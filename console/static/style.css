@@ -751,7 +751,11 @@ body.dispatch-page .notice { display: none; }
 .automation-plugin-entrypoint-copy { display: grid; gap: 1px; }
 .automation-plugin-entrypoint-copy strong { font-size: 0.8rem; }
 .automation-plugin-entrypoint-copy small { color: var(--muted); font-size: 0.7rem; font-weight: 600; }
-@media (prefers-reduced-motion: reduce) { .automation-plugin-entrypoint-track, .automation-plugin-entrypoint-track::after { transition: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .automation-plugin-entrypoint-track,
+  .automation-plugin-entrypoint-track::after,
+  .auto-settings { transition: none; }
+}
 .automation-plugin-schedule-kind { max-width: 360px; margin-bottom: 10px; }
 .auto-account-select[multiple] { min-height: 118px; padding-block: 6px; }
 
@@ -906,9 +910,10 @@ body.dispatch-page .notice { display: none; }
 .auto-checkbox-label { font-size: 0.8rem; font-weight: 600; color: var(--muted); user-select: none; transition: color var(--fast); }
 
 /* json summary chip */
-.auto-settings-footer { display: flex; gap: 10px; padding-top: 8px; }
+.auto-settings-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding-top: 8px; }
 .auto-save-btn { gap: 6px; font-size: 0.82rem; }
 .auto-save-btn .feather { width: 14px; height: 14px; }
+.automation-plugin-settings-feedback { flex: 1 1 280px; max-width: 70ch; font-weight: 600; line-height: 1.5; }
 
 /* ── Terminal drawer ── */
 .auto-terminal-drawer { border-radius: var(--radius-lg); background: #0c0c0c; border: 1px solid #2a2a2a; overflow: hidden; max-height: 0; opacity: 0; margin-top: 0; padding: 0 16px; transition: max-height var(--slow), opacity 200ms ease, margin-top 200ms ease, padding 200ms ease; }

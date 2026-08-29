@@ -40,6 +40,7 @@
   - `tms_runtime/scripts/` 中与 `price_scripts/` 旧离线脚本重名的模块（如 `login_manager`、`address_utils`、`get_price`、`browser_address_resolver`）必须使用 `agent.tms_runtime.scripts...` 包内导入，不得裸 `import login_manager` / `import get_price`，避免旧脚本目录或 `sys.modules` 缓存串线。
   - `SessionBroker` 是对旧调用方的统一门面；融辉/韵达验证码流程分别经 provider adapter，文件状态只由 state store 管理。融辉图片验证码必须点击真实登录页 `newLogin()` 入口，保留原页密码加密和 `userInfo` 写入回调；`userInfo` 必须保持 JavaScript 可读，且四个页面身份字段完整后才能标记 authenticated。历史错误 `httpOnly=true` 状态只允许由共享状态迁移器修正，不得在扫描脚本中从页头或默认值补身份。调度器不得访问 broker 私有状态或按目录顺序加载脚本。
 - 融辉、韵达、R7、R13 全部通过 `/admin/accounts/{account_id}/*` 使用同一账号管理契约；凭据只来自后台账号管理保存值。大祥报价任务显式绑定 `price_default` 及其 `price_default` profile，后台登录与飞书报价复用同一状态；`/admin/tms/session/*`、`/admin/tms/price-session/*`、`/admin/tms/yunda-session/*` 只保留旧调用兼容。不同账号仍按 `account_id` 隔离 Cookie/Token，R7/R13 使用可持久和在线校验的 SSO Token/Cookie，韵达登录态继续服务报表、查单、寄件同步、报价、录单原页代理和问题件接口
+  - R13 业务查询的站点身份属于中央账号目录合同；自动化项目只绑定 `r13_account_id`，首方 Broker 从该精确账号描述符派生站点并注入业务适配器。每日应签仅接受账号合同常量 `DAILY_SIGN_R13_SITE_CODE=7390017`，其他非空站点也必须拒绝；账号没有站点合同、项目绑定错误、调度后合同漂移或请求体尝试覆盖站点时均 fail closed。
   - Agent `_monitor_tms_session_alerts` 是唯一周期主动登录态检查器，检查结果回写 `/admin/accounts` 共享快照；Console `prefer_cached=1` 只读该快照，即使同时携带 `force=1` 也不得发起外部校验。同账号检查或登录忙时，`BLOCKED_LOGIN` 只跳过本轮，不覆盖快照、不累计失败、不发飞书告警。
   - 韵达账号绿色状态必须校验主站、报表 `searchData`、`kyinms`、消息中心和 `kyproblem` 问题件页；登录/验证码成功后 `SessionBroker` 会初始化这些子系统并写入同一份 `storage_state`，不能只用主站已登录判断业务可用。
   - `tms_runtime/scripts/yunda_waybill_proxy.py` 只允许代理 `https://kyinms.yunda56.com/ky_inms/public/...`，由 Console `/ocr/yunda/live/...` 使用；该代理会向原页注入预填和本地打印监听脚本，保存响应带 `shipnow_autoprint_url` 时打开 Console 本地打印页；新增韵达原页接口时优先复用该 allowlist 代理，不要把浏览器 Cookie 或鉴权头透传给 Console。
@@ -63,7 +64,7 @@
   - `tracking_number_validation.py`（单号查询本地格式预检；格式错误直接返回本地结果，不启动 `track_waybill`）
   - `core.py`（单号查询也先提交 Command；`track_waybill` 的进程内函数由 `main.py` 通过 `ToolExecutionPort` adapter 注入，仍只有 WorkflowRunner 调用）
   - `automation_profile.py`
-  - 当前已注册：登录验证码（`登录/登陆/发验证码/重新登录` 先选择大祥账号、操作场账号或韵达账号；带 `大祥/报价/价格/price` 时走大祥账号，带 `操作场/后台` 时走操作场账号，带 `韵达/yunda` 时走韵达账号）、单号查询（裸单号、`查单号 <单号>`、`查物流 <单号>`、`韵达 <单号>` 先做本地格式预检，通过后走 `track_waybill`）、报价（`报价/价格 ...` 或 `地址，重量`，同一地址请求会返回融辉和韵达两段报价；融辉段使用真实运单录入页详细地址 blur 解析得到目的网点/派件网点，无头页只补公开登录上下文和地图空实现，不做 `areaName`/区县/城市拆词兜底；韵达段先按页面 `getInsuredAmount.html` 规则用重量同步最低申明价值，再调用运单录入页 `price.html`，最终口径为页面的 `Number(CostTotal)+Number(短信费)` 后 `getFloatStr_1()` 截两位，并使用运单录入地址解析/网点匹配明细，飞书不传申明价值）、到货清单同步（`arrivelist/到货清单/预到达清单`）、扫描（`扫描/获取并扫描数据/...`）、R7 到达打卡（`到达打卡`）、R7 发车打卡（`发车/R7发车/发车打卡`）、上报分批差错（`上报分批差错` 等）、自提到货问题件（`自提到货问题件` / `自提部到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` / `开单为自提件问题件` 等）、统计到货数据（`统计/到货统计/...`）
+  - 当前已注册：登录验证码（`登录/登陆/发验证码/重新登录` 先选择大祥账号、操作场账号或韵达账号；带 `大祥/报价/价格/price` 时走大祥账号，带 `操作场/后台` 时走操作场账号，带 `韵达/yunda` 时走韵达账号）、单号查询（裸单号、`查单号 <单号>`、`查物流 <单号>`、`韵达 <单号>` 先做本地格式预检，通过后走 `track_waybill`）、报价（`报价/价格 ...` 或 `地址，重量`，同一地址请求会返回融辉和韵达两段报价；融辉段使用真实运单录入页详细地址 blur 解析得到目的网点/派件网点，无头页只补公开登录上下文和地图空实现，不做 `areaName`/区县/城市拆词兜底；韵达段先按页面 `getInsuredAmount.html` 规则用重量同步最低申明价值，再调用运单录入页 `price.html`，最终口径为页面的 `Number(CostTotal)+Number(短信费)` 后 `getFloatStr_1()` 截两位，并使用运单录入地址解析/网点匹配明细，飞书不传申明价值）、到货清单同步（`arrivelist/到货清单/预到达清单`）、扫描（`扫描/获取并扫描数据/...`）、R7 到达打卡（`到达打卡`）、R7 发车打卡（`发车/R7发车/发车打卡`）、分批问题件（仅精确文本 `分批`）、自提到货问题件（`自提到货问题件` / `自提部到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` / `开单为自提件问题件` 等）、统计到货数据（`统计/到货统计/...`）
   - `get_price` 同样先提交 Command；进程内价格函数由组合根作为 adapter 注入 WorkflowRunner。`tools/price_tool.py` 内部并发请求融辉 `/tms/get_price` 和韵达 `/tms/yunda_price`，分别按精确账号登录态处理登录恢复。
   - 韵达新增：`韵达登录/韵达发验证码` 走 `yunda` 登录态；`切换到融辉自动化/切换到韵达自动化/当前自动化状态` 管理当前 Profile；`韵达派件预测/网点派件量预测主单表` 触发韵达派件预测同步
   - 含 `is_confirm_text` / `is_cancel_text` / `parse_verify_code` 用于 pending 状态机
@@ -84,5 +85,5 @@
 - `../docs/project_overview.md`
 - `../docs/control_plane_v1.md`
 
-- `split_pending_problem_upload` 仅由精确文本“分批”触发，使用 `ronghui_default`；dry-run 编号列表后回复“确认”直接执行全部，输入序号、多选或区间时只选择对应运单并在回显后再次确认，运行时目标显式导入 `agent.tms_runtime.scripts.split_pending_problem_upload`。
-- 少货/分批复用不可独立调度的 `agent.tms_runtime.scripts.ronghui_split_complaint` 真实投诉页面能力，差错成功/重复后才登记问题件；有发未到只登记问题件。旧投诉 target、裸导入和 CLI 不得恢复。
+- `split_pending_problem_upload` 仅由精确文本“分批”触发；融辉账号必须由自动化项目的 `account_id` 角色显式绑定，运行时不得注入 `ronghui_default` 或任何默认 profile。dry-run 编号列表后回复“确认”直接执行全部，输入序号、多选或区间时只选择对应运单并在回显后再次确认，运行时目标显式导入 `agent.tms_runtime.scripts.split_pending_problem_upload`。
+- 少货/分批直接复用 `agent.tms_runtime.scripts.ronghui_problem_upload` 的真实“问题件录入”能力，固定登记“少货/分批 / 交接异常”，内容为 `应到XX件 实际到XX件`，并从登记问题件列表权威回读；不得调用 `ronghui_split_complaint` 或恢复投诉 target。

@@ -1213,10 +1213,31 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
             return []
 
         with patch("get_qianshou.fetch_qianshou", side_effect=_fake_fetch):
-            result = get_qianshou.run_once({"accountKey": "r13", "dispSiteCode": "7390004"})
+            result = get_qianshou.run_once(
+                {
+                    "r13_account_id": "r13-bound",
+                    "accountKey": "r13",
+                    "dispSiteCode": "site-code",
+                }
+            )
 
         self.assertEqual([], result)
         self.assertEqual("r13", captured["account_key"])
+        self.assertEqual("r13-bound", captured["account_id"])
+        self.assertEqual("site-code", captured["disp_site_code"])
+
+    def test_get_qianshou_rejects_missing_account_or_site_binding(self):
+        with self.assertRaisesRegex(RuntimeError, "site identity"):
+            get_qianshou.run_once({"r13_account_id": "r13-bound"})
+        with self.assertRaisesRegex(RuntimeError, "account identity"):
+            get_qianshou.run_once({"disp_site_code": "site-code"})
+        with self.assertRaisesRegex(RuntimeError, "account identity"):
+            get_qianshou.run_once(
+                {
+                    "account_id": "generic-account-is-not-an-r13-role",
+                    "disp_site_code": "site-code",
+                }
+            )
 
     def test_get_qianshou_uses_actual_sign_time_or_sign_site_as_sign_evidence(self):
         self.assertTrue(get_qianshou._has_confirmed_sign_signal({"signTime": "2026-08-11 16:54:54"}))

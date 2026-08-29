@@ -166,6 +166,8 @@ def test_preview_owns_classification_state_join_and_fingerprint():
         "R_SPLIT"
     ]
     assert result["data"]["candidates"][0]["problem_type"] == "少货/分批"
+    classified, _source_rows_count = action._classify(action._normalized_rows(_source_rows()))
+    assert classified[0]["problem_cause"] == "应到3件 实际到1件"
     assert len(result["data"]["preview_fingerprint"]) == 64
     assert result["meta"]["postcondition_evidence"]["0"]["details"][
         "write_attempted"
@@ -179,7 +181,7 @@ def test_legacy_read_only_preview_fingerprint_matches_signed_candidate_material(
         {
             "tracking_number": "R_SPLIT",
             "problem_type": "少货/分批",
-            "upload_status": "success",
+            "upload_status": "failed",
             "complaint_status": "failed",
         },
         {
@@ -226,13 +228,6 @@ def test_formal_selection_preflights_all_before_internal_or_external_writes():
             return {"complete": True, "evidence_ref": evidence_ref, "rows": _source_rows()}
         if action == "split_pending.snapshot.read":
             return {"complete": True, "evidence_ref": evidence_ref, "records": []}
-        if action == "ronghui.complaint.query":
-            return {
-                "bill_code": arguments["bill_code"],
-                "evidence_ref": evidence_ref,
-                "precondition_ref": f"complaint-precondition:{arguments['bill_code']}",
-                "ready": True,
-            }
         if action == "ronghui.problem.query":
             return {
                 "bill_code": arguments["bill_code"],
@@ -243,23 +238,9 @@ def test_formal_selection_preflights_all_before_internal_or_external_writes():
             }
         if action in {"split_pending.snapshot.replace", "feishu.sheet.replace_rows"}:
             return {"committed": True, "evidence_ref": evidence_ref}
-        if action == "ronghui.complaint.create":
-            return {
-                "committed": True,
-                "duplicate": False,
-                "evidence_ref": evidence_ref,
-                "external_id": "complaint:R_SPLIT",
-                "plan_sha256": "a" * 64,
-            }
-        if action == "ronghui.complaint.verify":
-            return {
-                "bill_code": arguments["bill_code"],
-                "confirmed": True,
-                "evidence_ref": evidence_ref,
-                "external_id": arguments["external_id"],
-                "plan_sha256": arguments["plan_sha256"],
-            }
         if action == "ronghui.problem.create":
+            if arguments["bill_code"] == "R_SPLIT":
+                assert arguments["problem_cause"] == "应到3件 实际到1件"
             return {
                 "committed": True,
                 "evidence_ref": evidence_ref,
@@ -294,17 +275,17 @@ def test_formal_selection_preflights_all_before_internal_or_external_writes():
     )
 
     actions = [call["action"] for call in calls]
-    assert actions[:5] == [
+    assert actions[:4] == [
         "feishu.sheet.read_rows",
         "split_pending.snapshot.read",
-        "ronghui.complaint.query",
         "ronghui.problem.query",
         "ronghui.problem.query",
     ]
-    assert actions[5:7] == [
+    assert actions[4:6] == [
         "split_pending.snapshot.replace",
         "feishu.sheet.replace_rows",
     ]
+    assert not any(action_name.startswith("ronghui.complaint.") for action_name in actions)
     assert result_module.validate_result(result) == result
     assert result["meta"]["record_count"] == 2
     assert result["data"]["selected_bill_codes"] == ["R_SPLIT", "R_ZERO"]
@@ -312,6 +293,63 @@ def test_formal_selection_preflights_all_before_internal_or_external_writes():
     assert result["meta"]["postcondition_evidence"]["0"]["details"][
         "confirmed_count"
     ] == 2
+
+
+def test_event_failure_does_not_mark_problem_result_complete():
+    action, _ = _load_action()
+    preview, _ = _preview(action)
+    calls: list[str] = []
+
+    def broker(operation, *, action, role, arguments):
+        calls.append(action)
+        evidence_ref = f"broker-evidence:{len(calls)}"
+        if action == "feishu.sheet.read_rows":
+            return {"complete": True, "evidence_ref": evidence_ref, "rows": _source_rows()}
+        if action == "split_pending.snapshot.read":
+            return {"complete": True, "evidence_ref": evidence_ref, "records": []}
+        if action == "ronghui.problem.query":
+            return {
+                "bill_code": arguments["bill_code"],
+                "evidence_ref": evidence_ref,
+                "existing": False,
+                "precondition_ref": "problem-precondition",
+                "ready": True,
+            }
+        if action in {"split_pending.snapshot.replace", "feishu.sheet.replace_rows"}:
+            return {"committed": True, "evidence_ref": evidence_ref}
+        if action == "ronghui.problem.create":
+            return {
+                "committed": True,
+                "evidence_ref": evidence_ref,
+                "external_id": "problem:R_SPLIT",
+            }
+        if action == "ronghui.problem.verify":
+            return {
+                "bill_code": arguments["bill_code"],
+                "confirmed": True,
+                "evidence_ref": evidence_ref,
+                "external_id": arguments["external_id"],
+                "problem_cause_sha256": arguments["problem_cause_sha256"],
+                "problem_owner_type": arguments["problem_owner_type"],
+                "problem_type": arguments["problem_type"],
+                "registered_at": "2026-08-15T01:02:03Z",
+                "registered_site": "登记网点",
+            }
+        if action == "daily_sign.problem_event.upsert":
+            raise RuntimeError("event write failed")
+        raise AssertionError(action)
+
+    with pytest.raises(RuntimeError, match="event write failed"):
+        action.run_action(
+            {
+                "dry_run": False,
+                "preview_fingerprint": preview["data"]["preview_fingerprint"],
+                "selected_bill_codes": ["R_SPLIT"],
+            },
+            broker,
+        )
+    assert "daily_sign.problem_event.upsert" in calls
+    assert "split_pending.result.upsert" not in calls
 
 
 def test_failed_late_preflight_prevents_every_write():
@@ -326,13 +364,6 @@ def test_failed_late_preflight_prevents_every_write():
             return {"complete": True, "evidence_ref": evidence_ref, "rows": _source_rows()}
         if action == "split_pending.snapshot.read":
             return {"complete": True, "evidence_ref": evidence_ref, "records": []}
-        if action == "ronghui.complaint.query":
-            return {
-                "bill_code": arguments["bill_code"],
-                "evidence_ref": evidence_ref,
-                "precondition_ref": "complaint-precondition",
-                "ready": True,
-            }
         if action == "ronghui.problem.query":
             return {
                 "bill_code": arguments["bill_code"],
@@ -354,7 +385,6 @@ def test_failed_late_preflight_prevents_every_write():
     assert calls == [
         "feishu.sheet.read_rows",
         "split_pending.snapshot.read",
-        "ronghui.complaint.query",
         "ronghui.problem.query",
         "ronghui.problem.query",
     ]

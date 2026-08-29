@@ -79,20 +79,6 @@ def _ports(**overrides):
             return {"ready": True, "existing": None}
         return _problem_result(plan, confirmed=action == "verify")
 
-    def complaint_action(_descriptor, action, plan):
-        if action == "query":
-            return {"ready": True}
-        if action == "create":
-            return {
-                "bill_code": plan["bill_code"],
-                "duplicate": False,
-                "external_id": "complaint-external-1",
-                "plan_sha256": "a" * 64,
-                "saved": True,
-                "verified": True,
-            }
-        return {"confirmed": True, **plan}
-
     values = {
         "describe_account": lambda account_id: {
             "account_id": account_id,
@@ -100,7 +86,6 @@ def _ports(**overrides):
             "system": "ronghui",
         },
         "problem_action": problem_action,
-        "complaint_action": complaint_action,
         "sheet_rows_read": lambda _resource, _column, _maximum: {
             "complete": True,
             "rows": [["运单编号"], ["R001"]],
@@ -134,9 +119,6 @@ def test_handler_map_is_exact_and_sheet_read_does_not_expose_bindings() -> None:
         ("browser.invoke", "ronghui.problem.query"),
         ("browser.invoke", "ronghui.problem.create"),
         ("browser.invoke", "ronghui.problem.verify"),
-        ("browser.invoke", "ronghui.complaint.query"),
-        ("browser.invoke", "ronghui.complaint.create"),
-        ("browser.invoke", "ronghui.complaint.verify"),
         ("projection.invoke", "split_pending.snapshot.read"),
         ("projection.invoke", "split_pending.snapshot.replace"),
         ("projection.invoke", "split_pending.result.upsert"),
@@ -320,35 +302,8 @@ def test_problem_write_requires_authoritative_readback_and_verify_is_fresh() -> 
     assert verify_unknown.value.code == "WRITE_OUTCOME_UNKNOWN"
 
 
-def test_split_complaint_and_projection_writes_require_exact_roles_and_readbacks() -> None:
+def test_split_projection_disables_complaint_state_and_requires_exact_role() -> None:
     handlers = build_problem_handler_map(_ports(), cursor_secret=_SECRET)
-    query_context = _context(
-        "split_pending_problem_upload",
-        "browser.invoke",
-        "ronghui.complaint.query",
-        "account_id",
-    )
-    query = handlers[(query_context.operation, query_context.action)](
-        query_context,
-        {"bill_code": "R003"},
-    )
-    create_context = replace(query_context, action="ronghui.complaint.create")
-    created = handlers[(create_context.operation, create_context.action)](
-        create_context,
-        {"bill_code": "R003", "precondition_ref": query["precondition_ref"]},
-    )
-    assert created["committed"] is True
-    verify_context = replace(query_context, action="ronghui.complaint.verify")
-    verified = handlers[(verify_context.operation, verify_context.action)](
-        verify_context,
-        {
-            "bill_code": "R003",
-            "external_id": created["external_id"],
-            "plan_sha256": created["plan_sha256"],
-        },
-    )
-    assert verified["confirmed"] is True
-
     result_context = _context(
         "split_pending_problem_upload",
         "projection.invoke",
@@ -359,12 +314,24 @@ def test_split_complaint_and_projection_writes_require_exact_roles_and_readbacks
         result_context,
         {
             "bill_code": "R003",
-            "complaint_status": "success",
+            "complaint_status": "not_applicable",
             "problem_item_status": "success",
             "problem_type": "少货/分批",
         },
     )
     assert result["committed"] is True
+
+    with pytest.raises(PluginExecutionError) as complaint_enabled:
+        handlers[(result_context.operation, result_context.action)](
+            result_context,
+            {
+                "bill_code": "R003",
+                "complaint_status": "success",
+                "problem_item_status": "success",
+                "problem_type": "少货/分批",
+            },
+        )
+    assert complaint_enabled.value.code == "BROKER_ARGUMENT_INVALID"
 
     wrong_role = replace(result_context, role="split_pending_source_sheet")
     with pytest.raises(PluginExecutionError) as denied:
@@ -372,7 +339,7 @@ def test_split_complaint_and_projection_writes_require_exact_roles_and_readbacks
             wrong_role,
             {
                 "bill_code": "R003",
-                "complaint_status": "success",
+                "complaint_status": "not_applicable",
                 "problem_item_status": "success",
                 "problem_type": "少货/分批",
             },

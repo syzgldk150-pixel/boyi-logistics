@@ -87,6 +87,15 @@ def _source_response(rows: list[list[object]], index: int = 1) -> dict[str, obje
     }
 
 
+def _legacy_source_params() -> dict[str, str]:
+    return {
+        "account_id": "bound-self",
+        "session_profile": "bound-self-profile",
+        "daxiang_s_account_id": "bound-daxiang",
+        "daxiang_s_session_profile": "bound-daxiang-profile",
+    }
+
+
 def _preview(action, rows: list[list[object]] | None = None):
     calls: list[dict[str, object]] = []
 
@@ -157,7 +166,7 @@ def test_legacy_read_only_preview_fingerprint_matches_signed_candidate_material(
     rows = _source_rows()
     legacy_records = legacy_action._collect_waybills_from_values(
         rows,
-        source_rules=legacy_action._source_rules({}),
+        source_rules=legacy_action._source_rules(_legacy_source_params()),
         source_sheet_id="sheet-1",
         source_sheet_title="每日到货表",
     )
@@ -170,6 +179,70 @@ def test_legacy_read_only_preview_fingerprint_matches_signed_candidate_material(
     assert legacy_action._preview_fingerprint(
         legacy_records
     ) == action._preview_fingerprint(signed_candidates)
+
+
+def test_waybill_outer_whitespace_is_trimmed_in_preview_and_formal_selection():
+    action, _ = _load_action()
+    rows = _source_rows()
+    rows[1][0] = "\t R_SELF \n"
+
+    result, _calls = _preview(action, rows)
+    assert result["data"]["candidates"][0]["bill_code"] == "R_SELF"
+    assert action._selected_bill_codes(
+        {
+            "preview_fingerprint": "a" * 64,
+            "selected_bill_codes": ["\t R_SELF \n"],
+        },
+        dry_run=False,
+    ) == ["R_SELF"]
+    with pytest.raises(
+        ValueError,
+        match="selected_bill_codes item contains internal whitespace",
+    ):
+        action._selected_bill_codes(
+            {
+                "preview_fingerprint": "a" * 64,
+                "selected_bill_codes": ["R SELF"],
+            },
+            dry_run=False,
+        )
+
+    legacy_records = legacy_action._collect_waybills_from_values(
+        rows,
+        source_rules=legacy_action._source_rules(_legacy_source_params()),
+        source_sheet_id="sheet-1",
+        source_sheet_title="每日到货表",
+    )
+    assert legacy_records[0]["bill_code"] == "R_SELF"
+
+
+def test_internal_whitespace_is_ignored_for_unrelated_rows_but_rejected_for_target_rows():
+    action, _ = _load_action()
+    unrelated = _source_rows() + [
+        ["R BAD", "配件", "自提", "1", "其他站点", "1"],
+    ]
+    result, _calls = _preview(action, unrelated)
+    assert result["data"]["candidate_count"] == 2
+    legacy_records = legacy_action._collect_waybills_from_values(
+        unrelated,
+        source_rules=legacy_action._source_rules(_legacy_source_params()),
+        source_sheet_id="sheet-1",
+        source_sheet_title="每日到货表",
+    )
+    assert len(legacy_records) == 2
+
+    target = _source_rows() + [
+        ["R BAD", "配件", "派送", "1", "邵阳自提部", "1"],
+    ]
+    with pytest.raises(ValueError, match="row 8 waybill contains internal whitespace"):
+        action._collect_candidates(target, include_daxiang=True, limit=None)
+    with pytest.raises(ValueError, match="第 8 行运单号包含内部空白"):
+        legacy_action._collect_waybills_from_values(
+            target,
+            source_rules=legacy_action._source_rules(_legacy_source_params()),
+            source_sheet_id="sheet-1",
+            source_sheet_title="每日到货表",
+        )
 
 
 def test_formal_selection_preflights_every_target_before_create_and_verifies_each_write():

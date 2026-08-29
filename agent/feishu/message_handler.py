@@ -145,7 +145,7 @@ TOOL_DISPLAY_NAMES = {
     "sync_yunda_dispatch_forecast": "韵达派件预测任务",
     "sync_yunda_send_waybills": "韵达寄件运单任务",
     "self_pickup_problem_upload": "自提到货问题件任务",
-    "split_pending_problem_upload": "分批差错及问题件任务",
+    "split_pending_problem_upload": "分批问题件任务",
     "r7_arrival_checkin": "R7 到达打卡任务",
     "r7_departure_checkin": "R7 发车打卡任务",
 }
@@ -2297,7 +2297,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         if ptype == "split_pending_selection":
             if is_cancel_text(text):
                 clear_pending(chat_id)
-                await _reply_text(chat_id, "已取消：分批差错及问题件")
+                await _reply_text(chat_id, "已取消：分批问题件")
                 return
             if _contains_account_override(pending) or not str(
                 pending.get("automation_route_key") or ""
@@ -2322,7 +2322,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                     pending,
                     selected_codes,
                     running_message=(
-                        "分批差错及问题件任务正在执行中；当前列表仍保留，请稍后再次回复“确认”。"
+                        "分批问题件任务正在执行中；当前列表仍保留，请稍后再次回复“确认”。"
                     ),
                 )
                 return
@@ -2363,7 +2363,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         if ptype == "split_pending_confirmation":
             if is_cancel_text(text):
                 clear_pending(chat_id)
-                await _reply_text(chat_id, "已取消：分批差错及问题件")
+                await _reply_text(chat_id, "已取消：分批问题件")
                 return
             if is_confirm_text(text):
                 await _execute_split_formal(
@@ -2372,7 +2372,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                     pending,
                     list(pending.get("selected_bill_codes") or []),
                     running_message=(
-                        "分批差错及问题件任务正在执行中；当前选择仍保留，请稍后再次回复“确认”。"
+                        "分批问题件任务正在执行中；当前选择仍保留，请稍后再次回复“确认”。"
                     ),
                 )
                 return
@@ -2649,7 +2649,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         if mode == "automation_preview" and tool_name == SPLIT_PREVIEW_TOOL_NAME:
             await _reply_text(
                 chat_id,
-                "正在生成分批差错及问题件候选清单；任务繁忙时可能需要排队，完成后我会反馈结果。",
+                "正在生成分批问题件候选清单；任务繁忙时可能需要排队，完成后我会反馈结果。",
                 reply_type="split_preview_started",
             )
 

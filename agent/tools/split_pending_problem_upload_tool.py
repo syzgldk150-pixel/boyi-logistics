@@ -34,7 +34,6 @@ from tools.tms_tool import call_http_service
 
 SOURCE_RESOURCE_KEY = "phase7.split_pending_source_sheet"
 EXPECTED_SOURCE_SHEET_ID = "8fc516"
-DEFAULT_ACCOUNT_ID = "ronghui_default"
 UPLOAD_TIMEOUT_SEC = 7200
 
 
@@ -127,23 +126,13 @@ def _stateful_candidates(
         problem_status = _clean_text(previous.get("upload_status")) if same_type else "pending"
         if problem_status not in {"pending", "failed", "success"}:
             problem_status = "pending"
-        if candidate["problem_type"] == "少货/分批":
-            complaint_status = _clean_text(previous.get("complaint_status")) if same_type else "pending"
-            if complaint_status not in {"pending", "failed", "success", "duplicate"}:
-                complaint_status = "pending"
-            complete = complaint_status in {"success", "duplicate"} and problem_status == "success"
-        else:
-            complaint_status = "not_applicable"
-            complete = problem_status == "success"
+        complaint_status = "not_applicable"
+        complete = problem_status == "success"
         if complete:
             hidden_completed += 1
             continue
-        if complaint_status == "failed":
-            candidate_status = "差错失败"
-        elif problem_status == "failed":
+        if problem_status == "failed":
             candidate_status = "问题件失败"
-        elif candidate["problem_type"] == "少货/分批" and problem_status == "success":
-            candidate_status = "待补差错"
         else:
             candidate_status = "未执行"
         eligible.append(
@@ -152,10 +141,6 @@ def _stateful_candidates(
                 "candidate_status": candidate_status,
                 "complaint_status": complaint_status,
                 "problem_item_status": problem_status,
-                "run_complaint": (
-                    candidate["problem_type"] == "少货/分批"
-                    and complaint_status not in {"success", "duplicate"}
-                ),
                 "run_problem_item": problem_status != "success",
             }
         )
@@ -293,7 +278,15 @@ def _validate_upload_results(
 def run_split_pending_problem_upload(params: dict[str, Any] | None = None) -> dict[str, Any]:
     params = dict(params or {})
     dry_run = _bool_param(params, "dry_run", True)
-    account_id = _clean_text(params.get("account_id") or DEFAULT_ACCOUNT_ID)
+    account_id = _clean_text(params.get("account_id"))
+    if not account_id:
+        message = "项目设置必须显式绑定 account_id"
+        return {
+            "ok": False,
+            "stage": "blocked_config",
+            "error": message,
+            "message": message,
+        }
     selected_bill_codes: list[str] = []
     requested_fingerprint = _clean_text(params.get("preview_fingerprint"))
     if not dry_run:
@@ -455,20 +448,6 @@ def run_split_pending_problem_upload(params: dict[str, Any] | None = None) -> di
         }
     saved_bills = sum(1 for result in results if result["complete"])
     failed_bill_codes = [result["bill_code"] for result in results if not result["complete"]]
-    try:
-        database_upload_result = update_split_pending_combined_results(results)
-    except Exception as exc:
-        return {
-            "ok": False,
-            "stage": "database_result_update_failed",
-            "error": f"融辉已执行，但数据库状态回写失败: {str(exc)[:500]}",
-            "message": str(exc)[:500],
-            "database_result": database_result,
-            "target_sheet_result": target_sheet_result,
-            "upload_result": upload_result,
-            "selected_bill_codes": selected_bill_codes,
-            **common,
-        }
     event_rows: list[dict[str, Any]] = []
     for result in results:
         if not result.get("complete"):
@@ -482,7 +461,6 @@ def run_split_pending_problem_upload(params: dict[str, Any] | None = None) -> di
                 "stage": "event_store_failed",
                 "error": f"{result.get('bill_code')} 已执行，但TMS结果缺少问题件唯一ID或登记时间",
                 "database_result": database_result,
-                "database_upload_result": database_upload_result,
                 "target_sheet_result": target_sheet_result,
                 "selected_bill_codes": selected_bill_codes,
                 **common,
@@ -509,8 +487,22 @@ def run_split_pending_problem_upload(params: dict[str, Any] | None = None) -> di
             "stage": "event_store_failed",
             "error": f"融辉已执行，但共享问题件事件写入失败: {str(exc)[:500]}",
             "database_result": database_result,
-            "database_upload_result": database_upload_result,
             "target_sheet_result": target_sheet_result,
+            "selected_bill_codes": selected_bill_codes,
+            **common,
+        }
+    try:
+        database_upload_result = update_split_pending_combined_results(results)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "stage": "database_result_update_failed",
+            "error": f"融辉已执行，但数据库状态回写失败: {str(exc)[:500]}",
+            "message": str(exc)[:500],
+            "database_result": database_result,
+            "problem_event_result": problem_event_result,
+            "target_sheet_result": target_sheet_result,
+            "upload_result": upload_result,
             "selected_bill_codes": selected_bill_codes,
             **common,
         }

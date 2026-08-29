@@ -102,6 +102,11 @@ class DailySignPipelineTests(unittest.TestCase):
             code = "AUTH_REQUIRED"
 
         manager = SimpleNamespace(
+            require_active_binding_descriptor=lambda _account_id: {
+                "account_id": "r13_default",
+                "system": "r13",
+                "site_code": "7390017",
+            },
             resolve_role_account_params=lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 AccountError("credential unavailable")
             )
@@ -468,6 +473,7 @@ class DailySignSourceTests(unittest.TestCase):
                 page=1,
                 fetch_all=True,
                 max_pages=10,
+                account_id="r13-test",
             )
 
         self.assertEqual("R001", rows[0]["billNumberMain"])
@@ -505,6 +511,7 @@ class DailySignSourceTests(unittest.TestCase):
                     page=1,
                     fetch_all=True,
                     max_pages=10,
+                    account_id="r13-test",
                 )
 
     def test_get_qianshou_refreshes_one_invalid_cached_token(self):
@@ -548,6 +555,7 @@ class DailySignSourceTests(unittest.TestCase):
                 page=1,
                 fetch_all=True,
                 max_pages=10,
+                account_id="r13-test",
             )
 
         self.assertEqual([], rows)
@@ -593,6 +601,7 @@ class DailySignSourceTests(unittest.TestCase):
                 page=1,
                 fetch_all=True,
                 max_pages=10,
+                account_id="r13-test",
             )
 
         self.assertEqual(["R001"], [row["billNumberMain"] for row in rows])
@@ -625,6 +634,7 @@ class DailySignSourceTests(unittest.TestCase):
                     page=1,
                     fetch_all=True,
                     max_pages=10,
+                    account_id="r13-test",
                 )
 
     def test_get_qianshou_rejects_pages_without_authoritative_total(self):
@@ -654,6 +664,7 @@ class DailySignSourceTests(unittest.TestCase):
                     page=1,
                     fetch_all=True,
                     max_pages=10,
+                    account_id="r13-test",
                 )
 
     def test_get_sign_records_requires_explicit_time_window(self):

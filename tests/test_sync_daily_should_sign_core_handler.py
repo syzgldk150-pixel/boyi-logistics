@@ -23,6 +23,7 @@ from agent.automation_plugins.first_party_handlers import (
     FirstPartyCoreHandlerPorts,
     build_first_party_core_handler_map,
 )
+from agent.automation_plugins import first_party_handlers as handler_module
 from agent.execution_boundary import authorize_tms_target, current_execution_capability
 from agent.tool_registry import ToolRegistry
 from plugin_core_adapters import daily_sign as daily_sign_adapters
@@ -71,11 +72,16 @@ def _descriptor(account_id: str) -> dict[str, str]:
         "r13-other": "r13",
         "ronghui-bound": "ronghui",
     }
-    return {
+    descriptor = {
         "account_id": account_id,
         "system": systems[account_id],
         "session_profile": f"profile:{account_id}",
     }
+    if descriptor["system"] == "r13":
+        descriptor["site_code"] = (
+            "7390017" if account_id == "r13-bound" else "r13-other-site"
+        )
+    return descriptor
 
 
 def _context(*, r13_account_id: str = "r13-bound") -> CoreBrokerInvocationContext:
@@ -236,6 +242,7 @@ def test_closed_handler_injects_exact_bindings_and_preserves_result_body() -> No
                 "days": 7,
                 "enrich_addresses": True,
                 "r13_account_id": "r13-bound",
+                "r13_site_code": "7390017",
                 "account_id": "ronghui-bound",
             },
             "resources": {
@@ -277,7 +284,65 @@ def test_closed_handler_rejects_nested_account_material_before_authoritative_cal
     assert calls == []
 
 
-def test_opaque_evidence_is_bound_to_both_exact_accounts() -> None:
+def test_closed_handler_rejects_r13_account_without_site_contract() -> None:
+    calls: list[object] = []
+
+    def descriptor(account_id: str) -> dict[str, str]:
+        value = _descriptor(account_id)
+        value.pop("site_code", None)
+        return value
+
+    handlers = build_first_party_core_handler_map(
+        FirstPartyCoreHandlerPorts(
+            describe_account=descriptor,
+            daily_sign_sync=lambda arguments, resources: calls.append(
+                (arguments, resources)
+            ),
+        ),
+        cursor_secret=b"d" * 32,
+    )
+
+    with pytest.raises(PluginExecutionError) as exc_info:
+        handlers[("ledger.invoke", "daily_sign.authoritative_sync")](
+            _context(),
+            {"days": 7},
+        )
+
+    assert exc_info.value.code == "BROKER_ACCOUNT_INVALID"
+    assert calls == []
+
+
+def test_closed_handler_rejects_r13_account_for_another_site() -> None:
+    calls: list[object] = []
+    handlers = build_first_party_core_handler_map(
+        FirstPartyCoreHandlerPorts(
+            describe_account=_descriptor,
+            daily_sign_sync=lambda arguments, resources: calls.append(
+                (arguments, resources)
+            ),
+        ),
+        cursor_secret=b"d" * 32,
+    )
+
+    with pytest.raises(PluginExecutionError) as exc_info:
+        handlers[("ledger.invoke", "daily_sign.authoritative_sync")](
+            _context(r13_account_id="r13-other"),
+            {"days": 7},
+        )
+
+    assert exc_info.value.code == "BROKER_ACCOUNT_INVALID"
+    assert calls == []
+
+
+def test_opaque_evidence_hash_includes_derived_r13_site(monkeypatch) -> None:
+    encoded_material: list[object] = []
+    original_encode = handler_module.canonical_json_bytes
+
+    def capture_encode(value):
+        encoded_material.append(value)
+        return original_encode(value)
+
+    monkeypatch.setattr(handler_module, "canonical_json_bytes", capture_encode)
     handlers = build_first_party_core_handler_map(
         FirstPartyCoreHandlerPorts(
             describe_account=_descriptor,
@@ -287,10 +352,13 @@ def test_opaque_evidence_is_bound_to_both_exact_accounts() -> None:
     )
     invoke = handlers[("ledger.invoke", "daily_sign.authoritative_sync")]
 
-    first = invoke(_context(r13_account_id="r13-bound"), {"days": 7})
-    second = invoke(_context(r13_account_id="r13-other"), {"days": 7})
+    invoke(_context(r13_account_id="r13-bound"), {"days": 7})
 
-    assert first["evidence_ref"] != second["evidence_ref"]
+    assert {
+        "r13_account_id": "r13-bound",
+        "r13_site_code": "7390017",
+        "account_id": "ronghui-bound",
+    } in encoded_material
 
 
 def test_broker_handler_receives_exact_tool_scoped_tms_capability() -> None:
@@ -430,6 +498,7 @@ def test_registered_adapter_revalidates_every_role_for_one_typed_call() -> None:
             "arguments": {
                 "days": 7,
                 "r13_account_id": "r13-bound",
+                "r13_site_code": "7390017",
                 "account_id": "ronghui-bound",
             },
             "resources": {

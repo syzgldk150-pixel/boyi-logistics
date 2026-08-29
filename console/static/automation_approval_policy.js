@@ -23,6 +23,20 @@
     "FAILED_TERMINAL",
     "CANCELLED",
   ]);
+  const PLUGIN_CONFIGURATION_CONTROL_SELECTOR = [
+    "[data-plugin-config-path]",
+    "[data-plugin-account-role]",
+    "[data-plugin-resource-role]",
+    "[data-plugin-entrypoint]",
+    "[data-plugin-worker-select]",
+    "[data-plugin-schedule-kind]",
+    "[data-automation-toggle]",
+    "[data-schedule-time]",
+  ].join(", ");
+  const PLUGIN_CONFIGURATION_PENDING_RUNTIME_STATES = new Set([
+    "BLOCKED_GENERATION",
+    "REFRESH_FAILED",
+  ]);
   const pendingStates = new WeakMap();
 
   function parseObject(value) {
@@ -140,6 +154,97 @@
     element.textContent = message || "";
     element.dataset.kind = kind;
     element.hidden = !message;
+  }
+
+  function pluginConfigurationContext(target) {
+    if (!(target instanceof Element)) return null;
+    const form = target.closest("form");
+    if (!(form instanceof HTMLFormElement)) return null;
+    const instance = form.querySelector("[data-plugin-instance]");
+    if (!(instance instanceof HTMLElement)) return null;
+    return { form, instance };
+  }
+
+  function setPluginConfigurationFeedback(instance, message, kind = "", options = {}) {
+    const form = instance.closest("form");
+    const summary = instance.querySelector("[data-plugin-instance-feedback]");
+    const local = form?.querySelector("[data-plugin-settings-feedback]");
+    if (options.summary === true) {
+      setFeedback(local, "", "");
+      setFeedback(summary, message, kind);
+      return;
+    }
+    setFeedback(summary, "", "");
+    if (local instanceof HTMLElement) {
+      local.setAttribute("role", kind === "error" ? "alert" : "status");
+      local.setAttribute("aria-live", kind === "error" ? "assertive" : "polite");
+    }
+    setFeedback(local, message, kind);
+  }
+
+  function markPluginConfigurationDirty(instance) {
+    const form = instance.closest("form");
+    const configurationSave = form?.querySelector("[data-plugin-configuration-save]");
+    const runButton = form?.querySelector("[data-run-now]");
+    if (configurationSave instanceof HTMLButtonElement) {
+      delete configurationSave.dataset.requestId;
+    }
+    setPluginConfigurationFeedback(
+      instance,
+      "项目设置尚未保存；保存后才能按新配置运行。",
+      "warning",
+    );
+    if (runButton instanceof HTMLButtonElement && !runButton.disabled) {
+      runButton.dataset.runTitleBeforePluginConfig = runButton.getAttribute("title") || "";
+      runButton.disabled = true;
+      runButton.dataset.disabledForPluginConfig = "true";
+      runButton.title = "请先保存项目设置";
+    }
+  }
+
+  function nestedConfigHasPath(value, rawPath) {
+    const parts = String(rawPath || "").split(".").filter(Boolean);
+    let cursor = value;
+    for (const part of parts) {
+      if (
+        !cursor
+        || typeof cursor !== "object"
+        || !Object.prototype.hasOwnProperty.call(cursor, part)
+      ) return false;
+      cursor = cursor[part];
+    }
+    return parts.length > 0;
+  }
+
+  function syncPluginConfigurationSavedState(instance, settings) {
+    const form = instance.closest("form");
+    form?.querySelectorAll("[data-plugin-config-path]").forEach(control => {
+      control.dataset.pluginConfigPresent = String(
+        nestedConfigHasPath(settings.config, control.dataset.pluginConfigPath),
+      );
+      control.dataset.pluginConfigTouched = "false";
+    });
+    const runButton = form?.querySelector("[data-run-now]");
+    if (!(runButton instanceof HTMLButtonElement)) return;
+    const consoleEnabled = settings.enabled_entrypoints.includes("console");
+    if (!consoleEnabled) {
+      runButton.disabled = true;
+      delete runButton.dataset.disabledForPluginConfig;
+      runButton.dataset.disabledForPluginEntrypoint = "true";
+      runButton.title = "后台手动入口已关闭";
+      return;
+    }
+    if (
+      runButton.dataset.disabledForPluginConfig !== "true"
+      && runButton.dataset.disabledForPluginEntrypoint !== "true"
+    ) return;
+    runButton.disabled = false;
+    delete runButton.dataset.disabledForPluginConfig;
+    delete runButton.dataset.disabledForPluginEntrypoint;
+    const previousTitle = runButton.dataset.runTitleBeforePluginConfig || "";
+    if (previousTitle) runButton.title = previousTitle;
+    else runButton.removeAttribute("title");
+    delete runButton.dataset.runTitleBeforePluginConfig;
   }
 
   function announce(governance, message) {
@@ -696,7 +801,11 @@
     const config = {};
     form.querySelectorAll("[data-plugin-config-path]").forEach(control => {
       if (!(control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement || control instanceof HTMLSelectElement)) return;
-      if (!control.checkValidity()) throw new Error("请检查“任务怎么运行”中的填写内容。");
+      if (!control.checkValidity()) {
+        control.reportValidity();
+        control.focus();
+        throw new Error("请检查“任务怎么运行”中的填写内容。");
+      }
       const normalized = pluginConfigControlValue(control);
       if (!normalized.omitted) setNestedConfig(config, control.dataset.pluginConfigPath, normalized.value);
     });
@@ -709,11 +818,15 @@
       const required = control.dataset.pluginAccountRequired === "true";
       const many = control.dataset.pluginAccountCardinality === "many";
       if (selected.some(option => option.disabled)) {
+        control.focus();
         throw new Error("已选账号已停用或登录态无效，请重新选择。");
       }
       const selectedIds = selected.map(option => option.value).filter(Boolean);
       if (!selectedIds.length) {
-        if (required) throw new Error("请为每个必需角色选择可用业务账号。");
+        if (required) {
+          control.focus();
+          throw new Error("请为每个必需角色选择可用业务账号。");
+        }
         return;
       }
       accountBindings[role] = many ? selectedIds : selectedIds[0];
@@ -726,11 +839,15 @@
       const selected = control.selectedOptions[0];
       const required = control.dataset.pluginResourceRequired === "true";
       if (selected?.disabled) {
+        control.focus();
         throw new Error("已保存资源不可用或类型不匹配，请重新选择。");
       }
       const resourceId = String(control.value || "").trim();
       if (!resourceId) {
-        if (required) throw new Error("请为每个必需角色选择可用资源。");
+        if (required) {
+          control.focus();
+          throw new Error("请为每个必需角色选择可用资源。");
+        }
         return;
       }
       resourceBindings[role] = resourceId;
@@ -743,8 +860,14 @@
     let deviceId = null;
     if (worker instanceof HTMLSelectElement) {
       const selected = worker.selectedOptions[0];
-      if (!worker.value) throw new Error("请选择在线的命名 Windows Worker。");
-      if (selected?.disabled) throw new Error("已选 Windows Worker 当前不可用。");
+      if (!worker.value) {
+        worker.focus();
+        throw new Error("请选择在线的命名 Windows Worker。");
+      }
+      if (selected?.disabled) {
+        worker.focus();
+        throw new Error("已选 Windows Worker 当前不可用。");
+      }
       deviceId = worker.value;
     }
 
@@ -756,8 +879,12 @@
       times = [...form.querySelectorAll("[data-schedule-time]")]
         .map(control => String(control.value || "").trim())
         .filter(Boolean);
-      if (!times.length) throw new Error("每天指定时间至少需要一个有效时间。");
+      if (!times.length) {
+        addScheduleTimeFocus(form);
+        throw new Error("每天指定时间至少需要一个有效时间。");
+      }
       if (times.some(value => !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value))) {
+        form.querySelector("[data-schedule-time]:invalid")?.focus();
         throw new Error("定时时间格式无效。");
       }
       times = [...new Set(times)].sort();
@@ -787,23 +914,43 @@
     };
   }
 
+  function addScheduleTimeFocus(form) {
+    const addSchedule = form.querySelector("[data-add-schedule-time]");
+    if (addSchedule instanceof HTMLElement) addSchedule.focus();
+  }
+
   async function savePluginConfiguration(instance, button) {
+    if (button.getAttribute("aria-busy") === "true") return;
     const automationId = instance.dataset.automationId || "";
-    const feedback = instance.querySelector("[data-plugin-instance-feedback]");
     const configurationVersion = Number(instance.dataset.projectConfigurationVersion || 0);
     if (!Number.isInteger(configurationVersion) || configurationVersion < 1) {
-      setFeedback(feedback, "项目配置版本已缺失，请刷新后重试。", "error");
+      setPluginConfigurationFeedback(
+        instance,
+        "项目配置版本已缺失，请刷新页面后重新保存。",
+        "error",
+      );
       return;
     }
     let settings;
     try {
       settings = collectPluginConfiguration(instance);
     } catch (error) {
-      setFeedback(feedback, error instanceof Error ? error.message : "项目设置无效。", "error");
+      setPluginConfigurationFeedback(
+        instance,
+        error instanceof Error ? error.message : "项目设置无效，请检查后重试。",
+        "error",
+      );
       return;
     }
-    const requestId = button.dataset.requestId || secureRequestId(feedback);
-    if (!requestId) return;
+    const requestId = button.dataset.requestId || secureRequestId(null);
+    if (!requestId) {
+      setPluginConfigurationFeedback(
+        instance,
+        "当前浏览器无法生成安全请求标识，设置尚未提交。请刷新页面后重试。",
+        "error",
+      );
+      return;
+    }
     button.dataset.requestId = requestId;
     setBusy(button, true, "保存中…");
     try {
@@ -827,24 +974,65 @@
       );
       const payload = await response.json().catch(() => null);
       if (!response.ok || payload?.ok !== true) {
-        throw new Error(responseMessage(payload, "项目设置保存失败，请重试。"));
+        const error = new Error(responseMessage(
+          payload,
+          response.status >= 500
+            ? "服务器暂时无法确认设置是否保存，请使用当前页面再次点击保存。"
+            : "项目设置未保存，请根据提示修正后重试。",
+        ));
+        error.responseConfirmed = response.status < 500;
+        throw error;
       }
       const scheduleRuntimeState = String(
         payload?.data?.schedule_runtime_state || "REFRESH_FAILED",
       ).toUpperCase();
-      if (["BLOCKED_GENERATION", "REFRESH_FAILED"].includes(scheduleRuntimeState)) {
-        setFeedback(
-          feedback,
+      const schedulerRefreshCompleted = payload?.data?.scheduler_refresh_completed === true;
+      const stableRuntime = ["ACTIVE", "DISABLED", "ENTRYPOINT_DISABLED"].includes(
+        scheduleRuntimeState,
+      );
+      if (
+        PLUGIN_CONFIGURATION_PENDING_RUNTIME_STATES.has(scheduleRuntimeState)
+        || !stableRuntime
+        || !schedulerRefreshCompleted
+      ) {
+        setPluginConfigurationFeedback(
+          instance,
           payload.message || "设置已保存，但运行中定时尚未生效；请使用同一请求重试。",
           "warning",
         );
         return;
       }
+      const newVersion = Number(payload?.data?.project_configuration_version || 0);
+      if (!Number.isInteger(newVersion) || newVersion < 1) {
+        setPluginConfigurationFeedback(
+          instance,
+          "设置可能已经保存，但页面未取得新的配置版本。请刷新页面核对后再继续。",
+          "warning",
+        );
+        return;
+      }
+      instance.dataset.projectConfigurationVersion = String(newVersion);
+      syncPluginConfigurationSavedState(instance, settings);
       delete button.dataset.requestId;
-      setFeedback(feedback, payload.message || "项目设置已保存。", "success");
-      window.location.reload();
+      setPluginConfigurationFeedback(
+        instance,
+        payload.message || "项目设置已保存。",
+        "success",
+        { summary: true },
+      );
+      const form = instance.closest("form");
+      form?.dispatchEvent(new CustomEvent("automation:plugin-configuration-saved", {
+        bubbles: false,
+        detail: { automationId, projectConfigurationVersion: newVersion },
+      }));
     } catch (error) {
-      setFeedback(feedback, error instanceof Error ? error.message : "项目设置保存失败，请重试。", "error");
+      if (error?.responseConfirmed === true) delete button.dataset.requestId;
+      const message = error instanceof TypeError
+        ? "未能连接服务器，设置是否保存尚未确认。请检查网络后再次点击，页面会复用同一请求标识。"
+        : error instanceof Error
+          ? error.message
+          : "项目设置保存失败，请重试。";
+      setPluginConfigurationFeedback(instance, message, "error");
     } finally {
       setBusy(button, false, "");
     }
@@ -955,8 +1143,6 @@
     });
 
     const form = instance.closest("form");
-    const configurationSave = form?.querySelector("[data-plugin-configuration-save]");
-    const runButton = form?.querySelector("[data-run-now]");
     const scheduleKind = form?.querySelector("[data-plugin-schedule-kind]");
     const scheduleStack = form?.querySelector("[data-schedule-stack]");
     const addSchedule = form?.querySelector("[data-add-schedule-time]");
@@ -996,41 +1182,41 @@
         syncScheduleVisibility();
       });
     });
+  }
 
-    const markConfigurationDirty = () => {
-      if (configurationSave instanceof HTMLButtonElement) delete configurationSave.dataset.requestId;
-      setFeedback(feedback, "项目设置尚未保存；保存后才能按新配置运行。", "warning");
-      if (runButton instanceof HTMLButtonElement && !runButton.disabled) {
-        runButton.disabled = true;
-        runButton.dataset.disabledForPluginConfig = "true";
-        runButton.title = "请先保存项目设置";
-      }
+  function initializePluginConfigurationDelegation() {
+    const root = document.documentElement;
+    if (root?.dataset.pluginConfigurationDelegated === "true") return;
+    if (root) root.dataset.pluginConfigurationDelegated = "true";
+
+    const markFromControl = event => {
+      const control = event.target instanceof Element ? event.target : null;
+      if (!control?.matches(PLUGIN_CONFIGURATION_CONTROL_SELECTOR)) return;
+      if (control.dataset.pluginConfigPath) control.dataset.pluginConfigTouched = "true";
+      const context = pluginConfigurationContext(control);
+      if (context) markPluginConfigurationDirty(context.instance);
     };
-    form?.querySelectorAll(
-      "[data-plugin-config-path], [data-plugin-account-role], [data-plugin-resource-role], [data-plugin-entrypoint], [data-plugin-worker-select], [data-plugin-schedule-kind], [data-automation-toggle], [data-schedule-time]",
-    ).forEach(control => {
-      control.addEventListener("input", () => {
-        if (control.dataset.pluginConfigPath) control.dataset.pluginConfigTouched = "true";
-        markConfigurationDirty();
-      });
-      control.addEventListener("change", () => {
-        if (control.dataset.pluginConfigPath) control.dataset.pluginConfigTouched = "true";
-        markConfigurationDirty();
-      });
-    });
-    form?.addEventListener("click", event => {
-      if (event.target.closest("[data-add-schedule-time], [data-remove-schedule-time]")) {
-        window.setTimeout(markConfigurationDirty, 0);
+    document.addEventListener("input", markFromControl);
+    document.addEventListener("change", markFromControl);
+    document.addEventListener("click", event => {
+      const target = event.target instanceof Element ? event.target : null;
+      const save = target?.closest("[data-plugin-configuration-save]");
+      if (save instanceof HTMLButtonElement) {
+        const context = pluginConfigurationContext(save);
+        if (context) void savePluginConfiguration(context.instance, save);
+        return;
       }
-    });
-    configurationSave?.addEventListener("click", () => {
-      if (configurationSave instanceof HTMLButtonElement) {
-        void savePluginConfiguration(instance, configurationSave);
-      }
+      const scheduleAction = target?.closest(
+        "[data-add-schedule-time], [data-remove-schedule-time]",
+      );
+      if (!scheduleAction) return;
+      const context = pluginConfigurationContext(scheduleAction);
+      if (context) window.setTimeout(() => markPluginConfigurationDirty(context.instance), 0);
     });
   }
 
   function initializePlugins() {
+    initializePluginConfigurationDelegation();
     initializePluginInstall();
     const instances = [...document.querySelectorAll("[data-plugin-instance]")];
     instances.forEach(initializePluginInstance);

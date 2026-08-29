@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.manifest import canonical_json_bytes
+from agent.tms_runtime.account_contracts import DAILY_SIGN_R13_SITE_CODE
 
 
 AccountDescriptorPort = Callable[[str], Mapping[str, Any]]
@@ -197,6 +198,27 @@ def _account_descriptor(
     if str(descriptor.get("system") or "").strip().lower() not in systems:
         raise _error("account system does not match the primitive", "BROKER_ACCOUNT_SYSTEM_MISMATCH")
     return descriptor
+
+
+def _daily_sign_account_bindings(
+    ports: _AccountDescriptorPorts,
+    context: CoreBrokerInvocationContext,
+) -> dict[str, str]:
+    r13_account_id = _one_role_account(context, "r13_account_id")
+    account_id = _one_role_account(context, "account_id")
+    descriptor = _account_descriptor(ports, r13_account_id, systems={"r13"})
+    r13_site_code = str(descriptor.get("site_code") or "").strip()
+    if r13_site_code != DAILY_SIGN_R13_SITE_CODE:
+        raise _error(
+            "the exact R13 account does not match the daily-sign site contract",
+            "BROKER_ACCOUNT_INVALID",
+        )
+    _account_descriptor(ports, account_id, systems={"ronghui"})
+    return {
+        "r13_account_id": r13_account_id,
+        "r13_site_code": r13_site_code,
+        "account_id": account_id,
+    }
 
 
 class _OpaqueCodec:

@@ -103,14 +103,14 @@ def _limit(value: object) -> int | None:
     return result
 
 
-def _waybill(value: object) -> str:
-    result = _cell_text(value, "waybill")
+def _waybill(value: object, *, label: str = "waybill") -> str:
+    result = _cell_text(value, label)
     if result.startswith("="):
         result = result[1:].strip()
     if len(result) >= 2 and result[0] == result[-1] and result[0] in {"'", '"'}:
         result = result[1:-1].strip()
     if any(character.isspace() for character in result):
-        raise ValueError("waybill contains whitespace")
+        raise ValueError(f"{label} contains internal whitespace")
     if len(result) > 128:
         raise ValueError("waybill is too long")
     return result
@@ -226,9 +226,6 @@ def _collect_candidates(
     source_by_waybill: dict[str, str] = {}
     exact_duplicates = 0
     for row_number, row in enumerate(rows[1:], start=2):
-        bill_code = _waybill(row[waybill_index] if waybill_index < len(row) else None)
-        if not bill_code:
-            continue
         destination = _row_cell(row, destination_index, "destination")
         delivery_method = _row_cell(row, delivery_index, "delivery method") if delivery_index is not None else ""
         matched_rules = [
@@ -240,7 +237,13 @@ def _collect_candidates(
         if not matched_rules:
             continue
         if len(matched_rules) != 1:
-            raise ValueError(f"waybill {bill_code} matches multiple self-pickup sources")
+            raise ValueError(f"self-pickup source row {row_number} matches multiple sources")
+        bill_code = _waybill(
+            row[waybill_index] if waybill_index < len(row) else None,
+            label=f"self-pickup source row {row_number} waybill",
+        )
+        if not bill_code:
+            continue
         rule = matched_rules[0]
         arrival_number, arrival_count = _count(
             row[arrival_index] if arrival_index < len(row) else None,
@@ -346,7 +349,7 @@ def _selected_bill_codes(arguments: Mapping[str, object], *, dry_run: bool) -> l
     for value in raw:
         if not isinstance(value, str):
             raise ValueError("selected_bill_codes items must be strings")
-        bill_code = _waybill(value)
+        bill_code = _waybill(value, label="selected_bill_codes item")
         if not bill_code:
             raise ValueError("selected_bill_codes contains an empty waybill")
         if bill_code in seen:

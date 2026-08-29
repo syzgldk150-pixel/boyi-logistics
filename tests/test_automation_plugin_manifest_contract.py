@@ -305,7 +305,13 @@ def test_split_contract_is_human_triggered_with_verified_selection_fields() -> N
         "split_pending_problem_upload"
     ]
 
-    assert source["version"] == "1.0.23"
+    assert source["version"] == "1.0.25"
+    broker_actions = {
+        (item["operation"], item["action"])
+        for item in source["runtime_permissions"]["broker_operations"]
+    }
+    assert ("browser.invoke", "ronghui.problem.create") in broker_actions
+    assert not any(action.startswith("ronghui.complaint.") for _operation, action in broker_actions)
     assert source["allowed_entrypoints"] == ["console", "feishu"]
     assert source["scheduling"] == {
         "supported": False,
@@ -336,7 +342,7 @@ def test_self_pickup_contract_has_verified_human_selection_fields() -> None:
         "self_pickup_problem_upload"
     ]
 
-    assert source["version"] == "1.0.23"
+    assert source["version"] == "1.0.25"
     assert source["allowed_entrypoints"] == ["console", "feishu"]
     assert source["scheduling"] == {
         "supported": False,

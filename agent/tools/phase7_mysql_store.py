@@ -1305,19 +1305,9 @@ def replace_split_pending_problem_items(records: list[dict[str, Any]]) -> dict[s
                             WHEN problem_type = VALUES(problem_type) THEN uploaded_at
                             ELSE NULL
                         END,
-                        complaint_status = CASE
-                            WHEN problem_type = VALUES(problem_type) THEN complaint_status
-                            WHEN VALUES(problem_type) = '少货/分批' THEN 'pending'
-                            ELSE 'not_applicable'
-                        END,
-                        complaint_error_summary = CASE
-                            WHEN problem_type = VALUES(problem_type) THEN complaint_error_summary
-                            ELSE NULL
-                        END,
-                        complaint_processed_at = CASE
-                            WHEN problem_type = VALUES(problem_type) THEN complaint_processed_at
-                            ELSE NULL
-                        END,
+                        complaint_status = 'not_applicable',
+                        complaint_error_summary = NULL,
+                        complaint_processed_at = NULL,
                         problem_type = VALUES(problem_type),
                         refreshed_at = VALUES(refreshed_at)
                     """,
@@ -1332,7 +1322,7 @@ def replace_split_pending_problem_items(records: list[dict[str, Any]]) -> dict[s
                             item["problem_type"],
                             item["problem_owner_type"],
                             item["problem_cause"],
-                            "pending" if item["problem_type"] == "少货/分批" else "not_applicable",
+                            "not_applicable",
                             refreshed_at,
                         )
                         for item in normalized
@@ -1372,28 +1362,9 @@ def update_split_pending_combined_results(results: list[dict[str, Any]]) -> dict
                 tracking_number = _clean_text(result.get("bill_code") or result.get("tracking_number"))
                 if not tracking_number:
                     continue
-                complaint = result.get("complaint") if isinstance(result.get("complaint"), dict) else None
+                if result.get("complaint") is not None:
+                    raise ValueError(f"{tracking_number} 不再支持 complaint 结果")
                 problem_item = result.get("problem_item") if isinstance(result.get("problem_item"), dict) else None
-                if complaint is not None:
-                    status = _clean_text(complaint.get("status"))
-                    if status not in {"success", "duplicate", "failed"}:
-                        raise ValueError(f"{tracking_number} 的 complaint.status 无效: {status or '空'}")
-                    error_summary = (
-                        ""
-                        if status in {"success", "duplicate"}
-                        else _clean_text(complaint.get("error") or complaint.get("message"))[:500]
-                    )
-                    cur.execute(
-                        """
-                        UPDATE split_pending_problem_items
-                        SET complaint_status = %s,
-                            complaint_error_summary = %s,
-                            complaint_processed_at = CURRENT_TIMESTAMP
-                        WHERE tracking_number = %s
-                        """,
-                        (status, error_summary or None, tracking_number),
-                    )
-                    updated += int(cur.rowcount or 0)
                 if problem_item is not None:
                     status = _clean_text(problem_item.get("status"))
                     if status not in {"success", "failed"}:
@@ -1408,7 +1379,10 @@ def update_split_pending_combined_results(results: list[dict[str, Any]]) -> dict
                         UPDATE split_pending_problem_items
                         SET upload_status = %s,
                             error_summary = %s,
-                            uploaded_at = CASE WHEN %s = 'success' THEN CURRENT_TIMESTAMP ELSE NULL END
+                            uploaded_at = CASE WHEN %s = 'success' THEN CURRENT_TIMESTAMP ELSE NULL END,
+                            complaint_status = 'not_applicable',
+                            complaint_error_summary = NULL,
+                            complaint_processed_at = NULL
                         WHERE tracking_number = %s
                         """,
                         (status, error_summary or None, status, tracking_number),

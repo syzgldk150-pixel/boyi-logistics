@@ -8,7 +8,6 @@ from typing import Any
 
 from agent.tms_runtime.account_manager import get_account_manager
 from agent.tms_runtime.scripts.login_manager import TMSAuth
-from agent.tms_runtime.scripts.ronghui_split_complaint import upload_split_complaints
 from agent.tms_runtime.scripts.ronghui_problem_upload import (
     fetch_login_context,
     resolve_problem_page_context,
@@ -20,8 +19,6 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 
-DEFAULT_ACCOUNT_ID = "ronghui_default"
-DEFAULT_SESSION_PROFILE = "default"
 ALLOWED_PROBLEM_MAPPINGS = {
     "少货/分批": "交接异常",
     "有发未到": "通知类（不顺延时效）",
@@ -47,7 +44,8 @@ def _bool_param(params: dict[str, Any], key: str, default: bool = False) -> bool
 
 def _resolve_account(params: dict[str, Any]) -> dict[str, Any]:
     params = dict(params)
-    params.setdefault("account_id", DEFAULT_ACCOUNT_ID)
+    if not _clean_text(params.get("account_id")):
+        raise ValueError("项目设置必须显式绑定 account_id")
     return get_account_manager().resolve_role_account_params(
         params,
         account_field="account_id",
@@ -104,19 +102,14 @@ def _validated_items(raw_items: Any) -> list[dict[str, Any]]:
             raise ValueError(
                 f"{bill_code} 的问题类型与到货件数不匹配: 应为 {expected_type}"
             )
-        expected_cause = "有发未到" if arrived == 0 else f"应到{expected}件，已到{arrived}件"
+        expected_cause = "有发未到" if arrived == 0 else f"应到{expected}件 实际到{arrived}件"
         if problem_cause != expected_cause:
             raise ValueError(
                 f"{bill_code} 的问题原因不匹配: 应为 {expected_cause}"
             )
         complaint_status = _clean_text(raw.get("complaint_status"))
         problem_item_status = _clean_text(raw.get("problem_item_status"))
-        if problem_type == "少货/分批":
-            if complaint_status not in {"pending", "failed", "success", "duplicate"}:
-                raise ValueError(
-                    f"{bill_code} 的 complaint_status 无效: {complaint_status or '空'}"
-                )
-        elif complaint_status != "not_applicable":
+        if complaint_status != "not_applicable":
             raise ValueError(f"{bill_code} 的 complaint_status 应为 not_applicable")
         if problem_item_status not in {"pending", "failed", "success"}:
             raise ValueError(
@@ -154,8 +147,10 @@ def _preview(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def run_once(params: dict[str, Any] | None = None) -> dict[str, Any]:
     params = _resolve_account(dict(params or {}))
     items = _validated_items(params.get("items"))
-    account_id = _clean_text(params.get("account_id") or DEFAULT_ACCOUNT_ID)
-    session_profile = _clean_text(params.get("session_profile") or DEFAULT_SESSION_PROFILE)
+    account_id = _clean_text(params.get("account_id"))
+    session_profile = _clean_text(params.get("session_profile"))
+    if not account_id or not session_profile:
+        raise ValueError("项目绑定账号未解析出 account_id/session_profile")
     if not items:
         return {
             "ok": True,
@@ -187,39 +182,14 @@ def run_once(params: dict[str, Any] | None = None) -> dict[str, Any]:
     session = TMSAuth(profile=session_profile).login_and_get_session(
         max_attempts=max(1, int(params.get("max_login_attempts") or 6))
     )
-    complaint_codes = [
-        item["bill_code"]
-        for item in items
-        if item["problem_type"] == "少货/分批"
-        and item["complaint_status"] not in {"success", "duplicate"}
-    ]
-    complaint_results = upload_split_complaints(
-        session,
-        complaint_codes,
-        headless=_bool_param(params, "headless", True),
-        slow_mo_ms=max(0, int(params.get("slow_mo_ms") or 0)),
-        keep_artifacts=_bool_param(params, "keep_artifacts", False),
-    )
-    complaint_by_code = {item["bill_code"]: item for item in complaint_results}
-
     problem_page_context = None
     login_context = None
     results: list[dict[str, Any]] = []
     for item in items:
         bill_code = item["bill_code"]
-        complaint_result = complaint_by_code.get(bill_code)
-        complaint_status = (
-            _clean_text(complaint_result.get("status"))
-            if complaint_result is not None
-            else item["complaint_status"]
-        )
         problem_status = item["problem_item_status"]
         problem_result: dict[str, Any] | None = None
-        complaint_ready = (
-            item["problem_type"] == "有发未到"
-            or complaint_status in {"success", "duplicate"}
-        )
-        if complaint_ready and problem_status != "success":
+        if problem_status != "success":
             try:
                 if problem_page_context is None:
                     problem_page_context = resolve_problem_page_context(session)
@@ -244,20 +214,14 @@ def run_once(params: dict[str, Any] | None = None) -> dict[str, Any]:
                     "saved": False,
                     "error": str(exc)[:500],
                 }
-        complete = (
-            problem_status == "success"
-            and (
-                item["problem_type"] == "有发未到"
-                or complaint_status in {"success", "duplicate"}
-            )
-        )
+        complete = problem_status == "success"
         results.append(
             {
                 "bill_code": bill_code,
                 "problem_type": item["problem_type"],
-                "complaint_status": complaint_status,
+                "complaint_status": "not_applicable",
                 "problem_item_status": problem_status,
-                "complaint": complaint_result,
+                "complaint": None,
                 "problem_item": problem_result,
                 "complete": complete,
             }
