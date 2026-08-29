@@ -26,6 +26,7 @@
   - `../tools/feishu_cli_tool.py`
 - 多轮对话状态（先预览后确认 / 登录态过期恢复）：
   - `message_handler.py` 中的 `_process_and_reply` 三态 pending 分支
+  - `selection_preview.py`（候选选择、预览投影、TTL 与回复分段的纯逻辑）
   - `../agent/pending_actions.py`（pending 存储；未过期状态会落盘，服务重启后可恢复）
   - `../agent/direct_tool_router.py`（确认/取消/验证码识别）
 
