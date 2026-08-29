@@ -255,6 +255,8 @@ class MonitoringConsoleTests(unittest.TestCase):
         self.assertIn("data-monitoring-agent-status", template)
         self.assertIn("renderSummaryUnavailable", template)
         self.assertIn("Agent 服务不可用", template)
+        stylesheet = (CONSOLE_DIR / "static" / "style.css").read_text(encoding="utf-8")
+        self.assertIn(".notice[hidden] { display: none !important; }", stylesheet)
         self.assertIn("monitoringRequestTimeoutMs = 8000", template)
         self.assertIn("fetchMonitoringJson", template)
         self.assertIn("signal: controller.signal", template)
