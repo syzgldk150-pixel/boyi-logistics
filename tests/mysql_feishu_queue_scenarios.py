@@ -12,6 +12,8 @@ def run_test_feishu_notification_lease_holds_the_database_binding_lane(harness):
 
     def create_approval(label: str) -> tuple[str, str]:
         command, item, run, event, outbox = harness._aggregate_rows(label)
+        plan_hash = hashlib.sha256(label.encode("utf-8")).hexdigest()
+        run["plan_hash"] = plan_hash
         with repository.unit_of_work() as uow:
             receipt = uow.command_gateway_create(
                 command,
@@ -21,7 +23,6 @@ def run_test_feishu_notification_lease_holds_the_database_binding_lane(harness):
                 outbox,
             )
             approval_id = str(uuid4())
-            plan_hash = hashlib.sha256(label.encode("utf-8")).hexdigest()
             uow.approvals.create_or_get(
                 {
                     "approval_id": approval_id,
@@ -429,6 +430,11 @@ def run_test_feishu_queue_migration_requeues_ambiguous_active_rows_and_resends(h
                 (second["event_id"],),
             )
             harness.assertEqual("PUBLISHED", cursor.fetchone()["status"])
+
+    # The current repository is only valid against the full migration chain.
+    # Keep the 023 recovery assertions above at their historical boundary, then
+    # advance in order before exercising the current notification sender.
+    harness._apply_through(database, "030")
 
     sent: list[tuple[str, str, str]] = []
     service = FeishuApprovalService(
