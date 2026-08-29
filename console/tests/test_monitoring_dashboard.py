@@ -252,6 +252,16 @@ class MonitoringConsoleTests(unittest.TestCase):
         self.assertIn("data-monitoring-current-src", template)
         self.assertIn("addEventListener('click', (event)", template)
         self.assertIn("prefer_cached=1", template)
+        self.assertIn("data-monitoring-agent-status", template)
+        self.assertIn("renderSummaryUnavailable", template)
+        self.assertIn("Agent 服务不可用", template)
+        stylesheet = (CONSOLE_DIR / "static" / "style.css").read_text(encoding="utf-8")
+        self.assertIn(".notice[hidden] { display: none !important; }", stylesheet)
+        self.assertIn("monitoringRequestTimeoutMs = 8000", template)
+        self.assertIn("fetchMonitoringJson", template)
+        self.assertIn("signal: controller.signal", template)
+        self.assertNotIn(">--<", template)
+        self.assertNotIn("catch(() => undefined)", template)
 
     def test_portal_template_does_not_render_live_status_pill(self):
         template = (CONSOLE_DIR / "templates" / "portal.html").read_text(encoding="utf-8")

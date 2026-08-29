@@ -226,7 +226,7 @@ class BrowserAddressResolver:
             from agent.tms_runtime.session_broker import get_session_broker
         except Exception:
             return {}
-        session = get_session_broker(PRICE_SESSION_PROFILE).build_requests_session(validate=True)
+        session = get_session_broker(PRICE_SESSION_PROFILE).build_requests_session(validate=False)
         return self._parse_user_info_cookie(session.cookies.get("userInfo"))
 
     def _load_page_user_info_from_context(self) -> Dict[str, Any]:

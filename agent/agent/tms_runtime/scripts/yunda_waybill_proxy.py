@@ -617,7 +617,7 @@ def run_once(params: dict[str, Any]) -> dict[str, Any]:
     content_type = _clean_text(params.get("content_type"))
     headers = _filter_request_headers(params.get("headers"), content_type=content_type)
     body = _decode_body(params)
-    session = get_session_broker("yunda").build_requests_session(validate=True)
+    session = get_session_broker("yunda").build_requests_session(validate=False)
     response = session.request(
         method,
         remote_url,

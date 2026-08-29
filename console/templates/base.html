@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <link rel="preload" href="/static/assets/fonts/InterVariable-Latin.woff2?v=4f95b56c" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/static/assets/fonts/SourceHanSansCN-UI.woff2?v=27533854" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="/static/style.css?v=cal-console-20260822-plugin-manager3">
+  <link rel="stylesheet" href="/static/style.css?v=cal-console-20260829-monitoring1">
   {% block head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -104,6 +104,14 @@
       <div class="notice notice--{{ message_kind or 'info' }}" data-notice>
         <div class="notice-copy"><i data-feather="info"></i><span>{{ message }}</span></div>
         <button class="notice-close" type="button" aria-label="关闭提示" data-notice-close><i data-feather="x"></i></button>
+      </div>
+      {% endif %}
+      {% if business_module_status_unavailable is defined and business_module_status_unavailable() %}
+      <div class="notice notice--warning" role="status" data-agent-unavailable>
+        <div class="notice-copy">
+          <i data-feather="alert-triangle"></i>
+          <span><strong>Agent 服务不可用。</strong>页面仍可查看，依赖 Agent 的数据暂时无法更新，可管理模块的写入操作已暂停。</span>
+        </div>
       </div>
       {% endif %}
       {% block content %}{% endblock %}

@@ -259,7 +259,9 @@ def _session_profile(platform: str, params: dict[str, Any]) -> str:
 
 def _build_session(platform: str, params: dict[str, Any]) -> Any:
     broker = get_session_broker(_session_profile(platform, params))
-    return broker.build_requests_session(validate=not _bool_param(params.get("skip_session_validate"), default=False))
+    # The selected Ronghui/Yunda target response is authoritative for this
+    # read.  Do not run the unrelated provider-wide validation matrix first.
+    return broker.build_requests_session(validate=False)
 
 
 def _normalize_platform(value: Any) -> str:

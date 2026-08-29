@@ -177,11 +177,14 @@ def test_closed_delivery_handlers_bind_cursor_account_and_resource() -> None:
 
 def test_production_delivery_handlers_use_only_low_level_ports() -> None:
     manager = MagicMock()
-    manager.require_authenticated_binding.return_value = {
+    manager.require_active_binding_descriptor.return_value = {
         "account_id": "ronghui-east",
         "system": "ronghui",
         "session_profile": "profile-ronghui-east",
     }
+    manager.require_authenticated_binding.side_effect = AssertionError(
+        "production describe_account must not authenticate online"
+    )
     auth = MagicMock()
     auth.login_and_get_session.return_value = object()
     resource = {
@@ -335,3 +338,4 @@ def test_production_delivery_handlers_use_only_low_level_ports() -> None:
         assert projection["updated"] == 1
 
     legacy_run.assert_not_called()
+    manager.require_authenticated_binding.assert_not_called()

@@ -28,6 +28,10 @@ from agent.automation_plugins.delivery_site_handlers import (
 from agent.tms_runtime.account_manager import AutomationAccountManager, get_account_manager
 from agent.tms_runtime.errors import TMSAuthStateError
 from plugin_core_adapters.arrival import build_production_arrival_write_ports
+from plugin_core_adapters.capability_session import (
+    CapabilityAuthorizer,
+    authorize_target_capability,
+)
 from plugin_core_adapters.daily_send import build_production_daily_send_handler_map
 from plugin_core_adapters.daily_sign import run_daily_sign_with_bound_resources
 from plugin_core_adapters.delivery_site import (
@@ -48,24 +52,18 @@ def _required_profile(descriptor: Mapping[str, Any]) -> str:
     return profile
 
 
-def _describe_authenticated_account(
+def _describe_active_account(
     manager: AutomationAccountManager,
     account_id: str,
 ) -> Mapping[str, Any]:
-    """Translate account-pool failures into the broker's closed login state.
-
-    The generic broker validates the binding before dispatch and the exact
-    primitive validates it again.  A session may expire between those checks;
-    that race must remain a typed, retry-safe login block rather than leak an
-    account-manager exception through the subprocess boundary.
-    """
+    """Resolve the exact local binding without contacting an external system."""
 
     try:
-        return manager.require_authenticated_binding(account_id)
+        return manager.require_active_binding_descriptor(account_id)
     except TMSAuthStateError as exc:
         raise PluginExecutionError(
-            "the exact bound account is no longer authenticated",
-            code="BLOCKED_LOGIN",
+            "the exact bound account is unavailable",
+            code="BROKER_ACCOUNT_UNAVAILABLE",
         ) from exc
 
 
@@ -1020,7 +1018,7 @@ def _yunda_session(descriptor: Mapping[str, Any]) -> Any:
 
     try:
         broker = get_session_broker(_required_profile(descriptor))
-        session = broker.build_requests_session(validate=True)
+        session = broker.build_requests_session(validate=False)
     except TMSAuthStateError as exc:
         raise PluginExecutionError(
             "the exact bound Yunda account has no valid authenticated session",
@@ -2321,6 +2319,7 @@ def build_production_first_party_core_handler_map(
     cursor_secret: bytes,
     account_manager: AutomationAccountManager | None = None,
     allowed_action_keys: Collection[tuple[str, str]] | None = None,
+    capability_authorizer: CapabilityAuthorizer | None = None,
 ) -> dict[tuple[str, str], CoreBrokerHandler]:
     """Return the production-safe handler map available in this release.
 
@@ -2331,9 +2330,11 @@ def build_production_first_party_core_handler_map(
     if not isinstance(cursor_secret, bytes) or len(cursor_secret) < 32:
         raise ValueError("production first-party broker cursor secret must contain at least 32 bytes")
     manager = account_manager or get_account_manager()
+    authorize_capability = capability_authorizer or authorize_target_capability
     arrival_writes = build_production_arrival_write_ports()
     ports = FirstPartyCoreHandlerPorts(
-        describe_account=lambda account_id: _describe_authenticated_account(manager, account_id),
+        describe_account=lambda account_id: _describe_active_account(manager, account_id),
+        authorize_capability=authorize_capability,
         clock_action=_clock_action,
         customer_action=_customer_action,
         daily_sign_sync=run_daily_sign_with_bound_resources,
@@ -2419,6 +2420,7 @@ def build_production_first_party_core_handler_map(
             build_production_finance_handler_map(
                 cursor_secret=cursor_secret,
                 account_manager=manager,
+                capability_authorizer=authorize_capability,
             ),
             frozenset(),
         ),
@@ -2427,6 +2429,7 @@ def build_production_first_party_core_handler_map(
             build_production_problem_handler_map(
                 cursor_secret=cursor_secret,
                 account_manager=manager,
+                capability_authorizer=authorize_capability,
             ),
             frozenset(),
         ),

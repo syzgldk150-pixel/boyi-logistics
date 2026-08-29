@@ -70,7 +70,11 @@ class FailClosedResourceBindingResolver:
 
 
 class AccountManagerSessionResolver:
-    """Resolve only an explicitly bound active account and current session."""
+    """Resolve an exact active account from the local registry only.
+
+    Generic broker admission must not validate an external session. The target
+    handler owns the one capability-specific authentication check, if required.
+    """
 
     def __init__(self, manager: AutomationAccountManager | None = None) -> None:
         self._manager = manager
@@ -81,18 +85,18 @@ class AccountManagerSessionResolver:
             self._manager = get_account_manager()
         return self._manager
 
-    def require_authenticated(
+    def require_active_binding_descriptor(
         self,
         *,
         account_id: str,
         allowed_systems: Sequence[str],
     ) -> Mapping[str, str]:
         try:
-            descriptor = self.manager.require_authenticated_binding(account_id)
+            descriptor = self.manager.require_active_binding_descriptor(account_id)
         except TMSAuthStateError as exc:
             raise PluginExecutionError(
-                "the exact bound account has no valid authenticated session",
-                code="BLOCKED_LOGIN",
+                "the exact bound account is unavailable",
+                code="BROKER_ACCOUNT_UNAVAILABLE",
             ) from exc
         system = str(descriptor.get("system") or "")
         if system not in set(allowed_systems):
@@ -191,33 +195,21 @@ class RegisteredCoreAutomationBrokerAdapter:
             )
         return normalized
 
-    async def invoke(
+    def _resolve_and_invoke_sync(
         self,
         *,
+        handler: CoreBrokerHandler,
         grant: BrokerGrant,
         operation: str,
         action: str,
         role: str,
         binding: object,
         arguments: Mapping[str, Any],
-        mark_write_started: Callable[[], None] | None = None,
-    ) -> Mapping[str, Any]:
-        handler = self._handlers.get((operation, action))
-        if handler is None:
-            raise PluginExecutionError(
-                "core broker action is not registered",
-                code="BROKER_ACTION_UNAVAILABLE",
-            )
-        signed_roles = self._signed_action_roles(
-            grant,
-            operation=operation,
-            action=action,
-        )
-        if role not in signed_roles:
-            raise PluginExecutionError(
-                "broker role is not signed for this action",
-                code="BROKER_ROLE_DENIED",
-            )
+        signed_roles: tuple[str, ...],
+        mark_write_started: Callable[[], None] | None,
+    ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]:
+        """Resolve blocking bindings and enter a synchronous handler off-loop."""
+
         resolved_accounts: dict[str, tuple[str, ...]] = {}
         resolved_resources: dict[str, str] = {}
         for signed_role in signed_roles:
@@ -246,7 +238,7 @@ class RegisteredCoreAutomationBrokerAdapter:
                         code="BROKER_CONTRACT_INVALID",
                     )
                 descriptors = [
-                    self._accounts.require_authenticated(
+                    self._accounts.require_active_binding_descriptor(
                         account_id=account_id,
                         allowed_systems=[str(item) for item in allowed_systems],
                     )
@@ -315,6 +307,41 @@ class RegisteredCoreAutomationBrokerAdapter:
             resource_bindings=resolved_resources,
             mark_write_started=mark_write_started,
         )
+        try:
+            return handler(context, dict(arguments))
+        except TMSAuthStateError as exc:
+            raise PluginExecutionError(
+                "the exact target session requires login",
+                code="BLOCKED_LOGIN",
+            ) from exc
+
+    async def invoke(
+        self,
+        *,
+        grant: BrokerGrant,
+        operation: str,
+        action: str,
+        role: str,
+        binding: object,
+        arguments: Mapping[str, Any],
+        mark_write_started: Callable[[], None] | None = None,
+    ) -> Mapping[str, Any]:
+        handler = self._handlers.get((operation, action))
+        if handler is None:
+            raise PluginExecutionError(
+                "core broker action is not registered",
+                code="BROKER_ACTION_UNAVAILABLE",
+            )
+        signed_roles = self._signed_action_roles(
+            grant,
+            operation=operation,
+            action=action,
+        )
+        if role not in signed_roles:
+            raise PluginExecutionError(
+                "broker role is not signed for this action",
+                code="BROKER_ROLE_DENIED",
+            )
         capability_ttl = max(
             1.0,
             (grant.expires_at - datetime.now(timezone.utc)).total_seconds(),
@@ -328,13 +355,29 @@ class RegisteredCoreAutomationBrokerAdapter:
             grant.tool_name,
             ttl_seconds=capability_ttl,
         ):
-            # Most production handlers are synchronous because they drive
-            # browser, database and HTTP adapters. Running them on the broker
-            # event loop blocks Run polling, Scheduler and every other API
-            # request for the full external call duration.
-            result = await asyncio.to_thread(handler, context, dict(arguments))
+            # Binding resolution can perform account/session and resource I/O.
+            # Keep it in the same worker as the synchronous handler so neither
+            # stage can stall the Agent event loop.
+            result = await asyncio.to_thread(
+                self._resolve_and_invoke_sync,
+                handler=handler,
+                grant=grant,
+                operation=operation,
+                action=action,
+                role=role,
+                binding=binding,
+                arguments=arguments,
+                signed_roles=signed_roles,
+                mark_write_started=mark_write_started,
+            )
             if inspect.isawaitable(result):
-                result = await result
+                try:
+                    result = await result
+                except TMSAuthStateError as exc:
+                    raise PluginExecutionError(
+                        "the exact target session requires login",
+                        code="BLOCKED_LOGIN",
+                    ) from exc
         if not isinstance(result, Mapping):
             raise PluginExecutionError("core broker handler returned a non-object result")
         return dict(result)

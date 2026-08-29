@@ -8,6 +8,8 @@ file names and their domain defaults.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +31,23 @@ class SessionStateStore:
 
     @staticmethod
     def write_dict(path: Path, payload: dict[str, Any]) -> None:
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, raw_temp_path = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=str(path.parent),
+        )
+        temp_path = Path(raw_temp_path)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temp_path.chmod(0o600)
+            os.replace(temp_path, path)
+        except BaseException:
+            temp_path.unlink(missing_ok=True)
+            raise
 
     @staticmethod
     def remove(path: Path) -> None:

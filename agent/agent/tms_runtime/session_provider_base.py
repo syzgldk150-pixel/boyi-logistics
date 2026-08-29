@@ -500,7 +500,7 @@ class ProviderSessionAdapterBase:
                 candidates.append(value)
         candidates.append(payload)
         for item in candidates:
-            for key in ("username", "userName", "user_id", "userId", "uid", "id", "account"):
+            for key in ("identity", "username", "userName", "user_id", "userId", "uid", "id", "account"):
                 value = str(item.get(key) or "").strip()
                 if value:
                     return value
@@ -731,163 +731,6 @@ class ProviderSessionAdapterBase:
         except Exception as exc:
             raise TMSAuthStateError("AUTH_REQUIRED", f"\u97f5\u8fbe\u95ee\u9898\u4ef6\u5b50\u7cfb\u7edf\u521d\u59cb\u5316\u5931\u8d25: {exc}") from exc
 
-    def _ensure_yunda_report_session_in_requests_locked(self, session: requests.Session, config: LoginConfig) -> None:
-        page_response = session.get(
-            yunda_report.page_url(),
-            headers={"Referer": config.home_url},
-            allow_redirects=True,
-            timeout=30,
-        )
-        page_body = getattr(page_response, "text", "") or ""
-        page_error = self._yunda_report_auth_error(page_response, page_body)
-        if page_error:
-            raise TMSAuthStateError("AUTH_REQUIRED", page_error)
-
-        target_date = dt.datetime.now().date()
-        for attempt in range(1, YUNDA_REPORT_VALIDATION_ATTEMPTS + 1):
-            search_response = session.get(
-                yunda_report.search_url(),
-                params=yunda_report.build_search_params({}, target_date=target_date, limit=1, offset=0),
-                headers=self._yunda_report_headers(yunda_report.page_url()),
-                allow_redirects=False,
-                timeout=30,
-            )
-            body = getattr(search_response, "text", "") or ""
-            search_error = self._yunda_report_auth_error(search_response, body)
-            if search_error:
-                raise TMSAuthStateError("AUTH_REQUIRED", search_error)
-            try:
-                payload = search_response.json()
-            except Exception as exc:
-                if not body.strip():
-                    message = "韵达报表接口返回空响应，请重新登录韵达账号。"
-                else:
-                    message = "韵达报表接口返回非 JSON，请重新登录韵达账号。"
-                if attempt < YUNDA_REPORT_VALIDATION_ATTEMPTS:
-                    logger.info(
-                        "Yunda report validation returned invalid JSON; retrying profile=%s attempt=%s/%s status=%s content_type=%s",
-                        self.profile_name,
-                        attempt,
-                        YUNDA_REPORT_VALIDATION_ATTEMPTS,
-                        getattr(search_response, "status_code", "-"),
-                        (getattr(search_response, "headers", {}) or {}).get("content-type", ""),
-                    )
-                    time.sleep(YUNDA_REPORT_VALIDATION_RETRY_DELAY_SEC)
-                    continue
-                raise TMSAuthStateError("AUTH_REQUIRED", message) from exc
-            if isinstance(payload, (dict, list)):
-                return
-            if attempt < YUNDA_REPORT_VALIDATION_ATTEMPTS:
-                logger.info(
-                    "Yunda report validation returned unexpected payload; retrying profile=%s attempt=%s/%s payload_type=%s",
-                    self.profile_name,
-                    attempt,
-                    YUNDA_REPORT_VALIDATION_ATTEMPTS,
-                    type(payload).__name__,
-                )
-                time.sleep(YUNDA_REPORT_VALIDATION_RETRY_DELAY_SEC)
-                continue
-            raise TMSAuthStateError("AUTH_REQUIRED", "韵达报表接口返回格式异常，请重新登录韵达账号。")
-
-    def _ensure_yunda_inms_session_in_requests_locked(self, session: requests.Session, config: LoginConfig) -> None:
-        response = session.get(
-            YUNDA_INMS_INDEX_URL,
-            headers={"Referer": config.home_url},
-            allow_redirects=True,
-            timeout=30,
-        )
-        body = getattr(response, "text", "") or ""
-        error = self._yunda_inms_auth_error(response, body)
-        if error:
-            raise TMSAuthStateError("AUTH_REQUIRED", error)
-
-    def _ensure_yunda_message_session_in_requests_locked(self, session: requests.Session, config: LoginConfig) -> None:
-        user_response = session.get(
-            YUNDA_USER_INFO_URL,
-            headers={
-                "Accept": "application/json, text/plain, */*",
-                "Referer": YUNDA_CLIENT_HOME_URL,
-                "X-Requested-With": "XMLHttpRequest",
-            },
-            allow_redirects=False,
-            timeout=15,
-        )
-        user_body = getattr(user_response, "text", "") or ""
-        user_error = self._yunda_message_auth_error(user_response, user_body)
-        if user_error:
-            raise TMSAuthStateError("AUTH_REQUIRED", user_error)
-        try:
-            user_payload = user_response.json()
-        except Exception as exc:
-            if not user_body.strip():
-                raise TMSAuthStateError("AUTH_REQUIRED", "韵达消息中心用户信息返回空响应，请重新登录韵达账号。") from exc
-            raise TMSAuthStateError("AUTH_REQUIRED", "韵达消息中心用户信息返回非 JSON，请重新登录韵达账号。") from exc
-        user_id = self._extract_yunda_message_user_id(user_payload)
-        if not user_id:
-            raise TMSAuthStateError("AUTH_REQUIRED", "韵达消息中心未获取到用户标识，请重新登录韵达账号。")
-
-        message_response = session.post(
-            YUNDA_MESSAGE_TYPES_URL,
-            data={"userId": user_id, "sourceFlag": "up"},
-            headers={
-                "Accept": "application/json, text/plain, */*",
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                "Origin": YUNDA_MESSAGE_ORIGIN,
-                "Referer": YUNDA_HEAD_MESSAGE_REFERER,
-                "X-Requested-With": "XMLHttpRequest",
-            },
-            allow_redirects=False,
-            timeout=15,
-        )
-        message_body = getattr(message_response, "text", "") or ""
-        message_error = self._yunda_message_auth_error(message_response, message_body)
-        if message_error:
-            raise TMSAuthStateError("AUTH_REQUIRED", message_error)
-        if getattr(message_response, "status_code", 0) != 200:
-            raise TMSAuthStateError(
-                "AUTH_REQUIRED",
-                f"韵达消息中心接口返回 HTTP {getattr(message_response, 'status_code', '')}，请重新登录韵达账号。",
-            )
-        try:
-            payload = message_response.json()
-        except Exception as exc:
-            if not message_body.strip():
-                raise TMSAuthStateError("AUTH_REQUIRED", "韵达消息中心接口返回空响应，请重新登录韵达账号。") from exc
-            raise TMSAuthStateError("AUTH_REQUIRED", "韵达消息中心接口返回非 JSON，请重新登录韵达账号。") from exc
-        if not isinstance(payload, (dict, list)):
-            raise TMSAuthStateError("AUTH_REQUIRED", "韵达消息中心接口返回格式异常，请重新登录韵达账号。")
-        if isinstance(payload, dict):
-            error_code = str(payload.get("errorCode") or payload.get("code") or "").strip()
-            message = str(payload.get("msg") or payload.get("message") or "").strip()
-            if "数据库操作异常" in message:
-                logger.warning(
-                    "Yunda message center returned database error during auth validation; ignoring as non-auth failure: code=%s",
-                    error_code,
-                )
-                return
-            if error_code in {"80001", "1001", "401", "403"} or "用户ID为空" in message:
-                raise TMSAuthStateError("AUTH_REQUIRED", f"韵达消息中心接口拒绝访问：{message or error_code}。请重新登录韵达账号。")
-
-    def _ensure_yunda_problem_session_in_requests_locked(self, session: requests.Session, config: LoginConfig) -> None:
-        response = session.get(
-            YUNDA_PROBLEM_QUERY_URL,
-            headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Referer": YUNDA_CLIENT_HOME_URL,
-            },
-            allow_redirects=True,
-            timeout=30,
-        )
-        body = getattr(response, "text", "") or ""
-        error = self._yunda_problem_auth_error(response, body)
-        if error:
-            raise TMSAuthStateError("AUTH_REQUIRED", error)
-        if getattr(response, "status_code", 0) != 200:
-            raise TMSAuthStateError(
-                "AUTH_REQUIRED",
-                f"\u97f5\u8fbe\u95ee\u9898\u4ef6\u5b50\u7cfb\u7edf\u8fd4\u56de HTTP {getattr(response, 'status_code', '')}\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55\u97f5\u8fbe\u8d26\u53f7\u3002",
-            )
-
     def _prepare_yunda_login_page(self, page: Any, config: LoginConfig) -> None:
         page.goto(config.login_url, wait_until="domcontentloaded", timeout=60_000)
         self._ensure_yunda_account_form_visible(page)
@@ -1085,10 +928,6 @@ class ProviderSessionAdapterBase:
         return _format_ts(min(cookie_expiries)) if cookie_expiries else ""
 
     def _persist_requests_session_locked(self, session: requests.Session, config: LoginConfig) -> dict[str, Any]:
-        if self._is_yunda_mode():
-            self._ensure_yunda_report_session_in_requests_locked(session, config)
-            self._ensure_yunda_inms_session_in_requests_locked(session, config)
-            self._ensure_yunda_message_session_in_requests_locked(session, config)
         fallback_domain = urlparse(config.base_origin).hostname or "yunda56.com"
         cookies = self._storage_cookies_from_requests_session(session, fallback_domain)
         expires_at = self._write_storage_cookies_locked(cookies)
@@ -1814,7 +1653,7 @@ class ProviderSessionAdapterBase:
             self._close_pending_locked()
             config = self.resolve_login_config()
             self._ensure_login_prerequisites(config)
-            return self._run_in_isolated_thread(lambda: self._run_yunda_password_login(config))
+            return self._run_yunda_password_login(config)
 
     def submit_yunda_code(self, code: str) -> dict[str, Any]:
         code_value = str(code or "").strip()
@@ -1834,12 +1673,10 @@ class ProviderSessionAdapterBase:
                     if challenge_type == "sms":
                         raise TMSAuthStateError("AUTH_REQUIRED", f"韵达短信验证码会话已损坏，请重新登录: {exc}") from exc
             if challenge_type == "sms":
-                return self._run_in_isolated_thread(
-                    lambda: self._submit_yunda_sms_login(
-                        config,
-                        sms_code=code_value,
-                        pending_since=pending_since,
-                    )
+                return self._submit_yunda_sms_login(
+                    config,
+                    sms_code=code_value,
+                    pending_since=pending_since,
                 )
             return self._submit_yunda_captcha_login(
                 config,
@@ -1915,7 +1752,7 @@ class ProviderSessionAdapterBase:
             self._close_pending_locked()
             config = self.resolve_login_config()
             self._ensure_login_prerequisites(config, require_phone=False)
-            result = self._run_in_isolated_thread(lambda: run_send(config))
+            result = run_send(config)
             if isinstance(result, dict):
                 if result.get("status") == "pending_code":
                     if result.get("challenge_type") == "image":
@@ -2011,11 +1848,9 @@ class ProviderSessionAdapterBase:
             pending_since = self._load_meta().get("pending_since") or _format_ts(_now_ts())
             config = self.resolve_login_config()
             if self._pending_challenge_type_locked() == "image":
-                return self._run_in_isolated_thread(
-                    lambda: self._submit_ronghui_captcha_login(
-                        config,
-                        captcha_code=sms_code,
-                        pending_since=pending_since,
-                    )
+                return self._submit_ronghui_captcha_login(
+                    config,
+                    captcha_code=sms_code,
+                    pending_since=pending_since,
                 )
-            return self._run_in_isolated_thread(lambda: run_submit(config, sms_code, pending_since))
+            return run_submit(config, sms_code, pending_since)

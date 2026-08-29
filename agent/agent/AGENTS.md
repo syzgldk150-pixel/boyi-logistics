@@ -12,6 +12,8 @@
   - `main.py` 是唯一组合根；`orchestration/` 不得导入 `tools`、`feishu` 或 Console。持久化统一走 `../../shared/orchestration_repository.py` 的显式 Unit of Work。
   - 第三方/财务写步骤崩溃恢复时，没有精确 reconciliation 就让该 Run 进入 `BLOCKED_DATA/WRITE_OUTCOME_UNKNOWN`，不得重放原 Run；新的 Command 仍可建立全新的 Run 与 lease 重新执行项目。
   - 澄清事件只允许闭合 v1 字段 `note/account_id/argument_updates` 并绑定原 `command_id`；纯文本只作审计 note。Planner 合并显式覆盖后仍要通过 input_schema、权威账号、策略和 plan hash 校验。
+  - 新 Command 使用依赖切片 Schema v2 Plan Hash；已等待审批的历史 Schema v1 Run 保持 v1 直到终态。WorkflowRunner 默认两个有界 Worker、浏览器单并发；只读/计算不加执行互斥，受保护写只用完整的账号 + target + resource + 写类型精确锁，锁身份缺失时显式失败。
+  - Session 登录使用按 profile 隔离、默认 120 秒的 staged 子进程；token/epoch 防止迟到提交，同 profile 登录中直接 `BLOCKED_LOGIN`。业务适配器不得先跑全系统鉴权，只打开保存态并以实际目标响应判断登录；完整 capability 矩阵仅供后台监控。
 - 改 HTTP API、健康检查、Webhook 入口：
   - `../main.py`
   - `runtime_config.py`（只在 Agent 服务入口显式加载环境；模块导入不得读取 `.env`）

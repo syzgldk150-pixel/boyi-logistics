@@ -1,5 +1,9 @@
 """Focused tests extracted from the former TMS runtime aggregate."""
 
+import json
+import threading
+import time
+
 from _tms_runtime_test_support import *  # noqa: F403
 from agent.tms_runtime.errors import TMSAuthStateError
 
@@ -35,6 +39,34 @@ class AutomationAccountManagerTests(unittest.TestCase):
         for item in reversed(self.patches):
             item.stop()
         self.tempdir.cleanup()
+
+    def test_active_binding_descriptor_is_local_and_contains_routing_fields(self):
+        with patch.object(
+            account_manager_module,
+            "get_session_broker",
+            side_effect=AssertionError("local binding lookup must not construct a broker"),
+        ):
+            descriptor = self.manager.require_active_binding_descriptor(
+                "ronghui_default"
+            )
+
+        self.assertEqual(
+            descriptor,
+            {
+                "account_id": "ronghui_default",
+                "system": "ronghui",
+                "account_purpose": "general",
+                "session_profile": "default",
+            },
+        )
+
+    def test_active_binding_descriptor_rejects_disabled_account(self):
+        self.manager.set_active("ronghui_default", False)
+
+        with self.assertRaises(TMSAuthStateError) as error:
+            self.manager.require_active_binding_descriptor("ronghui_default")
+
+        self.assertEqual(error.exception.code, "ACCOUNT_DISABLED")
 
     def test_local_credentials_preserve_password_and_show_success_status(self):
         result = self.manager.save_credentials(
@@ -445,6 +477,300 @@ class AutomationAccountManagerTests(unittest.TestCase):
                 ("send_code",),
             ],
         )
+
+    def test_same_account_auto_login_competition_fails_without_waiting(self):
+        started = threading.Event()
+        release = threading.Event()
+        first_result: dict[str, Any] = {}
+
+        class BlockingBroker(ManualCredentialsBroker):
+            def describe_status(self, *, validate=True, force=False):
+                if validate:
+                    started.set()
+                    if not release.wait(timeout=2):
+                        raise AssertionError("test did not release account status check")
+                return {
+                    "status": "authenticated",
+                    "label": "已登录",
+                    "status_tone": "success",
+                    "authenticated": True,
+                    "pending_code": False,
+                    "last_error_summary": "",
+                }
+
+        broker = BlockingBroker()
+
+        def run_first() -> None:
+            try:
+                first_result["status"] = self.manager.check_status_with_auto_login(
+                    "ronghui_default",
+                    force=True,
+                )
+            except BaseException as exc:  # pragma: no cover - asserted below
+                first_result["error"] = exc
+
+        with patch.object(account_manager_module, "get_session_broker", return_value=broker):
+            self.manager.set_auto_login("ronghui_default", True)
+            thread = threading.Thread(target=run_first)
+            thread.start()
+            self.assertTrue(started.wait(timeout=1))
+
+            started_at = time.monotonic()
+            with self.assertRaises(TMSAuthStateError) as raised:
+                self.manager.check_status_with_auto_login("ronghui_default", force=True)
+            self.assertLess(time.monotonic() - started_at, 0.2)
+            self.assertEqual("BLOCKED_LOGIN", raised.exception.code)
+
+            release.set()
+            thread.join(timeout=2)
+
+            follow_up = self.manager.check_status_with_auto_login(
+                "ronghui_default",
+                force=True,
+            )
+
+        self.assertFalse(thread.is_alive())
+        self.assertNotIn("error", first_result)
+        self.assertEqual("authenticated", first_result["status"]["status"])
+        self.assertEqual("authenticated", follow_up["status"])
+
+    def test_auto_login_lock_releases_when_status_check_raises(self):
+        with patch.object(
+            self.manager,
+            "_check_status_with_auto_login_locked",
+            side_effect=RuntimeError("fixture failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "fixture failure"):
+                self.manager.check_status_with_auto_login("ronghui_default", force=True)
+
+        lock = self.manager._auto_login_lock("ronghui_default")
+        self.assertTrue(lock.acquire(blocking=False))
+        lock.release()
+
+    def test_auto_login_state_commits_are_atomic_across_manager_instances(self):
+        other_manager = account_manager_module.AutomationAccountManager()
+        real_write_json = account_manager_module._write_json
+        registry_path = account_manager_module.ACCOUNTS_PATH
+        first_write_entered = threading.Event()
+        release_first_write = threading.Event()
+        second_lock_attempted = threading.Event()
+        second_finished = threading.Event()
+        errors: list[BaseException] = []
+
+        class InstrumentedRLock:
+            def __init__(self):
+                self._lock = threading.RLock()
+
+            def __enter__(self):
+                if threading.current_thread().name == "second-account-update":
+                    second_lock_attempted.set()
+                return self._lock.__enter__()
+
+            def __exit__(self, *args):
+                return self._lock.__exit__(*args)
+
+        def delayed_write(path, payload):
+            if path == registry_path and threading.current_thread().name == "first-account-update":
+                first_write_entered.set()
+                if not release_first_write.wait(timeout=2):
+                    raise AssertionError("test did not release first registry write")
+            real_write_json(path, payload)
+
+        def update_first() -> None:
+            try:
+                self.manager._set_auto_login_state(
+                    "ronghui_default",
+                    failure_count=1,
+                )
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        def update_second() -> None:
+            try:
+                other_manager._set_auto_login_state(
+                    "yunda_default",
+                    enabled=True,
+                )
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+            finally:
+                second_finished.set()
+
+        with (
+            patch.object(account_manager_module, "_ACCOUNTS_STATE_LOCK", InstrumentedRLock()),
+            patch.object(account_manager_module, "_write_json", side_effect=delayed_write),
+        ):
+            first = threading.Thread(target=update_first, name="first-account-update")
+            second = threading.Thread(target=update_second, name="second-account-update")
+            first.start()
+            self.assertTrue(first_write_entered.wait(timeout=1))
+            second.start()
+            self.assertTrue(second_lock_attempted.wait(timeout=1))
+            self.assertFalse(second_finished.is_set())
+            release_first_write.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(errors, [])
+        rows = json.loads(registry_path.read_text(encoding="utf-8"))
+        by_id = {row["account_id"]: row for row in rows}
+        self.assertEqual(by_id["ronghui_default"]["auto_login_failure_count"], 1)
+        self.assertTrue(by_id["yunda_default"]["auto_login_enabled"])
+        self.assertEqual(list(registry_path.parent.glob(f".{registry_path.name}.*.tmp")), [])
+
+    def test_management_change_and_auto_state_commit_keep_both_updates(self):
+        self.manager.list_accounts(include_status=False)
+        other_manager = account_manager_module.AutomationAccountManager()
+        real_write_json = account_manager_module._write_json
+        registry_path = account_manager_module.ACCOUNTS_PATH
+        management_write_entered = threading.Event()
+        release_management_write = threading.Event()
+        auto_lock_attempted = threading.Event()
+        auto_finished = threading.Event()
+        errors: list[BaseException] = []
+
+        class TrackingRLock:
+            def __init__(self):
+                self._lock = threading.RLock()
+                self._depth = threading.local()
+
+            def __enter__(self):
+                if (
+                    threading.current_thread().name == "auto-state-update"
+                    and not getattr(self._depth, "value", 0)
+                ):
+                    auto_lock_attempted.set()
+                self._lock.acquire()
+                self._depth.value = getattr(self._depth, "value", 0) + 1
+                return self
+
+            def __exit__(self, *_args):
+                self._depth.value -= 1
+                self._lock.release()
+
+            def held_by_current_thread(self) -> bool:
+                return bool(getattr(self._depth, "value", 0))
+
+        registry_lock = TrackingRLock()
+
+        def delayed_write(path, payload):
+            if path == registry_path:
+                if not registry_lock.held_by_current_thread():
+                    raise AssertionError("registry save escaped the shared RLock")
+                if threading.current_thread().name == "management-update":
+                    management_write_entered.set()
+                    if not release_management_write.wait(timeout=2):
+                        raise AssertionError("test did not release management registry write")
+            real_write_json(path, payload)
+
+        def update_management_field() -> None:
+            try:
+                self.manager.update_name("ronghui_default", "updated account note")
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        def update_auto_state() -> None:
+            try:
+                other_manager._set_auto_login_state(
+                    "yunda_default",
+                    failure_count=1,
+                )
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+            finally:
+                auto_finished.set()
+
+        with (
+            patch.object(account_manager_module, "_ACCOUNTS_STATE_LOCK", registry_lock),
+            patch.object(account_manager_module, "_write_json", side_effect=delayed_write),
+        ):
+            management = threading.Thread(
+                target=update_management_field,
+                name="management-update",
+            )
+            auto = threading.Thread(target=update_auto_state, name="auto-state-update")
+            management.start()
+            self.assertTrue(management_write_entered.wait(timeout=1))
+            auto.start()
+            self.assertTrue(auto_lock_attempted.wait(timeout=1))
+            self.assertFalse(auto_finished.is_set())
+            release_management_write.set()
+            management.join(timeout=2)
+            auto.join(timeout=2)
+
+        self.assertFalse(management.is_alive())
+        self.assertFalse(auto.is_alive())
+        self.assertEqual(errors, [])
+        rows = json.loads(registry_path.read_text(encoding="utf-8"))
+        by_id = {row["account_id"]: row for row in rows}
+        self.assertEqual(by_id["ronghui_default"]["name"], "updated account note")
+        self.assertEqual(by_id["yunda_default"]["auto_login_failure_count"], 1)
+
+    def test_different_accounts_validate_in_parallel_before_state_commit(self):
+        validation_barrier = threading.Barrier(2)
+        results: dict[str, dict[str, Any]] = {}
+        errors: list[BaseException] = []
+
+        class ConcurrentBroker(ManualCredentialsBroker):
+            def describe_status(self, *, validate=True, force=False):
+                if validate:
+                    validation_barrier.wait(timeout=1)
+                return {
+                    "status": "expired",
+                    "label": "已过期",
+                    "status_tone": "error",
+                    "authenticated": False,
+                    "pending_code": False,
+                    "last_error_summary": "session expired",
+                }
+
+            def send_code(self):
+                return {
+                    "status": "error",
+                    "label": "自动登录失败",
+                    "status_tone": "error",
+                    "authenticated": False,
+                    "pending_code": False,
+                    "last_error_summary": "synthetic failure",
+                }
+
+        def check(account_id: str) -> None:
+            try:
+                results[account_id] = self.manager.check_status_with_auto_login(
+                    account_id,
+                    force=True,
+                )
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        with patch.object(
+            account_manager_module,
+            "get_session_broker",
+            return_value=ConcurrentBroker(),
+        ):
+            self.manager.set_auto_login("ronghui_default", True)
+            self.manager.set_auto_login("yunda_default", True)
+            threads = [
+                threading.Thread(target=check, args=(account_id,))
+                for account_id in ("ronghui_default", "yunda_default")
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=2)
+
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(errors, [])
+        self.assertEqual(set(results), {"ronghui_default", "yunda_default"})
+        self.assertTrue(all(result["status"] == "error" for result in results.values()))
+        accounts = {
+            item["account_id"]: item
+            for item in self.manager.list_accounts(include_status=False)
+        }
+        self.assertEqual(accounts["ronghui_default"]["auto_login_failure_count"], 1)
+        self.assertEqual(accounts["yunda_default"]["auto_login_failure_count"], 1)
 
     def test_auto_login_disabled_skips_validation_and_login(self):
         calls: list[tuple[str, Any]] = []

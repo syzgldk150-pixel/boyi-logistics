@@ -12,8 +12,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Collection, Mapping, Sequence
 
-from agent.automation_plugins.errors import PluginConflictError
+from agent.automation_plugins.errors import AutomationPluginError, PluginConflictError
 from agent.automation_plugins.models import (
+    ProjectRuntimeRecord,
     RuntimeEffectKind,
     RuntimeEffectRecord,
     RuntimeEffectState,
@@ -585,64 +586,135 @@ def runtime_generation_health(
     ignored = {str(item) for item in ignored_automation_ids}
     if expected & ignored:
         raise ValueError("expected and ignored automation identities overlap")
-    projects = tuple(
-        project
-        for project in repository.list_project_runtimes()
-        if project.automation_id not in ignored
-    )
-    by_id = {project.automation_id: project for project in projects}
-    blockers: dict[str, tuple[str, ...]] = {}
-    for missing in sorted(expected - set(by_id)):
+
+    raw_id_reader = getattr(repository, "list_project_runtime_ids", None)
+    if callable(raw_id_reader):
+        raw_ids = tuple(str(item or "").strip() for item in raw_id_reader())
+        if any(not automation_id for automation_id in raw_ids) or len(set(raw_ids)) != len(
+            raw_ids
+        ):
+            raise PluginConflictError(
+                "runtime project identities are missing or duplicated",
+                code="PLUGIN_IDENTITY_CONFLICT",
+            )
+        automation_ids = tuple(
+            automation_id for automation_id in raw_ids if automation_id not in ignored
+        )
+        by_id: dict[str, ProjectRuntimeRecord] = {}
+        blockers: dict[str, tuple[str, ...]] = {}
+        for automation_id in automation_ids:
+            try:
+                project = repository.get_project_runtime(automation_id)
+            except AutomationPluginError as exc:
+                if exc.code == "PLUGIN_IDENTITY_CONFLICT":
+                    raise
+                blockers[automation_id] = (str(exc.code),)
+                continue
+            except ValueError:
+                blockers[automation_id] = ("PROJECT_RUNTIME_DATA_INVALID",)
+                continue
+            if project is None:
+                blockers[automation_id] = ("PROJECT_RUNTIME_MISSING",)
+                continue
+            if str(project.automation_id or "").strip() != automation_id:
+                blockers[automation_id] = ("PROJECT_RUNTIME_DATA_INVALID",)
+                continue
+            by_id[automation_id] = project
+    else:
+        # Compatibility for in-memory adapters. Production persistence exposes
+        # raw identities so parsing remains inside a single-project boundary.
+        projects = tuple(repository.list_project_runtimes())
+        raw_ids = tuple(str(project.automation_id or "").strip() for project in projects)
+        if any(not automation_id for automation_id in raw_ids) or len(set(raw_ids)) != len(
+            raw_ids
+        ):
+            raise PluginConflictError(
+                "runtime project identities are missing or duplicated",
+                code="PLUGIN_IDENTITY_CONFLICT",
+            )
+        by_id = {
+            project.automation_id: project
+            for project in projects
+            if project.automation_id not in ignored
+        }
+        automation_ids = tuple(sorted(by_id))
+        blockers = {}
+
+    for missing in sorted(expected - set(automation_ids)):
         blockers[missing] = ("PROJECT_RUNTIME_MISSING",)
     committed_count = 0
     active_lease_count = 0
     archival_unknown_generation_count = 0
     for automation_id, project in sorted(by_id.items()):
         reasons: set[str] = set()
-        if project.reconcile_state != RuntimeReconcileState.STABLE:
-            reasons.add(f"RECONCILE_{project.reconcile_state.value}")
-        if (
-            project.committed_generation is None
-            or project.target_generation != project.committed_generation
-        ):
-            reasons.add("TARGET_NOT_COMMITTED")
-        else:
-            committed_count += 1
-        generations = tuple(repository.list_project_generations(automation_id))
-        committed_rows = [
-            generation
-            for generation in generations
-            if generation.snapshot.generation == project.committed_generation
-        ]
-        if len(committed_rows) != 1 or committed_rows[0].state != RuntimeGenerationState.COMMITTED:
-            reasons.add("COMMITTED_GENERATION_INVALID")
-        for generation in generations:
-            number = generation.snapshot.generation
-            leases = tuple(repository.list_active_generation_leases(automation_id, number))
-            active_lease_count += len(leases)
-            if leases:
-                reasons.add("ACTIVE_GENERATION_LEASE")
-            unknown_write = repository.has_unknown_generation_write(automation_id, number)
-            archival_unknown = (
-                number != project.committed_generation
-                and generation.state is RuntimeGenerationState.BLOCKED
-                and unknown_write
-            )
-            if archival_unknown:
-                archival_unknown_generation_count += 1
-            elif unknown_write:
-                reasons.add("WRITE_OUTCOME_UNKNOWN")
+        project_committed = False
+        project_active_leases = 0
+        project_archival_unknown = 0
+        try:
+            if project.reconcile_state != RuntimeReconcileState.STABLE:
+                reasons.add(f"RECONCILE_{project.reconcile_state.value}")
             if (
-                number != project.committed_generation
-                and generation.state != RuntimeGenerationState.DISPOSED
-                and not archival_unknown
+                project.committed_generation is None
+                or project.target_generation != project.committed_generation
             ):
-                reasons.add(f"UNDISPOSED_{generation.state.value}")
+                reasons.add("TARGET_NOT_COMMITTED")
+            else:
+                project_committed = True
+            generations = tuple(repository.list_project_generations(automation_id))
+            committed_rows = [
+                generation
+                for generation in generations
+                if generation.snapshot.generation == project.committed_generation
+            ]
+            if (
+                len(committed_rows) != 1
+                or committed_rows[0].state != RuntimeGenerationState.COMMITTED
+            ):
+                reasons.add("COMMITTED_GENERATION_INVALID")
+            for generation in generations:
+                number = generation.snapshot.generation
+                leases = tuple(
+                    repository.list_active_generation_leases(automation_id, number)
+                )
+                project_active_leases += len(leases)
+                if leases:
+                    reasons.add("ACTIVE_GENERATION_LEASE")
+                unknown_write = repository.has_unknown_generation_write(
+                    automation_id,
+                    number,
+                )
+                archival_unknown = (
+                    number != project.committed_generation
+                    and generation.state is RuntimeGenerationState.BLOCKED
+                    and unknown_write
+                )
+                if archival_unknown:
+                    project_archival_unknown += 1
+                elif unknown_write:
+                    reasons.add("WRITE_OUTCOME_UNKNOWN")
+                if (
+                    number != project.committed_generation
+                    and generation.state != RuntimeGenerationState.DISPOSED
+                    and not archival_unknown
+                ):
+                    reasons.add(f"UNDISPOSED_{generation.state.value}")
+        except AutomationPluginError as exc:
+            if exc.code == "PLUGIN_IDENTITY_CONFLICT":
+                raise
+            blockers[automation_id] = (str(exc.code),)
+            continue
+        except ValueError:
+            blockers[automation_id] = ("PROJECT_RUNTIME_DATA_INVALID",)
+            continue
+        if project_committed:
+            committed_count += 1
+        active_lease_count += project_active_leases
+        archival_unknown_generation_count += project_archival_unknown
         if reasons:
             blockers[automation_id] = tuple(sorted(reasons))
     return RuntimeGenerationHealth(
-        healthy=not blockers and expected <= set(by_id),
-        project_count=len(projects),
+        healthy=not blockers and expected <= set(automation_ids),
+        project_count=len(automation_ids),
         committed_count=committed_count,
         active_lease_count=active_lease_count,
         blocked_projects=blockers,

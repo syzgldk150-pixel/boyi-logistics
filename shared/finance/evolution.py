@@ -635,6 +635,74 @@ class FinanceEvolutionMixin:
         payload = self.list_review_cases(status="open", limit=limit, offset=0)
         return [item for item in payload["items"] if item.get("ai_status") in {"pending", "failed"}]
 
+    def recover_interrupted_review_ai_runs(self, *, stale_before: dt.datetime) -> int:
+        """Make only stale current AI runs eligible for a new reviewed attempt."""
+
+        if not isinstance(stale_before, dt.datetime):
+            raise TypeError("stale_before must be a datetime")
+        cutoff = stale_before.replace(tzinfo=None)
+        now = _now()
+        with self._connection() as connection:
+            cursor = connection.cursor()
+            begin = getattr(connection, "begin", None)
+            transaction_started = callable(begin)
+            try:
+                if transaction_started:
+                    begin()
+                cursor.execute(
+                    """
+                    SELECT rc.id AS review_case_id, ai.id AS ai_run_id
+                    FROM finance_review_cases rc
+                    INNER JOIN finance_review_ai_runs ai
+                        ON ai.id = rc.current_ai_run_id
+                    WHERE rc.status = 'open'
+                      AND rc.ai_status = 'running'
+                      AND ai.status = 'running'
+                      AND ai.started_at < %s
+                    FOR UPDATE
+                    """,
+                    (cutoff,),
+                )
+                interrupted = _all(cursor)
+                recovered = 0
+                for item in interrupted:
+                    review_case_id = int(item["review_case_id"])
+                    ai_run_id = int(item["ai_run_id"])
+                    cursor.execute(
+                        """
+                        UPDATE finance_review_ai_runs
+                        SET status = 'failed',
+                            error_code = 'FINANCE_AI_RUN_INTERRUPTED',
+                            error_message = 'The previous AI analysis process was interrupted',
+                            finished_at = %s
+                        WHERE id = %s AND review_case_id = %s AND status = 'running'
+                        """,
+                        (now, ai_run_id, review_case_id),
+                    )
+                    if int(cursor.rowcount or 0) != 1:
+                        continue
+                    cursor.execute(
+                        """
+                        UPDATE finance_review_cases
+                        SET ai_status = 'failed', updated_at = %s
+                        WHERE id = %s AND current_ai_run_id = %s
+                          AND status = 'open' AND ai_status = 'running'
+                        """,
+                        (now, review_case_id, ai_run_id),
+                    )
+                    if int(cursor.rowcount or 0) != 1:
+                        raise RuntimeError("finance AI recovery lost its current-run lock")
+                    recovered += 1
+                if transaction_started:
+                    connection.commit()
+                return recovered
+            except Exception:
+                if transaction_started:
+                    connection.rollback()
+                raise
+            finally:
+                cursor.close()
+
     def mark_review_notified(self, review_case_id: int) -> None:
         with self._connection() as connection:
             cursor = connection.cursor()
@@ -761,7 +829,7 @@ class FinanceEvolutionMixin:
         suggestion: Mapping[str, Any] | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
-    ) -> None:
+    ) -> bool:
         now = _now()
         status = "success" if suggestion is not None else "failed"
         with self._connection() as connection:
@@ -772,7 +840,7 @@ class FinanceEvolutionMixin:
                     UPDATE finance_review_ai_runs
                     SET status = %s, suggestion_json = %s, error_code = %s,
                         error_message = %s, finished_at = %s
-                    WHERE id = %s AND review_case_id = %s
+                    WHERE id = %s AND review_case_id = %s AND status = 'running'
                     """,
                     (
                         status,
@@ -784,10 +852,13 @@ class FinanceEvolutionMixin:
                         int(review_case_id),
                     ),
                 )
+                if int(cursor.rowcount or 0) != 1:
+                    return False
                 cursor.execute(
-                    "UPDATE finance_review_cases SET ai_status = %s, updated_at = %s WHERE id = %s AND current_ai_run_id = %s",
+                    "UPDATE finance_review_cases SET ai_status = %s, updated_at = %s WHERE id = %s AND current_ai_run_id = %s AND ai_status = 'running'",
                     (status, now, int(review_case_id), int(ai_run_id)),
                 )
+                return int(cursor.rowcount or 0) == 1
             finally:
                 cursor.close()
 

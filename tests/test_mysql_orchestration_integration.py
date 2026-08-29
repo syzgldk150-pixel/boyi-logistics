@@ -2019,6 +2019,8 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             self.assertIsNotNone(index)
             self.assertEqual(0, int(index["NON_UNIQUE"]))
 
+    def test_feishu_notification_lease_holds_the_database_binding_lane(self): FEISHU_QUEUE_SCENARIOS.run_test_feishu_notification_lease_holds_the_database_binding_lane(self)
+
     def test_feishu_queue_migration_requeues_ambiguous_active_rows_and_resends(self):
         FEISHU_QUEUE_SCENARIOS.run_test_feishu_queue_migration_requeues_ambiguous_active_rows_and_resends(
             self

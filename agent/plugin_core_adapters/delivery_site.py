@@ -166,16 +166,16 @@ def _default_projection_write(
     )
 
 
-def _describe_authenticated_account(
+def _describe_active_account(
     manager: AutomationAccountManager,
     account_id: str,
 ) -> Mapping[str, Any]:
     try:
-        descriptor = manager.require_authenticated_binding(account_id)
+        descriptor = manager.require_active_binding_descriptor(account_id)
     except TMSAuthStateError as exc:
         raise _error(
-            "the exact delivery account is no longer authenticated",
-            "BLOCKED_LOGIN",
+            "the exact delivery account is unavailable",
+            "BROKER_ACCOUNT_UNAVAILABLE",
         ) from exc
     if not isinstance(descriptor, Mapping):
         raise _error("the delivery account descriptor is invalid", "BROKER_ACCOUNT_INVALID")
@@ -934,7 +934,7 @@ def build_production_delivery_site_ports(
         return _verified_result(before=before, after=after, count=len(bill_codes))
 
     return DeliverySiteHandlerPorts(
-        describe_account=lambda account_id: _describe_authenticated_account(
+        describe_account=lambda account_id: _describe_active_account(
             manager,
             account_id,
         ),

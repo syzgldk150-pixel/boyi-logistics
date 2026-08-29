@@ -17,6 +17,7 @@ from agent.llm_settings import (
     _decrypt_api_key,
     _encrypt_api_key,
 )
+from tools.finance_review_analysis_tool import run_finance_review_analysis
 
 
 class _RuntimeRepository:
@@ -50,6 +51,11 @@ class _FinanceRepository:
     def __init__(self) -> None:
         self.ai_runs = []
         self.finished = []
+        self.recovery_cutoffs = []
+
+    def recover_interrupted_review_ai_runs(self, *, stale_before):
+        self.recovery_cutoffs.append(stale_before)
+        return 0
 
     def pending_review_evidence(self, *, limit):
         return [
@@ -91,6 +97,7 @@ class _FinanceRepository:
 
     def finish_review_ai_run(self, **kwargs):
         self.finished.append(kwargs)
+        return True
 
 
 class LLMRuntimeTests(unittest.TestCase):
@@ -143,6 +150,47 @@ class LLMRuntimeTests(unittest.TestCase):
 
 
 class FinanceBrainTests(unittest.TestCase):
+    def test_core_tool_process_composes_finance_brain_and_forwards_limit(self):
+        llm = SimpleNamespace(bind_repository=AsyncMock())
+        brain = SimpleNamespace(
+            analyze_pending=AsyncMock(return_value={"status": "complete", "processed": 2}),
+            notify_unreported_anomalies=AsyncMock(
+                side_effect=AssertionError("analysis tool must not send external notifications")
+            ),
+        )
+        connection_factory = Mock()
+
+        with patch(
+            "tools.finance_review_analysis_tool.LLMSettingsRepository",
+            return_value="llm-settings",
+        ) as settings, patch(
+            "tools.finance_review_analysis_tool.FinanceRepository",
+            return_value="finance-repository",
+        ) as repository, patch(
+            "tools.finance_review_analysis_tool.FinanceBrain",
+            return_value=brain,
+        ) as finance_brain:
+            result = asyncio.run(
+                run_finance_review_analysis(
+                    {
+                        "trigger_id": "event-1",
+                        "source_run_id": "run-1",
+                        "limit": 7,
+                    },
+                    connection_factory=connection_factory,
+                    llm=llm,
+                )
+            )
+
+        settings.assert_called_once_with(connection_factory)
+        llm.bind_repository.assert_awaited_once_with("llm-settings")
+        repository.assert_called_once_with(connection_factory)
+        finance_brain.assert_called_once_with("finance-repository", llm)
+        brain.analyze_pending.assert_awaited_once_with(limit=7)
+        brain.notify_unreported_anomalies.assert_not_awaited()
+        self.assertTrue(result["ok"])
+        self.assertEqual("event-1", result["trigger_id"])
+
     def test_ai_receives_only_aggregate_evidence_and_never_approves_mapping(self):
         repository = _FinanceRepository()
         llm = SimpleNamespace(
@@ -174,6 +222,8 @@ class FinanceBrainTests(unittest.TestCase):
         result = asyncio.run(brain.analyze_pending(limit=5))
 
         self.assertEqual(1, result["completed"])
+        self.assertEqual(0, result["recovered_interrupted"])
+        self.assertEqual(1, len(repository.recovery_cutoffs))
         evidence = repository.ai_runs[0]["evidence"]
         self.assertEqual(
             {
@@ -195,6 +245,62 @@ class FinanceBrainTests(unittest.TestCase):
         self.assertNotIn("waybill_no", json.dumps(evidence, ensure_ascii=False))
         self.assertFalse(hasattr(repository, "save_fee_mapping"))
         self.assertEqual("waybill", repository.finished[0]["suggestion"]["fee_level"])
+
+    def test_late_ai_result_is_not_counted_as_completed_or_failed(self):
+        valid = json.dumps(
+            {
+                "fee_level": "waybill",
+                "canonical_subject": "待确认服务费",
+                "reason": "仅供人工确认。",
+                "confidence": "0.8",
+                "uncertainties": [],
+            },
+            ensure_ascii=False,
+        )
+        for content in (valid, "not-json"):
+            with self.subTest(content=content):
+                repository = _FinanceRepository()
+                repository.finish_review_ai_run = Mock(return_value=False)
+                llm = SimpleNamespace(
+                    public_status=Mock(
+                        return_value={
+                            "configured": True,
+                            "provider": "deepseek",
+                            "model": "deepseek-chat",
+                            "config_version_id": 7,
+                        }
+                    ),
+                    chat=AsyncMock(return_value={"content": content}),
+                )
+
+                with patch("agent.finance_brain.publish_finance_alert") as publish:
+                    result = asyncio.run(FinanceBrain(repository, llm).analyze_pending(limit=1))
+
+                self.assertEqual(0, result["completed"])
+                self.assertEqual(0, result["failed"])
+                self.assertEqual(1, result["late_rejected"])
+                publish.assert_not_called()
+
+    def test_analysis_failure_is_persisted_without_sending_external_notification(self):
+        repository = _FinanceRepository()
+        llm = SimpleNamespace(
+            public_status=Mock(
+                return_value={
+                    "configured": True,
+                    "provider": "deepseek",
+                    "model": "deepseek-chat",
+                    "config_version_id": 7,
+                }
+            ),
+            chat=AsyncMock(return_value={"content": "not-json"}),
+        )
+
+        with patch("agent.finance_brain.publish_finance_alert") as publish:
+            result = asyncio.run(FinanceBrain(repository, llm).analyze_pending(limit=1))
+
+        self.assertEqual(1, result["failed"])
+        self.assertEqual("FINANCE_AI_ANALYSIS_FAILED", repository.finished[0]["error_code"])
+        publish.assert_not_called()
 
 
 if __name__ == "__main__":

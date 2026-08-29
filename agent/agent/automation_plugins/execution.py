@@ -318,6 +318,106 @@ class PluginExecutionRouter:
             raise asyncio.TimeoutError
         return operation.result()
 
+    async def _acquire_generation_lease(
+        self,
+        automation_id: str,
+        *,
+        expected_generation: int,
+        expected_manifest_sha256: str,
+        lease_id: str,
+        orchestration_run_id: str,
+        expires_at: datetime,
+    ) -> RuntimeGenerationLease:
+        """Acquire a database-backed lease without blocking the event loop."""
+
+        repository = self._generation_leases
+        if repository is None:
+            raise PluginExecutionError(
+                "atomic generation lease service is not configured",
+                code="PLUGIN_GENERATION_LEASE_UNAVAILABLE",
+            )
+        task = asyncio.create_task(
+            asyncio.to_thread(
+                repository.acquire_committed_generation,
+                automation_id,
+                expected_generation=expected_generation,
+                expected_manifest_sha256=expected_manifest_sha256,
+                lease_id=lease_id,
+                orchestration_run_id=orchestration_run_id,
+                expires_at=expires_at,
+            )
+        )
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # A thread cannot be cancelled after it entered the repository. If
+            # acquisition completed, release that exact lease before honoring
+            # cancellation so a Run never leaves an orphaned generation lease.
+            try:
+                lease = await asyncio.shield(task)
+            except Exception:
+                pass
+            else:
+                try:
+                    await self._release_generation_lease(
+                        lease,
+                        outcome=RuntimeLeaseOutcome.FAILED_BEFORE_WRITE,
+                    )
+                except Exception:
+                    pass
+            raise
+
+    async def _release_generation_lease(
+        self,
+        lease: RuntimeGenerationLease,
+        *,
+        outcome: RuntimeLeaseOutcome,
+    ) -> None:
+        repository = self._generation_leases
+        if repository is None:
+            raise PluginExecutionError(
+                "atomic generation lease service is not configured",
+                code="PLUGIN_GENERATION_LEASE_UNAVAILABLE",
+            )
+        task = asyncio.create_task(
+            asyncio.to_thread(repository.release_generation, lease, outcome=outcome)
+        )
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await asyncio.shield(task)
+            raise
+
+    def _validated_plugin_launch_paths(
+        self,
+        metadata: Mapping[str, object],
+        runtime: Mapping[str, object],
+    ) -> tuple[str, str, str, Path, PurePosixPath, PurePosixPath]:
+        """Validate the immutable tree and filesystem launch paths off-loop."""
+
+        self._integrity.verify_install_root(metadata)
+        automation_id = str(metadata.get("automation_id") or "")
+        plugin_id = str(metadata.get("plugin_id") or "")
+        version = str(metadata.get("version") or "")
+        root = Path(str(metadata.get("install_root") or "")).resolve()
+        install_metadata = metadata.get("install_metadata")
+        if not all((automation_id, plugin_id, version)) or not isinstance(install_metadata, Mapping):
+            raise PluginExecutionError("plugin instance metadata is incomplete")
+        python_relative = PurePosixPath(str(install_metadata.get("python_relative") or ""))
+        entry_relative = PurePosixPath(str(runtime.get("entrypoint") or ""))
+        if any(part in {"", ".", ".."} for part in (*python_relative.parts, *entry_relative.parts)):
+            raise PluginExecutionError("plugin executable path is unsafe")
+        python_path = root.joinpath(*python_relative.parts).resolve()
+        entrypoint = (root / "package").joinpath(*entry_relative.parts).resolve()
+        for target in (python_path, entrypoint):
+            try:
+                target.relative_to(root)
+            except ValueError as exc:
+                raise PluginExecutionError("plugin executable escaped its install root") from exc
+            if not target.is_file() or target.is_symlink():
+                raise PluginExecutionError("plugin executable is missing or unsafe")
+        return automation_id, plugin_id, version, root, python_relative, entry_relative
+
     @staticmethod
     def _lease_capability(
         lease: RuntimeGenerationLease,
@@ -511,6 +611,7 @@ class PluginExecutionRouter:
         *,
         trusted_scheduler_context: Mapping[str, object] | None = None,
         trusted_invocation_context: Mapping[str, object] | None = None,
+        execution_identity: Mapping[str, object] | None = None,
     ) -> Mapping[str, Any]:
         initial_metadata = capability.get("_plugin_runtime")
         if not isinstance(initial_metadata, Mapping):
@@ -518,6 +619,7 @@ class PluginExecutionRouter:
                 dict(capability),
                 dict(params),
                 trusted_scheduler_context=trusted_scheduler_context,
+                execution_identity=execution_identity,
             )
         automation_id = str(initial_metadata.get("automation_id") or "")
         raw_generation = initial_metadata.get("generation")
@@ -532,7 +634,7 @@ class PluginExecutionRouter:
                 code="PLUGIN_GENERATION_LEASE_UNAVAILABLE",
             )
         try:
-            release_held = self._release_hold_provider()
+            release_held = await asyncio.to_thread(self._release_hold_provider)
         except Exception as exc:
             raise PluginExecutionError(
                 "automation plugin release hold state is unavailable",
@@ -549,7 +651,7 @@ class PluginExecutionRouter:
             generation=raw_generation,
         )
         timeout = max(1, min(int(capability.get("timeout") or 60), 3600))
-        lease = self._generation_leases.acquire_committed_generation(
+        lease = await self._acquire_generation_lease(
             automation_id,
             expected_generation=raw_generation,
             expected_manifest_sha256=str(initial_metadata.get("manifest_sha256") or ""),
@@ -557,31 +659,34 @@ class PluginExecutionRouter:
             orchestration_run_id=run_binding["run_id"],
             expires_at=datetime.now(timezone.utc) + timedelta(seconds=timeout + 60),
         )
-        if lease.orchestration_run_id != run_binding["run_id"]:
-            self._generation_leases.release_generation(
-                lease,
-                outcome=RuntimeLeaseOutcome.FAILED_BEFORE_WRITE,
-            )
-            raise PluginExecutionError(
-                "committed generation lease Run binding changed",
-                code="PLUGIN_GENERATION_LEASE_RUN_BINDING_CONFLICT",
-            )
-        resolved = self._lease_capability(lease, automation_id=automation_id)
         try:
-            initial_scan_phase = resolve_scan_capability_phase(capability, params)
-            resolved_scan_phase = resolve_scan_capability_phase(resolved, params)
-            if initial_scan_phase != resolved_scan_phase:
-                raise ValueError("scan execution phase changed with the generation lease")
-            resolved = apply_scan_execution_boundary(resolved, params)
-        except ValueError as exc:
-            self._generation_leases.release_generation(
+            if lease.orchestration_run_id != run_binding["run_id"]:
+                raise PluginExecutionError(
+                    "committed generation lease Run binding changed",
+                    code="PLUGIN_GENERATION_LEASE_RUN_BINDING_CONFLICT",
+                )
+            resolved = await asyncio.to_thread(
+                self._lease_capability,
+                lease,
+                automation_id=automation_id,
+            )
+            try:
+                initial_scan_phase = resolve_scan_capability_phase(capability, params)
+                resolved_scan_phase = resolve_scan_capability_phase(resolved, params)
+                if initial_scan_phase != resolved_scan_phase:
+                    raise ValueError("scan execution phase changed with the generation lease")
+                resolved = apply_scan_execution_boundary(resolved, params)
+            except ValueError as exc:
+                raise PluginExecutionError(
+                    "scan execution boundary is invalid",
+                    code="SCAN_EXECUTION_BOUNDARY_INVALID",
+                ) from exc
+        except (Exception, asyncio.CancelledError):
+            await self._release_generation_lease(
                 lease,
                 outcome=RuntimeLeaseOutcome.FAILED_BEFORE_WRITE,
             )
-            raise PluginExecutionError(
-                "scan execution boundary is invalid",
-                code="SCAN_EXECUTION_BOUNDARY_INVALID",
-            ) from exc
+            raise
         is_scan_preview = resolved_scan_phase == SCAN_PHASE_PREVIEW
         outcome = RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
         execution_state: dict[str, object] = {"process_launched": False, "started_mutating_call_count": None}
@@ -663,7 +768,7 @@ class PluginExecutionRouter:
             # ``_execute_plugin`` observes the broker receipt in its own
             # finalizer before control reaches this persistence boundary.
             try:
-                self._generation_leases.release_generation(lease, outcome=outcome)
+                await self._release_generation_lease(lease, outcome=outcome)
             except Exception as release_error:
                 if self._has_observed_started_write(execution_state):
                     return self._lease_release_unknown_result(release_error)
@@ -698,27 +803,18 @@ class PluginExecutionRouter:
                 code="PLUGIN_TRUST_SOURCE_INVALID",
             )
         self._reject_sensitive_arguments(params)
-        self._integrity.verify_install_root(metadata)
-        automation_id = str(metadata.get("automation_id") or "")
-        plugin_id = str(metadata.get("plugin_id") or "")
-        version = str(metadata.get("version") or "")
-        root = Path(str(metadata.get("install_root") or "")).resolve()
-        install_metadata = metadata.get("install_metadata")
-        if not all((automation_id, plugin_id, version)) or not isinstance(install_metadata, Mapping):
-            raise PluginExecutionError("plugin instance metadata is incomplete")
-        python_relative = PurePosixPath(str(install_metadata.get("python_relative") or ""))
-        entry_relative = PurePosixPath(str(runtime.get("entrypoint") or ""))
-        if any(part in {"", ".", ".."} for part in (*python_relative.parts, *entry_relative.parts)):
-            raise PluginExecutionError("plugin executable path is unsafe")
-        python_path = root.joinpath(*python_relative.parts).resolve()
-        entrypoint = (root / "package").joinpath(*entry_relative.parts).resolve()
-        for target in (python_path, entrypoint):
-            try:
-                target.relative_to(root)
-            except ValueError as exc:
-                raise PluginExecutionError("plugin executable escaped its install root") from exc
-            if not target.is_file() or target.is_symlink():
-                raise PluginExecutionError("plugin executable is missing or unsafe")
+        (
+            automation_id,
+            plugin_id,
+            version,
+            root,
+            python_relative,
+            entry_relative,
+        ) = await asyncio.to_thread(
+            self._validated_plugin_launch_paths,
+            metadata,
+            runtime,
+        )
         timeout = max(1, min(int(capability.get("timeout") or 60), 3600))
         account_roles = metadata.get("account_roles")
         resource_roles = metadata.get("resource_roles")
@@ -1132,10 +1228,16 @@ class PluginExecutionRouter:
             and current.get("run_id") == run_id
             and current.get("step_id") == step_id
         ]
+        if not matches:
+            return await self._core.cancel_bound_run(
+                tool_name=tool_name,
+                run_id=run_id,
+                step_id=step_id,
+            )
         if len(matches) != 1:
             return {
                 "ok": False,
-                "code": "NOT_RUNNING" if not matches else "AMBIGUOUS_PLUGIN_INVOCATION",
+                "code": "AMBIGUOUS_PLUGIN_INVOCATION",
                 "message": "trusted plugin Run binding did not resolve exactly one process",
             }
         invocation_id, _ = matches[0]

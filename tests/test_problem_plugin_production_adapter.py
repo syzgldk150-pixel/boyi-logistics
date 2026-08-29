@@ -111,7 +111,12 @@ def _split_row(code: str, expected: int, arrived: int) -> list[object]:
 
 
 class _AccountManager:
-    def require_authenticated_binding(self, account_id: str) -> dict[str, str]:
+    def __init__(self) -> None:
+        self.active_binding_calls: list[str] = []
+        self.authenticated_binding_calls: list[str] = []
+
+    def require_active_binding_descriptor(self, account_id: str) -> dict[str, str]:
+        self.active_binding_calls.append(account_id)
         assert account_id in {_PRIMARY, _DAXIANG}
         return {
             "account_id": account_id,
@@ -119,9 +124,14 @@ class _AccountManager:
             "system": "ronghui",
         }
 
+    def require_authenticated_binding(self, account_id: str) -> dict[str, str]:
+        self.authenticated_binding_calls.append(account_id)
+        raise AssertionError("describe_account must not authenticate online")
+
 
 class _Harness:
     def __init__(self) -> None:
+        self.account_manager = _AccountManager()
         self.resources = {
             _SELF_RESOURCE: self._resource(
                 _SELF_RESOURCE,
@@ -290,7 +300,7 @@ class _Harness:
     def handlers(self):
         return build_production_problem_handler_map(
             cursor_secret=b"p" * 32,
-            account_manager=_AccountManager(),
+            account_manager=self.account_manager,
             resource_loader=self.resource_loader,
             feishu_operation=self.feishu_operation,
             problem_action=self.problem_action,
@@ -300,6 +310,7 @@ class _Harness:
             result_updater=self.result_updater,
             event_updater=self.event_updater,
             event_state_reader=self.event_state_reader,
+            capability_authorizer=lambda _descriptor, _capability: None,
         )
 
 
@@ -367,6 +378,8 @@ def test_self_pickup_payload_runs_through_production_ports_without_binding_leak(
         "problem:create:R_SELF",
         "problem:verify:R_SELF",
     ]
+    assert harness.account_manager.active_binding_calls
+    assert harness.account_manager.authenticated_binding_calls == []
     forbidden = {
         "account_id",
         "resource_id",

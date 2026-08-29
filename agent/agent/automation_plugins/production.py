@@ -33,7 +33,11 @@ from agent.automation_plugins.core_adapter import (
     AccountManagerSessionResolver,
     RegisteredCoreAutomationBrokerAdapter,
 )
-from agent.automation_plugins.errors import PluginConflictError, PluginPackageError
+from agent.automation_plugins.errors import (
+    AutomationPluginError,
+    PluginConflictError,
+    PluginPackageError,
+)
 from agent.automation_plugins.configuration import (
     AutomationProjectConfigurationService,
 )
@@ -757,6 +761,7 @@ class MySQLRuntimeTargetService:
         runtime_repository: MySQLAutomationPluginRuntimeAdapter,
         reconciler: AutomationRuntimeReconciler,
         wake_runner: Callable[[str], None] | None = None,
+        catalog_repository: Any | None = None,
     ) -> None:
         self._orchestration = orchestration_repository
         self._catalog = catalog
@@ -764,6 +769,8 @@ class MySQLRuntimeTargetService:
         self._runtime = runtime_repository
         self._reconciler = reconciler
         self._wake_runner = wake_runner
+        self._catalog_repository = catalog_repository
+        self._last_reconcile_failures: dict[str, dict[str, str]] = {}
 
     def set_wake_runner(self, wake_runner: Callable[[str], None] | None) -> None:
         """Bind the process-local wake hook after the Runner is constructed."""
@@ -1088,22 +1095,109 @@ class MySQLRuntimeTargetService:
             self._wake_runner(run_id)
         return result
 
+    def _reconciliation_automation_ids(self) -> tuple[str, ...]:
+        """Discover project identities without compiling every catalog entry.
+
+        The production repository is the identity authority. Reading the list
+        is a platform operation and therefore remains fail-fast. Individual
+        manifest/configuration compilation happens later inside the project
+        boundary, so one invalid candidate cannot prevent another project from
+        being reconciled.
+        """
+
+        persisted_id_reader = getattr(
+            self._catalog,
+            "persisted_automation_ids",
+            None,
+        )
+        if callable(persisted_id_reader):
+            return tuple(persisted_id_reader())
+
+        repository = getattr(self, "_catalog_repository", None)
+        if repository is None:
+            repository = getattr(self._catalog, "_repository", None)
+        if repository is None:
+            # Small adapters used outside production may expose only the public
+            # catalog API. Discovery errors here remain global because no
+            # authoritative project identity is available to quarantine.
+            raw_ids = [
+                str(entry.automation_id or "").strip()
+                for entry in self._catalog.list()
+            ]
+        else:
+            raw_id_reader = getattr(repository, "list_instance_ids", None)
+            if callable(raw_id_reader):
+                raw_ids = [
+                    str(automation_id or "").strip()
+                    for automation_id in raw_id_reader()
+                ]
+            else:
+                projects = tuple(repository.list_instances())
+                raw_ids = [
+                    str(getattr(project, "automation_id", "") or "").strip()
+                    for project in projects
+                ]
+            if any(not automation_id for automation_id in raw_ids) or len(
+                set(raw_ids)
+            ) != len(raw_ids):
+                raise PluginConflictError(
+                    "automation project identities are missing or duplicated",
+                    code="PLUGIN_IDENTITY_CONFLICT",
+                )
+            hidden_ids = frozenset(
+                self._catalog.excluded_persisted_automation_ids()
+            )
+            raw_ids = [
+                automation_id
+                for automation_id in raw_ids
+                if automation_id not in hidden_ids
+            ]
+        if any(not automation_id for automation_id in raw_ids) or len(set(raw_ids)) != len(
+            raw_ids
+        ):
+            raise PluginConflictError(
+                "automation project identities are missing or duplicated",
+                code="PLUGIN_IDENTITY_CONFLICT",
+            )
+        return tuple(sorted(raw_ids))
+
     def reconcile_all(self) -> tuple[object, ...]:
         results: list[object] = []
-        for entry in sorted(self._catalog.list(), key=lambda item: item.automation_id):
+        failures: dict[str, dict[str, str]] = {}
+        for automation_id in self._reconciliation_automation_ids():
             try:
-                result = self.reconcile_project(entry.automation_id)
-            except PluginConflictError:
-                raise
-            except Exception as exc:
-                raise PluginConflictError(
-                    f"runtime generation reconciliation failed: {redact_text(exc)[:300]}",
-                    code="PLUGIN_RUNTIME_RECONCILE_FAILED",
-                ) from exc
+                result = self.reconcile_project(automation_id)
+            except AutomationPluginError as exc:
+                if exc.code == "PLUGIN_IDENTITY_CONFLICT":
+                    raise
+                failures[automation_id] = {
+                    "code": str(
+                        getattr(exc, "code", "PLUGIN_RUNTIME_RECONCILE_FAILED")
+                    ),
+                    "error_summary": redact_text(exc)[:300],
+                }
+                continue
+            except ValueError as exc:
+                failures[automation_id] = {
+                    "code": "PLUGIN_PROJECT_DATA_INVALID",
+                    "error_summary": redact_text(exc)[:300],
+                }
+                continue
             if result is not None:
                 results.append(result)
+        self._last_reconcile_failures = failures
         return tuple(results)
 
+    def reconciliation_failures(self) -> dict[str, dict[str, str]]:
+        """Return the latest per-project reconciliation warnings.
+
+        Catalog discovery itself still fails as one unit because duplicate global
+        identities cannot be routed safely.  Once identities are known, however,
+        a malformed candidate belongs to that project only and must not stop the
+        remaining committed projects or core tools from starting.
+        """
+
+        return copy.deepcopy(getattr(self, "_last_reconcile_failures", {}))
 
 @dataclass
 class ProductionAutomationPluginRuntime:
@@ -1166,7 +1260,8 @@ class ProductionAutomationPluginRuntime:
         if not refreshed.ok:
             raise PluginConflictError("first-party plugin bootstrap was rejected")
         self.bootstrap = refreshed
-        return first_pass + self.target_service.reconcile_all()
+        second_pass = self.target_service.reconcile_all()
+        return first_pass + second_pass
 
     def health(self) -> dict[str, Any]:
         catalog = self.catalog.production_health(tuple(self.required_first_party_ids))
@@ -1178,9 +1273,13 @@ class ProductionAutomationPluginRuntime:
         )
         sandbox = self._sandbox_canary
         sandbox_ready = bool(sandbox is not None and sandbox.healthy)
+        target_service = getattr(self, "target_service", None)
+        failure_reader = getattr(target_service, "reconciliation_failures", None)
+        reconciliation_errors = (
+            failure_reader() if callable(failure_reader) else {}
+        )
         runnable = bool(
             catalog.get("runnable") is True
-            and generations.healthy
             and self._started
             and sandbox_ready
         )
@@ -1211,6 +1310,7 @@ class ProductionAutomationPluginRuntime:
                     for key, value in sorted(generations.blocked_projects.items())
                 },
             },
+            "reconciliation_errors": reconciliation_errors,
         }
         self._health_snapshot = copy.deepcopy(payload)
         return payload
@@ -1229,6 +1329,7 @@ class ProductionAutomationPluginRuntime:
                 "sandbox": {"state": "unavailable", "code": "NOT_CHECKED", "checked_at": None},
                 "catalog": {"ok": False, "runnable": False, "runtime_status": "UNAVAILABLE"},
                 "generations": {"healthy": False, "blocked_projects": {}},
+                "reconciliation_errors": {},
                 "error_code": "AUTOMATION_PLUGIN_HEALTH_NOT_CHECKED",
             }
         if not self._started:
@@ -1446,6 +1547,7 @@ def build_production_automation_plugin_runtime(
         core_catalog=core_catalog,
         runtime_repository=runtime_repository,
         reconciler=reconciler,
+        catalog_repository=repository,
     )
     lifecycle_service = AutomationPluginService(
         repository=repository,

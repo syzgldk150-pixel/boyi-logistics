@@ -7,6 +7,8 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
+import pytest
+
 from agent.automation_plugins.catalog import (
     PluginCatalog,
     _entry_from_project,
@@ -38,13 +40,90 @@ from agent.automation_plugins.models import (
     RuntimeLeaseOutcome,
     RuntimeReconcileState,
 )
+from agent.automation_plugins.mysql_repository import (
+    MySQLAutomationPluginRepositoryAdapter,
+)
 from agent.automation_plugins.ports import RuntimeEffectPlan
 from agent.automation_plugins.runtime_repository import (
     MySQLAutomationPluginCatalogRepositoryAdapter,
     MySQLAutomationPluginRuntimeAdapter,
+    MySQLAutomationProjectConfigurationReadAdapter,
     snapshot_from_row,
     snapshot_to_row,
 )
+
+
+def test_raw_identity_readers_do_not_parse_corrupt_rows() -> None:
+    class _LowLevel:
+        @staticmethod
+        def list_projects() -> list[dict[str, Any]]:
+            return [{"automation_id": "bad-project", "state": "not-a-state"}]
+
+        @staticmethod
+        def list_project_runtime_rows() -> list[dict[str, Any]]:
+            return [
+                {
+                    "automation_id": "bad-runtime",
+                    "reconcile_state": "not-a-state",
+                }
+            ]
+
+    orchestration = _OrchestrationRepository(_LowLevel())
+
+    assert MySQLAutomationPluginCatalogRepositoryAdapter(
+        orchestration
+    ).list_instance_ids() == ("bad-project",)
+    assert MySQLAutomationPluginRuntimeAdapter(
+        orchestration
+    ).list_project_runtime_ids() == ("bad-runtime",)
+
+    lifecycle_repository = object.__new__(MySQLAutomationPluginRepositoryAdapter)
+    lifecycle_repository._catalog = MySQLAutomationPluginCatalogRepositoryAdapter(
+        orchestration
+    )
+    assert lifecycle_repository.list_instance_ids() == ("bad-project",)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    (
+        ("config_json", [1]),
+        ("account_bindings_json", [1]),
+        ("resource_bindings_json", [1]),
+        ("enabled_entrypoints_json", {"console": True}),
+    ),
+)
+def test_project_config_reader_rejects_valid_json_with_wrong_container_type(
+    field: str,
+    invalid_value: object,
+) -> None:
+    row: dict[str, Any] = {
+        "automation_id": "bad-project",
+        "config_json": {},
+        "account_bindings_json": {},
+        "resource_bindings_json": {},
+        "enabled_entrypoints_json": [],
+        "schedule": {"kind": "none", "times": [], "enabled": False},
+        "config_version": 1,
+        "configured": 1,
+        "config_sha256": "",
+        "account_bindings_sha256": "",
+        "resource_bindings_sha256": "",
+        "device_binding_sha256": "",
+    }
+    row[field] = invalid_value
+
+    class _LowLevel:
+        @staticmethod
+        def get_project_config(_automation_id: str) -> dict[str, Any]:
+            return row
+
+    reader = MySQLAutomationProjectConfigurationReadAdapter(
+        _OrchestrationRepository(_LowLevel())
+    )
+
+    with pytest.raises(ValueError, match=field):
+        reader.get_project_config("bad-project")
 
 
 def _sha(value: Any) -> str:

@@ -966,14 +966,15 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         calls: list[str] = []
 
         class Broker:
-            def ensure_authenticated(self, validate=True):
-                calls.append(f"validate={validate}")
+            def get_storage_state_path(self, validate=True):
+                calls.append(f"path_validate={validate}")
+                return "/tmp/test-storage-state.json"
 
         with patch("browser_manager.get_session_broker", return_value=Broker()) as get_broker:
             auth.login(page, username="", password="")
 
         get_broker.assert_called_once_with("price")
-        self.assertEqual(["validate=True"], calls)
+        self.assertEqual(["path_validate=False"], calls)
 
     def test_dispatch_load_callable_prefers_runtime_scripts_dir(self):
         from agent.tms_runtime import dispatch
