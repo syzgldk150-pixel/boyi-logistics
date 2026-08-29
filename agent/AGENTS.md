@@ -62,7 +62,7 @@
 - 首方启动 bootstrap 除补齐缺失实例外，还必须把仍指向较旧版本的保留实例按本次签名发布自动推进到目标版本；若旧 target 可在首轮协调完成，启动流程必须先完成该精确签名 generation，再重新 bootstrap 并进行第二次协调，使正常恢复和发行升级在同一 Agent 启动内收敛，禁止依赖人工二次重启。仍受真实 coeffect 阻塞的 target 必须保持不可运行，并在依赖恢复后的下一次显式协调中重试，不能伪造收敛。管理员配置、账号/资源绑定、入口空集、定时与权限模式保持不变，较新实例绝不降级。旧不可变包只为尚未排空的 generation lease、审计和可恢复回滚保留，不得继续作为活动 Catalog 版本。交互选择、预览指纹、客服复核引用和财务启动标记等代码拥有字段必须由精确首方身份声明、进入合同哈希并由 Agent 规范化，Console 不得让用户编辑或因其 Schema 形状阻断整个配置表单。
 - 当前 committed generation 发生 `WRITE_OUTCOME_UNKNOWN` 时，失败 Run、未知 lease、receipt 与 Evidence 必须原样保留，原 Run 不得重放；但当前 generation 和项目路由保持可运行，用户或定时器再次执行时必须创建新的 Command、Run 与 lease。未知 lease 仍阻断该 generation 的清理和卸载；generation 退出当前路由后必须落为历史 `BLOCKED` 归档，迟到 finalizer 只能更新旧代，不能影响新的 committed 路由。
 - Console 的“核验并恢复”仅用于闭合历史未知 receipt，不是重新执行入口；浏览器只提交请求 UUID，Agent 只依据持久 receipt 与权威回读判定 `WRITE_VERIFIED`、`NOT_APPLIED` 或 `UNKNOWN`，不得接受浏览器提交 generation、lease 或 evidence，也不得重放原 Run。普通重新执行直接提交新 Command，不以历史恢复为前置条件。
-- Business Account 池与 `workflow_resources` 资源池进入插件目录前只能投影闭合的安全 descriptor；资源固定为 `resource_id/name/kind/status`，不得把 Token、表格 ID、读写范围、文件路径、配置哈希/版本或原始配置送入浏览器。插件目录的 `hidden_automation_ids` 只投影真实持久化且当前发行明确排除的身份，不得用它生成静态项目；Console 只能按签名清单声明的 role 与 kind 精确筛选并保存 ID，不默认选择第一项；池不可用、descriptor 漂移、必填绑定缺失/停用/类型不符时，配置、运行、启用和完全自动均 fail closed。
+- Business Account 池与 `workflow_resources` 资源池进入插件目录前只能投影闭合的安全 descriptor；资源固定为 `resource_id/name/kind/status`，不得把 Token、表格 ID、读写范围、文件路径、配置哈希/版本或原始配置送入浏览器。插件目录的 `hidden_automation_ids` 只投影真实持久化且当前发行明确排除的身份，不得用它生成静态项目；Console 只能按签名清单声明的 role 与 kind 精确筛选并保存 ID，不默认选择第一项；所有签名项目自动化运行只接受项目当前提交的精确账号绑定，后台改绑后下一次运行使用新 ID，脚本、Broker、调度器均不得按 `is_default`、列表顺序或固定账号补齐；池不可用、descriptor 漂移、必填绑定缺失/停用/类型不符时，配置、运行、启用和完全自动均 fail closed。
 - 插件包只安装动作并声明支持的调度能力，不携带 cron 或实际执行时刻。定时由安装后的项目实例在系统自动化设置中配置，并与项目配置、账号/资源绑定和授权在同一版本化合同内保存；同一插件的重复安装实例可分别选择账号、资源、定时和权限。配置响应丢失重放必须绑定同一请求、操作者和精确目标配置版本；稳定 generation 提交后必须原子刷新进程内 Scheduler，刷新失败保留旧 Job 集并显式报告。通用项目 `startup` 只在未处于 release hold 的进程注册一次性 DateTrigger，并用上海业务日、任务配置版本和项目 generation 构造稳定 Command 身份。
 - 飞书插件直达入口由 `agent/orchestration/automation_project_entrypoints.py` 提供，并在 `feishu/message_handler.py` 通过组合根注入：文本、菜单与 pending 只能按 committed generation 中唯一的 `feishu_route.route_key` 构造 typed invocation，重复别名、多候选、账号覆盖或缺少稳定事件 ID 均 fail closed。账号只来自项目实例的 Business Account bindings；日期、车牌和预览指纹只由代码拥有的 resolver 注入，通用 Command/LLM 不得伪造项目上下文。
 - 首方飞书固定短语只在 `agent/direct_tool_router.py` 的只读 `FEISHU_COMMAND_REGISTRATIONS` 注册；命令 ID、route key 和触发工具名必须分别唯一，预览与正式工具只能在同一命令族内共享 route。安装插件不会自动激活文本短语；新短语必须经代码审查注册，运行时仍须由签名且稳定的项目 generation 唯一认领 route。
@@ -223,9 +223,9 @@ docs/
 
 - R13、实际到货、问题件与 TMS 主单签收必须完整分页并写入 `010_daily_sign_ledger.sql` 建立的权威台账；R13 状态只作候选诊断，只有真实主单“签收”事件可关闭事项。
 - 问题件 `(source, external_id)` 是大小写敏感的真实来源身份；迁移 `029_daily_sign_problem_event_binary_identity.sql` 使 MySQL 唯一键与采集层语义一致，禁止按不区分大小写的排序规则覆盖另一条事件。
-- 必须显式传入独立的 R13 来源账号和唯一的融辉 TMS 邵阳大祥站 `account_id`；R13 查询站点只能从自动化项目绑定的 `r13_account_id` 对应中央账号目录合同解析，且必须精确匹配账号合同常量 `DAILY_SIGN_R13_SITE_CODE=7390017`，其他非空站点同样拒绝。业务脚本与请求体不得硬编码、猜测或覆盖站点。同一个 TMS 登录态统一用于问题件、主单签收、轨迹核验和地址补全，不读取旧 `phase7.r13_credentials`，不接受内联凭据、隐式账号或多候选。
+- 必须显式传入自动化项目当前绑定的独立 `r13_account_id` 和融辉 TMS `account_id`，允许后台改绑为任意同系统有效账号；同一次运行统一使用该 TMS 账号处理问题件、主单签收、轨迹核验和地址补全。R13 查询站点在精确账号登录后从 `/gateway/site/public/aurora/auth` 的真实上下文取得：中心账号 `siteTypeCode=999` 使用空站点过滤，其他账号使用其 `siteCode`。业务脚本与请求体不得硬编码、猜测或覆盖账号/站点；上下文缺失、刷新后站点漂移或调用方传入站点均显式失败。不读取旧 `phase7.r13_credentials`，不接受内联凭据、隐式账号或多候选。
 - TMS 签收长历史查询按连续无重叠的 31 天窗口分片，校验汇总/明细总量并按主键去重；已离开当前 R13 的候选使用 `013_daily_sign_verification_state.sql` 按 1/3/7 天持久化退避精确复核。
-- 来源不完整、冲突无法核验、字段缺失或账号不唯一必须显式阻塞。R13 完整查询为零行时仍先完成其他来源的闭合证据核验；若最终发布集合为空且飞书仍有上一版数据，投影层必须显式阻塞且不得写空，只有目标本就为空并且其他证据闭合时才接受合法零集合。
+- 来源不完整、业务失败码、冲突无法核验、字段缺失或账号不唯一必须显式阻塞。R13 结构完整且权威总数为零时仍先完成其他来源的闭合证据核验；若最终发布集合为空，按正常发布流程删除多维表旧记录、清空电子表格旧数据并新鲜回读为零行。登录、HTTP、业务响应、结构或分页异常必须在投影变更前失败，不得伪装成零行。
 
 ## 财务同步上线范围
 

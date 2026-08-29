@@ -577,7 +577,7 @@ class TMSRoutesTests(unittest.TestCase):
     def test_tms_route_accepts_legacy_raw_payload(self):
         async def fake_execute_target(name, req):
             self.assertEqual(name, "get_qianshou")
-            self.assertEqual(req.params["disp_site_code"], "7390004")
+            self.assertEqual(req.params["r13_account_id"], "r13-project-selected")
             self.assertEqual(req.params["page_size"], 1)
             return 200, {"ok": True, "data": []}
 
@@ -586,7 +586,10 @@ class TMSRoutesTests(unittest.TestCase):
             with patch("agent.tms_runtime.routes.execute_target", side_effect=fake_execute_target):
                 response = self.client.post(
                     "/tms/get_qianshou",
-                    json={"disp_site_code": "7390004", "page_size": 1},
+                    json={
+                        "r13_account_id": "r13-project-selected",
+                        "page_size": 1,
+                    },
                     headers={EXECUTION_CAPABILITY_HEADER: capability},
                 )
         finally:
@@ -687,7 +690,6 @@ class TMSRoutesTests(unittest.TestCase):
         request = dispatch_module.TaskRequest(
             params={
                 "r13_account_id": "r13-non-default",
-                "disp_site_code": "7390017",
             },
             timeout_sec=30,
         )

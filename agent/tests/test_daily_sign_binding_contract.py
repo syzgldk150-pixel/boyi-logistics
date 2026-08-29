@@ -37,14 +37,13 @@ def test_daily_sign_request_requires_explicit_r13_account_binding() -> None:
     resource_mock.assert_not_called()
 
 
-def test_daily_sign_request_uses_account_contract_credentials_and_site() -> None:
+def test_daily_sign_request_uses_exact_selected_account_credentials() -> None:
     class FakeAccountManager:
         def require_active_binding_descriptor(self, account_id):
             self.descriptor_account_id = account_id
             return {
                 "account_id": account_id,
                 "system": "r13",
-                "site_code": "7390017",
             }
 
         def resolve_role_account_params(self, params, **kwargs):
@@ -56,35 +55,35 @@ def test_daily_sign_request_uses_account_contract_credentials_and_site() -> None
         "tools.daily_sign_sync_tool.get_account_manager", return_value=manager
     ):
         request = daily_sign_sync_tool.build_daily_sign_request_body(
-            {"r13_account_id": "r13_default", "request_body": {"days": 1}}
+            {"r13_account_id": "r13-project-selected", "request_body": {"days": 1}}
         )
 
-    assert manager.descriptor_account_id == "r13_default"
+    assert manager.descriptor_account_id == "r13-project-selected"
     assert manager.kwargs["account_field"] == "r13_account_id"
     assert manager.kwargs["output_account_field"] == ""
     assert manager.kwargs["output_session_profile_field"] == ""
-    assert request["disp_site_code"] == "7390017"
+    assert request["r13_account_id"] == "r13-project-selected"
+    assert "disp_site_code" not in request
     assert request["username"] == "r13-user"
     assert request["password"] == "r13-pass"
 
 
-@pytest.mark.parametrize("site_code", [None, "", "7390004", "r13-other-site"])
-def test_daily_sign_request_rejects_account_outside_required_site(site_code) -> None:
+def test_daily_sign_request_accepts_any_selected_r13_account_id() -> None:
     manager = Mock()
     manager.require_active_binding_descriptor.return_value = {
-        "account_id": "r13-other",
+        "account_id": "r13-user-selected",
         "system": "r13",
-        "site_code": site_code,
     }
-    with (
-        patch("tools.daily_sign_sync_tool.get_account_manager", return_value=manager),
-        pytest.raises(ValueError, match="站点合同"),
+    manager.resolve_role_account_params.side_effect = lambda params, **_kwargs: params
+    with patch(
+        "tools.daily_sign_sync_tool.get_account_manager", return_value=manager
     ):
-        daily_sign_sync_tool.build_daily_sign_request_body(
-            {"r13_account_id": "r13-other", "days": 1}
+        request = daily_sign_sync_tool.build_daily_sign_request_body(
+            {"r13_account_id": "r13-user-selected", "days": 1}
         )
 
-    manager.resolve_role_account_params.assert_not_called()
+    assert request["r13_account_id"] == "r13-user-selected"
+    manager.resolve_role_account_params.assert_called_once()
 
 
 def test_daily_sign_request_rejects_nested_broker_owned_material() -> None:
@@ -105,7 +104,7 @@ def test_daily_sign_request_rejects_nested_broker_owned_material() -> None:
 
 
 def test_daily_sign_request_rejects_top_level_site_override() -> None:
-    for forbidden in ("disp_site_code", "dispSiteCode"):
+    for forbidden in ("disp_site_code", "dispSiteCode", "r13_site_code"):
         with pytest.raises(ValueError, match="broker-owned"):
             daily_sign_sync_tool.build_daily_sign_request_body(
                 {
@@ -116,17 +115,54 @@ def test_daily_sign_request_rejects_top_level_site_override() -> None:
             )
 
 
-def test_empty_r13_existing_projection_fails_before_persistence() -> None:
+def test_complete_empty_r13_result_commits_and_publishes_zero_rows() -> None:
     observed_at = datetime(2026, 8, 13, 9, 0, 0)
-    preflight = Mock(
+
+    def persist(**kwargs):
+        return {"persistence_marker": kwargs["persistence_marker"]}
+
+    def verify_persistence(**kwargs):
+        marker = kwargs["persistence_marker"]
+        return {
+            "verified": True,
+            "record_count": len(kwargs["ledger_rows"]),
+            "publication_rows": {"record_count": len(kwargs["publication_rows"])},
+            "persistence_sha256": marker["marker_sha256"],
+            "publication_sha256": marker["publication_rows"]["sha256"],
+            "ledger_sha256": "l" * 64,
+        }
+
+    def verify_completed(*, expected_values, **_kwargs):
+        marker = expected_values["diagnostics_json"]["persistence_commit"]
+        return {
+            "verified": True,
+            "record_count": expected_values["published_rows"],
+            "publication_sha256": marker["publication_rows"]["sha256"],
+            "persistence_sha256": marker["marker_sha256"],
+        }
+
+    bitable = Mock(
         return_value={
-            "error": "R13 零行但飞书仍有上一版应签数据",
-            "error_code": "EMPTY_R13_SOURCE",
+            "ok": True,
+            "written": 0,
+            "readback": {
+                "verified": True,
+                "record_count": 0,
+                "snapshot_sha256": "b" * 64,
+            },
         }
     )
-    persist = Mock()
-    bitable = Mock()
-    sheet = Mock()
+    sheet = Mock(
+        return_value={
+            "ok": True,
+            "rows": 0,
+            "readback": {
+                "verified": True,
+                "record_count": 0,
+                "snapshot_sha256": "s" * 64,
+            },
+        }
+    )
     sync_replacements = {
         "start_sync_run": Mock(return_value=("source-run", observed_at)),
         "load_daily_sign_state": Mock(return_value=_empty_state()),
@@ -140,9 +176,10 @@ def test_empty_r13_existing_projection_fails_before_persistence() -> None:
                 {"complete": True, "queried": 0, "verification_rows": []},
             )
         ),
-        "_preflight_empty_r13_projection": preflight,
-        "verify_daily_sign_completed_run": Mock(return_value={"verified": True}),
+        "finish_sync_run": Mock(),
+        "verify_daily_sign_completed_run": Mock(side_effect=verify_completed),
         "persist_daily_sign_snapshot": persist,
+        "verify_daily_sign_persistence": Mock(side_effect=verify_persistence),
         "_sync_bitable": bitable,
         "_sync_sheet": sheet,
     }
@@ -168,16 +205,15 @@ def test_empty_r13_existing_projection_fails_before_persistence() -> None:
     ):
         result = daily_sign_sync_tool.run_daily_sign_sync(
             {
-                "r13_account_id": "r13_default",
-                "account_id": "ronghui_daxiang_s",
+                "r13_account_id": "r13-project-selected",
+                "account_id": "ronghui-project-selected",
                 "days": 1,
             }
         )
 
-    assert result["status"] == "FAILED"
-    assert result["error"]["code"] == "EMPTY_R13_SOURCE"
-    assert result["error"]["retryable"] is True
-    preflight.assert_called_once()
-    persist.assert_not_called()
-    bitable.assert_not_called()
-    sheet.assert_not_called()
+    assert result["status"] == "SUCCESS"
+    assert result["meta"]["record_count"] == 0
+    assert result["data"]["diagnostics"]["r13_rows"] == 0
+    assert result["data"]["diagnostics"]["published_rows"] == 0
+    assert bitable.call_args.args[0] == []
+    assert sheet.call_args.args[0] == []

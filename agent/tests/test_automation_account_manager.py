@@ -68,38 +68,40 @@ class AutomationAccountManagerTests(unittest.TestCase):
 
         self.assertEqual(error.exception.code, "ACCOUNT_DISABLED")
 
-    def test_r13_default_binding_descriptor_owns_daxiang_s_site(self):
-        descriptor = self.manager.require_active_binding_descriptor("r13_default")
+    def test_custom_r13_account_is_an_exact_switchable_binding(self):
+        self.manager.create_account(
+            account_id="r13_project_selected",
+            system="r13",
+            name="项目当前 R13 账号",
+        )
 
+        descriptor = self.manager.require_active_binding_descriptor(
+            "r13_project_selected"
+        )
+
+        self.assertEqual("r13_project_selected", descriptor["account_id"])
         self.assertEqual("r13", descriptor["system"])
-        self.assertEqual("7390017", descriptor["site_code"])
+        self.assertNotEqual("r13_default", descriptor["session_profile"])
+        self.assertNotIn("site_code", descriptor)
 
-    def test_legacy_r13_default_row_is_enriched_from_account_contract(self):
-        account_manager_module._write_json(
-            account_manager_module.ACCOUNTS_PATH,
-            [
-                {
-                    "account_id": "r13_default",
-                    "system": "r13",
-                    "name": "R13默认账号",
-                    "account_purpose": "general",
-                    "is_default": True,
-                    "is_active": True,
-                }
-            ],
+    def test_legacy_r13_site_contract_is_removed_from_account_metadata(self):
+        rows = self.manager._load_accounts()
+        for row in rows:
+            if row["account_id"] == "r13_default":
+                row["site_code"] = "legacy-fixed-site"
+        account_manager_module.ACCOUNTS_PATH.write_text(
+            json.dumps(rows, ensure_ascii=False),
+            encoding="utf-8",
         )
 
-        descriptor = self.manager.require_active_binding_descriptor("r13_default")
-        stored = account_manager_module._read_json(
-            account_manager_module.ACCOUNTS_PATH,
-            [],
+        reloaded = account_manager_module.AutomationAccountManager()
+        descriptor = reloaded.require_active_binding_descriptor("r13_default")
+        persisted = json.loads(
+            account_manager_module.ACCOUNTS_PATH.read_text(encoding="utf-8")
         )
 
-        self.assertEqual("7390017", descriptor["site_code"])
-        stored_r13 = next(
-            row for row in stored if row["account_id"] == "r13_default"
-        )
-        self.assertEqual("7390017", stored_r13["site_code"])
+        self.assertNotIn("site_code", descriptor)
+        self.assertTrue(all("site_code" not in row for row in persisted))
 
     def test_local_credentials_preserve_password_and_show_success_status(self):
         result = self.manager.save_credentials(
