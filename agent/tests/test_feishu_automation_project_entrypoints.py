@@ -116,6 +116,27 @@ def _scan_preview(run_id: str) -> dict:
     }
 
 
+def _selection_preview(
+    run_id: str,
+    automation_id: str,
+    candidates: list[dict],
+    summary: dict,
+) -> dict:
+    observed_at = datetime.now(timezone.utc).replace(microsecond=0)
+    return {
+        "contract_version": 1,
+        "automation_id": automation_id,
+        "title": automation_id,
+        "preview_run_id": run_id,
+        "observed_at": observed_at.isoformat(),
+        "expires_at": (observed_at + timedelta(minutes=15)).isoformat(),
+        "candidate_count": len(candidates),
+        "candidates": candidates,
+        "summary": summary,
+        "can_confirm": True,
+    }
+
+
 def test_direct_feishu_project_reports_waiting_approval_without_generic_execution():
     service = _FakeProjectEntrypoints(status="WAITING_APPROVAL")
     agent = _FakeAgent()
@@ -757,23 +778,38 @@ def test_feishu_webhook_and_websocket_keep_the_same_event_identity():
     assert all(call["sender_id"] == "user-one" for call in service.calls)
 
 
-def test_self_pickup_preview_uses_committed_accounts_and_confirmation_uses_route():
-    service = _FakeProjectEntrypoints()
-    agent = _FakeAgent(
+def test_self_pickup_preview_and_confirmation_use_persisted_signed_selection():
+    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    rows = [
         {
-            "success": True,
-            "data": {
-                "stage": "dry_run",
-                "candidate_count": 2,
-                "candidates": [
-                    {"bill_code": "R_SELF"},
-                    {"bill_code": "R_DX_PICK"},
-                ],
-                "preview_fingerprint": "f" * 64,
-                "source_summaries": [],
-            },
+            "arrival_count": "1",
+            "bill_code": bill_code,
+            "delivery_method": "自提",
+            "destination_site": "邵阳自提部",
+            "goods_count": "1",
+            "row_number": index,
+            "source_id": "source-one",
+            "source_name": "每日到货表",
         }
+        for index, bill_code in enumerate(("R_SELF", "R_DX_PICK"), start=2)
+    ]
+    service = _FakeProjectEntrypoints(
+        results=[
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": preview_run_id,
+                "selection_preview": _selection_preview(
+                    preview_run_id,
+                    "self_pickup_problem_upload",
+                    rows,
+                    {"duplicate_source_rows": 0},
+                ),
+            },
+            {"success": True, "status": "COMPLETED", "run_id": "run-formal"},
+        ]
     )
+    agent = _FakeAgent()
     pending = {}
     replies = []
     request = {
@@ -803,41 +839,61 @@ def test_self_pickup_preview_uses_committed_accounts_and_confirmation_uses_route
         patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
     ):
         _run_verified_text("preview-command", event_id="event-preview")
-        assert agent.tool_calls == [
-            (
-                "preview_self_pickup_problems",
-                {
-                    "account_id": "business-primary",
-                    "daxiang_s_account_id": "business-secondary",
-                },
-            )
-        ]
+        assert agent.tool_calls == []
+        assert service.calls[0]["preview_run_id"] is None
+        assert service.calls[0]["envelope"]["body"] == {}
+        assert pending["type"] == "self_pickup_selection_confirmation"
         assert pending["automation_route_key"] == "builtin.self_pickup_problem_upload"
+        assert pending["preview_run_id"] == preview_run_id
+        assert pending["originator_actor_id"] == "user-one"
+        assert pending["selected_bill_codes"] == ["R_SELF", "R_DX_PICK"]
+        assert "preview_fingerprint" not in pending
         assert not message_handler._contains_account_override(pending)
         _run_verified_text("yes", event_id="event-confirm")
 
     assert service.calls[-1]["event_id"] == "event-confirm"
+    assert service.calls[-1]["preview_run_id"] == preview_run_id
     assert service.calls[-1]["envelope"]["body"] == {
-        "dry_run": False,
         "selected_bill_codes": ["R_SELF", "R_DX_PICK"],
-        "preview_fingerprint": "f" * 64,
     }
 
 
-def test_split_preview_selection_and_confirmation_preserve_signed_dynamic_fields():
-    service = _FakeProjectEntrypoints()
-    agent = _FakeAgent(
+def test_split_preview_selection_and_confirmation_use_persisted_signed_selection():
+    preview_run_id = "22222222-2222-4222-8222-222222222222"
+    rows = [
         {
-            "success": True,
-            "data": {
-                "stage": "dry_run",
-                "candidate_count": 1,
-                "hidden_completed_count": 0,
-                "preview_fingerprint": "f" * 64,
-                "candidates": [{"bill_code": "R001", "problem_type": "split"}],
-            },
+            "arrived_quantity": 1,
+            "bill_code": "R001",
+            "complaint_status": "未投诉",
+            "expected_quantity": 2,
+            "pending_quantity": 1,
+            "problem_item_status": "未执行",
+            "problem_type": "少货/分批",
+            "source_row_no": 2,
         }
+    ]
+    service = _FakeProjectEntrypoints(
+        results=[
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": preview_run_id,
+                "selection_preview": _selection_preview(
+                    preview_run_id,
+                    "split_pending_problem_upload",
+                    rows,
+                    {
+                        "complete_count": 0,
+                        "hidden_completed_count": 0,
+                        "split_count": 1,
+                        "pending_count": 0,
+                    },
+                ),
+            },
+            {"success": True, "status": "COMPLETED", "run_id": "run-formal"},
+        ]
     )
+    agent = _FakeAgent()
     pending = {}
     replies = []
     request = {
@@ -864,14 +920,19 @@ def test_split_preview_selection_and_confirmation_preserve_signed_dynamic_fields
         patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
     ):
         _run_verified_text("split-command", event_id="event-split-preview")
+        assert agent.tool_calls == []
+        assert service.calls[0]["preview_run_id"] is None
+        assert service.calls[0]["envelope"]["body"] == {}
         assert pending["type"] == "split_pending_selection"
+        assert pending["preview_run_id"] == preview_run_id
+        assert pending["originator_actor_id"] == "user-one"
+        assert "preview_fingerprint" not in pending
         assert not message_handler._contains_account_override(pending)
         _run_verified_text("yes", event_id="event-split-confirm")
 
+    assert service.calls[-1]["preview_run_id"] == preview_run_id
     assert service.calls[-1]["envelope"]["body"] == {
-        "dry_run": False,
         "selected_bill_codes": ["R001"],
-        "preview_fingerprint": "f" * 64,
     }
 
 
@@ -899,6 +960,23 @@ def test_split_action_value_error_has_safe_repreview_reply():
     )
     assert other_reply_type == "automation_project_failed"
     assert "本次未执行外部写入" not in other_reply
+
+
+def test_self_pickup_selection_preview_expired_has_stable_repreview_reply():
+    reply, reply_type = message_handler._automation_result_reply(
+        task_name=message_handler.TOOL_DISPLAY_NAMES["self_pickup_problem_upload"],
+        result={
+            "status": "FAILED_TERMINAL",
+            "error_summary": (
+                "FIRST_PARTY_ACTION_FAILED:RUNTIME_ERROR:"
+                "SELECTION_PREVIEW_EXPIRED"
+            ),
+        },
+    )
+
+    assert reply_type == "self_pickup_preview_stale"
+    assert reply == "候选清单已变化，请重新发送“自提到货问题件”；本次未写入。"
+    assert "SELECTION_PREVIEW_EXPIRED" not in reply
 
 
 def test_r7_plate_choice_rechecks_committed_config_before_typed_invocation():

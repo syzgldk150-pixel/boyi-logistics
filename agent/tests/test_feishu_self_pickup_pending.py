@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import patch
 
@@ -10,39 +11,39 @@ class FeishuSelfPickupPendingTests(unittest.TestCase):
     def test_self_pickup_zero_candidate_preview_does_not_offer_confirmation(self):
         replies: list[str] = []
         pending_store: dict[str, dict[str, Any]] = {}
-        calls: list[tuple[str, dict[str, Any]]] = []
+        project_calls: list[dict[str, Any]] = []
+        preview_run_id = "33333333-3333-4333-8333-333333333333"
+        observed_at = datetime.now(timezone.utc).replace(microsecond=0)
 
         class FakeAgent:
-            async def execute_tool(self, tool_name, params, **_kwargs):
-                calls.append((tool_name, params))
-                return {
-                    "success": True,
-                    "data": {
-                        "stage": "dry_run",
-                        "candidate_count": 0,
-                        "candidates": [],
-                        "preview_fingerprint": "a" * 64,
-                        "table_token": "tbl_test",
-                        "sheet_name": "每日到货表",
-                        "upload_images": False,
-                        "source_summaries": [
-                            {"source_name": "邵阳自提部", "candidate_count": 0},
-                            {"source_name": "邵阳大祥S站自提", "candidate_count": 0},
-                        ],
-                    },
-                }
+            async def execute_tool(self, *_args, **_kwargs):
+                raise AssertionError("signed selection preview must not use a legacy tool")
 
             async def handle_message(self, *args, **kwargs):
-                raise AssertionError("cancel after preview should be handled by pending state")
+                raise AssertionError("preview should not reach the LLM")
 
         class FakeProjectEntrypoints:
-            @staticmethod
-            def require_feishu_account_bindings(_route_key, *roles):
-                bindings = {
-                    "account_id": "self-pickup-primary",
-                    "daxiang_s_account_id": "self-pickup-secondary",
+            async def invoke_feishu(self, **kwargs):
+                project_calls.append(dict(kwargs))
+                return {
+                    "success": True,
+                    "status": "COMPLETED",
+                    "run_id": preview_run_id,
+                    "selection_preview": {
+                        "contract_version": 1,
+                        "automation_id": "self_pickup_problem_upload",
+                        "title": "自提到货问题件",
+                        "preview_run_id": preview_run_id,
+                        "observed_at": observed_at.isoformat(),
+                        "expires_at": (
+                            observed_at + timedelta(minutes=15)
+                        ).isoformat(),
+                        "candidate_count": 0,
+                        "candidates": [],
+                        "summary": {"duplicate_source_rows": 0},
+                        "can_confirm": True,
+                    },
                 }
-                return {role: bindings[role] for role in roles}
 
         async def fake_reply_text(_chat_id, text, receive_id_type="chat_id", *, reply_type="text"):
             replies.append(text)
@@ -68,23 +69,28 @@ class FeishuSelfPickupPendingTests(unittest.TestCase):
                 FakeProjectEntrypoints(),
             ),
         ):
-            asyncio.run(message_handler._process_and_reply("自提到货问题件", "user-1", "chat-1"))
-
-            self.assertEqual(
-                [
-                    (
-                        "preview_self_pickup_problems",
-                        {
-                            "account_id": "self-pickup-primary",
-                            "daxiang_s_account_id": "self-pickup-secondary",
-                        },
-                    )
-                ],
-                calls,
+            token = message_handler._COMMAND_CONTEXT.set(
+                message_handler.FeishuCommandContext(
+                    event_id="event-zero-candidate",
+                    actor_id="user-1",
+                    chat_id="chat-1",
+                )
             )
+            try:
+                asyncio.run(
+                    message_handler._process_and_reply(
+                        "自提到货问题件", "user-1", "chat-1"
+                    )
+                )
+            finally:
+                message_handler._COMMAND_CONTEXT.reset(token)
+
+            self.assertEqual(1, len(project_calls))
+            self.assertEqual({}, project_calls[0]["envelope"]["body"])
+            self.assertIsNone(project_calls[0]["preview_run_id"])
             self.assertNotIn("chat-1", pending_store)
             self.assertIn("待上传自提到货问题件候选 0 单", replies[-1])
-            self.assertIn("当前没有可上传运单", replies[-1])
+            self.assertIn("当前没有需要上传的候选数据", replies[-1])
             self.assertNotIn('回复"确认"', replies[-1])
 
         self.assertNotIn("chat-1", pending_store)

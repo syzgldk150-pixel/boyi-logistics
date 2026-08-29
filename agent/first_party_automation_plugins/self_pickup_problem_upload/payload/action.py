@@ -188,6 +188,16 @@ def _candidate_material(candidate: Mapping[str, object]) -> dict[str, object]:
     }
 
 
+def _candidate_sort_key(candidate: Mapping[str, object]) -> str:
+    return json.dumps(
+        _candidate_material(candidate),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
 def _candidate_preview(candidate: Mapping[str, object]) -> dict[str, object]:
     return {
         "arrival_count": candidate["arrival_count"],
@@ -284,7 +294,7 @@ def _collect_candidates(
         candidates.append(candidate)
 
     if limit is not None:
-        candidates = candidates[:limit]
+        candidates = sorted(candidates, key=_candidate_sort_key)[:limit]
     return candidates, exact_duplicates
 
 
@@ -323,8 +333,18 @@ def _read_candidates(
 
 
 def _preview_fingerprint(candidates: list[dict[str, object]]) -> str:
+    material = [_candidate_material(candidate) for candidate in candidates]
+    material.sort(
+        key=lambda item: json.dumps(
+            item,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    )
     encoded = json.dumps(
-        [_candidate_material(candidate) for candidate in candidates],
+        material,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -536,7 +556,7 @@ def run_action(
 
     requested_fingerprint = str(values["preview_fingerprint"]).strip()
     if requested_fingerprint != fingerprint:
-        raise ValueError("self-pickup preview expired before execution")
+        raise RuntimeError("SELECTION_PREVIEW_EXPIRED")
     by_bill_code = {str(candidate["bill_code"]): candidate for candidate in candidates}
     unavailable = [bill_code for bill_code in selected_bill_codes if bill_code not in by_bill_code]
     if unavailable:

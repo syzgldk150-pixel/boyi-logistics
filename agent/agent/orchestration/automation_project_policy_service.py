@@ -1099,6 +1099,72 @@ class AutomationProjectPolicyService:
             ),
         )
 
+    async def confirm_selection_preview_and_wait(
+        self,
+        automation_id: str,
+        *,
+        preview_run_id: str,
+        selected_bill_codes: Sequence[str],
+        entrypoint: AutomationEntrypoint | str,
+        request_id: str,
+        actor: Actor,
+        trusted_context: Mapping[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        expected_automation_generation: int | None = None,
+        expected_project_configuration_version: int | None = None,
+        timeout_seconds: float = 1800.0,
+    ) -> dict[str, Any]:
+        """Confirm a persisted selection without accepting its fingerprint.
+
+        Trusted transport adapters provide only the preview run identity and
+        the user's selected bill codes.  The immutable fingerprint and formal
+        action arguments are restored from the verified persisted preview.
+        """
+
+        safe_id = _automation_id(automation_id)
+        entry, contract = self._load_contract(safe_id)
+        if not is_selection_preview_project(entry):
+            raise OrchestrationError(
+                "SELECTION_PREVIEW_PROJECT_INVALID",
+                "该自动化不支持后台候选选择。",
+            )
+        context = dict(trusted_context or {})
+        if "dynamic_inputs" in context:
+            raise OrchestrationError(
+                "SELECTION_INPUT_INVALID",
+                "Selection confirmation inputs must be restored by the server",
+                details={"status": "BLOCKED_DATA"},
+            )
+        expectation = SelectionPreviewExpectation(
+            project_instance_id=safe_id,
+            plugin_id=entry.plugin_id,
+            generation=contract.automation_generation,
+            contract_digest=contract.contract_hash,
+            configuration_version=contract.project_configuration_version,
+        )
+        with self._repository.unit_of_work() as uow:
+            arguments = selection_confirmation_arguments(
+                uow,
+                preview_run_id=preview_run_id,
+                expectation=expectation,
+                selected_bill_codes=selected_bill_codes,
+                now=datetime.now(timezone.utc),
+            )
+        context["dynamic_inputs"] = arguments
+        return await self.invoke_trusted_and_wait(
+            safe_id,
+            entrypoint=entrypoint,
+            request_id=request_id,
+            actor=actor,
+            trusted_context=context,
+            idempotency_key=idempotency_key,
+            expected_automation_generation=expected_automation_generation,
+            expected_project_configuration_version=(
+                expected_project_configuration_version
+            ),
+            timeout_seconds=timeout_seconds,
+        )
+
     def invoke_console(
         self,
         automation_id: str,

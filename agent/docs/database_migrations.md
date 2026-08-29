@@ -64,8 +64,8 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   `REQUIRE_EACH_RUN`（默认）与 `EXACT_SCHEDULE_EXEMPT`；请求 ID、任务 ID、CAS 版本与
   审计快照约束保证同一配置请求幂等且不覆盖并发更新。当前策略随任务删除，历史事件则
   独立保留以支持审计和时间槽重配。迁移本身不把任何任务改为免审。
-- `016_daily_sign_single_tms_account.sql`：把每日应签任务重复的三个融辉角色收敛为唯一的
-  邵阳大祥站 `account_id`，保留独立 R13 来源账号，并递增任务配置版本使旧审批策略自动失效；
+- `016_daily_sign_single_tms_account.sql`：历史上把每日应签任务重复的三个融辉角色收敛为一个
+  `account_id` 角色，迁移旧 seed 并保留独立 R13 来源账号；当前项目可为两个角色分别绑定任意同系统有效账号，下一次运行随绑定变化。迁移同时递增任务配置版本使旧审批策略自动失效；
   非已审核的旧/新精确参数形状会在更新前显式阻断迁移。迁移前完整行写入
   `daily_sign_single_tms_backup_016`；发布失败时
   `--restore-daily-sign-single-tms-account` 恢复原行并删除本次 `016` 历史，重复恢复安全。

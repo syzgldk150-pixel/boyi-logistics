@@ -41,7 +41,7 @@
   - `phase7_mysql_store.py`（Phase 7 共享 MySQL 存储；包含 `waybill_data` 到货基础表，也维护控制台 `waybills` 表的同步 upsert 入口；`waybills.status` 使用 `pending/in_transit/signed/cancelled`，`waybills.scan_status` 保存明确来源返回的当前扫描状态，同步时必须保留手动作废的 `cancelled`）
   - `phase7_sync_common.py`
 - TMS 问题件上报：
-  - `self_pickup_problem_upload_tool.py`（"自提到货问题件"：读飞书到货表，筛 `邵阳自提部` 以及 `邵阳大祥S站 + 派送方式=自提` 的单号，先 dry-run 预览，确认后调 `/tms/self_pickup_problem_upload` 上传 `开单为自提件` 问题件和货拉拉截图；自提部与大祥S站账号都必须由自动化项目角色显式绑定并解析 session profile，工具和运行时不得注入固定账号）
+  - `self_pickup_problem_upload_tool.py`（legacy 兼容只读封装，不参与飞书当前预览或正式写入；当前飞书链路调用 committed project route 的签名 dry-run，并从已验签候选 Run 确认。兼容脚本仍只按 `邵阳自提部` 以及 `邵阳大祥S站 + 派送方式=自提` 规则读取来源，账号必须由自动化项目角色显式绑定，任何路径都不得注入固定账号或默认 session profile）
 - R7 到达打卡：
   - `r7_arrival_checkin_tool.py`（直接调用 `agent/tms_runtime/scripts/auto_checkin_r7.py`；使用 R7 登录，不依赖 TMS 共享登录态；写 `r7_arrival_checkin_log` 并按 `daily_success_limit` 控制当天后续定时跳过）
   - R7 事件、状态和到达/发车打卡日志表由 `../migrations/006_r7_runtime_tables.sql` 创建；工具仅校验表存在，禁止在运行时建表。
@@ -82,7 +82,7 @@
 
 ## 每日应签共享台账
 
-- 运行参数只接受自动化项目当前绑定的一个融辉 TMS `account_id`，统一供问题件、主单签收、轨迹核验和地址补全使用；R13 是独立来源系统，使用项目当前绑定的 `r13_account_id`。后台改绑后下一次运行必须使用新账号，不得回落默认或固定 ID。R13 站点在精确账号登录后从 `/gateway/site/public/aurora/auth` 读取：中心账号使用空站点列表，其他账号使用其真实 `siteCode`；调用参数或嵌套请求体覆盖均拒绝。结构完整且权威总数为零是合法结果，最终空发布应清除旧投影并回读为零；真实来源异常不得当作零行。
+- 运行参数只接受自动化项目当前绑定的一个融辉 TMS `account_id`，统一供问题件、主单签收、轨迹核验和地址补全使用；R13 是独立来源系统，使用项目当前绑定的 `r13_account_id`。后台改绑后下一次运行必须使用新账号，不得回落默认或固定 ID。R13 站点在精确账号登录后按原页协议从 `/gateway/public/aurora/auth` 读取，请求只使用 R13 同源 `Origin` 与 `aurora-token`，不得继承 SSO `Origin` 或附加 Bearer；中心账号使用空站点列表，其他账号使用其真实 `siteCode`。调用参数或嵌套请求体覆盖均拒绝。结构完整且权威总数为零是合法结果，最终空发布应清除旧投影并回读为零；真实来源异常不得当作零行。
 - 候选为当前/历史未关闭 R13、实际到货件数大于零的成功统计及 R13 后续改单转入单号的并集。历史到货归档中的零到货行不构成候选；融辉子单号必须使用 `phase7_mysql_store.py` 的共享识别规则排除，禁止作为应签主单发布。
 - `daily_sign_ledger` 中 B 口径为 R13 原始应签时间，C 口径为本系统测算时间；R13 必须按原页“规划应签收时间”口径查询，未显式传入起止时间时至少覆盖原页默认的前 2 天至后 3 天。包装类型不在该 R13 页面字段中，继续从实际到货或 TMS 运单详情取得。无实际到货时 C 与到货件数为空。飞书应签明细始终保留当前 R13 的未签清单；已离开当前 R13 的历史候选只有在有效应签时间不晚于当前业务日时继续发布，历史口径 C 有值时以 C 为准，否则以 B 为准。普通电子表格必须先精确校验九列表头，再写新数据，成功后才清理尾部旧行。签收事件早于当前 R13 派件或首次到货生命周期时只能标记为旧周期证据，不得关闭当前运单。
 - 每轮发布前必须核对当前 R13 行、真实 TMS 主单签收行与待发布行：当前未获得主单签收证据的 R13 行必须全部进入发布集合；只有当前 R13 行都已有真实主单签收证据时，零行发布才是正常结果。

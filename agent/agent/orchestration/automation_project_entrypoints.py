@@ -19,6 +19,9 @@ from agent.orchestration.automation_project_policy_service import (
 )
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from agent.orchestration.scan_preview_binding import normalize_preview_run_id
+from agent.orchestration.selection_preview_binding import (
+    SELECTION_PREVIEW_PROJECTS,
+)
 from agent.automation_plugins.catalog import (
     PluginCatalog,
     project_capability_from_snapshot,
@@ -380,9 +383,18 @@ class AutomationProjectEntrypoints:
         safe_sender_id = _stable_identifier(sender_id, "sender_id")
         safe_chat_id = _stable_identifier(chat_id, "chat_id")
         dynamic_inputs = _extract_dynamic_inputs(route, envelope or {})
+        selection_route = route.automation_id in SELECTION_PREVIEW_PROJECTS
         safe_preview_run_id = None
         if preview_run_id is not None:
-            if (
+            if selection_route:
+                safe_preview_run_id = normalize_preview_run_id(preview_run_id)
+                if set(dynamic_inputs) != {"selected_bill_codes"}:
+                    raise OrchestrationError(
+                        "SELECTION_INPUT_INVALID",
+                        "Selection confirmation accepts only selected bill codes",
+                        details={"status": "BLOCKED_DATA"},
+                    )
+            elif (
                 route.route_key != _SCAN_FEISHU_ROUTE_KEY
                 or route.automation_id != _SCAN_AUTOMATION_ID
             ):
@@ -390,7 +402,14 @@ class AutomationProjectEntrypoints:
                     "SCAN_PREVIEW_ID_INVALID",
                     "A scan preview cannot be used by this Feishu route",
                 )
-            safe_preview_run_id = normalize_preview_run_id(preview_run_id)
+            else:
+                safe_preview_run_id = normalize_preview_run_id(preview_run_id)
+        elif selection_route and dynamic_inputs:
+            raise OrchestrationError(
+                "SELECTION_INPUT_INVALID",
+                "Selection preview inputs are supplied only by the server",
+                details={"status": "BLOCKED_DATA"},
+            )
         actor = (
             self._feishu_actor_resolver(safe_sender_id)
             if self._feishu_actor_resolver is not None
@@ -400,25 +419,53 @@ class AutomationProjectEntrypoints:
                 authenticated_by="feishu_verified_event",
             )
         )
-        return await self._policy.invoke_trusted_and_wait(
+        trusted_context = {
+            "route_id": route.route_id,
+            "route_revision": route.route_revision,
+            "event_id": safe_event_id,
+            "chat_id": safe_chat_id,
+        }
+        if selection_route and safe_preview_run_id is not None:
+            return await self._policy.confirm_selection_preview_and_wait(
+                route.automation_id,
+                preview_run_id=safe_preview_run_id,
+                selected_bill_codes=dynamic_inputs["selected_bill_codes"],
+                entrypoint=AutomationEntrypoint.FEISHU,
+                request_id=safe_event_id,
+                actor=actor,
+                trusted_context=trusted_context,
+                idempotency_key=f"feishu:{safe_event_id}",
+                expected_automation_generation=route.automation_generation,
+                expected_project_configuration_version=(
+                    route.project_configuration_version
+                ),
+            )
+        if selection_route:
+            dynamic_inputs = {
+                "dry_run": True,
+                "selected_bill_codes": [],
+                "preview_fingerprint": "",
+            }
+        trusted_context["dynamic_inputs"] = dynamic_inputs
+        result = await self._policy.invoke_trusted_and_wait(
             route.automation_id,
             entrypoint=AutomationEntrypoint.FEISHU,
             request_id=safe_event_id,
             actor=actor,
-            trusted_context={
-                "route_id": route.route_id,
-                "route_revision": route.route_revision,
-                "event_id": safe_event_id,
-                "chat_id": safe_chat_id,
-                "dynamic_inputs": dynamic_inputs,
-            },
+            trusted_context=trusted_context,
             idempotency_key=f"feishu:{safe_event_id}",
             expected_automation_generation=route.automation_generation,
             expected_project_configuration_version=(
                 route.project_configuration_version
             ),
-            preview_run_id=safe_preview_run_id,
+            preview_run_id=(safe_preview_run_id if not selection_route else None),
         )
+        if selection_route and str(result.get("status") or "").upper() == "COMPLETED":
+            result["selection_preview"] = self._policy.get_selection_preview_projection(
+                route.automation_id,
+                preview_run_id=str(result.get("run_id") or ""),
+            )
+        return result
 
     def describe_feishu_route(
         self,

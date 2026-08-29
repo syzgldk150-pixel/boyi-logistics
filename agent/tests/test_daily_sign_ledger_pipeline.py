@@ -52,6 +52,7 @@ def _r13_session(
     site_code: str = "site-from-bound-account",
     site_type_code: int = 101,
     captured_query: dict | None = None,
+    captured_requests: list[dict] | None = None,
 ) -> SimpleNamespace:
     account_response = _r13_response(
         {
@@ -65,6 +66,10 @@ def _r13_session(
     )
 
     def post(url, *args, **kwargs):
+        if captured_requests is not None:
+            captured_requests.append(
+                {"url": url, "args": args, "kwargs": dict(kwargs)}
+            )
         if url == get_qianshou.AUTH_CONTEXT_URL:
             return account_response
         if captured_query is not None:
@@ -468,6 +473,66 @@ class DailySignSourceTests(unittest.TestCase):
         self.assertNotIn("scanTime_CondStart", payload)
         self.assertNotIn("scanTime_CondEnd", payload)
 
+    def test_get_qianshou_uses_the_exact_authenticated_r13_request_contract(self):
+        self.assertEqual(
+            "https://r13.ronghuiwl.com/gateway/public/aurora/auth",
+            get_qianshou.AUTH_CONTEXT_URL,
+        )
+        captured_requests: list[dict] = []
+        login_calls: list[dict] = []
+        session = _r13_session(
+            _r13_response({"data": {"records": [], "total": 0}}),
+            captured_requests=captured_requests,
+        )
+
+        def login_and_get_session(**kwargs):
+            login_calls.append(dict(kwargs))
+            return session
+
+        auth = SimpleNamespace(
+            last_token="token-placeholder",
+            login_and_get_session=login_and_get_session,
+        )
+        with patch(
+            "agent.tms_runtime.scripts.get_qianshou.R13SSOAuth",
+            return_value=auth,
+        ):
+            rows = get_qianshou.fetch_qianshou(
+                config_path=None,
+                username=None,
+                password=None,
+                start="2026-08-13 00:00:00",
+                end="2026-08-13 23:59:59",
+                days=1,
+                page_size=100,
+                page=1,
+                fetch_all=True,
+                max_pages=10,
+                account_id="r13-selected-in-project",
+            )
+
+        self.assertEqual([], rows)
+        self.assertTrue(login_calls)
+        self.assertTrue(all(call["attach_bearer"] is False for call in login_calls))
+        context_request = captured_requests[0]
+        self.assertEqual(get_qianshou.AUTH_CONTEXT_URL, context_request["url"])
+        self.assertEqual({}, context_request["kwargs"]["json"])
+        self.assertEqual(20, context_request["kwargs"]["timeout"])
+        headers = context_request["kwargs"]["headers"]
+        self.assertEqual("https://r13.ronghuiwl.com", headers["Origin"])
+        self.assertEqual("site", headers["x-appId"])
+        self.assertEqual(get_qianshou.REFERER_URL, headers["aurora-back"])
+        self.assertEqual(get_qianshou.REFERER_URL, headers["Referer"])
+        self.assertEqual("token-placeholder", headers["aurora-token"])
+        self.assertNotIn("Authorization", headers)
+        query_request = captured_requests[1]
+        self.assertEqual(
+            "https://r13.ronghuiwl.com/gateway/site/waybillSignWarn/pageGet",
+            query_request["url"],
+        )
+        self.assertEqual(headers, query_request["kwargs"]["headers"])
+        self.assertEqual(20, query_request["kwargs"]["timeout"])
+
     def test_get_qianshou_derives_site_filter_from_bound_account_context(self):
         captured_query: dict = {}
         query_response = _r13_response({"data": {"records": [], "total": 0}})
@@ -661,6 +726,7 @@ class DailySignSourceTests(unittest.TestCase):
         self.assertEqual([], rows)
         self.assertEqual(2, len(auth.calls))
         self.assertIs(False, auth.calls[1]["allow_cached"])
+        self.assertTrue(all(call["attach_bearer"] is False for call in auth.calls))
 
     def test_get_qianshou_rejects_site_drift_after_token_refresh(self):
         invalid = _r13_response(

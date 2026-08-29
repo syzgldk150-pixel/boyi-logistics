@@ -164,6 +164,18 @@ AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY = {
     "finance_self_pickup_source": ("自提部账单账号", "读取自提部的账单数据。"),
     "customer_service_source": ("客服问题件账号", "读取所选账号下的客服问题件。"),
 }
+AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY_BY_PLUGIN = {
+    "sync_daily_should_sign": {
+        "r13_account_id": (
+            "R13 应签查询账号",
+            "从这个 R13 账号读取其所属站点范围和应签清单。",
+        ),
+        "account_id": (
+            "融辉到货与签收核验账号",
+            "从这个融辉账号核验到货、问题件和主单签收证据。",
+        ),
+    },
+}
 
 AUTOMATION_PLUGIN_RESOURCE_ROLE_COPY = {
     "webhook_route": ("外部调用入口", "只有需要由外部系统触发时才使用。"),
@@ -667,7 +679,11 @@ def normalize_automation_approval_batch_result(
     }
 
 
-def _normalize_plugin_account_roles(value: Any) -> list[dict[str, Any]]:
+def _normalize_plugin_account_roles(
+    value: Any,
+    *,
+    plugin_id: str = "",
+) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     roles: list[dict[str, Any]] = []
@@ -693,10 +709,14 @@ def _normalize_plugin_account_roles(value: Any) -> list[dict[str, Any]]:
         ):
             continue
         seen.add(role)
+        role_copy = {
+            **AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY,
+            **AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY_BY_PLUGIN.get(plugin_id, {}),
+        }
         label, hint = _plain_role_copy(
             role,
             raw_role.get("label"),
-            AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY,
+            role_copy,
             fallback_label="业务账号",
             fallback_hint="选择任务实际使用的业务账号。",
         )
@@ -1154,7 +1174,10 @@ def normalize_automation_plugin_catalog(
             continue
         raw_account_roles = raw.get("account_roles")
         raw_resource_roles = raw.get("resource_roles")
-        account_roles = _normalize_plugin_account_roles(raw_account_roles)
+        account_roles = _normalize_plugin_account_roles(
+            raw_account_roles,
+            plugin_id=plugin_id,
+        )
         resource_roles = _normalize_plugin_resource_roles(raw_resource_roles)
         roles_valid = (
             isinstance(raw_account_roles, list)
@@ -1248,7 +1271,10 @@ def normalize_automation_plugin_catalog(
         raw_account_roles = raw.get("account_roles")
         raw_resource_roles = raw.get("resource_roles")
         account_roles = (
-            _normalize_plugin_account_roles(raw_account_roles)
+            _normalize_plugin_account_roles(
+                raw_account_roles,
+                plugin_id=plugin_id,
+            )
             if isinstance(raw_account_roles, list)
             else list(package.get("account_roles") or [])
         )

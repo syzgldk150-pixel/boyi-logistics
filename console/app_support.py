@@ -467,8 +467,8 @@ AUTOMATION_WORKFLOW_CATALOG = [
             "days": 7,
         },
         "account_roles": [
-            {"label": "R13应签查询账号", "field": "r13_account_id", "system": "r13", "default_account_id": "r13_default"},
-            {"label": "TMS邵阳大祥站账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_daxiang_s"},
+            {"label": "R13 应签查询账号", "field": "r13_account_id", "system": "r13", "default_account_id": "r13_default"},
+            {"label": "融辉到货与签收核验账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_daxiang_s"},
         ],
         "order": 40,
     },

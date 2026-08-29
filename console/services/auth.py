@@ -731,8 +731,8 @@ class AuthServiceMixin:
                 roles = [{"label": "运行账号", "field": "account_id", "system": "r7", "default_account_id": "r7_default"}]
             elif tool_name_value == "sync_daily_should_sign" or normalized.startswith("daily_sign"):
                 roles = [
-                    {"label": "R13应签查询账号", "field": "r13_account_id", "system": "r13", "default_account_id": "r13_default"},
-                    {"label": "TMS邵阳大祥站账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_daxiang_s"},
+                    {"label": "R13 应签查询账号", "field": "r13_account_id", "system": "r13", "default_account_id": "r13_default"},
+                    {"label": "融辉到货与签收核验账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_daxiang_s"},
                 ]
             elif provider_value == "yunda" or tool_name_value.startswith("sync_yunda_"):
                 roles = [{"label": "运行账号", "field": "account_id", "system": "yunda", "default_account_id": "yunda_default"}]
