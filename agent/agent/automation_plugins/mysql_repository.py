@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import inspect
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -31,14 +32,17 @@ from agent.automation_plugins.manifest import (
     AutomationPluginManifest,
     canonical_json_bytes,
 )
+from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
 from agent.automation_plugins.models import (
     ExecutionBlock,
     ExecutionBlockKind,
     FirstPartyInstanceSeed,
     PluginInstanceRecord,
+    PluginRuntimeModel,
     PluginVersionRecord,
     WorkerCleanupRequest,
 )
+from agent.automation_plugins.service_v2_contract import ServiceV2ProjectContract
 from agent.automation_plugins.ports import (
     AutomationPluginRepositoryPort,
     BootstrapPersistenceResult,
@@ -67,8 +71,16 @@ _REQUIRE_EACH_RUN = "REQUIRE_EACH_RUN"
 _PROJECT_FULL_AUTO = "PROJECT_FULL_AUTO"
 
 
+def _json_plain(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _json_plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_plain(item) for item in value]
+    return copy.deepcopy(value)
+
+
 def _digest(value: Mapping[str, Any] | list[Any]) -> str:
-    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    return hashlib.sha256(canonical_json_bytes(_json_plain(value))).hexdigest()
 
 
 def _semantic_version_key(value: str) -> tuple[int, int, int]:
@@ -105,19 +117,23 @@ def _registration_rows(
     *,
     actor_id: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    manifest = AutomationPluginManifest.from_mapping(version.manifest)
+    manifest, contract = _version_contract(version)
     if (
         manifest.plugin_id != version.plugin_id
         or manifest.version != version.version
         or manifest.manifest_sha256 != version.manifest_sha256
     ):
-        raise PluginPackageError("plugin version identity differs from its signed manifest")
+        raise PluginPackageError("plugin version identity differs from its manifest")
     metadata = _installed_metadata(version)
     # Persist the exact validated mapping whose canonical bytes were signed.
     # Schema-v1 parsing may add a conservative broker ``effect=write`` only to
     # the in-memory execution view; storing that projection beside the raw
     # signed manifest digest would create a self-contradictory version row.
-    manifest_mapping = manifest.to_signed_mapping()
+    manifest_mapping = (
+        manifest.to_signed_mapping()
+        if isinstance(manifest, AutomationPluginManifest)
+        else manifest.to_mapping()
+    )
     package = {
         "plugin_id": manifest.plugin_id,
         "display_name": manifest.name,
@@ -125,34 +141,78 @@ def _registration_rows(
     }
     persisted_version = {
         "version": manifest.version,
+        "runtime_model": version.runtime_model.value,
+        "plugin_api": version.plugin_api,
         "package_sha256": version.package_sha256,
         "manifest_sha256": version.manifest_sha256,
         "manifest_json": manifest_mapping,
-        "tool_contract_sha256": _digest(manifest_mapping["tool_contract"]),
+        "tool_contract_sha256": _digest(dict(contract.tool_contract)),
         "config_schema_sha256": _digest(manifest_mapping["config_schema"]),
         "allowed_entrypoints_sha256": _digest(
-            manifest_mapping["allowed_entrypoints"]
+            list(contract.allowed_entrypoints)
         ),
         "invocation_contracts_sha256": _digest(
-            manifest_mapping["invocation_contracts"]
+            dict(contract.invocation_contracts)
         ),
         "worker_requirement_sha256": _digest(
-            manifest_mapping["worker_requirement"]
+            dict(contract.worker_requirement)
         ),
         "runtime_sha256": _digest(
             {
                 "runtime": manifest_mapping["runtime"],
-                "runtime_permissions": manifest_mapping["runtime_permissions"],
+                "runtime_permissions": dict(contract.runtime_permissions),
             }
         ),
-        "scheduling_sha256": _digest(manifest_mapping["scheduling"]),
-        "project_full_auto_allowed": manifest.project_full_auto_allowed,
+        "scheduling_sha256": _digest(dict(contract.scheduling)),
+        "project_full_auto_allowed": bool(contract.project_full_auto_allowed),
         "trust_source": version.trust_source.value,
         "install_root_metadata_json": metadata,
         "install_root_metadata_sha256": _digest(metadata),
         "installed_by_actor_id": str(actor_id),
     }
     return package, persisted_version
+
+
+def _version_contract(
+    version: PluginVersionRecord,
+) -> tuple[AutomationPluginManifest | AutomationPluginManifestV2, SimpleNamespace]:
+    if version.runtime_model is PluginRuntimeModel.SERVICE_V2:
+        manifest_v2 = AutomationPluginManifestV2.from_mapping(version.manifest)
+        projected = ServiceV2ProjectContract.from_manifest(manifest_v2)
+        return manifest_v2, SimpleNamespace(
+            allowed_entrypoints=projected.allowed_entrypoints,
+            default_entrypoints=projected.default_entrypoints,
+            invocation_contracts=projected.invocation_contracts,
+            config_schema=manifest_v2.config_schema,
+            account_roles=projected.account_roles,
+            resource_roles=projected.resource_roles,
+            tool_contract=projected.tool_contract,
+            worker_requirement={
+                "required": False,
+                "interactive_session": False,
+                "supported_os": [],
+                "queue_deadline_seconds": 60,
+            },
+            runtime=manifest_v2.runtime,
+            runtime_permissions=projected.runtime_permissions,
+            scheduling=projected.scheduling,
+            project_full_auto_allowed=True,
+        )
+    manifest_v1 = AutomationPluginManifest.from_mapping(version.manifest)
+    return manifest_v1, SimpleNamespace(
+        allowed_entrypoints=manifest_v1.allowed_entrypoints,
+        default_entrypoints=manifest_v1.allowed_entrypoints,
+        invocation_contracts=manifest_v1.invocation_contracts,
+        config_schema=manifest_v1.config_schema,
+        account_roles=manifest_v1.account_roles,
+        resource_roles=manifest_v1.resource_roles,
+        tool_contract=manifest_v1.tool_contract,
+        worker_requirement=manifest_v1.worker_requirement,
+        runtime=manifest_v1.runtime,
+        runtime_permissions=manifest_v1.to_signed_mapping()["runtime_permissions"],
+        scheduling=manifest_v1.scheduling,
+        project_full_auto_allowed=manifest_v1.project_full_auto_allowed,
+    )
 
 
 def _installation_payload_sha256(
@@ -170,7 +230,7 @@ def _installation_payload_sha256(
 
 def _transient_entry(
     automation_id: str,
-    manifest: AutomationPluginManifest,
+    manifest: Any,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         automation_id=automation_id,
@@ -245,17 +305,139 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
     def list_instances(self) -> Sequence[PluginInstanceRecord]:
         return self._catalog.list_instances()
 
+    def permanently_clear_plugin_documents(
+        self,
+        automation_id: str,
+        *,
+        request_id: str,
+        actor_id: str,
+        actor_role: str,
+        reason: str,
+    ) -> Mapping[str, Any]:
+        with self._orchestration.unit_of_work() as uow:
+            result = uow.automation_plugins.permanently_clear_plugin_documents(
+                automation_id,
+                request_id=request_id,
+                actor_id=actor_id,
+                actor_role=actor_role,
+                reason=reason,
+            )
+            uow.commit()
+        return result
+
+    # Service-v2 migration control plane.  Keep these narrow forwarding
+    # methods on the composition adapter so management never reaches into a
+    # Unit of Work and every named operation gets one committed transaction.
+    def get_plugin_migration_pair(self, migration_pair_id: str) -> Mapping[str, Any] | None:
+        with self._orchestration.unit_of_work() as uow:
+            return uow.automation_plugins.get_plugin_migration_pair(migration_pair_id)
+
+    def create_checked_plugin_migration_pair(self, **kwargs: Any) -> Mapping[str, Any]:
+        return self._migration_write("create_checked_plugin_migration_pair", **kwargs)
+
+    def begin_plugin_migration_pair_preparation(self, **kwargs: Any) -> Mapping[str, Any]:
+        return self._migration_write("begin_plugin_migration_pair_preparation", **kwargs)
+
+    def finalize_plugin_migration_pair_preparation(
+        self, migration_pair_id: str, **kwargs: Any
+    ) -> Mapping[str, Any]:
+        return self._migration_write(
+            "finalize_plugin_migration_pair_preparation", migration_pair_id, **kwargs
+        )
+
+    def mark_plugin_migration_ready(
+        self, migration_pair_id: str, **kwargs: Any
+    ) -> Mapping[str, Any]:
+        return self._migration_write("mark_plugin_migration_ready", migration_pair_id, **kwargs)
+
+    def cutover_plugin_migration_pair(
+        self, migration_pair_id: str, **kwargs: Any
+    ) -> Mapping[str, Any]:
+        return self._migration_write("cutover_plugin_migration_pair", migration_pair_id, **kwargs)
+
+    def rollback_plugin_migration_pair(
+        self, migration_pair_id: str, **kwargs: Any
+    ) -> Mapping[str, Any]:
+        return self._migration_write("rollback_plugin_migration_pair", migration_pair_id, **kwargs)
+
+    def complete_plugin_migration_pair(
+        self, migration_pair_id: str, **kwargs: Any
+    ) -> Mapping[str, Any]:
+        return self._migration_write("complete_plugin_migration_pair", migration_pair_id, **kwargs)
+
+    def source_project_migration_uninstall_allowed(self, automation_id: str) -> bool:
+        with self._orchestration.unit_of_work() as uow:
+            return bool(
+                uow.automation_plugins.source_project_migration_uninstall_allowed(
+                    automation_id
+                )
+            )
+
+    def get_active_plugin_migration_pair_for_automation(
+        self, automation_id: str
+    ) -> Mapping[str, Any] | None:
+        with self._orchestration.unit_of_work() as uow:
+            return uow.automation_plugins.get_active_plugin_migration_pair_for_automation(
+                automation_id
+            )
+
+    def get_active_plugin_migration_run_claim(self, **kwargs: Any) -> Mapping[str, Any] | None:
+        with self._orchestration.unit_of_work() as uow:
+            return uow.automation_plugins.get_active_plugin_migration_run_claim(**kwargs)
+
+    def claim_plugin_migration_run_key(self, **kwargs: Any) -> Mapping[str, Any]:
+        return self._migration_write("claim_plugin_migration_run_key", **kwargs)
+
+    def settle_plugin_migration_run_key(
+        self, migration_pair_id: str, business_run_key: str, **kwargs: Any
+    ) -> Mapping[str, Any]:
+        return self._migration_write(
+            "settle_plugin_migration_run_key",
+            migration_pair_id,
+            business_run_key,
+            **kwargs,
+        )
+
+    def _migration_write(self, method: str, *args: Any, **kwargs: Any) -> Mapping[str, Any]:
+        with self._orchestration.unit_of_work() as uow:
+            operation = getattr(uow.automation_plugins, method, None)
+            if not callable(operation):
+                raise PluginConflictError(
+                    "plugin migration persistence is unavailable",
+                    code="PLUGIN_MIGRATION_UNAVAILABLE",
+                )
+            result = operation(*args, **kwargs)
+            uow.commit()
+        if not isinstance(result, Mapping):
+            raise PluginConflictError(
+                "plugin migration persistence returned invalid result",
+                code="PLUGIN_MIGRATION_UNAVAILABLE",
+            )
+        return result
+
     @staticmethod
     def _register(
         low_level: Any,
         version: PluginVersionRecord,
         *,
         actor_id: str,
+        actor_role: str | None = None,
+        request_id: str | None = None,
     ) -> None:
         package, persisted_version = _registration_rows(version, actor_id=actor_id)
-        low_level.register_package_version(
+        register = low_level.register_package_version
+        if "request_id" not in inspect.signature(register).parameters:
+            # Narrow in-memory compatibility doubles predate package audit
+            # rows. Production's shared repository always accepts the audit
+            # context; do not make a test-only port look like a false failure.
+            register(package=package, version=persisted_version)
+            return
+        register(
             package=package,
             version=persisted_version,
+            request_id=request_id,
+            actor_id=actor_id if request_id is not None else None,
+            actor_role=actor_role,
         )
 
     def install_instance(
@@ -267,10 +449,16 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         actor_role: str,
         request_id: str,
     ) -> PluginInstanceRecord:
-        manifest = AutomationPluginManifest.from_mapping(version.manifest)
+        manifest, contract = _version_contract(version)
         automation_id = str(uuid.uuid4())
         with self._orchestration.unit_of_work() as uow:
-            self._register(uow.automation_plugins, version, actor_id=actor_id)
+            self._register(
+                uow.automation_plugins,
+                version,
+                actor_id=actor_id,
+                actor_role=actor_role,
+                request_id=request_id,
+            )
             row = uow.automation_plugins.install_project_instance(
                 {
                     "automation_id": automation_id,
@@ -289,7 +477,11 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
             automation_id = str(row["automation_id"])
             config = uow.automation_plugins.initialize_project_config(
                 automation_id,
-                enabled_entrypoints=manifest.allowed_entrypoints,
+                enabled_entrypoints=(
+                    contract.default_entrypoints
+                    if version.runtime_model is PluginRuntimeModel.SERVICE_V2
+                    else contract.allowed_entrypoints
+                ),
             )
             policy = uow.automation_projects.ensure_default(
                 automation_id,
@@ -317,6 +509,21 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     "correlation_id": request_id,
                 }
             )
+            record_install_event = getattr(
+                uow.automation_plugins,
+                "record_project_install_lifecycle_event",
+                None,
+            )
+            if callable(record_install_event):
+                record_install_event(
+                    automation_id,
+                    request_id=request_id,
+                    actor_id=actor_id,
+                    actor_role=actor_role,
+                    enabled_entrypoints=tuple(config.get("enabled_entrypoints") or ()),
+                    project_configuration_version=int(config["config_version"]),
+                    policy_mode=_PROJECT_FULL_AUTO,
+                )
             if str(policy.get("mode") or "") != _PROJECT_FULL_AUTO:
                 raise PluginConflictError("new plugin instance policy did not default to full auto")
             uow.commit()
@@ -391,11 +598,17 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 code="PLUGIN_UPGRADE_VERSION_INVALID",
             )
 
-        manifest = AutomationPluginManifest.from_mapping(version.manifest)
+        manifest, contract = _version_contract(version)
         if manifest.plugin_id != version.plugin_id or manifest.version != version.version:
-            raise PluginPackageError("upgrade package identity differs from its signed manifest")
+            raise PluginPackageError("upgrade package identity differs from its manifest")
         with self._orchestration.unit_of_work() as uow:
-            self._register(uow.automation_plugins, version, actor_id=actor_id)
+            self._register(
+                uow.automation_plugins,
+                version,
+                actor_id=actor_id,
+                actor_role=actor_role,
+                request_id=request_id,
+            )
             project = uow.automation_plugins.get_project(
                 automation_id,
                 for_update=True,
@@ -437,38 +650,38 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 validate_schema_instance(
                     f"automation.{automation_id}.upgrade_config",
                     dict(config_json),
-                    manifest.config_schema,
+                    contract.config_schema,
                 )
                 accounts = _closed_bindings(
                     account_bindings,
-                    manifest.account_roles,
+                    contract.account_roles,
                     kind="account",
                 )
                 resources = _closed_bindings(
                     resource_bindings,
-                    manifest.resource_roles,
+                    contract.resource_roles,
                     kind="resource",
                 )
                 normalized_schedule = normalize_project_schedule(
                     schedule,
-                    manifest.scheduling,
+                    contract.scheduling,
                 )
                 sources = tuple(str(item or "").strip() for item in enabled_entrypoints)
                 if (
                     any(not source for source in sources)
                     or len(sources) != len(set(sources))
-                    or not set(sources) <= set(manifest.allowed_entrypoints)
+                    or not set(sources) <= set(contract.allowed_entrypoints)
                 ):
                     raise PluginConflictError(
                         "enabled entrypoints differ from the upgrade contract"
                     )
-                worker_required = manifest.worker_requirement.get("required") is True
+                worker_required = contract.worker_requirement.get("required") is True
                 has_device = config.get("device_id") not in (None, "")
                 if worker_required != has_device:
                     raise PluginConflictError(
                         "Worker binding differs from the upgrade contract"
                     )
-                transient = _transient_entry(automation_id, manifest)
+                transient = _transient_entry(automation_id, contract)
                 compiled_after: dict[str, dict[str, Any]] = {}
                 for source in sources:
                     compiled = compile_instance_arguments(
@@ -485,6 +698,16 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                             dict(compiled.unresolved_dynamic_resolvers)
                         ),
                     }
+                    if version.runtime_model is PluginRuntimeModel.SERVICE_V2:
+                        invocation_contract = contract.invocation_contracts[source]
+                        compiled_after[source]["target"] = {
+                            "service": str(invocation_contract.get("service") or ""),
+                            "operation": str(invocation_contract.get("operation") or ""),
+                            "contribution_id": source,
+                            "contribution_kind": str(
+                                invocation_contract.get("contribution_kind") or ""
+                            ),
+                        }
                 if (
                     canonical_json_bytes(normalized_schedule)
                     != canonical_json_bytes(schedule)
@@ -515,13 +738,16 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 "actor_role": actor_role,
                 "expected_record_version": expected_record_version,
             }
+            stage = uow.automation_plugins.stage_project_upgrade
+            if "audit_version_identities" in inspect.signature(stage).parameters:
+                stage_arguments["audit_version_identities"] = True
             if prepared_configuration_request_id is not None:
                 stage_arguments["prepared_configuration_request_id"] = (
                     prepared_configuration_request_id
                 )
             if allow_blocked_unknown_write_archive:
                 stage_arguments["allow_blocked_unknown_write_archive"] = True
-            staged = uow.automation_plugins.stage_project_upgrade(
+            staged = stage(
                 automation_id,
                 **stage_arguments,
             )
@@ -858,6 +1084,14 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     uow.automation_plugins,
                     version,
                     actor_id=_MIGRATION_ACTOR_ID,
+                    actor_role=_MIGRATION_ACTOR_ROLE,
+                    request_id=str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_URL,
+                            "boyi:first-party-package-register:"
+                            f"{release_sha}:{version.plugin_id}:{version.version}",
+                        )
+                    ),
                 )
             for seed in sorted(instances, key=lambda item: item.automation_id):
                 version = by_version.get((seed.plugin_id, seed.version))
@@ -1210,6 +1444,18 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 cleanup_scope="PACKAGE",
                 cleanup_devices=devices,
             )
+            retain_documents = getattr(
+                uow.automation_plugins,
+                "retain_plugin_documents_for_uninstall",
+                None,
+            )
+            if callable(retain_documents):
+                retain_documents(
+                    automation_id,
+                    request_id=request_id,
+                    actor_id=actor_id,
+                    actor_role=actor_role,
+                )
             uow.commit()
         return self._preparation_from_journal(journal)
 

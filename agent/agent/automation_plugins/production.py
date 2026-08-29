@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from threading import RLock
 from typing import Any, Callable, Mapping, Sequence
 
 from agent.automation_plugins.broker import (
@@ -23,6 +24,11 @@ from agent.automation_plugins.broker import (
 )
 from agent.automation_plugins.binding_resolver import (
     ProductionProjectBindingResolver,
+)
+from agent.automation_plugins.capability_proxy_v2 import (
+    SERVICE_V2_SERVICE_INVOKE_HANDLER_KEY,
+    UNAVAILABLE_SERVICE_V2_HANDLER_KEYS,
+    build_service_v2_capability_handler_map,
 )
 from agent.automation_plugins.catalog import (
     CompositeToolRegistry,
@@ -36,6 +42,7 @@ from agent.automation_plugins.core_adapter import (
 from agent.automation_plugins.errors import (
     AutomationPluginError,
     PluginConflictError,
+    PluginExecutionError,
     PluginPackageError,
 )
 from agent.automation_plugins.configuration import (
@@ -57,6 +64,7 @@ from agent.automation_plugins.first_party import (
 from agent.automation_plugins.generation import (
     AutomationRuntimeReconciler,
     RuntimeGenerationHealth,
+    RuntimeReconcileResult,
     runtime_generation_health,
 )
 from agent.automation_plugins.manifest import (
@@ -68,8 +76,10 @@ from agent.automation_plugins.management import AutomationPluginManagementServic
 from agent.automation_plugins.management_repository import (
     MySQLAutomationPluginManagementRepository,
 )
+from agent.automation_plugins.migration import PluginMigrationRuntimeCoordinator
 from agent.automation_plugins.models import (
     BootstrapResult,
+    PluginRuntimeModel,
     PluginTrustSource,
     RuntimeCoeffectKind,
     RuntimeCoeffectSnapshot,
@@ -93,6 +103,23 @@ from agent.automation_plugins.runtime_repository import (
     MySQLAutomationPluginCatalogRepositoryAdapter,
     MySQLAutomationPluginRuntimeAdapter,
     MySQLAutomationProjectConfigurationReadAdapter,
+)
+from agent.automation_plugins.service_registry import (
+    ServiceProvider,
+    ServiceRegistry,
+    package_provider_registration_id,
+)
+from agent.automation_plugins.service_v2_projection import (
+    _CONTRIBUTION_EFFECT_CONTRACT_VERSION,
+    _MANAGED_CONTRIBUTION_KINDS,
+    _SERVICE_PROVIDER_GENERATION,
+    ManagedContributionRegistration,
+    ManagedContributionRegistry,
+    _closed_service_v2_contributions,
+    _contribution_backend,
+    _contribution_route_keys,
+    _service_registration_material,
+    _service_v2_contribution_effect_plans,
 )
 from agent.automation_plugins.sandbox import BubblewrapPluginSandbox, SandboxCanaryResult
 from agent.automation_plugins.storage import (
@@ -225,12 +252,21 @@ def build_runtime_generation_snapshot(
 
     if type(generation) is not int or generation <= 0:
         raise PluginConflictError("runtime generation must be a positive integer")
-    if entry.trust_source not in {
-        PluginTrustSource.ED25519_FIRST_PARTY.value,
-        PluginTrustSource.ED25519_UPLOAD.value,
-    }:
+    is_v2 = entry.runtime_model == PluginRuntimeModel.SERVICE_V2.value
+    allowed_trust_sources = (
+        {
+            PluginTrustSource.SUPER_ADMIN_UPLOAD.value,
+            PluginTrustSource.BUILTIN_BUNDLE.value,
+        }
+        if is_v2
+        else {
+            PluginTrustSource.ED25519_FIRST_PARTY.value,
+            PluginTrustSource.ED25519_UPLOAD.value,
+        }
+    )
+    if entry.trust_source not in allowed_trust_sources:
         raise PluginConflictError(
-            "production generations require an Ed25519 plugin package",
+            "plugin trust source does not match its runtime model",
             code="PLUGIN_TRUST_SOURCE_INVALID",
         )
     if entry.runtime.get("kind") != "python_subprocess":
@@ -260,18 +296,19 @@ def build_runtime_generation_snapshot(
         raise PluginConflictError("server plugin device binding digest is invalid")
 
     anchor = copy.deepcopy(dict(entry.governance_anchor))
-    core_capability = core_catalog.get_capability(str(anchor.get("name") or ""))
-    if not isinstance(core_capability, Mapping):
-        raise PluginConflictError("governed core capability disappeared")
-    if any(
-        key not in core_capability
-        or canonical_json_bytes(core_capability[key]) != canonical_json_bytes(value)
-        for key, value in anchor.items()
-    ):
-        raise PluginConflictError(
-            "governed core capability changed beneath the signed action",
-            code="PLUGIN_GOVERNANCE_ANCHOR_MISMATCH",
-        )
+    if not is_v2:
+        core_capability = core_catalog.get_capability(str(anchor.get("name") or ""))
+        if not isinstance(core_capability, Mapping):
+            raise PluginConflictError("governed core capability disappeared")
+        if any(
+            key not in core_capability
+            or canonical_json_bytes(core_capability[key]) != canonical_json_bytes(value)
+            for key, value in anchor.items()
+        ):
+            raise PluginConflictError(
+                "governed core capability changed beneath the signed action",
+                code="PLUGIN_GOVERNANCE_ANCHOR_MISMATCH",
+            )
     if _digest(anchor) != entry.governance_anchor_sha256:
         raise PluginConflictError("signed governance anchor digest is invalid")
 
@@ -297,7 +334,17 @@ def build_runtime_generation_snapshot(
             "desired managed-resource bindings are incomplete",
             code="PLUGIN_RESOURCE_BINDING_INVALID",
         )
-    if "webhook" in entrypoints and (
+    webhook_enabled = (
+        any(
+            isinstance(entry.invocation_contracts.get(source), Mapping)
+            and entry.invocation_contracts[source].get("contribution_kind")
+            == "webhook"
+            for source in entrypoints
+        )
+        if is_v2
+        else "webhook" in entrypoints
+    )
+    if not is_v2 and webhook_enabled and (
         "webhook_route" not in declared_resource_roles
         or "webhook_route" not in resource_bindings
     ):
@@ -346,6 +393,16 @@ def build_runtime_generation_snapshot(
         "action_contract": action_contract,
         "governance_anchor": anchor,
     }
+    if is_v2:
+        execution_metadata.update(
+            {
+                "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
+                "plugin_api": entry.plugin_api,
+                "service_contracts": copy.deepcopy(dict(entry.service_contracts)),
+                "contributions": copy.deepcopy(dict(entry.contributions)),
+                "storage_contract": copy.deepcopy(dict(entry.storage_contract)),
+            }
+        )
     observed_at = created_at or datetime.now(timezone.utc)
     if observed_at.tzinfo is None:
         raise PluginConflictError("runtime generation timestamp must be timezone-aware")
@@ -374,6 +431,8 @@ def build_runtime_generation_snapshot(
         enabled_entrypoints=entrypoints,
         execution_metadata=execution_metadata,
         created_at=observed_at.astimezone(timezone.utc),
+        runtime_model=PluginRuntimeModel(entry.runtime_model),
+        plugin_api=entry.plugin_api,
     )
 
 
@@ -392,11 +451,13 @@ class ProductionRuntimeCoeffectProvider:
         broker_handler_keys: Sequence[tuple[str, str]],
         account_manager: Any,
         binding_resolver: ProductionProjectBindingResolver | None = None,
+        service_registry: ServiceRegistry | None = None,
     ) -> None:
         self._core_catalog = core_catalog
         self._handler_keys = frozenset((str(a), str(b)) for a, b in broker_handler_keys)
         self._account_manager = account_manager
         self._bindings = binding_resolver
+        self._services = service_registry or ServiceRegistry()
 
     @staticmethod
     def _record(
@@ -414,6 +475,92 @@ class ProductionRuntimeCoeffectProvider:
             ready=ready,
             reason_code=reason_code,
         )
+
+    def _service_coeffects(
+        self,
+        snapshot: RuntimeGenerationSnapshot,
+    ) -> tuple[RuntimeCoeffectSnapshot, ...]:
+        material = _service_registration_material(snapshot)
+        results: list[RuntimeCoeffectSnapshot] = []
+        for service in material["requires"]:
+            provider = self._services.provider_for(service)
+            claimed = provider or self._services.claimed_provider_for(service)
+            dependency_status = (
+                "READY"
+                if provider is not None
+                else "PROVIDER_BLOCKED"
+                if claimed is not None
+                else "MISSING_PROVIDER"
+            )
+            revision_material = {
+                "service": service,
+                "dependency_status": dependency_status,
+                "provider": (
+                    {
+                        "plugin_id": claimed.plugin_id,
+                        "plugin_version": claimed.plugin_version,
+                        "package_sha256": claimed.package_sha256,
+                        "manifest_sha256": claimed.manifest_sha256,
+                        "generation": claimed.generation,
+                        "runtime_mode": claimed.runtime_mode,
+                    }
+                    if claimed is not None
+                    else None
+                ),
+            }
+            results.append(
+                self._record(
+                    RuntimeCoeffectKind.SERVICE,
+                    service,
+                    revision_material,
+                    ready=provider is not None,
+                    reason_code=(
+                        None if provider is not None else "BLOCKED_DEPENDENCY"
+                    ),
+                )
+            )
+        return tuple(results)
+
+    def _contribution_coeffects(
+        self,
+        snapshot: RuntimeGenerationSnapshot,
+    ) -> tuple[RuntimeCoeffectSnapshot, ...]:
+        """Observe the host backend for every enabled managed contribution."""
+
+        contributions = _closed_service_v2_contributions(snapshot)
+        enabled = set(snapshot.enabled_entrypoints)
+        project_schedule = snapshot.execution_metadata.get("schedule")
+        if not isinstance(project_schedule, Mapping):
+            raise PluginConflictError("generation project schedule is invalid")
+        results: list[RuntimeCoeffectSnapshot] = []
+        for kind in _MANAGED_CONTRIBUTION_KINDS:
+            for declaration in contributions[kind]:
+                contribution_id = str(declaration.get("id") or "")
+                if contribution_id not in enabled:
+                    continue
+                backend, status, reason_code, reason_detail = _contribution_backend(
+                    contribution_kind=kind,
+                    declaration=declaration,
+                    project_schedule=project_schedule,
+                )
+                # DISABLED is emitted only for an intentionally closed project
+                # schedule.  It is audited but is not a missing host capability.
+                ready = status in {"READY", "DISABLED"}
+                results.append(
+                    self._record(
+                        RuntimeCoeffectKind.CORE_ADAPTER,
+                        f"contribution:{kind}:{contribution_id}",
+                        {
+                            "backend": backend,
+                            "backend_status": status,
+                            "reason_code": reason_code,
+                            "reason_detail": reason_detail,
+                        },
+                        ready=ready,
+                        reason_code=None if ready else "CAPABILITY_UNAVAILABLE",
+                    )
+                )
+        return tuple(results)
 
     def observe(
         self,
@@ -444,13 +591,38 @@ class ProductionRuntimeCoeffectProvider:
             required_pairs.add(
                 (str(operation.get("operation") or ""), str(operation.get("action") or ""))
             )
-        core_capability = self._core_catalog.get_capability(str(anchor.get("name") or ""))
-        core_ready = isinstance(core_capability, Mapping) and all(
-            key in core_capability
-            and canonical_json_bytes(core_capability[key]) == canonical_json_bytes(value)
-            for key, value in anchor.items()
+        is_v2 = snapshot.runtime_model is PluginRuntimeModel.SERVICE_V2
+        runtime_contract = descriptor.get("runtime")
+        service_runtime_ready = (
+            not is_v2
+            or isinstance(runtime_contract, Mapping)
+            and runtime_contract.get("mode") == "on_demand"
         )
-        adapters_ready = bool(required_pairs) and required_pairs <= self._handler_keys
+        core_capability = (
+            None
+            if is_v2
+            else self._core_catalog.get_capability(str(anchor.get("name") or ""))
+        )
+        core_ready = (is_v2 and service_runtime_ready) or (
+            not is_v2
+            and
+            isinstance(core_capability, Mapping)
+            and all(
+                key in core_capability
+                and canonical_json_bytes(core_capability[key])
+                == canonical_json_bytes(value)
+                for key, value in anchor.items()
+            )
+        )
+        adapters_ready = (
+            all(
+                pair in self._handler_keys
+                or (pair[0], "*") in self._handler_keys
+                for pair in required_pairs
+            )
+            if is_v2
+            else bool(required_pairs) and required_pairs <= self._handler_keys
+        )
         results: list[RuntimeCoeffectSnapshot] = [
             self._record(
                 RuntimeCoeffectKind.CORE_ADAPTER,
@@ -459,7 +631,10 @@ class ProductionRuntimeCoeffectProvider:
                     "governance_anchor_sha256": snapshot.governance_anchor_sha256,
                     "required_broker_operations": sorted(required_pairs),
                     "registered_broker_operations": sorted(
-                        required_pairs & self._handler_keys
+                        pair
+                        for pair in required_pairs
+                        if pair in self._handler_keys
+                        or (pair[0], "*") in self._handler_keys
                     ),
                 },
                 ready=core_ready and adapters_ready,
@@ -469,11 +644,17 @@ class ProductionRuntimeCoeffectProvider:
                     else (
                         "CORE_REGISTRY_MISMATCH"
                         if not core_ready
+                        and service_runtime_ready
+                        else "RESIDENT_RUNTIME_UNAVAILABLE"
+                        if not service_runtime_ready
                         else "CORE_ADAPTER_ACTION_UNAVAILABLE"
                     )
                 ),
             )
         ]
+        if is_v2:
+            results.extend(self._service_coeffects(snapshot))
+            results.extend(self._contribution_coeffects(snapshot))
         public_accounts = {
             str(item.get("account_id") or ""): item
             for item in self._account_manager.list_accounts(
@@ -492,6 +673,16 @@ class ProductionRuntimeCoeffectProvider:
                 raise PluginConflictError("generation account role contract is invalid")
         for role_name, declaration in declared.items():
             raw_binding = bindings.get(role_name)
+            if raw_binding is None and declaration.get("required") is not True:
+                results.append(
+                    self._record(
+                        RuntimeCoeffectKind.ACCOUNT,
+                        role_name,
+                        None,
+                        ready=True,
+                    )
+                )
+                continue
             values = raw_binding if isinstance(raw_binding, (list, tuple)) else (raw_binding,)
             account_ids = tuple(str(value or "").strip() for value in values)
             allowed_systems = declaration.get("allowed_systems")
@@ -602,6 +793,7 @@ class ProductionRuntimeEffectPlanner:
         metadata = snapshot.execution_metadata
         schedule = metadata.get("schedule")
         entrypoints = set(snapshot.enabled_entrypoints)
+
         base = f"{snapshot.automation_id}:{snapshot.generation}"
         plans = [
             RuntimeEffectPlan(
@@ -628,6 +820,17 @@ class ProductionRuntimeEffectPlanner:
                 {"governance_anchor_sha256": snapshot.governance_anchor_sha256},
             ),
         ]
+        if snapshot.runtime_model is PluginRuntimeModel.SERVICE_V2:
+            service_registration = _service_registration_material(snapshot)
+            plans.append(
+                RuntimeEffectPlan(
+                    RuntimeEffectKind.SERVICE_REGISTRATION,
+                    f"services:{base}",
+                    service_registration,
+                )
+            )
+            plans.extend(_service_v2_contribution_effect_plans(snapshot))
+            return tuple(plans)
         if (
             "scheduler" in entrypoints
             and isinstance(schedule, Mapping)
@@ -654,9 +857,467 @@ class ProductionRuntimeEffectPlanner:
 class ProductionRuntimeEffectDriver:
     """Idempotently validate prepared ownership; route switching stays in CAS."""
 
-    def __init__(self, *, broker_handler_keys: Sequence[tuple[str, str]]) -> None:
+    def __init__(
+        self,
+        *,
+        broker_handler_keys: Sequence[tuple[str, str]],
+        service_registry: ServiceRegistry | None = None,
+        contribution_registry: ManagedContributionRegistry | None = None,
+    ) -> None:
         self._integrity = FilesystemPluginIntegrityVerifier()
         self._handler_keys = frozenset((str(a), str(b)) for a, b in broker_handler_keys)
+        self._services = service_registry or ServiceRegistry()
+        self._contributions = contribution_registry or ManagedContributionRegistry()
+        self._service_lock = RLock()
+        self._service_references: dict[str, set[str]] = {}
+        self._reference_packages: dict[str, str] = {}
+        self._service_registry_restored = False
+
+    @property
+    def service_registry(self) -> ServiceRegistry:
+        return self._services
+
+    @property
+    def contribution_registry(self) -> ManagedContributionRegistry:
+        return self._contributions
+
+    def projection_signature(self) -> tuple[object, object]:
+        """Return a stable process projection used for fixed-point retries."""
+
+        return self._services.snapshot(), self._contributions.snapshot()
+
+    @staticmethod
+    def _validated_service_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+        required_fields = {
+            "provider_registration_id",
+            "provider_generation",
+            "reference_id",
+            "plugin_id",
+            "plugin_version",
+            "package_sha256",
+            "manifest_sha256",
+            "runtime_mode",
+            "provides",
+            "requires",
+            "service_contracts_sha256",
+        }
+        if set(payload) != required_fields:
+            raise PluginConflictError("service registration effect payload is invalid")
+        package_sha256 = _required_sha(payload.get("package_sha256"), "package_sha256")
+        manifest_sha256 = _required_sha(
+            payload.get("manifest_sha256"),
+            "manifest_sha256",
+        )
+        registration_id = str(payload.get("provider_registration_id") or "")
+        if registration_id != package_provider_registration_id(package_sha256):
+            raise PluginConflictError("service package registration identity is invalid")
+        if payload.get("provider_generation") != _SERVICE_PROVIDER_GENERATION:
+            raise PluginConflictError("service provider generation is invalid")
+        reference_id = str(payload.get("reference_id") or "")
+        plugin_id = str(payload.get("plugin_id") or "")
+        plugin_version = str(payload.get("plugin_version") or "")
+        runtime_mode = str(payload.get("runtime_mode") or "")
+        raw_provides = payload.get("provides")
+        raw_requires = payload.get("requires")
+        if (
+            not reference_id
+            or not plugin_id
+            or not plugin_version
+            or runtime_mode not in {"on_demand", "resident"}
+            or not isinstance(raw_provides, list)
+            or not isinstance(raw_requires, list)
+            or not all(isinstance(item, Mapping) for item in raw_provides)
+            or not all(isinstance(item, str) and item for item in raw_requires)
+        ):
+            raise PluginConflictError("service registration effect contract is invalid")
+        provides = [copy.deepcopy(dict(item)) for item in raw_provides]
+        requires = [str(item) for item in raw_requires]
+        expected_contract_sha = _digest(
+            {"provides": provides, "requires": [{"service": item} for item in requires]}
+        )
+        if payload.get("service_contracts_sha256") != expected_contract_sha:
+            raise PluginConflictError("service registration effect digest is invalid")
+        return {
+            "provider_registration_id": registration_id,
+            "provider_generation": _SERVICE_PROVIDER_GENERATION,
+            "reference_id": reference_id,
+            "plugin_id": plugin_id,
+            "plugin_version": plugin_version,
+            "package_sha256": package_sha256,
+            "manifest_sha256": manifest_sha256,
+            "runtime_mode": runtime_mode,
+            "provides": provides,
+            "requires": requires,
+            "service_contracts_sha256": expected_contract_sha,
+        }
+
+    @staticmethod
+    def _validated_contribution_payload(
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        required_fields = {
+            "contract_version",
+            "registration_id",
+            "automation_id",
+            "generation",
+            "plugin_id",
+            "plugin_version",
+            "package_sha256",
+            "manifest_sha256",
+            "contribution_id",
+            "contribution_kind",
+            "service",
+            "operation",
+            "declaration",
+            "declaration_sha256",
+            "route_keys",
+            "backend",
+            "backend_status",
+            "reason_code",
+            "reason_detail",
+            "project_schedule",
+            "schedule_sha256",
+        }
+        if set(payload) != required_fields:
+            raise PluginConflictError(
+                "managed contribution effect payload is invalid"
+            )
+        if payload.get("contract_version") != _CONTRIBUTION_EFFECT_CONTRACT_VERSION:
+            raise PluginConflictError(
+                "managed contribution effect contract version is invalid"
+            )
+        generation = payload.get("generation")
+        if type(generation) is not int or generation <= 0:
+            raise PluginConflictError("managed contribution generation is invalid")
+        strings = {
+            field: str(payload.get(field) or "")
+            for field in (
+                "registration_id",
+                "automation_id",
+                "plugin_id",
+                "plugin_version",
+                "contribution_id",
+                "contribution_kind",
+                "service",
+                "operation",
+                "backend",
+                "backend_status",
+            )
+        }
+        if (
+            not all(strings.values())
+            or strings["contribution_kind"] not in _MANAGED_CONTRIBUTION_KINDS
+            or strings["backend_status"]
+            not in {"READY", "DISABLED", "CAPABILITY_UNAVAILABLE"}
+            or strings["registration_id"]
+            != (
+                f"{strings['automation_id']}:{generation}:"
+                f"{strings['contribution_id']}"
+            )
+        ):
+            raise PluginConflictError(
+                "managed contribution effect identity is invalid"
+            )
+        declaration = payload.get("declaration")
+        project_schedule = payload.get("project_schedule")
+        route_keys = payload.get("route_keys")
+        if (
+            not isinstance(declaration, Mapping)
+            or not isinstance(project_schedule, Mapping)
+            or not isinstance(route_keys, list)
+            or not route_keys
+            or any(not isinstance(item, str) or not item for item in route_keys)
+            or len(route_keys) != len(set(route_keys))
+        ):
+            raise PluginConflictError(
+                "managed contribution effect declaration is invalid"
+            )
+        normalized_declaration = copy.deepcopy(dict(declaration))
+        normalized_schedule = copy.deepcopy(dict(project_schedule))
+        if (
+            str(normalized_declaration.get("id") or "")
+            != strings["contribution_id"]
+            or str(normalized_declaration.get("service") or "")
+            != strings["service"]
+            or str(normalized_declaration.get("operation") or "")
+            != strings["operation"]
+            or payload.get("declaration_sha256")
+            != _digest(normalized_declaration)
+            or _required_sha(payload.get("schedule_sha256"), "schedule_sha256")
+            != _digest(normalized_schedule)
+        ):
+            raise PluginConflictError(
+                "managed contribution effect digest is invalid"
+            )
+        expected_routes = _contribution_route_keys(
+            automation_id=strings["automation_id"],
+            contribution_kind=strings["contribution_kind"],
+            declaration=normalized_declaration,
+        )
+        expected_backend = _contribution_backend(
+            contribution_kind=strings["contribution_kind"],
+            declaration=normalized_declaration,
+            project_schedule=normalized_schedule,
+        )
+        observed_backend = (
+            strings["backend"],
+            strings["backend_status"],
+            payload.get("reason_code"),
+            payload.get("reason_detail"),
+        )
+        if tuple(route_keys) != expected_routes or observed_backend != expected_backend:
+            raise PluginConflictError(
+                "managed contribution backend declaration is invalid"
+            )
+        package_sha256 = _required_sha(
+            payload.get("package_sha256"),
+            "package_sha256",
+        )
+        manifest_sha256 = _required_sha(
+            payload.get("manifest_sha256"),
+            "manifest_sha256",
+        )
+        return {
+            "contract_version": _CONTRIBUTION_EFFECT_CONTRACT_VERSION,
+            **strings,
+            "generation": generation,
+            "package_sha256": package_sha256,
+            "manifest_sha256": manifest_sha256,
+            "declaration": normalized_declaration,
+            "declaration_sha256": _digest(normalized_declaration),
+            "route_keys": list(expected_routes),
+            "reason_code": payload.get("reason_code"),
+            "reason_detail": payload.get("reason_detail"),
+            "project_schedule": normalized_schedule,
+            "schedule_sha256": _digest(normalized_schedule),
+        }
+
+    def _ensure_service_reference(self, payload: Mapping[str, Any]) -> None:
+        material = self._validated_service_payload(payload)
+        package_id = material["provider_registration_id"]
+        reference_id = material["reference_id"]
+        with self._service_lock:
+            existing_package = self._reference_packages.get(reference_id)
+            if existing_package is not None and existing_package != package_id:
+                raise PluginConflictError(
+                    "one generation cannot reference two service packages",
+                    code="SERVICE_REFERENCE_CONFLICT",
+                )
+            self._services.register_contract(
+                automation_id=package_id,
+                generation=material["provider_generation"],
+                plugin_id=material["plugin_id"],
+                plugin_version=material["plugin_version"],
+                package_sha256=material["package_sha256"],
+                manifest_sha256=material["manifest_sha256"],
+                runtime_mode=material["runtime_mode"],
+                provides=tuple(material["provides"]),
+                requires=tuple(material["requires"]),
+            )
+            automation_id, raw_generation = reference_id.rsplit(":", 1)
+            try:
+                project_generation = int(raw_generation)
+            except ValueError as exc:
+                raise PluginConflictError(
+                    "service project reference generation is invalid",
+                    code="SERVICE_REFERENCE_INVALID",
+                ) from exc
+            self._services.bind_project_reference(
+                provider_automation_id=package_id,
+                automation_id=automation_id,
+                generation=project_generation,
+                package_sha256=material["package_sha256"],
+                manifest_sha256=material["manifest_sha256"],
+            )
+            self._service_references.setdefault(package_id, set()).add(reference_id)
+            self._reference_packages[reference_id] = package_id
+
+    def _remove_service_reference(self, material: Mapping[str, Any]) -> None:
+        package_id = str(material["provider_registration_id"])
+        reference_id = str(material["reference_id"])
+        automation_id, raw_generation = reference_id.rsplit(":", 1)
+        try:
+            generation = int(raw_generation)
+        except ValueError as exc:
+            raise PluginConflictError(
+                "service project reference generation is invalid",
+                code="SERVICE_REFERENCE_INVALID",
+            ) from exc
+        with self._service_lock:
+            references = self._service_references.get(package_id)
+            if references is None or reference_id not in references:
+                return
+            references.remove(reference_id)
+            self._reference_packages.pop(reference_id, None)
+            self._services.unbind_project_reference(
+                provider_automation_id=package_id,
+                automation_id=automation_id,
+                generation=generation,
+            )
+            if references:
+                return
+            self._service_references.pop(package_id, None)
+            self._services.unregister(
+                package_id,
+                generation=int(material["provider_generation"]),
+            )
+
+    @staticmethod
+    def _is_managed_contribution_effect(effect: RuntimeEffectRecord) -> bool:
+        return (
+            effect.kind
+            in {
+                RuntimeEffectKind.SCHEDULE_BINDING,
+                RuntimeEffectKind.WEBHOOK_BINDING,
+                RuntimeEffectKind.CONTRIBUTION_REGISTRATION,
+            }
+            and effect.payload.get("contract_version")
+            == _CONTRIBUTION_EFFECT_CONTRACT_VERSION
+        )
+
+    @staticmethod
+    def _expected_contribution_plan(
+        snapshot: RuntimeGenerationSnapshot,
+        *,
+        kind: RuntimeEffectKind,
+        effect_key: str,
+    ) -> RuntimeEffectPlan:
+        matches = [
+            plan
+            for plan in _service_v2_contribution_effect_plans(snapshot)
+            if plan.kind is kind and plan.effect_key == effect_key
+        ]
+        if len(matches) != 1:
+            raise PluginConflictError(
+                "managed contribution effect is absent from its generation",
+                code="CONTRIBUTION_REGISTRATION_EFFECT_MISMATCH",
+            )
+        return matches[0]
+
+    def _ensure_contribution_reference(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        committed: bool,
+    ) -> None:
+        material = self._validated_contribution_payload(payload)
+        self._contributions.register(material, committed=committed)
+
+    def service_reference_count(self, package_sha256: str) -> int:
+        package_id = package_provider_registration_id(package_sha256)
+        with self._service_lock:
+            return len(self._service_references.get(package_id, ()))
+
+    def restore_from_repository(self, repository: Any) -> None:
+        """Rebuild service and contribution registries from durable effects once."""
+
+        with self._service_lock:
+            if self._service_registry_restored:
+                return
+        runtime_id_reader = getattr(repository, "list_project_runtime_ids", None)
+        if callable(runtime_id_reader):
+            automation_ids = tuple(str(value or "").strip() for value in runtime_id_reader())
+        else:
+            automation_ids = tuple(
+                str(runtime.automation_id or "").strip()
+                for runtime in repository.list_project_runtimes()
+            )
+        if any(not value for value in automation_ids) or len(set(automation_ids)) != len(
+            automation_ids
+        ):
+            raise PluginConflictError(
+                "runtime service restoration identities are missing or duplicated",
+                code="PLUGIN_IDENTITY_CONFLICT",
+            )
+        restored_services: list[
+            tuple[RuntimeGenerationSnapshot, RuntimeEffectRecord]
+        ] = []
+        restored_contributions: list[
+            tuple[RuntimeGenerationState, RuntimeGenerationSnapshot, RuntimeEffectRecord]
+        ] = []
+        committed_by_project: dict[str, int] = {}
+        eligible_states = {
+            RuntimeGenerationState.TARGET,
+            RuntimeGenerationState.PREPARING,
+            RuntimeGenerationState.WAITING_COEFFECTS,
+            RuntimeGenerationState.PREPARED,
+            RuntimeGenerationState.COMMITTED,
+            RuntimeGenerationState.DRAINING,
+            RuntimeGenerationState.DISPOSING,
+        }
+        for automation_id in sorted(automation_ids):
+            for generation in repository.list_project_generations(automation_id):
+                if generation.state not in eligible_states:
+                    continue
+                if generation.state is RuntimeGenerationState.COMMITTED:
+                    prior = committed_by_project.setdefault(
+                        generation.snapshot.automation_id,
+                        generation.snapshot.generation,
+                    )
+                    if prior != generation.snapshot.generation:
+                        raise PluginConflictError(
+                            "multiple committed contribution generations were restored",
+                            code="CONTRIBUTION_REGISTRATION_CONFLICT",
+                        )
+                for effect in generation.effects:
+                    if (
+                        effect.kind is RuntimeEffectKind.SERVICE_REGISTRATION
+                        and generation.state is RuntimeGenerationState.COMMITTED
+                        and effect.state is RuntimeEffectState.APPLIED
+                    ):
+                        restored_services.append((generation.snapshot, effect))
+                    elif (
+                        self._is_managed_contribution_effect(effect)
+                        and effect.state
+                        in {RuntimeEffectState.APPLIED, RuntimeEffectState.DISPOSING}
+                    ):
+                        restored_contributions.append(
+                            (generation.state, generation.snapshot, effect)
+                        )
+        for snapshot, effect in sorted(
+            restored_services,
+            key=lambda item: (
+                item[0].package_sha256,
+                item[0].automation_id,
+                item[0].generation,
+            ),
+        ):
+            expected = _service_registration_material(snapshot)
+            if canonical_json_bytes(dict(effect.payload)) != canonical_json_bytes(expected):
+                raise PluginConflictError(
+                    "persisted service registration effect does not match its generation",
+                    code="SERVICE_REGISTRATION_EFFECT_MISMATCH",
+                )
+            self._ensure_service_reference(expected)
+        for generation_state, snapshot, effect in sorted(
+            restored_contributions,
+            key=lambda item: (
+                item[1].automation_id,
+                item[1].generation,
+                item[2].sequence,
+            ),
+        ):
+            expected = self._expected_contribution_plan(
+                snapshot,
+                kind=effect.kind,
+                effect_key=effect.effect_key,
+            )
+            if canonical_json_bytes(dict(effect.payload)) != canonical_json_bytes(
+                dict(expected.payload)
+            ):
+                raise PluginConflictError(
+                    "persisted contribution registration does not match its generation",
+                    code="CONTRIBUTION_REGISTRATION_EFFECT_MISMATCH",
+                )
+            committed = generation_state is RuntimeGenerationState.COMMITTED
+            self._ensure_contribution_reference(
+                expected.payload,
+                committed=committed,
+            )
+        for automation_id, generation in sorted(committed_by_project.items()):
+            self._contributions.activate(automation_id, generation)
+        with self._service_lock:
+            self._service_registry_restored = True
 
     @staticmethod
     def _contained_regular_file(
@@ -730,16 +1391,170 @@ class ProductionRuntimeEffectDriver:
                 for item in operations
                 if isinstance(item, Mapping)
             } if isinstance(operations, list) else set()
-            if not required or not required <= self._handler_keys:
+            handlers_ready = (
+                all(
+                    pair in self._handler_keys
+                    or (pair[0], "*") in self._handler_keys
+                    for pair in required
+                )
+                if snapshot.runtime_model is PluginRuntimeModel.SERVICE_V2
+                else bool(required) and required <= self._handler_keys
+            )
+            if not handlers_ready:
                 raise PluginConflictError(
                     "generation broker scope is unavailable",
                     code="CORE_ADAPTER_ACTION_UNAVAILABLE",
                 )
+        if plan.kind is RuntimeEffectKind.SERVICE_REGISTRATION:
+            expected = _service_registration_material(snapshot)
+            if (
+                effect.automation_id != snapshot.automation_id
+                or effect.generation != snapshot.generation
+                or effect.kind is not RuntimeEffectKind.SERVICE_REGISTRATION
+                or expected["reference_id"]
+                != f"{effect.automation_id}:{effect.generation}"
+                or canonical_json_bytes(dict(plan.payload))
+                != canonical_json_bytes(expected)
+            ):
+                raise PluginConflictError(
+                    "service registration plan does not match its generation",
+                    code="SERVICE_REGISTRATION_EFFECT_MISMATCH",
+                )
+            # A prepared generation owns only a durable effect journal.  The
+            # service must not become routable until the generation CAS commits.
+        if (
+            snapshot.runtime_model is PluginRuntimeModel.SERVICE_V2
+            and plan.kind
+            in {
+                RuntimeEffectKind.SCHEDULE_BINDING,
+                RuntimeEffectKind.WEBHOOK_BINDING,
+                RuntimeEffectKind.CONTRIBUTION_REGISTRATION,
+            }
+        ):
+            expected = self._expected_contribution_plan(
+                snapshot,
+                kind=plan.kind,
+                effect_key=plan.effect_key,
+            )
+            if (
+                effect.automation_id != snapshot.automation_id
+                or effect.generation != snapshot.generation
+                or effect.kind is not plan.kind
+                or canonical_json_bytes(dict(plan.payload))
+                != canonical_json_bytes(dict(expected.payload))
+            ):
+                raise PluginConflictError(
+                    "contribution registration plan does not match its generation",
+                    code="CONTRIBUTION_REGISTRATION_EFFECT_MISMATCH",
+                )
+            material = self._validated_contribution_payload(expected.payload)
+            if material["backend_status"] not in {"READY", "DISABLED"}:
+                raise PluginConflictError(
+                    "enabled contribution has no compatible host backend",
+                    code="CAPABILITY_UNAVAILABLE",
+                )
+            self._contributions.register(material, committed=False)
         return replace(
             effect,
             state=RuntimeEffectState.APPLIED,
             payload=dict(plan.payload),
         )
+
+    def activate_committed(
+        self,
+        *,
+        snapshot: RuntimeGenerationSnapshot,
+        effects: Sequence[RuntimeEffectRecord],
+    ) -> None:
+        """Activate exactly the contribution effects behind the committed CAS."""
+
+        if snapshot.runtime_model is not PluginRuntimeModel.SERVICE_V2:
+            return
+        for effect in effects:
+            if effect.kind is RuntimeEffectKind.SERVICE_REGISTRATION:
+                expected_service = _service_registration_material(snapshot)
+                if (
+                    effect.automation_id != snapshot.automation_id
+                    or effect.generation != snapshot.generation
+                    or effect.state is not RuntimeEffectState.APPLIED
+                    or canonical_json_bytes(dict(effect.payload))
+                    != canonical_json_bytes(expected_service)
+                ):
+                    raise PluginConflictError(
+                        "committed service registration effect payload is invalid",
+                        code="SERVICE_REGISTRATION_EFFECT_MISMATCH",
+                    )
+                self._ensure_service_reference(expected_service)
+                continue
+            if not self._is_managed_contribution_effect(effect):
+                continue
+            if (
+                effect.automation_id != snapshot.automation_id
+                or effect.generation != snapshot.generation
+                or effect.state is not RuntimeEffectState.APPLIED
+            ):
+                raise PluginConflictError(
+                    "committed contribution effect identity is invalid",
+                    code="CONTRIBUTION_REGISTRATION_EFFECT_MISMATCH",
+                )
+            expected = self._expected_contribution_plan(
+                snapshot,
+                kind=effect.kind,
+                effect_key=effect.effect_key,
+            )
+            if canonical_json_bytes(dict(effect.payload)) != canonical_json_bytes(
+                dict(expected.payload)
+            ):
+                raise PluginConflictError(
+                    "committed contribution effect payload is invalid",
+                    code="CONTRIBUTION_REGISTRATION_EFFECT_MISMATCH",
+                )
+            self._ensure_contribution_reference(
+                expected.payload,
+                committed=True,
+            )
+        self._contributions.activate(snapshot.automation_id, snapshot.generation)
+
+    def deactivate_committed(
+        self,
+        *,
+        snapshot: RuntimeGenerationSnapshot,
+        effects: Sequence[RuntimeEffectRecord],
+    ) -> None:
+        """Withdraw process routes while retaining the committed durable journal."""
+
+        if snapshot.runtime_model is not PluginRuntimeModel.SERVICE_V2:
+            return
+        for effect in sorted(effects, key=lambda item: item.sequence, reverse=True):
+            if self._is_managed_contribution_effect(effect):
+                material = self._validated_contribution_payload(effect.payload)
+                if (
+                    effect.automation_id != snapshot.automation_id
+                    or effect.generation != snapshot.generation
+                    or effect.state is not RuntimeEffectState.APPLIED
+                    or material["automation_id"] != snapshot.automation_id
+                    or material["generation"] != snapshot.generation
+                ):
+                    raise PluginConflictError(
+                        "committed contribution registration does not match its generation",
+                        code="CONTRIBUTION_REGISTRATION_EFFECT_MISMATCH",
+                    )
+                self._contributions.unregister(material["registration_id"])
+                continue
+            if effect.kind is RuntimeEffectKind.SERVICE_REGISTRATION:
+                material = self._validated_service_payload(effect.payload)
+                if (
+                    effect.automation_id != snapshot.automation_id
+                    or effect.generation != snapshot.generation
+                    or effect.state is not RuntimeEffectState.APPLIED
+                    or material["reference_id"]
+                    != f"{snapshot.automation_id}:{snapshot.generation}"
+                ):
+                    raise PluginConflictError(
+                        "committed service registration does not match its generation",
+                        code="SERVICE_REGISTRATION_EFFECT_MISMATCH",
+                    )
+                self._remove_service_reference(material)
 
     def dispose(self, effect: RuntimeEffectRecord) -> None:
         if effect.reversible is not True:
@@ -747,6 +1562,28 @@ class ProductionRuntimeEffectDriver:
                 "non-reversible generation effect cannot be disposed",
                 code="RUNTIME_EFFECT_NOT_REVERSIBLE",
             )
+        if self._is_managed_contribution_effect(effect):
+            material = self._validated_contribution_payload(effect.payload)
+            if (
+                material["automation_id"] != effect.automation_id
+                or material["generation"] != effect.generation
+            ):
+                raise PluginConflictError(
+                    "contribution registration does not match its generation",
+                    code="CONTRIBUTION_REGISTRATION_EFFECT_MISMATCH",
+                )
+            self._contributions.unregister(material["registration_id"])
+            return
+        if effect.kind is not RuntimeEffectKind.SERVICE_REGISTRATION:
+            return
+        material = self._validated_service_payload(effect.payload)
+        expected_reference = f"{effect.automation_id}:{effect.generation}"
+        if material["reference_id"] != expected_reference:
+            raise PluginConflictError(
+                "service registration reference does not match its generation",
+                code="SERVICE_REGISTRATION_EFFECT_MISMATCH",
+            )
+        self._remove_service_reference(material)
 
 
 class MySQLRuntimeTargetService:
@@ -850,7 +1687,185 @@ class MySQLRuntimeTargetService:
             schema_version=manifest_schema_version,
         )
 
-    def reconcile_project(self, automation_id: str) -> object:
+    def _reconcile_uninstalling_project(
+        self,
+        automation_id: str,
+        runtime: Any,
+        generations: Sequence[Any],
+    ) -> RuntimeReconcileResult | None:
+        """Drain and dispose all effects after uninstall revocation.
+
+        Uninstall preparation intentionally marks the currently committed
+        generation as ``DRAINING`` too: there is no successor route once the
+        project is revoked.  The ordinary generation reconciler protects the
+        current route from disposal, so this explicit uninstall path is the
+        only place allowed to dispose it.  The repository still rechecks
+        leases and unknown writes for every generation.
+        """
+
+        disposed: list[int] = []
+        draining: list[int] = []
+        for generation in sorted(
+            generations,
+            key=lambda item: item.snapshot.generation,
+        ):
+            number = generation.snapshot.generation
+            if generation.state is RuntimeGenerationState.DISPOSED:
+                continue
+            draining.append(number)
+            if generation.state is RuntimeGenerationState.COMMITTED:
+                self._runtime.mark_generation_draining(automation_id, number)
+                generation = self._runtime.get_generation(automation_id, number) or generation
+            if generation.state not in {
+                RuntimeGenerationState.DRAINING,
+                RuntimeGenerationState.DISPOSING,
+                RuntimeGenerationState.FAILED,
+            }:
+                raise PluginConflictError(
+                    "uninstall runtime generation is not drainable",
+                    code="PLUGIN_UNINSTALL_RUNTIME_STATE_INVALID",
+                )
+            if self._reconciler.dispose_generation(generation):
+                disposed.append(number)
+        refreshed = self._runtime.get_project_runtime(automation_id) or runtime
+        return RuntimeReconcileResult(
+            automation_id=automation_id,
+            target_generation=int(refreshed.target_generation),
+            committed_generation=refreshed.committed_generation,
+            draining_generations=tuple(draining),
+            disposed_generations=tuple(disposed),
+        )
+
+    def _affected_v2_consumer_ids(
+        self,
+        provider_automation_id: str,
+        provider_services: Sequence[str],
+    ) -> tuple[str, ...]:
+        """Resolve direct and transitive consumers before Provider withdrawal."""
+
+        pending_services = {
+            str(service).strip() for service in provider_services if str(service).strip()
+        }
+        affected: set[str] = set()
+        entries = tuple(self._catalog.list())
+        changed = True
+        while changed:
+            changed = False
+            for entry in sorted(entries, key=lambda item: item.automation_id):
+                automation_id = str(entry.automation_id)
+                if automation_id == provider_automation_id or automation_id in affected:
+                    continue
+                if entry.runtime_model != PluginRuntimeModel.SERVICE_V2.value:
+                    continue
+                if not pending_services.intersection(entry.required_services):
+                    continue
+                affected.add(automation_id)
+                pending_services.update(entry.provided_services)
+                changed = True
+        return tuple(sorted(affected))
+
+    def suspend_provider_consumers(
+        self,
+        provider_automation_id: str,
+        *,
+        provider_services: Sequence[str],
+    ) -> tuple[str, ...]:
+        """Persistently close every affected consumer before Provider mutation."""
+
+        consumers = self._affected_v2_consumer_ids(
+            provider_automation_id,
+            provider_services,
+        )
+        for automation_id in consumers:
+            self._runtime.set_project_dependency_scheduler_gate(
+                automation_id,
+                dependency_ready=False,
+            )
+        return consumers
+
+    def restore_provider_dependency_tree(
+        self,
+        provider_automation_id: str,
+        *,
+        provider_services: Sequence[str],
+        consumer_automation_ids: Sequence[str] | None = None,
+    ) -> object:
+        """Restore exact projections first, then open strict scheduler gates."""
+
+        consumers = tuple(
+            consumer_automation_ids
+            if consumer_automation_ids is not None
+            else self._affected_v2_consumer_ids(
+                provider_automation_id,
+                provider_services,
+            )
+        )
+        projects = (provider_automation_id, *consumers)
+        for automation_id in projects:
+            self._runtime.set_project_dependency_scheduler_gate(
+                automation_id,
+                dependency_ready=False,
+            )
+        result = self.reconcile_project(
+            provider_automation_id,
+            defer_scheduler_enable=True,
+        )
+        projections: list[tuple[str, object]] = [
+            (provider_automation_id, result)
+        ]
+        for automation_id in consumers:
+            projections.append(
+                (
+                    automation_id,
+                    self.reconcile_project(
+                        automation_id,
+                        defer_scheduler_enable=True,
+                    ),
+                )
+            )
+        for automation_id, projection in projections:
+            waiting = getattr(projection, "waiting_coeffects", None)
+            if not isinstance(waiting, tuple) or waiting:
+                continue
+            self._runtime.set_project_dependency_scheduler_gate(
+                automation_id,
+                dependency_ready=True,
+            )
+        return result
+
+    def reconcile_provider_dependency_tree(
+        self,
+        provider_automation_id: str,
+        *,
+        provider_services: Sequence[str],
+        enabled: bool,
+        consumer_automation_ids: Sequence[str] | None = None,
+    ) -> object:
+        consumers = tuple(
+            consumer_automation_ids
+            if consumer_automation_ids is not None
+            else self._affected_v2_consumer_ids(
+                provider_automation_id,
+                provider_services,
+            )
+        )
+        if enabled:
+            return self.restore_provider_dependency_tree(
+                provider_automation_id,
+                provider_services=provider_services,
+                consumer_automation_ids=consumers,
+            )
+        result = self.reconcile_project(provider_automation_id)
+        for automation_id in consumers:
+            self.reconcile_project(automation_id)
+        return result
+
+    def reconcile_project(
+        self,
+        automation_id: str,
+        *,
+        defer_scheduler_enable: bool = False,
+    ) -> object:
         entry = self._catalog.require(automation_id)
         runtime = self._runtime.get_project_runtime(automation_id)
         generations = tuple(self._runtime.list_project_generations(automation_id))
@@ -865,6 +1880,12 @@ class MySQLRuntimeTargetService:
             # therefore a safe, non-blocking catalog state.
             return None
         by_number = {item.snapshot.generation: item for item in generations}
+        if runtime is not None and entry.state == "UNINSTALLING":
+            return self._reconcile_uninstalling_project(
+                automation_id,
+                runtime,
+                generations,
+            )
         blocked_unknown_committed = False
         if runtime is not None:
             committed_generation = runtime.committed_generation
@@ -994,6 +2015,15 @@ class MySQLRuntimeTargetService:
                     committed_candidate,
                     manifest_schema_version=entry.manifest_schema_version,
                 ):
+                    if (
+                        entry.runtime_model
+                        == PluginRuntimeModel.SERVICE_V2.value
+                    ):
+                        return self._reconciler.reconcile_committed_projection(
+                            committed,
+                            project_enabled=entry.enabled,
+                            defer_scheduler_enable=defer_scheduler_enable,
+                        )
                     return None
             elif policy_generation != next_generation:
                 raise PluginConflictError(
@@ -1162,31 +2192,51 @@ class MySQLRuntimeTargetService:
         return tuple(sorted(raw_ids))
 
     def reconcile_all(self) -> tuple[object, ...]:
-        results: list[object] = []
+        automation_ids = self._reconciliation_automation_ids()
+        results: dict[str, object] = {}
         failures: dict[str, dict[str, str]] = {}
-        for automation_id in self._reconciliation_automation_ids():
-            try:
-                result = self.reconcile_project(automation_id)
-            except AutomationPluginError as exc:
-                if exc.code == "PLUGIN_IDENTITY_CONFLICT":
-                    raise
-                failures[automation_id] = {
-                    "code": str(
-                        getattr(exc, "code", "PLUGIN_RUNTIME_RECONCILE_FAILED")
-                    ),
-                    "error_summary": redact_text(exc)[:300],
-                }
-                continue
-            except ValueError as exc:
-                failures[automation_id] = {
-                    "code": "PLUGIN_PROJECT_DATA_INVALID",
-                    "error_summary": redact_text(exc)[:300],
-                }
-                continue
-            if result is not None:
-                results.append(result)
+        signature_reader = getattr(
+            getattr(self, "_reconciler", None),
+            "projection_signature",
+            None,
+        )
+        # Provider activation may make a previously visited consumer ready.
+        # Iterate to a stable process registry instead of depending on project
+        # name ordering; the bounded pass count covers every acyclic chain.
+        for _pass in range(max(1, len(automation_ids) + 1)):
+            before = signature_reader() if callable(signature_reader) else None
+            for automation_id in automation_ids:
+                try:
+                    result = self.reconcile_project(automation_id)
+                except AutomationPluginError as exc:
+                    if exc.code == "PLUGIN_IDENTITY_CONFLICT":
+                        raise
+                    failures[automation_id] = {
+                        "code": str(
+                            getattr(exc, "code", "PLUGIN_RUNTIME_RECONCILE_FAILED")
+                        ),
+                        "error_summary": redact_text(exc)[:300],
+                    }
+                    continue
+                except ValueError as exc:
+                    failures[automation_id] = {
+                        "code": "PLUGIN_PROJECT_DATA_INVALID",
+                        "error_summary": redact_text(exc)[:300],
+                    }
+                    continue
+                failures.pop(automation_id, None)
+                if result is not None:
+                    results[automation_id] = result
+            after = signature_reader() if callable(signature_reader) else None
+            if before is None or after == before:
+                break
+        else:
+            raise PluginConflictError(
+                "service dependency projection did not converge",
+                code="SERVICE_DEPENDENCY_RECONCILE_DID_NOT_CONVERGE",
+            )
         self._last_reconcile_failures = failures
-        return tuple(results)
+        return tuple(results[key] for key in sorted(results))
 
     def reconciliation_failures(self) -> dict[str, dict[str, str]]:
         """Return the latest per-project reconciliation warnings.
@@ -1199,6 +2249,107 @@ class MySQLRuntimeTargetService:
 
         return copy.deepcopy(getattr(self, "_last_reconcile_failures", {}))
 
+class ProductionServiceV2ProviderExecutor:
+    """Resolve one committed project reference and enter the normal router."""
+
+    def __init__(
+        self,
+        *,
+        service_registry: ServiceRegistry,
+        catalog: PluginCatalog,
+    ) -> None:
+        self._services = service_registry
+        self._catalog = catalog
+        self._router: PluginExecutionRouter | None = None
+
+    def bind_router(self, router: PluginExecutionRouter) -> None:
+        if self._router is not None and self._router is not router:
+            raise RuntimeError("service Provider executor is already bound")
+        self._router = router
+
+    def _routable_capability(
+        self,
+        provider: ServiceProvider,
+    ) -> Mapping[str, Any]:
+        if provider.runtime_mode != "on_demand":
+            raise PluginExecutionError(
+                "resident Service v2 Providers are not supported by this runtime",
+                code="RESIDENT_RUNTIME_UNAVAILABLE",
+            )
+        references = self._services.project_references(provider.automation_id)
+        candidates: list[Mapping[str, Any]] = []
+        for reference in references:
+            try:
+                capability = self._catalog.get_project_capability(
+                    reference.automation_id
+                )
+            except AutomationPluginError:
+                continue
+            metadata = capability.get("_plugin_runtime")
+            if not isinstance(metadata, Mapping):
+                raise PluginExecutionError(
+                    "service Provider project route has no runtime metadata",
+                    code="SERVICE_PROVIDER_ROUTE_INVALID",
+                )
+            committed_generation = metadata.get("generation")
+            if committed_generation != reference.generation:
+                # Prepared and draining generation references coexist during
+                # an upgrade.  Only the exact committed generation can route.
+                continue
+            if (
+                metadata.get("automation_id") != reference.automation_id
+                or metadata.get("runtime_model")
+                != PluginRuntimeModel.SERVICE_V2.value
+                or metadata.get("plugin_id") != provider.plugin_id
+                or metadata.get("version") != provider.plugin_version
+                or metadata.get("package_sha256") != provider.package_sha256
+                or metadata.get("manifest_sha256") != provider.manifest_sha256
+                or reference.package_sha256 != provider.package_sha256
+                or reference.manifest_sha256 != provider.manifest_sha256
+            ):
+                raise PluginExecutionError(
+                    "service Provider project route changed package identity",
+                    code="SERVICE_PROVIDER_ROUTE_INVALID",
+                )
+            candidates.append(capability)
+        if not candidates:
+            raise PluginExecutionError(
+                "service Provider has no enabled committed project route",
+                code="SERVICE_PROVIDER_BLOCKED",
+            )
+        if len(candidates) != 1:
+            raise PluginExecutionError(
+                "service Provider has multiple active project routes",
+                code="SERVICE_PROVIDER_AMBIGUOUS",
+            )
+        return candidates[0]
+
+    async def __call__(
+        self,
+        *,
+        provider: ServiceProvider,
+        caller_automation_id: str,
+        operation: str,
+        arguments: Mapping[str, Any],
+        call_chain: tuple[str, ...],
+    ) -> Mapping[str, Any]:
+        del caller_automation_id
+        router = self._router
+        if router is None:
+            raise PluginExecutionError(
+                "service Provider runtime is not bound",
+                code="SERVICE_PROVIDER_BLOCKED",
+            )
+        capability = self._routable_capability(provider)
+        return await router.execute_service_operation(
+            capability,
+            arguments,
+            service=provider.service,
+            operation=operation,
+            call_chain=call_chain,
+        )
+
+
 @dataclass
 class ProductionAutomationPluginRuntime:
     release: ProductionPluginReleaseConfig
@@ -1210,12 +2361,16 @@ class ProductionAutomationPluginRuntime:
     issuer: LocalBrokerCapabilityIssuer
     broker: LocalCoreAutomationBroker
     execution_router: PluginExecutionRouter
+    migration_runtime: PluginMigrationRuntimeCoordinator
     target_service: MySQLRuntimeTargetService
     storage: FilesystemPluginStorage
     environments: LockedVirtualEnvironmentBuilder
     upload_signature_verifier: Any
     management_repository: MySQLAutomationPluginManagementRepository
     binding_resolver: ProductionProjectBindingResolver
+    service_registry: ServiceRegistry
+    contribution_registry: ManagedContributionRegistry
+    service_effect_driver: ProductionRuntimeEffectDriver
     lifecycle_service: AutomationPluginService
     configuration_service: AutomationProjectConfigurationService
     management: AutomationPluginManagementService
@@ -1245,6 +2400,9 @@ class ProductionAutomationPluginRuntime:
     def reconcile(self) -> tuple[object, ...]:
         if not self.bootstrap.ok:
             raise PluginConflictError("first-party plugin bootstrap was rejected")
+        service_driver = getattr(self, "service_effect_driver", None)
+        if isinstance(service_driver, ProductionRuntimeEffectDriver):
+            service_driver.restore_from_repository(self.runtime_repository)
         first_pass = self.target_service.reconcile_all()
 
         # A release bootstrap deliberately does not replace an in-flight
@@ -1262,6 +2420,27 @@ class ProductionAutomationPluginRuntime:
         self.bootstrap = refreshed
         second_pass = self.target_service.reconcile_all()
         return first_pass + second_pass
+
+    def reconcile_after_dependency_change(
+        self,
+        *,
+        account_id: str | None = None,
+        service: str | None = None,
+    ) -> tuple[object, ...]:
+        """Retry every affected v2 target after a dependency becomes ready.
+
+        Account-session restoration and ServiceRegistry provider activation are
+        process-local events, while the waiting generation is durable.  The
+        target service is the authority that re-observes all coeffects and
+        retries only projects whose target still needs work; passing the
+        optional event identity is intentionally informational and never used
+        to derive a binding or choose a project.
+        """
+
+        del account_id, service
+        if not self.bootstrap.ok:
+            raise PluginConflictError("first-party plugin bootstrap was rejected")
+        return tuple(self.target_service.reconcile_all())
 
     def health(self) -> dict[str, Any]:
         catalog = self.catalog.production_health(tuple(self.required_first_party_ids))
@@ -1488,12 +2667,23 @@ def build_production_automation_plugin_runtime(
     config_repository = MySQLAutomationProjectConfigurationReadAdapter(
         orchestration_repository
     )
+    catalog_account_resolver = AccountManagerSessionResolver(account_manager)
     catalog = PluginCatalog(
         catalog_repository,
         config_repository,
         excluded_automation_plugins=deferred_first_party_automation_plugins(),
         excluded_plugin_ids=deferred_first_party_plugin_ids(),
         allowed_execution_platforms=("server",),
+        migration_pair_provider=(
+            repository.get_active_plugin_migration_pair_for_automation
+        ),
+        account_binding_ready=lambda account_id, allowed_systems: bool(
+            catalog_account_resolver.require_active_binding_descriptor(
+                account_id=account_id,
+                allowed_systems=allowed_systems,
+            )
+        ),
+        contribution_backend_status=_contribution_backend,
     )
     runtime_repository = MySQLAutomationPluginRuntimeAdapter(
         orchestration_repository
@@ -1526,15 +2716,48 @@ def build_production_automation_plugin_runtime(
         for key, handler in broker_handlers.items()
         if key in release_handler_keys
     }
-    handler_keys = tuple(sorted(scoped_broker_handlers))
+    service_registry = ServiceRegistry()
+    contribution_registry = ManagedContributionRegistry()
+    service_executor = ProductionServiceV2ProviderExecutor(
+        service_registry=service_registry,
+        catalog=catalog,
+    )
+    platform_v2_handlers = build_service_v2_capability_handler_map(
+        orchestration_repository,
+        reviewed_handlers=scoped_broker_handlers,
+        service_registry=service_registry,
+        service_executor=service_executor,
+    )
+    conflicting_platform_handlers = set(scoped_broker_handlers) & set(
+        platform_v2_handlers
+    )
+    if conflicting_platform_handlers:
+        raise PluginPackageError(
+            "service-v2 platform Broker handlers conflict with release handlers: "
+            + ", ".join(
+                f"{operation}/{action}"
+                for operation, action in sorted(conflicting_platform_handlers)
+            )
+        )
+    scoped_broker_handlers.update(platform_v2_handlers)
+    unavailable_handler_keys = set(UNAVAILABLE_SERVICE_V2_HANDLER_KEYS)
+    unavailable_handler_keys.discard(SERVICE_V2_SERVICE_INVOKE_HANDLER_KEY)
+    handler_keys = tuple(
+        sorted(set(scoped_broker_handlers) - unavailable_handler_keys)
+    )
     coeffects = ProductionRuntimeCoeffectProvider(
         core_catalog=core_catalog,
         broker_handler_keys=handler_keys,
         account_manager=account_manager,
         binding_resolver=binding_resolver,
+        service_registry=service_registry,
     )
     planner = ProductionRuntimeEffectPlanner()
-    driver = ProductionRuntimeEffectDriver(broker_handler_keys=handler_keys)
+    driver = ProductionRuntimeEffectDriver(
+        broker_handler_keys=handler_keys,
+        service_registry=service_registry,
+        contribution_registry=contribution_registry,
+    )
     reconciler = AutomationRuntimeReconciler(
         repository=runtime_repository,
         coeffects=coeffects,
@@ -1580,17 +2803,20 @@ def build_production_automation_plugin_runtime(
     )
     core_adapter = RegisteredCoreAutomationBrokerAdapter(
         handlers=scoped_broker_handlers,
-        account_resolver=AccountManagerSessionResolver(account_manager),
+        account_resolver=catalog_account_resolver,
         resource_resolver=binding_resolver,
     )
     broker = LocalCoreAutomationBroker(issuer=issuer, adapter=core_adapter)
+    migration_runtime = PluginMigrationRuntimeCoordinator(repository)
     execution_router = PluginExecutionRouter(
         core_executor=core_executor,
         capability_issuer=issuer,
         sandbox_launcher=BubblewrapPluginSandbox(bubblewrap_path),
         generation_leases=runtime_repository,
+        migration_runtime=migration_runtime,
         release_hold_provider=release_hold_provider,
     )
+    service_executor.bind_router(execution_router)
     # Read the secret during graph construction so a missing stable identity
     # fails startup before the broker accepts any action.  Handler factories
     # receive the same value from the composition root.
@@ -1609,12 +2835,16 @@ def build_production_automation_plugin_runtime(
         issuer=issuer,
         broker=broker,
         execution_router=execution_router,
+        migration_runtime=migration_runtime,
         target_service=target_service,
         storage=storage,
         environments=environments,
         upload_signature_verifier=trust,
         management_repository=management_repository,
         binding_resolver=binding_resolver,
+        service_registry=service_registry,
+        contribution_registry=contribution_registry,
+        service_effect_driver=driver,
         lifecycle_service=lifecycle_service,
         configuration_service=configuration_service,
         management=management,
@@ -1631,8 +2861,11 @@ def production_cursor_secret(environ: Mapping[str, str] | None = None) -> bytes:
 
 __all__ = [
     "CURSOR_SECRET_ENV",
+    "ManagedContributionRegistration",
+    "ManagedContributionRegistry",
     "MySQLRuntimeTargetService",
     "ProductionAutomationPluginRuntime",
+    "ProductionServiceV2ProviderExecutor",
     "ProductionRuntimeCoeffectProvider",
     "ProductionRuntimeEffectDriver",
     "ProductionRuntimeEffectPlanner",

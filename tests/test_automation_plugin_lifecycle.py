@@ -37,6 +37,7 @@ from agent.automation_plugins.models import (
     FirstPartyInstanceSeed,
     PluginInstanceRecord,
     PluginProjectState,
+    PluginRuntimeModel,
     PluginTrustSource,
     PluginUninstallStatus,
     PluginVersionRecord,
@@ -56,6 +57,10 @@ from agent.automation_plugins.ports import (
 from agent.automation_plugins.sdk import PLUGIN_SDK_SOURCE
 from agent.automation_plugins.storage import FilesystemPluginStorage, LockedVirtualEnvironmentBuilder
 from agent.tool_registry import ToolRegistry
+from service_v2_plugins._shared.build_zip import build_plugin_zip
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _uploaded_package(
@@ -299,6 +304,55 @@ def _service(tmp_path: Path):
         upload_signature_verifier=trust,
     )
     return package, repository, storage, service
+
+
+class _RejectingSignatureVerifier:
+    def verify(self, **_kwargs: object) -> None:
+        raise AssertionError("service-v2 installation must not invoke Ed25519 verification")
+
+
+class _StubServiceV2EnvironmentBuilder:
+    def build(self, version_root: Path, manifest: object) -> Path:
+        assert getattr(manifest, "runtime_model", None) == "service_v2"
+        python_path = version_root / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_bytes(b"python-3.10-runtime-placeholder")
+        return python_path
+
+
+def test_unknown_unsigned_service_v2_zip_installs_without_signature_or_core_registration(
+    tmp_path: Path,
+) -> None:
+    package_path = build_plugin_zip(
+        REPOSITORY_ROOT / "agent" / "service_v2_plugins" / "clockin_daxiang_v2",
+        tmp_path / "clockin_daxiang_v2.zip",
+    )
+    package = package_path.read_bytes()
+    repository = _MemoryPluginRepository()
+    service = AutomationPluginService(
+        repository=repository,
+        storage=_LoggingStorage(tmp_path / "plugins", repository.call_log),
+        environments=_StubServiceV2EnvironmentBuilder(),
+        upload_signature_verifier=_RejectingSignatureVerifier(),
+    )
+
+    instance = service.install_upload(
+        package,
+        instance_name="parallel clock-in v2",
+        actor_id="admin-1",
+        actor_role="super_admin",
+        request_id=str(uuid.uuid4()),
+        transport_package_sha256=hashlib.sha256(package).hexdigest(),
+    )
+
+    version = instance.active_version
+    assert version.plugin_id == "clockin_daxiang_v2"
+    assert version.runtime_model is PluginRuntimeModel.SERVICE_V2
+    assert version.trust_source is PluginTrustSource.SUPER_ADMIN_UPLOAD
+    assert version.manifest["schema_version"] == 2
+    assert version.manifest["runtime_model"] == "service_v2"
+    assert version.install_metadata["archive_sha256"] == hashlib.sha256(package).hexdigest()
+    assert "clockin_daxiang_v2" not in resolve_first_party_manifests(ToolRegistry())
 
 
 @pytest.mark.parametrize(
@@ -1101,6 +1155,64 @@ def test_hard_uninstall_waits_for_exact_cleanup_ack_and_deletes_db_before_fs(
     assert repository.call_log.index("fs_delete") < repository.call_log.index("complete")
     assert repository.get_instance(instance.automation_id) is None
     assert not Path(instance.active_version.install_root or "").exists()
+
+
+def test_hard_uninstall_reconciles_revoked_runtime_before_waiting_for_cleanup(
+    tmp_path: Path,
+) -> None:
+    package, repository, _, service = _service(tmp_path)
+    instance = service.install_upload(
+        package,
+        instance_name="drain before cleanup",
+        actor_id="admin-1",
+        actor_role="super_admin",
+        request_id=str(uuid.uuid4()),
+    )
+    reconciled: list[str] = []
+
+    result = service.hard_uninstall(
+        instance.automation_id,
+        actor_id="admin-1",
+        actor_role="super_admin",
+        request_id=str(uuid.uuid4()),
+        expected_current_version=instance.active_version.version,
+        expected_record_version=instance.record_version,
+        before_finalize=lambda automation_id: reconciled.append(automation_id),
+    )
+
+    assert result.status is PluginUninstallStatus.PENDING
+    assert reconciled == [instance.automation_id]
+    assert repository.get_instance(instance.automation_id).state is PluginProjectState.UNINSTALLING
+
+
+def test_hard_uninstall_keeps_purge_journal_when_runtime_drain_fails(
+    tmp_path: Path,
+) -> None:
+    package, repository, _, service = _service(tmp_path)
+    instance = service.install_upload(
+        package,
+        instance_name="drain failure",
+        actor_id="admin-1",
+        actor_role="super_admin",
+        request_id=str(uuid.uuid4()),
+    )
+
+    with pytest.raises(PluginConflictError, match="runtime unavailable"):
+        service.hard_uninstall(
+            instance.automation_id,
+            actor_id="admin-1",
+            actor_role="super_admin",
+            request_id=str(uuid.uuid4()),
+            expected_current_version=instance.active_version.version,
+            expected_record_version=instance.record_version,
+            before_finalize=lambda _automation_id: (_ for _ in ()).throw(
+                PluginConflictError("runtime unavailable")
+            ),
+        )
+
+    assert repository.get_instance(instance.automation_id).state is PluginProjectState.UNINSTALLING
+    assert repository.preparations
+    assert "failed" in repository.call_log
 
 
 def test_unknown_write_blocks_uninstall_without_revocation(tmp_path: Path) -> None:

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
 from agent.automation_plugins.manifest import AutomationPluginManifest
+from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
 from agent.automation_plugins.models import (
     ExecutionBlock,
     AutomationProjectConfigRecord,
@@ -242,7 +243,11 @@ class PluginStoragePort(Protocol):
 
 @runtime_checkable
 class PluginEnvironmentBuilderPort(Protocol):
-    def build(self, version_root: Path, manifest: AutomationPluginManifest) -> Path: ...
+    def build(
+        self,
+        version_root: Path,
+        manifest: AutomationPluginManifest | AutomationPluginManifestV2,
+    ) -> Path: ...
 
 
 @runtime_checkable
@@ -491,6 +496,14 @@ class RuntimeGenerationRepositoryPort(Protocol):
         expected_committed_generation: int | None,
     ) -> ProjectRuntimeRecord:
         """Atomically switch every instance entrypoint to ``generation``."""
+
+    def set_project_dependency_scheduler_gate(
+        self,
+        automation_id: str,
+        *,
+        dependency_ready: bool,
+    ) -> Mapping[str, Any]:
+        """Toggle physical schedules without mutating desired schedule intent."""
 
     def mark_generation_draining(self, automation_id: str, generation: int) -> None: ...
 

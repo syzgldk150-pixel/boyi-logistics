@@ -74,7 +74,44 @@ _WORKER_TERMINAL_JOB_STATES = frozenset(
     {"SUCCEEDED", "FAILED", "CANCELLED", "BLOCKED_DATA", "OUTCOME_UNKNOWN"}
 )
 _PLUGIN_TRUST_SOURCES = frozenset(
-    {"ed25519_upload", "ed25519_first_party", "builtin_release"}
+    {
+        "ed25519_upload",
+        "ed25519_first_party",
+        "builtin_release",
+        "super_admin_upload",
+        "builtin_bundle",
+    }
+)
+_PLUGIN_RUNTIME_MODELS = frozenset({"ACTION_V1", "SERVICE_V2"})
+_MIGRATION_PAIR_STATES = frozenset(
+    {
+        "PREPARING",
+        "TESTING",
+        "READY",
+        "CUTTING_OVER",
+        "CUTOVER",
+        "ROLLING_BACK",
+        "ROLLED_BACK",
+        "COMPLETED",
+        "ERROR",
+    }
+)
+_MIGRATION_PAIR_TRANSITIONS = {
+    "PREPARING": frozenset({"TESTING", "ERROR"}),
+    "TESTING": frozenset({"READY", "ERROR"}),
+    "READY": frozenset({"CUTTING_OVER", "ROLLING_BACK", "ERROR"}),
+    "CUTTING_OVER": frozenset({"CUTOVER", "ROLLING_BACK", "ERROR"}),
+    "CUTOVER": frozenset({"COMPLETED", "ROLLING_BACK", "ERROR"}),
+    "ROLLING_BACK": frozenset({"ROLLED_BACK", "ERROR"}),
+    "ROLLED_BACK": frozenset({"COMPLETED"}),
+    "ERROR": frozenset({"TESTING", "ROLLING_BACK"}),
+    "COMPLETED": frozenset(),
+}
+_MIGRATION_RUN_TERMINAL_STATES = frozenset(
+    {"SUCCEEDED", "FAILED", "CANCELLED", "EXPIRED", "OUTCOME_UNKNOWN"}
+)
+_PLUGIN_DOCUMENT_STATES = frozenset(
+    {"ACTIVE", "RETAINED", "CLEAR_PENDING", "CLEARED"}
 )
 _RECONCILE_STATES = frozenset(
     {
@@ -103,7 +140,7 @@ _GENERATION_STATES = frozenset(
     }
 )
 _COEFFECT_KINDS = frozenset(
-    {"ACCOUNT", "SESSION", "RESOURCE", "DEVICE", "CORE_ADAPTER"}
+    {"ACCOUNT", "SESSION", "RESOURCE", "DEVICE", "CORE_ADAPTER", "SERVICE"}
 )
 _EFFECT_KINDS = frozenset(
     {
@@ -115,6 +152,8 @@ _EFFECT_KINDS = frozenset(
         "BROKER_SCOPE",
         "WORKER_DEPLOYMENT",
         "ENTRYPOINT_ROUTE",
+        "SERVICE_REGISTRATION",
+        "CONTRIBUTION_REGISTRATION",
     }
 )
 _GENERATION_HASH_FIELDS = (
@@ -147,6 +186,30 @@ def _optional_positive_int(value: Any, field: str) -> int | None:
     if value is None:
         return None
     return _positive_int(value, field)
+
+
+def _runtime_contract(value: Mapping[str, Any]) -> tuple[str, str]:
+    """Return an explicit persisted runtime contract, preserving legacy rows."""
+
+    has_model = "runtime_model" in value
+    has_api = "plugin_api" in value
+    if not has_model and not has_api:
+        return "ACTION_V1", "1.0.0"
+    if not has_model or not has_api:
+        raise ValueError("runtime_model and plugin_api must be declared together")
+    runtime_model = _required_text(value.get("runtime_model"), "runtime_model")
+    if runtime_model not in _PLUGIN_RUNTIME_MODELS:
+        raise ValueError("runtime_model is invalid")
+    plugin_api = _required_text(value.get("plugin_api"), "plugin_api")
+    parts = plugin_api.split(".")
+    if (
+        len(plugin_api) > 32
+        or len(parts) != 3
+        or any(not part.isascii() or not part.isdigit() for part in parts)
+        or any(str(int(part)) != part for part in parts)
+    ):
+        raise ValueError("plugin_api must be a canonical three-part version")
+    return runtime_model, plugin_api
 
 
 @dataclass(frozen=True)
@@ -536,7 +599,7 @@ def _generation_snapshot(
     if not isinstance(value, Mapping):
         raise ValueError("generation snapshot must be a mapping")
     snapshot = dict(value)
-    if set(snapshot) != {
+    legacy_fields = {
         "automation_id",
         "generation",
         "plugin_id",
@@ -546,7 +609,11 @@ def _generation_snapshot(
         "execution_metadata",
         "created_at",
         *_GENERATION_HASH_FIELDS,
-    }:
+    }
+    if set(snapshot) not in (
+        legacy_fields,
+        legacy_fields | {"runtime_model", "plugin_api"},
+    ):
         raise ValueError("generation snapshot fields are not closed")
     if _required_text(snapshot.get("automation_id"), "automation_id") != automation_id:
         raise ValueError("generation snapshot automation_id does not match target")
@@ -556,6 +623,10 @@ def _generation_snapshot(
     trust_source = str(snapshot.get("trust_source") or "")
     if trust_source not in _PLUGIN_TRUST_SOURCES:
         raise ValueError("generation snapshot trust_source is invalid")
+    runtime_model, plugin_api = _runtime_contract(snapshot)
+    if "runtime_model" in snapshot:
+        snapshot["runtime_model"] = runtime_model
+        snapshot["plugin_api"] = plugin_api
     for field in _GENERATION_HASH_FIELDS:
         snapshot[field] = _sha256(snapshot.get(field), field)
     entrypoints = snapshot.get("enabled_entrypoints")
@@ -645,6 +716,7 @@ def _validated_generation_row(value: Any) -> dict[str, Any]:
             "runtime generation snapshot is invalid"
         )
     snapshot = _generation_snapshot(automation_id, raw_snapshot)
+    runtime_model, plugin_api = _runtime_contract(snapshot)
     if (
         int(snapshot["generation"]) != generation
         or _json_hash(snapshot) != str(row.get("snapshot_sha256") or "")
@@ -652,6 +724,8 @@ def _validated_generation_row(value: Any) -> dict[str, Any]:
         or str(snapshot["plugin_version"])
         != str(row.get("plugin_version") or "")
         or str(snapshot["trust_source"]) != str(row.get("trust_source") or "")
+        or runtime_model != str(row.get("runtime_model") or "ACTION_V1")
+        or plugin_api != str(row.get("plugin_api") or "1.0.0")
         or _json_hash(snapshot["enabled_entrypoints"])
         != str(row.get("enabled_entrypoints_sha256") or "")
         or any(
@@ -1030,9 +1104,13 @@ from shared.automation_plugin_generation_repository import (
 from shared.automation_plugin_worker_repository import (
     AutomationPluginWorkerRepositoryMixin,
 )  # noqa: E402
+from shared.automation_plugin_v2_repository import (
+    AutomationPluginV2RepositoryMixin,
+)  # noqa: E402
 
 
 class AutomationPluginRepository(
+    AutomationPluginV2RepositoryMixin,
     AutomationPluginGenerationRepositoryMixin,
     AutomationPluginWorkerRepositoryMixin,
     RepositoryBase,
@@ -1059,6 +1137,51 @@ class AutomationPluginRepository(
     _GENERATION_JSON_FIELDS = ("snapshot_json",)
     _COEFFECT_JSON_FIELDS = ("observation_json",)
     _EFFECT_JSON_FIELDS = ("evidence_json",)
+    _MIGRATION_PAIR_JSON_FIELDS = ("entrypoint_snapshot_json",)
+    _PLUGIN_DOCUMENT_JSON_FIELDS = ("document_json",)
+
+    @staticmethod
+    def _package_audit_identity(version: Mapping[str, Any]) -> dict[str, Any]:
+        """Return a closed audit reference without retaining manifest payloads."""
+
+        manifest = version.get("manifest_json")
+        if not isinstance(manifest, Mapping):
+            raise OrchestrationPersistenceError("package audit manifest is invalid")
+        def digest(field: str) -> str:
+            return _json_hash(manifest.get(field))
+
+        runtime_model, plugin_api = _runtime_contract(version)
+        return {
+            "package_sha256": _sha256(version.get("package_sha256"), "package_sha256"),
+            "manifest_sha256": _sha256(version.get("manifest_sha256"), "manifest_sha256"),
+            "runtime_model": runtime_model,
+            "plugin_api": plugin_api,
+            "trust_source": _required_text(version.get("trust_source"), "trust_source"),
+            "technical_check": {
+                "result": "PASSED",
+                "runtime_sha256": _sha256(version.get("runtime_sha256"), "runtime_sha256"),
+                "host_contract_sha256": _json_hash(
+                    {
+                        "runtime_model": runtime_model,
+                        "plugin_api": plugin_api,
+                        "manifest_sha256": version.get("manifest_sha256"),
+                    }
+                ),
+            },
+            "manifest_component_sha256": {
+                "capabilities": digest("capabilities"),
+                "provides": digest("provides"),
+                "requires": digest("requires"),
+                "contributions": digest("contributes"),
+                "config_schema": digest("config_schema"),
+                "storage": digest("storage"),
+            },
+            "persisted_contract_sha256": {
+                "tool_contract": _sha256(version.get("tool_contract_sha256"), "tool_contract_sha256"),
+                "invocation_contracts": _sha256(version.get("invocation_contracts_sha256"), "invocation_contracts_sha256"),
+                "scheduling": _sha256(version.get("scheduling_sha256"), "scheduling_sha256"),
+            },
+        }
 
     def get_package(self, plugin_id: str, *, for_update: bool = False) -> dict[str, Any] | None:
         suffix = " FOR UPDATE" if for_update else ""
@@ -1098,11 +1221,15 @@ class AutomationPluginRepository(
         *,
         package: Mapping[str, Any],
         version: Mapping[str, Any],
+        request_id: str | None = None,
+        actor_id: str | None = None,
+        actor_role: str | None = None,
     ) -> dict[str, Any]:
         """Insert an immutable signed version, idempotent by digest."""
 
         plugin_id = _required_text(package.get("plugin_id"), "plugin_id")
         version_name = _required_text(version.get("version"), "version")
+        runtime_model, plugin_api = _runtime_contract(version)
         raw_trust_source = version.get("trust_source")
         trust_source = _required_text(
             getattr(raw_trust_source, "value", raw_trust_source),
@@ -1110,7 +1237,24 @@ class AutomationPluginRepository(
         )
         if trust_source not in _PLUGIN_TRUST_SOURCES:
             raise ValueError("trust_source is not a supported signed-package authority")
+        audit_requested = request_id is not None or actor_id is not None or actor_role is not None
+        if audit_requested:
+            safe_request = _canonical_uuid(request_id, "request_id")
+            safe_actor = _required_text(actor_id, "actor_id")
+            safe_role = _required_text(actor_role, "actor_role")
+        else:
+            safe_request = safe_actor = safe_role = None
         with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT * FROM automation_plugin_versions
+                WHERE plugin_id=%s AND version=%s FOR UPDATE
+                """,
+                (plugin_id, version_name),
+            )
+            existing_version = _decode_row(
+                _row_dict(cursor, cursor.fetchone()), self._VERSION_JSON_FIELDS
+            )
             cursor.execute(
                 """
                 INSERT INTO automation_plugin_packages (
@@ -1126,10 +1270,50 @@ class AutomationPluginRepository(
                     version_name,
                 ),
             )
+            if audit_requested and existing_version is None:
+                metadata = self._package_audit_identity(version)
+                cursor.execute(
+                    """
+                    SELECT * FROM automation_plugin_package_events
+                    WHERE plugin_id=%s AND request_id=%s FOR UPDATE
+                    """,
+                    (plugin_id, safe_request),
+                )
+                prior_event = _decode_row(
+                    _row_dict(cursor, cursor.fetchone()), ("metadata_json",)
+                )
+                metadata_sha = _json_hash(metadata)
+                if prior_event is not None:
+                    if (
+                        prior_event.get("event_type") != "PACKAGE_VERSION_REGISTERED"
+                        or prior_event.get("to_version") != version_name
+                        or prior_event.get("from_version") is not None
+                        or prior_event.get("metadata_sha256") != metadata_sha
+                        or prior_event.get("actor_id") != safe_actor
+                        or prior_event.get("actor_role") != safe_role
+                    ):
+                        raise IdempotencyConflict(
+                            "package registration request was reused with different input"
+                        )
+                else:
+                    cursor.execute(
+                        """
+                        INSERT INTO automation_plugin_package_events (
+                            plugin_id, request_id, event_type, from_version, to_version,
+                            metadata_json, metadata_sha256, actor_id, actor_role
+                        ) VALUES (%s, %s, 'PACKAGE_VERSION_REGISTERED', NULL, %s,
+                                  %s, %s, %s, %s)
+                        """,
+                        (
+                            plugin_id, safe_request, version_name,
+                            _json_param(metadata, {}), metadata_sha, safe_actor, safe_role,
+                        ),
+                    )
             cursor.execute(
                 """
                 INSERT INTO automation_plugin_versions (
-                    plugin_id, version, package_sha256, manifest_sha256,
+                    plugin_id, version, runtime_model, plugin_api,
+                    package_sha256, manifest_sha256,
                     manifest_json, tool_contract_sha256, config_schema_sha256,
                     allowed_entrypoints_sha256, invocation_contracts_sha256,
                     worker_requirement_sha256, runtime_sha256, scheduling_sha256,
@@ -1138,13 +1322,15 @@ class AutomationPluginRepository(
                     installed_by_actor_id, state
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, 'INSTALLED'
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'INSTALLED'
                 )
                 ON DUPLICATE KEY UPDATE plugin_id=plugin_id
                 """,
                 (
                     plugin_id,
                     version_name,
+                    runtime_model,
+                    plugin_api,
                     _sha256(version.get("package_sha256"), "package_sha256"),
                     _sha256(version.get("manifest_sha256"), "manifest_sha256"),
                     _json_param(version.get("manifest_json"), {}),
@@ -1192,12 +1378,27 @@ class AutomationPluginRepository(
             "scheduling_sha256",
             "install_root_metadata_sha256",
             "trust_source",
+            "runtime_model",
+            "plugin_api",
         )
         if any(
-            str(persisted.get(field_name) or "")
+            str(
+                persisted.get(field_name)
+                or (
+                    "ACTION_V1"
+                    if field_name == "runtime_model"
+                    else "1.0.0"
+                    if field_name == "plugin_api"
+                    else ""
+                )
+            )
             != (
                 trust_source
                 if field_name == "trust_source"
+                else runtime_model
+                if field_name == "runtime_model"
+                else plugin_api
+                if field_name == "plugin_api"
                 else str(version.get(field_name) or "")
             )
             for field_name in immutable_fields
@@ -1283,6 +1484,93 @@ class AutomationPluginRepository(
             raise IdempotencyConflict("install request was reused with different input")
         return persisted
 
+    def record_project_install_lifecycle_event(
+        self,
+        automation_id: str,
+        *,
+        request_id: str,
+        actor_id: str,
+        actor_role: str,
+        enabled_entrypoints: Sequence[str],
+        project_configuration_version: int,
+        policy_mode: str,
+    ) -> None:
+        """Write one idempotent, credential-free install lifecycle audit event."""
+
+        project_id = _required_text(automation_id, "automation_id")
+        safe_request = _canonical_uuid(request_id, "request_id")
+        safe_actor = _required_text(actor_id, "actor_id")
+        safe_role = _required_text(actor_role, "actor_role")
+        config_version = _positive_int(
+            project_configuration_version, "project_configuration_version"
+        )
+        mode = _required_text(policy_mode, "policy_mode")
+        entries = [str(item) for item in enabled_entrypoints]
+        if any(not item for item in entries) or len(entries) != len(set(entries)):
+            raise ValueError("enabled_entrypoints are invalid")
+        with self.cursor() as cursor:
+            cursor.execute(
+                "SELECT * FROM automation_projects WHERE automation_id=%s FOR UPDATE",
+                (project_id,),
+            )
+            project = _row_dict(cursor, cursor.fetchone())
+            if project is None:
+                raise OrchestrationPersistenceError("installed project disappeared")
+            cursor.execute(
+                """
+                SELECT * FROM automation_plugin_versions
+                WHERE plugin_id=%s AND version=%s FOR UPDATE
+                """,
+                (project.get("plugin_id"), project.get("plugin_version")),
+            )
+            version = _decode_row(
+                _row_dict(cursor, cursor.fetchone()), self._VERSION_JSON_FIELDS
+            )
+            if version is None:
+                raise OrchestrationPersistenceError("installed package version disappeared")
+            metadata = {
+                "package": self._package_audit_identity(version),
+                "initial": {
+                    "enabled_entrypoints_sha256": _json_hash(entries),
+                    "project_configuration_version": config_version,
+                    "policy_mode": mode,
+                    "project_generation": 1,
+                },
+            }
+            metadata_sha = _json_hash(metadata)
+            cursor.execute(
+                """
+                SELECT * FROM automation_project_events
+                WHERE automation_id=%s AND request_id=%s FOR UPDATE
+                """,
+                (project_id, safe_request),
+            )
+            prior = _decode_row(_row_dict(cursor, cursor.fetchone()), ("metadata_json",))
+            if prior is not None:
+                if (
+                    prior.get("event_type") != "PLUGIN_INSTANCE_INSTALLED"
+                    or prior.get("metadata_sha256") != metadata_sha
+                    or prior.get("actor_id") != safe_actor
+                    or prior.get("actor_role") != safe_role
+                ):
+                    raise IdempotencyConflict(
+                        "project install request was reused with different input"
+                    )
+                return
+            cursor.execute(
+                """
+                INSERT INTO automation_project_events (
+                    automation_id, request_id, event_type, from_state, to_state,
+                    metadata_json, metadata_sha256, actor_id, actor_role
+                ) VALUES (%s, %s, 'PLUGIN_INSTANCE_INSTALLED', NULL, 'INSTALLED',
+                          %s, %s, %s, %s)
+                """,
+                (
+                    project_id, safe_request, _json_param(metadata, {}), metadata_sha,
+                    safe_actor, safe_role,
+                ),
+            )
+
     def stage_project_upgrade(
         self,
         automation_id: str,
@@ -1297,6 +1585,7 @@ class AutomationPluginRepository(
         expected_record_version: int,
         prepared_configuration_request_id: str | None = None,
         allow_blocked_unknown_write_archive: bool = False,
+        audit_version_identities: bool = False,
     ) -> dict[str, Any]:
         """Stage an immutable target version without changing live execution.
 
@@ -1319,6 +1608,8 @@ class AutomationPluginRepository(
             raise ValueError("plugin upgrade requires a super_admin actor")
         if type(allow_blocked_unknown_write_archive) is not bool:
             raise ValueError("unknown-write archive authority must be boolean")
+        if type(audit_version_identities) is not bool:
+            raise ValueError("audit_version_identities must be boolean")
         if (
             allow_blocked_unknown_write_archive
             and safe_actor != FIRST_PARTY_RELEASE_ACTOR_ID
@@ -1424,6 +1715,30 @@ class AutomationPluginRepository(
                 raise OrchestrationPersistenceError(
                     "immutable plugin upgrade target is not registered"
                 )
+            version_audit: dict[str, Any] | None = None
+            if audit_version_identities:
+                cursor.execute(
+                    """
+                    SELECT * FROM automation_plugin_versions
+                    WHERE plugin_id=%s AND version IN (%s, %s)
+                    ORDER BY version FOR UPDATE
+                    """,
+                    (safe_plugin_id, safe_from, safe_to),
+                )
+                versions = {
+                    str(row.get("version") or ""): _decode_row(
+                        row, self._VERSION_JSON_FIELDS
+                    )
+                    for row in _rows(cursor)
+                }
+                if set(versions) != {safe_from, safe_to}:
+                    raise OrchestrationPersistenceError(
+                        "immutable plugin upgrade versions are unavailable for audit"
+                    )
+                version_audit = {
+                    "from_package": self._package_audit_identity(versions[safe_from]),
+                    "to_package": self._package_audit_identity(versions[safe_to]),
+                }
             current_config = self.get_project_config(project_id, for_update=True)
             if current_config is None:
                 raise OrchestrationPersistenceError(
@@ -1521,6 +1836,8 @@ class AutomationPluginRepository(
                     safe_prepared_configuration_request
                 ),
             }
+            if version_audit is not None:
+                event_metadata["immutable_version_identity"] = version_audit
             cursor.execute(
                 """
                 INSERT INTO automation_project_events (

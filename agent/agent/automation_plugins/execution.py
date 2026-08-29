@@ -20,9 +20,14 @@ from agent.automation_plugins.code_owned_fields import (
     resolve_scan_capability_phase,
 )
 from agent.automation_plugins.manifest import canonical_json_bytes
+from agent.automation_plugins.migration import (
+    MigrationRunClaim,
+    PluginMigrationRuntimeCoordinator,
+)
 from agent.automation_plugins.models import (
     GenerationBoundResult,
     GenerationVerificationContext,
+    PluginRuntimeModel,
     RuntimeGenerationLease,
     RuntimeLeaseOutcome,
 )
@@ -46,6 +51,8 @@ MAX_PLUGIN_OUTPUT_BYTES = 10 * 1024 * 1024
 MAX_PLUGIN_STDERR_BYTES = 1024 * 1024
 _WRITE_TYPES = frozenset({"internal_projection_write", "external_write", "financial_write", "destructive"})
 _FORBIDDEN_ARGUMENT_TOKENS = ("password", "cookie", "credential", "secret", "token")
+_MAX_SERVICE_CALL_DEPTH = 8
+_SERVICE_INVOKE_CONTRIBUTION_ID = "host.service.invoke"
 _T = TypeVar("_T")
 
 
@@ -112,6 +119,7 @@ class PluginExecutionRouter:
         integrity_verifier: PluginIntegrityVerifierPort | None = None,
         sandbox_launcher: PluginSandboxLauncherPort | None = None,
         generation_leases: RuntimeGenerationLeasePort | None = None,
+        migration_runtime: PluginMigrationRuntimeCoordinator | None = None,
         release_hold_provider: Callable[[], bool] | None = None,
         allow_development_builtin: bool = False,
     ) -> None:
@@ -121,6 +129,7 @@ class PluginExecutionRouter:
         self._sandbox = sandbox_launcher or FailClosedPluginSandbox()
         self._allow_development_builtin = bool(allow_development_builtin)
         self._generation_leases = generation_leases
+        self._migration_runtime = migration_runtime
         # A production caller must explicitly prove that release activation
         # completed.  Missing or failing hold state is intentionally held.
         self._release_hold_provider = release_hold_provider or (lambda: True)
@@ -245,7 +254,79 @@ class PluginExecutionRouter:
                 "trusted automation project invocation generation changed",
                 code="PLUGIN_PROJECT_GENERATION_CONFLICT",
             )
+        result.update(
+            {
+                "entrypoint": invocation.entrypoint.value,
+                "contract_id": invocation.contract_id,
+            }
+        )
         return result
+
+    @staticmethod
+    def _service_run_binding(
+        capability: Mapping[str, Any],
+        *,
+        service: str,
+        operation: str,
+        call_chain: tuple[str, ...],
+    ) -> dict[str, Any]:
+        metadata = capability.get("_plugin_runtime")
+        if (
+            not isinstance(metadata, Mapping)
+            or metadata.get("runtime_model") != PluginRuntimeModel.SERVICE_V2.value
+        ):
+            raise PluginExecutionError(
+                "service Provider is not a committed Service v2 capability",
+                code="SERVICE_PROVIDER_ROUTE_INVALID",
+            )
+        contracts = metadata.get("service_contracts")
+        provided = contracts.get("provides") if isinstance(contracts, Mapping) else None
+        matches = [
+            item
+            for item in provided or ()
+            if isinstance(item, Mapping) and item.get("service") == service
+        ]
+        operations = matches[0].get("operations") if len(matches) == 1 else None
+        if (
+            not service
+            or not operation
+            or not isinstance(operations, (list, tuple))
+            or operation not in operations
+        ):
+            raise PluginExecutionError(
+                "service Provider operation is absent from its committed contract",
+                code="SERVICE_OPERATION_UNDECLARED",
+            )
+        if (
+            not call_chain
+            or call_chain[-1] != service
+            or len(call_chain) > _MAX_SERVICE_CALL_DEPTH
+            or len(call_chain) != len(set(call_chain))
+            or any(
+                not isinstance(item, str)
+                or not item
+                or item != item.strip()
+                or len(item) > 191
+                for item in call_chain
+            )
+        ):
+            raise PluginExecutionError(
+                "service invocation ancestry is invalid",
+                code="SERVICE_CALL_CHAIN_INVALID",
+            )
+        invocation_id = str(uuid.uuid4())
+        return {
+            "run_id": invocation_id,
+            "step_id": f"service:{invocation_id}",
+            "entrypoint": "service",
+            "contract_id": _SERVICE_INVOKE_CONTRIBUTION_ID,
+            "service_target": {
+                "service": service,
+                "operation": operation,
+                "contribution_id": _SERVICE_INVOKE_CONTRIBUTION_ID,
+                "contribution_kind": "service",
+            },
+        }
 
     @staticmethod
     async def _terminate(proc: asyncio.subprocess.Process) -> None:
@@ -381,6 +462,82 @@ class PluginExecutionRouter:
             )
         task = asyncio.create_task(
             asyncio.to_thread(repository.release_generation, lease, outcome=outcome)
+        )
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await asyncio.shield(task)
+            raise
+
+    async def _claim_migration_run(
+        self,
+        *,
+        automation_id: str,
+        params: Mapping[str, Any],
+        run_id: str,
+        lease_id: str,
+        now: datetime,
+        expires_at: datetime,
+        target_generation: int,
+        contribution_id: str,
+        contribution_kind: str,
+        dry_run: bool,
+    ) -> MigrationRunClaim | None:
+        coordinator = self._migration_runtime
+        if coordinator is None:
+            return None
+        task = asyncio.create_task(
+            asyncio.to_thread(
+                coordinator.claim_for_execution,
+                automation_id,
+                params,
+                run_id,
+                lease_id,
+                now,
+                expires_at,
+                target_generation,
+                contribution_id,
+                contribution_kind,
+                dry_run,
+            )
+        )
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            try:
+                claim = await asyncio.shield(task)
+            except Exception:
+                pass
+            else:
+                if claim is not None:
+                    try:
+                        await asyncio.shield(
+                            asyncio.to_thread(
+                                coordinator.settle_before_write_result,
+                                claim,
+                                "CANCELLED",
+                                now=datetime.now(timezone.utc),
+                            )
+                        )
+                    except Exception:
+                        pass
+            raise
+
+    async def _settle_migration_before_verification(
+        self,
+        claim: MigrationRunClaim | None,
+        outcome: RuntimeLeaseOutcome,
+    ) -> None:
+        coordinator = self._migration_runtime
+        if coordinator is None or claim is None:
+            return
+        task = asyncio.create_task(
+            asyncio.to_thread(
+                coordinator.settle_before_write_result,
+                claim,
+                outcome.value,
+                now=datetime.now(timezone.utc),
+            )
         )
         try:
             await asyncio.shield(task)
@@ -612,6 +769,8 @@ class PluginExecutionRouter:
         trusted_scheduler_context: Mapping[str, object] | None = None,
         trusted_invocation_context: Mapping[str, object] | None = None,
         execution_identity: Mapping[str, object] | None = None,
+        _service_target: Mapping[str, str] | None = None,
+        _service_call_chain: tuple[str, ...] = (),
     ) -> Mapping[str, Any]:
         initial_metadata = capability.get("_plugin_runtime")
         if not isinstance(initial_metadata, Mapping):
@@ -645,20 +804,62 @@ class PluginExecutionRouter:
                 "automation plugin invocation is held for release",
                 code="PLUGIN_RELEASE_HELD",
             )
-        run_binding = self._run_binding(
-            trusted_invocation_context,
-            automation_id=automation_id,
-            generation=raw_generation,
-        )
+        if _service_target is None:
+            if _service_call_chain:
+                raise PluginExecutionError(
+                    "service invocation ancestry has no target",
+                    code="SERVICE_CALL_CHAIN_INVALID",
+                )
+            run_binding = self._run_binding(
+                trusted_invocation_context,
+                automation_id=automation_id,
+                generation=raw_generation,
+            )
+        else:
+            if set(_service_target) != {"service", "operation"}:
+                raise PluginExecutionError(
+                    "service invocation target is invalid",
+                    code="SERVICE_PROVIDER_ROUTE_INVALID",
+                )
+            run_binding = self._service_run_binding(
+                capability,
+                service=str(_service_target.get("service") or ""),
+                operation=str(_service_target.get("operation") or ""),
+                call_chain=_service_call_chain,
+            )
         timeout = max(1, min(int(capability.get("timeout") or 60), 3600))
-        lease = await self._acquire_generation_lease(
-            automation_id,
-            expected_generation=raw_generation,
-            expected_manifest_sha256=str(initial_metadata.get("manifest_sha256") or ""),
-            lease_id=str(uuid.uuid4()),
-            orchestration_run_id=run_binding["run_id"],
-            expires_at=datetime.now(timezone.utc) + timedelta(seconds=timeout + 60),
+        lease_id = str(uuid.uuid4())
+        acquired_at = datetime.now(timezone.utc)
+        expires_at = acquired_at + timedelta(seconds=timeout + 60)
+        migration_claim = await self._claim_migration_run(
+            automation_id=automation_id,
+            params=params,
+            run_id=run_binding["run_id"],
+            lease_id=lease_id,
+            now=acquired_at,
+            expires_at=expires_at,
+            target_generation=raw_generation,
+            contribution_id=run_binding["contract_id"],
+            contribution_kind=run_binding["entrypoint"],
+            dry_run=params.get("dry_run") is True,
         )
+        try:
+            lease = await self._acquire_generation_lease(
+                automation_id,
+                expected_generation=raw_generation,
+                expected_manifest_sha256=str(
+                    initial_metadata.get("manifest_sha256") or ""
+                ),
+                lease_id=lease_id,
+                orchestration_run_id=run_binding["run_id"],
+                expires_at=expires_at,
+            )
+        except (Exception, asyncio.CancelledError):
+            await self._settle_migration_before_verification(
+                migration_claim,
+                RuntimeLeaseOutcome.FAILED_BEFORE_WRITE,
+            )
+            raise
         try:
             if lease.orchestration_run_id != run_binding["run_id"]:
                 raise PluginExecutionError(
@@ -686,6 +887,10 @@ class PluginExecutionRouter:
                 lease,
                 outcome=RuntimeLeaseOutcome.FAILED_BEFORE_WRITE,
             )
+            await self._settle_migration_before_verification(
+                migration_claim,
+                RuntimeLeaseOutcome.FAILED_BEFORE_WRITE,
+            )
             raise
         is_scan_preview = resolved_scan_phase == SCAN_PHASE_PREVIEW
         outcome = RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
@@ -698,6 +903,7 @@ class PluginExecutionRouter:
                 execution_state=execution_state,
                 invocation_id=lease.lease_id,
                 run_binding=run_binding,
+                service_call_chain=_service_call_chain,
             )
             if is_scan_preview and execution_state["started_mutating_call_count"] != 0:
                 if isinstance(execution_state["started_mutating_call_count"], int):
@@ -746,6 +952,7 @@ class PluginExecutionRouter:
                         started_mutating_call_count=execution_state[
                             "started_mutating_call_count"
                         ],
+                        orchestration_run_id=run_binding["run_id"],
                     ),
                 )
             return result
@@ -770,9 +977,181 @@ class PluginExecutionRouter:
             try:
                 await self._release_generation_lease(lease, outcome=outcome)
             except Exception as release_error:
+                if migration_claim is not None:
+                    unknown_outcome = (
+                        RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
+                        if self._has_observed_started_write(execution_state)
+                        else RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
+                    )
+                    try:
+                        await self._settle_migration_before_verification(
+                            migration_claim,
+                            unknown_outcome,
+                        )
+                    except Exception:
+                        pass
                 if self._has_observed_started_write(execution_state):
                     return self._lease_release_unknown_result(release_error)
                 raise
+            try:
+                await self._settle_migration_before_verification(
+                    migration_claim,
+                    outcome,
+                )
+            except Exception as settlement_error:
+                if self._has_observed_started_write(execution_state):
+                    return self._lease_release_unknown_result(settlement_error)
+                raise PluginExecutionError(
+                    "migration run-key settlement is unavailable",
+                    code="PLUGIN_MIGRATION_SETTLEMENT_UNAVAILABLE",
+                ) from settlement_error
+
+    @staticmethod
+    def _service_result_has_evidence(
+        result: Mapping[str, Any],
+        *,
+        service: str,
+        operation: str,
+        write: bool,
+    ) -> bool:
+        data = result.get("data")
+        meta = result.get("meta")
+        evidence = data.get("evidence") if isinstance(data, Mapping) else None
+        refs = meta.get("evidence_refs") if isinstance(meta, Mapping) else None
+        observed_at = meta.get("observed_at") if isinstance(meta, Mapping) else None
+        try:
+            parsed_at = datetime.fromisoformat(
+                str(observed_at or "").replace("Z", "+00:00")
+            )
+        except ValueError:
+            return False
+        if (
+            str(result.get("status") or "").upper() != "SUCCESS"
+            or not isinstance(evidence, Mapping)
+            or evidence.get("service") != service
+            or evidence.get("operation") != operation
+            or not str(evidence.get("outcome") or "").strip()
+            or not isinstance(refs, list)
+            or not refs
+            or any(not isinstance(item, str) or not item.strip() for item in refs)
+            or len(refs) != len(set(refs))
+            or parsed_at.tzinfo is None
+        ):
+            return False
+        if write and (
+            str(evidence.get("outcome") or "").upper() != "WRITE_VERIFIED"
+            or str(meta.get("write_outcome") or "").upper() != "WRITE_VERIFIED"
+        ):
+            return False
+        return True
+
+    async def _finalize_service_write(
+        self,
+        verification: GenerationVerificationContext,
+        *,
+        result: Mapping[str, Any],
+        outcome: RuntimeLeaseOutcome,
+    ) -> None:
+        repository = self._generation_leases
+        if repository is None:
+            raise PluginExecutionError(
+                "service Provider write verifier is unavailable",
+                code="WRITE_OUTCOME_UNKNOWN",
+            )
+        evidence_sha256 = hashlib.sha256(
+            canonical_json_bytes(dict(result))
+        ).hexdigest()
+        try:
+            await asyncio.to_thread(
+                repository.finalize_generation_write,
+                automation_id=verification.automation_id,
+                generation=verification.generation,
+                lease_id=verification.lease_id,
+                outcome=outcome,
+                evidence_sha256=evidence_sha256,
+            )
+        except Exception as exc:
+            raise PluginExecutionError(
+                "service Provider write finalization could not be persisted",
+                code="WRITE_OUTCOME_UNKNOWN",
+            ) from exc
+        coordinator = self._migration_runtime
+        if coordinator is None or verification.orchestration_run_id is None:
+            return
+        try:
+            claim = await asyncio.to_thread(
+                coordinator.find_claim_for_execution,
+                verification.automation_id,
+                verification.orchestration_run_id,
+            )
+            await asyncio.to_thread(
+                coordinator.settle_after_write_verification,
+                claim,
+                outcome.value,
+                now=datetime.now(timezone.utc),
+            )
+        except Exception as exc:
+            raise PluginExecutionError(
+                "service Provider migration write settlement is unavailable",
+                code="PLUGIN_MIGRATION_SETTLEMENT_UNAVAILABLE",
+            ) from exc
+
+    async def execute_service_operation(
+        self,
+        capability: Mapping[str, Any],
+        arguments: Mapping[str, Any],
+        *,
+        service: str,
+        operation: str,
+        call_chain: tuple[str, ...],
+    ) -> Mapping[str, Any]:
+        """Execute an internal Provider through the normal lease and sandbox path."""
+
+        result = await self.execute(
+            capability,
+            arguments,
+            _service_target={"service": service, "operation": operation},
+            _service_call_chain=call_chain,
+        )
+        verification = getattr(result, "generation_verification", None)
+        if not isinstance(verification, GenerationVerificationContext):
+            if str(result.get("status") or "").upper() == "SUCCESS":
+                raise PluginExecutionError(
+                    "service Provider success lacks generation evidence",
+                    code="SERVICE_PROVIDER_EVIDENCE_INVALID",
+                )
+            return dict(result)
+        write = verification.requires_write_verification is True
+        evidence_valid = self._service_result_has_evidence(
+            result,
+            service=service,
+            operation=operation,
+            write=write,
+        )
+        if not write:
+            if verification.started_mutating_call_count != 0 or not evidence_valid:
+                raise PluginExecutionError(
+                    "service Provider read evidence is invalid",
+                    code="SERVICE_PROVIDER_EVIDENCE_INVALID",
+                )
+            return dict(result)
+
+        final_outcome = (
+            RuntimeLeaseOutcome.WRITE_VERIFIED
+            if evidence_valid
+            else RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
+        )
+        await self._finalize_service_write(
+            verification,
+            result=result,
+            outcome=final_outcome,
+        )
+        if not evidence_valid:
+            raise PluginExecutionError(
+                "service Provider write evidence is incomplete",
+                code="WRITE_OUTCOME_UNKNOWN",
+            )
+        return dict(result)
 
     async def _execute_plugin(
         self,
@@ -782,7 +1161,8 @@ class PluginExecutionRouter:
         trusted_scheduler_context: Mapping[str, object] | None = None,
         execution_state: dict[str, object] | None = None,
         invocation_id: str,
-        run_binding: Mapping[str, str],
+        run_binding: Mapping[str, Any],
+        service_call_chain: tuple[str, ...] = (),
     ) -> Mapping[str, Any]:
         metadata = capability.get("_plugin_runtime")
         if not isinstance(metadata, Mapping):
@@ -792,14 +1172,30 @@ class PluginExecutionRouter:
             raise PluginExecutionError("plugin runtime metadata is missing")
         runtime_kind = runtime.get("kind")
         trust_source = str(metadata.get("trust_source") or "")
+        runtime_model = str(
+            metadata.get("runtime_model") or PluginRuntimeModel.ACTION_V1.value
+        )
+        if runtime_model not in {
+            PluginRuntimeModel.ACTION_V1.value,
+            PluginRuntimeModel.SERVICE_V2.value,
+        }:
+            raise PluginExecutionError(
+                "plugin runtime model is unsupported",
+                code="PLUGIN_RUNTIME_MODEL_INVALID",
+            )
         if runtime_kind != "python_subprocess":
             raise PluginExecutionError(
                 "plugin actions must execute from their signed subprocess payload",
                 code="PLUGIN_RUNTIME_FORBIDDEN",
             )
-        if trust_source not in {"ed25519_upload", "ed25519_first_party"}:
+        allowed_trust_sources = (
+            {"super_admin_upload", "builtin_bundle"}
+            if runtime_model == PluginRuntimeModel.SERVICE_V2.value
+            else {"ed25519_upload", "ed25519_first_party"}
+        )
+        if trust_source not in allowed_trust_sources:
             raise PluginExecutionError(
-                "plugin subprocess is not backed by an Ed25519 package",
+                "plugin subprocess trust source does not match its runtime model",
                 code="PLUGIN_TRUST_SOURCE_INVALID",
             )
         self._reject_sensitive_arguments(params)
@@ -829,12 +1225,17 @@ class PluginExecutionRouter:
             or not isinstance(runtime_permissions, Mapping)
         ):
             raise PluginExecutionError("plugin capability declaration is incomplete")
+        issued_runtime_permissions = copy.deepcopy(dict(runtime_permissions))
+        if service_call_chain:
+            issued_runtime_permissions["_service_call_chain"] = list(
+                service_call_chain
+            )
         token = self._issuer.issue(
             automation_id=automation_id,
             plugin_version=version,
             tool_name=str(metadata.get("core_tool_name") or capability.get("name") or ""),
             ttl_seconds=timeout + 30,
-            runtime_permissions=runtime_permissions,
+            runtime_permissions=issued_runtime_permissions,
             account_roles=account_roles,
             resource_roles=resource_roles,
             account_bindings=copy.deepcopy(dict(account_bindings)),
@@ -851,15 +1252,70 @@ class PluginExecutionRouter:
             },
         )
         action_name = str(capability.get("name") or "")
-        payload = canonical_json_bytes(
-            {
-                "schema_version": 1,
-                "automation_id": automation_id,
-                "plugin_id": plugin_id,
-                "plugin_version": version,
-                "arguments": dict(params),
-            }
-        )
+        payload_contract: dict[str, Any] = {
+            "schema_version": 1,
+            "automation_id": automation_id,
+            "plugin_id": plugin_id,
+            "plugin_version": version,
+            "arguments": dict(params),
+        }
+        if runtime_model == PluginRuntimeModel.SERVICE_V2.value:
+            service_target = run_binding.get("service_target")
+            direct_contribution = False
+            if service_target is not None:
+                target = service_target
+            else:
+                compiled_invocations = metadata.get("compiled_invocations")
+                if not isinstance(compiled_invocations, Mapping):
+                    raise PluginExecutionError(
+                        "service-v2 invocation table is missing",
+                        code="PLUGIN_GENERATION_METADATA_INVALID",
+                    )
+                contribution_id = run_binding["contract_id"]
+                compiled = compiled_invocations.get(contribution_id)
+                direct_contribution = compiled is not None
+                if compiled is None and run_binding["entrypoint"] == "scheduler":
+                    candidates = [
+                        item
+                        for item in compiled_invocations.values()
+                        if isinstance(item, Mapping)
+                        and isinstance(item.get("target"), Mapping)
+                        and item["target"].get("contribution_kind") == "scheduler"
+                    ]
+                    compiled = candidates[0] if len(candidates) == 1 else None
+                target = (
+                    compiled.get("target") if isinstance(compiled, Mapping) else None
+                )
+            if (
+                not isinstance(target, Mapping)
+                or set(target)
+                != {
+                    "service",
+                    "operation",
+                    "contribution_id",
+                    "contribution_kind",
+                }
+                or not all(str(value or "").strip() for value in target.values())
+                or str(target.get("contribution_kind"))
+                != run_binding["entrypoint"]
+                or (
+                    direct_contribution
+                    and str(target.get("contribution_id")) != contribution_id
+                )
+            ):
+                raise PluginExecutionError(
+                    "service-v2 invocation target is invalid",
+                    code="PLUGIN_GENERATION_METADATA_INVALID",
+                )
+            payload_contract.update(
+                {
+                    "schema_version": 2,
+                    "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
+                    "entrypoint": run_binding["entrypoint"],
+                    "target": copy.deepcopy(dict(target)),
+                }
+            )
+        payload = canonical_json_bytes(payload_contract)
         proc: asyncio.subprocess.Process | None = None
         stdout_task: asyncio.Task[bytes] | None = None
         stderr_task: asyncio.Task[bytes] | None = None
