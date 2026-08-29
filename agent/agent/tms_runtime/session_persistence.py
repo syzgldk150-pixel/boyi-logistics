@@ -404,7 +404,7 @@ class SessionPersistenceMixin:
                     process_group_id=process_group_id,
                 )
                 raise TMSAuthStateError(
-                    "BLOCKED_LOGIN",
+                    "LOGIN_TIMEOUT",
                     f"登录操作超过 {self._browser_action_timeout_sec:g} 秒，已终止浏览器进程。",
                 ) from exc
 

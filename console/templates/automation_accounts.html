@@ -721,7 +721,7 @@
     refreshStatusesAbort?.abort();
     refreshStatusesAbort = new AbortController();
     try {
-      const response = await fetch("/automation-accounts/statuses?force=1&prefer_cached=1", {
+      const response = await fetch("/automation-accounts/statuses?prefer_cached=1", {
         method: "GET",
         headers: { "Accept": "application/json" },
         credentials: "same-origin",

@@ -82,6 +82,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `services/auth.py`
   - `static/style.css`
   - 账号管理页是凭据与登录态的唯一入口；自动化项目卡只选择并保存 Agent catalog 返回的账号绑定，不提供登录或凭据快捷入口。
+  - 账号页周期轮询只用 `prefer_cached=1` 被动读取 Agent 登录态共享快照，不得携带强制刷新语义或触发外部校验；周期主动检查仅由 Agent 监控执行，飞书告警与后台展示必须消费同一结果。
 - 改 OCR 工作区、上传、复核、模板：
   - `templates/document.html`
   - `templates/waybill_print.html`
@@ -163,6 +164,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 - 后台主认证方式为 `/login` 登录页 + MySQL 管理员账号 + `HttpOnly` 会话 Cookie，账号管理页为 `/settings/accounts`。
 - 自动化业务账号管理页为 `/automation-accounts`，只代理 Agent 侧账号元数据、凭据保存和登录态操作；账号系统只展示真实外部系统（TMS融辉、韵达、R7、R13），不在账号页维护“大祥报价 / 自提问题件 / 大祥S站”等用途标签；这些业务使用关系在 `/automations` 每个脚本卡片的账号角色绑定里选择。系统名下方的灰色账号备注使用账号 `name`，必须可在“编辑”面板单独保存并即时刷新，保存时不得额外校验登录态。“已停用”徽标只在 `is_active=false` 时显示；同一个启停操作必须在停用后明确显示“重新启用账号”。所有账号必须呈现同一套保存凭据、立即登录、退出登录、自动登录、停用/恢复和状态校验操作；R7/R13 不得显示“不支持”，协议差异只由 Agent 后端处理。“立即登录”点击后必须马上调用 Agent 登录接口；自动登录开关只表示定时校验和掉线恢复，关闭时仍允许手动登录。不要把业务账号密码落到 Console/MySQL，也不要在 GET 响应或页面中回显密码。自动登录开关必须在账号列表直接可见、默认关闭，且只在页面已保存完整账号密码时允许开启；不得显示“环境变量凭据”。
+- `/automation-accounts` 的周期轮询只用 `prefer_cached=1` 被动读取 Agent 登录态共享快照，不得触发外部状态校验；唯一周期主动检查器位于 Agent，飞书告警和后台状态必须来自其同一次检查结果。手动登录、验证码提交和显式状态操作仍可更新同一快照。
 - `/automations` 不得提供任何账号登录、凭据保存、账号管理快捷入口或隐式默认绑定；只能展示业务账号池的安全名称/状态投影并按项目保存绑定。
 - 首个管理员通过环境变量 `DOCFLOW_ADMIN_USERNAME`、`DOCFLOW_ADMIN_PASSWORD` 引导创建；不要把真实账号密码写进代码或文档。
 - `DOCFLOW_SESSION_SECRET` 用于签名会话 Cookie，生产/绑定域名时必须配置为固定随机值。

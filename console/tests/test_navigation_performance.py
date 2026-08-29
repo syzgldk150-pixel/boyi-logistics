@@ -376,7 +376,8 @@ class NavigationPerformanceTests(unittest.TestCase):
     def test_automation_accounts_template_polls_cached_statuses(self):
         template = (CONSOLE_DIR / "templates" / "automation_accounts.html").read_text(encoding="utf-8")
 
-        self.assertIn('/automation-accounts/statuses?force=1&prefer_cached=1', template)
+        self.assertIn('/automation-accounts/statuses?prefer_cached=1', template)
+        self.assertNotIn('/automation-accounts/statuses?force=1&prefer_cached=1', template)
         self.assertIn("statusPollIntervalMs = 60000", template)
 
 

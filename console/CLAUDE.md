@@ -30,6 +30,7 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 - `BLOCKED_UNKNOWN_WRITE` 项目可向 `super_admin` 显示“核验并恢复”，但浏览器只生成请求 UUID；Console 只把该 UUID 和签名管理员身份转发给 Agent，不接收或推断 generation、lease、receipt、evidence，也不把 `UNKNOWN` 显示成成功或解除隔离。
 - 项目设置统一通过 `PUT /internal/v1/automation/instances/{automation_id}/configuration` 原子保存 `config/account_bindings/resource_bindings/enabled_entrypoints/device_id/schedule/request_id/expected_project_configuration_version`。`enabled_entrypoints` 允许签名清单任意子集和空集；高级设置以标准 switch 独立控制系统定时、后台手动、飞书消息和外部验签请求。关闭定时保留时间配置但不注册 Job，关闭后台时执行按钮必须明确显示入口已关闭。Console 可转发最多 96 个规范时间点；保存后必须区分 `ACTIVE/DISABLED/ENTRYPOINT_DISABLED/BLOCKED_GENERATION/REFRESH_FAILED`，后两种保留原请求 UUID 供精确重试，不得把“配置已落库”误报成“运行中定时已生效”。
 - 后台账号页允许当前 Console 超级管理员创建/撤销飞书审批绑定码；页面不得展示 `open_id/chat_id`。绑定后飞书角色实时继承账号当前 `control_plane_role/is_active`，审批通知由 Agent 串行推送，精确回复 `1/2` 决定当前条目。
+- `/automation-accounts` 的周期轮询只用 `prefer_cached=1` 被动读取 Agent 登录态共享快照，不得触发外部状态校验；唯一周期主动检查器位于 Agent，飞书告警和后台状态必须来自其同一次检查结果。手动登录、验证码提交和显式状态操作仍可更新同一快照。
 - 插件只安装动作并声明可用的调度类型，实际定时属于系统项目配置，不属于 ZIP 或 manifest。安装完成后才在自动化卡片设置 `none/daily_times/startup`；同一插件的多个 `automation_id` 实例可各自选择账号、资源、定时和权限。
 - 自动化页不再渲染顶部账号登录绿点、登录态 popover、凭据表单或账号管理快捷入口，也不再探测旧 TMS session 接口；旧 `/automations/*-session/*` 和 `/automations/session-context` 不得路由。凭据和登录态只在侧栏“业务账号”模块管理；项目卡仅从 Agent catalog 的 `account_bindings` 显示业务账号池下拉，不回显凭据、不选默认/首项。未选、停用或 session 失效必须阻断运行、启用和完全自动。
 - 资源池投影只允许 `resource_id/name/kind/status` 四个字段，Token、表格 ID、读写范围、文件路径、配置哈希/版本及原始配置不得进入 Console 或浏览器。项目卡按签名 manifest 的 resource role 与 kind 精确生成候选，已有选择也必须重新核验可用性；不默认选择第一项。资源池不可用、descriptor 多/缺字段、必填资源未选、已停用或 kind 不匹配时，原卡显示阻断原因并 fail closed。
@@ -165,6 +166,7 @@ ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希
 - 导航搜索为前端本地筛选，不走后端接口
 - 后台登录使用 `/login`，账号管理使用 `/settings/accounts`，会话通过 `HttpOnly` Cookie 保护
 - 自动化业务账号管理使用 `/automation-accounts`，与后台管理员账号完全分离，并且是凭据与登录态的唯一 UI。项目实例只从 catalog 的 `account_bindings` 选择业务账号池投影，不回显凭据、不使用默认/第一项或旧 Cron 参数兜底；账号未选、停用或 session 失效均显式阻断。系统名下方的灰色账号备注可在“编辑”中单独修改，保存时不触发登录态校验。“已停用”徽标只在 `is_active=false` 时显示，停用后同一菜单操作显示“重新启用账号”。所有账号必须呈现同一套保存凭据、立即登录、退出登录、自动登录、停用/恢复和状态校验操作；R7/R13 不得显示“不支持”，协议差异只由 Agent 后端处理。
+  页面自动轮询只读取 Agent 维护的共享状态快照，不自行验证外部系统；显式账号操作与 Agent 周期监控更新同一快照，飞书告警也只消费该监控结果。
 
 ## 启动方式
 
