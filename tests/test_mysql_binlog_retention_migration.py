@@ -9,10 +9,13 @@ MIGRATION = (
 )
 
 
-def test_binlog_retention_uses_persistent_mysql_policy_and_managed_purge():
+def test_binlog_retention_migration_verifies_policy_without_admin_privilege():
     sql = " ".join(MIGRATION.read_text(encoding="utf-8").split())
 
-    assert "SET PERSIST binlog_expire_logs_seconds = 2592000" in sql
-    assert "PURGE BINARY LOGS BEFORE DATE_SUB(NOW(6), INTERVAL 30 DAY)" in sql
+    assert "CHECK (configured_seconds = 2592000)" in sql
+    assert "SELECT @@GLOBAL.binlog_expire_logs_seconds" in sql
+    assert "SET PERSIST" not in sql
+    assert "PURGE BINARY LOGS" not in sql
     assert "DELETE" not in sql
     assert "rm " not in sql
+    assert "SYSTEM_VARIABLES_ADMIN" in sql

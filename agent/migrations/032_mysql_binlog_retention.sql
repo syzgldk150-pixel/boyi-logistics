@@ -1,9 +1,17 @@
--- Migration 032: keep MySQL binary logs for 30 days.
+-- Migration 032: verify that MySQL binary logs are retained for 30 days.
 --
--- SET PERSIST changes the running server and writes mysqld-auto.cnf, so the
--- policy survives MySQL restarts. PURGE uses MySQL's own binlog index rather
--- than deleting files from the filesystem.
+-- The server-level setting is installed from deploy/mysql before this
+-- migration runs. The application migration account deliberately does not
+-- receive SYSTEM_VARIABLES_ADMIN; this temporary CHECK makes a mismatched
+-- server fail closed without widening database privileges.
 
-SET PERSIST binlog_expire_logs_seconds = 2592000;
+CREATE TEMPORARY TABLE mysql_binlog_retention_guard_032 (
+    configured_seconds BIGINT UNSIGNED NOT NULL,
+    CONSTRAINT chk_mysql_binlog_retention_30_days
+        CHECK (configured_seconds = 2592000)
+);
 
-PURGE BINARY LOGS BEFORE DATE_SUB(NOW(6), INTERVAL 30 DAY);
+INSERT INTO mysql_binlog_retention_guard_032 (configured_seconds)
+SELECT @@GLOBAL.binlog_expire_logs_seconds;
+
+DROP TEMPORARY TABLE mysql_binlog_retention_guard_032;
