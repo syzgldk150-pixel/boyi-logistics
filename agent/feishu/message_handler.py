@@ -190,6 +190,14 @@ def _automation_result_reply(
         detail = reason or "只完成了部分数据，请查看任务详情后重试未完成部分。"
         return f"{task_name}部分完成：{detail[:300]}", "automation_project_partial"
     if status in {"BLOCKED_DATA", "FAILED_RETRYABLE", "FAILED_TERMINAL"}:
+        if (
+            task_name == TOOL_DISPLAY_NAMES[SPLIT_TOOL_NAME]
+            and "ACTION_VALUE_ERROR:FRAME=action.py:642:run_action" in reason
+        ):
+            return (
+                "分批候选清单或执行参数已变化，请重新发送“分批”生成最新清单；本次未执行外部写入。",
+                "split_preview_stale",
+            )
         detail = reason or "数据读取或写入校验未通过，请查看任务详情。"
         return f"{task_name}执行失败：{detail[:300]}", "automation_project_failed"
     detail = reason or "结果暂时无法确认，请前往事项中心查看任务详情。"
@@ -2637,6 +2645,13 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
 
         if await _reply_if_tool_running(agent, chat_id, tool_name):
             return
+
+        if mode == "automation_preview" and tool_name == SPLIT_PREVIEW_TOOL_NAME:
+            await _reply_text(
+                chat_id,
+                "正在生成分批差错及问题件候选清单；任务繁忙时可能需要排队，完成后我会反馈结果。",
+                reply_type="split_preview_started",
+            )
 
         if tool_name == "track_waybill":
             tracking_number = str(params.get("tracking_number") or "").strip()

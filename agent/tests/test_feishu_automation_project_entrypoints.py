@@ -875,6 +875,32 @@ def test_split_preview_selection_and_confirmation_preserve_signed_dynamic_fields
     }
 
 
+def test_split_action_value_error_has_safe_repreview_reply():
+    reply, reply_type = message_handler._automation_result_reply(
+        task_name=message_handler.TOOL_DISPLAY_NAMES[message_handler.SPLIT_TOOL_NAME],
+        result={
+            "status": "FAILED_TERMINAL",
+            "error_summary": "FIRST_PARTY_ACTION_FAILED:ACTION_VALUE_ERROR:FRAME=action.py:642:run_action",
+        },
+    )
+
+    assert reply_type == "split_preview_stale"
+    assert reply == (
+        "分批候选清单或执行参数已变化，请重新发送“分批”生成最新清单；本次未执行外部写入。"
+    )
+    assert "ACTION_VALUE_ERROR" not in reply
+
+    other_reply, other_reply_type = message_handler._automation_result_reply(
+        task_name=message_handler.TOOL_DISPLAY_NAMES[message_handler.SPLIT_TOOL_NAME],
+        result={
+            "status": "FAILED_TERMINAL",
+            "error_summary": "FIRST_PARTY_ACTION_FAILED:ACTION_VALUE_ERROR:FRAME=action.py:700:run_action",
+        },
+    )
+    assert other_reply_type == "automation_project_failed"
+    assert "本次未执行外部写入" not in other_reply
+
+
 def test_r7_plate_choice_rechecks_committed_config_before_typed_invocation():
     service = _FakeProjectEntrypoints()
     agent = _FakeAgent()

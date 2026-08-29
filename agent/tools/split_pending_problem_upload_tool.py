@@ -165,17 +165,27 @@ def _stateful_candidates(
 def _preview_fingerprint(candidates: list[dict[str, Any]]) -> str:
     material = [
         {
-            "bill_code": item["bill_code"],
-            "problem_type": item["problem_type"],
-            "expected_quantity": item["expected_quantity"],
             "arrived_quantity": item["arrived_quantity"],
-            "pending_quantity": item["pending_quantity"],
+            "bill_code": item["bill_code"],
             "complaint_status": item["complaint_status"],
+            "expected_quantity": item["expected_quantity"],
+            "pending_quantity": item["pending_quantity"],
+            "problem_cause_sha256": hashlib.sha256(
+                item["problem_cause"].encode("utf-8")
+            ).hexdigest(),
             "problem_item_status": item["problem_item_status"],
+            "problem_owner_type": item["problem_owner_type"],
+            "problem_type": item["problem_type"],
         }
         for item in candidates
     ]
-    encoded = json.dumps(material, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    encoded = json.dumps(
+        material,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 

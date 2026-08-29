@@ -108,6 +108,9 @@ class FeishuSplitSelectionTests(unittest.TestCase):
 
         class FakeAgent:
             async def execute_tool(self, tool_name, params, **_kwargs):
+                assert replies and replies[-1] == (
+                    "正在生成分批差错及问题件候选清单；任务繁忙时可能需要排队，完成后我会反馈结果。"
+                )
                 calls.append((tool_name, dict(params)))
                 if tool_name == "preview_split_pending_problems":
                     return {
@@ -176,6 +179,32 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         self.assertEqual("a" * 64, formal_body["preview_fingerprint"])
         self.assertFalse(message_handler._contains_account_override(formal_body))
         self.assertEqual([600, 600], pending_ttls)
+
+    def test_running_preview_does_not_send_preview_started_reply(self):
+        replies: list[str] = []
+
+        class FakeAgent:
+            def is_tool_running(self, tool_name):
+                return tool_name == message_handler.SPLIT_PREVIEW_TOOL_NAME
+
+            async def execute_tool(self, *_args, **_kwargs):
+                raise AssertionError("running preview must not execute")
+
+            async def handle_message(self, *_args, **_kwargs):
+                raise AssertionError("split flow must not reach LLM")
+
+        async def fake_reply(_chat_id, text, receive_id_type="chat_id", *, reply_type="text"):
+            del receive_id_type, reply_type
+            replies.append(str(text))
+
+        with patch("feishu.bot.get_agent_core", return_value=FakeAgent()), patch.object(
+            message_handler, "get_pending", return_value=None
+        ), patch.object(message_handler, "_reply_text", side_effect=fake_reply):
+            asyncio.run(message_handler._process_and_reply("分批", "user", "chat"))
+
+        self.assertEqual(1, len(replies))
+        self.assertIn("脚本正在执行中", replies[0])
+        self.assertFalse(any("正在生成" in reply for reply in replies))
 
     def test_initial_confirmation_executes_all_previewed_codes(self):
         replies: list[str] = []

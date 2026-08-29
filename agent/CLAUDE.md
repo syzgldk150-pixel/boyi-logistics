@@ -179,7 +179,7 @@ docs/
 
 ## 分批差错及问题件
 
-- 飞书仅以精确文本“分批”触发 `preview_split_pending_problems` 只读预览和选择快照；自提预览使用 `preview_self_pickup_problems`。两条工具只接受显式 `account_id`，封装器固定调用旧实现 `dry_run=true` 并拒绝写入参数；旧文本仅提示发送“分批”。
+- 飞书仅以精确文本“分批”触发 `preview_split_pending_problems` 只读预览和选择快照，通过互斥检查后先回复正在生成；自提预览使用 `preview_self_pickup_problems`。两条工具只接受显式 `account_id`，封装器固定调用旧实现 `dry_run=true` 并拒绝写入参数；分批旧预览的指纹字段与规范化序列化必须和签名 action 完全一致，旧文本仅提示发送“分批”。
 - 只有飞书原发起人在有效 pending 内完成选择与确认，或 Console 从已验签的持久化候选 Run 勾选子集并由服务端恢复指纹后，才可调用签名项目 `automation.split_pending_problem_upload.run`；Scheduler、LLM 和旧同名工具均不能执行正式上传。
 - `selected_bill_codes` 和 `preview_fingerprint` 必须由飞书 pending 或 Agent 持久化候选 Run 恢复，Planner 绑定一至九十个规范、唯一、有序运单号及指纹；浏览器不能上传指纹，旧 `split_pending_problem_upload` 直接工具仍固定 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`，不得绕过项目入口。
 - 业务顺序为少货/分批先差错、再问题件，有发未到只登记问题件。签名包在任何写入前重读来源和快照、复核指纹并预检全部目标；随后逐单独立读回投诉与问题件，并验证 Sheet、MySQL 快照/结果和每日应签事件，不能用提交返回的 `saved/success` 代替 Evidence。
