@@ -19,21 +19,49 @@ from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.manifest import canonical_json_bytes
+from agent.automation_plugins.service_v2_contract import SYSTEM_CAPABILITY_ROLE
 from shared.redaction import redact_text
 
 
 _OPERATIONS = frozenset(
     {
         "browser.invoke",
+        "browser.session",
+        "event.publish",
         "office.invoke",
         "file.read",
         "file.write",
+        "http.request",
         "network.request",
         "projection.invoke",
         "ledger.invoke",
+        "service.invoke",
+        "storage.collection",
+        "storage.kv",
     }
 )
-_SENSITIVE_KEYS = ("password", "cookie", "credential", "secret", "token", "session")
+_SERVICE_V2_OPERATIONS = frozenset(
+    {
+        "browser.session",
+        "event.publish",
+        "file.read",
+        "file.write",
+        "http.request",
+        "service.invoke",
+        "storage.collection",
+        "storage.kv",
+    }
+)
+_SENSITIVE_KEYS = (
+    "api_key",
+    "authorization",
+    "cookie",
+    "credential",
+    "password",
+    "secret",
+    "session",
+    "token",
+)
 _BROKER_FRAME_PREFIX = b"BOYI-BROKER-V2 "
 _MAX_BROKER_LEGACY_REQUEST_BYTES = 10 * 1024 * 1024
 _MAX_BROKER_COMPRESSED_REQUEST_BYTES = 16 * 1024 * 1024
@@ -547,13 +575,36 @@ class LocalBrokerCapabilityIssuer:
             raise PluginExecutionError("browser adapter was not signed for this plugin", code="BROKER_OPERATION_DENIED")
         if operation.startswith("office.") and grant.runtime_permissions.get("office") is not True:
             raise PluginExecutionError("Office adapter was not signed for this plugin", code="BROKER_OPERATION_DENIED")
-        if operation.startswith("network.") and grant.runtime_permissions.get("network") is not True:
+        if operation in {"network.request", "http.request"} and grant.runtime_permissions.get("network") is not True:
             raise PluginExecutionError("network adapter was not signed for this plugin", code="BROKER_OPERATION_DENIED")
+        if operation.startswith("file."):
+            file_roles = grant.runtime_permissions.get("file_roles")
+            if (
+                not isinstance(file_roles, list)
+                or operation not in file_roles
+                and role not in file_roles
+            ):
+                raise PluginExecutionError(
+                    "file adapter was not signed for this plugin",
+                    code="BROKER_OPERATION_DENIED",
+                )
         account_roles = {str(item.get("role") or "") for item in grant.account_roles}
         resource_roles = {str(item.get("role") or "") for item in grant.resource_roles}
+        if SYSTEM_CAPABILITY_ROLE in account_roles | resource_roles:
+            raise PluginExecutionError(
+                "the internal broker role cannot be externally declared",
+                code="BROKER_CONTRACT_INVALID",
+            )
         if role in account_roles and role in resource_roles:
             raise PluginExecutionError("broker role declaration is ambiguous", code="BROKER_CONTRACT_INVALID")
-        if role in account_roles:
+        if role == SYSTEM_CAPABILITY_ROLE:
+            if operation not in _SERVICE_V2_OPERATIONS or allowed_roles != [role]:
+                raise PluginExecutionError(
+                    "the internal broker role is invalid for this operation",
+                    code="BROKER_CONTRACT_INVALID",
+                )
+            binding = None
+        elif role in account_roles:
             if role not in grant.account_bindings:
                 raise PluginExecutionError("account role is unbound", code="BROKER_ROLE_UNBOUND")
             binding = grant.account_bindings[role]

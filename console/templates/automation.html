@@ -123,18 +123,18 @@
       <div class="automation-plugin-manager-body">
         <section class="automation-plugin-install-section" aria-labelledby="automation-plugin-install-title">
           <div class="automation-plugin-install-copy">
-            <h3 id="automation-plugin-install-title">安装新的自动化项目</h3>
-            <p>拖入签名 ZIP 后立即安装。未填写项目名称时使用 ZIP 文件名，新项目默认停用。</p>
+            <h3 id="automation-plugin-install-title">超级管理员直接安装 ZIP</h3>
+            <p>v2 ZIP 无需签名、发布审批或运行审批。系统仍会校验 ZIP、Manifest 和运行环境，并记录 SHA-256 与安装审计；历史 v1 包继续按原签名合同处理。</p>
           </div>
           <form class="automation-plugin-install-form" action="/automations/plugins/install" method="post" enctype="multipart/form-data" data-plugin-install-form>
             <label class="automation-plugin-name-field">
               <span>项目名称（可选）</span>
               <input class="review-input compact-input" type="text" name="instance_name" maxlength="120" autocomplete="off" placeholder="留空则使用 ZIP 文件名">
             </label>
-            <div class="automation-plugin-drop-zone" data-plugin-drop-zone role="group" aria-label="签名 ZIP 拖放安装区">
+            <div class="automation-plugin-drop-zone" data-plugin-drop-zone role="group" aria-label="ZIP 插件包拖放安装区">
               <span class="automation-plugin-drop-icon" aria-hidden="true"><i data-feather="upload-cloud"></i></span>
               <div class="automation-plugin-drop-copy">
-                <strong>把签名 ZIP 拖到这里安装</strong>
+                <strong>把 ZIP 插件包拖到这里安装</strong>
                 <span data-plugin-file-name>仅接受一个不超过 32MB 的 .zip 文件</span>
               </div>
               <button class="ghost-btn automation-plugin-file-choose" type="button" data-plugin-file-choose>选择 ZIP</button>
@@ -145,6 +145,44 @@
               <button class="ghost-btn" type="button" data-plugin-install-cancel>取消</button>
             </div>
             <p class="automation-plugin-feedback" data-plugin-install-feedback role="status" aria-live="polite" hidden></p>
+          </form>
+        </section>
+        <section class="automation-plugin-migration-create" aria-labelledby="automation-plugin-migration-create-title">
+          <div class="automation-plugin-install-copy">
+            <h3 id="automation-plugin-migration-create-title">建立并行迁移验证</h3>
+            <p>把一个现有 v1 项目与独立 v2 项目配对。v2 在接管前只允许手动验证；防重复业务字段必须能在两边每次运行时明确取得。</p>
+          </div>
+          <form class="automation-plugin-migration-form" data-plugin-migration-create-form>
+            <label>
+              <span>现有 v1 项目</span>
+              <select class="review-input compact-input" name="source_automation_id" required>
+                <option value="">请选择旧项目</option>
+                {% for candidate in automation_plugin_instances if candidate.runtime_model == 'ACTION_V1' and not candidate.migration %}
+                <option value="{{ candidate.automation_id }}">{{ candidate.instance_name }} · {{ candidate.automation_id }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              <span>新 v2 项目</span>
+              <select class="review-input compact-input" name="target_automation_id" required>
+                <option value="">请选择 v2 项目</option>
+                {% for candidate in automation_plugin_instances if candidate.runtime_model == 'SERVICE_V2' and not candidate.migration %}
+                <option value="{{ candidate.automation_id }}">{{ candidate.instance_name }} · {{ candidate.automation_id }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              <span>防重复业务字段</span>
+              <input class="review-input compact-input" type="text" name="business_key_fields" maxlength="256" autocomplete="off" placeholder="例如 business_date；多个字段用逗号分隔" required>
+            </label>
+            <label>
+              <span>业务键命名空间（可选）</span>
+              <input class="review-input compact-input" type="text" name="business_key_namespace" maxlength="96" autocomplete="off" placeholder="例如 clockin-daxiang">
+            </label>
+            <div class="automation-plugin-install-actions">
+              <button class="primary-btn" type="submit" data-plugin-migration-create-submit>开始并行验证</button>
+            </div>
+            <p class="automation-plugin-feedback" data-plugin-migration-create-feedback role="status" aria-live="polite" hidden></p>
           </form>
         </section>
         <section class="automation-action-catalog" aria-labelledby="automation-action-catalog-title">
@@ -160,9 +198,25 @@
             <li class="automation-action-package">
               <span class="automation-action-package-icon" aria-hidden="true"><i data-feather="package"></i></span>
               <div class="automation-action-package-copy">
-                <div class="automation-action-package-title"><strong>{{ package.name }}</strong><span>{{ package.version }}</span></div>
+                <div class="automation-action-package-title">
+                  <strong>{{ package.name }}</strong>
+                  <span>{{ package.version }}</span>
+                </div>
                 <p>{{ package.action_summary or '可安装为独立的自动化项目' }}</p>
-                <div class="automation-action-package-meta"><span>{{ package.platform_label }}</span><span>需要设置：{{ package.configuration_summary }}</span></div>
+                <div class="automation-action-package-meta">
+                  <span>{{ package.platform_label }}</span>
+                  {% if package.runtime_model == 'SERVICE_V2' %}
+                  <span class="automation-plugin-model">{{ package.runtime_model_label }}</span>
+                  {% if package.plugin_api %}<span>Host API {{ package.plugin_api }}</span>{% endif %}
+                  {% endif %}
+                  <span>需要设置：{{ package.configuration_summary }}</span>
+                </div>
+                {% if package.runtime_model == 'SERVICE_V2' and package.provided_services %}
+                <div class="automation-plugin-services" aria-label="插件提供的服务">
+                  <span>服务</span>
+                  {% for service in package.provided_services %}<code>{{ service }}</code>{% endfor %}
+                </div>
+                {% endif %}
               </div>
             </li>
             {% endfor %}
@@ -288,6 +342,10 @@
         {% set can_save = task.can_save | default(true) %}
         {% set can_run_now = task.can_run_now | default(true) %}
         {% set run_disabled_reason = task.run_disabled_reason | default('当前不可执行') %}
+        {% if task.plugin and task.plugin.runtime_model == 'SERVICE_V2' and not task.plugin.console_entrypoints %}
+          {% set can_run_now = false %}
+          {% set run_disabled_reason = '未声明后台手动入口' %}
+        {% endif %}
         {% set has_expandable_settings = can_save and (has_webhook or task.is_schedulable or has_params or has_resources or has_account_roles or has_plugin_resource_roles or (task.plugin and task.plugin.entrypoints)) %}
 
         {# ── 卡片主行 ── #}
@@ -335,6 +393,21 @@
             </label>
             {% endif %}
 
+            {% if task.plugin and task.plugin.runtime_model == 'SERVICE_V2' and task.plugin.console_entrypoints | length == 1 %}
+            <input type="hidden" name="contribution_id" value="{{ task.plugin.console_entrypoints[0] }}">
+            {% elif task.plugin and task.plugin.runtime_model == 'SERVICE_V2' and task.plugin.console_entrypoints | length > 1 %}
+            <label class="automation-plugin-contribution-select">
+              <span class="sr-only">选择要手动执行的 v2 能力</span>
+              <select class="review-input compact-input" name="contribution_id" aria-label="选择要手动执行的 v2 能力">
+                {% set contribution_selection = namespace(chosen=false) %}
+                {% for contribution_id in task.plugin.console_entrypoints %}
+                {% set contribution_enabled = contribution_id in task.plugin.enabled_console_entrypoints %}
+                <option value="{{ contribution_id }}" {% if not contribution_enabled %}disabled{% elif not contribution_selection.chosen %}selected{% set contribution_selection.chosen = true %}{% endif %}>{{ contribution_id }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            {% endif %}
+
             {% if can_run_now %}
             <button class="primary-btn auto-run-btn" type="submit" formaction="{{ '/automations/tasks/selection-preview' if is_selection_preview_workflow else '/automations/tasks/run-now' }}" formmethod="post" data-run-now data-run-mode="start">
               <i data-feather="play" data-run-icon></i>
@@ -378,12 +451,43 @@
             <div class="automation-plugin-instance-copy">
               <div class="automation-plugin-instance-line">
                 <span class="automation-plugin-state automation-plugin-state--{{ plugin.state | lower }}">{{ plugin.status_label }}</span>
+                {% if plugin.runtime_model == 'SERVICE_V2' %}
+                <span class="automation-plugin-model">{{ plugin.runtime_model_label }}</span>
+                <span>运行版本 {{ plugin.active_version or '尚未激活' }}</span>
+                {% if plugin.target_version and plugin.target_version != plugin.active_version %}<span>目标版本 {{ plugin.target_version }}</span>{% endif %}
+                {% if plugin.plugin_api %}<span>Host API {{ plugin.plugin_api }}</span>{% endif %}
+                {% else %}
                 <span>{{ plugin.version }}</span>
+                {% endif %}
                 <span>{{ plugin.platform_label }}</span>
                 <span>{{ '可设置定时' if plugin.can_schedule else '仅按允许入口触发' }}</span>
               </div>
               {% if plugin.action_summary %}<p>{{ plugin.action_summary }}</p>{% endif %}
               <small>需要设置：{{ plugin.configuration_summary }}</small>
+              {% if plugin.runtime_model == 'SERVICE_V2' and plugin.provided_services %}
+              <div class="automation-plugin-services" aria-label="项目已注册的服务">
+                <span>服务</span>
+                {% for service in plugin.provided_services %}<code>{{ service }}</code>{% endfor %}
+              </div>
+              {% endif %}
+              {% if plugin.migration %}
+              <div class="automation-plugin-migration" data-plugin-migration data-migration-pair-id="{{ plugin.migration.migration_pair_id }}" data-migration-record-version="{{ plugin.migration.record_version }}">
+                <div class="automation-plugin-migration-copy">
+                  <span>{{ plugin.migration.status_label }}</span>
+                  {% if plugin.migration.test_status_label %}<span>{{ plugin.migration.test_status_label }}</span>{% endif %}
+                  {% if plugin.migration.paired_automation_id %}<span>配对项目 {{ plugin.migration.paired_automation_id }}</span>{% endif %}
+                  {% if plugin.migration.entrypoint_owner_automation_id %}<span>当前入口：{{ '本项目' if plugin.migration.owns_entrypoints else plugin.migration.entrypoint_owner_automation_id }}</span>{% endif %}
+                </div>
+                {% if can_manage_plugins and plugin.migration.role == 'TARGET' %}
+                <div class="automation-plugin-migration-actions">
+                  {% if plugin.migration.can_mark_ready %}<button class="ghost-btn" type="button" data-plugin-migration-action="ready">标记验证就绪</button>{% endif %}
+                  {% if plugin.migration.can_cutover %}<button class="primary-btn" type="button" data-plugin-migration-action="cutover">接管自动执行</button>{% endif %}
+                  {% if plugin.migration.can_rollback %}<button class="ghost-btn" type="button" data-plugin-migration-action="rollback">回滚到旧项目</button>{% endif %}
+                  {% if plugin.migration.can_complete %}<button class="ghost-btn" type="button" data-plugin-migration-action="complete">完成迁移</button>{% endif %}
+                </div>
+                {% endif %}
+              </div>
+              {% endif %}
             </div>
             {% if can_manage_plugins %}
             <div class="automation-plugin-menu-wrap">
@@ -423,7 +527,7 @@
           {% if task.plugin_blocked %}
           <div class="automation-plugin-block" role="status">
             <i data-feather="alert-triangle"></i>
-            <span>{{ task.plugin_warning or '项目配置尚未完整；运行、启用和完全自动均已阻断。' }}</span>
+            <span>{{ plugin.blocking_reason_labels | join('；') if plugin.blocking_reason_labels else task.plugin_warning or '项目配置尚未完整；运行、启用和完全自动均已阻断。' }}</span>
             {% if can_manage_plugins and plugin.reconcile_state == 'BLOCKED_UNKNOWN_WRITE' %}
             <button class="ghost-btn" type="button" data-plugin-recover-unknown-write>
               检查结果并恢复
@@ -440,7 +544,23 @@
         </div>
         {% endif %}
 
-        {% if task.approval_policy %}
+        {% if task.plugin and task.plugin.runtime_model == 'SERVICE_V2' %}
+        <section
+          class="auto-project-governance auto-project-governance--active auto-project-governance--service-v2"
+          aria-label="{{ task.name_value }} v2 运行方式"
+        >
+          <div class="auto-project-governance-row">
+            <div class="auto-project-governance-copy">
+              <span class="auto-project-governance-kicker">
+                <i data-feather="shield"></i>
+                运行方式
+              </span>
+              <strong>完全自动</strong>
+              <p>超级管理员安装后，依赖、配置和账号就绪即按 Manifest 默认入口运行。运行结果和写后 Evidence 继续留痕，审计不是审批。</p>
+            </div>
+          </div>
+        </section>
+        {% elif task.approval_policy %}
         {% set policy = task.approval_policy | default({}, true) %}
         <section
           class="auto-project-governance auto-project-governance--{{ policy.effective_status | default('unavailable', true) | lower }}"
@@ -767,12 +887,16 @@
             </div>
             <div class="automation-plugin-entrypoint-grid">
               {% for entrypoint in task.plugin.entrypoints %}
+              {% set entrypoint_kind = task.plugin.entrypoint_kinds.get(entrypoint, entrypoint) %}
               <label class="automation-plugin-entrypoint-option">
-                <input type="checkbox" role="switch" value="{{ entrypoint }}" data-plugin-entrypoint {% if entrypoint in task.plugin.enabled_entrypoints %}checked{% endif %} aria-label="{{ {'scheduler': '系统定时', 'console': '后台手动', 'feishu': '飞书消息', 'webhook': '外部验签请求'}.get(entrypoint, entrypoint) }}">
+                <input type="checkbox" role="switch" value="{{ entrypoint }}" data-plugin-entrypoint data-plugin-entrypoint-kind="{{ entrypoint_kind }}" {% if entrypoint in task.plugin.enabled_entrypoints %}checked{% endif %} aria-label="{{ {'scheduler': '系统定时', 'console': '后台手动', 'feishu': '飞书消息', 'webhook': '外部验签请求', 'events': '事件订阅'}.get(entrypoint_kind, entrypoint_kind) }}">
                 <span class="automation-plugin-entrypoint-track" aria-hidden="true"></span>
                 <span class="automation-plugin-entrypoint-copy">
-                  <strong>{{ {'scheduler': '系统定时', 'console': '后台手动', 'feishu': '飞书消息', 'webhook': '外部验签请求'}.get(entrypoint, entrypoint) }}</strong>
-                  <small data-plugin-entrypoint-state>{% if entrypoint in task.plugin.enabled_entrypoints %}开启{% else %}关闭{% endif %}</small>
+                  <strong>{{ {'scheduler': '系统定时', 'console': '后台手动', 'feishu': '飞书消息', 'webhook': '外部验签请求', 'events': '事件订阅'}.get(entrypoint_kind, entrypoint_kind) }}</strong>
+                  <small>
+                    {% if task.plugin.runtime_model == 'SERVICE_V2' %}<code>{{ entrypoint }}</code>{% endif %}
+                    <span data-plugin-entrypoint-state>{% if entrypoint in task.plugin.enabled_entrypoints %}开启{% else %}关闭{% endif %}</span>
+                  </small>
                 </span>
               </label>
               {% endfor %}
@@ -958,7 +1082,7 @@
               <i data-feather="plus"></i>
               添加时间
             </button>
-            {% if task.plugin %}<p class="auto-account-blocked" data-plugin-schedule-effect {% if not (task.plugin.schedule.enabled and 'scheduler' not in task.plugin.enabled_entrypoints) %}hidden{% endif %}>定时时间会保留，但“系统定时”入口关闭，当前不会运行。</p>{% endif %}
+            {% if task.plugin %}<p class="auto-account-blocked" data-plugin-schedule-effect {% if not (task.plugin.schedule.enabled and 'scheduler' not in task.plugin.enabled_entrypoint_kinds) %}hidden{% endif %}>定时时间会保留，但“系统定时”入口关闭，当前不会运行。</p>{% endif %}
             {% if task.plugin %}<p class="auto-webhook-note">时间由系统保存，修改后点击“保存项目设置”。{% if task.plugin_schedule_source == 'legacy_migration' %} 当前显示旧任务时间，保存后会统一到项目设置。{% endif %}</p>{% endif %}
           </div>
           {% endif %}
@@ -3127,6 +3251,10 @@
           const body = new URLSearchParams();
           if (isSelectionPreviewWorkflow) {
             body.set("task_id", String(form.querySelector("input[name='task_id']")?.value || ""));
+            const contribution = form.querySelector("[name='contribution_id']");
+            if (contribution instanceof HTMLInputElement || contribution instanceof HTMLSelectElement) {
+              body.set("contribution_id", contribution.value);
+            }
           } else {
             const fd = new FormData(form);
             fd.forEach((v, k) => { if (typeof v === "string") body.append(k, v); });

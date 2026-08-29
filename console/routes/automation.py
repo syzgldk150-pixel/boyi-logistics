@@ -28,6 +28,19 @@ def _automation_plugin_route(path: str) -> tuple[str, str] | None:
     return automation_id, action
 
 
+def _automation_plugin_migration_route(path: str) -> tuple[str, str] | None:
+    prefix = "/automations/plugin-migrations/"
+    if not path.startswith(prefix):
+        return None
+    remainder = path[len(prefix) :]
+    if remainder == "create":
+        return "", "create"
+    pair_id, separator, action = remainder.partition("/")
+    if not separator or not pair_id or not action or "/" in action:
+        return None
+    return pair_id, action
+
+
 def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[str, list[str]]) -> bool:
     if path in {"/automations", "/workspaces/automations"}:
         app._render_automations(handler, query)
@@ -77,6 +90,20 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
         return True
     if path == "/automations/tasks/cancel":
         app._handle_automation_task_cancel(handler)
+        return True
+    migration_route = _automation_plugin_migration_route(path)
+    if migration_route and migration_route[1] in {
+        "create",
+        "ready",
+        "cutover",
+        "rollback",
+        "complete",
+    }:
+        app._handle_automation_plugin_migration_action(
+            handler,
+            migration_route[0],
+            migration_route[1],
+        )
         return True
     plugin_route = _automation_plugin_route(path)
     if plugin_route and plugin_route[1] == "install":

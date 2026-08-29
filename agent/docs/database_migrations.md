@@ -120,6 +120,11 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   `deploy/mysql/zz-boyi-binlog-retention.cnf` 管理并安装到 ECS `/etc/my.cnf.d/`，应用迁移账号不授予
   `SYSTEM_VARIABLES_ADMIN`。
   超期文件只能由 MySQL 自动过期或正式 `PURGE BINARY LOGS` 清理，禁止直接删除 binlog 文件。
+- `033_plugin_service_v2_foundation.sql`：在不改写历史 v1 包的前提下增加 `ACTION_V1/SERVICE_V2`
+  运行模型、Service/Contribution 代际类型、v1→v2 migration pair 与业务运行键、托管插件文档及
+  digest-only 普通索引/unique 约束表。插件只能通过仓储事务执行 CAS、完整等值索引查询和唯一约束；
+  不获得 SQL/DDL 权限。migration pair 从 `PREPARING` 持久互斥态开始，先禁用目标物理任务再复制配置；
+  卸载把文档转为 `RETAINED`，独立永久清除同时删除文档索引并保留清除审计。
 
 生产迁移序列固定连续递增且不得改写已执行文件；发布器只按顺序补执行尚未记录的迁移，包含对已应用
 `022`、`023` 保持原始校验和，并在目标库尚未记录时执行 `024`。`016`/`017`/`018` 在业务行变更前各自保存

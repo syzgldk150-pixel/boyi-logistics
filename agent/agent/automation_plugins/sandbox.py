@@ -14,6 +14,16 @@ from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.sdk import PLUGIN_SDK_SOURCE
 
 
+_DEFAULT_PRLIMIT_PATH = Path("/usr/bin/prlimit")
+_RESOURCE_LIMIT_OPTIONS = (
+    "--as=1073741824:1073741824",
+    "--nproc=64:64",
+    "--cpu=300:300",
+    "--fsize=16777216:16777216",
+    "--nofile=128:128",
+)
+
+
 @dataclass(frozen=True)
 class SandboxCanaryResult:
     """Cached, payload-free proof that the production sandbox is executable."""
@@ -40,11 +50,20 @@ class BubblewrapPluginSandbox:
         *,
         trusted_base_prefix: Path | str | None = None,
         trusted_runtime_prefix: Path | str | None = None,
+        prlimit_path: Path | str = _DEFAULT_PRLIMIT_PATH,
     ) -> None:
         target = Path(executable)
         if not target.is_absolute() or target.is_symlink() or not target.is_file():
             raise ValueError("bubblewrap executable must be one explicit regular file")
         self._executable = target.resolve()
+        limiter = Path(prlimit_path)
+        if (
+            not limiter.is_absolute()
+            or limiter.is_symlink()
+            or not limiter.is_file()
+        ):
+            raise ValueError("prlimit executable must be one explicit regular file")
+        self._prlimit = limiter.resolve()
         raw_prefix = Path(trusted_base_prefix) if trusted_base_prefix is not None else Path(sys.base_prefix)
         if (
             not raw_prefix.is_absolute()
@@ -115,6 +134,17 @@ class BubblewrapPluginSandbox:
     def _covered_by_system_bind(path: Path, system_roots: tuple[Path, ...]) -> bool:
         return any(path == root or root in path.parents for root in system_roots)
 
+    def _limited_command(self, bubblewrap_arguments: list[str]) -> list[str]:
+        """Apply hard limits; prlimit execs bwrap so its process group is preserved."""
+
+        return [
+            str(self._prlimit),
+            *_RESOURCE_LIMIT_OPTIONS,
+            "--",
+            str(self._executable),
+            *bubblewrap_arguments,
+        ]
+
     @property
     def canary_result(self) -> SandboxCanaryResult | None:
         return self._canary_result
@@ -151,8 +181,7 @@ class BubblewrapPluginSandbox:
                 for system_root in ("/usr", "/bin", "/lib", "/lib64")
                 if Path(system_root).exists()
             )
-            command = [
-                str(self._executable),
+            bubblewrap_arguments = [
                 "--die-with-parent",
                 "--new-session",
                 "--unshare-all",
@@ -164,9 +193,11 @@ class BubblewrapPluginSandbox:
                 "/tmp",
             ]
             for system_root in system_roots:
-                command.extend(("--ro-bind", str(system_root), str(system_root)))
+                bubblewrap_arguments.extend(
+                    ("--ro-bind", str(system_root), str(system_root))
+                )
             if not self._covered_by_system_bind(self._trusted_base_prefix, system_roots):
-                command.extend(
+                bubblewrap_arguments.extend(
                     ("--ro-bind", str(self._trusted_base_prefix), str(self._trusted_base_prefix))
                 )
             payload = (
@@ -177,7 +208,7 @@ class BubblewrapPluginSandbox:
                 "assert callable(namespace['broker_call'])\n"
                 "print(json.dumps({'ok': True}, sort_keys=True))\n"
             )
-            command.extend(
+            bubblewrap_arguments.extend(
                 (
                     "--chdir",
                     "/tmp",
@@ -196,6 +227,7 @@ class BubblewrapPluginSandbox:
                     payload,
                 )
             )
+            command = self._limited_command(bubblewrap_arguments)
             proc = await asyncio.create_subprocess_exec(
                 *command,
                 stdin=asyncio.subprocess.DEVNULL,
@@ -234,8 +266,7 @@ class BubblewrapPluginSandbox:
         python_path = self._relative(python_relative, "Python")
         entrypoint = self._relative(entrypoint_relative, "entrypoint")
         base_prefix = self._base_prefix(root, python_path)
-        command = [
-            str(self._executable),
+        bubblewrap_arguments = [
             "--die-with-parent",
             "--new-session",
             "--unshare-all",
@@ -250,15 +281,23 @@ class BubblewrapPluginSandbox:
             Path(system_root) for system_root in ("/usr", "/bin", "/lib", "/lib64") if Path(system_root).exists()
         )
         for system_root in system_roots:
-            command.extend(("--ro-bind", str(system_root), str(system_root)))
+            bubblewrap_arguments.extend(
+                ("--ro-bind", str(system_root), str(system_root))
+            )
         if not self._covered_by_system_bind(base_prefix, system_roots):
-            command.extend(("--ro-bind", str(base_prefix), str(base_prefix)))
-        command.extend(("--ro-bind", str(root), "/plugin", "--chdir", "/plugin"))
+            bubblewrap_arguments.extend(
+                ("--ro-bind", str(base_prefix), str(base_prefix))
+            )
+        bubblewrap_arguments.extend(
+            ("--ro-bind", str(root), "/plugin", "--chdir", "/plugin")
+        )
         if broker_socket_path is not None:
             socket_path = broker_socket_path.resolve()
             if socket_path.is_symlink() or not socket_path.exists() or not socket_path.parent.is_dir():
                 raise PluginExecutionError("core broker socket is missing or unsafe")
-            command.extend(("--ro-bind", str(socket_path.parent), "/run/boyi-plugin-broker"))
+            bubblewrap_arguments.extend(
+                ("--ro-bind", str(socket_path.parent), "/run/boyi-plugin-broker")
+            )
         safe_environment = dict(environment)
         safe_environment["PATH"] = "/usr/bin:/bin"
         safe_environment["HOME"] = "/tmp"
@@ -268,13 +307,14 @@ class BubblewrapPluginSandbox:
                 f"unix:///run/boyi-plugin-broker/{broker_socket_path.name}"
             )
         for key, value in sorted(safe_environment.items()):
-            command.extend(("--setenv", key, value))
-        command.extend(
+            bubblewrap_arguments.extend(("--setenv", key, value))
+        bubblewrap_arguments.extend(
             (
                 f"/plugin/{python_path.as_posix()}",
                 f"/plugin/package/{entrypoint.as_posix()}",
             )
         )
+        command = self._limited_command(bubblewrap_arguments)
         return await asyncio.create_subprocess_exec(
             *command,
             stdin=asyncio.subprocess.PIPE,

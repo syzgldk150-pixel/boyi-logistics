@@ -549,6 +549,8 @@ body.dispatch-page .notice { display: none; }
 
 /* ── Card actions ── */
 .auto-card-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.automation-plugin-contribution-select { min-width: 0; margin: 0; }
+.automation-plugin-contribution-select select { width: min(220px, 24vw); min-height: 34px; font-family: var(--font-mono); font-size: 0.72rem; text-overflow: ellipsis; }
 
 /* toggle — vertically centered with action row */
 .auto-toggle-wrap { position: relative; display: inline-flex; align-items: center; width: 40px; height: 22px; cursor: pointer; margin-right: 6px; }
@@ -631,7 +633,7 @@ body.dispatch-page .notice { display: none; }
 .auto-resource-alert .feather { width: 15px; height: 15px; flex-shrink: 0; margin-top: 1px; color: #b45309; }
 
 /* ── Project-level automation governance ── */
-/* ── Installed automation projects and signed packages ── */
+/* ── Installed automation projects and ZIP packages ── */
 .automation-plugin-manager-trigger { position: relative; width: 40px; min-height: 40px; padding: 0; justify-content: center; color: var(--text); }
 .automation-plugin-manager-trigger:hover { color: var(--text-strong); }
 .automation-plugin-manager-icon { width: 19px; height: 19px; }
@@ -669,6 +671,11 @@ body.dispatch-page .notice { display: none; }
 .automation-plugin-file-choose { min-height: 40px; white-space: nowrap; }
 .automation-plugin-install-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
 .automation-plugin-install-actions button { min-height: 40px; }
+.automation-plugin-migration-create { display: grid; gap: 14px; padding: 20px; border-bottom: 1px solid var(--line); background: #fff; }
+.automation-plugin-migration-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.automation-plugin-migration-form label { display: grid; gap: 5px; min-width: 0; color: var(--text-strong); font-size: 0.76rem; font-weight: 700; }
+.automation-plugin-migration-form select,
+.automation-plugin-migration-form input { width: 100%; min-width: 0; background: #fff; }
 .automation-plugin-feedback { grid-column: 1 / -1; margin: 0; font-size: 0.78rem; font-weight: 700; }
 .automation-plugin-feedback[data-kind="success"] { color: #047857; }
 .automation-plugin-feedback[data-kind="warning"] { color: #92400e; }
@@ -687,6 +694,10 @@ body.dispatch-page .notice { display: none; }
 .automation-action-package-title span { color: var(--muted); font-size: 0.7rem; font-weight: 700; }
 .automation-action-package p { margin: 0; color: var(--muted); font-size: 0.76rem; line-height: 1.45; }
 .automation-action-package-meta { display: flex; flex-wrap: wrap; gap: 5px 10px; color: var(--muted); font-size: 0.7rem; }
+.automation-plugin-model { display: inline-flex; align-items: center; min-height: 20px; padding: 0 6px; border-radius: var(--radius-xs); background: #eaf2ff; color: #1d4ed8; font-size: 0.68rem; font-weight: 750; }
+.automation-plugin-services { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 7px; color: var(--muted); font-size: 0.7rem; }
+.automation-plugin-services > span { font-weight: 700; }
+.automation-plugin-services code { max-width: 100%; padding: 2px 5px; border-radius: var(--radius-xs); background: var(--surface-muted); color: var(--text); font-family: var(--font-mono); font-size: 0.68rem; overflow-wrap: anywhere; }
 .automation-action-catalog-empty { display: grid; min-height: 112px; place-items: center; gap: 8px; color: var(--muted); text-align: center; }
 .automation-action-catalog-empty .feather { width: 22px; height: 22px; }
 .automation-action-catalog-empty p { margin: 0; font-size: 0.8rem; }
@@ -698,11 +709,15 @@ body.dispatch-page .notice { display: none; }
   .automation-plugin-manager-header { min-height: 68px; padding: 12px; }
   .automation-plugin-manager-heading-icon { width: 36px; height: 36px; }
   .automation-plugin-install-section,
+  .automation-plugin-migration-create,
   .automation-action-catalog { padding: 16px; }
   .automation-plugin-drop-zone { grid-template-columns: auto minmax(0, 1fr); min-height: 132px; }
   .automation-plugin-file-choose { grid-column: 1 / -1; width: 100%; min-height: 44px; }
   .automation-plugin-install-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .automation-plugin-install-actions button { min-height: 44px; }
+  .automation-plugin-migration-form { grid-template-columns: 1fr; }
+  .automation-plugin-migration-form select,
+  .automation-plugin-migration-form input { min-height: 44px; }
   .automation-action-package-meta { display: grid; gap: 3px; }
 }
 .automation-plugin-advanced-config { margin-top: 12px; padding: 11px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fafafa; }
@@ -719,7 +734,22 @@ body.dispatch-page .notice { display: none; }
 .automation-plugin-instance-copy small { margin: 0; color: var(--muted); font-size: 0.77rem; line-height: 1.5; }
 .automation-plugin-state { display: inline-flex; align-items: center; min-height: 22px; padding: 1px 8px; border: 1px solid #d1d5db; border-radius: var(--radius-pill); background: #fff; color: #4b5563; font-size: 0.7rem; font-weight: 750; }
 .automation-plugin-state--enabled { border-color: #bbf7d0; background: #f0fdf4; color: #047857; }
+.automation-plugin-state--blocked_dependency,
+.automation-plugin-state--needs_configuration { border-color: #fde68a; background: #fffbeb; color: #92400e; }
+.automation-plugin-state--blocked_login { border-color: #fed7aa; background: #fff7ed; color: #9a3412; }
 .automation-plugin-state--error { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
+.automation-plugin-migration { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; color: var(--text); font-size: 0.72rem; line-height: 1.5; }
+.automation-plugin-migration-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
+.automation-plugin-migration-copy > span:first-child { font-weight: 750; }
+.automation-plugin-migration-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.automation-plugin-migration-actions .primary-btn,
+.automation-plugin-migration-actions .ghost-btn { min-height: 36px; padding: 6px 10px; font-size: 0.72rem; }
+@media (max-width: 640px) {
+  .automation-plugin-migration { align-items: stretch; }
+  .automation-plugin-migration-actions { display: grid; width: 100%; grid-template-columns: 1fr; }
+  .automation-plugin-migration-actions .primary-btn,
+  .automation-plugin-migration-actions .ghost-btn { min-height: 44px; }
+}
 .automation-plugin-menu-wrap { position: relative; flex: 0 0 auto; }
 .automation-plugin-menu-toggle { width: 40px; min-height: 40px; padding: 0; justify-content: center; }
 .automation-plugin-menu-toggle .feather { width: 16px; height: 16px; }
@@ -750,7 +780,8 @@ body.dispatch-page .notice { display: none; }
 .automation-plugin-entrypoint-option input:checked + .automation-plugin-entrypoint-track::after { transform: translateX(16px); }
 .automation-plugin-entrypoint-copy { display: grid; gap: 1px; }
 .automation-plugin-entrypoint-copy strong { font-size: 0.8rem; }
-.automation-plugin-entrypoint-copy small { color: var(--muted); font-size: 0.7rem; font-weight: 600; }
+.automation-plugin-entrypoint-copy small { display: flex; flex-wrap: wrap; gap: 2px 6px; color: var(--muted); font-size: 0.7rem; font-weight: 600; }
+.automation-plugin-entrypoint-copy code { color: var(--muted); font-size: 0.68rem; overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) {
   .automation-plugin-entrypoint-track,
   .automation-plugin-entrypoint-track::after,
@@ -2201,6 +2232,8 @@ body.dispatch-page .notice { display: none; }
   .auto-card.is-mobile-expanded .auto-mode-badge,
   .auto-card.is-mobile-expanded .auto-system-badge { min-height: 28px; padding: 2px 8px; }
   .auto-card-actions { width: 100%; gap: 8px; flex-wrap: nowrap; align-items: center; justify-content: flex-end; }
+  .automation-plugin-contribution-select { flex: 1 1 auto; }
+  .automation-plugin-contribution-select select { width: 100%; min-height: 44px; }
   .auto-toggle-wrap { width: 44px; height: 44px; margin-right: 0; flex: 0 0 44px; }
   .auto-toggle-track { inset: 11px 2px; }
   .auto-run-btn { flex: 0 0 auto; min-width: 80px; min-height: 44px; padding: 0 12px; justify-content: center; font-size: 0.84rem; }

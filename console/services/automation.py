@@ -5,6 +5,9 @@ from typing import Any, Mapping
 
 from console.app_support import *  # noqa: F403
 from console.services.automation_projects import *  # noqa: F403
+from console.services.automation_projects import (
+    automation_plugin_block_warning as _automation_plugin_block_warning,
+)
 
 
 SCAN_PREVIEW_PROJECT_ID = "scan_codes"
@@ -273,45 +276,6 @@ def group_scheduled_rows_by_automation_id(
             }
         )
     return groups
-
-
-def _automation_plugin_block_warning(plugin: Mapping[str, Any]) -> str:
-    """Keep configuration closure distinct from an immutable runtime transition."""
-
-    if plugin.get("configured") is not True:
-        return AUTOMATION_RUNTIME_REASON_LABELS[
-            "PROJECT_CONFIGURATION_INCOMPLETE"
-        ]
-    enabled_entrypoints = plugin.get("enabled_entrypoints")
-    if isinstance(enabled_entrypoints, list) and not enabled_entrypoints:
-        return AUTOMATION_RUNTIME_REASON_LABELS["ENTRYPOINTS_DISABLED"]
-    missing = [
-        str(item).strip()
-        for item in plugin.get("missing_requirements") or []
-        if str(item).strip()
-    ]
-    if missing:
-        if any(
-            "合同" in item
-            or "Schema" in item
-            or "投影" in item
-            or "运行描述符" in item
-            for item in missing
-        ):
-            return AUTOMATION_RUNTIME_CONTRACT_ERROR_LABEL
-        return "；".join(dict.fromkeys(missing))
-    state = str(plugin.get("state") or "UNKNOWN").upper()
-    if state not in AUTOMATION_PLUGIN_STABLE_STATES:
-        reconcile_state = str(plugin.get("reconcile_state") or "UNKNOWN").upper()
-        if reconcile_state == "BLOCKED_UNKNOWN_WRITE":
-            return (
-                "上次运行的保存结果无法确认。为防止重复写入，任务已暂停。"
-                "请先核对业务表格，再检查结果并恢复。"
-            )
-        if reconcile_state == "ERROR":
-            return "运行环境准备失败，任务已暂停。请联系管理员检查后再恢复。"
-        return "运行环境正在更新，任务暂时不可运行。已有设置和自动执行状态会保留。"
-    return AUTOMATION_RUNTIME_REASON_LABELS["PROJECT_RUNTIME_UNAVAILABLE"]
 
 
 class AutomationServiceMixin(AutomationProjectsServiceMixin):
@@ -607,6 +571,21 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 "error_code": "INVALID_AUTOMATION_PROJECT_INVOKE",
             }
         invoke_payload = {"request_id": request_id}
+        contribution_id = str(payload.get("contribution_id") or "").strip().lower()
+        if contribution_id:
+            if (
+                payload.get("project_plugin_instance") is not True
+                or not AUTOMATION_PLUGIN_V2_ENTRYPOINT_ID_RE.fullmatch(
+                    contribution_id
+                )
+            ):
+                return {
+                    "ok": False,
+                    "status": HTTPStatus.BAD_REQUEST,
+                    "error": "自动化手动入口无效。",
+                    "error_code": "INVALID_AUTOMATION_CONTRIBUTION",
+                }
+            invoke_payload["contribution_id"] = contribution_id
         if preview_run_id is not None:
             safe_preview_run_id = self._normalize_browser_request_uuid(preview_run_id)
             if automation_id != SCAN_PREVIEW_PROJECT_ID or not safe_preview_run_id:
@@ -979,7 +958,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             task["resource_blocked"] = False
             task["is_schedulable"] = bool(plugin.get("can_schedule"))
             task["schedule_supported"] = bool(task.get("is_schedulable"))
-            stable_state = str(plugin.get("state") or "") in AUTOMATION_PLUGIN_STABLE_STATES
+            stable_state = bool(plugin.get("lifecycle_actions_allowed"))
             task["can_save"] = stable_state
             task["schedule_editable"] = bool(plugin.get("can_schedule")) and stable_state
 
@@ -1061,7 +1040,9 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             base_runnable = bool(
                 plugin.get("enabled") and plugin.get("configured") and not plugin.get("blocked")
             )
-            console_enabled = "console" in set(plugin.get("enabled_entrypoints") or [])
+            console_enabled = "console" in set(
+                plugin.get("enabled_entrypoint_kinds") or []
+            )
             task["can_run_now"] = bool(base_runnable and console_enabled)
             task["run_disabled_reason"] = (
                 str(task.get("console_disabled_reason") or "后台入口已关闭")
@@ -1494,7 +1475,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             "pending": True,
             "task_id": payload["task_id"],
             "title": "命令已受理",
-            "message": "命令已提交到控制平面，后续会按 Run 状态自动更新；如需审批，可在当前项目卡片原位处理。",
+            "message": "命令已提交到控制平面，后续会按 Run 状态自动更新。",
             "status_label": "等待状态同步",
             "activity_label": "提交时间",
             "activity_value": started_stamp,
@@ -2179,6 +2160,16 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         project_plugin_instance = str(
             values.get("project_plugin_instance", "") or ""
         ).strip().lower() in {"1", "on", "true", "yes"}
+        raw_contribution_id = values.get("contribution_id", "")
+        if isinstance(raw_contribution_id, list):
+            return None, {}, "一次只能选择一个自动化手动入口。"
+        contribution_id = str(raw_contribution_id or "").strip().lower()
+        if contribution_id and not AUTOMATION_PLUGIN_V2_ENTRYPOINT_ID_RE.fullmatch(
+            contribution_id
+        ):
+            return None, {}, "自动化手动入口无效。"
+        if contribution_id and not project_plugin_instance:
+            return None, {}, "只有插件项目可以指定自动化手动入口。"
 
         if project_plugin_instance:
             if not self._automation_project_id(task_id):
@@ -2239,6 +2230,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                     "schedule_times_json": "[]",
                     "enabled": False,
                     "project_plugin_instance": project_plugin_instance,
+                    "contribution_id": contribution_id,
                 },
                 override,
                 "",
@@ -2283,6 +2275,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                         "schedule_times_json": "[]",
                         "enabled": False,
                         "project_plugin_instance": True,
+                        "contribution_id": contribution_id,
                     },
                     override,
                     "",
@@ -2322,6 +2315,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 "schedule_times_json": json.dumps(schedule_times, ensure_ascii=False),
                 "enabled": enabled,
                 "project_plugin_instance": project_plugin_instance,
+                "contribution_id": contribution_id,
             },
             override,
             "",

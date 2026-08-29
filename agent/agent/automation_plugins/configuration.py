@@ -14,7 +14,11 @@ from agent.automation_plugins.code_owned_fields import (
 )
 from agent.automation_plugins.errors import PluginConflictError
 from agent.automation_plugins.invocation import compile_instance_arguments
-from agent.automation_plugins.models import AutomationProjectConfigRecord, DeviceBinding
+from agent.automation_plugins.models import (
+    AutomationProjectConfigRecord,
+    DeviceBinding,
+    PluginRuntimeModel,
+)
 from agent.automation_plugins.ports import (
     AutomationProjectConfigurationPort,
     ProjectBindingResolverPort,
@@ -126,6 +130,23 @@ class AutomationProjectConfigurationService:
         self._catalog = catalog
         self._repository = repository
         self._bindings = binding_resolver
+
+    def read(self, automation_id: str) -> AutomationProjectConfigRecord:
+        """Return the closed, credential-free configuration for migration only."""
+
+        reader = getattr(self._repository, "get_project_config", None)
+        if not callable(reader):
+            raise PluginConflictError(
+                "project configuration cannot be read for migration",
+                code="PLUGIN_MIGRATION_CONFIGURATION_UNAVAILABLE",
+            )
+        record = reader(automation_id)
+        if not isinstance(record, AutomationProjectConfigRecord) or not record.configured:
+            raise PluginConflictError(
+                "source project configuration is unavailable for migration",
+                code="PLUGIN_MIGRATION_CONFIGURATION_UNAVAILABLE",
+            )
+        return record
 
     def save(
         self,
@@ -246,6 +267,16 @@ class AutomationProjectConfigurationService:
                     dict(compiled.unresolved_dynamic_resolvers)
                 ),
             }
+            if entry.runtime_model == PluginRuntimeModel.SERVICE_V2.value:
+                invocation_contract = entry.invocation_contracts[source]
+                compiled_invocations[source]["target"] = {
+                    "service": str(invocation_contract.get("service") or ""),
+                    "operation": str(invocation_contract.get("operation") or ""),
+                    "contribution_id": source,
+                    "contribution_kind": str(
+                        invocation_contract.get("contribution_kind") or ""
+                    ),
+                }
         return self._repository.save_project_config(
             automation_id,
             config=normalized_config,

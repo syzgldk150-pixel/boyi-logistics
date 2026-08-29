@@ -24,7 +24,10 @@ from agent.automation_plugins.errors import (
     PluginSignatureError,
     PluginUninstallBlocked,
 )
-from agent.automation_plugins.management import AutomationPluginManagementService
+from agent.automation_plugins.management import (
+    AutomationPluginManagementService,
+    MigrationPreparationPersistedError,
+)
 from agent.orchestration.models import Actor
 from shared.contracts import api_failure, api_success
 from shared.orchestration_repository_support import OrchestrationPersistenceError
@@ -54,6 +57,37 @@ class PluginUninstallRequest(BaseModel):
     confirm: Literal[True]
 
 
+class PluginDataPurgeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    request_id: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=1, max_length=500)
+    confirm: Literal[True]
+
+
+class PluginMigrationCreateRequest(BaseModel):
+    """Closed DTO; the server derives all project/configuration snapshots."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    migration_pair_id: str = Field(min_length=36, max_length=36)
+    source_automation_id: str = Field(min_length=1, max_length=128)
+    target_automation_id: str = Field(min_length=1, max_length=128)
+    business_key_fields: list[str] = Field(min_length=1, max_length=8)
+    business_key_namespace: str | None = Field(default=None, min_length=1, max_length=96)
+    request_id: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class PluginMigrationOperationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expected_record_version: int = Field(ge=1)
+    request_id: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=1, max_length=500)
+    confirm: Literal[True]
+
+
 class PluginScheduleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -68,7 +102,7 @@ class PluginConfigurationRequest(BaseModel):
     config: dict[str, Any]
     account_bindings: dict[str, Any]
     resource_bindings: dict[str, Any]
-    enabled_entrypoints: list[str] = Field(max_length=4)
+    enabled_entrypoints: list[str] = Field(max_length=64)
     device_id: str | None = Field(default=None, max_length=128)
     schedule: PluginScheduleRequest
     request_id: str = Field(min_length=1, max_length=64)
@@ -174,6 +208,161 @@ async def _service_response(call: Callable[[], Any]) -> dict[str, Any] | JSONRes
         ValueError,
     ) as exc:
         return _plugin_error_response(exc)
+
+
+def _entrypoint_kind_mapping(value: Any) -> dict[str, str]:
+    """Extract only the closed contribution-kind map used by runtime status."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    kinds: dict[str, str] = {}
+    for raw_id, raw_kind in value.items():
+        contribution_id = str(raw_id or "").strip()
+        if not contribution_id:
+            continue
+        if isinstance(raw_kind, Mapping):
+            raw_kind = raw_kind.get("contribution_kind")
+        contribution_kind = str(raw_kind or "").strip().lower()
+        if contribution_kind in {"console", "scheduler", "webhook", "feishu", "events"}:
+            kinds[contribution_id] = contribution_kind
+    return kinds
+
+
+def _catalog_entrypoint_metadata(
+    service: Any,
+    *,
+    actor: Actor,
+    automation_id: str,
+) -> tuple[str, dict[str, str]]:
+    """Read the exact instance contribution map when save output omits it."""
+
+    provider = getattr(service, "catalog_projection", None)
+    if not callable(provider):
+        return "", {}
+    try:
+        projection = provider(actor=actor)
+    except Exception:  # noqa: BLE001 - runtime status must fail closed
+        return "", {}
+    if not isinstance(projection, Mapping):
+        return "", {}
+    instances = projection.get("instances")
+    if not isinstance(instances, list):
+        return "", {}
+    for item in instances:
+        if not isinstance(item, Mapping) or str(item.get("automation_id") or "") != automation_id:
+            continue
+        runtime_model = str(item.get("runtime_model") or "").strip().upper()
+        kinds = _entrypoint_kind_mapping(item.get("entrypoint_kinds"))
+        if not kinds:
+            kinds = _entrypoint_kind_mapping(item.get("invocation_contracts"))
+        return runtime_model, kinds
+    return "", {}
+
+
+def _scheduler_contribution_enabled(
+    data: Mapping[str, Any],
+    *,
+    service: Any,
+    actor: Actor,
+    automation_id: str,
+) -> bool:
+    """Check the contribution kind, never the v2 contribution ID spelling."""
+
+    enabled = data.get("enabled_entrypoints")
+    if not isinstance(enabled, list):
+        return False
+    enabled_ids = {str(item or "").strip() for item in enabled if str(item or "").strip()}
+    if not enabled_ids:
+        return False
+
+    runtime_model = str(data.get("runtime_model") or "").strip().upper()
+    kinds = _entrypoint_kind_mapping(data.get("entrypoint_kinds"))
+    if not kinds:
+        kinds = _entrypoint_kind_mapping(data.get("invocation_contracts"))
+    if not kinds:
+        catalog_runtime_model, catalog_kinds = _catalog_entrypoint_metadata(
+            service,
+            actor=actor,
+            automation_id=automation_id,
+        )
+        runtime_model = runtime_model or catalog_runtime_model
+        kinds = catalog_kinds
+
+    # Unknown runtime models are never schedulable, even if a future response
+    # happens to contain a scheduler-looking contribution map.
+    if runtime_model not in {"", "ACTION_V1", "SERVICE_V2"}:
+        return False
+    if runtime_model == "ACTION_V1":
+        return "scheduler" in enabled_ids
+    # The contribution map is authoritative for v2.  A v2 package without its
+    # map is not schedulable.
+    if kinds:
+        return any(kinds.get(contribution_id) == "scheduler" for contribution_id in enabled_ids)
+    if runtime_model == "SERVICE_V2":
+        return False
+    if runtime_model == "":
+        return "scheduler" in enabled_ids
+    return False
+
+
+def _refresh_after_committed_operation(
+    response: dict[str, Any] | JSONResponse,
+    *,
+    scheduler_refresh_provider: Callable[[], Mapping[str, Any]] | None,
+    committed_field: str,
+    refresh_failure_message: str,
+) -> dict[str, Any] | JSONResponse:
+    """Refresh the scheduler after a durable control-plane mutation.
+
+    A failed refresh must not turn an already-committed mutation into an
+    apparent operation failure.  The response instead records the committed
+    mutation and tells the caller to retry refresh/status, not the mutation.
+    """
+
+    if isinstance(response, JSONResponse) or response.get("ok") is not True:
+        return response
+    data = response.get("data")
+    if not isinstance(data, dict):
+        return response
+    refresh_completed = False
+    if scheduler_refresh_provider is not None:
+        try:
+            refreshed = scheduler_refresh_provider()
+            refresh_completed = bool(
+                isinstance(refreshed, Mapping) and refreshed.get("initialized") is True
+            )
+        except Exception:  # noqa: BLE001 - committed mutation, report refresh separately
+            refresh_completed = False
+    data.update(
+        {
+            committed_field: True,
+            "scheduler_refresh_completed": refresh_completed,
+            "schedule_runtime_state": (
+                "REFRESHED" if refresh_completed else "REFRESH_FAILED"
+            ),
+        }
+    )
+    if not refresh_completed:
+        response["message"] = refresh_failure_message
+    return response
+
+
+def _refresh_after_committed_migration(
+    response: dict[str, Any] | JSONResponse,
+    *,
+    scheduler_refresh_provider: Callable[[], Mapping[str, Any]] | None,
+) -> dict[str, Any] | JSONResponse:
+    """Keep migration response wording while using the common refresh helper."""
+
+    return _refresh_after_committed_operation(
+        response,
+        scheduler_refresh_provider=scheduler_refresh_provider,
+        committed_field="migration_operation_committed",
+        refresh_failure_message=(
+            "迁移操作已提交，但调度器刷新失败；请刷新状态或重试调度刷新，"
+            "不要重复提交迁移切换。"
+        ),
+    )
 
 
 def _multipart_boundary(content_type: str) -> str:
@@ -289,7 +478,7 @@ async def _parse_plugin_upload(
     ):
         raise PluginPackageError(
             "plugin package must be one non-empty ZIP within the upload limit",
-            code="SIGNED_ZIP_REQUIRED",
+            code="PLUGIN_ZIP_REQUIRED",
         )
     fields: dict[str, str] = {}
     for name, filename, payload in parts:
@@ -375,7 +564,7 @@ def create_automation_plugin_management_router(
             )
         except PluginPackageError as exc:
             return _plugin_error_response(exc)
-        return await _service_response(
+        response = await _service_response(
             lambda: service_provider().install(
                 package,
                 instance_name=fields["instance_name"],
@@ -383,6 +572,15 @@ def create_automation_plugin_management_router(
                 transport_package_sha256=fields["package_sha256"],
                 actor=actor,
             )
+        )
+        return _refresh_after_committed_operation(
+            response,
+            scheduler_refresh_provider=scheduler_refresh_provider,
+            committed_field="plugin_operation_committed",
+            refresh_failure_message=(
+                "插件安装操作已提交，但调度器刷新失败；请刷新状态或重试调度刷新，"
+                "不要重复提交安装操作。"
+            ),
         )
 
     @router.post(
@@ -406,7 +604,7 @@ def create_automation_plugin_management_router(
                 raise ValueError("expected_record_version must be positive")
         except (PluginPackageError, ValueError) as exc:
             return _plugin_error_response(exc)
-        return await _service_response(
+        response = await _service_response(
             lambda: service_provider().upgrade(
                 automation_id,
                 package,
@@ -415,6 +613,15 @@ def create_automation_plugin_management_router(
                 transport_package_sha256=fields["package_sha256"],
                 actor=actor,
             )
+        )
+        return _refresh_after_committed_operation(
+            response,
+            scheduler_refresh_provider=scheduler_refresh_provider,
+            committed_field="plugin_operation_committed",
+            refresh_failure_message=(
+                "插件升级操作已提交，但调度器刷新失败；请刷新状态或重试调度刷新，"
+                "不要重复提交升级操作。"
+            ),
         )
 
     @router.post(
@@ -427,7 +634,7 @@ def create_automation_plugin_management_router(
         request: Request,
     ) -> dict[str, Any] | JSONResponse:
         actor = actor_provider(request)
-        return await _service_response(
+        response = await _service_response(
             lambda: service_provider().set_enabled(
                 automation_id,
                 enabled=payload.enabled,
@@ -435,6 +642,15 @@ def create_automation_plugin_management_router(
                 expected_record_version=payload.expected_record_version,
                 actor=actor,
             )
+        )
+        return _refresh_after_committed_operation(
+            response,
+            scheduler_refresh_provider=scheduler_refresh_provider,
+            committed_field="plugin_operation_committed",
+            refresh_failure_message=(
+                "插件启停操作已提交，但调度器刷新失败；请刷新状态或重试调度刷新，"
+                "不要重复提交启停操作。"
+            ),
         )
 
     @router.post(
@@ -447,7 +663,7 @@ def create_automation_plugin_management_router(
         request: Request,
     ) -> dict[str, Any] | JSONResponse:
         actor = actor_provider(request)
-        return await _service_response(
+        response = await _service_response(
             lambda: service_provider().uninstall(
                 automation_id,
                 request_id=payload.request_id,
@@ -455,6 +671,197 @@ def create_automation_plugin_management_router(
                 current_version=payload.current_version,
                 actor=actor,
             )
+        )
+        return _refresh_after_committed_operation(
+            response,
+            scheduler_refresh_provider=scheduler_refresh_provider,
+            committed_field="plugin_operation_committed",
+            refresh_failure_message=(
+                "插件卸载操作已提交，但调度器刷新失败；请刷新状态或重试调度刷新，"
+                "不要重复提交卸载操作。"
+            ),
+        )
+
+    @router.post(
+        "/internal/v1/automation/plugin-data/{automation_id}/permanent-clear",
+        response_model=None,
+    )
+    async def permanently_clear_plugin_data(
+        automation_id: str,
+        payload: PluginDataPurgeRequest,
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        return await _service_response(
+            lambda: service_provider().permanently_clear_data(
+                automation_id,
+                request_id=payload.request_id,
+                reason=payload.reason,
+                actor=actor,
+            )
+        )
+
+    @router.get(
+        "/internal/v1/automation/migrations/{migration_pair_id}",
+        response_model=None,
+    )
+    async def get_plugin_migration_pair(
+        migration_pair_id: str,
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        return await _service_response(
+            lambda: service_provider().migration_pair(migration_pair_id, actor=actor)
+        )
+
+    @router.post("/internal/v1/automation/migrations", response_model=None)
+    async def create_plugin_migration_pair(
+        payload: PluginMigrationCreateRequest,
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        create = lambda: service_provider().create_migration_pair(
+            migration_pair_id=payload.migration_pair_id,
+            source_automation_id=payload.source_automation_id,
+            target_automation_id=payload.target_automation_id,
+            business_key_fields=tuple(payload.business_key_fields),
+            business_key_namespace=payload.business_key_namespace,
+            request_id=payload.request_id,
+            reason=payload.reason,
+            actor=actor,
+        )
+        try:
+            response = api_success(await run_in_threadpool(create))
+        except MigrationPreparationPersistedError as exc:
+            # The target task was already disabled in the PREPARING
+            # transaction.  Reload even though clone/finalize failed so an
+            # in-memory scheduler cannot retain an old target job.  This is a
+            # committed, replayable outcome, not an instruction to create a
+            # different pair/request.
+            response = api_success(
+                {
+                    "migration_pair_id": exc.migration_pair_id,
+                    "state": "PREPARING",
+                    "migration_preparation_committed": True,
+                    "retry_with_same_request_id": True,
+                    "preparation_phase": exc.phase,
+                }
+            )
+            refreshed = _refresh_after_committed_migration(
+                response,
+                scheduler_refresh_provider=scheduler_refresh_provider,
+            )
+            assert isinstance(refreshed, dict)
+            refreshed["message"] = (
+                "迁移准备态已持久化，目标自动入口已禁用；请使用相同 request_id 重试，"
+                "不要创建新的迁移对。"
+            )
+            return JSONResponse(status_code=202, content=refreshed)
+        except (
+            AutomationPluginError,
+            OrchestrationPersistenceError,
+            ValueError,
+        ) as exc:
+            response = _plugin_error_response(exc)
+        return _refresh_after_committed_migration(
+            response,
+            scheduler_refresh_provider=scheduler_refresh_provider,
+        )
+
+    @router.post(
+        "/internal/v1/automation/migrations/{migration_pair_id}/ready",
+        response_model=None,
+    )
+    async def mark_plugin_migration_ready(
+        migration_pair_id: str,
+        payload: PluginMigrationOperationRequest,
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        response = await _service_response(
+            lambda: service_provider().mark_migration_ready(
+                migration_pair_id,
+                expected_record_version=payload.expected_record_version,
+                request_id=payload.request_id,
+                reason=payload.reason,
+                actor=actor,
+            )
+        )
+        return _refresh_after_committed_migration(
+            response,
+            scheduler_refresh_provider=scheduler_refresh_provider,
+        )
+
+    @router.post(
+        "/internal/v1/automation/migrations/{migration_pair_id}/cutover",
+        response_model=None,
+    )
+    async def cutover_plugin_migration_pair(
+        migration_pair_id: str,
+        payload: PluginMigrationOperationRequest,
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        response = await _service_response(
+            lambda: service_provider().cutover_migration_pair(
+                migration_pair_id,
+                expected_record_version=payload.expected_record_version,
+                request_id=payload.request_id,
+                reason=payload.reason,
+                actor=actor,
+            )
+        )
+        return _refresh_after_committed_migration(
+            response,
+            scheduler_refresh_provider=scheduler_refresh_provider,
+        )
+
+    @router.post(
+        "/internal/v1/automation/migrations/{migration_pair_id}/rollback",
+        response_model=None,
+    )
+    async def rollback_plugin_migration_pair(
+        migration_pair_id: str,
+        payload: PluginMigrationOperationRequest,
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        response = await _service_response(
+            lambda: service_provider().rollback_migration_pair(
+                migration_pair_id,
+                expected_record_version=payload.expected_record_version,
+                request_id=payload.request_id,
+                reason=payload.reason,
+                actor=actor,
+            )
+        )
+        return _refresh_after_committed_migration(
+            response,
+            scheduler_refresh_provider=scheduler_refresh_provider,
+        )
+
+    @router.post(
+        "/internal/v1/automation/migrations/{migration_pair_id}/complete",
+        response_model=None,
+    )
+    async def complete_plugin_migration_pair(
+        migration_pair_id: str,
+        payload: PluginMigrationOperationRequest,
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        response = await _service_response(
+            lambda: service_provider().complete_migration_pair(
+                migration_pair_id,
+                expected_record_version=payload.expected_record_version,
+                request_id=payload.request_id,
+                reason=payload.reason,
+                actor=actor,
+            )
+        )
+        return _refresh_after_committed_migration(
+            response,
+            scheduler_refresh_provider=scheduler_refresh_provider,
         )
 
     @router.put(
@@ -467,8 +874,9 @@ def create_automation_plugin_management_router(
         request: Request,
     ) -> dict[str, Any] | JSONResponse:
         actor = actor_provider(request)
+        service = service_provider()
         response = await _service_response(
-            lambda: service_provider().save_configuration(
+            lambda: service.save_configuration(
                 automation_id,
                 config=payload.config,
                 account_bindings=payload.account_bindings,
@@ -493,8 +901,11 @@ def create_automation_plugin_management_router(
         schedule_enabled = bool(
             isinstance(schedule, Mapping) and schedule.get("enabled") is True
         )
-        scheduler_entrypoint_enabled = bool(
-            isinstance(entrypoints, list) and "scheduler" in entrypoints
+        scheduler_entrypoint_enabled = _scheduler_contribution_enabled(
+            data,
+            service=service,
+            actor=actor,
+            automation_id=automation_id,
         )
         refresh_completed = False
         if data.get("generation_ready") is not True:
@@ -596,6 +1007,7 @@ def create_automation_plugin_management_router(
 
 __all__ = [
     "PluginConfigurationRequest",
+    "PluginDataPurgeRequest",
     "ArrivalStatsRecoveryReadbackRequest",
     "ArrivalStatsRecoveryRequest",
     "CurrentUnknownWriteRecoveryRequest",
