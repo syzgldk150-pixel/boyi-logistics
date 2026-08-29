@@ -56,10 +56,7 @@ from agent.automation_plugins.manifest import canonical_json_bytes
 AccountDescriptorPort = Callable[[str], Mapping[str, Any]]
 CustomerActionPort = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 ClockActionPort = Callable[[Mapping[str, Any]], Mapping[str, Any]]
-DailySignSyncPort = Callable[
-    [Mapping[str, Any], Mapping[str, str]],
-    Mapping[str, Any],
-]
+DailySignSyncPort = Callable[[Mapping[str, Any], Mapping[str, str]], Mapping[str, Any]]
 PageReaderPort = Callable[[Mapping[str, Any], str, int, int], Mapping[str, Any]]
 ProjectionReplacePort = Callable[[list[dict[str, Any]], str], Mapping[str, Any]]
 ResourceReplacePort = Callable[[str, list[Any], str | None], Mapping[str, Any]]
@@ -67,22 +64,12 @@ RecordReadPort = Callable[[Mapping[str, Any], str], Mapping[str, Any] | None]
 SnapshotReadPort = Callable[[str], Sequence[Mapping[str, Any]]]
 IdentityReadPort = Callable[[str], Sequence[str]]
 SnapshotCleanupPort = Callable[[int], Mapping[str, Any]]
-ResourceRecordReplacePort = Callable[
-    [str, str, list[dict[str, Any]], str], Mapping[str, Any]
-]
+ResourceRecordReplacePort = Callable[[str, str, list[dict[str, Any]], str], Mapping[str, Any]]
 ResourceArchivePort = Callable[[str, list[dict[str, Any]], str], Mapping[str, Any]]
-YundaDispatchPagePort = Callable[
-    [Mapping[str, Any], str, str, int, int], Mapping[str, Any]
-]
-YundaSendPagePort = Callable[
-    [Mapping[str, Any], str, int, int], Mapping[str, Any]
-]
-YundaRecordReadPort = Callable[
-    [Mapping[str, Any], str], Mapping[str, Any]
-]
-YundaRendererReadPort = Callable[
-    [Mapping[str, Any], str, str], Mapping[str, Any]
-]
+YundaDispatchPagePort = Callable[[Mapping[str, Any], str, str, int, int], Mapping[str, Any]]
+YundaSendPagePort = Callable[[Mapping[str, Any], str, int, int], Mapping[str, Any]]
+YundaRecordReadPort = Callable[[Mapping[str, Any], str], Mapping[str, Any]]
+YundaRendererReadPort = Callable[[Mapping[str, Any], str, str], Mapping[str, Any]]
 YundaResourceCommitPort = Callable[
     [str, list[dict[str, Any]], str, bool], Mapping[str, Any]
 ]
