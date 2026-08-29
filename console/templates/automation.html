@@ -981,10 +981,12 @@
 
           <div class="auto-settings-footer">
             {% if task.plugin %}
-            <button class="primary-btn auto-save-btn" type="button" data-plugin-configuration-save {% if not can_manage_plugins or not task.plugin.config_schema_supported or (has_plugin_resource_roles and not task.plugin.resource_pool_available) or not task.plugin_schedule_supported or not task.plugin.lifecycle_actions_allowed %}disabled{% endif %}>
+            {% set plugin_settings_feedback_id = 'plugin-settings-feedback-' ~ task.task_id %}
+            <button class="primary-btn auto-save-btn" type="button" data-plugin-configuration-save aria-describedby="{{ plugin_settings_feedback_id }}" {% if not can_manage_plugins or not task.plugin.config_schema_supported or (has_plugin_resource_roles and not task.plugin.resource_pool_available) or not task.plugin_schedule_supported or not task.plugin.lifecycle_actions_allowed %}disabled{% endif %}>
               <i data-feather="check"></i>
               保存项目设置
             </button>
+            <p id="{{ plugin_settings_feedback_id }}" class="automation-plugin-feedback automation-plugin-settings-feedback" data-plugin-settings-feedback role="status" aria-live="polite" hidden></p>
             {% else %}
             <button class="ghost-btn auto-save-btn" type="submit">
               <i data-feather="check"></i>
@@ -1229,6 +1231,12 @@
 
   function closePanel(btn, panel) {
     if (!btn || !panel || btn.getAttribute("aria-expanded") !== "true") return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      btn.setAttribute("aria-expanded", "false");
+      panel.classList.remove("is-open");
+      panel.hidden = true;
+      return;
+    }
     togglePanel(btn, panel);
     window.setTimeout(() => {
       if (!panel.classList.contains("is-open")) panel.hidden = true;
@@ -1983,6 +1991,10 @@
         syncMobileCardDetails();
       });
     }
+    form.addEventListener("automation:plugin-configuration-saved", () => {
+      closeAutomationTaskPanels(form);
+      window.requestAnimationFrame(() => settingsBtn?.focus());
+    });
 
     // 终端输出面板
     const termBtn = form.querySelector("[data-terminal-toggle]");
@@ -3297,5 +3309,5 @@
 
   feather.replace();
 </script>
-<script src="/static/automation_approval_policy.js?v=20260825-unknown-write-recovery" defer></script>
+<script src="/static/automation_approval_policy.js?v=20260829-project-settings-save" defer></script>
 {% endblock %}

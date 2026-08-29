@@ -2815,13 +2815,22 @@ class AutomationProjectsServiceMixin:
 
         raw_data = result.get("data") if isinstance(result.get("data"), dict) else {}
         new_version = raw_data.get("project_configuration_version")
-        response_data: dict[str, Any] = {"automation_id": automation_id}
         if (
-            not isinstance(new_version, bool)
-            and isinstance(new_version, int)
-            and new_version >= 1
+            isinstance(new_version, bool)
+            or not isinstance(new_version, int)
+            or new_version < 1
         ):
-            response_data["project_configuration_version"] = new_version
+            self._control_plane_error(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                "INVALID_PLUGIN_CONFIGURATION_RESPONSE",
+                "Agent 未返回新的项目配置版本，请刷新页面核对后重试。",
+            )
+            return
+        response_data: dict[str, Any] = {
+            "automation_id": automation_id,
+            "project_configuration_version": new_version,
+        }
         if isinstance(raw_data.get("configured"), bool):
             response_data["configured"] = raw_data["configured"]
         runtime_state = str(
@@ -2829,14 +2838,18 @@ class AutomationProjectsServiceMixin:
         ).strip().upper()
         if runtime_state not in AUTOMATION_PLUGIN_SCHEDULE_RUNTIME_STATES:
             runtime_state = "REFRESH_FAILED"
+        refresh_completed = raw_data.get("scheduler_refresh_completed") is True
+        if (
+            runtime_state in {"ACTIVE", "DISABLED", "ENTRYPOINT_DISABLED"}
+            and not refresh_completed
+        ):
+            runtime_state = "REFRESH_FAILED"
         response_data["schedule_runtime_state"] = runtime_state
         response_data["schedule_runtime_enabled"] = bool(
             raw_data.get("schedule_runtime_enabled") is True
             and runtime_state == "ACTIVE"
         )
-        response_data["scheduler_refresh_completed"] = bool(
-            raw_data.get("scheduler_refresh_completed") is True
-        )
+        response_data["scheduler_refresh_completed"] = refresh_completed
         messages = {
             "ACTIVE": "项目设置已保存，运行中定时已按新配置刷新。",
             "DISABLED": "项目设置已保存，运行中定时已关闭。",

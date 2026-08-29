@@ -577,7 +577,7 @@ class TMSRoutesTests(unittest.TestCase):
     def test_tms_route_accepts_legacy_raw_payload(self):
         async def fake_execute_target(name, req):
             self.assertEqual(name, "get_qianshou")
-            self.assertEqual(req.params["disp_site_code"], "7390004")
+            self.assertEqual(req.params["r13_account_id"], "r13-project-selected")
             self.assertEqual(req.params["page_size"], 1)
             return 200, {"ok": True, "data": []}
 
@@ -586,7 +586,10 @@ class TMSRoutesTests(unittest.TestCase):
             with patch("agent.tms_runtime.routes.execute_target", side_effect=fake_execute_target):
                 response = self.client.post(
                     "/tms/get_qianshou",
-                    json={"disp_site_code": "7390004", "page_size": 1},
+                    json={
+                        "r13_account_id": "r13-project-selected",
+                        "page_size": 1,
+                    },
                     headers={EXECUTION_CAPABILITY_HEADER: capability},
                 )
         finally:
@@ -644,6 +647,75 @@ class TMSRoutesTests(unittest.TestCase):
         self.assertEqual(status_code, 200)
         self.assertTrue(payload["data"]["ok"])
         self.assertEqual(payload["data"]["value"], "ok")
+
+    def test_account_bound_targets_reject_missing_project_account_binding(self):
+        async def _run_target(target_name):
+            return await dispatch_module.execute_target(
+                target_name,
+                dispatch_module.TaskRequest(params={}, timeout_sec=30),
+            )
+
+        for target_name in (
+            "get_qianshou",
+            "self_pickup_problem_upload",
+            "split_pending_problem_upload",
+        ):
+            with self.subTest(target_name=target_name):
+                status_code, payload = asyncio.run(_run_target(target_name))
+
+                self.assertEqual(200, status_code)
+                self.assertFalse(payload["ok"])
+                self.assertEqual("AUTH_REQUIRED", payload["error_code"])
+                self.assertIn("项目设置显式传入绑定账号", payload["error"])
+
+    def test_get_qianshou_resolves_the_exact_r13_role_without_default_fallback(self):
+        captured = {}
+
+        def resolve_role(params, **kwargs):
+            captured["role_params"] = dict(params)
+            captured["role_kwargs"] = dict(kwargs)
+            return {
+                **params,
+                "username": "selected-r13-user",
+                "password": "selected-r13-password",
+            }
+
+        def run_target(params):
+            captured["target_params"] = dict(params)
+            return {
+                "account_id": params["r13_account_id"],
+                "username": params["username"],
+            }
+
+        request = dispatch_module.TaskRequest(
+            params={
+                "r13_account_id": "r13-non-default",
+            },
+            timeout_sec=30,
+        )
+        with (
+            patch.object(dispatch_module, "resolve_account_params") as generic_resolve,
+            patch.object(
+                dispatch_module,
+                "resolve_role_account_params",
+                side_effect=resolve_role,
+            ),
+            patch.object(dispatch_module, "_load_callable", return_value=run_target),
+        ):
+            status_code, payload = asyncio.run(
+                dispatch_module.execute_target("get_qianshou", request)
+            )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("r13-non-default", payload["data"]["account_id"])
+        self.assertEqual("selected-r13-user", payload["data"]["username"])
+        generic_resolve.assert_not_called()
+        self.assertEqual("r13-non-default", captured["role_params"]["r13_account_id"])
+        self.assertEqual("r13_account_id", captured["role_kwargs"]["account_field"])
+        self.assertEqual("r13_account_id", captured["role_kwargs"]["output_account_field"])
+        self.assertEqual("", captured["role_kwargs"]["output_session_profile_field"])
+        self.assertEqual("selected-r13-user", captured["target_params"]["username"])
 
     def test_scan_next_run_once_moves_flow_out_of_running_async_loop(self):
         import scan_next

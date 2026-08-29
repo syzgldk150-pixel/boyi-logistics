@@ -23,6 +23,7 @@ from agent.automation_plugins.first_party_handlers import (
     FirstPartyCoreHandlerPorts,
     build_first_party_core_handler_map,
 )
+from agent.automation_plugins import first_party_handlers as handler_module
 from agent.execution_boundary import authorize_tms_target, current_execution_capability
 from agent.tool_registry import ToolRegistry
 from plugin_core_adapters import daily_sign as daily_sign_adapters
@@ -71,11 +72,12 @@ def _descriptor(account_id: str) -> dict[str, str]:
         "r13-other": "r13",
         "ronghui-bound": "ronghui",
     }
-    return {
+    descriptor = {
         "account_id": account_id,
         "system": systems[account_id],
         "session_profile": f"profile:{account_id}",
     }
+    return descriptor
 
 
 def _context(*, r13_account_id: str = "r13-bound") -> CoreBrokerInvocationContext:
@@ -277,7 +279,39 @@ def test_closed_handler_rejects_nested_account_material_before_authoritative_cal
     assert calls == []
 
 
-def test_opaque_evidence_is_bound_to_both_exact_accounts() -> None:
+def test_closed_handler_accepts_project_selected_alternate_r13_account() -> None:
+    calls: list[object] = []
+
+    def daily_sign_sync(arguments, resources):
+        calls.append((arguments, resources))
+        return _authoritative_result()
+
+    handlers = build_first_party_core_handler_map(
+        FirstPartyCoreHandlerPorts(
+            describe_account=_descriptor,
+            daily_sign_sync=daily_sign_sync,
+        ),
+        cursor_secret=b"d" * 32,
+    )
+
+    handlers[("ledger.invoke", "daily_sign.authoritative_sync")](
+        _context(r13_account_id="r13-other"),
+        {"days": 7},
+    )
+
+    assert calls[0][0]["r13_account_id"] == "r13-other"
+    assert "r13_site_code" not in calls[0][0]
+
+
+def test_opaque_evidence_hash_includes_exact_selected_accounts(monkeypatch) -> None:
+    encoded_material: list[object] = []
+    original_encode = handler_module.canonical_json_bytes
+
+    def capture_encode(value):
+        encoded_material.append(value)
+        return original_encode(value)
+
+    monkeypatch.setattr(handler_module, "canonical_json_bytes", capture_encode)
     handlers = build_first_party_core_handler_map(
         FirstPartyCoreHandlerPorts(
             describe_account=_descriptor,
@@ -287,10 +321,12 @@ def test_opaque_evidence_is_bound_to_both_exact_accounts() -> None:
     )
     invoke = handlers[("ledger.invoke", "daily_sign.authoritative_sync")]
 
-    first = invoke(_context(r13_account_id="r13-bound"), {"days": 7})
-    second = invoke(_context(r13_account_id="r13-other"), {"days": 7})
+    invoke(_context(r13_account_id="r13-bound"), {"days": 7})
 
-    assert first["evidence_ref"] != second["evidence_ref"]
+    assert {
+        "r13_account_id": "r13-bound",
+        "account_id": "ronghui-bound",
+    } in encoded_material
 
 
 def test_broker_handler_receives_exact_tool_scoped_tms_capability() -> None:

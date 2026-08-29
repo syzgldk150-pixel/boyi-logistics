@@ -40,8 +40,8 @@
   - `init_waybills_sql_from_feishu_tool.py`（SQL 初始化回填；从飞书融辉寄件数据和韵达寄件运单表全量读取历史记录，按运单号 upsert 到控制台 `waybills`，不删除历史）
   - `phase7_mysql_store.py`（Phase 7 共享 MySQL 存储；包含 `waybill_data` 到货基础表，也维护控制台 `waybills` 表的同步 upsert 入口；`waybills.status` 使用 `pending/in_transit/signed/cancelled`，`waybills.scan_status` 保存明确来源返回的当前扫描状态，同步时必须保留手动作废的 `cancelled`）
   - `phase7_sync_common.py`
-- TMS 投诉/问题件上报：
-  - `self_pickup_problem_upload_tool.py`（"自提到货问题件"：读飞书到货表，筛 `邵阳自提部` 以及 `邵阳大祥S站 + 派送方式=自提` 的单号，先 dry-run 预览，确认后调 `/tms/self_pickup_problem_upload` 上传 `开单为自提件` 问题件和货拉拉截图；自提部账号 `ronghui_self_pickup_problem`，大祥S站账号 `ronghui_daxiang_s`，不要使用 `price_default`）
+- TMS 问题件上报：
+  - `self_pickup_problem_upload_tool.py`（"自提到货问题件"：读飞书到货表，筛 `邵阳自提部` 以及 `邵阳大祥S站 + 派送方式=自提` 的单号，先 dry-run 预览，确认后调 `/tms/self_pickup_problem_upload` 上传 `开单为自提件` 问题件和货拉拉截图；自提部与大祥S站账号都必须由自动化项目角色显式绑定并解析 session profile，工具和运行时不得注入固定账号）
 - R7 到达打卡：
   - `r7_arrival_checkin_tool.py`（直接调用 `agent/tms_runtime/scripts/auto_checkin_r7.py`；使用 R7 登录，不依赖 TMS 共享登录态；写 `r7_arrival_checkin_log` 并按 `daily_success_limit` 控制当天后续定时跳过）
   - R7 事件、状态和到达/发车打卡日志表由 `../migrations/006_r7_runtime_tables.sql` 创建；工具仅校验表存在，禁止在运行时建表。
@@ -54,7 +54,7 @@
 - 多个同步工具共享逻辑时，优先提取到 `phase7_sync_common.py`
 - `phase7_sync_common.sync_sheet_snapshot()` 清空普通飞书电子表格时走 `feishu_cli_tool.clear_sheet`，不要改回写入大量空白单元格；否则大范围清空会产生过多 OpenAPI 写入分块。`clear_sheet` 通过飞书行维度删除旧快照行，清空范围必须从 A 列开始，配置里的 `Sheet1` 这类标题会在实际调用前解析成飞书 `sheet_id`，并按工作表当前最大行数裁剪清空结束行；后续 `write_sheet` 会在写入前自动补足目标范围需要的行数。
 - 普通飞书电子表格只有一个页签时，`feishu_cli_tool` 会把旧配置里的 `Sheet1` 自动映射到唯一页签的真实 `sheet_id`，避免用户重命名页签后触发 `sheetId not found`。
-- Snapshot sync tools generally treat an empty TMS fetch (`records=[]` or `data=[]`) as `no_fetched_rows`: skip Feishu Bitable writes/deletes, skip ordinary spreadsheet refresh, and skip SQL `replace_date` when applicable, so a source-side empty result cannot clear existing target data. This applies to `yunda_send_waybills_sync_tool.py`. `daily_sign_sync_tool.py` is ledger-based: an empty but complete R13 result never clears history and continues to retain all TMS-unconfirmed records; an incomplete R13 result stops publication.
+- Snapshot sync tools generally treat an empty TMS fetch (`records=[]` or `data=[]`) as `no_fetched_rows`: skip Feishu Bitable writes/deletes, skip ordinary spreadsheet refresh, and skip SQL `replace_date` when applicable, so a source-side empty result cannot clear existing target data. This applies to `yunda_send_waybills_sync_tool.py`. `daily_sign_sync_tool.py` is ledger-based: a structurally complete zero-row R13 result still undergoes the remaining evidence checks; when it produces an empty publication set, each Feishu sink must freshly read its target and fail closed without writes/deletes/clears if an earlier projection remains. An already-empty target may accept the evidence-closed zero set.
 - `site_send_list_sync_tool.py` is the exception: an empty TMS fetch is an intentional empty snapshot and must still clear/overwrite the Feishu Bitable and ordinary spreadsheet targets.
 - TMS 兼容接口返回 `AUTH_REQUIRED` / `AUTH_PENDING_CODE` 时，工具必须直接返回顶层 `error_code`，不得包装为“返回格式异常”；统一使用 `phase7_sync_common.tms_auth_error_result()` / `raise_tms_auth_error_if_present()`
 
@@ -72,15 +72,17 @@
 - `../docs/rules_and_definitions.md`
 - `../../1/AGENTS.md`
 
-- 分批差错及问题件：
+- 分批及有发未到问题件：
   - `split_pending_problem_upload_tool.py` dry-run 返回未完成候选、步骤状态、隐藏成功数量和指纹；该只读预览指纹的字段与规范化序列化必须和签名 action 保持完全一致；正式参数缺少 `selected_bill_codes` / `preview_fingerprint` 必须拒绝。
-  - 正式执行先校验最新来源与状态指纹，再刷新全部当前未齐 Sheet/MySQL 快照；融辉外部操作只处理所选运单，并通过 `phase7_mysql_store.py` 独立回写差错和问题件结果。
+  - 分批与自提兼容工具缺少项目账号绑定时必须在来源读取或登录前返回 `blocked_config`；问题件权威回读成功后，分批链路必须先写并核验每日应签问题事件，最后才把问题件结果标记为成功，避免事件失败后候选被永久隐藏。
+  - 正式执行先校验最新来源与状态指纹，再刷新全部当前未齐 Sheet/MySQL 快照；融辉外部操作只处理所选运单，并通过 `phase7_mysql_store.py` 独立回写问题件结果。
+  - `0 < 已到 < 应到` 不再进入投诉方登记，直接登记“少货/分批 / 交接异常”，内容严格为 `应到XX件 实际到XX件`；遗留 `complaint_status` 字段统一写 `not_applicable`，只以问题件权威回读判定成功。
   - `sync_arrival_stats` 成功完成统计输出后调用共享快照模块；结构异常或重复运单显式失败并保留旧快照，正常统计但全部到齐时写空候选以清理目标旧行，且不得调用融辉上报。
   - 完整成功的问题件上报必须同时写入 `waybill_problem_events`，保留外部唯一 ID、精确类型和 TMS 登记时间；后续补齐或当前未齐快照删除不得抹除历史延期证据。
 
 ## 每日应签共享台账
 
-- 运行参数只允许一个融辉 TMS 邵阳大祥站 `account_id`，统一供问题件、主单签收、轨迹核验和地址补全使用；R13 是独立来源系统，继续使用单独的 `r13_account_id`。禁止为同一 TMS 登录态复制多个角色字段。
+- 运行参数只接受自动化项目当前绑定的一个融辉 TMS `account_id`，统一供问题件、主单签收、轨迹核验和地址补全使用；R13 是独立来源系统，使用项目当前绑定的 `r13_account_id`。后台改绑后下一次运行必须使用新账号，不得回落默认或固定 ID。R13 站点在精确账号登录后从 `/gateway/site/public/aurora/auth` 读取：中心账号使用空站点列表，其他账号使用其真实 `siteCode`；调用参数或嵌套请求体覆盖均拒绝。结构完整且权威总数为零是合法结果，最终空发布应清除旧投影并回读为零；真实来源异常不得当作零行。
 - 候选为当前/历史未关闭 R13、实际到货件数大于零的成功统计及 R13 后续改单转入单号的并集。历史到货归档中的零到货行不构成候选；融辉子单号必须使用 `phase7_mysql_store.py` 的共享识别规则排除，禁止作为应签主单发布。
 - `daily_sign_ledger` 中 B 口径为 R13 原始应签时间，C 口径为本系统测算时间；R13 必须按原页“规划应签收时间”口径查询，未显式传入起止时间时至少覆盖原页默认的前 2 天至后 3 天。包装类型不在该 R13 页面字段中，继续从实际到货或 TMS 运单详情取得。无实际到货时 C 与到货件数为空。飞书应签明细始终保留当前 R13 的未签清单；已离开当前 R13 的历史候选只有在有效应签时间不晚于当前业务日时继续发布，历史口径 C 有值时以 C 为准，否则以 B 为准。普通电子表格必须先精确校验九列表头，再写新数据，成功后才清理尾部旧行。签收事件早于当前 R13 派件或首次到货生命周期时只能标记为旧周期证据，不得关闭当前运单。
 - 每轮发布前必须核对当前 R13 行、真实 TMS 主单签收行与待发布行：当前未获得主单签收证据的 R13 行必须全部进入发布集合；只有当前 R13 行都已有真实主单签收证据时，零行发布才是正常结果。

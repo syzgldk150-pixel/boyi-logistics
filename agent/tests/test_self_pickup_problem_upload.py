@@ -13,6 +13,16 @@ from agent.tms_runtime.scripts import ronghui_problem_upload
 
 
 class SelfPickupProblemUploadTests(unittest.TestCase):
+    def _bound_params(self, **overrides):
+        params = {
+            "account_id": "bound_self_pickup",
+            "session_profile": "bound_self_profile",
+            "daxiang_s_account_id": "bound_daxiang",
+            "daxiang_s_session_profile": "bound_daxiang_profile",
+        }
+        params.update(overrides)
+        return params
+
     def _base_bill_info(self):
         return {
             "DESTINATION": "destination",
@@ -33,6 +43,12 @@ class SelfPickupProblemUploadTests(unittest.TestCase):
             "dept_name": "dept",
         }
 
+    def test_missing_account_bindings_fail_before_source_read(self):
+        with patch.object(self_pickup_problem_upload, "_read_sheet_values") as read_mock, \
+            self.assertRaisesRegex(ValueError, "显式绑定 account_id"):
+            self_pickup_problem_upload.run_once({"dry_run": True})
+        read_mock.assert_not_called()
+
     def test_dry_run_collects_self_pickup_and_daxiang_s_self_pickup_sources(self):
         values = [
             ["运单编号", "目的站点", "派送方式", "累计到货件数", "货物件数"],
@@ -43,8 +59,15 @@ class SelfPickupProblemUploadTests(unittest.TestCase):
 
         with patch.object(self_pickup_problem_upload, "_tenant_access_token", return_value="token"), \
             patch.object(self_pickup_problem_upload, "_resolve_sheet_id", return_value=("sheet1", "每日到货表")), \
-            patch.object(self_pickup_problem_upload, "_read_sheet_values", return_value=values):
-            result = self_pickup_problem_upload.run_once({"dry_run": True})
+            patch.object(self_pickup_problem_upload, "_read_sheet_values", return_value=values), \
+            patch.object(
+                self_pickup_problem_upload,
+                "_resolve_bound_account_roles",
+                side_effect=lambda params: params,
+            ):
+            result = self_pickup_problem_upload.run_once(
+                self._bound_params(dry_run=True)
+            )
 
         self.assertEqual(2, result["candidate_count"])
         self.assertRegex(result["preview_fingerprint"], r"^[0-9a-f]{64}$")
@@ -57,10 +80,10 @@ class SelfPickupProblemUploadTests(unittest.TestCase):
             ["R_DX_PICK"],
             [item["bill_code"] for item in source_summaries["daxiang_s_self_pickup"]["candidates"]],
         )
-        self.assertEqual("ronghui_self_pickup_problem", source_summaries["self_pickup_department"]["account_id"])
-        self.assertEqual("self_pickup_problem_upload", source_summaries["self_pickup_department"]["session_profile"])
-        self.assertEqual("ronghui_daxiang_s", source_summaries["daxiang_s_self_pickup"]["account_id"])
-        self.assertEqual("daxiang_s", source_summaries["daxiang_s_self_pickup"]["session_profile"])
+        self.assertEqual("bound_self_pickup", source_summaries["self_pickup_department"]["account_id"])
+        self.assertEqual("bound_self_profile", source_summaries["self_pickup_department"]["session_profile"])
+        self.assertEqual("bound_daxiang", source_summaries["daxiang_s_self_pickup"]["account_id"])
+        self.assertEqual("bound_daxiang_profile", source_summaries["daxiang_s_self_pickup"]["session_profile"])
 
     def test_dry_run_resolves_bound_role_accounts_to_session_profiles(self):
         values = [
@@ -114,6 +137,11 @@ class SelfPickupProblemUploadTests(unittest.TestCase):
         with patch.object(self_pickup_problem_upload, "_tenant_access_token", return_value="token"), \
             patch.object(self_pickup_problem_upload, "_resolve_sheet_id", return_value=("sheet1", "每日到货表")), \
             patch.object(self_pickup_problem_upload, "_read_sheet_values", return_value=values), \
+            patch.object(
+                self_pickup_problem_upload,
+                "_resolve_bound_account_roles",
+                side_effect=lambda params: params,
+            ), \
             patch.object(self_pickup_problem_upload, "TMSAuth", side_effect=FakeAuth), \
             patch.object(self_pickup_problem_upload, "_resolve_problem_page_context", return_value={"url": "http://example.invalid"}), \
             patch.object(self_pickup_problem_upload, "_fetch_login_context", return_value=self._login_context()), \
@@ -129,9 +157,14 @@ class SelfPickupProblemUploadTests(unittest.TestCase):
                     "external_id": expected["GUID"],
                 },
             ):
-            result = self_pickup_problem_upload.run_once({"dry_run": False, "update_postpone_days": False})
+            result = self_pickup_problem_upload.run_once(
+                self._bound_params(
+                    dry_run=False,
+                    update_postpone_days=False,
+                )
+            )
 
-        self.assertEqual(["self_pickup_problem_upload", "daxiang_s"], profiles)
+        self.assertEqual(["bound_self_profile", "bound_daxiang_profile"], profiles)
         self.assertEqual(2, result["saved_bills"])
         self.assertEqual(0, result["failed_bills"])
 

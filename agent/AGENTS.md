@@ -62,7 +62,7 @@
 - 首方启动 bootstrap 除补齐缺失实例外，还必须把仍指向较旧版本的保留实例按本次签名发布自动推进到目标版本；若旧 target 可在首轮协调完成，启动流程必须先完成该精确签名 generation，再重新 bootstrap 并进行第二次协调，使正常恢复和发行升级在同一 Agent 启动内收敛，禁止依赖人工二次重启。仍受真实 coeffect 阻塞的 target 必须保持不可运行，并在依赖恢复后的下一次显式协调中重试，不能伪造收敛。管理员配置、账号/资源绑定、入口空集、定时与权限模式保持不变，较新实例绝不降级。旧不可变包只为尚未排空的 generation lease、审计和可恢复回滚保留，不得继续作为活动 Catalog 版本。交互选择、预览指纹、客服复核引用和财务启动标记等代码拥有字段必须由精确首方身份声明、进入合同哈希并由 Agent 规范化，Console 不得让用户编辑或因其 Schema 形状阻断整个配置表单。
 - 当前 committed generation 发生 `WRITE_OUTCOME_UNKNOWN` 时，失败 Run、未知 lease、receipt 与 Evidence 必须原样保留，原 Run 不得重放；但当前 generation 和项目路由保持可运行，用户或定时器再次执行时必须创建新的 Command、Run 与 lease。未知 lease 仍阻断该 generation 的清理和卸载；generation 退出当前路由后必须落为历史 `BLOCKED` 归档，迟到 finalizer 只能更新旧代，不能影响新的 committed 路由。
 - Console 的“核验并恢复”仅用于闭合历史未知 receipt，不是重新执行入口；浏览器只提交请求 UUID，Agent 只依据持久 receipt 与权威回读判定 `WRITE_VERIFIED`、`NOT_APPLIED` 或 `UNKNOWN`，不得接受浏览器提交 generation、lease 或 evidence，也不得重放原 Run。普通重新执行直接提交新 Command，不以历史恢复为前置条件。
-- Business Account 池与 `workflow_resources` 资源池进入插件目录前只能投影闭合的安全 descriptor；资源固定为 `resource_id/name/kind/status`，不得把 Token、表格 ID、读写范围、文件路径、配置哈希/版本或原始配置送入浏览器。插件目录的 `hidden_automation_ids` 只投影真实持久化且当前发行明确排除的身份，不得用它生成静态项目；Console 只能按签名清单声明的 role 与 kind 精确筛选并保存 ID，不默认选择第一项；池不可用、descriptor 漂移、必填绑定缺失/停用/类型不符时，配置、运行、启用和完全自动均 fail closed。
+- Business Account 池与 `workflow_resources` 资源池进入插件目录前只能投影闭合的安全 descriptor；资源固定为 `resource_id/name/kind/status`，不得把 Token、表格 ID、读写范围、文件路径、配置哈希/版本或原始配置送入浏览器。插件目录的 `hidden_automation_ids` 只投影真实持久化且当前发行明确排除的身份，不得用它生成静态项目；Console 只能按签名清单声明的 role 与 kind 精确筛选并保存 ID，不默认选择第一项；所有签名项目自动化运行只接受项目当前提交的精确账号绑定，后台改绑后下一次运行使用新 ID，脚本、Broker、调度器均不得按 `is_default`、列表顺序或固定账号补齐；池不可用、descriptor 漂移、必填绑定缺失/停用/类型不符时，配置、运行、启用和完全自动均 fail closed。
 - 插件包只安装动作并声明支持的调度能力，不携带 cron 或实际执行时刻。定时由安装后的项目实例在系统自动化设置中配置，并与项目配置、账号/资源绑定和授权在同一版本化合同内保存；同一插件的重复安装实例可分别选择账号、资源、定时和权限。配置响应丢失重放必须绑定同一请求、操作者和精确目标配置版本；稳定 generation 提交后必须原子刷新进程内 Scheduler，刷新失败保留旧 Job 集并显式报告。通用项目 `startup` 只在未处于 release hold 的进程注册一次性 DateTrigger，并用上海业务日、任务配置版本和项目 generation 构造稳定 Command 身份。
 - 飞书插件直达入口由 `agent/orchestration/automation_project_entrypoints.py` 提供，并在 `feishu/message_handler.py` 通过组合根注入：文本、菜单与 pending 只能按 committed generation 中唯一的 `feishu_route.route_key` 构造 typed invocation，重复别名、多候选、账号覆盖或缺少稳定事件 ID 均 fail closed。账号只来自项目实例的 Business Account bindings；日期、车牌和预览指纹只由代码拥有的 resolver 注入，通用 Command/LLM 不得伪造项目上下文。
 - 首方飞书固定短语只在 `agent/direct_tool_router.py` 的只读 `FEISHU_COMMAND_REGISTRATIONS` 注册；命令 ID、route key 和触发工具名必须分别唯一，预览与正式工具只能在同一命令族内共享 route。安装插件不会自动激活文本短语；新短语必须经代码审查注册，运行时仍须由签名且稳定的项目 generation 唯一认领 route。
@@ -207,25 +207,25 @@ docs/
 
 
 
-## 分批差错及问题件
+## 分批及有发未到问题件
 
 - 飞书文本仅精确指令“分批”触发低风险只读工具 `preview_split_pending_problems`；自提问题件预览使用 `preview_self_pickup_problems`。两条封装器只接受显式 `account_id` 并强制旧实现 `dry_run=true`，任何写入参数都会被拒绝；“分批问题件”“上报分批差错”“分批差错”和“上传分批/未到问题件”等旧文本只提示发送“分批”，不得执行旧工具或进入 LLM。
 - 交互通过互斥检查后先回复正在生成，再生成 dry-run 编号列表和选择快照；旧只读预览必须使用与签名 action 相同的指纹字段和规范化序列化。飞书固定命令只允许原发起人在有效 pending 内完成选择与确认，Console 只允许从已完成且验签的候选 Run 勾选子集并由服务端恢复指纹，两者才能调用签名项目 `automation.split_pending_problem_upload.run`。Scheduler、LLM 和旧同名工具均不能执行正式上传。
 - 来源资源固定为 `phase7.split_pending_source_sheet`（每日到货表 A:S），目标资源固定为 `phase7.split_pending_target_sheet`（分批及有发未到表 A:S）。
-- `sync_arrival_stats` 每次成功统计后必须用本次内存中的 A:S 统计结果刷新目标 Sheet 与 MySQL 未齐快照，不依赖人工发送“分批”；全部到齐时清空目标旧行并保留表头。自动刷新不得触发融辉差错或问题件上报。
+- `sync_arrival_stats` 每次成功统计后必须用本次内存中的 A:S 统计结果刷新目标 Sheet 与 MySQL 未齐快照，不依赖人工发送“分批”；全部到齐时清空目标旧行并保留表头。自动刷新不得触发融辉问题件上报。
 - `sync_arrival_stats` 的当天范围固定为“目标日 arrive-list ∪ 目标日实际扫描主单”；历史已到齐且当天未重扫的重复主单过滤，历史未齐主单以到货 0 保留，当天实际重扫始终保留。累计件数按开单件数封顶，`scan_window_days` 只允许 1，历史回填必须使用独立扫描同步工具。
-- MySQL 表 `split_pending_problem_items` 分别保存 `complaint_status` 与问题件 `upload_status`；同类型刷新保留历史步骤结果，完整成功单隐藏，失败或未完成步骤继续显示，类型变化才重置。
+- MySQL 表 `split_pending_problem_items` 以问题件 `upload_status` 作为当前执行状态；遗留 `complaint_status` 只为数据库兼容保留，当前快照统一写为 `not_applicable`，不得重新成为执行门禁。同类型刷新保留问题件结果，完整成功单隐藏，失败或未完成问题件继续显示，类型变化才重置。
 - 正式模式的 `selected_bill_codes` 与 `preview_fingerprint` 必须由飞书 pending 或 Agent 持久化候选 Run 恢复，Planner 绑定一至九十个规范、唯一、有序运单号及指纹；浏览器不能上传指纹，旧 `split_pending_problem_upload` 直接工具仍固定 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`，不得绕过项目入口。
-- 业务顺序为 `0 < 已到 < 应到` 先差错、再问题件，`已到=0` 只登记“有发未到”问题件。签名包在任何写入前重读来源和快照、复核指纹并预检全部目标；随后逐单独立读回投诉与问题件，并验证 Sheet、MySQL 快照/结果和每日应签事件，不能用提交返回的 `saved/success` 代替 Evidence。
-- 自提问题件允许飞书固定命令预览后确认全部候选，也允许 Console 从已验签的持久化候选 Run 勾选子集；确认参数必须由服务端恢复一至二百五十个规范、唯一、有序运单号及 64 位预览指纹，并调用 `automation.self_pickup_problem_upload.run`。Scheduler、LLM 和旧 `self_pickup_problem_upload` 直达工具均不能正式上传。签名动作在首个写入前重读完整来源、复核指纹并预检全部目标，随后逐单写入且分别从问题件列表独立读回。
+- `0 < 已到 < 应到` 直接在“问题件录入”登记“少货/分批 / 交接异常”，问题件内容严格为 `应到XX件 实际到XX件`；`已到=0` 登记“有发未到 / 通知类（不顺延时效）”。分批链路不得进入投诉方登记。签名包在任何写入前重读来源和快照、复核指纹并预检全部目标；随后逐单从登记问题件列表独立读回，先写后验每日应签问题事件，最后才把 MySQL 问题件结果标记成功；不能用提交返回的 `saved/success` 代替 Evidence，也不能在事件失败后隐藏候选。
+- 自提问题件允许飞书固定命令预览后确认全部候选，也允许 Console 从已验签的持久化候选 Run 勾选子集；确认参数必须由服务端恢复一至二百五十个规范、唯一、有序运单号及 64 位预览指纹，并调用 `automation.self_pickup_problem_upload.run`。来源运单号只去除前后空白；命中自提规则的行若仍含内部空白必须带行号显式失败，不得删除内部空白或拼接猜测，未命中自提规则的行不应阻断本任务。自提部与大祥S站账号只能来自项目角色绑定，兼容工具和运行时缺任一启用来源账号时必须显式阻塞，禁止固定账号或默认 profile。Scheduler、LLM 和旧 `self_pickup_problem_upload` 直达工具均不能正式上传。签名动作在首个写入前重读完整来源、复核指纹并预检全部目标，随后逐单写入且分别从问题件列表独立读回。
 
 ## 每日应签共享台账
 
 - R13、实际到货、问题件与 TMS 主单签收必须完整分页并写入 `010_daily_sign_ledger.sql` 建立的权威台账；R13 状态只作候选诊断，只有真实主单“签收”事件可关闭事项。
 - 问题件 `(source, external_id)` 是大小写敏感的真实来源身份；迁移 `029_daily_sign_problem_event_binary_identity.sql` 使 MySQL 唯一键与采集层语义一致，禁止按不区分大小写的排序规则覆盖另一条事件。
-- 必须显式传入独立的 R13 来源账号和唯一的融辉 TMS 邵阳大祥站 `account_id`；同一个 TMS 登录态统一用于问题件、主单签收、轨迹核验和地址补全，不读取旧 `phase7.r13_credentials`，不接受内联凭据、隐式账号或多候选。
+- 必须显式传入自动化项目当前绑定的独立 `r13_account_id` 和融辉 TMS `account_id`，允许后台改绑为任意同系统有效账号；同一次运行统一使用该 TMS 账号处理问题件、主单签收、轨迹核验和地址补全。R13 查询站点在精确账号登录后从 `/gateway/site/public/aurora/auth` 的真实上下文取得：中心账号 `siteTypeCode=999` 使用空站点过滤，其他账号使用其 `siteCode`。业务脚本与请求体不得硬编码、猜测或覆盖账号/站点；上下文缺失、刷新后站点漂移或调用方传入站点均显式失败。不读取旧 `phase7.r13_credentials`，不接受内联凭据、隐式账号或多候选。
 - TMS 签收长历史查询按连续无重叠的 31 天窗口分片，校验汇总/明细总量并按主键去重；已离开当前 R13 的候选使用 `013_daily_sign_verification_state.sql` 按 1/3/7 天持久化退避精确复核。
-- 来源不完整、冲突无法核验、字段缺失或账号不唯一必须显式阻塞；不得发布新展示口径覆盖上一轮完整结果。
+- 来源不完整、业务失败码、冲突无法核验、字段缺失或账号不唯一必须显式阻塞。R13 结构完整且权威总数为零时仍先完成其他来源的闭合证据核验；若最终发布集合为空，按正常发布流程删除多维表旧记录、清空电子表格旧数据并新鲜回读为零行。登录、HTTP、业务响应、结构或分页异常必须在投影变更前失败，不得伪装成零行。
 
 ## 财务同步上线范围
 

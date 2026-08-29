@@ -65,12 +65,12 @@ def record(bill_code="R1", problem_type="少货/分批"):
         "pending_quantity": 10 - arrived,
         "problem_type": problem_type,
         "problem_owner_type": "交接异常" if arrived else "通知类（不顺延时效）",
-        "problem_cause": f"应到10件，已到{arrived}件" if arrived else "有发未到",
+        "problem_cause": f"应到10件 实际到{arrived}件" if arrived else "有发未到",
     }
 
 
 class SplitPendingProblemStoreTests(unittest.TestCase):
-    def test_snapshot_upsert_preserves_same_type_steps_and_initializes_complaint(self):
+    def test_snapshot_upsert_preserves_problem_step_and_disables_complaint_step(self):
         cursor = FakeCursor()
         connection = FakeConnection(cursor)
         with patch.object(store, "ensure_phase7_tables"), patch.object(
@@ -82,12 +82,13 @@ class SplitPendingProblemStoreTests(unittest.TestCase):
         self.assertEqual(2, result["upserted"])
         sql, values = cursor.executemany_calls[0]
         self.assertIn("WHEN problem_type = VALUES(problem_type) THEN upload_status", sql)
-        self.assertIn("WHEN VALUES(problem_type) = '少货/分批' THEN 'pending'", sql)
-        self.assertEqual("pending", values[0][-2])
+        self.assertIn("complaint_status = 'not_applicable'", sql)
+        self.assertNotIn("WHEN VALUES(problem_type) = '少货/分批' THEN 'pending'", sql)
+        self.assertEqual("not_applicable", values[0][-2])
         self.assertEqual("not_applicable", values[1][-2])
         self.assertEqual(1, connection.commit_count)
 
-    def test_combined_result_updates_only_performed_steps(self):
+    def test_combined_result_updates_only_problem_steps(self):
         cursor = FakeCursor()
         connection = FakeConnection(cursor)
         with patch.object(store, "ensure_phase7_tables"), patch.object(
@@ -97,7 +98,7 @@ class SplitPendingProblemStoreTests(unittest.TestCase):
                 [
                     {
                         "bill_code": "R1",
-                        "complaint": {"status": "duplicate"},
+                        "complaint": None,
                         "problem_item": {"status": "failed", "error": "保存失败"},
                     },
                     {
@@ -107,20 +108,20 @@ class SplitPendingProblemStoreTests(unittest.TestCase):
                     },
                 ]
             )
-        self.assertEqual(3, result["updated"])
-        self.assertEqual(3, len(cursor.calls))
-        self.assertEqual("duplicate", cursor.calls[0][1][0])
-        self.assertEqual("failed", cursor.calls[1][1][0])
-        self.assertEqual("success", cursor.calls[2][1][0])
+        self.assertEqual(2, result["updated"])
+        self.assertEqual(2, len(cursor.calls))
+        self.assertEqual("failed", cursor.calls[0][1][0])
+        self.assertEqual("success", cursor.calls[1][1][0])
+        self.assertIn("complaint_status = 'not_applicable'", cursor.calls[0][0])
 
-    def test_invalid_step_status_rolls_back(self):
+    def test_complaint_result_is_rejected_and_rolls_back(self):
         cursor = FakeCursor()
         connection = FakeConnection(cursor)
         with patch.object(store, "ensure_phase7_tables"), patch.object(
             store, "_connect", return_value=connection
-        ), self.assertRaisesRegex(ValueError, "complaint.status"):
+        ), self.assertRaisesRegex(ValueError, "不再支持 complaint 结果"):
             store.update_split_pending_combined_results(
-                [{"bill_code": "R1", "complaint": {"status": "unknown"}}]
+                [{"bill_code": "R1", "complaint": {"status": "success"}}]
             )
         self.assertEqual(1, connection.rollback_count)
 

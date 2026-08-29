@@ -101,8 +101,6 @@ ARRIVED_QUANTITY_KEYS = (
     "累计到货件数",
 )
 R13_REQUEST_KEYS = (
-    "disp_site_code",
-    "dispSiteCode",
     "start",
     "end",
     "days",
@@ -116,6 +114,9 @@ R13_REQUEST_KEYS = (
 )
 FORBIDDEN_R13_REQUEST_KEYS = frozenset(
     {
+        "disp_site_code",
+        "dispSiteCode",
+        "r13_site_code",
         "username",
         "password",
         "user",
@@ -155,6 +156,16 @@ def _required_account_id(params: dict[str, Any], field: str) -> str:
 
 
 def _resolve_qianshou_request_body(params: dict) -> dict:
+    caller_site_keys = sorted(
+        key
+        for key in ("disp_site_code", "dispSiteCode", "r13_site_code")
+        if _has_value(params.get(key))
+    )
+    if caller_site_keys:
+        raise ValueError(
+            "R13 site identity is broker-owned and cannot be overridden: "
+            + ", ".join(caller_site_keys)
+        )
     request_body: dict[str, Any] = {}
     explicit_request_body = params.get("request_body")
     if isinstance(explicit_request_body, dict):
@@ -185,10 +196,17 @@ def _apply_r13_account_binding(request_body: dict[str, Any], params: dict[str, A
         or request_body.get("r13_account_id")
         or request_body.get("r13AccountId")
     )
-    if account_id in (None, ""):
-        return request_body
+    account_id = clean_text(account_id)
+    if not account_id:
+        raise ValueError(
+            "每日应签同步必须显式提供 r13_account_id，禁止选择默认账号"
+        )
+    manager = get_account_manager()
+    descriptor = manager.require_active_binding_descriptor(account_id)
+    if clean_text(descriptor.get("system")).lower() != "r13":
+        raise ValueError("r13_account_id 必须绑定 R13 账号")
     request_body["r13_account_id"] = account_id
-    return get_account_manager().resolve_role_account_params(
+    return manager.resolve_role_account_params(
         request_body,
         account_field="r13_account_id",
         output_account_field="",

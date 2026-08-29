@@ -109,7 +109,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         class FakeAgent:
             async def execute_tool(self, tool_name, params, **_kwargs):
                 assert replies and replies[-1] == (
-                    "正在生成分批差错及问题件候选清单；任务繁忙时可能需要排队，完成后我会反馈结果。"
+                    "正在生成分批问题件候选清单；任务繁忙时可能需要排队，完成后我会反馈结果。"
                 )
                 calls.append((tool_name, dict(params)))
                 if tool_name == "preview_split_pending_problems":

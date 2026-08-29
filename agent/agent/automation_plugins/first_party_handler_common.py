@@ -199,6 +199,20 @@ def _account_descriptor(
     return descriptor
 
 
+def _daily_sign_account_bindings(
+    ports: _AccountDescriptorPorts,
+    context: CoreBrokerInvocationContext,
+) -> dict[str, str]:
+    r13_account_id = _one_role_account(context, "r13_account_id")
+    account_id = _one_role_account(context, "account_id")
+    _account_descriptor(ports, r13_account_id, systems={"r13"})
+    _account_descriptor(ports, account_id, systems={"ronghui"})
+    return {
+        "r13_account_id": r13_account_id,
+        "account_id": account_id,
+    }
+
+
 class _OpaqueCodec:
     _COMPRESSED_PREFIX = b"Z1\0"
 

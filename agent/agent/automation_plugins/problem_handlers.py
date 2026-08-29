@@ -31,9 +31,6 @@ AccountDescriptorPort = Callable[[str], Mapping[str, Any]]
 ProblemActionPort = Callable[
     [Mapping[str, Any], str, Mapping[str, Any]], Mapping[str, Any]
 ]
-ComplaintActionPort = Callable[
-    [Mapping[str, Any], str, Mapping[str, Any]], Mapping[str, Any]
-]
 SheetRowsReadPort = Callable[[str, str, int], Mapping[str, Any]]
 SheetRowsReplacePort = Callable[[str, list[list[Any]]], Mapping[str, Any]]
 SnapshotReadPort = Callable[[int], Sequence[Mapping[str, Any]]]
@@ -84,7 +81,6 @@ _SPLIT_OWNER_BY_TYPE = {
 MARKED_WRITE_ACTION_KEYS = frozenset(
     {
         ("browser.invoke", "ronghui.problem.create"),
-        ("browser.invoke", "ronghui.complaint.create"),
         ("projection.invoke", "split_pending.snapshot.replace"),
         ("network.request", "feishu.sheet.replace_rows"),
         ("projection.invoke", "split_pending.result.upsert"),
@@ -356,7 +352,6 @@ class _OpaqueCodec:
 class ProblemHandlerPorts:
     describe_account: AccountDescriptorPort
     problem_action: ProblemActionPort
-    complaint_action: ComplaintActionPort
     sheet_rows_read: SheetRowsReadPort
     sheet_rows_replace: SheetRowsReplacePort
     snapshot_read: SnapshotReadPort
@@ -784,152 +779,6 @@ class _ProblemHandlers:
             ),
         }
 
-    def complaint_query(
-        self,
-        context: CoreBrokerInvocationContext,
-        arguments: Mapping[str, Any],
-    ) -> Mapping[str, Any]:
-        _require_context(
-            context,
-            operation="browser.invoke",
-            action="ronghui.complaint.query",
-            roles={_PRIMARY_ACCOUNT_ROLE},
-            tools={_SPLIT_TOOL},
-        )
-        values = _strict(arguments, {"bill_code"})
-        bill_code = _waybill(values.get("bill_code"))
-        descriptor = _one_account(context, self._ports)
-        raw = self._ports.complaint_action(
-            descriptor,
-            "query",
-            {"bill_code": bill_code},
-        )
-        if not isinstance(raw, Mapping) or raw.get("ready") is not True:
-            raise _error("Ronghui complaint preflight failed", "BROKER_SOURCE_INVALID")
-        precondition_ref = self._codec.encode(
-            context,
-            "complaint-create",
-            {"bill_code": bill_code},
-        )
-        return {
-            "bill_code": bill_code,
-            "precondition_ref": precondition_ref,
-            "ready": True,
-            "evidence_ref": self._codec.evidence(
-                context,
-                "complaint-query",
-                {"bill_code": bill_code, "ready": True},
-            ),
-        }
-
-    def complaint_create(
-        self,
-        context: CoreBrokerInvocationContext,
-        arguments: Mapping[str, Any],
-    ) -> Mapping[str, Any]:
-        _require_context(
-            context,
-            operation="browser.invoke",
-            action="ronghui.complaint.create",
-            roles={_PRIMARY_ACCOUNT_ROLE},
-            tools={_SPLIT_TOOL},
-        )
-        values = _strict(arguments, {"bill_code", "precondition_ref"})
-        bill_code = _waybill(values.get("bill_code"))
-        plan = self._codec.decode(
-            context,
-            "complaint-create",
-            values.get("precondition_ref"),
-        )
-        if plan != {"bill_code": bill_code}:
-            raise _error("complaint write plan changed", "BROKER_CURSOR_INVALID")
-        descriptor = _one_account(context, self._ports)
-        self._authorize_capability(descriptor)
-        self._mark_write_started(context)
-        raw = self._ports.complaint_action(descriptor, "create", plan)
-        if (
-            not isinstance(raw, Mapping)
-            or raw.get("saved") is not True
-            or raw.get("verified") is not True
-            or not isinstance(raw.get("duplicate"), bool)
-        ):
-            raise _error(
-                "Ronghui complaint write lacks authoritative readback",
-                "WRITE_OUTCOME_UNKNOWN",
-            )
-        external_id = _text(raw.get("external_id"), "external_id", maximum=256)
-        plan_sha256 = _sha256(raw.get("plan_sha256"), "plan_sha256")
-        if _waybill(raw.get("bill_code")) != bill_code:
-            raise _error("complaint write identity changed", "WRITE_OUTCOME_UNKNOWN")
-        proof = {
-            "bill_code": bill_code,
-            "duplicate": raw["duplicate"],
-            "external_id_sha256": hashlib.sha256(
-                external_id.encode("utf-8")
-            ).hexdigest(),
-            "plan_sha256": plan_sha256,
-        }
-        return {
-            "bill_code": bill_code,
-            "committed": True,
-            "duplicate": raw["duplicate"],
-            "external_id": external_id,
-            "plan_sha256": plan_sha256,
-            "evidence_ref": self._codec.evidence(
-                context,
-                "complaint-create",
-                proof,
-            ),
-        }
-
-    def complaint_verify(
-        self,
-        context: CoreBrokerInvocationContext,
-        arguments: Mapping[str, Any],
-    ) -> Mapping[str, Any]:
-        _require_context(
-            context,
-            operation="browser.invoke",
-            action="ronghui.complaint.verify",
-            roles={_PRIMARY_ACCOUNT_ROLE},
-            tools={_SPLIT_TOOL},
-        )
-        values = _strict(
-            arguments,
-            {"bill_code", "external_id", "plan_sha256"},
-        )
-        plan = {
-            "bill_code": _waybill(values.get("bill_code")),
-            "external_id": _text(
-                values.get("external_id"),
-                "external_id",
-                maximum=256,
-            ),
-            "plan_sha256": _sha256(values.get("plan_sha256"), "plan_sha256"),
-        }
-        descriptor = _one_account(context, self._ports)
-        raw = self._ports.complaint_action(descriptor, "verify", plan)
-        if not isinstance(raw, Mapping) or raw.get("confirmed") is not True:
-            raise _error(
-                "Ronghui complaint write could not be confirmed",
-                "WRITE_OUTCOME_UNKNOWN",
-            )
-        for field in plan:
-            if str(raw.get(field) or "").strip() != plan[field]:
-                raise _error(
-                    "Ronghui complaint identity changed",
-                    "WRITE_OUTCOME_UNKNOWN",
-                )
-        return {
-            **plan,
-            "confirmed": True,
-            "evidence_ref": self._codec.evidence(
-                context,
-                "complaint-verify",
-                plan,
-            ),
-        }
-
     def snapshot_read(
         self,
         context: CoreBrokerInvocationContext,
@@ -1018,7 +867,7 @@ class _ProblemHandlers:
                 raise _error("split classification is invalid", "BROKER_ARGUMENT_INVALID")
             if problem_type == "有发未到" and cause != "有发未到":
                 raise _error("split cause is invalid", "BROKER_ARGUMENT_INVALID")
-            if problem_type == "少货/分批" and cause != f"应到{expected}件，已到{arrived}件":
+            if problem_type == "少货/分批" and cause != f"应到{expected}件 实际到{arrived}件":
                 raise _error("split cause is invalid", "BROKER_ARGUMENT_INVALID")
             record = {
                 "arrived_quantity": arrived,
@@ -1174,14 +1023,9 @@ class _ProblemHandlers:
         }
         if result["problem_item_status"] != "success":
             raise _error("problem result is not successful", "BROKER_ARGUMENT_INVALID")
-        allowed_complaint = (
-            {"success", "duplicate"}
-            if result["problem_type"] == "少货/分批"
-            else {"not_applicable"}
-        )
         if (
             result["problem_type"] not in _SPLIT_OWNER_BY_TYPE
-            or result["complaint_status"] not in allowed_complaint
+            or result["complaint_status"] != "not_applicable"
         ):
             raise _error("problem result classification is invalid", "BROKER_ARGUMENT_INVALID")
         self._mark_write_started(context)
@@ -1285,9 +1129,6 @@ class _ProblemHandlers:
             ("browser.invoke", "ronghui.problem.query"): self.problem_query,
             ("browser.invoke", "ronghui.problem.create"): self.problem_create,
             ("browser.invoke", "ronghui.problem.verify"): self.problem_verify,
-            ("browser.invoke", "ronghui.complaint.query"): self.complaint_query,
-            ("browser.invoke", "ronghui.complaint.create"): self.complaint_create,
-            ("browser.invoke", "ronghui.complaint.verify"): self.complaint_verify,
             ("projection.invoke", "split_pending.snapshot.read"): self.snapshot_read,
             (
                 "projection.invoke",

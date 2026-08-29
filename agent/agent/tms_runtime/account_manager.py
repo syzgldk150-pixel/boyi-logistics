@@ -438,6 +438,9 @@ class AutomationAccountManager:
             row["auto_login_blocked"] = auto_login_blocked
             row["created_at"] = str(row.get("created_at") or now)
             row["updated_at"] = str(row.get("updated_at") or row["created_at"])
+            if "site_code" in row:
+                row.pop("site_code", None)
+                changed = True
             previous_profile = str(row.get("session_profile") or "")
             row["session_profile"] = self._coerce_session_profile(row)
             if row["session_profile"] != previous_profile:
@@ -799,7 +802,7 @@ class AutomationAccountManager:
     def _public_account(self, row: dict[str, Any]) -> dict[str, Any]:
         config = SYSTEMS[row["system"]]
         purpose = str(row.get("account_purpose") or "general").strip().lower() or "general"
-        return {
+        result = {
             "account_id": row["account_id"],
             "system": row["system"],
             "system_label": config["label"],
@@ -818,6 +821,7 @@ class AutomationAccountManager:
             "created_at": row.get("created_at", ""),
             "updated_at": row.get("updated_at", ""),
         }
+        return result
 
     def _with_account_context(self, row: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         config = SYSTEMS[row["system"]]
