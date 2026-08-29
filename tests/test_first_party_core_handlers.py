@@ -50,9 +50,18 @@ _ARRIVE_FIELDS = (
 class _Manager:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.active_binding_calls: list[str] = []
+
+    def require_active_binding_descriptor(self, account_id: str) -> dict[str, str]:
+        self.active_binding_calls.append(account_id)
+        return self._descriptor(account_id)
 
     def require_authenticated_binding(self, account_id: str) -> dict[str, str]:
         self.calls.append(account_id)
+        return self._descriptor(account_id)
+
+    @staticmethod
+    def _descriptor(account_id: str) -> dict[str, str]:
         systems = {
             "customer-rh": "ronghui",
             "customer-yd": "yunda",
@@ -162,6 +171,7 @@ def test_production_map_registers_only_available_closed_primitives() -> None:
     handlers = build_production_first_party_core_handler_map(
         account_manager=_Manager(),
         cursor_secret=_SECRET,
+        capability_authorizer=lambda _descriptor, _capability: None,
     )
     assert set(handlers) == {
         ("ledger.invoke", "daily_sign.authoritative_sync"),
@@ -239,13 +249,16 @@ def test_production_map_registers_only_available_closed_primitives() -> None:
     assert ("browser.invoke", "ronghui.child_count.read") not in handlers
 
 
-def test_production_handler_maps_second_account_check_race_to_login_block() -> None:
-    class ExpiredManager(_Manager):
+def test_production_handler_blocks_a_locally_disabled_account_without_online_auth() -> None:
+    class DisabledManager(_Manager):
+        def require_active_binding_descriptor(self, account_id: str) -> dict[str, str]:
+            raise TMSAuthStateError("ACCOUNT_DISABLED", "disabled")
+
         def require_authenticated_binding(self, account_id: str) -> dict[str, str]:
-            raise TMSAuthStateError("AUTH_REQUIRED", "expired")
+            raise AssertionError("production describe_account must not authenticate online")
 
     handlers = build_production_first_party_core_handler_map(
-        account_manager=ExpiredManager(),
+        account_manager=DisabledManager(),
         cursor_secret=_SECRET,
     )
     context = _context(
@@ -259,7 +272,7 @@ def test_production_handler_maps_second_account_check_race_to_login_block() -> N
             context,
             {"direction": "received", "cursor": None, "page_size": 200},
         )
-    assert exc.value.code == "BLOCKED_LOGIN"
+    assert exc.value.code == "BROKER_ACCOUNT_UNAVAILABLE"
 
 
 def test_customer_handlers_own_bound_source_pagination_and_opaque_identity() -> None:
@@ -460,7 +473,7 @@ def test_arrive_handlers_page_and_commit_only_exact_validated_records() -> None:
     assert sheet_calls == [("resource-arrive-primary", 3, "2026-08-15")]
 
 
-def test_registered_broker_revalidates_accounts_before_real_handler() -> None:
+def test_registered_broker_and_handler_only_revalidate_local_account_binding() -> None:
     manager = _Manager()
 
     def customer_action(arguments):
@@ -472,7 +485,7 @@ def test_registered_broker_revalidates_accounts_before_real_handler() -> None:
 
     handlers = build_first_party_core_handler_map(
         FirstPartyCoreHandlerPorts(
-            describe_account=manager.require_authenticated_binding,
+            describe_account=manager.require_active_binding_descriptor,
             customer_action=customer_action,
         ),
         cursor_secret=_SECRET,
@@ -517,9 +530,10 @@ def test_registered_broker_revalidates_accounts_before_real_handler() -> None:
         )
     )
     assert result["pagination_complete"] is True
-    # Generic broker validation and the closed handler independently recheck
-    # the same exact binding; neither may substitute another account.
-    assert manager.calls == ["customer-rh", "customer-rh"]
+    # Generic broker admission and the closed handler independently recheck
+    # the same exact local binding without doing an online session validation.
+    assert manager.active_binding_calls == ["customer-rh", "customer-rh"]
+    assert manager.calls == []
 
 
 def test_clock_stays_fail_closed_when_closed_port_is_absent() -> None:
@@ -605,6 +619,168 @@ def test_clock_handlers_bind_submit_to_fresh_read_verification() -> None:
     assert exc.value.code == "BROKER_CURSOR_INVALID"
 
 
+def test_clock_write_authorizes_once_before_receipt_while_read_stays_direct() -> None:
+    manager = _Manager()
+    events: list[str] = []
+
+    def authorize(_descriptor: Mapping[str, Any], capability: str) -> None:
+        events.append(f"authorize:{capability}")
+
+    def clock_action(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        action = str(arguments["action"])
+        events.append(f"action:{action}")
+        if action == "precheck":
+            return {"ready": True}
+        return {"accepted": True, "submitted_at": "2026-08-15 01:02:03"}
+
+    handlers = build_first_party_core_handler_map(
+        FirstPartyCoreHandlerPorts(
+            describe_account=manager.require_authenticated_binding,
+            clock_action=clock_action,
+            authorize_capability=authorize,
+        ),
+        cursor_secret=_SECRET,
+    )
+    site = {
+        "sitecode": "7390004",
+        "sitefbcode": "73901",
+        "sitename": "site",
+        "sitefbname": "yard",
+    }
+    handlers[("browser.invoke", "ronghui.clock.precheck")](
+        _context(
+            tool_name="clock_in_dual",
+            role="account_id",
+            account_ids=("clock-rh",),
+            action="ronghui.clock.precheck",
+        ),
+        {"site": site, "clock_types": ["交件到港", "接件离港"]},
+    )
+    handlers[("browser.invoke", "ronghui.clock.submit")](
+        _context(
+            tool_name="clock_in_dual",
+            role="account_id",
+            account_ids=("clock-rh",),
+            action="ronghui.clock.submit",
+            mark_write_started=lambda: events.append("receipt"),
+        ),
+        {"site": site, "clock_type": "交件到港"},
+    )
+
+    assert events == [
+        "action:precheck",
+        "authorize:ronghui_clock",
+        "receipt",
+        "action:submit",
+    ]
+
+
+def test_clock_auth_failure_never_crosses_write_receipt() -> None:
+    events: list[str] = []
+
+    def reject(_descriptor: Mapping[str, Any], _capability: str) -> None:
+        raise PluginExecutionError("login required", code="BLOCKED_LOGIN")
+
+    handlers = build_first_party_core_handler_map(
+        FirstPartyCoreHandlerPorts(
+            describe_account=_Manager().require_authenticated_binding,
+            clock_action=lambda _arguments: events.append("action") or {},
+            authorize_capability=reject,
+        ),
+        cursor_secret=_SECRET,
+    )
+    with pytest.raises(PluginExecutionError) as exc_info:
+        handlers[("browser.invoke", "ronghui.clock.submit")](
+            _context(
+                tool_name="clock_in_dual",
+                role="account_id",
+                account_ids=("clock-rh",),
+                action="ronghui.clock.submit",
+                mark_write_started=lambda: events.append("receipt"),
+            ),
+            {
+                "site": {
+                    "sitecode": "7390004",
+                    "sitefbcode": "73901",
+                    "sitename": "site",
+                    "sitefbname": "yard",
+                },
+                "clock_type": "交件到港",
+            },
+        )
+
+    assert exc_info.value.code == "BLOCKED_LOGIN"
+    assert events == []
+
+
+@pytest.mark.parametrize(
+    ("source_code", "expected_code"),
+    [
+        ("AUTH_REQUIRED", "BLOCKED_LOGIN"),
+        ("BLOCKED_LOGIN", "BLOCKED_LOGIN"),
+        ("CAPABILITY_UNAVAILABLE", "CAPABILITY_UNAVAILABLE"),
+    ],
+)
+def test_target_capability_authorizer_maps_only_login_failures(
+    monkeypatch,
+    source_code: str,
+    expected_code: str,
+) -> None:
+    from plugin_core_adapters import capability_session as capability_module
+
+    calls: list[tuple[str, str]] = []
+
+    class Broker:
+        def open_capability_session(self, capability: str) -> None:
+            calls.append(("profile-clock", capability))
+            raise TMSAuthStateError(source_code, "target unavailable")
+
+    monkeypatch.setattr(
+        capability_module,
+        "get_session_broker",
+        lambda profile: Broker() if profile == "profile-clock" else None,
+    )
+    with pytest.raises(PluginExecutionError) as exc_info:
+        capability_module.authorize_target_capability(
+            {"session_profile": "profile-clock"},
+            "ronghui_clock",
+        )
+
+    assert exc_info.value.code == expected_code
+    assert calls == [("profile-clock", "ronghui_clock")]
+
+
+def test_target_capability_authorizer_closes_validated_session(monkeypatch) -> None:
+    from plugin_core_adapters import capability_session as capability_module
+
+    calls: list[tuple[str, str]] = []
+
+    class Session:
+        def close(self) -> None:
+            calls.append(("profile-clock", "close"))
+
+    class Broker:
+        def open_capability_session(self, capability: str) -> Session:
+            calls.append(("profile-clock", capability))
+            return Session()
+
+    monkeypatch.setattr(
+        capability_module,
+        "get_session_broker",
+        lambda profile: Broker() if profile == "profile-clock" else None,
+    )
+
+    capability_module.authorize_target_capability(
+        {"session_profile": "profile-clock"},
+        "ronghui_clock",
+    )
+
+    assert calls == [
+        ("profile-clock", "ronghui_clock"),
+        ("profile-clock", "close"),
+    ]
+
+
 def test_production_clock_uses_exact_low_level_write_and_readback(monkeypatch) -> None:
     from agent.tms_runtime.scripts import clock_in_dual as clock_module
 
@@ -665,6 +841,7 @@ def test_production_clock_uses_exact_low_level_write_and_readback(monkeypatch) -
     handlers = build_production_first_party_core_handler_map(
         account_manager=_Manager(),
         cursor_secret=_SECRET,
+        capability_authorizer=lambda _descriptor, _capability: None,
     )
     context = _context(
         tool_name="clock_in_dual",
@@ -1404,7 +1581,7 @@ def test_production_yunda_sources_use_exact_profile_and_low_level_primitives(
             profiles.append(profile)
 
         def build_requests_session(self, *, validate: bool):
-            assert validate is True
+            assert validate is False
             return session
 
     monkeypatch.setattr(
@@ -1575,6 +1752,8 @@ def test_production_yunda_sources_use_exact_profile_and_low_level_primitives(
         ("original", "YD-1", {}),
         ("renderer", "YD-1", {"Created_Dot_Code": "56739382"}, {}),
     ]
+    assert manager.active_binding_calls == ["yunda-a"] * 6
+    assert manager.calls == []
 
 
 def test_production_yunda_resource_primitive_never_substitutes_a_binding(

@@ -656,6 +656,8 @@ class _ReleaseRestoreCursor:
         bootstrap_event_rows: int = 0,
         bootstrap_domain_rows: int = 0,
         remaining_created_count: int = 0,
+        columns: set[str] | None = None,
+        lease_rows: int = 0,
     ) -> None:
         self.tables = tables or {
             "schema_migrations",
@@ -681,6 +683,9 @@ class _ReleaseRestoreCursor:
         self.bootstrap_event_rows = bootstrap_event_rows
         self.bootstrap_domain_rows = bootstrap_domain_rows
         self.remaining_created_count = remaining_created_count
+        self.columns = set(columns or ())
+        self.lease_rows = lease_rows
+        self.rowcount = 0
         self.calls: list[tuple[str, object]] = []
         self._row = None
         self._rows: list[dict[str, object]] = []
@@ -694,6 +699,7 @@ class _ReleaseRestoreCursor:
     def execute(self, sql, params=None):
         normalized = " ".join(sql.split())
         self.calls.append((normalized, params))
+        self.rowcount = 0
         self._row = None
         self._rows = []
         if normalized == "SELECT VERSION() AS version":
@@ -701,6 +707,9 @@ class _ReleaseRestoreCursor:
         elif "FROM information_schema.TABLES" in normalized:
             table_name = params[0] if params else ""
             self._row = {"exists": 1} if table_name in self.tables else None
+        elif "FROM information_schema.COLUMNS" in normalized:
+            column_name = params[1] if params and len(params) > 1 else ""
+            self._row = {"exists": 1} if column_name in self.columns else None
         elif normalized.startswith("SELECT COUNT(*) AS running_count"):
             self._row = {"running_count": self.running_count}
         elif normalized.startswith("SELECT COUNT(*) AS orphan_count"):
@@ -732,6 +741,8 @@ class _ReleaseRestoreCursor:
         elif normalized.startswith("SELECT 1 FROM ") and normalized.endswith(" LIMIT 1"):
             table_name = normalized.split()[3]
             self._row = {"exists": 1} if table_name in self.dirty_backups else None
+        elif normalized.startswith("UPDATE feishu_approval_deliveries"):
+            self.rowcount = self.lease_rows
         elif normalized.startswith("INSERT INTO scheduled_tasks") and self.fail_restore:
             raise RuntimeError("injected 017 restore failure")
 
@@ -1240,6 +1251,56 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
             print_mock.assert_called_once_with(
                 f"control_plane_policy_bootstrap_marker_status={expected}"
             )
+
+    def test_feishu_notification_lease_status_reports_only_migration_state(self):
+        for applied, expected in (
+            (set(), "pending"),
+            ({"030"}, "applied"),
+        ):
+            with self.subTest(expected=expected):
+                cursor = _ReleaseRestoreCursor(applied_versions=applied)
+                connection = _WindowConnection(cursor)
+                with (
+                    patch.object(self.runner, "_connect", return_value=connection),
+                    patch("builtins.print") as print_mock,
+                ):
+                    result = self.runner.report_feishu_notification_lease_status()
+
+                self.assertEqual(0, result)
+                print_mock.assert_called_once_with(
+                    f"feishu_notification_lease_status={expected}"
+                )
+                self.assertTrue(connection.closed)
+
+    def test_feishu_notification_lease_restore_clears_only_sender_leases(self):
+        cursor = _ReleaseRestoreCursor(
+            tables={"feishu_approval_deliveries"},
+            columns={
+                "notification_lease_token",
+                "notification_lease_expires_at",
+            },
+            lease_rows=2,
+        )
+        connection = _RestoreConnection(cursor)
+        with (
+            patch.object(self.runner, "_connect", return_value=connection),
+            patch("builtins.print") as print_mock,
+        ):
+            result = self.runner.restore_feishu_notification_leases()
+
+        self.assertEqual(0, result)
+        self.assertTrue(connection.begun)
+        self.assertTrue(connection.committed)
+        self.assertFalse(connection.rolled_back)
+        print_mock.assert_called_once_with("feishu_notification_leases_restored=2")
+        update = next(
+            sql
+            for sql, _params in cursor.calls
+            if sql.startswith("UPDATE feishu_approval_deliveries")
+        )
+        self.assertIn("notification_lease_token=NULL", update)
+        self.assertIn("notification_lease_expires_at=NULL", update)
+        self.assertNotIn("DELETE", update)
 
     def test_control_plane_seed_cleanup_set_is_exact_and_code_owned(self):
         from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES

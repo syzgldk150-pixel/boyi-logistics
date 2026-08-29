@@ -11,6 +11,7 @@ from agent.orchestration.models import OperationType, PlanStep, RiskLevel, RunSt
 from agent.orchestration.result_verifier import ResultVerifier
 from agent.tool_executor import (
     CANCEL_MESSAGE,
+    MAX_COMPLETED_EXECUTION_HISTORY,
     PROJECT_ROOT,
     ToolExecutor,
     build_trusted_scheduler_context,
@@ -29,14 +30,6 @@ class ToolExecutorCancelTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.executor = ToolExecutor()
         self.script_paths: list[Path] = []
-        self.lock_dir = tempfile.TemporaryDirectory(prefix="tool-lock-", dir=PROJECT_ROOT)
-        self.addCleanup(self.lock_dir.cleanup)
-        self.lock_patch = patch(
-            "agent.tool_executor.LOCK_FILE",
-            os.path.join(self.lock_dir.name, ".heavy_task.lock"),
-        )
-        self.lock_patch.start()
-        self.addCleanup(self.lock_patch.stop)
         self.script_path = self._write_temp_script(
             "tool-cancel-",
             """
@@ -219,9 +212,12 @@ class ToolExecutorCancelTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["success"])
         self.assertIn("controlled spawn failure", result["error"])
         self.assertFalse(self.executor.is_tool_running(tool_name))
-        self.assertIsNone(self.executor._running_outputs[tool_name]["proc"])
+        self.assertTrue(self.executor._running_outputs)
+        self.assertTrue(
+            all(entry["proc"] is None for entry in self.executor._running_outputs.values())
+        )
 
-    async def test_heavy_tools_wait_for_existing_heavy_task(self):
+    async def test_heavy_tools_do_not_share_a_global_execution_lock(self):
         slow_script = self._write_temp_script(
             "tool-heavy-slow-",
             """
@@ -268,11 +264,84 @@ class ToolExecutorCancelTests(unittest.IsolatedAsyncioTestCase):
             },
             {},
         )
+        self.assertFalse(slow_task.done())
         slow_result = await slow_task
 
         self.assertTrue(slow_result["success"])
         self.assertTrue(fast_result["success"])
         self.assertEqual(fast_result["data"], {"tool": "fast"})
+
+    async def test_completed_execution_history_is_bounded_without_pruning_live_runs(self):
+        for index in range(MAX_COMPLETED_EXECUTION_HISTORY + 5):
+            self.executor._running_outputs[f"complete-{index}"] = {
+                "running": False,
+                "started": float(index),
+            }
+        self.executor._running_outputs["live"] = {
+            "running": True,
+            "started": -1.0,
+        }
+
+        self.executor._prune_completed_entries()
+
+        completed = [
+            entry
+            for entry in self.executor._running_outputs.values()
+            if not entry.get("running")
+        ]
+        self.assertEqual(MAX_COMPLETED_EXECUTION_HISTORY, len(completed))
+        self.assertIn("live", self.executor._running_outputs)
+
+    async def test_same_tool_runs_in_parallel_and_bound_cancel_is_exact(self):
+        tool_name = "parallel_cancel_tool"
+        capability = {
+            "name": tool_name,
+            "executor": self.executor_relpath,
+            "timeout": 30,
+            "heavy": True,
+        }
+        first = asyncio.create_task(
+            self.executor.execute(
+                capability,
+                {},
+                execution_identity={"run_id": "run-a", "step_id": "step-a"},
+            )
+        )
+        second = asyncio.create_task(
+            self.executor.execute(
+                capability,
+                {},
+                execution_identity={"run_id": "run-b", "step_id": "step-b"},
+            )
+        )
+        for _ in range(50):
+            info = self.executor.running_tool_info(tool_name)
+            if info.get("instances") == 2:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            self.fail("same-name executions did not run concurrently")
+
+        ambiguous = await self.executor.cancel_tool(tool_name)
+        self.assertEqual("AMBIGUOUS_TOOL_EXECUTION", ambiguous["code"])
+
+        cancelled = await self.executor.cancel_bound_run(
+            tool_name=tool_name,
+            run_id="run-a",
+            step_id="step-a",
+        )
+        self.assertTrue(cancelled["ok"])
+        first_result = await asyncio.wait_for(first, timeout=5)
+        self.assertEqual("CANCELLED", first_result["error_code"])
+        self.assertFalse(second.done())
+
+        await self.executor.cancel_bound_run(
+            tool_name=tool_name,
+            run_id="run-b",
+            step_id="step-b",
+        )
+        second_result = await asyncio.wait_for(second, timeout=5)
+        self.assertEqual("CANCELLED", second_result["error_code"])
 
     async def test_unified_tool_failure_preserves_auth_required_classification(self):
         failure_script = self._write_temp_script(

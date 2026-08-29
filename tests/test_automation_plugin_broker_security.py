@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import uuid
+import zlib
 from pathlib import Path
+from typing import Mapping
 
 import pytest
 
+from agent.automation_plugins import broker as broker_module
 from agent.automation_plugins.broker import (
     VERIFIED_WRITE_NOOP_FIELD,
     LocalBrokerCapabilityIssuer,
@@ -162,6 +166,175 @@ def test_sdk_compresses_and_broker_accepts_snapshot_larger_than_legacy_limit(
     assert asyncio.run(invoke()) == {"observed_length": 11 * 1024 * 1024}
 
 
+def test_broker_cpu_heavy_frame_and_response_phases_keep_async_ticker_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ReadAdapter:
+        async def invoke(self, *, arguments, **_kwargs):
+            return {
+                "observed_length": len(arguments["payload"]),
+                "nested": [{"status": "verified"}],
+            }
+
+    phases = (
+        "decompress",
+        "decode",
+        "arguments",
+        "consume",
+        "mark_hook",
+        "redact",
+        "serialize",
+    )
+    started = {phase: threading.Event() for phase in phases}
+    release = {phase: threading.Event() for phase in phases}
+    worker_threads: dict[str, int] = {}
+    loop_thread: dict[str, int] = {}
+
+    def blocking_wrapper(phase, target):
+        def wrapped(*args, **kwargs):
+            worker_threads[phase] = threading.get_ident()
+            started[phase].set()
+            if not release[phase].wait(timeout=2):
+                raise AssertionError(f"test did not release Broker {phase} phase")
+            return target(*args, **kwargs)
+
+        return wrapped
+
+    monkeypatch.setattr(
+        broker_module,
+        "_decompress_broker_request",
+        blocking_wrapper("decompress", broker_module._decompress_broker_request),
+    )
+    monkeypatch.setattr(
+        broker_module,
+        "_decode_broker_request",
+        blocking_wrapper("decode", broker_module._decode_broker_request),
+    )
+    monkeypatch.setattr(
+        broker_module,
+        "_copy_broker_arguments",
+        blocking_wrapper("arguments", broker_module._copy_broker_arguments),
+    )
+    monkeypatch.setattr(
+        LocalBrokerCapabilityIssuer,
+        "consume",
+        blocking_wrapper("consume", LocalBrokerCapabilityIssuer.consume),
+    )
+    monkeypatch.setattr(
+        LocalBrokerCapabilityIssuer,
+        "mark_write_started_hook",
+        blocking_wrapper(
+            "mark_hook",
+            LocalBrokerCapabilityIssuer.mark_write_started_hook,
+        ),
+    )
+    monkeypatch.setattr(
+        broker_module,
+        "_assert_redacted",
+        blocking_wrapper("redact", broker_module._assert_redacted),
+    )
+    monkeypatch.setattr(
+        broker_module,
+        "_serialize_broker_response",
+        blocking_wrapper("serialize", broker_module._serialize_broker_response),
+    )
+
+    async def wait_for_phase(phase: str) -> None:
+        deadline = asyncio.get_running_loop().time() + 1
+        while not started[phase].is_set():
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AssertionError(f"Broker {phase} phase did not start")
+            await asyncio.sleep(0.001)
+
+        ticked = False
+
+        async def ticker() -> None:
+            nonlocal ticked
+            await asyncio.sleep(0)
+            ticked = True
+
+        await ticker()
+        assert ticked
+        release[phase].set()
+
+    async def invoke() -> dict[str, object]:
+        loop_thread["id"] = threading.get_ident()
+        socket_path = tmp_path / "broker-offloop.sock"
+        issuer = LocalBrokerCapabilityIssuer(socket_path)
+        broker = LocalCoreAutomationBroker(issuer=issuer, adapter=ReadAdapter())
+        await broker.start()
+        try:
+            capability = issuer.issue(
+                automation_id="instance-a",
+                plugin_version="1.0.0",
+                tool_name="automation.instance-a.run",
+                ttl_seconds=60,
+                runtime_permissions={
+                    "browser": True,
+                    "network": False,
+                    "office": False,
+                    "max_broker_calls": 1,
+                    "broker_operations": [
+                        {
+                            "operation": "browser.invoke",
+                            "action": "source.read",
+                            "roles": ["source"],
+                            "effect": "read",
+                        }
+                    ],
+                },
+                account_roles=({"role": "source"},),
+                resource_roles=(),
+                account_bindings={"source": "opaque-binding"},
+                resource_bindings={},
+            )
+            request = {
+                "schema_version": 1,
+                "request_id": str(uuid.uuid4()),
+                "capability": capability,
+                "operation": "browser.invoke",
+                "action": "source.read",
+                "role": "source",
+                "arguments": {"payload": "x" * 250_000},
+            }
+            payload = json.dumps(request, separators=(",", ":")).encode("utf-8")
+            compressed = zlib.compress(payload)
+
+            async def client() -> dict[str, object]:
+                reader, writer = await asyncio.open_unix_connection(str(socket_path))
+                writer.write(
+                    broker_module._BROKER_FRAME_PREFIX
+                    + str(len(compressed)).encode("ascii")
+                    + b"\n"
+                    + compressed
+                )
+                await writer.drain()
+                response = json.loads((await reader.readline()).decode("utf-8"))
+                writer.close()
+                await writer.wait_closed()
+                return response
+
+            task = asyncio.create_task(client())
+            for phase in phases:
+                await wait_for_phase(phase)
+            return await task
+        finally:
+            await broker.stop()
+
+    response = asyncio.run(invoke())
+
+    assert response == {
+        "ok": True,
+        "data": {
+            "nested": [{"status": "verified"}],
+            "observed_length": 250_000,
+        },
+    }
+    assert set(worker_threads) == set(phases)
+    assert all(thread_id != loop_thread["id"] for thread_id in worker_threads.values())
+
+
 def test_sdk_broker_timeout_is_core_owned_and_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     environment = PluginExecutionRouter._minimal_environment(
         capability="opaque-capability",
@@ -219,6 +392,97 @@ def test_read_broker_failure_never_counts_as_a_started_write(tmp_path: Path) -> 
         role="source",
     )
     assert issuer.started_mutating_call_count(capability) == 0
+
+
+def test_write_receipt_persistence_does_not_hold_the_issuer_lock(tmp_path: Path) -> None:
+    recorder_entered = threading.Event()
+    release_recorder = threading.Event()
+    observer_finished = threading.Event()
+    receipts: list[Mapping[str, object]] = []
+    marker_errors: list[Exception] = []
+
+    def recorder(receipt: Mapping[str, object]) -> None:
+        recorder_entered.set()
+        release_recorder.wait(timeout=2)
+        receipts.append(receipt)
+
+    issuer = LocalBrokerCapabilityIssuer(
+        tmp_path / "broker.sock",
+        write_attempt_recorder=recorder,
+    )
+    capability = issuer.issue(
+        automation_id="arrive_list",
+        plugin_version="1.0.0",
+        tool_name="automation.arrive_list.run",
+        ttl_seconds=60,
+        runtime_permissions={
+            "browser": False,
+            "network": False,
+            "office": False,
+            "max_broker_calls": 1,
+            "broker_operations": [
+                {
+                    "operation": "projection.invoke",
+                    "action": "waybill.snapshot.replace",
+                    "roles": ["target"],
+                    "effect": "write",
+                }
+            ],
+        },
+        account_roles=({"role": "target"},),
+        resource_roles=(),
+        account_bindings={"target": "opaque-binding"},
+        resource_bindings={},
+        write_attempt_context={
+            "automation_id": "arrive_list",
+            "plugin_id": "sync_arrive_list",
+            "generation": 1,
+            "lease_id": str(uuid.uuid4()),
+            "orchestration_run_id": str(uuid.uuid4()),
+            "step_id": str(uuid.uuid4()),
+        },
+    )
+    request_id = str(uuid.uuid4())
+    issuer.consume(
+        capability,
+        request_id=request_id,
+        operation="projection.invoke",
+        action="waybill.snapshot.replace",
+        role="target",
+        arguments={"records": [], "target_date": "2026-08-28"},
+    )
+    marker = issuer.mark_write_started_hook(capability, request_id=request_id)
+    assert marker is not None
+
+    def mark() -> None:
+        try:
+            marker()
+        except Exception as exc:  # pragma: no cover - asserted below
+            marker_errors.append(exc)
+
+    marker_thread = threading.Thread(target=mark)
+    marker_thread.start()
+    assert recorder_entered.wait(timeout=1)
+
+    observed: list[int] = []
+
+    def observe() -> None:
+        observed.append(issuer.started_mutating_call_count(capability))
+        observer_finished.set()
+
+    observer_thread = threading.Thread(target=observe)
+    observer_thread.start()
+    issuer_was_responsive = observer_finished.wait(timeout=0.2)
+    release_recorder.set()
+    marker_thread.join(timeout=1)
+    observer_thread.join(timeout=1)
+
+    assert issuer_was_responsive is True
+    assert observed == [0]
+    assert marker_errors == []
+    assert len(receipts) == 1
+    assert marker.started() is True
+    assert issuer.started_mutating_call_count(capability) == 1
 
 
 @pytest.mark.parametrize(

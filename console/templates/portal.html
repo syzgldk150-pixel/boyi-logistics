@@ -335,30 +335,36 @@
 </style>
 
 <div class="monitor-dashboard" data-monitoring-dashboard>
+  <div class="notice notice--error" role="alert" data-monitoring-agent-status hidden>
+    <div class="notice-copy">
+      <i data-feather="alert-circle"></i>
+      <span><strong>Agent 服务不可用。</strong>监控数据暂时无法获取，请稍后重试。</span>
+    </div>
+  </div>
   <div class="monitor-metrics">
     <div class="monitor-metric">
       <span>未处理总数</span>
-      <strong data-monitoring-total>--</strong>
+      <strong data-monitoring-total>加载中</strong>
       <small>来自消息分类汇总</small>
     </div>
     <div class="monitor-metric">
       <span>韵达待办</span>
-      <strong data-monitoring-yunda>--</strong>
+      <strong data-monitoring-yunda>加载中</strong>
       <small>问题件、回复、待办事项</small>
     </div>
     <div class="monitor-metric">
       <span>融辉 TMS</span>
-      <strong data-monitoring-ronghui>--</strong>
+      <strong data-monitoring-ronghui>加载中</strong>
       <small>消息源定位中</small>
     </div>
     <div class="monitor-metric">
       <span>异常/投诉类</span>
-      <strong data-monitoring-exception>--</strong>
+      <strong data-monitoring-exception>加载中</strong>
       <small data-monitoring-updated>等待同步</small>
     </div>
     <div class="monitor-metric" data-monitoring-daily-sign>
       <span>今日应签未签</span>
-      <strong data-monitoring-daily-sign-count>--</strong>
+      <strong data-monitoring-daily-sign-count>加载中</strong>
       <small data-monitoring-daily-sign-meta>飞书应签明细</small>
     </div>
   </div>
@@ -420,7 +426,8 @@
     fullscreen: root.querySelector('[data-monitoring-fullscreen]'),
     open: root.querySelector('[data-monitoring-open]'),
     reload: root.querySelector('[data-monitoring-reload]'),
-    refresh: document.querySelector('[data-monitoring-refresh]')
+    refresh: document.querySelector('[data-monitoring-refresh]'),
+    agentStatus: root.querySelector('[data-monitoring-agent-status]')
   };
   let activeLink = null;
   let activeCategoryId = '';
@@ -433,6 +440,8 @@
   let detailRequest = null;
   let detailRequestSeq = 0;
   let refreshCooldown = false;
+  let hasSuccessfulSnapshot = false;
+  const monitoringRequestTimeoutMs = 8000;
   const detailLinkCache = new Map();
   const systemNodes = new Map();
 
@@ -472,8 +481,8 @@
     latestDailySignKey = key;
     const counts = payload?.counts || {};
     if (payload?.ok === false) {
-      setText(els.dailySign, '--');
-      setText(els.dailySignMeta, payload.message || '飞书应签明细获取失败');
+      setText(els.dailySign, '不可用');
+      setText(els.dailySignMeta, 'Agent 服务不可用，应签明细暂时无法获取');
       return;
     }
     setText(els.dailySign, fmt(counts.unsigned_today));
@@ -503,6 +512,12 @@
   }
 
   function applySnapshot(snapshot) {
+    if (snapshot?.ok === false) {
+      renderSummaryUnavailable();
+      return;
+    }
+    hasSuccessfulSnapshot = true;
+    if (els.agentStatus) els.agentStatus.hidden = true;
     const totals = snapshot.totals || {};
     setText(els.total, fmt(totals.total_pending));
     setText(els.yunda, fmt(totals.yunda_pending));
@@ -533,7 +548,7 @@
     refreshIconsSoon();
   }
 
-  function renderEmptySystems() {
+  function renderEmptySystems(message = '暂时没有监控数据。') {
     systemNodes.forEach((panel) => panel.remove());
     systemNodes.clear();
     let empty = els.systems.querySelector('[data-monitoring-empty]');
@@ -543,7 +558,18 @@
       empty.dataset.monitoringEmpty = 'true';
       els.systems.appendChild(empty);
     }
-    setText(empty, '暂时没有监控数据。');
+    setText(empty, message);
+  }
+
+  function renderSummaryUnavailable() {
+    setText(els.total, '不可用');
+    setText(els.yunda, '不可用');
+    setText(els.ronghui, '不可用');
+    setText(els.exception, '不可用');
+    setText(els.updated, 'Agent 服务不可用');
+    renderEmptySystems('Agent 服务不可用，监控数据暂时无法获取。');
+    if (els.agentStatus) els.agentStatus.hidden = false;
+    refreshIconsSoon();
   }
 
   function getSystemPanel(systemId) {
@@ -725,11 +751,24 @@
     return preferCached ? 'prefer_cached=1' : 'prefer_cached=0';
   }
 
+  async function fetchMonitoringJson(url) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), monitoringRequestTimeoutMs);
+    try {
+      const response = await fetch(url, {
+        credentials: 'same-origin',
+        signal: controller.signal
+      });
+      const payload = await response.json();
+      if (!response.ok || payload?.ok === false) throw new Error('Agent 服务不可用');
+      return payload;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
   async function fetchSummary(force = false, preferCached = false) {
-    const response = await fetch(`/monitoring/summary?systems=yunda,ronghui&force=${force ? '1' : '0'}&${preferCachedQueryValue(preferCached)}`, {
-      credentials: 'same-origin'
-    });
-    const payload = await response.json();
+    const payload = await fetchMonitoringJson(`/monitoring/summary?systems=yunda,ronghui&force=${force ? '1' : '0'}&${preferCachedQueryValue(preferCached)}`);
     renderSnapshot(payload);
   }
 
@@ -750,10 +789,7 @@
   }
 
   async function fetchDailySign(force = false, preferCached = false, scheduleNext = false) {
-    const response = await fetch(`/monitoring/daily-sign?force=${force ? '1' : '0'}&${preferCachedQueryValue(preferCached)}`, {
-      credentials: 'same-origin'
-    });
-    const payload = await response.json();
+    const payload = await fetchMonitoringJson(`/monitoring/daily-sign?force=${force ? '1' : '0'}&${preferCachedQueryValue(preferCached)}`);
     renderDailySign(payload);
     if (scheduleNext) scheduleDailySignRefresh(payload);
     return payload;
@@ -785,7 +821,7 @@
       fetchDailySign(true, true).catch(() => renderDailySign({ ok: false, message: '飞书应签明细获取失败' }))
     ]).finally(() => {
       window.setTimeout(() => {
-        fetchSummary(false, false).catch(() => undefined);
+        fetchSummary(false, false).catch(() => renderSummaryUnavailable());
         fetchDailySign(false, false, true).catch(() => renderDailySign({ ok: false, message: '飞书应签明细获取失败' }));
         refreshCooldown = false;
         setRefreshing(false);
@@ -799,7 +835,7 @@
     openCategory(button);
   });
 
-  fetchSummary(true, true).catch(() => undefined);
+  fetchSummary(true, true).catch(() => renderSummaryUnavailable());
   fetchDailySign(true, true, true).catch(() => {
     renderDailySign({ ok: false, message: '飞书应签明细获取失败' });
     scheduleDailySignRefresh();
@@ -815,11 +851,11 @@
       }
     });
     source.onerror = () => {
-      return;
+      if (!hasSuccessfulSnapshot) renderSummaryUnavailable();
     };
   } else {
-    fetchSummary(false).catch(() => undefined);
-    window.setInterval(() => fetchSummary(false).catch(() => undefined), 60000);
+    fetchSummary(false).catch(() => renderSummaryUnavailable());
+    window.setInterval(() => fetchSummary(false).catch(() => renderSummaryUnavailable()), 60000);
   }
 })();
 </script>

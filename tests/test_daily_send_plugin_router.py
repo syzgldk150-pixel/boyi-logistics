@@ -47,7 +47,7 @@ _SOURCE_ROW = {
 
 
 class _AccountManager:
-    def require_authenticated_binding(self, account_id: str):
+    def require_active_binding_descriptor(self, account_id: str):
         assert account_id == _ACCOUNT_ID
         return {
             "account_id": account_id,
@@ -55,6 +55,9 @@ class _AccountManager:
             "account_purpose": "daily_send",
             "session_profile": "profile-daily-send",
         }
+
+    def require_authenticated_binding(self, _account_id: str):
+        raise AssertionError("production describe_account must not authenticate online")
 
 
 def test_signed_daily_send_package_runs_production_ports_through_write_verifier(

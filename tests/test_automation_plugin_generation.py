@@ -1028,3 +1028,89 @@ def test_crash_after_effect_apply_before_ack_reuses_durable_planned_owner() -> N
         for effect in repository.generations[1].effects
     )
     assert repository.runtime and repository.runtime.reconcile_state == RuntimeReconcileState.STABLE
+
+
+def test_generation_health_quarantines_one_corrupt_runtime_project() -> None:
+    class _Repository:
+        @staticmethod
+        def list_project_runtime_ids() -> tuple[str, ...]:
+            return ("project-a", "project-b")
+
+        @staticmethod
+        def list_project_runtimes() -> tuple[ProjectRuntimeRecord, ...]:
+            raise AssertionError("health must discover raw identities first")
+
+        @staticmethod
+        def get_project_runtime(automation_id: str) -> ProjectRuntimeRecord | None:
+            if automation_id == "project-b":
+                raise ValueError("corrupt runtime row")
+            return ProjectRuntimeRecord(
+                automation_id=automation_id,
+                target_generation=1,
+                committed_generation=1,
+                reconcile_state=RuntimeReconcileState.STABLE,
+                record_version=1,
+            )
+
+        @staticmethod
+        def list_project_generations(
+            automation_id: str,
+        ) -> tuple[RuntimeGenerationRecord, ...]:
+            assert automation_id == "project-a"
+            return (
+                RuntimeGenerationRecord(
+                    snapshot=_snapshot(1, "1.0.0"),
+                    state=RuntimeGenerationState.COMMITTED,
+                ),
+            )
+
+        @staticmethod
+        def list_active_generation_leases(
+            _automation_id: str,
+            _generation: int,
+        ) -> tuple[RuntimeGenerationLease, ...]:
+            return ()
+
+        @staticmethod
+        def has_unknown_generation_write(
+            _automation_id: str,
+            _generation: int,
+        ) -> bool:
+            return False
+
+    health = runtime_generation_health(
+        _Repository(),
+        expected_automation_ids={"project-a", "project-b"},
+    )
+
+    assert health.healthy is False
+    assert health.project_count == 2
+    assert health.committed_count == 1
+    assert health.blocked_projects == {
+        "project-b": ("PROJECT_RUNTIME_DATA_INVALID",)
+    }
+
+
+@pytest.mark.parametrize("raw_ids", [("",), ("same", "same")])
+def test_generation_health_identity_corruption_remains_global(
+    raw_ids: tuple[str, ...],
+) -> None:
+    repository = _MemoryGenerationRepository()
+    repository.list_project_runtime_ids = lambda: raw_ids
+
+    with pytest.raises(PluginConflictError) as raised:
+        runtime_generation_health(repository, expected_automation_ids=set())
+
+    assert raised.value.code == "PLUGIN_IDENTITY_CONFLICT"
+
+
+def test_generation_health_identity_query_error_remains_global() -> None:
+    repository = _MemoryGenerationRepository()
+
+    def _failed_query() -> tuple[str, ...]:
+        raise RuntimeError("database unavailable")
+
+    repository.list_project_runtime_ids = _failed_query
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        runtime_generation_health(repository, expected_automation_ids=set())

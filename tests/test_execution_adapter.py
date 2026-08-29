@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
 from agent.orchestration.execution_adapter import RegisteredToolExecutionAdapter
 from agent.orchestration.models import OperationType, PlanStep, RiskLevel, sha256_json
+from agent.tool_executor import ToolExecutor
+from agent.tool_registry import ToolRegistry
 
 
 class _Catalog:
@@ -20,7 +23,7 @@ class _Executor:
     def __init__(self, result):
         self.result = result
 
-    async def execute(self, capability, arguments):
+    async def execute(self, capability, arguments, **_kwargs):
         return self.result
 
     def running_tool_info(self, tool_name):
@@ -37,6 +40,19 @@ class _CapturingExecutor:
 
     def running_tool_info(self, tool_name):
         return {"started_at": "2026-08-13T00:00:00Z"}
+
+
+class _BoundCancellationExecutor(_Executor):
+    def __init__(self):
+        super().__init__({"success": True, "data": {"ok": True}})
+        self.bound_calls = []
+
+    async def cancel_bound_run(self, **identity):
+        self.bound_calls.append(identity)
+        return {"ok": False, "code": "NOT_RUNNING"}
+
+    async def cancel_tool(self, *_args, **_kwargs):
+        raise AssertionError("name-only cancellation must not be used")
 
 
 class _R7Catalog:
@@ -110,6 +126,53 @@ def _trusted_r7_execution_context():
     }
 
 
+def test_finance_review_analysis_uses_core_tool_executor_port():
+    registry = ToolRegistry()
+    capability = registry.get_capability("analyze_finance_reviews")
+    executor = ToolExecutor()
+    executor.execute = AsyncMock(return_value={"success": True, "data": {"ok": True}})
+    adapter = RegisteredToolExecutionAdapter(catalog=registry, executor=executor)
+    step = PlanStep(
+        step_key="finance-analysis",
+        tool_name="analyze_finance_reviews",
+        tool_version="1.0.0",
+        operation_type=OperationType.INTERNAL_PROJECTION_WRITE,
+        arguments={
+            "trigger_id": "event-1",
+            "source_run_id": "run-1",
+            "limit": 20,
+        },
+        account_id=None,
+        depends_on=(),
+        idempotency_key="finance-analysis-1",
+        expected_evidence=(),
+        postconditions=({"name": "executor_reported_success"},),
+        risk_level=RiskLevel.MEDIUM,
+        requires_approval=True,
+    )
+
+    result = asyncio.run(
+        adapter.execute_step(
+            step,
+            run_id="run-analysis",
+            step_id="step-analysis",
+            execution_context={"source": "system"},
+        )
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert capability["executor"] == "tools/finance_review_analysis_tool.py"
+    executor.execute.assert_awaited_once()
+    executed_capability, arguments = executor.execute.await_args.args
+    kwargs = executor.execute.await_args.kwargs
+    assert executed_capability["name"] == "analyze_finance_reviews"
+    assert arguments == step.arguments
+    assert kwargs["execution_identity"] == {
+        "run_id": "run-analysis",
+        "step_id": "step-analysis",
+    }
+
+
 def test_valid_r7_scheduler_metadata_uses_private_executor_side_channel_only():
     executor = _CapturingExecutor()
     step = _r7_step()
@@ -141,6 +204,10 @@ def test_valid_r7_scheduler_metadata_uses_private_executor_side_channel_only():
         "configuration_version": 7,
         "scheduled_for": "2026-08-14T09:00:00+08:00",
         "cron_expression": "0 9 * * *",
+    }
+    assert kwargs["execution_identity"] == {
+        "run_id": "run-r7",
+        "step_id": "step-r7",
     }
 
 
@@ -174,7 +241,9 @@ def test_invalid_or_non_scheduler_r7_context_is_not_forwarded(field, value):
         )
     )
 
-    assert executor.calls[0][2] == {}
+    assert executor.calls[0][2] == {
+        "execution_identity": {"run_id": "run-r7", "step_id": "step-r7"}
+    }
 
 
 @pytest.mark.parametrize(
@@ -201,7 +270,9 @@ def test_forged_scheduler_actor_is_not_forwarded(actor_field, value):
         )
     )
 
-    assert executor.calls[0][2] == {}
+    assert executor.calls[0][2] == {
+        "execution_identity": {"run_id": "run-r7", "step_id": "step-r7"}
+    }
 
 
 def test_exit_success_without_explicit_business_success_has_no_postcondition_proof():
@@ -337,3 +408,25 @@ def test_nested_unified_retryable_failure_is_preserved():
     )
 
     assert result == nested_result
+
+
+def test_cancel_step_uses_only_the_exact_run_step_binding():
+    executor = _BoundCancellationExecutor()
+    adapter = RegisteredToolExecutionAdapter(
+        catalog=_Catalog(_capability()),
+        executor=executor,
+    )
+    adapter._step_to_tool[("run-1", "step-1")] = "write_tool"
+
+    result = asyncio.run(
+        adapter.cancel_step(run_id="run-1", step_id="step-1")
+    )
+
+    assert result == {"ok": False, "code": "NOT_RUNNING"}
+    assert executor.bound_calls == [
+        {
+            "tool_name": "write_tool",
+            "run_id": "run-1",
+            "step_id": "step-1",
+        }
+    ]

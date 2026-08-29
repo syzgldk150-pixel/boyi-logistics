@@ -42,6 +42,7 @@ ResultUpsertPort = Callable[[dict[str, str]], Mapping[str, Any]]
 ProblemEventUpsertPort = Callable[
     [Mapping[str, Any], dict[str, str]], Mapping[str, Any]
 ]
+CapabilityAuthorizationPort = Callable[[Mapping[str, Any], str], None]
 
 
 _SELF_TOOL = "self_pickup_problem_upload"
@@ -362,6 +363,7 @@ class ProblemHandlerPorts:
     snapshot_replace: SnapshotReplacePort
     result_upsert: ResultUpsertPort
     problem_event_upsert: ProblemEventUpsertPort
+    authorize_capability: CapabilityAuthorizationPort | None = None
 
 
 def _self_plan(context: CoreBrokerInvocationContext, bill_code: str) -> dict[str, Any]:
@@ -497,6 +499,14 @@ class _ProblemHandlers:
     def _mark_write_started(context: CoreBrokerInvocationContext) -> None:
         if context.mark_write_started is not None:
             context.mark_write_started()
+
+    def _authorize_capability(
+        self,
+        descriptor: Mapping[str, Any],
+    ) -> None:
+        authorizer = self._ports.authorize_capability
+        if authorizer is not None:
+            authorizer(descriptor, "ronghui_problem")
 
     def sheet_read(
         self,
@@ -652,6 +662,7 @@ class _ProblemHandlers:
         }
         if observed != plan:
             raise _error("problem write plan changed", "BROKER_CURSOR_INVALID")
+        self._authorize_capability(descriptor)
         self._mark_write_started(context)
         raw = self._ports.problem_action(
             descriptor,
@@ -833,6 +844,7 @@ class _ProblemHandlers:
         if plan != {"bill_code": bill_code}:
             raise _error("complaint write plan changed", "BROKER_CURSOR_INVALID")
         descriptor = _one_account(context, self._ports)
+        self._authorize_capability(descriptor)
         self._mark_write_started(context)
         raw = self._ports.complaint_action(descriptor, "create", plan)
         if (

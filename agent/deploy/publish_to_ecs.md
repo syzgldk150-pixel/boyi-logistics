@@ -1,12 +1,13 @@
 # 发布到 ECS
 
-标准发布入口必须显式传入与待发布 Git SHA 完全一致的签名首方插件目录，以及只含受信
-Ed25519 `.pub` 公钥的信任根。常规控制平面发布使用 `-Target all`：
+Agent 或 shared/migration 发布必须显式传入与待发布 Git SHA 完全一致的签名首方插件目录，
+以及只含受信 Ed25519 `.pub` 公钥的信任根。Console-only 发布不处理插件输入。需要协调两个
+服务的 shared/migration 发布使用 `-Target shared`（`-Target all` 是它的兼容别名）：
 
 ```powershell
 powershell -ExecutionPolicy Bypass `
   -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1" `
-  -Target all `
+  -Target shared `
   -AutomationPluginArtifactRoot "<signed-artifact-directory>" `
   -AutomationPluginTrustRoot "<public-trust-root-directory>"
 ```
@@ -85,28 +86,31 @@ Console `static/` 下已纳入 Git 的面单 PNG 属于明确静态资产例外�
 1. 检查 Git 工作区和远程提交。
 2. 检查本地 Agent 已停止。
 3. 校验 SSH 主机密钥、远端用户和 systemd 工作目录。
-4. 在项目内 `.task_tmp/` 构建白名单暂存包，上传到 `/home/boyce/.boyi-deploy/release-*`。
+4. 在项目内 `.task_tmp/` 构建白名单暂存包，上传到 `/home/boyce/.boyi-deploy/release-*`；Agent 与 Console 独立发布时各自使用唯一 stage，避免前一服务保留的回滚包阻断后一服务。
 5. 在本次 `/home/boyce/.boyi-deploy/release-*/_rollback/` 内建立当前受管源码、发布清单、unit 与旧虚拟环境引用的精确回滚包。
 6. 先确认首方 staged 源码只含代码 allowlist 包，再对远端暂存包执行 `compileall`；存在 SQL 迁移时必须找到受支持的 `--check` 迁移预检入口，并在任何 DDL 前验证官方 MySQL 8.x。
-7. 分别计算 Agent、Console `requirements.lock` 的 SHA-256，再生成联合哈希。两个服务共用唯一的 `runtime-deps-<联合哈希>` 环境；若当前共享环境的哈希一致且分别通过两份锁文件校验，直接复用。只有任一锁变化或校验失败时，才创建新的共享环境并一次性安装两份锁文件的并集。
-8. 在首次源码、虚拟环境或数据库变更前同时停止 Agent 与 Console，并确认两个 unit 均已退出；控制平面发布必须使用 `-Target all`，禁止在运行中的调度器/Worker 上同步混合版本源码。
+7. 只有 shared、数据库 migration、任一依赖清单或迁移运行器发生变化时，才分别计算 Agent、Console `requirements.lock` 的 SHA-256 并生成联合哈希。两个服务共用唯一的 `runtime-deps-<联合哈希>` 环境；哈希和两份锁校验均一致时直接复用，否则创建新共享环境并一次性安装两份锁文件的并集。Agent-only 与 Console-only 不构建、不切换共享虚拟环境。
+8. Console-only 只停止 Console；Agent-only 只停止 Agent；shared/migration 才同时停止两个服务。每条路径都先确认自己负责的 unit 已退出，未选中的服务不停止、不重启。
 9. 按 `.deploy-source-manifest` 同步源码，只删除上一版清单中存在而本版已移除的文件；不递归删除未受管业务数据。
-10. 先执行全部版本化迁移，再安装新 systemd unit、按需原子切换虚拟环境并执行 `daemon-reload`。写入 `runtime/release_sha` 后，发布器创建仅属于本次 SHA 的固定 release hold，再按 Agent、Console 顺序启动；Agent 只注册任务，Scheduler 保持 paused，WorkflowRunner 保持 held 且不领取既存或新 Run，任何自动任务都不得在发布门禁完成前执行。发现遗留 marker 时新发布必须失败关闭，不得覆盖。
-11. Agent `/health` 必须返回本次 Git SHA，Console 必须可访问；签名内部健康探针还必须确认 Scheduler paused、WorkflowRunner held 且 active Run 为零。随后完成 Agent/Console 签名身份联通、首次或后续控制平面 manifest、依赖哈希与数据库状态检查，最后才由签名 Console 管理员请求调用激活端点。端点先恢复并确认 WorkflowRunner 与 Scheduler 均可运行，再删除匹配本次 SHA 的 marker，并把财务启动补偿推迟 15 秒；marker 删除是发布提交点。
-12. 激活提交点之前任一步失败，发布器保持 Scheduler 与 WorkflowRunner hold，按 018、bootstrap、017、016、014 的本次变更范围逆序恢复，再恢复旧虚拟环境、源码、unit 与发布清单。恢复后先从旧源码的精确首方实例集合及旧 SHA 对应的已验签 release index 建立版本合同，并用只读事务逐项目检查数据库；数据库中任一实例版本高于旧发行、插件归属不一致或合同无法验证时，禁止启动旧服务，保持两服务停止并保留 stage，只清除仍由本次 SHA 持有的 hold 以允许新的前向修复发布。版本兼容时，先在 hold 仍存在的状态启动旧 Agent/Console，校验旧 40 位 SHA、Console 可用性及 PID/重启次数稳定；随后再次停止两服务、清除本次 hold、重新启动并重复同一稳定健康门禁。两阶段全部通过后才允许清理失败 stage，不能用瞬时 `systemctl is-active` 代替稳定健康。回滚产生的签名插件隔离树继续保持文件只读；最终删除失败发布 stage 前，发布器只对精确位于本次 `_rollback/retired/automation_plugin_installed` 下、无符号链接、同设备且属于当前 `boyce` 发布用户的目录恢复 owner 写权限。删除开始前任一验证失败都保留完整 stage；`rm` 开始后若失败则必须报告 `recovery_material_state=unknown verify_required=1`，不得声称恢复材料完整，须人工核验 stage。禁止 `sudo rm`、`chown` 或放宽仓库及线上插件目录。激活期间异常或进程退出必须保留 marker，使下一次启动继续 hold；响应丢失可用新签名 nonce 幂等重试。激活请求一旦发出便不得自动回滚，因为任务可能已经开始；此时必须保留远端暂存树并报告 `release_activation_incomplete`，由人工核验 Scheduler、WorkflowRunner 和业务状态。数据库 DDL 与启动阶段已经提交的插件/代际数据不随普通源码回滚，发布前必须另行完成可恢复数据库快照并保留到业务验收结束。
+10. shared/migration 路径先执行版本化迁移，再安装两个 unit 并按需原子切换共享虚拟环境；Agent-only/Console-only 只安装自己的 unit，且不执行迁移。包含 Agent 的路径写入 `runtime/release_sha`、安装已验签插件并创建仅属于本次 SHA 的 release hold；Console-only 不创建或消费 Agent hold。
+11. 每条路径只健康检查本次重启的服务：Agent `/health` 必须返回本次 Git SHA，Console 首页必须可访问。shared/migration 额外执行 Agent/Console 签名身份联通和依赖哈希检查；包含 Agent 的路径继续执行控制平面 manifest 门禁，并通过签名激活端点释放 Scheduler/WorkflowRunner hold。
+12. 提交点之前失败时，只停止和恢复本次路径负责的服务、源码、unit 与发布清单；shared/migration 才恢复两套运行时和共享虚拟环境。包含 Agent 的路径仍保留受保护写检查、精确插件版本合同、release hold 和两阶段稳定健康回滚；shared/migration 额外保留 migration checksum 与数据库恢复门禁。Console-only 不触碰 Agent、插件或数据库。所有路径的回滚材料仍位于本次 stage，删除安全边界和失败保留语义不变。
 13. 健康检查成功后仍保留本次远端暂存树、精确回滚包和上一版虚拟环境，直到事项中心、定时自动化、财务、每日应签与客服影子投影完成业务验收。清理必须是验收后的独立、有界管理动作，不得由发布成功路径自动执行；数据库快照同样保留到验收结束。
 
-业务代码频繁提交但锁文件未变时，发布仍会同步受管源码并重启受影响服务，但不会重新创建虚拟环境，也不会重复下载 OCR、OpenCV、Playwright、pandas 等依赖。锁文件变化时才承担完整依赖安装成本。
+业务代码频繁提交时，发布只同步受管源码并重启受影响服务，不会重新创建虚拟环境，也不会重复下载 OCR、OpenCV、Playwright、pandas 等依赖。锁文件变化归入 shared 路径，才承担完整依赖安装成本并协调两个服务。
 
 `/health` 是公开的精简存活接口，只返回状态和 `release_sha`。详细组件状态位于带 `X-Agent-Internal-Token` 的 `/internal/v1/health`。
 
 ## 发布范围
 
-默认 `-Target auto` 根据本地发布状态哈希判断范围。Shared 变化会同时影响 Agent 与 Console 的范围指纹。
+默认 `-Target auto` 使用三个独立指纹：Agent、Console、shared/migration。shared 指纹包含
+`shared/`、数据库迁移、迁移运行器以及两边依赖清单；只要它变化，`auto` 就优先选择 shared
+协调路径。显式 `-Target agent` 或 `-Target console` 若检测到未发布的 shared/migration 变化会
+失败关闭，必须改用 `-Target shared`，不能用窄目标绕过迁移或共享依赖发布。
 
 ```powershell
-# 全部发布
-powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1" -Target all
+# Shared / migration 协调发布（all 为兼容别名）
+powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1" -Target shared
 
 # 只发布并重启 Agent
 powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1" -Target agent

@@ -65,6 +65,7 @@ CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY=0
 DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY=0
 SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY=0
 AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY=0
+FEISHU_NOTIFICATION_LEASE_PENDING_AT_APPLY=0
 CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE=0
 MIGRATIONS_ATTEMPTED=0
 NEW_RUNTIME_START_ATTEMPTED=0
@@ -95,16 +96,47 @@ declare -A VENV_SWITCHED=()
 DEPENDENCY_HASH=""
 declare -A PREVIOUS_VENV_LINKS=()
 declare -A PREVIOUS_VENV_DIRS=()
-RUNTIME_TARGETS=(agent console)
-
 IFS=',' read -r -a REQUESTED_TARGETS <<<"${TARGETS_CSV}"
-SCOPES=(shared)
-for target in "${REQUESTED_TARGETS[@]}"; do
-  case "${target}" in
-    agent|console) SCOPES+=("${target}") ;;
-    *) echo "Unsupported release target: ${target}" >&2; exit 2 ;;
-  esac
-done
+RUNTIME_TARGETS=()
+SCOPES=()
+AGENT_RELEASE=0
+COORDINATED_RELEASE=0
+if [[ "${#REQUESTED_TARGETS[@]}" == "1" && "${REQUESTED_TARGETS[0]}" == "shared" ]]; then
+  COORDINATED_RELEASE=1
+  AGENT_RELEASE=1
+  REQUESTED_TARGETS=(agent console)
+  RUNTIME_TARGETS=(agent console)
+  SCOPES=(shared agent console)
+else
+  declare -A SEEN_TARGETS=()
+  for target in "${REQUESTED_TARGETS[@]}"; do
+    case "${target}" in
+      agent|console)
+        [[ -z "${SEEN_TARGETS[$target]:-}" ]] || {
+          echo "Duplicate release target: ${target}" >&2
+          exit 2
+        }
+        SEEN_TARGETS[$target]=1
+        RUNTIME_TARGETS+=("${target}")
+        SCOPES+=("${target}")
+        [[ "${target}" == "agent" ]] && AGENT_RELEASE=1
+        ;;
+      shared)
+        echo "Shared release target cannot be combined with service targets" >&2
+        exit 2
+        ;;
+      *) echo "Unsupported release target: ${target}" >&2; exit 2 ;;
+    esac
+  done
+  [[ "${#RUNTIME_TARGETS[@]}" == "1" ]] || {
+    echo "Agent and Console releases require separate remote invocations" >&2
+    exit 2
+  }
+fi
+[[ "${#RUNTIME_TARGETS[@]}" -gt 0 ]] || {
+  echo "At least one release target is required" >&2
+  exit 2
+}
 
 safe_relative_path() {
   local value="$1"
@@ -182,10 +214,12 @@ validate_environment() {
     echo "Invalid release SHA" >&2
     return 1
   }
-  [[ ! -e "${SCHEDULER_RELEASE_HOLD_FILE}" && ! -L "${SCHEDULER_RELEASE_HOLD_FILE}" ]] || {
-    echo "A stale scheduler release hold requires manual recovery" >&2
-    return 1
-  }
+  if [[ "${AGENT_RELEASE}" == "1" ]]; then
+    [[ ! -e "${SCHEDULER_RELEASE_HOLD_FILE}" && ! -L "${SCHEDULER_RELEASE_HOLD_FILE}" ]] || {
+      echo "A stale scheduler release hold requires manual recovery" >&2
+      return 1
+    }
+  fi
   [[ "${PIP_INDEX_URL}" =~ ^https://[^[:space:]]+$ ]] || {
     echo "Dependency index must be an HTTPS URL" >&2
     return 1
@@ -225,7 +259,7 @@ validate_environment() {
     }
   done
 
-  if [[ -d "${STAGE_ROOT}/agent/migrations" ]]; then
+  if [[ "${COORDINATED_RELEASE}" == "1" && -d "${STAGE_ROOT}/agent/migrations" ]]; then
     runtime_python="${PYTHON_BINS[agent]}"
     [[ -x "${runtime_python}" ]] || {
       echo "Missing Agent runtime Python for migrations: ${runtime_python}" >&2
@@ -757,8 +791,8 @@ quiesce_runtime_services() {
     return 1
   }
   local target
-  # Once shutdown begins, rollback must restore both runtime services even if
-  # stopping or verifying the second unit fails midway.
+  # Once shutdown begins, rollback must restore every selected runtime service
+  # even if stopping or verifying a later selected unit fails midway.
   SERVICES_QUIESCED=1
   for target in "${RUNTIME_TARGETS[@]}"; do
     sudo systemctl stop "${SERVICES[$target]}"
@@ -876,47 +910,49 @@ backup_managed_sources() {
     fi
   done
 
-  if [[ -f "/home/boyce/agent/runtime/release_sha" ]]; then
-    cp -a "/home/boyce/agent/runtime/release_sha" "${BACKUP_DIR}/release_sha"
-  else
-    : >"${BACKUP_DIR}/release_sha.absent"
-  fi
-
-  if [[ -f "${PLUGIN_RUNTIME_ENV_FILE}" && ! -L "${PLUGIN_RUNTIME_ENV_FILE}" ]]; then
-    cp -a "${PLUGIN_RUNTIME_ENV_FILE}" "${BACKUP_DIR}/automation_plugin_release.env"
-  elif [[ ! -e "${PLUGIN_RUNTIME_ENV_FILE}" && ! -L "${PLUGIN_RUNTIME_ENV_FILE}" ]]; then
-    : >"${BACKUP_DIR}/automation_plugin_release.env.absent"
-  else
-    echo "Unsafe automation plugin runtime environment file" >&2
-    return 1
-  fi
-
-  if [[ -d "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" && \
-    ! -L "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" ]]; then
-    : >"${BACKUP_DIR}/first_party_plugin_release.existing"
-  elif [[ ! -e "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" && \
-    ! -L "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" ]]; then
-    : >"${BACKUP_DIR}/first_party_plugin_release.absent"
-  else
-    echo "Unsafe existing first-party plugin release path" >&2
-    return 1
-  fi
-  for root_state in \
-    "${AUTOMATION_PLUGIN_ROOT}:plugin_root" \
-    "${FIRST_PARTY_PLUGIN_RELEASES_ROOT}:plugin_releases_root" \
-    "${FIRST_PARTY_PLUGIN_TRUST_ROOT}:plugin_trust_root"; do
-    local root_path="${root_state%%:*}"
-    local root_label="${root_state##*:}"
-    if [[ -d "${root_path}" && ! -L "${root_path}" ]]; then
-      : >"${BACKUP_DIR}/${root_label}.existing"
-    elif [[ ! -e "${root_path}" && ! -L "${root_path}" ]]; then
-      : >"${BACKUP_DIR}/${root_label}.absent"
+  if [[ "${AGENT_RELEASE}" == "1" ]]; then
+    if [[ -f "/home/boyce/agent/runtime/release_sha" ]]; then
+      cp -a "/home/boyce/agent/runtime/release_sha" "${BACKUP_DIR}/release_sha"
     else
-      echo "Unsafe automation plugin production root: ${root_path}" >&2
+      : >"${BACKUP_DIR}/release_sha.absent"
+    fi
+
+    if [[ -f "${PLUGIN_RUNTIME_ENV_FILE}" && ! -L "${PLUGIN_RUNTIME_ENV_FILE}" ]]; then
+      cp -a "${PLUGIN_RUNTIME_ENV_FILE}" "${BACKUP_DIR}/automation_plugin_release.env"
+    elif [[ ! -e "${PLUGIN_RUNTIME_ENV_FILE}" && ! -L "${PLUGIN_RUNTIME_ENV_FILE}" ]]; then
+      : >"${BACKUP_DIR}/automation_plugin_release.env.absent"
+    else
+      echo "Unsafe automation plugin runtime environment file" >&2
       return 1
     fi
-  done
-  : >"${PLUGIN_TRUST_ADDITIONS_FILE}"
+
+    if [[ -d "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" && \
+      ! -L "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" ]]; then
+      : >"${BACKUP_DIR}/first_party_plugin_release.existing"
+    elif [[ ! -e "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" && \
+      ! -L "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" ]]; then
+      : >"${BACKUP_DIR}/first_party_plugin_release.absent"
+    else
+      echo "Unsafe existing first-party plugin release path" >&2
+      return 1
+    fi
+    for root_state in \
+      "${AUTOMATION_PLUGIN_ROOT}:plugin_root" \
+      "${FIRST_PARTY_PLUGIN_RELEASES_ROOT}:plugin_releases_root" \
+      "${FIRST_PARTY_PLUGIN_TRUST_ROOT}:plugin_trust_root"; do
+      local root_path="${root_state%%:*}"
+      local root_label="${root_state##*:}"
+      if [[ -d "${root_path}" && ! -L "${root_path}" ]]; then
+        : >"${BACKUP_DIR}/${root_label}.existing"
+      elif [[ ! -e "${root_path}" && ! -L "${root_path}" ]]; then
+        : >"${BACKUP_DIR}/${root_label}.absent"
+      else
+        echo "Unsafe automation plugin production root: ${root_path}" >&2
+        return 1
+      fi
+    done
+    : >"${PLUGIN_TRUST_ADDITIONS_FILE}"
+  fi
 
   local target
   for target in "${REQUESTED_TARGETS[@]}"; do
@@ -976,7 +1012,9 @@ preflight_staged_first_party_source_scope() {
 }
 
 run_static_preflight() {
-  preflight_staged_first_party_source_scope
+  if [[ "${AGENT_RELEASE}" == "1" ]]; then
+    preflight_staged_first_party_source_scope
+  fi
   local target runtime_python shared_python=""
   for target in "${REQUESTED_TARGETS[@]}"; do
     runtime_python="${PYTHON_BINS[$target]}"
@@ -987,10 +1025,15 @@ run_static_preflight() {
       shared_python="${runtime_python}"
     fi
   done
-  "${shared_python}" -m compileall -q "${STAGE_ROOT}/shared"
+  if [[ "${COORDINATED_RELEASE}" == "1" ]]; then
+    "${shared_python}" -m compileall -q "${STAGE_ROOT}/shared"
+  fi
 
   local migration_count
-  migration_count="$(find "${STAGE_ROOT}" -type f -path '*/migrations/*.sql' | wc -l)"
+  migration_count=0
+  if [[ "${COORDINATED_RELEASE}" == "1" ]]; then
+    migration_count="$(find "${STAGE_ROOT}" -type f -path '*/migrations/*.sql' | wc -l)"
+  fi
   if [[ "${migration_count}" -gt 0 ]]; then
     if [[ -f "${STAGE_ROOT}/shared/db/migrate.py" ]]; then
       "${shared_python}" "${STAGE_ROOT}/shared/db/migrate.py" --check
@@ -1704,6 +1747,7 @@ capture_control_plane_release_state() {
     DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY=0
     SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY=0
     AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY=0
+    FEISHU_NOTIFICATION_LEASE_PENDING_AT_APPLY=0
     CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE=0
     return 0
   fi
@@ -1779,6 +1823,20 @@ capture_control_plane_release_state() {
       ;;
   esac
 
+  status="$(run_staged_migration_runner --feishu-notification-lease-status)" || return 1
+  case "${status}" in
+    feishu_notification_lease_status=pending)
+      FEISHU_NOTIFICATION_LEASE_PENDING_AT_APPLY=1
+      ;;
+    feishu_notification_lease_status=applied)
+      FEISHU_NOTIFICATION_LEASE_PENDING_AT_APPLY=0
+      ;;
+    *)
+      echo "Unexpected migration 030 state response" >&2
+      return 1
+      ;;
+  esac
+
   status="$(run_staged_migration_runner --control-plane-policy-bootstrap-marker-status)" || return 1
   case "${status}" in
     control_plane_policy_bootstrap_marker_status=absent)
@@ -1808,6 +1866,10 @@ restore_scheduled_task_contract_upgrade_data() {
 
 restore_automation_project_authorization_data() {
   run_staged_migration_runner --restore-automation-project-authorization
+}
+
+restore_feishu_notification_leases() {
+  run_staged_migration_runner --restore-feishu-notification-leases
 }
 
 restore_control_plane_policy_bootstrap_data() {
@@ -2050,19 +2112,20 @@ verify_rollback_first_party_version_compatibility() {
 }
 
 check_rollback_health() {
-  local expected_sha
-  local agent_pid_before agent_pid_after agent_restarts_before agent_restarts_after
-  local console_pid_before console_pid_after console_restarts_before console_restarts_after
-  [[ -f "${ROOTS[agent]}/runtime/release_sha" && \
-    ! -L "${ROOTS[agent]}/runtime/release_sha" ]] || {
-    echo "rollback_health=failed reason=RESTORED_RELEASE_SHA_UNAVAILABLE" >&2
-    return 1
-  }
-  read -r expected_sha <"${ROOTS[agent]}/runtime/release_sha"
-  [[ "${expected_sha}" =~ ^[0-9a-f]{40}$ ]] || {
-    echo "rollback_health=failed reason=RESTORED_RELEASE_SHA_INVALID" >&2
-    return 1
-  }
+  local expected_sha="${RELEASE_SHA}" target
+  declare -A pids_before=() pids_after=() restarts_before=() restarts_after=()
+  if [[ "${AGENT_RELEASE}" == "1" ]]; then
+    [[ -f "${ROOTS[agent]}/runtime/release_sha" && \
+      ! -L "${ROOTS[agent]}/runtime/release_sha" ]] || {
+      echo "rollback_health=failed reason=RESTORED_RELEASE_SHA_UNAVAILABLE" >&2
+      return 1
+    }
+    read -r expected_sha <"${ROOTS[agent]}/runtime/release_sha"
+    [[ "${expected_sha}" =~ ^[0-9a-f]{40}$ ]] || {
+      echo "rollback_health=failed reason=RESTORED_RELEASE_SHA_INVALID" >&2
+      return 1
+    }
+  fi
 
   # Bash locals are dynamically scoped, so the existing release health gate
   # validates the restored SHA and cannot be bypassed by --skip-health.
@@ -2073,24 +2136,21 @@ check_rollback_health() {
     return 1
   fi
 
-  agent_pid_before="$(systemctl show agent.service -p MainPID --value)" || return 1
-  agent_restarts_before="$(systemctl show agent.service -p NRestarts --value)" || return 1
-  console_pid_before="$(systemctl show console.service -p MainPID --value)" || return 1
-  console_restarts_before="$(systemctl show console.service -p NRestarts --value)" || return 1
+  for target in "${RUNTIME_TARGETS[@]}"; do
+    pids_before[$target]="$(systemctl show "${SERVICES[$target]}" -p MainPID --value)" || return 1
+    restarts_before[$target]="$(systemctl show "${SERVICES[$target]}" -p NRestarts --value)" || return 1
+  done
   sleep 2
-  agent_pid_after="$(systemctl show agent.service -p MainPID --value)" || return 1
-  agent_restarts_after="$(systemctl show agent.service -p NRestarts --value)" || return 1
-  console_pid_after="$(systemctl show console.service -p MainPID --value)" || return 1
-  console_restarts_after="$(systemctl show console.service -p NRestarts --value)" || return 1
-  if [[ -z "${agent_pid_before}" || "${agent_pid_before}" == "0" || \
-    -z "${console_pid_before}" || "${console_pid_before}" == "0" || \
-    "${agent_pid_before}" != "${agent_pid_after}" || \
-    "${agent_restarts_before}" != "${agent_restarts_after}" || \
-    "${console_pid_before}" != "${console_pid_after}" || \
-    "${console_restarts_before}" != "${console_restarts_after}" ]]; then
-    echo "rollback_health=failed reason=RESTORED_RUNTIME_UNSTABLE" >&2
-    return 1
-  fi
+  for target in "${RUNTIME_TARGETS[@]}"; do
+    pids_after[$target]="$(systemctl show "${SERVICES[$target]}" -p MainPID --value)" || return 1
+    restarts_after[$target]="$(systemctl show "${SERVICES[$target]}" -p NRestarts --value)" || return 1
+    if [[ -z "${pids_before[$target]}" || "${pids_before[$target]}" == "0" || \
+      "${pids_before[$target]}" != "${pids_after[$target]}" || \
+      "${restarts_before[$target]}" != "${restarts_after[$target]}" ]]; then
+      echo "rollback_health=failed reason=RESTORED_RUNTIME_UNSTABLE target=${target}" >&2
+      return 1
+    fi
+  done
   check_health || {
     echo "rollback_health=failed reason=RESTORED_RUNTIME_UNSTABLE" >&2
     return 1
@@ -2541,26 +2601,28 @@ restore_managed_release_state() {
     fi
   done
 
-  if [[ -f "${BACKUP_DIR}/release_sha" ]]; then
-    mkdir -p "${ROOTS[agent]}/runtime" || restore_status=1
-    cp -a "${BACKUP_DIR}/release_sha" "${ROOTS[agent]}/runtime/release_sha" || \
+  if [[ "${AGENT_RELEASE}" == "1" ]]; then
+    if [[ -f "${BACKUP_DIR}/release_sha" ]]; then
+      mkdir -p "${ROOTS[agent]}/runtime" || restore_status=1
+      cp -a "${BACKUP_DIR}/release_sha" "${ROOTS[agent]}/runtime/release_sha" || \
+        restore_status=1
+    elif [[ -f "${BACKUP_DIR}/release_sha.absent" ]]; then
+      rm -f -- "${ROOTS[agent]}/runtime/release_sha" || restore_status=1
+    else
+      echo "Missing previous release SHA state" >&2
       restore_status=1
-  elif [[ -f "${BACKUP_DIR}/release_sha.absent" ]]; then
-    rm -f -- "${ROOTS[agent]}/runtime/release_sha" || restore_status=1
-  else
-    echo "Missing previous release SHA state" >&2
-    restore_status=1
-  fi
+    fi
 
-  if [[ -f "${BACKUP_DIR}/automation_plugin_release.env" ]]; then
-    mkdir -p "$(dirname "${PLUGIN_RUNTIME_ENV_FILE}")" || restore_status=1
-    cp -a "${BACKUP_DIR}/automation_plugin_release.env" "${PLUGIN_RUNTIME_ENV_FILE}" || \
+    if [[ -f "${BACKUP_DIR}/automation_plugin_release.env" ]]; then
+      mkdir -p "$(dirname "${PLUGIN_RUNTIME_ENV_FILE}")" || restore_status=1
+      cp -a "${BACKUP_DIR}/automation_plugin_release.env" "${PLUGIN_RUNTIME_ENV_FILE}" || \
+        restore_status=1
+    elif [[ -f "${BACKUP_DIR}/automation_plugin_release.env.absent" ]]; then
+      rm -f -- "${PLUGIN_RUNTIME_ENV_FILE}" || restore_status=1
+    else
+      echo "Missing previous automation plugin runtime environment state" >&2
       restore_status=1
-  elif [[ -f "${BACKUP_DIR}/automation_plugin_release.env.absent" ]]; then
-    rm -f -- "${PLUGIN_RUNTIME_ENV_FILE}" || restore_status=1
-  else
-    echo "Missing previous automation plugin runtime environment state" >&2
-    restore_status=1
+    fi
   fi
 
   for target in "${REQUESTED_TARGETS[@]}"; do
@@ -2587,13 +2649,17 @@ rollback() {
   [[ "${exit_code}" -ne 0 ]] || exit_code=1
   echo "release_error stage=${RELEASE_STAGE} line=${failed_line} command=${failed_command}" >&2
   if [[ "${MUTATION_STARTED}" == "1" ]]; then
-    echo "Release failed; stopping both runtime services before rollback" >&2
+    echo "Release failed; stopping selected runtime services before rollback" >&2
     if ! stop_runtime_services_for_rollback; then
       rollback_status=1
       services_stopped=0
     fi
     if [[ "${services_stopped}" == "1" ]]; then
       echo "Restoring managed release state" >&2
+      if [[ "${FEISHU_NOTIFICATION_LEASE_PENDING_AT_APPLY}" == "1" && \
+        "${MIGRATIONS_ATTEMPTED}" == "1" ]]; then
+        restore_feishu_notification_leases || rollback_status=1
+      fi
       if [[ "${AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY}" == "1" && \
         "${MIGRATIONS_ATTEMPTED}" == "1" ]]; then
         restore_automation_project_authorization_data || rollback_status=1
@@ -2619,10 +2685,17 @@ rollback() {
       fi
       restore_managed_release_state || rollback_status=1
       verify_runtime_virtualenvs || rollback_status=1
-      if [[ "${rollback_status}" == "0" ]]; then
+      if [[ "${rollback_status}" == "0" && "${AGENT_RELEASE}" == "0" ]]; then
+        if ! restart_runtime_services_for_rollback; then
+          rollback_status=1
+        elif ! check_rollback_health; then
+          stop_runtime_services_for_rollback || rollback_status=1
+          rollback_status=1
+        fi
+      elif [[ "${rollback_status}" == "0" ]]; then
         if ! verify_rollback_first_party_version_compatibility; then
           rollback_status=1
-          # Both runtime services are still stopped.  Remove only this
+          # Selected runtime services are still stopped. Remove only this
           # release's verified hold so a forward repair can acquire a fresh
           # hold; the stage remains intact below for diagnosis.
           clear_scheduler_release_hold_for_rollback || rollback_status=1
@@ -2692,119 +2765,136 @@ run_release() {
   trap rollback ERR
   RELEASE_STAGE="validate_environment"
   validate_environment
-  if [[ "${WINDOWS_WORKER_RELEASE_ENABLED}" == "1" ]]; then
-    RELEASE_STAGE="preflight_worker_mtls_proxy"
-    preflight_worker_mtls_proxy
-  else
-    echo "windows_worker_release_scope=disabled"
+  if [[ "${AGENT_RELEASE}" == "1" ]]; then
+    if [[ "${WINDOWS_WORKER_RELEASE_ENABLED}" == "1" ]]; then
+      RELEASE_STAGE="preflight_worker_mtls_proxy"
+      preflight_worker_mtls_proxy
+    else
+      echo "windows_worker_release_scope=disabled"
+    fi
+    RELEASE_STAGE="preflight_service_identity_configuration"
+    preflight_service_identity_configuration
+    RELEASE_STAGE="preflight_control_plane_task_cutover"
+    preflight_control_plane_task_cutover
+    RELEASE_STAGE="preflight_automation_project_scheduled_task_identities"
+    preflight_automation_project_scheduled_task_identities
+    RELEASE_STAGE="preflight_automation_project_required_resources"
+    preflight_automation_project_required_resources
+    if [[ "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}" == "1" ]]; then
+      echo "emergency_scheduled_window_override=authorized emergency_user_authorized=true scope=scheduled_write_window_proximity_only residual_race_user_authorized=true"
+      RELEASE_STAGE="preflight_running_protected_writes_before_emergency_window_override"
+      preflight_running_protected_writes
+    fi
+    RELEASE_STAGE="preflight_scheduled_write_window"
+    preflight_scheduled_write_window
   fi
-  RELEASE_STAGE="preflight_service_identity_configuration"
-  preflight_service_identity_configuration
-  RELEASE_STAGE="preflight_control_plane_task_cutover"
-  preflight_control_plane_task_cutover
-  RELEASE_STAGE="preflight_automation_project_scheduled_task_identities"
-  preflight_automation_project_scheduled_task_identities
-  RELEASE_STAGE="preflight_automation_project_required_resources"
-  preflight_automation_project_required_resources
-  if [[ "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}" == "1" ]]; then
-    echo "emergency_scheduled_window_override=authorized emergency_user_authorized=true scope=scheduled_write_window_proximity_only residual_race_user_authorized=true"
-    RELEASE_STAGE="preflight_running_protected_writes_before_emergency_window_override"
-    preflight_running_protected_writes
-  fi
-  RELEASE_STAGE="preflight_scheduled_write_window"
-  preflight_scheduled_write_window
   RELEASE_STAGE="backup_managed_sources"
   mkdir -p "${BACKUP_DIR}"
   backup_managed_sources
   RELEASE_STAGE="static_preflight"
   run_static_preflight
-  RELEASE_STAGE="build_release_virtualenvs"
-  build_release_virtualenvs
-  RELEASE_STAGE="preflight_signed_first_party_plugins"
-  preflight_signed_first_party_plugins
-  if [[ "${WINDOWS_WORKER_RELEASE_ENABLED}" == "1" ]]; then
-    RELEASE_STAGE="preflight_worker_server_identity"
-    preflight_worker_server_identity
+  if [[ "${COORDINATED_RELEASE}" == "1" ]]; then
+    RELEASE_STAGE="build_release_virtualenvs"
+    build_release_virtualenvs
   fi
+  if [[ "${AGENT_RELEASE}" == "1" ]]; then
+    RELEASE_STAGE="preflight_signed_first_party_plugins"
+    preflight_signed_first_party_plugins
+    if [[ "${WINDOWS_WORKER_RELEASE_ENABLED}" == "1" ]]; then
+      RELEASE_STAGE="preflight_worker_server_identity"
+      preflight_worker_server_identity
+    fi
 
-  # Static checks and dependency builds can cross into an external-write
-  # schedule. Normal releases recheck the window; the explicitly authorized
-  # emergency path below minimizes and audits its old-scheduler residual race.
-  RELEASE_STAGE="preflight_scheduled_write_window_before_mutation"
-  preflight_scheduled_write_window
-  RELEASE_STAGE="capture_preexisting_automation_plugin_db_ownership"
-  capture_preexisting_automation_plugin_db_ownership
-  if [[ "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}" == "1" ]]; then
-    # The old scheduler does not observe this marker dynamically. Capture all
-    # read-only database state before creating the marker, then make the final
-    # running-write check the immediately preceding operation to quiescence.
-    RELEASE_STAGE="capture_control_plane_release_state"
-    capture_control_plane_release_state
-    RELEASE_STAGE="create_emergency_scheduler_release_hold"
-    create_scheduler_release_hold
-    RELEASE_STAGE="preflight_running_protected_writes_immediately_before_quiesce"
-    preflight_running_protected_writes
-  else
-    RELEASE_STAGE="preflight_running_protected_writes"
-    preflight_running_protected_writes
-    RELEASE_STAGE="capture_control_plane_release_state"
-    capture_control_plane_release_state
+    # Agent mutations can cross into an external-write schedule. Recheck the
+    # window after static/dependency work and immediately before quiescence.
+    RELEASE_STAGE="preflight_scheduled_write_window_before_mutation"
+    preflight_scheduled_write_window
+    RELEASE_STAGE="capture_preexisting_automation_plugin_db_ownership"
+    capture_preexisting_automation_plugin_db_ownership
+    if [[ "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}" == "1" ]]; then
+      RELEASE_STAGE="capture_control_plane_release_state"
+      capture_control_plane_release_state
+      RELEASE_STAGE="create_emergency_scheduler_release_hold"
+      create_scheduler_release_hold
+      RELEASE_STAGE="preflight_running_protected_writes_immediately_before_quiesce"
+      preflight_running_protected_writes
+    else
+      RELEASE_STAGE="preflight_running_protected_writes"
+      preflight_running_protected_writes
+      RELEASE_STAGE="capture_control_plane_release_state"
+      capture_control_plane_release_state
+    fi
   fi
   MUTATION_STARTED=1
   RELEASE_STAGE="quiesce_runtime_services"
   quiesce_runtime_services
-  RELEASE_STAGE="verify_protected_writes_quiesced"
-  preflight_running_protected_writes
-  RELEASE_STAGE="confirm_preexisting_automation_plugin_db_ownership"
-  confirm_preexisting_automation_plugin_db_ownership
-  RELEASE_STAGE="capture_automation_plugin_installation_state"
-  capture_automation_plugin_installation_state
-  RELEASE_STAGE="install_verified_first_party_plugin_artifacts"
-  FIRST_PARTY_PLUGIN_INSTALL_ATTEMPTED=1
-  install_verified_first_party_plugin_artifacts
-  RELEASE_STAGE="retire_legacy_finance_etl"
-  retire_legacy_finance_etl
+  if [[ "${AGENT_RELEASE}" == "1" ]]; then
+    RELEASE_STAGE="verify_protected_writes_quiesced"
+    preflight_running_protected_writes
+    RELEASE_STAGE="confirm_preexisting_automation_plugin_db_ownership"
+    confirm_preexisting_automation_plugin_db_ownership
+    RELEASE_STAGE="capture_automation_plugin_installation_state"
+    capture_automation_plugin_installation_state
+    RELEASE_STAGE="install_verified_first_party_plugin_artifacts"
+    FIRST_PARTY_PLUGIN_INSTALL_ATTEMPTED=1
+    install_verified_first_party_plugin_artifacts
+    RELEASE_STAGE="retire_legacy_finance_etl"
+    retire_legacy_finance_etl
+  fi
   for scope in "${SCOPES[@]}"; do
     RELEASE_STAGE="sync_scope:${scope}"
     sync_scope "${scope}"
   done
-  RELEASE_STAGE="apply_migrations"
-  MIGRATIONS_ATTEMPTED=1
-  apply_migrations
+  if [[ "${COORDINATED_RELEASE}" == "1" ]]; then
+    RELEASE_STAGE="apply_migrations"
+    MIGRATIONS_ATTEMPTED=1
+    apply_migrations
+  fi
   RELEASE_STAGE="install_service_units"
   install_service_units
-  RELEASE_STAGE="activate_release_virtualenvs"
-  activate_release_virtualenvs
-  RELEASE_STAGE="write_release_sha"
-  mkdir -p "${ROOTS[agent]}/runtime"
-  printf '%s\n' "${RELEASE_SHA}" >"${ROOTS[agent]}/runtime/release_sha"
-  RELEASE_STAGE="write_automation_plugin_runtime_environment"
-  write_automation_plugin_runtime_environment
-  RELEASE_STAGE="create_scheduler_release_hold"
-  ensure_scheduler_release_hold
+  if [[ "${COORDINATED_RELEASE}" == "1" ]]; then
+    RELEASE_STAGE="activate_release_virtualenvs"
+    activate_release_virtualenvs
+  fi
+  if [[ "${AGENT_RELEASE}" == "1" ]]; then
+    RELEASE_STAGE="write_release_sha"
+    mkdir -p "${ROOTS[agent]}/runtime"
+    printf '%s\n' "${RELEASE_SHA}" >"${ROOTS[agent]}/runtime/release_sha"
+    RELEASE_STAGE="write_automation_plugin_runtime_environment"
+    write_automation_plugin_runtime_environment
+    RELEASE_STAGE="create_scheduler_release_hold"
+    ensure_scheduler_release_hold
+  fi
   RELEASE_STAGE="restart_services"
   NEW_RUNTIME_START_ATTEMPTED=1
   restart_services
   RELEASE_STAGE="check_health"
   check_health
-  RELEASE_STAGE="check_service_identity_smoke"
-  check_service_identity_smoke
-  RELEASE_STAGE="check_control_plane_release_manifest"
-  check_control_plane_release_manifest
-  RELEASE_STAGE="record_dependency_hashes"
-  record_active_dependency_hashes
+  if [[ "${COORDINATED_RELEASE}" == "1" ]]; then
+    RELEASE_STAGE="check_service_identity_smoke"
+    check_service_identity_smoke
+  fi
+  if [[ "${AGENT_RELEASE}" == "1" ]]; then
+    RELEASE_STAGE="check_control_plane_release_manifest"
+    check_control_plane_release_manifest
+  fi
+  if [[ "${COORDINATED_RELEASE}" == "1" ]]; then
+    RELEASE_STAGE="record_dependency_hashes"
+    record_active_dependency_hashes
+  fi
 
-  # Every rollback-capable gate has passed. Scheduler activation is the
-  # release commit point: an ambiguous HTTP response may mean jobs have begun,
-  # so never roll source or database state back after this request is sent.
+  # Every rollback-capable gate has passed. Agent activation is the release
+  # commit point; Console-only releases have no scheduler hold to consume.
   MUTATION_STARTED=0
   trap - ERR
-  RELEASE_STAGE="activate_scheduler_after_release"
-  if ! activate_scheduler_after_release; then
-    echo "release_activation_incomplete stage_root=${STAGE_ROOT} scheduler_state_requires_recovery=1" >&2
-    exit 1
+  if [[ "${AGENT_RELEASE}" == "1" ]]; then
+    RELEASE_STAGE="activate_scheduler_after_release"
+    if ! activate_scheduler_after_release; then
+      echo "release_activation_incomplete stage_root=${STAGE_ROOT} scheduler_state_requires_recovery=1" >&2
+      exit 1
+    fi
+    SCHEDULER_RELEASE_HOLD_CREATED=0
   fi
-  SCHEDULER_RELEASE_HOLD_CREATED=0
   RELEASE_STAGE="cleanup_successful_release"
   cleanup_successful_release
   echo "Release completed: ${RELEASE_SHA} (${TARGETS_CSV})"

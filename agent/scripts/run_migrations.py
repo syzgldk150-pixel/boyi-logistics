@@ -2326,6 +2326,7 @@ def _load_script_helper(filename: str):
 
 
 _MIGRATION_018_HELPER = _load_script_helper("migration_018_authorization.py")
+_MIGRATION_030_HELPER = _load_script_helper("migration_030_notification_lease.py")
 _AUTOMATION_PROJECT_RELEASE_MANIFEST_HELPER = _load_script_helper(
     "automation_project_release_manifest_preflight.py"
 )
@@ -2704,6 +2705,23 @@ def report_automation_project_authorization_status() -> int:
     return 0
 
 
+def report_feishu_notification_lease_status() -> int:
+    return _MIGRATION_030_HELPER.report_feishu_notification_lease_status(
+        connect=_connect,
+        require_mysql8=_require_mysql8,
+        migration_table_exists=_migration_table_exists,
+    )
+
+
+def restore_feishu_notification_leases() -> int:
+    return _MIGRATION_030_HELPER.restore_feishu_notification_leases(
+        connect=_connect,
+        require_mysql8=_require_mysql8,
+        table_exists=_table_exists,
+        column_exists=_column_exists,
+    )
+
+
 def report_control_plane_policy_bootstrap_marker_status() -> int:
     connection = _connect()
     try:
@@ -2816,6 +2834,16 @@ def main() -> int:
         help="Report applied, pending_clean, or pending_dirty for migration 018",
     )
     modes.add_argument(
+        "--feishu-notification-lease-status",
+        action="store_true",
+        help="Report whether migration 030 predates this release",
+    )
+    modes.add_argument(
+        "--restore-feishu-notification-leases",
+        action="store_true",
+        help="Clear migration-030 sender leases before a source rollback",
+    )
+    modes.add_argument(
         "--check-automation-project-required-resources",
         action="store_true",
         help=(
@@ -2909,6 +2937,8 @@ def main() -> int:
         return restore_daily_sign_single_tms_account()
     if args.restore_control_plane_policy_bootstrap:
         return restore_control_plane_policy_bootstrap()
+    if args.restore_feishu_notification_leases:
+        return restore_feishu_notification_leases()
     if args.control_plane_task_cutover_status:
         return report_control_plane_task_cutover_status()
     if args.daily_sign_single_tms_status:
@@ -2917,6 +2947,8 @@ def main() -> int:
         return report_scheduled_task_contract_upgrade_status()
     if args.automation_project_authorization_status:
         return report_automation_project_authorization_status()
+    if args.feishu_notification_lease_status:
+        return report_feishu_notification_lease_status()
     if args.check_automation_project_required_resources:
         return check_automation_project_required_resources(_connect)
     if args.check_automation_project_scheduled_task_identities: return check_automation_project_scheduled_task_identities(_connect)

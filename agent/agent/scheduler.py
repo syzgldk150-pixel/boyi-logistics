@@ -43,6 +43,10 @@ class DeferredR7ScheduleIdentityError(RuntimeError):
     """A persisted R7 row no longer matches the reviewed migration identity."""
 
 
+class ScheduledTaskIdentityConflictError(RuntimeError):
+    """Two enabled rows claim the same global scheduler identity."""
+
+
 def _deferred_r7_legacy_schedule_task_ids() -> frozenset[str]:
     task_ids: set[str] = set()
     for automation_id in DEFERRED_R7_PLUGIN_IDS:
@@ -151,7 +155,7 @@ def init_scheduler(
             agent_core,
             automation_project_invoker=automation_project_invoker,
         )
-    except DeferredR7ScheduleIdentityError:
+    except ScheduledTaskIdentityConflictError:
         raise
     except Exception as exc:
         logger.warning("Scheduled task loading failed: %s", exc)
@@ -477,38 +481,24 @@ def _load_tasks_from_db(
         agent_core,
         include_startup_tasks=include_startup_tasks,
     )
-    plan, deferred_task_ids, _finance_startup_expected = registration_plan
+    plan, deferred_task_ids, _finance_startup_expected, invalid_tasks = registration_plan
     if deferred_task_ids:
         logger.warning(
             "Deferred R7 scheduled tasks were not registered: %s",
             ", ".join(sorted(deferred_task_ids)),
         )
+    _log_invalid_scheduled_tasks(invalid_tasks)
 
     for task, is_startup in plan:
-        if is_startup:
-            _add_startup_project_job(
+        try:
+            _register_scheduled_task(
                 task,
+                is_startup=is_startup,
                 agent_core=agent_core,
                 automation_project_invoker=automation_project_invoker,
             )
-        else:
-            _add_job(
-                task_id=task["id"],
-                cron_expr=task["cron_expression"],
-                tool_name=task["tool_name"],
-                tool_params=task.get("tool_params") or {},
-                configuration_version=_task_configuration_version(task),
-                automation_id=task.get("automation_id"),
-                automation_generation=task.get("automation_generation"),
-                automation_project_invoker=automation_project_invoker,
-                agent_core=agent_core,
-            )
-        logger.info(
-            "Loaded scheduled task: %s (%s) -> %s",
-            task.get("name") or task["id"],
-            task["cron_expression"],
-            task["tool_name"],
-        )
+        except Exception as exc:
+            _log_invalid_scheduled_tasks([_scheduled_task_issue(task, exc)])
 
 
 def _task_configuration_version(task: Mapping[str, Any]) -> int:
@@ -526,53 +516,126 @@ def _scheduled_task_registration_plan(
     agent_core,
     *,
     include_startup_tasks: bool,
-) -> tuple[list[tuple[dict[str, Any], bool]], list[str], bool]:
-    """Build the complete enabled non-finance registration plan before edits.
+) -> tuple[
+    list[tuple[dict[str, Any], bool]],
+    list[str],
+    bool,
+    list[dict[str, str]],
+]:
+    """Validate rows independently while preserving global task identities.
 
-    Keeping this read-only makes ``reload_scheduler`` fail closed: a malformed
-    or duplicate row cannot first remove the currently active schedule.
+    A malformed row is quarantined from the in-memory scheduler without
+    preventing unrelated valid rows from running. Duplicate non-empty task IDs
+    remain a global conflict because no row can safely own that scheduler ID.
     """
 
-    classified_tasks: list[tuple[dict[str, Any], bool]] = []
-    for task in agent_core.memory.list_enabled_scheduled_tasks():
-        if not isinstance(task, dict):
-            raise ValueError("Enabled scheduled task is not an object")
-        classified_tasks.append(
-            (task, _deferred_r7_schedule_must_not_register(task))
-        )
-    deferred_task_ids = [
-        str(task.get("id") or "")
-        for task, is_deferred in classified_tasks
-        if is_deferred
-    ]
-    plan: list[tuple[dict[str, Any], bool]] = []
-    finance_startup_expected = False
+    tasks = list(agent_core.memory.list_enabled_scheduled_tasks())
     registered_ids: set[str] = set()
-    for task, is_deferred in classified_tasks:
-        if is_deferred:
+    for task in tasks:
+        if not isinstance(task, dict):
             continue
         task_id = str(task.get("id") or "").strip()
         if not task_id:
-            raise ValueError("Enabled scheduled task has no id")
+            continue
         if task_id in registered_ids:
-            raise ValueError(f"Duplicate enabled scheduled task id: {task_id}")
+            raise ScheduledTaskIdentityConflictError(
+                f"Duplicate enabled scheduled task id: {task_id}"
+            )
         registered_ids.add(task_id)
-        cron_expression = str(task.get("cron_expression") or "").strip()
-        if task_id == FINANCE_STARTUP_TASK_ID:
-            # ``@startup`` is a persisted special occurrence, not a cron
-            # expression.  Its dedicated DateTrigger is registered below.
-            if include_startup_tasks:
+
+    deferred_task_ids: list[str] = []
+    plan: list[tuple[dict[str, Any], bool]] = []
+    finance_startup_expected = False
+    invalid_tasks: list[dict[str, str]] = []
+    for index, task in enumerate(tasks):
+        if not isinstance(task, dict):
+            invalid_tasks.append(
+                {
+                    "task_id": f"row:{index}",
+                    "error_code": "VALUEERROR",
+                    "error_summary": "Enabled scheduled task is not an object",
+                }
+            )
+            continue
+        try:
+            is_deferred = _deferred_r7_schedule_must_not_register(task)
+            if is_deferred:
+                deferred_task_ids.append(str(task.get("id") or ""))
+                continue
+            task_id = str(task.get("id") or "").strip()
+            if not task_id:
+                raise ValueError("Enabled scheduled task has no id")
+            cron_expression = str(task.get("cron_expression") or "").strip()
+            if task_id == FINANCE_STARTUP_TASK_ID:
+                # ``@startup`` is owned by the dedicated startup gate below.
                 _validate_finance_startup_task(task)
-                finance_startup_expected = True
-            continue
-        if cron_expression == "@startup":
-            _validate_startup_project_task(task)
-            if include_startup_tasks:
-                plan.append((task, True))
-            continue
-        _validate_cron_task(task)
-        plan.append((task, False))
-    return plan, deferred_task_ids, finance_startup_expected
+                finance_startup_expected = include_startup_tasks
+                continue
+            if cron_expression == "@startup":
+                _validate_startup_project_task(task)
+                if include_startup_tasks:
+                    plan.append((task, True))
+                continue
+            _validate_cron_task(task)
+            plan.append((task, False))
+        except Exception as exc:
+            invalid_tasks.append(_scheduled_task_issue(task, exc))
+    return plan, deferred_task_ids, finance_startup_expected, invalid_tasks
+
+
+def _scheduled_task_issue(
+    task: Mapping[str, Any],
+    exc: Exception,
+) -> dict[str, str]:
+    task_id = str(task.get("id") or "").strip() or "<missing>"
+    return {
+        "task_id": task_id,
+        "error_code": type(exc).__name__.upper()[:64],
+        "error_summary": redact_text(exc)[:200],
+    }
+
+
+def _log_invalid_scheduled_tasks(issues: list[dict[str, str]]) -> None:
+    for issue in issues:
+        logger.error(
+            "Scheduled task quarantined: %s code=%s reason=%s",
+            issue["task_id"],
+            issue["error_code"],
+            issue["error_summary"],
+        )
+
+
+def _register_scheduled_task(
+    task: Mapping[str, Any],
+    *,
+    is_startup: bool,
+    agent_core,
+    automation_project_invoker: Any | None,
+) -> None:
+    if is_startup:
+        _add_startup_project_job(
+            task,
+            agent_core=agent_core,
+            automation_project_invoker=automation_project_invoker,
+        )
+    else:
+        _add_job(
+            task_id=str(task["id"]),
+            cron_expr=str(task["cron_expression"]),
+            tool_name=str(task["tool_name"]),
+            tool_params=dict(task.get("tool_params") or {}),
+            configuration_version=_task_configuration_version(task),
+            automation_id=task.get("automation_id"),
+            automation_generation=task.get("automation_generation"),
+            automation_project_invoker=automation_project_invoker,
+            agent_core=agent_core,
+        )
+    logger.info(
+        "Loaded scheduled task: %s (%s) -> %s",
+        task.get("name") or task["id"],
+        task["cron_expression"],
+        task["tool_name"],
+    )
 
 
 def _validate_cron_task(task: Mapping[str, Any]) -> None:
@@ -1069,36 +1132,34 @@ def reload_scheduler(
         agent_core,
         include_startup_tasks=_include_startup_catchup_for_process,
     )
-    plan, deferred_task_ids, _finance_startup_expected = registration_plan
+    plan, deferred_task_ids, _finance_startup_expected, invalid_tasks = registration_plan
     previous_jobs = [_snapshot_scheduler_job(job) for job in _scheduler.get_jobs()]
+    desired_job_ids: set[str] = set()
+    registration_failures: list[dict[str, str]] = []
     try:
         for task, is_startup in plan:
+            task_id = str(task["id"])
             # APScheduler does not apply ``replace_existing`` to a pending job
             # until the scheduler starts. Remove the old id explicitly so a
             # stopped scheduler cannot accumulate duplicate pending jobs.
-            existing_job = _scheduler.get_job(str(task["id"]))
+            existing_job = _scheduler.get_job(task_id)
             if existing_job is not None:
                 _scheduler.remove_job(existing_job.id)
-            if is_startup:
-                _add_startup_project_job(
+            try:
+                _register_scheduled_task(
                     task,
+                    is_startup=is_startup,
                     agent_core=agent_core,
                     automation_project_invoker=_automation_project_invoker,
                 )
-            else:
-                _add_job(
-                    task_id=task["id"],
-                    cron_expr=task["cron_expression"],
-                    tool_name=task["tool_name"],
-                    tool_params=task.get("tool_params") or {},
-                    configuration_version=_task_configuration_version(task),
-                    automation_id=task.get("automation_id"),
-                    automation_generation=task.get("automation_generation"),
-                    automation_project_invoker=_automation_project_invoker,
-                    agent_core=agent_core,
-                )
+            except Exception as exc:
+                failed_job = _scheduler.get_job(task_id)
+                if failed_job is not None:
+                    _scheduler.remove_job(task_id)
+                registration_failures.append(_scheduled_task_issue(task, exc))
+                continue
+            desired_job_ids.add(task_id)
 
-        desired_job_ids = {str(task["id"]) for task, _is_startup in plan}
         if _include_startup_catchup_for_process:
             # The special finance job must be removed first so an unavailable
             # gate cannot leave behind an obsolete startup action.
@@ -1124,11 +1185,15 @@ def reload_scheduler(
             "Deferred R7 scheduled tasks were not registered: %s",
             ", ".join(sorted(deferred_task_ids)),
         )
+    all_invalid_tasks = [*invalid_tasks, *registration_failures]
+    _log_invalid_scheduled_tasks(all_invalid_tasks)
     jobs = _scheduler.get_jobs()
     return {
         "initialized": True,
         "jobs": len(jobs),
         "job_ids": [job.id for job in jobs],
+        "invalid_tasks": all_invalid_tasks,
+        "deferred_task_ids": deferred_task_ids,
     }
 
 

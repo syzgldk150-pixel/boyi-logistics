@@ -182,11 +182,20 @@ class BusinessModuleRepository:
             try:
                 connection.begin()
                 with _cursor(connection) as cursor:
-                    # Lock the fixed baseline in a deterministic order before
-                    # checking a possibly absent request id. This avoids taking
-                    # an event-index gap lock before the module locks and makes
-                    # a concurrent exact request replay after the original write.
-                    cursor.execute("SELECT module_code FROM business_modules ORDER BY module_code FOR UPDATE")
+                    # Lock only the module being changed. Different modules can
+                    # transition independently, while exact request replays for
+                    # this module still serialize behind the original write.
+                    cursor.execute(
+                        "SELECT module_code, code_version, installed_version, lifecycle_state, record_version, "
+                        "created_at, updated_at FROM business_modules WHERE module_code=%s FOR UPDATE",
+                        (code.module_code,),
+                    )
+                    row = _one(cursor)
+                    if not row:
+                        raise BusinessModuleLifecycleError(
+                            "BLOCKED", "Catalog module is missing from the lifecycle baseline"
+                        )
+                    cursor.execute("SELECT module_code FROM business_modules")
                     recorded_codes = {str(item["module_code"]) for item in _all(cursor)}
                     if recorded_codes != set(BUSINESS_MODULE_BY_CODE):
                         raise BusinessModuleLifecycleError(
@@ -213,14 +222,6 @@ class BusinessModuleRepository:
                         result["idempotent_replay"] = True
                         connection.commit()
                         return result
-                    cursor.execute(
-                        "SELECT module_code, code_version, installed_version, lifecycle_state, record_version, "
-                        "created_at, updated_at FROM business_modules WHERE module_code=%s FOR UPDATE",
-                        (code.module_code,),
-                    )
-                    row = _one(cursor)
-                    if not row:
-                        raise BusinessModuleLifecycleError("BLOCKED", "Catalog module is missing from the lifecycle baseline")
                     before = self._public_row(code, row, [])
                     self._assert_writable_row(code, row)
                     if int(row["record_version"]) != int(expected_record_version):

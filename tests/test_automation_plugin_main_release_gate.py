@@ -293,6 +293,21 @@ def test_running_plugin_health_remains_a_live_check(
     assert events == ["plugins-health-checked"]
 
 
+def test_runner_concurrency_settings_are_positive_and_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("WORKFLOW_RUNNER_CONCURRENCY", raising=False)
+    assert main._positive_runtime_int("WORKFLOW_RUNNER_CONCURRENCY", 2) == 2
+
+    monkeypatch.setenv("WORKFLOW_RUNNER_CONCURRENCY", "3")
+    assert main._positive_runtime_int("WORKFLOW_RUNNER_CONCURRENCY", 2) == 3
+
+    for invalid in ("0", "-1", "invalid"):
+        monkeypatch.setenv("WORKFLOW_RUNNER_CONCURRENCY", invalid)
+        with pytest.raises(RuntimeError, match="positive integer"):
+            main._positive_runtime_int("WORKFLOW_RUNNER_CONCURRENCY", 2)
+
+
 def test_windows_worker_is_not_mounted_or_queried_in_the_current_release_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

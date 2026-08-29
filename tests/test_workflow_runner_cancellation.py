@@ -34,7 +34,7 @@ class _ProcessExecutor:
     def __init__(self, result):
         self.result = result
 
-    async def execute(self, _capability, _arguments):
+    async def execute(self, _capability, _arguments, **_kwargs):
         return copy.deepcopy(self.result)
 
     def running_tool_info(self, _tool_name):
@@ -218,13 +218,18 @@ def _capability():
 
 
 def _step(operation_type: OperationType = OperationType.READ) -> PlanStep:
+    account_id = (
+        None
+        if operation_type in {OperationType.READ, OperationType.COMPUTE}
+        else "account-1"
+    )
     return PlanStep(
         step_key="cancel",
         tool_name="cancel_tool",
         tool_version="1.0.0",
         operation_type=operation_type,
-        arguments={},
-        account_id=None,
+        arguments={"account_id": account_id} if account_id else {},
+        account_id=account_id,
         depends_on=(),
         idempotency_key="cancel-step",
         expected_evidence=(),

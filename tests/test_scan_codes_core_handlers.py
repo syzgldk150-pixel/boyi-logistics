@@ -611,7 +611,7 @@ def test_scan_next_submit_rejects_ack_without_closed_postcondition(raw):
 
 def test_production_scan_next_calls_low_level_run_flow_and_never_whole_tool():
     class Manager:
-        def require_authenticated_binding(self, account_id: str) -> dict[str, str]:
+        def require_active_binding_descriptor(self, account_id: str) -> dict[str, str]:
             assert account_id == "scan-account"
             return {
                 "account_id": account_id,
@@ -619,6 +619,9 @@ def test_production_scan_next_calls_low_level_run_flow_and_never_whole_tool():
                 "account_purpose": "general",
                 "session_profile": "scan-profile",
             }
+
+        def require_authenticated_binding(self, _account_id: str) -> dict[str, str]:
+            raise AssertionError("production describe_account must not authenticate online")
 
     items = [{"bill_code": "R1", "station_name": "A站"}]
     low_level = {
@@ -636,6 +639,7 @@ def test_production_scan_next_calls_low_level_run_flow_and_never_whole_tool():
     handlers = build_production_first_party_core_handler_map(
         account_manager=Manager(),
         cursor_secret=_SECRET,
+        capability_authorizer=lambda _descriptor, _capability: None,
     )
     with (
         patch(

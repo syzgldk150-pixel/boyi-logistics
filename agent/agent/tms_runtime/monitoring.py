@@ -532,7 +532,16 @@ def _extract_yunda_user_id(payload: Any) -> str:
             candidates.append(value)
     candidates.append(payload)
     for item in candidates:
-        for key in ("username", "userName", "user_id", "userId", "uid", "id", "account"):
+        for key in (
+            "identity",
+            "username",
+            "userName",
+            "user_id",
+            "userId",
+            "uid",
+            "id",
+            "account",
+        ):
             value = _clean_text(item.get(key))
             if value:
                 return value
@@ -561,7 +570,9 @@ def _response_requires_login(response: Any, body_text: str = "") -> bool:
 
 def _collect_yunda_snapshot(*, force: bool, updated_at: str) -> dict[str, Any]:
     try:
-        session = get_session_broker("yunda").build_requests_session(validate=force)
+        # The user-info/message calls below are the real target checks. Do not
+        # precede them with a generic Session validation request.
+        session = get_session_broker("yunda").build_requests_session(validate=False)
         user_response = session.get(
             YUNDA_USER_INFO_URL,
             headers={
@@ -706,17 +717,32 @@ def _build_totals(systems: list[dict[str, Any]]) -> dict[str, int]:
 
 def _collect_system_snapshot(system: str, *, force: bool, updated_at: str) -> dict[str, Any]:
     if system == "yunda":
-        return _collect_yunda_snapshot(force=force, updated_at=updated_at)
-    if system == "ronghui":
-        return _collect_ronghui_snapshot(force=force, updated_at=updated_at)
-    return _system_payload(
-        system=system,
-        label=system,
-        status="error",
-        status_label="未支持",
-        updated_at=updated_at,
-        message="不支持的监控系统。",
-    )
+        payload = _collect_yunda_snapshot(force=force, updated_at=updated_at)
+    elif system == "ronghui":
+        payload = _collect_ronghui_snapshot(force=force, updated_at=updated_at)
+    else:
+        payload = _system_payload(
+            system=system,
+            label=system,
+            status="error",
+            status_label="未支持",
+            updated_at=updated_at,
+            message="不支持的监控系统。",
+        )
+    if not force or system not in {"yunda", "ronghui"}:
+        return payload
+    try:
+        matrix = get_session_broker("yunda" if system == "yunda" else "default").validate_health_matrix()
+    except Exception as exc:
+        matrix = {
+            "profile": system,
+            "status": "unavailable",
+            "capabilities": {},
+            "error": str(exc),
+        }
+    # Health diagnostics are informational. They must never replace the
+    # target snapshot status or become a business execution gate.
+    return {**payload, "capability_health": matrix}
 
 
 def _collect_systems_parallel(normalized: list[str], *, force: bool, updated_at: str) -> list[dict[str, Any]]:

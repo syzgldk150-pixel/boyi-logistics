@@ -557,6 +557,24 @@ class _CatalogRepository:
         return self.instance if automation_id == self.instance.automation_id else None
 
 
+class _PartiallyCorruptCatalogRepository:
+    def __init__(self, good: PluginInstanceRecord) -> None:
+        self.good = good
+
+    @staticmethod
+    def list_instance_ids() -> tuple[str, ...]:
+        return ("good-project", "bad-project")
+
+    def get_instance(self, automation_id: str) -> PluginInstanceRecord | None:
+        if automation_id == "bad-project":
+            raise ValueError("persisted snapshot is corrupt")
+        return self.good if automation_id == self.good.automation_id else None
+
+    @staticmethod
+    def list_instances() -> list[PluginInstanceRecord]:
+        raise AssertionError("raw identity discovery must not parse every project")
+
+
 def test_catalog_fragment_binds_trust_source(core_catalog: ToolRegistry) -> None:
     manifest = resolve_release_first_party_manifests(core_catalog)["sync_arrive_list"]
     version = PluginVersionRecord(
@@ -583,6 +601,77 @@ def test_catalog_fragment_binds_trust_source(core_catalog: ToolRegistry) -> None
     assert catalog.safe_projection()["instances"][0][
         "code_owned_config_fields"
     ] == []
+
+
+def test_catalog_quarantines_one_corrupt_persisted_project(
+    core_catalog: ToolRegistry,
+) -> None:
+    manifest = resolve_release_first_party_manifests(core_catalog)["sync_arrive_list"]
+    version = PluginVersionRecord(
+        plugin_id=manifest.plugin_id,
+        version=manifest.version,
+        package_sha256="1" * 64,
+        manifest_sha256=manifest.manifest_sha256,
+        manifest=manifest.to_mapping(),
+        trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
+        install_root="/srv/plugins/arrive-list",
+    )
+    good = PluginInstanceRecord(
+        automation_id="good-project",
+        display_name="good",
+        plugin_id=manifest.plugin_id,
+        state=PluginProjectState.DISABLED,
+        active_version=version,
+        enabled=False,
+        target_generation=0,
+        committed_generation=0,
+    )
+    catalog = PluginCatalog(_PartiallyCorruptCatalogRepository(good))
+
+    projection = catalog.safe_projection()
+    health = catalog.production_health(("good-project", "bad-project"))
+
+    assert catalog.persisted_automation_ids() == ("bad-project", "good-project")
+    assert [item["automation_id"] for item in projection["instances"]] == [
+        "good-project"
+    ]
+    assert projection["unavailable_projects"] == {
+        "bad-project": {
+            "runtime_status": "UNAVAILABLE",
+            "error_code": "PLUGIN_PROJECT_DATA_INVALID",
+        }
+    }
+    assert health["ok"] is True
+    assert health["runnable"] is True
+    assert health["unsupported_automation_ids"] == []
+
+
+@pytest.mark.parametrize("raw_ids", [("",), ("same", "same")])
+def test_catalog_identity_corruption_remains_global(raw_ids: tuple[str, ...]) -> None:
+    repository = _PartiallyCorruptCatalogRepository.__new__(
+        _PartiallyCorruptCatalogRepository
+    )
+    repository.list_instance_ids = lambda: raw_ids
+    catalog = PluginCatalog(repository)
+
+    with pytest.raises(PluginConflictError) as raised:
+        catalog.safe_projection()
+
+    assert raised.value.code == "PLUGIN_IDENTITY_CONFLICT"
+
+
+def test_catalog_identity_query_error_remains_global() -> None:
+    repository = _PartiallyCorruptCatalogRepository.__new__(
+        _PartiallyCorruptCatalogRepository
+    )
+
+    def _failed_query() -> tuple[str, ...]:
+        raise RuntimeError("database unavailable")
+
+    repository.list_instance_ids = _failed_query
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        PluginCatalog(repository).safe_projection()
 
 
 def test_catalog_projects_exact_first_party_code_owned_fields(
@@ -713,7 +802,7 @@ def test_registered_core_adapter_revalidates_exact_bound_account(
     role = manifest.account_roles[0]["role"]
 
     class Manager:
-        def require_authenticated_binding(self, account_id: str) -> dict[str, str]:
+        def require_active_binding_descriptor(self, account_id: str) -> dict[str, str]:
             assert account_id == "acct-1"
             return {
                 "account_id": account_id,
@@ -848,20 +937,28 @@ def test_registered_core_adapter_skips_unbound_optional_action_resource(
     assert calls[0][0].resource_bindings == {primary_role: "primary-resource"}
 
 
-def test_registered_core_adapter_keeps_event_loop_responsive_for_sync_handler(
+def test_registered_core_adapter_keeps_event_loop_responsive_for_sync_resolver_and_handler(
     core_catalog: ToolRegistry,
 ) -> None:
     manifest = _uploaded_manifest(core_catalog)
     role = manifest.account_roles[0]["role"]
 
     class Manager:
+        authenticated_checks = 0
+
         @staticmethod
-        def require_authenticated_binding(account_id: str) -> dict[str, str]:
+        def require_active_binding_descriptor(account_id: str) -> dict[str, str]:
+            time.sleep(0.25)
             return {
                 "account_id": account_id,
                 "system": "ronghui",
                 "account_purpose": "general",
             }
+
+        @classmethod
+        def require_authenticated_binding(cls, _account_id: str) -> dict[str, str]:
+            cls.authenticated_checks += 1
+            raise AssertionError("generic broker resolution must not authenticate online")
 
     def handler(_context, _arguments):
         time.sleep(0.25)
@@ -909,9 +1006,10 @@ def test_registered_core_adapter_keeps_event_loop_responsive_for_sync_handler(
         return elapsed
 
     assert asyncio.run(invoke()) < 0.1
+    assert Manager.authenticated_checks == 0
 
 
-def test_registered_core_adapter_blocks_unauthenticated_bound_account(
+def test_registered_core_adapter_blocks_disabled_bound_account(
     core_catalog: ToolRegistry,
 ) -> None:
     manifest = _uploaded_manifest(core_catalog)
@@ -919,11 +1017,11 @@ def test_registered_core_adapter_blocks_unauthenticated_bound_account(
 
     class Manager:
         @staticmethod
-        def require_authenticated_binding(account_id: str) -> dict[str, str]:
+        def require_active_binding_descriptor(account_id: str) -> dict[str, str]:
             assert account_id == "acct-1"
             raise TMSAuthStateError(
-                "AUTH_REQUIRED",
-                "The bound account session is unavailable.",
+                "ACCOUNT_DISABLED",
+                "The bound account is disabled.",
             )
 
     calls = []
@@ -968,8 +1066,87 @@ def test_registered_core_adapter_blocks_unauthenticated_bound_account(
             )
         )
 
-    assert blocked.value.code == "BLOCKED_LOGIN"
+    assert blocked.value.code == "BROKER_ACCOUNT_UNAVAILABLE"
     assert calls == []
+
+
+def test_registered_core_adapter_maps_target_auth_failure_to_blocked_login(
+    core_catalog: ToolRegistry,
+) -> None:
+    manifest = _uploaded_manifest(core_catalog)
+    role = manifest.account_roles[0]["role"]
+
+    class Manager:
+        @staticmethod
+        def require_active_binding_descriptor(account_id: str) -> dict[str, str]:
+            return {
+                "account_id": account_id,
+                "system": "ronghui",
+                "account_purpose": "general",
+            }
+
+    def handler(_context, _arguments):
+        raise TMSAuthStateError("AUTH_REQUIRED", "The target requested a login.")
+
+    adapter = RegisteredCoreAutomationBrokerAdapter(
+        handlers={("browser.invoke", "scan.fetch"): handler},
+        account_resolver=AccountManagerSessionResolver(Manager()),
+    )
+    issuer = LocalBrokerCapabilityIssuer(Path(".task_tmp") / "unused-broker.sock")
+    token = issuer.issue(
+        automation_id="instance-1",
+        plugin_version=manifest.version,
+        tool_name=manifest.tool_contract["name"],
+        ttl_seconds=60,
+        runtime_permissions=manifest.runtime_permissions,
+        account_roles=manifest.account_roles,
+        resource_roles=manifest.resource_roles,
+        account_bindings={role: "acct-1"},
+        resource_bindings={},
+    )
+    grant, binding = issuer.consume(
+        token,
+        request_id=str(uuid.uuid4()),
+        operation="browser.invoke",
+        action="scan.fetch",
+        role=role,
+    )
+
+    with pytest.raises(PluginExecutionError) as blocked:
+        asyncio.run(
+            adapter.invoke(
+                grant=grant,
+                operation="browser.invoke",
+                action="scan.fetch",
+                role=role,
+                binding=binding,
+                arguments={"query": "x"},
+            )
+        )
+
+    assert blocked.value.code == "BLOCKED_LOGIN"
+
+
+def test_account_resolver_rejects_bound_account_system_mismatch() -> None:
+    class Manager:
+        @staticmethod
+        def require_active_binding_descriptor(account_id: str) -> dict[str, str]:
+            return {
+                "account_id": account_id,
+                "system": "yunda",
+                "account_purpose": "general",
+                "session_profile": "yunda",
+            }
+
+    resolver = AccountManagerSessionResolver(Manager())
+
+    with pytest.raises(PluginExecutionError) as blocked:
+        resolver.require_active_binding_descriptor(
+            account_id="acct-1",
+            allowed_systems=["ronghui"],
+        )
+
+    assert blocked.value.code == "BROKER_ACCOUNT_SYSTEM_MISMATCH"
 
 
 def test_schedule_capability_is_closed() -> None:

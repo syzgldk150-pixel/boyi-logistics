@@ -5,6 +5,187 @@ import hashlib
 from uuid import uuid4
 
 
+def run_test_feishu_notification_lease_holds_the_database_binding_lane(harness):
+    """Migration 030 keeps a terminal in-flight send ahead of its queue."""
+
+    repository = harness._repository()
+
+    def create_approval(label: str) -> tuple[str, str]:
+        command, item, run, event, outbox = harness._aggregate_rows(label)
+        plan_hash = hashlib.sha256(label.encode("utf-8")).hexdigest()
+        run["plan_hash"] = plan_hash
+        with repository.unit_of_work() as uow:
+            receipt = uow.command_gateway_create(
+                command,
+                item,
+                run,
+                event,
+                outbox,
+            )
+            approval_id = str(uuid4())
+            uow.approvals.create_or_get(
+                {
+                    "approval_id": approval_id,
+                    "work_item_id": receipt["work_item_id"],
+                    "run_id": receipt["run_id"],
+                    "approval_round": 1,
+                    "plan_hash": plan_hash,
+                    "impact": {"label": label},
+                    "risk_level": "HIGH",
+                    "required_role": "super_admin",
+                    "required_approvals": 1,
+                    "status": "PENDING",
+                    "requested_by_type": "system",
+                    "requested_by_id": "migration-030-test",
+                    "expires_at": datetime.now() + timedelta(hours=1),
+                }
+            )
+            uow.commit()
+        return approval_id, plan_hash
+
+    first_approval_id, first_plan_hash = create_approval(
+        "feishu-lease-first"
+    )
+    second_approval_id, second_plan_hash = create_approval(
+        "feishu-lease-second"
+    )
+    binding_id = str(uuid4())
+    first_delivery_id = str(uuid4())
+    second_delivery_id = str(uuid4())
+    with harness._connection(autocommit=True) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT COLUMN_NAME, EXTRA, GENERATION_EXPRESSION
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA=DATABASE()
+              AND TABLE_NAME='feishu_approval_deliveries'
+              AND COLUMN_NAME IN (
+                  'notification_lease_token',
+                  'notification_lease_expires_at',
+                  'notification_lane_binding_id'
+              )
+            """
+        )
+        columns = {row["COLUMN_NAME"]: row for row in cursor.fetchall()}
+        harness.assertEqual(
+            {
+                "notification_lease_token",
+                "notification_lease_expires_at",
+                "notification_lane_binding_id",
+            },
+            set(columns),
+        )
+        generated = columns["notification_lane_binding_id"]
+        harness.assertIn("VIRTUAL GENERATED", str(generated["EXTRA"]).upper())
+        harness.assertIn(
+            "NOTIFICATION_LEASE_TOKEN",
+            str(generated["GENERATION_EXPRESSION"]).upper(),
+        )
+        cursor.execute(
+            """
+            SELECT NON_UNIQUE
+            FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA=DATABASE()
+              AND TABLE_NAME='feishu_approval_deliveries'
+              AND INDEX_NAME='uq_feishu_notification_lane_binding'
+              AND COLUMN_NAME='notification_lane_binding_id'
+            """
+        )
+        harness.assertEqual(0, int(cursor.fetchone()["NON_UNIQUE"]))
+        cursor.execute(
+            """
+            SELECT CHECK_CLAUSE
+            FROM information_schema.CHECK_CONSTRAINTS
+            WHERE CONSTRAINT_SCHEMA=DATABASE()
+              AND CONSTRAINT_NAME='chk_feishu_notification_lease_pair'
+            """
+        )
+        check = cursor.fetchone()
+        harness.assertIsNotNone(check)
+        harness.assertIn(
+            "NOTIFICATION_LEASE_EXPIRES_AT",
+            str(check["CHECK_CLAUSE"]).upper(),
+        )
+
+        cursor.execute(
+            "INSERT INTO admin_users "
+            "(username, display_name, password_hash, is_active, "
+            "control_plane_role, created_at, updated_at) "
+            "VALUES (%s, %s, 'test-only-hash', 1, 'super_admin', NOW(6), NOW(6))",
+            (f"lease-admin-{binding_id}", "Lease invariant admin"),
+        )
+        admin_user_id = int(cursor.lastrowid)
+        cursor.execute(
+            "INSERT INTO feishu_admin_bindings "
+            "(binding_id, admin_user_id, open_id, last_chat_id) "
+            "VALUES (%s, %s, %s, %s)",
+            (binding_id, admin_user_id, f"ou-{binding_id}", f"oc-{binding_id}"),
+        )
+        cursor.execute(
+            "INSERT INTO feishu_approval_deliveries "
+            "(delivery_id, approval_id, binding_id, plan_hash, status, "
+            "activated_at, created_at, updated_at) "
+            "VALUES (%s, %s, %s, %s, 'ACTIVE', NOW(6), NOW(6), NOW(6))",
+            (
+                first_delivery_id,
+                first_approval_id,
+                binding_id,
+                first_plan_hash,
+            ),
+        )
+        cursor.execute(
+            "INSERT INTO feishu_approval_deliveries "
+            "(delivery_id, approval_id, binding_id, plan_hash, status, "
+            "created_at, updated_at) "
+            "VALUES (%s, %s, %s, %s, 'QUEUED', NOW(6), NOW(6))",
+            (
+                second_delivery_id,
+                second_approval_id,
+                binding_id,
+                second_plan_hash,
+            ),
+        )
+        cursor.execute(
+            "UPDATE feishu_approval_deliveries "
+            "SET notification_lease_token=%s, "
+            "notification_lease_expires_at=DATE_ADD(NOW(6), INTERVAL 2 MINUTE) "
+            "WHERE delivery_id=%s",
+            (str(uuid4()), first_delivery_id),
+        )
+        cursor.execute(
+            "UPDATE feishu_approval_deliveries SET status='DECIDED' "
+            "WHERE delivery_id=%s",
+            (first_delivery_id,),
+        )
+        with harness.assertRaises(harness.pymysql.err.IntegrityError):
+            cursor.execute(
+                "UPDATE feishu_approval_deliveries SET status='ACTIVE' "
+                "WHERE delivery_id=%s",
+                (second_delivery_id,),
+            )
+
+        cursor.execute(
+            "UPDATE feishu_approval_deliveries "
+            "SET notification_lease_token=NULL, "
+            "notification_lease_expires_at=NULL WHERE delivery_id=%s",
+            (first_delivery_id,),
+        )
+        with harness.assertRaises(
+            (harness.pymysql.err.IntegrityError, harness.pymysql.err.OperationalError)
+        ):
+            cursor.execute(
+                "UPDATE feishu_approval_deliveries "
+                "SET notification_lease_token=%s WHERE delivery_id=%s",
+                (str(uuid4()), second_delivery_id),
+            )
+        cursor.execute(
+            "UPDATE feishu_approval_deliveries SET status='ACTIVE' "
+            "WHERE delivery_id=%s",
+            (second_delivery_id,),
+        )
+        harness.assertEqual(1, int(cursor.rowcount))
+
+
 def run_test_feishu_queue_migration_requeues_ambiguous_active_rows_and_resends(harness):
     """All historical notification combinations recover to one fresh item."""
 
@@ -252,6 +433,11 @@ def run_test_feishu_queue_migration_requeues_ambiguous_active_rows_and_resends(h
             )
             harness.assertEqual("PUBLISHED", cursor.fetchone()["status"])
 
+    # The current repository is only valid against the full migration chain.
+    # Keep the 023 recovery assertions above at their historical boundary, then
+    # advance in order before exercising the current notification sender.
+    harness._apply_through(database, "030")
+
     sent: list[tuple[str, str, str]] = []
     service = FeishuApprovalService(
         repository,
@@ -261,16 +447,14 @@ def run_test_feishu_queue_migration_requeues_ambiguous_active_rows_and_resends(h
         ),
     )
     first_recovery = approval_pairs[0][0]
-    with repository.unit_of_work() as uow:
-        result = service.handle_outbox(
-            {
-                "topic": "agent.approval.requested",
-                "entity_id": first_recovery["approval_id"],
-                "payload_json": {"plan_hash": first_recovery["plan_hash"]},
-            },
-            uow,
-        )
-        uow.commit()
+    result = service.handle_outbox(
+        {
+            "topic": "agent.approval.requested",
+            "entity_id": first_recovery["approval_id"],
+            "payload_json": {"plan_hash": first_recovery["plan_hash"]},
+        },
+        None,
+    )
     harness.assertEqual(3, result["sent"])
     harness.assertEqual(3, len(sent))
     with harness._connection(database) as connection, connection.cursor() as cursor:

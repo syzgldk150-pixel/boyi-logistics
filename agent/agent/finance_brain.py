@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
@@ -18,6 +19,8 @@ logger = logging.getLogger("agent")
 
 
 class FinanceBrain:
+    AI_RUN_INTERRUPTION_TIMEOUT = timedelta(minutes=30)
+
     def __init__(self, repository: FinanceRepository, llm: LLMClient) -> None:
         self.repository = repository
         self.llm = llm
@@ -96,15 +99,26 @@ class FinanceBrain:
         return rules[:50]
 
     async def analyze_pending(self, *, limit: int = 20) -> dict[str, Any]:
+        recovered = self.repository.recover_interrupted_review_ai_runs(
+            stale_before=(datetime.now() - self.AI_RUN_INTERRUPTION_TIMEOUT).replace(
+                tzinfo=None
+            )
+        )
         runtime = self.llm.public_status()
         if not runtime.get("configured"):
-            return {"status": "pending", "reason": "no_active_llm", "processed": 0}
+            return {
+                "status": "pending",
+                "reason": "no_active_llm",
+                "processed": 0,
+                "recovered_interrupted": recovered,
+            }
         provider = str(runtime["provider"])
         model = str(runtime["model"])
         config_version_id = runtime.get("config_version_id")
         cases = self.repository.pending_review_evidence(limit=limit)
         completed = 0
         failed = 0
+        late_rejected = 0
         for case in cases:
             case_id = int(case["id"])
             evidence = self._evidence(
@@ -136,30 +150,35 @@ class FinanceBrain:
                     response_format={"type": "json_object"},
                 )
                 suggestion = self._validate_suggestion(json.loads(str(response.get("content") or "")))
-                self.repository.finish_review_ai_run(
+                applied = self.repository.finish_review_ai_run(
                     review_case_id=case_id,
                     ai_run_id=ai_run_id,
                     suggestion=suggestion,
                 )
-                completed += 1
+                if applied:
+                    completed += 1
+                else:
+                    late_rejected += 1
             except Exception as exc:
                 safe_error = redact_text(str(exc) or type(exc).__name__)[:500]
-                self.repository.finish_review_ai_run(
+                applied = self.repository.finish_review_ai_run(
                     review_case_id=case_id,
                     ai_run_id=ai_run_id,
                     error_code="FINANCE_AI_ANALYSIS_FAILED",
                     error_message=safe_error,
                 )
-                publish_finance_alert(
-                    {
-                        "anomaly_type": "MODEL_ANALYSIS_FAILED",
-                        "title": "财务类目 AI 分析失败",
-                        "details": f"{provider}/{model}：{safe_error}",
-                        "admin_url": self._admin_url(),
-                    }
-                )
-                failed += 1
-        return {"status": "complete", "processed": len(cases), "completed": completed, "failed": failed}
+                if applied:
+                    failed += 1
+                else:
+                    late_rejected += 1
+        return {
+            "status": "complete",
+            "processed": len(cases),
+            "completed": completed,
+            "failed": failed,
+            "late_rejected": late_rejected,
+            "recovered_interrupted": recovered,
+        }
 
     async def notify_unreported_anomalies(self) -> int:
         rows = self.repository.list_unnotified_anomalies(limit=50)

@@ -48,15 +48,13 @@ class BusinessModuleCommandGate:
         with uow.commands.cursor() as cursor:
             cursor.execute(
                 "SELECT module_code, code_version, installed_version, lifecycle_state "
-                "FROM business_modules FOR UPDATE"
+                "FROM business_modules WHERE module_code=%s FOR UPDATE",
+                (module_code,),
             )
             rows = _rows(cursor)
-        by_code = {str(row.get("module_code") or ""): row for row in rows}
-        if set(by_code) != set(BUSINESS_MODULE_BY_CODE):
-            raise OrchestrationError("MODULE_STATUS_BLOCKED", "Business module lifecycle baseline is not closed")
-        row = by_code.get(module_code)
-        if row is None:
+        if len(rows) != 1 or str(rows[0].get("module_code") or "") != module_code:
             raise OrchestrationError("MODULE_STATUS_BLOCKED", "Business module lifecycle row is missing")
+        row = rows[0]
         if not _SEMVER_RE.fullmatch(str(row.get("code_version") or "")) or not _SEMVER_RE.fullmatch(str(row.get("installed_version") or "")):
             raise OrchestrationError("MODULE_STATUS_BLOCKED", "Business module lifecycle version is malformed")
         if str(row.get("code_version") or "") != module.version or str(row.get("installed_version") or "") != module.version:

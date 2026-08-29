@@ -30,6 +30,7 @@ class SessionBrokerTests(unittest.TestCase):
         broker._pending_storage_state_path = state_dir / "pending_storage_state.json"
         broker._pending_login_state_path = state_dir / "pending_login_state.json"
         broker._login_profile_path = state_dir / "login_profile.json"
+        broker._execute_login_inline = True
         return broker
 
     def test_health_snapshot_never_waits_on_validation_or_reads_credentials(self):
@@ -46,7 +47,7 @@ class SessionBrokerTests(unittest.TestCase):
         self.broker._credentials_status_locked = lambda: self.fail(
             "health must not read credentials"
         )
-        self.broker._validate_locked = lambda **_kwargs: self.fail(
+        self.broker._validate = lambda **_kwargs: self.fail(
             "health must not validate the provider"
         )
 
@@ -66,6 +67,71 @@ class SessionBrokerTests(unittest.TestCase):
             "pending_since": "",
             "expires_at": "",
         }
+
+    def test_target_direct_build_ignores_expired_meta_when_storage_exists(self):
+        self.broker._storage_state_path.write_text(
+            json.dumps({"cookies": [], "origins": []}),
+            encoding="utf-8",
+        )
+        self.broker._save_meta(
+            {
+                **self._authenticated_meta(),
+                "status": "expired",
+                "last_error_summary": "unrelated health-matrix failure",
+            }
+        )
+        session = object()
+        with (
+            patch.object(
+                self.broker,
+                "ensure_authenticated",
+                side_effect=AssertionError("target-direct access must not prevalidate"),
+            ),
+            patch.object(
+                self.broker,
+                "_session_from_saved_state_locked",
+                return_value=session,
+            ),
+        ):
+            result = self.broker.build_requests_session(validate=False)
+
+        self.assertIs(session, result)
+
+    def test_target_direct_storage_path_ignores_expired_meta_when_storage_exists(self):
+        self.broker._storage_state_path.write_text(
+            json.dumps({"cookies": [], "origins": []}),
+            encoding="utf-8",
+        )
+        self.broker._save_meta(
+            {
+                **self._authenticated_meta(),
+                "status": "error",
+                "last_error_summary": "unrelated health-matrix failure",
+            }
+        )
+        with patch.object(
+            self.broker,
+            "ensure_authenticated",
+            side_effect=AssertionError("target-direct access must not prevalidate"),
+        ):
+            result = self.broker.get_storage_state_path(validate=False)
+
+        self.assertEqual(str(self.broker._storage_state_path), result)
+
+    def test_target_direct_session_and_storage_path_block_active_same_profile_login(self):
+        self.broker._storage_state_path.write_text(
+            json.dumps({"cookies": [], "origins": []}),
+            encoding="utf-8",
+        )
+        self.broker._active_login_token = "fixture-active-login"
+
+        with self.assertRaises(Exception) as session_ctx:
+            self.broker.build_requests_session(validate=False)
+        with self.assertRaises(Exception) as path_ctx:
+            self.broker.get_storage_state_path(validate=False)
+
+        self.assertEqual("BLOCKED_LOGIN", getattr(session_ctx.exception, "code", ""))
+        self.assertEqual("BLOCKED_LOGIN", getattr(path_ctx.exception, "code", ""))
 
     @staticmethod
     def _ronghui_storage_state(*, user_info_http_only: bool = False):
@@ -162,37 +228,18 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertEqual(getattr(ctx.exception, "code", ""), "AUTH_UNAVAILABLE")
         self.assertIn("playwright install chromium", str(ctx.exception))
 
-    def test_submit_code_runs_sync_playwright_outside_async_loop(self):
-        page = _FakePage(self.login_config.login_url, self.login_config.home_url)
-        context = _FakeContext(page)
-        browser = _FakeBrowser(context)
-        manager = _FakePlaywrightManager(browser)
-
-        class _LoopGuardSyncPlaywright:
-            def start(self):
-                try:
-                    asyncio.get_running_loop()
-                except RuntimeError:
-                    return manager
-                raise RuntimeError("sync playwright started inside async loop")
-
-        sync_api_module = types.ModuleType("playwright.sync_api")
-        sync_api_module.sync_playwright = lambda: _LoopGuardSyncPlaywright()
-        playwright_module = types.ModuleType("playwright")
-        playwright_module.sync_api = sync_api_module
-        self.broker._pending_storage_state_path.write_text(
-            json.dumps({"cookies": [], "origins": []}),
-            encoding="utf-8",
-        )
-
-        with (
-            patch.dict(sys.modules, {"playwright": playwright_module, "playwright.sync_api": sync_api_module}),
-            patch.object(self.broker, "resolve_login_config", return_value=self.login_config),
-            patch.object(self.broker, "_persist_storage_state_locked", return_value=self._authenticated_meta()),
-        ):
+    def test_submit_code_routes_browser_work_to_staged_process_from_async_loop(self):
+        self.broker._execute_login_inline = False
+        expected = self._authenticated_meta()
+        with patch.object(
+            self.broker,
+            "_run_staged_login_operation",
+            return_value=expected,
+        ) as staged_operation:
             result = asyncio.run(self._submit_code_from_async_loop("123456"))
 
         self.assertEqual(result["status"], "authenticated")
+        staged_operation.assert_called_once_with("submit", "123456")
 
     async def _submit_code_from_async_loop(self, code: str):
         return self.broker.submit_code(code)
@@ -590,7 +637,7 @@ class SessionBrokerTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "authenticated")
 
-    def test_validate_falls_back_to_browser_when_requests_validation_fails(self):
+    def test_validate_fails_bounded_without_browser_fallback(self):
         self.broker._save_meta(
             {
                 "status": "authenticated",
@@ -606,14 +653,15 @@ class SessionBrokerTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        with (
-            patch.object(self.broker, "_session_from_saved_state_locked", side_effect=RuntimeError("ssl handshake failed")),
-            patch.object(self.broker, "_validate_storage_state_with_browser_locked", return_value=("authenticated", "")),
+        with patch.object(
+            self.broker,
+            "_session_from_saved_state_locked",
+            side_effect=RuntimeError("ssl handshake failed"),
         ):
             result = self.broker.describe_status(validate=True)
 
-        self.assertEqual(result["status"], "authenticated")
-        self.assertEqual(result["last_error_summary"], "")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("ssl handshake failed", result["last_error_summary"])
 
     def test_clear_transitions_to_logged_out(self):
         self.broker._save_meta(
@@ -878,7 +926,6 @@ class SessionBrokerTests(unittest.TestCase):
         expected = {"status": "authenticated"}
         with (
             patch.object(broker, "resolve_login_config", return_value=self.login_config),
-            patch.object(broker, "_run_in_isolated_thread", side_effect=lambda func: func()),
             patch.object(broker, "_submit_yunda_sms_login", return_value=expected) as submit_sms,
             patch.object(broker, "_submit_yunda_captcha_login") as submit_captcha,
         ):
@@ -1120,16 +1167,10 @@ class SessionBrokerTests(unittest.TestCase):
         persist_mock.assert_called_once()
         close_pending.assert_called_once()
 
-    def test_yunda_status_validates_report_api(self):
+    def test_yunda_report_capability_validates_exactly_once(self):
         yunda_broker = SessionBroker(profile_name="yunda", login_mode="yunda_password", require_phone=False)
-        state_dir = Path(self.tempdir.name) / "yunda-report-ok"
-        yunda_broker._state_dir = state_dir
-        yunda_broker._meta_path = state_dir / "session_meta.json"
-        yunda_broker._storage_state_path = state_dir / "storage_state.json"
-        yunda_broker._cookies_path = state_dir / "cookies.json"
-        yunda_broker._pending_storage_state_path = state_dir / "pending_storage_state.json"
-        yunda_broker._pending_login_state_path = state_dir / "pending_login_state.json"
-        yunda_broker._login_profile_path = state_dir / "login_profile.json"
+        self._configure_broker_state(yunda_broker, "yunda-report-ok")
+        state_dir = yunda_broker._state_dir
         state_dir.mkdir(parents=True, exist_ok=True)
         yunda_broker._save_meta(
             {
@@ -1165,42 +1206,24 @@ class SessionBrokerTests(unittest.TestCase):
                 self.calls.append((url, kwargs))
                 if "searchData" in url:
                     return Response(url, '{"total":0,"rows":[]}', {"content-type": "application/json"}, {"total": 0, "rows": []})
-                if "kyinms.yunda56.com" in url:
-                    return Response(url, "<html>用户登录 快件跟踪 mail app</html>", {"content-type": "text/html"})
-                if "client/user/info" in url:
-                    return Response(url, '{"data":{"userId":"u-1"}}', {"content-type": "application/json"}, {"data": {"userId": "u-1"}})
-                if "kyproblem.yunda56.com" in url:
-                    return Response(url, "<html>韵达问题件查询</html>", {"content-type": "text/html"})
-                return Response(url, "<html>report</html>", {"content-type": "text/html"})
+                self.fail_if_called_for_other_capability(url)
 
-            def post(self, url, **kwargs):
-                self.calls.append((url, kwargs))
-                if "message/api/getTypes" in url:
-                    return Response(url, '{"data":[]}', {"content-type": "application/json"}, {"data": []})
-                return Response(url, "{}", {"content-type": "application/json"}, {})
+            @staticmethod
+            def fail_if_called_for_other_capability(url):
+                raise AssertionError(f"unexpected capability request: {url}")
 
         session = Session()
         with patch.object(yunda_broker, "_session_from_saved_state_locked", return_value=session):
-            status = yunda_broker.describe_status(validate=True)
+            result = yunda_broker.open_capability_session("yunda_report")
 
-        self.assertEqual("authenticated", status["status"])
-        self.assertEqual("success", status["status_tone"])
-        self.assertTrue(any("searchData" in url for url, _kwargs in session.calls))
-        self.assertTrue(any("kyinms.yunda56.com" in url for url, _kwargs in session.calls))
-        self.assertTrue(any("client/user/info" in url for url, _kwargs in session.calls))
-        self.assertTrue(any("message/api/getTypes" in url for url, _kwargs in session.calls))
-        self.assertTrue(any("kyproblem.yunda56.com" in url for url, _kwargs in session.calls))
+        self.assertIs(session, result)
+        self.assertEqual(1, len(session.calls))
+        self.assertIn("searchData", session.calls[0][0])
 
-    def test_yunda_status_expires_when_problem_center_redirects_to_client_shell(self):
+    def test_yunda_problem_capability_rejects_client_shell_redirect(self):
         yunda_broker = SessionBroker(profile_name="yunda", login_mode="yunda_password", require_phone=False)
-        state_dir = Path(self.tempdir.name) / "yunda-problem-expired"
-        yunda_broker._state_dir = state_dir
-        yunda_broker._meta_path = state_dir / "session_meta.json"
-        yunda_broker._storage_state_path = state_dir / "storage_state.json"
-        yunda_broker._cookies_path = state_dir / "cookies.json"
-        yunda_broker._pending_storage_state_path = state_dir / "pending_storage_state.json"
-        yunda_broker._pending_login_state_path = state_dir / "pending_login_state.json"
-        yunda_broker._login_profile_path = state_dir / "login_profile.json"
+        self._configure_broker_state(yunda_broker, "yunda-problem-expired")
+        state_dir = yunda_broker._state_dir
         state_dir.mkdir(parents=True, exist_ok=True)
         yunda_broker._save_meta(
             {
@@ -1230,12 +1253,6 @@ class SessionBrokerTests(unittest.TestCase):
             cookies = []
 
             def get(self, url, **kwargs):
-                if "searchData" in url:
-                    return Response(url, '{"total":0,"rows":[]}', {"content-type": "application/json"}, {"total": 0, "rows": []})
-                if "kyinms.yunda56.com" in url:
-                    return Response(url, "<html>快件跟踪 mail app</html>", {"content-type": "text/html"})
-                if "client/user/info" in url:
-                    return Response(url, '{"data":{"userId":"u-1"}}', {"content-type": "application/json"}, {"data": {"userId": "u-1"}})
                 if "kyproblem.yunda56.com" in url:
                     return Response(
                         "https://ky-client.yunda56.com/#/",
@@ -1244,16 +1261,12 @@ class SessionBrokerTests(unittest.TestCase):
                     )
                 return Response(url, "<html>report</html>", {"content-type": "text/html"})
 
-            def post(self, url, **kwargs):
-                if "message/api/getTypes" in url:
-                    return Response(url, '{"data":[]}', {"content-type": "application/json"}, {"data": []})
-                return Response(url, "{}", {"content-type": "application/json"}, {})
-
         with patch.object(yunda_broker, "_session_from_saved_state_locked", return_value=Session()):
-            status = yunda_broker.describe_status(validate=True)
+            with self.assertRaises(Exception) as ctx:
+                yunda_broker.open_capability_session("yunda_problem")
 
-        self.assertEqual("expired", status["status"])
-        self.assertIn("问题件", status["last_error_summary"])
+        self.assertEqual("AUTH_REQUIRED", getattr(ctx.exception, "code", ""))
+        self.assertIn("问题件", str(ctx.exception))
 
     def test_yunda_problem_browser_session_uses_client_menu_route(self):
         yunda_broker = SessionBroker(profile_name="yunda", login_mode="yunda_password", require_phone=False)
@@ -1314,16 +1327,10 @@ class SessionBrokerTests(unittest.TestCase):
         self.assertTrue(any("问题件查询" in script for script in page.evaluated))
         self.assertIn(session_broker_module.YUNDA_PROBLEM_IFRAME_SELECTOR, page.waited_selectors)
 
-    def test_yunda_status_expires_when_inms_requires_login(self):
+    def test_yunda_inms_capability_requires_login(self):
         yunda_broker = SessionBroker(profile_name="yunda", login_mode="yunda_password", require_phone=False)
-        state_dir = Path(self.tempdir.name) / "yunda-inms-expired"
-        yunda_broker._state_dir = state_dir
-        yunda_broker._meta_path = state_dir / "session_meta.json"
-        yunda_broker._storage_state_path = state_dir / "storage_state.json"
-        yunda_broker._cookies_path = state_dir / "cookies.json"
-        yunda_broker._pending_storage_state_path = state_dir / "pending_storage_state.json"
-        yunda_broker._pending_login_state_path = state_dir / "pending_login_state.json"
-        yunda_broker._login_profile_path = state_dir / "login_profile.json"
+        self._configure_broker_state(yunda_broker, "yunda-inms-expired")
+        state_dir = yunda_broker._state_dir
         state_dir.mkdir(parents=True, exist_ok=True)
         yunda_broker._save_meta(
             {
@@ -1353,28 +1360,21 @@ class SessionBrokerTests(unittest.TestCase):
             cookies = []
 
             def get(self, url, **kwargs):
-                if "searchData" in url:
-                    return Response(url, '{"total":0,"rows":[]}', {"content-type": "application/json"}, {"total": 0, "rows": []})
                 if "kyinms.yunda56.com" in url:
                     return Response(url, '<form id="login_form"></form>', {"content-type": "text/html"})
-                return Response(url, "<html>report</html>", {"content-type": "text/html"})
+                raise AssertionError(f"unexpected capability request: {url}")
 
         with patch.object(yunda_broker, "_session_from_saved_state_locked", return_value=Session()):
-            status = yunda_broker.describe_status(validate=True)
+            with self.assertRaises(Exception) as ctx:
+                yunda_broker.open_capability_session("yunda_inms")
 
-        self.assertEqual("expired", status["status"])
-        self.assertIn("快件跟踪", status["last_error_summary"])
+        self.assertEqual("AUTH_REQUIRED", getattr(ctx.exception, "code", ""))
+        self.assertIn("快件跟踪", str(ctx.exception))
 
-    def test_yunda_status_expires_when_message_center_has_no_user_id(self):
+    def test_yunda_message_capability_requires_identity(self):
         yunda_broker = SessionBroker(profile_name="yunda", login_mode="yunda_password", require_phone=False)
-        state_dir = Path(self.tempdir.name) / "yunda-message-expired"
-        yunda_broker._state_dir = state_dir
-        yunda_broker._meta_path = state_dir / "session_meta.json"
-        yunda_broker._storage_state_path = state_dir / "storage_state.json"
-        yunda_broker._cookies_path = state_dir / "cookies.json"
-        yunda_broker._pending_storage_state_path = state_dir / "pending_storage_state.json"
-        yunda_broker._pending_login_state_path = state_dir / "pending_login_state.json"
-        yunda_broker._login_profile_path = state_dir / "login_profile.json"
+        self._configure_broker_state(yunda_broker, "yunda-message-expired")
+        state_dir = yunda_broker._state_dir
         state_dir.mkdir(parents=True, exist_ok=True)
         yunda_broker._save_meta(
             {
@@ -1406,30 +1406,21 @@ class SessionBrokerTests(unittest.TestCase):
             cookies = []
 
             def get(self, url, **kwargs):
-                if "searchData" in url:
-                    return Response(url, '{"total":0,"rows":[]}', {"content-type": "application/json"}, {"total": 0, "rows": []})
-                if "kyinms.yunda56.com" in url:
-                    return Response(url, "<html>快件跟踪 mail app</html>", {"content-type": "text/html"})
                 if "client/user/info" in url:
                     return Response(url, '{"data":{}}', {"content-type": "application/json"}, {"data": {}})
-                return Response(url, "<html>report</html>", {"content-type": "text/html"})
+                raise AssertionError(f"unexpected capability request: {url}")
 
         with patch.object(yunda_broker, "_session_from_saved_state_locked", return_value=Session()):
-            status = yunda_broker.describe_status(validate=True)
+            with self.assertRaises(Exception) as ctx:
+                yunda_broker.open_capability_session("yunda_message")
 
-        self.assertEqual("expired", status["status"])
-        self.assertIn("消息中心", status["last_error_summary"])
+        self.assertEqual("AUTH_REQUIRED", getattr(ctx.exception, "code", ""))
+        self.assertIn("登录身份", str(ctx.exception))
 
-    def test_yunda_status_ignores_message_center_database_error(self):
+    def test_yunda_message_capability_uses_single_identity_request(self):
         yunda_broker = SessionBroker(profile_name="yunda", login_mode="yunda_password", require_phone=False)
-        state_dir = Path(self.tempdir.name) / "yunda-message-db-error"
-        yunda_broker._state_dir = state_dir
-        yunda_broker._meta_path = state_dir / "session_meta.json"
-        yunda_broker._storage_state_path = state_dir / "storage_state.json"
-        yunda_broker._cookies_path = state_dir / "cookies.json"
-        yunda_broker._pending_storage_state_path = state_dir / "pending_storage_state.json"
-        yunda_broker._pending_login_state_path = state_dir / "pending_login_state.json"
-        yunda_broker._login_profile_path = state_dir / "login_profile.json"
+        self._configure_broker_state(yunda_broker, "yunda-message-single-request")
+        state_dir = yunda_broker._state_dir
         state_dir.mkdir(parents=True, exist_ok=True)
         yunda_broker._save_meta(
             {
@@ -1458,37 +1449,27 @@ class SessionBrokerTests(unittest.TestCase):
         class Session:
             cookies = []
 
+            def __init__(self):
+                self.calls = []
+
             def get(self, url, **kwargs):
-                if "searchData" in url:
-                    return Response(url, '{"total":0,"rows":[]}', {"content-type": "application/json"}, {"total": 0, "rows": []})
-                if "kyinms.yunda56.com" in url:
-                    return Response(url, "<html>快件跟踪 mail app</html>", {"content-type": "text/html"})
+                self.calls.append((url, kwargs))
                 if "client/user/info" in url:
-                    return Response(url, '{"data":{"userId":"u-1"}}', {"content-type": "application/json"}, {"data": {"userId": "u-1"}})
-                return Response(url, "<html>report</html>", {"content-type": "text/html"})
+                    return Response(url, '{"data":{"identity":"u-1"}}', {"content-type": "application/json"}, {"data": {"identity": "u-1"}})
+                raise AssertionError(f"unexpected capability request: {url}")
 
-            def post(self, url, **kwargs):
-                if "message/api/getTypes" in url:
-                    payload = {"errorCode": "80001", "message": "数据库操作异常"}
-                    return Response(url, json.dumps(payload, ensure_ascii=False), {"content-type": "application/json"}, payload)
-                return Response(url, "{}", {"content-type": "application/json"}, {})
+        session = Session()
+        with patch.object(yunda_broker, "_session_from_saved_state_locked", return_value=session):
+            result = yunda_broker.open_capability_session("yunda_message")
 
-        with patch.object(yunda_broker, "_session_from_saved_state_locked", return_value=Session()):
-            status = yunda_broker.describe_status(validate=True)
+        self.assertIs(session, result)
+        self.assertEqual(1, len(session.calls))
+        self.assertIn("client/user/info", session.calls[0][0])
 
-        self.assertEqual("authenticated", status["status"])
-        self.assertEqual("", status["last_error_summary"])
-
-    def test_yunda_status_expires_when_report_api_empty(self):
+    def test_yunda_report_capability_fails_on_empty_json(self):
         yunda_broker = SessionBroker(profile_name="yunda", login_mode="yunda_password", require_phone=False)
-        state_dir = Path(self.tempdir.name) / "yunda-report-empty"
-        yunda_broker._state_dir = state_dir
-        yunda_broker._meta_path = state_dir / "session_meta.json"
-        yunda_broker._storage_state_path = state_dir / "storage_state.json"
-        yunda_broker._cookies_path = state_dir / "cookies.json"
-        yunda_broker._pending_storage_state_path = state_dir / "pending_storage_state.json"
-        yunda_broker._pending_login_state_path = state_dir / "pending_login_state.json"
-        yunda_broker._login_profile_path = state_dir / "login_profile.json"
+        self._configure_broker_state(yunda_broker, "yunda-report-empty")
+        state_dir = yunda_broker._state_dir
         state_dir.mkdir(parents=True, exist_ok=True)
         yunda_broker._save_meta(
             {
@@ -1519,24 +1500,19 @@ class SessionBrokerTests(unittest.TestCase):
             def get(self, url, **kwargs):
                 if "searchData" in url:
                     return Response(url, "", {"content-type": "application/json"})
-                return Response(url, "<html>report</html>", {"content-type": "text/html"})
+                raise AssertionError(f"unexpected capability request: {url}")
 
         with patch.object(yunda_broker, "_session_from_saved_state_locked", return_value=Session()):
-            status = yunda_broker.describe_status(validate=True)
+            with self.assertRaises(Exception) as ctx:
+                yunda_broker.open_capability_session("yunda_report")
 
-        self.assertEqual("expired", status["status"])
-        self.assertIn("报表接口返回空响应", status["last_error_summary"])
+        self.assertEqual("CAPABILITY_UNAVAILABLE", getattr(ctx.exception, "code", ""))
+        self.assertIn("非 JSON", str(ctx.exception))
 
-    def test_yunda_status_retries_transient_report_non_json(self):
+    def test_yunda_report_capability_does_not_retry_non_json(self):
         yunda_broker = SessionBroker(profile_name="yunda", login_mode="yunda_password", require_phone=False)
-        state_dir = Path(self.tempdir.name) / "yunda-report-transient-html"
-        yunda_broker._state_dir = state_dir
-        yunda_broker._meta_path = state_dir / "session_meta.json"
-        yunda_broker._storage_state_path = state_dir / "storage_state.json"
-        yunda_broker._cookies_path = state_dir / "cookies.json"
-        yunda_broker._pending_storage_state_path = state_dir / "pending_storage_state.json"
-        yunda_broker._pending_login_state_path = state_dir / "pending_login_state.json"
-        yunda_broker._login_profile_path = state_dir / "login_profile.json"
+        self._configure_broker_state(yunda_broker, "yunda-report-transient-html")
+        state_dir = yunda_broker._state_dir
         state_dir.mkdir(parents=True, exist_ok=True)
         yunda_broker._save_meta(
             {
@@ -1575,33 +1551,18 @@ class SessionBrokerTests(unittest.TestCase):
                 self.calls.append((url, kwargs))
                 if "searchData" in url:
                     self.search_calls += 1
-                    if self.search_calls == 1:
-                        return Response(url, "<html>temporary upstream page</html>", {"content-type": "text/html"})
-                    return Response(url, '{"total":0,"rows":[]}', {"content-type": "application/json"}, {"total": 0, "rows": []})
-                if "kyinms.yunda56.com" in url:
-                    return Response(url, "<html>快件跟踪 mail app</html>", {"content-type": "text/html"})
-                if "client/user/info" in url:
-                    return Response(url, '{"data":{"userId":"u-1"}}', {"content-type": "application/json"}, {"data": {"userId": "u-1"}})
-                return Response(url, "<html>report</html>", {"content-type": "text/html"})
-
-            def post(self, url, **kwargs):
-                self.calls.append((url, kwargs))
-                if "message/api/getTypes" in url:
-                    return Response(url, '{"data":[]}', {"content-type": "application/json"}, {"data": []})
-                return Response(url, "{}", {"content-type": "application/json"}, {})
+                    return Response(url, "<html>temporary upstream page</html>", {"content-type": "text/html"})
+                raise AssertionError(f"unexpected capability request: {url}")
 
         session = Session()
-        with (
-            patch.object(yunda_broker, "_session_from_saved_state_locked", return_value=session),
-            patch.object(session_broker_module.time, "sleep") as sleep_mock,
-        ):
-            status = yunda_broker.describe_status(validate=True)
+        with patch.object(yunda_broker, "_session_from_saved_state_locked", return_value=session):
+            with self.assertRaises(Exception) as ctx:
+                yunda_broker.open_capability_session("yunda_report")
 
-        self.assertEqual("authenticated", status["status"])
-        self.assertEqual(2, session.search_calls)
-        sleep_mock.assert_called_once()
+        self.assertEqual("CAPABILITY_UNAVAILABLE", getattr(ctx.exception, "code", ""))
+        self.assertEqual(1, session.search_calls)
 
-    def test_ronghui_status_validates_scan_api(self):
+    def test_ronghui_status_uses_confirmed_home_instead_of_retired_scan_api(self):
         self.broker._save_meta(self._authenticated_meta())
         self.broker._storage_state_path.write_text(
             json.dumps(self._ronghui_storage_state(), ensure_ascii=False),
@@ -1618,10 +1579,8 @@ class SessionBrokerTests(unittest.TestCase):
             status = self.broker.describe_status(validate=True)
 
         self.assertEqual("authenticated", status["status"])
-        self.assertEqual(1, len(session.post_calls))
-        self.assertIn("/dataQuery/findPageByCallId", session.post_calls[0]["url"])
-        self.assertEqual({"id": "FIND_COME_SCAN_RECORD"}, session.post_calls[0]["params"])
-        self.assertEqual("1", session.post_calls[0]["data"]["pageSize"])
+        self.assertEqual([], session.post_calls)
+        self.assertEqual([self.login_config.home_url], [item["url"] for item in session.get_calls])
 
     def test_ronghui_user_info_cookie_round_trip_stays_javascript_readable(self):
         storage_state = self._ronghui_storage_state(user_info_http_only=False)
@@ -1668,11 +1627,6 @@ class SessionBrokerTests(unittest.TestCase):
         with (
             patch.object(self.broker, "resolve_login_config", return_value=self.login_config),
             patch.object(self.broker, "_session_from_saved_state_locked", return_value=session),
-            patch.object(
-                self.broker,
-                "_validate_storage_state_with_browser_locked",
-                return_value=("authenticated", ""),
-            ) as browser_validate,
         ):
             status = self.broker.describe_status(validate=True)
 
@@ -1680,9 +1634,8 @@ class SessionBrokerTests(unittest.TestCase):
         user_info_cookie = next(cookie for cookie in migrated["cookies"] if cookie["name"] == "userInfo")
         self.assertEqual("authenticated", status["status"])
         self.assertFalse(user_info_cookie["httpOnly"])
-        browser_validate.assert_called_once()
 
-    def test_ronghui_user_info_migration_expires_when_browser_context_is_not_ready(self):
+    def test_ronghui_user_info_migration_uses_home_without_browser_fallback(self):
         storage_state = self._ronghui_storage_state(user_info_http_only=True)
         self.broker._storage_state_path.write_text(
             json.dumps(storage_state, ensure_ascii=False),
@@ -1703,16 +1656,10 @@ class SessionBrokerTests(unittest.TestCase):
         with (
             patch.object(self.broker, "resolve_login_config", return_value=self.login_config),
             patch.object(self.broker, "_session_from_saved_state_locked", return_value=session),
-            patch.object(
-                self.broker,
-                "_validate_storage_state_with_browser_locked",
-                return_value=("expired", "页面用户上下文未就绪"),
-            ),
         ):
             status = self.broker.describe_status(validate=True)
 
-        self.assertEqual("expired", status["status"])
-        self.assertIn("页面用户上下文", status["last_error_summary"])
+        self.assertEqual("authenticated", status["status"])
 
     def test_ronghui_status_expires_when_page_user_context_cookie_is_missing(self):
         self.broker._save_meta(self._authenticated_meta())
@@ -1760,7 +1707,7 @@ class SessionBrokerTests(unittest.TestCase):
         ):
             browser_manager.TMSBrowserAuth(profile="fixture-profile")
 
-    def test_ronghui_status_expires_when_scan_api_returns_login_page(self):
+    def test_ronghui_status_does_not_call_retired_scan_api(self):
         self.broker._save_meta(self._authenticated_meta())
         self.broker._storage_state_path.write_text(
             json.dumps(self._ronghui_storage_state(), ensure_ascii=False),
@@ -1780,10 +1727,10 @@ class SessionBrokerTests(unittest.TestCase):
         ):
             status = self.broker.describe_status(validate=True)
 
-        self.assertEqual("expired", status["status"])
-        self.assertIn("scan API", status["last_error_summary"])
+        self.assertEqual("authenticated", status["status"])
+        self.assertEqual([], session.post_calls)
 
-    def test_ronghui_status_expires_when_menu_api_returns_failure(self):
+    def test_ronghui_status_does_not_call_retired_menu_api(self):
         self.broker._save_meta(self._authenticated_meta())
         self.broker._storage_state_path.write_text(
             json.dumps(self._ronghui_storage_state(), ensure_ascii=False),
@@ -1804,8 +1751,11 @@ class SessionBrokerTests(unittest.TestCase):
         ):
             status = self.broker.describe_status(validate=True)
 
-        self.assertEqual("expired", status["status"])
-        self.assertIn("menu validation failed", status["last_error_summary"])
+        self.assertEqual("authenticated", status["status"])
+        self.assertNotIn(
+            "/menuTreeExtend/loadMenu",
+            [item["url"] for item in session.get_calls],
+        )
 
     def test_ensure_authenticated_raises_auth_required_after_expiry(self):
         self.broker._save_meta(

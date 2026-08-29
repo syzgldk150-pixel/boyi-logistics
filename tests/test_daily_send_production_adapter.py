@@ -61,12 +61,21 @@ _PROJECTION = {
 
 
 class _AccountManager:
-    def require_authenticated_binding(self, account_id):
+    def __init__(self) -> None:
+        self.active_binding_calls: list[str] = []
+        self.authenticated_binding_calls: list[str] = []
+
+    def require_active_binding_descriptor(self, account_id):
+        self.active_binding_calls.append(account_id)
         return {
             "account_id": account_id,
             "system": "ronghui",
             "session_profile": "profile",
         }
+
+    def require_authenticated_binding(self, account_id):
+        self.authenticated_binding_calls.append(account_id)
+        raise AssertionError("describe_account must not authenticate online")
 
 
 def _resource_loader(resource_id):
@@ -302,13 +311,14 @@ def test_projection_counts_and_success_come_from_prestate_and_fresh_rows():
 
 def test_exact_account_and_resource_are_never_defaulted():
     loaded: list[str] = []
+    manager = _AccountManager()
 
     def load(resource_id):
         loaded.append(resource_id)
         return _resource_loader(resource_id)
 
     ports = build_production_daily_send_ports(
-        account_manager=_AccountManager(),
+        account_manager=manager,
         resource_loader=load,
         feishu_operation=lambda _action, _params: {"ok": True, "items": []},
         source_page=lambda descriptor, *_args: {
@@ -328,3 +338,5 @@ def test_exact_account_and_resource_are_never_defaulted():
     )["items"] == [{"BILL_CODE": "chosen-account"}]
     ports.bitable_list("exact-resource", 0, 200, ("运单编号", "发件日期"))
     assert loaded == ["exact-resource"]
+    assert manager.active_binding_calls == ["chosen-account", "chosen-account"]
+    assert manager.authenticated_binding_calls == []

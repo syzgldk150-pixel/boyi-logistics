@@ -1623,6 +1623,7 @@ class AutomationPluginRepositoryTests(TestCase):
                 ("FROM feishu_admin_bindings", {"binding_id": "binding-a"}, 0),
                 ("UPDATE feishu_approval_deliveries", None, 1),
                 ("FROM feishu_admin_bindings", {"binding_id": "binding-a"}, 0),
+                ("UPDATE feishu_approval_deliveries", None, 0),
                 ("FROM feishu_approval_deliveries", {"delivery_id": "d-next"}, 0),
                 ("FROM feishu_admin_bindings", {"binding_id": "binding-a"}, 0),
                 ("FROM feishu_approval_deliveries", {"delivery_id": "d-next"}, 0),

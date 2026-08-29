@@ -20,6 +20,10 @@ from agent.orchestration.models import (
     RiskLevel,
     topological_steps,
 )
+from agent.orchestration.plan_dependencies import (
+    plan_context_fingerprint,
+    plan_tool_catalog_hash,
+)
 from agent.orchestration.ports import ToolCatalogPort
 
 
@@ -28,9 +32,21 @@ class PlanValidator:
         self._catalog = catalog
 
     def validate(self, plan: Plan, context: ContextSnapshot, *, llm_selected: bool = False) -> Plan:
-        if plan.context_fingerprint != context.fingerprint:
+        expected_context_fingerprint = plan_context_fingerprint(
+            schema_version=plan.schema_version,
+            steps=plan.steps,
+            context=context,
+            catalog=self._catalog,
+            automation_project=plan.automation_id is not None,
+        )
+        if plan.context_fingerprint != expected_context_fingerprint:
             raise OrchestrationError("CONTEXT_CHANGED", "Plan context fingerprint does not match current context")
-        if plan.tool_catalog_hash != self._catalog.catalog_hash:
+        expected_catalog_hash = plan_tool_catalog_hash(
+            schema_version=plan.schema_version,
+            steps=plan.steps,
+            catalog=self._catalog,
+        )
+        if plan.tool_catalog_hash != expected_catalog_hash:
             raise OrchestrationError("TOOL_CATALOG_CHANGED", "Tool catalog changed after the plan was created")
         topological_steps(plan.steps)
 

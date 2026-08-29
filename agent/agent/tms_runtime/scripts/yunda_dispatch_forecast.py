@@ -193,7 +193,7 @@ def run_once(params: dict[str, Any]) -> dict[str, Any]:
 
     session_profile = str(params.get("session_profile") or "yunda").strip() or "yunda"
     broker = get_session_broker(session_profile)
-    session = broker.build_requests_session(validate=not bool(params.get("skip_session_validate", False)))
+    session = broker.build_requests_session(validate=False)
     rows, total = collect_records(
         session,
         params,

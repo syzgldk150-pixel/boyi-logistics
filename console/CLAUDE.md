@@ -212,4 +212,4 @@ ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希
 ## 业务模块管理
 
 - `/settings/modules` 及数据/审计入口只代理签名 Agent API，真实 MySQL `super_admin` 才可读取或变更；生命周期写还要求同源、理由、浏览器 UUID 和 CAS。
-- 导航、移动偏好修复和直接页面/API 门禁通过 `services/business_modules.py` 的 Agent 状态投影实现：可管理模块在未知、非 ENABLED、阻塞或未安装时关闭失败，核心模块保持可用；模块管理入口只对真实非 legacy `super_admin` 显示，且不依赖状态投影。不要在模板复制状态或将可选模块默认启用。
+- 导航固定从 14 项静态模块目录渲染，移动偏好修复和直接页面/API 门禁通过 `services/business_modules.py` 的 Agent 状态投影实现：状态未知时 GET 页面壳与只读入口保持可见并明确显示“Agent 服务不可用”，POST/PUT/PATCH/DELETE 与业务 Command 继续 fail closed；状态已知且模块非 `ENABLED`、阻塞或未安装时所有业务方法关闭失败，核心模块保持可用。模块管理入口只对真实非 legacy `super_admin` 显示，且不依赖状态投影；不得在模板复制模块目录或将可选模块默认启用。

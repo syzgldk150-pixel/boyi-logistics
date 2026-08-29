@@ -16,6 +16,10 @@ from agent.automation_plugins.problem_handlers import (
 )
 from agent.tms_runtime.account_manager import AutomationAccountManager, get_account_manager
 from agent.tms_runtime.errors import TMSAuthStateError
+from plugin_core_adapters.capability_session import (
+    CapabilityAuthorizer,
+    authorize_target_capability,
+)
 
 
 ResourceLoader = Callable[[str], Mapping[str, Any] | None]
@@ -60,16 +64,16 @@ def _required_profile(descriptor: Mapping[str, Any]) -> str:
     return profile
 
 
-def _authenticated_account(
+def _active_account(
     manager: AutomationAccountManager,
     account_id: str,
 ) -> Mapping[str, Any]:
     try:
-        descriptor = manager.require_authenticated_binding(account_id)
+        descriptor = manager.require_active_binding_descriptor(account_id)
     except TMSAuthStateError as exc:
         raise _error(
-            "the exact problem account is no longer authenticated",
-            "BLOCKED_LOGIN",
+            "the exact problem account is unavailable",
+            "BROKER_ACCOUNT_UNAVAILABLE",
         ) from exc
     if str(descriptor.get("account_id") or "").strip() != account_id:
         raise _error("the exact problem account changed", "BROKER_ACCOUNT_INVALID")
@@ -842,6 +846,7 @@ def build_production_problem_ports(
     result_updater: ResultUpdater | None = None,
     event_updater: EventUpdater | None = None,
     event_state_reader: EventStateReader | None = None,
+    capability_authorizer: CapabilityAuthorizer | None = None,
 ) -> ProblemHandlerPorts:
     manager = account_manager or get_account_manager()
     load_resource = resource_loader or _default_resource_loader
@@ -851,8 +856,9 @@ def build_production_problem_ports(
     update_result = result_updater or _default_result_updater
     update_event = event_updater or _default_event_updater
     read_event_state = event_state_reader or _default_event_state_reader
+    authorize_capability = capability_authorizer or authorize_target_capability
     return ProblemHandlerPorts(
-        describe_account=lambda account_id: _authenticated_account(
+        describe_account=lambda account_id: _active_account(
             manager,
             account_id,
         ),
@@ -888,6 +894,7 @@ def build_production_problem_ports(
             updater=update_event,
             reader=read_event_state,
         ),
+        authorize_capability=authorize_capability,
     )
 
 
@@ -895,11 +902,13 @@ def build_production_problem_handler_map(
     *,
     cursor_secret: bytes,
     account_manager: AutomationAccountManager | None = None,
+    capability_authorizer: CapabilityAuthorizer | None = None,
     **port_overrides: Any,
 ) -> dict[tuple[str, str], Any]:
     return build_problem_handler_map(
         build_production_problem_ports(
             account_manager=account_manager,
+            capability_authorizer=capability_authorizer,
             **port_overrides,
         ),
         cursor_secret=cursor_secret,

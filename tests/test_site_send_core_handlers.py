@@ -13,13 +13,16 @@ _SECRET = b"site-send-closed-handler-secret-value"
 
 
 class _Manager:
-    def require_authenticated_binding(self, account_id: str) -> dict[str, str]:
+    def require_active_binding_descriptor(self, account_id: str) -> dict[str, str]:
         assert account_id == "site-account"
         return {
             "account_id": account_id,
             "system": "ronghui",
             "session_profile": "site-profile",
         }
+
+    def require_authenticated_binding(self, _account_id: str) -> dict[str, str]:
+        raise AssertionError("production describe_account must not authenticate online")
 
 
 def _context(

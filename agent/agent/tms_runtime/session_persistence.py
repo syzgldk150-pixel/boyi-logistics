@@ -1,7 +1,27 @@
 """Credential, metadata, and browser-state persistence for session profiles."""
 
+from __future__ import annotations
+
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import uuid
+
 from agent.tms_runtime.session_support import *  # noqa: F403
 from shared.runtime_events import publish_tms_session_alert
+
+
+_LOGIN_RESULT_FILE = "operation_result.json"
+_LOGIN_STATE_FILES = (
+    "storage_state.json",
+    "cookies.json",
+    "pending_storage_state.json",
+    "pending_login_state.json",
+    "session_meta.json",
+)
+_LOGIN_STAGE_INPUT_FILES = (*_LOGIN_STATE_FILES, "login_profile.json")
 
 
 class SessionPersistenceMixin:
@@ -111,6 +131,7 @@ class SessionPersistenceMixin:
         if missing:
             raise TMSAuthStateError("AUTH_REQUIRED", f"{'、'.join(missing)}不能为空。")
         self._state_store.write_dict(self._login_profile_path, payload)
+        self._bump_state_epoch_locked()
         return self._credentials_status_locked()
 
     def get_saved_credentials(self) -> dict[str, Any]:
@@ -131,6 +152,7 @@ class SessionPersistenceMixin:
                 self._state_store.remove(self._login_profile_path)
             except Exception:
                 logger.exception("Failed to remove saved TMS credentials file: %s", self._login_profile_path)
+            self._bump_state_epoch_locked()
             return self._credentials_status_locked()
 
     def resolve_login_config(self) -> LoginConfig:
@@ -186,6 +208,14 @@ class SessionPersistenceMixin:
             }
         return payload
 
+    def _read_meta_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return self._save_meta(self._load_meta())
+
+    def _bump_state_epoch_locked(self) -> int:
+        self._state_epoch = int(getattr(self, "_state_epoch", 0)) + 1
+        return self._state_epoch
+
     def _save_meta(self, meta: dict[str, Any]) -> dict[str, Any]:
         payload = {
             "status": str(meta.get("status") or "logged_out"),
@@ -238,25 +268,184 @@ class SessionPersistenceMixin:
             except Exception:
                 logger.exception("Failed to close pending TMS browser handle")
 
-    def _run_in_isolated_thread(self, func: Callable[[], Any]) -> Any:
-        result: dict[str, Any] = {}
-        error: dict[str, BaseException] = {}
+    def _login_worker_command(self, stage_dir: Path) -> list[str]:
+        return [
+            sys.executable,
+            "-m",
+            "agent.tms_runtime.session_login_worker",
+            "--profile",
+            self.profile_name,
+            "--state-dir",
+            str(stage_dir),
+        ]
 
-        def runner() -> None:
+    def _snapshot_login_state_locked(self, stage_dir: Path) -> None:
+        stage_dir.mkdir(parents=True, exist_ok=False)
+        stage_dir.chmod(0o700)
+        for name in _LOGIN_STAGE_INPUT_FILES:
+            source = self._state_dir / name
+            if not source.exists():
+                continue
+            target = stage_dir / name
+            shutil.copyfile(source, target)
+            target.chmod(0o600)
+
+    @staticmethod
+    def _terminate_process_tree(
+        process: subprocess.Popen[Any],
+        *,
+        process_group_id: int | None = None,
+    ) -> None:
+        if os.name == "posix":
+            # The worker is started in a fresh session. Keep the pgid captured
+            # at launch because the leader may exit while Playwright children
+            # remain alive, making a later ``getpgid(pid)`` impossible.
+            pgid = int(process_group_id or process.pid)
             try:
-                result["value"] = func()
-            except BaseException as exc:  # pragma: no cover
-                error["exc"] = exc
+                os.killpg(pgid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+            # Always address the original process group after the grace
+            # period. Reaping the leader does not prove its browser children
+            # have exited.
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        else:  # pragma: no cover - ECS production runs on Linux
+            if process.poll() is not None:
+                return
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+                return
+            except subprocess.TimeoutExpired:
+                process.kill()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
 
-        thread = threading.Thread(target=runner, name="tms-playwright-worker", daemon=True)
-        thread.start()
-        thread.join()
-        if "exc" in error:
-            raise error["exc"]
-        return result.get("value")
+    def _commit_staged_login_state_locked(self, stage_dir: Path) -> None:
+        # Session metadata is the visibility marker and must move last.
+        for name in _LOGIN_STATE_FILES:
+            source = stage_dir / name
+            target = self._state_dir / name
+            if source.exists():
+                source.chmod(0o600)
+                os.replace(source, target)
+            else:
+                target.unlink(missing_ok=True)
+        self._health_snapshot_meta = self._load_meta()
+
+    def _discard_login_stage(self, stage_dir: Path) -> None:
+        try:
+            resolved_stage = stage_dir.resolve()
+            resolved_root = (self._state_dir / ".login_ops").resolve()
+            if resolved_stage.parent != resolved_root:
+                raise RuntimeError("login staging path escaped its profile directory")
+            shutil.rmtree(resolved_stage, ignore_errors=True)
+            try:
+                resolved_root.rmdir()
+            except OSError:
+                pass
+        except FileNotFoundError:
+            return
+
+    def _run_staged_login_operation(self, action: str, code: str) -> dict[str, Any]:
+        if action not in {"send", "submit"}:
+            raise TMSAuthStateError("AUTH_UNAVAILABLE", "不支持的登录操作。")
+        if not self._login_operation_lock.acquire(blocking=False):
+            raise TMSAuthStateError(
+                "BLOCKED_LOGIN",
+                "该账号已有登录操作正在执行；本次请求未排队。",
+            )
+
+        token = uuid.uuid4().hex
+        stage_dir = self._state_dir / ".login_ops" / token
+        epoch = -1
+        process: subprocess.Popen[Any] | None = None
+        process_group_id: int | None = None
+        try:
+            with self._lock:
+                epoch = self._bump_state_epoch_locked()
+                self._active_login_token = token
+                self._snapshot_login_state_locked(stage_dir)
+
+            popen_kwargs: dict[str, Any] = {
+                "stdin": subprocess.PIPE,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "text": True,
+            }
+            if os.name == "posix":
+                popen_kwargs["start_new_session"] = True
+            process = subprocess.Popen(self._login_worker_command(stage_dir), **popen_kwargs)
+            if os.name == "posix":
+                try:
+                    process_group_id = os.getpgid(process.pid)
+                except ProcessLookupError:
+                    # ``start_new_session=True`` makes the worker pid its pgid;
+                    # retain that identity even if the leader exited quickly.
+                    process_group_id = process.pid
+            request_payload = json.dumps({"action": action, "code": code}, ensure_ascii=False)
+            try:
+                process.communicate(
+                    input=request_payload,
+                    timeout=self._browser_action_timeout_sec,
+                )
+            except subprocess.TimeoutExpired as exc:
+                self._terminate_process_tree(
+                    process,
+                    process_group_id=process_group_id,
+                )
+                raise TMSAuthStateError(
+                    "BLOCKED_LOGIN",
+                    f"登录操作超过 {self._browser_action_timeout_sec:g} 秒，已终止浏览器进程。",
+                ) from exc
+
+            envelope = self._state_store.read_dict(stage_dir / _LOGIN_RESULT_FILE)
+            if process.returncode != 0 or envelope is None:
+                raise TMSAuthStateError("AUTH_UNAVAILABLE", "登录工作进程未返回有效结果。")
+
+            commit_staged_state = bool(envelope.get("commit_staged_state"))
+            with self._lock:
+                if self._active_login_token != token or self._state_epoch != epoch:
+                    raise TMSAuthStateError(
+                        "BLOCKED_LOGIN",
+                        "登录期间账号状态已变化，本次旧结果未提交。",
+                    )
+                if commit_staged_state:
+                    self._commit_staged_login_state_locked(stage_dir)
+
+            if envelope.get("ok") is not True:
+                raise TMSAuthStateError(
+                    str(envelope.get("error_code") or "AUTH_REQUIRED"),
+                    str(envelope.get("error") or "登录操作失败。"),
+                )
+            result = envelope.get("result")
+            if not isinstance(result, dict):
+                raise TMSAuthStateError("AUTH_UNAVAILABLE", "登录工作进程返回格式异常。")
+            return result
+        finally:
+            if process is not None and process.poll() is None:
+                self._terminate_process_tree(
+                    process,
+                    process_group_id=process_group_id,
+                )
+            with self._lock:
+                if self._active_login_token == token:
+                    self._active_login_token = None
+            self._discard_login_stage(stage_dir)
+            self._login_operation_lock.release()
 
     def clear(self) -> dict[str, Any]:
         with self._lock:
+            self._bump_state_epoch_locked()
             self._close_pending_locked()
             for path in (
                 self._storage_state_path,
@@ -344,12 +533,6 @@ class SessionPersistenceMixin:
         )
 
     def _persist_storage_state_locked(self, context: Any, page: Any) -> dict[str, Any]:
-        if self._is_yunda_mode():
-            report_meta = self._ensure_yunda_report_session_in_browser_locked(context, page)
-            if report_meta is not None:
-                return report_meta
-            self._ensure_yunda_inms_session_in_browser_locked(context, page)
-            self._ensure_yunda_problem_session_in_browser_locked(context, page)
         storage_state = context.storage_state(path=str(self._storage_state_path))
         if not isinstance(storage_state, dict):
             storage_state = self._load_storage_state()
@@ -386,12 +569,8 @@ class SessionPersistenceMixin:
                 "expires_at": expires_at,
             }
         )
-        if self._is_yunda_mode():
-            meta = self._validate_locked(force=True)
-            logger.info("Yunda shared session persisted: %s", page.url)
-            return meta
-        meta = self._validate_locked(force=True)
-        logger.info("TMS shared session persisted: %s", page.url)
+        meta = self._load_meta()
+        logger.info("%s shared session persisted", "Yunda" if self._is_yunda_mode() else "TMS")
         return meta
 
     def _ensure_login_prerequisites(self, config: LoginConfig, *, require_phone: bool | None = None) -> None:

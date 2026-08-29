@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -244,15 +246,10 @@ class FinanceRunEventPolicyTests(unittest.TestCase):
                 self.assertEqual(status, event["payload"]["status"])
                 self.assertEqual("finance.failure_alert", deliveries[0]["consumer_name"])
 
-    def test_completed_finance_run_is_consumed_by_finance_brain(self):
+    def test_completed_finance_run_submits_idempotent_analysis_without_waiting(self):
         from main import _finance_brain_completed_handler
+        from agent.orchestration.models import CommandReceipt, RunStatus
 
-        process_after_sync = Mock(return_value="finance-post-sync-coroutine")
-        submitted = Mock()
-        submitted.result.return_value = {
-            "notified": 1,
-            "analysis": {"status": "complete", "processed": 2},
-        }
         delivery = {
             "event_id": "00000000-0000-0000-0000-000000000003",
             "event_type": "agent.run.completed",
@@ -262,33 +259,93 @@ class FinanceRunEventPolicyTests(unittest.TestCase):
                 "tool_names": ["sync_finance_bills"],
             },
         }
-        runtime = SimpleNamespace(
-            finance_brain=SimpleNamespace(process_after_sync=process_after_sync)
-        )
+        commands = []
 
-        with patch(
-            "main.asyncio.run_coroutine_threadsafe",
-            return_value=submitted,
-        ) as submit:
-            result = _finance_brain_completed_handler(
-                runtime,
-                "main-loop",
-                delivery,
-                object(),
+        def submit(command):
+            commands.append(command)
+            return CommandReceipt(
+                command_id="00000000-0000-0000-0000-000000000010",
+                work_item_id="00000000-0000-0000-0000-000000000011",
+                run_id="00000000-0000-0000-0000-000000000012",
+                status=RunStatus.RECEIVED,
+                reused=len(commands) > 1,
             )
 
-        process_after_sync.assert_called_once_with()
-        submit.assert_called_once_with("finance-post-sync-coroutine", "main-loop")
-        submitted.result.assert_called_once_with(timeout=1800)
-        self.assertTrue(result["processed"])
-        self.assertEqual(1, result["result"]["notified"])
+        first = _finance_brain_completed_handler(submit, delivery, object())
+        second = _finance_brain_completed_handler(submit, delivery, object())
+
+        self.assertTrue(first["processed"])
+        self.assertFalse(first["reused"])
+        self.assertTrue(second["reused"])
+        self.assertEqual(first["run_id"], second["run_id"])
+        self.assertEqual(2, len(commands))
+        self.assertEqual(commands[0].idempotency_key, commands[1].idempotency_key)
+        self.assertEqual(
+            "finance-analysis:v1:00000000-0000-0000-0000-000000000003",
+            commands[0].idempotency_key,
+        )
+        self.assertEqual(
+            {
+                "tool_name": "analyze_finance_reviews",
+                "arguments": {
+                    "trigger_id": "00000000-0000-0000-0000-000000000003",
+                    "source_run_id": "00000000-0000-0000-0000-000000000004",
+                    "limit": 20,
+                },
+            },
+            commands[0].parameters,
+        )
+        self.assertEqual("finance_review_queue", commands[0].entity_refs[0].entity_type)
+        self.assertEqual("pending", commands[0].entity_refs[0].entity_id)
+        self.assertEqual("system", commands[0].source)
+        self.assertEqual("system", commands[0].actor.actor_type.value)
+        self.assertIsNone(commands[0].automation_invocation)
+
+    def test_manual_finance_analysis_returns_durable_run_receipt(self):
+        from main import FinanceAnalyzeRequest, internal_analyze_finance_reviews
+        from agent.orchestration.models import CommandReceipt, RunStatus
+
+        receipt = CommandReceipt(
+            command_id="00000000-0000-0000-0000-000000000020",
+            work_item_id="00000000-0000-0000-0000-000000000021",
+            run_id="00000000-0000-0000-0000-000000000022",
+            status=RunStatus.RECEIVED,
+            reused=False,
+        )
+        runtime = SimpleNamespace(submit_command=Mock(return_value=receipt))
+        request = SimpleNamespace(
+            state=SimpleNamespace(
+                console_principal={
+                    "actor_type": "console_admin",
+                    "actor_id": "42",
+                    "roles": ["admin"],
+                    "authenticated_by": "console_identity",
+                }
+            )
+        )
+
+        with patch("main._runtime", return_value=runtime):
+            response = asyncio.run(
+                internal_analyze_finance_reviews(FinanceAnalyzeRequest(limit=7), request)
+            )
+
+        self.assertEqual(202, response.status_code)
+        self.assertEqual(
+            "/internal/v1/runs/00000000-0000-0000-0000-000000000022",
+            response.headers["location"],
+        )
+        payload = json.loads(response.body)
+        self.assertEqual(receipt.run_id, payload["data"]["run_id"])
+        command = runtime.submit_command.call_args.args[0]
+        self.assertEqual("console", command.source)
+        self.assertEqual("analyze_finance_reviews", command.parameters["tool_name"])
+        self.assertEqual(7, command.parameters["arguments"]["limit"])
 
     def test_non_finance_completion_does_not_invoke_finance_brain(self):
         from main import _finance_brain_completed_handler
 
         result = _finance_brain_completed_handler(
-            SimpleNamespace(finance_brain=None),
-            object(),
+            Mock(side_effect=AssertionError("must not submit")),
             {
                 "event_id": "00000000-0000-0000-0000-000000000005",
                 "event_type": "agent.run.completed",

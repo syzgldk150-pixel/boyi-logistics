@@ -11,7 +11,11 @@ from agent.automation_plugins.code_owned_fields import (
     first_party_code_owned_config_fields,
     first_party_code_owned_plan_fields,
 )
-from agent.automation_plugins.errors import PluginConflictError, PluginNotFoundError
+from agent.automation_plugins.errors import (
+    AutomationPluginError,
+    PluginConflictError,
+    PluginNotFoundError,
+)
 from agent.automation_plugins.manifest import (
     AutomationPluginManifest,
     canonical_json_bytes,
@@ -553,30 +557,123 @@ class PluginCatalog:
         # Only persisted project identities are safe to expose as hidden IDs.
         # Static/reserved identifiers must not cause a fallback card to vanish;
         # a real same-ID project remains visible and fails closed instead.
-        _, hidden_automation_ids = self._partition_projects()
+        _, hidden_automation_ids, _ = self._partition_projects()
         return hidden_automation_ids
+
+    @staticmethod
+    def _project_data_failure(
+        exc: AutomationPluginError | ValueError | None = None,
+    ) -> dict[str, str]:
+        if isinstance(exc, AutomationPluginError):
+            if exc.code == "PLUGIN_IDENTITY_CONFLICT":
+                raise exc
+            code = str(exc.code)
+        else:
+            code = "PLUGIN_PROJECT_DATA_INVALID"
+        return {
+            "runtime_status": "UNAVAILABLE",
+            "error_code": code,
+        }
+
+    @staticmethod
+    def _validate_project_identities(raw_ids: Sequence[object]) -> tuple[str, ...]:
+        automation_ids = tuple(str(item or "").strip() for item in raw_ids)
+        if any(not automation_id for automation_id in automation_ids) or len(
+            set(automation_ids)
+        ) != len(automation_ids):
+            raise PluginConflictError(
+                "automation project identities are missing or duplicated",
+                code="PLUGIN_IDENTITY_CONFLICT",
+            )
+        return automation_ids
 
     def _partition_projects(
         self,
-    ) -> tuple[list[PluginInstanceRecord], frozenset[str]]:
+    ) -> tuple[
+        list[PluginInstanceRecord],
+        frozenset[str],
+        dict[str, dict[str, str]],
+    ]:
+        raw_id_reader = getattr(self._repository, "list_instance_ids", None)
+        loaded_projects: dict[str, PluginInstanceRecord] | None = None
+        if callable(raw_id_reader):
+            automation_ids = self._validate_project_identities(tuple(raw_id_reader()))
+        else:
+            # Compatibility for lightweight/in-memory adapters. Production
+            # repositories expose list_instance_ids so one bad row is never
+            # parsed as part of global identity discovery.
+            projects = tuple(self._repository.list_instances())
+            automation_ids = self._validate_project_identities(
+                tuple(getattr(project, "automation_id", "") for project in projects)
+            )
+            loaded_projects = dict(zip(automation_ids, projects, strict=True))
         visible: list[PluginInstanceRecord] = []
         hidden: set[str] = set()
-        for project in self._repository.list_instances():
+        failures: dict[str, dict[str, str]] = {}
+        for automation_id in automation_ids:
+            if automation_id in self._excluded_automation_ids:
+                hidden.add(automation_id)
+                continue
+            if loaded_projects is None:
+                try:
+                    project = self._repository.get_instance(automation_id)
+                except (AutomationPluginError, ValueError) as exc:
+                    failures[automation_id] = self._project_data_failure(exc)
+                    continue
+                if project is None:
+                    failures[automation_id] = self._project_data_failure()
+                    continue
+            else:
+                project = loaded_projects[automation_id]
+            if str(getattr(project, "automation_id", "") or "").strip() != automation_id:
+                failures[automation_id] = self._project_data_failure()
+                continue
             if self._project_is_excluded(project):
-                hidden.add(project.automation_id)
+                hidden.add(automation_id)
             else:
                 visible.append(project)
-        return visible, frozenset(hidden)
+        return visible, frozenset(hidden), dict(sorted(failures.items()))
+
+    def persisted_automation_ids(self) -> tuple[str, ...]:
+        """Return visible project identities without compiling project manifests."""
+
+        projects, _, unavailable_projects = self._partition_projects()
+        return tuple(
+            sorted(
+                {
+                    *(project.automation_id for project in projects),
+                    *unavailable_projects,
+                }
+            )
+        )
+
+    def _entries_with_failures(
+        self,
+    ) -> tuple[
+        list[PluginCatalogEntry],
+        frozenset[str],
+        dict[str, dict[str, str]],
+    ]:
+        projects, hidden_automation_ids, failures = self._partition_projects()
+        entries: list[PluginCatalogEntry] = []
+        for project in projects:
+            try:
+                entries.append(
+                    _entry_from_project(project, self._project_configuration)
+                )
+            except (AutomationPluginError, ValueError) as exc:
+                failures[project.automation_id] = self._project_data_failure(exc)
+        return (
+            sorted(entries, key=lambda item: item.automation_id),
+            hidden_automation_ids,
+            dict(sorted(failures.items())),
+        )
 
     def list(self, *, include_disabled: bool = True) -> list[PluginCatalogEntry]:
-        projects, _ = self._partition_projects()
-        entries = [
-            _entry_from_project(project, self._project_configuration)
-            for project in projects
-        ]
+        entries, _, _ = self._entries_with_failures()
         if not include_disabled:
             entries = [entry for entry in entries if entry.enabled]
-        return sorted(entries, key=lambda item: item.automation_id)
+        return entries
 
     @staticmethod
     def _resource_summary(entry: PluginCatalogEntry) -> str:
@@ -665,13 +762,8 @@ class PluginCatalog:
         uniform Console configuration form.
         """
 
-        projects, hidden_automation_ids = self._partition_projects()
-        entries = sorted(
-            (
-                _entry_from_project(project, self._project_configuration)
-                for project in projects
-            ),
-            key=lambda item: item.automation_id,
+        entries, hidden_automation_ids, unavailable_projects = (
+            self._entries_with_failures()
         )
         newest: dict[str, PluginCatalogEntry] = {}
         for entry in entries:
@@ -751,6 +843,7 @@ class PluginCatalog:
             "instances": instances,
             "unsupported_automation_ids": [],
             "hidden_automation_ids": sorted(hidden_automation_ids),
+            "unavailable_projects": unavailable_projects,
         }
 
     @staticmethod
@@ -832,7 +925,11 @@ class PluginCatalog:
         """Fail release/runtime health when a displayed project has no plugin."""
 
         requested = {str(item or "").strip() for item in automation_ids if str(item or "").strip()}
-        installed = {entry.automation_id for entry in self.list()}
+        entries, _, unavailable_projects = self._entries_with_failures()
+        installed = {
+            *(entry.automation_id for entry in entries),
+            *unavailable_projects,
+        }
         unsupported = sorted(requested - installed)
         if unsupported:
             raise PluginNotFoundError(
@@ -842,9 +939,12 @@ class PluginCatalog:
     def production_health(self, automation_ids: Sequence[str]) -> dict[str, Any]:
         """Return a credential-free release projection and reject dev trust."""
 
-        entries = self.list()
+        entries, _, unavailable_projects = self._entries_with_failures()
         expected = {str(item or "").strip() for item in automation_ids if str(item or "").strip()}
-        installed = {entry.automation_id for entry in entries}
+        installed = {
+            *(entry.automation_id for entry in entries),
+            *unavailable_projects,
+        }
         unsupported = sorted(expected - installed)
         enabled_builtin = sorted(
             entry.automation_id
@@ -914,6 +1014,7 @@ class PluginCatalog:
             "invalid_enabled_trust": invalid_trust,
             "unstable_generations": unstable,
             "invalid_enabled_runtime": invalid_runtime,
+            "unavailable_projects": unavailable_projects,
         }
 
     def assert_production_ready(self, automation_ids: Sequence[str]) -> dict[str, Any]:
@@ -933,8 +1034,15 @@ class PluginCatalog:
         if not tool_name.startswith(prefix) or not tool_name.endswith(suffix):
             return None
         automation_id = tool_name[len(prefix) : -len(suffix)]
-        entry = self.get(automation_id)
-        if entry is None or not entry.enabled:
+        project = self._repository.get_instance(automation_id)
+        if project is None or self._project_is_excluded(project):
+            return None
+        enabled = (
+            project.enabled
+            if project.enabled is not None
+            else project.state == PluginProjectState.ENABLED
+        )
+        if not enabled:
             return None
         return self.get_project_capability(automation_id)
 
@@ -950,7 +1058,41 @@ class PluginCatalog:
         return matches[0] if matches else None
 
     def get_project_capability(self, automation_id: str) -> dict[str, Any]:
-        entry = self.require(automation_id)
+        safe_automation_id = str(automation_id or "").strip()
+        project = self._repository.get_instance(safe_automation_id)
+        if project is None or self._project_is_excluded(project):
+            raise PluginNotFoundError(
+                f"automation plugin is not installed: {automation_id}"
+            )
+        try:
+            entry = _entry_from_project(project, self._project_configuration)
+        except AutomationPluginError:
+            snapshot = project.committed_snapshot
+            enabled = (
+                project.enabled
+                if project.enabled is not None
+                else project.state == PluginProjectState.ENABLED
+            )
+            failed_candidate_with_lkg = bool(
+                enabled
+                and snapshot is not None
+                and project.committed_generation == snapshot.generation
+                and snapshot.automation_id == project.automation_id
+                and snapshot.plugin_id == project.plugin_id
+                and project.state == PluginProjectState.UPGRADING
+                and project.target_generation > snapshot.generation
+                and project.reconcile_state
+                in {
+                    RuntimeReconcileState.PREPARING,
+                    RuntimeReconcileState.WAITING_COEFFECTS,
+                    RuntimeReconcileState.READY_TO_COMMIT,
+                    RuntimeReconcileState.DISPOSING,
+                    RuntimeReconcileState.ERROR,
+                }
+            )
+            if not failed_candidate_with_lkg:
+                raise
+            return project_capability_from_snapshot(snapshot)
         if not entry.enabled:
             raise PluginConflictError(f"automation plugin is disabled: {automation_id}")
         if entry.committed_generation is None or entry.committed_snapshot is None:

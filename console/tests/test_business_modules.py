@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from jinja2 import Environment, FileSystemLoader
+
 from console.services.business_modules import BusinessModulesServiceMixin
 from shared.business_modules import BUSINESS_MODULE_CATALOG
 
@@ -62,11 +64,24 @@ def _rows(*, receipts: str = "ENABLED", waybill_entry: str = "ENABLED", finance:
     ]}}
 
 
-def test_navigation_fails_closed_for_optional_status_outage_and_keeps_core() -> None:
+def test_navigation_uses_all_static_registrations_during_status_outage() -> None:
     app = _Console({"ok": False})
-    routes = {item["route"] for item in app._business_module_navigation()}
-    assert "/" in routes and "/automations" in routes
-    assert "/receipts" not in routes
+    routes = {item["route"] for item in app._business_module_navigation(None)}
+    assert len(routes) == len(BUSINESS_MODULE_CATALOG)
+    assert "/" in routes and "/automations" in routes and "/receipts" in routes
+    assert app.calls == []
+
+
+def test_module_status_failure_is_cached_briefly() -> None:
+    app = _Console({"ok": False})
+
+    assert app._business_module_rows() is None
+    assert app._business_module_rows() is None
+    assert len(app.calls) == 1
+
+    app._invalidate_business_module_status_cache()
+    assert app._business_module_rows() is None
+    assert len(app.calls) == 2
 
 
 def test_module_manager_navigation_is_super_admin_only_and_status_independent(
@@ -117,24 +132,51 @@ def test_super_admin_mobile_navigation_uses_the_common_navigation_projection() -
     assert "/settings/modules" in app._business_module_mobile_navigation_for_user(user)
 
 
-def test_mobile_navigation_repairs_disabled_saved_routes() -> None:
+def test_mobile_navigation_preserves_static_registered_routes() -> None:
     app = _Console(_rows())
     navigation = list(app._business_module_navigation())
     routes = app._business_module_mobile_nav({"ui_preferences_json": json.dumps({"mobile_bottom_nav": ["/receipts", "/tracking", "/automations"]})}, navigation)
-    assert "/receipts" in routes
+    assert routes == ("/receipts", "/tracking", "/automations")
     repaired = app._business_module_mobile_nav({"ui_preferences_json": json.dumps({"mobile_bottom_nav": ["/tracking"]})}, navigation)
-    assert len(repaired) == 3 and "/tracking" not in repaired
+    assert len(repaired) == 3 and "/tracking" in repaired
 
 
-def test_template_mobile_navigation_adapter_keeps_one_argument_contract() -> None:
+def test_template_mobile_navigation_adapter_keeps_disabled_module_registered() -> None:
     app = _Console(_rows(receipts="DISABLED"))
 
     routes = app._business_module_mobile_navigation_for_user(
         {"ui_preferences_json": json.dumps({"mobile_bottom_nav": ["/receipts", "/automations"]})}
     )
 
-    assert "/receipts" not in routes
+    assert "/receipts" in routes
     assert "/automations" in routes
+
+
+def test_status_outage_allows_get_and_rejects_optional_module_writes() -> None:
+    app = _Console({"ok": False})
+    app._reset_business_module_request_state()
+
+    assert app._reject_unavailable_business_module_request(
+        _Handler(), "/receipts", method="GET"
+    ) is False
+    assert app._business_module_status_unavailable_for_request() is True
+
+    write_handler = _Handler()
+    assert app._reject_unavailable_business_module_request(
+        write_handler, "/receipts/sync", method="POST"
+    ) is True
+    assert app.sent[-1][0] == 503
+    assert app.sent[-1][1]["error_code"] == "MODULE_STATUS_UNAVAILABLE"
+    assert len(app.calls) == 1
+
+    core_write_handler = _Handler()
+    assert app._reject_unavailable_business_module_request(
+        core_write_handler, "/automations/run", method="POST"
+    ) is True
+    assert app.sent[-1][1]["error_code"] == "MODULE_STATUS_UNAVAILABLE"
+
+    app._reset_business_module_request_state()
+    assert app._business_module_status_unavailable_for_request() is False
 
 
 def test_direct_optional_page_and_api_are_rejected_when_disabled() -> None:
@@ -245,3 +287,25 @@ def test_audit_trigger_and_result_container_have_distinct_dom_contracts() -> Non
     assert 'querySelector("[data-module-audit-list]")' in script
     assert "已启用" in template
     assert 'disable: "停用后将拒绝该模块的新业务请求' in script
+
+
+def test_base_template_displays_agent_outage_without_hiding_navigation() -> None:
+    root = Path(__file__).resolve().parents[1]
+    app = _Console({"ok": False})
+    app._reset_business_module_request_state()
+    assert app._reject_unavailable_business_module_request(
+        _Handler(), "/receipts", method="GET"
+    ) is False
+    env = Environment(loader=FileSystemLoader(root / "templates"), autoescape=True)
+    env.globals.update(
+        current_admin_user=lambda: None,
+        navigation_for_user=lambda: app._business_module_navigation(None),
+        mobile_navigation_for_user=app._business_module_mobile_navigation_for_user,
+        business_module_status_unavailable=app._business_module_status_unavailable_for_request,
+    )
+
+    rendered = env.get_template("base.html").render(app_title="test")
+
+    assert 'data-agent-unavailable' in rendered
+    assert "Agent 服务不可用" in rendered
+    assert rendered.count('class="nav-link"') == len(BUSINESS_MODULE_CATALOG)

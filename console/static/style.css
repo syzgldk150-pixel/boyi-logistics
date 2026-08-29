@@ -280,6 +280,7 @@ body.ui-ready [data-reveal] { opacity: 1; transform: none; }
 }
 
 .notice { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); box-shadow: none; margin-bottom: 24px; transition: opacity var(--fast), transform var(--fast); }
+.notice[hidden] { display: none !important; }
 .notice.is-closing { opacity: 0; transform: translateY(-6px); }
 .notice-copy { display: inline-flex; align-items: center; gap: 10px; font-weight: 500; }
 .notice--success { border-color: rgba(16, 185, 129, 0.38); background: #ecfdf5; }
