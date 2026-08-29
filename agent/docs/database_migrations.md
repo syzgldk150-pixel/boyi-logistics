@@ -4,7 +4,7 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-08-22
+updated: 2026-08-29
 ---
 
 # 数据库迁移
@@ -115,6 +115,9 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   `REQUIRE_EACH_RUN`、原降权事件仍为该项目最新策略事件且所有 actor/请求/代际字段闭合时，才以独立
   `MIGRATION_024_PLUGIN_FULL_AUTO` 事件 CAS 恢复完全自动，并失效对应 typed `WAITING_APPROVAL` 审批以唤醒
   Run；任何后续管理员选择优先。
+- `031_control_plane_retention.sql`：为控制平面 30 天滚动清理增加事件、Outbox 与审批查询索引。
+- `032_mysql_binlog_retention.sql`：使用 MySQL `SET PERSIST` 将二进制日志保留期固定为 30 天，
+  并通过 `PURGE BINARY LOGS` 清理更早日志；禁止绕过 MySQL 索引直接删除 binlog 文件。
 
 生产迁移序列固定连续递增且不得改写已执行文件；发布器只按顺序补执行尚未记录的迁移，包含对已应用
 `022`、`023` 保持原始校验和，并在目标库尚未记录时执行 `024`。`016`/`017`/`018` 在业务行变更前各自保存
