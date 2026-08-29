@@ -34,12 +34,6 @@ SCHEDULED_TASK_CONTRACT_UPGRADE_VERSION = "017"
 SCHEDULED_TASK_CONTRACT_UPGRADE_BACKUP_TABLE = "scheduled_task_contract_upgrade_backup_017"
 SCHEDULED_TASK_CONTRACT_UPGRADE_CREATED_TABLE = "scheduled_task_contract_upgrade_created_017"
 AUTOMATION_PROJECT_AUTHORIZATION_VERSION = "018"
-FEISHU_NOTIFICATION_LEASE_VERSION = "030"
-FEISHU_NOTIFICATION_DELIVERY_TABLE = "feishu_approval_deliveries"
-FEISHU_NOTIFICATION_LEASE_COLUMNS = (
-    "notification_lease_token",
-    "notification_lease_expires_at",
-)
 AUTOMATION_PROJECT_AUTHORIZATION_BACKUP_TABLE = "scheduled_task_automation_identity_backup_018"
 AUTOMATION_PROJECT_AUTHORIZATION_CAPTURE_TABLE = "automation_project_migration_capture_018"
 AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_MAP_TABLE = "automation_project_reviewed_schedule_map_018"
@@ -2332,6 +2326,7 @@ def _load_script_helper(filename: str):
 
 
 _MIGRATION_018_HELPER = _load_script_helper("migration_018_authorization.py")
+_MIGRATION_030_HELPER = _load_script_helper("migration_030_notification_lease.py")
 _AUTOMATION_PROJECT_RELEASE_MANIFEST_HELPER = _load_script_helper(
     "automation_project_release_manifest_preflight.py"
 )
@@ -2711,69 +2706,20 @@ def report_automation_project_authorization_status() -> int:
 
 
 def report_feishu_notification_lease_status() -> int:
-    """Report whether migration 030 predated this release without exposing rows."""
-
-    connection = _connect()
-    try:
-        with connection.cursor() as cursor:
-            _require_mysql8(cursor)
-            applied = False
-            if _migration_table_exists(cursor):
-                cursor.execute(
-                    "SELECT 1 FROM schema_migrations WHERE version=%s",
-                    (FEISHU_NOTIFICATION_LEASE_VERSION,),
-                )
-                applied = cursor.fetchone() is not None
-            print(
-                "feishu_notification_lease_status="
-                + ("applied" if applied else "pending")
-            )
-    finally:
-        connection.close()
-    return 0
+    return _MIGRATION_030_HELPER.report_feishu_notification_lease_status(
+        connect=_connect,
+        require_mysql8=_require_mysql8,
+        migration_table_exists=_migration_table_exists,
+    )
 
 
 def restore_feishu_notification_leases() -> int:
-    """Clear migration-030 sender leases before restarting pre-030 code."""
-
-    connection = _connect()
-    try:
-        connection.begin()
-        restored = 0
-        with connection.cursor() as cursor:
-            _require_mysql8(cursor)
-            table_exists = _table_exists(
-                cursor,
-                FEISHU_NOTIFICATION_DELIVERY_TABLE,
-            )
-            columns_exist = table_exists and all(
-                _column_exists(
-                    cursor,
-                    FEISHU_NOTIFICATION_DELIVERY_TABLE,
-                    column_name,
-                )
-                for column_name in FEISHU_NOTIFICATION_LEASE_COLUMNS
-            )
-            if columns_exist:
-                cursor.execute(
-                    """
-                    UPDATE feishu_approval_deliveries
-                    SET notification_lease_token=NULL,
-                        notification_lease_expires_at=NULL,
-                        updated_at=NOW(6)
-                    WHERE notification_lease_token IS NOT NULL
-                       OR notification_lease_expires_at IS NOT NULL
-                    """
-                )
-                restored = int(getattr(cursor, "rowcount", 0) or 0)
-        connection.commit()
-        print(f"feishu_notification_leases_restored={restored}")
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
-    return 0
+    return _MIGRATION_030_HELPER.restore_feishu_notification_leases(
+        connect=_connect,
+        require_mysql8=_require_mysql8,
+        table_exists=_table_exists,
+        column_exists=_column_exists,
+    )
 
 
 def report_control_plane_policy_bootstrap_marker_status() -> int:
