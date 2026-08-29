@@ -124,7 +124,8 @@ def run_test_feishu_notification_lease_holds_the_database_binding_lane(harness):
         cursor.execute(
             "INSERT INTO feishu_approval_deliveries "
             "(delivery_id, approval_id, binding_id, plan_hash, status, "
-            "activated_at) VALUES (%s, %s, %s, %s, 'ACTIVE', NOW(6))",
+            "activated_at, created_at, updated_at) "
+            "VALUES (%s, %s, %s, %s, 'ACTIVE', NOW(6), NOW(6), NOW(6))",
             (
                 first_delivery_id,
                 first_approval_id,
@@ -134,8 +135,9 @@ def run_test_feishu_notification_lease_holds_the_database_binding_lane(harness):
         )
         cursor.execute(
             "INSERT INTO feishu_approval_deliveries "
-            "(delivery_id, approval_id, binding_id, plan_hash, status) "
-            "VALUES (%s, %s, %s, %s, 'QUEUED')",
+            "(delivery_id, approval_id, binding_id, plan_hash, status, "
+            "created_at, updated_at) "
+            "VALUES (%s, %s, %s, %s, 'QUEUED', NOW(6), NOW(6))",
             (
                 second_delivery_id,
                 second_approval_id,
