@@ -36,7 +36,6 @@ router = APIRouter(route_class=EnvelopedRoute)
 ACCOUNT_LIST_CACHE_TTL_SEC = 60
 _ACCOUNT_LIST_CACHE: dict[str, Any] = {}
 _ACCOUNT_LIST_CACHE_LOCK = threading.Lock()
-_ACCOUNT_LIST_REFRESHING = False
 _agent_command_runtime: Any | None = None
 
 
@@ -179,8 +178,14 @@ def _account_manager():
     return get_account_manager()
 
 
-def _account_list_payload(*, force: bool = False) -> dict[str, Any]:
-    return {"accounts": _account_manager().list_accounts(include_status=True, force=force)}
+def _account_list_payload(*, force: bool = False, validate: bool = True) -> dict[str, Any]:
+    return {
+        "accounts": _account_manager().list_accounts(
+            include_status=True,
+            validate=validate,
+            force=force,
+        )
+    }
 
 
 def _cache_age_sec(now: float, cached_at: float | None) -> int:
@@ -220,11 +225,26 @@ def _invalidate_account_list_cache() -> None:
         _ACCOUNT_LIST_CACHE.clear()
 
 
+def ensure_account_list_cache(accounts: list[dict[str, Any]]) -> bool:
+    """Seed the shared account snapshot without replacing fresher monitor results."""
+    with _ACCOUNT_LIST_CACHE_LOCK:
+        if isinstance(_ACCOUNT_LIST_CACHE.get("payload"), dict):
+            return False
+        _ACCOUNT_LIST_CACHE.update(
+            {
+                "payload": {"accounts": copy.deepcopy(accounts)},
+                "cached_at": time.time(),
+            }
+        )
+        return True
+
+
 def update_account_list_cache_status(status_payload: dict[str, Any]) -> bool:
     """Update one cached account row with a freshly checked status payload."""
     account_id = str(status_payload.get("account_id") or "").strip()
     if not account_id:
         return False
+
     with _ACCOUNT_LIST_CACHE_LOCK:
         payload = _ACCOUNT_LIST_CACHE.get("payload")
         if not isinstance(payload, dict):
@@ -247,33 +267,9 @@ def update_account_list_cache_status(status_payload: dict[str, Any]) -> bool:
             ):
                 if key in status_payload:
                     account[key] = copy.deepcopy(status_payload[key])
+            _ACCOUNT_LIST_CACHE["cached_at"] = time.time()
             return True
     return False
-
-
-def _refresh_account_list_cache(*, force: bool = True) -> None:
-    global _ACCOUNT_LIST_REFRESHING
-    try:
-        _store_account_list_cache(_account_list_payload(force=force))
-    finally:
-        with _ACCOUNT_LIST_CACHE_LOCK:
-            _ACCOUNT_LIST_REFRESHING = False
-
-
-def _schedule_account_list_refresh(*, force: bool = True) -> bool:
-    global _ACCOUNT_LIST_REFRESHING
-    with _ACCOUNT_LIST_CACHE_LOCK:
-        if _ACCOUNT_LIST_REFRESHING:
-            return False
-        _ACCOUNT_LIST_REFRESHING = True
-    thread = threading.Thread(
-        target=_refresh_account_list_cache,
-        kwargs={"force": force},
-        name="account-list-refresh",
-        daemon=True,
-    )
-    thread.start()
-    return True
 
 
 def _cached_account_list_response(*, force: bool = False, prefer_cached: bool = False) -> dict[str, Any]:
@@ -281,26 +277,27 @@ def _cached_account_list_response(*, force: bool = False, prefer_cached: bool = 
     with _ACCOUNT_LIST_CACHE_LOCK:
         cached_payload = copy.deepcopy(_ACCOUNT_LIST_CACHE.get("payload"))
         cached_at = _ACCOUNT_LIST_CACHE.get("cached_at")
-        refreshing = bool(_ACCOUNT_LIST_REFRESHING)
 
     if prefer_cached and cached_payload:
         age = _cache_age_sec(now, cached_at if isinstance(cached_at, (int, float)) else None)
-        stale = bool(force or age >= ACCOUNT_LIST_CACHE_TTL_SEC)
-        if stale and not refreshing:
-            refreshing = _schedule_account_list_refresh(force=force)
         return _success_response(
             {
                 **cached_payload,
                 **_account_list_cache_meta(
                     cached=True,
-                    stale=stale,
-                    refreshing=refreshing,
+                    stale=age >= ACCOUNT_LIST_CACHE_TTL_SEC,
+                    refreshing=False,
                     cache_age_sec=age,
                 ),
             }
         )
 
-    payload = _account_list_payload(force=force)
+    # Cached reads are deliberately passive. The Agent monitor owns periodic
+    # validation and writes its final result into this shared snapshot.
+    payload = _account_list_payload(
+        force=False if prefer_cached else force,
+        validate=not prefer_cached,
+    )
     _store_account_list_cache(payload)
     return _success_response(
         {

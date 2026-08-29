@@ -213,7 +213,7 @@ class SessionProcessIsolationTests(unittest.TestCase):
             with self.assertRaises(TMSAuthStateError) as ctx:
                 broker.send_code()
 
-        self.assertEqual("BLOCKED_LOGIN", ctx.exception.code)
+        self.assertEqual("LOGIN_TIMEOUT", ctx.exception.code)
         self.assertEqual([(process, 30_777)], terminated)
         self.assertTrue(broker._login_operation_lock.acquire(blocking=False))
         broker._login_operation_lock.release()

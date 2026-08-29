@@ -39,7 +39,7 @@
 - 韵达/融辉活动原页不得在 Console 同源上下文执行。仅独立 origin 的 `yunda_waybill_proxy`、`ronghui_waybill_proxy` 可在已验证 Console principal、精确 `proxy_prefix=/original/{provider}` 和受审路径/写入 allowlist 同时满足时调用；旧 `/ocr/*` live、回单前缀及 `yunda_waybill_entry` 仍固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，不得回退到同源代理。
 - 登录/验证码仍走账号管理接口；账号状态转为 `authenticated` 时发布 `account.session_restored` 恢复原 `BLOCKED_LOGIN` Run，入口不得重新提交或盲目重试原工具。
 - `session_broker.py` 只保留稳定门面；provider 执行、adapter、状态持久化和响应验证分别维护在同目录的 `session_provider_base.py`、`session_adapters.py`、`session_persistence.py` 与 `session_validation_service.py`。`fetch_dispatch` 必须从显式所选账号的已认证会话 `userInfo` 唯一解析站点身份；缺失、多候选或调用参数与会话不一致时显式失败，不得硬编码或回落到默认站点码。
-- 内部健康接口只读取 `SessionBroker.health_snapshot()` 的无凭据内存快照，不得调用 `describe_status()`、等待 provider/session 锁或触发外部登录态校验；登录态实时验证只属于账号接口和后台监控，不能阻塞发布身份探针。
+- 内部健康接口只读取 `SessionBroker.health_snapshot()` 的无凭据内存快照，不得调用 `describe_status()`、等待 provider/session 锁或触发外部登录态校验；登录态实时验证只属于显式账号操作和 Agent `_monitor_tms_session_alerts` 唯一周期主动检查器，不能阻塞发布身份探针。监控最终结果必须回写 `/admin/accounts` 共享快照，Console `prefer_cached=1` 只能被动读取且即使携带 `force=1` 也不得触发校验；同账号忙锁 `BLOCKED_LOGIN` 只跳过本轮，不改快照、不增加失败计数、不发飞书告警。
 - 登录/验证码操作必须在按 `session_profile` 隔离的 staged 子进程中完成，默认 120 秒总期限由 `TMS_BROWSER_ACTION_TIMEOUT_SECONDS` 覆盖；同 profile 登录或业务 Session 打开立即 `BLOCKED_LOGIN`，不同 profile 可并行，旧 token/epoch 结果不得覆盖清空会话或凭据变更。通用 Broker 只核验本地精确绑定且不得联网；普通只读动作直接访问真实目标并由 Session response hook 将登录页转为 `BLOCKED_LOGIN`，受保护的融辉写入和财务抓取只在写回执或实时抓取前执行一次对应 capability 在线鉴权。后台 `validate_health_matrix()` 逐 capability 使用真实只读探针；没有安全探针的写能力必须明确 `UNKNOWN`，监控结果不修改业务 gate。
 - 新内部路由只能加入 `/internal/v1/*` 并返回 `ok/data/error`；旧路由只作为已鉴权的 deprecated 兼容层，不得新增调用方。
 

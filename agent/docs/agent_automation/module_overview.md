@@ -4,9 +4,10 @@ type: 模块文档
 tags: [Agent自动化, 飞书触发器, 直达指令, pending状态机, 登录恢复, TMS自动化]
 related: [../project_overview.md, ../code_navigation_index.md, ../ai_service/module_overview.md]
 status: active
-updated: 2026-08-15
+updated: 2026-08-29
 ---
 
+> 2026-08-29: Agent `_monitor_tms_session_alerts` 是唯一周期主动登录态检查器；检查完成后把同一份最终状态写入 `/admin/accounts` 共享快照，Console `/automation-accounts` 只用 `prefer_cached=1` 被动读取。即使请求同时携带 `force=1`，缓存读取也不得触发外部校验或后台刷新。同账号已有检查或登录在执行时，`BLOCKED_LOGIN` 只跳过本轮，不覆盖快照、不累计自动登录失败，也不发送飞书断线告警；显式手动登录和单账号状态操作仍更新这份共享快照。
 > 2026-08-15: 已插件化的飞书确定性指令不再把工具名和账号参数交给通用命令入口。文本、菜单及 pending 确认只提交由服务端构造的项目调用；项目实例通过 committed generation 中唯一的 `feishu_route.route_key` 精确解析，多实例别名冲突时显式拒绝。账号只来自该实例绑定的业务账号池，消息体或旧 pending 中出现 `account_id/account_ids` 等覆盖字段会失效并要求重新发起。自提、分批和 R7 多车牌仍保留“预览/选择/确认”状态机，日期、车牌和预览指纹由代码拥有的 resolver 闭合；Webhook 与 WebSocket 对同一真实 `event_id` 使用同一幂等身份。单号查询和报价等只读兼容能力继续走原通用 Command 链路。
 > 2026-08-13: 融辉发件扫描会把任务所选账号的精确 `session_profile` 同时传给浏览器 storage state 和共享登录校验，避免账号已登录但扫描误用默认会话。写表前等待发件扫描同源 iframe/父页/顶层页的 `$Z.user.getUserInfo()` 就绪，只使用真实 `loginUserName/loginUserAccount/loginSiteName/loginSiteCode`；多个可用来源必须完全一致，不一致时显式报 `ambiguous_login_context`，不从页头文字、用户名或硬编码网点补值。上下文不可用、字段缺失或 `SCAN_MAN_CODE` 超过数据库 20 字节限制时显式失败并返回具体状态。站点必须唯一精确匹配并包含真实编码，录单和上传失败不再切换到第二条操作路径。`sync_scan_codes` 任一批次失败后立即停止、不触发后续流程，并向控制台返回失败而不是“已完成”；`dry_run` 不写扫描索引、不调用 `/scan_next`，显式批次/条数限制会返回未排入数量。
 > 2026-08-13: 融辉图片验证码登录改为直接点击真实登录页的 `newLogin()` 按钮，沿用原页密码加密、AJAX 成功判定和 `userInfo` Cookie 写入回调，不再用 requests POST 将重定向误判为完整登录。共享会话会保留 Cookie 的 `HttpOnly`、`Secure`、`SameSite` 和过期属性，并自动把历史上误标为 `HttpOnly` 的融辉 `userInfo` 恢复为 JavaScript 可读；缺少或无法唯一解析 `loginUserName/loginUserAccount/loginSiteName/loginSiteCode` 时，主页、菜单和扫描 API 即使可访问也不得显示 authenticated，必须进入重新登录流程。
@@ -21,8 +22,7 @@ updated: 2026-08-15
 > 2026-06-06: 单号查询新增本地格式预检：裸单号、`查单号 <单号>`、`查物流 <单号>` 等直达路由先通过 `agent/tracking_number_validation.py` 校验；格式错误时直接返回 `单号查询失败：单号格式错误...`，不启动 `track_waybill` 工具、不进入 LLM、不访问外部 TMS/韵达接口。`track_waybill_tool.py` 同步复用该校验作为 API/控制台兜底。
 > 2026-06-04: 融辉地址报价的 `P_CALC_CLIENT_PRICE_BILL_SHOW4` payload 默认按运单录入页保价字段对齐：`INSURANCE=3000`、`INSURANCE_FEE=3`，避免后端按空保价回落到 2000/2 元导致机器人报价比页面“总金额”少 1 元。
 > 2026-06-05: 网点出港清单 `site_send_list_sync_tool.py` 改为把空 TMS 结果当作有效空快照处理：仍清空/覆盖飞书多维表和普通电子表格目标，不再按 `no_fetched_rows` 跳过。
-> 2026-06-05: 飞书登录态监控与后台账号管理统一状态缓存口径：飞书定时强制校验账号后会把最终状态回写 `/admin/accounts` 列表缓存；Console `/automation-accounts` 批量轮询使用 `force=1&prefer_cached=1`，快速返回缓存并触发后台强制刷新，避免页面长期显示与飞书告警相反的旧状态。
-> 2026-06-01: `/automation-accounts` 强制刷新和飞书登录态监控统一走 `AutomationAccountManager.check_status_with_auto_login()`：先校验共享 session，若状态为 `expired` / `logged_out` / `error` 则先自动登录；只有自动登录后仍为 `pending_code` 或 `error` 才展示/发送需要人工处理的状态。
+> 2026-06-01: 显式单账号状态操作和飞书登录态监控统一走 `AutomationAccountManager.check_status_with_auto_login()`：先校验共享 session，若状态为 `expired` / `logged_out` / `error` 则先自动登录；只有自动登录后仍为 `pending_code` 或 `error` 才展示或发送需要人工处理的状态。账号页的周期轮询不执行该主动检查。
 > 2026-06-01: 韵达单号查询的运单详情在 `list.html` 返回脱敏收寄件人/电话时，会追加调用原页面“小眼睛”同源接口 `system/mail/getOriginalData.html`，用明文 `Sender_*` / `Buyer_*` 字段覆盖 `waybill_stub` / `waybill_info`；接口失败时保留 `list.html` 轨迹和详情回退。
 > 2026-06-01: 韵达地址报价改为复刻录单页链路：先调用 `getInsuredAmount.html` 按重量同步最低申明价值，再调用 `price.html`，最终按页面 JS 的 `Number(CostTotal)+Number(短信费)` 和 `getFloatStr_1()` 截两位展示；`TotalMoney`/`CostTotal` 本身不含页面勾选短信费。
 > 2026-05-31: Yunda waybill query still uses only `ky_inms/public/index.php/system/mail/list.html`, and now maps the same response's `logistics` node into `waybill_stub` / `waybill_info` so the console 运单详情 tab can show basic, sender, receiver, goods, fee, and remark fields.
@@ -116,7 +116,7 @@ TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `er
 
 任意工具结果含 `AUTH_REQUIRED` / `当前未登录` / `登录态已过期` / `登录态已失效` 关键字时，机器人替换为友好提示并发起重新登录流程，登录成功后自动续跑原任务。
 
-后台登录态监控只处理 `/automation-accounts` 中处于启用状态、已在页面保存完整账号密码且打开“自动登录”开关的共享 session 账号；开关默认关闭。账号管理页和飞书定时轮询共用 `AutomationAccountManager.check_status_with_auto_login()`，统一执行“校验 → 必要时自动登录 → 返回最终状态”。页面未保存凭据、关闭开关、停用账号或进入失败熔断时，该账号会在校验前被跳过，不访问登录页，也不发送飞书断线提醒；部署环境变量凭据不参与账号管理的凭据判断或登录。飞书监控拿到最终状态后会调用 `agent/tms_runtime/routes.py` 的账号列表缓存回写入口，后台页批量轮询也用 `force=1&prefer_cached=1` 更新展示。共享 session 账号为 `expired` / `logged_out` / `error` 时才尝试自动恢复；如果自动登录成功，不发送提醒。连续自动登录失败达到 3 次后持久暂停，防止账号锁定；当次可发送一次需要人工处理的提醒，后续轮询不再重试或重复推送。手动登录成功或用户重新开启开关会清零失败计数。通知目标优先读取 `FEISHU_TMS_ALERT_CHAT_ID` 等环境变量；如果未配置，则使用机器人最近收到消息的 chat_id。
+后台登录态监控只处理 `/automation-accounts` 中处于启用状态、已在页面保存完整账号密码且打开“自动登录”开关的共享 session 账号；开关默认关闭。Agent `_monitor_tms_session_alerts` 是唯一周期主动检查器，统一执行“校验 → 必要时自动登录 → 返回最终状态”，再把最终结果写入 `agent/tms_runtime/routes.py` 维护的账号列表共享快照；Console 批量轮询只用 `prefer_cached=1` 被动读取该快照，不再发起第二次校验。页面未保存凭据、关闭开关、停用账号或进入失败熔断时，该账号会在校验前被跳过，不访问登录页，也不发送飞书断线提醒；部署环境变量凭据不参与账号管理的凭据判断或登录。同账号已有检查或手动登录在执行时，本轮监控收到 `BLOCKED_LOGIN` 后立即跳过，不排队、不覆盖共享快照、不增加失败计数、不发送告警。共享 session 账号为 `expired` / `logged_out` / `error` 时才尝试自动恢复；如果自动登录成功，不发送提醒。连续自动登录失败达到 3 次后持久暂停，防止账号锁定；当次可发送一次需要人工处理的提醒，后续轮询不再重试或重复推送。手动登录、验证码提交和显式单账号状态操作会更新同一共享快照；手动登录成功或用户重新开启开关会清零失败计数。通知目标优先读取 `FEISHU_TMS_ALERT_CHAT_ID` 等环境变量；如果未配置，则使用机器人最近收到消息的 chat_id。
 
 2026-08-11 起，账号管理对融辉、韵达、R7、R13 和大祥报价统一提供“保存凭据、立即登录、退出登录、自动登录、停用/恢复、状态校验”六类操作；页面不再显示 R7/R13“不支持”。协议差异只存在于后端 provider：融辉/韵达使用共享 SessionBroker，R7/R13 持久化各自 SSO Token/Cookie；每个真实账号始终按 `account_id` 隔离会话。大祥报价不再保留写死的 `price` 身份，统一绑定账号 `price_default` 及同名 profile，后台登录、飞书报价和融辉原页代理复用同一登录态。
 

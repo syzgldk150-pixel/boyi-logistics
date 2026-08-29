@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from agent.direct_tool_router import format_price_reply, format_price_reply_messages, parse_price_request
 from agent.orchestration.feishu_approval_service import DEFAULT_NOTIFICATION_LEASE_SECONDS
+from agent.tms_runtime.errors import TMSAuthStateError
 from feishu import message_handler, notify
 from feishu.reply_formatter import format_reply
 import main
@@ -1049,6 +1050,43 @@ class TmsAccountMonitorTests(unittest.TestCase):
         self.assertEqual(update_cache.call_args.args[0]["account_id"], "ronghui_default")
         self.assertEqual(update_cache.call_args.args[0]["status"], "error")
         self.assertTrue(result["should_alert"])
+
+    def test_session_monitor_skips_busy_account_without_overwriting_shared_status(self):
+        account = {
+            "account_id": "ronghui_default",
+            "name": "TMS融辉默认账号",
+            "system": "ronghui",
+            "system_label": "TMS融辉",
+            "session_profile": "default",
+            "session_capable": True,
+            "is_active": True,
+            "auto_login_enabled": True,
+        }
+
+        class FakeManager:
+            def describe_status(self, account_id, *, validate=True, force=False):
+                return {
+                    "account_id": account_id,
+                    "status": "authenticated",
+                    "authenticated": True,
+                    "pending_code": False,
+                    "last_error_summary": "",
+                }
+
+            def check_status_with_auto_login(self, account_id, *, force=False):
+                raise TMSAuthStateError(
+                    "BLOCKED_LOGIN",
+                    "该账号已有状态检查或自动登录正在执行；本次请求未排队。",
+                )
+
+        with patch.object(main, "update_account_list_cache_status") as update_cache:
+            result = _check_tms_account_session(FakeManager(), account)
+
+        update_cache.assert_not_called()
+        self.assertTrue(result["monitored"])
+        self.assertTrue(result["check_skipped"])
+        self.assertFalse(result["should_alert"])
+        self.assertEqual("authenticated", result["status_payload"]["status"])
 
     def test_session_monitor_suppresses_transient_yunda_timeout_alert(self):
         account = {

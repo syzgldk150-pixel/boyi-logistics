@@ -901,6 +901,38 @@ class AutomationAccountManagerTests(unittest.TestCase):
         self.assertTrue(all(result["auto_login_failure_count"] == 0 for result in results))
         self.assertTrue(all(not result["auto_login_blocked"] for result in results))
 
+    def test_nested_blocked_login_does_not_increment_auto_login_failure_count(self):
+        class FakeBroker(ManualCredentialsBroker):
+            def describe_status(self, *, validate=True, force=False):
+                return {
+                    "status": "expired",
+                    "label": "已过期",
+                    "status_tone": "error",
+                    "authenticated": False,
+                    "pending_code": False,
+                    "last_error_summary": "session expired",
+                }
+
+            def send_code(self):
+                raise TMSAuthStateError(
+                    "BLOCKED_LOGIN",
+                    "该账号已有登录操作正在执行；本次请求未排队。",
+                )
+
+        with patch.object(account_manager_module, "get_session_broker", return_value=FakeBroker()):
+            self.manager.set_auto_login("ronghui_default", True)
+            with self.assertRaises(TMSAuthStateError) as raised:
+                self.manager.check_status_with_auto_login("ronghui_default", force=True)
+
+        account = next(
+            item
+            for item in self.manager.list_accounts(include_status=False)
+            if item["account_id"] == "ronghui_default"
+        )
+        self.assertEqual("BLOCKED_LOGIN", raised.exception.code)
+        self.assertEqual(0, account["auto_login_failure_count"])
+        self.assertFalse(account["auto_login_blocked"])
+
     def test_force_status_check_keeps_pending_code_without_resending(self):
         calls: list[tuple[str, Any]] = []
 

@@ -223,7 +223,9 @@ from agent.scheduler import (
 from agent.tms_runtime import router as tms_router
 from agent.api_contracts import validation_failure
 from agent.tms_runtime.account_manager import get_account_manager
+from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime.monitoring import configure_feishu_operation
+from agent.tms_runtime.routes import ensure_account_list_cache
 from agent.tms_runtime.routes import update_account_list_cache_status
 from agent.tms_runtime.routes import bind_agent_command_runtime
 from agent.tms_runtime.session_broker import get_session_broker
@@ -960,7 +962,11 @@ def _should_start_tms_session_alert_monitor() -> bool:
     return websocket_lease_active()
 
 
-def _check_tms_account_session(account_manager, account: dict) -> dict:
+def _check_tms_account_session(
+    account_manager,
+    account: dict,
+    account_list_snapshot: list[dict] | None = None,
+) -> dict:
     if (
         not bool(account.get("is_active", True))
         or not bool(account.get("session_capable", False))
@@ -979,6 +985,8 @@ def _check_tms_account_session(account_manager, account: dict) -> dict:
         status_payload = account_manager.check_status_with_auto_login(account_id, force=True)
         status_payload = _status_payload_with_account_context(account, status_payload)
         with suppress(Exception):
+            if account_list_snapshot is not None:
+                ensure_account_list_cache(account_list_snapshot)
             update_account_list_cache_status(status_payload)
         status = str(status_payload.get("status") or "").strip()
 
@@ -997,8 +1005,22 @@ def _check_tms_account_session(account_manager, account: dict) -> dict:
             "previous": previous,
         }
     except Exception as exc:
+        if isinstance(exc, TMSAuthStateError) and exc.code == "BLOCKED_LOGIN":
+            logger.info(
+                "TMS session check skipped because the account is already being checked: account=%s",
+                account_id,
+            )
+            return {
+                "monitored": True,
+                "check_skipped": True,
+                "should_alert": False,
+                "status_payload": _status_payload_with_account_context(account, previous),
+                "previous": previous,
+            }
         status_payload = _error_status_payload_for_account(account, exc)
         with suppress(Exception):
+            if account_list_snapshot is not None:
+                ensure_account_list_cache(account_list_snapshot)
             update_account_list_cache_status(status_payload)
         should_alert = _should_alert_tms_session_status(status_payload)
         if not should_alert:
@@ -1024,12 +1046,24 @@ async def _monitor_tms_session_alerts(stop_event: asyncio.Event) -> None:
     while not stop_event.is_set():
         try:
             account_manager = get_account_manager()
-            accounts = await asyncio.to_thread(account_manager.list_accounts, include_status=False)
+            accounts = await asyncio.to_thread(
+                account_manager.list_accounts,
+                include_status=True,
+                validate=False,
+                force=False,
+            )
             for account in accounts:
                 if not isinstance(account, dict):
                     continue
-                check_result = await asyncio.to_thread(_check_tms_account_session, account_manager, account)
+                check_result = await asyncio.to_thread(
+                    _check_tms_account_session,
+                    account_manager,
+                    account,
+                    accounts,
+                )
                 if not check_result.get("monitored"):
+                    continue
+                if check_result.get("check_skipped"):
                     continue
                 status_payload = check_result.get("status_payload") or {}
                 previous = check_result.get("previous") or {}

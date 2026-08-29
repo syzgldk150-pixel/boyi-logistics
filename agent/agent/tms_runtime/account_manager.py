@@ -1191,6 +1191,8 @@ class AutomationAccountManager:
                 }
             return self._with_session_transition(row, status, result)
         except Exception as exc:
+            if isinstance(exc, TMSAuthStateError) and exc.code == "BLOCKED_LOGIN":
+                raise
             if isinstance(exc, TMSAuthStateError) and exc.code == "LOGIN_PAGE_UNAVAILABLE":
                 current = self._login_error_status(row, exc, status)
                 current["auto_login_retryable"] = True

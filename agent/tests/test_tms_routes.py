@@ -12,8 +12,6 @@ class TMSRoutesTests(unittest.TestCase):
     def setUp(self):
         if hasattr(routes_module, "_ACCOUNT_LIST_CACHE"):
             routes_module._ACCOUNT_LIST_CACHE.clear()
-        if hasattr(routes_module, "_ACCOUNT_LIST_REFRESHING"):
-            routes_module._ACCOUNT_LIST_REFRESHING = False
         app = FastAPI()
         app.include_router(router)
         app.include_router(router, prefix="/internal/v1")
@@ -292,7 +290,7 @@ class TMSRoutesTests(unittest.TestCase):
         self.assertEqual("ronghui_default", payload["accounts"][0]["account_id"])
         self.assertEqual(calls, [(True, True, True)])
 
-    def test_admin_accounts_prefer_cached_force_schedules_background_refresh(self):
+    def test_admin_accounts_prefer_cached_force_is_passive_on_cache_miss(self):
         calls = []
 
         class FakeAccountManager:
@@ -306,11 +304,33 @@ class TMSRoutesTests(unittest.TestCase):
                     }
                 ]
 
-        with (
-            patch("agent.tms_runtime.routes.get_account_manager", return_value=FakeAccountManager()),
-            patch.object(routes_module, "_schedule_account_list_refresh", return_value=True) as schedule_refresh,
-        ):
+        with patch("agent.tms_runtime.routes.get_account_manager", return_value=FakeAccountManager()):
+            response = self.client.get("/admin/accounts?force=1&prefer_cached=1")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["cached"])
+        self.assertFalse(payload["stale"])
+        self.assertFalse(payload["refreshing"])
+        self.assertEqual(calls, [(True, False, False)])
+
+    def test_admin_accounts_prefer_cached_force_does_not_refresh_stale_cache(self):
+        calls = []
+
+        class FakeAccountManager:
+            def list_accounts(self, *, include_status=True, validate=True, force=False):
+                calls.append((include_status, validate, force))
+                return [
+                    {
+                        "account_id": "ronghui_default",
+                        "system": "ronghui",
+                        "status": {"status": "authenticated"},
+                    }
+                ]
+
+        with patch("agent.tms_runtime.routes.get_account_manager", return_value=FakeAccountManager()):
             first = self.client.get("/admin/accounts?force=1")
+            routes_module._ACCOUNT_LIST_CACHE["cached_at"] = 1.0
             second = self.client.get("/admin/accounts?force=1&prefer_cached=1")
 
         self.assertEqual(first.status_code, 200)
@@ -318,8 +338,7 @@ class TMSRoutesTests(unittest.TestCase):
         payload = second.json()
         self.assertTrue(payload["cached"])
         self.assertTrue(payload["stale"])
-        self.assertTrue(payload["refreshing"])
-        schedule_refresh.assert_called_once_with(force=True)
+        self.assertFalse(payload["refreshing"])
         self.assertEqual(calls, [(True, True, True)])
 
     def test_monitor_status_update_rewrites_cached_account_status(self):
@@ -353,6 +372,8 @@ class TMSRoutesTests(unittest.TestCase):
 
         self.assertEqual(first.status_code, 200)
 
+        routes_module._ACCOUNT_LIST_CACHE["cached_at"] = 1.0
+
         routes_module.update_account_list_cache_status(
             {
                 "profile": "default",
@@ -376,6 +397,7 @@ class TMSRoutesTests(unittest.TestCase):
         self.assertEqual(payload["accounts"][0]["auto_login_failure_count"], 0)
         self.assertFalse(payload["accounts"][0]["auto_login_blocked"])
         self.assertEqual(payload["accounts"][1]["status"]["status"], "authenticated")
+        self.assertGreater(routes_module._ACCOUNT_LIST_CACHE["cached_at"], 1.0)
 
     def test_legacy_credentials_routes_use_account_manager(self):
         calls = []
