@@ -460,9 +460,7 @@ def _read_feishu_waybills(params: dict[str, Any]) -> tuple[list[dict[str, Any]],
         resolved_sheet_id = sheet_id
         resolved_title = ""
 
-    limit = params.get("limit")
-    if limit not in (None, ""):
-        records = records[: max(0, int(limit))]
+    records = _limited_preview_records(records, params.get("limit"))
 
     source = {
         "spreadsheet_token": spreadsheet_token,
@@ -509,29 +507,58 @@ def _canonical_preview_count(value: Any, label: str) -> str:
     )
 
 
+def _preview_candidate_material(item: dict[str, Any]) -> dict[str, str]:
+    return {
+        "arrival_count": _canonical_preview_count(
+            item.get("arrival_count"),
+            f"{item.get('bill_code')} arrival count",
+        ),
+        "bill_code": _clean_text(item.get("bill_code")),
+        "delivery_method": _clean_text(item.get("delivery_method")),
+        "destination_site": _clean_text(item.get("destination_site")),
+        "goods_count": _canonical_preview_count(
+            item.get("goods_count"),
+            f"{item.get('bill_code')} goods count",
+        ),
+        "problem_cause_sha256": hashlib.sha256(
+            _clean_text(item.get("problem_cause")).encode("utf-8")
+        ).hexdigest(),
+        "problem_owner_type": _clean_text(item.get("problem_owner_type")),
+        "problem_type": _clean_text(item.get("problem_type")),
+        "source_id": _clean_text(item.get("source_id")),
+    }
+
+
+def _preview_candidate_sort_key(item: dict[str, Any]) -> str:
+    return json.dumps(
+        _preview_candidate_material(item),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _limited_preview_records(
+    records: list[dict[str, Any]],
+    limit: Any,
+) -> list[dict[str, Any]]:
+    if limit in (None, ""):
+        return records
+    return sorted(records, key=_preview_candidate_sort_key)[: max(0, int(limit))]
+
+
 def _preview_fingerprint(records: list[dict[str, Any]]) -> str:
-    material = [
-        {
-            "arrival_count": _canonical_preview_count(
-                item.get("arrival_count"),
-                f"{item.get('bill_code')} arrival count",
-            ),
-            "bill_code": _clean_text(item.get("bill_code")),
-            "delivery_method": _clean_text(item.get("delivery_method")),
-            "destination_site": _clean_text(item.get("destination_site")),
-            "goods_count": _canonical_preview_count(
-                item.get("goods_count"),
-                f"{item.get('bill_code')} goods count",
-            ),
-            "problem_cause_sha256": hashlib.sha256(
-                _clean_text(item.get("problem_cause")).encode("utf-8")
-            ).hexdigest(),
-            "problem_owner_type": _clean_text(item.get("problem_owner_type")),
-            "problem_type": _clean_text(item.get("problem_type")),
-            "source_id": _clean_text(item.get("source_id")),
-        }
-        for item in records
-    ]
+    material = [_preview_candidate_material(item) for item in records]
+    material.sort(
+        key=lambda item: json.dumps(
+            item,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    )
     encoded = json.dumps(
         material,
         ensure_ascii=False,

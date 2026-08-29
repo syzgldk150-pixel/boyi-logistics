@@ -182,12 +182,12 @@ docs/
 
 ## 分批及有发未到问题件
 
-- 飞书仅以精确文本“分批”触发 `preview_split_pending_problems` 只读预览和选择快照，通过互斥检查后先回复正在生成；自提预览使用 `preview_self_pickup_problems`。两条工具只接受显式 `account_id`，封装器固定调用旧实现 `dry_run=true` 并拒绝写入参数；分批旧预览的指纹字段与规范化序列化必须和签名 action 完全一致，旧文本仅提示发送“分批”。
-- 只有飞书原发起人在有效 pending 内完成选择与确认，或 Console 从已验签的持久化候选 Run 勾选子集并由服务端恢复指纹后，才可调用签名项目 `automation.split_pending_problem_upload.run`；Scheduler、LLM 和旧同名工具均不能执行正式上传。
-- `selected_bill_codes` 和 `preview_fingerprint` 必须由飞书 pending 或 Agent 持久化候选 Run 恢复，Planner 绑定一至九十个规范、唯一、有序运单号及指纹；浏览器不能上传指纹，旧 `split_pending_problem_upload` 直接工具仍固定 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`，不得绕过项目入口。
+- 飞书仅以精确文本“分批”或自提问题件固定命令调用对应 committed project route 的签名 `dry_run`，通过互斥检查后先回复正在生成；不得调用 `preview_split_pending_problems`、`preview_self_pickup_problems` 或其他 legacy 预览工具。预览必须返回已验签并持久化的 `selection_preview`；旧文本只提示发送“分批”。
+- 飞书 pending 只保存 `preview_run_id`、原发起人、候选/用户选择和到期时间，不保存账号或客户端指纹；确认与取消都必须精确匹配原发起人。只有原发起人在 15 分钟有效期内确认，或 Console 从同一已验签候选 Run 勾选子集时，服务端才重新加载该 Run 并恢复 `preview_fingerprint` 与正式参数。自提默认选择全部候选，分批保留序号、多选和区间选择；Scheduler、LLM 和旧同名工具均不能执行正式上传。
+- `selected_bill_codes` 和 `preview_fingerprint` 必须由 Agent 从 `preview_run_id` 指向的已验签持久化候选 Run 恢复，Planner 绑定一至九十个规范、唯一、有序运单号及指纹；飞书和浏览器都不能上传账号或指纹，旧 `split_pending_problem_upload` 直接工具仍固定 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`，不得绕过项目入口。
 - MySQL 表 `split_pending_problem_items` 以问题件 `upload_status` 作为当前执行状态；遗留 `complaint_status` 只为数据库兼容保留，当前快照统一写为 `not_applicable`，不得重新成为执行门禁。同类型刷新保留问题件结果，完整成功单隐藏，失败或未完成问题件继续显示，类型变化才重置。
 - `0 < 已到 < 应到` 直接在“问题件录入”登记“少货/分批 / 交接异常”，问题件内容严格为 `应到XX件 实际到XX件`；`已到=0` 登记“有发未到 / 通知类（不顺延时效）”。分批链路不得进入投诉方登记。签名包在任何写入前重读来源和快照、复核指纹并预检全部目标；随后逐单从登记问题件列表独立读回，先写后验每日应签问题事件，最后才把 MySQL 问题件结果标记成功；不能用提交返回的 `saved/success` 代替 Evidence，也不能在事件失败后隐藏候选。
-- 自提问题件允许飞书固定命令预览后确认全部候选，也允许 Console 从已验签的持久化候选 Run 勾选子集；确认参数必须由服务端恢复一至二百五十个规范、唯一、有序运单号及 64 位预览指纹，并调用 `automation.self_pickup_problem_upload.run`。来源运单号只去除前后空白；命中自提规则的行若仍含内部空白必须带行号显式失败，不得删除内部空白或拼接猜测，未命中自提规则的行不应阻断本任务。自提部与大祥S站账号只能来自项目角色绑定，兼容工具和运行时缺任一启用来源账号时必须显式阻塞，禁止固定账号或默认 profile。Scheduler、LLM 和旧 `self_pickup_problem_upload` 直达工具均不能正式上传。签名动作在首个写入前重读完整来源、复核指纹并预检全部目标，随后逐单写入且分别从问题件列表独立读回。
+- 自提问题件允许飞书固定命令从同一已验签候选 Run 确认全部候选，也允许 Console 从该 Run 勾选子集；确认参数必须由服务端恢复一至二百五十个规范、唯一、有序运单号及 64 位预览指纹，并调用 `automation.self_pickup_problem_upload.run`。来源运单号只去除前后空白；命中自提规则的行若仍含内部空白必须带行号显式失败，不得删除内部空白或拼接猜测，未命中自提规则的行不应阻断本任务。自提部与大祥S站账号只能来自项目角色绑定，兼容工具和运行时缺任一启用来源账号时必须显式阻塞，禁止固定账号或默认 profile。Scheduler、LLM 和旧 `self_pickup_problem_upload` 直达工具均不能正式上传。签名动作在首个写入前重读完整来源、复核对候选顺序稳定的指纹并预检全部目标；候选内容漂移时返回 `SELECTION_PREVIEW_EXPIRED` 且零业务写入，随后才逐单写入并分别从问题件列表独立读回。
 - 到货统计成功后仍直接用本次 A:S 统计结果刷新“分批及有发未到表”和 MySQL 未齐快照；全部到齐时清空旧行，人工确认也不得绕过控制平面门禁产生融辉业务写。
 - 到货统计的当天范围固定为“目标日 arrive-list ∪ 目标日实际扫描主单”；历史已到齐且当天未重扫的重复主单过滤，历史未齐主单以到货 0 保留，当天实际重扫始终保留。累计件数按开单件数封顶，`scan_window_days` 只允许 1。
 - `agent/tms_runtime/scripts/ronghui_split_complaint.py` 仅保留历史隔离代码，不在当前分批签名包、运行时入口或 Broker 权限清单中。
@@ -198,7 +198,7 @@ docs/
 - 问题件 `(source, external_id)` 是大小写敏感的真实来源身份；迁移 `029_daily_sign_problem_event_binary_identity.sql` 使 MySQL 唯一键与采集层语义一致，禁止按不区分大小写的排序规则覆盖另一条事件。
 - R13 按原页“规划应签收时间”查询；未显式传入起止时间时至少覆盖前 2 天至后 3 天。飞书始终保留当前 R13 未签清单；已离开当前 R13 的历史候选只有在有效应签时间不晚于当前业务日时继续发布，历史口径 C 有值时以 C 为准，否则以 B 为准。早于当前派件或首次到货生命周期的同号签收事件不得关闭当前运单；包装类型从实际到货或 TMS 运单详情取得，不从 R13 猜测。
 - 发布前核对当前 R13、真实 TMS 主单签收和飞书待发布集合；只有当前 R13 行全部已有真实主单签收证据时，零行才是正常结果，存在任何未签行时不得清空应签明细。
-- 必须显式解析自动化项目当前绑定的独立 `r13_account_id` 和融辉 TMS `account_id`，允许后台改绑为任意同系统有效账号；同一次运行统一使用该 TMS 账号处理问题件、主单签收、轨迹核验和地址补全。R13 查询站点在精确账号登录后从 `/gateway/site/public/aurora/auth` 的真实上下文取得：中心账号 `siteTypeCode=999` 使用空站点过滤，其他账号使用其 `siteCode`。业务脚本与请求体不得硬编码、猜测或覆盖账号/站点；上下文缺失、刷新后站点漂移或调用方传入站点均显式失败。不读取旧 `phase7.r13_credentials`，不接受内联凭据、隐式账号或多候选。
+- 必须显式解析自动化项目当前绑定的独立 `r13_account_id` 和融辉 TMS `account_id`，允许后台改绑为任意同系统有效账号；同一次运行统一使用该 TMS 账号处理问题件、主单签收、轨迹核验和地址补全。R13 查询站点在精确账号登录后按原页协议从 `/gateway/public/aurora/auth` 的真实上下文取得：请求使用 R13 同源 `Origin` 和 `aurora-token`，不得继承 SSO `Origin` 或额外附加 Bearer；中心账号 `siteTypeCode=999` 使用空站点过滤，其他账号使用其 `siteCode`。业务脚本与请求体不得硬编码、猜测或覆盖账号/站点；上下文缺失、刷新后站点漂移或调用方传入站点均显式失败。不读取旧 `phase7.r13_credentials`，不接受内联凭据、隐式账号或多候选。
 - 长历史签收按 31 天窗口分片并校验总量；离开当前 R13 的候选由迁移 `013` 的状态按 1/3/7 天退避精确复核。来源不完整、业务失败码或冲突无法核验必须显式阻塞；R13 结构完整且权威总数为零时仍完成其他证据核验，若最终发布集合为空则正常删除多维表旧记录、清空电子表格旧数据并新鲜回读为零行。登录、HTTP、结构或分页异常必须在投影变更前失败，不得伪装成零行。
 
 ## 财务同步上线范围
