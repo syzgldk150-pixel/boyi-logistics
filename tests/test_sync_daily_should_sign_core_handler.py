@@ -77,10 +77,6 @@ def _descriptor(account_id: str) -> dict[str, str]:
         "system": systems[account_id],
         "session_profile": f"profile:{account_id}",
     }
-    if descriptor["system"] == "r13":
-        descriptor["site_code"] = (
-            "7390017" if account_id == "r13-bound" else "r13-other-site"
-        )
     return descriptor
 
 
@@ -242,7 +238,6 @@ def test_closed_handler_injects_exact_bindings_and_preserves_result_body() -> No
                 "days": 7,
                 "enrich_addresses": True,
                 "r13_account_id": "r13-bound",
-                "r13_site_code": "7390017",
                 "account_id": "ronghui-bound",
             },
             "resources": {
@@ -284,57 +279,31 @@ def test_closed_handler_rejects_nested_account_material_before_authoritative_cal
     assert calls == []
 
 
-def test_closed_handler_rejects_r13_account_without_site_contract() -> None:
+def test_closed_handler_accepts_project_selected_alternate_r13_account() -> None:
     calls: list[object] = []
 
-    def descriptor(account_id: str) -> dict[str, str]:
-        value = _descriptor(account_id)
-        value.pop("site_code", None)
-        return value
+    def daily_sign_sync(arguments, resources):
+        calls.append((arguments, resources))
+        return _authoritative_result()
 
-    handlers = build_first_party_core_handler_map(
-        FirstPartyCoreHandlerPorts(
-            describe_account=descriptor,
-            daily_sign_sync=lambda arguments, resources: calls.append(
-                (arguments, resources)
-            ),
-        ),
-        cursor_secret=b"d" * 32,
-    )
-
-    with pytest.raises(PluginExecutionError) as exc_info:
-        handlers[("ledger.invoke", "daily_sign.authoritative_sync")](
-            _context(),
-            {"days": 7},
-        )
-
-    assert exc_info.value.code == "BROKER_ACCOUNT_INVALID"
-    assert calls == []
-
-
-def test_closed_handler_rejects_r13_account_for_another_site() -> None:
-    calls: list[object] = []
     handlers = build_first_party_core_handler_map(
         FirstPartyCoreHandlerPorts(
             describe_account=_descriptor,
-            daily_sign_sync=lambda arguments, resources: calls.append(
-                (arguments, resources)
-            ),
+            daily_sign_sync=daily_sign_sync,
         ),
         cursor_secret=b"d" * 32,
     )
 
-    with pytest.raises(PluginExecutionError) as exc_info:
-        handlers[("ledger.invoke", "daily_sign.authoritative_sync")](
-            _context(r13_account_id="r13-other"),
-            {"days": 7},
-        )
+    handlers[("ledger.invoke", "daily_sign.authoritative_sync")](
+        _context(r13_account_id="r13-other"),
+        {"days": 7},
+    )
 
-    assert exc_info.value.code == "BROKER_ACCOUNT_INVALID"
-    assert calls == []
+    assert calls[0][0]["r13_account_id"] == "r13-other"
+    assert "r13_site_code" not in calls[0][0]
 
 
-def test_opaque_evidence_hash_includes_derived_r13_site(monkeypatch) -> None:
+def test_opaque_evidence_hash_includes_exact_selected_accounts(monkeypatch) -> None:
     encoded_material: list[object] = []
     original_encode = handler_module.canonical_json_bytes
 
@@ -356,7 +325,6 @@ def test_opaque_evidence_hash_includes_derived_r13_site(monkeypatch) -> None:
 
     assert {
         "r13_account_id": "r13-bound",
-        "r13_site_code": "7390017",
         "account_id": "ronghui-bound",
     } in encoded_material
 
@@ -498,7 +466,6 @@ def test_registered_adapter_revalidates_every_role_for_one_typed_call() -> None:
             "arguments": {
                 "days": 7,
                 "r13_account_id": "r13-bound",
-                "r13_site_code": "7390017",
                 "account_id": "ronghui-bound",
             },
             "resources": {

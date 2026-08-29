@@ -9,6 +9,7 @@ from agent.tms_runtime.sso_session_persistence import default_sso_state_path
 
 
 API_URL = "https://r13.ronghuiwl.com/gateway/site/waybillSignWarn/pageGet"
+AUTH_CONTEXT_URL = "https://r13.ronghuiwl.com/gateway/site/public/aurora/auth"
 REFERER_URL = "https://r13.ronghuiwl.com/outlets/cargoReceiptWarn"
 R13_PAGE_MIN_LOOKBACK_DAYS = 2
 R13_PAGE_FORWARD_DAYS = 3
@@ -121,9 +122,46 @@ def _is_invalid_token_response(payload: Any) -> bool:
     if not isinstance(payload, dict) or str(payload.get("code")) != "-2":
         return False
     message = str(payload.get("message") or payload.get("msg") or "").strip().lower()
-    return "token" in message and any(
-        marker in message for marker in ("无效", "失效", "invalid", "expired")
+    return "token" in message
+
+
+def _require_success_response(payload: Any, *, label: str) -> None:
+    if not isinstance(payload, dict) or "code" not in payload:
+        return
+    if str(payload.get("code")) not in {"0", "1", "200"}:
+        raise RuntimeError(f"{label} returned an explicit failure code")
+
+
+def _read_account_site_filter(payload: Any) -> List[str]:
+    if not isinstance(payload, dict) or str(payload.get("code")) not in {"0", "1", "200"}:
+        raise RuntimeError("R13 account context request did not succeed")
+    context = payload.get("data")
+    if not isinstance(context, dict):
+        raise RuntimeError("R13 account context is missing")
+    raw_site_type_code = context.get("siteTypeCode")
+    if raw_site_type_code in (None, ""):
+        raise RuntimeError("R13 account context is missing siteTypeCode")
+    try:
+        site_type_code = int(str(raw_site_type_code).strip())
+    except ValueError as exc:
+        raise RuntimeError("R13 account context has an invalid site type") from exc
+    if site_type_code == 999:
+        return []
+    site_code = str(context.get("siteCode") or "").strip()
+    if not site_code:
+        raise RuntimeError("R13 account context is missing siteCode")
+    return [site_code]
+
+
+def _request_account_context(session: Any, headers: Dict[str, str]) -> Any:
+    response = session.post(
+        AUTH_CONTEXT_URL,
+        json={},
+        headers=headers,
+        timeout=20,
     )
+    response.raise_for_status()
+    return response.json()
 
 
 def _extract_total(payload: Any) -> Optional[int]:
@@ -152,14 +190,14 @@ def _build_payload(
     *,
     start: str,
     end: str,
-    disp_site_code: str,
+    disp_site_codes: List[str],
     page_size: int,
     page: int,
 ) -> Dict[str, Any]:
     return {
         "queryType": 2,
         "showSub": "10",
-        "dispSiteCode_CondList": [disp_site_code],
+        "dispSiteCode_CondList": list(disp_site_codes),
         "queryDate": [start, end],
         "pageSize": page_size,
         "currentPage": page,
@@ -175,7 +213,6 @@ def fetch_qianshou(
     username: Optional[str],
     password: Optional[str],
     account_key: Optional[str] = None,
-    disp_site_code: str,
     start: Optional[str],
     end: Optional[str],
     days: int,
@@ -221,11 +258,31 @@ def fetch_qianshou(
     fetched_pages = 0
     token_refreshed = False
 
+    account_context = _request_account_context(session, headers)
+    if _is_invalid_token_response(account_context):
+        session = auth.login_and_get_session(
+            username=username,
+            password=password,
+            account_key=account_key,
+            exchange=False,
+            verify=False,
+            allow_cached=False,
+        )
+        token = auth.last_token
+        if not token:
+            raise RuntimeError("Missing aurora token after fresh R13 login.")
+        headers["aurora-token"] = token
+        token_refreshed = True
+        account_context = _request_account_context(session, headers)
+        if _is_invalid_token_response(account_context):
+            raise RuntimeError("R13 token is still invalid after one fresh login")
+    disp_site_codes = _read_account_site_filter(account_context)
+
     while True:
         payload = _build_payload(
             start=start_value,
             end=end_value,
-            disp_site_code=disp_site_code,
+            disp_site_codes=disp_site_codes,
             page_size=page_size,
             page=current_page,
         )
@@ -248,12 +305,23 @@ def fetch_qianshou(
             if not token:
                 raise RuntimeError("Missing aurora token after fresh R13 login.")
             headers["aurora-token"] = token
-            token_refreshed = True
+            refreshed_account_context = _request_account_context(session, headers)
+            if _is_invalid_token_response(refreshed_account_context):
+                raise RuntimeError("R13 token is still invalid after one fresh login")
+            refreshed_site_codes = _read_account_site_filter(
+                refreshed_account_context
+            )
+            if refreshed_site_codes != disp_site_codes:
+                raise RuntimeError(
+                    "R13 account site changed while fetching; refusing mixed results"
+                )
             response = session.post(API_URL, json=payload, headers=headers, timeout=20)
             response.raise_for_status()
             data = response.json()
             if _is_invalid_token_response(data):
                 raise RuntimeError("R13 token is still invalid after one fresh login")
+            token_refreshed = True
+        _require_success_response(data, label=f"R13 page {current_page}")
         if not _has_rows_container(data):
             raise RuntimeError(f"R13 page {current_page} response is missing a records list")
         rows = _extract_rows(data)
@@ -333,15 +401,6 @@ def fetch_qianshou(
     return result
 
 
-def _resolve_disp_site_code(value: Optional[str]) -> str:
-    site_code = str(value or "").strip()
-    if not site_code:
-        raise RuntimeError(
-            "R13 site identity is required and must come from the bound account"
-        )
-    return site_code
-
-
 def _coerce_int(value: Any, *, default: int) -> int:
     if value is None:
         return default
@@ -364,9 +423,16 @@ def _coerce_bool(value: Any, *, default: bool) -> bool:
 
 
 def run_once(params: Dict[str, Any]) -> List[Dict[str, Any]]:
-    disp_site_code = params.get("disp_site_code") or params.get("dispSiteCode")
-    if isinstance(disp_site_code, list):
-        disp_site_code = disp_site_code[0] if disp_site_code else None
+    caller_site_keys = [
+        key
+        for key in ("disp_site_code", "dispSiteCode", "r13_site_code")
+        if _has_value(params.get(key))
+    ]
+    if caller_site_keys:
+        raise RuntimeError(
+            "R13 site identity must come from the selected account session: "
+            + ", ".join(sorted(caller_site_keys))
+        )
 
     start = params.get("start")
     end = params.get("end")
@@ -385,7 +451,6 @@ def run_once(params: Dict[str, Any]) -> List[Dict[str, Any]]:
         username=params.get("username") or params.get("user"),
         password=params.get("password") or params.get("pass"),
         account_key=params.get("account_key") or params.get("accountKey"),
-        disp_site_code=_resolve_disp_site_code(disp_site_code),
         start=start,
         end=end,
         days=days,
@@ -404,7 +469,6 @@ def main() -> None:
     parser.add_argument("--password", default=None)
     parser.add_argument("--account-key", default=None)
     parser.add_argument("--account-id", required=True)
-    parser.add_argument("--disp-site-code", required=True)
     parser.add_argument("--start", default=None, help="YYYY-MM-DD HH:MM:SS")
     parser.add_argument("--end", default=None, help="YYYY-MM-DD HH:MM:SS")
     parser.add_argument("--days", type=int, default=7)
@@ -414,13 +478,11 @@ def main() -> None:
     parser.add_argument("--max-pages", type=int, default=500)
     args = parser.parse_args()
 
-    disp_site_code = _resolve_disp_site_code(args.disp_site_code)
     result = fetch_qianshou(
         config_path=args.config_path,
         username=args.username,
         password=args.password,
         account_key=args.account_key,
-        disp_site_code=disp_site_code,
         start=args.start,
         end=args.end,
         days=args.days,

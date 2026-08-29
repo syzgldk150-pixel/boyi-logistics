@@ -39,6 +39,41 @@ def _empty_state() -> dict:
     }
 
 
+def _r13_response(payload: dict) -> SimpleNamespace:
+    return SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: payload,
+    )
+
+
+def _r13_session(
+    query_response: SimpleNamespace,
+    *,
+    site_code: str = "site-from-bound-account",
+    site_type_code: int = 101,
+    captured_query: dict | None = None,
+) -> SimpleNamespace:
+    account_response = _r13_response(
+        {
+            "code": 200,
+            "data": {
+                "siteCode": site_code,
+                "siteName": "绑定账号所属站点",
+                "siteTypeCode": site_type_code,
+            },
+        }
+    )
+
+    def post(url, *args, **kwargs):
+        if url == get_qianshou.AUTH_CONTEXT_URL:
+            return account_response
+        if captured_query is not None:
+            captured_query.update(kwargs.get("json") or {})
+        return query_response
+
+    return SimpleNamespace(post=post)
+
+
 class DailySignRuleTests(unittest.TestCase):
     def test_r13_sign_signal_does_not_close_without_main_sign_event(self):
         row = build_ledger_row(
@@ -105,7 +140,6 @@ class DailySignPipelineTests(unittest.TestCase):
             require_active_binding_descriptor=lambda _account_id: {
                 "account_id": "r13_default",
                 "system": "r13",
-                "site_code": "7390017",
             },
             resolve_role_account_params=lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 AccountError("credential unavailable")
@@ -423,7 +457,7 @@ class DailySignSourceTests(unittest.TestCase):
         payload = get_qianshou._build_payload(
             start="2026-08-25 00:00:00",
             end="2026-08-30 23:59:59",
-            disp_site_code="site-code",
+            disp_site_codes=["site-code"],
             page_size=100,
             page=1,
         )
@@ -433,6 +467,78 @@ class DailySignSourceTests(unittest.TestCase):
         self.assertEqual("2026-08-30 23:59:59", payload["planSignTime_CondEnd"])
         self.assertNotIn("scanTime_CondStart", payload)
         self.assertNotIn("scanTime_CondEnd", payload)
+
+    def test_get_qianshou_derives_site_filter_from_bound_account_context(self):
+        captured_query: dict = {}
+        query_response = _r13_response({"data": {"records": [], "total": 0}})
+        session = _r13_session(
+            query_response,
+            site_code="site-selected-by-account",
+            captured_query=captured_query,
+        )
+        auth = SimpleNamespace(
+            last_token="token-placeholder",
+            login_and_get_session=lambda **_kwargs: session,
+        )
+
+        with patch(
+            "agent.tms_runtime.scripts.get_qianshou.R13SSOAuth",
+            return_value=auth,
+        ):
+            rows = get_qianshou.fetch_qianshou(
+                config_path=None,
+                username=None,
+                password=None,
+                start="2026-08-13 00:00:00",
+                end="2026-08-13 23:59:59",
+                days=1,
+                page_size=100,
+                page=1,
+                fetch_all=True,
+                max_pages=10,
+                account_id="r13-selected-in-project",
+            )
+
+        self.assertEqual([], rows)
+        self.assertEqual(
+            ["site-selected-by-account"],
+            captured_query["dispSiteCode_CondList"],
+        )
+
+    def test_get_qianshou_center_account_uses_its_unscoped_page_contract(self):
+        captured_query: dict = {}
+        query_response = _r13_response({"data": {"records": [], "total": 0}})
+        session = _r13_session(
+            query_response,
+            site_code="88888",
+            site_type_code=999,
+            captured_query=captured_query,
+        )
+        auth = SimpleNamespace(
+            last_token="token-placeholder",
+            login_and_get_session=lambda **_kwargs: session,
+        )
+
+        with patch(
+            "agent.tms_runtime.scripts.get_qianshou.R13SSOAuth",
+            return_value=auth,
+        ):
+            rows = get_qianshou.fetch_qianshou(
+                config_path=None,
+                username=None,
+                password=None,
+                start="2026-08-13 00:00:00",
+                end="2026-08-13 23:59:59",
+                days=1,
+                page_size=100,
+                page=1,
+                fetch_all=True,
+                max_pages=10,
+                account_id="r13-center-selected-in-project",
+            )
+
+        self.assertEqual([], rows)
+        self.assertEqual([], captured_query["dispSiteCode_CondList"])
 
     def test_get_qianshou_accepts_current_waybill_identity_field(self):
         response = SimpleNamespace(
@@ -452,7 +558,7 @@ class DailySignSourceTests(unittest.TestCase):
                 }
             },
         )
-        session = SimpleNamespace(post=lambda *_args, **_kwargs: response)
+        session = _r13_session(response)
         auth = SimpleNamespace(
             last_token="token-placeholder",
             login_and_get_session=lambda **_kwargs: session,
@@ -465,7 +571,6 @@ class DailySignSourceTests(unittest.TestCase):
                 config_path=None,
                 username=None,
                 password=None,
-                disp_site_code="site-code",
                 start="2026-08-13 00:00:00",
                 end="2026-08-13 23:59:59",
                 days=1,
@@ -489,7 +594,7 @@ class DailySignSourceTests(unittest.TestCase):
                 }
             },
         )
-        session = SimpleNamespace(post=lambda *_args, **_kwargs: response)
+        session = _r13_session(response)
         auth = SimpleNamespace(
             last_token="token-placeholder",
             login_and_get_session=lambda **_kwargs: session,
@@ -503,7 +608,6 @@ class DailySignSourceTests(unittest.TestCase):
                     config_path=None,
                     username=None,
                     password=None,
-                    disp_site_code="site-code",
                     start="2026-08-13 00:00:00",
                     end="2026-08-13 23:59:59",
                     days=1,
@@ -519,12 +623,9 @@ class DailySignSourceTests(unittest.TestCase):
             raise_for_status=lambda: None,
             json=lambda: {"code": -2, "data": "", "message": "Token无效"},
         )
-        valid = SimpleNamespace(
-            raise_for_status=lambda: None,
-            json=lambda: {"data": {"records": [], "total": 0}},
-        )
+        valid_query = _r13_response({"data": {"records": [], "total": 0}})
         cached_session = SimpleNamespace(post=lambda *_args, **_kwargs: invalid)
-        fresh_session = SimpleNamespace(post=lambda *_args, **_kwargs: valid)
+        fresh_session = _r13_session(valid_query)
 
         class Auth:
             def __init__(self, **_kwargs):
@@ -547,7 +648,6 @@ class DailySignSourceTests(unittest.TestCase):
                 config_path=None,
                 username="managed-user",
                 password="managed-password",
-                disp_site_code="site-code",
                 start="2026-08-13 00:00:00",
                 end="2026-08-13 23:59:59",
                 days=1,
@@ -561,6 +661,51 @@ class DailySignSourceTests(unittest.TestCase):
         self.assertEqual([], rows)
         self.assertEqual(2, len(auth.calls))
         self.assertIs(False, auth.calls[1]["allow_cached"])
+
+    def test_get_qianshou_rejects_site_drift_after_token_refresh(self):
+        invalid = _r13_response(
+            {"code": -2, "data": "", "message": "Token无效"}
+        )
+        initial_session = _r13_session(invalid, site_code="site-before-refresh")
+        fresh_session = _r13_session(
+            _r13_response({"data": {"records": [], "total": 0}}),
+            site_code="site-after-refresh",
+        )
+
+        class Auth:
+            def __init__(self, **_kwargs):
+                self.last_token = "cached-token"
+
+            def login_and_get_session(self, **kwargs):
+                if kwargs.get("allow_cached") is False:
+                    self.last_token = "fresh-token"
+                    return fresh_session
+                return initial_session
+
+        with patch(
+            "agent.tms_runtime.scripts.get_qianshou.R13SSOAuth",
+            Auth,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "site changed"):
+                get_qianshou.fetch_qianshou(
+                    config_path=None,
+                    username="managed-user",
+                    password="managed-password",
+                    start="2026-08-13 00:00:00",
+                    end="2026-08-13 23:59:59",
+                    days=1,
+                    page_size=100,
+                    page=1,
+                    fetch_all=True,
+                    max_pages=10,
+                    account_id="r13-test",
+                )
+
+    def test_get_qianshou_requires_complete_account_site_context(self):
+        with self.assertRaisesRegex(RuntimeError, "missing siteTypeCode"):
+            get_qianshou._read_account_site_filter(
+                {"code": 200, "data": {"siteCode": "site-code"}}
+            )
 
     def test_get_qianshou_keeps_rows_with_r13_dispatch_or_sign_signals(self):
         response = SimpleNamespace(
@@ -580,7 +725,7 @@ class DailySignSourceTests(unittest.TestCase):
                 }
             },
         )
-        session = SimpleNamespace(post=lambda *_args, **_kwargs: response)
+        session = _r13_session(response)
         auth = SimpleNamespace(
             last_token="token-placeholder",
             login_and_get_session=lambda **_kwargs: session,
@@ -593,7 +738,6 @@ class DailySignSourceTests(unittest.TestCase):
                 config_path=None,
                 username=None,
                 password=None,
-                disp_site_code="site-code",
                 start="2026-08-13 00:00:00",
                 end="2026-08-13 23:59:59",
                 days=1,
@@ -612,7 +756,7 @@ class DailySignSourceTests(unittest.TestCase):
             raise_for_status=lambda: None,
             json=lambda: {"data": {"records": [], "total": 1}},
         )
-        session = SimpleNamespace(post=lambda *_args, **_kwargs: response)
+        session = _r13_session(response)
         auth = SimpleNamespace(
             last_token="token-placeholder",
             login_and_get_session=lambda **_kwargs: session,
@@ -626,7 +770,6 @@ class DailySignSourceTests(unittest.TestCase):
                     config_path=None,
                     username=None,
                     password=None,
-                    disp_site_code="site-code",
                     start="2026-08-13 00:00:00",
                     end="2026-08-13 23:59:59",
                     days=1,
@@ -642,7 +785,7 @@ class DailySignSourceTests(unittest.TestCase):
             raise_for_status=lambda: None,
             json=lambda: {"data": {"records": []}},
         )
-        session = SimpleNamespace(post=lambda *_args, **_kwargs: response)
+        session = _r13_session(response)
         auth = SimpleNamespace(
             last_token="token-placeholder",
             login_and_get_session=lambda **_kwargs: session,
@@ -656,7 +799,6 @@ class DailySignSourceTests(unittest.TestCase):
                     config_path=None,
                     username=None,
                     password=None,
-                    disp_site_code="site-code",
                     start="2026-08-13 00:00:00",
                     end="2026-08-13 23:59:59",
                     days=1,

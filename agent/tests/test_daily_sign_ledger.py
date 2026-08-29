@@ -807,20 +807,27 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         verify_persistence.assert_called_once()
         verify_completed.assert_called_once()
 
-    def test_complete_empty_r13_source_does_not_delete_existing_bitable_projection(self):
+    def test_complete_empty_r13_source_deletes_existing_bitable_projection(self):
         actions = []
 
-        def fake_operation(action, _params):
+        def fake_operation(action, params):
             actions.append(action)
-            return {
-                "ok": True,
-                "items": [
-                    {
-                        "record_id": "existing-record",
-                        "fields": {"运单编号": "R-OLD"},
-                    }
-                ],
-            }
+            if action == "list_records" and actions.count("list_records") == 1:
+                return {
+                    "ok": True,
+                    "items": [
+                        {
+                            "record_id": "existing-record",
+                            "fields": {"运单编号": "R-OLD"},
+                        }
+                    ],
+                }
+            if action == "delete_records":
+                self.assertEqual(["existing-record"], params["record_ids"])
+                return {"ok": True, "deleted": 1}
+            if action == "list_records":
+                return {"ok": True, "items": []}
+            raise AssertionError(f"unexpected action: {action}")
 
         with (
             patch(
@@ -828,89 +835,86 @@ class DailySignSyncPipelineTest(unittest.TestCase):
                 return_value=("base", "table"),
             ),
             patch(
-                "tools.daily_sign_sync_tool._ensure_bitable_schema"
-            ) as ensure_schema,
+                "tools.daily_sign_sync_tool._ensure_bitable_schema",
+                return_value={
+                    "ok": True,
+                    "fields": {"R13应签收时间": 1},
+                },
+            ),
+            patch(
+                "tools.daily_sign_sync_tool.verify_bitable_snapshot",
+                return_value={
+                    "verified": True,
+                    "record_count": 0,
+                    "snapshot_sha256": "b" * 64,
+                },
+            ),
             patch(
                 "tools.daily_sign_sync_tool.feishu_operation",
                 side_effect=fake_operation,
             ),
         ):
-            result = daily_sign_sync_tool._sync_bitable(
-                [],
-                {
-                    daily_sign_sync_tool._PRESERVE_NONEMPTY_PROJECTION_ON_EMPTY_R13: True
-                },
-            )
+            result = daily_sign_sync_tool._sync_bitable([], {})
 
-        self.assertEqual("EMPTY_R13_SOURCE", result["error_code"])
-        self.assertIn("保留上一版", result["error"])
-        self.assertEqual(["list_records"], actions)
-        ensure_schema.assert_not_called()
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, result["deleted"])
+        self.assertEqual(
+            ["list_records", "delete_records", "list_records"],
+            actions,
+        )
 
-    def test_complete_empty_r13_source_does_not_clear_existing_sheet_projection(self):
+    def test_complete_empty_r13_source_clears_existing_sheet_projection(self):
         actions = []
 
         def fake_operation(action, params):
             actions.append((action, params["range"]))
-            return {
-                "ok": True,
-                "data": {"valueRange": {"values": [["R-OLD"]]}},
-            }
-
-        with (
-            patch(
-                "tools.daily_sign_sync_tool.resolve_sheet_target",
-                return_value=("token", "Sheet1!A2:I200"),
-            ),
-            patch(
-                "tools.daily_sign_sync_tool.feishu_operation",
-                side_effect=fake_operation,
-            ),
-        ):
-            result = daily_sign_sync_tool._sync_sheet(
-                [],
-                {
-                    daily_sign_sync_tool._PRESERVE_NONEMPTY_PROJECTION_ON_EMPTY_R13: True
-                },
-            )
-
-        self.assertEqual("EMPTY_R13_SOURCE", result["error_code"])
-        self.assertIn("保留上一版", result["error"])
-        self.assertEqual([("read_sheet", "Sheet1!A2:I200")], actions)
-
-    def test_empty_r13_preflight_reads_both_targets_without_mutation(self):
-        actions = []
-
-        def fake_operation(action, params):
-            actions.append(action)
-            if action == "list_records":
-                return {"ok": True, "items": []}
-            if action == "read_sheet":
-                self.assertEqual("Sheet1!A2:I200", params["range"])
+            if action == "read_sheet" and params["range"] == "Sheet1!A1:I1":
                 return {
                     "ok": True,
-                    "data": {"valueRange": {"values": [["R-OLD"]]}},
+                    "data": {
+                        "valueRange": {"values": [daily_sign_sync_tool.SHEET_HEADERS]}
+                    },
                 }
-            raise AssertionError(f"unexpected mutation: {action}")
+            if action == "clear_sheet":
+                return {"ok": True}
+            if action == "read_sheet":
+                return {"ok": True, "data": {"valueRange": {"values": []}}}
+            raise AssertionError(f"unexpected action: {action}")
 
         with (
             patch(
-                "tools.daily_sign_sync_tool.resolve_bitable_target",
-                return_value=("base", "table"),
-            ),
-            patch(
                 "tools.daily_sign_sync_tool.resolve_sheet_target",
                 return_value=("token", "Sheet1!A2:I200"),
+            ),
+            patch(
+                "tools.daily_sign_sync_tool.verify_sheet_snapshot",
+                return_value={
+                    "verified": True,
+                    "record_count": 0,
+                    "snapshot_sha256": "s" * 64,
+                },
             ),
             patch(
                 "tools.daily_sign_sync_tool.feishu_operation",
                 side_effect=fake_operation,
             ),
         ):
-            result = daily_sign_sync_tool._preflight_empty_r13_projection({})
+            result = daily_sign_sync_tool._sync_sheet([], {})
 
-        self.assertEqual("EMPTY_R13_SOURCE", result["error_code"])
-        self.assertEqual(["list_records", "read_sheet"], actions)
+        self.assertTrue(result["ok"])
+        self.assertEqual(0, result["rows"])
+        self.assertIn(("clear_sheet", "Sheet1!A2:I200"), actions)
+
+    def test_r13_explicit_business_failure_is_not_a_zero_row_result(self):
+        with self.assertRaisesRegex(RuntimeError, "explicit failure code"):
+            get_qianshou._require_success_response(
+                {
+                    "code": 999,
+                    "data": {"records": [], "total": 0},
+                    "message": "接口异常",
+                },
+                label="R13 page 1",
+            )
 
     def test_missing_projection_readback_proof_fails_closed(self):
         observed_at = datetime(2026, 8, 12, 12, 0, 0)
@@ -1637,18 +1641,26 @@ class DailySignSourceCompletenessTest(unittest.TestCase):
             def login_and_get_session(self, **_kwargs):
                 return Session()
 
-        with patch("agent.tms_runtime.scripts.get_qianshou.R13SSOAuth", Auth):
+        with (
+            patch("agent.tms_runtime.scripts.get_qianshou.R13SSOAuth", Auth),
+            patch(
+                "agent.tms_runtime.scripts.get_qianshou._request_account_context",
+                return_value={
+                    "code": 200,
+                    "data": {"siteCode": "site-bound", "siteTypeCode": 101},
+                },
+            ),
+        ):
             rows = get_qianshou.fetch_qianshou(
                 config_path=None,
                 username=None,
                 password=None,
-                disp_site_code="7390004",
                 start="2026-08-12 00:00:00",
                 end="2026-08-12 23:59:59",
                 days=1,
                 page_size=100,
                 page=1,
-                account_id="r13_default",
+                account_id="r13-project-selected",
             )
 
         self.assertEqual(1, len(rows))
@@ -1687,20 +1699,28 @@ class DailySignSourceCompletenessTest(unittest.TestCase):
             def login_and_get_session(self, **_kwargs):
                 return Session()
 
-        with patch("agent.tms_runtime.scripts.get_qianshou.R13SSOAuth", Auth):
+        with (
+            patch("agent.tms_runtime.scripts.get_qianshou.R13SSOAuth", Auth),
+            patch(
+                "agent.tms_runtime.scripts.get_qianshou._request_account_context",
+                return_value={
+                    "code": 200,
+                    "data": {"siteCode": "site-bound", "siteTypeCode": 101},
+                },
+            ),
+        ):
             with self.assertRaisesRegex(RuntimeError, "max_pages"):
                 get_qianshou.fetch_qianshou(
                     config_path=None,
                     username=None,
                     password=None,
-                    disp_site_code="7390004",
                     start="2026-08-12 00:00:00",
                     end="2026-08-12 23:59:59",
                     days=1,
                     page_size=1,
                     page=1,
                     max_pages=1,
-                    account_id="r13_default",
+                    account_id="r13-project-selected",
                 )
 
     def test_tms_scan_keeps_type_time_and_site_and_fails_at_page_limit(self):

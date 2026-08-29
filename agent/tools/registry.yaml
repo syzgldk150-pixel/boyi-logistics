@@ -827,11 +827,11 @@ tools:
         account_id:
           type: string
           minLength: 1
-          description: "必填，唯一的融辉 TMS 邵阳大祥站账号 ID；统一用于问题件、主单签收、轨迹核验和地址补全"
+          description: "必填，自动化项目当前绑定的融辉 TMS 账号 ID；统一用于问题件、主单签收、轨迹核验和地址补全，禁止默认或固定账号"
         r13_account_id:
           type: string
           minLength: 1
-          description: "必填，每日应签 R13 查询账号 ID；账号目录站点合同必须精确为 7390017，业务参数不能另传站点"
+          description: "必填，自动化项目当前绑定的 R13 查询账号 ID；站点范围从该账号登录后的真实上下文读取，业务参数不能另传站点"
         days:
           type: integer
           minimum: 1

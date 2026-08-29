@@ -2384,15 +2384,6 @@ class Phase7SyncToolTests(unittest.TestCase):
                             },
                         ),
                     ),
-                    patch(
-                        "tools.daily_sign_sync_tool._preflight_empty_r13_projection",
-                        return_value={
-                            "ok": True,
-                            "verified": True,
-                            "bitable_records": 0,
-                            "sheet_rows": 0,
-                        },
-                    ) as empty_projection_preflight,
                     patch("tools.daily_sign_sync_tool.finish_sync_run"),
                     patch(
                         "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
@@ -2429,8 +2420,8 @@ class Phase7SyncToolTests(unittest.TestCase):
                 ):
                     result = daily_sign_sync_tool.run_daily_sign_sync(
                         {
-                            "r13_account_id": "r13_default",
-                            "account_id": "ronghui_daxiang_s",
+                            "r13_account_id": "r13-project-selected",
+                            "account_id": "ronghui-project-selected",
                             "days": 1,
                         }
                     )
@@ -2446,21 +2437,8 @@ class Phase7SyncToolTests(unittest.TestCase):
                 verify_completed.assert_called_once()
                 persist_mock.assert_called_once()
                 self.assertEqual([], persist_mock.call_args.kwargs["publication_rows"])
-                empty_projection_preflight.assert_called_once()
                 bitable_mock.assert_called_once_with([], ANY)
                 sheet_mock.assert_called_once_with([], ANY)
-                self.assertIs(
-                    bitable_mock.call_args.args[1][
-                        daily_sign_sync_tool._PRESERVE_NONEMPTY_PROJECTION_ON_EMPTY_R13
-                    ],
-                    True,
-                )
-                self.assertIs(
-                    sheet_mock.call_args.args[1][
-                        daily_sign_sync_tool._PRESERVE_NONEMPTY_PROJECTION_ON_EMPTY_R13
-                    ],
-                    True,
-                )
 
     def test_site_send_list_sync_zero_rows_clears_targets(self):
         bitable_result = {"ok": True, "deleted": 3, "written": 0}

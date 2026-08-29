@@ -17,11 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from agent.tms_runtime.account_contracts import (
-    DAILY_SIGN_R13_SITE_CODE,
-    PRICE_ACCOUNT_ID,
-    PRICE_SESSION_PROFILE,
-)
+from agent.tms_runtime.account_contracts import PRICE_ACCOUNT_ID, PRICE_SESSION_PROFILE
 from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime.session_broker import SAVED_PASSWORD_MASK, get_session_broker
 from shared.runtime_events import publish_account_session_degraded, publish_account_session_restored
@@ -156,10 +152,6 @@ DEFAULT_ACCOUNTS: list[dict[str, Any]] = [
         "name": "R13默认账号",
         "account_purpose": "general",
         "is_default": True,
-        # R13 query scope is an account contract.  Business scripts receive
-        # this value only after the automation project resolves its exact
-        # ``r13_account_id`` binding; they must never guess a site themselves.
-        "site_code": DAILY_SIGN_R13_SITE_CODE,
     },
 ]
 
@@ -446,23 +438,7 @@ class AutomationAccountManager:
             row["auto_login_blocked"] = auto_login_blocked
             row["created_at"] = str(row.get("created_at") or now)
             row["updated_at"] = str(row.get("updated_at") or row["created_at"])
-            default_contract = next(
-                (
-                    candidate
-                    for candidate in DEFAULT_ACCOUNTS
-                    if candidate["account_id"] == account_id
-                ),
-                None,
-            )
-            contract_site_code = str(
-                (default_contract or {}).get("site_code") or ""
-            ).strip()
-            site_code = contract_site_code or str(row.get("site_code") or "").strip()
-            if site_code:
-                if row.get("site_code") != site_code:
-                    changed = True
-                row["site_code"] = site_code
-            elif "site_code" in row:
+            if "site_code" in row:
                 row.pop("site_code", None)
                 changed = True
             previous_profile = str(row.get("session_profile") or "")
@@ -845,9 +821,6 @@ class AutomationAccountManager:
             "created_at": row.get("created_at", ""),
             "updated_at": row.get("updated_at", ""),
         }
-        site_code = str(row.get("site_code") or "").strip()
-        if site_code:
-            result["site_code"] = site_code
         return result
 
     def _with_account_context(self, row: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -873,9 +846,6 @@ class AutomationAccountManager:
                 "auto_login_blocked": bool(row.get("auto_login_blocked", False)),
             }
         )
-        site_code = str(row.get("site_code") or "").strip()
-        if site_code:
-            result["site_code"] = site_code
         result.pop("password", None)
         return result
 
@@ -1114,16 +1084,12 @@ class AutomationAccountManager:
         row = self._get_account_row(account_id)
         if not row.get("is_active", True):
             raise TMSAuthStateError("ACCOUNT_DISABLED", "The bound account is disabled.")
-        descriptor = {
+        return {
             "account_id": str(row["account_id"]),
             "system": str(row["system"]),
             "account_purpose": str(row.get("account_purpose") or "general"),
             "session_profile": self._coerce_session_profile(row),
         }
-        site_code = str(row.get("site_code") or "").strip()
-        if site_code:
-            descriptor["site_code"] = site_code
-        return descriptor
 
     def _login_error_status(
         self,
