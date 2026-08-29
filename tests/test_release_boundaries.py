@@ -817,6 +817,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         expected_helpers = {
             "business_module_migration_contract.py",
             "migration_018_authorization.py",
+            "migration_030_notification_lease.py",
             "automation_project_release_manifest_preflight.py",
             "automation_project_resource_preflight.py",
             "automation_project_schedule_identity_preflight.py",
