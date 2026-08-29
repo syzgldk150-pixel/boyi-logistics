@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from agent.tms_runtime.account_manager import get_account_manager
+from agent.tms_runtime.account_contracts import DAILY_SIGN_R13_SITE_CODE
 from agent.workflow_resource_store import get_workflow_resource
 from tools.daily_sign_rules import (
     BUSINESS_TIMEZONE,
@@ -101,8 +102,6 @@ ARRIVED_QUANTITY_KEYS = (
     "累计到货件数",
 )
 R13_REQUEST_KEYS = (
-    "disp_site_code",
-    "dispSiteCode",
     "start",
     "end",
     "days",
@@ -116,6 +115,9 @@ R13_REQUEST_KEYS = (
 )
 FORBIDDEN_R13_REQUEST_KEYS = frozenset(
     {
+        "disp_site_code",
+        "dispSiteCode",
+        "r13_site_code",
         "username",
         "password",
         "user",
@@ -128,6 +130,9 @@ FORBIDDEN_R13_REQUEST_KEYS = frozenset(
         "r13_account_id",
         "r13AccountId",
     }
+)
+_PRESERVE_NONEMPTY_PROJECTION_ON_EMPTY_R13 = (
+    "_preserve_nonempty_projection_on_empty_r13"
 )
 
 
@@ -155,6 +160,16 @@ def _required_account_id(params: dict[str, Any], field: str) -> str:
 
 
 def _resolve_qianshou_request_body(params: dict) -> dict:
+    caller_site_keys = sorted(
+        key
+        for key in ("disp_site_code", "dispSiteCode")
+        if _has_value(params.get(key))
+    )
+    if caller_site_keys:
+        raise ValueError(
+            "R13 site identity is broker-owned and cannot be overridden: "
+            + ", ".join(caller_site_keys)
+        )
     request_body: dict[str, Any] = {}
     explicit_request_body = params.get("request_body")
     if isinstance(explicit_request_body, dict):
@@ -185,10 +200,24 @@ def _apply_r13_account_binding(request_body: dict[str, Any], params: dict[str, A
         or request_body.get("r13_account_id")
         or request_body.get("r13AccountId")
     )
-    if account_id in (None, ""):
-        return request_body
+    account_id = clean_text(account_id)
+    if not account_id:
+        raise ValueError(
+            "每日应签同步必须显式提供 r13_account_id，禁止选择默认账号"
+        )
+    manager = get_account_manager()
+    descriptor = manager.require_active_binding_descriptor(account_id)
+    if clean_text(descriptor.get("system")).lower() != "r13":
+        raise ValueError("r13_account_id 必须绑定 R13 账号")
+    site_code = clean_text(descriptor.get("site_code"))
+    if site_code != DAILY_SIGN_R13_SITE_CODE:
+        raise ValueError("绑定的 R13 账号不匹配每日应签站点合同，停止查询")
+    broker_site_code = clean_text(params.get("r13_site_code"))
+    if broker_site_code and broker_site_code != site_code:
+        raise ValueError("R13 账号站点合同在调度后发生变化，停止每日应签查询")
     request_body["r13_account_id"] = account_id
-    return get_account_manager().resolve_role_account_params(
+    request_body["disp_site_code"] = site_code
+    return manager.resolve_role_account_params(
         request_body,
         account_field="r13_account_id",
         output_account_field="",
@@ -1277,9 +1306,95 @@ def _sheet_values(payload: Any) -> list[list[Any]]:
     return []
 
 
+def _sheet_has_business_values(payload: Any) -> bool:
+    return any(clean_text(value) for row in _sheet_values(payload) for value in row)
+
+
+def _empty_r13_projection_guard_error(target: str) -> dict[str, Any]:
+    return {
+        "error": (
+            f"R13 完整查询返回零行，但{target}仍有上一版应签数据；"
+            "已保留上一版飞书应签投影。"
+        ),
+        "error_code": "EMPTY_R13_SOURCE",
+    }
+
+
+def _preflight_empty_r13_projection(params: dict[str, Any]) -> dict[str, Any]:
+    """Prove both Feishu targets are already empty without mutating either one."""
+
+    base_token, table_id = resolve_bitable_target(
+        params, DAILY_SIGN_BITABLE_RESOURCE_KEY
+    )
+    bitable_result = feishu_operation(
+        "list_records",
+        {
+            "base_token": base_token,
+            "table_id": table_id,
+            "limit": 1,
+            "as": params.get("as", "bot"),
+        },
+    )
+    if bitable_result.get("error"):
+        return {
+            "error": f"读取多维表旧投影失败: {bitable_result.get('error')}",
+            "error_code": "PROJECTION_READ_FAILED",
+        }
+    if _record_items(bitable_result):
+        return _empty_r13_projection_guard_error("每日应签多维表")
+
+    spreadsheet_token, configured_range = resolve_sheet_target(
+        params, DAILY_SIGN_SHEET_RESOURCE_KEY
+    )
+    info = parse_a1_range(configured_range)
+    old_end_row = max(info["end_row"], 2)
+    sheet_result = feishu_operation(
+        "read_sheet",
+        {
+            "spreadsheet_token": spreadsheet_token,
+            "range": f"{info['sheet']}!A2:I{old_end_row}",
+            "as": params.get("as", "bot"),
+        },
+    )
+    if sheet_result.get("error"):
+        return {
+            "error": f"读取应签明细旧投影失败: {sheet_result.get('error')}",
+            "error_code": "PROJECTION_READ_FAILED",
+        }
+    if _sheet_has_business_values(sheet_result):
+        return _empty_r13_projection_guard_error("每日应签电子表格")
+    return {
+        "ok": True,
+        "verified": True,
+        "bitable_records": 0,
+        "sheet_rows": 0,
+    }
+
+
 def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str, Any]:
     spreadsheet_token, configured_range = resolve_sheet_target(params, DAILY_SIGN_SHEET_RESOURCE_KEY)
     info = parse_a1_range(configured_range)
+    old_end_row = max(info["end_row"], 2)
+    preserve_nonempty_projection = (
+        not rows
+        and params.get(_PRESERVE_NONEMPTY_PROJECTION_ON_EMPTY_R13) is True
+    )
+    if preserve_nonempty_projection:
+        existing_result = feishu_operation(
+            "read_sheet",
+            {
+                "spreadsheet_token": spreadsheet_token,
+                "range": f"{info['sheet']}!A2:I{old_end_row}",
+                "as": params.get("as", "bot"),
+            },
+        )
+        if existing_result.get("error"):
+            return {
+                "error": f"读取应签明细旧投影失败: {existing_result.get('error')}",
+                "error_code": "PROJECTION_READ_FAILED",
+            }
+        if _sheet_has_business_values(existing_result):
+            return _empty_r13_projection_guard_error("每日应签电子表格")
     header_range = f"{info['sheet']}!A1:I1"
     read_result = feishu_operation(
         "read_sheet",
@@ -1352,10 +1467,26 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
         )
         if write_result.get("error"):
             return _write_outcome_unknown("写入应签明细后的终态未知。")
-    old_end_row = max(info["end_row"], 2)
     tail_start = 2 + len(sheet_values)
     clear_result: dict[str, Any] = {"ok": True, "skipped": True}
-    if tail_start <= old_end_row:
+    if preserve_nonempty_projection:
+        fresh_existing_result = feishu_operation(
+            "read_sheet",
+            {
+                "spreadsheet_token": spreadsheet_token,
+                "range": f"{info['sheet']}!A2:I{old_end_row}",
+                "as": params.get("as", "bot"),
+            },
+        )
+        if fresh_existing_result.get("error"):
+            return {
+                "error": f"重新读取应签明细旧投影失败: {fresh_existing_result.get('error')}",
+                "error_code": "PROJECTION_READ_FAILED",
+            }
+        if _sheet_has_business_values(fresh_existing_result):
+            return _empty_r13_projection_guard_error("每日应签电子表格")
+        clear_result["reason"] = "empty_r13_target_already_empty"
+    elif tail_start <= old_end_row:
         clear_result = feishu_operation(
             "clear_sheet",
             {
@@ -1496,6 +1627,27 @@ def _record_items(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _sync_bitable(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str, Any]:
     base_token, table_id = resolve_bitable_target(params, DAILY_SIGN_BITABLE_RESOURCE_KEY)
+    preserve_nonempty_projection = (
+        not rows
+        and params.get(_PRESERVE_NONEMPTY_PROJECTION_ON_EMPTY_R13) is True
+    )
+    if preserve_nonempty_projection:
+        guard_result = feishu_operation(
+            "list_records",
+            {
+                "base_token": base_token,
+                "table_id": table_id,
+                "limit": 1,
+                "as": params.get("as", "bot"),
+            },
+        )
+        if guard_result.get("error"):
+            return {
+                "error": f"读取多维表旧投影失败: {guard_result.get('error')}",
+                "error_code": "PROJECTION_READ_FAILED",
+            }
+        if _record_items(guard_result):
+            return _empty_r13_projection_guard_error("每日应签多维表")
     schema_result = _ensure_bitable_schema(base_token, table_id, params)
     if schema_result.get("error"):
         return schema_result
@@ -1505,6 +1657,8 @@ def _sync_bitable(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[st
     )
     if existing_result.get("error"):
         return {"error": f"读取多维表记录失败: {existing_result.get('error')}"}
+    if preserve_nonempty_projection and _record_items(existing_result):
+        return _empty_r13_projection_guard_error("每日应签多维表")
     existing_by_code: dict[str, dict[str, Any]] = {}
     for item in _record_items(existing_result):
         fields = item.get("fields") if isinstance(item.get("fields"), dict) else {}
@@ -1852,6 +2006,28 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
                     "recipient_address",
                 ):
                     row[field] = enriched.get(field)
+        projection_params = {
+            **params,
+            _PRESERVE_NONEMPTY_PROJECTION_ON_EMPTY_R13: not r13_rows
+            and not open_rows,
+        }
+        if projection_params[_PRESERVE_NONEMPTY_PROJECTION_ON_EMPTY_R13]:
+            empty_projection_preflight = _preflight_empty_r13_projection(
+                projection_params
+            )
+            if empty_projection_preflight.get("error"):
+                error_code = clean_text(
+                    empty_projection_preflight.get("error_code")
+                )
+                raise DailySignSyncError(
+                    error_code or "PROJECTION_READ_FAILED",
+                    clean_text(empty_projection_preflight.get("error"))
+                    or "每日应签旧投影读取失败。",
+                    retryable=error_code == "EMPTY_R13_SOURCE",
+                )
+            diagnostics["empty_r13_projection_preflight"] = (
+                empty_projection_preflight
+            )
         all_sign_events = bulk_sign_events + exact_sign_events + historical_sign_events
         persistence_marker = build_daily_sign_persistence_marker(
             problem_events=problem_events,
@@ -1918,13 +2094,13 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-        bitable_result = _sync_bitable(open_rows, params)
+        bitable_result = _sync_bitable(open_rows, projection_params)
         if bitable_result.get("error"):
             error_code = clean_text(bitable_result.get("error_code"))
             raise DailySignSyncError(
                 error_code or "PROJECTION_WRITE_FAILED",
                 clean_text(bitable_result.get("error")) or "每日应签多维表写入失败。",
-                retryable=False,
+                retryable=error_code == "EMPTY_R13_SOURCE",
             )
         bitable_readback = bitable_result.get("readback")
         if (
@@ -1944,13 +2120,13 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
                 "bitable_readback": bitable_readback,
             }
         )
-        sheet_result = _sync_sheet(open_rows, params)
+        sheet_result = _sync_sheet(open_rows, projection_params)
         if sheet_result.get("error"):
             error_code = clean_text(sheet_result.get("error_code"))
             raise DailySignSyncError(
                 error_code or "PROJECTION_WRITE_FAILED",
                 clean_text(sheet_result.get("error")) or "每日应签电子表格写入失败。",
-                retryable=False,
+                retryable=error_code == "EMPTY_R13_SOURCE",
             )
         sheet_readback = sheet_result.get("readback")
         if (

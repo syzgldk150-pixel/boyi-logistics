@@ -625,6 +625,18 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             **overrides,
         }
 
+    @staticmethod
+    def _complete_r13_row(code: str = "R-OPEN") -> dict:
+        return {
+            "billNumberMain": code,
+            "planSignTime": "2026-08-13 23:59:59",
+            "goodsName": "测试货物",
+            "packTypeDesc": "纸箱",
+            "pcs": 1,
+            "dispatchMode": "派送",
+            "dispAddress": "测试地址",
+        }
+
     def _state(self, *, signs=None):
         return {
             "ledger": {
@@ -795,6 +807,111 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         verify_persistence.assert_called_once()
         verify_completed.assert_called_once()
 
+    def test_complete_empty_r13_source_does_not_delete_existing_bitable_projection(self):
+        actions = []
+
+        def fake_operation(action, _params):
+            actions.append(action)
+            return {
+                "ok": True,
+                "items": [
+                    {
+                        "record_id": "existing-record",
+                        "fields": {"运单编号": "R-OLD"},
+                    }
+                ],
+            }
+
+        with (
+            patch(
+                "tools.daily_sign_sync_tool.resolve_bitable_target",
+                return_value=("base", "table"),
+            ),
+            patch(
+                "tools.daily_sign_sync_tool._ensure_bitable_schema"
+            ) as ensure_schema,
+            patch(
+                "tools.daily_sign_sync_tool.feishu_operation",
+                side_effect=fake_operation,
+            ),
+        ):
+            result = daily_sign_sync_tool._sync_bitable(
+                [],
+                {
+                    daily_sign_sync_tool._PRESERVE_NONEMPTY_PROJECTION_ON_EMPTY_R13: True
+                },
+            )
+
+        self.assertEqual("EMPTY_R13_SOURCE", result["error_code"])
+        self.assertIn("保留上一版", result["error"])
+        self.assertEqual(["list_records"], actions)
+        ensure_schema.assert_not_called()
+
+    def test_complete_empty_r13_source_does_not_clear_existing_sheet_projection(self):
+        actions = []
+
+        def fake_operation(action, params):
+            actions.append((action, params["range"]))
+            return {
+                "ok": True,
+                "data": {"valueRange": {"values": [["R-OLD"]]}},
+            }
+
+        with (
+            patch(
+                "tools.daily_sign_sync_tool.resolve_sheet_target",
+                return_value=("token", "Sheet1!A2:I200"),
+            ),
+            patch(
+                "tools.daily_sign_sync_tool.feishu_operation",
+                side_effect=fake_operation,
+            ),
+        ):
+            result = daily_sign_sync_tool._sync_sheet(
+                [],
+                {
+                    daily_sign_sync_tool._PRESERVE_NONEMPTY_PROJECTION_ON_EMPTY_R13: True
+                },
+            )
+
+        self.assertEqual("EMPTY_R13_SOURCE", result["error_code"])
+        self.assertIn("保留上一版", result["error"])
+        self.assertEqual([("read_sheet", "Sheet1!A2:I200")], actions)
+
+    def test_empty_r13_preflight_reads_both_targets_without_mutation(self):
+        actions = []
+
+        def fake_operation(action, params):
+            actions.append(action)
+            if action == "list_records":
+                return {"ok": True, "items": []}
+            if action == "read_sheet":
+                self.assertEqual("Sheet1!A2:I200", params["range"])
+                return {
+                    "ok": True,
+                    "data": {"valueRange": {"values": [["R-OLD"]]}},
+                }
+            raise AssertionError(f"unexpected mutation: {action}")
+
+        with (
+            patch(
+                "tools.daily_sign_sync_tool.resolve_bitable_target",
+                return_value=("base", "table"),
+            ),
+            patch(
+                "tools.daily_sign_sync_tool.resolve_sheet_target",
+                return_value=("token", "Sheet1!A2:I200"),
+            ),
+            patch(
+                "tools.daily_sign_sync_tool.feishu_operation",
+                side_effect=fake_operation,
+            ),
+        ):
+            result = daily_sign_sync_tool._preflight_empty_r13_projection({})
+
+        self.assertEqual("EMPTY_R13_SOURCE", result["error_code"])
+        self.assertEqual(["list_records", "read_sheet"], actions)
+
     def test_missing_projection_readback_proof_fails_closed(self):
         observed_at = datetime(2026, 8, 12, 12, 0, 0)
         state = {
@@ -813,7 +930,10 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             },
         }
         with (
-            patch("tools.daily_sign_sync_tool.call_http_service", return_value=[]),
+            patch(
+                "tools.daily_sign_sync_tool.call_http_service",
+                return_value=[self._complete_r13_row()],
+            ),
             patch(
                 "tools.daily_sign_sync_tool.start_sync_run",
                 return_value=("run", observed_at),
@@ -883,7 +1003,10 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         state = self._state()
         observed_at = datetime(2026, 8, 12, 12, 0, 0)
         with (
-            patch("tools.daily_sign_sync_tool.call_http_service", return_value=[]),
+            patch(
+                "tools.daily_sign_sync_tool.call_http_service",
+                return_value=[self._complete_r13_row()],
+            ),
             patch(
                 "tools.daily_sign_sync_tool.start_sync_run",
                 return_value=("run", observed_at),
@@ -938,7 +1061,10 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         state = self._state()
         observed_at = datetime(2026, 8, 12, 12, 0, 0)
         with (
-            patch("tools.daily_sign_sync_tool.call_http_service", return_value=[]),
+            patch(
+                "tools.daily_sign_sync_tool.call_http_service",
+                return_value=[self._complete_r13_row()],
+            ),
             patch(
                 "tools.daily_sign_sync_tool.start_sync_run",
                 return_value=("run", observed_at),

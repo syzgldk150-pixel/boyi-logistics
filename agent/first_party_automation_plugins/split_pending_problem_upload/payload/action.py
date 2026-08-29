@@ -159,7 +159,7 @@ def _classify(rows: list[list[object]]) -> tuple[list[dict[str, object]], int]:
         else:
             problem_type = "少货/分批"
             owner = "交接异常"
-            cause = f"应到{expected}件，已到{arrived}件"
+            cause = f"应到{expected}件 实际到{arrived}件"
         sheet_values = [
             _text(value, f"{bill_code} source cell", maximum=1024)
             for value in row[:18]
@@ -262,14 +262,8 @@ def _eligible_candidates(
         problem_status = previous.get("upload_status", "pending") if same_type else "pending"
         if problem_status not in {"pending", "failed", "success"}:
             raise ValueError(f"{candidate['bill_code']} has an invalid stored problem status")
-        if candidate["problem_type"] == "少货/分批":
-            complaint_status = previous.get("complaint_status", "pending") if same_type else "pending"
-            if complaint_status not in {"pending", "failed", "success", "duplicate"}:
-                raise ValueError(f"{candidate['bill_code']} has an invalid stored complaint status")
-            complete = complaint_status in {"success", "duplicate"} and problem_status == "success"
-        else:
-            complaint_status = "not_applicable"
-            complete = problem_status == "success"
+        complaint_status = "not_applicable"
+        complete = problem_status == "success"
         if complete:
             hidden += 1
             continue
@@ -277,8 +271,6 @@ def _eligible_candidates(
             {
                 "complaint_status": complaint_status,
                 "problem_item_status": problem_status,
-                "run_complaint": candidate["problem_type"] == "少货/分批"
-                and complaint_status not in {"success", "duplicate"},
                 "run_problem_item": problem_status != "success",
             }
         )
@@ -337,24 +329,6 @@ def _preflight(
     broker: Callable[..., object],
 ) -> tuple[dict[str, object], list[str]]:
     evidence_refs: list[str] = []
-    complaint_ref = ""
-    if candidate["run_complaint"] is True:
-        complaint = _object(
-            broker(
-                "browser.invoke",
-                action="ronghui.complaint.query",
-                role=_ACCOUNT_ROLE,
-                arguments={"bill_code": candidate["bill_code"]},
-            ),
-            "Ronghui complaint preflight",
-        )
-        evidence_refs.append(broker_evidence_ref(complaint, "Ronghui complaint preflight"))
-        if complaint.get("ready") is not True or complaint.get("bill_code") != candidate["bill_code"]:
-            raise ValueError(f"Ronghui complaint preflight did not confirm {candidate['bill_code']}")
-        complaint_ref = str(complaint.get("precondition_ref") or "").strip()
-        if not complaint_ref:
-            raise ValueError("Ronghui complaint preflight has no precondition")
-
     problem = _object(
         broker(
             "browser.invoke",
@@ -388,7 +362,6 @@ def _preflight(
         }
     return {
         "candidate": dict(candidate),
-        "complaint_precondition_ref": complaint_ref,
         "problem_precondition_ref": problem_ref,
         "existing_problem": existing_result,
     }, evidence_refs
@@ -447,54 +420,6 @@ def _execute_candidate(
 ) -> tuple[dict[str, object], list[str], str]:
     candidate = _object(preflight.get("candidate"), "split candidate")
     evidence_refs: list[str] = []
-    complaint_status = str(candidate["complaint_status"])
-    complaint_external_id = ""
-    if candidate["run_complaint"] is True:
-        create = _require_committed(
-            broker(
-                "browser.invoke",
-                action="ronghui.complaint.create",
-                role=_ACCOUNT_ROLE,
-                arguments={
-                    "bill_code": candidate["bill_code"],
-                    "precondition_ref": preflight["complaint_precondition_ref"],
-                },
-            ),
-            "Ronghui complaint creation",
-        )
-        evidence_refs.append(broker_evidence_ref(create, "Ronghui complaint creation"))
-        complaint_external_id = _text(
-            create.get("external_id"), "complaint external_id", maximum=256
-        )
-        plan_sha256 = _text(create.get("plan_sha256"), "complaint plan_sha256", maximum=64)
-        if not complaint_external_id or _FINGERPRINT_RE.fullmatch(plan_sha256) is None:
-            raise ValueError("Ronghui complaint creation proof is incomplete")
-        verify = _object(
-            broker(
-                "browser.invoke",
-                action="ronghui.complaint.verify",
-                role=_ACCOUNT_ROLE,
-                arguments={
-                    "bill_code": candidate["bill_code"],
-                    "external_id": complaint_external_id,
-                    "plan_sha256": plan_sha256,
-                },
-            ),
-            "Ronghui complaint verification",
-        )
-        evidence_refs.append(broker_evidence_ref(verify, "Ronghui complaint verification"))
-        if (
-            verify.get("confirmed") is not True
-            or verify.get("bill_code") != candidate["bill_code"]
-            or verify.get("external_id") != complaint_external_id
-            or verify.get("plan_sha256") != plan_sha256
-        ):
-            raise ValueError(f"Ronghui complaint read-back did not confirm {candidate['bill_code']}")
-        duplicate = create.get("duplicate")
-        if not isinstance(duplicate, bool):
-            raise ValueError("Ronghui complaint creation has no duplicate decision")
-        complaint_status = "duplicate" if duplicate else "success"
-
     existing_problem = preflight.get("existing_problem")
     if candidate["run_problem_item"] is True and not isinstance(existing_problem, Mapping):
         create = _require_committed(
@@ -530,21 +455,6 @@ def _execute_candidate(
         broker=broker,
     )
     evidence_refs.append(problem_verify_ref)
-    update = _require_committed(
-        broker(
-            "projection.invoke",
-            action="split_pending.result.upsert",
-            role=_TARGET_ROLE,
-            arguments={
-                "bill_code": candidate["bill_code"],
-                "complaint_status": complaint_status,
-                "problem_item_status": "success",
-                "problem_type": candidate["problem_type"],
-            },
-        ),
-        "split result projection",
-    )
-    evidence_refs.append(broker_evidence_ref(update, "split result projection"))
     event = _require_committed(
         broker(
             "ledger.invoke",
@@ -561,10 +471,25 @@ def _execute_candidate(
         "problem event ledger",
     )
     evidence_refs.append(broker_evidence_ref(event, "problem event ledger"))
+    update = _require_committed(
+        broker(
+            "projection.invoke",
+            action="split_pending.result.upsert",
+            role=_TARGET_ROLE,
+            arguments={
+                "bill_code": candidate["bill_code"],
+                "complaint_status": "not_applicable",
+                "problem_item_status": "success",
+                "problem_type": candidate["problem_type"],
+            },
+        ),
+        "split result projection",
+    )
+    evidence_refs.append(broker_evidence_ref(update, "split result projection"))
     return {
         "bill_code": candidate["bill_code"],
-        "complaint_external_id": complaint_external_id,
-        "complaint_status": complaint_status,
+        "complaint_external_id": "",
+        "complaint_status": "not_applicable",
         "problem_external_id": problem["external_id"],
         "problem_item_status": "success",
         "problem_type": candidate["problem_type"],

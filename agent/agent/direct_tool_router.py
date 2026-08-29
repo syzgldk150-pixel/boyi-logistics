@@ -38,7 +38,7 @@ SPLIT_PENDING_PROBLEM_UPLOAD_RE = re.compile(
     r"^\s*分批\s*$",
     re.IGNORECASE,
 )
-SPLIT_PENDING_PROBLEM_LABEL = "分批差错及问题件"
+SPLIT_PENDING_PROBLEM_LABEL = "分批问题件"
 
 @dataclass(frozen=True)
 class FeishuCommandRegistration:

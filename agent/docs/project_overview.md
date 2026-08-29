@@ -155,7 +155,7 @@ updated: 2026-08-16
 - ECS 上的 Agent 服务已提供 `/health`、`/chat`、`/run-tool`、`/tools`、`/admin/reload`、`/knowledge`、`/knowledge/search`、`/tool-logs` 等运行时接口，用于飞书机器人、调试和知识库维护。
 - ECS 上的 Agent 服务已提供 `/scheduled-tasks`、`/admin/seed-phase7-tasks`、`/tms/*`、`/admin/tms/session/*`，用于统一承载调度模板、TMS 兼容业务接口和共享登录态管理。
 - Phase 7 迁移所需的飞书表格、Webhook 等资源配置统一保存在 Agent MySQL 的 `workflow_resources` 表中，不再依赖 N8N sqlite；Console 只读取闭合安全 descriptor，不直接读取 Token、表格 ID、范围、路径或原始配置。
-- `sync_daily_should_sign` 必须显式绑定独立的 `r13_account_id` 与唯一的融辉 TMS 邵阳大祥站 `account_id`；同一个 TMS 登录态统一用于问题件、主单签收、轨迹核验和地址补全，不读取旧 `workflow_resources.phase7.r13_credentials`，也不接受请求体内联凭据或隐式默认账号。
+- `sync_daily_should_sign` 必须显式绑定独立的 `r13_account_id` 与唯一的融辉 TMS 邵阳大祥站 `account_id`；R13 查询站点只从项目所选账号的中央目录合同解析，并必须精确匹配 `DAILY_SIGN_R13_SITE_CODE=7390017`，首方 Broker 注入后业务脚本才可执行，账号缺站点、绑定其他站点或请求体覆盖站点都会阻塞。完整零行 R13 结果仍完成其他来源证据核验；若最终发布集合为空且飞书仍有上一成功投影，则投影层在任何写入、删除或清空前阻塞，目标本就为空且证据闭合时可接受合法零集合。同一个 TMS 登录态统一用于问题件、主单签收、轨迹核验和地址补全，不读取旧 `workflow_resources.phase7.r13_credentials`，也不接受请求体内联凭据或隐式默认账号。
 - R13 只作为应签候选和冲突诊断；TMS 主单“签收”事件是唯一关闭证据。长历史签收按 31 天窗口完整分页并校验汇总/明细总量，离开当前 R13 的候选由迁移 `013` 按 1/3/7 天退避进行精确轨迹核验。
 - `console` 现已与 Agent 统一使用同一套 MySQL，不再在运行时回退 SQLite。
 - Agent、控制台、自动化调度、Phase 7 同步链路当前统一使用独立的 Agent MySQL；N8N 已从运行时链路移除，不再参与数据库读写、Webhook 映射或任务调度。

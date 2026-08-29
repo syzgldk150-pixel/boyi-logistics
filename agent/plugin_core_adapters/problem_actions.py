@@ -27,9 +27,6 @@ FeishuOperation = Callable[[str, dict[str, Any]], Mapping[str, Any]]
 ProblemAction = Callable[
     [Mapping[str, Any], str, Mapping[str, Any]], Mapping[str, Any]
 ]
-ComplaintAction = Callable[
-    [Mapping[str, Any], str, Mapping[str, Any]], Mapping[str, Any]
-]
 SnapshotReader = Callable[[], Sequence[Mapping[str, Any]]]
 SnapshotReplacer = Callable[[list[dict[str, Any]]], Mapping[str, Any]]
 ResultUpdater = Callable[[list[dict[str, Any]]], Mapping[str, Any]]
@@ -529,125 +526,6 @@ def _default_problem_action(
     raise _error("problem adapter action is invalid", "BROKER_CONTEXT_INVALID")
 
 
-def _complaint_query(
-    descriptor: Mapping[str, Any],
-    plan: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    from agent.tms_runtime.scripts import ronghui_problem_upload as problem
-    from agent.tms_runtime.scripts import ronghui_split_complaint as complaint
-
-    session = _login_session(descriptor)
-    try:
-        login_context = problem.fetch_login_context(session)
-        entry_context = problem.resolve_problem_page_context(session)
-        problem.fetch_bill_info(session, str(plan["bill_code"]), entry_context)
-        page_context = complaint._resolve_page_context(session)
-        complaint.query_registered_complaints(
-            session,
-            bill_code=str(plan["bill_code"]),
-            complaint_list_url=page_context.complaint_list_url,
-            login_site_code=str(login_context.get("site_code") or ""),
-        )
-    except Exception as exc:
-        raise _error(
-            "Ronghui complaint preflight source is invalid",
-            "BROKER_SOURCE_INVALID",
-        ) from exc
-    return {"ready": True}
-
-
-def _complaint_create(
-    descriptor: Mapping[str, Any],
-    plan: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    from agent.tms_runtime.scripts import ronghui_split_complaint as complaint
-
-    session = _login_session(descriptor)
-    try:
-        results = complaint.upload_split_complaints(
-            session,
-            [str(plan["bill_code"])],
-            keep_artifacts=False,
-        )
-    except Exception as exc:
-        raise _error(
-            "Ronghui complaint write outcome is unknown",
-            "WRITE_OUTCOME_UNKNOWN",
-        ) from exc
-    if len(results) != 1 or not isinstance(results[0], Mapping):
-        raise _error(
-            "Ronghui complaint write outcome is unknown",
-            "WRITE_OUTCOME_UNKNOWN",
-        )
-    result = results[0]
-    status = str(result.get("status") or "").strip().lower()
-    if status not in {"success", "duplicate"}:
-        raise _error(
-            "Ronghui complaint write outcome is unknown",
-            "WRITE_OUTCOME_UNKNOWN",
-        )
-    if (
-        result.get("verified") is not True
-        or str(result.get("bill_code") or "").strip() != str(plan["bill_code"])
-        or not str(result.get("external_id") or "").strip()
-        or re.fullmatch(r"[0-9a-f]{64}", str(result.get("plan_sha256") or ""))
-        is None
-    ):
-        raise _error(
-            "Ronghui complaint acknowledgement lacks authoritative readback",
-            "WRITE_OUTCOME_UNKNOWN",
-        )
-    return {
-        "bill_code": str(plan["bill_code"]),
-        "duplicate": status == "duplicate",
-        "external_id": str(result["external_id"]).strip(),
-        "plan_sha256": str(result["plan_sha256"]).strip(),
-        "saved": True,
-        "verified": True,
-    }
-
-
-def _complaint_verify(
-    descriptor: Mapping[str, Any],
-    plan: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    from agent.tms_runtime.scripts import ronghui_problem_upload as problem
-    from agent.tms_runtime.scripts import ronghui_split_complaint as complaint
-
-    session = _login_session(descriptor)
-    try:
-        login_context = problem.fetch_login_context(session)
-        page_context = complaint._resolve_page_context(session)
-        proof = complaint.verify_complaint_fingerprint(
-            session,
-            bill_code=str(plan["bill_code"]),
-            external_id=str(plan["external_id"]),
-            plan_sha256=str(plan["plan_sha256"]),
-            complaint_list_url=page_context.complaint_list_url,
-            login_site_code=str(login_context.get("site_code") or ""),
-        )
-    except Exception as exc:
-        raise _error(
-            "Ronghui complaint authoritative readback failed",
-            "WRITE_OUTCOME_UNKNOWN",
-        ) from exc
-    return {"confirmed": True, **dict(proof)}
-
-
-def _default_complaint_action(
-    descriptor: Mapping[str, Any],
-    action: str,
-    plan: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    if action == "query":
-        return _complaint_query(descriptor, plan)
-    if action == "create":
-        return _complaint_create(descriptor, plan)
-    if action == "verify":
-        return _complaint_verify(descriptor, plan)
-    raise _error("complaint adapter action is invalid", "BROKER_CONTEXT_INVALID")
-
-
 def _default_snapshot_reader() -> Sequence[Mapping[str, Any]]:
     from tools.phase7_mysql_store import list_split_pending_problem_items
 
@@ -840,7 +718,6 @@ def build_production_problem_ports(
     resource_loader: ResourceLoader | None = None,
     feishu_operation: FeishuOperation | None = None,
     problem_action: ProblemAction | None = None,
-    complaint_action: ComplaintAction | None = None,
     snapshot_reader: SnapshotReader | None = None,
     snapshot_replacer: SnapshotReplacer | None = None,
     result_updater: ResultUpdater | None = None,
@@ -863,7 +740,6 @@ def build_production_problem_ports(
             account_id,
         ),
         problem_action=problem_action or _default_problem_action,
-        complaint_action=complaint_action or _default_complaint_action,
         sheet_rows_read=lambda resource_id, end_column, max_rows: _read_sheet_rows(
             load_resource,
             operate_feishu,

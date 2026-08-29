@@ -1,6 +1,5 @@
 import argparse
 import json
-import os
 from datetime import datetime, timedelta
 from math import ceil
 from typing import Any, Dict, List, Optional, Tuple
@@ -184,11 +183,14 @@ def fetch_qianshou(
     page: int,
     fetch_all: bool = True,
     max_pages: int = 500,
-    account_id: str = "r13_default",
+    account_id: str,
 ) -> List[Dict[str, Any]]:
+    resolved_account_id = str(account_id or "").strip()
+    if not resolved_account_id:
+        raise RuntimeError("R13 account identity is required")
     auth = R13SSOAuth(
         config_path=config_path,
-        state_path=default_sso_state_path(account_id or "r13_default"),
+        state_path=default_sso_state_path(resolved_account_id),
     )
     session = auth.login_and_get_session(
         username=username,
@@ -332,9 +334,12 @@ def fetch_qianshou(
 
 
 def _resolve_disp_site_code(value: Optional[str]) -> str:
-    if value:
-        return value
-    return os.environ.get("R13_DISP_SITE_CODE", "7390004")
+    site_code = str(value or "").strip()
+    if not site_code:
+        raise RuntimeError(
+            "R13 site identity is required and must come from the bound account"
+        )
+    return site_code
 
 
 def _coerce_int(value: Any, *, default: int) -> int:
@@ -371,6 +376,10 @@ def run_once(params: Dict[str, Any]) -> List[Dict[str, Any]]:
     fetch_all = _coerce_bool(params.get("fetch_all") or params.get("fetchAll"), default=True)
     max_pages = _coerce_int(params.get("max_pages") or params.get("maxPages"), default=500)
 
+    account_id = str(params.get("r13_account_id") or "").strip()
+    if not account_id:
+        raise RuntimeError("R13 account identity is required")
+
     return fetch_qianshou(
         config_path=params.get("config_path"),
         username=params.get("username") or params.get("user"),
@@ -384,7 +393,7 @@ def run_once(params: Dict[str, Any]) -> List[Dict[str, Any]]:
         page=page,
         fetch_all=fetch_all,
         max_pages=max_pages,
-        account_id=str(params.get("account_id") or params.get("r13_account_id") or "r13_default"),
+        account_id=account_id,
     )
 
 
@@ -394,7 +403,8 @@ def main() -> None:
     parser.add_argument("--username", default=None)
     parser.add_argument("--password", default=None)
     parser.add_argument("--account-key", default=None)
-    parser.add_argument("--disp-site-code", default=None)
+    parser.add_argument("--account-id", required=True)
+    parser.add_argument("--disp-site-code", required=True)
     parser.add_argument("--start", default=None, help="YYYY-MM-DD HH:MM:SS")
     parser.add_argument("--end", default=None, help="YYYY-MM-DD HH:MM:SS")
     parser.add_argument("--days", type=int, default=7)
@@ -418,6 +428,7 @@ def main() -> None:
         page=args.page,
         fetch_all=args.fetch_all,
         max_pages=args.max_pages,
+        account_id=args.account_id,
     )
     print(json.dumps(result, ensure_ascii=True, indent=2))
 

@@ -1,5 +1,7 @@
 import io
 import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -20,6 +22,19 @@ from console.services.automation import (
 
 REQUEST_ID = "12345678-1234-4234-8234-123456789abc"
 CONSOLE_DIR = Path(__file__).resolve().parents[1]
+
+
+def _node_host_path(path: Path, node_binary: str) -> str:
+    text = str(path)
+    if not node_binary.lower().endswith(".exe") or not text.startswith("/"):
+        return text
+    converted = subprocess.run(
+        ["wslpath", "-w", text],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return converted.stdout.strip()
 
 
 def _plugin_package() -> dict:
@@ -807,6 +822,53 @@ class AutomationPluginHandlerTests(unittest.TestCase):
                 )
                 self.assertIn(message, captured["payload"]["message"])
 
+    def test_configuration_rejects_agent_success_without_new_version(self):
+        app, captured = self._app()
+        app._agent_request = lambda *_args, **_kwargs: {
+            "ok": True,
+            "data": {
+                "schedule_runtime_state": "ACTIVE",
+                "schedule_runtime_enabled": True,
+                "scheduler_refresh_completed": True,
+            },
+        }
+
+        app._handle_automation_plugin_configuration_save(
+            self._handler(self._configuration_payload()),
+            "finance_action_east",
+        )
+
+        self.assertEqual(HTTPStatus.BAD_GATEWAY, captured["status"])
+        self.assertEqual(
+            "INVALID_PLUGIN_CONFIGURATION_RESPONSE",
+            captured["payload"]["error"]["code"],
+        )
+
+    def test_configuration_does_not_claim_active_when_scheduler_refresh_is_incomplete(self):
+        app, captured = self._app()
+        app._agent_request = lambda *_args, **_kwargs: {
+            "ok": True,
+            "data": {
+                "project_configuration_version": 10,
+                "schedule_runtime_state": "ACTIVE",
+                "schedule_runtime_enabled": True,
+                "scheduler_refresh_completed": False,
+            },
+        }
+
+        app._handle_automation_plugin_configuration_save(
+            self._handler(self._configuration_payload()),
+            "finance_action_east",
+        )
+
+        self.assertEqual(HTTPStatus.OK, captured["status"])
+        self.assertEqual(
+            "REFRESH_FAILED",
+            captured["payload"]["data"]["schedule_runtime_state"],
+        )
+        self.assertFalse(captured["payload"]["data"]["scheduler_refresh_completed"])
+        self.assertIn("刷新失败", captured["payload"]["message"])
+
     def test_configuration_rejects_browser_actor_cron_hash_and_task_ids(self):
         for forbidden in ("actor", "source", "cron_expression", "task_ids", "manifest_hash"):
             with self.subTest(forbidden=forbidden):
@@ -1246,6 +1308,45 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertIn("files.length !== 1", script_source)
         self.assertIn("void submitInstall(files[0])", script_source)
         self.assertIn("filename.replace(/\\.zip$/i", script_source)
+
+    def test_project_settings_save_is_delegated_and_survives_partial_navigation(self):
+        node_binary = shutil.which("node") or shutil.which("node.exe")
+        if node_binary is None:
+            self.skipTest("Node.js is required for the project settings DOM regression")
+        dom_test = Path(__file__).with_name("automation_project_settings_dom.test.cjs")
+        script = CONSOLE_DIR / "static" / "automation_approval_policy.js"
+        completed = subprocess.run(
+            [
+                node_binary,
+                _node_host_path(dom_test, node_binary),
+                _node_host_path(script, node_binary),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            0,
+            completed.returncode,
+            msg=f"{completed.stdout}\n{completed.stderr}",
+        )
+
+        template_source = (CONSOLE_DIR / "templates" / "automation.html").read_text(
+            encoding="utf-8"
+        )
+        script_source = script.read_text(encoding="utf-8")
+        stylesheet = (CONSOLE_DIR / "static" / "style.css").read_text(encoding="utf-8")
+        self.assertIn("data-plugin-settings-feedback", template_source)
+        self.assertIn('aria-describedby="{{ plugin_settings_feedback_id }}"', template_source)
+        self.assertIn(
+            'form.addEventListener("automation:plugin-configuration-saved"',
+            template_source,
+        )
+        self.assertIn("closeAutomationTaskPanels(form)", template_source)
+        self.assertIn("initializePluginConfigurationDelegation();", script_source)
+        self.assertNotIn('configurationSave?.addEventListener("click"', script_source)
+        self.assertIn(".automation-plugin-settings-feedback", stylesheet)
+        self.assertIn(".auto-settings { transition: none; }", stylesheet)
 
     def test_unknown_write_recovery_control_is_server_owned_and_visible_only_when_blocked(self):
         template_source = (CONSOLE_DIR / "templates" / "automation.html").read_text(

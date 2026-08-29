@@ -1,5 +1,8 @@
+from unittest.mock import patch
+
 from tools.preview_self_pickup_problems_tool import preview_self_pickup_problems
 from tools.preview_split_pending_problems_tool import preview_split_pending_problems
+from tools.self_pickup_problem_upload_tool import run_self_pickup_problem_upload
 
 
 def _preview_payload(account_id: str):
@@ -12,6 +15,15 @@ def _preview_payload(account_id: str):
         "preview_fingerprint": "a" * 64,
         "source": {"resource_key": "test"},
     }
+
+
+def test_self_pickup_legacy_wrapper_requires_project_account_bindings():
+    with patch("tools.self_pickup_problem_upload_tool.call_http_service") as call_mock:
+        result = run_self_pickup_problem_upload({"dry_run": True})
+    assert result["stage"] == "blocked_config"
+    assert "account_id" in result["error"]
+    assert "daxiang_s_account_id" in result["error"]
+    call_mock.assert_not_called()
 
 
 def test_split_preview_forces_dry_run_and_emits_evidence():

@@ -37,8 +37,8 @@ updated: 2026-08-29
 > 2026-05-13: Yunda password login may be redirected by SSO to `/public/sms/sms_valid`. `session_broker.py` now records this as `challenge_type=sms` so the console and Feishu recovery flow ask for a 6-digit SMS code instead of showing the Yunda image-captcha flow.
 > 2026-05-13: TMS credential status endpoints must not return saved passwords. They may report `has_saved_credentials`, `credential_source`, and non-secret status fields; password inputs in the console are write-only.
 > 2026-05-13: The same `yunda` main-account login state is used for both report automation and waybill tracking. After Yunda login succeeds, `session_broker.py` opens the client-side “快件跟踪” route once so `kyinms.yunda56.com` cookies are included in the shared storage state; validation also touches the INMS index page.
-> 2026-05-31: `self_pickup_problem_upload` 同时处理 `邵阳自提部` 和 `邵阳大祥S站 + 派送方式=自提` 两类来源；自提部使用 `ronghui_self_pickup_problem` / `self_pickup_problem_upload`，大祥S站使用 `ronghui_daxiang_s` / `daxiang_s`，登记前通过 `FIND_PROBLEM_BY_CODE` 跳过已有同类型或同文案问题件。
-> 2026-05-19: 新增 `self_pickup_problem_upload`，用于从飞书到货表筛选目的站点 `邵阳自提部` 的单号，先 dry-run 预览，确认后在 TMS 问题件录入中上传 `开单为自提件` 问题件；默认不上传截图，并使用独立账号 `ronghui_self_pickup_problem`。
+> 2026-05-31: `self_pickup_problem_upload` 同时处理 `邵阳自提部` 和 `邵阳大祥S站 + 派送方式=自提` 两类来源；两类来源分别使用项目设置显式绑定的 `account_id` 与 `daxiang_s_account_id`，运行时再从中央账号管理解析 session profile，登记前通过 `FIND_PROBLEM_BY_CODE` 跳过已有同类型或同文案问题件。缺少任一启用来源的账号绑定时显式阻断，不猜测默认账号。
+> 2026-05-19: 新增 `self_pickup_problem_upload`，用于从飞书到货表筛选目的站点 `邵阳自提部` 的单号，先 dry-run 预览，确认后在 TMS 问题件录入中上传 `开单为自提件` 问题件；默认不上传截图。运单号只裁剪前后空白，若裁剪后仍含内部空白则报告来源行并阻断该候选，禁止删除内部空白后猜测单号。
 > 2026-05-19: 融辉登录页已从短信验证码形态切到图片验证码形态时，`session_broker.py` 会自动识别页面 DOM，保存验证码图片和 cookie 会话并返回 `challenge_type=image`；旧短信验证码页仍保留 `challenge_type=sms` 流程。
 > 2026-05-20: 融辉与大祥报价登录默认按图片验证码处理，不再要求手机号；Console 会透传 `captcha_image` / `captcha_image_mime` / `captcha_captured_at` 到 `/automations` 顶部模块，飞书登录恢复支持 4-8 位字母数字验证码。
 
@@ -89,7 +89,7 @@ TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `er
 
 后台 `/automations` 中走 R7 页面的任务使用 `system_badges` 标记 R7 图标，当前包括 `R7 到达打卡` 和 `R7 发车打卡`；`arrive-list` 走 TMS 派件预报基础清单。
 
-`self_pickup_problem_upload` 的执行链路是：飞书文本 `自提到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` → `agent/direct_tool_router.py` dry-run → `tools/self_pickup_problem_upload_tool.py` → `/tms/self_pickup_problem_upload` → `agent/tms_runtime/scripts/self_pickup_problem_upload.py`。脚本读取工作簿 `F0NVsI5dlhaWugtw14YcmdrQnvh`，优先取源 sheet `每日到货表`，按两条来源规则筛单：`目的站点=邵阳自提部` 进入自提部来源；`目的站点=邵阳大祥S站` 且 `派送方式=自提` 进入大祥S站来源；两类来源都必须满足 `累计到货件数 = 件数/货物件数`，未到齐或缺少件数列时不进入上传候选。真实执行时每个来源分别定位 TMS `问题件录入` 并保存 `TAB_PROBLEM_ADD`，问题件类型固定为 `开单为自提件`，问题件科目为 `特殊时效`；保存前调用 `FIND_PROBLEM_BY_CODE`，已有同类型或同文案记录则跳过。默认不上传截图；如后续业务临时要求附图，可通过单次参数 `screenshot_path`、目录参数 `screenshot_dir`、逐单 `screenshot_map` 提供，或设置 `upload_screenshot=true` 后读取环境变量 `HUOLALA_ORDER_SCREENSHOT_PATH` / `TMS_SELF_PICKUP_PROBLEM_SCREENSHOT_PATH`。自提部来源绑定 `account_id=ronghui_self_pickup_problem`、`session_profile=self_pickup_problem_upload`；大祥S站来源绑定 `account_id=ronghui_daxiang_s`、`session_profile=daxiang_s`，不要使用大祥报价账号 `price_default`。两个账号会自动出现在后台账号管理里，凭据留空，人工在后台保存后再发码登录。
+`self_pickup_problem_upload` 的执行链路是：飞书文本 `自提到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` → `agent/direct_tool_router.py` dry-run → `tools/self_pickup_problem_upload_tool.py` → `/tms/self_pickup_problem_upload` → `agent/tms_runtime/scripts/self_pickup_problem_upload.py`。脚本读取项目绑定的来源表，优先取源 sheet `每日到货表`，按两条来源规则筛单：`目的站点=邵阳自提部` 进入自提部来源；`目的站点=邵阳大祥S站` 且 `派送方式=自提` 进入大祥S站来源；两类来源都必须满足 `累计到货件数 = 件数/货物件数`，未到齐或缺少件数列时不进入上传候选。候选运单号统一只裁剪前后空白；裁剪后仍含空白时显式报告来源行，预览与正式执行都不会删除内部空白或猜测单号。真实执行时每个来源分别定位 TMS `问题件录入` 并保存 `TAB_PROBLEM_ADD`，问题件类型固定为 `开单为自提件`，问题件科目为 `特殊时效`；保存前调用 `FIND_PROBLEM_BY_CODE`，已有同类型或同文案记录则跳过。默认不上传截图；如后续业务临时要求附图，可通过单次参数 `screenshot_path`、目录参数 `screenshot_dir`、逐单 `screenshot_map` 提供。自提部与大祥S站来源分别使用项目设置显式绑定的 `account_id` 与 `daxiang_s_account_id`，session profile 由中央账号记录解析；启用来源缺少绑定或账号描述不完整时显式阻断，脚本不内置默认站点、账号或 session profile。
 
 **新增指令的步骤：**
 
@@ -180,7 +180,7 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 | 消息状态机（三态 pending） | `feishu/message_handler.py` 的 `_process_and_reply` |
 | 工具调用统一入口 | `feishu/message_handler.py` 的 `_execute_and_reply` |
 | Admin 端点（发码/校码） | `agent/tms_runtime/routes.py` + `session_broker.py` |
-| 分批差错及问题件编排 | `tools/split_pending_problem_upload_tool.py` + `agent/tms_runtime/scripts/ronghui_split_complaint.py` + `agent/tms_runtime/scripts/ronghui_problem_upload.py` |
+| 分批及有发未到问题件编排 | `tools/split_pending_problem_upload_tool.py` + `agent/tms_runtime/scripts/split_pending_problem_upload.py` + `agent/tms_runtime/scripts/ronghui_problem_upload.py` |
 | 自提到货问题件编排 | `tools/self_pickup_problem_upload_tool.py` + `agent/tms_runtime/scripts/self_pickup_problem_upload.py` |
 | 扫描同步编排 | `tools/scan_sync_tool.py` |
 | 到货清单同步编排 | `tools/arrive_list_sync_tool.py` |
@@ -193,7 +193,7 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 
 `sync_scan_codes` 的执行链路是：后台“获取并扫描数据”、飞书扫描指令或 Webhook → `tools/scan_sync_tool.py` → `/get_scan` → 刷新扫描索引 → 分批执行 `/scan_next`。后台卡片的 `target_date` 留空时不发送日期覆盖参数，`get_scan` 按执行当天查询；选择日期时工具将 `YYYY-MM-DD` 转换为融辉扫描记录查询使用的 `YYYY/MM/DD` 单日范围。`target_date` 与高级 `request_body.params.date/start/end` 不能同时设置，冲突时显式失败。调度器选定账号后，`scan_next` 必须沿用该账号的 `session_profile`，并在发件扫描同源 iframe/父页/顶层页登录上下文完整就绪且值一致后再录单；扫描员和网点字段严格采用原页 `$Z.user.getUserInfo()`，禁止页头/默认值回退，站点只接受唯一精确匹配。任何批次失败都会立刻终止余下批次并返回顶层 `SCAN_NEXT_BATCH_FAILED`，后续 webhook 不执行；显式 `child_item_limit/max_batches` 导致的未排入子单通过 `omitted_items/truncated` 返回，避免把限定执行误报为全量完成。
 
-`sync_arrival_stats` 成功写完统计输出后，会把本次内存中的 A:S 统计结果交给 `split_pending_snapshot.py`：严格校验 19 列表头、件数、重复运单和到货范围，按 `已到 < 应到` 生成未齐候选，同时覆盖 `split_pending_problem_items` 快照与“分批及有发未到表”。正常统计但全部到齐时目标表只保留表头并清除旧行；统计结果为空、字段异常或重复单号时显式失败并保留旧快照。旧的 `phase7.pending_arrivals_sheet` 仅为可选输出：迁移生成的签名插件实例默认保存 `pending_sheet_disabled=true` 且不绑定 `arrival_stats_pending_sheet`，因此不会调用该资源；只有先配置并显式绑定精确资源，再把开关改为 false 才会启用。遗留 whole-tool 在资源未配置或写入失败时仍返回 skipped，不会中断主/副统计表、归档和分批未齐快照链路。该自动阶段只刷新数据，不调用融辉差错或问题件上报。
+`sync_arrival_stats` 成功写完统计输出后，会把本次内存中的 A:S 统计结果交给 `split_pending_snapshot.py`：严格校验 19 列表头、件数、重复运单和到货范围，按 `已到 < 应到` 生成未齐候选，同时覆盖 `split_pending_problem_items` 快照与“分批及有发未到表”。正常统计但全部到齐时目标表只保留表头并清除旧行；统计结果为空、字段异常或重复单号时显式失败并保留旧快照。旧的 `phase7.pending_arrivals_sheet` 仅为可选输出：迁移生成的签名插件实例默认保存 `pending_sheet_disabled=true` 且不绑定 `arrival_stats_pending_sheet`，因此不会调用该资源；只有先配置并显式绑定精确资源，再把开关改为 false 才会启用。遗留 whole-tool 在资源未配置或写入失败时仍返回 skipped，不会中断主/副统计表、归档和分批未齐快照链路。该自动阶段只刷新数据，不调用融辉问题件上报。
 
 `sync_daily_send_orders` 的执行链路是：后台定时任务 `获取当日寄件数据` 或飞书文本 `获取当日寄件数据/融辉寄件数据/TMS寄件数据` → `tools/send_order_sync_tool.py` → `/send_order` → 融辉 `FIND_BILL_SEND` 寄件查询接口 → 飞书多维表格资源 `phase7.send_order_bitable`。默认 `发件日期=当天`，可传 `target_date` 拉单日，也可传 `start_date` + `end_date` 拉闭区间日期范围；范围模式逐日执行。写入前会剔除 `运单编号` 为 `H` / `HR` 等回单号开头的记录，并返回 `skipped_receipt_like` 计数。写入策略为按日安全替换：同一台机器上先加本地文件锁，避免多进程重叠执行；再读取飞书中同一 `发件日期` 的旧记录并按 `运单编号` 建索引，本次拉到的单号更新或新增，写入成功后删除同一天旧记录中本次未返回的单号；读取飞书旧记录时按 200 条分页完整扫描，避免飞书列表接口截断后把后续旧单误判为新增；写入和删除完成后会复扫同日记录，同日同单号已有重复记录时只保留首条并删除多余记录。因此重复拉同一天时，飞书中该日期最终记录数会与本次接口返回数一致，其他日期历史不受影响。运行时 `/send_order` 在未显式传 `page_index` 时会按 `page_size/max_pages` 拉完整分页；显式传 `page_index` 时保留旧单页兼容行为。飞书写入成功后，同步将本次有效记录按 `waybill_no` upsert 到控制台 SQL 表 `waybills`，来源标记为 `ronghui`，明确返回的当前扫描状态写入 `scan_status`，并删除该来源同一 `open_date` 下本次未返回的旧单，保证后台 `/waybills` 运单查询与最新拉取快照一致；`sql_only=true` 时只执行原站拉取和控制台 SQL 回填，不读写飞书。
 
@@ -233,11 +233,11 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 - 韵达查询脚本在 `agent/tms_runtime/scripts/yunda_waybill_tracking.py`，复用 `yunda` 登录态和 `/admin/tms/yunda-session/*` 登录恢复流程，不新增凭据读取。
 - 回复格式由 `format_track_waybill_reply` 生成：首行 `查询单号：xxx`，后续为 `【时间 状态】描述`；默认展示全部轨迹，超过飞书文本长度时保留最新记录并提示截断。
 
-## 2026-08-07 分批差错及问题件
+## 2026-08-29 分批及有发未到问题件
 
 - 链路：飞书仅精确文本“分批” → dry-run 返回按每日到货表顺序编号的未完成候选、步骤状态、隐藏成功数量和 `preview_fingerprint` → 首次列表中回复“确认”会携带全部 `selected_bill_codes` 与指纹直接执行；输入序号/多选/区间时只选择对应运单，回显后再回复“确认”正式执行。
 - 旧文本“分批问题件”“上报分批差错”“分批差错”“上传分批/未到问题件”等只提示发送“分批”，不映射工具；菜单事件也不直接运行分批工具。
-- `0 < 已到 < 应到`：先通过 `ronghui_split_complaint.py` 上报“分批”差错，成功或重复后才登记“少货/分批 / 交接异常”问题件；差错失败跳过该票问题件并继续后续运单。`已到=0<应到` 只登记“有发未到 / 通知类（不顺延时效）”问题件。
-- `split_pending_problem_items` 独立保存差错与问题件状态。同类型数量变化保留已成功结果；类型变化重置所需步骤。完整成功单从后续候选隐藏，失败、未选择和部分成功单继续显示并只补未完成步骤。
+- `0 < 已到 < 应到`：只在真实“问题件录入”登记“少货/分批 / 交接异常”，问题件内容严格为 `应到XX件 实际到XX件`；不再进入投诉方登记。`已到=0<应到` 继续登记“有发未到 / 通知类（不顺延时效）”问题件。
+- `split_pending_problem_items` 保存问题件状态；遗留 `complaint_status` 固定为 `not_applicable`，不再代表执行步骤。同类型数量变化保留已成功结果；类型变化重置问题件状态。问题件写入完成后必须先写后回读每日应签问题事件，再把 MySQL 结果标为成功，避免事件失败时把候选错误隐藏。完整成功单从后续候选隐藏，失败和未选择单继续显示。
 - 正式执行先重读来源与状态并校验指纹；变化时整批零业务写入并要求重新发送“分批”。校验通过后刷新全部当前未齐 Sheet/MySQL 快照，但融辉外部上传只处理所选运单。
 - “分批及有发未到表”不再依赖人工“分批”指令保持新鲜：每次 `sync_arrival_stats` 成功后自动覆盖，全部到齐时清空旧数据；人工指令仍只负责选择与确认真实上报。

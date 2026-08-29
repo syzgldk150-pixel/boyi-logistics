@@ -300,6 +300,8 @@ class RuntimeRepositoryTests(unittest.TestCase):
                 "028",
                 "029",
                 "030",
+                "031",
+                "032",
             ],
             [version for version, _ in migrations],
         )

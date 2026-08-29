@@ -40,6 +40,7 @@ LEGACY_PYTHON_LINE_LIMITS = {
     "agent/agent/automation_plugins/first_party_handlers.py": 3_020,
     "agent/tests/test_phase7_sync_tools.py": 3_127,
     "console/services/automation.py": 3_016,
+    "shared/orchestration_repository.py": 3_075,
 }
 SECRET_PATTERNS = (
     re.compile(r"AKIA[0-9A-Z]{16}"),

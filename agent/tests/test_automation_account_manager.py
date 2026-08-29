@@ -68,6 +68,39 @@ class AutomationAccountManagerTests(unittest.TestCase):
 
         self.assertEqual(error.exception.code, "ACCOUNT_DISABLED")
 
+    def test_r13_default_binding_descriptor_owns_daxiang_s_site(self):
+        descriptor = self.manager.require_active_binding_descriptor("r13_default")
+
+        self.assertEqual("r13", descriptor["system"])
+        self.assertEqual("7390017", descriptor["site_code"])
+
+    def test_legacy_r13_default_row_is_enriched_from_account_contract(self):
+        account_manager_module._write_json(
+            account_manager_module.ACCOUNTS_PATH,
+            [
+                {
+                    "account_id": "r13_default",
+                    "system": "r13",
+                    "name": "R13默认账号",
+                    "account_purpose": "general",
+                    "is_default": True,
+                    "is_active": True,
+                }
+            ],
+        )
+
+        descriptor = self.manager.require_active_binding_descriptor("r13_default")
+        stored = account_manager_module._read_json(
+            account_manager_module.ACCOUNTS_PATH,
+            [],
+        )
+
+        self.assertEqual("7390017", descriptor["site_code"])
+        stored_r13 = next(
+            row for row in stored if row["account_id"] == "r13_default"
+        )
+        self.assertEqual("7390017", stored_r13["site_code"])
+
     def test_local_credentials_preserve_password_and_show_success_status(self):
         result = self.manager.save_credentials(
             "r7_default",

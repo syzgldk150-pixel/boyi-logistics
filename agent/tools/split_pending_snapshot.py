@@ -91,7 +91,7 @@ def classify_sheet_values(values: list[list[Any]]) -> tuple[list[dict[str, Any]]
         else:
             problem_type = "少货/分批"
             problem_owner_type = "交接异常"
-            problem_cause = f"应到{expected}件，已到{arrived}件"
+            problem_cause = f"应到{expected}件 实际到{arrived}件"
         sheet_row = list(row[:18]) + [arrived]
         candidates.append(
             {
