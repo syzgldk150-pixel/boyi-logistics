@@ -18,6 +18,7 @@ from console.services.automation import (
     build_automation_project_policy_view,
     normalize_automation_plugin_catalog,
 )
+from console.services.automation_projects import _normalize_plugin_account_roles
 
 
 REQUEST_ID = "12345678-1234-4234-8234-123456789abc"
@@ -118,6 +119,32 @@ def _catalog_payload() -> dict:
 
 
 class AutomationPluginCatalogTests(unittest.TestCase):
+    def test_daily_sign_account_roles_explain_the_two_external_systems(self):
+        roles = _normalize_plugin_account_roles(
+            [
+                {
+                    "role": "r13_account_id",
+                    "allowed_systems": ["r13"],
+                    "required": True,
+                    "binding_cardinality": "one",
+                },
+                {
+                    "role": "account_id",
+                    "allowed_systems": ["ronghui"],
+                    "required": True,
+                    "binding_cardinality": "one",
+                },
+            ],
+            plugin_id="sync_daily_should_sign",
+        )
+
+        self.assertEqual(
+            ["R13 应签查询账号", "融辉到货与签收核验账号"],
+            [role["label"] for role in roles],
+        )
+        self.assertIn("所属站点范围", roles[0]["hint"])
+        self.assertIn("主单签收证据", roles[1]["hint"])
+
     def test_code_owned_runtime_fields_stay_out_of_browser_configuration(self):
         payload = _catalog_payload()
         instance = payload["instances"][0]

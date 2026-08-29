@@ -12,7 +12,6 @@ import uuid
 from contextvars import ContextVar, Token
 from concurrent.futures import Future
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -39,6 +38,26 @@ from agent.pending_actions import clear_pending, get_pending, set_pending
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
 from feishu.notify import remember_chat_id
+from feishu.selection_preview import (
+    FEISHU_SAFE_TEXT_BYTES,
+    SCAN_PREVIEW_ERROR_MESSAGES,
+    SELF_PICKUP_MAX_SELECTED,
+    contains_account_override as _contains_account_override,
+    is_scan_cancel_text as _is_scan_cancel_text,
+    is_scan_confirm_text as _is_scan_confirm_text,
+    normalize_selection_preview_projection as _normalize_selection_preview_projection,
+    parse_split_selection as _parse_split_selection,
+    scan_confirmation_ttl as _scan_confirmation_ttl,
+    scan_preview_error_message as _scan_preview_error_message,
+    scan_preview_reply as _scan_preview_reply,
+    scan_preview_ttl as _scan_preview_ttl,
+    selection_confirmation_ttl as _selection_confirmation_ttl,
+    selection_preview_ttl as _selection_preview_ttl,
+    self_pickup_candidate_lines as _self_pickup_candidate_lines,
+    split_candidate_lines as _split_candidate_lines,
+    split_selected_lines as _split_selected_lines,
+    split_text_chunks as _split_text_chunks,
+)
 from shared.redaction import redact_text
 from tools.internal_http import internal_api_headers
 
@@ -64,29 +83,9 @@ R7_DEPARTURE_TASK_ID = "r7_departure_checkin"
 R7_DEPARTURE_DEFAULT_PLATE = "湘AK6980"
 SELF_PICKUP_PROBLEM_ACCOUNT_ID = "ronghui_self_pickup_problem"
 SELF_PICKUP_PREVIEW_TOOL_NAME = "preview_self_pickup_problems"
-SELF_PICKUP_MAX_SELECTED = 250
-SPLIT_SELECTION_TTL = 600
 SPLIT_TOOL_NAME = "split_pending_problem_upload"
 SPLIT_PREVIEW_TOOL_NAME = "preview_split_pending_problems"
 SCAN_FEISHU_ROUTE_KEY = "builtin.scan_codes"
-SCAN_PREVIEW_PENDING_TTL = 900
-SCAN_PREVIEW_ERROR_MESSAGES = {
-    "SCAN_PREVIEW_ID_INVALID": "扫描预览标识无效，请重新发送“扫描”。",
-    "SCAN_PREVIEW_NOT_FOUND": "扫描预览不存在，请重新发送“扫描”。",
-    "SCAN_PREVIEW_INCOMPLETE": "扫描预览尚未完整生成，请重新发送“扫描”。",
-    "SCAN_PREVIEW_INVALID": "扫描预览证据无效，请重新发送“扫描”。",
-    "SCAN_PREVIEW_EXPIRED": "扫描预览已超过十五分钟，请重新发送“扫描”。",
-    "SCAN_PREVIEW_STALE": "扫描数据已变化，请重新发送“扫描”后再确认。",
-    "PROJECT_INVOCATION_STALE": "扫描项目配置已变化，请重新发送“扫描”。",
-    "SCAN_PREVIEW_ALREADY_CONSUMED": "该预览已提交过正式请求，请前往事项中心查看原任务。",
-    "REQUEST_ID_REUSED": "本次飞书事件标识已被使用，请重新发送“确认扫描”。",
-    "SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED": "正式扫描尚未开放，本次没有写入第三方系统。",
-    "SCAN_PREVIEW_CONTEXT_REQUIRED": "服务端扫描合同缺少预览上下文，正式执行已阻断。",
-    "SCAN_PREVIEW_CONTEXT_INVALID": "服务端扫描合同与预览不一致，正式执行已阻断。",
-}
-SCAN_CONFIRM_RE = re.compile(r"^\s*确认\s*扫描\s*$")
-SCAN_CANCEL_RE = re.compile(r"^\s*取消\s*扫描\s*$")
-FEISHU_SAFE_TEXT_BYTES = 3500
 ACCOUNT_AUTH_SESSION_PREFIX = "account:"
 ADMIN_REQUEST_TIMEOUT = 90.0
 _FEISHU_ROUTE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,190}$")
@@ -191,6 +190,14 @@ def _automation_result_reply(
         return f"{task_name}部分完成：{detail[:300]}", "automation_project_partial"
     if status in {"BLOCKED_DATA", "FAILED_RETRYABLE", "FAILED_TERMINAL"}:
         if (
+            task_name == TOOL_DISPLAY_NAMES["self_pickup_problem_upload"]
+            and "SELECTION_PREVIEW_EXPIRED" in reason
+        ):
+            return (
+                "候选清单已变化，请重新发送“自提到货问题件”；本次未写入。",
+                "self_pickup_preview_stale",
+            )
+        if (
             task_name == TOOL_DISPLAY_NAMES[SPLIT_TOOL_NAME]
             and "ACTION_VALUE_ERROR:FRAME=action.py:642:run_action" in reason
         ):
@@ -216,163 +223,29 @@ TOOL_CANCEL_COMMANDS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
-def _split_text_chunks(lines: list[str], *, max_bytes: int = FEISHU_SAFE_TEXT_BYTES) -> list[str]:
-    chunks: list[str] = []
-    current: list[str] = []
-    current_bytes = 0
-    for raw_line in lines:
-        line = str(raw_line)
-        line_bytes = len(line.encode("utf-8"))
-        if line_bytes > max_bytes:
-            raise ValueError("单行分批消息超过飞书安全长度")
-        separator_bytes = 1 if current else 0
-        if current and current_bytes + separator_bytes + line_bytes > max_bytes:
-            chunks.append("\n".join(current))
-            current = []
-            current_bytes = 0
-            separator_bytes = 0
-        current.append(line)
-        current_bytes += separator_bytes + line_bytes
-    if current:
-        chunks.append("\n".join(current))
-    return chunks
-
-
-def _parse_split_selection(text: str, candidate_count: int) -> list[int]:
-    normalized = str(text or "").strip()
-    if candidate_count <= 0:
-        raise ValueError("当前没有可选择的运单")
-    if normalized == "全部":
-        return list(range(1, candidate_count + 1))
-    for separator in ("，", "、"):
-        normalized = normalized.replace(separator, ",")
-    if not normalized or normalized.startswith(",") or normalized.endswith(",") or ",," in normalized:
-        raise ValueError("请输入数字、逗号分隔数字、区间或“全部”")
-    selected: list[int] = []
-    seen: set[int] = set()
-    for raw_token in normalized.split(","):
-        token = raw_token.strip()
-        if re.fullmatch(r"\d+", token):
-            values = [int(token)]
-        else:
-            match = re.fullmatch(r"(\d+)\s*-\s*(\d+)", token)
-            if not match:
-                raise ValueError(f"非法序号：{token or '空'}")
-            start = int(match.group(1))
-            end = int(match.group(2))
-            if start > end:
-                raise ValueError(f"区间起始序号不能大于结束序号：{token}")
-            values = list(range(start, end + 1))
-        for value in values:
-            if value < 1 or value > candidate_count:
-                raise ValueError(f"序号越界：{value}（可选 1-{candidate_count}）")
-            if value in seen:
-                raise ValueError(f"序号重复或区间重叠：{value}")
-            seen.add(value)
-            selected.append(value)
-    if not selected:
-        raise ValueError("至少选择一个序号")
-    return selected
-
-
-def _split_candidate_lines(candidates: list[dict[str, Any]], hidden_completed: int) -> list[str]:
-    lines = [
-        f"待执行分批运单 {len(candidates)} 单（已隐藏完整成功 {hidden_completed} 单）：",
-    ]
-    for index, item in enumerate(candidates, start=1):
-        lines.append(
-            f"{index}. {item.get('bill_code')} [{item.get('status') or '未执行'}] "
-            f"{item.get('problem_type')}，已到{item.get('arrived_quantity')}/"
-            f"应到{item.get('expected_quantity')}件"
-        )
-    lines.extend(
-        [
-            "",
-            "回复“确认”直接执行全部；如需部分上传，请输入序号：2 / 1,3,5 / 2-4。",
-            "回复“取消”放弃；部分选择后需再次回复“确认”执行；10 分钟内有效。",
-        ]
-    )
-    return lines
-
-
-def _split_selected_lines(selected: list[dict[str, Any]]) -> list[str]:
-    lines = [f"已选择 {len(selected)} 单："]
-    for item in selected:
-        lines.append(
-            f"- {item.get('bill_code')} [{item.get('status') or '未执行'}] {item.get('problem_type')}"
-        )
-    lines.extend(["", "回复“确认”正式执行，回复“取消”放弃。10 分钟内有效。"])
-    return lines
-
-
-def _split_execution_inputs(
+async def _selection_pending_actor_allowed(
+    *,
+    chat_id: str,
+    sender_id: str,
     pending: dict[str, Any],
-    selected_bill_codes: list[str],
-) -> dict[str, Any]:
-    return {
-        "dry_run": False,
-        "selected_bill_codes": selected_bill_codes,
-        "preview_fingerprint": str(pending.get("preview_fingerprint") or ""),
-    }
-
-
-def _account_field_name(value: Any) -> bool:
-    field_name = str(value or "").strip().lower()
-    return (
-        field_name in {"account_id", "account_ids"}
-        or field_name.endswith(("_account_id", "_account_ids"))
-    )
-
-
-def _contains_account_override(value: Any) -> bool:
-    if isinstance(value, dict):
-        return any(
-            _account_field_name(key) or _contains_account_override(item)
-            for key, item in value.items()
+) -> bool:
+    originator = str(pending.get("originator_actor_id") or "").strip()
+    if not originator:
+        clear_pending(chat_id)
+        await _reply_text(
+            chat_id,
+            "候选确认状态无效，请重新生成候选清单。",
+            reply_type="selection_preview_pending_invalid",
         )
-    if isinstance(value, (list, tuple)):
-        return any(_contains_account_override(item) for item in value)
-    return False
-
-
-def _is_scan_confirm_text(value: Any) -> bool:
-    return bool(SCAN_CONFIRM_RE.fullmatch(str(value or "")))
-
-
-def _is_scan_cancel_text(value: Any) -> bool:
-    return bool(SCAN_CANCEL_RE.fullmatch(str(value or "")))
-
-
-def _scan_preview_error_message(error_code: Any) -> str:
-    code = str(error_code or "").strip()
-    return SCAN_PREVIEW_ERROR_MESSAGES.get(
-        code,
-        "扫描请求结果暂时无法确定，请前往事项中心查看原任务。",
-    )
-
-
-def _scan_preview_ttl(projection: dict[str, Any]) -> int:
-    expires_at = datetime.fromisoformat(
-        str(projection["expires_at"]).replace("Z", "+00:00")
-    )
-    remaining = int((expires_at - datetime.now(timezone.utc)).total_seconds())
-    return max(1, min(SCAN_PREVIEW_PENDING_TTL, remaining))
-
-
-def _scan_preview_reply(projection: dict[str, Any]) -> str:
-    return "\n".join(
-        [
-            "扫描预览已生成：",
-            f"日期：{projection['target_date']}",
-            f"来源页数：{projection['source_page_count']}",
-            f"来源记录：{projection['normalized_record_count']}",
-            f"待扫描：{projection['selection_count']}",
-            f"提交批次：{projection['batch_count']}",
-            f"有效期至：{projection['expires_at']}",
-            "",
-            "请在十五分钟内回复“确认扫描”执行正式扫描，或回复“取消扫描”放弃。",
-        ]
-    )
+        return False
+    if originator != str(sender_id or "").strip():
+        await _reply_text(
+            chat_id,
+            "只有生成本次候选清单的用户可以确认或取消。",
+            reply_type="selection_preview_actor_mismatch",
+        )
+        return False
+    return True
 
 
 def _automation_entrypoints() -> AutomationProjectEntrypoints:
@@ -393,68 +266,6 @@ def _safe_feishu_route_key(value: Any) -> str:
             "Automation project route key is invalid",
         )
     return route_key
-
-
-def _project_preview_params(route_key: str, tool_name: str) -> dict[str, Any]:
-    service = _automation_entrypoints()
-    roles = (
-        ("account_id", "daxiang_s_account_id")
-        if tool_name == "preview_self_pickup_problems"
-        else ("account_id",)
-    )
-    bindings = service.require_feishu_account_bindings(route_key, *roles)
-    params: dict[str, Any] = {}
-    for role in roles:
-        binding = bindings[role]
-        if not isinstance(binding, str):
-            raise OrchestrationError(
-                "PROJECT_ACCOUNT_BINDING_INVALID",
-                "Preview requires one exact Business Account for each role",
-            )
-        params[role] = binding
-    return params
-
-
-def _self_pickup_confirmation_inputs(result: dict[str, Any]) -> dict[str, Any] | None:
-    payload = result.get("data") if isinstance(result.get("data"), dict) else {}
-    candidates = payload.get("candidates")
-    fingerprint = payload.get("preview_fingerprint")
-    if not isinstance(candidates, list) or not candidates:
-        return None
-    if len(candidates) > SELF_PICKUP_MAX_SELECTED:
-        return None
-    if not isinstance(fingerprint, str) or re.fullmatch(
-        r"[0-9a-f]{64}", fingerprint
-    ) is None:
-        return None
-    selected: list[str] = []
-    seen: set[str] = set()
-    for item in candidates:
-        if not isinstance(item, dict):
-            return None
-        bill_code = item.get("bill_code")
-        if (
-            not isinstance(bill_code, str)
-            or bill_code != bill_code.strip()
-            or not bill_code
-            or len(bill_code) > 128
-            or any(character.isspace() for character in bill_code)
-            or bill_code.startswith("=")
-            or (
-                len(bill_code) >= 2
-                and bill_code[0] == bill_code[-1]
-                and bill_code[0] in {"'", '"'}
-            )
-            or bill_code in seen
-        ):
-            return None
-        seen.add(bill_code)
-        selected.append(bill_code)
-    return {
-        "dry_run": False,
-        "preview_fingerprint": fingerprint,
-        "selected_bill_codes": selected,
-    }
 
 
 async def _invoke_automation_project(
@@ -494,6 +305,7 @@ async def _invoke_automation_project_and_reply(
     dynamic_inputs: dict[str, Any] | None,
     receive_id: str,
     receive_id_type: str = "chat_id",
+    preview_run_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Invoke one exact committed project and render its bounded Feishu result."""
 
@@ -514,6 +326,7 @@ async def _invoke_automation_project_and_reply(
         result = await _invoke_automation_project(
             route_key=safe_route_key,
             dynamic_inputs=dynamic_inputs,
+            preview_run_id=preview_run_id,
         )
     except OrchestrationError as exc:
         logger.warning(
@@ -585,17 +398,136 @@ async def _invoke_automation_project_and_reply(
     return result
 
 
-def _scan_confirmation_ttl(pending: dict[str, Any]) -> int:
+async def _invoke_selection_preview_and_reply(
+    *,
+    route_key: str,
+    tool_name: str,
+    receive_id: str,
+) -> dict[str, Any] | None:
+    expected_automation_id = (
+        "self_pickup_problem_upload"
+        if tool_name == SELF_PICKUP_PREVIEW_TOOL_NAME
+        else "split_pending_problem_upload"
+    )
+    start_reply = (
+        "正在生成自提到货问题件候选清单，完成后我会发回结果。"
+        if tool_name == SELF_PICKUP_PREVIEW_TOOL_NAME
+        else "正在生成分批问题件候选清单；任务繁忙时可能需要排队，完成后我会反馈结果。"
+    )
+    await _reply_text(
+        receive_id,
+        start_reply,
+        reply_type="selection_preview_started",
+    )
     try:
-        expires_at = datetime.fromisoformat(
-            str(pending.get("expires_at") or "").replace("Z", "+00:00")
+        result = await _invoke_automation_project(
+            route_key=route_key,
+            dynamic_inputs={},
         )
-    except ValueError:
-        return 0
-    if expires_at.tzinfo is None:
-        return 0
-    remaining = int((expires_at - datetime.now(timezone.utc)).total_seconds())
-    return max(0, min(SCAN_PREVIEW_PENDING_TTL, remaining))
+    except OrchestrationError as exc:
+        logger.warning(
+            "trusted Feishu selection preview rejected | route=%s | code=%s",
+            str(route_key or "")[:191],
+            exc.code,
+        )
+        await _reply_text(
+            receive_id,
+            f"候选清单未生成（{exc.code}），请检查项目账号和数据表绑定后重试。",
+            reply_type="automation_preview_rejected",
+        )
+        return None
+
+    status = str(result.get("status") or "").strip().upper()
+    run_id = str(result.get("run_id") or "").strip()
+    if status != "COMPLETED":
+        reply, reply_type = _automation_result_reply(
+            task_name=_automation_task_name(route_key),
+            result=result,
+        )
+        await _reply_text(receive_id, reply, reply_type=reply_type)
+        return result
+    projection = _normalize_selection_preview_projection(
+        result.get("selection_preview"),
+        expected_automation_id=expected_automation_id,
+        expected_run_id=run_id,
+    )
+    if projection is None:
+        await _reply_text(
+            receive_id,
+            "候选清单返回无效，确认入口已阻断，请重新发起任务。",
+            reply_type="selection_preview_invalid",
+        )
+        return result
+
+    candidates = list(projection["candidates"])
+    can_confirm = bool(projection["can_confirm"])
+    ttl = _selection_preview_ttl(projection) if can_confirm else 0
+    context = _COMMAND_CONTEXT.get()
+    originator_actor_id = context.actor_id if context is not None else ""
+    if tool_name == SELF_PICKUP_PREVIEW_TOOL_NAME:
+        if candidates and len(candidates) <= SELF_PICKUP_MAX_SELECTED and ttl > 0:
+            set_pending(
+                receive_id,
+                {
+                    "type": "self_pickup_selection_confirmation",
+                    "tool_name": "self_pickup_problem_upload",
+                    "automation_route_key": route_key,
+                    "preview_run_id": projection["preview_run_id"],
+                    "originator_actor_id": originator_actor_id,
+                    "selected_bill_codes": [
+                        str(item["bill_code"]) for item in candidates
+                    ],
+                    "expires_at": projection["expires_at"],
+                    "description": "自提到货问题件",
+                },
+                ttl_sec=ttl,
+            )
+        await _reply_split_lines(
+            receive_id,
+            _self_pickup_candidate_lines(
+                candidates,
+                int(projection["summary"].get("duplicate_source_rows") or 0),
+            ),
+            reply_type="self_pickup_candidate_list",
+        )
+        return result
+
+    hidden_completed = int(
+        projection["summary"].get("hidden_completed_count") or 0
+    )
+    if not candidates:
+        await _reply_text(
+            receive_id,
+            f"待执行分批运单 0 单（已隐藏完整成功 {hidden_completed} 单）。",
+            reply_type="split_candidate_list",
+        )
+        return result
+    if ttl <= 0:
+        await _reply_text(
+            receive_id,
+            "分批候选清单已过期，请重新发送“分批”。",
+            reply_type="split_preview_stale",
+        )
+        return result
+    set_pending(
+        receive_id,
+        {
+            "type": "split_pending_selection",
+            "tool_name": SPLIT_TOOL_NAME,
+            "automation_route_key": route_key,
+            "preview_run_id": projection["preview_run_id"],
+            "originator_actor_id": originator_actor_id,
+            "expires_at": projection["expires_at"],
+            "candidates": candidates,
+        },
+        ttl_sec=ttl,
+    )
+    await _reply_split_lines(
+        receive_id,
+        _split_candidate_lines(candidates, hidden_completed),
+        reply_type="split_candidate_list",
+    )
+    return result
 
 
 def _store_scan_confirmation_pending(
@@ -816,6 +748,14 @@ async def _execute_split_formal(
     running_message: str,
 ) -> None:
     del agent, running_message
+    if _selection_confirmation_ttl(pending) <= 0:
+        clear_pending(chat_id)
+        await _reply_text(
+            chat_id,
+            "分批候选清单已过期，请重新发送“分批”。",
+            reply_type="split_preview_stale",
+        )
+        return
     if _contains_account_override(pending):
         clear_pending(chat_id)
         await _reply_text(
@@ -825,12 +765,21 @@ async def _execute_split_formal(
         )
         return
     route_key = str(pending.get("automation_route_key") or "").strip()
-    dynamic_inputs = _split_execution_inputs(pending, selected_bill_codes)
+    preview_run_id = str(pending.get("preview_run_id") or "").strip()
+    if not route_key or not preview_run_id or not selected_bill_codes:
+        clear_pending(chat_id)
+        await _reply_text(
+            chat_id,
+            "分批候选清单已失效，请重新发送“分批”。",
+            reply_type="split_confirmation_stale",
+        )
+        return
     clear_pending(chat_id)
     await _invoke_automation_project_and_reply(
         route_key=route_key,
-        dynamic_inputs=dynamic_inputs,
+        dynamic_inputs={"selected_bill_codes": selected_bill_codes},
         receive_id=chat_id,
+        preview_run_id=preview_run_id,
     )
 
 
@@ -2295,13 +2244,19 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
             return
 
         if ptype == "split_pending_selection":
+            if not await _selection_pending_actor_allowed(
+                chat_id=chat_id,
+                sender_id=sender_id,
+                pending=pending,
+            ):
+                return
             if is_cancel_text(text):
                 clear_pending(chat_id)
                 await _reply_text(chat_id, "已取消：分批问题件")
                 return
             if _contains_account_override(pending) or not str(
                 pending.get("automation_route_key") or ""
-            ).strip():
+            ).strip() or not str(pending.get("preview_run_id") or "").strip():
                 clear_pending(chat_id)
                 await _reply_text(
                     chat_id,
@@ -2341,17 +2296,28 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 await _reply_text(chat_id, "候选列表数据无效，请重新发送“分批”。")
                 clear_pending(chat_id)
                 return
+            ttl = _selection_confirmation_ttl(pending)
+            if ttl <= 0:
+                clear_pending(chat_id)
+                await _reply_text(
+                    chat_id,
+                    "分批候选清单已过期，请重新发送“分批”。",
+                    reply_type="split_preview_stale",
+                )
+                return
             set_pending(
                 chat_id,
                 {
                     "type": "split_pending_confirmation",
                     "tool_name": SPLIT_TOOL_NAME,
                     "automation_route_key": pending.get("automation_route_key"),
+                    "originator_actor_id": pending.get("originator_actor_id"),
                     "selected_bill_codes": selected_codes,
-                    "preview_fingerprint": pending.get("preview_fingerprint"),
+                    "preview_run_id": pending.get("preview_run_id"),
+                    "expires_at": pending.get("expires_at"),
                     "selected": selected,
                 },
-                ttl_sec=SPLIT_SELECTION_TTL,
+                ttl_sec=ttl,
             )
             await _reply_split_lines(
                 chat_id,
@@ -2361,6 +2327,12 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
             return
 
         if ptype == "split_pending_confirmation":
+            if not await _selection_pending_actor_allowed(
+                chat_id=chat_id,
+                sender_id=sender_id,
+                pending=pending,
+            ):
+                return
             if is_cancel_text(text):
                 clear_pending(chat_id)
                 await _reply_text(chat_id, "已取消：分批问题件")
@@ -2377,6 +2349,58 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 )
                 return
             await _reply_text(chat_id, "当前选择已保留，请回复“确认”执行或回复“取消”放弃。")
+            return
+
+        if ptype == "self_pickup_selection_confirmation":
+            if not await _selection_pending_actor_allowed(
+                chat_id=chat_id,
+                sender_id=sender_id,
+                pending=pending,
+            ):
+                return
+            if is_cancel_text(text):
+                clear_pending(chat_id)
+                await _reply_text(chat_id, "已取消：自提到货问题件")
+                return
+            if is_confirm_text(text):
+                if _selection_confirmation_ttl(pending) <= 0:
+                    clear_pending(chat_id)
+                    await _reply_text(
+                        chat_id,
+                        "自提到货问题件候选清单已过期，请重新发起任务。",
+                        reply_type="self_pickup_preview_stale",
+                    )
+                    return
+                route_key = str(pending.get("automation_route_key") or "").strip()
+                preview_run_id = str(pending.get("preview_run_id") or "").strip()
+                selected_bill_codes = list(pending.get("selected_bill_codes") or [])
+                if (
+                    _contains_account_override(pending)
+                    or not route_key
+                    or not preview_run_id
+                    or not selected_bill_codes
+                ):
+                    clear_pending(chat_id)
+                    await _reply_text(
+                        chat_id,
+                        "自提到货问题件候选清单已失效，请重新发起任务。",
+                        reply_type="automation_confirmation_stale",
+                    )
+                    return
+                clear_pending(chat_id)
+                await _invoke_automation_project_and_reply(
+                    route_key=route_key,
+                    dynamic_inputs={
+                        "selected_bill_codes": selected_bill_codes,
+                    },
+                    receive_id=chat_id,
+                    preview_run_id=preview_run_id,
+                )
+                return
+            await _reply_text(
+                chat_id,
+                "自提到货问题件候选已保留，请回复“确认”上传全部，或回复“取消”放弃。",
+            )
             return
 
         if ptype == "confirm_action":
@@ -2600,8 +2624,6 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         dynamic_inputs = direct_request.get("dynamic_inputs")
         if not isinstance(dynamic_inputs, dict):
             dynamic_inputs = {}
-        confirm_intent = direct_request.get("confirm_intent")
-        selection_intent = direct_request.get("selection_intent")
         local_result = direct_request.get("local_result")
         logger.info("feishu route | chat=%s | route=direct_tool | tool=%s | mode=%s", chat_id, tool_name, mode)
 
@@ -2622,15 +2644,12 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
             return
 
         if mode == "automation_preview":
-            try:
-                params = _project_preview_params(automation_route_key, tool_name)
-            except OrchestrationError as exc:
-                await _reply_text(
-                    chat_id,
-                    f"自动化预览不可用（{exc.code}），请检查项目账号绑定。",
-                    reply_type="automation_preview_rejected",
-                )
-                return
+            await _invoke_selection_preview_and_reply(
+                route_key=automation_route_key,
+                tool_name=tool_name,
+                receive_id=chat_id,
+            )
+            return
 
         if mode == "deferred":
             if await _reply_if_tool_running(agent, chat_id, tool_name):
@@ -2645,13 +2664,6 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
 
         if await _reply_if_tool_running(agent, chat_id, tool_name):
             return
-
-        if mode == "automation_preview" and tool_name == SPLIT_PREVIEW_TOOL_NAME:
-            await _reply_text(
-                chat_id,
-                "正在生成分批问题件候选清单；任务繁忙时可能需要排队，完成后我会反馈结果。",
-                reply_type="split_preview_started",
-            )
 
         if tool_name == "track_waybill":
             tracking_number = str(params.get("tracking_number") or "").strip()
@@ -2680,46 +2692,6 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         if await _handle_auth_result(chat_id, result=result, resume_tool=tool_name, resume_params=params):
             return
 
-        if confirm_intent and result.get("success"):
-            confirmation_inputs = dict(confirm_intent.get("dynamic_inputs") or {})
-            if tool_name == SELF_PICKUP_PREVIEW_TOOL_NAME:
-                confirmation_inputs = _self_pickup_confirmation_inputs(result)
-            if confirmation_inputs is not None:
-                set_pending(
-                    chat_id,
-                    {
-                        "type": "confirm_action",
-                        "tool_name": tool_name,
-                        "automation_route_key": automation_route_key,
-                        "dynamic_inputs": confirmation_inputs,
-                        "description": confirm_intent.get("description") or tool_name,
-                    },
-                )
-        if selection_intent and tool_name == SPLIT_PREVIEW_TOOL_NAME and result.get("success"):
-            payload = result.get("data") if isinstance(result.get("data"), dict) else result
-            candidates = payload.get("candidates") if isinstance(payload.get("candidates"), list) else []
-            fingerprint = str(payload.get("preview_fingerprint") or "")
-            if candidates and len(fingerprint) == 64:
-                set_pending(
-                    chat_id,
-                    {
-                        "type": "split_pending_selection",
-                        "tool_name": SPLIT_TOOL_NAME,
-                        "automation_route_key": automation_route_key,
-                        "candidates": candidates,
-                        "preview_fingerprint": fingerprint,
-                    },
-                    ttl_sec=SPLIT_SELECTION_TTL,
-                )
-                await _reply_split_lines(
-                    chat_id,
-                    _split_candidate_lines(
-                        candidates,
-                        int(payload.get("hidden_completed_count") or 0),
-                    ),
-                    reply_type="split_candidate_list",
-                )
-                return
         await _reply_tool_result(chat_id, tool_name, result)
         return
 

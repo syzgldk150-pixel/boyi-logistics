@@ -40,7 +40,7 @@
   - `tms_runtime/scripts/` 中与 `price_scripts/` 旧离线脚本重名的模块（如 `login_manager`、`address_utils`、`get_price`、`browser_address_resolver`）必须使用 `agent.tms_runtime.scripts...` 包内导入，不得裸 `import login_manager` / `import get_price`，避免旧脚本目录或 `sys.modules` 缓存串线。
   - `SessionBroker` 是对旧调用方的统一门面；融辉/韵达验证码流程分别经 provider adapter，文件状态只由 state store 管理。融辉图片验证码必须点击真实登录页 `newLogin()` 入口，保留原页密码加密和 `userInfo` 写入回调；`userInfo` 必须保持 JavaScript 可读，且四个页面身份字段完整后才能标记 authenticated。历史错误 `httpOnly=true` 状态只允许由共享状态迁移器修正，不得在扫描脚本中从页头或默认值补身份。调度器不得访问 broker 私有状态或按目录顺序加载脚本。
 - 融辉、韵达、R7、R13 全部通过 `/admin/accounts/{account_id}/*` 使用同一账号管理契约；凭据只来自后台账号管理保存值。大祥报价任务显式绑定 `price_default` 及其 `price_default` profile，后台登录与飞书报价复用同一状态；`/admin/tms/session/*`、`/admin/tms/price-session/*`、`/admin/tms/yunda-session/*` 只保留旧调用兼容。不同账号仍按 `account_id` 隔离 Cookie/Token，R7/R13 使用可持久和在线校验的 SSO Token/Cookie，韵达登录态继续服务报表、查单、寄件同步、报价、录单原页代理和问题件接口
-  - 所有签名项目自动化账号只来自项目当前提交的精确角色绑定；后台改绑后下一次运行使用新账号，Broker 和脚本不得按默认标记、列表顺序或固定 ID 猜测。R13 业务查询在该精确账号登录后调用 `/gateway/site/public/aurora/auth` 读取真实站点范围：中心账号传空站点列表，其他账号传其 `siteCode`；账号上下文缺失、刷新后范围漂移或请求体尝试覆盖站点时均 fail closed。
+  - 所有签名项目自动化账号只来自项目当前提交的精确角色绑定；后台改绑后下一次运行使用新账号，Broker 和脚本不得按默认标记、列表顺序或固定 ID 猜测。R13 业务查询在该精确账号登录后按原页协议调用 `/gateway/public/aurora/auth` 读取真实站点范围，请求使用 R13 同源 `Origin` 与 `aurora-token`，不得继承 SSO `Origin` 或附加 Bearer；中心账号传空站点列表，其他账号传其 `siteCode`。账号上下文缺失、刷新后范围漂移或请求体尝试覆盖站点时均 fail closed。
   - Agent `_monitor_tms_session_alerts` 是唯一周期主动登录态检查器，检查结果回写 `/admin/accounts` 共享快照；Console `prefer_cached=1` 只读该快照，即使同时携带 `force=1` 也不得发起外部校验。同账号检查或登录忙时，`BLOCKED_LOGIN` 只跳过本轮，不覆盖快照、不累计失败、不发飞书告警。
   - 韵达账号绿色状态必须校验主站、报表 `searchData`、`kyinms`、消息中心和 `kyproblem` 问题件页；登录/验证码成功后 `SessionBroker` 会初始化这些子系统并写入同一份 `storage_state`，不能只用主站已登录判断业务可用。
   - `tms_runtime/scripts/yunda_waybill_proxy.py` 只允许代理 `https://kyinms.yunda56.com/ky_inms/public/...`，由 Console `/ocr/yunda/live/...` 使用；该代理会向原页注入预填和本地打印监听脚本，保存响应带 `shipnow_autoprint_url` 时打开 Console 本地打印页；新增韵达原页接口时优先复用该 allowlist 代理，不要把浏览器 Cookie 或鉴权头透传给 Console。
@@ -69,10 +69,10 @@
   - 韵达新增：`韵达登录/韵达发验证码` 走 `yunda` 登录态；`切换到融辉自动化/切换到韵达自动化/当前自动化状态` 管理当前 Profile；`韵达派件预测/网点派件量预测主单表` 触发韵达派件预测同步
   - 含 `is_confirm_text` / `is_cancel_text` / `parse_verify_code` 用于 pending 状态机
   - TMS 工具返回登录态错误时必须顶层包含 `error_code=AUTH_REQUIRED` / `AUTH_PENDING_CODE`，不能只返回“格式异常”；共享解析在 `../tools/phase7_sync_common.py`
-  - `self_pickup_problem_upload` 自提部来源使用账号 `ronghui_self_pickup_problem` 和独立登录态 `self_pickup_problem_upload`；大祥S站自提来源使用账号 `ronghui_daxiang_s` 和登录态 `daxiang_s`；两者都不要回落到操作场默认 `default` 或报价账号 `price_default`
+  - `self_pickup_problem_upload` 两个来源分别使用项目当前显式绑定的 `account_id` 与 `daxiang_s_account_id`；Broker 从精确绑定账号解析会话与站点，后台改绑后下一次运行使用新账号，禁止固定账号、固定站点、默认 profile 或 `price_default` 回落。
 - 改"先预览-后确认"或"登录恢复"等多轮交互的待确认状态：
   - `pending_actions.py`（按 chat_id 维护带 TTL 的 pending；写入 `agent/tms_runtime/state/pending_actions.json`，服务重启后可恢复未过期状态）
-  - 与 `feishu/message_handler.py` 的三态 pending 配合：`confirm_action` / `confirm_login_for_resume` / `waiting_code_for_resume`
+  - 与 `feishu/message_handler.py` 的选择、登录恢复和验证码 pending 配合；自提/分批选择状态仅保存 `preview_run_id`、候选/选择和到期时间，不保存账号或指纹
 
 ## 不要先读的内容
 

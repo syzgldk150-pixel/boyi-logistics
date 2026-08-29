@@ -89,24 +89,24 @@ TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `er
 
 后台 `/automations` 中走 R7 页面的任务使用 `system_badges` 标记 R7 图标，当前包括 `R7 到达打卡` 和 `R7 发车打卡`；`arrive-list` 走 TMS 派件预报基础清单。
 
-`self_pickup_problem_upload` 的执行链路是：飞书文本 `自提到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` → `agent/direct_tool_router.py` dry-run → `tools/self_pickup_problem_upload_tool.py` → `/tms/self_pickup_problem_upload` → `agent/tms_runtime/scripts/self_pickup_problem_upload.py`。脚本读取项目绑定的来源表，优先取源 sheet `每日到货表`，按两条来源规则筛单：`目的站点=邵阳自提部` 进入自提部来源；`目的站点=邵阳大祥S站` 且 `派送方式=自提` 进入大祥S站来源；两类来源都必须满足 `累计到货件数 = 件数/货物件数`，未到齐或缺少件数列时不进入上传候选。候选运单号统一只裁剪前后空白；裁剪后仍含空白时显式报告来源行，预览与正式执行都不会删除内部空白或猜测单号。真实执行时每个来源分别定位 TMS `问题件录入` 并保存 `TAB_PROBLEM_ADD`，问题件类型固定为 `开单为自提件`，问题件科目为 `特殊时效`；保存前调用 `FIND_PROBLEM_BY_CODE`，已有同类型或同文案记录则跳过。默认不上传截图；如后续业务临时要求附图，可通过单次参数 `screenshot_path`、目录参数 `screenshot_dir`、逐单 `screenshot_map` 提供。自提部与大祥S站来源分别使用项目设置显式绑定的 `account_id` 与 `daxiang_s_account_id`，session profile 由中央账号记录解析；启用来源缺少绑定或账号描述不完整时显式阻断，脚本不内置默认站点、账号或 session profile。
+`self_pickup_problem_upload` 的当前执行链路是：飞书文本 `自提到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` → committed project route 的签名 dry-run → 已验签并持久化的 `selection_preview` → 飞书保存 `preview_run_id` 并默认选择全部候选 → 确认时服务端从同一候选 Run 恢复指纹和正式参数 → `automation.self_pickup_problem_upload.run`。旧 `agent/direct_tool_router.py`、`tools/self_pickup_problem_upload_tool.py` 与 `/tms/self_pickup_problem_upload` 不再参与飞书预览或正式写入。签名动作读取项目绑定的来源表，按两条来源规则筛单：`目的站点=邵阳自提部` 进入自提部来源；`目的站点=邵阳大祥S站` 且 `派送方式=自提` 进入大祥S站来源；两类来源都必须满足 `累计到货件数 = 件数/货物件数`，未到齐或缺少件数列时不进入上传候选。候选运单号统一只裁剪前后空白；裁剪后仍含空白时显式报告来源行，预览与正式执行都不会删除内部空白或猜测单号。候选指纹按规范内容排序计算，来源行顺序变化不会造成假过期；内容变化则返回 `SELECTION_PREVIEW_EXPIRED` 且在任何 TMS 写入前终止。真实执行时每个来源分别通过签名 Broker 定位 TMS `问题件录入`，问题件类型固定为 `开单为自提件`，问题件科目为 `特殊时效`；保存前读取登记问题件列表，已有同类型或同文案记录则跳过，新增后必须独立读回验证。自提部与大祥S站来源分别使用项目设置显式绑定的 `account_id` 与 `daxiang_s_account_id`；后台改绑后下一次运行使用新账号，脚本不内置默认站点、账号或 session profile。
 
 **新增指令的步骤：**
 
-1. 在 `agent/direct_tool_router.py` 加精确 regex（参考 `SPLIT_PENDING_PROBLEM_UPLOAD_RE` / `ARRIVAL_STATS_RE`）
-2. 在 `direct_tool_request_from_text` 里命中时返回 `{tool_name, params, mode}`
-3. 在 `format_tool_reply` 里加专门的 formatter 分支（如需自定义文案）
-4. 在 `tools/registry.yaml` 注册或复用现有工具
+1. 插件化确定性指令在签名 manifest 声明唯一 `feishu_route.route_key`，由 `AutomationProjectEntrypoints` 精确解析 committed 项目实例；账号只取该实例当前绑定。
+2. 只有仍属 legacy、无插件项目路由的兼容只读指令才在 `agent/direct_tool_router.py` 加精确 regex，并在 `direct_tool_request_from_text` 返回 `{tool_name, params, mode}`。
+3. 自定义回复放在 `feishu/message_handler.py` 的项目结果 formatter；不得把账号、站点或签名预览指纹放入消息参数。
+4. 新工具仍须在 `tools/registry.yaml` 完成治理注册；插件动作还需同步 manifest、Broker 合同、迁移矩阵、摘要锁和签名发行。
 
-### 2. 先预览-后确认（confirm_action）
+### 2. 先预览-后确认
 
-副作用大的批量操作（如对外发投诉），先预览候选清单，回"确认"才真正执行；TTL 10 分钟内有效。
+副作用大的批量操作先预览候选清单，回"确认"才真正执行。自提与分批统一走签名 dry-run 和持久化候选 Run，有效期 15 分钟；legacy `confirm_action` 只保留给尚未插件化的兼容流程。
 
 **触发机制：**
-- 直达路由返回 `mode=reply, params={dry_run: True}, confirm_intent={execute_params, description}`
-- 工具用 `dry_run=True` 跑出候选清单后，`message_handler._process_and_reply` 自动用 `set_pending` 注册 `confirm_action` 类型的待确认动作
-- 只要 dry-run 成功且回复文案提示用户可"确认"/"取消"，就必须注册 pending；候选数为 0 也不能跳过，否则用户回"取消"会落入未知脚本路由
-- 下一次用户输入命中 `is_confirm_text` → 用 `execute_params` 真实执行；命中 `is_cancel_text` → 清除 pending
+- 自提/分批调用 committed project route 的签名 `dry_run`，完成后读取已验签、已持久化的 `selection_preview`
+- 飞书只保存 `preview_run_id`、候选/所选运单和到期时间；候选为零时只回复零行，不开放写确认
+- 下一次用户输入命中 `is_confirm_text` 时只提交运行号与选择结果，服务端从同一候选 Run 恢复指纹和正式参数；命中 `is_cancel_text` 时清除 pending
+- 其他 legacy `confirm_action` 仍按其独立契约执行，不得复用自提/分批的账号或候选数据
 
 **关键文件：**
 - `agent/pending_actions.py` — 按 chat_id 维护带 TTL 的 pending，并写入 `agent/tms_runtime/state/pending_actions.json`，服务重启后仍可恢复未过期的登录/确认状态
@@ -180,8 +180,8 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 | 消息状态机（三态 pending） | `feishu/message_handler.py` 的 `_process_and_reply` |
 | 工具调用统一入口 | `feishu/message_handler.py` 的 `_execute_and_reply` |
 | Admin 端点（发码/校码） | `agent/tms_runtime/routes.py` + `session_broker.py` |
-| 分批及有发未到问题件编排 | `tools/split_pending_problem_upload_tool.py` + `agent/tms_runtime/scripts/split_pending_problem_upload.py` + `agent/tms_runtime/scripts/ronghui_problem_upload.py` |
-| 自提到货问题件编排 | `tools/self_pickup_problem_upload_tool.py` + `agent/tms_runtime/scripts/self_pickup_problem_upload.py` |
+| 分批及有发未到问题件编排 | `first_party_automation_plugins/split_pending_problem_upload/payload/action.py` + `agent/orchestration/selection_preview_binding.py` + `agent/orchestration/automation_project_entrypoints.py` + `agent/orchestration/automation_project_policy_service.py` + `feishu/message_handler.py`；旧 tool/runtime 仅兼容隔离 |
+| 自提到货问题件编排 | `first_party_automation_plugins/self_pickup_problem_upload/payload/action.py` + `agent/orchestration/selection_preview_binding.py` + `agent/orchestration/automation_project_entrypoints.py` + `agent/orchestration/automation_project_policy_service.py` + `feishu/message_handler.py`；旧 tool/runtime 仅兼容隔离 |
 | 扫描同步编排 | `tools/scan_sync_tool.py` |
 | 到货清单同步编排 | `tools/arrive_list_sync_tool.py` |
 | R7 到达打卡编排 | `tools/r7_arrival_checkin_tool.py` + `agent/tms_runtime/scripts/auto_checkin_r7.py` |
@@ -210,14 +210,15 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 
 | type | 用途 | 数据 |
 |---|---|---|
-| `confirm_action` | 通用先预览后确认（如自提到货问题件） | `{tool_name, params, description}` |
-| `split_pending_selection` | 分批 dry-run 后等待“确认”全量执行，或数字/多选/区间部分选择 | `{automation_route_key, candidates, preview_fingerprint, dynamic_inputs}`；不保存账号字段 |
-| `split_pending_confirmation` | 分批选择回显后等待确认 | `{automation_route_key, selected_bill_codes, preview_fingerprint, dynamic_inputs}`；不保存账号字段 |
+| `confirm_action` | 尚未插件化的通用 legacy 先预览后确认 | `{tool_name, params, description}` |
+| `self_pickup_selection_confirmation` | 自提签名候选 Run 等待原发起人确认全部 | `{automation_route_key, preview_run_id, originator_actor_id, selected_bill_codes, expires_at}`；不保存账号或指纹 |
+| `split_pending_selection` | 分批签名候选 Run 等待原发起人“确认”全量执行，或数字/多选/区间部分选择 | `{automation_route_key, preview_run_id, originator_actor_id, candidates, expires_at}`；不保存账号或指纹 |
+| `split_pending_confirmation` | 分批选择回显后等待原发起人确认 | `{automation_route_key, preview_run_id, originator_actor_id, selected_bill_codes, expires_at}`；不保存账号或指纹 |
 | `r7_departure_plate_choice` | 飞书发车打卡多车牌选择；只接受完整车牌号，不接受纯序号 | `{automation_route_key, plate_numbers, dynamic_inputs}`；车牌必须来自 committed 项目配置 |
 | `confirm_login_for_resume` | 登录态过期，等用户决定是否重登 | `{resume_tool, resume_params}` |
 | `waiting_code_for_resume` | 已发码，等用户回验证码；主动登录时 `resume_tool` 为空，仅完成登录校验 | `{resume_tool, resume_params}` |
 
-每条 pending 默认 TTL = 600 秒，并持久化到本地状态文件；服务重启后仍可恢复未过期的登录恢复、验证码等待和确认状态。
+登录恢复等 legacy pending 默认 TTL = 600 秒；自提/分批候选 pending 按已验签候选 Run 的到期时间设置，最长 900 秒。pending 持久化到本地状态文件，服务重启后仍只恢复未过期状态。
 
 ## 设计原则
 
@@ -235,7 +236,7 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 
 ## 2026-08-29 分批及有发未到问题件
 
-- 链路：飞书仅精确文本“分批” → dry-run 返回按每日到货表顺序编号的未完成候选、步骤状态、隐藏成功数量和 `preview_fingerprint` → 首次列表中回复“确认”会携带全部 `selected_bill_codes` 与指纹直接执行；输入序号/多选/区间时只选择对应运单，回显后再回复“确认”正式执行。
+- 链路：飞书仅精确文本“分批” → committed project route 的签名 dry-run 返回并持久化 `selection_preview` → 飞书 pending 只保存 `preview_run_id`、候选和用户选择 → 首次列表中回复“确认”会上传运行号与全部 `selected_bill_codes`；输入序号/多选/区间时只选择对应运单，回显后再回复“确认”。服务端从同一已验签候选 Run 恢复 `preview_fingerprint` 与正式参数后执行。
 - 旧文本“分批问题件”“上报分批差错”“分批差错”“上传分批/未到问题件”等只提示发送“分批”，不映射工具；菜单事件也不直接运行分批工具。
 - `0 < 已到 < 应到`：只在真实“问题件录入”登记“少货/分批 / 交接异常”，问题件内容严格为 `应到XX件 实际到XX件`；不再进入投诉方登记。`已到=0<应到` 继续登记“有发未到 / 通知类（不顺延时效）”问题件。
 - `split_pending_problem_items` 保存问题件状态；遗留 `complaint_status` 固定为 `not_applicable`，不再代表执行步骤。同类型数量变化保留已成功结果；类型变化重置问题件状态。问题件写入完成后必须先写后回读每日应签问题事件，再把 MySQL 结果标为成功，避免事件失败时把候选错误隐藏。完整成功单从后续候选隐藏，失败和未选择单继续显示。

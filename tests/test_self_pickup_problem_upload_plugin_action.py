@@ -181,6 +181,74 @@ def test_legacy_read_only_preview_fingerprint_matches_signed_candidate_material(
     ) == action._preview_fingerprint(signed_candidates)
 
 
+def test_preview_fingerprint_is_stable_when_source_rows_are_reordered():
+    action, _ = _load_action()
+    original_rows = _source_rows()
+    reordered_rows = _source_rows()
+    reordered_rows[1], reordered_rows[3] = reordered_rows[3], reordered_rows[1]
+
+    original_candidates, _ = action._collect_candidates(
+        original_rows,
+        include_daxiang=True,
+        limit=None,
+    )
+    reordered_candidates, _ = action._collect_candidates(
+        reordered_rows,
+        include_daxiang=True,
+        limit=None,
+    )
+    original_legacy = legacy_action._collect_waybills_from_values(
+        original_rows,
+        source_rules=legacy_action._source_rules(_legacy_source_params()),
+        source_sheet_id="sheet-1",
+        source_sheet_title="每日到货表",
+    )
+    reordered_legacy = legacy_action._collect_waybills_from_values(
+        reordered_rows,
+        source_rules=legacy_action._source_rules(_legacy_source_params()),
+        source_sheet_id="sheet-1",
+        source_sheet_title="每日到货表",
+    )
+
+    assert action._preview_fingerprint(original_candidates) == action._preview_fingerprint(
+        reordered_candidates
+    )
+    assert legacy_action._preview_fingerprint(
+        original_legacy
+    ) == legacy_action._preview_fingerprint(reordered_legacy)
+
+    original_limited, _ = action._collect_candidates(
+        original_rows,
+        include_daxiang=True,
+        limit=1,
+    )
+    reordered_limited, _ = action._collect_candidates(
+        reordered_rows,
+        include_daxiang=True,
+        limit=1,
+    )
+    original_legacy_limited = legacy_action._limited_preview_records(
+        original_legacy,
+        1,
+    )
+    reordered_legacy_limited = legacy_action._limited_preview_records(
+        reordered_legacy,
+        1,
+    )
+    assert [item["bill_code"] for item in original_limited] == [
+        item["bill_code"] for item in reordered_limited
+    ]
+    assert action._preview_fingerprint(original_limited) == action._preview_fingerprint(
+        reordered_limited
+    )
+    assert [item["bill_code"] for item in original_legacy_limited] == [
+        item["bill_code"] for item in reordered_legacy_limited
+    ]
+    assert legacy_action._preview_fingerprint(
+        original_legacy_limited
+    ) == legacy_action._preview_fingerprint(reordered_legacy_limited)
+
+
 def test_waybill_outer_whitespace_is_trimmed_in_preview_and_formal_selection():
     action, _ = _load_action()
     rows = _source_rows()
@@ -354,6 +422,7 @@ def test_preview_drift_blocks_before_any_ronghui_call():
     preview, _ = _preview(action)
     changed = _source_rows()
     changed[1][-1] = "2"
+    changed[6][-1] = "2"
     calls: list[str] = []
 
     def broker(operation, *, action, role, arguments):
@@ -362,7 +431,7 @@ def test_preview_drift_blocks_before_any_ronghui_call():
             return _source_response(changed)
         raise AssertionError("Ronghui must not run after source drift")
 
-    with pytest.raises(ValueError, match="preview expired"):
+    with pytest.raises(RuntimeError, match="SELECTION_PREVIEW_EXPIRED"):
         action.run_action(
             {
                 "dry_run": False,

@@ -179,15 +179,16 @@ Run 租约，避免审批回退与 executor 启动交叉。已有 `RUNNING/VERIF
   `customer_service_problem_publish`：绑定平台、账号、外部问题件或运单，以及完整发布载荷哈希；
 - `automation.split_pending_problem_upload.run`：只接受飞书固定命令从同一次预览恢复的一至九十个规范、
   唯一、有序运单号及 64 位预览指纹；计划哈希绑定该精确选择，正式动作在任何写入前重读来源与快照、
-  复核指纹并完成全部目标预检，写入后分别读回投诉、问题件、Sheet、快照、结果与每日应签事件。
+  复核指纹并完成全部目标预检，写入后分别读回问题件、Sheet、快照、结果与每日应签事件。
 - `automation.self_pickup_problem_upload.run`：只接受飞书固定命令从同一次预览恢复的一至二百五十个规范、
   唯一、有序运单号及 64 位预览指纹；计划哈希绑定该精确集合，正式动作在任何写入前重读完整来源、
   复核指纹并完成全部目标的问题件预检，随后逐单写入并从独立问题件列表读回验证。
 
-`preview_self_pickup_problems` 与 `preview_split_pending_problems` 是独立的低风险只读能力：只接受显式
-`account_id`，封装器强制旧实现以 `dry_run=true` 运行，并把候选、来源、观测时间、完整性和 Evidence
-纳入统一结果契约。两类飞书固定命令保存短期 pending，并在确认时把同一次预览的明确候选集合和指纹
-提交到对应签名项目；Scheduler、Console 和 LLM 均不提供这两类正式执行入口。
+自提与分批的低风险预览统一调用 committed project route 的签名 `dry_run`，不再通过
+`preview_self_pickup_problems`、`preview_split_pending_problems` 或 legacy wrapper 读取候选。完成的预览必须验签并
+持久化 `selection_preview`；飞书短期 pending 只保存 `preview_run_id`、候选与用户选择，确认时服务端从同一
+候选 Run 恢复明确候选集合和指纹。Console 也只能从已完成且验签的候选 Run 选择正式范围；Scheduler、LLM
+和旧同名工具均不提供这两类正式执行入口。
 
 以下正式写能力虽已注册、入口也只能经 Gateway，但因为候选预览尚未同时形成可批准的精确影响范围和
 权威写后读回证明，固定返回 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`，不能进入第三方写执行：

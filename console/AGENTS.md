@@ -36,6 +36,7 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 - 后台账号页允许当前 Console 超级管理员创建/撤销飞书审批绑定码；页面不得展示 `open_id/chat_id`。绑定后飞书角色实时继承账号当前 `control_plane_role/is_active`，审批通知由 Agent 串行推送，精确回复 `1/2` 决定当前条目。
 - 插件只安装动作并声明可用的调度类型，实际定时属于系统项目配置，不属于 ZIP 或 manifest。安装完成后才在自动化卡片设置 `none/daily_times/startup`；同一插件的多个 `automation_id` 实例可各自选择账号、资源、定时和权限。
 - 自动化页不再渲染顶部账号登录绿点、登录态 popover、凭据表单或账号管理快捷入口，也不再探测旧 TMS session 接口；旧 `/automations/*-session/*` 和 `/automations/session-context` 不得路由。凭据和登录态只在侧栏“业务账号”模块管理；项目卡仅从 Agent catalog 的 `account_bindings` 显示业务账号池下拉，不回显凭据、不选默认/首项。未选、停用或 session 失效必须阻断运行、启用和完全自动。
+- 每日应签的两个账号角色来自两个不同系统：`r13_account_id` 显示为“R13 应签查询账号”，负责读取该账号所属站点范围和应签清单；`account_id` 显示为“融辉到货与签收核验账号”，负责到货、问题件和主单签收证据。两者都只取项目当前绑定，后台改绑后下一次运行生效，不固定账号或站点。
 - 资源池投影只允许 `resource_id/name/kind/status` 四个字段，Token、表格 ID、读写范围、文件路径、配置哈希/版本及原始配置不得进入 Console 或浏览器。项目卡按签名 manifest 的 resource role 与 kind 精确生成候选，已有选择也必须重新核验可用性；不默认选择第一项。资源池不可用、descriptor 多/缺字段、必填资源未选、已停用或 kind 不匹配时，原卡显示阻断原因并 fail closed。
 - Console 自动化服务按职责拆分：`services/automation.py` 保留既有任务投影、运行控制、页面组合和兼容会话逻辑；`services/automation_projects.py` 维护项目级权限、卡内待审批集合、插件目录/安装/生命周期及项目配置，并由 `AutomationServiceMixin` 继承复用。原 `services.automation` 的公共导入保持兼容。
 
@@ -196,7 +197,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 
 - 自动化目录“分批/未到问题件上传”和“自提到货问题件”提供专用的 Console 候选选择入口：后台先通过 Agent 控制平面只读生成候选，用户勾选运单后再确认正式处理；预览指纹始终只保留在 Agent 持久化 Run 中，浏览器不能提交或覆盖指纹。两项任务仍不开放定时或 LLM 直达执行；飞书固定命令继续使用各自的预览确认流程。
-- 自动化目录“自提到货问题件”只显示项目状态，不提供 Console 执行入口，也不开放定时执行；正式上传所需的完整候选集合与预览指纹只由飞书固定命令的预览/确认状态注入。
+- 自动化目录“分批/未到问题件上传”和“自提到货问题件”均只允许 Console 从已验签、已持久化的候选 Run 勾选并确认，不开放定时或 LLM 直达；浏览器不得提交账号或预览指纹。
 
 ## 业务模块管理
 

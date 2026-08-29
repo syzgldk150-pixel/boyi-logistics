@@ -8,9 +8,10 @@ from agent.tms_runtime.scripts.r13_login_manager import R13SSOAuth
 from agent.tms_runtime.sso_session_persistence import default_sso_state_path
 
 
-API_URL = "https://r13.ronghuiwl.com/gateway/site/waybillSignWarn/pageGet"
-AUTH_CONTEXT_URL = "https://r13.ronghuiwl.com/gateway/site/public/aurora/auth"
-REFERER_URL = "https://r13.ronghuiwl.com/outlets/cargoReceiptWarn"
+R13_ORIGIN = "https://r13.ronghuiwl.com"
+API_URL = f"{R13_ORIGIN}/gateway/site/waybillSignWarn/pageGet"
+AUTH_CONTEXT_URL = f"{R13_ORIGIN}/gateway/public/aurora/auth"
+REFERER_URL = f"{R13_ORIGIN}/outlets/cargoReceiptWarn"
 R13_PAGE_MIN_LOOKBACK_DAYS = 2
 R13_PAGE_FORWARD_DAYS = 3
 
@@ -233,6 +234,7 @@ def fetch_qianshou(
         username=username,
         password=password,
         account_key=account_key,
+        attach_bearer=False,
         exchange=False,
         verify=False,
     )
@@ -243,6 +245,7 @@ def fetch_qianshou(
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
+        "Origin": R13_ORIGIN,
         "aurora-token": token,
         "x-appId": "site",
         "aurora-back": REFERER_URL,
@@ -264,6 +267,7 @@ def fetch_qianshou(
             username=username,
             password=password,
             account_key=account_key,
+            attach_bearer=False,
             exchange=False,
             verify=False,
             allow_cached=False,
@@ -297,6 +301,7 @@ def fetch_qianshou(
                 username=username,
                 password=password,
                 account_key=account_key,
+                attach_bearer=False,
                 exchange=False,
                 verify=False,
                 allow_cached=False,
