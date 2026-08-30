@@ -2,9 +2,9 @@
 module: 项目总览
 type: 架构文档
 tags: [项目总览, Agent控制平面, 事项中心, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
-related: [control_plane_v1.md, code_navigation_index.md, database_migrations.md, ocr/module_overview.md, price_scripts/project_structure.md, finance_module.md, finance_reconciliation/module_overview.md, dispatch/module_overview.md, ai_service/module_overview.md]
-status: 架构基线已完成
-updated: 2026-08-16
+related: [control_plane_v1.md, code_navigation_index.md, database_migrations.md, ocr/module_overview.md, finance_module.md, dispatch/module_overview.md, ai_service/module_overview.md]
+status: active
+updated: 2026-08-30
 ---
 
 # 物流 Agent 项目总览
@@ -23,6 +23,16 @@ updated: 2026-08-16
 - `none/daily_times/startup` 等定时在插件安装后由系统项目配置保存，不属于 ZIP/manifest；配置、
   账号/资源绑定、入口、定时和权限使用同一版本化合同，任何漂移都会 fail closed 并使授权 stale。
 
+## 2026-08-30 自动化插件双轨定位
+
+- `ACTION_V1` 是现有 Ed25519 签名动作包，当前运行与迁移合同见
+  `automation_plugin_platform.md` 和首方迁移矩阵。
+- `SERVICE_V2` 是无签名、仅由已验证 Console `super_admin` 安装的 ZIP 服务包，严格按
+  `schema_version=2 + runtime_model=service_v2` 分流；开发、能力、托管存储和双轨迁移的权威说明见
+  仓库根 `docs/plugin-platform-v2.md`。
+- 两种运行模型继续并存，解析失败不得跨模型回退；v1 项目不能原地升级成 v2，迁移必须建立独立
+  v2 项目并行验证。
+
 ## 2026-08-13 Agent 统一控制平面
 
 - 保留 Agent + Console 双服务。Agent 内新增持久化 Command Gateway、Work Item、Run、
@@ -37,8 +47,8 @@ updated: 2026-08-16
   审批、Evidence 与时间线；所有写动作使用真实管理员会话和同源校验。
 - 共享内部 Token 只证明服务调用方；Console 使用独立 HMAC 把真实 MySQL 管理员身份与
   精确请求绑定。工具子进程不继承管理 Token，只能用 WorkflowRunner 签发的短期能力访问
-  精确 TMS target。韵达/融辉活动原页同源代理和旧韵达 JSON 录单入口暂时固定返回 410，
-  在迁移到独立来源前不调用 Agent；本地 OCR、博益手工 CRUD 与控制平面命令保持可用。
+  精确 TMS target。韵达/融辉活动原页只通过主站 launch ticket 进入 `www` 独立 origin；
+  旧 Console 同源代理和旧韵达 JSON 录单入口固定返回 410 且不调用 Agent；本地 OCR、博益手工 CRUD 与控制平面命令保持可用。
 - “每日应签”和融辉/韵达双向客服问题件作为首期只读事项投影。每日应签以 MySQL 账本和
   真实主单签收事件为准；问题件必须全账号、双方向、全分页，列表消失后按外部 ID 精确
   详情复核，不能把未知状态当成关闭。
@@ -85,7 +95,7 @@ updated: 2026-08-16
 
 ## 2026-08-11 架构基线
 
-- 生产与 CI 统一使用 Python 3.10，Agent、Console 依赖分别由精确锁文件约束；ECS 发布按两份锁文件的联合哈希复用唯一共享环境，仅在依赖变化或校验失败时重建，成功后删除所有非当前环境。
+- 生产与 CI 统一使用 Python 3.10，Agent、Console 依赖分别由精确锁文件约束；ECS 发布按两份锁文件的联合哈希复用唯一共享环境，仅在依赖变化或校验失败时重建。发布成功后仍保留当次精确回滚包、上一版虚拟环境和数据库快照，直到业务验收完成后再以独立、有界操作清理。
 - Console 保留 `ThreadingHTTPServer`，`app.py` 是组合入口，业务服务位于 `console/services/`，路由识别位于 `console/routes/`。
 - TMS SessionBroker 是稳定门面，provider 执行、适配器、持久化和验证器已分层；`agent/agent/` 不再依赖 `tools` 或 `feishu`。
 - Console 到 Agent 的调用全部进入 `/internal/v1/*`，使用统一 `ok/data/error` 契约；旧接口仅作鉴权后的 deprecated 兼容层。
@@ -94,20 +104,30 @@ updated: 2026-08-16
 
 ## 项目定位
 
-`物流 Agent` 是一个统一承接物流业务数据、流程和服务的本地控制台项目，不是单一 OCR 工具。当前按 5 个功能模块组织：
+`物流 Agent` 是统一承接物流业务数据、流程和服务的 Agent + Console 双服务项目，不是单一 OCR
+工具。`shared/business_modules.py` 是当前 14 个 Console 菜单身份的唯一不可变代码目录：
 
-- `OCR识别`
-  负责纸质托运单电子化、字段抽取、人工复核和数据库入库。
-- `价格获取`
-  负责高德地址库、融辉 TMS 批量报价、客户报价表和价格分析。
-- `财务对账`
-  新工作台负责融辉/韵达逐笔账本、费用项目绑定、BI 和同步审计；旧离线 ETL 继续负责支付流水、发票和工作簿差异报表，两条链路隔离。
-- `车辆调度`
-  负责车辆资源管理与智能调度，实时追踪运力状态、线路规划和运单分配。
-- `AI客服`
-  负责消费其他模块的结果，承接查单、报价问答和异常解释。
+| 模块代码 | 菜单 | 主页面 | 生命周期 |
+|---|---|---|---|
+| `overview` | 概览 | `/` | 核心，不可停用 |
+| `waybill_entry` | 运单录入 | `/ocr` | 可管理 |
+| `waybill_query` | 寄件运单查询 | `/waybills` | 可管理 |
+| `tracking` | 物流跟踪 | `/tracking` | 可管理 |
+| `receipts` | 回单管理 | `/receipts` | 可管理 |
+| `customer_service` | 客户服务 | `/modules/customer-service` | 可管理 |
+| `finance` | 财务模块 | `/modules/finance` | 可管理 |
+| `dispatch` | 货拉拉调度 | `/dispatch` | 可管理 |
+| `line_haul` | 专线分流 | `/line-haul-contacts` | 可管理 |
+| `automations` | 自动化 | `/automations` | 核心，不可停用 |
+| `automation_accounts` | 业务账号 | `/automation-accounts` | 核心，不可停用 |
+| `llm_settings` | 智能模型 | `/settings/llm` | 核心，不可停用 |
+| `work_items` | 事项中心 | `/work-items` | 核心，不可停用 |
+| `system_settings` | 系统管理 | `/settings/accounts` | 核心，不可停用 |
 
-## 模块关系
+`/settings/modules` 是仅 `super_admin` 可见的生命周期控制平面入口，不属于上述 14 个业务模块目录。
+数据库只保存固定目录的安装状态和审计，不能动态创造模块、菜单或实现。
+
+## 主要业务数据关系
 
 1. `纸质单据 -> OCR识别`
    纸质托运单进入 OCR 工作区，转成结构化运单字段。
@@ -117,25 +137,9 @@ updated: 2026-08-16
    运单和流水汇总后生成月度损益、差异和校验结果。
 4. `OCR + 价格 + 车辆信息 -> 车辆调度`
    根据运单数据和价格基线进行智能派车、线路优化和运力监控。
-5. `OCR + 价格 + 财务 + 调度 -> AI客服`
-   AI 客服统一读取结构化运单、价格基线、财务解释和调度结果，对外提供问答和工单能力。
-
-## 本地控制台路由
-
-- `/`
-  项目总览页，展示 5 个模块和它们的上下游关系。
-- `/ocr`
-  OCR 工作区，负责上传、预处理、裁图、复核和入库。
-- `/modules/pricing`
-  价格获取模块说明页。
-- `/modules/finance`
-  融辉/韵达财务工作台，提供 BI 总览、交易明细、费用项目绑定和同步记录。
-- `/dispatch`
-  车辆调度工作区，车辆管理、派单和线路规划。
-- `/modules/dispatch`
-  车辆调度模块说明页。
-- `/modules/ai-service`
-  AI 客服模块说明页。
+5. `运单 + 跟踪 + 价格 + 财务 + 调度 -> 客服/Agent 查询`
+   固定命令和受管只读查询只消费已验证的结构化事实；没有来源或覆盖不完整时明确返回不可得，
+   不由 LLM 补造业务结论。
 
 ## 启停脚本
 
@@ -147,13 +151,13 @@ updated: 2026-08-16
 ## 当前实现状态
 
 - 项目级控制台目录现已独立为与 agent 并列的 `console/` 工作区。
-- 项目级本地控制台已接入 `OCR / 价格获取 / 财务对账 / 车辆调度 / AI客服` 5 个模块入口。
-- 目前可交互运行的是 `OCR 工作区`、`融辉财务工作台` 和 `车辆调度工作区`；韵达财务适配器待真实来源验收后再启用。
+- Console 导航固定登记上述 14 个模块身份；迁移 `027` 保存生命周期状态和 Lite 审计。状态服务不可达时静态导航和 GET 页面壳保持可见并显示不可用提示，所有写请求返回 `MODULE_STATUS_UNAVAILABLE`；状态已知且可管理模块不是 `ENABLED` 时，页面/API 由生命周期门禁阻断。
+- OCR、运单、跟踪、回单、客服、融辉财务、调度、自动化、账号、智能模型、事项中心和系统管理均沿既有页面与服务边界运行；韵达财务适配器待真实来源验收后再启用。
 - 财务工作台通过共享 MySQL 账本与 Agent `sync_finance_bills` 接通；当前生产只调度融辉三个财务角色，逐笔汇总、平台汇总与 signed-net 必须一致，旧 Excel ETL 已从线上运行时删除。
 - `车辆调度` 已完成工作区页面（车辆列表、调度看板、快速调度面板），当前使用演示数据。
-- `AI客服` 当前没有单独目录，运行时能力集中在 `agent/`、`feishu/` 和飞书工具链。
-- ECS 上的 Agent 服务已提供 `/health`、`/chat`、`/run-tool`、`/tools`、`/admin/reload`、`/knowledge`、`/knowledge/search`、`/tool-logs` 等运行时接口，用于飞书机器人、调试和知识库维护。
-- ECS 上的 Agent 服务已提供 `/scheduled-tasks`、`/admin/seed-phase7-tasks`、`/tms/*`、`/admin/tms/session/*`，用于统一承载调度模板、TMS 兼容业务接口和共享登录态管理。
+- 面向客户的独立 AI 客服模块仍未建立；现有固定命令、受限只读查询和客服工作台分别由 `agent/`、`feishu/` 与 Console 既有链路承载。
+- Agent 公开面只保留精简 `/health`、飞书事件入口和带独立 Webhook Token 的 `/webhook/*`；主要管理与业务代理接口位于 `/internal/v1/*`。`/chat`、`/run-tool` 等旧入口只作为继续鉴权的 deprecated 兼容层，不得新增调用方。
+- 调度模板、TMS 兼容接口和共享登录态仍由 Agent 承载；Console 通过受控内部接口访问，不把 `/tms/*` 当作新的控制平面写入口。
 - Phase 7 迁移所需的飞书表格、Webhook 等资源配置统一保存在 Agent MySQL 的 `workflow_resources` 表中，不再依赖 N8N sqlite；Console 只读取闭合安全 descriptor，不直接读取 Token、表格 ID、范围、路径或原始配置。
 - `sync_daily_should_sign` 必须显式绑定项目当前选择的独立 `r13_account_id` 与融辉 TMS `account_id`；后台可改绑为任意同系统有效账号，下一次运行只使用新绑定。R13 在精确账号登录后按原页协议从 `/gateway/public/aurora/auth` 读取实际站点范围，请求使用 R13 同源 `Origin` 与 `aurora-token`，不继承 SSO `Origin` 或附加 Bearer；中心账号使用空过滤，其他账号使用其 `siteCode`。缺账号上下文、刷新后范围漂移或请求体覆盖账号/站点都会阻塞。结构完整且权威总数为零的 R13 结果仍完成其他来源证据核验；若最终发布集合为空，则正常删除多维表旧记录、清空电子表格旧数据并回读为零行，真实来源异常则在投影变更前失败。同一个 TMS 登录态统一用于问题件、主单签收、轨迹核验和地址补全，不读取旧 `workflow_resources.phase7.r13_credentials`，也不接受请求体内联凭据或隐式默认账号。
 - R13 只作为应签候选和冲突诊断；TMS 主单“签收”事件是唯一关闭证据。长历史签收按 31 天窗口完整分页并校验汇总/明细总量，离开当前 R13 的候选由迁移 `013` 按 1/3/7 天退避进行精确轨迹核验。

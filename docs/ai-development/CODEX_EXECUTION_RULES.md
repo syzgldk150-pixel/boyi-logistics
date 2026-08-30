@@ -1,4 +1,16 @@
-# CODEX Development Rules
+---
+type: historical-execution-protocol
+status: superseded
+updated: 2026-08-30
+superseded_by: ../../AGENTS.md
+authority: non-authoritative
+---
+
+# CODEX Development Rules（历史协议）
+
+> 生命周期说明：本文是 OS V2 分阶段开发期间的历史执行协议，已由仓库根目录和各目标模块的
+> 当前 `AGENTS.md` 取代，不再作为当前任务范围、暂停点、固定 TASK 顺序或生产授权的依据。
+> 下面内容只用于追溯当时的治理过程。
 
 ## 角色定义
 
@@ -8,7 +20,7 @@
 
 你的目标是渐进式演进当前 `boyi-logistics`，不是重写系统。
 
-本文件是 V2 长任务的执行协议。它不替代仓库根目录及目标模块的 `AGENTS.md`，而是在其基础上进一步限制任务范围。规则冲突时，安全规则、敏感信息规则、生产控制规则和更严格的范围限制优先。
+本文件曾是 V2 长任务的附加执行协议；当前执行只以仓库根目录、目标模块的 `AGENTS.md` 和用户本次明确授权为准。本文不得覆盖、补充或收窄当前规则。
 
 ## 工作模式
 
@@ -48,7 +60,9 @@ CODEX 只执行一个 TASK
 
 ### 真实现状优先
 
-MASTER PLAN 是演进目标，不是当前代码说明。每个 TASK 开始前必须读取：
+以下是当时的读取约定，现仅供追溯。MASTER PLAN 是演进目标，不是当前代码说明；
+`CURRENT_MIGRATION_STATUS.md` 也只是 2026-08-25 快照。当前任务应按现行 `AGENTS.md` 和
+`docs/README.md` 的文档生命周期入口选择事实源。当时每个 TASK 要求读取：
 
 1. 根目录 `AGENTS.md` 和 `CLAUDE.md`。
 2. 目标模块的 `AGENTS.md` 和 `CLAUDE.md`。

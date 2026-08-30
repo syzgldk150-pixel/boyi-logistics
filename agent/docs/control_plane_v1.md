@@ -4,7 +4,7 @@ type: 架构与运行规范
 tags: [Command Gateway, Work Item, Agent Run, Approval, Evidence, Outbox]
 related: [project_overview.md, code_navigation_index.md, database_migrations.md]
 status: active
-updated: 2026-08-29
+updated: 2026-08-30
 ---
 
 # Agent 统一控制平面 v1
@@ -157,12 +157,15 @@ LLM 目录只暴露明确标记为 `llm_exposed` 的只读/计算工具。外部
 租约；该安全降权有固定 system actor/reason，可通过发布 manifest 区分于无解释的默认策略。
 
 `plan_hash` 使用稳定紧凑 JSON 与 SHA-256，包含上下文指纹、目录哈希、工具版本、完整
-参数/账号、实际影响实体/金额、证据与写后条件。审批有效期 15 分钟。执行前重建上下文
-和计划；哈希或影响范围变化时旧审批失效并生成新轮次，旧计划不能执行。
+参数/账号、实际影响实体/金额、证据与写后条件。15 分钟 TTL 只限制审批仍为 `PENDING`
+时的决定窗口：决定事务使用 MySQL `NOW(6)`，到期后才提交的决定会把该请求置为
+`EXPIRED`；在窗口内已经提交为 `APPROVED` 的同一 `plan_hash` 不会因为之后经过 release hold、
+停机或 Runner 排队而过期。执行前仍重建上下文和计划；哈希或影响范围变化时旧审批会被
+`INVALIDATED` 并生成新轮次，旧计划不能执行。
 
-审批消费与 `WAITING_APPROVAL -> RUNNING` 使用同一个数据库事务和 Run/Approval 行锁，并以
-MySQL `NOW(6)` 判断有效期。事务会先把已到期的 `PENDING/APPROVED` 审批置为 `EXPIRED`，只有
-状态仍为 `APPROVED`、计划哈希一致且尚未到期时才允许 Run 进入执行，避免“检查后到期”的竞态。
+审批消费与 `WAITING_APPROVAL -> RUNNING` 使用同一个数据库事务和 Run/Approval 行锁。事务只把
+已到期的 `PENDING` 请求置为 `EXPIRED`，随后允许状态为 `APPROVED` 且计划哈希仍一致的 Run
+进入执行；它不会再次用 `expires_at` 否定已经及时作出的批准。
 
 Worker 领取已经持久化为 `RUNNING` 的恢复 Run 时必须重新评估当前策略。若原 Scheduler 精确免审已经撤销且
 尚无写步骤开始，Run 与 Work Item 会在同一行锁事务中回到 `WAITING_APPROVAL`，步骤启动也必须先锁定并核对
@@ -362,22 +365,30 @@ Agent、签名插件、受保护写静默检查和控制平面门禁；只有共
 实时重协调和完整健康复核。发布前
 必须确认 MySQL 8 和 `SKIP LOCKED` 可用；不提供旧版本兼容领取兜底。发布器根据当前有效的
 外部写任务策略快照计算动态静默窗口；落入窗口即停止发布，不能使用固定时段猜测或绕过。
-远端发布全程持有固定互斥锁，并在 mutation 前捕获 `014`/`016`/`017` 与 bootstrap marker 的原状态；
-任一 pending migration 已留下 backup 但未登记 history 时视为 dirty 并阻断。停服务前和停稳后都要
-确认不存在 `RUNNING`/`VERIFYING` 的 external、financial 或 destructive step。失败时先清理仅由本次
-首次启动产生的 bootstrap，再按 `017 -> 016 -> 014` 恢复本次从 pending 进入的迁移，随后才恢复
-虚拟环境、源码、unit 并重启旧服务；任一步失败都保留 stage 恢复材料。
-首次生产切换启动后必须验证 69 条 reviewed task、67 条既有 enabled task，且 67 条全部为按当前任务行
-和已部署工具目录重算仍 ACTIVE 的精确免审。bootstrap marker 已存在的后续发布仍要求 69 条任务完整
-且参数 canonical，但允许管理员合法启停或改为逐次审批；每个启用项必须有当前有效的精确策略，或
-有明确 super_admin/账号凭据安全降权事件的 `REQUIRE_EACH_RUN`。新 Agent 启动前由部署器创建固定 release
-hold；APScheduler 装载常规定时任务并保持 paused，但该 held 进程不注册 `finance_startup_catchup`
-DateTrigger，后续 reload 或发布激活也不得补建、改期或强制执行它；只有未来未处于 hold 的正常服务启动才按
-该持久化任务的启用状态注册启动补拉。WorkflowRunner 进入 held 且不领取任何既存或新 Run，签名 identity
-smoke 必须同时确认两者状态和零 active Run。manifest、身份和依赖记录全部通过后，部署器才调用签名管理
-接口：先恢复并确认 Scheduler 与 WorkflowRunner 均可运行，最后删除匹配本次 SHA 的 marker。删除 marker
-是发布提交点；此前任意异常或进程退出都保留 marker，使下次启动重新进入 hold。激活响应丢失时可用新 nonce
-幂等重试；请求发出后不得自动回滚可能已经开始的任务，而应保留 stage 并进行显式恢复。
+远端发布全程持有固定互斥锁，并在 mutation 前捕获 `014`/`016`/`017`/`018`/`030`、任务级
+策略 bootstrap marker 与项目策略 bootstrap 证据的原状态；任一 pending migration 已留下 backup
+但未登记 history 时视为 dirty 并阻断。停服务前和停稳后都要确认不存在 `RUNNING`/`VERIFYING`
+的 external、financial 或 destructive step。失败只撤销本次从 pending/marker-absent 产生的状态，
+当前发布器的数据库逆序为：`030` 飞书通知租约；`018` 恢复器内部先校验并移除本次 release-owned
+项目策略 bootstrap、再恢复项目授权迁移；随后恢复本次创建的旧任务级策略 bootstrap；最后按
+`017 -> 016 -> 014` 恢复。之后才恢复虚拟环境、源码、unit 并重启旧服务；任一步失败都保留
+本次 stage 与精确恢复材料。
+
+首次 post-018 生产切换必须只读重算 71 条历史身份（57 条当前发行 typed schedule + 14 条延期
+R7 身份）、68 条启用和 16 个项目策略，并精确得到 10 个 `LEGACY_SCHEDULE_ONLY`、6 个
+`REQUIRE_EACH_RUN`；14 条 R7 只核验历史身份，不注册或执行。bootstrap marker 已存在的后续发布
+允许管理员合法启停、改 schedule 或改为逐次审批，不再把当前 typed 行数固定为首次快照，但原始
+marker/source snapshot、历史事件和当前 committed 项目仍必须分别闭合。
+
+新 Agent 启动前由部署器创建固定 release hold；APScheduler 装载常规定时任务并保持 paused，但该 held
+进程不注册 `finance_startup_catchup` DateTrigger，后续 reload 或发布激活也不得补建、改期或强制执行它；
+只有未来未处于 hold 的正常服务启动才按该持久化任务的启用状态注册启动补拉。WorkflowRunner 进入 held
+且不领取任何既存或新 Run，签名 identity smoke 必须同时确认两者状态和零 active Run。manifest、身份和
+依赖记录全部通过后，部署器才调用签名管理接口：先恢复并确认 Scheduler 与 WorkflowRunner 均可运行，
+最后删除匹配本次 SHA 的 marker。删除 marker 是发布提交点；此前任意异常或进程退出都保留 marker，
+使下次启动重新进入 hold。激活响应丢失时可用新 nonce 幂等重试；请求发出后不得自动回滚可能已经开始
+的任务，而应保留 stage 并进行显式恢复。发布成功也不自动删除 stage、精确回滚包、上一版虚拟环境或
+数据库快照；这些材料保留到业务验收完成，再由独立、有界管理动作清理。
 
 CI 必须覆盖 Ruff、Python 3.10 编译、工具注册表、导入/执行边界、内部 API、空库迁移、
 从 `010` 升级、部分迁移重跑、真实 MySQL JSON/外键/唯一约束/事务/`SKIP LOCKED`，以及

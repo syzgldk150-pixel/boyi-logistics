@@ -3,8 +3,8 @@ module: 客服系统
 type: 模块文档
 tags: [客服系统, 问题件, 融辉, 韵达, 原页接口, Console, Agent]
 related: [../code_navigation_index.md, ../project_overview.md]
-status: 开发中
-updated: 2026-06-22
+status: active
+updated: 2026-08-30
 ---
 
 # 客服系统模块说明
@@ -16,7 +16,7 @@ updated: 2026-06-22
 - Console 页面入口：`/modules/customer-service`
 - Console 设置接口：`GET/POST /customer-service/problem-settings`
 - Console 问题件接口：`/customer-service/problems/query|detail|mark-read|reply|publish|attachments/upload`；附件图片预览接口为 `GET /customer-service/problems/attachments/preview`
-- Agent target：`/tms/customer_service_problem`
+- Agent 只读 target：`/internal/v1/tms/customer_service_problem`；回复、发布、标记已读和附件上传等写操作提交受管 Command，由 WorkflowRunner 执行
 
 ## Console 交互口径
 
@@ -79,8 +79,9 @@ updated: 2026-06-22
 - Console 模板：`console/templates/customer_service.html`
 - Console 前端：`console/static/customer_service.js`
 - Console 样式：`console/static/style.css`
-- Agent target：`agent/tms_runtime/scripts/customer_service_problem.py`
+- Agent 只读 target：`agent/tms_runtime/scripts/customer_service_problem.py`
 - Agent 调度注册：`agent/tms_runtime/dispatch.py`
+- Console 写操作编排：`console/services/customer_service.py` → `/internal/v1/commands`
 
 ## 原页抓取规则
 

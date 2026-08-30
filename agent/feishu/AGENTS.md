@@ -39,8 +39,8 @@
 - **自提/分批先预览后确认**：固定文本调用 committed project route 的签名 `dry_run`，完成后只接受已验签并持久化的 `selection_preview`。飞书 pending 仅保存 `preview_run_id`、原发起人、候选/所选运单和到期时间，不保存账号或指纹；确认与取消都必须精确匹配原发起人，确认时服务端从同一候选 Run 恢复指纹与正式参数。自提自动选择全部候选，分批允许序号、多选和区间；候选有效期为 15 分钟，零候选不注册外部写确认。账号只来自项目当前 `account_id` / `daxiang_s_account_id` 角色绑定，后台改绑后下一次预览使用新账号；消息、pending 和脚本都不得固定账号、站点或回落默认 profile。
 - **登录态过期恢复**：任意工具结果含 `AUTH_REQUIRED` / "当前未登录" / "登录态已过期" 关键字
   - 自动注册 `confirm_login_for_resume` pending，提示用户是否重新登录
-  - 用户回"是" → 调 `POST /admin/tms/session/send-code` → 注册 `waiting_code_for_resume`
-  - 用户回 4-8 位字母数字验证码 → 调 `POST /admin/tms/session/submit-code` → 成功后由 `account.session_restored` 恢复原 Run；飞书不得再次提交原工具
+  - 用户回"是" → 调 `POST /admin/accounts/{account_id}/login` → 注册 `waiting_code_for_resume`
+  - 用户回 4-8 位字母数字验证码 → 调 `POST /admin/accounts/{account_id}/submit-code` → 成功后由 `account.session_restored` 恢复原 Run；飞书不得再次提交原工具
 - **验证码已发送/已生成恢复**：任意工具结果含 `AUTH_PENDING_CODE` / "验证码已发送" / "验证码已生成" 时
   - 直接注册 `waiting_code_for_resume` pending，不再重复询问是否发码
   - 用户回 4-8 位字母数字验证码 → 校验成功后由控制平面恢复原 Run，不创建第二个 Run
@@ -49,13 +49,11 @@
   - 主动登录/发码优先级高于所有 pending；收到后必须先清除旧 pending，不能把“登陆”当成上一次登录恢复任务的确认，也不能自动续跑旧任务
   - 泛化登录词会先提示选择：`1. 大祥账号` / `2. 操作场账号`
 - 大祥报价直达任务必须携带 `account_id=price_default`，登录恢复走 `/admin/accounts/price_default/login`；账号凭据只来自账号管理页面保存值，不读取部署环境变量
-  - 操作场账号走 `/admin/tms/session/send-code`，账号密码来自后台 Agent 自动化页面保存值
+  - 操作场账号同样走 `/admin/accounts/{account_id}/login`，账号密码来自后台业务账号页面保存值
   - 发送成功后注册 `waiting_code_for_resume` pending；用户回 4-8 位字母数字验证码后只完成登录态校验，若无 `resume_tool` 不续跑工具
   - 如果验证码已由后台或接口生成但飞书 pending 丢失，用户直接回 4-8 位验证码时会先检查 TMS session 是否处于 `pending_code`，命中后提交验证码完成登录
 - **报价验证码**：`get_price` 同时查询融辉和韵达，`tools/price_tool.py` 会并发启动两段 HTTP 查询；飞书回复两条报价消息时首行分别标注 `融辉价格` / `韵达价格`；融辉段使用大祥账号专用登录态，并用真实运单录入页详细地址 blur 解析获取目的网点/派件网点，无头页只补公开登录上下文和地图空实现，不做拆词兜底；韵达段使用韵达账号登录态；韵达价格来自运单录入页 `price.html` 成本口径并计入页面默认短信费，详细字段来自运单录入地址解析/网点匹配接口和 `checkServiceScope.html` 特殊区域校验接口；命中特殊区域时飞书必须展示特殊区域、加收备注和提醒
-- 融辉报价发码/提码统一走 `/admin/accounts/{account_id}/*`；`/admin/tms/price-session/*` 仅保留旧调用兼容并映射到 `price_default`
-  - 韵达报价登录恢复走 `/admin/tms/yunda-session/*`
-  - 其他 TMS 工具继续走 `/admin/tms/session/*`
+- 融辉、韵达及其他 TMS 账号的发码、提码和状态操作统一走 `/admin/accounts/{account_id}/*`；`/admin/tms/session/*`、`/admin/tms/price-session/*`、`/admin/tms/yunda-session/*` 仅保留旧调用兼容，不得成为新入口
 - **R7 发车多车牌选择**：必须回复完整车牌号；纯数字 `1` / `2` 只用于登录账号选择，不再作为 R7 车牌序号执行
 - **TMS 登录态主动提醒**：`main.py` 启动 `_monitor_tms_session_alerts`
   - 这是唯一周期主动检查器；最终状态回写 `/admin/accounts` 共享快照供 Console 被动读取，页面轮询不得再次触发外部校验

@@ -1,4 +1,17 @@
-# OCR 自学习反馈闭环 + 录单系统演进 — 实施方案
+---
+module: OCR识别
+type: 历史实施方案
+tags: [OCR, 自学习, PaddleOCR, 训练管线, 未实施]
+related: [module_overview.md]
+status: historical
+implementation_status: not_implemented
+superseded_by: module_overview.md
+updated: 2026-08-30
+---
+
+# OCR 自学习反馈闭环 + 录单系统演进 — 历史方案
+
+> 历史说明：本文是未完成的设计草案，不是当前运行手册。当前只上线 Qwen-OCR、人工复核和 MySQL/waybills 入库；训练相关表与配置仅为预留，自学习采样、PaddleOCR、双引擎、微调、模型激活和准确率看板均未实现。本文中的拟建文件、命令、配置和 DDL 不得直接执行。现行事实以 `module_overview.md`、`agent/migrations/` 和当前代码为准；数据库结构只能通过顺序迁移维护，失败必须显式报告，不得采用本文草案中的运行时建表或静默 `except`。
 
 ## Context
 

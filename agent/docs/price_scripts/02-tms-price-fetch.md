@@ -2,12 +2,15 @@
 module: 价格获取
 type: 模块文档
 tags: [TMS, API, OCR登录, 批量报价, 同名消歧, 断点续传, 网点匹配]
-related: [[01-amap-address-fetch], [03-quote-sheet-generation], [TMS价格结构分析], [tms-batch-quote-resume]]
-status: active
-updated: 2026-08-11
+related: [01-amap-address-fetch.md, 03-quote-sheet-generation.md, tms_price_structure_analysis.md, tms-batch-quote-resume.md]
+status: historical
+captured_at: 2026-08-11
+updated: 2026-08-30
 ---
 
 # 模块二：TMS 系统价格获取
+
+> 历史快照：本文主体记录已退役的全国批量报价工程。当前仓库只保留少量隔离的离线实现，没有 `batch_run.py`、`run_pipeline.py`、修复脚本、进度文件或原始价表；不得按本文恢复生产任务。当前实时报价入口是 `agent/tools/price_tool.py`，经 Agent `127.0.0.1:9000/tms/{get_price|yunda_price}` 和 `/admin/accounts/{account_id}/*` 使用受管账号。
 
 > 登录 TMS 物流系统，批量查询全国 3056 个区/县在 8 个重量区间 × 4 种产品 × 2 种派送方式下的运费报价。默认按区间边界取样；对历史原始价表中已确认依赖非边界最佳重量的 549 个区域，再额外加载覆盖权重点，保持代码与现有数据源一致。
 
@@ -58,77 +61,9 @@ updated: 2026-08-11
 
 ---
 
-## 运行命令
+## 历史运行入口
 
-```bash
-# 单独运行采集
-cd "C:/Users/DENG/Desktop/price_scripts/scripts/02_tms_price_fetch"
-python -u batch_run.py >> batch_run.log 2>&1
-
-# 或使用流水线（采集 + 生成单价表 + 数据验证）
-cd "C:/Users/DENG/Desktop/price_scripts/脚本"
-python -u run_pipeline.py          # 从 batch_run 开始
-python -u run_pipeline.py --skip   # 跳过采集，直接生成单价表
-```
-
-### 单地址测试
-
-```bash
-python get_price.py "浙江省杭州市西湖区文三路100号" 100 0.1
-```
-
-### 逐公斤价格扫描
-
-```bash
-cd "C:/Users/DENG/Desktop/price_scripts/scripts/02_tms_price_fetch"
-python weight_scan.py                                   # 默认成都锦江区 1-3000kg
-python weight_scan.py --address "浙江省杭州市西湖区文三路100号"  # 指定地址
-python weight_scan.py --start 1 --end 500 --step 1      # 只扫描 1-500kg
-```
-
-输出：`临时文件/weight_scan_result.xlsx`（完整明细）+ 终端打印价格阶梯变化汇总
-
-### 指定网点报价（batch_run_by_site.py）
-
-```bash
-cd "C:/Users/DENG/Desktop/price_scripts/scripts/02_tms_price_fetch"
-
-# 1. 准备输入文件：在本目录创建 指定网点查询.xlsx，包含"网点名称"列
-# 2. 运行
-python batch_run_by_site.py
-
-# 输出: 输出结果/指定网点价格表.xlsx
-```
-
-原理：跳过地址解析（`/map/inputtipsDTH`），直接用网点名称调 `FIND_DESTINATION_BY_NAME`（等同于 TMS 网页"目的地输入框"的搜索）。适用于自提部等无派送区域、地址匹配不到的网点。
-
-三级回退搜索策略：
-1. 直接用网点名称搜索（如"长沙自提部"）
-2. 提取城市前缀搜索（如"长沙"）→ 在候选中匹配 SITE_NAME
-3. 逐个候选深度检查 dispatch_site_name
-
-### 定向修复（repair_mismatch.py）
-
-```bash
-cd "C:/Users/DENG/Desktop/price_scripts/scripts/02_tms_price_fetch"
-
-# 先预览受影响区县（不执行修复）
-python repair_mismatch.py --dry-run
-
-# 执行完整修复（RC1同名错配 + RC2地址库错误 + RC3处理异常）
-python repair_mismatch.py
-
-# 仅修复某一类
-python repair_mismatch.py --rc1-only   # 仅同名区县错配
-python repair_mismatch.py --rc2-only   # 仅地址库错误
-python repair_mismatch.py --rc3-only   # 仅处理异常
-
-# 仅重跑指定区域
-python repair_selected_regions.py --region "上海市|市辖区|宝山区"
-
-# 从原始价表重建非边界权重点覆盖
-python build_non_boundary_weight_overrides.py
-```
+批量、流水线、逐公斤扫描、指定网点和定向修复入口均已从当前仓库移除，因此不再提供命令。本文记录的三级搜索和修复策略也是历史行为，不能恢复为当前业务兜底。`get_price.py` 的旧离线副本仅为隔离兼容代码，不得替代当前受管实时报价链路。需要恢复批量工程时必须另立任务，从受审历史提交、真实页面和原始数据重新验证。
 
 ---
 

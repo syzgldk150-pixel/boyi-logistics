@@ -1,4 +1,11 @@
+---
+status: implemented
+updated: 2026-08-30
+---
+
 # 已验证空快照与自动化阻塞状态设计
+
+> **Implemented historical design.** 本文记录已落地的空快照和阻塞状态语义，不是当前发布清单。当前实现与边界以代码、测试、根级 `AGENTS.md` 和 Console 指令文档为准。
 
 ## 背景
 

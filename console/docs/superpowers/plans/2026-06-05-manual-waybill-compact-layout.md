@@ -1,6 +1,13 @@
+---
+status: implemented
+updated: 2026-08-30
+---
+
 # Manual Waybill Compact Layout Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Implemented historical record.** 当前模板已经采用紧凑表单、发货/收货分区和地图下方单一起点输入框；下方步骤保留为实施证据，不是待执行清单。
+
+> 当前实现以 `console/templates/document.html` 和 `console/tests/test_manual_waybill.py` 为准。
 
 **Goal:** Make the `/ocr` manual waybill entry area shorter, split sender and receiver sections, and keep only the map-bottom origin search input while removing route/status results.
 

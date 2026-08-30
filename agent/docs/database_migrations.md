@@ -4,7 +4,7 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-08-29
+updated: 2026-08-30
 ---
 
 # 数据库迁移
@@ -31,6 +31,9 @@ updated: 2026-08-29
 - 不可变领域事件、事务 Outbox、死信状态和消费者幂等回执。
 - 定时任务的配置版本、当前审批策略及不可变策略审计事件；策略快照不保存凭据、Cookie、Token、
   原始请求体或可执行 HTML。
+- 自动化插件的包、项目、代际、租约、写尝试回执，以及 `ACTION_V1` / `SERVICE_V2` 双轨、
+  服务/贡献、托管文档和迁移互斥状态；
+- 固定 14 个业务模块的生命周期和 Lite 审计；
 - 财务演进与全局 LLM 设置（迁移 `009_finance_evolution_llm.sql`）；
 - 跨网点历史主单精确签收核验与 1/3/7 天退避状态（迁移 `013_daily_sign_verification_state.sql`）。
 
@@ -51,8 +54,6 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   `event_consumptions`。事件与业务聚合必须通过同一 Unit of Work 提交。
 - `013_daily_sign_verification_state.sql`：保存离开当前 R13 的历史候选精确核验结果、
   下一次复核时间和失败退避。该迁移已在线上应用，不得修改文件内容或校验和。
-- `029_daily_sign_problem_event_binary_identity.sql`：将问题件外部 ID 改为二进制排序规则，
-  使来源中仅大小写不同的两个真实 ID 在 MySQL 唯一键中保持独立，避免后写事件覆盖前一条。
 - `014_control_plane_task_cutover.sql`：这是生产已经执行的历史迁移，生产
   `schema_migrations` 记录的原始字节 SHA-256
   `4b447a7c139980369c61eb9c2c5e250a974452b8c80036a1bce0f04a95a4fcdf`
@@ -115,6 +116,20 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   `REQUIRE_EACH_RUN`、原降权事件仍为该项目最新策略事件且所有 actor/请求/代际字段闭合时，才以独立
   `MIGRATION_024_PLUGIN_FULL_AUTO` 事件 CAS 恢复完全自动，并失效对应 typed `WAITING_APPROVAL` 审批以唤醒
   Run；任何后续管理员选择优先。
+- `025_automation_write_attempt_receipts.sql`：建立不含业务 payload 的自动化写尝试回执，绑定项目、
+  generation、lease、Run/Step、精确 Broker operation/action 与参数/目标摘要；只有
+  `STARTED/WRITE_VERIFIED/WRITE_OUTCOME_UNKNOWN/NOT_APPLIED` 四种结果，供未知写恢复使用。
+- `026_scan_code_daily_identity.sql`：把扫描记录主键升级为 `(snapshot_date, raw_code)`，先从
+  `last_seen_at` 回填业务日，再保留按 `raw_code` 查询索引，避免跨日扫描互相覆盖。
+- `027_business_module_lifecycle.sql`：建立固定 14 模块的生命周期与 Lite 审计；两个表可从 MySQL
+  部分 DDL 提交状态前向重跑，runner 在 seed 前用 `business_module_migration_contract.py` 精确验证结构，
+  seed 只补缺行、不覆盖已有状态。
+- `028_repeatable_automation_runs.sql`：保留历史未知写 lease/receipt/Evidence，同时把仍指向当前稳定
+  committed generation 且无活动写 lease 的项目恢复为可接收新 Command；它不会重放历史 Run 或 lease。
+- `029_daily_sign_problem_event_binary_identity.sql`：将问题件外部 ID 改为二进制排序规则，使来源中仅
+  大小写不同的两个真实 ID 在 MySQL 唯一键中保持独立，避免后写事件覆盖前一条。
+- `030_feishu_notification_lease.sql`：为飞书审批外部发送增加短事务通知租约、队列唯一占用键和恢复索引；
+  所有 DDL 都按 `information_schema` 守卫，以支持 DDL 已提交但迁移历史尚未登记时的安全重试。
 - `031_control_plane_retention.sql`：为控制平面 30 天滚动清理增加事件、Outbox 与审批查询索引。
 - `032_mysql_binlog_retention.sql`：校验服务端二进制日志保留期严格为 30 天；服务器参数由
   `deploy/mysql/zz-boyi-binlog-retention.cnf` 管理并安装到 ECS `/etc/my.cnf.d/`，应用迁移账号不授予
@@ -126,12 +141,12 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   不获得 SQL/DDL 权限。migration pair 从 `PREPARING` 持久互斥态开始，先禁用目标物理任务再复制配置；
   卸载把文档转为 `RETAINED`，独立永久清除同时删除文档索引并保留清除审计。
 
-生产迁移序列固定连续递增且不得改写已执行文件；发布器只按顺序补执行尚未记录的迁移，包含对已应用
-`022`、`023` 保持原始校验和，并在目标库尚未记录时执行 `024`。`016`/`017`/`018` 在业务行变更前各自保存
-完整行备份；远端发布必须在变更前捕获各项迁移状态和 bootstrap marker 状态，`pending_dirty`
-直接阻断，回滚只撤销本次从
-pending 状态进入的迁移或 bootstrap。部署期 bootstrap 只在迁移成功后按当前受管契约创建可审计
-策略；其失败或不完整匹配不能使任何写任务获得免审。
+生产迁移序列当前从 `001` 连续到 `033`，固定递增且不得改写已执行文件；发布器只按顺序补执行
+`schema_migrations` 尚未记录的迁移，并对所有已执行版本保持原始校验和。`016`/`017`/`018` 在业务行
+变更前各自保存完整行备份；`027` 与 `030` 额外允许 MySQL DDL 已部分提交但 history 尚未登记时按精确
+结构合同前向续跑。远端发布必须在变更前捕获各项迁移状态和 bootstrap marker 状态，`pending_dirty`
+直接阻断，回滚只撤销本次从 pending/marker-absent 进入的状态。部署期 bootstrap 只在迁移成功后按
+当前受管契约创建可审计策略；其失败或不完整匹配不能使任何写任务获得免审。
 
 首次应用 018 的生产切换在启动健康后使用
 `--check-control-plane-release-manifest --expect-initial-production-manifest`。门禁只读重算 71 条历史身份：
@@ -148,7 +163,7 @@ pending 状态进入的迁移或 bootstrap。部署期 bootstrap 只在迁移成
 `SELECT ... FOR UPDATE SKIP LOCKED`；不满足时停止发布。运行连接必须
 `autocommit=False`，仓储显式提交或回滚，禁止把事件/Outbox 放在业务事务之外。
 
-CI 使用隔离的 `test_*` 数据库验证空库执行、重复执行、完整
-`014 -> 015 -> 016 -> 017 -> 018 -> 019 -> 020 -> 021 -> 022 -> 023 -> 024` 升级、部分历史、`017`/`018` 恢复后重应用、
-`--check`、JSON、外键、唯一约束、事务回滚和两个 worker 的 `SKIP LOCKED` 领取。测试代码
-只接受显式 CI 环境变量，不读取项目 `.env`。
+CI 使用隔离的 `test_*` 数据库验证空库顺序执行 `001 -> … -> 033`、重复执行、从既有历史继续升级、
+部分 DDL 状态下的 `027`/`030` 安全续跑、`017`/`018` 恢复后重应用、`--check`、JSON、外键、
+唯一约束、事务回滚和两个 worker 的 `SKIP LOCKED` 领取。测试代码只接受显式 CI 环境变量，
+不读取项目 `.env`。

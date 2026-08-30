@@ -37,8 +37,8 @@
 
 ## 常见修改入口
 
-- 改 `/health`、`/chat`、`/run-tool`
-  看 `main.py`、`agent/core.py`
+- 改 `/health` 或 `/internal/v1/*`
+  看 `main.py`、`agent/core.py`；`/chat`、`/run-tool` 仅是已弃用兼容入口，不得新增调用方
 - 改工具执行或超时并发
   看 `agent/tool_executor.py`
 - 改工具注册与参数
@@ -62,25 +62,25 @@
 如果需要单独拉起 Agent：
 
 ```bash
-cd /home/deng/projects/agent
+cd /home/deng/projects/boyi-logistics/agent
 ./start_agent.sh
 ```
 
 停止：
 
 ```bash
-cd /home/deng/projects/agent
+cd /home/deng/projects/boyi-logistics/agent
 ./stop_agent.sh
 ```
 
 ## TMS 本地验证
 
 - TMS 兼容业务接口统一挂在 `:9000/tms/*`
-- TMS 登录态管理接口统一挂在 `:9000/admin/tms/session/*`
+- TMS 账号与登录态统一由 `:9000/admin/accounts/{account_id}/*` 管理；`/admin/tms/*-session` 只保留旧调用兼容
 - 本地验证优先从并列目录启动控制台：
 
 ```bash
-cd /home/deng/projects/console
+cd /home/deng/projects/boyi-logistics/console
 ./start_backend.sh
 ```
 
@@ -94,9 +94,10 @@ cd /home/deng/projects/console
 - `FEISHU_EVENT_MODE=websocket`：沿用现有飞书长连接模式。
 - `FEISHU_EVENT_MODE=webhook`：启用飞书事件订阅模式，飞书请求地址指向 `POST /feishu/webhook/event`。
 - Webhook 模式建议配置 `FEISHU_EVENT_VERIFICATION_TOKEN`；当前未实现 Encrypt Key 解密，飞书事件订阅请保持不加密。
-- Webhook 模式下支持的文本触发：
-  - `地址，重量，体积`
-- 价格查询中的体积字段可省略，默认按 `0.1` 处理；也可填写厘米尺寸表达式，如 `30*23*103*1+97*23*31*4`，按 `长*宽*高*件数` 合计后转换为立方米并保留三位小数。申明价值由韵达页面按重量自动调整，飞书不传。
+- Webhook 与 WebSocket 把 `im.message.receive_v1` 送入同一受管消息路由；当前固定命令以
+  `agent/direct_tool_router.py`、`feishu/message_handler.py` 和受管工具注册表为准，不在此处复制清单。
+- 报价文本可使用 `地址，重量，体积` 形式；这只是报价入口示例，不代表机器人只有这一项能力。
+- 价格查询必须使用用户明确提供的完整地址、重量和体积；缺少影响金额的字段时先澄清，不得静默补 `0.1` 或其他业务默认值。体积可填写厘米尺寸表达式，如 `30*23*103*1+97*23*31*4`，由受管工具按 `长*宽*高*件数` 计算；申明价值只采用真实页面返回的当前规则和值，飞书不自行传入或猜测。
 
 ## 发布到 ECS
 
@@ -112,7 +113,7 @@ cd /home/deng/projects/console
 
 ## 与服务器的对应关系
 
-- 本地：`/home/deng/projects/agent`
+- 本地：`/home/deng/projects/boyi-logistics/agent`
 - 服务器：`/home/boyce/agent`
 
 目录结构应尽量保持一致，避免本地可改、服务器难同步。

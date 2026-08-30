@@ -1,170 +1,137 @@
-# console
+---
+status: active
+updated: 2026-08-30
+source_of_truth: console/AGENTS.md
+---
 
-本目录是控制台工作区，对齐服务器上的 `/home/boyce/console`，与 `../agent/` 并列。
+# Console
 
-## 这里负责什么
+Console 是 `boyi-logistics` 单仓中的 Web 控制台。它与 `agent/`、`shared/` 并列，组合入口位于 `console/app.py`；本地路径不是旧的独立仓 `/home/deng/projects/console`。
 
-- 控制台首页和模块页
-- OCR 工作区
-- 自动化图形化配置页
-- 货拉拉调度工作区
-- 控制台对 MySQL 的读写
+## 仓库位置
 
-## 不在这里改什么
+- 单仓根目录：`/home/deng/projects/boyi-logistics`
+- Console 源码：`/home/deng/projects/boyi-logistics/console`
+- Agent 源码：`/home/deng/projects/boyi-logistics/agent`
+- 共享契约与仓储：`/home/deng/projects/boyi-logistics/shared`
+- ECS 分拆部署目录：Console 为 `/home/boyce/console`，Agent 为 `/home/boyce/agent`
 
-- Agent API
-- 工具执行与调度编排
-- 飞书消息长连接
-- Phase 7 同步工具本体
+开发、测试和 Git 操作都从单仓根目录理解文件关系；不要再使用旧的并列仓路径。
 
-这些统一在 `../agent/`。
+## 职责边界
 
-## 关键文件
+Console 负责：
 
-- `app.py`
-  控制台路由、登录会话、页面数据组装、保存入口
-- `config.py`
-  控制台路径、MySQL、OCR、模板、运行时配置
-- `database.py`
-  控制台与 MySQL 的数据存取
-- `ocr_providers.py`
-  OCR 提供方封装
-- `task_queue.py`
-  后台 OCR 队列
-- `template_store.py`
-  OCR 模板管理
-- `templates/`
-  页面模板，含 `/login` 和 `/settings/accounts`
-- `static/style.css`
-  控制台样式
+- 后台登录、管理员会话、统一导航和页面壳层
+- OCR、博益手工录单、寄件运单、物流跟踪和回单工作台
+- 客服、财务、货拉拉地图调度与比价、专线分流页面
+- 自动化项目、业务账号、事项中心、模块管理和 LLM 设置界面
+- MySQL 中 Console 业务数据的校验、查询与受控写入
+- 以签名管理员身份代理 Agent 的 `/internal/v1/*` 接口
 
-## 常见修改入口
+Console 不负责：
 
-- 改首页、导航、模块卡片
-  看 `app.py`、`templates/base.html`、`templates/portal.html`
-- 改 `/automations`
-  看 `templates/automation.html`、`app.py`、`database.py`
-- 改 OCR 上传、复核、模板
-  看 `templates/document.html`、`ocr_providers.py`、`task_queue.py`
-- 改调度页
-  看 `templates/dispatch.html`、`static/style.css`
+- Agent 的业务编排、工具执行、审批状态机、Scheduler 或飞书长连接
+- 直接调用第三方写接口来绕过 Agent Command/Run
+- 在运行时创建或修改数据库结构
+- 在主站同源上下文中运行韵达或融辉活动原页
 
-## 本地运行
+## 代码分层
+
+- `app.py`：组合根、HTTP 生命周期、认证门禁和最终请求分发；业务逻辑不应继续堆入这里。
+- `routes/`：按业务域识别 GET/POST 路径，再把请求交给对应服务。
+- `services/`：认证、Agent API、自动化、控制平面、业务模块、客服、财务、TMS 代理、回单/运单和 OCR 文档等领域服务。
+- `navigation.py`：14 个生命周期菜单和控制平面菜单的唯一静态注册处。
+- `database.py`：MySQL 文档仓储；只验证结构及读写数据。
+- `config.py`：无副作用配置解析；`runtime_config.py` 只由服务入口执行一次运行时 bootstrap。
+- `finance_service.py`：财务查询、分页、金额字符串和受控命令参数的 Console 适配层。
+- `templates/`、`static/`：页面模板、样式和浏览器交互。
+- `tests/`：Console 路由、服务、模板和契约回归测试。
+
+数据库迁移统一维护在 `../agent/migrations/`。Console 保留 `ThreadingHTTPServer`，但路径识别应进入 `routes/`，领域处理应进入 `services/`。
+
+## Agent 接口边界
+
+所有 Console 到 Agent 的调用统一经过 `services/agent_api.py` 的 `_agent_request()`，使用 `/internal/v1/*` 与统一的 `ok/data/error` 响应契约。
+
+- 普通服务连接使用内部服务 Token。
+- 管理员命令、审批、账号和模块管理还必须绑定真实 MySQL 管理员会话，并由服务端签名。
+- 浏览器不能声明或覆盖管理员 principal、角色或来源。
+- 物流跟踪由 Console `/tracking` 代理 Agent `/internal/v1/tms/tracking_query`。
+- 一般执行型写请求提交 `/internal/v1/commands`；自动化项目手工执行使用专用项目 invoke 接口。
+- Basic Auth 仅为应急兼容入口，不具备控制平面写权限。
+
+## 数据库
+
+Console 运行时唯一业务数据库是与 Agent 共用的 MySQL；没有 SQLite 运行时回退。连接不可达或结构不满足要求时应显式失败，不得静默切换后端。
+
+数据库 DDL 只能由 Agent 的顺序迁移和部署迁移器执行。原图、处理产物、临时上传、日志和其他运行态文件位于 `console/runtime/`，不属于源码或数据库迁移。
+
+## 第三方原页隔离
+
+旧的同源代理路径 `/ocr/yunda/*`、`/ocr/ronghui/live/*`、`/receipts/yunda/live/*` 和 `/receipts/ronghui/live/*` 对所有方法固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，且不会调用 Agent。
+
+当前入口从主站已登录页面请求 `/original-pages/{provider}/launch`，获取一次性短期 ticket 后跳转到独立来源 `https://www.boyi.homes/original/{yunda|ronghui}/`。主站会话 Cookie 不会发送到该来源；独立来源使用路径限定 capability，写请求还需校验独立 Origin。
+
+## 主要页面
+
+- `/`：概览
+- `/login`：后台登录
+- `/settings/accounts`：管理员账号
+- `/settings/modules`：真实 `super_admin` 的业务模块管理
+- `/ocr`：运单录入与 OCR
+- `/waybills`：已落库寄件运单
+- `/tracking`：单票物流跟踪
+- `/receipts`：回单管理
+- `/modules/customer-service`：客服问题件
+- `/modules/finance`：财务工作台
+- `/dispatch`：map-only 路线、距离与运输方案比价，不包含车辆档案或真实派单
+- `/line-haul-contacts`：专线分流资料
+- `/automations`：自动化项目、配置、权限和运行状态
+- `/automation-accounts`：业务账号凭据与登录态的唯一 UI
+- `/settings/llm`：智能模型设置
+- `/work-items`：跨项目、历史和异常事项
+
+`/automations` 不保存凭据，也不提供登录快捷入口；项目只绑定 Agent Catalog 投影的业务账号。管理员账号与业务自动化账号是两套独立系统。
+
+## 本地启动
 
 WSL / Linux：
 
 ```bash
-cd /home/deng/projects/console
+cd /home/deng/projects/boyi-logistics/console
 ./start_backend.sh
 ```
 
-这条命令现在默认会做两件事：
+默认模式会先启动同仓 Agent，再使用固定 `tmux` 会话启动 Console。可选参数：
 
-- 在 WSL 内用 `tmux` 稳定拉起并列目录里的 `agent`
-- 在 WSL 内用 `tmux` 稳定拉起当前 `console`
+- `--foreground`：以前台方式运行 Console
+- `--no-agent`：不自动启动 Agent
+- `--daemon`：显式使用默认后台模式
 
-启动前脚本会自动探测常见的本地 MySQL 隧道地址：
-
-- `WSL 网关 IP:23306`
-- `WSL 网关 IP:13306`
-- `127.0.0.1:23306`
-- `127.0.0.1:13306`
-
-也就是说，页面和页面依赖的本地 Agent 会一起起来，不再依赖 Windows `Start-Process -> WSL` 这条容易失稳的后台链路。
-
-如果只想以前台方式跑当前控制台：
+停止本地服务：
 
 ```bash
-cd /home/deng/projects/console
-./start_backend.sh --foreground
-```
-
-如果只想启动控制台，不自动拉起 Agent：
-
-```bash
-cd /home/deng/projects/console
-./start_backend.sh --no-agent
-```
-
-停止：
-
-```bash
-cd /home/deng/projects/console
+cd /home/deng/projects/boyi-logistics/console
 ./stop_backend.sh
 ```
 
-Windows PowerShell：
+Windows PowerShell 通过 WSL 调用同一脚本：
 
 ```powershell
-wsl bash -lc 'cd /home/deng/projects/console && ./start_backend.sh'
+wsl bash -lc 'cd /home/deng/projects/boyi-logistics/console && ./start_backend.sh'
 ```
 
-稳定启动默认依赖 `tmux`。当前脚本会自动复用固定会话名：
+本地默认入口为 `http://127.0.0.1:8765/`，Agent 存活检查为 `http://127.0.0.1:9000/health`。
 
-- `codex-agent`
-- `codex-console`
+## 生产与发布
 
-## 页面入口
+生产入口为 `https://boyi.homes`；Console 只监听 `127.0.0.1:8765`，由受控 Nginx 反向代理。统一发布入口为：
 
-- 默认首页大盘：`http://127.0.0.1:8765/`
-- `http://127.0.0.1:8765/login`
-- `http://127.0.0.1:8765/settings/accounts`
-- `http://127.0.0.1:8765/ocr`
-- `http://127.0.0.1:8765/dispatch`
-- `http://127.0.0.1:8765/automations`
+```powershell
+powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1"
+```
 
-## 后台账号管理
+默认 `auto` 模式按变更范围选择 Console-only、Agent-only 或共享/迁移发布。发布成功后仍保留当次精确回滚包、上一版共享环境和数据库快照，直到业务验收完成；之后才允许独立清理。
 
-- 控制台默认使用 `/login` 登录页，账号和会话存储在 MySQL 的 `admin_users`、`admin_sessions` 表。
-- 首个管理员由 `DOCFLOW_ADMIN_USERNAME`、`DOCFLOW_ADMIN_PASSWORD` 引导创建；不要把真实账号密码写进代码或文档。
-- `DOCFLOW_SESSION_SECRET` 用于签名会话 Cookie，绑定域名或长期运行时必须配置固定随机值。
-- 账号管理入口为 `/settings/accounts`，支持新增管理员、启用/停用账号、重置密码。
-- 现有 `DOCFLOW_BASIC_AUTH_USER` / `DOCFLOW_BASIC_AUTH_PASS` 可作为应急兼容入口。
-
-## 生产域名
-
-- 正式入口为 `https://boyi.homes`；HTTP 和 `www.boyi.homes` 统一跳转到该地址。
-- Nginx 反向代理到 `127.0.0.1:8765`，配置来源为 `../agent/deploy/nginx/`。
-- 生产环境设置 `DOCFLOW_COOKIE_SECURE=1`，让后台 Cookie 只在 HTTPS 下发送。
-- Python 控制台服务只监听 `127.0.0.1`，阿里云安全组不得直接开放 `8765`。
-
-## TMS 本地验证
-
-- `/automation-accounts` 是业务账号与登录态中心；凭据只在该页写入和维护
-- `/automations` 项目卡只从业务账号池选择角色绑定，不回显凭据、不选择默认或首项账号；保存成功后显示明确反馈并自动收起设置面板
-- 页面刷新只读取脱敏账号状态；密码不通过 GET 响应回显，状态轮询也不会回拉密码
-- 本地验证通过前，不执行 ECS 发版和 cutover
-
-配套 Agent 健康检查：
-
-- `http://127.0.0.1:9000/health`
-
-## 运行目录
-
-- `runtime/originals/`
-  原图归档
-- `runtime/artifacts/`
-  处理产物
-- `runtime/state/`
-  控制台状态文件
-- `temp/`
-  临时文件
-
-## 数据库说明
-
-- 当前唯一后端：`MySQL`
-- `console/.env` 优先，其次读取并列的 `../agent/.env`
-- 不再保留 SQLite 作为运行时主后端
-
-## 与服务器的对应关系
-
-- 本地：`/home/deng/projects/console`
-- 服务器：`/home/boyce/console`
-
-目录结构尽量保持一致，避免本地改完后服务器路径错位。
-
-## 发布入口
-
-- 统一发布脚本在并列目录：`../agent/deploy/publish_to_ecs.ps1`
-- 发布说明：`../agent/deploy/publish_to_ecs.md`
-- 默认推荐：直接跑 `auto`，脚本会自动判断是否只发 `console`
+更详细且具约束力的规则见 `console/AGENTS.md` 或 `console/CLAUDE.md`。

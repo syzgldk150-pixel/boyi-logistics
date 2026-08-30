@@ -1,6 +1,13 @@
+---
+status: implemented
+updated: 2026-08-30
+---
+
 # Manual Waybill Address Parser Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Implemented historical record.** 地址解析按钮、浏览器本地解析、字段回填和模板测试已经落入当前代码。下方步骤只记录当时的实现过程，不是待执行清单。
+
+> 当前实现以 `console/templates/document.html` 和 `console/tests/test_manual_waybill.py` 为准。
 
 **Goal:** Add a local address parser modal to `/ocr` manual waybill entry that fills receiver name, receiver phone, and receiver address from pasted text.
 
@@ -15,7 +22,7 @@
 **Files:**
 - Modify: `tests/test_manual_waybill.py`
 
-- [ ] **Step 1: Write the failing test assertions**
+- [x] **Step 1: Write the failing test assertions**
 
 Add assertions to `ManualWaybillTemplateTests.test_document_template_defaults_to_manual_submit`:
 
@@ -33,7 +40,7 @@ self.assertIn("field_receiver_phone", html)
 self.assertIn("field_receiver_address", html)
 ```
 
-- [ ] **Step 2: Run test to verify RED**
+- [x] **Step 2: Run test to verify RED**
 
 Run:
 
@@ -48,7 +55,7 @@ Expected: fail with an assertion showing `地址解析` or the parser hooks are 
 **Files:**
 - Modify: `templates/document.html`
 
-- [ ] **Step 1: Add the header action**
+- [x] **Step 1: Add the header action**
 
 Add a `ghost-btn printer-trigger` button in `.manual-head-tools`:
 
@@ -58,7 +65,7 @@ Add a `ghost-btn printer-trigger` button in `.manual-head-tools`:
 </button>
 ```
 
-- [ ] **Step 2: Add the modal markup near the manual form**
+- [x] **Step 2: Add the modal markup near the manual form**
 
 Add a hidden dialog with textarea and actions:
 
@@ -81,7 +88,7 @@ Add a hidden dialog with textarea and actions:
 </div>
 ```
 
-- [ ] **Step 3: Add focused CSS**
+- [x] **Step 3: Add focused CSS**
 
 Add modal CSS next to existing manual CSS:
 
@@ -102,7 +109,7 @@ Add modal CSS next to existing manual CSS:
 **Files:**
 - Modify: `templates/document.html`
 
-- [ ] **Step 1: Add DOM references**
+- [x] **Step 1: Add DOM references**
 
 After the existing manual form DOM references, add:
 
@@ -112,7 +119,7 @@ const addressParserInput = document.querySelector("[data-address-parser-input]")
 const addressParserTrigger = document.querySelector("[data-address-parser-trigger]");
 ```
 
-- [ ] **Step 2: Add deterministic parser helpers**
+- [x] **Step 2: Add deterministic parser helpers**
 
 Add parser functions near `manualFieldValue`:
 
@@ -142,7 +149,7 @@ const parseReceiverAddressText = (value) => {
 };
 ```
 
-- [ ] **Step 3: Add apply and modal wiring**
+- [x] **Step 3: Add apply and modal wiring**
 
 Add:
 
@@ -183,7 +190,7 @@ addressParserDialog?.querySelector("[data-address-parser-apply]")?.addEventListe
 **Files:**
 - Test: `tests/test_manual_waybill.py`
 
-- [ ] **Step 1: Run the targeted test**
+- [x] **Step 1: Run the targeted test**
 
 Run:
 
@@ -193,7 +200,7 @@ Run:
 
 Expected: pass.
 
-- [ ] **Step 2: Run the full manual waybill test file**
+- [x] **Step 2: Run the full manual waybill test file**
 
 Run:
 
@@ -203,7 +210,7 @@ Run:
 
 Expected: pass.
 
-- [ ] **Step 3: Check git availability**
+- [x] **Step 3: Check git availability**
 
 Run:
 
@@ -211,7 +218,7 @@ Run:
 git rev-parse --show-toplevel
 ```
 
-Expected in `console/`: fail with `fatal: not a git repository`, so no commit can be made for these local `console/` files.
+Current result: the command succeeds and returns `/home/deng/projects/boyi-logistics`. `console/` is part of the monorepo, so changes are reviewed and committed from the repository root.
 
 ## Self-Review
 

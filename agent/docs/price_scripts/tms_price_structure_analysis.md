@@ -2,12 +2,15 @@
 module: 价格获取
 type: 分析报告
 tags: [TMS, 价格结构, 逐公斤扫描, 重量区间, 产品切换]
-related: [[02-tms-price-fetch], [data_accuracy_audit_report]]
-status: active
-updated: 2026-03-06
+related: [02-tms-price-fetch.md, data_accuracy_audit_report.md]
+status: snapshot
+captured_at: 2026-03-06
+updated: 2026-08-30
 ---
 
 # TMS 价格结构分析（逐公斤扫描）
+
+> 分析快照：结论和数值来自当时两地扫描，原始结果与扫描脚本不在当前仓库，本次未重新计算。不得把“两地一致”外推为当前全国规则或现行费率。
 
 > 通过对两个不同地址（杭州西湖区、哈尔滨双城区）进行 1-3000kg 逐公斤价格扫描，验证 TMS 价格结构规律。
 > 分析逻辑：四产品（融安达/融速达/精准零担/融惠达）× 两派送方式（自提/派送），每个重量点取每公斤单价最低的。

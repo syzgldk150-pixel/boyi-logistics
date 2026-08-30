@@ -2,14 +2,15 @@
 module: 价格获取
 type: 项目结构
 tags: [目录树, 脚本说明, 数据流, 业务流程, 产品规则]
-related: [[01-amap-address-fetch], [02-tms-price-fetch], [03-quote-sheet-generation]]
-status: active
-updated: 2026-06-03
+related: [01-amap-address-fetch.md, 02-tms-price-fetch.md, 03-quote-sheet-generation.md]
+status: historical
+captured_at: 2026-06-03
+updated: 2026-08-30
 ---
 
 # project_structure
 
-> 本文件由 Claude Code 自动生成，供快速了解各脚本职责与项目架构使用。
+> 历史快照：本文件描述已经退役且大部分不在仓库的离线价格工程，仅供追溯旧文件职责和数据流。它不是当前目录树，也不是运行手册；当前实时报价见 `agent/tools/price_tool.py` 和 `agent/agent/tms_runtime/`。
 
 ---
 
@@ -101,10 +102,7 @@ price_scripts/
 - 05_省重量单价热力图.png — 融速达·自提热力图
 - 06_派送vs自提溢价率.png — 各省派送溢价率
 
-**运行命令**：
-```bash
-cd "C:/Users/DENG/Desktop/price_scripts/scripts/03_finance_summary_charts" && python 生成价格表.py
-```
+**历史入口**：脚本与输入数据已不在当前仓库，不再提供运行命令。
 
 ---
 
@@ -131,10 +129,7 @@ cd "C:/Users/DENG/Desktop/price_scripts/scripts/03_finance_summary_charts" && py
 3. 偏远区县附加报价_自提 — 偏远区县自提单独报价（成本 + 利润）
 4. 偏远区县附加报价_派送 — 偏远区县派送单独报价（成本 + 利润）
 
-**运行命令**：
-```bash
-cd "C:/Users/DENG/Desktop/price_scripts/scripts/03_finance_summary_charts" && python 生成客户报价表.py
-```
+**历史入口**：脚本与输入数据已不在当前仓库，不再提供运行命令。
 
 ---
 
@@ -182,10 +177,7 @@ cd "C:/Users/DENG/Desktop/price_scripts/scripts/03_finance_summary_charts" && py
 
 **运行结果**（2026-03-16）：31 个现役自提部中 31 个成功获取价格并插入，价格范围 0.28～0.91 元/kg
 
-**运行命令**：
-```bash
-cd "C:/Users/DENG/Desktop/price_scripts/scripts/03_finance_summary_charts" && python 补充自提部报价.py
-```
+**历史入口**：脚本与输入数据已不在当前仓库，不再提供运行命令。
 
 ---
 
@@ -223,10 +215,7 @@ cd "C:/Users/DENG/Desktop/price_scripts/scripts/03_finance_summary_charts" && py
 | `RELOGIN_INTERVAL` | 80 条 | 每 N 条主动重登一次                         |
 | `SAVE_INTERVAL`    | 10 条 | 每 N 条保存进度                           |
 
-**续跑命令**：
-```bash
-cd "C:/Users/DENG/Desktop/price_scripts/scripts/02_tms_price_fetch" && python -u batch_run.py >> batch_run.log 2>&1
-```
+**历史续跑入口**：脚本、进度文件与业务数据已不在当前仓库，不再提供运行命令。
 
 ---
 
@@ -247,10 +236,7 @@ cd "C:/Users/DENG/Desktop/price_scripts/scripts/02_tms_price_fetch" && python -u
 | `_build_base_payload()`       | 构造价格计算所需的完整参数体                                                                         |
 | `fetch_prices()`              | 对外完整接口：输入地址/重量/体积，返回各产品报价字典                                                            |
 
-**也可命令行单独使用**：
-```bash
-python get_price.py "浙江省杭州市西湖区文三路100号" 100 0.1
-```
+**当前边界**：同名离线文件只作历史兼容，不作为命令行或生产入口；现行报价使用 `agent/tools/price_tool.py` 的受管链路。
 
 ---
 

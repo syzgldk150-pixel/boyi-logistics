@@ -1,4 +1,17 @@
+---
+module: 融辉TMS
+type: external_page_snapshot
+status: snapshot
+captured_at: 2026-03-25
+verified_at: 2026-08-30
+verification_scope: repository_metadata_only
+uncertainty: high
+updated: 2026-08-30
+---
+
 # 扫描管理 页面深拆
+
+> 外部页面快照：内容未在 2026-08-30 重新登录真实页面复验。DOM、接口、字段和页面身份可能已变化，不能直接作为当前自动化合同。
 
 ## Summary
 

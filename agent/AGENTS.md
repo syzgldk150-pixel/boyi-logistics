@@ -91,11 +91,12 @@
 | 模块 | 代码路径 | 文档路径 | 状态 |
 |------|----------|----------|------|
 | 控制台工作区 | `console/` | `docs/project_overview.md` | 与 agent 并列部署 |
-| 价格获取 | `price_scripts/` | `docs/price_scripts/` | 已完成（持续维护） |
+| 实时报价 | `tools/price_tool.py`、`agent/tms_runtime/scripts/{get_price,yunda_price}.py` | `docs/agent_automation/module_overview.md` | 受管只读能力；融辉/韵达分别使用精确账号登录态 |
+| 旧离线价格工程 | `price_scripts/` | `docs/price_scripts/` | legacy 隔离；文档均为历史/审计快照，不是运行入口 |
 | 财务对账 | `finance_reconciliation/` | `docs/finance_reconciliation/` | ETL v5.1 完成 |
 | 财务工作台 | `../shared/finance/`、`agent/business_query.py`、`agent/direct_tool_router.py`、`agent/core.py`、`agent/tms_runtime/scripts/*finance*`、`tools/finance_sync_service.py`、`tools/sync_finance_bills_tool.py`、`../console/finance_service.py` | `docs/finance_module.md` | 融辉逐笔账本、费用绑定、BI、00:10 同步与失败审计，以及不向 LLM 暴露、只允许飞书管理员绑定使用的确定性自然语言只读经营汇总；韵达财务未启用，并与旧 Excel ETL 隔离 |
-| OCR识别 | `console/` | `docs/ocr/` | 运行入口在控制台工作区 |
-| 车辆调度 | `console/` | `docs/dispatch/` | 运行入口在控制台工作区 |
+| OCR识别 | `console/` | `docs/ocr/` | Qwen-OCR、人工复核与 MySQL 入库已运行；自学习/Paddle 方案未实施 |
+| 车辆调度 | `console/` | `docs/dispatch/` | `map_only`：仅地图路线规划与本地试算，无真实派单/车辆/平台接口 |
 | Agent 自动化能力 | `agent/ + feishu/ + tools/` | `docs/agent_automation/` | 飞书机器人承载的全部能力都在此（直达指令 / pending 状态机 / 登录恢复） |
 | 自动化插件平台 | `agent/automation_plugins/`、`first_party_automation_plugins/`、`plugin_core_adapters/`、`agent/windows_worker/`、`service_v2_plugins/` | `docs/automation_plugin_platform.md`、`../docs/plugin-platform-v2.md`、`first_party_automation_plugins/README.md`、`first_party_automation_plugins/MIGRATION_MATRIX.md` | v1 签名动作继续运行；新能力使用 Service v2 无签名 ZIP、Host API 与声明式 Console，双轨迁移后逐项接管；Windows Worker/Tray 与 R7 打卡仍延后 |
 | AI客服 | `agent/ + feishu/`（规划中） | `docs/ai_service/` | 暂未开发；待启动后从 Agent 自动化能力剥离客户对话能力 |
@@ -115,46 +116,47 @@ docs/
 ├── agent_automation/
 │   └── module_overview.md           # 模块文档：飞书直达指令 / pending 状态机 / 登录恢复
 ├── price_scripts/
-│   ├── 01-amap-address-fetch.md      # 模块文档：高德POI地址库
-│   ├── 02-tms-price-fetch.md       # 模块文档：TMS批量报价采集
-│   ├── 03-quote-sheet-generation.md        # 模块文档：单价计算与客户报价
-│   ├── project_structure.md         # 项目结构：目录树/scripts/数据流/业务流程
-│   ├── tms-batch-quote-resume.md  # 操作手册：断点续传运行方法
-│   ├── tms_price_structure_analysis.md      # 分析报告：逐公斤扫描验证
-│   └── data_accuracy_audit_report.md   # 审计报告：全链路数据准确性
+│   ├── 01-amap-address-fetch.md      # 历史快照：旧高德 POI 地址库
+│   ├── 02-tms-price-fetch.md         # 历史快照：旧 TMS 批量报价采集
+│   ├── 03-quote-sheet-generation.md  # 历史快照：旧离线报价表生成
+│   ├── project_structure.md          # 历史快照：已退役目录树/数据流
+│   ├── tms-batch-quote-resume.md     # 已废弃：旧断点续传记录
+│   ├── tms_price_structure_analysis.md # 分析快照：当时两地扫描
+│   └── data_accuracy_audit_report.md # 审计快照：未按当前数据重算
 ├── finance_reconciliation/
 │   ├── module_overview.md             # 模块文档：ETL管道结构与数据源
 │   └── data_structure_analysis.md         # 分析报告：全量字段定义与关联关系
 ├── ocr/
-│   └── module_overview.md             # 模块文档：OCR工作区与本地控制台接入
+│   ├── module_overview.md             # 现行 OCR 工作区与实现边界
+│   └── ocr-self-learning-plan.md      # historical / not_implemented 方案
 ├── dispatch/
 │   └── module_overview.md             # 模块文档：车辆调度工作区与运力管理
 └── common/
     └── finance_data_baseline.md     # 编码规范：Decimal精度/自验证
 ```
 
-所有 .md 文档使用 YAML frontmatter，包含 `module`、`type`、`tags`、`related`、`status` 字段。
+`docs/` 下的模块文档使用 YAML frontmatter，至少包含 `module`、`type`、`status`、`updated`；历史计划、外部页面快照和退役资料必须明确生命周期与不确定性，默认不作为当前事实。
 
 ---
 
-## Codex 文档检索协议
+## 文档检索协议
 
 ### 核心原则
 
-**不全量加载文档，按需检索。** 本 AGENTS.md 是唯一始终加载到上下文的文件。
+**不全量加载文档，按需检索。** 本层级指令文件是唯一始终加载到上下文的文件。
 
 ### 检索流程
 
 1. **接到任务时**：根据任务关键词判断涉及哪个模块
 2. **先读定位索引**：优先查看 `docs/code_navigation_index.md`
-3. **定位文档**：用 `Grep` 搜索 `docs/` 下的 frontmatter `tags` 或 `module` 字段
+3. **定位文档**：用 `git grep` 搜索 Git 跟踪的 `docs/` 文档及其 frontmatter `tags`、`module` 和 `status` 字段；默认排除 `historical`、`snapshot`、`superseded` 文档
    ```
-   # 按模块搜索
-   Grep pattern="^module: 价格获取" path="docs/"
-   # 按标签搜索
-   Grep pattern="tags:.*同名消歧" path="docs/"
-   # 按类型搜索
-   Grep pattern="^type: 审计报告" path="docs/"
+    # 按模块搜索
+   git grep -n "^module: 价格获取" -- docs
+    # 按标签搜索
+   git grep -n "tags:.*同名消歧" -- docs
+   # 核对生命周期
+   git grep -n "^status:" -- docs
    ```
 4. **进入目标目录**：读取对应目录下的 `AGENTS.md` 或 `CLAUDE.md`
 5. **读取命中文档**：只读取与当前任务相关的文档，不全量加载
@@ -166,8 +168,8 @@ docs/
 | 场景 | 先搜什么 |
 |------|---------|
 | 修改某个脚本 | `docs/{模块}/` 下对应模块文档 |
-| 理解数据流 | `docs/price_scripts/project_structure.md` 或 `data_accuracy_audit_report.md` |
-| 运行/续跑脚本 | `Grep pattern="tags:.*运行命令" path="docs/"` |
+| 理解当前实时报价 | `tools/price_tool.py`、`agent/tms_runtime/` 与 `docs/agent_automation/module_overview.md`；不要使用旧价格快照 |
+| 追溯旧离线报价 | `docs/price_scripts/`，仅作 historical/snapshot 阅读，不执行其中入口 |
 | 精度/财务规范 | `docs/common/finance_data_baseline.md` |
 | 新建脚本 | 先搜已有同功能文档，检查是否可复用 |
 
@@ -182,7 +184,7 @@ docs/
 
 ## 敏感信息
 
-各模块的敏感变量统一存放在对应目录的 `.env` 文件中，详见各模块 AGENTS.md。
+敏感配置只由服务/脚本入口从部署环境加载；文档最多说明变量名称和用途，不得读取、复制或展示 `.env` 内容，详见各模块对应的指令文件。
 
 ---
 
@@ -191,7 +193,7 @@ docs/
 - 本地入口：`http://127.0.0.1:8765/`
 - 实时消息监控大盘：首页 `/`，Console 通过 `/monitoring/summary`、`/monitoring/stream`、`/monitoring/detail-link` 代理 Agent `/internal/v1/admin/monitoring/snapshot` 和 `/internal/v1/admin/monitoring/detail-link`；Agent 只返回分类、数量、状态和非敏感原系统跳转标识。
 - OCR 工作区：`http://127.0.0.1:8765/ocr`
-- 韵达/融辉录入的旧同源兼容 URL 不创建第三方活动 iframe；`/ocr?mode=yunda`、`/ocr?mode=ronghui` 仍回到博益本地录单壳，`/ocr/yunda/*` 与 `/ocr/ronghui/live/*` 固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`。独立 origin 仅通过 `/original/yunda`、`/original/ronghui` 的已验证 Console principal 和受审 allowlist 访问，不能改回同源预填代理。
+- 韵达/融辉录入的旧同源兼容 URL 不创建第三方活动 iframe；`/ocr?mode=yunda`、`/ocr?mode=ronghui` 仍回到博益本地录单壳，`/ocr/yunda/*` 与 `/ocr/ronghui/live/*` 固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`。活动原页只能由已验证 Console principal 经 `/original-pages/{provider}/launch` 取得一次性 ticket，再到 `https://www.boyi.homes/original/{provider}/` 独立 origin 兑换受审、路径限定 capability，不能改回同源预填代理。
 - 统一回单管理：Console `/receipts/sync` 与 `/receipts/{id}/audit` 只向 `/internal/v1/commands` 提交精确的 `receipts_sync` / `receipts_audit` 计划，浏览器 UUID 形成 Console 幂等键；提交阶段不得 upsert 同步结果或提前修改本地审核状态。`receipts_audit` 由高风险审批后的 WorkflowRunner 执行并读后核验；缺关键字段、多候选、登录失效、韵达未适配或写后状态不一致均显式失败。旧隐藏 iframe 自动写入兜底已删除，两个回单活动原页前缀对所有方法固定返回 410；页面只保留本地照片、证据和控制平面审核。
 - 车辆调度中心：`http://127.0.0.1:8765/dispatch`
 - 自动化账号管理：`http://127.0.0.1:8765/automation-accounts`，Console 只代理 Agent `agent/tms_runtime/account_manager.py` 的账号元数据、凭据写入和登录态操作；账号系统按真实外部系统展示，大祥报价、自提问题件、大祥S站等通过 TMS融辉账号用途区分。所有账号统一提供保存凭据、立即登录、登录状态、退出登录、自动登录开关、三次失败熔断和重新启用；协议差异只留在后端 provider。列表灰色备注来自 `name`，可独立修改且不得影响凭据和状态。业务账号密码不得写入 Console/MySQL 或 GET 响应。大祥报价显式使用 `price_default` 账号及其 `price_default` profile，飞书报价与后台登录复用同一状态，不再写死特殊 `price` 身份；R7/R13 使用可持久和在线校验的 SSO Token/Cookie，不得显示“不支持”或只做凭据检查。每个账号仍按 `account_id` 隔离运行态，所有 profile 只使用页面保存的独立凭据，不继承部署级账号密码。自动登录默认关闭，只能在页面保存完整凭据后开启；账号管理不得把环境变量凭据计入或展示为已保存凭据。

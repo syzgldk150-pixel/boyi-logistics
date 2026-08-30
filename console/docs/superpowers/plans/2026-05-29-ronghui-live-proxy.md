@@ -1,6 +1,14 @@
+---
+status: superseded
+updated: 2026-08-30
+superseded_by: console/services/tms_proxy.py
+---
+
 # Ronghui Live Proxy Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Superseded historical plan.** 本方案记录的是已停用的 Console 同源代理设计，不是当前实施清单。现行入口由主站 `/original-pages/ronghui/launch` 签发一次性 ticket，并在独立来源 `https://www.boyi.homes/original/ronghui/` 兑换路径限定 capability；旧 `/ocr/ronghui/live/*` 对所有方法固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`。当前规则见 `console/AGENTS.md` 的“运单录入与打印”，实现见 `console/services/tms_proxy.py`。
+
+> 下方复选框仅保留当时实施证据，不得据此恢复同源代理或继续执行未完成步骤。
 
 **Goal:** Add a Ronghui waybill entry mode that embeds the real Ronghui TMS "运单录入" page through the same-origin proxy approach already used by Yunda.
 
