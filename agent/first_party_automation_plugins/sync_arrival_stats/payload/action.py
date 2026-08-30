@@ -356,7 +356,10 @@ def _merge_records(
     merged = {str(row["tracking_number"]): dict(row) for row in existing}
     for row in fetched:
         tracking = str(row["tracking_number"])
-        payload = dict(merged.get(tracking, {}))
+        if tracking not in merged:
+            merged[tracking] = dict(row)
+            continue
+        payload = dict(merged[tracking])
         for key, value in row.items():
             if value not in (None, ""):
                 payload[key] = value
