@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from datetime import datetime
 import uuid
 from typing import Any
@@ -178,6 +179,28 @@ def _configuration_save_rows():
             "runtime": {"kind": "python_subprocess"},
         },
     }
+    witness = {
+        "runtime_model": "ACTION_V1",
+        "allowed_entrypoints": ["console"],
+        "invocation_contracts": {"console": {"action": "console"}},
+        "scheduling": {
+            "supported": False,
+            "allowed_kinds": [],
+            "max_daily_times": 0,
+        },
+    }
+    project.update(
+        {
+            "runtime_model": witness["runtime_model"],
+            "allowed_entrypoints_sha256": _json_hash(
+                witness["allowed_entrypoints"]
+            ),
+            "invocation_contracts_sha256": _json_hash(
+                witness["invocation_contracts"]
+            ),
+            "scheduling_sha256": _json_hash(witness["scheduling"]),
+        }
+    )
     config = {
         "automation_id": "instance-one",
         "config_json": {"marker": "A"},
@@ -208,6 +231,58 @@ def _configuration_save_rows():
     return project, config, policy
 
 
+def _configuration_witness(
+    *,
+    entrypoints: tuple[str, ...] = ("console",),
+    scheduling: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "runtime_model": "ACTION_V1",
+        "allowed_entrypoints": list(entrypoints),
+        "invocation_contracts": {
+            entrypoint: {"action": entrypoint} for entrypoint in entrypoints
+        },
+        "scheduling": scheduling
+        or {"supported": False, "allowed_kinds": [], "max_daily_times": 0},
+    }
+
+
+def _project_with_witness(
+    project: dict[str, Any], witness: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        **project,
+        "runtime_model": witness["runtime_model"],
+        "allowed_entrypoints_sha256": _json_hash(witness["allowed_entrypoints"]),
+        "invocation_contracts_sha256": _json_hash(witness["invocation_contracts"]),
+        "scheduling_sha256": _json_hash(witness["scheduling"]),
+    }
+
+
+def _service_v2_witness() -> dict[str, Any]:
+    return {
+        "runtime_model": "SERVICE_V2",
+        "allowed_entrypoints": ["manual-run", "scheduled-run"],
+        "invocation_contracts": {
+            "manual-run": {
+                "service": "plugin.example.runner@1",
+                "operation": "manual",
+                "contribution_kind": "console",
+            },
+            "scheduled-run": {
+                "service": "plugin.example.runner@1",
+                "operation": "scheduled",
+                "contribution_kind": "scheduler",
+            },
+        },
+        "scheduling": {
+            "supported": True,
+            "allowed_kinds": ["daily_times", "startup"],
+            "max_daily_times": 96,
+        },
+    }
+
+
 def _save_configuration(
     repository,
     *,
@@ -227,6 +302,7 @@ def _save_configuration(
                 "dynamic_resolvers": {},
             }
         },
+        contract_witness=_configuration_witness(),
         device_binding=None,
         actor_id="admin-one",
         actor_role="super_admin",
@@ -251,6 +327,194 @@ def _worker_envelope(*, kind, body, sequence=0, message_id=None):
 
 
 class AutomationPluginRepositoryTests(TestCase):
+    def test_install_replay_closes_actor_and_migration_authority(self):
+        request_id = str(uuid.uuid4())
+        row = {
+            "automation_id": "instance-one",
+            "plugin_id": "plugin-one",
+            "plugin_version": "1.0.0",
+            "display_name": "Instance one",
+            "install_request_id": request_id,
+            "install_payload_sha256": "a" * 64,
+            "installed_by_actor_id": "admin-one",
+            "migration_authority": False,
+        }
+        persisted = {**row, "record_version": 1}
+
+        created = AutomationPluginRepository(
+            _ScriptedConnection(
+                [
+                    ("FROM automation_projects", None, 0),
+                    ("INSERT INTO automation_projects", None, 1),
+                    ("FROM automation_projects", persisted, 0),
+                ]
+            )
+        ).install_project_instance(row)
+        self.assertTrue(created["_install_created"])
+
+        replayed = AutomationPluginRepository(
+            _ScriptedConnection([("FROM automation_projects", persisted, 0)])
+        ).install_project_instance({**row, "automation_id": "fresh-candidate-id"})
+        self.assertFalse(replayed["_install_created"])
+
+        concurrent_loser = AutomationPluginRepository(
+            _ScriptedConnection(
+                [
+                    ("FROM automation_projects", None, 0),
+                    ("INSERT INTO automation_projects", None, 0),
+                    ("FROM automation_projects", persisted, 0),
+                ]
+            )
+        ).install_project_instance({**row, "automation_id": "concurrent-candidate"})
+        self.assertFalse(concurrent_loser["_install_created"])
+
+        for override in (
+            {"installed_by_actor_id": "admin-two"},
+            {"install_payload_sha256": "b" * 64},
+            {"migration_authority": True},
+        ):
+            with self.subTest(override=override), self.assertRaises(
+                IdempotencyConflict
+            ):
+                AutomationPluginRepository(
+                    _ScriptedConnection([("FROM automation_projects", persisted, 0)])
+                ).install_project_instance({**row, **override})
+
+    def test_compiled_invocations_close_runtime_model_specific_targets(self):
+        common = {
+            "config": {},
+            "account_bindings": {},
+            "resource_bindings": {},
+            "enabled_entrypoints": ("manual-run",),
+            "schedule": {"kind": "none", "times": [], "enabled": False},
+            "device_binding": None,
+            "actor_id": "admin-one",
+            "actor_role": "super_admin",
+            "request_id": str(uuid.uuid4()),
+            "expected_project_configuration_version": 1,
+        }
+        with self.assertRaisesRegex(ValueError, "compiled invocation payload"):
+            AutomationPluginRepository(_Connection()).save_project_config(
+                "instance-one",
+                **common,
+                compiled_invocations={
+                    "manual-run": {"arguments": {}, "dynamic_resolvers": {}}
+                },
+                contract_witness=_service_v2_witness(),
+            )
+        with self.assertRaisesRegex(ValueError, "does not match contract"):
+            AutomationPluginRepository(_Connection()).save_project_config(
+                "instance-one",
+                **common,
+                compiled_invocations={
+                    "manual-run": {
+                        "arguments": {},
+                        "dynamic_resolvers": {},
+                        "target": {
+                            "service": "plugin.example.runner@1",
+                            "operation": "wrong",
+                            "contribution_id": "manual-run",
+                            "contribution_kind": "console",
+                        },
+                    }
+                },
+                contract_witness=_service_v2_witness(),
+            )
+        with self.assertRaisesRegex(ValueError, "compiled invocation payload"):
+            AutomationPluginRepository(_Connection()).save_project_config(
+                "instance-one",
+                **{
+                    **common,
+                    "enabled_entrypoints": ("console",),
+                    "request_id": str(uuid.uuid4()),
+                },
+                compiled_invocations={
+                    "console": {
+                        "arguments": {},
+                        "dynamic_resolvers": {},
+                        "target": {},
+                    }
+                },
+                contract_witness=_configuration_witness(),
+            )
+
+    def test_service_v2_schedule_uses_kind_not_a_literal_entrypoint_id(self):
+        witness = _service_v2_witness()
+        project, config, policy = _configuration_save_rows()
+        project = _project_with_witness(project, witness)
+        persisted_config = {
+            **config,
+            "config_version": 2,
+            "configured": True,
+        }
+        persisted_policy = {
+            **policy,
+            "project_configuration_version": 2,
+        }
+        compiled = {
+            entrypoint: {
+                "arguments": {"entrypoint": entrypoint},
+                "dynamic_resolvers": {},
+                "target": {
+                    "service": str(contract["service"]),
+                    "operation": str(contract["operation"]),
+                    "contribution_id": entrypoint,
+                    "contribution_kind": str(contract["contribution_kind"]),
+                },
+            }
+            for entrypoint, contract in witness["invocation_contracts"].items()
+        }
+        # Replace the signed scheduler contribution with a non-literal id and
+        # add a second scheduler target.  The schedule must fail for duplicate
+        # *kinds*, not because it expects an entrypoint named ``scheduler``.
+        witness["allowed_entrypoints"] = ["manual-run", "timer-alpha", "timer-beta"]
+        scheduler_contract = witness["invocation_contracts"].pop("scheduled-run")
+        witness["invocation_contracts"]["timer-alpha"] = scheduler_contract
+        witness["invocation_contracts"]["timer-beta"] = dict(scheduler_contract)
+        compiled.pop("scheduled-run")
+        for entrypoint in ("timer-alpha", "timer-beta"):
+            compiled[entrypoint] = {
+                "arguments": {"entrypoint": entrypoint},
+                "dynamic_resolvers": {},
+                "target": {
+                    "service": str(scheduler_contract["service"]),
+                    "operation": str(scheduler_contract["operation"]),
+                    "contribution_id": entrypoint,
+                    "contribution_kind": "scheduler",
+                },
+            }
+        project = _project_with_witness(project, witness)
+        connection = _ScriptedConnection(
+            [
+                ("FROM automation_projects AS project", project, 0),
+                ("FROM automation_project_configs", persisted_config, 0),
+                ("FROM automation_project_events", None, 0),
+                (
+                    "FROM automation_project_generations",
+                    [{"generation": 1, "state": "COMMITTED"}],
+                    0,
+                ),
+                ("FROM automation_project_policies", persisted_policy, 0),
+                ("FROM scheduled_tasks", [], 0),
+            ]
+        )
+        with self.assertRaisesRegex(OrchestrationPersistenceError, "exactly one"):
+            AutomationPluginRepository(connection).save_project_config(
+                "instance-one",
+                config={},
+                account_bindings={},
+                resource_bindings={},
+                enabled_entrypoints=("manual-run", "timer-alpha", "timer-beta"),
+                schedule={"kind": "startup", "times": [], "enabled": True},
+                compiled_invocations=compiled,
+                contract_witness=witness,
+                device_binding=None,
+                actor_id="admin-one",
+                actor_role="super_admin",
+                request_id=str(uuid.uuid4()),
+                expected_project_configuration_version=2,
+            )
+
     def test_plugin_state_change_is_audited_with_the_same_cas(self):
         request_id = str(uuid.uuid4())
         project = {
@@ -290,6 +554,300 @@ class AutomationPluginRepositoryTests(TestCase):
         self.assertEqual("DISABLED", insert_params[3])
         self.assertEqual("admin-one", insert_params[6])
         self.assertEqual("super_admin", insert_params[7])
+
+    def test_service_v2_install_state_audit_persists_only_closed_recovery_context(self):
+        request_id = str(uuid.uuid4())
+        root_request_id = str(uuid.uuid4())
+        context = {
+            "workflow": "SERVICE_V2_INSTALL",
+            "root_request_id": root_request_id,
+            "install_payload_sha256": "b" * 64,
+            "attempt": 1,
+            "phase": "enable",
+        }
+        connection = _ScriptedConnection(
+            [
+                (
+                    "FROM automation_projects",
+                    {
+                        "automation_id": "instance-one",
+                        "state": "DISABLED",
+                        "enabled": 0,
+                        "record_version": 2,
+                    },
+                    0,
+                ),
+                ("FROM automation_project_events", None, 0),
+                ("UPDATE automation_projects", None, 1),
+                ("INSERT INTO automation_project_events", None, 1),
+            ]
+        )
+
+        AutomationPluginRepository(connection).set_project_enabled_with_audit(
+            "instance-one",
+            enabled=True,
+            expected_record_version=2,
+            actor_id="admin-one",
+            actor_role="super_admin",
+            request_id=request_id,
+            state_change_context=context,
+        )
+
+        _insert_sql, insert_params = connection.cursor_instance.executions[3]
+        metadata = json.loads(insert_params[4])
+        self.assertEqual(context, metadata["state_change_context"])
+        with self.assertRaisesRegex(ValueError, "not closed"):
+            AutomationPluginRepository(_Connection()).set_project_enabled_with_audit(
+                "instance-one",
+                enabled=True,
+                expected_record_version=2,
+                actor_id="admin-one",
+                actor_role="super_admin",
+                request_id=str(uuid.uuid4()),
+                state_change_context={**context, "secret": "forbidden"},
+            )
+
+    def test_service_v2_install_enable_claim_freezes_real_generation_version(self):
+        root_request_id = str(uuid.uuid4())
+        configuration_request_id = str(
+            uuid.uuid5(
+                uuid.UUID(root_request_id),
+                "service-v2-initial-config",
+            )
+        )
+        configuration_metadata = {
+            "request_payload_sha256": "0" * 64,
+            "from_project_configuration_version": 1,
+            "to_project_configuration_version": 2,
+            "schedule_sha256": "1" * 64,
+            "scheduled_task_count": 0,
+        }
+        project = {
+            "automation_id": "instance-one",
+            "plugin_id": "plugin-one",
+            "plugin_version": "2.0.0",
+            "install_request_id": root_request_id,
+            "install_payload_sha256": "b" * 64,
+            "installed_by_actor_id": "admin-one",
+            "migration_authority": False,
+            "runtime_model": "SERVICE_V2",
+            "state": "INSTALLED",
+            "enabled": 0,
+            "record_version": 4,
+            "target_generation": 1,
+            "committed_generation": 1,
+            "reconcile_state": "STABLE",
+        }
+        config = {
+            "configured": 1,
+            "config_version": 2,
+            "updated_by_actor_id": "admin-one",
+            "config_sha256": "2" * 64,
+            "account_bindings_sha256": "3" * 64,
+            "resource_bindings_sha256": "4" * 64,
+            "enabled_entrypoints_sha256": "5" * 64,
+            "desired_schedule_sha256": "6" * 64,
+            "compiled_invocations_sha256": "7" * 64,
+            "device_binding_sha256": "8" * 64,
+        }
+        generation = {
+            "state": "COMMITTED",
+            "plugin_id": "plugin-one",
+            "plugin_version": "2.0.0",
+            "runtime_model": "SERVICE_V2",
+            "project_config_sha256": config["config_sha256"],
+            "account_bindings_sha256": config["account_bindings_sha256"],
+            "resource_bindings_sha256": config["resource_bindings_sha256"],
+            "enabled_entrypoints_sha256": config["enabled_entrypoints_sha256"],
+            "schedule_sha256": config["desired_schedule_sha256"],
+            "compiled_invocations_sha256": config[
+                "compiled_invocations_sha256"
+            ],
+            "device_binding_sha256": config["device_binding_sha256"],
+            "snapshot_sha256": "9" * 64,
+        }
+        configuration_event = {
+            "event_type": "CONFIGURATION_UPDATED",
+            "metadata_json": configuration_metadata,
+            "metadata_sha256": _json_hash(configuration_metadata),
+            "actor_id": "admin-one",
+            "actor_role": "super_admin",
+        }
+        connection = _ScriptedConnection(
+            [
+                ("FROM automation_projects AS project", project, 0),
+                ("FROM automation_project_configs", config, 0),
+                ("FROM automation_project_generations", generation, 0),
+                ("FROM automation_project_events", configuration_event, 0),
+                ("FROM automation_project_events", None, 0),
+                ("event_type='PLUGIN_STATE_CHANGED'", None, 0),
+                ("INSERT INTO automation_project_events", None, 1),
+            ]
+        )
+
+        base = AutomationPluginRepository(
+            connection
+        ).claim_service_v2_install_enable_base(
+            "instance-one",
+            root_request_id=root_request_id,
+            install_payload_sha256="b" * 64,
+            configuration_request_id=configuration_request_id,
+            actor_id="admin-one",
+            actor_role="super_admin",
+        )
+
+        self.assertEqual(4, base)
+        insert_sql, insert_params = connection.cursor_instance.executions[-1]
+        self.assertIn("SERVICE_V2_INSTALL_ENABLE_CLAIMED", insert_sql)
+        metadata = json.loads(insert_params[4])
+        self.assertEqual(4, metadata["base_record_version"])
+        self.assertEqual(1, metadata["target_generation"])
+        self.assertNotIn("config", metadata)
+
+        replay_project = {
+            **project,
+            "state": "DISABLED",
+            "record_version": 6,
+        }
+        replay_connection = _ScriptedConnection(
+            [
+                ("FROM automation_projects AS project", replay_project, 0),
+                ("FROM automation_project_configs", config, 0),
+                ("FROM automation_project_generations", generation, 0),
+                ("FROM automation_project_events", configuration_event, 0),
+                (
+                    "FROM automation_project_events",
+                    {
+                        "event_type": "SERVICE_V2_INSTALL_ENABLE_CLAIMED",
+                        "metadata_json": metadata,
+                        "metadata_sha256": _json_hash(metadata),
+                        "actor_id": "admin-one",
+                        "actor_role": "super_admin",
+                        "from_state": "INSTALLED",
+                        "to_state": "INSTALLED",
+                    },
+                    0,
+                ),
+            ]
+        )
+
+        replayed = AutomationPluginRepository(
+            replay_connection
+        ).claim_service_v2_install_enable_base(
+            "instance-one",
+            root_request_id=root_request_id,
+            install_payload_sha256="b" * 64,
+            configuration_request_id=configuration_request_id,
+            actor_id="admin-one",
+            actor_role="super_admin",
+        )
+
+        self.assertEqual(4, replayed)
+        self.assertEqual(5, len(replay_connection.cursor_instance.executions))
+
+    def test_service_v2_install_enable_claim_rejects_prior_state_history(self):
+        root_request_id = str(uuid.uuid4())
+        configuration_request_id = str(
+            uuid.uuid5(
+                uuid.UUID(root_request_id),
+                "service-v2-initial-config",
+            )
+        )
+        configuration_metadata = {
+            "request_payload_sha256": "0" * 64,
+            "from_project_configuration_version": 1,
+            "to_project_configuration_version": 2,
+            "schedule_sha256": "1" * 64,
+            "scheduled_task_count": 0,
+        }
+        config = {
+            "configured": 1,
+            "config_version": 2,
+            "updated_by_actor_id": "admin-one",
+            "config_sha256": "2" * 64,
+            "account_bindings_sha256": "3" * 64,
+            "resource_bindings_sha256": "4" * 64,
+            "enabled_entrypoints_sha256": "5" * 64,
+            "desired_schedule_sha256": "6" * 64,
+            "compiled_invocations_sha256": "7" * 64,
+            "device_binding_sha256": "8" * 64,
+        }
+        connection = _ScriptedConnection(
+            [
+                (
+                    "FROM automation_projects AS project",
+                    {
+                        "automation_id": "instance-one",
+                        "plugin_id": "plugin-one",
+                        "plugin_version": "2.0.0",
+                        "install_request_id": root_request_id,
+                        "install_payload_sha256": "b" * 64,
+                        "installed_by_actor_id": "admin-one",
+                        "migration_authority": False,
+                        "runtime_model": "SERVICE_V2",
+                        "state": "DISABLED",
+                        "enabled": 0,
+                        "record_version": 6,
+                        "target_generation": 1,
+                        "committed_generation": 1,
+                        "reconcile_state": "STABLE",
+                    },
+                    0,
+                ),
+                ("FROM automation_project_configs", config, 0),
+                (
+                    "FROM automation_project_generations",
+                    {
+                        "state": "COMMITTED",
+                        "plugin_id": "plugin-one",
+                        "plugin_version": "2.0.0",
+                        "runtime_model": "SERVICE_V2",
+                        "project_config_sha256": config["config_sha256"],
+                        "account_bindings_sha256": config[
+                            "account_bindings_sha256"
+                        ],
+                        "resource_bindings_sha256": config[
+                            "resource_bindings_sha256"
+                        ],
+                        "enabled_entrypoints_sha256": config[
+                            "enabled_entrypoints_sha256"
+                        ],
+                        "schedule_sha256": config["desired_schedule_sha256"],
+                        "compiled_invocations_sha256": config[
+                            "compiled_invocations_sha256"
+                        ],
+                        "device_binding_sha256": config["device_binding_sha256"],
+                        "snapshot_sha256": "9" * 64,
+                    },
+                    0,
+                ),
+                (
+                    "FROM automation_project_events",
+                    {
+                        "event_type": "CONFIGURATION_UPDATED",
+                        "metadata_json": configuration_metadata,
+                        "metadata_sha256": _json_hash(configuration_metadata),
+                        "actor_id": "admin-one",
+                        "actor_role": "super_admin",
+                    },
+                    0,
+                ),
+                ("FROM automation_project_events", None, 0),
+                ("event_type='PLUGIN_STATE_CHANGED'", {"event_id": 7}, 0),
+            ]
+        )
+
+        with self.assertRaisesRegex(ConcurrentUpdateError, "prior state history"):
+            AutomationPluginRepository(
+                connection
+            ).claim_service_v2_install_enable_base(
+                "instance-one",
+                root_request_id=root_request_id,
+                install_payload_sha256="b" * 64,
+                configuration_request_id=configuration_request_id,
+                actor_id="admin-one",
+                actor_role="super_admin",
+            )
 
     def test_plugin_state_response_loss_replays_without_second_update(self):
         request_id = str(uuid.uuid4())
@@ -822,6 +1380,7 @@ class AutomationPluginRepositoryTests(TestCase):
                 enabled_entrypoints=(),
                 schedule={"kind": "none", "times": [], "enabled": False},
                 compiled_invocations={},
+                contract_witness=_configuration_witness(entrypoints=()),
                 device_binding=None,
                 actor_id="console-admin",
                 actor_role="super_admin",
@@ -1071,6 +1630,7 @@ class AutomationPluginRepositoryTests(TestCase):
                     "dynamic_resolvers": {},
                 }
             },
+            contract_witness=_configuration_witness(),
             device_binding=None,
             actor_id="admin-one",
             actor_role="super_admin",
@@ -1172,6 +1732,7 @@ class AutomationPluginRepositoryTests(TestCase):
                     "dynamic_resolvers": {},
                 }
             },
+            "contract_witness": _configuration_witness(),
             "device_id": None,
             "expected_project_configuration_version": 2,
         }
@@ -1230,6 +1791,7 @@ class AutomationPluginRepositoryTests(TestCase):
                     "dynamic_resolvers": {},
                 }
             },
+            "contract_witness": _configuration_witness(),
             "device_id": None,
             "expected_project_configuration_version": 2,
         }
@@ -1283,18 +1845,22 @@ class AutomationPluginRepositoryTests(TestCase):
 
     def test_repository_enforces_signed_schedule_kinds_and_daily_limit(self):
         project, _config, _policy = _configuration_save_rows()
-        project = {
+        witness = _configuration_witness(
+            entrypoints=("console", "scheduler"),
+            scheduling={
+                "supported": True,
+                "allowed_kinds": ["startup"],
+                "max_daily_times": 1,
+            },
+        )
+        project = _project_with_witness({
             **project,
             "manifest_json": {
                 **project["manifest_json"],
-                "allowed_entrypoints": ["console", "scheduler"],
-                "scheduling": {
-                    "supported": True,
-                    "allowed_kinds": ["startup"],
-                    "max_daily_times": 1,
-                },
+                "allowed_entrypoints": witness["allowed_entrypoints"],
+                "scheduling": witness["scheduling"],
             },
-        }
+        }, witness)
 
         def save(schedule: dict[str, Any]) -> None:
             AutomationPluginRepository(
@@ -1318,6 +1884,7 @@ class AutomationPluginRepositoryTests(TestCase):
                         "dynamic_resolvers": {},
                     },
                 },
+                contract_witness=witness,
                 device_binding=None,
                 actor_id="admin-one",
                 actor_role="super_admin",
@@ -1337,17 +1904,21 @@ class AutomationPluginRepositoryTests(TestCase):
                 }
             )
 
-        daily_project = {
+        witness = _configuration_witness(
+            entrypoints=("console", "scheduler"),
+            scheduling={
+                "supported": True,
+                "allowed_kinds": ["daily_times"],
+                "max_daily_times": 1,
+            },
+        )
+        daily_project = _project_with_witness({
             **project,
             "manifest_json": {
                 **project["manifest_json"],
-                "scheduling": {
-                    "supported": True,
-                    "allowed_kinds": ["daily_times"],
-                    "max_daily_times": 1,
-                },
+                "scheduling": witness["scheduling"],
             },
-        }
+        }, witness)
         project = daily_project
         with self.assertRaisesRegex(
             OrchestrationPersistenceError,

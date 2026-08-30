@@ -230,7 +230,10 @@ def seed_required_project_resources(case, database: str) -> None:
 
 def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(case):
     from shared.automation_plugin_repository import AutomationPluginRepository
-    from shared.orchestration_repository_support import ConcurrentUpdateError
+    from shared.orchestration_repository_support import (
+        ConcurrentUpdateError,
+        _json_hash,
+    )
 
     database = case.project_authorization_database
     (
@@ -409,16 +412,29 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
             },
             "tool_contract": {"name": "sync_scan_codes"},
         }
+        contract_witness = {
+            "runtime_model": "ACTION_V1",
+            "allowed_entrypoints": ["scheduler", "console"],
+            "invocation_contracts": {
+                "scheduler": {"action": "scheduler"},
+                "console": {"action": "console"},
+            },
+            "scheduling": manifest["scheduling"],
+        }
         digest_fields = {
             "package_sha256": "1" * 64,
             "manifest_sha256": "2" * 64,
             "tool_contract_sha256": "3" * 64,
             "config_schema_sha256": "4" * 64,
-            "allowed_entrypoints_sha256": "5" * 64,
-            "invocation_contracts_sha256": "6" * 64,
+            "allowed_entrypoints_sha256": _json_hash(
+                contract_witness["allowed_entrypoints"]
+            ),
+            "invocation_contracts_sha256": _json_hash(
+                contract_witness["invocation_contracts"]
+            ),
             "worker_requirement_sha256": "7" * 64,
             "runtime_sha256": "8" * 64,
-            "scheduling_sha256": "9" * 64,
+            "scheduling_sha256": _json_hash(contract_witness["scheduling"]),
             "install_root_metadata_sha256": "a" * 64,
         }
         repository.register_package_version(
@@ -492,6 +508,7 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
                 "enabled": True,
             },
             compiled_invocations=compiled,
+            contract_witness=contract_witness,
             device_binding=None,
             actor_id="integration-admin",
             actor_role="super_admin",
@@ -523,6 +540,7 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
                 enabled_entrypoints=("scheduler", "console"),
                 schedule={"kind": "startup", "times": [], "enabled": False},
                 compiled_invocations=compiled,
+                contract_witness=contract_witness,
                 device_binding=None,
                 actor_id="integration-admin",
                 actor_role="super_admin",
@@ -593,6 +611,7 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
             enabled_entrypoints=("scheduler", "console"),
             schedule={"kind": "startup", "times": [], "enabled": False},
             compiled_invocations=compiled,
+            contract_witness=contract_witness,
             device_binding=None,
             actor_id="integration-admin",
             actor_role="super_admin",

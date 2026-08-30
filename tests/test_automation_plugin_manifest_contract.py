@@ -385,7 +385,7 @@ def test_arrival_bootstrap_persists_disabled_pending_sheet_invocations() -> None
 
         def install_project_instance(self, row):
             self.project = {**row, "record_version": 1}
-            return self.project
+            return {**self.project, "_install_created": True}
 
         def initialize_project_config(self, _automation_id, *, enabled_entrypoints):
             assert tuple(enabled_entrypoints) == tuple(template.allowed_entrypoints)

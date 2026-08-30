@@ -27,6 +27,9 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
 
 
 def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[str, list[str]]) -> bool:
+    if path == "/extensions/inspect":
+        app._handle_automation_plugin_package_upload(handler, inspect_only=True)
+        return True
     if path == "/extensions/install":
         app._handle_automation_plugin_package_upload(handler)
         return True

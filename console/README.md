@@ -95,7 +95,7 @@ Console 运行时唯一业务数据库是与 Agent 共用的 MySQL；没有 SQLi
 - `/settings/llm`：智能模型设置
 - `/work-items`：跨项目、历史和异常事项
 
-`/extensions` 与 `/automations` 复用同一个 Agent Catalog 和实例仓储：前者管理包与生命周期，后者管理项目配置与运行；Console 不维护第二套插件目录。`/automations` 不保存凭据，也不提供登录快捷入口；项目只绑定 Agent Catalog 投影的业务账号。管理员账号与业务自动化账号是两套独立系统。
+`/extensions` 与 `/automations` 复用同一个 Agent Catalog 和实例仓储：前者管理包与生命周期，后者管理项目配置与运行；Console 不维护第二套插件目录。Service v2 在扩展中心以同一页连续完成 ZIP 检查、权限确认、账号/资源、配置、入口/定时和最终安装；检查不落库，最终请求重新上传并验证同一 ZIP，发送后冻结根 UUID 与规范意图，响应丢失只原样重试。`/automations` 不保存凭据，也不提供登录快捷入口；项目只绑定 Agent Catalog 投影的业务账号。管理员账号与业务自动化账号是两套独立系统。
 
 ## 本地启动
 

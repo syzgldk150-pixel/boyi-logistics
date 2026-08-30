@@ -66,12 +66,13 @@ class AutomationPluginRepositoryPort(Protocol):
         actor_id: str,
         actor_role: str,
         request_id: str,
+        install_payload_sha256: str | None = None,
     ) -> PluginInstanceRecord:
         """Create a disabled, unconfigured instance and ref-count its package.
 
         The implementation generates the unique automation_id. Repeating the
-        same (request_id, package digest, instance_name) returns that same ID;
-        reuse with different inputs raises IDEMPOTENCY_CONFLICT. Package
+        same request and complete installation payload returns that same ID;
+        reuse with different input raises IDEMPOTENCY_CONFLICT. Package
         registration, empty account/resource bindings, unconfigured project
         config and PROJECT_FULL_AUTO policy are one transaction or a recoverable
         journal. No default account or schedule is created.
@@ -121,7 +122,28 @@ class AutomationPluginRepositoryPort(Protocol):
         actor_role: str,
         request_id: str,
         expected_record_version: int,
+        state_change_context: Mapping[str, object] | None = None,
     ) -> PluginInstanceRecord: ...
+
+    def get_state_change_witness(
+        self,
+        automation_id: str,
+        *,
+        request_id: str,
+    ) -> Mapping[str, object] | None:
+        """Read one credential-free audited state transition by request UUID."""
+
+    def claim_service_v2_install_enable_base(
+        self,
+        automation_id: str,
+        *,
+        root_request_id: str,
+        install_payload_sha256: str,
+        configuration_request_id: str,
+        actor_id: str,
+        actor_role: str,
+    ) -> int:
+        """Persist or replay the stable record version before install auto-enable."""
 
     def prepare_hard_uninstall(
         self,
@@ -370,13 +392,14 @@ class AutomationProjectConfigurationPort(Protocol):
         enabled_entrypoints: Sequence[str],
         schedule: Mapping[str, object],
         compiled_invocations: Mapping[str, Mapping[str, object]],
+        contract_witness: Mapping[str, object],
         device_binding: DeviceBinding | None,
         actor_id: str,
         actor_role: str,
         request_id: str,
         expected_project_configuration_version: int,
     ) -> AutomationProjectConfigRecord:
-        """CAS all core-owned settings and atomically stale authorization."""
+        """CAS settings against the catalog's hash-checked contract witness."""
 
 
 @runtime_checkable

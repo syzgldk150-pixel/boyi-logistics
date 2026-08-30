@@ -502,6 +502,54 @@ def _normalized_project_schedule(value: Mapping[str, Any]) -> dict[str, Any]:
     return {"kind": "daily_times", "times": normalized_times, "enabled": enabled}
 
 
+def _configuration_contract_witness(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Close the catalog proof used to save one project configuration.
+
+    The caller has already parsed and verified the package through the catalog.
+    Persistence compares this proof to immutable version digests instead of
+    reparsing a Service v2 manifest from the database.
+    """
+
+    if not isinstance(value, Mapping) or set(value) != {
+        "runtime_model",
+        "allowed_entrypoints",
+        "invocation_contracts",
+        "scheduling",
+    }:
+        raise ValueError("project configuration contract witness is invalid")
+    runtime_model = _required_text(value.get("runtime_model"), "runtime_model")
+    if runtime_model not in _PLUGIN_RUNTIME_MODELS:
+        raise ValueError("project configuration runtime_model is invalid")
+    raw_entrypoints = value.get("allowed_entrypoints")
+    if not isinstance(raw_entrypoints, list):
+        raise ValueError("project configuration allowed_entrypoints are invalid")
+    allowed_entrypoints = [
+        _required_text(item, "allowed_entrypoint") for item in raw_entrypoints
+    ]
+    if len(allowed_entrypoints) != len(set(allowed_entrypoints)):
+        raise ValueError("project configuration allowed_entrypoints are duplicated")
+    raw_contracts = value.get("invocation_contracts")
+    if not isinstance(raw_contracts, Mapping) or set(raw_contracts) != set(
+        allowed_entrypoints
+    ):
+        raise ValueError("project configuration invocation contracts are invalid")
+    invocation_contracts: dict[str, dict[str, Any]] = {}
+    for entrypoint in allowed_entrypoints:
+        contract = raw_contracts.get(entrypoint)
+        if not isinstance(contract, Mapping):
+            raise ValueError("project configuration invocation contract is invalid")
+        invocation_contracts[entrypoint] = dict(contract)
+    scheduling = value.get("scheduling")
+    if not isinstance(scheduling, Mapping):
+        raise ValueError("project configuration scheduling witness is invalid")
+    return {
+        "runtime_model": runtime_model,
+        "allowed_entrypoints": allowed_entrypoints,
+        "invocation_contracts": invocation_contracts,
+        "scheduling": dict(scheduling),
+    }
+
+
 _QUARTER_HOUR_DAILY_TIMES = tuple(
     f"{hour:02d}:{minute:02d}"
     for hour in range(24)
@@ -824,6 +872,57 @@ def _canonical_uuid(value: Any, field: str) -> str:
     return text
 
 
+def _normalized_state_change_context(
+    value: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    context = dict(value or {})
+    if not context:
+        return {}
+    workflow = context.get("workflow")
+    if workflow == "SERVICE_V2_INSTALL":
+        if set(context) != {
+            "workflow",
+            "root_request_id",
+            "install_payload_sha256",
+            "attempt",
+            "phase",
+        }:
+            raise ValueError("service-v2 install state context is not closed")
+        phase = context.get("phase")
+        if phase not in {"enable", "rollback"}:
+            raise ValueError("service-v2 install state phase is invalid")
+        return {
+            "workflow": workflow,
+            "root_request_id": _canonical_uuid(
+                context.get("root_request_id"),
+                "state_change_context.root_request_id",
+            ),
+            "install_payload_sha256": _sha256(
+                context.get("install_payload_sha256"),
+                "state_change_context.install_payload_sha256",
+            ),
+            "attempt": _positive_int(
+                context.get("attempt"),
+                "state_change_context.attempt",
+            ),
+            "phase": phase,
+        }
+    if workflow == "PLUGIN_STATE_RECONCILE_ROLLBACK":
+        if set(context) != {"workflow", "root_request_id", "phase"}:
+            raise ValueError("state reconcile rollback context is not closed")
+        if context.get("phase") != "rollback":
+            raise ValueError("state reconcile rollback phase is invalid")
+        return {
+            "workflow": workflow,
+            "root_request_id": _canonical_uuid(
+                context.get("root_request_id"),
+                "state_change_context.root_request_id",
+            ),
+            "phase": "rollback",
+        }
+    raise ValueError("state change context workflow is invalid")
+
+
 def _worker_time(value: Any, field: str) -> str:
     if not isinstance(value, datetime):
         raise ValueError(f"{field} must be a datetime")
@@ -1107,10 +1206,14 @@ from shared.automation_plugin_worker_repository import (
 from shared.automation_plugin_v2_repository import (
     AutomationPluginV2RepositoryMixin,
 )  # noqa: E402
+from shared.automation_plugin_enable_repository import (
+    AutomationPluginEnableRepositoryMixin,
+)  # noqa: E402
 
 
 class AutomationPluginRepository(
     AutomationPluginV2RepositoryMixin,
+    AutomationPluginEnableRepositoryMixin,
     AutomationPluginGenerationRepositoryMixin,
     AutomationPluginWorkerRepositoryMixin,
     RepositoryBase,
@@ -1439,29 +1542,13 @@ class AutomationPluginRepository(
         plugin_id = _required_text(row.get("plugin_id"), "plugin_id")
         request_id = _required_text(row.get("install_request_id"), "install_request_id")
         payload_sha = _sha256(row.get("install_payload_sha256"), "install_payload_sha256")
+        installed_by_actor_id = _required_text(
+            row.get("installed_by_actor_id"), "installed_by_actor_id"
+        )
+        migration_authority = row.get("migration_authority")
+        if type(migration_authority) is not bool:
+            raise ValueError("migration_authority must be boolean")
         with self.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO automation_projects (
-                    automation_id, plugin_id, plugin_version, display_name,
-                    enabled, state, install_request_id, install_payload_sha256,
-                    installed_by_actor_id, migration_authority, record_version
-                ) VALUES (
-                    %s, %s, %s, %s, FALSE, 'INSTALLED', %s, %s, %s, %s, 1
-                )
-                ON DUPLICATE KEY UPDATE automation_id=automation_id
-                """,
-                (
-                    automation_id,
-                    plugin_id,
-                    _required_text(row.get("plugin_version"), "plugin_version"),
-                    _required_text(row.get("display_name"), "display_name"),
-                    request_id,
-                    payload_sha,
-                    _required_text(row.get("installed_by_actor_id"), "installed_by_actor_id"),
-                    bool(row.get("migration_authority")),
-                ),
-            )
             cursor.execute(
                 """
                 SELECT * FROM automation_projects
@@ -1471,6 +1558,54 @@ class AutomationPluginRepository(
                 (request_id,),
             )
             persisted = _row_dict(cursor, cursor.fetchone())
+            attempted_insert = persisted is None
+            created = False
+            if persisted is None:
+                cursor.execute(
+                    """
+                    INSERT INTO automation_projects (
+                        automation_id, plugin_id, plugin_version, display_name,
+                        enabled, state, install_request_id, install_payload_sha256,
+                        installed_by_actor_id, migration_authority, record_version
+                    ) VALUES (
+                        %s, %s, %s, %s, FALSE, 'INSTALLED', %s, %s, %s, %s, 1
+                    )
+                    ON DUPLICATE KEY UPDATE automation_id=automation_id
+                    """,
+                    (
+                        automation_id,
+                        plugin_id,
+                        _required_text(row.get("plugin_version"), "plugin_version"),
+                        _required_text(row.get("display_name"), "display_name"),
+                        request_id,
+                        payload_sha,
+                        installed_by_actor_id,
+                        migration_authority,
+                    ),
+                )
+                insert_rowcount = int(getattr(cursor, "rowcount", 0) or 0)
+                cursor.execute(
+                    """
+                    SELECT * FROM automation_projects
+                    WHERE install_request_id=%s
+                    FOR UPDATE
+                    """,
+                    (request_id,),
+                )
+                persisted = _row_dict(cursor, cursor.fetchone())
+                # The request-id unique key may have been won by a concurrent
+                # transaction after our initial missing-row read.  Creation
+                # authority belongs only to the transaction whose fresh,
+                # server-generated candidate id became the persisted row; an
+                # ON DUPLICATE KEY loser must not repeat config/policy/audit
+                # initialization.
+                created = bool(
+                    attempted_insert
+                    and insert_rowcount == 1
+                    and persisted is not None
+                    and str(persisted.get("automation_id") or "")
+                    == automation_id
+                )
         if persisted is None:
             raise OrchestrationPersistenceError("automation instance did not persist")
         if (
@@ -1480,9 +1615,14 @@ class AutomationPluginRepository(
             or str(persisted.get("install_payload_sha256") or "") != payload_sha
             or str(persisted.get("display_name") or "")
             != str(row.get("display_name") or "")
+            or str(persisted.get("installed_by_actor_id") or "")
+            != installed_by_actor_id
+            or bool(persisted.get("migration_authority")) != migration_authority
         ):
             raise IdempotencyConflict("install request was reused with different input")
-        return persisted
+        result = dict(persisted)
+        result["_install_created"] = created
+        return result
 
     def record_project_install_lifecycle_event(
         self,
@@ -2137,6 +2277,7 @@ class AutomationPluginRepository(
         enabled_entrypoints: Sequence[str],
         schedule: Mapping[str, Any],
         compiled_invocations: Mapping[str, Mapping[str, Any]],
+        contract_witness: Mapping[str, Any],
         device_binding: Any | None,
         actor_id: str,
         actor_role: str,
@@ -2177,6 +2318,8 @@ class AutomationPluginRepository(
             for value in (config, account_bindings, resource_bindings, compiled_invocations)
         ):
             raise ValueError("project configuration payloads must be objects")
+        witness = _configuration_contract_witness(contract_witness)
+        runtime_model = witness["runtime_model"]
         entrypoints = tuple(
             sorted({_required_text(item, "entrypoint") for item in enabled_entrypoints})
         )
@@ -2187,10 +2330,12 @@ class AutomationPluginRepository(
         normalized_compiled: dict[str, dict[str, Any]] = {}
         for entrypoint in entrypoints:
             compiled = compiled_invocations.get(entrypoint)
-            if not isinstance(compiled, Mapping) or set(compiled) != {
-                "arguments",
-                "dynamic_resolvers",
-            }:
+            required_compiled_fields = (
+                {"arguments", "dynamic_resolvers", "target"}
+                if runtime_model == "SERVICE_V2"
+                else {"arguments", "dynamic_resolvers"}
+            )
+            if not isinstance(compiled, Mapping) or set(compiled) != required_compiled_fields:
                 raise ValueError("compiled invocation payload is invalid")
             arguments = compiled.get("arguments")
             resolvers = compiled.get("dynamic_resolvers")
@@ -2208,6 +2353,41 @@ class AutomationPluginRepository(
                 "arguments": dict(arguments),
                 "dynamic_resolvers": dict(resolvers),
             }
+            if runtime_model == "SERVICE_V2":
+                target = compiled.get("target")
+                expected_target = witness["invocation_contracts"].get(entrypoint)
+                if not isinstance(target, Mapping) or set(target) != {
+                    "service",
+                    "operation",
+                    "contribution_id",
+                    "contribution_kind",
+                }:
+                    raise ValueError("service v2 invocation target is invalid")
+                if not isinstance(expected_target, Mapping):
+                    raise ValueError("service v2 invocation contract is unavailable")
+                normalized_target = {
+                    field: _required_text(target.get(field), f"target.{field}")
+                    for field in (
+                        "service",
+                        "operation",
+                        "contribution_id",
+                        "contribution_kind",
+                    )
+                }
+                if (
+                    normalized_target["contribution_id"] != entrypoint
+                    or normalized_target["service"]
+                    != _required_text(expected_target.get("service"), "contract.service")
+                    or normalized_target["operation"]
+                    != _required_text(expected_target.get("operation"), "contract.operation")
+                    or normalized_target["contribution_kind"]
+                    != _required_text(
+                        expected_target.get("contribution_kind"),
+                        "contract.contribution_kind",
+                    )
+                ):
+                    raise ValueError("service v2 invocation target does not match contract")
+                normalized_compiled[entrypoint]["target"] = normalized_target
         normalized_schedule = _normalized_project_schedule(schedule)
         # Schedule times remain persisted while the scheduler entrypoint is off.
         # Generation commit materializes those rows disabled, so re-enabling the
@@ -2220,6 +2400,7 @@ class AutomationPluginRepository(
             "enabled_entrypoints": list(entrypoints),
             "schedule": normalized_schedule,
             "compiled_invocations": normalized_compiled,
+            "contract_witness": witness,
             "device_id": device_id,
             "expected_project_configuration_version": expected_version,
         }
@@ -2230,7 +2411,10 @@ class AutomationPluginRepository(
         with self.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT project.*, version.manifest_json
+                SELECT project.*, version.manifest_json, version.runtime_model,
+                       version.allowed_entrypoints_sha256,
+                       version.invocation_contracts_sha256,
+                       version.scheduling_sha256
                 FROM automation_projects AS project
                 INNER JOIN automation_plugin_versions AS version
                   ON version.plugin_id=project.plugin_id
@@ -2244,21 +2428,43 @@ class AutomationPluginRepository(
             if project is None:
                 raise OrchestrationPersistenceError("automation project is not installed")
             _stageable_project_state(project.get("state"))
-            manifest = _json_value(project.get("manifest_json"), {})
-            if not isinstance(manifest, Mapping):
-                raise OrchestrationPersistenceError("persisted plugin manifest is invalid")
-            allowed_entrypoints = manifest.get("allowed_entrypoints")
-            scheduling = manifest.get("scheduling")
-            tool_contract = manifest.get("tool_contract")
-            runtime = manifest.get("runtime")
+            persisted_runtime_model = str(project.get("runtime_model") or "ACTION_V1")
+            if persisted_runtime_model != runtime_model:
+                raise OrchestrationPersistenceError(
+                    "persisted plugin runtime model does not match contract witness"
+                )
             if (
-                not isinstance(allowed_entrypoints, list)
-                or not set(entrypoints) <= set(str(item) for item in allowed_entrypoints)
-                or not isinstance(scheduling, Mapping)
-                or not isinstance(tool_contract, Mapping)
-                or not isinstance(runtime, Mapping)
+                _sha256(
+                    project.get("allowed_entrypoints_sha256"),
+                    "allowed_entrypoints_sha256",
+                )
+                != _json_hash(witness["allowed_entrypoints"])
+                or _sha256(
+                    project.get("invocation_contracts_sha256"),
+                    "invocation_contracts_sha256",
+                )
+                != _json_hash(witness["invocation_contracts"])
+                or _sha256(project.get("scheduling_sha256"), "scheduling_sha256")
+                != _json_hash(witness["scheduling"])
             ):
+                raise OrchestrationPersistenceError(
+                    "persisted plugin contract does not match configuration witness"
+                )
+            allowed_entrypoints = witness["allowed_entrypoints"]
+            scheduling = witness["scheduling"]
+            if not set(entrypoints) <= set(allowed_entrypoints):
                 raise OrchestrationPersistenceError("persisted plugin contract is invalid")
+            if runtime_model == "ACTION_V1":
+                manifest = _json_value(project.get("manifest_json"), {})
+                if not isinstance(manifest, Mapping):
+                    raise OrchestrationPersistenceError("persisted plugin manifest is invalid")
+                tool_contract = manifest.get("tool_contract")
+                runtime = manifest.get("runtime")
+                if not isinstance(tool_contract, Mapping) or not isinstance(runtime, Mapping):
+                    raise OrchestrationPersistenceError("persisted plugin contract is invalid")
+            else:
+                tool_contract = None
+                runtime = None
             if (
                 normalized_schedule["kind"] != "none"
                 and scheduling.get("supported") is not True
@@ -2283,9 +2489,17 @@ class AutomationPluginRepository(
                     raise OrchestrationPersistenceError(
                         "project schedule exceeds the signed plugin daily limit"
                     )
-            tool_name = _required_text(tool_contract.get("name"), "tool_contract.name")
-            if runtime.get("kind") == "core_tool_ref" and runtime.get("tool_name") != tool_name:
-                raise OrchestrationPersistenceError("plugin runtime/tool identity mismatch")
+            if runtime_model == "ACTION_V1":
+                if not isinstance(tool_contract, Mapping) or not isinstance(runtime, Mapping):
+                    raise OrchestrationPersistenceError("persisted plugin contract is invalid")
+                tool_name = _required_text(
+                    tool_contract.get("name"), "tool_contract.name"
+                )
+                if (
+                    runtime.get("kind") == "core_tool_ref"
+                    and runtime.get("tool_name") != tool_name
+                ):
+                    raise OrchestrationPersistenceError("plugin runtime/tool identity mismatch")
 
             cursor.execute(
                 """
@@ -2464,9 +2678,24 @@ class AutomationPluginRepository(
                 by_cron[cron] = task
 
             expressions = _schedule_expressions(normalized_schedule)
-            scheduler_arguments = normalized_compiled.get("scheduler", {}).get(
-                "arguments", {}
-            )
+            if runtime_model == "SERVICE_V2" and normalized_schedule["kind"] != "none":
+                scheduler_entrypoints = [
+                    entrypoint
+                    for entrypoint in entrypoints
+                    if normalized_compiled[entrypoint]["target"]["contribution_kind"]
+                    == "scheduler"
+                ]
+                if len(scheduler_entrypoints) != 1:
+                    raise OrchestrationPersistenceError(
+                        "service v2 schedule requires exactly one enabled scheduler target"
+                    )
+                scheduler_arguments = normalized_compiled[
+                    scheduler_entrypoints[0]
+                ]["arguments"]
+            else:
+                scheduler_arguments = normalized_compiled.get("scheduler", {}).get(
+                    "arguments", {}
+                )
             if expressions and not isinstance(scheduler_arguments, Mapping):
                 raise ValueError("scheduler invocation arguments are invalid")
             target_tasks: list[dict[str, Any]] = []
@@ -2714,175 +2943,6 @@ class AutomationPluginRepository(
         if persisted is None:
             raise OrchestrationPersistenceError("automation project config disappeared")
         return persisted
-
-    def set_project_enabled(
-        self,
-        automation_id: str,
-        *,
-        enabled: bool,
-        expected_record_version: int,
-    ) -> dict[str, Any]:
-        _positive_int(expected_record_version, "expected_record_version")
-        state = "ENABLED" if enabled else "DISABLED"
-        with self.cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE automation_projects
-                SET enabled=%s, state=%s, record_version=record_version+1,
-                    updated_at=NOW(6)
-                WHERE automation_id=%s AND record_version=%s
-                  AND state NOT IN ('UNINSTALLING', 'UPGRADING')
-                """,
-                (
-                    bool(enabled),
-                    state,
-                    _required_text(automation_id, "automation_id"),
-                    expected_record_version,
-                ),
-            )
-            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
-                raise ConcurrentUpdateError("automation project instance version changed")
-        project = self.get_project(automation_id, for_update=True)
-        if project is None:
-            raise OrchestrationPersistenceError("automation project disappeared")
-        return project
-
-    def set_project_enabled_with_audit(
-        self,
-        automation_id: str,
-        *,
-        enabled: bool,
-        expected_record_version: int,
-        actor_id: str,
-        actor_role: str,
-        request_id: str,
-    ) -> dict[str, Any]:
-        """CAS one Console state change with an idempotent audit event."""
-
-        project_id = _required_text(automation_id, "automation_id")
-        expected_version = _positive_int(
-            expected_record_version,
-            "expected_record_version",
-        )
-        normalized_actor = _required_text(actor_id, "actor_id")
-        normalized_role = _required_text(actor_role, "actor_role")
-        normalized_request = _required_text(request_id, "request_id")
-        target_enabled = bool(enabled)
-        target_state = "ENABLED" if target_enabled else "DISABLED"
-        request_payload = {
-            "enabled": target_enabled,
-            "expected_record_version": expected_version,
-        }
-        request_payload_sha256 = _json_hash(request_payload)
-
-        with self.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT * FROM automation_projects
-                WHERE automation_id=%s FOR UPDATE
-                """,
-                (project_id,),
-            )
-            project = _row_dict(cursor, cursor.fetchone())
-            if project is None:
-                raise OrchestrationPersistenceError(
-                    "automation project is not installed"
-                )
-            cursor.execute(
-                """
-                SELECT * FROM automation_project_events
-                WHERE automation_id=%s AND request_id=%s FOR UPDATE
-                """,
-                (project_id, normalized_request),
-            )
-            prior_event = _decode_row(
-                _row_dict(cursor, cursor.fetchone()),
-                ("metadata_json",),
-            )
-
-            if prior_event is not None:
-                metadata = prior_event.get("metadata_json")
-                if (
-                    prior_event.get("event_type") != "PLUGIN_STATE_CHANGED"
-                    or not isinstance(metadata, Mapping)
-                    or metadata.get("request_payload_sha256")
-                    != request_payload_sha256
-                    or prior_event.get("actor_id") != normalized_actor
-                    or prior_event.get("actor_role") != normalized_role
-                ):
-                    raise IdempotencyConflict(
-                        "plugin state request was reused with different input"
-                    )
-                if (
-                    project.get("state") != target_state
-                    or bool(project.get("enabled")) is not target_enabled
-                    or project.get("record_version") != expected_version + 1
-                ):
-                    raise IdempotencyConflict(
-                        "plugin state changed after the idempotent request"
-                    )
-                return project
-
-            from_state = str(project.get("state") or "")
-            if (
-                project.get("record_version") != expected_version
-                or from_state in {"UNINSTALLING", "UPGRADING"}
-            ):
-                raise ConcurrentUpdateError(
-                    "automation project instance version changed"
-                )
-            cursor.execute(
-                """
-                UPDATE automation_projects
-                SET enabled=%s, state=%s, record_version=record_version+1,
-                    updated_at=NOW(6)
-                WHERE automation_id=%s AND record_version=%s
-                  AND state NOT IN ('UNINSTALLING', 'UPGRADING')
-                """,
-                (
-                    target_enabled,
-                    target_state,
-                    project_id,
-                    expected_version,
-                ),
-            )
-            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
-                raise ConcurrentUpdateError(
-                    "automation project instance version changed"
-                )
-            event_metadata = {
-                "request_payload_sha256": request_payload_sha256,
-                "enabled": target_enabled,
-                "from_record_version": expected_version,
-                "to_record_version": expected_version + 1,
-            }
-            cursor.execute(
-                """
-                INSERT INTO automation_project_events (
-                    automation_id, request_id, event_type, from_state, to_state,
-                    metadata_json, metadata_sha256, actor_id, actor_role
-                ) VALUES (
-                    %s, %s, 'PLUGIN_STATE_CHANGED', %s, %s,
-                    %s, %s, %s, %s
-                )
-                """,
-                (
-                    project_id,
-                    normalized_request,
-                    from_state,
-                    target_state,
-                    _json_param(event_metadata, {}),
-                    _json_hash(event_metadata),
-                    normalized_actor,
-                    normalized_role,
-                ),
-            )
-        return {
-            **project,
-            "enabled": target_enabled,
-            "state": target_state,
-            "record_version": expected_version + 1,
-        }
 
     def list_invalid_scheduled_project_links(self) -> list[dict[str, Any]]:
         """Return only safe identifiers; never include cron parameters."""

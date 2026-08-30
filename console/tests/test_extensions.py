@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import shutil
 import unittest
 from http import HTTPStatus
 from pathlib import Path
@@ -114,13 +116,178 @@ class ExtensionProjectionTests(unittest.TestCase):
         )
         self.assertIn("<dt>扩展 ID</dt>", source)
         self.assertIn("项目名称（可选）", source)
+        self.assertIn("data-extension-legacy-install-form", source)
+        self.assertIn("安装旧版 Action v1", source)
+        self.assertIn('data-extension-install-form data-extension-legacy-install-form', source)
+        self.assertIn('body.set("instance_name", instanceName)', script)
         self.assertIn('class="extension-install-form"', source)
         self.assertIn('class="ghost-btn extension-upgrade"', source)
         self.assertIn(".extension-upgrade:focus-within", styles)
         self.assertIn(".extension-install-form input,", styles)
-        self.assertIn("submit.dataset.requestId || secureRequestId()", script)
         self.assertIn("button.dataset.requestId || secureRequestId()", script)
         self.assertIn('credentials: "same-origin"', script)
+
+    def test_service_v2_wizard_uses_closed_projection_and_continuous_steps(self):
+        source = (Path(__file__).parents[1] / "templates" / "extensions.html").read_text(
+            encoding="utf-8"
+        )
+        script = (Path(__file__).parents[1] / "static" / "extensions.js").read_text(
+            encoding="utf-8"
+        )
+        for step in ("upload", "permissions", "bindings", "configuration", "install"):
+            self.assertIn(f'data-extension-progress="{step}"', source)
+        self.assertIn('action="/extensions/inspect"', source)
+        self.assertIn('action="/extensions/install"', source)
+        self.assertIn('data-extension-final-form', source)
+        self.assertIn('data-extension-inspection-warnings', source)
+        self.assertIn('body.set("package", file)', script)
+        self.assertIn('body.set("request_id", inspectedRequestId)', script)
+        self.assertIn('body.set("package", state.frozen.packageFile)', script)
+        self.assertIn('body.set("request_id", state.frozen.requestId)', script)
+        self.assertIn('body.set("intent", state.frozen.serializedIntent)', script)
+        self.assertIn('state.frozen = Object.freeze({', script)
+        self.assertIn('state.finalSent = true;', script)
+        self.assertIn('credentials: "same-origin"', script)
+        self.assertIn('textContent', script)
+        self.assertNotIn('innerHTML', script)
+
+    def test_service_v2_intent_has_exact_keys_and_no_browser_authority_fields(self):
+        source = (Path(__file__).parents[1] / "templates" / "extensions.html").read_text(
+            encoding="utf-8"
+        )
+        styles = (Path(__file__).parents[1] / "static" / "style.css").read_text(
+            encoding="utf-8"
+        )
+        script = (Path(__file__).parents[1] / "static" / "extensions.js").read_text(
+            encoding="utf-8"
+        )
+        expected_keys = (
+            "instance_name",
+            "config",
+            "account_bindings",
+            "resource_bindings",
+            "enabled_entrypoints",
+            "schedule",
+            "permissions_confirmed",
+        )
+        for key in expected_keys:
+            self.assertIn(f"{key}:", script)
+        final_form = source.split('data-extension-final-form', 1)[1].split('</form>', 1)[0]
+        for forbidden in (
+            "automation_id",
+            "package_sha256",
+            "manifest",
+            "digest",
+            "service",
+            "operation",
+            "credential",
+        ):
+            self.assertNotIn(f'name="{forbidden}"', final_form)
+        self.assertIn("account_options", script)
+        self.assertIn("resource_options", script)
+        self.assertIn("account_pool_available", script)
+        self.assertIn("resource_pool_available", script)
+        self.assertIn("warnings", script)
+        self.assertIn("operations:", script)
+        self.assertIn("SAFE_BINDING_ID", script)
+        self.assertIn("select.disabled = !hasUsableOptions", script)
+        self.assertIn("if (!configSchema || !scheduling) return null;", script)
+        self.assertIn("extensionConfigItemType", script)
+        self.assertIn("Number.isInteger", script)
+        self.assertIn("Number.isFinite", script)
+        self.assertIn("control.checkValidity", script)
+        self.assertIn("extensionConfigObjectRequired", script)
+        self.assertIn('permissionConfirmation.checked = false', script)
+        self.assertIn("JSON.stringify(path)", script)
+        self.assertIn("请选择", script)
+        self.assertIn("item.status_label", script)
+        self.assertNotIn('["startup"', script)
+        self.assertNotIn('control.type = "text"', script)
+        self.assertIn("MAX_SCHEDULE_TIMES", script)
+        self.assertNotIn("border-left: 3px", styles)
+        self.assertNotIn("border-left: 2px", styles)
+
+    def test_service_v2_final_retry_keeps_frozen_file_intent_and_request_id(self):
+        script = (Path(__file__).parents[1] / "static" / "extensions.js").read_text(
+            encoding="utf-8"
+        )
+        frozen_start = script.index("state.frozen = Object.freeze({")
+        frozen_block = script[frozen_start:script.index("state.finalSent = true;", frozen_start)]
+        self.assertIn("packageFile: state.packageFile", frozen_block)
+        self.assertIn("requestId: state.requestId", frozen_block)
+        self.assertIn("serializedIntent", frozen_block)
+        retry_start = script.index("const sendFinal = async () =>")
+        retry_block = script[retry_start:script.index("inspectForm.addEventListener", retry_start)]
+        self.assertIn("state.frozen.packageFile", retry_block)
+        self.assertIn("state.frozen.requestId", retry_block)
+        self.assertIn("state.frozen.serializedIntent", retry_block)
+        self.assertIn('finalButton.textContent = "重试相同安装"', retry_block)
+
+    def test_service_v2_projection_rules_execute_in_node(self):
+        script_path = (Path(__file__).parents[1] / "static" / "extensions.js").resolve()
+        script_source = script_path.read_text(encoding="utf-8")
+        node_executable = shutil.which("node") or shutil.which("node.exe")
+        if node_executable is None:
+            self.skipTest("Node.js is unavailable")
+        node_script = """
+const fs = require("fs");
+const vm = require("vm");
+global.Node = class {{}};
+global.HTMLElement = class extends Node {{}};
+global.HTMLFormElement = class extends HTMLElement {{}};
+global.HTMLButtonElement = class extends HTMLElement {{}};
+global.HTMLInputElement = class extends HTMLElement {{}};
+global.HTMLSelectElement = class extends HTMLElement {{}};
+global.Option = class {{}};
+global.File = class {{}};
+global.document = {{ querySelector: () => null, querySelectorAll: () => [] }};
+global.window = {{
+  __EXTENSION_WIZARD_TEST__: true,
+  crypto: {{ randomUUID: () => "00000000-0000-4000-8000-000000000001" }},
+}};
+vm.runInThisContext(fs.readFileSync(0, "utf8"));
+const {{safeProjection, setStructuredPath}} = window.__extensionWizardTest;
+const base = {{
+  plugin_id: "example_service",
+  name: "Example service",
+  version: "2.0.0",
+  host_api: {{minimum: "2.0.0", maximum_exclusive: "3.0.0"}},
+  permissions: [], account_roles: [], resource_roles: [],
+  config_schema: {{
+    type: "object", additionalProperties: false,
+    properties: {{
+      "runtime.mode": {{type: "string", enum: ["safe"], default: "safe"}},
+      nested: {{type: "object", additionalProperties: false,
+        properties: {{count: {{type: "integer", enum: [1, 2]}}}}, required: ["count"]}},
+    }}, required: ["runtime.mode", "nested"],
+  }},
+  contributions: [],
+  scheduling: {{supported: false, default_schedule: {{kind: "none", times: [], enabled: false}}}},
+  account_options: [], resource_options: [], account_pool_available: true,
+  resource_pool_available: true, warnings: [],
+}};
+const valid = safeProjection(base);
+if (!valid || !valid.config_schema.properties["runtime.mode"] || !valid.config_schema.properties.nested) throw new Error("valid projection rejected");
+const structured = {{}};
+if (!setStructuredPath(structured, ["runtime.mode"], "safe") || structured["runtime.mode"] !== "safe") throw new Error("dot property path changed shape");
+const unknown = JSON.parse(JSON.stringify(base));
+unknown.config_schema.properties.bad = {{type: "string", pattern: "^secret$"}};
+if (safeProjection(unknown) !== null) throw new Error("unsupported schema keyword accepted");
+const mismatched = JSON.parse(JSON.stringify(base));
+mismatched.config_schema.properties["runtime.mode"] = {{type: "integer", enum: [1.5]}};
+if (safeProjection(mismatched) !== null) throw new Error("mismatched enum accepted");
+const nullOnly = JSON.parse(JSON.stringify(base));
+nullOnly.config_schema.properties["runtime.mode"] = {{type: "string", enum: [null]}};
+if (safeProjection(nullOnly) !== null) throw new Error("null enum accepted");
+""".replace("{{", "{").replace("}}", "}")
+        result = subprocess.run(
+            [node_executable, "--input-type=commonjs", "-e", node_script],
+            check=False,
+            capture_output=True,
+            text=True,
+            input=script_source,
+        )
+        self.assertEqual(0, result.returncode, result.stderr or result.stdout)
 
 
 class ExtensionRouteTests(unittest.TestCase):
@@ -137,11 +304,20 @@ class ExtensionRouteTests(unittest.TestCase):
         app = SimpleNamespace(calls=[])
         app._handle_automation_plugin_package_upload = lambda handler, **kwargs: app.calls.append(("upload", kwargs))
         app._handle_automation_plugin_instance_action = lambda handler, automation_id, action: app.calls.append(("action", automation_id, action))
+        self.assertTrue(extension_routes.handle_post(app, "handler", "/extensions/inspect", "/extensions/inspect", {}))
         self.assertTrue(extension_routes.handle_post(app, "handler", "/extensions/install", "/extensions/install", {}))
         self.assertTrue(extension_routes.handle_post(app, "handler", "/extensions/project_east/enable", "/extensions/project_east/enable", {}))
         self.assertTrue(extension_routes.handle_post(app, "handler", "/extensions/project_east/upgrade", "/extensions/project_east/upgrade", {}))
         self.assertFalse(extension_routes.handle_post(app, "handler", "/extensions/project_east/nope", "/extensions/project_east/nope", {}))
-        self.assertEqual([("upload", {}), ("action", "project_east", "enable"), ("upload", {"automation_id": "project_east"})], app.calls)
+        self.assertEqual(
+            [
+                ("upload", {"inspect_only": True}),
+                ("upload", {}),
+                ("action", "project_east", "enable"),
+                ("upload", {"automation_id": "project_east"}),
+            ],
+            app.calls,
+        )
 
     def test_extension_project_setting_link_uses_strict_automation_deep_link(self):
         app = SimpleNamespace(calls=[])

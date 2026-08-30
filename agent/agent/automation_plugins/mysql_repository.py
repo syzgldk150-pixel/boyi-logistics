@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import inspect
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -69,6 +70,7 @@ _FIRST_PARTY_RELEASE_ACTOR_ID = FIRST_PARTY_RELEASE_ACTOR_ID
 _FIRST_PARTY_RELEASE_ACTOR_ROLE = "super_admin"
 _REQUIRE_EACH_RUN = "REQUIRE_EACH_RUN"
 _PROJECT_FULL_AUTO = "PROJECT_FULL_AUTO"
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _json_plain(value: Any) -> Any:
@@ -228,6 +230,26 @@ def _installation_payload_sha256(
     )
 
 
+def _configuration_contract_witness(
+    contract: Any,
+    *,
+    runtime_model: PluginRuntimeModel,
+) -> dict[str, Any]:
+    """Forward the already-verified package contract to persistence.
+
+    The shared repository compares hashes of this narrow witness with the
+    immutable installed-version row.  It must never reparse a browser- or
+    database-supplied manifest while saving configuration.
+    """
+
+    return {
+        "runtime_model": runtime_model.value,
+        "allowed_entrypoints": list(contract.allowed_entrypoints),
+        "invocation_contracts": _json_plain(dict(contract.invocation_contracts)),
+        "scheduling": _json_plain(dict(contract.scheduling)),
+    }
+
+
 def _transient_entry(
     automation_id: str,
     manifest: Any,
@@ -304,6 +326,98 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
 
     def list_instances(self) -> Sequence[PluginInstanceRecord]:
         return self._catalog.list_instances()
+
+    def get_state_change_witness(
+        self,
+        automation_id: str,
+        *,
+        request_id: str,
+    ) -> Mapping[str, object] | None:
+        with self._orchestration.unit_of_work() as uow:
+            row = uow.automation_plugins.get_project_state_change_witness(
+                automation_id,
+                request_id=request_id,
+            )
+            uow.commit()
+        if row is None:
+            return None
+        metadata = row.get("metadata_json")
+        state_change_context = (
+            metadata.get("state_change_context")
+            if isinstance(metadata, Mapping)
+            else None
+        )
+        request_payload = (
+            {
+                "enabled": metadata.get("enabled"),
+                "expected_record_version": metadata.get("from_record_version"),
+                "state_change_context": dict(state_change_context),
+            }
+            if isinstance(metadata, Mapping)
+            and isinstance(state_change_context, Mapping)
+            else None
+        )
+        request_payload_sha256 = (
+            hashlib.sha256(canonical_json_bytes(request_payload)).hexdigest()
+            if request_payload is not None
+            else None
+        )
+        if (
+            row.get("event_type") != "PLUGIN_STATE_CHANGED"
+            or not isinstance(metadata, Mapping)
+            or type(metadata.get("enabled")) is not bool
+            or type(metadata.get("from_record_version")) is not int
+            or type(metadata.get("to_record_version")) is not int
+            or metadata["to_record_version"] != metadata["from_record_version"] + 1
+            or not isinstance(state_change_context, Mapping)
+            or metadata.get("request_payload_sha256") != request_payload_sha256
+            or not str(row.get("actor_id") or "").strip()
+            or not str(row.get("actor_role") or "").strip()
+        ):
+            raise PluginConflictError(
+                "plugin state-change audit witness is invalid",
+                code="PLUGIN_STATE_AUDIT_INVALID",
+            )
+        return {
+            "enabled": metadata["enabled"],
+            "expected_record_version": metadata["from_record_version"],
+            "actor_id": str(row["actor_id"]),
+            "actor_role": str(row["actor_role"]),
+            "state_change_context": copy.deepcopy(dict(state_change_context)),
+        }
+
+    def claim_service_v2_install_enable_base(
+        self,
+        automation_id: str,
+        *,
+        root_request_id: str,
+        install_payload_sha256: str,
+        configuration_request_id: str,
+        actor_id: str,
+        actor_role: str,
+    ) -> int:
+        with self._orchestration.unit_of_work() as uow:
+            base_record_version = (
+                uow.automation_plugins.claim_service_v2_install_enable_base(
+                    automation_id,
+                    root_request_id=root_request_id,
+                    install_payload_sha256=install_payload_sha256,
+                    configuration_request_id=configuration_request_id,
+                    actor_id=actor_id,
+                    actor_role=actor_role,
+                )
+            )
+            uow.commit()
+        if (
+            isinstance(base_record_version, bool)
+            or not isinstance(base_record_version, int)
+            or base_record_version < 1
+        ):
+            raise PluginConflictError(
+                "service-v2 install enable claim returned an invalid version",
+                code="PLUGIN_INSTALL_PROGRESS_CONFLICT",
+            )
+        return base_record_version
 
     def permanently_clear_plugin_documents(
         self,
@@ -448,9 +562,19 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         actor_id: str,
         actor_role: str,
         request_id: str,
+        install_payload_sha256: str | None = None,
     ) -> PluginInstanceRecord:
         manifest, contract = _version_contract(version)
         automation_id = str(uuid.uuid4())
+        payload_sha256 = (
+            str(install_payload_sha256 or "").strip().lower()
+            or _installation_payload_sha256(
+                package_sha256=version.package_sha256,
+                instance_name=instance_name,
+            )
+        )
+        if not _SHA256_RE.fullmatch(payload_sha256):
+            raise PluginConflictError("plugin installation payload digest is invalid")
         with self._orchestration.unit_of_work() as uow:
             self._register(
                 uow.automation_plugins,
@@ -466,66 +590,73 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     "plugin_version": version.version,
                     "display_name": instance_name,
                     "install_request_id": request_id,
-                    "install_payload_sha256": _installation_payload_sha256(
-                        package_sha256=version.package_sha256,
-                        instance_name=instance_name,
-                    ),
+                    "install_payload_sha256": payload_sha256,
                     "installed_by_actor_id": actor_id,
                     "migration_authority": False,
                 }
             )
             automation_id = str(row["automation_id"])
-            config = uow.automation_plugins.initialize_project_config(
-                automation_id,
-                enabled_entrypoints=(
-                    contract.default_entrypoints
-                    if version.runtime_model is PluginRuntimeModel.SERVICE_V2
-                    else contract.allowed_entrypoints
-                ),
-            )
-            policy = uow.automation_projects.ensure_default(
-                automation_id,
-                mode=_PROJECT_FULL_AUTO,
-                project_generation=1,
-                project_configuration_version=int(config["config_version"]),
-            )
-            uow.automation_projects.append_event(
-                {
-                    "automation_id": automation_id,
-                    "request_id": request_id,
-                    "from_mode": None,
-                    "to_mode": _PROJECT_FULL_AUTO,
-                    "contract_hash": None,
-                    "contract_snapshot_json": None,
-                    "tool_contract_hash": None,
-                    "plugin_contract_hash": None,
-                    "project_configuration_version": int(config["config_version"]),
-                    "project_generation": 1,
-                    "actor_id": actor_id,
-                    "actor_role": actor_role,
-                    "actor_display_name": None,
-                    "reason": "PLUGIN_INSTANCE_INSTALLED",
-                    "comment": None,
-                    "correlation_id": request_id,
-                }
-            )
-            record_install_event = getattr(
-                uow.automation_plugins,
-                "record_project_install_lifecycle_event",
-                None,
-            )
-            if callable(record_install_event):
-                record_install_event(
-                    automation_id,
-                    request_id=request_id,
-                    actor_id=actor_id,
-                    actor_role=actor_role,
-                    enabled_entrypoints=tuple(config.get("enabled_entrypoints") or ()),
-                    project_configuration_version=int(config["config_version"]),
-                    policy_mode=_PROJECT_FULL_AUTO,
+            # The shared repository marks whether this exact request created
+            # the row.  Response-loss replay may re-read package identity, but
+            # first config/policy/audit writes must never replay.
+            created_marker = row.get("_install_created")
+            if not isinstance(created_marker, bool):
+                raise PluginConflictError(
+                    "plugin installation result omitted creation authority"
                 )
-            if str(policy.get("mode") or "") != _PROJECT_FULL_AUTO:
-                raise PluginConflictError("new plugin instance policy did not default to full auto")
+            created = created_marker
+            if created:
+                config = uow.automation_plugins.initialize_project_config(
+                    automation_id,
+                    enabled_entrypoints=(
+                        contract.default_entrypoints
+                        if version.runtime_model is PluginRuntimeModel.SERVICE_V2
+                        else contract.allowed_entrypoints
+                    ),
+                )
+                policy = uow.automation_projects.ensure_default(
+                    automation_id,
+                    mode=_PROJECT_FULL_AUTO,
+                    project_generation=1,
+                    project_configuration_version=int(config["config_version"]),
+                )
+                uow.automation_projects.append_event(
+                    {
+                        "automation_id": automation_id,
+                        "request_id": request_id,
+                        "from_mode": None,
+                        "to_mode": _PROJECT_FULL_AUTO,
+                        "contract_hash": None,
+                        "contract_snapshot_json": None,
+                        "tool_contract_hash": None,
+                        "plugin_contract_hash": None,
+                        "project_configuration_version": int(config["config_version"]),
+                        "project_generation": 1,
+                        "actor_id": actor_id,
+                        "actor_role": actor_role,
+                        "actor_display_name": None,
+                        "reason": "PLUGIN_INSTANCE_INSTALLED",
+                        "comment": None,
+                        "correlation_id": request_id,
+                    }
+                )
+                record_install_event = getattr(
+                    uow.automation_plugins,
+                    "record_project_install_lifecycle_event",
+                    None,
+                )
+                if callable(record_install_event):
+                    record_install_event(
+                        automation_id,
+                        request_id=request_id,
+                        actor_id=actor_id,
+                        actor_role=actor_role,
+                        enabled_entrypoints=tuple(config.get("enabled_entrypoints") or ()),
+                        project_configuration_version=int(config["config_version"]),
+                        policy_mode=_PROJECT_FULL_AUTO,
+                    )
+                if str(policy.get("mode") or "") != _PROJECT_FULL_AUTO:
+                    raise PluginConflictError("new plugin instance policy did not default to full auto")
             uow.commit()
         persisted = self.get_instance(automation_id)
         if persisted is None:
@@ -865,6 +996,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         """
 
         manifest = AutomationPluginManifest.from_mapping(version.manifest)
+        contract = _version_contract(version)[1]
         if manifest.plugin_id != seed.plugin_id or manifest.version != seed.version:
             raise PluginPackageError("first-party upgrade target identity is invalid")
         with self._orchestration.unit_of_work() as uow:
@@ -1024,6 +1156,10 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     enabled_entrypoints=sources,
                     schedule=normalized_schedule,
                     compiled_invocations=compiled_after,
+                    contract_witness=_configuration_contract_witness(
+                        contract,
+                        runtime_model=version.runtime_model,
+                    ),
                     device_binding=(
                         {"device_id": str(device_id)}
                         if device_id not in (None, "")
@@ -1166,6 +1302,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     existing.append(seed.automation_id)
                     continue
                 manifest = AutomationPluginManifest.from_mapping(version.manifest)
+                contract = _version_contract(version)[1]
                 template = FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES.get(
                     seed.automation_id
                 )
@@ -1272,6 +1409,10 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     enabled_entrypoints=seed.allowed_entrypoints,
                     schedule=schedule,
                     compiled_invocations=compiled,
+                    contract_witness=_configuration_contract_witness(
+                        contract,
+                        runtime_model=version.runtime_model,
+                    ),
                     device_binding=None,
                     actor_id=_MIGRATION_ACTOR_ID,
                     actor_role=_MIGRATION_ACTOR_ROLE,
@@ -1384,6 +1525,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         actor_role: str,
         request_id: str,
         expected_record_version: int,
+        state_change_context: Mapping[str, object] | None = None,
     ) -> PluginInstanceRecord:
         with self._orchestration.unit_of_work() as uow:
             uow.automation_plugins.set_project_enabled_with_audit(
@@ -1393,6 +1535,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 actor_id=actor_id,
                 actor_role=actor_role,
                 request_id=request_id,
+                state_change_context=state_change_context,
             )
             uow.commit()
         persisted = self.get_instance(automation_id)

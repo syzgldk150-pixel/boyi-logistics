@@ -119,6 +119,65 @@ def _catalog_payload() -> dict:
     }
 
 
+def _service_v2_inspection() -> dict:
+    return {
+        "plugin_id": "example_service",
+        "name": "示例服务",
+        "version": "2.0.0",
+        "host_api": {"minimum": "2.0.0", "maximum_exclusive": "3.0.0"},
+        "permissions": [
+            {
+                "name": "tms.read",
+                "operations": ["list"],
+                "account_role": "source_account",
+                "resource_role": "input_sheet",
+            }
+        ],
+        "account_roles": [
+            {
+                "role": "source_account",
+                "allowed_systems": ["ronghui"],
+                "required": True,
+            }
+        ],
+        "resource_roles": [
+            {
+                "role": "input_sheet",
+                "allowed_kinds": ["feishu_sheet"],
+                "required": True,
+            }
+        ],
+        "config_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {},
+            "required": [],
+        },
+        "contributions": [
+            {
+                "id": "run_now",
+                "kind": "console",
+                "title": "立即运行",
+                "default_enabled": True,
+            },
+            {
+                "id": "nightly",
+                "kind": "scheduler",
+                "title": "每日运行",
+                "default_enabled": True,
+            },
+        ],
+        "scheduling": {
+            "supported": True,
+            "default_schedule": {
+                "kind": "daily_times",
+                "times": ["18:05"],
+                "enabled": True,
+            },
+        },
+    }
+
+
 class AutomationPluginCatalogTests(unittest.TestCase):
     def test_daily_sign_account_roles_explain_the_two_external_systems(self):
         roles = _normalize_plugin_account_roles(
@@ -1367,6 +1426,258 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         self.assertEqual(3, forwarded["payload"]["expected_record_version"])
         self.assertTrue(forwarded["payload"]["confirm"])
         self.assertIn("接管自动执行入口", forwarded["payload"]["reason"])
+
+    def test_service_v2_inspect_forwards_only_zip_and_request_then_returns_safe_choices(self):
+        package_buffer = io.BytesIO()
+        with zipfile.ZipFile(package_buffer, "w") as archive:
+            archive.writestr("manifest.json", "{}")
+        package_bytes = package_buffer.getvalue()
+        form = _MultipartForm(
+            {
+                "package": SimpleNamespace(
+                    filename="example-service.zip",
+                    file=io.BytesIO(package_bytes),
+                ),
+                "request_id": REQUEST_ID,
+            }
+        )
+        app, captured = self._app()
+        app._parse_multipart_form = lambda _handler: form
+        app._fetch_automation_accounts = lambda **_kwargs: (
+            [
+                {
+                    "account_id": "acct-east",
+                    "name": "华东账号",
+                    "system": "ronghui",
+                    "is_active": True,
+                    "session_capable": True,
+                    "status": {"status": "authenticated", "label": "已登录"},
+                    "credentials": {"password": "must-not-cross-boundary"},
+                }
+            ],
+            "",
+        )
+        catalog_calls = []
+
+        def agent_request(method, endpoint, **kwargs):
+            catalog_calls.append((method, endpoint, kwargs))
+            return {
+                "ok": True,
+                "data": {
+                    "resources": [
+                        {
+                            "resource_id": "sheet.input",
+                            "name": "输入表格",
+                            "kind": "feishu_sheet",
+                            "status": "available",
+                        }
+                    ],
+                    "resource_pool_available": True,
+                },
+            }
+
+        app._agent_request = agent_request
+        forwarded = {}
+        with tempfile.TemporaryDirectory(dir=CONSOLE_DIR.parent) as runtime_dir:
+            app.settings = SimpleNamespace(runtime_dir=Path(runtime_dir))
+
+            def forward(endpoint, *, package_path, fields, console_principal):
+                forwarded.update(
+                    endpoint=endpoint,
+                    package_path=Path(package_path),
+                    package_bytes=Path(package_path).read_bytes(),
+                    fields=dict(fields),
+                    console_principal=console_principal,
+                )
+                return {"ok": True, "data": _service_v2_inspection()}
+
+            app._agent_plugin_multipart_request = forward
+            handler = self._handler()
+            handler.headers["Content-Type"] = "multipart/form-data; boundary=test"
+            handler.headers["Content-Length"] = str(len(package_bytes) + 512)
+
+            app._handle_automation_plugin_package_upload(handler, inspect_only=True)
+
+            self.assertFalse(forwarded["package_path"].exists())
+
+        self.assertEqual(HTTPStatus.OK, captured["status"])
+        self.assertEqual(
+            "/internal/v1/automation/plugins/inspect-upload",
+            forwarded["endpoint"],
+        )
+        self.assertEqual({"request_id": REQUEST_ID}, forwarded["fields"])
+        self.assertEqual(package_bytes, forwarded["package_bytes"])
+        self.assertEqual(
+            [("GET", "/internal/v1/automation/plugins/catalog")],
+            [(method, endpoint) for method, endpoint, _kwargs in catalog_calls],
+        )
+        result = captured["payload"]["data"]
+        self.assertEqual(
+            {
+                "account_id": "acct-east",
+                "name": "华东账号",
+                "system": "ronghui",
+                "available": True,
+                "status_label": "已登录",
+            },
+            result["account_options"][0],
+        )
+        self.assertEqual("sheet.input", result["resource_options"][0]["resource_id"])
+        self.assertNotIn("credentials", repr(result))
+        self.assertNotIn("must-not-cross-boundary", repr(result))
+
+    def test_service_v2_final_install_forwards_canonical_closed_intent(self):
+        package_buffer = io.BytesIO()
+        with zipfile.ZipFile(package_buffer, "w") as archive:
+            archive.writestr("manifest.json", "{}")
+        package_bytes = package_buffer.getvalue()
+        intent = {
+            "permissions_confirmed": True,
+            "schedule": {"enabled": False, "times": [], "kind": "none"},
+            "enabled_entrypoints": ["run_now"],
+            "resource_bindings": {"input_sheet": "sheet.input"},
+            "account_bindings": {"source_account": "acct-east"},
+            "config": {},
+            "instance_name": "示例服务项目",
+        }
+        form = _MultipartForm(
+            {
+                "package": SimpleNamespace(
+                    filename="example-service.zip",
+                    file=io.BytesIO(package_bytes),
+                ),
+                "request_id": REQUEST_ID,
+                "intent": json.dumps(intent, ensure_ascii=False),
+            }
+        )
+        app, captured = self._app()
+        app._parse_multipart_form = lambda _handler: form
+        forwarded = {}
+        with tempfile.TemporaryDirectory(dir=CONSOLE_DIR.parent) as runtime_dir:
+            app.settings = SimpleNamespace(runtime_dir=Path(runtime_dir))
+
+            def forward(endpoint, *, package_path, fields, console_principal):
+                forwarded.update(
+                    endpoint=endpoint,
+                    fields=dict(fields),
+                    console_principal=console_principal,
+                )
+                return {
+                    "ok": True,
+                    "data": {
+                        "automation_id": "example_service_east",
+                        "generation_ready": True,
+                        "enabled": True,
+                    },
+                }
+
+            app._agent_plugin_multipart_request = forward
+            handler = self._handler()
+            handler.headers["Content-Type"] = "multipart/form-data; boundary=test"
+            handler.headers["Content-Length"] = str(len(package_bytes) + 2048)
+
+            app._handle_automation_plugin_package_upload(handler)
+
+        self.assertEqual(HTTPStatus.OK, captured["status"])
+        self.assertEqual(
+            "/internal/v1/automation/plugins/install-v2",
+            forwarded["endpoint"],
+        )
+        self.assertEqual(REQUEST_ID, forwarded["fields"]["request_id"])
+        self.assertEqual(intent, json.loads(forwarded["fields"]["intent"]))
+        self.assertNotIn("package_sha256", forwarded["fields"])
+
+    def test_service_v2_preparing_result_is_retryable_and_never_reported_ready(self):
+        package_buffer = io.BytesIO()
+        with zipfile.ZipFile(package_buffer, "w") as archive:
+            archive.writestr("manifest.json", "{}")
+        intent = {
+            "instance_name": "示例服务项目",
+            "config": {},
+            "account_bindings": {},
+            "resource_bindings": {},
+            "enabled_entrypoints": ["run_now"],
+            "schedule": {"kind": "none", "times": [], "enabled": False},
+            "permissions_confirmed": True,
+        }
+        app, captured = self._app()
+        app._parse_multipart_form = lambda _handler: _MultipartForm(
+            {
+                "package": SimpleNamespace(
+                    filename="example-service.zip",
+                    file=io.BytesIO(package_buffer.getvalue()),
+                ),
+                "request_id": REQUEST_ID,
+                "intent": json.dumps(intent),
+            }
+        )
+        forwarded = []
+        with tempfile.TemporaryDirectory(dir=CONSOLE_DIR.parent) as runtime_dir:
+            app.settings = SimpleNamespace(runtime_dir=Path(runtime_dir))
+
+            def forward(endpoint, *, package_path, fields, console_principal):
+                forwarded.append((endpoint, dict(fields)))
+                return {
+                    "ok": True,
+                    "data": {
+                        "automation_id": "example_service_east",
+                        "generation_ready": False,
+                        "enabled": False,
+                    },
+                }
+
+            app._agent_plugin_multipart_request = forward
+            handler = self._handler()
+            handler.headers["Content-Type"] = "multipart/form-data; boundary=test"
+            handler.headers["Content-Length"] = str(len(package_buffer.getvalue()) + 2048)
+
+            app._handle_automation_plugin_package_upload(handler)
+
+        self.assertEqual(HTTPStatus.CONFLICT, captured["status"])
+        self.assertEqual(
+            "PLUGIN_INSTALL_PREPARING",
+            captured["payload"]["error"]["code"],
+        )
+        self.assertEqual(REQUEST_ID, forwarded[0][1]["request_id"])
+
+    def test_service_v2_install_rejects_nested_browser_authority_before_forwarding(self):
+        package_buffer = io.BytesIO()
+        with zipfile.ZipFile(package_buffer, "w") as archive:
+            archive.writestr("manifest.json", "{}")
+        intent = {
+            "instance_name": "示例服务项目",
+            "config": {"manifest": "browser-owned"},
+            "account_bindings": {},
+            "resource_bindings": {},
+            "enabled_entrypoints": [],
+            "schedule": {"kind": "none", "times": [], "enabled": False},
+            "permissions_confirmed": True,
+        }
+        app, captured = self._app()
+        app._parse_multipart_form = lambda _handler: _MultipartForm(
+            {
+                "package": SimpleNamespace(
+                    filename="example-service.zip",
+                    file=io.BytesIO(package_buffer.getvalue()),
+                ),
+                "request_id": REQUEST_ID,
+                "intent": json.dumps(intent),
+            }
+        )
+        app._agent_plugin_multipart_request = lambda *_args, **_kwargs: self.fail(
+            "must not call Agent"
+        )
+        handler = self._handler()
+        handler.headers["Content-Type"] = "multipart/form-data; boundary=test"
+        handler.headers["Content-Length"] = "1024"
+
+        app._handle_automation_plugin_package_upload(handler)
+
+        self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
+        self.assertEqual(
+            "PLUGIN_INSTALL_INTENT_INVALID",
+            captured["payload"]["error"]["code"],
+        )
 
     def test_install_has_no_browser_automation_id_or_digest_and_cleans_staged_zip(self):
         package_buffer = io.BytesIO()

@@ -6,12 +6,13 @@
 
 {% block page_actions %}
 {% if can_manage_extensions and not detail %}
+<a class="primary-btn" href="#extension-install-wizard" data-extension-start><i data-feather="upload"></i><span>安装 Service v2</span></a>
 <details class="automation-account-create-popover extension-install-popover">
-  <summary class="automation-account-add-btn"><i data-feather="upload"></i><span>安装扩展包</span></summary>
-  <form class="extension-install-form" action="/extensions/install" method="post" enctype="multipart/form-data" data-extension-install-form>
+  <summary class="automation-account-add-btn"><i data-feather="archive"></i><span>安装旧版 Action v1</span></summary>
+  <form class="extension-install-form" action="/extensions/install" method="post" enctype="multipart/form-data" data-extension-install-form data-extension-legacy-install-form>
     <label><span>项目名称（可选）</span><input class="review-input compact-input" name="instance_name" maxlength="120" autocomplete="off" placeholder="留空则使用 ZIP 文件名"></label>
     <label><span>ZIP 扩展包</span><input type="file" name="package" accept=".zip,application/zip" required></label>
-    <button class="primary-btn" type="submit">安装</button>
+    <button class="primary-btn" type="submit">安装旧版项目</button>
     <p class="automation-plugin-feedback" data-extension-feedback role="status" aria-live="polite" hidden></p>
   </form>
 </details>
@@ -92,6 +93,123 @@
     {% endif %}
   </section>
   {% else %}
+  {% if can_manage_extensions %}
+  <section id="extension-install-wizard" class="panel extension-install-wizard" data-extension-wizard aria-labelledby="extension-wizard-title">
+    <div class="extension-heading">
+      <div>
+        <h2 id="extension-wizard-title">安装 Service v2 扩展</h2>
+        <p>先检查 ZIP，再确认权限、绑定和入口。检查不会安装或启动项目。旧版 Action v1 请使用页首的旧版安装入口。</p>
+      </div>
+      <span class="status-pill status-pill--muted" data-extension-wizard-state>等待上传</span>
+    </div>
+
+    <ol class="extension-wizard-progress" aria-label="安装步骤">
+      <li class="is-active" data-extension-progress="upload"><span>1</span><strong>上传与命名</strong></li>
+      <li data-extension-progress="permissions"><span>2</span><strong>确认权限</strong></li>
+      <li data-extension-progress="bindings"><span>3</span><strong>账号与资源</strong></li>
+      <li data-extension-progress="configuration"><span>4</span><strong>配置入口</strong></li>
+      <li data-extension-progress="install"><span>5</span><strong>完成安装</strong></li>
+    </ol>
+
+    <form class="extension-install-form" action="/extensions/inspect" method="post" enctype="multipart/form-data" data-extension-install-form data-extension-inspect-form novalidate>
+      <fieldset class="extension-wizard-section" data-extension-wizard-section="upload">
+        <legend>上传与命名</legend>
+        <p class="extension-wizard-copy">ZIP 只在本次检查和最终安装请求中暂存。项目名称可以先留空，检查后仍可修改。</p>
+        <div class="extension-wizard-fields">
+          <label class="extension-wizard-field">
+            <span>项目名称（可选）</span>
+            <input class="review-input compact-input" name="instance_name" maxlength="120" autocomplete="off" placeholder="留空则使用 ZIP 文件名">
+          </label>
+          <label class="extension-wizard-field">
+            <span>ZIP 扩展包</span>
+            <input class="review-input extension-package-input" type="file" name="package" accept=".zip,application/zip" required>
+          </label>
+        </div>
+        <div class="extension-wizard-actions">
+          <button class="primary-btn" type="submit" data-extension-inspect-submit>检查 ZIP</button>
+        </div>
+        <p class="automation-plugin-feedback" data-extension-feedback role="status" aria-live="polite" hidden></p>
+      </fieldset>
+    </form>
+
+    <section class="extension-wizard-result" data-extension-inspection hidden aria-labelledby="extension-inspection-title">
+      <div class="extension-wizard-section extension-wizard-section--summary" data-extension-wizard-section="summary">
+        <div class="extension-wizard-section-heading">
+          <div>
+            <h3 id="extension-inspection-title">检查结果</h3>
+            <p>以下内容来自 Agent 的受限检查投影，浏览器不会保存原始 Manifest。</p>
+          </div>
+          <span class="status-pill status-pill--success">技术检查通过</span>
+        </div>
+        <dl class="extension-meta extension-meta--inspection" data-extension-inspection-summary></dl>
+        <div class="extension-wizard-warnings" data-extension-inspection-warnings role="status" aria-live="polite"></div>
+      </div>
+
+      <section class="extension-wizard-section" data-extension-wizard-section="permissions" aria-labelledby="extension-permissions-title">
+        <div class="extension-wizard-section-heading">
+          <div>
+            <h3 id="extension-permissions-title">确认权限</h3>
+            <p>请确认扩展会使用下列已声明能力。确认只表示管理员已阅读，不替代每次运行的审计和写后核验。</p>
+          </div>
+        </div>
+        <div class="extension-permission-list" data-extension-permissions></div>
+        <label class="extension-confirm-option">
+          <input type="checkbox" data-extension-permissions-confirmed>
+          <span>我已阅读并确认以上权限和影响范围</span>
+        </label>
+      </section>
+
+      <section class="extension-wizard-section" data-extension-wizard-section="bindings" aria-labelledby="extension-bindings-title">
+        <div class="extension-wizard-section-heading">
+          <div>
+            <h3 id="extension-bindings-title">账号与资源</h3>
+            <p>只填写已在业务账号和资源管理中确认的安全 ID。没有可用绑定时保持空白，最终安装会明确阻断。</p>
+          </div>
+        </div>
+        <div class="extension-binding-group" data-extension-account-section>
+          <h4>业务账号</h4>
+          <div class="extension-binding-grid" data-extension-account-roles></div>
+        </div>
+        <div class="extension-binding-group" data-extension-resource-section>
+          <h4>业务资源</h4>
+          <div class="extension-binding-grid" data-extension-resource-roles></div>
+        </div>
+      </section>
+
+      <section class="extension-wizard-section" data-extension-wizard-section="configuration" aria-labelledby="extension-config-title">
+        <div class="extension-wizard-section-heading">
+          <div>
+            <h3 id="extension-config-title">配置、入口与定时</h3>
+            <p>配置字段来自闭合 Schema。入口 ID 由 Agent 检查结果提供，浏览器不提交服务名或操作名。</p>
+          </div>
+        </div>
+        <div class="extension-config-grid" data-extension-config-fields></div>
+        <div class="extension-entrypoint-group">
+          <h4>启用入口</h4>
+          <div class="extension-entrypoint-grid" data-extension-entrypoints></div>
+        </div>
+        <div class="extension-schedule-group">
+          <h4>系统定时</h4>
+          <div data-extension-schedule></div>
+        </div>
+      </section>
+
+      <form class="extension-final-form" action="/extensions/install" method="post" data-extension-final-form>
+        <div class="extension-wizard-final" data-extension-wizard-section="install">
+          <div>
+            <h3>完成安装</h3>
+            <p>最终请求会冻结本次 ZIP、项目意图和请求标识。网络失败只可重试完全相同的请求。</p>
+          </div>
+          <div class="extension-wizard-actions">
+            <button class="primary-btn" type="submit" data-extension-install-submit disabled>确认并安装</button>
+            <button class="ghost-btn" type="button" data-extension-reset>重新选择 ZIP</button>
+          </div>
+          <p class="automation-plugin-feedback" data-extension-final-feedback role="status" aria-live="polite" hidden></p>
+        </div>
+      </form>
+    </section>
+  </section>
+  {% endif %}
   <section class="panel extension-list-panel" aria-labelledby="extension-list-title">
     <div class="extension-heading"><div><h2 id="extension-list-title">已登记扩展</h2><p>仅显示 Action v1 与 Service v2 扩展；固定业务模块不在此处管理。</p></div></div>
     {% if packages %}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -117,6 +118,25 @@ class _ApiService:
         self.calls.append(("install", {"package": package, **kwargs}))
         return {"automation_id": "server-generated"}
 
+    def inspect_service_v2_upload(self, package: bytes, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("inspect-v2", {"package": package, **kwargs}))
+        return {
+            "plugin_id": "example_service",
+            "name": "Example service",
+            "version": "2.0.0",
+            "host_api": {"minimum": "2.0.0", "maximum_exclusive": "3.0.0"},
+            "permissions": [],
+            "account_roles": [],
+            "resource_roles": [],
+            "config_schema": {"type": "object"},
+            "contributions": [],
+            "scheduling": {"supported": False, "default_schedule": {"kind": "none", "times": [], "enabled": False}},
+        }
+
+    def install_service_v2(self, package: bytes, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("install-v2", {"package": package, **kwargs}))
+        return {"automation_id": "server-generated", "generation_ready": True}
+
     def upgrade(self, automation_id: str, package: bytes, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(
             ("upgrade", {"automation_id": automation_id, "package": package, **kwargs})
@@ -202,6 +222,221 @@ def _configuration_request_payload() -> dict[str, Any]:
         "request_id": str(uuid.uuid4()),
         "expected_project_configuration_version": 3,
     }
+
+
+def _service_v2_install_intent(**overrides: Any) -> dict[str, Any]:
+    value: dict[str, Any] = {
+        "instance_name": "Example service project",
+        "config": {},
+        "account_bindings": {},
+        "resource_bindings": {},
+        "enabled_entrypoints": [],
+        "schedule": {"kind": "none", "times": [], "enabled": False},
+        "permissions_confirmed": True,
+    }
+    value.update(overrides)
+    return value
+
+
+def test_service_v2_inspect_upload_is_exact_multipart_and_has_no_mutation() -> None:
+    service = _ApiService()
+    client = _api_client(service)
+    package = b"PK\x03\x04service-v2"
+    request_id = str(uuid.uuid4())
+
+    response = client.post(
+        "/internal/v1/automation/plugins/inspect-upload",
+        data={
+            "request_id": request_id,
+            "package_sha256": hashlib.sha256(package).hexdigest(),
+        },
+        files={"package": ("service.zip", package, "application/zip")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["plugin_id"] == "example_service"
+    name, call = service.calls[-1]
+    assert name == "inspect-v2"
+    assert call["request_id"] == request_id
+    assert call["package"] == package
+    assert all(name not in {"install", "install-v2", "configuration", "state"} for name, _ in service.calls)
+
+    rejected = client.post(
+        "/internal/v1/automation/plugins/inspect-upload",
+        data={
+            "request_id": str(uuid.uuid4()),
+            "package_sha256": hashlib.sha256(package).hexdigest(),
+            "automation_id": "browser-authority",
+        },
+        files={"package": ("service.zip", package, "application/zip")},
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["error"]["code"] == "PLUGIN_MULTIPART_FIELDS_INVALID"
+
+
+def test_service_v2_install_requires_exact_bounded_intent_multipart() -> None:
+    service = _ApiService()
+    client = _api_client(service)
+    package = b"PK\x03\x04service-v2"
+    request_id = str(uuid.uuid4())
+    intent = _service_v2_install_intent()
+
+    response = client.post(
+        "/internal/v1/automation/plugins/install-v2",
+        data={
+            "request_id": request_id,
+            "package_sha256": hashlib.sha256(package).hexdigest(),
+            "intent": json.dumps(intent),
+        },
+        files={"package": ("service.zip", package, "application/zip")},
+    )
+
+    assert response.status_code == 200
+    name, call = service.calls[-1]
+    assert name == "install-v2"
+    assert call["raw_intent"] == json.dumps(intent)
+    assert call["request_id"] == request_id
+
+    extra = client.post(
+        "/internal/v1/automation/plugins/install-v2",
+        data={
+            "request_id": str(uuid.uuid4()),
+            "package_sha256": hashlib.sha256(package).hexdigest(),
+            "intent": json.dumps(intent),
+            "automation_id": "browser-authority",
+        },
+        files={"package": ("service.zip", package, "application/zip")},
+    )
+    assert extra.status_code == 422
+    assert extra.json()["error"]["code"] == "PLUGIN_MULTIPART_FIELDS_INVALID"
+
+    oversized = client.post(
+        "/internal/v1/automation/plugins/install-v2",
+        data={
+            "request_id": str(uuid.uuid4()),
+            "package_sha256": hashlib.sha256(package).hexdigest(),
+            "intent": "x" * (16 * 1024 + 1),
+        },
+        files={"package": ("service.zip", package, "application/zip")},
+    )
+    assert oversized.status_code == 422
+    assert oversized.json()["error"]["code"] == "PLUGIN_MULTIPART_FIELDS_INVALID"
+
+
+@pytest.mark.parametrize(
+    "intent",
+    [
+        _service_v2_install_intent(automation_id="browser-selected"),
+        _service_v2_install_intent(device_id="desktop-worker"),
+        _service_v2_install_intent(permissions_confirmed=False),
+        _service_v2_install_intent(package_sha256="a" * 64),
+    ],
+)
+def test_service_v2_install_intent_rejects_browser_authority_and_unconfirmed_permissions(
+    intent: dict[str, Any],
+) -> None:
+    with pytest.raises(PluginConflictError) as raised:
+        AutomationPluginManagementService._parse_service_v2_install_intent(
+            json.dumps(intent)
+        )
+    assert raised.value.code == "PLUGIN_INSTALL_INTENT_INVALID"
+
+
+def test_service_v2_inspect_projection_excludes_service_operation_and_package_authority() -> None:
+    verified = SimpleNamespace(
+        manifest=SimpleNamespace(
+            plugin_id="example_service",
+            name="Example service",
+            version="2.0.0",
+            host_api={"minimum": "2.0.0", "maximum_exclusive": "3.0.0"},
+            capabilities=({"name": "storage.kv", "operations": ("get",), "account_role": None, "resource_role": None},),
+            account_roles=(),
+            resource_roles=(),
+            config_schema={"type": "object", "additionalProperties": False, "properties": {}, "required": []},
+            contributes={
+                "console": ({"id": "run_now", "title": "Run now", "service": "plugin.example_service.run@1", "operation": "run", "default_enabled": True},),
+                "scheduler": ({"id": "nightly", "title": "Nightly", "service": "plugin.example_service.run@1", "operation": "run", "default_enabled": True, "schedule": {"kind": "cron", "expression": "5 18 * * *", "timezone": "Asia/Shanghai"}},),
+                "webhook": (), "feishu": (), "events": (),
+            },
+        )
+    )
+
+    projection = AutomationPluginManagementService._service_v2_wizard_projection(verified)
+
+    assert projection["scheduling"]["default_schedule"] == {
+        "kind": "daily_times", "times": ["18:05"], "enabled": True,
+    }
+    assert set(projection) == {
+        "plugin_id", "name", "version", "host_api", "permissions", "account_roles",
+        "resource_roles", "config_schema", "contributions", "scheduling",
+    }
+    assert all("service" not in item and "operation" not in item for item in projection["contributions"])
+    assert "package_sha256" not in projection
+
+
+def test_legacy_install_keeps_action_v1_and_rejects_service_v2_without_intent() -> None:
+    calls: list[str] = []
+    active_version = SimpleNamespace(
+        version="1.0.0",
+        runtime_model=PluginRuntimeModel.ACTION_V1,
+        plugin_api="1.0.0",
+    )
+    instance = SimpleNamespace(
+        automation_id="action-v1-instance",
+        plugin_id="example_action",
+        display_name="Action v1 instance",
+        active_version=active_version,
+        enabled=False,
+        state=PluginProjectState.INSTALLED,
+        record_version=1,
+        target_generation=1,
+        committed_generation=None,
+        reconcile_state=RuntimeReconcileState.PREPARING,
+    )
+
+    def inspect_action_v1(*_args: Any, **_kwargs: Any) -> None:
+        calls.append("inspect-v1")
+        raise PluginPackageError(
+            "service v2 required",
+            code="PLUGIN_SERVICE_V2_REQUIRED",
+        )
+
+    lifecycle = SimpleNamespace(
+        inspect_service_v2_upload=inspect_action_v1,
+        install_upload=lambda *_args, **_kwargs: calls.append("install-v1") or instance,
+    )
+    service = AutomationPluginManagementService(
+        catalog=_Catalog(),  # type: ignore[arg-type]
+        lifecycle=lifecycle,
+        configuration=SimpleNamespace(),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+    )
+
+    result = service.install(
+        b"action-v1-package",
+        instance_name="Action v1 instance",
+        request_id=str(uuid.uuid4()),
+        transport_package_sha256="a" * 64,
+        actor=_console_actor(),
+    )
+
+    assert calls == ["inspect-v1", "install-v1"]
+    assert result["automation_id"] == "action-v1-instance"
+
+    lifecycle.inspect_service_v2_upload = lambda *_args, **_kwargs: object()
+    with pytest.raises(PluginConflictError) as raised:
+        service.install(
+            b"service-v2-package",
+            instance_name="Service v2 instance",
+            request_id=str(uuid.uuid4()),
+            transport_package_sha256="b" * 64,
+            actor=_console_actor(),
+        )
+    assert raised.value.code == "PLUGIN_SERVICE_V2_INSTALL_INTENT_REQUIRED"
+    assert calls == ["inspect-v1", "install-v1"]
 
 
 def test_management_router_is_closed_and_install_identity_is_server_owned() -> None:
@@ -370,147 +605,393 @@ def test_failed_lifecycle_response_does_not_refresh_scheduler() -> None:
     assert refresh_calls == []
 
 
-def test_service_v2_install_enables_only_manifest_default_contributions() -> None:
-    entry = _entry(
+def test_service_v2_wizard_installs_unknown_package_without_registry_and_enables_only_after_ready() -> None:
+    initial = _entry(
+        automation_id="unregistered-v2",
+        plugin_id="unknown_service",
         runtime_model=PluginRuntimeModel.SERVICE_V2.value,
-        plugin_api="2.0.0",
-        active_runtime_model=None,
-        active_version=None,
         configured=False,
         enabled=False,
-        project_config_version=0,
         current_enabled_entrypoints=(),
-        config_schema={
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {},
-            "required": [],
-        },
-        account_roles=(),
-        resource_roles=(),
-        allowed_entrypoints=("manual_run", "nightly_run"),
-        contributions={
-            "console": [
-                {"id": "manual_run", "default_enabled": True},
-            ],
-            "scheduler": [
-                {"id": "nightly_run", "default_enabled": False},
-            ],
-        },
+        reconcile_state=RuntimeReconcileState.PREPARING,
+        record_version=1,
     )
-    catalog = _Catalog(entry)
-    configuration_calls: list[dict[str, Any]] = []
-    enable_calls: list[dict[str, Any]] = []
-    reconcile_calls: list[str] = []
+    configured = _entry(
+        **{
+            **vars(initial),
+            "configured": True,
+            "current_enabled_entrypoints": ("run_now",),
+            "record_version": 2,
+        }
+    )
+    ready = _entry(
+        **{
+            **vars(initial),
+            "configured": True,
+            "current_enabled_entrypoints": ("run_now",),
+            "committed_generation": 1,
+            "target_generation": 1,
+            "reconcile_state": RuntimeReconcileState.STABLE,
+            # Configuration staging, generation allocation and generation
+            # commit each advance the project version before auto-enable.
+            "record_version": 4,
+        }
+    )
+    catalog = _Catalog(initial)
+    calls: list[str] = []
     active_version = SimpleNamespace(
-        version="1.0.0",
+        version="2.0.0",
         runtime_model=PluginRuntimeModel.SERVICE_V2,
         plugin_api="2.0.0",
     )
     instance = SimpleNamespace(
-        automation_id="automation-1",
-        plugin_id="example_action",
-        display_name="Example action",
+        automation_id="unregistered-v2",
+        plugin_id="unknown_service",
+        display_name="Unknown service",
         active_version=active_version,
         enabled=False,
         state=PluginProjectState.INSTALLED,
-        record_version=3,
+        record_version=1,
         target_generation=1,
         committed_generation=None,
         reconcile_state=RuntimeReconcileState.PREPARING,
     )
 
-    def save(automation_id: str, **kwargs: Any) -> None:
-        configuration_calls.append({"automation_id": automation_id, **kwargs})
-        catalog.current = _entry(
-            **{
-                **vars(entry),
-                "configured": True,
-                "project_config_version": 1,
-                "current_enabled_entrypoints": tuple(kwargs["enabled_entrypoints"]),
-            }
-        )
+    def configure(_automation_id: str, **_kwargs: Any) -> None:
+        calls.append("configure")
+        catalog.current = configured
 
-    def set_enabled(automation_id: str, **kwargs: Any) -> SimpleNamespace:
-        enable_calls.append({"automation_id": automation_id, **kwargs})
+    def install_upload(*_args: Any, **kwargs: Any) -> SimpleNamespace:
+        calls.append("install")
+        assert kwargs["install_payload_sha256"]
+        return instance
+
+    def set_enabled(_automation_id: str, **_kwargs: Any) -> SimpleNamespace:
+        calls.append("lifecycle-enable")
         catalog.current.enabled = True
         catalog.current.record_version += 1
         return instance
 
+    def reconcile(_automation_id: str) -> None:
+        calls.append("reconcile")
+        if catalog.current is configured:
+            # Mirror the production repository: target allocation and commit
+            # advance record_version after configuration staging.
+            catalog.current = ready
+
+    def claim_enable_base(*_args: Any, **_kwargs: Any) -> int:
+        assert catalog.current is ready
+        assert catalog.current.record_version == 4
+        return catalog.current.record_version
+
     service = AutomationPluginManagementService(
         catalog=catalog,  # type: ignore[arg-type]
         lifecycle=SimpleNamespace(
-            install_upload=lambda *_args, **_kwargs: instance,
+            inspect_service_v2_upload=lambda *_args, **_kwargs: SimpleNamespace(
+                package_sha256="a" * 64
+            ),
+            install_upload=install_upload,
+            claim_service_v2_install_enable_base=claim_enable_base,
             set_enabled=set_enabled,
         ),
-        configuration=SimpleNamespace(save=save),
+        configuration=SimpleNamespace(save=configure),
         worker_repository=SimpleNamespace(),
-        target_service=SimpleNamespace(
-            reconcile_project=lambda automation_id: reconcile_calls.append(automation_id)
-        ),
+        target_service=SimpleNamespace(reconcile_project=reconcile),
         package_repository=SimpleNamespace(),
         storage=SimpleNamespace(),
     )
+    service._require_committed_ready = lambda _entry: None  # type: ignore[method-assign]
 
-    result = service.install(
-        b"v2-package",
-        instance_name="",
+    result = service.install_service_v2(
+        b"unknown-v2-package",
         request_id=str(uuid.uuid4()),
         transport_package_sha256="a" * 64,
+        raw_intent=json.dumps(
+            _service_v2_install_intent(enabled_entrypoints=["run_now"])
+        ),
         actor=_console_actor(),
     )
 
-    assert configuration_calls[0]["enabled_entrypoints"] == ("manual_run",)
-    assert configuration_calls[0]["schedule"] == {
-        "kind": "none",
-        "times": [],
-        "enabled": False,
-    }
-    assert len(enable_calls) == 1
-    assert reconcile_calls == ["automation-1"]
-    assert result["runtime_model"] == PluginRuntimeModel.SERVICE_V2.value
+    assert calls == [
+        "install",
+        "configure",
+        "reconcile",
+        "reconcile",
+        "lifecycle-enable",
+        "reconcile",
+    ]
+    assert result["automation_id"] == "unregistered-v2"
+    assert catalog.current.enabled is True
+    assert "unknown_service" not in str(calls)
 
 
-def test_service_v2_default_scheduler_install_uses_a_real_daily_schedule() -> None:
-    entry = _entry(
+def test_service_v2_install_replay_proves_config_and_exact_enable_child() -> None:
+    ready = _entry(
+        automation_id="replay-v2",
+        plugin_id="replay_service",
         runtime_model=PluginRuntimeModel.SERVICE_V2.value,
-        contributions={
-            "console": [{"id": "manual_run", "default_enabled": True}],
-            "scheduler": [{
-                "id": "daily_run", "default_enabled": True,
-                "schedule": {
-                    "kind": "cron", "expression": "5 18 * * *", "timezone": "Asia/Shanghai",
-                },
-            }],
-        },
-        scheduling={"supported": True, "allowed_kinds": ["daily_times"]},
+        configured=True,
+        enabled=False,
+        state=PluginProjectState.INSTALLED.value,
+        record_version=4,
+        target_generation=1,
+        committed_generation=1,
+        reconcile_state=RuntimeReconcileState.STABLE,
+        current_enabled_entrypoints=("run_now",),
+    )
+    catalog = _Catalog(ready)
+    config_calls: list[dict[str, Any]] = []
+    state_calls: list[dict[str, Any]] = []
+    active_version = SimpleNamespace(
+        version="2.0.0",
+        runtime_model=PluginRuntimeModel.SERVICE_V2,
+        plugin_api="2.0.0",
     )
 
-    assert AutomationPluginManagementService._service_v2_default_schedule(
-        entry, ("manual_run", "daily_run")
-    ) == {"kind": "daily_times", "times": ["18:05"], "enabled": True}
-
-
-def test_service_v2_default_scheduler_rejects_lossy_cron_mapping() -> None:
-    entry = _entry(
-        runtime_model=PluginRuntimeModel.SERVICE_V2.value,
-        contributions={
-            "scheduler": [{
-                "id": "weekday_run", "default_enabled": True,
-                "schedule": {
-                    "kind": "cron", "expression": "5 18 * * 1-5", "timezone": "Asia/Shanghai",
-                },
-            }],
-        },
-        scheduling={"supported": True, "allowed_kinds": ["daily_times"]},
-    )
-
-    with pytest.raises(PluginConflictError) as raised:
-        AutomationPluginManagementService._service_v2_default_schedule(
-            entry, ("weekday_run",)
+    def instance() -> SimpleNamespace:
+        return SimpleNamespace(
+            automation_id=ready.automation_id,
+            plugin_id=ready.plugin_id,
+            display_name="Replay service",
+            active_version=active_version,
+            enabled=ready.enabled,
+            state=PluginProjectState(ready.state),
+            record_version=ready.record_version,
+            target_generation=1,
+            committed_generation=1,
+            reconcile_state=RuntimeReconcileState.STABLE,
         )
 
-    assert raised.value.code == "PLUGIN_DEFAULT_SCHEDULE_UNSUPPORTED"
+    def set_enabled(_automation_id: str, **kwargs: Any) -> SimpleNamespace:
+        state_calls.append(dict(kwargs))
+        if not ready.enabled:
+            ready.enabled = True
+            ready.state = PluginProjectState.ENABLED.value
+            ready.record_version = 5
+        return instance()
+
+    service = AutomationPluginManagementService(
+        catalog=catalog,  # type: ignore[arg-type]
+        lifecycle=SimpleNamespace(
+            inspect_service_v2_upload=lambda *_args, **_kwargs: SimpleNamespace(
+                package_sha256="a" * 64
+            ),
+            install_upload=lambda *_args, **_kwargs: instance(),
+            claim_service_v2_install_enable_base=(
+                lambda *_args, **_kwargs: 4
+            ),
+            set_enabled=set_enabled,
+        ),
+        configuration=SimpleNamespace(
+            save=lambda _automation_id, **kwargs: config_calls.append(dict(kwargs))
+        ),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(reconcile_project=lambda _automation_id: None),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+    )
+    service._require_committed_ready = lambda _entry: None  # type: ignore[method-assign]
+    root_request_id = str(uuid.uuid4())
+    arguments = {
+        "package_bytes": b"replay-v2-package",
+        "request_id": root_request_id,
+        "transport_package_sha256": "a" * 64,
+        "raw_intent": json.dumps(
+            _service_v2_install_intent(enabled_entrypoints=["run_now"])
+        ),
+        "actor": _console_actor(),
+    }
+
+    first = service.install_service_v2(**arguments)
+    second = service.install_service_v2(**arguments)
+
+    assert first["enabled"] is True
+    assert second == first
+    assert len(config_calls) == 2
+    assert {call["expected_project_configuration_version"] for call in config_calls} == {1}
+    assert len(state_calls) == 2
+    assert state_calls[0] == state_calls[1]
+    assert state_calls[0]["expected_record_version"] == 4
+    assert state_calls[0]["state_change_context"]["phase"] == "enable"
+
+
+def test_service_v2_post_enable_failure_rolls_back_and_same_root_resumes_next_audited_attempt() -> None:
+    ready = _entry(
+        automation_id="recover-v2",
+        plugin_id="recover_service",
+        runtime_model=PluginRuntimeModel.SERVICE_V2.value,
+        configured=True,
+        enabled=False,
+        state=PluginProjectState.INSTALLED.value,
+        record_version=4,
+        target_generation=1,
+        committed_generation=1,
+        reconcile_state=RuntimeReconcileState.STABLE,
+        current_enabled_entrypoints=("run_now",),
+    )
+    catalog = _Catalog(ready)
+    active_version = SimpleNamespace(
+        version="2.0.0",
+        runtime_model=PluginRuntimeModel.SERVICE_V2,
+        plugin_api="2.0.0",
+    )
+    witnesses: dict[str, dict[str, object]] = {}
+    state_calls: list[dict[str, Any]] = []
+    reconcile_calls = 0
+
+    def instance() -> SimpleNamespace:
+        return SimpleNamespace(
+            automation_id=ready.automation_id,
+            plugin_id=ready.plugin_id,
+            display_name="Recover service",
+            active_version=active_version,
+            enabled=ready.enabled,
+            state=PluginProjectState(ready.state),
+            record_version=ready.record_version,
+            target_generation=1,
+            committed_generation=1,
+            reconcile_state=RuntimeReconcileState.STABLE,
+        )
+
+    def set_enabled(_automation_id: str, **kwargs: Any) -> SimpleNamespace:
+        state_calls.append(dict(kwargs))
+        request_id = str(kwargs["request_id"])
+        expected = int(kwargs["expected_record_version"])
+        target = bool(kwargs["enabled"])
+        context = dict(kwargs["state_change_context"])
+        prior = witnesses.get(request_id)
+        witness = {
+            "enabled": target,
+            "expected_record_version": expected,
+            "actor_id": str(kwargs["actor_id"]),
+            "actor_role": str(kwargs["actor_role"]),
+            "state_change_context": context,
+        }
+        if prior is not None:
+            assert prior == witness
+        else:
+            assert ready.record_version == expected
+            ready.enabled = target
+            ready.state = (
+                PluginProjectState.ENABLED.value
+                if target
+                else PluginProjectState.DISABLED.value
+            )
+            ready.record_version += 1
+            witnesses[request_id] = witness
+        return instance()
+
+    def reconcile(_automation_id: str) -> None:
+        nonlocal reconcile_calls
+        reconcile_calls += 1
+        if reconcile_calls == 3:
+            raise RuntimeError("injected post-enable failure")
+
+    lifecycle = SimpleNamespace(
+        inspect_service_v2_upload=lambda *_args, **_kwargs: SimpleNamespace(
+            package_sha256="a" * 64
+        ),
+        install_upload=lambda *_args, **_kwargs: instance(),
+        claim_service_v2_install_enable_base=lambda *_args, **_kwargs: 4,
+        set_enabled=set_enabled,
+        state_change_witness=lambda _automation_id, request_id: witnesses.get(
+            request_id
+        ),
+    )
+    service = AutomationPluginManagementService(
+        catalog=catalog,  # type: ignore[arg-type]
+        lifecycle=lifecycle,
+        configuration=SimpleNamespace(save=lambda *_args, **_kwargs: None),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(reconcile_project=reconcile),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+    )
+    service._require_committed_ready = lambda _entry: None  # type: ignore[method-assign]
+    root_request_id = str(uuid.uuid4())
+    arguments = {
+        "package_bytes": b"recover-v2-package",
+        "request_id": root_request_id,
+        "transport_package_sha256": "a" * 64,
+        "raw_intent": json.dumps(
+            _service_v2_install_intent(enabled_entrypoints=["run_now"])
+        ),
+        "actor": _console_actor(),
+    }
+
+    with pytest.raises(PluginConflictError) as error:
+        service.install_service_v2(**arguments)
+
+    assert error.value.code == "PLUGIN_ENABLE_RECONCILE_FAILED"
+    assert ready.enabled is False
+    assert ready.state == PluginProjectState.DISABLED.value
+    assert ready.record_version == 6
+    assert [call["enabled"] for call in state_calls] == [True, False]
+    assert state_calls[0]["state_change_context"]["attempt"] == 1
+    assert state_calls[1]["state_change_context"]["phase"] == "rollback"
+
+    resumed = service.install_service_v2(**arguments)
+
+    assert resumed["enabled"] is True
+    assert ready.record_version == 7
+    assert state_calls[-1]["expected_record_version"] == 6
+    assert state_calls[-1]["state_change_context"]["attempt"] == 2
+
+
+def test_service_v2_install_replay_never_treats_manual_disable_as_its_rollback() -> None:
+    root_request_id = str(uuid.uuid4())
+    payload_sha256 = "b" * 64
+    enabled_request_id = AutomationPluginManagementService._service_v2_install_enable_request_id(
+        root_request_id,
+        1,
+    )
+    enable_context = AutomationPluginManagementService._service_v2_install_state_context(
+        root_request_id=root_request_id,
+        install_payload_sha256=payload_sha256,
+        attempt=1,
+        phase="enable",
+    )
+    witnesses = {
+        enabled_request_id: {
+            "enabled": True,
+            "expected_record_version": 4,
+            "actor_id": "console-admin-1",
+            "actor_role": "super_admin",
+            "state_change_context": enable_context,
+        }
+    }
+    service = AutomationPluginManagementService(
+        catalog=_Catalog(),  # type: ignore[arg-type]
+        lifecycle=SimpleNamespace(
+            state_change_witness=lambda _automation_id, request_id: witnesses.get(
+                request_id
+            )
+        ),
+        configuration=SimpleNamespace(),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+    )
+    manually_disabled = _entry(
+        automation_id="automation-1",
+        runtime_model=PluginRuntimeModel.SERVICE_V2.value,
+        enabled=False,
+        state=PluginProjectState.DISABLED.value,
+        record_version=6,
+    )
+
+    with pytest.raises(PluginConflictError) as error:
+        service._service_v2_install_enable_claim(
+            manually_disabled,
+            base_record_version=4,
+            root_request_id=root_request_id,
+            install_payload_sha256=payload_sha256,
+            actor_id="console-admin-1",
+            actor_role="super_admin",
+        )
+
+    assert error.value.code == "PLUGIN_INSTALL_PROGRESS_CONFLICT"
 
 
 def test_current_unknown_write_recovery_accepts_only_request_identity() -> None:

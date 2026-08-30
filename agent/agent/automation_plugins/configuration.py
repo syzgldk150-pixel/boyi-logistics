@@ -251,6 +251,15 @@ class AutomationProjectConfigurationService:
         elif normalized_device_id:
             raise PluginConflictError("server plugin instances cannot bind a desktop Worker")
         normalized_schedule = normalize_project_schedule(schedule, entry.scheduling)
+        contract_witness = {
+            "runtime_model": entry.runtime_model,
+            "allowed_entrypoints": list(entry.allowed_entrypoints),
+            "invocation_contracts": {
+                source: copy.deepcopy(dict(contract))
+                for source, contract in entry.invocation_contracts.items()
+            },
+            "scheduling": copy.deepcopy(dict(entry.scheduling)),
+        }
         compiled_invocations: dict[str, dict[str, Any]] = {}
         for source in sources:
             compiled = compile_instance_arguments(
@@ -285,6 +294,7 @@ class AutomationProjectConfigurationService:
             enabled_entrypoints=sources,
             schedule=normalized_schedule,
             compiled_invocations=compiled_invocations,
+            contract_witness=contract_witness,
             device_binding=device_binding,
             actor_id=str(actor_id).strip(),
             actor_role=str(actor_role).strip(),
