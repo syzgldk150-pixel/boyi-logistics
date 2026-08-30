@@ -1,6 +1,13 @@
-# Verified Empty Snapshot Implementation Plan
+---
+status: historical
+updated: 2026-08-30
+---
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+# Verified Empty Snapshot Historical Release Record
+
+> **Frozen historical release record.** 本文记录 2026-08-24 的实现与 1.0.9 发布过程，不是当前工作清单、当前版本说明或 ECS 操作手册。复选框状态按当时记录冻结；未记录完成的发布步骤不得继续执行，应改用根级 `AGENTS.md`、`docs/git_workflow.md` 和当前发布器。
+
+> 下方代码片段、版本号、PR、标签和生产验收描述只用于追溯当时决策。
 
 **Goal:** Make every snapshot-style automation finish with a verified empty snapshot when its authoritative source is empty, update the target business date, and stop Console from presenting blocked Runs as continuously running.
 
@@ -216,26 +223,26 @@ Commit only version/digest and release-test changes as `build: release verified 
 
 Run Agent, Console, shared, MySQL-scenario-compatible unit suites, Ruff, compilation, tool registry, repository hygiene, import boundaries, internal API contracts, and sensitive-path scans. Expected: all pass.
 
-- [ ] **Step 2: Push the branch and update Draft PR #70**
+- **Historical state not recorded — Step 2: Push the branch and update Draft PR #70**
 
 Wait for GitHub CI. Request a fresh read-only final review; resolve only evidence-backed findings.
 
-- [ ] **Step 3: Merge to `main` and create the production tag**
+- **Historical state not recorded — Step 3: Merge to `main` and create the production tag**
 
 The merge commit, local `main`, GitHub `main`, and `ecs-production-2026-08-24-<sha12>` must resolve to the same commit.
 
-- [ ] **Step 4: Build and sign immutable 1.0.9 packages**
+- **Historical state not recorded — Step 4: Build and sign immutable 1.0.9 packages**
 
 Use the existing local protected signing profile without reading or printing private-key contents. Validate package count, signatures, trust root, release SHA, and release index.
 
-- [ ] **Step 5: Publish immediately to ECS**
+- **Historical state not recorded — Step 5: Publish immediately to ECS**
 
 Run the fixed publisher with `-Target all -EmergencyUserAuthorizedScheduledWindowOverride`. Do not bypass protected-write quiescence, migration preflight, backup, signature, service identity, health, or rollback checks.
 
-- [ ] **Step 6: Production acceptance**
+- **Historical state not recorded — Step 6: Production acceptance**
 
 After the signed package is installed, reconcile `arrive_list` through the normal control-plane generation workflow. The quarantined generation associated with the historical unknown write remains immutable and must not be replayed; create or reuse the new `1.0.9` target generation, wait for `READY_TO_COMMIT`, and atomically commit it. Verify Agent and Console are active, `/health.release_sha` equals `main`, every displayed project has a stable committed generation, and no card remains in `PROJECT_RUNTIME_UNAVAILABLE` or indefinite synchronization. Then run an authoritative empty `arrive_list` execution and require `no_data_cleared`. Confirm MySQL has zero target rows, both Feishu data regions are empty, and their title dates equal the target business day. Confirm a deliberately inspected blocked Run renders an attention state rather than “等待状态同步”.
 
-- [ ] **Step 7: Cleanup**
+- **Historical state not recorded — Step 7: Cleanup**
 
 Remove only this task's local signing stage and diagnostic files after path verification. Retain the ECS rollback bundle until business validation is complete. Close superseded PRs and leave GitHub with only the active `main` branch after merge.

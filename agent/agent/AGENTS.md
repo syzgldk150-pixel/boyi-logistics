@@ -43,7 +43,7 @@
   - 所有签名项目自动化账号只来自项目当前提交的精确角色绑定；后台改绑后下一次运行使用新账号，Broker 和脚本不得按默认标记、列表顺序或固定 ID 猜测。R13 业务查询在该精确账号登录后按原页协议调用 `/gateway/public/aurora/auth` 读取真实站点范围，请求使用 R13 同源 `Origin` 与 `aurora-token`，不得继承 SSO `Origin` 或附加 Bearer；中心账号传空站点列表，其他账号传其 `siteCode`。账号上下文缺失、刷新后范围漂移或请求体尝试覆盖站点时均 fail closed。
   - Agent `_monitor_tms_session_alerts` 是唯一周期主动登录态检查器，检查结果回写 `/admin/accounts` 共享快照；Console `prefer_cached=1` 只读该快照，即使同时携带 `force=1` 也不得发起外部校验。同账号检查或登录忙时，`BLOCKED_LOGIN` 只跳过本轮，不覆盖快照、不累计失败、不发飞书告警。
   - 韵达账号绿色状态必须校验主站、报表 `searchData`、`kyinms`、消息中心和 `kyproblem` 问题件页；登录/验证码成功后 `SessionBroker` 会初始化这些子系统并写入同一份 `storage_state`，不能只用主站已登录判断业务可用。
-  - `tms_runtime/scripts/yunda_waybill_proxy.py` 只允许代理 `https://kyinms.yunda56.com/ky_inms/public/...`，由 Console `/ocr/yunda/live/...` 使用；该代理会向原页注入预填和本地打印监听脚本，保存响应带 `shipnow_autoprint_url` 时打开 Console 本地打印页；新增韵达原页接口时优先复用该 allowlist 代理，不要把浏览器 Cookie 或鉴权头透传给 Console。
+  - `tms_runtime/scripts/yunda_waybill_proxy.py` 与 `ronghui_waybill_proxy.py` 只作为 Agent 内部、受能力约束的原页 target。Console 旧 `/ocr/yunda/*`、`/ocr/ronghui/live/*`、`/receipts/yunda/live/*`、`/receipts/ronghui/live/*` 对所有方法固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，且不得调用 Agent。活动原页只能由主站已验证管理员经 `/original-pages/{provider}/launch` 取得一次性 ticket，再到 `https://www.boyi.homes/original/{provider}/` 独立 origin 兑换路径限定 capability；主站 Cookie、浏览器 Cookie 和鉴权头不得跨 origin 或透传给 Console。
 - 改 Phase 7 资源导入、运行时资源存储：
   - `phase7_resource_import.py`
   - `workflow_resource_store.py`
@@ -64,7 +64,7 @@
   - `tracking_number_validation.py`（单号查询本地格式预检；格式错误直接返回本地结果，不启动 `track_waybill`）
   - `core.py`（单号查询也先提交 Command；`track_waybill` 的进程内函数由 `main.py` 通过 `ToolExecutionPort` adapter 注入，仍只有 WorkflowRunner 调用）
   - `automation_profile.py`
-  - 当前已注册：登录验证码（`登录/登陆/发验证码/重新登录` 先选择大祥账号、操作场账号或韵达账号；带 `大祥/报价/价格/price` 时走大祥账号，带 `操作场/后台` 时走操作场账号，带 `韵达/yunda` 时走韵达账号）、单号查询（裸单号、`查单号 <单号>`、`查物流 <单号>`、`韵达 <单号>` 先做本地格式预检，通过后走 `track_waybill`）、报价（`报价/价格 ...` 或 `地址，重量`，同一地址请求会返回融辉和韵达两段报价；融辉段使用真实运单录入页详细地址 blur 解析得到目的网点/派件网点，无头页只补公开登录上下文和地图空实现，不做 `areaName`/区县/城市拆词兜底；韵达段先按页面 `getInsuredAmount.html` 规则用重量同步最低申明价值，再调用运单录入页 `price.html`，最终口径为页面的 `Number(CostTotal)+Number(短信费)` 后 `getFloatStr_1()` 截两位，并使用运单录入地址解析/网点匹配明细，飞书不传申明价值）、到货清单同步（`arrivelist/到货清单/预到达清单`）、扫描（`扫描/获取并扫描数据/...`）、R7 到达打卡（`到达打卡`）、R7 发车打卡（`发车/R7发车/发车打卡`）、分批问题件（仅精确文本 `分批`）、自提到货问题件（`自提到货问题件` / `自提部到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` / `开单为自提件问题件` 等）、统计到货数据（`统计/到货统计/...`）
+  - 当前已注册：登录验证码（`登录/登陆/发验证码/重新登录` 先选择大祥账号、操作场账号或韵达账号；带 `大祥/报价/价格/price` 时走大祥账号，带 `操作场/后台` 时走操作场账号，带 `韵达/yunda` 时走韵达账号）、单号查询（裸单号、`查单号 <单号>`、`查物流 <单号>`、`韵达 <单号>` 先做本地格式预检，通过后走 `track_waybill`）、报价（`报价/价格 ...` 或 `地址，重量，体积`；缺任一影响金额的条件先澄清，不补业务默认值。同一完整请求返回融辉和韵达两段报价；融辉段使用真实运单录入页详细地址 blur 解析得到目的网点/派件网点，无头页只补公开登录上下文和地图空实现，不做 `areaName`/区县/城市拆词兜底；韵达段只按真实页面 `getInsuredAmount.html` 返回的当前规则和值处理申明价值，再调用运单录入页 `price.html`，最终口径为页面的 `Number(CostTotal)+Number(短信费)` 后 `getFloatStr_1()` 截两位，并使用运单录入地址解析/网点匹配明细，飞书不传申明价值）、到货清单同步（`arrivelist/到货清单/预到达清单`）、扫描（`扫描/获取并扫描数据/...`）、R7 到达打卡（`到达打卡`）、R7 发车打卡（`发车/R7发车/发车打卡`）、分批问题件（仅精确文本 `分批`）、自提到货问题件（`自提到货问题件` / `自提部到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` / `开单为自提件问题件` 等）、统计到货数据（`统计/到货统计/...`）
   - `get_price` 同样先提交 Command；进程内价格函数由组合根作为 adapter 注入 WorkflowRunner。`tools/price_tool.py` 内部并发请求融辉 `/tms/get_price` 和韵达 `/tms/yunda_price`，分别按精确账号登录态处理登录恢复。
   - 韵达新增：`韵达登录/韵达发验证码` 走 `yunda` 登录态；`切换到融辉自动化/切换到韵达自动化/当前自动化状态` 管理当前 Profile；`韵达派件预测/网点派件量预测主单表` 触发韵达派件预测同步
   - 含 `is_confirm_text` / `is_cancel_text` / `parse_verify_code` 用于 pending 状态机

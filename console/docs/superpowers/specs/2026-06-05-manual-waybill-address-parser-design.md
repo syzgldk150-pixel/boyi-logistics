@@ -1,4 +1,11 @@
+---
+status: implemented
+updated: 2026-08-30
+---
+
 # Manual Waybill Address Parser Design
+
+> **Implemented historical design.** 本文记录已落地功能的设计依据；当前行为以 `console/templates/document.html` 和回归测试为准。
 
 ## Goal
 
@@ -28,7 +35,7 @@ Add a local address parsing helper to the `/ocr` manual waybill entry page so pa
 - `templates/document.html`: add modal markup, compact modal styles, local parser helpers, event wiring, field fill, and map refresh hook.
 - `tests/test_manual_waybill.py`: add template assertions for the address parser button, modal fields, parser function names, validation text, and form field fill targets.
 
-## Verification
+## Historical verification sequence
 
 - First update the template test and run it to confirm it fails because the feature is not yet implemented.
 - Implement the modal and parser.
@@ -36,4 +43,4 @@ Add a local address parsing helper to the `/ocr` manual waybill entry page so pa
 
 ## Notes
 
-The current `console/` directory is not inside a git repository, so this spec cannot be committed from this workspace.
+`console/` 当前位于 `/home/deng/projects/boyi-logistics` 单仓内；Git 状态、提交和审查都应从仓库根目录执行。

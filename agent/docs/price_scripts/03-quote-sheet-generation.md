@@ -2,12 +2,15 @@
 module: 价格获取
 type: 模块文档
 tags: [报价表, 单价计算, Decimal精度, 客户报价, 物流频次, 自提部, 利润加计]
-related: [[02-tms-price-fetch], [data_accuracy_audit_report], [财务数据基准规范]]
-status: active
-updated: 2026-03-28
+related: [02-tms-price-fetch.md, data_accuracy_audit_report.md, ../common/finance_data_baseline.md]
+status: historical
+captured_at: 2026-03-28
+updated: 2026-08-30
 ---
 
 # 模块三：报价表生成
+
+> 历史快照：本文记录的 Excel 生成/回写脚本、业务原始表和输出文件不在当前仓库。以下数量和口径只用于追溯当时流程，未按当前数据重新计算，不能作为现行报价或运行指令。
 
 > 读取 TMS 原始报价数据，生成明细单价中间表，再结合物流托运单历史频次生成最终客户报价表。
 
@@ -43,16 +46,9 @@ updated: 2026-03-28
 
 ---
 
-## 运行命令
+## 历史运行入口
 
-```bash
-cd "C:/Users/DENG/Desktop/price_scripts/scripts/03_finance_summary_charts"
-python 生成价格表.py            # Step 1: 生成7Sheet分析Excel
-python 生成明细单价表.py        # Step 2: 生成中间明细单价表
-python 生成物流频次报价表.py    # Step 3: 生成最终客户报价表（依赖上一步输出）
-python 补充自提部报价.py        # Step 4: 补充自提部报价到客户报价表（依赖 Step 3 输出 + TMS API）
-python 回写客户报价表_live_tms.py  # Step 5: 将客户报价表 live TMS 审计结果回写到客户报价表（依赖 审计客户报价表_live_tms.py 输出）
-```
+所列脚本及其输入数据已从当前仓库移除，不再提供运行命令。恢复报表链路前必须重新取得受权数据、确认现行费率与利润口径，并运行金额、行数、极值和反算校验。
 
 ---
 

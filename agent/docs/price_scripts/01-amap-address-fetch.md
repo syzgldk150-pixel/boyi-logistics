@@ -2,12 +2,15 @@
 module: 价格获取
 type: 模块文档
 tags: [高德API, POI搜索, 地址库, 断点续传]
-related: [[02-tms-price-fetch], [project_structure]]
-status: active
-updated: 2026-03-06
+related: [02-tms-price-fetch.md, project_structure.md]
+status: historical
+captured_at: 2026-03-06
+updated: 2026-08-30
 ---
 
 # 模块一：高德地图 API 地址获取
+
+> 历史快照：本文描述的地址采集脚本和数据文件已不在当前仓库，不是可执行运行手册。以下数量与结论只代表当时记录，未按当前数据重新计算；现行 Agent 报价不从本文入口运行。
 
 > 调用高德地图 POI 搜索 API，为全国 3056 个区/县查找真实地址，构建地址库。
 
@@ -36,12 +39,9 @@ updated: 2026-03-06
 
 ---
 
-## 运行命令
+## 历史运行入口
 
-```bash
-cd "C:/Users/Administrator/Desktop/price_scripts/scripts/01_amap_address_fetch"
-python update_addresses_amap.py >> amap_fetch.log 2>&1
-```
+原采集入口已从当前仓库移除，不再提供运行命令。需要恢复时应从受审历史提交重新确认脚本、真实数据源、限流和输出校验，不能按本文路径执行。
 
 ---
 

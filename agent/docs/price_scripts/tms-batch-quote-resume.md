@@ -2,30 +2,24 @@
 module: 价格获取
 type: 操作手册
 tags: [TMS, 批量报价, 断点续传, 运行命令]
-related: [[02-tms-price-fetch]]
-status: active
-updated: 2026-03-06
+related: [02-tms-price-fetch.md]
+status: superseded
+captured_at: 2026-03-06
+updated: 2026-08-30
 ---
 
-# TMS 批量报价提取 - 续跑指令
+# TMS 批量报价提取 - 已退役续跑记录
 
-## 脚本位置
-```
-C:\Users\DENG\Desktop\agent\price_scripts\scripts\02_tms_price_fetch\
-```
+> 本操作手册已失效。`batch_run.py`、进度文件、输出表和原业务数据均不在当前仓库，不得按历史环境续跑。以下内容只保留当时断点机制的可追溯说明。
 
-## 续跑命令
-直接在 Claude Code 对话中说「运行续跑命令」，或手动执行：
+## 原脚本状态
 
-```bash
-cd "C:/Users/DENG/Desktop/price_scripts/scripts/02_tms_price_fetch" && python -u batch_run.py >> batch_run.log 2>&1
-```
+旧脚本位置和续跑命令已移除，当前没有可执行入口。需要恢复时必须从受审历史提交重建独立离线环境，并重新验证页面、账号、限流、进度文件和输出数据。
 
-## 断点续传说明
-- 脚本**自动支持断点续传**，无需任何额外参数
-- 进度保存在：`batch_progress.json`（记录已完成的地址索引 + 结果）
-- 每处理 10 条地址自动保存一次进度
-- 重启后脚本读取 `batch_progress.json`，自动跳过已完成项，从断点继续
+## 历史断点续传机制
+- 旧脚本曾自动支持断点续传
+- 进度曾保存在 `batch_progress.json`（记录已完成的地址索引和结果）
+- 当时每处理一批地址保存一次，重启后跳过已完成索引
 
 ## 关键文件
 | 文件 | 位置 | 说明 |
@@ -36,19 +30,14 @@ cd "C:/Users/DENG/Desktop/price_scripts/scripts/02_tms_price_fetch" && python -u
 | `TMS_Price_Matrix.xlsx` | `scripts/02_tms_price_fetch/` | 输出结果文件（每10条自动更新）|
 | `batch_run.log` | `scripts/02_tms_price_fetch/` | 运行日志（追加写入）|
 
-## 检查进度
-运行后可查看日志中的 `[Save]` 行：
+## 历史日志格式
 
-```bash
-cat "C:/Users/DENG/Desktop/price_scripts/scripts/02_tms_price_fetch/batch_run.log" | grep -a "Save" | tail -5
-```
-
-格式示例：
+旧日志中的保存进度格式示例：
 ```
 [Save] 1480/3056  速度: 98条/h  预计剩余: 937min
 ```
 
-## 运行参数（脚本内配置）
+## 历史参数快照
 | 参数 | 值 | 说明 |
 |------|----|------|
 | `SLEEP_ADDR` | 3 秒 | 地址间隔，避免限流 |
@@ -58,7 +47,7 @@ cat "C:/Users/DENG/Desktop/price_scripts/scripts/02_tms_price_fetch/batch_run.lo
 | `SAVE_INTERVAL` | 10 条 | 每 N 条保存一次进度 |
 | `MAX_RETRY` | 3 次 | 单地址最大重试次数 |
 
-## 注意事项
-- 运行前确认 `batch_progress.json` 存在（若缺失则从头开始）
-- 若 `TMS_Price_Matrix.xlsx` 被 Excel 打开，脚本会自动另存为带时间戳的文件
-- 日志为**追加模式**，历史运行记录会保留在 `batch_run.log` 中
+## 历史行为说明
+- 旧实现缺少进度文件时会从头开始
+- 输出表被 Excel 占用时曾改写到带时间戳的新文件
+- 旧日志使用追加模式

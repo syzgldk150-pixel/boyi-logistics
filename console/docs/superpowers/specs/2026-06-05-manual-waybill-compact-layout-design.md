@@ -1,4 +1,11 @@
+---
+status: implemented
+updated: 2026-08-30
+---
+
 # Manual Waybill Compact Layout Design
+
+> **Implemented historical design.** 本文记录已落地布局的设计依据；当前行为以 `console/templates/document.html` 和回归测试为准。
 
 ## Goal
 
@@ -20,7 +27,7 @@ Make the `/ocr` manual waybill entry form shorter and denser while preserving th
 - `tests/test_manual_waybill.py`: update template assertions for the new compact layout, separated customer sub-sections, and input-only map footer.
 - `AGENTS.md` and `CLAUDE.md`: remove stale documentation that says manual entry has the map-bottom origin estimator.
 
-## Verification
+## Historical verification sequence
 
 - Run the manual waybill template test and confirm it fails after the test update.
 - Implement the template and documentation changes.

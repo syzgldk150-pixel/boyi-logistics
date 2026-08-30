@@ -1,6 +1,17 @@
-# Boyi Logistics OS V2
+---
+type: architecture-vision
+status: aspirational
+updated: 2026-08-30
+authority: non-authoritative
+---
 
-状态：架构设计阶段
+# Boyi Logistics OS V2 愿景方案
+
+状态：aspirational（愿景，不是当前实现说明）
+
+> 生命周期说明：本文保留长期产品方向和历史概念方案，不声明当前代码、数据库、插件、路由或
+> 生产状态。当前事实必须从仓库 `docs/README.md` 指向的现行文档、实际代码、顺序迁移、测试和
+> 标准发布门禁核验；本文不能单独授权实现或生产操作。
 
 重要：
 
@@ -25,7 +36,7 @@
 
 本文档冻结 Boyi Logistics OS V2 的产品与架构方向，不授权任何代码修改、数据库迁移、ECS 发布、服务重启或插件切换。
 
-执行边界以 `CODEX_EXECUTION_RULES.md` 为准；真实完成状态以 `CURRENT_MIGRATION_STATUS.md` 为准。方案正文中的示例界面、时间和数据均为概念说明，不代表生产配置或实际业务数据；所有业务数字必须在对应 TASK 中从真实来源计算。
+执行边界以仓库根目录及目标模块当前 `AGENTS.md` 为准；`CODEX_EXECUTION_RULES.md` 已转为历史协议，`CURRENT_MIGRATION_STATUS.md` 只是 2026-08-25 的冻结快照，二者都不能替代当前代码与迁移核验。方案正文中的示例界面、时间和数据均为概念说明，不代表生产配置或实际业务数据；所有业务数字必须在对应 TASK 中从真实来源计算。
 
 TASK-000 已确认：当前仓库已经具备统一控制平面、签名自动化插件、插件生命周期、项目实例、账号与资源绑定、系统定时、飞书固定命令、审批、Evidence 和事务 Outbox。后续不得因为本文的概念性描述而新建第二套插件框架、调度器、权限引擎或事件总线。
 

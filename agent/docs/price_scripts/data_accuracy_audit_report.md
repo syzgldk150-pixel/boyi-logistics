@@ -2,10 +2,13 @@
 module: 价格获取
 type: 审计报告
 tags: [数据审计, 全链路, 列名一致性, 错误过滤, 精度校验]
-related: [[01-amap-address-fetch], [02-tms-price-fetch], [03-quote-sheet-generation], [project_structure]]
-status: active
-updated: 2026-06-03
+related: [01-amap-address-fetch.md, 02-tms-price-fetch.md, 03-quote-sheet-generation.md, project_structure.md]
+status: snapshot
+captured_at: 2026-06-03
+updated: 2026-08-30
 ---
+
+> 审计快照：本文只保存当时离线价表链路的审计证据。相关脚本和业务数据未保存在当前仓库，本文数字没有在本次文档维护中重算，不能证明当前实时价格或当前数据质量。
 
 ## 2026-03-15 地址清洗影响审计脚本
 

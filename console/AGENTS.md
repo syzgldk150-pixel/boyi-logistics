@@ -6,11 +6,18 @@
   - `powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1"`
 - 这个脚本会统一处理 `agent` 与 `console` 的 ECS 发布，默认 `auto` 模式会自动判断同步范围并执行远端健康检查。
 - 只有在用户明确指定特殊参数时，才改用 `-Target all`、`-SkipRestart`、`-SkipHealthCheck` 等变体。
-- ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希复用的 Python 3.10 环境；Console 使用 `opencv-python-headless`，不安装与 Agent 冲突的 GUI OpenCV 包。健康检查成功后只保留当前共享环境。
+- ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希复用的 Python 3.10 环境；Console 使用 `opencv-python-headless`，不安装与 Agent 冲突的 GUI OpenCV 包。发布成功后仍须保留当次精确回滚包、上一版共享环境和数据库快照，直到业务验收完成；清理只能作为验收后的独立有界操作。
+
+## 本地启动与数据后端
+
+- 本地仓库根目录固定为 `/home/deng/projects/boyi-logistics`，Console 工作目录为其下的 `console/`；不要使用已经失效的 `/home/deng/projects/console` 并列仓路径。
+- WSL / Linux 默认从仓库根目录运行 `cd console && ./start_backend.sh`。脚本默认先启动同仓 `agent/start_agent.sh`，再用 `tmux` 启动 Console；`--foreground` 以前台方式运行，`--no-agent` 只跳过 Agent 启动。停止使用 `cd console && ./stop_backend.sh`，该脚本同时停止本地 Console 和同仓 Agent。
+- Windows PowerShell 只负责调用上述 WSL 脚本，例如 `wsl bash -lc 'cd /home/deng/projects/boyi-logistics/console && ./start_backend.sh'`；仓库没有独立的 Windows Console 启停脚本。
+- Console 运行时唯一业务数据库是与 Agent 共用的 MySQL，不存在 SQLite 运行时回退。数据库结构只由 `../agent/migrations/` 和部署迁移器维护；Console 启动、仓储和请求路径只能校验结构及读写数据。
 
 ## 目录职责
 
-`console/` 是与 `agent/` 并列的控制台工作区，负责控制台页面、OCR 工作区、货拉拉调度页面、自动化配置页、财务工作台、客服系统工作台，以及控制台对 MySQL 的读写。
+`console/` 是单仓内与 `agent/` 并列的控制台工作区，负责控制台页面、OCR 工作区、货拉拉地图调度与比价页面、自动化配置页、财务工作台、客服系统工作台，以及控制台对 MySQL 的读写。
 
 Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/internal/v1/*` 并发送 `X-Agent-Internal-Token`；该 Token 只证明服务连接。涉及管理员命令、审批或账号管理时，服务端还必须用独立 `CONSOLE_AGENT_SIGNING_SECRET` 对 method、精确 path/query、原始 body 哈希、时间戳、一次性 nonce 和真实 MySQL 管理员会话快照签名；浏览器不能提交 `_console_principal`，签名密钥缺失时显式返回 503。响应在该边界统一解包 `ok/data/error`，异常与审计内容使用 `shared/redaction.py` 脱敏。
 
@@ -53,6 +60,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 - 改首页、模块页、公共导航、页面文案：
   - `app.py`
+  - `navigation.py`
   - `templates/base.html`
   - `templates/portal.html`
   - `static/style.css`
@@ -93,12 +101,15 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `template_store.py`
 - 改货拉拉调度地图页：
   - `templates/dispatch.html`
+  - `static/js/amap_route_utils.js`
   - `app.py`
   - `static/style.css`
+  - 当前页面是 map-only 的路线、距离与可用运输方案比价工作台，不包含车辆档案、车队管理或真实派单流程。
 - 改单号查询页：
   - `templates/tracking.html`
-  - `app.py`
-  - 统一代理 Agent `/tms/tracking_query`，按融辉 TMS、韵达、专线分发展示；融辉 TMS 展示“扫描轨迹 / 运单详情 / 子单详情”三个页签，韵达在原页接口返回明确子单数据时展示子单详情；韵达的 `data_source`、`device_no` 只保留在接口数据中不展示
+  - `routes/waybills.py`
+  - `services/waybills_receipts.py`
+  - 统一通过 `_agent_request()` 代理 Agent `/internal/v1/tms/tracking_query`，按融辉 TMS、韵达、专线分发展示；融辉 TMS 展示“扫描轨迹 / 运单详情 / 子单详情”三个页签，韵达在原页接口返回明确子单数据时展示子单详情；韵达的 `data_source`、`device_no` 只保留在接口数据中不展示
 - 改专线分流公司维护页：
   - `templates/line_haul_contacts.html`
   - `line_haul_contacts.py`
@@ -194,11 +205,10 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 - 本地项目级索引：`../agent/docs/code_navigation_index.md`
 - ECS 分拆部署时的项目级索引：`/home/boyce/agent/docs/code_navigation_index.md`
 - `../agent/docs/project_overview.md`
-- `CLAUDE.md`
+- 本目录的 `AGENTS.md` 与 `CLAUDE.md`
 
 
-- 自动化目录“分批/未到问题件上传”和“自提到货问题件”提供专用的 Console 候选选择入口：后台先通过 Agent 控制平面只读生成候选，用户勾选运单后再确认正式处理；预览指纹始终只保留在 Agent 持久化 Run 中，浏览器不能提交或覆盖指纹。两项任务仍不开放定时或 LLM 直达执行；飞书固定命令继续使用各自的预览确认流程。
-- 自动化目录“分批/未到问题件上传”和“自提到货问题件”均只允许 Console 从已验签、已持久化的候选 Run 勾选并确认，不开放定时或 LLM 直达；浏览器不得提交账号或预览指纹。
+- 自动化目录“分批/未到问题件上传”和“自提到货问题件”只允许 Console 从已验签、已持久化的候选 Run 勾选并确认：后台先由 Agent 控制平面只读生成候选，预览指纹始终只保留在 Agent 持久化 Run 中，浏览器不得提交账号、运单集合或预览指纹。两项任务不开放定时或 LLM 直达；飞书固定命令继续使用各自的预览确认流程。
 
 ## 业务模块管理
 
