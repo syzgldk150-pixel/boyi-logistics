@@ -37,6 +37,13 @@ class VerificationOutcome:
 
 
 class ResultVerifier:
+    _SERVICE_V2_RUNTIME_MODEL = "SERVICE_V2"
+    _SERVICE_V2_DIRECT_WRITE_EFFECTS = frozenset({"external_write", "destructive"})
+    _SERVICE_V2_WRITE_POSTCONDITION = "plugin_result_contract_valid"
+    _SERVICE_V2_REQUIRED_EVIDENCE_FIELDS = frozenset(
+        {"service", "operation", "outcome"}
+    )
+    _CLOCK_SITE_FIELDS = ("sitecode", "sitefbcode", "sitename", "sitefbname")
     REQUIRED_META_FIELDS = frozenset(
         {"source_system", "account_id", "observed_at", "record_count", "pagination_complete", "evidence_refs"}
     )
@@ -147,10 +154,17 @@ class ResultVerifier:
         if not isinstance(normalized.meta.get("record_count"), int) or normalized.meta.get("record_count") < 0:
             return self._failure("INVALID_RECORD_COUNT", "Tool result record_count must be a non-negative integer")
         if not isinstance(normalized.meta.get("evidence_refs"), list) or any(
-            not isinstance(value, str) or not value.strip()
+            not isinstance(value, str) or not value.strip() or value != value.strip()
             for value in normalized.meta.get("evidence_refs") or []
         ):
             return self._failure("INVALID_EVIDENCE_REFS", "Tool result evidence_refs must be an array")
+        if len(normalized.meta.get("evidence_refs") or []) != len(
+            set(normalized.meta.get("evidence_refs") or [])
+        ):
+            return self._failure(
+                "INVALID_EVIDENCE_REFS",
+                "Tool result evidence_refs must not contain duplicates",
+            )
 
         output_schema = capability.get("output_schema")
         if not isinstance(output_schema, Mapping):
@@ -200,6 +214,15 @@ class ResultVerifier:
                 result=normalized,
             )
 
+        service_v2_evidence_error = self._service_v2_evidence_error(
+            step=step,
+            capability=capability,
+            normalized=normalized,
+            evidence_requirements=evidence_requirements,
+        )
+        if service_v2_evidence_error is not None:
+            return service_v2_evidence_error
+
         try:
             scan_phase = resolve_scan_capability_phase(capability, step.arguments)
         except ValueError:
@@ -215,6 +238,14 @@ class ResultVerifier:
         postcondition_requirements = [postconditions] if isinstance(postconditions, Mapping) else postconditions
         if not isinstance(postcondition_requirements, list):
             return self._failure("INVALID_TOOL_POSTCONDITIONS", "Tool postconditions contract is invalid")
+        service_v2_postcondition_error = self._service_v2_postcondition_error(
+            step=step,
+            capability=capability,
+            normalized=normalized,
+            postcondition_requirements=postcondition_requirements,
+        )
+        if service_v2_postcondition_error is not None:
+            return service_v2_postcondition_error
         if (
             step.operation_type.value not in {"read", "compute"}
             or scan_phase == SCAN_PHASE_PREVIEW
@@ -300,6 +331,404 @@ class ResultVerifier:
             run_status=RunStatus.COMPLETED,
             code="VERIFIED",
             message="Tool result and evidence were verified",
+            result=normalized,
+        )
+
+    @classmethod
+    def _is_service_v2(cls, capability: Mapping[str, Any]) -> bool:
+        runtime = capability.get("_plugin_runtime")
+        return (
+            isinstance(runtime, Mapping)
+            and str(runtime.get("runtime_model") or "").strip().upper()
+            == cls._SERVICE_V2_RUNTIME_MODEL
+        )
+
+    @classmethod
+    def _is_service_v2_direct_write(
+        cls,
+        step: PlanStep,
+        capability: Mapping[str, Any],
+    ) -> bool:
+        if not cls._is_service_v2(capability):
+            return False
+        effect = str(capability.get("effect") or "").strip().lower()
+        operation_type = str(
+            capability.get("operation_type") or step.operation_type.value
+        ).strip().lower()
+        return (
+            effect in cls._SERVICE_V2_DIRECT_WRITE_EFFECTS
+            or operation_type in cls._SERVICE_V2_DIRECT_WRITE_EFFECTS
+        )
+
+    @staticmethod
+    def _non_empty_contract_text(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        return value or None
+
+    @classmethod
+    def _service_v2_expected_target(
+        cls,
+        capability: Mapping[str, Any],
+    ) -> tuple[str | None, str | None, VerificationOutcome | None]:
+        service = cls._non_empty_contract_text(capability.get("service"))
+        operation = cls._non_empty_contract_text(capability.get("operation"))
+        if service is None or operation is None:
+            return None, None, cls._failure(
+                "INVALID_TOOL_EVIDENCE",
+                "Service v2 write contract must declare one service and operation",
+            )
+
+        runtime = capability.get("_plugin_runtime")
+        compiled_invocations = (
+            runtime.get("compiled_invocations")
+            if isinstance(runtime, Mapping)
+            else None
+        )
+        if isinstance(compiled_invocations, Mapping):
+            for compiled in compiled_invocations.values():
+                if not isinstance(compiled, Mapping):
+                    return None, None, cls._failure(
+                        "INVALID_TOOL_EVIDENCE",
+                        "Service v2 invocation target is invalid",
+                    )
+                target = compiled.get("target")
+                if not isinstance(target, Mapping):
+                    return None, None, cls._failure(
+                        "INVALID_TOOL_EVIDENCE",
+                        "Service v2 invocation target is missing",
+                    )
+                target_service = cls._non_empty_contract_text(target.get("service"))
+                target_operation = cls._non_empty_contract_text(target.get("operation"))
+                target_identity = {
+                    "service",
+                    "operation",
+                    "contribution_id",
+                    "contribution_kind",
+                }
+                if (
+                    set(target) != target_identity
+                    or target_service is None
+                    or target_operation is None
+                    or any(
+                        cls._non_empty_contract_text(target.get(field)) is None
+                        for field in ("contribution_id", "contribution_kind")
+                    )
+                ):
+                    return None, None, cls._failure(
+                        "INVALID_TOOL_EVIDENCE",
+                        "Service v2 invocation target is invalid",
+                    )
+                if target_service == service and target_operation == operation:
+                    return service, operation, None
+            # The compiled table is core-owned when present.  A capability
+            # contract that is not represented there is stale and cannot be
+            # used to accept a plugin-produced business result.
+            if compiled_invocations:
+                return None, None, cls._failure(
+                    "INVALID_TOOL_EVIDENCE",
+                    "Service v2 result target does not match its committed invocation contract",
+                )
+        return service, operation, None
+
+    @classmethod
+    def _service_v2_evidence_error(
+        cls,
+        *,
+        step: PlanStep,
+        capability: Mapping[str, Any],
+        normalized: ToolResult,
+        evidence_requirements: list[Any],
+    ) -> VerificationOutcome | None:
+        if not cls._is_service_v2_direct_write(step, capability):
+            return None
+
+        required_contracts = [
+            item
+            for item in evidence_requirements
+            if isinstance(item, Mapping) and item.get("required") is True
+        ]
+        if len(required_contracts) != 1:
+            return cls._failure(
+                "INVALID_TOOL_EVIDENCE",
+                "Service v2 write contract must contain exactly one required evidence declaration",
+            )
+        required_fields = required_contracts[0].get("required_fields")
+        if (
+            not isinstance(required_fields, list)
+            or any(
+                not isinstance(field, str) or not field.strip()
+                for field in required_fields
+            )
+            or len(required_fields) != len(set(required_fields))
+            or set(required_fields) != cls._SERVICE_V2_REQUIRED_EVIDENCE_FIELDS
+        ):
+            return cls._failure(
+                "INVALID_TOOL_EVIDENCE",
+                "Service v2 write evidence must require service, operation and outcome",
+            )
+
+        expected_service, expected_operation, contract_error = cls._service_v2_expected_target(
+            capability
+        )
+        if contract_error is not None:
+            return contract_error
+        evidence = normalized.data.get("evidence")
+        if not isinstance(evidence, Mapping):
+            return cls._blocked_service_v2_result(
+                normalized,
+                "Service v2 write result lacks independent Host evidence",
+            )
+        observed_at = normalized.meta.get("observed_at")
+        if (
+            not cls._valid_observed_at(observed_at)
+            or not isinstance(normalized.meta.get("source_system"), str)
+            or not normalized.meta.get("source_system", "").strip()
+            or evidence.get("service") != expected_service
+            or evidence.get("operation") != expected_operation
+            or evidence.get("outcome") != "WRITE_VERIFIED"
+            or not isinstance(evidence.get("service"), str)
+            or not isinstance(evidence.get("operation"), str)
+            or not isinstance(evidence.get("outcome"), str)
+            or normalized.meta.get("write_outcome") != "WRITE_VERIFIED"
+        ):
+            return cls._blocked_service_v2_result(
+                normalized,
+                "Service v2 write evidence identity or outcome is inconsistent",
+            )
+        if "observed_at" in evidence and (
+            not cls._valid_observed_at(evidence.get("observed_at"))
+            or evidence.get("observed_at") != observed_at
+        ):
+            return cls._blocked_service_v2_result(
+                normalized,
+                "Service v2 write evidence observation time is inconsistent",
+            )
+        identity_error = cls._service_v2_identity_error(normalized.data)
+        if identity_error is not None:
+            return cls._blocked_service_v2_result(normalized, identity_error)
+        clock_error = cls._service_v2_clock_result_error(step, normalized)
+        if clock_error is not None:
+            return cls._blocked_service_v2_result(normalized, clock_error)
+        return None
+
+    @classmethod
+    def _service_v2_identity_error(cls, value: Any) -> str | None:
+        """Service payloads cannot disclose or invent core account identity."""
+
+        if isinstance(value, Mapping):
+            for raw_key, child in value.items():
+                key = str(raw_key).strip().lower().replace("-", "_")
+                if (
+                    key in {"account_id", "account_ids"}
+                    or key.endswith(("_account_id", "_account_ids"))
+                ):
+                    return "Service v2 result contains a broker-owned account identity"
+                nested_error = cls._service_v2_identity_error(child)
+                if nested_error is not None:
+                    return nested_error
+        elif isinstance(value, list):
+            for child in value:
+                nested_error = cls._service_v2_identity_error(child)
+                if nested_error is not None:
+                    return nested_error
+        return None
+
+    @classmethod
+    def _service_v2_clock_result_error(
+        cls,
+        step: PlanStep,
+        normalized: ToolResult,
+    ) -> str | None:
+        evidence = normalized.data.get("evidence")
+        results = normalized.data.get("results")
+        if not isinstance(evidence, Mapping) or (
+            "both_third_party_clock_ins_confirmed" not in evidence
+        ):
+            return None
+        if evidence.get("both_third_party_clock_ins_confirmed") is not True:
+            return "Dual clock result did not prove both independent confirmations"
+        if normalized.meta.get("source_system") != "ronghui":
+            return "Dual clock result source system is not Ronghui"
+        if not isinstance(results, list) or len(results) != 2:
+            return "Dual clock result must contain exactly two verification results"
+        if normalized.meta.get("record_count") != len(results):
+            return "Dual clock result count is inconsistent with its result summary"
+
+        expected_types = [
+            str(step.arguments.get("first_type") or "").strip(),
+            str(step.arguments.get("second_type") or "").strip(),
+        ]
+        if not all(expected_types) or expected_types[0] == expected_types[1]:
+            return "Dual clock request does not declare two distinct clock types"
+        expected_site = {
+            field: str(step.arguments.get(field) or "").strip()
+            for field in cls._CLOCK_SITE_FIELDS
+        }
+        if not all(expected_site.values()):
+            return "Dual clock request does not declare a complete site identity"
+
+        refs = normalized.meta.get("evidence_refs")
+        if not isinstance(refs, list) or len(refs) != 5:
+            return "Dual clock evidence must contain precheck, submit and verify receipts"
+        result_refs: list[str] = []
+        operation_ids: list[str] = []
+        observed_at = normalized.meta.get("observed_at")
+        try:
+            result_observed = datetime.fromisoformat(
+                str(observed_at).replace("Z", "+00:00")
+            )
+        except ValueError:
+            return "Dual clock result observation time is invalid"
+        for index, result in enumerate(results):
+            if not isinstance(result, Mapping):
+                return "Dual clock verification result is invalid"
+            if (
+                result.get("clock_type") != expected_types[index]
+                or result.get("confirmed") is not True
+                or not isinstance(result.get("operation_id"), str)
+                or not result.get("operation_id").strip()
+                or not isinstance(result.get("outcome_category"), str)
+                or not result.get("outcome_category").strip()
+                or not isinstance(result.get("evidence_ref"), str)
+                or not result.get("evidence_ref").strip()
+                or result.get("evidence_ref") not in refs
+                or result.get("site") != expected_site
+                or not cls._valid_observed_at(result.get("observed_at"))
+            ):
+                return "Dual clock verification result is incomplete or cross-site"
+            try:
+                verification_observed = datetime.fromisoformat(
+                    str(result["observed_at"]).replace("Z", "+00:00")
+                )
+            except ValueError:
+                return "Dual clock verification result observation time is invalid"
+            if verification_observed > result_observed:
+                return "Dual clock verification result is newer than its result receipt"
+            result_refs.append(str(result["evidence_ref"]))
+            operation_ids.append(str(result["operation_id"]))
+        if len(set(result_refs)) != len(result_refs) or len(set(operation_ids)) != len(operation_ids):
+            return "Dual clock verification receipts or operation identifiers are duplicated"
+        return None
+
+    @classmethod
+    def _service_v2_postcondition_error(
+        cls,
+        *,
+        step: PlanStep,
+        capability: Mapping[str, Any],
+        normalized: ToolResult,
+        postcondition_requirements: list[Any],
+    ) -> VerificationOutcome | None:
+        if not cls._is_service_v2_direct_write(step, capability):
+            return None
+        if len(postcondition_requirements) != 1 or not isinstance(
+            postcondition_requirements[0], Mapping
+        ):
+            return cls._failure(
+                "INVALID_TOOL_POSTCONDITIONS",
+                "Service v2 write contract must declare one postcondition",
+            )
+        if postcondition_requirements[0].get("name") != cls._SERVICE_V2_WRITE_POSTCONDITION:
+            return cls._failure(
+                "INVALID_TOOL_POSTCONDITIONS",
+                "Service v2 write contract has an unsupported postcondition",
+            )
+        reported = normalized.meta.get("postconditions")
+        proofs = normalized.meta.get("postcondition_evidence")
+        if (
+            not isinstance(reported, Mapping)
+            or set(reported) != {"0"}
+            or reported.get("0") is not True
+            or not isinstance(proofs, Mapping)
+            or set(proofs) != {"0"}
+        ):
+            return cls._blocked_service_v2_result(
+                normalized,
+                "Service v2 write postcondition proof is missing or ambiguous",
+            )
+        proof = proofs["0"]
+        refs = normalized.meta.get("evidence_refs")
+        required_proof_fields = {"condition", "verified", "observed_at", "evidence_ref", "details"}
+        if (
+            not isinstance(proof, Mapping)
+            or not required_proof_fields <= set(proof)
+            or proof.get("condition") != cls._SERVICE_V2_WRITE_POSTCONDITION
+            or proof.get("verified") is not True
+            or not cls._valid_observed_at(proof.get("observed_at"))
+            or proof.get("observed_at") != normalized.meta.get("observed_at")
+            or not isinstance(refs, list)
+            or not refs
+            or proof.get("evidence_ref") != refs[-1]
+        ):
+            return cls._blocked_service_v2_result(
+                normalized,
+                "Service v2 write postcondition proof does not match Host evidence",
+            )
+        details = proof.get("details")
+        if not isinstance(details, Mapping):
+            return cls._blocked_service_v2_result(
+                normalized,
+                "Service v2 write postcondition summary is missing",
+            )
+        detail_refs = details.get("evidence_refs")
+        summary = details.get("result_summary")
+        if detail_refs != refs or not isinstance(summary, Mapping):
+            return cls._blocked_service_v2_result(
+                normalized,
+                "Service v2 write postcondition summary does not close Host evidence refs",
+            )
+        expected_service = str(capability.get("service") or "").strip()
+        expected_operation = str(capability.get("operation") or "").strip()
+        if not cls._service_v2_summary_matches(
+            summary,
+            normalized,
+            service=expected_service,
+            operation=expected_operation,
+        ):
+            return cls._blocked_service_v2_result(
+                normalized,
+                "Service v2 write postcondition summary does not match the result",
+            )
+        return None
+
+    @classmethod
+    def _service_v2_summary_matches(
+        cls,
+        summary: Mapping[str, Any],
+        normalized: ToolResult,
+        *,
+        service: str,
+        operation: str,
+    ) -> bool:
+        # A full result summary is the strongest portable form: the core
+        # compares it byte-for-byte as a JSON structure.  A compact summary is
+        # accepted only when it includes a core-recomputable result digest;
+        # otherwise a plugin could assert success while omitting changed rows.
+        if dict(summary) == dict(normalized.data):
+            return True
+        if (
+            summary.get("service") != service
+            or summary.get("operation") != operation
+            or summary.get("outcome") != "WRITE_VERIFIED"
+            or summary.get("record_count") != normalized.meta.get("record_count")
+            or summary.get("evidence_refs") != normalized.meta.get("evidence_refs")
+        ):
+            return False
+        digest = summary.get("result_sha256")
+        return isinstance(digest, str) and digest == sha256_json(normalized.data)
+
+    @staticmethod
+    def _blocked_service_v2_result(
+        normalized: ToolResult,
+        message: str,
+    ) -> VerificationOutcome:
+        return VerificationOutcome(
+            accepted=False,
+            run_status=RunStatus.BLOCKED_DATA,
+            code="POSTCONDITION_UNVERIFIED",
+            message=message,
             result=normalized,
         )
 
