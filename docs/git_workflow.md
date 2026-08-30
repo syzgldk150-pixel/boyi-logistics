@@ -3,7 +3,7 @@ module: project
 type: operations
 tags: [git, github, version-control, network]
 status: active
-updated: 2026-08-08
+updated: 2026-08-30
 ---
 
 # GitHub 项目管理与国内网络说明
@@ -24,6 +24,7 @@ git switch -c agent/<task-name>
 
 # 修改和验证后，只加入本任务文件
 git add -- path/to/file path/to/test
+python3 agent/scripts/check_documentation.py
 git diff --cached --check
 git diff --cached
 git commit -m "<concise task summary>"

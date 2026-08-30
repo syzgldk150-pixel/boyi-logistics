@@ -1,4 +1,15 @@
+---
+module: automation-plugin-platform
+type: source-guide
+status: active
+updated: 2026-08-30
+---
+
 # First-party automation plugin sources and digest lock
+
+This directory is the production source inventory for the signed `ACTION_V1`
+compatibility track. New independently installable service capabilities use
+`SERVICE_V2`; see `docs/plugin-platform-v2.md` from the repository root.
 
 This directory contains the package-owned orchestration for every first-party
 automation action. It contains no credentials. Each deterministic ZIP is built
@@ -21,7 +32,7 @@ or post-write evidence.
 Production artifacts are intentionally narrower than this source inventory. The
 release builder, bootstrap, catalog, Broker surface, and generation health admit
 only server actions that are both marked `RUNNABLE` in the migration matrix and
-listed in `agent/automation_plugins/release_scope.py`. A `BLOCKED` payload is not
+listed in `agent/agent/automation_plugins/release_scope.py`. A `BLOCKED` payload is not
 an executable fallback merely because its files are present. The current scope
 also defers both R7 check-in actions and the entire Windows Worker/Tray runtime;
 those exclusions do not make otherwise healthy Linux/ECS actions fail release
@@ -31,5 +42,6 @@ the closed adapters and tests in the same commit.
 `builtin_release` is a deterministic development and release-preflight trust
 source tied to the reviewed release SHA and digest lock. Production bootstrap
 does not trust it: production first-party ZIPs must pass the
-`ED25519_FIRST_PARTY` verifier. Administrator-uploaded packages use their
-applicable Ed25519 trust policy as well.
+`ED25519_FIRST_PARTY` verifier. Administrator-uploaded v1 `ACTION_V1` packages
+use the `ED25519_UPLOAD` trust policy; v2 `SERVICE_V2` packages follow the
+separate verified-`super_admin`, unsigned, content-addressed installation contract.

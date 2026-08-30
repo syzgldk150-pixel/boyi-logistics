@@ -1,16 +1,29 @@
 ---
 module: 自动化插件平台
 type: 架构与运行手册
-tags: [自动化插件, Ed25519, generation, Windows Worker, Cordis]
+tags: [自动化插件, ACTION_V1, Ed25519, generation, Windows Worker, Cordis]
 related:
   - ../first_party_automation_plugins/README.md
   - ../first_party_automation_plugins/MIGRATION_MATRIX.md
+  - ../../docs/plugin-platform-v2.md
   - code_navigation_index.md
 status: active
-updated: 2026-08-29
+updated: 2026-08-30
 ---
 
-# 自动化插件平台
+# 自动化插件平台 v1（ACTION_V1）
+
+## 文档定位
+
+本文只说明现有 `ACTION_V1` Ed25519 签名动作平台及其运行、迁移和发布合同。Service v2 的
+Manifest、无签名 `super_admin` ZIP 安装、Host API、服务/贡献、托管存储和 v1→v2 双轨迁移，
+以仓库根 `docs/plugin-platform-v2.md` 为权威说明。
+
+v1 与 v2 继续并存，但安装器只按 `schema_version + runtime_model` 严格分流：v1 为
+`schema_version=1` 且 `runtime_model` 缺省或为 `action_v1`，v2 为 `schema_version=2` 且
+`runtime_model=service_v2`。任一模型解析失败都不得回退另一模型，v1 项目也不能原地升级为 v2。
+下文中的“插件”“签名 ZIP”“Broker 动作”和首方 allowlist 若未特别说明，均只指 ACTION_V1；
+不能把这些签名或构建规则套用到 v2。
 
 ## 边界与对象模型
 
@@ -103,7 +116,7 @@ python scripts/verify_first_party_plugins.py \
 
 `builtin_release` 仅可用于开发测试，不可进入生产 green health，也不可获得项目完全自动权限。
 
-## 管理 API 与显式绑定
+## ACTION_V1 管理 API 与显式绑定
 
 生产管理面由 `agent/automation_plugins/management_api.py` 的 router factory 注入，不导入组合根。
 Console 请求体统一 `extra=forbid`，身份只从已签名的 MySQL Console principal 获取；浏览器不能提交
@@ -198,7 +211,7 @@ python scripts/build_first_party_plugin_release.py \
 迁移实例，既不夹带 `BLOCKED` 动作，也不接受缺包或额外包。任一入围包失败时不发布部分目录。
 它只读取调用方明确传入且权限受限的私钥，不搜索、不复制、不输出私钥内容。
 
-新增能力从 `agent/examples/automation_plugin/` 的无副作用示例开始。该目录不属于首方源码清单，也不由
+新增 ACTION_V1 能力从 `examples/automation_plugin/` 的无副作用示例开始。该目录不属于首方源码清单，也不由
 bootstrap、Catalog、Broker、ECS 发布或签名发布发现。`validate_automation_plugin_source.py` 只执行签名前
 源码预检：严格解析 manifest 与工具治理合同、确认 entrypoint 与字面量 `ACTION_ID`、编译 payload，并
 拒绝导入 Agent、shared、tools、feishu 等运行时模块；它不生成签名、不安装插件、不创建实例。真实能力
@@ -383,7 +396,7 @@ escaped client certificate 头后代理到回环 Agent，并清空 internal toke
 
 ## 发布健康门禁
 
-新进程先在 release hold 下启动。当前只有 allowlist 中的签名包完整、其对应已安装实例具有稳定
+新进程先在 release hold 下启动。ACTION_V1 发行部分只有 allowlist 中的签名包完整、其对应已安装实例具有稳定
 committed generation、没有 `PREPARING/SWITCHING/DRAINING/BLOCKED/UNKNOWN`，且 Scheduler 与
 WorkflowRunner 已确认运行后，服务端才最后消费匹配 release SHA 的 marker。首次 018 切换还必须由
 独立只读 post-018 validator 精确核验 71 条历史身份、68 条启用、16 个策略、项目 bootstrap marker/items、
@@ -392,4 +405,5 @@ WorkflowRunner 已确认运行后，服务端才最后消费匹配 release SHA �
 数据库仍有旧记录，也从 Catalog 和健康计数中排除；其他未知或未入围的 persisted 项目仍失败关闭。
 Windows Worker 当前只投影固定的 `enabled=false/state=disabled/release_hold=false/active_jobs=0`，不读取
 Worker 仓储，也不是本轮发布门禁。任一步失败都保留 marker 和 hold。健康接口不得把入围动作的缺失
-公钥、缺失首方工件、缺 Broker 原语或不稳定 generation 降级为 warning。
+公钥、缺失首方工件、缺 Broker 原语或不稳定 generation 降级为 warning。SERVICE_V2 的包、隔离、
+服务依赖、贡献和迁移门禁不由本节概括，必须按 `docs/plugin-platform-v2.md` 单独核验。

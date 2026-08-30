@@ -4,7 +4,7 @@ type: 模块文档
 tags: [融辉, 财务同步, 费用绑定, BI, Decimal]
 related: [project_overview.md, common/finance_data_baseline.md]
 status: active
-updated: 2026-08-25
+updated: 2026-08-30
 ---
 
 # 融辉财务工作台
@@ -174,7 +174,12 @@ API Key 使用环境变量 `AGENT_LLM_CONFIG_MASTER_KEY` 提供的 32 字节 Bas
 - `GET /settings/llm/status`
 - `POST /settings/llm/candidates|models/refresh|test|activate|rollback|credentials/clear`
 
-Console 只查询共享 MySQL 账本或调用 Agent 的 `/run-tool` 执行 `sync_finance_bills`。平台筛选和同步范围只展示共享注册表中的启用来源。Console 不直接访问第三方页面，也不接触第三方登录态。
+Console 的 GET 接口只查询共享 MySQL 账本。`POST /finance/sync`、`/finance/backfill` 和
+`/finance/sync-batches/{id}/retry` 必须先校验真实 MySQL 管理员会话与同源请求，再用浏览器 UUID
+和签名 Console principal 向 Agent `POST /internal/v1/commands` 提交 `sync_finance_bills`，立即返回
+HTTP 202 Run 回执且不得同步等待结果。手工财务同步属于高风险计划，继续由事项中心完成
+`super_admin` 审批；不得新增 `/run-tool` 调用方。平台筛选和同步范围只展示共享注册表中的启用来源。
+Console 不直接访问第三方页面，也不接触第三方登录态。
 
 `GET /finance/sync-batches` 在批次汇总之外返回最新失败的 `platform/account_id/target_date/error_code/error_message`，同步记录页可直接定位失败来源。显式无数据日期会以零值进入趋势和账号对比；没有成功或无数据运行的日期不会被静默补零。
 
@@ -211,7 +216,7 @@ Console 只查询共享 MySQL 账本或调用 Agent 的 `/run-tool` 执行 `sync
 定向测试：
 
 ```bash
-cd /home/deng/projects && python3 -m unittest discover -s tests -p 'test_finance_*.py' -v
-cd /home/deng/projects/agent && PYTHONPATH=/home/deng/projects/agent:/home/deng/projects python3 -m unittest discover -s tests -p 'test_finance_*.py' -v
-cd /home/deng/projects/console && PYTHONPATH=/home/deng/projects/console:/home/deng/projects python3 -m unittest discover -s tests -p 'test_finance_*.py' -v
+cd /home/deng/projects/boyi-logistics && python3 -m unittest discover -s tests -p 'test_finance_*.py' -v
+cd /home/deng/projects/boyi-logistics/agent && PYTHONPATH=/home/deng/projects/boyi-logistics/agent:/home/deng/projects/boyi-logistics python3 -m unittest discover -s tests -p 'test_finance_*.py' -v
+cd /home/deng/projects/boyi-logistics/console && PYTHONPATH=/home/deng/projects/boyi-logistics/console:/home/deng/projects/boyi-logistics python3 -m unittest discover -s tests -p 'test_finance_*.py' -v
 ```

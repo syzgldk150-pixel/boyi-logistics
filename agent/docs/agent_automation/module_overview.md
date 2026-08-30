@@ -4,9 +4,10 @@ type: 模块文档
 tags: [Agent自动化, 飞书触发器, 直达指令, pending状态机, 登录恢复, TMS自动化]
 related: [../project_overview.md, ../code_navigation_index.md, ../ai_service/module_overview.md]
 status: active
-updated: 2026-08-29
+updated: 2026-08-30
 ---
 
+> 2026-08-30: 账号管理的现行入口统一为 `/admin/accounts/{account_id}/*`，旧 `/admin/tms/*-session` 只保留兼容且不得作为新入口。韵达/融辉旧同源活动原页路径固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`；活动原页只允许经一次性 ticket 在 `https://www.boyi.homes/original/{provider}/` 独立 origin 使用路径限定 capability。
 > 2026-08-29: Agent `_monitor_tms_session_alerts` 是唯一周期主动登录态检查器；检查完成后把同一份最终状态写入 `/admin/accounts` 共享快照，Console `/automation-accounts` 只用 `prefer_cached=1` 被动读取。即使请求同时携带 `force=1`，缓存读取也不得触发外部校验或后台刷新。同账号已有检查或登录在执行时，`BLOCKED_LOGIN` 只跳过本轮，不覆盖快照、不累计自动登录失败，也不发送飞书断线告警；显式手动登录和单账号状态操作仍更新这份共享快照。
 > 2026-08-15: 已插件化的飞书确定性指令不再把工具名和账号参数交给通用命令入口。文本、菜单及 pending 确认只提交由服务端构造的项目调用；项目实例通过 committed generation 中唯一的 `feishu_route.route_key` 精确解析，多实例别名冲突时显式拒绝。账号只来自该实例绑定的业务账号池，消息体或旧 pending 中出现 `account_id/account_ids` 等覆盖字段会失效并要求重新发起。自提、分批和 R7 多车牌仍保留“预览/选择/确认”状态机，日期、车牌和预览指纹由代码拥有的 resolver 闭合；Webhook 与 WebSocket 对同一真实 `event_id` 使用同一幂等身份。单号查询和报价等只读兼容能力继续走原通用 Command 链路。
 > 2026-08-13: 融辉发件扫描会把任务所选账号的精确 `session_profile` 同时传给浏览器 storage state 和共享登录校验，避免账号已登录但扫描误用默认会话。写表前等待发件扫描同源 iframe/父页/顶层页的 `$Z.user.getUserInfo()` 就绪，只使用真实 `loginUserName/loginUserAccount/loginSiteName/loginSiteCode`；多个可用来源必须完全一致，不一致时显式报 `ambiguous_login_context`，不从页头文字、用户名或硬编码网点补值。上下文不可用、字段缺失或 `SCAN_MAN_CODE` 超过数据库 20 字节限制时显式失败并返回具体状态。站点必须唯一精确匹配并包含真实编码，录单和上传失败不再切换到第二条操作路径。`sync_scan_codes` 任一批次失败后立即停止、不触发后续流程，并向控制台返回失败而不是“已完成”；`dry_run` 不写扫描索引、不调用 `/scan_next`，显式批次/条数限制会返回未排入数量。
@@ -33,7 +34,7 @@ updated: 2026-08-29
 > 2026-05-21: Ronghui (`default` / `ronghui_*`) and Daxiang price (`price` / `price_*`) login recovery now tries image-captcha OCR first. `send-code` may return `authenticated` directly after up to 4 OCR/login attempts; only after 4 failures does the broker fall back to `pending_code + challenge_type=image` so the console and Feishu can keep the existing manual captcha-entry path.
 > 2026-05-21: Snapshot-style syncs for daily sign and Yunda send waybills treat empty TMS source results as `no_fetched_rows` and skip Feishu Bitable deletes/writes, ordinary spreadsheet refresh, and SQL date replacement where applicable. This protects existing target data when source-side queries unexpectedly return zero rows.
 > 2026-05-12: Yunda waybill query calls the concrete `ky_inms/public/index.php/system/mail/list.html` endpoint only; there is no Playwright/browser fallback and no legacy endpoint probing.
-> 2026-05-13: The `yunda` login profile treats `YUNDA_USERNAME` / `YUNDA_PASSWORD` environment variables as usable backend credentials when no manual credentials are saved. The `/automations` credential source indicator shows whether Yunda credentials come from saved backend values or environment variables; environment variable values are not returned to the console form.
+> 2026-05-13（已由 2026-08-11 规则取代）: 早期 `yunda` profile 曾允许部署环境凭据；当前账号管理只接受页面明确保存的账号凭据，禁止环境变量或其他隐式凭据兜底。
 > 2026-05-13: Yunda password login may be redirected by SSO to `/public/sms/sms_valid`. `session_broker.py` now records this as `challenge_type=sms` so the console and Feishu recovery flow ask for a 6-digit SMS code instead of showing the Yunda image-captcha flow.
 > 2026-05-13: TMS credential status endpoints must not return saved passwords. They may report `has_saved_credentials`, `credential_source`, and non-secret status fields; password inputs in the console are write-only.
 > 2026-05-13: The same `yunda` main-account login state is used for both report automation and waybill tracking. After Yunda login succeeds, `session_broker.py` opens the client-side “快件跟踪” route once so `kyinms.yunda56.com` cookies are included in the shared storage state; validation also touches the INMS index page.
@@ -71,7 +72,7 @@ TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `er
 | `操作场登录` / `后台发验证码` / `后台保存账号登录` 等 | `/admin/accounts/{account_id}/login`（默认融辉操作场账号） | pending 或直接 authenticated（图片验证码先自动 OCR，失败 3 次后转人工输入并暂停自动重试） |
 | `韵达登录` / `韵达发验证码` / `yunda验证码` 等 | `/admin/accounts/{account_id}/login`（默认韵达账号） | pending 或直接 authenticated（图片验证码先 OCR；转手机验证码时飞书接管短信码输入） |
 | `切换到融辉自动化` / `切换到韵达自动化` / `当前自动化状态` | `automation_profile` | reply（切换或查看后台自动化 Profile；默认 `ronghui`） |
-| `报价` / `价格` + `地址,重量[,体积]` | `get_price` | reply（直接出报价；体积可为数字或 `长*宽*高*件数+...` 厘米表达式；融辉保价金额按录单页默认 3000，韵达申明价值使用页面按重量自动调整后的默认值） |
+| `报价` / `价格` + `地址,重量,体积` | `get_price` | reply（缺少任何影响金额的条件时先澄清，不补默认值；体积可为数字或 `长*宽*高*件数+...` 厘米表达式；保价/申明价值只采用真实页面本次返回的规则和值） |
 | `获取当日寄件数据` / `融辉寄件数据` / `TMS寄件数据` 等 | `sync_daily_send_orders` | deferred（异步执行；默认拉取当天融辉寄件数据，按发件日期替换同日飞书快照，并同步控制台 `waybills` SQL 表） |
 | `arrivelist` / `到货清单` / `预到达清单` / `执行一次arrivelist脚本` 等 | `sync_arrive_list` | deferred（异步执行；拉取 TMS 派件预报基础清单并写入 MySQL + 飞书表格） |
 | `韵达派件预测` / `网点派件量预测主单表` / `应派预测` 等 | `sync_yunda_dispatch_forecast` | deferred（异步执行；默认拉取次日应派数据，按应派时间覆盖飞书多维表格） |
@@ -144,7 +145,7 @@ TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `er
 - `feishu/message_handler.py` — `_is_auth_required` / `_request_relogin` / `_execute_and_reply`
 - `feishu/notify.py` — 主动通知目标记录与 TMS 登录态断开提醒发送
 - `agent/tms_runtime/session_broker.py` — 登录态、send_code / submit_code 的真正实现
-- `agent/tms_runtime/routes.py` — `/admin/tms/session/*` 端点
+- `agent/tms_runtime/routes.py` — `/admin/accounts/{account_id}/*` 现行端点；`/admin/tms/*-session` 仅兼容
 
 ### 4. 主动登录/发验证码
 
@@ -163,7 +164,7 @@ TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `er
 [Bot] "登录成功"
 ```
 
-如果文本中包含 `大祥`、`报价`、`价格` 或 `price`，例如 `大祥登录`、`价格发验证码`，则优先从账号管理中选择默认大祥账号。`操作场` / `后台` 选择默认融辉账号，`韵达` / `yunda` 选择默认韵达账号。若账号管理接口不可用，旧 `/admin/tms/*-session` 路径仍保留兼容。
+如果文本中包含 `大祥`、`报价`、`价格` 或 `price`，例如 `大祥登录`、`价格发验证码`，则按账号管理中的精确用途选择大祥账号。`操作场` / `后台` 选择融辉操作场账号，`韵达` / `yunda` 选择韵达账号；多候选或账号管理不可用时显式失败，不得自动回退旧 `/admin/tms/*-session` 路径。
 
 如果短信验证码已经由后台按钮或接口发出，但飞书内存 pending 丢失，用户直接回复 4-8 位验证码时，机器人会先检查账号管理里是否只有一个账号处于 `pending_code`。只有一个时直接提交；多个账号同时待验证时，先要求用户选择账号，避免把验证码提交到错误账号。
 
@@ -224,14 +225,14 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 
 - **机制 vs 业务分离**：直达路由、pending、登录恢复属于通用机制；具体工具（投诉/统计）属于业务。
 - **失败原因要可见**：工具失败时 formatter 至少打印前 5 条失败原因（含异常类型），不要把 stack trace 直接糊给用户。
-- **重大副作用必须确认**：任何对外发起的写操作（投诉、外部 API、改单）走 confirm_action；只读 / 重跑同步 / 内部状态变更可以直接 deferred。
+- **受保护写必须治理**：第三方写、财务写、破坏性动作和内部投影写必须提交受管 Command，并按工具合同、项目策略、审批与写后 Evidence 执行；不得仅靠 legacy `confirm_action` 或 deferred 标记绕过控制平面。
 - **状态切换原子**：每次切 pending 都先 `clear_pending` 再 `set_pending`，避免半成品状态留存。
 
 ## 2026-05-12 韵达快件追踪
 
 - 飞书新增 `track_waybill` 直达工具，入口在 `tools/track_waybill_tool.py`，统一调用 Agent `/tms/tracking_query`。
 - 文本命令入口在 `agent/direct_tool_router.py`：支持裸单号、`查单号 <单号>`、`查物流 <单号>`、`韵达 <单号>`；`R/RC/200` 识别为融辉，`000` 识别为专线，其它纯数字识别为韵达。
-- 韵达查询脚本在 `agent/tms_runtime/scripts/yunda_waybill_tracking.py`，复用 `yunda` 登录态和 `/admin/tms/yunda-session/*` 登录恢复流程，不新增凭据读取。
+- 韵达查询脚本在 `agent/tms_runtime/scripts/yunda_waybill_tracking.py`，复用项目绑定的韵达账号登录态和 `/admin/accounts/{account_id}/*` 恢复流程，不新增凭据读取；旧 `/admin/tms/yunda-session/*` 仅兼容。
 - 回复格式由 `format_track_waybill_reply` 生成：首行 `查询单号：xxx`，后续为 `【时间 状态】描述`；默认展示全部轨迹，超过飞书文本长度时保留最新记录并提示截断。
 
 ## 2026-08-29 分批及有发未到问题件
