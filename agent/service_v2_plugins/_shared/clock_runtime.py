@@ -105,25 +105,54 @@ def _success_result(
     evidence_refs: list[str],
 ) -> dict[str, object]:
     observed_at = _utc_now()
+    data = {
+        "results": results,
+        "evidence": {
+            "service": service_name,
+            "operation": "run",
+            "outcome": "WRITE_VERIFIED",
+            "both_third_party_clock_ins_confirmed": True,
+            "observed_at": observed_at,
+        },
+    }
+    # Do not reuse ``data`` itself here.  The subprocess serializes the
+    # payload, but keeping the summary detached also makes in-process callers
+    # unable to mutate both the result and its proof through one alias.
+    result_summary = {
+        "results": [
+            {
+                **dict(result),
+                "site": dict(result["site"]),
+            }
+            for result in results
+        ],
+        "evidence": dict(data["evidence"]),
+    }
     return {
         "status": "SUCCESS",
-        "data": {
-            "results": results,
-            "evidence": {
-                "service": service_name,
-                "operation": "run",
-                "outcome": "WRITE_VERIFIED",
-                "both_third_party_clock_ins_confirmed": True,
-                "observed_at": observed_at,
-            },
-        },
+        "data": data,
         "meta": {
             "source_system": "ronghui",
             "observed_at": observed_at,
             "record_count": 2,
             "pagination_complete": True,
             "evidence_refs": evidence_refs,
-            "postconditions": {"plugin_result_contract_valid": True},
+            "postconditions": {"0": True},
+            "postcondition_evidence": {
+                "0": {
+                    "condition": "plugin_result_contract_valid",
+                    "verified": True,
+                    "observed_at": observed_at,
+                    "evidence_ref": evidence_refs[-1],
+                    "details": {
+                        # The core compares this result summary with the
+                        # normalized result instead of trusting the plugin's
+                        # boolean success claim.
+                        "result_summary": result_summary,
+                        "evidence_refs": list(evidence_refs),
+                    },
+                }
+            },
             "write_outcome": "WRITE_VERIFIED",
         },
         "warnings": [],
@@ -188,6 +217,10 @@ def _verify_result(
         "outcome_category": str(verified["outcome_category"]),
         "observed_at": str(verified["observed_at"]),
         "evidence_ref": evidence_ref,
+        # Preserve the Host-confirmed site for the core ResultVerifier.  A
+        # cross-site readback must be rejected instead of being summarized
+        # away before verification.
+        "site": dict(site),
     }
 
 
@@ -236,7 +269,10 @@ def _submit_and_verify(
         )
     except Exception:
         return None, refs, "WRITE_OUTCOME_UNKNOWN"
-    refs.append(str(result.pop("evidence_ref")))
+    # Keep the verification receipt on the returned result as well as in the
+    # aggregate Host evidence list.  ResultVerifier uses this binding to
+    # reject a result whose summary points at a different site or operation.
+    refs.append(str(result["evidence_ref"]))
     return result, refs, None
 
 
