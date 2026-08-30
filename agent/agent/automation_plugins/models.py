@@ -17,6 +17,13 @@ class PluginTrustSource(str, Enum):
     ED25519_UPLOAD = "ed25519_upload"
     ED25519_FIRST_PARTY = "ed25519_first_party"
     BUILTIN_RELEASE = "builtin_release"
+    SUPER_ADMIN_UPLOAD = "super_admin_upload"
+    BUILTIN_BUNDLE = "builtin_bundle"
+
+
+class PluginRuntimeModel(str, Enum):
+    ACTION_V1 = "ACTION_V1"
+    SERVICE_V2 = "SERVICE_V2"
 
 
 class PluginProjectState(str, Enum):
@@ -77,6 +84,7 @@ class RuntimeCoeffectKind(str, Enum):
     RESOURCE = "RESOURCE"
     DEVICE = "DEVICE"
     CORE_ADAPTER = "CORE_ADAPTER"
+    SERVICE = "SERVICE"
 
 
 class RuntimeEffectKind(str, Enum):
@@ -88,6 +96,8 @@ class RuntimeEffectKind(str, Enum):
     BROKER_SCOPE = "BROKER_SCOPE"
     WORKER_DEPLOYMENT = "WORKER_DEPLOYMENT"
     ENTRYPOINT_ROUTE = "ENTRYPOINT_ROUTE"
+    SERVICE_REGISTRATION = "SERVICE_REGISTRATION"
+    CONTRIBUTION_REGISTRATION = "CONTRIBUTION_REGISTRATION"
 
 
 class RuntimeEffectState(str, Enum):
@@ -127,6 +137,8 @@ class PluginVersionRecord:
     installed_at: datetime = field(default_factory=utc_now)
     release_sha: str | None = None
     install_metadata: Mapping[str, Any] = field(default_factory=dict)
+    runtime_model: PluginRuntimeModel = PluginRuntimeModel.ACTION_V1
+    plugin_api: str = "1.0.0"
 
     def detached_manifest(self) -> dict[str, Any]:
         return copy.deepcopy(dict(self.manifest))
@@ -246,6 +258,8 @@ class RuntimeGenerationSnapshot:
     enabled_entrypoints: tuple[str, ...]
     execution_metadata: Mapping[str, Any]
     created_at: datetime = field(default_factory=utc_now)
+    runtime_model: PluginRuntimeModel = PluginRuntimeModel.ACTION_V1
+    plugin_api: str = "1.0.0"
 
 
 @dataclass(frozen=True)
@@ -313,6 +327,7 @@ class GenerationVerificationContext:
     account_bindings_sha256: str
     requires_write_verification: bool
     started_mutating_call_count: int | None = None
+    orchestration_run_id: str | None = None
 
 
 class GenerationBoundResult(dict[str, Any]):

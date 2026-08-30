@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import hashlib
 import re
 import uuid
@@ -17,10 +18,12 @@ from agent.automation_plugins.configuration import AutomationProjectConfiguratio
 from agent.automation_plugins.errors import PluginConflictError, PluginNotFoundError
 from agent.automation_plugins.first_party import RECOVERABLE_WRITE_PROJECT_PLUGINS
 from agent.automation_plugins.lifecycle import AutomationPluginService
+from agent.automation_plugins.migration import PluginMigrationControlPlane
 from agent.automation_plugins.models import (
     AutomationProjectConfigRecord,
     PluginInstanceRecord,
     PluginProjectState,
+    PluginRuntimeModel,
     PluginTrustSource,
     RuntimeReconcileState,
 )
@@ -35,6 +38,21 @@ from shared.orchestration_repository_support import (
 _DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _DEVICE_KEY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class MigrationPreparationPersistedError(PluginConflictError):
+    """A create request failed after its non-runnable PREPARING hold committed."""
+
+    code = "PLUGIN_MIGRATION_PREPARATION_PENDING"
+
+    def __init__(self, *, migration_pair_id: str, phase: str) -> None:
+        super().__init__(
+            "migration preparation is durable but target copy is incomplete; "
+            "retry the same request_id",
+            code=self.code,
+        )
+        self.migration_pair_id = migration_pair_id
+        self.phase = phase
 
 
 def _iso_datetime(value: object) -> str:
@@ -87,6 +105,7 @@ class AutomationPluginManagementService:
         self._workers = worker_repository
         self._targets = target_service
         self._packages = package_repository
+        self._migrations = PluginMigrationControlPlane(package_repository)
         self._storage = storage
         self._release_hold_provider = release_hold_provider or (lambda: False)
         self._resource_catalog_provider = resource_catalog_provider
@@ -124,8 +143,40 @@ class AutomationPluginManagementService:
                 code="PLUGIN_RELEASE_HOLD",
             )
 
+    def _require_no_open_migration_pair(self, automation_id: str) -> None:
+        """Keep ordinary project mutation from bypassing pair ownership.
+
+        Pair transitions are the only path allowed to move future automatic
+        entrypoints.  In particular, an ordinary config save/upgrade could
+        otherwise prepare a fresh generation whose scheduler materialization
+        races the durable CUTOVER or ROLLED_BACK owner.
+        """
+
+        finder = getattr(
+            self._packages,
+            "get_active_plugin_migration_pair_for_automation",
+            None,
+        )
+        if not callable(finder):
+            # The production repository always exposes this narrow query.  A
+            # legacy in-memory management double has no persisted migration
+            # table and therefore cannot own an entrypoint; keep that boundary
+            # compatible instead of treating a test-only port as a false pair.
+            return
+        pair = finder(automation_id)
+        if isinstance(pair, Mapping):
+            raise PluginConflictError(
+                "automation project is owned by an unfinished migration pair",
+                code="PLUGIN_MIGRATION_PROJECT_MUTATION_BLOCKED",
+            )
+
     @staticmethod
     def _instance_projection(instance: PluginInstanceRecord) -> dict[str, Any]:
+        runtime_model = getattr(
+            instance.active_version,
+            "runtime_model",
+            PluginRuntimeModel.ACTION_V1,
+        )
         return {
             "automation_id": instance.automation_id,
             "plugin_id": instance.plugin_id,
@@ -141,6 +192,8 @@ class AutomationPluginManagementService:
             "target_generation": instance.target_generation,
             "committed_generation": instance.committed_generation,
             "reconcile_state": instance.reconcile_state.value,
+            "runtime_model": getattr(runtime_model, "value", str(runtime_model)),
+            "plugin_api": getattr(instance.active_version, "plugin_api", "1.0.0"),
         }
 
     @staticmethod
@@ -475,7 +528,186 @@ class AutomationPluginManagementService:
             request_id=request_id,
             transport_package_sha256=transport_package_sha256,
         )
-        return self._instance_projection(instance)
+        if (
+            instance.active_version.runtime_model
+            is not PluginRuntimeModel.SERVICE_V2
+        ):
+            return self._instance_projection(instance)
+
+        entry = self._catalog.require(instance.automation_id)
+        initial_config = self._service_v2_initial_config(entry)
+        default_entrypoints = self._service_v2_default_entrypoints(entry)
+        default_schedule = self._service_v2_default_schedule(
+            entry, default_entrypoints
+        )
+        reconcile_failed = False
+        if initial_config is not None and not entry.configured:
+            configure_request_id = str(
+                uuid.uuid5(uuid.UUID(request_id), "service-v2-initial-config")
+            )
+            self._configuration.save(
+                instance.automation_id,
+                config=initial_config,
+                account_bindings={},
+                resource_bindings={},
+                enabled_entrypoints=default_entrypoints,
+                schedule=default_schedule,
+                device_id=None,
+                actor_id=actor.actor_id,
+                actor_role=role,
+                request_id=configure_request_id,
+                expected_project_configuration_version=(
+                    entry.project_config_version
+                ),
+            )
+            entry = self._catalog.require(instance.automation_id)
+        if entry.configured and entry.current_enabled_entrypoints and not entry.enabled:
+            enable_request_id = str(
+                uuid.uuid5(uuid.UUID(request_id), "service-v2-auto-enable")
+            )
+            self._lifecycle.set_enabled(
+                instance.automation_id,
+                enabled=True,
+                actor_id=actor.actor_id,
+                actor_role=role,
+                request_id=enable_request_id,
+                expected_record_version=entry.record_version,
+            )
+        try:
+            self._targets.reconcile_project(instance.automation_id)
+        except Exception:  # noqa: BLE001 - install remains durable and blocked
+            reconcile_failed = True
+        if not reconcile_failed:
+            self._retry_v2_consumers_after_provider_change(instance.automation_id)
+        refreshed = self._catalog.require(instance.automation_id)
+        projection = self._catalog_instance_projection(refreshed)
+        projection.update(self._transition_projection(refreshed, reconcile_failed))
+        return projection
+
+    @staticmethod
+    def _service_v2_initial_config(
+        entry: PluginCatalogEntry,
+    ) -> dict[str, Any] | None:
+        """Use only explicit schema defaults; never invent business config."""
+
+        if entry.runtime_model != PluginRuntimeModel.SERVICE_V2.value:
+            return None
+        if any(role.get("required") is True for role in entry.account_roles):
+            return None
+        if any(role.get("required") is True for role in entry.resource_roles):
+            return None
+        properties = entry.config_schema.get("properties")
+        required = entry.config_schema.get("required")
+        if not isinstance(properties, Mapping) or not isinstance(required, list):
+            return None
+        defaults = {
+            str(name): value["default"]
+            for name, value in properties.items()
+            if isinstance(value, Mapping) and "default" in value
+        }
+        if not set(str(item) for item in required) <= set(defaults):
+            return None
+        return defaults
+
+    @staticmethod
+    def _service_v2_default_entrypoints(
+        entry: PluginCatalogEntry,
+    ) -> tuple[str, ...]:
+        """Resolve only Manifest-declared defaults from the validated catalog."""
+
+        if entry.runtime_model != PluginRuntimeModel.SERVICE_V2.value:
+            return ()
+        defaults: list[str] = []
+        for raw_items in entry.contributions.values():
+            if not isinstance(raw_items, (list, tuple)):
+                raise PluginConflictError(
+                    "service-v2 contribution catalog is invalid",
+                    code="PLUGIN_CONTRACT_INVALID",
+                )
+            for raw_item in raw_items:
+                if not isinstance(raw_item, Mapping):
+                    raise PluginConflictError(
+                        "service-v2 contribution catalog is invalid",
+                        code="PLUGIN_CONTRACT_INVALID",
+                    )
+                if raw_item.get("default_enabled") is True:
+                    contribution_id = str(raw_item.get("id") or "").strip()
+                    if contribution_id not in entry.allowed_entrypoints:
+                        raise PluginConflictError(
+                            "service-v2 default contribution is not registered",
+                            code="PLUGIN_CONTRACT_INVALID",
+                        )
+                    defaults.append(contribution_id)
+        if len(defaults) != len(set(defaults)):
+            raise PluginConflictError(
+                "service-v2 default contributions are duplicated",
+                code="PLUGIN_CONTRACT_INVALID",
+            )
+        return tuple(sorted(defaults))
+
+    @staticmethod
+    def _service_v2_default_schedule(
+        entry: PluginCatalogEntry,
+        default_entrypoints: Sequence[str],
+    ) -> dict[str, Any]:
+        """Translate only the Host's lossless daily-cron subset at install.
+
+        Manifest v2 permits cron expressions, while the current host stores
+        schedules as Asia/Shanghai ``daily_times``.  A default scheduler must
+        therefore be exactly one fixed ``minute hour * * *`` contribution;
+        silently storing ``none`` would make a default entrypoint look ready
+        without ever creating a physical scheduled task.
+        """
+
+        defaults = set(default_entrypoints)
+        schedulers = [
+            item
+            for item in entry.contributions.get("scheduler", ())
+            if isinstance(item, Mapping) and str(item.get("id") or "") in defaults
+        ]
+        if not schedulers:
+            return {"kind": "none", "times": [], "enabled": False}
+        if len(schedulers) != 1:
+            raise PluginConflictError(
+                "default scheduler cannot be represented by this host",
+                code="PLUGIN_DEFAULT_SCHEDULE_UNSUPPORTED",
+            )
+        schedule = schedulers[0].get("schedule")
+        expression = (
+            schedule.get("expression") if isinstance(schedule, Mapping) else None
+        )
+        timezone_name = schedule.get("timezone") if isinstance(schedule, Mapping) else None
+        fields = expression.split() if isinstance(expression, str) else []
+        if (
+            timezone_name != "Asia/Shanghai"
+            or len(fields) != 5
+            or fields[2:] != ["*", "*", "*"]
+            or not fields[0].isdigit()
+            or not fields[1].isdigit()
+        ):
+            raise PluginConflictError(
+                "default scheduler cannot be represented by this host",
+                code="PLUGIN_DEFAULT_SCHEDULE_UNSUPPORTED",
+            )
+        minute = int(fields[0])
+        hour = int(fields[1])
+        allowed = entry.scheduling.get("allowed_kinds")
+        if (
+            not 0 <= minute <= 59
+            or not 0 <= hour <= 23
+            or entry.scheduling.get("supported") is not True
+            or not isinstance(allowed, list)
+            or "daily_times" not in allowed
+        ):
+            raise PluginConflictError(
+                "default scheduler cannot be represented by this host",
+                code="PLUGIN_DEFAULT_SCHEDULE_UNSUPPORTED",
+            )
+        return {
+            "kind": "daily_times",
+            "times": [f"{hour:02d}:{minute:02d}"],
+            "enabled": True,
+        }
 
     def upgrade(
         self,
@@ -489,6 +721,7 @@ class AutomationPluginManagementService:
     ) -> dict[str, Any]:
         role = self._require_console_actor(actor, super_admin=True)
         self._require_mutation_allowed()
+        self._require_no_open_migration_pair(automation_id)
         current = self._catalog.require(automation_id)
         # The repository owns the atomic CAS and request UUID idempotency.  Do
         # not reject a response-loss retry merely because the first attempt
@@ -514,6 +747,8 @@ class AutomationPluginManagementService:
         except Exception:  # noqa: BLE001 - mutation already committed; project safe state
             reconcile_failed = True
         refreshed = self._catalog.require(automation_id)
+        if not reconcile_failed:
+            self._retry_v2_consumers_after_provider_change(automation_id)
         projection = self._catalog_instance_projection(refreshed)
         projection.update(self._transition_projection(refreshed, reconcile_failed))
         return projection
@@ -531,6 +766,22 @@ class AutomationPluginManagementService:
             "target_generation": entry.target_generation,
             "committed_generation": entry.committed_generation,
             "reconcile_state": entry.reconcile_state.value,
+            "runtime_model": getattr(
+                entry,
+                "runtime_model",
+                PluginRuntimeModel.ACTION_V1.value,
+            ),
+            "plugin_api": getattr(entry, "plugin_api", "1.0.0"),
+            "active_runtime_model": getattr(
+                entry,
+                "active_runtime_model",
+                PluginRuntimeModel.ACTION_V1.value,
+            ),
+            "active_version": getattr(
+                entry,
+                "active_version",
+                entry.installed_version,
+            ),
         }
 
     @staticmethod
@@ -568,6 +819,7 @@ class AutomationPluginManagementService:
     ) -> dict[str, Any]:
         role = self._require_console_actor(actor, super_admin=True)
         self._require_mutation_allowed()
+        self._require_no_open_migration_pair(automation_id)
         entry = self._catalog.require(automation_id)
         if entry.record_version != expected_record_version:
             # A committed state change can outlive its HTTP response.  Let the
@@ -591,6 +843,9 @@ class AutomationPluginManagementService:
                     "automation instance version changed before state update",
                     code="PLUGIN_INSTANCE_VERSION_CONFLICT",
                 )
+            affected_consumers = (
+                self._suspend_v2_provider_consumers(entry) if not enabled else ()
+            )
             try:
                 instance = self._lifecycle.set_enabled(
                     automation_id,
@@ -605,6 +860,11 @@ class AutomationPluginManagementService:
                     "automation instance version changed before state update",
                     code="PLUGIN_INSTANCE_VERSION_CONFLICT",
                 ) from exc
+            self._reconcile_v2_after_enabled_change(
+                entry,
+                enabled=enabled,
+                affected_consumers=affected_consumers,
+            )
             return self._instance_projection(instance)
         if enabled:
             expected_material = (
@@ -631,6 +891,9 @@ class AutomationPluginManagementService:
                 )
             self._require_committed_ready(entry)
             expected_record_version = entry.record_version
+        affected_consumers = (
+            self._suspend_v2_provider_consumers(entry) if not enabled else ()
+        )
         instance = self._lifecycle.set_enabled(
             automation_id,
             enabled=enabled,
@@ -638,6 +901,11 @@ class AutomationPluginManagementService:
             actor_role=role,
             request_id=request_id,
             expected_record_version=expected_record_version,
+        )
+        self._reconcile_v2_after_enabled_change(
+            entry,
+            enabled=enabled,
+            affected_consumers=affected_consumers,
         )
         return self._instance_projection(instance)
 
@@ -652,6 +920,17 @@ class AutomationPluginManagementService:
     ) -> dict[str, Any]:
         role = self._require_console_actor(actor, super_admin=True)
         self._require_mutation_allowed()
+        self._require_no_open_migration_pair(automation_id)
+        migration_uninstall_allowed = getattr(
+            self._packages, "source_project_migration_uninstall_allowed", None
+        )
+        if callable(migration_uninstall_allowed) and not migration_uninstall_allowed(
+            automation_id
+        ):
+            raise PluginConflictError(
+                "complete every migration pair before uninstalling its v1 source",
+                code="PLUGIN_MIGRATION_SOURCE_UNINSTALL_BLOCKED",
+            )
         current = self._catalog.require(automation_id)
         if (
             current.record_version != expected_record_version
@@ -661,6 +940,7 @@ class AutomationPluginManagementService:
                 "automation instance changed before uninstall",
                 code="PLUGIN_INSTANCE_VERSION_CONFLICT",
             )
+        affected_consumers = self._suspend_v2_provider_consumers(current)
         result = self._lifecycle.hard_uninstall(
             automation_id,
             actor_id=actor.actor_id,
@@ -668,6 +948,11 @@ class AutomationPluginManagementService:
             request_id=request_id,
             expected_current_version=current_version,
             expected_record_version=expected_record_version,
+            before_finalize=lambda project_id: self._reconcile_before_uninstall(
+                project_id,
+                provided_services=tuple(getattr(current, "provided_services", ())),
+                affected_consumers=affected_consumers,
+            ),
         )
         return {
             "automation_id": result.automation_id,
@@ -675,6 +960,463 @@ class AutomationPluginManagementService:
             "purge_id": result.purge_id,
             "pending_cleanup_count": len(result.pending_cleanup_commands),
         }
+
+    def _reconcile_before_uninstall(
+        self,
+        automation_id: str,
+        *,
+        provided_services: Sequence[str] = (),
+        affected_consumers: Sequence[str] = (),
+    ) -> object:
+        """Dispose every revoked generation before the purge can delete state.
+
+        Uninstall preparation changes the project and all of its generations to
+        a revoked/draining state atomically.  A normal project reconciliation
+        then removes service registrations, routes and subprocess effects.  A
+        missing target service is an explicit failure: finalizing the purge
+        first could leave an orphaned service or process with no durable owner.
+        """
+
+        reconciler = getattr(self._targets, "reconcile_project", None)
+        if not callable(reconciler):
+            raise PluginConflictError(
+                "plugin uninstall runtime reconciler is unavailable",
+                code="PLUGIN_UNINSTALL_RECONCILE_UNAVAILABLE",
+            )
+        if provided_services:
+            reconcile_tree = getattr(
+                self._targets,
+                "reconcile_provider_dependency_tree",
+                None,
+            )
+            if not callable(reconcile_tree):
+                raise PluginConflictError(
+                    "plugin Provider dependency reconciler is unavailable",
+                    code="PLUGIN_CONSUMER_RECONCILE_UNAVAILABLE",
+                )
+            return reconcile_tree(
+                automation_id,
+                provider_services=provided_services,
+                enabled=False,
+                consumer_automation_ids=affected_consumers,
+            )
+        return reconciler(automation_id)
+
+    def permanently_clear_data(
+        self,
+        automation_id: str,
+        *,
+        request_id: str,
+        reason: str,
+        actor: Actor,
+    ) -> dict[str, Any]:
+        """Clear retained v2 data only after a separate super-admin action."""
+
+        role = self._require_console_actor(actor, super_admin=True)
+        self._require_mutation_allowed()
+        try:
+            uuid.UUID(str(request_id))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise PluginConflictError(
+                "plugin data purge request_id must be UUID",
+                code="PLUGIN_DATA_PURGE_REQUEST_INVALID",
+            ) from exc
+        safe_reason = str(reason or "").strip()
+        if not safe_reason or len(safe_reason) > 500:
+            raise PluginConflictError(
+                "plugin data purge requires a bounded reason",
+                code="PLUGIN_DATA_PURGE_REASON_REQUIRED",
+            )
+        try:
+            self._catalog.require(automation_id)
+        except PluginNotFoundError:
+            pass
+        else:
+            raise PluginConflictError(
+                "uninstall the automation project before permanently clearing data",
+                code="PLUGIN_DATA_PURGE_REQUIRES_UNINSTALL",
+            )
+        clearer = getattr(self._packages, "permanently_clear_plugin_documents", None)
+        if not callable(clearer):
+            raise PluginConflictError(
+                "managed plugin data purge is unavailable",
+                code="PLUGIN_DATA_PURGE_UNAVAILABLE",
+            )
+        result = clearer(
+            automation_id,
+            request_id=request_id,
+            actor_id=actor.actor_id,
+            actor_role=role,
+            reason=safe_reason,
+        )
+        if not isinstance(result, Mapping):
+            raise PluginConflictError(
+                "managed plugin data purge returned invalid evidence",
+                code="PLUGIN_DATA_PURGE_UNAVAILABLE",
+            )
+        return {
+            "automation_id": str(result.get("automation_id") or automation_id),
+            "cleared_count": int(result.get("cleared_count") or 0),
+            "already_cleared": bool(result.get("already_cleared")),
+        }
+
+    def migration_pair(self, migration_pair_id: str, *, actor: Actor) -> dict[str, Any]:
+        self._require_console_actor(actor, super_admin=True)
+        return self._migrations.get_pair(migration_pair_id)
+
+    @staticmethod
+    def _migration_role_signature(role: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+        """Compare role contracts without guessing a role name or argument key."""
+
+        ignored = {"role", "argument_field"}
+        normalized: list[tuple[str, str]] = []
+        for key, value in role.items():
+            if key in ignored:
+                continue
+            if isinstance(value, list):
+                normalized_value = repr(tuple(sorted(repr(item) for item in value)))
+            else:
+                normalized_value = repr(value)
+            normalized.append((str(key), normalized_value))
+        return tuple(sorted(normalized))
+
+    @classmethod
+    def _map_migration_bindings(
+        cls,
+        *,
+        source_bindings: Mapping[str, Any],
+        source_roles: Sequence[Mapping[str, Any]],
+        target_roles: Sequence[Mapping[str, Any]],
+        kind: str,
+    ) -> dict[str, Any]:
+        """Map only one-to-one role-equivalent bindings across runtimes."""
+
+        source_by_name = {
+            str(role.get("role") or ""): role
+            for role in source_roles
+            if isinstance(role, Mapping) and str(role.get("role") or "")
+        }
+        if len(source_by_name) != len(source_roles) or not set(source_bindings) <= set(
+            source_by_name
+        ):
+            raise PluginConflictError(
+                f"migration source {kind} roles are not closed",
+                code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
+            )
+        result: dict[str, Any] = {}
+        consumed: set[str] = set()
+        for target_role in target_roles:
+            if not isinstance(target_role, Mapping):
+                raise PluginConflictError(
+                    f"migration target {kind} role is invalid",
+                    code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
+                )
+            target_name = str(target_role.get("role") or "")
+            candidates = [
+                source_name
+                for source_name, source_role in source_by_name.items()
+                if cls._migration_role_signature(source_role)
+                == cls._migration_role_signature(target_role)
+            ]
+            if len(candidates) != 1:
+                raise PluginConflictError(
+                    f"migration {kind} role cannot be uniquely mapped",
+                    code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
+                )
+            source_name = candidates[0]
+            if source_name in source_bindings:
+                result[target_name] = copy.deepcopy(source_bindings[source_name])
+                consumed.add(source_name)
+            elif target_role.get("required") is True:
+                raise PluginConflictError(
+                    f"migration required {kind} binding is missing",
+                    code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
+                )
+        if consumed != set(source_bindings):
+            raise PluginConflictError(
+                f"migration source {kind} binding has no target role",
+                code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
+            )
+        return result
+
+    @staticmethod
+    def _migration_target_entrypoints(
+        entry: PluginCatalogEntry,
+        schedule: Mapping[str, Any],
+    ) -> tuple[str, ...]:
+        """Choose the sole Console validation and Scheduler owner routes."""
+
+        console = [
+            str(item.get("id") or "")
+            for item in entry.contributions.get("console", ())
+            if isinstance(item, Mapping)
+        ]
+        if len(console) != 1 or not console[0]:
+            raise PluginConflictError(
+                "migration target must declare exactly one Console entrypoint",
+                code="PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE",
+            )
+        entrypoints = list(console)
+        if schedule.get("kind") != "none":
+            schedulers = [
+                str(item.get("id") or "")
+                for item in entry.contributions.get("scheduler", ())
+                if isinstance(item, Mapping)
+            ]
+            if len(schedulers) != 1 or not schedulers[0]:
+                raise PluginConflictError(
+                    "migration target must declare exactly one scheduler entrypoint",
+                    code="PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE",
+                )
+            entrypoints.extend(schedulers)
+        return tuple(entrypoints)
+
+    def create_migration_pair(
+        self,
+        *,
+        migration_pair_id: str,
+        source_automation_id: str,
+        target_automation_id: str,
+        business_key_fields: tuple[str, ...],
+        business_key_namespace: str | None,
+        request_id: str,
+        reason: str,
+        actor: Actor,
+    ) -> dict[str, Any]:
+        role = self._require_console_actor(actor, super_admin=True)
+        self._require_mutation_allowed()
+        source = self._catalog.require(source_automation_id)
+        target = self._catalog.require(target_automation_id)
+        if (
+            getattr(source, "runtime_model", PluginRuntimeModel.ACTION_V1.value)
+            != PluginRuntimeModel.ACTION_V1.value
+            or getattr(target, "runtime_model", PluginRuntimeModel.ACTION_V1.value)
+            != PluginRuntimeModel.SERVICE_V2.value
+        ):
+            raise PluginConflictError(
+                "migration pair must bind ACTION_V1 to SERVICE_V2",
+                code="PLUGIN_MIGRATION_RUNTIME_MODEL_INVALID",
+            )
+        source_record = self._configuration.read(source_automation_id)
+        target_entrypoints = self._migration_target_entrypoints(
+            target,
+            source_record.schedule,
+        )
+        copied_accounts = self._map_migration_bindings(
+            source_bindings=source_record.account_bindings,
+            source_roles=source.account_roles,
+            target_roles=target.account_roles,
+            kind="account",
+        )
+        copied_resources = self._map_migration_bindings(
+            source_bindings=source_record.resource_bindings,
+            source_roles=source.resource_roles,
+            target_roles=target.resource_roles,
+            kind="resource",
+        )
+        # Persist the ownership gate *before* saving the target's copied
+        # scheduler intent.  If the copy/finalize step crashes, PREPARING is
+        # durable, the target's physical task stays disabled, and replaying
+        # this exact request continues instead of creating a second pair.
+        result = self._migrations.begin_pair_preparation(
+            migration_pair_id=migration_pair_id,
+            source_automation_id=source_automation_id,
+            target_automation_id=target_automation_id,
+            business_key_fields=business_key_fields,
+            business_key_namespace=business_key_namespace,
+            request_id=request_id,
+            actor_id=actor.actor_id,
+            actor_role=role,
+            reason=reason,
+        )
+        if result.get("state") != "PREPARING":
+            return self._migration_pair_copy_projection(
+                result,
+                source_automation_id=source_automation_id,
+                target_automation_id=target_automation_id,
+                source_record=source_record,
+                target_entrypoints=target_entrypoints,
+            )
+        # Read the source once more only after the durable ownership gate is
+        # in place.  Ordinary configuration mutation is now rejected for both
+        # sides, so this is the exact source snapshot copied into the new v2
+        # project rather than a pre-hold observation that could have raced a
+        # last legacy configuration save.
+        source_record = self._configuration.read(source_automation_id)
+        target_entrypoints = self._migration_target_entrypoints(
+            target,
+            source_record.schedule,
+        )
+        copied_accounts = self._map_migration_bindings(
+            source_bindings=source_record.account_bindings,
+            source_roles=source.account_roles,
+            target_roles=target.account_roles,
+            kind="account",
+        )
+        copied_resources = self._map_migration_bindings(
+            source_bindings=source_record.resource_bindings,
+            source_roles=source.resource_roles,
+            target_roles=target.resource_roles,
+            kind="resource",
+        )
+        copy_request_id = str(uuid.uuid5(uuid.UUID(request_id), "migration-target-copy"))
+        try:
+            self._configuration.save(
+                target_automation_id,
+                config=copy.deepcopy(source_record.config),
+                account_bindings=copied_accounts,
+                resource_bindings=copied_resources,
+                enabled_entrypoints=target_entrypoints,
+                schedule=copy.deepcopy(source_record.schedule),
+                device_id=None,
+                actor_id=actor.actor_id,
+                actor_role=role,
+                request_id=copy_request_id,
+                expected_project_configuration_version=target.project_config_version,
+            )
+        except Exception as exc:  # durable PREPARING now requires same-request replay
+            raise MigrationPreparationPersistedError(
+                migration_pair_id=migration_pair_id,
+                phase="TARGET_COPY",
+            ) from exc
+        try:
+            result = self._migrations.finalize_pair_preparation(
+                migration_pair_id,
+                request_id=str(uuid.uuid5(uuid.UUID(request_id), "migration-pair-finalize")),
+                actor_id=actor.actor_id,
+                actor_role=role,
+                reason=reason,
+            )
+        except Exception as exc:  # target config is staged but not yet immutable TESTING
+            raise MigrationPreparationPersistedError(
+                migration_pair_id=migration_pair_id,
+                phase="FINALIZE_TESTING",
+            ) from exc
+        # The pair is durable before target preparation begins, so the
+        # generation-side scheduler gate can only materialize a disabled v2
+        # task during manual verification.  A coeffect failure leaves TESTING
+        # durable and explicitly non-runnable; the normal reconciler retries.
+        try:
+            self._targets.reconcile_project(target_automation_id)
+        except Exception:  # noqa: BLE001 - copied desired state is durable and safe
+            result = {**result, "target_preparation_state": "PREPARING"}
+        else:
+            refreshed_target = self._catalog.require(target_automation_id)
+            prepared = (
+                refreshed_target.committed_generation
+                == refreshed_target.target_generation
+                and refreshed_target.reconcile_state is RuntimeReconcileState.STABLE
+            )
+            result = {
+                **result,
+                "target_preparation_state": "PREPARED" if prepared else "PREPARING",
+            }
+        return self._migration_pair_copy_projection(
+            result,
+            source_automation_id=source_automation_id,
+            target_automation_id=target_automation_id,
+            source_record=source_record,
+            target_entrypoints=target_entrypoints,
+        )
+
+    @staticmethod
+    def _migration_pair_copy_projection(
+        result: Mapping[str, Any],
+        *,
+        source_automation_id: str,
+        target_automation_id: str,
+        source_record: AutomationProjectConfigRecord,
+        target_entrypoints: Sequence[str],
+    ) -> dict[str, Any]:
+        projection = dict(result)
+        projection["copied_configuration"] = {
+            "source_automation_id": source_automation_id,
+            "target_automation_id": target_automation_id,
+            "source_config_version": source_record.config_version,
+            "target_entrypoints": list(target_entrypoints),
+            "schedule": copy.deepcopy(source_record.schedule),
+        }
+        return projection
+
+    def mark_migration_ready(
+        self,
+        migration_pair_id: str,
+        *,
+        expected_record_version: int,
+        request_id: str,
+        reason: str,
+        actor: Actor,
+    ) -> dict[str, Any]:
+        role = self._require_console_actor(actor, super_admin=True)
+        self._require_mutation_allowed()
+        return self._migrations.mark_ready(
+            migration_pair_id,
+            expected_record_version=expected_record_version,
+            request_id=request_id,
+            actor_id=actor.actor_id,
+            actor_role=role,
+            reason=reason,
+        )
+
+    def cutover_migration_pair(
+        self,
+        migration_pair_id: str,
+        *,
+        expected_record_version: int,
+        request_id: str,
+        reason: str,
+        actor: Actor,
+    ) -> dict[str, Any]:
+        role = self._require_console_actor(actor, super_admin=True)
+        self._require_mutation_allowed()
+        return self._migrations.cutover(
+            migration_pair_id,
+            expected_record_version=expected_record_version,
+            request_id=request_id,
+            actor_id=actor.actor_id,
+            actor_role=role,
+            reason=reason,
+        )
+
+    def rollback_migration_pair(
+        self,
+        migration_pair_id: str,
+        *,
+        expected_record_version: int,
+        request_id: str,
+        reason: str,
+        actor: Actor,
+    ) -> dict[str, Any]:
+        role = self._require_console_actor(actor, super_admin=True)
+        self._require_mutation_allowed()
+        return self._migrations.rollback(
+            migration_pair_id,
+            expected_record_version=expected_record_version,
+            request_id=request_id,
+            actor_id=actor.actor_id,
+            actor_role=role,
+            reason=reason,
+        )
+
+    def complete_migration_pair(
+        self,
+        migration_pair_id: str,
+        *,
+        expected_record_version: int,
+        request_id: str,
+        reason: str,
+        actor: Actor,
+    ) -> dict[str, Any]:
+        role = self._require_console_actor(actor, super_admin=True)
+        self._require_mutation_allowed()
+        return self._migrations.complete(
+            migration_pair_id,
+            expected_record_version=expected_record_version,
+            request_id=request_id,
+            actor_id=actor.actor_id,
+            actor_role=role,
+            reason=reason,
+        )
 
     def save_configuration(
         self,
@@ -692,6 +1434,7 @@ class AutomationPluginManagementService:
     ) -> dict[str, Any]:
         role = self._require_console_actor(actor, super_admin=True)
         self._require_mutation_allowed()
+        self._require_no_open_migration_pair(automation_id)
         record = self._configuration.save(
             automation_id,
             config=config,
@@ -718,6 +1461,27 @@ class AutomationPluginManagementService:
             reconcile_failed = True
         projection = self._configuration_projection(record)
         entry = self._catalog.require(automation_id)
+        if not reconcile_failed:
+            self._retry_v2_consumers_after_provider_change(automation_id)
+        if (
+            getattr(entry, "runtime_model", PluginRuntimeModel.ACTION_V1.value)
+            == PluginRuntimeModel.SERVICE_V2.value
+            and entry.configured
+            and entry.current_enabled_entrypoints
+            and not entry.enabled
+        ):
+            enable_request_id = str(
+                uuid.uuid5(uuid.UUID(request_id), "service-v2-auto-enable")
+            )
+            self._lifecycle.set_enabled(
+                automation_id,
+                enabled=True,
+                actor_id=actor.actor_id,
+                actor_role=role,
+                request_id=enable_request_id,
+                expected_record_version=entry.record_version,
+            )
+            entry = self._catalog.require(automation_id)
         projection.update(
             {
                 "target_generation": entry.target_generation,
@@ -727,6 +1491,126 @@ class AutomationPluginManagementService:
             }
         )
         return projection
+
+    def _reconcile_v2_after_enabled_change(
+        self,
+        entry: PluginCatalogEntry,
+        *,
+        enabled: bool,
+        affected_consumers: Sequence[str] = (),
+    ) -> None:
+        """Apply a v2 enablement change to effects before returning control."""
+
+        if (
+            getattr(entry, "runtime_model", PluginRuntimeModel.ACTION_V1.value)
+            != PluginRuntimeModel.SERVICE_V2.value
+        ):
+            return
+        provided_services = tuple(getattr(entry, "provided_services", ()))
+        if provided_services:
+            reconcile_tree = getattr(
+                self._targets,
+                "reconcile_provider_dependency_tree",
+                None,
+            )
+            if not callable(reconcile_tree):
+                raise PluginConflictError(
+                    "plugin Provider dependency reconciler is unavailable",
+                    code="PLUGIN_CONSUMER_RECONCILE_UNAVAILABLE",
+                )
+            reconcile_tree(
+                entry.automation_id,
+                provider_services=provided_services,
+                enabled=enabled,
+                consumer_automation_ids=affected_consumers or None,
+            )
+            return
+        reconcile_project = getattr(self._targets, "reconcile_project", None)
+        if not callable(reconcile_project):
+            raise PluginConflictError(
+                "plugin runtime reconciler is unavailable after state change",
+                code="PLUGIN_RUNTIME_RECONCILE_UNAVAILABLE",
+            )
+        reconcile_project(entry.automation_id)
+
+    def _suspend_v2_provider_consumers(
+        self,
+        entry: PluginCatalogEntry,
+    ) -> tuple[str, ...]:
+        if (
+            getattr(entry, "runtime_model", PluginRuntimeModel.ACTION_V1.value)
+            != PluginRuntimeModel.SERVICE_V2.value
+        ):
+            return ()
+        provided_services = tuple(getattr(entry, "provided_services", ()))
+        if not provided_services:
+            return ()
+        suspend = getattr(self._targets, "suspend_provider_consumers", None)
+        if not callable(suspend):
+            raise PluginConflictError(
+                "plugin consumer scheduler gate is unavailable",
+                code="PLUGIN_CONSUMER_SCHEDULER_GATE_UNAVAILABLE",
+            )
+        consumers = suspend(
+            entry.automation_id,
+            provider_services=provided_services,
+        )
+        if not isinstance(consumers, Sequence) or isinstance(consumers, (str, bytes)):
+            raise PluginConflictError(
+                "plugin consumer scheduler gate returned invalid evidence",
+                code="PLUGIN_CONSUMER_SCHEDULER_GATE_INVALID",
+            )
+        normalized = tuple(str(item).strip() for item in consumers)
+        if any(not item for item in normalized) or len(set(normalized)) != len(normalized):
+            raise PluginConflictError(
+                "plugin consumer scheduler gate returned invalid evidence",
+                code="PLUGIN_CONSUMER_SCHEDULER_GATE_INVALID",
+            )
+        return normalized
+
+    def _retry_v2_consumers_after_provider_change(
+        self,
+        automation_id: str,
+        *,
+        strict: bool = False,
+        provider_services: Sequence[str] | None = None,
+    ) -> None:
+        """Wake all waiting v2 consumers when this project may provide a service.
+
+        Service registration is a coeffect shared by otherwise independent
+        projects.  Re-running only the changed Provider leaves consumers in
+        ``WAITING_COEFFECTS`` indefinitely, so a successful Provider/config
+        reconcile schedules a bounded all-project pass.  The mutation that
+        made the Provider durable is never rolled back if that best-effort
+        pass encounters an unrelated project failure; the target service
+        records such failures for the next health/reconcile cycle.
+        """
+
+        if provider_services is None:
+            entry = self._catalog.require(automation_id)
+            provider_services = tuple(getattr(entry, "provided_services", ()))
+            runtime_model = getattr(
+                entry, "runtime_model", PluginRuntimeModel.ACTION_V1.value
+            )
+        else:
+            runtime_model = PluginRuntimeModel.SERVICE_V2.value
+        if runtime_model != PluginRuntimeModel.SERVICE_V2.value or not provider_services:
+            return
+        retry_all = getattr(self._targets, "reconcile_all", None)
+        if not callable(retry_all):
+            if strict:
+                raise PluginConflictError(
+                    "plugin consumer reconciler is unavailable",
+                    code="PLUGIN_CONSUMER_RECONCILE_UNAVAILABLE",
+                )
+            return
+        if strict:
+            retry_all()
+            return
+        try:
+            retry_all()
+        except Exception:  # noqa: BLE001 - desired Provider state is durable
+            return
 
     @classmethod
     def _is_committed_ready(cls, entry: PluginCatalogEntry) -> bool:

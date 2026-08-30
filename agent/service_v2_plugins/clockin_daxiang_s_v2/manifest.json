@@ -1,0 +1,100 @@
+{
+  "schema_version": 2,
+  "runtime_model": "service_v2",
+  "plugin_id": "clockin_daxiang_s_v2",
+  "name": "网点打卡-大祥 S 站 v2",
+  "version": "1.0.0",
+  "description": "通过受管浏览器能力依次提交两次网点打卡，并分别执行新鲜、唯一的写后核验。",
+  "host_api": {
+    "minimum": "2.0.0",
+    "maximum_exclusive": "3.0.0"
+  },
+  "runtime": {
+    "kind": "python_subprocess",
+    "python": "3.10",
+    "mode": "on_demand",
+    "entrypoint": "payload/main.py",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "provides": [
+    {
+      "service": "plugin.clockin_daxiang_s_v2.clock@1",
+      "operations": ["run"]
+    }
+  ],
+  "requires": [],
+  "capabilities": [
+    {
+      "name": "browser.session",
+      "operations": [
+        "ronghui.clock.precheck",
+        "ronghui.clock.submit",
+        "ronghui.clock.verify"
+      ],
+      "account_role": "operator",
+      "resource_role": null
+    }
+  ],
+  "account_roles": [
+    {
+      "role": "operator",
+      "allowed_systems": ["ronghui"],
+      "required": true
+    }
+  ],
+  "resource_roles": [],
+  "contributes": {
+    "console": [
+      {
+        "id": "manual_run",
+        "title": "人工验证打卡",
+        "service": "plugin.clockin_daxiang_s_v2.clock@1",
+        "operation": "run",
+        "default_enabled": true
+      }
+    ],
+    "scheduler": [
+      {
+        "id": "daily_clockin",
+        "title": "每日 18:33 自动打卡",
+        "service": "plugin.clockin_daxiang_s_v2.clock@1",
+        "operation": "run",
+        "default_enabled": false,
+        "schedule": {
+          "kind": "cron",
+          "expression": "33 18 * * *",
+          "timezone": "Asia/Shanghai"
+        }
+      }
+    ],
+    "webhook": [],
+    "feishu": [],
+    "events": []
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "sitecode": {"type": "string", "minLength": 1, "maxLength": 64},
+      "sitefbcode": {"type": "string", "minLength": 1, "maxLength": 64},
+      "sitename": {"type": "string", "minLength": 1, "maxLength": 100},
+      "sitefbname": {"type": "string", "minLength": 1, "maxLength": 100},
+      "first_type": {"type": "string", "minLength": 1, "maxLength": 32},
+      "second_type": {"type": "string", "minLength": 1, "maxLength": 32},
+      "delay_seconds": {"type": "number", "minimum": 0, "maximum": 30, "default": 0}
+    },
+    "required": [
+      "sitecode",
+      "sitefbcode",
+      "sitename",
+      "sitefbname",
+      "first_type",
+      "second_type"
+    ]
+  },
+  "storage": {
+    "kv": false,
+    "collections": []
+  }
+}

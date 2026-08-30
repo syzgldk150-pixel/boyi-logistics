@@ -1347,7 +1347,10 @@ async def lifespan(app: FastAPI):
         validator=validator,
         policy=policy,
         approval_service=approval_service,
-        verifier=ResultVerifier(plugin_runtime.runtime_repository),
+        verifier=ResultVerifier(
+            plugin_runtime.runtime_repository,
+            plugin_runtime.migration_runtime,
+        ),
         worker_id=f"{INSTANCE_ID}:runs",
         protected_step_start_guard=schedule_policy_service.begin_protected_step_start,
         worker_concurrency=_positive_runtime_int("WORKFLOW_RUNNER_CONCURRENCY", 2),
@@ -1424,13 +1427,20 @@ async def lifespan(app: FastAPI):
     bind_agent_runtime(runtime, loop)
     bind_agent_command_runtime(runtime)
 
+    async def handle_session_restored(account_id: str) -> None:
+        await service.publish_session_restored(account_id)
+        await asyncio.to_thread(
+            plugin_runtime.reconcile_after_dependency_change,
+            account_id=account_id,
+        )
+
     def on_session_restored(payload: dict) -> bool:
         account_id = str((payload or {}).get("account_id") or "").strip()
         if not account_id:
             return False
         loop.call_soon_threadsafe(
             asyncio.create_task,
-            service.publish_session_restored(account_id),
+            handle_session_restored(account_id),
         )
         return True
 

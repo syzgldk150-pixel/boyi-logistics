@@ -86,6 +86,7 @@ class AutomationSubmissionTests(unittest.TestCase):
                 "account_role__account_id": "legacy",
                 "plugin_account_role__finance_quote_source": "browser-account",
                 "project_plugin_instance": "true",
+                "contribution_id": "manual.sync",
                 "enabled": "on",
             }
         )
@@ -104,6 +105,84 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual("{}", payload["tool_params_json"])
         self.assertEqual([], payload["schedule_times"])
         self.assertEqual([], payload["cron_expressions"])
+        self.assertEqual("manual.sync", payload["contribution_id"])
+
+    def test_submission_rejects_invalid_or_non_plugin_contribution_id(self):
+        cases = (
+            ({"project_plugin_instance": "true", "contribution_id": "Invalid ID"}, "无效"),
+            ({"project_plugin_instance": "", "contribution_id": "manual.sync"}, "只有插件项目"),
+            (
+                {
+                    "project_plugin_instance": "true",
+                    "contribution_id": ["manual.sync", "manual.retry"],
+                },
+                "一次只能选择一个",
+            ),
+        )
+        for extra_values, expected_error in cases:
+            with self.subTest(extra_values=extra_values):
+                app = self._make_app(
+                    {
+                        "task_id": "finance_action_east",
+                        "task_mode": "manual",
+                        "name": "华东财务同步",
+                        "tool_name": "browser.supplied.tool",
+                        "tool_params_json": "{}",
+                        **extra_values,
+                    }
+                )
+
+                payload, _override, error_message = (
+                    app._collect_automation_task_submission(
+                        None,
+                        allow_missing_schedule=True,
+                    )
+                )
+
+                self.assertIsNone(payload)
+                self.assertIn(expected_error, error_message)
+
+    def test_service_v2_manual_invoke_forwards_only_contribution_identity(self):
+        app = LocalDocFlowApp.__new__(LocalDocFlowApp)
+        app.settings = SimpleNamespace(agent_timeout_seconds=10)
+        app.automation_virtual_task_state = {}
+        app._record_virtual_task_runtime = lambda *_args, **_kwargs: None
+        captured = {}
+
+        def agent_request(method, endpoint, **kwargs):
+            captured.update({"method": method, "endpoint": endpoint, **kwargs})
+            return {"ok": True, "data": {"run_id": "run-1"}}
+
+        app._agent_request = agent_request
+        result = app._start_automation_task_run(
+            {
+                "task_id": "finance_action_east",
+                "task_mode": "manual",
+                "project_plugin_instance": True,
+                "contribution_id": "manual.sync",
+                "tool_name": "browser.supplied.tool",
+                "tool_params": {"token": "must-not-forward"},
+                "account_id": "must-not-forward",
+                "service": "must-not-forward",
+                "operation": "must-not-forward",
+            },
+            trusted_context={"_console_principal": {"actor_id": "17"}},
+            browser_request_uuid="12345678-1234-4234-8234-123456789abc",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("POST", captured["method"])
+        self.assertEqual(
+            "/internal/v1/automation-projects/finance_action_east/invoke",
+            captured["endpoint"],
+        )
+        self.assertEqual(
+            {
+                "request_id": "12345678-1234-4234-8234-123456789abc",
+                "contribution_id": "manual.sync",
+            },
+            captured["payload"],
+        )
 
     def test_save_still_requires_schedule_for_scheduled_task(self):
         app = self._make_app(

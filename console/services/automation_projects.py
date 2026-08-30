@@ -4,9 +4,8 @@ import math
 from collections.abc import Mapping
 
 from console.app_support import *  # noqa: F403
-from shared.service_identity import (
-    ConsoleIdentityError,
-    build_console_identity_headers,
+from console.services.automation_plugin_management import (
+    AutomationPluginManagementServiceMixin,
 )
 
 
@@ -74,6 +73,8 @@ AUTOMATION_PLUGIN_STATE_LABELS = {
     "UNINSTALLING": "卸载中",
     "UNINSTALL_PENDING": "待卸载",
     "BLOCKED_DEPENDENCY": "依赖阻断",
+    "NEEDS_CONFIGURATION": "需要配置",
+    "BLOCKED_LOGIN": "账号未登录",
     "ERROR": "异常",
     "UNKNOWN": "状态未知",
 }
@@ -102,13 +103,77 @@ AUTOMATION_PLUGIN_RECONCILE_DISPLAY_STATES = {
 }
 AUTOMATION_PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 AUTOMATION_PLUGIN_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+AUTOMATION_PLUGIN_API_RE = re.compile(r"^[0-9A-Za-z._<>=,!~^*+\-]{1,32}$")
+AUTOMATION_PLUGIN_SERVICE_RE = re.compile(
+    r"^plugin\.([a-z][a-z0-9_]{1,63})\.([a-z][a-z0-9_.-]{0,127})@(0|[1-9][0-9]*)$"
+)
+AUTOMATION_PLUGIN_MIGRATION_PAIR_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+AUTOMATION_PLUGIN_RUNTIME_MODEL_LABELS = {
+    "ACTION_V1": "Action v1",
+    "SERVICE_V2": "Service v2",
+    "UNSUPPORTED": "不支持的运行时",
+}
+AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL = "UNSUPPORTED"
+AUTOMATION_PLUGIN_DEPENDENCY_STATE_LABELS = {
+    "NOT_APPLICABLE": "v1 动作运行时",
+    "ACTIVE": "依赖就绪",
+    "READY": "依赖就绪",
+    "SATISFIED": "依赖就绪",
+    "BLOCKED_DEPENDENCY": "依赖阻断",
+    "NEEDS_CONFIGURATION": "需要配置",
+    "BLOCKED_LOGIN": "账号未登录",
+    "UNKNOWN": "依赖状态未知",
+}
+AUTOMATION_PLUGIN_DEPENDENCY_BLOCKING_STATES = frozenset(
+    {"BLOCKED_DEPENDENCY", "NEEDS_CONFIGURATION", "BLOCKED_LOGIN", "UNKNOWN"}
+)
+AUTOMATION_PLUGIN_MIGRATION_STATE_LABELS = {
+    "PREPARING": "准备迁移项目",
+    "TESTING": "并行验证",
+    "READY": "等待接管",
+    "CUTTING_OVER": "接管中",
+    "CUTOVER": "已接管",
+    "ROLLING_BACK": "回滚中",
+    "ROLLED_BACK": "已回滚",
+    "COMPLETED": "迁移完成",
+    "ERROR": "迁移异常",
+}
+AUTOMATION_PLUGIN_MIGRATION_TEST_STATE_LABELS = {
+    "NOT_STARTED": "尚未真跑",
+    "RUNNING": "真跑验证中",
+    "PASSED": "真跑已通过",
+    "FAILED": "真跑失败",
+    "BLOCKED": "验证受阻",
+    "WRITE_OUTCOME_UNKNOWN": "写入结果未知",
+}
+AUTOMATION_PLUGIN_BLOCK_REASON_COPY = {
+    "MISSING_PROVIDER": "缺少服务提供方",
+    "PROVIDER_BLOCKED": "依赖服务尚未就绪",
+    "PROVIDER_CONFLICT": "服务提供方存在冲突",
+    "DEPENDENCY_CYCLE": "服务依赖存在循环",
+    "BLOCKED_DEPENDENCY": "依赖服务尚未就绪",
+    "CONFIGURATION_INCOMPLETE": "项目配置或资源绑定尚未完成",
+    "NEEDS_CONFIGURATION": "项目配置未完整",
+    "ACCOUNT_BINDING_MISSING": "必需账号尚未绑定或登录",
+    "BLOCKED_LOGIN": "必需账号尚未登录",
+}
 AUTOMATION_WORKER_ID_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,128}$")
 AUTOMATION_PLUGIN_BINDING_ID_RE = re.compile(r"^[A-Za-z0-9_.:@/-]{1,160}$")
 AUTOMATION_PLUGIN_CONFIG_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 AUTOMATION_PLUGIN_CODE_OWNED_CONFIG_KEY_RE = re.compile(
     r"^_?[A-Za-z][A-Za-z0-9_]{0,62}$"
 )
+AUTOMATION_PLUGIN_MIGRATION_RESERVED_BUSINESS_KEY_FIELDS = frozenset(
+    {"__host_business_date"}
+)
 AUTOMATION_PLUGIN_ENTRYPOINTS = frozenset({"scheduler", "console", "feishu", "webhook"})
+AUTOMATION_PLUGIN_V2_ENTRYPOINT_ID_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
+AUTOMATION_PLUGIN_V2_ENTRYPOINT_KINDS = frozenset(
+    {"console", "scheduler", "webhook", "feishu", "events"}
+)
 AUTOMATION_PLUGIN_CONFIG_MAX_FIELDS = 100
 AUTOMATION_PLUGIN_CONFIG_MAX_BYTES = 128 * 1024
 AUTOMATION_PLUGIN_SCHEDULE_MAX_DAILY_TIMES = 96
@@ -155,6 +220,16 @@ AUTOMATION_PLUGIN_CONFIG_COPY = {
     "sync_sheet": ("同步到表格", "开启后把结果同步到项目绑定的表格。"),
 }
 AUTOMATION_PLUGIN_COMMON_CONFIG_KEYS = frozenset(AUTOMATION_PLUGIN_CONFIG_COPY)
+
+
+def _valid_migration_business_key_field(value: str) -> bool:
+    """Allow the one host-derived key while rejecting all other host fields."""
+
+    if value in AUTOMATION_PLUGIN_MIGRATION_RESERVED_BUSINESS_KEY_FIELDS:
+        return True
+    if value.startswith("__host_"):
+        return False
+    return bool(AUTOMATION_PLUGIN_CONFIG_KEY_RE.fullmatch(value))
 
 AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY = {
     "account_id": ("运行账号", "任务执行时使用这个业务账号。"),
@@ -1022,21 +1097,55 @@ def _normalize_plugin_code_owned_config_fields(
     return (frozenset(normalized), True) if valid else (frozenset(), False)
 
 
-def _normalize_plugin_entrypoints(value: Any) -> tuple[list[str], bool]:
+def _normalize_plugin_entrypoints(
+    value: Any,
+    *,
+    runtime_model: str = "ACTION_V1",
+) -> tuple[list[str], bool]:
     if not isinstance(value, list):
         return [], False
     normalized = [str(item or "").strip().lower() for item in value]
-    if (
-        len(normalized) != len(set(normalized))
-        or not set(normalized) <= AUTOMATION_PLUGIN_ENTRYPOINTS
-    ):
+    if len(normalized) != len(set(normalized)) or len(normalized) > 100:
         return [], False
+    if runtime_model == "SERVICE_V2":
+        if any(
+            not AUTOMATION_PLUGIN_V2_ENTRYPOINT_ID_RE.fullmatch(item)
+            for item in normalized
+        ):
+            return [], False
+    elif runtime_model == "ACTION_V1":
+        if not set(normalized) <= AUTOMATION_PLUGIN_ENTRYPOINTS:
+            return [], False
+    else:
+        return [], False
+    return normalized, True
+
+
+def _normalize_plugin_entrypoint_kinds(
+    value: Any,
+    *,
+    runtime_model: str,
+    entrypoints: list[str],
+) -> tuple[dict[str, str], bool]:
+    if runtime_model == "ACTION_V1":
+        return {entrypoint: entrypoint for entrypoint in entrypoints}, True
+    if runtime_model != "SERVICE_V2":
+        return {}, False
+    if not isinstance(value, Mapping) or set(value) != set(entrypoints):
+        return {}, False
+    normalized: dict[str, str] = {}
+    for entrypoint in entrypoints:
+        kind = str(value.get(entrypoint) or "").strip().lower()
+        if kind not in AUTOMATION_PLUGIN_V2_ENTRYPOINT_KINDS:
+            return {}, False
+        normalized[entrypoint] = kind
     return normalized, True
 
 
 def _normalize_plugin_scheduling(
     value: Any,
     entrypoints: list[str],
+    entrypoint_kinds: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     if (
         not isinstance(value, dict)
@@ -1055,7 +1164,8 @@ def _normalize_plugin_scheduling(
         or not isinstance(max_daily_times, int)
     ):
         return {"supported": False, "allowed_kinds": [], "max_daily_times": 0}, False
-    valid = supported == ("scheduler" in entrypoints)
+    kinds = entrypoint_kinds or {entrypoint: entrypoint for entrypoint in entrypoints}
+    valid = supported == any(kinds.get(entrypoint) == "scheduler" for entrypoint in entrypoints)
     if supported:
         valid = valid and bool(raw_kinds) and 1 <= max_daily_times <= 96
     else:
@@ -1131,6 +1241,228 @@ def _normalize_plugin_binding_map(
     return normalized, valid and len(normalized) == len(value)
 
 
+def _normalize_plugin_runtime_model(
+    value: Any,
+    *,
+    present: bool | None = None,
+) -> str:
+    """Normalize an explicit runtime discriminator without silently downgrading it.
+
+    Catalogs emitted before runtime-model metadata existed are the only records
+    that may be projected as ``ACTION_V1``.  A present-but-unknown discriminator
+    is kept as an unsupported contract so that a newer runtime can never be
+    mistaken for a legacy action package.
+    """
+
+    if present is None:
+        present = value is not None
+    if not present:
+        return "ACTION_V1"
+    normalized = str(value or "").strip().upper()
+    if normalized in {"ACTION_V1", "SERVICE_V2"}:
+        return normalized
+    return AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL
+
+
+def _normalize_plugin_api(value: Any, *, runtime_model: str) -> str:
+    fallback = "1.0.0" if runtime_model == "ACTION_V1" else ""
+    if not isinstance(value, str):
+        return fallback
+    normalized = value.strip()
+    return normalized if AUTOMATION_PLUGIN_API_RE.fullmatch(normalized) else fallback
+
+
+def _normalize_plugin_semver(value: Any) -> str:
+    normalized = str(value or "").strip()
+    return normalized if AUTOMATION_PLUGIN_VERSION_RE.fullmatch(normalized) else ""
+
+
+def _normalize_plugin_versions(
+    raw: Mapping[str, Any],
+    *,
+    runtime_model: str,
+    version: str,
+    fallback: Mapping[str, Any] | None = None,
+) -> tuple[str, str]:
+    fallback = fallback or {}
+    active_version = _normalize_plugin_semver(
+        raw.get("active_version", fallback.get("active_version"))
+    )
+    target_version = _normalize_plugin_semver(
+        raw.get("target_version", fallback.get("target_version"))
+    )
+    if runtime_model == "ACTION_V1":
+        return active_version or version, target_version or version
+    if runtime_model == AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL:
+        return "", ""
+    return active_version, target_version or version
+
+
+def _normalize_plugin_provided_services(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    services: list[str] = []
+    for raw in value:
+        candidate = raw.get("service") if isinstance(raw, Mapping) else raw
+        service = str(candidate or "").strip()
+        if not AUTOMATION_PLUGIN_SERVICE_RE.fullmatch(service):
+            continue
+        if service not in services:
+            services.append(service)
+        if len(services) >= 20:
+            break
+    return services
+
+
+def _normalize_plugin_dependency_state(
+    value: Any,
+    *,
+    runtime_model: str,
+    state_hint: str = "",
+) -> str:
+    if runtime_model == "ACTION_V1":
+        return "NOT_APPLICABLE"
+    if runtime_model == AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL:
+        return "UNKNOWN"
+    normalized = str(value or "").strip().upper()
+    if normalized in set(AUTOMATION_PLUGIN_DEPENDENCY_STATE_LABELS) - {"NOT_APPLICABLE"}:
+        return normalized
+    hinted = str(state_hint or "").strip().upper()
+    if hinted in {
+        "BLOCKED_DEPENDENCY",
+        "NEEDS_CONFIGURATION",
+        "BLOCKED_LOGIN",
+    }:
+        return hinted
+    return "UNKNOWN"
+
+
+def _normalize_plugin_blocking_reasons(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    reasons: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for raw in value:
+        code = ""
+        service = ""
+        message = ""
+        if isinstance(raw, Mapping):
+            raw_code = str(raw.get("code") or "").strip().upper()
+            if re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", raw_code):
+                code = raw_code
+            raw_service = str(raw.get("service") or "").strip()
+            if AUTOMATION_PLUGIN_SERVICE_RE.fullmatch(raw_service):
+                service = raw_service
+            message = normalize_feedback_text(
+                redact_text(str(raw.get("message") or ""))
+            )[:240]
+        elif isinstance(raw, str):
+            raw_code = raw.strip().upper()
+            if re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", raw_code):
+                code = raw_code
+            message = normalize_feedback_text(redact_text(raw))[:240]
+        else:
+            continue
+        label = AUTOMATION_PLUGIN_BLOCK_REASON_COPY.get(code, "") or message
+        if service and label:
+            label = f"{label}：{service}"
+        if not label:
+            continue
+        identity = (code, service, label)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        reasons.append({"code": code, "service": service, "label": label})
+        if len(reasons) >= 20:
+            break
+    return reasons
+
+
+def _normalize_plugin_migration(
+    value: Any,
+    *,
+    automation_id: str,
+) -> dict[str, Any]:
+    if isinstance(value, str):
+        raw: Mapping[str, Any] = {"state": value}
+    elif isinstance(value, Mapping):
+        raw = value
+    else:
+        return {}
+    state = str(raw.get("state") or raw.get("status") or "").strip().upper()
+    if state not in AUTOMATION_PLUGIN_MIGRATION_STATE_LABELS:
+        return {}
+    pair_id = str(raw.get("migration_pair_id") or raw.get("pair_id") or "").strip()
+    if not AUTOMATION_PLUGIN_MIGRATION_PAIR_ID_RE.fullmatch(pair_id):
+        pair_id = ""
+    source_id = str(raw.get("source_automation_id") or "").strip()
+    target_id = str(raw.get("target_automation_id") or "").strip()
+    counterpart_id = str(raw.get("counterpart_automation_id") or "").strip()
+    owner_id = str(raw.get("entrypoint_owner_automation_id") or "").strip()
+    source_id = source_id if AUTOMATION_PROJECT_ID_RE.fullmatch(source_id) else ""
+    target_id = target_id if AUTOMATION_PROJECT_ID_RE.fullmatch(target_id) else ""
+    counterpart_id = (
+        counterpart_id
+        if AUTOMATION_PROJECT_ID_RE.fullmatch(counterpart_id)
+        else ""
+    )
+    owner_id = owner_id if AUTOMATION_PROJECT_ID_RE.fullmatch(owner_id) else ""
+    projected_role = str(raw.get("role") or "").strip().upper()
+    role = (
+        "TARGET"
+        if automation_id and automation_id == target_id
+        else "SOURCE"
+        if automation_id and automation_id == source_id
+        else projected_role
+        if projected_role in {"SOURCE", "TARGET"}
+        else ""
+    )
+    paired_automation_id = (
+        source_id
+        if role == "TARGET" and source_id
+        else target_id
+        if role == "SOURCE" and target_id
+        else counterpart_id
+    )
+    if not owner_id:
+        owner_id = (
+            automation_id
+            if (state in {"CUTOVER", "COMPLETED"} and role == "TARGET")
+            or (state not in {"CUTOVER", "COMPLETED"} and role == "SOURCE")
+            else paired_automation_id
+        )
+    record_version = raw.get("record_version")
+    if (
+        isinstance(record_version, bool)
+        or not isinstance(record_version, int)
+        or record_version < 1
+    ):
+        record_version = 0
+    test_state = str(
+        raw.get("test_state") or raw.get("test_status") or ""
+    ).strip().upper()
+    if test_state not in AUTOMATION_PLUGIN_MIGRATION_TEST_STATE_LABELS:
+        test_state = ""
+    return {
+        "migration_pair_id": pair_id,
+        "state": state,
+        "status_label": AUTOMATION_PLUGIN_MIGRATION_STATE_LABELS[state],
+        "role": role,
+        "paired_automation_id": paired_automation_id,
+        "entrypoint_owner_automation_id": owner_id,
+        "owns_entrypoints": bool(owner_id and owner_id == automation_id),
+        "record_version": record_version,
+        "can_mark_ready": bool(role == "TARGET" and state == "TESTING"),
+        "can_cutover": bool(role == "TARGET" and state == "READY"),
+        "can_rollback": bool(role == "TARGET" and state == "CUTOVER"),
+        "can_complete": bool(role == "TARGET" and state == "CUTOVER"),
+        "test_state": test_state,
+        "test_status_label": AUTOMATION_PLUGIN_MIGRATION_TEST_STATE_LABELS.get(
+            test_state, ""
+        ),
+    }
+
+
 AUTOMATION_PLUGIN_MISSING_REQUIREMENT_LABELS = {
     "project_config": "项目配置未完整",
     "account_binding": "必需账号尚未绑定",
@@ -1185,11 +1517,51 @@ def normalize_automation_plugin_catalog(
             and isinstance(raw_resource_roles, list)
             and len(resource_roles) == len(raw_resource_roles)
         )
-        entrypoints, entrypoints_valid = _normalize_plugin_entrypoints(raw.get("entrypoints"))
-        scheduling, scheduling_valid = _normalize_plugin_scheduling(
-            raw.get("scheduling"), entrypoints
+        runtime_model = _normalize_plugin_runtime_model(
+            raw.get("runtime_model"), present="runtime_model" in raw
         )
-        contract_supported = entrypoints_valid and scheduling_valid and roles_valid
+        entrypoints, entrypoints_valid = _normalize_plugin_entrypoints(
+            raw.get("entrypoints"), runtime_model=runtime_model
+        )
+        entrypoint_kinds, entrypoint_kinds_valid = _normalize_plugin_entrypoint_kinds(
+            raw.get("entrypoint_kinds"),
+            runtime_model=runtime_model,
+            entrypoints=entrypoints,
+        )
+        scheduling, scheduling_valid = _normalize_plugin_scheduling(
+            raw.get("scheduling"), entrypoints, entrypoint_kinds
+        )
+        contract_supported = (
+            entrypoints_valid
+            and entrypoint_kinds_valid
+            and scheduling_valid
+            and roles_valid
+        )
+        plugin_api = _normalize_plugin_api(
+            raw.get("plugin_api"), runtime_model=runtime_model
+        )
+        active_version, target_version = _normalize_plugin_versions(
+            raw,
+            runtime_model=runtime_model,
+            version=version,
+        )
+        dependency_state = _normalize_plugin_dependency_state(
+            raw.get("dependency_state"),
+            runtime_model=runtime_model,
+            state_hint=str(raw.get("state") or ""),
+        )
+        provided_services = _normalize_plugin_provided_services(
+            raw.get("provided_services")
+        )
+        blocking_reasons = _normalize_plugin_blocking_reasons(
+            raw.get("blocking_reasons")
+        )
+        if runtime_model == AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL:
+            # Do not expose untrusted future contract details as if they were
+            # usable services or v2 metadata.  The package remains visible with
+            # an explicit unsupported runtime label and a blocked contract.
+            provided_services = []
+            blocking_reasons = []
         package = {
             "plugin_id": plugin_id,
             "name": normalize_feedback_text(redact_text(str(raw.get("name") or plugin_id)))[:120],
@@ -1211,7 +1583,27 @@ def normalize_automation_plugin_catalog(
             ),
             "scheduling": scheduling,
             "entrypoints": entrypoints,
+            "entrypoint_kinds": entrypoint_kinds,
             "contract_supported": contract_supported,
+            "runtime_model": runtime_model,
+            "runtime_model_label": AUTOMATION_PLUGIN_RUNTIME_MODEL_LABELS[
+                runtime_model
+            ],
+            "plugin_api": plugin_api,
+            "active_version": active_version,
+            "target_version": target_version,
+            "dependency_state": dependency_state,
+            "dependency_state_label": AUTOMATION_PLUGIN_DEPENDENCY_STATE_LABELS[
+                dependency_state
+            ],
+            "provided_services": provided_services,
+            "blocking_reasons": blocking_reasons,
+            "blocking_reason_labels": [
+                reason["label"] for reason in blocking_reasons
+            ],
+            "migration": _normalize_plugin_migration(
+                raw.get("migration"), automation_id=""
+            ),
         }
         packages.append(package)
         packages_by_id[plugin_id] = package
@@ -1232,6 +1624,37 @@ def normalize_automation_plugin_catalog(
         configured = raw.get("configured")
         record_version = raw.get("record_version")
         project_configuration_version = raw.get("project_configuration_version", 0)
+        runtime_model = _normalize_plugin_runtime_model(
+            raw["runtime_model"] if "runtime_model" in raw else package.get("runtime_model"),
+            present="runtime_model" in raw or bool(package),
+        )
+        plugin_api = _normalize_plugin_api(
+            raw.get("plugin_api", package.get("plugin_api")),
+            runtime_model=runtime_model,
+        )
+        active_version, target_version = _normalize_plugin_versions(
+            raw,
+            runtime_model=runtime_model,
+            version=version,
+            fallback=package,
+        )
+        provided_services = (
+            _normalize_plugin_provided_services(raw.get("provided_services"))
+            if "provided_services" in raw
+            else list(package.get("provided_services") or [])
+        )
+        blocking_reasons = (
+            _normalize_plugin_blocking_reasons(raw.get("blocking_reasons"))
+            if "blocking_reasons" in raw
+            else list(package.get("blocking_reasons") or [])
+        )
+        if runtime_model == AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL:
+            provided_services = []
+            blocking_reasons = []
+        migration = _normalize_plugin_migration(
+            raw.get("migration", package.get("migration")),
+            automation_id=automation_id,
+        )
         projected_state = str(
             raw.get("state") or ("ENABLED" if enabled else "DISABLED")
         ).strip().upper()
@@ -1246,12 +1669,25 @@ def normalize_automation_plugin_catalog(
             if projected_reconcile_state in AUTOMATION_PLUGIN_RECONCILE_STATES
             else "UNKNOWN"
         )
+        dependency_state = _normalize_plugin_dependency_state(
+            raw.get("dependency_state", package.get("dependency_state")),
+            runtime_model=runtime_model,
+            state_hint=projected_state,
+        )
         state = project_state
-        if project_state in AUTOMATION_PLUGIN_STABLE_STATES and reconcile_state != "STABLE":
+        if runtime_model == AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL:
+            state = "UNKNOWN"
+        elif project_state in AUTOMATION_PLUGIN_STABLE_STATES and reconcile_state != "STABLE":
             state = AUTOMATION_PLUGIN_RECONCILE_DISPLAY_STATES.get(
                 reconcile_state,
                 "UNKNOWN",
             )
+        elif (
+            project_state in AUTOMATION_PLUGIN_STABLE_STATES
+            and runtime_model == "SERVICE_V2"
+            and dependency_state in AUTOMATION_PLUGIN_DEPENDENCY_BLOCKING_STATES
+        ):
+            state = dependency_state
         if (
             automation_id in seen_instances
             or not AUTOMATION_PROJECT_ID_RE.fullmatch(automation_id)
@@ -1294,10 +1730,18 @@ def normalize_automation_plugin_catalog(
             and resource_roles == list(package.get("resource_roles") or [])
         )
         entrypoints, entrypoints_valid = _normalize_plugin_entrypoints(
-            raw.get("entrypoints", package.get("entrypoints"))
+            raw.get("entrypoints", package.get("entrypoints")),
+            runtime_model=runtime_model,
+        )
+        entrypoint_kinds, entrypoint_kinds_valid = _normalize_plugin_entrypoint_kinds(
+            raw.get("entrypoint_kinds", package.get("entrypoint_kinds")),
+            runtime_model=runtime_model,
+            entrypoints=entrypoints,
         )
         scheduling, scheduling_valid = _normalize_plugin_scheduling(
-            raw.get("scheduling", package.get("scheduling")), entrypoints
+            raw.get("scheduling", package.get("scheduling")),
+            entrypoints,
+            entrypoint_kinds,
         )
         schedule, schedule_valid = _normalize_plugin_schedule(
             raw.get("schedule"), scheduling
@@ -1366,7 +1810,7 @@ def normalize_automation_plugin_catalog(
                 }
             )
         enabled_entrypoints, enabled_entrypoints_valid = _normalize_plugin_entrypoints(
-            raw.get("enabled_entrypoints")
+            raw.get("enabled_entrypoints"), runtime_model=runtime_model
         )
         if enabled_entrypoints_valid and not set(enabled_entrypoints) <= set(entrypoints):
             enabled_entrypoints_valid = False
@@ -1395,9 +1839,30 @@ def normalize_automation_plugin_catalog(
             for item in raw.get("missing_requirements", [])
             if isinstance(item, str) and item.strip()
         ][:20]
+        blocking_reason_labels = [
+            str(reason["label"]) for reason in blocking_reasons
+        ]
+        if (
+            runtime_model == "SERVICE_V2"
+            and dependency_state in AUTOMATION_PLUGIN_DEPENDENCY_BLOCKING_STATES
+            and not blocking_reason_labels
+        ):
+            blocking_reason_labels = [
+                {
+                    "BLOCKED_DEPENDENCY": "依赖服务尚未就绪",
+                    "NEEDS_CONFIGURATION": "项目配置未完整",
+                    "BLOCKED_LOGIN": "必需账号尚未登录",
+                    "UNKNOWN": "v2 依赖状态无法确认",
+                }[dependency_state]
+            ]
+        missing_requirements.extend(blocking_reason_labels)
         projection_warnings: list[str] = []
         if not entrypoints_valid or not scheduling_valid:
             projection_warnings.append("插件入口合同不可识别")
+        if runtime_model == AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL:
+            projection_warnings.append("插件运行时模型不受支持")
+        if not entrypoint_kinds_valid:
+            projection_warnings.append("插件入口类型映射不可识别")
         if not schedule_valid:
             projection_warnings.append("项目定时投影无效")
         if not roles_valid:
@@ -1447,6 +1912,7 @@ def normalize_automation_plugin_catalog(
         lifecycle_actions_allowed = (
             project_state in AUTOMATION_PLUGIN_STABLE_STATES
             and reconcile_state == "STABLE"
+            and runtime_model != AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL
         )
         disable_allowed = bool(enabled) and project_state not in {
             "UPGRADING",
@@ -1459,6 +1925,7 @@ def normalize_automation_plugin_catalog(
             or state not in AUTOMATION_PLUGIN_STABLE_STATES
             or (platform == "windows" and device is None)
             or not entrypoints_valid
+            or not entrypoint_kinds_valid
             or not scheduling_valid
             or not schedule_valid
             or not roles_valid
@@ -1480,6 +1947,21 @@ def normalize_automation_plugin_catalog(
                     )
                 )[:120],
                 "version": version,
+                "active_version": active_version,
+                "target_version": target_version,
+                "runtime_model": runtime_model,
+                "runtime_model_label": AUTOMATION_PLUGIN_RUNTIME_MODEL_LABELS[
+                    runtime_model
+                ],
+                "plugin_api": plugin_api,
+                "dependency_state": dependency_state,
+                "dependency_state_label": AUTOMATION_PLUGIN_DEPENDENCY_STATE_LABELS[
+                    dependency_state
+                ],
+                "provided_services": provided_services,
+                "blocking_reasons": blocking_reasons,
+                "blocking_reason_labels": blocking_reason_labels,
+                "migration": migration,
                 "enabled": enabled,
                 "configured": configured,
                 "state": state,
@@ -1526,7 +2008,25 @@ def normalize_automation_plugin_catalog(
                 "scheduling": scheduling,
                 "schedule": schedule,
                 "entrypoints": entrypoints,
+                "entrypoint_kinds": entrypoint_kinds,
+                "console_entrypoints": [
+                    entrypoint
+                    for entrypoint in entrypoints
+                    if entrypoint_kinds.get(entrypoint) == "console"
+                ],
+                "enabled_console_entrypoints": [
+                    entrypoint
+                    for entrypoint in enabled_entrypoints
+                    if entrypoint_kinds.get(entrypoint) == "console"
+                ],
                 "enabled_entrypoints": enabled_entrypoints,
+                "enabled_entrypoint_kinds": sorted(
+                    {
+                        entrypoint_kinds[entrypoint]
+                        for entrypoint in enabled_entrypoints
+                        if entrypoint in entrypoint_kinds
+                    }
+                ),
                 "device": device,
                 "missing_requirements": missing_requirements,
                 "blocked": blocked,
@@ -1598,7 +2098,53 @@ def normalize_hidden_automation_ids(value: Any) -> frozenset[str]:
     )
 
 
-class AutomationProjectsServiceMixin:
+def automation_plugin_block_warning(plugin: Mapping[str, Any]) -> str:
+    """Keep configuration closure distinct from an immutable runtime transition."""
+
+    if plugin.get("configured") is not True:
+        return AUTOMATION_RUNTIME_REASON_LABELS[
+            "PROJECT_CONFIGURATION_INCOMPLETE"
+        ]
+    enabled_entrypoints = plugin.get("enabled_entrypoints")
+    if isinstance(enabled_entrypoints, list) and not enabled_entrypoints:
+        return AUTOMATION_RUNTIME_REASON_LABELS["ENTRYPOINTS_DISABLED"]
+    missing = [
+        str(item).strip()
+        for item in plugin.get("missing_requirements") or []
+        if str(item).strip()
+    ]
+    if missing:
+        if any(
+            "合同" in item
+            or "Schema" in item
+            or "投影" in item
+            or "运行描述符" in item
+            for item in missing
+        ):
+            return AUTOMATION_RUNTIME_CONTRACT_ERROR_LABEL
+        return "；".join(dict.fromkeys(missing))
+    state = str(plugin.get("state") or "UNKNOWN").upper()
+    if state not in AUTOMATION_PLUGIN_STABLE_STATES:
+        reconcile_state = str(plugin.get("reconcile_state") or "UNKNOWN").upper()
+        if reconcile_state == "BLOCKED_UNKNOWN_WRITE":
+            return (
+                "上次运行的保存结果无法确认。为防止重复写入，任务已暂停。"
+                "请先核对业务表格，再检查结果并恢复。"
+            )
+        if reconcile_state == "ERROR":
+            return "运行环境准备失败，任务已暂停。请联系管理员检查后再恢复。"
+        return "运行环境正在更新，任务暂时不可运行。已有设置和自动执行状态会保留。"
+    return AUTOMATION_RUNTIME_REASON_LABELS["PROJECT_RUNTIME_UNAVAILABLE"]
+
+
+class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin):
+    _automation_plugin_max_package_bytes = AUTOMATION_PLUGIN_MAX_PACKAGE_BYTES
+    _automation_plugin_version_re = AUTOMATION_PLUGIN_VERSION_RE
+    _automation_plugin_migration_pair_id_re = AUTOMATION_PLUGIN_MIGRATION_PAIR_ID_RE
+    _valid_migration_business_key_field = staticmethod(
+        _valid_migration_business_key_field
+    )
+
     def _load_automation_plugin_catalog(
         self,
         handler: BaseHTTPRequestHandler,
@@ -2161,536 +2707,6 @@ class AutomationProjectsServiceMixin:
             },
         )
 
-    def _agent_plugin_multipart_request(
-        self,
-        endpoint: str,
-        *,
-        package_path: Path,
-        fields: dict[str, str],
-        console_principal: dict[str, Any],
-        timeout: int = 90,
-    ) -> dict[str, Any]:
-        """Forward one bounded ZIP as signed multipart without trusting browser metadata."""
-
-        try:
-            endpoint = self._validate_internal_agent_endpoint(endpoint)
-        except ValueError as exc:
-            return {
-                "ok": False,
-                "status": HTTPStatus.BAD_REQUEST,
-                "error_code": "INVALID_AGENT_ENDPOINT",
-                "error": str(exc),
-            }
-        token = str(getattr(self.settings, "agent_internal_api_token", "") or "").strip()
-        if not token:
-            return {
-                "ok": False,
-                "status": HTTPStatus.SERVICE_UNAVAILABLE,
-                "error_code": "AGENT_INTERNAL_TOKEN_NOT_CONFIGURED",
-                "error": "Agent 内部接口未配置。",
-            }
-        try:
-            package_size = package_path.stat().st_size
-            if package_size <= 0 or package_size > AUTOMATION_PLUGIN_MAX_PACKAGE_BYTES:
-                raise ValueError("plugin package size is outside the accepted boundary")
-            package_bytes = package_path.read_bytes()
-        except (OSError, ValueError) as exc:
-            LOGGER.warning("Rejected staged plugin package: %s", type(exc).__name__)
-            return {
-                "ok": False,
-                "status": HTTPStatus.BAD_REQUEST,
-                "error_code": "INVALID_PLUGIN_PACKAGE_SIZE",
-                "error": "插件包大小无效或暂时无法读取。",
-            }
-        signed_fields = dict(fields)
-        signed_fields["package_sha256"] = hashlib.sha256(package_bytes).hexdigest()
-        boundary = f"----ConsoleAutomationPlugin{secrets.token_hex(18)}"
-        parts: list[bytes] = []
-        for name, value in signed_fields.items():
-            safe_name = str(name).replace('"', "")
-            safe_value = str(value).replace("\r", " ").replace("\n", " ")
-            parts.extend(
-                [
-                    f"--{boundary}\r\n".encode("ascii"),
-                    (
-                        f'Content-Disposition: form-data; name="{safe_name}"\r\n\r\n'
-                    ).encode("ascii"),
-                    safe_value.encode("utf-8"),
-                    b"\r\n",
-                ]
-            )
-        parts.extend(
-            [
-                f"--{boundary}\r\n".encode("ascii"),
-                b'Content-Disposition: form-data; name="package"; filename="automation-plugin.zip"\r\n',
-                b"Content-Type: application/zip\r\n\r\n",
-                package_bytes,
-                b"\r\n",
-                f"--{boundary}--\r\n".encode("ascii"),
-            ]
-        )
-        body = b"".join(parts)
-        url = f"{self.settings.agent_base_url.rstrip('/')}{endpoint}"
-        headers = {
-            "X-Agent-Internal-Token": token,
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-        }
-        signing_secret = str(os.getenv("CONSOLE_AGENT_SIGNING_SECRET", "") or "").strip()
-        if not signing_secret:
-            return {
-                "ok": False,
-                "status": HTTPStatus.SERVICE_UNAVAILABLE,
-                "error_code": "CONSOLE_SIGNING_SECRET_NOT_CONFIGURED",
-                "error": "Console-to-Agent 签名未配置。",
-            }
-        try:
-            headers.update(
-                build_console_identity_headers(
-                    secret=signing_secret,
-                    method="POST",
-                    request_target=endpoint,
-                    body=body,
-                    principal=console_principal,
-                    nonce=secrets.token_urlsafe(24),
-                )
-            )
-        except ConsoleIdentityError as exc:
-            return {
-                "ok": False,
-                "status": HTTPStatus.SERVICE_UNAVAILABLE,
-                "error_code": exc.code,
-                "error": str(exc),
-            }
-        request = Request(url, data=body, headers=headers, method="POST")
-        try:
-            with urlopen(request, timeout=timeout) as response:
-                raw = response.read().decode("utf-8")
-                payload = json.loads(raw) if raw else {}
-                if not isinstance(payload, dict) or not {"ok", "data", "error"}.issubset(payload):
-                    raise ValueError("Agent returned an invalid internal API contract")
-                if payload.get("ok") is not True:
-                    error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
-                    return {
-                        "ok": False,
-                        "status": response.status,
-                        "error_code": str(error.get("code") or "PLUGIN_PACKAGE_REJECTED"),
-                        "error": redact_text(error.get("message") or "插件包被拒绝。"),
-                        "data": payload.get("data"),
-                    }
-                return {"ok": True, "status": response.status, "data": payload.get("data")}
-        except HTTPError as exc:
-            raw = exc.read().decode("utf-8", errors="replace")
-            try:
-                payload = json.loads(raw) if raw else {}
-            except json.JSONDecodeError:
-                payload = {}
-            error = payload.get("error") if isinstance(payload, dict) and isinstance(payload.get("error"), dict) else {}
-            return {
-                "ok": False,
-                "status": exc.code,
-                "error_code": str(error.get("code") or "PLUGIN_PACKAGE_REQUEST_FAILED"),
-                "error": redact_text(error.get("message") or "插件包上传失败。"),
-                "data": payload.get("data") if isinstance(payload, dict) else None,
-            }
-        except (URLError, ValueError) as exc:
-            return {
-                "ok": False,
-                "status": HTTPStatus.BAD_GATEWAY,
-                "error_code": "PLUGIN_PACKAGE_REQUEST_FAILED",
-                "error": redact_text(str(exc)),
-            }
-
-    def _handle_automation_plugin_package_upload(
-        self,
-        handler: BaseHTTPRequestHandler,
-        *,
-        automation_id: str = "",
-    ) -> None:
-        requested_automation_id = str(automation_id or "").strip()
-        automation_id = self._automation_project_id(requested_automation_id)
-        if requested_automation_id and not automation_id:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.NOT_FOUND,
-                "AUTOMATION_PLUGIN_INSTANCE_NOT_FOUND",
-                "插件实例不存在。",
-            )
-            return
-        trusted_context = self._control_plane_write_context(handler)
-        if trusted_context is None:
-            return
-        if "super_admin" not in list(trusted_context.get("actor_roles") or []):
-            self._control_plane_error(
-                handler,
-                HTTPStatus.FORBIDDEN,
-                "SUPER_ADMIN_REQUIRED",
-                "只有超级管理员可以安装或升级自动化。",
-            )
-            return
-        try:
-            content_length = int(handler.headers.get("Content-Length") or "0")
-        except (TypeError, ValueError):
-            content_length = -1
-        if content_length <= 0 or content_length > AUTOMATION_PLUGIN_MAX_PACKAGE_BYTES + 512 * 1024:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
-                "PLUGIN_PACKAGE_TOO_LARGE",
-                "插件 ZIP 不能超过 32MB。",
-            )
-            return
-        form = self._parse_multipart_form(handler)
-        allowed_form_fields = (
-            {"package", "request_id", "expected_record_version"}
-            if automation_id
-            else {"package", "request_id", "instance_name"}
-        )
-        unexpected_form_fields = set(form.keys()) - allowed_form_fields
-        duplicate_form_fields = [
-            field for field in form.keys() if isinstance(form[field], list)
-        ]
-        if unexpected_form_fields or duplicate_form_fields:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "UNSUPPORTED_PLUGIN_PACKAGE_FIELDS",
-                "插件包请求包含不支持的字段。",
-            )
-            return
-        package_item = form["package"] if "package" in form else None
-        filename = str(getattr(package_item, "filename", "") or "")
-        if package_item is None or not filename or Path(filename).suffix.lower() != ".zip":
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "SIGNED_ZIP_REQUIRED",
-                "请选择一个签名 ZIP 插件包。",
-            )
-            return
-        request_id = self._normalize_browser_request_uuid(
-            form.getvalue("request_id") or handler.headers.get("X-Browser-Request-UUID")
-        )
-        if not request_id:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "BROWSER_REQUEST_UUID_REQUIRED",
-                "缺少有效且稳定的请求标识，插件包未提交。",
-            )
-            return
-        package_bytes = package_item.file.read(AUTOMATION_PLUGIN_MAX_PACKAGE_BYTES + 1)
-        if (
-            not package_bytes
-            or len(package_bytes) > AUTOMATION_PLUGIN_MAX_PACKAGE_BYTES
-            or not zipfile.is_zipfile(io.BytesIO(package_bytes))
-        ):
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "INVALID_PLUGIN_ZIP",
-                "插件包为空、超过 32MB 或不是有效 ZIP。",
-            )
-            return
-
-        fields = {"request_id": request_id}
-        if automation_id:
-            expected_record_version_raw = str(form.getvalue("expected_record_version") or "").strip()
-            try:
-                expected_record_version = int(expected_record_version_raw)
-            except ValueError:
-                expected_record_version = 0
-            if expected_record_version < 1:
-                self._control_plane_error(
-                    handler,
-                    HTTPStatus.BAD_REQUEST,
-                    "EXPECTED_RECORD_VERSION_REQUIRED",
-                    "实例版本快照已缺失，请刷新后重试。",
-                )
-                return
-            fields["expected_record_version"] = str(expected_record_version)
-            endpoint = (
-                f"/internal/v1/automation/instances/{quote(automation_id, safe='')}/upgrade"
-            )
-        else:
-            instance_name = normalize_feedback_text(str(form.getvalue("instance_name") or "")).strip()
-            if not instance_name or len(instance_name) > 120:
-                self._control_plane_error(
-                    handler,
-                    HTTPStatus.BAD_REQUEST,
-                    "INSTANCE_NAME_REQUIRED",
-                    "请填写 1 至 120 个字符的实例名称。",
-                )
-                return
-            fields["instance_name"] = instance_name
-            endpoint = "/internal/v1/automation/plugins/install"
-
-        upload_root = (self.settings.runtime_dir / "automation_plugin_uploads").resolve()
-        upload_root.mkdir(parents=True, exist_ok=True)
-        try:
-            os.chmod(upload_root, 0o700)
-        except OSError:
-            pass
-        target = (upload_root / f"{request_id}-{secrets.token_hex(8)}.zip").resolve()
-        try:
-            target.relative_to(upload_root)
-        except ValueError:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "INVALID_PLUGIN_UPLOAD_PATH",
-                "插件上传路径无效。",
-            )
-            return
-        try:
-            target.write_bytes(package_bytes)
-            try:
-                os.chmod(target, 0o600)
-            except OSError:
-                pass
-            result = self._agent_plugin_multipart_request(
-                endpoint,
-                package_path=target,
-                fields=fields,
-                console_principal=trusted_context["_console_principal"],
-            )
-        except OSError as exc:
-            LOGGER.warning("Failed to stage automation plugin package: %s", type(exc).__name__)
-            self._control_plane_error(
-                handler,
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                "PLUGIN_UPLOAD_STAGING_FAILED",
-                "插件包暂存失败，请稍后重试。",
-            )
-            return
-        finally:
-            target.unlink(missing_ok=True)
-        if not result.get("ok"):
-            self._automation_project_agent_error(
-                handler,
-                result,
-                automation_id=automation_id,
-                fallback_code="PLUGIN_PACKAGE_REQUEST_FAILED",
-                fallback_message="自动化插件包处理失败。",
-            )
-            return
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        created_id = self._automation_project_id(data.get("automation_id"))
-        self._send_json(
-            handler,
-            HTTPStatus.OK,
-            {
-                "ok": True,
-                "data": {"automation_id": created_id} if created_id else {},
-                "message": "自动化已升级。" if automation_id else "自动化已安装为新的停用实例。",
-            },
-        )
-
-    def _handle_automation_plugin_instance_action(
-        self,
-        handler: BaseHTTPRequestHandler,
-        automation_id: str,
-        action: str,
-    ) -> None:
-        automation_id = self._automation_project_id(automation_id)
-        if not automation_id or action not in {"enable", "disable", "uninstall"}:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.NOT_FOUND,
-                "AUTOMATION_PLUGIN_ACTION_NOT_FOUND",
-                "插件实例操作不存在。",
-            )
-            return
-        trusted_context = self._control_plane_write_context(handler)
-        if trusted_context is None:
-            return
-        if "super_admin" not in list(trusted_context.get("actor_roles") or []):
-            self._control_plane_error(
-                handler,
-                HTTPStatus.FORBIDDEN,
-                "SUPER_ADMIN_REQUIRED",
-                "只有超级管理员可以管理插件实例。",
-            )
-            return
-        values = self._read_control_plane_json(handler)
-        if values is None:
-            return
-        request_id = self._normalize_browser_request_uuid(values.get("request_id"))
-        expected_record_version = values.get("expected_record_version")
-        if (
-            not request_id
-            or isinstance(expected_record_version, bool)
-            or not isinstance(expected_record_version, int)
-            or expected_record_version < 1
-        ):
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "PLUGIN_ACTION_VERSION_REQUIRED",
-                "缺少请求标识或实例版本快照，请刷新后重试。",
-            )
-            return
-        if action in {"enable", "disable"}:
-            if set(values) - {"request_id", "expected_record_version"}:
-                self._control_plane_error(
-                    handler,
-                    HTTPStatus.BAD_REQUEST,
-                    "UNSUPPORTED_PLUGIN_ACTION_FIELDS",
-                    "实例状态请求包含不支持的字段。",
-                )
-                return
-            endpoint = f"/internal/v1/automation/instances/{quote(automation_id, safe='')}/state"
-            payload = {
-                "enabled": action == "enable",
-                "request_id": request_id,
-                "expected_record_version": expected_record_version,
-            }
-        else:
-            current_version = str(values.get("current_version") or "").strip()
-            if (
-                set(values)
-                - {"request_id", "expected_record_version", "current_version", "confirm"}
-                or not AUTOMATION_PLUGIN_VERSION_RE.fullmatch(current_version)
-                or values.get("confirm") is not True
-            ):
-                self._control_plane_error(
-                    handler,
-                    HTTPStatus.BAD_REQUEST,
-                    "PLUGIN_UNINSTALL_CONFIRMATION_REQUIRED",
-                    "卸载必须确认当前实例版本与不可撤销范围。",
-                )
-                return
-            endpoint = f"/internal/v1/automation/instances/{quote(automation_id, safe='')}/uninstall"
-            payload = {
-                "request_id": request_id,
-                "expected_record_version": expected_record_version,
-                "current_version": current_version,
-                "confirm": True,
-            }
-        result = self._agent_request(
-            "POST",
-            endpoint,
-            payload=payload,
-            timeout=45 if action == "uninstall" else 20,
-            console_principal=trusted_context["_console_principal"],
-        )
-        if not result.get("ok"):
-            self._automation_project_agent_error(
-                handler,
-                result,
-                automation_id=automation_id,
-                fallback_code="PLUGIN_INSTANCE_ACTION_FAILED",
-                fallback_message="插件实例操作失败。",
-            )
-            return
-        self._send_json(
-            handler,
-            HTTPStatus.OK,
-            {
-                "ok": True,
-                "data": {"automation_id": automation_id},
-                "message": {
-                    "enable": "自动化实例已启用。",
-                    "disable": "自动化实例已停用。",
-                    "uninstall": "自动化实例已卸载。",
-                }[action],
-            },
-        )
-
-    def _handle_automation_plugin_unknown_write_recovery(
-        self,
-        handler: BaseHTTPRequestHandler,
-        automation_id: str,
-    ) -> None:
-        automation_id = self._automation_project_id(automation_id)
-        if not automation_id:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.NOT_FOUND,
-                "AUTOMATION_PLUGIN_INSTANCE_NOT_FOUND",
-                "插件实例不存在。",
-            )
-            return
-        trusted_context = self._control_plane_write_context(handler)
-        if trusted_context is None:
-            return
-        if "super_admin" not in list(trusted_context.get("actor_roles") or []):
-            self._control_plane_error(
-                handler,
-                HTTPStatus.FORBIDDEN,
-                "SUPER_ADMIN_REQUIRED",
-                "只有超级管理员可以恢复未知写入项目。",
-            )
-            return
-        values = self._read_control_plane_json(handler)
-        if values is None:
-            return
-        request_id = self._normalize_browser_request_uuid(values.get("request_id"))
-        if set(values) != {"request_id"} or not request_id:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "PLUGIN_RECOVERY_REQUEST_INVALID",
-                "未知写入恢复请求无效。",
-            )
-            return
-        result = self._agent_request(
-            "POST",
-            (
-                f"/internal/v1/automation/instances/{quote(automation_id, safe='')}"
-                "/generation/recover-current-unknown-write"
-            ),
-            payload={"request_id": request_id},
-            timeout=30,
-            console_principal=trusted_context["_console_principal"],
-        )
-        if not result.get("ok"):
-            self._automation_project_agent_error(
-                handler,
-                result,
-                automation_id=automation_id,
-                fallback_code="PLUGIN_UNKNOWN_WRITE_RECOVERY_FAILED",
-                fallback_message="未知写入恢复失败。",
-            )
-            return
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        recovery_status = str(data.get("recovery_status") or "").strip().upper()
-        if recovery_status == "UNKNOWN":
-            self._control_plane_error(
-                handler,
-                HTTPStatus.CONFLICT,
-                "PLUGIN_RECOVERY_EVIDENCE_UNRESOLVED",
-                (
-                    "系统仍无法确认上次是否已经保存。任务会继续暂停，也没有重复执行。"
-                    "请先到对应业务表格核对实际结果。"
-                ),
-            )
-            return
-        if recovery_status not in {"APPLIED", "NOT_APPLIED"}:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_GATEWAY,
-                "PLUGIN_RECOVERY_RESPONSE_INVALID",
-                "Agent 返回了无法识别的恢复结果。",
-            )
-            return
-        self._send_json(
-            handler,
-            HTTPStatus.OK,
-            {
-                "ok": True,
-                "data": {
-                    "automation_id": automation_id,
-                    "recovery_status": recovery_status,
-                    "transitioned": bool(data.get("transitioned")),
-                },
-                "message": (
-                    "已确认上次保存成功，任务已恢复。"
-                    if recovery_status == "APPLIED"
-                    else "已确认上次没有保存，任务已进入安全重试状态。"
-                ),
-            },
-        )
-
     def _handle_automation_plugin_configuration_save(
         self,
         handler: BaseHTTPRequestHandler,
@@ -2748,7 +2764,10 @@ class AutomationProjectsServiceMixin:
             values.get("resource_bindings")
         )
         enabled_entrypoints, entrypoints_valid = _normalize_plugin_entrypoints(
-            values.get("enabled_entrypoints")
+            values.get("enabled_entrypoints"),
+            # The Agent validates the submitted IDs against the project's signed
+            # v1 manifest or installed v2 contribution contract.
+            runtime_model="SERVICE_V2",
         )
         raw_device_id = values.get("device_id")
         device_id = str(raw_device_id or "").strip()

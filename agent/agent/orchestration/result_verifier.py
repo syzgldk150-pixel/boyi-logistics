@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 import uuid
 
@@ -13,6 +13,7 @@ from agent.automation_plugins.models import (
     GenerationVerificationContext,
     RuntimeLeaseOutcome,
 )
+from agent.automation_plugins.migration import PluginMigrationRuntimeCoordinator
 from agent.automation_plugins.code_owned_fields import (
     SCAN_FORMAL_POSTCONDITION,
     SCAN_PHASE_PREVIEW,
@@ -40,8 +41,13 @@ class ResultVerifier:
         {"source_system", "account_id", "observed_at", "record_count", "pagination_complete", "evidence_refs"}
     )
 
-    def __init__(self, generation_leases: RuntimeGenerationLeasePort | None = None) -> None:
+    def __init__(
+        self,
+        generation_leases: RuntimeGenerationLeasePort | None = None,
+        migration_runtime: PluginMigrationRuntimeCoordinator | None = None,
+    ) -> None:
         self._generation_leases = generation_leases
+        self._migration_runtime = migration_runtime
 
     def verify(
         self,
@@ -490,6 +496,14 @@ class ResultVerifier:
                 "GENERATION_LEASE_INVALID",
                 "Plugin generation verification metadata is incomplete",
             )
+        if verification.orchestration_run_id is not None and (
+            not verification.orchestration_run_id
+            or len(verification.orchestration_run_id) > 191
+        ):
+            return self._failure(
+                "GENERATION_LEASE_INVALID",
+                "Plugin generation verification metadata is incomplete",
+            )
         try:
             uuid.UUID(verification.lease_id)
         except (ValueError, TypeError, AttributeError):
@@ -558,6 +572,28 @@ class ResultVerifier:
                 "Plugin generation write finalization could not be persisted "
                 f"({type(exc).__name__}: {redact_text(exc)[:300]})",
             )
+        if (
+            self._migration_runtime is not None
+            and verification.orchestration_run_id is not None
+        ):
+            try:
+                claim = self._migration_runtime.find_claim_for_execution(
+                    verification.automation_id,
+                    verification.orchestration_run_id,
+                )
+                self._migration_runtime.settle_after_write_verification(
+                    claim,
+                    final_outcome.value,
+                    now=datetime.now(timezone.utc),
+                )
+            except Exception as exc:
+                return VerificationOutcome(
+                    False,
+                    RunStatus.BLOCKED_DATA,
+                    "PLUGIN_MIGRATION_SETTLEMENT_UNAVAILABLE",
+                    "Plugin migration write settlement could not be persisted "
+                    f"({type(exc).__name__}: {redact_text(exc)[:300]})",
+                )
         return outcome
 
     def _normalize_result(self, raw_result: Mapping[str, Any]) -> ToolResult:

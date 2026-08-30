@@ -43,6 +43,7 @@ class ProjectInvokeRequest(BaseModel):
 
     request_id: str
     preview_run_id: str | None = None
+    contribution_id: str | None = Field(default=None, max_length=128)
 
 
 class ProjectSelectionPreviewRequest(BaseModel):
@@ -235,11 +236,16 @@ def create_automation_project_router(
         payload: ProjectInvokeRequest,
         request: Request,
     ) -> dict[str, Any]:
+        invocation_arguments: dict[str, Any] = {
+            "request_id": payload.request_id,
+            "actor": actor_provider(request),
+            "preview_run_id": payload.preview_run_id,
+        }
+        if payload.contribution_id is not None:
+            invocation_arguments["contribution_id"] = payload.contribution_id
         receipt = service_provider().invoke_console(
             automation_id,
-            request_id=payload.request_id,
-            actor=actor_provider(request),
-            preview_run_id=payload.preview_run_id,
+            **invocation_arguments,
         )
         serialized = receipt.to_dict() if callable(getattr(receipt, "to_dict", None)) else receipt
         return api_success(serialized)

@@ -448,6 +448,175 @@ def test_reconcile_all_quarantines_one_project_and_continues() -> None:
     }
 
 
+def test_reconcile_all_retries_consumers_after_provider_projection_changes() -> None:
+    service = object.__new__(MySQLRuntimeTargetService)
+    service._catalog = SimpleNamespace(
+        persisted_automation_ids=lambda: ("consumer-project", "provider-project")
+    )
+    projection = {"revision": 0}
+    visited: list[str] = []
+
+    class _Reconciler:
+        @staticmethod
+        def projection_signature() -> int:
+            return projection["revision"]
+
+    def _reconcile_project(automation_id: str):
+        visited.append(automation_id)
+        if automation_id == "consumer-project" and projection["revision"] == 0:
+            return None
+        if automation_id == "provider-project":
+            projection["revision"] = 1
+        return f"ready:{automation_id}"
+
+    service._reconciler = _Reconciler()
+    service.reconcile_project = _reconcile_project
+
+    assert service.reconcile_all() == (
+        "ready:consumer-project",
+        "ready:provider-project",
+    )
+    assert visited == [
+        "consumer-project",
+        "provider-project",
+        "consumer-project",
+        "provider-project",
+    ]
+
+
+def test_provider_restore_projects_routes_before_opening_physical_schedules() -> None:
+    provider = SimpleNamespace(
+        automation_id="provider-project",
+        runtime_model="SERVICE_V2",
+        provided_services=("plugin.provider.lookup@1",),
+        required_services=(),
+    )
+    consumer = SimpleNamespace(
+        automation_id="consumer-project",
+        runtime_model="SERVICE_V2",
+        provided_services=(),
+        required_services=("plugin.provider.lookup@1",),
+    )
+    events: list[tuple[str, str, bool | None]] = []
+
+    class _Runtime:
+        @staticmethod
+        def set_project_dependency_scheduler_gate(
+            automation_id: str, *, dependency_ready: bool
+        ) -> dict[str, object]:
+            events.append(("gate", automation_id, dependency_ready))
+            return {"automation_id": automation_id}
+
+    target = object.__new__(MySQLRuntimeTargetService)
+    target._catalog = SimpleNamespace(list=lambda: (consumer, provider))
+    target._runtime = _Runtime()
+    def reconcile(automation_id: str, **kwargs: Any) -> SimpleNamespace:
+        events.append(
+            ("project", automation_id, kwargs.get("defer_scheduler_enable"))
+        )
+        return SimpleNamespace(waiting_coeffects=())
+
+    target.reconcile_project = reconcile
+
+    target.restore_provider_dependency_tree(
+        provider.automation_id,
+        provider_services=provider.provided_services,
+    )
+
+    assert events == [
+        ("gate", "provider-project", False),
+        ("gate", "consumer-project", False),
+        ("project", "provider-project", True),
+        ("project", "consumer-project", True),
+        ("gate", "provider-project", True),
+        ("gate", "consumer-project", True),
+    ]
+
+
+def test_provider_restore_does_not_open_consumer_with_another_missing_dependency() -> None:
+    provider = SimpleNamespace(
+        automation_id="provider-project",
+        runtime_model="SERVICE_V2",
+        provided_services=("plugin.provider.lookup@1",),
+        required_services=(),
+    )
+    consumer = SimpleNamespace(
+        automation_id="consumer-project",
+        runtime_model="SERVICE_V2",
+        provided_services=(),
+        required_services=(
+            "plugin.provider.lookup@1",
+            "plugin.other.missing@1",
+        ),
+    )
+    gate_calls: list[tuple[str, bool]] = []
+    target = object.__new__(MySQLRuntimeTargetService)
+    target._catalog = SimpleNamespace(list=lambda: (consumer, provider))
+    target._runtime = SimpleNamespace(
+        set_project_dependency_scheduler_gate=lambda automation_id, *, dependency_ready: (
+            gate_calls.append((automation_id, dependency_ready)) or {}
+        )
+    )
+    target.reconcile_project = lambda automation_id, **_kwargs: SimpleNamespace(
+        waiting_coeffects=(
+            ("BLOCKED_DEPENDENCY",)
+            if automation_id == consumer.automation_id
+            else ()
+        )
+    )
+
+    target.restore_provider_dependency_tree(
+        provider.automation_id,
+        provider_services=provider.provided_services,
+    )
+
+    assert gate_calls == [
+        ("provider-project", False),
+        ("consumer-project", False),
+        ("provider-project", True),
+    ]
+
+
+def test_provider_restore_crash_before_all_projections_never_opens_schedules() -> None:
+    provider = SimpleNamespace(
+        automation_id="provider-project",
+        runtime_model="SERVICE_V2",
+        provided_services=("plugin.provider.lookup@1",),
+        required_services=(),
+    )
+    consumer = SimpleNamespace(
+        automation_id="consumer-project",
+        runtime_model="SERVICE_V2",
+        provided_services=(),
+        required_services=("plugin.provider.lookup@1",),
+    )
+    gate_calls: list[tuple[str, bool]] = []
+    target = object.__new__(MySQLRuntimeTargetService)
+    target._catalog = SimpleNamespace(list=lambda: (consumer, provider))
+    target._runtime = SimpleNamespace(
+        set_project_dependency_scheduler_gate=lambda automation_id, *, dependency_ready: (
+            gate_calls.append((automation_id, dependency_ready)) or {}
+        )
+    )
+
+    def reconcile(automation_id: str, **_kwargs: Any) -> None:
+        if automation_id == consumer.automation_id:
+            raise RuntimeError("consumer projection failed")
+
+    target.reconcile_project = reconcile
+
+    with pytest.raises(RuntimeError, match="consumer projection failed"):
+        target.restore_provider_dependency_tree(
+            provider.automation_id,
+            provider_services=provider.provided_services,
+        )
+
+    assert gate_calls == [
+        ("provider-project", False),
+        ("consumer-project", False),
+    ]
+
+
 def test_reconcile_all_keeps_catalog_identity_conflicts_global() -> None:
     service = object.__new__(MySQLRuntimeTargetService)
     service._catalog_repository = SimpleNamespace(
@@ -1181,6 +1350,28 @@ def test_runtime_reconcile_closes_concurrent_stabilization_window() -> None:
     assert events == ["reconcile", "bootstrap", "reconcile"]
 
 
+def test_runtime_reconcile_after_dependency_change_retries_all_consumers() -> None:
+    events: list[tuple[str | None, str | None]] = []
+
+    class _TargetService:
+        @staticmethod
+        def reconcile_all():
+            events.append((None, None))
+            return ("consumer-a", "consumer-b")
+
+    runtime = object.__new__(ProductionAutomationPluginRuntime)
+    runtime.bootstrap = BootstrapResult(created=(), existing=(), rejected={})
+    runtime.target_service = _TargetService()
+
+    result = runtime.reconcile_after_dependency_change(
+        account_id="account-a",
+        service="plugin.provider.lookup@1",
+    )
+
+    assert result == ("consumer-a", "consumer-b")
+    assert events == [(None, None)]
+
+
 def test_runtime_reconcile_fails_closed_when_follow_up_bootstrap_is_rejected() -> None:
     reconcile_calls = 0
 
@@ -1265,6 +1456,51 @@ def test_coeffects_require_structural_account_and_all_typed_handlers(
         assert {
             item.reason_code for item in account_blocked if not item.ready
         } == {"BLOCKED_CONFIG"}
+
+
+def test_uninstall_reconciliation_disposes_the_revoked_current_generation() -> None:
+    class Runtime:
+        target_generation = 1
+        committed_generation = 1
+
+        @staticmethod
+        def get_project_runtime(_automation_id: str) -> "Runtime":
+            return Runtime()
+
+        @staticmethod
+        def get_generation(_automation_id: str, _generation: int) -> None:
+            return None
+
+        @staticmethod
+        def mark_generation_draining(_automation_id: str, _generation: int) -> None:
+            raise AssertionError("uninstall preparation already marked generation draining")
+
+    class Reconciler:
+        def __init__(self) -> None:
+            self.disposed: list[int] = []
+
+        def dispose_generation(self, generation: object) -> bool:
+            self.disposed.append(int(generation.snapshot.generation))
+            return True
+
+    generation = SimpleNamespace(
+        snapshot=SimpleNamespace(generation=1),
+        state=RuntimeGenerationState.DRAINING,
+    )
+    reconciler = Reconciler()
+    target = object.__new__(MySQLRuntimeTargetService)
+    target._runtime = Runtime()
+    target._reconciler = reconciler
+
+    result = target._reconcile_uninstalling_project(  # noqa: SLF001
+        "automation-1",
+        Runtime(),
+        (generation,),
+    )
+
+    assert result is not None
+    assert result.disposed_generations == (1,)
+    assert reconciler.disposed == [1]
 
 
 def test_resource_coeffect_binds_exact_managed_resource_revision(

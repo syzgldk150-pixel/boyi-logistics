@@ -421,6 +421,22 @@ class _IdempotentDriver(_Driver):
         return replace(effect, state=RuntimeEffectState.APPLIED)
 
 
+class _ActivatingDriver(_Driver):
+    def __init__(self) -> None:
+        super().__init__()
+        self.activated: list[tuple[int, tuple[RuntimeEffectState, ...]]] = []
+
+    def activate_committed(
+        self,
+        *,
+        snapshot: RuntimeGenerationSnapshot,
+        effects: Sequence[RuntimeEffectRecord],
+    ) -> None:
+        self.activated.append(
+            (snapshot.generation, tuple(effect.state for effect in effects))
+        )
+
+
 class _FailingDisposeDriver(_Driver):
     def dispose(self, effect: RuntimeEffectRecord) -> None:
         raise RuntimeError(f"cannot dispose {effect.effect_key}")
@@ -443,6 +459,26 @@ def _reconciler(
         ),
         driver,
     )
+
+
+def test_committed_route_cas_activates_only_durable_applied_effects() -> None:
+    repository = _MemoryGenerationRepository()
+    driver = _ActivatingDriver()
+    reconciler, _ = _reconciler(repository, driver=driver)
+
+    result = reconciler.reconcile(
+        _snapshot(1, "1.0.0"),
+        expected_committed_generation=None,
+        request_id=str(uuid.uuid4()),
+    )
+
+    assert result.committed_generation == 1
+    assert driver.activated == [
+        (
+            1,
+            (RuntimeEffectState.APPLIED, RuntimeEffectState.APPLIED),
+        )
+    ]
 
 
 def test_upgrade_commits_new_generation_then_drains_old_lease() -> None:

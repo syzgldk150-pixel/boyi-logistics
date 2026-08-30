@@ -14,6 +14,15 @@ from shared.automation_plugin_generation_unknown_write_repository import (
 )
 from shared.automation_unknown_write_repository import lock_remaining_unknown_generation_leases
 from shared.automation_write_attempt_repository import record_generation_write_attempt_row as _record_generation_write_attempt_row
+from shared.automation_plugin_generation_runtime_repository import (
+    get_generation_row as _get_generation_row,
+    get_project_runtime_row as _get_project_runtime_row,
+    list_generation_rows as _list_generation_rows,
+    list_project_runtime_rows as _list_project_runtime_rows,
+    migration_owned_scheduler_enabled as _migration_owned_scheduler_enabled,
+    scheduler_contribution_binding as _scheduler_contribution_binding,
+    set_project_dependency_scheduler_gate as _set_project_dependency_scheduler_gate,
+)
 
 Any = _repository.Any
 AutomationPluginPurgeBlocked = _repository.AutomationPluginPurgeBlocked
@@ -35,6 +44,7 @@ _optional_positive_int = _repository._optional_positive_int
 _optional_text = _repository._optional_text
 _positive_int = _repository._positive_int
 _required_text = _repository._required_text
+_runtime_contract = _repository._runtime_contract
 _row_dict = _repository._row_dict
 _rows = _repository._rows
 _safe_error = _repository._safe_error
@@ -47,37 +57,26 @@ uuid = _repository.uuid
 
 
 class AutomationPluginGenerationRepositoryMixin:
+    def set_project_dependency_scheduler_gate(
+        self,
+        automation_id: str,
+        *,
+        dependency_ready: bool,
+    ) -> dict[str, Any]:
+        return _set_project_dependency_scheduler_gate(
+            self, automation_id, dependency_ready=dependency_ready
+        )
+
     def get_project_runtime_row(
         self,
         automation_id: str,
         *,
         for_update: bool = False,
     ) -> dict[str, Any] | None:
-        suffix = " FOR UPDATE" if for_update else ""
-        with self.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT automation_id, target_generation, committed_generation,
-                       reconcile_state, record_version
-                FROM automation_projects WHERE automation_id=%s{suffix}
-                """,
-                (_required_text(automation_id, "automation_id"),),
-            )
-            return _row_dict(cursor, cursor.fetchone())
+        return _get_project_runtime_row(self, automation_id, for_update=for_update)
 
     def list_project_runtime_rows(self) -> list[dict[str, Any]]:
-        """Return only the runtime pointer projection used by reconciliation."""
-
-        with self.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT automation_id, target_generation, committed_generation,
-                       reconcile_state, record_version
-                FROM automation_projects
-                ORDER BY automation_id
-                """
-            )
-            return _rows(cursor)
+        return _list_project_runtime_rows(self)
 
     def get_generation_row(
         self,
@@ -86,76 +85,15 @@ class AutomationPluginGenerationRepositoryMixin:
         *,
         for_update: bool = False,
     ) -> dict[str, Any] | None:
-        suffix = " FOR UPDATE" if for_update else ""
-        safe_automation_id = _required_text(automation_id, "automation_id")
-        safe_generation = _positive_int(generation, "generation")
-        with self.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT * FROM automation_project_generations
-                WHERE automation_id=%s AND generation=%s{suffix}
-                """,
-                (safe_automation_id, safe_generation),
-            )
-            row = _decode_row(
-                _row_dict(cursor, cursor.fetchone()),
-                self._GENERATION_JSON_FIELDS,
-            )
-            if row is None:
-                return None
-            row = _validated_generation_row(row)
-            cursor.execute(
-                f"""
-                SELECT * FROM automation_project_generation_coeffects
-                WHERE automation_id=%s AND generation=%s
-                ORDER BY coeffect_kind, coeffect_key{suffix}
-                """,
-                (safe_automation_id, safe_generation),
-            )
-            row["coeffects"] = [
-                _decode_row(item, self._COEFFECT_JSON_FIELDS) or {}
-                for item in _rows(cursor)
-            ]
-            cursor.execute(
-                f"""
-                SELECT * FROM automation_project_generation_effects
-                WHERE automation_id=%s AND generation=%s
-                ORDER BY effect_sequence, effect_id{suffix}
-                """,
-                (safe_automation_id, safe_generation),
-            )
-            row["effects"] = [
-                _decode_row(item, self._EFFECT_JSON_FIELDS) or {}
-                for item in _rows(cursor)
-            ]
-            return row
+        return _get_generation_row(
+            self, automation_id, generation, for_update=for_update
+        )
 
     def list_generation_rows(
         self,
         automation_id: str,
     ) -> list[dict[str, Any]]:
-        """Return every persisted generation with its coeffect/effect journals."""
-
-        safe_automation_id = _required_text(automation_id, "automation_id")
-        with self.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT generation FROM automation_project_generations
-                WHERE automation_id=%s
-                ORDER BY generation
-                """,
-                (safe_automation_id,),
-            )
-            generations = [int(row["generation"]) for row in _rows(cursor)]
-        result: list[dict[str, Any]] = []
-        for generation in generations:
-            row = self.get_generation_row(safe_automation_id, generation)
-            if row is None:
-                raise ConcurrentUpdateError(
-                    "runtime generation changed during reconciliation listing"
-                )
-            result.append(row)
-        return result
+        return _list_generation_rows(self, automation_id)
 
     def allocate_target_generation_row(
         self,
@@ -168,6 +106,7 @@ class AutomationPluginGenerationRepositoryMixin:
 
         automation_id = _required_text(snapshot.get("automation_id"), "automation_id")
         normalized = _generation_snapshot(automation_id, snapshot)
+        runtime_model, plugin_api = _runtime_contract(normalized)
         generation = _positive_int(normalized["generation"], "generation")
         expected_committed = _optional_positive_int(
             expected_committed_generation,
@@ -260,10 +199,24 @@ class AutomationPluginGenerationRepositoryMixin:
                 "package_sha256",
                 "manifest_sha256",
                 "trust_source",
+                "runtime_model",
+                "plugin_api",
                 "tool_contract_sha256",
                 "invocation_contracts_sha256",
             ):
-                if str(version.get(field) or "") != str(normalized[field]):
+                target_value = (
+                    runtime_model
+                    if field == "runtime_model"
+                    else plugin_api
+                    if field == "plugin_api"
+                    else normalized[field]
+                )
+                persisted_value = version.get(field)
+                if persisted_value in (None, "") and field == "runtime_model":
+                    persisted_value = "ACTION_V1"
+                if persisted_value in (None, "") and field == "plugin_api":
+                    persisted_value = "1.0.0"
+                if str(persisted_value or "") != str(target_value):
                     raise ConcurrentUpdateError(
                         f"runtime target {field} differs from installed package"
                     )
@@ -376,6 +329,7 @@ class AutomationPluginGenerationRepositoryMixin:
                 INSERT INTO automation_project_generations (
                     automation_id, generation, request_id,
                     base_committed_generation, state, plugin_id, plugin_version,
+                    runtime_model, plugin_api,
                     package_sha256, manifest_sha256, trust_source,
                     project_config_sha256, account_bindings_sha256,
                     resource_bindings_sha256, device_binding_sha256,
@@ -386,7 +340,7 @@ class AutomationPluginGenerationRepositoryMixin:
                     enabled_entrypoints_sha256,
                     snapshot_json, snapshot_sha256, record_version, created_at
                 ) VALUES (
-                    %s, %s, %s, %s, 'TARGET', %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, 'TARGET', %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s,
                     %s, %s, 1, %s
@@ -399,6 +353,8 @@ class AutomationPluginGenerationRepositoryMixin:
                     expected_committed,
                     normalized["plugin_id"],
                     normalized["plugin_version"],
+                    runtime_model,
+                    plugin_api,
                     normalized["package_sha256"],
                     normalized["manifest_sha256"],
                     normalized["trust_source"],
@@ -1192,22 +1148,40 @@ class AutomationPluginGenerationRepositoryMixin:
                 raise OrchestrationPersistenceError(
                     "runtime generation entrypoints are invalid"
                 )
-            scheduler_enabled = "scheduler" in enabled_entrypoints
             compiled_invocations = execution_metadata.get("compiled_invocations")
             if not isinstance(compiled_invocations, Mapping):
                 raise OrchestrationPersistenceError(
                     "runtime compiled invocations are invalid"
                 )
-            scheduler_contract = compiled_invocations.get("scheduler", {})
+            expressions = _schedule_expressions(desired_schedule)
+            scheduler_entrypoint, scheduler_enabled = (
+                _scheduler_contribution_binding(
+                    snapshot=snapshot,
+                    execution_metadata=execution_metadata,
+                    enabled_entrypoints=enabled_entrypoints,
+                    schedule_expressions=expressions,
+                )
+            )
+            physical_scheduler_enabled = _migration_owned_scheduler_enabled(
+                cursor,
+                automation_id=safe_automation_id,
+                desired_enabled=bool(
+                    desired_schedule["enabled"] and scheduler_enabled
+                ),
+            )
+            scheduler_contract = (
+                compiled_invocations.get(scheduler_entrypoint, {})
+                if scheduler_entrypoint is not None
+                else {}
+            )
             scheduler_arguments = (
                 scheduler_contract.get("arguments")
                 if isinstance(scheduler_contract, Mapping)
                 else None
             )
-            expressions = _schedule_expressions(desired_schedule)
             if (
                 expressions
-                and scheduler_enabled
+                and scheduler_entrypoint is not None
                 and not isinstance(scheduler_arguments, Mapping)
             ):
                 raise OrchestrationPersistenceError(
@@ -1275,7 +1249,7 @@ class AutomationPluginGenerationRepositoryMixin:
                         f"automation.{safe_automation_id}.run",
                         _json_param(scheduler_arguments or {}, {}),
                         item["cron_expression"],
-                        bool(desired_schedule["enabled"] and scheduler_enabled),
+                        physical_scheduler_enabled,
                         int(execution_metadata["project_config_version"]),
                     ),
                 )
@@ -2583,7 +2557,8 @@ class AutomationPluginGenerationRepositoryMixin:
         with self.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT committed_generation FROM automation_projects
+                SELECT committed_generation, state, reconcile_state
+                FROM automation_projects
                 WHERE automation_id=%s FOR UPDATE
                 """,
                 (safe_automation_id,),
@@ -2591,7 +2566,15 @@ class AutomationPluginGenerationRepositoryMixin:
             project = _row_dict(cursor, cursor.fetchone())
             if project is None:
                 raise OrchestrationPersistenceError("automation project does not exist")
-            if int(project.get("committed_generation") or 0) == safe_generation:
+            uninstalling = (
+                str(project.get("state") or "") == "UNINSTALLING"
+                and str(project.get("reconcile_state") or "")
+                in {"DRAINING", "DISPOSING"}
+            )
+            if (
+                int(project.get("committed_generation") or 0) == safe_generation
+                and not uninstalling
+            ):
                 raise AutomationPluginPurgeBlocked(
                     "current committed generation cannot be disposed"
                 )
@@ -2791,14 +2774,27 @@ class AutomationPluginGenerationRepositoryMixin:
             cursor.execute(
                 """
                 SELECT automation_id, plugin_id, plugin_version, state, enabled,
-                       target_generation, committed_generation, record_version
+                       target_generation, committed_generation, reconcile_state,
+                       record_version
                 FROM automation_projects
                 WHERE automation_id=%s FOR UPDATE
                 """,
                 (safe_automation_id,),
             )
             project = _row_dict(cursor, cursor.fetchone())
-            if project is None or int(project.get("committed_generation") or 0) == safe_generation:
+            uninstalling = (
+                isinstance(project, Mapping)
+                and str(project.get("state") or "") == "UNINSTALLING"
+                and str(project.get("reconcile_state") or "")
+                in {"DRAINING", "DISPOSING"}
+            )
+            if (
+                project is None
+                or (
+                    int(project.get("committed_generation") or 0) == safe_generation
+                    and not uninstalling
+                )
+            ):
                 raise ConcurrentUpdateError(
                     "current committed generation cannot complete disposal"
                 )

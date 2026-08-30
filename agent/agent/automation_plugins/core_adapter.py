@@ -13,11 +13,39 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
-from agent.automation_plugins.broker import BrokerGrant
+from agent.automation_plugins.broker import BrokerGrant, _assert_redacted
 from agent.automation_plugins.errors import PluginExecutionError
+from agent.automation_plugins.service_v2_contract import SYSTEM_CAPABILITY_ROLE
 from agent.execution_boundary import execution_capability_scope
 from agent.tms_runtime.account_manager import AutomationAccountManager, get_account_manager
 from agent.tms_runtime.errors import TMSAuthStateError
+
+
+def _binding_account_ids(grant: BrokerGrant) -> frozenset[str]:
+    values: set[str] = set()
+    for binding in grant.account_bindings.values():
+        raw_values = binding if isinstance(binding, (tuple, list)) else (binding,)
+        for item in raw_values:
+            normalized = str(item or "").strip()
+            if normalized:
+                values.add(normalized)
+    return frozenset(values)
+
+
+def _assert_no_account_id_values(value: Any, account_ids: frozenset[str]) -> None:
+    if isinstance(value, Mapping):
+        for nested in value.values():
+            _assert_no_account_id_values(nested, account_ids)
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            _assert_no_account_id_values(nested, account_ids)
+    elif isinstance(value, str) and any(account_id in value for account_id in account_ids):
+        raise PluginExecutionError("core broker adapter returned sensitive data")
+
+
+def _assert_public_result_safe(value: Mapping[str, Any], grant: BrokerGrant) -> None:
+    _assert_redacted(value)
+    _assert_no_account_id_values(value, _binding_account_ids(grant))
 
 
 @dataclass(frozen=True)
@@ -32,6 +60,10 @@ class CoreBrokerInvocationContext:
     resource_id: str | None = None
     account_bindings: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     resource_bindings: Mapping[str, str] = field(default_factory=dict)
+    # Host-private ancestry for nested Service v2 calls.  It is carried only
+    # inside the opaque Broker grant and is never exposed as a credential or
+    # accepted from subprocess arguments.
+    service_call_chain: tuple[str, ...] = ()
     # This is supplied only for a signed write call.  The handler must invoke
     # it exactly once, immediately before its first mutating port call.  It is
     # intentionally optional so closed handler unit tests can exercise their
@@ -212,9 +244,28 @@ class RegisteredCoreAutomationBrokerAdapter:
 
         resolved_accounts: dict[str, tuple[str, ...]] = {}
         resolved_resources: dict[str, str] = {}
+        if SYSTEM_CAPABILITY_ROLE in signed_roles and signed_roles != (
+            SYSTEM_CAPABILITY_ROLE,
+        ):
+            raise PluginExecutionError(
+                "the internal broker role must be the only signed role",
+                code="BROKER_CONTRACT_INVALID",
+            )
         for signed_role in signed_roles:
             account_role = self._role_declaration(grant.account_roles, signed_role)
             resource_role = self._role_declaration(grant.resource_roles, signed_role)
+            if signed_role == SYSTEM_CAPABILITY_ROLE:
+                if (
+                    account_role is not None
+                    or resource_role is not None
+                    or signed_role in grant.account_bindings
+                    or signed_role in grant.resource_bindings
+                ):
+                    raise PluginExecutionError(
+                        "the internal broker role cannot carry a binding",
+                        code="BROKER_CONTRACT_INVALID",
+                    )
+                continue
             if account_role is not None and resource_role is not None:
                 raise PluginExecutionError(
                     "broker role is ambiguous",
@@ -294,6 +345,12 @@ class RegisteredCoreAutomationBrokerAdapter:
                     "selected resource binding does not match the signed grant",
                     code="BROKER_RESOURCE_MISMATCH",
                 )
+        elif role == SYSTEM_CAPABILITY_ROLE:
+            if binding is not None:
+                raise PluginExecutionError(
+                    "the internal broker role cannot carry a binding",
+                    code="BROKER_CONTRACT_INVALID",
+                )
         context = CoreBrokerInvocationContext(
             automation_id=grant.automation_id,
             plugin_version=grant.plugin_version,
@@ -305,6 +362,7 @@ class RegisteredCoreAutomationBrokerAdapter:
             resource_id=resource_id,
             account_bindings=resolved_accounts,
             resource_bindings=resolved_resources,
+            service_call_chain=self._service_call_chain(grant),
             mark_write_started=mark_write_started,
         )
         try:
@@ -314,6 +372,29 @@ class RegisteredCoreAutomationBrokerAdapter:
                 "the exact target session requires login",
                 code="BLOCKED_LOGIN",
             ) from exc
+
+    @staticmethod
+    def _service_call_chain(grant: BrokerGrant) -> tuple[str, ...]:
+        raw = grant.runtime_permissions.get("_service_call_chain")
+        if raw is None:
+            return ()
+        if (
+            not isinstance(raw, list)
+            or len(raw) > 8
+            or any(
+                not isinstance(item, str)
+                or not item
+                or item != item.strip()
+                or len(item) > 191
+                for item in raw
+            )
+            or len(raw) != len(set(raw))
+        ):
+            raise PluginExecutionError(
+                "service invocation ancestry is invalid",
+                code="SERVICE_CALL_CHAIN_INVALID",
+            )
+        return tuple(raw)
 
     async def invoke(
         self,
@@ -327,6 +408,8 @@ class RegisteredCoreAutomationBrokerAdapter:
         mark_write_started: Callable[[], None] | None = None,
     ) -> Mapping[str, Any]:
         handler = self._handlers.get((operation, action))
+        if handler is None:
+            handler = self._handlers.get((operation, "*"))
         if handler is None:
             raise PluginExecutionError(
                 "core broker action is not registered",
@@ -380,7 +463,9 @@ class RegisteredCoreAutomationBrokerAdapter:
                     ) from exc
         if not isinstance(result, Mapping):
             raise PluginExecutionError("core broker handler returned a non-object result")
-        return dict(result)
+        public_result = dict(result)
+        await asyncio.to_thread(_assert_public_result_safe, public_result, grant)
+        return public_result
 
 
 __all__ = [
