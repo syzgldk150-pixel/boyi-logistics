@@ -1,10 +1,18 @@
+---
+module: deployment
+type: operations
+status: active
+updated: 2026-08-30
+---
+
 # Nginx 生产边界
 
 当前生产站点使用 `boyi.homes.conf`。主站 `https://boyi.homes` 保留 `SAMEORIGIN`，只有
 `https://www.boyi.homes/original/` 代理到 Console，供韵达/融辉原页在独立 origin 内运行；
-`www` 的其他路径一律跳回主站。系统配置不由应用发布脚本自动覆盖，管理员必须先备份
-`/etc/nginx/conf.d/boyi.homes.conf`，安装当前提交中的同名文件，执行 `sudo -n nginx -t`，
-成功后才 reload；测试或 reload 失败时恢复备份并再次测试。
+`www` 的其他路径一律跳回主站。系统配置不由应用发布脚本自动覆盖；管理员必须先备份
+`/etc/nginx/sites-enabled/boyi.homes.conf` 解析到的实际站点文件，把当前提交中的同名文件
+安装到受管的 `sites-available`/`sites-enabled` 路径，执行 `sudo -n nginx -t`，成功后才 reload；
+测试或 reload 失败时恢复备份并再次测试。
 
 `boyi-worker-mtls.conf` 是未来重新启用 Windows Worker 时的保留合同。届时必须作为一个整体、
 且仅一次 include 在 `boyi.homes` 的 HTTPS
@@ -32,9 +40,12 @@ sudo -n /usr/sbin/nginx -t
 sudo systemctl reload nginx.service
 ```
 
-`remote_release.sh` 在备份、依赖环境构建、停服务、迁移或源码同步前重新验证：staged snippet 与安装
-文件 SHA-256 完全一致、站点精确引用、路径/owner/mode 安全、Nginx 正在运行且 `nginx -t` 成功。
-任一条件不满足时发布失败关闭，不会自动改写 `/etc/nginx` 或证书目录。
+当前发行在 `remote_release.sh` 中固定 `WINDOWS_WORKER_RELEASE_ENABLED=0`，所以普通 Agent/Console
+发布不会执行 Worker mTLS 预检，也不会因 snippet、客户端 CA 或 Worker 路由缺失而失败。未来通过
+受审代码变更重新启用该发行范围后，发布器才会在备份、依赖环境构建、停服务、迁移或源码同步前
+重新验证：staged snippet 与安装文件 SHA-256 完全一致、站点精确引用、路径/owner/mode 安全、Nginx
+正在运行且 `nginx -t` 成功。任一条件不满足时发布失败关闭，发布器仍不会自动改写 `/etc/nginx`
+或证书目录。
 
 Worker location 总是覆盖来自公网的 TLS 身份头，只从 Nginx 的 `$ssl_client_verify` 和
 `$ssl_client_escaped_cert` 生成上游值；`X-Worker-Device-ID` 仅用于选择待校验设备。它同时清空普通

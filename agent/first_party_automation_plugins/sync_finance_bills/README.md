@@ -1,3 +1,10 @@
+---
+module: finance
+type: plugin-contract
+status: active
+updated: 2026-08-30
+---
+
 # `sync_finance_bills` signed action
 
 This package is the finance business orchestrator. It explicitly runs the three
@@ -237,5 +244,8 @@ Response fields are `schema_version`, `committed=true`, `batch_id`, the same
 unlisted runs, finalize the batch, and expose only complete successful/no-data
 snapshots. A mismatch in status, counts, run set or contract digest fails closed.
 
-Until all five primitives satisfy these DTOs, the payload is intentionally not
-production-runnable; there is no compatibility fallback to the old whole tool.
+All five primitives now satisfy this closed contract. `MIGRATION_MATRIX.md` marks
+`sync_finance_bills` as `RUNNABLE`, and the executable production scope includes
+it in `agent/agent/automation_plugins/release_scope.py`. Production admission
+still requires the signed release, digest lock, Broker/router/write-lease and
+ResultVerifier gates; there is no compatibility fallback to the old whole tool.

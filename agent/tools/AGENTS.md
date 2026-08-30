@@ -64,13 +64,13 @@
   - 默认走 `http://127.0.0.1:9000/tms/*` 兼容层
   - 所有 WorkflowRunner 工具对本机 `/tms/*` 的调用必须使用 `internal_http.internal_api_headers()` 发送按工具/target 绑定的短期执行能力；该兼容函数名不代表共享 Token，工具子进程不得继承或发送 `X-Agent-Internal-Token`
   - 当前线上权威执行源已切换为 `agent/tms_runtime/`
-  - 图片/短信验证码共享登录态由 `agent` 的 `/admin/tms/session/*` 管理
+  - 图片/短信验证码共享登录态由 Agent 的 `/admin/accounts/{account_id}/*` 管理；`/admin/tms/*-session` 仅是旧兼容入口
 
 ## 相关文档
 
 - `../docs/code_navigation_index.md`
 - `../docs/rules_and_definitions.md`
-- `../../1/AGENTS.md`
+- `../../AGENTS.md`
 
 - 分批及有发未到问题件：
   - `split_pending_problem_upload_tool.py` dry-run 返回未完成候选、步骤状态、隐藏成功数量和指纹；该只读预览指纹的字段与规范化序列化必须和签名 action 保持完全一致；正式参数缺少 `selected_bill_codes` / `preview_fingerprint` 必须拒绝。

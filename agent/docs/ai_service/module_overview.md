@@ -2,27 +2,26 @@
 module: AI客服
 type: 模块文档
 tags: [AI客服, 查单, 报价问答, 异常解释, 工单]
-related: [../project_overview.md, ../ocr/module_overview.md, ../price_scripts/project_structure.md, ../finance_module.md]
-status: active
-updated: 2026-08-12
+related: [../project_overview.md, ../agent_automation/module_overview.md, ../customer_service/module_overview.md]
+status: planned
+updated: 2026-08-30
 ---
 
 # AI客服模块概述
 
 ## 模块定位
 
-AI 客服不是独立的数据源模块，而是整个 `物流 Agent` 的服务编排层。它主要消费其他三个模块的结果：
+AI 客服是规划中的面向客户对话层，不是当前运行模块。若后续实施，预计消费现有受管能力的结果，而不直接成为新的数据源或绕过控制平面：
 
-- 从 `OCR识别` 读取结构化运单字段和单据归档信息
-- 从 `价格获取` 读取标准报价表和客户报价表
-- 从 `财务对账` 的共享账本读取费用分类、同步异常和对账结论
+- 从运单与轨迹查询能力读取可对客展示的字段
+- 从当前实时报价工具读取已核验报价
+- 从受权业务规则和工单数据读取异常处理上下文
 
 ## 目标能力
 
 - 客户查单
 - 客户报价问答
 - 异常运单解释
-- 财务异常解释
 - 工单草稿生成与转人工
 
 ## 当前状态
@@ -30,10 +29,12 @@ AI 客服不是独立的数据源模块，而是整个 `物流 Agent` 的服务�
 - **本模块当前尚未开发**。计划承载客户对话能力（查单 / 报价问答 / 异常解释 / 工单草稿）。
 - 飞书机器人当前的全部能力（包括"报价"在内）当前都归属 **Agent 自动化能力** 模块（面向内部运维），文档见 `../agent_automation/module_overview.md`。
 - 待 AI客服开发启动时，再把面向客户的能力从 Agent 自动化能力中剥离过来。
+- 当前 `agent/core.py` 的 LLM 只做受限只读工具选择；未调用真实工具时必须明确无可执行脚本，不能把它描述为已上线的客服聊天系统。
+- 当前 Console 的“客户服务”页面是内部问题件处理模块，见 `../customer_service/module_overview.md`，与本规划中的面向客户 AI 对话不是同一模块。
 
 ## 预期输入输出
 
 - 输入
-  OCR 运单字段、客户报价表、财务差异与解释规则
+  可对客运单字段、实时报价结果、异常解释规则与工单上下文
 - 输出
   客服回复、报价答复、异常说明、待办工单

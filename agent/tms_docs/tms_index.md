@@ -1,11 +1,24 @@
+---
+module: 融辉TMS
+type: external_page_snapshot_index
+status: snapshot
+captured_at: 2026-03-25
+verified_at: 2026-08-30
+verification_scope: repository_metadata_and_links_only
+uncertainty: high
+updated: 2026-08-30
+---
+
 # 融辉 TMS 指定侧边栏页面结构与后台逻辑索引
 
-更新时间：2026-03-25
+> 外部页面快照：本组资料记录 2026-03-25 当时观察到的页面、DOM 与接口线索。本次只核对了仓库内分类和链接，没有重新登录真实融辉页面验证；菜单、字段、`pageId`、call ID 和保存协议均可能变化。当前自动化实现不得仅凭本快照修改，必须重新从真实页面和真实请求取得证据。
+
+页面抓取日期：2026-03-25
 
 ## 1. 文档说明
 
 - 本页只保留全局架构、菜单层级、模块文档入口和特殊说明。
-- 详细的 DOM 结构、接口链路、参数映射、保存逻辑已经拆到 `http_service/tms_docs/` 下的模块文档。
+- 详细的 DOM 结构、接口链路、参数映射和保存逻辑记录在本目录的模块快照中。
 
 ## 2. 全局架构
 
@@ -20,13 +33,13 @@
 
 ## 3. 模块文档入口
 
-- [运单管理](./tms_docs/waybill_management.md)：叶子页 `14` 个，分组节点 `1` 个
-- [扫描管理](./tms_docs/scan_management.md)：叶子页 `19` 个，分组节点 `1` 个
-- [签收管理](./tms_docs/sign_management.md)：叶子页 `3` 个，分组节点 `0` 个
-- [预付款管理](./tms_docs/prepayment_management.md)：叶子页 `11` 个，分组节点 `0` 个
-- [客服管理](./tms_docs/customer_service_management.md)：叶子页 `11` 个，分组节点 `2` 个
-- [投诉管理](./tms_docs/complaint_management.md)：叶子页 `3` 个，分组节点 `0` 个
-- [回单管理](./tms_docs/receipt_management.md)：叶子页 `10` 个，分组节点 `0` 个
+- [运单管理](./waybill_management.md)：叶子页 `14` 个，分组节点 `1` 个
+- [扫描管理](./scan_management.md)：叶子页 `19` 个，分组节点 `1` 个
+- [签收管理](./sign_management.md)：叶子页 `3` 个，分组节点 `0` 个
+- [预付款管理](./prepayment_management.md)：叶子页 `11` 个，分组节点 `0` 个
+- [客服管理](./customer_service_management.md)：叶子页 `11` 个，分组节点 `2` 个
+- [投诉管理](./complaint_management.md)：叶子页 `3` 个，分组节点 `0` 个
+- [回单管理](./receipt_management.md)：叶子页 `10` 个，分组节点 `0` 个
 
 ## 4. 菜单层级
 

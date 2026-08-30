@@ -1,6 +1,15 @@
+---
+module: automation-plugin-platform
+type: template
+status: active
+updated: 2026-08-30
+---
+
 # Automation capability template
 
-This is a copyable, non-production example for adding one automation action.
+This is a copyable, non-production `ACTION_V1` compatibility example for adding
+one automation action. New independently installable service capabilities should
+use `SERVICE_V2` and follow `docs/plugin-platform-v2.md` instead.
 It is deliberately outside `first_party_automation_plugins`, so it is never
 discovered by bootstrap, release packaging, the Catalog, or the Broker.
 

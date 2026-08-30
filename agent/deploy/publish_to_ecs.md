@@ -1,3 +1,10 @@
+---
+module: deployment
+type: operations
+status: active
+updated: 2026-08-30
+---
+
 # 发布到 ECS
 
 Agent 或 shared/migration 发布必须显式传入与待发布 Git SHA 完全一致的签名首方插件目录，
