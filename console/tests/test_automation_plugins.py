@@ -236,7 +236,7 @@ class AutomationPluginCatalogTests(unittest.TestCase):
             "READY_TO_COMMIT": ("SWITCHING", "切换中"),
             "DRAINING": ("DRAINING", "排空中"),
             "DISPOSING": ("DRAINING", "排空中"),
-            "BLOCKED_UNKNOWN_WRITE": ("ERROR", "异常"),
+            "BLOCKED_UNKNOWN_WRITE": ("BLOCKED_UNKNOWN_WRITE", "写入结果未知"),
             "ERROR": ("ERROR", "异常"),
             "FUTURE_RECONCILE_STATE": ("UNKNOWN", "状态未知"),
         }

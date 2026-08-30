@@ -28,8 +28,8 @@ updated: 2026-08-31
 |---|---|---|---|---|
 | TASK-BASE-000 | DONE_OFFLINE | 2026-08-30T23:30:59+08:00 | 2026-08-30T23:34:30+08:00 | 3c5bb24b603a3d349b7dba2a16b6b6c075baa078 |
 | TASK-EXT-001 | DONE_OFFLINE | 2026-08-30T23:39:27+08:00 | 2026-08-31T00:01:42+08:00 | 8d1eddd331d66bdc19f1a11d8c61bab1fe6bb701 |
-| TASK-EXT-002 | DONE_OFFLINE | 2026-08-31T00:02:53+08:00 | 2026-08-31T00:35:15+08:00 | 待下一 TASK 回填 |
-| TASK-EXT-003 | NOT_STARTED | — | — | — |
+| TASK-EXT-002 | DONE_OFFLINE | 2026-08-31T00:02:53+08:00 | 2026-08-31T00:35:15+08:00 | a23646ad069f52d6fa4c2e91d3486cdf913d4854 |
+| TASK-EXT-003 | DONE_OFFLINE | 2026-08-31T00:36:38+08:00 | 2026-08-31T00:51:46+08:00 | 待下一 TASK 回填 |
 | TASK-EXT-004 | NOT_STARTED | — | — | — |
 | TASK-EXT-005 | NOT_STARTED | — | — | — |
 | TASK-EXT-006 | NOT_STARTED | — | — | — |
@@ -82,7 +82,7 @@ updated: 2026-08-31
 - 状态：`DONE_OFFLINE`
 - 开始时间 / 结束时间：`2026-08-31T00:02:53+08:00` / `2026-08-31T00:35:15+08:00`
 - 设计决策：直接复用现有 Automation Plugin Catalog、Management API、包仓储和生命周期；新增“扩展中心”只作为 ACTION_V1 / SERVICE_V2 已安装包与实例健康的信息架构和管理视图，不建立第二套仓储、表或插件框架。自动化中心保留项目实例配置/运行，包级安装、升级、停用、卸载收敛到扩展中心；固定模块永不进入扩展列表，Connector 仅在已有真实合同后展示，不在本 TASK 虚构。
-- 修改文件 / Commit SHA：`console/{AGENTS.md,CLAUDE.md,README.md,app.py,navigation.py,permission_registry.py}`、`console/routes/{__init__.py,automation.py,extensions.py}`、`console/services/{automation.py,business_modules.py,extensions.py}`、`console/templates/{automation.html,extensions.html}`、`console/static/{automation_approval_policy.js,extensions.js,style.css}`、`console/tests/{test_automation_plugins.py,test_extensions.py,test_menu_registration.py}`、`agent/docs/{automation_plugin_platform.md,code_navigation_index.md}`、`docs/{plugin-platform-v2.md,extension-platform-progress.md}` / 本 checkpoint 提交后由下一 TASK 回填。
+- 修改文件 / Commit SHA：`console/{AGENTS.md,CLAUDE.md,README.md,app.py,navigation.py,permission_registry.py}`、`console/routes/{__init__.py,automation.py,extensions.py}`、`console/services/{automation.py,business_modules.py,extensions.py}`、`console/templates/{automation.html,extensions.html}`、`console/static/{automation_approval_policy.js,extensions.js,style.css}`、`console/tests/{test_automation_plugins.py,test_extensions.py,test_menu_registration.py}`、`agent/docs/{automation_plugin_platform.md,code_navigation_index.md}`、`docs/{plugin-platform-v2.md,extension-platform-progress.md}` / `a23646ad069f52d6fa4c2e91d3486cdf913d4854`。
 - 测试命令和结果：扩展中心、自动化职责和菜单定向 `79 passed, 35 subtests passed`；Console full suite `574 passed, 203 subtests passed`；两个浏览器脚本 Node 语法检查通过；变更 Python Ruff 与 Console compileall 通过；文档、仓库卫生、运行时导入边界、内部 API 合同、工具注册表（40 项）、指令镜像和 `git diff --check` 全部通过。独立复审在响应式安装面板、键盘焦点、扩展 ID 和旧生命周期 JS 清理修复后给出 `ship`。测试显式设置 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
 - 兼容性影响：新增真实 MySQL `admin/super_admin` 可见的 `/extensions` 列表和详情；安装、升级、启停和卸载继续复用既有签名 `super_admin` 处理器、同源校验、稳定浏览器 UUID 与实例 CAS。`/automations` 继续维护项目设置、运行、未知写恢复和 v1→v2 迁移验证，并提供扩展详情反向链接；旧包管理控件及不可达浏览器代码已移除。ACTION_V1 仅以“旧版固定自动化”兼容展示，14 个固定模块明确排除。
 - 数据库影响：无；未新增或修改表、迁移、仓储或包目录。
@@ -92,16 +92,16 @@ updated: 2026-08-31
 
 ### TASK-EXT-003：简化授权模型
 
-- 状态：`NOT_STARTED`
-- 开始时间 / 结束时间：— / —
-- 设计决策：仅 Service v2 固定 `PROJECT_FULL_AUTO`；不全局放开 ACTION_V1。
-- 修改文件 / Commit SHA：— / —
-- 测试命令和结果：尚未运行。
-- 兼容性影响：保留 Command、Run、Evidence、写后核验和未知写隔离。
-- 数据库影响：待审计；生产迁移禁止执行。
-- 未完成项：全部。
+- 状态：`DONE_OFFLINE`
+- 开始时间 / 结束时间：`2026-08-31T00:36:38+08:00` / `2026-08-31T00:51:46+08:00`
+- 设计决策：只在 Service v2 项目授权评估与安全投影缝隙固定 `PROJECT_FULL_AUTO`，并确保任何历史持久化逐次审批值都不能把 v2 Run 推入 `WAITING_APPROVAL`；不修改通用 `WorkflowRunner/PolicyEngine`，不全局放开 ACTION_V1。授权简化不绕过项目合同、账号/资源/登录/依赖/入口门禁，也不删除 Command、Run、Evidence、写后核验或未知写隔离。
+- 修改文件 / Commit SHA：`agent/{AGENTS.md,CLAUDE.md}`、`agent/agent/orchestration/automation_project_policy_service.py`、`agent/docs/{automation_plugin_platform.md,code_navigation_index.md}`、`console/{AGENTS.md,CLAUDE.md}`、`console/services/automation_projects.py`、`console/static/style.css`、`console/tests/test_automation_plugins.py`、`docs/{plugin-platform-v2.md,extension-platform-progress.md}`、`tests/test_automation_project_policy_service.py` / 本 checkpoint 提交后由下一 TASK 回填。
+- 测试命令和结果：策略服务定向 `38 passed, 23 subtests passed`；项目授权、API、入口和 Service v2 扩展回归 `94 passed, 49 subtests passed`；Agent full suite `1089 passed, 1 skipped, 195 subtests passed`；Console full suite `574 passed, 203 subtests passed`；root full suite `1916 passed, 30 skipped, 291 subtests passed`。变更 Python Ruff、`py_compile`、工具注册表（40 项）、仓库卫生、运行时导入边界、文档、内部 API 合同、指令镜像和 `git diff --check` 全部通过；独立复审给出 `ship`。测试显式设置 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
+- 兼容性影响：SERVICE_V2 在精确 committed contract 匹配且 `can_full_auto` 后固定无逐次审批；遗留 `REQUIRE_EACH_RUN/LEGACY_SCHEDULE_ONLY` 行只保留审计，不再改变 v2 安全投影或创建审批。ACTION_V1 仍按原持久策略工作；Console 继续只给 v1 提供切换控件，并把 `BLOCKED_UNKNOWN_WRITE` 独立显示为“写入结果未知”。Command、Run、Evidence、写后核验和未知写隔离均保留。
+- 数据库影响：无；未新增迁移、表或 DML，未访问生产数据库。
+- 未完成项：无离线实现项；未部署、未访问生产数据或真实业务系统，生产验证不在本 TASK 授权范围内。
 - 下一项 TASK：`TASK-EXT-004`。
-- 恢复说明：先确认前序 TASK 已提交推送，再将本 TASK 标为 `IN_PROGRESS`。
+- 恢复说明：检出长期分支，确认 TASK-EXT-003 checkpoint 已推送并回填 SHA，然后从现有 v2 lifecycle/management 单一安装链路开始 TASK-EXT-004；不得引入第二套安装器、信任浏览器 Manifest 或在幂等重放时重复初始化项目。
 
 ### TASK-EXT-004：一体化安装向导
 
