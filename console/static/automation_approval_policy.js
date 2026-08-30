@@ -548,176 +548,6 @@
     return "";
   }
 
-  function initializePluginInstall() {
-    const toggle = document.querySelector("[data-plugin-install-toggle]");
-    const dialog = document.querySelector("[data-plugin-install-panel]");
-    const close = document.querySelector("[data-plugin-install-close]");
-    const cancel = document.querySelector("[data-plugin-install-cancel]");
-    const form = document.querySelector("[data-plugin-install-form]");
-    if (!(toggle instanceof HTMLButtonElement) || !(dialog instanceof HTMLDialogElement)) return;
-
-    const setOpen = open => {
-      toggle.setAttribute("aria-expanded", String(open));
-      if (open && !dialog.open) {
-        dialog.showModal();
-        dialog.querySelector("input")?.focus();
-      } else if (!open && dialog.open) {
-        dialog.close();
-      }
-    };
-    toggle.addEventListener("click", () => setOpen(true));
-    close?.addEventListener("click", () => setOpen(false));
-    cancel?.addEventListener("click", () => setOpen(false));
-    dialog.addEventListener("click", event => {
-      if (event.target === dialog) setOpen(false);
-    });
-    dialog.addEventListener("cancel", event => {
-      event.preventDefault();
-      setOpen(false);
-    });
-    document.addEventListener("keydown", event => {
-      if (event.key === "Escape" && dialog.open) {
-        event.preventDefault();
-        setOpen(false);
-      }
-    });
-    dialog.addEventListener("close", () => {
-      toggle.setAttribute("aria-expanded", "false");
-      toggle.focus({ preventScroll: true });
-    });
-    if (!(form instanceof HTMLFormElement)) return;
-
-    const feedback = form.querySelector("[data-plugin-install-feedback]");
-    const submit = form.querySelector("[data-plugin-install-submit]");
-    const nameInput = form.elements.namedItem("instance_name");
-    const packageInput = form.querySelector("[data-plugin-package-input]");
-    const choose = form.querySelector("[data-plugin-file-choose]");
-    const dropZone = form.querySelector("[data-plugin-drop-zone]");
-    const fileName = form.querySelector("[data-plugin-file-name]");
-    let selectedPackage = null;
-    let dragDepth = 0;
-
-    const packageNameFromFile = file => {
-      const filename = String(file?.name || "").split(/[\\/]/).pop() || "";
-      return filename.replace(/\.zip$/i, "").trim().slice(0, 120);
-    };
-    const validPackage = file => file instanceof File && /\.zip$/i.test(file.name || "");
-    const setSelectedPackage = file => {
-      selectedPackage = file;
-      if (submit instanceof HTMLButtonElement) delete submit.dataset.requestId;
-      if (fileName) fileName.textContent = file ? `${file.name} · 等待安装` : "仅接受一个不超过 32MB 的 .zip 文件";
-      dropZone?.classList.toggle("is-ready", Boolean(file));
-      setFeedback(feedback, "", "");
-    };
-
-    const submitInstall = async packageFile => {
-      if (!(submit instanceof HTMLButtonElement) || !(nameInput instanceof HTMLInputElement)) return;
-      let instanceName = nameInput.value.trim();
-      if (!validPackage(packageFile)) {
-        setFeedback(feedback, "请选择一个 ZIP 插件包。", "error");
-        return;
-      }
-      if (!instanceName) {
-        instanceName = packageNameFromFile(packageFile);
-        nameInput.value = instanceName;
-      }
-      if (!instanceName) {
-        setFeedback(feedback, "无法从 ZIP 文件名生成项目名称，请先填写项目名称。", "error");
-        nameInput.focus();
-        return;
-      }
-      const requestId = submit.dataset.requestId || secureRequestId(feedback);
-      if (!requestId) return;
-      submit.dataset.requestId = requestId;
-      const body = new FormData();
-      body.append("package", packageFile, packageFile.name);
-      body.append("instance_name", instanceName);
-      body.append("request_id", requestId);
-      setBusy(submit, true, "安装中…");
-      dropZone?.setAttribute("aria-busy", "true");
-      try {
-        const response = await fetch("/automations/plugins/install", {
-          method: "POST",
-          credentials: "same-origin",
-          headers: {
-            "Accept": "application/json",
-            "X-Browser-Request-UUID": requestId,
-            "X-Requested-With": "XMLHttpRequest",
-          },
-          body,
-        });
-        const payload = await response.json().catch(() => null);
-        if (!response.ok || payload?.ok !== true) {
-          throw new Error(responseMessage(payload, "自动化安装失败，请重试。"));
-        }
-        delete submit.dataset.requestId;
-        setFeedback(
-          feedback,
-          payload.message || "自动化已安装，系统正在检查依赖、配置和账号状态。",
-          "success",
-        );
-        window.location.reload();
-      } catch (error) {
-        setFeedback(feedback, error instanceof Error ? error.message : "自动化安装失败，请重试。", "error");
-      } finally {
-        setBusy(submit, false, "");
-        dropZone?.removeAttribute("aria-busy");
-      }
-    };
-
-    form.addEventListener("input", () => {
-      delete submit?.dataset.requestId;
-      setFeedback(feedback, "", "");
-    });
-    form.addEventListener("submit", event => {
-      event.preventDefault();
-      const inputPackage = packageInput instanceof HTMLInputElement ? packageInput.files?.[0] : null;
-      void submitInstall(selectedPackage || inputPackage);
-    });
-    choose?.addEventListener("click", () => packageInput?.click());
-    packageInput?.addEventListener("change", () => {
-      const files = packageInput instanceof HTMLInputElement ? [...(packageInput.files || [])] : [];
-      if (files.length !== 1 || !validPackage(files[0])) {
-        setSelectedPackage(null);
-        setFeedback(feedback, "请选择一个 .zip 插件包。", "error");
-        return;
-      }
-      setSelectedPackage(files[0]);
-    });
-
-    const isFileDrag = event => Array.from(event.dataTransfer?.types || []).includes("Files");
-    dropZone?.addEventListener("dragenter", event => {
-      if (!isFileDrag(event)) return;
-      event.preventDefault();
-      dragDepth += 1;
-      dropZone.classList.add("is-dragging");
-    });
-    dropZone?.addEventListener("dragover", event => {
-      if (!isFileDrag(event)) return;
-      event.preventDefault();
-      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
-    });
-    dropZone?.addEventListener("dragleave", event => {
-      if (!isFileDrag(event)) return;
-      dragDepth = Math.max(0, dragDepth - 1);
-      if (dragDepth === 0) dropZone.classList.remove("is-dragging");
-    });
-    dropZone?.addEventListener("drop", event => {
-      if (!isFileDrag(event)) return;
-      event.preventDefault();
-      dragDepth = 0;
-      dropZone.classList.remove("is-dragging");
-      const files = [...(event.dataTransfer?.files || [])];
-      if (files.length !== 1 || !validPackage(files[0])) {
-        setSelectedPackage(null);
-        setFeedback(feedback, "一次只能拖入一个 .zip 插件包。", "error");
-        return;
-      }
-      setSelectedPackage(files[0]);
-      void submitInstall(files[0]);
-    });
-  }
-
   function initializePluginMigrationCreate() {
     const form = document.querySelector("[data-plugin-migration-create-form]");
     if (!(form instanceof HTMLFormElement)) return;
@@ -779,16 +609,17 @@
     });
   }
 
-  async function pluginJsonAction(instance, button, action, payload, fallback) {
+  async function recoverUnknownWrite(instance, button) {
     const automationId = instance.dataset.automationId || "";
     const feedback = instance.querySelector("[data-plugin-instance-feedback]");
+    const fallback = "系统仍无法确认上次是否已经保存。任务会继续暂停，也没有重复执行。请先到对应业务表格核对实际结果。";
     const requestId = button.dataset.requestId || secureRequestId(feedback);
     if (!requestId) return;
     button.dataset.requestId = requestId;
     setBusy(button, true, "提交中…");
     try {
       const response = await fetch(
-        `/automations/plugins/${encodeURIComponent(automationId)}/${action}`,
+        `/automations/plugins/${encodeURIComponent(automationId)}/recover`,
         {
           method: "POST",
           credentials: "same-origin",
@@ -798,15 +629,15 @@
             "X-Browser-Request-UUID": requestId,
             "X-Requested-With": "XMLHttpRequest",
           },
-          body: JSON.stringify({ ...payload, request_id: requestId }),
+          body: JSON.stringify({ request_id: requestId }),
         },
       );
-      const responsePayload = await response.json().catch(() => null);
-      if (!response.ok || responsePayload?.ok !== true) {
-        throw new Error(responseMessage(responsePayload, fallback));
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload?.ok !== true) {
+        throw new Error(responseMessage(payload, fallback));
       }
       delete button.dataset.requestId;
-      setFeedback(feedback, responsePayload.message || "项目实例已更新。", "success");
+      setFeedback(feedback, payload.message || "未知写入状态已重新核对。", "success");
       window.location.reload();
     } catch (error) {
       setFeedback(feedback, error instanceof Error ? error.message : fallback, "error");
@@ -814,7 +645,6 @@
       setBusy(button, false, "");
     }
   }
-
   async function pluginMigrationAction(instance, button, action) {
     const migration = button.closest("[data-plugin-migration]");
     const feedback = instance.querySelector("[data-plugin-instance-feedback]");
@@ -1183,97 +1013,6 @@
   }
 
   function initializePluginInstance(instance) {
-    const automationId = instance.dataset.automationId || "";
-    const recordVersion = Number(instance.dataset.recordVersion || 0);
-    const configurationVersion = Number(instance.dataset.projectConfigurationVersion || 0);
-    const currentVersion = instance.dataset.currentVersion || "";
-    const feedback = instance.querySelector("[data-plugin-instance-feedback]");
-    const menuToggle = instance.querySelector("[data-plugin-menu-toggle]");
-    const menu = instance.querySelector("[data-plugin-menu]");
-    const setMenuOpen = open => {
-      if (!(menuToggle instanceof HTMLButtonElement) || !(menu instanceof HTMLElement)) return;
-      menuToggle.setAttribute("aria-expanded", String(open));
-      menu.hidden = !open;
-      if (open) menu.querySelector("button:not([disabled]), input")?.focus();
-    };
-    menuToggle?.addEventListener("click", event => {
-      event.stopPropagation();
-      setMenuOpen(menuToggle.getAttribute("aria-expanded") !== "true");
-    });
-    menu?.addEventListener("click", event => event.stopPropagation());
-
-    const upgradeButton = instance.querySelector("[data-plugin-upgrade]");
-    const upgradeInput = instance.querySelector("[data-plugin-upgrade-package]");
-    upgradeInput?.addEventListener("change", () => {
-      if (upgradeButton instanceof HTMLButtonElement) delete upgradeButton.dataset.requestId;
-      setFeedback(feedback, "", "");
-    });
-    upgradeButton?.addEventListener("click", async () => {
-      if (!(upgradeButton instanceof HTMLButtonElement) || !(upgradeInput instanceof HTMLInputElement)) return;
-      const packageFile = upgradeInput.files?.[0];
-      if (!packageFile || !Number.isInteger(recordVersion) || recordVersion < 1) {
-        setFeedback(feedback, "请选择升级 ZIP；若页面已过期，请刷新后重试。", "error");
-        return;
-      }
-      const requestId = upgradeButton.dataset.requestId || secureRequestId(feedback);
-      if (!requestId) return;
-      upgradeButton.dataset.requestId = requestId;
-      const body = new FormData();
-      body.append("package", packageFile, packageFile.name);
-      body.append("request_id", requestId);
-      body.append("expected_record_version", String(recordVersion));
-      setBusy(upgradeButton, true, "升级中…");
-      try {
-        const response = await fetch(
-          `/automations/plugins/${encodeURIComponent(automationId)}/upgrade`,
-          {
-            method: "POST",
-            credentials: "same-origin",
-            headers: {
-              "Accept": "application/json",
-              "X-Browser-Request-UUID": requestId,
-              "X-Requested-With": "XMLHttpRequest",
-            },
-            body,
-          },
-        );
-        const payload = await response.json().catch(() => null);
-        if (!response.ok || payload?.ok !== true) {
-          throw new Error(responseMessage(payload, "项目升级失败，请重试。"));
-        }
-        delete upgradeButton.dataset.requestId;
-        setFeedback(feedback, payload.message || "项目已升级。", "success");
-        window.location.reload();
-      } catch (error) {
-        setFeedback(feedback, error instanceof Error ? error.message : "项目升级失败，请重试。", "error");
-      } finally {
-        setBusy(upgradeButton, false, "");
-      }
-    });
-
-    instance.querySelectorAll("[data-plugin-instance-action]").forEach(button => {
-      button.addEventListener("click", () => {
-        if (!(button instanceof HTMLButtonElement) || !Number.isInteger(recordVersion) || recordVersion < 1) return;
-        const action = button.dataset.pluginInstanceAction || "";
-        if (action === "uninstall") {
-          const confirmed = window.confirm(
-            "确认卸载这个自动化项目？\n\n系统会立即撤销项目权限并停止接收新任务；运行中任务或写入结果未知时会阻断卸载。只删除本应用自有的插件代码、独立 venv、项目配置、插件日志和控制面数据。离线 Worker 只会进入待清理状态，必须等下次重连后才能清除设备副本。网页、Office、飞书等外部系统中已经产生的结果无法撤销，也不能保证系统日志、代理日志或数据库备份无痕删除。此操作不会影响同一动作包的其他项目实例。",
-          );
-          if (!confirmed) return;
-          void pluginJsonAction(instance, button, "uninstall", {
-            expected_record_version: recordVersion,
-            current_version: currentVersion,
-            confirm: true,
-          }, "项目卸载失败，请重试。");
-          return;
-        }
-        if (action !== "enable" && action !== "disable") return;
-        void pluginJsonAction(instance, button, action, {
-          expected_record_version: recordVersion,
-        }, action === "enable" ? "项目启用失败，请重试。" : "项目停用失败，请重试。");
-      });
-    });
-
     instance.querySelectorAll("[data-plugin-migration-action]").forEach(button => {
       button.addEventListener("click", () => {
         if (!(button instanceof HTMLButtonElement)) return;
@@ -1288,13 +1027,7 @@
     const recoverButton = instance.querySelector("[data-plugin-recover-unknown-write]");
     recoverButton?.addEventListener("click", () => {
       if (!(recoverButton instanceof HTMLButtonElement)) return;
-      void pluginJsonAction(
-        instance,
-        recoverButton,
-        "recover",
-        {},
-        "系统仍无法确认上次是否已经保存。任务会继续暂停，也没有重复执行。请先到对应业务表格核对实际结果。",
-      );
+      void recoverUnknownWrite(instance, recoverButton);
     });
 
     const form = instance.closest("form");
@@ -1375,32 +1108,9 @@
 
   function initializePlugins() {
     initializePluginConfigurationDelegation();
-    initializePluginInstall();
     initializePluginMigrationCreate();
-    const instances = [...document.querySelectorAll("[data-plugin-instance]")];
-    instances.forEach(initializePluginInstance);
-    document.addEventListener("click", () => {
-      instances.forEach(instance => {
-        const toggle = instance.querySelector("[data-plugin-menu-toggle]");
-        const menu = instance.querySelector("[data-plugin-menu]");
-        if (toggle instanceof HTMLButtonElement) toggle.setAttribute("aria-expanded", "false");
-        if (menu instanceof HTMLElement) menu.hidden = true;
-      });
-    });
-    document.addEventListener("keydown", event => {
-      if (event.key !== "Escape") return;
-      instances.forEach(instance => {
-        const toggle = instance.querySelector("[data-plugin-menu-toggle]");
-        const menu = instance.querySelector("[data-plugin-menu]");
-        if (toggle instanceof HTMLButtonElement && toggle.getAttribute("aria-expanded") === "true") {
-          toggle.setAttribute("aria-expanded", "false");
-          if (menu instanceof HTMLElement) menu.hidden = true;
-          toggle.focus();
-        }
-      });
-    });
+    document.querySelectorAll("[data-plugin-instance]").forEach(initializePluginInstance);
   }
-
   function initialize() {
     initializePlugins();
     const panels = [...document.querySelectorAll("[data-automation-project-governance]")];

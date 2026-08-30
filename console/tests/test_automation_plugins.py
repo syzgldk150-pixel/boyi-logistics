@@ -1632,25 +1632,20 @@ class AutomationPluginTemplateTests(unittest.TestCase):
             automation_plugin_packages=packages,
             unsupported_automation_ids=[],
             can_manage_plugins=True,
+            can_view_extensions=True,
             can_manage_approval_policies=True,
             automation_provider_counts={"ronghui": 1, "yunda": 0},
             automation_provider_enabled_counts={"ronghui": 1, "yunda": 0},
         )
         card = html.split('class="auto-card"', 1)[1].split("</article>", 1)[0]
-        install_form = html.split('data-plugin-install-form', 1)[1].split("</form>", 1)[0]
         account_select = card.split('data-plugin-account-role="finance_quote_source"', 1)[1]
         account_select = account_select.split("</select>", 1)[0]
         resource_select = card.split('data-plugin-resource-role="input_sheet"', 1)[1]
         resource_select = resource_select.split("</select>", 1)[0]
 
-        self.assertIn("可安装的自动化", html)
-        self.assertIn('aria-controls="automation-plugin-manager-dialog"', html)
-        self.assertIn('<dialog class="automation-plugin-manager-dialog"', html)
-        self.assertIn("data-plugin-drop-zone", install_form)
-        self.assertIn("把 ZIP 插件包拖到这里安装", install_form)
-        self.assertIn("v2 ZIP 无需签名、发布审批或运行审批", html)
-        self.assertIn("SHA-256", html)
-        self.assertNotIn("把签名 ZIP", install_form)
+        self.assertIn('href="/extensions"', html)
+        self.assertNotIn("data-plugin-install-form", html)
+        self.assertNotIn("automation-plugin-manager-dialog", html)
         self.assertIn("华东财务同步", card)
         self.assertIn("1.2.3", card)
         self.assertEqual(1, card.count("data-project-policy-toggle"))
@@ -1668,8 +1663,8 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertNotIn("data-cron-editor", card)
         self.assertNotIn("policy_hash", card)
         self.assertIn('name="project-policy-finance_action_east"', card)
-        self.assertNotIn('name="automation_id"', install_form)
-        self.assertNotIn('name="package_sha256"', install_form)
+        self.assertNotIn("data-plugin-instance-action", card)
+        self.assertNotIn("data-plugin-upgrade", card)
 
     def test_service_v2_runtime_services_and_migration_are_visible_in_project_card(self):
         template_source = (CONSOLE_DIR / "templates" / "automation.html").read_text(
@@ -1701,30 +1696,36 @@ class AutomationPluginTemplateTests(unittest.TestCase):
             service_source,
         )
 
-    def test_plugin_manager_drop_flow_uses_dialog_and_only_accepts_one_zip(self):
+    def test_automation_page_links_to_extensions_without_package_lifecycle_ui(self):
         template_source = (CONSOLE_DIR / "templates" / "automation.html").read_text(
             encoding="utf-8"
         )
         script_source = (
             CONSOLE_DIR / "static" / "automation_approval_policy.js"
         ).read_text(encoding="utf-8")
-
-        self.assertIn('aria-haspopup="dialog"', template_source)
-        self.assertIn("data-plugin-file-choose", template_source)
-        self.assertIn("BLOCKED_GENERATION", script_source)
-        self.assertIn("REFRESH_FAILED", script_source)
+        self.assertIn('href="/extensions"', template_source)
         self.assertIn(
             'form.querySelector(\'input[name="project_plugin_instance"]\')',
             template_source,
         )
-        self.assertIn('accept=".zip,application/zip"', template_source)
-        self.assertIn('dropZone?.addEventListener("dragenter"', script_source)
-        self.assertIn('dropZone?.addEventListener("drop"', script_source)
-        self.assertIn('dialog.addEventListener("cancel"', script_source)
-        self.assertIn('event.key === "Escape" && dialog.open', script_source)
-        self.assertIn("files.length !== 1", script_source)
-        self.assertIn("void submitInstall(files[0])", script_source)
-        self.assertIn("filename.replace(/\\.zip$/i", script_source)
+        self.assertNotIn("data-plugin-install", template_source)
+        self.assertNotIn("data-plugin-upgrade", template_source)
+        self.assertNotIn("data-plugin-instance-action", template_source)
+        self.assertIn("data-plugin-migration-create-form", template_source)
+        for removed_selector in (
+            "data-plugin-install",
+            "data-plugin-upgrade",
+            "data-plugin-instance-action",
+            "data-plugin-menu-toggle",
+            "data-plugin-menu",
+        ):
+            self.assertNotIn(removed_selector, script_source)
+        self.assertNotIn("initializePluginInstall", script_source)
+        self.assertNotIn("pluginJsonAction", script_source)
+        self.assertIn("data-plugin-migration-create-form", script_source)
+        self.assertIn("data-plugin-migration-action", script_source)
+        self.assertIn("data-plugin-recover-unknown-write", script_source)
+        self.assertIn("recoverUnknownWrite", script_source)
 
     def test_project_settings_save_is_delegated_and_survives_partial_navigation(self):
         node_binary = shutil.which("node") or shutil.which("node.exe")
@@ -1775,32 +1776,27 @@ class AutomationPluginTemplateTests(unittest.TestCase):
 
         self.assertIn("plugin.reconcile_state == 'BLOCKED_UNKNOWN_WRITE'", template_source)
         self.assertIn("data-plugin-recover-unknown-write", template_source)
-        self.assertIn('"recover",\n        {},', script_source)
+        self.assertIn(
+            '`/automations/plugins/${encodeURIComponent(automationId)}/recover`',
+            script_source,
+        )
+        self.assertIn("body: JSON.stringify({ request_id: requestId })", script_source)
         self.assertNotIn("lease_id", script_source)
 
-    def test_unstable_plugin_state_disables_conflicting_card_operations(self):
-        source = (CONSOLE_DIR / "templates" / "automation.html").read_text(
+    def test_unstable_service_v2_state_disables_conflicting_extension_operations(self):
+        source = (CONSOLE_DIR / "templates" / "extensions.html").read_text(
             encoding="utf-8"
         )
 
         self.assertIn(
-            "{% if not plugin.menu_actions_allowed %}disabled aria-disabled=\"true\"{% endif %}",
+            "data-extension-action=\"disable\" {% if not instance.disable_allowed %}disabled{% endif %}",
             source,
         )
         self.assertIn(
-            "data-plugin-instance-action=\"disable\" {% if not plugin.disable_allowed %}disabled{% endif %}",
+            "data-extension-action=\"enable\" {% if not instance.enable_allowed %}disabled{% endif %}",
             source,
         )
-        self.assertIn(
-            "data-plugin-instance-action=\"enable\" {% if not plugin.enable_allowed %}disabled",
-            source,
-        )
-        full_auto_line = next(
-            line
-            for line in source.splitlines()
-            if 'value="PROJECT_FULL_AUTO"' in line
-        )
-        self.assertNotIn("task.plugin_blocked", full_auto_line)
+        self.assertIn("instance.lifecycle_actions_allowed", source)
 
 
 if __name__ == "__main__":

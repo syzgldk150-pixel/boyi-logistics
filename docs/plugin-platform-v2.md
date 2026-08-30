@@ -9,10 +9,11 @@ related:
   - ../agent/agent/automation_plugins/service_v2_projection.py
   - ../agent/agent/orchestration/automation_project_service_v2.py
   - ../agent/service_v2_plugins/
+  - ../console/services/extensions.py
   - ../console/services/automation_plugin_management.py
   - ../shared/automation_plugin_generation_runtime_repository.py
 status: active
-updated: 2026-08-30
+updated: 2026-08-31
 ---
 
 # ZIP 插件平台 v2 开发、安装与迁移手册
@@ -33,6 +34,8 @@ v1 与 v2 继续并存，但二者不是同一种包：
 | 迁移方式 | 保留运行 | 新建独立 v2 项目并行验证；不能把 v1 项目原地升级成 v2 |
 
 安装器只读取 `schema_version + runtime_model` 做一次严格分流。v2 解析失败不会回退 v1，v1 解析失败也不会尝试 v2。历史 v1 包和已安装字节保持原样，v2 不要求、也不生成 Ed25519 签名。
+
+Console 信息架构同样只有一个状态源：`/extensions` 与详情页展示真实 Catalog 中的包、权限摘要、实例健康并承载安装/升级/启停/卸载；`/automations` 维护每个项目的配置、绑定、入口、定时、权限、运行和 v1→v2 并行迁移验证。扩展中心只是现有 Catalog 和生命周期处理器的安全投影，不新增表、包仓、安装框架或运行状态。固定 14 个业务模块不属于扩展，尚未实现的 Connector 也不得预先伪造为可安装类型。
 
 当前实现已经具备 v2 Manifest/ZIP 校验、内容摘要、Linux Python 3.10 环境、代际注册、单 Provider 服务注册表、Catalog 就绪状态、受管 KV/collection、跨插件 `service.invoke`、数据保留以及迁移 pair/run-key 的持久化原语。以下边界必须如实显示：
 

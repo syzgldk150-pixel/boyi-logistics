@@ -14,6 +14,7 @@ from console.services.tms_proxy import TmsProxyServiceMixin
 from console.services.automation import AutomationServiceMixin
 from console.services.documents import DocumentServiceMixin
 from console.services.business_modules import BusinessModulesServiceMixin
+from console.services.extensions import ExtensionsServiceMixin
 from console.navigation import (
     CONSOLE_NAVIGATION,
 )
@@ -40,6 +41,7 @@ class LocalDocFlowApp(
     TmsProxyServiceMixin,
     AutomationServiceMixin,
     DocumentServiceMixin,
+    ExtensionsServiceMixin,
     BusinessModulesServiceMixin,
 ):
     def __init__(self) -> None:

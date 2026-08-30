@@ -8,7 +8,7 @@ related:
   - ../../docs/plugin-platform-v2.md
   - code_navigation_index.md
 status: active
-updated: 2026-08-30
+updated: 2026-08-31
 ---
 
 # 自动化插件平台 v1（ACTION_V1）
@@ -133,6 +133,8 @@ actor、`automation_id`、manifest 或签名/完整性内部字段。读取目�
 - `POST /internal/v1/automation/instances/{automation_id}/uninstall`
 - `PUT /internal/v1/automation/instances/{automation_id}/configuration`
 - `POST /internal/v1/automation/workers/pair`
+
+Console 的 `/extensions` 与 `/extensions/{plugin_id}` 是包清单、权限摘要、已安装项目健康状态和安装/升级/启停/卸载入口；`/automations` 只保留项目配置、绑定、入口、定时、权限、运行和迁移验证。两处都读取上述同一个 Catalog 并复用同一生命周期 API，不能新增第二套插件仓储或用固定业务模块伪装扩展。查看扩展中心要求真实非 legacy MySQL `admin/super_admin`，生命周期写仍只允许 `super_admin`。
 
 配置必须显式提交签名角色对应的 Business Account ID、managed resource ID 和（需要时）命名 Windows
 设备；解析器精确匹配账号池/资源池/配对设备，不读取 `is_default`，不选首项，也不按名称猜测。

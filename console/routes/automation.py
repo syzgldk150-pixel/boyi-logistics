@@ -5,6 +5,16 @@ from __future__ import annotations
 from typing import Any
 
 
+def _automation_open_task_id(app: Any, query: dict[str, list[str]]) -> str | None:
+    """Accept one canonical project deep-link, never a task-id fallback."""
+
+    values = query.get("open_task")
+    if not isinstance(values, list) or len(values) != 1:
+        return None
+    value = values[0]
+    return app._automation_project_id(value) or None
+
+
 def _automation_project_route(path: str) -> tuple[str, str] | None:
     prefix = "/automations/projects/"
     if not path.startswith(prefix):
@@ -43,7 +53,11 @@ def _automation_plugin_migration_route(path: str) -> tuple[str, str] | None:
 
 def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[str, list[str]]) -> bool:
     if path in {"/automations", "/workspaces/automations"}:
-        app._render_automations(handler, query)
+        app._render_automations(
+            handler,
+            query,
+            open_task_id=_automation_open_task_id(app, query),
+        )
         return True
     if path.startswith("/automation-accounts/") and path.endswith("/status"):
         app._handle_automation_account_status_get(handler, path, query)
