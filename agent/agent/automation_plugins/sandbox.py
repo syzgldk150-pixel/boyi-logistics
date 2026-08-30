@@ -15,13 +15,76 @@ from agent.automation_plugins.sdk import PLUGIN_SDK_SOURCE
 
 
 _DEFAULT_PRLIMIT_PATH = Path("/usr/bin/prlimit")
+_PROC_ROOT = Path("/proc")
+_PLUGIN_NPROC_HEADROOM = 64
 _RESOURCE_LIMIT_OPTIONS = (
     "--as=1073741824:1073741824",
-    "--nproc=64:64",
     "--cpu=300:300",
     "--fsize=16777216:16777216",
     "--nofile=128:128",
 )
+
+
+def _current_real_uid_task_count(proc_root: Path = _PROC_ROOT) -> int:
+    """Count every task currently charged to this process's real UID."""
+
+    try:
+        real_uid = os.getuid()
+        process_dirs = sorted(
+            (
+                entry
+                for entry in proc_root.iterdir()
+                if entry.name.isascii() and entry.name.isdecimal()
+            ),
+            key=lambda entry: int(entry.name),
+        )
+        current_pid = str(os.getpid())
+        current_process_seen = False
+        task_count = 0
+        for process_dir in process_dirs:
+            try:
+                status = (process_dir / "status").read_bytes()
+            except FileNotFoundError:
+                # A process may exit after /proc was enumerated. All other
+                # access and parsing errors remain fail closed below.
+                continue
+            fields: dict[bytes, list[bytes]] = {}
+            for line in status.splitlines():
+                key, separator, value = line.partition(b":")
+                if separator and key in {b"Uid", b"Threads"}:
+                    if key in fields:
+                        raise ValueError("duplicate process status field")
+                    fields[key] = value.split()
+            uid_fields = fields.get(b"Uid")
+            if (
+                uid_fields is None
+                or len(uid_fields) != 4
+                or any(not value.isdigit() for value in uid_fields)
+            ):
+                raise ValueError("process real UID is unavailable")
+            if int(uid_fields[0]) != real_uid:
+                continue
+            thread_fields = fields.get(b"Threads")
+            if (
+                thread_fields is None
+                or len(thread_fields) != 1
+                or not thread_fields[0].isdigit()
+            ):
+                raise ValueError("process task count is unavailable")
+            process_task_count = int(thread_fields[0])
+            if process_task_count < 1:
+                raise ValueError("process task count is invalid")
+            task_count += process_task_count
+            if process_dir.name == current_pid:
+                current_process_seen = True
+        if not current_process_seen or task_count < 1:
+            raise ValueError("current process is absent from /proc")
+        return task_count
+    except (AttributeError, OSError, ValueError) as exc:
+        raise PluginExecutionError(
+            "sandbox process limit baseline is unavailable",
+            code="PLUGIN_SANDBOX_NPROC_BASELINE_UNAVAILABLE",
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -137,9 +200,14 @@ class BubblewrapPluginSandbox:
     def _limited_command(self, bubblewrap_arguments: list[str]) -> list[str]:
         """Apply hard limits; prlimit execs bwrap so its process group is preserved."""
 
+        # RLIMIT_NPROC is charged to the host real UID, so this sandbox gets a
+        # 64-task budget on top of the UID's live baseline.
+        nproc_limit = _current_real_uid_task_count() + _PLUGIN_NPROC_HEADROOM
         return [
             str(self._prlimit),
-            *_RESOURCE_LIMIT_OPTIONS,
+            _RESOURCE_LIMIT_OPTIONS[0],
+            f"--nproc={nproc_limit}:{nproc_limit}",
+            *_RESOURCE_LIMIT_OPTIONS[1:],
             "--",
             str(self._executable),
             *bubblewrap_arguments,
