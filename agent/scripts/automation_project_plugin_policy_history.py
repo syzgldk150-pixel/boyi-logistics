@@ -12,6 +12,16 @@ from typing import Any
 ORIGINAL = "ORIGINAL"
 PREPARED_AWARE = "PREPARED_AWARE"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_PLUGIN_RUNTIME_MODELS = frozenset(("ACTION_V1", "SERVICE_V2"))
+_PLUGIN_TRUST_SOURCES = frozenset(
+    (
+        "ed25519_upload",
+        "ed25519_first_party",
+        "builtin_release",
+        "super_admin_upload",
+        "builtin_bundle",
+    )
+)
 _DURABLE_POLICY_MODES = frozenset(
     ("PROJECT_FULL_AUTO", "REQUIRE_EACH_RUN", "LEGACY_SCHEDULE_ONLY")
 )
@@ -33,6 +43,38 @@ _ORIGINAL_METADATA_FIELDS = frozenset(
 )
 _PREPARED_METADATA_FIELDS = _ORIGINAL_METADATA_FIELDS | frozenset(
     ("prepared_configuration_request_id",)
+)
+_IMMUTABLE_IDENTITY_METADATA_FIELDS = _PREPARED_METADATA_FIELDS | frozenset(
+    ("immutable_version_identity",)
+)
+_IMMUTABLE_VERSION_IDENTITY_FIELDS = frozenset(("from_package", "to_package"))
+_PACKAGE_AUDIT_IDENTITY_FIELDS = frozenset(
+    (
+        "package_sha256",
+        "manifest_sha256",
+        "runtime_model",
+        "plugin_api",
+        "trust_source",
+        "technical_check",
+        "manifest_component_sha256",
+        "persisted_contract_sha256",
+    )
+)
+_TECHNICAL_CHECK_FIELDS = frozenset(
+    ("result", "runtime_sha256", "host_contract_sha256")
+)
+_MANIFEST_COMPONENT_FIELDS = frozenset(
+    (
+        "capabilities",
+        "provides",
+        "requires",
+        "contributions",
+        "config_schema",
+        "storage",
+    )
+)
+_PERSISTED_CONTRACT_FIELDS = frozenset(
+    ("tool_contract", "invocation_contracts", "scheduling")
 )
 _JOINED_POLICY_FIELDS = {
     "event_id": "policy_event_id",
@@ -80,6 +122,71 @@ def _joined_policy_event_matches(
     )
 
 
+def _valid_plugin_api(value: Any) -> bool:
+    if type(value) is not str or len(value) > 32:
+        return False
+    parts = value.split(".")
+    return bool(
+        len(parts) == 3
+        and all(part.isascii() and part.isdigit() for part in parts)
+        and all(str(int(part)) == part for part in parts)
+    )
+
+
+def _valid_package_audit_identity(value: Any) -> bool:
+    if not isinstance(value, Mapping) or frozenset(value) != _PACKAGE_AUDIT_IDENTITY_FIELDS:
+        return False
+    technical_check = value.get("technical_check")
+    manifest_components = value.get("manifest_component_sha256")
+    persisted_contracts = value.get("persisted_contract_sha256")
+    if (
+        not isinstance(technical_check, Mapping)
+        or frozenset(technical_check) != _TECHNICAL_CHECK_FIELDS
+        or not isinstance(manifest_components, Mapping)
+        or frozenset(manifest_components) != _MANIFEST_COMPONENT_FIELDS
+        or not isinstance(persisted_contracts, Mapping)
+        or frozenset(persisted_contracts) != _PERSISTED_CONTRACT_FIELDS
+    ):
+        return False
+    runtime_model = value.get("runtime_model")
+    plugin_api = value.get("plugin_api")
+    manifest_sha256 = value.get("manifest_sha256")
+    return bool(
+        _valid_sha256(value.get("package_sha256"))
+        and _valid_sha256(manifest_sha256)
+        and type(runtime_model) is str
+        and runtime_model in _PLUGIN_RUNTIME_MODELS
+        and _valid_plugin_api(plugin_api)
+        and type(value.get("trust_source")) is str
+        and value.get("trust_source") in _PLUGIN_TRUST_SOURCES
+        and technical_check.get("result") == "PASSED"
+        and _valid_sha256(technical_check.get("runtime_sha256"))
+        and _valid_sha256(technical_check.get("host_contract_sha256"))
+        and technical_check.get("host_contract_sha256")
+        == _canonical_sha256(
+            {
+                "runtime_model": runtime_model,
+                "plugin_api": plugin_api,
+                "manifest_sha256": manifest_sha256,
+            }
+        )
+        and all(_valid_sha256(manifest_components.get(field)) for field in _MANIFEST_COMPONENT_FIELDS)
+        and all(_valid_sha256(persisted_contracts.get(field)) for field in _PERSISTED_CONTRACT_FIELDS)
+    )
+
+
+def _valid_immutable_version_identity(value: Any, *, target_package_sha256: Any) -> bool:
+    if not isinstance(value, Mapping) or frozenset(value) != _IMMUTABLE_VERSION_IDENTITY_FIELDS:
+        return False
+    from_package = value.get("from_package")
+    to_package = value.get("to_package")
+    return bool(
+        _valid_package_audit_identity(from_package)
+        and _valid_package_audit_identity(to_package)
+        and to_package.get("package_sha256") == target_package_sha256
+    )
+
+
 def validate_plugin_version_evidence(
     event: Mapping[str, Any],
     configuration_evidence: Sequence[Mapping[str, Any]],
@@ -87,8 +194,9 @@ def validate_plugin_version_evidence(
     """Validate exact retired plugin-writer evidence or raise ``ValueError``.
 
     The result is ``(prepared_request_id, legacy_downgrade, metadata_variant)``.
-    Both metadata forms are closed: the original writer has exactly six keys;
-    the prepared-aware writer has exactly those keys plus the prepared request.
+    Every metadata form is closed: the original writer has exactly six keys;
+    prepared-aware history adds its request, and current history additionally
+    binds the immutable source and target package audit identities.
     """
 
     matches = [
@@ -102,6 +210,8 @@ def validate_plugin_version_evidence(
     if metadata_fields == _ORIGINAL_METADATA_FIELDS:
         metadata_variant = ORIGINAL
     elif metadata_fields == _PREPARED_METADATA_FIELDS:
+        metadata_variant = PREPARED_AWARE
+    elif metadata_fields == _IMMUTABLE_IDENTITY_METADATA_FIELDS:
         metadata_variant = PREPARED_AWARE
     else:
         raise ValueError("plugin metadata field set is invalid")
@@ -151,6 +261,13 @@ def validate_plugin_version_evidence(
         or target_generation <= 0
         or target_generation != event_generation
         or metadata.get("previous_state") != joined.get("configuration_from_state")
+        or (
+            metadata_fields == _IMMUTABLE_IDENTITY_METADATA_FIELDS
+            and not _valid_immutable_version_identity(
+                metadata.get("immutable_version_identity"),
+                target_package_sha256=metadata.get("package_sha256"),
+            )
+        )
         or (
             prepared_request is not None
             and (type(prepared_request) is not str or not prepared_request)
