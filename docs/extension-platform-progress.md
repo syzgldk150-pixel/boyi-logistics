@@ -33,7 +33,7 @@ updated: 2026-08-31
 | TASK-EXT-004 | DONE_OFFLINE | 2026-08-31T00:52:43+08:00 | 2026-08-31T02:26:01+08:00 | 2f21e4ae43a1ebe778300c299d7061e57a319f5c |
 | TASK-EXT-005 | DONE_OFFLINE | 2026-08-31T02:27:29+08:00 | 2026-08-31T03:37:29+08:00 | 47cdfad4923ad0d02f2ec4b64112adb8ba9e994d + d4be93bd8bbbee910a29ee3f37c9576daa5855e8 |
 | TASK-EXT-006 | DONE_OFFLINE | 2026-08-31T03:38:37+08:00 | 2026-08-31T06:00:28+08:00 | a99f2c8f0813f1f314653830966f877a2924d4f2 |
-| TASK-EXT-007 | NOT_STARTED | — | — | — |
+| TASK-EXT-007 | DONE_OFFLINE | 2026-08-31T06:04:44+08:00 | 2026-08-31T07:13:05+08:00 | 81f58eb89befdf54be33b67ef70e6e3d96a4cde7 |
 | TASK-EXT-008 | NOT_STARTED | — | — | — |
 | TASK-EXT-009A | NOT_STARTED | — | — | — |
 | TASK-EXT-009B | NOT_STARTED | — | — | — |
@@ -146,16 +146,17 @@ updated: 2026-08-31
 
 ### TASK-EXT-007：开发者 SDK、模拟器和 CLI
 
-- 状态：`NOT_STARTED`
-- 开始时间 / 结束时间：— / —
-- 设计决策：只实现 `init/validate/test/permissions/package/inspect/diff`，不连接生产。
-- 修改文件 / Commit SHA：— / —
-- 测试命令和结果：尚未运行。
-- 兼容性影响：新增离线开发工具，不修改生产插件状态。
-- 数据库影响：无。
-- 未完成项：全部。
+- 状态：`DONE_OFFLINE`
+- 开始时间 / 结束时间：`2026-08-31T06:04:44+08:00` / `2026-08-31T07:13:05+08:00`
+- 设计决策：只实现 `init/validate/test/permissions/package/inspect/diff` 的完全离线开发链路，复用现有 Service v2 SDK、Manifest/ZIP 权威验证器、Host Capability Registry、项目合同和 canonical/hash 规则；CLI 不导入生产仓储，不连接数据库或网络，不部署、不安装、不签发权限。源码根严格限定为 `manifest.json + payload/`，Host SDK 由工具注入，敏感名称在任何成员内容读取或 ZIP 解压前拒绝。所有源码、ZIP、JSON、`init` 与输出路径在 Linux 上使用从根目录逐级打开的 `dirfd/openat + O_NOFOLLOW` 锚定；源码总量在成员读入前受限，确定性 ZIP 以保持打开的临时 inode、硬链接不可覆盖发布、最终快照复核和 inode 精确清理关闭并发替换窗口。`test` 只接受闭合 fixture，要求受信 Python 3.10、真实 Bubblewrap/prlimit、无网络 namespace、最小环境和一次性 Unix Broker；`service.invoke` 因没有本地 Provider 权威合同而显式不支持，任何已观察到的 Host 写在缺少真实独立 Evidence/Postcondition 时保守报告 `UNKNOWN`。
+- 修改文件 / Commit SHA：核心为 `agent/agent/automation_plugins/{developer_v2.py,developer_reports_v2.py,developer_simulator_v2.py,inspection_v2.py,runtime_environment.py}`、`agent/scripts/service_v2_plugin.py`、`agent/extension_sdk/schemas/manifest-v2.schema.json`，并提取生产执行环境、向导投影和 `service.invoke` 单 action 上限为共享单点；新增四组 root 测试、开发文档并同步平台文档、导航索引和指令镜像 / `81f58eb89befdf54be33b67ef70e6e3d96a4cde7`。
+- 测试命令和结果：最终 EXT007 与 package 定向 `86 passed`，更宽 Broker/Management/package/双打卡/Service v2/EXT007 回归在最终文件加固前为 `197 passed`，随后三套最终全量覆盖全部改动：root `2084 passed, 30 skipped, 296 subtests passed`；Agent `1123 passed, 1 skipped, 198 subtests passed`；Console `584 passed, 211 subtests passed`。全仓 Ruff（`py310`）、隔离 `compileall`、14 个已跟踪 JavaScript 语法、工具注册表（40 项）、仓库卫生、运行时导入边界、文档（76 项 Markdown）、内部 API 合同、首方 release scope、三套指令镜像、临时目录清理和 `git diff --check` 全部通过；两轮独立复审在修复敏感 ZIP 预扫、祖先/叶节点替换、fd 所有权及发布 inode 复用窗口后最终给出 `ship`。测试显式设置 `PYTHONDONTWRITEBYTECODE=1` 与 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
+- 环境门禁：Agent/Console 锁环境核验均如实报告 QA Python `3.12.3` 与锁定 Python `3.10` 不一致，本机没有 Python 3.10；模拟器默认链路因此明确 `SIMULATOR_SANDBOX_UNAVAILABLE`，没有以当前解释器替代。标准 Python 3.10 锁环境、真实 bwrap/prlimit 和生产等价 sandbox 复验保留为发布前门禁。
+- 兼容性影响：只新增离线开发入口和纯投影/模拟器；生产安装、Catalog、项目授权、Command/Run/Evidence 与 ACTION_V1 行为不变。生产执行器仅改为调用等价的共享最小环境构造，管理向导仅改为调用等价的共享安全投影；常量单点化不改变值。
+- 数据库影响：无 migration、无表或 DML；全部验证使用本地文件、fixture、Unix socket 和测试子进程，未连接真实数据库或业务系统。
+- 未完成项：无离线实现项。Python 3.10 锁环境、生产等价 sandbox、真实插件安装/授权/部署均为 `PRODUCTION_GATED`；未部署、未安装生产插件、未访问真实 TMS/飞书数据、未执行真实业务写。
 - 下一项 TASK：`TASK-EXT-008`。
-- 恢复说明：先确认前序 TASK 已提交推送，再将本 TASK 标为 `IN_PROGRESS`。
+- 恢复说明：确认 EXT007 代码提交与本账本 checkpoint 均已推送；从现有 `ManagedContributionRegistry`、generation snapshot/transition、项目 trusted invocation 和固定 Console 模块体系开始 EXT008。首期 Harness 只允许 `read/compute + harness_allowed`，必须关闭 shell、任意文件、任意网络和全部业务写，且不得复用 Legacy Agent 的直接 MySQL/真实工具路径或把动态能力开放给普通 LLM Catalog。
 
 ### TASK-EXT-008：Harness 只读运行时与 contribution
 
