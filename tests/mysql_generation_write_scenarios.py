@@ -382,7 +382,7 @@ def run_test_generation_write_lock_order_races(case):
     resource_roles = []
     scheduling = {"supported": False}
     governance_anchor = {"schema_version": 1, "authority": "integration"}
-    invocation_contracts = []
+    invocation_contracts = {}
     install_metadata = {
         "install_root": f"/integration/plugins/{archival_plugin_id}/1.0.0",
         "python_relative": "venv/bin/python",
@@ -533,6 +533,12 @@ def run_test_generation_write_lock_order_races(case):
             enabled_entrypoints=(),
             schedule={"kind": "none", "times": [], "enabled": False},
             compiled_invocations={},
+            contract_witness={
+                "runtime_model": "ACTION_V1",
+                "allowed_entrypoints": [],
+                "invocation_contracts": invocation_contracts,
+                "scheduling": scheduling,
+            },
             device_binding=None,
             actor_id="integration-admin",
             actor_role="super_admin",

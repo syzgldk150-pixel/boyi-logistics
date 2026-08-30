@@ -19,6 +19,7 @@ from agent.automation_plugins.code_owned_fields import (
     resolve_selection_execution_phase,
 )
 from agent.automation_plugins.errors import PluginConflictError
+from agent.automation_plugins.models import PluginRuntimeModel
 
 
 FIRST_PARTY_TRUST = "ed25519_first_party"
@@ -324,6 +325,8 @@ def _finance_service(automation_id: str) -> tuple[AutomationProjectConfiguration
         account_roles=(),
         resource_roles=(),
         allowed_entrypoints=(),
+        invocation_contracts={},
+        runtime_model=PluginRuntimeModel.ACTION_V1.value,
         worker_requirement={"required": False},
         scheduling={"supported": False, "allowed_kinds": [], "max_daily_times": 0},
     )

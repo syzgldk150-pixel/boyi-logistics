@@ -116,7 +116,7 @@ python scripts/verify_first_party_plugins.py \
 
 `builtin_release` 仅可用于开发测试，不可进入生产 green health，也不可获得项目完全自动权限。
 
-## ACTION_V1 管理 API 与显式绑定
+## ACTION_V1 / SERVICE_V2 管理 API 与显式绑定
 
 生产管理面由 `agent/automation_plugins/management_api.py` 的 router factory 注入，不导入组合根。
 Console 请求体统一 `extra=forbid`，身份只从已签名的 MySQL Console principal 获取；浏览器不能提交
@@ -128,6 +128,8 @@ actor、`automation_id`、manifest 或签名/完整性内部字段。读取目�
 - `GET /internal/v1/automation/workers`
 - `POST /internal/v1/automation/workers/pair`
 - `POST /internal/v1/automation/plugins/install`
+- `POST /internal/v1/automation/plugins/inspect-upload`
+- `POST /internal/v1/automation/plugins/install-v2`
 - `POST /internal/v1/automation/instances/{automation_id}/upgrade`
 - `POST /internal/v1/automation/instances/{automation_id}/state`
 - `POST /internal/v1/automation/instances/{automation_id}/uninstall`
@@ -135,6 +137,8 @@ actor、`automation_id`、manifest 或签名/完整性内部字段。读取目�
 - `POST /internal/v1/automation/workers/pair`
 
 Console 的 `/extensions` 与 `/extensions/{plugin_id}` 是包清单、权限摘要、已安装项目健康状态和安装/升级/启停/卸载入口；`/automations` 只保留项目配置、绑定、入口、定时、权限、运行和迁移验证。两处都读取上述同一个 Catalog 并复用同一生命周期 API，不能新增第二套插件仓储或用固定业务模块伪装扩展。查看扩展中心要求真实非 legacy MySQL `admin/super_admin`，生命周期写仍只允许 `super_admin`。
+
+Service v2 新安装固定先调用只读 `inspect-upload`，该请求只接收同一个 ZIP、Console 计算的传输摘要和检查 UUID；返回值只含权限、角色、配置 Schema、贡献和建议定时，不暴露 Manifest、服务目标、路径或摘要。最终 `install-v2` 必须重新核验同一 ZIP，并接收闭合的实例名、显式配置、账号/资源绑定、入口、定时和权限确认。仓储幂等键绑定包摘要、规范化完整意图和签名管理员身份；响应丢失后只允许原样重放，首次配置、策略和安装审计不得重复。执行顺序固定为 disabled 创建或重放、配置 CAS、generation reconcile、committed-ready 校验、仓储事务冻结真实 post-generation `record_version` 和高层启用；claim 必须同时证明初始配置审计、匹配的 committed generation 与此前零状态变更。同步启用后 reconcile 失败以确定性 enable/rollback witness 补偿回 disabled，缺少 witness 或后续人工状态变化时旧根请求停止；未就绪只返回可原样重试的 `PREPARING`。启用提交后进程崩溃或补偿仓储不可用的恢复演练仍为 `PRODUCTION_GATED`，在通过前不得宣称生产零半启用窗口，也不得要求重启服务或直接低层启用。
 
 配置必须显式提交签名角色对应的 Business Account ID、managed resource ID 和（需要时）命名 Windows
 设备；解析器精确匹配账号池/资源池/配对设备，不读取 `is_default`，不选首项，也不按名称猜测。

@@ -9,7 +9,399 @@ from shared.service_identity import (
 )
 
 
+_SERVICE_V2_INSTALL_INTENT_FIELDS = frozenset(
+    {
+        "instance_name",
+        "config",
+        "account_bindings",
+        "resource_bindings",
+        "enabled_entrypoints",
+        "schedule",
+        "permissions_confirmed",
+    }
+)
+_SERVICE_V2_INSPECTION_FIELDS = frozenset(
+    {
+        "plugin_id",
+        "name",
+        "version",
+        "host_api",
+        "permissions",
+        "account_roles",
+        "resource_roles",
+        "config_schema",
+        "contributions",
+        "scheduling",
+    }
+)
+_SERVICE_V2_INTENT_MAX_BYTES = 16 * 1024
+_SERVICE_V2_IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
+_SERVICE_V2_PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
+_SERVICE_V2_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+_SERVICE_V2_BINDING_ID_RE = re.compile(r"^[A-Za-z0-9_.:@/-]{1,160}$")
+_SERVICE_V2_TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+_SERVICE_V2_FORBIDDEN_BROWSER_AUTHORITY = frozenset(
+    {
+        "automation_id",
+        "device_id",
+        "manifest",
+        "manifest_sha256",
+        "package_digest",
+        "package_sha256",
+    }
+)
+
+
 class AutomationPluginManagementServiceMixin:
+    @staticmethod
+    def _service_v2_json_tree_is_safe(value: Any, *, depth: int = 0) -> bool:
+        """Bound JSON crossing the Agent-to-browser wizard projection."""
+
+        if depth > 16:
+            return False
+        if value is None or isinstance(value, bool):
+            return True
+        if isinstance(value, str):
+            return len(value) <= 4096
+        if isinstance(value, int):
+            return not isinstance(value, bool)
+        if isinstance(value, float):
+            try:
+                json.dumps(value, allow_nan=False)
+            except (TypeError, ValueError):
+                return False
+            return True
+        if isinstance(value, list):
+            return len(value) <= 256 and all(
+                AutomationPluginManagementServiceMixin._service_v2_json_tree_is_safe(
+                    item,
+                    depth=depth + 1,
+                )
+                for item in value
+            )
+        if isinstance(value, dict):
+            return len(value) <= 256 and all(
+                isinstance(key, str)
+                and 0 < len(key) <= 128
+                and key not in _SERVICE_V2_FORBIDDEN_BROWSER_AUTHORITY
+                and AutomationPluginManagementServiceMixin._service_v2_json_tree_is_safe(
+                    item,
+                    depth=depth + 1,
+                )
+                for key, item in value.items()
+            )
+        return False
+
+    @classmethod
+    def _normalize_service_v2_inspection(
+        cls,
+        value: Any,
+    ) -> dict[str, Any] | None:
+        """Copy only the closed, display-safe inspection contract."""
+
+        if not isinstance(value, dict) or set(value) != _SERVICE_V2_INSPECTION_FIELDS:
+            return None
+        plugin_id = str(value.get("plugin_id") or "").strip()
+        name = normalize_feedback_text(redact_text(value.get("name") or "")).strip()
+        version = str(value.get("version") or "").strip()
+        host_api = value.get("host_api")
+        if (
+            not _SERVICE_V2_PLUGIN_ID_RE.fullmatch(plugin_id)
+            or not name
+            or len(name) > 160
+            or not _SERVICE_V2_VERSION_RE.fullmatch(version)
+            or not isinstance(host_api, dict)
+            or set(host_api) != {"minimum", "maximum_exclusive"}
+            or not all(
+                _SERVICE_V2_VERSION_RE.fullmatch(str(host_api.get(key) or ""))
+                for key in ("minimum", "maximum_exclusive")
+            )
+        ):
+            return None
+
+        account_roles: list[dict[str, Any]] = []
+        raw_account_roles = value.get("account_roles")
+        if not isinstance(raw_account_roles, list) or len(raw_account_roles) > 64:
+            return None
+        for raw in raw_account_roles:
+            if not isinstance(raw, dict) or set(raw) != {
+                "role",
+                "allowed_systems",
+                "required",
+            }:
+                return None
+            role = str(raw.get("role") or "").strip()
+            systems = raw.get("allowed_systems")
+            if (
+                not _SERVICE_V2_IDENTIFIER_RE.fullmatch(role)
+                or not isinstance(systems, list)
+                or not systems
+                or len(systems) > 32
+                or not all(
+                    isinstance(item, str)
+                    and _SERVICE_V2_IDENTIFIER_RE.fullmatch(item)
+                    for item in systems
+                )
+                or len(systems) != len(set(systems))
+                or not isinstance(raw.get("required"), bool)
+            ):
+                return None
+            account_roles.append(
+                {
+                    "role": role,
+                    "allowed_systems": list(systems),
+                    "required": raw["required"],
+                }
+            )
+
+        resource_roles: list[dict[str, Any]] = []
+        raw_resource_roles = value.get("resource_roles")
+        if not isinstance(raw_resource_roles, list) or len(raw_resource_roles) > 64:
+            return None
+        for raw in raw_resource_roles:
+            if not isinstance(raw, dict) or set(raw) != {
+                "role",
+                "allowed_kinds",
+                "required",
+            }:
+                return None
+            role = str(raw.get("role") or "").strip()
+            kinds = raw.get("allowed_kinds")
+            if (
+                not _SERVICE_V2_IDENTIFIER_RE.fullmatch(role)
+                or not isinstance(kinds, list)
+                or not kinds
+                or len(kinds) > 32
+                or not all(
+                    isinstance(item, str)
+                    and _SERVICE_V2_IDENTIFIER_RE.fullmatch(item)
+                    for item in kinds
+                )
+                or len(kinds) != len(set(kinds))
+                or not isinstance(raw.get("required"), bool)
+            ):
+                return None
+            resource_roles.append(
+                {
+                    "role": role,
+                    "allowed_kinds": list(kinds),
+                    "required": raw["required"],
+                }
+            )
+
+        permissions: list[dict[str, Any]] = []
+        raw_permissions = value.get("permissions")
+        if not isinstance(raw_permissions, list) or len(raw_permissions) > 128:
+            return None
+        account_role_names = {item["role"] for item in account_roles}
+        resource_role_names = {item["role"] for item in resource_roles}
+        for raw in raw_permissions:
+            if not isinstance(raw, dict) or set(raw) != {
+                "name",
+                "operations",
+                "account_role",
+                "resource_role",
+            }:
+                return None
+            capability = str(raw.get("name") or "").strip()
+            operations = raw.get("operations")
+            account_role = raw.get("account_role")
+            resource_role = raw.get("resource_role")
+            if (
+                not _SERVICE_V2_IDENTIFIER_RE.fullmatch(capability)
+                or not isinstance(operations, list)
+                or not operations
+                or len(operations) > 64
+                or not all(
+                    isinstance(item, str)
+                    and _SERVICE_V2_IDENTIFIER_RE.fullmatch(item)
+                    for item in operations
+                )
+                or len(operations) != len(set(operations))
+                or (account_role is not None and account_role not in account_role_names)
+                or (resource_role is not None and resource_role not in resource_role_names)
+            ):
+                return None
+            permissions.append(
+                {
+                    "name": capability,
+                    "operations": list(operations),
+                    "account_role": account_role,
+                    "resource_role": resource_role,
+                }
+            )
+
+        contributions: list[dict[str, Any]] = []
+        raw_contributions = value.get("contributions")
+        allowed_kinds = {"console", "scheduler", "webhook", "feishu", "events"}
+        if not isinstance(raw_contributions, list) or len(raw_contributions) > 128:
+            return None
+        seen_contributions: set[str] = set()
+        for raw in raw_contributions:
+            if not isinstance(raw, dict) or set(raw) != {
+                "id",
+                "kind",
+                "title",
+                "default_enabled",
+            }:
+                return None
+            contribution_id = str(raw.get("id") or "").strip()
+            kind = str(raw.get("kind") or "").strip()
+            title = normalize_feedback_text(redact_text(raw.get("title") or "")).strip()
+            if (
+                contribution_id in seen_contributions
+                or not _SERVICE_V2_IDENTIFIER_RE.fullmatch(contribution_id)
+                or kind not in allowed_kinds
+                or not title
+                or len(title) > 160
+                or not isinstance(raw.get("default_enabled"), bool)
+            ):
+                return None
+            seen_contributions.add(contribution_id)
+            contributions.append(
+                {
+                    "id": contribution_id,
+                    "kind": kind,
+                    "title": title,
+                    "default_enabled": raw["default_enabled"],
+                }
+            )
+
+        scheduling = value.get("scheduling")
+        if (
+            not isinstance(scheduling, dict)
+            or set(scheduling) != {"supported", "default_schedule"}
+            or not isinstance(scheduling.get("supported"), bool)
+        ):
+            return None
+        default_schedule = scheduling.get("default_schedule")
+        if not cls._normalize_service_v2_schedule(default_schedule):
+            return None
+        config_schema = value.get("config_schema")
+        if (
+            not isinstance(config_schema, dict)
+            or not cls._service_v2_json_tree_is_safe(config_schema)
+        ):
+            return None
+        try:
+            schema_bytes = json.dumps(
+                config_schema,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (TypeError, ValueError):
+            return None
+        if len(schema_bytes) > 128 * 1024:
+            return None
+        return {
+            "plugin_id": plugin_id,
+            "name": name,
+            "version": version,
+            "host_api": {
+                "minimum": str(host_api["minimum"]),
+                "maximum_exclusive": str(host_api["maximum_exclusive"]),
+            },
+            "permissions": permissions,
+            "account_roles": account_roles,
+            "resource_roles": resource_roles,
+            "config_schema": config_schema,
+            "contributions": contributions,
+            "scheduling": {
+                "supported": scheduling["supported"],
+                "default_schedule": dict(default_schedule),
+            },
+        }
+
+    @staticmethod
+    def _normalize_service_v2_schedule(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or set(value) != {"kind", "times", "enabled"}:
+            return None
+        kind = value.get("kind")
+        times = value.get("times")
+        enabled = value.get("enabled")
+        if (
+            kind not in {"none", "daily_times"}
+            or not isinstance(times, list)
+            or len(times) > 24
+            or not all(isinstance(item, str) and _SERVICE_V2_TIME_RE.fullmatch(item) for item in times)
+            or len(times) != len(set(times))
+            or not isinstance(enabled, bool)
+            or (kind == "none" and (times or enabled))
+            or (kind == "daily_times" and (not times or not enabled))
+        ):
+            return None
+        return {"kind": kind, "times": list(times), "enabled": enabled}
+
+    @classmethod
+    def _normalize_service_v2_install_intent(cls, raw: Any) -> str | None:
+        """Canonicalize the browser intent without inventing business defaults."""
+
+        if not isinstance(raw, str) or len(raw.encode("utf-8")) > _SERVICE_V2_INTENT_MAX_BYTES:
+            return None
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if (
+            not isinstance(value, dict)
+            or set(value) != _SERVICE_V2_INSTALL_INTENT_FIELDS
+            or value.get("permissions_confirmed") is not True
+        ):
+            return None
+        instance_name = normalize_feedback_text(str(value.get("instance_name") or "")).strip()
+        config = value.get("config")
+        account_bindings = value.get("account_bindings")
+        resource_bindings = value.get("resource_bindings")
+        entrypoints = value.get("enabled_entrypoints")
+        schedule = cls._normalize_service_v2_schedule(value.get("schedule"))
+        if (
+            not instance_name
+            or len(instance_name) > 120
+            or not isinstance(config, dict)
+            or not cls._service_v2_json_tree_is_safe(config)
+            or not isinstance(account_bindings, dict)
+            or not isinstance(resource_bindings, dict)
+            or not isinstance(entrypoints, list)
+            or len(entrypoints) > 64
+            or len(entrypoints) != len(set(entrypoints))
+            or not all(
+                isinstance(item, str) and _SERVICE_V2_IDENTIFIER_RE.fullmatch(item)
+                for item in entrypoints
+            )
+            or schedule is None
+        ):
+            return None
+        for bindings in (account_bindings, resource_bindings):
+            if len(bindings) > 64 or any(
+                not isinstance(role, str)
+                or not _SERVICE_V2_IDENTIFIER_RE.fullmatch(role)
+                or not isinstance(binding_id, str)
+                or not _SERVICE_V2_BINDING_ID_RE.fullmatch(binding_id)
+                for role, binding_id in bindings.items()
+            ):
+                return None
+        normalized = {
+            "instance_name": instance_name,
+            "config": config,
+            "account_bindings": account_bindings,
+            "resource_bindings": resource_bindings,
+            "enabled_entrypoints": entrypoints,
+            "schedule": schedule,
+            "permissions_confirmed": True,
+        }
+        try:
+            canonical = json.dumps(
+                normalized,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError):
+            return None
+        return canonical if len(canonical.encode("utf-8")) <= _SERVICE_V2_INTENT_MAX_BYTES else None
+
     def _agent_plugin_multipart_request(
         self,
         endpoint: str,
@@ -154,9 +546,18 @@ class AutomationPluginManagementServiceMixin:
         handler: BaseHTTPRequestHandler,
         *,
         automation_id: str = "",
+        inspect_only: bool = False,
     ) -> None:
         requested_automation_id = str(automation_id or "").strip()
         automation_id = self._automation_project_id(requested_automation_id)
+        if inspect_only and requested_automation_id:
+            self._control_plane_error(
+                handler,
+                HTTPStatus.BAD_REQUEST,
+                "PLUGIN_INSPECTION_SCOPE_INVALID",
+                "安装前检查不能指定已有实例。",
+            )
+            return
         if requested_automation_id and not automation_id:
             self._control_plane_error(
                 handler,
@@ -189,11 +590,15 @@ class AutomationPluginManagementServiceMixin:
             )
             return
         form = self._parse_multipart_form(handler)
-        allowed_form_fields = (
-            {"package", "request_id", "expected_record_version"}
-            if automation_id
-            else {"package", "request_id", "instance_name"}
-        )
+        if inspect_only:
+            allowed_form_fields = {"package", "request_id"}
+        elif automation_id:
+            allowed_form_fields = {"package", "request_id", "expected_record_version"}
+        elif "intent" in form:
+            allowed_form_fields = {"package", "request_id", "intent"}
+        else:
+            # Keep the established Action-v1 upload contract unchanged.
+            allowed_form_fields = {"package", "request_id", "instance_name"}
         unexpected_form_fields = set(form.keys()) - allowed_form_fields
         duplicate_form_fields = [
             field for field in form.keys() if isinstance(form[field], list)
@@ -242,7 +647,9 @@ class AutomationPluginManagementServiceMixin:
             return
 
         fields = {"request_id": request_id}
-        if automation_id:
+        if inspect_only:
+            endpoint = "/internal/v1/automation/plugins/inspect-upload"
+        elif automation_id:
             expected_record_version_raw = str(form.getvalue("expected_record_version") or "").strip()
             try:
                 expected_record_version = int(expected_record_version_raw)
@@ -260,6 +667,20 @@ class AutomationPluginManagementServiceMixin:
             endpoint = (
                 f"/internal/v1/automation/instances/{quote(automation_id, safe='')}/upgrade"
             )
+        elif "intent" in form:
+            canonical_intent = self._normalize_service_v2_install_intent(
+                form.getvalue("intent")
+            )
+            if canonical_intent is None:
+                self._control_plane_error(
+                    handler,
+                    HTTPStatus.BAD_REQUEST,
+                    "PLUGIN_INSTALL_INTENT_INVALID",
+                    "安装信息不完整或已被修改，请重新检查插件包。",
+                )
+                return
+            fields["intent"] = canonical_intent
+            endpoint = "/internal/v1/automation/plugins/install-v2"
         else:
             instance_name = normalize_feedback_text(str(form.getvalue("instance_name") or "")).strip()
             if not instance_name or len(instance_name) > 120:
@@ -323,17 +744,173 @@ class AutomationPluginManagementServiceMixin:
             )
             return
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        if inspect_only:
+            inspection = self._normalize_service_v2_inspection(data)
+            if inspection is None:
+                self._control_plane_error(
+                    handler,
+                    HTTPStatus.BAD_GATEWAY,
+                    "INVALID_SERVICE_V2_INSPECTION_CONTRACT",
+                    "Agent 返回了无效的插件检查结果。",
+                )
+                return
+            warnings: list[str] = []
+            allowed_systems = {
+                system
+                for role in inspection["account_roles"]
+                for system in role["allowed_systems"]
+            }
+            account_options: list[dict[str, Any]] = []
+            account_pool_available = not allowed_systems
+            if allowed_systems:
+                raw_accounts, account_warning = self._fetch_automation_accounts(
+                    force=False,
+                    prefer_cached=True,
+                )
+                account_pool_available = not bool(account_warning)
+                if account_warning:
+                    warnings.append("账号列表暂时不可用，不能完成需要账号的安装。")
+                seen_account_ids: set[str] = set()
+                for raw_account in raw_accounts if not account_warning else []:
+                    if not isinstance(raw_account, dict):
+                        continue
+                    account_id = str(raw_account.get("account_id") or "").strip()
+                    system = str(raw_account.get("system") or "").strip().lower()
+                    name = normalize_feedback_text(
+                        redact_text(raw_account.get("name") or account_id)
+                    ).strip()
+                    status = (
+                        raw_account.get("status")
+                        if isinstance(raw_account.get("status"), dict)
+                        else {}
+                    )
+                    status_value = str(status.get("status") or "").strip().lower()
+                    status_label = normalize_feedback_text(
+                        redact_text(
+                            raw_account.get("status_label")
+                            or status.get("label")
+                            or "状态未知"
+                        )
+                    ).strip()[:80]
+                    session_capable = raw_account.get("session_capable") is True
+                    is_active = raw_account.get("is_active", True) is True
+                    if (
+                        account_id in seen_account_ids
+                        or not _SERVICE_V2_BINDING_ID_RE.fullmatch(account_id)
+                        or system not in allowed_systems
+                        or not name
+                        or len(name) > 160
+                    ):
+                        continue
+                    seen_account_ids.add(account_id)
+                    account_options.append(
+                        {
+                            "account_id": account_id,
+                            "name": name,
+                            "system": system,
+                            "available": is_active
+                            and (not session_capable or status_value == "authenticated"),
+                            "status_label": status_label,
+                        }
+                    )
+                account_options.sort(key=lambda item: (item["system"], item["name"], item["account_id"]))
+
+            allowed_resource_kinds = {
+                kind
+                for role in inspection["resource_roles"]
+                for kind in role["allowed_kinds"]
+            }
+            resource_options: list[dict[str, str]] = []
+            resource_pool_available = not allowed_resource_kinds
+            if allowed_resource_kinds:
+                catalog_result = self._agent_request(
+                    "GET",
+                    "/internal/v1/automation/plugins/catalog",
+                    timeout=12,
+                    console_principal=trusted_context["_console_principal"],
+                )
+                catalog_data = catalog_result.get("data")
+                if catalog_result.get("ok") and isinstance(catalog_data, dict):
+                    from console.services.automation_projects import (
+                        _normalize_plugin_resources,
+                    )
+
+                    normalized_resources, resources_valid = _normalize_plugin_resources(
+                        catalog_data.get("resources")
+                    )
+                    resource_pool_available = (
+                        catalog_data.get("resource_pool_available") is True
+                        and resources_valid
+                    )
+                    if resource_pool_available:
+                        resource_options = [
+                            {
+                                "resource_id": item["resource_id"],
+                                "name": item["name"],
+                                "kind": item["kind"],
+                                "status": item["status"],
+                            }
+                            for item in normalized_resources
+                            if item["kind"] in allowed_resource_kinds
+                        ]
+                if not resource_pool_available:
+                    warnings.append("资源列表暂时不可用，不能完成需要资源的安装。")
+            self._send_json(
+                handler,
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "data": {
+                        **inspection,
+                        "account_options": account_options,
+                        "resource_options": resource_options,
+                        "account_pool_available": account_pool_available,
+                        "resource_pool_available": resource_pool_available,
+                        "warnings": warnings,
+                    },
+                    "message": "插件包已检查，请完成权限、账号、资源、配置与入口设置。",
+                },
+            )
+            return
         created_id = self._automation_project_id(data.get("automation_id"))
+        if automation_id:
+            if created_id and created_id != automation_id:
+                self._control_plane_error(
+                    handler,
+                    HTTPStatus.BAD_GATEWAY,
+                    "INVALID_PLUGIN_INSTANCE_RESPONSE",
+                    "Agent 返回了不匹配的插件实例。",
+                )
+                return
+            created_id = automation_id
+        elif not created_id:
+            self._control_plane_error(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                "INVALID_PLUGIN_INSTANCE_RESPONSE",
+                "Agent 未返回有效的插件实例。",
+            )
+            return
+        if endpoint == "/internal/v1/automation/plugins/install-v2" and (
+            data.get("generation_ready") is not True or data.get("enabled") is not True
+        ):
+            self._control_plane_error(
+                handler,
+                HTTPStatus.CONFLICT,
+                "PLUGIN_INSTALL_PREPARING",
+                "插件已保持停用并等待运行环境就绪；请原样重试这次安装请求。",
+            )
+            return
         self._send_json(
             handler,
             HTTPStatus.OK,
             {
                 "ok": True,
-                "data": {"automation_id": created_id} if created_id else {},
+                "data": {"automation_id": created_id},
                 "message": (
                     "自动化已升级。"
                     if automation_id
-                    else "自动化已安装，系统将按依赖、配置和账号状态准备项目。"
+                    else "自动化已安装并完成运行准备。"
                 ),
             },
         )

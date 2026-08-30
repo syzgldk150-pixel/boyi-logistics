@@ -167,9 +167,10 @@ class _MemoryPluginRepository:
         actor_id: str,
         actor_role: str,
         request_id: str,
+        install_payload_sha256: str | None = None,
     ) -> PluginInstanceRecord:
         assert actor_id and actor_role == "super_admin"
-        identity = (version.package_sha256, instance_name)
+        identity = (install_payload_sha256 or version.package_sha256, instance_name)
         existing = self.requests.get(request_id)
         if existing is not None:
             if existing[:2] != identity:

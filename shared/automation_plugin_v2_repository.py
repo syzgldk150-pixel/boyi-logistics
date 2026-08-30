@@ -1228,13 +1228,15 @@ class AutomationPluginV2RepositoryMixin:
             str(key)
             for key, value in compiled.items()
             if isinstance(value, Mapping)
-            and value.get("contribution_kind") == "console"
+            and isinstance(value.get("target"), Mapping)
+            and value["target"].get("contribution_kind") == "console"
         }
         scheduler_ids = {
             str(key)
             for key, value in compiled.items()
             if isinstance(value, Mapping)
-            and value.get("contribution_kind") == "scheduler"
+            and isinstance(value.get("target"), Mapping)
+            and value["target"].get("contribution_kind") == "scheduler"
         }
         source_has_schedule = (
             source_schedule.get("kind") != "none"
@@ -1427,7 +1429,8 @@ class AutomationPluginV2RepositoryMixin:
             str(contribution_id)
             for contribution_id, invocation in compiled.items()
             if isinstance(invocation, Mapping)
-            and invocation.get("contribution_kind") == "console"
+            and isinstance(invocation.get("target"), Mapping)
+            and invocation["target"].get("contribution_kind") == "console"
         }
 
     @staticmethod

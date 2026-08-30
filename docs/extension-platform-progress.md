@@ -29,8 +29,8 @@ updated: 2026-08-31
 | TASK-BASE-000 | DONE_OFFLINE | 2026-08-30T23:30:59+08:00 | 2026-08-30T23:34:30+08:00 | 3c5bb24b603a3d349b7dba2a16b6b6c075baa078 |
 | TASK-EXT-001 | DONE_OFFLINE | 2026-08-30T23:39:27+08:00 | 2026-08-31T00:01:42+08:00 | 8d1eddd331d66bdc19f1a11d8c61bab1fe6bb701 |
 | TASK-EXT-002 | DONE_OFFLINE | 2026-08-31T00:02:53+08:00 | 2026-08-31T00:35:15+08:00 | a23646ad069f52d6fa4c2e91d3486cdf913d4854 |
-| TASK-EXT-003 | DONE_OFFLINE | 2026-08-31T00:36:38+08:00 | 2026-08-31T00:51:46+08:00 | 待下一 TASK 回填 |
-| TASK-EXT-004 | NOT_STARTED | — | — | — |
+| TASK-EXT-003 | DONE_OFFLINE | 2026-08-31T00:36:38+08:00 | 2026-08-31T00:51:46+08:00 | 2ac0eb735d4494d7de2873e998a5eb4c21e24c9e |
+| TASK-EXT-004 | DONE_OFFLINE | 2026-08-31T00:52:43+08:00 | 2026-08-31T02:26:01+08:00 | 本 TASK checkpoint（下一 TASK 回填） |
 | TASK-EXT-005 | NOT_STARTED | — | — | — |
 | TASK-EXT-006 | NOT_STARTED | — | — | — |
 | TASK-EXT-007 | NOT_STARTED | — | — | — |
@@ -95,7 +95,7 @@ updated: 2026-08-31
 - 状态：`DONE_OFFLINE`
 - 开始时间 / 结束时间：`2026-08-31T00:36:38+08:00` / `2026-08-31T00:51:46+08:00`
 - 设计决策：只在 Service v2 项目授权评估与安全投影缝隙固定 `PROJECT_FULL_AUTO`，并确保任何历史持久化逐次审批值都不能把 v2 Run 推入 `WAITING_APPROVAL`；不修改通用 `WorkflowRunner/PolicyEngine`，不全局放开 ACTION_V1。授权简化不绕过项目合同、账号/资源/登录/依赖/入口门禁，也不删除 Command、Run、Evidence、写后核验或未知写隔离。
-- 修改文件 / Commit SHA：`agent/{AGENTS.md,CLAUDE.md}`、`agent/agent/orchestration/automation_project_policy_service.py`、`agent/docs/{automation_plugin_platform.md,code_navigation_index.md}`、`console/{AGENTS.md,CLAUDE.md}`、`console/services/automation_projects.py`、`console/static/style.css`、`console/tests/test_automation_plugins.py`、`docs/{plugin-platform-v2.md,extension-platform-progress.md}`、`tests/test_automation_project_policy_service.py` / 本 checkpoint 提交后由下一 TASK 回填。
+- 修改文件 / Commit SHA：`agent/{AGENTS.md,CLAUDE.md}`、`agent/agent/orchestration/automation_project_policy_service.py`、`agent/docs/{automation_plugin_platform.md,code_navigation_index.md}`、`console/{AGENTS.md,CLAUDE.md}`、`console/services/automation_projects.py`、`console/static/style.css`、`console/tests/test_automation_plugins.py`、`docs/{plugin-platform-v2.md,extension-platform-progress.md}`、`tests/test_automation_project_policy_service.py` / `2ac0eb735d4494d7de2873e998a5eb4c21e24c9e`。
 - 测试命令和结果：策略服务定向 `38 passed, 23 subtests passed`；项目授权、API、入口和 Service v2 扩展回归 `94 passed, 49 subtests passed`；Agent full suite `1089 passed, 1 skipped, 195 subtests passed`；Console full suite `574 passed, 203 subtests passed`；root full suite `1916 passed, 30 skipped, 291 subtests passed`。变更 Python Ruff、`py_compile`、工具注册表（40 项）、仓库卫生、运行时导入边界、文档、内部 API 合同、指令镜像和 `git diff --check` 全部通过；独立复审给出 `ship`。测试显式设置 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
 - 兼容性影响：SERVICE_V2 在精确 committed contract 匹配且 `can_full_auto` 后固定无逐次审批；遗留 `REQUIRE_EACH_RUN/LEGACY_SCHEDULE_ONLY` 行只保留审计，不再改变 v2 安全投影或创建审批。ACTION_V1 仍按原持久策略工作；Console 继续只给 v1 提供切换控件，并把 `BLOCKED_UNKNOWN_WRITE` 独立显示为“写入结果未知”。Command、Run、Evidence、写后核验和未知写隔离均保留。
 - 数据库影响：无；未新增迁移、表或 DML，未访问生产数据库。
@@ -105,16 +105,16 @@ updated: 2026-08-31
 
 ### TASK-EXT-004：一体化安装向导
 
-- 状态：`NOT_STARTED`
-- 开始时间 / 结束时间：— / —
-- 设计决策：复用现有原子仓储、配置 CAS、generation 和 reconcile。
-- 修改文件 / Commit SHA：— / —
-- 测试命令和结果：尚未运行。
-- 兼容性影响：失败必须保持 disabled/preparing；不得要求重启服务。
-- 数据库影响：待审计；仅允许新增前向迁移并只做本地验证。
-- 未完成项：全部。
+- 状态：`DONE_OFFLINE`
+- 开始时间 / 结束时间：`2026-08-31T00:52:43+08:00` / `2026-08-31T02:26:01+08:00`
+- 设计决策：复用现有单一 v2 lifecycle/management、原子仓储、配置 CAS、generation 和 reconcile，把技术检查、权限摘要、账号/资源绑定、入口/定时与启用串成服务器权威的连续向导；浏览器只提交包字节、实例名、选择 ID、显式配置和稳定请求 UUID。安装幂等必须绑定完整规范意图，响应丢失重放不得重复创建项目、配置、代际或审计；任一步失败保持实例 disabled 且处于可精确续做的 `PREPARING`，只有 committed generation 稳定且仓储持久化真实 post-generation 启用基线后才允许启用，不新增第二套安装器或要求重启服务。同步启用后失败用根请求的确定性 enable/rollback witness 补偿；启用提交后进程崩溃或补偿仓储不可用的恢复演练标记 `PRODUCTION_GATED`。
+- 修改文件 / Commit SHA：`agent/{AGENTS.md,CLAUDE.md}`、`agent/agent/automation_plugins/{configuration.py,lifecycle.py,management.py,management_api.py,management_repository.py,mysql_repository.py,ports.py}`、`agent/docs/{automation_plugin_platform.md,code_navigation_index.md}`、`console/{AGENTS.md,CLAUDE.md,README.md}`、`console/routes/extensions.py`、`console/services/automation_plugin_management.py`、`console/static/{extensions.js,style.css}`、`console/templates/extensions.html`、`console/tests/{test_automation_plugins.py,test_extensions.py}`、`docs/{extension-platform-progress.md,plugin-platform-v2.md}`、`shared/{automation_plugin_enable_repository.py,automation_plugin_repository.py,automation_plugin_v2_repository.py}`、`tests/{mysql_automation_project_scenarios.py,mysql_generation_write_scenarios.py,test_automation_plugin_code_owned_fields.py,test_automation_plugin_lifecycle.py,test_automation_plugin_management_api.py,test_automation_plugin_manifest_contract.py,test_automation_plugin_repository.py}` / 本 TASK checkpoint（下一 TASK 回填）。
+- 测试命令和结果：插件后端完整回归 `465 passed, 28 subtests passed`；Console 向导与管理定向 `69 passed, 35 subtests passed`；仓储拆分后定向 `134 passed, 28 subtests passed`；Agent full suite `1089 passed, 1 skipped, 195 subtests passed`；Console full suite `582 passed, 203 subtests passed`；root full suite（拆分后复跑）`1931 passed, 30 skipped, 294 subtests passed`。变更 Python Ruff、隔离 `compileall`、Node 语法、工具注册表（40 项）、仓库卫生、运行时导入边界、文档、内部 API 合同、三套指令镜像和 `git diff --check` 全部通过；后端与 Console 独立复审均给出 `ship`。测试显式设置 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
+- 兼容性影响：ACTION_V1 继续使用独立旧安装入口且只发送 ZIP、可选实例名和请求 UUID；SERVICE_V2 使用服务器权威检查/安装向导，Manifest、配置、绑定、入口、定时和精确 intent 全部关闭失败。更换 ZIP 会清除权限确认并丢弃迟到检查响应；最终重试冻结同一 File、UUID 和 serialized intent。失败保持 disabled/preparing；稳定 generation 后才取得真实启用 CAS 基线，无需重启 Agent/Console。
+- 数据库影响：无 migration、无新表；只在现有项目、配置、generation 和事件表内执行事务化 DML，并新增不可变 `SERVICE_V2_INSTALL_ENABLE_CLAIMED` 审计事件。未连接或修改生产数据库。
+- 未完成项：无离线实现项。启用提交后进程崩溃以及补偿仓储不可用的恢复演练需要生产等价编排与故障注入，明确标记 `PRODUCTION_GATED`；未部署、未安装生产插件、未访问真实业务系统或数据。
 - 下一项 TASK：`TASK-EXT-005`。
-- 恢复说明：先确认前序 TASK 已提交推送，再将本 TASK 标为 `IN_PROGRESS`。
+- 恢复说明：检出长期分支，确认本 TASK checkpoint 已推送并回填 SHA，然后从独立 `HostCapabilityRegistry`、逐 operation immutable effect 和 Service v2 direct ResultVerifier 闭环开始 TASK-EXT-005；不得按名称猜 effect，不得把 lifecycle `effect_kind` 当业务 effect，也不得原地改写已发布同版本包。
 
 ### TASK-EXT-005：HostCapabilityRegistry 与显式 effect
 

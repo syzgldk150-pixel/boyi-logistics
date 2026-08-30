@@ -256,11 +256,12 @@ payload/
 
 管理员操作流程：
 
-1. 使用已验证的 Console `super_admin` 会话把 ZIP 拖入安装区；浏览器和 Agent 分别计算/核对同一 SHA-256。
-2. 安装器完成技术检查、建立不可变版本目录和隔离 Python 3.10 venv，生成新的 `automation_id`。上传者不提供项目 ID、Manifest 或摘要替代值。
-3. Catalog 展示目标版本、活动版本、运行模型、Host API、服务、贡献点、依赖状态和阻断原因。“包已安装”与“v2 generation 已稳定运行”必须分开显示。
-4. 管理员在系统表单绑定账号、资源和配置。没有必填绑定且所有必填配置均有显式默认值时，平台可自动保存默认配置。
-5. 依赖、配置和账号全部闭合后，平台按 Manifest 的 `default_enabled` 入口设置完全自动意图；迁移项目例外，初始只开放 Console 人工入口。
+1. 使用已验证的 Console `super_admin` 会话把 ZIP 拖入安装区；Console 计算收到字节的传输 SHA，Agent 复用最终安装的同一验证器做无副作用技术检查，只返回闭合权限、角色、配置 Schema、贡献点和调度投影。
+2. 管理员在同一个连续向导中确认权限，选择账号、资源、配置、入口和定时。浏览器不提交 Manifest、摘要、项目 ID、设备、服务或操作，只提交同一 ZIP、稳定根请求 UUID 和闭合安装意图。
+3. 最终安装重新验证 ZIP，不信任前一次检查投影；服务器规范化 `instance_name/config/account_bindings/resource_bindings/enabled_entrypoints/schedule/permissions_confirmed`，把包 SHA、完整意图和操作者绑定为根幂等身份，再建立新的 disabled 项目和不可变版本目录。
+4. 项目用确定性子 UUID 保存配置并 reconcile desired generation；只有目标 generation 已精确 `COMMITTED/STABLE` 后，仓储事务才会校验初始配置审计、已提交 generation 和此前零状态变更，并把当时真实的项目 `record_version` 持久化为启用基线。配置、依赖、运行环境或协调失败均保留 disabled `PREPARING/BLOCKED_DEPENDENCY`，不要求重启服务。
+5. 响应丢失时，同一根 UUID 只读取原安装并续做尚未完成的配置、reconcile 或启用阶段；ZIP、操作者或任一规范意图字段漂移必须返回幂等冲突，不得生成第二个项目或用最新状态冒充旧请求结果。启用和同步失败后的停用补偿使用连续、确定性的审计 witness；缺少任一 witness 或出现人工状态变更即停止旧请求重放。启用事务提交后进程崩溃、或补偿写不可用的恢复演练尚未在线完成，明确标记为 `PRODUCTION_GATED`，在演练通过前不把安装链路描述为零半启用窗口。
+6. Catalog 展示目标版本、活动版本、运行模型、Host API、服务、贡献点、依赖状态和阻断原因。“包已安装”与“v2 generation 已稳定运行”必须分开显示。迁移项目例外，初始只开放 Console 人工入口。
 
 `default_enabled` 不是“无条件可运行”。当前没有宿主 dispatcher 的 Webhook、飞书或 Event 入口，以及宿主无法表示的 Scheduler，都会在技术检查或 generation prepare 阶段显式阻断；Catalog 必须展示 `CAPABILITY_UNAVAILABLE`，不能留下“已启用但没有路由/任务”的假状态。
 

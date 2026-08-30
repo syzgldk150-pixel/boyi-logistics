@@ -36,6 +36,7 @@ from shared.redaction import redact_text
 
 _MAX_HTTP_ARCHIVE_BYTES = 32 * 1024 * 1024
 _MAX_MULTIPART_OVERHEAD_BYTES = 512 * 1024
+_MAX_SERVICE_V2_INTENT_BYTES = 16 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _BOUNDARY_RE = re.compile(r"^[0-9A-Za-z'()+_,./:=?-]{1,70}$")
 
@@ -393,6 +394,7 @@ async def _parse_plugin_upload(
     request: Request,
     *,
     expected_text_fields: frozenset[str],
+    text_field_max_bytes: Mapping[str, int] | None = None,
 ) -> tuple[bytes, dict[str, str]]:
     content_type = str(request.headers.get("content-type") or "")
     _multipart_boundary(content_type)
@@ -484,7 +486,8 @@ async def _parse_plugin_upload(
     for name, filename, payload in parts:
         if name == "package":
             continue
-        if filename is not None or len(payload) > 1024 or b"\x00" in payload:
+        maximum = int((text_field_max_bytes or {}).get(name, 1024))
+        if filename is not None or len(payload) > maximum or b"\x00" in payload:
             raise PluginPackageError(
                 "plugin upload text field is invalid",
                 code="PLUGIN_MULTIPART_FIELDS_INVALID",
@@ -570,6 +573,67 @@ def create_automation_plugin_management_router(
                 instance_name=fields["instance_name"],
                 request_id=fields["request_id"],
                 transport_package_sha256=fields["package_sha256"],
+                actor=actor,
+            )
+        )
+        return _refresh_after_committed_operation(
+            response,
+            scheduler_refresh_provider=scheduler_refresh_provider,
+            committed_field="plugin_operation_committed",
+            refresh_failure_message=(
+                "插件安装操作已提交，但调度器刷新失败；请刷新状态或重试调度刷新，"
+                "不要重复提交安装操作。"
+            ),
+        )
+
+    @router.post(
+        "/internal/v1/automation/plugins/inspect-upload",
+        response_model=None,
+    )
+    async def inspect_service_v2_plugin_upload(
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        try:
+            package, fields = await _parse_plugin_upload(
+                request,
+                expected_text_fields=frozenset({"request_id", "package_sha256"}),
+            )
+        except PluginPackageError as exc:
+            return _plugin_error_response(exc)
+        return await _service_response(
+            lambda: service_provider().inspect_service_v2_upload(
+                package,
+                request_id=fields["request_id"],
+                transport_package_sha256=fields["package_sha256"],
+                actor=actor,
+            )
+        )
+
+    @router.post(
+        "/internal/v1/automation/plugins/install-v2",
+        response_model=None,
+    )
+    async def install_service_v2_plugin(
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        try:
+            package, fields = await _parse_plugin_upload(
+                request,
+                expected_text_fields=frozenset(
+                    {"request_id", "package_sha256", "intent"}
+                ),
+                text_field_max_bytes={"intent": _MAX_SERVICE_V2_INTENT_BYTES},
+            )
+        except PluginPackageError as exc:
+            return _plugin_error_response(exc)
+        response = await _service_response(
+            lambda: service_provider().install_service_v2(
+                package,
+                request_id=fields["request_id"],
+                transport_package_sha256=fields["package_sha256"],
+                raw_intent=fields["intent"],
                 actor=actor,
             )
         )

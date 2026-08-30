@@ -9,7 +9,7 @@ import zipfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from agent.automation_plugins.errors import PluginConflictError, PluginPackageError, PluginUninstallBlocked
 from agent.automation_plugins.manifest import AutomationPluginManifest
@@ -315,6 +315,41 @@ class AutomationPluginService:
                 self._storage.discard_staging_root(staging)
             raise
 
+    def state_change_witness(
+        self,
+        automation_id: str,
+        *,
+        request_id: str,
+    ) -> dict[str, object] | None:
+        """Expose one closed audit witness for deterministic install recovery."""
+
+        witness = self._repository.get_state_change_witness(
+            automation_id,
+            request_id=request_id,
+        )
+        return None if witness is None else dict(witness)
+
+    def claim_service_v2_install_enable_base(
+        self,
+        automation_id: str,
+        *,
+        root_request_id: str,
+        install_payload_sha256: str,
+        configuration_request_id: str,
+        actor_id: str,
+        actor_role: str,
+    ) -> int:
+        """Freeze the exact post-generation version used by install recovery."""
+
+        return self._repository.claim_service_v2_install_enable_base(
+            automation_id,
+            root_request_id=root_request_id,
+            install_payload_sha256=install_payload_sha256,
+            configuration_request_id=configuration_request_id,
+            actor_id=actor_id,
+            actor_role=actor_role,
+        )
+
     def _verified_upload(
         self,
         package_source: bytes | bytearray | Path | str,
@@ -343,6 +378,28 @@ class AutomationPluginService:
         self._validate_release_scope(verified_v1.manifest)
         return verified_v1
 
+    def inspect_service_v2_upload(
+        self,
+        package_source: bytes | bytearray | Path | str,
+        *,
+        transport_package_sha256: str,
+    ) -> VerifiedPluginPackageV2:
+        """Verify an uploaded service package without materializing or writing it.
+
+        The management API deliberately receives only a verified, closed
+        projection from this boundary.  Keeping verification here prevents an
+        inspection request from growing a second ZIP/manifest parser with
+        weaker rules than installation.
+        """
+
+        verified = self._verified_upload(package_source, transport_package_sha256)
+        if not isinstance(verified, VerifiedPluginPackageV2):
+            raise PluginPackageError(
+                "the installation wizard accepts service-v2 packages only",
+                code="PLUGIN_SERVICE_V2_REQUIRED",
+            )
+        return verified
+
     def install_upload(
         self,
         package_source: bytes | bytearray | Path | str,
@@ -352,6 +409,7 @@ class AutomationPluginService:
         actor_role: str,
         request_id: str,
         transport_package_sha256: str | None = None,
+        install_payload_sha256: str | None = None,
     ) -> PluginInstanceRecord:
         """Install a new disabled instance; automation_id is server-generated."""
 
@@ -369,6 +427,7 @@ class AutomationPluginService:
                 actor_id=actor_id,
                 actor_role=actor_role,
                 request_id=request_id,
+                install_payload_sha256=install_payload_sha256,
             )
             return instance
         except Exception:
@@ -437,6 +496,7 @@ class AutomationPluginService:
         actor_role: str,
         request_id: str,
         expected_record_version: int,
+        state_change_context: Mapping[str, object] | None = None,
     ) -> PluginInstanceRecord:
         self._validate_super_admin(actor_id, actor_role, request_id)
         if enabled:
@@ -464,6 +524,7 @@ class AutomationPluginService:
             actor_role=actor_role,
             request_id=request_id,
             expected_record_version=expected_record_version,
+            state_change_context=state_change_context,
         )
 
     def hard_uninstall(
