@@ -24,6 +24,7 @@ from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
 
 HOST_API_VERSION = "2.0.0"
 SYSTEM_CAPABILITY_ROLE = "__system__"
+SERVICE_INVOKE_PER_CALL_LIMIT = 64
 
 _SUPPORTED_CAPABILITIES = frozenset(
     {
@@ -205,7 +206,7 @@ class ServiceV2ProjectContract:
                     # Provider effect immediately before dispatch.
                     governance = governance_for_effect(CapabilityEffect.EXTERNAL_WRITE).to_mapping()
                     dynamic_effect = True
-                    per_call_limit = 64
+                    per_call_limit = SERVICE_INVOKE_PER_CALL_LIMIT
                 else:
                     try:
                         descriptor = registry.resolve(
@@ -330,6 +331,7 @@ class ServiceV2ProjectContract:
 
 __all__ = [
     "HOST_API_VERSION",
+    "SERVICE_INVOKE_PER_CALL_LIMIT",
     "SYSTEM_CAPABILITY_ROLE",
     "ServiceV2ProjectContract",
 ]

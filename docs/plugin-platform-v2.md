@@ -6,6 +6,9 @@ related:
   - ../agent/docs/automation_plugin_platform.md
   - ../agent/agent/automation_plugins/manifest_v2.py
   - ../agent/agent/automation_plugins/package_v2.py
+  - ../agent/agent/automation_plugins/developer_v2.py
+  - ../agent/agent/automation_plugins/developer_reports_v2.py
+  - ../agent/agent/automation_plugins/developer_simulator_v2.py
   - ../agent/agent/automation_plugins/host_capability_registry.py
   - ../agent/agent/automation_plugins/service_registry.py
   - ../agent/agent/automation_plugins/service_v2_projection.py
@@ -17,6 +20,9 @@ related:
   - ../agent/agent/orchestration/automation_project_policy_plan.py
   - ../agent/agent/orchestration/result_verifier.py
   - ../agent/main.py
+  - ../agent/scripts/service_v2_plugin.py
+  - ../agent/extension_sdk/schemas/manifest-v2.schema.json
+  - ../agent/docs/service_v2_developer_tooling.md
   - ../agent/service_v2_plugins/
   - ../console/services/extensions.py
   - ../console/services/automation_plugin_management.py
@@ -85,6 +91,16 @@ payload/
 6. 包内不得包含账号、密码、Cookie、Token、私钥、真实账号 ID、数据库连接串或客户业务原始资料。
 
 超级管理员免的是“发布审批和签名”，不是技术校验。下列情况安装必须硬阻断：ZIP 损坏或摘要不一致、路径/成员不安全、Manifest 非法、Host API 不兼容、Linux Python 3.10 环境不可用、离线依赖不可安装，以及相同 `plugin_id + version` 已对应不同字节。新版本增加或减少能力应显示差异并写审计，但不另设发布审批。
+
+### 2.1 离线开发 CLI
+
+仓库根目录以 `PYTHONPATH=agent PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin ...` 运行统一开发入口。它提供七个纯本地命令：`init` 创建最小无写 compute + Console 源码，`validate` 走 ZIP verifier 与项目合同权威链，`package` 生成确定性且不可覆盖的 ZIP，`inspect` 只显示 identity/成员摘要/合同向导，`permissions` 只投影声明权限而不授权，`diff` 比较两个已验证工件但不声称项目兼容，`test` 使用闭合 scenarios 在真实本地 sandbox 中运行。
+
+源码目录精确只能有根 `manifest.json` 与 `payload/`，其中只能包含普通目录和普通文件；源码不得携带 `payload/boyi_plugin_sdk.py`，打包时由仓库当前 SDK 单点注入。遍历先按目录项名称拒绝 `.env*`、credential、secret、key/cert、session/token/Cookie/密码等敏感候选，再读取任何成员内容；符号链接、特殊文件、额外根成员均失败。相同成员字节按固定顺序和 ZIP 元数据产生相同包 identity，输出已存在或并发出现时拒绝覆盖，最终文件发布前必须完成权威验证。
+
+`validate/inspect/permissions/diff` 都只消费显式本地路径和已验证工件，不读取项目仓储、活动 generation、账号池、环境配置或生产状态。Manifest 编辑器 Schema 在 `agent/extension_sdk/schemas/manifest-v2.schema.json`，但不能代替运行时 parser/contract。完整命令语法、scenario Schema 和输出边界见 `agent/docs/service_v2_developer_tooling.md`。
+
+`test ARTIFACT --scenarios FILE` 的 scenario `entrypoint` 填 contribution ID；模拟器按 Manifest 解析后，插件请求中的 `entrypoint` 才是 contribution kind。它只接受闭合 `arguments/host_calls/expect`，使用一次性本地 capability、规范化 UUID 后拒绝重放、执行总量与逐 action 配额、按序精确 fixture 和不含正文的摘要报告。没有离线 Provider 合同的 `service.invoke` 固定拒绝；模拟器也不具备真实独立 Evidence/Postcondition 闭环，因此任何已到达本地 Host 的成功写均保守归类为 `WRITE_OUTCOME_UNKNOWN`。执行必须经过真实 `/usr/bin/bwrap`、`/usr/bin/prlimit`、无网络命名空间、只读包与系统 Python/stdlib、最小环境和 Unix Broker。Manifest 固定 Python 3.10，模拟器只接受受信系统 Python 3.10；主机只有 Python 3.12、工具/canary 不可用或运行时不可信时均以 `SIMULATOR_SANDBOX_UNAVAILABLE` 关闭失败，不替代执行或回退普通子进程。当前模拟器不构建离线依赖环境，包声明 requirements lock 或 wheelhouse 时以独立的 `SIMULATOR_DEPENDENCIES_UNSUPPORTED` 失败。七个命令都不会连接生产、安装插件、创建 grant 或改变授权。
 
 ## 3. Manifest v2 合同
 

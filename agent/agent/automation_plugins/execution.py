@@ -41,6 +41,7 @@ from agent.automation_plugins.ports import (
     PluginSandboxLauncherPort,
     RuntimeGenerationLeasePort,
 )
+from agent.automation_plugins.runtime_environment import minimal_plugin_environment
 from agent.automation_plugins.sandbox import FailClosedPluginSandbox, SandboxCanaryResult
 from agent.automation_plugins.storage import validate_plugin_tree, validate_regular_plugin_file
 from agent.tool_registry import validate_schema_instance
@@ -187,24 +188,14 @@ class PluginExecutionRouter:
         broker_endpoint: str,
         broker_call_timeout_seconds: int,
     ) -> dict[str, str]:
-        environment = {
-            "PATH": os.defpath,
-            "PYTHONNOUSERSITE": "1",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONPATH": "",
-            "PYTHON_DOTENV_DISABLED": "1",
-            "BOYI_PLUGIN_EXECUTION_CAPABILITY": capability,
-            "BOYI_AUTOMATION_ID": automation_id,
-            "BOYI_PLUGIN_ID": plugin_id,
-            "BOYI_PLUGIN_VERSION": plugin_version,
-            "BOYI_PLUGIN_BROKER_ENDPOINT": broker_endpoint,
-            "BOYI_PLUGIN_BROKER_CALL_TIMEOUT": str(broker_call_timeout_seconds),
-        }
-        for name in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP", "LANG", "LC_ALL", "TZ"):
-            value = os.environ.get(name)
-            if value:
-                environment[name] = value
-        return environment
+        return minimal_plugin_environment(
+            capability=capability,
+            automation_id=automation_id,
+            plugin_id=plugin_id,
+            plugin_version=plugin_version,
+            broker_endpoint=broker_endpoint,
+            broker_call_timeout_seconds=broker_call_timeout_seconds,
+        )
 
     @staticmethod
     def _reject_sensitive_arguments(arguments: Mapping[str, Any]) -> None:
