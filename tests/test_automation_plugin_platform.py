@@ -276,7 +276,7 @@ def test_first_party_descriptors_are_16_actions_and_18_instances(
     assert all(manifest.runtime_permissions["max_broker_calls"] > 0 for manifest in manifests.values())
     assert all(manifest.runtime_permissions["broker_operations"] for manifest in manifests.values())
     assert manifests["sync_scan_codes"].version == "1.0.23"
-    assert manifests["sync_arrival_stats"].version == "1.0.21"
+    assert manifests["sync_arrival_stats"].version == "1.0.22"
     assert manifests["self_pickup_problem_upload"].version == "1.0.26"
     assert manifests["split_pending_problem_upload"].version == "1.0.25"
     assert manifests["sync_arrival_stats"].runtime_permissions["max_broker_calls"] == 1000
@@ -300,7 +300,7 @@ def test_first_party_descriptors_are_16_actions_and_18_instances(
         seed.version
         for seed in seeds
         if seed.plugin_id == "sync_arrival_stats"
-    } == {"1.0.21"}
+    } == {"1.0.22"}
     assert {
         seed.version
         for seed in seeds
@@ -490,8 +490,9 @@ def test_linux_materialize_and_bubblewrap_cannot_read_host_sibling(
     tmp_path: Path,
 ) -> None:
     bubblewrap = Path("/usr/bin/bwrap")
-    if not bubblewrap.is_file():
-        pytest.skip("bubblewrap is not installed")
+    prlimit = Path("/usr/bin/prlimit")
+    if not bubblewrap.is_file() or not prlimit.is_file():
+        pytest.skip("bubblewrap resource-isolation tools are not installed")
     manifest, package, trust = _signed_package(core_catalog)
     verified = verify_signed_plugin_zip(package, verifier=trust)
     storage = FilesystemPluginStorage(tmp_path / "plugins")
@@ -505,6 +506,10 @@ def test_linux_materialize_and_bubblewrap_cannot_read_host_sibling(
     entrypoint.write_text(
         "import json,pathlib,sys\n"
         "request=json.load(sys.stdin)\n"
+        "if request['arguments'].get('exceed_file_limit'):\n"
+        " pathlib.Path('/tmp/oversized').write_bytes(b'x' * (17 * 1024 * 1024))\n"
+        " print(json.dumps({'unexpected':True}))\n"
+        " raise SystemExit(0)\n"
         "path=pathlib.Path(request['arguments']['probe_path'])\n"
         "try:\n path.read_text(encoding='utf-8')\n readable=True\n"
         "except (OSError,PermissionError):\n readable=False\n"
@@ -520,7 +525,7 @@ def test_linux_materialize_and_bubblewrap_cannot_read_host_sibling(
         manifest_sha256=manifest.manifest_sha256,
     )
 
-    async def run() -> tuple[int, bytes, bytes]:
+    async def run(arguments: dict[str, object]) -> tuple[int, bytes, bytes]:
         process = await BubblewrapPluginSandbox(bubblewrap).launch(
             install_root=install_root,
             python_relative=python_relative,
@@ -531,7 +536,7 @@ def test_linux_materialize_and_bubblewrap_cannot_read_host_sibling(
         assert process.stdin is not None
         process.stdin.write(
             canonical_json_bytes(
-                {"schema_version": 1, "arguments": {"probe_path": str(probe)}}
+                {"schema_version": 1, "arguments": arguments}
             )
         )
         await process.stdin.drain()
@@ -539,11 +544,17 @@ def test_linux_materialize_and_bubblewrap_cannot_read_host_sibling(
         stdout, stderr = await process.communicate()
         return int(process.returncode or 0), stdout, stderr
 
-    returncode, stdout, stderr = asyncio.run(run())
+    returncode, stdout, stderr = asyncio.run(run({"probe_path": str(probe)}))
     if returncode != 0 and b"namespace" in stderr.lower():
         pytest.skip("host kernel disabled unprivileged user namespaces")
     assert returncode == 0, stderr.decode("utf-8", errors="replace")
     assert json.loads(stdout.decode("utf-8")) == {"readable": False}
+
+    limited_code, _limited_stdout, _limited_stderr = asyncio.run(
+        run({"exceed_file_limit": True})
+    )
+    assert limited_code != 0
+    assert probe.read_text(encoding="utf-8") == "synthetic-only"
 
 
 class _CatalogRepository:
@@ -601,6 +612,47 @@ def test_catalog_fragment_binds_trust_source(core_catalog: ToolRegistry) -> None
     assert catalog.safe_projection()["instances"][0][
         "code_owned_config_fields"
     ] == []
+
+
+def test_catalog_projects_active_migration_relation_without_snapshot_data(
+    core_catalog: ToolRegistry,
+) -> None:
+    manifest = resolve_release_first_party_manifests(core_catalog)["sync_arrive_list"]
+    version = PluginVersionRecord(
+        plugin_id=manifest.plugin_id,
+        version=manifest.version,
+        package_sha256="1" * 64,
+        manifest_sha256=manifest.manifest_sha256,
+        manifest=manifest.to_mapping(),
+        trust_source=PluginTrustSource.ED25519_FIRST_PARTY,
+        install_root="/srv/plugins/arrive-list",
+    )
+    instance = PluginInstanceRecord(
+        automation_id="arrive-v1",
+        display_name="arrive v1",
+        plugin_id=manifest.plugin_id,
+        state=PluginProjectState.ENABLED,
+        active_version=version,
+    )
+    catalog = PluginCatalog(
+        _CatalogRepository(instance),
+        migration_pair_provider=lambda automation_id: {
+            "migration_pair_id": "pair-1",
+            "source_automation_id": automation_id,
+            "target_automation_id": "arrive-v2",
+            "state": "TESTING",
+            "record_version": 3,
+            "entrypoint_snapshot_json": {"must_not_leak": "configuration"},
+        },
+    )
+
+    assert catalog.safe_projection()["instances"][0]["migration"] == {
+        "migration_pair_id": "pair-1",
+        "state": "TESTING",
+        "record_version": 3,
+        "role": "source",
+        "counterpart_automation_id": "arrive-v2",
+    }
 
 
 def test_catalog_quarantines_one_corrupt_persisted_project(
@@ -1173,7 +1225,7 @@ def test_uploaded_python_runtime_defaults_to_fail_closed_sandbox() -> None:
 
 
 def test_trust_source_enum_matches_migration_check() -> None:
-    sql = Path("agent/migrations/018_automation_project_authorization.sql").read_text(
+    sql = Path("agent/migrations/033_plugin_service_v2_foundation.sql").read_text(
         encoding="utf-8"
     )
     marker = "CONSTRAINT chk_automation_plugin_trust_source CHECK"

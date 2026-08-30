@@ -18,6 +18,7 @@ from agent.automation_plugins.models import (
     RuntimeEffectKind,
     RuntimeEffectRecord,
     RuntimeEffectState,
+    RuntimeCoeffectSnapshot,
     RuntimeGenerationRecord,
     RuntimeGenerationSnapshot,
     RuntimeGenerationState,
@@ -122,6 +123,37 @@ class AutomationRuntimeReconciler:
                 code="RUNTIME_EFFECT_MISMATCH",
             )
 
+    def _observe_coeffects(
+        self,
+        snapshot: RuntimeGenerationSnapshot,
+    ) -> tuple[RuntimeCoeffectSnapshot, ...]:
+        observed = tuple(self._coeffects.observe(snapshot))
+        if not observed:
+            raise PluginConflictError(
+                "runtime generation has no observed coeffects",
+                code="RUNTIME_COEFFECTS_MISSING",
+            )
+        identities = {(item.kind, item.key) for item in observed}
+        if len(identities) != len(observed):
+            raise PluginConflictError(
+                "runtime coeffect snapshot contains duplicate identities"
+            )
+        return observed
+
+    @staticmethod
+    def _unavailable_coeffect_reasons(
+        observed: Sequence[RuntimeCoeffectSnapshot],
+    ) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    item.reason_code or f"{item.kind.value}:{item.key}"
+                    for item in observed
+                    if not item.ready
+                }
+            )
+        )
+
     def _compensate(self, effects: Sequence[RuntimeEffectRecord]) -> None:
         for effect in sorted(effects, key=lambda item: item.sequence, reverse=True):
             if (
@@ -186,7 +218,7 @@ class AutomationRuntimeReconciler:
         """Close the prepare/commit race over reactive core dependencies."""
 
         snapshot = target.snapshot
-        latest = tuple(self._coeffects.observe(snapshot))
+        latest = self._observe_coeffects(snapshot)
         previous = {
             (item.kind, item.key): (item.revision, item.ready)
             for item in target.coeffects
@@ -217,6 +249,99 @@ class AutomationRuntimeReconciler:
             return normalized
         return ()
 
+    def _activate_committed_effects(
+        self,
+        snapshot: RuntimeGenerationSnapshot,
+    ) -> None:
+        """Refresh optional process-local indexes after the durable route CAS.
+
+        Effect rows remain the source of truth.  Drivers that expose this hook
+        may only project those exact APPLIED rows; transports must not become
+        visible while a generation is merely PREPARED.
+        """
+
+        activate = getattr(self._driver, "activate_committed", None)
+        if not callable(activate):
+            return
+        committed = self._repository.get_generation(
+            snapshot.automation_id,
+            snapshot.generation,
+        )
+        if committed is None or committed.state is not RuntimeGenerationState.COMMITTED:
+            raise PluginConflictError(
+                "committed runtime effects are unavailable after route switch",
+                code="RUNTIME_COMMIT_INCONSISTENT",
+            )
+        activate(snapshot=snapshot, effects=committed.effects)
+
+    def reconcile_committed_projection(
+        self,
+        generation: RuntimeGenerationRecord,
+        *,
+        project_enabled: bool,
+        defer_scheduler_enable: bool = False,
+    ) -> RuntimeReconcileResult:
+        """Suspend or restore external routes for one immutable committed row."""
+
+        if generation.state is not RuntimeGenerationState.COMMITTED:
+            raise PluginConflictError(
+                "runtime projection requires a committed generation",
+                code="RUNTIME_COMMIT_INCONSISTENT",
+            )
+        snapshot = generation.snapshot
+        observed = self._observe_coeffects(snapshot)
+        reasons = set(self._unavailable_coeffect_reasons(observed))
+        if project_enabled is not True:
+            reasons.add("PROJECT_DISABLED")
+        waiting = tuple(sorted(reasons))
+        gate = getattr(
+            self._repository,
+            "set_project_dependency_scheduler_gate",
+            None,
+        )
+        if not callable(gate):
+            raise PluginConflictError(
+                "dependency scheduler gate is unavailable",
+                code="DEPENDENCY_SCHEDULER_GATE_UNAVAILABLE",
+            )
+        if waiting:
+            # Close the durable physical trigger before withdrawing process
+            # routes. Any later failure therefore remains fail-closed.
+            gate(snapshot.automation_id, dependency_ready=False)
+            deactivate = getattr(self._driver, "deactivate_committed", None)
+            if not callable(deactivate):
+                raise PluginConflictError(
+                    "committed runtime projection cannot be withdrawn",
+                    code="RUNTIME_PROJECTION_DEACTIVATION_UNAVAILABLE",
+                )
+            deactivate(snapshot=snapshot, effects=generation.effects)
+        else:
+            activate = getattr(self._driver, "activate_committed", None)
+            if not callable(activate):
+                raise PluginConflictError(
+                    "committed runtime projection cannot be restored",
+                    code="RUNTIME_PROJECTION_ACTIVATION_UNAVAILABLE",
+                )
+            # A Provider dependency-tree restore keeps every physical trigger
+            # closed until all exact committed process projections are back.
+            # Its caller then re-opens each project through the same strict
+            # durable gate (including migration ownership checks).
+            if defer_scheduler_enable:
+                gate(snapshot.automation_id, dependency_ready=False)
+            activate(snapshot=snapshot, effects=generation.effects)
+            if not defer_scheduler_enable:
+                gate(snapshot.automation_id, dependency_ready=True)
+        return RuntimeReconcileResult(
+            automation_id=snapshot.automation_id,
+            target_generation=snapshot.generation,
+            committed_generation=snapshot.generation,
+            waiting_coeffects=waiting,
+        )
+
+    def projection_signature(self) -> object | None:
+        signature = getattr(self._driver, "projection_signature", None)
+        return signature() if callable(signature) else None
+
     def prepare_target(self, target: RuntimeGenerationRecord) -> tuple[str, ...]:
         snapshot = target.snapshot
         if target.state == RuntimeGenerationState.PREPARED:
@@ -236,23 +361,13 @@ class AutomationRuntimeReconciler:
     def _prepare_target(self, target: RuntimeGenerationRecord) -> tuple[str, ...]:
         snapshot = target.snapshot
         self._repository.mark_generation_preparing(snapshot.automation_id, snapshot.generation)
-        observed = tuple(self._coeffects.observe(snapshot))
-        if not observed:
-            raise PluginConflictError(
-                "runtime generation has no observed coeffects",
-                code="RUNTIME_COEFFECTS_MISSING",
-            )
-        identities = {(item.kind, item.key) for item in observed}
-        if len(identities) != len(observed):
-            raise PluginConflictError("runtime coeffect snapshot contains duplicate identities")
+        observed = self._observe_coeffects(snapshot)
         self._repository.replace_generation_coeffects(
             snapshot.automation_id,
             snapshot.generation,
             observed,
         )
-        unavailable = tuple(
-            sorted({item.reason_code or f"{item.kind.value}:{item.key}" for item in observed if not item.ready})
-        )
+        unavailable = self._unavailable_coeffect_reasons(observed)
         if unavailable:
             self._repository.mark_generation_waiting_coeffects(
                 snapshot.automation_id,
@@ -425,6 +540,7 @@ class AutomationRuntimeReconciler:
             snapshot.generation,
             expected_committed_generation=expected_committed_generation,
         )
+        self._activate_committed_effects(snapshot)
         draining: list[int] = []
         disposed: list[int] = []
         if (
@@ -501,6 +617,7 @@ class AutomationRuntimeReconciler:
                 target.snapshot.generation,
                 expected_committed_generation=project.committed_generation,
             )
+            self._activate_committed_effects(target.snapshot)
         elif (
             target.state == RuntimeGenerationState.COMMITTED
             and project.committed_generation != target.snapshot.generation
@@ -511,6 +628,12 @@ class AutomationRuntimeReconciler:
             )
         elif target.state not in {RuntimeGenerationState.COMMITTED, RuntimeGenerationState.DISPOSED}:
             raise PluginConflictError("project target cannot be resumed automatically")
+
+        if (
+            target.state is RuntimeGenerationState.COMMITTED
+            and project.committed_generation == target.snapshot.generation
+        ):
+            self._activate_committed_effects(target.snapshot)
 
         draining: list[int] = []
         disposed: list[int] = []

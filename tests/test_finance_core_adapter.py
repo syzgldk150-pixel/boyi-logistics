@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import sys
 from collections.abc import Mapping
@@ -225,12 +226,13 @@ class _Repository:
 
 def _capture(descriptor: Mapping[str, Any], target_date: date) -> CaptureResult:
     account_id = str(descriptor["account_id"])
+    source_identity = hashlib.sha256(account_id.encode("utf-8")).hexdigest()[:16]
     return CaptureResult(
         transactions=[
             {
                 "platform": "ronghui",
                 "account_id": account_id,
-                "source_id": f"source-{account_id}",
+                "source_id": f"source-{source_identity}",
                 "target_date": target_date.isoformat(),
                 "trade_time": f"{target_date.isoformat()}T09:30:00",
                 "fee_name": "派件费",
@@ -240,13 +242,13 @@ def _capture(descriptor: Mapping[str, Any], target_date: date) -> CaptureResult:
                 "expend": "1.2500",
                 "old_amount": "80.0000",
                 "new_amount": "78.7500",
-                "bill_code": f"bill-{account_id}",
+                "bill_code": f"bill-{source_identity}",
                 "balance_order": "1",
                 "source_reference": "1",
                 "remark": "",
                 "source_payload": {
                     "BALANCE_ORDER": "1",
-                    "BILL_CODE": f"bill-{account_id}",
+                    "BILL_CODE": f"bill-{source_identity}",
                 },
             }
         ],

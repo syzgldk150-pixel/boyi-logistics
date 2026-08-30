@@ -1948,8 +1948,6 @@ def run_test_grouped_approval_second_cas_failure_is_atomic(case):
 def run_test_automation_project_024_original_plugin_full_auto(case):
     """Exercise the exact original six-key plugin recovery on real MySQL."""
 
-    from shared.automation_plugin_repository import AutomationPluginRepository
-
     database = case.legacy_plugin_full_auto_database
     plugin_id = "migration_024_legacy_plugin"
     actor_id = "legacy-plugin-admin"
@@ -1966,53 +1964,99 @@ def run_test_automation_project_024_original_plugin_full_auto(case):
         "install_root_metadata_sha256": "a" * 64,
     }
     with case._connection(database) as connection:
-        plugins = AutomationPluginRepository(
-            connection,
-            cursor_factory=case.pymysql.cursors.DictCursor,
-        )
-        plugins.register_package_version(
-            package={
-                "plugin_id": plugin_id,
-                "display_name": "Migration 024 integration plugin",
-                "description": "test-only original plugin writer fixture",
-            },
-            version={
-                "version": "1.0.0",
-                **digest_fields,
-                "manifest_json": {
-                    "allowed_entrypoints": ["console"],
-                    "runtime": {
-                        "kind": "core_tool_ref",
-                        "tool_name": "migration_024_probe",
-                    },
-                },
-                "project_full_auto_allowed": True,
-                "trust_source": "ed25519_first_party",
-                "install_root_metadata_json": {},
-                "installed_by_actor_id": actor_id,
-            },
-        )
-        for automation_id in (
-            "migration_024_legal",
-            "migration_024_seven_key",
-            "migration_024_extra_key",
-            "migration_024_bad_hash",
-            "migration_024_later_admin",
-        ):
-            plugins.install_project_instance(
-                {
-                    "automation_id": automation_id,
-                    "plugin_id": plugin_id,
-                    "plugin_version": "1.0.0",
-                    "display_name": automation_id,
-                    "install_request_id": str(uuid4()),
-                    "install_payload_sha256": hashlib.sha256(
-                        automation_id.encode("utf-8")
-                    ).hexdigest(),
-                    "installed_by_actor_id": actor_id,
-                    "migration_authority": False,
-                }
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA=DATABASE()
+                  AND TABLE_NAME='automation_plugin_versions'
+                  AND COLUMN_NAME IN ('runtime_model', 'plugin_api')
+                """
             )
+            case.assertEqual(0, cursor.fetchone()["n"])
+            cursor.execute(
+                """
+                INSERT INTO automation_plugin_packages (
+                    plugin_id, display_name, description, latest_version,
+                    state, record_version
+                ) VALUES (%s, %s, %s, '1.0.0', 'REGISTERED', 1)
+                """,
+                (
+                    plugin_id,
+                    "Migration 024 integration plugin",
+                    "test-only original plugin writer fixture",
+                ),
+            )
+            cursor.execute(
+                """
+                INSERT INTO automation_plugin_versions (
+                    plugin_id, version, package_sha256, manifest_sha256,
+                    manifest_json, tool_contract_sha256, config_schema_sha256,
+                    allowed_entrypoints_sha256, invocation_contracts_sha256,
+                    worker_requirement_sha256, runtime_sha256, scheduling_sha256,
+                    project_full_auto_allowed, trust_source,
+                    install_root_metadata_json, install_root_metadata_sha256,
+                    installed_by_actor_id, state
+                ) VALUES (
+                    %s, '1.0.0', %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, TRUE, 'ed25519_first_party', %s, %s, %s, 'INSTALLED'
+                )
+                """,
+                (
+                    plugin_id,
+                    digest_fields["package_sha256"],
+                    digest_fields["manifest_sha256"],
+                    json.dumps(
+                        {
+                            "allowed_entrypoints": ["console"],
+                            "runtime": {
+                                "kind": "core_tool_ref",
+                                "tool_name": "migration_024_probe",
+                            },
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                    digest_fields["tool_contract_sha256"],
+                    digest_fields["config_schema_sha256"],
+                    digest_fields["allowed_entrypoints_sha256"],
+                    digest_fields["invocation_contracts_sha256"],
+                    digest_fields["worker_requirement_sha256"],
+                    digest_fields["runtime_sha256"],
+                    digest_fields["scheduling_sha256"],
+                    json.dumps({}),
+                    digest_fields["install_root_metadata_sha256"],
+                    actor_id,
+                ),
+            )
+            for automation_id in (
+                "migration_024_legal",
+                "migration_024_seven_key",
+                "migration_024_extra_key",
+                "migration_024_bad_hash",
+                "migration_024_later_admin",
+            ):
+                cursor.execute(
+                    """
+                    INSERT INTO automation_projects (
+                        automation_id, plugin_id, plugin_version, display_name,
+                        enabled, state, install_request_id, install_payload_sha256,
+                        installed_by_actor_id, migration_authority, record_version
+                    ) VALUES (
+                        %s, %s, '1.0.0', %s, FALSE, 'INSTALLED', %s, %s, %s,
+                        FALSE, 1
+                    )
+                    """,
+                    (
+                        automation_id,
+                        plugin_id,
+                        automation_id,
+                        str(uuid4()),
+                        hashlib.sha256(automation_id.encode("utf-8")).hexdigest(),
+                        actor_id,
+                    ),
+                )
         connection.commit()
 
     def canonical_hash(payload: dict) -> str:

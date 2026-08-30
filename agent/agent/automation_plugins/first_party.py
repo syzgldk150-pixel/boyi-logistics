@@ -69,7 +69,7 @@ FIRST_PARTY_PACKAGE_VERSION = "1.0.20"
 _FIRST_PARTY_PACKAGE_VERSION_OVERRIDES: Mapping[str, str] = {
     "self_pickup_problem_upload": "1.0.26",
     "split_pending_problem_upload": "1.0.25",
-    "sync_arrival_stats": "1.0.21",
+    "sync_arrival_stats": "1.0.22",
     "sync_scan_codes": "1.0.23",
 }
 _RELEASE_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")

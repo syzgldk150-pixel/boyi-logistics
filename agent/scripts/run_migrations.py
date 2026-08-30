@@ -40,6 +40,11 @@ AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_MAP_TABLE = "automation_project_review
 AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_RESOURCE_MAP_TABLE = "automation_project_reviewed_resource_map_018"
 AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE = "automation_project_resource_backup_018"
 AUTOMATION_PROJECT_AUTHORIZATION_TABLES_REVERSE = (
+    "automation_plugin_document_indexes",
+    "automation_plugin_documents",
+    "automation_plugin_migration_run_locks",
+    "automation_plugin_migration_pair_events",
+    "automation_plugin_migration_pairs",
     "automation_write_attempt_receipts",
     "automation_plugin_purge_journal",
     "automation_worker_cleanup_directives",

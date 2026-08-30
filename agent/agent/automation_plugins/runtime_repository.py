@@ -20,11 +20,13 @@ from agent.automation_plugins.manifest import (
     canonical_json_bytes,
     runtime_descriptor_matches_signed_installation,
 )
+from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
 from agent.automation_plugins.models import (
     AutomationProjectConfigRecord,
     DeviceBinding,
     PluginInstanceRecord,
     PluginProjectState,
+    PluginRuntimeModel,
     PluginTrustSource,
     PluginVersionRecord,
     PluginVersionState,
@@ -41,6 +43,7 @@ from agent.automation_plugins.models import (
     RuntimeLeaseOutcome,
     RuntimeReconcileState,
 )
+from agent.automation_plugins.service_v2_contract import ServiceV2ProjectContract
 from agent.automation_plugins.ports import RuntimeEffectPlan
 from shared.automation_plugin_generation_unknown_write_repository import (
     stabilize_project_after_archival_unknown,
@@ -85,6 +88,8 @@ def snapshot_to_row(snapshot: RuntimeGenerationSnapshot) -> dict[str, Any]:
         "package_sha256": snapshot.package_sha256,
         "manifest_sha256": snapshot.manifest_sha256,
         "trust_source": snapshot.trust_source.value,
+        "runtime_model": snapshot.runtime_model.value,
+        "plugin_api": snapshot.plugin_api,
         "project_config_sha256": snapshot.project_config_sha256,
         "account_bindings_sha256": snapshot.account_bindings_sha256,
         "resource_bindings_sha256": snapshot.resource_bindings_sha256,
@@ -130,6 +135,10 @@ def snapshot_from_row(row: Mapping[str, Any]) -> RuntimeGenerationSnapshot:
         package_sha256=str(raw.get("package_sha256") or ""),
         manifest_sha256=str(raw.get("manifest_sha256") or ""),
         trust_source=PluginTrustSource(str(raw.get("trust_source") or "")),
+        runtime_model=PluginRuntimeModel(
+            str(raw.get("runtime_model") or "ACTION_V1")
+        ),
+        plugin_api=str(raw.get("plugin_api") or "1.0.0"),
         project_config_sha256=str(raw.get("project_config_sha256") or ""),
         account_bindings_sha256=str(raw.get("account_bindings_sha256") or ""),
         resource_bindings_sha256=str(raw.get("resource_bindings_sha256") or ""),
@@ -172,6 +181,10 @@ def snapshot_from_row(row: Mapping[str, Any]) -> RuntimeGenerationSnapshot:
                 raise ValueError(f"persisted runtime snapshot column drifted: {field}")
         if "trust_source" in row and str(row.get("trust_source") or "") != snapshot.trust_source.value:
             raise ValueError("persisted runtime snapshot column drifted: trust_source")
+        if str(row.get("runtime_model") or "ACTION_V1") != snapshot.runtime_model.value:
+            raise ValueError("persisted runtime snapshot column drifted: runtime_model")
+        if str(row.get("plugin_api") or "1.0.0") != snapshot.plugin_api:
+            raise ValueError("persisted runtime snapshot column drifted: plugin_api")
         expected_entrypoints_sha256 = _persisted_json_sha256(
             list(snapshot.enabled_entrypoints)
         )
@@ -268,6 +281,10 @@ def _version_from_row(row: Mapping[str, Any]) -> PluginVersionRecord:
         state=PluginVersionState(str(row.get("state") or "INSTALLED")),
         installed_at=_utc_datetime(row.get("installed_at"), "installed_at"),
         install_metadata=dict(install_metadata),
+        runtime_model=PluginRuntimeModel(
+            str(row.get("runtime_model") or "ACTION_V1")
+        ),
+        plugin_api=str(row.get("plugin_api") or "1.0.0"),
     )
 
 
@@ -340,37 +357,58 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
                 or committed_version.manifest_sha256
                 != committed_snapshot.manifest_sha256
                 or committed_version.trust_source != committed_snapshot.trust_source
+                or committed_version.runtime_model != committed_snapshot.runtime_model
+                or committed_version.plugin_api != committed_snapshot.plugin_api
             ):
                 raise ValueError(
                     "project committed generation differs from its immutable package"
                 )
-            committed_manifest = AutomationPluginManifest.from_mapping(
-                committed_version.manifest
-            )
-            committed_signed_manifest = committed_manifest.to_signed_mapping()
+            if committed_version.runtime_model is PluginRuntimeModel.SERVICE_V2:
+                committed_manifest = AutomationPluginManifestV2.from_mapping(
+                    committed_version.manifest
+                )
+                projected = ServiceV2ProjectContract.from_manifest(
+                    committed_manifest
+                )
+                committed_manifest_mapping = committed_manifest.to_mapping()
+                expected_tool_contract = projected.tool_contract
+                expected_runtime_permissions = projected.runtime_permissions
+                expected_account_roles = projected.account_roles
+                expected_resource_roles = projected.resource_roles
+                expected_governance_anchor = projected.governance_anchor
+            else:
+                committed_manifest = AutomationPluginManifest.from_mapping(
+                    committed_version.manifest
+                )
+                committed_manifest_mapping = committed_manifest.to_signed_mapping()
+                expected_tool_contract = committed_manifest.tool_contract
+                expected_runtime_permissions = committed_manifest_mapping[
+                    "runtime_permissions"
+                ]
+                expected_account_roles = committed_manifest.account_roles
+                expected_resource_roles = committed_manifest.resource_roles
+                expected_governance_anchor = committed_manifest.to_mapping()[
+                    "governance_anchor"
+                ]
             if (
                 committed_manifest.plugin_id != committed_version.plugin_id
                 or committed_manifest.version != committed_version.version
                 or committed_manifest.manifest_sha256
                 != committed_version.manifest_sha256
             ):
-                raise ValueError(
-                    "project committed package differs from its signed manifest"
-                )
+                raise ValueError("project committed package differs from its manifest")
             committed_capability = project_capability_from_snapshot(
                 committed_snapshot
             )
             committed_runtime = committed_capability.get("_plugin_runtime")
             expected_runtime_descriptor = {
-                "runtime": dict(committed_signed_manifest["runtime"]),
-                "runtime_permissions": dict(
-                    committed_signed_manifest["runtime_permissions"]
-                ),
+                "runtime": dict(committed_manifest_mapping["runtime"]),
+                "runtime_permissions": dict(expected_runtime_permissions),
                 "account_roles": [
-                    dict(item) for item in committed_signed_manifest["account_roles"]
+                    dict(item) for item in expected_account_roles
                 ],
                 "resource_roles": [
-                    dict(item) for item in committed_signed_manifest["resource_roles"]
+                    dict(item) for item in expected_resource_roles
                 ],
                 "install_metadata": {
                     **dict(committed_version.install_metadata),
@@ -387,25 +425,29 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
                 or canonical_json_bytes(committed_capability)
                 != canonical_json_bytes(
                     {
-                        **dict(committed_manifest.tool_contract),
+                        **dict(expected_tool_contract),
                         "name": f"automation.{automation_id}.run",
                         "_plugin_runtime": dict(committed_runtime),
                     }
                 )
-                or not runtime_descriptor_matches_signed_installation(
-                    observed_runtime_descriptor,
-                    expected_runtime_descriptor,
-                    schema_version=committed_manifest.schema_version,
+                or (
+                    not runtime_descriptor_matches_signed_installation(
+                        observed_runtime_descriptor,
+                        expected_runtime_descriptor,
+                        schema_version=committed_manifest.schema_version,
+                    )
+                    if committed_version.runtime_model
+                    is PluginRuntimeModel.ACTION_V1
+                    else canonical_json_bytes(observed_runtime_descriptor)
+                    != canonical_json_bytes(expected_runtime_descriptor)
                 )
                 or canonical_json_bytes(
                     committed_snapshot.execution_metadata.get("governance_anchor")
                 )
-                != canonical_json_bytes(
-                    committed_manifest.to_mapping()["governance_anchor"]
-                )
+                != canonical_json_bytes(expected_governance_anchor)
             ):
                 raise ValueError(
-                    "project committed generation differs from its signed installation"
+                    "project committed generation differs from its immutable installation"
                 )
         version_row = low_level.get_version(
             str(row.get("plugin_id") or ""),
@@ -657,6 +699,21 @@ class MySQLAutomationPluginRuntimeAdapter:
             )
             uow.commit()
         return _runtime_from_row(row)
+
+    def set_project_dependency_scheduler_gate(
+        self,
+        automation_id: str,
+        *,
+        dependency_ready: bool,
+    ) -> Mapping[str, Any]:
+        result = self._write(
+            "set_project_dependency_scheduler_gate",
+            automation_id,
+            dependency_ready=dependency_ready,
+        )
+        if not isinstance(result, Mapping):
+            raise ValueError("dependency scheduler gate returned invalid evidence")
+        return dict(result)
 
     def mark_generation_draining(self, automation_id: str, generation: int) -> None:
         self._write("mark_generation_draining_row", automation_id, generation)

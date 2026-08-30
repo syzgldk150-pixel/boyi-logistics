@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import uuid
 import zipfile
 from http import HTTPStatus
 from pathlib import Path
@@ -344,6 +345,233 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         projected_text = json.dumps({"packages": packages, "instances": instances})
         for forbidden in ("manifest", "install_root", "package_sha256", "policy_hash"):
             self.assertNotIn(forbidden, projected_text)
+
+    def test_legacy_catalog_defaults_to_action_v1_without_changing_version_display(self):
+        packages, instances, _unsupported = normalize_automation_plugin_catalog(
+            _catalog_payload()
+        )
+
+        for projected in (packages[0], instances[0]):
+            self.assertEqual("ACTION_V1", projected["runtime_model"])
+            self.assertEqual("Action v1", projected["runtime_model_label"])
+            self.assertEqual("1.0.0", projected["plugin_api"])
+            self.assertEqual("1.2.3", projected["active_version"])
+            self.assertEqual("1.2.3", projected["target_version"])
+            self.assertEqual("NOT_APPLICABLE", projected["dependency_state"])
+            self.assertEqual([], projected["provided_services"])
+            self.assertEqual([], projected["blocking_reasons"])
+            self.assertEqual({}, projected["migration"])
+
+    def test_service_v2_catalog_projects_services_versions_migration_and_blocks(self):
+        payload = _catalog_payload()
+        v2_metadata = {
+            "runtime_model": "SERVICE_V2",
+            "plugin_api": ">=2.0.0,<3.0.0",
+            "active_version": "1.2.3",
+            "target_version": "1.3.0",
+            "dependency_state": "BLOCKED_DEPENDENCY",
+            "entrypoints": [
+                "manual.sync",
+                "schedule.daily",
+                "hooks.sync",
+                "events.refresh",
+            ],
+            "entrypoint_kinds": {
+                "manual.sync": "console",
+                "schedule.daily": "scheduler",
+                "hooks.sync": "webhook",
+                "events.refresh": "events",
+            },
+            "enabled_entrypoints": ["manual.sync"],
+            "provided_services": [
+                "plugin.finance_action.sync@1",
+                {"service": "plugin.finance_action.query@1", "operations": ["run"]},
+                "not-a-service",
+            ],
+            "blocking_reasons": [
+                {
+                    "code": "MISSING_PROVIDER",
+                    "service": "plugin.account_pool.session@1",
+                    "message": "internal detail",
+                    "provider_automation_id": "must-not-cross-boundary",
+                }
+            ],
+        }
+        payload["plugins"][0].update(v2_metadata)
+        payload["instances"][0].update(v2_metadata)
+        payload["instances"][0]["migration"] = {
+            "migration_pair_id": "4e19b908-1334-42cc-96e6-85fa164f52af",
+            "source_automation_id": "finance_action_east_v1",
+            "target_automation_id": "finance_action_east",
+            "state": "TESTING",
+            "test_status": "RUNNING",
+            "entrypoint_owner_automation_id": "finance_action_east_v1",
+            "entrypoint_snapshot_json": {"must": "not leak"},
+        }
+
+        packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+
+        package = packages[0]
+        instance = instances[0]
+        self.assertEqual("SERVICE_V2", package["runtime_model"])
+        self.assertEqual(">=2.0.0,<3.0.0", package["plugin_api"])
+        self.assertEqual(
+            ["plugin.finance_action.sync@1", "plugin.finance_action.query@1"],
+            package["provided_services"],
+        )
+        self.assertEqual("console", package["entrypoint_kinds"]["manual.sync"])
+        self.assertEqual("events", package["entrypoint_kinds"]["events.refresh"])
+        self.assertEqual(["manual.sync"], instance["console_entrypoints"])
+        self.assertEqual(["manual.sync"], instance["enabled_console_entrypoints"])
+        self.assertEqual("BLOCKED_DEPENDENCY", instance["state"])
+        self.assertEqual("依赖阻断", instance["status_label"])
+        self.assertEqual("1.2.3", instance["active_version"])
+        self.assertEqual("1.3.0", instance["target_version"])
+        self.assertTrue(instance["blocked"])
+        self.assertTrue(instance["lifecycle_actions_allowed"])
+        self.assertEqual(
+            "缺少服务提供方：plugin.account_pool.session@1",
+            instance["blocking_reason_labels"][0],
+        )
+        self.assertEqual("并行验证", instance["migration"]["status_label"])
+        self.assertEqual("真跑验证中", instance["migration"]["test_status_label"])
+        self.assertEqual(
+            "finance_action_east_v1",
+            instance["migration"]["paired_automation_id"],
+        )
+        projected_text = json.dumps(instance, ensure_ascii=False)
+        self.assertNotIn("provider_automation_id", projected_text)
+        self.assertNotIn("entrypoint_snapshot_json", projected_text)
+        self.assertNotIn("must-not-cross-boundary", projected_text)
+
+    def test_service_v2_catalog_accepts_closed_migration_relation_projection(self):
+        payload = _catalog_payload()
+        payload["instances"][0].update(
+            {
+                "runtime_model": "SERVICE_V2",
+                "plugin_api": ">=2.0.0,<3.0.0",
+                "migration": {
+                    "migration_pair_id": "4e19b908-1334-42cc-96e6-85fa164f52af",
+                    "state": "READY",
+                    "record_version": 4,
+                    "role": "target",
+                    "counterpart_automation_id": "finance_action_east_v1",
+                },
+            }
+        )
+
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+
+        migration = instances[0]["migration"]
+        self.assertEqual("TARGET", migration["role"])
+        self.assertEqual("finance_action_east_v1", migration["paired_automation_id"])
+        self.assertEqual(4, migration["record_version"])
+        self.assertTrue(migration["can_cutover"])
+        self.assertFalse(migration["owns_entrypoints"])
+
+    def test_preparing_migration_remains_visible_but_disables_all_operations(self):
+        payload = _catalog_payload()
+        payload["instances"][0]["migration"] = {
+            "migration_pair_id": "4e19b908-1334-42cc-96e6-85fa164f52af",
+            "source_automation_id": "finance_action_east_v1",
+            "target_automation_id": "finance_action_east_v2",
+            "state": "PREPARING",
+            "role": "TARGET",
+            "entrypoint_owner_automation_id": "finance_action_east_v1",
+            "record_version": 1,
+        }
+
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+
+        migration = instances[0]["migration"]
+        self.assertEqual("PREPARING", migration["state"])
+        self.assertEqual("准备迁移项目", migration["status_label"])
+        self.assertEqual("finance_action_east_v1", migration["paired_automation_id"])
+        self.assertEqual("finance_action_east_v1", migration["entrypoint_owner_automation_id"])
+        self.assertFalse(migration["owns_entrypoints"])
+        self.assertFalse(migration["can_mark_ready"])
+        self.assertFalse(migration["can_cutover"])
+        self.assertFalse(migration["can_rollback"])
+        self.assertFalse(migration["can_complete"])
+
+    def test_service_v2_operator_block_states_remain_distinct(self):
+        expected = {
+            "BLOCKED_DEPENDENCY": "依赖阻断",
+            "NEEDS_CONFIGURATION": "需要配置",
+            "BLOCKED_LOGIN": "账号未登录",
+        }
+        for dependency_state, label in expected.items():
+            with self.subTest(dependency_state=dependency_state):
+                payload = _catalog_payload()
+                metadata = {
+                    "runtime_model": "service_v2",
+                    "plugin_api": "2.0.0",
+                    "dependency_state": dependency_state,
+                    "entrypoint_kinds": {
+                        "scheduler": "scheduler",
+                        "console": "console",
+                        "feishu": "feishu",
+                        "webhook": "webhook",
+                    },
+                    "provided_services": ["plugin.finance_action.sync@1"],
+                    "blocking_reasons": [{"code": dependency_state}],
+                }
+                payload["plugins"][0].update(metadata)
+                payload["instances"][0].update(metadata)
+
+                _packages, instances, _unsupported = normalize_automation_plugin_catalog(
+                    payload
+                )
+
+                instance = instances[0]
+                self.assertEqual(dependency_state, instance["state"])
+                self.assertEqual(label, instance["status_label"])
+                self.assertTrue(instance["blocked"])
+
+    def test_explicit_unknown_runtime_does_not_downgrade_or_leak_v1(self):
+        payload = _catalog_payload()
+        payload["plugins"][0].update(
+            {
+                "runtime_model": "FUTURE_RUNTIME",
+                "plugin_api": "invalid api value",
+                "active_version": "latest",
+                "target_version": "../../secret",
+                "provided_services": [{"service": "invalid", "token": "secret"}],
+                "migration": {"state": "FUTURE", "snapshot": "secret"},
+                "blocking_reasons": [{"token": "secret"}],
+            }
+        )
+
+        packages, _instances, _unsupported = normalize_automation_plugin_catalog(payload)
+
+        package = packages[0]
+        self.assertEqual("UNSUPPORTED", package["runtime_model"])
+        self.assertEqual("不支持的运行时", package["runtime_model_label"])
+        self.assertEqual("", package["plugin_api"])
+        self.assertEqual("", package["active_version"])
+        self.assertEqual("", package["target_version"])
+        self.assertEqual([], package["provided_services"])
+        self.assertEqual({}, package["migration"])
+        self.assertFalse(package["contract_supported"])
+        self.assertFalse(package["can_schedule"])
+        instance = _instances[0]
+        self.assertEqual("UNSUPPORTED", instance["runtime_model"])
+        self.assertEqual("UNKNOWN", instance["state"])
+        self.assertTrue(instance["blocked"])
+        self.assertFalse(instance["lifecycle_actions_allowed"])
+        self.assertIn("插件运行时模型不受支持", instance["missing_requirements"])
+        self.assertNotIn("secret", repr(package))
+
+    def test_explicit_runtime_aliases_normalize_without_implicit_downgrade(self):
+        payload = _catalog_payload()
+        payload["plugins"][0]["runtime_model"] = "action_v1"
+        payload["instances"][0]["runtime_model"] = "service_v2"
+
+        packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+
+        self.assertEqual("ACTION_V1", packages[0]["runtime_model"])
+        self.assertEqual("SERVICE_V2", instances[0]["runtime_model"])
+        self.assertTrue(instances[0]["blocked"])
 
     def test_unknown_schema_and_unavailable_resource_pool_fail_closed(self):
         payload = _catalog_payload()
@@ -1030,6 +1258,116 @@ class AutomationPluginHandlerTests(unittest.TestCase):
 
                 self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
 
+    def test_create_migration_pair_forwards_only_closed_server_owned_dto(self):
+        app, captured = self._app()
+        forwarded = {}
+
+        def agent_request(method, endpoint, **kwargs):
+            forwarded.update(method=method, endpoint=endpoint, **kwargs)
+            return {"ok": True, "data": {"state": "TESTING"}}
+
+        app._agent_request = agent_request
+        app._handle_automation_plugin_migration_action(
+            self._handler(
+                {
+                    "source_automation_id": "finance_action_east_v1",
+                    "target_automation_id": "finance_action_east_v2",
+                    "business_key_fields": ["business_date", "sitecode"],
+                    "business_key_namespace": "finance-east",
+                    "request_id": REQUEST_ID,
+                }
+            ),
+            "",
+            "create",
+        )
+
+        self.assertEqual(HTTPStatus.OK, captured["status"])
+        self.assertEqual("POST", forwarded["method"])
+        self.assertEqual("/internal/v1/automation/migrations", forwarded["endpoint"])
+        uuid.UUID(forwarded["payload"]["migration_pair_id"])
+        self.assertEqual(
+            ["business_date", "sitecode"],
+            forwarded["payload"]["business_key_fields"],
+        )
+        self.assertNotIn("entrypoint_snapshot", json.dumps(forwarded["payload"]))
+        self.assertEqual("17", forwarded["console_principal"]["actor_id"])
+
+    def test_create_migration_allows_only_the_reserved_host_business_date_key(self):
+        app, captured = self._app()
+        forwarded = {}
+
+        def agent_request(method, endpoint, **kwargs):
+            forwarded.update(method=method, endpoint=endpoint, **kwargs)
+            return {"ok": True, "data": {"state": "TESTING"}}
+
+        app._agent_request = agent_request
+        app._handle_automation_plugin_migration_action(
+            self._handler(
+                {
+                    "source_automation_id": "finance_action_east_v1",
+                    "target_automation_id": "finance_action_east_v2",
+                    "business_key_fields": ["__host_business_date"],
+                    "business_key_namespace": "finance-east",
+                    "request_id": REQUEST_ID,
+                }
+            ),
+            "",
+            "create",
+        )
+        self.assertEqual(HTTPStatus.OK, captured["status"])
+        self.assertEqual(["__host_business_date"], forwarded["payload"]["business_key_fields"])
+
+        app, captured = self._app()
+        app._agent_request = lambda *_args, **_kwargs: self.fail("must not call Agent")
+        self._handle_invalid_migration_business_key(app, captured, "__host_created_at")
+
+    def _handle_invalid_migration_business_key(self, app, captured, field):
+        app._handle_automation_plugin_migration_action(
+            self._handler(
+                {
+                    "source_automation_id": "finance_action_east_v1",
+                    "target_automation_id": "finance_action_east_v2",
+                    "business_key_fields": [field],
+                    "business_key_namespace": "finance-east",
+                    "request_id": REQUEST_ID,
+                }
+            ),
+            "",
+            "create",
+        )
+        self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
+
+    def test_cutover_migration_forwards_pair_cas_and_server_reason(self):
+        app, captured = self._app()
+        forwarded = {}
+        pair_id = "4e19b908-1334-42cc-96e6-85fa164f52af"
+
+        def agent_request(method, endpoint, **kwargs):
+            forwarded.update(method=method, endpoint=endpoint, **kwargs)
+            return {"ok": True, "data": {"state": "CUTOVER"}}
+
+        app._agent_request = agent_request
+        app._handle_automation_plugin_migration_action(
+            self._handler(
+                {
+                    "request_id": REQUEST_ID,
+                    "expected_record_version": 3,
+                    "confirm": True,
+                }
+            ),
+            pair_id,
+            "cutover",
+        )
+
+        self.assertEqual(HTTPStatus.OK, captured["status"])
+        self.assertEqual(
+            f"/internal/v1/automation/migrations/{pair_id}/cutover",
+            forwarded["endpoint"],
+        )
+        self.assertEqual(3, forwarded["payload"]["expected_record_version"])
+        self.assertTrue(forwarded["payload"]["confirm"])
+        self.assertIn("接管自动执行入口", forwarded["payload"]["reason"])
+
     def test_install_has_no_browser_automation_id_or_digest_and_cleans_staged_zip(self):
         package_buffer = io.BytesIO()
         with zipfile.ZipFile(package_buffer, "w") as archive:
@@ -1104,7 +1442,9 @@ class AutomationPluginHandlerTests(unittest.TestCase):
                 self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
 
     def test_console_computes_transport_digest_after_receiving_package(self):
-        source = (CONSOLE_DIR / "services" / "automation_projects.py").read_text(
+        source = (
+            CONSOLE_DIR / "services" / "automation_plugin_management.py"
+        ).read_text(
             encoding="utf-8"
         )
         helper = source[
@@ -1155,6 +1495,23 @@ class AutomationPluginHandlerTests(unittest.TestCase):
 
         self.assertTrue(automation_routes.handle_post(app, handler, path, path, {}))
         self.assertEqual([(handler, "arrive_list")], called)
+
+    def test_migration_cutover_has_one_explicit_console_route(self):
+        called = []
+        app = SimpleNamespace(
+            _handle_automation_account_post=lambda *_args: False,
+            _handle_automation_plugin_migration_action=(
+                lambda handler, pair_id, action: called.append(
+                    (handler, pair_id, action)
+                )
+            ),
+        )
+        handler = object()
+        pair_id = "4e19b908-1334-42cc-96e6-85fa164f52af"
+        path = f"/automations/plugin-migrations/{pair_id}/cutover"
+
+        self.assertTrue(automation_routes.handle_post(app, handler, path, path, {}))
+        self.assertEqual([(handler, pair_id, "cutover")], called)
 
 
 class AutomationPluginTemplateTests(unittest.TestCase):
@@ -1290,7 +1647,10 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertIn('aria-controls="automation-plugin-manager-dialog"', html)
         self.assertIn('<dialog class="automation-plugin-manager-dialog"', html)
         self.assertIn("data-plugin-drop-zone", install_form)
-        self.assertIn("把签名 ZIP 拖到这里安装", install_form)
+        self.assertIn("把 ZIP 插件包拖到这里安装", install_form)
+        self.assertIn("v2 ZIP 无需签名、发布审批或运行审批", html)
+        self.assertIn("SHA-256", html)
+        self.assertNotIn("把签名 ZIP", install_form)
         self.assertIn("华东财务同步", card)
         self.assertIn("1.2.3", card)
         self.assertEqual(1, card.count("data-project-policy-toggle"))
@@ -1310,6 +1670,36 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertIn('name="project-policy-finance_action_east"', card)
         self.assertNotIn('name="automation_id"', install_form)
         self.assertNotIn('name="package_sha256"', install_form)
+
+    def test_service_v2_runtime_services_and_migration_are_visible_in_project_card(self):
+        template_source = (CONSOLE_DIR / "templates" / "automation.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("plugin.runtime_model == 'SERVICE_V2'", template_source)
+        self.assertIn("运行版本 {{ plugin.active_version or '尚未激活' }}", template_source)
+        self.assertIn("目标版本 {{ plugin.target_version }}", template_source)
+        self.assertIn("Host API {{ plugin.plugin_api }}", template_source)
+        self.assertIn("{% for service in plugin.provided_services %}", template_source)
+        self.assertIn("{{ plugin.migration.status_label }}", template_source)
+        self.assertIn("plugin.blocking_reason_labels | join('；')", template_source)
+        self.assertIn('data-plugin-entrypoint-kind="{{ entrypoint_kind }}"', template_source)
+        self.assertIn("'events': '事件订阅'", template_source)
+        self.assertIn("审计不是审批", template_source)
+        self.assertIn("{% elif task.approval_policy %}", template_source)
+        self.assertIn('name="contribution_id"', template_source)
+        self.assertIn("task.plugin.console_entrypoints | length > 1", template_source)
+        service_source = (CONSOLE_DIR / "services" / "automation.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'stable_state = bool(plugin.get("lifecycle_actions_allowed"))',
+            service_source,
+        )
+        self.assertIn(
+            'plugin.get("enabled_entrypoint_kinds") or []',
+            service_source,
+        )
 
     def test_plugin_manager_drop_flow_uses_dialog_and_only_accepts_one_zip(self):
         template_source = (CONSOLE_DIR / "templates" / "automation.html").read_text(

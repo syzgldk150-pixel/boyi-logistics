@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import copy
 import hashlib
-from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Callable, Mapping, Sequence
 
 from agent.automation_plugins.code_owned_fields import (
     first_party_code_owned_config_fields,
@@ -21,13 +21,16 @@ from agent.automation_plugins.manifest import (
     canonical_json_bytes,
     runtime_descriptor_matches_signed_installation,
 )
+from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
 from agent.automation_plugins.models import (
     PluginInstanceRecord,
     PluginProjectState,
+    PluginRuntimeModel,
     PluginTrustSource,
     RuntimeReconcileState,
     RuntimeGenerationSnapshot,
 )
+from agent.automation_plugins.service_v2_contract import ServiceV2ProjectContract
 from agent.automation_plugins.ports import AutomationPluginRepositoryPort, AutomationProjectConfigurationPort
 from agent.tool_registry import validate_schema_instance
 
@@ -80,10 +83,35 @@ class PluginCatalogEntry:
     committed_generation: int | None
     reconcile_state: RuntimeReconcileState
     committed_snapshot: RuntimeGenerationSnapshot | None
+    runtime_model: str = PluginRuntimeModel.ACTION_V1.value
+    plugin_api: str = "1.0.0"
+    runtime_mode: str = "on_demand"
+    provided_services: tuple[str, ...] = ()
+    required_services: tuple[str, ...] = ()
+    contributions: Mapping[str, Any] = field(default_factory=dict)
+    declared_capabilities: tuple[Mapping[str, Any], ...] = ()
+    storage_contract: Mapping[str, Any] = field(default_factory=dict)
+    service_contracts: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def action_id(self) -> str:
         return f"automation.{self.automation_id}.run"
+
+    @property
+    def active_runtime_model(self) -> str | None:
+        return (
+            self.committed_snapshot.runtime_model.value
+            if self.committed_snapshot is not None
+            else None
+        )
+
+    @property
+    def active_version(self) -> str | None:
+        return (
+            self.committed_snapshot.plugin_version
+            if self.committed_snapshot is not None
+            else None
+        )
 
 
 _EXECUTION_METADATA_FIELDS = frozenset(
@@ -100,6 +128,13 @@ _EXECUTION_METADATA_FIELDS = frozenset(
         "governance_anchor",
     }
 )
+_EXECUTION_METADATA_FIELDS_V2 = _EXECUTION_METADATA_FIELDS | {
+    "runtime_model",
+    "plugin_api",
+    "service_contracts",
+    "contributions",
+    "storage_contract",
+}
 _RUNTIME_DESCRIPTOR_FIELDS = frozenset(
     {
         "install_metadata",
@@ -119,8 +154,27 @@ def _snapshot_execution_metadata(
     snapshot: RuntimeGenerationSnapshot,
 ) -> dict[str, Any]:
     metadata = copy.deepcopy(dict(snapshot.execution_metadata))
-    if set(metadata) != _EXECUTION_METADATA_FIELDS:
+    expected_fields = (
+        _EXECUTION_METADATA_FIELDS_V2
+        if snapshot.runtime_model is PluginRuntimeModel.SERVICE_V2
+        else _EXECUTION_METADATA_FIELDS
+    )
+    if set(metadata) != expected_fields:
         raise PluginConflictError("committed generation execution metadata is not closed")
+    if snapshot.runtime_model is PluginRuntimeModel.SERVICE_V2:
+        if (
+            metadata.get("runtime_model") != PluginRuntimeModel.SERVICE_V2.value
+            or metadata.get("plugin_api") != snapshot.plugin_api
+            or any(
+                not isinstance(metadata.get(field), (Mapping, list))
+                for field in (
+                    "service_contracts",
+                    "contributions",
+                    "storage_contract",
+                )
+            )
+        ):
+            raise PluginConflictError("committed service-v2 metadata is invalid")
     if (
         isinstance(metadata.get("project_config_version"), bool)
         or not isinstance(metadata.get("project_config_version"), int)
@@ -273,6 +327,8 @@ def project_capability_from_snapshot(
         "package_sha256": snapshot.package_sha256,
         "manifest_sha256": snapshot.manifest_sha256,
         "trust_source": snapshot.trust_source.value,
+        "runtime_model": snapshot.runtime_model.value,
+        "plugin_api": snapshot.plugin_api,
         "install_root": str(descriptor["install_metadata"].get("install_root") or ""),
         "runtime": copy.deepcopy(descriptor["runtime"]),
         "core_tool_name": str(committed["governance_anchor"].get("name") or ""),
@@ -285,6 +341,17 @@ def project_capability_from_snapshot(
         "account_bindings": copy.deepcopy(committed["account_bindings"]),
         "resource_bindings": copy.deepcopy(committed["resource_bindings"]),
     }
+    if snapshot.runtime_model is PluginRuntimeModel.SERVICE_V2:
+        capability["_plugin_runtime"].update(
+            {
+                "service_contracts": copy.deepcopy(committed["service_contracts"]),
+                "contributions": copy.deepcopy(committed["contributions"]),
+                "storage_contract": copy.deepcopy(committed["storage_contract"]),
+                "compiled_invocations": copy.deepcopy(
+                    committed["compiled_invocations"]
+                ),
+            }
+        )
     return capability
 
 
@@ -293,8 +360,58 @@ def _entry_from_project(
     project_configuration: AutomationProjectConfigurationPort | None = None,
 ) -> PluginCatalogEntry:
     version = project.active_version
-    manifest = AutomationPluginManifest.from_mapping(version.manifest)
-    signed_manifest = manifest.to_signed_mapping()
+    if version.runtime_model is PluginRuntimeModel.SERVICE_V2:
+        manifest = AutomationPluginManifestV2.from_mapping(version.manifest)
+        service_contract = ServiceV2ProjectContract.from_manifest(manifest)
+        account_roles = service_contract.account_roles
+        resource_roles = service_contract.resource_roles
+        allowed_entrypoints = service_contract.allowed_entrypoints
+        invocation_contracts = service_contract.invocation_contracts
+        governance_anchor = service_contract.governance_anchor
+        governance_anchor_sha256 = service_contract.governance_anchor_sha256
+        tool_contract = service_contract.tool_contract
+        worker_requirement = {
+            "required": False,
+            "interactive_session": False,
+            "supported_os": [],
+            "queue_deadline_seconds": 60,
+        }
+        execution_platform = "server"
+        scheduling = service_contract.scheduling
+        runtime_permissions = service_contract.runtime_permissions
+        signed_runtime_permissions = service_contract.runtime_permissions
+        project_full_auto_allowed = True
+        provided_services = manifest.provided_services
+        required_services = manifest.required_services
+        service_contracts = {
+            "provides": [copy.deepcopy(dict(item)) for item in manifest.provides],
+            "requires": [copy.deepcopy(dict(item)) for item in manifest.requires],
+        }
+        contributions = manifest.to_mapping()["contributes"]
+        declared_capabilities = manifest.capabilities
+        storage_contract = manifest.storage
+    else:
+        manifest = AutomationPluginManifest.from_mapping(version.manifest)
+        signed_manifest = manifest.to_signed_mapping()
+        account_roles = manifest.account_roles
+        resource_roles = manifest.resource_roles
+        allowed_entrypoints = manifest.allowed_entrypoints
+        invocation_contracts = manifest.invocation_contracts
+        governance_anchor = manifest.governance_anchor
+        governance_anchor_sha256 = manifest.governance_anchor_sha256
+        tool_contract = manifest.tool_contract
+        worker_requirement = manifest.worker_requirement
+        execution_platform = manifest.execution_platform
+        scheduling = manifest.scheduling
+        runtime_permissions = manifest.runtime_permissions
+        signed_runtime_permissions = signed_manifest["runtime_permissions"]
+        project_full_auto_allowed = manifest.project_full_auto_allowed
+        provided_services = ()
+        required_services = ()
+        contributions = {}
+        declared_capabilities = ()
+        storage_contract = {}
+        service_contracts = {}
     if manifest.plugin_id != project.plugin_id or version.plugin_id != project.plugin_id:
         raise PluginConflictError("persisted plugin_id does not match its manifest")
     if manifest.version != version.version:
@@ -310,6 +427,8 @@ def _entry_from_project(
             and committed.package_sha256 == version.package_sha256
             and committed.manifest_sha256 == version.manifest_sha256
             and committed.trust_source == version.trust_source
+            and committed.runtime_model == version.runtime_model
+            and committed.plugin_api == version.plugin_api
         )
         upgrade_in_progress = (
             project.state == PluginProjectState.UPGRADING
@@ -352,25 +471,23 @@ def _entry_from_project(
         package_sha256=version.package_sha256,
         manifest_sha256=version.manifest_sha256,
         config_schema=copy.deepcopy(dict(manifest.config_schema)),
-        account_roles=tuple(copy.deepcopy(dict(item)) for item in manifest.account_roles),
-        resource_roles=tuple(copy.deepcopy(dict(item)) for item in manifest.resource_roles),
-        allowed_entrypoints=tuple(manifest.allowed_entrypoints),
+        account_roles=tuple(copy.deepcopy(dict(item)) for item in account_roles),
+        resource_roles=tuple(copy.deepcopy(dict(item)) for item in resource_roles),
+        allowed_entrypoints=tuple(allowed_entrypoints),
         invocation_contracts={
             key: copy.deepcopy(dict(value))
-            for key, value in manifest.invocation_contracts.items()
+            for key, value in invocation_contracts.items()
         },
-        governance_anchor=copy.deepcopy(dict(manifest.governance_anchor)),
-        governance_anchor_sha256=manifest.governance_anchor_sha256,
-        tool_contract=copy.deepcopy(dict(manifest.tool_contract)),
-        worker_requirement=copy.deepcopy(dict(manifest.worker_requirement)),
-        execution_platform=manifest.execution_platform,
+        governance_anchor=copy.deepcopy(dict(governance_anchor)),
+        governance_anchor_sha256=governance_anchor_sha256,
+        tool_contract=copy.deepcopy(dict(tool_contract)),
+        worker_requirement=copy.deepcopy(dict(worker_requirement)),
+        execution_platform=execution_platform,
         runtime=copy.deepcopy(dict(manifest.runtime)),
-        scheduling=copy.deepcopy(dict(manifest.scheduling)),
-        project_full_auto_allowed=manifest.project_full_auto_allowed,
-        runtime_permissions=copy.deepcopy(dict(manifest.runtime_permissions)),
-        signed_runtime_permissions=copy.deepcopy(
-            dict(signed_manifest["runtime_permissions"])
-        ),
+        scheduling=copy.deepcopy(dict(scheduling)),
+        project_full_auto_allowed=project_full_auto_allowed,
+        runtime_permissions=copy.deepcopy(dict(runtime_permissions)),
+        signed_runtime_permissions=copy.deepcopy(dict(signed_runtime_permissions)),
         enabled=(
             project.enabled
             if project.enabled is not None
@@ -407,6 +524,17 @@ def _entry_from_project(
         committed_generation=project.committed_generation,
         reconcile_state=project.reconcile_state,
         committed_snapshot=committed,
+        runtime_model=version.runtime_model.value,
+        plugin_api=version.plugin_api,
+        runtime_mode=str(manifest.runtime.get("mode") or "on_demand"),
+        provided_services=tuple(provided_services),
+        required_services=tuple(required_services),
+        contributions=copy.deepcopy(dict(contributions)),
+        declared_capabilities=tuple(
+            copy.deepcopy(dict(item)) for item in declared_capabilities
+        ),
+        storage_contract=copy.deepcopy(dict(storage_contract)),
+        service_contracts=copy.deepcopy(dict(service_contracts)),
     )
 
 
@@ -422,6 +550,10 @@ def project_contract_fragment(entry: PluginCatalogEntry) -> dict[str, Any]:
         "plugin_id": entry.plugin_id,
         "action_id": entry.action_id,
         "plugin_version": entry.installed_version,
+        "runtime_model": entry.runtime_model,
+        "plugin_api": entry.plugin_api,
+        "active_runtime_model": entry.active_runtime_model,
+        "active_version": entry.active_version,
         "trust_source": entry.trust_source,
         "package_sha256": entry.package_sha256,
         "manifest_sha256": entry.manifest_sha256,
@@ -429,6 +561,10 @@ def project_contract_fragment(entry: PluginCatalogEntry) -> dict[str, Any]:
         "account_roles": [copy.deepcopy(dict(item)) for item in entry.account_roles],
         "resource_roles": [copy.deepcopy(dict(item)) for item in entry.resource_roles],
         "allowed_entrypoints": list(entry.allowed_entrypoints),
+        "entrypoint_kinds": {
+            key: str(value.get("contribution_kind") or key)
+            for key, value in sorted(entry.invocation_contracts.items())
+        },
         "invocation_contracts": {
             key: copy.deepcopy(dict(value))
             for key, value in sorted(entry.invocation_contracts.items())
@@ -439,6 +575,10 @@ def project_contract_fragment(entry: PluginCatalogEntry) -> dict[str, Any]:
         "worker_requirement": copy.deepcopy(dict(entry.worker_requirement)),
         "execution_platform": entry.execution_platform,
         "runtime_kind": str(entry.runtime.get("kind") or ""),
+        "runtime_mode": entry.runtime_mode,
+        "provided_services": list(entry.provided_services),
+        "required_services": list(entry.required_services),
+        "contributions": copy.deepcopy(dict(entry.contributions)),
         "scheduling": copy.deepcopy(dict(entry.scheduling)),
         "project_full_auto_allowed": entry.project_full_auto_allowed,
         "runtime_permissions": copy.deepcopy(dict(entry.runtime_permissions)),
@@ -483,6 +623,15 @@ class PluginCatalog:
         excluded_automation_plugins: Mapping[str, str] | None = None,
         excluded_plugin_ids: Sequence[str] = (),
         allowed_execution_platforms: Sequence[str] | None = None,
+        migration_pair_provider: (
+            Callable[[str], Mapping[str, Any] | None] | None
+        ) = None,
+        account_binding_ready: (
+            Callable[[str, Sequence[str]], bool] | None
+        ) = None,
+        contribution_backend_status: (
+            Callable[..., tuple[str, str, str | None, str | None]] | None
+        ) = None,
     ) -> None:
         self._repository = repository
         self._project_configuration = project_configuration
@@ -517,13 +666,21 @@ class PluginCatalog:
         )
         if self._allowed_execution_platforms == frozenset():
             raise ValueError("allowed execution platforms cannot be empty")
+        self._migration_pair_provider = migration_pair_provider
+        self._account_binding_ready = account_binding_ready
+        self._contribution_backend_status = contribution_backend_status
 
     def _project_is_excluded(self, project: PluginInstanceRecord) -> bool:
         if project.automation_id in self._excluded_automation_ids:
             return True
         raw_manifest = project.active_version.manifest
         try:
-            manifest = AutomationPluginManifest.from_mapping(raw_manifest)
+            manifest = (
+                AutomationPluginManifestV2.from_mapping(raw_manifest)
+                if project.active_version.runtime_model
+                is PluginRuntimeModel.SERVICE_V2
+                else AutomationPluginManifest.from_mapping(raw_manifest)
+            )
         except Exception:
             # Missing or corrupt platform data remains visible and therefore
             # fails closed in _entry_from_project instead of being hidden.
@@ -547,8 +704,13 @@ class PluginCatalog:
             return True
         return bool(
             self._allowed_execution_platforms is not None
-            and manifest.execution_platform in {"server", "windows"}
-            and manifest.execution_platform not in self._allowed_execution_platforms
+            and (
+                "server"
+                if project.active_version.runtime_model
+                is PluginRuntimeModel.SERVICE_V2
+                else manifest.execution_platform
+            )
+            not in self._allowed_execution_platforms
         )
 
     def excluded_persisted_automation_ids(self) -> frozenset[str]:
@@ -753,6 +915,265 @@ class PluginCatalog:
             if str(field_name) not in code_owned_fields
         }
 
+    def _v2_dependency_statuses(
+        self,
+        entries: Sequence[PluginCatalogEntry],
+    ) -> dict[str, tuple[str, list[dict[str, str]]]]:
+        """Resolve package-level service providers without rejecting instances.
+
+        Multiple projects of the same immutable package share one provider
+        claim, so each project may keep independent account/config bindings.
+        Different immutable packages claiming the same service are blocked and
+        remain installed for an administrator to resolve.
+        """
+
+        v2_entries = [
+            entry
+            for entry in entries
+            if entry.runtime_model == PluginRuntimeModel.SERVICE_V2.value
+        ]
+        candidates: dict[str, list[PluginCatalogEntry]] = {}
+        for entry in v2_entries:
+            for service in entry.provided_services:
+                candidates.setdefault(service, []).append(entry)
+
+        conflicts: set[str] = set()
+        providers: dict[str, tuple[str, str, str]] = {}
+        for service, items in candidates.items():
+            identities = {
+                (item.plugin_id, item.installed_version, item.manifest_sha256)
+                for item in items
+            }
+            if len(identities) != 1:
+                conflicts.add(service)
+            else:
+                providers[service] = next(iter(identities))
+
+        package_requirements: dict[tuple[str, str, str], tuple[str, ...]] = {}
+        package_runtime_ready: dict[tuple[str, str, str], bool] = {}
+        for entry in v2_entries:
+            identity = (
+                entry.plugin_id,
+                entry.installed_version,
+                entry.manifest_sha256,
+            )
+            package_requirements.setdefault(identity, entry.required_services)
+            package_runtime_ready[identity] = bool(
+                package_runtime_ready.get(identity)
+                or (
+                    entry.enabled
+                    and entry.configured
+                    and entry.state == PluginProjectState.ENABLED.value
+                    and entry.committed_snapshot is not None
+                    and entry.committed_generation is not None
+                    and entry.committed_snapshot.generation
+                    == entry.committed_generation
+                    and entry.committed_snapshot.plugin_version
+                    == entry.installed_version
+                    and entry.target_generation == entry.committed_generation
+                    and entry.reconcile_state == RuntimeReconcileState.STABLE
+                    and not self._missing_requirements(entry)
+                    and not self._required_account_unavailable(entry)
+                )
+            )
+
+        active_packages: set[tuple[str, str, str]] = set()
+        changed = True
+        while changed:
+            changed = False
+            for identity, requirements in package_requirements.items():
+                if identity in active_packages or not package_runtime_ready.get(identity):
+                    continue
+                if all(
+                    service not in conflicts
+                    and (provider := providers.get(service)) is not None
+                    and provider in active_packages
+                    for service in requirements
+                ):
+                    active_packages.add(identity)
+                    changed = True
+
+        result: dict[str, tuple[str, list[dict[str, str]]]] = {}
+        for entry in v2_entries:
+            reasons: list[dict[str, str]] = []
+            for service in entry.required_services:
+                if service in conflicts:
+                    reasons.append(
+                        {
+                            "code": "PROVIDER_CONFLICT",
+                            "service": service,
+                            "message": "多个不同版本声明了同一服务",
+                        }
+                    )
+                elif service not in providers:
+                    reasons.append(
+                        {
+                            "code": "MISSING_PROVIDER",
+                            "service": service,
+                            "message": "依赖服务尚未安装",
+                        }
+                    )
+                elif providers[service] not in active_packages:
+                    reasons.append(
+                        {
+                            "code": "PROVIDER_BLOCKED",
+                            "service": service,
+                            "message": "依赖服务自身尚未就绪",
+                        }
+                    )
+            for service in entry.provided_services:
+                if service in conflicts:
+                    reasons.append(
+                        {
+                            "code": "PROVIDER_CONFLICT",
+                            "service": service,
+                            "message": "该服务存在不同内容的 Provider 冲突",
+                        }
+                    )
+            result[entry.automation_id] = (
+                "READY" if not reasons else "BLOCKED_DEPENDENCY",
+                reasons,
+            )
+        return result
+
+    def _required_account_unavailable(self, entry: PluginCatalogEntry) -> bool:
+        checker = self._account_binding_ready
+        if checker is None:
+            return False
+        for role in entry.account_roles:
+            if role.get("required") is not True:
+                continue
+            name = str(role.get("role") or "")
+            raw_binding = entry.account_bindings.get(name)
+            values = (
+                raw_binding
+                if isinstance(raw_binding, (list, tuple))
+                else (raw_binding,)
+            )
+            allowed = role.get("allowed_systems")
+            if not isinstance(allowed, list):
+                return True
+            for account_id in values:
+                normalized = str(account_id or "").strip()
+                if not normalized:
+                    return True
+                try:
+                    ready = checker(normalized, [str(item) for item in allowed])
+                except Exception:
+                    return True
+                if ready is not True:
+                    return True
+        return False
+
+    def _contribution_backend_reasons(
+        self,
+        entry: PluginCatalogEntry,
+    ) -> list[dict[str, str]]:
+        """Fail closed when an enabled managed contribution has no host backend."""
+
+        if entry.runtime_model != PluginRuntimeModel.SERVICE_V2.value:
+            return []
+        enabled = set(entry.current_enabled_entrypoints)
+        reasons: list[dict[str, str]] = []
+        resolver = self._contribution_backend_status
+        for kind in ("scheduler", "webhook", "feishu", "events"):
+            raw_items = entry.contributions.get(kind)
+            if not isinstance(raw_items, (list, tuple)):
+                return [
+                    {
+                        "code": "CAPABILITY_UNAVAILABLE",
+                        "service": "",
+                        "message": "插件贡献点声明不可用",
+                    }
+                ]
+            for raw_item in raw_items:
+                if not isinstance(raw_item, Mapping):
+                    return [
+                        {
+                            "code": "CAPABILITY_UNAVAILABLE",
+                            "service": "",
+                            "message": "插件贡献点声明不可用",
+                        }
+                    ]
+                contribution_id = str(raw_item.get("id") or "")
+                if contribution_id not in enabled:
+                    continue
+                try:
+                    if resolver is None:
+                        raise RuntimeError("contribution backend resolver is unavailable")
+                    _backend, status, reason_code, reason_detail = resolver(
+                        contribution_kind=kind,
+                        declaration=raw_item,
+                        project_schedule=entry.project_schedule,
+                    )
+                except Exception:  # noqa: BLE001 - Catalog readiness must fail closed
+                    status = "CAPABILITY_UNAVAILABLE"
+                    reason_code = "CAPABILITY_UNAVAILABLE"
+                    reason_detail = "CONTRIBUTION_HOST_BACKEND_UNAVAILABLE"
+                # The injected host resolver is the sole backend authority.  It
+                # may return DISABLED only for an intentionally closed project
+                # schedule/entrypoint; every other non-READY state blocks.
+                if status in {"READY", "DISABLED"}:
+                    continue
+                reasons.append(
+                    {
+                        "code": str(reason_code or "CAPABILITY_UNAVAILABLE"),
+                        "service": str(raw_item.get("service") or ""),
+                        "message": (
+                            "贡献点宿主能力不可用："
+                            f"{kind}/{contribution_id} ({reason_detail or status})"
+                        ),
+                    }
+                )
+        return reasons
+
+    def _readiness(
+        self,
+        entry: PluginCatalogEntry,
+        dependency: tuple[str, list[dict[str, str]]] | None,
+    ) -> tuple[str, list[dict[str, str]]]:
+        dependency_state, dependency_reasons = dependency or ("READY", [])
+        if dependency_state != "READY":
+            return dependency_state, dependency_reasons
+        if entry.runtime_mode == "resident":
+            return (
+                "BLOCKED_DEPENDENCY",
+                [
+                    {
+                        "code": "RESIDENT_RUNTIME_UNAVAILABLE",
+                        "service": "",
+                        "message": "当前主机尚未提供常驻进程运行器",
+                    }
+                ],
+            )
+        contribution_reasons = self._contribution_backend_reasons(entry)
+        if contribution_reasons:
+            return "BLOCKED_DEPENDENCY", contribution_reasons
+        missing = self._missing_requirements(entry)
+        if "account_binding" in missing or self._required_account_unavailable(entry):
+            return (
+                "BLOCKED_LOGIN",
+                [
+                    {
+                        "code": "ACCOUNT_BINDING_MISSING",
+                        "service": "",
+                        "message": "必需的后台登录账号尚未绑定或登录已失效",
+                    }
+                ],
+            )
+        if missing:
+            return (
+                "NEEDS_CONFIGURATION",
+                [
+                    {
+                        "code": "CONFIGURATION_INCOMPLETE",
+                        "service": "",
+                        "message": "项目配置或资源绑定尚未完成",
+                    }
+                ],
+            )
+        return "READY", []
+
     def safe_projection(self) -> dict[str, Any]:
         """Return the closed Console projection without integrity or filesystem data.
 
@@ -765,6 +1186,7 @@ class PluginCatalog:
         entries, hidden_automation_ids, unavailable_projects = (
             self._entries_with_failures()
         )
+        dependency_statuses = self._v2_dependency_statuses(entries)
         newest: dict[str, PluginCatalogEntry] = {}
         for entry in entries:
             current = newest.get(entry.plugin_id)
@@ -781,6 +1203,11 @@ class PluginCatalog:
                 "plugin_id": entry.plugin_id,
                 "name": entry.name,
                 "version": entry.installed_version,
+                "runtime_model": entry.runtime_model,
+                "plugin_api": entry.plugin_api,
+                "runtime_mode": entry.runtime_mode,
+                "provided_services": list(entry.provided_services),
+                "required_services": list(entry.required_services),
                 "execution_platform": entry.execution_platform,
                 "can_schedule": entry.scheduling.get("supported") is True,
                 "worker_required": entry.worker_requirement.get("required") is True,
@@ -791,6 +1218,10 @@ class PluginCatalog:
                 "config_schema": copy.deepcopy(dict(entry.config_schema)),
                 "scheduling": copy.deepcopy(dict(entry.scheduling)),
                 "entrypoints": list(entry.allowed_entrypoints),
+                "entrypoint_kinds": {
+                    key: str(value.get("contribution_kind") or key)
+                    for key, value in sorted(entry.invocation_contracts.items())
+                },
             }
             for entry in sorted(newest.values(), key=lambda item: item.plugin_id)
         ]
@@ -800,6 +1231,24 @@ class PluginCatalog:
                 "plugin_id": entry.plugin_id,
                 "instance_name": entry.display_name,
                 "version": entry.installed_version,
+                "target_version": entry.installed_version,
+                "active_version": entry.active_version,
+                "runtime_model": entry.runtime_model,
+                "target_runtime_model": entry.runtime_model,
+                "active_runtime_model": entry.active_runtime_model,
+                "plugin_api": entry.plugin_api,
+                "runtime_mode": entry.runtime_mode,
+                "provided_services": list(entry.provided_services),
+                "required_services": list(entry.required_services),
+                "dependency_state": self._readiness(
+                    entry,
+                    dependency_statuses.get(entry.automation_id),
+                )[0],
+                "blocking_reasons": self._readiness(
+                    entry,
+                    dependency_statuses.get(entry.automation_id),
+                )[1],
+                "migration": self._migration_projection(entry.automation_id),
                 "enabled": entry.enabled,
                 "configured": entry.configured,
                 "state": entry.state,
@@ -818,6 +1267,10 @@ class PluginCatalog:
                 "config_schema": self._safe_instance_config_schema(entry),
                 "scheduling": copy.deepcopy(dict(entry.scheduling)),
                 "entrypoints": list(entry.allowed_entrypoints),
+                "entrypoint_kinds": {
+                    key: str(value.get("contribution_kind") or key)
+                    for key, value in sorted(entry.invocation_contracts.items())
+                },
                 "enabled_entrypoints": list(entry.current_enabled_entrypoints),
                 "code_owned_config_fields": list(
                     self._code_owned_config_fields(entry)
@@ -844,6 +1297,41 @@ class PluginCatalog:
             "unsupported_automation_ids": [],
             "hidden_automation_ids": sorted(hidden_automation_ids),
             "unavailable_projects": unavailable_projects,
+        }
+
+    def _migration_projection(self, automation_id: str) -> dict[str, Any] | None:
+        provider = self._migration_pair_provider
+        if provider is None:
+            return None
+        pair = provider(automation_id)
+        if pair is None:
+            return None
+        pair_id = str(pair.get("migration_pair_id") or "").strip()
+        source = str(pair.get("source_automation_id") or "").strip()
+        target = str(pair.get("target_automation_id") or "").strip()
+        state = str(pair.get("state") or "").strip()
+        record_version = pair.get("record_version")
+        if (
+            not pair_id
+            or automation_id not in {source, target}
+            or not source
+            or not target
+            or not state
+            or isinstance(record_version, bool)
+            or not isinstance(record_version, int)
+            or record_version <= 0
+        ):
+            raise PluginConflictError(
+                "plugin migration catalog projection is invalid",
+                code="PLUGIN_MIGRATION_DATA_INVALID",
+            )
+        is_source = automation_id == source
+        return {
+            "migration_pair_id": pair_id,
+            "state": state,
+            "record_version": record_version,
+            "role": "source" if is_source else "target",
+            "counterpart_automation_id": target if is_source else source,
         }
 
     @staticmethod
@@ -896,6 +1384,17 @@ class PluginCatalog:
     def resolve_invocation(self, automation_id: str, entrypoint: str) -> dict[str, Any]:
         entry = self.require(automation_id)
         source = str(entrypoint or "").strip()
+        if entry.runtime_model == PluginRuntimeModel.SERVICE_V2.value:
+            statuses = self._v2_dependency_statuses(self.list())
+            readiness, _reasons = self._readiness(
+                entry,
+                statuses.get(entry.automation_id),
+            )
+            if readiness != "READY":
+                raise PluginConflictError(
+                    f"service-v2 project is not ready: {readiness}",
+                    code=readiness,
+                )
         if not entry.enabled:
             raise PluginConflictError(f"automation instance is disabled: {automation_id}")
         if source not in entry.enabled_entrypoints:
@@ -959,6 +1458,8 @@ class PluginCatalog:
             not in {
                 PluginTrustSource.ED25519_UPLOAD.value,
                 PluginTrustSource.ED25519_FIRST_PARTY.value,
+                PluginTrustSource.SUPER_ADMIN_UPLOAD.value,
+                PluginTrustSource.BUILTIN_BUNDLE.value,
             }
         )
         unstable = sorted(
@@ -990,6 +1491,8 @@ class PluginCatalog:
             in {
                 PluginTrustSource.ED25519_UPLOAD.value,
                 PluginTrustSource.ED25519_FIRST_PARTY.value,
+                PluginTrustSource.SUPER_ADMIN_UPLOAD.value,
+                PluginTrustSource.BUILTIN_BUNDLE.value,
             }
         }
         trust_counts: dict[str, int] = {}

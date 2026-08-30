@@ -17,8 +17,10 @@ import pytest
 from agent.automation_plugins.errors import PluginConflictError, PluginExecutionError
 from agent.automation_plugins.execution import PluginExecutionRouter
 from agent.automation_plugins.manifest import canonical_json_bytes
+from agent.automation_plugins.migration import MigrationRunClaim
 from agent.automation_plugins.models import (
     GenerationBoundResult,
+    PluginRuntimeModel,
     PluginTrustSource,
     RuntimeGenerationLease,
     RuntimeGenerationSnapshot,
@@ -319,6 +321,10 @@ def _snapshot(capability: Mapping[str, Any]) -> RuntimeGenerationSnapshot:
         policy_contract_sha256=_digest("policy"),
         enabled_entrypoints=("console",),
         execution_metadata=copy.deepcopy(dict(capability)),
+        runtime_model=PluginRuntimeModel(
+            str(metadata.get("runtime_model") or PluginRuntimeModel.ACTION_V1.value)
+        ),
+        plugin_api=str(metadata.get("plugin_api") or "1.0.0"),
     )
 
 
@@ -382,6 +388,71 @@ class _LeaseRepository:
         assert len(evidence_sha256) == 64
         self.verifying.remove(lease_id)
         self.finalized.append((lease_id, outcome))
+
+
+class _MigrationRuntime:
+    def __init__(self) -> None:
+        self.claims: dict[tuple[str, str], MigrationRunClaim] = {}
+        self.before: list[tuple[str, str]] = []
+        self.after: list[tuple[str, str]] = []
+
+    def claim_for_execution(
+        self,
+        automation_id: str,
+        params: Mapping[str, Any],
+        run_id: str,
+        lease_id: str,
+        now: datetime,
+        expires: datetime,
+        target_generation: int,
+        contribution_id: str,
+        contribution_kind: str,
+        dry_run: bool,
+    ) -> MigrationRunClaim:
+        assert params == {"business_date": "2026-08-30"}
+        assert target_generation == 1
+        assert contribution_id == "console"
+        assert contribution_kind == "console"
+        assert dry_run is False
+        claim = MigrationRunClaim(
+            migration_pair_id="migration-pair",
+            business_run_key="clock:2026-08-30",
+            lease_id=lease_id,
+            owner_automation_id=automation_id,
+            orchestration_run_id=run_id,
+            expires_at=expires,
+        )
+        assert now < expires
+        self.claims[(automation_id, run_id)] = claim
+        return claim
+
+    def find_claim_for_execution(
+        self,
+        automation_id: str,
+        run_id: str,
+    ) -> MigrationRunClaim | None:
+        return self.claims.get((automation_id, run_id))
+
+    def settle_before_write_result(
+        self,
+        claim: MigrationRunClaim,
+        outcome: str,
+        *,
+        now: datetime,
+    ) -> None:
+        assert now.tzinfo is not None
+        if outcome != RuntimeLeaseOutcome.VERIFYING.value:
+            self.before.append((claim.lease_id, outcome))
+
+    def settle_after_write_verification(
+        self,
+        claim: MigrationRunClaim,
+        outcome: str,
+        *,
+        now: datetime,
+    ) -> None:
+        assert now.tzinfo is not None
+        self.after.append((claim.lease_id, outcome))
 
 
 class _Issuer:
@@ -561,6 +632,86 @@ def test_router_forwards_execution_identity_unchanged_to_core() -> None:
     assert captured["trusted_scheduler_context"] is scheduler_context
 
 
+def test_internal_service_invocation_uses_normal_generation_lease_and_opaque_chain(
+    tmp_path: Path,
+) -> None:
+    capability = _capability(tmp_path, automation_id="base-service-project")
+    service = "plugin.base_service.runner@1"
+    metadata = capability["_plugin_runtime"]
+    metadata.update(
+        {
+            "plugin_id": "base_service",
+            "trust_source": PluginTrustSource.SUPER_ADMIN_UPLOAD.value,
+            "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
+            "plugin_api": "2.0.0",
+            "service_contracts": {
+                "provides": [{"service": service, "operations": ["get"]}],
+                "requires": [],
+            },
+            "compiled_invocations": {},
+        }
+    )
+    capability["operation_type"] = "read"
+    capability["output_schema"] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "status": {"type": "string"},
+            "data": {"type": "object", "additionalProperties": True},
+            "meta": {"type": "object", "additionalProperties": True},
+            "warnings": {"type": "array", "items": {"type": "string"}},
+            "error": {
+                "oneOf": [
+                    {"type": "object", "additionalProperties": True},
+                    {"type": "null"},
+                ]
+            },
+        },
+        "required": ["status", "data", "meta", "warnings", "error"],
+    }
+    provider_result = {
+        "status": "SUCCESS",
+        "data": {
+            "evidence": {
+                "service": service,
+                "operation": "get",
+                "outcome": "READ_VERIFIED",
+            }
+        },
+        "meta": {
+            "observed_at": "2026-08-30T00:00:00Z",
+            "evidence_refs": ["evidence:base:get"],
+        },
+        "warnings": [],
+        "error": None,
+    }
+    leases = _LeaseRepository({"base-service-project": capability})
+    issuer = _Issuer(started_mutating_calls=0)
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=issuer,
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=_OutputSandbox(canonical_json_bytes(provider_result)),
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+
+    result = asyncio.run(
+        router.execute_service_operation(
+            capability,
+            {"query": "safe"},
+            service=service,
+            operation="get",
+            call_chain=(service,),
+        )
+    )
+
+    assert result == provider_result
+    assert leases.released[0][1] is RuntimeLeaseOutcome.SUCCEEDED
+    assert issuer.last_issue is not None
+    assert issuer.last_issue["runtime_permissions"]["_service_call_chain"] == [service]
+
+
 def test_router_sync_generation_and_filesystem_checks_do_not_block_event_loop(
     tmp_path: Path,
 ) -> None:
@@ -707,6 +858,53 @@ def test_router_adapter_verifier_keeps_schema_clean_and_verifies_write(tmp_path:
     )
     assert leases.finalized[0][1] == RuntimeLeaseOutcome.WRITE_VERIFIED
     assert leases.verifying == set()
+
+
+def test_migration_run_key_is_held_until_generation_write_verification(
+    tmp_path: Path,
+) -> None:
+    capability = _capability(tmp_path)
+    leases = _LeaseRepository({"project-a": capability})
+    migration = _MigrationRuntime()
+    plugin_id = str(capability["_plugin_runtime"]["plugin_id"])
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_Issuer(started_mutating_calls=1),
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=_OutputSandbox(
+            canonical_json_bytes(_plugin_result(plugin_id))
+        ),
+        generation_leases=leases,
+        migration_runtime=migration,
+        release_hold_provider=lambda: False,
+    )
+    run_id = str(uuid.uuid4())
+
+    raw = asyncio.run(
+        router.execute(
+            capability,
+            {"business_date": "2026-08-30"},
+            trusted_invocation_context=_trusted_binding(
+                capability,
+                run_id=run_id,
+            ),
+        )
+    )
+
+    assert isinstance(raw, GenerationBoundResult)
+    claim = migration.claims[("project-a", run_id)]
+    assert raw.generation_verification.orchestration_run_id == run_id
+    assert leases.released == [(claim.lease_id, RuntimeLeaseOutcome.VERIFYING)]
+    assert migration.before == []
+    verified = ResultVerifier(leases, migration).verify(
+        _step(str(capability["name"])),
+        raw,
+        capability,
+    )
+    assert verified.accepted is True
+    assert migration.after == [
+        (claim.lease_id, RuntimeLeaseOutcome.WRITE_VERIFIED.value)
+    ]
 
 
 def test_scan_preview_uses_read_lease_and_only_the_read_page_broker_grant(
@@ -1229,6 +1427,8 @@ def test_bubblewrap_outer_process_always_starts_new_session(
 ) -> None:
     executable = tmp_path / "bwrap"
     executable.write_text("binary", encoding="utf-8")
+    limiter = tmp_path / "prlimit"
+    limiter.write_text("binary", encoding="utf-8")
     install_root = tmp_path / "install"
     (install_root / "venv" / "bin").mkdir(parents=True)
     (install_root / "venv" / "bin" / "python").write_text("python", encoding="utf-8")
@@ -1246,7 +1446,7 @@ def test_bubblewrap_outer_process_always_starts_new_session(
 
     monkeypatch.setattr("agent.automation_plugins.sandbox.asyncio.create_subprocess_exec", _spawn)
     result = asyncio.run(
-        BubblewrapPluginSandbox(executable).launch(
+        BubblewrapPluginSandbox(executable, prlimit_path=limiter).launch(
             install_root=install_root,
             python_relative="venv/bin/python",
             entrypoint_relative="payload/main.py",
@@ -1257,8 +1457,33 @@ def test_bubblewrap_outer_process_always_starts_new_session(
     assert result is sentinel
     assert captured["start_new_session"] is True
     command = tuple(str(item) for item in captured["args"])
+    assert command[:7] == (
+        str(limiter),
+        "--as=1073741824:1073741824",
+        "--nproc=64:64",
+        "--cpu=300:300",
+        "--fsize=16777216:16777216",
+        "--nofile=128:128",
+        "--",
+    )
+    assert command[7] == str(executable)
     assert "--clearenv" not in command
     assert str(sys.base_prefix) in command
+
+
+def test_bubblewrap_fails_closed_without_a_regular_absolute_prlimit(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "bwrap"
+    executable.write_text("binary", encoding="utf-8")
+    missing = tmp_path / "missing-prlimit"
+
+    with pytest.raises(ValueError, match="prlimit executable"):
+        BubblewrapPluginSandbox(executable, prlimit_path=missing)
+
+    relative = Path("prlimit")
+    with pytest.raises(ValueError, match="prlimit executable"):
+        BubblewrapPluginSandbox(executable, prlimit_path=relative)
 
 
 def test_router_reports_cached_sandbox_canary_from_fake_launcher() -> None:
@@ -1300,6 +1525,8 @@ def test_bubblewrap_canary_caches_success_and_never_uses_broker(
 ) -> None:
     executable = tmp_path / "bwrap"
     executable.write_text("binary", encoding="utf-8")
+    limiter = tmp_path / "prlimit"
+    limiter.write_text("binary", encoding="utf-8")
     base = tmp_path / "base"
     (base / "bin").mkdir(parents=True)
     (base / "bin" / "python").write_text("binary", encoding="utf-8")
@@ -1323,6 +1550,7 @@ def test_bubblewrap_canary_caches_success_and_never_uses_broker(
         executable,
         trusted_base_prefix=base,
         trusted_runtime_prefix=runtime,
+        prlimit_path=limiter,
     )
     first = asyncio.run(sandbox.startup_canary())
     second = asyncio.run(sandbox.startup_canary())
@@ -1330,6 +1558,8 @@ def test_bubblewrap_canary_caches_success_and_never_uses_broker(
     assert first.healthy is True
     assert second == first
     command = tuple(str(item) for item in captured["args"])
+    assert command[0] == str(limiter)
+    assert command[6:8] == ("--", str(executable))
     assert "--clearenv" not in command
     assert str(base) in command
     assert "BOYI_PLUGIN_EXECUTION_CAPABILITY" not in command

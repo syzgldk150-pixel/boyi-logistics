@@ -7,8 +7,8 @@ committed plugin generation and locked orchestration rows.
 
 from __future__ import annotations
 
-import uuid
 import logging
+import uuid
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
@@ -27,6 +27,12 @@ from agent.automation_plugins.code_owned_fields import (
     SELECTION_PHASE_PREVIEW,
     resolve_scan_execution_phase,
     resolve_selection_execution_phase,
+)
+from agent.orchestration.automation_project_service_v2 import (
+    normalize_contribution_id,
+    require_service_v2_policy_mode,
+    resolve_invocation_contract_id,
+    validate_service_v2_compiled_target,
 )
 from agent.orchestration.command_gateway import CommandGateway
 from agent.orchestration.models import (
@@ -154,6 +160,7 @@ _SERVER_CONTEXT_FIELDS = frozenset(
         "automation_invocation",
         "_automation_project_invocation",
         "contract_id",
+        "contribution_id",
         "contract_hash",
         "policy_version",
         "project_configuration_version",
@@ -635,6 +642,8 @@ class AutomationProjectPolicyService:
                 "INVALID_APPROVAL_POLICY_MODE",
                 "Project policy must be full auto or require each run",
             )
+        catalog_entry = self._plugin_catalog.require(safe_id)
+        require_service_v2_policy_mode(catalog_entry, safe_mode)
         safe_request_id = _request_id(request_id)
         safe_comment = _comment(comment)
         expected_policy = _positive_int(
@@ -1172,6 +1181,7 @@ class AutomationProjectPolicyService:
         request_id: str,
         actor: Actor,
         preview_run_id: str | None = None,
+        contribution_id: str | None = None,
     ) -> Any:
         return self.invoke_trusted(
             automation_id,
@@ -1179,6 +1189,7 @@ class AutomationProjectPolicyService:
             request_id=request_id,
             actor=actor,
             preview_run_id=preview_run_id,
+            contribution_id=contribution_id,
         )
 
     def invoke_trusted(
@@ -1193,6 +1204,7 @@ class AutomationProjectPolicyService:
         expected_automation_generation: int | None = None,
         expected_project_configuration_version: int | None = None,
         preview_run_id: str | None = None,
+        contribution_id: str | None = None,
     ) -> Any:
         """Submit one server-resolved invocation for a trusted entry adapter.
 
@@ -1212,11 +1224,19 @@ class AutomationProjectPolicyService:
         self._require_trusted_entrypoint_actor(source, actor)
         safe_id = _automation_id(automation_id)
         safe_request_id = _request_id(request_id)
+        safe_contribution_id = normalize_contribution_id(contribution_id)
+        entry, contract = self._load_contract(safe_id)
+        is_service_v2 = getattr(entry, "runtime_model", "ACTION_V1") == "SERVICE_V2"
         command_idempotency_key = _idempotency_key(
             idempotency_key
             or (
                 f"automation:{safe_id}:{source.value}:"
-                f"{actor.actor_id}:{safe_request_id}"
+                + (
+                    f"{safe_contribution_id or 'default'}:"
+                    if is_service_v2
+                    else ""
+                )
+                + f"{actor.actor_id}:{safe_request_id}"
             )
         )
         context = _trusted_context(source, trusted_context)
@@ -1241,7 +1261,6 @@ class AutomationProjectPolicyService:
                 "PROJECT_GENERATION_REQUIRED",
                 "Trusted non-Console entrypoints must bind a committed generation",
             )
-        entry, contract = self._load_contract(safe_id)
         scan_preview_project = is_scan_preview_project(entry)
         selection_preview_project = is_selection_preview_project(entry)
         safe_preview_run_id = None
@@ -1279,15 +1298,12 @@ class AutomationProjectPolicyService:
                 "PROJECT_INVOCATION_STALE",
                 "Automation project configuration changed before invocation",
             )
-        invocation_contract_id = source.value
-        if source is AutomationEntrypoint.SCHEDULER:
-            task_id = str(context.get("task_id") or "").strip()
-            if not task_id or len(task_id) > 191:
-                raise OrchestrationError(
-                    "PROJECT_SCHEDULE_ID_REQUIRED",
-                    "Trusted Scheduler invocation requires an exact task identity",
-                )
-            invocation_contract_id = f"scheduler:{task_id}"
+        invocation_contract_id = resolve_invocation_contract_id(
+            contract,
+            source=source,
+            contribution_id=safe_contribution_id,
+            context=context,
+        )
         invocation_contract = contract.invocation_contracts.get(invocation_contract_id)
         if (
             invocation_contract is None
@@ -1304,6 +1320,10 @@ class AutomationProjectPolicyService:
             "occurred_at": occurred_at.isoformat(),
             **context,
         }
+        if is_service_v2:
+            execution_context["contribution_id"] = (
+                invocation_contract.contribution_id
+            )
         selection_dynamic_inputs: Mapping[str, Any] | None = None
         if selection_preview_project and "dynamic_inputs" in context:
             raw_selection_inputs = context["dynamic_inputs"]
@@ -1478,6 +1498,7 @@ class AutomationProjectPolicyService:
         expected_automation_generation: int | None = None,
         expected_project_configuration_version: int | None = None,
         preview_run_id: str | None = None,
+        contribution_id: str | None = None,
         timeout_seconds: float = 1800.0,
     ) -> dict[str, Any]:
         receipt = self.invoke_trusted(
@@ -1492,6 +1513,7 @@ class AutomationProjectPolicyService:
                 expected_project_configuration_version
             ),
             preview_run_id=preview_run_id,
+            contribution_id=contribution_id,
         )
         if self._command_gateway is None:  # defensive; invoke_trusted checked it
             raise OrchestrationError(
@@ -1817,10 +1839,10 @@ class AutomationProjectPolicyService:
         argument_templates: dict[str, Mapping[str, Any]] = {}
         dynamic_resolvers: dict[str, Mapping[str, str]] = {}
         for raw_entrypoint, raw_contract in compiled_invocations.items():
-            if not isinstance(raw_contract, Mapping) or set(raw_contract) != {
-                "arguments",
-                "dynamic_resolvers",
-            }:
+            expected_fields = {"arguments", "dynamic_resolvers"}
+            if entry.runtime_model == "SERVICE_V2":
+                expected_fields.add("target")
+            if not isinstance(raw_contract, Mapping) or set(raw_contract) != expected_fields:
                 raise AutomationProjectContractError(
                     "PLUGIN_RUNTIME_SNAPSHOT_INVALID"
                 )
@@ -1831,6 +1853,7 @@ class AutomationProjectPolicyService:
                     "PLUGIN_RUNTIME_SNAPSHOT_INVALID"
                 )
             entrypoint = str(raw_entrypoint)
+            validate_service_v2_compiled_target(entry, entrypoint, raw_contract)
             argument_templates[entrypoint] = dict(arguments)
             dynamic_resolvers[entrypoint] = {
                 str(key): str(value) for key, value in resolvers.items()
