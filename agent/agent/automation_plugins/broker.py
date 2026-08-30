@@ -25,7 +25,10 @@ from agent.automation_plugins.host_capability_registry import (
     governance_for_effect,
 )
 from agent.automation_plugins.manifest import canonical_json_bytes
-from agent.automation_plugins.service_v2_contract import SYSTEM_CAPABILITY_ROLE
+from agent.automation_plugins.service_v2_contract import (
+    SERVICE_INVOKE_PER_CALL_LIMIT,
+    SYSTEM_CAPABILITY_ROLE,
+)
 from shared.redaction import redact_text
 
 
@@ -692,7 +695,7 @@ class LocalBrokerCapabilityIssuer:
                     code="BROKER_CONTRACT_INVALID",
                 )
             if dynamic_effect:
-                per_action_limit = 64
+                per_action_limit = SERVICE_INVOKE_PER_CALL_LIMIT
             else:
                 try:
                     descriptor = default_host_capability_registry().resolve(
