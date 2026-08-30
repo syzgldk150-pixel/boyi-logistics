@@ -23,6 +23,8 @@ updated: 2026-08-30
 
 - [代码定位索引](../agent/docs/code_navigation_index.md)：需求到代码、测试和模块说明的入口。
 - [项目总览](../agent/docs/project_overview.md)：当前服务边界和模块目录。
+- [扩展化平台架构基准](extension-platform-baseline.md)：固定核心模块、Service v2、自动化中心、Harness、Connector 与迁移路线图的现行基准。
+- [扩展化平台执行账本](extension-platform-progress.md)：无人值守改造的逐 TASK 状态、验证、提交和生产门禁记录。
 - [控制平面](../agent/docs/control_plane_v1.md)：Command、Run、审批、Evidence、Outbox 与恢复。
 - [数据库迁移](../agent/docs/database_migrations.md)：顺序迁移与部署期结构管理。
 - [Action v1 插件兼容轨道](../agent/docs/automation_plugin_platform.md)：现存 v1 自动化插件合同。
