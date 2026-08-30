@@ -8,6 +8,7 @@ import pytest
 
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.execution import PluginExecutionRouter
+from agent.automation_plugins.host_capability_registry import CapabilityEffect
 from agent.automation_plugins.models import (
     GenerationBoundResult,
     GenerationVerificationContext,
@@ -31,7 +32,13 @@ def _registry() -> tuple[ServiceRegistry, Any]:
         manifest_sha256="b" * 64,
         runtime_mode="on_demand",
         provides=(
-            {"service": "plugin.base.runner@1", "operations": ["get", "run"]},
+            {
+                "service": "plugin.base.runner@1",
+                "operations": [
+                    {"name": "get", "effect": "read"},
+                    {"name": "run", "effect": "external_write"},
+                ],
+            },
         ),
         requires=(),
     )
@@ -53,7 +60,10 @@ def _capability(automation_id: str, generation: int) -> dict[str, Any]:
                 "provides": [
                     {
                         "service": "plugin.base.runner@1",
-                        "operations": ["get", "run"],
+                        "operations": [
+                            {"name": "get", "effect": "read"},
+                            {"name": "run", "effect": "external_write"},
+                        ],
                     }
                 ],
                 "requires": [],
@@ -174,7 +184,7 @@ def test_production_service_executor_explicitly_blocks_resident_without_manager(
         provides=(
             {
                 "service": "plugin.resident_base.runner@1",
-                "operations": ["run"],
+                "operations": [{"name": "run", "effect": "read"}],
             },
         ),
         requires=(),
@@ -237,6 +247,27 @@ def _provider_result(*, service: str, operation: str) -> dict[str, Any]:
     }
 
 
+def _provider_host_observations(
+    result: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], ...]:
+    meta = result.get("meta")
+    assert isinstance(meta, Mapping)
+    refs = meta.get("evidence_refs")
+    assert isinstance(refs, list) and len(refs) == 1
+    return (
+        {
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "operation": "browser.session",
+            "action": "provider.write",
+            "role": "operator",
+            "arguments_sha256": "d" * 64,
+            "write_started": True,
+            "evidence_ref": refs[0],
+            "result": {"provider_write": "verified"},
+        },
+    )
+
+
 def test_internal_service_write_is_finalized_only_after_provider_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -259,6 +290,7 @@ def test_internal_service_write_is_finalized_only_after_provider_evidence(
         requires_write_verification=True,
         started_mutating_call_count=1,
         orchestration_run_id="service-run",
+        host_call_observations=_provider_host_observations(result),
     )
 
     async def execute(*_args, **_kwargs):
@@ -271,6 +303,7 @@ def test_internal_service_write_is_finalized_only_after_provider_evidence(
             {},
             service=service,
             operation=operation,
+            effect=CapabilityEffect.EXTERNAL_WRITE,
             call_chain=(service,),
         )
     )
@@ -302,6 +335,7 @@ def test_internal_service_write_with_incomplete_evidence_becomes_unknown(
         requires_write_verification=True,
         started_mutating_call_count=1,
         orchestration_run_id="service-run",
+        host_call_observations=_provider_host_observations(result),
     )
 
     async def execute(*_args, **_kwargs):
@@ -315,6 +349,7 @@ def test_internal_service_write_with_incomplete_evidence_becomes_unknown(
                 {},
                 service=service,
                 operation="run",
+                effect=CapabilityEffect.EXTERNAL_WRITE,
                 call_chain=(service,),
             )
         )

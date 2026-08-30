@@ -7,6 +7,7 @@ import pytest
 from agent.automation_plugins.models import (
     GenerationBoundResult,
     GenerationVerificationContext,
+    RuntimeLeaseOutcome,
 )
 from agent.orchestration.models import OperationType, PlanStep, RiskLevel, RunStatus, sha256_json
 from agent.orchestration.result_verifier import ResultVerifier
@@ -367,6 +368,129 @@ def test_write_finalization_persistence_failure_remains_unknown_and_recoverable(
     assert outcome.code == "WRITE_OUTCOME_UNKNOWN"
     assert "RuntimeError" in outcome.message
     assert "generation repository unavailable" in outcome.message
+
+
+def _service_internal_write_contract():
+    observed_at = "2026-08-30T00:00:00Z"
+    evidence_ref = "evidence:internal-write"
+    data = {"evidence": {"outcome": "WRITE_VERIFIED"}, "stored": True}
+    result = {
+        "status": "SUCCESS",
+        "data": data,
+        "meta": {
+            "source_system": "host-storage",
+            "observed_at": observed_at,
+            "record_count": 1,
+            "pagination_complete": True,
+            "evidence_refs": [evidence_ref],
+            "write_outcome": "WRITE_VERIFIED",
+            "postconditions": {"0": True},
+            "postcondition_evidence": {
+                "0": {
+                    "condition": "plugin_result_contract_valid",
+                    "verified": True,
+                    "observed_at": observed_at,
+                    "evidence_ref": evidence_ref,
+                    "details": {
+                        "evidence_refs": [evidence_ref],
+                        "result_summary": deepcopy(data),
+                    },
+                }
+            },
+        },
+        "warnings": [],
+        "error": None,
+    }
+    capability = {
+        "effect": "internal_write",
+        "operation_type": "internal_projection_write",
+        "risk_level": "medium",
+        "service": "plugin.internal.writer@1",
+        "operation": "apply",
+        "evidence": {"required": True, "required_fields": ["outcome"]},
+        "postconditions": [{"name": "plugin_result_contract_valid"}],
+        "output_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "status": {"type": "string"},
+                "data": {"type": "object", "additionalProperties": True},
+                "meta": {"type": "object", "additionalProperties": True},
+                "warnings": {"type": "array", "items": {"type": "string"}},
+                "error": {"oneOf": [{"type": "object"}, {"type": "null"}]},
+            },
+            "required": ["status", "data", "meta", "warnings", "error"],
+        },
+        "_plugin_runtime": {"runtime_model": "SERVICE_V2"},
+    }
+    step = PlanStep(
+        step_key="internal-write",
+        tool_name="service.internal_writer",
+        tool_version="1.0.0",
+        operation_type=OperationType.INTERNAL_PROJECTION_WRITE,
+        arguments={},
+        account_id=None,
+        depends_on=(),
+        idempotency_key="internal-write-one",
+        expected_evidence=(dict(capability["evidence"]),),
+        postconditions=tuple(capability["postconditions"]),
+        risk_level=RiskLevel.MEDIUM,
+        requires_approval=False,
+    )
+    observations = (
+        {
+            "request_id": "44444444-4444-4444-8444-444444444444",
+            "operation": "storage.kv",
+            "action": "put",
+            "role": "__system__",
+            "arguments_sha256": "f" * 64,
+            "write_started": True,
+            "evidence_ref": evidence_ref,
+            "result": {
+                "stored": True,
+                "version": 1,
+                "content_sha256": "a" * 64,
+            },
+        },
+    )
+    return step, capability, result, observations
+
+
+@pytest.mark.parametrize("mode", ("matching", "missing", "forged"))
+def test_service_internal_write_requires_registered_host_mutation_evidence(
+    mode: str,
+) -> None:
+    step, capability, result, observations = _service_internal_write_contract()
+    if mode == "forged":
+        forged_ref = "plugin:forged-unrelated"
+        result["meta"]["evidence_refs"] = [forged_ref]
+        proof = result["meta"]["postcondition_evidence"]["0"]
+        proof["evidence_ref"] = forged_ref
+        proof["details"]["evidence_refs"] = [forged_ref]
+    leases = _FinalizingGenerationLeases()
+    raw = GenerationBoundResult(
+        result,
+        verification=GenerationVerificationContext(
+            automation_id="internal-writer",
+            generation=1,
+            lease_id="55555555-5555-4555-8555-555555555555",
+            account_ids=(),
+            account_bindings_sha256="b" * 64,
+            requires_write_verification=True,
+            started_mutating_call_count=1,
+            host_call_observations=(observations if mode != "missing" else ()),
+        ),
+    )
+
+    outcome = ResultVerifier(leases).verify(step, raw, capability)
+
+    accepted = mode == "matching"
+    assert outcome.accepted is accepted
+    assert leases.outcomes == [
+        RuntimeLeaseOutcome.WRITE_VERIFIED
+        if accepted
+        else RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
+    ]
 
 
 @pytest.mark.parametrize(

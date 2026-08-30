@@ -2331,7 +2331,7 @@ class AutomationPluginRepository(
         for entrypoint in entrypoints:
             compiled = compiled_invocations.get(entrypoint)
             required_compiled_fields = (
-                {"arguments", "dynamic_resolvers", "target"}
+                {"arguments", "dynamic_resolvers", "target", "governance"}
                 if runtime_model == "SERVICE_V2"
                 else {"arguments", "dynamic_resolvers"}
             )
@@ -2355,6 +2355,7 @@ class AutomationPluginRepository(
             }
             if runtime_model == "SERVICE_V2":
                 target = compiled.get("target")
+                governance = compiled.get("governance")
                 expected_target = witness["invocation_contracts"].get(entrypoint)
                 if not isinstance(target, Mapping) or set(target) != {
                     "service",
@@ -2365,6 +2366,15 @@ class AutomationPluginRepository(
                     raise ValueError("service v2 invocation target is invalid")
                 if not isinstance(expected_target, Mapping):
                     raise ValueError("service v2 invocation contract is unavailable")
+                expected_governance = expected_target.get("governance")
+                if (
+                    not isinstance(governance, Mapping)
+                    or not isinstance(expected_governance, Mapping)
+                    or dict(governance) != dict(expected_governance)
+                ):
+                    raise ValueError(
+                        "service v2 invocation governance does not match contract"
+                    )
                 normalized_target = {
                     field: _required_text(target.get(field), f"target.{field}")
                     for field in (
@@ -2387,6 +2397,7 @@ class AutomationPluginRepository(
                     )
                 ):
                     raise ValueError("service v2 invocation target does not match contract")
+                normalized_compiled[entrypoint]["governance"] = dict(governance)
                 normalized_compiled[entrypoint]["target"] = normalized_target
         normalized_schedule = _normalized_project_schedule(schedule)
         # Schedule times remain persisted while the scheduler entrypoint is off.

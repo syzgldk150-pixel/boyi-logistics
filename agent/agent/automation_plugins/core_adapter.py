@@ -15,10 +15,16 @@ from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
 from agent.automation_plugins.broker import BrokerGrant, _assert_redacted
 from agent.automation_plugins.errors import PluginExecutionError
+from agent.automation_plugins.host_capability_registry import (
+    HOST_CAPABILITY_API_VERSION,
+    HostCapabilityDescriptor,
+    default_host_capability_registry,
+)
 from agent.automation_plugins.service_v2_contract import SYSTEM_CAPABILITY_ROLE
 from agent.execution_boundary import execution_capability_scope
 from agent.tms_runtime.account_manager import AutomationAccountManager, get_account_manager
 from agent.tms_runtime.errors import TMSAuthStateError
+from agent.tool_registry import validate_schema_instance
 
 
 def _binding_account_ids(grant: BrokerGrant) -> frozenset[str]:
@@ -64,6 +70,10 @@ class CoreBrokerInvocationContext:
     # inside the opaque Broker grant and is never exposed as a credential or
     # accepted from subprocess arguments.
     service_call_chain: tuple[str, ...] = ()
+    signed_effect: str = ""
+    signed_broker_effect: str = ""
+    dynamic_effect: bool = False
+    service_effect_ceiling: str = ""
     # This is supplied only for a signed write call.  The handler must invoke
     # it exactly once, immediately before its first mutating port call.  It is
     # intentionally optional so closed handler unit tests can exercise their
@@ -168,6 +178,100 @@ class RegisteredCoreAutomationBrokerAdapter:
         self._resources = resource_resolver or FailClosedResourceBindingResolver()
 
     @staticmethod
+    def _service_v2_descriptor(
+        signed_contract: Mapping[str, object],
+        *,
+        operation: str,
+        action: str,
+        handler_key: str,
+        arguments: Mapping[str, Any],
+        grant: BrokerGrant,
+        signed_roles: tuple[str, ...],
+    ) -> HostCapabilityDescriptor | None:
+        v2_fields = {
+            "operation",
+            "action",
+            "roles",
+            "effect",
+            "broker_effect",
+            "governance",
+            "dynamic_effect",
+        }
+        if set(signed_contract) != v2_fields or signed_contract.get(
+            "dynamic_effect"
+        ) is True:
+            return None
+        try:
+            descriptor = default_host_capability_registry().resolve(
+                api_version=HOST_CAPABILITY_API_VERSION,
+                capability=operation,
+                action=action,
+            )
+        except PluginExecutionError as exc:
+            raise PluginExecutionError(
+                "Host capability is unavailable",
+                code="CAPABILITY_UNAVAILABLE",
+            ) from exc
+        if descriptor.handler_key != handler_key:
+            raise PluginExecutionError(
+                "Host capability handler drifted from its registry descriptor",
+                code="CAPABILITY_UNAVAILABLE",
+            )
+        account_declarations = tuple(
+            role
+            for role in signed_roles
+            if RegisteredCoreAutomationBrokerAdapter._role_declaration(
+                grant.account_roles,
+                role,
+            )
+            is not None
+        )
+        resource_declarations = tuple(
+            role
+            for role in signed_roles
+            if RegisteredCoreAutomationBrokerAdapter._role_declaration(
+                grant.resource_roles,
+                role,
+            )
+            is not None
+        )
+        if descriptor.requires_account_role:
+            roles_valid = (
+                len(signed_roles) == 1
+                and account_declarations == signed_roles
+                and not resource_declarations
+            )
+        elif descriptor.requires_resource_role:
+            roles_valid = (
+                len(signed_roles) == 1
+                and resource_declarations == signed_roles
+                and not account_declarations
+            )
+        else:
+            roles_valid = (
+                signed_roles == (SYSTEM_CAPABILITY_ROLE,)
+                and not account_declarations
+                and not resource_declarations
+            )
+        if not roles_valid:
+            raise PluginExecutionError(
+                "Host capability role binding drifted from its registry descriptor",
+                code="BROKER_CONTRACT_INVALID",
+            )
+        try:
+            validate_schema_instance(
+                f"{operation}.{action} Host input",
+                dict(arguments),
+                descriptor.input_schema,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PluginExecutionError(
+                "Host capability arguments do not match its registry schema",
+                code="CAPABILITY_ARGUMENT_INVALID",
+            ) from exc
+        return descriptor
+
+    @staticmethod
     def _role_declaration(
         declarations: Sequence[Mapping[str, object]],
         role: str,
@@ -184,6 +288,32 @@ class RegisteredCoreAutomationBrokerAdapter:
         operation: str,
         action: str,
     ) -> tuple[str, ...]:
+        contract = RegisteredCoreAutomationBrokerAdapter._signed_action_contract(
+            grant,
+            operation=operation,
+            action=action,
+        )
+        raw_roles = contract.get("roles")
+        if not isinstance(raw_roles, list):
+            raise PluginExecutionError(
+                "signed broker action roles are invalid",
+                code="BROKER_CONTRACT_INVALID",
+            )
+        roles = tuple(str(item or "").strip() for item in raw_roles)
+        if not roles or any(not item for item in roles) or len(roles) != len(set(roles)):
+            raise PluginExecutionError(
+                "signed broker action roles are invalid",
+                code="BROKER_CONTRACT_INVALID",
+            )
+        return roles
+
+    @staticmethod
+    def _signed_action_contract(
+        grant: BrokerGrant,
+        *,
+        operation: str,
+        action: str,
+    ) -> Mapping[str, object]:
         raw_contracts = grant.runtime_permissions.get("broker_operations")
         if not isinstance(raw_contracts, list):
             raise PluginExecutionError(
@@ -202,19 +332,7 @@ class RegisteredCoreAutomationBrokerAdapter:
                 "signed broker action contract is ambiguous",
                 code="BROKER_CONTRACT_INVALID",
             )
-        raw_roles = matches[0].get("roles")
-        if not isinstance(raw_roles, list):
-            raise PluginExecutionError(
-                "signed broker action roles are invalid",
-                code="BROKER_CONTRACT_INVALID",
-            )
-        roles = tuple(str(item or "").strip() for item in raw_roles)
-        if not roles or any(not item for item in roles) or len(roles) != len(set(roles)):
-            raise PluginExecutionError(
-                "signed broker action roles are invalid",
-                code="BROKER_CONTRACT_INVALID",
-            )
-        return roles
+        return matches[0]
 
     @staticmethod
     def _normalize_account_binding(binding: object) -> tuple[str, ...]:
@@ -238,6 +356,7 @@ class RegisteredCoreAutomationBrokerAdapter:
         binding: object,
         arguments: Mapping[str, Any],
         signed_roles: tuple[str, ...],
+        signed_contract: Mapping[str, object],
         mark_write_started: Callable[[], None] | None,
     ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]:
         """Resolve blocking bindings and enter a synchronous handler off-loop."""
@@ -363,6 +482,14 @@ class RegisteredCoreAutomationBrokerAdapter:
             account_bindings=resolved_accounts,
             resource_bindings=resolved_resources,
             service_call_chain=self._service_call_chain(grant),
+            signed_effect=str(signed_contract.get("effect") or ""),
+            signed_broker_effect=str(
+                signed_contract.get("broker_effect") or ""
+            ),
+            dynamic_effect=signed_contract.get("dynamic_effect") is True,
+            service_effect_ceiling=str(
+                grant.runtime_permissions.get("_service_effect_ceiling") or ""
+            ),
             mark_write_started=mark_write_started,
         )
         try:
@@ -408,17 +535,33 @@ class RegisteredCoreAutomationBrokerAdapter:
         mark_write_started: Callable[[], None] | None = None,
     ) -> Mapping[str, Any]:
         handler = self._handlers.get((operation, action))
+        handler_key = f"{operation}:{action}"
         if handler is None:
             handler = self._handlers.get((operation, "*"))
+            handler_key = f"{operation}:*"
         if handler is None:
             raise PluginExecutionError(
                 "core broker action is not registered",
                 code="BROKER_ACTION_UNAVAILABLE",
             )
+        signed_contract = self._signed_action_contract(
+            grant,
+            operation=operation,
+            action=action,
+        )
         signed_roles = self._signed_action_roles(
             grant,
             operation=operation,
             action=action,
+        )
+        descriptor = self._service_v2_descriptor(
+            signed_contract,
+            operation=operation,
+            action=action,
+            handler_key=handler_key,
+            arguments=arguments,
+            grant=grant,
+            signed_roles=signed_roles,
         )
         if role not in signed_roles:
             raise PluginExecutionError(
@@ -441,30 +584,61 @@ class RegisteredCoreAutomationBrokerAdapter:
             # Binding resolution can perform account/session and resource I/O.
             # Keep it in the same worker as the synchronous handler so neither
             # stage can stall the Agent event loop.
-            result = await asyncio.to_thread(
-                self._resolve_and_invoke_sync,
-                handler=handler,
-                grant=grant,
-                operation=operation,
-                action=action,
-                role=role,
-                binding=binding,
-                arguments=arguments,
-                signed_roles=signed_roles,
-                mark_write_started=mark_write_started,
-            )
-            if inspect.isawaitable(result):
-                try:
-                    result = await result
-                except TMSAuthStateError as exc:
-                    raise PluginExecutionError(
-                        "the exact target session requires login",
-                        code="BLOCKED_LOGIN",
-                    ) from exc
+            async def invoke_handler() -> Mapping[str, Any]:
+                resolved = await asyncio.to_thread(
+                    self._resolve_and_invoke_sync,
+                    handler=handler,
+                    grant=grant,
+                    operation=operation,
+                    action=action,
+                    role=role,
+                    binding=binding,
+                    arguments=arguments,
+                    signed_roles=signed_roles,
+                    signed_contract=signed_contract,
+                    mark_write_started=mark_write_started,
+                )
+                if inspect.isawaitable(resolved):
+                    try:
+                        resolved = await resolved
+                    except TMSAuthStateError as exc:
+                        raise PluginExecutionError(
+                            "the exact target session requires login",
+                            code="BLOCKED_LOGIN",
+                        ) from exc
+                return resolved
+
+            started_at = asyncio.get_running_loop().time()
+            result = await invoke_handler()
+            if (
+                descriptor is not None
+                and asyncio.get_running_loop().time() - started_at
+                > descriptor.timeout_seconds
+            ):
+                # Synchronous Host handlers run in a worker thread and cannot
+                # be safely pre-empted. Reject an over-time result only after
+                # the handler has stopped, so no orphan thread can mutate
+                # after the Broker observes/finalizes the lease boundary.
+                raise PluginExecutionError(
+                    "Host capability timed out",
+                    code="CAPABILITY_TIMEOUT",
+                )
         if not isinstance(result, Mapping):
             raise PluginExecutionError("core broker handler returned a non-object result")
         public_result = dict(result)
         await asyncio.to_thread(_assert_public_result_safe, public_result, grant)
+        if descriptor is not None:
+            try:
+                validate_schema_instance(
+                    f"{operation}.{action} Host output",
+                    public_result,
+                    descriptor.output_schema,
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise PluginExecutionError(
+                    "Host capability result does not match its registry schema",
+                    code="BROKER_SOURCE_INVALID",
+                ) from exc
         return public_result
 
 

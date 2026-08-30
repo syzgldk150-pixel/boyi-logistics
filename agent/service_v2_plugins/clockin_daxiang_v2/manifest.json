@@ -3,7 +3,7 @@
   "runtime_model": "service_v2",
   "plugin_id": "clockin_daxiang_v2",
   "name": "网点打卡-大祥站 v2",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "通过受管浏览器能力依次提交两次网点打卡，并分别执行新鲜、唯一的写后核验。",
   "host_api": {
     "minimum": "2.0.0",
@@ -20,7 +20,9 @@
   "provides": [
     {
       "service": "plugin.clockin_daxiang_v2.clock@1",
-      "operations": ["run"]
+      "operations": [
+        {"name": "run", "effect": "external_write"}
+      ]
     }
   ],
   "requires": [],

@@ -80,6 +80,10 @@ class PlanValidator:
                 scan_phase == SCAN_PHASE_PREVIEW
                 or selection_phase == SELECTION_PHASE_PREVIEW
             )
+            project_bound = self._is_broker_bound_project(
+                step.tool_name,
+                capability,
+            )
             expected_operation = (
                 OperationType.READ.value
                 if read_preview
@@ -90,16 +94,15 @@ class PlanValidator:
                 if read_preview
                 else str(capability.get("risk_level") or "")
             )
-            if expected_operation != step.operation_type.value:
+            if (read_preview or not project_bound) and expected_operation != step.operation_type.value:
                 raise OrchestrationError("TOOL_OPERATION_CHANGED", f"Tool operation changed: {step.tool_name}")
-            if expected_risk != step.risk_level.value:
+            if (read_preview or not project_bound) and expected_risk != step.risk_level.value:
                 raise OrchestrationError("TOOL_RISK_CHANGED", f"Tool risk changed: {step.tool_name}")
             if llm_selected and (
                 not bool(capability.get("llm_exposed"))
                 or step.operation_type not in {OperationType.READ, OperationType.COMPUTE}
             ):
                 raise OrchestrationError("LLM_WRITE_FORBIDDEN", "LLM plans may contain only exposed read/compute tools")
-            project_bound = self._is_broker_bound_project(step.tool_name, capability)
             if not project_bound:
                 try:
                     self._catalog.validate_arguments(step.tool_name, step.arguments)

@@ -33,7 +33,9 @@ def _utc_now() -> str:
 def _object(value: object, label: str) -> dict[str, object]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{label} must be an object")
-    return dict(value)
+    # Preserve the SDK's dict subclass so its Host transport metadata remains
+    # available without becoming part of the Registry-defined business data.
+    return value if isinstance(value, dict) else dict(value)
 
 
 def _required_text(value: object, label: str, maximum: int) -> str:
@@ -44,7 +46,11 @@ def _required_text(value: object, label: str, maximum: int) -> str:
 
 
 def _evidence_ref(value: Mapping[str, object], label: str) -> str:
-    reference = _required_text(value.get("evidence_ref"), label, 512)
+    reference = _required_text(
+        getattr(value, "host_evidence_ref", None) or value.get("evidence_ref"),
+        label,
+        512,
+    )
     return reference
 
 

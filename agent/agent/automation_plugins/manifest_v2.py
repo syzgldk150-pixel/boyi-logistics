@@ -19,13 +19,12 @@ from typing import Any, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent.automation_plugins.errors import PluginManifestError
+from agent.automation_plugins.host_capability_registry import CapabilityEffect
 
 
 _PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
-_SERVICE_RE = re.compile(
-    r"^plugin\.([a-z][a-z0-9_]{1,63})\.([a-z][a-z0-9_.-]{0,127})@(0|[1-9][0-9]*)$"
-)
+_SERVICE_RE = re.compile(r"^plugin\.([a-z][a-z0-9_]{1,63})\.([a-z][a-z0-9_.-]{0,127})@(0|[1-9][0-9]*)$")
 _IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _ROLE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _ROUTE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -63,18 +62,13 @@ _RUNTIME_FIELDS = frozenset(
     }
 )
 _PROVIDE_FIELDS = frozenset({"service", "operations"})
+_PROVIDE_OPERATION_FIELDS = frozenset({"name", "effect"})
 _REQUIRE_FIELDS = frozenset({"service"})
-_CAPABILITY_FIELDS = frozenset(
-    {"name", "operations", "account_role", "resource_role"}
-)
+_CAPABILITY_FIELDS = frozenset({"name", "operations", "account_role", "resource_role"})
 _ACCOUNT_ROLE_FIELDS = frozenset({"role", "allowed_systems", "required"})
 _RESOURCE_ROLE_FIELDS = frozenset({"role", "allowed_kinds", "required"})
-_CONTRIBUTION_FIELDS = frozenset(
-    {"console", "scheduler", "webhook", "feishu", "events"}
-)
-_CONSOLE_FIELDS = frozenset(
-    {"id", "title", "service", "operation", "default_enabled"}
-)
+_CONTRIBUTION_FIELDS = frozenset({"console", "scheduler", "webhook", "feishu", "events"})
+_CONSOLE_FIELDS = frozenset({"id", "title", "service", "operation", "default_enabled"})
 _SCHEDULER_FIELDS = frozenset(
     {
         "id",
@@ -86,12 +80,8 @@ _SCHEDULER_FIELDS = frozenset(
     }
 )
 _SCHEDULE_FIELDS = frozenset({"kind", "expression", "timezone"})
-_WEBHOOK_FIELDS = frozenset(
-    {"id", "service", "operation", "method", "route", "default_enabled"}
-)
-_FEISHU_FIELDS = frozenset(
-    {"id", "service", "operation", "commands", "default_enabled"}
-)
+_WEBHOOK_FIELDS = frozenset({"id", "service", "operation", "method", "route", "default_enabled"})
+_FEISHU_FIELDS = frozenset({"id", "service", "operation", "commands", "default_enabled"})
 _EVENT_FIELDS = frozenset(
     {
         "id",
@@ -102,18 +92,12 @@ _EVENT_FIELDS = frozenset(
         "default_enabled",
     }
 )
-_CONFIG_SCHEMA_FIELDS = frozenset(
-    {"type", "additionalProperties", "properties", "required"}
-)
+_CONFIG_SCHEMA_FIELDS = frozenset({"type", "additionalProperties", "properties", "required"})
 _STORAGE_FIELDS = frozenset({"kv", "collections"})
-_COLLECTION_FIELDS = frozenset(
-    {"name", "fields", "indexes", "unique_constraints"}
-)
+_COLLECTION_FIELDS = frozenset({"name", "fields", "indexes", "unique_constraints"})
 _COLLECTION_FIELD_FIELDS = frozenset({"name", "type", "required"})
 _INDEX_FIELDS = frozenset({"name", "fields"})
-_COLLECTION_VALUE_TYPES = frozenset(
-    {"string", "integer", "number", "boolean", "datetime", "json"}
-)
+_COLLECTION_VALUE_TYPES = frozenset({"string", "integer", "number", "boolean", "datetime", "json"})
 _SENSITIVE_CONFIG_TOKENS = (
     "password",
     "cookie",
@@ -157,9 +141,7 @@ def _mapping(
         unknown = set(result) - fields
         missing = fields - set(result)
         if unknown:
-            raise PluginManifestError(
-                f"{path} has unsupported fields: {sorted(unknown)}"
-            )
+            raise PluginManifestError(f"{path} has unsupported fields: {sorted(unknown)}")
         if missing:
             raise PluginManifestError(f"{path} is missing fields: {sorted(missing)}")
     return result
@@ -175,9 +157,7 @@ def _array(value: Any, path: str, *, non_empty: bool = False) -> list[Any]:
 
 def _text(value: Any, path: str, *, maximum: int) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > maximum:
-        raise PluginManifestError(
-            f"{path} must be a non-empty string no longer than {maximum}"
-        )
+        raise PluginManifestError(f"{path} must be a non-empty string no longer than {maximum}")
     if value != value.strip():
         raise PluginManifestError(f"{path} must not contain surrounding whitespace")
     return value
@@ -295,9 +275,7 @@ def _service_name(value: Any, path: str) -> tuple[str, str, int]:
     service = _text(value, path, maximum=220)
     match = _SERVICE_RE.fullmatch(service)
     if match is None:
-        raise PluginManifestError(
-            f"{path} must use plugin.<plugin_id>.<service>@<major>"
-        )
+        raise PluginManifestError(f"{path} must use plugin.<plugin_id>.<service>@<major>")
     return service, match.group(1), int(match.group(3))
 
 
@@ -313,9 +291,7 @@ def _payload_path(value: Any, path: str, *, suffix: str) -> str:
         or any(part in {"", ".", ".."} for part in candidate.parts)
         or candidate.suffix != suffix
     ):
-        raise PluginManifestError(
-            f"{path} must be a {suffix} file below payload/"
-        )
+        raise PluginManifestError(f"{path} must be a {suffix} file below payload/")
     return candidate.as_posix()
 
 
@@ -323,9 +299,7 @@ def _wheel_path(value: Any, path: str) -> str:
     wheel = _payload_path(value, path, suffix=".whl")
     parts = PurePosixPath(wheel).parts
     if len(parts) < 3 or parts[:2] != ("payload", "wheelhouse"):
-        raise PluginManifestError(
-            f"{path} must be a wheel file below payload/wheelhouse/"
-        )
+        raise PluginManifestError(f"{path} must be a wheel file below payload/wheelhouse/")
     return wheel
 
 
@@ -355,9 +329,7 @@ def _validate_config_property_names(schema: Mapping[str, Any], path: str) -> Non
                 or lowered.endswith(("_account_id", "_account_ids"))
                 or any(token in lowered for token in _SENSITIVE_CONFIG_TOKENS)
             ):
-                raise PluginManifestError(
-                    f"{path}.properties cannot declare account IDs or credential material"
-                )
+                raise PluginManifestError(f"{path}.properties cannot declare account IDs or credential material")
             if isinstance(child, Mapping):
                 _validate_config_property_names(child, f"{path}.properties.{name}")
     items = schema.get("items")
@@ -378,9 +350,7 @@ def _validate_config_schema(value: Any) -> dict[str, Any]:
         raise PluginManifestError("config_schema property names must be non-empty strings")
     required = _string_array(schema["required"], "config_schema.required")
     if not set(required) <= set(properties):
-        raise PluginManifestError(
-            "config_schema.required contains an unknown property"
-        )
+        raise PluginManifestError("config_schema.required contains an unknown property")
     normalized = {
         "type": "object",
         "additionalProperties": False,
@@ -397,9 +367,7 @@ def _validate_host_api(value: Any) -> dict[str, str]:
     minimum = _semver(raw["minimum"], "host_api.minimum")
     maximum = _semver(raw["maximum_exclusive"], "host_api.maximum_exclusive")
     if _semver_tuple(minimum) >= _semver_tuple(maximum):
-        raise PluginManifestError(
-            "host_api.minimum must be lower than host_api.maximum_exclusive"
-        )
+        raise PluginManifestError("host_api.minimum must be lower than host_api.maximum_exclusive")
     return {"minimum": minimum, "maximum_exclusive": maximum}
 
 
@@ -431,9 +399,7 @@ def _validate_runtime(value: Any) -> dict[str, Any]:
         validator=_wheel_path,
     )
     if wheelhouse and requirements_lock is None:
-        raise PluginManifestError(
-            "runtime.wheelhouse requires runtime.requirements_lock"
-        )
+        raise PluginManifestError("runtime.wheelhouse requires runtime.requirements_lock")
     return {
         "kind": "python_subprocess",
         "python": "3.10",
@@ -459,18 +425,35 @@ def _validate_provides(
             f"provides[{index}].service",
         )
         if owner != plugin_id:
-            raise PluginManifestError(
-                "provided services must use the declaring plugin_id namespace"
-            )
+            raise PluginManifestError("provided services must use the declaring plugin_id namespace")
         if service in operations_by_service:
             raise PluginManifestError(f"duplicate provided service: {service}")
-        operations = _string_array(
+        raw_operations = _array(
             item["operations"],
             f"provides[{index}].operations",
             non_empty=True,
-            validator=_identifier,
         )
-        operations_by_service[service] = frozenset(operations)
+        operations: list[dict[str, str]] = []
+        operation_names: set[str] = set()
+        for operation_index, raw_operation in enumerate(raw_operations):
+            operation = _mapping(
+                raw_operation,
+                f"provides[{index}].operations[{operation_index}]",
+                _PROVIDE_OPERATION_FIELDS,
+            )
+            name = _identifier(
+                operation["name"],
+                f"provides[{index}].operations[{operation_index}].name",
+            )
+            if name in operation_names:
+                raise PluginManifestError(f"provides[{index}].operations must not contain duplicate names")
+            try:
+                effect = CapabilityEffect(operation["effect"])
+            except (TypeError, ValueError) as exc:
+                raise PluginManifestError(f"provides[{index}].operations[{operation_index}].effect is invalid") from exc
+            operation_names.add(name)
+            operations.append({"name": name, "effect": effect.value})
+        operations_by_service[service] = frozenset(operation_names)
         result.append({"service": service, "operations": operations})
     return result, operations_by_service
 
@@ -591,9 +574,7 @@ def _validate_capabilities(
                 f"capabilities[{index}].account_role",
             )
             if account_role not in account_roles:
-                raise PluginManifestError(
-                    "capability references an undeclared account role"
-                )
+                raise PluginManifestError("capability references an undeclared account role")
         resource_role = item["resource_role"]
         if resource_role is not None:
             resource_role = _role(
@@ -601,9 +582,7 @@ def _validate_capabilities(
                 f"capabilities[{index}].resource_role",
             )
             if resource_role not in resource_roles:
-                raise PluginManifestError(
-                    "capability references an undeclared resource role"
-                )
+                raise PluginManifestError("capability references an undeclared resource role")
         identity = (name, account_role, resource_role)
         if identity in seen:
             raise PluginManifestError("duplicate capability binding")
@@ -621,9 +600,7 @@ def _validate_capabilities(
         if "storage.kv" in names and storage.get("kv") is not True:
             raise PluginManifestError("storage.kv capability requires storage.kv=true")
         if "storage.collection" in names and not storage.get("collections"):
-            raise PluginManifestError(
-                "storage.collection capability requires declared collections"
-            )
+            raise PluginManifestError("storage.collection capability requires declared collections")
     return result
 
 
@@ -638,9 +615,7 @@ def _contribution_target(
     if service not in operations_by_service:
         raise PluginManifestError("contributions must target a provided service")
     if operation not in operations_by_service[service]:
-        raise PluginManifestError(
-            "contribution operation is absent from the provided service"
-        )
+        raise PluginManifestError("contribution operation is absent from the provided service")
     return service, operation
 
 
@@ -693,9 +668,7 @@ def _validate_contributes(
             }
         )
 
-    for index, raw_item in enumerate(
-        _array(raw["scheduler"], "contributes.scheduler")
-    ):
+    for index, raw_item in enumerate(_array(raw["scheduler"], "contributes.scheduler")):
         path = f"contributes.scheduler[{index}]"
         item = _mapping(raw_item, path, _SCHEDULER_FIELDS)
         service, operation = _contribution_target(
@@ -829,9 +802,7 @@ def _validate_default_scheduler_host_compatibility(
         raise PluginManifestError("contributes.scheduler must be an array")
     defaults = [item for item in schedulers if item.get("default_enabled") is True]
     if len(defaults) > 1:
-        raise PluginManifestError(
-            "at most one default scheduler is supported by this host"
-        )
+        raise PluginManifestError("at most one default scheduler is supported by this host")
     if not defaults:
         return
     schedule = defaults[0].get("schedule")
@@ -846,9 +817,7 @@ def _validate_default_scheduler_host_compatibility(
         or not fields[0].isdigit()
         or not fields[1].isdigit()
     ):
-        raise PluginManifestError(
-            "default scheduler must be Asia/Shanghai fixed minute hour * * *"
-        )
+        raise PluginManifestError("default scheduler must be Asia/Shanghai fixed minute hour * * *")
     minute, hour = int(fields[0]), int(fields[1])
     if not 0 <= minute <= 59 or not 0 <= hour <= 23:
         raise PluginManifestError("default scheduler minute/hour is out of range")
@@ -882,22 +851,16 @@ def _validate_storage(value: Any) -> dict[str, Any]:
 
         fields: list[dict[str, Any]] = []
         declared_fields: set[str] = set()
-        for field_index, raw_field in enumerate(
-            _array(collection["fields"], f"{path}.fields", non_empty=True)
-        ):
+        for field_index, raw_field in enumerate(_array(collection["fields"], f"{path}.fields", non_empty=True)):
             field_path = f"{path}.fields[{field_index}]"
             field = _mapping(raw_field, field_path, _COLLECTION_FIELD_FIELDS)
             field_name = _role(field["name"], f"{field_path}.name")
             if field_name in declared_fields:
-                raise PluginManifestError(
-                    f"duplicate field in storage collection {name}: {field_name}"
-                )
+                raise PluginManifestError(f"duplicate field in storage collection {name}: {field_name}")
             declared_fields.add(field_name)
             field_type = field["type"]
             if field_type not in _COLLECTION_VALUE_TYPES:
-                raise PluginManifestError(
-                    f"{field_path}.type must be one of {sorted(_COLLECTION_VALUE_TYPES)}"
-                )
+                raise PluginManifestError(f"{field_path}.type must be one of {sorted(_COLLECTION_VALUE_TYPES)}")
             fields.append(
                 {
                     "name": field_name,
@@ -913,16 +876,12 @@ def _validate_storage(value: Any) -> dict[str, Any]:
             ("indexes", indexes),
             ("unique_constraints", constraints),
         ):
-            for item_index, raw_index in enumerate(
-                _array(collection[group_name], f"{path}.{group_name}")
-            ):
+            for item_index, raw_index in enumerate(_array(collection[group_name], f"{path}.{group_name}")):
                 index_path = f"{path}.{group_name}[{item_index}]"
                 index = _mapping(raw_index, index_path, _INDEX_FIELDS)
                 index_name = _role(index["name"], f"{index_path}.name")
                 if index_name in seen_names:
-                    raise PluginManifestError(
-                        f"duplicate index or constraint name in collection {name}: {index_name}"
-                    )
+                    raise PluginManifestError(f"duplicate index or constraint name in collection {name}: {index_name}")
                 seen_names.add(index_name)
                 destination.append(
                     {
@@ -989,16 +948,10 @@ class AutomationPluginManifestV2:
             data["requires"],
             provided_services=frozenset(operations_by_service),
         )
-        account_roles, account_role_names = _validate_account_roles(
-            data["account_roles"]
-        )
-        resource_roles, resource_role_names = _validate_resource_roles(
-            data["resource_roles"]
-        )
+        account_roles, account_role_names = _validate_account_roles(data["account_roles"])
+        resource_roles, resource_role_names = _validate_resource_roles(data["resource_roles"])
         if account_role_names & resource_role_names:
-            raise PluginManifestError(
-                "account and resource role names must be globally unique"
-            )
+            raise PluginManifestError("account and resource role names must be globally unique")
         storage = _validate_storage(data["storage"])
         capabilities = _validate_capabilities(
             data["capabilities"],

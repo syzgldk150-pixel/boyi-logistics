@@ -21,6 +21,12 @@ from agent.automation_plugins.core_adapter import (
     RegisteredCoreAutomationBrokerAdapter,
 )
 from agent.automation_plugins.errors import PluginExecutionError
+from agent.automation_plugins.host_capability_registry import (
+    CapabilityEffect,
+    HOST_CAPABILITY_API_VERSION,
+    default_host_capability_registry,
+    governance_for_effect,
+)
 from agent.automation_plugins.service_registry import (
     ServiceOperationUnavailable,
     ServiceRegistry,
@@ -46,7 +52,12 @@ def _manifest(*, kv: bool = True) -> dict[str, Any]:
             "requirements_lock": None,
             "wheelhouse": [],
         },
-        "provides": [{"service": service, "operations": ["run"]}],
+        "provides": [
+            {
+                "service": service,
+                "operations": [{"name": "run", "effect": "internal_write"}],
+            }
+        ],
         "requires": [],
         "capabilities": [
             {
@@ -100,9 +111,7 @@ def _manifest(*, kv: bool = True) -> dict[str, Any]:
                         {"name": "by_external_id", "fields": ["external_id"]},
                         {"name": "by_attempts", "fields": ["attempts"]},
                     ],
-                    "unique_constraints": [
-                        {"name": "one_external_id", "fields": ["external_id"]}
-                    ],
+                    "unique_constraints": [{"name": "one_external_id", "fields": ["external_id"]}],
                 }
             ],
         },
@@ -168,13 +177,9 @@ class _Documents:
         if current_version != expected_document_version:
             raise RuntimeError("CAS_CONFLICT")
         for name, value_sha256 in dict(unique_values_sha256 or {}).items():
-            owner = self.unique_values.get(
-                (automation_id, collection, name, value_sha256)
-            )
+            owner = self.unique_values.get((automation_id, collection, name, value_sha256))
             if owner is not None and owner != document_key:
-                raise ConcurrentUpdateError(
-                    "managed plugin document unique constraint conflict: " + name
-                )
+                raise ConcurrentUpdateError("managed plugin document unique constraint conflict: " + name)
         next_version = current_version + 1
         body = dict(document)
         digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -192,21 +197,17 @@ class _Documents:
         self.indexes = {
             identity: value
             for identity, value in self.indexes.items()
-            if identity[:2] != (automation_id, collection)
-            or identity[3] != document_key
+            if identity[:2] != (automation_id, collection) or identity[3] != document_key
         }
         self.unique_values = {
             identity: owner
             for identity, owner in self.unique_values.items()
-            if identity[:2] != (automation_id, collection)
-            or owner != document_key
+            if identity[:2] != (automation_id, collection) or owner != document_key
         }
         for name, value_sha256 in dict(index_values_sha256 or {}).items():
             self.indexes[(automation_id, collection, name, document_key)] = value_sha256
         for name, value_sha256 in dict(unique_values_sha256 or {}).items():
-            self.unique_values[
-                (automation_id, collection, name, value_sha256)
-            ] = document_key
+            self.unique_values[(automation_id, collection, name, value_sha256)] = document_key
         self.put_calls.append(
             {
                 "actor_id": actor_id,
@@ -228,17 +229,13 @@ class _Documents:
     ):
         document_keys = sorted(
             document_key
-            for (project, declared_collection, declared_index, document_key), digest
-            in self.indexes.items()
+            for (project, declared_collection, declared_index, document_key), digest in self.indexes.items()
             if project == automation_id
             and declared_collection == collection
             and declared_index == index_name
             and digest == value_sha256
         )[:limit]
-        return [
-            self.rows[(automation_id, collection, document_key)]
-            for document_key in document_keys
-        ]
+        return [self.rows[(automation_id, collection, document_key)] for document_key in document_keys]
 
 
 class _UnitOfWork:
@@ -270,6 +267,27 @@ def _context(
     *,
     marker=None,
 ) -> CoreBrokerInvocationContext:
+    if operation == "service.invoke":
+        signed_effect = CapabilityEffect.EXTERNAL_WRITE.value
+        signed_broker_effect = "write"
+        dynamic_effect = True
+    else:
+        try:
+            governance = (
+                default_host_capability_registry()
+                .resolve(
+                    api_version=HOST_CAPABILITY_API_VERSION,
+                    capability=operation,
+                    action=action,
+                )
+                .governance
+            )
+            signed_effect = governance.effect.value
+            signed_broker_effect = governance.broker_effect
+        except PluginExecutionError:
+            signed_effect = ""
+            signed_broker_effect = ""
+        dynamic_effect = False
     return CoreBrokerInvocationContext(
         automation_id="instance-v2",
         plugin_version="1.0.0",
@@ -277,6 +295,14 @@ def _context(
         operation=operation,
         action=action,
         role="__system__",
+        signed_effect=signed_effect,
+        signed_broker_effect=signed_broker_effect,
+        dynamic_effect=dynamic_effect,
+        service_effect_ceiling=(
+            CapabilityEffect.EXTERNAL_WRITE.value
+            if operation == "service.invoke"
+            else ""
+        ),
         mark_write_started=marker,
     )
 
@@ -284,6 +310,29 @@ def _context(
 def _grant(operation: str, action: str) -> BrokerGrant:
     from datetime import datetime, timedelta, timezone
 
+    if operation == "service.invoke":
+        governance = governance_for_effect(CapabilityEffect.EXTERNAL_WRITE)
+        effect = governance.effect.value
+        broker_effect = governance.broker_effect
+        dynamic_effect = True
+    else:
+        try:
+            governance = (
+                default_host_capability_registry()
+                .resolve(
+                    api_version=HOST_CAPABILITY_API_VERSION,
+                    capability=operation,
+                    action=action,
+                )
+                .governance
+            )
+            effect = governance.effect.value
+            broker_effect = governance.broker_effect
+        except PluginExecutionError:
+            governance = governance_for_effect(CapabilityEffect.EXTERNAL_WRITE)
+            effect = governance.effect.value
+            broker_effect = governance.broker_effect
+        dynamic_effect = False
     return BrokerGrant(
         automation_id="instance-v2",
         plugin_version="1.0.0",
@@ -294,12 +343,20 @@ def _grant(operation: str, action: str) -> BrokerGrant:
             "network": operation == "http.request",
             "office": False,
             "file_roles": [operation] if operation.startswith("file.") else [],
+            "_service_effect_ceiling": (
+                CapabilityEffect.EXTERNAL_WRITE.value
+                if operation == "service.invoke"
+                else ""
+            ),
             "broker_operations": [
                 {
                     "operation": operation,
                     "action": action,
                     "roles": ["__system__"],
-                    "effect": "read",
+                    "effect": effect,
+                    "broker_effect": broker_effect,
+                    "governance": governance.to_mapping(),
+                    "dynamic_effect": dynamic_effect,
                 }
             ],
         },
@@ -311,23 +368,21 @@ def _grant(operation: str, action: str) -> BrokerGrant:
 
 
 @pytest.mark.parametrize(
-    "operation",
+    ("operation", "action"),
     (
-        "browser.session",
-        "http.request",
-        "file.read",
-        "file.write",
-        "storage.kv",
-        "storage.collection",
-        "event.publish",
-        "service.invoke",
+        ("storage.kv", "get"),
+        ("storage.kv", "put"),
+        ("storage.collection", "query"),
+        ("storage.collection", "upsert"),
+        ("service.invoke", "inspect"),
     ),
 )
-def test_broker_accepts_declared_v2_operations_with_unbound_system_role(
+def test_broker_accepts_registered_v2_operations_with_unbound_system_role(
     tmp_path: Path,
     operation: str,
+    action: str,
 ) -> None:
-    permissions = dict(_grant(operation, "inspect").runtime_permissions)
+    permissions = dict(_grant(operation, action).runtime_permissions)
     permissions["max_broker_calls"] = 1
     issuer = LocalBrokerCapabilityIssuer(tmp_path / "broker.sock")
     token = issuer.issue(
@@ -346,12 +401,56 @@ def test_broker_accepts_declared_v2_operations_with_unbound_system_role(
         token,
         request_id=str(uuid.uuid4()),
         operation=operation,
-        action="inspect",
+        action=action,
         role="__system__",
     )
 
     assert grant.automation_id == "instance-v2"
     assert binding is None
+
+
+def test_broker_enforces_the_registry_per_action_limit(tmp_path: Path) -> None:
+    operation = "storage.kv"
+    action = "get"
+    descriptor = default_host_capability_registry().resolve(
+        api_version=HOST_CAPABILITY_API_VERSION,
+        capability=operation,
+        action=action,
+    )
+    permissions = dict(_grant(operation, action).runtime_permissions)
+    permissions["max_broker_calls"] = descriptor.per_call_limit + 1
+    issuer = LocalBrokerCapabilityIssuer(tmp_path / "broker.sock")
+    token = issuer.issue(
+        automation_id="instance-v2",
+        plugin_version="1.0.0",
+        tool_name="service.sample_plugin",
+        ttl_seconds=60,
+        runtime_permissions=permissions,
+        account_roles=(),
+        resource_roles=(),
+        account_bindings={},
+        resource_bindings={},
+    )
+
+    for _ in range(descriptor.per_call_limit):
+        issuer.consume(
+            token,
+            request_id=str(uuid.uuid4()),
+            operation=operation,
+            action=action,
+            role="__system__",
+        )
+
+    with pytest.raises(PluginExecutionError) as exhausted:
+        issuer.consume(
+            token,
+            request_id=str(uuid.uuid4()),
+            operation=operation,
+            action=action,
+            role="__system__",
+        )
+
+    assert exhausted.value.code == "BROKER_CALL_LIMIT"
 
 
 def test_system_role_cannot_bypass_a_v1_operation_or_carry_a_binding(tmp_path: Path) -> None:
@@ -415,7 +514,7 @@ def test_system_role_cannot_bypass_a_v1_operation_or_carry_a_binding(tmp_path: P
     assert declared.value.code == "BROKER_CONTRACT_INVALID"
 
 
-def test_core_adapter_uses_exact_handler_before_wildcard_and_keeps_system_context_empty() -> None:
+def test_core_adapter_rejects_a_handler_that_drifts_from_the_registry() -> None:
     observed: list[CoreBrokerInvocationContext] = []
 
     def wildcard(context, _arguments):
@@ -432,6 +531,28 @@ def test_core_adapter_uses_exact_handler_before_wildcard_and_keeps_system_contex
             ("storage.kv", "get"): exact,
         }
     )
+    with pytest.raises(PluginExecutionError) as drifted:
+        asyncio.run(
+            adapter.invoke(
+                grant=_grant("storage.kv", "get"),
+                operation="storage.kv",
+                action="get",
+                role="__system__",
+                binding=None,
+                arguments={"key": "checkpoint"},
+            )
+        )
+    assert drifted.value.code == "CAPABILITY_UNAVAILABLE"
+    assert observed == []
+
+    adapter = RegisteredCoreAutomationBrokerAdapter(
+        handlers={
+            ("storage.kv", "*"): lambda context, _arguments: (
+                observed.append(context)
+                or {"found": False, "value": None, "version": 0}
+            )
+        }
+    )
     result = asyncio.run(
         adapter.invoke(
             grant=_grant("storage.kv", "get"),
@@ -443,7 +564,7 @@ def test_core_adapter_uses_exact_handler_before_wildcard_and_keeps_system_contex
         )
     )
 
-    assert result == {"handler": "exact"}
+    assert result == {"found": False, "value": None, "version": 0}
     assert observed[0].account_ids == ()
     assert observed[0].account_bindings == {}
     assert observed[0].resource_id is None
@@ -467,9 +588,7 @@ def test_core_adapter_carries_only_valid_host_owned_service_ancestry() -> None:
             },
         }
     )
-    adapter = RegisteredCoreAutomationBrokerAdapter(
-        handlers={("service.invoke", "*"): handler}
-    )
+    adapter = RegisteredCoreAutomationBrokerAdapter(handlers={("service.invoke", "*"): handler})
 
     assert asyncio.run(
         adapter.invoke(
@@ -563,11 +682,7 @@ def test_core_adapter_applies_sensitive_result_review_to_wildcard_handlers() -> 
         )
 
     embedded_adapter = RegisteredCoreAutomationBrokerAdapter(
-        handlers={
-            ("storage.kv", "*"): lambda _context, _args: {
-                "reference": "result:opaque-account-42:verified"
-            }
-        }
+        handlers={("storage.kv", "*"): lambda _context, _args: {"reference": "result:opaque-account-42:verified"}}
     )
     with pytest.raises(PluginExecutionError, match="sensitive data"):
         asyncio.run(
@@ -626,7 +741,13 @@ def _service_registry() -> ServiceRegistry:
         manifest_sha256="b" * 64,
         runtime_mode="on_demand",
         provides=(
-            {"service": "plugin.base.runner@1", "operations": ["get", "run"]},
+            {
+                "service": "plugin.base.runner@1",
+                "operations": [
+                    {"name": "get", "effect": "read"},
+                    {"name": "run", "effect": "external_write"},
+                ],
+            },
         ),
         requires=(),
     )
@@ -728,9 +849,7 @@ def test_service_invoke_fails_closed_for_undeclared_operation_dependency_and_cyc
     depth_context = CoreBrokerInvocationContext(
         **{
             **_context("service.invoke", "get").__dict__,
-            "service_call_chain": tuple(
-                f"plugin.depth_{index}.runner@1" for index in range(8)
-            ),
+            "service_call_chain": tuple(f"plugin.depth_{index}.runner@1" for index in range(8)),
         }
     )
     with pytest.raises(PluginExecutionError) as depth:
@@ -776,6 +895,118 @@ def test_service_invoke_marks_signed_write_before_provider_dispatch() -> None:
 
     assert result["status"] == "FAILED"
     assert sequence == ["write-started", "provider"]
+
+
+def test_service_invoke_uses_provider_read_effect_without_a_write_marker() -> None:
+    sequence: list[str] = []
+
+    async def execute(**_values):
+        sequence.append("provider")
+        return {"status": "SUCCESS", "data": {}, "meta": {}, "warnings": [], "error": None}
+
+    proxy = ServiceV2CapabilityProxy(
+        _Orchestration(_Documents(manifest=_service_consumer_manifest())),
+        service_registry=_service_registry(),
+        service_executor=execute,
+    )
+    asyncio.run(
+        proxy.service_invoke(
+            _context("service.invoke", "get", marker=lambda: sequence.append("write")),
+            {
+                "service": "plugin.base.runner@1",
+                "operation": "get",
+                "arguments": {},
+            },
+        )
+    )
+
+    assert sequence == ["provider"]
+
+
+def test_service_invoke_rejects_provider_effect_above_caller_ceiling() -> None:
+    sequence: list[str] = []
+
+    async def execute(**_values):
+        sequence.append("provider")
+        return {"status": "SUCCESS", "data": {}, "meta": {}, "warnings": [], "error": None}
+
+    context = CoreBrokerInvocationContext(
+        **{
+            **_context(
+                "service.invoke",
+                "run",
+                marker=lambda: sequence.append("write"),
+            ).__dict__,
+            "service_effect_ceiling": CapabilityEffect.READ.value,
+        }
+    )
+    proxy = ServiceV2CapabilityProxy(
+        _Orchestration(_Documents(manifest=_service_consumer_manifest())),
+        service_registry=_service_registry(),
+        service_executor=execute,
+    )
+
+    with pytest.raises(PluginExecutionError) as rejected:
+        asyncio.run(
+            proxy.service_invoke(
+                context,
+                {
+                    "service": "plugin.base.runner@1",
+                    "operation": "run",
+                    "arguments": {},
+                },
+            )
+        )
+
+    assert rejected.value.code == "SERVICE_EFFECT_ESCALATION_DENIED"
+    assert sequence == []
+
+
+def test_service_invoke_rejects_a_non_dynamic_or_drifted_admission_before_marker() -> None:
+    called: list[str] = []
+
+    async def execute(**_values):
+        called.append("provider")
+        return {"status": "SUCCESS", "data": {}, "meta": {}, "warnings": [], "error": None}
+
+    context = CoreBrokerInvocationContext(
+        **{
+            **_context("service.invoke", "get", marker=lambda: called.append("marker")).__dict__,
+            "dynamic_effect": False,
+        }
+    )
+    proxy = ServiceV2CapabilityProxy(
+        _Orchestration(_Documents(manifest=_service_consumer_manifest())),
+        service_registry=_service_registry(),
+        service_executor=execute,
+    )
+    with pytest.raises(PluginExecutionError) as rejected:
+        asyncio.run(
+            proxy.service_invoke(
+                context,
+                {
+                    "service": "plugin.base.runner@1",
+                    "operation": "get",
+                    "arguments": {},
+                },
+            )
+        )
+    assert rejected.value.code == "CAPABILITY_UNAVAILABLE"
+    assert called == []
+
+
+def test_static_host_capability_rejects_a_signed_governance_drift() -> None:
+    context = CoreBrokerInvocationContext(
+        **{
+            **_context("storage.kv", "get").__dict__,
+            "signed_effect": "external_write",
+            "signed_broker_effect": "write",
+        }
+    )
+    proxy = ServiceV2CapabilityProxy(_Orchestration(_Documents()))
+    with pytest.raises(PluginExecutionError) as rejected:
+        proxy.kv(context, {"key": "checkpoint"})
+    assert rejected.value.code == "CAPABILITY_UNAVAILABLE"
 
 
 def test_reviewed_clock_primitives_are_adapted_to_the_account_blind_v2_contract() -> None:
@@ -828,6 +1059,8 @@ def test_reviewed_clock_primitives_are_adapted_to_the_account_blind_v2_contract(
         role="operator",
         account_ids=("opaque-account",),
         account_bindings={"operator": ("opaque-account",)},
+        signed_effect="read",
+        signed_broker_effect="read",
     )
 
     precheck = handlers[("browser.session", "ronghui.clock.precheck")](

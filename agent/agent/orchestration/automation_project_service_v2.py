@@ -107,10 +107,17 @@ def validate_service_v2_compiled_target(
     if getattr(entry, "runtime_model", "ACTION_V1") != "SERVICE_V2":
         return
     target = raw_contract.get("target")
+    governance = raw_contract.get("governance")
     invocation = entry.invocation_contracts.get(contribution_id)
+    expected_governance = (
+        invocation.get("governance") if isinstance(invocation, Mapping) else None
+    )
     if (
         not isinstance(target, Mapping)
+        or not isinstance(governance, Mapping)
         or not isinstance(invocation, Mapping)
+        or not isinstance(expected_governance, Mapping)
+        or dict(governance) != dict(expected_governance)
         or set(target)
         != {
             "service",

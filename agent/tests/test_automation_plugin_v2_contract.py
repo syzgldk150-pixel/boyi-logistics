@@ -5,6 +5,10 @@ import copy
 import pytest
 
 from agent.automation_plugins.errors import PluginManifestError
+from agent.automation_plugins.host_capability_registry import (
+    HOST_CAPABILITY_API_VERSION,
+    default_host_capability_registry,
+)
 from agent.automation_plugins.manifest_v2 import (
     AutomationPluginManifestV2,
     canonical_json_bytes,
@@ -51,14 +55,17 @@ def _manifest_mapping(
         "provides": [
             {
                 "service": service,
-                "operations": ["run", "receive"],
+                "operations": [
+                    {"name": "run", "effect": "external_write"},
+                    {"name": "receive", "effect": "read"},
+                ],
             }
         ],
         "requires": [{"service": item} for item in requires],
         "capabilities": [
             {
                 "name": "browser.session",
-                "operations": ["invoke"],
+                "operations": ["ronghui.clock.precheck"],
                 "account_role": "operator",
                 "resource_role": None,
             },
@@ -163,9 +170,7 @@ def _manifest_mapping(
                         {"name": "status", "type": "string", "required": False},
                     ],
                     "indexes": [{"name": "by_status", "fields": ["status"]}],
-                    "unique_constraints": [
-                        {"name": "by_external_id", "fields": ["external_id"]}
-                    ],
+                    "unique_constraints": [{"name": "by_external_id", "fields": ["external_id"]}],
                 }
             ],
         },
@@ -182,9 +187,7 @@ def test_manifest_v2_round_trip_is_closed_immutable_and_hash_addressed() -> None
     assert manifest.provided_services == ("plugin.sample_plugin.runner@1",)
     assert manifest.required_services == ()
     assert len(manifest.manifest_sha256) == 64
-    assert manifest.manifest_sha256 == AutomationPluginManifestV2.from_mapping(
-        source
-    ).manifest_sha256
+    assert manifest.manifest_sha256 == AutomationPluginManifestV2.from_mapping(source).manifest_sha256
     assert canonical_json_bytes(manifest.to_mapping()) == canonical_json_bytes(source)
     assert manifest.supports_host_api("2.0.0")
     assert manifest.supports_host_api("2.9.9")
@@ -204,9 +207,7 @@ def test_manifest_v2_round_trip_is_closed_immutable_and_hash_addressed() -> None
         (lambda value: value.update(extra=True), "unsupported fields"),
         (lambda value: value["host_api"].update(extra=True), "unsupported fields"),
         (
-            lambda value: value["host_api"].update(
-                minimum="3.0.0", maximum_exclusive="3.0.0"
-            ),
+            lambda value: value["host_api"].update(minimum="3.0.0", maximum_exclusive="3.0.0"),
             "must be lower",
         ),
         (lambda value: value["runtime"].update(python="3.11"), "must be 3.10"),
@@ -231,14 +232,10 @@ def test_manifest_v2_closes_runtime_dependency_paths() -> None:
         wheelhouse=["payload/wheelhouse/example-1.0.0-py3-none-any.whl"],
     )
     manifest = AutomationPluginManifestV2.from_mapping(source)
-    assert manifest.to_mapping()["runtime"]["wheelhouse"] == [
-        "payload/wheelhouse/example-1.0.0-py3-none-any.whl"
-    ]
+    assert manifest.to_mapping()["runtime"]["wheelhouse"] == ["payload/wheelhouse/example-1.0.0-py3-none-any.whl"]
 
     missing_lock = _manifest_mapping()
-    missing_lock["runtime"]["wheelhouse"] = [
-        "payload/wheelhouse/example-1.0.0-py3-none-any.whl"
-    ]
+    missing_lock["runtime"]["wheelhouse"] = ["payload/wheelhouse/example-1.0.0-py3-none-any.whl"]
     with pytest.raises(PluginManifestError, match="requires runtime.requirements_lock"):
         AutomationPluginManifestV2.from_mapping(missing_lock)
 
@@ -303,9 +300,7 @@ def test_manifest_v2_rejects_invalid_cron_and_timezone(
 
 def test_manifest_v2_keeps_credentials_out_and_validates_managed_storage() -> None:
     secret_config = _manifest_mapping()
-    secret_config["config_schema"]["properties"] = {
-        "api_token": {"type": "string"}
-    }
+    secret_config["config_schema"]["properties"] = {"api_token": {"type": "string"}}
     secret_config["config_schema"]["required"] = ["api_token"]
     with pytest.raises(PluginManifestError, match="credential material"):
         AutomationPluginManifestV2.from_mapping(secret_config)
@@ -316,9 +311,7 @@ def test_manifest_v2_keeps_credentials_out_and_validates_managed_storage() -> No
         AutomationPluginManifestV2.from_mapping(bad_capability_role)
 
     bad_index = _manifest_mapping()
-    bad_index["storage"]["collections"][0]["indexes"][0]["fields"] = [
-        "missing"
-    ]
+    bad_index["storage"]["collections"][0]["indexes"][0]["fields"] = ["missing"]
     with pytest.raises(PluginManifestError, match="undeclared collection field"):
         AutomationPluginManifestV2.from_mapping(bad_index)
 
@@ -328,7 +321,7 @@ def test_manifest_v2_keeps_credentials_out_and_validates_managed_storage() -> No
         AutomationPluginManifestV2.from_mapping(missing_kv)
 
 
-def test_service_invoke_is_always_governed_as_a_write_even_for_get_named_operation() -> None:
+def test_service_invoke_has_a_protective_admission_ceiling_while_entrypoint_governance_uses_provider_effect() -> None:
     source = _manifest_mapping(
         "consumer_plugin",
         requires=("plugin.provider_plugin.records@1",),
@@ -342,35 +335,84 @@ def test_service_invoke_is_always_governed_as_a_write_even_for_get_named_operati
         }
     ]
 
-    contract = ServiceV2ProjectContract.from_manifest(
-        AutomationPluginManifestV2.from_mapping(source)
-    )
+    contract = ServiceV2ProjectContract.from_manifest(AutomationPluginManifestV2.from_mapping(source))
     service_call = next(
-        item
-        for item in contract.runtime_permissions["broker_operations"]
-        if item["operation"] == "service.invoke"
+        item for item in contract.runtime_permissions["broker_operations"] if item["operation"] == "service.invoke"
     )
 
     assert service_call == {
         "operation": "service.invoke",
         "action": "get_and_mutate",
         "roles": ["__system__"],
-        "effect": "write",
+        "effect": "external_write",
+        "broker_effect": "write",
+        "governance": {
+            "effect": "external_write",
+            "operation_type": "external_write",
+            "risk_level": "high",
+            "lock_class": "external_target",
+            "evidence": {
+                "required": True,
+                "required_fields": ["service", "operation", "outcome"],
+            },
+            "postconditions": [{"name": "plugin_result_contract_valid"}],
+            "retry": {"safe": False, "max_attempts": 1},
+            "harness_allowed": False,
+            "broker_effect": "write",
+            "approval": {"mode": "project_policy"},
+            "idempotency": {"mode": "parameters", "key_fields": []},
+            "project_full_auto_allowed": True,
+        },
+        "dynamic_effect": True,
     }
     assert contract.tool_contract["mutating"] is True
     assert contract.tool_contract["operation_type"] == "external_write"
-    assert contract.invocation_contracts["run_now"]["service"] == (
-        "plugin.consumer_plugin.runner@1"
-    )
+    assert contract.invocation_contracts["run_now"]["service"] == ("plugin.consumer_plugin.runner@1")
     assert contract.invocation_contracts["run_now"]["operation"] == "run"
+    assert contract.invocation_contracts["run_now"]["effect"] == "external_write"
+    assert contract.invocation_contracts["incoming_hook"]["effect"] == "read"
+
+
+def test_project_contract_enforces_registry_role_requirements_and_call_limits() -> None:
+    source = _manifest_mapping()
+    contract = ServiceV2ProjectContract.from_manifest(
+        AutomationPluginManifestV2.from_mapping(source)
+    )
+    limits = []
+    registry = default_host_capability_registry()
+    for capability in source["capabilities"]:
+        for action in capability["operations"]:
+            limits.append(
+                registry.resolve(
+                    api_version=HOST_CAPABILITY_API_VERSION,
+                    capability=capability["name"],
+                    action=action,
+                ).per_call_limit
+            )
+    assert contract.runtime_permissions["max_broker_calls"] == min(
+        1000,
+        sum(limits),
+    )
+
+    missing_account_role = _manifest_mapping()
+    missing_account_role["capabilities"][0]["account_role"] = None
+    with pytest.raises(PluginManifestError, match="requires exactly one account role"):
+        ServiceV2ProjectContract.from_manifest(
+            AutomationPluginManifestV2.from_mapping(missing_account_role)
+        )
+
+    unexpected_resource_role = _manifest_mapping()
+    unexpected_resource_role["capabilities"][1]["resource_role"] = "input_sheet"
+    with pytest.raises(PluginManifestError, match="does not accept a bound role"):
+        ServiceV2ProjectContract.from_manifest(
+            AutomationPluginManifestV2.from_mapping(unexpected_resource_role)
+        )
 
 
 def test_service_registry_blocks_then_automatically_recovers_dependencies() -> None:
     registry = ServiceRegistry()
     base_service = "plugin.base_plugin.runner@1"
-    consumer = AutomationPluginManifestV2.from_mapping(
-        _manifest_mapping("consumer_plugin", requires=(base_service,))
-    )
+    consumer = AutomationPluginManifestV2.from_mapping(_manifest_mapping("consumer_plugin", requires=(base_service,)))
 
     blocked = registry.register(
         automation_id="consumer-project",
@@ -452,11 +494,14 @@ def test_service_registry_replaces_one_generation_atomically_and_rejects_stale()
         generation=1,
         manifest=v1,
     )
-    assert registry.register(
-        automation_id="replace-project",
-        generation=1,
-        manifest=copy.deepcopy(v1),
-    ) == initial
+    assert (
+        registry.register(
+            automation_id="replace-project",
+            generation=1,
+            manifest=copy.deepcopy(v1),
+        )
+        == initial
+    )
 
     v2 = _manifest_mapping(
         "replace_plugin",
@@ -471,9 +516,7 @@ def test_service_registry_replaces_one_generation_atomically_and_rejects_stale()
     )
     assert replaced.generation == 2
     assert registry.provider_for("plugin.replace_plugin.runner@1") is None
-    assert registry.require_provider(
-        "plugin.replace_plugin.new_runner@2"
-    ).generation == 2
+    assert registry.require_provider("plugin.replace_plugin.new_runner@2").generation == 2
 
     with pytest.raises(StaleServiceGeneration):
         registry.register(

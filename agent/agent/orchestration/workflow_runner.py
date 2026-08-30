@@ -29,7 +29,10 @@ from agent.orchestration.models import (
     sha256_json,
 )
 from agent.orchestration.plan_validator import PlanValidator
-from agent.orchestration.planner import DeterministicPlanner
+from agent.orchestration.planner import (
+    DeterministicPlanner,
+    effective_project_capability,
+)
 from agent.orchestration.pilot_projection import PilotProjectionService
 from agent.orchestration.policy_engine import PolicyEngine
 from agent.orchestration.result_verifier import ResultVerifier
@@ -1200,7 +1203,7 @@ class WorkflowRunner:
 
     async def _execute_plan(self, run: dict[str, Any], plan: Plan, command: Command) -> dict[str, Any]:
         for order, step in enumerate(plan.steps, start=1):
-            step_row = self._get_or_create_step(run, step, order)
+            step_row = self._get_or_create_step(run, step, order, command)
             if step_row.get("status") == "COMPLETED":
                 continue
             if step_row.get("status") in {"RUNNING", "VERIFYING"}:
@@ -1217,6 +1220,7 @@ class WorkflowRunner:
             # The lock is acquired before the Step becomes RUNNING so a queued
             # write can never be recovered as though it had already started.
             capability = self._catalog.get_capability(step.tool_name) or {}
+            capability = effective_project_capability(command, capability)
             finish_execution_slot = await self._acquire_execution_slot(
                 step,
                 plan,
@@ -1594,6 +1598,7 @@ class WorkflowRunner:
         """Resolve a stale RUNNING/VERIFYING step without replaying an external write."""
 
         capability = self._catalog.get_capability(step.tool_name) or {}
+        capability = effective_project_capability(command, capability)
         operation = step.operation_type
         if operation in {OperationType.READ, OperationType.COMPUTE}:
             return self._mark_interrupted_step_retryable(
@@ -1754,7 +1759,15 @@ class WorkflowRunner:
             uow.commit()
         raise OrchestrationError(code, summary, details={"status": RunStatus.BLOCKED_DATA.value})
 
-    def _get_or_create_step(self, run: Mapping[str, Any], step: PlanStep, order: int) -> dict[str, Any]:
+    def _get_or_create_step(
+        self,
+        run: Mapping[str, Any],
+        step: PlanStep,
+        order: int,
+        command: Command,
+    ) -> dict[str, Any]:
+        capability = self._catalog.get_capability(step.tool_name) or {}
+        capability = effective_project_capability(command, capability)
         with self._repository.unit_of_work() as uow:
             persisted = uow.steps.create_or_get(
                 {
@@ -1768,7 +1781,9 @@ class WorkflowRunner:
                     "risk_level": step.risk_level.value.upper(),
                     "status": "PENDING",
                     "requires_approval": step.requires_approval,
-                    "retry_safe": bool((self._catalog.get_capability(step.tool_name) or {}).get("retry", {}).get("safe")),
+                    "retry_safe": bool(
+                        (capability.get("retry") or {}).get("safe")
+                    ),
                     "idempotency_key": step.idempotency_key,
                     "account_id": step.account_id,
                     "input_summary_json": {"arguments": dict(step.arguments)},
@@ -2412,10 +2427,21 @@ class WorkflowRunner:
         raw_plan = run.get("plan_json")
         if not isinstance(raw_plan, Mapping):
             return True
+        command_id = str(run.get("command_id") or "").strip()
+        if not command_id:
+            return False
+        try:
+            command = self._load_command(command_id)
+        except OrchestrationError:
+            return False
         for step in raw_plan.get("steps") or []:
             if not isinstance(step, Mapping):
                 return False
             capability = self._catalog.get_capability(str(step.get("tool_name") or "")) or {}
+            try:
+                capability = effective_project_capability(command, capability)
+            except OrchestrationError:
+                return False
             retry = capability.get("retry") if isinstance(capability.get("retry"), Mapping) else {}
             idempotency = (
                 capability.get("idempotency")

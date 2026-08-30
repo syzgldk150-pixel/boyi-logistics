@@ -8,6 +8,7 @@ import uuid
 from typing import Any
 from unittest import TestCase
 
+from agent.automation_plugins.host_capability_registry import governance_for_effect
 from shared.automation_plugin_repository import (
     AutomationPluginRepository,
     _configuration_target_generation,
@@ -260,6 +261,7 @@ def _project_with_witness(
 
 
 def _service_v2_witness() -> dict[str, Any]:
+    governance = governance_for_effect("external_write").to_mapping()
     return {
         "runtime_model": "SERVICE_V2",
         "allowed_entrypoints": ["manual-run", "scheduled-run"],
@@ -268,11 +270,15 @@ def _service_v2_witness() -> dict[str, Any]:
                 "service": "plugin.example.runner@1",
                 "operation": "manual",
                 "contribution_kind": "console",
+                "effect": "external_write",
+                "governance": governance,
             },
             "scheduled-run": {
                 "service": "plugin.example.runner@1",
                 "operation": "scheduled",
                 "contribution_kind": "scheduler",
+                "effect": "external_write",
+                "governance": governance,
             },
         },
         "scheduling": {
@@ -410,6 +416,9 @@ class AutomationPluginRepositoryTests(TestCase):
                     "manual-run": {
                         "arguments": {},
                         "dynamic_resolvers": {},
+                        "governance": _service_v2_witness()[
+                            "invocation_contracts"
+                        ]["manual-run"]["governance"],
                         "target": {
                             "service": "plugin.example.runner@1",
                             "operation": "wrong",
@@ -461,6 +470,7 @@ class AutomationPluginRepositoryTests(TestCase):
                     "contribution_id": entrypoint,
                     "contribution_kind": str(contract["contribution_kind"]),
                 },
+                "governance": dict(contract["governance"]),
             }
             for entrypoint, contract in witness["invocation_contracts"].items()
         }
@@ -482,6 +492,7 @@ class AutomationPluginRepositoryTests(TestCase):
                     "contribution_id": entrypoint,
                     "contribution_kind": "scheduler",
                 },
+                "governance": dict(scheduler_contract["governance"]),
             }
         project = _project_with_witness(project, witness)
         connection = _ScriptedConnection(

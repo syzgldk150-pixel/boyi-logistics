@@ -328,6 +328,7 @@ class GenerationVerificationContext:
     requires_write_verification: bool
     started_mutating_call_count: int | None = None
     orchestration_run_id: str | None = None
+    host_call_observations: tuple[Mapping[str, Any], ...] = ()
 
 
 class GenerationBoundResult(dict[str, Any]):

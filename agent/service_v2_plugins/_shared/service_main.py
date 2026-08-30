@@ -20,6 +20,7 @@ _REQUEST_FIELDS = {
     "plugin_version",
     "entrypoint",
     "target",
+    "governance",
     "arguments",
 }
 _FORBIDDEN_KEYS = ("password", "cookie", "credential", "secret", "token", "session")
@@ -64,6 +65,7 @@ def _read_request() -> dict[str, object]:
     ):
         raise ValueError("service request entrypoint is invalid")
     target = request.get("target")
+    governance = request.get("governance")
     expected_target = {
         "service": SERVICE_NAME,
         "operation": "run",
@@ -72,6 +74,14 @@ def _read_request() -> dict[str, object]:
     }
     if not isinstance(target, Mapping) or dict(target) != expected_target:
         raise ValueError("service target is invalid")
+    if (
+        not isinstance(governance, Mapping)
+        or governance.get("effect") != "external_write"
+        or governance.get("operation_type") != "external_write"
+        or governance.get("broker_effect") != "write"
+        or governance.get("harness_allowed") is not False
+    ):
+        raise ValueError("service governance is invalid")
     _reject_sensitive(request["arguments"])
     return request
 

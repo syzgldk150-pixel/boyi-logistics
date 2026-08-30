@@ -7,12 +7,22 @@ import subprocess
 import sys
 import zipfile
 from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 from agent.automation_plugins.package_v2 import extract_verified_plugin_package_v2, verify_unsigned_plugin_zip_v2
+from agent.automation_plugins.host_capability_registry import governance_for_effect
+from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
+from agent.automation_plugins.models import (
+    GenerationBoundResult,
+    GenerationVerificationContext,
+    RuntimeLeaseOutcome,
+)
 from agent.automation_plugins.service_v2_contract import ServiceV2ProjectContract
+from agent.orchestration.models import OperationType, PlanStep, RiskLevel
+from agent.orchestration.result_verifier import ResultVerifier
 from service_v2_plugins._shared.build_zip import build_plugin_zip
 from service_v2_plugins._shared.clock_runtime import run_clock_service
 
@@ -60,31 +70,35 @@ def _successful_broker(arguments: dict[str, object]) -> tuple[Callable[..., obje
     expected_site = _site(arguments)
 
     def broker(operation: str, *, action: str, role: str, arguments: dict[str, object]) -> object:
-        calls.append(
-            {
-                "operation": operation,
-                "action": action,
-                "role": role,
-                "arguments": arguments,
-            }
-        )
+        call = {
+            "operation": operation,
+            "action": action,
+            "role": role,
+            "arguments": arguments,
+        }
+        calls.append(call)
+
+        def complete(result: dict[str, object]) -> dict[str, object]:
+            call["result"] = deepcopy(result)
+            return result
+
         if action == "ronghui.clock.precheck":
-            return {
+            return complete({
                 "ready": True,
                 "site": expected_site,
                 "clock_types": ["arrival", "departure"],
                 "evidence_ref": "evidence:precheck",
-            }
+            })
         if action == "ronghui.clock.submit":
             clock_type = str(arguments["clock_type"])
-            return {
+            return complete({
                 "accepted": True,
                 "operation_id": f"operation:{clock_type}",
                 "evidence_ref": f"evidence:submit:{clock_type}",
-            }
+            })
         if action == "ronghui.clock.verify":
             clock_type = str(arguments["clock_type"])
-            return {
+            return complete({
                 "confirmed": True,
                 "operation_id": arguments["operation_id"],
                 "clock_type": clock_type,
@@ -93,7 +107,7 @@ def _successful_broker(arguments: dict[str, object]) -> tuple[Callable[..., obje
                 "outcome_category": "confirmed",
                 "observed_at": "2026-08-30T10:00:00+08:00",
                 "evidence_ref": f"evidence:verify:{clock_type}",
-            }
+            })
         raise AssertionError(action)
 
     return broker, calls
@@ -103,6 +117,105 @@ def _build(source: Path, output: Path) -> bytes:
     built = build_plugin_zip(source, output)
     assert built == output.resolve()
     return built.read_bytes()
+
+
+def _verified_clock_contract(plugin_id: str):
+    metadata = PACKAGES[plugin_id]
+    arguments = _arguments(str(metadata["site"]))
+    broker, calls = _successful_broker(arguments)
+    result = run_clock_service(
+        arguments,
+        broker,
+        expected_site_name=str(metadata["site"]),
+        service_name=str(metadata["service"]),
+    )
+    manifest = AutomationPluginManifestV2.from_mapping(
+        json.loads((metadata["source"] / "manifest.json").read_text(encoding="utf-8"))
+    )
+    projected = ServiceV2ProjectContract.from_manifest(manifest)
+    invocation = projected.invocation_contracts["manual_run"]
+    capability = {
+        **dict(projected.tool_contract),
+        "_plugin_runtime": {
+            "runtime_model": "SERVICE_V2",
+            "compiled_invocations": {
+                "manual_run": {
+                    "arguments": {},
+                    "dynamic_resolvers": {},
+                    "target": {
+                        "service": invocation["service"],
+                        "operation": invocation["operation"],
+                        "contribution_id": "manual_run",
+                        "contribution_kind": "console",
+                    },
+                    "governance": invocation["governance"],
+                }
+            },
+        },
+    }
+    step = PlanStep(
+        step_key="clock",
+        tool_name=str(capability["name"]),
+        tool_version=str(capability["version"]),
+        operation_type=OperationType.EXTERNAL_WRITE,
+        arguments=arguments,
+        account_id="account-1",
+        depends_on=(),
+        idempotency_key="clock-result-verification",
+        expected_evidence=(dict(capability["evidence"]),),
+        postconditions=tuple(capability["postconditions"]),
+        risk_level=RiskLevel.HIGH,
+    )
+    observations = tuple(
+        {
+            "request_id": f"00000000-0000-4000-8000-{index:012d}",
+            "operation": str(call["operation"]),
+            "action": str(call["action"]),
+            "role": str(call["role"]),
+            "arguments_sha256": hashlib.sha256(
+                json.dumps(
+                    call["arguments"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+            "write_started": call["action"] == "ronghui.clock.submit",
+            "evidence_ref": str(call["result"]["evidence_ref"]),
+            "result": deepcopy(call["result"]),
+        }
+        for index, call in enumerate(calls, start=1)
+    )
+    return step, result, capability, observations
+
+
+class _ClockGenerationLeases:
+    def __init__(self) -> None:
+        self.outcomes: list[RuntimeLeaseOutcome] = []
+
+    def finalize_generation_write(self, **values: object) -> None:
+        self.outcomes.append(values["outcome"])
+
+
+def _generation_bound_clock(
+    result: dict[str, object],
+    *,
+    started_mutating_calls: int = 2,
+    host_call_observations: tuple[dict[str, object], ...] = (),
+) -> GenerationBoundResult:
+    return GenerationBoundResult(
+        result,
+        verification=GenerationVerificationContext(
+            automation_id="clock-project",
+            generation=1,
+            lease_id="11111111-1111-4111-8111-111111111111",
+            account_ids=("account-1",),
+            account_bindings_sha256="a" * 64,
+            requires_write_verification=True,
+            started_mutating_call_count=started_mutating_calls,
+            host_call_observations=host_call_observations,
+        ),
+    )
 
 
 def test_both_clock_packages_build_deterministically_and_validate_as_independent_v2_zips(
@@ -183,12 +296,120 @@ def test_both_clock_packages_build_deterministically_and_validate_as_independent
         }
         assert [item["effect"] for item in projected.runtime_permissions["broker_operations"]] == [
             "read",
-            "write",
+            "external_write",
             "read",
         ]
 
     assert verified["clockin_daxiang_v2"].package_sha256 != verified["clockin_daxiang_s_v2"].package_sha256
     assert verified["clockin_daxiang_v2"].manifest_sha256 != verified["clockin_daxiang_s_v2"].manifest_sha256
+
+
+@pytest.mark.parametrize("plugin_id", tuple(PACKAGES))
+def test_clock_result_closes_generation_evidence_and_indexed_postcondition(
+    plugin_id: str,
+) -> None:
+    step, result, capability, observations = _verified_clock_contract(plugin_id)
+    leases = _ClockGenerationLeases()
+
+    outcome = ResultVerifier(leases).verify(
+        step,
+        _generation_bound_clock(result, host_call_observations=observations),
+        capability,
+    )
+
+    assert outcome.accepted is True
+    assert leases.outcomes == [RuntimeLeaseOutcome.WRITE_VERIFIED]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda result: result["data"]["evidence"].pop("outcome"),
+        lambda result: result["data"]["results"][0]["site"].update(
+            {"sitename": "另一个站点"}
+        ),
+        lambda result: result["meta"]["postcondition_evidence"]["0"][
+            "details"
+        ]["result_summary"]["evidence"].update({"outcome": "UNVERIFIED"}),
+        lambda result: result["meta"]["evidence_refs"].append(
+            result["meta"]["evidence_refs"][-1]
+        ),
+        lambda result: result["meta"].update(
+            {"postconditions": {"plugin_result_contract_valid": True}}
+        ),
+    ),
+)
+def test_clock_result_tampering_never_finalizes_as_verified(mutation) -> None:
+    step, base_result, capability, observations = _verified_clock_contract(
+        "clockin_daxiang_v2"
+    )
+    result = deepcopy(base_result)
+    mutation(result)
+    leases = _ClockGenerationLeases()
+
+    outcome = ResultVerifier(leases).verify(
+        step,
+        _generation_bound_clock(result, host_call_observations=observations),
+        capability,
+    )
+
+    assert outcome.accepted is False
+    assert leases.outcomes == [RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN]
+
+
+def test_clock_result_without_started_write_receipt_is_rejected() -> None:
+    step, result, capability, observations = _verified_clock_contract(
+        "clockin_daxiang_v2"
+    )
+    leases = _ClockGenerationLeases()
+
+    outcome = ResultVerifier(leases).verify(
+        step,
+        _generation_bound_clock(
+            result,
+            started_mutating_calls=0,
+            host_call_observations=observations,
+        ),
+        capability,
+    )
+
+    assert outcome.accepted is False
+    assert outcome.code == "GENERATION_WRITE_BOUNDARY_INVALID"
+    assert leases.outcomes == [RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN]
+
+
+def test_clock_result_cannot_omit_dual_clock_marker_after_one_started_write() -> None:
+    step, base_result, capability, observations = _verified_clock_contract(
+        "clockin_daxiang_v2"
+    )
+    result = deepcopy(base_result)
+    result["data"]["evidence"].pop("both_third_party_clock_ins_confirmed")
+    result["data"].pop("results")
+    partial_observations = observations[:2]
+    partial_refs = [
+        str(observation["result"]["evidence_ref"])
+        for observation in partial_observations
+    ]
+    result["meta"]["evidence_refs"] = partial_refs
+    proof = result["meta"]["postcondition_evidence"]["0"]
+    proof["evidence_ref"] = partial_refs[-1]
+    proof["details"]["evidence_refs"] = partial_refs
+    proof["details"]["result_summary"] = deepcopy(result["data"])
+    leases = _ClockGenerationLeases()
+
+    outcome = ResultVerifier(leases).verify(
+        step,
+        _generation_bound_clock(
+            result,
+            started_mutating_calls=1,
+            host_call_observations=partial_observations,
+        ),
+        capability,
+    )
+
+    assert outcome.accepted is False
+    assert outcome.code == "POSTCONDITION_UNVERIFIED"
+    assert leases.outcomes == [RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN]
 
 
 def test_built_packages_have_only_declarative_manifest_and_compilable_python_modules(
@@ -255,7 +476,7 @@ def test_package_entrypoint_accepts_the_execution_schema_v2_runtime_discriminato
         "runtime_model": "SERVICE_V2",
         "automation_id": f"{plugin_id}-project",
         "plugin_id": plugin_id,
-        "plugin_version": "1.0.0",
+        "plugin_version": "1.1.0",
         "entrypoint": entrypoint,
         "target": {
             "service": metadata["service"],
@@ -263,12 +484,13 @@ def test_package_entrypoint_accepts_the_execution_schema_v2_runtime_discriminato
             "contribution_id": contribution_id,
             "contribution_kind": contribution_kind,
         },
+        "governance": governance_for_effect("external_write").to_mapping(),
         "arguments": _arguments(str(metadata["site"])),
     }
     environment = {
         "BOYI_AUTOMATION_ID": request["automation_id"],
         "BOYI_PLUGIN_ID": plugin_id,
-        "BOYI_PLUGIN_VERSION": "1.0.0",
+        "BOYI_PLUGIN_VERSION": "1.1.0",
         "PYTHONIOENCODING": "utf-8",
     }
 

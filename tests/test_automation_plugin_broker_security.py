@@ -20,7 +20,17 @@ from agent.automation_plugins.broker import (
 from agent.automation_plugins.code_owned_fields import apply_scan_execution_boundary
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.execution import PluginExecutionRouter
+from agent.automation_plugins.host_capability_registry import (
+    CapabilityEffect,
+    HOST_CAPABILITY_API_VERSION,
+    default_host_capability_registry,
+    governance_for_effect,
+)
 from agent.automation_plugins.sdk import PLUGIN_SDK_SOURCE
+from agent.tool_registry import validate_schema_instance
+from service_v2_plugins._shared.boyi_plugin_sdk import (
+    broker_call as service_v2_broker_call,
+)
 
 
 @pytest.mark.parametrize(
@@ -55,7 +65,11 @@ def test_broker_accepts_signed_requests_larger_than_asyncio_default_limit(
         async def invoke(self, *, arguments, **_kwargs):
             return {"observed_length": len(arguments["payload"])}
 
-    async def invoke() -> dict[str, object]:
+    async def invoke() -> tuple[
+        dict[str, object],
+        tuple[Mapping[str, object], ...],
+        str,
+    ]:
         socket_path = tmp_path / "broker.sock"
         issuer = LocalBrokerCapabilityIssuer(socket_path)
         broker = LocalCoreAutomationBroker(issuer=issuer, adapter=LargeReadAdapter())
@@ -86,9 +100,10 @@ def test_broker_accepts_signed_requests_larger_than_asyncio_default_limit(
                 resource_bindings={},
             )
             reader, writer = await asyncio.open_unix_connection(str(socket_path))
+            request_id = str(uuid.uuid4())
             request = {
                 "schema_version": 1,
-                "request_id": str(uuid.uuid4()),
+                "request_id": request_id,
                 "capability": capability,
                 "operation": "browser.invoke",
                 "action": "source.read",
@@ -100,13 +115,197 @@ def test_broker_accepts_signed_requests_larger_than_asyncio_default_limit(
             response = json.loads((await reader.readline()).decode("utf-8"))
             writer.close()
             await writer.wait_closed()
-            return response
+            return response, issuer.broker_call_observations(capability), request_id
         finally:
             await broker.stop()
 
-    response = asyncio.run(invoke())
+    response, observations, request_id = asyncio.run(invoke())
 
     assert response == {"ok": True, "data": {"observed_length": 70_000}}
+    assert len(observations) == 1
+    observation = observations[0]
+    assert observation["request_id"] == request_id
+    assert observation["operation"] == "browser.invoke"
+    assert observation["action"] == "source.read"
+    assert observation["role"] == "source"
+    assert observation["write_started"] is False
+    assert observation["result"] == {"observed_length": 70_000}
+    assert len(str(observation["arguments_sha256"])) == 64
+
+
+def test_service_invoke_receives_a_distinct_outer_host_evidence_ref(
+    tmp_path: Path,
+) -> None:
+    provider_ref = "provider:evidence:read"
+
+    class ProviderAdapter:
+        async def invoke(self, **_kwargs):
+            return {
+                "status": "SUCCESS",
+                "data": {"rows": []},
+                "meta": {"evidence_refs": [provider_ref]},
+                "warnings": [],
+                "error": None,
+            }
+
+    async def invoke():
+        socket_path = tmp_path / "service-broker.sock"
+        issuer = LocalBrokerCapabilityIssuer(socket_path)
+        broker = LocalCoreAutomationBroker(issuer=issuer, adapter=ProviderAdapter())
+        governance = governance_for_effect(CapabilityEffect.EXTERNAL_WRITE)
+        await broker.start()
+        try:
+            capability = issuer.issue(
+                automation_id="consumer-project",
+                plugin_version="1.0.0",
+                tool_name="service.consumer",
+                ttl_seconds=60,
+                runtime_permissions={
+                    "browser": False,
+                    "network": False,
+                    "office": False,
+                    "file_roles": [],
+                    "max_broker_calls": 1,
+                    "_service_effect_ceiling": "read",
+                    "broker_operations": [
+                        {
+                            "operation": "service.invoke",
+                            "action": "get",
+                            "roles": ["__system__"],
+                            "effect": governance.effect.value,
+                            "broker_effect": governance.broker_effect,
+                            "governance": governance.to_mapping(),
+                            "dynamic_effect": True,
+                        }
+                    ],
+                },
+                account_roles=(),
+                resource_roles=(),
+                account_bindings={},
+                resource_bindings={},
+            )
+            reader, writer = await asyncio.open_unix_connection(str(socket_path))
+            request = {
+                "schema_version": 1,
+                "request_id": str(uuid.uuid4()),
+                "capability": capability,
+                "operation": "service.invoke",
+                "action": "get",
+                "role": "__system__",
+                "arguments": {
+                    "service": "plugin.provider.reader@1",
+                    "operation": "get",
+                    "arguments": {},
+                },
+            }
+            writer.write(
+                (json.dumps(request, separators=(",", ":")) + "\n").encode(
+                    "utf-8"
+                )
+            )
+            await writer.drain()
+            response = json.loads((await reader.readline()).decode("utf-8"))
+            writer.close()
+            await writer.wait_closed()
+            return response, issuer.broker_call_observations(capability)
+        finally:
+            await broker.stop()
+
+    response, observations = asyncio.run(invoke())
+
+    outer_ref = response["host_evidence_ref"]
+    assert outer_ref.startswith("host-call:")
+    assert outer_ref != provider_ref
+    assert "evidence_ref" not in response["data"]
+    assert response["data"]["meta"]["evidence_refs"] == [provider_ref]
+    assert observations[0]["evidence_ref"] == outer_ref
+    assert "evidence_ref" not in observations[0]["result"]
+
+
+def test_sdk_exposes_host_evidence_as_out_of_band_result_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class StorageAdapter:
+        async def invoke(self, **_kwargs):
+                return {
+                    "found": True,
+                    "value": {"status": "ready"},
+                    "version": 1,
+                }
+
+    async def invoke():
+        socket_path = tmp_path / "storage-broker.sock"
+        issuer = LocalBrokerCapabilityIssuer(socket_path)
+        broker = LocalCoreAutomationBroker(issuer=issuer, adapter=StorageAdapter())
+        await broker.start()
+        try:
+            governance = governance_for_effect(CapabilityEffect.READ)
+            capability = issuer.issue(
+                automation_id="storage-project",
+                plugin_version="1.0.0",
+                tool_name="service.storage-reader",
+                ttl_seconds=60,
+                runtime_permissions={
+                    "browser": False,
+                    "network": False,
+                    "office": False,
+                    "file_roles": [],
+                    "max_broker_calls": 1,
+                    "broker_operations": [
+                        {
+                            "operation": "storage.kv",
+                            "action": "get",
+                            "roles": ["__system__"],
+                            "effect": governance.effect.value,
+                            "broker_effect": governance.broker_effect,
+                            "governance": governance.to_mapping(),
+                            "dynamic_effect": False,
+                        }
+                    ],
+                },
+                account_roles=(),
+                resource_roles=(),
+                account_bindings={},
+                resource_bindings={},
+            )
+            monkeypatch.setenv(
+                "BOYI_PLUGIN_BROKER_ENDPOINT", f"unix://{socket_path}"
+            )
+            monkeypatch.setenv("BOYI_PLUGIN_EXECUTION_CAPABILITY", capability)
+            monkeypatch.setenv("BOYI_PLUGIN_BROKER_CALL_TIMEOUT", "60")
+            result = await asyncio.to_thread(
+                service_v2_broker_call,
+                "storage.kv",
+                action="get",
+                role="__system__",
+                arguments={"key": "state"},
+            )
+            return result, issuer.broker_call_observations(capability)
+        finally:
+            await broker.stop()
+
+    result, observations = asyncio.run(invoke())
+
+    assert result == {
+        "found": True,
+        "value": {"status": "ready"},
+        "version": 1,
+    }
+    assert "evidence_ref" not in result
+    assert result.host_evidence_ref.startswith("host-call:")
+    assert observations[0]["evidence_ref"] == result.host_evidence_ref
+    assert observations[0]["result"] == dict(result)
+    descriptor = default_host_capability_registry().resolve(
+        api_version=HOST_CAPABILITY_API_VERSION,
+        capability="storage.kv",
+        action="get",
+    )
+    validate_schema_instance(
+        "storage.kv.get Broker data",
+        dict(result),
+        descriptor.output_schema,
+    )
 
 
 def test_sdk_compresses_and_broker_accepts_snapshot_larger_than_legacy_limit(

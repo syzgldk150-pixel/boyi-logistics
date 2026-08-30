@@ -13,6 +13,11 @@ from agent.automation_plugins.models import (
     GenerationVerificationContext,
     RuntimeLeaseOutcome,
 )
+from agent.automation_plugins.host_capability_registry import (
+    CapabilityEffect,
+    HOST_CAPABILITY_API_VERSION,
+    default_host_capability_registry,
+)
 from agent.automation_plugins.migration import PluginMigrationRuntimeCoordinator
 from agent.automation_plugins.code_owned_fields import (
     SCAN_FORMAL_POSTCONDITION,
@@ -38,12 +43,20 @@ class VerificationOutcome:
 
 class ResultVerifier:
     _SERVICE_V2_RUNTIME_MODEL = "SERVICE_V2"
-    _SERVICE_V2_DIRECT_WRITE_EFFECTS = frozenset({"external_write", "destructive"})
+    _SERVICE_V2_DIRECT_WRITE_EFFECTS = frozenset(
+        {"internal_write", "external_write", "destructive"}
+    )
     _SERVICE_V2_WRITE_POSTCONDITION = "plugin_result_contract_valid"
     _SERVICE_V2_REQUIRED_EVIDENCE_FIELDS = frozenset(
         {"service", "operation", "outcome"}
     )
     _CLOCK_SITE_FIELDS = ("sitecode", "sitefbcode", "sitename", "sitefbname")
+    _CLOCK_SERVICE_TARGETS = frozenset(
+        {
+            ("plugin.clockin_daxiang_v2.clock@1", "run"),
+            ("plugin.clockin_daxiang_s_v2.clock@1", "run"),
+        }
+    )
     REQUIRED_META_FIELDS = frozenset(
         {"source_system", "account_id", "observed_at", "record_count", "pagination_complete", "evidence_refs"}
     )
@@ -139,6 +152,11 @@ class ResultVerifier:
             return self._failure(exc.code, exc.message)
         if normalized.status != "SUCCESS":
             return self._classified_failure(normalized.to_dict())
+        if self._is_service_v2(capability) and generation_verification is None:
+            return self._failure(
+                "GENERATION_LEASE_INVALID",
+                "Service v2 success lacks committed generation evidence",
+            )
 
         missing_meta = sorted(field for field in self.REQUIRED_META_FIELDS if field not in normalized.meta)
         if missing_meta:
@@ -219,6 +237,7 @@ class ResultVerifier:
             capability=capability,
             normalized=normalized,
             evidence_requirements=evidence_requirements,
+            generation_verification=generation_verification,
         )
         if service_v2_evidence_error is not None:
             return service_v2_evidence_error
@@ -440,6 +459,7 @@ class ResultVerifier:
         capability: Mapping[str, Any],
         normalized: ToolResult,
         evidence_requirements: list[Any],
+        generation_verification: GenerationVerificationContext | None,
     ) -> VerificationOutcome | None:
         if not cls._is_service_v2_direct_write(step, capability):
             return None
@@ -454,6 +474,12 @@ class ResultVerifier:
                 "INVALID_TOOL_EVIDENCE",
                 "Service v2 write contract must contain exactly one required evidence declaration",
             )
+        effect = str(capability.get("effect") or "").strip().lower()
+        expected_required_fields = (
+            {"outcome"}
+            if effect == "internal_write"
+            else cls._SERVICE_V2_REQUIRED_EVIDENCE_FIELDS
+        )
         required_fields = required_contracts[0].get("required_fields")
         if (
             not isinstance(required_fields, list)
@@ -462,18 +488,20 @@ class ResultVerifier:
                 for field in required_fields
             )
             or len(required_fields) != len(set(required_fields))
-            or set(required_fields) != cls._SERVICE_V2_REQUIRED_EVIDENCE_FIELDS
+            or set(required_fields) != expected_required_fields
         ):
             return cls._failure(
                 "INVALID_TOOL_EVIDENCE",
-                "Service v2 write evidence must require service, operation and outcome",
+                "Service v2 write evidence required_fields do not match its effect",
             )
 
-        expected_service, expected_operation, contract_error = cls._service_v2_expected_target(
-            capability
-        )
-        if contract_error is not None:
-            return contract_error
+        expected_service = expected_operation = None
+        if effect != "internal_write":
+            expected_service, expected_operation, contract_error = (
+                cls._service_v2_expected_target(capability)
+            )
+            if contract_error is not None:
+                return contract_error
         evidence = normalized.data.get("evidence")
         if not isinstance(evidence, Mapping):
             return cls._blocked_service_v2_result(
@@ -485,11 +513,7 @@ class ResultVerifier:
             not cls._valid_observed_at(observed_at)
             or not isinstance(normalized.meta.get("source_system"), str)
             or not normalized.meta.get("source_system", "").strip()
-            or evidence.get("service") != expected_service
-            or evidence.get("operation") != expected_operation
             or evidence.get("outcome") != "WRITE_VERIFIED"
-            or not isinstance(evidence.get("service"), str)
-            or not isinstance(evidence.get("operation"), str)
             or not isinstance(evidence.get("outcome"), str)
             or normalized.meta.get("write_outcome") != "WRITE_VERIFIED"
         ):
@@ -497,6 +521,26 @@ class ResultVerifier:
                 normalized,
                 "Service v2 write evidence identity or outcome is inconsistent",
             )
+        if effect != "internal_write" and (
+            evidence.get("service") != expected_service
+            or evidence.get("operation") != expected_operation
+            or not isinstance(evidence.get("service"), str)
+            or not isinstance(evidence.get("operation"), str)
+        ):
+            return cls._blocked_service_v2_result(
+                normalized,
+                "Service v2 write evidence target is inconsistent",
+            )
+        host_error = cls._service_v2_host_observation_error(
+            step=step,
+            normalized=normalized,
+            generation_verification=generation_verification,
+            service=expected_service,
+            operation=expected_operation,
+            effect=effect,
+        )
+        if host_error is not None:
+            return cls._blocked_service_v2_result(normalized, host_error)
         if "observed_at" in evidence and (
             not cls._valid_observed_at(evidence.get("observed_at"))
             or evidence.get("observed_at") != observed_at
@@ -508,9 +552,152 @@ class ResultVerifier:
         identity_error = cls._service_v2_identity_error(normalized.data)
         if identity_error is not None:
             return cls._blocked_service_v2_result(normalized, identity_error)
-        clock_error = cls._service_v2_clock_result_error(step, normalized)
+        clock_error = cls._service_v2_clock_result_error(
+            step,
+            normalized,
+            service=expected_service,
+            operation=expected_operation,
+        )
         if clock_error is not None:
             return cls._blocked_service_v2_result(normalized, clock_error)
+        return None
+
+    @classmethod
+    def _service_v2_host_observation_error(
+        cls,
+        *,
+        step: PlanStep,
+        normalized: ToolResult,
+        generation_verification: GenerationVerificationContext | None,
+        service: str | None,
+        operation: str | None,
+        effect: str,
+    ) -> str | None:
+        """Close plugin evidence against the Broker's Python-only side channel."""
+
+        if generation_verification is None:
+            return "Service v2 write lacks Host call observations"
+        observations = generation_verification.host_call_observations
+        if not isinstance(observations, tuple) or not observations:
+            return "Service v2 write lacks Host call observations"
+        required_fields = {
+            "request_id",
+            "operation",
+            "action",
+            "role",
+            "arguments_sha256",
+            "write_started",
+            "evidence_ref",
+            "result",
+        }
+        host_refs: list[str] = []
+        started_count = 0
+        for observation in observations:
+            if (
+                not isinstance(observation, Mapping)
+                or set(observation) != required_fields
+                or not cls._non_empty_contract_text(observation.get("request_id"))
+                or not cls._non_empty_contract_text(observation.get("operation"))
+                or not cls._non_empty_contract_text(observation.get("action"))
+                or not cls._non_empty_contract_text(observation.get("role"))
+                or not isinstance(observation.get("arguments_sha256"), str)
+                or len(str(observation.get("arguments_sha256"))) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in str(observation.get("arguments_sha256"))
+                )
+                or type(observation.get("write_started")) is not bool
+                or not cls._non_empty_contract_text(observation.get("evidence_ref"))
+                or not isinstance(observation.get("result"), Mapping)
+            ):
+                return "Service v2 Host call observation is invalid"
+            if observation["write_started"] is True:
+                started_count += 1
+            host_refs.append(str(observation["evidence_ref"]))
+        if started_count != generation_verification.started_mutating_call_count:
+            return "Service v2 result evidence does not match Host-observed calls"
+        if effect == CapabilityEffect.INTERNAL_WRITE.value:
+            started_observations = tuple(
+                observation
+                for observation in observations
+                if observation["write_started"] is True
+            )
+            if not started_observations:
+                return "Service v2 internal write lacks Host-observed mutation evidence"
+            for observation in started_observations:
+                try:
+                    descriptor = default_host_capability_registry().resolve(
+                        api_version=HOST_CAPABILITY_API_VERSION,
+                        capability=str(observation["operation"]),
+                        action=str(observation["action"]),
+                    )
+                except Exception:
+                    return "Service v2 internal write used an unregistered Host mutation"
+                if descriptor.governance.effect is not CapabilityEffect.INTERNAL_WRITE:
+                    return "Service v2 internal write Host effect is inconsistent"
+        if (
+            len(host_refs) != len(observations)
+            or normalized.meta.get("evidence_refs") != host_refs
+        ):
+            return "Service v2 result evidence does not match Host-observed calls"
+
+        if (service, operation) not in cls._CLOCK_SERVICE_TARGETS:
+            return None
+        expected_actions = (
+            "ronghui.clock.precheck",
+            "ronghui.clock.submit",
+            "ronghui.clock.verify",
+            "ronghui.clock.submit",
+            "ronghui.clock.verify",
+        )
+        if tuple(str(item["action"]) for item in observations) != expected_actions:
+            return "Dual clock Host call sequence is incomplete"
+        expected_site = {
+            field: str(step.arguments.get(field) or "").strip()
+            for field in cls._CLOCK_SITE_FIELDS
+        }
+        expected_types = (
+            str(step.arguments.get("first_type") or "").strip(),
+            str(step.arguments.get("second_type") or "").strip(),
+        )
+        precheck = observations[0]["result"]
+        if (
+            precheck.get("ready") is not True
+            or precheck.get("site") != expected_site
+            or precheck.get("clock_types") != list(expected_types)
+            or any(
+                observations[index]["write_started"] is not (index in {1, 3})
+                for index in range(len(observations))
+            )
+        ):
+            return "Dual clock Host precheck or write receipts are inconsistent"
+        plugin_results = normalized.data.get("results")
+        if not isinstance(plugin_results, list) or len(plugin_results) != 2:
+            return "Dual clock result summary is invalid"
+        for result_index, (submit_index, verify_index) in enumerate(((1, 2), (3, 4))):
+            submit = observations[submit_index]["result"]
+            verified = observations[verify_index]["result"]
+            plugin_result = plugin_results[result_index]
+            if (
+                not isinstance(plugin_result, Mapping)
+                or submit.get("accepted") is not True
+                or submit.get("operation_id") != verified.get("operation_id")
+                or verified.get("clock_type") != expected_types[result_index]
+                or verified.get("site") != expected_site
+                or any(
+                    plugin_result.get(field_name) != verified.get(field_name)
+                    for field_name in (
+                        "confirmed",
+                        "operation_id",
+                        "clock_type",
+                        "outcome_category",
+                        "observed_at",
+                        "evidence_ref",
+                        "site",
+                    )
+                )
+            ):
+                return "Dual clock result does not match Host verification"
         return None
 
     @classmethod
@@ -540,14 +727,18 @@ class ResultVerifier:
         cls,
         step: PlanStep,
         normalized: ToolResult,
+        *,
+        service: str | None,
+        operation: str | None,
     ) -> str | None:
         evidence = normalized.data.get("evidence")
         results = normalized.data.get("results")
-        if not isinstance(evidence, Mapping) or (
-            "both_third_party_clock_ins_confirmed" not in evidence
-        ):
+        if (service, operation) not in cls._CLOCK_SERVICE_TARGETS:
             return None
-        if evidence.get("both_third_party_clock_ins_confirmed") is not True:
+        if (
+            not isinstance(evidence, Mapping)
+            or evidence.get("both_third_party_clock_ins_confirmed") is not True
+        ):
             return "Dual clock result did not prove both independent confirmations"
         if normalized.meta.get("source_system") != "ronghui":
             return "Dual clock result source system is not Ronghui"
@@ -653,7 +844,7 @@ class ResultVerifier:
         required_proof_fields = {"condition", "verified", "observed_at", "evidence_ref", "details"}
         if (
             not isinstance(proof, Mapping)
-            or not required_proof_fields <= set(proof)
+            or set(proof) != required_proof_fields
             or proof.get("condition") != cls._SERVICE_V2_WRITE_POSTCONDITION
             or proof.get("verified") is not True
             or not cls._valid_observed_at(proof.get("observed_at"))
@@ -971,6 +1162,15 @@ class ResultVerifier:
                     "Plugin read execution has no authoritative zero-write proof",
                 )
             return outcome
+        if (
+            not isinstance(verification.started_mutating_call_count, int)
+            or isinstance(verification.started_mutating_call_count, bool)
+            or verification.started_mutating_call_count <= 0
+        ):
+            outcome = self._failure(
+                "GENERATION_WRITE_BOUNDARY_INVALID",
+                "Plugin write success has no authoritative started-write receipt",
+            )
         if self._generation_leases is None:
             return self._failure(
                 "GENERATION_VERIFIER_UNAVAILABLE",

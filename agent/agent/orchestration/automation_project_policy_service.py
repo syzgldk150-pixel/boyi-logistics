@@ -1842,7 +1842,7 @@ class AutomationProjectPolicyService:
         for raw_entrypoint, raw_contract in compiled_invocations.items():
             expected_fields = {"arguments", "dynamic_resolvers"}
             if entry.runtime_model == "SERVICE_V2":
-                expected_fields.add("target")
+                expected_fields.update({"target", "governance"})
             if not isinstance(raw_contract, Mapping) or set(raw_contract) != expected_fields:
                 raise AutomationProjectContractError(
                     "PLUGIN_RUNTIME_SNAPSHOT_INVALID"

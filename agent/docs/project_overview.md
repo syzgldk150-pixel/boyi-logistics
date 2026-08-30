@@ -4,7 +4,7 @@ type: 架构文档
 tags: [项目总览, Agent控制平面, 事项中心, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [control_plane_v1.md, code_navigation_index.md, database_migrations.md, ocr/module_overview.md, finance_module.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: active
-updated: 2026-08-30
+updated: 2026-08-31
 ---
 
 # 物流 Agent 项目总览
@@ -30,6 +30,10 @@ updated: 2026-08-30
 - `SERVICE_V2` 是无签名、仅由已验证 Console `super_admin` 安装的 ZIP 服务包，严格按
   `schema_version=2 + runtime_model=service_v2` 分流；开发、能力、托管存储和双轨迁移的权威说明见
   仓库根 `docs/plugin-platform-v2.md`。
+- Service v2 Host API 由 `agent/automation_plugins/host_capability_registry.py` 按精确 API/capability/action
+  管理 Schema、handler 和五态 effect；Provider 操作以 `{name,effect}` 声明，Host capability 的 action
+  仍是字符串且 effect 只能由 Registry 给出。逐 contribution governance 会进入 generation、Plan、锁、
+  Evidence 和 ResultVerifier，禁止按名称或 lifecycle effect 猜测。
 - 两种运行模型继续并存，解析失败不得跨模型回退；v1 项目不能原地升级成 v2，迁移必须建立独立
   v2 项目并行验证。
 

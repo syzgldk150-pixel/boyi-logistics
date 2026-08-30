@@ -300,6 +300,12 @@ class ExecutionCapabilityIssuerPort(Protocol):
     def started_mutating_call_count(self, capability: str) -> int:
         """Return only signed writes started for this exact capability."""
 
+    def broker_call_observations(
+        self,
+        capability: str,
+    ) -> Sequence[Mapping[str, object]]:
+        """Return successful Host-observed Broker calls for this capability."""
+
 
 @runtime_checkable
 class FirstPartyPackageProvider(Protocol):

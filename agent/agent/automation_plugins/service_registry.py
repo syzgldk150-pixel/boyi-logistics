@@ -9,6 +9,7 @@ from threading import RLock
 from typing import Any, Mapping
 
 from agent.automation_plugins.errors import AutomationPluginError, PluginConflictError
+from agent.automation_plugins.host_capability_registry import CapabilityEffect
 from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
 
 
@@ -49,7 +50,7 @@ class DependencyBlockReason:
 @dataclass(frozen=True)
 class ServiceProvider:
     service: str
-    operations: tuple[str, ...]
+    operation_effects: tuple[tuple[str, CapabilityEffect], ...]
     automation_id: str
     generation: int
     plugin_id: str
@@ -58,6 +59,42 @@ class ServiceProvider:
     manifest_sha256: str
     runtime_mode: str
     active: bool
+    requested_operation: str | None = None
+
+    @property
+    def operations(self) -> tuple[str, ...]:
+        """The immutable operation names, retained for safe read projections."""
+
+        return tuple(name for name, _effect in self.operation_effects)
+
+    @property
+    def effect(self) -> CapabilityEffect:
+        """The authoritative effect for a value returned by ``require_operation``."""
+
+        if self.requested_operation is None:
+            raise ServiceOperationUnavailable(
+                "service Provider has no selected operation",
+                code="SERVICE_OPERATION_UNDECLARED",
+            )
+        for name, effect in self.operation_effects:
+            if name == self.requested_operation:
+                return effect
+        raise ServiceOperationUnavailable(
+            "service Provider selected an undeclared operation",
+            code="SERVICE_OPERATION_UNDECLARED",
+        )
+
+    def effect_for(self, operation: str) -> CapabilityEffect:
+        """Return the immutable effect for one exact Provider operation."""
+
+        normalized = _validate_operation_name(operation)
+        for name, effect in self.operation_effects:
+            if name == normalized:
+                return effect
+        raise ServiceOperationUnavailable(
+            f"service operation is not declared: {self.service}/{normalized}",
+            code="SERVICE_OPERATION_UNDECLARED",
+        )
 
 
 @dataclass(frozen=True)
@@ -116,6 +153,45 @@ def _validate_sha256(value: object, field: str) -> str:
     if _SHA256_RE.fullmatch(normalized) is None:
         raise ServiceRegistryError(f"{field} must be a lowercase SHA-256 digest")
     return normalized
+
+
+def _validate_operation_name(value: object) -> str:
+    normalized = str(value or "").strip()
+    if not normalized or normalized != value or len(normalized) > 191:
+        raise ServiceOperationUnavailable(
+            "service operation is invalid",
+            code="SERVICE_OPERATION_UNDECLARED",
+        )
+    return normalized
+
+
+def _normalize_operation_effects(
+    value: object,
+) -> tuple[tuple[str, CapabilityEffect], ...]:
+    """Validate the v2 operation object form without name-based governance.
+
+    Service operation names are payload-owned and consequently cannot classify
+    an operation as read or write.  Only the immutable manifest effect object
+    is accepted here; persisted effect payloads use the same close-set.
+    """
+
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ServiceRegistryError("persisted service operations are invalid")
+    normalized: list[tuple[str, CapabilityEffect]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, Mapping) or set(item) != {"name", "effect"}:
+            raise ServiceRegistryError("persisted service operation is invalid")
+        name = _validate_operation_name(item.get("name"))
+        if name in seen:
+            raise ServiceRegistryError("persisted service operations are invalid")
+        try:
+            effect = CapabilityEffect(str(item.get("effect") or ""))
+        except (TypeError, ValueError) as exc:
+            raise ServiceRegistryError("persisted service operation effect is invalid") from exc
+        seen.add(name)
+        normalized.append((name, effect))
+    return tuple(normalized)
 
 
 def package_provider_registration_id(package_sha256: object) -> str:
@@ -209,16 +285,12 @@ class ServiceRegistry:
                 or not operations
             ):
                 raise ServiceRegistryError("persisted provided service is invalid")
-            normalized_operations = tuple(str(value or "") for value in operations)
-            if any(not value for value in normalized_operations) or len(
-                set(normalized_operations)
-            ) != len(normalized_operations):
-                raise ServiceRegistryError("persisted service operations are invalid")
+            normalized_operations = _normalize_operation_effects(operations)
             seen.add(service)
             providers.append(
                 ServiceProvider(
                     service=service,
-                    operations=normalized_operations,
+                    operation_effects=normalized_operations,
                     automation_id=automation_id,
                     generation=generation,
                     plugin_id=plugin_id,
@@ -287,9 +359,9 @@ class ServiceRegistry:
     ) -> bool:
         def providers(
             registration: ServiceRegistration,
-        ) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        ) -> tuple[tuple[str, tuple[tuple[str, CapabilityEffect], ...]], ...]:
             return tuple(
-                (provider.service, provider.operations)
+                (provider.service, provider.operation_effects)
                 for provider in registration.provided_services
             )
 
@@ -391,19 +463,10 @@ class ServiceRegistry:
     def require_operation(self, service: str, operation: str) -> ServiceProvider:
         """Return the active Provider only when it declared the exact operation."""
 
-        normalized_operation = str(operation or "").strip()
-        if not normalized_operation or normalized_operation != operation:
-            raise ServiceOperationUnavailable(
-                "service operation is invalid",
-                code="SERVICE_OPERATION_UNDECLARED",
-            )
+        normalized_operation = _validate_operation_name(operation)
         provider = self.require_provider(service)
-        if normalized_operation not in provider.operations:
-            raise ServiceOperationUnavailable(
-                f"service operation is not declared: {service}/{normalized_operation}",
-                code="SERVICE_OPERATION_UNDECLARED",
-            )
-        return provider
+        provider.effect_for(normalized_operation)
+        return replace(provider, requested_operation=normalized_operation)
 
     def bind_project_reference(
         self,
@@ -500,7 +563,7 @@ class ServiceRegistry:
         providers = tuple(
             ServiceProvider(
                 service=str(item["service"]),
-                operations=tuple(str(operation) for operation in item["operations"]),
+                operation_effects=_normalize_operation_effects(item["operations"]),
                 automation_id=automation_id,
                 generation=generation,
                 plugin_id=manifest.plugin_id,
