@@ -1,7 +1,8 @@
-"""Immutable, code-owned business-module catalog.
+"""Immutable, code-owned catalog for the fourteen fixed Console modules.
 
-The lifecycle database records installation state only.  It never supplies a
-module implementation, menu entry, permission, or runtime extension.
+Legacy lifecycle records remain readable for audit compatibility only. They
+never supply a module implementation, menu entry, permission, runtime
+extension, or fixed-module availability decision.
 """
 
 from __future__ import annotations

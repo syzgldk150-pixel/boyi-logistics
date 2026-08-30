@@ -123,7 +123,7 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   `last_seen_at` 回填业务日，再保留按 `raw_code` 查询索引，避免跨日扫描互相覆盖。
 - `027_business_module_lifecycle.sql`：建立固定 14 模块的生命周期与 Lite 审计；两个表可从 MySQL
   部分 DDL 提交状态前向重跑，runner 在 seed 前用 `business_module_migration_contract.py` 精确验证结构，
-  seed 只补缺行、不覆盖已有状态。
+  seed 只补缺行、不覆盖已有状态。该状态现仅供历史目录和审计只读兼容，不再控制固定模块运行可用性。
 - `028_repeatable_automation_runs.sql`：保留历史未知写 lease/receipt/Evidence，同时把仍指向当前稳定
   committed generation 且无活动写 lease 的项目恢复为可接收新 Command；它不会重放历史 Run 或 lease。
 - `029_daily_sign_problem_event_binary_identity.sql`：将问题件外部 ID 改为二进制排序规则，使来源中仅

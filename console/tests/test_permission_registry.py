@@ -46,11 +46,11 @@ def test_permission_registry_covers_every_registered_menu_exactly_once() -> None
 
 def test_existing_administrator_roles_retain_all_registered_menu_views() -> None:
     assert CONSOLE_ADMIN_ROLES == frozenset({"admin", "super_admin"})
-    manager_permission = "console.menu.module_manager.view"
-    assert has_console_permission("super_admin", manager_permission)
-    assert not has_console_permission("admin", manager_permission)
+    system_status_permission = "console.menu.system_status.view"
+    assert has_console_permission("super_admin", system_status_permission)
+    assert not has_console_permission("admin", system_status_permission)
     for item in CONSOLE_PERMISSION_REGISTRATIONS:
-        if item.permission_id != manager_permission:
+        if item.permission_id != system_status_permission:
             assert has_console_permission("admin", item.permission_id)
             assert has_console_permission("super_admin", item.permission_id)
 

@@ -58,24 +58,24 @@ def test_registered_menu_projection_preserves_existing_console_contract() -> Non
     )
 
 
-def test_module_manager_is_a_control_plane_registration_after_lifecycle_menus() -> None:
+def test_system_status_is_a_control_plane_registration_after_fixed_menus() -> None:
     assert len(BUSINESS_MODULE_CATALOG) == 14
     assert tuple(item.menu_id for item in CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS) == (
-        "module_manager",
+        "system_status",
     )
     assert tuple(item.menu_id for item in CONSOLE_NAVIGATION_REGISTRATIONS)[-2:] == (
         "system_settings",
-        "module_manager",
+        "system_status",
     )
-    manager = CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS[0]
-    assert manager.route == "/settings/modules"
-    assert manager.icon == "package"
-    assert manager.section == "system"
-    assert NAVIGATION_BY_ROUTE[manager.route] == manager.to_navigation_item()
-    assert "/settings/modules" in {item["route"] for item in MOBILE_NAVIGATION_CANDIDATES}
+    status = CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS[0]
+    assert status.route == "/settings/system-status"
+    assert status.icon == "activity"
+    assert status.section == "system"
+    assert NAVIGATION_BY_ROUTE[status.route] == status.to_navigation_item()
+    assert "/settings/modules" not in {item["route"] for item in MOBILE_NAVIGATION_CANDIDATES}
     assert validate_mobile_bottom_nav(
-        ("/settings/modules", "/tracking", "/automations")
-    ) == ("/settings/modules", "/tracking", "/automations")
+        ("/settings/system-status", "/tracking", "/automations")
+    ) == ("/settings/system-status", "/tracking", "/automations")
 
 
 def test_menu_registration_is_immutable_and_freezes_input_order() -> None:

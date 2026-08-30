@@ -25,7 +25,7 @@ Console 负责：
 - 后台登录、管理员会话、统一导航和页面壳层
 - OCR、博益手工录单、寄件运单、物流跟踪和回单工作台
 - 客服、财务、货拉拉地图调度与比价、专线分流页面
-- 自动化项目、业务账号、事项中心、模块管理和 LLM 设置界面
+- 自动化项目、业务账号、事项中心、系统状态和 LLM 设置界面
 - MySQL 中 Console 业务数据的校验、查询与受控写入
 - 以签名管理员身份代理 Agent 的 `/internal/v1/*` 接口
 
@@ -41,7 +41,7 @@ Console 不负责：
 - `app.py`：组合根、HTTP 生命周期、认证门禁和最终请求分发；业务逻辑不应继续堆入这里。
 - `routes/`：按业务域识别 GET/POST 路径，再把请求交给对应服务。
 - `services/`：认证、Agent API、自动化、控制平面、业务模块、客服、财务、TMS 代理、回单/运单和 OCR 文档等领域服务。
-- `navigation.py`：14 个生命周期菜单和控制平面菜单的唯一静态注册处。
+- `navigation.py`：14 个固定模块菜单和“系统状态”控制平面菜单的唯一静态注册处。
 - `database.py`：MySQL 文档仓储；只验证结构及读写数据。
 - `config.py`：无副作用配置解析；`runtime_config.py` 只由服务入口执行一次运行时 bootstrap。
 - `finance_service.py`：财务查询、分页、金额字符串和受控命令参数的 Console 适配层。
@@ -55,7 +55,7 @@ Console 不负责：
 所有 Console 到 Agent 的调用统一经过 `services/agent_api.py` 的 `_agent_request()`，使用 `/internal/v1/*` 与统一的 `ok/data/error` 响应契约。
 
 - 普通服务连接使用内部服务 Token。
-- 管理员命令、审批、账号和模块管理还必须绑定真实 MySQL 管理员会话，并由服务端签名。
+- 管理员命令、审批、账号、系统状态和旧模块审计读取还必须绑定真实 MySQL 管理员会话，并由服务端签名。
 - 浏览器不能声明或覆盖管理员 principal、角色或来源。
 - 物流跟踪由 Console `/tracking` 代理 Agent `/internal/v1/tms/tracking_query`。
 - 一般执行型写请求提交 `/internal/v1/commands`；自动化项目手工执行使用专用项目 invoke 接口。
@@ -78,7 +78,8 @@ Console 运行时唯一业务数据库是与 Agent 共用的 MySQL；没有 SQLi
 - `/`：概览
 - `/login`：后台登录
 - `/settings/accounts`：管理员账号
-- `/settings/modules`：真实 `super_admin` 的业务模块管理
+- `/settings/system-status`：真实 `super_admin` 的系统版本与组件状态白名单视图
+- `/settings/modules`：退役兼容入口，只重定向到系统状态；其 data/audit 子路径仅保留只读兼容
 - `/ocr`：运单录入与 OCR
 - `/waybills`：已落库寄件运单
 - `/tracking`：单票物流跟踪
