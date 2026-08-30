@@ -302,7 +302,8 @@ OS sandbox、闭合 Broker、Evidence 和 fail-closed 门禁。
 
 ## 项目权限与就地审批
 
-审批以 `automation_id` 为单位，项目只暴露“完全自动”和“每次运行审批”两个设置；项目内所有
+本节只适用于 `ACTION_V1`；`SERVICE_V2` 固定完全自动且不产生逐次审批，具体合同与阻断语义以根目录
+`docs/plugin-platform-v2.md` 为权威。ACTION_V1 审批以 `automation_id` 为单位，项目只暴露“完全自动”和“每次运行审批”两个设置；项目内所有
 Scheduler、Console、飞书和 Webhook 入口共享同一项目策略。`PROJECT_FULL_AUTO` 是持久化管理员意图，
 不绑定某代 contract hash；它覆盖签名清单内的外部写、财务写、破坏性和极高风险动作。运行时仍逐次
 校验当前 committed generation、签名、enabled action、闭合参数、账号/资源、入口和写后 Evidence；

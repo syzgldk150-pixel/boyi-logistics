@@ -1094,6 +1094,90 @@ class AutomationProjectPolicyServiceTests(TestCase):
         self.assertTrue(approval_required.allowed)
         self.assertTrue(approval_required.requires_approval)
 
+    def test_service_v2_ignores_historical_require_each_run_policy(self):
+        self.entry.runtime_model = "SERVICE_V2"
+        self.repository.state.policy["mode"] = "REQUIRE_EACH_RUN"
+        invocation = _invocation()
+
+        decision = self.service.evaluate_invocation(
+            _plan(invocation),
+            _admin(),
+            "console",
+            {},
+            invocation,
+        )
+
+        self.assertTrue(decision.allowed)
+        self.assertFalse(decision.requires_approval)
+        self.assertEqual("PROJECT_FULL_AUTO", decision.code)
+
+    def test_service_v2_projection_hides_historical_policy_mode(self):
+        self.service._compile_entry = (  # type: ignore[method-assign]
+            lambda _entry, _rows: self.contract
+        )
+        entry = SimpleNamespace(
+            automation_id=AUTOMATION_ID,
+            runtime_model="SERVICE_V2",
+            enabled=True,
+            configured=True,
+            target_generation=1,
+            committed_generation=1,
+            reconcile_state="STABLE",
+            current_enabled_entrypoints=("console",),
+            project_config_version=1,
+        )
+
+        for historical_mode in ("REQUIRE_EACH_RUN", "LEGACY_SCHEDULE_ONLY"):
+            with self.subTest(historical_mode=historical_mode):
+                projection = self.service._describe_entry(
+                    entry,
+                    {**self.repository.state.policy, "mode": historical_mode},
+                )
+
+                self.assertEqual(
+                    "PROJECT_FULL_AUTO", projection["configured_mode"]
+                )
+                self.assertEqual("PROJECT_FULL_AUTO", projection["effective_mode"])
+
+    def test_action_v1_require_each_run_still_requires_approval(self):
+        self.entry.runtime_model = "ACTION_V1"
+        self.repository.state.policy["mode"] = "REQUIRE_EACH_RUN"
+        invocation = _invocation()
+
+        decision = self.service.evaluate_invocation(
+            _plan(invocation),
+            _admin(),
+            "console",
+            {},
+            invocation,
+        )
+
+        self.assertTrue(decision.allowed)
+        self.assertTrue(decision.requires_approval)
+        self.assertEqual("PROJECT_APPROVAL_REQUIRED", decision.code)
+
+    def test_service_v2_full_auto_still_honors_contract_restriction(self):
+        self.entry.runtime_model = "SERVICE_V2"
+        self.repository.state.policy["mode"] = "REQUIRE_EACH_RUN"
+        self.contract = replace(
+            self.contract,
+            can_full_auto=False,
+            restriction_code="PROJECT_CONTRACT_NOT_RUNNABLE",
+        )
+        invocation = _invocation()
+
+        decision = self.service.evaluate_invocation(
+            _plan(invocation),
+            _admin(),
+            "console",
+            {},
+            invocation,
+        )
+
+        self.assertFalse(decision.allowed)
+        self.assertFalse(decision.requires_approval)
+        self.assertEqual("PROJECT_CONTRACT_NOT_RUNNABLE", decision.code)
+
     def test_scan_preview_never_requires_formal_project_approval(self):
         plan, invocation = self._scan_policy_subject(dry_run=True)
         self.repository.state.policy["mode"] = "REQUIRE_EACH_RUN"

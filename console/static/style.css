@@ -673,6 +673,7 @@ body.dispatch-page .notice { display: none; }
 .automation-plugin-state--blocked_dependency,
 .automation-plugin-state--needs_configuration { border-color: #fde68a; background: #fffbeb; color: #92400e; }
 .automation-plugin-state--blocked_login { border-color: #fed7aa; background: #fff7ed; color: #9a3412; }
+.automation-plugin-state--blocked_unknown_write,
 .automation-plugin-state--error { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
 .automation-plugin-migration { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; color: var(--text); font-size: 0.72rem; line-height: 1.5; }
 .automation-plugin-migration-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }

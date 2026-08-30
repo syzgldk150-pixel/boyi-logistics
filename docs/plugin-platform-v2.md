@@ -272,6 +272,7 @@ payload/
 | `BLOCKED_DEPENDENCY` | `requires` Provider 缺失/未活动/冲突，或代际 coeffect 未闭合 | Provider 恢复后重新 reconcile；不重装插件 |
 | `NEEDS_CONFIGURATION` | 项目配置或必需资源绑定缺失 | 保存完整配置/资源后重新 reconcile |
 | `BLOCKED_LOGIN` | 必需账号未绑定，或执行时登录态不可用 | 绑定/恢复账号后重试新的运行 |
+| `BLOCKED_UNKNOWN_WRITE` | 历史写尝试缺少可证明的最终结果；原 Run 禁止重放 | 仅通过权威回读闭合原 receipt，或以新的 Command 发起后续运行 |
 | `PREPARING` | 目标版本已持久化但 generation 尚未稳定 | 等待 reconcile，不能误报已运行 |
 
 安装成功但阻断是合法状态。恢复条件后应重新准备服务和入口；卸载/停用 Provider 时，其消费者重新进入 `BLOCKED_DEPENDENCY`，不能保留孤立入口。
@@ -279,6 +280,8 @@ payload/
 ## 8. 审计什么，以及为什么它不是审批
 
 超级管理员安装 v2 ZIP 不需要发布审批或逐次运行审批。审计只回答“谁在何时让哪一组字节、能力和入口产生了什么结果”，不会等待另一个人批准。
+
+Service v2 的保存结果、Catalog/Console 投影和实际 invocation 评估都固定为 `PROJECT_FULL_AUTO`；历史策略行即使漂移为 `REQUIRE_EACH_RUN`，也不得展示逐次审批或把新的 v2 Run 推入 `WAITING_APPROVAL`。固定全自动只能在调用精确匹配当前 committed generation 合同且该合同声明 `can_full_auto` 后生效；项目、配置、账号/资源、登录、依赖、入口、代际和未知写门禁仍逐项 fail closed。Command、Run、generation lease、Evidence、写尝试、写后核验和 `WRITE_OUTCOME_UNKNOWN` 处置链路全部保留。
 
 至少应能关联以下证据：
 

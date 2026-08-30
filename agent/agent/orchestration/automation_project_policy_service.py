@@ -150,6 +150,7 @@ _TRUSTED_CONTEXT_FIELDS = {
 }
 _DEFAULT_FULL_AUTO_ACTOR_ID = "system:migration:automation-full-auto-v1"
 _DEFAULT_FULL_AUTO_REASON = "AUTOMATION_DEFAULT_FULL_AUTO"
+_PROJECT_FULL_AUTO = AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value
 _SERVER_CONTEXT_FIELDS = frozenset(
     {
         "project_request_id",
@@ -1760,7 +1761,7 @@ class AutomationProjectPolicyService:
                 code="SELECTION_PREVIEW_ALLOWED",
                 reason="The governed selection preview is read-only",
             )
-        mode = str(policy.get("mode") or "")
+        mode = _PROJECT_FULL_AUTO if getattr(entry, "runtime_model", "ACTION_V1") == "SERVICE_V2" else str(policy.get("mode") or "")
         if mode == AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value:
             legacy_active = self._legacy_schedule_active(policy, contract)
             return ProjectPolicyEvaluation(
@@ -1968,9 +1969,9 @@ class AutomationProjectPolicyService:
         entry: PluginCatalogEntry,
         policy: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
-        configured = str(
-            (policy or {}).get("mode")
-            or AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value
+        configured = (
+            _PROJECT_FULL_AUTO if getattr(entry, "runtime_model", "ACTION_V1") == "SERVICE_V2"
+            else str((policy or {}).get("mode") or _PROJECT_FULL_AUTO)
         )
         browser_configured = (
             configured
