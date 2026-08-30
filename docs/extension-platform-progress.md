@@ -32,7 +32,7 @@ updated: 2026-08-31
 | TASK-EXT-003 | DONE_OFFLINE | 2026-08-31T00:36:38+08:00 | 2026-08-31T00:51:46+08:00 | 2ac0eb735d4494d7de2873e998a5eb4c21e24c9e |
 | TASK-EXT-004 | DONE_OFFLINE | 2026-08-31T00:52:43+08:00 | 2026-08-31T02:26:01+08:00 | 2f21e4ae43a1ebe778300c299d7061e57a319f5c |
 | TASK-EXT-005 | DONE_OFFLINE | 2026-08-31T02:27:29+08:00 | 2026-08-31T03:37:29+08:00 | 47cdfad4923ad0d02f2ec4b64112adb8ba9e994d + d4be93bd8bbbee910a29ee3f37c9576daa5855e8 |
-| TASK-EXT-006 | NOT_STARTED | — | — | — |
+| TASK-EXT-006 | DONE_OFFLINE | 2026-08-31T03:38:37+08:00 | 2026-08-31T06:00:28+08:00 | a99f2c8f0813f1f314653830966f877a2924d4f2 |
 | TASK-EXT-007 | NOT_STARTED | — | — | — |
 | TASK-EXT-008 | NOT_STARTED | — | — | — |
 | TASK-EXT-009A | NOT_STARTED | — | — | — |
@@ -132,16 +132,17 @@ updated: 2026-08-31
 
 ### TASK-EXT-006：热刷新 Console 与 Scheduler Contribution Router
 
-- 状态：`NOT_STARTED`
-- 开始时间 / 结束时间：— / —
-- 设计决策：仅 Console、Scheduler；飞书、Webhook、Event、Harness 留给独立 TASK。
-- 修改文件 / Commit SHA：— / —
-- 测试命令和结果：尚未运行。
-- 兼容性影响：失败必须原子保留旧路由和 Job。
-- 数据库影响：待审计。
-- 未完成项：全部。
+- 状态：`DONE_OFFLINE`
+- 开始时间 / 结束时间：`2026-08-31T03:38:37+08:00` / `2026-08-31T06:00:28+08:00`
+- 设计决策：只实现 Service v2 的 Console/Scheduler 受管 contribution，并复用现有 generation、项目策略、`scheduled_tasks`、APScheduler 和单一 Catalog，不建立第二套路由或 Job 仓储。generation CAS 同事务保存 `PENDING_PROJECTION` token、旧项目/策略/任务/审批策略前镜像；Provider reference、`ManagedContributionRegistry` 和 strict Scheduler reload 共用投影锁，完整刷新后才切 exact active generation 并 ACK `ACTIVE`。目标代存在任何 lease 历史、token/hash/进程投影并发漂移时禁止 reverse；通用 lease 入口对有 journal 的代际只接受 `ACTIVE`。ACK 失败的真实 driver 以进程单调 revision 和完整身份 CAS 精确恢复旧 v2 代或空投影；无法安全恢复则持久 block、关闭 Scheduler gate、撤销项目进程路由并 tombstone 动态 Job。启动先构造但不启动 Scheduler、绑定 strict/emergency 投影器、reconcile/ACK，最后才 start。飞书、Webhook、Event、Harness 未在本 TASK 预建。
+- 修改文件 / Commit SHA：核心包括 `agent/agent/automation_plugins/{generation.py,management.py,management_api.py,models.py,ports.py,production.py,production_projection_identity.py,production_snapshot.py,runtime_repository.py,service_registry.py,service_v2_projection.py}`、`agent/agent/orchestration/{automation_project_policy_service.py,automation_project_policy_plan.py}`、`agent/{main.py,agent/scheduler.py,migrations/034_runtime_generation_activation_journal.sql}`、`console/services/{automation_projects.py,automation_project_contributions.py}`、`shared/{automation_plugin_generation_repository.py,automation_plugin_generation_transition_repository.py,orchestration_schema.py}`、对应 root/Agent/Console/MySQL fixture 测试以及各级文档和指令镜像 / `a99f2c8f0813f1f314653830966f877a2924d4f2`。
+- 测试命令和结果：关键 generation/真实 driver/Scheduler 启动组合 `166 passed, 44 subtests passed`；root full suite `2013 passed, 30 skipped, 296 subtests passed`；Agent full suite `1123 passed, 1 skipped, 198 subtests passed`；Console full suite `584 passed, 211 subtests passed`。全仓 Ruff、隔离 `compileall`、14 个已跟踪 JavaScript 语法、工具注册表（40 项）、仓库卫生、运行时导入边界、文档（75 项 Markdown）、内部 API 合同、三套指令镜像和 `git diff --check` 全部通过；独立发布阻断级复审逐项复核三个原 P0 后给出 `ship`。测试显式设置 `PYTHONDONTWRITEBYTECODE=1` 与 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
+- 环境门禁：Agent/Console 两次锁环境核验均如实报告 QA Python `3.12` 与锁定 Python `3.10` 不一致；未擅自安装或改写环境。标准 Python 3.10 复验保留为发布前门禁。
+- 兼容性影响：ACTION_V1 不进入 activation journal 和 contribution 热投影，既有行为保持不变；迁移 034 前无 transition 的历史 generation 明确保留 lease 兼容。Service v2 的 Console/Scheduler 只接受当前 committed generation 的 exact `COMMITTED/READY` active 记录；纯 service v2 不制造 contribution marker。停用/卸载先 strict 刷新物理 Job 再整代 withdraw，失败保留旧投影或进入项目级 fail-close，不依赖 Agent/Console 重启。
+- 数据库影响：新增前向迁移 `034_runtime_generation_activation_journal.sql`，包含 durable generation transition 与任务/逐任务审批 before-image 两张表；仓储通过同一事务执行 token ACK、条件 reverse 和 block。仅以本地 fixture、内存仓储和 MySQL 场景合同验证，未连接或修改真实数据库。
+- 未完成项：无离线实现项。真实 MySQL 迁移与故障注入、锁定 Python 3.10 环境、生产多进程和真实 APScheduler/Console 集成演练均标记 `PRODUCTION_GATED`；未部署、未访问生产数据或真实业务入口。动态飞书/Webhook/Event dispatcher 与端到端 Harness 按后续 TASK 实现。
 - 下一项 TASK：`TASK-EXT-007`。
-- 恢复说明：先确认前序 TASK 已提交推送，再将本 TASK 标为 `IN_PROGRESS`。
+- 恢复说明：确认 EXT006 代码提交和本账本 checkpoint 均已推送后，从现有 Service v2 SDK、无副作用 ZIP/Manifest 校验器与示例包开始 TASK-EXT-007；只实现完全离线的 `init/validate/test/permissions/package/inspect/diff`，不得连接生产、部署、签发生产权限或打包 `.env`/凭据。
 
 ### TASK-EXT-007：开发者 SDK、模拟器和 CLI
 
