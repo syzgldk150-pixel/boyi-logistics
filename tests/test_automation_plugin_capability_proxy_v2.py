@@ -732,13 +732,16 @@ def _service_consumer_manifest() -> dict[str, Any]:
 
 def _service_registry() -> ServiceRegistry:
     registry = ServiceRegistry()
+    package_sha256 = "a" * 64
+    manifest_sha256 = "b" * 64
+    provider_automation_id = f"package:{package_sha256}"
     registry.register_contract(
-        automation_id=f"package:{'a' * 64}",
+        automation_id=provider_automation_id,
         generation=1,
         plugin_id="base",
         plugin_version="1.0.0",
-        package_sha256="a" * 64,
-        manifest_sha256="b" * 64,
+        package_sha256=package_sha256,
+        manifest_sha256=manifest_sha256,
         runtime_mode="on_demand",
         provides=(
             {
@@ -750,6 +753,17 @@ def _service_registry() -> ServiceRegistry:
             },
         ),
         requires=(),
+    )
+    registry.bind_project_reference(
+        provider_automation_id=provider_automation_id,
+        automation_id="base-provider-project",
+        generation=1,
+        package_sha256=package_sha256,
+        manifest_sha256=manifest_sha256,
+    )
+    registry.activate_project_reference(
+        automation_id="base-provider-project",
+        generation=1,
     )
     return registry
 

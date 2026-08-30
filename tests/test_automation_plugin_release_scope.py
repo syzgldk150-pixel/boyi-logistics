@@ -118,6 +118,41 @@ def test_startup_schema_requires_write_attempt_receipts_and_identity_columns() -
     } <= columns
 
 
+def test_startup_schema_requires_runtime_generation_transition_journal() -> None:
+    tables, columns = orchestration_schema_requirements(include_windows_worker=False)
+    expected_tables = {
+        "automation_project_generation_transitions",
+        "automation_project_generation_transition_tasks",
+    }
+    expected_columns = {
+        ("automation_project_generation_transitions", "transition_token"),
+        ("automation_project_generation_transitions", "base_committed_generation"),
+        ("automation_project_generation_transitions", "phase"),
+        ("automation_project_generation_transitions", "before_project_record_version"),
+        ("automation_project_generation_transitions", "pending_project_record_version"),
+        ("automation_project_generation_transitions", "before_policy_version"),
+        ("automation_project_generation_transitions", "pending_policy_version"),
+        ("automation_project_generation_transitions", "before_tasks_sha256"),
+        ("automation_project_generation_transitions", "pending_tasks_sha256"),
+        ("automation_project_generation_transition_tasks", "transition_token"),
+        ("automation_project_generation_transition_tasks", "task_id"),
+        ("automation_project_generation_transition_tasks", "automation_generation"),
+        ("automation_project_generation_transition_tasks", "tool_params"),
+        ("automation_project_generation_transition_tasks", "configuration_version"),
+        ("automation_project_generation_transition_tasks", "policy_mode"),
+        (
+            "automation_project_generation_transition_tasks",
+            "policy_contract_snapshot_json",
+        ),
+        ("automation_project_generation_transition_tasks", "policy_version"),
+    }
+
+    assert expected_tables <= REQUIRED_TABLES
+    assert expected_tables <= tables
+    assert expected_columns <= REQUIRED_COLUMNS
+    assert expected_columns <= columns
+
+
 def test_first_party_broker_effects_are_closed_and_current_actions_explicit() -> None:
     manifests = resolve_first_party_manifests(ToolRegistry())
 

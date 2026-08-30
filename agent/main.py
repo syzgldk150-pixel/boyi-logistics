@@ -213,6 +213,7 @@ from agent.runtime_config import load_agent_environment
 from agent.scheduler import (
     begin_scheduler_release_activation,
     consume_scheduler_release_hold,
+    emergency_withdraw_automation_project_jobs,
     init_scheduler,
     pause_scheduler_for_release,
     reload_scheduler,
@@ -1188,8 +1189,6 @@ async def lifespan(app: FastAPI):
             server_signer=worker_server_signer,
             package_reader=FilesystemWorkerPackageArchiveReader(plugin_runtime.storage),
         )
-    await asyncio.to_thread(plugin_runtime.reconcile)
-    await asyncio.to_thread(plugin_runtime.health)
     catalog = plugin_runtime.composite_catalog
     agent_core.configure_tool_catalog(catalog)
     business_finance_query = BusinessFinanceQueryService(
@@ -1257,7 +1256,31 @@ async def lifespan(app: FastAPI):
         wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
         dynamic_resolver=TrustedDynamicArgumentResolver(),
         release_hold_provider=scheduler_release_hold_requested,
+        contribution_registry=plugin_runtime.contribution_registry,
     )
+    # Construct a stopped Scheduler and bind its strict projection callbacks
+    # before runtime generation recovery. A PENDING_PROJECTION generation may
+    # only be acknowledged after the exact Console/Scheduler contribution set
+    # has been refreshed; BLOCKED recovery must install its project tombstone
+    # before any physical trigger can run.
+    release_hold = scheduler_release_hold_requested()
+    scheduler = init_scheduler(
+        runtime,
+        automation_project_invoker=project_policy_service,
+        include_startup_catchup=not release_hold,
+    )
+    plugin_runtime.service_effect_driver.bind_scheduler_projection_refresher(
+        lambda: reload_scheduler(
+            runtime,
+            automation_project_invoker=project_policy_service,
+            strict=True,
+        )
+    )
+    plugin_runtime.service_effect_driver.bind_scheduler_project_emergency_withdrawer(
+        emergency_withdraw_automation_project_jobs,
+    )
+    await asyncio.to_thread(plugin_runtime.reconcile)
+    await asyncio.to_thread(plugin_runtime.health)
     default_full_auto = {"changed": 0}
     if scheduler_release_hold_requested():
         bootstrap_automation_ids = release_first_party_automation_ids()
@@ -1403,7 +1426,6 @@ async def lifespan(app: FastAPI):
     # A release marker is the only process-wide execution hold. Plugin health is
     # projected per project: one unavailable generation must not freeze core
     # tools or unrelated committed plugins.
-    release_hold = scheduler_release_hold_requested()
     await runner.start(held_for_release=release_hold)
     await dispatcher.start()
     await retention_worker.start()
@@ -1429,11 +1451,6 @@ async def lifespan(app: FastAPI):
 
     register_account_session_restored(on_session_restored)
 
-    scheduler = init_scheduler(
-        runtime,
-        automation_project_invoker=project_policy_service,
-        include_startup_catchup=not release_hold,
-    )
     scheduler.start(paused=release_hold)
     logger.info(
         "APScheduler started with %d jobs state=%s",
@@ -1515,9 +1532,9 @@ app.include_router(
         service_provider=lambda: _automation_plugins().management,
         actor_provider=lambda request: _require_console_admin_request(request),
         include_worker_routes=WINDOWS_WORKER_RELEASE_ENABLED,
-        scheduler_refresh_provider=lambda: reload_scheduler(
-            _runtime(),
-            automation_project_invoker=_automation_project_policies(),
+        scheduler_refresh_provider=lambda: (
+            _automation_plugins()
+            .service_effect_driver.refresh_contribution_projection()
         ),
     )
 )
@@ -1580,6 +1597,7 @@ async def orchestration_error_handler(request: Request, exc: OrchestrationError)
         "PROJECT_ROUTE_AMBIGUOUS": 409,
         "PROJECT_ROUTE_STALE": 409,
         "PROJECT_RUNTIME_RECONCILING": 409,
+        "PROJECT_RUNTIME_PROJECTION_STALE": 409,
         "PROJECT_ENTRYPOINT_DISABLED": 409,
         "PROJECT_ACCOUNT_OVERRIDE_FORBIDDEN": 422,
         "PROJECT_ARGUMENT_OVERRIDE_FORBIDDEN": 422,

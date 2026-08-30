@@ -78,6 +78,13 @@ class RuntimeGenerationState(str, Enum):
     BLOCKED = "BLOCKED"
 
 
+class RuntimeActivationPhase(str, Enum):
+    PENDING_PROJECTION = "PENDING_PROJECTION"
+    ACTIVE = "ACTIVE"
+    ROLLED_BACK = "ROLLED_BACK"
+    BLOCKED = "BLOCKED"
+
+
 class RuntimeCoeffectKind(str, Enum):
     ACCOUNT = "ACCOUNT"
     SESSION = "SESSION"
@@ -291,6 +298,9 @@ class RuntimeGenerationRecord:
     state: RuntimeGenerationState
     coeffects: tuple[RuntimeCoeffectSnapshot, ...] = ()
     effects: tuple[RuntimeEffectRecord, ...] = ()
+    base_committed_generation: int | None = None
+    activation_transition_token: str | None = None
+    activation_phase: RuntimeActivationPhase | None = None
 
 
 @dataclass(frozen=True)

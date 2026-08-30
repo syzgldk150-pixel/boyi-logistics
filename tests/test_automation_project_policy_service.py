@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest import TestCase
 
+from agent.automation_plugins.errors import PluginConflictError
 from agent.orchestration.automation_project_policy_service import (
     AutomationProjectPolicyService,
 )
@@ -452,6 +453,42 @@ class _Gateway:
         }
 
 
+class _ContributionRegistry:
+    def __init__(self, *, error_code: str | None = None) -> None:
+        self.error_code = error_code
+        self.calls: list[dict[str, object]] = []
+
+    def resolve_active(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        contribution_kind: str,
+        contribution_id: str,
+    ) -> SimpleNamespace:
+        self.calls.append(
+            {
+                "automation_id": automation_id,
+                "generation": generation,
+                "contribution_kind": contribution_kind,
+                "contribution_id": contribution_id,
+            }
+        )
+        if self.error_code is not None:
+            raise PluginConflictError(
+                "synthetic runtime projection rejection",
+                code=self.error_code,
+            )
+        return SimpleNamespace(
+            automation_id=automation_id,
+            generation=generation,
+            contribution_kind=contribution_kind,
+            contribution_id=contribution_id,
+            phase="COMMITTED",
+            backend_status="READY",
+        )
+
+
 class AutomationProjectPolicyServiceTests(TestCase):
     def setUp(self) -> None:
         self.repository = _Repository()
@@ -475,6 +512,46 @@ class AutomationProjectPolicyServiceTests(TestCase):
                 self.contract,
                 dict(self.repository.state.config),
             )
+        )
+
+    def _service_with_contribution_registry(
+        self,
+        registry: _ContributionRegistry,
+    ) -> AutomationProjectPolicyService:
+        service = AutomationProjectPolicyService(
+            self.repository,
+            core_catalog=SimpleNamespace(),
+            plugin_catalog=_Catalog(self.entry),
+            command_gateway=self.gateway,
+            wake_runner=self.woken_run_ids.append,
+            contribution_registry=registry,
+        )
+        service._load_contract = lambda _automation_id: (  # type: ignore[method-assign]
+            self.entry,
+            self.contract,
+        )
+        service._lock_and_compile_contract = (  # type: ignore[method-assign]
+            lambda _uow, _entry, **_kwargs: (
+                self.contract,
+                dict(self.repository.state.config),
+            )
+        )
+        return service
+
+    def _set_service_v2_console_contract(self) -> None:
+        self.entry.runtime_model = "SERVICE_V2"
+        self.contract = replace(
+            self.contract,
+            invocation_contracts={
+                "run_now": InvocationArgumentContract(
+                    contract_id="run_now",
+                    entrypoint="console",
+                    expected_arguments={"mode": "saved"},
+                    dynamic_argument_resolvers={},
+                    contribution_id="run_now",
+                )
+            },
+            allowed_entrypoints=frozenset({"console"}),
         )
 
     def _set_scan_project(self) -> None:
@@ -659,6 +736,77 @@ class AutomationProjectPolicyServiceTests(TestCase):
         self.assertEqual({"mode": "saved"}, command.parameters["arguments"])
         self.assertEqual(1, command.automation_invocation.automation_generation)
         self.assertEqual(CONTRACT_HASH, command.automation_invocation.contract_hash)
+
+    def test_service_v2_console_invoke_requires_exact_active_contribution(self):
+        self._set_service_v2_console_contract()
+        registry = _ContributionRegistry()
+        service = self._service_with_contribution_registry(registry)
+
+        receipt = service.invoke_console(
+            AUTOMATION_ID,
+            request_id="request-service-v2-console",
+            actor=_admin(),
+            contribution_id="run_now",
+        )
+
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual(
+            [
+                {
+                    "automation_id": AUTOMATION_ID,
+                    "generation": 1,
+                    "contribution_kind": "console",
+                    "contribution_id": "run_now",
+                }
+            ],
+            registry.calls,
+        )
+
+    def test_service_v2_missing_or_stale_console_projection_fails_closed(self):
+        self._set_service_v2_console_contract()
+
+        for error_code in ("RUNTIME_PROJECTION_STALE", "CAPABILITY_UNAVAILABLE"):
+            with self.subTest(error_code=error_code):
+                registry = _ContributionRegistry(error_code=error_code)
+                service = self._service_with_contribution_registry(registry)
+
+                with self.assertRaises(OrchestrationError) as raised:
+                    service.invoke_console(
+                        AUTOMATION_ID,
+                        request_id=f"request-{error_code.lower()}",
+                        actor=_admin(),
+                        contribution_id="run_now",
+                    )
+
+                self.assertEqual(
+                    "PROJECT_RUNTIME_PROJECTION_STALE",
+                    raised.exception.code,
+                )
+                self.assertIsNone(self.gateway.command)
+
+    def test_action_v1_and_uninjected_service_v2_keep_compatibility(self):
+        registry = _ContributionRegistry(error_code="RUNTIME_PROJECTION_STALE")
+        service = self._service_with_contribution_registry(registry)
+        self.entry.runtime_model = "ACTION_V1"
+
+        action_receipt = service.invoke_console(
+            AUTOMATION_ID,
+            request_id="request-action-v1-with-registry",
+            actor=_admin(),
+        )
+
+        self.assertEqual("run-invoke", action_receipt.run_id)
+        self.assertEqual([], registry.calls)
+
+        self._set_service_v2_console_contract()
+        service_v2_receipt = self.service.invoke_console(
+            AUTOMATION_ID,
+            request_id="request-service-v2-without-registry",
+            actor=_admin(),
+            contribution_id="run_now",
+        )
+
+        self.assertEqual("run-invoke", service_v2_receipt.run_id)
 
     def test_scan_preview_formal_invoke_stays_disabled_under_current_governance(self):
         self._set_scan_project()
@@ -1352,6 +1500,53 @@ class AutomationProjectPolicyServiceTests(TestCase):
         self.assertEqual(
             "schedule-one",
             command.parameters["execution_context"]["task_id"],
+        )
+
+    def test_service_v2_scheduler_invoke_requires_exact_active_contribution(self):
+        self.entry.runtime_model = "SERVICE_V2"
+        scheduler_contract = InvocationArgumentContract(
+            contract_id="scheduler:schedule-one",
+            entrypoint="scheduler",
+            expected_arguments={"mode": "saved"},
+            dynamic_argument_resolvers={},
+            contribution_id="daily_run",
+        )
+        self.contract = replace(
+            self.contract,
+            invocation_contracts={scheduler_contract.contract_id: scheduler_contract},
+            allowed_entrypoints=frozenset({"scheduler"}),
+        )
+        registry = _ContributionRegistry()
+        service = self._service_with_contribution_registry(registry)
+        actor = Actor(
+            ActorType.SCHEDULER,
+            "schedule-one",
+            roles=("system",),
+            authenticated_by="apscheduler",
+        )
+
+        receipt = service.invoke_trusted(
+            AUTOMATION_ID,
+            entrypoint=AutomationEntrypoint.SCHEDULER,
+            request_id="scheduler:schedule-one:service-v2",
+            actor=actor,
+            trusted_context={"task_id": "schedule-one"},
+            expected_automation_generation=1,
+            expected_project_configuration_version=1,
+            contribution_id="daily_run",
+        )
+
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual(
+            [
+                {
+                    "automation_id": AUTOMATION_ID,
+                    "generation": 1,
+                    "contribution_kind": "scheduler",
+                    "contribution_id": "daily_run",
+                }
+            ],
+            registry.calls,
         )
 
     def test_trusted_wait_preserves_terminal_error_for_scheduler_status(self):

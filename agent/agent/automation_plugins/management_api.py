@@ -194,9 +194,18 @@ def _plugin_error_response(exc: Exception) -> JSONResponse:
     else:  # pragma: no cover - caller deliberately re-raises unknown failures
         raise exc
     code = getattr(exc, "code", "PLUGIN_REQUEST_INVALID")
+    data = None
+    if code == "RUNTIME_PROJECTION_REFRESH_FAILED":
+        data = {
+            "generation_ready": False,
+            "transition_state": "BLOCKED_DEPENDENCY",
+            "contribution_projection_state": "STALE",
+            "runtime_projection_pending": True,
+            "runtime_projection_retryable": True,
+        }
     return JSONResponse(
         status_code=status_code,
-        content=api_failure(str(code), redact_text(exc)[:500]),
+        content=api_failure(str(code), redact_text(exc)[:500], data=data),
     )
 
 
@@ -306,6 +315,17 @@ def _scheduler_contribution_enabled(
     return False
 
 
+def _scheduler_refresh_succeeded(evidence: object) -> bool:
+    """Accept legacy success evidence, but never an explicit invalid task set."""
+
+    if not isinstance(evidence, Mapping) or evidence.get("initialized") is not True:
+        return False
+    if "invalid_tasks" not in evidence:
+        return True
+    invalid_tasks = evidence.get("invalid_tasks")
+    return isinstance(invalid_tasks, (list, tuple)) and not invalid_tasks
+
+
 def _refresh_after_committed_operation(
     response: dict[str, Any] | JSONResponse,
     *,
@@ -329,11 +349,13 @@ def _refresh_after_committed_operation(
     if scheduler_refresh_provider is not None:
         try:
             refreshed = scheduler_refresh_provider()
-            refresh_completed = bool(
-                isinstance(refreshed, Mapping) and refreshed.get("initialized") is True
-            )
+            refresh_completed = _scheduler_refresh_succeeded(refreshed)
         except Exception:  # noqa: BLE001 - committed mutation, report refresh separately
             refresh_completed = False
+    if refresh_completed and data.get("runtime_projection_pending") is True:
+        data["runtime_projection_pending"] = False
+        if data.get("enabled") is False:
+            data["contribution_projection_state"] = "INACTIVE"
     data.update(
         {
             committed_field: True,
@@ -981,10 +1003,7 @@ def create_automation_plugin_management_router(
                     if scheduler_refresh_provider is not None
                     else {"initialized": False}
                 )
-                refresh_completed = bool(
-                    isinstance(refreshed, Mapping)
-                    and refreshed.get("initialized") is True
-                )
+                refresh_completed = _scheduler_refresh_succeeded(refreshed)
             except Exception:  # noqa: BLE001 - config is durable; report refresh separately
                 refresh_completed = False
             if not refresh_completed:

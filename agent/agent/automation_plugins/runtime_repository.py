@@ -31,6 +31,7 @@ from agent.automation_plugins.models import (
     PluginVersionRecord,
     PluginVersionState,
     ProjectRuntimeRecord,
+    RuntimeActivationPhase,
     RuntimeCoeffectKind,
     RuntimeCoeffectSnapshot,
     RuntimeEffectKind,
@@ -243,11 +244,33 @@ def generation_from_row(row: Mapping[str, Any]) -> RuntimeGenerationRecord:
     effects = row.get("effects", ())
     if not isinstance(coeffects, (list, tuple)) or not isinstance(effects, (list, tuple)):
         raise ValueError("persisted generation children are invalid")
+    base_committed_generation = row.get("base_committed_generation")
+    if base_committed_generation is not None:
+        base_committed_generation = int(base_committed_generation)
+        if base_committed_generation <= 0:
+            raise ValueError("persisted base committed generation is invalid")
+    transition_token_value = row.get("activation_transition_token")
+    activation_phase_value = row.get("activation_phase")
+    if (transition_token_value is None) != (activation_phase_value is None):
+        raise ValueError("persisted activation transition is incomplete")
+    activation_transition_token: str | None = None
+    activation_phase: RuntimeActivationPhase | None = None
+    if transition_token_value is not None:
+        raw_transition_token = str(transition_token_value)
+        activation_transition_token = str(uuid.UUID(raw_transition_token))
+        if activation_transition_token != raw_transition_token:
+            raise ValueError(
+                "persisted activation transition token is not canonical"
+            )
+        activation_phase = RuntimeActivationPhase(str(activation_phase_value))
     return RuntimeGenerationRecord(
         snapshot=snapshot_from_row(row),
         state=RuntimeGenerationState(str(row.get("state") or "")),
         coeffects=tuple(_coeffect_from_row(item) for item in coeffects),
         effects=tuple(_effect_from_row(item) for item in effects),
+        base_committed_generation=base_committed_generation,
+        activation_transition_token=activation_transition_token,
+        activation_phase=activation_phase,
     )
 
 
@@ -699,6 +722,56 @@ class MySQLAutomationPluginRuntimeAdapter:
             )
             uow.commit()
         return _runtime_from_row(row)
+
+    def rollback_generation_cas(
+        self,
+        automation_id: str,
+        generation: int,
+        *,
+        expected_base_committed_generation: int | None,
+        expected_transition_token: str,
+    ) -> ProjectRuntimeRecord:
+        with self._orchestration.unit_of_work() as uow:
+            row = uow.automation_plugins.rollback_generation_cas_row(
+                automation_id,
+                generation,
+                expected_base_committed_generation=(
+                    expected_base_committed_generation
+                ),
+                expected_transition_token=expected_transition_token,
+            )
+            uow.commit()
+        return _runtime_from_row(row)
+
+    def complete_generation_activation(
+        self,
+        automation_id: str,
+        generation: int,
+        *,
+        expected_transition_token: str,
+    ) -> None:
+        with self._orchestration.unit_of_work() as uow:
+            uow.automation_plugins.complete_generation_activation_row(
+                automation_id,
+                generation,
+                expected_transition_token=expected_transition_token,
+            )
+            uow.commit()
+
+    def block_generation_activation(
+        self,
+        automation_id: str,
+        generation: int,
+        *,
+        expected_transition_token: str,
+    ) -> None:
+        with self._orchestration.unit_of_work() as uow:
+            uow.automation_plugins.block_generation_activation_row(
+                automation_id,
+                generation,
+                expected_transition_token=expected_transition_token,
+            )
+            uow.commit()
 
     def set_project_dependency_scheduler_gate(
         self,

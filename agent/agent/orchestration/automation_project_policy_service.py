@@ -28,11 +28,15 @@ from agent.automation_plugins.code_owned_fields import (
     resolve_scan_execution_phase,
     resolve_selection_execution_phase,
 )
+from agent.automation_plugins.errors import PluginConflictError
 from agent.orchestration.automation_project_service_v2 import (
     normalize_contribution_id,
     require_service_v2_policy_mode,
     resolve_invocation_contract_id,
     validate_service_v2_compiled_target,
+)
+from agent.orchestration.automation_project_policy_plan import (
+    plan_from_mapping as _plan_from_mapping,
 )
 from agent.orchestration.command_gateway import CommandGateway
 from agent.orchestration.models import (
@@ -43,7 +47,6 @@ from agent.orchestration.models import (
     OperationType,
     OrchestrationError,
     Plan,
-    PlanStep,
     RiskLevel,
     new_id,
 )
@@ -188,6 +191,7 @@ class AutomationProjectPolicyService:
             Callable[[str, str, Mapping[str, Any]], Any] | None
         ) = None,
         release_hold_provider: Callable[[], bool] | None = None,
+        contribution_registry: Any | None = None,
     ) -> None:
         self._repository = repository
         self._core_catalog = core_catalog
@@ -196,6 +200,7 @@ class AutomationProjectPolicyService:
         self._wake_runner = wake_runner
         self._dynamic_resolver = dynamic_resolver
         self._release_hold_provider = release_hold_provider
+        self._contribution_registry = contribution_registry
 
     def list_policies(self) -> dict[str, Any]:
         with self._repository.unit_of_work() as uow:
@@ -1314,6 +1319,37 @@ class AutomationProjectPolicyService:
                 "PROJECT_ENTRYPOINT_DISABLED",
                 "Requested entrypoint is not enabled for this automation project",
             )
+        if (
+            is_service_v2
+            and source
+            in {
+                AutomationEntrypoint.CONSOLE,
+                AutomationEntrypoint.SCHEDULER,
+            }
+            and self._contribution_registry is not None
+        ):
+            resolve_active = getattr(
+                self._contribution_registry,
+                "resolve_active",
+                None,
+            )
+            if not callable(resolve_active):
+                raise OrchestrationError(
+                    "PROJECT_RUNTIME_PROJECTION_STALE",
+                    "Automation project runtime projection is unavailable",
+                )
+            try:
+                resolve_active(
+                    automation_id=safe_id,
+                    generation=contract.automation_generation,
+                    contribution_kind=source.value,
+                    contribution_id=invocation_contract.contribution_id,
+                )
+            except PluginConflictError as exc:
+                raise OrchestrationError(
+                    "PROJECT_RUNTIME_PROJECTION_STALE",
+                    "Automation project runtime projection changed before invocation",
+                ) from exc
         occurred_at = datetime.now(timezone.utc)
         execution_context = {
             "project_request_id": safe_request_id,
@@ -2763,115 +2799,6 @@ def _pending_set_hash(rows: Sequence[Mapping[str, Any]]) -> str:
             }
         )
     return canonical_sha256(identities)
-
-
-def _plan_from_mapping(raw: Any) -> Plan:
-    if not isinstance(raw, Mapping):
-        raise OrchestrationError("INVALID_PERSISTED_PLAN", "Persisted plan is invalid")
-    expected_keys = {
-        "schema_version",
-        "command_type",
-        "context_fingerprint",
-        "tool_catalog_hash",
-        "steps",
-        "impact",
-        "automation_id",
-        "automation_generation",
-        "automation_contract_hash",
-        "plan_hash",
-    }
-    if set(raw) != expected_keys or type(raw.get("schema_version")) is not int:
-        raise OrchestrationError("INVALID_PERSISTED_PLAN", "Persisted plan is invalid")
-    raw_steps = raw.get("steps")
-    if not isinstance(raw_steps, list) or not raw_steps:
-        raise OrchestrationError("INVALID_PERSISTED_PLAN", "Persisted plan is invalid")
-    step_keys = {
-        "step_key",
-        "tool_name",
-        "tool_version",
-        "operation_type",
-        "arguments",
-        "account_id",
-        "depends_on",
-        "idempotency_key",
-        "expected_evidence",
-        "postconditions",
-        "risk_level",
-        "requires_approval",
-    }
-    steps: list[PlanStep] = []
-    for item in raw_steps:
-        if not isinstance(item, Mapping) or set(item) != step_keys:
-            raise OrchestrationError(
-                "INVALID_PERSISTED_PLAN",
-                "Persisted plan step is invalid",
-            )
-        if (
-            not isinstance(item.get("arguments"), Mapping)
-            or not isinstance(item.get("depends_on"), list)
-            or not isinstance(item.get("expected_evidence"), list)
-            or not isinstance(item.get("postconditions"), list)
-            or type(item.get("requires_approval")) is not bool
-        ):
-            raise OrchestrationError(
-                "INVALID_PERSISTED_PLAN",
-                "Persisted plan step is invalid",
-            )
-        account_id = item.get("account_id")
-        if account_id is not None and not isinstance(account_id, str):
-            raise OrchestrationError(
-                "INVALID_PERSISTED_PLAN",
-                "Persisted plan account binding is invalid",
-            )
-        try:
-            operation_type = OperationType(item["operation_type"])
-            risk_level = RiskLevel(item["risk_level"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise OrchestrationError(
-                "INVALID_PERSISTED_PLAN",
-                "Persisted plan governance is invalid",
-            ) from exc
-        steps.append(
-            PlanStep(
-                step_key=str(item["step_key"]),
-                tool_name=str(item["tool_name"]),
-                tool_version=str(item["tool_version"]),
-                operation_type=operation_type,
-                arguments=dict(item["arguments"]),
-                account_id=account_id,
-                depends_on=tuple(str(value) for value in item["depends_on"]),
-                idempotency_key=str(item["idempotency_key"]),
-                expected_evidence=tuple(item["expected_evidence"]),
-                postconditions=tuple(item["postconditions"]),
-                risk_level=risk_level,
-                requires_approval=item["requires_approval"],
-            )
-        )
-    if not isinstance(raw.get("impact"), Mapping):
-        raise OrchestrationError("INVALID_PERSISTED_PLAN", "Persisted plan is invalid")
-    try:
-        plan = Plan(
-            command_type=str(raw["command_type"]),
-            context_fingerprint=str(raw["context_fingerprint"]),
-            tool_catalog_hash=str(raw["tool_catalog_hash"]),
-            steps=tuple(steps),
-            impact=dict(raw["impact"]),
-            automation_id=raw["automation_id"],
-            automation_generation=raw["automation_generation"],
-            automation_contract_hash=raw["automation_contract_hash"],
-            schema_version=raw["schema_version"],
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise OrchestrationError(
-            "INVALID_PERSISTED_PLAN",
-            "Persisted plan is invalid",
-        ) from exc
-    if plan.plan_hash != raw.get("plan_hash"):
-        raise OrchestrationError(
-            "PLAN_HASH_MISMATCH",
-            "Persisted plan hash does not match its content",
-        )
-    return plan
 
 
 def _project_denied(code: str, reason: str) -> ProjectPolicyEvaluation:

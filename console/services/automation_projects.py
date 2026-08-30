@@ -4,6 +4,12 @@ import math
 from collections.abc import Mapping
 
 from console.app_support import *  # noqa: F403
+from console.services.automation_project_contributions import (
+    AUTOMATION_PLUGIN_ACTIVE_CONTRIBUTION_FIELDS as _ACTIVE_CONTRIBUTION_FIELDS,
+    AUTOMATION_PLUGIN_CONTRIBUTION_PROJECTION_STATES as _CONTRIBUTION_PROJECTION_STATES,
+    AUTOMATION_PLUGIN_V2_ENTRYPOINT_ID_RE as AUTOMATION_PLUGIN_V2_ENTRYPOINT_ID_RE,
+    normalize_plugin_active_contributions as _normalize_plugin_active_contributions,
+)
 from console.services.automation_plugin_management import (
     AutomationPluginManagementServiceMixin,
 )
@@ -171,10 +177,13 @@ AUTOMATION_PLUGIN_MIGRATION_RESERVED_BUSINESS_KEY_FIELDS = frozenset(
     {"__host_business_date"}
 )
 AUTOMATION_PLUGIN_ENTRYPOINTS = frozenset({"scheduler", "console", "feishu", "webhook"})
-AUTOMATION_PLUGIN_V2_ENTRYPOINT_ID_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 AUTOMATION_PLUGIN_V2_ENTRYPOINT_KINDS = frozenset(
     {"console", "scheduler", "webhook", "feishu", "events"}
 )
+AUTOMATION_PLUGIN_CONTRIBUTION_PROJECTION_STATES = (
+    _CONTRIBUTION_PROJECTION_STATES
+)
+AUTOMATION_PLUGIN_ACTIVE_CONTRIBUTION_FIELDS = _ACTIVE_CONTRIBUTION_FIELDS
 AUTOMATION_PLUGIN_CONFIG_MAX_FIELDS = 100
 AUTOMATION_PLUGIN_CONFIG_MAX_BYTES = 128 * 1024
 AUTOMATION_PLUGIN_SCHEDULE_MAX_DAILY_TIMES = 96
@@ -1816,6 +1825,55 @@ def normalize_automation_plugin_catalog(
         if enabled_entrypoints_valid and not set(enabled_entrypoints) <= set(entrypoints):
             enabled_entrypoints_valid = False
             enabled_entrypoints = []
+        active_contributions: list[dict[str, Any]] = []
+        contribution_projection_state = "UNKNOWN"
+        if runtime_model == "SERVICE_V2":
+            (
+                active_contributions,
+                contribution_projection_state,
+            ) = _normalize_plugin_active_contributions(
+                raw.get("active_contributions"),
+                projection_state=raw.get("contribution_projection_state"),
+                committed_generation=raw.get("committed_generation"),
+                entrypoints=entrypoints,
+                entrypoint_kinds=entrypoint_kinds,
+                enabled_entrypoints=enabled_entrypoints,
+            )
+            active_contribution_ids = {
+                str(contribution["contribution_id"])
+                for contribution in active_contributions
+            }
+            console_entrypoints = [
+                entrypoint
+                for entrypoint in entrypoints
+                if entrypoint in active_contribution_ids
+                and entrypoint_kinds.get(entrypoint) == "console"
+            ]
+            enabled_console_entrypoints = list(console_entrypoints)
+            enabled_entrypoint_kinds = sorted(
+                {
+                    str(contribution["contribution_kind"])
+                    for contribution in active_contributions
+                }
+            )
+        else:
+            console_entrypoints = [
+                entrypoint
+                for entrypoint in entrypoints
+                if entrypoint_kinds.get(entrypoint) == "console"
+            ]
+            enabled_console_entrypoints = [
+                entrypoint
+                for entrypoint in enabled_entrypoints
+                if entrypoint_kinds.get(entrypoint) == "console"
+            ]
+            enabled_entrypoint_kinds = sorted(
+                {
+                    entrypoint_kinds[entrypoint]
+                    for entrypoint in enabled_entrypoints
+                    if entrypoint in entrypoint_kinds
+                }
+            )
         raw_device = raw.get("device") if isinstance(raw.get("device"), dict) else None
         device = None
         if raw_device is not None:
@@ -1954,6 +2012,13 @@ def normalize_automation_plugin_catalog(
                 "runtime_model_label": AUTOMATION_PLUGIN_RUNTIME_MODEL_LABELS[
                     runtime_model
                 ],
+                **(
+                    {
+                        "contribution_projection_state": contribution_projection_state,
+                    }
+                    if runtime_model == "SERVICE_V2"
+                    else {}
+                ),
                 "plugin_api": plugin_api,
                 "dependency_state": dependency_state,
                 "dependency_state_label": AUTOMATION_PLUGIN_DEPENDENCY_STATE_LABELS[
@@ -2010,24 +2075,10 @@ def normalize_automation_plugin_catalog(
                 "schedule": schedule,
                 "entrypoints": entrypoints,
                 "entrypoint_kinds": entrypoint_kinds,
-                "console_entrypoints": [
-                    entrypoint
-                    for entrypoint in entrypoints
-                    if entrypoint_kinds.get(entrypoint) == "console"
-                ],
-                "enabled_console_entrypoints": [
-                    entrypoint
-                    for entrypoint in enabled_entrypoints
-                    if entrypoint_kinds.get(entrypoint) == "console"
-                ],
+                "console_entrypoints": console_entrypoints,
+                "enabled_console_entrypoints": enabled_console_entrypoints,
                 "enabled_entrypoints": enabled_entrypoints,
-                "enabled_entrypoint_kinds": sorted(
-                    {
-                        entrypoint_kinds[entrypoint]
-                        for entrypoint in enabled_entrypoints
-                        if entrypoint in entrypoint_kinds
-                    }
-                ),
+                "enabled_entrypoint_kinds": enabled_entrypoint_kinds,
                 "device": device,
                 "missing_requirements": missing_requirements,
                 "blocked": blocked,

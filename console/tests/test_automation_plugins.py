@@ -400,6 +400,12 @@ class AutomationPluginCatalogTests(unittest.TestCase):
             instances[0]["schedule"],
         )
         self.assertEqual(["scheduler", "console"], instances[0]["enabled_entrypoints"])
+        self.assertEqual(["console"], instances[0]["console_entrypoints"])
+        self.assertEqual(["console"], instances[0]["enabled_console_entrypoints"])
+        self.assertEqual(
+            ["console", "scheduler"], instances[0]["enabled_entrypoint_kinds"]
+        )
+        self.assertNotIn("contribution_projection_state", instances[0])
         self.assertFalse(instances[0]["blocked"])
         projected_text = json.dumps({"packages": packages, "instances": instances})
         for forbidden in ("manifest", "install_root", "package_sha256", "policy_hash"):
@@ -458,6 +464,22 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         }
         payload["plugins"][0].update(v2_metadata)
         payload["instances"][0].update(v2_metadata)
+        payload["instances"][0].update(
+            {
+                "target_generation": 7,
+                "committed_generation": 7,
+                "contribution_projection_state": "ACTIVE",
+                "active_contributions": [
+                    {
+                        "contribution_id": "manual.sync",
+                        "contribution_kind": "console",
+                        "generation": 7,
+                        "phase": "COMMITTED",
+                        "backend_status": "READY",
+                    }
+                ],
+            }
+        )
         payload["instances"][0]["migration"] = {
             "migration_pair_id": "4e19b908-1334-42cc-96e6-85fa164f52af",
             "source_automation_id": "finance_action_east_v1",
@@ -482,6 +504,8 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertEqual("events", package["entrypoint_kinds"]["events.refresh"])
         self.assertEqual(["manual.sync"], instance["console_entrypoints"])
         self.assertEqual(["manual.sync"], instance["enabled_console_entrypoints"])
+        self.assertEqual(["console"], instance["enabled_entrypoint_kinds"])
+        self.assertEqual("ACTIVE", instance["contribution_projection_state"])
         self.assertEqual("BLOCKED_DEPENDENCY", instance["state"])
         self.assertEqual("依赖阻断", instance["status_label"])
         self.assertEqual("1.2.3", instance["active_version"])
@@ -502,6 +526,137 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertNotIn("provider_automation_id", projected_text)
         self.assertNotIn("entrypoint_snapshot_json", projected_text)
         self.assertNotIn("must-not-cross-boundary", projected_text)
+
+    def test_service_v2_active_projection_is_the_only_console_runtime_authority(self):
+        payload = _catalog_payload()
+        metadata = {
+            "runtime_model": "SERVICE_V2",
+            "plugin_api": "2.0.0",
+            "entrypoints": ["manual.sync", "schedule.daily"],
+            "entrypoint_kinds": {
+                "manual.sync": "console",
+                "schedule.daily": "scheduler",
+            },
+            "enabled_entrypoints": ["manual.sync", "schedule.daily"],
+            "target_generation": 7,
+            "committed_generation": 7,
+            "contribution_projection_state": "ACTIVE",
+            "active_contributions": [
+                {
+                    "contribution_id": "manual.sync",
+                    "contribution_kind": "console",
+                    "generation": 7,
+                    "phase": "COMMITTED",
+                    "backend_status": "READY",
+                },
+                {
+                    "contribution_id": "schedule.daily",
+                    "contribution_kind": "scheduler",
+                    "generation": 7,
+                    "phase": "COMMITTED",
+                    "backend_status": "READY",
+                },
+                {
+                    "contribution_id": "stale.schedule",
+                    "contribution_kind": "scheduler",
+                    "generation": 6,
+                    "phase": "DRAINING",
+                    "backend_status": "READY",
+                    "frontend": "<script>unrelated-scheduler</script>",
+                },
+            ],
+            "frontend": {
+                "html": "<script>must-not-render</script>",
+                "javascript": "must-not-run()",
+                "css": "body { display: none }",
+            },
+        }
+        payload["plugins"][0].update(metadata)
+        payload["instances"][0].update(metadata)
+
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+
+        instance = instances[0]
+        self.assertEqual(["manual.sync"], instance["console_entrypoints"])
+        self.assertEqual(["manual.sync"], instance["enabled_console_entrypoints"])
+        self.assertEqual(
+            ["console", "scheduler"], instance["enabled_entrypoint_kinds"]
+        )
+        self.assertIn("console", instance["enabled_entrypoint_kinds"])
+        projected_text = json.dumps(instance, ensure_ascii=False)
+        self.assertNotIn("must-not-render", projected_text)
+        self.assertNotIn("must-not-run", projected_text)
+        self.assertNotIn("display: none", projected_text)
+        self.assertNotIn("unrelated-scheduler", projected_text)
+
+    def test_service_v2_console_projection_drift_fails_closed_but_keeps_declaration(self):
+        cases = (
+            ("missing_list", {}, {"active_contributions"}),
+            ("missing_state", {}, {"contribution_projection_state"}),
+            ("old_generation", {"generation": 6}, set()),
+            ("not_ready", {"backend_status": "UNAVAILABLE"}, set()),
+            ("not_committed", {"phase": "PREPARED"}, set()),
+            ("stale", {"projection_state": "STALE"}, set()),
+            ("inactive", {"projection_state": "INACTIVE"}, set()),
+            ("frontend_field", {"frontend": "<script>blocked</script>"}, set()),
+        )
+        for label, changes, removed_fields in cases:
+            with self.subTest(case=label):
+                payload = _catalog_payload()
+                metadata = {
+                    "runtime_model": "SERVICE_V2",
+                    "plugin_api": "2.0.0",
+                    "entrypoints": ["manual.sync", "schedule.daily"],
+                    "entrypoint_kinds": {
+                        "manual.sync": "console",
+                        "schedule.daily": "scheduler",
+                    },
+                    "enabled_entrypoints": ["manual.sync"],
+                }
+                payload["plugins"][0].update(metadata)
+                instance = payload["instances"][0]
+                instance.update(metadata)
+                instance.update(
+                    {
+                        "target_generation": 7,
+                        "committed_generation": 7,
+                        "contribution_projection_state": changes.get(
+                            "projection_state", "ACTIVE"
+                        ),
+                        "active_contributions": [
+                            {
+                                "contribution_id": "manual.sync",
+                                "contribution_kind": "console",
+                                "generation": changes.get("generation", 7),
+                                "phase": changes.get("phase", "COMMITTED"),
+                                "backend_status": changes.get(
+                                    "backend_status", "READY"
+                                ),
+                                **(
+                                    {"frontend": changes["frontend"]}
+                                    if "frontend" in changes
+                                    else {}
+                                ),
+                            }
+                        ],
+                    }
+                )
+                for field in removed_fields:
+                    instance.pop(field, None)
+
+                _packages, instances, _unsupported = (
+                    normalize_automation_plugin_catalog(payload)
+                )
+
+                projected = instances[0]
+                self.assertEqual(
+                    ["manual.sync", "schedule.daily"], projected["entrypoints"]
+                )
+                self.assertEqual("console", projected["entrypoint_kinds"]["manual.sync"])
+                self.assertEqual([], projected["console_entrypoints"])
+                self.assertEqual([], projected["enabled_console_entrypoints"])
+                self.assertNotIn("console", projected["enabled_entrypoint_kinds"])
+                self.assertNotIn("<script>", json.dumps(projected, ensure_ascii=False))
 
     def test_service_v2_catalog_accepts_closed_migration_relation_projection(self):
         payload = _catalog_payload()

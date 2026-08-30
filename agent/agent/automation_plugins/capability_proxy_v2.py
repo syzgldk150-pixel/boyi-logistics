@@ -24,7 +24,10 @@ from agent.automation_plugins.core_adapter import (
 )
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
-from agent.automation_plugins.service_registry import ServiceProvider, ServiceRegistry
+from agent.automation_plugins.service_registry import (
+    ResolvedServiceOperation,
+    ServiceRegistry,
+)
 from agent.automation_plugins.service_v2_contract import SYSTEM_CAPABILITY_ROLE
 from agent.automation_plugins.host_capability_registry import (
     CapabilityEffect,
@@ -134,7 +137,7 @@ class ServiceV2ProviderExecutor(Protocol):
     def __call__(
         self,
         *,
-        provider: ServiceProvider,
+        provider: ResolvedServiceOperation,
         caller_automation_id: str,
         operation: str,
         arguments: Mapping[str, Any],

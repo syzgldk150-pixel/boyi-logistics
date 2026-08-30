@@ -3,8 +3,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import pytest
@@ -28,6 +30,7 @@ from agent.automation_plugins.models import (
     PluginTrustSource,
     PluginVersionRecord,
     ProjectRuntimeRecord,
+    RuntimeActivationPhase,
     RuntimeCoeffectKind,
     RuntimeCoeffectSnapshot,
     RuntimeEffectKind,
@@ -48,9 +51,21 @@ from agent.automation_plugins.runtime_repository import (
     MySQLAutomationPluginCatalogRepositoryAdapter,
     MySQLAutomationPluginRuntimeAdapter,
     MySQLAutomationProjectConfigurationReadAdapter,
+    generation_from_row,
     snapshot_from_row,
     snapshot_to_row,
 )
+from shared.automation_plugin_generation_repository import (
+    AutomationPluginGenerationRepositoryMixin,
+    _exact_json_hash,
+    _lock_scheduled_task_before_image,
+    _restore_transition_task_before_image,
+)
+from shared.automation_plugin_generation_transition_repository import (
+    _assert_transition_target_has_no_generation_leases,
+)
+from shared.automation_plugin_repository import _generation_snapshot
+from shared.orchestration_repository_support import ConcurrentUpdateError
 
 
 def test_raw_identity_readers_do_not_parse_corrupt_rows() -> None:
@@ -519,6 +534,7 @@ class _LowLevelRuntimeRepository:
         record = RuntimeGenerationRecord(
             snapshot=snapshot,
             state=RuntimeGenerationState.TARGET,
+            base_committed_generation=expected_committed_generation,
         )
         self.snapshots[snapshot.generation] = snapshot
         self.generations[snapshot.generation] = record
@@ -640,7 +656,18 @@ class _LowLevelRuntimeRepository:
         assert automation_id == self.project_runtime.automation_id
         assert self.project_runtime.committed_generation == expected_committed_generation
         assert self.generations[generation].state == RuntimeGenerationState.PREPARED
-        self._set_generation_state(generation, RuntimeGenerationState.COMMITTED)
+        transition_token = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"test:{automation_id}:{generation}",
+            )
+        )
+        self.generations[generation] = replace(
+            self.generations[generation],
+            state=RuntimeGenerationState.COMMITTED,
+            activation_transition_token=transition_token,
+            activation_phase=RuntimeActivationPhase.PENDING_PROJECTION,
+        )
         self.committed_generation = generation
         self.project_state = (
             PluginProjectState.ENABLED if self.enabled else PluginProjectState.DISABLED
@@ -652,6 +679,40 @@ class _LowLevelRuntimeRepository:
             record_version=self.project_runtime.record_version + 1,
         )
         return self.project_runtime
+
+    def complete_generation_activation(
+        self,
+        automation_id: str,
+        generation: int,
+        *,
+        expected_transition_token: str,
+    ) -> None:
+        assert automation_id == self.project_runtime.automation_id
+        record = self.generations[generation]
+        assert record.activation_transition_token == expected_transition_token
+        assert record.activation_phase in {
+            RuntimeActivationPhase.PENDING_PROJECTION,
+            RuntimeActivationPhase.ACTIVE,
+        }
+        self.generations[generation] = replace(
+            record,
+            activation_phase=RuntimeActivationPhase.ACTIVE,
+        )
+
+    def block_generation_activation(
+        self,
+        automation_id: str,
+        generation: int,
+        *,
+        expected_transition_token: str,
+    ) -> None:
+        assert automation_id == self.project_runtime.automation_id
+        record = self.generations[generation]
+        assert record.activation_transition_token == expected_transition_token
+        self.generations[generation] = replace(
+            record,
+            activation_phase=RuntimeActivationPhase.BLOCKED,
+        )
 
     def mark_generation_draining(self, automation_id: str, generation: int) -> None:
         assert automation_id == self.project_runtime.automation_id
@@ -1538,3 +1599,661 @@ def test_strict_generation_decoder_rejects_snapshot_and_child_hash_drift() -> No
         assert "execution metadata hash" in str(exc)
     else:
         raise AssertionError("generation child hash drift was accepted")
+
+
+def test_generation_decoder_exposes_base_and_closed_activation_transition() -> None:
+    manifest = _synthetic_manifest("1.0.0")
+    snapshot = _snapshot(
+        automation_id="transition-decoder-instance",
+        generation=2,
+        manifest=manifest,
+        package_sha256="8" * 64,
+        project_config={"marker": "B"},
+        account_id="account-B",
+        schedule_time="10:00",
+        install_root="/plugins/action/transition-decoder",
+    )
+    raw = snapshot_to_row(snapshot)
+    transition_token = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2"
+    row = {
+        **raw,
+        "state": RuntimeGenerationState.COMMITTED.value,
+        "base_committed_generation": 1,
+        "snapshot_json": raw,
+        "snapshot_sha256": _persisted_sha(raw),
+        "enabled_entrypoints_sha256": _persisted_sha(
+            list(snapshot.enabled_entrypoints)
+        ),
+        "activation_transition_token": transition_token,
+        "activation_phase": RuntimeActivationPhase.PENDING_PROJECTION.value,
+        "coeffects": [],
+        "effects": [],
+    }
+
+    decoded = generation_from_row(row)
+
+    assert decoded.base_committed_generation == 1
+    assert decoded.activation_transition_token == transition_token
+    assert decoded.activation_phase is RuntimeActivationPhase.PENDING_PROJECTION
+
+    malformed = dict(row, activation_phase="NOT_A_PHASE")
+    with pytest.raises(ValueError):
+        generation_from_row(malformed)
+
+    noncanonical = dict(
+        row,
+        activation_transition_token=transition_token.upper(),
+    )
+    with pytest.raises(ValueError, match="not canonical"):
+        generation_from_row(noncanonical)
+
+
+def test_runtime_adapter_delegates_token_guarded_activation_transitions() -> None:
+    calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+
+    class _LowLevel:
+        @staticmethod
+        def rollback_generation_cas_row(
+            automation_id: str,
+            generation: int,
+            **kwargs: object,
+        ) -> dict[str, object]:
+            calls.append(("rollback", (automation_id, generation), kwargs))
+            return {
+                "automation_id": automation_id,
+                "target_generation": generation,
+                "committed_generation": 1,
+                "reconcile_state": RuntimeReconcileState.READY_TO_COMMIT.value,
+                "record_version": 4,
+            }
+
+        @staticmethod
+        def complete_generation_activation_row(
+            automation_id: str,
+            generation: int,
+            **kwargs: object,
+        ) -> None:
+            calls.append(("complete", (automation_id, generation), kwargs))
+
+        @staticmethod
+        def block_generation_activation_row(
+            automation_id: str,
+            generation: int,
+            **kwargs: object,
+        ) -> None:
+            calls.append(("block", (automation_id, generation), kwargs))
+
+    adapter = MySQLAutomationPluginRuntimeAdapter(
+        _OrchestrationRepository(_LowLevel())  # type: ignore[arg-type]
+    )
+    transition_token = "00000000-0000-0000-0000-000000000003"
+
+    restored = adapter.rollback_generation_cas(
+        "adapter-transition-instance",
+        2,
+        expected_base_committed_generation=1,
+        expected_transition_token=transition_token,
+    )
+    adapter.complete_generation_activation(
+        "adapter-transition-instance",
+        2,
+        expected_transition_token=transition_token,
+    )
+    adapter.block_generation_activation(
+        "adapter-transition-instance",
+        2,
+        expected_transition_token=transition_token,
+    )
+
+    assert restored.committed_generation == 1
+    assert restored.reconcile_state is RuntimeReconcileState.READY_TO_COMMIT
+    assert calls == [
+        (
+            "rollback",
+            ("adapter-transition-instance", 2),
+            {
+                "expected_base_committed_generation": 1,
+                "expected_transition_token": transition_token,
+            },
+        ),
+        (
+            "complete",
+            ("adapter-transition-instance", 2),
+            {"expected_transition_token": transition_token},
+        ),
+        (
+            "block",
+            ("adapter-transition-instance", 2),
+            {"expected_transition_token": transition_token},
+        ),
+    ]
+
+
+class _ActivationPhaseCursor:
+    def __init__(self, *, transition_token: str, phase: str) -> None:
+        self.transition_token = transition_token
+        self.phase = phase
+        self.rowcount = 0
+        self._result: dict[str, object] | None = None
+
+    def execute(self, sql: str, params: Sequence[object] = ()) -> None:
+        normalized = " ".join(sql.split())
+        if normalized.startswith("SELECT transition_token, phase"):
+            self._result = {
+                "transition_token": self.transition_token,
+                "phase": self.phase,
+            }
+            self.rowcount = 1
+            return
+        if normalized.startswith(
+            "UPDATE automation_project_generation_transitions"
+        ):
+            expected_token = str(params[2])
+            if (
+                expected_token == self.transition_token
+                and self.phase == "PENDING_PROJECTION"
+            ):
+                self.phase = "BLOCKED"
+                self.rowcount = 1
+            else:
+                self.rowcount = 0
+            self._result = None
+            return
+        raise AssertionError(f"unexpected activation phase SQL: {normalized}")
+
+    def fetchone(self) -> dict[str, object] | None:
+        return self._result
+
+
+class _CursorManager:
+    def __init__(self, cursor: object) -> None:
+        self.cursor = cursor
+
+    def __enter__(self) -> object:
+        return self.cursor
+
+    def __exit__(self, *_args: object) -> bool:
+        return False
+
+
+class _LeaseActivationGateCursor:
+    def __init__(
+        self,
+        *,
+        generation_row: Mapping[str, Any],
+        transition_phase: str | None,
+    ) -> None:
+        self.generation_row = dict(generation_row)
+        self.transition_phase = transition_phase
+        self.lease: dict[str, Any] | None = None
+        self._result: dict[str, Any] | None = None
+        self.rowcount = 0
+        self.calls: list[str] = []
+
+    def execute(self, sql: str, params: Sequence[object] = ()) -> None:
+        normalized = " ".join(sql.split())
+        self.calls.append(normalized)
+        if normalized.startswith(
+            "SELECT committed_generation, enabled, state, reconcile_state"
+        ):
+            self._result = {
+                "committed_generation": 1,
+                "enabled": True,
+                "state": "ENABLED",
+                "reconcile_state": "STABLE",
+            }
+            self.rowcount = 1
+            return
+        if normalized.startswith(
+            "SELECT * FROM automation_project_generations"
+        ):
+            self._result = copy.deepcopy(self.generation_row)
+            self.rowcount = 1
+            return
+        if normalized.startswith(
+            "SELECT phase FROM automation_project_generation_transitions"
+        ):
+            self._result = (
+                None
+                if self.transition_phase is None
+                else {"phase": self.transition_phase}
+            )
+            self.rowcount = int(self._result is not None)
+            return
+        if normalized.startswith(
+            "INSERT INTO automation_project_generation_leases"
+        ):
+            values = tuple(params)
+            self.lease = {
+                "lease_id": values[0],
+                "automation_id": values[1],
+                "generation": values[2],
+                "orchestration_run_id": values[3],
+                "lease_owner": values[4],
+                "runtime_metadata_json": values[5],
+                "runtime_metadata_sha256": values[6],
+                "outcome": "RUNNING",
+                "expires_at": values[7],
+            }
+            self._result = None
+            self.rowcount = 1
+            return
+        if normalized.startswith(
+            "SELECT * FROM automation_project_generation_leases"
+        ):
+            self._result = copy.deepcopy(self.lease)
+            self.rowcount = int(self._result is not None)
+            return
+        raise AssertionError(f"unexpected lease activation SQL: {normalized}")
+
+    def fetchone(self) -> dict[str, Any] | None:
+        return self._result
+
+
+class _LeaseActivationGateRepository(AutomationPluginGenerationRepositoryMixin):
+    _GENERATION_JSON_FIELDS = ("snapshot_json",)
+
+    def __init__(self, cursor: _LeaseActivationGateCursor) -> None:
+        self._cursor = cursor
+
+    def cursor(self) -> _CursorManager:
+        return _CursorManager(self._cursor)
+
+
+@pytest.mark.parametrize(
+    ("transition_phase", "allowed"),
+    (
+        pytest.param("PENDING_PROJECTION", False, id="first-install-pending"),
+        pytest.param("BLOCKED", False, id="blocked"),
+        pytest.param("ACTIVE", True, id="active"),
+        pytest.param(None, True, id="legacy-without-transition"),
+    ),
+)
+def test_generation_lease_requires_active_transition_or_explicit_legacy_route(
+    transition_phase: str | None,
+    allowed: bool,
+) -> None:
+    manifest = _synthetic_manifest("1.0.0")
+    snapshot = _snapshot(
+        automation_id="lease-activation-gate-instance",
+        generation=1,
+        manifest=manifest,
+        package_sha256="7" * 64,
+        project_config={"marker": "A"},
+        account_id="account-A",
+        schedule_time="09:00",
+        install_root="/plugins/action/lease-activation-gate",
+    )
+    raw_snapshot = _generation_snapshot(
+        snapshot.automation_id,
+        snapshot_to_row(snapshot),
+    )
+    generation_row = {
+        **raw_snapshot,
+        "state": "COMMITTED",
+        "snapshot_json": raw_snapshot,
+        "snapshot_sha256": _exact_json_hash(raw_snapshot),
+        "enabled_entrypoints_sha256": _exact_json_hash(
+            list(snapshot.enabled_entrypoints)
+        ),
+    }
+    cursor = _LeaseActivationGateCursor(
+        generation_row=generation_row,
+        transition_phase=transition_phase,
+    )
+    repository = _LeaseActivationGateRepository(cursor)
+    expires_at = datetime(2026, 9, 1, 9, 5)
+
+    if not allowed:
+        with pytest.raises(ConcurrentUpdateError, match="not accepting leases"):
+            repository.acquire_committed_generation_lease_row(
+                snapshot.automation_id,
+                expected_generation=1,
+                expected_manifest_sha256=snapshot.manifest_sha256,
+                lease_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa7",
+                orchestration_run_id="run-lease-activation-gate",
+                expires_at=expires_at,
+                lease_owner="agent-runtime",
+            )
+        transition_sql = next(
+            sql
+            for sql in cursor.calls
+            if sql.startswith(
+                "SELECT phase FROM automation_project_generation_transitions"
+            )
+        )
+        assert transition_sql.endswith("FOR UPDATE")
+        assert not any(
+            sql.startswith("INSERT INTO automation_project_generation_leases")
+            for sql in cursor.calls
+        )
+        return
+
+    lease = repository.acquire_committed_generation_lease_row(
+        snapshot.automation_id,
+        expected_generation=1,
+        expected_manifest_sha256=snapshot.manifest_sha256,
+        lease_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa7",
+        orchestration_run_id="run-lease-activation-gate",
+        expires_at=expires_at,
+        lease_owner="agent-runtime",
+    )
+
+    assert lease["outcome"] == "RUNNING"
+    transition_sql = next(
+        sql
+        for sql in cursor.calls
+        if sql.startswith(
+            "SELECT phase FROM automation_project_generation_transitions"
+        )
+    )
+    assert transition_sql.endswith("FOR UPDATE")
+    assert any(
+        sql.startswith("INSERT INTO automation_project_generation_leases")
+        for sql in cursor.calls
+    )
+
+
+class _LeaseHistoryCursor:
+    def __init__(self, rows: Sequence[Mapping[str, Any]]) -> None:
+        self.rows = [dict(item) for item in rows]
+        self.sql = ""
+
+    def execute(self, sql: str, params: Sequence[object] = ()) -> None:
+        self.sql = " ".join(sql.split())
+        assert params == ("reverse-lease-instance", 2)
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return copy.deepcopy(self.rows)
+
+
+def test_reverse_cas_rejects_completed_target_generation_lease_history() -> None:
+    cursor = _LeaseHistoryCursor(
+        [
+            {
+                "lease_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb8",
+                "outcome": "SUCCEEDED",
+            }
+        ]
+    )
+
+    with pytest.raises(ConcurrentUpdateError, match="lease history"):
+        _assert_transition_target_has_no_generation_leases(
+            cursor,
+            automation_id="reverse-lease-instance",
+            generation=2,
+        )
+
+    assert "outcome IN" not in cursor.sql
+    assert "ORDER BY lease_id FOR UPDATE" in cursor.sql
+
+
+class _ActivationPhaseRepository(AutomationPluginGenerationRepositoryMixin):
+    def __init__(self, cursor: _ActivationPhaseCursor) -> None:
+        self._cursor = cursor
+
+    def cursor(self) -> _CursorManager:
+        return _CursorManager(self._cursor)
+
+
+def test_activation_block_is_token_guarded_and_idempotent() -> None:
+    transition_token = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa6"
+    cursor = _ActivationPhaseCursor(
+        transition_token=transition_token,
+        phase="PENDING_PROJECTION",
+    )
+    repository = _ActivationPhaseRepository(cursor)
+
+    repository.block_generation_activation_row(
+        "blocked-transition-instance",
+        2,
+        expected_transition_token=transition_token,
+    )
+    assert cursor.phase == "BLOCKED"
+
+    repository.block_generation_activation_row(
+        "blocked-transition-instance",
+        2,
+        expected_transition_token=transition_token,
+    )
+    assert cursor.phase == "BLOCKED"
+
+    with pytest.raises(ConcurrentUpdateError, match="token changed"):
+        repository.block_generation_activation_row(
+            "blocked-transition-instance",
+            2,
+            expected_transition_token="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb6",
+        )
+
+
+class _TransitionTaskCursor:
+    def __init__(
+        self,
+        *,
+        current_tasks: Sequence[Mapping[str, Any]],
+        journal_tasks: Sequence[Mapping[str, Any]],
+    ) -> None:
+        self.current_tasks = [dict(item) for item in current_tasks]
+        self.journal_tasks = [dict(item) for item in journal_tasks]
+        self._result: list[dict[str, Any]] = []
+        self.rowcount = 0
+
+    def execute(self, sql: str, params: Sequence[object] = ()) -> None:
+        normalized = " ".join(sql.split())
+        if normalized.startswith("SELECT task.id"):
+            self._result = copy.deepcopy(self.current_tasks)
+            self.rowcount = len(self._result)
+            return
+        if normalized.startswith("DELETE FROM scheduled_tasks"):
+            self.rowcount = len(self.current_tasks)
+            self.current_tasks = []
+            self._result = []
+            return
+        if normalized.startswith(
+            "SELECT * FROM automation_project_generation_transition_tasks"
+        ):
+            self._result = copy.deepcopy(self.journal_tasks)
+            self.rowcount = len(self._result)
+            return
+        if normalized.startswith("INSERT INTO scheduled_tasks"):
+            values = tuple(params)
+            self.current_tasks.append(
+                {
+                    "id": values[0],
+                    "automation_id": values[1],
+                    "automation_generation": values[2],
+                    "name": values[3],
+                    "tool_name": values[4],
+                    "tool_params": json.loads(str(values[5])) if values[5] else None,
+                    "cron_expression": values[6],
+                    "enabled": values[7],
+                    "last_run": values[8],
+                    "last_status": values[9],
+                    "last_duration_ms": values[10],
+                    "last_message": values[11],
+                    "configuration_version": values[12],
+                    "created_at": values[13],
+                    "updated_at": values[14],
+                }
+            )
+            self.rowcount = 1
+            return
+        if normalized.startswith(
+            "INSERT INTO scheduled_task_approval_policies"
+        ):
+            values = tuple(params)
+            task = next(item for item in self.current_tasks if item["id"] == values[0])
+            task.update(
+                {
+                    "policy_task_id": values[0],
+                    "policy_mode": values[1],
+                    "policy_contract_hash": values[2],
+                    "policy_contract_snapshot_json": (
+                        json.loads(str(values[3])) if values[3] else None
+                    ),
+                    "policy_tool_contract_hash": values[4],
+                    "policy_approved_by_actor_id": values[5],
+                    "policy_approved_by_actor_role": values[6],
+                    "policy_approved_by_actor_display_name": values[7],
+                    "policy_approved_at": values[8],
+                    "policy_comment": values[9],
+                    "policy_version": values[10],
+                    "policy_updated_at": values[11],
+                }
+            )
+            self.rowcount = 1
+            return
+        raise AssertionError(f"unexpected SQL in transition task test: {normalized}")
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return self._result
+
+
+def test_transition_task_before_image_restores_non_default_policy_exactly() -> None:
+    observed_at = datetime(2026, 8, 31, 8, 30, tzinfo=timezone.utc)
+    before_task = {
+        "id": "old-task",
+        "automation_id": "task-roundtrip-instance",
+        "automation_generation": 1,
+        "name": "Administrator supplied name",
+        "tool_name": "automation.task-roundtrip-instance.run",
+        "tool_params": {"marker": "old"},
+        "cron_expression": "0 9 * * *",
+        "enabled": 1,
+        "last_run": observed_at,
+        "last_status": "success",
+        "last_duration_ms": 17,
+        "last_message": "ok",
+        "configuration_version": 3,
+        "created_at": observed_at,
+        "updated_at": observed_at,
+        "policy_task_id": "old-task",
+        "policy_mode": "EXACT_SCHEDULE_EXEMPT",
+        "policy_contract_hash": "a" * 64,
+        "policy_contract_snapshot_json": {"scope": "exact"},
+        "policy_tool_contract_hash": "b" * 64,
+        "policy_approved_by_actor_id": "admin-1",
+        "policy_approved_by_actor_role": "super_admin",
+        "policy_approved_by_actor_display_name": "Admin",
+        "policy_approved_at": observed_at,
+        "policy_comment": "approved",
+        "policy_version": 7,
+        "policy_updated_at": observed_at,
+    }
+    journal_task = {
+        **before_task,
+        "task_id": before_task["id"],
+        "task_created_at": before_task["created_at"],
+        "task_updated_at": before_task["updated_at"],
+    }
+    cursor = _TransitionTaskCursor(
+        current_tasks=[
+            {
+                **before_task,
+                "id": "new-task",
+                "automation_generation": 2,
+                "name": "new projection",
+                "policy_task_id": "new-task",
+                "policy_mode": "REQUIRE_EACH_RUN",
+                "policy_contract_hash": None,
+                "policy_contract_snapshot_json": None,
+                "policy_tool_contract_hash": None,
+                "policy_approved_by_actor_id": None,
+                "policy_approved_by_actor_role": None,
+                "policy_approved_by_actor_display_name": None,
+                "policy_approved_at": None,
+                "policy_comment": None,
+                "policy_version": 1,
+            }
+        ],
+        journal_tasks=[journal_task],
+    )
+
+    _restore_transition_task_before_image(
+        cursor,
+        automation_id="task-roundtrip-instance",
+        transition_token="00000000-0000-0000-0000-000000000004",
+    )
+    restored = _lock_scheduled_task_before_image(
+        cursor,
+        automation_id="task-roundtrip-instance",
+    )
+
+    assert _exact_json_hash(restored) == _exact_json_hash([before_task])
+
+
+def test_transition_task_empty_before_image_clears_first_install_projection() -> None:
+    observed_at = datetime(2026, 8, 31, 8, 30, tzinfo=timezone.utc)
+    cursor = _TransitionTaskCursor(
+        current_tasks=[
+            {
+                "id": "initial-task",
+                "automation_id": "first-install-instance",
+                "automation_generation": 1,
+                "name": "initial projection",
+                "tool_name": "automation.first-install-instance.run",
+                "tool_params": {},
+                "cron_expression": "0 9 * * *",
+                "enabled": 1,
+                "last_run": None,
+                "last_status": None,
+                "last_duration_ms": None,
+                "last_message": None,
+                "configuration_version": 1,
+                "created_at": observed_at,
+                "updated_at": observed_at,
+                "policy_task_id": "initial-task",
+                "policy_mode": "REQUIRE_EACH_RUN",
+                "policy_contract_hash": None,
+                "policy_contract_snapshot_json": None,
+                "policy_tool_contract_hash": None,
+                "policy_approved_by_actor_id": None,
+                "policy_approved_by_actor_role": None,
+                "policy_approved_by_actor_display_name": None,
+                "policy_approved_at": None,
+                "policy_comment": None,
+                "policy_version": 1,
+                "policy_updated_at": observed_at,
+            }
+        ],
+        journal_tasks=[],
+    )
+
+    _restore_transition_task_before_image(
+        cursor,
+        automation_id="first-install-instance",
+        transition_token="00000000-0000-0000-0000-000000000005",
+    )
+
+    restored = _lock_scheduled_task_before_image(
+        cursor,
+        automation_id="first-install-instance",
+    )
+    assert restored == []
+    assert _exact_json_hash(restored) == _exact_json_hash([])
+
+
+def test_activation_transition_migration_closes_phase_and_before_image() -> None:
+    sql = Path(
+        "agent/migrations/034_runtime_generation_activation_journal.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS automation_project_generation_transitions" in sql
+    assert (
+        "CREATE TABLE IF NOT EXISTS "
+        "automation_project_generation_transition_tasks" in sql
+    )
+    for phase in ("PENDING_PROJECTION", "ACTIVE", "ROLLED_BACK", "BLOCKED"):
+        assert f"'{phase}'" in sql
+    for field in (
+        "transition_token",
+        "base_committed_generation",
+        "before_project_record_version",
+        "pending_project_record_version",
+        "before_tasks_sha256",
+        "pending_tasks_sha256",
+        "policy_contract_snapshot_json",
+        "policy_version",
+        "policy_updated_at",
+    ):
+        assert field in sql

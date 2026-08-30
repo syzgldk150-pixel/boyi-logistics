@@ -5,7 +5,6 @@ import hashlib
 import json
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -13,7 +12,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from agent.automation_plugins.binding_resolver import ProductionProjectBindingResolver
 from agent.automation_plugins.errors import PluginConflictError, PluginPackageError
 from agent.automation_plugins.management import (
     AutomationPluginManagementService,
@@ -22,18 +20,12 @@ from agent.automation_plugins.management import (
 from agent.automation_plugins.management_api import (
     create_automation_plugin_management_router,
 )
-from agent.automation_plugins.management_repository import (
-    MySQLAutomationPluginManagementRepository,
-)
 from agent.automation_plugins.models import (
     AutomationProjectConfigRecord,
     PluginProjectState,
     PluginRuntimeModel,
-    PluginTrustSource,
-    PluginVersionRecord,
     RuntimeReconcileState,
 )
-from agent.automation_plugins.storage import FilesystemPluginStorage
 from agent.orchestration.models import Actor, ActorType
 from shared.orchestration_repository_support import IdempotencyConflict
 
@@ -84,6 +76,79 @@ class _Catalog:
     @staticmethod
     def safe_projection() -> dict[str, Any]:
         return {"plugins": [{"plugin_id": "example_action"}], "instances": []}
+
+
+class _ContributionRegistry:
+    def __init__(
+        self,
+        active_generation: int | None,
+        records: tuple[object, ...] = (),
+    ) -> None:
+        self.generation = active_generation
+        self.records = records
+
+    def active_generation(self, automation_id: str) -> int | None:
+        assert automation_id
+        return self.generation
+
+    def snapshot(self) -> tuple[object, ...]:
+        return self.records
+
+
+class _ProjectionCatalog:
+    def __init__(self, instance: dict[str, Any], entry: object) -> None:
+        self.instance = instance
+        self.entry = entry
+
+    def safe_projection(self) -> dict[str, Any]:
+        return {
+            "plugins": [],
+            "instances": [json.loads(json.dumps(self.instance))],
+        }
+
+    def require(self, automation_id: str) -> object:
+        assert automation_id == self.instance["automation_id"]
+        return self.entry
+
+
+def _committed_service_entry(
+    *,
+    automation_id: str,
+    generation: int | None,
+    enabled: bool,
+    declared_kinds: dict[str, str],
+    committed_enabled_entrypoints: tuple[str, ...],
+) -> SimpleNamespace:
+    contributions: dict[str, list[dict[str, str]]] = {
+        "console": [],
+        "scheduler": [],
+        "webhook": [],
+        "feishu": [],
+        "events": [],
+    }
+    for contribution_id, contribution_kind in declared_kinds.items():
+        contributions[contribution_kind].append(
+            {
+                "id": contribution_id,
+                "service": "plugin.example.run@1",
+                "operation": "run",
+            }
+        )
+    snapshot = (
+        SimpleNamespace(
+            enabled_entrypoints=committed_enabled_entrypoints,
+            execution_metadata={"contributions": contributions},
+        )
+        if generation is not None
+        else None
+    )
+    return SimpleNamespace(
+        automation_id=automation_id,
+        runtime_model=PluginRuntimeModel.SERVICE_V2.value,
+        enabled=enabled,
+        committed_generation=generation,
+        committed_snapshot=snapshot,
+    )
 
 
 class _ApiService:
@@ -579,6 +644,39 @@ def test_lifecycle_refresh_failure_is_explicit_and_does_not_retry_operation() ->
     assert "不要重复提交安装操作" in response.json()["message"]
 
 
+def test_scheduler_refresh_rejects_explicit_invalid_tasks_for_lifecycle_and_configuration() -> None:
+    service = _ApiService()
+
+    def invalid_refresh() -> dict[str, Any]:
+        return {
+            "initialized": True,
+            "invalid_tasks": [{"task_id": "invalid-task"}],
+        }
+
+    client = _api_client(service, scheduler_refresh_provider=invalid_refresh)
+    package = b"PK\x03\x04invalid-refresh"
+    installed = client.post(
+        "/internal/v1/automation/plugins/install",
+        data={
+            "instance_name": "Invalid refresh",
+            "request_id": str(uuid.uuid4()),
+            "package_sha256": hashlib.sha256(package).hexdigest(),
+        },
+        files={"package": ("invalid-refresh.zip", package, "application/zip")},
+    )
+    configured = client.put(
+        "/internal/v1/automation/instances/automation-1/configuration",
+        json=_configuration_request_payload(),
+    )
+
+    assert installed.status_code == 200
+    assert installed.json()["data"]["scheduler_refresh_completed"] is False
+    assert installed.json()["data"]["schedule_runtime_state"] == "REFRESH_FAILED"
+    assert configured.status_code == 200
+    assert configured.json()["data"]["scheduler_refresh_completed"] is False
+    assert configured.json()["data"]["schedule_runtime_state"] == "REFRESH_FAILED"
+
+
 def test_failed_lifecycle_response_does_not_refresh_scheduler() -> None:
     service = _ApiService()
 
@@ -602,6 +700,42 @@ def test_failed_lifecycle_response_does_not_refresh_scheduler() -> None:
     )
 
     assert response.status_code == 409
+    assert refresh_calls == []
+
+
+def test_uninstall_projection_refresh_error_is_explicitly_retryable_and_not_ready() -> None:
+    service = _ApiService()
+
+    def fail_uninstall(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise PluginConflictError(
+            "runtime projection refresh failed",
+            code="RUNTIME_PROJECTION_REFRESH_FAILED",
+        )
+
+    service.uninstall = fail_uninstall  # type: ignore[method-assign]
+    refresh_calls: list[str] = []
+    client = _api_client(
+        service,
+        scheduler_refresh_provider=lambda: refresh_calls.append("refresh")
+        or {"initialized": True, "invalid_tasks": []},
+    )
+    response = client.post(
+        "/internal/v1/automation/instances/automation-1/uninstall",
+        json={
+            "request_id": str(uuid.uuid4()),
+            "expected_record_version": 3,
+            "current_version": "1.0.0",
+            "confirm": True,
+        },
+    )
+
+    assert response.status_code == 409
+    data = response.json()["data"]
+    assert data["runtime_projection_pending"] is True
+    assert data["runtime_projection_retryable"] is True
+    assert data["contribution_projection_state"] == "STALE"
+    assert data["generation_ready"] is False
+    assert data["transition_state"] != "READY"
     assert refresh_calls == []
 
 
@@ -1370,6 +1504,351 @@ def test_management_identity_and_worker_projection_are_fail_closed() -> None:
     assert error.value.code == "PLUGIN_MANAGEMENT_FORBIDDEN"
 
 
+def test_catalog_projects_exact_active_service_v2_contributions_without_leaking_records() -> None:
+    instance = {
+        "automation_id": "service-project",
+        "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
+        "enabled": True,
+        "committed_generation": 7,
+        "dependency_state": "READY",
+        "blocking_reasons": [],
+        "entrypoints": ["run_now", "daily_run"],
+        "enabled_entrypoints": ["run_now", "daily_run"],
+        "entrypoint_kinds": {
+            "run_now": "console",
+            "daily_run": "scheduler",
+        },
+    }
+    registry = _ContributionRegistry(
+        7,
+        (
+            SimpleNamespace(
+                automation_id="service-project",
+                generation=7,
+                contribution_id="daily_run",
+                contribution_kind="scheduler",
+                phase="COMMITTED",
+                backend_status="DISABLED",
+                service="must-not-cross-boundary",
+            ),
+            SimpleNamespace(
+                automation_id="service-project",
+                generation=7,
+                contribution_id="run_now",
+                contribution_kind="console",
+                phase="COMMITTED",
+                backend_status="READY",
+                declaration={"secret": "must-not-cross-boundary"},
+            ),
+        ),
+    )
+    catalog = _ProjectionCatalog(
+        instance,
+        _committed_service_entry(
+            automation_id="service-project",
+            generation=7,
+            enabled=True,
+            declared_kinds={"run_now": "console", "daily_run": "scheduler"},
+            committed_enabled_entrypoints=("run_now", "daily_run"),
+        ),
+    )
+    service = AutomationPluginManagementService(
+        catalog=catalog,
+        lifecycle=SimpleNamespace(),
+        configuration=SimpleNamespace(),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+        contribution_registry=registry,
+    )
+
+    projection = service.catalog_projection(actor=_console_actor(super_admin=False))
+    projected = projection["instances"][0]
+
+    assert projected["contribution_projection_state"] == "ACTIVE"
+    assert projected["dependency_state"] == "READY"
+    assert projected["active_contributions"] == [
+        {
+            "contribution_id": "run_now",
+            "contribution_kind": "console",
+            "generation": 7,
+            "phase": "COMMITTED",
+            "backend_status": "READY",
+        },
+        {
+            "contribution_id": "daily_run",
+            "contribution_kind": "scheduler",
+            "generation": 7,
+            "phase": "COMMITTED",
+            "backend_status": "DISABLED",
+        },
+    ]
+    assert "must-not-cross-boundary" not in repr(projection)
+
+
+def test_catalog_service_v2_projection_states_are_closed_and_fail_closed() -> None:
+    managed = {
+        "automation_id": "service-project",
+        "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
+        "enabled": True,
+        "committed_generation": 7,
+        "dependency_state": "READY",
+        "blocking_reasons": [],
+        "entrypoints": ["run_now"],
+        "enabled_entrypoints": ["run_now"],
+        "entrypoint_kinds": {"run_now": "console"},
+    }
+    stale_registry = _ContributionRegistry(
+        6,
+        (
+            SimpleNamespace(
+                automation_id="service-project",
+                generation=6,
+                contribution_id="run_now",
+                contribution_kind="console",
+                phase="COMMITTED",
+                backend_status="READY",
+            ),
+        ),
+    )
+    service = AutomationPluginManagementService(
+        catalog=_ProjectionCatalog(
+            managed,
+            _committed_service_entry(
+                automation_id="service-project",
+                generation=7,
+                enabled=True,
+                declared_kinds={"run_now": "console"},
+                committed_enabled_entrypoints=("run_now",),
+            ),
+        ),
+        lifecycle=SimpleNamespace(),
+        configuration=SimpleNamespace(),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+        contribution_registry=stale_registry,
+    )
+
+    stale = service.catalog_projection(actor=_console_actor())["instances"][0]
+
+    assert stale["contribution_projection_state"] == "STALE"
+    assert stale["dependency_state"] == "BLOCKED_DEPENDENCY"
+    assert stale["blocking_reasons"][-1]["code"] == "RUNTIME_PROJECTION_STALE"
+    assert stale["active_contributions"][0]["generation"] == 6
+
+    service_only = {
+        **managed,
+        "automation_id": "service-only",
+        "entrypoints": [],
+        "enabled_entrypoints": [],
+        "entrypoint_kinds": {},
+    }
+    compatible = AutomationPluginManagementService(
+        catalog=_ProjectionCatalog(
+            service_only,
+            _committed_service_entry(
+                automation_id="service-only",
+                generation=7,
+                enabled=True,
+                declared_kinds={},
+                committed_enabled_entrypoints=(),
+            ),
+        ),
+        lifecycle=SimpleNamespace(),
+        configuration=SimpleNamespace(),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+    ).catalog_projection(actor=_console_actor())["instances"][0]
+    assert compatible["contribution_projection_state"] == "ACTIVE"
+    assert compatible["active_contributions"] == []
+
+    inactive = {
+        **managed,
+        "committed_generation": None,
+    }
+    unavailable_registry = SimpleNamespace(
+        active_generation=lambda _automation_id: (_ for _ in ()).throw(
+            RuntimeError("registry unavailable")
+        ),
+        snapshot=lambda: (_ for _ in ()).throw(RuntimeError("registry unavailable")),
+    )
+    inactive_projection = AutomationPluginManagementService(
+        catalog=_ProjectionCatalog(
+            inactive,
+            _committed_service_entry(
+                automation_id="service-project",
+                generation=None,
+                enabled=True,
+                declared_kinds={"run_now": "console"},
+                committed_enabled_entrypoints=(),
+            ),
+        ),
+        lifecycle=SimpleNamespace(),
+        configuration=SimpleNamespace(),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+        contribution_registry=unavailable_registry,
+    ).catalog_projection(actor=_console_actor())["instances"][0]
+    assert inactive_projection["contribution_projection_state"] == "INACTIVE"
+    assert inactive_projection["active_contributions"] == []
+
+
+def test_catalog_projection_uses_only_enabled_managed_contributions() -> None:
+    base = {
+        "automation_id": "partially-enabled",
+        "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
+        "enabled": True,
+        "committed_generation": 4,
+        "dependency_state": "READY",
+        "blocking_reasons": [],
+        "entrypoints": ["run_now", "daily_run"],
+        "enabled_entrypoints": ["run_now"],
+        "entrypoint_kinds": {
+            "run_now": "console",
+            "daily_run": "scheduler",
+        },
+    }
+
+    def project(
+        instance: dict[str, Any],
+        registry: object | None,
+        *,
+        committed_enabled: tuple[str, ...] = ("run_now",),
+        project_enabled: bool = True,
+    ) -> dict[str, Any]:
+        return AutomationPluginManagementService(
+            catalog=_ProjectionCatalog(
+                instance,
+                _committed_service_entry(
+                    automation_id="partially-enabled",
+                    generation=4,
+                    enabled=project_enabled,
+                    declared_kinds={
+                        "run_now": "console",
+                        "daily_run": "scheduler",
+                    },
+                    committed_enabled_entrypoints=committed_enabled,
+                ),
+            ),
+            lifecycle=SimpleNamespace(),
+            configuration=SimpleNamespace(),
+            worker_repository=SimpleNamespace(),
+            target_service=SimpleNamespace(),
+            package_repository=SimpleNamespace(),
+            storage=SimpleNamespace(),
+            contribution_registry=registry,
+        ).catalog_projection(actor=_console_actor())["instances"][0]
+
+    partial = project(
+        base,
+        _ContributionRegistry(
+            4,
+            (
+                SimpleNamespace(
+                    automation_id="partially-enabled",
+                    generation=4,
+                    contribution_id="run_now",
+                    contribution_kind="console",
+                    phase="COMMITTED",
+                    backend_status="READY",
+                ),
+            ),
+        ),
+    )
+    assert partial["contribution_projection_state"] == "ACTIVE"
+    assert [item["contribution_id"] for item in partial["active_contributions"]] == [
+        "run_now"
+    ]
+
+    all_disabled = project(
+        {**base, "enabled_entrypoints": []},
+        SimpleNamespace(
+            active_generation=lambda _automation_id: (_ for _ in ()).throw(
+                AssertionError("all-disabled projection must not require a marker")
+            ),
+            snapshot=lambda: (_ for _ in ()).throw(
+                AssertionError("all-disabled projection has no active records")
+            ),
+        ),
+        committed_enabled=(),
+    )
+    assert all_disabled["contribution_projection_state"] == "ACTIVE"
+    assert all_disabled["active_contributions"] == []
+
+    malformed = project(
+        {**base, "entrypoint_kinds": {"run_now": "console"}},
+        _ContributionRegistry(
+            4,
+            (
+                SimpleNamespace(
+                    automation_id="partially-enabled",
+                    generation=4,
+                    contribution_id="run_now",
+                    contribution_kind="console",
+                    phase="COMMITTED",
+                    backend_status="READY",
+                ),
+            ),
+        ),
+    )
+    assert malformed["contribution_projection_state"] == "STALE"
+    assert malformed["dependency_state"] == "BLOCKED_DEPENDENCY"
+
+    malformed_disabled = project(
+        {
+            **base,
+            "enabled": False,
+            "entrypoint_kinds": {"run_now": "console"},
+        },
+        _ContributionRegistry(None),
+        project_enabled=False,
+    )
+    assert malformed_disabled["contribution_projection_state"] == "STALE"
+
+    unavailable = project(
+        base,
+        SimpleNamespace(
+            active_generation=lambda _automation_id: (_ for _ in ()).throw(
+                RuntimeError("registry unavailable")
+            ),
+            snapshot=lambda: (),
+        ),
+    )
+    assert unavailable["contribution_projection_state"] == "STALE"
+    assert unavailable["active_contributions"] == []
+
+    desired_changed = project(
+        {
+            **base,
+            "entrypoints": ["daily_run"],
+            "enabled_entrypoints": ["daily_run"],
+            "entrypoint_kinds": {"daily_run": "scheduler"},
+        },
+        _ContributionRegistry(
+            4,
+            (
+                SimpleNamespace(
+                    automation_id="partially-enabled",
+                    generation=4,
+                    contribution_id="run_now",
+                    contribution_kind="console",
+                    phase="COMMITTED",
+                    backend_status="READY",
+                ),
+            ),
+        ),
+    )
+    assert desired_changed["contribution_projection_state"] == "ACTIVE"
+    assert desired_changed["active_contributions"][0]["contribution_id"] == "run_now"
+
+
 def test_catalog_projects_only_closed_managed_resource_descriptors() -> None:
     service = AutomationPluginManagementService(
         catalog=_Catalog(),  # type: ignore[arg-type]
@@ -1504,6 +1983,83 @@ def test_enable_requires_exact_committed_generation_before_lifecycle_call() -> N
     assert lifecycle_calls == []
 
 
+def test_service_v2_transition_readiness_requires_exact_enabled_projection_generation() -> None:
+    contributions = {
+        "console": (
+            {
+                "id": "run_now",
+                "service": "plugin.example.run@1",
+                "operation": "run",
+            },
+        ),
+        "scheduler": (
+            {
+                "id": "daily_run",
+                "service": "plugin.example.run@1",
+                "operation": "run",
+            },
+        ),
+        "webhook": (),
+        "feishu": (),
+        "events": (),
+    }
+
+    def ready_entry(enabled_entrypoints: tuple[str, ...]) -> SimpleNamespace:
+        snapshot = SimpleNamespace(
+            generation=4,
+            plugin_version="1.0.0",
+            project_config_sha256="1" * 64,
+            account_bindings_sha256="2" * 64,
+            resource_bindings_sha256="3" * 64,
+            device_binding_sha256="4" * 64,
+            enabled_entrypoints=enabled_entrypoints,
+            execution_metadata={
+                "project_config_version": 2,
+                "contributions": contributions,
+            },
+        )
+        return _entry(
+            runtime_model=PluginRuntimeModel.SERVICE_V2.value,
+            target_generation=4,
+            committed_generation=4,
+            reconcile_state=RuntimeReconcileState.STABLE,
+            current_enabled_entrypoints=enabled_entrypoints,
+            committed_snapshot=snapshot,
+        )
+
+    def service(registry: object | None) -> AutomationPluginManagementService:
+        return AutomationPluginManagementService(
+            catalog=_Catalog(),  # type: ignore[arg-type]
+            lifecycle=SimpleNamespace(),
+            configuration=SimpleNamespace(),
+            worker_repository=SimpleNamespace(),
+            target_service=SimpleNamespace(),
+            package_repository=SimpleNamespace(),
+            storage=SimpleNamespace(),
+            contribution_registry=registry,
+        )
+
+    partial = ready_entry(("run_now",))
+    stale = service(_ContributionRegistry(3))._transition_projection(partial)
+    assert stale["generation_ready"] is False
+    assert stale["transition_state"] != "READY"
+
+    active = service(_ContributionRegistry(4))._transition_projection(partial)
+    assert active == {"generation_ready": True, "transition_state": "READY"}
+
+    all_disabled = service(
+        SimpleNamespace(
+            active_generation=lambda _automation_id: (_ for _ in ()).throw(
+                AssertionError("all-disabled readiness must not require a marker")
+            )
+        )
+    )._transition_projection(ready_entry(()))
+    assert all_disabled == {"generation_ready": True, "transition_state": "READY"}
+
+    legacy_adapter = service(None)._transition_projection(partial)
+    assert legacy_adapter == {"generation_ready": True, "transition_state": "READY"}
+
+
 def test_disable_revokes_authority_while_generation_is_reconciling() -> None:
     lifecycle_calls: list[dict[str, Any]] = []
     target_calls: list[str] = []
@@ -1554,6 +2110,85 @@ def test_disable_revokes_authority_while_generation_is_reconciling() -> None:
     assert result["state"] == "DISABLED"
     assert target_calls == []
     assert lifecycle_calls[0]["expected_record_version"] == 3
+
+
+def test_disable_refresh_failure_returns_committed_pending_projection_for_api_retry() -> None:
+    catalog = _Catalog(
+        _entry(
+            runtime_model=PluginRuntimeModel.SERVICE_V2.value,
+            enabled=True,
+            state=PluginProjectState.ENABLED.value,
+            provided_services=(),
+        )
+    )
+    lifecycle_calls: list[str] = []
+    target_calls: list[str] = []
+    refresh_calls: list[str] = []
+    active_version = SimpleNamespace(
+        version="1.0.0",
+        runtime_model=PluginRuntimeModel.SERVICE_V2,
+        plugin_api="2.0.0",
+    )
+
+    def set_enabled(automation_id: str, **_kwargs: Any) -> SimpleNamespace:
+        lifecycle_calls.append(automation_id)
+        return SimpleNamespace(
+            automation_id=automation_id,
+            plugin_id="example_action",
+            display_name="Example action",
+            active_version=active_version,
+            enabled=False,
+            state=PluginProjectState.DISABLED,
+            record_version=4,
+            target_generation=2,
+            committed_generation=1,
+            reconcile_state=RuntimeReconcileState.DRAINING,
+        )
+
+    def reconcile(automation_id: str) -> None:
+        target_calls.append(automation_id)
+        raise PluginConflictError(
+            "scheduler refresh failed",
+            code="RUNTIME_PROJECTION_REFRESH_FAILED",
+        )
+
+    service = AutomationPluginManagementService(
+        catalog=catalog,  # type: ignore[arg-type]
+        lifecycle=SimpleNamespace(set_enabled=set_enabled),
+        configuration=SimpleNamespace(),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(reconcile_project=reconcile),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+    )
+    client = _api_client(
+        service,  # type: ignore[arg-type]
+        scheduler_refresh_provider=lambda: (
+            refresh_calls.append("refresh")
+            or {"initialized": True, "invalid_tasks": []}
+        ),
+    )
+
+    response = client.post(
+        "/internal/v1/automation/instances/automation-1/state",
+        json={
+            "enabled": False,
+            "request_id": str(uuid.uuid4()),
+            "expected_record_version": 3,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["plugin_operation_committed"] is True
+    assert data["scheduler_refresh_completed"] is True
+    assert data["runtime_projection_pending"] is False
+    assert data["contribution_projection_state"] == "INACTIVE"
+    assert data["generation_ready"] is False
+    assert data["transition_state"] != "READY"
+    assert lifecycle_calls == ["automation-1"]
+    assert target_calls == ["automation-1"]
+    assert refresh_calls == ["refresh"]
 
 
 def test_state_response_loss_retry_reaches_audited_lifecycle_without_reconcile() -> None:
@@ -2278,381 +2913,3 @@ def test_v2_provider_uninstall_closes_consumers_before_uninstall_preparation() -
         "uninstall-prepared",
         "provider-route-withdrawn",
     ]
-
-
-class _AccountManager:
-    @staticmethod
-    def list_accounts(*, include_status: bool, validate: bool) -> list[dict[str, Any]]:
-        assert include_status is False and validate is False
-        return [
-            {
-                "account_id": "default-account",
-                "system": "ronghui",
-                "is_active": True,
-                "is_default": True,
-            },
-            {
-                "account_id": "season",
-                "system": "ronghui",
-                "is_active": True,
-                "is_default": False,
-            },
-        ]
-
-
-def test_binding_resolver_never_uses_default_or_first_item() -> None:
-    worker = {
-        "device_id": "worker-season",
-        "display_name": "Season desktop",
-        "platform": "windows",
-        "service_state": "OFFLINE",
-        "interactive_session_state": "LOCKED",
-        "capabilities_json": {"interactive": True},
-        "paired_public_key_fingerprint": "a" * 64,
-        "capabilities_sha256": "b" * 64,
-        "record_version": 1,
-    }
-    resolver = ProductionProjectBindingResolver(
-        account_manager=_AccountManager(),
-        resource_provider=lambda resource_id: (
-            {
-                "resource_id": resource_id,
-                "resource_kind": "input_file",
-                "_meta": {
-                    "configuration_version": 3,
-                    "config_sha256": "c" * 64,
-                    "source": "managed-resource-pool",
-                },
-            }
-            if resource_id == "resource-exact"
-            else None
-        ),
-        worker_repository=SimpleNamespace(
-            get_worker_device=lambda device_id: worker
-            if device_id == "worker-season"
-            else None
-        ),
-    )
-    account_role = {"allowed_systems": ["ronghui"]}
-    assert resolver.describe_account_binding(
-        automation_id="automation-1",
-        role=account_role,
-        account_id="season",
-    )["account_id"] == "season"
-    with pytest.raises(PluginConflictError) as error:
-        resolver.validate_account_binding(
-            automation_id="automation-1",
-            role=account_role,
-            account_id="missing-account",
-        )
-    assert error.value.code == "PLUGIN_ACCOUNT_BINDING_NOT_FOUND"
-
-    resource_role = {"allowed_kinds": ["input_file"]}
-    assert resolver.describe_resource_binding(
-        automation_id="automation-1",
-        role=resource_role,
-        resource_id="resource-exact",
-    )["resource_kind"] == "input_file"
-    with pytest.raises(PluginConflictError) as error:
-        resolver.validate_resource_binding(
-            automation_id="automation-1",
-            role=resource_role,
-            resource_id="missing-resource",
-        )
-    assert error.value.code == "PLUGIN_RESOURCE_BINDING_NOT_FOUND"
-
-
-    binding = resolver.resolve_device_binding(
-        automation_id="automation-1",
-        device_id="worker-season",
-        worker_requirement={"supported_os": ["windows"], "interactive_session": True},
-    )
-    assert binding.device_id == "worker-season"
-    with pytest.raises(PluginConflictError) as error:
-        resolver.resolve_device_binding(
-            automation_id="automation-1",
-            device_id="worker-missing",
-            worker_requirement={
-                "supported_os": ["windows"],
-                "interactive_session": True,
-            },
-        )
-    assert error.value.code == "PLUGIN_WORKER_BINDING_NOT_FOUND"
-
-
-def test_binding_resolver_broker_resource_requires_exact_complete_revision() -> None:
-    resources = {
-        "bitable-exact": {
-            "resource_kind": "feishu_bitable",
-            "_meta": {
-                "configuration_version": 4,
-                "config_sha256": "d" * 64,
-                "source": "automation-settings",
-                "updated_at": "2026-08-15T12:00:00+08:00",
-            },
-        },
-        "source-missing": {
-            "resource_kind": "feishu_bitable",
-            "_meta": {
-                "configuration_version": 4,
-                "config_sha256": "e" * 64,
-                "source": "",
-            },
-        },
-    }
-    resolver = ProductionProjectBindingResolver(
-        account_manager=_AccountManager(),
-        resource_provider=resources.get,
-        worker_repository=SimpleNamespace(get_worker_device=lambda _device_id: None),
-    )
-
-    descriptor = resolver.require_active(
-        resource_id="bitable-exact",
-        allowed_kinds=["feishu_bitable"],
-    )
-    assert descriptor == {
-        "resource_id": "bitable-exact",
-        "resource_kind": "feishu_bitable",
-        "source": "automation-settings",
-        "configuration_version": "4",
-        "config_sha256": "d" * 64,
-        "updated_at": "2026-08-15T12:00:00+08:00",
-    }
-    for resource_id, kinds in (
-        ("missing", ["feishu_bitable"]),
-        ("bitable-exact", ["feishu_sheet"]),
-        ("source-missing", ["feishu_bitable"]),
-    ):
-        with pytest.raises(PluginConflictError):
-            resolver.require_active(resource_id=resource_id, allowed_kinds=kinds)
-
-
-def test_pair_worker_validates_public_identity_and_repository_audit_contract() -> None:
-    rows: dict[str, dict[str, Any]] = {}
-
-    def pair_worker_device(row: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-        assert kwargs["request_id"]
-        current = rows.get(row["device_id"])
-        if current is not None and current["identity_json"] != row["identity_json"]:
-            raise PluginConflictError("device identity cannot be replaced")
-        persisted = {
-            **row,
-            "service_state": "OFFLINE",
-            "interactive_session_state": "LOGGED_OUT",
-            "last_seen_at": None,
-        }
-        rows[row["device_id"]] = persisted
-        return persisted
-
-    workers = SimpleNamespace(pair_worker_device=pair_worker_device)
-    service = AutomationPluginManagementService(
-        catalog=_Catalog(),  # type: ignore[arg-type]
-        lifecycle=SimpleNamespace(),
-        configuration=SimpleNamespace(),
-        worker_repository=workers,
-        target_service=SimpleNamespace(),
-        package_repository=SimpleNamespace(),
-        storage=SimpleNamespace(),
-    )
-    public_bytes = b"k" * 32
-    identity = {
-        "device_key_id": "worker-key-1",
-        "ed25519_public_key_base64": base64.b64encode(public_bytes).decode("ascii"),
-        "tls_client_certificate_sha256": "c" * 64,
-    }
-    result = service.pair_worker(
-        device_id="worker-season",
-        display_name="Season desktop",
-        platform="windows",
-        agent_version="1.0.0",
-        identity=identity,
-        capabilities={"interactive": True},
-        request_id=str(uuid.uuid4()),
-        actor=_console_actor(),
-    )
-    assert result["device_id"] == "worker-season"
-    assert rows["worker-season"]["paired_public_key_fingerprint"] == hashlib.sha256(
-        public_bytes
-    ).hexdigest()
-    assert "identity_json" not in result
-
-    with pytest.raises(PluginConflictError):
-        service.pair_worker(
-            device_id="worker-season",
-            display_name="Season desktop",
-            platform="windows",
-            agent_version="1.0.0",
-            identity={
-                **identity,
-                "ed25519_public_key_base64": base64.b64encode(b"z" * 32).decode(
-                    "ascii"
-                ),
-            },
-            capabilities={"interactive": True},
-            request_id=str(uuid.uuid4()),
-            actor=_console_actor(),
-        )
-
-
-def test_mysql_pairing_adapter_does_not_call_unaudited_pair_device() -> None:
-    calls: list[str] = []
-
-    class _LowLevel:
-        def pair_device(self, _row: dict[str, Any]) -> None:
-            calls.append("unaudited")
-
-    class _UnitOfWork:
-        automation_plugins = _LowLevel()
-
-        def __enter__(self) -> _UnitOfWork:
-            return self
-
-        def __exit__(self, *_args: Any) -> None:
-            return None
-
-        @staticmethod
-        def commit() -> None:
-            calls.append("commit")
-
-    repository = MySQLAutomationPluginManagementRepository(
-        SimpleNamespace(unit_of_work=lambda: _UnitOfWork())
-    )
-    with pytest.raises(PluginConflictError) as error:
-        repository.pair_worker_device(
-            {"device_id": "worker-1"},
-            request_id=str(uuid.uuid4()),
-            actor_id="console-admin-1",
-            actor_role="super_admin",
-        )
-    assert error.value.code == "PLUGIN_WORKER_PAIRING_AUDIT_UNAVAILABLE"
-    assert calls == []
-
-
-def test_mysql_pairing_adapter_writes_domain_outbox_in_same_uow() -> None:
-    calls: list[tuple[str, Any]] = []
-    request_id = str(uuid.uuid4())
-
-    class _LowLevel:
-        @staticmethod
-        def pair_device_with_audit(row, **kwargs):
-            calls.append(("pair", (dict(row), dict(kwargs))))
-            return {
-                **row,
-                "identity_sha256": "1" * 64,
-                "capabilities_sha256": "2" * 64,
-            }
-
-    class _Events:
-        @staticmethod
-        def append_with_outbox(event, outbox):
-            calls.append(("event", (dict(event), tuple(outbox))))
-
-    class _UnitOfWork:
-        automation_plugins = _LowLevel()
-        events = _Events()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        @staticmethod
-        def commit():
-            calls.append(("commit", None))
-
-    repository = MySQLAutomationPluginManagementRepository(
-        SimpleNamespace(unit_of_work=lambda: _UnitOfWork())
-    )
-    row = {
-        "device_id": "worker-1",
-        "paired_public_key_fingerprint": "f" * 64,
-    }
-
-    persisted = repository.pair_worker_device(
-        row,
-        request_id=request_id,
-        actor_id="admin-one",
-        actor_role="super_admin",
-    )
-
-    assert persisted["device_id"] == "worker-1"
-    assert [name for name, _value in calls] == ["pair", "event", "commit"]
-    paired_row, paired_context = calls[0][1]
-    assert paired_row == row
-    assert paired_context == {
-        "request_id": request_id,
-        "actor_id": "admin-one",
-        "actor_role": "super_admin",
-    }
-    event, outbox = calls[1][1]
-    assert event["event_type"] == "automation_worker.paired"
-    assert event["correlation_id"] == request_id
-    assert "identity_json" not in event["payload"]
-    assert outbox[0]["consumer_name"] == "orchestration.audit"
-
-
-def test_management_package_reader_returns_only_exact_installed_signed_archive(
-    tmp_path: Path,
-) -> None:
-    storage = FilesystemPluginStorage(tmp_path / "plugins")
-    archive = b"PK\x03\x04worker-package"
-    digest = hashlib.sha256(archive).hexdigest()
-    stage = storage.create_staging_root("worker_action", "1.0.0")
-    relative = storage.persist_verified_archive(
-        stage,
-        archive,
-        expected_sha256=digest,
-    )
-    install_root = storage.commit_staging_root(
-        stage,
-        plugin_id="worker_action",
-        version="1.0.0",
-        manifest_sha256="d" * 64,
-    )
-    version = PluginVersionRecord(
-        plugin_id="worker_action",
-        version="1.0.0",
-        package_sha256=digest,
-        manifest_sha256="d" * 64,
-        manifest={},
-        trust_source=PluginTrustSource.ED25519_UPLOAD,
-        install_root=str(install_root),
-        install_metadata={
-            "archive_relative": relative,
-            "archive_sha256": digest,
-        },
-    )
-    service = AutomationPluginManagementService(
-        catalog=_Catalog(),  # type: ignore[arg-type]
-        lifecycle=SimpleNamespace(),
-        configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
-        target_service=SimpleNamespace(),
-        package_repository=SimpleNamespace(
-            get_package_version=lambda plugin_id, plugin_version: version
-            if (plugin_id, plugin_version) == ("worker_action", "1.0.0")
-            else None
-        ),
-        storage=storage,
-    )
-    assert service.package_bytes(
-        "worker_action",
-        "1.0.0",
-        expected_sha256=digest,
-    ) == archive
-    with pytest.raises(PluginConflictError) as error:
-        service.package_bytes(
-            "worker_action",
-            "1.0.0",
-            expected_sha256="e" * 64,
-        )
-    assert error.value.code == "PLUGIN_PACKAGE_DIGEST_MISMATCH"
-
-    (install_root / relative).write_bytes(archive + b"tampered")
-    with pytest.raises(PluginPackageError):
-        service.package_bytes(
-            "worker_action",
-            "1.0.0",
-            expected_sha256=digest,
-        )

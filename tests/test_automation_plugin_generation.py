@@ -13,9 +13,12 @@ from agent.automation_plugins.generation import (
     AutomationRuntimeReconciler,
     runtime_generation_health,
 )
+from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.models import (
+    PluginRuntimeModel,
     PluginTrustSource,
     ProjectRuntimeRecord,
+    RuntimeActivationPhase,
     RuntimeCoeffectKind,
     RuntimeCoeffectSnapshot,
     RuntimeEffectKind,
@@ -29,11 +32,19 @@ from agent.automation_plugins.models import (
     RuntimeReconcileState,
 )
 from agent.automation_plugins.ports import RuntimeEffectPlan
-from agent.automation_plugins.production import ProductionRuntimeCoeffectProvider
+from agent.automation_plugins.production import (
+    ProductionRuntimeCoeffectProvider,
+    ProductionRuntimeEffectDriver,
+    ProductionRuntimeEffectPlanner,
+)
 
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _json_digest(value: object) -> str:
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
 def _snapshot(generation: int, version: str) -> RuntimeGenerationSnapshot:
@@ -82,6 +93,112 @@ def _snapshot(generation: int, version: str) -> RuntimeGenerationSnapshot:
     )
 
 
+def _service_v2_snapshot(
+    generation: int,
+    version: str,
+) -> RuntimeGenerationSnapshot:
+    service = "plugin.service_a.runner@1"
+    schedule = {
+        "kind": "daily_times",
+        "times": ["09:00"],
+        "enabled": True,
+    }
+    runtime_descriptor = {
+        "runtime": {"mode": "on_demand"},
+        "runtime_permissions": {"broker_operations": []},
+        "account_roles": [],
+        "resource_roles": [],
+        "install_metadata": {
+            "install_root": f"/plugins/service-a/{version}",
+            "python_relative": "venv/bin/python",
+        },
+    }
+    compiled_invocations = {
+        contribution_id: {
+            "arguments": {},
+            "dynamic_resolvers": {},
+            "target": {
+                "service": service,
+                "operation": "run",
+                "contribution_id": contribution_id,
+                "contribution_kind": kind,
+            },
+        }
+        for contribution_id, kind in (
+            ("run_now", "console"),
+            ("daily_run", "scheduler"),
+        )
+    }
+    execution_metadata = {
+        "project_config_version": generation,
+        "project_config": {"generation": generation},
+        "account_bindings": {},
+        "resource_bindings": {},
+        "device_binding": None,
+        "schedule": schedule,
+        "compiled_invocations": compiled_invocations,
+        "runtime_descriptor": runtime_descriptor,
+        "action_contract": {},
+        "governance_anchor": {},
+        "service_contracts": {
+            "provides": [
+                {
+                    "service": service,
+                    "operations": [{"name": "run", "effect": "read"}],
+                }
+            ],
+            "requires": [],
+        },
+        "contributions": {
+            "console": [
+                {"id": "run_now", "service": service, "operation": "run"}
+            ],
+            "scheduler": [
+                {
+                    "id": "daily_run",
+                    "service": service,
+                    "operation": "run",
+                    "schedule": {
+                        "kind": "cron",
+                        "expression": "0 9 * * *",
+                        "timezone": "Asia/Shanghai",
+                    },
+                }
+            ],
+            "webhook": [],
+            "feishu": [],
+            "events": [],
+        },
+        "storage_contract": {},
+    }
+    return RuntimeGenerationSnapshot(
+        automation_id="project-a",
+        generation=generation,
+        plugin_id="service_a",
+        plugin_version=version,
+        package_sha256=_digest(f"service-package:{version}"),
+        manifest_sha256=_digest(f"service-manifest:{version}"),
+        trust_source=PluginTrustSource.SUPER_ADMIN_UPLOAD,
+        project_config_sha256=_json_digest({"generation": generation}),
+        account_bindings_sha256=_json_digest({}),
+        resource_bindings_sha256=_json_digest({}),
+        device_binding_sha256=_json_digest(None),
+        schedule_sha256=_json_digest(schedule),
+        core_registry_sha256=_json_digest({}),
+        tool_contract_sha256=_json_digest({}),
+        invocation_contracts_sha256=_json_digest(compiled_invocations),
+        compiled_invocations_sha256=_json_digest(compiled_invocations),
+        runtime_descriptor_sha256=_json_digest(runtime_descriptor),
+        governance_anchor_sha256=_json_digest({}),
+        policy_contract_sha256=_digest("service-policy"),
+        enabled_entrypoints=("run_now", "daily_run"),
+        execution_metadata=execution_metadata,
+        created_at=datetime.now(timezone.utc),
+        runtime_model=PluginRuntimeModel.SERVICE_V2,
+        plugin_api="2.0.0",
+    )
+
+
 class _MemoryGenerationRepository:
     def __init__(self) -> None:
         self.runtime: ProjectRuntimeRecord | None = None
@@ -90,6 +207,9 @@ class _MemoryGenerationRepository:
         self.unknown: set[int] = set()
         self.events: list[str] = []
         self.fail_effect_applied_once = False
+        self.fail_complete_for: set[int] = set()
+        self.fail_rollback_for: set[int] = set()
+        self.scheduler_gates: list[tuple[str, bool]] = []
 
     def get_project_runtime(self, automation_id: str) -> ProjectRuntimeRecord | None:
         return self.runtime
@@ -214,7 +334,13 @@ class _MemoryGenerationRepository:
                     expected_committed_generation,
                     RuntimeGenerationState.DRAINING,
                 )
-        self._state(generation, RuntimeGenerationState.COMMITTED)
+        self.generations[generation] = replace(
+            self.generations[generation],
+            state=RuntimeGenerationState.COMMITTED,
+            base_committed_generation=expected_committed_generation,
+            activation_transition_token=str(uuid.uuid4()),
+            activation_phase=RuntimeActivationPhase.PENDING_PROJECTION,
+        )
         self.runtime = replace(
             self.runtime,
             committed_generation=generation,
@@ -227,6 +353,95 @@ class _MemoryGenerationRepository:
         )
         self.events.append(f"commit:{generation}")
         return self.runtime
+
+    def complete_generation_activation(
+        self,
+        automation_id: str,
+        generation: int,
+        *,
+        expected_transition_token: str,
+    ) -> None:
+        record = self.generations[generation]
+        assert record.activation_transition_token == expected_transition_token
+        assert record.activation_phase is RuntimeActivationPhase.PENDING_PROJECTION
+        if generation in self.fail_complete_for:
+            self.fail_complete_for.remove(generation)
+            raise RuntimeError("simulated activation ACK failure")
+        self.generations[generation] = replace(
+            record,
+            activation_phase=RuntimeActivationPhase.ACTIVE,
+        )
+        self.events.append(f"activation-ack:{generation}")
+
+    def rollback_generation_cas(
+        self,
+        automation_id: str,
+        generation: int,
+        *,
+        expected_base_committed_generation: int | None,
+        expected_transition_token: str,
+    ) -> ProjectRuntimeRecord:
+        record = self.generations[generation]
+        assert record.activation_transition_token == expected_transition_token
+        assert record.base_committed_generation == expected_base_committed_generation
+        assert record.activation_phase in {
+            RuntimeActivationPhase.PENDING_PROJECTION,
+            RuntimeActivationPhase.ROLLED_BACK,
+        }
+        if generation in self.fail_rollback_for:
+            raise RuntimeError("simulated reverse-CAS conflict")
+        if record.activation_phase is RuntimeActivationPhase.ROLLED_BACK:
+            assert self.runtime is not None
+            return self.runtime
+        assert not self.leases.get(generation)
+        assert generation not in self.unknown
+        if expected_base_committed_generation is not None:
+            self._state(
+                expected_base_committed_generation,
+                RuntimeGenerationState.COMMITTED,
+            )
+        self.generations[generation] = replace(
+            record,
+            state=RuntimeGenerationState.PREPARED,
+            activation_phase=RuntimeActivationPhase.ROLLED_BACK,
+        )
+        assert self.runtime is not None
+        self.runtime = replace(
+            self.runtime,
+            committed_generation=expected_base_committed_generation,
+            reconcile_state=RuntimeReconcileState.READY_TO_COMMIT,
+            record_version=self.runtime.record_version + 1,
+        )
+        return self.runtime
+
+    def block_generation_activation(
+        self,
+        automation_id: str,
+        generation: int,
+        *,
+        expected_transition_token: str,
+    ) -> None:
+        record = self.generations[generation]
+        assert record.activation_transition_token == expected_transition_token
+        if record.activation_phase is RuntimeActivationPhase.BLOCKED:
+            return
+        assert record.activation_phase is RuntimeActivationPhase.PENDING_PROJECTION
+        self.generations[generation] = replace(
+            record,
+            activation_phase=RuntimeActivationPhase.BLOCKED,
+        )
+
+    def set_project_dependency_scheduler_gate(
+        self,
+        automation_id: str,
+        *,
+        dependency_ready: bool,
+    ) -> Mapping[str, Any]:
+        self.scheduler_gates.append((automation_id, dependency_ready))
+        return {
+            "automation_id": automation_id,
+            "scheduler_enabled": dependency_ready,
+        }
 
     def mark_generation_draining(self, automation_id: str, generation: int) -> None:
         self._state(generation, RuntimeGenerationState.DRAINING)
@@ -400,6 +615,78 @@ class _Driver:
         self.disposed.append(effect.effect_key)
 
 
+class _ProductionProjectionBridge(_Driver):
+    """Use real production projection hooks with fixture-only effect setup."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.runtime = ProductionRuntimeEffectDriver(broker_handler_keys=())
+        self.runtime.bind_scheduler_projection_refresher(
+            lambda: {"initialized": True, "invalid_tasks": []},
+        )
+
+    def ensure_applied(
+        self,
+        *,
+        snapshot: RuntimeGenerationSnapshot,
+        plan: RuntimeEffectPlan,
+        effect: RuntimeEffectRecord,
+    ) -> RuntimeEffectRecord:
+        if plan.kind is RuntimeEffectKind.SERVICE_REGISTRATION or (
+            plan.kind
+            in {
+                RuntimeEffectKind.SCHEDULE_BINDING,
+                RuntimeEffectKind.WEBHOOK_BINDING,
+                RuntimeEffectKind.CONTRIBUTION_REGISTRATION,
+            }
+            and plan.payload.get("contract_version") == 1
+        ):
+            return self.runtime.ensure_applied(
+                snapshot=snapshot,
+                plan=plan,
+                effect=effect,
+            )
+        return super().ensure_applied(
+            snapshot=snapshot,
+            plan=plan,
+            effect=effect,
+        )
+
+    def activate_committed(
+        self,
+        *,
+        snapshot: RuntimeGenerationSnapshot,
+        effects: Sequence[RuntimeEffectRecord],
+    ) -> None:
+        self.runtime.activate_committed(snapshot=snapshot, effects=effects)
+
+    def rollback_committed_activation(
+        self,
+        *,
+        snapshot: RuntimeGenerationSnapshot,
+        effects: Sequence[RuntimeEffectRecord],
+        restored_snapshot: RuntimeGenerationSnapshot | None = None,
+        restored_effects: Sequence[RuntimeEffectRecord] = (),
+    ) -> None:
+        self.runtime.rollback_committed_activation(
+            snapshot=snapshot,
+            effects=effects,
+            restored_snapshot=restored_snapshot,
+            restored_effects=restored_effects,
+        )
+
+    def fail_closed_project_projection(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+    ) -> Mapping[str, Any]:
+        return self.runtime.fail_closed_project_projection(
+            automation_id=automation_id,
+            generation=generation,
+        )
+
+
 class _IdempotentDriver(_Driver):
     def __init__(self) -> None:
         super().__init__()
@@ -437,9 +724,101 @@ class _ActivatingDriver(_Driver):
         )
 
 
+class _ActivationTransitionDriver(_ActivatingDriver):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_activation_for: set[int] = set()
+        self.restored: list[tuple[int, int | None]] = []
+        self.fail_closed: list[tuple[str, int]] = []
+
+    def activate_committed(
+        self,
+        *,
+        snapshot: RuntimeGenerationSnapshot,
+        effects: Sequence[RuntimeEffectRecord],
+    ) -> None:
+        if snapshot.generation in self.fail_activation_for:
+            self.fail_activation_for.remove(snapshot.generation)
+            raise PluginConflictError(
+                "synthetic strict projection refresh failed",
+                code="RUNTIME_PROJECTION_REFRESH_FAILED",
+            )
+        super().activate_committed(snapshot=snapshot, effects=effects)
+
+    def rollback_committed_activation(
+        self,
+        *,
+        snapshot: RuntimeGenerationSnapshot,
+        effects: Sequence[RuntimeEffectRecord],
+        restored_snapshot: RuntimeGenerationSnapshot | None = None,
+        restored_effects: Sequence[RuntimeEffectRecord] = (),
+    ) -> None:
+        del effects, restored_effects
+        self.restored.append(
+            (
+                snapshot.generation,
+                restored_snapshot.generation
+                if restored_snapshot is not None
+                else None,
+            )
+        )
+
+    def fail_closed_project_projection(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+    ) -> Mapping[str, Any]:
+        self.fail_closed.append((automation_id, generation))
+        return {
+            "automation_id": automation_id,
+            "emergency_withdrawn": True,
+            "removed_job_ids": [],
+        }
+
+
+class _OrderedActivationTransitionDriver(_ActivationTransitionDriver):
+    def __init__(self, events: list[str]) -> None:
+        super().__init__()
+        self._events = events
+
+    def activate_committed(
+        self,
+        *,
+        snapshot: RuntimeGenerationSnapshot,
+        effects: Sequence[RuntimeEffectRecord],
+    ) -> None:
+        self._events.append(f"strict-projection:{snapshot.generation}")
+        super().activate_committed(snapshot=snapshot, effects=effects)
+
+    def dispose(self, effect: RuntimeEffectRecord) -> None:
+        self._events.append(f"dispose:{effect.effect_key}")
+        super().dispose(effect)
+
+
 class _FailingDisposeDriver(_Driver):
     def dispose(self, effect: RuntimeEffectRecord) -> None:
         raise RuntimeError(f"cannot dispose {effect.effect_key}")
+
+
+class _RetryableProjectionDisposeDriver(_Driver):
+    def __init__(self) -> None:
+        super().__init__()
+        self.withdraw_attempts = 0
+
+    def deactivate_generation(
+        self,
+        *,
+        snapshot: RuntimeGenerationSnapshot,
+        effects: Sequence[RuntimeEffectRecord],
+    ) -> None:
+        del snapshot, effects
+        self.withdraw_attempts += 1
+        if self.withdraw_attempts == 1:
+            raise PluginConflictError(
+                "synthetic live projection refresh failure",
+                code="RUNTIME_PROJECTION_REFRESH_FAILED",
+            )
 
 
 def _reconciler(
@@ -540,6 +919,249 @@ def test_postcommit_old_dispose_failure_keeps_committed_b_routable() -> None:
     assert repository.runtime.reconcile_state == RuntimeReconcileState.DRAINING
     assert repository.generations[2].state == RuntimeGenerationState.COMMITTED
     assert repository.generations[1].state == RuntimeGenerationState.FAILED
+
+
+def test_projection_refresh_failure_keeps_old_dispose_retryable() -> None:
+    repository = _MemoryGenerationRepository()
+    driver = _RetryableProjectionDisposeDriver()
+    reconciler, _ = _reconciler(repository, driver=driver)
+    reconciler.reconcile(
+        _snapshot(1, "1.0.0"),
+        expected_committed_generation=None,
+        request_id=str(uuid.uuid4()),
+    )
+
+    with pytest.raises(PluginConflictError) as raised:
+        reconciler.reconcile(
+            _snapshot(2, "2.0.0"),
+            expected_committed_generation=1,
+            request_id=str(uuid.uuid4()),
+        )
+
+    assert raised.value.code == "RUNTIME_PROJECTION_REFRESH_FAILED"
+    assert repository.generations[1].state == RuntimeGenerationState.DISPOSING
+    assert repository.generations[2].state == RuntimeGenerationState.COMMITTED
+
+    resumed = reconciler.resume_project("project-a")
+
+    assert resumed.disposed_generations == (1,)
+    assert repository.generations[1].state == RuntimeGenerationState.DISPOSED
+    assert driver.withdraw_attempts == 2
+
+
+def test_postcommit_projection_failure_reverses_exact_route_and_retries() -> None:
+    repository = _MemoryGenerationRepository()
+    driver = _ActivationTransitionDriver()
+    reconciler, _ = _reconciler(repository, driver=driver)
+    reconciler.reconcile(
+        _snapshot(1, "1.0.0"),
+        expected_committed_generation=None,
+        request_id=str(uuid.uuid4()),
+    )
+    second_snapshot = _snapshot(2, "2.0.0")
+    driver.fail_activation_for.add(2)
+
+    with pytest.raises(PluginConflictError) as failed:
+        reconciler.reconcile(
+            second_snapshot,
+            expected_committed_generation=1,
+            request_id=str(uuid.uuid4()),
+        )
+
+    assert failed.value.code == "RUNTIME_PROJECTION_REFRESH_FAILED"
+    assert repository.runtime is not None
+    assert repository.runtime.committed_generation == 1
+    assert repository.runtime.target_generation == 2
+    assert repository.runtime.reconcile_state is RuntimeReconcileState.READY_TO_COMMIT
+    assert repository.generations[1].state is RuntimeGenerationState.COMMITTED
+    assert repository.generations[2].state is RuntimeGenerationState.PREPARED
+    assert (
+        repository.generations[2].activation_phase
+        is RuntimeActivationPhase.ROLLED_BACK
+    )
+    assert driver.restored == [(2, 1)]
+    assert driver.fail_closed == []
+
+    retried = reconciler.reconcile(
+        second_snapshot,
+        expected_committed_generation=1,
+        request_id=str(uuid.uuid4()),
+    )
+
+    assert retried.committed_generation == 2
+    assert repository.generations[2].activation_phase is RuntimeActivationPhase.ACTIVE
+    assert repository.generations[1].state is RuntimeGenerationState.DISPOSED
+
+
+def test_activation_ack_failure_reverses_after_process_projection_succeeded() -> None:
+    repository = _MemoryGenerationRepository()
+    driver = _ActivationTransitionDriver()
+    reconciler, _ = _reconciler(repository, driver=driver)
+    reconciler.reconcile(
+        _snapshot(1, "1.0.0"),
+        expected_committed_generation=None,
+        request_id=str(uuid.uuid4()),
+    )
+    repository.fail_complete_for.add(2)
+
+    with pytest.raises(RuntimeError, match="activation ACK failure"):
+        reconciler.reconcile(
+            _snapshot(2, "2.0.0"),
+            expected_committed_generation=1,
+            request_id=str(uuid.uuid4()),
+        )
+
+    assert repository.runtime is not None
+    assert repository.runtime.committed_generation == 1
+    assert repository.generations[1].state is RuntimeGenerationState.COMMITTED
+    assert repository.generations[2].state is RuntimeGenerationState.PREPARED
+    assert driver.restored == [(2, 1)]
+    assert driver.fail_closed == []
+
+
+@pytest.mark.parametrize("upgrade", [False, True])
+def test_real_production_projection_reverses_activation_ack_failure(
+    upgrade: bool,
+) -> None:
+    repository = _MemoryGenerationRepository()
+    driver = _ProductionProjectionBridge()
+    reconciler = AutomationRuntimeReconciler(
+        repository=repository,
+        coeffects=_Coeffects(),
+        planner=ProductionRuntimeEffectPlanner(),
+        driver=driver,
+    )
+    predecessor = _service_v2_snapshot(1, "1.0.0")
+    if upgrade:
+        reconciler.reconcile(
+            predecessor,
+            expected_committed_generation=None,
+            request_id=str(uuid.uuid4()),
+        )
+        candidate = _service_v2_snapshot(2, "2.0.0")
+        expected_predecessor = 1
+    else:
+        candidate = predecessor
+        expected_predecessor = None
+    repository.fail_complete_for.add(candidate.generation)
+
+    with pytest.raises(RuntimeError, match="activation ACK failure"):
+        reconciler.reconcile(
+            candidate,
+            expected_committed_generation=expected_predecessor,
+            request_id=str(uuid.uuid4()),
+        )
+
+    assert repository.runtime is not None
+    assert repository.runtime.committed_generation == expected_predecessor
+    assert (
+        repository.generations[candidate.generation].activation_phase
+        is RuntimeActivationPhase.ROLLED_BACK
+    )
+    assert driver.runtime.service_reference_count(candidate.package_sha256) == 0
+    if upgrade:
+        route = driver.runtime.service_registry.require_operation(
+            "plugin.service_a.runner@1",
+            "run",
+        )
+        assert route.project_generation == predecessor.generation
+        assert route.package_sha256 == predecessor.package_sha256
+        assert (
+            driver.runtime.contribution_registry.active_generation(
+                predecessor.automation_id,
+            )
+            == predecessor.generation
+        )
+    else:
+        assert driver.runtime.service_registry.snapshot() == ()
+        assert (
+            driver.runtime.contribution_registry.active_generation(
+                candidate.automation_id,
+            )
+            is None
+        )
+
+
+def test_reverse_conflict_persists_block_and_withdraws_every_process_route() -> None:
+    repository = _MemoryGenerationRepository()
+    driver = _ActivationTransitionDriver()
+    reconciler, _ = _reconciler(repository, driver=driver)
+    reconciler.reconcile(
+        _snapshot(1, "1.0.0"),
+        expected_committed_generation=None,
+        request_id=str(uuid.uuid4()),
+    )
+    driver.fail_activation_for.add(2)
+    repository.fail_rollback_for.add(2)
+
+    with pytest.raises(PluginConflictError) as blocked:
+        reconciler.reconcile(
+            _snapshot(2, "2.0.0"),
+            expected_committed_generation=1,
+            request_id=str(uuid.uuid4()),
+        )
+
+    assert blocked.value.code == "RUNTIME_ACTIVATION_BLOCKED"
+    assert repository.runtime is not None
+    assert repository.runtime.committed_generation == 2
+    assert repository.generations[1].state is RuntimeGenerationState.DRAINING
+    assert repository.generations[2].state is RuntimeGenerationState.COMMITTED
+    assert repository.generations[2].activation_phase is RuntimeActivationPhase.BLOCKED
+    assert repository.scheduler_gates[-1] == ("project-a", False)
+    assert driver.fail_closed == [("project-a", 2)]
+
+    health = runtime_generation_health(
+        repository,
+        expected_automation_ids=("project-a",),
+    )
+    assert health.healthy is False
+    assert "ACTIVATION_BLOCKED" in health.blocked_projects["project-a"]
+
+    with pytest.raises(PluginConflictError) as resumed:
+        reconciler.resume_project("project-a")
+    assert resumed.value.code == "RUNTIME_ACTIVATION_BLOCKED"
+    assert driver.fail_closed[-1] == ("project-a", 2)
+
+
+def test_startup_resumes_pending_projection_before_disposing_predecessor() -> None:
+    repository = _MemoryGenerationRepository()
+    initial_driver = _ActivationTransitionDriver()
+    reconciler, _ = _reconciler(repository, driver=initial_driver)
+    reconciler.reconcile(
+        _snapshot(1, "1.0.0"),
+        expected_committed_generation=None,
+        request_id=str(uuid.uuid4()),
+    )
+    target = repository.allocate_target_generation(
+        _snapshot(2, "2.0.0"),
+        expected_committed_generation=1,
+        request_id=str(uuid.uuid4()),
+    )
+    assert reconciler.prepare_target(target) == ()
+    repository.commit_generation_cas(
+        "project-a",
+        2,
+        expected_committed_generation=1,
+    )
+    assert (
+        repository.generations[2].activation_phase
+        is RuntimeActivationPhase.PENDING_PROJECTION
+    )
+    recovered_driver = _OrderedActivationTransitionDriver(repository.events)
+    recovered, _ = _reconciler(repository, driver=recovered_driver)
+
+    result = recovered.resume_project("project-a")
+
+    assert result.committed_generation == 2
+    assert repository.generations[2].activation_phase is RuntimeActivationPhase.ACTIVE
+    assert repository.generations[1].state is RuntimeGenerationState.DISPOSED
+    assert recovered_driver.activated[0][0] == 2
+    assert repository.events.index("strict-projection:2") < repository.events.index(
+        "activation-ack:2"
+    )
+    assert repository.events.index("activation-ack:2") < repository.events.index(
+        "dispose:broker:1"
+    )
 
 
 def test_unready_coeffect_never_applies_or_commits() -> None:
