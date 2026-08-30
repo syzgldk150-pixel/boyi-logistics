@@ -14,6 +14,7 @@ from typing import Any, Mapping
 
 import pytest
 
+from agent.automation_plugins import sandbox as sandbox_module
 from agent.automation_plugins.errors import PluginConflictError, PluginExecutionError
 from agent.automation_plugins.execution import PluginExecutionRouter
 from agent.automation_plugins.manifest import canonical_json_bytes
@@ -1437,7 +1438,13 @@ def test_bubblewrap_outer_process_always_starts_new_session(
         encoding="utf-8",
     )
     captured: dict[str, object] = {}
+    baseline_calls = 0
     sentinel = object()
+
+    def _task_count() -> int:
+        nonlocal baseline_calls
+        baseline_calls += 1
+        return 137
 
     async def _spawn(*args: object, **kwargs: object) -> object:
         captured["args"] = args
@@ -1445,6 +1452,7 @@ def test_bubblewrap_outer_process_always_starts_new_session(
         return sentinel
 
     monkeypatch.setattr("agent.automation_plugins.sandbox.asyncio.create_subprocess_exec", _spawn)
+    monkeypatch.setattr("agent.automation_plugins.sandbox._current_real_uid_task_count", _task_count)
     result = asyncio.run(
         BubblewrapPluginSandbox(executable, prlimit_path=limiter).launch(
             install_root=install_root,
@@ -1455,12 +1463,13 @@ def test_bubblewrap_outer_process_always_starts_new_session(
         )
     )
     assert result is sentinel
+    assert baseline_calls == 1
     assert captured["start_new_session"] is True
     command = tuple(str(item) for item in captured["args"])
     assert command[:7] == (
         str(limiter),
         "--as=1073741824:1073741824",
-        "--nproc=64:64",
+        "--nproc=201:201",
         "--cpu=300:300",
         "--fsize=16777216:16777216",
         "--nofile=128:128",
@@ -1469,6 +1478,45 @@ def test_bubblewrap_outer_process_always_starts_new_session(
     assert command[7] == str(executable)
     assert "--clearenv" not in command
     assert str(sys.base_prefix) in command
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="Linux /proc contract")
+def test_bubblewrap_nproc_baseline_counts_real_uid_tasks_and_fails_closed(
+    tmp_path: Path,
+) -> None:
+    proc_root = tmp_path / "proc"
+    current_uid = os.getuid()
+    current_pid = os.getpid()
+
+    def _write_status(pid: int, *, uid: int, threads: str) -> None:
+        process_root = proc_root / str(pid)
+        process_root.mkdir(parents=True)
+        (process_root / "status").write_bytes(
+            f"Name:\ttest\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\nThreads:\t{threads}\n".encode()
+        )
+
+    _write_status(current_pid, uid=current_uid, threads="3")
+    _write_status(current_pid + 1, uid=current_uid, threads="5")
+    _write_status(current_pid + 2, uid=current_uid + 1, threads="100")
+    (proc_root / str(current_pid + 3)).mkdir()
+    assert sandbox_module._current_real_uid_task_count(proc_root) == 8  # noqa: SLF001
+
+    malformed_root = tmp_path / "malformed-proc"
+    malformed_process = malformed_root / str(current_pid)
+    malformed_process.mkdir(parents=True)
+    (malformed_process / "status").write_text(
+        f"Uid:\t{current_uid}\t{current_uid}\t{current_uid}\t{current_uid}\nThreads:\tnot-a-number\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PluginExecutionError) as malformed:
+        sandbox_module._current_real_uid_task_count(malformed_root)  # noqa: SLF001
+    assert malformed.value.code == "PLUGIN_SANDBOX_NPROC_BASELINE_UNAVAILABLE"
+
+    unreadable_root = tmp_path / "unreadable-proc"
+    (unreadable_root / str(current_pid)).mkdir(parents=True)
+    with pytest.raises(PluginExecutionError) as unreadable:
+        sandbox_module._current_real_uid_task_count(unreadable_root)  # noqa: SLF001
+    assert unreadable.value.code == "PLUGIN_SANDBOX_NPROC_BASELINE_UNAVAILABLE"
 
 
 def test_bubblewrap_fails_closed_without_a_regular_absolute_prlimit(
@@ -1533,6 +1581,12 @@ def test_bubblewrap_canary_caches_success_and_never_uses_broker(
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     captured: dict[str, object] = {}
+    baseline_calls = 0
+
+    def _task_count() -> int:
+        nonlocal baseline_calls
+        baseline_calls += 1
+        return 219
 
     class _CanaryProcess:
         returncode = 0
@@ -1546,6 +1600,7 @@ def test_bubblewrap_canary_caches_success_and_never_uses_broker(
         return _CanaryProcess()
 
     monkeypatch.setattr("agent.automation_plugins.sandbox.asyncio.create_subprocess_exec", _spawn)
+    monkeypatch.setattr("agent.automation_plugins.sandbox._current_real_uid_task_count", _task_count)
     sandbox = BubblewrapPluginSandbox(
         executable,
         trusted_base_prefix=base,
@@ -1557,9 +1612,18 @@ def test_bubblewrap_canary_caches_success_and_never_uses_broker(
 
     assert first.healthy is True
     assert second == first
+    assert baseline_calls == 1
     command = tuple(str(item) for item in captured["args"])
-    assert command[0] == str(limiter)
-    assert command[6:8] == ("--", str(executable))
+    assert command[:8] == (
+        str(limiter),
+        "--as=1073741824:1073741824",
+        "--nproc=283:283",
+        "--cpu=300:300",
+        "--fsize=16777216:16777216",
+        "--nofile=128:128",
+        "--",
+        str(executable),
+    )
     assert "--clearenv" not in command
     assert str(base) in command
     assert "BOYI_PLUGIN_EXECUTION_CAPABILITY" not in command
