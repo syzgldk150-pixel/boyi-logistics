@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import pytest
 
+from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
+from agent.automation_plugins.first_party_handlers import (
+    FirstPartyCoreHandlerPorts,
+    build_first_party_core_handler_map,
+)
 from tests.first_party_action_payload_support import load_first_party_action
 
 
@@ -139,6 +144,107 @@ def test_dry_run_counts_fresh_scan_without_mutating_the_snapshot() -> None:
         "arrival.snapshot.completed_before",
         "scan.snapshot.read",
     ]
+
+
+def test_scan_only_detail_keeps_closed_shape_through_core_handler() -> None:
+    action_module = load_first_party_action("sync_arrival_stats")
+    main = "R12345678901"
+    calls: list[str] = []
+    projected: list[dict[str, object]] = []
+
+    def replace_waybills(records, target_date):
+        projected.extend(records)
+        assert target_date == "2026-08-24"
+        return {"ok": True, "verified": True, "record_count": len(records)}
+
+    core_handlers = build_first_party_core_handler_map(
+        FirstPartyCoreHandlerPorts(
+            describe_account=lambda account_id: {
+                "account_id": account_id,
+                "system": "ronghui",
+                "account_purpose": "arrival_stats",
+                "session_profile": "test-profile",
+            },
+            replace_waybill_snapshot=replace_waybills,
+        ),
+        cursor_secret=b"arrival-stats-shape-regression-secret",
+    )
+    waybill_context = CoreBrokerInvocationContext(
+        automation_id="instance-sync-arrival-stats",
+        plugin_version="1.0.22",
+        tool_name="sync_arrival_stats",
+        operation="projection.invoke",
+        action="waybill.snapshot.replace",
+        role="account_id",
+        account_ids=("arrive-rh",),
+    )
+
+    def response(action: str, **values: object) -> dict[str, object]:
+        return {
+            **values,
+            "evidence_ref": f"broker-evidence:{len(calls)}:{action}",
+        }
+
+    def broker(operation, *, action, role, arguments):
+        calls.append(action)
+        if action == "ronghui.arrive_list.read_page":
+            return response(action, items=[], pagination_complete=True, next_cursor=None)
+        if action == "ronghui.scan.read_page":
+            return response(
+                action,
+                items=[
+                    {
+                        "bill_code": main,
+                        "destination": "station",
+                        "scan_type": "arrival",
+                        "scan_time": "2026-08-24 08:00:00",
+                        "scan_site": "station",
+                    }
+                ],
+                pagination_complete=True,
+                next_cursor=None,
+            )
+        if action == "arrival.snapshot.completed_before":
+            return response(action, tracking_numbers=[], pagination_complete=True)
+        if action == "scan.snapshot.read":
+            return response(action, items=[], pagination_complete=True)
+        if action == "ronghui.waybill_detail.read":
+            assert arguments == {"tracking_number": main}
+            return response(
+                action,
+                found=True,
+                record={"tracking_number": main, "quantity": 1},
+            )
+        if action == "waybill.snapshot.replace":
+            assert operation == "projection.invoke"
+            assert role == "account_id"
+            return core_handlers[(operation, action)](waybill_context, arguments)
+        if action in {
+            "scan.snapshot.replace",
+            "scan.snapshot.cleanup",
+            "feishu.sheet.replace",
+            "split_pending.snapshot.refresh",
+            "arrival.snapshot.replace",
+        }:
+            records = arguments.get("records", [])
+            return response(action, committed=True, record_count=len(records))
+        raise AssertionError(action)
+
+    result = action_module.run_action(
+        {
+            "target_date": "2026-08-24",
+            "pending_sheet_disabled": True,
+            "archive_snapshot": False,
+        },
+        broker,
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert len(projected) == 1
+    assert set(projected[0]) == set(action_module._WAYBILL_FIELDS)
+    assert projected[0]["actual_weight"] is None
+    assert projected[0]["receipt_number"] == ""
+    assert projected[0]["remarks"] == ""
 
 
 def test_broker_budget_fails_before_detail_reads_or_writes() -> None:
