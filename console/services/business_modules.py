@@ -50,9 +50,36 @@ class BusinessModulesServiceMixin:
     ) -> tuple[dict[str, str], ...]:
         if user is _CURRENT_REQUEST_USER:
             user = current_admin_user()
-        if self._can_see_system_status_navigation(user if isinstance(user, Mapping) else None):
-            return (*CONSOLE_NAVIGATION, *CONSOLE_CONTROL_PLANE_NAVIGATION)
-        return CONSOLE_NAVIGATION
+        normalized_user = user if isinstance(user, Mapping) else None
+        control_plane = []
+        if self._can_see_extensions_navigation(normalized_user):
+            control_plane.extend(
+                item
+                for item in CONSOLE_CONTROL_PLANE_NAVIGATION
+                if item["route"] == "/extensions"
+            )
+        if self._can_see_system_status_navigation(normalized_user):
+            control_plane.extend(
+                item
+                for item in CONSOLE_CONTROL_PLANE_NAVIGATION
+                if item["route"] == "/settings/system-status"
+            )
+        return (*CONSOLE_NAVIGATION, *control_plane)
+
+    @staticmethod
+    def _can_see_extensions_navigation(user: Mapping[str, Any] | None) -> bool:
+        if not isinstance(user, Mapping):
+            return False
+        try:
+            user_id = int(user.get("id") or 0)
+        except (TypeError, ValueError):
+            return False
+        return (
+            not bool(user.get("is_legacy_basic_auth"))
+            and str(user.get("role") or user.get("control_plane_role") or "")
+            in {"admin", "super_admin"}
+            and user_id > 0
+        )
 
     def _business_module_mobile_nav(
         self,

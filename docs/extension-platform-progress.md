@@ -5,7 +5,7 @@ tags: [extension-platform, autonomous-execution, service-v2, migration]
 status: active
 authority: canonical
 owner: repository
-updated: 2026-08-30
+updated: 2026-08-31
 ---
 
 # 扩展化平台无人值守执行账本
@@ -27,8 +27,8 @@ updated: 2026-08-30
 | TASK | 状态 | 开始 | 结束 | Commit |
 |---|---|---|---|---|
 | TASK-BASE-000 | DONE_OFFLINE | 2026-08-30T23:30:59+08:00 | 2026-08-30T23:34:30+08:00 | 3c5bb24b603a3d349b7dba2a16b6b6c075baa078 |
-| TASK-EXT-001 | DONE_OFFLINE | 2026-08-30T23:39:27+08:00 | 2026-08-31T00:01:42+08:00 | 待本 TASK checkpoint 后回填 |
-| TASK-EXT-002 | NOT_STARTED | — | — | — |
+| TASK-EXT-001 | DONE_OFFLINE | 2026-08-30T23:39:27+08:00 | 2026-08-31T00:01:42+08:00 | 8d1eddd331d66bdc19f1a11d8c61bab1fe6bb701 |
+| TASK-EXT-002 | DONE_OFFLINE | 2026-08-31T00:02:53+08:00 | 2026-08-31T00:35:15+08:00 | 待下一 TASK 回填 |
 | TASK-EXT-003 | NOT_STARTED | — | — | — |
 | TASK-EXT-004 | NOT_STARTED | — | — | — |
 | TASK-EXT-005 | NOT_STARTED | — | — | — |
@@ -69,7 +69,7 @@ updated: 2026-08-30
 - 状态：`DONE_OFFLINE`
 - 开始时间 / 结束时间：`2026-08-30T23:39:27+08:00` / `2026-08-31T00:01:42+08:00`
 - 设计决策：固定 14 模块彻底从旧生命周期状态、版本和 Agent 状态查询中解耦，继续保留现有登录、角色权限、签名 principal 和必要业务前置条件；迁移 027、旧表、仓储和审计只读保留。旧 `/settings/modules` 重定向到仅真实 `super_admin` 可见的 `/settings/system-status`，新页只白名单投影鉴权 `/internal/v1/health` 的真实字段，缺失或不可达明确显示“不可用”。
-- 修改文件 / Commit SHA：`AGENTS.md`、`CLAUDE.md`、`agent/{AGENTS.md,CLAUDE.md,main.py}`、`agent/agent/business_modules_api.py`、`agent/agent/orchestration/{command_gateway.py,business_module_command_gate.py（删除）}`、`agent/docs/{business_module_lifecycle.md,code_navigation_index.md,database_migrations.md,project_overview.md}`、`agent/tests/test_business_module_lifecycle.py`、`console/{AGENTS.md,CLAUDE.md,README.md,app.py,navigation.py,permission_registry.py}`、`console/routes/business_modules.py`、`console/services/{business_modules.py,tms_proxy.py}`、`console/templates/{admin_accounts.html,base.html,business_modules.html（删除）}`、`console/static/{business_modules.css（删除）,business_modules.js（删除）}`、`console/tests/{test_business_modules.py,test_menu_registration.py,test_module_status_registry.py,test_permission_registry.py,test_yunda_entry.py}`、`shared/business_modules.py`、本账本 / 待本 TASK checkpoint 后回填。
+- 修改文件 / Commit SHA：`AGENTS.md`、`CLAUDE.md`、`agent/{AGENTS.md,CLAUDE.md,main.py}`、`agent/agent/business_modules_api.py`、`agent/agent/orchestration/{command_gateway.py,business_module_command_gate.py（删除）}`、`agent/docs/{business_module_lifecycle.md,code_navigation_index.md,database_migrations.md,project_overview.md}`、`agent/tests/test_business_module_lifecycle.py`、`console/{AGENTS.md,CLAUDE.md,README.md,app.py,navigation.py,permission_registry.py}`、`console/routes/business_modules.py`、`console/services/{business_modules.py,tms_proxy.py}`、`console/templates/{admin_accounts.html,base.html,business_modules.html（删除）}`、`console/static/{business_modules.css（删除）,business_modules.js（删除）}`、`console/tests/{test_business_modules.py,test_menu_registration.py,test_module_status_registry.py,test_permission_registry.py,test_yunda_entry.py}`、`shared/business_modules.py`、本账本 / `8d1eddd331d66bdc19f1a11d8c61bab1fe6bb701`。
 - 测试命令和结果：变更 Python `py_compile` 与 Ruff 通过；Agent full suite `1089 passed, 1 skipped, 195 subtests passed`；Console full suite最终 `567 passed, 203 subtests passed`；Agent/API/CommandGateway 定向 `23 passed`；Console 导航、权限、路由、真实 health shape 与原页边界定向 `40 passed`；文档、仓库卫生、运行时导入边界、内部 API 合同、工具注册表（40 项）和 `git diff --check` 全部通过。测试显式设置 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
 - 兼容性影响：固定模块不再因旧状态漂移消失或拒绝新请求；既有登录、模块查看权限和各业务失败关闭条件不变。Agent 签名管理员 GET 与 Console `super_admin` 旧 data/detail/audit 代理继续只读兼容，生命周期 POST 返回无路由。
 - 数据库影响：无；保留旧表、迁移和审计。
@@ -79,16 +79,16 @@ updated: 2026-08-30
 
 ### TASK-EXT-002：建立扩展中心信息架构
 
-- 状态：`NOT_STARTED`
-- 开始时间 / 结束时间：— / —
-- 设计决策：待复用现有插件仓储和生命周期，不建立第二套框架。
-- 修改文件 / Commit SHA：— / —
-- 测试命令和结果：尚未运行。
-- 兼容性影响：待评估；ACTION_V1 只作兼容展示。
-- 数据库影响：待当前结构审计；不得删除历史结构。
-- 未完成项：全部。
+- 状态：`DONE_OFFLINE`
+- 开始时间 / 结束时间：`2026-08-31T00:02:53+08:00` / `2026-08-31T00:35:15+08:00`
+- 设计决策：直接复用现有 Automation Plugin Catalog、Management API、包仓储和生命周期；新增“扩展中心”只作为 ACTION_V1 / SERVICE_V2 已安装包与实例健康的信息架构和管理视图，不建立第二套仓储、表或插件框架。自动化中心保留项目实例配置/运行，包级安装、升级、停用、卸载收敛到扩展中心；固定模块永不进入扩展列表，Connector 仅在已有真实合同后展示，不在本 TASK 虚构。
+- 修改文件 / Commit SHA：`console/{AGENTS.md,CLAUDE.md,README.md,app.py,navigation.py,permission_registry.py}`、`console/routes/{__init__.py,automation.py,extensions.py}`、`console/services/{automation.py,business_modules.py,extensions.py}`、`console/templates/{automation.html,extensions.html}`、`console/static/{automation_approval_policy.js,extensions.js,style.css}`、`console/tests/{test_automation_plugins.py,test_extensions.py,test_menu_registration.py}`、`agent/docs/{automation_plugin_platform.md,code_navigation_index.md}`、`docs/{plugin-platform-v2.md,extension-platform-progress.md}` / 本 checkpoint 提交后由下一 TASK 回填。
+- 测试命令和结果：扩展中心、自动化职责和菜单定向 `79 passed, 35 subtests passed`；Console full suite `574 passed, 203 subtests passed`；两个浏览器脚本 Node 语法检查通过；变更 Python Ruff 与 Console compileall 通过；文档、仓库卫生、运行时导入边界、内部 API 合同、工具注册表（40 项）、指令镜像和 `git diff --check` 全部通过。独立复审在响应式安装面板、键盘焦点、扩展 ID 和旧生命周期 JS 清理修复后给出 `ship`。测试显式设置 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
+- 兼容性影响：新增真实 MySQL `admin/super_admin` 可见的 `/extensions` 列表和详情；安装、升级、启停和卸载继续复用既有签名 `super_admin` 处理器、同源校验、稳定浏览器 UUID 与实例 CAS。`/automations` 继续维护项目设置、运行、未知写恢复和 v1→v2 迁移验证，并提供扩展详情反向链接；旧包管理控件及不可达浏览器代码已移除。ACTION_V1 仅以“旧版固定自动化”兼容展示，14 个固定模块明确排除。
+- 数据库影响：无；未新增或修改表、迁移、仓储或包目录。
+- 未完成项：无离线实现项；未部署、未访问生产目录或数据，生产环境页面验证不在本 TASK 授权范围内。
 - 下一项 TASK：`TASK-EXT-003`。
-- 恢复说明：先确认前序 TASK 已提交推送，再将本 TASK 标为 `IN_PROGRESS`。
+- 恢复说明：检出长期分支，确认 TASK-EXT-002 checkpoint 已推送并回填 SHA，然后从 Service v2 项目授权评估、Catalog 权限投影与 Console 项目治理区开始 TASK-EXT-003；不得全局放开 ACTION_V1，且必须保留 Command、Run、Evidence、写后核验和未知写隔离。
 
 ### TASK-EXT-003：简化授权模型
 

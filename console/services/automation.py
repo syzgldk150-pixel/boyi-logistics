@@ -1118,6 +1118,11 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             unsupported_automation_ids=unsupported_automation_ids,
             automation_plugin_warning=automation_plugin_warning,
             can_manage_plugins=can_manage_plugins,
+            can_view_extensions=bool(
+                getattr(self, "_can_see_extensions_navigation", lambda _user: False)(
+                    getattr(handler, "current_admin_user", None) or current_admin_user()
+                )
+            ),
         )
         self._send_html(handler, body)
 

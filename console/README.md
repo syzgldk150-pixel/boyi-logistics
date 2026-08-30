@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-08-30
+updated: 2026-08-31
 source_of_truth: console/AGENTS.md
 ---
 
@@ -25,7 +25,7 @@ Console 负责：
 - 后台登录、管理员会话、统一导航和页面壳层
 - OCR、博益手工录单、寄件运单、物流跟踪和回单工作台
 - 客服、财务、货拉拉地图调度与比价、专线分流页面
-- 自动化项目、业务账号、事项中心、系统状态和 LLM 设置界面
+- 扩展包与生命周期、自动化项目、业务账号、事项中心、系统状态和 LLM 设置界面
 - MySQL 中 Console 业务数据的校验、查询与受控写入
 - 以签名管理员身份代理 Agent 的 `/internal/v1/*` 接口
 
@@ -41,7 +41,7 @@ Console 不负责：
 - `app.py`：组合根、HTTP 生命周期、认证门禁和最终请求分发；业务逻辑不应继续堆入这里。
 - `routes/`：按业务域识别 GET/POST 路径，再把请求交给对应服务。
 - `services/`：认证、Agent API、自动化、控制平面、业务模块、客服、财务、TMS 代理、回单/运单和 OCR 文档等领域服务。
-- `navigation.py`：14 个固定模块菜单和“系统状态”控制平面菜单的唯一静态注册处。
+- `navigation.py`：14 个固定模块菜单和“扩展中心 / 系统状态”控制平面菜单的唯一静态注册处。
 - `database.py`：MySQL 文档仓储；只验证结构及读写数据。
 - `config.py`：无副作用配置解析；`runtime_config.py` 只由服务入口执行一次运行时 bootstrap。
 - `finance_service.py`：财务查询、分页、金额字符串和受控命令参数的 Console 适配层。
@@ -88,12 +88,14 @@ Console 运行时唯一业务数据库是与 Agent 共用的 MySQL；没有 SQLi
 - `/modules/finance`：财务工作台
 - `/dispatch`：map-only 路线、距离与运输方案比价，不包含车辆档案或真实派单
 - `/line-haul-contacts`：专线分流资料
-- `/automations`：自动化项目、配置、权限和运行状态
+- `/extensions`：真实 Agent Catalog 中的扩展包、权限摘要、已安装项目健康状态和生命周期
+- `/extensions/{plugin_id}`：单个扩展包及其项目；项目设置深链回自动化页
+- `/automations`：自动化项目配置、绑定、入口、定时、权限、运行和 v1→v2 并行迁移验证
 - `/automation-accounts`：业务账号凭据与登录态的唯一 UI
 - `/settings/llm`：智能模型设置
 - `/work-items`：跨项目、历史和异常事项
 
-`/automations` 不保存凭据，也不提供登录快捷入口；项目只绑定 Agent Catalog 投影的业务账号。管理员账号与业务自动化账号是两套独立系统。
+`/extensions` 与 `/automations` 复用同一个 Agent Catalog 和实例仓储：前者管理包与生命周期，后者管理项目配置与运行；Console 不维护第二套插件目录。`/automations` 不保存凭据，也不提供登录快捷入口；项目只绑定 Agent Catalog 投影的业务账号。管理员账号与业务自动化账号是两套独立系统。
 
 ## 本地启动
 

@@ -5,15 +5,7 @@
 {% block subtitle %}脚本、定时任务与运行状态{% endblock %}
 
 {% block page_actions %}
-{% if can_manage_plugins %}
-<button class="ghost-btn automation-plugin-manager-trigger" type="button" data-plugin-install-toggle aria-haspopup="dialog" aria-expanded="false" aria-controls="automation-plugin-manager-dialog" title="管理自动化">
-  <svg class="automation-plugin-manager-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <path d="M4 4h5.5a2.5 2.5 0 1 1 5 0H20v5.5a2.5 2.5 0 1 0 0 5V20h-5.5a2.5 2.5 0 1 0-5 0H4v-5.5a2.5 2.5 0 1 1 0-5V4Z"></path>
-  </svg>
-  <span class="sr-only">管理自动化</span>
-  <span class="automation-plugin-manager-count" aria-hidden="true">{{ automation_plugin_packages | default([], true) | length }}</span>
-</button>
-{% endif %}
+{% if can_view_extensions %}<a class="ghost-btn" href="/extensions"><i data-feather="package"></i>扩展中心</a>{% endif %}
 <label class="automation-toolbar-field">
   <span>排序</span>
   <select class="automation-sort-select" data-automation-sort>
@@ -107,129 +99,6 @@
 {% block content %}
 <section class="auto-page" data-reveal="tasks">
 
-  {% if can_manage_plugins %}
-  <dialog class="automation-plugin-manager-dialog" id="automation-plugin-manager-dialog" data-plugin-install-panel aria-labelledby="automation-plugin-manager-title">
-    <div class="automation-plugin-manager-surface">
-      <header class="automation-plugin-manager-header">
-        <div class="automation-plugin-manager-heading">
-          <span class="automation-plugin-manager-heading-icon" aria-hidden="true"><i data-feather="package"></i></span>
-          <div>
-            <h2 id="automation-plugin-manager-title">自动化管理</h2>
-            <p>{{ automation_plugin_packages | default([], true) | length }} 个可用自动化</p>
-          </div>
-        </div>
-        <button class="ghost-btn automation-plugin-manager-close" type="button" data-plugin-install-close aria-label="关闭自动化管理"><i data-feather="x"></i></button>
-      </header>
-      <div class="automation-plugin-manager-body">
-        <section class="automation-plugin-install-section" aria-labelledby="automation-plugin-install-title">
-          <div class="automation-plugin-install-copy">
-            <h3 id="automation-plugin-install-title">超级管理员直接安装 ZIP</h3>
-            <p>v2 ZIP 无需签名、发布审批或运行审批。系统仍会校验 ZIP、Manifest 和运行环境，并记录 SHA-256 与安装审计；历史 v1 包继续按原签名合同处理。</p>
-          </div>
-          <form class="automation-plugin-install-form" action="/automations/plugins/install" method="post" enctype="multipart/form-data" data-plugin-install-form>
-            <label class="automation-plugin-name-field">
-              <span>项目名称（可选）</span>
-              <input class="review-input compact-input" type="text" name="instance_name" maxlength="120" autocomplete="off" placeholder="留空则使用 ZIP 文件名">
-            </label>
-            <div class="automation-plugin-drop-zone" data-plugin-drop-zone role="group" aria-label="ZIP 插件包拖放安装区">
-              <span class="automation-plugin-drop-icon" aria-hidden="true"><i data-feather="upload-cloud"></i></span>
-              <div class="automation-plugin-drop-copy">
-                <strong>把 ZIP 插件包拖到这里安装</strong>
-                <span data-plugin-file-name>仅接受一个不超过 32MB 的 .zip 文件</span>
-              </div>
-              <button class="ghost-btn automation-plugin-file-choose" type="button" data-plugin-file-choose>选择 ZIP</button>
-              <input type="file" name="package" accept=".zip,application/zip" data-plugin-package-input hidden aria-hidden="true" tabindex="-1">
-            </div>
-            <div class="automation-plugin-install-actions">
-              <button class="primary-btn" type="submit" data-plugin-install-submit>安装自动化</button>
-              <button class="ghost-btn" type="button" data-plugin-install-cancel>取消</button>
-            </div>
-            <p class="automation-plugin-feedback" data-plugin-install-feedback role="status" aria-live="polite" hidden></p>
-          </form>
-        </section>
-        <section class="automation-plugin-migration-create" aria-labelledby="automation-plugin-migration-create-title">
-          <div class="automation-plugin-install-copy">
-            <h3 id="automation-plugin-migration-create-title">建立并行迁移验证</h3>
-            <p>把一个现有 v1 项目与独立 v2 项目配对。v2 在接管前只允许手动验证；防重复业务字段必须能在两边每次运行时明确取得。</p>
-          </div>
-          <form class="automation-plugin-migration-form" data-plugin-migration-create-form>
-            <label>
-              <span>现有 v1 项目</span>
-              <select class="review-input compact-input" name="source_automation_id" required>
-                <option value="">请选择旧项目</option>
-                {% for candidate in automation_plugin_instances if candidate.runtime_model == 'ACTION_V1' and not candidate.migration %}
-                <option value="{{ candidate.automation_id }}">{{ candidate.instance_name }} · {{ candidate.automation_id }}</option>
-                {% endfor %}
-              </select>
-            </label>
-            <label>
-              <span>新 v2 项目</span>
-              <select class="review-input compact-input" name="target_automation_id" required>
-                <option value="">请选择 v2 项目</option>
-                {% for candidate in automation_plugin_instances if candidate.runtime_model == 'SERVICE_V2' and not candidate.migration %}
-                <option value="{{ candidate.automation_id }}">{{ candidate.instance_name }} · {{ candidate.automation_id }}</option>
-                {% endfor %}
-              </select>
-            </label>
-            <label>
-              <span>防重复业务字段</span>
-              <input class="review-input compact-input" type="text" name="business_key_fields" maxlength="256" autocomplete="off" placeholder="例如 business_date；多个字段用逗号分隔" required>
-            </label>
-            <label>
-              <span>业务键命名空间（可选）</span>
-              <input class="review-input compact-input" type="text" name="business_key_namespace" maxlength="96" autocomplete="off" placeholder="例如 clockin-daxiang">
-            </label>
-            <div class="automation-plugin-install-actions">
-              <button class="primary-btn" type="submit" data-plugin-migration-create-submit>开始并行验证</button>
-            </div>
-            <p class="automation-plugin-feedback" data-plugin-migration-create-feedback role="status" aria-live="polite" hidden></p>
-          </form>
-        </section>
-        <section class="automation-action-catalog" aria-labelledby="automation-action-catalog-title">
-          <div class="automation-action-catalog-head">
-            <div>
-              <h3 id="automation-action-catalog-title">可安装的自动化</h3>
-              <p>同一种自动化可以安装成多个项目，每个项目单独设置账号、表格、时间和权限。</p>
-            </div>
-          </div>
-          {% if automation_plugin_packages %}
-          <ul class="automation-action-catalog-list">
-            {% for package in automation_plugin_packages %}
-            <li class="automation-action-package">
-              <span class="automation-action-package-icon" aria-hidden="true"><i data-feather="package"></i></span>
-              <div class="automation-action-package-copy">
-                <div class="automation-action-package-title">
-                  <strong>{{ package.name }}</strong>
-                  <span>{{ package.version }}</span>
-                </div>
-                <p>{{ package.action_summary or '可安装为独立的自动化项目' }}</p>
-                <div class="automation-action-package-meta">
-                  <span>{{ package.platform_label }}</span>
-                  {% if package.runtime_model == 'SERVICE_V2' %}
-                  <span class="automation-plugin-model">{{ package.runtime_model_label }}</span>
-                  {% if package.plugin_api %}<span>Host API {{ package.plugin_api }}</span>{% endif %}
-                  {% endif %}
-                  <span>需要设置：{{ package.configuration_summary }}</span>
-                </div>
-                {% if package.runtime_model == 'SERVICE_V2' and package.provided_services %}
-                <div class="automation-plugin-services" aria-label="插件提供的服务">
-                  <span>服务</span>
-                  {% for service in package.provided_services %}<code>{{ service }}</code>{% endfor %}
-                </div>
-                {% endif %}
-              </div>
-            </li>
-            {% endfor %}
-          </ul>
-          {% else %}
-          <div class="automation-action-catalog-empty"><i data-feather="package" aria-hidden="true"></i><p>还没有可用自动化。上传安装文件后即可创建第一个项目。</p></div>
-          {% endif %}
-        </section>
-      </div>
-    </div>
-  </dialog>
-  {% endif %}
-
   {% if automation_plugin_warning %}
   <div class="auto-feedback auto-feedback--warning" role="status">
     <div class="auto-feedback-head">
@@ -271,6 +140,45 @@
       <span>{{ automation_approval_policy_warning }}</span>
     </div>
   </div>
+  {% endif %}
+
+  {% if can_manage_plugins %}
+  <details class="panel auto-migration-create-panel">
+    <summary>建立 v1 → v2 并行迁移验证</summary>
+    <p>迁移配对属于项目验证流程；扩展包安装与生命周期统一在扩展中心管理。</p>
+    <form class="auto-migration-create-form" data-plugin-migration-create-form>
+      <label>
+        <span>现有 v1 项目</span>
+        <select class="review-input compact-input" name="source_automation_id" required>
+          <option value="">请选择旧项目</option>
+          {% for candidate in automation_plugin_instances if candidate.runtime_model == 'ACTION_V1' and not candidate.migration %}
+          <option value="{{ candidate.automation_id }}">{{ candidate.instance_name }} · {{ candidate.automation_id }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span>新 v2 项目</span>
+        <select class="review-input compact-input" name="target_automation_id" required>
+          <option value="">请选择 v2 项目</option>
+          {% for candidate in automation_plugin_instances if candidate.runtime_model == 'SERVICE_V2' and not candidate.migration %}
+          <option value="{{ candidate.automation_id }}">{{ candidate.instance_name }} · {{ candidate.automation_id }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span>防重复业务字段</span>
+        <input class="review-input compact-input" type="text" name="business_key_fields" maxlength="256" autocomplete="off" placeholder="例如 business_date；多个字段用逗号分隔" required>
+      </label>
+      <label>
+        <span>业务键命名空间（可选）</span>
+        <input class="review-input compact-input" type="text" name="business_key_namespace" maxlength="96" autocomplete="off" placeholder="例如 clockin-daxiang">
+      </label>
+      <div class="auto-migration-create-actions">
+        <button class="primary-btn" type="submit" data-plugin-migration-create-submit>开始并行验证</button>
+      </div>
+      <p class="automation-plugin-feedback" data-plugin-migration-create-feedback role="status" aria-live="polite" hidden></p>
+    </form>
+  </details>
   {% endif %}
 
   {# ── 分类切换 ── #}
@@ -489,26 +397,7 @@
               </div>
               {% endif %}
             </div>
-            {% if can_manage_plugins %}
-            <div class="automation-plugin-menu-wrap">
-              <button class="ghost-btn automation-plugin-menu-toggle" type="button" data-plugin-menu-toggle aria-expanded="false" aria-label="管理 {{ task.name_value }}" title="{{ '更多操作' if plugin.menu_actions_allowed else '当前状态不可执行项目操作' }}" {% if not plugin.menu_actions_allowed %}disabled aria-disabled="true"{% endif %}>
-                <i data-feather="more-horizontal"></i>
-              </button>
-              <div class="automation-plugin-menu" data-plugin-menu hidden>
-                <label class="automation-plugin-upgrade-file">
-                  <span>选择升级 ZIP</span>
-                  <input type="file" accept=".zip,application/zip" data-plugin-upgrade-package {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>
-                </label>
-                <button class="automation-plugin-menu-item" type="button" data-plugin-upgrade {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>升级此项目</button>
-                {% if plugin.enabled %}
-                <button class="automation-plugin-menu-item" type="button" data-plugin-instance-action="disable" {% if not plugin.disable_allowed %}disabled{% endif %}>停用此项目</button>
-                {% else %}
-                <button class="automation-plugin-menu-item" type="button" data-plugin-instance-action="enable" {% if not plugin.enable_allowed %}disabled title="{{ '当前状态不可启用' if not plugin.lifecycle_actions_allowed else '请先补齐账号、资源和设备配置' }}"{% endif %}>启用此项目</button>
-                {% endif %}
-                <button class="automation-plugin-menu-item automation-plugin-menu-item--danger" type="button" data-plugin-instance-action="uninstall" {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>卸载此项目</button>
-              </div>
-            </div>
-            {% endif %}
+            <a class="ghost-btn" href="/extensions/{{ plugin.plugin_id | urlencode }}">在扩展中心管理包</a>
           </div>
 
           {% if plugin.execution_platform == 'windows' %}

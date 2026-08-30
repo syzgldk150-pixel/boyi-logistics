@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+
+{% block title %}扩展中心 | {{ app_title }}{% endblock %}
+{% block breadcrumb %}扩展中心{% endblock %}
+{% block subtitle %}包、已安装项目及其真实运行状态{% endblock %}
+
+{% block page_actions %}
+{% if can_manage_extensions and not detail %}
+<details class="automation-account-create-popover extension-install-popover">
+  <summary class="automation-account-add-btn"><i data-feather="upload"></i><span>安装扩展包</span></summary>
+  <form class="extension-install-form" action="/extensions/install" method="post" enctype="multipart/form-data" data-extension-install-form>
+    <label><span>项目名称（可选）</span><input class="review-input compact-input" name="instance_name" maxlength="120" autocomplete="off" placeholder="留空则使用 ZIP 文件名"></label>
+    <label><span>ZIP 扩展包</span><input type="file" name="package" accept=".zip,application/zip" required></label>
+    <button class="primary-btn" type="submit">安装</button>
+    <p class="automation-plugin-feedback" data-extension-feedback role="status" aria-live="polite" hidden></p>
+  </form>
+</details>
+{% endif %}
+{% if detail %}<a class="ghost-btn" href="/extensions"><i data-feather="arrow-left"></i>返回扩展列表</a>{% endif %}
+{% endblock %}
+
+{% macro runtime_label(item) %}
+  {% if item.runtime_model == 'ACTION_V1' %}
+  <span class="status-pill status-pill--muted">旧版固定自动化</span>
+  {% else %}
+  <span class="status-pill status-pill--muted">{{ item.runtime_model_label }}</span>
+  {% endif %}
+{% endmacro %}
+
+{% macro extension_meta(item) %}
+<dl class="extension-meta">
+  <div><dt>扩展 ID</dt><dd>{{ item.plugin_id }}</dd></div>
+  <div><dt>包版本</dt><dd>{{ item.version }}</dd></div>
+  <div><dt>运行平台</dt><dd>{{ item.platform_label }}</dd></div>
+  <div><dt>入口</dt><dd>{{ item.entrypoints | join('、') if item.entrypoints else '不可用' }}</dd></div>
+  <div><dt>项目数</dt><dd>{{ item.instance_count }}</dd></div>
+  <div><dt>健康状态</dt><dd>{{ item.health_label }}</dd></div>
+  {% if item.plugin_api %}<div><dt>Host API</dt><dd>{{ item.plugin_api }}</dd></div>{% endif %}
+</dl>
+<dl class="extension-meta extension-meta--permissions">
+  {% for permission in item.permissions %}
+  <div><dt>权限 · {{ permission.label }}</dt><dd>{{ permission.items | join('、') }}</dd></div>
+  {% endfor %}
+</dl>
+{% endmacro %}
+
+{% macro instance_row(instance, can_manage) %}
+<article class="extension-instance" data-extension-instance data-automation-id="{{ instance.automation_id }}" data-record-version="{{ instance.record_version }}" data-current-version="{{ instance.version }}">
+  <div>
+    <div class="extension-instance__head">
+      <strong>{{ instance.instance_name }}</strong>
+      <span class="automation-plugin-state automation-plugin-state--{{ instance.state | lower }}">{{ instance.status_label }}</span>
+      {{ runtime_label(instance) }}
+    </div>
+    <p>{{ instance.automation_id }} · {{ instance.active_version or instance.version }}{% if instance.target_version and instance.target_version != instance.active_version %} → {{ instance.target_version }}{% endif %}</p>
+    <small>{{ '已完成项目配置' if instance.configured else '项目配置尚未完整' }} · {{ '已启用' if instance.enabled else '未启用' }}</small>
+  </div>
+  <div class="extension-instance__actions">
+    <a class="ghost-btn" href="/automations?open_task={{ instance.automation_id | urlencode }}">项目设置</a>
+    {% if can_manage and instance.runtime_model == 'SERVICE_V2' %}
+      <label class="ghost-btn extension-upgrade"><span>选择升级 ZIP</span><input type="file" accept=".zip,application/zip" data-extension-upgrade {% if not instance.lifecycle_actions_allowed %}disabled{% endif %}></label>
+      <button class="ghost-btn" type="button" data-extension-action="upgrade" {% if not instance.lifecycle_actions_allowed %}disabled{% endif %}>升级</button>
+      {% if instance.enabled %}
+      <button class="ghost-btn" type="button" data-extension-action="disable" {% if not instance.disable_allowed %}disabled{% endif %}>停用</button>
+      {% else %}
+      <button class="ghost-btn" type="button" data-extension-action="enable" {% if not instance.enable_allowed %}disabled{% endif %}>启用</button>
+      {% endif %}
+      <button class="ghost-btn extension-action--danger" type="button" data-extension-action="uninstall" {% if not instance.lifecycle_actions_allowed %}disabled{% endif %}>卸载</button>
+    {% endif %}
+  </div>
+  <p class="automation-plugin-feedback" data-extension-feedback role="status" aria-live="polite" hidden></p>
+</article>
+{% endmacro %}
+
+{% block content %}
+<section class="auto-page extension-page">
+  {% if extension_warning %}
+  <div class="auto-feedback auto-feedback--warning" role="status"><div class="auto-feedback-head"><strong>扩展目录不可用</strong><span>{{ extension_warning }}</span></div></div>
+  {% endif %}
+
+  {% if detail %}
+  <section class="panel extension-detail">
+    <div class="extension-heading"><div><h2>{{ detail.name }}</h2><p>{{ detail.action_summary or '扩展说明当前不可用。' }}</p></div>{{ runtime_label(detail) }}</div>
+    {{ extension_meta(detail) }}
+  </section>
+  <section class="panel extension-instances-panel" aria-labelledby="installed-projects-title">
+    <div class="extension-heading"><div><h2 id="installed-projects-title">已安装项目</h2><p>项目设置、定时和运行仍在自动化页面维护。</p></div></div>
+    {% if detail.instances %}
+      {% for instance in detail.instances %}{{ instance_row(instance, can_manage_extensions) }}{% endfor %}
+    {% else %}
+      <p class="customer-service-empty-inline">尚无已安装项目。</p>
+    {% endif %}
+  </section>
+  {% else %}
+  <section class="panel extension-list-panel" aria-labelledby="extension-list-title">
+    <div class="extension-heading"><div><h2 id="extension-list-title">已登记扩展</h2><p>仅显示 Action v1 与 Service v2 扩展；固定业务模块不在此处管理。</p></div></div>
+    {% if packages %}
+    <div class="extension-list">
+      {% for package in packages %}
+      <article class="extension-card">
+        <div class="extension-heading"><div><h3>{{ package.name }}</h3><p>{{ package.action_summary or '扩展说明当前不可用。' }}</p></div>{{ runtime_label(package) }}</div>
+        {{ extension_meta(package) }}
+        <a class="ghost-btn" href="/extensions/{{ package.plugin_id | urlencode }}">查看包与项目</a>
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="customer-service-empty-inline">当前没有可显示的扩展。目录不可用时不会推测历史状态。</p>
+    {% endif %}
+  </section>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/extensions.js?v=extension-center-20260831"></script>
+{% endblock %}
