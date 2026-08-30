@@ -526,6 +526,34 @@ class RuntimeGenerationRepositoryPort(Protocol):
     ) -> ProjectRuntimeRecord:
         """Atomically switch every instance entrypoint to ``generation``."""
 
+    def rollback_generation_cas(
+        self,
+        automation_id: str,
+        generation: int,
+        *,
+        expected_base_committed_generation: int | None,
+        expected_transition_token: str,
+    ) -> ProjectRuntimeRecord:
+        """Atomically restore the exact predecessor after activation failure."""
+
+    def complete_generation_activation(
+        self,
+        automation_id: str,
+        generation: int,
+        *,
+        expected_transition_token: str,
+    ) -> None:
+        """Acknowledge that strict process projection reached this transition."""
+
+    def block_generation_activation(
+        self,
+        automation_id: str,
+        generation: int,
+        *,
+        expected_transition_token: str,
+    ) -> None:
+        """Persist that a pending projection can no longer roll back safely."""
+
     def set_project_dependency_scheduler_gate(
         self,
         automation_id: str,

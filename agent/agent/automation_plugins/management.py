@@ -57,6 +57,17 @@ _SERVICE_V2_INSTALL_INTENT_FIELDS = frozenset(
 )
 _SERVICE_V2_INSTALL_INITIAL_CONFIG_VERSION = 1
 _SERVICE_V2_INSTALL_STATE_WORKFLOW = "SERVICE_V2_INSTALL"
+_SERVICE_V2_CONTRIBUTION_KINDS = frozenset(
+    {"console", "scheduler", "webhook", "feishu", "events"}
+)
+_MANAGED_CONTRIBUTION_KINDS = frozenset({"console", "scheduler"})
+_ACTIVE_CONTRIBUTION_FIELDS = (
+    "contribution_id",
+    "contribution_kind",
+    "generation",
+    "phase",
+    "backend_status",
+)
 
 
 class MigrationPreparationPersistedError(PluginConflictError):
@@ -79,6 +90,22 @@ def _iso_datetime(value: object) -> str:
         return ""
     normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
     return normalized.astimezone(timezone.utc).isoformat()
+
+
+def _projection_field(record: object, field: str) -> object:
+    if isinstance(record, Mapping):
+        return record.get(field)
+    return getattr(record, field, None)
+
+
+def _contribution_projection(
+    state: str,
+    active: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    return {
+        "active_contributions": [dict(item) for item in active],
+        "contribution_projection_state": state,
+    }
 
 
 def classify_arrival_stats_recovery_readback(
@@ -117,6 +144,7 @@ class AutomationPluginManagementService:
         storage: PluginStoragePort,
         release_hold_provider: Callable[[], bool] | None = None,
         resource_catalog_provider: Callable[[], Sequence[Mapping[str, Any]]] | None = None,
+        contribution_registry: Any | None = None,
     ) -> None:
         self._catalog = catalog
         self._lifecycle = lifecycle
@@ -128,6 +156,7 @@ class AutomationPluginManagementService:
         self._storage = storage
         self._release_hold_provider = release_hold_provider or (lambda: False)
         self._resource_catalog_provider = resource_catalog_provider
+        self._contribution_registry = contribution_registry
 
     @staticmethod
     def _require_console_actor(actor: Actor, *, super_admin: bool) -> str:
@@ -227,9 +256,263 @@ class AutomationPluginManagementService:
             "enabled_entrypoints": list(record.enabled_entrypoints),
         }
 
+    @staticmethod
+    def _runtime_model_value(value: object) -> str:
+        return str(getattr(value, "value", value) or "").strip().upper()
+
+    @staticmethod
+    def _safe_entrypoint_projection_is_closed(instance: Mapping[str, Any]) -> bool:
+        entrypoints = instance.get("entrypoints")
+        enabled = instance.get("enabled_entrypoints")
+        kinds = instance.get("entrypoint_kinds")
+        if (
+            not isinstance(entrypoints, (list, tuple))
+            or not isinstance(enabled, (list, tuple))
+            or not isinstance(kinds, Mapping)
+        ):
+            return False
+        if any(
+            not isinstance(item, str) or not item or item != item.strip()
+            for item in (*entrypoints, *enabled)
+        ):
+            return False
+        if (
+            len(set(entrypoints)) != len(entrypoints)
+            or len(set(enabled)) != len(enabled)
+            or not set(enabled) <= set(entrypoints)
+            or set(kinds) != set(entrypoints)
+        ):
+            return False
+        return all(
+            isinstance(kind, str)
+            and kind == kind.strip().lower()
+            and kind in _SERVICE_V2_CONTRIBUTION_KINDS
+            for kind in kinds.values()
+        )
+
+    @staticmethod
+    def _entry_managed_contribution_identities(
+        entry: PluginCatalogEntry,
+    ) -> frozenset[tuple[str, str]] | None:
+        try:
+            snapshot = entry.committed_snapshot
+            raw_contributions = snapshot.execution_metadata["contributions"]
+            if (
+                not isinstance(raw_contributions, Mapping)
+                or set(raw_contributions) != _SERVICE_V2_CONTRIBUTION_KINDS
+            ):
+                return None
+            declared = [
+                (kind, declaration["id"])
+                for kind in _SERVICE_V2_CONTRIBUTION_KINDS
+                for declaration in raw_contributions[kind]
+            ]
+            enabled = tuple(snapshot.enabled_entrypoints)
+        except (AttributeError, KeyError, TypeError):
+            return None
+        identities = [contribution_id for _kind, contribution_id in declared]
+        if any(
+            not isinstance(contribution_id, str)
+            or not contribution_id
+            or contribution_id != contribution_id.strip()
+            for contribution_id in identities
+        ) or len(set(identities)) != len(identities):
+            return None
+        if (
+            any(
+                not isinstance(contribution_id, str)
+                or not contribution_id
+                or contribution_id != contribution_id.strip()
+                for contribution_id in enabled
+            )
+            or len(set(enabled)) != len(enabled)
+            or not set(enabled) <= set(identities)
+        ):
+            return None
+        kinds_by_id = {contribution_id: kind for kind, contribution_id in declared}
+        return frozenset(
+            (kinds_by_id[contribution_id], contribution_id)
+            for contribution_id in enabled
+            if kinds_by_id[contribution_id] in _MANAGED_CONTRIBUTION_KINDS
+        )
+
+    def _active_contribution_generation(self, automation_id: str) -> int | None:
+        provider = getattr(self._contribution_registry, "active_generation", None)
+        if not callable(provider):
+            raise ValueError("managed contribution registry is incomplete")
+        generation = provider(automation_id)
+        if generation is None:
+            return None
+        if type(generation) is not int or generation < 1:
+            raise ValueError("managed contribution generation is invalid")
+        return generation
+
+    def _registry_active_contribution_projection(
+        self,
+        automation_id: str,
+    ) -> tuple[int | None, list[dict[str, Any]]]:
+        registry = self._contribution_registry
+        snapshot = getattr(registry, "snapshot", None)
+        if not callable(snapshot):
+            raise ValueError("managed contribution registry is incomplete")
+        generation = self._active_contribution_generation(automation_id)
+        records = snapshot()
+        if not isinstance(records, (list, tuple)):
+            raise ValueError("managed contribution snapshot is invalid")
+
+        active_records = (
+            record
+            for record in records
+            if _projection_field(record, "automation_id") == automation_id
+            and _projection_field(record, "generation") == generation
+        )
+        projected = [
+            {
+                field: _projection_field(record, field)
+                for field in _ACTIVE_CONTRIBUTION_FIELDS
+            }
+            for record in active_records
+        ]
+        identities = [
+            (item["contribution_kind"], item["contribution_id"])
+            for item in projected
+        ]
+        if (
+            any(
+                type(item["generation"]) is not int
+                or not isinstance(item["contribution_id"], str)
+                or not item["contribution_id"]
+                or item["contribution_id"] != item["contribution_id"].strip()
+                or item["contribution_kind"] not in _MANAGED_CONTRIBUTION_KINDS
+                or item["phase"] not in {"PREPARED", "COMMITTED", "DRAINING"}
+                or item["backend_status"] not in {"READY", "DISABLED"}
+                for item in projected
+            )
+            or len(set(identities)) != len(identities)
+        ):
+            raise ValueError("managed contribution projection is invalid")
+        projected.sort(
+            key=lambda item: (item["contribution_kind"], item["contribution_id"])
+        )
+        return generation, projected
+
+    def _service_v2_contribution_projection(
+        self,
+        instance: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        committed_generation = instance.get("committed_generation")
+        if committed_generation is None:
+            return _contribution_projection("INACTIVE")
+        if (
+            isinstance(committed_generation, bool)
+            or not isinstance(committed_generation, int)
+            or committed_generation < 1
+        ):
+            return _contribution_projection("STALE")
+
+        automation_id = instance.get("automation_id")
+        expected: frozenset[tuple[str, str]] | None = None
+        enabled: object = None
+        if (
+            isinstance(automation_id, str)
+            and automation_id
+            and self._safe_entrypoint_projection_is_closed(instance)
+        ):
+            try:
+                committed_entry = self._catalog.require(automation_id)
+            except Exception:  # noqa: BLE001 - Catalog status must fail closed
+                committed_entry = None
+            if (
+                committed_entry is not None
+                and self._runtime_model_value(
+                    getattr(committed_entry, "runtime_model", "")
+                )
+                == PluginRuntimeModel.SERVICE_V2.value
+                and committed_entry.committed_generation == committed_generation
+            ):
+                expected = self._entry_managed_contribution_identities(
+                    committed_entry
+                )
+                enabled = getattr(committed_entry, "enabled", None)
+        if self._contribution_registry is None:
+            state = (
+                "ACTIVE"
+                if enabled is True and expected == frozenset()
+                else "INACTIVE"
+                if enabled is False and expected == frozenset()
+                else "STALE"
+            )
+            return _contribution_projection(state)
+        if expected == frozenset():
+            state = (
+                "ACTIVE"
+                if enabled is True
+                else "INACTIVE"
+                if enabled is False
+                else "STALE"
+            )
+            return _contribution_projection(state)
+
+        try:
+            active_generation, active = self._registry_active_contribution_projection(
+                str(automation_id or "")
+            )
+        except Exception:  # noqa: BLE001 - Catalog status must fail closed
+            return _contribution_projection("STALE")
+
+        actual = frozenset(
+            (item["contribution_kind"], item["contribution_id"])
+            for item in active
+        )
+        all_committed = all(item["phase"] == "COMMITTED" for item in active)
+        if expected is None:
+            state = "STALE"
+        elif enabled is False:
+            state = "INACTIVE" if active_generation is None and not active else "STALE"
+        elif enabled is not True:
+            state = "STALE"
+        elif (
+            active_generation == committed_generation
+            and active
+            and all_committed
+            and actual == expected
+        ):
+            state = "ACTIVE"
+        else:
+            state = "STALE"
+        return _contribution_projection(state, active)
+
     def catalog_projection(self, *, actor: Actor) -> dict[str, Any]:
         self._require_console_actor(actor, super_admin=False)
         projection = self._catalog.safe_projection()
+        instances = projection.get("instances")
+        if isinstance(instances, list):
+            for instance in instances:
+                if not isinstance(instance, dict) or self._runtime_model_value(
+                    instance.get("runtime_model")
+                ) != PluginRuntimeModel.SERVICE_V2.value:
+                    continue
+                contribution_projection = self._service_v2_contribution_projection(
+                    instance
+                )
+                instance.update(contribution_projection)
+                if (
+                    contribution_projection["contribution_projection_state"]
+                    == "STALE"
+                    and instance.get("dependency_state") == "READY"
+                ):
+                    instance["dependency_state"] = "BLOCKED_DEPENDENCY"
+                    reasons = instance.get("blocking_reasons")
+                    if not isinstance(reasons, list):
+                        reasons = []
+                    instance["blocking_reasons"] = [
+                        *reasons,
+                        {
+                            "code": "RUNTIME_PROJECTION_STALE",
+                            "service": "",
+                            "message": "运行时贡献投影与当前已提交代际不一致",
+                        },
+                    ]
         resources: list[dict[str, str]] = []
         resource_pool_available = self._resource_catalog_provider is not None
         if self._resource_catalog_provider is not None:
@@ -1116,8 +1399,7 @@ class AutomationPluginManagementService:
             ),
         }
 
-    @staticmethod
-    def _require_committed_ready(entry: PluginCatalogEntry) -> None:
+    def _require_committed_ready(self, entry: PluginCatalogEntry) -> None:
         snapshot = entry.committed_snapshot
         metadata = snapshot.execution_metadata if snapshot is not None else {}
         if (
@@ -1137,6 +1419,34 @@ class AutomationPluginManagementService:
         ):
             raise PluginConflictError(
                 "the desired plugin generation is not committed and release-ready",
+                code="PLUGIN_GENERATION_NOT_READY",
+            )
+        if (
+            self._contribution_registry is None
+            or self._runtime_model_value(getattr(entry, "runtime_model", ""))
+            != PluginRuntimeModel.SERVICE_V2.value
+        ):
+            return
+        managed = self._entry_managed_contribution_identities(entry)
+        if managed is None:
+            raise PluginConflictError(
+                "the committed contribution projection is unavailable",
+                code="PLUGIN_GENERATION_NOT_READY",
+            )
+        if not managed:
+            return
+        try:
+            active_generation = self._active_contribution_generation(
+                entry.automation_id
+            )
+        except Exception as exc:
+            raise PluginConflictError(
+                "the committed contribution projection is unavailable",
+                code="PLUGIN_GENERATION_NOT_READY",
+            ) from exc
+        if active_generation != entry.committed_generation:
+            raise PluginConflictError(
+                "the committed contribution projection is not active",
                 code="PLUGIN_GENERATION_NOT_READY",
             )
 
@@ -1908,6 +2218,21 @@ class AutomationPluginManagementService:
             )
         except Exception as reconcile_error:
             if not enabled:
+                if (
+                    isinstance(reconcile_error, PluginConflictError)
+                    and reconcile_error.code
+                    == "RUNTIME_PROJECTION_REFRESH_FAILED"
+                ):
+                    projection = self._instance_projection(instance)
+                    projection.update(
+                        {
+                            "generation_ready": False,
+                            "transition_state": "BLOCKED_DEPENDENCY",
+                            "contribution_projection_state": "STALE",
+                            "runtime_projection_pending": True,
+                        }
+                    )
+                    return projection
                 raise
             persisted = self._catalog.require(entry.automation_id)
             persisted_state = getattr(persisted.state, "value", persisted.state)
@@ -2055,21 +2380,19 @@ class AutomationPluginManagementService:
         except Exception:  # noqa: BLE001 - desired Provider state is durable
             return
 
-    @classmethod
-    def _is_committed_ready(cls, entry: PluginCatalogEntry) -> bool:
+    def _is_committed_ready(self, entry: PluginCatalogEntry) -> bool:
         try:
-            cls._require_committed_ready(entry)
+            self._require_committed_ready(entry)
         except PluginConflictError:
             return False
         return True
 
-    @classmethod
     def _transition_projection(
-        cls,
+        self,
         entry: PluginCatalogEntry,
         reconcile_failed: bool = False,
     ) -> dict[str, Any]:
-        ready = cls._is_committed_ready(entry)
+        ready = self._is_committed_ready(entry)
         blocked = reconcile_failed or entry.reconcile_state in {
             RuntimeReconcileState.WAITING_COEFFECTS,
             RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE,

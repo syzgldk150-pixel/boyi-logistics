@@ -410,9 +410,9 @@ def run_test_generation_write_lock_order_races(case):
         "install_metadata": install_metadata,
     }
 
-    def generation_snapshot(config, generation):
+    def generation_snapshot(config, generation, *, instance_id=archival_automation_id):
         return {
-            "automation_id": archival_automation_id,
+            "automation_id": instance_id,
             "generation": generation,
             "plugin_id": archival_plugin_id,
             "plugin_version": "1.0.0",
@@ -448,6 +448,7 @@ def run_test_generation_write_lock_order_races(case):
         }
 
     def prepare_generation(repository, snapshot, expected_committed):
+        instance_id = str(snapshot["automation_id"])
         generation = int(snapshot["generation"])
         repository.allocate_target_generation_row(
             snapshot,
@@ -455,11 +456,11 @@ def run_test_generation_write_lock_order_races(case):
             request_id=str(uuid4()),
         )
         repository.mark_generation_preparing_row(
-            archival_automation_id,
+            instance_id,
             generation,
         )
         repository.replace_generation_coeffects_rows(
-            archival_automation_id,
+            instance_id,
             generation,
             (
                 {
@@ -473,7 +474,7 @@ def run_test_generation_write_lock_order_races(case):
             ),
         )
         repository.mark_generation_prepared_row(
-            archival_automation_id,
+            instance_id,
             generation,
         )
 
@@ -559,6 +560,17 @@ def run_test_generation_write_lock_order_races(case):
             1,
         )
         case.assertIsNotNone(first_generation)
+        case.assertEqual(
+            "PENDING_PROJECTION",
+            first_generation["activation_phase"],
+        )
+        archival_repository.complete_generation_activation_row(
+            archival_automation_id,
+            1,
+            expected_transition_token=first_generation[
+                "activation_transition_token"
+            ],
+        )
         first_snapshot_sha256 = first_generation["snapshot_sha256"]
         with connection.cursor() as cursor:
             cursor.execute(
@@ -615,6 +627,18 @@ def run_test_generation_write_lock_order_races(case):
             archival_automation_id,
             2,
             expected_committed_generation=1,
+        )
+        successor_generation = archival_repository.get_generation_row(
+            archival_automation_id,
+            2,
+        )
+        case.assertIsNotNone(successor_generation)
+        archival_repository.complete_generation_activation_row(
+            archival_automation_id,
+            2,
+            expected_transition_token=successor_generation[
+                "activation_transition_token"
+            ],
         )
         archival_repository.finalize_generation_write_row(
             automation_id=archival_automation_id,
@@ -754,3 +778,479 @@ def run_test_generation_write_lock_order_races(case):
         )
         case.assertEqual("SUCCEEDED", completed_repeat["outcome"])
         connection.commit()
+
+    # Durable activation transitions retain an exact scheduler/policy
+    # before-image and support token-guarded reverse CAS, including first
+    # install and cross-version retries.
+    rollback_automation_id = f"reverse_cas_{uuid4().hex[:20]}"
+
+    def version_material(version):
+        version_tool_contract = {**tool_contract, "version": version}
+        version_install_metadata = {
+            **install_metadata,
+            "install_root": f"/integration/plugins/{archival_plugin_id}/{version}",
+        }
+        version_manifest = {
+            **manifest,
+            "tool_contract": version_tool_contract,
+        }
+        version_runtime_descriptor = {
+            **runtime_descriptor,
+            "install_metadata": version_install_metadata,
+        }
+        return {
+            "version": version,
+            "tool_contract": version_tool_contract,
+            "install_metadata": version_install_metadata,
+            "manifest": version_manifest,
+            "runtime_descriptor": version_runtime_descriptor,
+            "package_sha256": _json_hash(
+                {"plugin_id": archival_plugin_id, "version": version}
+            ),
+            "manifest_sha256": _json_hash(version_manifest),
+        }
+
+    version_two = version_material("2.0.0")
+    version_three = version_material("3.0.0")
+
+    def register_version(repository, material):
+        repository.register_package_version(
+            package={
+                "plugin_id": archival_plugin_id,
+                "display_name": "archival unknown integration",
+                "description": "integration only",
+            },
+            version={
+                "version": material["version"],
+                "package_sha256": material["package_sha256"],
+                "manifest_sha256": material["manifest_sha256"],
+                "manifest_json": material["manifest"],
+                "tool_contract_sha256": _json_hash(material["tool_contract"]),
+                "config_schema_sha256": _json_hash(manifest["config_schema"]),
+                "allowed_entrypoints_sha256": _json_hash([]),
+                "invocation_contracts_sha256": _json_hash(invocation_contracts),
+                "worker_requirement_sha256": _json_hash(
+                    manifest["worker_requirement"]
+                ),
+                "runtime_sha256": _json_hash(runtime),
+                "scheduling_sha256": _json_hash(scheduling),
+                "project_full_auto_allowed": True,
+                "trust_source": "ed25519_first_party",
+                "install_root_metadata_json": material["install_metadata"],
+                "install_root_metadata_sha256": _json_hash(
+                    material["install_metadata"]
+                ),
+                "installed_by_actor_id": "integration-admin",
+            },
+        )
+
+    def versioned_snapshot(config, generation, material):
+        snapshot = generation_snapshot(
+            config,
+            generation,
+            instance_id=rollback_automation_id,
+        )
+        snapshot.update(
+            {
+                "plugin_version": material["version"],
+                "package_sha256": material["package_sha256"],
+                "manifest_sha256": material["manifest_sha256"],
+                "tool_contract_sha256": _json_hash(material["tool_contract"]),
+                "runtime_descriptor_sha256": _json_hash(
+                    material["runtime_descriptor"]
+                ),
+            }
+        )
+        snapshot["execution_metadata"] = {
+            **snapshot["execution_metadata"],
+            "action_contract": material["tool_contract"],
+            "runtime_descriptor": material["runtime_descriptor"],
+        }
+        return snapshot
+
+    with case._connection(database) as connection:
+        rollback_repository = AutomationPluginRepository(
+            connection,
+            cursor_factory=case.pymysql.cursors.DictCursor,
+        )
+        register_version(rollback_repository, version_two)
+        register_version(rollback_repository, version_three)
+        rollback_repository.install_project_instance(
+            {
+                "automation_id": rollback_automation_id,
+                "plugin_id": archival_plugin_id,
+                "plugin_version": "1.0.0",
+                "display_name": "activation rollback integration",
+                "install_request_id": str(uuid4()),
+                "install_payload_sha256": _json_hash(
+                    {"automation_id": rollback_automation_id}
+                ),
+                "installed_by_actor_id": "integration-admin",
+                "migration_authority": False,
+            }
+        )
+        initial_config = rollback_repository.initialize_project_config(
+            rollback_automation_id,
+            enabled_entrypoints=(),
+        )
+        rollback_config = rollback_repository.save_project_config(
+            rollback_automation_id,
+            config={},
+            account_bindings={},
+            resource_bindings={},
+            enabled_entrypoints=(),
+            schedule={"kind": "none", "times": [], "enabled": False},
+            compiled_invocations={},
+            contract_witness={
+                "runtime_model": "ACTION_V1",
+                "allowed_entrypoints": [],
+                "invocation_contracts": invocation_contracts,
+                "scheduling": scheduling,
+            },
+            device_binding=None,
+            actor_id="integration-admin",
+            actor_role="super_admin",
+            request_id=str(uuid4()),
+            expected_project_configuration_version=int(
+                initial_config["config_version"]
+            ),
+        )
+        first_snapshot = generation_snapshot(
+            rollback_config,
+            1,
+            instance_id=rollback_automation_id,
+        )
+        prepare_generation(rollback_repository, first_snapshot, None)
+        rollback_repository.commit_generation_cas_row(
+            rollback_automation_id,
+            1,
+            expected_committed_generation=None,
+        )
+        connection.commit()
+
+        committed_first = rollback_repository.get_generation_row(
+            rollback_automation_id,
+            1,
+        )
+        first_token = committed_first["activation_transition_token"]
+        rollback_repository.rollback_generation_cas_row(
+            rollback_automation_id,
+            1,
+            expected_base_committed_generation=None,
+            expected_transition_token=first_token,
+        )
+        connection.commit()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT committed_generation, target_generation, state, "
+                "reconcile_state FROM automation_projects WHERE automation_id=%s",
+                (rollback_automation_id,),
+            )
+            project = cursor.fetchone()
+            case.assertIsNone(project["committed_generation"])
+            case.assertEqual(1, project["target_generation"])
+            case.assertEqual("INSTALLED", project["state"])
+            case.assertEqual("READY_TO_COMMIT", project["reconcile_state"])
+            cursor.execute(
+                "SELECT COUNT(*) AS n FROM scheduled_tasks WHERE automation_id=%s",
+                (rollback_automation_id,),
+            )
+            case.assertEqual(0, cursor.fetchone()["n"])
+        rollback_repository.rollback_generation_cas_row(
+            rollback_automation_id,
+            1,
+            expected_base_committed_generation=None,
+            expected_transition_token=first_token,
+        )
+        rollback_repository.commit_generation_cas_row(
+            rollback_automation_id,
+            1,
+            expected_committed_generation=None,
+        )
+        retried_first = rollback_repository.get_generation_row(
+            rollback_automation_id,
+            1,
+        )
+        case.assertNotEqual(
+            first_token,
+            retried_first["activation_transition_token"],
+        )
+        rollback_repository.complete_generation_activation_row(
+            rollback_automation_id,
+            1,
+            expected_transition_token=retried_first[
+                "activation_transition_token"
+            ],
+        )
+        connection.commit()
+
+        old_task_id = uuid4().hex
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO scheduled_tasks (
+                    id, automation_id, automation_generation, name,
+                    tool_name, tool_params, cron_expression, enabled,
+                    last_status, last_duration_ms, last_message,
+                    configuration_version
+                ) VALUES (%s, %s, 1, %s, %s, %s, %s, TRUE,
+                          'success', 17, 'old result', %s)
+                """,
+                (
+                    old_task_id,
+                    rollback_automation_id,
+                    "Administrator supplied name",
+                    f"automation.{rollback_automation_id}.run",
+                    json.dumps({"marker": "old"}),
+                    "0 9 * * *",
+                    int(rollback_config["config_version"]),
+                ),
+            )
+            cursor.execute(
+                """
+                INSERT INTO scheduled_task_approval_policies (
+                    task_id, mode, contract_hash, contract_snapshot_json,
+                    tool_contract_hash, approved_by_actor_id,
+                    approved_by_actor_role, approved_by_actor_display_name,
+                    approved_at, comment, version
+                ) VALUES (
+                    %s, 'EXACT_SCHEDULE_EXEMPT', %s, %s, %s,
+                    'integration-admin', 'super_admin', 'Integration Admin',
+                    NOW(6), 'retain exact approval', 7
+                )
+                """,
+                (
+                    old_task_id,
+                    "a" * 64,
+                    json.dumps({"scope": "exact"}),
+                    "b" * 64,
+                ),
+            )
+        connection.commit()
+
+        second_snapshot = generation_snapshot(
+            rollback_config,
+            2,
+            instance_id=rollback_automation_id,
+        )
+        prepare_generation(rollback_repository, second_snapshot, 1)
+        rollback_repository.commit_generation_cas_row(
+            rollback_automation_id,
+            2,
+            expected_committed_generation=1,
+        )
+        connection.commit()
+        committed_second = rollback_repository.get_generation_row(
+            rollback_automation_id,
+            2,
+        )
+        second_token = committed_second["activation_transition_token"]
+        blocking_lease = str(uuid4())
+        with case.assertRaises(ConcurrentUpdateError):
+            rollback_repository.acquire_committed_generation_lease_row(
+                rollback_automation_id,
+                expected_generation=2,
+                expected_manifest_sha256=manifest_sha256,
+                lease_id=blocking_lease,
+                orchestration_run_id=run_id,
+                expires_at=datetime.now() + timedelta(minutes=5),
+                lease_owner="reverse-cas-blocker",
+            )
+        connection.rollback()
+        # Simulate a persisted lease written outside the supported repository
+        # boundary after the transition. Even a completed outcome must make
+        # reverse CAS fail closed; outcome filtering would lose that evidence.
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO automation_project_generation_leases (
+                    lease_id, automation_id, generation,
+                    orchestration_run_id, lease_owner,
+                    runtime_metadata_json, runtime_metadata_sha256,
+                    outcome, acquired_at, expires_at, released_at
+                ) VALUES (
+                    %s, %s, 2, %s, %s, %s, %s,
+                    'SUCCEEDED', NOW(6), %s, NOW(6)
+                )
+                """,
+                (
+                    blocking_lease,
+                    rollback_automation_id,
+                    run_id,
+                    "reverse-cas-blocker",
+                    json.dumps({}),
+                    _json_hash({}),
+                    datetime.now() + timedelta(minutes=5),
+                ),
+            )
+        connection.commit()
+        with case.assertRaises(ConcurrentUpdateError):
+            rollback_repository.rollback_generation_cas_row(
+                rollback_automation_id,
+                2,
+                expected_base_committed_generation=1,
+                expected_transition_token=second_token,
+            )
+        connection.rollback()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM automation_project_generation_leases
+                WHERE lease_id=%s AND automation_id=%s AND generation=2
+                """,
+                (blocking_lease, rollback_automation_id),
+            )
+            case.assertEqual(1, cursor.rowcount)
+        connection.commit()
+        rollback_repository.rollback_generation_cas_row(
+            rollback_automation_id,
+            2,
+            expected_base_committed_generation=1,
+            expected_transition_token=second_token,
+        )
+        connection.commit()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT task.name, task.automation_generation,
+                       task.tool_params, task.last_status,
+                       task.last_duration_ms, task.last_message,
+                       policy.mode, policy.contract_hash,
+                       policy.contract_snapshot_json,
+                       policy.tool_contract_hash, policy.comment,
+                       policy.version
+                FROM scheduled_tasks AS task
+                JOIN scheduled_task_approval_policies AS policy
+                  ON policy.task_id=task.id
+                WHERE task.id=%s
+                """,
+                (old_task_id,),
+            )
+            restored_task = cursor.fetchone()
+            case.assertEqual("Administrator supplied name", restored_task["name"])
+            case.assertEqual(1, restored_task["automation_generation"])
+            case.assertEqual({"marker": "old"}, restored_task["tool_params"])
+            case.assertEqual("success", restored_task["last_status"])
+            case.assertEqual(17, restored_task["last_duration_ms"])
+            case.assertEqual("old result", restored_task["last_message"])
+            case.assertEqual("EXACT_SCHEDULE_EXEMPT", restored_task["mode"])
+            case.assertEqual("a" * 64, restored_task["contract_hash"])
+            case.assertEqual(
+                {"scope": "exact"},
+                restored_task["contract_snapshot_json"],
+            )
+            case.assertEqual("b" * 64, restored_task["tool_contract_hash"])
+            case.assertEqual("retain exact approval", restored_task["comment"])
+            case.assertEqual(7, restored_task["version"])
+        rollback_repository.rollback_generation_cas_row(
+            rollback_automation_id,
+            2,
+            expected_base_committed_generation=1,
+            expected_transition_token=second_token,
+        )
+        rollback_repository.commit_generation_cas_row(
+            rollback_automation_id,
+            2,
+            expected_committed_generation=1,
+        )
+        retried_second = rollback_repository.get_generation_row(
+            rollback_automation_id,
+            2,
+        )
+        rollback_repository.complete_generation_activation_row(
+            rollback_automation_id,
+            2,
+            expected_transition_token=retried_second[
+                "activation_transition_token"
+            ],
+        )
+        connection.commit()
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE automation_projects
+                SET plugin_version='2.0.0', state='UPGRADING',
+                    record_version=record_version+1
+                WHERE automation_id=%s
+                """,
+                (rollback_automation_id,),
+            )
+        connection.commit()
+        third_snapshot = versioned_snapshot(
+            rollback_config,
+            3,
+            version_two,
+        )
+        prepare_generation(rollback_repository, third_snapshot, 2)
+        rollback_repository.commit_generation_cas_row(
+            rollback_automation_id,
+            3,
+            expected_committed_generation=2,
+        )
+        connection.commit()
+        committed_third = rollback_repository.get_generation_row(
+            rollback_automation_id,
+            3,
+        )
+        third_token = committed_third["activation_transition_token"]
+        rollback_repository.rollback_generation_cas_row(
+            rollback_automation_id,
+            3,
+            expected_base_committed_generation=2,
+            expected_transition_token=third_token,
+        )
+        connection.commit()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT plugin_version, state, committed_generation, "
+                "target_generation, reconcile_state FROM automation_projects "
+                "WHERE automation_id=%s",
+                (rollback_automation_id,),
+            )
+            rolled_back_upgrade = cursor.fetchone()
+            case.assertEqual("1.0.0", rolled_back_upgrade["plugin_version"])
+            case.assertEqual("UPGRADING", rolled_back_upgrade["state"])
+            case.assertEqual(2, rolled_back_upgrade["committed_generation"])
+            case.assertEqual(3, rolled_back_upgrade["target_generation"])
+            case.assertEqual(
+                "READY_TO_COMMIT",
+                rolled_back_upgrade["reconcile_state"],
+            )
+        rollback_repository.commit_generation_cas_row(
+            rollback_automation_id,
+            3,
+            expected_committed_generation=2,
+        )
+        retried_third = rollback_repository.get_generation_row(
+            rollback_automation_id,
+            3,
+        )
+        connection.commit()
+        rollback_repository.rollback_generation_cas_row(
+            rollback_automation_id,
+            3,
+            expected_base_committed_generation=2,
+            expected_transition_token=retried_third[
+                "activation_transition_token"
+            ],
+        )
+        connection.commit()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE automation_projects
+                SET plugin_version='3.0.0', state='UPGRADING',
+                    record_version=record_version+1
+                WHERE automation_id=%s
+                """,
+                (rollback_automation_id,),
+            )
+        connection.commit()
+        with case.assertRaises(ConcurrentUpdateError):
+            rollback_repository.commit_generation_cas_row(
+                rollback_automation_id,
+                3,
+                expected_committed_generation=2,
+            )
+        connection.rollback()

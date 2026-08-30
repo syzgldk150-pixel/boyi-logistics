@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from threading import Event, Lock, Thread
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
@@ -150,7 +151,10 @@ def _scheduler_module_for_gate_tests():
             self._jobs = {}
 
         def add_job(self, func, _trigger, *, id, **_kwargs):
-            self._jobs[id] = SimpleNamespace(func=func)
+            self._jobs[id] = SimpleNamespace(
+                func=func,
+                kwargs=dict(_kwargs.get("kwargs") or {}),
+            )
 
         def get_job(self, job_id):
             return self._jobs.get(job_id)
@@ -250,6 +254,25 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             "configuration_version": 6,
             "automation_id": "project_startup",
             "automation_generation": 9,
+            **overrides,
+        }
+
+    @staticmethod
+    def _project_cron_task(
+        automation_id: str,
+        task_id: str,
+        **overrides,
+    ):
+        return {
+            "id": task_id,
+            "name": f"{automation_id} cron",
+            "tool_name": f"automation.{automation_id}.run",
+            "tool_params": {"source": "scheduler"},
+            "cron_expression": "15 3 * * *",
+            "enabled": True,
+            "configuration_version": 2,
+            "automation_id": automation_id,
+            "automation_generation": 4,
             **overrides,
         }
 
@@ -514,7 +537,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             self.assertTrue(job.coalesce)
             self.assertEqual(300, job.misfire_grace_time)
 
-            asyncio.run(job.func())
+            asyncio.run(job.func(**job.kwargs))
             self.assertEqual(1, len(invoker.calls))
             automation_id, trusted = invoker.calls[0]
             self.assertEqual("project_startup", automation_id)
@@ -534,7 +557,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
                 trusted["idempotency_key"],
             )
 
-            asyncio.run(job.func())
+            asyncio.run(job.func(**job.kwargs))
             self.assertEqual(
                 invoker.calls[0][1]["request_id"],
                 invoker.calls[1][1]["request_id"],
@@ -795,6 +818,560 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             scheduler_module._scheduler = previous_scheduler
             scheduler_module._include_startup_catchup_for_process = previous_include
 
+    def test_strict_reload_rebuilds_pending_jobs_before_scheduler_start(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _AgentCore()
+        core.memory.rows = [
+            {
+                "id": "pending_daily",
+                "name": "Pending daily",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {"mode": "sync"},
+                "cron_expression": "10 0 * * *",
+                "enabled": True,
+                "configuration_version": 2,
+            }
+        ]
+        previous_scheduler = scheduler_module._scheduler
+        previous_include = scheduler_module._include_startup_catchup_for_process
+        try:
+            async def exercise() -> None:
+                scheduler = init_scheduler(core, include_startup_catchup=False)
+                self.assertTrue(scheduler.get_job("pending_daily").pending)
+                core.memory.rows[0]["cron_expression"] = "35 2 * * *"
+
+                reloaded = scheduler_module.reload_scheduler(core, strict=True)
+
+                self.assertTrue(reloaded["initialized"])
+                self.assertEqual([], reloaded["invalid_tasks"])
+                self.assertEqual(["pending_daily"], reloaded["job_ids"])
+                self.assertTrue(scheduler.get_job("pending_daily").pending)
+                scheduler.start(paused=True)
+                try:
+                    self.assertFalse(scheduler.get_job("pending_daily").pending)
+                finally:
+                    scheduler.shutdown(wait=False)
+
+            asyncio.run(exercise())
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+            scheduler_module._include_startup_catchup_for_process = previous_include
+
+    def test_strict_reload_rejects_invalid_plan_without_mutating_jobs(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _AgentCore()
+        core.memory.rows = [
+            {
+                "id": "stable_daily",
+                "name": "Stable daily",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {"mode": "sync"},
+                "cron_expression": "10 0 * * *",
+                "enabled": True,
+                "configuration_version": 2,
+            },
+            {
+                "id": "healthy_daily",
+                "name": "Healthy daily",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {"mode": "sync"},
+                "cron_expression": "20 0 * * *",
+                "enabled": True,
+                "configuration_version": 2,
+            },
+        ]
+        previous_scheduler = scheduler_module._scheduler
+        previous_include = scheduler_module._include_startup_catchup_for_process
+        try:
+            async def exercise() -> None:
+                scheduler = init_scheduler(core, include_startup_catchup=False)
+                scheduler.start(paused=True)
+                try:
+                    before = {
+                        job.id: self._scheduler_job_state(job)
+                        for job in scheduler.get_jobs()
+                    }
+                    core.memory.rows[0]["cron_expression"] = "not a cron expression"
+                    core.memory.rows[1]["cron_expression"] = "35 2 * * *"
+
+                    with self.assertRaises(scheduler_module.ScheduledTaskReloadError) as raised:
+                        scheduler_module.reload_scheduler(core, strict=True)
+
+                    self.assertEqual(
+                        ["stable_daily"],
+                        [item["task_id"] for item in raised.exception.invalid_tasks],
+                    )
+                    self.assertEqual(
+                        before,
+                        {
+                            job.id: self._scheduler_job_state(job)
+                            for job in scheduler.get_jobs()
+                        },
+                    )
+                finally:
+                    scheduler.shutdown(wait=False)
+
+            asyncio.run(exercise())
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+            scheduler_module._include_startup_catchup_for_process = previous_include
+
+    def test_strict_reload_registration_failure_restores_complete_job_snapshots(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _AgentCore()
+        core.memory.rows = [
+            {
+                "id": "first_daily",
+                "name": "First daily",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {"mode": "sync"},
+                "cron_expression": "10 0 * * *",
+                "enabled": True,
+                "configuration_version": 2,
+            },
+            {
+                "id": "second_daily",
+                "name": "Second daily",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {"mode": "sync"},
+                "cron_expression": "15 0 * * *",
+                "enabled": True,
+                "configuration_version": 2,
+            },
+        ]
+        previous_scheduler = scheduler_module._scheduler
+        previous_include = scheduler_module._include_startup_catchup_for_process
+        try:
+            async def exercise() -> None:
+                scheduler = init_scheduler(core, include_startup_catchup=False)
+                scheduler.start(paused=True)
+                try:
+                    before = {
+                        job.id: self._scheduler_job_state(job)
+                        for job in scheduler.get_jobs()
+                    }
+                    core.memory.rows[0]["cron_expression"] = "35 2 * * *"
+                    core.memory.rows[1]["cron_expression"] = "40 3 * * *"
+                    original_add_job = scheduler_module._add_job
+                    calls = 0
+
+                    def fail_second_registration(*args, **kwargs):
+                        nonlocal calls
+                        calls += 1
+                        if calls == 2:
+                            raise RuntimeError("injected strict registration failure")
+                        return original_add_job(*args, **kwargs)
+
+                    with patch.object(
+                        scheduler_module,
+                        "_add_job",
+                        side_effect=fail_second_registration,
+                    ):
+                        with self.assertRaises(
+                            scheduler_module.ScheduledTaskReloadError
+                        ) as raised:
+                            scheduler_module.reload_scheduler(core, strict=True)
+
+                    self.assertEqual(
+                        ["second_daily"],
+                        [item["task_id"] for item in raised.exception.invalid_tasks],
+                    )
+                    self.assertEqual(
+                        before,
+                        {
+                            job.id: self._scheduler_job_state(job)
+                            for job in scheduler.get_jobs()
+                        },
+                    )
+
+                    reloaded = scheduler_module.reload_scheduler(core, strict=True)
+                    self.assertEqual([], reloaded["invalid_tasks"])
+                    self.assertEqual(
+                        ["first_daily", "second_daily"],
+                        sorted(reloaded["job_ids"]),
+                    )
+                finally:
+                    scheduler.shutdown(wait=False)
+
+            asyncio.run(exercise())
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+            scheduler_module._include_startup_catchup_for_process = previous_include
+
+    def test_direct_and_strict_reload_calls_share_one_process_lock(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        first_entered = Event()
+        release_first = Event()
+        second_attempted = Event()
+        counter_lock = Lock()
+        errors: list[BaseException] = []
+        calls = 0
+        active = 0
+        maximum_active = 0
+
+        def locked_reload(*args, **kwargs):
+            nonlocal calls, active, maximum_active
+            del args, kwargs
+            with counter_lock:
+                calls += 1
+                active += 1
+                maximum_active = max(maximum_active, active)
+                first = calls == 1
+            try:
+                if first:
+                    first_entered.set()
+                    self.assertTrue(release_first.wait(timeout=2))
+                return {"initialized": True, "invalid_tasks": []}
+            finally:
+                with counter_lock:
+                    active -= 1
+
+        def invoke(*, strict: bool, attempted: Event | None = None) -> None:
+            if attempted is not None:
+                attempted.set()
+            try:
+                scheduler_module.reload_scheduler(object(), strict=strict)
+            except BaseException as exc:  # noqa: BLE001 - assert in the main thread
+                errors.append(exc)
+
+        with patch.object(
+            scheduler_module,
+            "_reload_scheduler_locked",
+            side_effect=locked_reload,
+        ):
+            direct_thread = Thread(target=invoke, kwargs={"strict": False})
+            strict_thread = Thread(
+                target=invoke,
+                kwargs={"strict": True, "attempted": second_attempted},
+            )
+            direct_thread.start()
+            self.assertTrue(first_entered.wait(timeout=2))
+            strict_thread.start()
+            self.assertTrue(second_attempted.wait(timeout=2))
+            try:
+                with counter_lock:
+                    self.assertEqual(1, calls)
+                    self.assertEqual(1, maximum_active)
+            finally:
+                release_first.set()
+                direct_thread.join(timeout=2)
+                strict_thread.join(timeout=2)
+
+        self.assertFalse(direct_thread.is_alive())
+        self.assertFalse(strict_thread.is_alive())
+        self.assertEqual([], errors)
+        self.assertEqual(2, calls)
+        self.assertEqual(1, maximum_active)
+
+    def test_emergency_withdraw_removes_all_three_owned_job_types_and_tombstones_reload(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        target_id = "emergency_target"
+        core = _AgentCore()
+        core.memory.rows = [
+            self._project_cron_task(target_id, "target_cron"),
+            self._project_startup_task(
+                id="target_startup",
+                tool_name=f"automation.{target_id}.run",
+                automation_id=target_id,
+            ),
+            self._project_startup_task(
+                id="finance_startup_catchup",
+                name="Finance startup catch-up",
+                tool_name=f"automation.{target_id}.run",
+                automation_id=target_id,
+            ),
+            self._project_cron_task("other_project", "other_cron"),
+            {
+                "id": "fixed_cron",
+                "name": "Fixed cron",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {"mode": "sync"},
+                "cron_expression": "20 3 * * *",
+                "enabled": True,
+                "configuration_version": 2,
+            },
+        ]
+        core.finance_startup_gate_provider = _StartupGate(_ready_startup_gate())
+        previous_scheduler = scheduler_module._scheduler
+        previous_include = scheduler_module._include_startup_catchup_for_process
+        previous_tombstones = set(
+            scheduler_module._automation_project_job_tombstones
+        )
+        try:
+            scheduler_module._automation_project_job_tombstones.clear()
+            scheduler = init_scheduler(core, include_startup_catchup=True)
+            marker = scheduler_module.AUTOMATION_JOB_OWNER_MARKER
+            target_job_ids = {
+                "target_cron",
+                "target_startup",
+                "finance_startup_catchup",
+            }
+            for job_id in target_job_ids:
+                self.assertEqual(target_id, scheduler.get_job(job_id).kwargs[marker])
+            self.assertEqual(
+                "other_project",
+                scheduler.get_job("other_cron").kwargs[marker],
+            )
+            self.assertNotIn(marker, scheduler.get_job("fixed_cron").kwargs)
+
+            with self.assertRaisesRegex(RuntimeError, "owner marker"):
+                asyncio.run(scheduler.get_job("target_cron").func())
+            with self.assertRaisesRegex(RuntimeError, "owner marker"):
+                asyncio.run(
+                    scheduler.get_job("target_cron").func(
+                        **{marker: "other_project"}
+                    )
+                )
+
+            evidence = scheduler_module.emergency_withdraw_automation_project_jobs(
+                target_id
+            )
+            self.assertTrue(evidence["initialized"])
+            self.assertTrue(evidence["tombstoned"])
+            self.assertTrue(evidence["complete"])
+            self.assertEqual(sorted(target_job_ids), evidence["removed_job_ids"])
+            self.assertEqual([], evidence["remaining_target_job_ids"])
+            self.assertEqual([], evidence["remaining_malformed_marker_job_ids"])
+            self.assertIsNotNone(scheduler.get_job("other_cron"))
+            self.assertIsNotNone(scheduler.get_job("fixed_cron"))
+
+            repeated = scheduler_module.emergency_withdraw_automation_project_jobs(
+                target_id
+            )
+            self.assertTrue(repeated["complete"])
+            self.assertEqual([], repeated["removed_job_ids"])
+
+            for strict in (False, True):
+                refreshed = scheduler_module.reload_scheduler(core, strict=strict)
+                self.assertEqual(
+                    ["fixed_cron", "other_cron"],
+                    sorted(refreshed["job_ids"]),
+                )
+                self.assertTrue(target_job_ids.isdisjoint(refreshed["job_ids"]))
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+            scheduler_module._include_startup_catchup_for_process = previous_include
+            scheduler_module._automation_project_job_tombstones.clear()
+            scheduler_module._automation_project_job_tombstones.update(
+                previous_tombstones
+            )
+
+    def test_scheduler_snapshot_restore_preserves_private_owner_marker(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _AgentCore()
+        core.memory.rows = [
+            self._project_cron_task("snapshot_owner", "owned_job"),
+            {
+                "id": "fixed_job",
+                "name": "Fixed job",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {},
+                "cron_expression": "30 4 * * *",
+                "enabled": True,
+                "configuration_version": 1,
+            },
+        ]
+        previous_scheduler = scheduler_module._scheduler
+        previous_include = scheduler_module._include_startup_catchup_for_process
+        previous_tombstones = set(
+            scheduler_module._automation_project_job_tombstones
+        )
+        try:
+            scheduler_module._automation_project_job_tombstones.clear()
+            scheduler = init_scheduler(core, include_startup_catchup=False)
+            snapshots = [
+                scheduler_module._snapshot_scheduler_job(job)
+                for job in scheduler.get_jobs()
+            ]
+
+            scheduler_module._restore_scheduler_jobs(snapshots)
+
+            marker = scheduler_module.AUTOMATION_JOB_OWNER_MARKER
+            self.assertEqual(
+                "snapshot_owner",
+                scheduler.get_job("owned_job").kwargs[marker],
+            )
+            self.assertNotIn(marker, scheduler.get_job("fixed_job").kwargs)
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+            scheduler_module._include_startup_catchup_for_process = previous_include
+            scheduler_module._automation_project_job_tombstones.clear()
+            scheduler_module._automation_project_job_tombstones.update(
+                previous_tombstones
+            )
+
+    def test_emergency_withdraw_before_initialization_is_complete_and_rejects_empty_id(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        previous_scheduler = scheduler_module._scheduler
+        previous_tombstones = set(
+            scheduler_module._automation_project_job_tombstones
+        )
+        try:
+            scheduler_module._scheduler = None
+            scheduler_module._automation_project_job_tombstones.clear()
+            evidence = scheduler_module.emergency_withdraw_automation_project_jobs(
+                "before_start"
+            )
+            self.assertFalse(evidence["initialized"])
+            self.assertTrue(evidence["tombstoned"])
+            self.assertTrue(evidence["complete"])
+            self.assertEqual([], evidence["remaining_target_job_ids"])
+            self.assertEqual([], evidence["remaining_malformed_marker_job_ids"])
+            for invalid_id in ("", " ", None):
+                with self.subTest(invalid_id=invalid_id):
+                    with self.assertRaises(ValueError):
+                        scheduler_module.emergency_withdraw_automation_project_jobs(
+                            invalid_id
+                        )
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+            scheduler_module._automation_project_job_tombstones.clear()
+            scheduler_module._automation_project_job_tombstones.update(
+                previous_tombstones
+            )
+
+    def test_emergency_withdraw_removes_and_reports_malformed_owner_markers(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _AgentCore()
+        core.memory.rows = [
+            self._project_cron_task("malformed_target", "target_job"),
+            {
+                "id": "fixed_job",
+                "name": "Fixed job",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {},
+                "cron_expression": "30 4 * * *",
+                "enabled": True,
+                "configuration_version": 1,
+            },
+        ]
+        previous_scheduler = scheduler_module._scheduler
+        previous_include = scheduler_module._include_startup_catchup_for_process
+        previous_tombstones = set(
+            scheduler_module._automation_project_job_tombstones
+        )
+        try:
+            scheduler_module._automation_project_job_tombstones.clear()
+            scheduler = init_scheduler(core, include_startup_catchup=False)
+            marker = scheduler_module.AUTOMATION_JOB_OWNER_MARKER
+
+            async def malformed_job(
+                _boyi_automation_owner_v1=None,
+            ):
+                del _boyi_automation_owner_v1
+
+            scheduler.add_job(
+                malformed_job,
+                scheduler_module.DateTrigger(
+                    run_date=datetime.now().astimezone() + timedelta(minutes=5)
+                ),
+                id="malformed_job",
+                kwargs={marker: 42},
+            )
+
+            evidence = scheduler_module.emergency_withdraw_automation_project_jobs(
+                "malformed_target"
+            )
+
+            self.assertTrue(evidence["complete"])
+            self.assertEqual(
+                ["malformed_job"],
+                evidence["malformed_marker_job_ids"],
+            )
+            self.assertEqual(
+                ["malformed_job", "target_job"],
+                evidence["removed_job_ids"],
+            )
+            self.assertEqual([], evidence["remaining_malformed_marker_job_ids"])
+            self.assertIsNotNone(scheduler.get_job("fixed_job"))
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+            scheduler_module._include_startup_catchup_for_process = previous_include
+            scheduler_module._automation_project_job_tombstones.clear()
+            scheduler_module._automation_project_job_tombstones.update(
+                previous_tombstones
+            )
+
+    def test_emergency_withdraw_tolerates_job_disappearing_during_removal(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _AgentCore()
+        core.memory.rows = [
+            self._project_cron_task("race_target", "race_target_job"),
+            {
+                "id": "race_fixed_job",
+                "name": "Fixed job",
+                "tool_name": "sync_finance_bills",
+                "tool_params": {},
+                "cron_expression": "30 4 * * *",
+                "enabled": True,
+                "configuration_version": 1,
+            },
+        ]
+        previous_scheduler = scheduler_module._scheduler
+        previous_include = scheduler_module._include_startup_catchup_for_process
+        previous_tombstones = set(
+            scheduler_module._automation_project_job_tombstones
+        )
+        try:
+            scheduler_module._automation_project_job_tombstones.clear()
+            scheduler = init_scheduler(core, include_startup_catchup=False)
+            original_remove_job = scheduler.remove_job
+
+            def remove_then_report_lookup_race(job_id):
+                original_remove_job(job_id)
+                raise RuntimeError("one-shot job already disappeared")
+
+            with patch.object(
+                scheduler,
+                "remove_job",
+                side_effect=remove_then_report_lookup_race,
+            ):
+                evidence = (
+                    scheduler_module.emergency_withdraw_automation_project_jobs(
+                        "race_target"
+                    )
+                )
+
+            self.assertTrue(evidence["complete"])
+            self.assertEqual([], evidence["removal_failure_job_ids"])
+            self.assertEqual([], evidence["remaining_target_job_ids"])
+            self.assertIsNone(scheduler.get_job("race_target_job"))
+            self.assertIsNotNone(scheduler.get_job("race_fixed_job"))
+        finally:
+            scheduler_module._scheduler = previous_scheduler
+            scheduler_module._include_startup_catchup_for_process = previous_include
+            scheduler_module._automation_project_job_tombstones.clear()
+            scheduler_module._automation_project_job_tombstones.update(
+                previous_tombstones
+            )
+
     def test_duplicate_enabled_task_id_remains_a_global_conflict(self):
         if not HAS_APSCHEDULER:
             self.skipTest("apscheduler is not installed in the unit-test interpreter")
@@ -870,7 +1447,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         )
         job = scheduler.get_job("finance_startup_catchup")
         self.assertIsNotNone(job)
-        asyncio.run(job.func())
+        asyncio.run(job.func(**job.kwargs))
         self.assertEqual(1, len(invoker.calls))
         _automation_id, trusted = invoker.calls[0]
         self.assertEqual(ActorType.SCHEDULER, trusted["actor"].actor_type)
@@ -886,7 +1463,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
 
         # A second service start on the same business day must submit the same
         # logical occurrence so CommandGateway reuses the original Run.
-        asyncio.run(job.func())
+        asyncio.run(job.func(**job.kwargs))
         self.assertEqual(2, len(invoker.calls))
         self.assertEqual(
             invoker.calls[0][1]["request_id"],
@@ -1682,7 +2259,7 @@ class FinanceStartupGateTests(unittest.TestCase):
             )
             job = scheduler_module._scheduler.get_job("finance_startup_catchup")
             self.assertIsNotNone(job)
-            asyncio.run(job.func())
+            asyncio.run(job.func(**job.kwargs))
             self.assertEqual([], invoker.calls)
             self.assertEqual(2, len(gate.calls))
         finally:
@@ -1701,7 +2278,7 @@ class FinanceStartupGateTests(unittest.TestCase):
             )
             job = scheduler_module._scheduler.get_job("finance_startup_catchup")
             self.assertIsNotNone(job)
-            asyncio.run(job.func())
+            asyncio.run(job.func(**job.kwargs))
             self.assertEqual(1, len(invoker.calls))
             self.assertEqual("finance_startup_catchup", invoker.calls[0][0])
             self.assertEqual(2, len(gate.calls))

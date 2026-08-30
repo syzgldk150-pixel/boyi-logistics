@@ -974,11 +974,31 @@ class AutomationProjectPolicyBootstrapTests(TestCase):
 
     def test_main_bootstraps_only_after_reconcile_and_before_policy_engine(self):
         source = (ROOT / "agent" / "main.py").read_text(encoding="utf-8")
+        scheduled_policy_bootstrap = source.index("bootstrap_reviewed_policies")
+        project_policy_service = source.index(
+            "project_policy_service = AutomationProjectPolicyService("
+        )
+        scheduler_init = source.index("scheduler = init_scheduler(")
+        strict_projection = source.index(
+            "bind_scheduler_projection_refresher("
+        )
+        emergency_withdrawal = source.index(
+            "bind_scheduler_project_emergency_withdrawer("
+        )
         reconcile = source.index("plugin_runtime.reconcile")
         bootstrap = source.index("bootstrap_legacy_project_policies")
         default_full_auto = source.index("ensure_default_full_auto_policies")
         policy_engine = source.index("PolicyEngine(")
+        scheduler_start = source.index("scheduler.start(")
+        self.assertLess(scheduled_policy_bootstrap, project_policy_service)
+        self.assertLess(project_policy_service, scheduler_init)
+        self.assertLess(scheduler_init, strict_projection)
+        self.assertLess(scheduler_init, emergency_withdrawal)
+        self.assertLess(strict_projection, reconcile)
+        self.assertLess(emergency_withdrawal, reconcile)
+        self.assertLess(reconcile, scheduler_start)
         self.assertLess(reconcile, bootstrap)
+        self.assertLess(bootstrap, scheduler_start)
         self.assertLess(bootstrap, policy_engine)
         self.assertNotIn(
             'if project_policy_bootstrap.get("status") == "created":',

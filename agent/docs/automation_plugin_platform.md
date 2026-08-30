@@ -146,9 +146,24 @@ Service v2 新安装固定先调用只读 `inspect-upload`，该请求只接收�
 依赖未就绪时响应只投影 `PREPARING/BLOCKED_DEPENDENCY`，不得宣称完成或提前启用。启用必须再次
 确认当前 desired material 已有完全匹配的 `STABLE committed_generation`。
 配置幂等重放还须精确匹配操作者身份和事件目标配置版本，后续配置漂移后不得读回最新值冒充旧请求结果。
-稳定 generation 提交后，管理 API 在 Agent 事件循环内原子刷新 APScheduler；完整注册计划先校验，任何
-加载失败都恢复旧 Job、返回 `REFRESH_FAILED`，调用方以同一请求 UUID 重试。`startup` 项目使用一次性
-DateTrigger 和“上海业务日 + 配置版本”的稳定 Command 身份；release hold 启动不注册任何 startup Job。
+Service v2 的 stable generation 提交后，全部受管 Console/Scheduler contribution 先作为完整一代准备。
+generation CAS 同一事务写入 `PENDING_PROJECTION` transition token、旧项目/策略版本以及旧任务和逐任务审批
+策略的精确前镜像；`ManagedContributionRegistry`、Provider reference 和 strict APScheduler reload 共用同一
+投影锁。只有整份计划没有非法行、所有 Job 注册成功且返回 `initialized=true, invalid_tasks=[]`，才切换 exact
+active generation 并以同一 token ACK 为 `ACTIVE`。刷新或 ACK 失败会执行条件化 reverse CAS，恢复旧项目
+版本、旧 committed generation、旧任务与审批策略，再在同一投影锁内恢复旧 Provider、Console 路由和 Job；
+随后可用同一 immutable target 重试，无需重启 Agent/Console。
+reverse CAS 在目标新代存在任何 lease 历史、未知写、任务/策略/项目版本并发变化或 token 不一致时必须拒绝。此时 journal
+标记 `BLOCKED`，持久 Scheduler gate 关闭，进程内全部 Provider/Console 路由撤销，并按私有 owner marker 删除
+该项目动态 Job；进程 tombstone 阻止普通或 strict reload 将其复活。启动恢复只按 durable phase 决定重试
+投影、继续旧代或保持阻断，不从当前对象猜测成功状态；transition 存在时通用 lease 入口只接受 `ACTIVE`。
+启动先构造但不启动 Scheduler、绑定 strict/emergency 投影器并完成 reconcile/ACK，随后才启动物理 Scheduler。
+停用和卸载同样先 strict 刷新物理任务再整代 withdraw；纯 service v2 没有已启用 Console/Scheduler
+contribution 时不创建伪 marker。Catalog 只输出闭合 `active_contributions` 与 `ACTIVE/STALE/INACTIVE`，
+Console 只从当前 committed generation 的 exact `COMMITTED/READY` 记录开放入口。此机制不改变
+`ACTION_V1`；动态飞书/Webhook/Event dispatcher、统一端到端 Harness 和自定义插件前端均未开放。
+`startup` 项目使用一次性 DateTrigger 和“上海业务日 + 配置版本”的稳定 Command 身份；release hold 启动
+不注册任何 startup Job。
 Console 启用/停用使用浏览器动作 UUID 与实例 `record_version` 做精确 CAS，并在同一事务写入
 `PLUGIN_STATE_CHANGED` 事件，绑定目标状态、CAS 前后版本和签名管理员身份；响应丢失后重放同一 UUID
 只读回该次结果，不得再次推进。启用必须等待稳定 committed generation；停用作为止损动作可在依赖

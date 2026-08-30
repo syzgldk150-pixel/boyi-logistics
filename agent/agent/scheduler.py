@@ -8,6 +8,7 @@ import os
 import stat
 from datetime import datetime, timedelta
 from pathlib import Path
+from threading import RLock
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
@@ -31,10 +32,13 @@ logger = logging.getLogger("agent")
 _scheduler: AsyncIOScheduler | None = None
 _automation_project_invoker: Any | None = None
 _include_startup_catchup_for_process = True
+_scheduler_reload_lock = RLock()
+_automation_project_job_tombstones: set[str] = set()
 FINANCE_MISFIRE_GRACE_SECONDS = 3600
 EXTERNAL_WRITE_MISFIRE_GRACE_SECONDS = 60
 FINANCE_SCHEDULE_TASK_ID = "finance_bills_0010"
 FINANCE_STARTUP_TASK_ID = "finance_startup_catchup"
+AUTOMATION_JOB_OWNER_MARKER = "_boyi_automation_owner_v1"
 SCHEDULER_RELEASE_HOLD_ENV = "BOYI_SCHEDULER_RELEASE_HOLD_FILE"
 SCHEDULER_RELEASE_HOLD_NAME = "scheduler-release.pause"
 
@@ -45,6 +49,154 @@ class DeferredR7ScheduleIdentityError(RuntimeError):
 
 class ScheduledTaskIdentityConflictError(RuntimeError):
     """Two enabled rows claim the same global scheduler identity."""
+
+
+class ScheduledTaskReloadError(RuntimeError):
+    """A strict scheduler refresh could not apply its complete job set."""
+
+    def __init__(self, invalid_tasks: list[dict[str, str]]):
+        self.invalid_tasks = [dict(issue) for issue in invalid_tasks]
+        task_ids = ", ".join(issue["task_id"] for issue in self.invalid_tasks)
+        super().__init__(f"Strict scheduler reload rejected scheduled tasks: {task_ids}")
+
+
+def _task_automation_owner(task: Mapping[str, Any]) -> str | None:
+    owner = str(task.get("automation_id") or "").strip()
+    return owner or None
+
+
+def _automation_project_job_is_tombstoned(automation_id: str) -> bool:
+    with _scheduler_reload_lock:
+        return automation_id in _automation_project_job_tombstones
+
+
+def _validate_automation_job_owner_marker(
+    *,
+    expected_owner: str | None,
+    actual_owner: Any,
+) -> None:
+    """Reject a scheduler invocation whose private owner binding was altered."""
+
+    if expected_owner is None:
+        if actual_owner is not None:
+            raise RuntimeError("Fixed scheduler job received an automation owner marker")
+        return
+    if type(actual_owner) is not str or actual_owner != expected_owner:
+        raise RuntimeError("Scheduler automation owner marker does not match its job binding")
+
+
+def _scheduler_job_owner_marker(job: Any) -> tuple[str, str | None]:
+    """Classify one APScheduler job without inferring ownership from its id."""
+
+    sentinel = object()
+    kwargs = getattr(job, "kwargs", sentinel)
+    if kwargs is sentinel:
+        return "fixed", None
+    if not isinstance(kwargs, Mapping):
+        return "malformed", None
+    if AUTOMATION_JOB_OWNER_MARKER not in kwargs:
+        return "fixed", None
+    owner = kwargs[AUTOMATION_JOB_OWNER_MARKER]
+    if type(owner) is not str or not owner or owner != owner.strip():
+        return "malformed", None
+    return "automation", owner
+
+
+def emergency_withdraw_automation_project_jobs(automation_id: str) -> dict[str, Any]:
+    """Tombstone one project and remove only jobs with explicit owner evidence.
+
+    This process-local path deliberately avoids database reads. Jobs carrying a
+    malformed owner marker are also removed because their ownership cannot be
+    established safely; the returned evidence reports every such removal.
+    Already-running job instances are not cancelled.
+    """
+
+    if (
+        type(automation_id) is not str
+        or not automation_id
+        or automation_id != automation_id.strip()
+    ):
+        raise ValueError("automation_id must be a non-empty normalized string")
+
+    with _scheduler_reload_lock:
+        _automation_project_job_tombstones.add(automation_id)
+        evidence: dict[str, Any] = {
+            "automation_id": automation_id,
+            "initialized": _scheduler is not None,
+            "tombstoned": True,
+            "complete": True,
+            "removed_job_ids": [],
+            "malformed_marker_job_ids": [],
+            "remaining_target_job_ids": [],
+            "remaining_malformed_marker_job_ids": [],
+            "removal_failure_job_ids": [],
+        }
+        if _scheduler is None:
+            return evidence
+
+        candidate_job_ids: set[str] = set()
+        malformed_job_ids: set[str] = set()
+        for job in list(_scheduler.get_jobs()):
+            marker_state, owner = _scheduler_job_owner_marker(job)
+            job_id = str(job.id)
+            if marker_state == "malformed":
+                candidate_job_ids.add(job_id)
+                malformed_job_ids.add(job_id)
+            elif marker_state == "automation" and owner == automation_id:
+                candidate_job_ids.add(job_id)
+
+        removed_job_ids: list[str] = []
+        removal_failure_job_ids: list[str] = []
+        for job_id in sorted(candidate_job_ids):
+            current = _scheduler.get_job(job_id)
+            if current is None:
+                continue
+            marker_state, owner = _scheduler_job_owner_marker(current)
+            if marker_state == "malformed":
+                malformed_job_ids.add(job_id)
+            elif marker_state != "automation" or owner != automation_id:
+                continue
+            try:
+                _scheduler.remove_job(job_id)
+            except Exception:  # APScheduler can race a concurrent one-shot removal.
+                current_after_failure = _scheduler.get_job(job_id)
+                if current_after_failure is None:
+                    continue
+                marker_state, owner = _scheduler_job_owner_marker(
+                    current_after_failure
+                )
+                if marker_state == "malformed" or (
+                    marker_state == "automation" and owner == automation_id
+                ):
+                    removal_failure_job_ids.append(job_id)
+                continue
+            removed_job_ids.append(job_id)
+
+        remaining_target_job_ids: list[str] = []
+        remaining_malformed_job_ids: list[str] = []
+        for job in list(_scheduler.get_jobs()):
+            marker_state, owner = _scheduler_job_owner_marker(job)
+            if marker_state == "malformed":
+                remaining_malformed_job_ids.append(str(job.id))
+            elif marker_state == "automation" and owner == automation_id:
+                remaining_target_job_ids.append(str(job.id))
+
+        evidence.update(
+            {
+                "complete": not (
+                    remaining_target_job_ids
+                    or remaining_malformed_job_ids
+                ),
+                "removed_job_ids": sorted(removed_job_ids),
+                "malformed_marker_job_ids": sorted(malformed_job_ids),
+                "remaining_target_job_ids": sorted(remaining_target_job_ids),
+                "remaining_malformed_marker_job_ids": sorted(
+                    remaining_malformed_job_ids
+                ),
+                "removal_failure_job_ids": sorted(removal_failure_job_ids),
+            }
+        )
+        return evidence
 
 
 def _deferred_r7_legacy_schedule_task_ids() -> frozenset[str]:
@@ -244,6 +396,16 @@ def _add_finance_startup_catchup_job(
     if startup_task is None:
         logger.info("Finance startup catch-up skipped because its independent task is disabled")
         return
+    automation_owner = _task_automation_owner(startup_task)
+    if automation_owner is None:
+        logger.warning("Finance startup catch-up has no stable automation owner")
+        return
+    if _automation_project_job_is_tombstoned(automation_owner):
+        logger.warning(
+            "Finance startup catch-up suppressed by the process tombstone: %s",
+            automation_owner,
+        )
+        return
 
     provider = (
         startup_gate_provider
@@ -266,7 +428,13 @@ def _add_finance_startup_catchup_job(
         logger.warning("Finance startup catch-up was not registered: STARTUP_GATE_BLOCKED")
         return
 
-    async def startup_catchup() -> None:
+    async def startup_catchup(
+        _boyi_automation_owner_v1: str | None = None,
+    ) -> None:
+        _validate_automation_job_owner_marker(
+            expected_owner=automation_owner,
+            actual_owner=_boyi_automation_owner_v1,
+        )
         # Use one stable logical occurrence per task-contract version and
         # business day. Repeated starts on the same version therefore reuse the
         # same Command/Run instead of starting another arbitrary wall-clock scan.
@@ -309,15 +477,19 @@ def _add_finance_startup_catchup_job(
         run_date=datetime.now().astimezone() + timedelta(seconds=15),
         timezone="Asia/Shanghai",
     )
-    _scheduler.add_job(
-        startup_catchup,
-        trigger,
-        id="finance_startup_catchup",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=300,
-    )
+    with _scheduler_reload_lock:
+        if _automation_project_job_is_tombstoned(automation_owner):
+            return
+        _scheduler.add_job(
+            startup_catchup,
+            trigger,
+            id="finance_startup_catchup",
+            kwargs={AUTOMATION_JOB_OWNER_MARKER: automation_owner},
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+        )
 
 
 def _finance_startup_occurrence(
@@ -534,6 +706,12 @@ def _scheduled_task_registration_plan(
     for task in tasks:
         if not isinstance(task, dict):
             continue
+        automation_owner = _task_automation_owner(task)
+        if (
+            automation_owner is not None
+            and _automation_project_job_is_tombstoned(automation_owner)
+        ):
+            continue
         task_id = str(task.get("id") or "").strip()
         if not task_id:
             continue
@@ -556,6 +734,12 @@ def _scheduled_task_registration_plan(
                     "error_summary": "Enabled scheduled task is not an object",
                 }
             )
+            continue
+        automation_owner = _task_automation_owner(task)
+        if (
+            automation_owner is not None
+            and _automation_project_job_is_tombstoned(automation_owner)
+        ):
             continue
         try:
             is_deferred = _deferred_r7_schedule_must_not_register(task)
@@ -612,24 +796,31 @@ def _register_scheduled_task(
     agent_core,
     automation_project_invoker: Any | None,
 ) -> None:
-    if is_startup:
-        _add_startup_project_job(
-            task,
-            agent_core=agent_core,
-            automation_project_invoker=automation_project_invoker,
-        )
-    else:
-        _add_job(
-            task_id=str(task["id"]),
-            cron_expr=str(task["cron_expression"]),
-            tool_name=str(task["tool_name"]),
-            tool_params=dict(task.get("tool_params") or {}),
-            configuration_version=_task_configuration_version(task),
-            automation_id=task.get("automation_id"),
-            automation_generation=task.get("automation_generation"),
-            automation_project_invoker=automation_project_invoker,
-            agent_core=agent_core,
-        )
+    automation_owner = _task_automation_owner(task)
+    with _scheduler_reload_lock:
+        if (
+            automation_owner is not None
+            and _automation_project_job_is_tombstoned(automation_owner)
+        ):
+            return
+        if is_startup:
+            _add_startup_project_job(
+                task,
+                agent_core=agent_core,
+                automation_project_invoker=automation_project_invoker,
+            )
+        else:
+            _add_job(
+                task_id=str(task["id"]),
+                cron_expr=str(task["cron_expression"]),
+                tool_name=str(task["tool_name"]),
+                tool_params=dict(task.get("tool_params") or {}),
+                configuration_version=_task_configuration_version(task),
+                automation_id=task.get("automation_id"),
+                automation_generation=task.get("automation_generation"),
+                automation_project_invoker=automation_project_invoker,
+                agent_core=agent_core,
+            )
     logger.info(
         "Loaded scheduled task: %s (%s) -> %s",
         task.get("name") or task["id"],
@@ -719,7 +910,13 @@ def _add_startup_project_job(
     automation_generation = task["automation_generation"]
     tool_params = copy.deepcopy(task.get("tool_params") or {})
 
-    async def startup_job() -> None:
+    async def startup_job(
+        _boyi_automation_owner_v1: str | None = None,
+    ) -> None:
+        _validate_automation_job_owner_marker(
+            expected_owner=automation_id,
+            actual_owner=_boyi_automation_owner_v1,
+        )
         try:
             result = await _execute_scheduled_tool(
                 agent_core,
@@ -747,6 +944,7 @@ def _add_startup_project_job(
             timezone="Asia/Shanghai",
         ),
         id=task_id,
+        kwargs={AUTOMATION_JOB_OWNER_MARKER: automation_id},
         replace_existing=True,
         max_instances=1,
         coalesce=True,
@@ -766,6 +964,11 @@ def _add_job(
     automation_generation: int | None = None,
     automation_project_invoker: Any | None = None,
 ) -> None:
+    automation_owner = (
+        str(automation_id).strip()
+        if automation_id is not None and str(automation_id).strip()
+        else None
+    )
     parts = str(cron_expr or "").split()
     if len(parts) != 5:
         raise ValueError(f"Invalid cron expression for task {task_id}: {cron_expr}")
@@ -785,9 +988,14 @@ def _add_job(
         tid: str = task_id,
         cron: str = cron_expr,
         config_version: int = configuration_version,
-        project_id: str | None = automation_id,
+        project_id: str | None = automation_owner,
         project_generation: int | None = automation_generation,
+        _boyi_automation_owner_v1: str | None = None,
     ) -> None:
+        _validate_automation_job_owner_marker(
+            expected_owner=project_id,
+            actual_owner=_boyi_automation_owner_v1,
+        )
         logger.info("Scheduled task fired: %s -> %s", tid, tn)
         try:
             scheduled_for = _latest_scheduled_fire_time(trigger, datetime.now(trigger.timezone))
@@ -853,7 +1061,19 @@ def _add_job(
         }
     if _scheduler is None:
         raise RuntimeError("scheduler is not initialized")
-    _scheduler.add_job(job_func, trigger, id=task_id, replace_existing=True, **options)
+    owner_kwargs = (
+        {AUTOMATION_JOB_OWNER_MARKER: automation_owner}
+        if automation_owner is not None
+        else {}
+    )
+    _scheduler.add_job(
+        job_func,
+        trigger,
+        id=task_id,
+        kwargs=owner_kwargs,
+        replace_existing=True,
+        **options,
+    )
 
 
 async def _execute_scheduled_tool(
@@ -1113,12 +1333,32 @@ def reload_scheduler(
     agent_core,
     *,
     automation_project_invoker: Any | None = None,
+    strict: bool = False,
+) -> dict[str, Any]:
+    """Serialize every whole-job-set refresh in this Agent process."""
+
+    with _scheduler_reload_lock:
+        return _reload_scheduler_locked(
+            agent_core,
+            automation_project_invoker=automation_project_invoker,
+            strict=strict,
+        )
+
+
+def _reload_scheduler_locked(
+    agent_core,
+    *,
+    automation_project_invoker: Any | None = None,
+    strict: bool = False,
 ) -> dict[str, Any]:
     """Atomically replace the live registration plan from persisted schedules.
 
     The read-only plan validation happens before touching the active scheduler.
     If APScheduler rejects any new registration, every prior job is rebuilt with
-    its original trigger, options and next run time.
+    its original trigger, options and next run time. The default refresh keeps
+    the existing row-by-row quarantine behavior. ``strict=True`` rejects any
+    invalid row or registration failure and leaves the complete prior job set
+    active.
     """
     global _automation_project_invoker
     if automation_project_invoker is not None:
@@ -1133,6 +1373,9 @@ def reload_scheduler(
         include_startup_tasks=_include_startup_catchup_for_process,
     )
     plan, deferred_task_ids, _finance_startup_expected, invalid_tasks = registration_plan
+    if strict and invalid_tasks:
+        _log_invalid_scheduled_tasks(invalid_tasks)
+        raise ScheduledTaskReloadError(invalid_tasks)
     previous_jobs = [_snapshot_scheduler_job(job) for job in _scheduler.get_jobs()]
     desired_job_ids: set[str] = set()
     registration_failures: list[dict[str, str]] = []
@@ -1156,7 +1399,11 @@ def reload_scheduler(
                 failed_job = _scheduler.get_job(task_id)
                 if failed_job is not None:
                     _scheduler.remove_job(task_id)
-                registration_failures.append(_scheduled_task_issue(task, exc))
+                issue = _scheduled_task_issue(task, exc)
+                if strict:
+                    _log_invalid_scheduled_tasks([issue])
+                    raise ScheduledTaskReloadError([issue]) from exc
+                registration_failures.append(issue)
                 continue
             desired_job_ids.add(task_id)
 

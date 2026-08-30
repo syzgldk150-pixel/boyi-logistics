@@ -15,6 +15,7 @@ from typing import Collection, Mapping, Sequence
 from agent.automation_plugins.errors import AutomationPluginError, PluginConflictError
 from agent.automation_plugins.models import (
     ProjectRuntimeRecord,
+    RuntimeActivationPhase,
     RuntimeEffectKind,
     RuntimeEffectRecord,
     RuntimeEffectState,
@@ -274,6 +275,203 @@ class AutomationRuntimeReconciler:
             )
         activate(snapshot=snapshot, effects=committed.effects)
 
+    @staticmethod
+    def _activation_token(
+        generation: RuntimeGenerationRecord,
+    ) -> str | None:
+        token = generation.activation_transition_token
+        phase = generation.activation_phase
+        if token is None and phase is None:
+            # Compatibility for immutable generations committed before the
+            # activation journal migration. New production commits always
+            # carry both fields.
+            return None
+        if not isinstance(token, str) or not token or phase is None:
+            raise PluginConflictError(
+                "runtime activation journal identity is incomplete",
+                code="RUNTIME_COMMIT_INCONSISTENT",
+            )
+        return token
+
+    def _fail_closed_activation(
+        self,
+        generation: RuntimeGenerationRecord,
+        *,
+        cause: Exception,
+        transition_may_be_pending: bool,
+    ) -> None:
+        """Persist and project the strongest available project-level block."""
+
+        snapshot = generation.snapshot
+        failures: list[str] = []
+        token = self._activation_token(generation)
+        if transition_may_be_pending and token is not None:
+            block = getattr(self._repository, "block_generation_activation", None)
+            if callable(block):
+                try:
+                    block(
+                        snapshot.automation_id,
+                        snapshot.generation,
+                        expected_transition_token=token,
+                    )
+                except Exception as exc:  # noqa: BLE001 - preserve every safety attempt
+                    failures.append(f"durable activation block failed: {redact_text(exc)[:240]}")
+        gate = getattr(
+            self._repository,
+            "set_project_dependency_scheduler_gate",
+            None,
+        )
+        if callable(gate):
+            try:
+                gate(snapshot.automation_id, dependency_ready=False)
+            except Exception as exc:  # noqa: BLE001 - DB may be the original failure
+                failures.append(f"durable Scheduler gate failed: {redact_text(exc)[:240]}")
+        withdraw = getattr(self._driver, "fail_closed_project_projection", None)
+        if callable(withdraw):
+            try:
+                withdraw(
+                    automation_id=snapshot.automation_id,
+                    generation=snapshot.generation,
+                )
+            except Exception as exc:  # noqa: BLE001 - retain all fail-closed evidence
+                failures.append(f"process projection withdrawal failed: {redact_text(exc)[:240]}")
+        blocked = PluginConflictError(
+            "runtime activation could not be safely acknowledged or reversed",
+            code="RUNTIME_ACTIVATION_BLOCKED",
+        )
+        blocked.add_note(f"activation failure: {redact_text(cause)[:300]}")
+        for failure in failures:
+            blocked.add_note(failure)
+        raise blocked from cause
+
+    def _reverse_failed_activation(
+        self,
+        generation: RuntimeGenerationRecord,
+        *,
+        cause: Exception,
+    ) -> None:
+        snapshot = generation.snapshot
+        token = self._activation_token(generation)
+        rollback = getattr(self._repository, "rollback_generation_cas", None)
+        if token is None or not callable(rollback):
+            self._fail_closed_activation(
+                generation,
+                cause=cause,
+                transition_may_be_pending=False,
+            )
+        try:
+            rollback(
+                snapshot.automation_id,
+                snapshot.generation,
+                expected_base_committed_generation=(
+                    generation.base_committed_generation
+                ),
+                expected_transition_token=token,
+            )
+        except Exception as rollback_error:  # noqa: BLE001 - choose fail-closed below
+            cause.add_note(
+                "durable activation reverse failed: "
+                f"{redact_text(rollback_error)[:300]}"
+            )
+            self._fail_closed_activation(
+                generation,
+                cause=cause,
+                transition_may_be_pending=True,
+            )
+
+        restored: RuntimeGenerationRecord | None = None
+        if generation.base_committed_generation is not None:
+            restored = self._repository.get_generation(
+                snapshot.automation_id,
+                generation.base_committed_generation,
+            )
+            if restored is None or restored.state is not RuntimeGenerationState.COMMITTED:
+                self._fail_closed_activation(
+                    generation,
+                    cause=PluginConflictError(
+                        "reversed predecessor generation is unavailable",
+                        code="RUNTIME_COMMIT_INCONSISTENT",
+                    ),
+                    transition_may_be_pending=False,
+                )
+        cleanup = getattr(self._driver, "rollback_committed_activation", None)
+        try:
+            if callable(cleanup):
+                cleanup(
+                    snapshot=snapshot,
+                    effects=generation.effects,
+                    restored_snapshot=(restored.snapshot if restored is not None else None),
+                    restored_effects=(restored.effects if restored is not None else ()),
+                )
+            elif restored is not None:
+                self._activate_committed_effects(restored.snapshot)
+        except Exception as cleanup_error:  # noqa: BLE001 - DB is old; process must close
+            cause.add_note(
+                "reversed process projection restore failed: "
+                f"{redact_text(cleanup_error)[:300]}"
+            )
+            self._fail_closed_activation(
+                generation,
+                cause=cause,
+                transition_may_be_pending=False,
+            )
+
+    def _activate_generation_transition(
+        self,
+        generation: RuntimeGenerationRecord,
+    ) -> None:
+        """Project and acknowledge one exact committed activation journal."""
+
+        if generation.state is not RuntimeGenerationState.COMMITTED:
+            raise PluginConflictError(
+                "runtime activation target is not committed",
+                code="RUNTIME_COMMIT_INCONSISTENT",
+            )
+        phase = generation.activation_phase
+        token = self._activation_token(generation)
+        if phase is RuntimeActivationPhase.BLOCKED:
+            self._fail_closed_activation(
+                generation,
+                cause=PluginConflictError(
+                    "runtime activation journal is blocked",
+                    code="RUNTIME_ACTIVATION_BLOCKED",
+                ),
+                transition_may_be_pending=False,
+            )
+        if phase is RuntimeActivationPhase.ROLLED_BACK:
+            raise PluginConflictError(
+                "rolled-back activation still points at a committed generation",
+                code="RUNTIME_COMMIT_INCONSISTENT",
+            )
+        if phase in {None, RuntimeActivationPhase.ACTIVE}:
+            self._activate_committed_effects(generation.snapshot)
+            return
+        if phase is not RuntimeActivationPhase.PENDING_PROJECTION or token is None:
+            raise PluginConflictError(
+                "runtime activation journal phase is invalid",
+                code="RUNTIME_COMMIT_INCONSISTENT",
+            )
+        complete = getattr(self._repository, "complete_generation_activation", None)
+        if not callable(complete):
+            self._fail_closed_activation(
+                generation,
+                cause=PluginConflictError(
+                    "runtime activation ACK repository is unavailable",
+                    code="RUNTIME_ACTIVATION_BLOCKED",
+                ),
+                transition_may_be_pending=True,
+            )
+        try:
+            self._activate_committed_effects(generation.snapshot)
+            complete(
+                generation.snapshot.automation_id,
+                generation.snapshot.generation,
+                expected_transition_token=token,
+            )
+        except Exception as exc:
+            self._reverse_failed_activation(generation, cause=exc)
+            raise
+
     def reconcile_committed_projection(
         self,
         generation: RuntimeGenerationRecord,
@@ -288,6 +486,21 @@ class AutomationRuntimeReconciler:
                 "runtime projection requires a committed generation",
                 code="RUNTIME_COMMIT_INCONSISTENT",
             )
+        activation_recovered = generation.activation_phase in {
+            RuntimeActivationPhase.PENDING_PROJECTION,
+            RuntimeActivationPhase.BLOCKED,
+        }
+        if activation_recovered:
+            self._activate_generation_transition(generation)
+            generation = self._repository.get_generation(
+                generation.snapshot.automation_id,
+                generation.snapshot.generation,
+            )
+            if generation is None or generation.state is not RuntimeGenerationState.COMMITTED:
+                raise PluginConflictError(
+                    "runtime projection activation recovery changed its route",
+                    code="RUNTIME_COMMIT_INCONSISTENT",
+                )
         snapshot = generation.snapshot
         observed = self._observe_coeffects(snapshot)
         reasons = set(self._unavailable_coeffect_reasons(observed))
@@ -317,7 +530,7 @@ class AutomationRuntimeReconciler:
             deactivate(snapshot=snapshot, effects=generation.effects)
         else:
             activate = getattr(self._driver, "activate_committed", None)
-            if not callable(activate):
+            if not callable(activate) and not activation_recovered:
                 raise PluginConflictError(
                     "committed runtime projection cannot be restored",
                     code="RUNTIME_PROJECTION_ACTIVATION_UNAVAILABLE",
@@ -328,7 +541,8 @@ class AutomationRuntimeReconciler:
             # durable gate (including migration ownership checks).
             if defer_scheduler_enable:
                 gate(snapshot.automation_id, dependency_ready=False)
-            activate(snapshot=snapshot, effects=generation.effects)
+            if not activation_recovered:
+                activate(snapshot=snapshot, effects=generation.effects)
             if not defer_scheduler_enable:
                 gate(snapshot.automation_id, dependency_ready=True)
         return RuntimeReconcileResult(
@@ -470,6 +684,19 @@ class AutomationRuntimeReconciler:
                 code="RUNTIME_EFFECT_NOT_REVERSIBLE",
             )
         try:
+            deactivate_generation = getattr(
+                self._driver,
+                "deactivate_generation",
+                None,
+            )
+            if callable(deactivate_generation):
+                # Process-level contribution consumers (currently Console and
+                # Scheduler) must withdraw the complete generation before the
+                # durable effect journal is compensated one row at a time.
+                deactivate_generation(
+                    snapshot=snapshot,
+                    effects=tuple(effects),
+                )
             self._compensate(effects)
             self._repository.complete_generation_dispose(
                 snapshot.automation_id,
@@ -477,6 +704,12 @@ class AutomationRuntimeReconciler:
             )
             return True
         except Exception as exc:
+            if getattr(exc, "code", None) == "RUNTIME_PROJECTION_REFRESH_FAILED":
+                # A strict live projection refresh is retryable.  Keep the
+                # durable generation in DISPOSING so startup or the next
+                # reconcile can retry the same exact withdrawal; marking it
+                # FAILED here would strand an otherwise reversible old route.
+                raise
             self._repository.fail_generation(
                 snapshot.automation_id,
                 snapshot.generation,
@@ -540,7 +773,16 @@ class AutomationRuntimeReconciler:
             snapshot.generation,
             expected_committed_generation=expected_committed_generation,
         )
-        self._activate_committed_effects(snapshot)
+        committed = self._repository.get_generation(
+            snapshot.automation_id,
+            snapshot.generation,
+        )
+        if committed is None:
+            raise PluginConflictError(
+                "committed runtime generation disappeared after route switch",
+                code="RUNTIME_COMMIT_INCONSISTENT",
+            )
+        self._activate_generation_transition(committed)
         draining: list[int] = []
         disposed: list[int] = []
         if (
@@ -617,7 +859,15 @@ class AutomationRuntimeReconciler:
                 target.snapshot.generation,
                 expected_committed_generation=project.committed_generation,
             )
-            self._activate_committed_effects(target.snapshot)
+            target = self._repository.get_generation(
+                automation_id,
+                target.snapshot.generation,
+            )
+            if target is None:
+                raise PluginConflictError(
+                    "committed runtime target disappeared during recovery",
+                    code="RUNTIME_COMMIT_INCONSISTENT",
+                )
         elif (
             target.state == RuntimeGenerationState.COMMITTED
             and project.committed_generation != target.snapshot.generation
@@ -633,7 +883,23 @@ class AutomationRuntimeReconciler:
             target.state is RuntimeGenerationState.COMMITTED
             and project.committed_generation == target.snapshot.generation
         ):
-            self._activate_committed_effects(target.snapshot)
+            self._activate_generation_transition(target)
+
+        project = self._repository.get_project_runtime(automation_id)
+        if project is None:
+            raise PluginConflictError(
+                "project runtime disappeared after activation recovery",
+                code="RUNTIME_COMMIT_INCONSISTENT",
+            )
+        target = self._repository.get_generation(
+            automation_id,
+            project.target_generation,
+        )
+        if target is None:
+            raise PluginConflictError(
+                "project target disappeared after activation recovery",
+                code="RUNTIME_COMMIT_INCONSISTENT",
+            )
 
         draining: list[int] = []
         disposed: list[int] = []
@@ -686,13 +952,26 @@ class AutomationRuntimeReconciler:
             key=lambda item: item.automation_id,
         ):
             generations = tuple(self._repository.list_project_generations(project.automation_id))
+            has_incomplete_activation = any(
+                generation.snapshot.generation == project.committed_generation
+                and generation.activation_phase
+                in {
+                    RuntimeActivationPhase.PENDING_PROJECTION,
+                    RuntimeActivationPhase.BLOCKED,
+                }
+                for generation in generations
+            )
             has_undisposed_old = any(
                 generation.snapshot.generation != project.committed_generation
                 and generation.state != RuntimeGenerationState.DISPOSED
                 and not self._is_archival_unknown_generation(generation)
                 for generation in generations
             )
-            if project.reconcile_state != RuntimeReconcileState.STABLE or has_undisposed_old:
+            if (
+                project.reconcile_state != RuntimeReconcileState.STABLE
+                or has_undisposed_old
+                or has_incomplete_activation
+            ):
                 results.append(self.resume_project(project.automation_id))
         return tuple(results)
 
@@ -794,6 +1073,15 @@ def runtime_generation_health(
                 or committed_rows[0].state != RuntimeGenerationState.COMMITTED
             ):
                 reasons.add("COMMITTED_GENERATION_INVALID")
+            elif committed_rows[0].activation_phase in {
+                RuntimeActivationPhase.PENDING_PROJECTION,
+                RuntimeActivationPhase.BLOCKED,
+                RuntimeActivationPhase.ROLLED_BACK,
+            }:
+                reasons.add(
+                    "ACTIVATION_"
+                    f"{committed_rows[0].activation_phase.value}"
+                )
             for generation in generations:
                 number = generation.snapshot.generation
                 leases = tuple(

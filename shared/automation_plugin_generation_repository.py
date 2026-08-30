@@ -7,6 +7,21 @@ repository type and method names remain backward compatible.
 from __future__ import annotations
 
 from shared import automation_plugin_repository as _repository
+from shared.automation_plugin_generation_transition_repository import (
+    AutomationPluginGenerationTransitionRepositoryMixin,
+    _apply_scheduled_task_projection,
+    _begin_generation_transition,
+    _exact_json_hash as _exact_json_hash,
+    _finish_pending_transition,
+    _lock_lease_eligible_activation_transition,
+    _lock_scheduled_task_before_image,
+    _migration_owned_scheduler_enabled as _migration_owned_scheduler_enabled,
+    _persist_transition_task_before_image as _persist_transition_task_before_image,
+    _restore_transition_task_before_image as _restore_transition_task_before_image,
+    _scheduler_contribution_binding as _scheduler_contribution_binding,
+    _transition_token as _transition_token,
+    _validate_installed_target_version,
+)
 from shared.automation_plugin_generation_unknown_write_repository import (
     block_generation_unknown_write_row as _block_generation_unknown_write_row,
     lock_archival_unknown_predecessor as _lock_archival_unknown_predecessor,
@@ -19,8 +34,6 @@ from shared.automation_plugin_generation_runtime_repository import (
     get_project_runtime_row as _get_project_runtime_row,
     list_generation_rows as _list_generation_rows,
     list_project_runtime_rows as _list_project_runtime_rows,
-    migration_owned_scheduler_enabled as _migration_owned_scheduler_enabled,
-    scheduler_contribution_binding as _scheduler_contribution_binding,
     set_project_dependency_scheduler_gate as _set_project_dependency_scheduler_gate,
 )
 
@@ -39,7 +52,6 @@ _generation_snapshot = _repository._generation_snapshot
 _json_hash = _repository._json_hash
 _json_param = _repository._json_param
 _mysql_datetime = _repository._mysql_datetime
-_normalized_project_schedule = _repository._normalized_project_schedule
 _optional_positive_int = _repository._optional_positive_int
 _optional_text = _repository._optional_text
 _positive_int = _repository._positive_int
@@ -48,15 +60,15 @@ _runtime_contract = _repository._runtime_contract
 _row_dict = _repository._row_dict
 _rows = _repository._rows
 _safe_error = _repository._safe_error
-_schedule_expressions = _repository._schedule_expressions
 _sha256 = _repository._sha256
-_stable_schedule_task_id = _repository._stable_schedule_task_id
 _validated_generation_row = _repository._validated_generation_row
 datetime = _repository.datetime
 uuid = _repository.uuid
 
 
-class AutomationPluginGenerationRepositoryMixin:
+class AutomationPluginGenerationRepositoryMixin(
+    AutomationPluginGenerationTransitionRepositoryMixin,
+):
     def set_project_dependency_scheduler_gate(
         self,
         automation_id: str,
@@ -85,15 +97,54 @@ class AutomationPluginGenerationRepositoryMixin:
         *,
         for_update: bool = False,
     ) -> dict[str, Any] | None:
-        return _get_generation_row(
+        row = _get_generation_row(
             self, automation_id, generation, for_update=for_update
         )
+        if row is None:
+            return None
+        suffix = " FOR UPDATE" if for_update else ""
+        with self.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT transition_token, phase
+                FROM automation_project_generation_transitions
+                WHERE automation_id=%s AND generation=%s{suffix}
+                """,
+                (automation_id, generation),
+            )
+            transition = _row_dict(cursor, cursor.fetchone())
+        if transition is not None:
+            row["activation_transition_token"] = transition.get(
+                "transition_token"
+            )
+            row["activation_phase"] = transition.get("phase")
+        return row
 
     def list_generation_rows(
         self,
         automation_id: str,
     ) -> list[dict[str, Any]]:
-        return _list_generation_rows(self, automation_id)
+        rows = _list_generation_rows(self, automation_id)
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT generation, transition_token, phase
+                FROM automation_project_generation_transitions
+                WHERE automation_id=%s
+                """,
+                (automation_id,),
+            )
+            transitions = {
+                int(item["generation"]): item for item in _rows(cursor)
+            }
+        for row in rows:
+            transition = transitions.get(int(row.get("generation") or 0))
+            if transition is not None:
+                row["activation_transition_token"] = transition.get(
+                    "transition_token"
+                )
+                row["activation_phase"] = transition.get("phase")
+        return rows
 
     def allocate_target_generation_row(
         self,
@@ -156,6 +207,21 @@ class AutomationPluginGenerationRepositoryMixin:
                 raise ConcurrentUpdateError(
                     "committed runtime generation changed before allocation"
                 )
+            if persisted_committed is not None:
+                cursor.execute(
+                    """
+                    SELECT phase FROM automation_project_generation_transitions
+                    WHERE automation_id=%s AND generation=%s FOR UPDATE
+                    """,
+                    (automation_id, persisted_committed),
+                )
+                committed_transition = _row_dict(cursor, cursor.fetchone())
+                if committed_transition is not None and str(
+                    committed_transition.get("phase") or ""
+                ) != "ACTIVE":
+                    raise ConcurrentUpdateError(
+                        "committed runtime generation projection is not active"
+                    )
             cursor.execute(
                 """
                 SELECT COALESCE(MAX(generation), 0) AS max_generation
@@ -182,44 +248,11 @@ class AutomationPluginGenerationRepositoryMixin:
                 raise ConcurrentUpdateError(
                     "a new plugin version requires an explicit upgrade state"
                 )
-            cursor.execute(
-                """
-                SELECT * FROM automation_plugin_versions
-                WHERE plugin_id=%s AND version=%s FOR UPDATE
-                """,
-                (normalized["plugin_id"], normalized["plugin_version"]),
+            _validate_installed_target_version(
+                self,
+                cursor,
+                snapshot=normalized,
             )
-            version = _decode_row(
-                _row_dict(cursor, cursor.fetchone()),
-                self._VERSION_JSON_FIELDS,
-            )
-            if version is None:
-                raise OrchestrationPersistenceError("installed plugin version disappeared")
-            for field in (
-                "package_sha256",
-                "manifest_sha256",
-                "trust_source",
-                "runtime_model",
-                "plugin_api",
-                "tool_contract_sha256",
-                "invocation_contracts_sha256",
-            ):
-                target_value = (
-                    runtime_model
-                    if field == "runtime_model"
-                    else plugin_api
-                    if field == "plugin_api"
-                    else normalized[field]
-                )
-                persisted_value = version.get(field)
-                if persisted_value in (None, "") and field == "runtime_model":
-                    persisted_value = "ACTION_V1"
-                if persisted_value in (None, "") and field == "plugin_api":
-                    persisted_value = "1.0.0"
-                if str(persisted_value or "") != str(target_value):
-                    raise ConcurrentUpdateError(
-                        f"runtime target {field} differs from installed package"
-                    )
             cursor.execute(
                 """
                 SELECT * FROM automation_project_configs
@@ -283,46 +316,6 @@ class AutomationPluginGenerationRepositoryMixin:
             ):
                 raise ConcurrentUpdateError(
                     "runtime target compiled invocations are stale"
-                )
-            manifest = version.get("manifest_json")
-            if not isinstance(manifest, Mapping):
-                raise OrchestrationPersistenceError(
-                    "installed plugin manifest is invalid"
-                )
-            if _json_hash(execution_metadata["action_contract"]) != str(
-                version.get("tool_contract_sha256") or ""
-            ) or _json_hash(execution_metadata["action_contract"]) != _json_hash(
-                manifest.get("tool_contract")
-            ):
-                raise ConcurrentUpdateError(
-                    "runtime target action contract differs from signed package"
-                )
-            governance_anchor_hash = _json_hash(manifest.get("governance_anchor"))
-            if (
-                _json_hash(execution_metadata["governance_anchor"])
-                != governance_anchor_hash
-                or str(normalized["governance_anchor_sha256"])
-                != governance_anchor_hash
-            ):
-                raise ConcurrentUpdateError(
-                    "runtime target governance anchor differs from signed package"
-                )
-            expected_runtime_descriptor = {
-                "runtime": manifest.get("runtime"),
-                "runtime_permissions": manifest.get("runtime_permissions"),
-                "account_roles": manifest.get("account_roles"),
-                "resource_roles": manifest.get("resource_roles"),
-                "install_metadata": version.get("install_root_metadata_json"),
-            }
-            runtime_descriptor_hash = _json_hash(expected_runtime_descriptor)
-            if (
-                _json_hash(execution_metadata["runtime_descriptor"])
-                != runtime_descriptor_hash
-                or str(normalized["runtime_descriptor_sha256"])
-                != runtime_descriptor_hash
-            ):
-                raise ConcurrentUpdateError(
-                    "runtime target descriptor differs from signed installation"
                 )
             cursor.execute(
                 """
@@ -1036,22 +1029,71 @@ class AutomationPluginGenerationRepositoryMixin:
                     "runtime generation snapshot integrity failed before commit"
                 )
             snapshot = normalized_snapshot
-            cursor.execute(
-                """
-                SELECT plugin_id, plugin_version FROM automation_projects
-                WHERE automation_id=%s
-                """,
-                (safe_automation_id,),
+            _validate_installed_target_version(
+                self,
+                cursor,
+                snapshot=snapshot,
             )
-            current_project = _row_dict(cursor, cursor.fetchone()) or {}
-            if str(current_project.get("plugin_id") or "") != str(
+            if str(project.get("plugin_id") or "") != str(
                 snapshot.get("plugin_id") or ""
-            ) or str(current_project.get("plugin_version") or "") != str(
-                snapshot.get("plugin_version") or ""
             ):
                 raise ConcurrentUpdateError(
                     "installed plugin package changed after generation preparation"
                 )
+            base_snapshot: Mapping[str, Any] | None = None
+            if expected_committed is not None:
+                cursor.execute(
+                    """
+                    SELECT * FROM automation_project_generations
+                    WHERE automation_id=%s AND generation=%s FOR UPDATE
+                    """,
+                    (safe_automation_id, expected_committed),
+                )
+                base_generation = _decode_row(
+                    _row_dict(cursor, cursor.fetchone()),
+                    self._GENERATION_JSON_FIELDS,
+                )
+                if base_generation is not None:
+                    base_generation = _validated_generation_row(base_generation)
+                expected_base_state = (
+                    "BLOCKED" if archival_unknown_predecessor else "COMMITTED"
+                )
+                if (
+                    base_generation is None
+                    or str(base_generation.get("state") or "")
+                    != expected_base_state
+                ):
+                    raise ConcurrentUpdateError(
+                        "previous committed runtime generation is not recoverable"
+                    )
+                raw_base_snapshot = base_generation.get("snapshot_json")
+                if not isinstance(raw_base_snapshot, Mapping):
+                    raise OrchestrationPersistenceError(
+                        "previous committed runtime snapshot is invalid"
+                    )
+                base_snapshot = raw_base_snapshot
+                if str(base_snapshot.get("plugin_id") or "") != str(
+                    snapshot.get("plugin_id") or ""
+                ):
+                    raise ConcurrentUpdateError(
+                        "runtime generation predecessor belongs to another plugin"
+                    )
+            project_plugin_version = str(project.get("plugin_version") or "")
+            target_plugin_version = str(snapshot.get("plugin_version") or "")
+            if project_plugin_version != target_plugin_version:
+                if (
+                    expected_committed is None
+                    or archival_unknown_predecessor
+                    or str(project.get("state") or "") != "UPGRADING"
+                    or str(project.get("reconcile_state") or "")
+                    != "READY_TO_COMMIT"
+                    or base_snapshot is None
+                    or str(base_snapshot.get("plugin_version") or "")
+                    != project_plugin_version
+                ):
+                    raise ConcurrentUpdateError(
+                        "installed plugin package changed after generation preparation"
+                    )
             cursor.execute(
                 """
                 SELECT config_json, config_sha256,
@@ -1119,162 +1161,73 @@ class AutomationPluginGenerationRepositoryMixin:
                     "project invocation templates changed after preparation"
                 )
 
+            pending_reconcile_state = (
+                "DRAINING"
+                if expected_committed is not None
+                and not archival_unknown_predecessor
+                else "STABLE"
+            )
+            pending_project_state = (
+                "ENABLED" if bool(project.get("enabled")) else "DISABLED"
+            )
             cursor.execute(
                 """
-                SELECT * FROM scheduled_tasks
-                WHERE automation_id=%s ORDER BY id FOR UPDATE
+                SELECT project_generation, project_configuration_version,
+                       version
+                FROM automation_project_policies
+                WHERE automation_id=%s FOR UPDATE
                 """,
                 (safe_automation_id,),
             )
-            existing_tasks = [
-                _decode_row(row, ("tool_params",)) or {}
-                for row in _rows(cursor)
-            ]
-            existing_by_cron = {
-                str(row.get("cron_expression") or ""): row
-                for row in existing_tasks
-            }
-            if len(existing_by_cron) != len(existing_tasks):
+            policy = _row_dict(cursor, cursor.fetchone())
+            if policy is None:
                 raise OrchestrationPersistenceError(
-                    "committed project schedule contains duplicate cron rows"
+                    "automation project policy disappeared before generation switch"
                 )
-            desired_schedule = _normalized_project_schedule(
-                execution_metadata.get("schedule")
+            expected_policy_generation = (
+                expected_committed
+                if expected_committed is not None
+                else safe_generation
             )
-            enabled_entrypoints = snapshot.get("enabled_entrypoints")
-            if not isinstance(enabled_entrypoints, list) or any(
-                not isinstance(item, str) for item in enabled_entrypoints
+            if int(policy.get("project_generation") or 0) != int(
+                expected_policy_generation
             ):
-                raise OrchestrationPersistenceError(
-                    "runtime generation entrypoints are invalid"
+                raise ConcurrentUpdateError(
+                    "automation project policy generation changed before commit"
                 )
-            compiled_invocations = execution_metadata.get("compiled_invocations")
-            if not isinstance(compiled_invocations, Mapping):
-                raise OrchestrationPersistenceError(
-                    "runtime compiled invocations are invalid"
-                )
-            expressions = _schedule_expressions(desired_schedule)
-            scheduler_entrypoint, scheduler_enabled = (
-                _scheduler_contribution_binding(
-                    snapshot=snapshot,
-                    execution_metadata=execution_metadata,
-                    enabled_entrypoints=enabled_entrypoints,
-                    schedule_expressions=expressions,
-                )
-            )
-            physical_scheduler_enabled = _migration_owned_scheduler_enabled(
+            before_tasks = _lock_scheduled_task_before_image(
                 cursor,
                 automation_id=safe_automation_id,
-                desired_enabled=bool(
-                    desired_schedule["enabled"] and scheduler_enabled
+            )
+            rollback_plugin_version = (
+                str(base_snapshot.get("plugin_version") or "")
+                if base_snapshot is not None
+                else project_plugin_version
+            )
+            transition_token = _begin_generation_transition(
+                cursor,
+                automation_id=safe_automation_id,
+                generation=safe_generation,
+                base_committed_generation=expected_committed,
+                project=project,
+                pending_plugin_version=target_plugin_version,
+                rollback_plugin_version=rollback_plugin_version,
+                pending_project_state=pending_project_state,
+                pending_reconcile_state=pending_reconcile_state,
+                policy=policy,
+                pending_policy_configuration_version=_positive_int(
+                    execution_metadata.get("project_config_version"),
+                    "project_config_version",
                 ),
+                before_tasks=before_tasks,
             )
-            scheduler_contract = (
-                compiled_invocations.get(scheduler_entrypoint, {})
-                if scheduler_entrypoint is not None
-                else {}
+            _apply_scheduled_task_projection(
+                cursor,
+                automation_id=safe_automation_id,
+                generation=safe_generation,
+                project=project,
+                snapshot=snapshot,
             )
-            scheduler_arguments = (
-                scheduler_contract.get("arguments")
-                if isinstance(scheduler_contract, Mapping)
-                else None
-            )
-            if (
-                expressions
-                and scheduler_entrypoint is not None
-                and not isinstance(scheduler_arguments, Mapping)
-            ):
-                raise OrchestrationPersistenceError(
-                    "scheduled runtime arguments are not compiled"
-                )
-            target_tasks: list[dict[str, Any]] = []
-            for expression in expressions:
-                existing = existing_by_cron.get(expression)
-                task_id = (
-                    str(existing["id"])
-                    if existing is not None
-                    else _stable_schedule_task_id(safe_automation_id, expression)
-                )
-                target_tasks.append(
-                    {
-                        "id": task_id,
-                        "name": (
-                            str(existing.get("name") or "")
-                            if existing is not None
-                            else f"{project.get('display_name') or safe_automation_id} schedule"
-                        )[:128],
-                        "cron_expression": expression,
-                    }
-                )
-            if target_tasks:
-                placeholders = ", ".join(["%s"] * len(target_tasks))
-                cursor.execute(
-                    f"""
-                    SELECT id, automation_id FROM scheduled_tasks
-                    WHERE id IN ({placeholders}) FOR UPDATE
-                    """,
-                    tuple(item["id"] for item in target_tasks),
-                )
-                if any(
-                    str(item.get("automation_id") or "") != safe_automation_id
-                    for item in _rows(cursor)
-                ):
-                    raise OrchestrationPersistenceError(
-                        "server-derived schedule identity collided with another project"
-                    )
-            target_ids = {str(item["id"]) for item in target_tasks}
-            for item in target_tasks:
-                cursor.execute(
-                    """
-                    INSERT INTO scheduled_tasks (
-                        id, automation_id, automation_generation, name,
-                        tool_name, tool_params, cron_expression, enabled,
-                        configuration_version
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        automation_id=VALUES(automation_id),
-                        automation_generation=VALUES(automation_generation),
-                        name=VALUES(name), tool_name=VALUES(tool_name),
-                        tool_params=VALUES(tool_params),
-                        cron_expression=VALUES(cron_expression),
-                        enabled=VALUES(enabled),
-                        configuration_version=VALUES(configuration_version),
-                        updated_at=NOW(6)
-                    """,
-                    (
-                        item["id"],
-                        safe_automation_id,
-                        safe_generation,
-                        item["name"],
-                        f"automation.{safe_automation_id}.run",
-                        _json_param(scheduler_arguments or {}, {}),
-                        item["cron_expression"],
-                        physical_scheduler_enabled,
-                        int(execution_metadata["project_config_version"]),
-                    ),
-                )
-                cursor.execute(
-                    """
-                    INSERT INTO scheduled_task_approval_policies (task_id, mode)
-                    VALUES (%s, 'REQUIRE_EACH_RUN')
-                    ON DUPLICATE KEY UPDATE task_id=task_id
-                    """,
-                    (item["id"],),
-                )
-            stale_ids = {
-                str(item["id"])
-                for item in existing_tasks
-                if str(item["id"]) not in target_ids
-            }
-            if stale_ids:
-                placeholders = ", ".join(["%s"] * len(stale_ids))
-                cursor.execute(
-                    f"""
-                    DELETE FROM scheduled_tasks
-                    WHERE automation_id=%s AND id IN ({placeholders})
-                    """,
-                    tuple([safe_automation_id, *sorted(stale_ids)]),
-                )
             if expected_committed is not None and not archival_unknown_predecessor:
                 cursor.execute(
                     """
@@ -1301,28 +1254,32 @@ class AutomationPluginGenerationRepositoryMixin:
             )
             if int(getattr(cursor, "rowcount", 0) or 0) != 1:
                 raise ConcurrentUpdateError("runtime generation commit changed")
-            reconcile_state = (
-                "DRAINING"
-                if expected_committed is not None and not archival_unknown_predecessor
-                else "STABLE"
-            )
             cursor.execute(
                 """
                 UPDATE automation_projects
                 SET plugin_version=%s, committed_generation=%s,
-                    state=CASE WHEN enabled THEN 'ENABLED' ELSE 'DISABLED' END,
+                    state=%s,
                     reconcile_state=%s,
                     record_version=record_version+1, updated_at=NOW(6)
                 WHERE automation_id=%s AND target_generation=%s
                   AND record_version=%s
+                  AND committed_generation <=> %s
+                  AND plugin_version=%s AND state=%s
+                  AND reconcile_state=%s AND enabled=%s
                 """,
                 (
                     str(snapshot.get("plugin_version") or ""),
                     safe_generation,
-                    reconcile_state,
+                    pending_project_state,
+                    pending_reconcile_state,
                     safe_automation_id,
                     safe_generation,
                     int(project.get("record_version") or 0),
+                    expected_committed,
+                    project_plugin_version,
+                    str(project.get("state") or ""),
+                    str(project.get("reconcile_state") or ""),
+                    bool(project.get("enabled")),
                 ),
             )
             if int(getattr(cursor, "rowcount", 0) or 0) != 1:
@@ -1333,13 +1290,47 @@ class AutomationPluginGenerationRepositoryMixin:
                 SET project_generation=%s,
                     project_configuration_version=%s,
                     updated_at=NOW(6)
-                WHERE automation_id=%s
+                WHERE automation_id=%s AND project_generation=%s
+                  AND project_configuration_version=%s AND version=%s
                 """,
                 (
                     safe_generation,
                     int(execution_metadata["project_config_version"]),
                     safe_automation_id,
+                    int(policy["project_generation"]),
+                    int(policy["project_configuration_version"]),
+                    int(policy["version"]),
                 ),
+            )
+            cursor.execute(
+                """
+                SELECT project_generation, project_configuration_version,
+                       version
+                FROM automation_project_policies
+                WHERE automation_id=%s FOR UPDATE
+                """,
+                (safe_automation_id,),
+            )
+            committed_policy = _row_dict(cursor, cursor.fetchone())
+            if (
+                committed_policy is None
+                or int(committed_policy.get("project_generation") or 0)
+                != safe_generation
+                or int(
+                    committed_policy.get("project_configuration_version") or 0
+                )
+                != int(execution_metadata["project_config_version"])
+                or int(committed_policy.get("version") or 0)
+                != int(policy["version"])
+            ):
+                raise ConcurrentUpdateError(
+                    "automation project policy changed during generation commit"
+                )
+            _finish_pending_transition(
+                cursor,
+                automation_id=safe_automation_id,
+                generation=safe_generation,
+                transition_token=transition_token,
             )
         row = self.get_project_runtime_row(safe_automation_id, for_update=True)
         if row is None:
@@ -1473,6 +1464,11 @@ class AutomationPluginGenerationRepositoryMixin:
                 raise ConcurrentUpdateError(
                     "committed runtime generation is not accepting leases"
                 )
+            _lock_lease_eligible_activation_transition(
+                cursor,
+                automation_id=safe_automation_id,
+                generation=generation,
+            )
             if str(target.get("manifest_sha256") or "") != safe_expected_manifest:
                 raise ConcurrentUpdateError(
                     "approved plugin manifest is no longer committed"

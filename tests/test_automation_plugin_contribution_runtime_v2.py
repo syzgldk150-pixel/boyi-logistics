@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.automation_plugins.errors import PluginConflictError
 from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.host_capability_registry import governance_for_effect
 from agent.automation_plugins.models import (
@@ -201,6 +202,20 @@ def _managed_plans(snapshot: RuntimeGenerationSnapshot):
     )
 
 
+def _active_materials(
+    snapshot: RuntimeGenerationSnapshot,
+) -> tuple[dict[str, object], ...]:
+    return tuple(
+        copy.deepcopy(dict(plan.payload))
+        for plan in _managed_plans(snapshot)
+        if plan.payload.get("contribution_kind") in {"console", "scheduler"}
+    )
+
+
+def _refresh_success() -> dict[str, object]:
+    return {"initialized": True, "invalid_tasks": []}
+
+
 def _effect(
     snapshot: RuntimeGenerationSnapshot,
     plan,
@@ -241,9 +256,13 @@ def test_v2_contributions_are_registered_activated_and_reversibly_removed() -> N
         )
 
     prepared = registry.snapshot()
-    assert len(prepared) == 1
+    assert len(prepared) == 2
     assert all(item.phase == "PREPARED" for item in prepared)
     assert not any(item.dispatch_available for item in prepared)
+    console = next(item for item in prepared if item.contribution_kind == "console")
+    assert console.route_keys == ("console:example-project:run_now",)
+    assert console.backend == "managed_console_router"
+    assert console.backend_status == "READY"
     scheduler = next(
         item for item in prepared if item.contribution_kind == "scheduler"
     )
@@ -261,10 +280,273 @@ def test_v2_contributions_are_registered_activated_and_reversibly_removed() -> N
     assert next(
         item for item in committed if item.contribution_kind == "scheduler"
     ).dispatch_available is True
+    assert next(
+        item for item in committed if item.contribution_kind == "console"
+    ).dispatch_available is True
 
     for effect in reversed(applied):
         driver.dispose(effect)
     assert registry.snapshot() == ()
+
+
+def test_registry_applies_console_and_scheduler_as_one_atomic_generation() -> None:
+    snapshot = _snapshot(enabled_entrypoints=("run_now", "daily_run"))
+    registry = ManagedContributionRegistry()
+    registry.prepare_generation(_active_materials(snapshot))
+
+    assert registry.active_generation(snapshot.automation_id) is None
+    assert registry.active_snapshot() == ()
+    assert {item.phase for item in registry.snapshot()} == {"PREPARED"}
+    refresh_observations: list[tuple[int | None, tuple[dict[str, object], ...]]] = []
+
+    def _refresh() -> dict[str, object]:
+        refresh_observations.append(
+            (
+                registry.active_generation(snapshot.automation_id),
+                registry.active_snapshot(automation_id=snapshot.automation_id),
+            )
+        )
+        return _refresh_success()
+
+    registry.apply_generation(
+        snapshot.automation_id,
+        snapshot.generation,
+        refresh=_refresh,
+    )
+
+    assert refresh_observations == [(None, ())]
+    assert registry.active_generation(snapshot.automation_id) == snapshot.generation
+    assert {
+        item["contribution_kind"] for item in registry.active_snapshot()
+    } == {"console", "scheduler"}
+    assert set(registry.active_snapshot()[0]) == {
+        "automation_id",
+        "generation",
+        "contribution_id",
+        "contribution_kind",
+        "service",
+        "operation",
+        "backend",
+        "backend_status",
+    }
+    assert registry.resolve_active(
+        snapshot.automation_id,
+        snapshot.generation,
+        "console",
+        "run_now",
+    ).route_keys == ("console:example-project:run_now",)
+    assert registry.resolve_active(
+        snapshot.automation_id,
+        snapshot.generation,
+        "scheduler",
+        "daily_run",
+    ).route_keys == ("scheduler:example-project:daily_run",)
+
+
+def test_registry_upgrade_switch_and_old_generation_withdraw_are_atomic() -> None:
+    generation_one = _snapshot(
+        generation=1,
+        enabled_entrypoints=("run_now", "daily_run"),
+    )
+    generation_two = _snapshot(
+        generation=2,
+        enabled_entrypoints=("run_now", "daily_run"),
+    )
+    registry = ManagedContributionRegistry()
+    registry.prepare_generation(_active_materials(generation_one))
+    registry.apply_generation(
+        generation_one.automation_id,
+        generation_one.generation,
+        refresh=_refresh_success,
+    )
+    registry.prepare_generation(_active_materials(generation_two))
+
+    before_switch = registry.active_snapshot()
+    assert {item["generation"] for item in before_switch} == {1}
+    registry.apply_generation(
+        generation_two.automation_id,
+        generation_two.generation,
+        refresh=_refresh_success,
+    )
+    after_switch = registry.snapshot()
+    assert registry.active_generation(generation_two.automation_id) == 2
+    assert {
+        (item.generation, item.phase)
+        for item in after_switch
+    } == {(1, "DRAINING"), (2, "COMMITTED")}
+
+    stable = registry.snapshot()
+    registry.apply_generation(
+        generation_two.automation_id,
+        generation_two.generation,
+        refresh=_refresh_success,
+    )
+    assert registry.snapshot() == stable
+
+    registry.withdraw_generation(
+        generation_one.automation_id,
+        generation_one.generation,
+        refresh=_refresh_success,
+    )
+    assert registry.active_generation(generation_two.automation_id) == 2
+    assert {item.generation for item in registry.snapshot()} == {2}
+    registry.withdraw_generation(
+        generation_one.automation_id,
+        generation_one.generation,
+        refresh=lambda: pytest.fail("idempotent cleanup must not refresh"),
+    )
+
+
+@pytest.mark.parametrize(
+    "refresh",
+    (
+        lambda: {},
+        lambda: {"initialized": True},
+        lambda: {"initialized": False, "invalid_tasks": []},
+        lambda: {"initialized": True, "invalid_tasks": [{"task_id": "bad"}]},
+    ),
+)
+def test_registry_failed_upgrade_refresh_preserves_the_complete_projection(
+    refresh,
+) -> None:
+    generation_one = _snapshot(
+        generation=1,
+        enabled_entrypoints=("run_now", "daily_run"),
+    )
+    generation_two = _snapshot(
+        generation=2,
+        enabled_entrypoints=("run_now", "daily_run"),
+    )
+    registry = ManagedContributionRegistry()
+    registry.prepare_generation(_active_materials(generation_one))
+    registry.apply_generation(
+        generation_one.automation_id,
+        generation_one.generation,
+        refresh=_refresh_success,
+    )
+    registry.prepare_generation(_active_materials(generation_two))
+    before_registrations = registry.snapshot()
+    before_routes = {
+        key: frozenset(value) for key, value in registry._route_owners.items()
+    }
+    before_active = registry.active_generation(generation_one.automation_id)
+
+    with pytest.raises(PluginConflictError) as exc_info:
+        registry.apply_generation(
+            generation_two.automation_id,
+            generation_two.generation,
+            refresh=refresh,
+        )
+
+    assert exc_info.value.code == "RUNTIME_PROJECTION_REFRESH_FAILED"
+    assert registry.snapshot() == before_registrations
+    assert {
+        key: frozenset(value) for key, value in registry._route_owners.items()
+    } == before_routes
+    assert registry.active_generation(generation_one.automation_id) == before_active
+    assert {item["generation"] for item in registry.active_snapshot()} == {1}
+
+
+def test_registry_refresh_exception_and_failed_withdraw_preserve_live_routes() -> None:
+    snapshot = _snapshot(enabled_entrypoints=("run_now", "daily_run"))
+    registry = ManagedContributionRegistry()
+    registry.prepare_generation(_active_materials(snapshot))
+    registry.apply_generation(
+        snapshot.automation_id,
+        snapshot.generation,
+        refresh=_refresh_success,
+    )
+    before = registry.snapshot()
+
+    def _raise_refresh() -> None:
+        raise RuntimeError("offline injected refresh failure")
+
+    with pytest.raises(PluginConflictError) as exc_info:
+        registry.withdraw_generation(
+            snapshot.automation_id,
+            snapshot.generation,
+            refresh=_raise_refresh,
+        )
+    assert exc_info.value.code == "RUNTIME_PROJECTION_REFRESH_FAILED"
+    assert registry.snapshot() == before
+    assert registry.active_generation(snapshot.automation_id) == snapshot.generation
+
+    registry.withdraw_generation(
+        snapshot.automation_id,
+        snapshot.generation,
+        refresh=_refresh_success,
+    )
+    assert registry.snapshot() == ()
+    assert registry.active_generation(snapshot.automation_id) is None
+    registry.withdraw_generation(
+        snapshot.automation_id,
+        snapshot.generation,
+        refresh=lambda: pytest.fail("idempotent withdraw must not refresh"),
+    )
+
+
+def test_registry_resolve_is_exact_and_disabled_scheduler_fails_closed() -> None:
+    snapshot = _snapshot(
+        schedule={"kind": "none", "times": [], "enabled": False},
+        enabled_entrypoints=("run_now", "daily_run"),
+    )
+    registry = ManagedContributionRegistry()
+    registry.prepare_generation(_active_materials(snapshot))
+    registry.apply_generation(
+        snapshot.automation_id,
+        snapshot.generation,
+        refresh=_refresh_success,
+    )
+
+    assert registry.resolve_active(
+        snapshot.automation_id,
+        snapshot.generation,
+        "console",
+        "run_now",
+    ).backend == "managed_console_router"
+    with pytest.raises(PluginConflictError) as stale:
+        registry.resolve_active(
+            snapshot.automation_id,
+            snapshot.generation + 1,
+            "console",
+            "run_now",
+        )
+    assert stale.value.code == "RUNTIME_PROJECTION_STALE"
+    with pytest.raises(PluginConflictError) as disabled:
+        registry.resolve_active(
+            snapshot.automation_id,
+            snapshot.generation,
+            "scheduler",
+            "daily_run",
+        )
+    assert disabled.value.code == "CAPABILITY_UNAVAILABLE"
+    with pytest.raises(PluginConflictError) as missing:
+        registry.resolve_active(
+            snapshot.automation_id,
+            snapshot.generation,
+            "console",
+            "missing",
+        )
+    assert missing.value.code == "CAPABILITY_UNAVAILABLE"
+    assert [
+        item["contribution_kind"] for item in registry.active_snapshot()
+    ] == ["console"]
+
+
+def test_registry_rejects_an_unsupported_backend_without_partial_prepare() -> None:
+    snapshot = _snapshot(
+        schedule={"kind": "none", "times": [], "enabled": False},
+        enabled_entrypoints=("receive_hook",),
+    )
+    unsupported = tuple(dict(plan.payload) for plan in _managed_plans(snapshot))
+    registry = ManagedContributionRegistry()
+
+    with pytest.raises(PluginConflictError) as exc_info:
+        registry.prepare_generation(unsupported)
+
+    assert exc_info.value.code == "CAPABILITY_UNAVAILABLE"
+    assert registry.snapshot() == ()
+    assert registry.active_generation(snapshot.automation_id) is None
 
 
 @pytest.mark.parametrize(
@@ -521,9 +803,9 @@ def test_applied_contribution_effects_restore_committed_state_after_restart() ->
     driver.restore_from_repository(_Repository())
 
     restored = registry.snapshot()
-    assert len(restored) == 1
+    assert len(restored) == 2
     assert all(item.phase == "COMMITTED" for item in restored)
-    assert sum(item.dispatch_available for item in restored) == 1
+    assert sum(item.dispatch_available for item in restored) == 2
 
 
 def test_unavailable_routes_fail_before_a_generation_can_commit() -> None:

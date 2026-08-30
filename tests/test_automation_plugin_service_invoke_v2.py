@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
+import hashlib
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
@@ -9,14 +11,124 @@ import pytest
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.execution import PluginExecutionRouter
 from agent.automation_plugins.host_capability_registry import CapabilityEffect
+from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.models import (
     GenerationBoundResult,
     GenerationVerificationContext,
     PluginRuntimeModel,
+    PluginTrustSource,
+    RuntimeActivationPhase,
+    RuntimeGenerationRecord,
+    RuntimeGenerationSnapshot,
+    RuntimeGenerationState,
     RuntimeLeaseOutcome,
 )
 from agent.automation_plugins.production import ProductionServiceV2ProviderExecutor
-from agent.automation_plugins.service_registry import ServiceRegistry
+from agent.automation_plugins.service_registry import (
+    ResolvedServiceOperation,
+    ServiceProviderAmbiguous,
+    ServiceRegistryError,
+    ServiceRegistry,
+)
+
+
+def _digest(value: object) -> str:
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def _provider_snapshot(
+    automation_id: str,
+    generation: int,
+) -> RuntimeGenerationSnapshot:
+    project_config: dict[str, object] = {}
+    account_bindings: dict[str, object] = {}
+    resource_bindings: dict[str, object] = {}
+    schedule: dict[str, object] = {"kind": "none", "enabled": False}
+    compiled_invocations: dict[str, object] = {}
+    runtime_descriptor = {
+        "install_metadata": {
+            "install_root": "/immutable/base/1.0.0",
+            "python_relative": "venv/bin/python",
+        },
+        "runtime": {
+            "kind": "python_subprocess",
+            "entrypoint": "payload/main.py",
+            "mode": "on_demand",
+        },
+        "runtime_permissions": {"broker_operations": []},
+        "account_roles": [],
+        "resource_roles": [],
+    }
+    action_contract = {"operation_type": "read"}
+    governance_anchor = {"name": "service-provider"}
+    service_contracts = {
+        "provides": [
+            {
+                "service": "plugin.base.runner@1",
+                "operations": [
+                    {"name": "get", "effect": "read"},
+                    {"name": "run", "effect": "external_write"},
+                ],
+            }
+        ],
+        "requires": [],
+    }
+    metadata = {
+        "project_config_version": generation,
+        "project_config": project_config,
+        "account_bindings": account_bindings,
+        "resource_bindings": resource_bindings,
+        "device_binding": None,
+        "schedule": schedule,
+        "compiled_invocations": compiled_invocations,
+        "runtime_descriptor": runtime_descriptor,
+        "action_contract": action_contract,
+        "governance_anchor": governance_anchor,
+        "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
+        "plugin_api": "2.0.0",
+        "service_contracts": service_contracts,
+        "contributions": {},
+        "storage_contract": {},
+    }
+    return RuntimeGenerationSnapshot(
+        automation_id=automation_id,
+        generation=generation,
+        plugin_id="base",
+        plugin_version="1.0.0",
+        package_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+        trust_source=PluginTrustSource.SUPER_ADMIN_UPLOAD,
+        project_config_sha256=_digest(project_config),
+        account_bindings_sha256=_digest(account_bindings),
+        resource_bindings_sha256=_digest(resource_bindings),
+        device_binding_sha256=_digest(None),
+        schedule_sha256=_digest(schedule),
+        core_registry_sha256=_digest(governance_anchor),
+        tool_contract_sha256=_digest(action_contract),
+        invocation_contracts_sha256=_digest({}),
+        compiled_invocations_sha256=_digest(compiled_invocations),
+        runtime_descriptor_sha256=_digest(runtime_descriptor),
+        governance_anchor_sha256=_digest(governance_anchor),
+        policy_contract_sha256=_digest({}),
+        enabled_entrypoints=(),
+        execution_metadata=metadata,
+        runtime_model=PluginRuntimeModel.SERVICE_V2,
+        plugin_api="2.0.0",
+    )
+
+
+class _RuntimeGenerations:
+    def __init__(self, *snapshots: RuntimeGenerationSnapshot) -> None:
+        self._records = {
+            (snapshot.automation_id, snapshot.generation): RuntimeGenerationRecord(
+                snapshot=snapshot,
+                state=RuntimeGenerationState.COMMITTED,
+            )
+            for snapshot in snapshots
+        }
+
+    def get_generation(self, automation_id: str, generation: int):
+        return self._records.get((automation_id, generation))
 
 
 def _registry() -> tuple[ServiceRegistry, Any]:
@@ -41,6 +153,17 @@ def _registry() -> tuple[ServiceRegistry, Any]:
             },
         ),
         requires=(),
+    )
+    registry.bind_project_reference(
+        provider_automation_id=provider_id,
+        automation_id="base-project",
+        generation=1,
+        package_sha256=package_sha,
+        manifest_sha256="b" * 64,
+    )
+    registry.activate_project_reference(
+        automation_id="base-project",
+        generation=1,
     )
     return registry, registry.require_operation("plugin.base.runner@1", "run")
 
@@ -72,17 +195,6 @@ def _capability(automation_id: str, generation: int) -> dict[str, Any]:
     }
 
 
-class _Catalog:
-    def __init__(self, capabilities: Mapping[str, Mapping[str, Any]]) -> None:
-        self.capabilities = capabilities
-
-    def get_project_capability(self, automation_id: str) -> Mapping[str, Any]:
-        capability = self.capabilities.get(automation_id)
-        if capability is None:
-            raise PluginExecutionError("disabled", code="PLUGIN_DISABLED")
-        return capability
-
-
 class _Router:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -96,17 +208,10 @@ class _Router:
 
 def test_production_service_executor_routes_only_one_committed_project_reference() -> None:
     registry, provider = _registry()
-    registry.bind_project_reference(
-        provider_automation_id=provider.automation_id,
-        automation_id="base-project",
-        generation=1,
-        package_sha256="a" * 64,
-        manifest_sha256="b" * 64,
-    )
     # A prepared replacement reference must not compete with the committed
-    # generation exposed by Catalog during an upgrade.
+    # exact route during an upgrade.
     registry.bind_project_reference(
-        provider_automation_id=provider.automation_id,
+        provider_automation_id=provider.provider_registration_id,
         automation_id="base-project",
         generation=2,
         package_sha256="a" * 64,
@@ -114,7 +219,9 @@ def test_production_service_executor_routes_only_one_committed_project_reference
     )
     executor = ProductionServiceV2ProviderExecutor(
         service_registry=registry,
-        catalog=_Catalog({"base-project": _capability("base-project", 1)}),
+        generation_repository=_RuntimeGenerations(
+            _provider_snapshot("base-project", 1),
+        ),
     )
     router = _Router()
     executor.bind_router(router)  # type: ignore[arg-type]
@@ -135,28 +242,30 @@ def test_production_service_executor_routes_only_one_committed_project_reference
     assert router.calls[0]["call_chain"] == ("plugin.base.runner@1",)
 
 
-def test_production_service_executor_rejects_multiple_active_project_routes() -> None:
+@pytest.mark.parametrize(
+    "activation_phase",
+    [RuntimeActivationPhase.PENDING_PROJECTION, RuntimeActivationPhase.BLOCKED],
+)
+def test_production_service_executor_blocks_unacknowledged_generation(
+    activation_phase: RuntimeActivationPhase,
+) -> None:
     registry, provider = _registry()
-    for automation_id in ("base-one", "base-two"):
-        registry.bind_project_reference(
-            provider_automation_id=provider.automation_id,
-            automation_id=automation_id,
-            generation=1,
-            package_sha256="a" * 64,
-            manifest_sha256="b" * 64,
-        )
+    snapshot = _provider_snapshot("base-project", 1)
+    generations = _RuntimeGenerations(snapshot)
+    key = (snapshot.automation_id, snapshot.generation)
+    generations._records[key] = replace(
+        generations._records[key],
+        activation_transition_token="00000000-0000-4000-8000-000000000001",
+        activation_phase=activation_phase,
+    )
     executor = ProductionServiceV2ProviderExecutor(
         service_registry=registry,
-        catalog=_Catalog(
-            {
-                automation_id: _capability(automation_id, 1)
-                for automation_id in ("base-one", "base-two")
-            }
-        ),
+        generation_repository=generations,
     )
-    executor.bind_router(_Router())  # type: ignore[arg-type]
+    router = _Router()
+    executor.bind_router(router)  # type: ignore[arg-type]
 
-    with pytest.raises(PluginExecutionError) as ambiguous:
+    with pytest.raises(PluginExecutionError) as blocked:
         asyncio.run(
             executor(
                 provider=provider,
@@ -167,13 +276,123 @@ def test_production_service_executor_rejects_multiple_active_project_routes() ->
             )
         )
 
-    assert ambiguous.value.code == "SERVICE_PROVIDER_AMBIGUOUS"
+    assert blocked.value.code == "SERVICE_PROVIDER_BLOCKED"
+    assert router.calls == []
+
+
+def test_service_resolution_rejects_multiple_active_project_routes() -> None:
+    registry, provider = _registry()
+    for automation_id in ("base-one", "base-two"):
+        registry.bind_project_reference(
+            provider_automation_id=provider.provider_registration_id,
+            automation_id=automation_id,
+            generation=1,
+            package_sha256="a" * 64,
+            manifest_sha256="b" * 64,
+        )
+        registry.activate_project_reference(
+            automation_id=automation_id,
+            generation=1,
+        )
+
+    with pytest.raises(ServiceProviderAmbiguous):
+        registry.require_operation("plugin.base.runner@1", "run")
+
+
+def test_resolved_service_operation_rejects_directly_forged_provider_or_service_identity() -> None:
+    _registry_instance, resolved = _registry()
+    assert isinstance(resolved, ResolvedServiceOperation)
+
+    with pytest.raises(ServiceRegistryError, match="registration identity"):
+        replace(
+            resolved,
+            provider_registration_id=f"package:{'c' * 64}",
+        )
+    with pytest.raises(ServiceRegistryError, match="resolved service is invalid"):
+        replace(resolved, service="plugin.other.runner@1")
+    with pytest.raises(ServiceRegistryError, match="operation effect"):
+        replace(resolved, effect="read")  # type: ignore[arg-type]
+
+
+def test_resolved_old_route_cannot_obtain_execution_after_new_generation_switch() -> None:
+    registry, old_route = _registry()
+    new_package_sha = "c" * 64
+    new_manifest_sha = "d" * 64
+    new_provider_id = f"package:{new_package_sha}"
+    registry.register_contract(
+        automation_id=new_provider_id,
+        generation=1,
+        plugin_id="base",
+        plugin_version="2.0.0",
+        package_sha256=new_package_sha,
+        manifest_sha256=new_manifest_sha,
+        runtime_mode="on_demand",
+        provides=(
+            {
+                "service": "plugin.base.runner@1",
+                "operations": [
+                    {"name": "get", "effect": "read"},
+                    {"name": "run", "effect": "external_write"},
+                ],
+            },
+        ),
+        requires=(),
+    )
+    registry.bind_project_reference(
+        provider_automation_id=new_provider_id,
+        automation_id="base-project",
+        generation=2,
+        package_sha256=new_package_sha,
+        manifest_sha256=new_manifest_sha,
+    )
+    registry.activate_project_reference(automation_id="base-project", generation=2)
+    new_route = registry.require_operation("plugin.base.runner@1", "run")
+    assert new_route.project_generation == 2
+    assert old_route.project_generation == 1
+
+    old_snapshot = _provider_snapshot("base-project", 1)
+    new_snapshot = replace(
+        _provider_snapshot("base-project", 2),
+        plugin_version="2.0.0",
+        package_sha256=new_package_sha,
+        manifest_sha256=new_manifest_sha,
+    )
+    executor = ProductionServiceV2ProviderExecutor(
+        service_registry=registry,
+        generation_repository=_RuntimeGenerations(old_snapshot, new_snapshot),
+    )
+    router = _Router()
+    executor.bind_router(router)  # type: ignore[arg-type]
+
+    with pytest.raises(PluginExecutionError) as stale:
+        asyncio.run(
+            executor(
+                provider=old_route,
+                caller_automation_id="consumer-project",
+                operation="run",
+                arguments={"batch": "stale"},
+                call_chain=("plugin.base.runner@1",),
+            )
+        )
+    assert stale.value.code == "SERVICE_PROVIDER_BLOCKED"
+    assert router.calls == []
+
+    assert asyncio.run(
+        executor(
+            provider=new_route,
+            caller_automation_id="consumer-project",
+            operation="run",
+            arguments={"batch": "current"},
+            call_chain=("plugin.base.runner@1",),
+        )
+    ) == {"status": "SUCCESS"}
+    assert router.calls[0]["capability"]["_plugin_runtime"]["generation"] == 2
 
 
 def test_production_service_executor_explicitly_blocks_resident_without_manager() -> None:
     registry = ServiceRegistry()
     package_sha = "d" * 64
-    registry.register_contract(
+    registration = registry.register_contract(
         automation_id=f"package:{package_sha}",
         generation=1,
         plugin_id="resident_base",
@@ -189,13 +408,24 @@ def test_production_service_executor_explicitly_blocks_resident_without_manager(
         ),
         requires=(),
     )
+    registry.bind_project_reference(
+        provider_automation_id=registration.automation_id,
+        automation_id="resident-project",
+        generation=1,
+        package_sha256=package_sha,
+        manifest_sha256="e" * 64,
+    )
+    registry.activate_project_reference(
+        automation_id="resident-project",
+        generation=1,
+    )
     provider = registry.require_operation(
         "plugin.resident_base.runner@1",
         "run",
     )
     executor = ProductionServiceV2ProviderExecutor(
         service_registry=registry,
-        catalog=_Catalog({}),
+        generation_repository=_RuntimeGenerations(),
     )
     executor.bind_router(_Router())  # type: ignore[arg-type]
 

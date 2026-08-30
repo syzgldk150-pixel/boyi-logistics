@@ -140,8 +140,14 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   digest-only 普通索引/unique 约束表。插件只能通过仓储事务执行 CAS、完整等值索引查询和唯一约束；
   不获得 SQL/DDL 权限。migration pair 从 `PREPARING` 持久互斥态开始，先禁用目标物理任务再复制配置；
   卸载把文档转为 `RETAINED`，独立永久清除同时删除文档索引并保留清除审计。
+- `034_runtime_generation_activation_journal.sql`：为 generation 数据库 CAS 到进程 Provider/Console/Scheduler
+  投影之间增加 durable activation journal。正向 CAS 同事务保存 transition token、旧项目/项目策略版本、
+  旧 `scheduled_tasks` 与完整逐任务审批策略前镜像；strict 投影成功后按 token ACK `ACTIVE`。刷新或 ACK
+  失败只在目标新代从未产生任何 lease 且项目、策略、任务 hash 均未漂移时执行 reverse CAS；否则按 token
+  标记 `BLOCKED`，由运行时关闭调度门和全部进程路由。回滚后的 target 保持 `PREPARED/ROLLED_BACK`，
+  可用新 token 精确重试；跨版本回滚恢复旧插件版本但保留升级意图状态。
 
-生产迁移序列当前从 `001` 连续到 `033`，固定递增且不得改写已执行文件；发布器只按顺序补执行
+生产迁移序列当前从 `001` 连续到 `034`，固定递增且不得改写已执行文件；发布器只按顺序补执行
 `schema_migrations` 尚未记录的迁移，并对所有已执行版本保持原始校验和。`016`/`017`/`018` 在业务行
 变更前各自保存完整行备份；`027` 与 `030` 额外允许 MySQL DDL 已部分提交但 history 尚未登记时按精确
 结构合同前向续跑。远端发布必须在变更前捕获各项迁移状态和 bootstrap marker 状态，`pending_dirty`
@@ -163,7 +169,7 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
 `SELECT ... FOR UPDATE SKIP LOCKED`；不满足时停止发布。运行连接必须
 `autocommit=False`，仓储显式提交或回滚，禁止把事件/Outbox 放在业务事务之外。
 
-CI 使用隔离的 `test_*` 数据库验证空库顺序执行 `001 -> … -> 033`、重复执行、从既有历史继续升级、
+CI 使用隔离的 `test_*` 数据库验证空库顺序执行 `001 -> … -> 034`、重复执行、从既有历史继续升级、
 部分 DDL 状态下的 `027`/`030` 安全续跑、`017`/`018` 恢复后重应用、`--check`、JSON、外键、
 唯一约束、事务回滚和两个 worker 的 `SKIP LOCKED` 领取。测试代码只接受显式 CI 环境变量，
 不读取项目 `.env`。

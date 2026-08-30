@@ -9,12 +9,23 @@ related:
   - ../agent/agent/automation_plugins/host_capability_registry.py
   - ../agent/agent/automation_plugins/service_registry.py
   - ../agent/agent/automation_plugins/service_v2_projection.py
+  - ../agent/agent/automation_plugins/production.py
+  - ../agent/agent/automation_plugins/production_projection_identity.py
+  - ../agent/agent/automation_plugins/production_snapshot.py
+  - ../agent/agent/scheduler.py
   - ../agent/agent/orchestration/automation_project_service_v2.py
+  - ../agent/agent/orchestration/automation_project_policy_plan.py
   - ../agent/agent/orchestration/result_verifier.py
+  - ../agent/main.py
   - ../agent/service_v2_plugins/
   - ../console/services/extensions.py
   - ../console/services/automation_plugin_management.py
+  - ../console/services/automation_projects.py
+  - ../console/services/automation_project_contributions.py
+  - ../shared/automation_plugin_generation_repository.py
+  - ../shared/automation_plugin_generation_transition_repository.py
   - ../shared/automation_plugin_generation_runtime_repository.py
+  - ../agent/migrations/034_runtime_generation_activation_journal.sql
 status: active
 updated: 2026-08-31
 ---
@@ -294,6 +305,24 @@ Provider effect 来自 `provides[*].operations[*].effect`，Host capability effe
 6. Catalog 展示目标版本、活动版本、运行模型、Host API、服务、贡献点、依赖状态和阻断原因。“包已安装”与“v2 generation 已稳定运行”必须分开显示。迁移项目例外，初始只开放 Console 人工入口。
 
 `default_enabled` 不是“无条件可运行”。当前没有宿主 dispatcher 的 Webhook、飞书或 Event 入口，以及宿主无法表示的 Scheduler，都会在技术检查或 generation prepare 阶段显式阻断；Catalog 必须展示 `CAPABILITY_UNAVAILABLE`，不能留下“已启用但没有路由/任务”的假状态。
+
+### 7.1 Console / Scheduler 无重启热投影
+
+当前受管热投影只覆盖 Service v2 的 Console 与 Scheduler contribution。generation 协调器先完整准备新代 effect，并由 generation CAS 持久化 committed generation 与对应 `scheduled_tasks`；进程内 `ManagedContributionRegistry` 再批量保存该代 `PREPARED` 材料，不能逐条开放新路由。
+
+generation CAS 在同一数据库事务内写入 `PENDING_PROJECTION` transition token，并保存旧项目字段、旧 project policy 版本、旧 `scheduled_tasks` 及其完整 approval policy 前镜像。运行中的 APScheduler 已绑定时，Provider reference、`ManagedContributionRegistry` 和 `reload_scheduler(strict=True)` 共用同一把投影锁。strict 模式要求整份计划无非法行且每个 Job 均注册成功；失败会按切换前快照恢复全部 Job、触发器选项和 `next_run_time`。只有刷新证据闭合为 `initialized=true` 且 `invalid_tasks=[]` 后，Registry 才一次性切 exact active Provider/Console generation，并用相同 token 把 durable phase ACK 为 `ACTIVE`。
+
+strict refresh 或 activation ACK 失败时，协调器执行 token 和 base generation 条件化的 reverse CAS：目标新代从未产生任何 lease，且项目、策略、任务 hash 均未并发变化时，精确恢复旧 committed generation、项目版本、任务名称/参数/运行字段和审批策略，再以进程投影的单调 revision 与完整身份做 compare-and-swap，在同一投影锁内恢复旧 Provider、Console 路由与 Scheduler Job。target 回到 `PREPARED/ROLLED_BACK`，因此同一 immutable target 可以直接重试，不要求重启 Agent 或 Console。
+
+若 reverse CAS 因目标新代存在任何 lease 历史、未知写、并发变化或 token 漂移被拒绝，系统不得继续保留混合代际：transition 标记 `BLOCKED`，持久 Scheduler gate 关闭，全部进程 Provider/Console 路由撤销，并通过只存在于动态 Job `kwargs` 的私有 owner marker 删除该项目任务。进程 tombstone 会让后续普通或 strict reload 都跳过该项目；固定 Job 没有 marker，绝不按 id 或闭包猜测归属。启动恢复只依据 `PENDING_PROJECTION/ACTIVE/ROLLED_BACK/BLOCKED` phase 决定继续投影、继续旧代或保持阻断；通用 lease 入口在 transition 存在时只接受 `ACTIVE`，因此 `PENDING_PROJECTION/BLOCKED` 不会开放新执行。
+
+Agent 启动时先完成审批策略与项目调用器装配，再构造但不启动 APScheduler，并绑定 strict reload 与 emergency withdrawer。随后 reconcile 按 durable phase 完成未确认投影、activation ACK 或阻断撤销；只有恢复闭合后才启动 Scheduler，避免 ACK 先于真实 Job 投影。
+
+停用和卸载使用同一顺序：先严格刷新物理 Scheduler 计划，成功后再整代 withdraw Console/Scheduler 注册；失败保留切换前对象并保持 pending，调用仍由 durable 项目状态 fail closed。只提供 service、没有已启用 Console/Scheduler contribution 的 v2 generation 不创建伪 marker。
+
+Catalog 只输出白名单 `active_contributions` 与 `contribution_projection_state`；状态仅为 `ACTIVE/STALE/INACTIVE`，每条 active 记录只含 `contribution_id/contribution_kind/generation/phase/backend_status`。Console 保留 Manifest 声明入口用于配置，但执行入口只从与当前 committed generation 精确一致、`phase=COMMITTED`、`backend_status=READY` 且状态为 `ACTIVE` 的记录派生；缺失、歧义或跨代记录关闭对应入口，stale/inactive 状态关闭整组入口。这不改变 `ACTION_V1` 合同，也不开放自定义前端。动态飞书/Webhook/Event dispatcher 与统一端到端扩展 Harness 仍是后续任务，当前不得投影为可运行。
+
+以上只记录离线实现与故障注入合同；没有执行生产 Scheduler、生产数据库或真实业务入口演练，不构成生产验收。
 
 就绪状态的含义：
 
