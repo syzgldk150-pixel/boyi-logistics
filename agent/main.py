@@ -168,7 +168,6 @@ from agent.orchestration.automation_project_policy_service import (
     AutomationProjectPolicyService,
 )
 from agent.orchestration.command_gateway import CommandGateway
-from agent.orchestration.business_module_command_gate import BusinessModuleCommandGate
 from agent.orchestration.context_builder import ContextBuilder
 from agent.orchestration.control_plane_service import ControlPlaneService
 from agent.orchestration.feishu_approval_service import (
@@ -1246,25 +1245,9 @@ async def lifespan(app: FastAPI):
     )
     runner_holder: dict[str, WorkflowRunner] = {}
 
-    def _project_governance_tool_name(command) -> str | None:
-        invocation = command.automation_invocation
-        automation_id = str(getattr(invocation, "automation_id", "") or "").strip()
-        if not automation_id:
-            raise ValueError("trusted automation invocation is missing its identity")
-        capability = catalog.get_project_capability(automation_id)
-        runtime = capability.get("_plugin_runtime") if isinstance(capability, dict) else None
-        anchor = runtime.get("governance_anchor") if isinstance(runtime, dict) else None
-        tool_name = str(anchor.get("name") or "").strip() if isinstance(anchor, dict) else ""
-        if not tool_name or tool_name != str(runtime.get("core_tool_name") or "").strip():
-            raise ValueError("committed automation governance anchor is invalid")
-        return tool_name
-
     gateway = CommandGateway(
         repository,
         wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
-        business_module_gate=BusinessModuleCommandGate(
-            project_governance_tool_resolver=_project_governance_tool_name,
-        ),
     )
     project_policy_service = AutomationProjectPolicyService(
         repository,
@@ -1525,7 +1508,6 @@ app.include_router(
             release_sha=_release_sha(),
         ),
         admin_actor_provider=lambda request: _require_console_admin_request(request),
-        super_admin_actor_provider=lambda request: _require_console_super_admin_request(request),
     )
 )
 app.include_router(

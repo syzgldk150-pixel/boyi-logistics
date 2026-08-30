@@ -1,12 +1,50 @@
 {% extends "base.html" %}
 
-{% block title %}后台账号管理 - {{ app_title }}{% endblock %}
-{% block breadcrumb %}系统管理{% endblock %}
-{% block subtitle %}管理员账号与登录安全{% endblock %}
+{% block title %}{{ '系统状态' if system_status_only else '后台账号管理' }} - {{ app_title }}{% endblock %}
+{% block breadcrumb %}{{ '系统状态' if system_status_only else '系统管理' }}{% endblock %}
+{% block subtitle %}{{ 'Agent 与平台组件健康概览' if system_status_only else '管理员账号与登录安全' }}{% endblock %}
 
 {% block content %}
+{% if system_status_only %}
+<section class="panel account-admin-panel" aria-labelledby="system-status-title">
+  <div class="account-admin-toolbar">
+    <div class="account-admin-title">
+      <strong id="system-status-title">系统状态</strong>
+      <span class="status-pill {{ 'status-pill--success' if system_health.available else 'status-pill--muted' }}">
+        {{ 'Agent 已连接' if system_health.available else 'Agent 不可用' }}
+      </span>
+    </div>
+    <a class="ghost-btn" href="/settings/accounts">返回系统管理</a>
+  </div>
+  <p class="muted-copy">仅展示经鉴权 Agent 健康接口允许的系统级字段；未返回的字段明确标记为不可用。</p>
+  <div class="account-table-wrap">
+    <table class="account-table">
+      <tbody>
+        <tr><th>状态</th><td>{{ system_health.status }}</td></tr>
+        <tr><th>发布版本</th><td>{{ system_health.release_sha }}</td></tr>
+        <tr><th>实例</th><td>{{ system_health.instance_id }}</td></tr>
+        <tr><th>运行时间</th><td>{{ system_health.uptime }}</td></tr>
+        <tr><th>内存 (MB)</th><td>{{ system_health.memory_mb }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+<section class="panel account-admin-panel" aria-labelledby="system-components-title">
+  <div class="account-admin-toolbar"><div class="account-admin-title"><strong id="system-components-title">组件概览</strong></div></div>
+  <div class="account-table-wrap">
+    <table class="account-table">
+      <thead><tr><th>组件</th><th>状态</th></tr></thead>
+      <tbody>
+        {% for component in system_health.components %}
+        <tr><td>{{ component.label }}</td><td>{{ component.value }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% else %}
 {% if is_super_admin %}
-  <p><a class="ghost-btn" href="/settings/modules">模块管理</a></p>
+  <p><a class="ghost-btn" href="/settings/system-status">系统状态</a></p>
 <section class="panel account-admin-panel" aria-labelledby="feishu-approval-binding-title">
   <div class="account-admin-toolbar">
     <div class="account-admin-title">
@@ -123,4 +161,5 @@
     </table>
   </div>
 </section>
+{% endif %}
 {% endblock %}

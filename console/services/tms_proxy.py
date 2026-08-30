@@ -200,17 +200,6 @@ class TmsProxyServiceMixin:
             if origin_allowed is False or (origin_allowed is None and not referer_allowed):
                 self._send_text(handler, HTTPStatus.FORBIDDEN, "Original page write origin rejected.")
                 return True
-            # The isolated origin uses /original/{provider}, while lifecycle
-            # ownership is intentionally defined by the canonical Console
-            # /original-pages prefix.  Check that owner after capability/origin
-            # authorization and before any request can reach the Agent proxy.
-            canonical_module_path = f"/original-pages/{provider}"
-            if self._reject_unavailable_business_module_request(
-                handler,
-                canonical_module_path,
-                method=method,
-            ):
-                return True
         if provider == "yunda":
             self._handle_yunda_live_proxy(
                 handler,

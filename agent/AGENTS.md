@@ -200,9 +200,9 @@ docs/
 - 启动脚本：`console/start_backend.sh`
 - 停止脚本：`console/stop_backend.sh`
 
-## 模块生命周期与经营只读
+## 固定模块与旧生命周期只读兼容
 
-- `shared/business_modules.py` / `migrations/027_business_module_lifecycle.sql` 定义固定目录、持久生命周期与 Lite 审计；027 可从部分 DDL 状态前向重跑，`scripts/run_migrations.py` 显式加载 `scripts/business_module_migration_contract.py` 在 seed 前精确校验结构且只补齐缺行，审计只经唯一仓储/API 生命周期写路径追加、不依赖 trigger。`BusinessModuleCommandGate` 在 Command UoW 中锁定行并拒绝不可用的可管理工具。项目命令必须从已提交签名治理锚点解析其核心工具；已受理 Run 不回滚。
+- `shared/business_modules.py` 定义 14 个固定模块身份；固定模块的新 Command 不再查询或锁定旧生命周期行，其可用性只受代码路由、调用方身份权限和各业务自身前置条件约束。`migrations/027_business_module_lifecycle.sql`、历史表和 Lite 审计继续保留且不得改写；`/internal/v1/admin/modules` 只保留签名管理员读取目录、详情和审计，生命周期 POST 已移除。迁移合同仍在 seed 前精确校验结构且只补齐缺行。
 - `query_automation_operations` 的实现与直连 runner 位于 `agent/business_query.py` / `main.py`，只接受闭合日期、参数化读取主库命令和运行状态。飞书“经营摘要/经营情况”在 `direct_tool_router.py` / `core.py`，复用财务日期与管理员绑定；金额、客户收入和异常历史均不得猜测。
 
 

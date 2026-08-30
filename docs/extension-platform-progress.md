@@ -19,14 +19,15 @@ updated: 2026-08-30
 - 起始远端：`origin/main`。
 - 起始提交：`bc43e4e9b77f10da3da08792a382a59171183756`。
 - 长期分支：`agent/extension-platform-autonomous`。
+- Draft PR：[PR #142](https://github.com/syzgldk150-pixel/boyi-logistics/pull/142)。
 - 生产边界：仅离线开发与本地 fixture；不部署、不连接生产数据库、不访问真实 TMS/飞书业务数据、不执行外部写、不安装生产插件、不合并 `main`、不读取凭据。
 
 ## 状态总览
 
 | TASK | 状态 | 开始 | 结束 | Commit |
 |---|---|---|---|---|
-| TASK-BASE-000 | DONE_OFFLINE | 2026-08-30T23:30:59+08:00 | 2026-08-30T23:34:30+08:00 | PENDING_SELF |
-| TASK-EXT-001 | NOT_STARTED | — | — | — |
+| TASK-BASE-000 | DONE_OFFLINE | 2026-08-30T23:30:59+08:00 | 2026-08-30T23:34:30+08:00 | 3c5bb24b603a3d349b7dba2a16b6b6c075baa078 |
+| TASK-EXT-001 | DONE_OFFLINE | 2026-08-30T23:39:27+08:00 | 2026-08-31T00:01:42+08:00 | 待本 TASK checkpoint 后回填 |
 | TASK-EXT-002 | NOT_STARTED | — | — | — |
 | TASK-EXT-003 | NOT_STARTED | — | — | — |
 | TASK-EXT-004 | NOT_STARTED | — | — | — |
@@ -51,30 +52,30 @@ updated: 2026-08-30
 - 结束时间：`2026-08-30T23:34:30+08:00`
 - 设计决策：仓库尚无基准文件，因此使用本次附件落库；本次无人值守授权只覆盖“单 TASK 后停止”和“每 TASK 单独分支/PR”，其余基准约束保持有效。
 - 修改文件：`docs/extension-platform-baseline.md`、`docs/README.md`、`docs/extension-platform-progress.md`。
-- Commit SHA：`PENDING_SELF`（提交后在下一 TASK 的账本更新中回填，避免 Git 提交自引用）。
+- Commit SHA：`3c5bb24b603a3d349b7dba2a16b6b6c075baa078`。
 - 测试命令和结果：Gate 范围 `py_compile` 与 Ruff 通过；`console shared` compileall 与 Ruff 通过；工具清单、导入边界、仓库卫生、文档、内部 API 合同全部通过；root suite `1889 passed, 30 skipped, 289 subtests passed`；Agent suite `1061 passed, 195 subtests passed`；Console suite `574 passed, 205 subtests passed`。测试使用项目临时隔离 QA 环境，运行时显式设置 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
 - 兼容性影响：只新增/更新文档，无运行时影响。
 - 数据库影响：无。
-- 未完成项：生产验证不适用；checkpoint 提交、推送和 Draft PR 在本记录写入后执行，SHA 由下一 TASK 回填。
+- 未完成项：无。
 - 下一项 TASK：`TASK-EXT-001`。
 - 恢复说明：检出 `agent/extension-platform-autonomous`，读取本账本，完成 `TASK-BASE-000` 未完成项后再开始 `TASK-EXT-001`。
 
-## 尚未开始的 TASK 记录
+## TASK 记录
 
-以下任务在开始时必须先从本节移出对应占位，补齐开始时间、设计决策和精确恢复说明，并把总览中的状态改为 `IN_PROGRESS`。
+任务开始时必须补齐开始时间、设计决策和精确恢复说明，并把总览中的状态改为 `IN_PROGRESS`。
 
 ### TASK-EXT-001：取消固定模块生命周期 UI
 
-- 状态：`NOT_STARTED`
-- 开始时间 / 结束时间：— / —
-- 设计决策：待按当前 Console 实现确定。
-- 修改文件 / Commit SHA：— / —
-- 测试命令和结果：尚未运行。
-- 兼容性影响：待评估；不得改变固定模块权限或业务页面。
+- 状态：`DONE_OFFLINE`
+- 开始时间 / 结束时间：`2026-08-30T23:39:27+08:00` / `2026-08-31T00:01:42+08:00`
+- 设计决策：固定 14 模块彻底从旧生命周期状态、版本和 Agent 状态查询中解耦，继续保留现有登录、角色权限、签名 principal 和必要业务前置条件；迁移 027、旧表、仓储和审计只读保留。旧 `/settings/modules` 重定向到仅真实 `super_admin` 可见的 `/settings/system-status`，新页只白名单投影鉴权 `/internal/v1/health` 的真实字段，缺失或不可达明确显示“不可用”。
+- 修改文件 / Commit SHA：`AGENTS.md`、`CLAUDE.md`、`agent/{AGENTS.md,CLAUDE.md,main.py}`、`agent/agent/business_modules_api.py`、`agent/agent/orchestration/{command_gateway.py,business_module_command_gate.py（删除）}`、`agent/docs/{business_module_lifecycle.md,code_navigation_index.md,database_migrations.md,project_overview.md}`、`agent/tests/test_business_module_lifecycle.py`、`console/{AGENTS.md,CLAUDE.md,README.md,app.py,navigation.py,permission_registry.py}`、`console/routes/business_modules.py`、`console/services/{business_modules.py,tms_proxy.py}`、`console/templates/{admin_accounts.html,base.html,business_modules.html（删除）}`、`console/static/{business_modules.css（删除）,business_modules.js（删除）}`、`console/tests/{test_business_modules.py,test_menu_registration.py,test_module_status_registry.py,test_permission_registry.py,test_yunda_entry.py}`、`shared/business_modules.py`、本账本 / 待本 TASK checkpoint 后回填。
+- 测试命令和结果：变更 Python `py_compile` 与 Ruff 通过；Agent full suite `1089 passed, 1 skipped, 195 subtests passed`；Console full suite最终 `567 passed, 203 subtests passed`；Agent/API/CommandGateway 定向 `23 passed`；Console 导航、权限、路由、真实 health shape 与原页边界定向 `40 passed`；文档、仓库卫生、运行时导入边界、内部 API 合同、工具注册表（40 项）和 `git diff --check` 全部通过。测试显式设置 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
+- 兼容性影响：固定模块不再因旧状态漂移消失或拒绝新请求；既有登录、模块查看权限和各业务失败关闭条件不变。Agent 签名管理员 GET 与 Console `super_admin` 旧 data/detail/audit 代理继续只读兼容，生命周期 POST 返回无路由。
 - 数据库影响：无；保留旧表、迁移和审计。
-- 未完成项：全部。
+- 未完成项：无离线实现项；生产环境验证不属于本 TASK，且本次明确禁止部署与生产访问。
 - 下一项 TASK：`TASK-EXT-002`。
-- 恢复说明：先确认前序 TASK 已提交推送，再将本 TASK 标为 `IN_PROGRESS`。
+- 恢复说明：检出长期分支，确认 TASK-EXT-001 checkpoint 已推送并回填 SHA，然后从现有 Automation Plugin Catalog/Management 单一仓储开始 TASK-EXT-002；不得恢复旧固定模块生命周期 UI 或门禁。
 
 ### TASK-EXT-002：建立扩展中心信息架构
 

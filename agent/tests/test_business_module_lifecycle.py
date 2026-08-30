@@ -4,7 +4,7 @@ import importlib.util
 import json
 import uuid
 from pathlib import Path
-from types import MappingProxyType, SimpleNamespace
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -13,9 +13,8 @@ from fastapi.testclient import TestClient
 
 from agent.business_modules_api import create_business_module_router
 from agent.core import AgentCore
-from agent.orchestration.business_module_command_gate import BusinessModuleCommandGate
 from agent.orchestration.command_gateway import CommandGateway
-from agent.orchestration.models import Actor, ActorType, Command, OrchestrationError
+from agent.orchestration.models import Actor, ActorType, Command
 from shared.business_module_repository import (
     BusinessModuleLifecycleError,
     BusinessModuleLifecycleService,
@@ -657,130 +656,23 @@ def test_lifecycle_event_and_change_commit_together_with_exact_idempotency_and_c
     assert stale.value.code == "CAS_CONFLICT"
 
 
-def test_command_gate_allows_enabled_owned_tool_for_tool_and_project_commands() -> None:
+def test_command_gateway_accepts_new_fixed_module_commands_despite_legacy_state_drift() -> None:
     rows = _gate_rows()
-    gate = BusinessModuleCommandGate()
-    for command_type in ("tool.execute", "automation.project.invoke"):
-        command = SimpleNamespace(command_type=command_type, parameters={"tool_name": "query_waybill"})
-        uow = SimpleNamespace(commands=_GateCommands(rows))
-        gate.check_new_command(command, uow)
-        assert uow.commands.cursor_calls == 1
-
-
-def test_command_gate_rejects_unavailable_missing_row_and_version_drift() -> None:
-    cases = (
-        ("DISABLED", "1.0.0", "1.0.0", "MODULE_UNAVAILABLE"),
-        ("NOT_INSTALLED", "1.0.0", "1.0.0", "MODULE_UNAVAILABLE"),
-        ("BLOCKED", "1.0.0", "1.0.0", "MODULE_UNAVAILABLE"),
-        ("ENABLED", "bad-version", "1.0.0", "MODULE_STATUS_BLOCKED"),
-        ("ENABLED", "2.0.0", "1.0.0", "MODULE_UPGRADE_REQUIRED"),
-    )
-    for state, code_version, installed_version, expected in cases:
-        with pytest.raises(OrchestrationError) as caught:
-            rows = _gate_rows()
-            row = next(row for row in rows if row["module_code"] == "waybill_query")
-            row.update(lifecycle_state=state, code_version=code_version, installed_version=installed_version)
-            BusinessModuleCommandGate().check_new_command(
-                SimpleNamespace(command_type="tool.execute", parameters={"tool_name": "query_waybill"}),
-                SimpleNamespace(commands=_GateCommands(rows)),
-            )
-        assert caught.value.code == expected
-
-    rows = [row for row in _gate_rows() if row["module_code"] != "waybill_query"]
-    with pytest.raises(OrchestrationError) as caught:
-        BusinessModuleCommandGate().check_new_command(
-            SimpleNamespace(command_type="tool.execute", parameters={"tool_name": "query_waybill"}),
-            SimpleNamespace(commands=_GateCommands(rows)),
-        )
-    assert caught.value.code == "MODULE_STATUS_BLOCKED"
-
-
-def test_command_gate_locks_only_the_owned_module_row() -> None:
-    commands = _GateCommands(
-        _gate_rows()
-        + [
-            {
-                "module_code": "unrelated-runtime-row",
-                "code_version": "bad-version",
-                "installed_version": None,
-                "lifecycle_state": "BLOCKED",
-            }
-        ]
-    )
-
-    BusinessModuleCommandGate().check_new_command(
-        SimpleNamespace(command_type="tool.execute", parameters={"tool_name": "query_waybill"}),
-        SimpleNamespace(commands=commands),
-    )
-    assert commands.cursor_instance is not None
-    assert "WHERE module_code=%s FOR UPDATE" in commands.cursor_instance.statements[0]
-
-
-def test_command_gate_leaves_unowned_and_core_owned_tools_unaffected() -> None:
-    gate = BusinessModuleCommandGate()
-    for tool_name in ("sync_scan_codes", "unknown_tool"):
-        commands = _GateCommands(_gate_rows())
-        gate.check_new_command(
-            SimpleNamespace(command_type="tool.execute", parameters={"tool_name": tool_name}),
-            SimpleNamespace(commands=commands),
-        )
-        assert commands.cursor_calls == 0
-
-
-def test_command_gate_resolves_trusted_project_governance_anchor_without_copying_project_ids() -> None:
-    rows = _gate_rows()
-    next(row for row in rows if row["module_code"] == "finance")["lifecycle_state"] = "DISABLED"
-    resolved: list[object] = []
-    gate = BusinessModuleCommandGate(
-        project_governance_tool_resolver=lambda command: resolved.append(command.automation_invocation) or "query_business_finance"
-    )
-    project_command = SimpleNamespace(
-        command_type="automation.project.invoke",
-        parameters={"tool_name": "automation.finance_daily.run"},
-        automation_invocation=SimpleNamespace(automation_id="finance_daily"),
-    )
-    with pytest.raises(OrchestrationError) as caught:
-        gate.check_new_command(project_command, SimpleNamespace(commands=_GateCommands(rows)))
-    assert caught.value.code == "MODULE_UNAVAILABLE"
-    assert resolved
-
-    core_gate = BusinessModuleCommandGate(
-        project_governance_tool_resolver=lambda _command: "sync_scan_codes"
-    )
-    commands = _GateCommands(rows)
-    core_gate.check_new_command(project_command, SimpleNamespace(commands=commands))
-    assert commands.cursor_calls == 0
-
-    with pytest.raises(OrchestrationError) as missing:
-        BusinessModuleCommandGate().check_new_command(project_command, SimpleNamespace(commands=_GateCommands(rows)))
-    assert missing.value.code == "MODULE_STATUS_BLOCKED"
-
-
-def test_command_gateway_replays_existing_command_after_module_is_disabled() -> None:
-    rows = _gate_rows()
-    repository = _GatewayRepository(rows)
-    gateway = CommandGateway(repository, business_module_gate=BusinessModuleCommandGate())
-    first = gateway.submit(_gate_command())
-    assert first.reused is False
-    assert repository.uows[-1].created_count == 1
-    assert repository.uows[-1].commands.cursor_calls == 1
-
     next(row for row in rows if row["module_code"] == "waybill_query")["lifecycle_state"] = "DISABLED"
-    replay = gateway.submit(_gate_command(key="module-gate-key"))
+    next(row for row in rows if row["module_code"] == "finance")["installed_version"] = "9.9.9"
+    repository = _GatewayRepository(rows)
+    gateway = CommandGateway(repository)
 
-    assert replay.reused is True
-    assert replay.command_id == first.command_id
-    assert repository.uows[-1].created_count == 0
-    assert repository.uows[-1].commands.cursor_calls == 0
+    first = gateway.submit(_gate_command(key="fixed-module-state-drift"))
+    second = gateway.submit(_gate_command(tool_name="query_business_finance", key="fixed-module-version-drift"))
 
-    with pytest.raises(OrchestrationError) as caught:
-        gateway.submit(_gate_command(key="module-gate-new"))
-    assert caught.value.code == "MODULE_UNAVAILABLE"
+    assert first.reused is False and second.reused is False
+    assert all(uow.commands.cursor_calls == 0 for uow in repository.uows)
 
 
 def test_feishu_operating_summary_subqueries_create_distinct_gateway_commands() -> None:
     repository = _GatewayRepository(_gate_rows())
-    gateway = CommandGateway(repository, business_module_gate=BusinessModuleCommandGate())
+    gateway = CommandGateway(repository)
     actor = Actor(ActorType.FEISHU_USER, "bound-admin", roles=("admin",))
     finance_key = AgentCore._entry_idempotency_key(actor, "feishu", "business-summary-finance", "event-1")
     operations_key = AgentCore._entry_idempotency_key(actor, "feishu", "business-summary-operations", "event-1")
@@ -815,23 +707,22 @@ class _ApiService:
         return {"release_sha": "development", "module": kwargs}
 
 
-def test_api_uses_admin_reads_super_admin_writes_and_closed_dto() -> None:
+def test_api_keeps_legacy_lifecycle_reads_and_removes_lifecycle_write_route() -> None:
     service = _ApiService()
     admin_actor = Actor(ActorType.CONSOLE_ADMIN, "admin-1", roles=("admin",))
-    super_admin_actor = Actor(ActorType.CONSOLE_ADMIN, "super-admin-1", roles=("super_admin",))
     calls: list[str] = []
     app = FastAPI()
     app.include_router(
         create_business_module_router(
             service_provider=lambda: service,  # type: ignore[arg-type]
             admin_actor_provider=lambda _request: calls.append("admin") or admin_actor,
-            super_admin_actor_provider=lambda _request: calls.append("super") or super_admin_actor,
         )
     )
     client = TestClient(app)
 
     assert client.get("/internal/v1/admin/modules").json()["ok"] is True
     assert client.get("/internal/v1/admin/modules/catalog").json()["ok"] is True
+    assert client.get("/internal/v1/admin/modules/receipts/audit").json()["ok"] is True
     response = client.post(
         "/internal/v1/admin/modules/receipts/lifecycle",
         json={
@@ -841,19 +732,6 @@ def test_api_uses_admin_reads_super_admin_writes_and_closed_dto() -> None:
             "expected_record_version": 1,
         },
     )
-    assert response.status_code == 200
-    assert calls == ["admin", "admin", "super"]
-    assert service.calls[-1]["actor_id"] == "super-admin-1"
-
-    rejected = client.post(
-        "/internal/v1/admin/modules/receipts/lifecycle",
-        json={
-            "action": "disable",
-            "reason": "planned maintenance",
-            "request_id": str(uuid.uuid4()),
-            "expected_record_version": 1,
-            "actor_id": "forged",
-        },
-    )
-    assert rejected.status_code == 422
-    assert len(service.calls) == 1
+    assert response.status_code == 404
+    assert calls == ["admin", "admin", "admin"]
+    assert service.calls == []

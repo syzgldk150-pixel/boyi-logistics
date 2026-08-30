@@ -96,17 +96,17 @@ CONSOLE_MENU_REGISTRATIONS = register_console_menus(
     )
 )
 
-# This is a Console control-plane entry, not a fifteenth lifecycle module.
+# This is a Console control-plane entry, not a fifteenth fixed business module.
 CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS = register_console_menus(
     (
-        ConsoleMenuRegistration("module_manager", "/settings/modules", "模块管理", "模块", "package", "system"),
+        ConsoleMenuRegistration("system_status", "/settings/system-status", "系统状态", "状态", "activity", "system"),
     )
 )
 CONSOLE_NAVIGATION_REGISTRATIONS = register_console_menus(
     (*CONSOLE_MENU_REGISTRATIONS, *CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS)
 )
 
-# The existing static projection remains the fourteen lifecycle identities.
+# The existing static projection remains the fourteen fixed module identities.
 # Request-scoped navigation adds control-plane entries after authorization.
 CONSOLE_NAVIGATION: tuple[dict[str, str], ...] = tuple(
     registration.to_navigation_item() for registration in CONSOLE_MENU_REGISTRATIONS

@@ -77,11 +77,7 @@ class LocalDocFlowApp(
         self.template_env.globals["mobile_navigation_for_user"] = (
             self._business_module_mobile_navigation_for_user
         )
-        self.template_env.globals["business_module_status_unavailable"] = (
-            self._business_module_status_unavailable_for_request
-        )
         self.project_modules = self._build_project_modules()
-        self._business_module_status_cache = None
         self.finance_service = FinanceService(
             self.repository,
             agent_request=self._agent_request,
@@ -153,17 +149,13 @@ class LocalDocFlowApp(
         return RequestHandler
 
     def handle_proxy_write(self, handler: BaseHTTPRequestHandler, method: str) -> None:
-        self._reset_business_module_request_state()
         _CURRENT_ADMIN_USER.set(None)
         parsed = urlparse(handler.path)
-        path = parsed.path.rstrip("/") or "/"
         if self._handle_isolated_original_page_request(handler, parsed, method=method):
             return
         if self._active_original_page_proxy_disabled(handler, parsed.path):
             return
         if not self._ensure_authorized(handler):
-            return
-        if self._reject_unavailable_business_module_request(handler, path, method=method):
             return
         self._send_json(
             handler,
@@ -172,7 +164,6 @@ class LocalDocFlowApp(
         )
 
     def handle_get(self, handler: BaseHTTPRequestHandler) -> None:
-        self._reset_business_module_request_state()
         _CURRENT_ADMIN_USER.set(None)
         parsed = urlparse(handler.path)
         path = parsed.path.rstrip("/") or "/"
@@ -191,8 +182,6 @@ class LocalDocFlowApp(
         if self._active_original_page_proxy_disabled(handler, parsed.path):
             return
         if not self._ensure_authorized(handler):
-            return
-        if self._reject_unavailable_business_module_request(handler, path, method="GET"):
             return
         if path.startswith("/original-pages/") and path.endswith("/launch"):
             provider = path[len("/original-pages/") : -len("/launch")].strip("/")
@@ -302,6 +291,9 @@ class LocalDocFlowApp(
         if path == "/settings/accounts":
             self._render_admin_accounts(handler, query)
             return
+        if path == "/settings/system-status":
+            self._render_system_status(handler, query)
+            return
         if path == "/templates/new":
             self._render_template_editor(handler, None, query)
             return
@@ -343,7 +335,6 @@ class LocalDocFlowApp(
         self._send_text(handler, HTTPStatus.NOT_FOUND, "Not found")
 
     def handle_post(self, handler: BaseHTTPRequestHandler) -> None:
-        self._reset_business_module_request_state()
         _CURRENT_ADMIN_USER.set(None)
         parsed = urlparse(handler.path)
         path = parsed.path.rstrip("/") or "/"
@@ -356,8 +347,6 @@ class LocalDocFlowApp(
         if self._active_original_page_proxy_disabled(handler, parsed.path):
             return
         if not self._ensure_authorized(handler):
-            return
-        if self._reject_unavailable_business_module_request(handler, path, method="POST"):
             return
         query = parse_qs(parsed.query)
         if self.routes.handle_post(self, handler, path, parsed.path, query):

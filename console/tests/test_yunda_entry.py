@@ -660,7 +660,7 @@ class YundaEntryBackendTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual(HTTPStatus.FORBIDDEN, handler.status)
 
-    def test_isolated_original_page_writes_fail_closed_with_waybill_entry_module(self):
+    def test_isolated_original_page_writes_do_not_consult_legacy_module_lifecycle(self):
         providers = {
             "yunda": (
                 "/original/yunda/ky_inms/public/index.php/business/waybill/entry/indexNew.html",
@@ -671,54 +671,39 @@ class YundaEntryBackendTests(unittest.TestCase):
                 "_handle_ronghui_live_proxy",
             ),
         }
-        module_states = (
-            (None, HTTPStatus.SERVICE_UNAVAILABLE, "MODULE_STATUS_UNAVAILABLE"),
-            (
-                {"waybill_entry": {"lifecycle_state": "DISABLED"}},
-                HTTPStatus.NOT_FOUND,
-                "MODULE_UNAVAILABLE",
-            ),
-        )
-
         for provider, (path, proxy_method) in providers.items():
-            for rows, expected_status, expected_error in module_states:
-                with self.subTest(provider=provider, rows=rows):
-                    app = self._app(repository=_OriginalPageRepository())
-                    capability = f"{provider}-capability"
-                    app._original_page_capabilities = {
-                        capability: {
-                            "provider": provider,
-                            "session_id": "admin-session-1",
-                            "expires_at": datetime.now().timestamp() + 60,
-                        }
+            with self.subTest(provider=provider):
+                app = self._app(repository=_OriginalPageRepository())
+                capability = f"{provider}-capability"
+                app._original_page_capabilities = {
+                    capability: {
+                        "provider": provider,
+                        "session_id": "admin-session-1",
+                        "expires_at": datetime.now().timestamp() + 60,
                     }
-                    app._original_page_tickets = {}
-                    app._original_page_state_lock = threading.Lock()
-                    app._business_module_rows = lambda handler, value=rows: value
+                }
+                app._original_page_tickets = {}
+                app._original_page_state_lock = threading.Lock()
+                proxy_calls = []
+                setattr(app, proxy_method, lambda *args, **kwargs: proxy_calls.append((args, kwargs)))
+                handler = _LiveHandler(
+                    headers={
+                        "Host": "www.boyi.homes",
+                        "Cookie": f"shipnow_original_{provider}={capability}",
+                        "Origin": "https://www.boyi.homes",
+                    }
+                )
 
-                    def must_not_proxy(*args, **kwargs):
-                        raise AssertionError("module gate must run before the Agent proxy")
+                handled = app._handle_isolated_original_page_request(
+                    handler,
+                    urlparse(f"https://www.boyi.homes{path}"),
+                    method="POST",
+                )
 
-                    setattr(app, proxy_method, must_not_proxy)
-                    handler = _LiveHandler(
-                        headers={
-                            "Host": "www.boyi.homes",
-                            "Cookie": f"shipnow_original_{provider}={capability}",
-                            "Origin": "https://www.boyi.homes",
-                        }
-                    )
+                self.assertTrue(handled)
+                self.assertEqual(1, len(proxy_calls))
 
-                    handled = app._handle_isolated_original_page_request(
-                        handler,
-                        urlparse(f"https://www.boyi.homes{path}"),
-                        method="POST",
-                    )
-
-                    self.assertTrue(handled)
-                    self.assertEqual(expected_status, app.sent_status)
-                    self.assertEqual(expected_error, app.sent_payload["error_code"])
-
-    def test_isolated_original_page_get_shell_does_not_query_module_lifecycle(self):
+    def test_isolated_original_page_get_shell_does_not_require_legacy_module_lifecycle(self):
         for provider, proxy_method in (
             ("yunda", "_handle_yunda_live_proxy"),
             ("ronghui", "_handle_ronghui_live_proxy"),
@@ -736,15 +721,11 @@ class YundaEntryBackendTests(unittest.TestCase):
                 app._original_page_tickets = {}
                 app._original_page_state_lock = threading.Lock()
 
-                def must_not_query_module(*args, **kwargs):
-                    raise AssertionError("GET original-page shell must stay available")
-
                 proxy_calls = []
 
                 def capture_proxy(*args, **kwargs):
                     proxy_calls.append((args, kwargs))
 
-                app._business_module_rows = must_not_query_module
                 setattr(app, proxy_method, capture_proxy)
                 handler = _LiveHandler(
                     headers={

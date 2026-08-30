@@ -1,71 +1,37 @@
-"""Console proxy, navigation projection, and page/API gate for business modules."""
+"""Fixed-module navigation and the super-admin system-status projection.
+
+The legacy business-module lifecycle remains available only through its
+read-only Agent compatibility API. It is deliberately not a Console routing,
+navigation, or command-admission dependency.
+"""
 
 from __future__ import annotations
 
-import contextvars
-from http import HTTPStatus
-import posixpath
-import time
-from typing import Any, Mapping
-from urllib.parse import unquote, urlparse
+import json
+from collections.abc import Mapping
+from typing import Any
 
 from console.app_support import *  # noqa: F403
 from console.navigation import CONSOLE_CONTROL_PLANE_NAVIGATION, CONSOLE_NAVIGATION
-from shared.business_modules import BUSINESS_MODULE_BY_CODE
 
 
-_MODULE_MANAGER_ROUTE = "/settings/modules"
-_CURRENT_REQUEST_USER = object()
-_MODULE_STATUS_SUCCESS_CACHE_TTL_SECONDS = 2.0
-_MODULE_STATUS_FAILURE_CACHE_TTL_SECONDS = 5.0
-_MODULE_STATUS_REQUEST_TIMEOUT_SECONDS = 2.0
-_CURRENT_MODULE_STATUS_UNAVAILABLE: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "current_business_module_status_unavailable",
-    default=False,
+_SYSTEM_HEALTH_COMPONENTS = (
+    ("mysql", "MySQL"),
+    ("scheduler", "调度器"),
+    ("workflow_runner", "工作流执行器"),
+    ("automation_plugins", "自动化扩展"),
+    ("automation_workers", "自动化 Worker"),
+    ("tms_session", "TMS 会话"),
 )
+_UNAVAILABLE = "不可用"
+_CURRENT_REQUEST_USER = object()
 
 
 class BusinessModulesServiceMixin:
-    def _business_module_rows(self, handler: BaseHTTPRequestHandler | None = None) -> dict[str, dict[str, Any]] | None:
-        cached = getattr(self, "_business_module_status_cache", None)
-        if isinstance(cached, tuple) and len(cached) >= 2:
-            cached_rows = cached[1]
-            cache_ttl = (
-                _MODULE_STATUS_SUCCESS_CACHE_TTL_SECONDS
-                if isinstance(cached_rows, dict)
-                else _MODULE_STATUS_FAILURE_CACHE_TTL_SECONDS
-            )
-            if time.monotonic() - cached[0] < cache_ttl:
-                return dict(cached_rows) if isinstance(cached_rows, dict) else None
-        user = getattr(handler, "current_admin_user", None) if handler is not None else current_admin_user()
-        result = self._agent_request(
-            "GET",
-            "/internal/v1/admin/modules",
-            timeout=_MODULE_STATUS_REQUEST_TIMEOUT_SECONDS,
-            console_principal=self._mysql_console_principal(user),
-        )
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        items = data.get("items") if isinstance(data.get("items"), list) else None
-        if not result.get("ok") or items is None:
-            self._business_module_status_cache = (time.monotonic(), None, "")
-            return None
-        rows = {str(item.get("module_code")): item for item in items if isinstance(item, dict)}
-        self._business_module_status_cache = (time.monotonic(), dict(rows), str(data.get("release_sha") or ""))
-        return rows
-
-    def _invalidate_business_module_status_cache(self) -> None:
-        self._business_module_status_cache = None
+    """Keep fixed menus independent from legacy lifecycle records."""
 
     @staticmethod
-    def _reset_business_module_request_state() -> None:
-        _CURRENT_MODULE_STATUS_UNAVAILABLE.set(False)
-
-    @staticmethod
-    def _business_module_status_unavailable_for_request() -> bool:
-        return _CURRENT_MODULE_STATUS_UNAVAILABLE.get()
-
-    @staticmethod
-    def _can_see_module_manager_navigation(user: Mapping[str, Any] | None) -> bool:
+    def _can_see_system_status_navigation(user: Mapping[str, Any] | None) -> bool:
         if not isinstance(user, Mapping):
             return False
         try:
@@ -84,18 +50,15 @@ class BusinessModulesServiceMixin:
     ) -> tuple[dict[str, str], ...]:
         if user is _CURRENT_REQUEST_USER:
             user = current_admin_user()
-        module_manager_visible = self._can_see_module_manager_navigation(user)
-        navigation = (*CONSOLE_NAVIGATION, *CONSOLE_CONTROL_PLANE_NAVIGATION)
-        return tuple(
-            item for item in navigation
-            if (
-                item["route"] == _MODULE_MANAGER_ROUTE
-                and module_manager_visible
-            )
-            or item["route"] != _MODULE_MANAGER_ROUTE
-        )
+        if self._can_see_system_status_navigation(user if isinstance(user, Mapping) else None):
+            return (*CONSOLE_NAVIGATION, *CONSOLE_CONTROL_PLANE_NAVIGATION)
+        return CONSOLE_NAVIGATION
 
-    def _business_module_mobile_nav(self, user: Mapping[str, Any] | None, navigation: list[dict[str, str]]) -> tuple[str, ...]:
+    def _business_module_mobile_nav(
+        self,
+        user: Mapping[str, Any] | None,
+        navigation: list[dict[str, str]],
+    ) -> tuple[str, ...]:
         candidates = [item["route"] for item in navigation if item["route"] != "/"]
         if len(candidates) < 3:
             return tuple(candidates)
@@ -116,155 +79,116 @@ class BusinessModulesServiceMixin:
         self,
         user: Mapping[str, Any] | None,
     ) -> tuple[str, ...]:
-        """Keep the template global's established one-argument contract."""
-
-        return self._business_module_mobile_nav(
-            user,
-            list(self._business_module_navigation(user)),
-        )
-
-    @staticmethod
-    def _module_code_for_route(route: str) -> str:
-        for code, item in BUSINESS_MODULE_BY_CODE.items():
-            if route in item.page_contributions:
-                return code
-        return ""
-
-    @staticmethod
-    def _normalized_module_request_path(path: str) -> str | None:
-        """Match the runtime file handler's single-decode path semantics.
-
-        Runtime files are resolved from ``runtime_dir`` after one ``unquote``.
-        Normalize that decoded POSIX-relative path before module-prefix matching so
-        a raw prefix cannot govern a file owned by another module.  A path which
-        escapes the runtime root is invalid rather than an unowned path.
-        """
-
-        normalized = str(path or "/")
-        if not normalized.startswith("/runtime/"):
-            return normalized
-        decoded_relpath = unquote(normalized[len("/runtime/") :])
-        if decoded_relpath.startswith("/") or "\x00" in decoded_relpath:
-            return None
-
-        parts: list[str] = []
-        for part in decoded_relpath.split("/"):
-            if part in {"", "."}:
-                continue
-            if part == "..":
-                if not parts:
-                    return None
-                parts.pop()
-                continue
-            parts.append(part)
-
-        resolved = posixpath.normpath("/runtime/" + "/".join(parts))
-        return "/runtime/" if resolved == "/runtime" else resolved
-
-    @staticmethod
-    def _module_code_for_normalized_request_path(normalized: str) -> str:
-        """Return an owner for a path already normalized for module gating."""
-
-        if normalized == "/":
-            return "overview"
-        matches: list[tuple[int, str]] = []
-        for code, item in BUSINESS_MODULE_BY_CODE.items():
-            for prefix in (*item.page_contributions, *item.api_contributions):
-                if prefix != "/" and (normalized == prefix or normalized.startswith(prefix + "/")):
-                    matches.append((len(prefix), code))
-        return max(matches, default=(0, ""))[1]
-
-    @staticmethod
-    def _module_code_for_request(path: str) -> str:
-        normalized = BusinessModulesServiceMixin._normalized_module_request_path(path)
-        if normalized is None:
-            return ""
-        return BusinessModulesServiceMixin._module_code_for_normalized_request_path(normalized)
-
-    def _reject_unavailable_business_module_request(
-        self,
-        handler: BaseHTTPRequestHandler,
-        path: str,
-        *,
-        method: str | None = None,
-    ) -> bool:
-        if path == _MODULE_MANAGER_ROUTE or path.startswith(_MODULE_MANAGER_ROUTE + "/"):
-            return False
-        normalized = self._normalized_module_request_path(path)
-        if normalized is None:
-            self._send_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "error_code": "INVALID_MODULE_RUNTIME_PATH", "message": "运行时文件路径无效。"})
-            return True
-        module_code = self._module_code_for_normalized_request_path(normalized)
-        if not module_code:
-            return False
-        rows = self._business_module_rows(handler)
-        if rows is None:
-            _CURRENT_MODULE_STATUS_UNAVAILABLE.set(True)
-            request_method = str(method or getattr(handler, "command", "GET") or "GET").upper()
-            if request_method == "GET":
-                return False
-            self._send_json(handler, HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error_code": "MODULE_STATUS_UNAVAILABLE", "message": "Agent 服务不可用，已暂停该模块的写入操作。"})
-            return True
-        state = str((rows.get(module_code) or {}).get("lifecycle_state") or "BLOCKED")
-        if state == "ENABLED":
-            return False
-        self._send_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "error_code": "MODULE_UNAVAILABLE", "message": "该模块当前未安装、已停用或被阻断。"})
-        return True
+        return self._business_module_mobile_nav(user, list(self._business_module_navigation(user)))
 
     @staticmethod
     def _is_module_super_admin(handler: BaseHTTPRequestHandler) -> bool:
         user = getattr(handler, "current_admin_user", None) or current_admin_user() or {}
-        return not bool(user.get("is_legacy_basic_auth")) and str(user.get("role") or "") == "super_admin" and int(user.get("id") or 0) > 0
+        return BusinessModulesServiceMixin._can_see_system_status_navigation(user)
 
-    def _require_module_manager_super_admin(self, handler: BaseHTTPRequestHandler) -> bool:
-        if self._is_module_super_admin(handler):
-            return True
-        self._send_json(handler, HTTPStatus.FORBIDDEN, {"ok": False, "error_code": "SUPER_ADMIN_REQUIRED", "message": "只有超级管理员可以访问模块管理。"})
-        return False
+    @staticmethod
+    def _health_field(value: object) -> str | int | float:
+        if isinstance(value, bool):
+            return "正常" if value else "异常"
+        if isinstance(value, (str, int, float)):
+            return value
+        return _UNAVAILABLE
 
-    def _require_module_same_origin_write(self, handler: BaseHTTPRequestHandler) -> bool:
-        source = str(handler.headers.get("Origin") or handler.headers.get("Referer") or "")
-        parsed = urlparse(source)
-        if str(handler.headers.get("Host") or "") and parsed.scheme in {"http", "https"} and parsed.netloc.lower() == str(handler.headers.get("Host")).lower():
-            return True
-        self._send_json(handler, HTTPStatus.FORBIDDEN, {"ok": False, "error_code": "CSRF_ORIGIN_REJECTED", "message": "模块变更必须从同源 Console 页面发起。"})
-        return False
+    @classmethod
+    def _health_component_value(cls, value: object) -> str | int | float:
+        if isinstance(value, Mapping):
+            for key in ("state", "status", "healthy", "ok"):
+                if key in value:
+                    return cls._health_field(value.get(key))
+            return _UNAVAILABLE
+        return cls._health_field(value)
 
-    def _render_business_modules(self, handler: BaseHTTPRequestHandler, query: dict[str, list[str]]) -> None:
-        if not self._require_module_manager_super_admin(handler):
-            return
-        rows = self._business_module_rows(handler)
-        template = self.template_env.get_template("business_modules.html")
-        cached = getattr(self, "_business_module_status_cache", None)
-        release_sha = cached[2] if isinstance(cached, tuple) and len(cached) > 2 else ""
-        self._send_html(handler, template.render(app_title=self.settings.app_title, items=list((rows or {}).values()), release_sha=release_sha, unavailable=rows is None, is_super_admin=self._is_module_super_admin(handler), message=query.get("message", [""])[0], message_kind=query.get("kind", ["info"])[0]))
+    def _system_status_snapshot(self, handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+        result = self._agent_request(
+            "GET",
+            "/internal/v1/health",
+            timeout=4,
+            console_principal=self._mysql_console_principal(
+                getattr(handler, "current_admin_user", None)
+            ),
+        )
+        payload = result.get("data") if isinstance(result.get("data"), Mapping) else {}
+        available = bool(result.get("ok")) and bool(payload)
+        components = payload.get("components") if isinstance(payload.get("components"), Mapping) else {}
+        return {
+            "available": available,
+            "status": self._health_field(payload.get("status")) if available else _UNAVAILABLE,
+            "release_sha": self._health_field(payload.get("release_sha")) if available else _UNAVAILABLE,
+            "instance_id": self._health_field(payload.get("instance_id")) if available else _UNAVAILABLE,
+            "uptime": self._health_field(payload.get("uptime")) if available else _UNAVAILABLE,
+            "memory_mb": self._health_field(payload.get("memory_mb")) if available else _UNAVAILABLE,
+            "components": tuple(
+                {
+                    "key": key,
+                    "label": label,
+                    "value": self._health_component_value(components.get(key)) if available else _UNAVAILABLE,
+                }
+                for key, label in _SYSTEM_HEALTH_COMPONENTS
+            ),
+        }
 
-    def _handle_business_modules_data(self, handler: BaseHTTPRequestHandler, module_code: str = "", *, audit: bool = False) -> None:
-        if not self._require_module_manager_super_admin(handler):
-            return
-        endpoint = "/internal/v1/admin/modules" + (f"/{module_code}" if module_code else "") + ("/audit" if audit else "")
-        result = self._agent_request("GET", endpoint, timeout=12, console_principal=self._mysql_console_principal(getattr(handler, "current_admin_user", None)))
-        self._send_json(handler, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_GATEWAY, {"ok": bool(result.get("ok")), "data": result.get("data"), "error": result.get("error")})
-
-    def _handle_business_module_lifecycle(self, handler: BaseHTTPRequestHandler) -> None:
+    def _render_system_status(
+        self,
+        handler: BaseHTTPRequestHandler,
+        query: dict[str, list[str]],
+    ) -> None:
         if not self._is_module_super_admin(handler):
-            self._send_json(handler, HTTPStatus.FORBIDDEN, {"ok": False, "error_code": "SUPER_ADMIN_REQUIRED", "message": "只有超级管理员可以变更模块生命周期。"})
+            self._send_json(
+                handler,
+                HTTPStatus.FORBIDDEN,
+                {"ok": False, "error_code": "SUPER_ADMIN_REQUIRED", "message": "只有超级管理员可以查看系统状态。"},
+            )
             return
-        if not self._require_module_same_origin_write(handler):
+        template = self.template_env.get_template("admin_accounts.html")
+        body = template.render(
+            app_title=self.settings.app_title,
+            system_status_only=True,
+            system_health=self._system_status_snapshot(handler),
+            is_super_admin=True,
+            users=(),
+            feishu_binding={},
+            binding_challenge=None,
+            message=query.get("message", [""])[0],
+            message_kind=query.get("kind", ["info"])[0],
+        )
+        self._send_html(handler, body)
+
+    def _handle_legacy_business_modules_data(
+        self,
+        handler: BaseHTTPRequestHandler,
+        module_code: str = "",
+        *,
+        audit: bool = False,
+    ) -> None:
+        """Keep the old super-admin read surface without restoring its UI."""
+
+        if not self._is_module_super_admin(handler):
+            self._send_json(
+                handler,
+                HTTPStatus.FORBIDDEN,
+                {"ok": False, "error_code": "SUPER_ADMIN_REQUIRED", "message": "只有超级管理员可以读取旧模块审计。"},
+            )
             return
-        body = self._parse_json_body(handler)
-        if set(body) - {"module_code", "action", "reason", "request_id", "expected_record_version"}:
-            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "error_code": "INVALID_MODULE_LIFECYCLE_REQUEST", "message": "模块生命周期请求包含不允许的字段。"})
-            return
-        code = str(body.get("module_code") or "").strip()
-        action = str(body.get("action") or "").strip()
-        reason = str(body.get("reason") or "").strip()
-        request_id = self._normalize_browser_request_uuid(body.get("request_id"))
-        version = body.get("expected_record_version")
-        if code not in BUSINESS_MODULE_BY_CODE or action not in {"install", "enable", "disable", "upgrade", "uninstall"} or not reason or not request_id or type(version) is not int or version < 1:
-            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "error_code": "INVALID_MODULE_LIFECYCLE_REQUEST", "message": "模块、动作、理由、请求标识或版本无效。"})
-            return
-        result = self._agent_request("POST", f"/internal/v1/admin/modules/{code}/lifecycle", payload={"action": action, "reason": reason, "request_id": request_id, "expected_record_version": version}, timeout=20, console_principal=self._mysql_console_principal(getattr(handler, "current_admin_user", None)))
-        if result.get("ok"):
-            self._invalidate_business_module_status_cache()
-        self._send_json(handler, HTTPStatus.OK if result.get("ok") else HTTPStatus.CONFLICT, {"ok": bool(result.get("ok")), "data": result.get("data"), "error": result.get("error")})
+        endpoint = "/internal/v1/admin/modules"
+        if module_code:
+            endpoint += f"/{module_code}"
+        if audit:
+            endpoint += "/audit"
+        result = self._agent_request(
+            "GET",
+            endpoint,
+            timeout=12,
+            console_principal=self._mysql_console_principal(
+                getattr(handler, "current_admin_user", None)
+            ),
+        )
+        self._send_json(
+            handler,
+            HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_GATEWAY,
+            {"ok": bool(result.get("ok")), "data": result.get("data"), "error": result.get("error")},
+        )
