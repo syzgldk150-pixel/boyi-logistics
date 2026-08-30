@@ -9,6 +9,8 @@ from types import ModuleType
 
 import pytest
 
+from shared.automation_plugin_repository import AutomationPluginRepository
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_HISTORY_PATH = (
@@ -66,10 +68,35 @@ def _plugin_event() -> dict:
     }
 
 
+def _package_identity(*, package_sha256: str, manifest_sha256: str) -> dict:
+    return AutomationPluginRepository._package_audit_identity(
+        {
+            "package_sha256": package_sha256,
+            "manifest_sha256": manifest_sha256,
+            "runtime_model": "ACTION_V1",
+            "plugin_api": "1.0.0",
+            "trust_source": "ed25519_first_party",
+            "runtime_sha256": "c" * 64,
+            "tool_contract_sha256": "d" * 64,
+            "invocation_contracts_sha256": "e" * 64,
+            "scheduling_sha256": "f" * 64,
+            "manifest_json": {
+                "capabilities": [],
+                "provides": [],
+                "requires": [],
+                "contributes": {},
+                "config_schema": {},
+                "storage": {},
+            },
+        }
+    )
+
+
 def _plugin_evidence(
     event: dict,
     *,
     include_prepared_request: bool,
+    include_immutable_version_identity: bool = False,
     target_generation=2,
 ) -> dict:
     metadata = {
@@ -82,6 +109,17 @@ def _plugin_evidence(
     }
     if include_prepared_request:
         metadata["prepared_configuration_request_id"] = None
+    if include_immutable_version_identity:
+        metadata["immutable_version_identity"] = {
+            "from_package": _package_identity(
+                package_sha256="1" * 64,
+                manifest_sha256="2" * 64,
+            ),
+            "to_package": _package_identity(
+                package_sha256=metadata["package_sha256"],
+                manifest_sha256="3" * 64,
+            ),
+        }
     return {
         "request_id": event["request_id"],
         "policy_event_id": event["event_id"],
@@ -147,6 +185,70 @@ def test_plugin_policy_history_rejects_non_positive_integer_target_generation(
         include_prepared_request=include_prepared_request,
         target_generation=invalid_target_generation,
     )
+
+    with pytest.raises(ValueError, match="plugin policy evidence is invalid"):
+        plugin_history.validate_plugin_version_evidence(event, [evidence])
+
+
+def test_plugin_policy_history_accepts_current_immutable_identity_shape(
+    plugin_history,
+):
+    event = {**_plugin_event(), "to_mode": "PROJECT_FULL_AUTO"}
+    evidence = _plugin_evidence(
+        event,
+        include_prepared_request=True,
+        include_immutable_version_identity=True,
+    )
+
+    prepared_request, downgrade, variant = (
+        plugin_history.validate_plugin_version_evidence(event, [evidence])
+    )
+
+    assert prepared_request is None
+    assert downgrade is False
+    assert variant == "PREPARED_AWARE"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "extra_identity_field",
+        "extra_package_field",
+        "wrong_target_package",
+        "wrong_host_contract",
+        "missing_manifest_component",
+        "invalid_plugin_api",
+        "unhashable_runtime_model",
+    ),
+)
+def test_plugin_policy_history_rejects_tampered_immutable_identity(
+    plugin_history,
+    mutation,
+):
+    event = {**_plugin_event(), "to_mode": "PROJECT_FULL_AUTO"}
+    evidence = _plugin_evidence(
+        event,
+        include_prepared_request=True,
+        include_immutable_version_identity=True,
+    )
+    metadata = evidence["configuration_metadata_json"]
+    identity = metadata["immutable_version_identity"]
+    target = identity["to_package"]
+    if mutation == "extra_identity_field":
+        identity["unexpected"] = True
+    elif mutation == "extra_package_field":
+        target["unexpected"] = True
+    elif mutation == "wrong_target_package":
+        target["package_sha256"] = "9" * 64
+    elif mutation == "wrong_host_contract":
+        target["technical_check"]["host_contract_sha256"] = "9" * 64
+    elif mutation == "missing_manifest_component":
+        target["manifest_component_sha256"].pop("storage")
+    elif mutation == "invalid_plugin_api":
+        target["plugin_api"] = "01.0.0"
+    elif mutation == "unhashable_runtime_model":
+        target["runtime_model"] = {}
+    evidence["configuration_metadata_sha256"] = _canonical_sha256(metadata)
 
     with pytest.raises(ValueError, match="plugin policy evidence is invalid"):
         plugin_history.validate_plugin_version_evidence(event, [evidence])
