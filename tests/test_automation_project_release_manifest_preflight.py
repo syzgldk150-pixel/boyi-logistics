@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from shared.automation_plugin_repository import AutomationPluginRepository
 from shared.automation_project_policy_repository import (
     AUTOMATION_PROJECT_BOOTSTRAP_COMPLETED_BY,
     AutomationProjectBootstrapContractError,
@@ -1571,6 +1572,7 @@ def _plugin_version_evidence(
     *,
     prepared_request_id=None,
     include_prepared_request=True,
+    include_immutable_version_identity=False,
 ):
     metadata = {
         "request_payload_sha256": "a" * 64,
@@ -1582,6 +1584,40 @@ def _plugin_version_evidence(
     }
     if include_prepared_request:
         metadata["prepared_configuration_request_id"] = prepared_request_id
+    if include_immutable_version_identity:
+        def package_identity(*, package_sha256, manifest_sha256):
+            return AutomationPluginRepository._package_audit_identity(
+                {
+                    "package_sha256": package_sha256,
+                    "manifest_sha256": manifest_sha256,
+                    "runtime_model": "ACTION_V1",
+                    "plugin_api": "1.0.0",
+                    "trust_source": "ed25519_first_party",
+                    "runtime_sha256": "c" * 64,
+                    "tool_contract_sha256": "d" * 64,
+                    "invocation_contracts_sha256": "e" * 64,
+                    "scheduling_sha256": "f" * 64,
+                    "manifest_json": {
+                        "capabilities": [],
+                        "provides": [],
+                        "requires": [],
+                        "contributes": {},
+                        "config_schema": {},
+                        "storage": {},
+                    },
+                }
+            )
+
+        metadata["immutable_version_identity"] = {
+            "from_package": package_identity(
+                package_sha256="1" * 64,
+                manifest_sha256="2" * 64,
+            ),
+            "to_package": package_identity(
+                package_sha256=metadata["package_sha256"],
+                manifest_sha256="3" * 64,
+            ),
+        }
     return {
         **_joined_policy_evidence(event),
         "configuration_event_id": 30,
@@ -1766,7 +1802,14 @@ def test_later_manifest_accepts_safe_stale_legacy_and_full_auto_bindings(preflig
     )
 
 
-def test_later_manifest_accepts_migrated_full_auto_plugin_rebind(preflight):
+@pytest.mark.parametrize(
+    "include_immutable_version_identity",
+    (False, True),
+    ids=("historical", "audited-immutable-identity"),
+)
+def test_later_manifest_accepts_migrated_full_auto_plugin_rebind(
+    preflight, include_immutable_version_identity
+):
     automation_id = "send_order"
     contract = _later_policy_contract()
     item = {
@@ -1780,7 +1823,11 @@ def test_later_manifest_accepts_migrated_full_auto_plugin_rebind(preflight):
     )
     migration = _migration_full_auto_event(automation_id)
     plugin_event = _plugin_version_event()
-    plugin_evidence = _plugin_version_evidence(preflight, plugin_event)
+    plugin_evidence = _plugin_version_evidence(
+        preflight,
+        plugin_event,
+        include_immutable_version_identity=include_immutable_version_identity,
+    )
     policy = {
         "mode": "PROJECT_FULL_AUTO",
         "version": 3,
@@ -2742,6 +2789,53 @@ def test_later_manifest_rejects_tampered_plugin_evidence(preflight, mutation):
             policy={},
             policy_events=[bootstrap, migration, plugin_event],
             configuration_evidence=evidence_rows,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "extra_identity_field",
+        "extra_package_field",
+        "wrong_target_package",
+        "wrong_host_contract",
+        "missing_manifest_component",
+        "invalid_plugin_api",
+        "unhashable_runtime_model",
+    ),
+)
+def test_plugin_version_evidence_rejects_tampered_immutable_identity(
+    preflight, mutation
+):
+    event = _plugin_version_event()
+    evidence = _plugin_version_evidence(
+        preflight,
+        event,
+        include_immutable_version_identity=True,
+    )
+    metadata = evidence["configuration_metadata_json"]
+    identity = metadata["immutable_version_identity"]
+    target = identity["to_package"]
+    if mutation == "extra_identity_field":
+        identity["unexpected"] = True
+    elif mutation == "extra_package_field":
+        target["unexpected"] = True
+    elif mutation == "wrong_target_package":
+        target["package_sha256"] = "9" * 64
+    elif mutation == "wrong_host_contract":
+        target["technical_check"]["host_contract_sha256"] = "9" * 64
+    elif mutation == "missing_manifest_component":
+        target["manifest_component_sha256"].pop("storage")
+    elif mutation == "invalid_plugin_api":
+        target["plugin_api"] = "01.0.0"
+    elif mutation == "unhashable_runtime_model":
+        target["runtime_model"] = {}
+    evidence["configuration_metadata_sha256"] = preflight._canonical_sha256(metadata)
+
+    with pytest.raises(ValueError, match="plugin policy evidence is invalid"):
+        preflight.plugin_policy_history.validate_plugin_version_evidence(
+            event,
+            [evidence],
         )
 
 
