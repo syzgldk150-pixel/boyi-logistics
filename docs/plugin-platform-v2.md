@@ -6,8 +6,11 @@ related:
   - ../agent/docs/automation_plugin_platform.md
   - ../agent/agent/automation_plugins/manifest_v2.py
   - ../agent/agent/automation_plugins/package_v2.py
+  - ../agent/agent/automation_plugins/host_capability_registry.py
+  - ../agent/agent/automation_plugins/service_registry.py
   - ../agent/agent/automation_plugins/service_v2_projection.py
   - ../agent/agent/orchestration/automation_project_service_v2.py
+  - ../agent/agent/orchestration/result_verifier.py
   - ../agent/service_v2_plugins/
   - ../console/services/extensions.py
   - ../console/services/automation_plugin_management.py
@@ -37,9 +40,10 @@ v1 与 v2 继续并存，但二者不是同一种包：
 
 Console 信息架构同样只有一个状态源：`/extensions` 与详情页展示真实 Catalog 中的包、权限摘要、实例健康并承载安装/升级/启停/卸载；`/automations` 维护每个项目的配置、绑定、入口、定时、权限、运行和 v1→v2 并行迁移验证。扩展中心只是现有 Catalog 和生命周期处理器的安全投影，不新增表、包仓、安装框架或运行状态。固定 14 个业务模块不属于扩展，尚未实现的 Connector 也不得预先伪造为可安装类型。
 
-当前实现已经具备 v2 Manifest/ZIP 校验、内容摘要、Linux Python 3.10 环境、代际注册、单 Provider 服务注册表、Catalog 就绪状态、受管 KV/collection、跨插件 `service.invoke`、数据保留以及迁移 pair/run-key 的持久化原语。以下边界必须如实显示：
+当前实现已经具备 v2 Manifest/ZIP 校验、内容摘要、Linux Python 3.10 环境、独立可查询的 Host Capability Registry、五态 effect 治理、代际注册、单 Provider 服务注册表、Catalog 就绪状态、受管 KV/collection、跨插件 `service.invoke`、数据保留以及迁移 pair/run-key 的持久化原语。以下边界必须如实显示：
 
-- `service.invoke` 已由宿主统一实现，只能调用 Manifest `requires` 中的精确服务和 Provider 已声明的操作；解析到缺失、阻断、歧义、循环或超过八层的调用链都会显式失败。服务操作名由插件自己定义，不能证明读写属性，因此在服务合同增加不可变 effect 字段前，所有 `service.invoke` 一律按受保护写治理。被调用 Provider 仍使用自己的 generation lease、能力授权、隔离进程和写后 Evidence。
+- Provider 的每个操作都必须以闭合 `{name,effect}` 对象声明不可变 effect；effect 只允许 `read/compute/internal_write/external_write/destructive`。同一字段进入 Manifest 摘要、Service Registry、generation、compiled invocation 和逐 contribution Plan，任一缺失或漂移都关闭失败。
+- `service.invoke` 已由宿主统一实现，只能调用 Manifest `requires` 中的精确服务和 Provider 已声明的操作；解析到缺失、阻断、歧义、循环或超过八层的调用链都会显式失败。静态 Broker grant 是动态 effect 的保护上限，不代表每次调用都是写：分发前仍按 Registry 中的 Provider 精确 effect 分类，并受当前调用 contribution 的 effect ceiling 约束；只读/计算调用不产生写标记，写调用必须先留下宿主写尝试。被调用 Provider 仍使用自己的 generation lease、能力授权、隔离进程和写后 Evidence。
 - `browser.session` 只开放宿主已注册且逐项审核的 action；当前双打卡包可使用 `ronghui.clock.precheck/submit/verify`。`http.request`、`file.read`、`file.write`、`event.publish` 以及任意未注册 browser action 仍固定失败为 `CAPABILITY_UNAVAILABLE`，不能旁路直连。
 - Scheduler 可接入现有 `scheduled_tasks`（当前宿主时区为 `Asia/Shanghai`）。默认启用的 Scheduler 只有在 cron 可无损表示为固定 `minute hour * * *` 时才允许安装并自动转成项目 `daily_times`；不兼容默认值在写入任何项目之前失败。Webhook、飞书命令和 Event subscription 尚无动态宿主 dispatcher：声明且保持关闭可用于合同审计，但一旦启用就以 `CAPABILITY_UNAVAILABLE` 阻断 generation 和 Catalog 就绪，绝不会显示为可运行入口。
 - Manifest 虽可声明 `resident`，Catalog 会以 `RESIDENT_RUNTIME_UNAVAILABLE` 阻断，而不是误报为可运行；当前生产插件必须使用 `on_demand`。
@@ -82,7 +86,7 @@ payload/
 | `plugin_id` | 稳定小写 snake_case；版本发布后不重命名 |
 | `version` | 严格 `MAJOR.MINOR.PATCH`；同版本内容不可变 |
 | `runtime` | `kind=python_subprocess`、`python=3.10`、`mode=on_demand|resident`，入口和离线依赖路径必须位于 `payload/` |
-| `provides` | 至少一个服务；名称固定为 `plugin.<plugin_id>.<service>@<major>`，操作名稳定且唯一 |
+| `provides` | 至少一个服务；名称固定为 `plugin.<plugin_id>.<service>@<major>`；每个操作是字段精确为 `name/effect` 的对象，名称稳定且唯一，effect 只能是五态闭集 |
 | `requires` | 只列其他插件提供的完整服务名；不能依赖自己提供的服务 |
 | `capabilities` | 只声明实际使用的能力、精确 action、账号角色或资源角色 |
 | `account_roles` | 声明角色、允许系统和是否必填；账号由项目绑定，不进入配置 JSON |
@@ -124,7 +128,9 @@ payload/
   "provides": [
     {
       "service": "plugin.demo_snapshot_v2.snapshot@1",
-      "operations": ["run"]
+      "operations": [
+        {"name": "run", "effect": "internal_write"}
+      ]
     }
   ],
   "requires": [],
@@ -202,19 +208,41 @@ payload/
 
 `indexes` 和 `unique_constraints` 是运行时合同，不是插件 DDL。`upsert` 会在同一个事务中完成文档 CAS、普通索引摘要刷新和唯一约束检查；冲突固定返回 `CAPABILITY_COLLECTION_UNIQUE_CONFLICT`。`get` 使用精确 `document_key`；`query` 只接受 Manifest 已声明的普通索引、该索引全部字段的精确等值 `values`，以及 `1..100` 的 `limit`。不支持按 unique constraint 查询、范围条件、前缀搜索或任意扫描。
 
+### 3.3 Host Capability Registry 与 effect
+
+Host capability 不是一组散落的字符串常量。`HostCapabilityRegistry` 以精确 `(api_version, capability, action)` 为键，描述 effect、input/output Schema、handler key、账号/资源角色要求、Scheduler 资格、单次调用上限、超时和启用状态。Manifest 安装检查与每次 Broker 调用都重新解析这个权威描述；未注册、停用、重复或动态描述漂移都会关闭失败，Broker 统一返回 `CAPABILITY_UNAVAILABLE`。
+
+`capabilities[*].operations` **仍是 action 字符串数组**，例如 `storage.collection` 的 `"get"`、`"query"`、`"upsert"`。插件只声明自己要调用什么，不能在 capability 声明中附加 effect、risk、lock 或 Harness 标志。`service.invoke` 是动态服务能力：它的静态 grant 只开放受保护的动态 effect 分发，实际 effect 必须在调用前从目标 Provider 的不可变操作合同取得，effect ceiling 则来自调用 contribution 的精确治理。
+
+五态 effect 是唯一治理输入，宿主按下表机械派生，不按 `get/list/query/run` 等名称猜测，也不复用 generation lifecycle 的 `effect_kind`：
+
+| effect | operation type / risk | lock | Evidence 与重试 | Harness | Broker 投影 / 全自动 |
+|---|---|---|---|---|---|
+| `read` | `read / low` | 无 | 不要求；最多 3 次安全尝试 | 允许 | `read` / 允许 |
+| `compute` | `compute / low` | 无 | 不要求；最多 3 次安全尝试 | 允许 | `read` / 允许 |
+| `internal_write` | `internal_projection_write / medium` | 项目 | 要求 `outcome` 与 postcondition；不自动重试 | 允许 | `write` / 允许 |
+| `external_write` | `external_write / high` | 外部目标 | 要求 `service/operation/outcome` 与 postcondition；不自动重试 | 不允许 | `write` / 允许 |
+| `destructive` | `destructive / extreme` | 破坏性目标 | 要求 `service/operation/outcome` 与 postcondition；不自动重试 | 不允许 | `write` / 不允许 |
+
+Provider effect 来自 `provides[*].operations[*].effect`，Host capability effect 来自 Registry；两者都会生成完整 governance，但插件都不能自行降级风险。每个 contribution 指向的 Provider 操作决定自己的 effect，生成时把精确 target 与 governance 同时写入 invocation contract 和 compiled invocation；Planner、锁、ResultVerifier 与恢复路径只使用这一份逐 contribution 合同，不能用插件级最严格汇总替代具体调用。
+
 ## 4. 插件进程与服务规则
 
-一个 v2 包可以提供多个服务和操作，但每个服务名同时只能有一个活动 Provider。相同不可变包被多个项目实例引用时按包 SHA-256 共享 Provider 身份和引用计数；不同字节争用同一服务名会产生 Provider 冲突，不能按加载顺序覆盖。
+一个 v2 包可以提供多个服务和操作，但每个服务名同时只能有一个活动 Provider。Registry 同时持久化每个操作的精确 effect，恢复时会逐项核对，不能用同名操作的新 effect 覆盖旧合同。相同不可变包被多个项目实例引用时按包 SHA-256 共享 Provider 身份和引用计数；不同字节争用同一服务名会产生 Provider 冲突，不能按加载顺序覆盖。
 
-插件之间不得 `import` 对方源码、读取对方目录或直接访问对方进程。跨插件依赖只能写入 `requires`，调用只能经 `service.invoke` 和服务注册表；调用方不能指定未声明服务、任意 Provider、其他项目路径或新的账号绑定。Provider 被停用、卸载或变得不可用时，宿主先持久化关闭 consumer 的物理 Scheduler，再撤销进程内 contribution/service 路由；恢复时只有项目启用、精确 committed generation 稳定、desired schedule 有效且 migration pair 的入口所有权仍属于该项目，才重新打开任务。
+插件之间不得 `import` 对方源码、读取对方目录或直接访问对方进程。跨插件依赖只能写入 `requires`，调用只能经 `service.invoke` 和服务注册表；调用方不能指定未声明服务、任意 Provider、其他项目路径、新的账号绑定或自选 effect。宿主先解析目标 Provider 的精确 effect，再确认它没有超过调用 contribution 的 effect ceiling；随后用该 effect 建立目标 generation lease。`read/compute` 不调用写标记，`internal_write/external_write/destructive` 在分发前调用一次宿主写标记，读 contribution 因而不能借 `service.invoke` 升级成写。Provider 被停用、卸载或变得不可用时，宿主先持久化关闭 consumer 的物理 Scheduler，再撤销进程内 contribution/service 路由；恢复时只有项目启用、精确 committed generation 稳定、desired schedule 有效且 migration pair 的入口所有权仍属于该项目，才重新打开任务。
 
-插件入口从标准输入读取宿主生成的闭合 JSON，只使用其中的项目配置、入口类型和已解析 service/operation；标准输出只能返回一个 JSON 对象，至少包含：
+插件入口从标准输入读取宿主生成的闭合 JSON，只使用其中的项目配置、入口类型、已解析 target 和逐 contribution `governance`；target 与 governance 由 committed contract 生成，插件不得覆盖。标准输出只能返回一个 JSON 对象，读/计算成功至少包含：
 
 ```json
 {
   "status": "SUCCESS",
   "data": {},
   "meta": {
+    "source_system": "demo_snapshot_v2",
+    "observed_at": "2026-08-31T00:00:00Z",
+    "record_count": 0,
+    "pagination_complete": true,
     "evidence_refs": [],
     "write_outcome": "NOT_APPLIED"
   },
@@ -223,11 +251,13 @@ payload/
 }
 ```
 
-外部写不能只返回第三方 ACK。每次写前必须经过宿主写尝试标记，写后必须做独立、新鲜、唯一的回读并返回 Evidence；无法证明结果时返回 `WRITE_OUTCOME_UNKNOWN`，不得重试原写。插件输出和错误不得回显 Cookie、Token、账号 ID、原始请求或宿主路径。
+插件不能在输出中提供 `account_id`；宿主从 generation 绑定的 Python-only side channel 注入并验证账号证明。`internal_write` 成功必须在 `data.evidence` 给出 `outcome=WRITE_VERIFIED`；`external_write/destructive` 还必须给出与 compiled target 完全一致的 `service/operation`。三类写都要返回唯一 Evidence 引用、`write_outcome=WRITE_VERIFIED`、按索引报告的 `postconditions`，以及字段精确闭合的 `postcondition_evidence`；唯一 proof 必须绑定最后一条 Evidence，并带有可与规范化结果反算一致的 summary。
+
+外部写不能只返回第三方 ACK。每次写前必须经过宿主写尝试标记，写后必须做独立、新鲜、唯一的回读并返回 Evidence；ResultVerifier 还会把插件报告的 Evidence 顺序、写调用数和结果逐项对照 Broker 保存的 Host 调用观测。每次 Service v2 Broker 成功调用都会在业务 `data` 之外生成独立 `host_evidence_ref` 响应信封，并在 Python-only observation 的独立字段保存同一引用；SDK 仅把它作为不参与字典键、JSON 序列化或 Registry output Schema 的结果属性暴露。插件写结果必须按调用顺序回显这些 Host 引用，不能用业务输出中的同名字段、嵌套 Provider 引用或自行构造的引用替代。双打卡额外核对 `precheck -> submit -> verify -> submit -> verify` 顺序、两次唯一 operation ID、站点、打卡类型和回读结果。缺少 committed generation、写开始回执、Host 观测、唯一引用、严格 postcondition proof 或独立回读时，成功声明不会被接受；无法证明结果时进入 `WRITE_OUTCOME_UNKNOWN`，不得重试原写。插件输出和错误不得回显 Cookie、Token、账号 ID、原始请求或宿主路径。
 
 ## 5. 能力代理与凭据隔离
 
-插件进程运行在 fail-closed Linux sandbox 中，不得直接访问系统数据库、任意文件系统或网络。插件只通过短期、本次运行绑定的 Broker capability 调用 Manifest 已声明的精确 `(capability, action, role)`。资源上限由宿主固定，ZIP 无权修改；超出内存、进程、CPU、文件或文件描述符限制只终止该插件进程，不能把限制参数作为 Manifest 配置绕过。
+插件进程运行在 fail-closed Linux sandbox 中，不得直接访问系统数据库、任意文件系统或网络。插件只通过短期、本次运行绑定的 Broker capability 调用 Manifest 已声明的精确 `(capability, action, role)`；Broker 同时核对 Registry 的 input/output Schema、handler 和 effect governance。Registry output Schema 只约束 Host handler 返回的业务 `data`，Broker 不得在校验后向其中注入传输元数据；Host 调用引用固定属于独立响应信封和私有 observation。资源上限由宿主固定，ZIP 无权修改；超出内存、进程、CPU、文件或文件描述符限制只终止该插件进程，不能把限制参数作为 Manifest 配置绕过。
 
 平台在每次调用时解析项目当前账号/资源绑定：
 
@@ -289,10 +319,10 @@ Service v2 的保存结果、Catalog/Console 投影和实际 invocation 评估�
 | 阶段 | 审计内容 |
 |---|---|
 | 安装 | package event 与 project lifecycle event：操作者、角色、时间、请求 UUID、包 SHA-256、规范 Manifest SHA-256、版本、运行模型、Host API、技术检查结果与初始策略/入口摘要 |
-| 能力变化 | 新旧 capabilities、服务、requires、贡献点、配置 Schema 和托管存储声明的摘要/差异 |
+| 能力变化 | 新旧 Host capability action、Registry descriptor、Provider `{name,effect}`、requires、贡献点、配置 Schema 和托管存储声明的摘要/差异 |
 | 配置与绑定 | 项目配置版本、入口集合、schedule、账号/资源角色绑定变更；只存受控内部引用和摘要，不记凭据 |
-| 代际与服务 | desired/committed generation、Provider 注册/撤销、依赖阻断、启停、升级、回滚和引用排空 |
-| 每次运行 | 项目、入口 contribution、service/operation、运行 ID、generation lease、开始/结束、结果、Evidence 引用、写尝试和写后验证 |
+| 代际与服务 | desired/committed generation、逐 contribution target/governance、Provider operation effect、注册/撤销、依赖阻断、启停、升级、回滚和引用排空 |
+| 每次运行 | 项目、入口 contribution、service/operation/effect、运行 ID、generation lease、锁、开始/结束、结果、Host 调用观测、Evidence 引用、写尝试和写后验证 |
 | 异常写 | `WRITE_OUTCOME_UNKNOWN`、未知原因、禁止重放状态和人工处置记录 |
 | 迁移 | migration pair、配置/入口快照摘要、业务运行键归属、测试状态、接管、回滚和完成迁移 |
 | 卸载与数据 | 服务/入口撤销、未完成租约或未知写阻断、保留数据，以及独立永久清除的操作者、原因和清除数量 |
@@ -351,17 +381,18 @@ v1 继续服务，v2 作为新包、新项目和新 `automation_id` 建立。禁
 5. `sync_daily_should_sign`、`sync_arrival_stats`、`sync_finance_bills`。
 6. `r7_arrival_checkin` 与 `r7_departure_checkin` 继续阻断；只有真实页面合同、字段来源和独立写后 Evidence 完整后才单独迁移。
 
-两个双打卡示例源码位于 `agent/service_v2_plugins/clockin_daxiang_v2/` 和 `agent/service_v2_plugins/clockin_daxiang_s_v2/`。它们默认只启用 Console 人工入口，同时分别声明默认关闭的 `Asia/Shanghai` 每日 18:30 与 18:33 Scheduler，并使用受审的 `ronghui.clock.precheck/submit/verify` Host action。源码测试证明合同、调用顺序和失败关闭；只有安装到生产项目、绑定真实账号并取得真实 `WRITE_VERIFIED` Evidence 后，才算完成每个项目各自的真跑验收。
+两个双打卡示例源码位于 `agent/service_v2_plugins/clockin_daxiang_v2/` 和 `agent/service_v2_plugins/clockin_daxiang_s_v2/`。当前显式-effect 合同版本均为 `1.1.0`，Provider `run` 固定为 `external_write`；它们默认只启用 Console 人工入口，同时分别声明默认关闭的 `Asia/Shanghai` 每日 18:30 与 18:33 Scheduler，并使用 Registry 受审的 `ronghui.clock.precheck/submit/verify` Host action。源码测试证明逐 contribution 治理、Host 调用顺序、独立写后 Evidence、ResultVerifier 和未知写失败关闭；只有安装到生产项目、绑定真实账号并取得真实 `WRITE_VERIFIED` Evidence 后，才算完成每个项目各自的真跑验收。
 
 ## 11. 开发与发布检查清单
 
 开发者交包前：
 
 - [ ] `plugin_id`、版本、服务名和 major 稳定；同版本重新构建得到相同字节或明确提升版本。
-- [ ] Manifest 只有闭合字段，Host API 区间覆盖 `2.0.0`，所有 contribution 指向本包提供的真实操作。
+- [ ] Manifest 只有闭合字段，Host API 区间覆盖 `2.0.0`；每个 `provides[*].operations` 项精确包含 `name/effect`，所有 contribution 指向本包提供的真实操作。
 - [ ] 包内没有凭据、账号 ID、前端、hook、任意下载脚本、SQL/DDL 或其他插件源码。
-- [ ] 只调用已声明的 Host capability；缺失数据、歧义、空响应和写后无法核验均显式失败。
-- [ ] 外部写先预检、再标记写尝试、最后独立回读；未知结果不重放。
+- [ ] `capabilities[*].operations` 只列 Registry 已注册的 action 字符串，不复制或自报 Host effect；缺失数据、歧义、空响应和写后无法核验均显式失败。
+- [ ] 每个 contribution 的 effect、target 和 governance 在编译、Plan 与运行时一致；跨插件调用不超过调用方 ceiling，读/计算路径保持零写标记。
+- [ ] 写操作先预检、再由宿主标记写尝试、最后独立回读；Evidence、postcondition proof 与 Host 调用观测闭合，未知结果不重放。
 - [ ] 离线依赖全部为清单列明、哈希锁定的 wheel；在 Linux Python 3.10 上完成离线安装测试。
 - [ ] ZIP 根结构、UTF-8、摘要、路径安全、压缩限制和输出 JSON 合同通过测试。
 - [ ] 对 KV/collection 使用 CAS；索引查询只提交 Manifest 普通索引的完整等值字段，unique 只依赖 `upsert` 事务约束，不假定范围、扫描或按 unique 查询。
@@ -378,7 +409,7 @@ python agent/service_v2_plugins/_shared/build_zip.py \
 
 管理员安装后：
 
-- [ ] 核对包 SHA-256、Manifest、能力差异、服务和默认入口。
+- [ ] 核对包 SHA-256、Manifest、Host capability descriptor、Provider operation effect、服务和默认入口差异。
 - [ ] 精确绑定账号/资源，不选默认或首项；确认 Catalog 的目标版本、活动版本和 dependency state。
 - [ ] 新插件在全部条件闭合后才启用默认入口；迁移插件只开 Console。
 - [ ] 真跑检查 Run、lease、Evidence、写后结果与审计链；`WRITE_OUTCOME_UNKNOWN` 必须先 reconcile。

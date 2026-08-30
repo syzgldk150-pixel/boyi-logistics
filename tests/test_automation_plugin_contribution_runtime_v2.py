@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.automation_plugins.manifest import canonical_json_bytes
+from agent.automation_plugins.host_capability_registry import governance_for_effect
 from agent.automation_plugins.models import (
     PluginRuntimeModel,
     PluginTrustSource,
@@ -115,6 +116,11 @@ def _snapshot(
         )
     )
     service = "plugin.example_plugin.runner@1"
+    contribution_kinds = {
+        str(item["id"]): kind
+        for kind in ("console", "scheduler", "webhook", "feishu", "events")
+        for item in declared[kind]
+    }
     metadata = {
         "project_config_version": 1,
         "project_config": {},
@@ -123,7 +129,17 @@ def _snapshot(
         "device_binding": None,
         "schedule": project_schedule,
         "compiled_invocations": {
-            contribution_id: {"arguments": {}, "dynamic_resolvers": {}}
+            contribution_id: {
+                "arguments": {},
+                "dynamic_resolvers": {},
+                "target": {
+                    "service": service,
+                    "operation": "run",
+                    "contribution_id": contribution_id,
+                    "contribution_kind": contribution_kinds[contribution_id],
+                },
+                "governance": governance_for_effect("read").to_mapping(),
+            }
             for contribution_id in enabled
         },
         "runtime_descriptor": {
@@ -138,7 +154,12 @@ def _snapshot(
         "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
         "plugin_api": "2.0.0",
         "service_contracts": {
-            "provides": [{"service": service, "operations": ["run"]}],
+            "provides": [
+                {
+                    "service": service,
+                    "operations": [{"name": "run", "effect": "read"}],
+                }
+            ],
             "requires": [],
         },
         "contributions": declared,
@@ -323,7 +344,19 @@ def test_manifest_webhook_mount_does_not_require_a_legacy_route_resource() -> No
         "feishu": [],
         "events": [],
     }
-    compiled = {"receive_hook": {"arguments": {}, "dynamic_resolvers": {}}}
+    compiled = {
+        "receive_hook": {
+            "arguments": {},
+            "dynamic_resolvers": {},
+            "target": {
+                "service": service,
+                "operation": "run",
+                "contribution_id": "receive_hook",
+                "contribution_kind": "webhook",
+            },
+            "governance": governance_for_effect("read").to_mapping(),
+        }
+    }
     schedule = {"kind": "none", "times": [], "enabled": False}
     entry = SimpleNamespace(
         automation_id="example-project",
@@ -341,7 +374,13 @@ def test_manifest_webhook_mount_does_not_require_a_legacy_route_resource() -> No
         },
         allowed_entrypoints=("receive_hook",),
         invocation_contracts={
-            "receive_hook": {"contribution_kind": "webhook"}
+            "receive_hook": {
+                "service": service,
+                "operation": "run",
+                "contribution_kind": "webhook",
+                "effect": "read",
+                "governance": governance_for_effect("read").to_mapping(),
+            }
         },
         governance_anchor={},
         governance_anchor_sha256=_sha({}),
@@ -352,7 +391,12 @@ def test_manifest_webhook_mount_does_not_require_a_legacy_route_resource() -> No
         install_metadata={"python_relative": "venv/bin/python"},
         install_root="/plugins/example_plugin/1.0.0",
         service_contracts={
-            "provides": [{"service": service, "operations": ["run"]}],
+            "provides": [
+                {
+                    "service": service,
+                    "operations": [{"name": "run", "effect": "read"}],
+                }
+            ],
             "requires": [],
         },
         contributions=contributions,

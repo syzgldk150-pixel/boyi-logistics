@@ -27,6 +27,11 @@
   - `../tools/registry.yaml`
   - 工具清单在启动和热加载时完整校验：名称唯一、执行器存在且位于项目内、`parameters` 是合法 object schema；发现错误必须启动失败，不能降级为警告。
   - 新的内部接口放在 `/internal/v1/*`，统一通过 `shared.contracts.api_success/api_failure` 返回 `ok/data/error`；旧接口保留兼容时标记 deprecated 并保持内部 Token 鉴权。
+- 改 Service v2 Manifest、Host API、跨插件服务或逐 contribution 治理：
+  - `automation_plugins/host_capability_registry.py` 是精确 `(api_version, capability, action)` 的唯一 Host capability/effect 权威；`manifest_v2.py`、`service_v2_contract.py`、`service_registry.py`、`capability_proxy_v2.py` 和 `core_adapter.py` 只能消费其关闭失败的描述，不能按操作名或 lifecycle `effect_kind` 推断。
+  - Provider 的 `provides[*].operations` 必须是闭合 `{name,effect}` 对象；Host `capabilities[*].operations` 仍只声明 action 字符串，插件无权自报 Host effect、风险或 Harness 资格。
+  - `read/compute/internal_write/external_write/destructive` 逐 contribution 进入 invocation contract、compiled invocation、Plan 和 Run；风险、锁、Evidence、重试、Harness 与 Broker `read/write` 投影从 effect 机械派生。`service.invoke` 的静态 grant 只开放受保护的动态 effect 分发，真正的 effect ceiling 来自调用 contribution 的精确治理，实际调用还要核对 Provider effect。
+  - `orchestration/planner.py`、`plan_validator.py`、`workflow_runner.py` 与 `result_verifier.py` 必须使用同一精确治理。读/计算不得产生写尝试；写成功必须有 committed generation、宿主写开始回执、Python-only Host 调用观测、独立 Evidence 和严格 postcondition proof，任一漂移都进入失败或未知写而非重放。Registry output Schema 只约束业务 `data`；Host 调用引用属于独立 Broker 信封和 observation，禁止校验后注入 `data`。
 - 改调度任务、热重载、启停：
   - `scheduler.py`
   - `task_templates.py`

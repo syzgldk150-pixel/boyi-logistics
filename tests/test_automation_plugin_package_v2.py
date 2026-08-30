@@ -40,7 +40,7 @@ def _manifest() -> dict[str, object]:
         "provides": [
             {
                 "service": "plugin.sample_plugin.runner@1",
-                "operations": ["run"],
+                "operations": [{"name": "run", "effect": "read"}],
             }
         ],
         "requires": [],
@@ -96,9 +96,7 @@ def _package(
     entries: list[tuple[str | zipfile.ZipInfo, bytes]] = [
         (
             "manifest.json",
-            json.dumps(manifest or _manifest(), ensure_ascii=False, indent=2).encode(
-                "utf-8"
-            ),
+            json.dumps(manifest or _manifest(), ensure_ascii=False, indent=2).encode("utf-8"),
         ),
         ("payload/main.py", main),
     ]

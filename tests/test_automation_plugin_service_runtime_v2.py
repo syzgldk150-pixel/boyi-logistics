@@ -9,6 +9,7 @@ import pytest
 
 from agent.automation_plugins.catalog import PluginCatalog, PluginCatalogEntry
 from agent.automation_plugins.generation import AutomationRuntimeReconciler
+from agent.automation_plugins.host_capability_registry import governance_for_effect
 from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.models import (
     PluginProjectState,
@@ -110,7 +111,19 @@ def _snapshot(
         "device_binding": None,
         "schedule": project_schedule,
         "compiled_invocations": {
-            entrypoint: {"arguments": {}, "dynamic_resolvers": {}}
+            entrypoint: {
+                "arguments": {},
+                "dynamic_resolvers": {},
+                "target": {
+                    "service": service,
+                    "operation": "run",
+                    "contribution_id": entrypoint,
+                    "contribution_kind": (
+                        "scheduler" if entrypoint == "daily_run" else "console"
+                    ),
+                },
+                "governance": governance_for_effect("read").to_mapping(),
+            }
             for entrypoint in enabled_entrypoints
         },
         "governance_anchor": {},
@@ -122,7 +135,12 @@ def _snapshot(
             "resource_roles": [],
         },
         "service_contracts": {
-            "provides": [{"service": service, "operations": ["run"]}],
+            "provides": [
+                {
+                    "service": service,
+                    "operations": [{"name": "run", "effect": "read"}],
+                }
+            ],
             "requires": [{"service": item} for item in requires],
         },
         "contributions": {
@@ -224,7 +242,15 @@ def _catalog_entry(
         account_roles=account_roles,
         resource_roles=(),
         allowed_entrypoints=("run_now",),
-        invocation_contracts={"run_now": {"contribution_kind": "console"}},
+        invocation_contracts={
+            "run_now": {
+                "service": service,
+                "operation": "run",
+                "contribution_kind": "console",
+                "effect": "read",
+                "governance": governance_for_effect("read").to_mapping(),
+            }
+        },
         governance_anchor={},
         governance_anchor_sha256="0" * 64,
         tool_contract={"description": plugin_id},
@@ -266,7 +292,12 @@ def _catalog_entry(
         declared_capabilities=(),
         storage_contract={},
         service_contracts={
-            "provides": [{"service": service, "operations": ["run"]}],
+            "provides": [
+                {
+                    "service": service,
+                    "operations": [{"name": "run", "effect": "read"}],
+                }
+            ],
             "requires": [{"service": item} for item in requires],
         },
     )
@@ -776,3 +807,55 @@ def test_applied_service_effects_restore_once_after_process_restart() -> None:
     assert len(registry.snapshot()) == 1
     assert driver.service_reference_count(package_sha) == 2
     assert registry.require_provider("plugin.restore_plugin.runner@1").active is True
+
+
+def test_service_operation_effect_is_exact_and_cannot_drift_on_replay() -> None:
+    registry = ServiceRegistry()
+    package_sha = "f" * 64
+    common = {
+        "automation_id": package_provider_registration_id(package_sha),
+        "generation": 1,
+        "plugin_id": "effect_plugin",
+        "plugin_version": "1.0.0",
+        "package_sha256": package_sha,
+        "manifest_sha256": "a" * 64,
+        "runtime_mode": "on_demand",
+        "requires": (),
+    }
+    provides = (
+        {
+            "service": "plugin.effect_plugin.runner@1",
+            "operations": [
+                {"name": "inspect", "effect": "read"},
+                {"name": "dispatch", "effect": "external_write"},
+            ],
+        },
+    )
+
+    registry.register_contract(**common, provides=provides)
+    assert (
+        registry.require_operation(
+            "plugin.effect_plugin.runner@1", "inspect"
+        ).effect.value
+        == "read"
+    )
+    assert (
+        registry.require_operation(
+            "plugin.effect_plugin.runner@1", "dispatch"
+        ).effect.value
+        == "external_write"
+    )
+
+    with pytest.raises(ServiceProviderConflict):
+        registry.register_contract(
+            **common,
+            provides=(
+                {
+                    "service": "plugin.effect_plugin.runner@1",
+                    "operations": [
+                        {"name": "inspect", "effect": "external_write"},
+                        {"name": "dispatch", "effect": "external_write"},
+                    ],
+                },
+            ),
+        )

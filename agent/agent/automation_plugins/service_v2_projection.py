@@ -9,6 +9,7 @@ from threading import RLock
 from typing import Any, Mapping
 
 from agent.automation_plugins.errors import PluginConflictError
+from agent.automation_plugins.host_capability_registry import CapabilityEffect
 from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.models import (
     PluginRuntimeModel,
@@ -45,6 +46,30 @@ def _required_sha(value: object, field: str) -> str:
     ):
         raise PluginConflictError(f"persisted {field} is not a SHA-256 digest")
     return text
+
+
+def _service_operation_material(value: object) -> list[dict[str, str]]:
+    """Copy the immutable exact operation/effect records into an effect plan."""
+
+    if not isinstance(value, (list, tuple)) or not value:
+        raise PluginConflictError("v2 provided service operations are invalid")
+    result: list[dict[str, str]] = []
+    names: set[str] = set()
+    for operation in value:
+        if not isinstance(operation, Mapping) or set(operation) != {"name", "effect"}:
+            raise PluginConflictError("v2 provided service operation is invalid")
+        name = str(operation.get("name") or "")
+        if not name or name != name.strip() or len(name) > 191 or name in names:
+            raise PluginConflictError("v2 provided service operation is invalid")
+        try:
+            effect = CapabilityEffect(str(operation.get("effect") or ""))
+        except (TypeError, ValueError) as exc:
+            raise PluginConflictError(
+                "v2 provided service operation effect is invalid"
+            ) from exc
+        names.add(name)
+        result.append({"name": name, "effect": effect.value})
+    return result
 
 
 @dataclass(frozen=True)
@@ -471,13 +496,10 @@ def _service_registration_material(
     for item in raw_provides:
         if not isinstance(item, Mapping):
             raise PluginConflictError("v2 provided service contract is invalid")
-        operations = item.get("operations")
-        if not isinstance(operations, (list, tuple)):
-            raise PluginConflictError("v2 provided service operations are invalid")
         provides.append(
             {
                 "service": str(item.get("service") or ""),
-                "operations": [str(operation or "") for operation in operations],
+                "operations": _service_operation_material(item.get("operations")),
             }
         )
     requires: list[str] = []

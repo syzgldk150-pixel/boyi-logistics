@@ -18,6 +18,12 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 from agent.automation_plugins.errors import PluginExecutionError
+from agent.automation_plugins.host_capability_registry import (
+    CapabilityEffect,
+    HOST_CAPABILITY_API_VERSION,
+    default_host_capability_registry,
+    governance_for_effect,
+)
 from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.service_v2_contract import SYSTEM_CAPABILITY_ROLE
 from shared.redaction import redact_text
@@ -390,6 +396,9 @@ class _BrokerGrantState:
     pending_write_calls: dict[str, tuple[str, str, str, object, dict[str, Any]]] = field(
         default_factory=dict
     )
+    dynamic_effect_calls: set[str] = field(default_factory=set)
+    completed_calls: dict[str, dict[str, Any]] = field(default_factory=dict)
+    operation_call_counts: dict[tuple[str, str], int] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -516,6 +525,71 @@ class LocalBrokerCapabilityIssuer:
                 )
             return state.started_mutating_calls
 
+    def broker_call_observations(
+        self,
+        capability: str,
+    ) -> tuple[Mapping[str, Any], ...]:
+        """Return Host-observed successful Broker results for one invocation."""
+
+        digest = hashlib.sha256(
+            str(capability).encode("ascii", errors="ignore")
+        ).hexdigest()
+        with self._lock:
+            state = self._grants.get(digest)
+            if state is None:
+                raise PluginExecutionError(
+                    "core broker capability observation is unavailable",
+                    code="BROKER_OBSERVATION_UNAVAILABLE",
+                )
+            return tuple(
+                json.loads(canonical_json_bytes(observation))
+                for observation in state.completed_calls.values()
+            )
+
+    def record_broker_call_result(
+        self,
+        capability: str,
+        *,
+        request_id: str,
+        operation: str,
+        action: str,
+        role: str,
+        arguments: Mapping[str, Any],
+        result: Mapping[str, Any],
+        evidence_ref: str | None,
+        write_started: bool,
+    ) -> None:
+        """Capture a successful redacted Host result outside plugin JSON."""
+
+        normalized_request_id = str(uuid.UUID(str(request_id)))
+        digest = hashlib.sha256(
+            str(capability).encode("ascii", errors="ignore")
+        ).hexdigest()
+        observation = {
+            "request_id": normalized_request_id,
+            "operation": str(operation),
+            "action": str(action),
+            "role": str(role),
+            "arguments_sha256": hashlib.sha256(
+                canonical_json_bytes(dict(arguments))
+            ).hexdigest(),
+            "write_started": bool(write_started),
+            "evidence_ref": evidence_ref,
+            "result": json.loads(canonical_json_bytes(dict(result))),
+        }
+        with self._lock:
+            state = self._grants.get(digest)
+            if (
+                state is None
+                or normalized_request_id not in state.request_ids
+                or normalized_request_id in state.completed_calls
+            ):
+                raise PluginExecutionError(
+                    "core broker result observation is invalid",
+                    code="BROKER_OBSERVATION_UNAVAILABLE",
+                )
+            state.completed_calls[normalized_request_id] = observation
+
     def consume(
         self,
         capability: str,
@@ -559,13 +633,93 @@ class LocalBrokerCapabilityIssuer:
                 "broker operation/action is not signed for this plugin",
                 code="BROKER_OPERATION_DENIED",
             )
-        effect = matches[0].get("effect")
-        if effect not in {"read", "write"}:
+        contract = matches[0]
+        legacy_fields = {"operation", "action", "roles", "effect"}
+        v2_fields = {
+            "operation",
+            "action",
+            "roles",
+            "effect",
+            "broker_effect",
+            "governance",
+            "dynamic_effect",
+        }
+        if set(contract) == legacy_fields:
+            # ACTION_V1's signed broker wire contract is immutable and only
+            # carries the historical read/write effect.  Keep it byte-for-byte
+            # compatible; Service v2 never accepts this abbreviated shape.
+            effect = contract.get("effect")
+            if effect not in {"read", "write"} or operation == "service.invoke":
+                raise PluginExecutionError(
+                    "signed broker operation contract is invalid",
+                    code="BROKER_CONTRACT_INVALID",
+                )
+            broker_effect = effect
+            dynamic_effect = False
+        elif set(contract) == v2_fields:
+            try:
+                effect = CapabilityEffect(str(contract.get("effect") or ""))
+            except (TypeError, ValueError) as exc:
+                raise PluginExecutionError(
+                    "broker effect classification is not signed",
+                    code="BROKER_CONTRACT_INVALID",
+                ) from exc
+            governance = contract.get("governance")
+            if not isinstance(governance, Mapping) or canonical_json_bytes(
+                dict(governance)
+            ) != canonical_json_bytes(governance_for_effect(effect).to_mapping()):
+                raise PluginExecutionError(
+                    "broker effect governance is invalid",
+                    code="BROKER_CONTRACT_INVALID",
+                )
+            broker_effect = contract.get("broker_effect")
+            dynamic_effect = contract.get("dynamic_effect")
+            if (
+                not isinstance(dynamic_effect, bool)
+                or broker_effect != governance_for_effect(effect).broker_effect
+                or (
+                    dynamic_effect
+                    and not (
+                        operation == "service.invoke"
+                        and effect is CapabilityEffect.EXTERNAL_WRITE
+                        and broker_effect == "write"
+                    )
+                )
+                or (not dynamic_effect and operation == "service.invoke")
+            ):
+                raise PluginExecutionError(
+                    "broker dynamic effect contract is invalid",
+                    code="BROKER_CONTRACT_INVALID",
+                )
+            if dynamic_effect:
+                per_action_limit = 64
+            else:
+                try:
+                    descriptor = default_host_capability_registry().resolve(
+                        api_version=HOST_CAPABILITY_API_VERSION,
+                        capability=operation,
+                        action=action,
+                    )
+                except PluginExecutionError as exc:
+                    raise PluginExecutionError(
+                        "signed Host capability is unavailable",
+                        code="CAPABILITY_UNAVAILABLE",
+                    ) from exc
+                if (
+                    descriptor.governance.effect is not effect
+                    or descriptor.governance.broker_effect != broker_effect
+                ):
+                    raise PluginExecutionError(
+                        "signed Host capability governance drifted",
+                        code="BROKER_CONTRACT_INVALID",
+                    )
+                per_action_limit = descriptor.per_call_limit
+        else:
             raise PluginExecutionError(
-                "broker effect classification is not signed",
+                "signed broker operation contract is invalid",
                 code="BROKER_CONTRACT_INVALID",
             )
-        allowed_roles = matches[0].get("roles")
+        allowed_roles = contract.get("roles")
         if not isinstance(allowed_roles, list) or role not in allowed_roles:
             raise PluginExecutionError(
                 "broker role is not signed for this operation",
@@ -634,10 +788,24 @@ class LocalBrokerCapabilityIssuer:
                     "core broker call limit was exhausted",
                     code="BROKER_CALL_LIMIT",
                 )
+            if set(contract) == v2_fields:
+                operation_identity = (operation, action)
+                operation_calls = current.operation_call_counts.get(
+                    operation_identity,
+                    0,
+                )
+                if operation_calls >= per_action_limit:
+                    raise PluginExecutionError(
+                        "Host capability per-action call limit was exhausted",
+                        code="BROKER_CALL_LIMIT",
+                    )
+                current.operation_call_counts[operation_identity] = (
+                    operation_calls + 1
+                )
             current.request_ids.add(normalized_request_id)
             current.remaining_calls -= 1
             current.consumed_calls += 1
-            if effect == "write":
+            if broker_effect == "write":
                 current.pending_write_calls[normalized_request_id] = (
                     operation,
                     action,
@@ -645,6 +813,8 @@ class LocalBrokerCapabilityIssuer:
                     binding,
                     dict(arguments or {}),
                 )
+                if dynamic_effect:
+                    current.dynamic_effect_calls.add(normalized_request_id)
         return grant, binding
 
     def mark_write_started_hook(
@@ -674,6 +844,8 @@ class LocalBrokerCapabilityIssuer:
             return None
 
         phase = "ready"
+        with self._lock:
+            dynamic_effect = normalized_request_id in state.dynamic_effect_calls
 
         def mark_write_started() -> None:
             nonlocal phase
@@ -735,6 +907,7 @@ class LocalBrokerCapabilityIssuer:
                         code="WRITE_ATTEMPT_START_INVALID",
                     )
                 current.pending_write_calls.pop(normalized_request_id, None)
+                current.dynamic_effect_calls.discard(normalized_request_id)
                 current.started_mutating_calls += 1
                 phase = "started"
 
@@ -743,12 +916,15 @@ class LocalBrokerCapabilityIssuer:
                 return phase == "started"
 
         setattr(mark_write_started, "started", started)
+        setattr(mark_write_started, "dynamic_effect", dynamic_effect)
 
         return mark_write_started
 
 
 @dataclass(frozen=True)
 class _PreparedBrokerInvocation:
+    capability: str
+    request_id: str
     grant: BrokerGrant
     binding: object
     operation: str
@@ -756,6 +932,7 @@ class _PreparedBrokerInvocation:
     role: str
     arguments: dict[str, Any]
     mark_write_started: Callable[[], None] | None
+    dynamic_effect: bool
 
 
 def _copy_broker_arguments(arguments: Mapping[str, Any]) -> dict[str, Any]:
@@ -787,6 +964,8 @@ def _prepare_broker_invocation(
         request_id=request_id,
     )
     return _PreparedBrokerInvocation(
+        capability=capability,
+        request_id=request_id,
         grant=grant,
         binding=binding,
         operation=operation,
@@ -794,6 +973,10 @@ def _prepare_broker_invocation(
         role=role,
         arguments=arguments,
         mark_write_started=mark_write_started,
+        dynamic_effect=bool(
+            mark_write_started is not None
+            and getattr(mark_write_started, "dynamic_effect", False)
+        ),
     )
 
 
@@ -860,6 +1043,26 @@ def _serialize_broker_response(response: Mapping[str, Any]) -> bytes:
     if len(data) > 10 * 1024 * 1024:
         return canonical_json_bytes({"ok": False, "error_code": "BROKER_RESPONSE_TOO_LARGE"})
     return data
+
+
+def _host_call_evidence_ref(
+    *,
+    request_id: str,
+    operation: str,
+    action: str,
+    result: Mapping[str, Any],
+) -> str:
+    digest = hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "request_id": request_id,
+                "operation": operation,
+                "action": action,
+                "result": dict(result),
+            }
+        )
+    ).hexdigest()
+    return f"host-call:{request_id}:{digest}"
 
 
 class LocalCoreAutomationBroker:
@@ -951,7 +1154,7 @@ class LocalCoreAutomationBroker:
                 mark_write_started=prepared.mark_write_started,
             )
             public_result = dict(result)
-            if prepared.mark_write_started is not None:
+            if prepared.mark_write_started is not None and not prepared.dynamic_effect:
                 verified_noop = _is_verified_write_noop(
                     public_result,
                     grant=prepared.grant,
@@ -971,8 +1174,38 @@ class LocalCoreAutomationBroker:
                         code="WRITE_ATTEMPT_START_NOT_RECORDED",
                     )
                 public_result.pop(VERIFIED_WRITE_NOOP_FIELD, None)
+            host_evidence_ref: str | None = None
+            if prepared.operation in _SERVICE_V2_OPERATIONS:
+                # Registry output schemas describe only ``data``.  A distinct
+                # Host-owned call reference therefore lives in the Broker
+                # envelope and private observation, never in that output.
+                # This also prevents service.invoke from promoting a nested
+                # Provider reference into the consumer's Host namespace.
+                host_evidence_ref = _host_call_evidence_ref(
+                    request_id=prepared.request_id,
+                    operation=prepared.operation,
+                    action=prepared.action,
+                    result=public_result,
+                )
             await asyncio.to_thread(_assert_redacted, public_result)
+            await asyncio.to_thread(
+                self._issuer.record_broker_call_result,
+                prepared.capability,
+                request_id=prepared.request_id,
+                operation=prepared.operation,
+                action=prepared.action,
+                role=prepared.role,
+                arguments=prepared.arguments,
+                result=public_result,
+                evidence_ref=host_evidence_ref,
+                write_started=bool(
+                    prepared.mark_write_started is not None
+                    and prepared.mark_write_started.started()
+                ),
+            )
             response = {"ok": True, "data": public_result}
+            if host_evidence_ref is not None:
+                response["host_evidence_ref"] = host_evidence_ref
         except Exception as exc:
             response = {
                 "ok": False,

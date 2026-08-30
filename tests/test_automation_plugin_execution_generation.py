@@ -17,6 +17,10 @@ import pytest
 from agent.automation_plugins import sandbox as sandbox_module
 from agent.automation_plugins.errors import PluginConflictError, PluginExecutionError
 from agent.automation_plugins.execution import PluginExecutionRouter
+from agent.automation_plugins.host_capability_registry import (
+    CapabilityEffect,
+    governance_for_effect,
+)
 from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.migration import MigrationRunClaim
 from agent.automation_plugins.models import (
@@ -38,14 +42,18 @@ def _digest(value: object) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _project_invocation(capability: Mapping[str, Any]) -> dict[str, Any]:
+def _project_invocation(
+    capability: Mapping[str, Any],
+    *,
+    contract_id: str = "console",
+) -> dict[str, Any]:
     metadata = capability["_plugin_runtime"]
     return {
         "schema_version": 1,
         "automation_id": metadata["automation_id"],
         "automation_generation": metadata["generation"],
         "entrypoint": "console",
-        "contract_id": "console",
+        "contract_id": contract_id,
         "contract_hash": "a" * 64,
         "policy_version": 1,
         "project_configuration_version": 1,
@@ -58,11 +66,15 @@ def _trusted_binding(
     *,
     run_id: str | None = None,
     step_id: str | None = None,
+    contract_id: str = "console",
 ) -> dict[str, Any]:
     return {
         "run_id": run_id or str(uuid.uuid4()),
         "step_id": step_id or str(uuid.uuid4()),
-        "_automation_project_invocation": _project_invocation(capability),
+        "_automation_project_invocation": _project_invocation(
+            capability,
+            contract_id=contract_id,
+        ),
     }
 
 
@@ -298,6 +310,170 @@ def _scan_capability(tmp_path: Path) -> dict[str, Any]:
     return capability
 
 
+def _mixed_effect_service_v2_capability(tmp_path: Path) -> dict[str, Any]:
+    capability = _capability(tmp_path, automation_id="mixed-service")
+    service = "plugin.mixed_service.runner@1"
+    read_governance = governance_for_effect("read").to_mapping()
+    write_governance = governance_for_effect("external_write").to_mapping()
+    capability.update(write_governance)
+    capability["version"] = "1.1.0"
+    capability["output_schema"] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "status": {"type": "string"},
+            "data": {"type": "object", "additionalProperties": True},
+            "meta": {"type": "object", "additionalProperties": True},
+            "warnings": {"type": "array", "items": {"type": "string"}},
+            "error": {
+                "oneOf": [
+                    {"type": "object", "additionalProperties": True},
+                    {"type": "null"},
+                ]
+            },
+        },
+        "required": ["status", "data", "meta", "warnings", "error"],
+    }
+    metadata = capability["_plugin_runtime"]
+    metadata.update(
+        {
+            "plugin_id": "mixed_service",
+            "version": "1.1.0",
+            "trust_source": PluginTrustSource.SUPER_ADMIN_UPLOAD.value,
+            "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
+            "plugin_api": "2.0.0",
+            "service_contracts": {
+                "provides": [
+                    {
+                        "service": service,
+                        "operations": [
+                            {"name": "inspect", "effect": "read"},
+                            {"name": "apply", "effect": "external_write"},
+                        ],
+                    }
+                ],
+                "requires": [],
+            },
+            "compiled_invocations": {
+                "console": {
+                    "arguments": {},
+                    "dynamic_resolvers": {},
+                    "target": {
+                        "service": service,
+                        "operation": "inspect",
+                        "contribution_id": "console",
+                        "contribution_kind": "console",
+                    },
+                    "governance": read_governance,
+                },
+                "apply": {
+                    "arguments": {},
+                    "dynamic_resolvers": {},
+                    "target": {
+                        "service": service,
+                        "operation": "apply",
+                        "contribution_id": "apply",
+                        "contribution_kind": "console",
+                    },
+                    "governance": write_governance,
+                },
+            },
+        }
+    )
+    return capability
+
+
+def _mixed_service_write_result(
+    *,
+    service: str = "plugin.mixed_service.runner@1",
+) -> tuple[dict[str, Any], tuple[Mapping[str, Any], ...]]:
+    operation = "apply"
+    evidence_ref = "evidence:mixed-service:apply"
+    observed_at = "2026-08-30T10:00:00+08:00"
+    data = {
+        "evidence": {
+            "service": service,
+            "operation": operation,
+            "outcome": "WRITE_VERIFIED",
+        },
+        "changed": True,
+    }
+    result = {
+        "status": "SUCCESS",
+        "data": data,
+        "meta": {
+            "source_system": "host-test",
+            "observed_at": observed_at,
+            "record_count": 1,
+            "pagination_complete": True,
+            "evidence_refs": [evidence_ref],
+            "write_outcome": "WRITE_VERIFIED",
+            "postconditions": {"0": True},
+            "postcondition_evidence": {
+                "0": {
+                    "condition": "plugin_result_contract_valid",
+                    "verified": True,
+                    "observed_at": observed_at,
+                    "evidence_ref": evidence_ref,
+                    "details": {
+                        "evidence_refs": [evidence_ref],
+                        "result_summary": copy.deepcopy(data),
+                    },
+                }
+            },
+        },
+        "warnings": [],
+        "error": None,
+    }
+    observations = (
+        {
+            "request_id": "33333333-3333-4333-8333-333333333333",
+            "operation": "service.invoke",
+            "action": "apply",
+            "role": "__system__",
+            "arguments_sha256": "e" * 64,
+            "write_started": True,
+            "evidence_ref": evidence_ref,
+            "result": {
+                "status": "SUCCESS",
+                "data": {"provider_write": "verified"},
+                "meta": {"evidence_refs": ["provider:evidence:apply"]},
+                "warnings": [],
+                "error": None,
+            },
+        },
+    )
+    return result, observations
+
+
+def _mixed_service_write_step(capability: Mapping[str, Any]) -> PlanStep:
+    return PlanStep(
+        step_key="mixed-write",
+        tool_name=str(capability["name"]),
+        tool_version=str(capability["version"]),
+        operation_type=OperationType.EXTERNAL_WRITE,
+        arguments={},
+        account_id="account-1",
+        depends_on=(),
+        idempotency_key="mixed-service-write",
+        expected_evidence=(dict(capability["evidence"]),),
+        postconditions=tuple(capability["postconditions"]),
+        risk_level=RiskLevel.HIGH,
+        requires_approval=True,
+    )
+
+
+def _mixed_service_effective_write_capability(
+    capability: Mapping[str, Any],
+) -> dict[str, Any]:
+    effective = copy.deepcopy(dict(capability))
+    governance = governance_for_effect("external_write").to_mapping()
+    effective.update(governance)
+    effective["service"] = "plugin.mixed_service.runner@1"
+    effective["operation"] = "apply"
+    return effective
+
+
 def _snapshot(capability: Mapping[str, Any]) -> RuntimeGenerationSnapshot:
     metadata = capability["_plugin_runtime"]
     return RuntimeGenerationSnapshot(
@@ -460,8 +636,14 @@ class _Issuer:
     broker_endpoint = "unix:///tmp/fake-plugin-broker.sock"
     broker_socket_path = None
 
-    def __init__(self, *, started_mutating_calls: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        started_mutating_calls: int = 0,
+        host_call_observations: tuple[Mapping[str, Any], ...] = (),
+    ) -> None:
         self._started_mutating_calls = started_mutating_calls
+        self._host_call_observations = host_call_observations
         self.last_issue: dict[str, object] | None = None
 
     def issue(self, **values: object) -> str:
@@ -474,6 +656,13 @@ class _Issuer:
     def started_mutating_call_count(self, capability: str) -> int:
         assert capability == "test-capability"
         return self._started_mutating_calls
+
+    def broker_call_observations(
+        self,
+        capability: str,
+    ) -> tuple[Mapping[str, Any], ...]:
+        assert capability == "test-capability"
+        return self._host_call_observations
 
 
 class _Integrity:
@@ -646,7 +835,12 @@ def test_internal_service_invocation_uses_normal_generation_lease_and_opaque_cha
             "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
             "plugin_api": "2.0.0",
             "service_contracts": {
-                "provides": [{"service": service, "operations": ["get"]}],
+                "provides": [
+                    {
+                        "service": service,
+                        "operations": [{"name": "get", "effect": "read"}],
+                    }
+                ],
                 "requires": [],
             },
             "compiled_invocations": {},
@@ -703,6 +897,7 @@ def test_internal_service_invocation_uses_normal_generation_lease_and_opaque_cha
             {"query": "safe"},
             service=service,
             operation="get",
+            effect=CapabilityEffect.READ,
             call_chain=(service,),
         )
     )
@@ -711,6 +906,155 @@ def test_internal_service_invocation_uses_normal_generation_lease_and_opaque_cha
     assert leases.released[0][1] is RuntimeLeaseOutcome.SUCCEEDED
     assert issuer.last_issue is not None
     assert issuer.last_issue["runtime_permissions"]["_service_call_chain"] == [service]
+
+
+def test_direct_service_v2_read_contribution_does_not_inherit_summary_write_lease(
+    tmp_path: Path,
+) -> None:
+    capability = _mixed_effect_service_v2_capability(tmp_path)
+    leases = _LeaseRepository({"mixed-service": capability})
+    issuer = _Issuer(started_mutating_calls=0)
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=issuer,
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=_OutputSandbox(
+            canonical_json_bytes(_plugin_result("mixed_service"))
+        ),
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+
+    result = asyncio.run(
+        router.execute(
+            capability,
+            {},
+            trusted_invocation_context=_trusted_binding(capability),
+        )
+    )
+
+    assert isinstance(result, GenerationBoundResult)
+    assert result.generation_verification.requires_write_verification is False
+    assert result.generation_verification.started_mutating_call_count == 0
+    assert leases.released[0][1] is RuntimeLeaseOutcome.SUCCEEDED
+    assert issuer.last_issue is not None
+    assert issuer.last_issue["runtime_permissions"]["_service_effect_ceiling"] == "read"
+
+
+def test_direct_service_v2_write_success_without_started_receipt_is_not_verifying(
+    tmp_path: Path,
+) -> None:
+    capability = _mixed_effect_service_v2_capability(tmp_path)
+    leases = _LeaseRepository({"mixed-service": capability})
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_Issuer(started_mutating_calls=0),
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=_OutputSandbox(
+            canonical_json_bytes(_plugin_result("mixed_service"))
+        ),
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+
+    result = asyncio.run(
+        router.execute(
+            capability,
+            {},
+            trusted_invocation_context=_trusted_binding(
+                capability,
+                contract_id="apply",
+            ),
+        )
+    )
+
+    assert not isinstance(result, GenerationBoundResult)
+    assert leases.released[0][1] is RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
+    assert not leases.verifying
+
+
+def test_mixed_service_write_closes_router_and_verifier_host_evidence(
+    tmp_path: Path,
+) -> None:
+    capability = _mixed_effect_service_v2_capability(tmp_path)
+    result, observations = _mixed_service_write_result()
+    leases = _LeaseRepository({"mixed-service": capability})
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_Issuer(
+            started_mutating_calls=1,
+            host_call_observations=observations,
+        ),
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=_OutputSandbox(canonical_json_bytes(result)),
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+
+    raw = asyncio.run(
+        router.execute(
+            capability,
+            {},
+            trusted_invocation_context=_trusted_binding(
+                capability,
+                contract_id="apply",
+            ),
+        )
+    )
+
+    assert isinstance(raw, GenerationBoundResult)
+    assert raw.generation_verification.requires_write_verification is True
+    assert raw.generation_verification.host_call_observations == observations
+    effective = _mixed_service_effective_write_capability(capability)
+    verified = ResultVerifier(leases).verify(
+        _mixed_service_write_step(effective),
+        raw,
+        effective,
+    )
+    assert verified.accepted is True
+    assert leases.finalized[0][1] is RuntimeLeaseOutcome.WRITE_VERIFIED
+
+
+def test_mixed_service_write_rejects_cross_contribution_target_evidence(
+    tmp_path: Path,
+) -> None:
+    capability = _mixed_effect_service_v2_capability(tmp_path)
+    result, observations = _mixed_service_write_result(
+        service="plugin.other.runner@1"
+    )
+    leases = _LeaseRepository({"mixed-service": capability})
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_Issuer(
+            started_mutating_calls=1,
+            host_call_observations=observations,
+        ),
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=_OutputSandbox(canonical_json_bytes(result)),
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+    raw = asyncio.run(
+        router.execute(
+            capability,
+            {},
+            trusted_invocation_context=_trusted_binding(
+                capability,
+                contract_id="apply",
+            ),
+        )
+    )
+    effective = _mixed_service_effective_write_capability(capability)
+
+    verified = ResultVerifier(leases).verify(
+        _mixed_service_write_step(effective),
+        raw,
+        effective,
+    )
+
+    assert verified.accepted is False
+    assert verified.code == "POSTCONDITION_UNVERIFIED"
+    assert leases.finalized[0][1] is RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
 
 
 def test_router_sync_generation_and_filesystem_checks_do_not_block_event_loop(
@@ -823,7 +1167,7 @@ def test_router_adapter_verifier_keeps_schema_clean_and_verifies_write(tmp_path:
     sandbox = _OutputSandbox(canonical_json_bytes(_plugin_result(plugin_id)))
     router = PluginExecutionRouter(
         core_executor=_Core(),
-        capability_issuer=_Issuer(),
+        capability_issuer=_Issuer(started_mutating_calls=1),
         integrity_verifier=_Integrity(),
         sandbox_launcher=sandbox,
         generation_leases=leases,

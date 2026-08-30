@@ -15,6 +15,19 @@ _MAX_COMPRESSED_REQUEST = 16 * 1024 * 1024
 _FRAME_PREFIX = b"BOYI-BROKER-V2 "
 
 
+class BrokerCallResult(dict):
+    """Schema-valid business data with out-of-band Host transport metadata."""
+
+    def __init__(
+        self,
+        data: dict[str, object],
+        *,
+        host_evidence_ref: str | None = None,
+    ) -> None:
+        super().__init__(data)
+        self.host_evidence_ref = host_evidence_ref
+
+
 def _broker_timeout() -> int:
     raw = os.environ.get("BOYI_PLUGIN_BROKER_CALL_TIMEOUT", "")
     if not raw.isdigit():
@@ -77,4 +90,11 @@ def broker_call(
     if not isinstance(response, dict) or response.get("ok") is not True:
         code = response.get("error_code") if isinstance(response, dict) else None
         raise RuntimeError(str(code or "BROKER_RESPONSE_INVALID"))
-    return response.get("data")
+    data = response.get("data")
+    host_evidence_ref = response.get("host_evidence_ref")
+    if not isinstance(data, dict) or (
+        host_evidence_ref is not None
+        and (not isinstance(host_evidence_ref, str) or not host_evidence_ref.strip())
+    ):
+        raise RuntimeError("BROKER_RESPONSE_INVALID")
+    return BrokerCallResult(data, host_evidence_ref=host_evidence_ref)

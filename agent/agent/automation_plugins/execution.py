@@ -14,6 +14,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable, Mapping, TypeVar
 
 from agent.automation_plugins.errors import PluginExecutionError
+from agent.automation_plugins.host_capability_registry import (
+    CapabilityEffect,
+    governance_for_effect,
+)
 from agent.automation_plugins.code_owned_fields import (
     SCAN_PHASE_PREVIEW,
     apply_scan_execution_boundary,
@@ -54,6 +58,13 @@ _FORBIDDEN_ARGUMENT_TOKENS = ("password", "cookie", "credential", "secret", "tok
 _MAX_SERVICE_CALL_DEPTH = 8
 _SERVICE_INVOKE_CONTRIBUTION_ID = "host.service.invoke"
 _T = TypeVar("_T")
+_SERVICE_OPERATION_TYPES = {
+    CapabilityEffect.READ: "read",
+    CapabilityEffect.COMPUTE: "compute",
+    CapabilityEffect.INTERNAL_WRITE: "internal_projection_write",
+    CapabilityEffect.EXTERNAL_WRITE: "external_write",
+    CapabilityEffect.DESTRUCTIVE: "destructive",
+}
 
 
 class FilesystemPluginIntegrityVerifier:
@@ -268,6 +279,7 @@ class PluginExecutionRouter:
         *,
         service: str,
         operation: str,
+        effect: CapabilityEffect,
         call_chain: tuple[str, ...],
     ) -> dict[str, Any]:
         metadata = capability.get("_plugin_runtime")
@@ -287,11 +299,17 @@ class PluginExecutionRouter:
             if isinstance(item, Mapping) and item.get("service") == service
         ]
         operations = matches[0].get("operations") if len(matches) == 1 else None
+        operation_effects = {
+            str(item.get("name") or ""): str(item.get("effect") or "")
+            for item in operations or ()
+            if isinstance(item, Mapping) and set(item) == {"name", "effect"}
+        }
         if (
             not service
             or not operation
             or not isinstance(operations, (list, tuple))
-            or operation not in operations
+            or len(operation_effects) != len(operations)
+            or operation_effects.get(operation) != effect.value
         ):
             raise PluginExecutionError(
                 "service Provider operation is absent from its committed contract",
@@ -326,7 +344,119 @@ class PluginExecutionRouter:
                 "contribution_id": _SERVICE_INVOKE_CONTRIBUTION_ID,
                 "contribution_kind": "service",
             },
+            "service_governance": governance_for_effect(effect).to_mapping(),
         }
+
+    @staticmethod
+    def _service_effect_capability(
+        capability: Mapping[str, Any],
+        effect: CapabilityEffect,
+    ) -> dict[str, Any]:
+        """Bind Provider lease governance to the exact immutable operation.
+
+        A Service v2 package can expose read and protected operations together;
+        its primary tool contract is therefore not sufficient to decide one
+        internal call's lease outcome.  The Registry-selected manifest effect
+        is the sole authority for this invocation.
+        """
+
+        operation_type = _SERVICE_OPERATION_TYPES.get(effect)
+        if operation_type is None:
+            raise PluginExecutionError(
+                "service Provider operation effect is invalid",
+                code="SERVICE_OPERATION_UNDECLARED",
+            )
+        governance = governance_for_effect(effect).to_mapping()
+        resolved = copy.deepcopy(dict(capability))
+        for field_name, value in governance.items():
+            resolved[field_name] = copy.deepcopy(value)
+        resolved["operation_type"] = operation_type
+        return resolved
+
+    @classmethod
+    def _service_contribution_capability(
+        cls,
+        capability: Mapping[str, Any],
+        *,
+        contribution_id: str,
+    ) -> dict[str, Any]:
+        """Resolve one direct Service v2 contribution from committed material."""
+
+        metadata = capability.get("_plugin_runtime")
+        compiled_invocations = (
+            metadata.get("compiled_invocations")
+            if isinstance(metadata, Mapping)
+            else None
+        )
+        compiled = (
+            compiled_invocations.get(contribution_id)
+            if isinstance(compiled_invocations, Mapping)
+            else None
+        )
+        target = compiled.get("target") if isinstance(compiled, Mapping) else None
+        governance = (
+            compiled.get("governance") if isinstance(compiled, Mapping) else None
+        )
+        exact_governance = cls._validated_service_governance(governance)
+        if (
+            not isinstance(target, Mapping)
+            or set(target)
+            != {
+                "service",
+                "operation",
+                "contribution_id",
+                "contribution_kind",
+            }
+            or target.get("contribution_id") != contribution_id
+            or any(
+                not isinstance(target.get(field_name), str)
+                or not str(target.get(field_name) or "").strip()
+                for field_name in (
+                    "service",
+                    "operation",
+                    "contribution_id",
+                    "contribution_kind",
+                )
+            )
+        ):
+            raise PluginExecutionError(
+                "service-v2 contribution target is invalid",
+                code="PLUGIN_GENERATION_METADATA_INVALID",
+            )
+        try:
+            effect = CapabilityEffect(str(exact_governance["effect"]))
+        except ValueError as exc:
+            raise PluginExecutionError(
+                "service-v2 contribution effect is invalid",
+                code="PLUGIN_GENERATION_METADATA_INVALID",
+            ) from exc
+        resolved = cls._service_effect_capability(capability, effect)
+        resolved["service"] = str(target["service"])
+        resolved["operation"] = str(target["operation"])
+        return resolved
+
+    @staticmethod
+    def _validated_service_governance(value: object) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            raise PluginExecutionError(
+                "service invocation governance is invalid",
+                code="PLUGIN_GENERATION_METADATA_INVALID",
+            )
+        try:
+            effect = CapabilityEffect(str(value.get("effect") or ""))
+        except (TypeError, ValueError) as exc:
+            raise PluginExecutionError(
+                "service invocation governance effect is invalid",
+                code="PLUGIN_GENERATION_METADATA_INVALID",
+            ) from exc
+        expected = governance_for_effect(effect).to_mapping()
+        observed = copy.deepcopy(dict(value))
+        if canonical_json_bytes(observed) != canonical_json_bytes(expected):
+            raise PluginExecutionError(
+                "service invocation governance drifted",
+                code="PLUGIN_GENERATION_METADATA_INVALID",
+            )
+        return expected
 
     @staticmethod
     async def _terminate(proc: asyncio.subprocess.Process) -> None:
@@ -623,10 +753,10 @@ class PluginExecutionRouter:
         process_launched: bool,
         started_mutating_call_count: int | None,
     ) -> RuntimeLeaseOutcome:
-        if capability.get("operation_type") not in _WRITE_TYPES:
-            return RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
         if started_mutating_call_count is not None and started_mutating_call_count > 0:
             return RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
+        if capability.get("operation_type") not in _WRITE_TYPES:
+            return RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
         if started_mutating_call_count == 0:
             return RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
         return (
@@ -652,7 +782,21 @@ class PluginExecutionRouter:
         process_success = result.get("success") is True or str(result.get("status") or "").upper() == "SUCCESS"
         if process_success:
             if capability.get("operation_type") in _WRITE_TYPES:
-                return RuntimeLeaseOutcome.VERIFYING
+                if started_mutating_call_count == 0:
+                    return RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
+                if (
+                    isinstance(started_mutating_call_count, int)
+                    and not isinstance(started_mutating_call_count, bool)
+                    and started_mutating_call_count > 0
+                ):
+                    return RuntimeLeaseOutcome.VERIFYING
+                return RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
+            if (
+                isinstance(started_mutating_call_count, int)
+                and not isinstance(started_mutating_call_count, bool)
+                and started_mutating_call_count > 0
+            ):
+                return RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
             return RuntimeLeaseOutcome.SUCCEEDED
         return PluginExecutionRouter._write_failure_outcome(
             capability,
@@ -675,6 +819,26 @@ class PluginExecutionRouter:
             execution_state["started_mutating_call_count"] = observed
         except Exception:
             execution_state["started_mutating_call_count"] = None
+
+    def _observe_host_call_observations(
+        self,
+        capability: str,
+        execution_state: dict[str, object],
+    ) -> None:
+        try:
+            observer = getattr(self._issuer, "broker_call_observations", None)
+            if not callable(observer):
+                raise ValueError("broker observations are unavailable")
+            observed = observer(capability)
+            if not isinstance(observed, (list, tuple)) or any(
+                not isinstance(item, Mapping) for item in observed
+            ):
+                raise ValueError("broker observations are invalid")
+            execution_state["host_call_observations"] = tuple(
+                copy.deepcopy(dict(item)) for item in observed
+            )
+        except Exception:
+            execution_state["host_call_observations"] = ()
 
     def _failure_code(
         self,
@@ -816,15 +980,25 @@ class PluginExecutionRouter:
                 generation=raw_generation,
             )
         else:
-            if set(_service_target) != {"service", "operation"}:
+            if set(_service_target) != {"service", "operation", "effect"}:
                 raise PluginExecutionError(
                     "service invocation target is invalid",
                     code="SERVICE_PROVIDER_ROUTE_INVALID",
                 )
+            try:
+                service_effect = CapabilityEffect(
+                    str(_service_target.get("effect") or "")
+                )
+            except (TypeError, ValueError) as exc:
+                raise PluginExecutionError(
+                    "service invocation effect is invalid",
+                    code="SERVICE_OPERATION_UNDECLARED",
+                ) from exc
             run_binding = self._service_run_binding(
                 capability,
                 service=str(_service_target.get("service") or ""),
                 operation=str(_service_target.get("operation") or ""),
+                effect=service_effect,
                 call_chain=_service_call_chain,
             )
         timeout = max(1, min(int(capability.get("timeout") or 60), 3600))
@@ -871,6 +1045,19 @@ class PluginExecutionRouter:
                 lease,
                 automation_id=automation_id,
             )
+            if _service_target is not None:
+                resolved = self._service_effect_capability(resolved, service_effect)
+            else:
+                resolved_metadata = resolved.get("_plugin_runtime")
+                if (
+                    isinstance(resolved_metadata, Mapping)
+                    and resolved_metadata.get("runtime_model")
+                    == PluginRuntimeModel.SERVICE_V2.value
+                ):
+                    resolved = self._service_contribution_capability(
+                        resolved,
+                        contribution_id=str(run_binding["contract_id"]),
+                    )
             try:
                 initial_scan_phase = resolve_scan_capability_phase(capability, params)
                 resolved_scan_phase = resolve_scan_capability_phase(resolved, params)
@@ -894,7 +1081,11 @@ class PluginExecutionRouter:
             raise
         is_scan_preview = resolved_scan_phase == SCAN_PHASE_PREVIEW
         outcome = RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
-        execution_state: dict[str, object] = {"process_launched": False, "started_mutating_call_count": None}
+        execution_state: dict[str, object] = {
+            "process_launched": False,
+            "started_mutating_call_count": None,
+            "host_call_observations": (),
+        }
         try:
             result = await self._execute_plugin(
                 resolved,
@@ -953,6 +1144,9 @@ class PluginExecutionRouter:
                             "started_mutating_call_count"
                         ],
                         orchestration_run_id=run_binding["run_id"],
+                        host_call_observations=tuple(
+                            execution_state["host_call_observations"]
+                        ),
                     ),
                 )
             return result
@@ -1012,8 +1206,14 @@ class PluginExecutionRouter:
         *,
         service: str,
         operation: str,
-        write: bool,
+        effect: CapabilityEffect,
+        verification: GenerationVerificationContext,
     ) -> bool:
+        write = effect in {
+            CapabilityEffect.INTERNAL_WRITE,
+            CapabilityEffect.EXTERNAL_WRITE,
+            CapabilityEffect.DESTRUCTIVE,
+        }
         data = result.get("data")
         meta = result.get("meta")
         evidence = data.get("evidence") if isinstance(data, Mapping) else None
@@ -1043,6 +1243,19 @@ class PluginExecutionRouter:
             or str(meta.get("write_outcome") or "").upper() != "WRITE_VERIFIED"
         ):
             return False
+        if write:
+            host_refs = [
+                observation.get("evidence_ref")
+                for observation in verification.host_call_observations
+                if isinstance(observation, Mapping)
+                and isinstance(observation.get("evidence_ref"), str)
+                and observation.get("evidence_ref", "").strip()
+            ]
+            if (
+                len(host_refs) != len(verification.host_call_observations)
+                or refs != host_refs
+            ):
+                return False
         return True
 
     async def _finalize_service_write(
@@ -1103,6 +1316,7 @@ class PluginExecutionRouter:
         *,
         service: str,
         operation: str,
+        effect: CapabilityEffect,
         call_chain: tuple[str, ...],
     ) -> Mapping[str, Any]:
         """Execute an internal Provider through the normal lease and sandbox path."""
@@ -1110,7 +1324,11 @@ class PluginExecutionRouter:
         result = await self.execute(
             capability,
             arguments,
-            _service_target={"service": service, "operation": operation},
+            _service_target={
+                "service": service,
+                "operation": operation,
+                "effect": effect.value,
+            },
             _service_call_chain=call_chain,
         )
         verification = getattr(result, "generation_verification", None)
@@ -1121,12 +1339,22 @@ class PluginExecutionRouter:
                     code="SERVICE_PROVIDER_EVIDENCE_INVALID",
                 )
             return dict(result)
-        write = verification.requires_write_verification is True
+        write = effect in {
+            CapabilityEffect.INTERNAL_WRITE,
+            CapabilityEffect.EXTERNAL_WRITE,
+            CapabilityEffect.DESTRUCTIVE,
+        }
+        if write != (verification.requires_write_verification is True):
+            raise PluginExecutionError(
+                "service Provider lease effect changed during execution",
+                code="SERVICE_PROVIDER_EVIDENCE_INVALID",
+            )
         evidence_valid = self._service_result_has_evidence(
             result,
             service=service,
             operation=operation,
-            write=write,
+            effect=effect,
+            verification=verification,
         )
         if not write:
             if verification.started_mutating_call_count != 0 or not evidence_valid:
@@ -1226,6 +1454,26 @@ class PluginExecutionRouter:
         ):
             raise PluginExecutionError("plugin capability declaration is incomplete")
         issued_runtime_permissions = copy.deepcopy(dict(runtime_permissions))
+        if runtime_model == PluginRuntimeModel.SERVICE_V2.value:
+            raw_service_governance = run_binding.get("service_governance")
+            if raw_service_governance is None:
+                compiled_invocations = metadata.get("compiled_invocations")
+                compiled = (
+                    compiled_invocations.get(run_binding.get("contract_id"))
+                    if isinstance(compiled_invocations, Mapping)
+                    else None
+                )
+                raw_service_governance = (
+                    compiled.get("governance")
+                    if isinstance(compiled, Mapping)
+                    else None
+                )
+            exact_service_governance = self._validated_service_governance(
+                raw_service_governance
+            )
+            issued_runtime_permissions["_service_effect_ceiling"] = str(
+                exact_service_governance["effect"]
+            )
         if service_call_chain:
             issued_runtime_permissions["_service_call_chain"] = list(
                 service_call_chain
@@ -1264,6 +1512,7 @@ class PluginExecutionRouter:
             direct_contribution = False
             if service_target is not None:
                 target = service_target
+                governance = run_binding.get("service_governance")
             else:
                 compiled_invocations = metadata.get("compiled_invocations")
                 if not isinstance(compiled_invocations, Mapping):
@@ -1286,6 +1535,9 @@ class PluginExecutionRouter:
                 target = (
                     compiled.get("target") if isinstance(compiled, Mapping) else None
                 )
+                governance = (
+                    compiled.get("governance") if isinstance(compiled, Mapping) else None
+                )
             if (
                 not isinstance(target, Mapping)
                 or set(target)
@@ -1307,12 +1559,14 @@ class PluginExecutionRouter:
                     "service-v2 invocation target is invalid",
                     code="PLUGIN_GENERATION_METADATA_INVALID",
                 )
+            exact_governance = self._validated_service_governance(governance)
             payload_contract.update(
                 {
                     "schema_version": 2,
                     "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
                     "entrypoint": run_binding["entrypoint"],
                     "target": copy.deepcopy(dict(target)),
+                    "governance": exact_governance,
                 }
             )
         payload = canonical_json_bytes(payload_contract)
@@ -1518,6 +1772,7 @@ class PluginExecutionRouter:
             self._running.pop(invocation_id, None)
             if execution_state is not None:
                 self._observe_started_mutating_calls(token, execution_state)
+                self._observe_host_call_observations(token, execution_state)
             self._issuer.revoke(token)
 
     def running_tool_info(self, tool_name: str) -> dict[str, Any]:

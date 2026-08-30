@@ -831,6 +831,14 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     }
                     if version.runtime_model is PluginRuntimeModel.SERVICE_V2:
                         invocation_contract = contract.invocation_contracts[source]
+                        governance = invocation_contract.get("governance")
+                        if not isinstance(governance, Mapping):
+                            raise PluginConflictError(
+                                "service-v2 invocation governance is unavailable"
+                            )
+                        compiled_after[source]["governance"] = copy.deepcopy(
+                            dict(governance)
+                        )
                         compiled_after[source]["target"] = {
                             "service": str(invocation_contract.get("service") or ""),
                             "operation": str(invocation_contract.get("operation") or ""),

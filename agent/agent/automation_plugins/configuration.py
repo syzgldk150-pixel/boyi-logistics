@@ -278,6 +278,14 @@ class AutomationProjectConfigurationService:
             }
             if entry.runtime_model == PluginRuntimeModel.SERVICE_V2.value:
                 invocation_contract = entry.invocation_contracts[source]
+                governance = invocation_contract.get("governance")
+                if not isinstance(governance, Mapping):
+                    raise PluginConflictError(
+                        "service-v2 invocation governance is unavailable"
+                    )
+                compiled_invocations[source]["governance"] = copy.deepcopy(
+                    dict(governance)
+                )
                 compiled_invocations[source]["target"] = {
                     "service": str(invocation_contract.get("service") or ""),
                     "operation": str(invocation_contract.get("operation") or ""),

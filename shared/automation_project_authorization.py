@@ -36,6 +36,12 @@ _CORE_GOVERNANCE_FIELDS = (
     "postconditions",
     "project_full_auto_allowed",
 )
+_SERVICE_V2_TOOL_GOVERNANCE_FIELDS = _CORE_GOVERNANCE_FIELDS + (
+    "effect",
+    "lock_class",
+    "harness_allowed",
+    "broker_effect",
+)
 
 
 class AutomationProjectPolicyMode(str, Enum):
@@ -191,6 +197,80 @@ class InvocationArgumentContract:
     dynamic_argument_resolvers: Mapping[str, str]
     input_schema: Mapping[str, Any] | None = None
     contribution_id: str | None = None
+    governance: Mapping[str, Any] | None = None
+
+
+_SERVICE_V2_INVOCATION_GOVERNANCE_FIELDS = frozenset(
+    {
+        "effect",
+        "operation_type",
+        "risk_level",
+        "lock_class",
+        "evidence",
+        "postconditions",
+        "retry",
+        "harness_allowed",
+        "broker_effect",
+        "approval",
+        "idempotency",
+        "project_full_auto_allowed",
+    }
+)
+
+
+def _service_v2_invocation_governance(
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    raw = contract.get("governance")
+    if (
+        not isinstance(raw, Mapping)
+        or set(raw) != _SERVICE_V2_INVOCATION_GOVERNANCE_FIELDS
+    ):
+        raise AutomationProjectContractError("PLUGIN_INVOCATION_GOVERNANCE_INVALID")
+    if (
+        raw.get("effect")
+        not in {
+            "read",
+            "compute",
+            "internal_write",
+            "external_write",
+            "destructive",
+        }
+        or raw.get("operation_type")
+        not in {
+            "read",
+            "compute",
+            "internal_projection_write",
+            "external_write",
+            "destructive",
+        }
+        or raw.get("risk_level") not in {"low", "medium", "high", "extreme"}
+        or not isinstance(raw.get("lock_class"), str)
+        or not str(raw.get("lock_class") or "").strip()
+        or raw.get("broker_effect") not in {"read", "write"}
+        or type(raw.get("harness_allowed")) is not bool
+        or type(raw.get("project_full_auto_allowed")) is not bool
+        or not isinstance(raw.get("evidence"), Mapping)
+        or not isinstance(raw.get("postconditions"), list)
+        or any(not isinstance(item, Mapping) for item in raw["postconditions"])
+        or not isinstance(raw.get("retry"), Mapping)
+        or not isinstance(raw.get("approval"), Mapping)
+        or not isinstance(raw.get("idempotency"), Mapping)
+    ):
+        raise AutomationProjectContractError("PLUGIN_INVOCATION_GOVERNANCE_INVALID")
+    return {str(key): value for key, value in raw.items()}
+
+
+def _governance_objects(value: Any) -> tuple[Mapping[str, Any], ...]:
+    if value in (None, "", (), []):
+        return ()
+    if isinstance(value, Mapping):
+        return (dict(value),)
+    if not isinstance(value, (list, tuple)) or any(
+        not isinstance(item, Mapping) for item in value
+    ):
+        return ()
+    return tuple(dict(item) for item in value)
 
 
 @dataclass(frozen=True)
@@ -252,13 +332,35 @@ class CompiledAutomationProjectContract:
         if len(steps) != 1:
             return False
         step = steps[0]
+        effective_governance = invocation_contract.governance or {
+            "operation_type": self.operation_type,
+            "risk_level": self.risk_level,
+            "evidence": (),
+            "postconditions": (),
+        }
         if (
             str(getattr(step, "tool_name", "")) != self.tool_name
             or str(getattr(step, "tool_version", "")) != self.tool_version
             or str(getattr(getattr(step, "operation_type", ""), "value", getattr(step, "operation_type", "")))
-            != self.operation_type
+            != str(effective_governance.get("operation_type") or "")
         ):
             return False
+        if invocation_contract.governance is not None:
+            if (
+                str(
+                    getattr(
+                        getattr(step, "risk_level", ""),
+                        "value",
+                        getattr(step, "risk_level", ""),
+                    )
+                )
+                != str(effective_governance.get("risk_level") or "")
+                or tuple(getattr(step, "expected_evidence", ()) or ())
+                != _governance_objects(effective_governance.get("evidence"))
+                or tuple(getattr(step, "postconditions", ()) or ())
+                != _governance_objects(effective_governance.get("postconditions"))
+            ):
+                return False
         return _arguments_match(
             invocation_contract.expected_arguments,
             getattr(step, "arguments", {}),
@@ -306,9 +408,12 @@ def compile_automation_project_contract(
     risk_level = str(capability.get("risk_level") or "").strip()
     if not tool_version or not operation_type or not risk_level:
         raise AutomationProjectContractError("PROJECT_TOOL_CONTRACT_INVALID")
-    tool_contract_payload = {
-        key: capability.get(key) for key in _CORE_GOVERNANCE_FIELDS
-    }
+    governance_fields = (
+        _SERVICE_V2_TOOL_GOVERNANCE_FIELDS
+        if runtime_model == "SERVICE_V2"
+        else _CORE_GOVERNANCE_FIELDS
+    )
+    tool_contract_payload = {key: capability.get(key) for key in governance_fields}
     tool_contract_hash = canonical_sha256(tool_contract_payload)
     _validate_plugin_fragment(
         plugin_fragment,
@@ -485,6 +590,13 @@ def compile_automation_project_contract(
                 if runtime_model == "SERVICE_V2"
                 else None
             ),
+            governance=(
+                _service_v2_invocation_governance(
+                    plugin_fragment["invocation_contracts"][scheduler_contribution]
+                )
+                if runtime_model == "SERVICE_V2"
+                else None
+            ),
         )
         schedule_snapshots.append(
             {
@@ -525,6 +637,13 @@ def compile_automation_project_contract(
                 "input_schema"
             ],
             contribution_id=entrypoint if runtime_model == "SERVICE_V2" else None,
+            governance=(
+                _service_v2_invocation_governance(
+                    plugin_fragment["invocation_contracts"][entrypoint]
+                )
+                if runtime_model == "SERVICE_V2"
+                else None
+            ),
         )
 
     invocation_snapshots: list[dict[str, Any]] = []
@@ -539,6 +658,7 @@ def compile_automation_project_contract(
         }
         if runtime_model == "SERVICE_V2":
             invocation_snapshot["contribution_id"] = item.contribution_id
+            invocation_snapshot["governance"] = dict(item.governance or {})
         invocation_snapshots.append(invocation_snapshot)
     snapshot = {
         "schema_version": 1,
@@ -1040,7 +1160,12 @@ def _validate_plugin_fragment(
     governance_anchor = fragment.get("governance_anchor")
     if not isinstance(governance_anchor, Mapping):
         raise AutomationProjectContractError("PLUGIN_GOVERNANCE_ANCHOR_INVALID")
-    if set(governance_anchor) != set(_CORE_GOVERNANCE_FIELDS):
+    governance_fields = (
+        _SERVICE_V2_TOOL_GOVERNANCE_FIELDS
+        if runtime_model == "SERVICE_V2"
+        else _CORE_GOVERNANCE_FIELDS
+    )
+    if set(governance_anchor) != set(governance_fields):
         raise AutomationProjectContractError("PLUGIN_GOVERNANCE_ANCHOR_INVALID")
     if str(governance_anchor.get("name") or "") != definition.tool_name:
         raise AutomationProjectContractError("PLUGIN_TOOL_IDENTITY_MISMATCH")
@@ -1051,7 +1176,7 @@ def _validate_plugin_fragment(
     ):
         raise AutomationProjectContractError("PLUGIN_GOVERNANCE_ANCHOR_INVALID")
     signed_action_governance = {
-        key: plugin_tool.get(key) for key in _CORE_GOVERNANCE_FIELDS
+        key: plugin_tool.get(key) for key in governance_fields
     }
     if canonical_sha256(signed_action_governance) != canonical_sha256(
         governance_anchor
@@ -1140,6 +1265,8 @@ def _validate_plugin_fragment(
                 "service",
                 "operation",
                 "contribution_kind",
+                "effect",
+                "governance",
             }
         if set(raw_contract) != expected_contract_fields:
             raise AutomationProjectContractError("PLUGIN_INVOCATION_CONTRACT_INVALID")
@@ -1154,6 +1281,12 @@ def _validate_plugin_fragment(
             raise AutomationProjectContractError("PLUGIN_INVOCATION_CONTRACT_INVALID")
         if not isinstance(raw_contract.get("dynamic_resolvers"), Mapping):
             raise AutomationProjectContractError("PLUGIN_INVOCATION_CONTRACT_INVALID")
+        if runtime_model == "SERVICE_V2":
+            governance = _service_v2_invocation_governance(raw_contract)
+            if raw_contract.get("effect") != governance["effect"]:
+                raise AutomationProjectContractError(
+                    "PLUGIN_INVOCATION_GOVERNANCE_INVALID"
+                )
 
     config_version = fragment.get("project_config_version")
     if type(config_version) is not int or config_version <= 0:

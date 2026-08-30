@@ -12,24 +12,19 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from agent.automation_plugins.errors import PluginManifestError
+from agent.automation_plugins.host_capability_registry import (
+    CapabilityEffect,
+    HOST_CAPABILITY_API_VERSION,
+    default_host_capability_registry,
+    effect_rank,
+    governance_for_effect,
+)
 from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
 
 
 HOST_API_VERSION = "2.0.0"
 SYSTEM_CAPABILITY_ROLE = "__system__"
 
-_READ_OPERATION_PREFIXES = (
-    "describe",
-    "find",
-    "get",
-    "inspect",
-    "list",
-    "precheck",
-    "query",
-    "read",
-    "resolve",
-    "verify",
-)
 _SUPPORTED_CAPABILITIES = frozenset(
     {
         "browser.session",
@@ -52,31 +47,6 @@ def _thaw(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_thaw(item) for item in value]
     return copy.deepcopy(value)
-
-
-def _operation_effect(operation: str) -> str:
-    normalized = str(operation or "").strip().lower()
-    terminal_verb = normalized.rsplit(".", 1)[-1]
-    return (
-        "read"
-        if normalized.startswith(_READ_OPERATION_PREFIXES)
-        or terminal_verb.startswith(_READ_OPERATION_PREFIXES)
-        else "write"
-    )
-
-
-def _capability_operation_effect(capability: str, operation: str) -> str:
-    """Classify Host API calls without trusting service operation names.
-
-    A Provider owns its service operation names, so names such as ``get_*``
-    cannot establish that the Provider is read-only.  Until the immutable
-    service contract carries an explicit effect, every cross-plugin call uses
-    the protected-write path.
-    """
-
-    if capability == "service.invoke":
-        return "write"
-    return _operation_effect(operation)
 
 
 def _result_schema() -> dict[str, Any]:
@@ -121,18 +91,31 @@ class ServiceV2ProjectContract:
         manifest: AutomationPluginManifestV2,
     ) -> "ServiceV2ProjectContract":
         if not manifest.supports_host_api(HOST_API_VERSION):
-            raise PluginManifestError(
-                f"service-v2 plugin does not support Host API {HOST_API_VERSION}"
-            )
-        capability_names = {
-            str(item["name"])
-            for item in manifest.capabilities
-        }
+            raise PluginManifestError(f"service-v2 plugin does not support Host API {HOST_API_VERSION}")
+        capability_names = {str(item["name"]) for item in manifest.capabilities}
         unsupported = capability_names - _SUPPORTED_CAPABILITIES
         if unsupported:
-            raise PluginManifestError(
-                f"unsupported service-v2 capabilities: {sorted(unsupported)}"
-            )
+            raise PluginManifestError(f"unsupported service-v2 capabilities: {sorted(unsupported)}")
+
+        registry = default_host_capability_registry()
+        provided_operation_effects: dict[tuple[str, str], CapabilityEffect] = {}
+        for provided in manifest.provides:
+            service = str(provided["service"])
+            operations = provided.get("operations")
+            if not isinstance(operations, tuple):
+                raise PluginManifestError("provided service operations are invalid")
+            for operation in operations:
+                if not isinstance(operation, Mapping):
+                    raise PluginManifestError("provided service operation is invalid")
+                name = str(operation.get("name") or "")
+                try:
+                    effect = CapabilityEffect(str(operation.get("effect") or ""))
+                except ValueError as exc:
+                    raise PluginManifestError("provided service operation effect is invalid") from exc
+                key = (service, name)
+                if not name or key in provided_operation_effects:
+                    raise PluginManifestError("provided service operation is ambiguous")
+                provided_operation_effects[key] = effect
 
         entrypoints: list[str] = []
         defaults: list[str] = []
@@ -141,10 +124,7 @@ class ServiceV2ProjectContract:
         config_properties = manifest.config_schema.get("properties")
         if not isinstance(config_properties, Mapping):
             raise PluginManifestError("service-v2 config properties are invalid")
-        template = {
-            str(field): {"source": "project_config", "key": str(field)}
-            for field in config_properties
-        }
+        template = {str(field): {"source": "project_config", "key": str(field)} for field in config_properties}
         input_schema = {
             "type": "object",
             "additionalProperties": False,
@@ -160,9 +140,7 @@ class ServiceV2ProjectContract:
         ):
             raw_items = manifest.contributes.get(contribution_kind)
             if not isinstance(raw_items, tuple):
-                raise PluginManifestError(
-                    f"service-v2 contribution list is invalid: {contribution_kind}"
-                )
+                raise PluginManifestError(f"service-v2 contribution list is invalid: {contribution_kind}")
             for raw_item in raw_items:
                 item = _thaw(raw_item)
                 entrypoint_id = str(item["id"])
@@ -170,6 +148,13 @@ class ServiceV2ProjectContract:
                 kinds[entrypoint_id] = contribution_kind
                 if item.get("default_enabled") is True:
                     defaults.append(entrypoint_id)
+                try:
+                    effect = provided_operation_effects[(str(item["service"]), str(item["operation"]))]
+                except KeyError as exc:
+                    raise PluginManifestError(
+                        "contribution operation is absent from its provider effect contract"
+                    ) from exc
+                governance = governance_for_effect(effect).to_mapping()
                 invocations[entrypoint_id] = {
                     "input_schema": copy.deepcopy(input_schema),
                     "service": str(item["service"]),
@@ -177,12 +162,12 @@ class ServiceV2ProjectContract:
                     "contribution_kind": contribution_kind,
                     "argument_template": copy.deepcopy(template),
                     "dynamic_resolvers": {},
+                    "effect": effect.value,
+                    "governance": governance,
                 }
 
         if not entrypoints:
-            raise PluginManifestError(
-                "service-v2 plugin must contribute at least one entrypoint"
-            )
+            raise PluginManifestError("service-v2 plugin must contribute at least one entrypoint")
 
         account_roles = tuple(
             {
@@ -192,43 +177,95 @@ class ServiceV2ProjectContract:
             }
             for item in manifest.account_roles
         )
-        resource_roles = tuple(
-            _thaw(item) for item in manifest.resource_roles
-        )
+        resource_roles = tuple(_thaw(item) for item in manifest.resource_roles)
         broker_operations: list[dict[str, Any]] = []
+        seen_broker_operations: set[tuple[str, str]] = set()
+        max_broker_calls = 0
+        scheduler_contributed = bool(manifest.contributes.get("scheduler"))
         for capability in manifest.capabilities:
             name = str(capability["name"])
-            bound_role = (
-                capability.get("account_role")
-                or capability.get("resource_role")
-                or SYSTEM_CAPABILITY_ROLE
-            )
+            account_role = capability.get("account_role")
+            resource_role = capability.get("resource_role")
+            if name == "service.invoke" and (
+                account_role is not None or resource_role is not None
+            ):
+                raise PluginManifestError(
+                    "service.invoke must use the Host-owned system role"
+                )
             for operation in capability["operations"]:
+                action = str(operation)
+                identity = (name, action)
+                if identity in seen_broker_operations:
+                    raise PluginManifestError("duplicate Host capability operation")
+                seen_broker_operations.add(identity)
+                if name == "service.invoke":
+                    # The target Provider owns the immutable operation effect.
+                    # This static admission ceiling is deliberately protective;
+                    # capability_proxy_v2 must resolve and enforce the exact
+                    # Provider effect immediately before dispatch.
+                    governance = governance_for_effect(CapabilityEffect.EXTERNAL_WRITE).to_mapping()
+                    dynamic_effect = True
+                    per_call_limit = 64
+                else:
+                    try:
+                        descriptor = registry.resolve(
+                            api_version=HOST_CAPABILITY_API_VERSION,
+                            capability=name,
+                            action=action,
+                        )
+                    except Exception as exc:
+                        if getattr(exc, "code", None) == "CAPABILITY_UNAVAILABLE":
+                            raise PluginManifestError("Host capability is unavailable") from exc
+                        raise
+                    governance = descriptor.governance.to_mapping()
+                    dynamic_effect = False
+                    if descriptor.requires_account_role:
+                        if not account_role or resource_role is not None:
+                            raise PluginManifestError(
+                                "Host capability requires exactly one account role"
+                            )
+                    elif descriptor.requires_resource_role:
+                        if not resource_role or account_role is not None:
+                            raise PluginManifestError(
+                                "Host capability requires exactly one resource role"
+                            )
+                    elif account_role is not None or resource_role is not None:
+                        raise PluginManifestError(
+                            "Host capability does not accept a bound role"
+                        )
+                    if scheduler_contributed and not descriptor.scheduler_allowed:
+                        raise PluginManifestError(
+                            "Host capability is unavailable to scheduler contributions"
+                        )
+                    per_call_limit = descriptor.per_call_limit
+                bound_role = account_role or resource_role or SYSTEM_CAPABILITY_ROLE
+                max_broker_calls += per_call_limit
                 broker_operations.append(
                     {
                         "operation": name,
-                        "action": str(operation),
+                        "action": action,
                         "roles": [str(bound_role)],
-                        "effect": _capability_operation_effect(
-                            name,
-                            str(operation),
-                        ),
+                        "effect": str(governance["effect"]),
+                        "broker_effect": str(governance["broker_effect"]),
+                        "governance": governance,
+                        "dynamic_effect": dynamic_effect,
                     }
                 )
         runtime_permissions = {
             "network": "http.request" in capability_names,
             "browser": "browser.session" in capability_names,
             "office": False,
-            "file_roles": [
-                name for name in ("file.read", "file.write") if name in capability_names
-            ],
+            "file_roles": [name for name in ("file.read", "file.write") if name in capability_names],
             "broker_operations": broker_operations,
-            "max_broker_calls": (
-                min(1000, len(broker_operations) * 64) if broker_operations else 0
-            ),
+            "max_broker_calls": min(1000, max_broker_calls),
         }
         primary = copy.deepcopy(dict(next(iter(invocations.values()))))
-        mutating = any(item["effect"] == "write" for item in broker_operations)
+        strictest = max(
+            invocations.values(),
+            key=lambda item: effect_rank(str(item["effect"])),
+        )
+        summary_governance = copy.deepcopy(dict(strictest["governance"]))
+        mutating = str(summary_governance["broker_effect"]) == "write"
         tool_contract = {
             "name": f"service.{manifest.plugin_id}",
             "version": manifest.version,
@@ -239,26 +276,18 @@ class ServiceV2ProjectContract:
             "timeout": 3600,
             "heavy": True,
             "mutating": mutating,
-            "operation_type": "external_write" if mutating else "read",
-            "risk_level": "high",
-            "approval": {"mode": "project_policy"},
+            **summary_governance,
             "permissions": sorted(capability_names),
-            "idempotency": {"required": True, "scope": "project_run"},
-            "retry": {"max_attempts": 1},
-            "evidence": {
-                "required": True,
-                "required_fields": ["service", "operation", "outcome"],
-            },
-            "postconditions": [{"name": "plugin_result_contract_valid"}],
-            "project_full_auto_allowed": True,
             "service": primary["service"],
             "operation": primary["operation"],
         }
         governance_fields = (
             "name",
             "version",
+            "effect",
             "operation_type",
             "risk_level",
+            "lock_class",
             "approval",
             "permissions",
             "idempotency",
@@ -266,10 +295,10 @@ class ServiceV2ProjectContract:
             "evidence",
             "postconditions",
             "project_full_auto_allowed",
+            "harness_allowed",
+            "broker_effect",
         )
-        governance_anchor = {
-            field: copy.deepcopy(tool_contract[field]) for field in governance_fields
-        }
+        governance_anchor = {field: copy.deepcopy(tool_contract[field]) for field in governance_fields}
         scheduler_items = manifest.contributes.get("scheduler")
         scheduling = {
             "supported": bool(scheduler_items),
@@ -296,9 +325,7 @@ class ServiceV2ProjectContract:
 
         import hashlib
 
-        return hashlib.sha256(
-            canonical_json_bytes(dict(self.governance_anchor))
-        ).hexdigest()
+        return hashlib.sha256(canonical_json_bytes(dict(self.governance_anchor))).hexdigest()
 
 
 __all__ = [

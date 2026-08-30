@@ -26,6 +26,12 @@ from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
 from agent.automation_plugins.service_registry import ServiceProvider, ServiceRegistry
 from agent.automation_plugins.service_v2_contract import SYSTEM_CAPABILITY_ROLE
+from agent.automation_plugins.host_capability_registry import (
+    CapabilityEffect,
+    HOST_CAPABILITY_API_VERSION,
+    default_host_capability_registry,
+    effect_rank,
+)
 from shared.orchestration_repository_support import ConcurrentUpdateError
 
 
@@ -50,9 +56,7 @@ _UNAVAILABLE_CAPABILITIES = (
     "http.request",
     "service.invoke",
 )
-UNAVAILABLE_SERVICE_V2_HANDLER_KEYS = frozenset(
-    (operation, "*") for operation in _UNAVAILABLE_CAPABILITIES
-)
+UNAVAILABLE_SERVICE_V2_HANDLER_KEYS = frozenset((operation, "*") for operation in _UNAVAILABLE_CAPABILITIES)
 SERVICE_V2_SERVICE_INVOKE_HANDLER_KEY = ("service.invoke", "*")
 _MAX_SERVICE_CALL_DEPTH = 8
 _REVIEWED_CLOCK_OPERATION = "browser.invoke"
@@ -140,6 +144,57 @@ class ServiceV2ProviderExecutor(Protocol):
 
 def _capability_error(message: str, *, code: str) -> PluginExecutionError:
     return PluginExecutionError(message, code=code)
+
+
+def _require_static_host_governance(
+    context: CoreBrokerInvocationContext,
+) -> None:
+    """Require the broker grant to reproduce the Registry descriptor exactly."""
+
+    try:
+        descriptor = default_host_capability_registry().resolve(
+            api_version=HOST_CAPABILITY_API_VERSION,
+            capability=context.operation,
+            action=context.action,
+        )
+    except PluginExecutionError as exc:
+        raise _capability_error(
+            "Host capability is unavailable",
+            code="CAPABILITY_UNAVAILABLE",
+        ) from exc
+    governance = descriptor.governance
+    if (
+        context.dynamic_effect
+        or context.signed_effect != governance.effect.value
+        or context.signed_broker_effect != governance.broker_effect
+    ):
+        raise _capability_error(
+            "signed Host capability governance drifted",
+            code="CAPABILITY_UNAVAILABLE",
+        )
+
+
+def _require_dynamic_service_invoke_governance(
+    context: CoreBrokerInvocationContext,
+) -> CapabilityEffect:
+    """Validate the only protective service.invoke admission form."""
+
+    if (
+        context.dynamic_effect is not True
+        or context.signed_effect != CapabilityEffect.EXTERNAL_WRITE.value
+        or context.signed_broker_effect != "write"
+    ):
+        raise _capability_error(
+            "service invocation governance is unavailable",
+            code="CAPABILITY_UNAVAILABLE",
+        )
+    try:
+        return CapabilityEffect(context.service_effect_ceiling)
+    except ValueError as exc:
+        raise _capability_error(
+            "service invocation effect ceiling is unavailable",
+            code="CAPABILITY_UNAVAILABLE",
+        ) from exc
 
 
 def _required_key(value: object, *, field: str) -> str:
@@ -409,9 +464,7 @@ def _declared_index(
     index_name: str,
 ) -> Mapping[str, Any]:
     matches = [
-        item
-        for item in declaration.get("indexes", ())
-        if isinstance(item, Mapping) and item.get("name") == index_name
+        item for item in declaration.get("indexes", ()) if isinstance(item, Mapping) and item.get("name") == index_name
     ]
     if len(matches) != 1:
         raise _capability_error(
@@ -426,10 +479,7 @@ def _index_value_sha256(
     fields: tuple[str, ...],
     values: Mapping[str, Any],
 ) -> str:
-    ordered_values = [
-        {"field": field_name, "value": values[field_name]}
-        for field_name in fields
-    ]
+    ordered_values = [{"field": field_name, "value": values[field_name]} for field_name in fields]
     return hashlib.sha256(_canonical_json(ordered_values)).hexdigest()
 
 
@@ -483,11 +533,7 @@ def _query_index_digest(
 ) -> str:
     index = _declared_index(declaration, index_name=index_name)
     raw_fields = index.get("fields")
-    if (
-        not isinstance(raw_fields, tuple)
-        or not raw_fields
-        or any(not isinstance(field, str) for field in raw_fields)
-    ):
+    if not isinstance(raw_fields, tuple) or not raw_fields or any(not isinstance(field, str) for field in raw_fields):
         raise _capability_error(
             "managed collection index declaration is invalid",
             code="CAPABILITY_CONTRACT_INVALID",
@@ -544,6 +590,7 @@ class ServiceV2CapabilityProxy:
         context: CoreBrokerInvocationContext,
         arguments: Mapping[str, Any],
     ) -> Mapping[str, Any]:
+        _require_static_host_governance(context)
         if context.action == "get":
             _required_arguments(arguments, {"key"})
             key = _required_key(arguments["key"], field="key")
@@ -622,6 +669,7 @@ class ServiceV2CapabilityProxy:
         context: CoreBrokerInvocationContext,
         arguments: Mapping[str, Any],
     ) -> Mapping[str, Any]:
+        _require_static_host_governance(context)
         if context.action == "get":
             _required_arguments(arguments, {"collection", "document_key"})
             collection = _required_key(arguments["collection"], field="collection")
@@ -755,9 +803,7 @@ class ServiceV2CapabilityProxy:
                     )
                     uow.commit()
             except ConcurrentUpdateError as exc:
-                if str(exc).startswith(
-                    "managed plugin document unique constraint conflict"
-                ):
+                if str(exc).startswith("managed plugin document unique constraint conflict"):
                     raise _capability_error(
                         "managed collection unique constraint conflicts with another document",
                         code="CAPABILITY_COLLECTION_UNIQUE_CONFLICT",
@@ -781,14 +827,12 @@ class ServiceV2CapabilityProxy:
     ) -> Mapping[str, Any]:
         """Invoke one required service through its unique active host Provider."""
 
-        if (
-            context.operation != "service.invoke"
-            or context.role != SYSTEM_CAPABILITY_ROLE
-        ):
+        if context.operation != "service.invoke" or context.role != SYSTEM_CAPABILITY_ROLE:
             raise _capability_error(
                 "service invocation context is invalid",
                 code="SERVICE_INVOKE_CONTEXT_INVALID",
             )
+        caller_effect = _require_dynamic_service_invoke_governance(context)
         _required_arguments(arguments, {"service", "operation", "arguments"})
         service = _required_key(arguments["service"], field="service")
         operation = _required_key(arguments["operation"], field="operation")
@@ -832,10 +876,30 @@ class ServiceV2CapabilityProxy:
             )
         provider = registry.require_operation(service, operation)
         call_chain = (*context.service_call_chain, service)
-        if context.mark_write_started is not None:
-            # A signed write call can enter an isolated Provider that mutates
-            # external state.  Record the consumer boundary before dispatch;
-            # the Provider records and verifies its own exact writes as well.
+        try:
+            effect = provider.effect
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise _capability_error(
+                "service Provider effect is unavailable",
+                code="CAPABILITY_UNAVAILABLE",
+            ) from exc
+        if effect_rank(effect) > effect_rank(caller_effect):
+            raise _capability_error(
+                "service invocation would exceed its signed effect ceiling",
+                code="SERVICE_EFFECT_ESCALATION_DENIED",
+            )
+        if (
+            effect
+            in {
+                CapabilityEffect.INTERNAL_WRITE,
+                CapabilityEffect.EXTERNAL_WRITE,
+                CapabilityEffect.DESTRUCTIVE,
+            }
+            and context.mark_write_started is not None
+        ):
+            # The Provider's immutable operation descriptor, not the consumer
+            # operation name nor a static service.invoke admission ceiling,
+            # determines whether this consumer crosses a write boundary.
             context.mark_write_started()
         result = await executor(
             provider=provider,
@@ -878,6 +942,7 @@ def _service_v2_clock_handler(
         context: CoreBrokerInvocationContext,
         arguments: Mapping[str, Any],
     ) -> Mapping[str, Any]:
+        _require_static_host_governance(context)
         if context.operation != _SERVICE_V2_CLOCK_OPERATION or context.action != action:
             raise _capability_error(
                 "service-v2 clock capability context is invalid",
@@ -928,9 +993,7 @@ def build_service_v2_capability_handler_map(
     """Return fail-closed platform handlers plus reviewed capability adapters."""
 
     if (service_registry is None) != (service_executor is None):
-        raise ValueError(
-            "service registry and executor must be configured together"
-        )
+        raise ValueError("service registry and executor must be configured together")
     proxy = ServiceV2CapabilityProxy(
         orchestration_repository,
         service_registry=service_registry,
@@ -947,9 +1010,7 @@ def build_service_v2_capability_handler_map(
     for action in _CLOCK_ACTIONS:
         reviewed_handler = reviewed.get((_REVIEWED_CLOCK_OPERATION, action))
         if reviewed_handler is not None:
-            handlers[(_SERVICE_V2_CLOCK_OPERATION, action)] = (
-                _service_v2_clock_handler(action, reviewed_handler)
-            )
+            handlers[(_SERVICE_V2_CLOCK_OPERATION, action)] = _service_v2_clock_handler(action, reviewed_handler)
     return handlers
 
 

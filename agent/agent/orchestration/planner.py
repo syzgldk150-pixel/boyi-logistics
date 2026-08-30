@@ -91,6 +91,7 @@ class DeterministicPlanner:
         capability = self._catalog.get_capability(tool_name)
         if capability is None:
             raise OrchestrationError("UNKNOWN_TOOL", f"Unknown tool: {tool_name}")
+        capability = effective_project_capability(command, capability)
 
         raw_arguments = parameters.get("arguments")
         if not isinstance(raw_arguments, Mapping):
@@ -282,6 +283,102 @@ def _project_code_owned_plan_fields(
         plugin_id=str(runtime.get("plugin_id") or "").strip(),
         trust_source=str(runtime.get("trust_source") or "").strip(),
     )
+
+
+def effective_project_capability(
+    command: Command,
+    capability: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Select immutable per-contribution governance for Service v2 plans."""
+
+    invocation = command.automation_invocation
+    runtime = capability.get("_plugin_runtime")
+    if invocation is None or not isinstance(runtime, Mapping):
+        return capability
+    if str(runtime.get("runtime_model") or "") != "SERVICE_V2":
+        return capability
+    execution_context = command.parameters.get("execution_context")
+    contribution_id = (
+        str(execution_context.get("contribution_id") or "").strip()
+        if isinstance(execution_context, Mapping)
+        else ""
+    )
+    compiled_invocations = runtime.get("compiled_invocations")
+    compiled = (
+        compiled_invocations.get(contribution_id)
+        if contribution_id and isinstance(compiled_invocations, Mapping)
+        else None
+    )
+    governance = compiled.get("governance") if isinstance(compiled, Mapping) else None
+    target = compiled.get("target") if isinstance(compiled, Mapping) else None
+    if not isinstance(governance, Mapping):
+        raise OrchestrationError(
+            "PROJECT_INVOCATION_STALE",
+            "Service v2 invocation governance is unavailable",
+        )
+    required = {
+        "effect",
+        "operation_type",
+        "risk_level",
+        "lock_class",
+        "evidence",
+        "postconditions",
+        "retry",
+        "harness_allowed",
+        "broker_effect",
+        "approval",
+        "idempotency",
+        "project_full_auto_allowed",
+    }
+    if set(governance) != required:
+        raise OrchestrationError(
+            "PROJECT_INVOCATION_STALE",
+            "Service v2 invocation governance is invalid",
+        )
+    if (
+        not isinstance(target, Mapping)
+        or set(target)
+        != {
+            "service",
+            "operation",
+            "contribution_id",
+            "contribution_kind",
+        }
+        or target.get("contribution_id") != contribution_id
+        or any(
+            not isinstance(target.get(field_name), str)
+            or not str(target.get(field_name) or "").strip()
+            for field_name in (
+                "service",
+                "operation",
+                "contribution_id",
+                "contribution_kind",
+            )
+        )
+    ):
+        raise OrchestrationError(
+            "PROJECT_INVOCATION_STALE",
+            "Service v2 invocation target is invalid",
+        )
+    effective = dict(capability)
+    for field_name in (
+        "effect",
+        "operation_type",
+        "risk_level",
+        "evidence",
+        "postconditions",
+        "retry",
+        "approval",
+        "idempotency",
+        "project_full_auto_allowed",
+        "harness_allowed",
+        "lock_class",
+        "broker_effect",
+    ):
+        effective[field_name] = governance[field_name]
+    effective["service"] = str(target["service"])
+    effective["operation"] = str(target["operation"])
+    return effective
 
 
 def _trusted_clarification_override(context: ContextSnapshot) -> dict[str, Any]:
