@@ -34,7 +34,7 @@ updated: 2026-08-31
 | TASK-EXT-005 | DONE_OFFLINE | 2026-08-31T02:27:29+08:00 | 2026-08-31T03:37:29+08:00 | 47cdfad4923ad0d02f2ec4b64112adb8ba9e994d + d4be93bd8bbbee910a29ee3f37c9576daa5855e8 |
 | TASK-EXT-006 | DONE_OFFLINE | 2026-08-31T03:38:37+08:00 | 2026-08-31T06:00:28+08:00 | a99f2c8f0813f1f314653830966f877a2924d4f2 |
 | TASK-EXT-007 | DONE_OFFLINE | 2026-08-31T06:04:44+08:00 | 2026-08-31T07:13:05+08:00 | 81f58eb89befdf54be33b67ef70e6e3d96a4cde7 |
-| TASK-EXT-008 | NOT_STARTED | — | — | — |
+| TASK-EXT-008 | DONE_OFFLINE | 2026-08-31T07:20:58+08:00 | 2026-08-31T08:30:16+08:00 | 90ad312dba83f480062fa6d99cd6ee8be371696f |
 | TASK-EXT-009A | NOT_STARTED | — | — | — |
 | TASK-EXT-009B | NOT_STARTED | — | — | — |
 | TASK-EXT-009C | NOT_STARTED | — | — | — |
@@ -160,16 +160,16 @@ updated: 2026-08-31
 
 ### TASK-EXT-008：Harness 只读运行时与 contribution
 
-- 状态：`NOT_STARTED`
-- 开始时间 / 结束时间：— / —
-- 设计决策：受限只读运行时；关闭任意 shell、文件、网络和业务写入。
-- 修改文件 / Commit SHA：— / —
-- 测试命令和结果：尚未运行。
-- 兼容性影响：新增固定 Harness 模块和动态只读工具目录。
-- 数据库影响：待审计；仅本地前向迁移可验证。
-- 未完成项：全部。
+- 状态：`DONE_OFFLINE`
+- 开始时间 / 结束时间：`2026-08-31T07:20:58+08:00` / `2026-08-31T08:30:16+08:00`
+- 设计决策：新增固定 Harness 页面、严格绑定签名管理员 principal 的 Session、专用受限 sidecar 协议和读穿现有 `ManagedContributionRegistry` 的动态 Tool Catalog；不复用 Legacy Agent 的直接 MySQL/真实 TMS 工具或普通 LLM 插件目录。Harness contribution 的 service/operation/effect 只从已验证 Manifest/compiled invocation/generation 派生，首期只接受 `read/compute` 且 `harness_allowed=true`、`broker_effect=read`，包级 shell/任意文件/任意网络/http/browser/event 与所有 Host/Provider 写能力整体关闭。激活、升级、停用和卸载继续走现有 generation transition 与原子 registry batch，无第二套插件仓储、无重启、无新数据库迁移；真实 LLM、知识/运单/轨迹/事项/Artifact 数据源、生产 Python 3.10 sandbox 和持久 Session 生产化明确留作 `PRODUCTION_GATED`。
+- 修改文件 / Commit SHA：Harness domain/session/sidecar/catalog、Agent 应用与签名 API、Service V2 Manifest/合同/投影/授权、固定 Console 页面、模块目录、文档及回归测试 / `90ad312dba83f480062fa6d99cd6ee8be371696f`。
+- 测试命令和结果：Harness/Service V2/授权定向最终 `205 passed, 41 subtests passed`；root full suite `2117 passed, 30 skipped, 296 subtests passed`；Agent full suite `1090 passed, 198 subtests passed`；Console full suite `594 passed, 211 subtests passed`。变更范围 Ruff、JSON Schema/design 解析、Harness JavaScript 语法、工具注册表（40 项）、仓库卫生、运行时导入边界、文档（76 项 Markdown）、内部 API 合同和 `git diff --check` 全部通过；独立只读最终复审结论为 `ship`。测试显式设置 `PYTHONDONTWRITEBYTECODE=1` 与 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
+- 兼容性影响：新增第 15 个固定 Harness 模块、签名管理员专用页面/API 和动态只读 Tool Catalog；Action V1 路由、Legacy Agent 的 LLM catalog 与既有模块权限保持不变。Service V2 invocation contract 继续使用 contribution ID，而 compiled transport allowlist 改为真实入口 kind，修复 Console/Harness 匹配。
+- 数据库影响：当前离线实现无需新增表、字段或迁移；复用现有 Manifest、compiled invocation、generation snapshot/effect/transition 持久字段，Session 使用进程内有界仓储并显式标记非生产持久化。
+- 未完成项：无离线实现项。真实 LLM、真实知识/运单/轨迹/事项/Artifact 数据源、生产 Python 3.10 精确锁环境、生产等价 sandbox、持久 Session、真实插件安装/授权和部署均为 `PRODUCTION_GATED`；未部署、未连接生产数据库、未访问真实 TMS/飞书数据、未执行真实业务写。
 - 下一项 TASK：`TASK-EXT-009A`。
-- 恢复说明：先确认前序 TASK 已提交推送，再将本 TASK 标为 `IN_PROGRESS`。
+- 恢复说明：确认 EXT008 代码提交与本账本 checkpoint 均已推送；从现有 `ManagedContributionRegistry`、generation transition 和 trusted invocation 开始 EXT009A。动态飞书只允许按 committed READY contribution 的精确 command 路由，固定 Action V1 必须优先；Dispatcher 不接受调用方提交 service/operation/参数/账号/资源。先修复权威空 generation 未立即撤销旧 active route 的原子切换缺口，再接独立 Feishu Dispatcher；真实 tenant、Webhook/WS、机器人回复和多进程全局 route 仲裁保持 `PRODUCTION_GATED`。
 
 ### TASK-EXT-009A：动态飞书 Dispatcher
 
