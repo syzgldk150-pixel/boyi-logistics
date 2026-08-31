@@ -96,6 +96,11 @@ def _target_feishu_commands(
             "migration target Feishu contribution is ambiguous",
             code="PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE",
         )
+    if matches[0].get("selection_preview_operation") is not None:
+        raise PluginConflictError(
+            "migration of an enabled Action-v1 Feishu selection-preview route is production gated",
+            code="PLUGIN_MIGRATION_FEISHU_SELECTION_PREVIEW_PRODUCTION_GATED",
+        )
     commands = matches[0].get("commands")
     if (
         not isinstance(commands, (list, tuple))

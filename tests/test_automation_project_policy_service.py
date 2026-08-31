@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest import TestCase
+from unittest.mock import patch
 
 from agent.automation_plugins.errors import PluginConflictError
 from agent.automation_plugins.manifest import canonical_json_bytes
@@ -29,6 +30,7 @@ from shared.automation_project_authorization import (
     AutomationProjectInvocation,
     CompiledAutomationProjectContract,
     InvocationArgumentContract,
+    canonical_sha256,
 )
 from shared.account_execution_locks import AccountExecutionLockUnavailable
 from shared.orchestration_repository import InvalidStateError
@@ -196,6 +198,7 @@ class _State:
         self.batches: dict[tuple[str, str], dict] = {}
         self.policy_events: list[dict] = []
         self.domain_events: list[dict] = []
+        self.commands_by_idempotency: dict[tuple[str, str], dict] = {}
         self.fail_decision_at: int | None = None
 
 
@@ -352,10 +355,15 @@ class _Runs:
 
 
 class _Commands:
-    @staticmethod
-    def get_by_idempotency(_source, _idempotency_key, *, for_update=False):
+    def __init__(self, repository: "_Repository") -> None:
+        self._repository = repository
+
+    def get_by_idempotency(self, source, idempotency_key, *, for_update=False):
         del for_update
-        return None
+        row = self._repository.state.commands_by_idempotency.get(
+            (source, idempotency_key)
+        )
+        return copy.deepcopy(row) if row is not None else None
 
 
 class _Uow:
@@ -366,7 +374,7 @@ class _Uow:
         self.approvals = _Approvals(repository)
         self.events = _Events(repository)
         self.runs = _Runs(repository)
-        self.commands = _Commands()
+        self.commands = _Commands(repository)
         self.scheduled_policies = SimpleNamespace()
         self._snapshot: _State | None = None
 
@@ -599,6 +607,129 @@ class AutomationProjectPolicyServiceTests(TestCase):
             },
             allowed_entrypoints=frozenset({"console"}),
         )
+
+    def _set_service_v2_selection_contract(self) -> None:
+        self.entry.runtime_model = "SERVICE_V2"
+        self.entry.plugin_id = "selection_v2"
+        self.entry.trust_source = "ed25519_first_party"
+        self.entry.display_name = "Selection v2"
+        self.entry.contributions = {
+            "console": [
+                {
+                    "id": "execute_console",
+                    "title": "Preview candidates",
+                    "service": "plugin.selection@1",
+                    "operation": "execute",
+                    "selection_preview_operation": "preview",
+                    "default_enabled": False,
+                }
+            ],
+            "feishu": [],
+        }
+        self.contract = replace(
+            self.contract,
+            invocation_contracts={
+                "execute_console": InvocationArgumentContract(
+                    contract_id="execute_console",
+                    entrypoint="console",
+                    expected_arguments={"mode": "saved"},
+                    dynamic_argument_resolvers={},
+                    contribution_id="execute_console",
+                )
+            },
+            allowed_entrypoints=frozenset({"console"}),
+        )
+
+    def _persisted_selection_confirmation(
+        self,
+        *,
+        preview_run_id: str,
+        request_id: str,
+        observed_at: datetime,
+    ) -> tuple[str, dict]:
+        actor = _admin()
+        idempotency_key = (
+            f"automation:{AUTOMATION_ID}:console:{actor.actor_id}:"
+            f"selection:{preview_run_id}:{request_id}"
+        )
+        selected = ["R0001"]
+        formal_arguments = {
+            "mode": "saved",
+            "dry_run": False,
+            "selected_bill_codes": selected,
+            "preview_fingerprint": "f" * 64,
+        }
+        observed_text = observed_at.astimezone(timezone.utc).isoformat().replace(
+            "+00:00", "Z"
+        )
+        expires_text = (
+            observed_at.astimezone(timezone.utc) + timedelta(minutes=15)
+        ).isoformat().replace("+00:00", "Z")
+        selection_context = {
+            "contract_version": 1,
+            "plugin_id": "selection_v2",
+            "preview_run_id": preview_run_id,
+            "preview_step_id": "preview-step",
+            "preview_result_sha256": "b" * 64,
+            "project_instance_id": AUTOMATION_ID,
+            "generation": 1,
+            "contract_digest": CONTRACT_HASH,
+            "configuration_version": 1,
+            "entrypoint": "console",
+            "contribution_id": "execute_console",
+            "preview_fingerprint": "f" * 64,
+            "candidate_count": 1,
+            "candidates_sha256": "c" * 64,
+            "selection_count": 1,
+            "selection_sha256": canonical_sha256(selected),
+            "formal_arguments_sha256": canonical_sha256(formal_arguments),
+            "observed_at": observed_text,
+            "expires_at": expires_text,
+        }
+        selection_context["context_sha256"] = canonical_sha256(selection_context)
+        invocation = AutomationProjectInvocation(
+            automation_id=AUTOMATION_ID,
+            automation_generation=1,
+            entrypoint=AutomationEntrypoint.CONSOLE,
+            contract_id="execute_console",
+            contract_hash=CONTRACT_HASH,
+            policy_version=1,
+            project_configuration_version=1,
+            request_id=request_id,
+        )
+        return idempotency_key, {
+            "command_id": f"command-{request_id}",
+            "command_type": "automation.project.invoke",
+            "source": "console",
+            "actor_type": actor.actor_type.value,
+            "actor_id": actor.actor_id,
+            "actor_roles_json": list(actor.roles),
+            "entity_refs_json": [
+                {
+                    "entity_type": "automation_project",
+                    "entity_id": AUTOMATION_ID,
+                    "source_system": "agent",
+                    "relation_type": "subject",
+                    "metadata": {},
+                }
+            ],
+            "parameters_json": {
+                "tool_name": f"automation.{AUTOMATION_ID}.run",
+                "arguments": formal_arguments,
+                "execution_context": {
+                    "project_request_id": request_id,
+                    "entrypoint": "console",
+                    "occurred_at": observed_text,
+                    "contribution_id": "execute_console",
+                    "selection_phase": "FORMAL",
+                    "selection_preview": selection_context,
+                },
+            },
+            "automation_invocation_json": invocation.to_dict(),
+            "idempotency_key": idempotency_key,
+            "correlation_id": f"correlation-{request_id}",
+            "requested_at": observed_at,
+        }
 
     def _set_service_v2_feishu_contract(self) -> None:
         self.entry.runtime_model = "SERVICE_V2"
@@ -903,6 +1034,365 @@ class AutomationProjectPolicyServiceTests(TestCase):
             ],
             registry.calls,
         )
+
+    def test_service_v2_selection_preview_is_host_owned_and_read_phase_bound(self):
+        self._set_service_v2_selection_contract()
+        registry = _ContributionRegistry()
+        service = self._service_with_contribution_registry(registry)
+
+        receipt = service.invoke_selection_preview(
+            AUTOMATION_ID,
+            request_id="selection-preview",
+            actor=_admin(),
+        )
+
+        self.assertEqual("run-invoke", receipt.run_id)
+        command = self.gateway.command
+        self.assertEqual("execute_console", command.automation_invocation.contract_id)
+        self.assertEqual(
+            {
+                "mode": "saved",
+                "dry_run": True,
+                "selected_bill_codes": [],
+                "preview_fingerprint": "",
+            },
+            command.parameters["arguments"],
+        )
+        self.assertEqual(
+            "PREVIEW",
+            command.parameters["execution_context"]["selection_phase"],
+        )
+
+        with self.assertRaises(OrchestrationError) as raised:
+            service.invoke_console(
+                AUTOMATION_ID,
+                request_id="selection-direct",
+                actor=_admin(),
+                contribution_id="execute_console",
+            )
+        self.assertEqual("SELECTION_INPUT_INVALID", raised.exception.code)
+
+    def test_service_v2_selection_confirmation_replays_inside_and_after_ttl(self):
+        self._set_service_v2_selection_contract()
+        registry = _ContributionRegistry()
+        service = self._service_with_contribution_registry(registry)
+        service._load_contract = (  # type: ignore[method-assign]
+            lambda _automation_id: self.fail(
+                "exact selection replay must precede current contract resolution"
+            )
+        )
+        now = datetime.now(timezone.utc)
+        cases = (
+            (
+                "11111111-1111-4111-8111-111111111111",
+                "selection-replay-active",
+                now - timedelta(minutes=5),
+            ),
+            (
+                "22222222-2222-4222-8222-222222222222",
+                "selection-replay-expired",
+                now - timedelta(minutes=20),
+            ),
+        )
+
+        for preview_run_id, request_id, observed_at in cases:
+            with self.subTest(request_id=request_id):
+                key, row = self._persisted_selection_confirmation(
+                    preview_run_id=preview_run_id,
+                    request_id=request_id,
+                    observed_at=observed_at,
+                )
+                self.repository.state.commands_by_idempotency[("console", key)] = row
+
+                receipt = service.confirm_selection_preview(
+                    AUTOMATION_ID,
+                    preview_run_id=preview_run_id,
+                    selected_bill_codes=["R0001"],
+                    request_id=request_id,
+                    actor=_admin(),
+                )
+
+                self.assertEqual(row["command_id"], receipt.command_id)
+                self.assertEqual(
+                    row["parameters_json"],
+                    self.gateway.command.parameters,
+                )
+
+        with self.assertRaises(OrchestrationError) as raised:
+            service.confirm_selection_preview(
+                AUTOMATION_ID,
+                preview_run_id=cases[-1][0],
+                selected_bill_codes=["R0002"],
+                request_id=cases[-1][1],
+                actor=_admin(),
+            )
+        self.assertEqual("REQUEST_ID_REUSED", raised.exception.code)
+        self.assertEqual([], registry.calls)
+
+    def test_service_v2_selection_guard_replays_race_before_live_checks(self):
+        self._set_service_v2_selection_contract()
+        registry = _ContributionRegistry()
+        service = self._service_with_contribution_registry(registry)
+        preview_run_id = "44444444-4444-4444-8444-444444444444"
+        request_id = "selection-concurrent-loser"
+        key, row = self._persisted_selection_confirmation(
+            preview_run_id=preview_run_id,
+            request_id=request_id,
+            observed_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        )
+        self.repository.state.commands_by_idempotency[("console", key)] = row
+        preview_context = row["parameters_json"]["execution_context"][
+            "selection_preview"
+        ]
+        formal_arguments = row["parameters_json"]["arguments"]
+        resolution = SimpleNamespace(
+            context=preview_context,
+            formal_arguments={
+                "dry_run": formal_arguments["dry_run"],
+                "selected_bill_codes": formal_arguments["selected_bill_codes"],
+                "preview_fingerprint": formal_arguments["preview_fingerprint"],
+            },
+        )
+        original_get = _Commands.get_by_idempotency
+        lookups: list[bool] = []
+
+        def race_lookup(
+            commands: _Commands,
+            source: str,
+            idempotency_key: str,
+            *,
+            for_update: bool = False,
+        ):
+            lookups.append(for_update)
+            if len(lookups) == 1:
+                return None
+            return original_get(
+                commands,
+                source,
+                idempotency_key,
+                for_update=for_update,
+            )
+
+        with (
+            patch.object(_Commands, "get_by_idempotency", race_lookup),
+            patch(
+                "agent.orchestration.automation_project_policy_service.resolve_selection_preview",
+                return_value=resolution,
+            ) as resolve,
+            patch.object(
+                service,
+                "_lock_and_compile_contract",
+                side_effect=AssertionError(
+                    "exact concurrent replay must precede live contract locking"
+                ),
+            ) as lock_contract,
+        ):
+            receipt = service.confirm_selection_preview(
+                AUTOMATION_ID,
+                preview_run_id=preview_run_id,
+                selected_bill_codes=["R0001"],
+                request_id=request_id,
+                actor=_admin(),
+            )
+
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual([False, True, False], lookups)
+        self.assertEqual(1, resolve.call_count)
+        self.assertFalse(resolve.call_args.kwargs["for_update"])
+        lock_contract.assert_not_called()
+        self.assertEqual(1, len(registry.calls))
+
+    def test_service_v2_selection_confirmation_pins_context_and_consumes_once(self):
+        self._set_service_v2_selection_contract()
+        service = self._service_with_contribution_registry(_ContributionRegistry())
+        preview_run_id = "33333333-3333-4333-8333-333333333333"
+        preview_context = {
+            "observed_at": "2026-08-31T01:02:03Z",
+            "context_sha256": "e" * 64,
+        }
+        resolution = SimpleNamespace(
+            context=preview_context,
+            formal_arguments={
+                "dry_run": False,
+                "selected_bill_codes": ["R0001"],
+                "preview_fingerprint": "f" * 64,
+            },
+        )
+        consumed = OrchestrationError(
+            "SELECTION_PREVIEW_ALREADY_CONSUMED",
+            "synthetic preview consumption conflict",
+        )
+
+        with (
+            patch(
+                "agent.orchestration.automation_project_policy_service.resolve_selection_preview",
+                return_value=resolution,
+            ) as resolve,
+            patch(
+                "agent.orchestration.automation_project_policy_service.ensure_selection_preview_active"
+            ) as ensure_active,
+            patch(
+                "agent.orchestration.automation_project_policy_service.consume_selection_preview"
+            ) as consume,
+        ):
+            receipt = service.confirm_selection_preview(
+                AUTOMATION_ID,
+                preview_run_id=preview_run_id,
+                selected_bill_codes=["R0001"],
+                request_id="selection-first-confirmation",
+                actor=_admin(),
+            )
+
+            self.assertEqual("run-invoke", receipt.run_id)
+            self.assertEqual(2, resolve.call_count)
+            self.assertFalse(resolve.call_args_list[0].kwargs["for_update"])
+            self.assertTrue(resolve.call_args_list[1].kwargs["for_update"])
+            ensure_active.assert_called_once()
+            consume.assert_called_once()
+            self.assertEqual(
+                preview_context,
+                self.gateway.command.parameters["execution_context"][
+                    "selection_preview"
+                ],
+            )
+            self.assertEqual(
+                preview_context["observed_at"],
+                self.gateway.command.parameters["execution_context"]["occurred_at"],
+            )
+
+            consume.side_effect = consumed
+            with self.assertRaises(OrchestrationError) as raised:
+                service.confirm_selection_preview(
+                    AUTOMATION_ID,
+                    preview_run_id=preview_run_id,
+                    selected_bill_codes=["R0001"],
+                    request_id="selection-different-request",
+                    actor=_admin(),
+                )
+            self.assertEqual(
+                "SELECTION_PREVIEW_ALREADY_CONSUMED",
+                raised.exception.code,
+            )
+
+    def test_service_v2_selection_project_allows_non_selection_sibling(self):
+        self._set_service_v2_selection_contract()
+        self.entry.contributions["console"].append(
+            {
+                "id": "inspect_console",
+                "title": "Inspect status",
+                "service": "plugin.selection@1",
+                "operation": "inspect",
+                "default_enabled": False,
+            }
+        )
+        self.contract = replace(
+            self.contract,
+            invocation_contracts={
+                **self.contract.invocation_contracts,
+                "inspect_console": InvocationArgumentContract(
+                    contract_id="inspect_console",
+                    entrypoint="console",
+                    expected_arguments={"mode": "saved"},
+                    dynamic_argument_resolvers={},
+                    contribution_id="inspect_console",
+                ),
+            },
+        )
+        service = self._service_with_contribution_registry(_ContributionRegistry())
+
+        receipt = service.invoke_console(
+            AUTOMATION_ID,
+            request_id="selection-sibling-invoke",
+            actor=_admin(),
+            contribution_id="inspect_console",
+        )
+
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertNotIn(
+            "selection_phase",
+            self.gateway.command.parameters["execution_context"],
+        )
+        invocation = AutomationProjectInvocation(
+            automation_id=AUTOMATION_ID,
+            automation_generation=1,
+            entrypoint=AutomationEntrypoint.CONSOLE,
+            contract_id="inspect_console",
+            contract_hash=CONTRACT_HASH,
+            policy_version=1,
+            project_configuration_version=1,
+            request_id="selection-sibling-policy",
+        )
+        evaluation = self.service.evaluate_invocation(
+            _plan(invocation),
+            _admin(),
+            "console",
+            {},
+            invocation,
+        )
+        self.assertTrue(evaluation.allowed)
+        self.assertEqual("PROJECT_FULL_AUTO", evaluation.code)
+
+    def test_service_v2_selection_formal_requires_persisted_preview_identity(self):
+        self._set_service_v2_selection_contract()
+        service = self._service_with_contribution_registry(_ContributionRegistry())
+
+        with self.assertRaises(OrchestrationError) as raised:
+            service.invoke_trusted(
+                AUTOMATION_ID,
+                entrypoint=AutomationEntrypoint.CONSOLE,
+                request_id="selection-formal-without-preview",
+                actor=_admin(),
+                trusted_context={
+                    "dynamic_inputs": {
+                        "dry_run": False,
+                        "selected_bill_codes": ["R0001"],
+                        "preview_fingerprint": "f" * 64,
+                    }
+                },
+                contribution_id="execute_console",
+            )
+        self.assertEqual("SELECTION_PREVIEW_REQUIRED", raised.exception.code)
+
+    def test_service_v2_selection_policy_matches_contract_without_host_fields(self):
+        self._set_service_v2_selection_contract()
+        invocation = AutomationProjectInvocation(
+            automation_id=AUTOMATION_ID,
+            automation_generation=1,
+            entrypoint=AutomationEntrypoint.CONSOLE,
+            contract_id="execute_console",
+            contract_hash=CONTRACT_HASH,
+            policy_version=1,
+            project_configuration_version=1,
+            request_id="selection-policy",
+        )
+        preview_plan = replace(
+            _plan(invocation),
+            steps=(
+                replace(
+                    _plan(invocation).steps[0],
+                    operation_type=OperationType.READ,
+                    risk_level=RiskLevel.LOW,
+                    arguments={
+                        "mode": "saved",
+                        "dry_run": True,
+                        "selected_bill_codes": [],
+                        "preview_fingerprint": "",
+                    },
+                ),
+            ),
+        )
+
+        preview = self.service.evaluate_invocation(
+            preview_plan,
+            _admin(),
+            "console",
+            {"selection_phase": "PREVIEW"},
+            invocation,
+        )
+
+        self.assertTrue(preview.allowed)
+        self.assertFalse(preview.requires_approval)
+        self.assertEqual("SELECTION_PREVIEW_ALLOWED", preview.code)
 
     def test_service_v2_missing_or_stale_console_projection_fails_closed(self):
         self._set_service_v2_console_contract()

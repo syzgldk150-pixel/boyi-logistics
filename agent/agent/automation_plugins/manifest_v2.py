@@ -79,14 +79,20 @@ _CONNECTOR_RESOURCE_REQUIRE_FIELDS = frozenset(
     {"service", "binding_kind", "resource_role"}
 )
 _CONNECTOR_HOST_INTERNAL_REQUIRE_FIELDS = frozenset({"service", "binding_kind"})
-_CAPABILITY_FIELDS = frozenset({"name", "operations", "account_role", "resource_role"})
+_CAPABILITY_REQUIRED_FIELDS = frozenset(
+    {"name", "operations", "account_role", "resource_role"}
+)
+_CAPABILITY_FIELDS = _CAPABILITY_REQUIRED_FIELDS | {"action_call_limits"}
 _ACCOUNT_ROLE_FIELDS = frozenset({"role", "allowed_systems", "required"})
 _RESOURCE_ROLE_FIELDS = frozenset({"role", "allowed_kinds", "required"})
 _CONTRIBUTION_REQUIRED_FIELDS = frozenset(
     {"console", "scheduler", "webhook", "feishu", "events"}
 )
 _CONTRIBUTION_FIELDS = _CONTRIBUTION_REQUIRED_FIELDS | {"harness", "module_slots"}
-_CONSOLE_FIELDS = frozenset({"id", "title", "service", "operation", "default_enabled"})
+_CONSOLE_REQUIRED_FIELDS = frozenset(
+    {"id", "title", "service", "operation", "default_enabled"}
+)
+_CONSOLE_FIELDS = _CONSOLE_REQUIRED_FIELDS | {"selection_preview_operation"}
 _MODULE_SLOT_FIELDS = frozenset(
     {"id", "slot", "title", "service", "operation", "default_enabled"}
 )
@@ -103,7 +109,10 @@ _SCHEDULER_FIELDS = frozenset(
 _SCHEDULER_FIELDS_WITHOUT_SCHEDULE = _SCHEDULER_FIELDS - {"schedule"}
 _SCHEDULE_FIELDS = frozenset({"kind", "expression", "timezone"})
 _WEBHOOK_FIELDS = frozenset({"id", "service", "operation", "method", "route", "default_enabled"})
-_FEISHU_FIELDS = frozenset({"id", "service", "operation", "commands", "default_enabled"})
+_FEISHU_REQUIRED_FIELDS = frozenset(
+    {"id", "service", "operation", "commands", "default_enabled"}
+)
+_FEISHU_FIELDS = _FEISHU_REQUIRED_FIELDS | {"selection_preview_operation"}
 _EVENT_FIELDS = frozenset(
     {
         "id",
@@ -654,8 +663,13 @@ def _validate_capabilities(
         item = _mapping(
             raw_item,
             f"capabilities[{index}]",
-            _CAPABILITY_FIELDS,
         )
+        unknown = set(item) - _CAPABILITY_FIELDS
+        missing = _CAPABILITY_REQUIRED_FIELDS - set(item)
+        if unknown or missing:
+            raise PluginManifestError(
+                f"capabilities[{index}] has unsupported or missing fields"
+            )
         name = _identifier(item["name"], f"capabilities[{index}].name")
         operations = _string_array(
             item["operations"],
@@ -683,14 +697,43 @@ def _validate_capabilities(
         if identity in seen:
             raise PluginManifestError("duplicate capability binding")
         seen.add(identity)
-        result.append(
-            {
-                "name": name,
-                "operations": operations,
-                "account_role": account_role,
-                "resource_role": resource_role,
-            }
-        )
+        normalized = {
+            "name": name,
+            "operations": operations,
+            "account_role": account_role,
+            "resource_role": resource_role,
+        }
+        if "action_call_limits" in item:
+            if name != "service.invoke":
+                raise PluginManifestError(
+                    "action_call_limits is accepted only for service.invoke"
+                )
+            raw_limits = _mapping(
+                item["action_call_limits"],
+                f"capabilities[{index}].action_call_limits",
+            )
+            if set(raw_limits) != set(operations):
+                raise PluginManifestError(
+                    "service.invoke action_call_limits must cover operations exactly"
+                )
+            limits: dict[str, int] = {}
+            for operation in operations:
+                value = raw_limits[operation]
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or not 1 <= value <= 1000
+                ):
+                    raise PluginManifestError(
+                        "service.invoke action_call_limits values must be integers from 1 to 1000"
+                    )
+                limits[operation] = value
+            if sum(limits.values()) > 1000:
+                raise PluginManifestError(
+                    "service.invoke action_call_limits total must not exceed 1000"
+                )
+            normalized["action_call_limits"] = limits
+        result.append(normalized)
     if storage is not None:
         names = {item["name"] for item in result}
         if "storage.kv" in names and storage.get("kv") is not True:
@@ -728,6 +771,35 @@ def _contribution_id(
     return contribution_id
 
 
+def _selection_preview_operation(
+    item: Mapping[str, Any],
+    *,
+    path: str,
+    service: str,
+    execute_operation: str,
+    operations_by_service: Mapping[str, frozenset[str]],
+    provided_operation_effects: Mapping[tuple[str, str], CapabilityEffect],
+) -> str | None:
+    if "selection_preview_operation" not in item:
+        return None
+    preview_operation = _identifier(
+        item["selection_preview_operation"],
+        f"{path}.selection_preview_operation",
+    )
+    if (
+        preview_operation == execute_operation
+        or preview_operation not in operations_by_service.get(service, frozenset())
+        or provided_operation_effects.get((service, preview_operation))
+        is not CapabilityEffect.READ
+        or provided_operation_effects.get((service, execute_operation))
+        is not CapabilityEffect.EXTERNAL_WRITE
+    ):
+        raise PluginManifestError(
+            f"{path} selection preview must pair one read operation with one external_write operation on the same service"
+        )
+    return preview_operation
+
+
 def _validate_contributes(
     value: Any,
     *,
@@ -760,24 +832,38 @@ def _validate_contributes(
 
     for index, raw_item in enumerate(_array(raw["console"], "contributes.console")):
         path = f"contributes.console[{index}]"
-        item = _mapping(raw_item, path, _CONSOLE_FIELDS)
+        item = _mapping(raw_item, path)
+        if frozenset(item) not in {
+            _CONSOLE_REQUIRED_FIELDS,
+            _CONSOLE_FIELDS,
+        }:
+            raise PluginManifestError(f"{path} has unsupported or missing fields")
         service, operation = _contribution_target(
             item,
             path=path,
             operations_by_service=operations_by_service,
         )
-        result["console"].append(
-            {
-                "id": _contribution_id(item["id"], f"{path}.id", seen=seen_ids),
-                "title": _text(item["title"], f"{path}.title", maximum=120),
-                "service": service,
-                "operation": operation,
-                "default_enabled": _boolean(
-                    item["default_enabled"],
-                    f"{path}.default_enabled",
-                ),
-            }
+        normalized_console = {
+            "id": _contribution_id(item["id"], f"{path}.id", seen=seen_ids),
+            "title": _text(item["title"], f"{path}.title", maximum=120),
+            "service": service,
+            "operation": operation,
+            "default_enabled": _boolean(
+                item["default_enabled"],
+                f"{path}.default_enabled",
+            ),
+        }
+        preview_operation = _selection_preview_operation(
+            item,
+            path=path,
+            service=service,
+            execute_operation=operation,
+            operations_by_service=operations_by_service,
+            provided_operation_effects=provided_operation_effects,
         )
+        if preview_operation is not None:
+            normalized_console["selection_preview_operation"] = preview_operation
+        result["console"].append(normalized_console)
 
     for index, raw_item in enumerate(_array(raw["scheduler"], "contributes.scheduler")):
         path = f"contributes.scheduler[{index}]"
@@ -848,7 +934,12 @@ def _validate_contributes(
 
     for index, raw_item in enumerate(_array(raw["feishu"], "contributes.feishu")):
         path = f"contributes.feishu[{index}]"
-        item = _mapping(raw_item, path, _FEISHU_FIELDS)
+        item = _mapping(raw_item, path)
+        if frozenset(item) not in {
+            _FEISHU_REQUIRED_FIELDS,
+            _FEISHU_FIELDS,
+        }:
+            raise PluginManifestError(f"{path} has unsupported or missing fields")
         service, operation = _contribution_target(
             item,
             path=path,
@@ -859,18 +950,27 @@ def _validate_contributes(
             f"{path}.commands",
             non_empty=True,
         )
-        result["feishu"].append(
-            {
-                "id": _contribution_id(item["id"], f"{path}.id", seen=seen_ids),
-                "service": service,
-                "operation": operation,
-                "commands": commands,
-                "default_enabled": _boolean(
-                    item["default_enabled"],
-                    f"{path}.default_enabled",
-                ),
-            }
+        normalized_feishu = {
+            "id": _contribution_id(item["id"], f"{path}.id", seen=seen_ids),
+            "service": service,
+            "operation": operation,
+            "commands": commands,
+            "default_enabled": _boolean(
+                item["default_enabled"],
+                f"{path}.default_enabled",
+            ),
+        }
+        preview_operation = _selection_preview_operation(
+            item,
+            path=path,
+            service=service,
+            execute_operation=operation,
+            operations_by_service=operations_by_service,
+            provided_operation_effects=provided_operation_effects,
         )
+        if preview_operation is not None:
+            normalized_feishu["selection_preview_operation"] = preview_operation
+        result["feishu"].append(normalized_feishu)
 
     for index, raw_item in enumerate(_array(raw["events"], "contributes.events")):
         path = f"contributes.events[{index}]"
@@ -983,6 +1083,29 @@ def _validate_contributes(
                     f"{path}.default_enabled",
                 ),
             }
+        )
+    for contribution_kind in ("console", "feishu"):
+        selection_count = sum(
+            "selection_preview_operation" in item
+            for item in result[contribution_kind]
+        )
+        if selection_count > 1:
+            raise PluginManifestError(
+                f"contributes.{contribution_kind} supports at most one selection preview"
+            )
+    selection_identities = {
+        (
+            str(item["service"]),
+            str(item["operation"]),
+            str(item["selection_preview_operation"]),
+        )
+        for contribution_kind in ("console", "feishu")
+        for item in result[contribution_kind]
+        if "selection_preview_operation" in item
+    }
+    if len(selection_identities) > 1:
+        raise PluginManifestError(
+            "selection preview contributions must share one exact service operation pair"
         )
     return result
 

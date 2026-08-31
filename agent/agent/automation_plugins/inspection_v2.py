@@ -98,14 +98,16 @@ def service_v2_wizard_projection(
                 "verified service-v2 permission projection is invalid",
                 code="PLUGIN_CONTRACT_INVALID",
             )
-        permissions.append(
-            {
-                "name": str(capability.get("name") or ""),
-                "operations": list(capability.get("operations") or ()),
-                "account_role": capability.get("account_role"),
-                "resource_role": capability.get("resource_role"),
-            }
-        )
+        permission = {
+            "name": str(capability.get("name") or ""),
+            "operations": list(capability.get("operations") or ()),
+            "account_role": capability.get("account_role"),
+            "resource_role": capability.get("resource_role"),
+        }
+        action_call_limits = capability.get("action_call_limits")
+        if isinstance(action_call_limits, Mapping):
+            permission["action_call_limits"] = _thaw_json(action_call_limits)
+        permissions.append(permission)
     return {
         "plugin_id": manifest.plugin_id,
         "name": manifest.name,

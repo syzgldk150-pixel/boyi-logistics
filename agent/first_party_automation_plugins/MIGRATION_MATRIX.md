@@ -47,6 +47,68 @@ is not created for the same source; later v2 generation upgrades reuse v2
 ownership. Enabled v1 Webhook and route resources are not silently migrated or
 mapped to business resources.
 
+## TASK-MIG-002 Service v2 migration status
+
+The independent candidate package is
+`agent/service_v2_plugins/self_pickup_problem_upload_v2/`. Its only business
+algorithm source remains the v1
+`agent/first_party_automation_plugins/self_pickup_problem_upload/payload/action.py`:
+the deterministic candidate builder embeds that action and the first-party
+result helper byte-for-byte as `payload/action.py` and
+`payload/boyi_plugin_result.py`. The package has no legacy import, `sys.path`
+mutation or whole-tool fallback. Offline parity fixtures cover two sources,
+duplicates, stable output under source reordering, source drift, complete
+target preflight failure, and uncertain create/verify outcomes; the v1/v2
+stable business projection and primitive order are compared directly.
+
+The package provides
+`plugin.self_pickup_problem_upload_v2.self_pickup_problem_upload@1` with two
+immutable operations: `preview/read` and `execute/external_write`. Console and
+Feishu both declare formal `operation=execute` plus
+`selection_preview_operation=preview`, and both are `default_enabled=false`.
+There are no Scheduler, Webhook, Event or Harness contributions. Preview is
+forced to `dry_run=true` with no selection; formal execution is forced to
+`dry_run=false` and requires the canonical non-empty `selected_bill_codes` and
+`preview_fingerprint`. Feishu's multi-round selection is therefore only the
+signed preview -> user selection -> fingerprinted execute contract; it is not
+an enabled direct or one-round write entrypoint.
+
+The package requires three distinct package-external Connector services:
+
+- source Sheet resource:
+  `connector.boyi.self_pickup_source_sheet@1`, role
+  `self_pickup_source_sheet`;
+- primary Ronghui account:
+  `connector.boyi.self_pickup_primary_ronghui@1`, role `account_id`;
+- Daxiang-S Ronghui account:
+  `connector.boyi.self_pickup_daxiang_s_ronghui@1`, role
+  `daxiang_s_account_id`.
+
+The v1 roles are local adapter consistency checks only; account/resource
+identities stay Host-side and are never exposed to the package. Connector
+primitive mapping is `read_rows/read`, `query/read`,
+`create/external_write`, and `verify/read`. The signed `service.invoke` action
+budget is exact: `read_rows=1`, `query=250`, `create=250`, `verify=250`, for a
+total of 751 calls. Persistent configuration contains only
+`include_daxiang_s_self_pickup` and `limit`.
+
+Formal execution sends all three unique, complete
+`preflight_services` on the first real Connector call and does not repeat the
+preflight or add a Broker call; preview preflights only the source Sheet.
+Mutation begins at `create`: failures before that boundary are `NOT_APPLIED`,
+while any later exception is `WRITE_OUTCOME_UNKNOWN`. Successful formal runs
+retain every Host Evidence reference and prove a fresh `verify` for every
+ticket; successful previews retain read-only Evidence.
+
+This is an offline candidate only. The three real Connector descriptors,
+bindings and handlers, package installation, project configuration, account
+and resource binding, entrypoint ownership switch (including Feishu's
+multi-round selection UI/dispatcher), real Sheet/Ronghui reads, problem writes,
+fresh verification, production Evidence, deployment and production acceptance
+are all `PRODUCTION_GATED`. Offline tests may inject a local Host Broker
+fixture, but must not register or impersonate a production Connector. The v1
+Inventory record below is intentionally unchanged.
+
 ## Inventory
 
 | Action package | Legacy wrapper | Account roles | Closed primitives | Extraction state |

@@ -8,6 +8,7 @@ and capabilities into the existing generation, broker and Console contracts.
 from __future__ import annotations
 
 import copy
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -32,6 +33,10 @@ from shared.waybill_entry_extensions import (
 HOST_API_VERSION = "2.0.0"
 SYSTEM_CAPABILITY_ROLE = "__system__"
 SERVICE_INVOKE_PER_CALL_LIMIT = 64
+SELECTION_ARGUMENT_FIELDS = frozenset(
+    {"dry_run", "selected_bill_codes", "preview_fingerprint"}
+)
+SELECTION_MAX_SELECTED_BILL_CODES = 250
 SERVICE_V2_CONTRIBUTION_KINDS = (
     "console",
     "scheduler",
@@ -47,6 +52,17 @@ _HARNESS_INPUT_SCHEMA = {
     "properties": {},
     "required": [],
 }
+_SELECTION_INPUT_PROPERTIES = {
+    "dry_run": {"type": "boolean"},
+    "selected_bill_codes": {
+        "type": "array",
+        "maxItems": SELECTION_MAX_SELECTED_BILL_CODES,
+        "uniqueItems": True,
+        "items": {"type": "string", "minLength": 1, "maxLength": 64},
+    },
+    "preview_fingerprint": {"type": "string", "maxLength": 64},
+}
+_HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 _SUPPORTED_CAPABILITIES = frozenset(
     {
@@ -105,6 +121,141 @@ def _waybill_entry_draft_schema() -> dict[str, Any]:
         },
         "required": list(WAYBILL_ENTRY_DRAFT_FIELDS),
     }
+
+
+def _selection_input_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    result = copy.deepcopy(dict(schema))
+    properties = result.get("properties")
+    if not isinstance(properties, dict):
+        raise PluginManifestError("service-v2 selection input schema is invalid")
+    if set(properties) & SELECTION_ARGUMENT_FIELDS:
+        raise PluginManifestError(
+            "service-v2 config collides with Host-owned selection arguments"
+        )
+    properties.update(copy.deepcopy(_SELECTION_INPUT_PROPERTIES))
+    return result
+
+
+def resolve_service_v2_selection_phase(arguments: Mapping[str, Any]) -> str:
+    """Resolve the exact Host-owned selection phase from invocation arguments."""
+
+    if not isinstance(arguments, Mapping) or not SELECTION_ARGUMENT_FIELDS <= set(
+        arguments
+    ):
+        raise ValueError("selection arguments are incomplete")
+    dry_run = arguments.get("dry_run")
+    selected = arguments.get("selected_bill_codes")
+    fingerprint = arguments.get("preview_fingerprint")
+    if dry_run is True:
+        if selected not in (None, []) or fingerprint not in (None, ""):
+            raise ValueError("selection preview arguments are invalid")
+        return "PREVIEW"
+    if dry_run is False:
+        if (
+            not isinstance(selected, list)
+            or not 1 <= len(selected) <= SELECTION_MAX_SELECTED_BILL_CODES
+            or len(selected) != len(set(selected))
+            or any(
+                not isinstance(item, str)
+                or not item
+                or item != item.strip()
+                or len(item) > 64
+                for item in selected
+            )
+            or not isinstance(fingerprint, str)
+            or _HEX_SHA256.fullmatch(fingerprint) is None
+        ):
+            raise ValueError("selection execute arguments are invalid")
+        return "FORMAL"
+    raise ValueError("selection phase is invalid")
+
+
+def resolve_service_v2_selection_target(
+    runtime: Mapping[str, Any],
+    *,
+    contribution_id: str,
+    contribution_kind: str,
+    arguments: Mapping[str, Any],
+) -> tuple[dict[str, str], dict[str, Any], str] | None:
+    """Resolve a signed preview/execute target from committed runtime material."""
+
+    contributions = runtime.get("contributions")
+    declarations = (
+        contributions.get(contribution_kind)
+        if isinstance(contributions, Mapping)
+        else None
+    )
+    matches = [
+        item
+        for item in declarations or ()
+        if isinstance(item, Mapping)
+        and str(item.get("id") or "") == contribution_id
+    ]
+    if len(matches) != 1:
+        return None
+    declaration = matches[0]
+    preview_operation = declaration.get("selection_preview_operation")
+    if preview_operation is None:
+        return None
+    if contribution_kind not in {"console", "feishu"}:
+        raise ValueError("selection contribution kind is invalid")
+    phase = resolve_service_v2_selection_phase(arguments)
+
+    compiled_invocations = runtime.get("compiled_invocations")
+    compiled = (
+        compiled_invocations.get(contribution_id)
+        if isinstance(compiled_invocations, Mapping)
+        else None
+    )
+    execute_target = compiled.get("target") if isinstance(compiled, Mapping) else None
+    service = str(declaration.get("service") or "")
+    execute_operation = str(declaration.get("operation") or "")
+    if (
+        not isinstance(execute_target, Mapping)
+        or execute_target.get("service") != service
+        or execute_target.get("operation") != execute_operation
+        or execute_target.get("contribution_id") != contribution_id
+        or execute_target.get("contribution_kind") != contribution_kind
+    ):
+        raise ValueError("selection execute target drifted")
+
+    contracts = runtime.get("service_contracts")
+    provided = contracts.get("provides") if isinstance(contracts, Mapping) else None
+    service_matches = [
+        item
+        for item in provided or ()
+        if isinstance(item, Mapping) and item.get("service") == service
+    ]
+    operations = service_matches[0].get("operations") if len(service_matches) == 1 else None
+    effects = {
+        str(item.get("name") or ""): str(item.get("effect") or "")
+        for item in operations or ()
+        if isinstance(item, Mapping) and set(item) == {"name", "effect"}
+    }
+    if (
+        not service
+        or not isinstance(preview_operation, str)
+        or not preview_operation
+        or effects.get(preview_operation) != CapabilityEffect.READ.value
+        or effects.get(execute_operation) != CapabilityEffect.EXTERNAL_WRITE.value
+    ):
+        raise ValueError("selection operation effects drifted")
+    operation = preview_operation if phase == "PREVIEW" else execute_operation
+    effect = (
+        CapabilityEffect.READ
+        if phase == "PREVIEW"
+        else CapabilityEffect.EXTERNAL_WRITE
+    )
+    return (
+        {
+            "service": service,
+            "operation": operation,
+            "contribution_id": contribution_id,
+            "contribution_kind": contribution_kind,
+        },
+        governance_for_effect(effect).to_mapping(),
+        phase,
+    )
 
 
 @dataclass(frozen=True)
@@ -170,11 +321,18 @@ class ServiceV2ProjectContract:
             "required": list(manifest.config_schema.get("required") or []),
         }
         module_slots_contributed = bool(manifest.contributes.get("module_slots"))
+        selection_contributed = any(
+            isinstance(item, Mapping) and "selection_preview_operation" in item
+            for kind in ("console", "feishu")
+            for item in manifest.contributes.get(kind, ())
+        )
         if module_slots_contributed and WAYBILL_ENTRY_DYNAMIC_ARGUMENT_FIELD in config_properties:
             raise PluginManifestError(
                 "service-v2 config field collides with the Host-owned waybill argument"
             )
         tool_input_schema = copy.deepcopy(input_schema)
+        if selection_contributed:
+            tool_input_schema = _selection_input_schema(tool_input_schema)
         if module_slots_contributed:
             # The package-level tool schema is shared by mixed contribution
             # kinds, so the Host-owned occurrence value is optional here.  The
@@ -203,6 +361,8 @@ class ServiceV2ProjectContract:
                 invocation_input_schema = input_schema
                 argument_template = template
                 dynamic_resolvers: dict[str, str] = {}
+                if "selection_preview_operation" in item:
+                    invocation_input_schema = _selection_input_schema(input_schema)
                 if contribution_kind == "harness":
                     declared_effect = item.get("effect")
                     if declared_effect != effect.value:
@@ -295,6 +455,7 @@ class ServiceV2ProjectContract:
             name = str(capability["name"])
             account_role = capability.get("account_role")
             resource_role = capability.get("resource_role")
+            action_call_limits = capability.get("action_call_limits")
             if name == "service.invoke" and (
                 account_role is not None or resource_role is not None
             ):
@@ -314,7 +475,11 @@ class ServiceV2ProjectContract:
                     # Provider effect immediately before dispatch.
                     governance = governance_for_effect(CapabilityEffect.EXTERNAL_WRITE).to_mapping()
                     dynamic_effect = True
-                    per_call_limit = SERVICE_INVOKE_PER_CALL_LIMIT
+                    per_call_limit = (
+                        int(action_call_limits[action])
+                        if isinstance(action_call_limits, Mapping)
+                        else SERVICE_INVOKE_PER_CALL_LIMIT
+                    )
                 else:
                     try:
                         descriptor = registry.resolve(
@@ -349,17 +514,20 @@ class ServiceV2ProjectContract:
                     per_call_limit = descriptor.per_call_limit
                 bound_role = account_role or resource_role or SYSTEM_CAPABILITY_ROLE
                 max_broker_calls += per_call_limit
-                broker_operations.append(
-                    {
-                        "operation": name,
-                        "action": action,
-                        "roles": [str(bound_role)],
-                        "effect": str(governance["effect"]),
-                        "broker_effect": str(governance["broker_effect"]),
-                        "governance": governance,
-                        "dynamic_effect": dynamic_effect,
-                    }
-                )
+                broker_operation = {
+                    "operation": name,
+                    "action": action,
+                    "roles": [str(bound_role)],
+                    "effect": str(governance["effect"]),
+                    "broker_effect": str(governance["broker_effect"]),
+                    "governance": governance,
+                    "dynamic_effect": dynamic_effect,
+                }
+                if name == "service.invoke" and isinstance(
+                    action_call_limits, Mapping
+                ):
+                    broker_operation["per_action_limit"] = per_call_limit
+                broker_operations.append(broker_operation)
         runtime_permissions = {
             "network": "http.request" in capability_names,
             "browser": "browser.session" in capability_names,
@@ -439,8 +607,12 @@ class ServiceV2ProjectContract:
 
 __all__ = [
     "HOST_API_VERSION",
+    "SELECTION_ARGUMENT_FIELDS",
+    "SELECTION_MAX_SELECTED_BILL_CODES",
     "SERVICE_INVOKE_PER_CALL_LIMIT",
     "SERVICE_V2_CONTRIBUTION_KINDS",
     "SYSTEM_CAPABILITY_ROLE",
     "ServiceV2ProjectContract",
+    "resolve_service_v2_selection_phase",
+    "resolve_service_v2_selection_target",
 ]

@@ -389,6 +389,85 @@ def test_manifest_v2_allows_only_disabled_scheduler_without_a_placeholder_cron()
         AutomationPluginManifestV2.from_mapping(source)
 
 
+def test_selection_contribution_pairs_read_preview_with_external_write_execute() -> None:
+    source = _manifest_mapping()
+    source["contributes"]["console"][0]["selection_preview_operation"] = "receive"
+    source["contributes"]["feishu"][0]["selection_preview_operation"] = "receive"
+    source["config_schema"] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"sitecode": {"type": "string"}},
+        "required": ["sitecode"],
+    }
+
+    manifest = AutomationPluginManifestV2.from_mapping(source)
+    contract = ServiceV2ProjectContract.from_manifest(manifest)
+
+    assert manifest.to_mapping() == source
+    assert contract.invocation_contracts["run_now"]["operation"] == "run"
+    assert set(contract.invocation_contracts["run_now"]["input_schema"]["properties"]) == {
+        "dry_run",
+        "selected_bill_codes",
+        "preview_fingerprint",
+        "sitecode",
+    }
+    assert contract.invocation_contracts["run_now"]["input_schema"]["required"] == [
+        "sitecode"
+    ]
+
+
+def test_manifest_v2_rejects_ambiguous_selection_contributions_per_entrypoint() -> None:
+    source = _manifest_mapping()
+    source["contributes"]["console"][0]["selection_preview_operation"] = "receive"
+    duplicate = copy.deepcopy(source["contributes"]["console"][0])
+    duplicate["id"] = "run_again"
+    duplicate["title"] = "Run again"
+    source["contributes"]["console"].append(duplicate)
+
+    with pytest.raises(PluginManifestError, match="at most one selection preview"):
+        AutomationPluginManifestV2.from_mapping(source)
+
+
+def test_manifest_v2_rejects_cross_entrypoint_selection_pair_drift() -> None:
+    source = _manifest_mapping()
+    operations = source["provides"][0]["operations"]
+    operations.extend(
+        (
+            {"name": "execute_other", "effect": "external_write"},
+            {"name": "preview_other", "effect": "read"},
+        )
+    )
+    source["contributes"]["console"][0]["selection_preview_operation"] = "receive"
+    source["contributes"]["feishu"][0]["operation"] = "execute_other"
+    source["contributes"]["feishu"][0]["selection_preview_operation"] = (
+        "preview_other"
+    )
+
+    with pytest.raises(PluginManifestError, match="one exact service operation pair"):
+        AutomationPluginManifestV2.from_mapping(source)
+
+
+@pytest.mark.parametrize(
+    ("execute_operation", "preview_operation"),
+    [
+        ("run", "run"),
+        ("run", "missing"),
+        ("receive", "run"),
+    ],
+)
+def test_manifest_v2_rejects_invalid_selection_operation_pair(
+    execute_operation: str,
+    preview_operation: str,
+) -> None:
+    source = _manifest_mapping()
+    contribution = source["contributes"]["console"][0]
+    contribution["operation"] = execute_operation
+    contribution["selection_preview_operation"] = preview_operation
+
+    with pytest.raises(PluginManifestError, match="selection preview"):
+        AutomationPluginManifestV2.from_mapping(source)
+
+
 def test_manifest_v2_keeps_connector_namespace_out_of_providers_and_contributions() -> None:
     connector_provider = _manifest_mapping()
     connector_provider["provides"][0]["service"] = "connector.fixture.tracking@1"
@@ -662,6 +741,78 @@ def test_service_invoke_has_a_protective_admission_ceiling_while_entrypoint_gove
     assert contract.invocation_contracts["run_now"]["operation"] == "run"
     assert contract.invocation_contracts["run_now"]["effect"] == "external_write"
     assert contract.invocation_contracts["incoming_hook"]["effect"] == "read"
+
+
+def test_service_invoke_projects_explicit_signed_action_call_limits() -> None:
+    source = _manifest_mapping(
+        "bounded_consumer",
+        requires=("plugin.provider_plugin.records@1",),
+    )
+    source["capabilities"] = [
+        {
+            "name": "service.invoke",
+            "operations": ["read_rows", "query", "create", "verify"],
+            "account_role": None,
+            "resource_role": None,
+            "action_call_limits": {
+                "read_rows": 1,
+                "query": 250,
+                "create": 250,
+                "verify": 250,
+            },
+        }
+    ]
+
+    manifest = AutomationPluginManifestV2.from_mapping(source)
+    contract = ServiceV2ProjectContract.from_manifest(manifest)
+
+    assert manifest.to_mapping() == source
+    assert contract.runtime_permissions["max_broker_calls"] == 751
+    assert {
+        item["action"]: item["per_action_limit"]
+        for item in contract.runtime_permissions["broker_operations"]
+    } == {
+        "read_rows": 1,
+        "query": 250,
+        "create": 250,
+        "verify": 250,
+    }
+
+
+@pytest.mark.parametrize(
+    "name, operations, limits",
+    [
+        ("service.invoke", ["query", "verify"], {"query": 1}),
+        ("service.invoke", ["query"], {"query": 1, "verify": 1}),
+        ("service.invoke", ["query"], {"query": True}),
+        ("service.invoke", ["query"], {"query": 0}),
+        ("service.invoke", ["query"], {"query": 1001}),
+        (
+            "service.invoke",
+            ["query", "verify"],
+            {"query": 501, "verify": 500},
+        ),
+        ("storage.kv", ["get"], {"get": 1}),
+    ],
+)
+def test_manifest_v2_rejects_invalid_action_call_limits(
+    name: str,
+    operations: list[str],
+    limits: dict[str, object],
+) -> None:
+    source = _manifest_mapping()
+    source["capabilities"] = [
+        {
+            "name": name,
+            "operations": operations,
+            "account_role": None,
+            "resource_role": None,
+            "action_call_limits": limits,
+        }
+    ]
+
+    with pytest.raises(PluginManifestError, match="action_call_limits"):
+        AutomationPluginManifestV2.from_mapping(source)
 
 
 def test_project_contract_enforces_registry_role_requirements_and_call_limits() -> None:

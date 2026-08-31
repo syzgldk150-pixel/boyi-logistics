@@ -29,6 +29,9 @@ from agent.automation_plugins.migration import PluginMigrationControlPlane
 from agent.automation_plugins.migration_entrypoint_ownership import (
     migration_target_entrypoints_and_ownership,
 )
+from agent.automation_plugins.migration_binding_mapping import (
+    reviewed_migration_binding_mapping,
+)
 from agent.automation_plugins.models import (
     AutomationProjectConfigRecord,
     PluginInstanceRecord,
@@ -1704,10 +1707,11 @@ class AutomationPluginManagementService:
         source_bindings: Mapping[str, Any],
         source_roles: Sequence[Mapping[str, Any]],
         target_roles: Sequence[Mapping[str, Any]],
+        source_to_target_roles: Mapping[str, str],
         kind: str,
         explicitly_consumed_source_bindings: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
-        """Map only one-to-one role-equivalent bindings across runtimes."""
+        """Copy one reviewed role bijection without signature-based inference."""
 
         source_by_name = {
             str(role.get("role") or ""): role
@@ -1741,48 +1745,41 @@ class AutomationPluginManagementService:
                 )
             target_by_name[target_name] = target_role
 
-        # Reserve every exact name+contract match first.  This is deliberately
-        # a complete first pass: an earlier differently named role must never
-        # consume the exact source role of a later target merely because the
-        # two roles share a signature.
-        matches: dict[str, str] = {}
-        consumed_roles: set[str] = set()
-        for target_name, target_role in target_by_name.items():
-            source_role = source_by_name.get(target_name)
-            if (
-                target_name not in explicitly_consumed_source_bindings
-                and source_role is not None
-                and cls._migration_role_signature(source_role)
-                == cls._migration_role_signature(target_role)
-            ):
-                matches[target_name] = target_name
-                consumed_roles.add(target_name)
-
-        # Only unresolved targets may use signature matching, and only one
-        # still-unconsumed source role is acceptable.
-        for target_name, target_role in target_by_name.items():
-            if target_name in matches:
-                continue
-            candidates = [
-                source_name
-                for source_name, source_role in source_by_name.items()
-                if source_name not in consumed_roles
-                if source_name not in explicitly_consumed_source_bindings
-                if cls._migration_role_signature(source_role)
-                == cls._migration_role_signature(target_role)
-            ]
-            if len(candidates) != 1:
+        if not isinstance(source_to_target_roles, Mapping) or any(
+            not isinstance(source_name, str)
+            or not source_name
+            or not isinstance(target_name, str)
+            or not target_name
+            for source_name, target_name in source_to_target_roles.items()
+        ):
+            raise PluginConflictError(
+                f"migration reviewed {kind} role map is invalid",
+                code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
+            )
+        reviewed_map = dict(source_to_target_roles)
+        if (
+            set(reviewed_map) - set(source_by_name)
+            or set(reviewed_map.values()) != set(target_by_name)
+            or len(set(reviewed_map.values())) != len(reviewed_map)
+            or set(reviewed_map) & set(explicitly_consumed_source_bindings)
+        ):
+            raise PluginConflictError(
+                f"migration reviewed {kind} role map is not a closed bijection",
+                code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
+            )
+        for source_name, target_name in reviewed_map.items():
+            if cls._migration_role_signature(
+                source_by_name[source_name]
+            ) != cls._migration_role_signature(target_by_name[target_name]):
                 raise PluginConflictError(
-                    f"migration {kind} role cannot be uniquely mapped",
+                    f"migration reviewed {kind} role contracts are incompatible",
                     code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
                 )
-            matches[target_name] = candidates[0]
-            consumed_roles.add(candidates[0])
 
         result: dict[str, Any] = {}
         consumed_bindings: set[str] = set(explicitly_consumed_source_bindings)
-        for target_name, target_role in target_by_name.items():
-            source_name = matches[target_name]
+        for source_name, target_name in reviewed_map.items():
+            target_role = target_by_name[target_name]
             if source_name in source_bindings:
                 result[target_name] = copy.deepcopy(source_bindings[source_name])
                 consumed_bindings.add(source_name)
@@ -1824,6 +1821,16 @@ class AutomationPluginManagementService:
                 "migration pair must bind ACTION_V1 to SERVICE_V2",
                 code="PLUGIN_MIGRATION_RUNTIME_MODEL_INVALID",
             )
+        binding_mapping = reviewed_migration_binding_mapping(
+            source_automation_id=source_automation_id,
+            source_plugin_id=str(getattr(source, "plugin_id", "") or ""),
+            target_plugin_id=str(getattr(target, "plugin_id", "") or ""),
+        )
+        if binding_mapping is None:
+            raise PluginConflictError(
+                "migration pair has no reviewed binding map",
+                code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
+            )
         source_record = self._configuration.read(source_automation_id)
         target_entrypoints, entrypoint_ownership, consumed_route_bindings = (
             migration_target_entrypoints_and_ownership(
@@ -1838,12 +1845,14 @@ class AutomationPluginManagementService:
             source_bindings=source_record.account_bindings,
             source_roles=source.account_roles,
             target_roles=target.account_roles,
+            source_to_target_roles=binding_mapping.account_roles,
             kind="account",
         )
         copied_resources = self._map_migration_bindings(
             source_bindings=source_record.resource_bindings,
             source_roles=source.resource_roles,
             target_roles=target.resource_roles,
+            source_to_target_roles=binding_mapping.resource_roles,
             kind="resource",
             explicitly_consumed_source_bindings=consumed_route_bindings,
         )
@@ -1902,12 +1911,14 @@ class AutomationPluginManagementService:
             source_bindings=source_record.account_bindings,
             source_roles=source.account_roles,
             target_roles=target.account_roles,
+            source_to_target_roles=binding_mapping.account_roles,
             kind="account",
         )
         copied_resources = self._map_migration_bindings(
             source_bindings=source_record.resource_bindings,
             source_roles=source.resource_roles,
             target_roles=target.resource_roles,
+            source_to_target_roles=binding_mapping.resource_roles,
             kind="resource",
             explicitly_consumed_source_bindings=consumed_route_bindings,
         )

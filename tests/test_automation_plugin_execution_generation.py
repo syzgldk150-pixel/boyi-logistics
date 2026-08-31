@@ -383,6 +383,107 @@ def _mixed_effect_service_v2_capability(tmp_path: Path) -> dict[str, Any]:
     return capability
 
 
+def _selection_service_v2_capability(tmp_path: Path) -> dict[str, Any]:
+    capability = _mixed_effect_service_v2_capability(tmp_path)
+    service = "plugin.self_pickup_problem_upload_v2.self_pickup_problem_upload@1"
+    write_governance = governance_for_effect("external_write").to_mapping()
+    capability["name"] = "automation.self_pickup_problem_upload.run"
+    metadata = capability["_plugin_runtime"]
+    metadata.update(
+        {
+            "automation_id": "self_pickup_problem_upload",
+            "plugin_id": "self_pickup_problem_upload_v2",
+            "contributions": {
+                "console": [
+                    {
+                        "id": "execute_console",
+                        "service": service,
+                        "operation": "execute",
+                        "selection_preview_operation": "preview",
+                        "default_enabled": False,
+                    }
+                ],
+                "scheduler": [],
+                "webhook": [],
+                "feishu": [],
+                "events": [],
+            },
+            "compiled_invocations": {
+                "execute_console": {
+                    "arguments": {},
+                    "dynamic_resolvers": {},
+                    "target": {
+                        "service": service,
+                        "operation": "execute",
+                        "contribution_id": "execute_console",
+                        "contribution_kind": "console",
+                    },
+                    "governance": write_governance,
+                }
+            },
+            "service_contracts": {
+                "provides": [
+                    {
+                        "service": service,
+                        "operations": [
+                            {"name": "preview", "effect": "read"},
+                            {"name": "execute", "effect": "external_write"},
+                        ],
+                    }
+                ],
+                "requires": [],
+            },
+        }
+    )
+    return capability
+
+
+def _selection_service_result(
+    *,
+    service: str,
+    operation: str,
+    evidence_ref: str,
+) -> dict[str, Any]:
+    observed_at = "2026-08-30T10:00:00Z"
+    outcome = "READ_ONLY" if operation == "preview" else "WRITE_VERIFIED"
+    data = {
+        "ok": True,
+        "evidence": {
+            "service": service,
+            "operation": operation,
+            "outcome": outcome,
+        },
+    }
+    return {
+        "status": "SUCCESS",
+        "data": data,
+        "meta": {
+            "source_system": "host-test",
+            "observed_at": observed_at,
+            "record_count": 1,
+            "pagination_complete": True,
+            "evidence_refs": [evidence_ref],
+            "postconditions": {"0": True},
+            "postcondition_evidence": {
+                "0": {
+                    "condition": "plugin_result_contract_valid",
+                    "verified": True,
+                    "observed_at": observed_at,
+                    "evidence_ref": evidence_ref,
+                    "details": {"result_summary": copy.deepcopy(data)},
+                }
+            },
+            **(
+                {"write_outcome": "WRITE_VERIFIED"}
+                if operation == "execute"
+                else {}
+            ),
+        },
+        "warnings": [],
+        "error": None,
+    }
+
+
 def _mixed_service_write_result(
     *,
     service: str = "plugin.mixed_service.runner@1",
@@ -751,6 +852,28 @@ class _OutputSandbox:
         )
 
 
+class _PayloadCaptureSandbox:
+    def __init__(self, output: bytes, payload_path: Path) -> None:
+        self.output = output
+        self.payload_path = payload_path
+
+    async def launch(self, **_: object) -> asyncio.subprocess.Process:
+        source = (
+            "import pathlib,sys; "
+            f"pathlib.Path({str(self.payload_path)!r}).write_bytes(sys.stdin.buffer.read()); "
+            f"sys.stdout.buffer.write({self.output!r})"
+        )
+        return await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            source,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+
+
 class _SleepSandbox:
     async def launch(self, **_: object) -> asyncio.subprocess.Process:
         source = "import sys,time; sys.stdin.buffer.read(); time.sleep(30)"
@@ -939,6 +1062,98 @@ def test_direct_service_v2_read_contribution_does_not_inherit_summary_write_leas
     assert leases.released[0][1] is RuntimeLeaseOutcome.SUCCEEDED
     assert issuer.last_issue is not None
     assert issuer.last_issue["runtime_permissions"]["_service_effect_ceiling"] == "read"
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_operation", "expected_effect", "started_mutating_calls"),
+    (
+        (
+            {
+                "dry_run": True,
+                "selected_bill_codes": [],
+                "preview_fingerprint": "",
+            },
+            "preview",
+            CapabilityEffect.READ,
+            0,
+        ),
+        (
+            {
+                "dry_run": False,
+                "selected_bill_codes": ["R_SELF"],
+                "preview_fingerprint": "a" * 64,
+            },
+            "execute",
+            CapabilityEffect.EXTERNAL_WRITE,
+            1,
+        ),
+    ),
+)
+def test_service_v2_selection_payload_target_matches_signed_phase(
+    tmp_path: Path,
+    arguments: dict[str, Any],
+    expected_operation: str,
+    expected_effect: CapabilityEffect,
+    started_mutating_calls: int,
+) -> None:
+    capability = _selection_service_v2_capability(tmp_path)
+    service = "plugin.self_pickup_problem_upload_v2.self_pickup_problem_upload@1"
+    evidence_ref = f"evidence:self-pickup:{expected_operation}"
+    payload_path = tmp_path / f"{expected_operation}-payload.json"
+    output = _selection_service_result(
+        service=service,
+        operation=expected_operation,
+        evidence_ref=evidence_ref,
+    )
+    leases = _LeaseRepository({"self_pickup_problem_upload": capability})
+    observations = (
+        {
+            "request_id": "44444444-4444-4444-8444-444444444444",
+            "operation": "service.invoke",
+            "action": "execute",
+            "role": "__system__",
+            "arguments_sha256": "f" * 64,
+            "write_started": True,
+            "evidence_ref": evidence_ref,
+            "result": {"status": "SUCCESS"},
+        },
+    ) if expected_effect is CapabilityEffect.EXTERNAL_WRITE else ()
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=_Issuer(
+            started_mutating_calls=started_mutating_calls,
+            host_call_observations=observations,
+        ),
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=_PayloadCaptureSandbox(
+            json.dumps(output, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+            payload_path,
+        ),
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+
+    raw = asyncio.run(
+        router.execute(
+            capability,
+            arguments,
+            trusted_invocation_context=_trusted_binding(
+                capability,
+                contract_id="execute_console",
+            ),
+        )
+    )
+
+    assert raw["status"] == "SUCCESS"
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    assert payload["arguments"] == arguments
+    assert payload["target"] == {
+        "service": service,
+        "operation": expected_operation,
+        "contribution_id": "execute_console",
+        "contribution_kind": "console",
+    }
+    assert payload["governance"] == governance_for_effect(expected_effect.value).to_mapping()
 
 
 def test_direct_service_v2_write_success_without_started_receipt_is_not_verifying(

@@ -163,6 +163,16 @@ def _service_invoke_row(
         or _stable(broker_operation.get("governance")) != _stable(governance)
     ):
         raise PluginManifestError("service.invoke admission governance is invalid")
+    signed_limit = broker_operation.get(
+        "per_action_limit",
+        SERVICE_INVOKE_PER_CALL_LIMIT,
+    )
+    if (
+        isinstance(signed_limit, bool)
+        or not isinstance(signed_limit, int)
+        or not 1 <= signed_limit <= 1000
+    ):
+        raise PluginManifestError("service.invoke action call limit is invalid")
     return {
         "capability": "service.invoke",
         "action": action,
@@ -174,7 +184,7 @@ def _service_invoke_row(
         "admission_ceiling": CapabilityEffect.EXTERNAL_WRITE.value,
         "governance": _stable(governance),
         "scheduler_allowed": True,
-        "per_call_limit": SERVICE_INVOKE_PER_CALL_LIMIT,
+        "per_call_limit": signed_limit,
         "grant": False,
     }
 

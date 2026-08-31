@@ -118,7 +118,7 @@ payload/
 | `runtime` | `kind=python_subprocess`、`python=3.10`、`mode=on_demand|resident`，入口和离线依赖路径必须位于 `payload/` |
 | `provides` | 至少一个服务；名称固定为 `plugin.<plugin_id>.<service>@<major>`；ZIP 不能提供或覆盖 `connector.*`；每个操作是字段精确为 `name/effect` 的对象，名称稳定且唯一，effect 只能是五态闭集 |
 | `requires` | 插件服务依赖精确为 `{service}`；宿主 Connector 依赖只能是闭合的 `{service,binding_kind,account_role}`、`{service,binding_kind,resource_role}` 或 `{service,binding_kind}`（分别对应 `account`、`resource`、`host_internal`）；账号角色必须在 `account_roles` 中声明为 `required=true`，资源角色可声明 `required=true|false`；不能依赖自己提供的服务 |
-| `capabilities` | 只声明实际使用的能力、精确 action、账号角色或资源角色 |
+| `capabilities` | 只声明实际使用的能力、精确 action、账号角色或资源角色；仅 `service.invoke` 可选 `action_call_limits`，其键必须精确覆盖 operations，每项为 `1..1000` 整数且总和不超过 1000，未声明时保留旧的每 action 64 次默认 |
 | `account_roles` | 声明角色、允许系统和是否必填；账号由项目绑定，不进入配置 JSON |
 | `resource_roles` | 声明角色、允许资源种类和是否必填 |
 | `contributes` | 必须同时含 `console/scheduler/webhook/feishu/events` 五个数组，可选 `harness/module_slots`；所有 contribution `id` 在包内全局唯一 |
@@ -131,6 +131,7 @@ payload/
 - Scheduler：在上述字段外可声明五段 cron 和时区；仅当 `default_enabled=false` 时允许省略 `schedule`，省略只表示默认关闭，不能填充或推断 cron。启用的 contribution 必须使用项目配置中的真实 schedule；MIG001 若源项目 Scheduler 已启用，明确返回 `PLUGIN_MIGRATION_SCHEDULER_PRODUCTION_GATED`，不在离线层复制或切换；本任务的 arrival 源无 Scheduler，目标保持 disabled/no schedule。若声明默认启用，当前 Host 仍只接受 `Asia/Shanghai` 与固定数字 `minute hour * * *`，且一个包最多一个默认 Scheduler。项目迁移测试期必须关闭物理任务。
 - Webhook：只接受 `POST` 和稳定 route 段。
 - 飞书：声明命令文本，但发布时仍需宿主侧受审路由能力；不能借此把任意文本变成特权入口。
+- Selection：仅 Console/Feishu 可选增加 `selection_preview_operation`；原 `operation` 是 execute。两者必须属于同一 service，preview effect 必须是 `read`、execute effect 必须是 `external_write` 且名称不同；同一包的 Console/Feishu selection 声明还必须共享完全相同的 service/preview/execute 三元组，其他 contribution kind 禁止该字段。
 - Event：声明全局 exact 事件名、是否 durable 和目标服务操作；当前只有 `durable=false` 可进入离线 best-effort Dispatcher，`durable=true` 明确不可用且不降级。
 - Module Slot：可选 `module_slots` 中每项字段精确为 `id/slot/title/service/operation/default_enabled`；当前 slot 只允许 `waybill_entry.actions` 与 `waybill_entry.validators`，目标 Provider operation 只允许 `read/compute`，插件不能携带或返回前端代码。
 
@@ -245,6 +246,8 @@ Host capability 不是一组散落的字符串常量。`HostCapabilityRegistry` 
 
 `capabilities[*].operations` **仍是 action 字符串数组**，例如 `storage.collection` 的 `"get"`、`"query"`、`"upsert"`。插件只声明自己要调用什么，不能在 capability 声明中附加 effect、risk、lock 或 Harness 标志。`service.invoke` 是动态服务能力：它的静态 grant 只开放受保护的动态 effect 分发，实际 effect 必须在调用前从目标 Provider 的不可变操作合同取得，effect ceiling 则来自调用 contribution 的精确治理。
 
+`service.invoke.action_call_limits` 只调整签名 Broker contract 中每个已声明 action 的调用预算，不允许增删 action 或改变 effect/governance；总预算仍有 1000 次硬上限。旧包未声明该字段时继续生成原 canonical material 与每 action 64 次额度，不能因新字段支持而漂移历史 hash。
+
 五态 effect 是唯一治理输入，宿主按下表机械派生，不按 `get/list/query/run` 等名称猜测，也不复用 generation lifecycle 的 `effect_kind`：
 
 | effect | operation type / risk | lock | Evidence 与重试 | Harness | Broker 投影 / 全自动 |
@@ -350,6 +353,8 @@ Agent 启动时先完成审批策略与项目调用器装配，再构造但不�
 
 Catalog 只输出白名单 `active_contributions` 与 `contribution_projection_state`；状态仅为 `ACTIVE/STALE/INACTIVE`，每条公开 active 记录只含 `contribution_id/contribution_kind/generation/phase/backend_status`。Console 手工执行入口仍只从与当前 committed generation 精确一致、`phase=COMMITTED`、`backend_status=READY` 且状态为 `ACTIVE` 的 Console 记录派生；Feishu/Webhook/Event/Module Slot 记录可以进入已启用种类展示，但绝不进入通用 Console 手工调用清单。Module Slot 只能经 7.6 的固定录单宿主调用。Harness 使用同一 Registry 的独立私有只读 snapshot，每次调用前再次解析 exact active generation；动态飞书、动态 Webhook、non-durable Event Dispatcher 与 Module Slot Host 都只解析 exact active generation，Policy 还会在创建 Command 前和同一接受 UOW 内再次核对 Registry identity。缺失、歧义、跨代、stale 或 inactive 均关闭失败。这不改变 `ACTION_V1`、既有 Webhook/Feishu、`shared/runtime_events.py`、事务 Outbox 或 Host `event.publish` 合同，也不开放自定义插件前端；`durable=true` Event 仍为 `CAPABILITY_UNAVAILABLE`。
 
+Selection contribution 的首次预览对调用方是零业务参数：`dry_run=true`、空选集和空指纹由 Host 注入，签名 preview operation 以 read/low 治理执行；持久 preview 有效期 15 分钟。确认调用面只接受 `preview_run_id + selected_bill_codes` 以及既有已验证 transport/Actor，项目、代际、配置、contract、contribution、service、operation、effect、账号、资源、完整 fingerprint 和 `dry_run=false` 均由 Host 恢复。Command 接受 UOW 内重新锁定 Run，要求选集为原候选子集并复核全部身份与 phase 后原子 consume；同一 request 按 Command 幂等恢复，另一个 request 重用 preview 返回 `SELECTION_PREVIEW_ALREADY_CONSUMED`。过期、结果篡改、身份或 operation/effect 漂移全部关闭失败。
+
 ### 7.2 Harness 首期只读边界
 
 `/harness` 是代码拥有、不可停用的固定 Console 模块。浏览器只能提交规范请求 UUID、Agent 签发的 Session UUID 和最多 4,000 字符的消息；Console 只接受真实 MySQL `admin/super_admin` 会话与同源写请求，再通过既有签名 principal 调用 Agent `/internal/v1/harness/sessions` 和 `/internal/v1/harness/messages`。浏览器或模型均不能提交 `automation_id/service/operation/account_id/resource_id` 等运行身份，动态工具只公开不可逆的 opaque tool id、标题和说明。
@@ -440,7 +445,7 @@ v1 继续服务，v2 作为新包、新项目和新 `automation_id` 建立。禁
 
 1. 为旧 `ACTION_V1` 项目安装真正的 `SERVICE_V2` ZIP，生成独立项目。
 2. 创建 migration pair 时先在一个事务中写入 `PREPARING` 持久互斥态并禁用目标物理任务；此时旧 v1 入口继续运行，目标即使已有残留内存 Job 也会在 API 返回前触发 Scheduler reload。
-3. 在 `PREPARING` 保护下重新读取源项目，按一对一等价角色自动复制业务配置、账号和资源绑定；歧义、缺角色或 Schema 不兼容必须失败，不能按同名、首项或默认值猜测。项目 ID、运行租约和历史 capability 永不复制。
+3. 在 `PREPARING` 保护下重新读取源项目，只按 `migration_binding_mapping.py` 中代码审阅的闭合一对一角色映射复制业务配置、账号和资源绑定；未知 pair、歧义、缺角色或 Schema 不兼容必须失败，不能按同名、签名、首项或默认值猜测。项目 ID、运行租约和历史 capability 永不复制。
 4. 配置复制与快照冻结成功后才把 pair 推进为 `TESTING`。v2 desired 配置可保留原 Scheduler 意图，但物理 Scheduler、飞书生产适配、公网 Webhook namespace 和 Event 仍没有迁移入口所有权；只有 Console 人工入口用于真跑验证。无网络 Webhook Dispatcher 的 `READY` 不改变该门禁。
 5. 若复制或冻结中途失败，`PREPARING` 与目标禁用状态继续持久化，API 返回 `202`、失败阶段和 `retry_with_same_request_id=true`。只能用原 migration pair、原 request UUID 精确续做，不能创建第二个 pair。
 
@@ -490,6 +495,12 @@ v1 继续服务，v2 作为新包、新项目和新 `automation_id` 建立。禁
 
 MIG001 的真实 TMS 读取、Feishu/资源写、内部投影写、独立新鲜写后核验、真实 descriptors/handlers、生产安装、Scheduler/Feishu 入口接管和部署仍为 `PRODUCTION_GATED`。离线完成不等于生产真跑或迁移完成；任何写响应丢失或 postcondition 不闭合都必须保留 `WRITE_OUTCOME_UNKNOWN`，不得重放原写。
 
+### 9.5 MIG002 自提问题件独立包
+
+`self_pickup_problem_upload_v2` 位于 `agent/service_v2_plugins/self_pickup_problem_upload_v2/`，以逐字节嵌入的 v1 `payload/action.py` 与共享结果契约作为唯一业务算法来源。它提供同一 service 上的 `preview/read` 与 `execute/external_write`，通过一个来源 Sheet Connector 和两个精确区分账号角色的 Ronghui Connector 完成全目标 preflight；Host 预算精确为一次 `read_rows` 加最多 250 次 `query/create/verify`，共 751 次。离线测试证明代表性 preview parity、primitive 顺序、来源重排指纹稳定、来源漂移拒绝、正式逐票 query-create-fresh-verify，以及 create/verify 不确定时保留 `WRITE_OUTCOME_UNKNOWN`；代码审阅的一对一 binding map 禁止按同名、签名或首项猜测。
+
+两个入口默认关闭，Scheduler/Webhook/Event 为空。上述源码、确定性 ZIP、fixture 与 Host 合同不等于安装或生产迁移：三个真实 Connector descriptor/handler、账号/资源与 grant、生产安装和 committed generation、Console/固定飞书多轮选择 ownership 切换、真实飞书读取、真实问题件创建及独立权威列表回读、生产数据库事务演练和部署全部为 `PRODUCTION_GATED`。当前启用的 v1 飞书选择入口会在创建 migration pair 前返回 `PLUGIN_MIGRATION_FEISHU_SELECTION_PREVIEW_PRODUCTION_GATED`，v1 继续唯一生产 owner。
+
 ## 10. 迁移波次
 
 波次必须按风险和宿主能力闭合情况推进，不能因源代码已存在就跳过真实验证。
@@ -512,6 +523,7 @@ MIG001 的真实 TMS 读取、Feishu/资源写、内部投影写、独立新鲜�
 - [ ] 包内没有凭据、账号 ID、前端、hook、任意下载脚本、SQL/DDL 或其他插件源码。
 - [ ] `capabilities[*].operations` 只列 Registry 已注册的 action 字符串，不复制或自报 Host effect；缺失数据、歧义、空响应和写后无法核验均显式失败。
 - [ ] 每个 contribution 的 effect、target 和 governance 在编译、Plan 与运行时一致；跨插件调用不超过调用方 ceiling，读/计算路径保持零写标记。
+- [ ] Selection contribution 的同 service preview/read 与 execute/external_write 配对闭合，Host-owned 输入、15 分钟候选子集与一次性消费均通过；`service.invoke.action_call_limits` 精确覆盖 operations 且预算边界闭合。
 - [ ] Connector 依赖使用显式 account/resource/host_internal binding；每个 operation 的 effect、闭合 input/output Schema 和 input/output cap 进入 contract 校验，legacy account/read/default-cap hash 保持稳定，插件结果不含账号/资源身份。
 - [ ] disabled Scheduler contribution 可省略 `schedule`；enabled contribution 只能使用项目真实 schedule。MIG001 source Scheduler 已启用时标记 `PLUGIN_MIGRATION_SCHEDULER_PRODUCTION_GATED`，arrival source 无 Scheduler 时目标保持 disabled/no schedule。
 - [ ] 写操作先预检、再由宿主标记写尝试、最后独立回读；Evidence、postcondition proof 与 Host 调用观测闭合，未知结果不重放。

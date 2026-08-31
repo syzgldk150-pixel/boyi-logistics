@@ -454,6 +454,55 @@ def test_service_v2_inspect_projection_excludes_service_operation_and_package_au
     assert "package_sha256" not in projection
 
 
+def test_service_v2_inspect_projection_preserves_signed_action_call_limits() -> None:
+    verified = SimpleNamespace(
+        manifest=SimpleNamespace(
+            plugin_id="example_service",
+            name="Example service",
+            version="2.0.0",
+            host_api={"minimum": "2.0.0", "maximum_exclusive": "3.0.0"},
+            capabilities=(
+                {
+                    "name": "service.invoke",
+                    "operations": ("preview", "execute"),
+                    "account_role": None,
+                    "resource_role": None,
+                    "action_call_limits": {"preview": 1, "execute": 250},
+                },
+            ),
+            account_roles=(),
+            resource_roles=(),
+            config_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
+                "required": [],
+            },
+            contributes={
+                "console": (),
+                "scheduler": (),
+                "webhook": (),
+                "feishu": (),
+                "events": (),
+            },
+        )
+    )
+
+    projection = AutomationPluginManagementService._service_v2_wizard_projection(
+        verified
+    )
+
+    assert projection["permissions"] == [
+        {
+            "name": "service.invoke",
+            "operations": ["preview", "execute"],
+            "account_role": None,
+            "resource_role": None,
+            "action_call_limits": {"preview": 1, "execute": 250},
+        }
+    ]
+
+
 def test_legacy_install_keeps_action_v1_and_rejects_service_v2_without_intent() -> None:
     calls: list[str] = []
     active_version = SimpleNamespace(
@@ -2576,7 +2625,16 @@ def test_open_migration_pair_blocks_ordinary_project_state_mutation() -> None:
     assert lifecycle_calls == []
 
 
-def test_create_migration_pair_copies_closed_bindings_without_scheduler() -> None:
+def test_create_migration_pair_copies_closed_bindings_without_scheduler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "agent.automation_plugins.management.reviewed_migration_binding_mapping",
+        lambda **_kwargs: SimpleNamespace(
+            account_roles={"legacy_operator": "operator"},
+            resource_roles={},
+        ),
+    )
     source = _entry(
         automation_id="legacy-clock",
         runtime_model=PluginRuntimeModel.ACTION_V1.value,
@@ -2752,7 +2810,13 @@ def test_create_migration_pair_rejects_ambiguous_binding_mapping() -> None:
     assert raised.value.code == "PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE"
 
 
-def test_create_migration_pair_copy_failure_leaves_durable_preparing_hold() -> None:
+def test_create_migration_pair_copy_failure_leaves_durable_preparing_hold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "agent.automation_plugins.management.reviewed_migration_binding_mapping",
+        lambda **_kwargs: SimpleNamespace(account_roles={}, resource_roles={}),
+    )
     source = _entry(
         automation_id="legacy-clock",
         runtime_model=PluginRuntimeModel.ACTION_V1.value,
