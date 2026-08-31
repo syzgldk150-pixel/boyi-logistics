@@ -39,7 +39,7 @@ updated: 2026-08-31
 | TASK-EXT-009B | DONE_OFFLINE | 2026-08-31T10:16:26+08:00 | 2026-08-31T10:55:01+08:00 | 983a2f4ec06c294e43310e4dbb6b6d14f8aad47b |
 | TASK-EXT-009C | DONE_OFFLINE | 2026-08-31T10:56:17+08:00 | 2026-08-31T11:35:00+08:00 | 2571ca202f42c7155da8635af5de76cd0f906632 |
 | TASK-EXT-010 | DONE_OFFLINE | 2026-08-31T11:38:27+08:00 | 2026-08-31T12:49:57+08:00 | f1f13aaab4ed522b7b19e36027875767c4d14373 |
-| TASK-EXT-011 | IN_PROGRESS | 2026-08-31T12:51:05+08:00 | — | — |
+| TASK-EXT-011 | DONE_OFFLINE | 2026-08-31T12:51:05+08:00 | 2026-08-31T14:05:36+08:00 | 01cf2447e997c51973d2ead49ac3c522743095f9 |
 | TASK-MIG-001 | NOT_STARTED | — | — | — |
 | TASK-MIG-002 | NOT_STARTED | — | — | — |
 | TASK-MIG-003 | NOT_STARTED | — | — | — |
@@ -225,16 +225,16 @@ updated: 2026-08-31
 
 ### TASK-EXT-011：Connector Registry
 
-- 状态：`IN_PROGRESS`
-- 开始时间 / 结束时间：`2026-08-31T12:51:05+08:00` / —
-- 设计决策：先审计现有 Host capability、ServiceRegistry、`service.invoke` 与账号绑定单一链，再新增宿主拥有且不能由普通 ZIP 注册/覆盖的 Connector Registry。首个 Connector 只允许闭合、版本化、`read` effect 的离线 fixture adapter；调用方只拿业务结果，不能取得账号绑定 ID、密码、Cookie、Token、endpoint、数据库连接或真实文件路径。真实 TMS/生产数据库接线保持 `PRODUCTION_GATED`。
-- 修改文件 / Commit SHA：— / —
-- 测试命令和结果：尚未运行。
-- 兼容性影响：闭合、版本化服务合同。
-- 数据库影响：待审计。
-- 未完成项：全部。
+- 状态：`DONE_OFFLINE`
+- 开始时间 / 结束时间：`2026-08-31T12:51:05+08:00` / `2026-08-31T14:05:36+08:00`
+- 设计决策：新增与 ZIP `ServiceRegistry` 严格分离、构造后不可注册/卸载的宿主 `ConnectorRegistry`；ZIP 的 `provides` 与 contribution target 继续只允许 `plugin.*`。Connector 依赖必须精确声明 `{service,account_role}`，角色必须 `required=true`，且服务、角色和允许系统在 Manifest、持久代际、Catalog、ServiceRegistry、coeffect 与每次调用中使用同一兼容合同核对。Core 只构造不观察 Registry 的私有 lazy resolver；Proxy 必须先完成 requires、cycle 和 depth 检查，再解析 Connector 与账号，因此已注册/未知的未声明服务返回同一拒绝且不形成存在性 oracle。首个 `connector.fixture.tracking@1/query` 仅支持 `read`、闭合 Schema 和显式本地 fixture；结果拒绝账号标识、认证字段、URI、endpoint、绝对路径与超限 JSON。生产组合只注入同一个空 Registry，不导入 fixture。
+- 修改文件 / Commit SHA：核心包括 `automation_plugins/{connector_registry.py,connector_compatibility.py,connector_dependency_projection.py,fixture_connectors.py,capability_proxy_v2.py,core_adapter.py,service_registry.py,service_v2_projection.py,catalog.py,manifest_v2.py,production.py}`、SDK Schema、离线 fixture、合同/运行时/生产装配测试以及根/Agent 文档与指令镜像 / `01cf2447e997c51973d2ead49ac3c522743095f9`。
+- 测试命令和结果：Connector、运行时、合同和 CLI-core 定向 `194 passed`；生产装配/Foundation/Event/Feishu/Webhook 定向 `80 passed, 57 subtests passed`；联合安全回归 `260 passed`。修正后 root full suite `2351 passed, 30 skipped, 370 subtests passed`；Agent full suite `1163 passed, 1 skipped, 211 subtests passed`；Console full suite `618 passed, 213 subtests passed`。全仓 Ruff、隔离编译、15 个已跟踪 JavaScript 语法、文档（76 项 Markdown）、仓库卫生、运行时导入边界、内部 API 合同、工具注册表（40 项）、三套指令镜像和 `git diff --check` 全部通过；两名独立最终复审均给出 `SHIP`。测试显式设置 `PYTHONDONTWRITEBYTECODE=1` 与 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
+- 兼容性影响：旧 `plugin.*` Manifest canonical mapping/hash、仅插件服务的 durable effect 11 字段、`service_contracts_sha256` 与 coeffect revision material 保持原结构。Connector 不作为 Provider owner，也没有安装、升级、启停或卸载生命周期；Catalog 只输出不含账号绑定、合同哈希或生命周期动作的独立安全投影。角色/系统漂移统一进入 `BLOCKED_DEPENDENCY`；允许系统集合仅顺序不同仍兼容。
+- 数据库影响：无 migration、无表/字段/DML；未连接生产数据库。
+- 未完成项：无离线实现项。真实 TMS、飞书、数据库 Connector、写 Connector、真实账号接入、生产安装、部署和真实业务验收均为 `PRODUCTION_GATED`；本轮未访问真实业务数据、凭据或外部系统。
 - 下一项 TASK：`TASK-MIG-001`。
-- 恢复说明：EXT010 代码 `f1f13aaab4ed522b7b19e36027875767c4d14373` 与完成账本 `e68829e1d0d732f6d76101bfe80d9bcfefbff492` 已推送。从现有 Manifest requires、Catalog 依赖投影、ServiceRegistry、`service.invoke` 和项目 account binding 开始，设计一个与普通 ZIP Provider 分离的宿主 Connector Registry；只使用本地 fixture，不读取 `.env`、凭据或真实业务数据。
+- 恢复说明：确认 EXT011 代码 `01cf2447e997c51973d2ead49ac3c522743095f9` 与完成账本 checkpoint 已推送后，从既有 `sync_arrival_stats` v1 业务源码、Service v2 包构建器、Connector 合同和 migration pair 开始 MIG001；先形成离线候选包、fixture 等价、dry-run、cutover/rollback 清单，不读取 `.env`、不连接真实 TMS/飞书/数据库，不执行真实写。
 
 ### TASK-MIG-001：迁移到货统计
 
