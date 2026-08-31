@@ -38,7 +38,7 @@ updated: 2026-08-31
 | TASK-EXT-009A | DONE_OFFLINE | 2026-08-31T08:31:21+08:00 | 2026-08-31T10:15:09+08:00 | 9104ebbe936f315f429f7c1c011485ff7cd5a843 |
 | TASK-EXT-009B | DONE_OFFLINE | 2026-08-31T10:16:26+08:00 | 2026-08-31T10:55:01+08:00 | 983a2f4ec06c294e43310e4dbb6b6d14f8aad47b |
 | TASK-EXT-009C | DONE_OFFLINE | 2026-08-31T10:56:17+08:00 | 2026-08-31T11:35:00+08:00 | 2571ca202f42c7155da8635af5de76cd0f906632 |
-| TASK-EXT-010 | IN_PROGRESS | 2026-08-31T11:38:27+08:00 | — | — |
+| TASK-EXT-010 | DONE_OFFLINE | 2026-08-31T11:38:27+08:00 | 2026-08-31T12:49:57+08:00 | f1f13aaab4ed522b7b19e36027875767c4d14373 |
 | TASK-EXT-011 | NOT_STARTED | — | — | — |
 | TASK-MIG-001 | NOT_STARTED | — | — | — |
 | TASK-MIG-002 | NOT_STARTED | — | — | — |
@@ -212,16 +212,16 @@ updated: 2026-08-31
 
 ### TASK-EXT-010：固定模块扩展槽位
 
-- 状态：`IN_PROGRESS`
-- 开始时间 / 结束时间：`2026-08-31T11:38:27+08:00` / —
+- 状态：`DONE_OFFLINE`
+- 开始时间 / 结束时间：`2026-08-31T11:38:27+08:00` / `2026-08-31T12:49:57+08:00`
 - 设计决策：独立提交；只允许 exact `waybill_entry.actions`、`waybill_entry.validators` 两个槽位，并且只挂载在本地博益手工录单 frame `/ocr/boyi/frame`，不进入韵达/融辉跨域原页。插件只声明闭合 Host 元数据和已签名 `read/compute` Provider operation；Console GET 只消费 `{slot,handle,title}`，固定 Host HTML/JS/CSS 渲染按钮和校验反馈。动作的浏览器同源 POST 只含 `{request_id,waybill}`，必须带与 body 一致的 canonical `X-Browser-Request-UUID`；21 个业务字段单点来自 `shared.waybill_entry_extensions`，不含 `waybill_no/weight_volume/return_to/auto_print/action`，也不含项目、代际、service、operation、effect、账号、资源、Actor、角色或任意参数。validator 不依赖客户端门禁：Console 在原 `/waybills/manual` 实际落库前从同一表单构造闭合 draft，以服务端 UUID 和签名 principal 调用 Agent active-set 端点；Agent 对前后完全一致的 validators-only active snapshot 逐一运行 exact handle。invalid、超时、调用失败、畸形响应或激活/停用/切代漂移均阻止本次；稳定空集合才恢复核心原生保存。禁止插件 HTML/JS/CSS、远程前端、DOM/Cookie/内部接口访问和隐式 fallback。
-- 修改文件 / Commit SHA：Console 宿主服务、路由、Boyi frame 模板、Catalog/安装向导安全投影及测试；Agent/shared generation Registry、Manifest/compiled contract、Policy/API 由同 TASK 并行实现；文档与三层指令镜像 / —
-- 测试命令和结果：Console 聚焦与相邻边界先后 `38 passed`、`59 passed`，最终聚焦组合为 `112 passed`；Console 全量 pytest 为 `611 passed, 213 subtests passed`（另以 unittest discover 复核 `561 passed`）。Ruff 对全部 Console 改动、`git diff --check` 均通过；跨分片集成待本 TASK 收口。测试设置 `PYTHONDONTWRITEBYTECODE=1` 与 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
-- 兼容性影响：核心 POST `/waybills/manual` 未修改；无 active validator 时行为不变。GET 投影不可用时只降级扩展展示，页面和核心录单继续可用；active validator 调用失败则只阻止当次保存，不能静默跳过；停用/卸载撤销 handle 后恢复核心路径。
+- 修改文件 / Commit SHA：Service v2 Manifest/SDK Schema/compiled contract、generation Registry/投影、Policy/API/Host、共享 21 字段与 validator 合同、Console 固定宿主路由/服务/Boyi frame 模板/Catalog 安全投影、权威保存 guard、测试、基准文档与三层指令镜像 / `f1f13aaab4ed522b7b19e36027875767c4d14373`。
+- 测试命令和结果：修复后 Agent/Policy/Host/API 聚焦 `92 passed, 42 subtests passed`，Console 保存边界/Catalog/API 聚焦 `127 passed, 53 subtests passed`；root full suite `2247 passed, 30 skipped, 370 subtests passed`；Agent full suite `1155 passed, 1 skipped, 211 subtests passed`；Console full suite `618 passed, 213 subtests passed`。全仓 Ruff、隔离 compileall、文档（76 项 Markdown）、仓库卫生、运行时导入边界、内部 API 合同、工具注册表（40 项）、Node 语法、三套指令镜像和 `git diff --check` 全部通过；直接 POST 绕过与 stale DOM 阻断修复后，安全和测试充分性两位独立最终复审均给出 `SHIP`。测试设置 `PYTHONDONTWRITEBYTECODE=1` 与 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
+- 兼容性影响：原 POST `/waybills/manual` 路径和 `apply_manual_waybill` 核心落库实现保持不变，但路由在调用落库前新增服务器权威 active-validator guard；稳定空集合返回 valid 后继续原链。GET 投影不可用只影响展示，旧 DOM 不参与保存门禁；active-set 不可达、invalid、超时、畸形响应或代际集合漂移只阻止当次保存，不能静默跳过。停用/卸载后稳定空集合恢复核心路径；ACTION_V1、韵达/融辉跨域原页和其他 contribution 路径不变。
 - 数据库影响：无需新增表、字段或迁移；复用既有 Manifest、compiled invocation、generation snapshot/activation journal、`ManagedContributionRegistry`、Policy、Command 与 Run。
-- 未完成项：最终全量回归、跨分片集成、独立复审和 Commit SHA 待本 TASK 收口。真实外部写、真实 TMS/飞书/生产数据、生产数据库、部署与生产故障演练均为 `PRODUCTION_GATED`；本轮未访问或执行。
+- 未完成项：无离线实现项。真实外部写、真实 TMS/飞书/生产数据、生产数据库、真实插件安装、部署、跨进程切换仲裁与生产故障演练均为 `PRODUCTION_GATED`；本轮未访问或执行。
 - 下一项 TASK：`TASK-EXT-011`。
-- 恢复说明：EXT009C 代码 `2571ca202f42c7155da8635af5de76cd0f906632` 与完成账本 `c47c7be` 已推送。从现有 Service v2 Manifest/compiled invocation、`ManagedContributionRegistry`、Policy 接受 UOW 二次核验和 Console 录单宿主边界开始审计；只实现两个 exact waybill slot 与本地 fixture，不连接真实 TMS/飞书、生产数据库，不执行外部写或部署。
+- 恢复说明：确认 EXT010 代码 `f1f13aaab4ed522b7b19e36027875767c4d14373` 与本完成账本 checkpoint 均已推送后，立即从现有 Host capability/ServiceRegistry/`service.invoke`/账号绑定链开始 EXT011；只抽象一个宿主拥有的低风险只读 Connector 与本地 fixture adapter，不访问真实 TMS、生产数据库或凭据，不把 Connector 伪装成普通 ZIP Provider。
 
 ### TASK-EXT-011：Connector Registry
 
