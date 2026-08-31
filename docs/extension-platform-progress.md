@@ -36,7 +36,7 @@ updated: 2026-08-31
 | TASK-EXT-007 | DONE_OFFLINE | 2026-08-31T06:04:44+08:00 | 2026-08-31T07:13:05+08:00 | 81f58eb89befdf54be33b67ef70e6e3d96a4cde7 |
 | TASK-EXT-008 | DONE_OFFLINE | 2026-08-31T07:20:58+08:00 | 2026-08-31T08:30:16+08:00 | 90ad312dba83f480062fa6d99cd6ee8be371696f |
 | TASK-EXT-009A | DONE_OFFLINE | 2026-08-31T08:31:21+08:00 | 2026-08-31T10:15:09+08:00 | 9104ebbe936f315f429f7c1c011485ff7cd5a843 |
-| TASK-EXT-009B | IN_PROGRESS | 2026-08-31T10:16:26+08:00 | — | — |
+| TASK-EXT-009B | DONE_OFFLINE | 2026-08-31T10:16:26+08:00 | 2026-08-31T10:55:01+08:00 | 983a2f4ec06c294e43310e4dbb6b6d14f8aad47b |
 | TASK-EXT-009C | NOT_STARTED | — | — | — |
 | TASK-EXT-010 | NOT_STARTED | — | — | — |
 | TASK-EXT-011 | NOT_STARTED | — | — | — |
@@ -186,16 +186,16 @@ updated: 2026-08-31
 
 ### TASK-EXT-009B：动态 Webhook Dispatcher
 
-- 状态：`IN_PROGRESS`
-- 开始时间 / 结束时间：`2026-08-31T10:16:26+08:00` / —
-- 设计决策：独立提交；仅从 exact committed/READY Registry 解析稳定 method/route identity，项目、service、operation、业务参数、账号和资源均由已签名项目合同派生，调用方不得覆盖。先实现无网络的宿主 Dispatcher、可信内部适配边界、停用/卸载热撤销和冲突/重启/幂等 fixture；真实公网入口、反向代理、认证密钥、流量与部署均保持 `PRODUCTION_GATED`。
-- 修改文件 / Commit SHA：— / —
-- 测试命令和结果：尚未运行。
-- 兼容性影响：停用/卸载立即撤销入口。
-- 数据库影响：待审计。
-- 未完成项：全部。
+- 状态：`DONE_OFFLINE`
+- 开始时间 / 结束时间：`2026-08-31T10:16:26+08:00` / `2026-08-31T10:55:01+08:00`
+- 设计决策：仅从 exact committed/READY Registry 解析稳定 method/route identity；Webhook 以全局大小写敏感的 `POST + route` 整代原子占用，同代或跨项目冲突整批失败，同项目相邻 generation 只由 exact active map 放行。新增无网络宿主 Dispatcher，接口只接受 verified method、route 和稳定 `source_event_id`；项目、service、operation、业务参数、账号、资源与 Actor 均由 Registry identity 和已签名项目合同派生，调用方不得覆盖。owner-scoped SHA-256 幂等键跨 generation 稳定且跨项目隔离；Policy 在创建 Command 前与同一接受 UOW 内再次核对 exact Registry identity。既有 Action V1 Webhook 不改、不接公网动态 fallback。
+- 修改文件 / Commit SHA：核心包括 `agent/agent/automation_plugins/{management.py,service_v2_projection.py}`、`agent/agent/orchestration/{automation_project_entrypoints.py,automation_project_policy_service.py}`、Console contribution 安全投影、Manifest/Registry/Dispatcher/Policy/Management/Console 测试及各级文档与指令镜像 / `983a2f4ec06c294e43310e4dbb6b6d14f8aad47b`。
+- 测试命令和结果：EXT009B 跨分片集成 `255 passed, 96 subtests passed`；root full suite 最终 `2187 passed, 30 skipped, 330 subtests passed`；Agent full suite `1138 passed, 1 skipped, 211 subtests passed`；Console full suite `595 passed, 211 subtests passed`。全仓 Ruff、文档（76 项 Markdown）、仓库卫生、运行时导入边界、内部 API 合同、工具注册表（40 项）与 `git diff --check` 全部通过；安全与测试充分性两轮独立复核均给出 `SHIP`。测试显式设置 `PYTHONDONTWRITEBYTECODE=1` 与 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
+- 兼容性影响：停用、卸载、权威空 generation、BLOCKED 与回滚立即撤销动态 Webhook route；DRAINING 不再占路由并可由其他项目回收。Console 只安全显示 Webhook active kind，不生成浏览器手工入口；Action V1 Webhook、固定公网 catch-all 与动态 envelope 参数合同保持不变。
+- 数据库影响：无需新增表、字段或迁移；复用 Manifest Webhook declaration、compiled invocation、generation snapshot、通用 effect journal、activation journal 与现有 `ManagedContributionRegistry`。
+- 未完成项：无离线实现项。真实公网 namespace、逐 route token/signature 与轮换、Nginx/反向代理、真实流量与 replay、跨进程全局 route 仲裁、部署和生产等价故障注入均为 `PRODUCTION_GATED`；未部署、未连接生产数据库、未访问真实 TMS/飞书数据、未执行真实业务写或安装插件。
 - 下一项 TASK：`TASK-EXT-009C`。
-- 恢复说明：EXT009A 代码 `9104ebbe936f315f429f7c1c011485ff7cd5a843` 与完成账本 checkpoint 已推送。从既有 generation-level atomic contribution prepare、state-aware restore、exact active map 与双重 Policy identity recheck 开始扩展 Webhook kind；不得新建第二套仓储/授权/运行链，不得连接公网、生产数据库、真实 TMS/飞书或执行外部写。完成并推送 009B 后立即开始 009C。
+- 恢复说明：确认 EXT009B 代码 `983a2f4ec06c294e43310e4dbb6b6d14f8aad47b` 与本完成账本 checkpoint 均已推送后，立即从同一 generation-level atomic contribution Registry、state-aware restore、exact active map 和 Policy 双重 identity recheck 扩展 Event kind；不得新建第二套仓储/授权/运行链，不得连接外部事件系统、生产数据库、真实 TMS/飞书或执行外部写。
 
 ### TASK-EXT-009C：动态 Event Dispatcher
 
