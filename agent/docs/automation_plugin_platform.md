@@ -31,6 +31,14 @@ A:S 19 列、数量守恒、全量 Sheet/MySQL 投影、最多 90 票全预检�
 ACTION_V1 发行、签名或 whole-tool 机制接管。真实问题件/事件写、生产入口切换、安装和部署均为
 `PRODUCTION_GATED`。
 
+TASK-MIG-004 的 `sync_scan_codes_v2` 同样只是默认关闭的 Service v2 离线候选包。它逐字节嵌入
+本文现有 v1 扫描 action，以两个 Connector 适配分页读取、扫描快照替换、逐批 submit 与 fresh
+server-ledger verify；不导入 whole-tool，也不声明通用 selection preview、Scheduler、Webhook、
+Event 或 Harness。PREVIEW/FORMAL、15 分钟到期、权威重读、数量守恒、零候选和未知写不重试均
+继续由嵌入 action 闭合。v1 生产路由仍是一次性 preview 消费和确认合同的唯一所有者；迁移固定以
+`PLUGIN_MIGRATION_SCAN_PREVIEW_PRODUCTION_GATED` 阻断，真实扫描、入口切换、安装和部署不得由
+ACTION_V1 发行机制替它完成。
+
 v1 与 v2 继续并存，但安装器只按 `schema_version + runtime_model` 严格分流：v1 为
 `schema_version=1` 且 `runtime_model` 缺省或为 `action_v1`，v2 为 `schema_version=2` 且
 `runtime_model=service_v2`。任一模型解析失败都不得回退另一模型，v1 项目也不能原地升级为 v2。

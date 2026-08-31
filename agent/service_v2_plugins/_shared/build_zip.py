@@ -31,6 +31,11 @@ _SPLIT_PENDING_SHARED_FILES = {
     "payload/boyi_plugin_sdk.py": "boyi_plugin_sdk.py",
 }
 _SPLIT_PENDING_PLUGIN_ID = "split_pending_problem_upload_v2"
+_SCAN_SHARED_FILES = {
+    "payload/main.py": "scan_service_main.py",
+    "payload/boyi_plugin_sdk.py": "boyi_plugin_sdk.py",
+}
+_SCAN_PLUGIN_ID = "sync_scan_codes_v2"
 _SOURCE_FILES = {
     "manifest.json": "manifest.json",
     "payload/plugin.py": "payload/plugin.py",
@@ -102,6 +107,20 @@ def build_plugin_zip(source_directory: Path | str, output_path: Path | str) -> P
             {
                 "payload/action.py": (
                     first_party / "split_pending_problem_upload" / "payload" / "action.py"
+                ).read_bytes(),
+                "payload/boyi_plugin_result.py": (
+                    first_party / "_runtime" / "result.py"
+                ).read_bytes(),
+            }
+        )
+    elif manifest.get("plugin_id") == _SCAN_PLUGIN_ID:
+        shared_files = _SCAN_SHARED_FILES
+        repository_root = source.parents[2]
+        first_party = repository_root / "agent" / "first_party_automation_plugins"
+        entries.update(
+            {
+                "payload/action.py": (
+                    first_party / "sync_scan_codes" / "payload" / "action.py"
                 ).read_bytes(),
                 "payload/boyi_plugin_result.py": (
                     first_party / "_runtime" / "result.py"

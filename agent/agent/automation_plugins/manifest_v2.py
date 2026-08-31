@@ -728,10 +728,10 @@ def _validate_capabilities(
                         "service.invoke action_call_limits values must be integers from 1 to 1000"
                     )
                 limits[operation] = value
-            if sum(limits.values()) > 1000:
-                raise PluginManifestError(
-                    "service.invoke action_call_limits total must not exceed 1000"
-                )
+            # The runtime contract clamps global ``max_broker_calls`` to 1000,
+            # while the Broker enforces both that global counter and every
+            # per-action counter.  Removing the obsolete sum rejection does
+            # not change normalized or canonical manifest material.
             normalized["action_call_limits"] = limits
         result.append(normalized)
     if storage is not None:

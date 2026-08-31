@@ -142,6 +142,17 @@ def migration_target_entrypoints_and_ownership(
 ) -> tuple[tuple[str, ...], dict[str, Any], frozenset[str]]:
     """Build the target config and immutable ownership from signed catalogs."""
 
+    if (
+        str(getattr(source, "automation_id", "") or "") == "scan_codes"
+        and str(getattr(source, "plugin_id", "") or "") == "sync_scan_codes"
+        and str(getattr(target, "plugin_id", "") or "")
+        == "sync_scan_codes_v2"
+    ):
+        raise PluginConflictError(
+            "migration of the v1-identity-specific one-use scan preview binding is production gated",
+            code="PLUGIN_MIGRATION_SCAN_PREVIEW_PRODUCTION_GATED",
+        )
+
     source_enabled = tuple(str(item or "") for item in source_enabled_entrypoints)
     if any(not item for item in source_enabled) or len(source_enabled) != len(
         set(source_enabled)

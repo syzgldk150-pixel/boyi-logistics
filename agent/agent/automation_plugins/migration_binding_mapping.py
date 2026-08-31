@@ -71,6 +71,14 @@ _REVIEWED_BINDING_MAPPINGS: Mapping[
                 "split_pending_target_sheet": "split_pending_target_sheet",
             },
         ),
+        (
+            "scan_codes",
+            "sync_scan_codes",
+            "sync_scan_codes_v2",
+        ): _mapping(
+            account_roles={"account_id": "account_id"},
+            resource_roles={},
+        ),
     }
 )
 

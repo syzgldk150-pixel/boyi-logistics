@@ -224,6 +224,48 @@ def test_split_pending_migration_uses_only_its_reviewed_account_and_sheet_roles(
     )
 
 
+def test_scan_migration_uses_only_its_reviewed_exact_identity_and_account_role() -> None:
+    mapping = reviewed_migration_binding_mapping(
+        source_automation_id="scan_codes",
+        source_plugin_id="sync_scan_codes",
+        target_plugin_id="sync_scan_codes_v2",
+    )
+
+    assert mapping is not None
+    assert dict(mapping.account_roles) == {"account_id": "account_id"}
+    assert dict(mapping.resource_roles) == {}
+    assert (
+        reviewed_migration_binding_mapping(
+            source_automation_id="scan_codes",
+            source_plugin_id="sync_scan_codes",
+            target_plugin_id="unknown_target",
+        )
+        is None
+    )
+
+
+def test_scan_migration_is_blocked_by_its_dedicated_preview_handoff_gate() -> None:
+    source = _entry(
+        automation_id="scan_codes",
+        plugin_id="sync_scan_codes",
+    )
+    target = _entry(
+        automation_id="scan-codes-v2",
+        plugin_id="sync_scan_codes_v2",
+    )
+
+    with pytest.raises(PluginConflictError) as raised:
+        migration_target_entrypoints_and_ownership(
+            source=source,
+            target=target,
+            source_enabled_entrypoints=("console", "feishu"),
+            source_schedule={"kind": "none", "times": [], "enabled": False},
+            source_resource_bindings={},
+        )
+
+    assert raised.value.code == "PLUGIN_MIGRATION_SCAN_PREVIEW_PRODUCTION_GATED"
+
+
 def _self_pickup_migration_fixture() -> tuple[SimpleNamespace, SimpleNamespace]:
     source = _entry(
         automation_id="self_pickup_problem_upload",
