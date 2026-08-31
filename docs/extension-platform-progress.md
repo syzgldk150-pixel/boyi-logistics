@@ -40,7 +40,7 @@ updated: 2026-08-31
 | TASK-EXT-009C | DONE_OFFLINE | 2026-08-31T10:56:17+08:00 | 2026-08-31T11:35:00+08:00 | 2571ca202f42c7155da8635af5de76cd0f906632 |
 | TASK-EXT-010 | DONE_OFFLINE | 2026-08-31T11:38:27+08:00 | 2026-08-31T12:49:57+08:00 | f1f13aaab4ed522b7b19e36027875767c4d14373 |
 | TASK-EXT-011 | DONE_OFFLINE | 2026-08-31T12:51:05+08:00 | 2026-08-31T14:05:36+08:00 | 01cf2447e997c51973d2ead49ac3c522743095f9 |
-| TASK-MIG-001 | IN_PROGRESS | 2026-08-31T14:07:30+08:00 | — | — |
+| TASK-MIG-001 | DONE_OFFLINE | 2026-08-31T14:07:30+08:00 | 2026-08-31T15:31:46+08:00 | f9792c7eb7d20929be1ac89d160b85b57e242d3c |
 | TASK-MIG-002 | NOT_STARTED | — | — | — |
 | TASK-MIG-003 | NOT_STARTED | — | — | — |
 | TASK-MIG-004 | NOT_STARTED | — | — | — |
@@ -238,16 +238,16 @@ updated: 2026-08-31
 
 ### TASK-MIG-001：迁移到货统计
 
-- 状态：`IN_PROGRESS`
-- 开始时间 / 结束时间：`2026-08-31T14:07:30+08:00` / —
-- 设计决策：先以现有 `sync_arrival_stats` v1 业务源码作为唯一算法来源，审计其 primitive、账号/资源、Evidence、入口和 migration pair 缺口，再建立独立 Service v2 候选包。本 TASK 只使用显式 fixture 完成 dry-run、v1/v2 稳定投影与调用序列对比、默认关闭 Scheduler、切换/回滚代码和清单；不得复制业务公式、伪造 Connector、填造 Scheduler 时间或把生产验证冒充离线完成。真实 TMS/飞书/数据库适配、真实写后核验、生产入口接管与停用 v1 保持 `PRODUCTION_GATED`。
-- 修改文件 / Commit SHA：— / —
-- 测试命令和结果：尚未运行。
-- 兼容性影响：v2 Scheduler 默认关闭，v1 保持运行。
-- 数据库影响：仅本地验证可能的前向迁移；不操作生产。
-- 未完成项：全部。
+- 状态：`DONE_OFFLINE`
+- 开始时间 / 结束时间：`2026-08-31T14:07:30+08:00` / `2026-08-31T15:31:46+08:00`
+- 设计决策：以 `sync_arrival_stats` v1 `payload/action.py` 作为唯一业务算法来源，由确定性构建器把其字节一致副本嵌入独立 Service v2 候选包，插件不导入 legacy 路径、不复制公式。Host 侧扩展 Connector 为闭合 `account/resource/host_internal` binding，并仅允许 `read/internal_write/external_write`；输入 binding、cap 和 Schema 在写 marker 前验证，handler 后再验证输出 cap、Schema 与敏感字段。到货候选在首个真实调用提交完整、唯一、Manifest 声明内的全目标 preflight，不产生额外 Broker 调用；`pending_sheet_disabled` 必须显式配置。Scheduler 无 schedule 且默认关闭，任何已启用 source Scheduler、Webhook、真实 Connector/写入、生产入口接管与部署均显式门禁。Console/固定飞书入口所有权只由不可变 migration pair 决定；完成态永久归 v2，同 source 不得重建 pair，切换/回滚请求按完整意图幂等并返回原事件状态/版本。
+- 修改文件 / Commit SHA：到货 v2 包、共享 arrival Host adapter、Connector/Manifest/SDK/Registry/Proxy/Management、migration ownership 与仓储、Console/飞书入口接管、fixture/parity/安全回归、平台文档及三层指令镜像，共 49 个文件 / `f9792c7eb7d20929be1ac89d160b85b57e242d3c`。
+- 测试命令和结果：最终 root full suite `2419 passed, 30 skipped, 370 subtests passed`；Agent full suite `1167 passed, 1 skipped, 214 subtests passed`；Console full suite `618 passed, 213 subtests passed`；最终独立审查定向 `349 passed, 6 subtests passed` 并给出 `ship`。全仓 Ruff、隔离 `compileall`、文档（77 项 Markdown）、仓库卫生、运行时导入边界、内部 API 合同、工具注册表（40 项）、15 个 JavaScript 语法、Manifest JSON Schema、三套指令镜像和 `git diff --check` 全部通过。测试显式设置 `PYTHONDONTWRITEBYTECODE=1` 与 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
+- 兼容性影响：v1 算法字节和原始 primitive 顺序保持一致；旧 account/read/default-cap Connector canonical material 与 digest 保持不变。生产 v1 入口和所有真实业务链未切换；v2 Console 候选可离线验证，飞书与 Scheduler 默认关闭。缺失可选 pending 资源只有在显式启用该路径时失败，不存在静默回退。
+- 数据库影响：无 migration、无新表/字段；只扩展既有 migration pair 仓储代码及本地 fake 验证，未连接或修改生产数据库。
+- 未完成项：真实 Ronghui/飞书/数据库 Connector descriptor、handler、正式 Schema 与 per-operation cap，真实写后核验，手工小范围真实验证，启用 source Scheduler 或 Webhook 的迁移，插件安装、生产入口接管、停用 v1、部署与生产故障演练均为 `PRODUCTION_GATED`。代表性 16 MiB 仅为候选测量，不是正式上限。
 - 下一项 TASK：`TASK-MIG-002`。
-- 恢复说明：EXT011 代码 `01cf2447e997c51973d2ead49ac3c522743095f9` 与完成账本 `597677c` 已推送。从 v1 `sync_arrival_stats` 源码、Service v2 build_zip、Connector effect/绑定合同、migration pair 的 Console/Scheduler/Feishu ownership 开始；先补足可离线证明的合同与 fixture，不读取 `.env`、不访问真实系统或执行真实写。
+- 恢复说明：MIG001 代码 `f9792c7eb7d20929be1ac89d160b85b57e242d3c` 已推送；确认完成账本 checkpoint 后，从 v1 自提到货问题件源码、预览/选择/一次性绑定、全目标 preflight、权威列表核验与未知写隔离开始 MIG002。不得读取 `.env`、访问真实系统或执行真实写。
 
 ### TASK-MIG-002：迁移自提到货问题件
 
