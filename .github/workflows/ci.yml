@@ -38,7 +38,11 @@ jobs:
       - name: Install restricted Harness sandbox dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap util-linux
+          sudo apt-get install --yes apparmor apparmor-profiles bubblewrap util-linux
+          sudo apparmor_parser -r \
+            /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+          bwrap --unshare-all --die-with-parent \
+            --ro-bind / / /usr/bin/true
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"

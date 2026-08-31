@@ -11,6 +11,7 @@ import pytest
 from agent.automation_plugins.errors import PluginConflictError
 from agent.automation_plugins.generation import (
     AutomationRuntimeReconciler,
+    _add_exception_note,
     runtime_generation_health,
 )
 from agent.automation_plugins.manifest import canonical_json_bytes
@@ -37,6 +38,19 @@ from agent.automation_plugins.production import (
     ProductionRuntimeEffectDriver,
     ProductionRuntimeEffectPlanner,
 )
+
+
+class _LegacyExceptionWithoutAddNote(Exception):
+    add_note = None
+
+
+def test_exception_notes_are_preserved_on_python_310() -> None:
+    error = _LegacyExceptionWithoutAddNote("legacy")
+
+    _add_exception_note(error, "first")
+    _add_exception_note(error, "second")
+
+    assert error.__notes__ == ["first", "second"]
 
 
 def _digest(value: str) -> str:

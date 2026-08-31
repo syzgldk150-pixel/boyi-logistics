@@ -1389,6 +1389,15 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
             reverse_block.index('"automation_project_generation_leases"'),
         )
         self.assertLess(
+            reverse_block.index('"automation_project_generation_transition_tasks"'),
+            reverse_block.index('"automation_project_generation_transitions"'),
+        )
+        self.assertLess(
+            reverse_block.index('"automation_project_generation_transitions"'),
+            reverse_block.index('"automation_project_generations"'),
+        )
+        self.assertNotIn("FOREIGN_KEY_CHECKS", reverse_block)
+        self.assertLess(
             reverse_block.rindex('"automation_project_bootstrap_items_018"'),
             reverse_block.rindex('"automation_project_bootstrap_marker_018"'),
         )
@@ -1836,6 +1845,49 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
                 runtime,
                 BootstrapCursor(marker=(), items=(), events=()),
             )
+        )
+
+    def test_restore_clears_exact_reapply_history_for_removed_dependencies(self):
+        helper = _load_migration_helper()
+        runner = _load_runner()
+
+        class Cursor:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, sql, params=None):
+                self.calls.append((" ".join(str(sql).split()), params))
+
+        cursor = Cursor()
+        helper._clear_automation_project_authorization_reapply_history(
+            {
+                "AUTOMATION_PROJECT_AUTHORIZATION_REAPPLY_MIGRATION_VERSIONS": (
+                    runner.AUTOMATION_PROJECT_AUTHORIZATION_REAPPLY_MIGRATION_VERSIONS
+                )
+            },
+            cursor,
+        )
+
+        self.assertEqual(
+            [
+                (
+                    "DELETE FROM schema_migrations "
+                    "WHERE BINARY version IN (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (
+                        "018",
+                        "019",
+                        "020",
+                        "021",
+                        "022",
+                        "024",
+                        "025",
+                        "028",
+                        "033",
+                        "034",
+                    ),
+                )
+            ],
+            cursor.calls,
         )
 
 

@@ -762,6 +762,17 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
                 (database,),
             )
             case.assertEqual(cursor.fetchone()["n"], 0)
+
+            reapply_versions = (
+                case.runner.AUTOMATION_PROJECT_AUTHORIZATION_REAPPLY_MIGRATION_VERSIONS
+            )
+            placeholders = ", ".join("%s" for _version in reapply_versions)
+            cursor.execute(
+                f"SELECT version FROM schema_migrations "
+                f"WHERE BINARY version IN ({placeholders}) ORDER BY version",
+                reapply_versions,
+            )
+            case.assertEqual([], cursor.fetchall())
     case._run_migrations(database)
     with case._connection(database, autocommit=True) as connection:
         with connection.cursor() as cursor:
@@ -818,6 +829,65 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
             case.assertEqual(reapplied_backup_counts["map_count"], 26)
             case.assertEqual(reapplied_backup_counts["backup_count"], 26)
             case.assertEqual(reapplied_backup_counts["hashed_backup_count"], 26)
+            reapply_versions = (
+                case.runner.AUTOMATION_PROJECT_AUTHORIZATION_REAPPLY_MIGRATION_VERSIONS
+            )
+            placeholders = ", ".join("%s" for _version in reapply_versions)
+            cursor.execute(
+                f"SELECT version FROM schema_migrations "
+                f"WHERE BINARY version IN ({placeholders}) ORDER BY version",
+                reapply_versions,
+            )
+            case.assertEqual(
+                list(reapply_versions),
+                [row["version"] for row in cursor.fetchall()],
+            )
+            cursor.execute(
+                """
+                SELECT table_name
+                FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA=%s
+                  AND TABLE_NAME IN (
+                    'automation_project_generation_transitions',
+                    'automation_project_generation_transition_tasks'
+                  )
+                ORDER BY table_name
+                """,
+                (database,),
+            )
+            case.assertEqual(
+                [
+                    "automation_project_generation_transition_tasks",
+                    "automation_project_generation_transitions",
+                ],
+                [row["table_name"] for row in cursor.fetchall()],
+            )
+            cursor.execute(
+                """
+                SELECT table_name, column_name
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA=%s
+                  AND (
+                    (table_name='automation_project_generation_leases'
+                     AND column_name='orchestration_run_id')
+                    OR (table_name='automation_project_generations'
+                        AND column_name IN ('runtime_model', 'plugin_api'))
+                  )
+                ORDER BY table_name, column_name
+                """,
+                (database,),
+            )
+            case.assertEqual(
+                [
+                    ("automation_project_generation_leases", "orchestration_run_id"),
+                    ("automation_project_generations", "plugin_api"),
+                    ("automation_project_generations", "runtime_model"),
+                ],
+                [
+                    (row["table_name"], row["column_name"])
+                    for row in cursor.fetchall()
+                ],
+            )
 
 
 def run_test_automation_project_018_partial_rerun_is_safe(case):
@@ -1248,7 +1318,6 @@ def run_test_automation_project_018_partial_rerun_is_safe(case):
                 LEGACY_R7_DEPARTURE_TASK_ID,
             )
             case.assertEqual(migrated_r7["automation_generation"], 1)
-
     with patch.dict(os.environ, case._environment(partial_database), clear=False):
         case.assertEqual(0, case.runner.restore_automation_project_authorization())
     with case._connection(partial_database, autocommit=True) as connection:

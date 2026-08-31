@@ -1129,7 +1129,10 @@ def run_test_generation_write_lock_order_races(case):
             restored_task = cursor.fetchone()
             case.assertEqual("Administrator supplied name", restored_task["name"])
             case.assertEqual(1, restored_task["automation_generation"])
-            case.assertEqual({"marker": "old"}, restored_task["tool_params"])
+            case.assertEqual(
+                {"marker": "old"},
+                json.loads(restored_task["tool_params"]),
+            )
             case.assertEqual("success", restored_task["last_status"])
             case.assertEqual(17, restored_task["last_duration_ms"])
             case.assertEqual("old result", restored_task["last_message"])
@@ -1137,7 +1140,7 @@ def run_test_generation_write_lock_order_races(case):
             case.assertEqual("a" * 64, restored_task["contract_hash"])
             case.assertEqual(
                 {"scope": "exact"},
-                restored_task["contract_snapshot_json"],
+                json.loads(restored_task["contract_snapshot_json"]),
             )
             case.assertEqual("b" * 64, restored_task["tool_contract_hash"])
             case.assertEqual("retain exact approval", restored_task["comment"])
