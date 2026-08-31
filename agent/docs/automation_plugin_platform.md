@@ -25,6 +25,12 @@ schedule 规则以及 Console/Scheduler/固定飞书入口 ownership 均属于�
 飞书、资源写入、生产安装和部署继续 `PRODUCTION_GATED`。迁移完成后不得为同一 source 再建
 pair，后续 v2 generation 升级沿用既有 v2 ownership；混合、损坏或历史归属歧义必须 fail closed。
 
+TASK-MIG-002/003 的自提与分批问题件也只形成默认关闭的 Service v2 离线候选包，复用同一套
+Host selection preview、一次性消费、精确迁移 ownership 和 Connector 边界。分批包完整保留
+A:S 19 列、数量守恒、全量 Sheet/MySQL 投影、最多 90 票全预检和逐票 Evidence；不得由本文的
+ACTION_V1 发行、签名或 whole-tool 机制接管。真实问题件/事件写、生产入口切换、安装和部署均为
+`PRODUCTION_GATED`。
+
 v1 与 v2 继续并存，但安装器只按 `schema_version + runtime_model` 严格分流：v1 为
 `schema_version=1` 且 `runtime_model` 缺省或为 `action_v1`，v2 为 `schema_version=2` 且
 `runtime_model=service_v2`。任一模型解析失败都不得回退另一模型，v1 项目也不能原地升级为 v2。

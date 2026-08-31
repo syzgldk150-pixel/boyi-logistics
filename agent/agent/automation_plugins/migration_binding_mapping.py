@@ -60,6 +60,17 @@ _REVIEWED_BINDING_MAPPINGS: Mapping[
                 "self_pickup_source_sheet": "self_pickup_source_sheet",
             },
         ),
+        (
+            "split_pending_problem_upload",
+            "split_pending_problem_upload",
+            "split_pending_problem_upload_v2",
+        ): _mapping(
+            account_roles={"account_id": "account_id"},
+            resource_roles={
+                "split_pending_source_sheet": "split_pending_source_sheet",
+                "split_pending_target_sheet": "split_pending_target_sheet",
+            },
+        ),
     }
 )
 

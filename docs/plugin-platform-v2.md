@@ -501,6 +501,12 @@ MIG001 的真实 TMS 读取、Feishu/资源写、内部投影写、独立新鲜�
 
 两个入口默认关闭，Scheduler/Webhook/Event 为空。上述源码、确定性 ZIP、fixture 与 Host 合同不等于安装或生产迁移：三个真实 Connector descriptor/handler、账号/资源与 grant、生产安装和 committed generation、Console/固定飞书多轮选择 ownership 切换、真实飞书读取、真实问题件创建及独立权威列表回读、生产数据库事务演练和部署全部为 `PRODUCTION_GATED`。当前启用的 v1 飞书选择入口会在创建 migration pair 前返回 `PLUGIN_MIGRATION_FEISHU_SELECTION_PREVIEW_PRODUCTION_GATED`，v1 继续唯一生产 owner。
 
+### 9.6 MIG003 分批问题件独立包
+
+`split_pending_problem_upload_v2` 位于 `agent/service_v2_plugins/split_pending_problem_upload_v2/`，确定性构建器逐字节嵌入 v1 `payload/action.py` 与共享结果 helper，不导入 legacy 工具或整链路运行时。它提供同一 service 上的 `preview/read` 与 `execute/external_write`；Console/Feishu 均绑定 `selection_preview_operation=preview` 且默认关闭，无 Scheduler/Webhook/Event/Harness。v1 action 继续唯一拥有 A:S 19 列校验、`应到=已到+未到`、候选指纹、最多 90 票有序选择、全部 query 先于任何写、全量 snapshot/Sheet 投影，以及逐票 create → fresh verify → event → result 的 Evidence 顺序。
+
+包声明源 Sheet、目标 Sheet、内部 projection、融辉账号和同 `account_id` 事件 ledger 五个 Connector；preview 首次调用只预检源 Sheet与 projection，execute 首次调用预检全部五项且不重复。九个 `service.invoke` action 的精确上限合计 454 次。写 marker 从全量 `snapshot_replace` 前开始，此后任何响应丢失、ACK/读回不闭合或后续票失败都保留 `WRITE_OUTCOME_UNKNOWN`，不得重放或回落 whole-tool。离线 fixture 只证明字节嵌入、代表性 19 列/数量守恒、v1-v2 投影与 primitive 顺序、逐票 Host Evidence 和错误边界；五个真实 Connector descriptor/handler/grant、真实 Sheet/MySQL/TMS 数据与写入、安装、committed generation、Console/固定飞书多轮选择 ownership 切换、生产 Evidence、数据库故障演练和部署全部为 `PRODUCTION_GATED`。
+
 ## 10. 迁移波次
 
 波次必须按风险和宿主能力闭合情况推进，不能因源代码已存在就跳过真实验证。

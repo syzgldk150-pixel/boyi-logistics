@@ -1,0 +1,138 @@
+{
+  "schema_version": 2,
+  "runtime_model": "service_v2",
+  "plugin_id": "split_pending_problem_upload_v2",
+  "name": "分批问题件 v2",
+  "version": "1.0.0",
+  "description": "通过受管 Connector 预览并按已确认运单逐票登记分批及有发未到问题件的离线候选 Service v2 包。",
+  "host_api": {
+    "minimum": "2.0.0",
+    "maximum_exclusive": "3.0.0"
+  },
+  "runtime": {
+    "kind": "python_subprocess",
+    "python": "3.10",
+    "mode": "on_demand",
+    "entrypoint": "payload/main.py",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "provides": [
+    {
+      "service": "plugin.split_pending_problem_upload_v2.split_pending_problem_upload@1",
+      "operations": [
+        {"name": "preview", "effect": "read"},
+        {"name": "execute", "effect": "external_write"}
+      ]
+    }
+  ],
+  "requires": [
+    {
+      "service": "connector.boyi.split_pending_source_sheet@1",
+      "binding_kind": "resource",
+      "resource_role": "split_pending_source_sheet"
+    },
+    {
+      "service": "connector.boyi.split_pending_target_sheet@1",
+      "binding_kind": "resource",
+      "resource_role": "split_pending_target_sheet"
+    },
+    {
+      "service": "connector.boyi.split_pending_projection@1",
+      "binding_kind": "host_internal"
+    },
+    {
+      "service": "connector.boyi.split_pending_ronghui@1",
+      "binding_kind": "account",
+      "account_role": "account_id"
+    },
+    {
+      "service": "connector.boyi.split_pending_problem_ledger@1",
+      "binding_kind": "account",
+      "account_role": "account_id"
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "service.invoke",
+      "operations": [
+        "read_rows",
+        "snapshot_read",
+        "problem_query",
+        "snapshot_replace",
+        "replace_rows",
+        "problem_create",
+        "problem_verify",
+        "event_upsert",
+        "result_upsert"
+      ],
+      "account_role": null,
+      "resource_role": null,
+      "action_call_limits": {
+        "read_rows": 1,
+        "snapshot_read": 1,
+        "problem_query": 90,
+        "snapshot_replace": 1,
+        "replace_rows": 1,
+        "problem_create": 90,
+        "problem_verify": 90,
+        "event_upsert": 90,
+        "result_upsert": 90
+      }
+    }
+  ],
+  "account_roles": [
+    {
+      "role": "account_id",
+      "allowed_systems": ["ronghui"],
+      "required": true
+    }
+  ],
+  "resource_roles": [
+    {
+      "role": "split_pending_source_sheet",
+      "allowed_kinds": ["feishu_sheet"],
+      "required": true
+    },
+    {
+      "role": "split_pending_target_sheet",
+      "allowed_kinds": ["feishu_sheet"],
+      "required": true
+    }
+  ],
+  "contributes": {
+    "console": [
+      {
+        "id": "execute_console",
+        "title": "预览分批问题件候选",
+        "service": "plugin.split_pending_problem_upload_v2.split_pending_problem_upload@1",
+        "operation": "execute",
+        "selection_preview_operation": "preview",
+        "default_enabled": false
+      }
+    ],
+    "scheduler": [],
+    "webhook": [],
+    "feishu": [
+      {
+        "id": "execute_feishu",
+        "service": "plugin.split_pending_problem_upload_v2.split_pending_problem_upload@1",
+        "operation": "execute",
+        "commands": ["分批"],
+        "selection_preview_operation": "preview",
+        "default_enabled": false
+      }
+    ],
+    "events": []
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {},
+    "required": []
+  },
+  "storage": {
+    "kv": false,
+    "collections": []
+  }
+}

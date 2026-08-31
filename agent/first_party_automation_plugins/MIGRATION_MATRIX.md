@@ -109,6 +109,52 @@ are all `PRODUCTION_GATED`. Offline tests may inject a local Host Broker
 fixture, but must not register or impersonate a production Connector. The v1
 Inventory record below is intentionally unchanged.
 
+## TASK-MIG-003 Service v2 migration status
+
+The independent candidate package is
+`agent/service_v2_plugins/split_pending_problem_upload_v2/`. The deterministic
+builder embeds the v1
+`agent/first_party_automation_plugins/split_pending_problem_upload/payload/action.py`
+and shared result helper byte-for-byte. The ZIP imports no `agent`/`tools`
+module, mutates no `sys.path`, and has no whole-tool fallback. That embedded
+action remains the only owner of the A:S 19-column contract, split/undelivered
+classification, row and aggregate count conservation, ordered preview
+fingerprint, 1..90 formal selection, full snapshot/Sheet projection, all-ticket
+preflight, and per-ticket create/fresh-verify/event/result ordering.
+
+The package provides
+`plugin.split_pending_problem_upload_v2.split_pending_problem_upload@1` with
+`preview/read` and `execute/external_write`. Console and Feishu declare the
+same execute plus `selection_preview_operation=preview`, are default-disabled,
+and no Scheduler, Webhook, Event or Harness contribution exists. Preview is
+forced read-only; formal arguments require the Host-restored ordered selection
+and exact preview fingerprint.
+
+Five package-external Connector services are declared: source Sheet resource,
+target Sheet resource, Host-internal MySQL projection, Ronghui `account_id`, and
+a separately permissioned problem-event ledger using the same `account_id`.
+Their operations are exact `read_rows`, `snapshot_read`, `problem_query`,
+`snapshot_replace`, `replace_rows`, `problem_create`, `problem_verify`,
+`event_upsert`, and `result_upsert`. The signed limits are respectively
+`1,1,90,1,1,90,90,90,90`, totaling 454 calls. Preview preflights source plus
+projection; execute preflights all five services on its first source call and
+does not repeat the preflight.
+
+All selected problem queries finish before the first mutation. Mutation begins
+before the full snapshot replacement; every later failure is
+`WRITE_OUTCOME_UNKNOWN`. A subset execution still writes the full current
+incomplete snapshot and 19-column Sheet, while Ronghui/event/result writes are
+limited to the ordered selection. Each selected ticket retains distinct Host
+Evidence for query, optional create, mandatory fresh verify, event and result;
+the final proof binds ordered verification references to the selected results.
+
+This remains an offline candidate. Real Connector descriptors/handlers/grants,
+real account and Sheet bindings, 5,000-by-19 capacity measurement, package
+installation, committed generation, Console/fixed Feishu selection ownership,
+real Sheet/MySQL/Ronghui reads and writes, authoritative post-write Evidence,
+production database fault exercises, v1 disablement and deployment are all
+`PRODUCTION_GATED`. The existing v1 Inventory row remains unchanged.
+
 ## Inventory
 
 | Action package | Legacy wrapper | Account roles | Closed primitives | Extraction state |

@@ -1,0 +1,55 @@
+{
+  "scenario": "synthetic 19-column split-pending classification and selected execution",
+  "arguments": {
+    "dry_run": true
+  },
+  "rows": [
+    ["运单编号", "货物名称", "包装类型", "派送方式", "件数", "回单号", "实际重量", "体积", "备注", "目的站点", "收件人", "收件电话", "收件地址", "结算重量", "体积重", "运费", "支付类型", "到付款", "累计到货件数"],
+    ["R_SPLIT_A", "配件A", "纸箱", "派送", 5, "", "1", "0.001", "", "测试目的站", "测试收件人", "", "测试地址A", "1", "0", "0", "现付", "0", 2],
+    ["R_ZERO", "配件B", "纸箱", "派送", 4, "", "1", "0.001", "", "测试目的站", "测试收件人", "", "测试地址B", "1", "0", "0", "现付", "0", 0],
+    ["R_COMPLETE", "配件C", "纸箱", "派送", 3, "", "1", "0.001", "", "测试目的站", "测试收件人", "", "测试地址C", "1", "0", "0", "现付", "0", 3],
+    ["R_SPLIT_B", "配件D", "纸箱", "派送", 7, "", "1", "0.001", "", "测试目的站", "测试收件人", "", "测试地址D", "1", "0", "0", "现付", "0", 6],
+    ["R_HIDDEN", "配件E", "纸箱", "派送", 2, "", "1", "0.001", "", "测试目的站", "测试收件人", "", "测试地址E", "1", "0", "0", "现付", "0", 1]
+  ],
+  "stored": [
+    {
+      "tracking_number": "R_HIDDEN",
+      "problem_type": "少货/分批",
+      "upload_status": "success",
+      "complaint_status": "not_applicable"
+    }
+  ],
+  "expected": {
+    "source_rows": 5,
+    "snapshot_count": 4,
+    "complete_count": 1,
+    "candidate_count": 3,
+    "hidden_completed_count": 1,
+    "candidate_bill_codes": ["R_SPLIT_A", "R_ZERO", "R_SPLIT_B"],
+    "selected_bill_codes": ["R_ZERO", "R_SPLIT_B"],
+    "type_counts": {
+      "少货/分批": 2,
+      "有发未到": 1
+    },
+    "preview_primitive_actions": [
+      "feishu.sheet.read_rows",
+      "split_pending.snapshot.read"
+    ],
+    "formal_primitive_actions": [
+      "feishu.sheet.read_rows",
+      "split_pending.snapshot.read",
+      "ronghui.problem.query",
+      "ronghui.problem.query",
+      "split_pending.snapshot.replace",
+      "feishu.sheet.replace_rows",
+      "ronghui.problem.create",
+      "ronghui.problem.verify",
+      "daily_sign.problem_event.upsert",
+      "split_pending.result.upsert",
+      "ronghui.problem.create",
+      "ronghui.problem.verify",
+      "daily_sign.problem_event.upsert",
+      "split_pending.result.upsert"
+    ]
+  }
+}
