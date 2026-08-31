@@ -35,6 +35,18 @@ from agent.automation_plugins.ports import (
 from shared.redaction import redact_text
 
 
+def _add_exception_note(error: Exception, note: str) -> None:
+    """Preserve diagnostic notes on the supported Python 3.10 runtime."""
+
+    add_note = getattr(error, "add_note", None)
+    if callable(add_note):
+        add_note(note)
+        return
+    notes = list(getattr(error, "__notes__", ()))
+    notes.append(note)
+    setattr(error, "__notes__", notes)
+
+
 @dataclass(frozen=True)
 class RuntimeReconcileResult:
     automation_id: str
@@ -207,9 +219,10 @@ class AutomationRuntimeReconciler:
         try:
             self.dispose_generation(failed)
         except Exception as abort_error:  # noqa: BLE001 - preserve terminal cause
-            error.add_note(
+            _add_exception_note(
+                error,
                 "automatic empty-target abort failed: "
-                f"{redact_text(abort_error)[:300]}"
+                f"{redact_text(abort_error)[:300]}",
             )
 
     def _revalidate_coeffects(
@@ -339,9 +352,12 @@ class AutomationRuntimeReconciler:
             "runtime activation could not be safely acknowledged or reversed",
             code="RUNTIME_ACTIVATION_BLOCKED",
         )
-        blocked.add_note(f"activation failure: {redact_text(cause)[:300]}")
+        _add_exception_note(
+            blocked,
+            f"activation failure: {redact_text(cause)[:300]}",
+        )
         for failure in failures:
-            blocked.add_note(failure)
+            _add_exception_note(blocked, failure)
         raise blocked from cause
 
     def _reverse_failed_activation(
@@ -369,9 +385,10 @@ class AutomationRuntimeReconciler:
                 expected_transition_token=token,
             )
         except Exception as rollback_error:  # noqa: BLE001 - choose fail-closed below
-            cause.add_note(
+            _add_exception_note(
+                cause,
                 "durable activation reverse failed: "
-                f"{redact_text(rollback_error)[:300]}"
+                f"{redact_text(rollback_error)[:300]}",
             )
             self._fail_closed_activation(
                 generation,
@@ -406,9 +423,10 @@ class AutomationRuntimeReconciler:
             elif restored is not None:
                 self._activate_committed_effects(restored.snapshot)
         except Exception as cleanup_error:  # noqa: BLE001 - DB is old; process must close
-            cause.add_note(
+            _add_exception_note(
+                cause,
                 "reversed process projection restore failed: "
-                f"{redact_text(cleanup_error)[:300]}"
+                f"{redact_text(cleanup_error)[:300]}",
             )
             self._fail_closed_activation(
                 generation,

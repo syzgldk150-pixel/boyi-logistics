@@ -38,3 +38,14 @@ def test_live_smoke_is_not_wired_into_product_or_ci() -> None:
     main_source = (ROOT / "agent" / "main.py").read_text(encoding="utf-8")
     assert "harness_live_smoke" not in workflow
     assert "harness_live_smoke" not in main_source
+
+
+def test_ci_runs_real_network_isolated_bubblewrap_canary() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "apparmor-profiles" in workflow
+    assert "bwrap-userns-restrict" in workflow
+    assert "bwrap --unshare-all" in workflow
+    assert "--share-net" not in workflow

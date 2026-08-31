@@ -985,6 +985,28 @@ def _restore_automation_project_resources(runtime, cursor) -> None:
     )
 
 
+def _clear_automation_project_authorization_reapply_history(runtime, cursor) -> None:
+    """Invalidate every migration record whose owned schema was restored.
+
+    The restore drops 018 tables plus later lease, policy/routing, receipt,
+    Service v2, and activation-journal state.  Leaving any one of those
+    ledger rows would make the next normal migration run skip a missing
+    dependency or policy transformation.
+    """
+
+    versions = tuple(
+        runtime["AUTOMATION_PROJECT_AUTHORIZATION_REAPPLY_MIGRATION_VERSIONS"]
+    )
+    if not versions:
+        raise RuntimeError("018 restore reapply migration history is empty")
+    placeholders = ", ".join("%s" for _version in versions)
+    cursor.execute(
+        "DELETE FROM schema_migrations "
+        f"WHERE BINARY version IN ({placeholders})",
+        versions,
+    )
+
+
 def restore_automation_project_authorization(runtime) -> int:
     """Remove only migration-owned 018 state and restore the pre-018 schema.
 
@@ -1049,7 +1071,9 @@ def restore_automation_project_authorization(runtime) -> int:
             if restore_scheduler:
                 cursor.execute(f'\n                    INSERT INTO scheduled_tasks (\n                        id, name, tool_name, tool_params, cron_expression, enabled,\n                        last_run, last_status, last_duration_ms, last_message,\n                        created_at, configuration_version, updated_at\n                    )\n                    SELECT\n                        id, name, tool_name, tool_params, cron_expression, enabled,\n                        last_run, last_status, last_duration_ms, last_message,\n                        created_at, configuration_version, updated_at\n                    FROM {runtime["AUTOMATION_PROJECT_AUTHORIZATION_BACKUP_TABLE"]}\n                    WHERE TRUE\n                    ON DUPLICATE KEY UPDATE\n                        name = VALUES(name),\n                        tool_name = VALUES(tool_name),\n                        tool_params = VALUES(tool_params),\n                        cron_expression = VALUES(cron_expression),\n                        enabled = VALUES(enabled),\n                        last_run = VALUES(last_run),\n                        last_status = VALUES(last_status),\n                        last_duration_ms = VALUES(last_duration_ms),\n                        last_message = VALUES(last_message),\n                        created_at = VALUES(created_at),\n                        configuration_version = VALUES(configuration_version),\n                        updated_at = VALUES(updated_at)\n                    ')
             if runtime["_migration_table_exists"](cursor):
-                cursor.execute('DELETE FROM schema_migrations WHERE version=%s', (runtime["AUTOMATION_PROJECT_AUTHORIZATION_VERSION"],))
+                _clear_automation_project_authorization_reapply_history(
+                    runtime, cursor
+                )
             for table_name in (runtime["AUTOMATION_PROJECT_AUTHORIZATION_CAPTURE_TABLE"], runtime["AUTOMATION_PROJECT_AUTHORIZATION_BACKUP_TABLE"], runtime["AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE"]):
                 if runtime["_table_exists"](cursor, table_name):
                     cursor.execute(f'DROP TABLE {table_name}')
