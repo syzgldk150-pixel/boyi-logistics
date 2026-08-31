@@ -7,8 +7,12 @@ identity remain owned by the active contribution registry and policy service.
 
 from __future__ import annotations
 
+from threading import RLock
 from typing import Any
 
+from agent.automation_plugins.runtime_backend_availability import (
+    RuntimeContributionBackendAvailability,
+)
 from agent.orchestration.automation_project_entrypoints import (
     ServiceV2EventDispatcher,
     ServiceV2WebhookDispatcher,
@@ -27,7 +31,14 @@ class ServiceV2ManagedIngress:
         *,
         policy_service: AutomationProjectPolicyService,
         contribution_registry: Any,
+        backend_availability: RuntimeContributionBackendAvailability,
     ) -> None:
+        if not isinstance(
+            backend_availability,
+            RuntimeContributionBackendAvailability,
+        ):
+            raise TypeError("backend_availability is invalid")
+        self._backend_availability = backend_availability
         self._webhook_dispatcher = ServiceV2WebhookDispatcher(
             policy_service=policy_service,
             contribution_registry=contribution_registry,
@@ -65,8 +76,18 @@ class ServiceV2ManagedIngress:
             source_event_id=source_event_id,
         )
 
+    def _bind_backend_readiness(self) -> None:
+        self._backend_availability.bind_managed_ingress(self)
+
+    def _unbind_backend_readiness(self) -> None:
+        self._backend_availability.unbind_managed_ingress(self)
+
+    def _backend_readiness_is_bound(self) -> bool:
+        return self._backend_availability.managed_ingress_is_bound(self)
+
 
 _SERVICE_V2_MANAGED_INGRESS: ServiceV2ManagedIngress | None = None
+_SERVICE_V2_MANAGED_INGRESS_LOCK = RLock()
 
 
 def bind_service_v2_managed_ingress(service: ServiceV2ManagedIngress) -> None:
@@ -80,12 +101,20 @@ def bind_service_v2_managed_ingress(service: ServiceV2ManagedIngress) -> None:
     global _SERVICE_V2_MANAGED_INGRESS
     if not isinstance(service, ServiceV2ManagedIngress):
         raise TypeError("service must be ServiceV2ManagedIngress")
-    if (
-        _SERVICE_V2_MANAGED_INGRESS is not None
-        and _SERVICE_V2_MANAGED_INGRESS is not service
-    ):
-        raise RuntimeError("Service v2 managed ingress is already bound")
-    _SERVICE_V2_MANAGED_INGRESS = service
+    with _SERVICE_V2_MANAGED_INGRESS_LOCK:
+        if (
+            _SERVICE_V2_MANAGED_INGRESS is not None
+            and _SERVICE_V2_MANAGED_INGRESS is not service
+        ):
+            raise RuntimeError("Service v2 managed ingress is already bound")
+        if _SERVICE_V2_MANAGED_INGRESS is service:
+            return
+        _SERVICE_V2_MANAGED_INGRESS = service
+        try:
+            service._bind_backend_readiness()
+        except Exception:
+            _SERVICE_V2_MANAGED_INGRESS = None
+            raise
 
 
 def unbind_service_v2_managed_ingress(
@@ -96,29 +125,37 @@ def unbind_service_v2_managed_ingress(
     global _SERVICE_V2_MANAGED_INGRESS
     if service is not None and not isinstance(service, ServiceV2ManagedIngress):
         raise TypeError("service must be ServiceV2ManagedIngress or None")
-    if (
-        service is not None
-        and _SERVICE_V2_MANAGED_INGRESS is not None
-        and _SERVICE_V2_MANAGED_INGRESS is not service
-    ):
-        raise RuntimeError("Service v2 managed ingress binding does not match")
-    _SERVICE_V2_MANAGED_INGRESS = None
+    with _SERVICE_V2_MANAGED_INGRESS_LOCK:
+        current = _SERVICE_V2_MANAGED_INGRESS
+        if (
+            service is not None
+            and current is not None
+            and current is not service
+        ):
+            raise RuntimeError("Service v2 managed ingress binding does not match")
+        if current is None:
+            return
+        current._unbind_backend_readiness()
+        _SERVICE_V2_MANAGED_INGRESS = None
 
 
 def service_v2_managed_ingress_is_bound() -> bool:
     """Return whether the trusted process-local ingress is currently bound."""
 
-    return _SERVICE_V2_MANAGED_INGRESS is not None
+    with _SERVICE_V2_MANAGED_INGRESS_LOCK:
+        service = _SERVICE_V2_MANAGED_INGRESS
+        return service is not None and service._backend_readiness_is_bound()
 
 
 def _bound_ingress() -> ServiceV2ManagedIngress:
-    service = _SERVICE_V2_MANAGED_INGRESS
-    if service is None:
-        raise OrchestrationError(
-            "PROJECT_RUNTIME_PROJECTION_STALE",
-            "Automation project managed ingress is unavailable",
-        )
-    return service
+    with _SERVICE_V2_MANAGED_INGRESS_LOCK:
+        service = _SERVICE_V2_MANAGED_INGRESS
+        if service is None or not service._backend_readiness_is_bound():
+            raise OrchestrationError(
+                "PROJECT_RUNTIME_PROJECTION_STALE",
+                "Automation project managed ingress is unavailable",
+            )
+        return service
 
 
 async def dispatch_verified_webhook(

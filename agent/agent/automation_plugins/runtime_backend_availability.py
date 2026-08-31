@@ -15,6 +15,7 @@ from typing import Mapping
 
 
 _LIVE_GATED_KINDS = frozenset({"harness", "webhook", "events"})
+_INGRESS_GATED_KINDS = frozenset({"webhook", "events"})
 _DEFAULT_UNAVAILABLE_REASONS = {
     "harness": "HARNESS_SANDBOX_UNAVAILABLE",
     "webhook": "WEBHOOK_HOST_BACKEND_UNAVAILABLE",
@@ -37,6 +38,7 @@ class RuntimeContributionBackendAvailability:
             kind: RuntimeBackendState(False, reason)
             for kind, reason in _DEFAULT_UNAVAILABLE_REASONS.items()
         }
+        self._managed_ingress_owner: object | None = None
 
     @staticmethod
     def _kind(value: object) -> str:
@@ -74,21 +76,67 @@ class RuntimeContributionBackendAvailability:
                     reason or _DEFAULT_UNAVAILABLE_REASONS[kind],
                 )
 
+    def bind_managed_ingress(self, owner: object) -> None:
+        """Bind the process ingress required by Webhook/Event readiness."""
+
+        if owner is None:
+            raise TypeError("managed ingress owner is required")
+        with self._lock:
+            if (
+                self._managed_ingress_owner is not None
+                and self._managed_ingress_owner is not owner
+            ):
+                raise RuntimeError("managed ingress readiness is already bound")
+            self._managed_ingress_owner = owner
+
+    def unbind_managed_ingress(self, owner: object | None = None) -> None:
+        """Revoke the process ingress, optionally checking exact ownership."""
+
+        with self._lock:
+            if (
+                owner is not None
+                and self._managed_ingress_owner is not None
+                and self._managed_ingress_owner is not owner
+            ):
+                raise RuntimeError("managed ingress readiness binding does not match")
+            self._managed_ingress_owner = None
+
+    def managed_ingress_is_bound(self, owner: object | None = None) -> bool:
+        with self._lock:
+            bound = self._managed_ingress_owner
+            return bound is not None and (owner is None or bound is owner)
+
+    def _effective_state_unlocked(self, kind: str) -> RuntimeBackendState:
+        state = self._states[kind]
+        if (
+            kind in _INGRESS_GATED_KINDS
+            and state.available
+            and self._managed_ingress_owner is None
+        ):
+            return RuntimeBackendState(
+                False,
+                "MANAGED_INGRESS_UNBOUND",
+            )
+        return state
+
     def is_available(self, contribution_kind: str) -> bool:
         kind = str(contribution_kind or "")
         if kind not in _LIVE_GATED_KINDS:
             return True
         with self._lock:
-            return self._states[kind].available
+            return self._effective_state_unlocked(kind).available
 
     def state(self, contribution_kind: str) -> RuntimeBackendState:
         kind = self._kind(contribution_kind)
         with self._lock:
-            return self._states[kind]
+            return self._effective_state_unlocked(kind)
 
     def snapshot(self) -> Mapping[str, RuntimeBackendState]:
         with self._lock:
-            return dict(self._states)
+            return {
+                kind: self._effective_state_unlocked(kind)
+                for kind in self._states
+            }
 
     def effective_status(
         self,

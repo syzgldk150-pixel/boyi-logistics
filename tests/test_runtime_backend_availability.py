@@ -34,9 +34,21 @@ def test_live_backend_status_is_process_only_and_fail_closed_by_default() -> Non
 def test_ingress_backends_share_one_atomic_process_readiness_authority() -> None:
     availability = RuntimeContributionBackendAvailability()
     availability.mark_available("webhook", "events")
+    assert availability.is_available("webhook") is False
+    assert availability.is_available("events") is False
+    assert availability.state("webhook").reason_detail == "MANAGED_INGRESS_UNBOUND"
+
+    ingress = object()
+    availability.bind_managed_ingress(ingress)
     assert availability.is_available("webhook") is True
     assert availability.is_available("events") is True
     assert availability.is_available("console") is True
+
+    availability.unbind_managed_ingress(ingress)
+    assert availability.is_available("webhook") is False
+    assert availability.is_available("events") is False
+
+    availability.bind_managed_ingress(ingress)
 
     availability.mark_unavailable(
         "webhook",

@@ -501,7 +501,7 @@ class HarnessRuntime:
         if state.status != "READY":
             raise _error(
                 "Restricted Harness runtime is unavailable",
-                state.blocked_reason or "HARNESS_SANDBOX_UNAVAILABLE",
+                "HARNESS_SIDECAR_UNAVAILABLE",
             )
 
     def _catalog(self, actor: Actor, request_id: str) -> HarnessToolCatalog:

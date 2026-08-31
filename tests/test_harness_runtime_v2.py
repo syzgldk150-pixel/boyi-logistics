@@ -12,7 +12,11 @@ from agent.harness.catalog import FixedHarnessTool, HarnessToolCatalog, ManagedT
 from agent.harness.errors import HarnessError
 from agent.harness.models import HarnessMessage
 from agent.harness.sessions import InMemoryHarnessSessionRepository
-from agent.harness.sidecar import DeterministicHarnessSidecar, RestrictedSidecarLauncher
+from agent.harness.sidecar import (
+    DeterministicHarnessSidecar,
+    RestrictedSidecarLauncher,
+    SidecarResult,
+)
 
 
 def _uuid() -> str:
@@ -325,6 +329,16 @@ def test_restricted_sidecar_runs_offline_tool_loop_without_identity_surfaces() -
     assert port.calls == [("gateway:knowledge", {"query": "offline"})]
     assert "automation_id" not in str(model.requests)
     assert "account_id" not in str(model.requests)
+
+
+def test_sidecar_result_enforces_utf8_byte_limit() -> None:
+    assert SidecarResult(content="x" * 8_192, tool_calls=0).content == "x" * 8_192
+    assert SidecarResult(content="界" * 2_730, tool_calls=0).content == "界" * 2_730
+
+    for content in ("x" * 8_193, "界" * 2_731):
+        with pytest.raises(HarnessError) as oversized:
+            SidecarResult(content=content, tool_calls=0)
+        assert oversized.value.code == "HARNESS_PROTOCOL_INVALID"
 
 
 def test_sidecar_fails_closed_on_identity_protocol_limit_and_sandbox() -> None:

@@ -34,6 +34,11 @@ from agent.automation_plugins.production import (
 from agent.automation_plugins.runtime_backend_availability import (
     RuntimeContributionBackendAvailability,
 )
+from agent.orchestration.service_v2_managed_ingress import (
+    ServiceV2ManagedIngress,
+    bind_service_v2_managed_ingress,
+    unbind_service_v2_managed_ingress,
+)
 from shared.automation_plugin_generation_repository import (
     _scheduler_contribution_binding,
 )
@@ -1030,9 +1035,23 @@ def test_webhook_and_event_effective_routes_require_bound_process_ingress() -> N
         )
     assert webhook_unavailable.value.code == "CAPABILITY_UNAVAILABLE"
     availability.mark_available("webhook")
-    assert webhook_registry.resolve_active_webhook_route(
-        method="POST", route="receive"
-    ) is not None
+    with pytest.raises(PluginConflictError) as webhook_unbound:
+        webhook_registry.resolve_active_webhook_route(
+            method="POST", route="receive"
+        )
+    assert webhook_unbound.value.code == "CAPABILITY_UNAVAILABLE"
+    webhook_ingress = ServiceV2ManagedIngress(
+        policy_service=SimpleNamespace(),  # type: ignore[arg-type]
+        contribution_registry=webhook_registry,
+        backend_availability=availability,
+    )
+    bind_service_v2_managed_ingress(webhook_ingress)
+    try:
+        assert webhook_registry.resolve_active_webhook_route(
+            method="POST", route="receive"
+        ) is not None
+    finally:
+        unbind_service_v2_managed_ingress(webhook_ingress)
 
     event_snapshot = _event_snapshot(
         contributions=_non_durable_event_contributions(),
@@ -1053,7 +1072,19 @@ def test_webhook_and_event_effective_routes_require_bound_process_ingress() -> N
         event_registry.resolve_active_event(event_name="orders.changed")
     assert event_unavailable.value.code == "CAPABILITY_UNAVAILABLE"
     availability.mark_available("events")
-    assert event_registry.resolve_active_event(event_name="orders.changed") is not None
+    with pytest.raises(PluginConflictError) as event_unbound:
+        event_registry.resolve_active_event(event_name="orders.changed")
+    assert event_unbound.value.code == "CAPABILITY_UNAVAILABLE"
+    event_ingress = ServiceV2ManagedIngress(
+        policy_service=SimpleNamespace(),  # type: ignore[arg-type]
+        contribution_registry=event_registry,
+        backend_availability=availability,
+    )
+    bind_service_v2_managed_ingress(event_ingress)
+    try:
+        assert event_registry.resolve_active_event(event_name="orders.changed") is not None
+    finally:
+        unbind_service_v2_managed_ingress(event_ingress)
 
 
 def test_durable_event_stays_unavailable_and_mixed_generation_is_atomic() -> None:

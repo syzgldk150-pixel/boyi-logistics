@@ -87,9 +87,11 @@ def test_process_runtime_binds_and_revokes_all_live_backends() -> None:
 def test_conflicting_ingress_binding_blocks_startup_and_revokes_harness() -> None:
     _reset_bindings()
     registry = _Registry()
+    existing_availability = RuntimeContributionBackendAvailability()
     existing = ServiceV2ManagedIngress(
         policy_service=_Policy(),  # type: ignore[arg-type]
         contribution_registry=registry,
+        backend_availability=existing_availability,
     )
     bind_service_v2_managed_ingress(existing)
     availability = RuntimeContributionBackendAvailability()

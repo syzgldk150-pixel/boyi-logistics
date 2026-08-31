@@ -12,24 +12,13 @@ from datetime import datetime
 from typing import Any, Callable
 
 from shared.orchestration_repository_support import (
-    ConcurrentUpdateError,
-    IdempotencyConflict,
-    InvalidStateError,
-    OrchestrationPersistenceError,
-    RepositoryBase as _RepositoryBase,
-    _canonical_json,
-    _created_flag,
-    _decode_row,
-    _json_hash,
-    _json_param,
-    _json_value,
-    _optional_text,
-    _required_text,
-    _row_dict,
-    _rows,
-    _safe_comment,
-    _safe_error,
-    _status,
+    APPROVAL_STATUSES, COMMAND_STATUSES, ConcurrentUpdateError, IdempotencyConflict,
+    InvalidStateError, OUTBOX_CANDIDATE_SCAN_LIMIT, OUTBOX_STATUSES,
+    OrchestrationPersistenceError, RepositoryBase as _RepositoryBase, RUN_STATUSES,
+    SCHEDULER_SUPERSESSION_BATCH_LIMIT, STEP_STATUSES, TERMINAL_RUN_STATUSES,
+    WORK_ITEM_STATUSES, _canonical_json, _created_flag, _decode_row, _json_hash,
+    _json_param, _json_value, _optional_text, _required_text, _row_dict, _rows,
+    _safe_comment, _safe_error, _status,
 )
 from shared.orchestration_schema import orchestration_schema_requirements
 from shared.scheduled_task_approval_repository import ScheduledTaskApprovalPolicyRepository
@@ -45,61 +34,6 @@ from shared.account_execution_locks import (
 )
 
 ConnectionFactory = Callable[[], Any]
-
-COMMAND_STATUSES = frozenset({"RECEIVED", "ACCEPTED", "REJECTED"})
-WORK_ITEM_STATUSES = frozenset(
-    {
-        "OPEN",
-        "IN_PROGRESS",
-        "NEEDS_CLARIFICATION",
-        "WAITING_APPROVAL",
-        "BLOCKED_LOGIN",
-        "BLOCKED_DATA",
-        "RESOLVED",
-        "CANCELLED",
-    }
-)
-RUN_STATUSES = frozenset(
-    {
-        "RECEIVED",
-        "CONTEXT_READY",
-        "PLANNED",
-        "VALIDATED",
-        "WAITING_APPROVAL",
-        "RUNNING",
-        "VERIFYING",
-        "COMPLETED",
-        "NEEDS_CLARIFICATION",
-        "BLOCKED_LOGIN",
-        "BLOCKED_DATA",
-        "PARTIAL",
-        "FAILED_RETRYABLE",
-        "FAILED_TERMINAL",
-        "CANCELLED",
-    }
-)
-STEP_STATUSES = frozenset(
-    {
-        "PENDING",
-        "WAITING_APPROVAL",
-        "RUNNING",
-        "VERIFYING",
-        "BLOCKED_LOGIN",
-        "BLOCKED_DATA",
-        "COMPLETED",
-        "SKIPPED",
-        "FAILED_RETRYABLE",
-        "FAILED_TERMINAL",
-        "CANCELLED",
-    }
-)
-APPROVAL_STATUSES = frozenset({"PENDING", "APPROVED", "REJECTED", "EXPIRED", "INVALIDATED"})
-OUTBOX_STATUSES = frozenset({"PENDING", "PROCESSING", "PUBLISHED", "DEAD_LETTER"})
-OUTBOX_CANDIDATE_SCAN_LIMIT = 500
-SCHEDULER_SUPERSESSION_BATCH_LIMIT = 100
-TERMINAL_RUN_STATUSES = frozenset(
-    {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
-)
 
 
 class CommandRepository(_RepositoryBase):
@@ -239,7 +173,6 @@ class CommandRepository(_RepositoryBase):
         if not immutable_matches:
             raise IdempotencyConflict("command idempotency key was reused with different immutable input")
         return _created_flag(persisted, created)
-
 
 class WorkItemRepository(_RepositoryBase):
     JSON_FIELDS = ("resolution_json",)
@@ -638,7 +571,6 @@ class PilotProjectionSourceRepository(_RepositoryBase):
                 """
             )
             return _rows(cursor)
-
 
 class AgentRunRepository(_RepositoryBase):
     JSON_FIELDS = ("plan_json",)
@@ -1574,7 +1506,6 @@ class AgentRunRepository(_RepositoryBase):
                 raise ConcurrentUpdateError("waiting approval plan changed before refresh")
         return self.get(run_id, for_update=True) or {}
 
-
 class AgentRunStepRepository(_RepositoryBase):
     JSON_FIELDS = ("input_summary_json", "result_summary_json", "postcondition_json")
 
@@ -1745,7 +1676,6 @@ class AgentRunStepRepository(_RepositoryBase):
             if int(getattr(cursor, "rowcount", 0) or 0) != 1:
                 raise ConcurrentUpdateError("step state changed before transition")
         return self.get(step_id, for_update=True) or {}
-
 
 class ApprovalRepository(_RepositoryBase):
     def get(self, approval_id: str, *, for_update: bool = False) -> dict[str, Any] | None:
@@ -2104,7 +2034,6 @@ class ApprovalRepository(_RepositoryBase):
             "invalidated_count": invalidated_count,
         }
 
-
 class EvidenceRepository(_RepositoryBase):
     def add(self, row: Mapping[str, Any]) -> dict[str, Any]:
         evidence_id = _required_text(row.get("evidence_id"), "evidence_id")
@@ -2173,7 +2102,6 @@ class EvidenceRepository(_RepositoryBase):
             cursor.execute(sql, params)
             return [_decode_row(row, ("summary_json",)) or {} for row in _rows(cursor)]
 
-
 class ExternalEntityLinkRepository(_RepositoryBase):
     def upsert(self, row: Mapping[str, Any]) -> dict[str, Any]:
         identity = (
@@ -2230,7 +2158,6 @@ class ExternalEntityLinkRepository(_RepositoryBase):
         ):
             raise IdempotencyConflict("external entity identity is already bound to another canonical entity")
         return persisted
-
 
 class DomainEventRepository(_RepositoryBase):
     JSON_FIELDS = ("payload_json", "headers_json")
@@ -2416,7 +2343,6 @@ class DomainEventRepository(_RepositoryBase):
             "event": _created_flag(persisted, created),
             "outbox": deliveries,
         }
-
 
 class OutboxRepository(_RepositoryBase):
     EVENT_JSON_FIELDS = ("payload_json", "headers_json")
@@ -2722,7 +2648,6 @@ class OutboxRepository(_RepositoryBase):
                 (consumer_name, event_id),
             )
             return cursor.fetchone() is not None
-
 
 class ControlPlaneRetentionRepository(_RepositoryBase):
     """Delete terminal control-plane records after their rolling retention window."""
