@@ -41,7 +41,7 @@ updated: 2026-08-31
 | TASK-EXT-010 | DONE_OFFLINE | 2026-08-31T11:38:27+08:00 | 2026-08-31T12:49:57+08:00 | f1f13aaab4ed522b7b19e36027875767c4d14373 |
 | TASK-EXT-011 | DONE_OFFLINE | 2026-08-31T12:51:05+08:00 | 2026-08-31T14:05:36+08:00 | 01cf2447e997c51973d2ead49ac3c522743095f9 |
 | TASK-MIG-001 | DONE_OFFLINE | 2026-08-31T14:07:30+08:00 | 2026-08-31T15:31:46+08:00 | f9792c7eb7d20929be1ac89d160b85b57e242d3c |
-| TASK-MIG-002 | NOT_STARTED | — | — | — |
+| TASK-MIG-002 | IN_PROGRESS | 2026-08-31T15:33:05+08:00 | — | — |
 | TASK-MIG-003 | NOT_STARTED | — | — | — |
 | TASK-MIG-004 | NOT_STARTED | — | — | — |
 
@@ -251,16 +251,16 @@ updated: 2026-08-31
 
 ### TASK-MIG-002：迁移自提到货问题件
 
-- 状态：`NOT_STARTED`
-- 开始时间 / 结束时间：— / —
-- 设计决策：保留预览、选择、一次性绑定、全目标 preflight、权威核验和未知写隔离；真实写入门禁。
+- 状态：`IN_PROGRESS`
+- 开始时间 / 结束时间：`2026-08-31T15:33:05+08:00` / —
+- 设计决策：以现有自提到货问题件 v1 源码和已验证 primitive 为唯一业务来源，先形成独立 Service v2 候选包与 fixture 等价；保留 read-only 预览、用户显式选择、一次性 preview binding、正式执行前全目标 preflight、逐票创建后权威列表核验和 `WRITE_OUTCOME_UNKNOWN` 隔离。预览与正式执行使用不同 effect 的精确 operation；双账号只允许代码拥有的明确 Connector service/角色映射，禁止按签名猜测或取首个候选。若现有 Service v2 预览确认链、调用预算或 migration role 映射不足，只做可复用的闭合平台扩展并保持旧合同兼容；真实 TMS、飞书、数据库、问题件写入、入口切换、安装和部署继续 `PRODUCTION_GATED`。
 - 修改文件 / Commit SHA：— / —
 - 测试命令和结果：尚未运行。
 - 兼容性影响：v1 保持运行，v2 默认不接生产入口。
 - 数据库影响：仅本地验证；不操作生产。
 - 未完成项：全部。
 - 下一项 TASK：`TASK-MIG-003`。
-- 恢复说明：先确认前序 TASK 已提交推送，再将本 TASK 标为 `IN_PROGRESS`。
+- 恢复说明：MIG001 代码 `f9792c7eb7d20929be1ac89d160b85b57e242d3c` 与完成账本 `279c7e0` 已推送。从 v1 自提到货问题件源码、选择预览 binding、Service v2 多 effect 贡献、action budget、双账号 Connector 角色映射和权威写后核验开始；先完成只读审计与 fixture，不读取 `.env`、不访问真实系统或执行真实写。
 
 ### TASK-MIG-003：迁移分批问题件
 
