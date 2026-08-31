@@ -199,4 +199,3 @@ class ServiceV2FeishuDispatcherTests(IsolatedAsyncioTestCase):
         self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
         self.assertEqual([], actor_calls)
         self.assertEqual([], policy.calls)
-
