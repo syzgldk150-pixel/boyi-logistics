@@ -25,7 +25,6 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-
 from shared.redaction import redact_text
 from shared.contracts import api_failure, api_success
 from shared.finance import FinanceRepository
@@ -1359,6 +1358,7 @@ async def lifespan(app: FastAPI):
         policy_service=project_policy_service,
         contribution_registry=plugin_runtime.contribution_registry,
         resolve_actor=feishu_approval_service.resolve_actor,
+        migration_entrypoint_ownership=plugin_runtime.migration_entrypoint_ownership,
     )
     bind_service_v2_feishu_dispatcher(service_v2_feishu_dispatcher)
     runner = WorkflowRunner(

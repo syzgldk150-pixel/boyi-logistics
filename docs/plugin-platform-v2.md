@@ -117,7 +117,7 @@ payload/
 | `version` | 严格 `MAJOR.MINOR.PATCH`；同版本内容不可变 |
 | `runtime` | `kind=python_subprocess`、`python=3.10`、`mode=on_demand|resident`，入口和离线依赖路径必须位于 `payload/` |
 | `provides` | 至少一个服务；名称固定为 `plugin.<plugin_id>.<service>@<major>`；ZIP 不能提供或覆盖 `connector.*`；每个操作是字段精确为 `name/effect` 的对象，名称稳定且唯一，effect 只能是五态闭集 |
-| `requires` | 插件服务依赖精确为 `{service}`；宿主 Connector 依赖精确为 `{service,account_role}`，且该账号角色必须在 `account_roles` 中声明为 `required=true`；不能依赖自己提供的服务 |
+| `requires` | 插件服务依赖精确为 `{service}`；宿主 Connector 依赖只能是闭合的 `{service,binding_kind,account_role}`、`{service,binding_kind,resource_role}` 或 `{service,binding_kind}`（分别对应 `account`、`resource`、`host_internal`）；账号角色必须在 `account_roles` 中声明为 `required=true`，资源角色可声明 `required=true|false`；不能依赖自己提供的服务 |
 | `capabilities` | 只声明实际使用的能力、精确 action、账号角色或资源角色 |
 | `account_roles` | 声明角色、允许系统和是否必填；账号由项目绑定，不进入配置 JSON |
 | `resource_roles` | 声明角色、允许资源种类和是否必填 |
@@ -128,7 +128,7 @@ payload/
 贡献点只声明“宿主可以挂什么”：
 
 - Console：`id/title/service/operation/default_enabled`。
-- Scheduler：在上述字段外声明五段 cron 和时区。默认启用时当前 Host 只接受 `Asia/Shanghai` 与固定数字 `minute hour * * *`，且一个包最多一个默认 Scheduler；非默认 cron 只作受审建议，实际启停与宿主支持的时刻仍以项目提交配置为准。项目迁移测试期必须关闭物理任务。
+- Scheduler：在上述字段外可声明五段 cron 和时区；仅当 `default_enabled=false` 时允许省略 `schedule`，省略只表示默认关闭，不能填充或推断 cron。启用的 contribution 必须使用项目配置中的真实 schedule；MIG001 若源项目 Scheduler 已启用，明确返回 `PLUGIN_MIGRATION_SCHEDULER_PRODUCTION_GATED`，不在离线层复制或切换；本任务的 arrival 源无 Scheduler，目标保持 disabled/no schedule。若声明默认启用，当前 Host 仍只接受 `Asia/Shanghai` 与固定数字 `minute hour * * *`，且一个包最多一个默认 Scheduler。项目迁移测试期必须关闭物理任务。
 - Webhook：只接受 `POST` 和稳定 route 段。
 - 飞书：声明命令文本，但发布时仍需宿主侧受审路由能力；不能借此把任意文本变成特权入口。
 - Event：声明全局 exact 事件名、是否 durable 和目标服务操作；当前只有 `durable=false` 可进入离线 best-effort Dispatcher，`durable=true` 明确不可用且不降级。
@@ -265,11 +265,11 @@ Provider effect 来自 `provides[*].operations[*].effect`，Host capability effe
 
 ### 4.1 宿主 Connector Registry
 
-`ConnectorRegistry` 是宿主代码拥有的只读适配器注册表，与 ZIP Provider 使用的 `ServiceRegistry` 严格分离。ZIP 的 `provides` 和全部 contribution target 仍只能指向 `plugin.*`，不能注册、替换或控制 `connector.*` 的生命周期。插件若要调用 Connector，只能在 `requires` 写字段精确为 `{service,account_role}` 的 `connector.<owner>.<service>@<major>` 依赖；对应 `account_roles` 声明必须为必填，安装、generation 准备和每次调用都会核对服务、角色与允许系统。
+`ConnectorRegistry` 是宿主代码拥有的适配器注册表，与 ZIP Provider 使用的 `ServiceRegistry` 严格分离。ZIP 的 `provides` 和全部 contribution target 仍只能指向 `plugin.*`，不能注册、替换或控制 `connector.*` 的生命周期。Connector 依赖只能在 `requires` 使用三种显式闭合绑定：`binding_kind=account` 搭配 `account_role`（对应清单角色必须 `required=true`）、`binding_kind=resource` 搭配 `resource_role`（角色可 `required=true|false`），或 `binding_kind=host_internal`（不带账号/资源角色）。宿主在安装、generation 准备和每次调用核对服务、绑定类型、角色和允许系统/资源种类。
 
-Connector 调用仍经 `service.invoke`。宿主从当前项目的精确绑定解析账号，并只把私有 `ConnectorBindingRef` 交给宿主适配器；插件既不能提交绑定身份，也不能看到绑定标识、连接位置或认证材料，只能收到经闭合 output Schema 与脱敏检查验证的业务结果。缺少注册、缺少唯一绑定、角色或系统漂移、输入输出不闭合、结果含敏感材料时全部显式失败。
+每个 Connector operation 都是不可变 `{name,effect,input_schema,output_schema,max_input_bytes,max_output_bytes}` 合同；effect 允许 `read/internal_write/external_write`。输入/输出 cap 属于扩展 contract hash；但 legacy account + `read` + 默认 cap 的 canonical material 保持旧形态，不能因新增绑定类型或 cap 字段漂移历史 hash。调用经 `service.invoke` 时，宿主只向适配器传递私有 account/resource/host-internal binding ref；插件不能提交或看到绑定标识、连接位置或认证材料。`preflight_services` 只做闭合依赖/绑定解析，不增加 Broker call；写 marker 前只完成 binding、input cap 和 input Schema 校验，handler 返回后再做 output cap、output Schema 及敏感结果脱敏。插件结果及错误不得包含账号/资源 ID 或其字段值（包括嵌套、包装或资源标识字段）；缺少注册、缺少唯一绑定、角色/系统/资源种类漂移、输入输出不闭合、超 cap 或敏感结果均显式失败。
 
-首个 `connector.fixture.tracking@1/query` 只有 `read` effect，只能由测试显式注入本地 JSON fixture；生产组合默认构造空 `ConnectorRegistry`，不会隐式启用该 fixture。Catalog 的顶层 `connectors` 与 `plugins/instances` 分开，只投影服务名、标题、账号角色、允许系统及操作/effect，不提供安装、升级、启停或卸载动作。真实 TMS、飞书、数据库或任何写 Connector，以及其生产账号接入、部署和验收均为 `PRODUCTION_GATED`。
+首个 `connector.fixture.tracking@1/query` 只有 `read` effect，只能由测试显式注入本地 JSON fixture；生产组合默认构造空 `ConnectorRegistry`，不会隐式启用该 fixture。Catalog 的顶层 `connectors` 与 `plugins/instances` 分开，只投影服务名、标题、绑定类型、角色、允许系统/资源种类及操作/effect，不提供安装、升级、启停或卸载动作。真实 TMS、飞书、数据库或任何写 Connector，以及其生产账号/资源接入、部署和验收均为 `PRODUCTION_GATED`。
 
 插件入口从标准输入读取宿主生成的闭合 JSON，只使用其中的项目配置、入口类型、已解析 target 和逐 contribution `governance`；target 与 governance 由 committed contract 生成，插件不得覆盖。标准输出只能返回一个 JSON 对象，读/计算成功至少包含：
 
@@ -446,6 +446,17 @@ v1 继续服务，v2 作为新包、新项目和新 `automation_id` 建立。禁
 
 迁移状态按 `PREPARING -> TESTING -> READY -> CUTTING_OVER -> CUTOVER -> COMPLETED` 推进；失败可进入 `ERROR`，切换前后按门禁进入 `ROLLING_BACK -> ROLLED_BACK`。状态变化必须使用 CAS 版本和唯一请求 ID，响应丢失只能重放同一个请求。
 
+迁移入口 ownership 由持久 pair 状态闭合决定：
+
+| pair 状态 | Console / Scheduler / 固定飞书 |
+|---|---|
+| `TESTING`、`READY` | v1 唯一拥有；v2 只能离线验证 |
+| `CUTOVER`、`COMPLETED` | v2 唯一拥有；`COMPLETED` 后禁止同源新建 pair，后续 v2 generation 升级继续复用 v2 ownership |
+| `ROLLED_BACK` | v1 唯一拥有 |
+| `PREPARING`、`CUTTING_OVER`、`ROLLING_BACK`、`ERROR`、损坏、过渡或历史归属歧义 | 不猜测任何一侧，全部 fail closed |
+
+固定飞书保留命令只有 exact migration target 才能占用；消息 handler 的 pending、登录、确认和固定 Action v1 优先级不因迁移改变。启用的 v1 webhook 不在本迁移中静默接管，明确保持 `PRODUCTION_GATED`；route 资源也不得映射为业务资源。Scheduler contribution 在禁用（`default_enabled=false`）时可省略 `schedule`；启用必须使用项目真实 schedule，不得伪造默认时间。MIG001 的 arrival 源没有 Scheduler，目标保持 disabled/no schedule；若发现已启用源 Scheduler，则返回 `PLUGIN_MIGRATION_SCHEDULER_PRODUCTION_GATED`，不得在离线层复制或切换。
+
 ### 9.2 业务运行键互斥
 
 测试期的双方在执行业务前必须从同一 migration pair 认领同一个 `business_run_key`。键必须从真实、类型化的业务身份生成，例如“动作 + 业务日期 + 网点 + 批次”，不能使用显示名称、当前时间、默认日期或模糊候选。唯一保留的宿主字段 `__host_business_date` 由宿主按 `Asia/Shanghai` 确定性注入；其他 `__host_*` 字段全部拒绝，插件也不能自行覆盖该日期。
@@ -473,6 +484,12 @@ v1 继续服务，v2 作为新包、新项目和新 `automation_id` 建立。禁
 
 回滚只把后续入口所有权恢复给旧项目，不撤销已经发生的第三方写。存在未知写时禁止切换和回滚；必须先完成人工 reconcile 并留下证据。只有超级管理员明确“完成迁移”，且无租约、未知写和运行引用后，旧项目才允许卸载。
 
+### 9.4 MIG001 到货统计独立包
+
+`sync_arrival_stats_v2` 位于 `agent/service_v2_plugins/sync_arrival_stats_v2/`，是独立的 Service v2 ZIP 项目，不把 v1 项目原地升级，也不通过旧 whole-tool 入口运行。包内算法与结果契约使用 v1 `payload/action.py` 及共享 `_runtime/result.py` 的逐字节嵌入副本；离线 fixture 只核对代表性 payload、稳定结果投影和 primitive 顺序，不能被解释为正式 20,000 条容量或生产吞吐证明。账号、资源和 host-internal binding 只留在宿主侧，插件 JSON 不包含账号/资源 ID。
+
+MIG001 的真实 TMS 读取、Feishu/资源写、内部投影写、独立新鲜写后核验、真实 descriptors/handlers、生产安装、Scheduler/Feishu 入口接管和部署仍为 `PRODUCTION_GATED`。离线完成不等于生产真跑或迁移完成；任何写响应丢失或 postcondition 不闭合都必须保留 `WRITE_OUTCOME_UNKNOWN`，不得重放原写。
+
 ## 10. 迁移波次
 
 波次必须按风险和宿主能力闭合情况推进，不能因源代码已存在就跳过真实验证。
@@ -495,6 +512,8 @@ v1 继续服务，v2 作为新包、新项目和新 `automation_id` 建立。禁
 - [ ] 包内没有凭据、账号 ID、前端、hook、任意下载脚本、SQL/DDL 或其他插件源码。
 - [ ] `capabilities[*].operations` 只列 Registry 已注册的 action 字符串，不复制或自报 Host effect；缺失数据、歧义、空响应和写后无法核验均显式失败。
 - [ ] 每个 contribution 的 effect、target 和 governance 在编译、Plan 与运行时一致；跨插件调用不超过调用方 ceiling，读/计算路径保持零写标记。
+- [ ] Connector 依赖使用显式 account/resource/host_internal binding；每个 operation 的 effect、闭合 input/output Schema 和 input/output cap 进入 contract 校验，legacy account/read/default-cap hash 保持稳定，插件结果不含账号/资源身份。
+- [ ] disabled Scheduler contribution 可省略 `schedule`；enabled contribution 只能使用项目真实 schedule。MIG001 source Scheduler 已启用时标记 `PLUGIN_MIGRATION_SCHEDULER_PRODUCTION_GATED`，arrival source 无 Scheduler 时目标保持 disabled/no schedule。
 - [ ] 写操作先预检、再由宿主标记写尝试、最后独立回读；Evidence、postcondition proof 与 Host 调用观测闭合，未知结果不重放。
 - [ ] 离线依赖全部为清单列明、哈希锁定的 wheel；在 Linux Python 3.10 上完成离线安装测试。
 - [ ] ZIP 根结构、UTF-8、摘要、路径安全、压缩限制和输出 JSON 合同通过测试。

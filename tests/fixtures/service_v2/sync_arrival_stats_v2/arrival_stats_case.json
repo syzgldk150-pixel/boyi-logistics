@@ -1,0 +1,112 @@
+{
+  "scenario": "synthetic dry-run with one refreshed waybill",
+  "arguments": {
+    "target_date": "2026-08-24",
+    "dry_run": true
+  },
+  "responses": {
+    "arrive_list": {
+      "items": [
+        {
+          "tracking_number": "R12345678901",
+          "goods_name": "synthetic goods",
+          "package_type": "carton",
+          "delivery_method": "dispatch",
+          "quantity": 2,
+          "recipient_name": "synthetic recipient",
+          "recipient_phone": "13800000000",
+          "recipient_address": "short"
+        }
+      ],
+      "pagination_complete": true,
+      "next_cursor": null
+    },
+    "scan": {
+      "items": [
+        {
+          "bill_code": "R123456789010001",
+          "destination": "synthetic station",
+          "scan_type": "arrival",
+          "scan_time": "2026-08-24 08:00:00",
+          "scan_site": "synthetic station"
+        }
+      ],
+      "pagination_complete": true,
+      "next_cursor": null
+    },
+    "completed_before": {
+      "tracking_numbers": [],
+      "pagination_complete": true
+    },
+    "scan_snapshot": {
+      "items": [
+        {
+          "raw_code": "R123456789010001",
+          "destination": "synthetic station",
+          "code_type": "child"
+        }
+      ],
+      "pagination_complete": true
+    },
+    "waybill_detail": {
+      "found": true,
+      "record": {
+        "tracking_number": "R12345678901",
+        "goods_name": "synthetic goods",
+        "package_type": "carton",
+        "delivery_method": "dispatch",
+        "quantity": 2,
+        "receipt_number": "",
+        "actual_weight": "1.00",
+        "volume": "0.001",
+        "remarks": "",
+        "destination_station": "synthetic station",
+        "recipient_name": "synthetic recipient",
+        "recipient_phone": "13800000000",
+        "recipient_address": "complete synthetic address",
+        "settlement_weight": "1.00",
+        "volumetric_weight": "1.00",
+        "shipping_fee": "0.00",
+        "payment_type": "prepaid",
+        "pay_on_arrival": "0.00"
+      }
+    }
+  },
+  "expected": {
+    "primitive_actions": [
+      "ronghui.arrive_list.read_page",
+      "ronghui.scan.read_page",
+      "arrival.snapshot.completed_before",
+      "scan.snapshot.read",
+      "ronghui.waybill_detail.read"
+    ],
+    "mutating_actions": [],
+    "result_data": {
+      "dry_run": true,
+      "records": 1,
+      "arrive_pages": 1,
+      "scan_pages": 1,
+      "current_main_trackings": 1,
+      "accumulated_main_trackings": 1,
+      "detail_requested": 1,
+      "detail_fetched": 1,
+      "count_result": {
+        "ok": true,
+        "source": "scan_index",
+        "requested": 1,
+        "counted": 1,
+        "arrived_nonzero": 1,
+        "scan_rows": 1,
+        "child_scan_rows": 1,
+        "direct_main_rows": 0,
+        "quantity_adjustments": 0,
+        "quantity_gaps": 1
+      },
+      "evidence": {
+        "source": "signed_first_party_plugin",
+        "pagination_complete": true,
+        "execution_result": "dry_run_complete"
+      }
+    }
+  }
+}

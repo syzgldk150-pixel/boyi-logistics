@@ -26,6 +26,9 @@ from agent.automation_plugins.lifecycle import AutomationPluginService
 from agent.automation_plugins.inspection_v2 import service_v2_wizard_projection
 from agent.automation_plugins.manifest_v2 import canonical_json_bytes
 from agent.automation_plugins.migration import PluginMigrationControlPlane
+from agent.automation_plugins.migration_entrypoint_ownership import (
+    migration_target_entrypoints_and_ownership,
+)
 from agent.automation_plugins.models import (
     AutomationProjectConfigRecord,
     PluginInstanceRecord,
@@ -1680,9 +1683,9 @@ class AutomationPluginManagementService:
 
     @staticmethod
     def _migration_role_signature(role: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
-        """Compare role contracts without guessing a role name or argument key."""
+        """Compare the complete role contract independently of its role name."""
 
-        ignored = {"role", "argument_field"}
+        ignored = {"role"}
         normalized: list[tuple[str, str]] = []
         for key, value in role.items():
             if key in ignored:
@@ -1702,6 +1705,7 @@ class AutomationPluginManagementService:
         source_roles: Sequence[Mapping[str, Any]],
         target_roles: Sequence[Mapping[str, Any]],
         kind: str,
+        explicitly_consumed_source_bindings: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """Map only one-to-one role-equivalent bindings across runtimes."""
 
@@ -1717,8 +1721,12 @@ class AutomationPluginManagementService:
                 f"migration source {kind} roles are not closed",
                 code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
             )
-        result: dict[str, Any] = {}
-        consumed: set[str] = set()
+        if not explicitly_consumed_source_bindings <= set(source_bindings):
+            raise PluginConflictError(
+                f"migration explicitly consumed {kind} bindings are invalid",
+                code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
+            )
+        target_by_name: dict[str, Mapping[str, Any]] = {}
         for target_role in target_roles:
             if not isinstance(target_role, Mapping):
                 raise PluginConflictError(
@@ -1726,9 +1734,40 @@ class AutomationPluginManagementService:
                     code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
                 )
             target_name = str(target_role.get("role") or "")
+            if not target_name or target_name in target_by_name:
+                raise PluginConflictError(
+                    f"migration target {kind} roles are not closed",
+                    code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
+                )
+            target_by_name[target_name] = target_role
+
+        # Reserve every exact name+contract match first.  This is deliberately
+        # a complete first pass: an earlier differently named role must never
+        # consume the exact source role of a later target merely because the
+        # two roles share a signature.
+        matches: dict[str, str] = {}
+        consumed_roles: set[str] = set()
+        for target_name, target_role in target_by_name.items():
+            source_role = source_by_name.get(target_name)
+            if (
+                target_name not in explicitly_consumed_source_bindings
+                and source_role is not None
+                and cls._migration_role_signature(source_role)
+                == cls._migration_role_signature(target_role)
+            ):
+                matches[target_name] = target_name
+                consumed_roles.add(target_name)
+
+        # Only unresolved targets may use signature matching, and only one
+        # still-unconsumed source role is acceptable.
+        for target_name, target_role in target_by_name.items():
+            if target_name in matches:
+                continue
             candidates = [
                 source_name
                 for source_name, source_role in source_by_name.items()
+                if source_name not in consumed_roles
+                if source_name not in explicitly_consumed_source_bindings
                 if cls._migration_role_signature(source_role)
                 == cls._migration_role_signature(target_role)
             ]
@@ -1737,53 +1776,27 @@ class AutomationPluginManagementService:
                     f"migration {kind} role cannot be uniquely mapped",
                     code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
                 )
-            source_name = candidates[0]
+            matches[target_name] = candidates[0]
+            consumed_roles.add(candidates[0])
+
+        result: dict[str, Any] = {}
+        consumed_bindings: set[str] = set(explicitly_consumed_source_bindings)
+        for target_name, target_role in target_by_name.items():
+            source_name = matches[target_name]
             if source_name in source_bindings:
                 result[target_name] = copy.deepcopy(source_bindings[source_name])
-                consumed.add(source_name)
+                consumed_bindings.add(source_name)
             elif target_role.get("required") is True:
                 raise PluginConflictError(
                     f"migration required {kind} binding is missing",
                     code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
                 )
-        if consumed != set(source_bindings):
+        if consumed_bindings != set(source_bindings):
             raise PluginConflictError(
                 f"migration source {kind} binding has no target role",
                 code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
             )
         return result
-
-    @staticmethod
-    def _migration_target_entrypoints(
-        entry: PluginCatalogEntry,
-        schedule: Mapping[str, Any],
-    ) -> tuple[str, ...]:
-        """Choose the sole Console validation and Scheduler owner routes."""
-
-        console = [
-            str(item.get("id") or "")
-            for item in entry.contributions.get("console", ())
-            if isinstance(item, Mapping)
-        ]
-        if len(console) != 1 or not console[0]:
-            raise PluginConflictError(
-                "migration target must declare exactly one Console entrypoint",
-                code="PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE",
-            )
-        entrypoints = list(console)
-        if schedule.get("kind") != "none":
-            schedulers = [
-                str(item.get("id") or "")
-                for item in entry.contributions.get("scheduler", ())
-                if isinstance(item, Mapping)
-            ]
-            if len(schedulers) != 1 or not schedulers[0]:
-                raise PluginConflictError(
-                    "migration target must declare exactly one scheduler entrypoint",
-                    code="PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE",
-                )
-            entrypoints.extend(schedulers)
-        return tuple(entrypoints)
 
     def create_migration_pair(
         self,
@@ -1812,9 +1825,14 @@ class AutomationPluginManagementService:
                 code="PLUGIN_MIGRATION_RUNTIME_MODEL_INVALID",
             )
         source_record = self._configuration.read(source_automation_id)
-        target_entrypoints = self._migration_target_entrypoints(
-            target,
-            source_record.schedule,
+        target_entrypoints, entrypoint_ownership, consumed_route_bindings = (
+            migration_target_entrypoints_and_ownership(
+                source=source,
+                target=target,
+                source_enabled_entrypoints=source_record.enabled_entrypoints,
+                source_schedule=source_record.schedule,
+                source_resource_bindings=source_record.resource_bindings,
+            )
         )
         copied_accounts = self._map_migration_bindings(
             source_bindings=source_record.account_bindings,
@@ -1827,6 +1845,7 @@ class AutomationPluginManagementService:
             source_roles=source.resource_roles,
             target_roles=target.resource_roles,
             kind="resource",
+            explicitly_consumed_source_bindings=consumed_route_bindings,
         )
         # Persist the ownership gate *before* saving the target's copied
         # scheduler intent.  If the copy/finalize step crashes, PREPARING is
@@ -1838,6 +1857,7 @@ class AutomationPluginManagementService:
             target_automation_id=target_automation_id,
             business_key_fields=business_key_fields,
             business_key_namespace=business_key_namespace,
+            entrypoint_ownership=entrypoint_ownership,
             request_id=request_id,
             actor_id=actor.actor_id,
             actor_role=role,
@@ -1857,10 +1877,27 @@ class AutomationPluginManagementService:
         # project rather than a pre-hold observation that could have raced a
         # last legacy configuration save.
         source_record = self._configuration.read(source_automation_id)
-        target_entrypoints = self._migration_target_entrypoints(
-            target,
-            source_record.schedule,
+        (
+            target_entrypoints,
+            refreshed_entrypoint_ownership,
+            refreshed_consumed_route_bindings,
+        ) = (
+            migration_target_entrypoints_and_ownership(
+                source=source,
+                target=target,
+                source_enabled_entrypoints=source_record.enabled_entrypoints,
+                source_schedule=source_record.schedule,
+                source_resource_bindings=source_record.resource_bindings,
+            )
         )
+        if (
+            refreshed_entrypoint_ownership != entrypoint_ownership
+            or refreshed_consumed_route_bindings != consumed_route_bindings
+        ):
+            raise PluginConflictError(
+                "migration entrypoint ownership changed during preparation",
+                code="PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE",
+            )
         copied_accounts = self._map_migration_bindings(
             source_bindings=source_record.account_bindings,
             source_roles=source.account_roles,
@@ -1872,6 +1909,7 @@ class AutomationPluginManagementService:
             source_roles=source.resource_roles,
             target_roles=target.resource_roles,
             kind="resource",
+            explicitly_consumed_source_bindings=consumed_route_bindings,
         )
         copy_request_id = str(uuid.uuid5(uuid.UUID(request_id), "migration-target-copy"))
         try:

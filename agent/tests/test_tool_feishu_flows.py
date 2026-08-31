@@ -83,6 +83,125 @@ class ToolFeishuFlowTests(unittest.TestCase):
 
         self.assertIsNone(request)
 
+    def test_fixed_feishu_route_obeys_testing_cutover_and_rollback_owner(self):
+        class _FakeAgent:
+            async def execute_tool(self, *_args, **_kwargs):
+                raise AssertionError("fixed project route must not call a legacy tool directly")
+
+            async def handle_message(self, *_args, **_kwargs):
+                raise AssertionError("fixed project route must not reach the LLM")
+
+        class _MigrationDispatcher:
+            def __init__(self, owner):
+                self.owner = owner
+                self.dispatches = []
+
+            def fixed_feishu_owner(self, **kwargs):
+                self.owner_request = kwargs
+                return self.owner
+
+            async def dispatch(self, **kwargs):
+                self.dispatches.append(kwargs)
+                return {"status": "COMPLETED", "success": True}
+
+        async def _fake_reply_text(
+            _chat_id,
+            _text,
+            receive_id_type="chat_id",
+            *,
+            reply_type="text",
+        ):
+            del receive_id_type, reply_type
+
+        for state, owner, expected_v1_calls, expected_v2_calls in (
+            ("TESTING", "ACTION_V1", 1, 0),
+            ("CUTOVER", "SERVICE_V2", 0, 1),
+            ("ROLLED_BACK", "ACTION_V1", 1, 0),
+        ):
+            with self.subTest(state=state):
+                self.project_entrypoints.calls.clear()
+                dispatcher = _MigrationDispatcher(owner)
+                with (
+                    patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
+                    patch("feishu.message_handler.get_pending", return_value=None),
+                    patch.object(
+                        message_handler,
+                        "_SERVICE_V2_FEISHU_DISPATCHER",
+                        dispatcher,
+                    ),
+                    patch(
+                        "feishu.message_handler._reply_text",
+                        side_effect=_fake_reply_text,
+                    ),
+                ):
+                    asyncio.run(
+                        message_handler._process_and_reply(
+                            "统计到货数据",
+                            "user-1",
+                            "chat-1",
+                        )
+                    )
+
+                self.assertEqual(expected_v1_calls, len(self.project_entrypoints.calls))
+                self.assertEqual(expected_v2_calls, len(dispatcher.dispatches))
+                self.assertEqual(
+                    "builtin.arrival_stats",
+                    dispatcher.owner_request["source_route_key"],
+                )
+
+    def test_cutover_fixed_feishu_route_fails_closed_when_v2_projection_is_missing(self):
+        replies: list[tuple[str, str]] = []
+
+        class _FakeAgent:
+            async def execute_tool(self, *_args, **_kwargs):
+                raise AssertionError("cutover must not fall back to an Action-v1 tool")
+
+            async def handle_message(self, *_args, **_kwargs):
+                raise AssertionError("cutover must not fall back to the LLM")
+
+        class _MissingTargetDispatcher:
+            @staticmethod
+            def fixed_feishu_owner(**_kwargs):
+                return "SERVICE_V2"
+
+            @staticmethod
+            async def dispatch(**_kwargs):
+                return None
+
+        async def _fake_reply_text(
+            _chat_id,
+            text,
+            receive_id_type="chat_id",
+            *,
+            reply_type="text",
+        ):
+            del receive_id_type
+            replies.append((text, reply_type))
+
+        with (
+            patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
+            patch("feishu.message_handler.get_pending", return_value=None),
+            patch.object(
+                message_handler,
+                "_SERVICE_V2_FEISHU_DISPATCHER",
+                _MissingTargetDispatcher(),
+            ),
+            patch(
+                "feishu.message_handler._reply_text",
+                side_effect=_fake_reply_text,
+            ),
+        ):
+            asyncio.run(
+                message_handler._process_and_reply(
+                    "统计到货数据",
+                    "user-1",
+                    "chat-1",
+                )
+            )
+
+        self.assertEqual([], self.project_entrypoints.calls)
+        self.assertEqual("service_v2_feishu_failed", replies[-1][1])
+
     def test_feishu_finance_text_resolves_bound_admin_before_agent_core(self):
         calls: dict[str, Any] = {}
         replies: list[str] = []

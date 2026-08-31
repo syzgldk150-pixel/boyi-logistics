@@ -495,6 +495,17 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 automation_id
             )
 
+    def get_authoritative_plugin_migration_pair_for_automation(
+        self, automation_id: str
+    ) -> Mapping[str, Any] | None:
+        with self._orchestration.unit_of_work() as uow:
+            return (
+                uow.automation_plugins
+                .get_authoritative_plugin_migration_pair_for_automation(
+                    automation_id
+                )
+            )
+
     def get_active_plugin_migration_run_claim(self, **kwargs: Any) -> Mapping[str, Any] | None:
         with self._orchestration.unit_of_work() as uow:
             return uow.automation_plugins.get_active_plugin_migration_run_claim(**kwargs)

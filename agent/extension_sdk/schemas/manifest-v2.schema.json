@@ -294,6 +294,62 @@
           "additionalProperties": false,
           "required": [
             "service",
+            "binding_kind",
+            "account_role"
+          ],
+          "properties": {
+            "service": {
+              "$ref": "#/$defs/connector_service"
+            },
+            "binding_kind": {
+              "const": "account"
+            },
+            "account_role": {
+              "$ref": "#/$defs/role"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "service",
+            "binding_kind",
+            "resource_role"
+          ],
+          "properties": {
+            "service": {
+              "$ref": "#/$defs/connector_service"
+            },
+            "binding_kind": {
+              "const": "resource"
+            },
+            "resource_role": {
+              "$ref": "#/$defs/role"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "service",
+            "binding_kind"
+          ],
+          "properties": {
+            "service": {
+              "$ref": "#/$defs/connector_service"
+            },
+            "binding_kind": {
+              "const": "host_internal"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "service",
             "account_role"
           ],
           "properties": {
@@ -496,8 +552,7 @@
         {
           "type": "object",
           "required": [
-            "title",
-            "schedule"
+            "title"
           ],
           "properties": {
             "title": {
@@ -529,7 +584,26 @@
                 }
               }
             }
-          }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "default_enabled": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "default_enabled"
+                ]
+              },
+              "then": {
+                "required": [
+                  "schedule"
+                ]
+              }
+            }
+          ]
         }
       ],
       "unevaluatedProperties": false

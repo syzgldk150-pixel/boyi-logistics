@@ -79,6 +79,7 @@ class PluginMigrationControlPlane:
         target_automation_id: str,
         business_key_fields: tuple[str, ...],
         business_key_namespace: str | None,
+        entrypoint_ownership: Mapping[str, Any],
         request_id: str,
         actor_id: str,
         actor_role: str,
@@ -96,6 +97,7 @@ class PluginMigrationControlPlane:
                     else {}
                 ),
             },
+            entrypoint_ownership=dict(entrypoint_ownership),
             request_id=request_id,
             actor_id=actor_id,
             actor_role=actor_role,

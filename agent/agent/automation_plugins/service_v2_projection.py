@@ -62,9 +62,9 @@ _ACTIVE_CONTRIBUTION_KINDS = (
     "harness",
     "module_slots",
 )
-_SCHEDULE_BACKEND_TIMEZONE = "Asia/Shanghai"
 _WEBHOOK_ROUTE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$", re.ASCII)
 _EVENT_NAME_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$", re.ASCII)
+_PROJECT_DAILY_TIME_RE = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$", re.ASCII)
 _EMPTY_HARNESS_INPUT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -413,13 +413,23 @@ class ManagedContributionRegistry:
         *,
         lock: Any | None = None,
         reserved_feishu_command: Callable[[str], bool] | None = None,
+        migration_reserved_feishu_target: (
+            Callable[[str, int, str, str], bool] | None
+        ) = None,
     ) -> None:
         if reserved_feishu_command is not None and not callable(
             reserved_feishu_command
         ):
             raise TypeError("reserved_feishu_command must be callable")
+        if migration_reserved_feishu_target is not None and not callable(
+            migration_reserved_feishu_target
+        ):
+            raise TypeError("migration_reserved_feishu_target must be callable")
         self._lock = lock or RLock()
         self._reserved_feishu_command = reserved_feishu_command
+        self._migration_reserved_feishu_target = (
+            migration_reserved_feishu_target
+        )
         self._registrations: dict[str, ManagedContributionRegistration] = {}
         self._route_owners: dict[str, set[str]] = {}
         self._active_generations: dict[str, int] = {}
@@ -782,7 +792,26 @@ class ManagedContributionRegistry:
                             "reserved Feishu command check returned an invalid result",
                             code="CONTRIBUTION_ROUTE_CONFLICT",
                         )
-                    if is_reserved:
+                    migration_allowed = False
+                    if is_reserved and self._migration_reserved_feishu_target is not None:
+                        try:
+                            migration_allowed = self._migration_reserved_feishu_target(
+                                candidate.automation_id,
+                                candidate.generation,
+                                candidate.contribution_id,
+                                command,
+                            )
+                        except Exception as exc:
+                            raise PluginConflictError(
+                                "migration Feishu ownership check failed",
+                                code="CONTRIBUTION_ROUTE_CONFLICT",
+                            ) from exc
+                        if not isinstance(migration_allowed, bool):
+                            raise PluginConflictError(
+                                "migration Feishu ownership check returned an invalid result",
+                                code="CONTRIBUTION_ROUTE_CONFLICT",
+                            )
+                    if is_reserved and not migration_allowed:
                         raise PluginConflictError(
                             "managed Feishu command conflicts with an Action V1 command",
                             code="CONTRIBUTION_ROUTE_CONFLICT",
@@ -1859,10 +1888,6 @@ def _contribution_backend(
     if contribution_kind == "console":
         return "managed_console_router", "READY", None, None
     if contribution_kind == "scheduler":
-        schedule = declaration.get("schedule")
-        if not isinstance(schedule, Mapping):
-            raise PluginConflictError("v2 scheduler default is invalid")
-        timezone_name = str(schedule.get("timezone") or "")
         if project_schedule.get("kind") == "none" or project_schedule.get(
             "enabled"
         ) is not True:
@@ -1872,13 +1897,35 @@ def _contribution_backend(
                 None,
                 "PROJECT_SCHEDULE_DISABLED",
             )
-        if timezone_name != _SCHEDULE_BACKEND_TIMEZONE:
-            return (
-                "scheduled_tasks",
-                "CAPABILITY_UNAVAILABLE",
-                "CAPABILITY_UNAVAILABLE",
-                "SCHEDULER_TIMEZONE_UNAVAILABLE",
+        # The core-owned project schedule is the sole runnable clock.  A
+        # declaration may intentionally omit a static/default schedule; in a
+        # migration the enabled project schedule is copied exactly from the
+        # v1 source.  Never manufacture a cron or substitute a manifest
+        # default here.
+        if (
+            set(project_schedule) != {"kind", "times", "enabled"}
+            or project_schedule.get("kind") not in {"daily_times", "startup"}
+            or not isinstance(project_schedule.get("times"), (list, tuple))
+        ):
+            raise PluginConflictError("v2 project scheduler is invalid")
+        schedule_kind = str(project_schedule["kind"])
+        schedule_times = tuple(project_schedule["times"])
+        if (
+            (schedule_kind == "startup" and schedule_times)
+            or (
+                schedule_kind == "daily_times"
+                and (
+                    not schedule_times
+                    or any(
+                        not isinstance(item, str)
+                        or _PROJECT_DAILY_TIME_RE.fullmatch(item) is None
+                        for item in schedule_times
+                    )
+                    or len(set(schedule_times)) != len(schedule_times)
+                )
             )
+        ):
+            raise PluginConflictError("v2 project scheduler is invalid")
         return "scheduled_tasks", "READY", None, None
     if contribution_kind == "harness":
         # This is a catalog projection only.  It does not start a Harness
@@ -2223,6 +2270,7 @@ def _service_registration_material(
     raw_provides = contracts.get("provides")
     raw_requires = contracts.get("requires")
     raw_account_roles = descriptor.get("account_roles")
+    raw_resource_roles = descriptor.get("resource_roles")
     runtime = descriptor.get("runtime")
     if (
         not isinstance(raw_provides, (list, tuple))
@@ -2253,6 +2301,11 @@ def _service_registration_material(
             account_roles=(
                 (item for item in raw_account_roles if isinstance(item, Mapping))
                 if isinstance(raw_account_roles, (list, tuple))
+                else ()
+            ),
+            resource_roles=(
+                (item for item in raw_resource_roles if isinstance(item, Mapping))
+                if isinstance(raw_resource_roles, (list, tuple))
                 else ()
             ),
         )

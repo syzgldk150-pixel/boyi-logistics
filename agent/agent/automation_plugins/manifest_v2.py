@@ -72,6 +72,13 @@ _PROVIDE_FIELDS = frozenset({"service", "operations"})
 _PROVIDE_OPERATION_FIELDS = frozenset({"name", "effect"})
 _PLUGIN_REQUIRE_FIELDS = frozenset({"service"})
 _CONNECTOR_REQUIRE_FIELDS = frozenset({"service", "account_role"})
+_CONNECTOR_ACCOUNT_REQUIRE_FIELDS = frozenset(
+    {"service", "binding_kind", "account_role"}
+)
+_CONNECTOR_RESOURCE_REQUIRE_FIELDS = frozenset(
+    {"service", "binding_kind", "resource_role"}
+)
+_CONNECTOR_HOST_INTERNAL_REQUIRE_FIELDS = frozenset({"service", "binding_kind"})
 _CAPABILITY_FIELDS = frozenset({"name", "operations", "account_role", "resource_role"})
 _ACCOUNT_ROLE_FIELDS = frozenset({"role", "allowed_systems", "required"})
 _RESOURCE_ROLE_FIELDS = frozenset({"role", "allowed_kinds", "required"})
@@ -93,6 +100,7 @@ _SCHEDULER_FIELDS = frozenset(
         "schedule",
     }
 )
+_SCHEDULER_FIELDS_WITHOUT_SCHEDULE = _SCHEDULER_FIELDS - {"schedule"}
 _SCHEDULE_FIELDS = frozenset({"kind", "expression", "timezone"})
 _WEBHOOK_FIELDS = frozenset({"id", "service", "operation", "method", "route", "default_enabled"})
 _FEISHU_FIELDS = frozenset({"id", "service", "operation", "commands", "default_enabled"})
@@ -489,6 +497,7 @@ def _validate_requires(
     provided_services: frozenset[str],
     account_roles: set[str],
     required_account_roles: frozenset[str],
+    resource_roles: set[str],
 ) -> list[dict[str, str]]:
     raw_items = _array(value, "requires")
     result: list[dict[str, str]] = []
@@ -508,21 +517,51 @@ def _validate_requires(
             if service in provided_services:
                 raise PluginManifestError("a plugin cannot require a service it provides")
         elif _CONNECTOR_SERVICE_RE.fullmatch(service):
-            if set(item) != _CONNECTOR_REQUIRE_FIELDS:
-                raise PluginManifestError(
-                    f"{path} connector service requirement must contain exactly service and account_role"
-                )
             service, _, _ = _connector_service_name(service, f"{path}.service")
-            account_role = _role(item["account_role"], f"{path}.account_role")
-            if account_role not in account_roles:
+            fields = set(item)
+            binding_kind = item.get("binding_kind")
+            if fields == _CONNECTOR_REQUIRE_FIELDS or (
+                fields == _CONNECTOR_ACCOUNT_REQUIRE_FIELDS
+                and binding_kind == "account"
+            ):
+                account_role = _role(item["account_role"], f"{path}.account_role")
+                if account_role not in account_roles:
+                    raise PluginManifestError(
+                        f"{path}.account_role references an undeclared account role"
+                    )
+                if account_role not in required_account_roles:
+                    raise PluginManifestError(
+                        f"{path}.account_role must reference an account role with required=true"
+                    )
+                # Keep EXT011's exact account requirement shape stable.
+                normalized = {"service": service, "account_role": account_role}
+            elif (
+                fields == _CONNECTOR_RESOURCE_REQUIRE_FIELDS
+                and binding_kind == "resource"
+            ):
+                resource_role = _role(item["resource_role"], f"{path}.resource_role")
+                if resource_role not in resource_roles:
+                    raise PluginManifestError(
+                        f"{path}.resource_role references an undeclared resource role"
+                    )
+                normalized = {
+                    "service": service,
+                    "binding_kind": "resource",
+                    "resource_role": resource_role,
+                }
+            elif (
+                fields == _CONNECTOR_HOST_INTERNAL_REQUIRE_FIELDS
+                and binding_kind == "host_internal"
+            ):
+                normalized = {"service": service, "binding_kind": "host_internal"}
+            else:
+                if "binding_kind" not in item:
+                    raise PluginManifestError(
+                        f"{path} connector service requirement must contain exactly service and account_role"
+                    )
                 raise PluginManifestError(
-                    f"{path}.account_role references an undeclared account role"
+                    f"{path} connector service requirement has an invalid binding contract"
                 )
-            if account_role not in required_account_roles:
-                raise PluginManifestError(
-                    f"{path}.account_role must reference an account role with required=true"
-                )
-            normalized = {"service": service, "account_role": account_role}
         else:
             raise PluginManifestError(
                 f"{path}.service must use plugin.<plugin_id>.<service>@<major> "
@@ -742,40 +781,43 @@ def _validate_contributes(
 
     for index, raw_item in enumerate(_array(raw["scheduler"], "contributes.scheduler")):
         path = f"contributes.scheduler[{index}]"
-        item = _mapping(raw_item, path, _SCHEDULER_FIELDS)
+        item = _mapping(raw_item, path)
+        fields = set(item)
+        if fields not in {_SCHEDULER_FIELDS, _SCHEDULER_FIELDS_WITHOUT_SCHEDULE}:
+            raise PluginManifestError(f"{path} has unsupported or missing fields")
         service, operation = _contribution_target(
             item,
             path=path,
             operations_by_service=operations_by_service,
         )
+        default_enabled = _boolean(item["default_enabled"], f"{path}.default_enabled")
+        normalized_scheduler = {
+            "id": _contribution_id(item["id"], f"{path}.id", seen=seen_ids),
+            "title": _text(item["title"], f"{path}.title", maximum=120),
+            "service": service,
+            "operation": operation,
+            "default_enabled": default_enabled,
+        }
+        if "schedule" not in item:
+            if default_enabled:
+                raise PluginManifestError(
+                    f"{path}.schedule is required when default_enabled=true"
+                )
+            # A disabled candidate must not invent a placeholder cron. A later
+            # project cutover must copy its reviewed source schedule explicitly.
+            result["scheduler"].append(normalized_scheduler)
+            continue
         schedule = _mapping(item["schedule"], f"{path}.schedule", _SCHEDULE_FIELDS)
         if schedule["kind"] != "cron":
             raise PluginManifestError(f"{path}.schedule.kind must be cron")
-        expression = _validate_cron_expression(
-            schedule["expression"],
-            f"{path}.schedule.expression",
-        )
-        timezone = _validate_timezone(
-            schedule["timezone"],
-            f"{path}.schedule.timezone",
-        )
-        result["scheduler"].append(
-            {
-                "id": _contribution_id(item["id"], f"{path}.id", seen=seen_ids),
-                "title": _text(item["title"], f"{path}.title", maximum=120),
-                "service": service,
-                "operation": operation,
-                "default_enabled": _boolean(
-                    item["default_enabled"],
-                    f"{path}.default_enabled",
-                ),
-                "schedule": {
-                    "kind": "cron",
-                    "expression": expression,
-                    "timezone": timezone,
-                },
-            }
-        )
+        normalized_scheduler["schedule"] = {
+            "kind": "cron",
+            "expression": _validate_cron_expression(
+                schedule["expression"], f"{path}.schedule.expression"
+            ),
+            "timezone": _validate_timezone(schedule["timezone"], f"{path}.schedule.timezone"),
+        }
+        result["scheduler"].append(normalized_scheduler)
 
     for index, raw_item in enumerate(_array(raw["webhook"], "contributes.webhook")):
         path = f"contributes.webhook[{index}]"
@@ -1124,6 +1166,7 @@ class AutomationPluginManifestV2:
                 for item in account_roles
                 if item["required"] is True
             ),
+            resource_roles=resource_role_names,
         )
         storage = _validate_storage(data["storage"])
         capabilities = _validate_capabilities(
@@ -1203,7 +1246,8 @@ class AutomationPluginManifestV2:
     def connector_account_role_for(self, service: str) -> str | None:
         for requirement in self.connector_requirements:
             if requirement["service"] == service:
-                return str(requirement["account_role"])
+                account_role = requirement.get("account_role")
+                return account_role if isinstance(account_role, str) else None
         return None
 
     @property

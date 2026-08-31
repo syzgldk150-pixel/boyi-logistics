@@ -1,0 +1,178 @@
+{
+  "schema_version": 2,
+  "runtime_model": "service_v2",
+  "plugin_id": "sync_arrival_stats_v2",
+  "name": "到货统计 v2",
+  "version": "1.0.0",
+  "description": "以 v1 已验证算法为唯一业务来源的离线候选到货统计 Service v2 包。",
+  "host_api": {
+    "minimum": "2.0.0",
+    "maximum_exclusive": "3.0.0"
+  },
+  "runtime": {
+    "kind": "python_subprocess",
+    "python": "3.10",
+    "mode": "on_demand",
+    "entrypoint": "payload/main.py",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "provides": [
+    {
+      "service": "plugin.sync_arrival_stats_v2.arrival_stats@1",
+      "operations": [
+        {"name": "run", "effect": "external_write"}
+      ]
+    }
+  ],
+  "requires": [
+    {
+      "service": "connector.boyi.arrival_stats_tms@1",
+      "binding_kind": "account",
+      "account_role": "arrival_stats_tms"
+    },
+    {
+      "service": "connector.boyi.arrival_stats_primary_sheet@1",
+      "binding_kind": "resource",
+      "resource_role": "arrival_stats_primary_sheet"
+    },
+    {
+      "service": "connector.boyi.arrival_stats_secondary_sheet@1",
+      "binding_kind": "resource",
+      "resource_role": "arrival_stats_secondary_sheet"
+    },
+    {
+      "service": "connector.boyi.arrival_stats_pending_sheet@1",
+      "binding_kind": "resource",
+      "resource_role": "arrival_stats_pending_sheet"
+    },
+    {
+      "service": "connector.boyi.arrival_stats_archive_sheet@1",
+      "binding_kind": "resource",
+      "resource_role": "arrival_stats_archive_sheet"
+    },
+    {
+      "service": "connector.boyi.arrival_stats_split_pending_sheet@1",
+      "binding_kind": "resource",
+      "resource_role": "arrival_stats_split_pending_sheet"
+    },
+    {
+      "service": "connector.boyi.arrival_stats_projection@1",
+      "binding_kind": "host_internal"
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "service.invoke",
+      "operations": [
+        "arrive_list_read_page",
+        "scan_read_page",
+        "waybill_detail_read",
+        "completed_before",
+        "scan_read",
+        "scan_replace",
+        "scan_cleanup",
+        "waybill_replace",
+        "pending_read",
+        "arrival_replace",
+        "split_pending_refresh",
+        "replace",
+        "add"
+      ],
+      "account_role": null,
+      "resource_role": null
+    }
+  ],
+  "account_roles": [
+    {
+      "role": "arrival_stats_tms",
+      "allowed_systems": ["ronghui"],
+      "required": true
+    }
+  ],
+  "resource_roles": [
+    {
+      "role": "arrival_stats_primary_sheet",
+      "allowed_kinds": ["feishu_sheet"],
+      "required": true
+    },
+    {
+      "role": "arrival_stats_secondary_sheet",
+      "allowed_kinds": ["feishu_sheet"],
+      "required": true
+    },
+    {
+      "role": "arrival_stats_pending_sheet",
+      "allowed_kinds": ["feishu_sheet"],
+      "required": false
+    },
+    {
+      "role": "arrival_stats_archive_sheet",
+      "allowed_kinds": ["feishu_sheet"],
+      "required": true
+    },
+    {
+      "role": "arrival_stats_split_pending_sheet",
+      "allowed_kinds": ["feishu_sheet"],
+      "required": true
+    }
+  ],
+  "contributes": {
+    "console": [
+      {
+        "id": "manual_run",
+        "title": "人工执行到货统计",
+        "service": "plugin.sync_arrival_stats_v2.arrival_stats@1",
+        "operation": "run",
+        "default_enabled": true
+      }
+    ],
+    "scheduler": [
+      {
+        "id": "daily_arrival_stats",
+        "title": "每日到货统计（默认关闭）",
+        "service": "plugin.sync_arrival_stats_v2.arrival_stats@1",
+        "operation": "run",
+        "default_enabled": false
+      }
+    ],
+    "webhook": [],
+    "feishu": [
+      {
+        "id": "arrival_stats_command",
+        "service": "plugin.sync_arrival_stats_v2.arrival_stats@1",
+        "operation": "run",
+        "commands": ["统计到货数据"],
+        "default_enabled": false
+      }
+    ],
+    "events": []
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "refresh_disabled": {"type": "boolean"},
+      "target_date": {"type": "string", "minLength": 10, "maxLength": 10},
+      "scan_window_days": {"type": "integer", "minimum": 1, "maximum": 1},
+      "arrive_list_request_body": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      },
+      "scan_codes_retention_days": {"type": "integer", "minimum": 0, "maximum": 3650},
+      "pending_sheet_disabled": {"type": "boolean"},
+      "missing_limit": {"type": "integer", "minimum": 0, "maximum": 20000},
+      "export_limit": {"type": "integer", "minimum": 0, "maximum": 20000},
+      "child_count_limit": {"type": "integer", "minimum": 0, "maximum": 20000},
+      "archive_snapshot": {"type": "boolean"},
+      "dry_run": {"type": "boolean"}
+    },
+    "required": ["pending_sheet_disabled"]
+  },
+  "storage": {
+    "kv": false,
+    "collections": []
+  }
+}

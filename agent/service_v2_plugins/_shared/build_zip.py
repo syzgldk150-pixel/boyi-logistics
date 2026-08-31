@@ -16,6 +16,11 @@ _SHARED_FILES = {
     "payload/clock_runtime.py": "clock_runtime.py",
     "payload/boyi_plugin_sdk.py": "boyi_plugin_sdk.py",
 }
+_ARRIVAL_SHARED_FILES = {
+    "payload/main.py": "arrival_service_main.py",
+    "payload/boyi_plugin_sdk.py": "boyi_plugin_sdk.py",
+}
+_ARRIVAL_PLUGIN_ID = "sync_arrival_stats_v2"
 _SOURCE_FILES = {
     "manifest.json": "manifest.json",
     "payload/plugin.py": "payload/plugin.py",
@@ -23,10 +28,11 @@ _SOURCE_FILES = {
 _FIXED_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
 
-def _read_manifest(path: Path) -> None:
+def _read_manifest(path: Path) -> dict[str, object]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or value.get("schema_version") != 2 or value.get("runtime_model") != "service_v2":
         raise ValueError("source manifest must declare schema-v2 service_v2")
+    return value
 
 
 def _zip_info(name: str) -> zipfile.ZipInfo:
@@ -46,11 +52,26 @@ def build_plugin_zip(source_directory: Path | str, output_path: Path | str) -> P
         raise FileNotFoundError("plugin source directory does not exist")
     if output.exists() or output.is_symlink():
         raise FileExistsError("output ZIP already exists")
-    _read_manifest(source / "manifest.json")
+    manifest = _read_manifest(source / "manifest.json")
     shared = Path(__file__).resolve().parent
     entries = {package_path: (source / source_path).read_bytes() for package_path, source_path in _SOURCE_FILES.items()}
+    shared_files = _SHARED_FILES
+    if manifest.get("plugin_id") == _ARRIVAL_PLUGIN_ID:
+        shared_files = _ARRIVAL_SHARED_FILES
+        repository_root = source.parents[2]
+        first_party = repository_root / "agent" / "first_party_automation_plugins"
+        entries.update(
+            {
+                "payload/action.py": (
+                    first_party / "sync_arrival_stats" / "payload" / "action.py"
+                ).read_bytes(),
+                "payload/boyi_plugin_result.py": (
+                    first_party / "_runtime" / "result.py"
+                ).read_bytes(),
+            }
+        )
     entries.update(
-        {package_path: (shared / source_path).read_bytes() for package_path, source_path in _SHARED_FILES.items()}
+        {package_path: (shared / source_path).read_bytes() for package_path, source_path in shared_files.items()}
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(

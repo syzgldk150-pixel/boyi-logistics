@@ -82,6 +82,9 @@ from agent.automation_plugins.management_repository import (
     MySQLAutomationPluginManagementRepository,
 )
 from agent.automation_plugins.migration import PluginMigrationRuntimeCoordinator
+from agent.automation_plugins.migration_entrypoint_ownership import (
+    MigrationEntrypointOwnershipResolver,
+)
 from agent.automation_plugins.models import (
     BootstrapResult,
     PluginRuntimeModel,
@@ -2428,6 +2431,7 @@ class ProductionAutomationPluginRuntime:
     broker: LocalCoreAutomationBroker
     execution_router: PluginExecutionRouter
     migration_runtime: PluginMigrationRuntimeCoordinator
+    migration_entrypoint_ownership: MigrationEntrypointOwnershipResolver
     target_service: MySQLRuntimeTargetService
     storage: FilesystemPluginStorage
     environments: LockedVirtualEnvironmentBuilder
@@ -2756,6 +2760,9 @@ def build_production_automation_plugin_runtime(
         )
     scoped_broker_handlers = {key: handler for key, handler in broker_handlers.items() if key in release_handler_keys}
     runtime_projection_lock = RLock()
+    migration_entrypoint_ownership = MigrationEntrypointOwnershipResolver(
+        repository
+    )
     service_registry = ServiceRegistry(
         lock=runtime_projection_lock,
         connector_registry=connector_registry,
@@ -2763,6 +2770,9 @@ def build_production_automation_plugin_runtime(
     contribution_registry = ManagedContributionRegistry(
         lock=runtime_projection_lock,
         reserved_feishu_command=reserved_feishu_command,
+        migration_reserved_feishu_target=(
+            migration_entrypoint_ownership.allow_reserved_feishu_target
+        ),
     )
     service_executor = ProductionServiceV2ProviderExecutor(
         service_registry=service_registry,
@@ -2880,6 +2890,7 @@ def build_production_automation_plugin_runtime(
         broker=broker,
         execution_router=execution_router,
         migration_runtime=migration_runtime,
+        migration_entrypoint_ownership=migration_entrypoint_ownership,
         target_service=target_service,
         storage=storage,
         environments=environments,

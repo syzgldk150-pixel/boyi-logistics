@@ -1830,6 +1830,79 @@ def test_disabled_project_schedule_keeps_manifest_default_as_audited_declaration
     assert schedule_plan.payload["reason_detail"] == "PROJECT_SCHEDULE_DISABLED"
 
 
+def test_default_disabled_scheduler_can_omit_a_static_manifest_clock() -> None:
+    contributions = copy.deepcopy(_contributions())
+    contributions["scheduler"][0].pop("schedule")
+    snapshot = _snapshot(
+        schedule={"kind": "none", "times": [], "enabled": False},
+        contributions=contributions,
+        enabled_entrypoints=("daily_run",),
+    )
+
+    schedule_plan = next(
+        plan
+        for plan in _managed_plans(snapshot)
+        if plan.payload["contribution_kind"] == "scheduler"
+    )
+
+    assert "schedule" not in schedule_plan.payload["declaration"]
+    assert schedule_plan.payload["project_schedule"] == {
+        "kind": "none",
+        "times": [],
+        "enabled": False,
+    }
+    assert schedule_plan.payload["backend_status"] == "DISABLED"
+
+
+def test_enabled_scheduler_uses_only_the_real_project_schedule_without_static_cron() -> None:
+    contributions = copy.deepcopy(_contributions())
+    contributions["scheduler"][0].pop("schedule")
+    source_schedule = {
+        "kind": "daily_times",
+        "times": ["18:30"],
+        "enabled": True,
+    }
+    snapshot = _snapshot(
+        schedule=source_schedule,
+        contributions=contributions,
+        enabled_entrypoints=("daily_run",),
+    )
+
+    schedule_plan = next(
+        plan
+        for plan in _managed_plans(snapshot)
+        if plan.payload["contribution_kind"] == "scheduler"
+    )
+
+    assert "schedule" not in schedule_plan.payload["declaration"]
+    assert schedule_plan.payload["project_schedule"] == source_schedule
+    assert schedule_plan.payload["backend_status"] == "READY"
+
+
+@pytest.mark.parametrize(
+    "source_schedule",
+    (
+        {"kind": "daily_times", "times": [], "enabled": True},
+        {"kind": "daily_times", "times": ["25:00"], "enabled": True},
+        {"kind": "daily_times", "times": ["18:30", "18:30"], "enabled": True},
+        {"kind": "startup", "times": ["18:30"], "enabled": True},
+    ),
+)
+def test_enabled_scheduler_rejects_an_invalid_real_project_schedule(
+    source_schedule: dict[str, object],
+) -> None:
+    contributions = copy.deepcopy(_contributions())
+    contributions["scheduler"][0].pop("schedule")
+    snapshot = _snapshot(
+        schedule=source_schedule,
+        contributions=contributions,
+        enabled_entrypoints=("daily_run",),
+    )
+
+    with pytest.raises(PluginConflictError, match="project scheduler is invalid"):
+        _managed_plans(snapshot)
+
+
 def test_applied_contribution_effects_restore_committed_state_after_restart() -> None:
     snapshot = _snapshot(enabled_entrypoints=("run_now", "daily_run"))
     effects = tuple(
@@ -2231,3 +2304,31 @@ def test_generation_commit_rejects_an_unavailable_scheduler_timezone() -> None:
         )
     assert getattr(exc_info.value, "code", None) == "CAPABILITY_UNAVAILABLE"
     assert driver.contribution_registry.snapshot() == ()
+
+
+def test_generation_commit_accepts_disabled_scheduleless_declaration_only_with_real_schedule_on_enable() -> None:
+    contributions = _contributions()
+    scheduler = contributions["scheduler"][0]
+    scheduler["default_enabled"] = False
+    scheduler.pop("schedule")
+    snapshot = {"runtime_model": "SERVICE_V2", "plugin_api": "2.0.0"}
+
+    assert _scheduler_contribution_binding(
+        snapshot=snapshot,
+        execution_metadata={"contributions": contributions},
+        enabled_entrypoints=("run_now",),
+        schedule_expressions=(),
+    ) == ("daily_run", False)
+    with pytest.raises(Exception, match="explicit project schedule"):
+        _scheduler_contribution_binding(
+            snapshot=snapshot,
+            execution_metadata={"contributions": contributions},
+            enabled_entrypoints=("daily_run",),
+            schedule_expressions=(),
+        )
+    assert _scheduler_contribution_binding(
+        snapshot=snapshot,
+        execution_metadata={"contributions": contributions},
+        enabled_entrypoints=("daily_run",),
+        schedule_expressions=("0 9 * * *",),
+    ) == ("daily_run", True)

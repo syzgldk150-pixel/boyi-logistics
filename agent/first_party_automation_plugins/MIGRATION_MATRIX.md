@@ -18,9 +18,34 @@ arguments plus a short-lived broker capability.
   generation side channel and is added by `ResultVerifier`, never by payload
   JSON.
 - `PAYLOAD_DONE` means package orchestration and evidence are extracted and
-  tested. It is not production-ready until every listed closed primitive has a
-  production handler. `BLOCKED` packages fail closed and never invoke the old
-  whole-tool executor.
+tested. It is not production-ready until every listed closed primitive has a
+production handler. `BLOCKED` packages fail closed and never invoke the old
+whole-tool executor.
+
+## TASK-MIG-001 Service v2 migration status
+
+The existing `sync_arrival_stats` row remains the ACTION_V1 extraction record.
+The independent v2 package is
+`agent/service_v2_plugins/sync_arrival_stats_v2/`; it embeds the v1
+`payload/action.py` and shared result contract byte-for-byte and does not
+import or fall back to the v1 runtime. Its offline fixture checks only a
+representative payload, stable v1/v2 projection parity and primitive order; it
+is not a formal capacity or throughput proof.
+
+The v2 package uses explicit `account` (required), `resource` (required or
+optional), and `host_internal` Connector bindings. Account/resource identities
+remain Host-side and never enter plugin JSON. Real TMS reads, Feishu/resource
+writes, internal projection writes, independent fresh post-write verification,
+production descriptors/handlers, installation, entrypoint ownership cutover
+and deployment remain `PRODUCTION_GATED`. A source Scheduler that is already
+enabled is explicitly `PLUGIN_MIGRATION_SCHEDULER_PRODUCTION_GATED`; the
+arrival source has no Scheduler and its v2 target stays disabled with no
+schedule. Migration ownership is v1 in `TESTING/READY`, v2 in
+`CUTOVER/COMPLETED`, and v1 again in `ROLLED_BACK`; transition, corrupt or
+historically ambiguous ownership fails closed. After `COMPLETED`, a new pair
+is not created for the same source; later v2 generation upgrades reuse v2
+ownership. Enabled v1 Webhook and route resources are not silently migrated or
+mapped to business resources.
 
 ## Inventory
 
