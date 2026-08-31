@@ -301,7 +301,8 @@ updated: 2026-09-01
 
 ## 2026-09-01 审查问题修复
 
-- 状态：`IN_PROGRESS`；只有本节新完整门禁全部通过后才能重新记录 `COMPLETE_OFFLINE`。
+- 状态：`COMPLETE_OFFLINE`。
+- 完成时间：`2026-09-01T03:48:35+08:00`。
 - 范围：仅离线修复质量门禁、Harness、Webhook/Event 进程 ingress、tracking Connector 开发 CLI 和状态文档。未部署、未连接生产数据库、未访问真实 TMS/飞书数据、未执行真实写入、未安装生产插件、未合并 `main`。
 
 | Checkpoint | 状态 | Commit | 实际能力 |
@@ -310,6 +311,11 @@ updated: 2026-09-01
 | REVIEW-FIX-002 Harness | `DONE_OFFLINE` | `dc3f9462828b39282837a19524e59e2ebfca7793` | canary 成功时 `READY/OFFLINE_RESTRICTED`；只允许唯一精确标题的零参数动态只读工具。真实 LLM/业务读网关仍为 `PRODUCTION_GATED`。 |
 | REVIEW-FIX-003 Webhook/Event | `DONE_OFFLINE` | `f947749a4ca65546fa8a4eb77a660b1bc793d800` | `READY` 只表示已绑定的可信进程内 ingress；公网验签、外部事件源与可靠投递仍为 `PRODUCTION_GATED`。 |
 | REVIEW-FIX-004 Connector | `DONE_OFFLINE` | `ed4099a96d308f15dd4358b441b1981ac888ef71` | `offline_contract=COMPLETE`、`offline_runtime=READY`、`production_runtime=PRODUCTION_GATED`；仅显式 `connector-test` fixture 命令可调用。 |
-| REVIEW-FIX-005 状态与全量门禁 | `IN_PROGRESS` | 待提交 | 正在执行完整 compile、Ruff、root/Agent/Console pytest、文档、hygiene、导入边界、内部 API、工具注册表、JavaScript 语法与 `origin/main...HEAD` diff 检查。 |
+| REVIEW-FIX-005 状态与全量门禁 | `DONE_OFFLINE` | `f0eb3f4` … `9e29ffd` | 全部 Python 行数白名单已取消；CI 与本地补充门禁全部通过，状态文档已按实际能力收敛。 |
 
 - 当前 Harness 产品离线链不需要 LLM API Key；可选真实模型 smoke 只供人工验收，不影响本次离线完成状态。
+- 能力结论：Harness 在真实 Bubblewrap + `prlimit` canary 成功时为 `READY/OFFLINE_RESTRICTED`，真实 LLM 与业务读网关仍为 `PRODUCTION_GATED`；Webhook/Event 的 `READY` 只表示持久注册与当前进程可信 `ServiceV2ManagedIngress` 绑定同时有效，未绑定返回 `PROJECT_RUNTIME_PROJECTION_STALE`，公网入口、外部事件源与可靠投递仍为 `PRODUCTION_GATED`；Connector 保持 `offline_contract=COMPLETE`、`offline_runtime=READY`、`production_runtime=PRODUCTION_GATED`。
+- 完整代码门禁锚点：提交 `9e29ffd9e102acc0002dcebb7ee4948e3178dfd1` 的 [GitHub Actions run 33431830312](https://github.com/syzgldk150-pixel/boyi-logistics/actions/runs/33431830312) 全部成功；Root `2586 passed, 5 skipped, 391 subtests passed`，Agent `1148 passed, 7 warnings, 214 subtests passed`，Console `618 passed, 213 subtests passed`，延后非门禁审计 `11 passed`。Root 的 Python 3.10 子进程 transport 回收警告已消失。
+- 静态门禁：同一 CI 的 compile、Ruff、工具注册表、运行时导入边界、repository hygiene、文档合同与内部 API 合同全部通过；本地再次实际验证 77 个受跟踪 Markdown、三组 AGENTS/CLAUDE 镜像、17 个受跟踪 JavaScript 语法、工具注册表 40 项，以及 `git diff --check origin/main...HEAD`，结果均通过。
+- 生产边界：全程未部署 ECS、未连接或修改生产数据库、未访问或修改真实 TMS/飞书业务数据、未执行真实扫描/打卡/问题件写入、未安装生产插件、未合并 `main`，也未读取或输出凭据。
+- 恢复说明：本账本提交后的 Draft PR 分支远端 CI 作为最终交付校验。若无新的明确生产授权，本轮任务终止于 `COMPLETE_OFFLINE`，不得自动越过任何 `PRODUCTION_GATED` 边界。

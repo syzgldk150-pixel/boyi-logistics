@@ -194,7 +194,8 @@ Console/Feishu contribution 可选择声明 `selection_preview_operation`；它�
 保持原子，任何同代或跨项目冲突都不能留下部分 reservation。无网络 Dispatcher 只接收已验证 method、route 和
 稳定 `source_event_id`；项目、service、operation、业务参数、账号、资源和 Actor 都只能由 exact Registry identity
 及签名项目合同派生，body/query/headers 不能跨越入口。Policy 在创建 Command 前与同一接受 UOW 内再次核对
-Registry，换代或撤销竞态必须关闭失败。`managed_webhook_router READY` 只表示该可注入无网络 backend 已可离线调用；
+Registry，换代或撤销竞态必须关闭失败。`managed_webhook_router READY` 只表示持久注册与当前进程可信 ingress
+绑定同时有效的无网络 backend 已可离线调用；未绑定固定返回 `PROJECT_RUNTIME_PROJECTION_STALE`；
 真实公网 namespace、per-route token/signature 与轮换、Nginx/反代、真实流量/replay、跨进程全局仲裁、部署及
 生产等价故障注入均为 `PRODUCTION_GATED`。此机制不改变既有 `ACTION_V1` Webhook。
 
@@ -204,7 +205,8 @@ Non-durable Event 使用全局大小写敏感的 exact event name；整代 prepa
 Dispatcher 只接受已验证 event name 与稳定 `source_event_id`，调用面不携带 payload、payload version 或任何业务参数；项目、service、
 operation、账号、资源、Actor 与调用参数只能由 exact Registry identity 和签名项目合同派生。Policy 在创建
 Command 前与同一接受 UOW 内再次核对 Registry；成功接受后 Command 才持久化，接受前事件可能丢失。
-该 `READY` 只表示可注入的离线 best-effort backend，不表示生产入口所有权或可靠投递。真实 event source、
+该 `READY` 只表示持久注册与当前进程可信 ingress 绑定同时有效的离线 best-effort backend；未绑定固定返回
+`PROJECT_RUNTIME_PROJECTION_STALE`，且不表示生产入口所有权或可靠投递。真实 event source、
 payload/version 合同、Outbox fan-out、ACK/retry/dead-letter/replay、跨进程仲裁、数据库迁移、部署和生产故障
 注入均为 `PRODUCTION_GATED`。既有 `shared/runtime_events.py`、事务 Outbox、Host `event.publish`、`ACTION_V1`、
 Webhook 和 Feishu 保持不变，自定义插件前端也未开放。
