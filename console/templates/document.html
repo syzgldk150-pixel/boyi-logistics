@@ -109,6 +109,19 @@
   .manual-feedback[hidden] { display: none; }
   .manual-feedback.is-error { border-bottom-color: #fecaca; background: #fef2f2; color: #b91c1c; }
   .manual-feedback.is-success { border-bottom-color: #bbf7d0; background: #ecfdf5; color: #047857; }
+  .waybill-extension-bar {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 8px; min-height: 42px;
+    padding: 6px var(--form-x-pad); overflow-x: auto; border-bottom: 1px solid var(--line); background: #fff;
+  }
+  .waybill-extension-label { color: var(--muted); font-size: .72rem; font-weight: 900; white-space: nowrap; }
+  .waybill-extension-validator {
+    display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 0 9px;
+    border: 1px solid #dbeafe; border-radius: 999px; background: #eff6ff; color: #1d4ed8;
+    font-size: .74rem; font-weight: 850; white-space: nowrap;
+  }
+  .waybill-extension-validator .feather { width: 13px; height: 13px; }
+  .waybill-extension-action { min-height: 30px; height: 30px; padding: 0 11px; font-size: .76rem; white-space: nowrap; }
+  .waybill-extension-unavailable { color: #b45309; font-size: .76rem; font-weight: 800; white-space: nowrap; }
   .mode-switch { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
   .mode-switch button, .mode-switch a {
     display: inline-flex; align-items: center; gap: 5px; min-height: 26px; padding: 0 8px;
@@ -635,6 +648,33 @@
       </div>
     </div>
     <div class="manual-feedback" data-manual-feedback aria-live="polite" hidden></div>
+
+    {% if is_boyi_frame and ((waybill_entry_extension_actions|default([])) or (waybill_entry_extension_validators|default([])) or (waybill_entry_extensions_unavailable|default(false))) %}
+    <div class="waybill-extension-bar" data-waybill-entry-extensions aria-label="录单扩展能力">
+      <span class="waybill-extension-label">扩展能力</span>
+      {% if waybill_entry_extensions_unavailable|default(false) %}
+      <span class="waybill-extension-unavailable" role="status">扩展展示暂不可用，保存时将重新校验</span>
+      {% else %}
+        {% for validator in waybill_entry_extension_validators|default([]) %}
+        <span
+          class="waybill-extension-validator"
+          data-waybill-extension-validator
+          data-extension-slot="{{ validator.slot }}"
+          data-extension-handle="{{ validator.handle }}"
+        ><i data-feather="shield"></i>{{ validator.title }}</span>
+        {% endfor %}
+        {% for action in waybill_entry_extension_actions|default([]) %}
+        <button
+          type="button"
+          class="ghost-btn waybill-extension-action"
+          data-waybill-extension-action
+          data-extension-slot="{{ action.slot }}"
+          data-extension-handle="{{ action.handle }}"
+        ><i data-feather="zap"></i>{{ action.title }}</button>
+        {% endfor %}
+      {% endif %}
+    </div>
+    {% endif %}
 
     <form id="manual-waybill-form" action="/waybills/manual" method="post" class="manual-form" data-manual-form>
       {% if is_boyi_frame %}
@@ -1507,6 +1547,9 @@
     const addressInput = document.querySelector("[data-address-input]");
     const manualForm = document.querySelector("[data-manual-form]");
     const manualFeedback = document.querySelector("[data-manual-feedback]");
+    const waybillEntryExtensionFields = {{ waybill_entry_extension_fields | default([]) | tojson }};
+    const waybillEntryExtensionActions = Array.from(document.querySelectorAll("[data-waybill-extension-action]"));
+    const waybillEntryExtensionEndpointRoot = "/waybill-entry/extensions";
     const addressParserDialog = document.querySelector("[data-address-parser-dialog]");
     const addressParserInput = document.querySelector("[data-address-parser-input]");
     const addressParserTrigger = document.querySelector("[data-address-parser-trigger]");
@@ -1606,12 +1649,6 @@
       firstMissing?.focus({ preventScroll: true });
       return false;
     };
-    manualForm?.addEventListener("submit", (event) => {
-      syncWeightVolumeField();
-      if (validateManualRequiredFields()) return;
-      event.preventDefault();
-      event.stopPropagation();
-    });
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
       "&": "&amp;",
       "<": "&lt;",
@@ -1636,6 +1673,74 @@
       input.addEventListener("change", syncWeightVolumeField);
     });
     syncWeightVolumeField();
+    const createWaybillEntryExtensionRequestId = () => {
+      if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+      throw new Error("浏览器无法生成安全请求标识");
+    };
+    const readWaybillEntryExtensionField = (fieldName) => {
+      const field = document.getElementById(`field_${fieldName}`);
+      if (!(field instanceof HTMLInputElement || field instanceof HTMLSelectElement || field instanceof HTMLTextAreaElement)) {
+        throw new Error("录单扩展字段不可用，本次操作已停止");
+      }
+      return field.value;
+    };
+    const readWaybillEntryExtensionDraft = () => Object.fromEntries(
+      waybillEntryExtensionFields.map((fieldName) => [fieldName, readWaybillEntryExtensionField(fieldName)])
+    );
+    const waybillEntryExtensionEndpoint = (element) => {
+      const slot = String(element?.dataset.extensionSlot || "");
+      const handle = String(element?.dataset.extensionHandle || "");
+      return `${waybillEntryExtensionEndpointRoot}/${encodeURIComponent(slot)}/${encodeURIComponent(handle)}/invoke`;
+    };
+    const invokeWaybillEntryExtension = async (element, waybill) => {
+      const requestId = createWaybillEntryExtensionRequestId();
+      const response = await fetch(waybillEntryExtensionEndpoint(element), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Browser-Request-UUID": requestId,
+        },
+        body: JSON.stringify({
+          request_id: requestId,
+          waybill,
+        }),
+      });
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+      if (!response.ok || payload?.ok !== true || !payload.data) {
+        throw new Error("录单扩展暂不可用，本次操作已停止");
+      }
+      return payload.data;
+    };
+    waybillEntryExtensionActions.forEach((button) => {
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        setManualFeedback("正在执行录单扩展动作…", "info");
+        try {
+          const result = await invokeWaybillEntryExtension(button, readWaybillEntryExtensionDraft());
+          if (result?.kind !== "action" || !result.receipt) {
+            throw new Error("录单扩展返回无效结果");
+          }
+          const title = String(button.textContent || "扩展动作").trim();
+          setManualFeedback(`${title}已提交，可在事项中心查看进度。`, "success");
+        } catch (error) {
+          setManualFeedback(error instanceof Error ? error.message : "录单扩展动作执行失败", "error");
+        } finally {
+          button.disabled = false;
+        }
+      });
+    });
+    manualForm?.addEventListener("submit", (event) => {
+      syncWeightVolumeField();
+      if (!validateManualRequiredFields()) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    });
     const manualWaybillPreviewNo = () => {
       const input = document.getElementById("field_waybill_no");
       const value = String(input?.value || "").trim();

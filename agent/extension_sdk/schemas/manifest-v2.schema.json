@@ -198,6 +198,12 @@
           "items": {
             "$ref": "#/$defs/harness_contribution"
           }
+        },
+        "module_slots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/module_slot_contribution"
+          }
         }
       }
     },
@@ -611,6 +617,43 @@
             "read",
             "compute"
           ]
+        }
+      }
+    },
+    "module_slot_contribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "slot",
+        "title",
+        "service",
+        "operation",
+        "default_enabled"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/role"
+        },
+        "slot": {
+          "enum": [
+            "waybill_entry.actions",
+            "waybill_entry.validators"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "service": {
+          "$ref": "#/$defs/service"
+        },
+        "operation": {
+          "$ref": "#/$defs/identifier"
+        },
+        "default_enabled": {
+          "type": "boolean"
         }
       }
     },

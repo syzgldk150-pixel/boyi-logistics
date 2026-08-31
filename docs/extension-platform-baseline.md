@@ -521,11 +521,18 @@ module_slots
 
 ## 7.5 固定模块扩展槽位
 
-第一批建议只实现少量明确槽位：
+首期只实现以下两个 exact 槽位：
 
 ```text
 waybill_entry.actions
 waybill_entry.validators
+```
+
+它们只挂载在本地博益手工录单 frame，由 Host 固定渲染按钮和校验反馈；插件不能提供 HTML、JavaScript 或 CSS。Provider operation 只允许 `read/compute`，动作浏览器调用与保存边界的服务器校验都只传递 shared 定义的闭合运单草稿，不提交项目、服务、操作、账号、资源、Actor 或角色。active validator 必须在核心服务器保存边界按请求前后完全一致的当前集合逐一执行，返回 invalid、调用失败或集合漂移均阻止本次；停用/卸载后稳定 active 集合为空，原生 `/waybills/manual` 保存链继续工作。
+
+以下仅是后续候选，本首期不实现：
+
+```text
 waybill_entry.enrichers
 customer_service.actions
 customer_service.classifiers
@@ -1053,10 +1060,14 @@ waybill_entry.validators
 
 目标：
 
-- 插件安装后录单页出现宿主渲染的动作或校验能力；
-- 卸载后能力消失，录单核心不受影响；
+- 插件安装后仅在 `/ocr/boyi/frame` 出现宿主渲染的动作或校验能力，不进入韵达/融辉跨域原页；
+- GET 只投影 `{slot,handle,title}`，动作和校验的浏览器 POST 只含 `{request_id,waybill}`，并要求同源、签名管理员 Session 和一致的 canonical browser UUID；
+- active validator 在原 `/waybills/manual` 保存前逐一运行，invalid、超时、调用失败或响应漂移都显式阻止本次保存；
+- 停用或卸载后 active 集合为空，能力消失且录单核心原生保存链不受影响；
 - 不允许自定义 HTML/JS/CSS；
-- 不允许访问 Console DOM、Cookie 或内部接口。
+- 不允许访问 Console DOM、Cookie 或内部接口；
+- Provider effect 只允许 `read/compute`，不执行真实 TMS/飞书/生产数据库或外部写；
+- 复用既有 generation/Registry/Policy/Command/Run，不新增数据库迁移，真实写、生产数据库和部署继续 gated。
 
 ## TASK-EXT-011：Connector Registry
 

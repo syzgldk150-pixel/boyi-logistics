@@ -166,6 +166,12 @@ def _service_v2_inspection() -> dict:
                 "title": "每日运行",
                 "default_enabled": True,
             },
+            {
+                "id": "waybill_check",
+                "kind": "module_slots",
+                "title": "录单校验",
+                "default_enabled": True,
+            },
         ],
         "scheduling": {
             "supported": True,
@@ -589,7 +595,7 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertNotIn("display: none", projected_text)
         self.assertNotIn("unrelated-scheduler", projected_text)
 
-    def test_service_v2_non_console_projections_are_active_but_not_browser_invocable(
+    def test_service_v2_non_console_projections_are_active_but_not_general_browser_invocable(
         self,
     ):
         payload = _catalog_payload()
@@ -601,18 +607,21 @@ class AutomationPluginCatalogTests(unittest.TestCase):
                 "message.report",
                 "hooks.receive",
                 "events.orders",
+                "waybill.validate",
             ],
             "entrypoint_kinds": {
                 "manual.sync": "console",
                 "message.report": "feishu",
                 "hooks.receive": "webhook",
                 "events.orders": "events",
+                "waybill.validate": "module_slots",
             },
             "enabled_entrypoints": [
                 "manual.sync",
                 "message.report",
                 "hooks.receive",
                 "events.orders",
+                "waybill.validate",
             ],
             "target_generation": 9,
             "committed_generation": 9,
@@ -646,6 +655,13 @@ class AutomationPluginCatalogTests(unittest.TestCase):
                     "phase": "COMMITTED",
                     "backend_status": "READY",
                 },
+                {
+                    "contribution_id": "waybill.validate",
+                    "contribution_kind": "module_slots",
+                    "generation": 9,
+                    "phase": "COMMITTED",
+                    "backend_status": "READY",
+                },
             ],
         }
         payload["plugins"][0].update(metadata)
@@ -659,7 +675,7 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertEqual(["manual.sync"], instance["console_entrypoints"])
         self.assertEqual(["manual.sync"], instance["enabled_console_entrypoints"])
         self.assertEqual(
-            ["console", "events", "feishu", "webhook"],
+            ["console", "events", "feishu", "module_slots", "webhook"],
             instance["enabled_entrypoint_kinds"],
         )
         self.assertNotIn("active_contributions", instance)
@@ -1742,6 +1758,12 @@ class AutomationPluginHandlerTests(unittest.TestCase):
             [(method, endpoint) for method, endpoint, _kwargs in catalog_calls],
         )
         result = captured["payload"]["data"]
+        module_slot = next(
+            item for item in result["contributions"] if item["kind"] == "module_slots"
+        )
+        self.assertEqual(
+            {"id", "kind", "title", "default_enabled"}, set(module_slot)
+        )
         self.assertEqual(
             {
                 "account_id": "acct-east",

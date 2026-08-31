@@ -6,7 +6,14 @@
   const SAFE_IDENTIFIER = /^[A-Za-z][A-Za-z0-9_.:-]{0,159}$/;
   const SAFE_BINDING_ID = /^[A-Za-z0-9_.:@/-]{1,160}$/;
   const SAFE_ENTRYPOINT = /^[a-z][a-z0-9_.-]{0,127}$/;
-  const SAFE_KINDS = new Set(["console", "scheduler", "webhook", "feishu", "events"]);
+  const SAFE_KINDS = new Set([
+    "console",
+    "scheduler",
+    "webhook",
+    "feishu",
+    "events",
+    "module_slots",
+  ]);
   const SAFE_CONFIG_TYPES = new Set(["string", "integer", "number", "boolean", "array"]);
   const SAFE_SCHEMA_KEYSETS = {
     object: new Set(["type", "additionalProperties", "properties", "required", "title", "description"]),

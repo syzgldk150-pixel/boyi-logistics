@@ -73,7 +73,14 @@ def normalize_plugin_active_contributions(
         if (
             not AUTOMATION_PLUGIN_V2_ENTRYPOINT_ID_RE.fullmatch(contribution_id)
             or contribution_kind
-            not in {"console", "scheduler", "webhook", "feishu", "events"}
+            not in {
+                "console",
+                "scheduler",
+                "webhook",
+                "feishu",
+                "events",
+                "module_slots",
+            }
             or isinstance(generation, bool)
             or not isinstance(generation, int)
             or generation < 1

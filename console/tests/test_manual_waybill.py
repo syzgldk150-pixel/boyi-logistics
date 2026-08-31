@@ -186,6 +186,10 @@ class ManualWaybillRouteTests(unittest.TestCase):
 
         app._parse_urlencoded_form = parse_form.__get__(app, LocalDocFlowApp)
         app._redirect_with_message = redirect.__get__(app, LocalDocFlowApp)
+        app._validate_active_waybill_entry_extensions = lambda _handler, _values: (
+            True,
+            "",
+        )
 
         app._handle_manual_waybill(SimpleNamespace())
 
@@ -210,6 +214,10 @@ class ManualWaybillRouteTests(unittest.TestCase):
 
         app._parse_urlencoded_form = parse_form.__get__(app, LocalDocFlowApp)
         app._redirect_with_message = redirect.__get__(app, LocalDocFlowApp)
+        app._validate_active_waybill_entry_extensions = lambda _handler, _values: (
+            True,
+            "",
+        )
 
         app._handle_manual_waybill(SimpleNamespace())
 
@@ -236,6 +244,10 @@ class ManualWaybillRouteTests(unittest.TestCase):
 
         app._parse_urlencoded_form = parse_form.__get__(app, LocalDocFlowApp)
         app._redirect_with_message = redirect.__get__(app, LocalDocFlowApp)
+        app._validate_active_waybill_entry_extensions = lambda _handler, _values: (
+            True,
+            "",
+        )
 
         app._handle_manual_waybill(SimpleNamespace())
 

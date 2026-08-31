@@ -29,6 +29,7 @@ from agent.automation_plugins.service_v2_contract import (
     SYSTEM_CAPABILITY_ROLE,
     ServiceV2ProjectContract,
 )
+from shared.waybill_entry_extensions import normalize_waybill_entry_slot
 
 
 PERMISSION_REPORT_SCHEMA = "service-v2-project-permissions/1"
@@ -42,6 +43,7 @@ _CONTRIBUTION_KINDS = (
     "feishu",
     "events",
     "harness",
+    "module_slots",
 )
 _MANIFEST_SECTIONS = (
     "schema_version",
@@ -271,6 +273,20 @@ def _contribution_rows(
                 raise PluginManifestError(
                     "harness contribution effect does not match its Provider operation"
                 )
+            if kind == "module_slots":
+                try:
+                    normalize_waybill_entry_slot(raw.get("slot"))
+                except ValueError as exc:
+                    raise PluginManifestError(
+                        "module-slot contribution slot is invalid"
+                    ) from exc
+                if invocation.get("effect") not in {
+                    CapabilityEffect.READ.value,
+                    CapabilityEffect.COMPUTE.value,
+                }:
+                    raise PluginManifestError(
+                        "module-slot contribution Provider effect is not read-only"
+                    )
             rows.append(
                 {
                     "kind": kind,

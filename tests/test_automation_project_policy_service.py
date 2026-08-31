@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest import TestCase
 
 from agent.automation_plugins.errors import PluginConflictError
+from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.orchestration.automation_project_policy_service import (
     AutomationProjectPolicyService,
 )
@@ -30,6 +32,10 @@ from shared.automation_project_authorization import (
 )
 from shared.account_execution_locks import AccountExecutionLockUnavailable
 from shared.orchestration_repository import InvalidStateError
+from shared.waybill_entry_extensions import (
+    WAYBILL_ENTRY_DRAFT_FIELDS,
+    WAYBILL_ENTRY_DYNAMIC_RESOLVER_ID,
+)
 
 
 AUTOMATION_ID = "instance-one"
@@ -498,6 +504,37 @@ class _ContributionRegistry:
         )
 
 
+class _ModuleSlotRegistry:
+    def __init__(self, *, fail_after_first: bool = False) -> None:
+        self.fail_after_first = fail_after_first
+        self.calls: list[dict[str, str]] = []
+        self.declaration = {
+            "id": "validate_waybill",
+            "slot": "waybill_entry.validators",
+            "title": "Validate waybill",
+            "service": "plugin.waybill.validator@1",
+            "operation": "validate",
+            "default_enabled": True,
+        }
+
+    def resolve_active_module_slot(self, *, slot: str, handle: str) -> SimpleNamespace:
+        self.calls.append({"slot": slot, "handle": handle})
+        if self.fail_after_first and len(self.calls) > 1:
+            raise PluginConflictError("synthetic generation switch", code="RUNTIME_PROJECTION_STALE")
+        return SimpleNamespace(
+            automation_id=AUTOMATION_ID,
+            generation=1,
+            contribution_id="validate_waybill",
+            contribution_kind="module_slots",
+            slot=slot,
+            handle=handle,
+            declaration_sha256=hashlib.sha256(canonical_json_bytes(self.declaration)).hexdigest(),
+            service="plugin.waybill.validator@1",
+            operation="validate",
+            declaration=dict(self.declaration),
+        )
+
+
 class AutomationProjectPolicyServiceTests(TestCase):
     def setUp(self) -> None:
         self.repository = _Repository()
@@ -609,6 +646,30 @@ class AutomationProjectPolicyServiceTests(TestCase):
                 )
             },
             allowed_entrypoints=frozenset({"events"}),
+        )
+
+    def _set_service_v2_module_slot_contract(self) -> None:
+        self.entry.runtime_model = "SERVICE_V2"
+        self.entry.invocation_contracts = {
+            "validate_waybill": {
+                "contribution_kind": "module_slots",
+                "service": "plugin.waybill.validator@1",
+                "operation": "validate",
+                "dynamic_resolvers": {"waybill": WAYBILL_ENTRY_DYNAMIC_RESOLVER_ID},
+            }
+        }
+        self.contract = replace(
+            self.contract,
+            invocation_contracts={
+                "validate_waybill": InvocationArgumentContract(
+                    contract_id="validate_waybill",
+                    entrypoint="module_slots",
+                    expected_arguments={"mode": "saved"},
+                    dynamic_argument_resolvers={"waybill": WAYBILL_ENTRY_DYNAMIC_RESOLVER_ID},
+                    contribution_id="validate_waybill",
+                )
+            },
+            allowed_entrypoints=frozenset({"module_slots"}),
         )
 
     @staticmethod
@@ -1084,6 +1145,89 @@ class AutomationProjectPolicyServiceTests(TestCase):
 
         self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
         self.assertEqual(2, len(registry.calls))
+        self.assertIsNone(self.gateway.command)
+
+    def test_service_v2_module_slot_rechecks_exact_handle_in_uow_guard(self):
+        self._set_service_v2_module_slot_contract()
+        registry = _ModuleSlotRegistry()
+        service = self._service_with_contribution_registry(registry)
+        service._dynamic_resolver = (  # type: ignore[method-assign]
+            lambda resolver_id, field_name, context: (
+                context["dynamic_inputs"][field_name] if resolver_id == WAYBILL_ENTRY_DYNAMIC_RESOLVER_ID else None
+            )
+        )
+        waybill = {field: "" for field in WAYBILL_ENTRY_DRAFT_FIELDS}
+
+        receipt = service.invoke_trusted(
+            AUTOMATION_ID,
+            entrypoint=AutomationEntrypoint.MODULE_SLOTS,
+            request_id="11111111-1111-4111-8111-111111111111",
+            actor=_admin(),
+            trusted_context={
+                "module_slot": {
+                    "slot": "waybill_entry.validators",
+                    "handle": "a" * 64,
+                },
+                "dynamic_inputs": {"waybill": waybill},
+            },
+            expected_automation_generation=1,
+            contribution_id="validate_waybill",
+        )
+
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual(
+            [
+                {"slot": "waybill_entry.validators", "handle": "a" * 64},
+                {"slot": "waybill_entry.validators", "handle": "a" * 64},
+            ],
+            registry.calls,
+        )
+        self.assertEqual(waybill, self.gateway.command.parameters["arguments"]["waybill"])
+
+    def test_service_v2_module_slot_generation_switch_fails_before_acceptance(self):
+        self._set_service_v2_module_slot_contract()
+        registry = _ModuleSlotRegistry(fail_after_first=True)
+        service = self._service_with_contribution_registry(registry)
+        service._dynamic_resolver = (  # type: ignore[method-assign]
+            lambda _resolver_id, field_name, context: context["dynamic_inputs"][field_name]
+        )
+
+        with self.assertRaises(OrchestrationError) as raised:
+            service.invoke_trusted(
+                AUTOMATION_ID,
+                entrypoint=AutomationEntrypoint.MODULE_SLOTS,
+                request_id="22222222-2222-4222-8222-222222222222",
+                actor=_admin(),
+                trusted_context={
+                    "module_slot": {
+                        "slot": "waybill_entry.validators",
+                        "handle": "a" * 64,
+                    },
+                    "dynamic_inputs": {"waybill": {field: "" for field in WAYBILL_ENTRY_DRAFT_FIELDS}},
+                },
+                expected_automation_generation=1,
+                contribution_id="validate_waybill",
+            )
+
+        self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
+        self.assertEqual(2, len(registry.calls))
+        self.assertIsNone(self.gateway.command)
+
+    def test_action_v1_module_slot_is_rejected_before_dispatch(self):
+        self.entry.runtime_model = "ACTION_V1"
+
+        with self.assertRaises(OrchestrationError) as raised:
+            self.service.invoke_trusted(
+                AUTOMATION_ID,
+                entrypoint=AutomationEntrypoint.MODULE_SLOTS,
+                request_id="33333333-3333-4333-8333-333333333333",
+                actor=_admin(),
+                trusted_context={},
+                expected_automation_generation=1,
+                contribution_id="forged",
+            )
+
+        self.assertEqual("PROJECT_ENTRYPOINT_DISABLED", raised.exception.code)
         self.assertIsNone(self.gateway.command)
 
     def test_action_v1_feishu_invocation_does_not_require_managed_projection(self):

@@ -4,6 +4,11 @@ import gzip
 from email.utils import formatdate
 
 from console.app_support import *  # noqa: F403
+from shared.waybill_entry_extensions import (
+    WAYBILL_ENTRY_ACTIONS_SLOT,
+    WAYBILL_ENTRY_DRAFT_FIELDS,
+    WAYBILL_ENTRY_VALIDATORS_SLOT,
+)
 
 
 def _accepts_content_encoding(header_value: str, encoding: str) -> bool:
@@ -57,11 +62,14 @@ class DocumentServiceMixin:
         }
         manual_amap_sdk_should_load = not manual_amap_config["amap_js_key"].startswith("YOUR_")
         manual_preview_waybill_no = ""
+        waybill_entry_extensions = self._empty_waybill_entry_extensions()
         if document is None:
             try:
                 manual_preview_waybill_no = self.repository.peek_next_manual_waybill_no()
             except Exception:
                 manual_preview_waybill_no = ""
+        if boyi_frame_mode:
+            waybill_entry_extensions = self._load_waybill_entry_extensions(handler)
 
         fields = []
         preprocess_info = {}
@@ -123,6 +131,16 @@ class DocumentServiceMixin:
             manual_amap_config=manual_amap_config,
             manual_amap_sdk_should_load=manual_amap_sdk_should_load,
             manual_preview_waybill_no=manual_preview_waybill_no,
+            waybill_entry_extension_fields=WAYBILL_ENTRY_DRAFT_FIELDS,
+            waybill_entry_extension_actions=waybill_entry_extensions[
+                WAYBILL_ENTRY_ACTIONS_SLOT
+            ],
+            waybill_entry_extension_validators=waybill_entry_extensions[
+                WAYBILL_ENTRY_VALIDATORS_SLOT
+            ],
+            waybill_entry_extensions_unavailable=waybill_entry_extensions[
+                "unavailable"
+            ],
         )
         self._send_html(handler, body)
 
@@ -758,6 +776,17 @@ class DocumentServiceMixin:
             values = self._parse_urlencoded_form(handler)
             return_to = self._safe_return_to(values.get("return_to", ""), "/ocr")
             should_print = str(values.get("auto_print", "")).lower() in {"1", "true", "yes", "on"}
+            validation_ok, validation_message = (
+                self._validate_active_waybill_entry_extensions(handler, values)
+            )
+            if not validation_ok:
+                self._redirect_with_message(
+                    handler,
+                    return_to,
+                    validation_message,
+                    "warning",
+                )
+                return
             result = self.service.apply_manual_waybill(values)
         except Exception as exc:
             self._redirect_with_message(handler, return_to, f"手工单保存失败：{exc}", "warning")

@@ -28,6 +28,9 @@ related:
   - ../console/services/automation_plugin_management.py
   - ../console/services/automation_projects.py
   - ../console/services/automation_project_contributions.py
+  - ../console/services/waybill_entry_extensions.py
+  - ../agent/agent/orchestration/service_v2_waybill_entry_extension_host.py
+  - ../shared/waybill_entry_extensions.py
   - ../shared/automation_plugin_generation_repository.py
   - ../shared/automation_plugin_generation_transition_repository.py
   - ../shared/automation_plugin_generation_runtime_repository.py
@@ -118,7 +121,7 @@ payload/
 | `capabilities` | 只声明实际使用的能力、精确 action、账号角色或资源角色 |
 | `account_roles` | 声明角色、允许系统和是否必填；账号由项目绑定，不进入配置 JSON |
 | `resource_roles` | 声明角色、允许资源种类和是否必填 |
-| `contributes` | 必须同时含 `console/scheduler/webhook/feishu/events` 五个数组；所有 contribution `id` 在包内全局唯一 |
+| `contributes` | 必须同时含 `console/scheduler/webhook/feishu/events` 五个数组，可选 `harness/module_slots`；所有 contribution `id` 在包内全局唯一 |
 | `config_schema` | 顶层必须是 `type=object`、`additionalProperties=false`，只含 `properties/required`；禁止账号 ID 和凭据类字段名 |
 | `storage` | 明确 `kv` 与 `collections`；不需要存储时也要写 `false` 和空数组 |
 
@@ -129,6 +132,7 @@ payload/
 - Webhook：只接受 `POST` 和稳定 route 段。
 - 飞书：声明命令文本，但发布时仍需宿主侧受审路由能力；不能借此把任意文本变成特权入口。
 - Event：声明全局 exact 事件名、是否 durable 和目标服务操作；当前只有 `durable=false` 可进入离线 best-effort Dispatcher，`durable=true` 明确不可用且不降级。
+- Module Slot：可选 `module_slots` 中每项字段精确为 `id/slot/title/service/operation/default_enabled`；当前 slot 只允许 `waybill_entry.actions` 与 `waybill_entry.validators`，目标 Provider operation 只允许 `read/compute`，插件不能携带或返回前端代码。
 
 ### 3.2 可复制的最小示例
 
@@ -322,9 +326,9 @@ Provider effect 来自 `provides[*].operations[*].effect`，Host capability effe
 
 `default_enabled` 不是“无条件可运行”。宿主无法表示的 Scheduler 和 `durable=true` Event 会在技术检查或 generation prepare 阶段显式阻断；Catalog 必须展示 `CAPABILITY_UNAVAILABLE`，不能留下“已启用但没有入口/任务”的假状态。Feishu contribution 只有在其 exact commands 与固定 Action v1、同代 contribution 和其他项目均无冲突时才可进入 READY 投影；Webhook contribution 也必须先取得全局 exact `POST + route` reservation，且 `READY` 只表示无网络 Dispatcher backend，不表示公网已开放。只有取得全局 exact event-name reservation 的 `durable=false` Event 才能以 `managed_event_dispatcher READY` 进入离线 best-effort 投影。
 
-### 7.1 Console / Scheduler / Harness / Feishu / Webhook / Event 无重启热投影
+### 7.1 Console / Scheduler / Harness / Feishu / Webhook / Event / Module Slot 无重启热投影
 
-当前受管热投影覆盖 Service v2 的 Console、Scheduler、Harness、Feishu、Webhook 与 Event contribution。generation 协调器先完整准备新代 effect，并由 generation CAS 持久化 committed generation 与对应 `scheduled_tasks`；进程内 `ManagedContributionRegistry` 再批量保存该代 `PREPARED` 材料，不能逐条开放新路由、命令、事件或工具。Webhook 的全局 exact `POST + route` 与 non-durable Event 的全局 exact event name 都必须随整代原子占用，冲突不能留下部分 reservation。投影转换携带由 generation snapshot 权威派生的完整 registration ID 集合；该集合可以为空。`COMMITTED/PREPARED/PENDING_PROJECTION` 的 observed effect keys 必须与 snapshot 计划精确相等；`TARGET/PREPARING/WAITING` 崩溃恢复只允许逐项验证已持久化的合法子集，随后仍从权威 snapshot 原子恢复整代 PREPARED reservation 续做，不能把子集误当完整 committed 代。
+当前受管热投影覆盖 Service v2 的 Console、Scheduler、Harness、Feishu、Webhook、Event 与 Module Slot contribution。generation 协调器先完整准备新代 effect，并由 generation CAS 持久化 committed generation 与对应 `scheduled_tasks`；进程内 `ManagedContributionRegistry` 再批量保存该代 `PREPARED` 材料，不能逐条开放新路由、命令、事件、工具或模块槽。Webhook 的全局 exact `POST + route`、non-durable Event 的全局 exact event name 与 Module Slot 的 generation-bound opaque handle 都必须随整代原子占用，冲突不能留下部分 reservation。投影转换携带由 generation snapshot 权威派生的完整 registration ID 集合；该集合可以为空。`COMMITTED/PREPARED/PENDING_PROJECTION` 的 observed effect keys 必须与 snapshot 计划精确相等；`TARGET/PREPARING/WAITING` 崩溃恢复只允许逐项验证已持久化的合法子集，随后仍从权威 snapshot 原子恢复整代 PREPARED reservation 续做，不能把子集误当完整 committed 代。
 
 generation CAS 在同一数据库事务内写入 `PENDING_PROJECTION` transition token，并保存旧项目字段、旧 project policy 版本、旧 `scheduled_tasks` 及其完整 approval policy 前镜像。运行中的 APScheduler 已绑定时，Provider reference、`ManagedContributionRegistry` 和 `reload_scheduler(strict=True)` 共用同一把投影锁。strict 模式要求整份计划无非法行且每个 Job 均注册成功；失败会按切换前快照恢复全部 Job、触发器选项和 `next_run_time`。只有刷新证据闭合为 `initialized=true` 且 `invalid_tasks=[]` 后，Registry 才一次性切 exact active Provider/Console generation，并用相同 token 把 durable phase ACK 为 `ACTIVE`。
 
@@ -334,9 +338,9 @@ strict refresh 或 activation ACK 失败时，协调器执行 token 和 base gen
 
 Agent 启动时先完成审批策略与项目调用器装配，再构造但不启动 APScheduler，并绑定 strict reload 与 emergency withdrawer。随后 reconcile 按 durable phase 完成未确认投影、activation ACK 或阻断撤销；只有恢复闭合后才启动 Scheduler，避免 ACK 先于真实 Job 投影。
 
-停用和卸载使用同一顺序：先严格刷新物理 Scheduler 计划，成功后再整代 withdraw Console/Scheduler/Harness/Feishu/Webhook/Event 注册；失败保留切换前对象并保持 pending，调用仍由 durable 项目状态 fail closed。只提供 service、没有已启用 Console/Scheduler/Harness/Feishu/Webhook/Event contribution 的 v2 generation 不创建伪 marker。关闭最后一个受管 contribution 的权威空 generation 仍执行原子刷新：旧代即使仍有 lease 也立即从 active map 清除并进入 DRAINING；DRAINING 记录不再接收流量或占用全局飞书命令、Webhook route 或 event name，但继续保留作租约排空与诊断。
+停用和卸载使用同一顺序：先严格刷新物理 Scheduler 计划，成功后再整代 withdraw Console/Scheduler/Harness/Feishu/Webhook/Event/Module Slot 注册；失败保留切换前对象并保持 pending，调用仍由 durable 项目状态 fail closed。只提供 service、没有已启用受管 contribution 的 v2 generation 不创建伪 marker。关闭最后一个受管 contribution 的权威空 generation 仍执行原子刷新：旧代即使仍有 lease 也立即从 active map 清除并进入 DRAINING；DRAINING 记录不再接收流量或占用全局飞书命令、Webhook route、event name 或 module-slot handle，但继续保留作租约排空与诊断。
 
-Catalog 只输出白名单 `active_contributions` 与 `contribution_projection_state`；状态仅为 `ACTIVE/STALE/INACTIVE`，每条公开 active 记录只含 `contribution_id/contribution_kind/generation/phase/backend_status`。Console 手工执行入口仍只从与当前 committed generation 精确一致、`phase=COMMITTED`、`backend_status=READY` 且状态为 `ACTIVE` 的 Console 记录派生；Feishu/Webhook/Event 记录可以进入已启用种类展示，但绝不进入浏览器手工调用清单。Harness 使用同一 Registry 的独立私有只读 snapshot，每次调用前再次解析 exact active generation；动态飞书、动态 Webhook 与 non-durable Event Dispatcher 都只解析 exact active generation，Policy 还会在创建 Command 前和同一接受 UOW 内再次核对 Registry identity。缺失、歧义、跨代、stale 或 inactive 均关闭失败。这不改变 `ACTION_V1`、既有 Webhook/Feishu、`shared/runtime_events.py`、事务 Outbox 或 Host `event.publish` 合同，也不开放自定义插件前端；`durable=true` Event 仍为 `CAPABILITY_UNAVAILABLE`。
+Catalog 只输出白名单 `active_contributions` 与 `contribution_projection_state`；状态仅为 `ACTIVE/STALE/INACTIVE`，每条公开 active 记录只含 `contribution_id/contribution_kind/generation/phase/backend_status`。Console 手工执行入口仍只从与当前 committed generation 精确一致、`phase=COMMITTED`、`backend_status=READY` 且状态为 `ACTIVE` 的 Console 记录派生；Feishu/Webhook/Event/Module Slot 记录可以进入已启用种类展示，但绝不进入通用 Console 手工调用清单。Module Slot 只能经 7.6 的固定录单宿主调用。Harness 使用同一 Registry 的独立私有只读 snapshot，每次调用前再次解析 exact active generation；动态飞书、动态 Webhook、non-durable Event Dispatcher 与 Module Slot Host 都只解析 exact active generation，Policy 还会在创建 Command 前和同一接受 UOW 内再次核对 Registry identity。缺失、歧义、跨代、stale 或 inactive 均关闭失败。这不改变 `ACTION_V1`、既有 Webhook/Feishu、`shared/runtime_events.py`、事务 Outbox 或 Host `event.publish` 合同，也不开放自定义插件前端；`durable=true` Event 仍为 `CAPABILITY_UNAVAILABLE`。
 
 ### 7.2 Harness 首期只读边界
 
@@ -373,6 +377,16 @@ Dispatcher 从 Registry 只取得 `automation_id/generation/contribution_id`，�
 无外部总线的 `ServiceV2EventDispatcher` 只接受适配器已验证的 exact event name 与稳定 `source_event_id`，调用面不接收 payload、payload version、项目、service、operation、业务参数、账号、资源或 Actor。目标身份和全部调用参数只由 Registry 与签名项目合同派生；Policy 在创建 Command 前和同一接受 UOW 内再次核对 exact Registry identity。只有 Command 成功接受后才有持久记录，接受前进程退出或事件源断开可能丢失，因此 `READY` 只表示可注入的离线 best-effort backend，不表示生产入口所有权、可靠投递或持久订阅。
 
 真实 event source、payload/version 合同、Outbox fan-out、ACK/retry/dead-letter/replay、跨进程全局 event-name 仲裁、数据库迁移、部署和生产等价故障注入全部为 `PRODUCTION_GATED`。既有 `shared/runtime_events.py`、事务 Outbox、Host `event.publish`、`ACTION_V1`、Webhook 和 Feishu 链路保持不变，不得把它们接成隐式 Event 总线或降级兜底。
+
+### 7.6 固定录单 Module Slot 边界
+
+Module Slot 只挂载在 Console 本地博益手工录单 frame `/ocr/boyi/frame`；韵达、融辉等跨域原页不读取投影、不渲染按钮，也不接入该调用链。浏览器看到的唯一扩展描述是 Agent GET `/internal/v1/automation-projects/module-slots/waybill-entry` 返回的闭合 `data.module_slots[*] = {slot,handle,title}`。`handle` 是绑定 active generation 的不透明标识；项目、generation、contribution、service、operation、effect、账号、资源、Actor 与角色均不进入浏览器。Console 只使用仓库内固定 HTML/JavaScript/CSS：模板中的 title 经 Jinja autoescape，动态反馈只经 `textContent` 写入；宿主不解释插件 HTML/JavaScript/CSS，也不加载远程前端代码。
+
+动作按钮调用 Console 同源 POST `/waybill-entry/extensions/{slot}/{handle}/invoke`。请求必须带 canonical `X-Browser-Request-UUID`，且 JSON 字段精确为 `{request_id,waybill}`、header UUID 与 body UUID 一致；`waybill` 的键精确为 `open_date,destination_site,sender_name,sender_phone,receiver_name,receiver_phone,receiver_address,goods_name_lines,package_type_lines,quantity_lines,weight_kg,volume_m3,freight_fee,pickup_fee,delivery_fee,transfer_fee,delivery_method,payment_method,insurance_amount,cod_amount,remark`，全部为有界字符串。`waybill_no/weight_volume/return_to/auto_print/action` 不跨越扩展边界。Console 在真实 MySQL 管理员 Session、同源和 UUID 校验后签发既有 principal，再将同一闭合 body 转发到 Agent `/internal/v1/automation-projects/module-slots/waybill-entry/{slot}/{handle}/invoke`；浏览器不能提交任意参数或覆盖运行身份。
+
+`waybill_entry.actions` 只渲染固定 Host 按钮，Agent 只返回 `data={kind:"action",receipt:{command_id,work_item_id,run_id,status,reused,next_poll_after_ms}}`。`waybill_entry.validators` 不依赖浏览器 submit listener：Console 在原 `/waybills/manual` 的实际 `apply_manual_waybill` 前，从同一表单构造上述 21 字段 draft，生成服务端 UUID，并以签名管理员 principal 调用 Agent `/internal/v1/automation-projects/module-slots/waybill-entry/validators/invoke-active`。Agent 先取得 validators-only active snapshot，逐一运行 exact handle，结束后再次取得 snapshot 并要求完全相等；只接受闭合 `data={kind:"validator_set",validation:{valid,issues}}`。`invalid`、调用失败、超时、畸形响应或激活/停用/切代漂移都显式阻止本次保存。稳定 active 集合为空时继续原生落库；GET 投影失败只影响页面展示，旧 DOM 不参与保存门禁。任何 active validator 失败都不允许隐式跳过。
+
+两个 slot 的 Provider effect 只允许 `read/compute`；本任务不允许插件写 TMS、飞书、生产数据库或其他外部系统。实现复用既有 Manifest、generation、Registry、Policy、Command 和 Run 链，不新增表、字段或数据库迁移。真实外部写、生产数据库连接、部署、真实 TMS/飞书数据验证和生产故障演练全部保持 `PRODUCTION_GATED`。
 
 以上只记录离线实现与故障注入合同；没有执行生产 Scheduler、生产数据库或真实业务入口演练，不构成生产验收。
 

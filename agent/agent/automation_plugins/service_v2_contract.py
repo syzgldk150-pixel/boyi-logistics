@@ -20,6 +20,13 @@ from agent.automation_plugins.host_capability_registry import (
     governance_for_effect,
 )
 from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
+from shared.waybill_entry_extensions import (
+    WAYBILL_ENTRY_DRAFT_FIELDS,
+    WAYBILL_ENTRY_DRAFT_MAX_LENGTHS,
+    WAYBILL_ENTRY_DYNAMIC_ARGUMENT_FIELD,
+    WAYBILL_ENTRY_DYNAMIC_RESOLVER_ID,
+    normalize_waybill_entry_slot,
+)
 
 
 HOST_API_VERSION = "2.0.0"
@@ -32,6 +39,7 @@ SERVICE_V2_CONTRIBUTION_KINDS = (
     "feishu",
     "events",
     "harness",
+    "module_slots",
 )
 _HARNESS_INPUT_SCHEMA = {
     "type": "object",
@@ -81,6 +89,21 @@ def _result_schema() -> dict[str, Any]:
             },
         },
         "required": ["status", "data", "meta", "warnings", "error"],
+    }
+
+
+def _waybill_entry_draft_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            field: {
+                "type": "string",
+                "maxLength": WAYBILL_ENTRY_DRAFT_MAX_LENGTHS[field],
+            }
+            for field in WAYBILL_ENTRY_DRAFT_FIELDS
+        },
+        "required": list(WAYBILL_ENTRY_DRAFT_FIELDS),
     }
 
 
@@ -146,6 +169,20 @@ class ServiceV2ProjectContract:
             "properties": _thaw(config_properties),
             "required": list(manifest.config_schema.get("required") or []),
         }
+        module_slots_contributed = bool(manifest.contributes.get("module_slots"))
+        if module_slots_contributed and WAYBILL_ENTRY_DYNAMIC_ARGUMENT_FIELD in config_properties:
+            raise PluginManifestError(
+                "service-v2 config field collides with the Host-owned waybill argument"
+            )
+        tool_input_schema = copy.deepcopy(input_schema)
+        if module_slots_contributed:
+            # The package-level tool schema is shared by mixed contribution
+            # kinds, so the Host-owned occurrence value is optional here.  The
+            # per-entrypoint module-slot schema below makes it mandatory and
+            # binds it to the only code-owned resolver.
+            tool_input_schema["properties"][WAYBILL_ENTRY_DYNAMIC_ARGUMENT_FIELD] = (
+                _waybill_entry_draft_schema()
+            )
         for contribution_kind in SERVICE_V2_CONTRIBUTION_KINDS:
             raw_items = manifest.contributes.get(contribution_kind, ())
             if not isinstance(raw_items, tuple):
@@ -165,6 +202,7 @@ class ServiceV2ProjectContract:
                     ) from exc
                 invocation_input_schema = input_schema
                 argument_template = template
+                dynamic_resolvers: dict[str, str] = {}
                 if contribution_kind == "harness":
                     declared_effect = item.get("effect")
                     if declared_effect != effect.value:
@@ -189,17 +227,53 @@ class ServiceV2ProjectContract:
                         )
                     invocation_input_schema = _HARNESS_INPUT_SCHEMA
                     argument_template = {}
+                if contribution_kind == "module_slots":
+                    try:
+                        normalize_waybill_entry_slot(item.get("slot"))
+                    except ValueError as exc:
+                        raise PluginManifestError(
+                            "module-slot contribution slot is invalid"
+                        ) from exc
+                    if effect not in {
+                        CapabilityEffect.READ,
+                        CapabilityEffect.COMPUTE,
+                    }:
+                        raise PluginManifestError(
+                            "module-slot contributions only accept read or compute effects"
+                        )
+                    module_governance = governance_for_effect(effect).to_mapping()
+                    if (
+                        module_governance["broker_effect"] != "read"
+                        or module_governance["operation_type"] not in {"read", "compute"}
+                    ):
+                        raise PluginManifestError(
+                            "module-slot contribution governance is not read-only"
+                        )
+                    invocation_input_schema = copy.deepcopy(input_schema)
+                    invocation_input_schema["properties"][
+                        WAYBILL_ENTRY_DYNAMIC_ARGUMENT_FIELD
+                    ] = _waybill_entry_draft_schema()
+                    invocation_input_schema["required"] = [
+                        *invocation_input_schema["required"],
+                        WAYBILL_ENTRY_DYNAMIC_ARGUMENT_FIELD,
+                    ]
+                    dynamic_resolvers = {
+                        WAYBILL_ENTRY_DYNAMIC_ARGUMENT_FIELD: (
+                            WAYBILL_ENTRY_DYNAMIC_RESOLVER_ID
+                        )
+                    }
                 governance = governance_for_effect(effect).to_mapping()
-                invocations[entrypoint_id] = {
+                invocation_contract = {
                     "input_schema": copy.deepcopy(invocation_input_schema),
                     "service": str(item["service"]),
                     "operation": str(item["operation"]),
                     "contribution_kind": contribution_kind,
                     "argument_template": copy.deepcopy(argument_template),
-                    "dynamic_resolvers": {},
+                    "dynamic_resolvers": dynamic_resolvers,
                     "effect": effect.value,
                     "governance": governance,
                 }
+                invocations[entrypoint_id] = invocation_contract
 
         if not entrypoints:
             raise PluginManifestError("service-v2 plugin must contribute at least one entrypoint")
@@ -306,7 +380,7 @@ class ServiceV2ProjectContract:
             "version": manifest.version,
             "description": manifest.description,
             "executor": manifest.runtime_entrypoint,
-            "input_schema": input_schema,
+            "input_schema": tool_input_schema,
             "output_schema": _result_schema(),
             "timeout": 3600,
             "heavy": True,

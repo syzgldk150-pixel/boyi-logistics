@@ -16,6 +16,7 @@ from console.services.automation import AutomationServiceMixin
 from console.services.documents import DocumentServiceMixin
 from console.services.business_modules import BusinessModulesServiceMixin
 from console.services.extensions import ExtensionsServiceMixin
+from console.services.waybill_entry_extensions import WaybillEntryExtensionsServiceMixin
 from console.navigation import (
     CONSOLE_NAVIGATION,
 )
@@ -42,6 +43,7 @@ class LocalDocFlowApp(
     WaybillsReceiptsServiceMixin,
     TmsProxyServiceMixin,
     AutomationServiceMixin,
+    WaybillEntryExtensionsServiceMixin,
     DocumentServiceMixin,
     ExtensionsServiceMixin,
     BusinessModulesServiceMixin,

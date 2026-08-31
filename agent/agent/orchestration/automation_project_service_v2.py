@@ -7,10 +7,12 @@ authorization authority.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Mapping
 from typing import Any
 
+from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.orchestration.models import OrchestrationError
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
@@ -18,12 +20,18 @@ from shared.automation_project_authorization import (
     AutomationProjectPolicyMode,
     CompiledAutomationProjectContract,
 )
-
-
-_CONTRIBUTION_CHARACTERS = frozenset(
-    "abcdefghijklmnopqrstuvwxyz0123456789_.-"
+from shared.waybill_entry_extensions import (
+    WAYBILL_ENTRY_DYNAMIC_ARGUMENT_FIELD,
+    WAYBILL_ENTRY_DYNAMIC_RESOLVER_ID,
+    normalize_waybill_entry_draft,
+    normalize_waybill_entry_extension_handle,
+    normalize_waybill_entry_slot,
 )
+
+
+_CONTRIBUTION_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_.-")
 _EVENT_NAME_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
+_MODULE_SLOT_DECLARATION_FIELDS = frozenset({"id", "slot", "title", "service", "operation", "default_enabled"})
 
 
 def require_service_v2_policy_mode(entry: Any, policy_mode: str) -> None:
@@ -167,6 +175,201 @@ def require_active_service_v2_contribution(
         )
     if expected_event_name is not None:
         validate_active_event_declaration(record, event_name=expected_event_name)
+
+
+def normalize_service_v2_module_slot_context(
+    context: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Normalize the only two code-owned facts accepted from the module host."""
+
+    if set(context) != {"module_slot", "dynamic_inputs"}:
+        raise OrchestrationError(
+            "TRUSTED_CONTEXT_INVALID",
+            "Module-slot context must contain only its route and waybill snapshot",
+        )
+    route = context.get("module_slot")
+    dynamic_inputs = context.get("dynamic_inputs")
+    if (
+        not isinstance(route, Mapping)
+        or set(route) != {"slot", "handle"}
+        or not isinstance(dynamic_inputs, Mapping)
+        or set(dynamic_inputs) != {WAYBILL_ENTRY_DYNAMIC_ARGUMENT_FIELD}
+    ):
+        raise OrchestrationError(
+            "TRUSTED_CONTEXT_INVALID",
+            "Module-slot route or dynamic inputs are invalid",
+        )
+    try:
+        slot = normalize_waybill_entry_slot(route.get("slot"))
+        handle = normalize_waybill_entry_extension_handle(route.get("handle"))
+        waybill = normalize_waybill_entry_draft(dynamic_inputs.get(WAYBILL_ENTRY_DYNAMIC_ARGUMENT_FIELD))
+    except ValueError as exc:
+        raise OrchestrationError(
+            "TRUSTED_CONTEXT_INVALID",
+            "Module-slot route or waybill snapshot is invalid",
+        ) from exc
+    return {
+        "module_slot": {"slot": slot, "handle": handle},
+        "dynamic_inputs": {WAYBILL_ENTRY_DYNAMIC_ARGUMENT_FIELD: waybill},
+    }
+
+
+def _record_value(record: Any, field: str) -> Any:
+    return record.get(field) if isinstance(record, Mapping) else getattr(record, field, None)
+
+
+def resolve_active_service_v2_module_slot(
+    registry: Any,
+    *,
+    slot: str,
+    handle: str,
+    automation_id: str | None = None,
+    generation: int | None = None,
+    contribution_id: str | None = None,
+) -> Any:
+    """Resolve and verify one exact active module-slot dispatch target."""
+
+    try:
+        safe_slot = normalize_waybill_entry_slot(slot)
+        safe_handle = normalize_waybill_entry_extension_handle(handle)
+    except ValueError as exc:
+        raise OrchestrationError(
+            "PROJECT_RUNTIME_PROJECTION_STALE",
+            "Automation module-slot identity is invalid",
+        ) from exc
+    resolve = getattr(registry, "resolve_active_module_slot", None)
+    if not callable(resolve):
+        raise OrchestrationError(
+            "PROJECT_RUNTIME_PROJECTION_STALE",
+            "Automation module-slot projection is unavailable",
+        )
+    try:
+        target = resolve(slot=safe_slot, handle=safe_handle)
+    except Exception as exc:
+        raise OrchestrationError(
+            "PROJECT_RUNTIME_PROJECTION_STALE",
+            "Automation module-slot projection changed before invocation",
+        ) from exc
+    declaration = _record_value(target, "declaration")
+    target_id = _record_value(target, "contribution_id")
+    target_generation = _record_value(target, "generation")
+    target_automation = _record_value(target, "automation_id")
+    target_service = _record_value(target, "service")
+    target_operation = _record_value(target, "operation")
+    declared_digest = _record_value(target, "declaration_sha256")
+    observed_digest = (
+        hashlib.sha256(canonical_json_bytes(dict(declaration))).hexdigest() if isinstance(declaration, Mapping) else ""
+    )
+    if (
+        _record_value(target, "contribution_kind") != "module_slots"
+        or _record_value(target, "slot") != safe_slot
+        or _record_value(target, "handle") != safe_handle
+        or type(target_generation) is not int
+        or target_generation <= 0
+        or not isinstance(target_automation, str)
+        or not target_automation
+        or not isinstance(target_id, str)
+        or not target_id
+        or not isinstance(target_service, str)
+        or not target_service
+        or not isinstance(target_operation, str)
+        or not target_operation
+        or not isinstance(declaration, Mapping)
+        or set(declaration) != _MODULE_SLOT_DECLARATION_FIELDS
+        or declaration.get("id") != target_id
+        or declaration.get("slot") != safe_slot
+        or declaration.get("service") != target_service
+        or declaration.get("operation") != target_operation
+        or type(declaration.get("default_enabled")) is not bool
+        or not isinstance(declaration.get("title"), str)
+        or not declaration.get("title")
+        or declared_digest != observed_digest
+        or (automation_id is not None and target_automation != automation_id)
+        or (generation is not None and target_generation != generation)
+        or (contribution_id is not None and target_id != contribution_id)
+    ):
+        raise OrchestrationError(
+            "PROJECT_RUNTIME_PROJECTION_STALE",
+            "Automation module-slot projection identity does not match",
+        )
+    return target
+
+
+def require_active_service_v2_module_slot(
+    registry: Any,
+    *,
+    entry: Any,
+    automation_id: str,
+    generation: int,
+    invocation_contract: Any,
+    context: Mapping[str, Any],
+) -> None:
+    """Bind an active slot to the same signed invocation before acceptance."""
+
+    route = context.get("module_slot")
+    contribution_id = str(getattr(invocation_contract, "contribution_id", "") or "")
+    signed = getattr(entry, "invocation_contracts", {}).get(contribution_id)
+    if (
+        getattr(entry, "runtime_model", "ACTION_V1") != "SERVICE_V2"
+        or getattr(invocation_contract, "entrypoint", "") != "module_slots"
+        or not contribution_id
+        or not isinstance(route, Mapping)
+        or not isinstance(signed, Mapping)
+        or signed.get("contribution_kind") != "module_slots"
+        or signed.get("dynamic_resolvers") != {WAYBILL_ENTRY_DYNAMIC_ARGUMENT_FIELD: WAYBILL_ENTRY_DYNAMIC_RESOLVER_ID}
+    ):
+        raise OrchestrationError(
+            "PROJECT_RUNTIME_PROJECTION_STALE",
+            "Automation module-slot contract is unavailable",
+        )
+    target = resolve_active_service_v2_module_slot(
+        registry,
+        slot=str(route.get("slot") or ""),
+        handle=str(route.get("handle") or ""),
+        automation_id=automation_id,
+        generation=generation,
+        contribution_id=contribution_id,
+    )
+    if _record_value(target, "service") != signed.get("service") or _record_value(target, "operation") != signed.get(
+        "operation"
+    ):
+        raise OrchestrationError(
+            "PROJECT_RUNTIME_PROJECTION_STALE",
+            "Automation module-slot target does not match its signed contract",
+        )
+
+
+def require_active_service_v2_dispatch(
+    registry: Any,
+    *,
+    source: AutomationEntrypoint,
+    entry: Any,
+    automation_id: str,
+    generation: int,
+    invocation_contract: Any,
+    context: Mapping[str, Any],
+    expected_event_name: str | None = None,
+) -> None:
+    """Recheck either a regular contribution or an exact module slot."""
+
+    if source is AutomationEntrypoint.MODULE_SLOTS:
+        require_active_service_v2_module_slot(
+            registry,
+            entry=entry,
+            automation_id=automation_id,
+            generation=generation,
+            invocation_contract=invocation_contract,
+            context=context,
+        )
+        return
+    require_active_service_v2_contribution(
+        registry,
+        automation_id=automation_id,
+        generation=generation,
+        contribution_kind=source.value,
+        contribution_id=invocation_contract.contribution_id,
+        expected_event_name=expected_event_name,
+    )
 
 
 def resolve_invocation_contract_id(

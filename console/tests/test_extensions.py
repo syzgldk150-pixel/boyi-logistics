@@ -261,13 +261,17 @@ const base = {{
         properties: {{count: {{type: "integer", enum: [1, 2]}}}}, required: ["count"]}},
     }}, required: ["runtime.mode", "nested"],
   }},
-  contributions: [],
+  contributions: [{{
+    id: "waybill_check", kind: "module_slots", title: "Waybill check", default_enabled: true,
+  }}],
   scheduling: {{supported: false, default_schedule: {{kind: "none", times: [], enabled: false}}}},
   account_options: [], resource_options: [], account_pool_available: true,
   resource_pool_available: true, warnings: [],
 }};
 const valid = safeProjection(base);
 if (!valid || !valid.config_schema.properties["runtime.mode"] || !valid.config_schema.properties.nested) throw new Error("valid projection rejected");
+if (valid.contributions.length !== 1 || valid.contributions[0].kind !== "module_slots") throw new Error("module slot contribution rejected");
+if (Object.keys(valid.contributions[0]).sort().join(",") !== "default_enabled,id,kind,title") throw new Error("module slot contribution widened");
 const structured = {{}};
 if (!setStructuredPath(structured, ["runtime.mode"], "safe") || structured["runtime.mode"] !== "safe") throw new Error("dot property path changed shape");
 const unknown = JSON.parse(JSON.stringify(base));

@@ -59,13 +59,33 @@ _SERVICE_V2_INSTALL_INTENT_FIELDS = frozenset(
 _SERVICE_V2_INSTALL_INITIAL_CONFIG_VERSION = 1
 _SERVICE_V2_INSTALL_STATE_WORKFLOW = "SERVICE_V2_INSTALL"
 _SERVICE_V2_CONTRIBUTION_KINDS = frozenset(
-    {"console", "scheduler", "webhook", "feishu", "events", "harness"}
+    {
+        "console",
+        "scheduler",
+        "webhook",
+        "feishu",
+        "events",
+        "harness",
+        "module_slots",
+    }
 )
 _LEGACY_SERVICE_V2_CONTRIBUTION_KINDS = frozenset(
     {"console", "scheduler", "webhook", "feishu", "events"}
 )
 _MANAGED_CONTRIBUTION_KINDS = frozenset(
-    {"console", "scheduler", "webhook", "feishu", "events", "harness"}
+    {
+        "console",
+        "scheduler",
+        "webhook",
+        "feishu",
+        "events",
+        "harness",
+        "module_slots",
+    }
+)
+_SERVICE_V2_CONTRIBUTION_KEYSETS = frozenset(
+    _LEGACY_SERVICE_V2_CONTRIBUTION_KINDS | frozenset(optional)
+    for optional in ((), ("harness",), ("module_slots",), ("harness", "module_slots"))
 )
 _ACTIVE_CONTRIBUTION_FIELDS = (
     "contribution_id",
@@ -306,10 +326,7 @@ class AutomationPluginManagementService:
             if not isinstance(raw_contributions, Mapping):
                 return None
             contribution_keys = set(raw_contributions)
-            if contribution_keys not in {
-                _LEGACY_SERVICE_V2_CONTRIBUTION_KINDS,
-                _SERVICE_V2_CONTRIBUTION_KINDS,
-            }:
+            if frozenset(contribution_keys) not in _SERVICE_V2_CONTRIBUTION_KEYSETS:
                 return None
             declared = [
                 (kind, declaration["id"])
