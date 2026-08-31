@@ -59,9 +59,12 @@ _SERVICE_V2_INSTALL_INTENT_FIELDS = frozenset(
 _SERVICE_V2_INSTALL_INITIAL_CONFIG_VERSION = 1
 _SERVICE_V2_INSTALL_STATE_WORKFLOW = "SERVICE_V2_INSTALL"
 _SERVICE_V2_CONTRIBUTION_KINDS = frozenset(
+    {"console", "scheduler", "webhook", "feishu", "events", "harness"}
+)
+_LEGACY_SERVICE_V2_CONTRIBUTION_KINDS = frozenset(
     {"console", "scheduler", "webhook", "feishu", "events"}
 )
-_MANAGED_CONTRIBUTION_KINDS = frozenset({"console", "scheduler"})
+_MANAGED_CONTRIBUTION_KINDS = frozenset({"console", "scheduler", "harness"})
 _ACTIVE_CONTRIBUTION_FIELDS = (
     "contribution_id",
     "contribution_kind",
@@ -298,15 +301,18 @@ class AutomationPluginManagementService:
         try:
             snapshot = entry.committed_snapshot
             raw_contributions = snapshot.execution_metadata["contributions"]
-            if (
-                not isinstance(raw_contributions, Mapping)
-                or set(raw_contributions) != _SERVICE_V2_CONTRIBUTION_KINDS
-            ):
+            if not isinstance(raw_contributions, Mapping):
+                return None
+            contribution_keys = set(raw_contributions)
+            if contribution_keys not in {
+                _LEGACY_SERVICE_V2_CONTRIBUTION_KINDS,
+                _SERVICE_V2_CONTRIBUTION_KINDS,
+            }:
                 return None
             declared = [
                 (kind, declaration["id"])
                 for kind in _SERVICE_V2_CONTRIBUTION_KINDS
-                for declaration in raw_contributions[kind]
+                for declaration in raw_contributions.get(kind, ())
             ]
             enabled = tuple(snapshot.enabled_entrypoints)
         except (AttributeError, KeyError, TypeError):

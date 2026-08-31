@@ -117,6 +117,7 @@ _USER_POLICY_MODES = frozenset(
 _SCHEDULED_POLICY_EVENT_REQUEST_ID_MAX_LENGTH = 36
 _SOURCE_LABELS = {
     "console": "后台",
+    "harness": "Harness",
     "scheduler": "定时",
     "feishu": "飞书",
     "webhook": "Webhook",
@@ -124,6 +125,7 @@ _SOURCE_LABELS = {
 _RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "EXTREME": 3}
 _TRUSTED_CONTEXT_FIELDS = {
     AutomationEntrypoint.CONSOLE: frozenset({"dynamic_inputs"}),
+    AutomationEntrypoint.HARNESS: frozenset(),
     AutomationEntrypoint.SCHEDULER: frozenset(
         {
             "task_id",
@@ -1198,6 +1200,31 @@ class AutomationProjectPolicyService:
             contribution_id=contribution_id,
         )
 
+    def invoke_harness(
+        self,
+        automation_id: str,
+        *,
+        request_id: str,
+        actor: Actor,
+        expected_automation_generation: int,
+        contribution_id: str,
+    ) -> Any:
+        """Submit one read-only Service V2 contribution from Harness.
+
+        Harness may select only an opaque catalog entry.  It cannot supply
+        project arguments or trusted transport context; both remain compiled
+        and server-owned at the exact active generation.
+        """
+
+        return self.invoke_trusted(
+            automation_id,
+            entrypoint=AutomationEntrypoint.HARNESS,
+            request_id=request_id,
+            actor=actor,
+            expected_automation_generation=expected_automation_generation,
+            contribution_id=contribution_id,
+        )
+
     def invoke_trusted(
         self,
         automation_id: str,
@@ -1233,6 +1260,11 @@ class AutomationProjectPolicyService:
         safe_contribution_id = normalize_contribution_id(contribution_id)
         entry, contract = self._load_contract(safe_id)
         is_service_v2 = getattr(entry, "runtime_model", "ACTION_V1") == "SERVICE_V2"
+        if source is AutomationEntrypoint.HARNESS and not is_service_v2:
+            raise OrchestrationError(
+                "PROJECT_ENTRYPOINT_DISABLED",
+                "Harness accepts only managed Service V2 contributions",
+            )
         command_idempotency_key = _idempotency_key(
             idempotency_key
             or (
@@ -1324,6 +1356,7 @@ class AutomationProjectPolicyService:
             and source
             in {
                 AutomationEntrypoint.CONSOLE,
+                AutomationEntrypoint.HARNESS,
                 AutomationEntrypoint.SCHEDULER,
             }
             and self._contribution_registry is not None
@@ -2576,6 +2609,9 @@ class AutomationProjectPolicyService:
         actor: Actor,
     ) -> None:
         if entrypoint is AutomationEntrypoint.CONSOLE:
+            cls._require_console_admin(actor)
+            return
+        if entrypoint is AutomationEntrypoint.HARNESS:
             cls._require_console_admin(actor)
             return
         if entrypoint is AutomationEntrypoint.FEISHU:

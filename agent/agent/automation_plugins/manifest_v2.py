@@ -67,7 +67,10 @@ _REQUIRE_FIELDS = frozenset({"service"})
 _CAPABILITY_FIELDS = frozenset({"name", "operations", "account_role", "resource_role"})
 _ACCOUNT_ROLE_FIELDS = frozenset({"role", "allowed_systems", "required"})
 _RESOURCE_ROLE_FIELDS = frozenset({"role", "allowed_kinds", "required"})
-_CONTRIBUTION_FIELDS = frozenset({"console", "scheduler", "webhook", "feishu", "events"})
+_CONTRIBUTION_REQUIRED_FIELDS = frozenset(
+    {"console", "scheduler", "webhook", "feishu", "events"}
+)
+_CONTRIBUTION_FIELDS = _CONTRIBUTION_REQUIRED_FIELDS | {"harness"}
 _CONSOLE_FIELDS = frozenset({"id", "title", "service", "operation", "default_enabled"})
 _SCHEDULER_FIELDS = frozenset(
     {
@@ -91,6 +94,9 @@ _EVENT_FIELDS = frozenset(
         "durable",
         "default_enabled",
     }
+)
+_HARNESS_FIELDS = frozenset(
+    {"id", "title", "description", "service", "operation", "effect"}
 )
 _CONFIG_SCHEMA_FIELDS = frozenset({"type", "additionalProperties", "properties", "required"})
 _STORAGE_FIELDS = frozenset({"kv", "collections"})
@@ -636,8 +642,19 @@ def _validate_contributes(
     value: Any,
     *,
     operations_by_service: Mapping[str, frozenset[str]],
+    provided_operation_effects: Mapping[tuple[str, str], CapabilityEffect],
 ) -> dict[str, Any]:
-    raw = _mapping(value, "contributes", _CONTRIBUTION_FIELDS)
+    raw = _mapping(value, "contributes")
+    unknown = set(raw) - _CONTRIBUTION_FIELDS
+    missing = _CONTRIBUTION_REQUIRED_FIELDS - set(raw)
+    if unknown:
+        raise PluginManifestError(
+            f"contributes has unsupported fields: {sorted(unknown)}"
+        )
+    if missing:
+        raise PluginManifestError(
+            f"contributes is missing fields: {sorted(missing)}"
+        )
     seen_ids: set[str] = set()
     result: dict[str, list[dict[str, Any]]] = {
         "console": [],
@@ -646,6 +663,8 @@ def _validate_contributes(
         "feishu": [],
         "events": [],
     }
+    if "harness" in raw:
+        result["harness"] = []
 
     for index, raw_item in enumerate(_array(raw["console"], "contributes.console")):
         path = f"contributes.console[{index}]"
@@ -780,6 +799,55 @@ def _validate_contributes(
                     item["default_enabled"],
                     f"{path}.default_enabled",
                 ),
+            }
+        )
+
+    for index, raw_item in enumerate(
+        _array(raw.get("harness", []), "contributes.harness")
+    ):
+        path = f"contributes.harness[{index}]"
+        item = _mapping(raw_item, path, _HARNESS_FIELDS)
+        service, operation = _contribution_target(
+            item,
+            path=path,
+            operations_by_service=operations_by_service,
+        )
+        try:
+            declared_effect = CapabilityEffect(item["effect"])
+        except (TypeError, ValueError) as exc:
+            raise PluginManifestError(
+                f"{path}.effect must be read or compute"
+            ) from exc
+        if declared_effect not in {
+            CapabilityEffect.READ,
+            CapabilityEffect.COMPUTE,
+        }:
+            raise PluginManifestError(f"{path}.effect must be read or compute")
+        authoritative_effect = provided_operation_effects.get((service, operation))
+        if authoritative_effect is None:
+            # The target check above should make this unreachable, but keep the
+            # failure explicit if a future parser changes that lookup.
+            raise PluginManifestError(
+                f"{path} targets an operation without an authoritative effect"
+            )
+        if declared_effect is not authoritative_effect:
+            raise PluginManifestError(
+                f"{path}.effect must match the provided operation effect"
+            )
+        result["harness"].append(
+            {
+                "id": _contribution_id(item["id"], f"{path}.id", seen=seen_ids),
+                "title": _text(item["title"], f"{path}.title", maximum=120),
+                "description": _text(
+                    item["description"],
+                    f"{path}.description",
+                    maximum=500,
+                ),
+                "service": service,
+                "operation": operation,
+                # This is a redundant declaration.  ServiceV2ProjectContract
+                # derives governance from the Provider effect, never here.
+                "effect": declared_effect.value,
             }
         )
     return result
@@ -944,6 +1012,13 @@ class AutomationPluginManifestV2:
             data["provides"],
             plugin_id=plugin_id,
         )
+        provided_operation_effects = {
+            (str(provided["service"]), str(operation["name"])): CapabilityEffect(
+                str(operation["effect"])
+            )
+            for provided in provides
+            for operation in provided["operations"]
+        }
         requires = _validate_requires(
             data["requires"],
             provided_services=frozenset(operations_by_service),
@@ -962,6 +1037,7 @@ class AutomationPluginManifestV2:
         contributes = _validate_contributes(
             data["contributes"],
             operations_by_service=operations_by_service,
+            provided_operation_effects=provided_operation_effects,
         )
         _validate_default_scheduler_host_compatibility(contributes)
         config_schema = _validate_config_schema(data["config_schema"])

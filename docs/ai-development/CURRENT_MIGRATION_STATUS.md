@@ -114,7 +114,7 @@ authority: non-authoritative
 - 事项中心
 - 系统管理
 
-菜单身份和顺序继续由 `console/navigation.py` 静态维护；`shared/business_modules.py` 将同一 14 项登记为不可变代码目录，Agent 的持久生命周期状态负责动态投影菜单、页面、API 和 Command 可用性。系统管理下已增加 `/settings/modules`，核心模块不可停用，可管理模块支持安装、启用、停用、升级、卸载和不可变审计。
+菜单身份和顺序继续由 `console/navigation.py` 静态维护；`shared/business_modules.py` 当前将 15 项登记为不可变代码目录。迁移 `027` 的 14 行历史生命周期状态只保留作兼容审计，不再控制菜单、页面、API 或 Command 可用性；Harness 作为第 15 个固定模块不回写该历史 seed。
 
 ### 数据库基线
 

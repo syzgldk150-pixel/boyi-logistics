@@ -88,7 +88,7 @@ def test_system_status_is_super_admin_only_and_not_a_fixed_module() -> None:
     assert "/settings/system-status" in {item["route"] for item in app._business_module_navigation(super_admin)}
     assert "/settings/system-status" not in {item["route"] for item in app._business_module_navigation(ordinary_admin)}
     assert "/settings/system-status" not in {item["route"] for item in app._business_module_navigation({})}
-    assert len(BUSINESS_MODULE_CATALOG) == 14
+    assert len(BUSINESS_MODULE_CATALOG) == 15
 
 
 def test_mobile_navigation_repairs_retired_module_manager_preference() -> None:

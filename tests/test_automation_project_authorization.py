@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from types import SimpleNamespace
 import unittest
 
+from agent.automation_plugins.host_capability_registry import governance_for_effect
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
     AutomationProjectContractError,
@@ -183,6 +184,85 @@ def _fragment(definition, capability, *, enabled=True, plugin_allowed=None):
     }
 
 
+def _service_v2_fragment(definition):
+    governance = governance_for_effect("read").to_mapping()
+    governance_anchor = {
+        "name": definition.tool_name,
+        "version": "1.0.0",
+        "operation_type": governance["operation_type"],
+        "risk_level": governance["risk_level"],
+        "approval": governance["approval"],
+        "permissions": {"required_roles": []},
+        "idempotency": governance["idempotency"],
+        "retry": governance["retry"],
+        "evidence": governance["evidence"],
+        "postconditions": governance["postconditions"],
+        "project_full_auto_allowed": governance["project_full_auto_allowed"],
+        "effect": governance["effect"],
+        "lock_class": governance["lock_class"],
+        "harness_allowed": governance["harness_allowed"],
+        "broker_effect": governance["broker_effect"],
+    }
+    input_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {},
+        "required": [],
+    }
+    tool_contract = {
+        **copy.deepcopy(governance_anchor),
+        "input_schema": copy.deepcopy(input_schema),
+        "output_schema": {"type": "object"},
+    }
+    return {
+        "automation_id": definition.automation_id,
+        "plugin_id": definition.plugin_id,
+        "plugin_version": "1.0.0",
+        "runtime_model": "SERVICE_V2",
+        "plugin_api": "2.0.0",
+        "package_sha256": "1" * 64,
+        "manifest_sha256": "2" * 64,
+        "trust_source": "super_admin_upload",
+        "enabled": True,
+        "runtime_kind": "python_subprocess",
+        "action_id": f"automation.{definition.automation_id}.run",
+        "allowed_entrypoints": ["run_now"],
+        "enabled_entrypoints": ["run_now"],
+        "entrypoint_kinds": {"run_now": "console"},
+        "code_owned_plan_fields": [],
+        "config_schema": copy.deepcopy(input_schema),
+        "account_roles": [],
+        "invocation_contracts": {
+            "run_now": {
+                "service": "plugin.service_plugin.reader@1",
+                "operation": "read",
+                "contribution_kind": "console",
+                "effect": "read",
+                "governance": copy.deepcopy(governance),
+                "input_schema": copy.deepcopy(input_schema),
+                "argument_template": {},
+                "dynamic_resolvers": {},
+            }
+        },
+        "governance_anchor": governance_anchor,
+        "governance_anchor_sha256": canonical_sha256(governance_anchor),
+        "tool_contract": tool_contract,
+        "project_full_auto_allowed": True,
+        "project_config_version": 1,
+        "target_generation": 1,
+        "committed_generation": 1,
+        "reconcile_state": "STABLE",
+        "project_config_sha256": canonical_sha256(definition.project_config),
+        "account_bindings_sha256": canonical_sha256(
+            definition.account_bindings
+        ),
+        "resource_bindings_sha256": canonical_sha256(
+            definition.resource_bindings
+        ),
+        "device_binding_sha256": "5" * 64,
+    }
+
+
 @dataclass(frozen=True)
 class _Step:
     tool_name: str
@@ -211,6 +291,61 @@ class AutomationProjectAuthorizationTests(unittest.TestCase):
                 )
                 self.assertTrue(contract.can_full_auto)
                 self.assertIsNone(contract.restriction_code)
+
+    def test_service_v2_contribution_id_compiles_to_transport_entrypoint(self):
+        definition = AutomationProjectInstanceDefinition(
+            automation_id="service_instance",
+            plugin_id="service_plugin",
+            tool_name="service_projection_read",
+            argument_templates={"run_now": {}},
+            dynamic_argument_resolvers={},
+            account_bindings={},
+            allowed_entrypoints=frozenset({"run_now"}),
+            project_config={},
+            resource_bindings={},
+        )
+        fragment = _service_v2_fragment(definition)
+        contract = compile_automation_project_contract(
+            definition,
+            catalog=SimpleNamespace(),
+            plugin_contract_provider=lambda _automation_id: fragment,
+        )
+
+        self.assertEqual(frozenset({"console"}), contract.allowed_entrypoints)
+        self.assertEqual(["console"], contract.snapshot["allowed_entrypoints"])
+        self.assertEqual(
+            "run_now",
+            contract.invocation_contracts["run_now"].contribution_id,
+        )
+        invocation = AutomationProjectInvocation(
+            automation_id=definition.automation_id,
+            automation_generation=contract.automation_generation,
+            entrypoint=AutomationEntrypoint.CONSOLE,
+            contract_id="run_now",
+            contract_hash=contract.contract_hash,
+            policy_version=1,
+            project_configuration_version=contract.project_configuration_version,
+            request_id="service-v2-console-request",
+        )
+        governance = fragment["invocation_contracts"]["run_now"]["governance"]
+        plan = SimpleNamespace(
+            automation_id=definition.automation_id,
+            automation_generation=contract.automation_generation,
+            automation_contract_hash=contract.contract_hash,
+            steps=(
+                SimpleNamespace(
+                    tool_name=contract.tool_name,
+                    tool_version=contract.tool_version,
+                    operation_type=governance["operation_type"],
+                    risk_level=governance["risk_level"],
+                    arguments={},
+                    expected_evidence=(governance["evidence"],),
+                    postconditions=tuple(governance["postconditions"]),
+                ),
+            ),
+        )
+
+        self.assertTrue(contract.matches_plan(plan, invocation, source="console"))
 
     def test_closed_parameter_idempotent_write_can_be_full_auto(self):
         _capability_row, _definition_row, _fragment_row, contract = self._compile(

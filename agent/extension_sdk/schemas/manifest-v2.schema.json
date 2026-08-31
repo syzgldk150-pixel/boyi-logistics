@@ -192,6 +192,12 @@
           "items": {
             "$ref": "#/$defs/event_contribution"
           }
+        },
+        "harness": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/harness_contribution"
+          }
         }
       }
     },
@@ -568,6 +574,45 @@
         }
       ],
       "unevaluatedProperties": false
+    },
+    "harness_contribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "description",
+        "service",
+        "operation",
+        "effect"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/role"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "service": {
+          "$ref": "#/$defs/service"
+        },
+        "operation": {
+          "$ref": "#/$defs/identifier"
+        },
+        "effect": {
+          "enum": [
+            "read",
+            "compute"
+          ]
+        }
+      }
     },
     "storage_collection": {
       "type": "object",

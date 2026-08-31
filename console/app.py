@@ -6,6 +6,7 @@ from console.app_support import *  # noqa: F403
 from console.services.agent_api import AgentApiServiceMixin
 from console.services.auth import AuthServiceMixin
 from console.services.control_plane import ControlPlaneServiceMixin
+from console.services.harness import HarnessServiceMixin
 from console.services.monitoring_finance import MonitoringFinanceServiceMixin
 from console.services.llm_settings import LLMSettingsServiceMixin
 from console.services.customer_service import CustomerServiceMixin
@@ -34,6 +35,7 @@ class LocalDocFlowApp(
     AuthServiceMixin,
     AgentApiServiceMixin,
     ControlPlaneServiceMixin,
+    HarnessServiceMixin,
     LLMSettingsServiceMixin,
     MonitoringFinanceServiceMixin,
     CustomerServiceMixin,

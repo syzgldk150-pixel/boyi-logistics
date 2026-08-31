@@ -315,6 +315,8 @@ def test_agent_admin_prefix_requires_console_principal() -> None:
         "/internal/v1/admin/tms/session/credentials",
         "/internal/v1/admin/monitoring/snapshot",
         "/internal/v1/admin/import-phase7-resources",
+        "/internal/v1/harness/sessions",
+        "/internal/v1/harness/messages",
     ):
         assert _admin_request_requires_console_principal(path)
     for path in (

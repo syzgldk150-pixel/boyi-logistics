@@ -25,6 +25,20 @@ from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
 HOST_API_VERSION = "2.0.0"
 SYSTEM_CAPABILITY_ROLE = "__system__"
 SERVICE_INVOKE_PER_CALL_LIMIT = 64
+SERVICE_V2_CONTRIBUTION_KINDS = (
+    "console",
+    "scheduler",
+    "webhook",
+    "feishu",
+    "events",
+    "harness",
+)
+_HARNESS_INPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {},
+    "required": [],
+}
 
 _SUPPORTED_CAPABILITIES = frozenset(
     {
@@ -132,14 +146,8 @@ class ServiceV2ProjectContract:
             "properties": _thaw(config_properties),
             "required": list(manifest.config_schema.get("required") or []),
         }
-        for contribution_kind in (
-            "console",
-            "scheduler",
-            "webhook",
-            "feishu",
-            "events",
-        ):
-            raw_items = manifest.contributes.get(contribution_kind)
+        for contribution_kind in SERVICE_V2_CONTRIBUTION_KINDS:
+            raw_items = manifest.contributes.get(contribution_kind, ())
             if not isinstance(raw_items, tuple):
                 raise PluginManifestError(f"service-v2 contribution list is invalid: {contribution_kind}")
             for raw_item in raw_items:
@@ -155,13 +163,39 @@ class ServiceV2ProjectContract:
                     raise PluginManifestError(
                         "contribution operation is absent from its provider effect contract"
                     ) from exc
+                invocation_input_schema = input_schema
+                argument_template = template
+                if contribution_kind == "harness":
+                    declared_effect = item.get("effect")
+                    if declared_effect != effect.value:
+                        raise PluginManifestError(
+                            "harness contribution effect must match the provided operation effect"
+                        )
+                    if effect not in {
+                        CapabilityEffect.READ,
+                        CapabilityEffect.COMPUTE,
+                    }:
+                        raise PluginManifestError(
+                            "harness contribution only accepts read or compute effects"
+                        )
+                    harness_governance = governance_for_effect(effect).to_mapping()
+                    if (
+                        harness_governance["harness_allowed"] is not True
+                        or harness_governance["broker_effect"] != "read"
+                        or harness_governance["operation_type"] not in {"read", "compute"}
+                    ):
+                        raise PluginManifestError(
+                            "harness contribution governance is not read-only"
+                        )
+                    invocation_input_schema = _HARNESS_INPUT_SCHEMA
+                    argument_template = {}
                 governance = governance_for_effect(effect).to_mapping()
                 invocations[entrypoint_id] = {
-                    "input_schema": copy.deepcopy(input_schema),
+                    "input_schema": copy.deepcopy(invocation_input_schema),
                     "service": str(item["service"]),
                     "operation": str(item["operation"]),
                     "contribution_kind": contribution_kind,
-                    "argument_template": copy.deepcopy(template),
+                    "argument_template": copy.deepcopy(argument_template),
                     "dynamic_resolvers": {},
                     "effect": effect.value,
                     "governance": governance,
@@ -332,6 +366,7 @@ class ServiceV2ProjectContract:
 __all__ = [
     "HOST_API_VERSION",
     "SERVICE_INVOKE_PER_CALL_LIMIT",
+    "SERVICE_V2_CONTRIBUTION_KINDS",
     "SYSTEM_CAPABILITY_ROLE",
     "ServiceV2ProjectContract",
 ]

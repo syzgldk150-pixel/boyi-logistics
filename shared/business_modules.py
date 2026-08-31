@@ -1,4 +1,4 @@
-"""Immutable, code-owned catalog for the fourteen fixed Console modules.
+"""Immutable, code-owned catalog for the fifteen fixed Console modules.
 
 Legacy lifecycle records remain readable for audit compatibility only. They
 never supply a module implementation, menu entry, permission, runtime
@@ -23,6 +23,7 @@ CORE_MODULE_CODES = frozenset(
     {
         "overview",
         "automations",
+        "harness",
         "automation_accounts",
         "llm_settings",
         "work_items",
@@ -121,8 +122,8 @@ def register_business_modules(items: Iterable[BusinessModuleCode]) -> tuple[Busi
     """Validate the exact source-owned module set once, at import time."""
 
     catalog = tuple(items)
-    if len(catalog) != 14:
-        raise ValueError("business module catalog must contain exactly 14 current menu identities")
+    if len(catalog) != 15:
+        raise ValueError("business module catalog must contain exactly 15 current menu identities")
     if any(not isinstance(item, BusinessModuleCode) for item in catalog):
         raise TypeError("business module catalog entries must be BusinessModuleCode")
     codes = tuple(item.module_code for item in catalog)
@@ -130,12 +131,12 @@ def register_business_modules(items: Iterable[BusinessModuleCode]) -> tuple[Busi
         raise ValueError("business module codes must be unique")
     if set(codes) != {
         "overview", "waybill_entry", "waybill_query", "tracking", "receipts", "customer_service",
-        "finance", "dispatch", "line_haul", "automations", "automation_accounts", "llm_settings",
+        "finance", "dispatch", "line_haul", "automations", "harness", "automation_accounts", "llm_settings",
         "work_items", "system_settings",
     }:
         raise ValueError("business module catalog must cover the exact current Console menu identities")
     if {item.module_code for item in catalog if not item.disable_allowed} != CORE_MODULE_CODES:
-        raise ValueError("only the six core modules may be non-disableable")
+        raise ValueError("only the seven core modules may be non-disableable")
     for field_name in ("menu_contributions", "page_contributions", "api_contributions", "permission_contributions"):
         contributions = [value for item in catalog for value in getattr(item, field_name)]
         if len(contributions) != len(set(contributions)):
@@ -161,6 +162,7 @@ BUSINESS_MODULE_CATALOG = register_business_modules(
         _module("dispatch", "/dispatch", "货拉拉调度", disable_allowed=True, api_prefixes=("/dispatch",), tool_names=("sync_yunda_dispatch_forecast",)),
         _module("line_haul", "/line-haul-contacts", "专线分流", disable_allowed=True, api_prefixes=("/line-haul-contacts",)),
         _module("automations", "/automations", "自动化", disable_allowed=False, api_prefixes=("/automations",), page_prefixes=("/workspaces/automations",), internal_extensions=("automations.signed_action_package_platform", "notification.feishu.background")),
+        _module("harness", "/harness", "Harness 助手", disable_allowed=False, api_prefixes=("/harness",)),
         _module("automation_accounts", "/automation-accounts", "业务账号", disable_allowed=False, api_prefixes=("/automation-accounts",)),
         _module("llm_settings", "/settings/llm", "智能模型", disable_allowed=False, api_prefixes=("/settings/llm",)),
         _module("work_items", "/work-items", "事项中心", disable_allowed=False, api_prefixes=("/control-plane",)),

@@ -35,7 +35,14 @@ PERMISSION_REPORT_SCHEMA = "service-v2-project-permissions/1"
 PACKAGE_DIFF_REPORT_SCHEMA = "service-v2-package-diff/1"
 NOT_EVALUATED_OFFLINE = "NOT_EVALUATED_OFFLINE"
 
-_CONTRIBUTION_KINDS = ("console", "scheduler", "webhook", "feishu", "events")
+_CONTRIBUTION_KINDS = (
+    "console",
+    "scheduler",
+    "webhook",
+    "feishu",
+    "events",
+    "harness",
+)
 _MANIFEST_SECTIONS = (
     "schema_version",
     "runtime_model",
@@ -250,7 +257,7 @@ def _contribution_rows(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for kind in _CONTRIBUTION_KINDS:
-        raw_items = verified.manifest.contributes.get(kind)
+        raw_items = verified.manifest.contributes.get(kind, ())
         if not isinstance(raw_items, tuple):
             raise PluginManifestError("verified contribution projection is invalid")
         for raw in raw_items:
@@ -260,6 +267,10 @@ def _contribution_rows(
             invocation = contract.invocation_contracts.get(contribution_id)
             if not isinstance(invocation, Mapping):
                 raise PluginManifestError("contribution invocation contract is unavailable")
+            if kind == "harness" and raw.get("effect") != invocation.get("effect"):
+                raise PluginManifestError(
+                    "harness contribution effect does not match its Provider operation"
+                )
             rows.append(
                 {
                     "kind": kind,

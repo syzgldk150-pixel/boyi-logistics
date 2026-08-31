@@ -155,6 +155,13 @@ from agent.automation_plugins.first_party import (
 from agent.automation_plugins.management_api import (
     create_automation_plugin_management_router,
 )
+from agent.harness import HarnessError, InMemoryHarnessSessionRepository
+from agent.harness_api import (
+    create_harness_router,
+    harness_error_response,
+    public_harness_tools,
+)
+from agent.harness_application import HarnessConversationService
 from agent.orchestration.approval_service import ApprovalService
 from agent.orchestration.automation_project_api import (
     create_automation_project_router,
@@ -276,6 +283,7 @@ control_plane_retention_worker: ControlPlaneRetentionWorker | None = None
 control_plane_service: ControlPlaneService | None = None
 scheduled_task_approval_service: ScheduledTaskApprovalService | None = None
 automation_project_policy_service: AutomationProjectPolicyService | None = None
+harness_conversation_service: HarnessConversationService | None = None
 scheduled_task_approval_bootstrap: dict[str, int] = {}
 automation_plugin_runtime: ProductionAutomationPluginRuntime | None = None
 automation_worker_transport_service: WindowsWorkerServerTransport | None = None
@@ -340,6 +348,12 @@ def _automation_project_policies() -> AutomationProjectPolicyService:
     if automation_project_policy_service is None:
         raise RuntimeError("Automation project policy service is not initialized")
     return automation_project_policy_service
+
+
+def _harness_conversations() -> HarnessConversationService:
+    if harness_conversation_service is None:
+        raise RuntimeError("Harness conversation service is not initialized")
+    return harness_conversation_service
 
 
 def _automation_project_entrypoint_service() -> AutomationProjectEntrypoints:
@@ -1118,6 +1132,7 @@ async def lifespan(app: FastAPI):
     global control_plane_retention_worker
     global scheduled_task_approval_service, scheduled_task_approval_bootstrap
     global automation_plugin_runtime, automation_project_policy_service
+    global harness_conversation_service
     global automation_worker_transport_service
     global automation_project_entrypoints
     global feishu_approval_service
@@ -1312,6 +1327,9 @@ async def lifespan(app: FastAPI):
         default_full_auto.get("changed", 0),
     )
     automation_project_policy_service = project_policy_service
+    harness_conversation_service = HarnessConversationService(
+        repository=InMemoryHarnessSessionRepository(),
+    )
     policy = PolicyEngine(
         catalog,
         scheduler_allowlist_provider=schedule_policy_service.allowlist_entries,
@@ -1499,6 +1517,7 @@ async def lifespan(app: FastAPI):
     automation_project_entrypoints = None
     feishu_approval_service = None
     automation_project_policy_service = None
+    harness_conversation_service = None
     outbox_dispatcher = None
     control_plane_retention_worker = None
     workflow_runner = None
@@ -1536,6 +1555,18 @@ app.include_router(
             _automation_plugins()
             .service_effect_driver.refresh_contribution_projection()
         ),
+    )
+)
+app.include_router(
+    create_harness_router(
+        conversation_provider=_harness_conversations,
+        tools_provider=lambda actor, request_id: public_harness_tools(
+            policy_service=_automation_project_policies(),
+            contribution_registry=_automation_plugins().contribution_registry,
+            actor=actor,
+            request_id=request_id,
+        ),
+        actor_provider=lambda request: _require_console_admin_request(request),
     )
 )
 if WINDOWS_WORKER_RELEASE_ENABLED:
@@ -1629,6 +1660,11 @@ async def orchestration_state_conflict_handler(
             redact_text(exc)[:500] or "Control-plane state changed concurrently",
         ),
     )
+
+
+@app.exception_handler(HarnessError)
+async def harness_error_handler(request: Request, exc: HarnessError):
+    return harness_error_response(request, exc)
 
 
 @app.exception_handler(LLMSettingsError)
@@ -1733,6 +1769,7 @@ def _admin_request_requires_console_principal(path: str) -> bool:
     return (
         normalized == "/internal/v1/scheduled-task-approval-policies"
         or normalized == "/internal/v1/automation-project-policies"
+        or normalized.startswith("/internal/v1/harness/")
         or normalized.startswith("/internal/v1/automation-projects/")
         or normalized.startswith("/internal/v1/automation/")
         or normalized in {"/admin", "/internal/v1/admin"}

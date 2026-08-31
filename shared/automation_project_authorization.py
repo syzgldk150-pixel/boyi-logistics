@@ -42,6 +42,10 @@ _SERVICE_V2_TOOL_GOVERNANCE_FIELDS = _CORE_GOVERNANCE_FIELDS + (
     "harness_allowed",
     "broker_effect",
 )
+_SERVICE_V2_ENTRYPOINT_KINDS = TRUSTED_AUTOMATION_ENTRYPOINTS | {
+    "events",
+    "harness",
+}
 
 
 class AutomationProjectPolicyMode(str, Enum):
@@ -53,6 +57,7 @@ class AutomationProjectPolicyMode(str, Enum):
 class AutomationEntrypoint(str, Enum):
     SCHEDULER = "scheduler"
     CONSOLE = "console"
+    HARNESS = "harness"
     FEISHU = "feishu"
     WEBHOOK = "webhook"
 
@@ -448,10 +453,15 @@ def compile_automation_project_contract(
         str(entrypoint): str(kind)
         for entrypoint, kind in entrypoint_kinds.items()
     }
+    allowed_entrypoint_kinds = (
+        _SERVICE_V2_ENTRYPOINT_KINDS
+        if runtime_model == "SERVICE_V2"
+        else TRUSTED_AUTOMATION_ENTRYPOINTS | {"events"}
+    )
     if (
         not effective_entrypoints
         or set(normalized_entrypoint_kinds.values())
-        - (TRUSTED_AUTOMATION_ENTRYPOINTS | {"events"})
+        - allowed_entrypoint_kinds
     ):
         raise AutomationProjectContractError("PLUGIN_ENTRYPOINTS_INVALID")
     if runtime_model == "ACTION_V1" and any(
@@ -474,6 +484,10 @@ def compile_automation_project_contract(
         raise AutomationProjectContractError("PROJECT_ENTRYPOINT_TEMPLATE_INVALID")
     if set(definition.dynamic_argument_resolvers) - effective_entrypoints:
         raise AutomationProjectContractError("PROJECT_DYNAMIC_RESOLVER_INVALID")
+    effective_entrypoint_kinds = frozenset(
+        normalized_entrypoint_kinds[entrypoint]
+        for entrypoint in effective_entrypoints
+    )
 
     normalized_accounts = _normalize_identifier_bindings(
         definition.account_bindings,
@@ -670,7 +684,7 @@ def compile_automation_project_contract(
         "tool_version": str(plugin_fragment["tool_contract"]["version"]),
         "operation_type": operation_type,
         "risk_level": risk_level,
-        "allowed_entrypoints": sorted(effective_entrypoints),
+        "allowed_entrypoints": sorted(effective_entrypoint_kinds),
         "invocation_contracts": invocation_snapshots,
         "account_bindings_sha256": plugin_fragment["account_bindings_sha256"],
         "resource_bindings_sha256": plugin_fragment["resource_bindings_sha256"],
@@ -696,7 +710,7 @@ def compile_automation_project_contract(
         risk_level=risk_level,
         invocation_contracts=invocation_contracts,
         account_bindings=normalized_accounts,
-        allowed_entrypoints=effective_entrypoints,
+        allowed_entrypoints=effective_entrypoint_kinds,
         contract_hash=contract_hash,
         tool_contract_hash=tool_contract_hash,
         plugin_contract_hash=plugin_contract_hash,
@@ -1242,12 +1256,17 @@ def _validate_plugin_fragment(
         invocation_contracts, Mapping
     ) or not isinstance(config_schema, Mapping) or not isinstance(account_roles, list):
         raise AutomationProjectContractError("PLUGIN_INVOCATION_CONTRACT_INVALID")
+    allowed_entrypoint_kinds = (
+        _SERVICE_V2_ENTRYPOINT_KINDS
+        if runtime_model == "SERVICE_V2"
+        else TRUSTED_AUTOMATION_ENTRYPOINTS | {"events"}
+    )
     if (
         set(invocation_contracts) != set(plugin_entrypoints)
         or not isinstance(entrypoint_kinds, Mapping)
         or set(entrypoint_kinds) != set(plugin_entrypoints)
         or any(
-            str(kind) not in TRUSTED_AUTOMATION_ENTRYPOINTS | {"events"}
+            str(kind) not in allowed_entrypoint_kinds
             for kind in entrypoint_kinds.values()
         )
     ):

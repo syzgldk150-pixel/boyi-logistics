@@ -44,6 +44,7 @@ def test_registered_menu_projection_preserves_existing_console_contract() -> Non
         "dispatch",
         "line_haul",
         "automations",
+        "harness",
         "automation_accounts",
         "llm_settings",
         "work_items",
@@ -59,7 +60,7 @@ def test_registered_menu_projection_preserves_existing_console_contract() -> Non
 
 
 def test_system_status_is_a_control_plane_registration_after_fixed_menus() -> None:
-    assert len(BUSINESS_MODULE_CATALOG) == 14
+    assert len(BUSINESS_MODULE_CATALOG) == 15
     assert tuple(item.menu_id for item in CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS) == (
         "extensions",
         "system_status",

@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+
+{% block title %}Harness 助手 | {{ app_title }}{% endblock %}
+{% block breadcrumb %}Harness 助手{% endblock %}
+{% block subtitle %}受限、只读的 Console 工作台{% endblock %}
+{% block main_class %}harness-main{% endblock %}
+{% block body_class %}harness-page-body{% endblock %}
+
+{% block content %}
+<section class="harness-page" data-harness-page aria-labelledby="harness-page-title">
+  <div class="harness-intro">
+    <div class="harness-intro-copy">
+      <p class="harness-eyebrow">固定模块 · 只读</p>
+      <h2 id="harness-page-title">用受限 Harness 查看可核验信息</h2>
+      <p>页面由 Console 主机渲染，会话只在受限运行时中短暂保存。当前不承诺真实 LLM、业务数据或生产能力已就绪。</p>
+    </div>
+    <div class="harness-state" data-harness-state aria-live="polite">
+      <span class="harness-state-dot" aria-hidden="true"></span>
+      <span data-harness-state-label>尚未建立会话</span>
+    </div>
+  </div>
+
+  <div class="harness-notice" role="note">
+    <i data-feather="shield"></i>
+    <p>仅允许只读查询与计算。不会执行扫描、打卡、问题件写入、业务账号操作或生产数据变更。</p>
+  </div>
+
+  <div class="harness-layout">
+    <section class="harness-panel harness-panel--prompt" aria-labelledby="harness-prompt-title">
+      <div class="harness-panel-heading">
+        <div>
+          <p class="harness-section-kicker">开始一次受限查询</p>
+          <h3 id="harness-prompt-title">向 Harness 提问</h3>
+        </div>
+        <span class="harness-readonly-chip">只读</span>
+      </div>
+      <form class="harness-form" data-harness-form novalidate>
+        <label class="harness-field" for="harness-message">
+          <span>消息</span>
+          <textarea id="harness-message" name="message" maxlength="4000" rows="7" required data-harness-message placeholder="输入需要查看或计算的内容"></textarea>
+          <span class="harness-field-help">最多 4000 个字符；浏览器只提交消息、会话 ID 和请求标识。</span>
+        </label>
+        <div class="harness-form-actions">
+          <button class="primary-btn harness-submit" type="submit" data-harness-submit>
+            <i data-feather="send" aria-hidden="true"></i><span>创建会话并发送</span>
+          </button>
+          <button class="ghost-btn harness-reset" type="button" data-harness-reset disabled aria-disabled="true">
+            <i data-feather="rotate-ccw" aria-hidden="true"></i><span>清空会话</span>
+          </button>
+        </div>
+        <p class="harness-feedback" data-harness-feedback role="status" aria-live="polite" hidden></p>
+      </form>
+    </section>
+
+    <section class="harness-panel harness-panel--tools" aria-labelledby="harness-tools-title">
+      <div class="harness-panel-heading">
+        <div>
+          <p class="harness-section-kicker">闭合能力目录</p>
+          <h3 id="harness-tools-title">可用只读工具</h3>
+        </div>
+        <span class="harness-count" data-harness-tools-count>未加载</span>
+      </div>
+      <p class="harness-panel-copy">工具由 Agent 返回安全摘要。页面不会接收或展示服务名、操作名、账号、资源或项目身份。</p>
+      <div class="harness-tools-list" data-harness-tools aria-live="polite">
+        <p class="harness-empty">建立会话后显示受限工具摘要。</p>
+      </div>
+    </section>
+  </div>
+
+  <section class="harness-panel harness-panel--output" aria-labelledby="harness-output-title">
+    <div class="harness-panel-heading harness-panel-heading--output">
+      <div>
+        <p class="harness-section-kicker">闭合响应</p>
+        <h3 id="harness-output-title">过程、证据与结果</h3>
+      </div>
+      <span class="harness-output-state" data-harness-output-state>等待查询</span>
+    </div>
+    <div class="harness-output-grid">
+      <section class="harness-output-section" aria-labelledby="harness-process-title">
+        <h4 id="harness-process-title">过程</h4>
+        <div class="harness-output-content" data-harness-process>
+          <p class="harness-empty">发送消息后，这里显示受限处理摘要。</p>
+        </div>
+      </section>
+      <section class="harness-output-section" aria-labelledby="harness-evidence-title">
+        <h4 id="harness-evidence-title">证据</h4>
+        <div class="harness-output-content" data-harness-evidence>
+          <p class="harness-empty">当前没有可展示的证据。</p>
+        </div>
+      </section>
+      <section class="harness-output-section harness-output-section--result" aria-labelledby="harness-result-title">
+        <h4 id="harness-result-title">结果</h4>
+        <div class="harness-output-content" data-harness-result>
+          <p class="harness-empty">查询结果会显示在这里。</p>
+        </div>
+      </section>
+      <section class="harness-output-section" aria-labelledby="harness-tool-summary-title">
+        <h4 id="harness-tool-summary-title">工具摘要</h4>
+        <div class="harness-output-content" data-harness-tool-summaries>
+          <p class="harness-empty">本次响应尚无工具摘要。</p>
+        </div>
+      </section>
+    </div>
+  </section>
+
+  <p class="harness-footnote" data-harness-session aria-live="polite">会话状态：尚未建立；生产数据和真实模型均未声明可用。</p>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/harness.js?v=harness-console-20260831"></script>
+{% endblock %}

@@ -9,7 +9,7 @@ updated: 2026-08-30
 
 # 固定业务模块与旧生命周期只读兼容
 
-`shared/business_modules.py` 是 14 个 Console 固定模块身份的唯一代码目录。它不从数据库、插件、ZIP 或动态导入创建模块。固定模块的导航、页面、API 和新 Command 只由当前代码路由、登录、既有用户权限及各业务自身前置条件控制；旧生命周期状态、版本或 Agent 健康查询不得隐藏或阻断固定模块，也不得改变既有模块权限。
+`shared/business_modules.py` 是 15 个 Console 固定模块身份的唯一代码目录，其中包括不可停用的固定 Harness 助手。它不从数据库、插件、ZIP 或动态导入创建模块。固定模块的导航、页面、API 和新 Command 只由当前代码路由、登录、既有用户权限及各业务自身前置条件控制；旧生命周期状态、版本或 Agent 健康查询不得隐藏或阻断固定模块，也不得改变既有模块权限。
 
 迁移 `027_business_module_lifecycle.sql`、`business_modules`、`business_module_events` 和历史数据继续原样保留，不删除或改写已执行迁移。MySQL DDL 可能在失败部署中单独提交，因此两个表仍使用 `CREATE TABLE IF NOT EXISTS`；`scripts/run_migrations.py` 继续加载 `scripts/business_module_migration_contract.py`，在 seed 前精确校验表、列、索引、约束和外键。seed 只补齐缺少的固定身份行，绝不覆盖历史状态。历史 `installed_version`、`code_version`、`lifecycle_state` 和 `record_version` 仅供兼容审计，不是运行时开关。
 

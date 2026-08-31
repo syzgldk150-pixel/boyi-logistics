@@ -41,7 +41,7 @@ Console 不负责：
 - `app.py`：组合根、HTTP 生命周期、认证门禁和最终请求分发；业务逻辑不应继续堆入这里。
 - `routes/`：按业务域识别 GET/POST 路径，再把请求交给对应服务。
 - `services/`：认证、Agent API、自动化、控制平面、业务模块、客服、财务、TMS 代理、回单/运单和 OCR 文档等领域服务。
-- `navigation.py`：14 个固定模块菜单和“扩展中心 / 系统状态”控制平面菜单的唯一静态注册处。
+- `navigation.py`：15 个固定模块菜单和“扩展中心 / 系统状态”控制平面菜单的唯一静态注册处。
 - `database.py`：MySQL 文档仓储；只验证结构及读写数据。
 - `config.py`：无副作用配置解析；`runtime_config.py` 只由服务入口执行一次运行时 bootstrap。
 - `finance_service.py`：财务查询、分页、金额字符串和受控命令参数的 Console 适配层。

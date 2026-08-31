@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import copy
 import hashlib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from threading import RLock
 from typing import Any, Callable, Iterable, Mapping
 
 from agent.automation_plugins.errors import PluginConflictError
-from agent.automation_plugins.host_capability_registry import CapabilityEffect
+from agent.automation_plugins.host_capability_registry import (
+    CapabilityEffect,
+    governance_for_effect,
+)
 from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.models import (
     PluginRuntimeModel,
@@ -24,16 +27,211 @@ from agent.automation_plugins.service_registry import (
 
 _SERVICE_PROVIDER_GENERATION = 1
 _CONTRIBUTION_EFFECT_CONTRACT_VERSION = 1
-_SERVICE_V2_CONTRIBUTION_KINDS = (
+_LEGACY_SERVICE_V2_CONTRIBUTION_KINDS = (
     "console",
     "scheduler",
     "webhook",
     "feishu",
     "events",
 )
+_SERVICE_V2_CONTRIBUTION_KINDS = _LEGACY_SERVICE_V2_CONTRIBUTION_KINDS + (
+    "harness",
+)
 _MANAGED_CONTRIBUTION_KINDS = _SERVICE_V2_CONTRIBUTION_KINDS
-_ACTIVE_CONTRIBUTION_KINDS = ("console", "scheduler")
+_ACTIVE_CONTRIBUTION_KINDS = ("console", "scheduler", "harness")
 _SCHEDULE_BACKEND_TIMEZONE = "Asia/Shanghai"
+_EMPTY_HARNESS_INPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {},
+    "required": [],
+}
+
+
+class _FrozenDict(dict[str, Any]):
+    """JSON-compatible immutable mapping for the active registry boundary."""
+
+    def _immutable(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise TypeError("active contribution snapshot is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+
+    def __ior__(self, other: object) -> "_FrozenDict":
+        del other
+        raise TypeError("active contribution snapshot is immutable")
+
+
+def _freeze_json(value: Any) -> Any:
+    """Recursively freeze the detached JSON values exposed to Harness."""
+
+    if isinstance(value, Mapping):
+        return _FrozenDict(
+            {str(key): _freeze_json(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json(item) for item in value)
+    return copy.deepcopy(value)
+
+
+def _harness_runtime_permissions(value: object | None = None) -> dict[str, Any]:
+    """Return the closed, non-sensitive permission surface for Harness.
+
+    Harness material must carry the exact signed generation descriptor.  There
+    is intentionally no default: an omitted permission surface must not be
+    mistaken for a package that was admitted without Host capabilities.
+    """
+
+    if value is None:
+        raise PluginConflictError(
+            "harness runtime permissions are missing",
+            code="PLUGIN_CONTRACT_INVALID",
+        )
+    if not isinstance(value, Mapping):
+        raise PluginConflictError(
+            "harness runtime permissions are invalid",
+            code="PLUGIN_CONTRACT_INVALID",
+        )
+    expected_fields = {
+        "network",
+        "browser",
+        "office",
+        "file_roles",
+        "broker_operations",
+        "max_broker_calls",
+    }
+    if set(value) != expected_fields:
+        raise PluginConflictError(
+            "harness runtime permissions are not closed",
+            code="PLUGIN_CONTRACT_INVALID",
+        )
+    if any(
+        type(value.get(field_name)) is not bool
+        for field_name in ("network", "browser", "office")
+    ):
+        raise PluginConflictError(
+            "harness runtime permission flags are invalid",
+            code="PLUGIN_CONTRACT_INVALID",
+        )
+    file_roles = value.get("file_roles")
+    broker_operations = value.get("broker_operations")
+    max_broker_calls = value.get("max_broker_calls")
+    if (
+        not isinstance(file_roles, (list, tuple))
+        or any(not isinstance(item, str) or not item for item in file_roles)
+        or not isinstance(broker_operations, (list, tuple))
+        or any(not isinstance(item, Mapping) for item in broker_operations)
+        or isinstance(max_broker_calls, bool)
+        or not isinstance(max_broker_calls, int)
+        or max_broker_calls < 0
+    ):
+        raise PluginConflictError(
+            "harness runtime permissions are invalid",
+            code="PLUGIN_CONTRACT_INVALID",
+        )
+    if (
+        value.get("network") is not False
+        or value.get("browser") is not False
+        or value.get("office") is not False
+        or file_roles
+        or broker_operations
+        or max_broker_calls
+    ):
+        raise PluginConflictError(
+            "harness runtime permissions expose an unsafe capability surface",
+            code="CAPABILITY_UNAVAILABLE",
+        )
+    return copy.deepcopy(dict(value))
+
+
+def _harness_contract_from_declaration(
+    declaration: Mapping[str, Any],
+    *,
+    authoritative_effect: CapabilityEffect | str | None = None,
+) -> dict[str, Any]:
+    expected_fields = {
+        "id",
+        "title",
+        "description",
+        "service",
+        "operation",
+        "effect",
+    }
+    if set(declaration) != expected_fields:
+        raise PluginConflictError(
+            "v2 harness contribution declaration is not closed",
+            code="PLUGIN_CONTRACT_INVALID",
+        )
+    for field_name, maximum in (
+        ("id", 160),
+        ("title", 120),
+        ("description", 500),
+        ("service", 191),
+        ("operation", 128),
+    ):
+        value = declaration.get(field_name)
+        if (
+            not isinstance(value, str)
+            or not value
+            or value != value.strip()
+            or len(value) > maximum
+        ):
+            raise PluginConflictError(
+                f"v2 harness contribution {field_name} is invalid",
+                code="PLUGIN_CONTRACT_INVALID",
+            )
+    if not isinstance(declaration.get("effect"), str):
+        raise PluginConflictError(
+            "v2 harness contribution effect is invalid",
+            code="PLUGIN_CONTRACT_INVALID",
+        )
+    declared_effect = declaration["effect"]
+    try:
+        declared = CapabilityEffect(declared_effect)
+    except (TypeError, ValueError) as exc:
+        raise PluginConflictError(
+            "v2 harness contribution effect is invalid",
+            code="PLUGIN_CONTRACT_INVALID",
+        ) from exc
+    if authoritative_effect is None:
+        effect = declared
+    else:
+        try:
+            effect = CapabilityEffect(authoritative_effect)
+        except (TypeError, ValueError) as exc:
+            raise PluginConflictError(
+                "v2 harness Provider operation effect is invalid",
+                code="PLUGIN_CONTRACT_INVALID",
+            ) from exc
+        if declared is not effect:
+            raise PluginConflictError(
+                "v2 harness contribution effect does not match its Provider operation",
+                code="PLUGIN_CONTRACT_INVALID",
+            )
+    if effect not in {CapabilityEffect.READ, CapabilityEffect.COMPUTE}:
+        raise PluginConflictError(
+            "v2 harness contributions must be read or compute",
+            code="CAPABILITY_UNAVAILABLE",
+        )
+    governance = governance_for_effect(effect).to_mapping()
+    return {
+        "id": declaration["id"],
+        "title": declaration["title"],
+        "description": declaration["description"],
+        "service": declaration["service"],
+        "operation": declaration["operation"],
+        "effect": effect.value,
+        "operation_type": str(governance["operation_type"]),
+        "harness_allowed": governance["harness_allowed"],
+        "broker_effect": governance["broker_effect"],
+        "input_schema": copy.deepcopy(_EMPTY_HARNESS_INPUT_SCHEMA),
+    }
 
 
 def _digest(value: Any) -> str:
@@ -97,6 +295,9 @@ class ManagedContributionRegistration:
     project_schedule: Mapping[str, Any]
     schedule_sha256: str
     phase: str
+    runtime_model: str = "SERVICE_V2"
+    runtime_permissions: Mapping[str, Any] = field(default_factory=dict)
+    harness_contract: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def dispatch_available(self) -> bool:
@@ -123,6 +324,25 @@ class ManagedContributionRegistry:
         *,
         phase: str,
     ) -> ManagedContributionRegistration:
+        contribution_kind = str(material["contribution_kind"])
+        declaration = copy.deepcopy(dict(material["declaration"]))
+        raw_harness_contract = material.get("harness_contract")
+        if contribution_kind == "harness":
+            if material.get("runtime_model") != "SERVICE_V2":
+                raise PluginConflictError(
+                    "harness contribution runtime model is missing or invalid",
+                    code="PLUGIN_CONTRACT_INVALID",
+                )
+            if not isinstance(material.get("runtime_permissions"), Mapping):
+                raise PluginConflictError(
+                    "harness runtime permissions are missing",
+                    code="PLUGIN_CONTRACT_INVALID",
+                )
+            if not isinstance(raw_harness_contract, Mapping):
+                raise PluginConflictError(
+                    "harness contribution contract is missing",
+                    code="PLUGIN_CONTRACT_INVALID",
+                )
         return ManagedContributionRegistration(
             registration_id=str(material["registration_id"]),
             automation_id=str(material["automation_id"]),
@@ -132,10 +352,10 @@ class ManagedContributionRegistry:
             package_sha256=str(material["package_sha256"]),
             manifest_sha256=str(material["manifest_sha256"]),
             contribution_id=str(material["contribution_id"]),
-            contribution_kind=str(material["contribution_kind"]),
+            contribution_kind=contribution_kind,
             service=str(material["service"]),
             operation=str(material["operation"]),
-            declaration=copy.deepcopy(dict(material["declaration"])),
+            declaration=declaration,
             route_keys=tuple(str(item) for item in material["route_keys"]),
             backend=str(material["backend"]),
             backend_status=str(material["backend_status"]),
@@ -152,6 +372,15 @@ class ManagedContributionRegistry:
             project_schedule=copy.deepcopy(dict(material["project_schedule"])),
             schedule_sha256=str(material["schedule_sha256"]),
             phase=phase,
+            runtime_model=str(material.get("runtime_model") or "SERVICE_V2"),
+            runtime_permissions=(
+                _harness_runtime_permissions(material.get("runtime_permissions"))
+                if contribution_kind == "harness"
+                else {}
+            ),
+            harness_contract=copy.deepcopy(
+                dict(raw_harness_contract or {})
+            ),
         )
 
     @staticmethod
@@ -176,6 +405,9 @@ class ManagedContributionRegistry:
             "reason_detail": record.reason_detail,
             "project_schedule": copy.deepcopy(dict(record.project_schedule)),
             "schedule_sha256": record.schedule_sha256,
+            "runtime_model": record.runtime_model,
+            "runtime_permissions": copy.deepcopy(dict(record.runtime_permissions)),
+            "harness_contract": copy.deepcopy(dict(record.harness_contract)),
         }
 
     @staticmethod
@@ -232,6 +464,23 @@ class ManagedContributionRegistry:
                 "managed contribution declaration identity is invalid",
                 code="CONTRIBUTION_REGISTRATION_CONFLICT",
             )
+        if candidate.contribution_kind == "harness":
+            expected_harness_contract = _harness_contract_from_declaration(
+                declaration
+            )
+            if candidate.runtime_model != "SERVICE_V2":
+                raise PluginConflictError(
+                    "harness contribution runtime model is invalid",
+                    code="CONTRIBUTION_REGISTRATION_CONFLICT",
+                )
+            if canonical_json_bytes(
+                dict(candidate.harness_contract)
+            ) != canonical_json_bytes(expected_harness_contract):
+                raise PluginConflictError(
+                    "harness contribution contract is invalid",
+                    code="CONTRIBUTION_REGISTRATION_CONFLICT",
+                )
+            _harness_runtime_permissions(candidate.runtime_permissions)
         expected_routes = _contribution_route_keys(
             automation_id=candidate.automation_id,
             contribution_kind=candidate.contribution_kind,
@@ -647,8 +896,15 @@ class ManagedContributionRegistry:
         *,
         automation_id: str | None = None,
         contribution_kind: str | None = None,
-    ) -> tuple[dict[str, Any], ...]:
-        """Return the non-sensitive, dispatchable committed projection."""
+    ) -> tuple[Mapping[str, Any], ...]:
+        """Return an immutable non-sensitive active projection.
+
+        Harness records intentionally expose only the closed runtime and
+        invocation contract required by a future ``HarnessToolCatalog``.  No
+        package bytes, source paths, or raw installation metadata cross this
+        boundary.  Existing Console/Scheduler callers retain their compact
+        projection shape.
+        """
 
         with self._lock:
             records = tuple(
@@ -663,27 +919,76 @@ class ManagedContributionRegistry:
                     or record.contribution_kind == contribution_kind
                 )
             )
-            return tuple(
-                {
-                    "automation_id": record.automation_id,
-                    "generation": record.generation,
-                    "contribution_id": record.contribution_id,
-                    "contribution_kind": record.contribution_kind,
-                    "service": record.service,
-                    "operation": record.operation,
-                    "backend": record.backend,
-                    "backend_status": record.backend_status,
-                }
-                for record in sorted(
-                    records,
-                    key=lambda item: (
-                        item.automation_id,
-                        item.generation,
-                        item.contribution_kind,
-                        item.contribution_id,
-                    ),
-                )
-            )
+            projected: list[Mapping[str, Any]] = []
+            for record in sorted(
+                records,
+                key=lambda item: (
+                    item.automation_id,
+                    item.generation,
+                    item.contribution_kind,
+                    item.contribution_id,
+                ),
+            ):
+                if record.contribution_kind == "harness":
+                    # Harness receives an identity-only active record.  The
+                    # closed contract carries invocation metadata; package
+                    # and transport material stay inside the registry.
+                    item = {
+                        "automation_id": record.automation_id,
+                        "generation": record.generation,
+                        "contribution_id": record.contribution_id,
+                        "contribution_kind": record.contribution_kind,
+                    }
+                    item.update(
+                        {
+                            "runtime_model": record.runtime_model,
+                            "runtime_permissions": copy.deepcopy(
+                                dict(record.runtime_permissions)
+                            ),
+                            "harness_contract": copy.deepcopy(
+                                dict(record.harness_contract)
+                            ),
+                        }
+                    )
+                else:
+                    item = {
+                        "automation_id": record.automation_id,
+                        "generation": record.generation,
+                        "contribution_id": record.contribution_id,
+                        "contribution_kind": record.contribution_kind,
+                        "service": record.service,
+                        "operation": record.operation,
+                        "backend": record.backend,
+                        "backend_status": record.backend_status,
+                    }
+                projected.append(_freeze_json(item))
+            return tuple(projected)
+
+    def active_record_snapshot(
+        self,
+        *,
+        automation_id: str | None = None,
+        contribution_kind: str | None = None,
+    ) -> tuple[Mapping[str, Any], ...]:
+        """Alias with an explicit name for future catalog providers."""
+
+        return self.active_snapshot(
+            automation_id=automation_id,
+            contribution_kind=contribution_kind,
+        )
+
+    def active_records_snapshot(
+        self,
+        *,
+        automation_id: str | None = None,
+        contribution_kind: str | None = None,
+    ) -> tuple[Mapping[str, Any], ...]:
+        """Plural compatibility alias for catalog integrations."""
+
+        return self.active_snapshot(
+            automation_id=automation_id,
+            contribution_kind=contribution_kind,
+        )
 
     def snapshot(
         self,
@@ -720,8 +1025,12 @@ def _closed_service_v2_contributions(
     contributions = snapshot.execution_metadata.get("contributions")
     if not isinstance(contributions, Mapping):
         raise PluginConflictError("v2 contribution contract is missing")
-    if set(contributions) != set(_SERVICE_V2_CONTRIBUTION_KINDS):
-        if set(contributions) - set(_SERVICE_V2_CONTRIBUTION_KINDS):
+    contribution_keys = set(contributions)
+    if contribution_keys not in (
+        set(_LEGACY_SERVICE_V2_CONTRIBUTION_KINDS),
+        set(_SERVICE_V2_CONTRIBUTION_KINDS),
+    ):
+        if contribution_keys - set(_SERVICE_V2_CONTRIBUTION_KINDS):
             raise PluginConflictError(
                 "plugin-provided frontend or unknown contribution is forbidden",
                 code="PLUGIN_CUSTOM_FRONTEND_FORBIDDEN",
@@ -730,7 +1039,7 @@ def _closed_service_v2_contributions(
     normalized: dict[str, list[dict[str, Any]]] = {}
     identities: set[str] = set()
     for kind in _SERVICE_V2_CONTRIBUTION_KINDS:
-        raw_items = contributions.get(kind)
+        raw_items = contributions.get(kind, ())
         if not isinstance(raw_items, (list, tuple)):
             raise PluginConflictError("v2 contribution list is invalid")
         items: list[dict[str, Any]] = []
@@ -748,6 +1057,11 @@ def _closed_service_v2_contributions(
                 or not operation
             ):
                 raise PluginConflictError("v2 contribution identity is invalid")
+            if kind == "harness":
+                _validate_harness_declaration(
+                    item,
+                    snapshot=snapshot,
+                )
             identities.add(contribution_id)
             items.append(item)
         normalized[kind] = items
@@ -755,6 +1069,70 @@ def _closed_service_v2_contributions(
     if not enabled <= identities:
         raise PluginConflictError("enabled v2 contribution is undeclared")
     return normalized
+
+
+def _provider_operation_effects(
+    snapshot: RuntimeGenerationSnapshot,
+) -> dict[tuple[str, str], CapabilityEffect]:
+    contracts = snapshot.execution_metadata.get("service_contracts")
+    if not isinstance(contracts, Mapping):
+        raise PluginConflictError("v2 service contracts are missing")
+    raw_provides = contracts.get("provides")
+    if not isinstance(raw_provides, (list, tuple)):
+        raise PluginConflictError("v2 provided service contracts are invalid")
+    result: dict[tuple[str, str], CapabilityEffect] = {}
+    for raw_provided in raw_provides:
+        if not isinstance(raw_provided, Mapping):
+            raise PluginConflictError("v2 provided service contract is invalid")
+        service = str(raw_provided.get("service") or "")
+        operations = raw_provided.get("operations")
+        if not service or not isinstance(operations, (list, tuple)):
+            raise PluginConflictError("v2 provided service contract is invalid")
+        for raw_operation in operations:
+            if not isinstance(raw_operation, Mapping):
+                raise PluginConflictError("v2 provided service operation is invalid")
+            name = str(raw_operation.get("name") or "")
+            try:
+                effect = CapabilityEffect(str(raw_operation.get("effect") or ""))
+            except (TypeError, ValueError) as exc:
+                raise PluginConflictError(
+                    "v2 provided service operation effect is invalid"
+                ) from exc
+            key = (service, name)
+            if not name or key in result:
+                raise PluginConflictError("v2 provided service operation is ambiguous")
+            result[key] = effect
+    return result
+
+
+def _validate_harness_declaration(
+    declaration: Mapping[str, Any],
+    *,
+    snapshot: RuntimeGenerationSnapshot,
+) -> None:
+    service = str(declaration.get("service") or "")
+    operation = str(declaration.get("operation") or "")
+    expected_effect = _provider_operation_effects(snapshot).get(
+        (service, operation)
+    )
+    if expected_effect is None:
+        raise PluginConflictError(
+            "v2 harness contribution effect does not match its Provider operation",
+            code="PLUGIN_CONTRACT_INVALID",
+        )
+    contract = _harness_contract_from_declaration(
+        declaration,
+        authoritative_effect=expected_effect,
+    )
+    if (
+        contract["harness_allowed"] is not True
+        or contract["broker_effect"] != "read"
+        or contract["operation_type"] not in {"read", "compute"}
+    ):
+        raise PluginConflictError(
+            "v2 harness contribution governance is not read-only",
+            code="CAPABILITY_UNAVAILABLE",
+        )
 
 
 def _contribution_route_keys(
@@ -768,6 +1146,8 @@ def _contribution_route_keys(
         return (f"console:{automation_id}:{contribution_id}",)
     if contribution_kind == "scheduler":
         return (f"scheduler:{automation_id}:{contribution_id}",)
+    if contribution_kind == "harness":
+        return (f"harness:{automation_id}:{contribution_id}",)
     if contribution_kind == "webhook":
         return (f"webhook:{automation_id}:{declaration.get('route')}",)
     if contribution_kind == "feishu":
@@ -815,6 +1195,11 @@ def _contribution_backend(
                 "SCHEDULER_TIMEZONE_UNAVAILABLE",
             )
         return "scheduled_tasks", "READY", None, None
+    if contribution_kind == "harness":
+        # This is a catalog projection only.  It does not start a Harness
+        # runtime or expose a transport; a later HarnessToolCatalog consumes
+        # the immutable active record through the registry snapshot.
+        return "harness_tool_catalog", "READY", None, None
     backend = {
         "webhook": "managed_webhook_router",
         "feishu": "managed_feishu_router",
@@ -843,7 +1228,7 @@ def _contribution_registration_material(
         project_schedule=project_schedule,
     )
     contribution_id = str(declaration.get("id") or "")
-    return {
+    material = {
         "contract_version": _CONTRIBUTION_EFFECT_CONTRACT_VERSION,
         "registration_id": (
             f"{snapshot.automation_id}:{snapshot.generation}:{contribution_id}"
@@ -874,6 +1259,200 @@ def _contribution_registration_material(
         "project_schedule": copy.deepcopy(dict(project_schedule)),
         "schedule_sha256": _required_sha(snapshot.schedule_sha256, "schedule_sha256"),
     }
+    if contribution_kind == "harness":
+        runtime_descriptor = snapshot.execution_metadata.get("runtime_descriptor")
+        if not isinstance(runtime_descriptor, Mapping):
+            raise PluginConflictError(
+                "harness runtime descriptor is missing",
+                code="PLUGIN_CONTRACT_INVALID",
+            )
+        runtime_permissions = runtime_descriptor.get("runtime_permissions")
+        expected_effect = _provider_operation_effects(snapshot).get(
+            (str(declaration.get("service") or ""), str(declaration.get("operation") or ""))
+        )
+        if expected_effect is None:
+            raise PluginConflictError(
+                "harness contribution targets an unknown Provider operation",
+                code="PLUGIN_CONTRACT_INVALID",
+            )
+        material.update(
+            {
+                "runtime_model": "SERVICE_V2",
+                "runtime_permissions": _harness_runtime_permissions(
+                    runtime_permissions
+                ),
+                "harness_contract": _harness_contract_from_declaration(
+                    declaration,
+                    authoritative_effect=expected_effect,
+                ),
+            }
+        )
+    return material
+
+
+def _validated_managed_contribution_effect_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Rebuild one closed durable contribution payload before projection."""
+
+    base_fields = {
+        "contract_version",
+        "registration_id",
+        "automation_id",
+        "generation",
+        "plugin_id",
+        "plugin_version",
+        "package_sha256",
+        "manifest_sha256",
+        "contribution_id",
+        "contribution_kind",
+        "service",
+        "operation",
+        "declaration",
+        "declaration_sha256",
+        "route_keys",
+        "backend",
+        "backend_status",
+        "reason_code",
+        "reason_detail",
+        "project_schedule",
+        "schedule_sha256",
+    }
+    is_harness = payload.get("contribution_kind") == "harness"
+    required_fields = (
+        base_fields | {"runtime_model", "runtime_permissions", "harness_contract"}
+        if is_harness
+        else base_fields
+    )
+    if set(payload) != required_fields:
+        raise PluginConflictError("managed contribution effect payload is invalid")
+    if payload.get("contract_version") != _CONTRIBUTION_EFFECT_CONTRACT_VERSION:
+        raise PluginConflictError(
+            "managed contribution effect contract version is invalid"
+        )
+    generation = payload.get("generation")
+    if type(generation) is not int or generation <= 0:
+        raise PluginConflictError("managed contribution generation is invalid")
+    strings = {
+        field: str(payload.get(field) or "")
+        for field in (
+            "registration_id",
+            "automation_id",
+            "plugin_id",
+            "plugin_version",
+            "contribution_id",
+            "contribution_kind",
+            "service",
+            "operation",
+            "backend",
+            "backend_status",
+        )
+    }
+    if (
+        not all(strings.values())
+        or strings["contribution_kind"] not in _MANAGED_CONTRIBUTION_KINDS
+        or strings["backend_status"]
+        not in {"READY", "DISABLED", "CAPABILITY_UNAVAILABLE"}
+        or strings["registration_id"]
+        != f"{strings['automation_id']}:{generation}:{strings['contribution_id']}"
+    ):
+        raise PluginConflictError("managed contribution effect identity is invalid")
+    declaration = payload.get("declaration")
+    project_schedule = payload.get("project_schedule")
+    route_keys = payload.get("route_keys")
+    if (
+        not isinstance(declaration, Mapping)
+        or not isinstance(project_schedule, Mapping)
+        or not isinstance(route_keys, list)
+        or not route_keys
+        or any(not isinstance(item, str) or not item for item in route_keys)
+        or len(route_keys) != len(set(route_keys))
+    ):
+        raise PluginConflictError(
+            "managed contribution effect declaration is invalid"
+        )
+    normalized_declaration = copy.deepcopy(dict(declaration))
+    normalized_schedule = copy.deepcopy(dict(project_schedule))
+    if (
+        str(normalized_declaration.get("id") or "") != strings["contribution_id"]
+        or str(normalized_declaration.get("service") or "") != strings["service"]
+        or str(normalized_declaration.get("operation") or "") != strings["operation"]
+        or payload.get("declaration_sha256") != _digest(normalized_declaration)
+        or _required_sha(payload.get("schedule_sha256"), "schedule_sha256")
+        != _digest(normalized_schedule)
+    ):
+        raise PluginConflictError("managed contribution effect digest is invalid")
+    expected_routes = _contribution_route_keys(
+        automation_id=strings["automation_id"],
+        contribution_kind=strings["contribution_kind"],
+        declaration=normalized_declaration,
+    )
+    expected_backend = _contribution_backend(
+        contribution_kind=strings["contribution_kind"],
+        declaration=normalized_declaration,
+        project_schedule=normalized_schedule,
+    )
+    observed_backend = (
+        strings["backend"],
+        strings["backend_status"],
+        payload.get("reason_code"),
+        payload.get("reason_detail"),
+    )
+    if tuple(route_keys) != expected_routes or observed_backend != expected_backend:
+        raise PluginConflictError(
+            "managed contribution backend declaration is invalid"
+        )
+    material = {
+        "contract_version": _CONTRIBUTION_EFFECT_CONTRACT_VERSION,
+        **strings,
+        "generation": generation,
+        "package_sha256": _required_sha(
+            payload.get("package_sha256"), "package_sha256"
+        ),
+        "manifest_sha256": _required_sha(
+            payload.get("manifest_sha256"), "manifest_sha256"
+        ),
+        "declaration": normalized_declaration,
+        "declaration_sha256": _digest(normalized_declaration),
+        "route_keys": list(expected_routes),
+        "reason_code": payload.get("reason_code"),
+        "reason_detail": payload.get("reason_detail"),
+        "project_schedule": normalized_schedule,
+        "schedule_sha256": _digest(normalized_schedule),
+    }
+    if not is_harness:
+        return material
+    if payload.get("runtime_model") != PluginRuntimeModel.SERVICE_V2.value:
+        raise PluginConflictError(
+            "managed Harness runtime model is invalid",
+            code="PLUGIN_CONTRACT_INVALID",
+        )
+    raw_harness_contract = payload.get("harness_contract")
+    if not isinstance(raw_harness_contract, Mapping):
+        raise PluginConflictError(
+            "managed Harness contract is invalid",
+            code="PLUGIN_CONTRACT_INVALID",
+        )
+    expected_harness_contract = _harness_contract_from_declaration(
+        normalized_declaration
+    )
+    if canonical_json_bytes(dict(raw_harness_contract)) != canonical_json_bytes(
+        expected_harness_contract
+    ):
+        raise PluginConflictError(
+            "managed Harness contract is invalid",
+            code="PLUGIN_CONTRACT_INVALID",
+        )
+    material.update(
+        {
+            "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
+            "runtime_permissions": _harness_runtime_permissions(
+                payload.get("runtime_permissions")
+            ),
+            "harness_contract": expected_harness_contract,
+        }
+    )
+    return material
 
 
 def _service_v2_contribution_effect_plans(
@@ -903,6 +1482,7 @@ def _service_v2_contribution_effect_plans(
         "webhook": RuntimeEffectKind.WEBHOOK_BINDING,
         "feishu": RuntimeEffectKind.CONTRIBUTION_REGISTRATION,
         "events": RuntimeEffectKind.CONTRIBUTION_REGISTRATION,
+        "harness": RuntimeEffectKind.CONTRIBUTION_REGISTRATION,
     }
     plans: list[RuntimeEffectPlan] = []
     for kind in _MANAGED_CONTRIBUTION_KINDS:
