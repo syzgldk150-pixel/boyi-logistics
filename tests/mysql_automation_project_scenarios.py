@@ -772,7 +772,7 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
                 f"WHERE BINARY version IN ({placeholders}) ORDER BY version",
                 reapply_versions,
             )
-            case.assertEqual([], cursor.fetchall())
+            case.assertEqual((), cursor.fetchall())
     case._run_migrations(database)
     with case._connection(database, autocommit=True) as connection:
         with connection.cursor() as cursor:

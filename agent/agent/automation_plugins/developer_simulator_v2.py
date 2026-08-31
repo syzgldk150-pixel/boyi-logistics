@@ -53,6 +53,8 @@ _MAX_PLUGIN_STDERR_BYTES = 1024 * 1024
 _MAX_PLUGIN_INPUT_BYTES = 10 * 1024 * 1024
 _MAX_SCENARIOS = 100
 _MAX_HOST_CALLS = 1000
+_MAX_UNIX_SOCKET_PATH_BYTES = 107
+_BROKER_SOCKET_NAME = "b.sock"
 _IDENTIFIER_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._:@/-]{0,255}\Z")
 _RESULT_CODE_RE = re.compile(r"[A-Z][A-Z0-9_]{1,63}\Z")
 _SENSITIVE_KEY_TOKENS = (
@@ -474,12 +476,33 @@ class _UnixBrokerSimulator:
                 "Unix sockets are unavailable",
                 code="SIMULATOR_SANDBOX_UNAVAILABLE",
             )
+        try:
+            encoded_socket_path = os.fsencode(self.socket_path)
+        except UnicodeEncodeError as exc:
+            raise _error(
+                "simulator broker socket path is unavailable",
+                code="SIMULATOR_SANDBOX_UNAVAILABLE",
+            ) from exc
+        if (
+            b"\0" in encoded_socket_path
+            or len(encoded_socket_path) > _MAX_UNIX_SOCKET_PATH_BYTES
+        ):
+            raise _error(
+                "simulator broker socket path exceeds the platform limit",
+                code="SIMULATOR_SANDBOX_UNAVAILABLE",
+            )
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             listener.settimeout(0.1)
             listener.bind(str(self.socket_path))
             os.chmod(self.socket_path, 0o600)
             listener.listen(8)
+        except OSError as exc:
+            listener.close()
+            raise _error(
+                "simulator broker socket is unavailable",
+                code="SIMULATOR_SANDBOX_UNAVAILABLE",
+            ) from exc
         except Exception:
             listener.close()
             raise
@@ -996,7 +1019,10 @@ def _scenario_result(
     timeout_seconds: int,
 ) -> dict[str, Any]:
     capability = hashlib.sha256(f"{scenario.stable_sha256}:{uuid.uuid4()}".encode("ascii")).hexdigest()
-    socket_path = install_root / f"broker-{scenario.stable_sha256[:12]}.sock"
+    # One broker runs at a time inside this invocation-specific directory.  A
+    # deliberately short basename keeps the host AF_UNIX path below Linux's
+    # sockaddr limit even in hosted CI workspaces with long checkout paths.
+    socket_path = install_root / _BROKER_SOCKET_NAME
     broker = _UnixBrokerSimulator(
         socket_path=socket_path,
         capability=capability,
