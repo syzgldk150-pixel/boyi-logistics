@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -26,6 +27,9 @@ from agent.automation_plugins.developer_simulator_v2 import (
     run_service_v2_scenarios,
 )
 from agent.automation_plugins.errors import AutomationPluginError
+from agent.automation_plugins.fixture_connectors import (
+    invoke_fixture_tracking_query,
+)
 
 
 def _configure_windows_streams() -> None:
@@ -96,6 +100,16 @@ def _handle_diff(args: argparse.Namespace) -> Mapping[str, Any]:
     )
 
 
+def _handle_connector_test(args: argparse.Namespace) -> Mapping[str, Any]:
+    return asyncio.run(
+        invoke_fixture_tracking_query(
+            fixture_root=args.fixture_root,
+            fixture_path=args.fixture,
+            tracking_number=args.tracking_number,
+        )
+    )
+
+
 def _register_core_commands(subparsers: Any) -> None:
     init_parser = subparsers.add_parser(
         "init",
@@ -152,6 +166,15 @@ def _register_core_commands(subparsers: Any) -> None:
     diff_parser.add_argument("before", type=Path)
     diff_parser.add_argument("after", type=Path)
     diff_parser.set_defaults(_handler=_handle_diff)
+
+    connector_parser = subparsers.add_parser(
+        "connector-test",
+        help="query the opt-in offline tracking fixture through ConnectorRegistry",
+    )
+    connector_parser.add_argument("--fixture-root", required=True, type=Path)
+    connector_parser.add_argument("--fixture", required=True, type=Path)
+    connector_parser.add_argument("--tracking-number", required=True)
+    connector_parser.set_defaults(_handler=_handle_connector_test)
 
 
 def build_parser() -> argparse.ArgumentParser:
