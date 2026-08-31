@@ -165,16 +165,12 @@ from agent.orchestration.automation_project_entrypoints import (
     ServiceV2FeishuDispatcher,
     TrustedDynamicArgumentResolver,
 )
-from agent.orchestration.automation_project_policy_service import (
-    AutomationProjectPolicyService,
-)
+from agent.orchestration.automation_project_policy_service import AutomationProjectPolicyService
 from agent.orchestration.command_gateway import CommandGateway
 from agent.orchestration.context_builder import ContextBuilder
 from agent.orchestration.control_plane_service import ControlPlaneService
-from agent.orchestration.feishu_approval_service import (
-    DEFAULT_NOTIFICATION_LEASE_SECONDS,
-    FeishuApprovalService,
-)
+from agent.orchestration.feishu_approval_service import DEFAULT_NOTIFICATION_LEASE_SECONDS, FeishuApprovalService
+from agent.orchestration.service_v2_waybill_entry_extension_host import ServiceV2WaybillEntryExtensionHost
 from agent.orchestration.execution_adapter import RegisteredToolExecutionAdapter
 from agent.orchestration.models import (
     Actor,
@@ -194,6 +190,7 @@ from agent.orchestration.scheduled_task_approval_service import ScheduledTaskApp
 from agent.orchestration.result_verifier import ResultVerifier
 from agent.orchestration.workflow_runner import WorkflowRunner
 from agent.automation_plugins.release_scope import WINDOWS_WORKER_RELEASE_ENABLED
+
 if WINDOWS_WORKER_RELEASE_ENABLED:
     from agent.windows_worker.server_api import (
         FilesystemWorkerPackageArchiveReader,
@@ -1537,6 +1534,11 @@ app.include_router(
     create_automation_project_router(
         service_provider=_automation_project_policies,
         actor_provider=lambda request: _require_console_admin_request(request),
+        module_slot_host_provider=lambda: ServiceV2WaybillEntryExtensionHost(
+            policy_service=_automation_project_policies(),
+            contribution_registry=_automation_plugins().contribution_registry,
+            command_gateway=_automation_project_policies().command_gateway,
+        ),
     )
 )
 app.include_router(
@@ -1554,8 +1556,7 @@ app.include_router(
         actor_provider=lambda request: _require_console_admin_request(request),
         include_worker_routes=WINDOWS_WORKER_RELEASE_ENABLED,
         scheduler_refresh_provider=lambda: (
-            _automation_plugins()
-            .service_effect_driver.refresh_contribution_projection()
+            _automation_plugins().service_effect_driver.refresh_contribution_projection()
         ),
     )
 )

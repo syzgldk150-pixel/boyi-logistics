@@ -42,6 +42,7 @@ def service_v2_wizard_projection(
         "feishu",
         "events",
         "harness",
+        "module_slots",
     ):
         raw_items = manifest.contributes.get(kind, ())
         if not isinstance(raw_items, (list, tuple)):

@@ -11,12 +11,16 @@ from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, UUID4
 
 from agent.orchestration.automation_project_policy_service import (
     AutomationProjectPolicyService,
 )
 from agent.orchestration.models import Actor
+from agent.orchestration.service_v2_waybill_entry_extension_host import (
+    ServiceV2WaybillEntryExtensionHost,
+)
 from shared.contracts import api_success
 
 
@@ -59,10 +63,18 @@ class ProjectSelectionConfirmationRequest(BaseModel):
     selected_bill_codes: list[str] = Field(min_length=1, max_length=10_000)
 
 
+class WaybillEntryModuleSlotInvokeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: UUID4
+    waybill: dict[str, Any]
+
+
 def create_automation_project_router(
     *,
     service_provider: Callable[[], AutomationProjectPolicyService],
     actor_provider: Callable[[Request], Actor],
+    module_slot_host_provider: (Callable[[], ServiceV2WaybillEntryExtensionHost] | None) = None,
 ) -> APIRouter:
     """Build routes around injected providers without importing ``main``."""
 
@@ -250,6 +262,44 @@ def create_automation_project_router(
         serialized = receipt.to_dict() if callable(getattr(receipt, "to_dict", None)) else receipt
         return api_success(serialized)
 
+    if module_slot_host_provider is not None:
+
+        @router.get("/internal/v1/automation-projects/module-slots/waybill-entry")
+        async def list_waybill_entry_module_slots(
+            request: Request,
+        ) -> dict[str, Any]:
+            actor = actor_provider(request)
+            return api_success(module_slot_host_provider().list_module_slots(actor=actor))
+
+        @router.post("/internal/v1/automation-projects/module-slots/waybill-entry/validators/invoke-active")
+        async def invoke_active_waybill_entry_validators(
+            payload: WaybillEntryModuleSlotInvokeRequest,
+            request: Request,
+        ) -> dict[str, Any]:
+            result = await module_slot_host_provider().invoke_active_validators(
+                request_id=str(payload.request_id),
+                waybill=payload.waybill,
+                actor=actor_provider(request),
+            )
+            return api_success(result)
+
+        @router.post("/internal/v1/automation-projects/module-slots/waybill-entry/{slot}/{handle}/invoke")
+        async def invoke_waybill_entry_module_slot(
+            slot: str,
+            handle: str,
+            payload: WaybillEntryModuleSlotInvokeRequest,
+            request: Request,
+        ) -> JSONResponse:
+            result = await module_slot_host_provider().invoke(
+                slot=slot,
+                handle=handle,
+                request_id=str(payload.request_id),
+                waybill=payload.waybill,
+                actor=actor_provider(request),
+            )
+            status_code = 202 if result.get("kind") == "action" else 200
+            return JSONResponse(status_code=status_code, content=api_success(result))
+
     return router
 
 
@@ -259,5 +309,6 @@ __all__ = [
     "ProjectPolicyUpdateRequest",
     "ProjectSelectionConfirmationRequest",
     "ProjectSelectionPreviewRequest",
+    "WaybillEntryModuleSlotInvokeRequest",
     "create_automation_project_router",
 ]

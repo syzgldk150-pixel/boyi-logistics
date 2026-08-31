@@ -45,6 +45,7 @@ _SERVICE_V2_TOOL_GOVERNANCE_FIELDS = _CORE_GOVERNANCE_FIELDS + (
 _SERVICE_V2_ENTRYPOINT_KINDS = TRUSTED_AUTOMATION_ENTRYPOINTS | {
     "events",
     "harness",
+    "module_slots",
 }
 
 
@@ -61,6 +62,7 @@ class AutomationEntrypoint(str, Enum):
     FEISHU = "feishu"
     WEBHOOK = "webhook"
     EVENTS = "events"
+    MODULE_SLOTS = "module_slots"
 
 
 class AutomationProjectContractError(ValueError):
@@ -443,31 +445,19 @@ def compile_automation_project_contract(
     effective_entrypoints = frozenset(str(item) for item in plugin_entrypoints)
     entrypoint_kinds = plugin_fragment.get("entrypoint_kinds")
     if runtime_model == "ACTION_V1" and entrypoint_kinds is None:
-        entrypoint_kinds = {
-            entrypoint: entrypoint for entrypoint in effective_entrypoints
-        }
-    if not isinstance(entrypoint_kinds, Mapping) or set(entrypoint_kinds) != set(
-        effective_entrypoints
-    ):
+        entrypoint_kinds = {entrypoint: entrypoint for entrypoint in effective_entrypoints}
+    if not isinstance(entrypoint_kinds, Mapping) or set(entrypoint_kinds) != set(effective_entrypoints):
         raise AutomationProjectContractError("PLUGIN_ENTRYPOINTS_INVALID")
-    normalized_entrypoint_kinds = {
-        str(entrypoint): str(kind)
-        for entrypoint, kind in entrypoint_kinds.items()
-    }
+    normalized_entrypoint_kinds = {str(entrypoint): str(kind) for entrypoint, kind in entrypoint_kinds.items()}
+    if runtime_model == "ACTION_V1" and AutomationEntrypoint.MODULE_SLOTS.value in normalized_entrypoint_kinds.values():
+        raise AutomationProjectContractError("PROJECT_MODULE_SLOTS_SERVICE_V2_REQUIRED")
     allowed_entrypoint_kinds = (
-        _SERVICE_V2_ENTRYPOINT_KINDS
-        if runtime_model == "SERVICE_V2"
-        else TRUSTED_AUTOMATION_ENTRYPOINTS | {"events"}
+        _SERVICE_V2_ENTRYPOINT_KINDS if runtime_model == "SERVICE_V2" else TRUSTED_AUTOMATION_ENTRYPOINTS | {"events"}
     )
-    if (
-        not effective_entrypoints
-        or set(normalized_entrypoint_kinds.values())
-        - allowed_entrypoint_kinds
-    ):
+    if not effective_entrypoints or set(normalized_entrypoint_kinds.values()) - allowed_entrypoint_kinds:
         raise AutomationProjectContractError("PLUGIN_ENTRYPOINTS_INVALID")
     if runtime_model == "ACTION_V1" and any(
-        entrypoint != kind
-        for entrypoint, kind in normalized_entrypoint_kinds.items()
+        entrypoint != kind for entrypoint, kind in normalized_entrypoint_kinds.items()
     ):
         raise AutomationProjectContractError("PLUGIN_ENTRYPOINTS_INVALID")
     configured_entrypoints = plugin_fragment.get("enabled_entrypoints")

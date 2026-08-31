@@ -24,6 +24,10 @@ from agent.automation_plugins.ports import RuntimeEffectPlan
 from agent.automation_plugins.service_registry import (
     package_provider_registration_id,
 )
+from shared.waybill_entry_extensions import (
+    normalize_waybill_entry_extension_handle,
+    normalize_waybill_entry_slot,
+)
 
 
 _SERVICE_PROVIDER_GENERATION = 1
@@ -37,6 +41,11 @@ _LEGACY_SERVICE_V2_CONTRIBUTION_KINDS = (
 )
 _SERVICE_V2_CONTRIBUTION_KINDS = _LEGACY_SERVICE_V2_CONTRIBUTION_KINDS + (
     "harness",
+    "module_slots",
+)
+_SERVICE_V2_CONTRIBUTION_KEYSETS = frozenset(
+    frozenset((*_LEGACY_SERVICE_V2_CONTRIBUTION_KINDS, *optional))
+    for optional in ((), ("harness",), ("module_slots",), ("harness", "module_slots"))
 )
 _MANAGED_CONTRIBUTION_KINDS = _SERVICE_V2_CONTRIBUTION_KINDS
 _ACTIVE_CONTRIBUTION_KINDS = (
@@ -46,6 +55,7 @@ _ACTIVE_CONTRIBUTION_KINDS = (
     "feishu",
     "events",
     "harness",
+    "module_slots",
 )
 _SCHEDULE_BACKEND_TIMEZONE = "Asia/Shanghai"
 _WEBHOOK_ROUTE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$", re.ASCII)
@@ -248,6 +258,28 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
+def _module_slot_handle(
+    *,
+    automation_id: str,
+    generation: int,
+    declaration: Mapping[str, Any],
+) -> str:
+    """Derive the opaque public identity from the exact signed generation."""
+
+    slot = normalize_waybill_entry_slot(declaration.get("slot"))
+    contribution_id = str(declaration.get("id") or "")
+    declaration_sha256 = _digest(dict(declaration))
+    return _digest(
+        {
+            "automation_id": automation_id,
+            "generation": generation,
+            "slot": slot,
+            "contribution_id": contribution_id,
+            "declaration_sha256": declaration_sha256,
+        }
+    )
+
+
 def _feishu_command_digest(command: str) -> str:
     """Hash the exact command bytes without JSON normalization or folding."""
 
@@ -345,6 +377,22 @@ class ManagedEventDispatchTarget:
     automation_id: str
     generation: int
     contribution_id: str
+
+
+@dataclass(frozen=True)
+class ManagedModuleSlotDispatchTarget:
+    """Exact internal owner resolved from one public generation-bound handle."""
+
+    automation_id: str
+    generation: int
+    contribution_id: str
+    contribution_kind: str
+    slot: str
+    handle: str
+    declaration_sha256: str
+    service: str
+    operation: str
+    declaration: Mapping[str, Any]
 
 
 class ManagedContributionRegistry:
@@ -534,6 +582,8 @@ class ManagedContributionRegistry:
                     code="CONTRIBUTION_REGISTRATION_CONFLICT",
                 )
             _harness_runtime_permissions(candidate.runtime_permissions)
+        if candidate.contribution_kind == "module_slots":
+            _validate_module_slot_declaration(declaration)
         if candidate.contribution_kind == "feishu":
             commands = declaration.get("commands")
             if (
@@ -558,6 +608,7 @@ class ManagedContributionRegistry:
             _validated_event_declaration(declaration)
         expected_routes = _contribution_route_keys(
             automation_id=candidate.automation_id,
+            generation=candidate.generation,
             contribution_kind=candidate.contribution_kind,
             declaration=declaration,
         )
@@ -1033,6 +1084,64 @@ class ManagedContributionRegistry:
                 )
             return self._clone(record)
 
+    def resolve_active_module_slot(
+        self,
+        *,
+        slot: str,
+        handle: str,
+    ) -> ManagedModuleSlotDispatchTarget:
+        """Resolve one safe public handle back to its exact active owner."""
+
+        try:
+            normalized_slot = normalize_waybill_entry_slot(slot)
+            normalized_handle = normalize_waybill_entry_extension_handle(handle)
+        except ValueError as exc:
+            raise PluginConflictError(
+                "requested module-slot contribution is unavailable",
+                code="CAPABILITY_UNAVAILABLE",
+            ) from exc
+        with self._lock:
+            matches = tuple(
+                record
+                for record in self._registrations.values()
+                if record.contribution_kind == "module_slots"
+                and record.dispatch_available
+                and self._active_generations.get(record.automation_id)
+                == record.generation
+                and record.declaration.get("slot") == normalized_slot
+                and _module_slot_handle(
+                    automation_id=record.automation_id,
+                    generation=record.generation,
+                    declaration=record.declaration,
+                )
+                == normalized_handle
+            )
+            if not matches:
+                raise PluginConflictError(
+                    "requested module-slot contribution is unavailable",
+                    code="CAPABILITY_UNAVAILABLE",
+                )
+            if len(matches) != 1:
+                raise PluginConflictError(
+                    "requested module-slot contribution is ambiguous",
+                    code="RUNTIME_PROJECTION_AMBIGUOUS",
+                )
+            record = matches[0]
+            declaration = copy.deepcopy(dict(record.declaration))
+            declaration_sha256 = _digest(declaration)
+            return ManagedModuleSlotDispatchTarget(
+                automation_id=record.automation_id,
+                generation=record.generation,
+                contribution_id=record.contribution_id,
+                contribution_kind=record.contribution_kind,
+                slot=normalized_slot,
+                handle=normalized_handle,
+                declaration_sha256=declaration_sha256,
+                service=record.service,
+                operation=record.operation,
+                declaration=_freeze_json(declaration),
+            )
+
     def resolve_active_feishu_command(
         self,
         command: str,
@@ -1249,6 +1358,70 @@ class ManagedContributionRegistry:
                 contribution_id=record.contribution_id,
             )
 
+    def active_module_slot_snapshot(
+        self,
+        *,
+        automation_id: str | None = None,
+        slot: str | None = None,
+    ) -> tuple[Mapping[str, str], ...]:
+        """Return only the three host-renderable module-slot fields."""
+
+        normalized_automation_id: str | None = None
+        if automation_id is not None:
+            normalized_automation_id = str(automation_id)
+            if (
+                not normalized_automation_id
+                or normalized_automation_id != normalized_automation_id.strip()
+            ):
+                raise ValueError("automation_id is invalid")
+        try:
+            normalized_slot = (
+                normalize_waybill_entry_slot(slot) if slot is not None else None
+            )
+        except ValueError as exc:
+            raise ValueError("module slot is invalid") from exc
+        with self._lock:
+            projected = []
+            for record in self._registrations.values():
+                if (
+                    record.contribution_kind != "module_slots"
+                    or not record.dispatch_available
+                    or self._active_generations.get(record.automation_id)
+                    != record.generation
+                    or (
+                        normalized_automation_id is not None
+                        and record.automation_id != normalized_automation_id
+                    )
+                    or (
+                        normalized_slot is not None
+                        and record.declaration.get("slot") != normalized_slot
+                    )
+                ):
+                    continue
+                item = {
+                    "slot": normalize_waybill_entry_slot(
+                        record.declaration.get("slot")
+                    ),
+                    "handle": _module_slot_handle(
+                        automation_id=record.automation_id,
+                        generation=record.generation,
+                        declaration=record.declaration,
+                    ),
+                    "title": str(record.declaration.get("title") or ""),
+                }
+                projected.append(item)
+            return tuple(
+                _freeze_json(item)
+                for item in sorted(
+                    projected,
+                    key=lambda value: (
+                        value["slot"],
+                        value["title"],
+                        value["handle"],
+                    ),
+                )
+            )
+
     def active_snapshot(
         self,
         *,
@@ -1308,6 +1481,18 @@ class ManagedContributionRegistry:
                             ),
                         }
                     )
+                elif record.contribution_kind == "module_slots":
+                    item = {
+                        "slot": normalize_waybill_entry_slot(
+                            record.declaration.get("slot")
+                        ),
+                        "handle": _module_slot_handle(
+                            automation_id=record.automation_id,
+                            generation=record.generation,
+                            declaration=record.declaration,
+                        ),
+                        "title": str(record.declaration.get("title") or ""),
+                    }
                 else:
                     item = {
                         "automation_id": record.automation_id,
@@ -1384,10 +1569,7 @@ def _closed_service_v2_contributions(
     if not isinstance(contributions, Mapping):
         raise PluginConflictError("v2 contribution contract is missing")
     contribution_keys = set(contributions)
-    if contribution_keys not in (
-        set(_LEGACY_SERVICE_V2_CONTRIBUTION_KINDS),
-        set(_SERVICE_V2_CONTRIBUTION_KINDS),
-    ):
+    if frozenset(contribution_keys) not in _SERVICE_V2_CONTRIBUTION_KEYSETS:
         if contribution_keys - set(_SERVICE_V2_CONTRIBUTION_KINDS):
             raise PluginConflictError(
                 "plugin-provided frontend or unknown contribution is forbidden",
@@ -1417,6 +1599,11 @@ def _closed_service_v2_contributions(
                 raise PluginConflictError("v2 contribution identity is invalid")
             if kind == "harness":
                 _validate_harness_declaration(
+                    item,
+                    snapshot=snapshot,
+                )
+            if kind == "module_slots":
+                _validate_module_slot_declaration(
                     item,
                     snapshot=snapshot,
                 )
@@ -1493,6 +1680,74 @@ def _validate_harness_declaration(
         )
 
 
+def _validate_module_slot_declaration(
+    declaration: Mapping[str, Any],
+    *,
+    snapshot: RuntimeGenerationSnapshot | None = None,
+) -> None:
+    expected_fields = {
+        "id",
+        "slot",
+        "title",
+        "service",
+        "operation",
+        "default_enabled",
+    }
+    if set(declaration) != expected_fields:
+        raise PluginConflictError(
+            "v2 module-slot contribution declaration is not closed",
+            code="PLUGIN_CONTRACT_INVALID",
+        )
+    for field_name, maximum in (
+        ("id", 64),
+        ("title", 120),
+        ("service", 191),
+        ("operation", 128),
+    ):
+        value = declaration.get(field_name)
+        if (
+            not isinstance(value, str)
+            or not value
+            or value != value.strip()
+            or len(value) > maximum
+        ):
+            raise PluginConflictError(
+                f"v2 module-slot contribution {field_name} is invalid",
+                code="PLUGIN_CONTRACT_INVALID",
+            )
+    try:
+        normalize_waybill_entry_slot(declaration.get("slot"))
+    except ValueError as exc:
+        raise PluginConflictError(
+            "v2 module-slot contribution slot is invalid",
+            code="PLUGIN_CONTRACT_INVALID",
+        ) from exc
+    if type(declaration.get("default_enabled")) is not bool:
+        raise PluginConflictError(
+            "v2 module-slot contribution default_enabled is invalid",
+            code="PLUGIN_CONTRACT_INVALID",
+        )
+    if snapshot is None:
+        return
+    effect = _provider_operation_effects(snapshot).get(
+        (str(declaration["service"]), str(declaration["operation"]))
+    )
+    if effect not in {CapabilityEffect.READ, CapabilityEffect.COMPUTE}:
+        raise PluginConflictError(
+            "v2 module-slot contribution Provider effect is not read-only",
+            code="CAPABILITY_UNAVAILABLE",
+        )
+    governance = governance_for_effect(effect).to_mapping()
+    if (
+        governance["broker_effect"] != "read"
+        or governance["operation_type"] not in {"read", "compute"}
+    ):
+        raise PluginConflictError(
+            "v2 module-slot contribution governance is not read-only",
+            code="CAPABILITY_UNAVAILABLE",
+        )
+
+
 def _validated_webhook_declaration(
     declaration: Mapping[str, Any],
 ) -> tuple[str, str]:
@@ -1553,6 +1808,7 @@ def _validated_event_declaration(
 def _contribution_route_keys(
     *,
     automation_id: str,
+    generation: int,
     contribution_kind: str,
     declaration: Mapping[str, Any],
 ) -> tuple[str, ...]:
@@ -1563,6 +1819,15 @@ def _contribution_route_keys(
         return (f"scheduler:{automation_id}:{contribution_id}",)
     if contribution_kind == "harness":
         return (f"harness:{automation_id}:{contribution_id}",)
+    if contribution_kind == "module_slots":
+        _validate_module_slot_declaration(declaration)
+        slot = normalize_waybill_entry_slot(declaration.get("slot"))
+        handle = _module_slot_handle(
+            automation_id=automation_id,
+            generation=generation,
+            declaration=declaration,
+        )
+        return (f"module-slot:{slot}:{handle}",)
     if contribution_kind == "webhook":
         method, route = _validated_webhook_declaration(declaration)
         return (f"webhook:{method}:{route}",)
@@ -1615,6 +1880,9 @@ def _contribution_backend(
         # runtime or expose a transport; a later HarnessToolCatalog consumes
         # the immutable active record through the registry snapshot.
         return "harness_tool_catalog", "READY", None, None
+    if contribution_kind == "module_slots":
+        _validate_module_slot_declaration(declaration)
+        return "managed_module_slot_host", "READY", None, None
     if contribution_kind == "feishu":
         return "managed_feishu_router", "READY", None, None
     if contribution_kind == "webhook":
@@ -1645,6 +1913,8 @@ def _contribution_registration_material(
     project_schedule = snapshot.execution_metadata.get("schedule")
     if not isinstance(project_schedule, Mapping):
         raise PluginConflictError("generation project schedule is invalid")
+    if contribution_kind == "module_slots":
+        _validate_module_slot_declaration(declaration, snapshot=snapshot)
     backend, backend_status, reason_code, reason_detail = _contribution_backend(
         contribution_kind=contribution_kind,
         declaration=declaration,
@@ -1671,6 +1941,7 @@ def _contribution_registration_material(
         "route_keys": list(
             _contribution_route_keys(
                 automation_id=snapshot.automation_id,
+                generation=snapshot.generation,
                 contribution_kind=contribution_kind,
                 declaration=declaration,
             )
@@ -1807,6 +2078,7 @@ def _validated_managed_contribution_effect_payload(
         raise PluginConflictError("managed contribution effect digest is invalid")
     expected_routes = _contribution_route_keys(
         automation_id=strings["automation_id"],
+        generation=generation,
         contribution_kind=strings["contribution_kind"],
         declaration=normalized_declaration,
     )
@@ -1906,6 +2178,7 @@ def _service_v2_contribution_effect_plans(
         "feishu": RuntimeEffectKind.CONTRIBUTION_REGISTRATION,
         "events": RuntimeEffectKind.CONTRIBUTION_REGISTRATION,
         "harness": RuntimeEffectKind.CONTRIBUTION_REGISTRATION,
+        "module_slots": RuntimeEffectKind.CONTRIBUTION_REGISTRATION,
     }
     plans: list[RuntimeEffectPlan] = []
     for kind in _MANAGED_CONTRIBUTION_KINDS:
@@ -1993,5 +2266,6 @@ __all__ = [
     "ManagedContributionRegistration",
     "ManagedContributionRegistry",
     "ManagedEventDispatchTarget",
+    "ManagedModuleSlotDispatchTarget",
     "ManagedWebhookDispatchTarget",
 ]

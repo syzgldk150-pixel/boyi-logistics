@@ -233,7 +233,14 @@ class AutomationPluginManagementServiceMixin:
 
         contributions: list[dict[str, Any]] = []
         raw_contributions = value.get("contributions")
-        allowed_kinds = {"console", "scheduler", "webhook", "feishu", "events"}
+        allowed_kinds = {
+            "console",
+            "scheduler",
+            "webhook",
+            "feishu",
+            "events",
+            "module_slots",
+        }
         if not isinstance(raw_contributions, list) or len(raw_contributions) > 128:
             return None
         seen_contributions: set[str] = set()

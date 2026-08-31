@@ -23,6 +23,7 @@ from . import (
     ocr,
     receipts,
     waybills,
+    waybill_entry_extensions,
 )
 
 
@@ -42,6 +43,7 @@ class ConsoleRouteDispatcher:
         customer_service,
         receipts,
         ocr,
+        waybill_entry_extensions,
         waybills,
     )
 

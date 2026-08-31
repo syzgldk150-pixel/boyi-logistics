@@ -20,6 +20,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent.automation_plugins.errors import PluginManifestError
 from agent.automation_plugins.host_capability_registry import CapabilityEffect
+from shared.waybill_entry_extensions import (
+    WAYBILL_ENTRY_EXTENSION_SLOTS,
+    normalize_waybill_entry_slot,
+)
 
 
 _PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
@@ -70,8 +74,11 @@ _RESOURCE_ROLE_FIELDS = frozenset({"role", "allowed_kinds", "required"})
 _CONTRIBUTION_REQUIRED_FIELDS = frozenset(
     {"console", "scheduler", "webhook", "feishu", "events"}
 )
-_CONTRIBUTION_FIELDS = _CONTRIBUTION_REQUIRED_FIELDS | {"harness"}
+_CONTRIBUTION_FIELDS = _CONTRIBUTION_REQUIRED_FIELDS | {"harness", "module_slots"}
 _CONSOLE_FIELDS = frozenset({"id", "title", "service", "operation", "default_enabled"})
+_MODULE_SLOT_FIELDS = frozenset(
+    {"id", "slot", "title", "service", "operation", "default_enabled"}
+)
 _SCHEDULER_FIELDS = frozenset(
     {
         "id",
@@ -665,6 +672,8 @@ def _validate_contributes(
     }
     if "harness" in raw:
         result["harness"] = []
+    if "module_slots" in raw:
+        result["module_slots"] = []
 
     for index, raw_item in enumerate(_array(raw["console"], "contributes.console")):
         path = f"contributes.console[{index}]"
@@ -848,6 +857,45 @@ def _validate_contributes(
                 # This is a redundant declaration.  ServiceV2ProjectContract
                 # derives governance from the Provider effect, never here.
                 "effect": declared_effect.value,
+            }
+        )
+
+    for index, raw_item in enumerate(
+        _array(raw.get("module_slots", []), "contributes.module_slots")
+    ):
+        path = f"contributes.module_slots[{index}]"
+        item = _mapping(raw_item, path, _MODULE_SLOT_FIELDS)
+        service, operation = _contribution_target(
+            item,
+            path=path,
+            operations_by_service=operations_by_service,
+        )
+        try:
+            slot = normalize_waybill_entry_slot(item["slot"])
+        except ValueError as exc:
+            allowed = ", ".join(WAYBILL_ENTRY_EXTENSION_SLOTS)
+            raise PluginManifestError(
+                f"{path}.slot must be one of: {allowed}"
+            ) from exc
+        authoritative_effect = provided_operation_effects.get((service, operation))
+        if authoritative_effect not in {
+            CapabilityEffect.READ,
+            CapabilityEffect.COMPUTE,
+        }:
+            raise PluginManifestError(
+                f"{path} must target a read or compute Provider operation"
+            )
+        result["module_slots"].append(
+            {
+                "id": _contribution_id(item["id"], f"{path}.id", seen=seen_ids),
+                "slot": slot,
+                "title": _text(item["title"], f"{path}.title", maximum=120),
+                "service": service,
+                "operation": operation,
+                "default_enabled": _boolean(
+                    item["default_enabled"],
+                    f"{path}.default_enabled",
+                ),
             }
         )
     return result

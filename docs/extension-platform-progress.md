@@ -214,12 +214,12 @@ updated: 2026-08-31
 
 - 状态：`IN_PROGRESS`
 - 开始时间 / 结束时间：`2026-08-31T11:38:27+08:00` / —
-- 设计决策：独立提交；先审计录单页现有宿主边界与 Service v2 contribution 链，只允许 exact `waybill_entry.actions`、`waybill_entry.validators` 两个槽位。插件仅声明闭合的宿主渲染元数据和已签名 service/operation，调用时仍由 Registry、项目合同与 Policy 派生权限、账号、资源和参数；禁止任意 HTML/JS/CSS、DOM/Cookie/内部接口访问、远程前端代码或隐式 fallback。复用 committed generation 的原子刷新与撤销语义，卸载贡献后录单核心必须保持可用。
-- 修改文件 / Commit SHA：— / —
-- 测试命令和结果：尚未运行。
-- 兼容性影响：卸载贡献后录单核心保持可用。
-- 数据库影响：先审计；不得臆造迁移。
-- 未完成项：全部。
+- 设计决策：独立提交；只允许 exact `waybill_entry.actions`、`waybill_entry.validators` 两个槽位，并且只挂载在本地博益手工录单 frame `/ocr/boyi/frame`，不进入韵达/融辉跨域原页。插件只声明闭合 Host 元数据和已签名 `read/compute` Provider operation；Console GET 只消费 `{slot,handle,title}`，固定 Host HTML/JS/CSS 渲染按钮和校验反馈。动作的浏览器同源 POST 只含 `{request_id,waybill}`，必须带与 body 一致的 canonical `X-Browser-Request-UUID`；21 个业务字段单点来自 `shared.waybill_entry_extensions`，不含 `waybill_no/weight_volume/return_to/auto_print/action`，也不含项目、代际、service、operation、effect、账号、资源、Actor、角色或任意参数。validator 不依赖客户端门禁：Console 在原 `/waybills/manual` 实际落库前从同一表单构造闭合 draft，以服务端 UUID 和签名 principal 调用 Agent active-set 端点；Agent 对前后完全一致的 validators-only active snapshot 逐一运行 exact handle。invalid、超时、调用失败、畸形响应或激活/停用/切代漂移均阻止本次；稳定空集合才恢复核心原生保存。禁止插件 HTML/JS/CSS、远程前端、DOM/Cookie/内部接口访问和隐式 fallback。
+- 修改文件 / Commit SHA：Console 宿主服务、路由、Boyi frame 模板、Catalog/安装向导安全投影及测试；Agent/shared generation Registry、Manifest/compiled contract、Policy/API 由同 TASK 并行实现；文档与三层指令镜像 / —
+- 测试命令和结果：Console 聚焦与相邻边界先后 `38 passed`、`59 passed`，最终聚焦组合为 `112 passed`；Console 全量 pytest 为 `611 passed, 213 subtests passed`（另以 unittest discover 复核 `561 passed`）。Ruff 对全部 Console 改动、`git diff --check` 均通过；跨分片集成待本 TASK 收口。测试设置 `PYTHONDONTWRITEBYTECODE=1` 与 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
+- 兼容性影响：核心 POST `/waybills/manual` 未修改；无 active validator 时行为不变。GET 投影不可用时只降级扩展展示，页面和核心录单继续可用；active validator 调用失败则只阻止当次保存，不能静默跳过；停用/卸载撤销 handle 后恢复核心路径。
+- 数据库影响：无需新增表、字段或迁移；复用既有 Manifest、compiled invocation、generation snapshot/activation journal、`ManagedContributionRegistry`、Policy、Command 与 Run。
+- 未完成项：最终全量回归、跨分片集成、独立复审和 Commit SHA 待本 TASK 收口。真实外部写、真实 TMS/飞书/生产数据、生产数据库、部署与生产故障演练均为 `PRODUCTION_GATED`；本轮未访问或执行。
 - 下一项 TASK：`TASK-EXT-011`。
 - 恢复说明：EXT009C 代码 `2571ca202f42c7155da8635af5de76cd0f906632` 与完成账本 `c47c7be` 已推送。从现有 Service v2 Manifest/compiled invocation、`ManagedContributionRegistry`、Policy 接受 UOW 二次核验和 Console 录单宿主边界开始审计；只实现两个 exact waybill slot 与本地 fixture，不连接真实 TMS/飞书、生产数据库，不执行外部写或部署。
 

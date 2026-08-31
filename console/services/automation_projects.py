@@ -178,7 +178,7 @@ AUTOMATION_PLUGIN_MIGRATION_RESERVED_BUSINESS_KEY_FIELDS = frozenset(
 )
 AUTOMATION_PLUGIN_ENTRYPOINTS = frozenset({"scheduler", "console", "feishu", "webhook"})
 AUTOMATION_PLUGIN_V2_ENTRYPOINT_KINDS = frozenset(
-    {"console", "scheduler", "webhook", "feishu", "events"}
+    {"console", "scheduler", "webhook", "feishu", "events", "module_slots"}
 )
 AUTOMATION_PLUGIN_CONTRIBUTION_PROJECTION_STATES = (
     _CONTRIBUTION_PROJECTION_STATES

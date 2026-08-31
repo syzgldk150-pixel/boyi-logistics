@@ -30,7 +30,8 @@ from agent.automation_plugins.code_owned_fields import (
 )
 from agent.orchestration.automation_project_service_v2 import (
     normalize_contribution_id,
-    require_active_service_v2_contribution,
+    normalize_service_v2_module_slot_context,
+    require_active_service_v2_dispatch,
     require_service_v2_policy_mode,
     resolve_invocation_contract_id,
     validate_service_v2_event_context,
@@ -123,6 +124,7 @@ _SOURCE_LABELS = {
     "feishu": "飞书",
     "webhook": "Webhook",
     "events": "Event",
+    "module_slots": "模块扩展",
 }
 _RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "EXTREME": 3}
 _TRUSTED_CONTEXT_FIELDS = {
@@ -156,6 +158,7 @@ _TRUSTED_CONTEXT_FIELDS = {
         }
     ),
     AutomationEntrypoint.EVENTS: frozenset({"event_name", "source_event_id"}),
+    AutomationEntrypoint.MODULE_SLOTS: frozenset({"module_slot", "dynamic_inputs"}),
 }
 _DEFAULT_FULL_AUTO_ACTOR_ID = "system:migration:automation-full-auto-v1"
 _DEFAULT_FULL_AUTO_REASON = "AUTOMATION_DEFAULT_FULL_AUTO"
@@ -193,9 +196,7 @@ class AutomationProjectPolicyService:
         *,
         command_gateway: CommandGateway | None = None,
         wake_runner: Callable[[str], None] | None = None,
-        dynamic_resolver: (
-            Callable[[str, str, Mapping[str, Any]], Any] | None
-        ) = None,
+        dynamic_resolver: (Callable[[str, str, Mapping[str, Any]], Any] | None) = None,
         release_hold_provider: Callable[[], bool] | None = None,
         contribution_registry: Any | None = None,
     ) -> None:
@@ -208,12 +209,15 @@ class AutomationProjectPolicyService:
         self._release_hold_provider = release_hold_provider
         self._contribution_registry = contribution_registry
 
+    @property
+    def command_gateway(self) -> CommandGateway:
+        if self._command_gateway is None:
+            raise OrchestrationError("PROJECT_INVOKE_UNAVAILABLE", "Automation project command gateway is unavailable")
+        return self._command_gateway
+
     def list_policies(self) -> dict[str, Any]:
         with self._repository.unit_of_work() as uow:
-            policies = {
-                str(row.get("automation_id") or ""): row
-                for row in uow.automation_projects.list_policies()
-            }
+            policies = {str(row.get("automation_id") or ""): row for row in uow.automation_projects.list_policies()}
         items = [
             self._describe_entry(entry, policies.get(entry.automation_id))
             for entry in self._plugin_catalog.list()
@@ -1257,20 +1261,23 @@ class AutomationProjectPolicyService:
                 "PROJECT_ENTRYPOINT_DISABLED",
                 "Action V1 projects cannot invoke the managed Event entrypoint",
             )
-        if source is AutomationEntrypoint.HARNESS and not is_service_v2:
+        if (
+            source
+            in {
+                AutomationEntrypoint.HARNESS,
+                AutomationEntrypoint.MODULE_SLOTS,
+            }
+            and not is_service_v2
+        ):
             raise OrchestrationError(
                 "PROJECT_ENTRYPOINT_DISABLED",
-                "Harness accepts only managed Service V2 contributions",
+                "Managed entrypoint accepts only Service V2 contributions",
             )
         command_idempotency_key = _idempotency_key(
             idempotency_key
             or (
                 f"automation:{safe_id}:{source.value}:"
-                + (
-                    f"{safe_contribution_id or 'default'}:"
-                    if is_service_v2
-                    else ""
-                )
+                + (f"{safe_contribution_id or 'default'}:" if is_service_v2 else "")
                 + f"{actor.actor_id}:{safe_request_id}"
             )
         )
@@ -1280,15 +1287,10 @@ class AutomationProjectPolicyService:
             if is_service_v2 and source is AutomationEntrypoint.EVENTS
             else None
         )
-        if (
-            is_service_v2
-            and source is AutomationEntrypoint.WEBHOOK
-            and "dynamic_inputs" in context
-        ):
+        if is_service_v2 and source is AutomationEntrypoint.WEBHOOK and "dynamic_inputs" in context:
             raise OrchestrationError(
                 "TRUSTED_CONTEXT_INVALID",
-                "Managed Webhook arguments must come from the signed "
-                "project contract",
+                "Managed Webhook arguments must come from the signed project contract",
             )
         expected_generation = (
             _positive_int(
@@ -1332,18 +1334,12 @@ class AutomationProjectPolicyService:
             if replay is not None:
                 return self._command_gateway.submit(replay)
             require_scan_formal_governance(entry)
-        if (
-            expected_generation is not None
-            and contract.automation_generation != expected_generation
-        ):
+        if expected_generation is not None and contract.automation_generation != expected_generation:
             raise OrchestrationError(
                 "PROJECT_INVOCATION_STALE",
                 "Automation project generation changed before invocation",
             )
-        if (
-            expected_configuration is not None
-            and contract.project_configuration_version != expected_configuration
-        ):
+        if expected_configuration is not None and contract.project_configuration_version != expected_configuration:
             raise OrchestrationError(
                 "PROJECT_INVOCATION_STALE",
                 "Automation project configuration changed before invocation",
@@ -1355,10 +1351,7 @@ class AutomationProjectPolicyService:
             context=context,
         )
         invocation_contract = contract.invocation_contracts.get(invocation_contract_id)
-        if (
-            invocation_contract is None
-            or invocation_contract.entrypoint != source.value
-        ):
+        if invocation_contract is None or invocation_contract.entrypoint != source.value:
             raise OrchestrationError(
                 "PROJECT_ENTRYPOINT_DISABLED",
                 "Requested entrypoint is not enabled for this automation project",
@@ -1370,14 +1363,17 @@ class AutomationProjectPolicyService:
             AutomationEntrypoint.FEISHU,
             AutomationEntrypoint.WEBHOOK,
             AutomationEntrypoint.EVENTS,
+            AutomationEntrypoint.MODULE_SLOTS,
         }
         if is_service_v2 and managed_projection_source:
-            require_active_service_v2_contribution(
+            require_active_service_v2_dispatch(
                 self._contribution_registry,
+                source=source,
+                entry=entry,
                 automation_id=safe_id,
                 generation=contract.automation_generation,
-                contribution_kind=source.value,
-                contribution_id=invocation_contract.contribution_id,
+                invocation_contract=invocation_contract,
+                context=context,
                 expected_event_name=expected_event_name,
             )
         occurred_at = datetime.now(timezone.utc)
@@ -1388,15 +1384,11 @@ class AutomationProjectPolicyService:
             **context,
         }
         if is_service_v2:
-            execution_context["contribution_id"] = (
-                invocation_contract.contribution_id
-            )
+            execution_context["contribution_id"] = invocation_contract.contribution_id
         selection_dynamic_inputs: Mapping[str, Any] | None = None
         if selection_preview_project and "dynamic_inputs" in context:
             raw_selection_inputs = context["dynamic_inputs"]
-            if not isinstance(raw_selection_inputs, Mapping) or set(
-                raw_selection_inputs
-            ) != {
+            if not isinstance(raw_selection_inputs, Mapping) or set(raw_selection_inputs) != {
                 "dry_run",
                 "selected_bill_codes",
                 "preview_fingerprint",
@@ -1494,6 +1486,7 @@ class AutomationProjectPolicyService:
             ),
             automation_invocation=invocation,
         )
+
         def guard(uow: Any) -> None:
             locked_contract, _config = self._lock_and_compile_contract(
                 uow,
@@ -1509,8 +1502,7 @@ class AutomationProjectPolicyService:
                 current_policy is None
                 or int(current_policy.get("version") or 0) != policy_version
                 or locked_contract.contract_hash != invocation.contract_hash
-                or locked_contract.automation_generation
-                != invocation.automation_generation
+                or locked_contract.automation_generation != invocation.automation_generation
             ):
                 raise OrchestrationError(
                     "PROJECT_INVOCATION_STALE",
@@ -1520,13 +1512,16 @@ class AutomationProjectPolicyService:
                 AutomationEntrypoint.FEISHU,
                 AutomationEntrypoint.WEBHOOK,
                 AutomationEntrypoint.EVENTS,
+                AutomationEntrypoint.MODULE_SLOTS,
             }:
-                require_active_service_v2_contribution(
+                require_active_service_v2_dispatch(
                     self._contribution_registry,
+                    source=source,
+                    entry=entry,
                     automation_id=safe_id,
                     generation=locked_contract.automation_generation,
-                    contribution_kind=source.value,
-                    contribution_id=invocation_contract.contribution_id,
+                    invocation_contract=invocation_contract,
+                    context=context,
                     expected_event_name=expected_event_name,
                 )
             if preview_context is not None and safe_preview_run_id is not None:
@@ -1548,9 +1543,7 @@ class AutomationProjectPolicyService:
                         locked_preview.context,
                         now=datetime.now(timezone.utc),
                     )
-                    if locked_preview.context.get(
-                        "context_sha256"
-                    ) != preview_context.get("context_sha256"):
+                    if locked_preview.context.get("context_sha256") != preview_context.get("context_sha256"):
                         raise OrchestrationError(
                             "SCAN_PREVIEW_STALE",
                             "The scan preview changed before command acceptance",
@@ -1564,6 +1557,7 @@ class AutomationProjectPolicyService:
                     )
 
         return self._command_gateway.submit(command, uow_guard=guard)
+
     async def invoke_trusted_and_wait(
         self,
         automation_id: str,
@@ -1587,9 +1581,7 @@ class AutomationProjectPolicyService:
             trusted_context=trusted_context,
             idempotency_key=idempotency_key,
             expected_automation_generation=expected_automation_generation,
-            expected_project_configuration_version=(
-                expected_project_configuration_version
-            ),
+            expected_project_configuration_version=(expected_project_configuration_version),
             preview_run_id=preview_run_id,
             contribution_id=contribution_id,
         )
@@ -2615,22 +2607,17 @@ class AutomationProjectPolicyService:
         entrypoint: AutomationEntrypoint,
         actor: Actor,
     ) -> None:
-        if entrypoint is AutomationEntrypoint.CONSOLE:
-            cls._require_console_admin(actor)
-            return
-        if entrypoint is AutomationEntrypoint.HARNESS:
+        if entrypoint in {
+            AutomationEntrypoint.CONSOLE,
+            AutomationEntrypoint.HARNESS,
+            AutomationEntrypoint.MODULE_SLOTS,
+        }:
             cls._require_console_admin(actor)
             return
         if entrypoint is AutomationEntrypoint.FEISHU:
-            if (
-                actor.actor_type is ActorType.FEISHU_USER
-                and (
-                    (actor.authenticated_by == "feishu_verified_event" and actor.roles == ())
-                    or (
-                        actor.authenticated_by == "feishu_admin_binding"
-                        and actor.roles == ("admin", "super_admin")
-                    )
-                )
+            if actor.actor_type is ActorType.FEISHU_USER and (
+                (actor.authenticated_by == "feishu_verified_event" and actor.roles == ())
+                or (actor.authenticated_by == "feishu_admin_binding" and actor.roles == ("admin", "super_admin"))
             ):
                 return
             raise OrchestrationError(
@@ -2938,6 +2925,8 @@ def _trusted_context(
             "TRUSTED_CONTEXT_INVALID",
             "Trusted dynamic inputs must be a JSON object",
         )
+    if entrypoint is AutomationEntrypoint.MODULE_SLOTS:
+        return normalize_service_v2_module_slot_context(context)
     return context
 
 
