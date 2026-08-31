@@ -3,6 +3,10 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import socket
+import sqlite3
+import subprocess
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -10,6 +14,7 @@ import pytest
 from agent.automation_plugins.connector_registry import (
     ConnectorContractInvalid,
     ConnectorRegistry,
+    ConnectorUnavailable,
 )
 from agent.automation_plugins.fixture_connectors import (
     FIXTURE_TRACKING_SERVICE,
@@ -219,6 +224,89 @@ def test_connector_cli_rejects_symlink_and_oversized_fixture(
     assert oversized_payload["error"]["code"] == "CONNECTOR_CONTRACT_INVALID"
 
 
+def test_connector_cli_rejects_symlinked_root_and_intermediate_directory(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    actual_root = tmp_path / "actual-root"
+    nested = actual_root / "nested"
+    nested.mkdir(parents=True)
+    fixture_content = (FIXTURE_ROOT / FIXTURE_NAME).read_text(encoding="utf-8")
+    (nested / "tracking.json").write_text(fixture_content, encoding="utf-8")
+
+    linked_root = tmp_path / "linked-root"
+    linked_root.symlink_to(actual_root, target_is_directory=True)
+    root_status, root_payload, _ = _invoke_cli(
+        fixture_root=linked_root.absolute(),
+        fixture=Path("nested/tracking.json"),
+        tracking_number="OFFLINE1001",
+        capsys=capsys,
+    )
+    assert root_status == 2
+    assert root_payload["error"]["code"] == "CONNECTOR_CONTRACT_INVALID"
+
+    trusted_root = tmp_path / "trusted-root"
+    trusted_root.mkdir()
+    linked_nested = trusted_root / "linked-nested"
+    linked_nested.symlink_to(nested, target_is_directory=True)
+    nested_status, nested_payload, _ = _invoke_cli(
+        fixture_root=trusted_root.absolute(),
+        fixture=Path("linked-nested/tracking.json"),
+        tracking_number="OFFLINE1001",
+        capsys=capsys,
+    )
+    assert nested_status == 2
+    assert nested_payload["error"]["code"] == "CONNECTOR_CONTRACT_INVALID"
+
+
+def test_connector_facade_uses_no_network_process_database_tms_or_feishu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("offline Connector crossed an external boundary")
+
+    monkeypatch.setattr(socket, "create_connection", forbidden)
+    monkeypatch.setattr(sqlite3, "connect", forbidden)
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    monkeypatch.setattr(urllib.request, "urlopen", forbidden)
+
+    result = asyncio.run(
+        invoke_fixture_tracking_query(
+            fixture_root=FIXTURE_ROOT.resolve(),
+            fixture_path=FIXTURE_NAME,
+            tracking_number="OFFLINE1001",
+        )
+    )
+    assert result["result"]["found"] is True
+
+    fixture_module = Path(__file__).parents[1] / "agent" / "agent" / "automation_plugins" / "fixture_connectors.py"
+    tree = ast.parse(fixture_module.read_text(encoding="utf-8"))
+    imported_modules = {
+        node.module or ""
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+    }
+    imported_modules.update(
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    )
+    forbidden_roots = (
+        "agent.feishu",
+        "agent.tms_runtime",
+        "httpx",
+        "pymysql",
+        "requests",
+        "sqlalchemy",
+    )
+    assert not any(
+        module == root or module.startswith(f"{root}.")
+        for module in imported_modules
+        for root in forbidden_roots
+    )
+
+
 def test_connector_cli_is_opt_in_and_production_registry_remains_empty(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -272,3 +360,21 @@ def test_production_composition_constructs_an_empty_connector_registry() -> None
         isinstance(node, ast.Name) and node.id == "build_fixture_tracking_registry"
         for node in ast.walk(builder)
     )
+
+
+@pytest.mark.parametrize(
+    "service",
+    (
+        "connector.boyi.arrival_stats_primary_sheet@1",
+        "connector.boyi.self_pickup_primary_ronghui@1",
+        "connector.boyi.split_pending_source_sheet@1",
+        "connector.boyi.scan_ronghui@1",
+    ),
+)
+def test_production_registry_closes_real_migration_connector_dependencies(
+    service: str,
+) -> None:
+    production_registry = ConnectorRegistry()
+    with pytest.raises(ConnectorUnavailable) as unavailable:
+        production_registry.require_operation(service, "query")
+    assert unavailable.value.code == "CONNECTOR_UNAVAILABLE"

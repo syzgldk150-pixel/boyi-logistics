@@ -2,10 +2,10 @@
 module: extension-platform-progress
 type: execution-ledger
 tags: [extension-platform, autonomous-execution, service-v2, migration]
-status: complete
+status: in-progress
 authority: canonical
 owner: repository
-updated: 2026-08-31
+updated: 2026-09-01
 ---
 
 # 扩展化平台无人值守执行账本
@@ -288,9 +288,9 @@ updated: 2026-08-31
 - 下一项 TASK：无；最终完整门禁与交付已完成。
 - 恢复说明：MIG004 代码 `daefd9b80584f89425152361fa034a6ffeb94fb1` 已推送；提交本完成账本后，从已推送 HEAD 运行最终仓库完整门禁，确认所有 TASK 均为 `DONE_OFFLINE` 或 `PRODUCTION_GATED`、临时工件已清理且分支与远端一致，然后写最终交付记录。不得读取 `.env`、访问真实系统、安装生产插件、合并 `main`、部署或执行真实扫描。
 
-## 最终离线交付记录
+## 旧最终离线交付记录（已被审查复核取代）
 
-- 状态：`COMPLETE_OFFLINE`
+- 状态：`SUPERSEDED_BY_REVIEW`；下列 2026-08-31 结论只保留为历史证据，不再代表当前分支最终门禁。
 - 完成时间：`2026-08-31T18:59:09+08:00`
 - TASK 汇总：从状态总览实际读取 18 项，`DONE_OFFLINE=18`、非完成项 0；所有需要真实系统、真实数据、生产安装、生产数据库、入口切换、部署或外部写的后续工作均保留在各 TASK 的 `PRODUCTION_GATED` 清单中，没有以离线 fixture 代替生产验收。
 - 最终提交前门禁：已提交 HEAD 上 root full suite `2531 passed, 30 skipped, 372 subtests passed`；Agent full suite `1181 passed, 1 skipped, 214 subtests passed`；Console full suite `618 passed, 213 subtests passed`。全仓受跟踪 Python Ruff、文档完整性（77 个 Markdown）、运行时导入边界、内部 API 合同、工具注册表（40 项）、15 个 JavaScript 语法、三套指令镜像与 `git diff --check` 均通过。repository hygiene 仍只报告 3 个本轮开始前已存在的超大模块，没有新增卫生问题。
@@ -298,3 +298,18 @@ updated: 2026-08-31
 - 临时文件：双构建 ZIP 已删除；本轮创建的 `pycache`、隔离 QA 环境及 EXT006/EXT011/MIG001 compile 临时目录共 5 个已在确认绝对路径位于仓库 `.task_tmp` 后清除，未删除本轮开始前已存在的其他临时目录。
 - 生产边界：全程未部署 ECS、未连接或修改生产数据库、未访问或修改真实 TMS/飞书业务数据、未执行真实扫描/打卡/问题件写入、未安装生产插件、未合并 `main`，也未读取或输出凭据。下一步只能在获得新的明确生产授权后，从各 TASK 的 `PRODUCTION_GATED` 清单制定分阶段验收与切换方案。
 - 恢复说明：检出 `agent/extension-platform-autonomous` 并读取本账本；若无新的明确生产授权，本轮无人值守任务已经终止于 `COMPLETE_OFFLINE`，不得自动越过任何 `PRODUCTION_GATED` 边界。
+
+## 2026-09-01 审查问题修复
+
+- 状态：`IN_PROGRESS`；只有本节新完整门禁全部通过后才能重新记录 `COMPLETE_OFFLINE`。
+- 范围：仅离线修复质量门禁、Harness、Webhook/Event 进程 ingress、tracking Connector 开发 CLI 和状态文档。未部署、未连接生产数据库、未访问真实 TMS/飞书数据、未执行真实写入、未安装生产插件、未合并 `main`。
+
+| Checkpoint | 状态 | Commit | 实际能力 |
+|---|---|---|---|
+| REVIEW-FIX-001 质量门禁 | `DONE_OFFLINE` | `dedc32161544834991e9546d172bab453e08c633` | 策略辅助函数和超限测试已机械拆分；进一步取消全部 Python 行数白名单的修复归入最终 checkpoint。 |
+| REVIEW-FIX-002 Harness | `DONE_OFFLINE` | `dc3f9462828b39282837a19524e59e2ebfca7793` | canary 成功时 `READY/OFFLINE_RESTRICTED`；只允许唯一精确标题的零参数动态只读工具。真实 LLM/业务读网关仍为 `PRODUCTION_GATED`。 |
+| REVIEW-FIX-003 Webhook/Event | `DONE_OFFLINE` | `f947749a4ca65546fa8a4eb77a660b1bc793d800` | `READY` 只表示已绑定的可信进程内 ingress；公网验签、外部事件源与可靠投递仍为 `PRODUCTION_GATED`。 |
+| REVIEW-FIX-004 Connector | `DONE_OFFLINE` | `ed4099a96d308f15dd4358b441b1981ac888ef71` | `offline_contract=COMPLETE`、`offline_runtime=READY`、`production_runtime=PRODUCTION_GATED`；仅显式 `connector-test` fixture 命令可调用。 |
+| REVIEW-FIX-005 状态与全量门禁 | `IN_PROGRESS` | 待提交 | 正在执行完整 compile、Ruff、root/Agent/Console pytest、文档、hygiene、导入边界、内部 API、工具注册表、JavaScript 语法与 `origin/main...HEAD` diff 检查。 |
+
+- 当前 Harness 产品离线链不需要 LLM API Key；可选真实模型 smoke 只供人工验收，不影响本次离线完成状态。

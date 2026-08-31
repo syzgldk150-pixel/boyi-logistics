@@ -10,14 +10,14 @@ related:
   - ../scripts/service_v2_plugin.py
   - ../extension_sdk/schemas/manifest-v2.schema.json
 status: active
-updated: 2026-08-31
+updated: 2026-09-01
 ---
 
 # Service v2 离线开发工具
 
 ## 1. 边界
 
-`agent/scripts/service_v2_plugin.py` 是 Service v2 源码、ZIP 和闭合场景的离线开发入口。它只处理调用者明确指定的本地路径，并把源码目录或 ZIP 交给现有 `verify_unsigned_plugin_zip_v2` 与 `ServiceV2ProjectContract.from_manifest` 权威链。七个命令都不会连接 Agent、Console、生产数据库、TMS、飞书或其他网络服务，也不会安装插件、建立项目、创建 grant、改变授权或触发生命周期操作。
+`agent/scripts/service_v2_plugin.py` 是 Service v2 源码、ZIP、闭合场景与 tracking Connector fixture 的离线开发入口。它只处理调用者明确指定的本地路径；工件命令把源码目录或 ZIP 交给现有 `verify_unsigned_plugin_zip_v2` 与 `ServiceV2ProjectContract.from_manifest` 权威链，`connector-test` 则以真实 `ConnectorRegistry.invoke` 调用显式本地 fixture。八个命令都不会连接 Agent、Console、生产数据库、TMS、飞书或其他网络服务，也不会安装插件、建立项目、创建 grant、改变授权或触发生命周期操作。
 
 在仓库根目录通过 Agent 包根直接运行：
 
@@ -27,7 +27,7 @@ PYTHONPATH=agent PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin --
 
 命令成功时向标准输出写一个稳定 JSON 对象；参数、合同或本地安全检查失败时向标准错误写闭合错误并返回非零状态。工具不加载 `.env`，也不接受凭据、账号 ID 或生产连接参数。
 
-## 2. 七个命令
+## 2. 八个命令
 
 | 命令 | 调用形式 | 结果与边界 |
 |---|---|---|
@@ -38,6 +38,7 @@ PYTHONPATH=agent PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin --
 | `permissions` | `permissions ARTIFACT` | 从已验证 Manifest、Provider effect 与 Host Capability Registry 投影声明权限；不创建 grant，不解析项目绑定，不代表当前运行授权。 |
 | `diff` | `diff BEFORE AFTER` | 比较两个已验证工件的身份、版本、成员、Manifest、权限、effect、贡献、配置 Schema 与存储声明；只给审阅分类，不声明项目配置或运行兼容性。 |
 | `test` | `test ARTIFACT --scenarios FILE [--timeout-seconds SECONDS]` | 在真实本地 Linux sandbox 中运行闭合 fixture；不接触真实 Host、账号、网络或业务数据。timeout 默认 30 秒，只接受 `1..300`，CLI 解析后模拟器会再次执行同一有界校验。 |
+| `connector-test` | `connector-test --fixture-root ROOT --fixture FILE --tracking-number NUMBER` | `ROOT` 必须是绝对可信目录，`FILE` 必须是其下相对 JSON 路径；调用闭合只读 tracking Connector，输出固定含 `write_attempted=false`，不显示 fixture 路径、合成账号或 Registry 私有身份。 |
 
 常用流程示例：
 
@@ -49,6 +50,7 @@ PYTHONPATH=agent PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin in
 PYTHONPATH=agent PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin permissions ./sample_compute.zip
 PYTHONPATH=agent PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin diff ./sample_compute.zip ./sample_compute-next.zip
 PYTHONPATH=agent PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin test ./sample_compute.zip --scenarios ./sample-compute-scenarios.json
+PYTHONPATH=agent PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin connector-test --fixture-root /absolute/trusted/fixtures --fixture connector_tracking.json --tracking-number OFFLINE1001
 ```
 
 这些路径都是说明用本地路径；命令不会把它们转换成安装请求或发送到服务端。
@@ -80,7 +82,7 @@ Connector 不是一种 ZIP Provider。源码包的 `provides` 与 contribution t
 
 每个 Connector operation 的合同固定为 `{name,effect,input_schema,output_schema,max_input_bytes,max_output_bytes}`，effect 允许 `read/internal_write/external_write`。input/output cap 纳入扩展 contract hash；legacy account + read + 默认 cap 的 canonical hash 保持旧 material，不因新增 binding 类型或 cap 字段漂移。宿主先解析 binding、input Schema 和 input cap，再决定是否允许写 marker；handler 返回后再核验 output Schema、output cap 和结果脱敏。`preflight_services` 只闭合解析依赖，不增加 Broker call。账号/资源 ID、绑定字段和宿主引用只能留在 Broker/Host 私有 side channel，插件结果或错误中出现这些值（含嵌套/包装）必须失败。
 
-`connector.fixture.tracking@1/query` 只用于显式离线 Host 集成测试：测试调用方必须主动提供本地 JSON fixture 和 `fixture` 系统的 `tracking_account` 绑定。它不会由开发 CLI、安装器或生产组合自动加载；生产 `ConnectorRegistry` 默认为空。真实 TMS、飞书、数据库和写 Connector 都是 `PRODUCTION_GATED`，开发工具不得用 fixture 结果冒充生产连通性或授权。
+`connector.fixture.tracking@1/query` 只用于显式离线 Host 集成测试。它只会在调用方显式执行 `connector-test`、给出绝对可信 fixture root、相对 JSON 路径和单号时被加载；路径逃逸、符号链接、敏感名称、超限、重复 JSON 键和 Schema 漂移都显式失败。生产 Agent Registry、安装器和其他开发命令不会加载该 fixture，生产 `ConnectorRegistry` 默认为空。当前状态为 `offline_contract=COMPLETE`、`offline_runtime=READY`、`production_runtime=PRODUCTION_GATED`；真实 TMS、飞书、数据库和写 Connector 均未开放，不得用 fixture 结果冒充生产连通性或授权。
 
 Scheduler contribution 在 `default_enabled=false` 时可以省略 `schedule`，且不得由 CLI 或安装器填充伪造时间；enabled contribution 只能使用项目真实 schedule。MIG001 的 arrival source 没有 Scheduler，目标保持 disabled/no schedule；若源项目已有 enabled Scheduler，迁移必须显式返回 `PLUGIN_MIGRATION_SCHEDULER_PRODUCTION_GATED`，不能在离线层复制或切换。
 

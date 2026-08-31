@@ -15,7 +15,7 @@ from agent.harness.models import HarnessMessage, ToolCall, strict_json
 
 
 _MAX_TOOL_CALLS = 8
-_MAX_OUTPUT_CHARS = 8_192
+_MAX_OUTPUT_BYTES = 8_192
 _MAX_TIMEOUT_SECONDS = 30
 _FORBIDDEN_MODEL_KEYS = frozenset(
     {"automation_id", "service", "operation", "account_id", "resource_id", "provider_id"}
@@ -39,7 +39,10 @@ class SidecarResult:
     tool_calls: int
 
     def __post_init__(self) -> None:
-        if not isinstance(self.content, str) or len(self.content) > _MAX_OUTPUT_CHARS:
+        if (
+            not isinstance(self.content, str)
+            or len(self.content.encode("utf-8")) > _MAX_OUTPUT_BYTES
+        ):
             raise HarnessError("sidecar output is invalid", code="HARNESS_PROTOCOL_INVALID")
         if isinstance(self.tool_calls, bool) or not isinstance(self.tool_calls, int) or self.tool_calls < 0:
             raise HarnessError("sidecar result is invalid", code="HARNESS_PROTOCOL_INVALID")

@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 import pytest
 
+from agent import harness_api
 from agent.automation_plugins.runtime_backend_availability import (
     RuntimeContributionBackendAvailability,
 )
@@ -347,4 +349,42 @@ def test_unavailable_sandbox_closes_status_catalog_and_messages() -> None:
     assert runtime.public_tools(_actor(), str(uuid.uuid4())) == []
     with pytest.raises(HarnessError) as unavailable:
         runtime.sidecar_factory(_actor(), str(uuid.uuid4()))
-    assert unavailable.value.code == "HARNESS_SANDBOX_UNAVAILABLE"
+    assert unavailable.value.code == "HARNESS_SIDECAR_UNAVAILABLE"
+
+
+@pytest.mark.parametrize(
+    "canary_error_code",
+    ("HARNESS_PROTOCOL_INVALID", "HARNESS_TIMEOUT"),
+)
+def test_canary_failure_keeps_message_api_stably_unavailable(
+    canary_error_code: str,
+) -> None:
+    class FailingCanaryLauncher:
+        @staticmethod
+        def availability() -> bool:
+            return True
+
+        def launch(self, _request: Mapping[str, Any]) -> Mapping[str, Any]:
+            raise HarnessError("synthetic canary failure", code=canary_error_code)
+
+    runtime = HarnessRuntime(
+        policy_service=_Policy(),
+        contribution_registry=_MutableRegistry((_record(),)),
+        backend_availability=RuntimeContributionBackendAvailability(),
+        launcher=FailingCanaryLauncher(),
+    )
+    state = runtime.start()
+    assert state.status == "CAPABILITY_UNAVAILABLE"
+    assert state.blocked_reason == canary_error_code
+
+    with pytest.raises(HarnessError) as unavailable:
+        runtime.sidecar_factory(_actor(), str(uuid.uuid4()))
+    assert unavailable.value.code == "HARNESS_SIDECAR_UNAVAILABLE"
+    response = harness_api.harness_error_response(
+        SimpleNamespace(
+            url=SimpleNamespace(path="/internal/v1/harness/messages")
+        ),
+        unavailable.value,
+    )
+    assert response.status_code == 503
+    assert b"HARNESS_SIDECAR_UNAVAILABLE" in response.body

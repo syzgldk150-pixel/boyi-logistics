@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from unittest import IsolatedAsyncioTestCase
 
 from agent.automation_plugins.errors import PluginConflictError
+from agent.automation_plugins.runtime_backend_availability import (
+    RuntimeContributionBackendAvailability,
+)
 from agent.orchestration.models import OrchestrationError
 from agent.orchestration.service_v2_managed_ingress import (
     ServiceV2ManagedIngress,
@@ -80,9 +83,11 @@ class ServiceV2ManagedIngressTests(IsolatedAsyncioTestCase):
         unbind_service_v2_managed_ingress()
         self.registry = _Registry()
         self.policy = _Policy()
+        self.availability = RuntimeContributionBackendAvailability()
         self.ingress = ServiceV2ManagedIngress(
             policy_service=self.policy,  # type: ignore[arg-type]
             contribution_registry=self.registry,
+            backend_availability=self.availability,
         )
 
     def tearDown(self) -> None:
@@ -205,8 +210,15 @@ class ServiceV2ManagedIngressTests(IsolatedAsyncioTestCase):
         self.assertEqual([], self.policy.calls)
 
     async def test_unbind_revokes_module_entrypoints(self):
+        self.availability.mark_available("webhook", "events")
+        self.assertFalse(self.availability.is_available("webhook"))
+        self.assertFalse(self.availability.is_available("events"))
         bind_service_v2_managed_ingress(self.ingress)
+        self.assertTrue(self.availability.is_available("webhook"))
+        self.assertTrue(self.availability.is_available("events"))
         unbind_service_v2_managed_ingress(self.ingress)
+        self.assertFalse(self.availability.is_available("webhook"))
+        self.assertFalse(self.availability.is_available("events"))
 
         with self.assertRaises(OrchestrationError) as raised:
             await dispatch_verified_event(
@@ -224,6 +236,7 @@ class ServiceV2ManagedIngressTests(IsolatedAsyncioTestCase):
         other = ServiceV2ManagedIngress(
             policy_service=self.policy,  # type: ignore[arg-type]
             contribution_registry=self.registry,
+            backend_availability=self.availability,
         )
         with self.assertRaises(RuntimeError):
             bind_service_v2_managed_ingress(other)

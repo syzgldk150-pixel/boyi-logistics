@@ -30,6 +30,62 @@ class InvalidStateError(OrchestrationPersistenceError):
     """A persisted status or state transition is invalid."""
 
 
+COMMAND_STATUSES = frozenset({"RECEIVED", "ACCEPTED", "REJECTED"})
+WORK_ITEM_STATUSES = frozenset(
+    {
+        "OPEN",
+        "IN_PROGRESS",
+        "NEEDS_CLARIFICATION",
+        "WAITING_APPROVAL",
+        "BLOCKED_LOGIN",
+        "BLOCKED_DATA",
+        "RESOLVED",
+        "CANCELLED",
+    }
+)
+RUN_STATUSES = frozenset(
+    {
+        "RECEIVED",
+        "CONTEXT_READY",
+        "PLANNED",
+        "VALIDATED",
+        "WAITING_APPROVAL",
+        "RUNNING",
+        "VERIFYING",
+        "COMPLETED",
+        "NEEDS_CLARIFICATION",
+        "BLOCKED_LOGIN",
+        "BLOCKED_DATA",
+        "PARTIAL",
+        "FAILED_RETRYABLE",
+        "FAILED_TERMINAL",
+        "CANCELLED",
+    }
+)
+STEP_STATUSES = frozenset(
+    {
+        "PENDING",
+        "WAITING_APPROVAL",
+        "RUNNING",
+        "VERIFYING",
+        "BLOCKED_LOGIN",
+        "BLOCKED_DATA",
+        "COMPLETED",
+        "SKIPPED",
+        "FAILED_RETRYABLE",
+        "FAILED_TERMINAL",
+        "CANCELLED",
+    }
+)
+APPROVAL_STATUSES = frozenset({"PENDING", "APPROVED", "REJECTED", "EXPIRED", "INVALIDATED"})
+OUTBOX_STATUSES = frozenset({"PENDING", "PROCESSING", "PUBLISHED", "DEAD_LETTER"})
+OUTBOX_CANDIDATE_SCAN_LIMIT = 500
+SCHEDULER_SUPERSESSION_BATCH_LIMIT = 100
+TERMINAL_RUN_STATUSES = frozenset(
+    {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
+)
+
+
 def _required_text(value: Any, field: str) -> str:
     text = str(value or "").strip()
     if not text:

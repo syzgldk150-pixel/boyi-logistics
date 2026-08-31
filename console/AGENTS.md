@@ -51,7 +51,7 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 - 自动化页不再渲染顶部账号登录绿点、登录态 popover、凭据表单或账号管理快捷入口，也不再探测旧 TMS session 接口；旧 `/automations/*-session/*` 和 `/automations/session-context` 不得路由。凭据和登录态只在侧栏“业务账号”模块管理；项目卡仅从 Agent catalog 的 `account_bindings` 显示业务账号池下拉，不回显凭据、不选默认/首项。未选、停用或 session 失效必须阻断运行、启用和完全自动。
 - 每日应签的两个账号角色来自两个不同系统：`r13_account_id` 显示为“R13 应签查询账号”，负责读取该账号所属站点范围和应签清单；`account_id` 显示为“融辉到货与签收核验账号”，负责到货、问题件和主单签收证据。两者都只取项目当前绑定，后台改绑后下一次运行生效，不固定账号或站点。
 - 资源池投影只允许 `resource_id/name/kind/status` 四个字段，Token、表格 ID、读写范围、文件路径、配置哈希/版本及原始配置不得进入 Console 或浏览器。项目卡按签名 manifest 的 resource role 与 kind 精确生成候选，已有选择也必须重新核验可用性；不默认选择第一项。资源池不可用、descriptor 多/缺字段、必填资源未选、已停用或 kind 不匹配时，原卡显示阻断原因并 fail closed。
-- Console 自动化服务按职责拆分：`services/automation.py` 保留既有任务投影、运行控制、页面组合和兼容会话逻辑；`services/automation_projects.py` 维护项目级权限、卡内待审批集合、插件目录和项目配置；`services/automation_plugin_management.py` 专门维护 ZIP 上传、实例生命周期、v2 迁移及未知写恢复，并由 `AutomationServiceMixin` 组合复用；`services/extensions.py` 只在上述目录之上生成浏览器安全扩展投影，`routes/extensions.py` 复用既有生命周期处理器。原 `services.automation` 的公共导入保持兼容。
+- Console 自动化服务按职责拆分：`services/automation.py` 保留既有任务投影、运行控制、页面组合和兼容会话逻辑，纯 preview 合同、字段校验和调度分组 helper 位于 `services/automation_preview_support.py`；`services/automation_projects.py` 维护项目级权限、卡内待审批集合、插件目录和项目配置；`services/automation_plugin_management.py` 专门维护 ZIP 上传、实例生命周期、v2 迁移及未知写恢复，并由 `AutomationServiceMixin` 组合复用；`services/extensions.py` 只在上述目录之上生成浏览器安全扩展投影，`routes/extensions.py` 复用既有生命周期处理器。原 `services.automation` 的公共导入保持兼容。
 
 `scheduled_tasks`、`workflow_resources` 和 `waybills` 的结构由 Agent 发布迁移统一管理；Console 只做业务读写，不在启动或请求路径中建表、改表或忽略迁移错误。前两张表必须通过 `shared/runtime_repositories.py` 访问。
 

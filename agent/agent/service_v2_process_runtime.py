@@ -41,6 +41,7 @@ class ServiceV2ProcessRuntime:
         self._ingress = ServiceV2ManagedIngress(
             policy_service=policy_service,
             contribution_registry=contribution_registry,
+            backend_availability=backend_availability,
         )
         self._started = False
 

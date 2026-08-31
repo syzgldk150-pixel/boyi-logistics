@@ -62,10 +62,16 @@ Console 信息架构同样只有一个状态源：`/extensions` 与详情页展�
 
 当前实现已经具备 v2 Manifest/ZIP 校验、内容摘要、Linux Python 3.10 环境、独立可查询的 Host Capability Registry、五态 effect 治理、代际注册、单 Provider 服务注册表、Catalog 就绪状态、受管 KV/collection、跨插件 `service.invoke`、数据保留以及迁移 pair/run-key 的持久化原语。以下边界必须如实显示：
 
+| 能力 | offline_contract | offline_runtime | production_runtime |
+|---|---|---|---|
+| Harness | `COMPLETE` | sandbox canary 成功时 `READY / OFFLINE_RESTRICTED` | `PRODUCTION_GATED` |
+| Webhook / Event | `COMPLETE` | 只有当前进程已绑定可信 ingress 时 `READY` | `PRODUCTION_GATED` |
+| tracking Connector | `COMPLETE` | 仅显式 `connector-test` fixture 命令为 `READY` | `PRODUCTION_GATED` |
+
 - Provider 的每个操作都必须以闭合 `{name,effect}` 对象声明不可变 effect；effect 只允许 `read/compute/internal_write/external_write/destructive`。同一字段进入 Manifest 摘要、Service Registry、generation、compiled invocation 和逐 contribution Plan，任一缺失或漂移都关闭失败。
 - `service.invoke` 已由宿主统一实现，只能调用 Manifest `requires` 中的精确服务和 Provider 已声明的操作；解析到缺失、阻断、歧义、循环或超过八层的调用链都会显式失败。静态 Broker grant 是动态 effect 的保护上限，不代表每次调用都是写：分发前仍按 Registry 中的 Provider 精确 effect 分类，并受当前调用 contribution 的 effect ceiling 约束；只读/计算调用不产生写标记，写调用必须先留下宿主写尝试。被调用 Provider 仍使用自己的 generation lease、能力授权、隔离进程和写后 Evidence。
 - `browser.session` 只开放宿主已注册且逐项审核的 action；当前双打卡包可使用 `ronghui.clock.precheck/submit/verify`。`http.request`、`file.read`、`file.write`、`event.publish` 以及任意未注册 browser action 仍固定失败为 `CAPABILITY_UNAVAILABLE`，不能旁路直连。
-- Scheduler 可接入现有 `scheduled_tasks`（当前宿主时区为 `Asia/Shanghai`）。默认启用的 Scheduler 只有在 cron 可无损表示为固定 `minute hour * * *` 时才允许安装并自动转成项目 `daily_times`；不兼容默认值在写入任何项目之前失败。飞书命令已接入独立动态 Dispatcher：只允许已启用、committed/READY generation 的 exact command，固定 Action v1 与跨项目命令冲突在整批 prepare 时失败。Webhook 已接入无网络宿主 Dispatcher：只允许全局唯一的 exact `POST + route`，同代或跨项目冲突在整批 prepare 时原子失败；`managed_webhook_router READY` 只说明该可注入 backend 已可做离线调用，不代表公网路由可达。Event subscription 仅对 `durable=false` 接入无外部总线的可注入 Dispatcher：事件名是全局大小写敏感的 exact identity，`managed_event_dispatcher READY` 只代表离线 best-effort 接受面，Command 成功接受后才持久化，接受前事件可能丢失；`durable=true` 仍固定 `CAPABILITY_UNAVAILABLE`，不得降级。真实飞书 tenant/Webhook/WS/机器人回复、Webhook 公网入口、真实 event source、payload/version 合同、Outbox fan-out、ACK/retry/dead-letter/replay、多 Agent 进程全局仲裁、数据库迁移、部署及生产等价故障注入均为 `PRODUCTION_GATED`。
+- Scheduler 可接入现有 `scheduled_tasks`（当前宿主时区为 `Asia/Shanghai`）。默认启用的 Scheduler 只有在 cron 可无损表示为固定 `minute hour * * *` 时才允许安装并自动转成项目 `daily_times`；不兼容默认值在写入任何项目之前失败。飞书命令已接入独立动态 Dispatcher：只允许已启用、committed/READY generation 的 exact command，固定 Action v1 与跨项目命令冲突在整批 prepare 时失败。Webhook 与 non-durable Event 由 composition root 绑定唯一 `ServiceV2ManagedIngress`：只有“持久注册就绪 + 当前进程 ingress 已绑定”才可投影有效 `READY`，未绑定调用返回 `PROJECT_RUNTIME_PROJECTION_STALE`。该 ingress 只接受已验证的闭合 identity，没有新增 HTTP 路由或外部总线；关机先撤销 backend availability，再解绑进程入口。`durable=true` Event 仍固定 `CAPABILITY_UNAVAILABLE`。真实飞书 tenant/Webhook/WS/机器人回复、Webhook 公网入口与验签、真实 event source、payload/version 合同、Outbox fan-out、ACK/retry/dead-letter/replay、多 Agent 进程全局仲裁、数据库迁移、部署及生产等价故障注入均为 `PRODUCTION_GATED`。
 - Manifest 虽可声明 `resident`，Catalog 会以 `RESIDENT_RUNTIME_UNAVAILABLE` 阻断，而不是误报为可运行；当前生产插件必须使用 `on_demand`。
 - 每次子进程同时受 Bubblewrap 挂载/用户/PID/网络命名空间和固定 `/usr/bin/prlimit` 约束：地址空间 1 GiB、最多 64 个进程、CPU 300 秒、单文件 16 MiB、最多 128 个打开文件。`bubblewrap` 或 `prlimit` 缺失、不是绝对常规文件或启动 canary 失败时，运行时整体 fail closed。
 - 两个双打卡 v2 源包已经完成代码和离线合同验证，但在生产项目中完成真实提交与独立新鲜回读前，不得声称真实写入验收完成。
@@ -272,7 +278,7 @@ Provider effect 来自 `provides[*].operations[*].effect`，Host capability effe
 
 每个 Connector operation 都是不可变 `{name,effect,input_schema,output_schema,max_input_bytes,max_output_bytes}` 合同；effect 允许 `read/internal_write/external_write`。输入/输出 cap 属于扩展 contract hash；但 legacy account + `read` + 默认 cap 的 canonical material 保持旧形态，不能因新增绑定类型或 cap 字段漂移历史 hash。调用经 `service.invoke` 时，宿主只向适配器传递私有 account/resource/host-internal binding ref；插件不能提交或看到绑定标识、连接位置或认证材料。`preflight_services` 只做闭合依赖/绑定解析，不增加 Broker call；写 marker 前只完成 binding、input cap 和 input Schema 校验，handler 返回后再做 output cap、output Schema 及敏感结果脱敏。插件结果及错误不得包含账号/资源 ID 或其字段值（包括嵌套、包装或资源标识字段）；缺少注册、缺少唯一绑定、角色/系统/资源种类漂移、输入输出不闭合、超 cap 或敏感结果均显式失败。
 
-首个 `connector.fixture.tracking@1/query` 只有 `read` effect，只能由测试显式注入本地 JSON fixture；生产组合默认构造空 `ConnectorRegistry`，不会隐式启用该 fixture。Catalog 的顶层 `connectors` 与 `plugins/instances` 分开，只投影服务名、标题、绑定类型、角色、允许系统/资源种类及操作/effect，不提供安装、升级、启停或卸载动作。真实 TMS、飞书、数据库或任何写 Connector，以及其生产账号/资源接入、部署和验收均为 `PRODUCTION_GATED`。
+首个 `connector.fixture.tracking@1/query` 只有 `read` effect。它的离线合同已闭合，且可由开发 CLI 显式运行：`service_v2_plugin.py connector-test --fixture-root <绝对可信目录> --fixture <相对 JSON 路径> --tracking-number <单号>`。该命令通过真实 `ConnectorRegistry.invoke` 和现有 input/output Schema 校验返回闭合结果，不输出 fixture 路径、合成账号或 Registry 私有身份，并固定声明 `write_attempted=false`。fixture 只能由该命令显式加载；生产 Agent 组合、安装器和其他开发命令仍构造空 `ConnectorRegistry`。Catalog 的顶层 `connectors` 与 `plugins/instances` 分开，只投影服务名、标题、绑定类型、角色、允许系统/资源种类及操作/effect，不提供生命周期动作。因此当前状态为 `offline_contract=COMPLETE`、`offline_runtime=READY`、`production_runtime=PRODUCTION_GATED`；真实 TMS、飞书、数据库或任何写 Connector 及其生产账号/资源接入、部署和验收均未开放。
 
 插件入口从标准输入读取宿主生成的闭合 JSON，只使用其中的项目配置、入口类型、已解析 target 和逐 contribution `governance`；target 与 governance 由 committed contract 生成，插件不得覆盖。标准输出只能返回一个 JSON 对象，读/计算成功至少包含：
 
@@ -359,11 +365,11 @@ Selection contribution 的首次预览对调用方是零业务参数：`dry_run=
 
 `/harness` 是代码拥有、不可停用的固定 Console 模块。浏览器只能提交规范请求 UUID、Agent 签发的 Session UUID 和最多 4,000 字符的消息；Console 只接受真实 MySQL `admin/super_admin` 会话与同源写请求，再通过既有签名 principal 调用 Agent `/internal/v1/harness/sessions` 和 `/internal/v1/harness/messages`。浏览器或模型均不能提交 `automation_id/service/operation/account_id/resource_id` 等运行身份，动态工具只公开不可逆的 opaque tool id、标题和说明。
 
-Harness Tool Catalog 固定注入知识、运单、轨迹、事项、运行摘要和 Artifact 六类只读描述；这些固定网关在本阶段没有默认真实处理器。动态工具只来自当前 exact active 的 `contributes.harness`，其 Provider effect 必须是 `read` 或 `compute`，且机械治理必须同时满足 `harness_allowed=true`、`broker_effect=read`。注册材料必须绑定 generation snapshot 中真实签名的闭合 `runtime_permissions`；网络、浏览器、Office、文件角色、Broker operation 或调用额度任一开放、字段缺失或漂移都会拒绝注册和目录读取，不能生成空权限默认值。
+六类固定业务工具当前没有真实 handler，因此不进入有效 Tool Catalog。产品 Catalog 和消息执行由同一进程级 `HarnessRuntime` 生成；动态工具只来自当前 exact active 的 `contributes.harness`，其 Provider effect 必须是 `read` 或 `compute`，且机械治理必须同时满足 `harness_allowed=true`、`broker_effect=read`。注册材料必须绑定 generation snapshot 中真实签名的闭合 `runtime_permissions`；网络、浏览器、Office、文件角色、Broker operation 或调用额度任一开放、字段缺失或漂移都会拒绝注册和目录读取，不能生成空权限默认值。进程 backend availability 只影响当前有效投影，不改写持久 generation hash 或数据库合同。
 
-Session 仅保存在进程内有界仓储，状态固定为 `MEMORY_ONLY_NON_PRODUCTION`，并精确绑定已签名管理员身份。受限 sidecar 协议只有消息、公共工具描述、闭合工具调用和 JSON 结果，限制超时与调用次数；生产 launcher 不继承环境、不挂载仓库/插件、不开放网络，并在缺少经审计 sandbox adapter 时固定失败。真实 LLM、六类固定业务读网关、生产 Python 3.10 sandbox、持久 Session 和真实数据验证均标记 `PRODUCTION_GATED`；不得回退 Legacy Agent、直接 MySQL、TMS/飞书工具、任意 shell、文件或网络。
+Session 仅保存在进程内有界仓储，状态为 `MEMORY_ONLY_NON_PRODUCTION`，并精确绑定已签名管理员身份。启动时先在 Bubblewrap + `prlimit` 短命子进程执行无业务数据 canary；子进程环境清空、无网络、无仓库/Home/插件挂载、无 shell，只读挂载可信 Python 运行时、标准库及必要动态库。canary 成功后 Session 显示 `status=READY`、`availability=OFFLINE_RESTRICTED`；缺少 sandbox 或 canary 失败时显示 `CAPABILITY_UNAVAILABLE`，消息入口保持 503，不回退 Legacy Agent 或进程内假模型。
 
-上述边界已实现可注入的确定性离线 fake model 路径，用于证明新 Harness contribution 随 generation 原子出现、升级和撤销且无需修改 Harness 源码或重启。它不是生产启用声明。
+离线交互只接受精确文本 `调用只读工具：<完整标题>`。标题必须在当前 active Catalog 中唯一且完全匹配，并且该 `read/compute` 工具的输入 Schema 必须是闭合空对象；零匹配、多匹配、需要参数或 generation 漂移都显式失败。子进程保持 5 秒超时，sidecar 保持 8 次工具调用和 8 KiB 规范 JSON 结果上限。真实 LLM、六类业务读网关、持久 Session 和真实数据验证均为 `PRODUCTION_GATED`；可选 `harness_live_smoke.py` 只供手工合成数据验收，仅从对应环境变量取 Key，不进入 CI 或产品运行链。
 
 ### 7.3 动态飞书 Dispatcher 边界
 
@@ -381,13 +387,13 @@ Dispatcher 从 Registry 只取得 `automation_id/generation/contribution_id`，�
 
 无网络 `ServiceV2WebhookDispatcher` 的调用面只接收适配器已验证的 method、route 和稳定 `source_event_id`。调用方不能提交或覆盖项目、service、operation、业务参数、账号、资源、Actor、原始 body、query 或 headers；Dispatcher 从 Registry 得到 exact contribution identity，Policy 只按签名项目合同编译调用。Policy 在创建 Command 前、以及同一 Command 接受 UOW 内再次核对 exact Registry identity，路由在两次检查之间被撤销或换代时关闭失败，不用旧目标继续执行。
 
-`managed_webhook_router READY` 只代表上述可注入、无网络的 Dispatcher backend 已可用于离线 fixture，不代表已有公网入口。现有 `ACTION_V1` Webhook 路由、验签和动态参数合同保持原样，不能被 Service v2 Dispatcher 复用或隐式接管；Event contribution 的独立离线边界见 7.5。真实公网 namespace、逐 route token/signature 及轮换、Nginx/反向代理、真实流量与 replay、跨进程全局 route 仲裁、部署和生产等价故障注入全部为 `PRODUCTION_GATED`。
+composition root 启动时构造并绑定唯一 `ServiceV2ManagedIngress`，运输适配器只能通过 `dispatch_verified_webhook(method, route, source_event_id)` 进入已有 Dispatcher。绑定失败会阻止 Agent 启动；未绑定调用返回 `PROJECT_RUNTIME_PROJECTION_STALE`。`managed_webhook_router READY` 只代表持久注册与当前进程绑定同时有效，不代表已有公网入口。本链路未新增 HTTP 路由；现有 `ACTION_V1` Webhook 路由、验签和动态参数合同保持原样，不能被 Service v2 Dispatcher 复用或隐式接管。Event contribution 的独立离线边界见 7.5。真实公网 namespace、逐 route token/signature 及轮换、Nginx/反向代理、真实流量与 replay、跨进程全局 route 仲裁、部署和生产等价故障注入全部为 `PRODUCTION_GATED`。
 
 ### 7.5 Non-durable Event Dispatcher 离线边界
 
 `contributes.events[*]` 使用大小写敏感的全局 exact event name。只有 `durable=false` 可以进入 `managed_event_dispatcher READY`；同一 generation 内重复或跨项目争用必须令整代 prepare 原子失败，不能留下其他 contribution 的部分 reservation。相邻 generation、权威空 generation、DRAINING、BLOCKED、ROLLED_BACK、停用、卸载和重启恢复继续服从 7.1 的 exact committed/READY active-map 语义。`durable=true` 在 prepare 时保持 `CAPABILITY_UNAVAILABLE`，绝不静默降级为 non-durable。
 
-无外部总线的 `ServiceV2EventDispatcher` 只接受适配器已验证的 exact event name 与稳定 `source_event_id`，调用面不接收 payload、payload version、项目、service、operation、业务参数、账号、资源或 Actor。目标身份和全部调用参数只由 Registry 与签名项目合同派生；Policy 在创建 Command 前和同一接受 UOW 内再次核对 exact Registry identity。只有 Command 成功接受后才有持久记录，接受前进程退出或事件源断开可能丢失，因此 `READY` 只表示可注入的离线 best-effort backend，不表示生产入口所有权、可靠投递或持久订阅。
+无外部总线的 `ServiceV2EventDispatcher` 由同一 `ServiceV2ManagedIngress` 封装，运输适配器只能调用 `dispatch_verified_event(event_name, source_event_id)`。该入口只接受已验证的 exact event name 与稳定 `source_event_id`，不接收 payload、payload version、项目、service、operation、业务参数、账号、资源或 Actor。目标身份和全部调用参数只由 Registry 与签名项目合同派生；Policy 在创建 Command 前和同一接受 UOW 内再次核对 exact Registry identity。未绑定调用固定返回 `PROJECT_RUNTIME_PROJECTION_STALE`。只有 Command 成功接受后才有持久记录，接受前进程退出或事件源断开可能丢失，因此 `READY` 只表示持久注册与当前进程绑定同时有效的离线 best-effort backend，不表示生产入口所有权、可靠投递或持久订阅。
 
 真实 event source、payload/version 合同、Outbox fan-out、ACK/retry/dead-letter/replay、跨进程全局 event-name 仲裁、数据库迁移、部署和生产等价故障注入全部为 `PRODUCTION_GATED`。既有 `shared/runtime_events.py`、事务 Outbox、Host `event.publish`、`ACTION_V1`、Webhook 和 Feishu 链路保持不变，不得把它们接成隐式 Event 总线或降级兜底。
 
