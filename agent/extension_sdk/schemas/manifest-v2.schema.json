@@ -470,8 +470,37 @@
               "$ref": "#/$defs/role"
             }
           ]
+        },
+        "action_call_limits": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1000,
+          "propertyNames": {
+            "$ref": "#/$defs/identifier"
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "action_call_limits"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "const": "service.invoke"
+              }
+            }
+          }
+        }
+      ]
     },
     "account_role": {
       "type": "object",
@@ -538,6 +567,9 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 120
+            },
+            "selection_preview_operation": {
+              "$ref": "#/$defs/identifier"
             }
           }
         }
@@ -654,6 +686,9 @@
                 "minLength": 1,
                 "maxLength": 128
               }
+            },
+            "selection_preview_operation": {
+              "$ref": "#/$defs/identifier"
             }
           }
         }

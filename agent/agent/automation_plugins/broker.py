@@ -647,6 +647,7 @@ class LocalBrokerCapabilityIssuer:
             "governance",
             "dynamic_effect",
         }
+        v2_limited_fields = v2_fields | {"per_action_limit"}
         if set(contract) == legacy_fields:
             # ACTION_V1's signed broker wire contract is immutable and only
             # carries the historical read/write effect.  Keep it byte-for-byte
@@ -659,7 +660,10 @@ class LocalBrokerCapabilityIssuer:
                 )
             broker_effect = effect
             dynamic_effect = False
-        elif set(contract) == v2_fields:
+        elif frozenset(contract) in {
+            frozenset(v2_fields),
+            frozenset(v2_limited_fields),
+        }:
             try:
                 effect = CapabilityEffect(str(contract.get("effect") or ""))
             except (TypeError, ValueError) as exc:
@@ -695,8 +699,26 @@ class LocalBrokerCapabilityIssuer:
                     code="BROKER_CONTRACT_INVALID",
                 )
             if dynamic_effect:
-                per_action_limit = SERVICE_INVOKE_PER_CALL_LIMIT
+                signed_limit = contract.get("per_action_limit")
+                if "per_action_limit" not in contract:
+                    per_action_limit = SERVICE_INVOKE_PER_CALL_LIMIT
+                elif (
+                    isinstance(signed_limit, bool)
+                    or not isinstance(signed_limit, int)
+                    or not 1 <= signed_limit <= 1000
+                ):
+                    raise PluginExecutionError(
+                        "signed service action call limit is invalid",
+                        code="BROKER_CONTRACT_INVALID",
+                    )
+                else:
+                    per_action_limit = signed_limit
             else:
+                if "per_action_limit" in contract:
+                    raise PluginExecutionError(
+                        "signed Host capability cannot override its call limit",
+                        code="BROKER_CONTRACT_INVALID",
+                    )
                 try:
                     descriptor = default_host_capability_registry().resolve(
                         api_version=HOST_CAPABILITY_API_VERSION,
@@ -791,7 +813,10 @@ class LocalBrokerCapabilityIssuer:
                     "core broker call limit was exhausted",
                     code="BROKER_CALL_LIMIT",
                 )
-            if set(contract) == v2_fields:
+            if frozenset(contract) in {
+                frozenset(v2_fields),
+                frozenset(v2_limited_fields),
+            }:
                 operation_identity = (operation, action)
                 operation_calls = current.operation_call_counts.get(
                     operation_identity,

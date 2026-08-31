@@ -9,6 +9,9 @@ import pytest
 
 from agent.automation_plugins.errors import PluginConflictError
 from agent.automation_plugins.management import AutomationPluginManagementService
+from agent.automation_plugins.migration_binding_mapping import (
+    reviewed_migration_binding_mapping,
+)
 from agent.automation_plugins.migration_entrypoint_ownership import (
     migration_target_entrypoints_and_ownership,
 )
@@ -100,7 +103,7 @@ def test_create_migration_pair_with_enabled_scheduler_is_production_gated() -> N
     assert raised.value.code == "PLUGIN_MIGRATION_SCHEDULER_PRODUCTION_GATED"
 
 
-def test_migration_binding_mapping_reserves_duplicate_signatures_by_exact_name() -> None:
+def test_migration_binding_mapping_uses_only_the_reviewed_bijection() -> None:
     roles = (
         {"role": "primary", "allowed_kinds": ["feishu_sheet"], "required": True},
         {"role": "secondary", "allowed_kinds": ["feishu_sheet"], "required": True},
@@ -110,6 +113,10 @@ def test_migration_binding_mapping_reserves_duplicate_signatures_by_exact_name()
         source_bindings={"primary": "sheet-1", "secondary": "sheet-2"},
         source_roles=roles,
         target_roles=tuple(reversed(roles)),
+        source_to_target_roles={
+            "primary": "primary",
+            "secondary": "secondary",
+        },
         kind="resource",
     )
 
@@ -138,10 +145,145 @@ def test_migration_exact_name_does_not_hide_a_role_contract_mismatch() -> None:
                     "collection": False,
                 },
             ),
+            source_to_target_roles={"operator": "operator"},
             kind="account",
         )
 
     assert raised.value.code == "PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE"
+
+
+def test_self_pickup_migration_maps_both_identical_account_contracts_explicitly() -> None:
+    mapping = reviewed_migration_binding_mapping(
+        source_automation_id="self_pickup_problem_upload",
+        source_plugin_id="self_pickup_problem_upload",
+        target_plugin_id="self_pickup_problem_upload_v2",
+    )
+    assert mapping is not None
+    roles = (
+        {
+            "role": "account_id",
+            "argument_field": None,
+            "allowed_systems": ["ronghui"],
+            "required": True,
+            "collection": False,
+        },
+        {
+            "role": "daxiang_s_account_id",
+            "argument_field": None,
+            "allowed_systems": ["ronghui"],
+            "required": True,
+            "collection": False,
+        },
+    )
+
+    copied = AutomationPluginManagementService._map_migration_bindings(
+        source_bindings={
+            "account_id": "primary-account",
+            "daxiang_s_account_id": "daxiang-s-account",
+        },
+        source_roles=roles,
+        target_roles=tuple(reversed(roles)),
+        source_to_target_roles=mapping.account_roles,
+        kind="account",
+    )
+
+    assert copied == {
+        "account_id": "primary-account",
+        "daxiang_s_account_id": "daxiang-s-account",
+    }
+    assert (
+        reviewed_migration_binding_mapping(
+            source_automation_id="unknown",
+            source_plugin_id="self_pickup_problem_upload",
+            target_plugin_id="self_pickup_problem_upload_v2",
+        )
+        is None
+    )
+
+
+def _self_pickup_migration_fixture() -> tuple[SimpleNamespace, SimpleNamespace]:
+    source = _entry(
+        automation_id="self_pickup_problem_upload",
+        plugin_id="self_pickup_problem_upload",
+    )
+    target = _entry(
+        automation_id="self-pickup-problem-upload-v2",
+        plugin_id="self_pickup_problem_upload_v2",
+        contributions={
+            "console": (
+                {
+                    "id": "execute_console",
+                    "service": "plugin.self_pickup_problem_upload_v2.self_pickup_problem_upload@1",
+                    "operation": "execute",
+                    "selection_preview_operation": "preview",
+                },
+            ),
+            "scheduler": (),
+            "webhook": (),
+            "feishu": (
+                {
+                    "id": "execute_feishu",
+                    "service": "plugin.self_pickup_problem_upload_v2.self_pickup_problem_upload@1",
+                    "operation": "execute",
+                    "commands": ("自提到货问题件",),
+                    "selection_preview_operation": "preview",
+                },
+            ),
+            "events": (),
+        },
+    )
+    return source, target
+
+
+def test_self_pickup_enabled_feishu_selection_migration_is_production_gated() -> None:
+    source, target = _self_pickup_migration_fixture()
+
+    with pytest.raises(PluginConflictError) as raised:
+        migration_target_entrypoints_and_ownership(
+            source=source,
+            target=target,
+            source_enabled_entrypoints=("console", "feishu"),
+            source_schedule={"kind": "none", "times": [], "enabled": False},
+            source_resource_bindings={
+                "feishu_route": "automation.feishu_route.self_pickup_problem_upload",
+                "self_pickup_source_sheet": "phase7.self_pickup_source_sheet",
+            },
+        )
+
+    assert (
+        raised.value.code
+        == "PLUGIN_MIGRATION_FEISHU_SELECTION_PREVIEW_PRODUCTION_GATED"
+    )
+
+
+def test_self_pickup_console_only_migration_keeps_feishu_unowned() -> None:
+    source, target = _self_pickup_migration_fixture()
+
+    entrypoints, ownership, consumed = migration_target_entrypoints_and_ownership(
+        source=source,
+        target=target,
+        source_enabled_entrypoints=("console",),
+        source_schedule={"kind": "none", "times": [], "enabled": False},
+        source_resource_bindings={
+            "feishu_route": "automation.feishu_route.self_pickup_problem_upload",
+            "self_pickup_source_sheet": "phase7.self_pickup_source_sheet",
+        },
+    )
+
+    assert entrypoints == ("execute_console",)
+    assert consumed == frozenset({"feishu_route"})
+    assert ownership["feishu"] == {
+        "source_enabled": False,
+        "source_tool_name": None,
+        "source_route_key": None,
+        "source_resource_id": None,
+        "target_contribution_id": None,
+        "commands": [],
+    }
+    assert {
+        state: owners["feishu"]
+        for state, owners in ownership["owners"].items()
+    } == {state: "NONE" for state in MIGRATION_OWNERSHIP_STATES}
 
 
 def _arrival_migration_fixture(*, enabled_entrypoints: tuple[str, ...]):

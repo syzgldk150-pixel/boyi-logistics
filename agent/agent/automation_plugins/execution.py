@@ -43,6 +43,9 @@ from agent.automation_plugins.ports import (
 )
 from agent.automation_plugins.runtime_environment import minimal_plugin_environment
 from agent.automation_plugins.sandbox import FailClosedPluginSandbox, SandboxCanaryResult
+from agent.automation_plugins.service_v2_contract import (
+    resolve_service_v2_selection_target,
+)
 from agent.automation_plugins.storage import validate_plugin_tree, validate_regular_plugin_file
 from agent.tool_registry import validate_schema_instance
 from shared.automation_project_authorization import (
@@ -970,6 +973,26 @@ class PluginExecutionRouter:
                 automation_id=automation_id,
                 generation=raw_generation,
             )
+            if initial_metadata.get("runtime_model") == PluginRuntimeModel.SERVICE_V2.value:
+                try:
+                    selection_target = resolve_service_v2_selection_target(
+                        initial_metadata,
+                        contribution_id=run_binding["contract_id"],
+                        contribution_kind=run_binding["entrypoint"],
+                        arguments=params,
+                    )
+                except ValueError as exc:
+                    raise PluginExecutionError(
+                        "service-v2 selection invocation is invalid",
+                        code="PLUGIN_GENERATION_METADATA_INVALID",
+                    ) from exc
+                if selection_target is not None:
+                    target, governance, _selection_phase = selection_target
+                    run_binding = {
+                        **run_binding,
+                        "service_target": target,
+                        "service_governance": governance,
+                    }
         else:
             if set(_service_target) != {"service", "operation", "effect"}:
                 raise PluginExecutionError(

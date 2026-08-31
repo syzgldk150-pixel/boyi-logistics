@@ -174,6 +174,8 @@ generation 的 exact `COMMITTED/READY` Console 记录开放浏览器入口；Fei
 同一 parser 在整代 prepare 时拒绝，不允许任何冲突留下部分 reservation。Dispatcher 在 Command 接受事务内再次核对 Registry；调用方不能提交项目、
 服务、操作、参数、账号或资源。
 
+Console/Feishu contribution 可选择声明 `selection_preview_operation`；它必须与原 execute operation 属于同一 service，并严格组成 `read` preview 与 `external_write` execute。首次调用的 `dry_run/selected_bill_codes/preview_fingerprint` 由 Host 注入，只读 Run 持久化候选与完整指纹；正式接受时在同一 UOW 锁定该 Run，重新核对 project/generation/contract/configuration/contribution/phase 与选集，再用既有 DomainEvent 唯一约束原子消费。相同 Command 幂等请求可恢复既有结果，另一个请求重用同一 preview 返回 `SELECTION_PREVIEW_ALREADY_CONSUMED`；过期、代际或 operation 漂移全部 fail closed。
+
 动态 Webhook 使用全局大小写敏感的 exact `POST + route` identity；整代 prepare、切换、停用、卸载和重启恢复
 保持原子，任何同代或跨项目冲突都不能留下部分 reservation。无网络 Dispatcher 只接收已验证 method、route 和
 稳定 `source_event_id`；项目、service、operation、业务参数、账号、资源和 Actor 都只能由 exact Registry identity
@@ -216,6 +218,7 @@ Console 自动化列表成员只来自该目录的实例与持久化定时行，
 route。文本匹配后仍必须由 committed、STABLE 且签名资源修订一致的项目 generation 唯一认领 route；
 缺失、禁用、重复或失效均拒绝执行，也不会回退 LLM 或旧工具。扫描确认态故意不落盘，服务重启后必须
 重新生成预览；其他既有 pending 按原 TTL 恢复，并在正式调用时重新经过 route 与项目治理校验。
+`selection_preview_operation` 是 Service v2 的显式 opt-in，不改变 ACTION_V1 的代码拥有 dry-run/confirm 路由、pending 优先级或参数合同；MIG002 的固定飞书多轮选择入口尚未接管，仍为 `PRODUCTION_GATED`。
 
 迁移 `018` 的资源闭包由当前 16 个可发布首方实例模板反向校验：模板绑定的并集必须精确等于 26 个
 审阅身份。其中 18 个代码内置身份由 `phase7_resource_import.BUILTIN_RESOURCES` 提供精确配置，另 8 个

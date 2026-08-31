@@ -19,6 +19,10 @@ from agent.automation_plugins.code_owned_fields import (
     resolve_scan_capability_phase,
     resolve_selection_capability_phase,
 )
+from agent.automation_plugins.service_v2_contract import (
+    SELECTION_ARGUMENT_FIELDS,
+    resolve_service_v2_selection_target,
+)
 from agent.orchestration.models import (
     PLAN_SCHEMA_VERSION,
     SUPPORTED_PLAN_SCHEMA_VERSIONS,
@@ -100,6 +104,16 @@ class DeterministicPlanner:
         arguments = dict(raw_arguments)
         raw_updates = clarification.get("argument_updates")
         if isinstance(raw_updates, Mapping):
+            protected_selection_fields = _service_v2_selection_plan_fields(
+                command=command,
+                capability=capability,
+            )
+            if set(raw_updates) & protected_selection_fields:
+                raise OrchestrationError(
+                    "CLARIFICATION_CODE_OWNED_FIELD",
+                    "Clarification cannot change Host-owned selection arguments",
+                    details={"status": "NEEDS_CLARIFICATION"},
+                )
             arguments.update(dict(raw_updates))
 
         account_id_value = clarification.get("account_id", parameters.get("account_id"))
@@ -285,6 +299,32 @@ def _project_code_owned_plan_fields(
     )
 
 
+def _service_v2_selection_plan_fields(
+    *,
+    command: Command,
+    capability: Mapping[str, Any],
+) -> frozenset[str]:
+    invocation = command.automation_invocation
+    runtime = capability.get("_plugin_runtime")
+    if invocation is None or not isinstance(runtime, Mapping):
+        return frozenset()
+    contributions = runtime.get("contributions")
+    declarations = (
+        contributions.get(invocation.entrypoint.value)
+        if isinstance(contributions, Mapping)
+        else None
+    )
+    matches = [
+        item
+        for item in declarations or ()
+        if isinstance(item, Mapping)
+        and item.get("id") == invocation.contract_id
+        and isinstance(item.get("selection_preview_operation"), str)
+        and str(item.get("selection_preview_operation") or "").strip()
+    ]
+    return SELECTION_ARGUMENT_FIELDS if len(matches) == 1 else frozenset()
+
+
 def effective_project_capability(
     command: Command,
     capability: Mapping[str, Any],
@@ -311,6 +351,22 @@ def effective_project_capability(
     )
     governance = compiled.get("governance") if isinstance(compiled, Mapping) else None
     target = compiled.get("target") if isinstance(compiled, Mapping) else None
+    if isinstance(target, Mapping):
+        raw_arguments = command.parameters.get("arguments")
+        try:
+            selection_target = resolve_service_v2_selection_target(
+                runtime,
+                contribution_id=contribution_id,
+                contribution_kind=str(target.get("contribution_kind") or ""),
+                arguments=(raw_arguments if isinstance(raw_arguments, Mapping) else {}),
+            )
+        except ValueError as exc:
+            raise OrchestrationError(
+                "PROJECT_INVOCATION_STALE",
+                "Service v2 selection invocation is invalid",
+            ) from exc
+        if selection_target is not None:
+            target, governance, _selection_phase = selection_target
     if not isinstance(governance, Mapping):
         raise OrchestrationError(
             "PROJECT_INVOCATION_STALE",

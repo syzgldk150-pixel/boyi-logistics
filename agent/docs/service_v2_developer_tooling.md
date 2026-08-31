@@ -72,6 +72,10 @@ payload/
 
 Manifest 的编辑器 Schema 位于 `agent/extension_sdk/schemas/manifest-v2.schema.json`。它帮助编辑器补全闭合字段，但运行时权威仍是 `manifest_v2.py`、ZIP verifier 与 `ServiceV2ProjectContract`；通过编辑器 Schema 不能代替 `validate`。
 
+Console/Feishu contribution 可选声明 `selection_preview_operation`；原 `operation` 是 execute，两者必须属于同一 service，且 preview 必须是 `read`、execute 必须是 `external_write`。同一包的 Console/Feishu selection 声明必须共享完全相同的 service/preview/execute 三元组；这三个 Host-owned 参数 `dry_run/selected_bill_codes/preview_fingerprint` 不能与插件配置字段重名，其他 contribution kind 也不能声明 selection 配对。
+
+仅 `service.invoke` capability 可选声明 `action_call_limits`。键集合必须与 `operations` 精确相等，每个值为 `1..1000` 的整数且总和不超过 1000；这些额度进入签名 Broker contract，不能增删 action 或改变 effect/governance。未声明时继续使用旧的每 action 64 次额度和旧 canonical material。
+
 Connector 不是一种 ZIP Provider。源码包的 `provides` 与 contribution target 仍只能使用 `plugin.*`；声明宿主 Connector 依赖时，`requires` 必须使用三种闭合形式之一：`{service,binding_kind:account,account_role}`、`{service,binding_kind:resource,resource_role}` 或 `{service,binding_kind:host_internal}`。账号角色必须在 `account_roles` 中声明为 `required=true`，资源角色可为 `required=true|false`；`validate` 会拒绝额外字段、未声明角色、非必填账号角色，以及 ZIP 尝试提供 `connector.*` 的情况。
 
 每个 Connector operation 的合同固定为 `{name,effect,input_schema,output_schema,max_input_bytes,max_output_bytes}`，effect 允许 `read/internal_write/external_write`。input/output cap 纳入扩展 contract hash；legacy account + read + 默认 cap 的 canonical hash 保持旧 material，不因新增 binding 类型或 cap 字段漂移。宿主先解析 binding、input Schema 和 input cap，再决定是否允许写 marker；handler 返回后再核验 output Schema、output cap 和结果脱敏。`preflight_services` 只闭合解析依赖，不增加 Broker call。账号/资源 ID、绑定字段和宿主引用只能留在 Broker/Host 私有 side channel，插件结果或错误中出现这些值（含嵌套/包装）必须失败。
@@ -83,6 +87,54 @@ Scheduler contribution 在 `default_enabled=false` 时可以省略 `schedule`，
 ### MIG001 到货统计包
 
 `agent/service_v2_plugins/sync_arrival_stats_v2/` 是独立 Service v2 包，包内算法和结果契约使用 v1 payload/action 与共享结果模块的逐字节嵌入副本。离线 fixture 只验证代表性 payload 的 parity、稳定投影和 primitive 顺序，不是正式容量上限或生产吞吐证明；真实 TMS/Feishu/资源读写、独立写后核验、descriptors/handlers、安装、入口接管和部署均保持 `PRODUCTION_GATED`。
+
+### MIG002 自提问题件候选包
+
+`agent/service_v2_plugins/self_pickup_problem_upload_v2/` 是独立的
+Service v2 离线候选包。它的唯一业务算法源仍是 v1
+`agent/first_party_automation_plugins/self_pickup_problem_upload/payload/action.py`；
+专用 `agent/service_v2_plugins/_shared/build_zip.py` 在确定性 ZIP 中逐字节嵌入
+该 action 和 first-party result helper（分别为
+`payload/action.py`、`payload/boyi_plugin_result.py`），并注入受管的
+`main.py` 与 SDK。相同输入产生相同 ZIP，构建器只写调用方指定且此前不存在的
+输出路径。候选 payload 不导入 legacy 路径、不修改 `sys.path`，也不使用 whole-tool
+fallback；因此它不是 generic `service_v2_plugin package` 示例的生产安装结果。
+
+该包提供
+`plugin.self_pickup_problem_upload_v2.self_pickup_problem_upload@1` 的两个不可变
+operation：`preview/read` 与 `execute/external_write`。Console 和 Feishu
+contribution 都声明 `operation=execute`、`selection_preview_operation=preview`，
+且 `default_enabled=false`；不存在 Scheduler、Webhook、Event 或 Harness。
+Preview 请求必须是 `dry_run=true` 且不带选择；正式执行必须是 `dry_run=false`，并带
+规范的非空 `selected_bill_codes` 与 `preview_fingerprint`。Feishu 的生产入口切换
+还必须支持“preview → 用户多轮选择 → 带原 preview fingerprint 的 execute”，不能
+把命令直接变成一次性写入入口。
+
+包外 Connector 依赖严格分为三个独立 service：
+
+| Connector service | binding | 本地 v1 role 检查 | primitive → operation/effect |
+|---|---|---|---|
+| `connector.boyi.self_pickup_source_sheet@1` | resource `self_pickup_source_sheet` | `self_pickup_source_sheet` | `read_rows` → `read_rows/read` |
+| `connector.boyi.self_pickup_primary_ronghui@1` | account `account_id` | `account_id` | `query` → `query/read`；`create` → `create/external_write`；`verify` → `verify/read` |
+| `connector.boyi.self_pickup_daxiang_s_ronghui@1` | account `daxiang_s_account_id` | `daxiang_s_account_id` | `query` → `query/read`；`create` → `create/external_write`；`verify` → `verify/read` |
+
+这些 v1 role 仅用于包内 adapter 的本地一致性检查，账号/资源标识只存在于 Host
+私有 side channel，绝不进入插件 JSON。持久配置仅有
+`include_daxiang_s_self_pickup` 与 `limit`。`service.invoke` action budget
+必须精确为 `read_rows=1`、`query=250`、`create=250`、`verify=250`，总量为 751。
+
+正式执行的第一次真实 Connector 调用必须一次提交三个唯一且完整的
+`preflight_services`，之后不得重复 preflight 或额外调用 Broker；preview 只预检
+source Sheet。写边界从 `create` 开始：写前失败为 `NOT_APPLIED`，`create` 之后的
+异常为 `WRITE_OUTCOME_UNKNOWN`。正式成功必须保留全部 Host Evidence，并逐票证明
+`verify`；preview 成功只能产生 read-only Evidence。离线 fixture 覆盖双来源、重复、
+重排稳定性、来源漂移、全目标 preflight 失败以及 create/verify 不确定结果，并比较
+v1/v2 稳定业务投影和 primitive 顺序；fixture Host Broker 不代表真实 Connector。
+
+三个真实 Connector 的 descriptors/handlers/注册、安装、项目配置、账号与资源绑定、
+Console/Feishu 入口所有权切换（尤其 Feishu 多轮选择）、真实 Sheet/Ronghui 读写与
+独立验证、Evidence 验收、部署和生产运行均为 `PRODUCTION_GATED`。离线测试可以显式
+注入本地 Host Broker，但不得伪造生产 Connector 注册或真实业务数据。
 
 ## 4. 安全投影的含义
 

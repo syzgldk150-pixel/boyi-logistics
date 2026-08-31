@@ -222,6 +222,83 @@ def test_service_invoke_receives_a_distinct_outer_host_evidence_ref(
     assert "evidence_ref" not in observations[0]["result"]
 
 
+def test_service_invoke_enforces_signed_action_limit_and_keeps_legacy_default(
+    tmp_path: Path,
+) -> None:
+    governance = governance_for_effect(CapabilityEffect.EXTERNAL_WRITE)
+
+    def issue(*, per_action_limit: int | None, max_calls: int) -> tuple[LocalBrokerCapabilityIssuer, str]:
+        issuer = LocalBrokerCapabilityIssuer(tmp_path / f"broker-{max_calls}.sock")
+        operation = {
+            "operation": "service.invoke",
+            "action": "query",
+            "roles": ["__system__"],
+            "effect": governance.effect.value,
+            "broker_effect": governance.broker_effect,
+            "governance": governance.to_mapping(),
+            "dynamic_effect": True,
+        }
+        if per_action_limit is not None:
+            operation["per_action_limit"] = per_action_limit
+        capability = issuer.issue(
+            automation_id="bounded-consumer",
+            plugin_version="1.0.0",
+            tool_name="service.bounded_consumer",
+            ttl_seconds=60,
+            runtime_permissions={
+                "browser": False,
+                "network": False,
+                "office": False,
+                "file_roles": [],
+                "max_broker_calls": max_calls,
+                "broker_operations": [operation],
+            },
+            account_roles=(),
+            resource_roles=(),
+            account_bindings={},
+            resource_bindings={},
+        )
+        return issuer, capability
+
+    limited, limited_capability = issue(per_action_limit=3, max_calls=4)
+    for _ in range(3):
+        limited.consume(
+            limited_capability,
+            request_id=str(uuid.uuid4()),
+            operation="service.invoke",
+            action="query",
+            role="__system__",
+        )
+    with pytest.raises(PluginExecutionError) as limited_error:
+        limited.consume(
+            limited_capability,
+            request_id=str(uuid.uuid4()),
+            operation="service.invoke",
+            action="query",
+            role="__system__",
+        )
+    assert limited_error.value.code == "BROKER_CALL_LIMIT"
+
+    legacy, legacy_capability = issue(per_action_limit=None, max_calls=65)
+    for _ in range(64):
+        legacy.consume(
+            legacy_capability,
+            request_id=str(uuid.uuid4()),
+            operation="service.invoke",
+            action="query",
+            role="__system__",
+        )
+    with pytest.raises(PluginExecutionError) as legacy_error:
+        legacy.consume(
+            legacy_capability,
+            request_id=str(uuid.uuid4()),
+            operation="service.invoke",
+            action="query",
+            role="__system__",
+        )
+    assert legacy_error.value.code == "BROKER_CALL_LIMIT"
+
+
 def test_sdk_exposes_host_evidence_as_out_of_band_result_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

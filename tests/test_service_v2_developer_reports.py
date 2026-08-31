@@ -216,6 +216,27 @@ def test_permission_report_is_stable_declarative_and_uses_explicit_effects() -> 
     assert json.loads(json.dumps(report, ensure_ascii=False, allow_nan=False)) == report
 
 
+def test_permission_report_projects_signed_service_action_call_limit() -> None:
+    manifest = _manifest()
+    capabilities = manifest["capabilities"]
+    assert isinstance(capabilities, list)
+    service_invoke = next(
+        item
+        for item in capabilities
+        if isinstance(item, dict) and item.get("name") == "service.invoke"
+    )
+    service_invoke["action_call_limits"] = {"lookup": 7}
+
+    report = project_permission_report(_verified(manifest))
+
+    row = _row(
+        report["host_capabilities"],
+        capability="service.invoke",
+        action="lookup",
+    )
+    assert row["per_call_limit"] == 7
+
+
 def test_permission_report_rejects_unknown_and_disabled_host_actions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

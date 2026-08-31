@@ -1,0 +1,117 @@
+{
+  "schema_version": 2,
+  "runtime_model": "service_v2",
+  "plugin_id": "self_pickup_problem_upload_v2",
+  "name": "自提问题件 v2",
+  "version": "1.0.0",
+  "description": "通过受管 Connector 预览并按已确认运单逐票登记自提问题件的离线候选 Service v2 包。",
+  "host_api": {
+    "minimum": "2.0.0",
+    "maximum_exclusive": "3.0.0"
+  },
+  "runtime": {
+    "kind": "python_subprocess",
+    "python": "3.10",
+    "mode": "on_demand",
+    "entrypoint": "payload/main.py",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "provides": [
+    {
+      "service": "plugin.self_pickup_problem_upload_v2.self_pickup_problem_upload@1",
+      "operations": [
+        {"name": "preview", "effect": "read"},
+        {"name": "execute", "effect": "external_write"}
+      ]
+    }
+  ],
+  "requires": [
+    {
+      "service": "connector.boyi.self_pickup_source_sheet@1",
+      "binding_kind": "resource",
+      "resource_role": "self_pickup_source_sheet"
+    },
+    {
+      "service": "connector.boyi.self_pickup_primary_ronghui@1",
+      "binding_kind": "account",
+      "account_role": "account_id"
+    },
+    {
+      "service": "connector.boyi.self_pickup_daxiang_s_ronghui@1",
+      "binding_kind": "account",
+      "account_role": "daxiang_s_account_id"
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "service.invoke",
+      "operations": ["read_rows", "query", "create", "verify"],
+      "account_role": null,
+      "resource_role": null,
+      "action_call_limits": {
+        "read_rows": 1,
+        "query": 250,
+        "create": 250,
+        "verify": 250
+      }
+    }
+  ],
+  "account_roles": [
+    {
+      "role": "account_id",
+      "allowed_systems": ["ronghui"],
+      "required": true
+    },
+    {
+      "role": "daxiang_s_account_id",
+      "allowed_systems": ["ronghui"],
+      "required": true
+    }
+  ],
+  "resource_roles": [
+    {
+      "role": "self_pickup_source_sheet",
+      "allowed_kinds": ["feishu_sheet"],
+      "required": true
+    }
+  ],
+  "contributes": {
+    "console": [
+      {
+        "id": "execute_console",
+        "title": "预览自提问题件候选",
+        "service": "plugin.self_pickup_problem_upload_v2.self_pickup_problem_upload@1",
+        "operation": "execute",
+        "selection_preview_operation": "preview",
+        "default_enabled": false
+      }
+    ],
+    "scheduler": [],
+    "webhook": [],
+    "feishu": [
+      {
+        "id": "execute_feishu",
+        "service": "plugin.self_pickup_problem_upload_v2.self_pickup_problem_upload@1",
+        "operation": "execute",
+        "commands": ["自提到货问题件"],
+        "selection_preview_operation": "preview",
+        "default_enabled": false
+      }
+    ],
+    "events": []
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "include_daxiang_s_self_pickup": {"type": "boolean"},
+      "limit": {"type": "integer", "minimum": 0, "maximum": 2000}
+    },
+    "required": []
+  },
+  "storage": {
+    "kv": false,
+    "collections": []
+  }
+}
