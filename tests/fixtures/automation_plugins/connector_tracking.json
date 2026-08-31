@@ -1,0 +1,22 @@
+{
+  "observed_at": "2026-08-31T03:15:00Z",
+  "records": [
+    {
+      "tracking_number": "OFFLINE1001",
+      "status": "IN_TRANSIT",
+      "observed_at": "2026-08-31T03:15:00Z",
+      "events": [
+        {
+          "occurred_at": "2026-08-31T01:20:00Z",
+          "status": "ACCEPTED",
+          "description": "Offline fixture accepted the parcel"
+        },
+        {
+          "occurred_at": "2026-08-31T03:15:00Z",
+          "status": "IN_TRANSIT",
+          "description": "Offline fixture recorded a transit event"
+        }
+      ]
+    }
+  ]
+}

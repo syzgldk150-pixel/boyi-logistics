@@ -72,6 +72,10 @@ payload/
 
 Manifest 的编辑器 Schema 位于 `agent/extension_sdk/schemas/manifest-v2.schema.json`。它帮助编辑器补全闭合字段，但运行时权威仍是 `manifest_v2.py`、ZIP verifier 与 `ServiceV2ProjectContract`；通过编辑器 Schema 不能代替 `validate`。
 
+Connector 不是一种 ZIP Provider。源码包的 `provides` 与 contribution target 仍只能使用 `plugin.*`；声明宿主 Connector 依赖时，`requires` 项必须精确包含 `service/account_role`，服务名使用 `connector.<owner>.<service>@<major>`，同名账号角色必须在 `account_roles` 中声明且 `required=true`。`validate` 会拒绝额外字段、未声明或非必填角色，以及 ZIP 尝试提供 `connector.*` 的情况。
+
+`connector.fixture.tracking@1/query` 只用于显式离线 Host 集成测试：测试调用方必须主动提供本地 JSON fixture 和 `fixture` 系统的 `tracking_account` 绑定。它不会由开发 CLI、安装器或生产组合自动加载；生产 `ConnectorRegistry` 默认为空。真实 TMS、飞书、数据库和写 Connector 都是 `PRODUCTION_GATED`，开发工具不得用 fixture 结果冒充生产连通性或授权。
+
 ## 4. 安全投影的含义
 
 ### `validate` 与 `inspect`
@@ -117,7 +121,7 @@ Manifest 的编辑器 Schema 位于 `agent/extension_sdk/schemas/manifest-v2.sch
 }
 ```
 
-每个 Host call 必须精确包含 `operation/action/role/arguments/data/fault`。`operation/action/role` 必须来自已验证 Manifest 与 Host Registry，fixture 的 arguments/data 必须分别通过真实 capability input/output Schema；调用总数与逐 action 次数都不能超过验证后合同的配额。`service.invoke` 需要真实 Provider 合同与 effect 解析，当前纯本地模拟器不具备该权威来源，因此固定以 `SIMULATOR_SERVICE_INVOKE_UNSUPPORTED` 拒绝，不把保护性的静态写上限冒充实际 Provider effect。`fault` 只能显式选择：
+每个 Host call 必须精确包含 `operation/action/role/arguments/data/fault`。`operation/action/role` 必须来自已验证 Manifest 与 Host Registry，fixture 的 arguments/data 必须分别通过真实 capability input/output Schema；调用总数与逐 action 次数都不能超过验证后合同的配额。`service.invoke` 需要真实 Provider 或宿主 Connector 合同与 effect 解析，当前纯本地 CLI 模拟器不注入这两类权威 Registry，因此固定以 `SIMULATOR_SERVICE_INVOKE_UNSUPPORTED` 拒绝，不把保护性的静态写上限或离线 tracking fixture 冒充实际运行依赖。`fault` 只能显式选择：
 
 - `none`：返回本地 fixture data。
 - `fail_before_write`：在写开始前失败。

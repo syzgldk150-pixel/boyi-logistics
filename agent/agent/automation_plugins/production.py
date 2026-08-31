@@ -49,6 +49,10 @@ from agent.automation_plugins.errors import (
 from agent.automation_plugins.configuration import (
     AutomationProjectConfigurationService,
 )
+from agent.automation_plugins.connector_dependency_projection import (
+    project_service_dependencies,
+)
+from agent.automation_plugins.connector_registry import ConnectorRegistry
 from agent.automation_plugins.execution import (
     FilesystemPluginIntegrityVerifier,
     PluginExecutionRouter,
@@ -129,6 +133,7 @@ from agent.automation_plugins.service_v2_projection import (
     _service_registration_material,
     _service_v2_contribution_effect_plans,
     _validated_managed_contribution_effect_payload,
+    _validated_service_registration_payload,
 )
 from agent.automation_plugins.sandbox import BubblewrapPluginSandbox, SandboxCanaryResult
 from agent.automation_plugins.storage import (
@@ -169,12 +174,16 @@ class ProductionRuntimeCoeffectProvider:
         account_manager: Any,
         binding_resolver: ProductionProjectBindingResolver | None = None,
         service_registry: ServiceRegistry | None = None,
+        connector_registry: ConnectorRegistry | None = None,
     ) -> None:
         self._core_catalog = core_catalog
         self._handler_keys = frozenset((str(a), str(b)) for a, b in broker_handler_keys)
         self._account_manager = account_manager
         self._bindings = binding_resolver
-        self._services = service_registry or ServiceRegistry()
+        self._connectors = connector_registry or ConnectorRegistry()
+        self._services = service_registry or ServiceRegistry(
+            connector_registry=self._connectors
+        )
 
     @staticmethod
     def _record(
@@ -198,39 +207,22 @@ class ProductionRuntimeCoeffectProvider:
         snapshot: RuntimeGenerationSnapshot,
     ) -> tuple[RuntimeCoeffectSnapshot, ...]:
         material = _service_registration_material(snapshot)
-        results: list[RuntimeCoeffectSnapshot] = []
-        for service in material["requires"]:
-            provider = self._services.provider_for(service)
-            claimed = provider or self._services.claimed_provider_for(service)
-            dependency_status = (
-                "READY" if provider is not None else "PROVIDER_BLOCKED" if claimed is not None else "MISSING_PROVIDER"
+        dependencies = project_service_dependencies(
+            material["requires"],
+            connector_requirements=material.get("connector_requirements", ()),
+            connector_registry=self._connectors,
+            service_registry=self._services,
+        )
+        return tuple(
+            self._record(
+                RuntimeCoeffectKind.SERVICE,
+                service,
+                revision,
+                ready=ready,
+                reason_code=None if ready else "BLOCKED_DEPENDENCY",
             )
-            revision_material = {
-                "service": service,
-                "dependency_status": dependency_status,
-                "provider": (
-                    {
-                        "plugin_id": claimed.plugin_id,
-                        "plugin_version": claimed.plugin_version,
-                        "package_sha256": claimed.package_sha256,
-                        "manifest_sha256": claimed.manifest_sha256,
-                        "generation": claimed.generation,
-                        "runtime_mode": claimed.runtime_mode,
-                    }
-                    if claimed is not None
-                    else None
-                ),
-            }
-            results.append(
-                self._record(
-                    RuntimeCoeffectKind.SERVICE,
-                    service,
-                    revision_material,
-                    ready=provider is not None,
-                    reason_code=(None if provider is not None else "BLOCKED_DEPENDENCY"),
-                )
-            )
-        return tuple(results)
+            for service, ready, revision in dependencies
+        )
 
     def _contribution_coeffects(
         self,
@@ -918,90 +910,7 @@ class ProductionRuntimeEffectDriver:
 
     @staticmethod
     def _validated_service_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-        required_fields = {
-            "provider_registration_id",
-            "provider_generation",
-            "reference_id",
-            "plugin_id",
-            "plugin_version",
-            "package_sha256",
-            "manifest_sha256",
-            "runtime_mode",
-            "provides",
-            "requires",
-            "service_contracts_sha256",
-        }
-        if set(payload) != required_fields:
-            raise PluginConflictError("service registration effect payload is invalid")
-        package_sha256 = _required_sha(payload.get("package_sha256"), "package_sha256")
-        manifest_sha256 = _required_sha(
-            payload.get("manifest_sha256"),
-            "manifest_sha256",
-        )
-        registration_id = str(payload.get("provider_registration_id") or "")
-        if registration_id != package_provider_registration_id(package_sha256):
-            raise PluginConflictError("service package registration identity is invalid")
-        if payload.get("provider_generation") != _SERVICE_PROVIDER_GENERATION:
-            raise PluginConflictError("service provider generation is invalid")
-        reference_id = str(payload.get("reference_id") or "")
-        plugin_id = str(payload.get("plugin_id") or "")
-        plugin_version = str(payload.get("plugin_version") or "")
-        runtime_mode = str(payload.get("runtime_mode") or "")
-        raw_provides = payload.get("provides")
-        raw_requires = payload.get("requires")
-        if (
-            not reference_id
-            or not plugin_id
-            or not plugin_version
-            or runtime_mode not in {"on_demand", "resident"}
-            or not isinstance(raw_provides, list)
-            or not isinstance(raw_requires, list)
-            or not all(isinstance(item, Mapping) for item in raw_provides)
-            or not all(isinstance(item, str) and item for item in raw_requires)
-        ):
-            raise PluginConflictError("service registration effect contract is invalid")
-        provides = [copy.deepcopy(dict(item)) for item in raw_provides]
-        requires = [str(item) for item in raw_requires]
-        seen_services: set[str] = set()
-        for provided in provides:
-            if set(provided) != {"service", "operations"}:
-                raise PluginConflictError("service registration effect contract is invalid")
-            service = str(provided.get("service") or "")
-            operations = provided.get("operations")
-            if not service or service in seen_services or not isinstance(operations, list) or not operations:
-                raise PluginConflictError("service registration effect contract is invalid")
-            seen_services.add(service)
-            operation_names: set[str] = set()
-            for operation in operations:
-                if not isinstance(operation, Mapping) or set(operation) != {
-                    "name",
-                    "effect",
-                }:
-                    raise PluginConflictError("service registration effect contract is invalid")
-                name = str(operation.get("name") or "")
-                try:
-                    CapabilityEffect(str(operation.get("effect") or ""))
-                except (TypeError, ValueError) as exc:
-                    raise PluginConflictError("service registration effect contract is invalid") from exc
-                if not name or name != name.strip() or name in operation_names:
-                    raise PluginConflictError("service registration effect contract is invalid")
-                operation_names.add(name)
-        expected_contract_sha = _digest({"provides": provides, "requires": [{"service": item} for item in requires]})
-        if payload.get("service_contracts_sha256") != expected_contract_sha:
-            raise PluginConflictError("service registration effect digest is invalid")
-        return {
-            "provider_registration_id": registration_id,
-            "provider_generation": _SERVICE_PROVIDER_GENERATION,
-            "reference_id": reference_id,
-            "plugin_id": plugin_id,
-            "plugin_version": plugin_version,
-            "package_sha256": package_sha256,
-            "manifest_sha256": manifest_sha256,
-            "runtime_mode": runtime_mode,
-            "provides": provides,
-            "requires": requires,
-            "service_contracts_sha256": expected_contract_sha,
-        }
+        return _validated_service_registration_payload(payload)
 
     @staticmethod
     def _validated_contribution_payload(
@@ -1030,6 +939,9 @@ class ProductionRuntimeEffectDriver:
                 runtime_mode=material["runtime_mode"],
                 provides=tuple(material["provides"]),
                 requires=tuple(material["requires"]),
+                connector_requirements=tuple(
+                    material.get("connector_requirements", ())
+                ),
             )
             automation_id, raw_generation = reference_id.rsplit(":", 1)
             try:
@@ -2523,6 +2435,7 @@ class ProductionAutomationPluginRuntime:
     management_repository: MySQLAutomationPluginManagementRepository
     binding_resolver: ProductionProjectBindingResolver
     service_registry: ServiceRegistry
+    connector_registry: ConnectorRegistry
     contribution_registry: ManagedContributionRegistry
     service_effect_driver: ProductionRuntimeEffectDriver
     lifecycle_service: AutomationPluginService
@@ -2804,6 +2717,7 @@ def build_production_automation_plugin_runtime(
     catalog_repository = MySQLAutomationPluginCatalogRepositoryAdapter(orchestration_repository)
     config_repository = MySQLAutomationProjectConfigurationReadAdapter(orchestration_repository)
     catalog_account_resolver = AccountManagerSessionResolver(account_manager)
+    connector_registry = ConnectorRegistry()
     catalog = PluginCatalog(
         catalog_repository,
         config_repository,
@@ -2818,6 +2732,7 @@ def build_production_automation_plugin_runtime(
             )
         ),
         contribution_backend_status=_contribution_backend,
+        connector_registry=connector_registry,
     )
     runtime_repository = MySQLAutomationPluginRuntimeAdapter(orchestration_repository)
     management_repository = MySQLAutomationPluginManagementRepository(orchestration_repository)
@@ -2841,7 +2756,10 @@ def build_production_automation_plugin_runtime(
         )
     scoped_broker_handlers = {key: handler for key, handler in broker_handlers.items() if key in release_handler_keys}
     runtime_projection_lock = RLock()
-    service_registry = ServiceRegistry(lock=runtime_projection_lock)
+    service_registry = ServiceRegistry(
+        lock=runtime_projection_lock,
+        connector_registry=connector_registry,
+    )
     contribution_registry = ManagedContributionRegistry(
         lock=runtime_projection_lock,
         reserved_feishu_command=reserved_feishu_command,
@@ -2855,6 +2773,7 @@ def build_production_automation_plugin_runtime(
         reviewed_handlers=scoped_broker_handlers,
         service_registry=service_registry,
         service_executor=service_executor,
+        connector_registry=connector_registry,
     )
     conflicting_platform_handlers = set(scoped_broker_handlers) & set(platform_v2_handlers)
     if conflicting_platform_handlers:
@@ -2872,6 +2791,7 @@ def build_production_automation_plugin_runtime(
         account_manager=account_manager,
         binding_resolver=binding_resolver,
         service_registry=service_registry,
+        connector_registry=connector_registry,
     )
     planner = ProductionRuntimeEffectPlanner()
     driver = ProductionRuntimeEffectDriver(
@@ -2928,6 +2848,7 @@ def build_production_automation_plugin_runtime(
         handlers=scoped_broker_handlers,
         account_resolver=catalog_account_resolver,
         resource_resolver=binding_resolver,
+        connector_registry=connector_registry,
     )
     broker = LocalCoreAutomationBroker(issuer=issuer, adapter=core_adapter)
     migration_runtime = PluginMigrationRuntimeCoordinator(repository)
@@ -2966,6 +2887,7 @@ def build_production_automation_plugin_runtime(
         management_repository=management_repository,
         binding_resolver=binding_resolver,
         service_registry=service_registry,
+        connector_registry=connector_registry,
         contribution_registry=contribution_registry,
         service_effect_driver=driver,
         lifecycle_service=lifecycle_service,

@@ -29,6 +29,9 @@ from shared.waybill_entry_extensions import (
 _PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 _SERVICE_RE = re.compile(r"^plugin\.([a-z][a-z0-9_]{1,63})\.([a-z][a-z0-9_.-]{0,127})@(0|[1-9][0-9]*)$")
+_CONNECTOR_SERVICE_RE = re.compile(
+    r"^connector\.([a-z][a-z0-9_]{1,63})\.([a-z][a-z0-9_.-]{0,127})@(0|[1-9][0-9]*)$"
+)
 _IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _ROLE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _ROUTE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -67,7 +70,8 @@ _RUNTIME_FIELDS = frozenset(
 )
 _PROVIDE_FIELDS = frozenset({"service", "operations"})
 _PROVIDE_OPERATION_FIELDS = frozenset({"name", "effect"})
-_REQUIRE_FIELDS = frozenset({"service"})
+_PLUGIN_REQUIRE_FIELDS = frozenset({"service"})
+_CONNECTOR_REQUIRE_FIELDS = frozenset({"service", "account_role"})
 _CAPABILITY_FIELDS = frozenset({"name", "operations", "account_role", "resource_role"})
 _ACCOUNT_ROLE_FIELDS = frozenset({"role", "allowed_systems", "required"})
 _RESOURCE_ROLE_FIELDS = frozenset({"role", "allowed_kinds", "required"})
@@ -292,6 +296,14 @@ def _service_name(value: Any, path: str) -> tuple[str, str, int]:
     return service, match.group(1), int(match.group(3))
 
 
+def _connector_service_name(value: Any, path: str) -> tuple[str, str, int]:
+    service = _text(value, path, maximum=220)
+    match = _CONNECTOR_SERVICE_RE.fullmatch(service)
+    if match is None:
+        raise PluginManifestError(f"{path} must use connector.<owner>.<service>@<major>")
+    return service, match.group(1), int(match.group(3))
+
+
 def _payload_path(value: Any, path: str, *, suffix: str) -> str:
     text = _text(value, path, maximum=240)
     if "\\" in text:
@@ -475,19 +487,51 @@ def _validate_requires(
     value: Any,
     *,
     provided_services: frozenset[str],
+    account_roles: set[str],
+    required_account_roles: frozenset[str],
 ) -> list[dict[str, str]]:
     raw_items = _array(value, "requires")
     result: list[dict[str, str]] = []
     seen: set[str] = set()
     for index, raw_item in enumerate(raw_items):
-        item = _mapping(raw_item, f"requires[{index}]", _REQUIRE_FIELDS)
-        service, _, _ = _service_name(item["service"], f"requires[{index}].service")
-        if service in provided_services:
-            raise PluginManifestError("a plugin cannot require a service it provides")
+        path = f"requires[{index}]"
+        item = _mapping(raw_item, path)
+        service_value = item.get("service")
+        service = _text(service_value, f"{path}.service", maximum=220)
+        if _SERVICE_RE.fullmatch(service):
+            if set(item) != _PLUGIN_REQUIRE_FIELDS:
+                raise PluginManifestError(
+                    f"{path} plugin service requirement must contain exactly service"
+                )
+            service, _, _ = _service_name(service, f"{path}.service")
+            normalized = {"service": service}
+            if service in provided_services:
+                raise PluginManifestError("a plugin cannot require a service it provides")
+        elif _CONNECTOR_SERVICE_RE.fullmatch(service):
+            if set(item) != _CONNECTOR_REQUIRE_FIELDS:
+                raise PluginManifestError(
+                    f"{path} connector service requirement must contain exactly service and account_role"
+                )
+            service, _, _ = _connector_service_name(service, f"{path}.service")
+            account_role = _role(item["account_role"], f"{path}.account_role")
+            if account_role not in account_roles:
+                raise PluginManifestError(
+                    f"{path}.account_role references an undeclared account role"
+                )
+            if account_role not in required_account_roles:
+                raise PluginManifestError(
+                    f"{path}.account_role must reference an account role with required=true"
+                )
+            normalized = {"service": service, "account_role": account_role}
+        else:
+            raise PluginManifestError(
+                f"{path}.service must use plugin.<plugin_id>.<service>@<major> "
+                "or connector.<owner>.<service>@<major>"
+            )
         if service in seen:
             raise PluginManifestError(f"duplicate required service: {service}")
         seen.add(service)
-        result.append({"service": service})
+        result.append(normalized)
     return result
 
 
@@ -1067,14 +1111,20 @@ class AutomationPluginManifestV2:
             for provided in provides
             for operation in provided["operations"]
         }
-        requires = _validate_requires(
-            data["requires"],
-            provided_services=frozenset(operations_by_service),
-        )
         account_roles, account_role_names = _validate_account_roles(data["account_roles"])
         resource_roles, resource_role_names = _validate_resource_roles(data["resource_roles"])
         if account_role_names & resource_role_names:
             raise PluginManifestError("account and resource role names must be globally unique")
+        requires = _validate_requires(
+            data["requires"],
+            provided_services=frozenset(operations_by_service),
+            account_roles=account_role_names,
+            required_account_roles=frozenset(
+                str(item["role"])
+                for item in account_roles
+                if item["required"] is True
+            ),
+        )
         storage = _validate_storage(data["storage"])
         capabilities = _validate_capabilities(
             data["capabilities"],
@@ -1141,6 +1191,20 @@ class AutomationPluginManifestV2:
     @property
     def required_services(self) -> tuple[str, ...]:
         return tuple(str(item["service"]) for item in self.requires)
+
+    @property
+    def connector_requirements(self) -> tuple[Mapping[str, Any], ...]:
+        return tuple(
+            item
+            for item in self.requires
+            if _CONNECTOR_SERVICE_RE.fullmatch(str(item["service"]))
+        )
+
+    def connector_account_role_for(self, service: str) -> str | None:
+        for requirement in self.connector_requirements:
+            if requirement["service"] == service:
+                return str(requirement["account_role"])
+        return None
 
     @property
     def runtime_entrypoint(self) -> str:

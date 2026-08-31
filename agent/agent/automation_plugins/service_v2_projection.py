@@ -9,6 +9,11 @@ from dataclasses import dataclass, field, replace
 from threading import RLock
 from typing import Any, Callable, Iterable, Mapping
 
+from agent.automation_plugins.connector_compatibility import (
+    connector_requirement_from_mapping,
+    connector_requirements_from_contracts,
+)
+from agent.automation_plugins.connector_registry import ConnectorRegistryError
 from agent.automation_plugins.errors import PluginConflictError
 from agent.automation_plugins.host_capability_registry import (
     CapabilityEffect,
@@ -2217,6 +2222,7 @@ def _service_registration_material(
         raise PluginConflictError("v2 service generation contract is missing")
     raw_provides = contracts.get("provides")
     raw_requires = contracts.get("requires")
+    raw_account_roles = descriptor.get("account_roles")
     runtime = descriptor.get("runtime")
     if (
         not isinstance(raw_provides, (list, tuple))
@@ -2239,13 +2245,28 @@ def _service_registration_material(
         if not isinstance(item, Mapping):
             raise PluginConflictError("v2 required service contract is invalid")
         requires.append(str(item.get("service") or ""))
+    try:
+        connector_requirements = connector_requirements_from_contracts(
+            requirements=(
+                item for item in raw_requires if isinstance(item, Mapping)
+            ),
+            account_roles=(
+                (item for item in raw_account_roles if isinstance(item, Mapping))
+                if isinstance(raw_account_roles, (list, tuple))
+                else ()
+            ),
+        )
+    except (ConnectorRegistryError, TypeError, ValueError) as exc:
+        raise PluginConflictError(
+            "v2 Connector requirement contract is invalid"
+        ) from exc
     if any(not item["service"] for item in provides) or any(
         not service for service in requires
     ):
         raise PluginConflictError("v2 service names cannot be empty")
     package_sha256 = _required_sha(snapshot.package_sha256, "package_sha256")
     manifest_sha256 = _required_sha(snapshot.manifest_sha256, "manifest_sha256")
-    return {
+    material = {
         "provider_registration_id": package_provider_registration_id(package_sha256),
         "provider_generation": _SERVICE_PROVIDER_GENERATION,
         "reference_id": f"{snapshot.automation_id}:{snapshot.generation}",
@@ -2260,6 +2281,154 @@ def _service_registration_material(
             {"provides": provides, "requires": [{"service": item} for item in requires]}
         ),
     }
+    if connector_requirements:
+        material["connector_requirements"] = [
+            item.to_mapping() for item in connector_requirements
+        ]
+    return material
+
+
+def _validated_service_registration_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate one durable service effect, including exact Connector roles."""
+
+    base_fields = {
+        "provider_registration_id",
+        "provider_generation",
+        "reference_id",
+        "plugin_id",
+        "plugin_version",
+        "package_sha256",
+        "manifest_sha256",
+        "runtime_mode",
+        "provides",
+        "requires",
+        "service_contracts_sha256",
+    }
+    raw_requires = payload.get("requires")
+    if not isinstance(raw_requires, list) or not all(
+        isinstance(item, str) and item for item in raw_requires
+    ):
+        raise PluginConflictError("service registration effect contract is invalid")
+    requires = [str(item) for item in raw_requires]
+    connector_services = tuple(
+        service for service in requires if service.startswith("connector.")
+    )
+    expected_fields = (
+        base_fields | {"connector_requirements"}
+        if connector_services
+        else base_fields
+    )
+    if set(payload) != expected_fields:
+        raise PluginConflictError("service registration effect payload is invalid")
+
+    package_sha256 = _required_sha(payload.get("package_sha256"), "package_sha256")
+    manifest_sha256 = _required_sha(
+        payload.get("manifest_sha256"),
+        "manifest_sha256",
+    )
+    registration_id = str(payload.get("provider_registration_id") or "")
+    if registration_id != package_provider_registration_id(package_sha256):
+        raise PluginConflictError("service package registration identity is invalid")
+    if payload.get("provider_generation") != _SERVICE_PROVIDER_GENERATION:
+        raise PluginConflictError("service provider generation is invalid")
+    reference_id = str(payload.get("reference_id") or "")
+    plugin_id = str(payload.get("plugin_id") or "")
+    plugin_version = str(payload.get("plugin_version") or "")
+    runtime_mode = str(payload.get("runtime_mode") or "")
+    raw_provides = payload.get("provides")
+    if (
+        not reference_id
+        or not plugin_id
+        or not plugin_version
+        or runtime_mode not in {"on_demand", "resident"}
+        or not isinstance(raw_provides, list)
+        or not all(isinstance(item, Mapping) for item in raw_provides)
+    ):
+        raise PluginConflictError("service registration effect contract is invalid")
+    provides = [copy.deepcopy(dict(item)) for item in raw_provides]
+    seen_services: set[str] = set()
+    for provided in provides:
+        if set(provided) != {"service", "operations"}:
+            raise PluginConflictError("service registration effect contract is invalid")
+        service = str(provided.get("service") or "")
+        operations = provided.get("operations")
+        if (
+            not service
+            or service in seen_services
+            or not isinstance(operations, list)
+            or not operations
+        ):
+            raise PluginConflictError("service registration effect contract is invalid")
+        seen_services.add(service)
+        operation_names: set[str] = set()
+        for operation in operations:
+            if not isinstance(operation, Mapping) or set(operation) != {
+                "name",
+                "effect",
+            }:
+                raise PluginConflictError(
+                    "service registration effect contract is invalid"
+                )
+            name = str(operation.get("name") or "")
+            try:
+                CapabilityEffect(str(operation.get("effect") or ""))
+            except (TypeError, ValueError) as exc:
+                raise PluginConflictError(
+                    "service registration effect contract is invalid"
+                ) from exc
+            if not name or name != name.strip() or name in operation_names:
+                raise PluginConflictError(
+                    "service registration effect contract is invalid"
+                )
+            operation_names.add(name)
+
+    connector_requirements: list[dict[str, object]] = []
+    if connector_services:
+        raw_connector_requirements = payload.get("connector_requirements")
+        if not isinstance(raw_connector_requirements, list) or not all(
+            isinstance(item, Mapping) for item in raw_connector_requirements
+        ):
+            raise PluginConflictError("Connector registration contract is invalid")
+        try:
+            parsed_connector_requirements = tuple(
+                connector_requirement_from_mapping(item)
+                for item in raw_connector_requirements
+            )
+        except (ConnectorRegistryError, TypeError, ValueError) as exc:
+            raise PluginConflictError(
+                "Connector registration contract is invalid"
+            ) from exc
+        if tuple(item.service for item in parsed_connector_requirements) != (
+            connector_services
+        ):
+            raise PluginConflictError("Connector registration contract is invalid")
+        connector_requirements = [
+            item.to_mapping() for item in parsed_connector_requirements
+        ]
+
+    expected_contract_sha = _digest(
+        {"provides": provides, "requires": [{"service": item} for item in requires]}
+    )
+    if payload.get("service_contracts_sha256") != expected_contract_sha:
+        raise PluginConflictError("service registration effect digest is invalid")
+    material = {
+        "provider_registration_id": registration_id,
+        "provider_generation": _SERVICE_PROVIDER_GENERATION,
+        "reference_id": reference_id,
+        "plugin_id": plugin_id,
+        "plugin_version": plugin_version,
+        "package_sha256": package_sha256,
+        "manifest_sha256": manifest_sha256,
+        "runtime_mode": runtime_mode,
+        "provides": provides,
+        "requires": requires,
+        "service_contracts_sha256": expected_contract_sha,
+    }
+    if connector_requirements:
+        material["connector_requirements"] = connector_requirements
+    return material
 
 
 __all__ = [

@@ -8,6 +8,17 @@ import re
 from threading import RLock
 from typing import Any, Mapping
 
+from agent.automation_plugins.connector_compatibility import (
+    ConnectorRequirementContract,
+    connector_requirement_for_service,
+    connector_requirement_from_mapping,
+    connector_requirements_from_manifest,
+    evaluate_connector_requirement,
+)
+from agent.automation_plugins.connector_registry import (
+    ConnectorRegistry,
+    ConnectorRegistryError,
+)
 from agent.automation_plugins.errors import AutomationPluginError, PluginConflictError
 from agent.automation_plugins.host_capability_registry import CapabilityEffect
 from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
@@ -194,6 +205,7 @@ class ServiceRegistration:
     manifest_sha256: str
     provided_services: tuple[ServiceProvider, ...]
     required_services: tuple[str, ...]
+    connector_requirements: tuple[ConnectorRequirementContract, ...]
     state: ServiceRegistrationState
     blocking_reasons: tuple[DependencyBlockReason, ...] = ()
 
@@ -308,7 +320,12 @@ class ServiceRegistry:
     package's complete claim set in one lock-held commit.
     """
 
-    def __init__(self, *, lock: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        lock: Any | None = None,
+        connector_registry: ConnectorRegistry | None = None,
+    ) -> None:
         """Create the registry, optionally sharing a runtime projection lock.
 
         Production couples service ownership with contribution route/job
@@ -323,6 +340,7 @@ class ServiceRegistry:
         ):
             raise TypeError("service registry lock must support acquire/release")
         self._lock = lock if lock is not None else RLock()
+        self._connectors = connector_registry or ConnectorRegistry()
         self._registrations: dict[str, ServiceRegistration] = {}
         # Several immutable packages may provide one service name.  Bare-name
         # resolution is valid only when exactly one ready Provider exists;
@@ -366,6 +384,9 @@ class ServiceRegistry:
         runtime_mode: str,
         provides: tuple[Mapping[str, Any], ...],
         requires: tuple[str, ...],
+        connector_requirements: tuple[
+            ConnectorRequirementContract | Mapping[str, Any], ...
+        ] = (),
     ) -> ServiceRegistration:
         """Restore a validated package claim from an immutable generation."""
 
@@ -381,6 +402,7 @@ class ServiceRegistry:
             runtime_mode=runtime_mode,
             provides=provides,
             requires=requires,
+            connector_requirements=connector_requirements,
         )
         return self._register_incoming(incoming)
 
@@ -397,6 +419,9 @@ class ServiceRegistry:
         replacement_runtime_mode: str,
         replacement_provides: tuple[Mapping[str, Any], ...],
         replacement_requires: tuple[str, ...],
+        replacement_connector_requirements: tuple[
+            ConnectorRequirementContract | Mapping[str, Any], ...
+        ] = (),
         automation_id: str,
         generation: int,
     ) -> ServiceProviderReplacement:
@@ -425,6 +450,7 @@ class ServiceRegistry:
             runtime_mode=replacement_runtime_mode,
             provides=replacement_provides,
             requires=replacement_requires,
+            connector_requirements=replacement_connector_requirements,
         )
         if replaced_provider_automation_id == replacement_provider_automation_id:
             raise ServiceProviderConflict(
@@ -600,6 +626,9 @@ class ServiceRegistry:
         runtime_mode: str,
         provides: tuple[Mapping[str, Any], ...],
         requires: tuple[str, ...],
+        connector_requirements: tuple[
+            ConnectorRequirementContract | Mapping[str, Any], ...
+        ],
     ) -> ServiceRegistration:
         if not plugin_id or not plugin_version:
             raise ServiceRegistryError("persisted service identity is invalid")
@@ -611,6 +640,8 @@ class ServiceRegistry:
             raise ServiceRegistryError("persisted provided services are invalid")
         if not isinstance(requires, (list, tuple)):
             raise ServiceRegistryError("persisted required services are invalid")
+        if not isinstance(connector_requirements, (list, tuple)):
+            raise ServiceRegistryError("persisted Connector requirements are invalid")
         providers: list[ServiceProvider] = []
         seen: set[str] = set()
         for item in provides:
@@ -645,6 +676,25 @@ class ServiceRegistry:
             set(normalized_requires)
         ) != len(normalized_requires):
             raise ServiceRegistryError("persisted required services are invalid")
+        try:
+            normalized_connector_requirements = tuple(
+                item
+                if isinstance(item, ConnectorRequirementContract)
+                else connector_requirement_from_mapping(item)
+                for item in connector_requirements
+            )
+        except (TypeError, ValueError, ConnectorRegistryError) as exc:
+            raise ServiceRegistryError(
+                "persisted Connector requirements are invalid"
+            ) from exc
+        connector_services = tuple(
+            item.service for item in normalized_connector_requirements
+        )
+        if (
+            len(connector_services) != len(set(connector_services))
+            or any(service not in normalized_requires for service in connector_services)
+        ):
+            raise ServiceRegistryError("persisted Connector requirements are invalid")
         return ServiceRegistration(
             automation_id=automation_id,
             generation=generation,
@@ -654,6 +704,7 @@ class ServiceRegistry:
             manifest_sha256=manifest_sha256,
             provided_services=tuple(providers),
             required_services=normalized_requires,
+            connector_requirements=normalized_connector_requirements,
             state=ServiceRegistrationState.BLOCKED_DEPENDENCY,
         )
 
@@ -676,6 +727,7 @@ class ServiceRegistry:
             and current.package_sha256 == incoming.package_sha256
             and current.manifest_sha256 == incoming.manifest_sha256
             and current.required_services == incoming.required_services
+            and current.connector_requirements == incoming.connector_requirements
             and providers(current) == providers(incoming)
             and tuple(
                 provider.runtime_mode for provider in current.provided_services
@@ -695,6 +747,7 @@ class ServiceRegistry:
         return (
             current.plugin_id == incoming.plugin_id
             and current.required_services == incoming.required_services
+            and current.connector_requirements == incoming.connector_requirements
             and tuple(
                 (
                     provider.service,
@@ -1281,6 +1334,7 @@ class ServiceRegistry:
             manifest_sha256=manifest.manifest_sha256,
             provided_services=providers,
             required_services=manifest.required_services,
+            connector_requirements=connector_requirements_from_manifest(manifest),
             state=ServiceRegistrationState.BLOCKED_DEPENDENCY,
             blocking_reasons=(),
         )
@@ -1301,9 +1355,8 @@ class ServiceRegistry:
             for service, claims in owners.items()
         }
 
-    @classmethod
     def _reconcile(
-        cls,
+        self,
         registrations: Mapping[str, ServiceRegistration],
         owners: Mapping[str, tuple[tuple[str, int], ...]],
     ) -> dict[str, ServiceRegistration]:
@@ -1316,8 +1369,23 @@ class ServiceRegistry:
                     continue
                 registration = registrations[automation_id]
                 if all(
-                    (claims := owners.get(service)) is not None
-                    and any(owner[0] in active for owner in claims)
+                    (
+                        evaluate_connector_requirement(
+                            self._connectors,
+                            connector_requirement_for_service(
+                                registration.connector_requirements,
+                                service,
+                            ),
+                            service=service,
+                        ).ready
+                        if service.startswith("connector.")
+                        else False
+                    )
+                    or (
+                        not service.startswith("connector.")
+                        and (claims := owners.get(service)) is not None
+                        and any(owner[0] in active for owner in claims)
+                    )
                     for service in registration.required_services
                 ):
                     active.add(automation_id)
@@ -1326,7 +1394,7 @@ class ServiceRegistry:
         result: dict[str, ServiceRegistration] = {}
         for automation_id, registration in registrations.items():
             is_active = automation_id in active
-            reasons = () if is_active else cls._blocking_reasons_for(
+            reasons = () if is_active else self._blocking_reasons_for(
                 registration,
                 registrations=registrations,
                 owners=owners,
@@ -1348,8 +1416,8 @@ class ServiceRegistry:
             )
         return result
 
-    @staticmethod
     def _blocking_reasons_for(
+        self,
         registration: ServiceRegistration,
         *,
         registrations: Mapping[str, ServiceRegistration],
@@ -1358,13 +1426,39 @@ class ServiceRegistry:
     ) -> tuple[DependencyBlockReason, ...]:
         reasons: list[DependencyBlockReason] = []
         for service in registration.required_services:
+            if service.startswith("connector."):
+                compatibility = evaluate_connector_requirement(
+                    self._connectors,
+                    connector_requirement_for_service(
+                        registration.connector_requirements,
+                        service,
+                    ),
+                    service=service,
+                )
+                if not compatibility.ready:
+                    reasons.append(
+                        DependencyBlockReason(
+                            code=compatibility.reason_code
+                            or "CONNECTOR_REQUIREMENT_INCOMPATIBLE",
+                            service=service,
+                            message=compatibility.reason
+                            or "Connector requirement is incompatible",
+                        )
+                    )
+                continue
+            if self._connectors.is_available(service):
+                continue
             claims = owners.get(service)
             if claims is None:
                 reasons.append(
                     DependencyBlockReason(
-                        code="MISSING_PROVIDER",
+                        code=(
+                            "MISSING_CONNECTOR"
+                            if service.startswith("connector.")
+                            else "MISSING_PROVIDER"
+                        ),
                         service=service,
-                        message=f"required service has no provider: {service}",
+                        message=f"required service is unavailable: {service}",
                     )
                 )
                 continue

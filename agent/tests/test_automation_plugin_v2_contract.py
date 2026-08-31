@@ -205,6 +205,151 @@ def test_manifest_v2_round_trip_is_closed_immutable_and_hash_addressed() -> None
         manifest.runtime["wheelhouse"].append("payload/wheelhouse/x.whl")
 
 
+def test_manifest_v2_connector_requirement_is_closed_and_legacy_hash_is_stable() -> None:
+    legacy_source = _manifest_mapping()
+    legacy = AutomationPluginManifestV2.from_mapping(legacy_source)
+    assert legacy.to_mapping() == legacy_source
+    assert legacy.manifest_sha256 == "0a30eae53800608b79d1607a34bb7ec50250f940aac3b0383b72d5b475ba886f"
+
+    legacy_consumer_source = _manifest_mapping(
+        "legacy_consumer",
+        requires=("plugin.provider_plugin.records@1",),
+    )
+    legacy_consumer = AutomationPluginManifestV2.from_mapping(legacy_consumer_source)
+    assert legacy_consumer.to_mapping() == legacy_consumer_source
+    assert legacy_consumer.manifest_sha256 == (
+        "4c250a4c238fb01076bbff96bf9de40c7e5a2e6d7296ea71bcfaf9e1852bc1b9"
+    )
+
+    source = _manifest_mapping(
+        "connector_consumer",
+        requires=("plugin.provider_plugin.records@1",),
+    )
+    source["requires"].append(
+        {
+            "service": "connector.fixture.tracking@1",
+            "account_role": "operator",
+        }
+    )
+
+    manifest = AutomationPluginManifestV2.from_mapping(source)
+
+    assert manifest.to_mapping() == source
+    assert manifest.required_services == (
+        "plugin.provider_plugin.records@1",
+        "connector.fixture.tracking@1",
+    )
+    assert tuple(dict(item) for item in manifest.connector_requirements) == (
+        {
+            "service": "connector.fixture.tracking@1",
+            "account_role": "operator",
+        },
+    )
+    assert manifest.connector_account_role_for("connector.fixture.tracking@1") == "operator"
+    assert manifest.connector_account_role_for("connector.fixture.missing@1") is None
+
+
+@pytest.mark.parametrize(
+    ("requirement", "message"),
+    [
+        (
+            {"service": "connector.fixture.tracking@1"},
+            "connector service requirement must contain exactly service and account_role",
+        ),
+        (
+            {
+                "service": "connector.fixture.tracking@1",
+                "account_role": "missing",
+            },
+            "undeclared account role",
+        ),
+        (
+            {
+                "service": "plugin.provider_plugin.records@1",
+                "account_role": "operator",
+            },
+            "plugin service requirement must contain exactly service",
+        ),
+        (
+            {
+                "service": "connector.fixture.tracking@1",
+                "account_role": "operator",
+                "extra": True,
+            },
+            "connector service requirement must contain exactly service and account_role",
+        ),
+        (
+            {
+                "service": "connector.Fixture.tracking@1",
+                "account_role": "operator",
+            },
+            "must use plugin.<plugin_id>.<service>@<major> or connector.<owner>.<service>@<major>",
+        ),
+    ],
+)
+def test_manifest_v2_rejects_invalid_connector_requirements(
+    requirement: dict[str, object],
+    message: str,
+) -> None:
+    source = _manifest_mapping()
+    source["requires"] = [requirement]
+
+    with pytest.raises(PluginManifestError, match=message):
+        AutomationPluginManifestV2.from_mapping(source)
+
+
+def test_manifest_v2_rejects_duplicate_connector_service_and_role_declaration() -> None:
+    duplicate_service = _manifest_mapping()
+    duplicate_service["requires"] = [
+        {
+            "service": "connector.fixture.tracking@1",
+            "account_role": "operator",
+        },
+        {
+            "service": "connector.fixture.tracking@1",
+            "account_role": "operator",
+        },
+    ]
+    with pytest.raises(PluginManifestError, match="duplicate required service"):
+        AutomationPluginManifestV2.from_mapping(duplicate_service)
+
+    duplicate_role = _manifest_mapping()
+    duplicate_role["requires"] = [
+        {
+            "service": "connector.fixture.tracking@1",
+            "account_role": "operator",
+        }
+    ]
+    duplicate_role["account_roles"].append(copy.deepcopy(duplicate_role["account_roles"][0]))
+    with pytest.raises(PluginManifestError, match="duplicate account role"):
+        AutomationPluginManifestV2.from_mapping(duplicate_role)
+
+    optional_role = _manifest_mapping()
+    optional_role["requires"] = [
+        {
+            "service": "connector.fixture.tracking@1",
+            "account_role": "operator",
+        }
+    ]
+    optional_role["account_roles"][0]["required"] = False
+    with pytest.raises(PluginManifestError, match="required=true"):
+        AutomationPluginManifestV2.from_mapping(optional_role)
+
+
+def test_manifest_v2_keeps_connector_namespace_out_of_providers_and_contributions() -> None:
+    connector_provider = _manifest_mapping()
+    connector_provider["provides"][0]["service"] = "connector.fixture.tracking@1"
+    with pytest.raises(PluginManifestError, match="must use plugin.<plugin_id>"):
+        AutomationPluginManifestV2.from_mapping(connector_provider)
+
+    connector_contribution = _manifest_mapping()
+    connector_contribution["contributes"]["console"][0]["service"] = (
+        "connector.fixture.tracking@1"
+    )
+    with pytest.raises(PluginManifestError, match="must use plugin.<plugin_id>"):
+        AutomationPluginManifestV2.from_mapping(connector_contribution)
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
