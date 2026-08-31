@@ -37,7 +37,7 @@ updated: 2026-08-31
 | TASK-EXT-008 | DONE_OFFLINE | 2026-08-31T07:20:58+08:00 | 2026-08-31T08:30:16+08:00 | 90ad312dba83f480062fa6d99cd6ee8be371696f |
 | TASK-EXT-009A | DONE_OFFLINE | 2026-08-31T08:31:21+08:00 | 2026-08-31T10:15:09+08:00 | 9104ebbe936f315f429f7c1c011485ff7cd5a843 |
 | TASK-EXT-009B | DONE_OFFLINE | 2026-08-31T10:16:26+08:00 | 2026-08-31T10:55:01+08:00 | 983a2f4ec06c294e43310e4dbb6b6d14f8aad47b |
-| TASK-EXT-009C | NOT_STARTED | — | — | — |
+| TASK-EXT-009C | IN_PROGRESS | 2026-08-31T10:56:17+08:00 | — | — |
 | TASK-EXT-010 | NOT_STARTED | — | — | — |
 | TASK-EXT-011 | NOT_STARTED | — | — | — |
 | TASK-MIG-001 | NOT_STARTED | — | — | — |
@@ -199,16 +199,16 @@ updated: 2026-08-31
 
 ### TASK-EXT-009C：动态 Event Dispatcher
 
-- 状态：`NOT_STARTED`
-- 开始时间 / 结束时间：— / —
-- 设计决策：独立提交；事件 identity 稳定且唯一。
+- 状态：`IN_PROGRESS`
+- 开始时间 / 结束时间：`2026-08-31T10:56:17+08:00` / —
+- 设计决策：独立提交；复用同一 generation-level atomic contribution Registry、state-aware restore 与 Policy 双重 identity recheck，以签名 Manifest 中稳定 event name 作为唯一候选身份。先审计 `durable` 合同并实现无外部总线的宿主 Event Dispatcher、冲突/热撤销/重启/幂等 fixture；调用方不得提交项目、service、operation、业务参数、账号或资源。真实事件源接线、外部总线、生产消费/replay、跨进程仲裁与部署保持 `PRODUCTION_GATED`。
 - 修改文件 / Commit SHA：— / —
 - 测试命令和结果：尚未运行。
 - 兼容性影响：只从 committed generation 注册。
 - 数据库影响：待审计。
 - 未完成项：全部。
 - 下一项 TASK：`TASK-EXT-010`。
-- 恢复说明：先确认 009C 独立提交已推送，再开始 EXT-010。
+- 恢复说明：EXT009B 代码 `983a2f4ec06c294e43310e4dbb6b6d14f8aad47b` 与完成账本 `fff4be9` 已推送。从现有 Webhook/Feishu exact Registry、整代原子切换/恢复和 Policy 接受 UOW 二次核验开始扩展 Event kind；先闭合 `durable` 真实语义，禁止用默认值或隐式回退伪造 delivery guarantee，不得连接外部事件系统、生产数据库、真实 TMS/飞书或执行外部写。
 
 ### TASK-EXT-010：固定模块扩展槽位
 
