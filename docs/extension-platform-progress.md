@@ -35,7 +35,7 @@ updated: 2026-08-31
 | TASK-EXT-006 | DONE_OFFLINE | 2026-08-31T03:38:37+08:00 | 2026-08-31T06:00:28+08:00 | a99f2c8f0813f1f314653830966f877a2924d4f2 |
 | TASK-EXT-007 | DONE_OFFLINE | 2026-08-31T06:04:44+08:00 | 2026-08-31T07:13:05+08:00 | 81f58eb89befdf54be33b67ef70e6e3d96a4cde7 |
 | TASK-EXT-008 | DONE_OFFLINE | 2026-08-31T07:20:58+08:00 | 2026-08-31T08:30:16+08:00 | 90ad312dba83f480062fa6d99cd6ee8be371696f |
-| TASK-EXT-009A | IN_PROGRESS | 2026-08-31T08:31:21+08:00 | — | — |
+| TASK-EXT-009A | DONE_OFFLINE | 2026-08-31T08:31:21+08:00 | 2026-08-31T10:15:09+08:00 | 9104ebbe936f315f429f7c1c011485ff7cd5a843 |
 | TASK-EXT-009B | NOT_STARTED | — | — | — |
 | TASK-EXT-009C | NOT_STARTED | — | — | — |
 | TASK-EXT-010 | NOT_STARTED | — | — | — |
@@ -173,16 +173,16 @@ updated: 2026-08-31
 
 ### TASK-EXT-009A：动态飞书 Dispatcher
 
-- 状态：`IN_PROGRESS`
-- 开始时间 / 结束时间：`2026-08-31T08:31:21+08:00` / —
-- 设计决策：新增独立 Service V2 飞书 Dispatcher，不改造 Action V1 固定路由；动态入口只按 committed、READY registry 中的精确 command 解析 `automation_id/generation/contribution_id`，调用方不得指定 service/operation/参数/账号/资源。固定 Action V1 必须优先，未知 command 才继续既有 LLM 路径；命中后 event/sender/chat 身份不完整必须显式拒绝。generation transition 同步修复“权威空 generation”原子撤销：即使旧代仍有 lease，关闭最后一个 managed contribution 也必须立即清除 active dispatch 面，失败 refresh 完整回滚。真实飞书 tenant/Webhook/WS/机器人回复与多 Agent 进程全局 command 仲裁保持 `PRODUCTION_GATED`。
-- 修改文件 / Commit SHA：— / —
-- 测试命令和结果：尚未运行。
-- 兼容性影响：仅 committed generation 注册；冲突 fail closed。
-- 数据库影响：离线设计无需新增表、字段或迁移；复用 Manifest commands、项目 compiled invocations、generation snapshot、通用 effect evidence 与 activation journal。多进程全局 route 仲裁的生产方案待真实部署拓扑确认，不臆造 migration。
-- 未完成项：全部。
+- 状态：`DONE_OFFLINE`
+- 开始时间 / 结束时间：`2026-08-31T08:31:21+08:00` / `2026-08-31T10:15:09+08:00`
+- 设计决策：新增独立 Service V2 飞书 Dispatcher，不改造 Action V1 固定路由；动态入口只按 committed、READY registry 中大小写敏感的 exact command 解析 `automation_id/generation/contribution_id`，调用方只交付 verified event/sender/chat，不得指定 service/operation/参数/账号/资源。宿主登录、任务取消、扫描确认、审批绑定与固定 Action V1 使用真实运行 parser 在整代 prepare 时拒绝；未知 command 才继续既有 LLM，命中但身份缺失则公共拒绝。generation transition 同步实现权威空 generation 原子撤销、全代命令 reservation、refresh 完整回滚和状态感知的重启恢复：committed/prepared/pending journal 必须 exact，partial preparing 从 snapshot 恢复整代后续做，draining/disposing/blocked/rolled-back 均不重新占 route。
+- 修改文件 / Commit SHA：核心包括 `agent/agent/automation_plugins/{management.py,production.py,service_v2_projection.py}`、`agent/agent/{direct_tool_router.py,feishu_command_contract.py}`、`agent/agent/orchestration/{automation_project_entrypoints.py,automation_project_policy_service.py,feishu_approval_service.py}`、`agent/feishu/{message_handler.py,selection_preview.py}`、`agent/main.py`、Console contribution 投影、对应 root/Agent/Console 测试以及各级文档和指令镜像 / `9104ebbe936f315f429f7c1c011485ff7cd5a843`。
+- 测试命令和结果：EXT009A 集成回归 `378 passed, 155 subtests passed`；runtime 恢复与原子注册 `57 passed`；root full suite `2169 passed, 30 skipped, 306 subtests passed`；Agent full suite `1130 passed, 1 skipped, 211 subtests passed`；Console full suite `595 passed, 211 subtests passed`。全仓 Ruff、文档（76 项 Markdown）、仓库卫生、运行时导入边界、内部 API 合同、工具注册表（40 项）与 `git diff --check` 全部通过；安全与测试缺口两轮独立最终复核均给出 `SHIP`。测试显式设置 `PYTHONDONTWRITEBYTECODE=1` 与 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
+- 兼容性影响：仅 exact committed/READY generation 可接流量；固定 Action V1 和既有登录/pending/LLM 顺序保持不变。停用、卸载、空代、阻断和回滚立即撤销动态入口；同代、跨项目或宿主命令冲突整批失败且无部分 reservation。
+- 数据库影响：无需新增表、字段或迁移；复用 Manifest commands、compiled invocations、generation snapshot、通用 effect journal 与 activation journal。多进程全局 route 仲裁的生产方案待真实部署拓扑确认，不臆造 migration。
+- 未完成项：无离线实现项。真实飞书 tenant、Webhook/WS 消费、机器人回复、事件重放、多 Agent 进程全局 command 仲裁与生产等价故障注入均为 `PRODUCTION_GATED`；未部署、未连接生产数据库、未访问真实 TMS/飞书数据、未执行真实业务写或安装插件。
 - 下一项 TASK：`TASK-EXT-009B`。
-- 恢复说明：EXT008 代码 `90ad312dba83f480062fa6d99cd6ee8be371696f` 与完成账本 `51ab24e4fd29c119c7daa249dfc5b3c5d7b1fb44` 已推送。先实现 registry 权威 expected registration set 与空集切换，再接独立 Dispatcher、飞书 handler、主程序绑定和只读状态投影；禁止触碰真实飞书/TMS、生产数据库或外部写。
+- 恢复说明：确认 EXT009A 代码提交与本账本 checkpoint 均已推送后，从现有 state-aware `ManagedContributionRegistry`、generation-level atomic prepare 和 `AutomationProjectPolicyService` 开始独立实现动态 Webhook Dispatcher；Webhook route/method 只能来自 committed 项目合同，调用方不得提交 service/operation/账号/资源或任意参数，真实公网流量与部署保持 `PRODUCTION_GATED`。
 
 ### TASK-EXT-009B：动态 Webhook Dispatcher
 
