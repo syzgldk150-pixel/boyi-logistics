@@ -33,7 +33,7 @@ updated: 2026-08-30
   原始请求体或可执行 HTML。
 - 自动化插件的包、项目、代际、租约、写尝试回执，以及 `ACTION_V1` / `SERVICE_V2` 双轨、
   服务/贡献、托管文档和迁移互斥状态；
-- 固定 14 个业务模块的生命周期和 Lite 审计；
+- 迁移 `027` 中历史 14 个业务模块的生命周期和 Lite 审计（当前第 15 个 Harness 模块不回写历史 seed）；
 - 财务演进与全局 LLM 设置（迁移 `009_finance_evolution_llm.sql`）；
 - 跨网点历史主单精确签收核验与 1/3/7 天退避状态（迁移 `013_daily_sign_verification_state.sql`）。
 

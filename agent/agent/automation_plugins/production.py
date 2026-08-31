@@ -126,9 +126,9 @@ from agent.automation_plugins.service_v2_projection import (
     ManagedContributionRegistry,
     _closed_service_v2_contributions,
     _contribution_backend,
-    _contribution_route_keys,
     _service_registration_material,
     _service_v2_contribution_effect_plans,
+    _validated_managed_contribution_effect_payload,
 )
 from agent.automation_plugins.sandbox import BubblewrapPluginSandbox, SandboxCanaryResult
 from agent.automation_plugins.storage import (
@@ -985,120 +985,7 @@ class ProductionRuntimeEffectDriver:
     def _validated_contribution_payload(
         payload: Mapping[str, Any],
     ) -> dict[str, Any]:
-        required_fields = {
-            "contract_version",
-            "registration_id",
-            "automation_id",
-            "generation",
-            "plugin_id",
-            "plugin_version",
-            "package_sha256",
-            "manifest_sha256",
-            "contribution_id",
-            "contribution_kind",
-            "service",
-            "operation",
-            "declaration",
-            "declaration_sha256",
-            "route_keys",
-            "backend",
-            "backend_status",
-            "reason_code",
-            "reason_detail",
-            "project_schedule",
-            "schedule_sha256",
-        }
-        if set(payload) != required_fields:
-            raise PluginConflictError("managed contribution effect payload is invalid")
-        if payload.get("contract_version") != _CONTRIBUTION_EFFECT_CONTRACT_VERSION:
-            raise PluginConflictError("managed contribution effect contract version is invalid")
-        generation = payload.get("generation")
-        if type(generation) is not int or generation <= 0:
-            raise PluginConflictError("managed contribution generation is invalid")
-        strings = {
-            field: str(payload.get(field) or "")
-            for field in (
-                "registration_id",
-                "automation_id",
-                "plugin_id",
-                "plugin_version",
-                "contribution_id",
-                "contribution_kind",
-                "service",
-                "operation",
-                "backend",
-                "backend_status",
-            )
-        }
-        if (
-            not all(strings.values())
-            or strings["contribution_kind"] not in _MANAGED_CONTRIBUTION_KINDS
-            or strings["backend_status"] not in {"READY", "DISABLED", "CAPABILITY_UNAVAILABLE"}
-            or strings["registration_id"] != (f"{strings['automation_id']}:{generation}:{strings['contribution_id']}")
-        ):
-            raise PluginConflictError("managed contribution effect identity is invalid")
-        declaration = payload.get("declaration")
-        project_schedule = payload.get("project_schedule")
-        route_keys = payload.get("route_keys")
-        if (
-            not isinstance(declaration, Mapping)
-            or not isinstance(project_schedule, Mapping)
-            or not isinstance(route_keys, list)
-            or not route_keys
-            or any(not isinstance(item, str) or not item for item in route_keys)
-            or len(route_keys) != len(set(route_keys))
-        ):
-            raise PluginConflictError("managed contribution effect declaration is invalid")
-        normalized_declaration = copy.deepcopy(dict(declaration))
-        normalized_schedule = copy.deepcopy(dict(project_schedule))
-        if (
-            str(normalized_declaration.get("id") or "") != strings["contribution_id"]
-            or str(normalized_declaration.get("service") or "") != strings["service"]
-            or str(normalized_declaration.get("operation") or "") != strings["operation"]
-            or payload.get("declaration_sha256") != _digest(normalized_declaration)
-            or _required_sha(payload.get("schedule_sha256"), "schedule_sha256") != _digest(normalized_schedule)
-        ):
-            raise PluginConflictError("managed contribution effect digest is invalid")
-        expected_routes = _contribution_route_keys(
-            automation_id=strings["automation_id"],
-            contribution_kind=strings["contribution_kind"],
-            declaration=normalized_declaration,
-        )
-        expected_backend = _contribution_backend(
-            contribution_kind=strings["contribution_kind"],
-            declaration=normalized_declaration,
-            project_schedule=normalized_schedule,
-        )
-        observed_backend = (
-            strings["backend"],
-            strings["backend_status"],
-            payload.get("reason_code"),
-            payload.get("reason_detail"),
-        )
-        if tuple(route_keys) != expected_routes or observed_backend != expected_backend:
-            raise PluginConflictError("managed contribution backend declaration is invalid")
-        package_sha256 = _required_sha(
-            payload.get("package_sha256"),
-            "package_sha256",
-        )
-        manifest_sha256 = _required_sha(
-            payload.get("manifest_sha256"),
-            "manifest_sha256",
-        )
-        return {
-            "contract_version": _CONTRIBUTION_EFFECT_CONTRACT_VERSION,
-            **strings,
-            "generation": generation,
-            "package_sha256": package_sha256,
-            "manifest_sha256": manifest_sha256,
-            "declaration": normalized_declaration,
-            "declaration_sha256": _digest(normalized_declaration),
-            "route_keys": list(expected_routes),
-            "reason_code": payload.get("reason_code"),
-            "reason_detail": payload.get("reason_detail"),
-            "project_schedule": normalized_schedule,
-            "schedule_sha256": _digest(normalized_schedule),
-        }
+        return _validated_managed_contribution_effect_payload(payload)
 
     def _ensure_service_reference(self, payload: Mapping[str, Any]) -> None:
         material = self._validated_service_payload(payload)

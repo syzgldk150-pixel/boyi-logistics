@@ -55,7 +55,7 @@ v1 与 v2 继续并存，但二者不是同一种包：
 
 安装器只读取 `schema_version + runtime_model` 做一次严格分流。v2 解析失败不会回退 v1，v1 解析失败也不会尝试 v2。历史 v1 包和已安装字节保持原样，v2 不要求、也不生成 Ed25519 签名。
 
-Console 信息架构同样只有一个状态源：`/extensions` 与详情页展示真实 Catalog 中的包、权限摘要、实例健康并承载安装/升级/启停/卸载；`/automations` 维护每个项目的配置、绑定、入口、定时、权限、运行和 v1→v2 并行迁移验证。扩展中心只是现有 Catalog 和生命周期处理器的安全投影，不新增表、包仓、安装框架或运行状态。固定 14 个业务模块不属于扩展，尚未实现的 Connector 也不得预先伪造为可安装类型。
+Console 信息架构同样只有一个状态源：`/extensions` 与详情页展示真实 Catalog 中的包、权限摘要、实例健康并承载安装/升级/启停/卸载；`/automations` 维护每个项目的配置、绑定、入口、定时、权限、运行和 v1→v2 并行迁移验证。扩展中心只是现有 Catalog 和生命周期处理器的安全投影，不新增表、包仓、安装框架或运行状态。固定 15 个业务模块不属于扩展，尚未实现的 Connector 也不得预先伪造为可安装类型。
 
 当前实现已经具备 v2 Manifest/ZIP 校验、内容摘要、Linux Python 3.10 环境、独立可查询的 Host Capability Registry、五态 effect 治理、代际注册、单 Provider 服务注册表、Catalog 就绪状态、受管 KV/collection、跨插件 `service.invoke`、数据保留以及迁移 pair/run-key 的持久化原语。以下边界必须如实显示：
 
@@ -322,21 +322,31 @@ Provider effect 来自 `provides[*].operations[*].effect`，Host capability effe
 
 `default_enabled` 不是“无条件可运行”。当前没有宿主 dispatcher 的 Webhook、飞书或 Event 入口，以及宿主无法表示的 Scheduler，都会在技术检查或 generation prepare 阶段显式阻断；Catalog 必须展示 `CAPABILITY_UNAVAILABLE`，不能留下“已启用但没有路由/任务”的假状态。
 
-### 7.1 Console / Scheduler 无重启热投影
+### 7.1 Console / Scheduler / Harness 无重启热投影
 
-当前受管热投影只覆盖 Service v2 的 Console 与 Scheduler contribution。generation 协调器先完整准备新代 effect，并由 generation CAS 持久化 committed generation 与对应 `scheduled_tasks`；进程内 `ManagedContributionRegistry` 再批量保存该代 `PREPARED` 材料，不能逐条开放新路由。
+当前受管热投影覆盖 Service v2 的 Console、Scheduler 与 Harness contribution。generation 协调器先完整准备新代 effect，并由 generation CAS 持久化 committed generation 与对应 `scheduled_tasks`；进程内 `ManagedContributionRegistry` 再批量保存该代 `PREPARED` 材料，不能逐条开放新路由或工具。
 
 generation CAS 在同一数据库事务内写入 `PENDING_PROJECTION` transition token，并保存旧项目字段、旧 project policy 版本、旧 `scheduled_tasks` 及其完整 approval policy 前镜像。运行中的 APScheduler 已绑定时，Provider reference、`ManagedContributionRegistry` 和 `reload_scheduler(strict=True)` 共用同一把投影锁。strict 模式要求整份计划无非法行且每个 Job 均注册成功；失败会按切换前快照恢复全部 Job、触发器选项和 `next_run_time`。只有刷新证据闭合为 `initialized=true` 且 `invalid_tasks=[]` 后，Registry 才一次性切 exact active Provider/Console generation，并用相同 token 把 durable phase ACK 为 `ACTIVE`。
 
 strict refresh 或 activation ACK 失败时，协调器执行 token 和 base generation 条件化的 reverse CAS：目标新代从未产生任何 lease，且项目、策略、任务 hash 均未并发变化时，精确恢复旧 committed generation、项目版本、任务名称/参数/运行字段和审批策略，再以进程投影的单调 revision 与完整身份做 compare-and-swap，在同一投影锁内恢复旧 Provider、Console 路由与 Scheduler Job。target 回到 `PREPARED/ROLLED_BACK`，因此同一 immutable target 可以直接重试，不要求重启 Agent 或 Console。
 
-若 reverse CAS 因目标新代存在任何 lease 历史、未知写、并发变化或 token 漂移被拒绝，系统不得继续保留混合代际：transition 标记 `BLOCKED`，持久 Scheduler gate 关闭，全部进程 Provider/Console 路由撤销，并通过只存在于动态 Job `kwargs` 的私有 owner marker 删除该项目任务。进程 tombstone 会让后续普通或 strict reload 都跳过该项目；固定 Job 没有 marker，绝不按 id 或闭包猜测归属。启动恢复只依据 `PENDING_PROJECTION/ACTIVE/ROLLED_BACK/BLOCKED` phase 决定继续投影、继续旧代或保持阻断；通用 lease 入口在 transition 存在时只接受 `ACTIVE`，因此 `PENDING_PROJECTION/BLOCKED` 不会开放新执行。
+若 reverse CAS 因目标新代存在任何 lease 历史、未知写、并发变化或 token 漂移被拒绝，系统不得继续保留混合代际：transition 标记 `BLOCKED`，持久 Scheduler gate 关闭，全部进程 Provider/Console/Harness 路由撤销，并通过只存在于动态 Job `kwargs` 的私有 owner marker 删除该项目任务。进程 tombstone 会让后续普通或 strict reload 都跳过该项目；固定 Job 没有 marker，绝不按 id 或闭包猜测归属。启动恢复只依据 `PENDING_PROJECTION/ACTIVE/ROLLED_BACK/BLOCKED` phase 决定继续投影、继续旧代或保持阻断；通用 lease 入口在 transition 存在时只接受 `ACTIVE`，因此 `PENDING_PROJECTION/BLOCKED` 不会开放新执行。
 
 Agent 启动时先完成审批策略与项目调用器装配，再构造但不启动 APScheduler，并绑定 strict reload 与 emergency withdrawer。随后 reconcile 按 durable phase 完成未确认投影、activation ACK 或阻断撤销；只有恢复闭合后才启动 Scheduler，避免 ACK 先于真实 Job 投影。
 
-停用和卸载使用同一顺序：先严格刷新物理 Scheduler 计划，成功后再整代 withdraw Console/Scheduler 注册；失败保留切换前对象并保持 pending，调用仍由 durable 项目状态 fail closed。只提供 service、没有已启用 Console/Scheduler contribution 的 v2 generation 不创建伪 marker。
+停用和卸载使用同一顺序：先严格刷新物理 Scheduler 计划，成功后再整代 withdraw Console/Scheduler/Harness 注册；失败保留切换前对象并保持 pending，调用仍由 durable 项目状态 fail closed。只提供 service、没有已启用 Console/Scheduler/Harness contribution 的 v2 generation 不创建伪 marker。
 
-Catalog 只输出白名单 `active_contributions` 与 `contribution_projection_state`；状态仅为 `ACTIVE/STALE/INACTIVE`，每条 active 记录只含 `contribution_id/contribution_kind/generation/phase/backend_status`。Console 保留 Manifest 声明入口用于配置，但执行入口只从与当前 committed generation 精确一致、`phase=COMMITTED`、`backend_status=READY` 且状态为 `ACTIVE` 的记录派生；缺失、歧义或跨代记录关闭对应入口，stale/inactive 状态关闭整组入口。这不改变 `ACTION_V1` 合同，也不开放自定义前端。动态飞书/Webhook/Event dispatcher 与统一端到端扩展 Harness 仍是后续任务，当前不得投影为可运行。
+Catalog 只输出白名单 `active_contributions` 与 `contribution_projection_state`；状态仅为 `ACTIVE/STALE/INACTIVE`，每条公开 active 记录只含 `contribution_id/contribution_kind/generation/phase/backend_status`。Console 手工执行入口仍只从与当前 committed generation 精确一致、`phase=COMMITTED`、`backend_status=READY` 且状态为 `ACTIVE` 的 Console 记录派生。Harness 使用同一 Registry 的独立私有只读 snapshot，每次调用前再次解析 exact active generation；缺失、歧义、跨代、stale 或 inactive 均关闭失败。这不改变 `ACTION_V1` 合同，也不开放自定义插件前端。动态飞书/Webhook/Event dispatcher 仍是后续任务。
+
+### 7.2 Harness 首期只读边界
+
+`/harness` 是代码拥有、不可停用的固定 Console 模块。浏览器只能提交规范请求 UUID、Agent 签发的 Session UUID 和最多 4,000 字符的消息；Console 只接受真实 MySQL `admin/super_admin` 会话与同源写请求，再通过既有签名 principal 调用 Agent `/internal/v1/harness/sessions` 和 `/internal/v1/harness/messages`。浏览器或模型均不能提交 `automation_id/service/operation/account_id/resource_id` 等运行身份，动态工具只公开不可逆的 opaque tool id、标题和说明。
+
+Harness Tool Catalog 固定注入知识、运单、轨迹、事项、运行摘要和 Artifact 六类只读描述；这些固定网关在本阶段没有默认真实处理器。动态工具只来自当前 exact active 的 `contributes.harness`，其 Provider effect 必须是 `read` 或 `compute`，且机械治理必须同时满足 `harness_allowed=true`、`broker_effect=read`。注册材料必须绑定 generation snapshot 中真实签名的闭合 `runtime_permissions`；网络、浏览器、Office、文件角色、Broker operation 或调用额度任一开放、字段缺失或漂移都会拒绝注册和目录读取，不能生成空权限默认值。
+
+Session 仅保存在进程内有界仓储，状态固定为 `MEMORY_ONLY_NON_PRODUCTION`，并精确绑定已签名管理员身份。受限 sidecar 协议只有消息、公共工具描述、闭合工具调用和 JSON 结果，限制超时与调用次数；生产 launcher 不继承环境、不挂载仓库/插件、不开放网络，并在缺少经审计 sandbox adapter 时固定失败。真实 LLM、六类固定业务读网关、生产 Python 3.10 sandbox、持久 Session 和真实数据验证均标记 `PRODUCTION_GATED`；不得回退 Legacy Agent、直接 MySQL、TMS/飞书工具、任意 shell、文件或网络。
+
+上述边界已实现可注入的确定性离线 fake model 路径，用于证明新 Harness contribution 随 generation 原子出现、升级和撤销且无需修改 Harness 源码或重启。它不是生产启用声明。
 
 以上只记录离线实现与故障注入合同；没有执行生产 Scheduler、生产数据库或真实业务入口演练，不构成生产验收。
 

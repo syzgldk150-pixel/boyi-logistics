@@ -109,7 +109,7 @@ updated: 2026-08-31
 ## 项目定位
 
 `物流 Agent` 是统一承接物流业务数据、流程和服务的 Agent + Console 双服务项目，不是单一 OCR
-工具。`shared/business_modules.py` 是当前 14 个 Console 菜单身份的唯一不可变代码目录：
+工具。`shared/business_modules.py` 是当前 15 个 Console 菜单身份的唯一不可变代码目录：
 
 | 模块代码 | 菜单 | 主页面 | 运行身份 |
 |---|---|---|---|
@@ -123,13 +123,14 @@ updated: 2026-08-31
 | `dispatch` | 货拉拉调度 | `/dispatch` | 固定模块 |
 | `line_haul` | 专线分流 | `/line-haul-contacts` | 固定模块 |
 | `automations` | 自动化 | `/automations` | 固定模块 |
+| `harness` | Harness 助手 | `/harness` | 固定模块（首期只读、生产能力门控） |
 | `automation_accounts` | 业务账号 | `/automation-accounts` | 固定模块 |
 | `llm_settings` | 智能模型 | `/settings/llm` | 固定模块 |
 | `work_items` | 事项中心 | `/work-items` | 固定模块 |
 | `system_settings` | 系统管理 | `/settings/accounts` | 固定模块 |
 
 固定模块只由代码路由、既有登录/用户权限和业务前置条件控制；旧数据库生命周期状态和版本不能隐藏或阻断它们。
-`/settings/system-status` 是仅真实 `super_admin` 可见的控制平面入口，不属于上述 14 个固定模块目录，只展示鉴权健康接口的白名单系统字段。`/settings/modules` 是退役重定向入口，旧 data/audit 子路径和 Agent 管理 API 只保留历史记录读取；数据库不能动态创造模块、菜单或实现。
+`/settings/system-status` 是仅真实 `super_admin` 可见的控制平面入口，不属于上述 15 个固定模块目录，只展示鉴权健康接口的白名单系统字段。`/settings/modules` 是退役重定向入口，旧 data/audit 子路径和 Agent 管理 API 只保留历史记录读取；数据库不能动态创造模块、菜单或实现。
 
 ## 主要业务数据关系
 
@@ -155,7 +156,7 @@ updated: 2026-08-31
 ## 当前实现状态
 
 - 项目级控制台目录现已独立为与 agent 并列的 `console/` 工作区。
-- Console 导航固定登记上述 14 个模块身份；迁移 `027` 保存的历史生命周期状态和 Lite 审计仅供只读兼容，不参与固定模块菜单、页面、API 或 Command 可用性判断。依赖 Agent、账号、资源或其他业务数据的具体操作仍由各自合同独立失败关闭。
+- Console 导航固定登记上述 15 个模块身份；迁移 `027` 保存的 14 行历史生命周期状态和 Lite 审计仅供只读兼容，不参与固定模块菜单、页面、API 或 Command 可用性判断。依赖 Agent、账号、资源或其他业务数据的具体操作仍由各自合同独立失败关闭。
 - OCR、运单、跟踪、回单、客服、融辉财务、调度、自动化、账号、智能模型、事项中心和系统管理均沿既有页面与服务边界运行；韵达财务适配器待真实来源验收后再启用。
 - 财务工作台通过共享 MySQL 账本与 Agent `sync_finance_bills` 接通；当前生产只调度融辉三个财务角色，逐笔汇总、平台汇总与 signed-net 必须一致，旧 Excel ETL 已从线上运行时删除。
 - `车辆调度` 已完成工作区页面（车辆列表、调度看板、快速调度面板），当前使用演示数据。

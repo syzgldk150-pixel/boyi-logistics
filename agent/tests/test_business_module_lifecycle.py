@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import shared.business_module_repository as business_module_repository
 from agent.business_modules_api import create_business_module_router
 from agent.core import AgentCore
 from agent.orchestration.command_gateway import CommandGateway
@@ -27,7 +28,14 @@ from shared.business_modules import (
     CORE_MODULE_CODES,
     BusinessModuleCode,
 )
-import shared.business_module_repository as business_module_repository
+
+
+_LEGACY_LIFECYCLE_MODULES = tuple(
+    item for item in BUSINESS_MODULE_CATALOG if item.module_code != "harness"
+)
+_LEGACY_LIFECYCLE_MODULE_CODES = {
+    item.module_code for item in _LEGACY_LIFECYCLE_MODULES
+}
 
 
 def _business_module_migration_contract_module():
@@ -126,7 +134,7 @@ class _LifecycleMigrationCursor:
             ]
             return
         if sql.startswith("INSERT INTO business_modules"):
-            for item in BUSINESS_MODULE_CATALOG:
+            for item in _LEGACY_LIFECYCLE_MODULES:
                 self.rows.setdefault(
                     item.module_code,
                     {"lifecycle_state": "ENABLED", "installed_version": item.version},
@@ -365,11 +373,11 @@ def _repository(connection: _Connection) -> BusinessModuleRepository:
     return BusinessModuleRepository(lambda: connection)
 
 
-def test_catalog_is_exact_immutable_14_menu_identity_set() -> None:
+def test_catalog_is_exact_immutable_15_menu_identity_set() -> None:
     codes = [item.module_code for item in BUSINESS_MODULE_CATALOG]
 
-    assert len(codes) == 14
-    assert len(set(codes)) == 14
+    assert len(codes) == 15
+    assert len(set(codes)) == 15
     assert {item.module_code for item in BUSINESS_MODULE_CATALOG if not item.disable_allowed} == CORE_MODULE_CODES
     assert all(item.code_registered and item.version == "1.0.0" for item in BUSINESS_MODULE_CATALOG)
 
@@ -417,8 +425,9 @@ def test_migration_seeds_the_exact_enabled_baseline() -> None:
     assert "CREATE TABLE IF NOT EXISTS business_modules" in sql
     assert "CREATE TABLE IF NOT EXISTS business_module_events" in sql
     assert "CREATE TRIGGER" not in sql
-    for item in BUSINESS_MODULE_CATALOG:
+    for item in _LEGACY_LIFECYCLE_MODULES:
         assert f"('{item.module_code}', '1.0.0', '1.0.0', 'ENABLED', 1" in sql
+    assert "('harness'," not in sql
     assert sql.count("'ENABLED', 1, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6)") == 14
     assert "idx_business_module_events_module_created (module_code, created_at, event_id)" in sql
     assert "ON DUPLICATE KEY UPDATE module_code = module_code" in sql
@@ -432,7 +441,7 @@ def test_027_retry_handles_fresh_and_partial_ddl_without_overwriting_state() -> 
     fresh = _LifecycleMigrationCursor(contract, existing_tables=set())
     contract.apply_business_module_lifecycle_migration(fresh, path, split_statements)
     assert fresh.created_tables == ["business_modules", "business_module_events"]
-    assert set(fresh.rows) == {item.module_code for item in BUSINESS_MODULE_CATALOG}
+    assert set(fresh.rows) == _LEGACY_LIFECYCLE_MODULE_CODES
     assert all(row["lifecycle_state"] == "ENABLED" for row in fresh.rows.values())
 
     partial = _LifecycleMigrationCursor(
@@ -443,7 +452,7 @@ def test_027_retry_handles_fresh_and_partial_ddl_without_overwriting_state() -> 
     contract.apply_business_module_lifecycle_migration(partial, path, split_statements)
     assert partial.created_tables == []
     assert partial.rows["finance"]["lifecycle_state"] == "DISABLED"
-    assert set(partial.rows) == {item.module_code for item in BUSINESS_MODULE_CATALOG}
+    assert set(partial.rows) == _LEGACY_LIFECYCLE_MODULE_CODES
 
 
 def test_027_retry_rejects_incompatible_partial_ddl_before_seed() -> None:

@@ -23,6 +23,7 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 
 ## 事项中心与命令入口
 
+- `/harness` 是不可停用的固定只读模块。页面、代理和浏览器脚本分别位于 `templates/harness.html`、`services/harness.py`、`routes/harness.py` 和 `static/harness.js`；浏览器只提交规范请求 UUID、Agent Session UUID 和有界消息，动态内容只用 `textContent` 渲染。Session/Message POST 只接受真实 MySQL `admin/super_admin` 会话与同源请求，再通过既有签名 principal 调用 Agent `/internal/v1/harness/*`；Basic/emergency 明确拒绝。Console 不托管 Agent、不选择 service/operation/账号/资源、不读取数据库业务数据，也不回退旧工具。真实 LLM、业务读网关、生产 sandbox 与持久 Session 均显示 `PRODUCTION_GATED`，不得把门控或不可用状态显示成成功。
 - `/work-items` 与 `/work-items/{id}` 是统一事项中心，主要承载历史、跨项目和异常处理；自动化项目的日常待审批在当前项目卡片原位完成。实现位于 `routes/control_plane.py`、`services/control_plane.py`、`services/agent_api.py`、`templates/work_items*.html` 和 `static/control_plane.*`。Console 不得查询 Agent 控制平面表。
 - 一般业务执行型 POST 提交 `/internal/v1/commands`。自动化项目手工执行是专用例外，只能调用 `/internal/v1/automation-projects/{automation_id}/invoke`，Agent 从已保存项目配置派生动作与参数；浏览器和 Console 都不得向 Agent invoke body 填工具名、账号、参数或来源。客服标记已读/回复/发布/附件上传、回单同步/审核都不能直调 `/tms/*` 或第三方脚本；登录/验证码、Console 本地 OCR 和博益手工运单 CRUD 不在此范围。
 - 控制平面写请求只接受真实 MySQL 管理员会话和同源 Origin/Referer。Basic Auth 明确拒绝；服务端从会话生成私有 principal 并签名，浏览器 actor、roles、source、authenticated_by 和同名私有标记均不能覆盖。`control_plane_role` 只有 `admin`/`super_admin`，高风险审批只允许后者。
@@ -202,9 +203,9 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 ## 移动端导航与视觉壳层
 
-- 唯一菜单注册目录：`navigation.py`。14 个固定模块保留在不可变 `CONSOLE_MENU_REGISTRATIONS` 并投影为兼容的 `CONSOLE_NAVIGATION`；`extensions` 与 `system_status` 是同文件声明的控制平面注册，不属于固定模块目录，由 `services/business_modules.py` 按真实 MySQL 管理员角色请求级追加。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用这些投影，不得维护模板内副本。菜单注册不承载权限或运行健康状态。
+- 唯一菜单注册目录：`navigation.py`。15 个固定模块保留在不可变 `CONSOLE_MENU_REGISTRATIONS` 并投影为兼容的 `CONSOLE_NAVIGATION`；`extensions` 与 `system_status` 是同文件声明的控制平面注册，不属于固定模块目录，由 `services/business_modules.py` 按真实 MySQL 管理员角色请求级追加。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用这些投影，不得维护模板内副本。菜单注册不承载权限或运行健康状态。
 - 模块查看权限目录：`permission_registry.py`。每个已注册菜单必须恰有一个 `console.menu.<menu_id>.view` 权限，当前只登记 MySQL 管理员既有 `admin` / `super_admin` 角色事实；未知角色、未知权限、缺失或多余菜单均关闭失败。该注册表不改变路由认证、菜单显示或超级管理员写边界；应急 Basic Auth 没有可签名管理员身份，不进入模块权限注册。
-- 模块代码注册状态目录：`module_status_registry.py`。它按 14 个固定模块顺序登记唯一 `code_registered`，不包含控制平面“系统状态”；该事实只表示当前源码构建已包含注册，不代表 healthy、ready、生产发布或可切换状态。目录只读且不提供 HTTP/启停接口；`ProjectModule` 的 ready/maintained/in-progress/planned 是独立的文档卡成熟度，禁止混用。
+- 模块代码注册状态目录：`module_status_registry.py`。它按 15 个固定模块顺序登记唯一 `code_registered`，不包含控制平面“系统状态”；该事实只表示当前源码构建已包含注册，不代表 healthy、ready、生产发布或可切换状态。目录只读且不提供 HTTP/启停接口；`ProjectModule` 的 ready/maintained/in-progress/planned 是独立的文档卡成熟度，禁止混用。
 - 系统区固定模块顺序为“智能模型 → 事项中心 → 系统管理”，真实 super_admin 的请求级导航随后追加“系统状态”；旧移动偏好中的 `/settings/modules` 必须被修复，不得恢复旧入口。任何模块深链接直接打开或刷新时，顶部必须先建立不可关闭的“概览”固定标签，再激活当前模块；概览首次点击可懒加载，前进/后退或关闭当前模块不能丢失概览。
 - 偏好存储：`admin_users.ui_preferences_json`，由 `agent/migrations/008_admin_ui_preferences.sql` 在部署期创建；运行时只能校验和读写，不得执行 DDL。Basic Auth 没有管理员 ID，必须返回明确的不可同步错误。
 - 统一 Logo：使用内容哈希命名的 `static/assets/boyi-logistics-logo-7e1f2994.webp`。字体按首屏、常用字与完整回退分层存放在 `static/assets/fonts/`，中文固定用思源黑体，英文和数字固定用 Inter；Feather 图标固定使用 `static/vendor/feather-4.29.2.min.js`。不得引入在线字体或图标服务。发布白名单只允许 `console/static/` 下的源码 WebP，不得扩大到运行时图片目录。移动公共交互位于 `templates/base.html`、`static/style.css`、`static/console_ui.js`，需保持安全区、44px 触控、键盘焦点、焦点锁定与 `prefers-reduced-motion` 支持。
@@ -222,6 +223,6 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 ## 固定业务模块与系统状态
 
-- 14 个固定模块不再由旧数据库生命周期状态、版本或 Agent 可达性控制；导航、页面、API 与新 Command 只依赖代码注册、既有登录/角色权限和各业务自身前置条件。不得重新引入生命周期状态门禁，也不得改变现有模块权限。
+- 15 个固定模块不再由旧数据库生命周期状态、版本或 Agent 可达性控制；导航、页面、API 与新 Command 只依赖代码注册、既有登录/角色权限和各业务自身前置条件。不得重新引入生命周期状态门禁，也不得改变现有模块权限。
 - “扩展中心”是控制平面入口而非第 15 个固定业务模块；它只展示 Agent 真实 Catalog 中的非固定 `ACTION_V1/SERVICE_V2` 包，不得把固定模块包装成插件，也不得虚构尚未实现的 Connector 类型。
 - `/settings/modules` 只重定向到 `/settings/system-status`；旧 `/settings/modules/data`、详情和 audit 路径仅为真实 MySQL `super_admin` 保留签名只读兼容，生命周期 POST 不再路由。`/settings/system-status` 同样只对真实非 legacy `super_admin` 显示，且只投影 `/internal/v1/health` 白名单字段，Agent 不可达或字段缺失时明确显示“不可用”。

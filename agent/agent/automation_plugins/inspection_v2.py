@@ -35,7 +35,14 @@ def service_v2_wizard_projection(
         "times": [],
         "enabled": False,
     }
-    for kind in ("console", "scheduler", "webhook", "feishu", "events"):
+    for kind in (
+        "console",
+        "scheduler",
+        "webhook",
+        "feishu",
+        "events",
+        "harness",
+    ):
         raw_items = manifest.contributes.get(kind, ())
         if not isinstance(raw_items, (list, tuple)):
             raise PluginConflictError(
@@ -52,8 +59,19 @@ def service_v2_wizard_projection(
                 "id": str(raw.get("id") or ""),
                 "kind": kind,
                 "title": str(raw.get("title") or ""),
-                "default_enabled": raw.get("default_enabled") is True,
             }
+            if kind == "harness":
+                # Keep the wizard projection safe: descriptive metadata and
+                # the effect are useful to an administrator, while service /
+                # operation remain server-owned invocation authority.
+                item.update(
+                    {
+                        "description": str(raw.get("description") or ""),
+                        "effect": str(raw.get("effect") or ""),
+                    }
+                )
+            else:
+                item["default_enabled"] = raw.get("default_enabled") is True
             # The manifest boundary already proved that an enabled default
             # Scheduler cron is representable by the Host daily-time model.
             if kind == "scheduler" and item["default_enabled"]:

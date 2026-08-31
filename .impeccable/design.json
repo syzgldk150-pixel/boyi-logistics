@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-08-13T00:00:00+08:00",
+  "generatedAt": "2026-08-31T00:00:00+08:00",
   "title": "Design System: 博益物流控制台",
   "extensions": {
     "reference": {
@@ -91,6 +91,14 @@
       "description": "只展示来源、账号、观测时间、记录数和分页完整性，敏感值与可执行内容不得渲染。",
       "html": "<dl class=\"evidence-summary\"><dt>来源</dt><dd>融辉</dd><dt>分页</dt><dd>完整</dd></dl>",
       "css": ".evidence-summary { display: grid; grid-template-columns: minmax(96px, 0.35fr) 1fr; gap: 8px 16px; }"
+    },
+    {
+      "name": "Harness 受限状态",
+      "kind": "status-panel",
+      "refersTo": "harness-readonly-state",
+      "description": "并列展示只读、内存会话、生产门控或不可用状态；不以模拟结果掩盖受限能力。",
+      "html": "<section class=\"harness-state\" aria-live=\"polite\"><span>生产能力未开放</span></section>",
+      "css": ".harness-state { display: inline-flex; min-height: 32px; align-items: center; border: 1px solid #E5E7EB; border-radius: 999px; }"
     }
   ],
   "narrative": {
