@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from types import MappingProxyType
 from typing import Any
 
+from agent.feishu_command_contract import is_unconditional_host_feishu_command_text
 from agent.tms_runtime.account_contracts import PRICE_ACCOUNT_ID
 from agent.tracking_number_validation import validate_tracking_number
 
@@ -148,6 +149,32 @@ def _automation_project_request(
 def is_deprecated_split_command(text: str) -> bool:
     normalized = str(text or "").strip()
     return bool(DEPRECATED_SPLIT_COMMAND_RE.match(normalized))
+
+
+def is_reserved_feishu_command_text(text: str) -> bool:
+    """Return whether an exact message is already owned by a host route.
+
+    Dynamic Service v2 contributions use this predicate while preparing their
+    route batch.  It intentionally delegates to the same deterministic parser
+    used at message time so admission cannot create a route that an earlier
+    deterministic login or Action v1 branch will always consume.
+    The dispatch-forecast family is recognized before parsing because its
+    selected fixed target depends on the current profile, while ownership does
+    not.
+    """
+
+    normalized = _normalize_command_text(text)
+    if not normalized:
+        return False
+    if is_unconditional_host_feishu_command_text(normalized):
+        return True
+    if parse_login_send_code_session(normalized):
+        return True
+    if DEPRECATED_SPLIT_COMMAND_RE.match(normalized):
+        return True
+    if DISPATCH_FORECAST_SYNC_RE.match(normalized):
+        return True
+    return direct_tool_request_from_text(normalized) is not None
 
 ARRIVAL_STATS_RE = re.compile(
     r"^(?=.*统计)[\s统计到货数据刷新更新]+$"

@@ -28,8 +28,14 @@ from agent.direct_tool_router import (
     parse_login_send_code_session,
     parse_verify_code,
 )
+from agent.feishu_command_contract import (
+    cancel_tool_name_from_text as _shared_cancel_tool_name_from_text,
+    is_scan_cancel_text as _is_scan_cancel_text,
+    is_scan_confirm_text as _is_scan_confirm_text,
+)
 from agent.orchestration.automation_project_entrypoints import (
     AutomationProjectEntrypoints,
+    ServiceV2FeishuDispatcher,
 )
 from agent.orchestration.scan_preview_binding import (
     normalize_scan_preview_public_projection,
@@ -43,8 +49,6 @@ from feishu.selection_preview import (
     SCAN_PREVIEW_ERROR_MESSAGES,
     SELF_PICKUP_MAX_SELECTED,
     contains_account_override as _contains_account_override,
-    is_scan_cancel_text as _is_scan_cancel_text,
-    is_scan_confirm_text as _is_scan_confirm_text,
     normalize_selection_preview_projection as _normalize_selection_preview_projection,
     parse_split_selection as _parse_split_selection,
     scan_confirmation_ttl as _scan_confirmation_ttl,
@@ -93,6 +97,7 @@ _FEISHU_ROUTE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,190}$")
 
 _AUTOMATION_PROJECT_ENTRYPOINTS: AutomationProjectEntrypoints | None = None
 _FEISHU_APPROVAL_RUNTIME: Any | None = None
+_SERVICE_V2_FEISHU_DISPATCHER: ServiceV2FeishuDispatcher | None = None
 
 
 def bind_automation_project_entrypoints(
@@ -111,6 +116,15 @@ def bind_feishu_approval_runtime(service: Any | None) -> None:
 
     global _FEISHU_APPROVAL_RUNTIME
     _FEISHU_APPROVAL_RUNTIME = service
+
+
+def bind_service_v2_feishu_dispatcher(service: ServiceV2FeishuDispatcher | None) -> None:
+    """Bind the sole managed Service v2 Feishu command dispatcher."""
+
+    global _SERVICE_V2_FEISHU_DISPATCHER
+    if service is not None and not isinstance(service, ServiceV2FeishuDispatcher):
+        raise TypeError("service must be ServiceV2FeishuDispatcher or None")
+    _SERVICE_V2_FEISHU_DISPATCHER = service
 
 
 @dataclass(frozen=True)
@@ -209,20 +223,6 @@ def _automation_result_reply(
         return f"{task_name}执行失败：{detail[:300]}", "automation_project_failed"
     detail = reason or "结果暂时无法确认，请前往事项中心查看任务详情。"
     return f"{task_name}未完成：{detail[:300]}", "automation_project_status"
-TOOL_CANCEL_COMMANDS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("sync_scan_codes", re.compile(r"^\s*取消\s*(?:扫描|扫描数据|扫描任务|sync_scan_codes)\s*$", re.IGNORECASE)),
-    ("sync_arrival_stats", re.compile(r"^\s*取消\s*(?:统计|到货统计|统计到货数据|sync_arrival_stats)\s*$", re.IGNORECASE)),
-    ("sync_arrive_list", re.compile(r"^\s*取消\s*(?:arrive[-_\s]*list|到货清单|预到达清单|sync_arrive_list)\s*$", re.IGNORECASE)),
-    ("sync_daily_send_orders", re.compile(r"^\s*取消\s*(?:当日寄件数据|寄件数据|融辉寄件数据|sync_daily_send_orders)\s*$", re.IGNORECASE)),
-    ("sync_yunda_dispatch_forecast", re.compile(r"^\s*取消\s*(?:韵达派件预测|派件预测|sync_yunda_dispatch_forecast)\s*$", re.IGNORECASE)),
-    ("sync_yunda_send_waybills", re.compile(r"^\s*取消\s*(?:韵达寄件运单|韵达寄件|sync_yunda_send_waybills)\s*$", re.IGNORECASE)),
-    ("self_pickup_problem_upload", re.compile(r"^\s*取消\s*(?:自提到货问题件|自提问题件|self_pickup_problem_upload)\s*$", re.IGNORECASE)),
-    ("split_pending_problem_upload", re.compile(r"^\s*取消\s*(?:分批|split_pending_problem_upload)\s*$", re.IGNORECASE)),
-    ("r7_arrival_checkin", re.compile(r"^\s*取消\s*(?:R7\s*)?到达\s*打卡\s*$", re.IGNORECASE)),
-    ("r7_departure_checkin", re.compile(r"^\s*取消\s*(?:R7\s*)?(?:发车|发车打卡)\s*$", re.IGNORECASE)),
-)
-
-
 async def _selection_pending_actor_allowed(
     *,
     chat_id: str,
@@ -1434,13 +1434,7 @@ def _tool_display_name(tool_name: str) -> str:
 
 
 def _cancel_tool_name_from_text(text: str) -> str | None:
-    normalized = str(text or "").strip()
-    if not normalized:
-        return None
-    for tool_name, pattern in TOOL_CANCEL_COMMANDS:
-        if pattern.match(normalized):
-            return tool_name
-    return None
+    return _shared_cancel_tool_name_from_text(text)
 
 
 def _running_tool_info(agent: Any, tool_name: str) -> dict[str, Any]:
@@ -1967,8 +1961,8 @@ async def _handle_im_message_data(
     token: Token[FeishuCommandContext | None] = _COMMAND_CONTEXT.set(
         FeishuCommandContext(
             event_id=stable_event_id,
-            actor_id=str(sender_id or "unknown-feishu-user"),
-            chat_id=str(chat_id or ""),
+            actor_id=str(sender_id or "").strip(),
+            chat_id=str(chat_id or "").strip(),
         )
         if stable_event_id
         else None
@@ -2015,8 +2009,8 @@ async def _handle_menu_action(
     token: Token[FeishuCommandContext | None] = _COMMAND_CONTEXT.set(
         FeishuCommandContext(
             event_id=stable_event_id,
-            actor_id=str(receive_id or "unknown-feishu-user"),
-            chat_id=str(receive_id or ""),
+            actor_id=str(receive_id or "").strip(),
+            chat_id=str(receive_id or "").strip(),
         )
         if stable_event_id
         else None
@@ -2695,6 +2689,9 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         await _reply_tool_result(chat_id, tool_name, result)
         return
 
+    if await _dispatch_service_v2_feishu_command(text=text, receive_id=chat_id):
+        return
+
     logger.info("feishu route | chat=%s | route=agent_llm", chat_id)
     notice_task = asyncio.create_task(_send_after_delay(chat_id, "正在处理...", 1.5))
     try:
@@ -2739,6 +2736,48 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     reply_text = format_reply(result.get("reply") or UNKNOWN_EXECUTION_REPLY)
     reply_type = "unknown_no_tool" if reply_text == UNKNOWN_EXECUTION_REPLY else "agent_reply"
     await _reply_text(chat_id, reply_text, reply_type=reply_type)
+
+
+async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str) -> bool:
+    """Dispatch one exact managed command after all fixed routes miss."""
+
+    dispatcher = _SERVICE_V2_FEISHU_DISPATCHER
+    if dispatcher is None:
+        return False
+    context = _COMMAND_CONTEXT.get() or FeishuCommandContext("", "", "")
+    try:
+        result = await dispatcher.dispatch(
+            command_text=text, event_id=context.event_id,
+            sender_id=context.actor_id, chat_id=context.chat_id,
+        )
+        if result is not None and not isinstance(result, dict):
+            raise TypeError("managed Feishu command result must be a dict or None")
+    except OrchestrationError as exc:
+        logger.warning("managed Feishu command rejected | code=%s", exc.code)
+        await _reply_text(
+            receive_id,
+            "扩展任务未能执行：消息身份不完整或当前入口不可用。",
+            reply_type="service_v2_feishu_rejected",
+        )
+        return True
+    except Exception as exc:
+        logger.error(
+            "managed Feishu command failed | error_type=%s", type(exc).__name__,
+        )
+        await _reply_text(
+            receive_id,
+            "扩展任务暂时无法执行，请稍后重试。",
+            reply_type="service_v2_feishu_failed",
+        )
+        return True
+    if result is None:
+        return False
+    reply, reply_type = _automation_result_reply(
+        task_name="扩展任务",
+        result={"status": result.get("status")},
+    )
+    await _reply_text(receive_id, reply, reply_type=reply_type)
+    return True
 
 
 async def _run_deferred_tool(

@@ -36,7 +36,7 @@ def normalize_plugin_active_contributions(
     The declaration remains available through ``entrypoints`` for settings UI,
     but a Service v2 contribution is executable only when the Agent reports an
     ACTIVE, closed runtime projection for the exact committed generation.
-    Malformed rows are ignored individually so an unrelated Scheduler record
+    Malformed rows are ignored individually so an unrelated managed record
     cannot withdraw a valid Console route, while the malformed contribution
     itself remains unavailable.
     """
@@ -72,7 +72,7 @@ def normalize_plugin_active_contributions(
         backend_status = str(raw.get("backend_status") or "").strip().upper()
         if (
             not AUTOMATION_PLUGIN_V2_ENTRYPOINT_ID_RE.fullmatch(contribution_id)
-            or contribution_kind not in {"console", "scheduler"}
+            or contribution_kind not in {"console", "scheduler", "feishu"}
             or isinstance(generation, bool)
             or not isinstance(generation, int)
             or generation < 1

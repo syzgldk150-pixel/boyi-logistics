@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import subprocess
 import sys
@@ -373,3 +374,56 @@ def test_disabled_release_does_not_import_windows_worker_runtime() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+def test_main_wires_the_fixed_feishu_command_reservation_into_the_registry() -> None:
+    main_tree = ast.parse((REPOSITORY_ROOT / "agent" / "main.py").read_text("utf-8"))
+    runtime_calls = [
+        node
+        for node in ast.walk(main_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "to_thread"
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "build_production_automation_plugin_runtime"
+    ]
+    assert len(runtime_calls) == 1
+    runtime_keyword = next(
+        keyword
+        for keyword in runtime_calls[0].keywords
+        if keyword.arg == "reserved_feishu_command"
+    )
+    assert isinstance(runtime_keyword.value, ast.Name)
+    assert runtime_keyword.value.id == "is_reserved_feishu_command_text"
+
+    production_tree = ast.parse(
+        (
+            REPOSITORY_ROOT
+            / "agent"
+            / "agent"
+            / "automation_plugins"
+            / "production.py"
+        ).read_text("utf-8")
+    )
+    builder = next(
+        node
+        for node in production_tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "build_production_automation_plugin_runtime"
+    )
+    registry_calls = [
+        node
+        for node in ast.walk(builder)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "ManagedContributionRegistry"
+    ]
+    assert len(registry_calls) == 1
+    registry_keyword = next(
+        keyword
+        for keyword in registry_calls[0].keywords
+        if keyword.arg == "reserved_feishu_command"
+    )
+    assert isinstance(registry_keyword.value, ast.Name)
+    assert registry_keyword.value.id == "reserved_feishu_command"

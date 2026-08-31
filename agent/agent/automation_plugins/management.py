@@ -64,7 +64,9 @@ _SERVICE_V2_CONTRIBUTION_KINDS = frozenset(
 _LEGACY_SERVICE_V2_CONTRIBUTION_KINDS = frozenset(
     {"console", "scheduler", "webhook", "feishu", "events"}
 )
-_MANAGED_CONTRIBUTION_KINDS = frozenset({"console", "scheduler", "harness"})
+_MANAGED_CONTRIBUTION_KINDS = frozenset(
+    {"console", "scheduler", "feishu", "harness"}
+)
 _ACTIVE_CONTRIBUTION_FIELDS = (
     "contribution_id",
     "contribution_kind",
@@ -450,22 +452,26 @@ class AutomationPluginManagementService:
                 else "STALE"
             )
             return _contribution_projection(state)
-        if expected == frozenset():
-            state = (
-                "ACTIVE"
-                if enabled is True
-                else "INACTIVE"
-                if enabled is False
-                else "STALE"
-            )
-            return _contribution_projection(state)
-
         try:
             active_generation, active = self._registry_active_contribution_projection(
                 str(automation_id or "")
             )
         except Exception:  # noqa: BLE001 - Catalog status must fail closed
             return _contribution_projection("STALE")
+
+        if expected == frozenset():
+            state = (
+                "ACTIVE"
+                if enabled is True
+                and active_generation is None
+                and not active
+                else "INACTIVE"
+                if enabled is False
+                and active_generation is None
+                and not active
+                else "STALE"
+            )
+            return _contribution_projection(state, active)
 
         actual = frozenset(
             (item["contribution_kind"], item["contribution_id"])

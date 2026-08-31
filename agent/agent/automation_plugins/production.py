@@ -570,7 +570,12 @@ class ProductionRuntimeEffectDriver:
             Callable[[str], Mapping[str, Any]] | None
         ) = None
         self._emergency_blocked_projects: dict[str, int] = {}
-        self._pending_projection_transitions: dict[tuple[str, int], str] = {}
+        # Retry state is authoritative.  In particular an empty expected set
+        # means "clear the active contribution generation", not "derive the
+        # set from whatever process registrations happen to remain".
+        self._pending_projection_transitions: dict[
+            tuple[str, int], tuple[str, tuple[str, ...]]
+        ] = {}
         self._projection_identities = ProjectionIdentityJournal()
 
     @property
@@ -592,7 +597,7 @@ class ProductionRuntimeEffectDriver:
                         generation,
                         operation,
                     )
-                    for (automation_id, generation), operation in (
+                    for (automation_id, generation), (operation, _) in (
                         self._pending_projection_transitions.items()
                     )
                 )
@@ -705,8 +710,15 @@ class ProductionRuntimeEffectDriver:
         operation: str,
         automation_id: str,
         generation: int,
+        expected_registration_ids: Sequence[str] = (),
     ) -> Mapping[str, Any]:
         key = (automation_id, generation)
+        expected_ids = tuple(sorted(str(value) for value in expected_registration_ids))
+        if len(set(expected_ids)) != len(expected_ids):
+            raise PluginConflictError(
+                "managed contribution expected registration identities are duplicated",
+                code="CONTRIBUTION_REGISTRATION_EFFECT_MISMATCH",
+            )
         evidence: Mapping[str, Any] | None = None
         service_transition: ServiceProjectRouteTransition | None = None
 
@@ -744,14 +756,17 @@ class ProductionRuntimeEffectDriver:
                 raise
 
         with self._projection_lock:
-            current_operation = self._pending_projection_transitions.get(key)
-            if current_operation is None:
-                self._pending_projection_transitions[key] = operation
+            current_transition = self._pending_projection_transitions.get(key)
+            if current_transition is None:
+                self._pending_projection_transitions[key] = (
+                    operation,
+                    expected_ids,
+                )
                 self._projection_identities.begin(
                     key,
                     self._project_projection_identity(automation_id),
                 )
-            elif current_operation == operation:
+            elif current_transition == (operation, expected_ids):
                 self._projection_identities.require_baseline(
                     key,
                     self._project_projection_identity(automation_id),
@@ -761,23 +776,27 @@ class ProductionRuntimeEffectDriver:
                     "runtime projection transition changed while pending",
                     code="RUNTIME_PROJECTION_STALE",
                 )
-            has_contributions = any(
-                record.automation_id == automation_id
-                and record.generation == generation
-                for record in self._contributions.snapshot()
-            )
-            if operation == "apply" and has_contributions:
+            if operation == "apply":
                 self._contributions.apply_generation(
                     automation_id,
                     generation,
                     refresh=refresh,
+                    expected_registration_ids=expected_ids,
                 )
-            elif operation == "withdraw" and has_contributions:
-                self._contributions.withdraw_generation(
-                    automation_id,
-                    generation,
-                    refresh=refresh,
+            elif operation == "withdraw":
+                has_contributions = any(
+                    record.automation_id == automation_id
+                    and record.generation == generation
+                    for record in self._contributions.snapshot()
                 )
+                if has_contributions:
+                    self._contributions.withdraw_generation(
+                        automation_id,
+                        generation,
+                        refresh=refresh,
+                    )
+                else:
+                    refresh()
             elif operation in {"apply", "withdraw"}:
                 refresh()
             else:
@@ -812,10 +831,12 @@ class ProductionRuntimeEffectDriver:
                         automation_id,
                         generation,
                         operation,
+                        expected_ids,
                     )
-                    for (automation_id, generation), operation in (
+                    for (automation_id, generation), (operation, expected_ids) in (
                         self._pending_projection_transitions.items()
                     )
+                    if operation != "blocked"
                 )
             )
             if not pending:
@@ -833,11 +854,12 @@ class ProductionRuntimeEffectDriver:
                 "initialized": False,
                 "invalid_tasks": [],
             }
-            for automation_id, generation, operation in pending:
+            for automation_id, generation, operation, expected_ids in pending:
                 evidence = self._apply_projection_transition(
                     operation=operation,
                     automation_id=automation_id,
                     generation=generation,
+                    expected_registration_ids=expected_ids,
                 )
             return evidence
 
@@ -874,7 +896,7 @@ class ProductionRuntimeEffectDriver:
                     self._pending_projection_transitions.pop(key, None)
             self._pending_projection_transitions[
                 (automation_key, generation_number)
-            ] = "blocked"
+            ] = ("blocked", ())
             self._emergency_blocked_projects[automation_key] = generation_number
             self._projection_identities.fail_closed(automation_key)
             withdrawer = self._scheduler_project_emergency_withdrawer
@@ -1088,15 +1110,6 @@ class ProductionRuntimeEffectDriver:
             )
         return matches[0]
 
-    def _ensure_contribution_reference(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        committed: bool,
-    ) -> None:
-        material = self._validated_contribution_payload(payload)
-        self._contributions.register(material, committed=committed)
-
     def service_reference_count(self, package_sha256: str) -> int:
         package_id = package_provider_registration_id(package_sha256)
         with self._service_lock:
@@ -1123,6 +1136,9 @@ class ProductionRuntimeEffectDriver:
         restored_services: list[tuple[RuntimeGenerationSnapshot, RuntimeEffectRecord]] = []
         restored_contributions: list[tuple[RuntimeGenerationState, RuntimeGenerationSnapshot, RuntimeEffectRecord]] = []
         committed_by_project: dict[str, int] = {}
+        committed_contribution_effects: dict[tuple[str, int], tuple[Any, list[RuntimeEffectRecord]]] = {}
+        contribution_groups: dict[tuple[str, int], tuple[Any, Any, list[RuntimeEffectRecord]]] = {}
+        activation_phases: dict[tuple[str, int], RuntimeActivationPhase | None] = {}
         eligible_states = {
             RuntimeGenerationState.TARGET,
             RuntimeGenerationState.PREPARING,
@@ -1136,6 +1152,9 @@ class ProductionRuntimeEffectDriver:
             for generation in repository.list_project_generations(automation_id):
                 if generation.state not in eligible_states:
                     continue
+                snapshot = generation.snapshot
+                generation_key = (snapshot.automation_id, snapshot.generation)
+                activation_phases[generation_key] = generation.activation_phase
                 activation_ready = generation.activation_phase in {
                     None,
                     RuntimeActivationPhase.ACTIVE,
@@ -1145,14 +1164,25 @@ class ProductionRuntimeEffectDriver:
                     and activation_ready
                 ):
                     prior = committed_by_project.setdefault(
-                        generation.snapshot.automation_id,
-                        generation.snapshot.generation,
+                        snapshot.automation_id,
+                        snapshot.generation,
                     )
-                    if prior != generation.snapshot.generation:
+                    if prior != snapshot.generation:
                         raise PluginConflictError(
                             "multiple committed contribution generations were restored",
                             code="CONTRIBUTION_REGISTRATION_CONFLICT",
                         )
+                    committed_contribution_effects[generation_key] = (snapshot, [])
+                if generation.state in {
+                    RuntimeGenerationState.DRAINING,
+                    RuntimeGenerationState.DISPOSING,
+                } or generation.activation_phase in {
+                    RuntimeActivationPhase.BLOCKED,
+                    RuntimeActivationPhase.ROLLED_BACK,
+                }:
+                    contribution_groups.setdefault(
+                        generation_key, (generation.state, snapshot, [])
+                    )
                 for effect in generation.effects:
                     if (
                         effect.kind is RuntimeEffectKind.SERVICE_REGISTRATION
@@ -1163,12 +1193,16 @@ class ProductionRuntimeEffectDriver:
                         }
                         and effect.state is RuntimeEffectState.APPLIED
                     ):
-                        restored_services.append((generation.snapshot, effect))
+                        restored_services.append((snapshot, effect))
                     elif self._is_managed_contribution_effect(effect) and effect.state in {
                         RuntimeEffectState.APPLIED,
                         RuntimeEffectState.DISPOSING,
+                        RuntimeEffectState.DISPOSED,
                     }:
-                        restored_contributions.append((generation.state, generation.snapshot, effect))
+                        restored_contributions.append((generation.state, snapshot, effect))
+                        committed_effects = committed_contribution_effects.get(generation_key)
+                        if committed_effects is not None:
+                            committed_effects[1].append(effect)
         for snapshot, effect in sorted(
             restored_services,
             key=lambda item: (
@@ -1184,29 +1218,78 @@ class ProductionRuntimeEffectDriver:
                     code="SERVICE_REGISTRATION_EFFECT_MISMATCH",
                 )
             self._ensure_service_reference(expected)
-        for generation_state, snapshot, effect in sorted(
-            restored_contributions,
-            key=lambda item: (
-                item[1].automation_id,
-                item[1].generation,
-                item[2].sequence,
-            ),
-        ):
-            expected = self._expected_contribution_plan(
-                snapshot,
-                kind=effect.kind,
-                effect_key=effect.effect_key,
-            )
-            if canonical_json_bytes(dict(effect.payload)) != canonical_json_bytes(dict(expected.payload)):
+        for generation_state, snapshot, effect in restored_contributions:
+            group_key = (snapshot.automation_id, snapshot.generation)
+            existing = contribution_groups.get(group_key)
+            if existing is None:
+                contribution_groups[group_key] = (generation_state, snapshot, [effect])
+                continue
+            if existing[0] is not generation_state or existing[1] != snapshot:
                 raise PluginConflictError(
-                    "persisted contribution registration does not match its generation",
+                    "persisted contribution generation state is ambiguous",
                     code="CONTRIBUTION_REGISTRATION_EFFECT_MISMATCH",
                 )
-            committed = generation_state is RuntimeGenerationState.COMMITTED
-            self._ensure_contribution_reference(
-                expected.payload,
-                committed=committed,
+            existing[2].append(effect)
+        for group_key, (generation_state, snapshot, effects) in sorted(
+            contribution_groups.items()
+        ):
+            if (
+                generation_state is RuntimeGenerationState.COMMITTED
+                and (snapshot.automation_id, snapshot.generation)
+                in committed_contribution_effects
+            ):
+                continue
+            retiring = generation_state in {
+                RuntimeGenerationState.DRAINING,
+                RuntimeGenerationState.DISPOSING,
+            }
+            partial = generation_state in {
+                RuntimeGenerationState.TARGET,
+                RuntimeGenerationState.PREPARING,
+                RuntimeGenerationState.WAITING_COEFFECTS,
+            }
+            activation_phase = activation_phases[group_key]
+            inactive = retiring or activation_phase is RuntimeActivationPhase.BLOCKED
+            allowed_states = {RuntimeEffectState.APPLIED}
+            if retiring:
+                allowed_states.update({RuntimeEffectState.DISPOSING, RuntimeEffectState.DISPOSED})
+            materials = self._validated_generation_contribution_materials(
+                snapshot=snapshot,
+                effects=effects,
+                allowed_states=frozenset(allowed_states),
+                require_exact=not partial,
             )
+            if partial:
+                materials = tuple(
+                    self._validated_contribution_payload(plan.payload)
+                    for plan in _service_v2_contribution_effect_plans(snapshot)
+                )
+            if retiring:
+                remaining = {
+                    (effect.kind, effect.effect_key)
+                    for effect in effects
+                    if effect.state is not RuntimeEffectState.DISPOSED
+                }
+                materials = tuple(
+                    material
+                    for plan, material in zip(
+                        _service_v2_contribution_effect_plans(snapshot), materials
+                    )
+                    if (plan.kind, plan.effect_key) in remaining
+                )
+            if materials and activation_phase is not RuntimeActivationPhase.ROLLED_BACK:
+                self._contributions.prepare_generation(
+                    materials, committed=(generation_state is RuntimeGenerationState.COMMITTED),
+                    restored_inactive=inactive,
+                )
+        for snapshot, effects in committed_contribution_effects.values():
+            materials = self._validated_generation_contribution_materials(
+                snapshot=snapshot,
+                effects=effects,
+                allowed_states=frozenset({RuntimeEffectState.APPLIED}),
+            )
+            if materials:
+                self._contributions.prepare_generation(materials, committed=True)
         for automation_id, generation in sorted(committed_by_project.items()):
             if self._services.project_reference(
                 automation_id=automation_id,
@@ -1345,7 +1428,11 @@ class ProductionRuntimeEffectDriver:
                     "enabled contribution has no compatible host backend",
                     code="CAPABILITY_UNAVAILABLE",
                 )
-            self._contributions.register(material, committed=False)
+            generation_materials = tuple(
+                self._validated_contribution_payload(item.payload)
+                for item in _service_v2_contribution_effect_plans(snapshot)
+            )
+            self._contributions.prepare_generation(generation_materials, committed=False)
         return replace(
             effect,
             state=RuntimeEffectState.APPLIED,
@@ -1358,8 +1445,14 @@ class ProductionRuntimeEffectDriver:
         snapshot: RuntimeGenerationSnapshot,
         effects: Sequence[RuntimeEffectRecord],
         allowed_states: frozenset[RuntimeEffectState],
+        require_exact: bool = True,
     ) -> tuple[dict[str, Any], ...]:
-        materials: list[dict[str, Any]] = []
+        plans = _service_v2_contribution_effect_plans(snapshot)
+        expected_plans = {
+            (plan.kind, plan.effect_key): plan
+            for plan in plans
+        }
+        observed: dict[tuple[RuntimeEffectKind, str], dict[str, Any]] = {}
         for effect in effects:
             if not self._is_managed_contribution_effect(effect):
                 continue
@@ -1372,11 +1465,13 @@ class ProductionRuntimeEffectDriver:
                     "contribution effect identity is invalid",
                     code="CONTRIBUTION_REGISTRATION_EFFECT_MISMATCH",
                 )
-            expected = self._expected_contribution_plan(
-                snapshot,
-                kind=effect.kind,
-                effect_key=effect.effect_key,
-            )
+            key = (effect.kind, effect.effect_key)
+            expected = expected_plans.get(key)
+            if expected is None or key in observed:
+                raise PluginConflictError(
+                    "contribution effect is absent from or duplicated in its generation",
+                    code="CONTRIBUTION_REGISTRATION_EFFECT_MISMATCH",
+                )
             if canonical_json_bytes(dict(effect.payload)) != canonical_json_bytes(
                 dict(expected.payload)
             ):
@@ -1384,8 +1479,17 @@ class ProductionRuntimeEffectDriver:
                     "contribution effect payload is invalid",
                     code="CONTRIBUTION_REGISTRATION_EFFECT_MISMATCH",
                 )
-            materials.append(self._validated_contribution_payload(expected.payload))
-        return tuple(materials)
+            observed[key] = self._validated_contribution_payload(expected.payload)
+        if require_exact and set(observed) != set(expected_plans):
+            raise PluginConflictError(
+                "contribution effects do not exactly match their generation",
+                code="CONTRIBUTION_REGISTRATION_EFFECT_MISMATCH",
+            )
+        return tuple(
+            observed[(plan.kind, plan.effect_key)]
+            for plan in plans
+            if (plan.kind, plan.effect_key) in observed
+        )
 
     def _validated_generation_service_materials(
         self,
@@ -1447,6 +1551,9 @@ class ProductionRuntimeEffectDriver:
             operation="apply",
             automation_id=snapshot.automation_id,
             generation=snapshot.generation,
+            expected_registration_ids=tuple(
+                material["registration_id"] for material in contributions
+            ),
         )
 
     def rollback_committed_activation(
@@ -1507,7 +1614,7 @@ class ProductionRuntimeEffectDriver:
                     key,
                     pending=False,
                 )
-            elif pending == "apply":
+            elif pending[0] == "apply":
                 expected_projection = self._projection_identities.expected_rollback(
                     key,
                     pending=True,
@@ -1539,12 +1646,17 @@ class ProductionRuntimeEffectDriver:
                     operation="apply",
                     automation_id=restored_snapshot.automation_id,
                     generation=restored_snapshot.generation,
+                    expected_registration_ids=tuple(
+                        material["registration_id"]
+                        for material in restored_contributions
+                    ),
                 )
             else:
                 self._apply_projection_transition(
                     operation="withdraw",
                     automation_id=snapshot.automation_id,
                     generation=snapshot.generation,
+                    expected_registration_ids=(),
                 )
             for material in contributions:
                 self._contributions.unregister(material["registration_id"])
@@ -2639,6 +2751,7 @@ def build_production_automation_plugin_runtime(
     release_hold_provider: Callable[[], bool] | None = None,
     bubblewrap_path: Path | str = Path("/usr/bin/bwrap"),
     resource_provider: Callable[[str], Mapping[str, Any] | None] | None = None,
+    reserved_feishu_command: Callable[[str], bool] | None = None,
 ) -> ProductionAutomationPluginRuntime:
     """Build the production graph without starting its local broker socket."""
 
@@ -2731,6 +2844,7 @@ def build_production_automation_plugin_runtime(
     service_registry = ServiceRegistry(lock=runtime_projection_lock)
     contribution_registry = ManagedContributionRegistry(
         lock=runtime_projection_lock,
+        reserved_feishu_command=reserved_feishu_command,
     )
     service_executor = ProductionServiceV2ProviderExecutor(
         service_registry=service_registry,

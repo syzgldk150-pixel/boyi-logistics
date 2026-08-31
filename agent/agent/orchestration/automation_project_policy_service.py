@@ -28,7 +28,6 @@ from agent.automation_plugins.code_owned_fields import (
     resolve_scan_execution_phase,
     resolve_selection_execution_phase,
 )
-from agent.automation_plugins.errors import PluginConflictError
 from agent.orchestration.automation_project_service_v2 import (
     normalize_contribution_id,
     require_service_v2_policy_mode,
@@ -1225,6 +1224,55 @@ class AutomationProjectPolicyService:
             contribution_id=contribution_id,
         )
 
+    def _require_active_service_v2_contribution(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        contribution_kind: str,
+        contribution_id: str,
+    ) -> None:
+        registry = self._contribution_registry
+        resolve_active = getattr(registry, "resolve_active", None)
+        if not callable(resolve_active):
+            raise OrchestrationError(
+                "PROJECT_RUNTIME_PROJECTION_STALE",
+                "Automation project runtime projection is unavailable",
+            )
+        try:
+            record = resolve_active(
+                automation_id=automation_id,
+                generation=generation,
+                contribution_kind=contribution_kind,
+                contribution_id=contribution_id,
+            )
+        except Exception as exc:
+            raise OrchestrationError(
+                "PROJECT_RUNTIME_PROJECTION_STALE",
+                "Automation project runtime projection changed before invocation",
+            ) from exc
+        fields = (
+            "automation_id", "generation", "contribution_kind",
+            "contribution_id", "phase", "backend_status",
+        )
+        observed = tuple(
+            (
+                record.get(field)
+                if isinstance(record, Mapping)
+                else getattr(record, field, None)
+            )
+            for field in fields
+        )
+        expected = (
+            automation_id, generation, contribution_kind, contribution_id,
+            "COMMITTED", "READY",
+        )
+        if observed != expected:
+            raise OrchestrationError(
+                "PROJECT_RUNTIME_PROJECTION_STALE",
+                "Automation project runtime projection identity does not match",
+            )
+
     def invoke_trusted(
         self,
         automation_id: str,
@@ -1351,38 +1399,19 @@ class AutomationProjectPolicyService:
                 "PROJECT_ENTRYPOINT_DISABLED",
                 "Requested entrypoint is not enabled for this automation project",
             )
-        if (
-            is_service_v2
-            and source
-            in {
-                AutomationEntrypoint.CONSOLE,
-                AutomationEntrypoint.HARNESS,
-                AutomationEntrypoint.SCHEDULER,
-            }
-            and self._contribution_registry is not None
-        ):
-            resolve_active = getattr(
-                self._contribution_registry,
-                "resolve_active",
-                None,
+        managed_projection_source = source in {
+            AutomationEntrypoint.CONSOLE,
+            AutomationEntrypoint.HARNESS,
+            AutomationEntrypoint.SCHEDULER,
+            AutomationEntrypoint.FEISHU,
+        }
+        if is_service_v2 and managed_projection_source:
+            self._require_active_service_v2_contribution(
+                automation_id=safe_id,
+                generation=contract.automation_generation,
+                contribution_kind=source.value,
+                contribution_id=invocation_contract.contribution_id,
             )
-            if not callable(resolve_active):
-                raise OrchestrationError(
-                    "PROJECT_RUNTIME_PROJECTION_STALE",
-                    "Automation project runtime projection is unavailable",
-                )
-            try:
-                resolve_active(
-                    automation_id=safe_id,
-                    generation=contract.automation_generation,
-                    contribution_kind=source.value,
-                    contribution_id=invocation_contract.contribution_id,
-                )
-            except PluginConflictError as exc:
-                raise OrchestrationError(
-                    "PROJECT_RUNTIME_PROJECTION_STALE",
-                    "Automation project runtime projection changed before invocation",
-                ) from exc
         occurred_at = datetime.now(timezone.utc)
         execution_context = {
             "project_request_id": safe_request_id,
@@ -1519,6 +1548,13 @@ class AutomationProjectPolicyService:
                 raise OrchestrationError(
                     "PROJECT_INVOCATION_STALE",
                     "Automation project changed before command acceptance",
+                )
+            if is_service_v2 and source is AutomationEntrypoint.FEISHU:
+                self._require_active_service_v2_contribution(
+                    automation_id=safe_id,
+                    generation=locked_contract.automation_generation,
+                    contribution_kind=source.value,
+                    contribution_id=invocation_contract.contribution_id,
                 )
             if preview_context is not None and safe_preview_run_id is not None:
                 locked_preview = resolve_scan_preview(

@@ -2,18 +2,22 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from agent.automation_plugins.errors import PluginConflictError
+from agent.automation_plugins.generation import AutomationRuntimeReconciler
 from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.host_capability_registry import governance_for_effect
 from agent.automation_plugins.models import (
     PluginRuntimeModel,
     PluginTrustSource,
+    RuntimeActivationPhase,
     RuntimeCoeffectKind,
+    RuntimeCoeffectSnapshot,
     RuntimeEffectRecord,
     RuntimeEffectState,
     RuntimeGenerationRecord,
@@ -234,6 +238,165 @@ def _effect(
         effect_key=plan.effect_key,
         payload=plan.payload,
     )
+
+
+class _GenerationRepository:
+    def __init__(self, *records: RuntimeGenerationRecord) -> None:
+        self._records: dict[str, list[RuntimeGenerationRecord]] = {}
+        for record in records:
+            self._records.setdefault(record.snapshot.automation_id, []).append(record)
+
+    def list_project_runtime_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self._records))
+
+    def list_project_generations(
+        self,
+        automation_id: str,
+    ) -> tuple[RuntimeGenerationRecord, ...]:
+        return tuple(
+            sorted(
+                self._records[automation_id],
+                key=lambda record: record.snapshot.generation,
+            )
+        )
+
+    def list_project_runtimes(self) -> tuple[SimpleNamespace, ...]:
+        return tuple(
+            SimpleNamespace(automation_id=automation_id)
+            for automation_id in sorted(self._records)
+        )
+
+
+class _PrepareRepository:
+    def __init__(self, snapshot: RuntimeGenerationSnapshot) -> None:
+        self.generation = RuntimeGenerationRecord(
+            snapshot=snapshot,
+            state=RuntimeGenerationState.TARGET,
+        )
+
+    def get_generation(
+        self,
+        automation_id: str,
+        generation: int,
+    ) -> RuntimeGenerationRecord | None:
+        snapshot = self.generation.snapshot
+        if (automation_id, generation) == (
+            snapshot.automation_id,
+            snapshot.generation,
+        ):
+            return self.generation
+        return None
+
+    def list_project_runtime_ids(self) -> tuple[str, ...]:
+        return (self.generation.snapshot.automation_id,)
+
+    def list_project_generations(
+        self,
+        _automation_id: str,
+    ) -> tuple[RuntimeGenerationRecord, ...]:
+        return (self.generation,)
+
+    def list_project_runtimes(self) -> tuple[SimpleNamespace, ...]:
+        return (
+            SimpleNamespace(automation_id=self.generation.snapshot.automation_id),
+        )
+
+    def mark_generation_preparing(self, _automation_id: str, _generation: int) -> None:
+        self.generation = replace(
+            self.generation,
+            state=RuntimeGenerationState.PREPARING,
+        )
+
+    def replace_generation_coeffects(
+        self,
+        _automation_id: str,
+        _generation: int,
+        coeffects,
+    ) -> None:
+        self.generation = replace(self.generation, coeffects=tuple(coeffects))
+
+    def reserve_generation_effect(
+        self,
+        snapshot: RuntimeGenerationSnapshot,
+        *,
+        plan,
+        sequence: int,
+    ) -> RuntimeEffectRecord:
+        effect = RuntimeEffectRecord(
+            effect_id=f"{snapshot.automation_id}:{snapshot.generation}:{sequence}",
+            automation_id=snapshot.automation_id,
+            generation=snapshot.generation,
+            sequence=sequence,
+            kind=plan.kind,
+            state=RuntimeEffectState.PLANNED,
+            reversible=plan.reversible,
+            effect_key=plan.effect_key,
+            payload=dict(plan.payload),
+        )
+        self.generation = replace(
+            self.generation,
+            effects=(*self.generation.effects, effect),
+        )
+        return effect
+
+    def mark_generation_effect_applied(
+        self,
+        applied: RuntimeEffectRecord,
+    ) -> RuntimeEffectRecord:
+        self.generation = replace(
+            self.generation,
+            effects=tuple(
+                applied if effect.effect_id == applied.effect_id else effect
+                for effect in self.generation.effects
+            ),
+        )
+        return applied
+
+    def mark_generation_prepared(self, _automation_id: str, _generation: int) -> None:
+        self.generation = replace(
+            self.generation,
+            state=RuntimeGenerationState.PREPARED,
+        )
+
+    def fail_generation(
+        self,
+        _automation_id: str,
+        _generation: int,
+        *,
+        error_code: str,
+        error_summary: str,
+    ) -> None:
+        assert error_code
+        assert error_summary
+        self.generation = replace(
+            self.generation,
+            state=RuntimeGenerationState.FAILED,
+        )
+
+    @staticmethod
+    def get_project_runtime(_automation_id: str):
+        return None
+
+
+class _ReadyCoeffects:
+    @staticmethod
+    def observe(
+        _snapshot: RuntimeGenerationSnapshot,
+    ) -> tuple[RuntimeCoeffectSnapshot, ...]:
+        return (
+            RuntimeCoeffectSnapshot(
+                kind=RuntimeCoeffectKind.CORE_ADAPTER,
+                key="offline-ready",
+                revision="offline-ready-1",
+                ready=True,
+            ),
+        )
+
+
+class _ManagedContributionPlanner:
+    @staticmethod
+    def plan(snapshot: RuntimeGenerationSnapshot):
+        return _managed_plans(snapshot)
 
 
 def test_v2_contributions_are_registered_activated_and_reversibly_removed() -> None:
@@ -485,6 +648,385 @@ def test_registry_refresh_exception_and_failed_withdraw_preserve_live_routes() -
     )
 
 
+def test_feishu_command_is_ready_global_exact_and_resolves_only_active_generation() -> None:
+    disabled_schedule = {"kind": "none", "times": [], "enabled": False}
+    first = _snapshot(
+        generation=1,
+        schedule=disabled_schedule,
+        enabled_entrypoints=("run_command",),
+    )
+    second = _snapshot(
+        generation=2,
+        schedule=disabled_schedule,
+        enabled_entrypoints=("run_command",),
+    )
+    first_materials = tuple(
+        copy.deepcopy(dict(plan.payload))
+        for plan in _managed_plans(first)
+        if plan.payload["contribution_kind"] == "feishu"
+    )
+    second_materials = tuple(
+        copy.deepcopy(dict(plan.payload))
+        for plan in _managed_plans(second)
+        if plan.payload["contribution_kind"] == "feishu"
+    )
+    registry = ManagedContributionRegistry()
+    registry.prepare_generation(first_materials)
+    assert first_materials[0]["route_keys"] == [
+        "feishu:command:"
+        + hashlib.sha256("执行示例".encode("utf-8")).hexdigest()
+    ]
+    registry.apply_generation(
+        first.automation_id,
+        first.generation,
+        refresh=_refresh_success,
+        expected_registration_ids=(first_materials[0]["registration_id"],),
+    )
+    first_target = registry.resolve_active_feishu_command("执行示例")
+    assert (
+        first_target.automation_id,
+        first_target.generation,
+        first_target.contribution_id,
+    ) == (first.automation_id, 1, "run_command")
+
+    registry.prepare_generation(second_materials)
+    registry.apply_generation(
+        second.automation_id,
+        second.generation,
+        refresh=_refresh_success,
+        expected_registration_ids=(second_materials[0]["registration_id"],),
+    )
+    assert registry.resolve_active_feishu_command("执行示例").generation == 2
+    with pytest.raises(PluginConflictError) as wrong_case:
+        registry.resolve_active_feishu_command("执行示例 ")
+    assert wrong_case.value.code == "CAPABILITY_UNAVAILABLE"
+
+
+def test_reserved_feishu_command_rejects_the_whole_prepare_batch() -> None:
+    snapshot = _snapshot(
+        schedule={"kind": "none", "times": [], "enabled": False},
+        enabled_entrypoints=("run_now", "run_command"),
+    )
+    materials = tuple(copy.deepcopy(dict(plan.payload)) for plan in _managed_plans(snapshot))
+    registry = ManagedContributionRegistry(
+        reserved_feishu_command=lambda command: command == "执行示例"
+    )
+
+    with pytest.raises(PluginConflictError) as conflict:
+        registry.prepare_generation(materials)
+
+    assert conflict.value.code == "CONTRIBUTION_ROUTE_CONFLICT"
+    assert registry.snapshot() == ()
+
+
+def test_authoritative_empty_generation_clears_live_routes_and_refresh_failure_rolls_back() -> None:
+    first = _snapshot(
+        generation=1,
+        schedule={"kind": "none", "times": [], "enabled": False},
+        enabled_entrypoints=("run_now",),
+    )
+    materials = _active_materials(first)
+    registry = ManagedContributionRegistry()
+    registry.prepare_generation(materials)
+    registry.apply_generation(
+        first.automation_id,
+        first.generation,
+        refresh=_refresh_success,
+        expected_registration_ids=tuple(item["registration_id"] for item in materials),
+    )
+    before = registry.snapshot()
+
+    with pytest.raises(PluginConflictError) as failed:
+        registry.apply_generation(
+            first.automation_id,
+            2,
+            refresh=lambda: {"initialized": False, "invalid_tasks": []},
+            expected_registration_ids=(),
+        )
+    assert failed.value.code == "RUNTIME_PROJECTION_REFRESH_FAILED"
+    assert registry.snapshot() == before
+    assert registry.active_generation(first.automation_id) == 1
+
+    registry.apply_generation(
+        first.automation_id,
+        2,
+        refresh=_refresh_success,
+        expected_registration_ids=(),
+    )
+    assert registry.active_generation(first.automation_id) is None
+    assert registry.active_snapshot(automation_id=first.automation_id) == ()
+    assert {item.phase for item in registry.snapshot()} == {"DRAINING"}
+
+
+
+def test_draining_feishu_generation_releases_its_global_command_for_another_project() -> None:
+    snapshot = _snapshot(
+        schedule={"kind": "none", "times": [], "enabled": False},
+        enabled_entrypoints=("run_command",),
+    )
+    material = next(
+        copy.deepcopy(dict(plan.payload))
+        for plan in _managed_plans(snapshot)
+        if plan.payload["contribution_kind"] == "feishu"
+    )
+    registry = ManagedContributionRegistry()
+    registry.prepare_generation((material,))
+    registry.apply_generation(
+        snapshot.automation_id,
+        snapshot.generation,
+        refresh=_refresh_success,
+        expected_registration_ids=(material["registration_id"],),
+    )
+    registry.apply_generation(
+        snapshot.automation_id,
+        2,
+        refresh=_refresh_success,
+        expected_registration_ids=(),
+    )
+    other_project_material = copy.deepcopy(material)
+    other_project_material["automation_id"] = "other-project"
+    other_project_material["registration_id"] = "other-project:1:run_command"
+    registry.prepare_generation((other_project_material,))
+    assert {
+        item.automation_id for item in registry.snapshot()
+    } == {"example-project", "other-project"}
+
+
+def test_reconciler_atomic_prepare_leaves_no_route_for_duplicate_feishu_command() -> None:
+    contributions = _contributions()
+    contributions["feishu"].append(
+        {
+            **copy.deepcopy(contributions["feishu"][0]),
+            "id": "run_command_duplicate",
+        }
+    )
+    snapshot = _snapshot(
+        schedule={"kind": "none", "times": [], "enabled": False},
+        contributions=contributions,
+        enabled_entrypoints=("run_command", "run_command_duplicate"),
+    )
+    repository = _PrepareRepository(snapshot)
+    registry = ManagedContributionRegistry()
+    reconciler = AutomationRuntimeReconciler(
+        repository=repository,
+        coeffects=_ReadyCoeffects(),
+        planner=_ManagedContributionPlanner(),
+        driver=ProductionRuntimeEffectDriver(
+            broker_handler_keys=(),
+            contribution_registry=registry,
+        ),
+    )
+
+    with pytest.raises(PluginConflictError) as conflict:
+        reconciler.prepare_target(repository.generation)
+
+    assert conflict.value.code == "CONTRIBUTION_ROUTE_CONFLICT"
+    assert repository.generation.state is RuntimeGenerationState.FAILED
+    assert registry.snapshot() == ()
+
+
+@pytest.mark.parametrize("existing_active", (False, True), ids=("prepared", "active"))
+def test_reconciler_atomic_prepare_leaves_no_current_route_on_late_cross_project_conflict(
+    existing_active: bool,
+) -> None:
+    schedule = {"kind": "none", "times": [], "enabled": False}
+    existing = replace(
+        _snapshot(schedule=schedule, enabled_entrypoints=("run_command",)),
+        automation_id="existing-project",
+    )
+    existing_material = next(
+        copy.deepcopy(dict(plan.payload))
+        for plan in _managed_plans(existing)
+        if plan.payload["contribution_kind"] == "feishu"
+    )
+    contributions = _contributions()
+    contributions["feishu"] = [
+        {
+            **copy.deepcopy(contributions["feishu"][0]),
+            "id": "first_command",
+            "commands": ["执行唯一"],
+        },
+        {
+            **copy.deepcopy(contributions["feishu"][0]),
+            "id": "second_command",
+        },
+    ]
+    snapshot = _snapshot(
+        schedule=schedule,
+        contributions=contributions,
+        enabled_entrypoints=("first_command", "second_command"),
+    )
+    repository = _PrepareRepository(snapshot)
+    registry = ManagedContributionRegistry()
+    registry.prepare_generation((existing_material,))
+    if existing_active:
+        registry.apply_generation(
+            existing.automation_id,
+            existing.generation,
+            refresh=_refresh_success,
+            expected_registration_ids=(existing_material["registration_id"],),
+        )
+    reconciler = AutomationRuntimeReconciler(
+        repository=repository,
+        coeffects=_ReadyCoeffects(),
+        planner=_ManagedContributionPlanner(),
+        driver=ProductionRuntimeEffectDriver(
+            broker_handler_keys=(),
+            contribution_registry=registry,
+        ),
+    )
+
+    with pytest.raises(PluginConflictError) as conflict:
+        reconciler.prepare_target(repository.generation)
+
+    assert conflict.value.code == "CONTRIBUTION_ROUTE_CONFLICT"
+    assert repository.generation.state is RuntimeGenerationState.FAILED
+    assert {
+        (item.automation_id, item.contribution_id, item.phase)
+        for item in registry.snapshot()
+    } == {
+        (
+            existing.automation_id,
+            "run_command",
+            "COMMITTED" if existing_active else "PREPARED",
+        )
+    }
+
+
+def test_restart_restores_full_atomic_batch_from_partial_preparing_journal_and_reconciles() -> None:
+    contributions = _contributions()
+    contributions["feishu"] = [
+        {
+            **copy.deepcopy(contributions["feishu"][0]),
+            "id": "first_command",
+            "commands": ["执行一号"],
+        },
+        {
+            **copy.deepcopy(contributions["feishu"][0]),
+            "id": "second_command",
+            "commands": ["执行二号"],
+        },
+    ]
+    snapshot = _snapshot(
+        schedule={"kind": "none", "times": [], "enabled": False},
+        contributions=contributions,
+        enabled_entrypoints=("first_command", "second_command"),
+    )
+    plans = _managed_plans(snapshot)
+    repository = _PrepareRepository(snapshot)
+    repository.generation = RuntimeGenerationRecord(
+        snapshot=snapshot,
+        state=RuntimeGenerationState.PREPARING,
+        effects=(
+            _effect(
+                snapshot,
+                plans[0],
+                1,
+                state=RuntimeEffectState.APPLIED,
+            ),
+        ),
+    )
+    registry = ManagedContributionRegistry()
+    driver = ProductionRuntimeEffectDriver(
+        broker_handler_keys=(),
+        contribution_registry=registry,
+    )
+
+    driver.restore_from_repository(repository)
+
+    assert {
+        (item.contribution_id, item.phase)
+        for item in registry.snapshot()
+    } == {
+        ("first_command", "PREPARED"),
+        ("second_command", "PREPARED"),
+    }
+    reconciler = AutomationRuntimeReconciler(
+        repository=repository,
+        coeffects=_ReadyCoeffects(),
+        planner=_ManagedContributionPlanner(),
+        driver=driver,
+    )
+    assert reconciler.prepare_target(repository.generation) == ()
+    assert repository.generation.state is RuntimeGenerationState.PREPARED
+    assert len(repository.generation.effects) == 2
+    assert all(
+        effect.state is RuntimeEffectState.APPLIED
+        for effect in repository.generation.effects
+    )
+
+
+def test_empty_generation_retry_preserves_authoritative_empty_expected_ids() -> None:
+    first = _snapshot(
+        generation=1,
+        schedule={"kind": "none", "times": [], "enabled": False},
+        enabled_entrypoints=("run_now",),
+    )
+    second = _snapshot(
+        generation=2,
+        schedule={"kind": "none", "times": [], "enabled": False},
+        enabled_entrypoints=(),
+    )
+    first_effects = tuple(
+        _effect(
+            first,
+            plan,
+            sequence,
+            state=RuntimeEffectState.APPLIED,
+        )
+        for sequence, plan in enumerate(_managed_plans(first), start=1)
+    )
+    registry = ManagedContributionRegistry()
+    driver = ProductionRuntimeEffectDriver(
+        broker_handler_keys=(),
+        contribution_registry=registry,
+    )
+    driver.bind_scheduler_projection_refresher(_refresh_success)
+    driver.activate_committed(snapshot=first, effects=first_effects)
+    driver.bind_scheduler_projection_refresher(
+        lambda: {"initialized": False, "invalid_tasks": []}
+    )
+
+    with pytest.raises(PluginConflictError) as failed:
+        driver.activate_committed(snapshot=second, effects=())
+
+    assert failed.value.code == "RUNTIME_PROJECTION_REFRESH_FAILED"
+    assert registry.active_generation(first.automation_id) == 1
+    assert driver._pending_projection_transitions[(first.automation_id, 2)] == (
+        "apply",
+        (),
+    )
+    driver.bind_scheduler_projection_refresher(_refresh_success)
+    driver.refresh_contribution_projection()
+    assert registry.active_generation(first.automation_id) is None
+    assert registry.active_snapshot(automation_id=first.automation_id) == ()
+
+
+def test_activation_rejects_missing_expected_contribution_effects() -> None:
+    snapshot = _snapshot(enabled_entrypoints=("run_now", "daily_run"))
+    console_plan = next(
+        plan
+        for plan in _managed_plans(snapshot)
+        if plan.payload["contribution_kind"] == "console"
+    )
+    driver = ProductionRuntimeEffectDriver(broker_handler_keys=())
+
+    with pytest.raises(PluginConflictError) as mismatch:
+        driver.activate_committed(
+            snapshot=snapshot,
+            effects=(
+                _effect(
+                    snapshot,
+                    console_plan,
+                    1,
+                    state=RuntimeEffectState.APPLIED,
+                ),
+            ),
+        )
+
+    assert mismatch.value.code == "CONTRIBUTION_REGISTRATION_EFFECT_MISMATCH"
+
+
 def test_registry_resolve_is_exact_and_disabled_scheduler_fails_closed() -> None:
     snapshot = _snapshot(
         schedule={"kind": "none", "times": [], "enabled": False},
@@ -553,7 +1095,6 @@ def test_registry_rejects_an_unsupported_backend_without_partial_prepare() -> No
     ("kind", "contribution_id"),
     (
         ("webhook", "receive_hook"),
-        ("feishu", "run_command"),
         ("events", "orders_changed"),
     ),
 )
@@ -806,6 +1347,276 @@ def test_applied_contribution_effects_restore_committed_state_after_restart() ->
     assert len(restored) == 2
     assert all(item.phase == "COMMITTED" for item in restored)
     assert sum(item.dispatch_available for item in restored) == 2
+
+
+def test_restart_restores_empty_successor_and_cross_project_feishu_reclaim_with_draining_predecessor() -> None:
+    schedule = {"kind": "none", "times": [], "enabled": False}
+    predecessor = _snapshot(
+        generation=1,
+        schedule=schedule,
+        enabled_entrypoints=("run_command",),
+    )
+    empty_successor = _snapshot(
+        generation=2,
+        schedule=schedule,
+        enabled_entrypoints=(),
+    )
+    reclaimer = replace(
+        _snapshot(schedule=schedule, enabled_entrypoints=("run_command",)),
+        automation_id="other-project",
+    )
+    predecessor_effects = tuple(
+        _effect(
+            predecessor,
+            plan,
+            sequence,
+            state=RuntimeEffectState.APPLIED,
+        )
+        for sequence, plan in enumerate(_managed_plans(predecessor), start=1)
+    )
+    reclaimer_effects = tuple(
+        _effect(
+            reclaimer,
+            plan,
+            sequence,
+            state=RuntimeEffectState.APPLIED,
+        )
+        for sequence, plan in enumerate(_managed_plans(reclaimer), start=1)
+    )
+    repository = _GenerationRepository(
+        RuntimeGenerationRecord(
+            snapshot=predecessor,
+            state=RuntimeGenerationState.DRAINING,
+            effects=predecessor_effects,
+        ),
+        RuntimeGenerationRecord(
+            snapshot=empty_successor,
+            state=RuntimeGenerationState.COMMITTED,
+            effects=(),
+        ),
+        RuntimeGenerationRecord(
+            snapshot=reclaimer,
+            state=RuntimeGenerationState.COMMITTED,
+            effects=reclaimer_effects,
+        ),
+    )
+    registry = ManagedContributionRegistry()
+    driver = ProductionRuntimeEffectDriver(
+        broker_handler_keys=(),
+        contribution_registry=registry,
+    )
+
+    driver.restore_from_repository(repository)
+
+    assert {
+        (item.automation_id, item.generation, item.phase)
+        for item in registry.snapshot()
+    } == {
+        (predecessor.automation_id, 1, "DRAINING"),
+        (reclaimer.automation_id, 1, "COMMITTED"),
+    }
+    assert registry.active_generation(predecessor.automation_id) is None
+    assert registry.active_generation(reclaimer.automation_id) == 1
+    assert registry.resolve_active_feishu_command("执行示例").automation_id == (
+        reclaimer.automation_id
+    )
+
+
+def test_restart_rejects_committed_generation_missing_all_expected_contribution_effects() -> None:
+    snapshot = _snapshot(
+        schedule={"kind": "none", "times": [], "enabled": False},
+        enabled_entrypoints=("run_command",),
+    )
+    repository = _GenerationRepository(
+        RuntimeGenerationRecord(
+            snapshot=snapshot,
+            state=RuntimeGenerationState.COMMITTED,
+            effects=(),
+        )
+    )
+    registry = ManagedContributionRegistry()
+    driver = ProductionRuntimeEffectDriver(
+        broker_handler_keys=(),
+        contribution_registry=registry,
+    )
+
+    with pytest.raises(PluginConflictError) as mismatch:
+        driver.restore_from_repository(repository)
+
+    assert mismatch.value.code == "CONTRIBUTION_REGISTRATION_EFFECT_MISMATCH"
+    assert registry.snapshot() == ()
+
+
+def test_restart_rejects_disposing_generation_with_missing_disposed_journal_entry() -> None:
+    snapshot = _snapshot(
+        schedule={"kind": "none", "times": [], "enabled": False},
+        enabled_entrypoints=("run_now", "run_command"),
+    )
+    feishu_plan = next(
+        plan
+        for plan in _managed_plans(snapshot)
+        if plan.payload["contribution_kind"] == "feishu"
+    )
+    repository = _GenerationRepository(
+        RuntimeGenerationRecord(
+            snapshot=snapshot,
+            state=RuntimeGenerationState.DISPOSING,
+            effects=(
+                _effect(
+                    snapshot,
+                    feishu_plan,
+                    2,
+                    state=RuntimeEffectState.DISPOSING,
+                ),
+            ),
+        )
+    )
+    driver = ProductionRuntimeEffectDriver(broker_handler_keys=())
+
+    with pytest.raises(PluginConflictError) as mismatch:
+        driver.restore_from_repository(repository)
+
+    assert mismatch.value.code == "CONTRIBUTION_REGISTRATION_EFFECT_MISMATCH"
+    assert driver.contribution_registry.snapshot() == ()
+
+
+def test_restart_resumes_partially_disposed_contribution_generation_without_reclaiming_routes() -> None:
+    schedule = {"kind": "none", "times": [], "enabled": False}
+    disposing = _snapshot(
+        schedule=schedule,
+        enabled_entrypoints=("run_now", "run_command"),
+    )
+    reclaimer = replace(
+        _snapshot(schedule=schedule, enabled_entrypoints=("run_command",)),
+        automation_id="other-project",
+    )
+    disposing_effects = tuple(
+        _effect(
+            disposing,
+            plan,
+            sequence,
+            state=(
+                RuntimeEffectState.DISPOSING
+                if plan.payload["contribution_kind"] == "feishu"
+                else RuntimeEffectState.DISPOSED
+            ),
+        )
+        for sequence, plan in enumerate(_managed_plans(disposing), start=1)
+    )
+    reclaimer_effects = tuple(
+        _effect(
+            reclaimer,
+            plan,
+            sequence,
+            state=RuntimeEffectState.APPLIED,
+        )
+        for sequence, plan in enumerate(_managed_plans(reclaimer), start=1)
+    )
+    repository = _GenerationRepository(
+        RuntimeGenerationRecord(
+            snapshot=disposing,
+            state=RuntimeGenerationState.DISPOSING,
+            effects=disposing_effects,
+        ),
+        RuntimeGenerationRecord(
+            snapshot=reclaimer,
+            state=RuntimeGenerationState.COMMITTED,
+            effects=reclaimer_effects,
+        ),
+    )
+    registry = ManagedContributionRegistry()
+    driver = ProductionRuntimeEffectDriver(
+        broker_handler_keys=(),
+        contribution_registry=registry,
+    )
+
+    driver.restore_from_repository(repository)
+
+    restored = registry.snapshot()
+    assert {
+        (item.automation_id, item.contribution_id, item.phase)
+        for item in restored
+    } == {
+        (disposing.automation_id, "run_command", "DRAINING"),
+        (reclaimer.automation_id, "run_command", "COMMITTED"),
+    }
+    assert registry.active_generation(disposing.automation_id) is None
+    assert registry.resolve_active_feishu_command("执行示例").automation_id == (
+        reclaimer.automation_id
+    )
+
+
+@pytest.mark.parametrize(
+    ("generation_state", "activation_phase", "retains_diagnostic"),
+    (
+        (RuntimeGenerationState.COMMITTED, RuntimeActivationPhase.BLOCKED, True),
+        (RuntimeGenerationState.PREPARED, RuntimeActivationPhase.ROLLED_BACK, False),
+    ),
+)
+def test_restart_keeps_blocked_and_rolled_back_generations_off_feishu_routes(
+    generation_state: RuntimeGenerationState,
+    activation_phase: RuntimeActivationPhase,
+    retains_diagnostic: bool,
+) -> None:
+    schedule = {"kind": "none", "times": [], "enabled": False}
+    interrupted = _snapshot(
+        schedule=schedule,
+        enabled_entrypoints=("run_command",),
+    )
+    reclaimer = replace(
+        _snapshot(schedule=schedule, enabled_entrypoints=("run_command",)),
+        automation_id="other-project",
+    )
+    interrupted_effects = tuple(
+        _effect(
+            interrupted,
+            plan,
+            sequence,
+            state=RuntimeEffectState.APPLIED,
+        )
+        for sequence, plan in enumerate(_managed_plans(interrupted), start=1)
+    )
+    reclaimer_effects = tuple(
+        _effect(
+            reclaimer,
+            plan,
+            sequence,
+            state=RuntimeEffectState.APPLIED,
+        )
+        for sequence, plan in enumerate(_managed_plans(reclaimer), start=1)
+    )
+    repository = _GenerationRepository(
+        RuntimeGenerationRecord(
+            snapshot=interrupted,
+            state=generation_state,
+            effects=interrupted_effects,
+            activation_transition_token="00000000-0000-4000-8000-000000000001",
+            activation_phase=activation_phase,
+        ),
+        RuntimeGenerationRecord(
+            snapshot=reclaimer,
+            state=RuntimeGenerationState.COMMITTED,
+            effects=reclaimer_effects,
+        ),
+    )
+    registry = ManagedContributionRegistry()
+    driver = ProductionRuntimeEffectDriver(
+        broker_handler_keys=(),
+        contribution_registry=registry,
+    )
+
+    driver.restore_from_repository(repository)
+
+    interrupted_records = tuple(
+        item
+        for item in registry.snapshot()
+        if item.automation_id == interrupted.automation_id
+    )
+    assert bool(interrupted_records) is retains_diagnostic
+    assert all(item.phase == "DRAINING" for item in interrupted_records)
+    assert registry.resolve_active_feishu_command("执行示例").automation_id == (
+        reclaimer.automation_id
+    )
 
 
 def test_unavailable_routes_fail_before_a_generation_can_commit() -> None:

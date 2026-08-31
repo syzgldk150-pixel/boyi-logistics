@@ -38,7 +38,7 @@ _SERVICE_V2_CONTRIBUTION_KINDS = _LEGACY_SERVICE_V2_CONTRIBUTION_KINDS + (
     "harness",
 )
 _MANAGED_CONTRIBUTION_KINDS = _SERVICE_V2_CONTRIBUTION_KINDS
-_ACTIVE_CONTRIBUTION_KINDS = ("console", "scheduler", "harness")
+_ACTIVE_CONTRIBUTION_KINDS = ("console", "scheduler", "feishu", "harness")
 _SCHEDULE_BACKEND_TIMEZONE = "Asia/Shanghai"
 _EMPTY_HARNESS_INPUT_SCHEMA = {
     "type": "object",
@@ -238,6 +238,12 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
+def _feishu_command_digest(command: str) -> str:
+    """Hash the exact command bytes without JSON normalization or folding."""
+
+    return hashlib.sha256(command.encode("utf-8")).hexdigest()
+
+
 def _required_sha(value: object, field: str) -> str:
     text = str(value or "").strip().lower()
     if len(text) != 64 or any(
@@ -304,6 +310,15 @@ class ManagedContributionRegistration:
         return self.phase == "COMMITTED" and self.backend_status == "READY"
 
 
+@dataclass(frozen=True)
+class ManagedFeishuDispatchTarget:
+    """Closed, process-local target returned by exact managed command lookup."""
+
+    automation_id: str
+    generation: int
+    contribution_id: str
+
+
 class ManagedContributionRegistry:
     """Recoverable registry for host-owned v2 contribution declarations.
 
@@ -312,8 +327,18 @@ class ManagedContributionRegistry:
     pretends an unavailable transport backend is runnable.
     """
 
-    def __init__(self, *, lock: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        lock: Any | None = None,
+        reserved_feishu_command: Callable[[str], bool] | None = None,
+    ) -> None:
+        if reserved_feishu_command is not None and not callable(
+            reserved_feishu_command
+        ):
+            raise TypeError("reserved_feishu_command must be callable")
         self._lock = lock or RLock()
+        self._reserved_feishu_command = reserved_feishu_command
         self._registrations: dict[str, ManagedContributionRegistration] = {}
         self._route_owners: dict[str, set[str]] = {}
         self._active_generations: dict[str, int] = {}
@@ -481,6 +506,24 @@ class ManagedContributionRegistry:
                     code="CONTRIBUTION_REGISTRATION_CONFLICT",
                 )
             _harness_runtime_permissions(candidate.runtime_permissions)
+        if candidate.contribution_kind == "feishu":
+            commands = declaration.get("commands")
+            if (
+                not isinstance(commands, (list, tuple))
+                or not commands
+                or any(
+                    not isinstance(command, str)
+                    or not command
+                    or command != command.strip()
+                    or len(command) > 128
+                    for command in commands
+                )
+                or len(set(commands)) != len(commands)
+            ):
+                raise PluginConflictError(
+                    "managed Feishu commands are invalid",
+                    code="CONTRIBUTION_REGISTRATION_CONFLICT",
+                )
         expected_routes = _contribution_route_keys(
             automation_id=candidate.automation_id,
             contribution_kind=candidate.contribution_kind,
@@ -516,10 +559,12 @@ class ManagedContributionRegistry:
     def _candidate_batch(
         cls,
         materials: Iterable[Mapping[str, Any]],
+        *,
+        phase: str = "PREPARED",
     ) -> tuple[ManagedContributionRegistration, ...]:
         try:
             candidates = tuple(
-                cls._from_material(material, phase="PREPARED")
+                cls._from_material(material, phase=phase)
                 for material in materials
             )
         except (KeyError, TypeError, ValueError) as exc:
@@ -568,6 +613,10 @@ class ManagedContributionRegistry:
     ) -> dict[str, set[str]]:
         route_owners: dict[str, set[str]] = {}
         for registration_id, candidate in registrations.items():
+            # A draining predecessor is diagnostic/lease-retention state only;
+            # it must neither receive traffic nor reserve a global command.
+            if candidate.phase == "DRAINING":
+                continue
             for route_key in candidate.route_keys:
                 for owner_id in route_owners.get(route_key, ()):
                     owner = registrations[owner_id]
@@ -610,16 +659,46 @@ class ManagedContributionRegistry:
         materials: Iterable[Mapping[str, Any]],
         *,
         committed: bool = False,
+        restored_inactive: bool = False,
     ) -> None:
         """Stage one complete generation without changing live dispatch.
 
         ``committed`` is retained as a restore-path compatibility hint. A
         generation becomes live only through the atomic ``apply_generation``
         (or compatibility ``activate``) operation.
+
+        ``restored_inactive`` retains immutable crash-recovery evidence while
+        excluding the generation from every route and command reservation.
         """
 
         del committed
-        candidates = self._candidate_batch(materials)
+        candidates = self._candidate_batch(
+            materials,
+            phase="DRAINING" if restored_inactive else "PREPARED",
+        )
+        reserved = None if restored_inactive else self._reserved_feishu_command
+        if reserved is not None:
+            for candidate in candidates:
+                if candidate.contribution_kind != "feishu":
+                    continue
+                for command in candidate.declaration["commands"]:
+                    try:
+                        is_reserved = reserved(command)
+                    except Exception as exc:
+                        raise PluginConflictError(
+                            "reserved Feishu command check failed",
+                            code="CONTRIBUTION_ROUTE_CONFLICT",
+                        ) from exc
+                    if not isinstance(is_reserved, bool):
+                        raise PluginConflictError(
+                            "reserved Feishu command check returned an invalid result",
+                            code="CONTRIBUTION_ROUTE_CONFLICT",
+                        )
+                    if is_reserved:
+                        raise PluginConflictError(
+                            "managed Feishu command conflicts with an Action V1 command",
+                            code="CONTRIBUTION_ROUTE_CONFLICT",
+                        )
         with self._lock:
             registrations = dict(self._registrations)
             automation_id = candidates[0].automation_id
@@ -663,6 +742,7 @@ class ManagedContributionRegistry:
         generation: int,
         *,
         refresh: Callable[[], object],
+        expected_registration_ids: Iterable[str] | None = None,
     ) -> None:
         """Refresh physical Jobs, then atomically expose one prepared generation."""
 
@@ -675,12 +755,38 @@ class ManagedContributionRegistry:
                 if record.automation_id == automation_key
                 and record.generation == generation_number
             )
-            if not candidates:
+            if expected_registration_ids is None:
+                expected_ids = tuple(
+                    sorted(record.registration_id for record in candidates)
+                )
+            else:
+                expected_ids = tuple(str(value) for value in expected_registration_ids)
+                if (
+                    len(set(expected_ids)) != len(expected_ids)
+                    or any(
+                        registration_id
+                        != (
+                            f"{automation_key}:{generation_number}:"
+                            f"{registration_id.rsplit(':', 1)[-1]}"
+                        )
+                        or not registration_id.rsplit(":", 1)[-1]
+                        for registration_id in expected_ids
+                    )
+                ):
+                    raise PluginConflictError(
+                        "managed contribution expected registration identities are invalid",
+                        code="CONTRIBUTION_REGISTRATION_CONFLICT",
+                    )
+            candidate_ids = {record.registration_id for record in candidates}
+            if candidate_ids != set(expected_ids):
                 raise PluginConflictError(
-                    "managed contribution generation is not prepared",
+                    "managed contribution prepared set does not match its generation",
                     code="RUNTIME_PROJECTION_STALE",
                 )
-            self._candidate_batch(self._material(record) for record in candidates)
+            if candidates:
+                self._candidate_batch(
+                    self._material(record) for record in candidates
+                )
             registrations = {
                 registration_id: (
                     replace(
@@ -698,7 +804,10 @@ class ManagedContributionRegistry:
             }
             route_owners = self._route_index(registrations)
             active_generations = dict(self._active_generations)
-            active_generations[automation_key] = generation_number
+            if expected_ids:
+                active_generations[automation_key] = generation_number
+            else:
+                active_generations.pop(automation_key, None)
             original = (
                 dict(self._registrations),
                 {key: set(value) for key, value in self._route_owners.items()},
@@ -721,18 +830,19 @@ class ManagedContributionRegistry:
 
     def activate(self, automation_id: str, generation: int) -> None:
         with self._lock:
-            if not any(
-                record.automation_id == str(automation_id)
-                and record.generation == int(generation)
-                for record in self._registrations.values()
-            ):
-                # A Service-v2 package may provide services without any enabled
-                # Console/Scheduler contribution. It needs no registry marker.
-                return
+            expected_registration_ids = tuple(
+                sorted(
+                    record.registration_id
+                    for record in self._registrations.values()
+                    if record.automation_id == str(automation_id)
+                    and record.generation == int(generation)
+                )
+            )
         self.apply_generation(
             automation_id,
             generation,
             refresh=lambda: {"initialized": True, "invalid_tasks": []},
+            expected_registration_ids=expected_registration_ids,
         )
 
     def withdraw_generation(
@@ -890,6 +1000,76 @@ class ManagedContributionRegistry:
                     code="CAPABILITY_UNAVAILABLE",
                 )
             return self._clone(record)
+
+    def resolve_active_feishu_command(
+        self,
+        command: str,
+    ) -> ManagedFeishuDispatchTarget:
+        """Resolve one exact case-sensitive Feishu command without identifiers.
+
+        The registration store may retain a draining predecessor for lease
+        diagnostics, but the route index omits it.  Only the one record
+        selected by the active generation map is dispatchable; any ambiguity
+        in that active surface fails closed.
+        """
+
+        if (
+            not isinstance(command, str)
+            or not command
+            or command != command.strip()
+            or len(command) > 128
+        ):
+            raise PluginConflictError(
+                "managed Feishu command is unavailable",
+                code="CAPABILITY_UNAVAILABLE",
+            )
+        route_key = f"feishu:command:{_feishu_command_digest(command)}"
+        with self._lock:
+            owner_ids = tuple(self._route_owners.get(route_key, ()))
+            if not owner_ids:
+                raise PluginConflictError(
+                    "managed Feishu command is unavailable",
+                    code="CAPABILITY_UNAVAILABLE",
+                )
+            records: list[ManagedContributionRegistration] = []
+            for registration_id in owner_ids:
+                record = self._registrations.get(registration_id)
+                if (
+                    record is None
+                    or record.contribution_kind != "feishu"
+                    or route_key not in record.route_keys
+                ):
+                    raise PluginConflictError(
+                        "managed Feishu route projection is invalid",
+                        code="RUNTIME_PROJECTION_AMBIGUOUS",
+                    )
+                if (
+                    record.dispatch_available
+                    and self._active_generations.get(record.automation_id)
+                    == record.generation
+                ):
+                    records.append(record)
+            if not records:
+                raise PluginConflictError(
+                    "managed Feishu command is unavailable",
+                    code="CAPABILITY_UNAVAILABLE",
+                )
+            if len(records) != 1:
+                raise PluginConflictError(
+                    "managed Feishu command route is ambiguous",
+                    code="RUNTIME_PROJECTION_AMBIGUOUS",
+                )
+            record = records[0]
+            if command not in record.declaration.get("commands", ()):
+                raise PluginConflictError(
+                    "managed Feishu command route is invalid",
+                    code="RUNTIME_PROJECTION_AMBIGUOUS",
+                )
+            return ManagedFeishuDispatchTarget(
+                automation_id=record.automation_id,
+                generation=record.generation,
+                contribution_id=record.contribution_id,
+            )
 
     def active_snapshot(
         self,
@@ -1155,7 +1335,7 @@ def _contribution_route_keys(
         if not isinstance(commands, (list, tuple)):
             raise PluginConflictError("v2 Feishu commands are invalid")
         return tuple(
-            f"feishu:{automation_id}:{_digest(str(command))}"
+            f"feishu:command:{_feishu_command_digest(command)}"
             for command in commands
         )
     if contribution_kind == "events":
@@ -1200,9 +1380,10 @@ def _contribution_backend(
         # runtime or expose a transport; a later HarnessToolCatalog consumes
         # the immutable active record through the registry snapshot.
         return "harness_tool_catalog", "READY", None, None
+    if contribution_kind == "feishu":
+        return "managed_feishu_router", "READY", None, None
     backend = {
         "webhook": "managed_webhook_router",
-        "feishu": "managed_feishu_router",
         "events": "managed_event_subscriptions",
     }[contribution_kind]
     return (

@@ -32,6 +32,10 @@
   - Provider 的 `provides[*].operations` 必须是闭合 `{name,effect}` 对象；Host `capabilities[*].operations` 仍只声明 action 字符串，插件无权自报 Host effect、风险或 Harness 资格。
   - `read/compute/internal_write/external_write/destructive` 逐 contribution 进入 invocation contract、compiled invocation、Plan 和 Run；风险、锁、Evidence、重试、Harness 与 Broker `read/write` 投影从 effect 机械派生。`service.invoke` 的静态 grant 只开放受保护的动态 effect 分发，真正的 effect ceiling 来自调用 contribution 的精确治理，实际调用还要核对 Provider effect。
   - `orchestration/planner.py`、`plan_validator.py`、`workflow_runner.py` 与 `result_verifier.py` 必须使用同一精确治理。读/计算不得产生写尝试；写成功必须有 committed generation、宿主写开始回执、Python-only Host 调用观测、独立 Evidence 和严格 postcondition proof，任一漂移都进入失败或未知写而非重放。Registry output Schema 只约束业务 `data`；Host 调用引用属于独立 Broker 信封和 observation，禁止校验后注入 `data`。
+- 改 Service v2 动态飞书命令：
+  - `automation_plugins/service_v2_projection.py` 只维护全局 exact command digest、整代冲突和 active generation；不得导入飞书或业务工具。DRAINING 旧代不接流量、不占命令，权威空 generation 必须原子清 active map。
+  - `orchestration/automation_project_entrypoints.py` 的 `ServiceV2FeishuDispatcher` 只接 verified event/sender/chat，并只从 Registry 取得项目/代际/contribution；`automation_project_policy_service.py` 在 Command 接受事务内再次核对 exact `COMMITTED/READY` identity。service、operation、参数、账号和资源不得来自消息。
+  - `feishu_command_contract.py` 是宿主无条件取消、扫描确认和审批绑定文本的纯解析单点；`direct_tool_router.py` 复用它和登录/固定 Action v1 parser，并通过组合根注入的纯判定器阻止动态 contribution 安装同文案。动态未知才可继续既有 Agent/LLM；匹配后身份缺失必须停止，不得回退。
 - 改固定 Harness Session、只读 Tool Catalog 或受限 sidecar：
   - `harness/` 只放无环境、数据库、网络、文件、TMS 和飞书依赖的领域模型、内存 Session、Catalog、协议与 fail-closed launcher；`harness_application.py` 绑定真实签名 MySQL 管理员、可信项目调用 adapter 和组合根注入的只读处理器；`harness_api.py` 只承载闭合内部 HTTP 请求、响应投影和错误映射。
   - 动态工具只从 `ManagedContributionRegistry` 的 immutable active snapshot 读取，并在调用前重解 exact active generation。贡献必须绑定 generation 中真实签名的闭合 `runtime_permissions`，只接受 `read/compute + harness_allowed=true + broker_effect=read`，且 network/browser/office 为 false、file roles/Broker operations 为空、调用额度为零；字段缺失不得生成默认权限。

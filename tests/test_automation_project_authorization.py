@@ -347,6 +347,71 @@ class AutomationProjectAuthorizationTests(unittest.TestCase):
 
         self.assertTrue(contract.matches_plan(plan, invocation, source="console"))
 
+    def test_service_v2_feishu_contribution_compiles_to_feishu_transport(self):
+        contribution_id = "message.report"
+        definition = AutomationProjectInstanceDefinition(
+            automation_id="service_instance",
+            plugin_id="service_plugin",
+            tool_name="service_projection_read",
+            argument_templates={contribution_id: {}},
+            dynamic_argument_resolvers={},
+            account_bindings={},
+            allowed_entrypoints=frozenset({contribution_id}),
+            project_config={},
+            resource_bindings={},
+        )
+        fragment = _service_v2_fragment(definition)
+        invocation_contract = fragment["invocation_contracts"].pop("run_now")
+        invocation_contract["contribution_kind"] = "feishu"
+        fragment["allowed_entrypoints"] = [contribution_id]
+        fragment["enabled_entrypoints"] = [contribution_id]
+        fragment["entrypoint_kinds"] = {contribution_id: "feishu"}
+        fragment["invocation_contracts"] = {
+            contribution_id: invocation_contract
+        }
+
+        contract = compile_automation_project_contract(
+            definition,
+            catalog=SimpleNamespace(),
+            plugin_contract_provider=lambda _automation_id: fragment,
+        )
+
+        self.assertEqual(frozenset({"feishu"}), contract.allowed_entrypoints)
+        self.assertEqual(["feishu"], contract.snapshot["allowed_entrypoints"])
+        self.assertEqual(
+            contribution_id,
+            contract.invocation_contracts[contribution_id].contribution_id,
+        )
+        invocation = AutomationProjectInvocation(
+            automation_id=definition.automation_id,
+            automation_generation=contract.automation_generation,
+            entrypoint=AutomationEntrypoint.FEISHU,
+            contract_id=contribution_id,
+            contract_hash=contract.contract_hash,
+            policy_version=1,
+            project_configuration_version=contract.project_configuration_version,
+            request_id="service-v2-feishu-request",
+        )
+        governance = invocation_contract["governance"]
+        plan = SimpleNamespace(
+            automation_id=definition.automation_id,
+            automation_generation=contract.automation_generation,
+            automation_contract_hash=contract.contract_hash,
+            steps=(
+                SimpleNamespace(
+                    tool_name=contract.tool_name,
+                    tool_version=contract.tool_version,
+                    operation_type=governance["operation_type"],
+                    risk_level=governance["risk_level"],
+                    arguments={},
+                    expected_evidence=(governance["evidence"],),
+                    postconditions=tuple(governance["postconditions"]),
+                ),
+            ),
+        )
+
+        self.assertTrue(contract.matches_plan(plan, invocation, source="feishu"))
+
     def test_closed_parameter_idempotent_write_can_be_full_auto(self):
         _capability_row, _definition_row, _fragment_row, contract = self._compile(
             "sync_daily_should_sign",

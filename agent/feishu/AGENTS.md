@@ -7,10 +7,11 @@
 ## 控制平面边界
 
 - 非插件只读/兼容文本通过注入的 `AgentCore` 命令门面提交；已插件化的文本、菜单和 pending 确认只通过注入的 `AutomationProjectEntrypoints` 提交服务端 typed invocation。两者都禁止直接调用 `ToolExecutor`、业务脚本或第三方写函数。
+- Service v2 动态文本只通过独立注入的 `ServiceV2FeishuDispatcher` 解析当前 committed/READY contribution；所有 pending、登录、确认和固定 Action V1 文本优先，只有固定路由未命中后才查动态精确命令，动态未知才继续既有 Agent/LLM 路径。Dispatcher 只接收 `_COMMAND_CONTEXT` 中已验证的 event/sender/chat 与规范化文本，不接收原始 Webhook body、项目/服务/操作/账号/资源或调用参数；命中但身份缺失必须公共拒绝并停止，回复不得暴露 automation、service、operation、contribution 或 Run UUID。
 - 插件项目只能按 committed generation 中唯一的 `feishu_route.route_key` 解析实例；重复别名、多候选、缺绑定或非稳定事件 ID 必须显式拒绝，不得按工具、插件或列表首项猜测。消息和旧 pending 中的账号覆盖字段一律拒绝，账号只取该实例的 Business Account bindings；日期、车牌和预览指纹只由代码拥有的 resolver 注入。
 - 每个生产命令使用飞书事件头 `event_id` 生成 `feishu:{event_id}` 幂等键；缺少稳定事件 ID 的写命令必须显式拒绝，不能用消息内容、时间戳或随机值代替。
 - `builtin.scan_codes` 只接受“扫描/菜单生成预览 → 原发起人精确回复确认扫描或取消扫描”的两步流程。公共回复只显示日期、来源页数/记录数、待扫描数、批次数和失效时间；pending 只在进程内保存公共 `preview_run_id` 和事件身份，最长十五分钟且服务重启不恢复。正式确认不得发送 `dry_run`、哈希、Evidence 或运单集合；结果未知时锁定原事件 ID，仅允许该事件精确重放，已消费或正式治理关闭后禁止新预览和旧链路回退。
-- 飞书 actor 只从真实事件发送者构造，角色固定为空；飞书可以提交高风险计划，但首期不能在飞书批准。
+- 飞书 actor 只由 `FeishuApprovalService.resolve_actor()` 从真实事件发送者构造：当前仍有效的 Console 超级管理员绑定投影为 `FEISHU_USER` 且角色为 `admin/super_admin`，其他已验证事件角色为空；消息、动态 contribution 或调用方不得自行提交角色。审批决定只接受该服务实时复核绑定与账号状态后的精确 `1/2`，普通消息和 Dispatcher 不能伪造批准身份。
 - 登录和验证码流程仍由账号管理接口处理。登录成功只发布 `account.session_restored` 并恢复原 `BLOCKED_LOGIN` Run，不得重新提交或盲目重跑原工具。
 
 ## 修改入口

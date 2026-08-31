@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import hashlib
-import re
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
+from agent.feishu_command_contract import match_feishu_approval_binding
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from agent.orchestration.outbox_dispatcher import OutboxRetryAfter
 
 
-_BIND_RE = re.compile(r"^绑定审批\s+([0-9A-HJKMNP-TV-Z]{10})$", re.IGNORECASE)
 _CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
 DEFAULT_NOTIFICATION_LEASE_SECONDS = 120
 
@@ -123,7 +122,7 @@ class FeishuApprovalService:
 
     def handle_text(self, open_id: str, chat_id: str, text: str) -> str | None:
         normalized = str(text or "").strip()
-        match = _BIND_RE.fullmatch(normalized)
+        match = match_feishu_approval_binding(normalized)
         if match:
             return self._bind(open_id, chat_id, match.group(1).upper())
         if normalized not in {"1", "2"}:
