@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from shared import automation_plugin_repository as _repository
+from shared.automation_plugin_migration_ownership import (
+    normalize_migration_entrypoint_ownership,
+)
 
 Any = _repository.Any
 Mapping = _repository.Mapping
@@ -126,6 +129,169 @@ def _snapshot_business_key_contract(snapshot: Mapping[str, Any]) -> dict[str, An
         raise OrchestrationPersistenceError(
             "migration pair business key contract is invalid"
         ) from exc
+
+
+def _snapshot_entrypoint_ownership(
+    snapshot: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    value = snapshot.get("entrypoint_ownership")
+    if value is None:
+        return None
+    try:
+        return normalize_migration_entrypoint_ownership(value)
+    except (TypeError, ValueError) as exc:
+        raise OrchestrationPersistenceError(
+            "migration entrypoint ownership is invalid"
+        ) from exc
+
+
+def _select_authoritative_migration_pair(
+    rows: list[dict[str, Any]],
+    *,
+    automation_id: str,
+) -> dict[str, Any] | None:
+    """Select one durable owner without silently preferring ambiguous history."""
+
+    for row in rows:
+        if (
+            str(row.get("state") or "") not in _MIGRATION_PAIR_STATES
+            or automation_id
+            not in {
+                str(row.get("source_automation_id") or ""),
+                str(row.get("target_automation_id") or ""),
+            }
+        ):
+            raise OrchestrationPersistenceError(
+                "migration ownership history is invalid"
+            )
+    unfinished = [row for row in rows if row.get("state") != "COMPLETED"]
+    completed = [row for row in rows if row.get("state") == "COMPLETED"]
+    if unfinished and completed:
+        raise OrchestrationPersistenceError(
+            "automation project has conflicting active and completed migration ownership"
+        )
+    if len(unfinished) > 1:
+        raise OrchestrationPersistenceError(
+            "automation project has ambiguous unfinished migration ownership"
+        )
+    if unfinished:
+        return unfinished[0]
+    if not rows:
+        return None
+
+    fingerprints: set[tuple[str, str, str, bool]] = set()
+    for row in rows:
+        snapshot = row.get("entrypoint_snapshot_json")
+        if not isinstance(snapshot, Mapping):
+            raise OrchestrationPersistenceError(
+                "completed migration ownership snapshot is invalid"
+            )
+        ownership = _snapshot_entrypoint_ownership(snapshot)
+        if ownership is None:
+            raise OrchestrationPersistenceError(
+                "completed migration entrypoint ownership is missing"
+            )
+        fingerprints.add(
+            (
+                str(row.get("source_automation_id") or ""),
+                str(row.get("target_automation_id") or ""),
+                _json_hash(ownership),
+                row.get("rolled_back_at") is not None,
+            )
+        )
+    if len(fingerprints) != 1:
+        raise OrchestrationPersistenceError(
+            "automation project has ambiguous completed migration ownership"
+        )
+
+    def _completed_generation(row: Mapping[str, Any]) -> int:
+        snapshot = row.get("entrypoint_snapshot_json")
+        target = snapshot.get("target") if isinstance(snapshot, Mapping) else None
+        return int(target.get("generation") or 0) if isinstance(target, Mapping) else 0
+
+    return max(
+        rows,
+        key=lambda row: (
+            _completed_generation(row),
+            str(row.get("completed_at") or ""),
+            str(row.get("updated_at") or ""),
+            str(row.get("migration_pair_id") or ""),
+        ),
+    )
+
+
+def _migration_pair_event_projection(
+    pair: Mapping[str, Any],
+    event: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project an idempotent replay at the recorded transition boundary."""
+
+    state = str(event.get("to_state") or "")
+    version = int(event.get("to_record_version") or 0)
+    if state not in _MIGRATION_PAIR_STATES or version < 1:
+        raise OrchestrationPersistenceError(
+            "migration transition event projection is invalid"
+        )
+    result = {
+        **pair,
+        "state": state,
+        "record_version": version,
+        "last_transition_request_id": event.get("request_id"),
+        "last_transition_actor_id": event.get("actor_id"),
+        "last_transition_actor_role": event.get("actor_role"),
+        "last_transition_reason": event.get("reason"),
+    }
+    event_time = event.get("created_at")
+    if event_time is not None:
+        result["updated_at"] = event_time
+        if state == "CUTOVER":
+            result["cutover_at"] = event_time
+        if state == "ROLLED_BACK":
+            result["rolled_back_at"] = event_time
+        if state == "COMPLETED":
+            result["completed_at"] = event_time
+    if state != "COMPLETED":
+        result["completed_at"] = None
+    if state not in {"ROLLED_BACK", "COMPLETED"}:
+        result["rolled_back_at"] = None
+    if state in {"PREPARING", "TESTING", "READY", "CUTTING_OVER"}:
+        result["cutover_at"] = None
+    return result
+
+
+def _lock_migration_pair_creation_conflicts(
+    cursor: Any,
+    *,
+    source_id: str,
+    target_id: str,
+) -> None:
+    """Permanently reserve a migrated source and exclude open overlaps."""
+
+    cursor.execute(
+        """
+        SELECT migration_pair_id, source_automation_id, target_automation_id, state
+        FROM automation_plugin_migration_pairs
+        WHERE source_automation_id=%s
+           OR (
+                state<>'COMPLETED'
+                AND (
+                    source_automation_id IN (%s, %s)
+                    OR target_automation_id IN (%s, %s)
+                )
+           )
+        FOR UPDATE
+        """,
+        (source_id, source_id, target_id, source_id, target_id),
+    )
+    conflicts = _rows(cursor)
+    if any(str(row.get("source_automation_id") or "") == source_id for row in conflicts):
+        raise ConcurrentUpdateError(
+            "migration source already has durable ownership history"
+        )
+    if conflicts:
+        raise ConcurrentUpdateError(
+            "automation project already has an unfinished migration pair"
+        )
 
 
 def _migration_project_snapshot(
@@ -313,6 +479,11 @@ class AutomationPluginV2RepositoryMixin:
                         "migration-pair request was reused with different input"
                     )
                 return existing
+            _lock_migration_pair_creation_conflicts(
+                cursor,
+                source_id=source_id,
+                target_id=target_id,
+            )
             cursor.execute(
                 """
                 SELECT project.automation_id, version.runtime_model
@@ -389,6 +560,11 @@ class AutomationPluginV2RepositoryMixin:
         safe_actor = _required_text(actor_id, "actor_id")
         safe_role = _required_text(actor_role, "actor_role")
         safe_reason = _required_text(reason, "reason")
+        allowed_from_states = {
+            from_state
+            for from_state, targets in _MIGRATION_PAIR_TRANSITIONS.items()
+            if state in targets
+        }
         with self.cursor() as cursor:
             cursor.execute(
                 "SELECT * FROM automation_plugin_migration_pairs "
@@ -412,11 +588,15 @@ class AutomationPluginV2RepositoryMixin:
                     prior.get("to_state") != state
                     or prior.get("actor_id") != safe_actor
                     or prior.get("actor_role") != safe_role
+                    or prior.get("reason") != safe_reason
+                    or prior.get("from_state") not in allowed_from_states
+                    or int(prior.get("from_record_version") or 0) != expected
+                    or int(prior.get("to_record_version") or 0) != expected + 1
                 ):
                     raise IdempotencyConflict(
                         "migration transition request was reused with different input"
                     )
-                return pair
+                return _migration_pair_event_projection(pair, prior)
             current = str(pair.get("state") or "")
             if int(pair.get("record_version") or 0) != expected:
                 raise ConcurrentUpdateError("migration pair version changed")
@@ -464,6 +644,7 @@ class AutomationPluginV2RepositoryMixin:
         source_automation_id: str,
         target_automation_id: str,
         business_key_contract: Mapping[str, Any],
+        entrypoint_ownership: Mapping[str, Any] | None = None,
         request_id: str,
         actor_id: str,
         actor_role: str,
@@ -484,6 +665,11 @@ class AutomationPluginV2RepositoryMixin:
         if source_id == target_id:
             raise ValueError("migration source and target must be different")
         contract = _validated_business_key_contract(business_key_contract)
+        ownership = (
+            None
+            if entrypoint_ownership is None
+            else normalize_migration_entrypoint_ownership(entrypoint_ownership)
+        )
         safe_request = _required_text(request_id, "request_id")
         safe_actor = _required_text(actor_id, "actor_id")
         safe_role = _required_text(actor_role, "actor_role")
@@ -492,6 +678,11 @@ class AutomationPluginV2RepositoryMixin:
             "schema": "plugin-migration-v2/1",
             "business_key_contract": contract,
             "preparation": {"state": "PREPARING"},
+            **(
+                {"entrypoint_ownership": ownership}
+                if ownership is not None
+                else {}
+            ),
         }
         placeholder_sha = _json_hash(placeholder)
         with self.cursor() as cursor:
@@ -513,27 +704,20 @@ class AutomationPluginV2RepositoryMixin:
                     or existing.get("created_by_actor_role") != safe_role
                     or not isinstance(existing_snapshot, Mapping)
                     or _snapshot_business_key_contract(existing_snapshot) != contract
+                    or _snapshot_entrypoint_ownership(existing_snapshot) != ownership
                 ):
                     raise IdempotencyConflict(
                         "migration-pair request was reused with different input"
                     )
                 return existing
-            # Lock an existing open pair before project rows.  This excludes
-            # overlapping pairs before the target scheduler is suppressed.
-            cursor.execute(
-                """
-                SELECT migration_pair_id FROM automation_plugin_migration_pairs
-                WHERE (source_automation_id IN (%s, %s)
-                       OR target_automation_id IN (%s, %s))
-                  AND state<>'COMPLETED'
-                FOR UPDATE
-                """,
-                (source_id, target_id, source_id, target_id),
+            # Lock pair history before project rows. A completed source owns
+            # its v2 route permanently; later v2 generations upgrade under
+            # that final ownership rather than opening a replacement pair.
+            _lock_migration_pair_creation_conflicts(
+                cursor,
+                source_id=source_id,
+                target_id=target_id,
             )
-            if _rows(cursor):
-                raise ConcurrentUpdateError(
-                    "automation project already has an unfinished migration pair"
-                )
             cursor.execute(
                 """
                 SELECT project.automation_id, version.runtime_model
@@ -636,11 +820,16 @@ class AutomationPluginV2RepositoryMixin:
                     prior.get("to_state") != "TESTING"
                     or prior.get("actor_id") != safe_actor
                     or prior.get("actor_role") != safe_role
+                    or prior.get("reason") != safe_reason
+                    or prior.get("from_state") != "PREPARING"
+                    or int(prior.get("from_record_version") or 0) < 1
+                    or int(prior.get("to_record_version") or 0)
+                    != int(prior.get("from_record_version") or 0) + 1
                 ):
                     raise IdempotencyConflict(
                         "migration preparation request was reused with different input"
                     )
-                return pair
+                return _migration_pair_event_projection(pair, prior)
             if str(pair.get("state") or "") != "PREPARING":
                 raise ConcurrentUpdateError("migration pair is not awaiting preparation")
             source_id = _required_text(pair.get("source_automation_id"), "source_automation_id")
@@ -655,6 +844,7 @@ class AutomationPluginV2RepositoryMixin:
                 business_key_contract=_snapshot_business_key_contract(prior_snapshot),
                 require_target_console_only=True,
                 allow_target_unprepared=True,
+                entrypoint_ownership=_snapshot_entrypoint_ownership(prior_snapshot),
             )
             snapshot_sha = _json_hash(snapshot)
             expected = _positive_int(pair.get("record_version"), "record_version")
@@ -745,6 +935,11 @@ class AutomationPluginV2RepositoryMixin:
                         "migration-pair request was reused with different input"
                     )
                 return existing
+            _lock_migration_pair_creation_conflicts(
+                cursor,
+                source_id=source_id,
+                target_id=target_id,
+            )
             snapshot = self._lock_migration_snapshot(
                 cursor,
                 source_id=source_id,
@@ -915,6 +1110,37 @@ class AutomationPluginV2RepositoryMixin:
             )
         return rows[0] if rows else None
 
+    def get_authoritative_plugin_migration_pair_for_automation(
+        self, automation_id: str
+    ) -> dict[str, Any] | None:
+        """Return the unique current or final migration entrypoint owner.
+
+        Unlike the execution-time active-pair query, this deliberately keeps
+        ``ROLLED_BACK`` and ``COMPLETED`` visible to ingress routing.  A
+        completed cutover remains Service-v2-owned after its v1 source is
+        uninstalled.  Historical rows are inspected as a set and conflicting
+        final ownership fails closed instead of being hidden by ``LIMIT 1``.
+        """
+
+        project_id = _required_text(automation_id, "automation_id")
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT * FROM automation_plugin_migration_pairs
+                WHERE source_automation_id=%s OR target_automation_id=%s
+                ORDER BY created_at, migration_pair_id FOR UPDATE
+                """,
+                (project_id, project_id),
+            )
+            rows = [
+                _decode_row(row, self._MIGRATION_PAIR_JSON_FIELDS) or {}
+                for row in _rows(cursor)
+            ]
+        return _select_authoritative_migration_pair(
+            rows,
+            automation_id=project_id,
+        )
+
     def get_active_plugin_migration_run_claim(
         self,
         *,
@@ -975,6 +1201,18 @@ class AutomationPluginV2RepositoryMixin:
         safe_reason = _required_text(reason, "reason")
         if operation not in {"READY", "CUTOVER", "ROLLBACK", "COMPLETE"}:
             raise ValueError("migration operation is invalid")
+        next_state = {
+            "READY": "READY",
+            "CUTOVER": "CUTOVER",
+            "ROLLBACK": "ROLLED_BACK",
+            "COMPLETE": "COMPLETED",
+        }[operation]
+        allowed_from_states = {
+            "READY": {"TESTING"},
+            "CUTOVER": {"READY"},
+            "ROLLBACK": {"CUTOVER", "READY"},
+            "COMPLETE": {"CUTOVER"},
+        }[operation]
         with self.cursor() as cursor:
             # 1. pair
             cursor.execute(
@@ -1005,13 +1243,23 @@ class AutomationPluginV2RepositoryMixin:
                 if (
                     previous.get("actor_id") != safe_actor
                     or previous.get("actor_role") != safe_role
+                    or previous.get("reason") != safe_reason
+                    or previous.get("from_state") not in allowed_from_states
+                    or previous.get("to_state") != next_state
+                    or int(previous.get("from_record_version") or 0) != expected
+                    or int(previous.get("to_record_version") or 0) != expected + 1
                 ):
                     raise IdempotencyConflict(
                         "migration operation request was reused with different input"
                     )
-                return pair
+                return _migration_pair_event_projection(pair, previous)
             if int(pair.get("record_version") or 0) != expected:
                 raise ConcurrentUpdateError("migration pair version changed")
+            ownership = _snapshot_entrypoint_ownership(snapshot)
+            self._assert_migration_scheduler_operation_allowed(
+                operation=operation,
+                ownership=ownership,
+            )
 
             # 2. projects, 3. config rows.  This helper also proves the v1/v2
             # runtime relationship and catches any generation/config/manifest
@@ -1023,6 +1271,7 @@ class AutomationPluginV2RepositoryMixin:
                 business_key_contract=_snapshot_business_key_contract(snapshot),
                 require_target_console_only=False,
                 allow_target_unprepared=False,
+                entrypoint_ownership=ownership,
             )
             _assert_migration_snapshot_compatible(snapshot, live)
 
@@ -1073,7 +1322,12 @@ class AutomationPluginV2RepositoryMixin:
                 lease_summary=lease_summary,
                 migration_lock_summary=migration_lock_summary,
             )
-            if operation == "CUTOVER" and scheduled[source_id]:
+            scheduler_transferred = (
+                bool(ownership["scheduler"]["source_enabled"])
+                if ownership is not None
+                else bool(scheduled[source_id])
+            )
+            if operation == "CUTOVER" and scheduler_transferred:
                 source_crons = {
                     str(item.get("cron_expression") or "")
                     for item in scheduled[source_id]
@@ -1082,16 +1336,10 @@ class AutomationPluginV2RepositoryMixin:
                     str(item.get("cron_expression") or "")
                     for item in scheduled[target_id]
                 }
-                if not target_crons or source_crons != target_crons:
+                if not source_crons or not target_crons or source_crons != target_crons:
                     raise ConcurrentUpdateError(
                         "migration target schedule is not prepared for exact cutover"
                     )
-            next_state = {
-                "READY": "READY",
-                "CUTOVER": "CUTOVER",
-                "ROLLBACK": "ROLLED_BACK",
-                "COMPLETE": "COMPLETED",
-            }[operation]
             if operation == "CUTOVER":
                 self._transfer_migration_entrypoints(
                     cursor,
@@ -1100,6 +1348,8 @@ class AutomationPluginV2RepositoryMixin:
                     scheduled=scheduled,
                     source_enabled=False,
                     target_enabled=True,
+                    source_scheduler_enabled=False,
+                    target_scheduler_enabled=scheduler_transferred,
                 )
             elif operation == "ROLLBACK":
                 self._transfer_migration_entrypoints(
@@ -1109,6 +1359,8 @@ class AutomationPluginV2RepositoryMixin:
                     scheduled=scheduled,
                     source_enabled=True,
                     target_enabled=False,
+                    source_scheduler_enabled=scheduler_transferred,
+                    target_scheduler_enabled=False,
                 )
             cursor.execute(
                 """
@@ -1153,6 +1405,7 @@ class AutomationPluginV2RepositoryMixin:
         business_key_contract: Mapping[str, Any],
         require_target_console_only: bool,
         allow_target_unprepared: bool,
+        entrypoint_ownership: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         cursor.execute(
             """
@@ -1238,12 +1491,20 @@ class AutomationPluginV2RepositoryMixin:
             and isinstance(value.get("target"), Mapping)
             and value["target"].get("contribution_kind") == "scheduler"
         }
+        feishu_ids = {
+            str(key)
+            for key, value in compiled.items()
+            if isinstance(value, Mapping)
+            and isinstance(value.get("target"), Mapping)
+            and value["target"].get("contribution_kind") == "feishu"
+        }
         source_has_schedule = (
             source_schedule.get("kind") != "none"
             and source_schedule.get("enabled") is True
         )
         enabled_console_ids = console_ids.intersection(map(str, enabled))
         enabled_scheduler_ids = scheduler_ids.intersection(map(str, enabled))
+        enabled_feishu_ids = feishu_ids.intersection(map(str, enabled))
         if require_target_console_only and (
             len(enabled_console_ids) != 1
             or (source_has_schedule and len(enabled_scheduler_ids) != 1)
@@ -1253,6 +1514,48 @@ class AutomationPluginV2RepositoryMixin:
             raise ConcurrentUpdateError(
                 "migration target must be prepared with exact Console and scheduler routes"
             )
+        normalized_ownership = (
+            None
+            if entrypoint_ownership is None
+            else normalize_migration_entrypoint_ownership(entrypoint_ownership)
+        )
+        if normalized_ownership is not None:
+            expected_enabled = {
+                str(normalized_ownership["console"]["target_contribution_id"])
+            }
+            scheduler_ownership = normalized_ownership["scheduler"]
+            if scheduler_ownership["source_enabled"]:
+                expected_enabled.add(
+                    str(scheduler_ownership["target_contribution_id"])
+                )
+            feishu_ownership = normalized_ownership["feishu"]
+            if feishu_ownership["source_enabled"]:
+                expected_enabled.add(str(feishu_ownership["target_contribution_id"]))
+            if (
+                set(map(str, enabled)) != expected_enabled
+                or enabled_console_ids
+                != {normalized_ownership["console"]["target_contribution_id"]}
+                or enabled_scheduler_ids
+                != (
+                    {scheduler_ownership["target_contribution_id"]}
+                    if scheduler_ownership["source_enabled"]
+                    else set()
+                )
+                or enabled_feishu_ids
+                != (
+                    {feishu_ownership["target_contribution_id"]}
+                    if feishu_ownership["source_enabled"]
+                    else set()
+                )
+                or bool(scheduler_ownership["source_enabled"]) != source_has_schedule
+                or (
+                    scheduler_ownership["source_enabled"]
+                    and schedule != source_schedule
+                )
+            ):
+                raise ConcurrentUpdateError(
+                    "migration target entrypoint ownership does not match its exact routes"
+                )
         cursor.execute(
             """
             SELECT automation_id, generation, state, snapshot_sha256,
@@ -1278,6 +1581,11 @@ class AutomationPluginV2RepositoryMixin:
         return {
             "schema": "plugin-migration-v2/1",
             "business_key_contract": dict(business_key_contract),
+            **(
+                {"entrypoint_ownership": normalized_ownership}
+                if normalized_ownership is not None
+                else {}
+            ),
             "source": _migration_project_snapshot(projects[source_id], configs[source_id], generations[source_id]),
             "target": _migration_project_snapshot(
                 projects[target_id],
@@ -1509,6 +1817,21 @@ class AutomationPluginV2RepositoryMixin:
         return result
 
     @staticmethod
+    def _assert_migration_scheduler_operation_allowed(
+        *,
+        operation: str,
+        ownership: Mapping[str, Any] | None,
+    ) -> None:
+        if (
+            operation in {"CUTOVER", "ROLLBACK"}
+            and ownership is not None
+            and ownership["scheduler"]["source_enabled"] is True
+        ):
+            raise ConcurrentUpdateError(
+                "migration scheduler ownership is production gated"
+            )
+
+    @staticmethod
     def _assert_migration_operation_allowed(
         *,
         operation: str,
@@ -1552,6 +1875,8 @@ class AutomationPluginV2RepositoryMixin:
         scheduled: Mapping[str, list[str]],
         source_enabled: bool,
         target_enabled: bool,
+        source_scheduler_enabled: bool,
+        target_scheduler_enabled: bool,
     ) -> None:
         cursor.execute(
             """
@@ -1576,7 +1901,8 @@ class AutomationPluginV2RepositoryMixin:
         if int(getattr(cursor, "rowcount", 0) or 0) != 1:
             raise ConcurrentUpdateError("migration target project changed")
         for automation_id, enabled in (
-            (source_id, source_enabled), (target_id, target_enabled)
+            (source_id, source_scheduler_enabled),
+            (target_id, target_scheduler_enabled),
         ):
             if not scheduled.get(automation_id):
                 continue

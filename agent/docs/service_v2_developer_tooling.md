@@ -72,9 +72,17 @@ payload/
 
 Manifest 的编辑器 Schema 位于 `agent/extension_sdk/schemas/manifest-v2.schema.json`。它帮助编辑器补全闭合字段，但运行时权威仍是 `manifest_v2.py`、ZIP verifier 与 `ServiceV2ProjectContract`；通过编辑器 Schema 不能代替 `validate`。
 
-Connector 不是一种 ZIP Provider。源码包的 `provides` 与 contribution target 仍只能使用 `plugin.*`；声明宿主 Connector 依赖时，`requires` 项必须精确包含 `service/account_role`，服务名使用 `connector.<owner>.<service>@<major>`，同名账号角色必须在 `account_roles` 中声明且 `required=true`。`validate` 会拒绝额外字段、未声明或非必填角色，以及 ZIP 尝试提供 `connector.*` 的情况。
+Connector 不是一种 ZIP Provider。源码包的 `provides` 与 contribution target 仍只能使用 `plugin.*`；声明宿主 Connector 依赖时，`requires` 必须使用三种闭合形式之一：`{service,binding_kind:account,account_role}`、`{service,binding_kind:resource,resource_role}` 或 `{service,binding_kind:host_internal}`。账号角色必须在 `account_roles` 中声明为 `required=true`，资源角色可为 `required=true|false`；`validate` 会拒绝额外字段、未声明角色、非必填账号角色，以及 ZIP 尝试提供 `connector.*` 的情况。
+
+每个 Connector operation 的合同固定为 `{name,effect,input_schema,output_schema,max_input_bytes,max_output_bytes}`，effect 允许 `read/internal_write/external_write`。input/output cap 纳入扩展 contract hash；legacy account + read + 默认 cap 的 canonical hash 保持旧 material，不因新增 binding 类型或 cap 字段漂移。宿主先解析 binding、input Schema 和 input cap，再决定是否允许写 marker；handler 返回后再核验 output Schema、output cap 和结果脱敏。`preflight_services` 只闭合解析依赖，不增加 Broker call。账号/资源 ID、绑定字段和宿主引用只能留在 Broker/Host 私有 side channel，插件结果或错误中出现这些值（含嵌套/包装）必须失败。
 
 `connector.fixture.tracking@1/query` 只用于显式离线 Host 集成测试：测试调用方必须主动提供本地 JSON fixture 和 `fixture` 系统的 `tracking_account` 绑定。它不会由开发 CLI、安装器或生产组合自动加载；生产 `ConnectorRegistry` 默认为空。真实 TMS、飞书、数据库和写 Connector 都是 `PRODUCTION_GATED`，开发工具不得用 fixture 结果冒充生产连通性或授权。
+
+Scheduler contribution 在 `default_enabled=false` 时可以省略 `schedule`，且不得由 CLI 或安装器填充伪造时间；enabled contribution 只能使用项目真实 schedule。MIG001 的 arrival source 没有 Scheduler，目标保持 disabled/no schedule；若源项目已有 enabled Scheduler，迁移必须显式返回 `PLUGIN_MIGRATION_SCHEDULER_PRODUCTION_GATED`，不能在离线层复制或切换。
+
+### MIG001 到货统计包
+
+`agent/service_v2_plugins/sync_arrival_stats_v2/` 是独立 Service v2 包，包内算法和结果契约使用 v1 payload/action 与共享结果模块的逐字节嵌入副本。离线 fixture 只验证代表性 payload 的 parity、稳定投影和 primitive 顺序，不是正式容量上限或生产吞吐证明；真实 TMS/Feishu/资源读写、独立写后核验、descriptors/handlers、安装、入口接管和部署均保持 `PRODUCTION_GATED`。
 
 ## 4. 安全投影的含义
 

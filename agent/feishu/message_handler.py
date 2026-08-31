@@ -43,6 +43,9 @@ from agent.orchestration.scan_preview_binding import (
 from agent.pending_actions import clear_pending, get_pending, set_pending
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
+from feishu.migration_entrypoint_router import (
+    dispatch_migrated_fixed_feishu_entrypoint,
+)
 from feishu.notify import remember_chat_id
 from feishu.selection_preview import (
     FEISHU_SAFE_TEXT_BYTES,
@@ -2620,6 +2623,18 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
             dynamic_inputs = {}
         local_result = direct_request.get("local_result")
         logger.info("feishu route | chat=%s | route=direct_tool | tool=%s | mode=%s", chat_id, tool_name, mode)
+
+        if await dispatch_migrated_fixed_feishu_entrypoint(
+            mode=mode,
+            automation_route_key=automation_route_key,
+            tool_name=tool_name,
+            command_text=text,
+            receive_id=chat_id,
+            dispatcher=_SERVICE_V2_FEISHU_DISPATCHER,
+            dispatch_service_v2=_dispatch_service_v2_feishu_command,
+            reply_text=_reply_text,
+        ):
+            return
 
         if isinstance(local_result, dict):
             await _reply_tool_result(chat_id, tool_name, local_result)

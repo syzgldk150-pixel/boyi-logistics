@@ -419,6 +419,7 @@ class ServiceV2FeishuDispatcher:
         policy_service: AutomationProjectPolicyService,
         contribution_registry: Any,
         resolve_actor: Any,
+        migration_entrypoint_ownership: Any | None = None,
     ) -> None:
         resolve_command = getattr(
             contribution_registry,
@@ -431,9 +432,44 @@ class ServiceV2FeishuDispatcher:
             )
         if not callable(resolve_actor):
             raise TypeError("resolve_actor must be callable")
+        fixed_owner = (
+            getattr(
+                migration_entrypoint_ownership,
+                "fixed_feishu_owner",
+                None,
+            )
+            if migration_entrypoint_ownership is not None
+            else None
+        )
+        if migration_entrypoint_ownership is not None and not callable(fixed_owner):
+            raise TypeError(
+                "migration_entrypoint_ownership must resolve fixed Feishu owners"
+            )
         self._policy = policy_service
         self._resolve_command = resolve_command
         self._resolve_actor = resolve_actor
+        self._fixed_owner = fixed_owner
+
+    def fixed_feishu_owner(
+        self,
+        *,
+        source_tool_name: str,
+        source_route_key: str,
+        command_text: str,
+    ) -> str:
+        """Return v1/v2 ownership without deriving it from project enablement."""
+
+        if self._fixed_owner is None:
+            return "ACTION_V1"
+        try:
+            owner = self._fixed_owner(
+                source_tool_name=source_tool_name,
+                source_route_key=source_route_key,
+                command=command_text,
+            )
+        except Exception:
+            return "BLOCKED"
+        return owner if owner in {"ACTION_V1", "SERVICE_V2", "BLOCKED"} else "BLOCKED"
 
     async def dispatch(
         self,

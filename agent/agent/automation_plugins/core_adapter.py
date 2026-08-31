@@ -19,9 +19,13 @@ from agent.automation_plugins.connector_compatibility import (
     evaluate_connector_requirement,
 )
 from agent.automation_plugins.connector_registry import (
+    ConnectorBinding,
     ConnectorBindingRef,
+    ConnectorBindingKind,
+    ConnectorHostInternalBindingRef,
     ConnectorRegistry,
     ConnectorRegistryError,
+    ConnectorResourceBindingRef,
 )
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.host_capability_registry import (
@@ -47,6 +51,14 @@ def _binding_account_ids(grant: BrokerGrant) -> frozenset[str]:
     return frozenset(values)
 
 
+def _binding_resource_ids(grant: BrokerGrant) -> frozenset[str]:
+    return frozenset(
+        normalized
+        for value in grant.resource_bindings.values()
+        if (normalized := str(value or "").strip())
+    )
+
+
 def _assert_no_account_id_values(value: Any, account_ids: frozenset[str]) -> None:
     if isinstance(value, Mapping):
         for nested in value.values():
@@ -58,14 +70,29 @@ def _assert_no_account_id_values(value: Any, account_ids: frozenset[str]) -> Non
         raise PluginExecutionError("core broker adapter returned sensitive data")
 
 
+def _assert_no_resource_id_values(
+    value: Any,
+    resource_ids: frozenset[str],
+) -> None:
+    if isinstance(value, Mapping):
+        for nested in value.values():
+            _assert_no_resource_id_values(nested, resource_ids)
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            _assert_no_resource_id_values(nested, resource_ids)
+    elif isinstance(value, str) and any(resource_id in value for resource_id in resource_ids):
+        raise PluginExecutionError("core broker adapter returned sensitive data")
+
+
 def _assert_public_result_safe(value: Mapping[str, Any], grant: BrokerGrant) -> None:
     _assert_redacted(value)
     _assert_no_account_id_values(value, _binding_account_ids(grant))
+    _assert_no_resource_id_values(value, _binding_resource_ids(grant))
 
 
 ConnectorBindingResolver = Callable[
     [ConnectorRequirementContract],
-    ConnectorBindingRef,
+    ConnectorBinding,
 ]
 
 
@@ -382,7 +409,10 @@ class RegisteredCoreAutomationBrokerAdapter:
         raw_service = arguments.get("service")
         if not isinstance(raw_service, str) or not raw_service.startswith("connector."):
             return None
-        if set(arguments) != {"service", "operation", "arguments"}:
+        if set(arguments) not in (
+            {"service", "operation", "arguments"},
+            {"service", "operation", "arguments", "preflight_services"},
+        ):
             raise PluginExecutionError(
                 "Connector service invocation arguments are invalid",
                 code="CAPABILITY_ARGUMENT_INVALID",
@@ -393,11 +423,11 @@ class RegisteredCoreAutomationBrokerAdapter:
                 code="BROKER_CONTRACT_INVALID",
             )
 
-        def resolve(requirement: ConnectorRequirementContract) -> ConnectorBindingRef:
+        def resolve(requirement: ConnectorRequirementContract) -> ConnectorBinding:
             compatibility = evaluate_connector_requirement(
                 self._connectors,
                 requirement,
-                service=raw_service,
+                service=requirement.service,
             )
             descriptor = compatibility.descriptor
             if not compatibility.ready or descriptor is None:
@@ -405,68 +435,123 @@ class RegisteredCoreAutomationBrokerAdapter:
                     compatibility.reason or "Connector requirement is incompatible",
                     code=compatibility.reason_code or "BROKER_CONTRACT_INVALID",
                 )
-            account_role = self._role_declaration(
-                grant.account_roles,
-                descriptor.account_role,
-            )
-            resource_role = self._role_declaration(
-                grant.resource_roles,
-                descriptor.account_role,
-            )
-            if account_role is None or resource_role is not None:
-                raise PluginExecutionError(
-                    "Connector account role is not declared exactly once",
-                    code="BROKER_CONTRACT_INVALID",
-            )
-            allowed_systems = account_role.get("allowed_systems")
-            normalized_allowed_systems = (
-                tuple(str(item) for item in allowed_systems)
-                if isinstance(allowed_systems, list)
-                else ()
-            )
-            if (
-                account_role.get("required") is not True
-                or not isinstance(allowed_systems, list)
-                or len(normalized_allowed_systems)
-                != len(set(normalized_allowed_systems))
-                or frozenset(normalized_allowed_systems)
-                != frozenset(descriptor.allowed_systems)
-            ):
-                raise PluginExecutionError(
-                    "Connector account role drifted from its Host descriptor",
-                    code="BROKER_CONTRACT_INVALID",
+            if descriptor.binding_kind is ConnectorBindingKind.HOST_INTERNAL:
+                return ConnectorHostInternalBindingRef(service=descriptor.service)
+            if descriptor.binding_kind is ConnectorBindingKind.ACCOUNT:
+                account_role = self._role_declaration(
+                    grant.account_roles,
+                    descriptor.account_role,
                 )
-            if descriptor.account_role not in grant.account_bindings:
-                raise PluginExecutionError(
-                    "Connector account role is unbound",
-                    code="BROKER_ROLE_UNBOUND",
+                resource_role = self._role_declaration(
+                    grant.resource_roles,
+                    descriptor.account_role,
                 )
-            account_ids = self._normalize_account_binding(
-                grant.account_bindings[descriptor.account_role]
-            )
-            if len(account_ids) != 1:
-                raise PluginExecutionError(
-                    "Connector requires one exact account binding",
-                    code="BROKER_CONTRACT_INVALID",
+                if account_role is None or resource_role is not None:
+                    raise PluginExecutionError(
+                        "Connector account role is not declared exactly once",
+                        code="BROKER_CONTRACT_INVALID",
+                    )
+                allowed_systems = account_role.get("allowed_systems")
+                normalized_allowed_systems = (
+                    tuple(str(item) for item in allowed_systems)
+                    if isinstance(allowed_systems, list)
+                    else ()
                 )
-            resolved = self._accounts.require_active_binding_descriptor(
-                account_id=account_ids[0],
-                allowed_systems=descriptor.allowed_systems,
-            )
-            if str(resolved.get("account_id") or "") != account_ids[0]:
-                raise PluginExecutionError(
-                    "Connector account resolver changed the exact binding",
-                    code="BROKER_ACCOUNT_MISMATCH",
+                if (
+                    account_role.get("required") is not True
+                    or not isinstance(allowed_systems, list)
+                    or len(normalized_allowed_systems)
+                    != len(set(normalized_allowed_systems))
+                    or frozenset(normalized_allowed_systems)
+                    != frozenset(descriptor.allowed_systems)
+                ):
+                    raise PluginExecutionError(
+                        "Connector account role drifted from its Host descriptor",
+                        code="BROKER_CONTRACT_INVALID",
+                    )
+                if descriptor.account_role not in grant.account_bindings:
+                    raise PluginExecutionError(
+                        "Connector account role is unbound",
+                        code="BROKER_ROLE_UNBOUND",
+                    )
+                account_ids = self._normalize_account_binding(
+                    grant.account_bindings[descriptor.account_role]
                 )
-            try:
+                if len(account_ids) != 1:
+                    raise PluginExecutionError(
+                        "Connector requires one exact account binding",
+                        code="BROKER_CONTRACT_INVALID",
+                    )
+                resolved = self._accounts.require_active_binding_descriptor(
+                    account_id=account_ids[0],
+                    allowed_systems=descriptor.allowed_systems,
+                )
+                if str(resolved.get("account_id") or "") != account_ids[0]:
+                    raise PluginExecutionError(
+                        "Connector account resolver changed the exact binding",
+                        code="BROKER_ACCOUNT_MISMATCH",
+                    )
                 return ConnectorBindingRef(
                     service=descriptor.service,
-                    account_role=descriptor.account_role,
+                    account_role=str(descriptor.account_role),
                     account_id=account_ids[0],
                     system=str(resolved.get("system") or ""),
                 )
-            except ConnectorRegistryError as exc:
-                raise PluginExecutionError(str(exc), code=exc.code) from exc
+            resource_role = self._role_declaration(
+                grant.resource_roles,
+                descriptor.resource_role,
+            )
+            account_role = self._role_declaration(
+                grant.account_roles,
+                descriptor.resource_role,
+            )
+            if resource_role is None or account_role is not None:
+                raise PluginExecutionError(
+                    "Connector resource role is not declared exactly once",
+                    code="BROKER_CONTRACT_INVALID",
+                )
+            allowed_kinds = resource_role.get("allowed_kinds")
+            normalized_allowed_kinds = (
+                tuple(str(item) for item in allowed_kinds)
+                if isinstance(allowed_kinds, list)
+                else ()
+            )
+            if (
+                not isinstance(allowed_kinds, list)
+                or len(normalized_allowed_kinds) != len(set(normalized_allowed_kinds))
+                or frozenset(normalized_allowed_kinds)
+                != frozenset(descriptor.allowed_resource_kinds)
+            ):
+                raise PluginExecutionError(
+                    "Connector resource role drifted from its Host descriptor",
+                    code="BROKER_CONTRACT_INVALID",
+                )
+            if descriptor.resource_role not in grant.resource_bindings:
+                raise PluginExecutionError(
+                    "Connector resource role is unbound",
+                    code="BROKER_ROLE_UNBOUND",
+                )
+            resource_id = str(grant.resource_bindings[descriptor.resource_role] or "").strip()
+            if not resource_id:
+                raise PluginExecutionError(
+                    "Connector resource role is unbound",
+                    code="BROKER_ROLE_UNBOUND",
+                )
+            resolved_resource = self._resources.require_active(
+                resource_id=resource_id,
+                allowed_kinds=descriptor.allowed_resource_kinds,
+            )
+            if str(resolved_resource.get("resource_id") or "") != resource_id:
+                raise PluginExecutionError(
+                    "Connector resource resolver changed the exact binding",
+                    code="BROKER_RESOURCE_MISMATCH",
+                )
+            return ConnectorResourceBindingRef(
+                service=descriptor.service,
+                resource_role=str(descriptor.resource_role),
+                resource_id=resource_id,
+                kind=str(resolved_resource.get("kind") or ""),
+            )
 
         return resolve
 

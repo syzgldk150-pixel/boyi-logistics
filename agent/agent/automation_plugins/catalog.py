@@ -1094,13 +1094,14 @@ class PluginCatalog:
     ) -> tuple[ConnectorRequirementContract, ...]:
         service_contracts = getattr(entry, "service_contracts", {})
         account_roles = getattr(entry, "account_roles", ())
+        resource_roles = getattr(entry, "resource_roles", ())
         if not isinstance(service_contracts, Mapping):
             return ()
         raw_requirements = service_contracts.get("requires")
         if not isinstance(raw_requirements, (list, tuple)) or not isinstance(
             account_roles,
             (list, tuple),
-        ):
+        ) or not isinstance(resource_roles, (list, tuple)):
             return ()
         try:
             return connector_requirements_from_contracts(
@@ -1109,6 +1110,9 @@ class PluginCatalog:
                 ),
                 account_roles=(
                     item for item in account_roles if isinstance(item, Mapping)
+                ),
+                resource_roles=(
+                    item for item in resource_roles if isinstance(item, Mapping)
                 ),
             )
         except (AutomationPluginError, TypeError, ValueError):

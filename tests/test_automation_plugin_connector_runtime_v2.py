@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,14 +20,18 @@ from agent.automation_plugins.connector_dependency_projection import (
     project_service_dependencies,
 )
 from agent.automation_plugins.connector_registry import (
+    ConnectorBindingKind,
     ConnectorBindingRef,
     ConnectorDescriptor,
+    ConnectorHostInternalBindingRef,
     ConnectorOperation,
     ConnectorRegistry,
+    ConnectorResourceBindingRef,
 )
 from agent.automation_plugins.core_adapter import (
     CoreBrokerInvocationContext,
     RegisteredCoreAutomationBrokerAdapter,
+    _assert_public_result_safe,
 )
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.fixture_connectors import (
@@ -206,6 +211,27 @@ class _AccountResolver:
         }
 
 
+class _ResourceResolver:
+    def __init__(self, *, kind: str = "feishu_sheet") -> None:
+        self.kind = kind
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def require_active(
+        self,
+        *,
+        resource_id: str,
+        allowed_kinds: Sequence[str],
+    ) -> Mapping[str, str]:
+        allowed = tuple(str(item) for item in allowed_kinds)
+        self.calls.append((resource_id, allowed))
+        if self.kind not in allowed:
+            raise PluginExecutionError(
+                "the exact bound resource does not match the signed role",
+                code="BROKER_RESOURCE_MISMATCH",
+            )
+        return {"resource_id": resource_id, "kind": self.kind}
+
+
 def _grant(
     *,
     account_bindings: Mapping[str, object] | None = None,
@@ -319,6 +345,404 @@ def test_connector_service_invoke_resolves_private_account_and_returns_only_clos
     assert "fixture-account-001" not in public_json
     assert "account_id" not in public_json
     assert "endpoint" not in public_json
+
+
+def test_connector_service_invoke_uses_resource_or_host_internal_binding_without_account_fallback() -> None:
+    def handler(_binding, arguments):
+        if arguments["value"] == "handler_error":
+            raise RuntimeError("test handler failure")
+        return {"value": arguments["value"]}
+
+    resource_service = "connector.boyi.arrival_stats_primary_sheet@1"
+    internal_service = "connector.boyi.arrival_stats_projection@1"
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"value": {"type": "string", "maxLength": 64}},
+        "required": ["value"],
+    }
+    connectors = ConnectorRegistry(
+        (
+            ConnectorDescriptor(
+                service=resource_service,
+                title="Arrival stats primary Sheet",
+                account_role=None,
+                allowed_systems=(),
+                binding_kind=ConnectorBindingKind.RESOURCE,
+                resource_role="arrival_stats_primary_sheet",
+                allowed_resource_kinds=("feishu_sheet",),
+                operations=(
+                    ConnectorOperation(
+                        name="replace",
+                        effect=CapabilityEffect.EXTERNAL_WRITE,
+                        input_schema=schema,
+                        output_schema=schema,
+                        handler=handler,
+                        max_input_bytes=512,
+                        max_output_bytes=512,
+                    ),
+                ),
+            ),
+            ConnectorDescriptor(
+                service=internal_service,
+                title="Arrival stats projection",
+                account_role=None,
+                allowed_systems=(),
+                binding_kind=ConnectorBindingKind.HOST_INTERNAL,
+                operations=(
+                    ConnectorOperation(
+                        name="replace",
+                        effect=CapabilityEffect.INTERNAL_WRITE,
+                        input_schema=schema,
+                        output_schema=schema,
+                        handler=handler,
+                    ),
+                ),
+            ),
+        )
+    )
+    manifest = _manifest(
+        requires=[
+            {
+                "service": resource_service,
+                "binding_kind": "resource",
+                "resource_role": "arrival_stats_primary_sheet",
+            },
+            {"service": internal_service, "binding_kind": "host_internal"},
+        ]
+    )
+    manifest["account_roles"] = []
+    manifest["resource_roles"] = [
+        {
+            "role": "arrival_stats_primary_sheet",
+            "allowed_kinds": ["feishu_sheet"],
+            "required": True,
+        }
+    ]
+    resources = _ResourceResolver()
+    adapter = RegisteredCoreAutomationBrokerAdapter(
+        handlers=build_service_v2_capability_handler_map(
+            _Orchestration(manifest), connector_registry=connectors
+        ),
+        account_resolver=_AccountResolver(),  # type: ignore[arg-type]
+        resource_resolver=resources,  # type: ignore[arg-type]
+        connector_registry=connectors,
+    )
+    governance = governance_for_effect(CapabilityEffect.EXTERNAL_WRITE)
+    grant = replace(
+        _grant(account_bindings={}),
+        runtime_permissions={
+            "_service_effect_ceiling": CapabilityEffect.EXTERNAL_WRITE.value,
+            "broker_operations": [
+                {
+                    "operation": "service.invoke",
+                    "action": "replace",
+                    "roles": [SYSTEM_CAPABILITY_ROLE],
+                    "effect": governance.effect.value,
+                    "broker_effect": governance.broker_effect,
+                    "governance": governance.to_mapping(),
+                    "dynamic_effect": True,
+                }
+            ],
+        },
+        account_roles=(),
+        resource_roles=(
+            {
+                "role": "arrival_stats_primary_sheet",
+                "allowed_kinds": ["feishu_sheet"],
+                "required": True,
+            },
+        ),
+        account_bindings={},
+        resource_bindings={"arrival_stats_primary_sheet": "primary-sheet-1"},
+    )
+    markers: list[str] = []
+    for service in (resource_service, internal_service):
+        result = asyncio.run(
+            adapter.invoke(
+                grant=grant,
+                operation="service.invoke",
+                action="replace",
+                role=SYSTEM_CAPABILITY_ROLE,
+                binding=None,
+                arguments={
+                    "service": service,
+                    "operation": "replace",
+                    "arguments": {"value": "ok"},
+                },
+                mark_write_started=lambda: markers.append(service),
+            )
+        )
+        assert result == {"value": "ok"}
+    assert resources.calls == [("primary-sheet-1", ("feishu_sheet",))]
+    assert markers == [resource_service, internal_service]
+
+    input_failure_markers: list[str] = []
+    with pytest.raises(PluginExecutionError) as input_failure:
+        asyncio.run(
+            adapter.invoke(
+                grant=grant,
+                operation="service.invoke",
+                action="replace",
+                role=SYSTEM_CAPABILITY_ROLE,
+                binding=None,
+                arguments={
+                    "service": resource_service,
+                    "operation": "replace",
+                    "arguments": {"value": "x" * 513},
+                },
+                mark_write_started=lambda: input_failure_markers.append("write"),
+            )
+        )
+    assert input_failure.value.code == "CONNECTOR_INVOCATION_FAILED"
+    assert input_failure_markers == []
+
+    handler_failure_markers: list[str] = []
+    with pytest.raises(PluginExecutionError) as handler_failure:
+        asyncio.run(
+            adapter.invoke(
+                grant=grant,
+                operation="service.invoke",
+                action="replace",
+                role=SYSTEM_CAPABILITY_ROLE,
+                binding=None,
+                arguments={
+                    "service": resource_service,
+                    "operation": "replace",
+                    "arguments": {"value": "handler_error"},
+                },
+                mark_write_started=lambda: handler_failure_markers.append("write"),
+            )
+        )
+    assert handler_failure.value.code == "CONNECTOR_INVOCATION_FAILED"
+    assert handler_failure_markers == ["write"]
+
+    optional_manifest = json.loads(json.dumps(manifest))
+    optional_manifest["resource_roles"][0]["required"] = False
+    optional_adapter = RegisteredCoreAutomationBrokerAdapter(
+        handlers=build_service_v2_capability_handler_map(
+            _Orchestration(optional_manifest), connector_registry=connectors
+        ),
+        account_resolver=_AccountResolver(),  # type: ignore[arg-type]
+        resource_resolver=resources,  # type: ignore[arg-type]
+        connector_registry=connectors,
+    )
+    optional_grant = replace(
+        grant,
+        resource_roles=(
+            {
+                "role": "arrival_stats_primary_sheet",
+                "allowed_kinds": ["feishu_sheet"],
+                "required": False,
+            },
+        ),
+        resource_bindings={},
+    )
+    optional_markers: list[str] = []
+    with pytest.raises(PluginExecutionError) as unbound:
+        asyncio.run(
+            optional_adapter.invoke(
+                grant=optional_grant,
+                operation="service.invoke",
+                action="replace",
+                role=SYSTEM_CAPABILITY_ROLE,
+                binding=None,
+                arguments={
+                    "service": resource_service,
+                    "operation": "replace",
+                    "arguments": {"value": "ok"},
+                },
+                mark_write_started=lambda: optional_markers.append("write"),
+            )
+        )
+    assert unbound.value.code == "BROKER_ROLE_UNBOUND"
+    assert optional_markers == []
+
+
+def test_connector_preflight_resolves_an_optional_resource_before_the_first_write() -> None:
+    primary_service = "connector.boyi.arrival_stats_primary_sheet@1"
+    pending_service = "connector.boyi.arrival_stats_pending_sheet@1"
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"value": {"type": "string", "maxLength": 64}},
+        "required": ["value"],
+    }
+    handler_calls: list[str] = []
+
+    def handler(binding, arguments):
+        handler_calls.append(binding.service)
+        return {"value": arguments["value"]}
+
+    def descriptor(service: str, role: str, *, effect: CapabilityEffect) -> ConnectorDescriptor:
+        return ConnectorDescriptor(
+            service=service,
+            title=f"{role} connector",
+            account_role=None,
+            allowed_systems=(),
+            binding_kind=ConnectorBindingKind.RESOURCE,
+            resource_role=role,
+            allowed_resource_kinds=("feishu_sheet",),
+            operations=(
+                ConnectorOperation(
+                    name="replace",
+                    effect=effect,
+                    input_schema=schema,
+                    output_schema=schema,
+                    handler=handler,
+                ),
+            ),
+        )
+
+    connectors = ConnectorRegistry(
+        (
+            descriptor(primary_service, "arrival_stats_primary_sheet", effect=CapabilityEffect.EXTERNAL_WRITE),
+            descriptor(pending_service, "arrival_stats_pending_sheet", effect=CapabilityEffect.EXTERNAL_WRITE),
+        )
+    )
+    manifest = _manifest(
+        requires=[
+            {
+                "service": primary_service,
+                "binding_kind": "resource",
+                "resource_role": "arrival_stats_primary_sheet",
+            },
+            {
+                "service": pending_service,
+                "binding_kind": "resource",
+                "resource_role": "arrival_stats_pending_sheet",
+            },
+        ]
+    )
+    manifest["account_roles"] = []
+    manifest["resource_roles"] = [
+        {
+            "role": "arrival_stats_primary_sheet",
+            "allowed_kinds": ["feishu_sheet"],
+            "required": True,
+        },
+        {
+            "role": "arrival_stats_pending_sheet",
+            "allowed_kinds": ["feishu_sheet"],
+            "required": False,
+        },
+    ]
+    resources = _ResourceResolver()
+    adapter = RegisteredCoreAutomationBrokerAdapter(
+        handlers=build_service_v2_capability_handler_map(
+            _Orchestration(manifest), connector_registry=connectors
+        ),
+        account_resolver=_AccountResolver(),  # type: ignore[arg-type]
+        resource_resolver=resources,  # type: ignore[arg-type]
+        connector_registry=connectors,
+    )
+    governance = governance_for_effect(CapabilityEffect.EXTERNAL_WRITE)
+    grant = replace(
+        _grant(account_bindings={}),
+        runtime_permissions={
+            "_service_effect_ceiling": CapabilityEffect.EXTERNAL_WRITE.value,
+            "broker_operations": [
+                {
+                    "operation": "service.invoke",
+                    "action": "replace",
+                    "roles": [SYSTEM_CAPABILITY_ROLE],
+                    "effect": governance.effect.value,
+                    "broker_effect": governance.broker_effect,
+                    "governance": governance.to_mapping(),
+                    "dynamic_effect": True,
+                }
+            ],
+        },
+        account_roles=(),
+        resource_roles=tuple(manifest["resource_roles"]),
+        account_bindings={},
+        resource_bindings={"arrival_stats_primary_sheet": "primary-sheet-1"},
+    )
+    markers: list[str] = []
+
+    with pytest.raises(PluginExecutionError) as rejected:
+        asyncio.run(
+            adapter.invoke(
+                grant=grant,
+                operation="service.invoke",
+                action="replace",
+                role=SYSTEM_CAPABILITY_ROLE,
+                binding=None,
+                arguments={
+                    "service": primary_service,
+                    "operation": "replace",
+                    "arguments": {"value": "ok"},
+                    "preflight_services": [primary_service, pending_service],
+                },
+                mark_write_started=lambda: markers.append("write"),
+            )
+        )
+
+    assert rejected.value.code == "BROKER_ROLE_UNBOUND"
+    assert markers == []
+    assert handler_calls == []
+
+    for invalid_preflight_service in (
+        "connector.boyi.undeclared_sheet@1",
+        "plugin.boyi.not_a_connector@1",
+    ):
+        with pytest.raises(PluginExecutionError) as undeclared:
+            asyncio.run(
+                adapter.invoke(
+                    grant=grant,
+                    operation="service.invoke",
+                    action="replace",
+                    role=SYSTEM_CAPABILITY_ROLE,
+                    binding=None,
+                    arguments={
+                        "service": primary_service,
+                        "operation": "replace",
+                        "arguments": {"value": "ok"},
+                        "preflight_services": [
+                            primary_service,
+                            invalid_preflight_service,
+                        ],
+                    },
+                    mark_write_started=lambda: markers.append("write"),
+                )
+            )
+        assert undeclared.value.code == "SERVICE_DEPENDENCY_UNDECLARED"
+        assert markers == []
+        assert handler_calls == []
+
+    with pytest.raises(PluginExecutionError) as duplicate:
+        asyncio.run(
+            adapter.invoke(
+                grant=grant,
+                operation="service.invoke",
+                action="replace",
+                role=SYSTEM_CAPABILITY_ROLE,
+                binding=None,
+                arguments={
+                    "service": primary_service,
+                    "operation": "replace",
+                    "arguments": {"value": "ok"},
+                    "preflight_services": [primary_service, primary_service],
+                },
+                mark_write_started=lambda: markers.append("write"),
+            )
+        )
+    assert duplicate.value.code == "CAPABILITY_ARGUMENT_INVALID"
+    assert markers == []
+    assert handler_calls == []
+
+
+def test_core_final_result_rejects_a_wrapped_current_resource_binding_value() -> None:
+    grant = replace(
+        _grant(),
+        resource_bindings={"arrival_stats_primary_sheet": "sheet-resource-1"},
+    )
+
+    with pytest.raises(PluginExecutionError, match="sensitive data"):
+        _assert_public_result_safe(
+            {"summary": "wrapped-sheet-resource-1-value"},
+            grant,
+        )
 
 
 def test_connector_service_invoke_cannot_bypass_manifest_dependency_or_binding() -> None:

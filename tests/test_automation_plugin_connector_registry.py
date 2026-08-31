@@ -10,14 +10,17 @@ import pytest
 
 from agent.automation_plugins.connector_registry import (
     ConnectorBindingInvalid,
+    ConnectorBindingKind,
     ConnectorBindingRef,
     ConnectorConflict,
     ConnectorContractInvalid,
     ConnectorDescriptor,
+    ConnectorHostInternalBindingRef,
     ConnectorInvocationError,
     ConnectorOperation,
     ConnectorOperationUnavailable,
     ConnectorRegistry,
+    ConnectorResourceBindingRef,
     ConnectorSensitiveDataDenied,
     ConnectorUnavailable,
 )
@@ -62,6 +65,8 @@ def _operation(
     effect: CapabilityEffect = CapabilityEffect.READ,
     input_schema: Mapping[str, object] = _INPUT_SCHEMA,
     output_schema: Mapping[str, object] = _OUTPUT_SCHEMA,
+    max_input_bytes: int = 1024 * 1024,
+    max_output_bytes: int = 1024 * 1024,
 ) -> ConnectorOperation:
     return ConnectorOperation(
         name=name,
@@ -69,6 +74,8 @@ def _operation(
         input_schema=input_schema,
         output_schema=output_schema,
         handler=handler,
+        max_input_bytes=max_input_bytes,
+        max_output_bytes=max_output_bytes,
     )
 
 
@@ -150,9 +157,15 @@ def test_connector_service_names_match_the_manifest_namespace(service: str) -> N
     assert _descriptor(service="connector.owner.a-b.c@0").service == "connector.owner.a-b.c@0"
 
 
-def test_descriptor_is_read_only_and_immutable() -> None:
-    with pytest.raises(ConnectorContractInvalid, match="read-only"):
-        _operation(effect=CapabilityEffect.COMPUTE)
+@pytest.mark.parametrize(
+    "effect",
+    [CapabilityEffect.COMPUTE, CapabilityEffect.DESTRUCTIVE],
+)
+def test_descriptor_rejects_non_connector_effects_and_is_immutable(
+    effect: CapabilityEffect,
+) -> None:
+    with pytest.raises(ConnectorContractInvalid, match="operation effect"):
+        _operation(effect=effect)
 
     operation = _operation()
     with pytest.raises(TypeError):
@@ -161,11 +174,154 @@ def test_descriptor_is_read_only_and_immutable() -> None:
         operation.name = "changed"  # type: ignore[misc]
 
 
+def test_code_owned_write_operations_have_explicit_binding_and_byte_contracts() -> None:
+    resource_operation = _operation(
+        effect=CapabilityEffect.INTERNAL_WRITE,
+        max_input_bytes=30,
+        max_output_bytes=96,
+    )
+    resource_descriptor = ConnectorDescriptor(
+        service="connector.test.resource_sheet@1",
+        title="Resource sheet connector",
+        account_role=None,
+        allowed_systems=(),
+        binding_kind=ConnectorBindingKind.RESOURCE,
+        resource_role="arrival_sheet",
+        allowed_resource_kinds=("feishu_sheet",),
+        operations=(resource_operation,),
+    )
+    internal_descriptor = ConnectorDescriptor(
+        service="connector.test.internal_store@1",
+        title="Internal store connector",
+        account_role=None,
+        allowed_systems=(),
+        binding_kind=ConnectorBindingKind.HOST_INTERNAL,
+        operations=(
+            _operation(name="replace", effect=CapabilityEffect.EXTERNAL_WRITE),
+        ),
+    )
+    registry = ConnectorRegistry((resource_descriptor, internal_descriptor))
+
+    assert asyncio.run(
+        registry.invoke(
+            resolved=registry.require_operation("connector.test.resource_sheet@1", "query"),
+            binding=ConnectorResourceBindingRef(
+                service="connector.test.resource_sheet@1",
+                resource_role="arrival_sheet",
+                resource_id="sheet-resource-1",
+                kind="feishu_sheet",
+            ),
+            arguments={"value": "ok"},
+        )
+    ) == {"value": "ok"}
+    assert asyncio.run(
+        registry.invoke(
+            resolved=registry.require_operation("connector.test.internal_store@1", "replace"),
+            binding=ConnectorHostInternalBindingRef(
+                service="connector.test.internal_store@1"
+            ),
+            arguments={"value": "ok"},
+        )
+    ) == {"value": "ok"}
+    with pytest.raises(ConnectorInvocationError, match="bounded JSON"):
+        asyncio.run(
+            registry.invoke(
+                resolved=registry.require_operation("connector.test.resource_sheet@1", "query"),
+                binding=ConnectorResourceBindingRef(
+                    service="connector.test.resource_sheet@1",
+                    resource_role="arrival_sheet",
+                    resource_id="sheet-resource-1",
+                    kind="feishu_sheet",
+                ),
+                arguments={"value": "x" * 32},
+            )
+        )
+    assert registry.contract_sha256("connector.test.resource_sheet@1") != ConnectorRegistry(
+        (
+            ConnectorDescriptor(
+                service="connector.test.resource_sheet@1",
+                title="Resource sheet connector",
+                account_role=None,
+                allowed_systems=(),
+                binding_kind=ConnectorBindingKind.RESOURCE,
+                resource_role="arrival_sheet",
+                allowed_resource_kinds=("feishu_sheet",),
+                operations=(_operation(effect=CapabilityEffect.INTERNAL_WRITE),),
+            ),
+        )
+    ).contract_sha256("connector.test.resource_sheet@1")
+
+
+def test_connector_operation_keeps_a_default_mebibyte_but_allows_bounded_broker_limits() -> None:
+    assert _operation().max_input_bytes == 1024 * 1024
+    assert _operation().max_output_bytes == 1024 * 1024
+    with pytest.raises(ConnectorContractInvalid, match="max_input_bytes"):
+        _operation(max_input_bytes=64 * 1024 * 1024 + 1)
+    with pytest.raises(ConnectorContractInvalid, match="max_output_bytes"):
+        _operation(max_output_bytes=10 * 1024 * 1024 + 1)
+
+
+def test_connector_accepts_a_bounded_20k_by_18_input_payload_above_the_default_cap() -> None:
+    input_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "rows": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20_000,
+                "items": {
+                    "type": "array",
+                    "minItems": 18,
+                    "maxItems": 18,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 18},
+                },
+            }
+        },
+        "required": ["rows"],
+    }
+    output_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"accepted": {"type": "boolean"}},
+        "required": ["accepted"],
+    }
+    operation = _operation(
+        handler=lambda _binding, _arguments: {"accepted": True},
+        input_schema=input_schema,
+        output_schema=output_schema,
+        max_input_bytes=8 * 1024 * 1024,
+    )
+    registry = ConnectorRegistry((_descriptor(operations=(operation,)),))
+    payload = {
+        "rows": (
+            [["x" * 18] * 18 for _ in range(12_222)]
+            + [["y" * 17] * 18 for _ in range(7_778)]
+        )
+    }
+    payload_bytes = len(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    )
+    assert payload_bytes == 7_460_006
+    assert 1024 * 1024 < payload_bytes < operation.max_input_bytes
+    assert asyncio.run(
+        registry.invoke(
+            resolved=registry.require_operation("connector.test.sample@1", "query"),
+            binding=_binding(),
+            arguments=payload,
+        )
+    ) == {"accepted": True}
+
+
 @pytest.mark.parametrize(
     "field",
     [
         "account_id",
         "source_account_ids",
+        "resource_id",
+        "source_resource_ids",
         "endpoint",
         "api_endpoint",
         "database",
@@ -326,6 +482,57 @@ def test_contract_digest_tracks_schema_but_not_handler_implementation() -> None:
     assert other_handler.contract_sha256("connector.test.sample@1") == first_digest
     assert changed_schema.contract_sha256("connector.test.sample@1") != first_digest
     assert len(first_digest) == 64
+
+
+def test_legacy_account_read_default_cap_digest_uses_the_original_canonical_material() -> None:
+    registry = ConnectorRegistry((_descriptor(),))
+
+    assert registry.contract_sha256("connector.test.sample@1") == (
+        "4cfd5b0ab3d8f650971b5c92995eeb84b2dde3201c1664685dc5344b7c778999"
+    )
+    nondefault_cap = ConnectorRegistry(
+        (_descriptor(operations=(_operation(max_input_bytes=2 * 1024 * 1024),)),)
+    )
+    assert (
+        nondefault_cap.contract_sha256("connector.test.sample@1")
+        != registry.contract_sha256("connector.test.sample@1")
+    )
+
+
+def test_resource_result_rejects_wrapped_resource_binding_values_and_sensitive_names() -> None:
+    descriptor = ConnectorDescriptor(
+        service="connector.test.resource_result@1",
+        title="Resource result connector",
+        account_role=None,
+        allowed_systems=(),
+        binding_kind=ConnectorBindingKind.RESOURCE,
+        resource_role="arrival_sheet",
+        allowed_resource_kinds=("feishu_sheet",),
+        operations=(
+            _operation(
+                handler=lambda _binding, _arguments: {
+                    "value": "wrapped-sheet-resource-1-value"
+                },
+            ),
+        ),
+    )
+    registry = ConnectorRegistry((descriptor,))
+
+    with pytest.raises(ConnectorSensitiveDataDenied):
+        asyncio.run(
+            registry.invoke(
+                resolved=registry.require_operation(
+                    "connector.test.resource_result@1", "query"
+                ),
+                binding=ConnectorResourceBindingRef(
+                    service="connector.test.resource_result@1",
+                    resource_role="arrival_sheet",
+                    resource_id="sheet-resource-1",
+                    kind="feishu_sheet",
+                ),
+                arguments={"value": "ok"},
+            )
+        )
 
 
 def test_missing_service_and_operation_fail_closed() -> None:

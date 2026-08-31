@@ -336,6 +336,59 @@ def test_manifest_v2_rejects_duplicate_connector_service_and_role_declaration() 
         AutomationPluginManifestV2.from_mapping(optional_role)
 
 
+def test_manifest_v2_keeps_resource_and_host_internal_connector_bindings_explicit() -> None:
+    source = _manifest_mapping()
+    source["requires"] = [
+        {
+            "service": "connector.boyi.arrival_sheet@1",
+            "binding_kind": "resource",
+            "resource_role": "input_sheet",
+        },
+        {
+            "service": "connector.boyi.arrival_projection@1",
+            "binding_kind": "host_internal",
+        },
+    ]
+
+    manifest = AutomationPluginManifestV2.from_mapping(source)
+
+    assert tuple(dict(item) for item in manifest.connector_requirements) == tuple(
+        source["requires"]
+    )
+    assert manifest.resource_roles[0]["required"] is False
+    assert manifest.connector_account_role_for(
+        "connector.boyi.arrival_sheet@1"
+    ) is None
+    resource_as_account = copy.deepcopy(source)
+    resource_as_account["requires"][0] = {
+        "service": "connector.boyi.arrival_sheet@1",
+        "account_role": "input_sheet",
+    }
+    with pytest.raises(PluginManifestError, match="undeclared account role"):
+        AutomationPluginManifestV2.from_mapping(resource_as_account)
+    mixed_binding = copy.deepcopy(source)
+    mixed_binding["requires"][0]["account_role"] = "operator"
+    with pytest.raises(PluginManifestError, match="invalid binding contract"):
+        AutomationPluginManifestV2.from_mapping(mixed_binding)
+    mixed_internal = copy.deepcopy(source)
+    mixed_internal["requires"][1]["resource_role"] = "input_sheet"
+    with pytest.raises(PluginManifestError, match="invalid binding contract"):
+        AutomationPluginManifestV2.from_mapping(mixed_internal)
+
+
+def test_manifest_v2_allows_only_disabled_scheduler_without_a_placeholder_cron() -> None:
+    source = _manifest_mapping()
+    source["contributes"]["scheduler"][0].pop("schedule")
+
+    manifest = AutomationPluginManifestV2.from_mapping(source)
+
+    assert manifest.contributes["scheduler"][0]["default_enabled"] is False
+    assert "schedule" not in manifest.contributes["scheduler"][0]
+    source["contributes"]["scheduler"][0]["default_enabled"] = True
+    with pytest.raises(PluginManifestError, match="schedule is required"):
+        AutomationPluginManifestV2.from_mapping(source)
+
+
 def test_manifest_v2_keeps_connector_namespace_out_of_providers_and_contributions() -> None:
     connector_provider = _manifest_mapping()
     connector_provider["provides"][0]["service"] = "connector.fixture.tracking@1"

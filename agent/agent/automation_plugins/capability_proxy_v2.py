@@ -31,8 +31,10 @@ from agent.automation_plugins.connector_compatibility import (
 )
 from agent.automation_plugins.connector_registry import (
     ConnectorBindingRef,
+    ConnectorHostInternalBindingRef,
     ConnectorRegistry,
     ConnectorRegistryError,
+    ConnectorResourceBindingRef,
 )
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
@@ -848,9 +850,16 @@ class ServiceV2CapabilityProxy:
             raise _capability_error(
                 "service invocation context is invalid",
                 code="SERVICE_INVOKE_CONTEXT_INVALID",
-            )
+        )
         caller_effect = _require_dynamic_service_invoke_governance(context)
-        _required_arguments(arguments, {"service", "operation", "arguments"})
+        if set(arguments) not in (
+            {"service", "operation", "arguments"},
+            {"service", "operation", "arguments", "preflight_services"},
+        ):
+            raise _capability_error(
+                "service invocation arguments do not match the Host API contract",
+                code="CAPABILITY_ARGUMENT_INVALID",
+            )
         service = _required_key(arguments["service"], field="service")
         operation = _required_key(arguments["operation"], field="operation")
         if operation != context.action:
@@ -866,6 +875,21 @@ class ServiceV2CapabilityProxy:
             )
         public_arguments = dict(service_arguments)
         _canonical_json(public_arguments)
+        raw_preflight_services = arguments.get("preflight_services", ())
+        if (
+            not isinstance(raw_preflight_services, (list, tuple))
+            or len(raw_preflight_services) > 8
+            or any(
+                not isinstance(item, str) or not item or item != item.strip()
+                for item in raw_preflight_services
+            )
+            or len(raw_preflight_services) != len(set(raw_preflight_services))
+        ):
+            raise _capability_error(
+                "Connector preflight services are invalid",
+                code="CAPABILITY_ARGUMENT_INVALID",
+            )
+        preflight_services = tuple(raw_preflight_services)
 
         with self._orchestration.unit_of_work() as uow:
             manifest = _manifest_for_context(uow.automation_plugins, context)
@@ -886,7 +910,13 @@ class ServiceV2CapabilityProxy:
             )
         call_chain = (*context.service_call_chain, service)
         is_connector = service.startswith("connector.")
+        if preflight_services and not is_connector:
+            raise _capability_error(
+                "Connector preflight requires a Connector invocation",
+                code="CAPABILITY_ARGUMENT_INVALID",
+            )
         connector_requirement: ConnectorRequirementContract | None = None
+        connector_requirements: tuple[ConnectorRequirementContract, ...] = ()
         if is_connector:
             registry = self._connectors
             if registry is None:
@@ -895,8 +925,9 @@ class ServiceV2CapabilityProxy:
                     code="CAPABILITY_UNAVAILABLE",
                 )
             try:
+                connector_requirements = connector_requirements_from_manifest(manifest)
                 connector_requirement = connector_requirement_for_service(
-                    connector_requirements_from_manifest(manifest),
+                    connector_requirements,
                     service,
                 )
                 provider = registry.require_operation(service, operation)
@@ -938,19 +969,11 @@ class ServiceV2CapabilityProxy:
                 "service invocation would exceed its signed effect ceiling",
                 code="SERVICE_EFFECT_ESCALATION_DENIED",
             )
-        if (
-            effect
-            in {
-                CapabilityEffect.INTERNAL_WRITE,
-                CapabilityEffect.EXTERNAL_WRITE,
-                CapabilityEffect.DESTRUCTIVE,
-            }
-            and context.mark_write_started is not None
-        ):
-            # The Provider's immutable operation descriptor, not the consumer
-            # operation name nor a static service.invoke admission ceiling,
-            # determines whether this consumer crosses a write boundary.
-            context.mark_write_started()
+        is_write = effect in {
+            CapabilityEffect.INTERNAL_WRITE,
+            CapabilityEffect.EXTERNAL_WRITE,
+            CapabilityEffect.DESTRUCTIVE,
+        }
         if is_connector:
             resolver = context.connector_binding_resolver
             if resolver is None or connector_requirement is None:
@@ -958,13 +981,69 @@ class ServiceV2CapabilityProxy:
                     "Connector binding resolver is unavailable",
                     code="BROKER_ROLE_UNBOUND",
                 )
-            binding = await asyncio.to_thread(resolver, connector_requirement)
-            if not isinstance(binding, ConnectorBindingRef):
+            preflight_bindings: dict[str, object] = {}
+            preflight_requirements: list[ConnectorRequirementContract] = []
+            for candidate in preflight_services:
+                if not candidate.startswith("connector."):
+                    raise _capability_error(
+                        "Connector preflight service was not declared exactly",
+                        code="SERVICE_DEPENDENCY_UNDECLARED",
+                    )
+                requirement = connector_requirement_for_service(
+                    connector_requirements,
+                    candidate,
+                )
+                if requirement is None:
+                    raise _capability_error(
+                        "Connector preflight service was not declared exactly",
+                        code="SERVICE_DEPENDENCY_UNDECLARED",
+                    )
+                preflight_requirements.append(requirement)
+            for requirement in preflight_requirements:
+                resolved_binding = await asyncio.to_thread(resolver, requirement)
+                if not isinstance(
+                    resolved_binding,
+                    (
+                        ConnectorBindingRef,
+                        ConnectorResourceBindingRef,
+                        ConnectorHostInternalBindingRef,
+                    ),
+                ):
+                    raise _capability_error(
+                        "Connector binding resolver returned an invalid binding",
+                        code="BROKER_CONTRACT_INVALID",
+                    )
+                preflight_bindings[requirement.service] = resolved_binding
+            binding = preflight_bindings.get(service)
+            if binding is None:
+                binding = await asyncio.to_thread(resolver, connector_requirement)
+            if not isinstance(
+                binding,
+                (
+                    ConnectorBindingRef,
+                    ConnectorResourceBindingRef,
+                    ConnectorHostInternalBindingRef,
+                ),
+            ):
                 raise _capability_error(
                     "Connector binding resolver returned an invalid binding",
                     code="BROKER_CONTRACT_INVALID",
                 )
             try:
+                # Input caps and schemas are immutable Connector contract
+                # checks, so reject them before a write is recorded. ``invoke``
+                # repeats this validation immediately before its handler.
+                registry.prepare_invocation(
+                    resolved=provider,
+                    binding=binding,
+                    arguments=public_arguments,
+                )
+                if is_write and context.mark_write_started is not None:
+                    # Resolve the exact Host binding first. The immutable
+                    # Connector operation is the final fact that crosses the
+                    # write boundary, so an unbound optional resource remains
+                    # a pre-write failure rather than an unknown write.
+                    context.mark_write_started()
                 result = await registry.invoke(
                     resolved=provider,
                     binding=binding,
@@ -973,6 +1052,11 @@ class ServiceV2CapabilityProxy:
             except ConnectorRegistryError as exc:
                 raise _capability_error(str(exc), code=exc.code) from exc
         else:
+            if is_write and context.mark_write_started is not None:
+                # The Provider's immutable operation descriptor, not the
+                # consumer operation name nor a static service.invoke ceiling,
+                # determines whether this consumer crosses a write boundary.
+                context.mark_write_started()
             result = await executor(
                 provider=provider,
                 caller_automation_id=context.automation_id,

@@ -47,7 +47,12 @@ def scheduler_contribution_binding(
     if not isinstance(scheduler_items, list) or any(
         not isinstance(item, Mapping)
         or not str(item.get("id") or "")
-        or not isinstance(item.get("schedule"), Mapping)
+        or type(item.get("default_enabled")) is not bool
+        or (
+            "schedule" not in item
+            and item.get("default_enabled") is not False
+        )
+        or ("schedule" in item and not isinstance(item.get("schedule"), Mapping))
         for item in scheduler_items
     ):
         raise OrchestrationPersistenceError(
@@ -80,9 +85,14 @@ def scheduler_contribution_binding(
             for item in scheduler_items
             if str(item.get("id") or "") == entrypoint
         )
-        default_schedule = declaration["schedule"]
+        default_schedule = declaration.get("schedule")
+        if enabled and default_schedule is None and not schedule_expressions:
+            raise OrchestrationPersistenceError(
+                "enabled scheduler contribution requires an explicit project schedule"
+            )
         if (
             schedule_expressions
+            and isinstance(default_schedule, Mapping)
             and str(default_schedule.get("timezone") or "") != "Asia/Shanghai"
         ):
             raise OrchestrationPersistenceError(

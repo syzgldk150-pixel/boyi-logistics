@@ -19,6 +19,12 @@ updated: 2026-08-31
 Manifest、无签名 `super_admin` ZIP 安装、Host API、服务/贡献、托管存储和 v1→v2 双轨迁移，
 以仓库根 `docs/plugin-platform-v2.md` 为权威说明。
 
+TASK-MIG-001 的独立 `sync_arrival_stats_v2` 包、显式 Connector binding、Scheduler 省略/真实
+schedule 规则以及 Console/Scheduler/固定飞书入口 ownership 均属于上述 Service v2 合同，不
+改变本文的 v1 action 语义。v1 source 的 enabled webhook 不因离线迁移而被静默接管；真实 TMS、
+飞书、资源写入、生产安装和部署继续 `PRODUCTION_GATED`。迁移完成后不得为同一 source 再建
+pair，后续 v2 generation 升级沿用既有 v2 ownership；混合、损坏或历史归属歧义必须 fail closed。
+
 v1 与 v2 继续并存，但安装器只按 `schema_version + runtime_model` 严格分流：v1 为
 `schema_version=1` 且 `runtime_model` 缺省或为 `action_v1`，v2 为 `schema_version=2` 且
 `runtime_model=service_v2`。任一模型解析失败都不得回退另一模型，v1 项目也不能原地升级为 v2。

@@ -2576,7 +2576,7 @@ def test_open_migration_pair_blocks_ordinary_project_state_mutation() -> None:
     assert lifecycle_calls == []
 
 
-def test_create_migration_pair_copies_only_uniquely_compatible_closed_bindings() -> None:
+def test_create_migration_pair_copies_closed_bindings_without_scheduler() -> None:
     source = _entry(
         automation_id="legacy-clock",
         runtime_model=PluginRuntimeModel.ACTION_V1.value,
@@ -2611,14 +2611,14 @@ def test_create_migration_pair_copies_only_uniquely_compatible_closed_bindings()
         config={"sitecode": "A"},
         account_bindings={"legacy_operator": "account-1"},
         resource_bindings={},
-        schedule={"kind": "daily_times", "times": ["18:30"], "enabled": True},
+        schedule={"kind": "none", "times": [], "enabled": False},
         config_version=7,
         configured=True,
         config_sha256="1" * 64,
         account_bindings_sha256="2" * 64,
         resource_bindings_sha256="3" * 64,
         device_binding_sha256="4" * 64,
-        enabled_entrypoints=("scheduler",),
+        enabled_entrypoints=("console",),
     )
     saves: list[dict[str, Any]] = []
     reconciled: list[str] = []
@@ -2680,7 +2680,7 @@ def test_create_migration_pair_copies_only_uniquely_compatible_closed_bindings()
 
     assert saves[0]["automation_id"] == "clock-v2"
     assert saves[0]["account_bindings"] == {"operator": "account-1"}
-    assert saves[0]["enabled_entrypoints"] == ("manual_run", "daily_clockin")
+    assert saves[0]["enabled_entrypoints"] == ("manual_run",)
     assert saves[0]["schedule"] == source_record.schedule
     assert prepared_pairs and prepared_pairs[0]["state"] == "PREPARING"
     assert reconciled == ["clock-v2"]

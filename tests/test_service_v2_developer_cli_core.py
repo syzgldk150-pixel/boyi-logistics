@@ -649,9 +649,21 @@ def test_manifest_schema_matches_template_envelope_and_authoritative_contract(
     assert schema["properties"]["runtime"]["properties"]["python"]["const"] == "3.10"
     assert manifest["requires"] == []
     required_service = schema["$defs"]["required_service"]
-    assert len(required_service["oneOf"]) == 2
+    assert len(required_service["oneOf"]) == 5
     assert required_service["oneOf"][0]["required"] == ["service"]
-    assert required_service["oneOf"][1]["required"] == ["service", "account_role"]
+    assert required_service["oneOf"][1]["required"] == [
+        "service",
+        "binding_kind",
+        "account_role",
+    ]
+    assert required_service["oneOf"][2]["properties"]["binding_kind"] == {
+        "const": "resource"
+    }
+    assert required_service["oneOf"][3]["properties"]["binding_kind"] == {
+        "const": "host_internal"
+    }
+    assert required_service["oneOf"][4]["required"] == ["service", "account_role"]
+    assert all(branch["additionalProperties"] is False for branch in required_service["oneOf"])
     assert schema["$defs"]["connector_service"]["pattern"].startswith("^connector\\.")
     verified = load_verified_local_artifact(source)
     projected = ServiceV2ProjectContract.from_manifest(verified.manifest)

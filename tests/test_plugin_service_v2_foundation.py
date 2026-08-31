@@ -15,7 +15,14 @@ from shared.automation_plugin_repository import (
     _runtime_contract,
     _validated_generation_row,
 )
-from shared.orchestration_repository_support import ConcurrentUpdateError
+from shared.automation_plugin_migration_ownership import (
+    MIGRATION_ENTRYPOINT_OWNERSHIP_SCHEMA,
+    MIGRATION_OWNERSHIP_STATES,
+)
+from shared.orchestration_repository_support import (
+    ConcurrentUpdateError,
+    IdempotencyConflict,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -159,6 +166,7 @@ def test_create_migration_pair_requires_action_to_service_and_audits():
     connection = _Connection(
         [
             ("WHERE pair.create_request_id=%s", None, 0),
+            ("SELECT migration_pair_id, source_automation_id", [], 0),
             (
                 "WHERE project.automation_id IN (%s, %s)",
                 [
@@ -206,7 +214,7 @@ def test_begin_migration_preparation_holds_target_before_copy_can_run():
     connection = _Connection(
         [
             ("WHERE create_request_id=%s", None, 0),
-            ("SELECT migration_pair_id FROM automation_plugin_migration_pairs", [], 0),
+            ("SELECT migration_pair_id, source_automation_id", [], 0),
             (
                 "WHERE project.automation_id IN (%s, %s)",
                 [
@@ -237,6 +245,215 @@ def test_begin_migration_preparation_holds_target_before_copy_can_run():
     disabled = next(sql for sql, _params in executed if "UPDATE scheduled_tasks" in sql)
     assert "automation_id=%s" in disabled
     assert connection.cursor_instance.actions == []
+
+
+def test_begin_migration_rejects_a_source_with_completed_ownership_history() -> None:
+    pair_id = str(uuid.uuid4())
+    connection = _Connection(
+        [
+            ("WHERE create_request_id=%s", None, 0),
+            (
+                "SELECT migration_pair_id, source_automation_id",
+                [
+                    {
+                        "migration_pair_id": str(uuid.uuid4()),
+                        "source_automation_id": "legacy-action",
+                        "target_automation_id": "service-v2",
+                        "state": "COMPLETED",
+                    }
+                ],
+                0,
+            ),
+        ]
+    )
+    repository = AutomationPluginRepository(connection)
+
+    with pytest.raises(ConcurrentUpdateError, match="durable ownership history"):
+        repository.begin_plugin_migration_pair_preparation(
+            migration_pair_id=pair_id,
+            source_automation_id="legacy-action",
+            target_automation_id="service-v2-next",
+            business_key_contract={"fields": ["business_day"]},
+            request_id=str(uuid.uuid4()),
+            actor_id="admin-one",
+            actor_role="super_admin",
+            reason="must not replace completed ownership",
+        )
+
+    assert connection.cursor_instance.actions == []
+
+
+def _migration_cutover_retry_repository(
+    *,
+    event_overrides: dict[str, object] | None = None,
+    pair_overrides: dict[str, object] | None = None,
+) -> AutomationPluginRepository:
+    snapshot = {"schema": "plugin-migration-v2/1"}
+    pair = {
+        "migration_pair_id": "00000000-0000-0000-0000-000000000001",
+        "source_automation_id": "legacy-action",
+        "target_automation_id": "service-v2",
+        "state": "CUTOVER",
+        "record_version": 3,
+        "entrypoint_snapshot_json": snapshot,
+        "entrypoint_snapshot_sha256": _json_hash(snapshot),
+        **(pair_overrides or {}),
+    }
+    event = {
+        "actor_id": "admin-one",
+        "actor_role": "super_admin",
+        "reason": "approved cutover",
+        "from_state": "READY",
+        "to_state": "CUTOVER",
+        "from_record_version": 2,
+        "to_record_version": 3,
+        **(event_overrides or {}),
+    }
+    return AutomationPluginRepository(
+        _Connection(
+            [
+                ("WHERE migration_pair_id=%s FOR UPDATE", pair, 0),
+                (
+                    "WHERE migration_pair_id=%s AND request_id=%s FOR UPDATE",
+                    event,
+                    0,
+                ),
+            ]
+        )
+    )
+
+
+def test_migration_operation_exact_retry_returns_the_recorded_transition() -> None:
+    repository = _migration_cutover_retry_repository(
+        pair_overrides={
+            "state": "COMPLETED",
+            "record_version": 4,
+            "completed_at": datetime(2026, 8, 31, tzinfo=timezone.utc),
+        }
+    )
+
+    result = repository.cutover_plugin_migration_pair(
+        "00000000-0000-0000-0000-000000000001",
+        expected_record_version=2,
+        request_id="00000000-0000-0000-0000-000000000002",
+        actor_id="admin-one",
+        actor_role="super_admin",
+        reason="approved cutover",
+    )
+
+    assert result["state"] == "CUTOVER"
+    assert result["record_version"] == 3
+    assert result["completed_at"] is None
+
+
+@pytest.mark.parametrize(
+    ("event_overrides", "operation", "reason"),
+    (
+        ({"from_state": "TESTING"}, "CUTOVER", "approved cutover"),
+        ({"from_record_version": 1}, "CUTOVER", "approved cutover"),
+        ({"to_state": "ROLLED_BACK"}, "CUTOVER", "approved cutover"),
+        ({}, "ROLLBACK", "approved cutover"),
+        ({}, "CUTOVER", "different reason"),
+    ),
+)
+def test_migration_operation_request_reuse_rejects_different_intent(
+    event_overrides: dict[str, object],
+    operation: str,
+    reason: str,
+) -> None:
+    repository = _migration_cutover_retry_repository(
+        event_overrides=event_overrides,
+    )
+    method = (
+        repository.cutover_plugin_migration_pair
+        if operation == "CUTOVER"
+        else repository.rollback_plugin_migration_pair
+    )
+
+    with pytest.raises(IdempotencyConflict, match="different input"):
+        method(
+            "00000000-0000-0000-0000-000000000001",
+            expected_record_version=2,
+            request_id="00000000-0000-0000-0000-000000000002",
+            actor_id="admin-one",
+            actor_role="super_admin",
+            reason=reason,
+        )
+
+
+@pytest.mark.parametrize("operation", ("CUTOVER", "ROLLBACK"))
+def test_repository_migration_operation_rejects_scheduler_ownership(
+    operation: str,
+) -> None:
+    owners = {
+        state: {
+            "console": "SERVICE_V2" if state == "CUTOVER" else "ACTION_V1",
+            "scheduler": "SERVICE_V2" if state == "CUTOVER" else "ACTION_V1",
+            "feishu": "NONE",
+        }
+        for state in MIGRATION_OWNERSHIP_STATES
+    }
+    snapshot = {
+        "schema": "plugin-migration-v2/1",
+        "business_key_contract": {"fields": ["business_day"]},
+        "entrypoint_ownership": {
+            "schema": MIGRATION_ENTRYPOINT_OWNERSHIP_SCHEMA,
+            "console": {
+                "source_enabled": True,
+                "target_contribution_id": "manual_run",
+            },
+            "scheduler": {
+                "source_enabled": True,
+                "target_contribution_id": "daily_run",
+                "schedule_mode": "COPY_SOURCE",
+            },
+            "feishu": {
+                "source_enabled": False,
+                "target_contribution_id": None,
+                "source_tool_name": None,
+                "source_route_key": None,
+                "source_resource_id": None,
+                "commands": [],
+            },
+            "owners": owners,
+        },
+    }
+    pair = {
+        "migration_pair_id": "00000000-0000-0000-0000-000000000001",
+        "source_automation_id": "legacy-action",
+        "target_automation_id": "service-v2",
+        "state": "READY",
+        "record_version": 2,
+        "entrypoint_snapshot_json": snapshot,
+        "entrypoint_snapshot_sha256": _json_hash(snapshot),
+    }
+    repository = AutomationPluginRepository(
+        _Connection(
+            [
+                ("WHERE migration_pair_id=%s FOR UPDATE", pair, 0),
+                (
+                    "WHERE migration_pair_id=%s AND request_id=%s FOR UPDATE",
+                    None,
+                    0,
+                ),
+            ]
+        )
+    )
+    method = (
+        repository.cutover_plugin_migration_pair
+        if operation == "CUTOVER"
+        else repository.rollback_plugin_migration_pair
+    )
+
+    with pytest.raises(ConcurrentUpdateError, match="production gated"):
+        method(
+            pair["migration_pair_id"],
+            expected_record_version=2,
+            request_id="00000000-0000-0000-0000-000000000002",
+            actor_id="admin-one",
+            actor_role="super_admin",
+            reason="scheduler requires a production reload",
+        )
 
 
 def test_dependency_loss_disables_physical_scheduler_without_mutating_intent():
