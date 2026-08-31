@@ -264,16 +264,16 @@ updated: 2026-08-31
 
 ### TASK-MIG-003：迁移分批问题件
 
-- 状态：`IN_PROGRESS`
-- 开始时间 / 结束时间：`2026-08-31T17:29:07+08:00` / —
-- 设计决策：以现有分批问题件 v1 源码和已验证 primitive 作为唯一业务来源，先完成 19 列分类、应到/已到数量严格守恒、Sheet 与 MySQL 投影、逐票独立 Evidence、写后核验和错误边界审计，再形成独立 Service v2 候选包与离线 fixture parity。只复用既有 Connector、selection preview、Command/Run/Evidence 与 migration pair 合同，不复制 whole-tool fallback、不按字段或角色猜测、不伪造真实 Connector；真实 TMS/飞书/Sheet/MySQL、问题件写入、入口切换、安装和部署继续 `PRODUCTION_GATED`。
-- 修改文件 / Commit SHA：— / —
-- 测试命令和结果：尚未运行。
-- 兼容性影响：v1 保持运行，v2 默认不接生产入口。
-- 数据库影响：Sheet/MySQL 仅 fixture 与离线投影验证；不操作生产。
-- 未完成项：全部。
+- 状态：`DONE_OFFLINE`
+- 开始时间 / 结束时间：`2026-08-31T17:29:07+08:00` / `2026-08-31T18:01:27+08:00`
+- 设计决策：以现有分批问题件 v1 源码和已验证 primitive 作为唯一业务来源，新增独立 `split_pending_problem_upload_v2` Service v2 候选包；固定 19 列 A:S、严格数量守恒、最多 90 票选择、全部查询预检先于首个写、Sheet 与 host-internal 投影同步、逐票 create/verify/ledger/result Evidence，以及首个写后的 `WRITE_OUTCOME_UNKNOWN` 隔离。五类 Connector requirement 按 source/target/projection/Ronghui account/problem-ledger account 显式建模；Host Evidence 保留 v1 每票 `third_party_split_problem_confirmed` 验证链，不复制 whole-tool fallback、不按字段或角色猜测、不伪造真实 Connector。
+- 修改文件 / Commit SHA：18 个代码、manifest、fixture、测试与文档文件 / `2b595665e3ed17979bb865c19c6e3e277bd53a73`（已推送）。
+- 测试命令和结果：MIG003 聚焦与平台回归 `365 passed, 44 subtests passed`；根测试 `2505 passed, 30 skipped, 372 subtests passed`；Agent 测试 `1181 passed, 1 skipped, 214 subtests passed`；Console 测试 `618 passed, 213 subtests passed`。Ruff、文档完整性（77 个受跟踪 Markdown）、运行时导入边界、内部 API 合同、manifest schema、15 个 JavaScript 语法检查、镜像文档一致性和 diff 检查均通过；repository hygiene 仅保留 3 个既有超大模块提示，未新增提示。确定性 ZIP 双构建字节一致，SHA256 `3698b613546186fa0174612b48b60d1b4705a84055796030e4efd4d4fb91eee2`，大小 17005 bytes。两路独立复核均为 `SHIP`。
+- 兼容性影响：v1 仍是唯一生产入口；v2 默认关闭且未绑定生产命令、调度、事件或 webhook。
+- 数据库影响：无 migration、schema 或 DML；Sheet/MySQL 仅 fixture 与离线投影验证，未连接或操作生产数据库。
+- 未完成项：真实 TMS/飞书/Sheet/MySQL Connector 适配、真实问题件写后回读、入口切换、安装、部署与生产验证均为 `PRODUCTION_GATED`。
 - 下一项 TASK：`TASK-MIG-004`。
-- 恢复说明：MIG002 代码 `ae53ba09c3a2aa6a3735bb98dfa9fe9e098a1131` 与完成账本 `32fa9dfca1b7d0edd158689f442d830102d97dec` 已推送。从 v1 `split_pending_problem_upload` payload、19 列分类/数量守恒、Sheet/MySQL 投影、逐票 Evidence 与 whole-tool fallback 边界开始只读审计；先做离线 fixture，不读取 `.env`、不访问真实系统或执行真实写。
+- 恢复说明：MIG003 代码 `2b595665e3ed17979bb865c19c6e3e277bd53a73` 已推送；确认本完成账本 checkpoint 后，立即从 v1 `sync_scan_codes` 的 PREVIEW/FORMAL、有效期、一次性消费、权威重读、批次 ledger 核验、数量守恒、零候选和未知写边界开始 MIG004。不得读取 `.env`、访问真实系统或执行真实扫描。
 
 ### TASK-MIG-004：迁移扫描
 
