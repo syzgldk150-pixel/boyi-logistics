@@ -1651,6 +1651,70 @@ def test_catalog_projects_exact_committed_feishu_contribution() -> None:
     assert "must-not-cross-boundary" not in repr(projection)
 
 
+def test_catalog_projects_exact_committed_webhook_contribution() -> None:
+    instance = {
+        "automation_id": "service-project",
+        "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
+        "enabled": True,
+        "committed_generation": 8,
+        "dependency_state": "READY",
+        "blocking_reasons": [],
+        "entrypoints": ["hooks.receive"],
+        "enabled_entrypoints": ["hooks.receive"],
+        "entrypoint_kinds": {"hooks.receive": "webhook"},
+    }
+    registry = _ContributionRegistry(
+        8,
+        (
+            SimpleNamespace(
+                automation_id="service-project",
+                generation=8,
+                contribution_id="hooks.receive",
+                contribution_kind="webhook",
+                phase="COMMITTED",
+                backend_status="READY",
+                route="private-hook",
+                service="must-not-cross-boundary",
+            ),
+        ),
+    )
+    catalog = _ProjectionCatalog(
+        instance,
+        _committed_service_entry(
+            automation_id="service-project",
+            generation=8,
+            enabled=True,
+            declared_kinds={"hooks.receive": "webhook"},
+            committed_enabled_entrypoints=("hooks.receive",),
+        ),
+    )
+    service = AutomationPluginManagementService(
+        catalog=catalog,
+        lifecycle=SimpleNamespace(),
+        configuration=SimpleNamespace(),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+        contribution_registry=registry,
+    )
+
+    projection = service.catalog_projection(actor=_console_actor())
+
+    assert projection["instances"][0]["contribution_projection_state"] == "ACTIVE"
+    assert projection["instances"][0]["active_contributions"] == [
+        {
+            "contribution_id": "hooks.receive",
+            "contribution_kind": "webhook",
+            "generation": 8,
+            "phase": "COMMITTED",
+            "backend_status": "READY",
+        }
+    ]
+    assert "private-hook" not in repr(projection)
+    assert "must-not-cross-boundary" not in repr(projection)
+
+
 def test_catalog_service_v2_projection_states_are_closed_and_fail_closed() -> None:
     managed = {
         "automation_id": "service-project",

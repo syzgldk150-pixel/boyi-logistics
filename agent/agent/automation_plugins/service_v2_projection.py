@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import re
 from dataclasses import dataclass, field, replace
 from threading import RLock
 from typing import Any, Callable, Iterable, Mapping
@@ -38,8 +39,15 @@ _SERVICE_V2_CONTRIBUTION_KINDS = _LEGACY_SERVICE_V2_CONTRIBUTION_KINDS + (
     "harness",
 )
 _MANAGED_CONTRIBUTION_KINDS = _SERVICE_V2_CONTRIBUTION_KINDS
-_ACTIVE_CONTRIBUTION_KINDS = ("console", "scheduler", "feishu", "harness")
+_ACTIVE_CONTRIBUTION_KINDS = (
+    "console",
+    "scheduler",
+    "webhook",
+    "feishu",
+    "harness",
+)
 _SCHEDULE_BACKEND_TIMEZONE = "Asia/Shanghai"
+_WEBHOOK_ROUTE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$", re.ASCII)
 _EMPTY_HARNESS_INPUT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -319,6 +327,15 @@ class ManagedFeishuDispatchTarget:
     contribution_id: str
 
 
+@dataclass(frozen=True)
+class ManagedWebhookDispatchTarget:
+    """Closed, process-local target returned by exact managed route lookup."""
+
+    automation_id: str
+    generation: int
+    contribution_id: str
+
+
 class ManagedContributionRegistry:
     """Recoverable registry for host-owned v2 contribution declarations.
 
@@ -524,6 +541,8 @@ class ManagedContributionRegistry:
                     "managed Feishu commands are invalid",
                     code="CONTRIBUTION_REGISTRATION_CONFLICT",
                 )
+        if candidate.contribution_kind == "webhook":
+            _validated_webhook_declaration(declaration)
         expected_routes = _contribution_route_keys(
             automation_id=candidate.automation_id,
             contribution_kind=candidate.contribution_kind,
@@ -1071,6 +1090,85 @@ class ManagedContributionRegistry:
                 contribution_id=record.contribution_id,
             )
 
+    def resolve_active_webhook_route(
+        self,
+        *,
+        method: str,
+        route: str,
+    ) -> ManagedWebhookDispatchTarget | None:
+        """Resolve one global exact POST route without caller-supplied ownership."""
+
+        if (
+            not isinstance(method, str)
+            or not method
+            or method != method.strip()
+        ):
+            raise PluginConflictError(
+                "managed Webhook method is invalid",
+                code="CONTRIBUTION_REGISTRATION_CONFLICT",
+            )
+        if method != "POST":
+            return None
+        if not isinstance(route, str) or not _WEBHOOK_ROUTE_RE.fullmatch(route):
+            raise PluginConflictError(
+                "managed Webhook route is invalid",
+                code="CONTRIBUTION_REGISTRATION_CONFLICT",
+            )
+        route_key = f"webhook:POST:{route}"
+        with self._lock:
+            owner_ids = tuple(self._route_owners.get(route_key, ()))
+            if not owner_ids:
+                return None
+            records: list[ManagedContributionRegistration] = []
+            for registration_id in owner_ids:
+                record = self._registrations.get(registration_id)
+                if (
+                    record is None
+                    or record.contribution_kind != "webhook"
+                    or record.route_keys != (route_key,)
+                    or record.backend != "managed_webhook_router"
+                    or record.backend_status != "READY"
+                    or record.reason_code is not None
+                    or record.reason_detail is not None
+                ):
+                    raise PluginConflictError(
+                        "managed Webhook route projection is invalid",
+                        code="RUNTIME_PROJECTION_AMBIGUOUS",
+                    )
+                try:
+                    declaration_method, declaration_route = (
+                        _validated_webhook_declaration(record.declaration)
+                    )
+                except PluginConflictError as exc:
+                    raise PluginConflictError(
+                        "managed Webhook route projection is invalid",
+                        code="RUNTIME_PROJECTION_AMBIGUOUS",
+                    ) from exc
+                if declaration_method != method or declaration_route != route:
+                    raise PluginConflictError(
+                        "managed Webhook route projection is invalid",
+                        code="RUNTIME_PROJECTION_AMBIGUOUS",
+                    )
+                if (
+                    record.dispatch_available
+                    and self._active_generations.get(record.automation_id)
+                    == record.generation
+                ):
+                    records.append(record)
+            if not records:
+                return None
+            if len(records) != 1:
+                raise PluginConflictError(
+                    "managed Webhook route is ambiguous",
+                    code="RUNTIME_PROJECTION_AMBIGUOUS",
+                )
+            record = records[0]
+            return ManagedWebhookDispatchTarget(
+                automation_id=record.automation_id,
+                generation=record.generation,
+                contribution_id=record.contribution_id,
+            )
+
     def active_snapshot(
         self,
         *,
@@ -1315,6 +1413,24 @@ def _validate_harness_declaration(
         )
 
 
+def _validated_webhook_declaration(
+    declaration: Mapping[str, Any],
+) -> tuple[str, str]:
+    method = declaration.get("method")
+    route = declaration.get("route")
+    if (
+        not isinstance(method, str)
+        or method != "POST"
+        or not isinstance(route, str)
+        or not _WEBHOOK_ROUTE_RE.fullmatch(route)
+    ):
+        raise PluginConflictError(
+            "v2 Webhook declaration is invalid",
+            code="CONTRIBUTION_REGISTRATION_CONFLICT",
+        )
+    return method, route
+
+
 def _contribution_route_keys(
     *,
     automation_id: str,
@@ -1329,7 +1445,8 @@ def _contribution_route_keys(
     if contribution_kind == "harness":
         return (f"harness:{automation_id}:{contribution_id}",)
     if contribution_kind == "webhook":
-        return (f"webhook:{automation_id}:{declaration.get('route')}",)
+        method, route = _validated_webhook_declaration(declaration)
+        return (f"webhook:{method}:{route}",)
     if contribution_kind == "feishu":
         commands = declaration.get("commands")
         if not isinstance(commands, (list, tuple)):
@@ -1382,8 +1499,10 @@ def _contribution_backend(
         return "harness_tool_catalog", "READY", None, None
     if contribution_kind == "feishu":
         return "managed_feishu_router", "READY", None, None
+    if contribution_kind == "webhook":
+        _validated_webhook_declaration(declaration)
+        return "managed_webhook_router", "READY", None, None
     backend = {
-        "webhook": "managed_webhook_router",
         "events": "managed_event_subscriptions",
     }[contribution_kind]
     return (
@@ -1750,4 +1869,5 @@ def _service_registration_material(
 __all__ = [
     "ManagedContributionRegistration",
     "ManagedContributionRegistry",
+    "ManagedWebhookDispatchTarget",
 ]

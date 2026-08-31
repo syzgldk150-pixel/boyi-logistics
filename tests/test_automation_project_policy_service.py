@@ -570,12 +570,36 @@ class AutomationProjectPolicyServiceTests(TestCase):
             allowed_entrypoints=frozenset({"feishu"}),
         )
 
+    def _set_service_v2_webhook_contract(self) -> None:
+        self.entry.runtime_model = "SERVICE_V2"
+        self.contract = replace(
+            self.contract,
+            invocation_contracts={
+                "receive_status": InvocationArgumentContract(
+                    contract_id="receive_status",
+                    entrypoint="webhook",
+                    expected_arguments={"mode": "saved"},
+                    dynamic_argument_resolvers={},
+                    contribution_id="receive_status",
+                )
+            },
+            allowed_entrypoints=frozenset({"webhook"}),
+        )
+
     @staticmethod
     def _verified_feishu_actor() -> Actor:
         return Actor(
             ActorType.FEISHU_USER,
             "sender-one",
             authenticated_by="feishu_verified_event",
+        )
+
+    @staticmethod
+    def _verified_webhook_actor() -> Actor:
+        return Actor(
+            ActorType.WEBHOOK,
+            "webhook:route-owner-digest",
+            authenticated_by="signed_webhook_route",
         )
 
     def _set_scan_project(self) -> None:
@@ -1043,6 +1067,143 @@ class AutomationProjectPolicyServiceTests(TestCase):
         )
 
         self.assertEqual("run-invoke", receipt.run_id)
+
+    def test_service_v2_webhook_revalidates_exact_projection_at_acceptance(self):
+        self._set_service_v2_webhook_contract()
+        registry = _ContributionRegistry()
+        service = self._service_with_contribution_registry(registry)
+
+        receipt = service.invoke_trusted(
+            AUTOMATION_ID,
+            entrypoint=AutomationEntrypoint.WEBHOOK,
+            request_id="event-service-v2-webhook",
+            actor=self._verified_webhook_actor(),
+            trusted_context={
+                "route_id": "route-owner-digest",
+                "route_revision": 1,
+                "source_event_id": "event-service-v2-webhook",
+                "webhook_path": "webhook/status_update",
+                "webhook_method": "POST",
+            },
+            idempotency_key="webhook:event-owner-digest",
+            expected_automation_generation=1,
+            contribution_id="receive_status",
+        )
+
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual({"mode": "saved"}, self.gateway.command.parameters["arguments"])
+        expected_call = {
+            "automation_id": AUTOMATION_ID,
+            "generation": 1,
+            "contribution_kind": "webhook",
+            "contribution_id": "receive_status",
+        }
+        self.assertEqual([expected_call, expected_call], registry.calls)
+
+    def test_service_v2_webhook_rejects_dynamic_argument_input(self):
+        self._set_service_v2_webhook_contract()
+        registry = _ContributionRegistry()
+        service = self._service_with_contribution_registry(registry)
+
+        with self.assertRaises(OrchestrationError) as raised:
+            service.invoke_trusted(
+                AUTOMATION_ID,
+                entrypoint=AutomationEntrypoint.WEBHOOK,
+                request_id="event-dynamic-webhook",
+                actor=self._verified_webhook_actor(),
+                trusted_context={
+                    "route_id": "route-owner-digest",
+                    "route_revision": 1,
+                    "source_event_id": "event-dynamic-webhook",
+                    "webhook_path": "webhook/status_update",
+                    "webhook_method": "POST",
+                    "dynamic_inputs": {"mode": "override"},
+                },
+                expected_automation_generation=1,
+                contribution_id="receive_status",
+            )
+
+        self.assertEqual("TRUSTED_CONTEXT_INVALID", raised.exception.code)
+        self.assertEqual([], registry.calls)
+        self.assertIsNone(self.gateway.command)
+
+    def test_service_v2_webhook_requires_matching_projection_and_uow_recheck(self):
+        self._set_service_v2_webhook_contract()
+        context = {
+            "route_id": "route-owner-digest",
+            "route_revision": 1,
+            "source_event_id": "event-webhook",
+            "webhook_path": "webhook/status_update",
+            "webhook_method": "POST",
+        }
+
+        with self.assertRaises(OrchestrationError) as raised:
+            self.service.invoke_trusted(
+                AUTOMATION_ID,
+                entrypoint=AutomationEntrypoint.WEBHOOK,
+                request_id="event-no-registry",
+                actor=self._verified_webhook_actor(),
+                trusted_context=context,
+                expected_automation_generation=1,
+                contribution_id="receive_status",
+            )
+        self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
+
+        registry = _ContributionRegistry()
+
+        def mismatched_resolve_active(**kwargs):
+            registry.calls.append(dict(kwargs))
+            return SimpleNamespace(
+                **{**kwargs, "contribution_kind": "feishu"},
+                phase="COMMITTED",
+                backend_status="READY",
+            )
+
+        registry.resolve_active = mismatched_resolve_active
+        service = self._service_with_contribution_registry(registry)
+        with self.assertRaises(OrchestrationError) as raised:
+            service.invoke_trusted(
+                AUTOMATION_ID,
+                entrypoint=AutomationEntrypoint.WEBHOOK,
+                request_id="event-mismatched-registry",
+                actor=self._verified_webhook_actor(),
+                trusted_context=context,
+                expected_automation_generation=1,
+                contribution_id="receive_status",
+            )
+        self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
+        self.assertEqual(1, len(registry.calls))
+
+        registry = _ContributionRegistry()
+
+        def racing_resolve_active(**kwargs):
+            registry.calls.append(dict(kwargs))
+            if len(registry.calls) > 1:
+                raise PluginConflictError(
+                    "synthetic Webhook generation switch",
+                    code="RUNTIME_PROJECTION_STALE",
+                )
+            return SimpleNamespace(
+                **kwargs,
+                phase="COMMITTED",
+                backend_status="READY",
+            )
+
+        registry.resolve_active = racing_resolve_active
+        service = self._service_with_contribution_registry(registry)
+        with self.assertRaises(OrchestrationError) as raised:
+            service.invoke_trusted(
+                AUTOMATION_ID,
+                entrypoint=AutomationEntrypoint.WEBHOOK,
+                request_id="event-racing-registry",
+                actor=self._verified_webhook_actor(),
+                trusted_context=context,
+                expected_automation_generation=1,
+                contribution_id="receive_status",
+            )
+        self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
+        self.assertEqual(2, len(registry.calls))
+        self.assertIsNone(self.gateway.command)
 
     def test_scan_preview_formal_invoke_stays_disabled_under_current_governance(self):
         self._set_scan_project()
@@ -1880,6 +2041,7 @@ class AutomationProjectPolicyServiceTests(TestCase):
                 "route_revision": 3,
                 "source_event_id": "event-one",
                 "webhook_path": "scan-sync",
+                "webhook_method": "POST",
                 "dynamic_inputs": {"BILL_CODE": "10001"},
             },
             expected_automation_generation=1,
