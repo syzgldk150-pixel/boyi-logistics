@@ -60,6 +60,7 @@ class AutomationEntrypoint(str, Enum):
     HARNESS = "harness"
     FEISHU = "feishu"
     WEBHOOK = "webhook"
+    EVENTS = "events"
 
 
 class AutomationProjectContractError(ValueError):

@@ -274,12 +274,6 @@ def test_manifest_v2_requires_owned_service_names_and_closed_contributions() -> 
     with pytest.raises(PluginManifestError, match="absent from the provided service"):
         AutomationPluginManifestV2.from_mapping(unknown_operation)
 
-    duplicate_id = _manifest_mapping()
-    duplicate_id["contributes"]["events"][0]["id"] = "run_now"
-    with pytest.raises(PluginManifestError, match="duplicate contribution id"):
-        AutomationPluginManifestV2.from_mapping(duplicate_id)
-
-
 def test_manifest_v2_accepts_canonical_post_webhook_route() -> None:
     source = _manifest_mapping()
     source["contributes"]["webhook"][0]["route"] = "a" * 64
@@ -313,6 +307,60 @@ def test_manifest_v2_accepts_canonical_post_webhook_route() -> None:
 def test_manifest_v2_rejects_noncanonical_webhook_contract(mutate, message: str) -> None:
     source = _manifest_mapping()
     mutate(source["contributes"]["webhook"][0])
+
+    with pytest.raises(PluginManifestError, match=message):
+        AutomationPluginManifestV2.from_mapping(source)
+
+
+def test_manifest_v2_accepts_boundary_non_durable_event_contract() -> None:
+    source = _manifest_mapping()
+    source["contributes"]["events"][0].update(
+        event="a" * 128,
+        durable=False,
+        default_enabled=True,
+    )
+
+    manifest = AutomationPluginManifestV2.from_mapping(source)
+
+    assert manifest.to_mapping()["contributes"]["events"] == [
+        {
+            "id": "account_restored",
+            "service": "plugin.sample_plugin.runner@1",
+            "operation": "run",
+            "event": "a" * 128,
+            "durable": False,
+            "default_enabled": True,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda item: item.update(event=" "), "non-empty string"),
+        (lambda item: item.update(event="Account.session_restored"), "stable event name"),
+        (lambda item: item.update(event="account/session_restored"), "stable event name"),
+        (lambda item: item.update(event="a" * 129), "no longer than 128"),
+        (lambda item: item.update(extra=True), "unsupported fields"),
+        (lambda item: item.update(durable="false"), "durable must be boolean"),
+        (
+            lambda item: item.update(default_enabled=1),
+            "default_enabled must be boolean",
+        ),
+        (
+            lambda item: item.update(service="plugin.sample_plugin.missing@1"),
+            "must target a provided service",
+        ),
+        (
+            lambda item: item.update(operation="missing"),
+            "operation is absent from the provided service",
+        ),
+        (lambda item: item.update(id="run_now"), "duplicate contribution id"),
+    ],
+)
+def test_manifest_v2_rejects_noncanonical_event_contract(mutate, message: str) -> None:
+    source = _manifest_mapping()
+    mutate(source["contributes"]["events"][0])
 
     with pytest.raises(PluginManifestError, match=message):
         AutomationPluginManifestV2.from_mapping(source)

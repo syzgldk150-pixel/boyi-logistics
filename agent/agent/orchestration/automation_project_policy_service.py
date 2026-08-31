@@ -30,8 +30,10 @@ from agent.automation_plugins.code_owned_fields import (
 )
 from agent.orchestration.automation_project_service_v2 import (
     normalize_contribution_id,
+    require_active_service_v2_contribution,
     require_service_v2_policy_mode,
     resolve_invocation_contract_id,
+    validate_service_v2_event_context,
     validate_service_v2_compiled_target,
 )
 from agent.orchestration.automation_project_policy_plan import (
@@ -120,6 +122,7 @@ _SOURCE_LABELS = {
     "scheduler": "定时",
     "feishu": "飞书",
     "webhook": "Webhook",
+    "events": "Event",
 }
 _RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "EXTREME": 3}
 _TRUSTED_CONTEXT_FIELDS = {
@@ -152,6 +155,7 @@ _TRUSTED_CONTEXT_FIELDS = {
             "dynamic_inputs",
         }
     ),
+    AutomationEntrypoint.EVENTS: frozenset({"event_name", "source_event_id"}),
 }
 _DEFAULT_FULL_AUTO_ACTOR_ID = "system:migration:automation-full-auto-v1"
 _DEFAULT_FULL_AUTO_REASON = "AUTOMATION_DEFAULT_FULL_AUTO"
@@ -1214,55 +1218,6 @@ class AutomationProjectPolicyService:
             contribution_id=contribution_id,
         )
 
-    def _require_active_service_v2_contribution(
-        self,
-        *,
-        automation_id: str,
-        generation: int,
-        contribution_kind: str,
-        contribution_id: str,
-    ) -> None:
-        registry = self._contribution_registry
-        resolve_active = getattr(registry, "resolve_active", None)
-        if not callable(resolve_active):
-            raise OrchestrationError(
-                "PROJECT_RUNTIME_PROJECTION_STALE",
-                "Automation project runtime projection is unavailable",
-            )
-        try:
-            record = resolve_active(
-                automation_id=automation_id,
-                generation=generation,
-                contribution_kind=contribution_kind,
-                contribution_id=contribution_id,
-            )
-        except Exception as exc:
-            raise OrchestrationError(
-                "PROJECT_RUNTIME_PROJECTION_STALE",
-                "Automation project runtime projection changed before invocation",
-            ) from exc
-        fields = (
-            "automation_id", "generation", "contribution_kind",
-            "contribution_id", "phase", "backend_status",
-        )
-        observed = tuple(
-            (
-                record.get(field)
-                if isinstance(record, Mapping)
-                else getattr(record, field, None)
-            )
-            for field in fields
-        )
-        expected = (
-            automation_id, generation, contribution_kind, contribution_id,
-            "COMMITTED", "READY",
-        )
-        if observed != expected:
-            raise OrchestrationError(
-                "PROJECT_RUNTIME_PROJECTION_STALE",
-                "Automation project runtime projection identity does not match",
-            )
-
     def invoke_trusted(
         self,
         automation_id: str,
@@ -1297,6 +1252,11 @@ class AutomationProjectPolicyService:
         safe_contribution_id = normalize_contribution_id(contribution_id)
         entry, contract = self._load_contract(safe_id)
         is_service_v2 = getattr(entry, "runtime_model", "ACTION_V1") == "SERVICE_V2"
+        if source is AutomationEntrypoint.EVENTS and not is_service_v2:
+            raise OrchestrationError(
+                "PROJECT_ENTRYPOINT_DISABLED",
+                "Action V1 projects cannot invoke the managed Event entrypoint",
+            )
         if source is AutomationEntrypoint.HARNESS and not is_service_v2:
             raise OrchestrationError(
                 "PROJECT_ENTRYPOINT_DISABLED",
@@ -1315,6 +1275,11 @@ class AutomationProjectPolicyService:
             )
         )
         context = _trusted_context(source, trusted_context)
+        expected_event_name = (
+            validate_service_v2_event_context(context, request_id=safe_request_id)
+            if is_service_v2 and source is AutomationEntrypoint.EVENTS
+            else None
+        )
         if (
             is_service_v2
             and source is AutomationEntrypoint.WEBHOOK
@@ -1404,13 +1369,16 @@ class AutomationProjectPolicyService:
             AutomationEntrypoint.SCHEDULER,
             AutomationEntrypoint.FEISHU,
             AutomationEntrypoint.WEBHOOK,
+            AutomationEntrypoint.EVENTS,
         }
         if is_service_v2 and managed_projection_source:
-            self._require_active_service_v2_contribution(
+            require_active_service_v2_contribution(
+                self._contribution_registry,
                 automation_id=safe_id,
                 generation=contract.automation_generation,
                 contribution_kind=source.value,
                 contribution_id=invocation_contract.contribution_id,
+                expected_event_name=expected_event_name,
             )
         occurred_at = datetime.now(timezone.utc)
         execution_context = {
@@ -1551,12 +1519,15 @@ class AutomationProjectPolicyService:
             if is_service_v2 and source in {
                 AutomationEntrypoint.FEISHU,
                 AutomationEntrypoint.WEBHOOK,
+                AutomationEntrypoint.EVENTS,
             }:
-                self._require_active_service_v2_contribution(
+                require_active_service_v2_contribution(
+                    self._contribution_registry,
                     automation_id=safe_id,
                     generation=locked_contract.automation_generation,
                     contribution_kind=source.value,
                     contribution_id=invocation_contract.contribution_id,
+                    expected_event_name=expected_event_name,
                 )
             if preview_context is not None and safe_preview_run_id is not None:
                 locked_preview = resolve_scan_preview(
@@ -2675,6 +2646,11 @@ class AutomationProjectPolicyService:
             AutomationEntrypoint.WEBHOOK: (
                 ActorType.WEBHOOK,
                 "signed_webhook_route",
+                (),
+            ),
+            AutomationEntrypoint.EVENTS: (
+                ActorType.EVENT,
+                "managed_event_dispatcher",
                 (),
             ),
         }[entrypoint]

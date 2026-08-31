@@ -44,10 +44,12 @@ _ACTIVE_CONTRIBUTION_KINDS = (
     "scheduler",
     "webhook",
     "feishu",
+    "events",
     "harness",
 )
 _SCHEDULE_BACKEND_TIMEZONE = "Asia/Shanghai"
 _WEBHOOK_ROUTE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$", re.ASCII)
+_EVENT_NAME_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$", re.ASCII)
 _EMPTY_HARNESS_INPUT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -336,6 +338,15 @@ class ManagedWebhookDispatchTarget:
     contribution_id: str
 
 
+@dataclass(frozen=True)
+class ManagedEventDispatchTarget:
+    """Closed, process-local target returned by exact managed event lookup."""
+
+    automation_id: str
+    generation: int
+    contribution_id: str
+
+
 class ManagedContributionRegistry:
     """Recoverable registry for host-owned v2 contribution declarations.
 
@@ -543,6 +554,8 @@ class ManagedContributionRegistry:
                 )
         if candidate.contribution_kind == "webhook":
             _validated_webhook_declaration(declaration)
+        if candidate.contribution_kind == "events":
+            _validated_event_declaration(declaration)
         expected_routes = _contribution_route_keys(
             automation_id=candidate.automation_id,
             contribution_kind=candidate.contribution_kind,
@@ -1169,6 +1182,73 @@ class ManagedContributionRegistry:
                 contribution_id=record.contribution_id,
             )
 
+    def resolve_active_event(
+        self,
+        *,
+        event_name: str,
+    ) -> ManagedEventDispatchTarget | None:
+        """Resolve one global exact non-durable event dispatch target."""
+
+        if not isinstance(event_name, str) or not _EVENT_NAME_RE.fullmatch(event_name):
+            raise PluginConflictError(
+                "managed event name is invalid",
+                code="CONTRIBUTION_REGISTRATION_CONFLICT",
+            )
+        route_key = f"event:{event_name}"
+        with self._lock:
+            owner_ids = tuple(self._route_owners.get(route_key, ()))
+            if not owner_ids:
+                return None
+            records: list[ManagedContributionRegistration] = []
+            for registration_id in owner_ids:
+                record = self._registrations.get(registration_id)
+                if (
+                    record is None
+                    or record.contribution_kind != "events"
+                    or record.route_keys != (route_key,)
+                    or record.backend != "managed_event_dispatcher"
+                    or record.backend_status != "READY"
+                    or record.reason_code is not None
+                    or record.reason_detail is not None
+                ):
+                    raise PluginConflictError(
+                        "managed event projection is invalid",
+                        code="RUNTIME_PROJECTION_AMBIGUOUS",
+                    )
+                try:
+                    declaration_event, durable = _validated_event_declaration(
+                        record.declaration
+                    )
+                except PluginConflictError as exc:
+                    raise PluginConflictError(
+                        "managed event projection is invalid",
+                        code="RUNTIME_PROJECTION_AMBIGUOUS",
+                    ) from exc
+                if declaration_event != event_name or durable is not False:
+                    raise PluginConflictError(
+                        "managed event projection is invalid",
+                        code="RUNTIME_PROJECTION_AMBIGUOUS",
+                    )
+                if (
+                    record.dispatch_available
+                    and self._active_generations.get(record.automation_id)
+                    == record.generation
+                ):
+                    records.append(record)
+            if not records:
+                return None
+            if len(records) != 1:
+                raise PluginConflictError(
+                    "managed event route is ambiguous",
+                    code="RUNTIME_PROJECTION_AMBIGUOUS",
+                )
+            record = records[0]
+            return ManagedEventDispatchTarget(
+                automation_id=record.automation_id,
+                generation=record.generation,
+                contribution_id=record.contribution_id,
+            )
+
     def active_snapshot(
         self,
         *,
@@ -1431,6 +1511,45 @@ def _validated_webhook_declaration(
     return method, route
 
 
+def _validated_event_declaration(
+    declaration: Mapping[str, Any],
+) -> tuple[str, bool]:
+    expected_fields = {
+        "id",
+        "service",
+        "operation",
+        "event",
+        "durable",
+        "default_enabled",
+    }
+    if set(declaration) != expected_fields:
+        raise PluginConflictError(
+            "v2 Event declaration is not closed",
+            code="CONTRIBUTION_REGISTRATION_CONFLICT",
+        )
+    for field_name in ("id", "service", "operation"):
+        value = declaration.get(field_name)
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise PluginConflictError(
+                "v2 Event declaration identity is invalid",
+                code="CONTRIBUTION_REGISTRATION_CONFLICT",
+            )
+    event_name = declaration.get("event")
+    durable = declaration.get("durable")
+    default_enabled = declaration.get("default_enabled")
+    if (
+        not isinstance(event_name, str)
+        or not _EVENT_NAME_RE.fullmatch(event_name)
+        or type(durable) is not bool
+        or type(default_enabled) is not bool
+    ):
+        raise PluginConflictError(
+            "v2 Event declaration is invalid",
+            code="CONTRIBUTION_REGISTRATION_CONFLICT",
+        )
+    return event_name, durable
+
+
 def _contribution_route_keys(
     *,
     automation_id: str,
@@ -1456,9 +1575,8 @@ def _contribution_route_keys(
             for command in commands
         )
     if contribution_kind == "events":
-        return (
-            f"event:{declaration.get('event')}:{automation_id}:{contribution_id}",
-        )
+        event_name, _durable = _validated_event_declaration(declaration)
+        return (f"event:{event_name}",)
     raise PluginConflictError("unsupported managed contribution kind")
 
 
@@ -1502,14 +1620,19 @@ def _contribution_backend(
     if contribution_kind == "webhook":
         _validated_webhook_declaration(declaration)
         return "managed_webhook_router", "READY", None, None
-    backend = {
-        "events": "managed_event_subscriptions",
-    }[contribution_kind]
-    return (
-        backend,
-        "CAPABILITY_UNAVAILABLE",
-        "CAPABILITY_UNAVAILABLE",
-        f"{contribution_kind.upper()}_HOST_BACKEND_UNAVAILABLE",
+    if contribution_kind == "events":
+        _event_name, durable = _validated_event_declaration(declaration)
+        if durable is False:
+            return "managed_event_dispatcher", "READY", None, None
+        return (
+            "managed_event_subscriptions",
+            "CAPABILITY_UNAVAILABLE",
+            "CAPABILITY_UNAVAILABLE",
+            "EVENTS_HOST_BACKEND_UNAVAILABLE",
+        )
+    raise PluginConflictError(
+        "unsupported managed contribution kind",
+        code="CONTRIBUTION_REGISTRATION_CONFLICT",
     )
 
 
@@ -1869,5 +1992,6 @@ def _service_registration_material(
 __all__ = [
     "ManagedContributionRegistration",
     "ManagedContributionRegistry",
+    "ManagedEventDispatchTarget",
     "ManagedWebhookDispatchTarget",
 ]

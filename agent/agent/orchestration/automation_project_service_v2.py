@@ -7,6 +7,7 @@ authorization authority.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -22,6 +23,7 @@ from shared.automation_project_authorization import (
 _CONTRIBUTION_CHARACTERS = frozenset(
     "abcdefghijklmnopqrstuvwxyz0123456789_.-"
 )
+_EVENT_NAME_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 
 
 def require_service_v2_policy_mode(entry: Any, policy_mode: str) -> None:
@@ -50,6 +52,121 @@ def normalize_contribution_id(value: str | None) -> str:
             "Automation contribution identity is invalid",
         )
     return contribution_id
+
+
+def validate_service_v2_event_context(
+    context: Mapping[str, Any],
+    *,
+    request_id: str,
+) -> str:
+    """Require the two exact, transport-owned facts for managed events."""
+
+    if set(context) != {"event_name", "source_event_id"}:
+        raise OrchestrationError(
+            "TRUSTED_CONTEXT_INVALID",
+            "Managed Event context must contain its exact event and source identity",
+        )
+    event_name = context.get("event_name")
+    source_event_id = context.get("source_event_id")
+    if (
+        not isinstance(event_name, str)
+        or _EVENT_NAME_RE.fullmatch(event_name) is None
+        or any(
+            not isinstance(value, str)
+            or not value
+            or value != value.strip()
+            or len(value) > 191
+            for value in (event_name, source_event_id)
+        )
+        or source_event_id != request_id
+    ):
+        raise OrchestrationError(
+            "TRUSTED_CONTEXT_INVALID",
+            "Managed Event identities must remain exact and stable",
+        )
+    return event_name
+
+
+def validate_active_event_declaration(record: Any, *, event_name: str) -> None:
+    """Bind a resolved Event record to one non-durable manifest declaration."""
+
+    declaration = (
+        record.get("declaration")
+        if isinstance(record, Mapping)
+        else getattr(record, "declaration", None)
+    )
+    declaration_event = (
+        declaration.get("event") if isinstance(declaration, Mapping) else None
+    )
+    if (
+        not isinstance(declaration, Mapping)
+        or not isinstance(declaration_event, str)
+        or _EVENT_NAME_RE.fullmatch(declaration_event) is None
+        or declaration_event != event_name
+        or declaration.get("durable") is not False
+    ):
+        raise OrchestrationError(
+            "PROJECT_RUNTIME_PROJECTION_STALE",
+            "Automation event declaration does not match its active projection",
+        )
+
+
+def require_active_service_v2_contribution(
+    registry: Any,
+    *,
+    automation_id: str,
+    generation: int,
+    contribution_kind: str,
+    contribution_id: str,
+    expected_event_name: str | None = None,
+) -> None:
+    """Recheck one exact committed/ready contribution against the registry."""
+
+    resolve_active = getattr(registry, "resolve_active", None)
+    if not callable(resolve_active):
+        raise OrchestrationError(
+            "PROJECT_RUNTIME_PROJECTION_STALE",
+            "Automation project runtime projection is unavailable",
+        )
+    try:
+        record = resolve_active(
+            automation_id=automation_id,
+            generation=generation,
+            contribution_kind=contribution_kind,
+            contribution_id=contribution_id,
+        )
+    except Exception as exc:
+        raise OrchestrationError(
+            "PROJECT_RUNTIME_PROJECTION_STALE",
+            "Automation project runtime projection changed before invocation",
+        ) from exc
+    fields = (
+        "automation_id",
+        "generation",
+        "contribution_kind",
+        "contribution_id",
+        "phase",
+        "backend_status",
+    )
+    observed = tuple(
+        record.get(field) if isinstance(record, Mapping) else getattr(record, field, None)
+        for field in fields
+    )
+    expected = (
+        automation_id,
+        generation,
+        contribution_kind,
+        contribution_id,
+        "COMMITTED",
+        "READY",
+    )
+    if observed != expected:
+        raise OrchestrationError(
+            "PROJECT_RUNTIME_PROJECTION_STALE",
+            "Automation project runtime projection identity does not match",
+        )
+    if expected_event_name is not None:
+        validate_active_event_declaration(record, event_name=expected_event_name)
 
 
 def resolve_invocation_contract_id(

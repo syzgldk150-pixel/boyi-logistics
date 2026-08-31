@@ -216,6 +216,34 @@ def _active_materials(
     )
 
 
+def _non_durable_event_contributions() -> dict[str, list[dict[str, object]]]:
+    contributions = _contributions()
+    contributions["events"][0]["durable"] = False
+    return contributions
+
+
+def _event_material(snapshot: RuntimeGenerationSnapshot) -> dict[str, object]:
+    return next(
+        copy.deepcopy(dict(plan.payload))
+        for plan in _managed_plans(snapshot)
+        if plan.payload["contribution_kind"] == "events"
+    )
+
+
+def _event_snapshot(
+    *,
+    generation: int = 1,
+    contributions: dict[str, list[dict[str, object]]] | None = None,
+    enabled_entrypoints: tuple[str, ...] = ("orders_changed",),
+) -> RuntimeGenerationSnapshot:
+    return _snapshot(
+        generation=generation,
+        schedule={"kind": "none", "times": [], "enabled": False},
+        contributions=contributions,
+        enabled_entrypoints=enabled_entrypoints,
+    )
+
+
 def _refresh_success() -> dict[str, object]:
     return {"initialized": True, "invalid_tasks": []}
 
@@ -909,6 +937,300 @@ def test_authoritative_empty_webhook_generation_revokes_and_releases_route() -> 
     target = registry.resolve_active_webhook_route(method="POST", route="receive")
     assert target is not None
     assert target.automation_id == reclaimer.automation_id
+
+
+def test_nondurable_event_is_ready_global_exact_and_switches_adjacent_generation() -> None:
+    contributions = _non_durable_event_contributions()
+    first = _event_snapshot(
+        generation=1,
+        contributions=contributions,
+        enabled_entrypoints=("orders_changed",),
+    )
+    second = _event_snapshot(
+        generation=2,
+        contributions=contributions,
+        enabled_entrypoints=("orders_changed",),
+    )
+    first_material = _event_material(first)
+    second_material = _event_material(second)
+    registry = ManagedContributionRegistry()
+
+    assert first_material["route_keys"] == ["event:orders.changed"]
+    assert first_material["backend"] == "managed_event_dispatcher"
+    assert first_material["backend_status"] == "READY"
+    assert registry.resolve_active_event(event_name="orders.changed") is None
+    assert registry.resolve_active_event(event_name="orders.unknown") is None
+    with pytest.raises(PluginConflictError) as invalid:
+        registry.resolve_active_event(event_name="Orders.changed")
+    assert invalid.value.code == "CONTRIBUTION_REGISTRATION_CONFLICT"
+
+    registry.prepare_generation((first_material,))
+    registry.apply_generation(
+        first.automation_id,
+        first.generation,
+        refresh=_refresh_success,
+        expected_registration_ids=(first_material["registration_id"],),
+    )
+    target = registry.resolve_active_event(event_name="orders.changed")
+    assert target is not None
+    assert (
+        target.automation_id,
+        target.generation,
+        target.contribution_id,
+    ) == (first.automation_id, 1, "orders_changed")
+
+    registry.prepare_generation((second_material,))
+    registry.apply_generation(
+        second.automation_id,
+        second.generation,
+        refresh=_refresh_success,
+        expected_registration_ids=(second_material["registration_id"],),
+    )
+    upgraded = registry.resolve_active_event(event_name="orders.changed")
+    assert upgraded is not None
+    assert upgraded.generation == 2
+    assert {
+        (record.generation, record.phase) for record in registry.snapshot()
+    } == {(1, "DRAINING"), (2, "COMMITTED")}
+
+
+def test_durable_event_stays_unavailable_and_mixed_generation_is_atomic() -> None:
+    snapshot = _event_snapshot(
+        enabled_entrypoints=("run_now", "orders_changed")
+    )
+    materials = tuple(copy.deepcopy(dict(plan.payload)) for plan in _managed_plans(snapshot))
+    durable_material = next(
+        material
+        for material in materials
+        if material["contribution_kind"] == "events"
+    )
+    nondurable_snapshot = _event_snapshot(
+        contributions=_non_durable_event_contributions(),
+        enabled_entrypoints=("orders_changed",),
+    )
+
+    assert durable_material["route_keys"] == ["event:orders.changed"]
+    assert _event_material(nondurable_snapshot)["route_keys"] == [
+        "event:orders.changed"
+    ]
+    assert durable_material["backend"] == "managed_event_subscriptions"
+    assert durable_material["backend_status"] == "CAPABILITY_UNAVAILABLE"
+    assert durable_material["reason_code"] == "CAPABILITY_UNAVAILABLE"
+    assert durable_material["reason_detail"] == "EVENTS_HOST_BACKEND_UNAVAILABLE"
+    registry = ManagedContributionRegistry()
+
+    with pytest.raises(PluginConflictError) as unavailable:
+        registry.prepare_generation(materials)
+
+    assert unavailable.value.code == "CAPABILITY_UNAVAILABLE"
+    assert registry.snapshot() == ()
+
+
+@pytest.mark.parametrize("existing_active", (False, True), ids=("prepared", "active"))
+def test_event_route_conflict_is_global_and_leaves_no_partial_reservation(
+    existing_active: bool,
+) -> None:
+    contributions = _non_durable_event_contributions()
+    first = _event_snapshot(
+        contributions=contributions,
+        enabled_entrypoints=("orders_changed",),
+    )
+    second = replace(first, automation_id="other-project")
+    first_material = _event_material(first)
+    second_materials = tuple(
+        copy.deepcopy(dict(plan.payload)) for plan in _managed_plans(second)
+    )
+    registry = ManagedContributionRegistry()
+    registry.prepare_generation((first_material,))
+    if existing_active:
+        registry.apply_generation(
+            first.automation_id,
+            first.generation,
+            refresh=_refresh_success,
+            expected_registration_ids=(first_material["registration_id"],),
+        )
+
+    with pytest.raises(PluginConflictError) as conflict:
+        registry.prepare_generation(second_materials)
+
+    assert conflict.value.code == "CONTRIBUTION_ROUTE_CONFLICT"
+    assert {record.automation_id for record in registry.snapshot()} == {
+        first.automation_id
+    }
+
+
+def test_duplicate_event_name_in_one_generation_is_atomic() -> None:
+    contributions = _non_durable_event_contributions()
+    contributions["events"].append(
+        {
+            **copy.deepcopy(contributions["events"][0]),
+            "id": "orders_changed_duplicate",
+        }
+    )
+    snapshot = _event_snapshot(
+        contributions=contributions,
+        enabled_entrypoints=("orders_changed", "orders_changed_duplicate"),
+    )
+    materials = tuple(copy.deepcopy(dict(plan.payload)) for plan in _managed_plans(snapshot))
+    registry = ManagedContributionRegistry()
+
+    with pytest.raises(PluginConflictError) as conflict:
+        registry.prepare_generation(materials)
+
+    assert conflict.value.code == "CONTRIBUTION_ROUTE_CONFLICT"
+    assert registry.snapshot() == ()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "value"),
+    (
+        ("extra", "forbidden"),
+        ("missing", None),
+        ("event", "Orders.changed"),
+        ("event", "orders.changed "),
+        ("durable", 0),
+        ("default_enabled", 1),
+        ("id", 1),
+    ),
+)
+def test_event_runtime_rejects_non_closed_or_non_exact_declarations(
+    mutation: str,
+    value: object,
+) -> None:
+    snapshot = _event_snapshot(
+        contributions=_non_durable_event_contributions(),
+        enabled_entrypoints=("orders_changed",),
+    )
+    material = _event_material(snapshot)
+    declaration = material["declaration"]
+    assert isinstance(declaration, dict)
+    if mutation == "extra":
+        declaration["unexpected"] = value
+    elif mutation == "missing":
+        declaration.pop("default_enabled")
+    else:
+        declaration[mutation] = value
+    registry = ManagedContributionRegistry()
+
+    with pytest.raises(PluginConflictError) as invalid:
+        registry.prepare_generation((material,))
+
+    assert invalid.value.code == "CONTRIBUTION_REGISTRATION_CONFLICT"
+    assert registry.snapshot() == ()
+
+
+def test_committed_event_effect_restore_is_a_fixed_point() -> None:
+    snapshot = _event_snapshot(
+        contributions=_non_durable_event_contributions(),
+        enabled_entrypoints=("orders_changed",),
+    )
+    plans = tuple(
+        plan
+        for plan in _managed_plans(snapshot)
+        if plan.payload["contribution_kind"] == "events"
+    )
+    generation = RuntimeGenerationRecord(
+        snapshot=snapshot,
+        state=RuntimeGenerationState.COMMITTED,
+        effects=tuple(
+            _effect(
+                snapshot,
+                plan,
+                sequence,
+                state=RuntimeEffectState.APPLIED,
+            )
+            for sequence, plan in enumerate(plans, start=1)
+        ),
+    )
+    registry = ManagedContributionRegistry()
+    driver = ProductionRuntimeEffectDriver(
+        broker_handler_keys=(),
+        contribution_registry=registry,
+    )
+    repository = _GenerationRepository(generation)
+
+    driver.restore_from_repository(repository)
+    stable = registry.snapshot()
+    driver.restore_from_repository(repository)
+
+    assert registry.snapshot() == stable
+    target = registry.resolve_active_event(event_name="orders.changed")
+    assert target is not None
+    assert (
+        target.automation_id,
+        target.generation,
+        target.contribution_id,
+    ) == (snapshot.automation_id, snapshot.generation, "orders_changed")
+
+
+def test_empty_event_generation_releases_draining_route_for_reclaim() -> None:
+    contributions = _non_durable_event_contributions()
+    first = _event_snapshot(
+        contributions=contributions,
+        enabled_entrypoints=("orders_changed",),
+    )
+    first_material = _event_material(first)
+    registry = ManagedContributionRegistry()
+    registry.prepare_generation((first_material,))
+    registry.apply_generation(
+        first.automation_id,
+        first.generation,
+        refresh=_refresh_success,
+        expected_registration_ids=(first_material["registration_id"],),
+    )
+
+    registry.apply_generation(
+        first.automation_id,
+        2,
+        refresh=_refresh_success,
+        expected_registration_ids=(),
+    )
+
+    assert registry.resolve_active_event(event_name="orders.changed") is None
+    assert {record.phase for record in registry.snapshot()} == {"DRAINING"}
+    reclaimer = replace(first, automation_id="other-project")
+    reclaim_material = _event_material(reclaimer)
+    registry.prepare_generation((reclaim_material,))
+    registry.apply_generation(
+        reclaimer.automation_id,
+        reclaimer.generation,
+        refresh=_refresh_success,
+        expected_registration_ids=(reclaim_material["registration_id"],),
+    )
+    registry.withdraw_generation(
+        first.automation_id,
+        first.generation,
+        refresh=_refresh_success,
+    )
+
+    target = registry.resolve_active_event(event_name="orders.changed")
+    assert target is not None
+    assert target.automation_id == reclaimer.automation_id
+    assert {record.automation_id for record in registry.snapshot()} == {
+        reclaimer.automation_id
+    }
+
+
+def test_event_resolver_fails_closed_for_corrupt_route_owner() -> None:
+    snapshot = _event_snapshot(
+        contributions=_non_durable_event_contributions(),
+        enabled_entrypoints=("orders_changed",),
+    )
+    material = _event_material(snapshot)
+    registry = ManagedContributionRegistry()
+    registry.prepare_generation((material,))
+    registry.apply_generation(
+        snapshot.automation_id,
+        snapshot.generation,
+        refresh=_refresh_success,
+        expected_registration_ids=(material["registration_id"],),
+    )
+    registry._route_owners["event:orders.changed"].add("missing-registration")
+
+    with pytest.raises(PluginConflictError) as corrupt:
+        registry.resolve_active_event(event_name="orders.changed")
+
+    assert corrupt.value.code == "RUNTIME_PROJECTION_AMBIGUOUS"
 
 
 def test_reserved_feishu_command_rejects_the_whole_prepare_batch() -> None:

@@ -589,18 +589,31 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertNotIn("display: none", projected_text)
         self.assertNotIn("unrelated-scheduler", projected_text)
 
-    def test_service_v2_message_projections_are_active_but_not_browser_invocable(self):
+    def test_service_v2_non_console_projections_are_active_but_not_browser_invocable(
+        self,
+    ):
         payload = _catalog_payload()
         metadata = {
             "runtime_model": "SERVICE_V2",
             "plugin_api": "2.0.0",
-            "entrypoints": ["manual.sync", "message.report", "hooks.receive"],
+            "entrypoints": [
+                "manual.sync",
+                "message.report",
+                "hooks.receive",
+                "events.orders",
+            ],
             "entrypoint_kinds": {
                 "manual.sync": "console",
                 "message.report": "feishu",
                 "hooks.receive": "webhook",
+                "events.orders": "events",
             },
-            "enabled_entrypoints": ["manual.sync", "message.report", "hooks.receive"],
+            "enabled_entrypoints": [
+                "manual.sync",
+                "message.report",
+                "hooks.receive",
+                "events.orders",
+            ],
             "target_generation": 9,
             "committed_generation": 9,
             "contribution_projection_state": "ACTIVE",
@@ -626,6 +639,13 @@ class AutomationPluginCatalogTests(unittest.TestCase):
                     "phase": "COMMITTED",
                     "backend_status": "READY",
                 },
+                {
+                    "contribution_id": "events.orders",
+                    "contribution_kind": "events",
+                    "generation": 9,
+                    "phase": "COMMITTED",
+                    "backend_status": "READY",
+                },
             ],
         }
         payload["plugins"][0].update(metadata)
@@ -639,7 +659,8 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertEqual(["manual.sync"], instance["console_entrypoints"])
         self.assertEqual(["manual.sync"], instance["enabled_console_entrypoints"])
         self.assertEqual(
-            ["console", "feishu", "webhook"], instance["enabled_entrypoint_kinds"]
+            ["console", "events", "feishu", "webhook"],
+            instance["enabled_entrypoint_kinds"],
         )
         self.assertNotIn("active_contributions", instance)
 

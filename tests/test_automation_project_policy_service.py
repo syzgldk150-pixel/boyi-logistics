@@ -454,8 +454,16 @@ class _Gateway:
 
 
 class _ContributionRegistry:
-    def __init__(self, *, error_code: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        error_code: str | None = None,
+        event_name: str = "shipment.created",
+        durable: bool = False,
+    ) -> None:
         self.error_code = error_code
+        self.event_name = event_name
+        self.durable = durable
         self.calls: list[dict[str, object]] = []
 
     def resolve_active(
@@ -486,6 +494,7 @@ class _ContributionRegistry:
             contribution_id=contribution_id,
             phase="COMMITTED",
             backend_status="READY",
+            declaration={"event": self.event_name, "durable": self.durable},
         )
 
 
@@ -586,6 +595,22 @@ class AutomationProjectPolicyServiceTests(TestCase):
             allowed_entrypoints=frozenset({"webhook"}),
         )
 
+    def _set_service_v2_event_contract(self) -> None:
+        self.entry.runtime_model = "SERVICE_V2"
+        self.contract = replace(
+            self.contract,
+            invocation_contracts={
+                "handle_created": InvocationArgumentContract(
+                    contract_id="handle_created",
+                    entrypoint="events",
+                    expected_arguments={"mode": "saved"},
+                    dynamic_argument_resolvers={},
+                    contribution_id="handle_created",
+                )
+            },
+            allowed_entrypoints=frozenset({"events"}),
+        )
+
     @staticmethod
     def _verified_feishu_actor() -> Actor:
         return Actor(
@@ -600,6 +625,14 @@ class AutomationProjectPolicyServiceTests(TestCase):
             ActorType.WEBHOOK,
             "webhook:route-owner-digest",
             authenticated_by="signed_webhook_route",
+        )
+
+    @staticmethod
+    def _verified_event_actor() -> Actor:
+        return Actor(
+            ActorType.EVENT,
+            "event:owner-digest",
+            authenticated_by="managed_event_dispatcher",
         )
 
     def _set_scan_project(self) -> None:
@@ -1203,6 +1236,207 @@ class AutomationProjectPolicyServiceTests(TestCase):
             )
         self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
         self.assertEqual(2, len(registry.calls))
+        self.assertIsNone(self.gateway.command)
+
+    def test_service_v2_event_revalidates_exact_projection_at_acceptance(self):
+        self._set_service_v2_event_contract()
+        registry = _ContributionRegistry()
+        service = self._service_with_contribution_registry(registry)
+
+        receipt = service.invoke_trusted(
+            AUTOMATION_ID,
+            entrypoint=AutomationEntrypoint.EVENTS,
+            request_id="event-one",
+            actor=self._verified_event_actor(),
+            trusted_context={
+                "event_name": "shipment.created",
+                "source_event_id": "event-one",
+            },
+            idempotency_key="event:v2:owner-event-digest",
+            expected_automation_generation=1,
+            contribution_id="handle_created",
+        )
+
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual({"mode": "saved"}, self.gateway.command.parameters["arguments"])
+        expected_call = {
+            "automation_id": AUTOMATION_ID,
+            "generation": 1,
+            "contribution_kind": "events",
+            "contribution_id": "handle_created",
+        }
+        self.assertEqual([expected_call, expected_call], registry.calls)
+
+    def test_service_v2_event_requires_exact_closed_context(self):
+        self._set_service_v2_event_contract()
+        valid = {
+            "event_name": "shipment.created",
+            "source_event_id": "event-one",
+        }
+        cases = (
+            ({"event_name": "shipment.created"}, "event-one"),
+            ({**valid, "extra": "blocked"}, "event-one"),
+            ({**valid, "source_event_id": "event-two"}, "event-one"),
+            ({**valid, "event_name": "Shipment.created"}, "event-one"),
+            ({**valid, "event_name": "shipment/created"}, "event-one"),
+            ({**valid, "event_name": "x" * 129}, "event-one"),
+            ({**valid, "source_event_id": " event-one"}, "event-one"),
+            ({**valid, "source_event_id": "x" * 192}, "event-one"),
+        )
+        for context, request_id in cases:
+            with self.subTest(context=context):
+                registry = _ContributionRegistry()
+                service = self._service_with_contribution_registry(registry)
+                with self.assertRaises(OrchestrationError) as raised:
+                    service.invoke_trusted(
+                        AUTOMATION_ID,
+                        entrypoint=AutomationEntrypoint.EVENTS,
+                        request_id=request_id,
+                        actor=self._verified_event_actor(),
+                        trusted_context=context,
+                        expected_automation_generation=1,
+                        contribution_id="handle_created",
+                    )
+                self.assertEqual("TRUSTED_CONTEXT_INVALID", raised.exception.code)
+                self.assertEqual([], registry.calls)
+                self.assertIsNone(self.gateway.command)
+
+    def test_service_v2_event_requires_managed_event_actor(self):
+        self._set_service_v2_event_contract()
+        invalid_actors = (
+            Actor(ActorType.WEBHOOK, "event:owner-digest", authenticated_by="managed_event_dispatcher"),
+            Actor(ActorType.EVENT, "event:owner-digest"),
+            Actor(
+                ActorType.EVENT,
+                "event:owner-digest",
+                roles=("system",),
+                authenticated_by="managed_event_dispatcher",
+            ),
+        )
+        for actor in invalid_actors:
+            with self.subTest(actor=actor):
+                with self.assertRaises(OrchestrationError) as raised:
+                    self.service.invoke_trusted(
+                        AUTOMATION_ID,
+                        entrypoint=AutomationEntrypoint.EVENTS,
+                        request_id="event-one",
+                        actor=actor,
+                        trusted_context={
+                            "event_name": "shipment.created",
+                            "source_event_id": "event-one",
+                        },
+                        expected_automation_generation=1,
+                        contribution_id="handle_created",
+                    )
+                self.assertEqual("TRUSTED_ENTRYPOINT_REQUIRED", raised.exception.code)
+
+    def test_service_v2_event_requires_exact_declaration_and_uow_recheck(self):
+        self._set_service_v2_event_contract()
+        context = {"event_name": "shipment.created", "source_event_id": "event-one"}
+        for registry in (
+            _ContributionRegistry(event_name="shipment.updated"),
+            _ContributionRegistry(durable=True),
+        ):
+            with self.subTest(registry=registry):
+                service = self._service_with_contribution_registry(registry)
+                with self.assertRaises(OrchestrationError) as raised:
+                    service.invoke_trusted(
+                        AUTOMATION_ID,
+                        entrypoint=AutomationEntrypoint.EVENTS,
+                        request_id="event-one",
+                        actor=self._verified_event_actor(),
+                        trusted_context=context,
+                        expected_automation_generation=1,
+                        contribution_id="handle_created",
+                    )
+                self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
+                self.assertEqual(1, len(registry.calls))
+
+        registry = _ContributionRegistry()
+
+        def mismatched_resolve_active(**kwargs):
+            registry.calls.append(dict(kwargs))
+            return SimpleNamespace(
+                **{**kwargs, "contribution_kind": "webhook"},
+                phase="COMMITTED",
+                backend_status="READY",
+                declaration={"event": "shipment.created", "durable": False},
+            )
+
+        registry.resolve_active = mismatched_resolve_active
+        service = self._service_with_contribution_registry(registry)
+        with self.assertRaises(OrchestrationError) as raised:
+            service.invoke_trusted(
+                AUTOMATION_ID,
+                entrypoint=AutomationEntrypoint.EVENTS,
+                request_id="event-one",
+                actor=self._verified_event_actor(),
+                trusted_context=context,
+                expected_automation_generation=1,
+                contribution_id="handle_created",
+            )
+        self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
+        self.assertEqual(1, len(registry.calls))
+
+        with self.assertRaises(OrchestrationError) as raised:
+            self.service.invoke_trusted(
+                AUTOMATION_ID,
+                entrypoint=AutomationEntrypoint.EVENTS,
+                request_id="event-one",
+                actor=self._verified_event_actor(),
+                trusted_context=context,
+                expected_automation_generation=1,
+                contribution_id="handle_created",
+            )
+        self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
+
+        registry = _ContributionRegistry()
+
+        def racing_resolve_active(**kwargs):
+            registry.calls.append(dict(kwargs))
+            if len(registry.calls) > 1:
+                raise RuntimeError("synthetic Event generation switch")
+            return SimpleNamespace(
+                **kwargs,
+                phase="COMMITTED",
+                backend_status="READY",
+                declaration={"event": "shipment.created", "durable": False},
+            )
+
+        registry.resolve_active = racing_resolve_active
+        service = self._service_with_contribution_registry(registry)
+        with self.assertRaises(OrchestrationError) as raised:
+            service.invoke_trusted(
+                AUTOMATION_ID,
+                entrypoint=AutomationEntrypoint.EVENTS,
+                request_id="event-one",
+                actor=self._verified_event_actor(),
+                trusted_context=context,
+                expected_automation_generation=1,
+                contribution_id="handle_created",
+            )
+        self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
+        self.assertEqual(2, len(registry.calls))
+        self.assertIsNone(self.gateway.command)
+
+    def test_action_v1_event_entrypoint_is_always_disabled(self):
+        self.entry.runtime_model = "ACTION_V1"
+        self.contract = _contract_for(AutomationEntrypoint.EVENTS)
+        registry = _ContributionRegistry()
+        service = self._service_with_contribution_registry(registry)
+
+        with self.assertRaises(OrchestrationError) as raised:
+            service.invoke_trusted(
+                AUTOMATION_ID,
+                entrypoint=AutomationEntrypoint.EVENTS,
+                request_id="event-one",
+                actor=self._verified_event_actor(),
+                trusted_context={"unexpected": "still-disabled-first"},
+                expected_automation_generation=1,
+            )
+
+        self.assertEqual("PROJECT_ENTRYPOINT_DISABLED", raised.exception.code)
+        self.assertEqual([], registry.calls)
         self.assertIsNone(self.gateway.command)
 
     def test_scan_preview_formal_invoke_stays_disabled_under_current_governance(self):

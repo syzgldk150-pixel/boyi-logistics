@@ -151,6 +151,21 @@ def _committed_service_entry(
     )
 
 
+def _projection_service(
+    catalog: object, contribution_registry: object,
+) -> AutomationPluginManagementService:
+    return AutomationPluginManagementService(
+        catalog=catalog,
+        lifecycle=SimpleNamespace(),
+        configuration=SimpleNamespace(),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+        contribution_registry=contribution_registry,
+    )
+
+
 class _ApiService:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -1552,16 +1567,7 @@ def test_catalog_projects_exact_active_service_v2_contributions_without_leaking_
             committed_enabled_entrypoints=("run_now", "daily_run"),
         ),
     )
-    service = AutomationPluginManagementService(
-        catalog=catalog,
-        lifecycle=SimpleNamespace(),
-        configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
-        target_service=SimpleNamespace(),
-        package_repository=SimpleNamespace(),
-        storage=SimpleNamespace(),
-        contribution_registry=registry,
-    )
+    service = _projection_service(catalog, registry)
 
     projection = service.catalog_projection(actor=_console_actor(super_admin=False))
     projected = projection["instances"][0]
@@ -1587,7 +1593,24 @@ def test_catalog_projects_exact_active_service_v2_contributions_without_leaking_
     assert "must-not-cross-boundary" not in repr(projection)
 
 
-def test_catalog_projects_exact_committed_feishu_contribution() -> None:
+@pytest.mark.parametrize(
+    (
+        "contribution_kind", "contribution_id", "private_field",
+        "private_value", "private_marker",
+    ),
+    (
+        ("feishu", "message.report", "commands", ("只读日报",), "只读日报"),
+        ("webhook", "hooks.receive", "route", "private-hook", "private-hook"),
+        ("events", "events.orders", "event", "orders.changed", "orders.changed"),
+    ),
+)
+def test_catalog_projects_exact_committed_dynamic_contribution(
+    contribution_kind: str,
+    contribution_id: str,
+    private_field: str,
+    private_value: object,
+    private_marker: str,
+) -> None:
     instance = {
         "automation_id": "service-project",
         "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
@@ -1595,9 +1618,9 @@ def test_catalog_projects_exact_committed_feishu_contribution() -> None:
         "committed_generation": 8,
         "dependency_state": "READY",
         "blocking_reasons": [],
-        "entrypoints": ["message.report"],
-        "enabled_entrypoints": ["message.report"],
-        "entrypoint_kinds": {"message.report": "feishu"},
+        "entrypoints": [contribution_id],
+        "enabled_entrypoints": [contribution_id],
+        "entrypoint_kinds": {contribution_id: contribution_kind},
     }
     registry = _ContributionRegistry(
         8,
@@ -1605,12 +1628,12 @@ def test_catalog_projects_exact_committed_feishu_contribution() -> None:
             SimpleNamespace(
                 automation_id="service-project",
                 generation=8,
-                contribution_id="message.report",
-                contribution_kind="feishu",
+                contribution_id=contribution_id,
+                contribution_kind=contribution_kind,
                 phase="COMMITTED",
                 backend_status="READY",
-                commands=("只读日报",),
                 service="must-not-cross-boundary",
+                **{private_field: private_value},
             ),
         ),
     )
@@ -1620,98 +1643,25 @@ def test_catalog_projects_exact_committed_feishu_contribution() -> None:
             automation_id="service-project",
             generation=8,
             enabled=True,
-            declared_kinds={"message.report": "feishu"},
-            committed_enabled_entrypoints=("message.report",),
+            declared_kinds={contribution_id: contribution_kind},
+            committed_enabled_entrypoints=(contribution_id,),
         ),
     )
-    service = AutomationPluginManagementService(
-        catalog=catalog,
-        lifecycle=SimpleNamespace(),
-        configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
-        target_service=SimpleNamespace(),
-        package_repository=SimpleNamespace(),
-        storage=SimpleNamespace(),
-        contribution_registry=registry,
-    )
+    service = _projection_service(catalog, registry)
 
     projection = service.catalog_projection(actor=_console_actor())
 
     assert projection["instances"][0]["contribution_projection_state"] == "ACTIVE"
     assert projection["instances"][0]["active_contributions"] == [
         {
-            "contribution_id": "message.report",
-            "contribution_kind": "feishu",
+            "contribution_id": contribution_id,
+            "contribution_kind": contribution_kind,
             "generation": 8,
             "phase": "COMMITTED",
             "backend_status": "READY",
         }
     ]
-    assert "只读日报" not in repr(projection)
-    assert "must-not-cross-boundary" not in repr(projection)
-
-
-def test_catalog_projects_exact_committed_webhook_contribution() -> None:
-    instance = {
-        "automation_id": "service-project",
-        "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
-        "enabled": True,
-        "committed_generation": 8,
-        "dependency_state": "READY",
-        "blocking_reasons": [],
-        "entrypoints": ["hooks.receive"],
-        "enabled_entrypoints": ["hooks.receive"],
-        "entrypoint_kinds": {"hooks.receive": "webhook"},
-    }
-    registry = _ContributionRegistry(
-        8,
-        (
-            SimpleNamespace(
-                automation_id="service-project",
-                generation=8,
-                contribution_id="hooks.receive",
-                contribution_kind="webhook",
-                phase="COMMITTED",
-                backend_status="READY",
-                route="private-hook",
-                service="must-not-cross-boundary",
-            ),
-        ),
-    )
-    catalog = _ProjectionCatalog(
-        instance,
-        _committed_service_entry(
-            automation_id="service-project",
-            generation=8,
-            enabled=True,
-            declared_kinds={"hooks.receive": "webhook"},
-            committed_enabled_entrypoints=("hooks.receive",),
-        ),
-    )
-    service = AutomationPluginManagementService(
-        catalog=catalog,
-        lifecycle=SimpleNamespace(),
-        configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
-        target_service=SimpleNamespace(),
-        package_repository=SimpleNamespace(),
-        storage=SimpleNamespace(),
-        contribution_registry=registry,
-    )
-
-    projection = service.catalog_projection(actor=_console_actor())
-
-    assert projection["instances"][0]["contribution_projection_state"] == "ACTIVE"
-    assert projection["instances"][0]["active_contributions"] == [
-        {
-            "contribution_id": "hooks.receive",
-            "contribution_kind": "webhook",
-            "generation": 8,
-            "phase": "COMMITTED",
-            "backend_status": "READY",
-        }
-    ]
-    assert "private-hook" not in repr(projection)
+    assert private_marker not in repr(projection)
     assert "must-not-cross-boundary" not in repr(projection)
 
 
@@ -1740,8 +1690,8 @@ def test_catalog_service_v2_projection_states_are_closed_and_fail_closed() -> No
             ),
         ),
     )
-    service = AutomationPluginManagementService(
-        catalog=_ProjectionCatalog(
+    service = _projection_service(
+        _ProjectionCatalog(
             managed,
             _committed_service_entry(
                 automation_id="service-project",
@@ -1751,13 +1701,7 @@ def test_catalog_service_v2_projection_states_are_closed_and_fail_closed() -> No
                 committed_enabled_entrypoints=("run_now",),
             ),
         ),
-        lifecycle=SimpleNamespace(),
-        configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
-        target_service=SimpleNamespace(),
-        package_repository=SimpleNamespace(),
-        storage=SimpleNamespace(),
-        contribution_registry=stale_registry,
+        stale_registry,
     )
 
     stale = service.catalog_projection(actor=_console_actor())["instances"][0]

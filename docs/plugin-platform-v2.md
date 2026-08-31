@@ -62,7 +62,7 @@ Console 信息架构同样只有一个状态源：`/extensions` 与详情页展�
 - Provider 的每个操作都必须以闭合 `{name,effect}` 对象声明不可变 effect；effect 只允许 `read/compute/internal_write/external_write/destructive`。同一字段进入 Manifest 摘要、Service Registry、generation、compiled invocation 和逐 contribution Plan，任一缺失或漂移都关闭失败。
 - `service.invoke` 已由宿主统一实现，只能调用 Manifest `requires` 中的精确服务和 Provider 已声明的操作；解析到缺失、阻断、歧义、循环或超过八层的调用链都会显式失败。静态 Broker grant 是动态 effect 的保护上限，不代表每次调用都是写：分发前仍按 Registry 中的 Provider 精确 effect 分类，并受当前调用 contribution 的 effect ceiling 约束；只读/计算调用不产生写标记，写调用必须先留下宿主写尝试。被调用 Provider 仍使用自己的 generation lease、能力授权、隔离进程和写后 Evidence。
 - `browser.session` 只开放宿主已注册且逐项审核的 action；当前双打卡包可使用 `ronghui.clock.precheck/submit/verify`。`http.request`、`file.read`、`file.write`、`event.publish` 以及任意未注册 browser action 仍固定失败为 `CAPABILITY_UNAVAILABLE`，不能旁路直连。
-- Scheduler 可接入现有 `scheduled_tasks`（当前宿主时区为 `Asia/Shanghai`）。默认启用的 Scheduler 只有在 cron 可无损表示为固定 `minute hour * * *` 时才允许安装并自动转成项目 `daily_times`；不兼容默认值在写入任何项目之前失败。飞书命令已接入独立动态 Dispatcher：只允许已启用、committed/READY generation 的 exact command，固定 Action v1 与跨项目命令冲突在整批 prepare 时失败。Webhook 已接入无网络宿主 Dispatcher：只允许全局唯一的 exact `POST + route`，同代或跨项目冲突在整批 prepare 时原子失败；`managed_webhook_router READY` 只说明该可注入 backend 已可做离线调用，不代表公网路由可达。Event subscription 尚无动态宿主 dispatcher，启用后仍以 `CAPABILITY_UNAVAILABLE` 阻断 generation 和 Catalog 就绪。真实飞书 tenant/Webhook/WS/机器人回复、Webhook 公网 namespace、per-route token/signature 与轮换、Nginx/反代、真实流量/replay、多 Agent 进程全局仲裁、部署及生产等价故障注入均为 `PRODUCTION_GATED`。
+- Scheduler 可接入现有 `scheduled_tasks`（当前宿主时区为 `Asia/Shanghai`）。默认启用的 Scheduler 只有在 cron 可无损表示为固定 `minute hour * * *` 时才允许安装并自动转成项目 `daily_times`；不兼容默认值在写入任何项目之前失败。飞书命令已接入独立动态 Dispatcher：只允许已启用、committed/READY generation 的 exact command，固定 Action v1 与跨项目命令冲突在整批 prepare 时失败。Webhook 已接入无网络宿主 Dispatcher：只允许全局唯一的 exact `POST + route`，同代或跨项目冲突在整批 prepare 时原子失败；`managed_webhook_router READY` 只说明该可注入 backend 已可做离线调用，不代表公网路由可达。Event subscription 仅对 `durable=false` 接入无外部总线的可注入 Dispatcher：事件名是全局大小写敏感的 exact identity，`managed_event_dispatcher READY` 只代表离线 best-effort 接受面，Command 成功接受后才持久化，接受前事件可能丢失；`durable=true` 仍固定 `CAPABILITY_UNAVAILABLE`，不得降级。真实飞书 tenant/Webhook/WS/机器人回复、Webhook 公网入口、真实 event source、payload/version 合同、Outbox fan-out、ACK/retry/dead-letter/replay、多 Agent 进程全局仲裁、数据库迁移、部署及生产等价故障注入均为 `PRODUCTION_GATED`。
 - Manifest 虽可声明 `resident`，Catalog 会以 `RESIDENT_RUNTIME_UNAVAILABLE` 阻断，而不是误报为可运行；当前生产插件必须使用 `on_demand`。
 - 每次子进程同时受 Bubblewrap 挂载/用户/PID/网络命名空间和固定 `/usr/bin/prlimit` 约束：地址空间 1 GiB、最多 64 个进程、CPU 300 秒、单文件 16 MiB、最多 128 个打开文件。`bubblewrap` 或 `prlimit` 缺失、不是绝对常规文件或启动 canary 失败时，运行时整体 fail closed。
 - 两个双打卡 v2 源包已经完成代码和离线合同验证，但在生产项目中完成真实提交与独立新鲜回读前，不得声称真实写入验收完成。
@@ -128,7 +128,7 @@ payload/
 - Scheduler：在上述字段外声明五段 cron 和时区。默认启用时当前 Host 只接受 `Asia/Shanghai` 与固定数字 `minute hour * * *`，且一个包最多一个默认 Scheduler；非默认 cron 只作受审建议，实际启停与宿主支持的时刻仍以项目提交配置为准。项目迁移测试期必须关闭物理任务。
 - Webhook：只接受 `POST` 和稳定 route 段。
 - 飞书：声明命令文本，但发布时仍需宿主侧受审路由能力；不能借此把任意文本变成特权入口。
-- Event：声明事件名、是否 durable 和目标服务操作。
+- Event：声明全局 exact 事件名、是否 durable 和目标服务操作；当前只有 `durable=false` 可进入离线 best-effort Dispatcher，`durable=true` 明确不可用且不降级。
 
 ### 3.2 可复制的最小示例
 
@@ -320,23 +320,23 @@ Provider effect 来自 `provides[*].operations[*].effect`，Host capability effe
 5. 响应丢失时，同一根 UUID 只读取原安装并续做尚未完成的配置、reconcile 或启用阶段；ZIP、操作者或任一规范意图字段漂移必须返回幂等冲突，不得生成第二个项目或用最新状态冒充旧请求结果。启用和同步失败后的停用补偿使用连续、确定性的审计 witness；缺少任一 witness 或出现人工状态变更即停止旧请求重放。启用事务提交后进程崩溃、或补偿写不可用的恢复演练尚未在线完成，明确标记为 `PRODUCTION_GATED`，在演练通过前不把安装链路描述为零半启用窗口。
 6. Catalog 展示目标版本、活动版本、运行模型、Host API、服务、贡献点、依赖状态和阻断原因。“包已安装”与“v2 generation 已稳定运行”必须分开显示。迁移项目例外，初始只开放 Console 人工入口。
 
-`default_enabled` 不是“无条件可运行”。Event 入口和宿主无法表示的 Scheduler 会在技术检查或 generation prepare 阶段显式阻断；Catalog 必须展示 `CAPABILITY_UNAVAILABLE`，不能留下“已启用但没有路由/任务”的假状态。Feishu contribution 只有在其 exact commands 与固定 Action v1、同代 contribution 和其他项目均无冲突时才可进入 READY 投影；Webhook contribution 也必须先取得全局 exact `POST + route` reservation，且 `READY` 只表示无网络 Dispatcher backend，不表示公网已开放。
+`default_enabled` 不是“无条件可运行”。宿主无法表示的 Scheduler 和 `durable=true` Event 会在技术检查或 generation prepare 阶段显式阻断；Catalog 必须展示 `CAPABILITY_UNAVAILABLE`，不能留下“已启用但没有入口/任务”的假状态。Feishu contribution 只有在其 exact commands 与固定 Action v1、同代 contribution 和其他项目均无冲突时才可进入 READY 投影；Webhook contribution 也必须先取得全局 exact `POST + route` reservation，且 `READY` 只表示无网络 Dispatcher backend，不表示公网已开放。只有取得全局 exact event-name reservation 的 `durable=false` Event 才能以 `managed_event_dispatcher READY` 进入离线 best-effort 投影。
 
-### 7.1 Console / Scheduler / Harness / Feishu / Webhook 无重启热投影
+### 7.1 Console / Scheduler / Harness / Feishu / Webhook / Event 无重启热投影
 
-当前受管热投影覆盖 Service v2 的 Console、Scheduler、Harness、Feishu 与 Webhook contribution。generation 协调器先完整准备新代 effect，并由 generation CAS 持久化 committed generation 与对应 `scheduled_tasks`；进程内 `ManagedContributionRegistry` 再批量保存该代 `PREPARED` 材料，不能逐条开放新路由、命令或工具。Webhook 以全局大小写敏感的 exact `POST + route` 作为 route identity，与飞书命令一样必须整代原子占用，冲突不能留下部分 reservation。投影转换携带由 generation snapshot 权威派生的完整 registration ID 集合；该集合可以为空。`COMMITTED/PREPARED/PENDING_PROJECTION` 的 observed effect keys 必须与 snapshot 计划精确相等；`TARGET/PREPARING/WAITING` 崩溃恢复只允许逐项验证已持久化的合法子集，随后仍从权威 snapshot 原子恢复整代 PREPARED reservation 续做，不能把子集误当完整 committed 代。
+当前受管热投影覆盖 Service v2 的 Console、Scheduler、Harness、Feishu、Webhook 与 Event contribution。generation 协调器先完整准备新代 effect，并由 generation CAS 持久化 committed generation 与对应 `scheduled_tasks`；进程内 `ManagedContributionRegistry` 再批量保存该代 `PREPARED` 材料，不能逐条开放新路由、命令、事件或工具。Webhook 的全局 exact `POST + route` 与 non-durable Event 的全局 exact event name 都必须随整代原子占用，冲突不能留下部分 reservation。投影转换携带由 generation snapshot 权威派生的完整 registration ID 集合；该集合可以为空。`COMMITTED/PREPARED/PENDING_PROJECTION` 的 observed effect keys 必须与 snapshot 计划精确相等；`TARGET/PREPARING/WAITING` 崩溃恢复只允许逐项验证已持久化的合法子集，随后仍从权威 snapshot 原子恢复整代 PREPARED reservation 续做，不能把子集误当完整 committed 代。
 
 generation CAS 在同一数据库事务内写入 `PENDING_PROJECTION` transition token，并保存旧项目字段、旧 project policy 版本、旧 `scheduled_tasks` 及其完整 approval policy 前镜像。运行中的 APScheduler 已绑定时，Provider reference、`ManagedContributionRegistry` 和 `reload_scheduler(strict=True)` 共用同一把投影锁。strict 模式要求整份计划无非法行且每个 Job 均注册成功；失败会按切换前快照恢复全部 Job、触发器选项和 `next_run_time`。只有刷新证据闭合为 `initialized=true` 且 `invalid_tasks=[]` 后，Registry 才一次性切 exact active Provider/Console generation，并用相同 token 把 durable phase ACK 为 `ACTIVE`。
 
-strict refresh 或 activation ACK 失败时，协调器执行 token 和 base generation 条件化的 reverse CAS：目标新代从未产生任何 lease，且项目、策略、任务 hash 均未并发变化时，精确恢复旧 committed generation、项目版本、任务名称/参数/运行字段和审批策略，再以进程投影的单调 revision 与完整身份做 compare-and-swap，在同一投影锁内恢复旧 Provider、Console/Feishu/Webhook 路由与 Scheduler Job。target 回到 `PREPARED/ROLLED_BACK`，因此同一 immutable target 可以直接重试，不要求重启 Agent 或 Console。
+strict refresh 或 activation ACK 失败时，协调器执行 token 和 base generation 条件化的 reverse CAS：目标新代从未产生任何 lease，且项目、策略、任务 hash 均未并发变化时，精确恢复旧 committed generation、项目版本、任务名称/参数/运行字段和审批策略，再以进程投影的单调 revision 与完整身份做 compare-and-swap，在同一投影锁内恢复旧 Provider、Console/Feishu/Webhook/Event 路由与 Scheduler Job。target 回到 `PREPARED/ROLLED_BACK`，因此同一 immutable target 可以直接重试，不要求重启 Agent 或 Console。
 
-若 reverse CAS 因目标新代存在任何 lease 历史、未知写、并发变化或 token 漂移被拒绝，系统不得继续保留混合代际：transition 标记 `BLOCKED`，持久 Scheduler gate 关闭，全部进程 Provider/Console/Harness/Feishu/Webhook 路由撤销，并通过只存在于动态 Job `kwargs` 的私有 owner marker 删除该项目任务。进程 tombstone 会让后续普通或 strict reload 都跳过该项目；固定 Job 没有 marker，绝不按 id 或闭包猜测归属。启动恢复只依据 durable generation/activation phase 决定继续投影、继续旧代或保持阻断：`DRAINING/DISPOSING/BLOCKED` contribution 仅恢复成不占 route/active map 的诊断记录，`ROLLED_BACK` 完整校验 journal 后不恢复 contribution；通用 lease 入口在 transition 存在时只接受 `ACTIVE`，因此 `PENDING_PROJECTION/BLOCKED` 不会开放新执行。
+若 reverse CAS 因目标新代存在任何 lease 历史、未知写、并发变化或 token 漂移被拒绝，系统不得继续保留混合代际：transition 标记 `BLOCKED`，持久 Scheduler gate 关闭，全部进程 Provider/Console/Harness/Feishu/Webhook/Event 路由撤销，并通过只存在于动态 Job `kwargs` 的私有 owner marker 删除该项目任务。进程 tombstone 会让后续普通或 strict reload 都跳过该项目；固定 Job 没有 marker，绝不按 id 或闭包猜测归属。启动恢复只依据 durable generation/activation phase 决定继续投影、继续旧代或保持阻断：`DRAINING/DISPOSING/BLOCKED` contribution 仅恢复成不占 route/active map 的诊断记录，`ROLLED_BACK` 完整校验 journal 后不恢复 contribution；通用 lease 入口在 transition 存在时只接受 `ACTIVE`，因此 `PENDING_PROJECTION/BLOCKED` 不会开放新执行。
 
 Agent 启动时先完成审批策略与项目调用器装配，再构造但不启动 APScheduler，并绑定 strict reload 与 emergency withdrawer。随后 reconcile 按 durable phase 完成未确认投影、activation ACK 或阻断撤销；只有恢复闭合后才启动 Scheduler，避免 ACK 先于真实 Job 投影。
 
-停用和卸载使用同一顺序：先严格刷新物理 Scheduler 计划，成功后再整代 withdraw Console/Scheduler/Harness/Feishu/Webhook 注册；失败保留切换前对象并保持 pending，调用仍由 durable 项目状态 fail closed。只提供 service、没有已启用 Console/Scheduler/Harness/Feishu/Webhook contribution 的 v2 generation 不创建伪 marker。关闭最后一个受管 contribution 的权威空 generation 仍执行原子刷新：旧代即使仍有 lease 也立即从 active map 清除并进入 DRAINING；DRAINING 记录不再接收流量或占用全局飞书命令/Webhook route，但继续保留作租约排空与诊断。
+停用和卸载使用同一顺序：先严格刷新物理 Scheduler 计划，成功后再整代 withdraw Console/Scheduler/Harness/Feishu/Webhook/Event 注册；失败保留切换前对象并保持 pending，调用仍由 durable 项目状态 fail closed。只提供 service、没有已启用 Console/Scheduler/Harness/Feishu/Webhook/Event contribution 的 v2 generation 不创建伪 marker。关闭最后一个受管 contribution 的权威空 generation 仍执行原子刷新：旧代即使仍有 lease 也立即从 active map 清除并进入 DRAINING；DRAINING 记录不再接收流量或占用全局飞书命令、Webhook route 或 event name，但继续保留作租约排空与诊断。
 
-Catalog 只输出白名单 `active_contributions` 与 `contribution_projection_state`；状态仅为 `ACTIVE/STALE/INACTIVE`，每条公开 active 记录只含 `contribution_id/contribution_kind/generation/phase/backend_status`。Console 手工执行入口仍只从与当前 committed generation 精确一致、`phase=COMMITTED`、`backend_status=READY` 且状态为 `ACTIVE` 的 Console 记录派生；Feishu/Webhook 记录可以进入已启用种类展示，但绝不进入浏览器手工调用清单。Harness 使用同一 Registry 的独立私有只读 snapshot，每次调用前再次解析 exact active generation；动态飞书和动态 Webhook Dispatcher 都只解析 exact active generation，Policy 还会在创建 Command 前和同一接受 UOW 内再次核对 Registry identity。缺失、歧义、跨代、stale 或 inactive 均关闭失败。这不改变 `ACTION_V1` 合同，也不开放自定义插件前端；Event dispatcher 仍为 `CAPABILITY_UNAVAILABLE`。
+Catalog 只输出白名单 `active_contributions` 与 `contribution_projection_state`；状态仅为 `ACTIVE/STALE/INACTIVE`，每条公开 active 记录只含 `contribution_id/contribution_kind/generation/phase/backend_status`。Console 手工执行入口仍只从与当前 committed generation 精确一致、`phase=COMMITTED`、`backend_status=READY` 且状态为 `ACTIVE` 的 Console 记录派生；Feishu/Webhook/Event 记录可以进入已启用种类展示，但绝不进入浏览器手工调用清单。Harness 使用同一 Registry 的独立私有只读 snapshot，每次调用前再次解析 exact active generation；动态飞书、动态 Webhook 与 non-durable Event Dispatcher 都只解析 exact active generation，Policy 还会在创建 Command 前和同一接受 UOW 内再次核对 Registry identity。缺失、歧义、跨代、stale 或 inactive 均关闭失败。这不改变 `ACTION_V1`、既有 Webhook/Feishu、`shared/runtime_events.py`、事务 Outbox 或 Host `event.publish` 合同，也不开放自定义插件前端；`durable=true` Event 仍为 `CAPABILITY_UNAVAILABLE`。
 
 ### 7.2 Harness 首期只读边界
 
@@ -364,7 +364,15 @@ Dispatcher 从 Registry 只取得 `automation_id/generation/contribution_id`，�
 
 无网络 `ServiceV2WebhookDispatcher` 的调用面只接收适配器已验证的 method、route 和稳定 `source_event_id`。调用方不能提交或覆盖项目、service、operation、业务参数、账号、资源、Actor、原始 body、query 或 headers；Dispatcher 从 Registry 得到 exact contribution identity，Policy 只按签名项目合同编译调用。Policy 在创建 Command 前、以及同一 Command 接受 UOW 内再次核对 exact Registry identity，路由在两次检查之间被撤销或换代时关闭失败，不用旧目标继续执行。
 
-`managed_webhook_router READY` 只代表上述可注入、无网络的 Dispatcher backend 已可用于离线 fixture，不代表已有公网入口。现有 `ACTION_V1` Webhook 路由、验签和动态参数合同保持原样，不能被 Service v2 Dispatcher 复用或隐式接管；Event contribution 仍为 `CAPABILITY_UNAVAILABLE`。真实公网 namespace、逐 route token/signature 及轮换、Nginx/反向代理、真实流量与 replay、跨进程全局 route 仲裁、部署和生产等价故障注入全部为 `PRODUCTION_GATED`。
+`managed_webhook_router READY` 只代表上述可注入、无网络的 Dispatcher backend 已可用于离线 fixture，不代表已有公网入口。现有 `ACTION_V1` Webhook 路由、验签和动态参数合同保持原样，不能被 Service v2 Dispatcher 复用或隐式接管；Event contribution 的独立离线边界见 7.5。真实公网 namespace、逐 route token/signature 及轮换、Nginx/反向代理、真实流量与 replay、跨进程全局 route 仲裁、部署和生产等价故障注入全部为 `PRODUCTION_GATED`。
+
+### 7.5 Non-durable Event Dispatcher 离线边界
+
+`contributes.events[*]` 使用大小写敏感的全局 exact event name。只有 `durable=false` 可以进入 `managed_event_dispatcher READY`；同一 generation 内重复或跨项目争用必须令整代 prepare 原子失败，不能留下其他 contribution 的部分 reservation。相邻 generation、权威空 generation、DRAINING、BLOCKED、ROLLED_BACK、停用、卸载和重启恢复继续服从 7.1 的 exact committed/READY active-map 语义。`durable=true` 在 prepare 时保持 `CAPABILITY_UNAVAILABLE`，绝不静默降级为 non-durable。
+
+无外部总线的 `ServiceV2EventDispatcher` 只接受适配器已验证的 exact event name 与稳定 `source_event_id`，调用面不接收 payload、payload version、项目、service、operation、业务参数、账号、资源或 Actor。目标身份和全部调用参数只由 Registry 与签名项目合同派生；Policy 在创建 Command 前和同一接受 UOW 内再次核对 exact Registry identity。只有 Command 成功接受后才有持久记录，接受前进程退出或事件源断开可能丢失，因此 `READY` 只表示可注入的离线 best-effort backend，不表示生产入口所有权、可靠投递或持久订阅。
+
+真实 event source、payload/version 合同、Outbox fan-out、ACK/retry/dead-letter/replay、跨进程全局 event-name 仲裁、数据库迁移、部署和生产等价故障注入全部为 `PRODUCTION_GATED`。既有 `shared/runtime_events.py`、事务 Outbox、Host `event.publish`、`ACTION_V1`、Webhook 和 Feishu 链路保持不变，不得把它们接成隐式 Event 总线或降级兜底。
 
 以上只记录离线实现与故障注入合同；没有执行生产 Scheduler、生产数据库或真实业务入口演练，不构成生产验收。
 
