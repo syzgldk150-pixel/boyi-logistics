@@ -136,6 +136,8 @@ updated: 2026-08-31
 
 自提问题件 Service v2 独立包位于 `service_v2_plugins/self_pickup_problem_upload_v2/`，闭合 subprocess 适配器位于 `service_v2_plugins/_shared/self_pickup_service_main.py`。Manifest/预算/选择配对、代码拥有迁移映射、一次性 preview binding、Host policy 与 preview/formal 目标解析分别位于 `automation_plugins/manifest_v2.py`、`automation_plugins/service_v2_contract.py`、`automation_plugins/migration_binding_mapping.py`、`agent/orchestration/selection_preview_binding.py`、`agent/orchestration/automation_project_policy_service.py`、`agent/orchestration/planner.py`、`automation_plugins/execution.py` 与 `automation_plugins/broker.py`，Schema 位于 `extension_sdk/schemas/manifest-v2.schema.json`。离线包/parity、preview binding 与 Policy 覆盖位于 `../tests/test_self_pickup_problem_service_v2_package.py`、`../tests/test_self_pickup_problem_v1_v2_parity.py`、`../tests/test_selection_preview_binding.py` 和 `../tests/test_automation_project_policy_service.py`；真实 Connector、安装、入口切换和业务读写仍为 `PRODUCTION_GATED`。
 
+分批问题件 Service v2 独立包位于 `service_v2_plugins/split_pending_problem_upload_v2/`，闭合 subprocess 适配器位于 `service_v2_plugins/_shared/split_pending_service_main.py`，唯一业务算法仍是逐字节嵌入的 `first_party_automation_plugins/split_pending_problem_upload/payload/action.py`。源/目标 Sheet、内部 MySQL 投影、融辉问题件与同账号事件账本只经五个精确 Connector 调用；代码拥有迁移角色映射位于 `automation_plugins/migration_binding_mapping.py`。离线确定性包、19 列/数量守恒与 v1-v2 primitive parity 位于 `../tests/test_split_pending_problem_service_v2_package.py`、`../tests/test_split_pending_problem_v1_v2_parity.py`；真实 Connector、安装、入口切换和业务读写仍为 `PRODUCTION_GATED`。
+
 ## 2026-08-03 新增定位
 
 | 需求类型 | 优先查看文件 | 说明 |

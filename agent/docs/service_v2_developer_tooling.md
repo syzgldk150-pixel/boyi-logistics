@@ -136,6 +136,47 @@ Console/Feishu 入口所有权切换（尤其 Feishu 多轮选择）、真实 Sh
 独立验证、Evidence 验收、部署和生产运行均为 `PRODUCTION_GATED`。离线测试可以显式
 注入本地 Host Broker，但不得伪造生产 Connector 注册或真实业务数据。
 
+### MIG003 分批问题件候选包
+
+`agent/service_v2_plugins/split_pending_problem_upload_v2/` 是默认关闭的独立
+Service v2 离线候选包。确定性构建器逐字节嵌入 v1
+`first_party_automation_plugins/split_pending_problem_upload/payload/action.py` 与共享
+result helper；插件 payload 不导入 `agent`、`tools` 或 legacy whole-tool，也不修改
+`sys.path`。包提供同一 service 的 `preview/read` 和 `execute/external_write`；Console
+与 exact 飞书命令“分批”都声明 execute + selection preview，且无
+Scheduler/Webhook/Event/Harness。
+
+v1 action 继续唯一拥有 A:S 19 列校验、分批/有发未到分类、逐票
+`expected_quantity = arrived_quantity + pending_quantity`、汇总数量守恒、候选指纹、
+最多 90 票有序选择、全部目标 query 先于写、全量 MySQL snapshot 与 Sheet 投影，
+以及逐票 create → fresh verify → daily-sign event → result 的顺序。正式选择即使只含
+候选子集，snapshot 与 Sheet 仍投影全部当前未齐来源；不得把投影缩成 selected 子集。
+
+五个包外 Connector 使用最小权限分离：
+
+| Connector service | binding | 本地 v1 role 检查 | primitive → operation/effect |
+|---|---|---|---|
+| `connector.boyi.split_pending_source_sheet@1` | resource `split_pending_source_sheet` | `split_pending_source_sheet` | `feishu.sheet.read_rows` → `read_rows/read` |
+| `connector.boyi.split_pending_target_sheet@1` | resource `split_pending_target_sheet` | `split_pending_target_sheet` | `feishu.sheet.replace_rows` → `replace_rows/external_write` |
+| `connector.boyi.split_pending_projection@1` | host_internal | target role | snapshot read/replace/result upsert → `snapshot_read/read`、`snapshot_replace/internal_write`、`result_upsert/internal_write` |
+| `connector.boyi.split_pending_ronghui@1` | account `account_id` | `account_id` | problem query/create/verify → `problem_query/read`、`problem_create/external_write`、`problem_verify/read` |
+| `connector.boyi.split_pending_problem_ledger@1` | account `account_id` | `account_id` | daily-sign event upsert → `event_upsert/internal_write` |
+
+两个账号 Connector 必须共享项目当前精确 `account_id` 绑定；ledger 不能降为
+host-internal，因为事件写合同依赖同一账号 descriptor。Preview 首次调用只提交
+source + projection preflight；execute 首次调用一次提交全部五项，之后不重复。
+九个 `service.invoke.action_call_limits` 的最坏路径为固定调用各 1 次、五个逐票动作各
+90 次，总计 454。Host 通用选择最多 250 票不放宽该 action 的签名上限；第 91 票必须
+在任何 Broker 调用前失败。
+
+写边界从全量 `snapshot_replace` 调用前开始，之后 Sheet、Ronghui、event 或 result 的
+任何异常、响应丢失或读回不闭合都必须是 `WRITE_OUTCOME_UNKNOWN`，不得重放。离线
+fixture 只证明代表性 19 列/数量守恒、字节嵌入、v1-v2 projection/primitive parity、
+每票独立 Host Evidence 和错误边界；真实 5,000×19 容量仍需在真实 descriptor 的
+input/output cap 下实测，禁止截断。五个真实 Connector、账号/资源绑定、安装、入口
+切换、真实 Sheet/MySQL/TMS 读写、生产 Evidence、数据库故障演练和部署均为
+`PRODUCTION_GATED`。
+
 ## 4. 安全投影的含义
 
 ### `validate` 与 `inspect`

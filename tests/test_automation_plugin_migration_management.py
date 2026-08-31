@@ -201,6 +201,29 @@ def test_self_pickup_migration_maps_both_identical_account_contracts_explicitly(
     )
 
 
+def test_split_pending_migration_uses_only_its_reviewed_account_and_sheet_roles() -> None:
+    mapping = reviewed_migration_binding_mapping(
+        source_automation_id="split_pending_problem_upload",
+        source_plugin_id="split_pending_problem_upload",
+        target_plugin_id="split_pending_problem_upload_v2",
+    )
+
+    assert mapping is not None
+    assert dict(mapping.account_roles) == {"account_id": "account_id"}
+    assert dict(mapping.resource_roles) == {
+        "split_pending_source_sheet": "split_pending_source_sheet",
+        "split_pending_target_sheet": "split_pending_target_sheet",
+    }
+    assert (
+        reviewed_migration_binding_mapping(
+            source_automation_id="split_pending_problem_upload",
+            source_plugin_id="split_pending_problem_upload",
+            target_plugin_id="unknown_target",
+        )
+        is None
+    )
+
+
 def _self_pickup_migration_fixture() -> tuple[SimpleNamespace, SimpleNamespace]:
     source = _entry(
         automation_id="self_pickup_problem_upload",
