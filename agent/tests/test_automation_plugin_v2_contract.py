@@ -779,6 +779,42 @@ def test_service_invoke_projects_explicit_signed_action_call_limits() -> None:
     }
 
 
+def test_service_invoke_allows_correlated_action_maxima_above_global_budget() -> None:
+    source = _manifest_mapping(
+        "correlated_bounded_consumer",
+        requires=("plugin.provider_plugin.records@1",),
+    )
+    source["capabilities"] = [
+        {
+            "name": "service.invoke",
+            "operations": ["read_page", "snapshot_replace", "submit", "verify"],
+            "account_role": None,
+            "resource_role": None,
+            "action_call_limits": {
+                "read_page": 500,
+                "snapshot_replace": 1,
+                "submit": 499,
+                "verify": 499,
+            },
+        }
+    ]
+
+    manifest = AutomationPluginManifestV2.from_mapping(source)
+    contract = ServiceV2ProjectContract.from_manifest(manifest)
+
+    assert manifest.to_mapping() == source
+    assert contract.runtime_permissions["max_broker_calls"] == 1000
+    assert {
+        item["action"]: item["per_action_limit"]
+        for item in contract.runtime_permissions["broker_operations"]
+    } == {
+        "read_page": 500,
+        "snapshot_replace": 1,
+        "submit": 499,
+        "verify": 499,
+    }
+
+
 @pytest.mark.parametrize(
     "name, operations, limits",
     [
@@ -787,11 +823,6 @@ def test_service_invoke_projects_explicit_signed_action_call_limits() -> None:
         ("service.invoke", ["query"], {"query": True}),
         ("service.invoke", ["query"], {"query": 0}),
         ("service.invoke", ["query"], {"query": 1001}),
-        (
-            "service.invoke",
-            ["query", "verify"],
-            {"query": 501, "verify": 500},
-        ),
         ("storage.kv", ["get"], {"get": 1}),
     ],
 )

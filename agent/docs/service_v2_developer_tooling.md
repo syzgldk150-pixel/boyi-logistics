@@ -74,7 +74,7 @@ Manifest 的编辑器 Schema 位于 `agent/extension_sdk/schemas/manifest-v2.sch
 
 Console/Feishu contribution 可选声明 `selection_preview_operation`；原 `operation` 是 execute，两者必须属于同一 service，且 preview 必须是 `read`、execute 必须是 `external_write`。同一包的 Console/Feishu selection 声明必须共享完全相同的 service/preview/execute 三元组；这三个 Host-owned 参数 `dry_run/selected_bill_codes/preview_fingerprint` 不能与插件配置字段重名，其他 contribution kind 也不能声明 selection 配对。
 
-仅 `service.invoke` capability 可选声明 `action_call_limits`。键集合必须与 `operations` 精确相等，每个值为 `1..1000` 的整数且总和不超过 1000；这些额度进入签名 Broker contract，不能增删 action 或改变 effect/governance。未声明时继续使用旧的每 action 64 次额度和旧 canonical material。
+仅 `service.invoke` capability 可选声明 `action_call_limits`。键集合必须与 `operations` 精确相等，每个值必须是 `1..1000` 的整数；相关动作的声明上限合计可以超过 1000，因为它们不是可以同时兑现的第二套全局预算。运行时无条件把 `max_broker_calls` 截为 1000，Broker 同时执行该全局计数和逐 action 计数；这些额度仍进入签名 Broker contract，不能增删 action 或改变 effect/governance。未声明时继续使用旧的每 action 64 次额度和旧 canonical material。
 
 Connector 不是一种 ZIP Provider。源码包的 `provides` 与 contribution target 仍只能使用 `plugin.*`；声明宿主 Connector 依赖时，`requires` 必须使用三种闭合形式之一：`{service,binding_kind:account,account_role}`、`{service,binding_kind:resource,resource_role}` 或 `{service,binding_kind:host_internal}`。账号角色必须在 `account_roles` 中声明为 `required=true`，资源角色可为 `required=true|false`；`validate` 会拒绝额外字段、未声明角色、非必填账号角色，以及 ZIP 尝试提供 `connector.*` 的情况。
 
@@ -176,6 +176,39 @@ fixture 只证明代表性 19 列/数量守恒、字节嵌入、v1-v2 projection
 input/output cap 下实测，禁止截断。五个真实 Connector、账号/资源绑定、安装、入口
 切换、真实 Sheet/MySQL/TMS 读写、生产 Evidence、数据库故障演练和部署均为
 `PRODUCTION_GATED`。
+
+### MIG004 扫描同步候选包
+
+`agent/service_v2_plugins/sync_scan_codes_v2/` 是默认关闭的独立 Service v2
+离线候选包。确定性构建器逐字节嵌入 v1
+`first_party_automation_plugins/sync_scan_codes/payload/action.py` 与共享 result helper；
+payload 不导入 `agent`、`tools` 或 legacy whole-tool，也不修改 `sys.path`。包提供
+`plugin.sync_scan_codes_v2.scan_codes@1` 的 `preview/read` 与
+`execute/external_write`。Console 和精确飞书命令“扫描”都指向 execute 且默认关闭，
+不声明通用 `selection_preview_operation`、Scheduler、Webhook、Event 或 Harness；
+配置 Schema 也不接受 Host-owned 的 `dry_run` 或 `_scan_preview_binding`。
+
+嵌入的 v1 action 继续唯一拥有稳定分页、等价重复合并、冲突目标拒绝、H 单排除、
+主/子单分类、站点后运单排序、批次截断、PREVIEW/FORMAL、15 分钟到期与正式阶段
+权威重读。正式执行先调用一次 `scan.snapshot.replace` 并独立核对全量身份哈希，随后
+每批严格执行 `ronghui.scan_next.submit` → fresh `ronghui.scan_next.verify`；下一批只有
+在上一批取得 `server_ledger_verified` 后才能开始。必须同时满足
+`candidate = scheduled + omitted` 与 `scheduled = scanned + skipped`，空来源会清空快照，
+非空但无候选也只投影快照且不伪造第三方写。
+
+包外依赖只有账号绑定的 `connector.boyi.scan_ronghui@1` 与 Host 内部
+`connector.boyi.scan_projection@1`。Preview 首次 `read_page` 只预检扫描 Connector；
+execute 首次 `read_page` 一次预检两项。`read_page/snapshot_replace/submit/verify` 的
+逐 action 上限为 `500/1/499/499`，声明合计 1499；运行时全局上限仍固定为 1000，
+因此单页来源、一次快照、499 个单项批次及各自 verify 正好达到边界。写 marker 从
+`snapshot_replace` 调用前开始；snapshot、submit 或 verify 的响应丢失或证明不闭合均为
+`WRITE_OUTCOME_UNKNOWN`、`retryable=false`，不得重放或继续下一批。
+
+v2 离线包没有为 v1-identity-specific 的一次性 preview 消费发明替代实现。现有
+`tests/test_scan_preview_binding.py` 继续覆盖 v1 Host 的唯一消费与到期合同；迁移固定返回
+`PLUGIN_MIGRATION_SCAN_PREVIEW_PRODUCTION_GATED`。真实 Connector descriptor/handler/grant、
+安装与项目绑定、scan-preview handoff、Console/飞书验收、真实扫描和 readback、cutover、
+生产数据库、故障演练及部署全部为 `PRODUCTION_GATED`。
 
 ## 4. 安全投影的含义
 

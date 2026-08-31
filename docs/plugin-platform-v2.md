@@ -118,7 +118,7 @@ payload/
 | `runtime` | `kind=python_subprocess`、`python=3.10`、`mode=on_demand|resident`，入口和离线依赖路径必须位于 `payload/` |
 | `provides` | 至少一个服务；名称固定为 `plugin.<plugin_id>.<service>@<major>`；ZIP 不能提供或覆盖 `connector.*`；每个操作是字段精确为 `name/effect` 的对象，名称稳定且唯一，effect 只能是五态闭集 |
 | `requires` | 插件服务依赖精确为 `{service}`；宿主 Connector 依赖只能是闭合的 `{service,binding_kind,account_role}`、`{service,binding_kind,resource_role}` 或 `{service,binding_kind}`（分别对应 `account`、`resource`、`host_internal`）；账号角色必须在 `account_roles` 中声明为 `required=true`，资源角色可声明 `required=true|false`；不能依赖自己提供的服务 |
-| `capabilities` | 只声明实际使用的能力、精确 action、账号角色或资源角色；仅 `service.invoke` 可选 `action_call_limits`，其键必须精确覆盖 operations，每项为 `1..1000` 整数且总和不超过 1000，未声明时保留旧的每 action 64 次默认 |
+| `capabilities` | 只声明实际使用的能力、精确 action、账号角色或资源角色；仅 `service.invoke` 可选 `action_call_limits`，其键必须精确覆盖 operations 且每项为 `1..1000` 整数；相关 action 的声明上限合计可超过 1000，但运行时全局上限仍固定为 1000，未声明时保留旧的每 action 64 次默认 |
 | `account_roles` | 声明角色、允许系统和是否必填；账号由项目绑定，不进入配置 JSON |
 | `resource_roles` | 声明角色、允许资源种类和是否必填 |
 | `contributes` | 必须同时含 `console/scheduler/webhook/feishu/events` 五个数组，可选 `harness/module_slots`；所有 contribution `id` 在包内全局唯一 |
@@ -246,7 +246,7 @@ Host capability 不是一组散落的字符串常量。`HostCapabilityRegistry` 
 
 `capabilities[*].operations` **仍是 action 字符串数组**，例如 `storage.collection` 的 `"get"`、`"query"`、`"upsert"`。插件只声明自己要调用什么，不能在 capability 声明中附加 effect、risk、lock 或 Harness 标志。`service.invoke` 是动态服务能力：它的静态 grant 只开放受保护的动态 effect 分发，实际 effect 必须在调用前从目标 Provider 的不可变操作合同取得，effect ceiling 则来自调用 contribution 的精确治理。
 
-`service.invoke.action_call_limits` 只调整签名 Broker contract 中每个已声明 action 的调用预算，不允许增删 action 或改变 effect/governance；总预算仍有 1000 次硬上限。旧包未声明该字段时继续生成原 canonical material 与每 action 64 次额度，不能因新字段支持而漂移历史 hash。
+`service.invoke.action_call_limits` 只调整签名 Broker contract 中每个已声明 action 的调用预算，不允许增删 action 或改变 effect/governance。相关 action 的声明 maxima 可以因路径相关而合计超过 1000；这不是另一份可兑现的总预算，运行时始终把 `max_broker_calls` 截为 1000，Broker 同时强制该全局计数和逐 action 计数。旧包未声明该字段时继续生成原 canonical material 与每 action 64 次额度，不能因新字段支持而漂移历史 hash。
 
 五态 effect 是唯一治理输入，宿主按下表机械派生，不按 `get/list/query/run` 等名称猜测，也不复用 generation lifecycle 的 `effect_kind`：
 
@@ -506,6 +506,16 @@ MIG001 的真实 TMS 读取、Feishu/资源写、内部投影写、独立新鲜�
 `split_pending_problem_upload_v2` 位于 `agent/service_v2_plugins/split_pending_problem_upload_v2/`，确定性构建器逐字节嵌入 v1 `payload/action.py` 与共享结果 helper，不导入 legacy 工具或整链路运行时。它提供同一 service 上的 `preview/read` 与 `execute/external_write`；Console/Feishu 均绑定 `selection_preview_operation=preview` 且默认关闭，无 Scheduler/Webhook/Event/Harness。v1 action 继续唯一拥有 A:S 19 列校验、`应到=已到+未到`、候选指纹、最多 90 票有序选择、全部 query 先于任何写、全量 snapshot/Sheet 投影，以及逐票 create → fresh verify → event → result 的 Evidence 顺序。
 
 包声明源 Sheet、目标 Sheet、内部 projection、融辉账号和同 `account_id` 事件 ledger 五个 Connector；preview 首次调用只预检源 Sheet与 projection，execute 首次调用预检全部五项且不重复。九个 `service.invoke` action 的精确上限合计 454 次。写 marker 从全量 `snapshot_replace` 前开始，此后任何响应丢失、ACK/读回不闭合或后续票失败都保留 `WRITE_OUTCOME_UNKNOWN`，不得重放或回落 whole-tool。离线 fixture 只证明字节嵌入、代表性 19 列/数量守恒、v1-v2 投影与 primitive 顺序、逐票 Host Evidence 和错误边界；五个真实 Connector descriptor/handler/grant、真实 Sheet/MySQL/TMS 数据与写入、安装、committed generation、Console/固定飞书多轮选择 ownership 切换、生产 Evidence、数据库故障演练和部署全部为 `PRODUCTION_GATED`。
+
+### 9.7 MIG004 扫描同步独立包
+
+`sync_scan_codes_v2` 位于 `agent/service_v2_plugins/sync_scan_codes_v2/`，确定性构建器逐字节嵌入 v1 `sync_scan_codes/payload/action.py` 与共享结果 helper，不导入 legacy whole-tool。包提供 `plugin.sync_scan_codes_v2.scan_codes@1` 上的 `preview/read` 与 `execute/external_write`；Console 和精确飞书命令“扫描”都指向 execute 且默认关闭，不声明通用 `selection_preview_operation`、Scheduler、Webhook、Event 或 Harness。配置 Schema 不保存 Host-owned 的 `dry_run` 与 `_scan_preview_binding`。
+
+嵌入 action 继续唯一拥有稳定分页、等价重复合并、H 单排除、主子单分类、候选排序/截断、PREVIEW/FORMAL、15 分钟到期和正式权威重读。包仅声明账号绑定的 `connector.boyi.scan_ronghui@1` 与 Host 内部 `connector.boyi.scan_projection@1`；`read_page/snapshot_replace/submit/verify` 的逐 action 上限为 `500/1/499/499`，声明 maxima 合计 1499，而运行时与 Broker 的全局上限始终为 1000。Preview 首次调用只预检扫描 Connector，execute 首次调用预检两项且不重复。
+
+正式执行必须先用权威重读结果独立核验一次全量快照替换，再让每个批次严格 submit → fresh `server_ledger_verified`；上一批未闭合就不能开始下一批。结果同时证明 `candidate = scheduled + omitted` 与 `scheduled = scanned + skipped`，空来源和非空零候选都只完成经核验的 projection，不伪造第三方提交。snapshot、submit 或 verify 后的任何不确定性固定为 `WRITE_OUTCOME_UNKNOWN`、不可重试。
+
+v2 离线包没有复制 v1 身份专属的一次性 preview 消费机制；现有 `tests/test_scan_preview_binding.py` 继续覆盖该 Host 合同，v1 生产路由仍为唯一 owner。真实 Connector、账号绑定、安装、scan-preview handoff、Console/飞书验收、真实扫描与权威 readback、cutover、生产数据库故障演练和部署全部为 `PRODUCTION_GATED`，migration pair 以 `PLUGIN_MIGRATION_SCAN_PREVIEW_PRODUCTION_GATED` 显式阻断。
 
 ## 10. 迁移波次
 

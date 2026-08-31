@@ -1,0 +1,88 @@
+{
+  "arguments": {
+    "target_date": "2026-08-31",
+    "batch_size": 1,
+    "max_batches": 2
+  },
+  "pages": [
+    [
+      {
+        "bill_code": "R123456789010002",
+        "destination": "B站",
+        "scan_type": "到货",
+        "scan_time": "2026-08-31 08:02:00",
+        "scan_site": "测试网点一"
+      },
+      {
+        "bill_code": "R12345678901",
+        "destination": "总站",
+        "scan_type": "到货",
+        "scan_time": "2026-08-31 08:00:00",
+        "scan_site": "测试网点一"
+      },
+      {
+        "bill_code": "H0001",
+        "destination": "回单",
+        "scan_type": "到货",
+        "scan_time": "2026-08-31 08:03:00",
+        "scan_site": "测试网点一"
+      }
+    ],
+    [
+      {
+        "bill_code": "R123456789010001",
+        "destination": "A站",
+        "scan_type": "到货",
+        "scan_time": "2026-08-31 08:01:00",
+        "scan_site": "测试网点二"
+      },
+      {
+        "bill_code": "R123456789010002",
+        "destination": "B站",
+        "scan_type": "复扫",
+        "scan_time": "2026-08-31 08:04:00",
+        "scan_site": "测试网点二"
+      },
+      {
+        "bill_code": "20012345678901",
+        "destination": "C站",
+        "scan_type": "到货",
+        "scan_time": "2026-08-31 08:05:00",
+        "scan_site": "测试网点二"
+      }
+    ]
+  ],
+  "expected": {
+    "fetched": 5,
+    "normalized": 4,
+    "candidate_items": 3,
+    "scheduled_items": 2,
+    "omitted_items": 1,
+    "scanned": 1,
+    "skipped_signed_count": 1,
+    "skipped_signed_codes": ["R123456789010002"],
+    "snapshot_codes": [
+      "20012345678901",
+      "R12345678901",
+      "R123456789010001",
+      "R123456789010002"
+    ],
+    "planned_codes": [
+      "R123456789010001",
+      "R123456789010002"
+    ],
+    "preview_primitive_actions": [
+      "ronghui.scan.read_page",
+      "ronghui.scan.read_page"
+    ],
+    "formal_primitive_actions": [
+      "ronghui.scan.read_page",
+      "ronghui.scan.read_page",
+      "scan.snapshot.replace",
+      "ronghui.scan_next.submit",
+      "ronghui.scan_next.verify",
+      "ronghui.scan_next.submit",
+      "ronghui.scan_next.verify"
+    ]
+  }
+}

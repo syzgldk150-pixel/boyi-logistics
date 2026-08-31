@@ -1,0 +1,116 @@
+{
+  "schema_version": 2,
+  "runtime_model": "service_v2",
+  "plugin_id": "sync_scan_codes_v2",
+  "name": "扫描同步 v2",
+  "version": "1.0.0",
+  "description": "通过受管 Connector 分页预览扫描数据，并在正式阶段重读后完成快照与逐批服务端核验的离线候选 Service v2 包。",
+  "host_api": {
+    "minimum": "2.0.0",
+    "maximum_exclusive": "3.0.0"
+  },
+  "runtime": {
+    "kind": "python_subprocess",
+    "python": "3.10",
+    "mode": "on_demand",
+    "entrypoint": "payload/main.py",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "provides": [
+    {
+      "service": "plugin.sync_scan_codes_v2.scan_codes@1",
+      "operations": [
+        {"name": "preview", "effect": "read"},
+        {"name": "execute", "effect": "external_write"}
+      ]
+    }
+  ],
+  "requires": [
+    {
+      "service": "connector.boyi.scan_ronghui@1",
+      "binding_kind": "account",
+      "account_role": "account_id"
+    },
+    {
+      "service": "connector.boyi.scan_projection@1",
+      "binding_kind": "host_internal"
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "service.invoke",
+      "operations": ["read_page", "snapshot_replace", "submit", "verify"],
+      "account_role": null,
+      "resource_role": null,
+      "action_call_limits": {
+        "read_page": 500,
+        "snapshot_replace": 1,
+        "submit": 499,
+        "verify": 499
+      }
+    }
+  ],
+  "account_roles": [
+    {
+      "role": "account_id",
+      "allowed_systems": ["ronghui"],
+      "required": true
+    }
+  ],
+  "resource_roles": [],
+  "contributes": {
+    "console": [
+      {
+        "id": "execute_console",
+        "title": "预览并执行扫描同步",
+        "service": "plugin.sync_scan_codes_v2.scan_codes@1",
+        "operation": "execute",
+        "default_enabled": false
+      }
+    ],
+    "scheduler": [],
+    "webhook": [],
+    "feishu": [
+      {
+        "id": "execute_feishu",
+        "service": "plugin.sync_scan_codes_v2.scan_codes@1",
+        "operation": "execute",
+        "commands": ["扫描"],
+        "default_enabled": false
+      }
+    ],
+    "events": []
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "target_date": {
+        "type": "string",
+        "minLength": 10,
+        "maxLength": 10,
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+      },
+      "child_item_limit": {"type": "integer", "minimum": 1, "maximum": 100000},
+      "batch_size": {"type": "integer", "minimum": 1, "maximum": 200},
+      "max_batches": {"type": "integer", "minimum": 1, "maximum": 499},
+      "skip_bill_codes": {
+        "type": "array",
+        "maxItems": 100000,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^\\S(?:[^\\r\\n]*\\S)?$"
+        }
+      }
+    },
+    "required": []
+  },
+  "storage": {
+    "kv": false,
+    "collections": []
+  }
+}

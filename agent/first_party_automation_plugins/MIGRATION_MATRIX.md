@@ -155,6 +155,52 @@ real Sheet/MySQL/Ronghui reads and writes, authoritative post-write Evidence,
 production database fault exercises, v1 disablement and deployment are all
 `PRODUCTION_GATED`. The existing v1 Inventory row remains unchanged.
 
+## TASK-MIG-004 Service v2 migration status
+
+The independent default-disabled candidate is
+`agent/service_v2_plugins/sync_scan_codes_v2/`. Its deterministic builder embeds
+the v1 `agent/first_party_automation_plugins/sync_scan_codes/payload/action.py`
+and shared result helper byte-for-byte. The ZIP imports no `agent`/`tools`
+module, mutates no `sys.path`, and has no whole-tool fallback. The embedded v1
+action remains the sole owner of stable pagination, equivalent-event
+deduplication, conflicting-destination rejection, H-prefix exclusion,
+main/child classification, candidate sorting, batching, and the PREVIEW/FORMAL
+contract.
+
+The package provides `plugin.sync_scan_codes_v2.scan_codes@1` with
+`preview/read` and `execute/external_write`. Default-disabled Console and the
+exact Feishu command `扫描` both target execute; no generic
+`selection_preview_operation`, Scheduler, Webhook, Event or Harness contribution
+exists. The saved config excludes the Host-owned `dry_run` and
+`_scan_preview_binding` fields. This source candidate deliberately does not
+invent a v2 replacement for v1's identity-specific, one-use preview-consumption
+contract.
+
+Two package-external Connector services are declared: the Ronghui scan service
+bound to `account_id`, and a Host-internal scan projection. Their exact
+`read_page`, `snapshot_replace`, `submit`, and `verify` action maxima are
+`500,1,499,499`, totaling 1499 correlated maxima. The signed runtime still
+clamps `max_broker_calls` to 1000 and the Broker enforces both that global
+counter and the per-action counters. Preview preflights only the scan Connector;
+execute preflights both Connectors on its first authoritative page read.
+
+Formal execution rereads every source page before its first mutation, verifies
+one complete snapshot replacement, then requires every batch submit to be
+followed immediately by a fresh `server_ledger_verified` readback before the
+next batch. The result proves both `candidate = scheduled + omitted` and
+`scheduled = scanned + skipped`, including empty-source clearing and nonempty
+zero-candidate projection. A failure before snapshot replacement is
+`NOT_APPLIED`; snapshot, submit, or verify uncertainty is
+`WRITE_OUTCOME_UNKNOWN`, non-retryable, and never advances to another batch.
+
+Existing `tests/test_scan_preview_binding.py` remains the v1 Host proof for
+one-use consumption and expiry. Package installation, real account binding and
+Connector registration, the scan-preview handoff, Console/Feishu acceptance,
+real scans and authoritative readback, cutover, production database work,
+failure exercises and deployment are all `PRODUCTION_GATED`; migration is
+stopped by `PLUGIN_MIGRATION_SCAN_PREVIEW_PRODUCTION_GATED`. The existing v1
+Inventory row remains unchanged and remains the sole production owner.
+
 ## Inventory
 
 | Action package | Legacy wrapper | Account roles | Closed primitives | Extraction state |
