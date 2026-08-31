@@ -2,7 +2,7 @@
 module: extension-platform-progress
 type: execution-ledger
 tags: [extension-platform, autonomous-execution, service-v2, migration]
-status: active
+status: complete
 authority: canonical
 owner: repository
 updated: 2026-08-31
@@ -285,5 +285,16 @@ updated: 2026-08-31
 - 兼容性影响：v1 继续是唯一生产 owner，原 Action v1 字节和 primitive 顺序保持不变；未声明新字段的旧 Manifest canonical material 不漂移。v2 Console/Feishu contribution 默认关闭，且没有 Scheduler、Webhook、Event、Harness 或 selection preview contribution。严格入口—贡献—operation 身份和布尔 governance 拒绝畸形调用；离线 execute 仍要求专用 scan preview binding，绝不复用 selection preview。
 - 数据库影响：无 migration、schema、表、字段或 DML；只扩展既有 migration pair 的审阅映射与入口 ownership 关闭失败规则，并使用 fixture/fake 做离线验证，未连接或操作生产数据库。
 - 未完成项：真实 Ronghui scan 与 host-internal projection Connector descriptor/handler/注册、真实账号绑定、生产插件安装和 committed generation、专用 scan preview binding 的生产持久化/一次性 handoff、Console/固定飞书多轮交互验收、真实扫描提交与独立服务端 ledger 回读、生产 Evidence 验收、v1→v2 入口切换/回滚、生产数据库故障演练和部署均为 `PRODUCTION_GATED`；本 TASK 未访问真实系统、数据或凭据，未执行真实扫描或外部写。
-- 下一项 TASK：最终完整门禁与交付。
+- 下一项 TASK：无；最终完整门禁与交付已完成。
 - 恢复说明：MIG004 代码 `daefd9b80584f89425152361fa034a6ffeb94fb1` 已推送；提交本完成账本后，从已推送 HEAD 运行最终仓库完整门禁，确认所有 TASK 均为 `DONE_OFFLINE` 或 `PRODUCTION_GATED`、临时工件已清理且分支与远端一致，然后写最终交付记录。不得读取 `.env`、访问真实系统、安装生产插件、合并 `main`、部署或执行真实扫描。
+
+## 最终离线交付记录
+
+- 状态：`COMPLETE_OFFLINE`
+- 完成时间：`2026-08-31T18:59:09+08:00`
+- TASK 汇总：从状态总览实际读取 18 项，`DONE_OFFLINE=18`、非完成项 0；所有需要真实系统、真实数据、生产安装、生产数据库、入口切换、部署或外部写的后续工作均保留在各 TASK 的 `PRODUCTION_GATED` 清单中，没有以离线 fixture 代替生产验收。
+- 最终提交前门禁：已提交 HEAD 上 root full suite `2531 passed, 30 skipped, 372 subtests passed`；Agent full suite `1181 passed, 1 skipped, 214 subtests passed`；Console full suite `618 passed, 213 subtests passed`。全仓受跟踪 Python Ruff、文档完整性（77 个 Markdown）、运行时导入边界、内部 API 合同、工具注册表（40 项）、15 个 JavaScript 语法、三套指令镜像与 `git diff --check` 均通过。repository hygiene 仍只报告 3 个本轮开始前已存在的超大模块，没有新增卫生问题。
+- MIG004 交付锚点：代码 `daefd9b80584f89425152361fa034a6ffeb94fb1`、完成账本 `269d4585c10af33f01db89d8e8605114f467fbb3` 已推送到 `origin/agent/extension-platform-autonomous`；Draft PR 为 [PR #142](https://github.com/syzgldk150-pixel/boyi-logistics/pull/142)。最终记录提交后以该分支远端 HEAD 为准，不合并 `main`。
+- 临时文件：双构建 ZIP 已删除；本轮创建的 `pycache`、隔离 QA 环境及 EXT006/EXT011/MIG001 compile 临时目录共 5 个已在确认绝对路径位于仓库 `.task_tmp` 后清除，未删除本轮开始前已存在的其他临时目录。
+- 生产边界：全程未部署 ECS、未连接或修改生产数据库、未访问或修改真实 TMS/飞书业务数据、未执行真实扫描/打卡/问题件写入、未安装生产插件、未合并 `main`，也未读取或输出凭据。下一步只能在获得新的明确生产授权后，从各 TASK 的 `PRODUCTION_GATED` 清单制定分阶段验收与切换方案。
+- 恢复说明：检出 `agent/extension-platform-autonomous` 并读取本账本；若无新的明确生产授权，本轮无人值守任务已经终止于 `COMPLETE_OFFLINE`，不得自动越过任何 `PRODUCTION_GATED` 边界。
