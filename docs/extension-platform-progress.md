@@ -277,13 +277,13 @@ updated: 2026-08-31
 
 ### TASK-MIG-004：迁移扫描
 
-- 状态：`NOT_STARTED`
-- 开始时间 / 结束时间：— / —
-- 设计决策：保留 PREVIEW/FORMAL、有效期、一次性消费、权威重读、批次 ledger 核验、数量守恒和未知写隔离；不做真实扫描。
+- 状态：`IN_PROGRESS`
+- 开始时间 / 结束时间：`2026-08-31T18:02:30+08:00` / —
+- 设计决策：以现有 `sync_scan_codes` v1 源码和已验证 primitive 作为唯一业务来源，先只读审计 PREVIEW/FORMAL 两阶段、预览有效期、一次性消费、正式执行前权威重读、逐批提交与服务端 ledger 回读、数量守恒、零候选语义和 `WRITE_OUTCOME_UNKNOWN` 边界，再形成独立 Service v2 候选包与离线 fixture parity。只复用既有 Connector、scan preview、Command/Run/Evidence 与 migration pair 合同，不复制 whole-tool fallback、不伪造真实 Connector；真实扫描、入口切换、安装和部署继续 `PRODUCTION_GATED`。
 - 修改文件 / Commit SHA：— / —
 - 测试命令和结果：尚未运行。
 - 兼容性影响：v1 保持运行，v2 默认不接生产入口。
 - 数据库影响：仅 fixture 和本地验证；不操作生产。
 - 未完成项：全部。
 - 下一项 TASK：最终完整门禁与交付。
-- 恢复说明：先确认前序 TASK 已提交推送，再将本 TASK 标为 `IN_PROGRESS`；完成后运行最终完整门禁。
+- 恢复说明：MIG003 代码 `2b595665e3ed17979bb865c19c6e3e277bd53a73` 与完成账本 `da48402d0755130b83cceeca7edffa8bec986c71` 已推送。从 v1 `sync_scan_codes` payload、PREVIEW/FORMAL、预览有效期/一次性消费、权威重读、批次 ledger、数量守恒、零候选与未知写边界开始只读审计；先做离线 fixture，不读取 `.env`、不访问真实系统或执行真实扫描。
