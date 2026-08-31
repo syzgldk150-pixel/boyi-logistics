@@ -116,8 +116,8 @@ payload/
 | `plugin_id` | 稳定小写 snake_case；版本发布后不重命名 |
 | `version` | 严格 `MAJOR.MINOR.PATCH`；同版本内容不可变 |
 | `runtime` | `kind=python_subprocess`、`python=3.10`、`mode=on_demand|resident`，入口和离线依赖路径必须位于 `payload/` |
-| `provides` | 至少一个服务；名称固定为 `plugin.<plugin_id>.<service>@<major>`；每个操作是字段精确为 `name/effect` 的对象，名称稳定且唯一，effect 只能是五态闭集 |
-| `requires` | 只列其他插件提供的完整服务名；不能依赖自己提供的服务 |
+| `provides` | 至少一个服务；名称固定为 `plugin.<plugin_id>.<service>@<major>`；ZIP 不能提供或覆盖 `connector.*`；每个操作是字段精确为 `name/effect` 的对象，名称稳定且唯一，effect 只能是五态闭集 |
+| `requires` | 插件服务依赖精确为 `{service}`；宿主 Connector 依赖精确为 `{service,account_role}`，且该账号角色必须在 `account_roles` 中声明为 `required=true`；不能依赖自己提供的服务 |
 | `capabilities` | 只声明实际使用的能力、精确 action、账号角色或资源角色 |
 | `account_roles` | 声明角色、允许系统和是否必填；账号由项目绑定，不进入配置 JSON |
 | `resource_roles` | 声明角色、允许资源种类和是否必填 |
@@ -262,6 +262,14 @@ Provider effect 来自 `provides[*].operations[*].effect`，Host capability effe
 一个 v2 包可以提供多个服务和操作，但每个服务名同时只能有一个活动 Provider。Registry 同时持久化每个操作的精确 effect，恢复时会逐项核对，不能用同名操作的新 effect 覆盖旧合同。相同不可变包被多个项目实例引用时按包 SHA-256 共享 Provider 身份和引用计数；不同字节争用同一服务名会产生 Provider 冲突，不能按加载顺序覆盖。
 
 插件之间不得 `import` 对方源码、读取对方目录或直接访问对方进程。跨插件依赖只能写入 `requires`，调用只能经 `service.invoke` 和服务注册表；调用方不能指定未声明服务、任意 Provider、其他项目路径、新的账号绑定或自选 effect。宿主先解析目标 Provider 的精确 effect，再确认它没有超过调用 contribution 的 effect ceiling；随后用该 effect 建立目标 generation lease。`read/compute` 不调用写标记，`internal_write/external_write/destructive` 在分发前调用一次宿主写标记，读 contribution 因而不能借 `service.invoke` 升级成写。Provider 被停用、卸载或变得不可用时，宿主先持久化关闭 consumer 的物理 Scheduler，再撤销进程内 contribution/service 路由；恢复时只有项目启用、精确 committed generation 稳定、desired schedule 有效且 migration pair 的入口所有权仍属于该项目，才重新打开任务。
+
+### 4.1 宿主 Connector Registry
+
+`ConnectorRegistry` 是宿主代码拥有的只读适配器注册表，与 ZIP Provider 使用的 `ServiceRegistry` 严格分离。ZIP 的 `provides` 和全部 contribution target 仍只能指向 `plugin.*`，不能注册、替换或控制 `connector.*` 的生命周期。插件若要调用 Connector，只能在 `requires` 写字段精确为 `{service,account_role}` 的 `connector.<owner>.<service>@<major>` 依赖；对应 `account_roles` 声明必须为必填，安装、generation 准备和每次调用都会核对服务、角色与允许系统。
+
+Connector 调用仍经 `service.invoke`。宿主从当前项目的精确绑定解析账号，并只把私有 `ConnectorBindingRef` 交给宿主适配器；插件既不能提交绑定身份，也不能看到绑定标识、连接位置或认证材料，只能收到经闭合 output Schema 与脱敏检查验证的业务结果。缺少注册、缺少唯一绑定、角色或系统漂移、输入输出不闭合、结果含敏感材料时全部显式失败。
+
+首个 `connector.fixture.tracking@1/query` 只有 `read` effect，只能由测试显式注入本地 JSON fixture；生产组合默认构造空 `ConnectorRegistry`，不会隐式启用该 fixture。Catalog 的顶层 `connectors` 与 `plugins/instances` 分开，只投影服务名、标题、账号角色、允许系统及操作/effect，不提供安装、升级、启停或卸载动作。真实 TMS、飞书、数据库或任何写 Connector，以及其生产账号接入、部署和验收均为 `PRODUCTION_GATED`。
 
 插件入口从标准输入读取宿主生成的闭合 JSON，只使用其中的项目配置、入口类型、已解析 target 和逐 contribution `governance`；target 与 governance 由 committed contract 生成，插件不得覆盖。标准输出只能返回一个 JSON 对象，读/计算成功至少包含：
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import hashlib
+from dataclasses import replace
 from datetime import datetime, timezone
 from threading import Event, Lock, Thread
 from types import SimpleNamespace
@@ -39,6 +41,9 @@ from agent.automation_plugins.service_registry import (
     ServiceRegistry,
     ServiceUnavailable,
     package_provider_registration_id,
+)
+from agent.automation_plugins.service_v2_projection import (
+    _service_registration_material,
 )
 
 
@@ -314,6 +319,74 @@ def _service_plan(snapshot: RuntimeGenerationSnapshot):
         for plan in ProductionRuntimeEffectPlanner().plan(snapshot)
         if plan.kind is RuntimeEffectKind.SERVICE_REGISTRATION
     )
+
+
+def test_plugin_only_service_material_preserves_legacy_hash_and_shape() -> None:
+    dependency = "plugin.provider_plugin.runner@1"
+    snapshot = _snapshot(
+        automation_id="consumer-project",
+        plugin_id="consumer_plugin",
+        package_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+        requires=(dependency,),
+    )
+
+    material = _service_registration_material(snapshot)
+
+    assert set(material) == {
+        "provider_registration_id",
+        "provider_generation",
+        "reference_id",
+        "plugin_id",
+        "plugin_version",
+        "package_sha256",
+        "manifest_sha256",
+        "runtime_mode",
+        "provides",
+        "requires",
+        "service_contracts_sha256",
+    }
+    assert material["service_contracts_sha256"] == _sha(
+        {
+            "provides": material["provides"],
+            "requires": [{"service": dependency}],
+        }
+    )
+
+
+def test_connector_service_material_retains_exact_role_and_system_contract() -> None:
+    service = "connector.fixture.tracking@1"
+    snapshot = _snapshot(
+        automation_id="connector-consumer",
+        plugin_id="connector_consumer",
+        package_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+        requires=(service,),
+    )
+    metadata = copy.deepcopy(dict(snapshot.execution_metadata))
+    metadata["service_contracts"]["requires"] = [
+        {"service": service, "account_role": "tracking_account"}
+    ]
+    metadata["runtime_descriptor"]["account_roles"] = [
+        {
+            "role": "tracking_account",
+            "allowed_systems": ["other", "fixture"],
+            "required": True,
+        }
+    ]
+    snapshot = replace(snapshot, execution_metadata=metadata)
+
+    material = _service_registration_material(snapshot)
+
+    assert material["connector_requirements"] == [
+        {
+            "service": service,
+            "account_role": "tracking_account",
+            "allowed_systems": ["other", "fixture"],
+            "required": True,
+        }
+    ]
+    assert _service_plan(snapshot).payload == material
 
 
 def _effect(

@@ -647,6 +647,12 @@ def test_manifest_schema_matches_template_envelope_and_authoritative_contract(
     assert re.fullmatch(schema["$defs"]["plugin_id"]["pattern"], manifest["plugin_id"])
     assert re.fullmatch(schema["$defs"]["semver"]["pattern"], manifest["version"])
     assert schema["properties"]["runtime"]["properties"]["python"]["const"] == "3.10"
+    assert manifest["requires"] == []
+    required_service = schema["$defs"]["required_service"]
+    assert len(required_service["oneOf"]) == 2
+    assert required_service["oneOf"][0]["required"] == ["service"]
+    assert required_service["oneOf"][1]["required"] == ["service", "account_role"]
+    assert schema["$defs"]["connector_service"]["pattern"].startswith("^connector\\.")
     verified = load_verified_local_artifact(source)
     projected = ServiceV2ProjectContract.from_manifest(verified.manifest)
     assert projected.allowed_entrypoints == ("run",)

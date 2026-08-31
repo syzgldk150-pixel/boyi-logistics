@@ -122,16 +122,7 @@
     "requires": {
       "type": "array",
       "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "service"
-        ],
-        "properties": {
-          "service": {
-            "$ref": "#/$defs/service"
-          }
-        }
+        "$ref": "#/$defs/required_service"
       }
     },
     "capabilities": {
@@ -278,6 +269,43 @@
       "type": "string",
       "pattern": "^plugin\\.[a-z][a-z0-9_]{1,63}\\.[a-z][a-z0-9_.-]{0,127}@(0|[1-9][0-9]*)$",
       "maxLength": 220
+    },
+    "connector_service": {
+      "type": "string",
+      "pattern": "^connector\\.[a-z][a-z0-9_]{1,63}\\.[a-z][a-z0-9_.-]{0,127}@(0|[1-9][0-9]*)$",
+      "maxLength": 220
+    },
+    "required_service": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "service"
+          ],
+          "properties": {
+            "service": {
+              "$ref": "#/$defs/service"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "service",
+            "account_role"
+          ],
+          "properties": {
+            "service": {
+              "$ref": "#/$defs/connector_service"
+            },
+            "account_role": {
+              "$ref": "#/$defs/role"
+            }
+          }
+        }
+      ]
     },
     "python_payload_path": {
       "type": "string",

@@ -14,6 +14,15 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
 from agent.automation_plugins.broker import BrokerGrant, _assert_redacted
+from agent.automation_plugins.connector_compatibility import (
+    ConnectorRequirementContract,
+    evaluate_connector_requirement,
+)
+from agent.automation_plugins.connector_registry import (
+    ConnectorBindingRef,
+    ConnectorRegistry,
+    ConnectorRegistryError,
+)
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.host_capability_registry import (
     HOST_CAPABILITY_API_VERSION,
@@ -54,6 +63,12 @@ def _assert_public_result_safe(value: Mapping[str, Any], grant: BrokerGrant) -> 
     _assert_no_account_id_values(value, _binding_account_ids(grant))
 
 
+ConnectorBindingResolver = Callable[
+    [ConnectorRequirementContract],
+    ConnectorBindingRef,
+]
+
+
 @dataclass(frozen=True)
 class CoreBrokerInvocationContext:
     automation_id: str
@@ -66,6 +81,11 @@ class CoreBrokerInvocationContext:
     resource_id: str | None = None
     account_bindings: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     resource_bindings: Mapping[str, str] = field(default_factory=dict)
+    connector_binding_resolver: ConnectorBindingResolver | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     # Host-private ancestry for nested Service v2 calls.  It is carried only
     # inside the opaque Broker grant and is never exposed as a credential or
     # accepted from subprocess arguments.
@@ -162,6 +182,7 @@ class RegisteredCoreAutomationBrokerAdapter:
         handlers: Mapping[tuple[str, str], CoreBrokerHandler],
         account_resolver: AccountManagerSessionResolver | None = None,
         resource_resolver: ResourceBindingResolverPort | None = None,
+        connector_registry: ConnectorRegistry | None = None,
     ) -> None:
         normalized: dict[tuple[str, str], CoreBrokerHandler] = {}
         for raw_key, handler in handlers.items():
@@ -176,6 +197,7 @@ class RegisteredCoreAutomationBrokerAdapter:
         self._handlers = normalized
         self._accounts = account_resolver or AccountManagerSessionResolver()
         self._resources = resource_resolver or FailClosedResourceBindingResolver()
+        self._connectors = connector_registry or ConnectorRegistry()
 
     @staticmethod
     def _service_v2_descriptor(
@@ -345,6 +367,109 @@ class RegisteredCoreAutomationBrokerAdapter:
             )
         return normalized
 
+    def _connector_binding_resolver(
+        self,
+        *,
+        grant: BrokerGrant,
+        operation: str,
+        arguments: Mapping[str, Any],
+        signed_roles: tuple[str, ...],
+    ) -> ConnectorBindingResolver | None:
+        """Build a lazy Host-private resolver without observing Connector state."""
+
+        if operation != "service.invoke":
+            return None
+        raw_service = arguments.get("service")
+        if not isinstance(raw_service, str) or not raw_service.startswith("connector."):
+            return None
+        if set(arguments) != {"service", "operation", "arguments"}:
+            raise PluginExecutionError(
+                "Connector service invocation arguments are invalid",
+                code="CAPABILITY_ARGUMENT_INVALID",
+            )
+        if signed_roles != (SYSTEM_CAPABILITY_ROLE,):
+            raise PluginExecutionError(
+                "Connector invocation must use the Host-owned system role",
+                code="BROKER_CONTRACT_INVALID",
+            )
+
+        def resolve(requirement: ConnectorRequirementContract) -> ConnectorBindingRef:
+            compatibility = evaluate_connector_requirement(
+                self._connectors,
+                requirement,
+                service=raw_service,
+            )
+            descriptor = compatibility.descriptor
+            if not compatibility.ready or descriptor is None:
+                raise PluginExecutionError(
+                    compatibility.reason or "Connector requirement is incompatible",
+                    code=compatibility.reason_code or "BROKER_CONTRACT_INVALID",
+                )
+            account_role = self._role_declaration(
+                grant.account_roles,
+                descriptor.account_role,
+            )
+            resource_role = self._role_declaration(
+                grant.resource_roles,
+                descriptor.account_role,
+            )
+            if account_role is None or resource_role is not None:
+                raise PluginExecutionError(
+                    "Connector account role is not declared exactly once",
+                    code="BROKER_CONTRACT_INVALID",
+            )
+            allowed_systems = account_role.get("allowed_systems")
+            normalized_allowed_systems = (
+                tuple(str(item) for item in allowed_systems)
+                if isinstance(allowed_systems, list)
+                else ()
+            )
+            if (
+                account_role.get("required") is not True
+                or not isinstance(allowed_systems, list)
+                or len(normalized_allowed_systems)
+                != len(set(normalized_allowed_systems))
+                or frozenset(normalized_allowed_systems)
+                != frozenset(descriptor.allowed_systems)
+            ):
+                raise PluginExecutionError(
+                    "Connector account role drifted from its Host descriptor",
+                    code="BROKER_CONTRACT_INVALID",
+                )
+            if descriptor.account_role not in grant.account_bindings:
+                raise PluginExecutionError(
+                    "Connector account role is unbound",
+                    code="BROKER_ROLE_UNBOUND",
+                )
+            account_ids = self._normalize_account_binding(
+                grant.account_bindings[descriptor.account_role]
+            )
+            if len(account_ids) != 1:
+                raise PluginExecutionError(
+                    "Connector requires one exact account binding",
+                    code="BROKER_CONTRACT_INVALID",
+                )
+            resolved = self._accounts.require_active_binding_descriptor(
+                account_id=account_ids[0],
+                allowed_systems=descriptor.allowed_systems,
+            )
+            if str(resolved.get("account_id") or "") != account_ids[0]:
+                raise PluginExecutionError(
+                    "Connector account resolver changed the exact binding",
+                    code="BROKER_ACCOUNT_MISMATCH",
+                )
+            try:
+                return ConnectorBindingRef(
+                    service=descriptor.service,
+                    account_role=descriptor.account_role,
+                    account_id=account_ids[0],
+                    system=str(resolved.get("system") or ""),
+                )
+            except ConnectorRegistryError as exc:
+                raise PluginExecutionError(str(exc), code=exc.code) from exc
+
+        return resolve
+
     def _resolve_and_invoke_sync(
         self,
         *,
@@ -448,6 +573,13 @@ class RegisteredCoreAutomationBrokerAdapter:
                 code="BROKER_ROLE_UNBOUND",
             )
 
+        connector_binding_resolver = self._connector_binding_resolver(
+            grant=grant,
+            operation=operation,
+            arguments=arguments,
+            signed_roles=signed_roles,
+        )
+
         account_ids: tuple[str, ...] = ()
         resource_id: str | None = None
         if role in resolved_accounts:
@@ -481,6 +613,7 @@ class RegisteredCoreAutomationBrokerAdapter:
             resource_id=resource_id,
             account_bindings=resolved_accounts,
             resource_bindings=resolved_resources,
+            connector_binding_resolver=connector_binding_resolver,
             service_call_chain=self._service_call_chain(grant),
             signed_effect=str(signed_contract.get("effect") or ""),
             signed_broker_effect=str(

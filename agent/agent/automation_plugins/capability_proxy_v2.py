@@ -8,6 +8,7 @@ back to direct process access.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -21,6 +22,17 @@ from zoneinfo import ZoneInfo
 from agent.automation_plugins.core_adapter import (
     CoreBrokerHandler,
     CoreBrokerInvocationContext,
+)
+from agent.automation_plugins.connector_compatibility import (
+    ConnectorRequirementContract,
+    connector_requirement_for_service,
+    connector_requirements_from_manifest,
+    evaluate_connector_requirement,
+)
+from agent.automation_plugins.connector_registry import (
+    ConnectorBindingRef,
+    ConnectorRegistry,
+    ConnectorRegistryError,
 )
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
@@ -570,12 +582,14 @@ class ServiceV2CapabilityProxy:
         *,
         service_registry: ServiceRegistry | None = None,
         service_executor: ServiceV2ProviderExecutor | None = None,
+        connector_registry: ConnectorRegistry | None = None,
     ) -> None:
         if not callable(getattr(orchestration_repository, "unit_of_work", None)):
             raise ValueError("Service v2 capability proxy requires a Unit of Work repository")
         self._orchestration = orchestration_repository
         self._services = service_registry
         self._service_executor = service_executor
+        self._connectors = connector_registry
 
     @staticmethod
     def unavailable(
@@ -870,15 +884,48 @@ class ServiceV2CapabilityProxy:
                 "service invocation depth limit was reached",
                 code="SERVICE_CALL_DEPTH_EXCEEDED",
             )
-        registry = self._services
-        executor = self._service_executor
-        if registry is None or executor is None:
-            raise _capability_error(
-                "Host capability service.invoke has no approved backend",
-                code="CAPABILITY_UNAVAILABLE",
-            )
-        provider = registry.require_operation(service, operation)
         call_chain = (*context.service_call_chain, service)
+        is_connector = service.startswith("connector.")
+        connector_requirement: ConnectorRequirementContract | None = None
+        if is_connector:
+            registry = self._connectors
+            if registry is None:
+                raise _capability_error(
+                    "Host capability service.invoke has no approved Connector backend",
+                    code="CAPABILITY_UNAVAILABLE",
+                )
+            try:
+                connector_requirement = connector_requirement_for_service(
+                    connector_requirements_from_manifest(manifest),
+                    service,
+                )
+                provider = registry.require_operation(service, operation)
+                compatibility = evaluate_connector_requirement(
+                    registry,
+                    connector_requirement,
+                    service=service,
+                )
+            except (ConnectorRegistryError, ValueError) as exc:
+                code = (
+                    exc.code
+                    if isinstance(exc, ConnectorRegistryError)
+                    else "BROKER_CONTRACT_INVALID"
+                )
+                raise _capability_error(str(exc), code=code) from exc
+            if not compatibility.ready:
+                raise _capability_error(
+                    compatibility.reason or "Connector requirement is incompatible",
+                    code=compatibility.reason_code or "BROKER_CONTRACT_INVALID",
+                )
+        else:
+            registry = self._services
+            executor = self._service_executor
+            if registry is None or executor is None:
+                raise _capability_error(
+                    "Host capability service.invoke has no approved backend",
+                    code="CAPABILITY_UNAVAILABLE",
+                )
+            provider = registry.require_operation(service, operation)
         try:
             effect = provider.effect
         except (TypeError, ValueError, AttributeError) as exc:
@@ -904,13 +951,35 @@ class ServiceV2CapabilityProxy:
             # operation name nor a static service.invoke admission ceiling,
             # determines whether this consumer crosses a write boundary.
             context.mark_write_started()
-        result = await executor(
-            provider=provider,
-            caller_automation_id=context.automation_id,
-            operation=operation,
-            arguments=public_arguments,
-            call_chain=call_chain,
-        )
+        if is_connector:
+            resolver = context.connector_binding_resolver
+            if resolver is None or connector_requirement is None:
+                raise _capability_error(
+                    "Connector binding resolver is unavailable",
+                    code="BROKER_ROLE_UNBOUND",
+                )
+            binding = await asyncio.to_thread(resolver, connector_requirement)
+            if not isinstance(binding, ConnectorBindingRef):
+                raise _capability_error(
+                    "Connector binding resolver returned an invalid binding",
+                    code="BROKER_CONTRACT_INVALID",
+                )
+            try:
+                result = await registry.invoke(
+                    resolved=provider,
+                    binding=binding,
+                    arguments=public_arguments,
+                )
+            except ConnectorRegistryError as exc:
+                raise _capability_error(str(exc), code=exc.code) from exc
+        else:
+            result = await executor(
+                provider=provider,
+                caller_automation_id=context.automation_id,
+                operation=operation,
+                arguments=public_arguments,
+                call_chain=call_chain,
+            )
         if not isinstance(result, Mapping):
             raise _capability_error(
                 "service Provider returned a non-object result",
@@ -992,6 +1061,7 @@ def build_service_v2_capability_handler_map(
     reviewed_handlers: Mapping[tuple[str, str], CoreBrokerHandler] | None = None,
     service_registry: ServiceRegistry | None = None,
     service_executor: ServiceV2ProviderExecutor | None = None,
+    connector_registry: ConnectorRegistry | None = None,
 ) -> dict[tuple[str, str], CoreBrokerHandler]:
     """Return fail-closed platform handlers plus reviewed capability adapters."""
 
@@ -1001,13 +1071,14 @@ def build_service_v2_capability_handler_map(
         orchestration_repository,
         service_registry=service_registry,
         service_executor=service_executor,
+        connector_registry=connector_registry,
     )
     handlers: dict[tuple[str, str], CoreBrokerHandler] = {
         (operation, "*"): proxy.unavailable for operation in _UNAVAILABLE_CAPABILITIES
     }
     handlers[("storage.kv", "*")] = proxy.kv
     handlers[("storage.collection", "*")] = proxy.collection
-    if service_registry is not None:
+    if service_registry is not None or connector_registry is not None:
         handlers[SERVICE_V2_SERVICE_INVOKE_HANDLER_KEY] = proxy.service_invoke
     reviewed = reviewed_handlers or {}
     for action in _CLOCK_ACTIONS:

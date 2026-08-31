@@ -11,6 +11,13 @@ from agent.automation_plugins.code_owned_fields import (
     first_party_code_owned_config_fields,
     first_party_code_owned_plan_fields,
 )
+from agent.automation_plugins.connector_compatibility import (
+    ConnectorRequirementContract,
+    connector_requirement_for_service,
+    connector_requirements_from_contracts,
+    evaluate_connector_requirement,
+)
+from agent.automation_plugins.connector_registry import ConnectorRegistry
 from agent.automation_plugins.errors import (
     AutomationPluginError,
     PluginConflictError,
@@ -632,6 +639,7 @@ class PluginCatalog:
         contribution_backend_status: (
             Callable[..., tuple[str, str, str | None, str | None]] | None
         ) = None,
+        connector_registry: ConnectorRegistry | None = None,
     ) -> None:
         self._repository = repository
         self._project_configuration = project_configuration
@@ -669,6 +677,7 @@ class PluginCatalog:
         self._migration_pair_provider = migration_pair_provider
         self._account_binding_ready = account_binding_ready
         self._contribution_backend_status = contribution_backend_status
+        self._connectors = connector_registry or ConnectorRegistry()
 
     def _project_is_excluded(self, project: PluginInstanceRecord) -> bool:
         if project.automation_id in self._excluded_automation_ids:
@@ -950,6 +959,10 @@ class PluginCatalog:
                 providers[service] = next(iter(identities))
 
         package_requirements: dict[tuple[str, str, str], tuple[str, ...]] = {}
+        package_connector_requirements: dict[
+            tuple[str, str, str],
+            tuple[ConnectorRequirementContract, ...],
+        ] = {}
         package_runtime_ready: dict[tuple[str, str, str], bool] = {}
         for entry in v2_entries:
             identity = (
@@ -958,6 +971,10 @@ class PluginCatalog:
                 entry.manifest_sha256,
             )
             package_requirements.setdefault(identity, entry.required_services)
+            package_connector_requirements.setdefault(
+                identity,
+                self._entry_connector_requirements(entry),
+            )
             package_runtime_ready[identity] = bool(
                 package_runtime_ready.get(identity)
                 or (
@@ -985,9 +1002,25 @@ class PluginCatalog:
                 if identity in active_packages or not package_runtime_ready.get(identity):
                     continue
                 if all(
-                    service not in conflicts
-                    and (provider := providers.get(service)) is not None
-                    and provider in active_packages
+                    (
+                        evaluate_connector_requirement(
+                            self._connectors,
+                            connector_requirement_for_service(
+                                package_connector_requirements[identity],
+                                service,
+                            ),
+                            service=service,
+                        ).ready
+                        if service.startswith("connector.")
+                        else False
+                    )
+                    or (
+                        not service.startswith("connector.")
+                        and
+                        service not in conflicts
+                        and (provider := providers.get(service)) is not None
+                        and provider in active_packages
+                    )
                     for service in requirements
                 ):
                     active_packages.add(identity)
@@ -997,7 +1030,26 @@ class PluginCatalog:
         for entry in v2_entries:
             reasons: list[dict[str, str]] = []
             for service in entry.required_services:
-                if service in conflicts:
+                if service.startswith("connector."):
+                    compatibility = evaluate_connector_requirement(
+                        self._connectors,
+                        connector_requirement_for_service(
+                            self._entry_connector_requirements(entry),
+                            service,
+                        ),
+                        service=service,
+                    )
+                    if not compatibility.ready:
+                        reasons.append(
+                            {
+                                "code": compatibility.reason_code
+                                or "CONNECTOR_REQUIREMENT_INCOMPATIBLE",
+                                "service": service,
+                                "message": compatibility.reason
+                                or "Connector requirement is incompatible",
+                            }
+                        )
+                elif service in conflicts:
                     reasons.append(
                         {
                             "code": "PROVIDER_CONFLICT",
@@ -1035,6 +1087,32 @@ class PluginCatalog:
                 reasons,
             )
         return result
+
+    @staticmethod
+    def _entry_connector_requirements(
+        entry: PluginCatalogEntry,
+    ) -> tuple[ConnectorRequirementContract, ...]:
+        service_contracts = getattr(entry, "service_contracts", {})
+        account_roles = getattr(entry, "account_roles", ())
+        if not isinstance(service_contracts, Mapping):
+            return ()
+        raw_requirements = service_contracts.get("requires")
+        if not isinstance(raw_requirements, (list, tuple)) or not isinstance(
+            account_roles,
+            (list, tuple),
+        ):
+            return ()
+        try:
+            return connector_requirements_from_contracts(
+                requirements=(
+                    item for item in raw_requirements if isinstance(item, Mapping)
+                ),
+                account_roles=(
+                    item for item in account_roles if isinstance(item, Mapping)
+                ),
+            )
+        except (AutomationPluginError, TypeError, ValueError):
+            return ()
 
     def _required_account_unavailable(self, entry: PluginCatalogEntry) -> bool:
         checker = self._account_binding_ready
@@ -1292,6 +1370,9 @@ class PluginCatalog:
             for entry in entries
         ]
         return {
+            "connectors": [
+                copy.deepcopy(item) for item in self._connectors.safe_projection()
+            ],
             "plugins": plugins,
             "instances": instances,
             "unsupported_automation_ids": [],
