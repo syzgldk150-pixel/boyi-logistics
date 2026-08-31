@@ -844,7 +844,7 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
             )
             cursor.execute(
                 """
-                SELECT table_name
+                SELECT TABLE_NAME AS table_name
                 FROM information_schema.TABLES
                 WHERE TABLE_SCHEMA=%s
                   AND TABLE_NAME IN (
@@ -864,7 +864,9 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
             )
             cursor.execute(
                 """
-                SELECT table_name, column_name
+                SELECT
+                    TABLE_NAME AS table_name,
+                    COLUMN_NAME AS column_name
                 FROM information_schema.COLUMNS
                 WHERE TABLE_SCHEMA=%s
                   AND (
