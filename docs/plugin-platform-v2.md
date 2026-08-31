@@ -36,7 +36,7 @@ related:
   - ../shared/automation_plugin_generation_runtime_repository.py
   - ../agent/migrations/034_runtime_generation_activation_journal.sql
 status: active
-updated: 2026-08-31
+updated: 2026-09-01
 ---
 
 # ZIP 插件平台 v2 开发、安装与迁移手册
@@ -341,7 +341,7 @@ Provider effect 来自 `provides[*].operations[*].effect`，Host capability effe
 5. 响应丢失时，同一根 UUID 只读取原安装并续做尚未完成的配置、reconcile 或启用阶段；ZIP、操作者或任一规范意图字段漂移必须返回幂等冲突，不得生成第二个项目或用最新状态冒充旧请求结果。启用和同步失败后的停用补偿使用连续、确定性的审计 witness；缺少任一 witness 或出现人工状态变更即停止旧请求重放。启用事务提交后进程崩溃、或补偿写不可用的恢复演练尚未在线完成，明确标记为 `PRODUCTION_GATED`，在演练通过前不把安装链路描述为零半启用窗口。
 6. Catalog 展示目标版本、活动版本、运行模型、Host API、服务、贡献点、依赖状态和阻断原因。“包已安装”与“v2 generation 已稳定运行”必须分开显示。迁移项目例外，初始只开放 Console 人工入口。
 
-`default_enabled` 不是“无条件可运行”。宿主无法表示的 Scheduler 和 `durable=true` Event 会在技术检查或 generation prepare 阶段显式阻断；Catalog 必须展示 `CAPABILITY_UNAVAILABLE`，不能留下“已启用但没有入口/任务”的假状态。Feishu contribution 只有在其 exact commands 与固定 Action v1、同代 contribution 和其他项目均无冲突时才可进入 READY 投影；Webhook contribution 也必须先取得全局 exact `POST + route` reservation，且 `READY` 只表示无网络 Dispatcher backend，不表示公网已开放。只有取得全局 exact event-name reservation 的 `durable=false` Event 才能以 `managed_event_dispatcher READY` 进入离线 best-effort 投影。
+`default_enabled` 不是“无条件可运行”。宿主无法表示的 Scheduler 和 `durable=true` Event 会在技术检查或 generation prepare 阶段显式阻断；Catalog 必须展示 `CAPABILITY_UNAVAILABLE`，不能留下“已启用但没有入口/任务”的假状态。Feishu contribution 只有在其 exact commands 与固定 Action v1、同代 contribution 和其他项目均无冲突时才可进入 READY 投影；Webhook contribution 也必须先取得全局 exact `POST + route` reservation，且 `READY` 只表示持久注册与当前进程可信 ingress 绑定同时有效的无网络 Dispatcher backend，未绑定返回 `PROJECT_RUNTIME_PROJECTION_STALE`，不表示公网已开放。只有取得全局 exact event-name reservation、并在当前进程完成同一 ingress 绑定的 `durable=false` Event 才能以 `managed_event_dispatcher READY` 进入离线 best-effort 投影。
 
 ### 7.1 Console / Scheduler / Harness / Feishu / Webhook / Event / Module Slot 无重启热投影
 

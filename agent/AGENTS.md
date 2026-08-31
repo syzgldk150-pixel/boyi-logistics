@@ -46,6 +46,7 @@
 
 ## 统一控制平面
 
+- Webhook/Event 状态中的所有 `READY` 简称都必须解释为“持久注册与当前进程可信 `ServiceV2ManagedIngress` 绑定同时有效”的离线 backend；未绑定调用返回 `PROJECT_RUNTIME_PROJECTION_STALE`。该状态不代表公网入口、外部事件源或可靠投递。
 - EXT006 的结构边界固定为：`automation_plugins/production_snapshot.py` 只编译闭合 generation 快照，`automation_plugins/production_projection_identity.py` 只维护进程投影精确 CAS 身份，`orchestration/automation_project_policy_plan.py` 只重建并核验持久 Plan，migration 034 的 activation journal/reverse/block 仓储只位于 `../shared/automation_plugin_generation_transition_repository.py`；禁止把这些职责复制回聚合模块。
 - EXT007 的 Service v2 离线开发入口固定为 `scripts/service_v2_plugin.py`，源码/打包、报告和真实本地模拟器职责分别位于 `agent/automation_plugins/developer_v2.py`、`developer_reports_v2.py` 与 `developer_simulator_v2.py`，Manifest 编辑器 Schema 位于 `extension_sdk/schemas/manifest-v2.schema.json`，完整边界见 `docs/service_v2_developer_tooling.md` 与 `../docs/plugin-platform-v2.md`。从仓库根目录以 `PYTHONPATH=agent python -m scripts.service_v2_plugin` 运行 `init/validate/package/inspect/permissions/diff/test`；源码根只允许 `manifest.json + payload/`，必须先按名称拒绝敏感候选再读取，ZIP 必须确定性生成且不可覆盖。`validate/inspect/permissions/diff` 只作已验证工件的离线投影，`diff` 不声明项目兼容；`test` 只接受闭合场景并要求真实 `bwrap + prlimit`、无网络、最小环境、一次性本地 capability 和受信系统 Python 3.10，依赖环境未支持时显式失败。该工具链绝不连接生产、安装插件、创建 grant 或改变授权。
 - `main.py` 是唯一组合根，负责注入 `CommandGateway`、Context/Planner/Validator/Policy、Approval、WorkflowRunner、ResultVerifier、Outbox Dispatcher、真实仓储和执行 adapter，并按 Runner -> Outbox 的顺序停机。
