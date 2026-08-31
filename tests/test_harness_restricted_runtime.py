@@ -15,12 +15,6 @@ from agent.automation_plugins.runtime_backend_availability import (
 from agent.harness.errors import HarnessError
 from agent.harness.sessions import InMemoryHarnessSessionRepository
 from agent.harness_application import HarnessConversationService
-from agent.harness_process_runtime import (
-    HarnessProcessRuntime,
-    harness_conversations,
-    harness_status,
-    unbind_harness_process_runtime,
-)
 from agent.harness_runtime import BubblewrapHarnessModelLauncher, HarnessRuntime
 from agent.orchestration.models import Actor, ActorType
 
@@ -354,29 +348,3 @@ def test_unavailable_sandbox_closes_status_catalog_and_messages() -> None:
     with pytest.raises(HarnessError) as unavailable:
         runtime.sidecar_factory(_actor(), str(uuid.uuid4()))
     assert unavailable.value.code == "HARNESS_SANDBOX_UNAVAILABLE"
-
-
-@pytest.mark.skipif(
-    not BubblewrapHarnessModelLauncher.availability(),
-    reason="Bubblewrap/prlimit are not installed",
-)
-def test_harness_process_binding_starts_and_revokes_the_canary_runtime() -> None:
-    unbind_harness_process_runtime()
-    availability = RuntimeContributionBackendAvailability()
-    runtime = HarnessProcessRuntime(
-        policy_service=_Policy(),
-        contribution_registry=_MutableRegistry(()),
-        backend_availability=availability,
-    )
-    try:
-        assert runtime.start().status == "READY"
-        assert harness_status().availability == "OFFLINE_RESTRICTED"
-        assert harness_conversations() is runtime.conversations
-        assert availability.is_available("harness") is True
-        assert availability.is_available("webhook") is False
-        assert availability.is_available("events") is False
-    finally:
-        runtime.stop()
-    assert availability.is_available("harness") is False
-    with pytest.raises(RuntimeError, match="not initialized"):
-        harness_status()

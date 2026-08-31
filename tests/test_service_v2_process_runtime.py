@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Mapping
+
+import pytest
+
+from agent.automation_plugins.runtime_backend_availability import (
+    RuntimeContributionBackendAvailability,
+)
+from agent.harness_runtime import BubblewrapHarnessModelLauncher
+from agent.orchestration.service_v2_managed_ingress import (
+    ServiceV2ManagedIngress,
+    bind_service_v2_managed_ingress,
+    service_v2_managed_ingress_is_bound,
+    unbind_service_v2_managed_ingress,
+)
+from agent.service_v2_process_runtime import (
+    ServiceV2ProcessRuntime,
+    service_v2_harness_conversations,
+    service_v2_harness_status,
+    unbind_service_v2_process_runtime,
+)
+
+
+class _Registry:
+    def active_snapshot(self) -> tuple[Mapping[str, Any], ...]:
+        return ()
+
+    def resolve_active(self, *_args: object) -> object:
+        raise RuntimeError("no active Harness contribution")
+
+    def resolve_active_webhook_route(self, *, method: str, route: str) -> None:
+        del method, route
+        return None
+
+    def resolve_active_event(self, *, event_name: str) -> None:
+        del event_name
+        return None
+
+
+class _Policy:
+    pass
+
+
+def _reset_bindings() -> None:
+    unbind_service_v2_process_runtime()
+    unbind_service_v2_managed_ingress()
+
+
+@pytest.mark.skipif(
+    not BubblewrapHarnessModelLauncher.availability(),
+    reason="Bubblewrap/prlimit are not installed",
+)
+def test_process_runtime_binds_and_revokes_all_live_backends() -> None:
+    _reset_bindings()
+    availability = RuntimeContributionBackendAvailability()
+    runtime = ServiceV2ProcessRuntime(
+        policy_service=_Policy(),
+        contribution_registry=_Registry(),
+        backend_availability=availability,
+    )
+    try:
+        assert runtime.start().status == "READY"
+        assert service_v2_harness_status().availability == "OFFLINE_RESTRICTED"
+        assert service_v2_harness_conversations() is runtime.conversations
+        assert service_v2_managed_ingress_is_bound() is True
+        assert all(
+            availability.is_available(kind)
+            for kind in ("harness", "webhook", "events")
+        )
+    finally:
+        runtime.stop()
+    assert service_v2_managed_ingress_is_bound() is False
+    assert all(
+        not availability.is_available(kind)
+        for kind in ("harness", "webhook", "events")
+    )
+    with pytest.raises(RuntimeError, match="not initialized"):
+        service_v2_harness_status()
+
+
+@pytest.mark.skipif(
+    not BubblewrapHarnessModelLauncher.availability(),
+    reason="Bubblewrap/prlimit are not installed",
+)
+def test_conflicting_ingress_binding_blocks_startup_and_revokes_harness() -> None:
+    _reset_bindings()
+    registry = _Registry()
+    existing = ServiceV2ManagedIngress(
+        policy_service=_Policy(),  # type: ignore[arg-type]
+        contribution_registry=registry,
+    )
+    bind_service_v2_managed_ingress(existing)
+    availability = RuntimeContributionBackendAvailability()
+    runtime = ServiceV2ProcessRuntime(
+        policy_service=_Policy(),
+        contribution_registry=registry,
+        backend_availability=availability,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="already bound"):
+            runtime.start()
+        assert availability.is_available("harness") is False
+        assert availability.is_available("webhook") is False
+        assert availability.is_available("events") is False
+        assert service_v2_managed_ingress_is_bound() is True
+    finally:
+        unbind_service_v2_managed_ingress(existing)
+        unbind_service_v2_process_runtime()
+
+
+def test_composition_root_owns_lifecycle_without_adding_an_http_transport() -> None:
+    root = Path(__file__).resolve().parents[1]
+    main_source = (root / "agent" / "main.py").read_text(encoding="utf-8")
+    lifespan = main_source[
+        main_source.index("@asynccontextmanager") : main_source.index(
+            "app = FastAPI"
+        )
+    ]
+    assert lifespan.index("ServiceV2ProcessRuntime(") < lifespan.index(
+        "process_service_v2_runtime.start"
+    )
+    assert lifespan.index("process_service_v2_runtime.start") < lifespan.index(
+        "    yield"
+    )
+    assert lifespan.index("    yield") < lifespan.index(
+        "process_service_v2_runtime.stop"
+    )
+    assert '@app.post("/webhook/{path:path}")' in main_source
+
+    ingress_source = (
+        root
+        / "agent"
+        / "agent"
+        / "orchestration"
+        / "service_v2_managed_ingress.py"
+    ).read_text(encoding="utf-8")
+    assert "fastapi" not in ingress_source.lower()
+    assert "APIRouter" not in ingress_source

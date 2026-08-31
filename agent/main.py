@@ -155,12 +155,6 @@ from agent.automation_plugins.first_party import (
 from agent.automation_plugins.management_api import create_automation_plugin_management_router
 from agent.harness import HarnessError
 from agent.harness_api import create_harness_router, harness_error_response
-from agent.harness_process_runtime import (
-    HarnessProcessRuntime,
-    harness_conversations,
-    harness_status,
-    harness_tools,
-)
 from agent.orchestration.approval_service import ApprovalService
 from agent.orchestration.automation_project_api import create_automation_project_router
 from agent.orchestration.automation_project_entrypoints import (
@@ -212,6 +206,12 @@ from agent.http_security import INTERNAL_API_TOKEN_HEADER, authenticate_internal
 from agent.execution_boundary import EXECUTION_CAPABILITY_HEADER, authorize_tms_target
 from agent.phase7_resource_import import import_phase7_resources
 from agent.runtime_config import load_agent_environment
+from agent.service_v2_process_runtime import (
+    ServiceV2ProcessRuntime,
+    service_v2_harness_conversations,
+    service_v2_harness_status,
+    service_v2_harness_tools,
+)
 from agent.scheduler import (
     begin_scheduler_release_activation,
     consume_scheduler_release_hold,
@@ -1355,12 +1355,12 @@ async def lifespan(app: FastAPI):
         migration_entrypoint_ownership=plugin_runtime.migration_entrypoint_ownership,
     )
     bind_service_v2_feishu_dispatcher(service_v2_feishu_dispatcher)
-    process_harness_runtime = HarnessProcessRuntime(
+    process_service_v2_runtime = ServiceV2ProcessRuntime(
         policy_service=project_policy_service,
         contribution_registry=plugin_runtime.contribution_registry,
         backend_availability=plugin_runtime.contribution_backend_availability,
     )
-    harness_runtime_status = await asyncio.to_thread(process_harness_runtime.start)
+    harness_runtime_status = await asyncio.to_thread(process_service_v2_runtime.start)
     logger.info("Restricted Harness runtime status=%s availability=%s",
                 harness_runtime_status.status, harness_runtime_status.availability)
     runner = WorkflowRunner(
@@ -1493,7 +1493,7 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Agent service shutting down instance_id=%s", INSTANCE_ID)
-    process_harness_runtime.stop()
+    process_service_v2_runtime.stop()
     if tms_session_alert_task is not None:
         tms_session_alert_stop.set()
         tms_session_alert_task.cancel()
@@ -1564,10 +1564,10 @@ app.include_router(
 )
 app.include_router(
     create_harness_router(
-        conversation_provider=harness_conversations,
-        tools_provider=harness_tools,
+        conversation_provider=service_v2_harness_conversations,
+        tools_provider=service_v2_harness_tools,
         actor_provider=lambda request: _require_console_admin_request(request),
-        availability_provider=harness_status,
+        availability_provider=service_v2_harness_status,
     )
 )
 if WINDOWS_WORKER_RELEASE_ENABLED:
