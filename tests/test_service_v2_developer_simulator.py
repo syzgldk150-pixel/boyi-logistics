@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import socket
 import sys
 import time
@@ -24,6 +25,26 @@ REAL_TRUSTED_MANIFEST_PYTHON = developer_simulator_v2._trusted_manifest_python
 CURRENT_SANDBOX_PYTHON = (
     Path(sys.base_prefix) / "bin" / f"python{sys.version_info.major}.{sys.version_info.minor}"
 ).resolve()
+
+
+def test_simulator_broker_socket_path_fits_hosted_checkout_and_fails_closed_when_too_long() -> None:
+    hosted_install_root = Path(
+        "/home/runner/work/boyi-logistics/boyi-logistics/.task_tmp/"
+        "service-v2-simulator-abcdefgh"
+    )
+    hosted_socket_path = hosted_install_root / developer_simulator_v2._BROKER_SOCKET_NAME
+    assert len(os.fsencode(hosted_socket_path)) <= developer_simulator_v2._MAX_UNIX_SOCKET_PATH_BYTES
+
+    broker = developer_simulator_v2._UnixBrokerSimulator(
+        socket_path=Path("/") / ("x" * developer_simulator_v2._MAX_UNIX_SOCKET_PATH_BYTES),
+        capability="fixture-capability",
+        fixtures=(),
+        timeout_seconds=1,
+    )
+    with pytest.raises(PluginExecutionError) as captured:
+        broker.start()
+
+    assert captured.value.code == "SIMULATOR_SANDBOX_UNAVAILABLE"
 
 
 @pytest.fixture(autouse=True)
