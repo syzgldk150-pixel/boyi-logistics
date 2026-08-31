@@ -935,7 +935,7 @@ def test_cancelled_execution_kills_and_reaps_the_process_group(tmp_path: Path) -
             )
             return self.process
 
-    async def exercise() -> int:
+    async def exercise() -> asyncio.subprocess.Process:
         launcher = LocalSleepLauncher()
         task = asyncio.create_task(
             developer_simulator_v2._execute_sandboxed(
@@ -954,18 +954,11 @@ def test_cancelled_execution_kills_and_reaps_the_process_group(tmp_path: Path) -
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        assert launcher.process is not None
-        returncode = launcher.process.returncode
-        # Do not retain an asyncio subprocess transport after asyncio.run()
-        # closes its loop; Python 3.10 otherwise reports an unraisable warning.
-        launcher.process = None
-        await asyncio.sleep(0)
-        assert returncode is not None
-        return returncode
+        return launcher.process
 
-    returncode = asyncio.run(exercise())
+    process = asyncio.run(exercise())
 
-    assert returncode is not None
+    assert process.returncode is not None
 
 
 def test_missing_exact_manifest_python_fails_closed_and_cleans_temp(
