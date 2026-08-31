@@ -38,7 +38,7 @@ updated: 2026-08-31
 | TASK-EXT-009A | DONE_OFFLINE | 2026-08-31T08:31:21+08:00 | 2026-08-31T10:15:09+08:00 | 9104ebbe936f315f429f7c1c011485ff7cd5a843 |
 | TASK-EXT-009B | DONE_OFFLINE | 2026-08-31T10:16:26+08:00 | 2026-08-31T10:55:01+08:00 | 983a2f4ec06c294e43310e4dbb6b6d14f8aad47b |
 | TASK-EXT-009C | DONE_OFFLINE | 2026-08-31T10:56:17+08:00 | 2026-08-31T11:35:00+08:00 | 2571ca202f42c7155da8635af5de76cd0f906632 |
-| TASK-EXT-010 | NOT_STARTED | — | — | — |
+| TASK-EXT-010 | IN_PROGRESS | 2026-08-31T11:38:27+08:00 | — | — |
 | TASK-EXT-011 | NOT_STARTED | — | — | — |
 | TASK-MIG-001 | NOT_STARTED | — | — | — |
 | TASK-MIG-002 | NOT_STARTED | — | — | — |
@@ -212,16 +212,16 @@ updated: 2026-08-31
 
 ### TASK-EXT-010：固定模块扩展槽位
 
-- 状态：`NOT_STARTED`
-- 开始时间 / 结束时间：— / —
-- 设计决策：仅 `waybill_entry.actions` 和 `waybill_entry.validators`，宿主渲染，无任意前端注入。
+- 状态：`IN_PROGRESS`
+- 开始时间 / 结束时间：`2026-08-31T11:38:27+08:00` / —
+- 设计决策：独立提交；先审计录单页现有宿主边界与 Service v2 contribution 链，只允许 exact `waybill_entry.actions`、`waybill_entry.validators` 两个槽位。插件仅声明闭合的宿主渲染元数据和已签名 service/operation，调用时仍由 Registry、项目合同与 Policy 派生权限、账号、资源和参数；禁止任意 HTML/JS/CSS、DOM/Cookie/内部接口访问、远程前端代码或隐式 fallback。复用 committed generation 的原子刷新与撤销语义，卸载贡献后录单核心必须保持可用。
 - 修改文件 / Commit SHA：— / —
 - 测试命令和结果：尚未运行。
 - 兼容性影响：卸载贡献后录单核心保持可用。
-- 数据库影响：待审计。
+- 数据库影响：先审计；不得臆造迁移。
 - 未完成项：全部。
 - 下一项 TASK：`TASK-EXT-011`。
-- 恢复说明：先确认前序 TASK 已提交推送，再将本 TASK 标为 `IN_PROGRESS`。
+- 恢复说明：EXT009C 代码 `2571ca202f42c7155da8635af5de76cd0f906632` 与完成账本 `c47c7be` 已推送。从现有 Service v2 Manifest/compiled invocation、`ManagedContributionRegistry`、Policy 接受 UOW 二次核验和 Console 录单宿主边界开始审计；只实现两个 exact waybill slot 与本地 fixture，不连接真实 TMS/飞书、生产数据库，不执行外部写或部署。
 
 ### TASK-EXT-011：Connector Registry
 
