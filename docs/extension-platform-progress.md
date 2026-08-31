@@ -40,7 +40,7 @@ updated: 2026-08-31
 | TASK-EXT-009C | DONE_OFFLINE | 2026-08-31T10:56:17+08:00 | 2026-08-31T11:35:00+08:00 | 2571ca202f42c7155da8635af5de76cd0f906632 |
 | TASK-EXT-010 | DONE_OFFLINE | 2026-08-31T11:38:27+08:00 | 2026-08-31T12:49:57+08:00 | f1f13aaab4ed522b7b19e36027875767c4d14373 |
 | TASK-EXT-011 | DONE_OFFLINE | 2026-08-31T12:51:05+08:00 | 2026-08-31T14:05:36+08:00 | 01cf2447e997c51973d2ead49ac3c522743095f9 |
-| TASK-MIG-001 | NOT_STARTED | — | — | — |
+| TASK-MIG-001 | IN_PROGRESS | 2026-08-31T14:07:30+08:00 | — | — |
 | TASK-MIG-002 | NOT_STARTED | — | — | — |
 | TASK-MIG-003 | NOT_STARTED | — | — | — |
 | TASK-MIG-004 | NOT_STARTED | — | — | — |
@@ -238,16 +238,16 @@ updated: 2026-08-31
 
 ### TASK-MIG-001：迁移到货统计
 
-- 状态：`NOT_STARTED`
-- 开始时间 / 结束时间：— / —
-- 设计决策：仅离线实现、fixture、dry-run、v1/v2 对比、切换/回滚代码与清单；真实验证标记 `PRODUCTION_GATED`。
+- 状态：`IN_PROGRESS`
+- 开始时间 / 结束时间：`2026-08-31T14:07:30+08:00` / —
+- 设计决策：先以现有 `sync_arrival_stats` v1 业务源码作为唯一算法来源，审计其 primitive、账号/资源、Evidence、入口和 migration pair 缺口，再建立独立 Service v2 候选包。本 TASK 只使用显式 fixture 完成 dry-run、v1/v2 稳定投影与调用序列对比、默认关闭 Scheduler、切换/回滚代码和清单；不得复制业务公式、伪造 Connector、填造 Scheduler 时间或把生产验证冒充离线完成。真实 TMS/飞书/数据库适配、真实写后核验、生产入口接管与停用 v1 保持 `PRODUCTION_GATED`。
 - 修改文件 / Commit SHA：— / —
 - 测试命令和结果：尚未运行。
 - 兼容性影响：v2 Scheduler 默认关闭，v1 保持运行。
 - 数据库影响：仅本地验证可能的前向迁移；不操作生产。
 - 未完成项：全部。
 - 下一项 TASK：`TASK-MIG-002`。
-- 恢复说明：先确认前序 TASK 已提交推送，再将本 TASK 标为 `IN_PROGRESS`。
+- 恢复说明：EXT011 代码 `01cf2447e997c51973d2ead49ac3c522743095f9` 与完成账本 `597677c` 已推送。从 v1 `sync_arrival_stats` 源码、Service v2 build_zip、Connector effect/绑定合同、migration pair 的 Console/Scheduler/Feishu ownership 开始；先补足可离线证明的合同与 fixture，不读取 `.env`、不访问真实系统或执行真实写。
 
 ### TASK-MIG-002：迁移自提到货问题件
 
