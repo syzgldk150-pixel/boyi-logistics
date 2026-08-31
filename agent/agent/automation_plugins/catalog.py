@@ -1158,8 +1158,11 @@ class PluginCatalog:
         enabled = set(entry.current_enabled_entrypoints)
         reasons: list[dict[str, str]] = []
         resolver = self._contribution_backend_status
-        for kind in ("scheduler", "webhook", "feishu", "events"):
-            raw_items = entry.contributions.get(kind)
+        for kind in ("scheduler", "webhook", "feishu", "events", "harness"):
+            raw_items = entry.contributions.get(
+                kind,
+                () if kind == "harness" else None,
+            )
             if not isinstance(raw_items, (list, tuple)):
                 return [
                     {

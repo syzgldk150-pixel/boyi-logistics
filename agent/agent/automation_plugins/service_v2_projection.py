@@ -26,6 +26,9 @@ from agent.automation_plugins.models import (
     RuntimeGenerationSnapshot,
 )
 from agent.automation_plugins.ports import RuntimeEffectPlan
+from agent.automation_plugins.runtime_backend_availability import (
+    RuntimeContributionBackendAvailability,
+)
 from agent.automation_plugins.service_registry import (
     package_provider_registration_id,
 )
@@ -416,6 +419,7 @@ class ManagedContributionRegistry:
         migration_reserved_feishu_target: (
             Callable[[str, int, str, str], bool] | None
         ) = None,
+        backend_availability: RuntimeContributionBackendAvailability | None = None,
     ) -> None:
         if reserved_feishu_command is not None and not callable(
             reserved_feishu_command
@@ -430,9 +434,27 @@ class ManagedContributionRegistry:
         self._migration_reserved_feishu_target = (
             migration_reserved_feishu_target
         )
+        if (
+            backend_availability is not None
+            and not isinstance(
+                backend_availability,
+                RuntimeContributionBackendAvailability,
+            )
+        ):
+            raise TypeError(
+                "backend_availability must be RuntimeContributionBackendAvailability"
+            )
+        self._backend_availability = backend_availability
         self._registrations: dict[str, ManagedContributionRegistration] = {}
         self._route_owners: dict[str, set[str]] = {}
         self._active_generations: dict[str, int] = {}
+
+    def _process_backend_available(self, contribution_kind: str) -> bool:
+        availability = self._backend_availability
+        return (
+            availability is None
+            or availability.is_available(contribution_kind)
+        )
 
     @staticmethod
     def _from_material(
@@ -1111,7 +1133,10 @@ class ManagedContributionRegistry:
                     "requested contribution generation is stale",
                     code="RUNTIME_PROJECTION_STALE",
                 )
-            if record.backend_status != "READY":
+            if (
+                record.backend_status != "READY"
+                or not self._process_backend_available(record.contribution_kind)
+            ):
                 raise PluginConflictError(
                     "requested contribution is unavailable",
                     code="CAPABILITY_UNAVAILABLE",
@@ -1313,6 +1338,11 @@ class ManagedContributionRegistry:
                     records.append(record)
             if not records:
                 return None
+            if not self._process_backend_available("webhook"):
+                raise PluginConflictError(
+                    "managed Webhook backend is unavailable",
+                    code="CAPABILITY_UNAVAILABLE",
+                )
             if len(records) != 1:
                 raise PluginConflictError(
                     "managed Webhook route is ambiguous",
@@ -1380,6 +1410,11 @@ class ManagedContributionRegistry:
                     records.append(record)
             if not records:
                 return None
+            if not self._process_backend_available("events"):
+                raise PluginConflictError(
+                    "managed event backend is unavailable",
+                    code="CAPABILITY_UNAVAILABLE",
+                )
             if len(records) != 1:
                 raise PluginConflictError(
                     "managed event route is ambiguous",
@@ -1476,6 +1511,7 @@ class ManagedContributionRegistry:
                 record
                 for record in self._registrations.values()
                 if record.dispatch_available
+                and self._process_backend_available(record.contribution_kind)
                 and self._active_generations.get(record.automation_id)
                 == record.generation
                 and (automation_id is None or record.automation_id == automation_id)

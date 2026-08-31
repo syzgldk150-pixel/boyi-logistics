@@ -138,6 +138,7 @@ def test_agent_harness_message_returns_only_bounded_conversation_projection() ->
         "assistant_message": "Offline result",
         "result": "Offline result",
         "read_only": True,
+        "tool_calls": 0,
         "tools": [],
     }
 
@@ -179,7 +180,7 @@ def test_harness_production_gate_maps_to_service_unavailable() -> None:
     assert b"HARNESS_RUNTIME_PRODUCTION_GATED" in response.body
 
 
-def test_main_catalog_lists_exact_fixed_tools_without_runtime_handlers() -> None:
+def test_catalog_excludes_fixed_tools_without_runtime_handlers() -> None:
     import main
 
     class Registry:
@@ -194,12 +195,33 @@ def test_main_catalog_lists_exact_fixed_tools_without_runtime_handlers() -> None
         request_id=REQUEST_UUID,
     )
 
-    assert tuple(item["tool_id"] for item in tools) == (
-        "artifact.inspect",
-        "knowledge.search",
-        "runs.get_summary",
-        "tracking.lookup",
-        "waybill.lookup",
-        "work_items.list_open",
+    assert tools == []
+
+
+def test_agent_harness_session_projects_restricted_runtime_readiness() -> None:
+    import main
+
+    service = SimpleNamespace(
+        create_session=lambda **_kwargs: SimpleNamespace(
+            session_id=SESSION_UUID,
+            request_id=REQUEST_UUID,
+            persistence_status="MEMORY_ONLY_NON_PRODUCTION",
+        )
     )
-    assert all(set(item) == {"tool_id", "title", "description"} for item in tools)
+    result = asyncio.run(
+        harness_api.create_harness_session_response(
+            harness_api.HarnessSessionRequest(request_uuid=REQUEST_UUID),
+            _request(),
+            conversation_provider=lambda: service,
+            tools_provider=lambda _actor, _request_id: [],
+            actor_provider=main._require_console_admin_request,
+            availability_provider=lambda: {
+                "status": "READY",
+                "availability": "OFFLINE_RESTRICTED",
+                "blocked_reason": None,
+            },
+        )
+    )
+    assert result["data"]["status"] == "READY"
+    assert result["data"]["availability"] == "OFFLINE_RESTRICTED"
+    assert result["data"]["blocked_reason"] is None

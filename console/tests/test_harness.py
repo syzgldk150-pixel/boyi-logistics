@@ -96,7 +96,8 @@ def _session_result() -> dict:
             "request_uuid": REQUEST_UUID,
             "persistence_status": "MEMORY_ONLY_NON_PRODUCTION",
             "status": "READY",
-            "availability": "OFFLINE_LIMITED",
+            "availability": "OFFLINE_RESTRICTED",
+            "blocked_reason": None,
             "read_only": True,
             "tools": [
                 {
@@ -184,6 +185,7 @@ def test_session_create_forwards_exact_body_and_signed_mysql_principal() -> None
 
     assert app.sent[-1][0] == HTTPStatus.OK
     assert app.sent[-1][1]["ok"] is True
+    assert app.sent[-1][1]["data"]["availability"] == "OFFLINE_RESTRICTED"
     assert app.agent_calls == [
         {
             "method": "POST",
@@ -320,6 +322,7 @@ def test_template_and_script_keep_host_rendered_accessible_safe_surface() -> Non
     assert "insertAdjacentHTML" not in script
     assert '"/harness/sessions"' in script
     assert '"/harness/messages"' in script
+    assert "调用只读工具：完整标题" in template
     assert ".harness-page" in styles
     assert ":focus" in styles
     assert "@media (prefers-reduced-motion: reduce)" in styles

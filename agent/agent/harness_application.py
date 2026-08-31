@@ -184,6 +184,7 @@ class HarnessMessageReceipt:
     assistant_message: HarnessMessage
     request_id: str
     replayed: bool
+    tool_calls: int
 
     @property
     def session_id(self) -> str:
@@ -198,6 +199,7 @@ class HarnessMessageReceipt:
             "request_id": self.request_id,
             "session_id": self.session_id,
             "replayed": self.replayed,
+            "tool_calls": self.tool_calls,
             "persistence_status": self.persistence_status,
             "user_message": _message_mapping(self.user_message),
             "assistant_message": _message_mapping(self.assistant_message),
@@ -234,6 +236,7 @@ class HarnessConversationService:
         self._timeout_seconds = timeout_seconds
         self._lock = RLock()
         self._session_principals: dict[str, tuple[str, str, tuple[str, ...], str]] = {}
+        self._message_tool_calls: dict[str, int] = {}
 
     def create_session(self, *, actor: Actor, request_id: str) -> HarnessSessionReceipt:
         bound_actor = _normalize_admin_actor(actor)
@@ -300,12 +303,15 @@ class HarnessConversationService:
             if existing_assistant is not None:
                 if existing_user is None or existing_user.content != message or existing_user.role != "user":
                     raise _error("Message replay is inconsistent", "HARNESS_IDEMPOTENCY_CONFLICT")
+                if assistant_id not in self._message_tool_calls:
+                    raise _error("Message replay is incomplete", "HARNESS_IDEMPOTENCY_CONFLICT")
                 return HarnessMessageReceipt(
                     session=session,
                     user_message=existing_user,
                     assistant_message=existing_assistant,
                     request_id=safe_request_id,
                     replayed=True,
+                    tool_calls=self._message_tool_calls[assistant_id],
                 )
 
             user_message = HarnessMessage(
@@ -363,6 +369,7 @@ class HarnessConversationService:
                 ),
                 message=assistant_message,
             )
+            self._message_tool_calls[assistant_id] = result.tool_calls
             final_session = self._repository.get(
                 principal_id=bound_actor.actor_id,
                 session_id=safe_session_id,
@@ -373,6 +380,7 @@ class HarnessConversationService:
                 assistant_message=assistant_message,
                 request_id=safe_request_id,
                 replayed=False,
+                tool_calls=result.tool_calls,
             )
 
     def _build_sidecar(self, actor: Actor, request_id: str) -> HarnessSidecar:
