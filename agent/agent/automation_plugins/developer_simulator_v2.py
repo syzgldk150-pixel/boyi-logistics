@@ -840,6 +840,20 @@ async def _terminate_process(process: asyncio.subprocess.Process) -> None:
     await process.wait()
 
 
+async def _close_process_transport(process: asyncio.subprocess.Process) -> None:
+    """Close asyncio's subprocess transport before its owning loop exits."""
+
+    # asyncio.subprocess.Process has no public close method.  CPython keeps the
+    # transport private, so centralize the guarded compatibility access here;
+    # otherwise cancelled pipe readers can be collected after asyncio.run()
+    # closes the loop and raise an unraisable ``Event loop is closed`` error.
+    transport = getattr(process, "_transport", None)
+    close = getattr(transport, "close", None)
+    if callable(close):
+        close()
+    await asyncio.sleep(0)
+
+
 async def _execute_sandboxed(
     sandbox: BubblewrapPluginSandbox,
     *,
@@ -871,11 +885,13 @@ async def _execute_sandboxed(
             launched = None
         if isinstance(launched, asyncio.subprocess.Process):
             await _terminate_process(launched)
+            await _close_process_transport(launched)
         raise
     except Exception:
         return None, b"", "SIMULATOR_SANDBOX_UNAVAILABLE"
     if process.stdin is None or process.stdout is None or process.stderr is None:
         await _terminate_process(process)
+        await _close_process_transport(process)
         return None, b"", "SIMULATOR_SANDBOX_UNAVAILABLE"
     stdout_task = asyncio.create_task(_read_limited(process.stdout, _MAX_PLUGIN_OUTPUT_BYTES))
     stderr_task = asyncio.create_task(_read_limited(process.stderr, _MAX_PLUGIN_STDERR_BYTES))
@@ -894,6 +910,7 @@ async def _execute_sandboxed(
         for task in process_tasks:
             task.cancel()
         await asyncio.gather(*process_tasks, return_exceptions=True)
+        await _close_process_transport(process)
 
     try:
         _fed, stdout, _stderr, _returncode = await asyncio.wait_for(
@@ -912,6 +929,7 @@ async def _execute_sandboxed(
     except Exception:
         await _stop_and_reap()
         return process.returncode, b"", "PLUGIN_PROCESS_FAILED"
+    await _close_process_transport(process)
     return process.returncode, stdout, None
 
 
