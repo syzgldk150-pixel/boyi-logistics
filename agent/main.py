@@ -136,6 +136,7 @@ logger = logging.getLogger("agent")
 
 
 from agent.core import AgentCore
+from agent.direct_tool_router import is_reserved_feishu_command_text
 from agent.business_query import (
     AutomationOperationsQueryService,
     BusinessFinanceQueryService,
@@ -152,23 +153,16 @@ from agent.automation_plugins.first_party import (
     release_first_party_broker_action_keys,
     release_first_party_plugin_ids,
 )
-from agent.automation_plugins.management_api import (
-    create_automation_plugin_management_router,
-)
+from agent.automation_plugins.management_api import create_automation_plugin_management_router
 from agent.harness import HarnessError, InMemoryHarnessSessionRepository
-from agent.harness_api import (
-    create_harness_router,
-    harness_error_response,
-    public_harness_tools,
-)
+from agent.harness_api import create_harness_router, harness_error_response, public_harness_tools
 from agent.harness_application import HarnessConversationService
 from agent.orchestration.approval_service import ApprovalService
-from agent.orchestration.automation_project_api import (
-    create_automation_project_router,
-)
+from agent.orchestration.automation_project_api import create_automation_project_router
 from agent.orchestration.automation_project_entrypoints import (
     AutomationProjectEntrypoints,
     CommittedAutomationProjectRouteResolver,
+    ServiceV2FeishuDispatcher,
     TrustedDynamicArgumentResolver,
 )
 from agent.orchestration.automation_project_policy_service import (
@@ -250,6 +244,7 @@ from feishu.bot import (
 from feishu.message_handler import (
     bind_automation_project_entrypoints,
     bind_feishu_approval_runtime,
+    bind_service_v2_feishu_dispatcher,
     queue_bot_menu_payload,
     queue_im_message_payload,
 )
@@ -1185,6 +1180,7 @@ async def lifespan(app: FastAPI):
         runtime_release_sha=_release_sha(),
         environ=os.environ,
         release_hold_provider=scheduler_release_hold_requested,
+        reserved_feishu_command=is_reserved_feishu_command_text,
     )
     await plugin_runtime.start()
     automation_plugin_runtime = plugin_runtime
@@ -1362,6 +1358,12 @@ async def lifespan(app: FastAPI):
     )
     bind_automation_project_entrypoints(automation_project_entrypoints)
     bind_feishu_approval_runtime(feishu_approval_service)
+    service_v2_feishu_dispatcher = ServiceV2FeishuDispatcher(
+        policy_service=project_policy_service,
+        contribution_registry=plugin_runtime.contribution_registry,
+        resolve_actor=feishu_approval_service.resolve_actor,
+    )
+    bind_service_v2_feishu_dispatcher(service_v2_feishu_dispatcher)
     runner = WorkflowRunner(
         repository=repository,
         catalog=catalog,
@@ -1502,13 +1504,13 @@ async def lifespan(app: FastAPI):
     bind_agent_command_runtime(None)
     bind_automation_project_entrypoints(None)
     bind_feishu_approval_runtime(None)
+    bind_service_v2_feishu_dispatcher(None)
     await stop_feishu_ws()
     await retention_worker.stop()
     await runner.stop()
     await dispatcher.stop()
     await plugin_runtime.stop()
     await runtime.close()
-    bind_automation_project_entrypoints(None)
     control_plane_service = None
     scheduled_task_approval_service = None
     scheduled_task_approval_bootstrap = {}

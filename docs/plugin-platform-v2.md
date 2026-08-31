@@ -62,7 +62,7 @@ Console 信息架构同样只有一个状态源：`/extensions` 与详情页展�
 - Provider 的每个操作都必须以闭合 `{name,effect}` 对象声明不可变 effect；effect 只允许 `read/compute/internal_write/external_write/destructive`。同一字段进入 Manifest 摘要、Service Registry、generation、compiled invocation 和逐 contribution Plan，任一缺失或漂移都关闭失败。
 - `service.invoke` 已由宿主统一实现，只能调用 Manifest `requires` 中的精确服务和 Provider 已声明的操作；解析到缺失、阻断、歧义、循环或超过八层的调用链都会显式失败。静态 Broker grant 是动态 effect 的保护上限，不代表每次调用都是写：分发前仍按 Registry 中的 Provider 精确 effect 分类，并受当前调用 contribution 的 effect ceiling 约束；只读/计算调用不产生写标记，写调用必须先留下宿主写尝试。被调用 Provider 仍使用自己的 generation lease、能力授权、隔离进程和写后 Evidence。
 - `browser.session` 只开放宿主已注册且逐项审核的 action；当前双打卡包可使用 `ronghui.clock.precheck/submit/verify`。`http.request`、`file.read`、`file.write`、`event.publish` 以及任意未注册 browser action 仍固定失败为 `CAPABILITY_UNAVAILABLE`，不能旁路直连。
-- Scheduler 可接入现有 `scheduled_tasks`（当前宿主时区为 `Asia/Shanghai`）。默认启用的 Scheduler 只有在 cron 可无损表示为固定 `minute hour * * *` 时才允许安装并自动转成项目 `daily_times`；不兼容默认值在写入任何项目之前失败。Webhook、飞书命令和 Event subscription 尚无动态宿主 dispatcher：声明且保持关闭可用于合同审计，但一旦启用就以 `CAPABILITY_UNAVAILABLE` 阻断 generation 和 Catalog 就绪，绝不会显示为可运行入口。
+- Scheduler 可接入现有 `scheduled_tasks`（当前宿主时区为 `Asia/Shanghai`）。默认启用的 Scheduler 只有在 cron 可无损表示为固定 `minute hour * * *` 时才允许安装并自动转成项目 `daily_times`；不兼容默认值在写入任何项目之前失败。飞书命令已接入独立动态 Dispatcher：只允许已启用、committed/READY generation 的 exact command，固定 Action v1 与跨项目命令冲突在整批 prepare 时失败。Webhook 和 Event subscription 尚无动态宿主 dispatcher：声明且保持关闭可用于合同审计，但一旦启用就以 `CAPABILITY_UNAVAILABLE` 阻断 generation 和 Catalog 就绪，绝不会显示为可运行入口。真实飞书 tenant/Webhook/WS/机器人回复和多 Agent 进程全局命令仲裁仍为 `PRODUCTION_GATED`。
 - Manifest 虽可声明 `resident`，Catalog 会以 `RESIDENT_RUNTIME_UNAVAILABLE` 阻断，而不是误报为可运行；当前生产插件必须使用 `on_demand`。
 - 每次子进程同时受 Bubblewrap 挂载/用户/PID/网络命名空间和固定 `/usr/bin/prlimit` 约束：地址空间 1 GiB、最多 64 个进程、CPU 300 秒、单文件 16 MiB、最多 128 个打开文件。`bubblewrap` 或 `prlimit` 缺失、不是绝对常规文件或启动 canary 失败时，运行时整体 fail closed。
 - 两个双打卡 v2 源包已经完成代码和离线合同验证，但在生产项目中完成真实提交与独立新鲜回读前，不得声称真实写入验收完成。
@@ -320,23 +320,23 @@ Provider effect 来自 `provides[*].operations[*].effect`，Host capability effe
 5. 响应丢失时，同一根 UUID 只读取原安装并续做尚未完成的配置、reconcile 或启用阶段；ZIP、操作者或任一规范意图字段漂移必须返回幂等冲突，不得生成第二个项目或用最新状态冒充旧请求结果。启用和同步失败后的停用补偿使用连续、确定性的审计 witness；缺少任一 witness 或出现人工状态变更即停止旧请求重放。启用事务提交后进程崩溃、或补偿写不可用的恢复演练尚未在线完成，明确标记为 `PRODUCTION_GATED`，在演练通过前不把安装链路描述为零半启用窗口。
 6. Catalog 展示目标版本、活动版本、运行模型、Host API、服务、贡献点、依赖状态和阻断原因。“包已安装”与“v2 generation 已稳定运行”必须分开显示。迁移项目例外，初始只开放 Console 人工入口。
 
-`default_enabled` 不是“无条件可运行”。当前没有宿主 dispatcher 的 Webhook、飞书或 Event 入口，以及宿主无法表示的 Scheduler，都会在技术检查或 generation prepare 阶段显式阻断；Catalog 必须展示 `CAPABILITY_UNAVAILABLE`，不能留下“已启用但没有路由/任务”的假状态。
+`default_enabled` 不是“无条件可运行”。当前没有宿主 dispatcher 的 Webhook 或 Event 入口，以及宿主无法表示的 Scheduler，都会在技术检查或 generation prepare 阶段显式阻断；Catalog 必须展示 `CAPABILITY_UNAVAILABLE`，不能留下“已启用但没有路由/任务”的假状态。飞书 contribution 只有在其 exact commands 与固定 Action v1、同代 contribution 和其他项目均无冲突时才可进入 READY 投影。
 
-### 7.1 Console / Scheduler / Harness 无重启热投影
+### 7.1 Console / Scheduler / Harness / Feishu 无重启热投影
 
-当前受管热投影覆盖 Service v2 的 Console、Scheduler 与 Harness contribution。generation 协调器先完整准备新代 effect，并由 generation CAS 持久化 committed generation 与对应 `scheduled_tasks`；进程内 `ManagedContributionRegistry` 再批量保存该代 `PREPARED` 材料，不能逐条开放新路由或工具。
+当前受管热投影覆盖 Service v2 的 Console、Scheduler、Harness 与 Feishu contribution。generation 协调器先完整准备新代 effect，并由 generation CAS 持久化 committed generation 与对应 `scheduled_tasks`；进程内 `ManagedContributionRegistry` 再批量保存该代 `PREPARED` 材料，不能逐条开放新路由、命令或工具。投影转换携带由 generation snapshot 权威派生的完整 registration ID 集合；该集合可以为空。`COMMITTED/PREPARED/PENDING_PROJECTION` 的 observed effect keys 必须与 snapshot 计划精确相等；`TARGET/PREPARING/WAITING` 崩溃恢复只允许逐项验证已持久化的合法子集，随后仍从权威 snapshot 原子恢复整代 PREPARED reservation 续做，不能把子集误当完整 committed 代。
 
 generation CAS 在同一数据库事务内写入 `PENDING_PROJECTION` transition token，并保存旧项目字段、旧 project policy 版本、旧 `scheduled_tasks` 及其完整 approval policy 前镜像。运行中的 APScheduler 已绑定时，Provider reference、`ManagedContributionRegistry` 和 `reload_scheduler(strict=True)` 共用同一把投影锁。strict 模式要求整份计划无非法行且每个 Job 均注册成功；失败会按切换前快照恢复全部 Job、触发器选项和 `next_run_time`。只有刷新证据闭合为 `initialized=true` 且 `invalid_tasks=[]` 后，Registry 才一次性切 exact active Provider/Console generation，并用相同 token 把 durable phase ACK 为 `ACTIVE`。
 
-strict refresh 或 activation ACK 失败时，协调器执行 token 和 base generation 条件化的 reverse CAS：目标新代从未产生任何 lease，且项目、策略、任务 hash 均未并发变化时，精确恢复旧 committed generation、项目版本、任务名称/参数/运行字段和审批策略，再以进程投影的单调 revision 与完整身份做 compare-and-swap，在同一投影锁内恢复旧 Provider、Console 路由与 Scheduler Job。target 回到 `PREPARED/ROLLED_BACK`，因此同一 immutable target 可以直接重试，不要求重启 Agent 或 Console。
+strict refresh 或 activation ACK 失败时，协调器执行 token 和 base generation 条件化的 reverse CAS：目标新代从未产生任何 lease，且项目、策略、任务 hash 均未并发变化时，精确恢复旧 committed generation、项目版本、任务名称/参数/运行字段和审批策略，再以进程投影的单调 revision 与完整身份做 compare-and-swap，在同一投影锁内恢复旧 Provider、Console/Feishu 路由与 Scheduler Job。target 回到 `PREPARED/ROLLED_BACK`，因此同一 immutable target 可以直接重试，不要求重启 Agent 或 Console。
 
-若 reverse CAS 因目标新代存在任何 lease 历史、未知写、并发变化或 token 漂移被拒绝，系统不得继续保留混合代际：transition 标记 `BLOCKED`，持久 Scheduler gate 关闭，全部进程 Provider/Console/Harness 路由撤销，并通过只存在于动态 Job `kwargs` 的私有 owner marker 删除该项目任务。进程 tombstone 会让后续普通或 strict reload 都跳过该项目；固定 Job 没有 marker，绝不按 id 或闭包猜测归属。启动恢复只依据 `PENDING_PROJECTION/ACTIVE/ROLLED_BACK/BLOCKED` phase 决定继续投影、继续旧代或保持阻断；通用 lease 入口在 transition 存在时只接受 `ACTIVE`，因此 `PENDING_PROJECTION/BLOCKED` 不会开放新执行。
+若 reverse CAS 因目标新代存在任何 lease 历史、未知写、并发变化或 token 漂移被拒绝，系统不得继续保留混合代际：transition 标记 `BLOCKED`，持久 Scheduler gate 关闭，全部进程 Provider/Console/Harness/Feishu 路由撤销，并通过只存在于动态 Job `kwargs` 的私有 owner marker 删除该项目任务。进程 tombstone 会让后续普通或 strict reload 都跳过该项目；固定 Job 没有 marker，绝不按 id 或闭包猜测归属。启动恢复只依据 durable generation/activation phase 决定继续投影、继续旧代或保持阻断：`DRAINING/DISPOSING/BLOCKED` contribution 仅恢复成不占 route/active map 的诊断记录，`ROLLED_BACK` 完整校验 journal 后不恢复 contribution；通用 lease 入口在 transition 存在时只接受 `ACTIVE`，因此 `PENDING_PROJECTION/BLOCKED` 不会开放新执行。
 
 Agent 启动时先完成审批策略与项目调用器装配，再构造但不启动 APScheduler，并绑定 strict reload 与 emergency withdrawer。随后 reconcile 按 durable phase 完成未确认投影、activation ACK 或阻断撤销；只有恢复闭合后才启动 Scheduler，避免 ACK 先于真实 Job 投影。
 
-停用和卸载使用同一顺序：先严格刷新物理 Scheduler 计划，成功后再整代 withdraw Console/Scheduler/Harness 注册；失败保留切换前对象并保持 pending，调用仍由 durable 项目状态 fail closed。只提供 service、没有已启用 Console/Scheduler/Harness contribution 的 v2 generation 不创建伪 marker。
+停用和卸载使用同一顺序：先严格刷新物理 Scheduler 计划，成功后再整代 withdraw Console/Scheduler/Harness/Feishu 注册；失败保留切换前对象并保持 pending，调用仍由 durable 项目状态 fail closed。只提供 service、没有已启用 Console/Scheduler/Harness/Feishu contribution 的 v2 generation 不创建伪 marker。关闭最后一个受管 contribution 的权威空 generation 仍执行原子刷新：旧代即使仍有 lease 也立即从 active map 清除并进入 DRAINING；DRAINING 记录不再接收流量或占用全局飞书命令，但继续保留作租约排空与诊断。
 
-Catalog 只输出白名单 `active_contributions` 与 `contribution_projection_state`；状态仅为 `ACTIVE/STALE/INACTIVE`，每条公开 active 记录只含 `contribution_id/contribution_kind/generation/phase/backend_status`。Console 手工执行入口仍只从与当前 committed generation 精确一致、`phase=COMMITTED`、`backend_status=READY` 且状态为 `ACTIVE` 的 Console 记录派生。Harness 使用同一 Registry 的独立私有只读 snapshot，每次调用前再次解析 exact active generation；缺失、歧义、跨代、stale 或 inactive 均关闭失败。这不改变 `ACTION_V1` 合同，也不开放自定义插件前端。动态飞书/Webhook/Event dispatcher 仍是后续任务。
+Catalog 只输出白名单 `active_contributions` 与 `contribution_projection_state`；状态仅为 `ACTIVE/STALE/INACTIVE`，每条公开 active 记录只含 `contribution_id/contribution_kind/generation/phase/backend_status`。Console 手工执行入口仍只从与当前 committed generation 精确一致、`phase=COMMITTED`、`backend_status=READY` 且状态为 `ACTIVE` 的 Console 记录派生；Feishu 记录可以进入已启用种类展示，但绝不进入浏览器手工调用清单。Harness 使用同一 Registry 的独立私有只读 snapshot，每次调用前再次解析 exact active generation；动态飞书 Dispatcher 同样在解析后和 Command 接受事务内两次核对 exact active generation。缺失、歧义、跨代、stale 或 inactive 均关闭失败。这不改变 `ACTION_V1` 合同，也不开放自定义插件前端。动态 Webhook/Event dispatcher 仍是后续任务。
 
 ### 7.2 Harness 首期只读边界
 
@@ -347,6 +347,16 @@ Harness Tool Catalog 固定注入知识、运单、轨迹、事项、运行摘�
 Session 仅保存在进程内有界仓储，状态固定为 `MEMORY_ONLY_NON_PRODUCTION`，并精确绑定已签名管理员身份。受限 sidecar 协议只有消息、公共工具描述、闭合工具调用和 JSON 结果，限制超时与调用次数；生产 launcher 不继承环境、不挂载仓库/插件、不开放网络，并在缺少经审计 sandbox adapter 时固定失败。真实 LLM、六类固定业务读网关、生产 Python 3.10 sandbox、持久 Session 和真实数据验证均标记 `PRODUCTION_GATED`；不得回退 Legacy Agent、直接 MySQL、TMS/飞书工具、任意 shell、文件或网络。
 
 上述边界已实现可注入的确定性离线 fake model 路径，用于证明新 Harness contribution 随 generation 原子出现、升级和撤销且无需修改 Harness 源码或重启。它不是生产启用声明。
+
+### 7.3 动态飞书 Dispatcher 边界
+
+`contributes.feishu[*].commands` 的每条文本以大小写敏感的精确 UTF-8 字节生成全局 `feishu:command:<sha256>` 路由键，键不包含项目 ID；哈希命中后仍必须回查 committed declaration 中存在完全相同的 command，不能用哈希命中替代文本核对。不同项目或同一 generation 的两个 contribution 争用同一 command 时，整批 prepare 以 `CONTRIBUTION_ROUTE_CONFLICT` 失败且不产生部分注册；同一项目相邻 generation 可同时保留材料，但 active map 始终只允许一个 committed generation 接收调用。
+
+消息顺序固定为审批、pending、登录、确认等状态流程 → 固定 Action v1 deterministic route → Service v2 动态 Dispatcher → 既有 Agent/LLM。宿主无条件拥有的登录、任务取消、扫描确认、审批绑定和固定 Action v1 文本均复用实际运行 parser，并通过注入 Registry 的同一个只读判定器在动态整代 prepare 时阻止不可达冲突；条件式审批数字选择不被错误地全局保留。动态匹配不做大小写折叠、模糊、关键词、首项或 LLM 回退。未知命令才继续既有 Agent/LLM；已经匹配但稳定 event/sender/chat 任一缺失时必须公共拒绝并停止。
+
+Dispatcher 从 Registry 只取得 `automation_id/generation/contribution_id`，飞书适配器只提交已验证 `event_id/sender_id/chat_id`。Actor 只能由 `FeishuApprovalService.resolve_actor(sender_id)` 生成；幂等键固定为 `feishu:{event_id}`，trusted context 只含 event/chat。service、operation、参数、账号、资源和原始 Webhook body 均不能跨越入口；Policy 在创建 Command 前和同一接受事务内再次核对 exact `COMMITTED/READY` Registry identity。公共回复只投影业务状态，不展示控制面身份或 Run UUID。
+
+以上只证明离线 fixture、Webhook/WS 共享稳定事件身份的代码链和进程内单 Registry 冲突语义。真实飞书 tenant、Webhook/WS 消费、机器人回复、事件重放以及多 Agent 进程的全局 command 仲裁均为 `PRODUCTION_GATED`；未完成权威单 reconciler 或数据库级 claim 方案前，不得声称生产多进程冲突已闭合。
 
 以上只记录离线实现与故障注入合同；没有执行生产 Scheduler、生产数据库或真实业务入口演练，不构成生产验收。
 

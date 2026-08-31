@@ -1587,6 +1587,70 @@ def test_catalog_projects_exact_active_service_v2_contributions_without_leaking_
     assert "must-not-cross-boundary" not in repr(projection)
 
 
+def test_catalog_projects_exact_committed_feishu_contribution() -> None:
+    instance = {
+        "automation_id": "service-project",
+        "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
+        "enabled": True,
+        "committed_generation": 8,
+        "dependency_state": "READY",
+        "blocking_reasons": [],
+        "entrypoints": ["message.report"],
+        "enabled_entrypoints": ["message.report"],
+        "entrypoint_kinds": {"message.report": "feishu"},
+    }
+    registry = _ContributionRegistry(
+        8,
+        (
+            SimpleNamespace(
+                automation_id="service-project",
+                generation=8,
+                contribution_id="message.report",
+                contribution_kind="feishu",
+                phase="COMMITTED",
+                backend_status="READY",
+                commands=("只读日报",),
+                service="must-not-cross-boundary",
+            ),
+        ),
+    )
+    catalog = _ProjectionCatalog(
+        instance,
+        _committed_service_entry(
+            automation_id="service-project",
+            generation=8,
+            enabled=True,
+            declared_kinds={"message.report": "feishu"},
+            committed_enabled_entrypoints=("message.report",),
+        ),
+    )
+    service = AutomationPluginManagementService(
+        catalog=catalog,
+        lifecycle=SimpleNamespace(),
+        configuration=SimpleNamespace(),
+        worker_repository=SimpleNamespace(),
+        target_service=SimpleNamespace(),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+        contribution_registry=registry,
+    )
+
+    projection = service.catalog_projection(actor=_console_actor())
+
+    assert projection["instances"][0]["contribution_projection_state"] == "ACTIVE"
+    assert projection["instances"][0]["active_contributions"] == [
+        {
+            "contribution_id": "message.report",
+            "contribution_kind": "feishu",
+            "generation": 8,
+            "phase": "COMMITTED",
+            "backend_status": "READY",
+        }
+    ]
+    assert "只读日报" not in repr(projection)
+    assert "must-not-cross-boundary" not in repr(projection)
+
+
 def test_catalog_service_v2_projection_states_are_closed_and_fail_closed() -> None:
     managed = {
         "automation_id": "service-project",
@@ -1769,18 +1833,30 @@ def test_catalog_projection_uses_only_enabled_managed_contributions() -> None:
 
     all_disabled = project(
         {**base, "enabled_entrypoints": []},
-        SimpleNamespace(
-            active_generation=lambda _automation_id: (_ for _ in ()).throw(
-                AssertionError("all-disabled projection must not require a marker")
-            ),
-            snapshot=lambda: (_ for _ in ()).throw(
-                AssertionError("all-disabled projection has no active records")
-            ),
-        ),
+        _ContributionRegistry(None, ()),
         committed_enabled=(),
     )
     assert all_disabled["contribution_projection_state"] == "ACTIVE"
     assert all_disabled["active_contributions"] == []
+
+    stale_all_disabled = project(
+        {**base, "enabled_entrypoints": []},
+        _ContributionRegistry(
+            3,
+            (
+                SimpleNamespace(
+                    automation_id="partially-enabled",
+                    generation=3,
+                    contribution_id="run_now",
+                    contribution_kind="console",
+                    phase="COMMITTED",
+                    backend_status="READY",
+                ),
+            ),
+        ),
+        committed_enabled=(),
+    )
+    assert stale_all_disabled["contribution_projection_state"] == "STALE"
 
     malformed = project(
         {**base, "entrypoint_kinds": {"run_now": "console"}},

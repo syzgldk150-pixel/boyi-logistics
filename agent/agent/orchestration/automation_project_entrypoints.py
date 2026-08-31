@@ -26,6 +26,7 @@ from agent.automation_plugins.catalog import (
     PluginCatalog,
     project_capability_from_snapshot,
 )
+from agent.automation_plugins.errors import PluginConflictError
 from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.models import (
     RuntimeCoeffectKind,
@@ -352,6 +353,92 @@ class CommittedAutomationProjectRouteResolver:
                 "Verified transport route is bound to multiple automation instances",
             )
         return matches[0] if matches else None
+
+
+class ServiceV2FeishuDispatcher:
+    """Resolve one active Service V2 command through the managed registry.
+
+    This adapter is intentionally separate from the fixed Action V1 route
+    resolver.  The verified Feishu transport supplies only its stable event
+    identities and command text; project and contribution identity come only
+    from the active managed-contribution projection.
+    """
+
+    def __init__(
+        self,
+        *,
+        policy_service: AutomationProjectPolicyService,
+        contribution_registry: Any,
+        resolve_actor: Any,
+    ) -> None:
+        resolve_command = getattr(
+            contribution_registry,
+            "resolve_active_feishu_command",
+            None,
+        )
+        if not callable(resolve_command):
+            raise TypeError(
+                "contribution_registry must resolve active Feishu commands"
+            )
+        if not callable(resolve_actor):
+            raise TypeError("resolve_actor must be callable")
+        self._policy = policy_service
+        self._resolve_command = resolve_command
+        self._resolve_actor = resolve_actor
+
+    async def dispatch(
+        self,
+        *,
+        command_text: str,
+        event_id: str,
+        sender_id: str,
+        chat_id: str,
+    ) -> dict[str, Any] | None:
+        """Dispatch an exact active command, or return ``None`` if unknown."""
+
+        try:
+            target = self._resolve_command(command_text)
+        except PluginConflictError as exc:
+            if exc.code == "CAPABILITY_UNAVAILABLE":
+                return None
+            raise OrchestrationError(
+                "PROJECT_RUNTIME_PROJECTION_STALE",
+                "Automation project runtime projection is unavailable",
+            ) from exc
+        if target is None:
+            return None
+
+        safe_event_id = _stable_identifier(event_id, "event_id")
+        safe_sender_id = _stable_identifier(sender_id, "sender_id")
+        safe_chat_id = _stable_identifier(chat_id, "chat_id")
+        try:
+            actor = self._resolve_actor(safe_sender_id)
+        except OrchestrationError:
+            raise
+        except Exception as exc:
+            raise OrchestrationError(
+                "TRUSTED_ENTRYPOINT_REQUIRED",
+                "Feishu actor identity could not be verified",
+            ) from exc
+        if not isinstance(actor, Actor) or actor.actor_id != safe_sender_id:
+            raise OrchestrationError(
+                "TRUSTED_ENTRYPOINT_REQUIRED",
+                "Feishu actor identity does not match the verified sender",
+            )
+
+        return await self._policy.invoke_trusted_and_wait(
+            getattr(target, "automation_id", None),
+            entrypoint=AutomationEntrypoint.FEISHU,
+            request_id=safe_event_id,
+            actor=actor,
+            trusted_context={
+                "event_id": safe_event_id,
+                "chat_id": safe_chat_id,
+            },
+            idempotency_key=f"feishu:{safe_event_id}",
+            expected_automation_generation=getattr(target, "generation", None),
+            contribution_id=getattr(target, "contribution_id", None),
+        )
 
 
 class AutomationProjectEntrypoints:

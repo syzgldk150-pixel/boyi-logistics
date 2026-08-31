@@ -554,6 +554,30 @@ class AutomationProjectPolicyServiceTests(TestCase):
             allowed_entrypoints=frozenset({"console"}),
         )
 
+    def _set_service_v2_feishu_contract(self) -> None:
+        self.entry.runtime_model = "SERVICE_V2"
+        self.contract = replace(
+            self.contract,
+            invocation_contracts={
+                "lookup_command": InvocationArgumentContract(
+                    contract_id="lookup_command",
+                    entrypoint="feishu",
+                    expected_arguments={"mode": "saved"},
+                    dynamic_argument_resolvers={},
+                    contribution_id="lookup_command",
+                )
+            },
+            allowed_entrypoints=frozenset({"feishu"}),
+        )
+
+    @staticmethod
+    def _verified_feishu_actor() -> Actor:
+        return Actor(
+            ActorType.FEISHU_USER,
+            "sender-one",
+            authenticated_by="feishu_verified_event",
+        )
+
     def _set_scan_project(self) -> None:
         self.entry.automation_id = "scan_codes"
         self.entry.plugin_id = "sync_scan_codes"
@@ -784,7 +808,7 @@ class AutomationProjectPolicyServiceTests(TestCase):
                 )
                 self.assertIsNone(self.gateway.command)
 
-    def test_action_v1_and_uninjected_service_v2_keep_compatibility(self):
+    def test_action_v1_ignores_registry_but_service_v2_requires_it(self):
         registry = _ContributionRegistry(error_code="RUNTIME_PROJECTION_STALE")
         service = self._service_with_contribution_registry(registry)
         self.entry.runtime_model = "ACTION_V1"
@@ -799,14 +823,226 @@ class AutomationProjectPolicyServiceTests(TestCase):
         self.assertEqual([], registry.calls)
 
         self._set_service_v2_console_contract()
-        service_v2_receipt = self.service.invoke_console(
+        with self.assertRaises(OrchestrationError) as raised:
+            self.service.invoke_console(
+                AUTOMATION_ID,
+                request_id="request-service-v2-without-registry",
+                actor=_admin(),
+                contribution_id="run_now",
+            )
+
+        self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
+
+    def test_service_v2_harness_and_scheduler_require_runtime_projection(self):
+        self.entry.runtime_model = "SERVICE_V2"
+        cases = (
+            (
+                AutomationEntrypoint.HARNESS,
+                "harness_lookup",
+                "harness_lookup",
+                _admin(),
+                {},
+            ),
+            (
+                AutomationEntrypoint.SCHEDULER,
+                "scheduler:schedule-one",
+                "daily_run",
+                Actor(
+                    ActorType.SCHEDULER,
+                    "schedule-one",
+                    roles=("system",),
+                    authenticated_by="apscheduler",
+                ),
+                {"task_id": "schedule-one"},
+            ),
+        )
+        for source, contract_id, contribution_id, actor, context in cases:
+            with self.subTest(source=source.value):
+                self.gateway.command = None
+                self.contract = replace(
+                    _contract(),
+                    invocation_contracts={
+                        contract_id: InvocationArgumentContract(
+                            contract_id=contract_id,
+                            entrypoint=source.value,
+                            expected_arguments={"mode": "saved"},
+                            dynamic_argument_resolvers={},
+                            contribution_id=contribution_id,
+                        )
+                    },
+                    allowed_entrypoints=frozenset({source.value}),
+                )
+
+                with self.assertRaises(OrchestrationError) as raised:
+                    self.service.invoke_trusted(
+                        AUTOMATION_ID,
+                        entrypoint=source,
+                        request_id=f"request-{source.value}-without-registry",
+                        actor=actor,
+                        trusted_context=context,
+                        expected_automation_generation=1,
+                        contribution_id=contribution_id,
+                    )
+
+                self.assertEqual(
+                    "PROJECT_RUNTIME_PROJECTION_STALE",
+                    raised.exception.code,
+                )
+                self.assertIsNone(self.gateway.command)
+
+    def test_service_v2_feishu_revalidates_exact_projection_at_acceptance(self):
+        self._set_service_v2_feishu_contract()
+        registry = _ContributionRegistry()
+        service = self._service_with_contribution_registry(registry)
+
+        receipt = service.invoke_trusted(
             AUTOMATION_ID,
-            request_id="request-service-v2-without-registry",
-            actor=_admin(),
-            contribution_id="run_now",
+            entrypoint=AutomationEntrypoint.FEISHU,
+            request_id="event-service-v2-feishu",
+            actor=self._verified_feishu_actor(),
+            trusted_context={
+                "event_id": "event-service-v2-feishu",
+                "chat_id": "chat-one",
+            },
+            idempotency_key="feishu:event-service-v2-feishu",
+            expected_automation_generation=1,
+            contribution_id="lookup_command",
         )
 
-        self.assertEqual("run-invoke", service_v2_receipt.run_id)
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual(
+            [
+                {
+                    "automation_id": AUTOMATION_ID,
+                    "generation": 1,
+                    "contribution_kind": "feishu",
+                    "contribution_id": "lookup_command",
+                },
+                {
+                    "automation_id": AUTOMATION_ID,
+                    "generation": 1,
+                    "contribution_kind": "feishu",
+                    "contribution_id": "lookup_command",
+                },
+            ],
+            registry.calls,
+        )
+
+    def test_service_v2_feishu_requires_an_injected_runtime_projection(self):
+        self._set_service_v2_feishu_contract()
+
+        with self.assertRaises(OrchestrationError) as raised:
+            self.service.invoke_trusted(
+                AUTOMATION_ID,
+                entrypoint=AutomationEntrypoint.FEISHU,
+                request_id="event-missing-projection",
+                actor=self._verified_feishu_actor(),
+                trusted_context={
+                    "event_id": "event-missing-projection",
+                    "chat_id": "chat-one",
+                },
+                expected_automation_generation=1,
+                contribution_id="lookup_command",
+            )
+
+        self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
+        self.assertIsNone(self.gateway.command)
+
+    def test_service_v2_feishu_rejects_mismatched_projection_identity(self):
+        self._set_service_v2_feishu_contract()
+
+        for field_name, wrong_value in (
+            ("generation", 2),
+            ("contribution_kind", "console"),
+        ):
+            with self.subTest(field_name=field_name):
+                registry = _ContributionRegistry()
+
+                def mismatched_resolve_active(**kwargs):
+                    registry.calls.append(dict(kwargs))
+                    values = {
+                        **kwargs,
+                        "phase": "COMMITTED",
+                        "backend_status": "READY",
+                    }
+                    values[field_name] = wrong_value
+                    return SimpleNamespace(**values)
+
+                registry.resolve_active = mismatched_resolve_active
+                service = self._service_with_contribution_registry(registry)
+
+                with self.assertRaises(OrchestrationError) as raised:
+                    service.invoke_trusted(
+                        AUTOMATION_ID,
+                        entrypoint=AutomationEntrypoint.FEISHU,
+                        request_id=f"event-wrong-{field_name}",
+                        actor=self._verified_feishu_actor(),
+                        trusted_context={
+                            "event_id": f"event-wrong-{field_name}",
+                            "chat_id": "chat-one",
+                        },
+                        expected_automation_generation=1,
+                        contribution_id="lookup_command",
+                    )
+
+                self.assertEqual(
+                    "PROJECT_RUNTIME_PROJECTION_STALE",
+                    raised.exception.code,
+                )
+                self.assertIsNone(self.gateway.command)
+
+    def test_service_v2_feishu_projection_race_fails_in_uow_guard(self):
+        self._set_service_v2_feishu_contract()
+        registry = _ContributionRegistry()
+
+        def racing_resolve_active(**kwargs):
+            registry.calls.append(dict(kwargs))
+            if len(registry.calls) > 1:
+                raise PluginConflictError(
+                    "synthetic generation switch",
+                    code="RUNTIME_PROJECTION_STALE",
+                )
+            return SimpleNamespace(
+                **kwargs,
+                phase="COMMITTED",
+                backend_status="READY",
+            )
+
+        registry.resolve_active = racing_resolve_active
+        service = self._service_with_contribution_registry(registry)
+
+        with self.assertRaises(OrchestrationError) as raised:
+            service.invoke_trusted(
+                AUTOMATION_ID,
+                entrypoint=AutomationEntrypoint.FEISHU,
+                request_id="event-racing-projection",
+                actor=self._verified_feishu_actor(),
+                trusted_context={
+                    "event_id": "event-racing-projection",
+                    "chat_id": "chat-one",
+                },
+                expected_automation_generation=1,
+                contribution_id="lookup_command",
+            )
+
+        self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
+        self.assertEqual(2, len(registry.calls))
+        self.assertIsNone(self.gateway.command)
+
+    def test_action_v1_feishu_invocation_does_not_require_managed_projection(self):
+        self.entry.runtime_model = "ACTION_V1"
+        self.contract = _contract_for(AutomationEntrypoint.FEISHU)
+
+        receipt = self.service.invoke_trusted(
+            AUTOMATION_ID,
+            entrypoint=AutomationEntrypoint.FEISHU,
+            request_id="event-action-v1",
+            actor=self._verified_feishu_actor(),
+            trusted_context={"event_id": "event-action-v1", "chat_id": "chat-one"},
+            expected_automation_generation=1,
+        )
+
+        self.assertEqual("run-invoke", receipt.run_id)
 
     def test_scan_preview_formal_invoke_stays_disabled_under_current_governance(self):
         self._set_scan_project()

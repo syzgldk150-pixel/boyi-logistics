@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from agent.feishu_command_contract import is_scan_cancel_text, is_scan_confirm_text
 from agent.orchestration.models import OrchestrationError
 from agent.orchestration.scan_preview_binding import normalize_preview_run_id
 
@@ -29,10 +30,6 @@ SCAN_PREVIEW_ERROR_MESSAGES = {
     "SCAN_PREVIEW_CONTEXT_REQUIRED": "服务端扫描合同缺少预览上下文，正式执行已阻断。",
     "SCAN_PREVIEW_CONTEXT_INVALID": "服务端扫描合同与预览不一致，正式执行已阻断。",
 }
-
-_SCAN_CONFIRM_RE = re.compile(r"^\s*确认\s*扫描\s*$")
-_SCAN_CANCEL_RE = re.compile(r"^\s*取消\s*扫描\s*$")
-
 
 def split_text_chunks(
     lines: list[str],
@@ -250,14 +247,6 @@ def _account_field_name(value: Any) -> bool:
         field_name in {"account_id", "account_ids"}
         or field_name.endswith(("_account_id", "_account_ids"))
     )
-
-
-def is_scan_confirm_text(value: Any) -> bool:
-    return bool(_SCAN_CONFIRM_RE.fullmatch(str(value or "")))
-
-
-def is_scan_cancel_text(value: Any) -> bool:
-    return bool(_SCAN_CANCEL_RE.fullmatch(str(value or "")))
 
 
 def scan_preview_error_message(error_code: Any) -> str:

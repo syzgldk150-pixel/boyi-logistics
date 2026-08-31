@@ -589,6 +589,52 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertNotIn("display: none", projected_text)
         self.assertNotIn("unrelated-scheduler", projected_text)
 
+    def test_service_v2_feishu_projection_is_active_but_not_browser_invocable(self):
+        payload = _catalog_payload()
+        metadata = {
+            "runtime_model": "SERVICE_V2",
+            "plugin_api": "2.0.0",
+            "entrypoints": ["manual.sync", "message.report"],
+            "entrypoint_kinds": {
+                "manual.sync": "console",
+                "message.report": "feishu",
+            },
+            "enabled_entrypoints": ["manual.sync", "message.report"],
+            "target_generation": 9,
+            "committed_generation": 9,
+            "contribution_projection_state": "ACTIVE",
+            "active_contributions": [
+                {
+                    "contribution_id": "manual.sync",
+                    "contribution_kind": "console",
+                    "generation": 9,
+                    "phase": "COMMITTED",
+                    "backend_status": "READY",
+                },
+                {
+                    "contribution_id": "message.report",
+                    "contribution_kind": "feishu",
+                    "generation": 9,
+                    "phase": "COMMITTED",
+                    "backend_status": "READY",
+                },
+            ],
+        }
+        payload["plugins"][0].update(metadata)
+        payload["instances"][0].update(metadata)
+
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(
+            payload
+        )
+
+        instance = instances[0]
+        self.assertEqual(["manual.sync"], instance["console_entrypoints"])
+        self.assertEqual(["manual.sync"], instance["enabled_console_entrypoints"])
+        self.assertEqual(
+            ["console", "feishu"], instance["enabled_entrypoint_kinds"]
+        )
+        self.assertNotIn("active_contributions", instance)
+
     def test_service_v2_console_projection_drift_fails_closed_but_keeps_declaration(self):
         cases = (
             ("missing_list", {}, {"active_contributions"}),

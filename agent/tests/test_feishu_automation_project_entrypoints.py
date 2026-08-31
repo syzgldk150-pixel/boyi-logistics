@@ -76,6 +76,24 @@ class _FakeAgent:
         return {"reply": message_handler.UNKNOWN_EXECUTION_REPLY}
 
 
+class _FakeServiceV2FeishuDispatcher:
+    def __init__(
+        self,
+        *,
+        result: dict | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.result = result
+        self.error = error
+        self.calls: list[dict] = []
+
+    async def dispatch(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
 def _reply_recorder(replies):
     async def record(_receive_id, text, receive_id_type="chat_id", **kwargs):
         replies.append(
@@ -135,6 +153,178 @@ def _selection_preview(
         "summary": summary,
         "can_confirm": True,
     }
+
+
+def test_service_v2_feishu_dispatches_verified_exact_context_and_hides_internal_ids():
+    dispatcher = _FakeServiceV2FeishuDispatcher(
+        result={
+            "success": False,
+            "status": "FAILED_TERMINAL",
+            "automation_id": "private-automation",
+            "service": "private.service",
+            "operation": "private.operation",
+            "contribution_id": "private.contribution",
+            "run_id": "11111111-1111-4111-8111-111111111111",
+            "error_summary": "private.service/private.operation failed",
+        }
+    )
+    agent = _FakeAgent()
+    replies = []
+    with (
+        patch("feishu.bot.get_agent_core", return_value=agent),
+        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=None),
+        patch.object(message_handler, "get_pending", return_value=None),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        _run_verified_text("插件只读日报", event_id="event-dynamic-one")
+
+    assert dispatcher.calls == [
+        {
+            "command_text": "插件只读日报",
+            "event_id": "event-dynamic-one",
+            "sender_id": "user-one",
+            "chat_id": "chat-one",
+        }
+    ]
+    assert agent.chat_calls == []
+    assert replies[-1][0] == (
+        "扩展任务执行失败：数据读取或写入校验未通过，请查看任务详情。"
+    )
+    public_reply = replies[-1][0]
+    for private_value in (
+        "private-automation",
+        "private.service",
+        "private.operation",
+        "private.contribution",
+        "11111111-1111-4111-8111-111111111111",
+    ):
+        assert private_value not in public_reply
+
+
+def test_service_v2_feishu_unknown_command_continues_to_existing_agent_path():
+    dispatcher = _FakeServiceV2FeishuDispatcher(result=None)
+    agent = _FakeAgent()
+    replies = []
+    with (
+        patch("feishu.bot.get_agent_core", return_value=agent),
+        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=None),
+        patch.object(message_handler, "get_pending", return_value=None),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        _run_verified_text("普通未知消息", event_id="event-unknown-one")
+
+    assert dispatcher.calls[0]["command_text"] == "普通未知消息"
+    assert len(agent.chat_calls) == 1
+    assert replies[-1][0] == message_handler.UNKNOWN_EXECUTION_REPLY
+
+
+def test_fixed_action_v1_command_wins_without_calling_dynamic_dispatcher():
+    service = _FakeProjectEntrypoints()
+    dispatcher = _FakeServiceV2FeishuDispatcher(
+        error=AssertionError("dynamic dispatcher must not run")
+    )
+    agent = _FakeAgent()
+    request = {
+        "tool_name": "sync_arrival_stats",
+        "params": {},
+        "mode": "automation_project",
+        "automation_route_key": "builtin.arrival_stats",
+        "dynamic_inputs": {},
+    }
+    with (
+        patch("feishu.bot.get_agent_core", return_value=agent),
+        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+        patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
+        patch.object(message_handler, "get_pending", return_value=None),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder([])),
+    ):
+        _run_verified_text("统计", event_id="event-fixed-one")
+
+    assert len(service.calls) == 1
+    assert dispatcher.calls == []
+    assert agent.chat_calls == []
+
+
+def test_service_v2_feishu_match_without_verified_context_stops_before_agent():
+    dispatcher = _FakeServiceV2FeishuDispatcher(
+        error=OrchestrationError(
+            "STABLE_EVENT_ID_REQUIRED",
+            "A stable verified Feishu event id is required",
+        )
+    )
+    agent = _FakeAgent()
+    replies = []
+    with (
+        patch("feishu.bot.get_agent_core", return_value=agent),
+        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=None),
+        patch.object(message_handler, "get_pending", return_value=None),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        asyncio.run(
+            message_handler._process_and_reply(
+                "插件只读日报",
+                "unverified-user",
+                "unverified-chat",
+            )
+        )
+
+    assert dispatcher.calls == [
+        {
+            "command_text": "插件只读日报",
+            "event_id": "",
+            "sender_id": "",
+            "chat_id": "",
+        }
+    ]
+    assert agent.chat_calls == []
+    assert replies[-1][0] == "扩展任务未能执行：消息身份不完整或当前入口不可用。"
+
+
+def test_service_v2_feishu_verified_event_without_sender_keeps_identity_empty():
+    dispatcher = _FakeServiceV2FeishuDispatcher(
+        error=OrchestrationError(
+            "STABLE_SENDER_ID_REQUIRED",
+            "A stable verified Feishu sender id is required",
+        )
+    )
+    agent = _FakeAgent()
+    replies = []
+    with (
+        patch("feishu.bot.get_agent_core", return_value=agent),
+        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=None),
+        patch.object(message_handler, "get_pending", return_value=None),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        asyncio.run(
+            message_handler._handle_im_message_data(
+                msg_type="text",
+                chat_id="chat-one",
+                sender_id="",
+                raw_content=json.dumps({"text": "插件只读日报"}),
+                event_id="event-without-sender",
+            )
+        )
+
+    assert dispatcher.calls == [
+        {
+            "command_text": "插件只读日报",
+            "event_id": "event-without-sender",
+            "sender_id": "",
+            "chat_id": "chat-one",
+        }
+    ]
+    assert agent.chat_calls == []
+    assert replies[-1][0] == "扩展任务未能执行：消息身份不完整或当前入口不可用。"
 
 
 def test_direct_feishu_project_reports_waiting_approval_without_generic_execution():
@@ -776,6 +966,66 @@ def test_feishu_webhook_and_websocket_keep_the_same_event_identity():
         "event-duplicate",
     ]
     assert all(call["sender_id"] == "user-one" for call in service.calls)
+
+
+def test_dynamic_feishu_webhook_and_websocket_keep_the_same_verified_identity():
+    dispatcher = _FakeServiceV2FeishuDispatcher(
+        result={"success": True, "status": "COMPLETED"}
+    )
+    agent = _FakeAgent()
+    replies = []
+    scheduled = []
+    submitted = []
+    event_body = {
+        "message": {
+            "message_type": "text",
+            "chat_id": "chat-one",
+            "content": json.dumps({"text": "插件只读日报"}),
+        },
+        "sender": {"sender_id": {"open_id": "user-one"}},
+    }
+    sdk_event = SimpleNamespace(
+        header=SimpleNamespace(event_id="event-dynamic-duplicate"),
+        event=SimpleNamespace(
+            message=SimpleNamespace(**event_body["message"]),
+            sender=SimpleNamespace(
+                sender_id=SimpleNamespace(open_id="user-one")
+            ),
+        ),
+    )
+    with (
+        patch("feishu.bot.get_agent_core", return_value=agent),
+        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=None),
+        patch.object(message_handler, "get_pending", return_value=None),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+        patch.object(message_handler, "_schedule_local_task", side_effect=scheduled.append),
+        patch.object(message_handler, "_submit_with_future_callback", side_effect=submitted.append),
+    ):
+        assert message_handler.queue_im_message_payload(
+            event_body,
+            event_id="event-dynamic-duplicate",
+        )
+        message_handler.handle_im_message(sdk_event)
+        asyncio.run(scheduled.pop())
+        asyncio.run(submitted.pop())
+
+    assert dispatcher.calls == [
+        {
+            "command_text": "插件只读日报",
+            "event_id": "event-dynamic-duplicate",
+            "sender_id": "user-one",
+            "chat_id": "chat-one",
+        },
+        {
+            "command_text": "插件只读日报",
+            "event_id": "event-dynamic-duplicate",
+            "sender_id": "user-one",
+            "chat_id": "chat-one",
+        },
+    ]
+    assert agent.chat_calls == []
 
 
 def test_self_pickup_preview_and_confirmation_use_persisted_signed_selection():

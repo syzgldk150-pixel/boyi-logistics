@@ -146,22 +146,27 @@ Service v2 新安装固定先调用只读 `inspect-upload`，该请求只接收�
 依赖未就绪时响应只投影 `PREPARING/BLOCKED_DEPENDENCY`，不得宣称完成或提前启用。启用必须再次
 确认当前 desired material 已有完全匹配的 `STABLE committed_generation`。
 配置幂等重放还须精确匹配操作者身份和事件目标配置版本，后续配置漂移后不得读回最新值冒充旧请求结果。
-Service v2 的 stable generation 提交后，全部受管 Console/Scheduler/Harness contribution 先作为完整一代准备。
+Service v2 的 stable generation 提交后，全部受管 Console/Scheduler/Harness/Feishu contribution 先作为完整一代准备。
 generation CAS 同一事务写入 `PENDING_PROJECTION` transition token、旧项目/策略版本以及旧任务和逐任务审批
 策略的精确前镜像；`ManagedContributionRegistry`、Provider reference 和 strict APScheduler reload 共用同一
 投影锁。只有整份计划没有非法行、所有 Job 注册成功且返回 `initialized=true, invalid_tasks=[]`，才切换 exact
 active generation 并以同一 token ACK 为 `ACTIVE`。刷新或 ACK 失败会执行条件化 reverse CAS，恢复旧项目
-版本、旧 committed generation、旧任务与审批策略，再在同一投影锁内恢复旧 Provider、Console/Harness 路由和 Job；
+版本、旧 committed generation、旧任务与审批策略，再在同一投影锁内恢复旧 Provider、Console/Harness/Feishu 路由和 Job；
 随后可用同一 immutable target 重试，无需重启 Agent/Console。
 reverse CAS 在目标新代存在任何 lease 历史、未知写、任务/策略/项目版本并发变化或 token 不一致时必须拒绝。此时 journal
-标记 `BLOCKED`，持久 Scheduler gate 关闭，进程内全部 Provider/Console/Harness 路由撤销，并按私有 owner marker 删除
+标记 `BLOCKED`，持久 Scheduler gate 关闭，进程内全部 Provider/Console/Harness/Feishu 路由撤销，并按私有 owner marker 删除
 该项目动态 Job；进程 tombstone 阻止普通或 strict reload 将其复活。启动恢复只按 durable phase 决定重试
 投影、继续旧代或保持阻断，不从当前对象猜测成功状态；transition 存在时通用 lease 入口只接受 `ACTIVE`。
 启动先构造但不启动 Scheduler、绑定 strict/emergency 投影器并完成 reconcile/ACK，随后才启动物理 Scheduler。
-停用和卸载同样先 strict 刷新物理任务再整代 withdraw；纯 service v2 没有已启用 Console/Scheduler/Harness
-contribution 时不创建伪 marker。Catalog 只输出闭合 `active_contributions` 与 `ACTIVE/STALE/INACTIVE`，
-Console 只从当前 committed generation 的 exact `COMMITTED/READY` 记录开放入口。此机制不改变
-`ACTION_V1`；动态飞书/Webhook/Event dispatcher 和自定义插件前端均未开放。
+停用和卸载同样先 strict 刷新物理任务再整代 withdraw；纯 service v2 没有已启用 Console/Scheduler/Harness/Feishu
+contribution 时不创建伪 marker。权威空 generation 仍经原子 refresh 清除旧 active map；DRAINING 旧代不再占用
+飞书命令。重启时 committed/prepared/pending projection journal 必须与权威计划精确相等；target/preparing/waiting
+只接受逐项验证的持久子集，再从 snapshot 原子恢复整代 PREPARED reservation；draining/disposing/blocked 仅恢复
+非路由诊断，rolled-back 不恢复 contribution。Catalog 只输出闭合 `active_contributions` 与 `ACTIVE/STALE/INACTIVE`，Console 只从当前 committed
+generation 的 exact `COMMITTED/READY` Console 记录开放浏览器入口。动态 Feishu Dispatcher 仅在固定 Action v1
+未命中后按大小写敏感 exact command 解析；宿主登录、任务取消、扫描确认、审批绑定与固定 Action v1 使用运行时
+同一 parser 在整代 prepare 时拒绝，不允许任何冲突留下部分 reservation。Dispatcher 在 Command 接受事务内再次核对 Registry；调用方不能提交项目、
+服务、操作、参数、账号或资源。此机制不改变 `ACTION_V1`；动态 Webhook/Event dispatcher 和自定义插件前端均未开放。
 
 固定 `/harness` 模块只接受真实 MySQL 管理员会话的同源请求，并通过签名 principal 调用 Agent 的闭合 Session/Message API。Session 当前仅进程内保存；真实 LLM、固定业务读网关、生产受限 sandbox 和持久会话均为 `PRODUCTION_GATED`。动态工具只从 Registry 私有 active snapshot 取得，绑定 exact generation 与真实签名 `runtime_permissions`，且只允许 `read/compute + harness_allowed=true + broker_effect=read`；任意网络、浏览器、文件、Broker operation、写能力或权限字段缺失均关闭失败。浏览器和 sidecar 只见 opaque tool id，不能提交项目、服务、操作、账号或资源身份，也不回退 Legacy Agent、直接数据库或真实 TMS/飞书工具。
 `startup` 项目使用一次性 DateTrigger 和“上海业务日 + 配置版本”的稳定 Command 身份；release hold 启动

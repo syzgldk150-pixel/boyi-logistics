@@ -352,7 +352,10 @@ def _commit_service(
     snapshot: RuntimeGenerationSnapshot,
 ) -> RuntimeEffectRecord:
     effect = _apply(driver, snapshot)
-    driver.activate_committed(snapshot=snapshot, effects=(effect,))
+    driver.activate_committed(
+        snapshot=snapshot,
+        effects=_activation_effects(snapshot, effect),
+    )
     return effect
 
 
@@ -388,6 +391,19 @@ def _committed_projection_effects(
     return tuple(effects)
 
 
+def _activation_effects(
+    snapshot: RuntimeGenerationSnapshot,
+    service_effect: RuntimeEffectRecord,
+) -> tuple[RuntimeEffectRecord, ...]:
+    """Build the complete durable effect journal for committed activation."""
+
+    return (service_effect,) + tuple(
+        effect
+        for effect in _committed_projection_effects(snapshot)
+        if effect.kind is not RuntimeEffectKind.SERVICE_REGISTRATION
+    )
+
+
 def test_prepared_service_effect_is_not_routable_before_commit() -> None:
     registry = ServiceRegistry()
     driver = ProductionRuntimeEffectDriver(
@@ -407,7 +423,10 @@ def test_prepared_service_effect_is_not_routable_before_commit() -> None:
     assert registry.snapshot() == ()
     assert registry.provider_for("plugin.prepared_plugin.runner@1") is None
 
-    driver.activate_committed(snapshot=snapshot, effects=(effect,))
+    driver.activate_committed(
+        snapshot=snapshot,
+        effects=_activation_effects(snapshot, effect),
+    )
     assert registry.require_provider("plugin.prepared_plugin.runner@1").active is True
 
 
@@ -473,7 +492,7 @@ def test_byte_different_packages_coexist_but_bare_service_route_is_ambiguous() -
     contender_effect = _apply(driver, contender)
     driver.activate_committed(
         snapshot=contender,
-        effects=(contender_effect,),
+        effects=_activation_effects(contender, contender_effect),
     )
 
     assert len(registry.snapshot()) == 2
@@ -1362,12 +1381,12 @@ def test_applied_service_effects_restore_once_after_process_restart() -> None:
         first.automation_id: RuntimeGenerationRecord(
             snapshot=first,
             state=RuntimeGenerationState.COMMITTED,
-            effects=(_effect(first, state=RuntimeEffectState.APPLIED),),
+                effects=_committed_projection_effects(first),
         ),
         second.automation_id: RuntimeGenerationRecord(
             snapshot=second,
             state=RuntimeGenerationState.COMMITTED,
-            effects=(_effect(second, state=RuntimeEffectState.APPLIED),),
+                effects=_committed_projection_effects(second),
         ),
     }
 
@@ -1425,14 +1444,14 @@ def test_restart_stages_but_does_not_route_unacknowledged_generation(
         RuntimeGenerationRecord(
             snapshot=first,
             state=RuntimeGenerationState.DRAINING,
-            effects=(_effect(first, state=RuntimeEffectState.APPLIED),),
+                effects=_committed_projection_effects(first),
             activation_transition_token="00000000-0000-4000-8000-000000000001",
             activation_phase=RuntimeActivationPhase.ACTIVE,
         ),
         RuntimeGenerationRecord(
             snapshot=second,
             state=RuntimeGenerationState.COMMITTED,
-            effects=(_effect(second, state=RuntimeEffectState.APPLIED),),
+                effects=_committed_projection_effects(second),
             base_committed_generation=1,
             activation_transition_token="00000000-0000-4000-8000-000000000002",
             activation_phase=activation_phase,

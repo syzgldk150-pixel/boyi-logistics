@@ -1313,6 +1313,33 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
                 (registration, duplicate_route)
             )
 
+    def test_reserved_feishu_command_uses_the_fixed_router_contract(self):
+        for text in (
+            "到达打卡",
+            "同步到货清单",
+            "报价 湖南省长沙市,1kg",
+            "分批问题件",
+            "韵达网点派件量预测主单表",
+            "登录",
+            "重新登录",
+            "发送验证码",
+            "韵达验证码登录",
+            "取消扫描",
+            "取消到货统计",
+            "确认扫描",
+            "绑定审批 23456789AB",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(
+                    direct_tool_router.is_reserved_feishu_command_text(text)
+                )
+
+        self.assertFalse(
+            direct_tool_router.is_reserved_feishu_command_text("插件自定义只读日报")
+        )
+        self.assertFalse(direct_tool_router.is_reserved_feishu_command_text("1"))
+        self.assertFalse(direct_tool_router.is_reserved_feishu_command_text("2"))
+
     def test_direct_router_maps_arrival_checkin_command_to_r7_tool(self):
         request = direct_tool_router.direct_tool_request_from_text("到达打卡")
 
