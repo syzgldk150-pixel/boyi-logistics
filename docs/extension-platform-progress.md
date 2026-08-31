@@ -39,7 +39,7 @@ updated: 2026-08-31
 | TASK-EXT-009B | DONE_OFFLINE | 2026-08-31T10:16:26+08:00 | 2026-08-31T10:55:01+08:00 | 983a2f4ec06c294e43310e4dbb6b6d14f8aad47b |
 | TASK-EXT-009C | DONE_OFFLINE | 2026-08-31T10:56:17+08:00 | 2026-08-31T11:35:00+08:00 | 2571ca202f42c7155da8635af5de76cd0f906632 |
 | TASK-EXT-010 | DONE_OFFLINE | 2026-08-31T11:38:27+08:00 | 2026-08-31T12:49:57+08:00 | f1f13aaab4ed522b7b19e36027875767c4d14373 |
-| TASK-EXT-011 | NOT_STARTED | — | — | — |
+| TASK-EXT-011 | IN_PROGRESS | 2026-08-31T12:51:05+08:00 | — | — |
 | TASK-MIG-001 | NOT_STARTED | — | — | — |
 | TASK-MIG-002 | NOT_STARTED | — | — | — |
 | TASK-MIG-003 | NOT_STARTED | — | — | — |
@@ -225,16 +225,16 @@ updated: 2026-08-31
 
 ### TASK-EXT-011：Connector Registry
 
-- 状态：`NOT_STARTED`
-- 开始时间 / 结束时间：— / —
-- 设计决策：先抽象一个低风险只读 Connector；不向插件返回凭据或任意 endpoint。
+- 状态：`IN_PROGRESS`
+- 开始时间 / 结束时间：`2026-08-31T12:51:05+08:00` / —
+- 设计决策：先审计现有 Host capability、ServiceRegistry、`service.invoke` 与账号绑定单一链，再新增宿主拥有且不能由普通 ZIP 注册/覆盖的 Connector Registry。首个 Connector 只允许闭合、版本化、`read` effect 的离线 fixture adapter；调用方只拿业务结果，不能取得账号绑定 ID、密码、Cookie、Token、endpoint、数据库连接或真实文件路径。真实 TMS/生产数据库接线保持 `PRODUCTION_GATED`。
 - 修改文件 / Commit SHA：— / —
 - 测试命令和结果：尚未运行。
 - 兼容性影响：闭合、版本化服务合同。
 - 数据库影响：待审计。
 - 未完成项：全部。
 - 下一项 TASK：`TASK-MIG-001`。
-- 恢复说明：先确认前序 TASK 已提交推送，再将本 TASK 标为 `IN_PROGRESS`。
+- 恢复说明：EXT010 代码 `f1f13aaab4ed522b7b19e36027875767c4d14373` 与完成账本 `e68829e1d0d732f6d76101bfe80d9bcfefbff492` 已推送。从现有 Manifest requires、Catalog 依赖投影、ServiceRegistry、`service.invoke` 和项目 account binding 开始，设计一个与普通 ZIP Provider 分离的宿主 Connector Registry；只使用本地 fixture，不读取 `.env`、凭据或真实业务数据。
 
 ### TASK-MIG-001：迁移到货统计
 
