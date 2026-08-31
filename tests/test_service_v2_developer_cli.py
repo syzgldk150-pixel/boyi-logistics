@@ -23,7 +23,7 @@ def _invoke(
     return value["data"]
 
 
-def test_all_seven_cli_commands_form_one_offline_workflow(
+def test_all_seven_artifact_commands_form_one_offline_workflow(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -142,4 +142,5 @@ def test_cli_registers_exact_offline_command_set() -> None:
         "package",
         "inspect",
         "diff",
+        "connector-test",
     }

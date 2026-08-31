@@ -33,6 +33,7 @@ _FORBIDDEN_FILE_NAME = re.compile(
     re.IGNORECASE,
 )
 _MAX_FIXTURE_BYTES = 1024 * 1024
+_OFFLINE_FIXTURE_ACCOUNT_ID = "offline-fixture-connector"
 
 
 FIXTURE_TRACKING_INPUT_SCHEMA: Mapping[str, object] = MappingProxyType(
@@ -305,6 +306,61 @@ def build_fixture_tracking_registry(
     )
 
 
+async def invoke_fixture_tracking_query(
+    *,
+    fixture_root: str | Path,
+    fixture_path: str | Path,
+    tracking_number: str,
+) -> Mapping[str, Any]:
+    """Invoke the opt-in fixture through the real closed Connector boundary.
+
+    This facade is intentionally fixture-scoped: callers must provide one
+    relative JSON path below one explicit absolute trusted root.  The
+    synthetic binding remains private and only the schema-validated business
+    result is returned.
+    """
+
+    root = Path(fixture_root)
+    relative_fixture = Path(fixture_path)
+    if not root.is_absolute():
+        raise ConnectorContractInvalid(
+            "tracking fixture root must be an absolute directory"
+        )
+    if (
+        relative_fixture.is_absolute()
+        or not relative_fixture.parts
+        or ".." in relative_fixture.parts
+        or relative_fixture.suffix.lower() != ".json"
+    ):
+        raise ConnectorContractInvalid(
+            "tracking fixture must be a relative JSON path"
+        )
+
+    registry = build_fixture_tracking_registry(
+        relative_fixture,
+        fixture_root=root,
+    )
+    resolved = registry.require_operation(FIXTURE_TRACKING_SERVICE, "query")
+    result = await registry.invoke(
+        resolved=resolved,
+        binding=ConnectorBindingRef(
+            service=FIXTURE_TRACKING_SERVICE,
+            account_role=FIXTURE_TRACKING_ACCOUNT_ROLE,
+            account_id=_OFFLINE_FIXTURE_ACCOUNT_ID,
+            system=FIXTURE_TRACKING_SYSTEM,
+        ),
+        arguments={"tracking_number": tracking_number},
+    )
+    return {
+        "schema_version": 1,
+        "service": resolved.service,
+        "operation": resolved.operation,
+        "effect": resolved.effect.value,
+        "result": result,
+        "write_attempted": False,
+    }
+
+
 __all__ = [
     "FIXTURE_TRACKING_ACCOUNT_ROLE",
     "FIXTURE_TRACKING_INPUT_SCHEMA",
@@ -313,4 +369,5 @@ __all__ = [
     "FIXTURE_TRACKING_SYSTEM",
     "build_fixture_tracking_connector",
     "build_fixture_tracking_registry",
+    "invoke_fixture_tracking_query",
 ]
