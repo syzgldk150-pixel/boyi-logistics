@@ -36,7 +36,7 @@ updated: 2026-08-31
 | TASK-EXT-007 | DONE_OFFLINE | 2026-08-31T06:04:44+08:00 | 2026-08-31T07:13:05+08:00 | 81f58eb89befdf54be33b67ef70e6e3d96a4cde7 |
 | TASK-EXT-008 | DONE_OFFLINE | 2026-08-31T07:20:58+08:00 | 2026-08-31T08:30:16+08:00 | 90ad312dba83f480062fa6d99cd6ee8be371696f |
 | TASK-EXT-009A | DONE_OFFLINE | 2026-08-31T08:31:21+08:00 | 2026-08-31T10:15:09+08:00 | 9104ebbe936f315f429f7c1c011485ff7cd5a843 |
-| TASK-EXT-009B | NOT_STARTED | — | — | — |
+| TASK-EXT-009B | IN_PROGRESS | 2026-08-31T10:16:26+08:00 | — | — |
 | TASK-EXT-009C | NOT_STARTED | — | — | — |
 | TASK-EXT-010 | NOT_STARTED | — | — | — |
 | TASK-EXT-011 | NOT_STARTED | — | — | — |
@@ -186,16 +186,16 @@ updated: 2026-08-31
 
 ### TASK-EXT-009B：动态 Webhook Dispatcher
 
-- 状态：`NOT_STARTED`
-- 开始时间 / 结束时间：— / —
-- 设计决策：独立提交；入口参数完全由项目合同派生。
+- 状态：`IN_PROGRESS`
+- 开始时间 / 结束时间：`2026-08-31T10:16:26+08:00` / —
+- 设计决策：独立提交；仅从 exact committed/READY Registry 解析稳定 method/route identity，项目、service、operation、业务参数、账号和资源均由已签名项目合同派生，调用方不得覆盖。先实现无网络的宿主 Dispatcher、可信内部适配边界、停用/卸载热撤销和冲突/重启/幂等 fixture；真实公网入口、反向代理、认证密钥、流量与部署均保持 `PRODUCTION_GATED`。
 - 修改文件 / Commit SHA：— / —
 - 测试命令和结果：尚未运行。
 - 兼容性影响：停用/卸载立即撤销入口。
 - 数据库影响：待审计。
 - 未完成项：全部。
 - 下一项 TASK：`TASK-EXT-009C`。
-- 恢复说明：先确认 009B 独立提交已推送，再开始 009C。
+- 恢复说明：EXT009A 代码 `9104ebbe936f315f429f7c1c011485ff7cd5a843` 与完成账本 checkpoint 已推送。从既有 generation-level atomic contribution prepare、state-aware restore、exact active map 与双重 Policy identity recheck 开始扩展 Webhook kind；不得新建第二套仓储/授权/运行链，不得连接公网、生产数据库、真实 TMS/飞书或执行外部写。完成并推送 009B 后立即开始 009C。
 
 ### TASK-EXT-009C：动态 Event Dispatcher
 
