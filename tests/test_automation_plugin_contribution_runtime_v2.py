@@ -31,6 +31,9 @@ from agent.automation_plugins.production import (
     ProductionRuntimeEffectPlanner,
     build_runtime_generation_snapshot,
 )
+from agent.automation_plugins.runtime_backend_availability import (
+    RuntimeContributionBackendAvailability,
+)
 from shared.automation_plugin_generation_repository import (
     _scheduler_contribution_binding,
 )
@@ -992,6 +995,65 @@ def test_nondurable_event_is_ready_global_exact_and_switches_adjacent_generation
     assert {
         (record.generation, record.phase) for record in registry.snapshot()
     } == {(1, "DRAINING"), (2, "COMMITTED")}
+
+
+def test_webhook_and_event_effective_routes_require_bound_process_ingress() -> None:
+    availability = RuntimeContributionBackendAvailability()
+    schedule = {"kind": "none", "times": [], "enabled": False}
+    webhook_snapshot = _snapshot(
+        schedule=schedule,
+        enabled_entrypoints=("receive_hook",),
+    )
+    webhook_material = next(
+        copy.deepcopy(dict(plan.payload))
+        for plan in _managed_plans(webhook_snapshot)
+        if plan.payload["contribution_kind"] == "webhook"
+    )
+    webhook_registry = ManagedContributionRegistry(
+        backend_availability=availability
+    )
+    webhook_registry.prepare_generation((webhook_material,))
+    webhook_registry.apply_generation(
+        webhook_snapshot.automation_id,
+        webhook_snapshot.generation,
+        refresh=_refresh_success,
+        expected_registration_ids=(webhook_material["registration_id"],),
+    )
+
+    assert webhook_registry.active_snapshot(contribution_kind="webhook") == ()
+    assert webhook_registry.resolve_active_webhook_route(
+        method="POST", route="unknown"
+    ) is None
+    with pytest.raises(PluginConflictError) as webhook_unavailable:
+        webhook_registry.resolve_active_webhook_route(
+            method="POST", route="receive"
+        )
+    assert webhook_unavailable.value.code == "CAPABILITY_UNAVAILABLE"
+    availability.mark_available("webhook")
+    assert webhook_registry.resolve_active_webhook_route(
+        method="POST", route="receive"
+    ) is not None
+
+    event_snapshot = _event_snapshot(
+        contributions=_non_durable_event_contributions(),
+        enabled_entrypoints=("orders_changed",),
+    )
+    event_material = _event_material(event_snapshot)
+    event_registry = ManagedContributionRegistry(
+        backend_availability=availability
+    )
+    event_registry.prepare_generation((event_material,))
+    event_registry.apply_generation(
+        event_snapshot.automation_id,
+        event_snapshot.generation,
+        refresh=_refresh_success,
+        expected_registration_ids=(event_material["registration_id"],),
+    )
+    with pytest.raises(PluginConflictError) as event_unavailable:
+        event_registry.resolve_active_event(event_name="orders.changed")
+    assert event_unavailable.value.code == "CAPABILITY_UNAVAILABLE"
+    availability.mark_available("events")
+    assert event_registry.resolve_active_event(event_name="orders.changed") is not None
 
 
 def test_durable_event_stays_unavailable_and_mixed_generation_is_atomic() -> None:
