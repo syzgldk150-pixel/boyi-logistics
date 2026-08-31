@@ -65,7 +65,7 @@ _LEGACY_SERVICE_V2_CONTRIBUTION_KINDS = frozenset(
     {"console", "scheduler", "webhook", "feishu", "events"}
 )
 _MANAGED_CONTRIBUTION_KINDS = frozenset(
-    {"console", "scheduler", "webhook", "feishu", "harness"}
+    {"console", "scheduler", "webhook", "feishu", "events", "harness"}
 )
 _ACTIVE_CONTRIBUTION_FIELDS = (
     "contribution_id",

@@ -1,4 +1,4 @@
-"""Trusted Scheduler, Feishu, and Webhook adapters for automation projects.
+"""Trusted Scheduler, Feishu, Webhook, and Event adapters for projects.
 
 Transport handlers verify their native signature/session first, resolve one
 exact committed instance route, and pass only closed transport facts here.
@@ -49,6 +49,55 @@ _SCAN_AUTOMATION_ID = "scan_codes"
 
 def _canonical_digest(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def _managed_target_identity(target: Any) -> tuple[str, int, str]:
+    try:
+        automation_id = (
+            target.get("automation_id")
+            if isinstance(target, Mapping)
+            else getattr(target, "automation_id")
+        )
+        generation = (
+            target.get("generation")
+            if isinstance(target, Mapping)
+            else getattr(target, "generation")
+        )
+        contribution_id = (
+            target.get("contribution_id")
+            if isinstance(target, Mapping)
+            else getattr(target, "contribution_id")
+        )
+    except Exception as exc:
+        raise OrchestrationError(
+            "PROJECT_RUNTIME_PROJECTION_STALE",
+            "Automation project runtime projection identity is invalid",
+        ) from exc
+    if (
+        not _is_exact_managed_identifier(automation_id)
+        or type(generation) is not int
+        or generation <= 0
+        or not _is_exact_managed_identifier(contribution_id)
+    ):
+        raise OrchestrationError(
+            "PROJECT_RUNTIME_PROJECTION_STALE",
+            "Automation project runtime projection identity is invalid",
+        )
+    return automation_id, generation, contribution_id
+
+
+def _safe_managed_dispatch_result(result: Any) -> dict[str, Any]:
+    if (
+        not isinstance(result, Mapping)
+        or type(result.get("success")) is not bool
+        or not isinstance(result.get("status"), str)
+        or not result["status"]
+    ):
+        raise OrchestrationError(
+            "PROJECT_INVOKE_UNAVAILABLE",
+            "Automation project result is unavailable",
+        )
+    return {"success": result["success"], "status": result["status"]}
 
 
 @dataclass(frozen=True)
@@ -481,37 +530,7 @@ class ServiceV2WebhookDispatcher:
         if target is None:
             return None
 
-        try:
-            automation_id = (
-                target.get("automation_id")
-                if isinstance(target, Mapping)
-                else getattr(target, "automation_id")
-            )
-            generation = (
-                target.get("generation")
-                if isinstance(target, Mapping)
-                else getattr(target, "generation")
-            )
-            contribution_id = (
-                target.get("contribution_id")
-                if isinstance(target, Mapping)
-                else getattr(target, "contribution_id")
-            )
-        except (AttributeError, TypeError) as exc:
-            raise OrchestrationError(
-                "PROJECT_RUNTIME_PROJECTION_STALE",
-                "Automation project runtime projection identity is invalid",
-            ) from exc
-        if (
-            not _is_exact_managed_identifier(automation_id)
-            or type(generation) is not int
-            or generation <= 0
-            or not _is_exact_managed_identifier(contribution_id)
-        ):
-            raise OrchestrationError(
-                "PROJECT_RUNTIME_PROJECTION_STALE",
-                "Automation project runtime projection identity is invalid",
-            )
+        automation_id, generation, contribution_id = _managed_target_identity(target)
 
         safe_event_id = _exact_stable_identifier(
             source_event_id,
@@ -548,17 +567,75 @@ class ServiceV2WebhookDispatcher:
             expected_automation_generation=generation,
             contribution_id=contribution_id,
         )
-        if (
-            not isinstance(result, Mapping)
-            or type(result.get("success")) is not bool
-            or not isinstance(result.get("status"), str)
-            or not result["status"]
-        ):
+        return _safe_managed_dispatch_result(result)
+
+
+class ServiceV2EventDispatcher:
+    """Dispatch one exact non-durable managed Event without a live event bus."""
+
+    def __init__(
+        self,
+        *,
+        policy_service: AutomationProjectPolicyService,
+        contribution_registry: Any,
+    ) -> None:
+        resolve_event = getattr(contribution_registry, "resolve_active_event", None)
+        if not callable(resolve_event):
+            raise TypeError("contribution_registry must resolve active Events")
+        self._policy = policy_service
+        self._resolve_event = resolve_event
+
+    async def dispatch(
+        self,
+        *,
+        event_name: str,
+        source_event_id: str,
+    ) -> dict[str, Any] | None:
+        """Dispatch an exact active Event, or return ``None`` if unowned."""
+
+        try:
+            target = self._resolve_event(event_name=event_name)
+        except Exception as exc:
             raise OrchestrationError(
-                "PROJECT_INVOKE_UNAVAILABLE",
-                "Automation project result is unavailable",
-            )
-        return {"success": result["success"], "status": result["status"]}
+                "PROJECT_RUNTIME_PROJECTION_STALE",
+                "Automation project runtime projection is unavailable",
+            ) from exc
+        if target is None:
+            return None
+
+        automation_id, generation, contribution_id = _managed_target_identity(target)
+        safe_event_name = _exact_stable_identifier(event_name, "event_name")
+        safe_source_event_id = _exact_stable_identifier(
+            source_event_id,
+            "source_event_id",
+        )
+        owner = {
+            "automation_id": automation_id,
+            "contribution_id": contribution_id,
+            "event_name": safe_event_name,
+        }
+        owner_digest = _canonical_digest(owner)
+        event_digest = _canonical_digest(
+            {"owner": owner, "source_event_id": safe_source_event_id}
+        )
+        result = await self._policy.invoke_trusted_and_wait(
+            automation_id,
+            entrypoint=AutomationEntrypoint.EVENTS,
+            request_id=safe_source_event_id,
+            actor=Actor(
+                ActorType.EVENT,
+                f"event:{owner_digest}",
+                authenticated_by="managed_event_dispatcher",
+            ),
+            trusted_context={
+                "event_name": safe_event_name,
+                "source_event_id": safe_source_event_id,
+            },
+            idempotency_key=f"event:v2:{event_digest}",
+            expected_automation_generation=generation,
+            contribution_id=contribution_id,
+        )
+        return _safe_managed_dispatch_result(result)
 
 
 class AutomationProjectEntrypoints:

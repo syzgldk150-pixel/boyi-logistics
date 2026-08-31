@@ -16,7 +16,10 @@ from shared.automation_project_authorization import (
     canonical_sha256,
     compile_automation_project_contract,
 )
-from shared.automation_project_manifest import AutomationProjectInstanceDefinition
+from shared.automation_project_manifest import (
+    TRUSTED_AUTOMATION_ENTRYPOINTS,
+    AutomationProjectInstanceDefinition,
+)
 
 
 _TOOL_CONTRACT_FIELDS = (
@@ -272,6 +275,10 @@ class _Step:
 
 
 class AutomationProjectAuthorizationTests(unittest.TestCase):
+    def test_events_is_service_v2_only_and_not_a_trusted_action_v1_entrypoint(self):
+        self.assertEqual("events", AutomationEntrypoint.EVENTS.value)
+        self.assertNotIn("events", TRUSTED_AUTOMATION_ENTRYPOINTS)
+
     def _compile(self, tool_name, **capability_overrides):
         capability = _capability(tool_name, **capability_overrides)
         definition = _definition(tool_name)

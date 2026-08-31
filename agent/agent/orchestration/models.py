@@ -54,6 +54,7 @@ class ActorType(str, Enum):
     FEISHU_USER = "feishu_user"
     SCHEDULER = "scheduler"
     WEBHOOK = "webhook"
+    EVENT = "event"
     SYSTEM = "system"
     LEGACY_API = "legacy_api"
 
