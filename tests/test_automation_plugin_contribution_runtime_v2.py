@@ -702,6 +702,215 @@ def test_feishu_command_is_ready_global_exact_and_resolves_only_active_generatio
     assert wrong_case.value.code == "CAPABILITY_UNAVAILABLE"
 
 
+def test_webhook_route_is_ready_global_exact_and_resolves_only_active_generation() -> None:
+    disabled_schedule = {"kind": "none", "times": [], "enabled": False}
+    first = _snapshot(
+        generation=1,
+        schedule=disabled_schedule,
+        enabled_entrypoints=("receive_hook",),
+    )
+    second = _snapshot(
+        generation=2,
+        schedule=disabled_schedule,
+        enabled_entrypoints=("receive_hook",),
+    )
+    first_material = next(
+        copy.deepcopy(dict(plan.payload))
+        for plan in _managed_plans(first)
+        if plan.payload["contribution_kind"] == "webhook"
+    )
+    second_material = next(
+        copy.deepcopy(dict(plan.payload))
+        for plan in _managed_plans(second)
+        if plan.payload["contribution_kind"] == "webhook"
+    )
+    registry = ManagedContributionRegistry()
+    registry.prepare_generation((first_material,))
+
+    assert first_material["route_keys"] == ["webhook:POST:receive"]
+    assert first_material["backend"] == "managed_webhook_router"
+    assert first_material["backend_status"] == "READY"
+    assert registry.resolve_active_webhook_route(method="POST", route="receive") is None
+    registry.apply_generation(
+        first.automation_id,
+        first.generation,
+        refresh=_refresh_success,
+        expected_registration_ids=(first_material["registration_id"],),
+    )
+    target = registry.resolve_active_webhook_route(method="POST", route="receive")
+    assert target is not None
+    assert (
+        target.automation_id,
+        target.generation,
+        target.contribution_id,
+    ) == (first.automation_id, 1, "receive_hook")
+    assert registry.resolve_active_webhook_route(method="GET", route="receive") is None
+    assert registry.resolve_active_webhook_route(method="POST", route="unknown") is None
+    with pytest.raises(PluginConflictError) as invalid_route:
+        registry.resolve_active_webhook_route(method="POST", route="receive ")
+    assert invalid_route.value.code == "CONTRIBUTION_REGISTRATION_CONFLICT"
+
+    registry.prepare_generation((second_material,))
+    registry.apply_generation(
+        second.automation_id,
+        second.generation,
+        refresh=_refresh_success,
+        expected_registration_ids=(second_material["registration_id"],),
+    )
+    upgraded = registry.resolve_active_webhook_route(method="POST", route="receive")
+    assert upgraded is not None
+    assert upgraded.generation == 2
+
+
+@pytest.mark.parametrize("existing_active", (False, True), ids=("prepared", "active"))
+def test_webhook_route_conflict_is_global_and_leaves_no_partial_reservation(
+    existing_active: bool,
+) -> None:
+    schedule = {"kind": "none", "times": [], "enabled": False}
+    first = _snapshot(schedule=schedule, enabled_entrypoints=("receive_hook",))
+    second = replace(first, automation_id="other-project")
+    first_material = next(
+        copy.deepcopy(dict(plan.payload))
+        for plan in _managed_plans(first)
+        if plan.payload["contribution_kind"] == "webhook"
+    )
+    second_material = next(
+        copy.deepcopy(dict(plan.payload))
+        for plan in _managed_plans(second)
+        if plan.payload["contribution_kind"] == "webhook"
+    )
+    registry = ManagedContributionRegistry()
+    registry.prepare_generation((first_material,))
+    if existing_active:
+        registry.apply_generation(
+            first.automation_id,
+            first.generation,
+            refresh=_refresh_success,
+            expected_registration_ids=(first_material["registration_id"],),
+        )
+
+    with pytest.raises(PluginConflictError) as conflict:
+        registry.prepare_generation((second_material,))
+
+    assert conflict.value.code == "CONTRIBUTION_ROUTE_CONFLICT"
+    assert tuple(item.automation_id for item in registry.snapshot()) == (
+        first.automation_id,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("method", "POST "), ("method", "GET"), ("route", "receive ")),
+)
+def test_webhook_runtime_rejects_non_exact_declarations(
+    field: str,
+    value: str,
+) -> None:
+    snapshot = _snapshot(
+        schedule={"kind": "none", "times": [], "enabled": False},
+        enabled_entrypoints=("receive_hook",),
+    )
+    material = next(
+        copy.deepcopy(dict(plan.payload))
+        for plan in _managed_plans(snapshot)
+        if plan.payload["contribution_kind"] == "webhook"
+    )
+    material["declaration"][field] = value
+    registry = ManagedContributionRegistry()
+
+    with pytest.raises(PluginConflictError) as invalid:
+        registry.prepare_generation((material,))
+
+    assert invalid.value.code == "CONTRIBUTION_REGISTRATION_CONFLICT"
+    assert registry.snapshot() == ()
+
+
+def test_committed_webhook_effect_restores_exact_active_route_after_restart() -> None:
+    snapshot = _snapshot(
+        schedule={"kind": "none", "times": [], "enabled": False},
+        enabled_entrypoints=("receive_hook",),
+    )
+    plans = tuple(
+        plan
+        for plan in _managed_plans(snapshot)
+        if plan.payload["contribution_kind"] == "webhook"
+    )
+    generation = RuntimeGenerationRecord(
+        snapshot=snapshot,
+        state=RuntimeGenerationState.COMMITTED,
+        effects=tuple(
+            _effect(
+                snapshot,
+                plan,
+                sequence,
+                state=RuntimeEffectState.APPLIED,
+            )
+            for sequence, plan in enumerate(plans, start=1)
+        ),
+    )
+    registry = ManagedContributionRegistry()
+    driver = ProductionRuntimeEffectDriver(
+        broker_handler_keys=(),
+        contribution_registry=registry,
+    )
+
+    repository = _GenerationRepository(generation)
+    driver.restore_from_repository(repository)
+    driver.restore_from_repository(repository)
+
+    target = registry.resolve_active_webhook_route(method="POST", route="receive")
+    assert target is not None
+    assert (
+        target.automation_id,
+        target.generation,
+        target.contribution_id,
+    ) == (snapshot.automation_id, snapshot.generation, "receive_hook")
+
+
+def test_authoritative_empty_webhook_generation_revokes_and_releases_route() -> None:
+    schedule = {"kind": "none", "times": [], "enabled": False}
+    first = _snapshot(schedule=schedule, enabled_entrypoints=("receive_hook",))
+    first_material = next(
+        copy.deepcopy(dict(plan.payload))
+        for plan in _managed_plans(first)
+        if plan.payload["contribution_kind"] == "webhook"
+    )
+    registry = ManagedContributionRegistry()
+    registry.prepare_generation((first_material,))
+    registry.apply_generation(
+        first.automation_id,
+        first.generation,
+        refresh=_refresh_success,
+        expected_registration_ids=(first_material["registration_id"],),
+    )
+
+    registry.apply_generation(
+        first.automation_id,
+        first.generation + 1,
+        refresh=_refresh_success,
+        expected_registration_ids=(),
+    )
+
+    assert registry.resolve_active_webhook_route(method="POST", route="receive") is None
+    assert {item.phase for item in registry.snapshot()} == {"DRAINING"}
+    reclaimer = replace(first, automation_id="other-project")
+    reclaim_material = next(
+        copy.deepcopy(dict(plan.payload))
+        for plan in _managed_plans(reclaimer)
+        if plan.payload["contribution_kind"] == "webhook"
+    )
+    registry.prepare_generation((reclaim_material,))
+    registry.apply_generation(
+        reclaimer.automation_id,
+        reclaimer.generation,
+        refresh=_refresh_success,
+        expected_registration_ids=(reclaim_material["registration_id"],),
+    )
+    target = registry.resolve_active_webhook_route(method="POST", route="receive")
+    assert target is not None
+    assert target.automation_id == reclaimer.automation_id
+
+
 def test_reserved_feishu_command_rejects_the_whole_prepare_batch() -> None:
     snapshot = _snapshot(
         schedule={"kind": "none", "times": [], "enabled": False},
@@ -1078,7 +1287,7 @@ def test_registry_resolve_is_exact_and_disabled_scheduler_fails_closed() -> None
 def test_registry_rejects_an_unsupported_backend_without_partial_prepare() -> None:
     snapshot = _snapshot(
         schedule={"kind": "none", "times": [], "enabled": False},
-        enabled_entrypoints=("receive_hook",),
+        enabled_entrypoints=("orders_changed",),
     )
     unsupported = tuple(dict(plan.payload) for plan in _managed_plans(snapshot))
     registry = ManagedContributionRegistry()
@@ -1093,10 +1302,7 @@ def test_registry_rejects_an_unsupported_backend_without_partial_prepare() -> No
 
 @pytest.mark.parametrize(
     ("kind", "contribution_id"),
-    (
-        ("webhook", "receive_hook"),
-        ("events", "orders_changed"),
-    ),
+    (("events", "orders_changed"),),
 )
 def test_unavailable_managed_backend_blocks_before_effect_registration(
     kind: str,
@@ -1270,17 +1476,16 @@ def test_manifest_webhook_mount_does_not_require_a_legacy_route_resource() -> No
         if item.payload["contribution_kind"] == "webhook"
     )
     assert snapshot.execution_metadata["resource_bindings"] == {}
-    assert plan.payload["backend_status"] == "CAPABILITY_UNAVAILABLE"
-    assert plan.payload["reason_code"] == "CAPABILITY_UNAVAILABLE"
+    assert plan.payload["backend_status"] == "READY"
+    assert plan.payload["reason_code"] is None
     driver = ProductionRuntimeEffectDriver(broker_handler_keys=())
-    with pytest.raises(Exception) as exc_info:
-        driver.ensure_applied(
-            snapshot=snapshot,
-            plan=plan,
-            effect=_effect(snapshot, plan, 1),
-        )
-    assert getattr(exc_info.value, "code", None) == "CAPABILITY_UNAVAILABLE"
-    assert driver.contribution_registry.snapshot() == ()
+    applied = driver.ensure_applied(
+        snapshot=snapshot,
+        plan=plan,
+        effect=_effect(snapshot, plan, 1),
+    )
+    assert applied.state is RuntimeEffectState.APPLIED
+    assert driver.contribution_registry.snapshot()[0].phase == "PREPARED"
 
 
 def test_disabled_project_schedule_keeps_manifest_default_as_audited_declaration() -> None:
@@ -1619,7 +1824,7 @@ def test_restart_keeps_blocked_and_rolled_back_generations_off_feishu_routes(
     )
 
 
-def test_unavailable_routes_fail_before_a_generation_can_commit() -> None:
+def test_duplicate_webhook_routes_fail_before_a_generation_can_commit() -> None:
     contributions = _contributions()
     contributions["webhook"].append(
         {
@@ -1627,7 +1832,11 @@ def test_unavailable_routes_fail_before_a_generation_can_commit() -> None:
             "id": "receive_hook_duplicate",
         }
     )
-    snapshot = _snapshot(contributions=contributions)
+    snapshot = _snapshot(
+        contributions=contributions,
+        enabled_entrypoints=("receive_hook", "receive_hook_duplicate"),
+        schedule={"kind": "none", "times": [], "enabled": False},
+    )
     plans = [
         plan
         for plan in _managed_plans(snapshot)
@@ -1641,7 +1850,7 @@ def test_unavailable_routes_fail_before_a_generation_can_commit() -> None:
             plan=plans[0],
             effect=_effect(snapshot, plans[0], 1),
         )
-    assert getattr(exc_info.value, "code", None) == "CAPABILITY_UNAVAILABLE"
+    assert getattr(exc_info.value, "code", None) == "CONTRIBUTION_ROUTE_CONFLICT"
     assert driver.contribution_registry.snapshot() == ()
 
 

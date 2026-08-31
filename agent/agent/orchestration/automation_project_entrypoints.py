@@ -441,6 +441,126 @@ class ServiceV2FeishuDispatcher:
         )
 
 
+class ServiceV2WebhookDispatcher:
+    """Dispatch one exact managed Webhook route without transport payload input."""
+
+    def __init__(
+        self,
+        *,
+        policy_service: AutomationProjectPolicyService,
+        contribution_registry: Any,
+    ) -> None:
+        resolve_route = getattr(
+            contribution_registry,
+            "resolve_active_webhook_route",
+            None,
+        )
+        if not callable(resolve_route):
+            raise TypeError(
+                "contribution_registry must resolve active Webhook routes"
+            )
+        self._policy = policy_service
+        self._resolve_route = resolve_route
+
+    async def dispatch(
+        self,
+        *,
+        method: str,
+        route: str,
+        source_event_id: str,
+    ) -> dict[str, Any] | None:
+        """Dispatch an exact active route, or return ``None`` if unowned."""
+
+        try:
+            target = self._resolve_route(method=method, route=route)
+        except Exception as exc:
+            raise OrchestrationError(
+                "PROJECT_RUNTIME_PROJECTION_STALE",
+                "Automation project runtime projection is unavailable",
+            ) from exc
+        if target is None:
+            return None
+
+        try:
+            automation_id = (
+                target.get("automation_id")
+                if isinstance(target, Mapping)
+                else getattr(target, "automation_id")
+            )
+            generation = (
+                target.get("generation")
+                if isinstance(target, Mapping)
+                else getattr(target, "generation")
+            )
+            contribution_id = (
+                target.get("contribution_id")
+                if isinstance(target, Mapping)
+                else getattr(target, "contribution_id")
+            )
+        except (AttributeError, TypeError) as exc:
+            raise OrchestrationError(
+                "PROJECT_RUNTIME_PROJECTION_STALE",
+                "Automation project runtime projection identity is invalid",
+            ) from exc
+        if (
+            not _is_exact_managed_identifier(automation_id)
+            or type(generation) is not int
+            or generation <= 0
+            or not _is_exact_managed_identifier(contribution_id)
+        ):
+            raise OrchestrationError(
+                "PROJECT_RUNTIME_PROJECTION_STALE",
+                "Automation project runtime projection identity is invalid",
+            )
+
+        safe_event_id = _exact_stable_identifier(
+            source_event_id,
+            "source_event_id",
+        )
+        owner = {
+            "automation_id": automation_id,
+            "contribution_id": contribution_id,
+            "method": method,
+            "route": route,
+        }
+        owner_digest = _canonical_digest(owner)
+        event_digest = _canonical_digest(
+            {"owner": owner, "source_event_id": safe_event_id}
+        )
+        actor = Actor(
+            ActorType.WEBHOOK,
+            f"webhook:{owner_digest}",
+            authenticated_by="signed_webhook_route",
+        )
+        result = await self._policy.invoke_trusted_and_wait(
+            automation_id,
+            entrypoint=AutomationEntrypoint.WEBHOOK,
+            request_id=safe_event_id,
+            actor=actor,
+            trusted_context={
+                "route_id": owner_digest,
+                "route_revision": generation,
+                "source_event_id": safe_event_id,
+                "webhook_path": f"webhook/{route}",
+                "webhook_method": method,
+            },
+            idempotency_key=f"webhook:v2:{event_digest}",
+            expected_automation_generation=generation,
+            contribution_id=contribution_id,
+        )
+        if (
+            not isinstance(result, Mapping)
+            or type(result.get("success")) is not bool
+            or not isinstance(result.get("status"), str)
+            or not result["status"]
+        ):
+            raise OrchestrationError(
+                "PROJECT_INVOKE_UNAVAILABLE",
+                "Automation project result is unavailable",
+            )
+        return {"success": result["success"], "status": result["status"]}
+
+
 class AutomationProjectEntrypoints:
     """Narrow entry adapters around the project policy authority."""
 
@@ -805,6 +925,29 @@ def _stable_identifier(value: Any, field_name: str) -> str:
             f"A stable verified {field_name} is required",
         )
     return identifier
+
+
+def _is_exact_managed_identifier(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value == value.strip()
+        and len(value) <= 191
+    )
+
+
+def _exact_stable_identifier(value: Any, field_name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > 191
+    ):
+        raise OrchestrationError(
+            "STABLE_EVENT_ID_REQUIRED",
+            f"A stable verified {field_name} is required",
+        )
+    return value
 
 
 def _normalize_route_key(

@@ -280,6 +280,44 @@ def test_manifest_v2_requires_owned_service_names_and_closed_contributions() -> 
         AutomationPluginManifestV2.from_mapping(duplicate_id)
 
 
+def test_manifest_v2_accepts_canonical_post_webhook_route() -> None:
+    source = _manifest_mapping()
+    source["contributes"]["webhook"][0]["route"] = "a" * 64
+
+    manifest = AutomationPluginManifestV2.from_mapping(source)
+
+    assert manifest.to_mapping()["contributes"]["webhook"] == [
+        {
+            "id": "incoming_hook",
+            "service": "plugin.sample_plugin.runner@1",
+            "operation": "receive",
+            "method": "POST",
+            "route": "a" * 64,
+            "default_enabled": False,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda item: item.update(method="GET"), "method must be POST"),
+        (lambda item: item.update(method="post"), "method must be POST"),
+        (lambda item: item.update(route=" incoming"), "surrounding whitespace"),
+        (lambda item: item.update(route="Incoming"), "stable route segment"),
+        (lambda item: item.update(route="incoming/hook"), "stable route segment"),
+        (lambda item: item.update(route="a" * 65), "no longer than 64"),
+        (lambda item: item.update(extra=True), "unsupported fields"),
+    ],
+)
+def test_manifest_v2_rejects_noncanonical_webhook_contract(mutate, message: str) -> None:
+    source = _manifest_mapping()
+    mutate(source["contributes"]["webhook"][0])
+
+    with pytest.raises(PluginManifestError, match=message):
+        AutomationPluginManifestV2.from_mapping(source)
+
+
 @pytest.mark.parametrize(
     ("expression", "timezone", "message"),
     [

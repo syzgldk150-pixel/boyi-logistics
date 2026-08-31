@@ -148,6 +148,7 @@ _TRUSTED_CONTEXT_FIELDS = {
             "route_revision",
             "source_event_id",
             "webhook_path",
+            "webhook_method",
             "dynamic_inputs",
         }
     ),
@@ -241,7 +242,6 @@ class AutomationProjectPolicyService:
         exact migration-owned retirement event associated with the committed
         project configuration.  The whole 018 marker is one transaction.
         """
-
         self._require_release_held()
         automation_ids = _bootstrap_automation_ids(expected_automation_ids)
         try:
@@ -263,7 +263,6 @@ class AutomationProjectPolicyService:
                 "PROJECT_POLICY_BOOTSTRAP_SCOPE_INVALID",
                 "Automation project bootstrap release scope is unavailable",
             ) from exc
-
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         bootstrap_actor = Actor(
             actor_type=ActorType.SYSTEM,
@@ -295,7 +294,6 @@ class AutomationProjectPolicyService:
                         "PROJECT_POLICY_BOOTSTRAP_PARTIAL",
                         "Automation project bootstrap is partially persisted",
                     )
-
                 for automation_id in automation_ids:
                     entry = entries[automation_id]
                     project = uow.automation_plugins.get_project(
@@ -486,7 +484,6 @@ class AutomationProjectPolicyService:
                         bootstrap_event=bootstrap_event,
                     )
                     created_items.append(dict(item))
-
                 project_set_sha256 = _bootstrap_project_set_sha256(
                     safe_release_sha,
                     created_items,
@@ -533,7 +530,6 @@ class AutomationProjectPolicyService:
         bootstrap after SQL migrations have completed.  Its audit marker also
         makes a later explicit administrator choice authoritative.
         """
-
         changed = 0
         with self._repository.unit_of_work() as uow:
             policy_ids = tuple(
@@ -705,7 +701,6 @@ class AutomationProjectPolicyService:
                     )
                     uow.commit()
                     return self.get_policy_projection(safe_id)
-
                 if int(config.get("config_version") or 0) != expected_configuration:
                     raise OrchestrationError(
                         "PROJECT_CONFIGURATION_CHANGED",
@@ -716,7 +711,6 @@ class AutomationProjectPolicyService:
                         "PROJECT_POLICY_CHANGED",
                         "Automation project policy changed; refresh and retry",
                     )
-
                 # Approval policy is durable administrator intent.  Changing it
                 # must not create or reconcile a runtime generation: runtime
                 # lineage is owned exclusively by project/plugin configuration.
@@ -876,7 +870,6 @@ class AutomationProjectPolicyService:
                     )
                     uow.commit()
                     return result
-
                 # Lock every waiting Run before locking approval rows, matching
                 # individual decision and execution-consumption lock order.
                 uow.automation_projects.lock_waiting_approval_runs(safe_id)
@@ -992,7 +985,6 @@ class AutomationProjectPolicyService:
         preview_run_id: str,
     ) -> dict[str, Any]:
         """Project one verified preview without exposing persisted item evidence."""
-
         safe_id = _automation_id(automation_id)
         entry, contract = self._load_contract(safe_id)
         if not is_scan_preview_project(entry):
@@ -1136,7 +1128,6 @@ class AutomationProjectPolicyService:
         the user's selected bill codes.  The immutable fingerprint and formal
         action arguments are restored from the verified persisted preview.
         """
-
         safe_id = _automation_id(automation_id)
         entry, contract = self._load_contract(safe_id)
         if not is_selection_preview_project(entry):
@@ -1214,7 +1205,6 @@ class AutomationProjectPolicyService:
         project arguments or trusted transport context; both remain compiled
         and server-owned at the exact active generation.
         """
-
         return self.invoke_trusted(
             automation_id,
             entrypoint=AutomationEntrypoint.HARNESS,
@@ -1294,7 +1284,6 @@ class AutomationProjectPolicyService:
         latter are compiled from the immutable committed generation and locked
         again in the same Unit of Work that accepts the Command.
         """
-
         self._require_release_active()
         if self._command_gateway is None:
             raise OrchestrationError(
@@ -1326,6 +1315,16 @@ class AutomationProjectPolicyService:
             )
         )
         context = _trusted_context(source, trusted_context)
+        if (
+            is_service_v2
+            and source is AutomationEntrypoint.WEBHOOK
+            and "dynamic_inputs" in context
+        ):
+            raise OrchestrationError(
+                "TRUSTED_CONTEXT_INVALID",
+                "Managed Webhook arguments must come from the signed "
+                "project contract",
+            )
         expected_generation = (
             _positive_int(
                 expected_automation_generation,
@@ -1404,6 +1403,7 @@ class AutomationProjectPolicyService:
             AutomationEntrypoint.HARNESS,
             AutomationEntrypoint.SCHEDULER,
             AutomationEntrypoint.FEISHU,
+            AutomationEntrypoint.WEBHOOK,
         }
         if is_service_v2 and managed_projection_source:
             self._require_active_service_v2_contribution(
@@ -1526,7 +1526,6 @@ class AutomationProjectPolicyService:
             ),
             automation_invocation=invocation,
         )
-
         def guard(uow: Any) -> None:
             locked_contract, _config = self._lock_and_compile_contract(
                 uow,
@@ -1549,7 +1548,10 @@ class AutomationProjectPolicyService:
                     "PROJECT_INVOCATION_STALE",
                     "Automation project changed before command acceptance",
                 )
-            if is_service_v2 and source is AutomationEntrypoint.FEISHU:
+            if is_service_v2 and source in {
+                AutomationEntrypoint.FEISHU,
+                AutomationEntrypoint.WEBHOOK,
+            }:
                 self._require_active_service_v2_contribution(
                     automation_id=safe_id,
                     generation=locked_contract.automation_generation,
@@ -1591,7 +1593,6 @@ class AutomationProjectPolicyService:
                     )
 
         return self._command_gateway.submit(command, uow_guard=guard)
-
     async def invoke_trusted_and_wait(
         self,
         automation_id: str,
@@ -2097,7 +2098,6 @@ class AutomationProjectPolicyService:
             contract_error = exc.code
         except Exception:
             contract_error = "PROJECT_CONTRACT_UNAVAILABLE"
-
         stable = (
             getattr(entry, "committed_generation", None) is not None
             and getattr(entry, "target_generation", None)
