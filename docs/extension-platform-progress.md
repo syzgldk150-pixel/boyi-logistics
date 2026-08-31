@@ -42,8 +42,8 @@ updated: 2026-08-31
 | TASK-EXT-011 | DONE_OFFLINE | 2026-08-31T12:51:05+08:00 | 2026-08-31T14:05:36+08:00 | 01cf2447e997c51973d2ead49ac3c522743095f9 |
 | TASK-MIG-001 | DONE_OFFLINE | 2026-08-31T14:07:30+08:00 | 2026-08-31T15:31:46+08:00 | f9792c7eb7d20929be1ac89d160b85b57e242d3c |
 | TASK-MIG-002 | DONE_OFFLINE | 2026-08-31T15:33:05+08:00 | 2026-08-31T17:27:28+08:00 | ae53ba09c3a2aa6a3735bb98dfa9fe9e098a1131 |
-| TASK-MIG-003 | IN_PROGRESS | 2026-08-31T17:29:07+08:00 | — | — |
-| TASK-MIG-004 | NOT_STARTED | — | — | — |
+| TASK-MIG-003 | DONE_OFFLINE | 2026-08-31T17:29:07+08:00 | 2026-08-31T18:01:27+08:00 | 2b595665e3ed17979bb865c19c6e3e277bd53a73 |
+| TASK-MIG-004 | DONE_OFFLINE | 2026-08-31T18:02:30+08:00 | 2026-08-31T18:48:07+08:00 | daefd9b80584f89425152361fa034a6ffeb94fb1 |
 
 ## TASK-BASE-000：落库基准文档
 
@@ -277,13 +277,13 @@ updated: 2026-08-31
 
 ### TASK-MIG-004：迁移扫描
 
-- 状态：`IN_PROGRESS`
-- 开始时间 / 结束时间：`2026-08-31T18:02:30+08:00` / —
-- 设计决策：以现有 `sync_scan_codes` v1 源码和已验证 primitive 作为唯一业务来源，先只读审计 PREVIEW/FORMAL 两阶段、预览有效期、一次性消费、正式执行前权威重读、逐批提交与服务端 ledger 回读、数量守恒、零候选语义和 `WRITE_OUTCOME_UNKNOWN` 边界，再形成独立 Service v2 候选包与离线 fixture parity。只复用既有 Connector、scan preview、Command/Run/Evidence 与 migration pair 合同，不复制 whole-tool fallback、不伪造真实 Connector；真实扫描、入口切换、安装和部署继续 `PRODUCTION_GATED`。
-- 修改文件 / Commit SHA：— / —
-- 测试命令和结果：尚未运行。
-- 兼容性影响：v1 保持运行，v2 默认不接生产入口。
-- 数据库影响：仅 fixture 和本地验证；不操作生产。
-- 未完成项：全部。
+- 状态：`DONE_OFFLINE`
+- 开始时间 / 结束时间：`2026-08-31T18:02:30+08:00` / `2026-08-31T18:48:07+08:00`
+- 设计决策：以现有 `sync_scan_codes` v1 `payload/action.py` 和共享结果 helper 作为唯一业务算法来源，由确定性构建器逐字节嵌入独立 `sync_scan_codes_v2` Service v2 候选包；包只提供同一 service 的 `preview/read` 与 `execute/external_write`。preview 强制 `dry_run=true` 且只预检 Ronghui scan Connector；execute 强制 `dry_run=false`、要求非空一次性 scan preview binding，并在首个读取时同时预检 Ronghui scan 与 host-internal projection Connector。正式执行保留 15 分钟精确有效期、源数据权威重读、投影快照替换、最多 499 个批次的逐批 `submit → server ledger verify`、数量守恒、零源/非空零候选也替换并核验空快照，以及首个 mutation 后非重试 `WRITE_OUTCOME_UNKNOWN`。Console/飞书贡献精确绑定 `execute` 且默认关闭，只有 service 入口可调用两阶段；迁移 ownership 对 exact v1/v2 pair 在任何持久化前以 `PLUGIN_MIGRATION_SCAN_PREVIEW_PRODUCTION_GATED` 关闭失败。`service.invoke.action_call_limits` 继续要求 exact operations 且每项 `1..1000`；本候选的相关上限可合计 1499，但 Host 运行时仍独立强制全局最多 1000 次 Broker 调用和逐 action 上限。MIG002 中“总和不超过 1000”保留为当时历史记录，不再代表当前合同。包不导入 legacy 路径、不复制公式、不含 whole-tool fallback，也不伪造真实 Connector。
+- 修改文件 / Commit SHA：21 个代码、manifest、fixture、测试与当前平台文档文件 / `daefd9b80584f89425152361fa034a6ffeb94fb1`（已推送）。
+- 测试命令和结果：MIG004 聚焦与平台回归 `170 passed`；root full suite `2531 passed, 30 skipped, 372 subtests passed`；Agent full suite `1181 passed, 1 skipped, 214 subtests passed`；Console full suite `618 passed, 213 subtests passed`。Ruff、文档完整性（77 个受跟踪 Markdown）、运行时导入边界、内部 API 合同、工具注册表（40 项）、15 个 JavaScript 语法、指令镜像和 `git diff --check` 均通过；repository hygiene 仅保留 3 个既有超大模块提示，未新增提示。确定性 ZIP 双构建字节一致，SHA-256 `8df22b5ab945ad0d6cfc509217272023489faaea801d463a6a0d1330a6d54d72`，大小 18793 bytes，6 个成员固定为 1980 时间戳，临时工件已清理。包/平台、运行时、测试/文档和集成四路独立复核最终均为 `SHIP`。所有测试显式设置 `PYTHONDONTWRITEBYTECODE=1` 与 `PYTHON_DOTENV_DISABLED=1`，未读取 `.env`。
+- 兼容性影响：v1 继续是唯一生产 owner，原 Action v1 字节和 primitive 顺序保持不变；未声明新字段的旧 Manifest canonical material 不漂移。v2 Console/Feishu contribution 默认关闭，且没有 Scheduler、Webhook、Event、Harness 或 selection preview contribution。严格入口—贡献—operation 身份和布尔 governance 拒绝畸形调用；离线 execute 仍要求专用 scan preview binding，绝不复用 selection preview。
+- 数据库影响：无 migration、schema、表、字段或 DML；只扩展既有 migration pair 的审阅映射与入口 ownership 关闭失败规则，并使用 fixture/fake 做离线验证，未连接或操作生产数据库。
+- 未完成项：真实 Ronghui scan 与 host-internal projection Connector descriptor/handler/注册、真实账号绑定、生产插件安装和 committed generation、专用 scan preview binding 的生产持久化/一次性 handoff、Console/固定飞书多轮交互验收、真实扫描提交与独立服务端 ledger 回读、生产 Evidence 验收、v1→v2 入口切换/回滚、生产数据库故障演练和部署均为 `PRODUCTION_GATED`；本 TASK 未访问真实系统、数据或凭据，未执行真实扫描或外部写。
 - 下一项 TASK：最终完整门禁与交付。
-- 恢复说明：MIG003 代码 `2b595665e3ed17979bb865c19c6e3e277bd53a73` 与完成账本 `da48402d0755130b83cceeca7edffa8bec986c71` 已推送。从 v1 `sync_scan_codes` payload、PREVIEW/FORMAL、预览有效期/一次性消费、权威重读、批次 ledger、数量守恒、零候选与未知写边界开始只读审计；先做离线 fixture，不读取 `.env`、不访问真实系统或执行真实扫描。
+- 恢复说明：MIG004 代码 `daefd9b80584f89425152361fa034a6ffeb94fb1` 已推送；提交本完成账本后，从已推送 HEAD 运行最终仓库完整门禁，确认所有 TASK 均为 `DONE_OFFLINE` 或 `PRODUCTION_GATED`、临时工件已清理且分支与远端一致，然后写最终交付记录。不得读取 `.env`、访问真实系统、安装生产插件、合并 `main`、部署或执行真实扫描。
