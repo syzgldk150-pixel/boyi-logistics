@@ -26,6 +26,9 @@ from agent.automation_plugins.models import (
 )
 from agent.automation_plugins.package_v2 import verify_unsigned_plugin_zip_v2
 from agent.automation_plugins.production import ProductionRuntimeEffectDriver
+from agent.automation_plugins.runtime_backend_availability import (
+    RuntimeContributionBackendAvailability,
+)
 from agent.automation_plugins.service_v2_contract import ServiceV2ProjectContract
 from agent.automation_plugins.service_v2_projection import (
     ManagedContributionRegistry,
@@ -465,6 +468,43 @@ def test_harness_registry_snapshot_is_immutable_and_catalog_is_atomic() -> None:
     assert registry.active_snapshot() == ()
     catalog.refresh()
     assert catalog.public_tools() == ()
+
+
+def test_harness_registry_effective_snapshot_requires_process_canary() -> None:
+    availability = RuntimeContributionBackendAvailability()
+    snapshot = _runtime_snapshot()
+    material = _harness_material(snapshot)
+    registry = ManagedContributionRegistry(backend_availability=availability)
+    registry.prepare_generation((material,))
+    registry.apply_generation(
+        snapshot.automation_id,
+        snapshot.generation,
+        refresh=lambda: {"initialized": True, "invalid_tasks": []},
+    )
+
+    assert registry.active_snapshot(contribution_kind="harness") == ()
+    with pytest.raises(PluginConflictError) as unavailable:
+        registry.resolve_active(
+            snapshot.automation_id,
+            snapshot.generation,
+            "harness",
+            "analyze_tool",
+        )
+    assert unavailable.value.code == "CAPABILITY_UNAVAILABLE"
+
+    availability.mark_available("harness")
+    assert len(registry.active_snapshot(contribution_kind="harness")) == 1
+    resolved = registry.resolve_active(
+        snapshot.automation_id,
+        snapshot.generation,
+        "harness",
+        "analyze_tool",
+    )
+    assert resolved.backend_status == "READY"
+    assert resolved.schedule_sha256 == material["schedule_sha256"]
+
+    availability.mark_unavailable("harness")
+    assert registry.active_snapshot(contribution_kind="harness") == ()
 
 
 def test_unsafe_harness_permissions_and_legacy_action_entrypoint_fail_closed() -> None:

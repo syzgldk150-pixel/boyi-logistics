@@ -153,9 +153,14 @@ from agent.automation_plugins.first_party import (
     release_first_party_plugin_ids,
 )
 from agent.automation_plugins.management_api import create_automation_plugin_management_router
-from agent.harness import HarnessError, InMemoryHarnessSessionRepository
-from agent.harness_api import create_harness_router, harness_error_response, public_harness_tools
-from agent.harness_application import HarnessConversationService
+from agent.harness import HarnessError
+from agent.harness_api import create_harness_router, harness_error_response
+from agent.harness_process_runtime import (
+    HarnessProcessRuntime,
+    harness_conversations,
+    harness_status,
+    harness_tools,
+)
 from agent.orchestration.approval_service import ApprovalService
 from agent.orchestration.automation_project_api import create_automation_project_router
 from agent.orchestration.automation_project_entrypoints import (
@@ -274,7 +279,6 @@ control_plane_retention_worker: ControlPlaneRetentionWorker | None = None
 control_plane_service: ControlPlaneService | None = None
 scheduled_task_approval_service: ScheduledTaskApprovalService | None = None
 automation_project_policy_service: AutomationProjectPolicyService | None = None
-harness_conversation_service: HarnessConversationService | None = None
 scheduled_task_approval_bootstrap: dict[str, int] = {}
 automation_plugin_runtime: ProductionAutomationPluginRuntime | None = None
 automation_worker_transport_service: WindowsWorkerServerTransport | None = None
@@ -339,12 +343,6 @@ def _automation_project_policies() -> AutomationProjectPolicyService:
     if automation_project_policy_service is None:
         raise RuntimeError("Automation project policy service is not initialized")
     return automation_project_policy_service
-
-
-def _harness_conversations() -> HarnessConversationService:
-    if harness_conversation_service is None:
-        raise RuntimeError("Harness conversation service is not initialized")
-    return harness_conversation_service
 
 
 def _automation_project_entrypoint_service() -> AutomationProjectEntrypoints:
@@ -1123,7 +1121,6 @@ async def lifespan(app: FastAPI):
     global control_plane_retention_worker
     global scheduled_task_approval_service, scheduled_task_approval_bootstrap
     global automation_plugin_runtime, automation_project_policy_service
-    global harness_conversation_service
     global automation_worker_transport_service
     global automation_project_entrypoints
     global feishu_approval_service
@@ -1319,9 +1316,6 @@ async def lifespan(app: FastAPI):
         default_full_auto.get("changed", 0),
     )
     automation_project_policy_service = project_policy_service
-    harness_conversation_service = HarnessConversationService(
-        repository=InMemoryHarnessSessionRepository(),
-    )
     policy = PolicyEngine(
         catalog,
         scheduler_allowlist_provider=schedule_policy_service.allowlist_entries,
@@ -1361,6 +1355,14 @@ async def lifespan(app: FastAPI):
         migration_entrypoint_ownership=plugin_runtime.migration_entrypoint_ownership,
     )
     bind_service_v2_feishu_dispatcher(service_v2_feishu_dispatcher)
+    process_harness_runtime = HarnessProcessRuntime(
+        policy_service=project_policy_service,
+        contribution_registry=plugin_runtime.contribution_registry,
+        backend_availability=plugin_runtime.contribution_backend_availability,
+    )
+    harness_runtime_status = await asyncio.to_thread(process_harness_runtime.start)
+    logger.info("Restricted Harness runtime status=%s availability=%s",
+                harness_runtime_status.status, harness_runtime_status.availability)
     runner = WorkflowRunner(
         repository=repository,
         catalog=catalog,
@@ -1491,6 +1493,7 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Agent service shutting down instance_id=%s", INSTANCE_ID)
+    process_harness_runtime.stop()
     if tms_session_alert_task is not None:
         tms_session_alert_stop.set()
         tms_session_alert_task.cancel()
@@ -1516,7 +1519,6 @@ async def lifespan(app: FastAPI):
     automation_project_entrypoints = None
     feishu_approval_service = None
     automation_project_policy_service = None
-    harness_conversation_service = None
     outbox_dispatcher = None
     control_plane_retention_worker = None
     workflow_runner = None
@@ -1562,14 +1564,10 @@ app.include_router(
 )
 app.include_router(
     create_harness_router(
-        conversation_provider=_harness_conversations,
-        tools_provider=lambda actor, request_id: public_harness_tools(
-            policy_service=_automation_project_policies(),
-            contribution_registry=_automation_plugins().contribution_registry,
-            actor=actor,
-            request_id=request_id,
-        ),
+        conversation_provider=harness_conversations,
+        tools_provider=harness_tools,
         actor_provider=lambda request: _require_console_admin_request(request),
+        availability_provider=harness_status,
     )
 )
 if WINDOWS_WORKER_RELEASE_ENABLED:

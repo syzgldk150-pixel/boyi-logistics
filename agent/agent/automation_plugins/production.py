@@ -118,6 +118,9 @@ from agent.automation_plugins.runtime_repository import (
     MySQLAutomationPluginRuntimeAdapter,
     MySQLAutomationProjectConfigurationReadAdapter,
 )
+from agent.automation_plugins.runtime_backend_availability import (
+    RuntimeContributionBackendAvailability,
+)
 from agent.automation_plugins.service_registry import (
     ResolvedServiceOperation,
     ServiceRegistry,
@@ -2441,6 +2444,7 @@ class ProductionAutomationPluginRuntime:
     service_registry: ServiceRegistry
     connector_registry: ConnectorRegistry
     contribution_registry: ManagedContributionRegistry
+    contribution_backend_availability: RuntimeContributionBackendAvailability
     service_effect_driver: ProductionRuntimeEffectDriver
     lifecycle_service: AutomationPluginService
     configuration_service: AutomationProjectConfigurationService
@@ -2722,6 +2726,24 @@ def build_production_automation_plugin_runtime(
     config_repository = MySQLAutomationProjectConfigurationReadAdapter(orchestration_repository)
     catalog_account_resolver = AccountManagerSessionResolver(account_manager)
     connector_registry = ConnectorRegistry()
+    contribution_backend_availability = RuntimeContributionBackendAvailability()
+
+    def _effective_contribution_backend(
+        *,
+        contribution_kind: str,
+        declaration: Mapping[str, Any],
+        project_schedule: Mapping[str, Any],
+    ) -> tuple[str, str, str | None, str | None]:
+        structural_status = _contribution_backend(
+            contribution_kind=contribution_kind,
+            declaration=declaration,
+            project_schedule=project_schedule,
+        )
+        return contribution_backend_availability.effective_status(
+            contribution_kind=contribution_kind,
+            structural_status=structural_status,
+        )
+
     catalog = PluginCatalog(
         catalog_repository,
         config_repository,
@@ -2735,7 +2757,7 @@ def build_production_automation_plugin_runtime(
                 allowed_systems=allowed_systems,
             )
         ),
-        contribution_backend_status=_contribution_backend,
+        contribution_backend_status=_effective_contribution_backend,
         connector_registry=connector_registry,
     )
     runtime_repository = MySQLAutomationPluginRuntimeAdapter(orchestration_repository)
@@ -2773,6 +2795,7 @@ def build_production_automation_plugin_runtime(
         migration_reserved_feishu_target=(
             migration_entrypoint_ownership.allow_reserved_feishu_target
         ),
+        backend_availability=contribution_backend_availability,
     )
     service_executor = ProductionServiceV2ProviderExecutor(
         service_registry=service_registry,
@@ -2900,6 +2923,7 @@ def build_production_automation_plugin_runtime(
         service_registry=service_registry,
         connector_registry=connector_registry,
         contribution_registry=contribution_registry,
+        contribution_backend_availability=contribution_backend_availability,
         service_effect_driver=driver,
         lifecycle_service=lifecycle_service,
         configuration_service=configuration_service,
