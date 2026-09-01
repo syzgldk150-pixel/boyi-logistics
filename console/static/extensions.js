@@ -465,7 +465,7 @@
     options.forEach((item) => {
       const option = new Option(item.name, item.id);
       option.disabled = !item.usable;
-      if (item.system || item.status) option.textContent = `${item.name}（${[item.system, item.status].filter(Boolean).join(" · ")}）`;
+      if (item.status) option.textContent = `${item.name}（${item.status}）`;
       select.appendChild(option);
     });
     return select;
@@ -477,14 +477,16 @@
       container.appendChild(createNode("p", "extension-empty-copy", type === "account" ? "此扩展未声明业务账号。" : "此扩展未声明业务资源。"));
       return;
     }
-    roles.forEach((role) => {
+    roles.forEach((role, index) => {
       const label = createNode("label", "extension-binding-field");
-      const labelText = createNode("span", "extension-config-label", role.role);
+      const baseLabel = type === "account" ? "业务账号" : "业务资源";
+      const labelText = createNode(
+        "span",
+        "extension-config-label",
+        `${baseLabel}${roles.length > 1 ? ` ${index + 1}` : ""}`,
+      );
       if (role.required) labelText.appendChild(createNode("em", "extension-required", " *"));
       label.appendChild(labelText);
-      label.appendChild(createNode("small", "extension-config-hint", type === "account"
-        ? `允许系统：${role.allowed_systems.join("、")}`
-        : `允许资源类型：${role.allowed_kinds.join("、")}`));
       label.appendChild(renderRoleOptions(
         role,
         type,
@@ -504,9 +506,7 @@
     permissions.forEach((permission) => {
       const item = createNode("div", "extension-permission-item");
       item.appendChild(createNode("strong", "extension-permission-name", permission.name));
-      const roles = [permission.account_role && `账号角色：${permission.account_role}`, permission.resource_role && `资源角色：${permission.resource_role}`].filter(Boolean);
-      const operations = permission.operations.length ? `操作：${permission.operations.join("、")}` : "操作未提供";
-      item.appendChild(createNode("span", "extension-permission-scope", [operations, ...roles].join(" · ")));
+      item.appendChild(createNode("span", "extension-permission-scope", "仅在扩展运行时使用，并保留操作记录。"));
       container.appendChild(item);
     });
   };
@@ -514,16 +514,10 @@
   const renderSummary = (container, projection) => {
     clearNode(container);
     const rows = [
-      ["扩展 ID", projection.plugin_id],
-      ["包版本", projection.version],
-      ["Host API", [projection.host_api.minimum, projection.host_api.maximum_exclusive].filter(Boolean).join(" ≤ Host API < ")],
-      ["权限项", String(projection.permissions.length)],
-      ["账号角色", String(projection.account_roles.length)],
-      ["资源角色", String(projection.resource_roles.length)],
-      ["账号池", projection.account_pool_available ? "可用" : "不可用"],
-      ["资源池", projection.resource_pool_available ? "可用" : "不可用"],
-      ["贡献入口", String(projection.contributions.length)],
-      ["系统定时", projection.scheduling.supported ? "支持" : "未声明"],
+      ["扩展名称", projection.name],
+      ["版本", projection.version],
+      ["包含功能", `${projection.contributions.length} 项`],
+      ["需要授权", `${projection.permissions.length} 项`],
     ];
     rows.forEach(([term, value]) => {
       const wrapper = createNode("div");
@@ -558,7 +552,7 @@
       label.appendChild(input);
       const copy = createNode("span", "extension-entrypoint-copy");
       copy.appendChild(createNode("strong", "", contribution.title || contribution.id));
-      copy.appendChild(createNode("small", "", `${contribution.kind} · ${contribution.id}`));
+      copy.appendChild(createNode("small", "", contribution.default_enabled ? "安装后开启" : "可按需开启"));
       label.appendChild(copy);
       container.appendChild(label);
     });
@@ -631,102 +625,34 @@
     container.appendChild(row);
   }
 
-  const setupLegacyInstallForms = () => {
-    document.querySelectorAll("[data-extension-legacy-install-form]").forEach((form) => {
-      const feedback = form.querySelector("[data-extension-feedback]");
-      const submit = form.querySelector('button[type="submit"]');
-      const nameInput = form.querySelector('input[name="instance_name"]');
-      const packageInput = form.querySelector('input[name="package"]');
-      if (!(form instanceof HTMLFormElement)) return;
-
-      form.addEventListener("input", () => {
-        if (submit instanceof HTMLButtonElement) delete submit.dataset.requestId;
-        setFeedback(feedback);
-      });
-
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        if (!(submit instanceof HTMLButtonElement)) return;
-        const packageFile = packageInput?.files?.[0];
-        if (!fileIsZip(packageFile)) {
-          setFeedback(feedback, "请选择一个 ZIP 扩展包。", "error");
-          return;
-        }
-        const requestedName = String(nameInput?.value || "").trim();
-        const instanceName = requestedName || filenameFallback(packageFile);
-        if (!instanceName || instanceName.length > MAX_NAME_LENGTH) {
-          setFeedback(feedback, "请填写 1 至 120 个字符的项目名称。", "error");
-          return;
-        }
-        const requestId = submit.dataset.requestId || secureRequestId();
-        if (!requestId) {
-          setFeedback(feedback, "浏览器未提供安全请求标识，未提交安装。", "error");
-          return;
-        }
-        submit.dataset.requestId = requestId;
-        const body = new FormData();
-        body.set("package", packageFile);
-        body.set("instance_name", instanceName);
-        body.set("request_id", requestId);
-        submit.disabled = true;
-        try {
-          const response = await fetch(form.action, {
-            method: "POST",
-            credentials: "same-origin",
-            headers: {
-              Accept: "application/json",
-              "X-Browser-Request-UUID": requestId,
-              "X-Requested-With": "XMLHttpRequest",
-            },
-            body,
-          });
-          const payload = await response.json().catch(() => null);
-          if (!response.ok || payload?.ok !== true) throw new Error(responseMessage(payload, "安装失败，请重试。"));
-          delete submit.dataset.requestId;
-          window.location.assign("/extensions");
-        } catch (error) {
-          setFeedback(feedback, error instanceof Error ? error.message : "安装失败，请重试。", "error");
-          submit.disabled = false;
-        }
-      });
-    });
-  };
-
   const setupInstallWizard = () => {
     const wizard = document.querySelector("[data-extension-wizard]");
+    const dialog = document.querySelector("[data-extension-dialog]");
     const inspectForm = wizard?.querySelector("[data-extension-inspect-form]");
     const finalForm = wizard?.querySelector("[data-extension-final-form]");
-    if (!(wizard instanceof HTMLElement) || !(inspectForm instanceof HTMLFormElement) || !(finalForm instanceof HTMLFormElement)) return;
+    if (!(wizard instanceof HTMLElement)
+      || !(dialog instanceof HTMLDialogElement)
+      || !(inspectForm instanceof HTMLFormElement)
+      || !(finalForm instanceof HTMLFormElement)) return;
 
     const fileInput = inspectForm.querySelector('input[name="package"]');
-    const nameInput = inspectForm.querySelector('input[name="instance_name"]');
+    const nameInput = wizard.querySelector("[data-extension-instance-name]");
     const inspectButton = inspectForm.querySelector("[data-extension-inspect-submit]");
     const inspectFeedback = inspectForm.querySelector("[data-extension-feedback]");
     const inspection = wizard.querySelector("[data-extension-inspection]");
     const finalButton = finalForm.querySelector("[data-extension-install-submit]");
     const finalFeedback = finalForm.querySelector("[data-extension-final-feedback]");
     const resetButton = wizard.querySelector("[data-extension-reset]");
-    const stateLabel = wizard.querySelector("[data-extension-wizard-state]");
-    const progress = wizard.querySelectorAll("[data-extension-progress]");
+    const dropzone = wizard.querySelector("[data-extension-dropzone]");
+    const fileName = wizard.querySelector("[data-extension-file-name]");
+    const inspectionName = wizard.querySelector("[data-extension-inspection-name]");
     const state = {requestId: "", packageFile: null, projection: null, finalSent: false, frozen: null, sending: false};
-
-    const updateProgress = (active) => {
-      const order = ["upload", "permissions", "bindings", "configuration", "install"];
-      const activeIndex = order.indexOf(active);
-      progress.forEach((item) => {
-        const index = order.indexOf(item.dataset.extensionProgress || "");
-        item.classList.toggle("is-active", index === activeIndex);
-        item.classList.toggle("is-complete", index >= 0 && index < activeIndex);
-      });
-    };
 
     const lockAfterFinalSend = () => {
       wizard.querySelectorAll("input, select, textarea, button").forEach((control) => {
         if (control === finalButton) return;
         control.disabled = true;
       });
-      if (stateLabel instanceof HTMLElement) stateLabel.textContent = "已冻结，等待安装结果";
-      updateProgress("install");
     };
 
     const resetInspection = () => {
@@ -746,8 +672,7 @@
       if (permissionConfirmation instanceof HTMLInputElement) permissionConfirmation.checked = false;
       if (inspection instanceof HTMLElement) inspection.hidden = true;
       if (finalButton instanceof HTMLButtonElement) finalButton.disabled = true;
-      if (stateLabel instanceof HTMLElement) stateLabel.textContent = "等待上传";
-      updateProgress("upload");
+      if (fileName instanceof HTMLElement) fileName.textContent = "仅支持 .zip 文件";
     };
 
     const renderInspection = (projection) => {
@@ -761,10 +686,9 @@
       renderSchedule(wizard.querySelector("[data-extension-schedule]"), projection.scheduling);
       const derivedName = filenameFallback(state.packageFile);
       if (nameInput instanceof HTMLInputElement && !nameInput.value.trim() && derivedName) nameInput.value = derivedName;
+      if (inspectionName instanceof HTMLElement) inspectionName.textContent = `${projection.name} 已通过检查，请确认设置。`;
       if (inspection instanceof HTMLElement) inspection.hidden = false;
-      if (stateLabel instanceof HTMLElement) stateLabel.textContent = "已检查，等待确认";
-      updateProgress("permissions");
-      wizard.querySelector("[data-extension-permissions-confirmed]")?.focus();
+      inspection.scrollIntoView({block: "start", behavior: "smooth"});
     };
 
     const readValue = (control) => {
@@ -1028,8 +952,34 @@
       state.packageFile = fileInput.files?.[0] || null;
       resetInspection();
       state.packageFile = fileInput.files?.[0] || null;
-      if (state.packageFile && !fileIsZip(state.packageFile)) setFeedback(inspectFeedback, "请选择一个 ZIP 扩展包。", "error");
+      if (!state.packageFile) return;
+      if (fileName instanceof HTMLElement) fileName.textContent = state.packageFile.name;
+      if (!fileIsZip(state.packageFile)) {
+        setFeedback(inspectFeedback, "请选择一个 ZIP 扩展包。", "error");
+        return;
+      }
+      window.requestAnimationFrame(() => inspectForm.requestSubmit());
     });
+
+    if (dropzone instanceof HTMLElement && fileInput instanceof HTMLInputElement) {
+      ["dragenter", "dragover"].forEach((eventName) => {
+        dropzone.addEventListener(eventName, (event) => {
+          event.preventDefault();
+          if (!state.finalSent) dropzone.classList.add("is-dragging");
+        });
+      });
+      ["dragleave", "drop"].forEach((eventName) => {
+        dropzone.addEventListener(eventName, () => dropzone.classList.remove("is-dragging"));
+      });
+      dropzone.addEventListener("drop", (event) => {
+        event.preventDefault();
+        if (state.finalSent || !event.dataTransfer?.files?.length) return;
+        const transfer = new DataTransfer();
+        transfer.items.add(event.dataTransfer.files[0]);
+        fileInput.files = transfer.files;
+        fileInput.dispatchEvent(new Event("change", {bubbles: true}));
+      });
+    }
 
     inspectForm.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -1138,6 +1088,21 @@
       setFeedback(finalFeedback);
       fileInput?.focus();
     });
+
+    document.querySelectorAll("[data-extension-open]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (!dialog.open) dialog.showModal();
+        window.requestAnimationFrame(() => fileInput?.focus());
+      });
+    });
+    wizard.querySelectorAll("[data-extension-close]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (!state.finalSent) dialog.close();
+      });
+    });
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog && !state.finalSent) dialog.close();
+    });
   };
 
   document.querySelectorAll("[data-extension-instance]").forEach((card) => {
@@ -1243,12 +1208,5 @@
     window.__extensionWizardTest = {safeProjection, safeConfigSchema, setStructuredPath};
   }
 
-  setupLegacyInstallForms();
   setupInstallWizard();
-
-  document.querySelectorAll("[data-extension-start]").forEach((link) => {
-    link.addEventListener("click", () => {
-      window.requestAnimationFrame(() => document.querySelector("[data-extension-wizard]")?.scrollIntoView({block: "start"}));
-    });
-  });
 })();

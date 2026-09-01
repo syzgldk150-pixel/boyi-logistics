@@ -18,15 +18,52 @@ class ExtensionsServiceMixin:
     """Present packages and their installed projects without another state source."""
 
     @staticmethod
+    def _extension_display_status(
+        instances: list[dict[str, Any]],
+    ) -> tuple[str, str]:
+        if not instances:
+            return "尚未使用", "muted"
+        if any(
+            item["state"].upper() == "ERROR"
+            or item["state"].upper().startswith("BLOCKED")
+            for item in instances
+        ):
+            return "需要处理", "error"
+        if any(not item["configured"] for item in instances):
+            return "需要设置", "needs_configuration"
+        if any(item["enabled"] for item in instances):
+            return "使用中", "enabled"
+        return "已暂停", "muted"
+
+    @staticmethod
+    def _extension_display_summary(package: Mapping[str, Any]) -> str:
+        summary = str(package.get("action_summary") or "").strip()
+        if not summary:
+            return "此扩展暂时没有说明。"
+        for separator in ("；", "。", "\n"):
+            summary = summary.split(separator, 1)[0].strip()
+        return f"{summary[:72]}{'…' if len(summary) > 72 else ''}"
+
+    @staticmethod
+    def _extension_display_name(
+        package: Mapping[str, Any], instances: list[dict[str, Any]]
+    ) -> str:
+        name = str(package.get("name") or package["plugin_id"]).strip()
+        if any("\u4e00" <= character <= "\u9fff" for character in name):
+            return name
+        if instances:
+            instance_name = str(instances[0]["instance_name"]).strip()
+            return f"{instance_name}{'等' if len(instances) > 1 else ''}"
+        return name.replace("_", " ")
+
+    @staticmethod
     def _extension_package_view(
         package: Mapping[str, Any], instances: list[dict[str, Any]]
     ) -> dict[str, Any]:
         """Return the intentionally small, browser-safe extension projection."""
 
-        states = list(
-            dict.fromkeys(
-                str(item.get("status_label") or "状态未知") for item in instances
-            )
+        display_status, display_status_kind = (
+            ExtensionsServiceMixin._extension_display_status(instances)
         )
         account_roles = package.get("account_roles")
         resource_roles = package.get("resource_roles")
@@ -49,6 +86,9 @@ class ExtensionsServiceMixin:
         return {
             "plugin_id": str(package["plugin_id"]),
             "name": str(package.get("name") or package["plugin_id"]),
+            "display_name": ExtensionsServiceMixin._extension_display_name(
+                package, instances
+            ),
             "version": str(package["version"]),
             "runtime_model": str(package["runtime_model"]),
             "runtime_model_label": str(package["runtime_model_label"]),
@@ -57,6 +97,9 @@ class ExtensionsServiceMixin:
             "plugin_api": str(package.get("plugin_api") or ""),
             "entrypoints": list(package.get("entrypoints") or []),
             "action_summary": str(package.get("action_summary") or ""),
+            "display_summary": ExtensionsServiceMixin._extension_display_summary(
+                package
+            ),
             "configuration_summary": str(package.get("configuration_summary") or ""),
             "permissions": (
                 {"label": "账号", "items": account_permissions or (["无"] if permissions_available else unavailable)},
@@ -64,7 +107,11 @@ class ExtensionsServiceMixin:
                 {"label": "服务", "items": service_permissions or (["无"] if permissions_available else unavailable)},
             ),
             "instance_count": len(instances),
-            "health_label": "、".join(states) if states else "尚无已安装项目",
+            "instance_count_label": (
+                f"已用于 {len(instances)} 个项目" if instances else "还没有项目使用"
+            ),
+            "display_status": display_status,
+            "display_status_kind": display_status_kind,
             "instances": instances,
         }
 
@@ -72,6 +119,21 @@ class ExtensionsServiceMixin:
     def _extension_instance_view(instance: Mapping[str, Any]) -> dict[str, Any]:
         """Keep configuration, bindings, source paths and opaque payloads out of HTML."""
 
+        state = str(instance.get("state") or "UNKNOWN")
+        configured = instance.get("configured") is True
+        enabled = instance.get("enabled") is True
+        if state.upper() == "ERROR" or state.upper().startswith("BLOCKED"):
+            display_status = str(instance.get("status_label") or "需要处理")
+            display_status_kind = "error"
+        elif not configured:
+            display_status = "需要设置"
+            display_status_kind = "needs_configuration"
+        elif enabled:
+            display_status = "使用中"
+            display_status_kind = "enabled"
+        else:
+            display_status = "已暂停"
+            display_status_kind = "muted"
         return {
             "automation_id": str(instance["automation_id"]),
             "instance_name": str(instance.get("instance_name") or instance["automation_id"]),
@@ -80,10 +142,12 @@ class ExtensionsServiceMixin:
             "target_version": str(instance.get("target_version") or ""),
             "runtime_model": str(instance.get("runtime_model") or ""),
             "runtime_model_label": str(instance.get("runtime_model_label") or ""),
-            "state": str(instance.get("state") or "UNKNOWN"),
+            "state": state,
             "status_label": str(instance.get("status_label") or "状态未知"),
-            "configured": instance.get("configured") is True,
-            "enabled": instance.get("enabled") is True,
+            "display_status": display_status,
+            "display_status_kind": display_status_kind,
+            "configured": configured,
+            "enabled": enabled,
             "record_version": int(instance["record_version"]),
             "lifecycle_actions_allowed": instance.get("lifecycle_actions_allowed") is True,
             "enable_allowed": instance.get("enable_allowed") is True,

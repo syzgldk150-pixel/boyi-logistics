@@ -93,12 +93,16 @@ class ExtensionProjectionTests(unittest.TestCase):
         self.assertEqual(["extension_actions"], [item["plugin_id"] for item in packages])
         package = packages[0]
         self.assertEqual(["无"], package["permissions"][0]["items"])
+        self.assertEqual("extension_actions_east instance", package["display_name"])
+        self.assertEqual("使用中", package["display_status"])
+        self.assertEqual("已用于 1 个项目", package["instance_count_label"])
         instance = package["instances"][0]
+        self.assertEqual("使用中", instance["display_status"])
         self.assertNotIn("config", instance)
         self.assertNotIn("account_bindings", instance)
         self.assertNotIn("secret-like-value", str(package))
 
-    def test_extension_template_renders_permission_items_from_mapping(self):
+    def test_extension_list_keeps_runtime_details_out_of_the_novice_view(self):
         app = _ExtensionApp()
         packages, warning, can_manage = app._extension_catalog(self._handler())
         template_dir = Path(__file__).parents[1] / "templates"
@@ -115,8 +119,11 @@ class ExtensionProjectionTests(unittest.TestCase):
             can_manage_extensions=can_manage,
         )
 
-        self.assertIn("权限 · 账号", html)
-        self.assertIn("<dd>无</dd>", html)
+        self.assertIn("我的扩展", html)
+        self.assertIn("已用于 1 个项目", html)
+        self.assertNotIn("权限 · 账号", html)
+        self.assertNotIn("Host API", html)
+        self.assertNotIn("ACTION_V1", html)
 
     def test_extension_view_requires_real_non_legacy_mysql_admin(self):
         app = _ExtensionApp()
@@ -126,7 +133,7 @@ class ExtensionProjectionTests(unittest.TestCase):
         self.assertEqual("MYSQL_ADMIN_REQUIRED", app.sent[1]["error_code"])
         self.assertFalse(app._ensure_extension_view_access(self._handler(user_id=0)))
 
-    def test_extension_template_distinguishes_packages_and_keeps_install_name_optional(self):
+    def test_extension_template_uses_one_current_drag_install_entry(self):
         source = (Path(__file__).parents[1] / "templates" / "extensions.html").read_text(
             encoding="utf-8"
         )
@@ -136,28 +143,35 @@ class ExtensionProjectionTests(unittest.TestCase):
         script = (Path(__file__).parents[1] / "static" / "extensions.js").read_text(
             encoding="utf-8"
         )
-        self.assertIn("<dt>扩展 ID</dt>", source)
-        self.assertIn("项目名称（可选）", source)
-        self.assertIn("data-extension-legacy-install-form", source)
-        self.assertIn("安装旧版 Action v1", source)
-        self.assertIn('data-extension-install-form data-extension-legacy-install-form', source)
-        self.assertIn('body.set("instance_name", instanceName)', script)
+        self.assertIn("data-extension-open", source)
+        self.assertIn("data-extension-dialog", source)
+        self.assertIn("data-extension-dropzone", source)
+        self.assertIn("把扩展 ZIP 拖到这里", source)
+        self.assertNotIn("data-extension-legacy-install-form", source)
+        self.assertNotIn("安装旧版 Action v1", source)
+        self.assertNotIn("安装 Service v2", source)
         self.assertIn('class="extension-install-form"', source)
         self.assertIn('class="ghost-btn extension-upgrade"', source)
         self.assertIn(".extension-upgrade:focus-within", styles)
-        self.assertIn(".extension-install-form input,", styles)
-        self.assertIn("button.dataset.requestId || secureRequestId()", script)
+        self.assertIn(".extension-install-dialog", styles)
+        self.assertIn("new DataTransfer()", script)
+        self.assertIn("inspectForm.requestSubmit()", script)
+        self.assertIn("dialog.showModal()", script)
         self.assertIn('credentials: "same-origin"', script)
 
-    def test_service_v2_wizard_uses_closed_projection_and_continuous_steps(self):
+    def test_current_extension_dialog_uses_closed_projection_and_safe_two_phase_install(self):
         source = (Path(__file__).parents[1] / "templates" / "extensions.html").read_text(
             encoding="utf-8"
         )
         script = (Path(__file__).parents[1] / "static" / "extensions.js").read_text(
             encoding="utf-8"
         )
-        for step in ("upload", "permissions", "bindings", "configuration", "install"):
-            self.assertIn(f'data-extension-progress="{step}"', source)
+        self.assertIn("<dialog", source)
+        self.assertIn("安装设置", source)
+        self.assertIn("使用权限", source)
+        self.assertNotIn("Host API", source)
+        self.assertNotIn("运行平台", source)
+        self.assertNotIn("扩展 ID", source)
         self.assertIn('action="/extensions/inspect"', source)
         self.assertIn('action="/extensions/install"', source)
         self.assertIn('data-extension-final-form', source)
