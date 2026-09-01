@@ -154,7 +154,7 @@ def test_system_status_requires_super_admin_and_reuses_status_template() -> None
 
     app._render_system_status(_Handler(), {})
     assert "系统状态 - test" in app.html
-    assert "Agent 与平台组件健康概览" in app.html
+    assert "智能服务与平台组件健康概览" in app.html
     assert "test-sha" in app.html
 
 
