@@ -90,13 +90,11 @@ BUILTIN_RESOURCES: dict[str, dict] = {
         "route_key": "builtin.split_pending_problem_upload",
     },
     "phase7.split_pending_source_sheet": {
-        "display_name": "每日到货表",
         "spreadsheet_token": "F0NVsI5dlhaWugtw14YcmdrQnvh",
         "sheet_id": "8fc516",
         "range": "8fc516!A1:S5000",
     },
     "phase7.split_pending_target_sheet": {
-        "display_name": "分批及有发未到表",
         "spreadsheet_token": "F0NVsI5dlhaWugtw14YcmdrQnvh",
         "sheet_id": "bNhh7u",
         "range": "bNhh7u!A1:S1",
