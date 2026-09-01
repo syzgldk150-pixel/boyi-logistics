@@ -1897,6 +1897,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         )[0]
         self.assertNotIn('"windows_worker_requirements.txt"', agent_files)
         self.assertNotIn('"windows_worker_requirements.lock"', agent_files)
+        self.assertIn('"harness_composition.py"', agent_files)
         self.assertIn('"windows_worker_requirements.txt"', blocked_files)
         self.assertIn('"windows_worker_requirements.lock"', blocked_files)
         self.assertIn('"windows_worker_host.py"', blocked_files)
