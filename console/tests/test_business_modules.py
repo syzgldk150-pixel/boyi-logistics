@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from jinja2 import Environment, FileSystemLoader
 
+from console.navigation import CONSOLE_NAVIGATION
 from console.routes import business_modules as business_modules_routes
 from console.services.business_modules import BusinessModulesServiceMixin
 from shared.business_modules import BUSINESS_MODULE_CATALOG
@@ -75,7 +76,8 @@ def test_fixed_navigation_never_queries_legacy_lifecycle_state() -> None:
 
     routes = {item["route"] for item in app._business_module_navigation({})}
 
-    assert len(routes) == len(BUSINESS_MODULE_CATALOG)
+    assert len(routes) == len(CONSOLE_NAVIGATION)
+    assert "/work-items" not in routes
     assert "/settings/modules" not in routes
     assert app.calls == []
 

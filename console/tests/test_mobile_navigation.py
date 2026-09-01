@@ -105,7 +105,7 @@ class MobileNavigationTests(unittest.TestCase):
         routes = [item["route"] for item in CONSOLE_NAVIGATION]
 
         self.assertEqual(len(routes), len(set(routes)))
-        self.assertIn("/work-items", routes)
+        self.assertNotIn("/work-items", routes)
         self.assertEqual(("/tracking", "/receipts", "/automations"), DEFAULT_MOBILE_BOTTOM_NAV)
         self.assertTrue(all(route != "/" for route in DEFAULT_MOBILE_BOTTOM_NAV))
         self.assertTrue(all(item["route"] != "/" for item in MOBILE_NAVIGATION_CANDIDATES))
@@ -113,8 +113,11 @@ class MobileNavigationTests(unittest.TestCase):
         system_labels = [
             item["label"] for item in CONSOLE_NAVIGATION if item["section"] == "system"
         ]
-        self.assertEqual(["智能模型", "事项中心", "系统管理"], system_labels)
-        self.assertEqual("system", next(item for item in CONSOLE_NAVIGATION if item["route"] == "/work-items")["section"])
+        self.assertEqual(["智能模型", "系统管理"], system_labels)
+        self.assertNotIn(
+            "/work-items",
+            {item["route"] for item in MOBILE_NAVIGATION_CANDIDATES},
+        )
         self.assertEqual(("/tracking", "/receipts", "/automations"), DEFAULT_MOBILE_BOTTOM_NAV)
         console_ui = (CONSOLE_DIR / "static" / "console_ui.js").read_text(encoding="utf-8")
         self.assertNotIn('pathname.startsWith("/templates")', console_ui)

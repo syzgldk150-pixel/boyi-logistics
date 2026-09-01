@@ -40,7 +40,7 @@
 </dl>
 <dl class="extension-meta extension-meta--permissions">
   {% for permission in item.permissions %}
-  <div><dt>权限 · {{ permission.label }}</dt><dd>{{ permission.items | join('、') }}</dd></div>
+  <div><dt>权限 · {{ permission.label }}</dt><dd>{{ permission['items'] | join('、') }}</dd></div>
   {% endfor %}
 </dl>
 {% endmacro %}

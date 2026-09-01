@@ -51,8 +51,14 @@ def test_registered_menu_projection_preserves_existing_console_contract() -> Non
         "system_settings",
     )
     assert CONSOLE_NAVIGATION == tuple(
-        item.to_navigation_item() for item in CONSOLE_MENU_REGISTRATIONS
+        item.to_navigation_item()
+        for item in CONSOLE_MENU_REGISTRATIONS
+        if item.show_in_navigation
     )
+    assert next(
+        item for item in CONSOLE_MENU_REGISTRATIONS if item.menu_id == "work_items"
+    ).show_in_navigation is False
+    assert "/work-items" not in {item["route"] for item in CONSOLE_NAVIGATION}
     assert all(
         set(item) == {"route", "label", "mobile_label", "icon", "section"}
         for item in CONSOLE_NAVIGATION

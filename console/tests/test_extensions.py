@@ -9,6 +9,8 @@ from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
 
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+
 from console.routes import extensions as extension_routes
 from console.routes import automation as automation_routes
 from console.services.business_modules import BusinessModulesServiceMixin
@@ -95,6 +97,26 @@ class ExtensionProjectionTests(unittest.TestCase):
         self.assertNotIn("config", instance)
         self.assertNotIn("account_bindings", instance)
         self.assertNotIn("secret-like-value", str(package))
+
+    def test_extension_template_renders_permission_items_from_mapping(self):
+        app = _ExtensionApp()
+        packages, warning, can_manage = app._extension_catalog(self._handler())
+        template_dir = Path(__file__).parents[1] / "templates"
+        template = Environment(
+            loader=FileSystemLoader(template_dir),
+            autoescape=select_autoescape(("html",)),
+        ).get_template("extensions.html")
+
+        html = template.render(
+            app_title="Console",
+            packages=packages,
+            detail=None,
+            extension_warning=warning,
+            can_manage_extensions=can_manage,
+        )
+
+        self.assertIn("权限 · 账号", html)
+        self.assertIn("<dd>无</dd>", html)
 
     def test_extension_view_requires_real_non_legacy_mysql_admin(self):
         app = _ExtensionApp()
