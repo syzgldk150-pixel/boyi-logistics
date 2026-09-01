@@ -5,26 +5,75 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Mapping
 
 import pytest
 
-from agent import harness_api
 from agent.automation_plugins.runtime_backend_availability import (
     RuntimeContributionBackendAvailability,
 )
 from agent.harness.errors import HarnessError
 from agent.harness.sessions import InMemoryHarnessSessionRepository
-from agent.harness_application import HarnessConversationService
+from agent.harness_application import FIXED_HARNESS_TOOL_IDS, HarnessConversationService
 from agent.harness_runtime import BubblewrapHarnessModelLauncher, HarnessRuntime
+from agent.llm_client import LLMClient
 from agent.orchestration.models import Actor, ActorType
 
 
 _PREFIX = "调用只读工具："
 
 
-def _record(*, generation: int = 3, title: str = "Managed lookup") -> dict[str, Any]:
+class _ConfiguredLLM(LLMClient):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def public_status(self) -> dict[str, Any]:
+        return {
+            "configured": True,
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "health": "ready",
+        }
+
+    async def chat(self, messages: list[dict], tools=None, **_kwargs: Any) -> dict:
+        self.calls.append({"messages": messages, "tools": tools})
+        if messages[-1]["role"] == "tool":
+            return {"role": "assistant", "content": "查询已完成。"}
+        dynamic = next(
+            item
+            for item in tools or []
+            if item["function"]["description"] == "读取已启用项目的只读结果。"
+        )
+        return {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": dynamic["function"]["name"],
+                        "arguments": "{}",
+                    },
+                }
+            ],
+        }
+
+
+class _GreetingLLM(_ConfiguredLLM):
+    async def chat(self, messages: list[dict], tools=None, **_kwargs: Any) -> dict:
+        self.calls.append({"messages": messages, "tools": tools})
+        return {"role": "assistant", "content": "你好，我可以帮你进行只读业务查询。"}
+
+
+def _fixed_handlers() -> dict[str, Any]:
+    return {
+        tool_id: (lambda _arguments, current=tool_id: {"查询": current, "状态": "无数据"})
+        for tool_id in FIXED_HARNESS_TOOL_IDS
+    }
+
+
+def _record(*, generation: int = 3, title: str = "项目只读查询") -> dict[str, Any]:
     return {
         "automation_id": "automation-a",
         "generation": generation,
@@ -42,7 +91,7 @@ def _record(*, generation: int = 3, title: str = "Managed lookup") -> dict[str, 
         "harness_contract": {
             "id": "lookup",
             "title": title,
-            "description": "Reads a synthetic offline projection.",
+            "description": "读取已启用项目的只读结果。",
             "service": "plugin.synthetic.lookup@1",
             "operation": "lookup",
             "input_schema": {
@@ -140,11 +189,7 @@ def _model_request(
     }
 
 
-@pytest.mark.skipif(
-    not BubblewrapHarnessModelLauncher.availability(),
-    reason="Bubblewrap/prlimit are not installed",
-)
-def test_runtime_canary_catalog_and_message_use_one_hot_dynamic_surface() -> None:
+def test_runtime_uses_active_model_and_localized_read_only_surface() -> None:
     availability = RuntimeContributionBackendAvailability()
     registry = _MutableRegistry((_record(),))
     policy = _Policy()
@@ -152,16 +197,18 @@ def test_runtime_canary_catalog_and_message_use_one_hot_dynamic_surface() -> Non
         policy_service=policy,
         contribution_registry=registry,
         backend_availability=availability,
+        llm_client=_ConfiguredLLM(),
+        fixed_handlers=_fixed_handlers(),
     )
 
     assert runtime.start().to_dict() == {
         "status": "READY",
-        "availability": "OFFLINE_RESTRICTED",
+        "availability": "ONLINE_READ_ONLY",
         "blocked_reason": None,
     }
     tools = runtime.public_tools(_actor(), str(uuid.uuid4()))
-    assert [tool["title"] for tool in tools] == ["Managed lookup"]
-    assert all(not tool["tool_id"].startswith("knowledge.") for tool in tools)
+    assert "项目只读查询" in [tool["title"] for tool in tools]
+    assert "查询业务知识" in [tool["title"] for tool in tools]
 
     conversations = HarnessConversationService(
         repository=InMemoryHarnessSessionRepository(),
@@ -173,23 +220,48 @@ def test_runtime_canary_catalog_and_message_use_one_hot_dynamic_surface() -> Non
         actor=actor,
         session_id=session.session_id,
         request_id=str(uuid.uuid4()),
-        message=f"{_PREFIX}Managed lookup",
+        message="请查询已启用项目的只读结果",
     )
-    assert receipt.assistant_message.content == (
-        '{"status":"COMPLETED","synthetic_value":"ready"}'
-    )
+    assert receipt.assistant_message.content == "查询已完成。"
     assert receipt.tool_calls == 1
     assert policy.calls[0]["automation_id"] == "automation-a"
     assert policy.calls[0]["expected_automation_generation"] == 3
 
-    registry.records = (_record(generation=4, title="Managed lookup v2"),)
-    assert [
+    registry.records = (_record(generation=4, title="项目只读查询新版"),)
+    assert "项目只读查询新版" in [
         item["title"] for item in runtime.public_tools(actor, str(uuid.uuid4()))
-    ] == ["Managed lookup v2"]
+    ]
     registry.records = ()
-    assert runtime.public_tools(actor, str(uuid.uuid4())) == []
+    assert len(runtime.public_tools(actor, str(uuid.uuid4()))) == 6
     runtime.stop()
     assert availability.is_available("harness") is False
+
+
+def test_natural_chinese_greeting_does_not_call_a_business_tool() -> None:
+    runtime = HarnessRuntime(
+        policy_service=_Policy(),
+        contribution_registry=_MutableRegistry(()),
+        backend_availability=RuntimeContributionBackendAvailability(),
+        llm_client=_GreetingLLM(),
+        fixed_handlers=_fixed_handlers(),
+    )
+    runtime.start()
+    conversations = HarnessConversationService(
+        repository=InMemoryHarnessSessionRepository(),
+        sidecar_factory=runtime.sidecar_factory,
+    )
+    actor = _actor()
+    session = conversations.create_session(actor=actor, request_id=str(uuid.uuid4()))
+
+    receipt = conversations.send_message(
+        actor=actor,
+        session_id=session.session_id,
+        request_id=str(uuid.uuid4()),
+        message="你好",
+    )
+
+    assert receipt.assistant_message.content == "你好，我可以帮你进行只读业务查询。"
+    assert receipt.tool_calls == 0
 
 
 @pytest.mark.skipif(
@@ -325,7 +397,7 @@ def test_sandbox_rejects_oversized_process_output() -> None:
     assert failed.value.code == "HARNESS_PROTOCOL_INVALID"
 
 
-def test_unavailable_sandbox_closes_status_catalog_and_messages() -> None:
+def test_unavailable_sandbox_does_not_block_online_model() -> None:
     class UnavailableLauncher:
         @staticmethod
         def availability() -> bool:
@@ -339,24 +411,24 @@ def test_unavailable_sandbox_closes_status_catalog_and_messages() -> None:
         policy_service=_Policy(),
         contribution_registry=_MutableRegistry((_record(),)),
         backend_availability=availability,
+        llm_client=_ConfiguredLLM(),
+        fixed_handlers=_fixed_handlers(),
         launcher=UnavailableLauncher(),
     )
     assert runtime.start().to_dict() == {
-        "status": "CAPABILITY_UNAVAILABLE",
-        "availability": "CAPABILITY_UNAVAILABLE",
-        "blocked_reason": "HARNESS_SANDBOX_UNAVAILABLE",
+        "status": "READY",
+        "availability": "ONLINE_READ_ONLY",
+        "blocked_reason": None,
     }
-    assert runtime.public_tools(_actor(), str(uuid.uuid4())) == []
-    with pytest.raises(HarnessError) as unavailable:
-        runtime.sidecar_factory(_actor(), str(uuid.uuid4()))
-    assert unavailable.value.code == "HARNESS_SIDECAR_UNAVAILABLE"
+    assert runtime.public_tools(_actor(), str(uuid.uuid4()))
+    assert runtime.sidecar_factory(_actor(), str(uuid.uuid4())) is not None
 
 
 @pytest.mark.parametrize(
     "canary_error_code",
     ("HARNESS_PROTOCOL_INVALID", "HARNESS_TIMEOUT"),
 )
-def test_canary_failure_keeps_message_api_stably_unavailable(
+def test_offline_canary_failure_does_not_change_online_readiness(
     canary_error_code: str,
 ) -> None:
     class FailingCanaryLauncher:
@@ -371,20 +443,12 @@ def test_canary_failure_keeps_message_api_stably_unavailable(
         policy_service=_Policy(),
         contribution_registry=_MutableRegistry((_record(),)),
         backend_availability=RuntimeContributionBackendAvailability(),
+        llm_client=_ConfiguredLLM(),
+        fixed_handlers=_fixed_handlers(),
         launcher=FailingCanaryLauncher(),
     )
     state = runtime.start()
-    assert state.status == "CAPABILITY_UNAVAILABLE"
-    assert state.blocked_reason == canary_error_code
-
-    with pytest.raises(HarnessError) as unavailable:
-        runtime.sidecar_factory(_actor(), str(uuid.uuid4()))
-    assert unavailable.value.code == "HARNESS_SIDECAR_UNAVAILABLE"
-    response = harness_api.harness_error_response(
-        SimpleNamespace(
-            url=SimpleNamespace(path="/internal/v1/harness/messages")
-        ),
-        unavailable.value,
-    )
-    assert response.status_code == 503
-    assert b"HARNESS_SIDECAR_UNAVAILABLE" in response.body
+    assert state.status == "READY"
+    assert state.availability == "ONLINE_READ_ONLY"
+    assert state.blocked_reason is None
+    assert runtime.sidecar_factory(_actor(), str(uuid.uuid4())) is not None

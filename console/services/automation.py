@@ -426,6 +426,13 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 f"自动化任务数据库当前不可达，任务列表已临时降级为空。详情：{exc}"
             )
 
+        if query.get("refresh_resources") == ["1"]:
+            plugin_catalog = self._load_automation_plugin_catalog(
+                handler,
+                refresh_resources=True,
+            )
+        else:
+            plugin_catalog = self._load_automation_plugin_catalog(handler)
         (
             automation_plugin_packages,
             automation_plugin_instances,
@@ -434,7 +441,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             hidden_automation_ids,
             automation_plugin_warning,
             can_manage_plugins,
-        ) = self._load_automation_plugin_catalog(handler)
+        ) = plugin_catalog
         plugin_instances_by_id = {
             str(item["automation_id"]): item for item in automation_plugin_instances
         }

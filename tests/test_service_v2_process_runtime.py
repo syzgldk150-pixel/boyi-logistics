@@ -8,7 +8,8 @@ import pytest
 from agent.automation_plugins.runtime_backend_availability import (
     RuntimeContributionBackendAvailability,
 )
-from agent.harness_runtime import BubblewrapHarnessModelLauncher
+from agent.harness_application import FIXED_HARNESS_TOOL_IDS
+from agent.llm_client import LLMClient
 from agent.orchestration.service_v2_managed_ingress import (
     ServiceV2ManagedIngress,
     bind_service_v2_managed_ingress,
@@ -43,15 +44,31 @@ class _Policy:
     pass
 
 
+class _ConfiguredLLM(LLMClient):
+    def __init__(self) -> None:
+        pass
+
+    def public_status(self) -> dict[str, Any]:
+        return {
+            "configured": True,
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "health": "ready",
+        }
+
+
+def _fixed_handlers() -> dict[str, Any]:
+    return {
+        tool_id: (lambda _arguments, current=tool_id: {"查询": current})
+        for tool_id in FIXED_HARNESS_TOOL_IDS
+    }
+
+
 def _reset_bindings() -> None:
     unbind_service_v2_process_runtime()
     unbind_service_v2_managed_ingress()
 
 
-@pytest.mark.skipif(
-    not BubblewrapHarnessModelLauncher.availability(),
-    reason="Bubblewrap/prlimit are not installed",
-)
 def test_process_runtime_binds_and_revokes_all_live_backends() -> None:
     _reset_bindings()
     availability = RuntimeContributionBackendAvailability()
@@ -59,10 +76,12 @@ def test_process_runtime_binds_and_revokes_all_live_backends() -> None:
         policy_service=_Policy(),
         contribution_registry=_Registry(),
         backend_availability=availability,
+        llm_client=_ConfiguredLLM(),
+        harness_fixed_handlers=_fixed_handlers(),
     )
     try:
         assert runtime.start().status == "READY"
-        assert service_v2_harness_status().availability == "OFFLINE_RESTRICTED"
+        assert service_v2_harness_status().availability == "ONLINE_READ_ONLY"
         assert service_v2_harness_conversations() is runtime.conversations
         assert service_v2_managed_ingress_is_bound() is True
         assert all(
@@ -80,10 +99,6 @@ def test_process_runtime_binds_and_revokes_all_live_backends() -> None:
         service_v2_harness_status()
 
 
-@pytest.mark.skipif(
-    not BubblewrapHarnessModelLauncher.availability(),
-    reason="Bubblewrap/prlimit are not installed",
-)
 def test_conflicting_ingress_binding_blocks_startup_and_revokes_harness() -> None:
     _reset_bindings()
     registry = _Registry()
@@ -99,6 +114,8 @@ def test_conflicting_ingress_binding_blocks_startup_and_revokes_harness() -> Non
         policy_service=_Policy(),
         contribution_registry=registry,
         backend_availability=availability,
+        llm_client=_ConfiguredLLM(),
+        harness_fixed_handlers=_fixed_handlers(),
     )
     try:
         with pytest.raises(RuntimeError, match="already bound"):

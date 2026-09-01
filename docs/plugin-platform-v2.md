@@ -64,7 +64,7 @@ Console 信息架构同样只有一个状态源：`/extensions` 与详情页展�
 
 | 能力 | offline_contract | offline_runtime | production_runtime |
 |---|---|---|---|
-| Harness | `COMPLETE` | sandbox canary 成功时 `READY / OFFLINE_RESTRICTED` | `PRODUCTION_GATED` |
+| AI 助手 | `COMPLETE` | 激活模型与六类只读网关就绪时 `READY / ONLINE_READ_ONLY` | 持久会话与写能力仍为 `PRODUCTION_GATED` |
 | Webhook / Event | `COMPLETE` | 只有当前进程已绑定可信 ingress 时 `READY` | `PRODUCTION_GATED` |
 | tracking Connector | `COMPLETE` | 仅显式 `connector-test` fixture 命令为 `READY` | `PRODUCTION_GATED` |
 
@@ -361,15 +361,15 @@ Catalog 只输出白名单 `active_contributions` 与 `contribution_projection_s
 
 Selection contribution 的首次预览对调用方是零业务参数：`dry_run=true`、空选集和空指纹由 Host 注入，签名 preview operation 以 read/low 治理执行；持久 preview 有效期 15 分钟。确认调用面只接受 `preview_run_id + selected_bill_codes` 以及既有已验证 transport/Actor，项目、代际、配置、contract、contribution、service、operation、effect、账号、资源、完整 fingerprint 和 `dry_run=false` 均由 Host 恢复。Command 接受 UOW 内重新锁定 Run，要求选集为原候选子集并复核全部身份与 phase 后原子 consume；同一 request 按 Command 幂等恢复，另一个 request 重用 preview 返回 `SELECTION_PREVIEW_ALREADY_CONSUMED`。过期、结果篡改、身份或 operation/effect 漂移全部关闭失败。
 
-### 7.2 Harness 首期只读边界
+### 7.2 AI 助手只读边界
 
 `/harness` 是代码拥有、不可停用的固定 Console 模块。浏览器只能提交规范请求 UUID、Agent 签发的 Session UUID 和最多 4,000 字符的消息；Console 只接受真实 MySQL `admin/super_admin` 会话与同源写请求，再通过既有签名 principal 调用 Agent `/internal/v1/harness/sessions` 和 `/internal/v1/harness/messages`。浏览器或模型均不能提交 `automation_id/service/operation/account_id/resource_id` 等运行身份，动态工具只公开不可逆的 opaque tool id、标题和说明。
 
-六类固定业务工具当前没有真实 handler，因此不进入有效 Tool Catalog。产品 Catalog 和消息执行由同一进程级 `HarnessRuntime` 生成；动态工具只来自当前 exact active 的 `contributes.harness`，其 Provider effect 必须是 `read` 或 `compute`，且机械治理必须同时满足 `harness_allowed=true`、`broker_effect=read`。注册材料必须绑定 generation snapshot 中真实签名的闭合 `runtime_permissions`；网络、浏览器、Office、文件角色、Broker operation 或调用额度任一开放、字段缺失或漂移都会拒绝注册和目录读取，不能生成空权限默认值。进程 backend availability 只影响当前有效投影，不改写持久 generation hash 或数据库合同。
+六类固定业务工具由宿主代码拥有并接入真实只读 handler：查询业务知识、查询运单信息、查询物流轨迹、查看待处理事项、查看任务运行结果、查看运行证据。运单、运行与证据身份精确匹配，结果先做最小化和脱敏；缺少编号、多候选、未知工具、参数错误、超限或来源异常均显式失败。动态工具只来自当前 exact active 的 `contributes.harness`，还必须具有中文名称，其 Provider effect 必须是 `read` 或 `compute`，且机械治理必须同时满足 `harness_allowed=true`、`broker_effect=read`。网络、浏览器、Office、文件角色、Broker operation 或运行权限任一开放、字段缺失或漂移都会拒绝注册，不能生成默认值。
 
-Session 仅保存在进程内有界仓储，状态为 `MEMORY_ONLY_NON_PRODUCTION`，并精确绑定已签名管理员身份。启动时先在 Bubblewrap + `prlimit` 短命子进程执行无业务数据 canary；子进程环境清空、无网络、无仓库/Home/插件挂载、无 shell，只读挂载可信 Python 运行时、标准库及必要动态库。canary 成功后 Session 显示 `status=READY`、`availability=OFFLINE_RESTRICTED`；缺少 sandbox 或 canary 失败时显示 `CAPABILITY_UNAVAILABLE`，消息入口保持 503，不回退 Legacy Agent 或进程内假模型。
+Session 仅保存在进程内有界仓储，状态为 `MEMORY_ONLY`，并精确绑定已签名管理员身份。生产对话直接复用“智能模型”当前激活的统一客户端，下一次请求立即反映模型激活、切换、回滚或清除；就绪状态为 `READY/ONLINE_READ_ONLY`。生产对话不依赖 Bubblewrap 启动状态；Bubblewrap 只用于离线测试和扩展隔离。模型未配置、接口超时或供应商异常分别返回稳定中文提示，不回退 Legacy Agent、旧离线模拟模型或其他供应商。
 
-离线交互只接受精确文本 `调用只读工具：<完整标题>`。标题必须在当前 active Catalog 中唯一且完全匹配，并且该 `read/compute` 工具的输入 Schema 必须是闭合空对象；零匹配、多匹配、需要参数或 generation 漂移都显式失败。子进程保持 5 秒超时，sidecar 保持 8 次工具调用和 8 KiB 规范 JSON 结果上限。真实 LLM、六类业务读网关、持久 Session 和真实数据验证均为 `PRODUCTION_GATED`；可选 `harness_live_smoke.py` 只供手工合成数据验收，仅从对应环境变量取 Key，不进入 CI 或产品运行链。
+交互接受正常中文自然语言；“你好”等普通对话无需调用工具，业务查询由模型在六类固定网关和通过治理的动态只读工具中选择。单次回答最多调用 8 次工具且总时限 30 秒，工具输出的规范 JSON 仍受 8 KiB 上限约束。模型请求和工具结果都会移除手机号、地址、账号、内部参数、密钥、长哈希及原始异常详情。持久 Session、写工具和未经治理的外部能力仍为 `PRODUCTION_GATED`。
 
 ### 7.3 动态飞书 Dispatcher 边界
 

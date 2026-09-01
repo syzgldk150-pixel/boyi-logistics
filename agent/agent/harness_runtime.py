@@ -1,9 +1,8 @@
-"""Process composition for the restricted offline Harness runtime.
+"""Process composition for the read-only AI assistant runtime.
 
-The product runtime deliberately uses a deterministic model process rather
-than a network LLM.  The child receives only a sanitized catalog and message
-transcript, runs in a Bubblewrap namespace with a cleared environment, and
-can request only an exact zero-argument read-only tool title.
+Production conversations use the currently active global model and a closed
+read-only catalog.  The deterministic Bubblewrap launcher remains available
+for isolated tests, but is not a production readiness dependency.
 """
 
 from __future__ import annotations
@@ -30,7 +29,14 @@ from agent.harness.sidecar import (
     OfflineModelPort,
     RestrictedSidecarProfile,
 )
-from agent.harness_application import TrustedHarnessInvocationAdapter
+from agent.harness_application import (
+    FIXED_HARNESS_TOOL_IDS,
+    ReadOnlyFixedHandler,
+    TrustedHarnessInvocationAdapter,
+    build_fixed_harness_tools,
+)
+from agent.harness_online import OnlineHarnessSidecar, visible_descriptors
+from agent.llm_client import LLMClient
 from agent.orchestration.models import Actor
 
 
@@ -255,7 +261,6 @@ class BubblewrapHarnessModelLauncher:
             "--unshare-all",
             "--die-with-parent",
             "--new-session",
-            "--clearenv",
             "--cap-drop",
             "ALL",
         ]
@@ -412,6 +417,8 @@ class HarnessRuntime:
         policy_service: object,
         contribution_registry: object,
         backend_availability: RuntimeContributionBackendAvailability,
+        llm_client: LLMClient,
+        fixed_handlers: Mapping[str, ReadOnlyFixedHandler],
         launcher: BubblewrapHarnessModelLauncher | None = None,
     ) -> None:
         if not isinstance(backend_availability, RuntimeContributionBackendAvailability):
@@ -420,11 +427,20 @@ class HarnessRuntime:
             raise TypeError("contribution_registry must provide an active snapshot")
         if not callable(getattr(contribution_registry, "resolve_active", None)):
             raise TypeError("contribution_registry must resolve active contributions")
+        if not isinstance(llm_client, LLMClient):
+            raise TypeError("llm_client must be LLMClient")
+        if set(fixed_handlers) != set(FIXED_HARNESS_TOOL_IDS):
+            raise TypeError("fixed_handlers must provide the six read-only gateways")
+        if any(not callable(handler) for handler in fixed_handlers.values()):
+            raise TypeError("fixed_handlers must be callable")
         self._policy_service = policy_service
         self._contribution_registry = contribution_registry
         self._backend_availability = backend_availability
+        self._llm = llm_client
+        self._fixed_handlers = dict(fixed_handlers)
         self._launcher = launcher or BubblewrapHarnessModelLauncher()
         self._lock = RLock()
+        self._started = False
         self._status = HarnessRuntimeStatus(
             status="CAPABILITY_UNAVAILABLE",
             availability="CAPABILITY_UNAVAILABLE",
@@ -432,50 +448,9 @@ class HarnessRuntime:
         )
 
     def start(self) -> HarnessRuntimeStatus:
-        try:
-            if not self._launcher.availability():
-                raise _error(
-                    "Restricted Harness sandbox is unavailable",
-                    "HARNESS_SANDBOX_UNAVAILABLE",
-                )
-            sidecar = DeterministicHarnessSidecar(
-                catalog=_canary_catalog(),
-                model=BubblewrapOfflineModelPort(self._launcher),
-            )
-            result = sidecar.run(
-                messages=(
-                    HarnessMessage(
-                        role="user",
-                        content=f"{_COMMAND_PREFIX}Offline canary",
-                        message_id=_CANARY_MESSAGE_ID,
-                    ),
-                ),
-                timeout_seconds=_MODEL_TIMEOUT_SECONDS,
-            )
-            if result.tool_calls != 1 or result.content != '{"canary":"ok"}':
-                raise _error("Restricted Harness canary failed", "HARNESS_CANARY_FAILED")
-        except Exception as exc:
-            reason_code = (
-                exc.code
-                if isinstance(exc, HarnessError)
-                else "HARNESS_CANARY_FAILED"
-            )
-            self._backend_availability.mark_unavailable(
-                "harness",
-                reason_detail=reason_code,
-            )
-            state = HarnessRuntimeStatus(
-                status="CAPABILITY_UNAVAILABLE",
-                availability="CAPABILITY_UNAVAILABLE",
-                blocked_reason=reason_code,
-            )
-        else:
-            self._backend_availability.mark_available("harness")
-            state = HarnessRuntimeStatus(
-                status="READY",
-                availability="OFFLINE_RESTRICTED",
-                blocked_reason=None,
-            )
+        with self._lock:
+            self._started = True
+        state = self._live_status()
         with self._lock:
             self._status = state
         return state
@@ -486,6 +461,7 @@ class HarnessRuntime:
             reason_detail="HARNESS_RUNTIME_STOPPED",
         )
         with self._lock:
+            self._started = False
             self._status = HarnessRuntimeStatus(
                 status="CAPABILITY_UNAVAILABLE",
                 availability="CAPABILITY_UNAVAILABLE",
@@ -493,14 +469,44 @@ class HarnessRuntime:
             )
 
     def status(self) -> HarnessRuntimeStatus:
+        state = self._live_status()
         with self._lock:
-            return self._status
+            self._status = state
+        return state
+
+    def _live_status(self) -> HarnessRuntimeStatus:
+        with self._lock:
+            started = self._started
+            stopped = self._status.blocked_reason == "HARNESS_RUNTIME_STOPPED"
+        if not started:
+            reason = "HARNESS_RUNTIME_STOPPED" if stopped else "HARNESS_RUNTIME_NOT_STARTED"
+            return HarnessRuntimeStatus(
+                status="CAPABILITY_UNAVAILABLE",
+                availability="CAPABILITY_UNAVAILABLE",
+                blocked_reason=reason,
+            )
+        if not self._llm.public_status().get("configured"):
+            self._backend_availability.mark_unavailable(
+                "harness",
+                reason_detail="HARNESS_MODEL_NOT_CONFIGURED",
+            )
+            return HarnessRuntimeStatus(
+                status="CAPABILITY_UNAVAILABLE",
+                availability="CAPABILITY_UNAVAILABLE",
+                blocked_reason="HARNESS_MODEL_NOT_CONFIGURED",
+            )
+        self._backend_availability.mark_available("harness")
+        return HarnessRuntimeStatus(
+            status="READY",
+            availability="ONLINE_READ_ONLY",
+            blocked_reason=None,
+        )
 
     def _require_ready(self) -> None:
         state = self.status()
         if state.status != "READY":
             raise _error(
-                "Restricted Harness runtime is unavailable",
+                "AI assistant runtime is unavailable",
                 "HARNESS_SIDECAR_UNAVAILABLE",
             )
 
@@ -509,10 +515,11 @@ class HarnessRuntime:
             policy_service=self._policy_service,
             actor=actor,
             base_request_id=request_id,
+            fixed_handlers=self._fixed_handlers,
         )
         return HarnessToolCatalog(
             invocation_port=adapter,
-            fixed_tools=(),
+            fixed_tools=build_fixed_harness_tools(),
             snapshot_provider=self._contribution_registry,
         )
 
@@ -526,14 +533,17 @@ class HarnessRuntime:
                 "title": str(item["title"]),
                 "description": str(item["description"]),
             }
-            for item in catalog.public_tools()
+            for item in (
+                descriptor.public_mapping()
+                for descriptor in visible_descriptors(catalog)
+            )
         ]
 
-    def sidecar_factory(self, actor: Actor, request_id: str) -> DeterministicHarnessSidecar:
+    def sidecar_factory(self, actor: Actor, request_id: str) -> OnlineHarnessSidecar:
         self._require_ready()
-        return DeterministicHarnessSidecar(
+        return OnlineHarnessSidecar(
             catalog=self._catalog(actor, request_id),
-            model=BubblewrapOfflineModelPort(self._launcher),
+            llm=self._llm,
         )
 
 

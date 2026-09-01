@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from threading import RLock
+from typing import Mapping
 
 from agent.automation_plugins.runtime_backend_availability import (
     RuntimeContributionBackendAvailability,
 )
 from agent.harness.sessions import InMemoryHarnessSessionRepository
-from agent.harness_application import HarnessConversationService
+from agent.harness_application import HarnessConversationService, ReadOnlyFixedHandler
+from agent.llm_client import LLMClient
 from agent.harness_runtime import HarnessRuntime, HarnessRuntimeStatus
 from agent.orchestration.models import Actor
 from agent.orchestration.service_v2_managed_ingress import (
@@ -19,7 +21,7 @@ from agent.orchestration.service_v2_managed_ingress import (
 
 
 class ServiceV2ProcessRuntime:
-    """Own the offline Harness and trusted managed-ingress lifecycle."""
+    """Own the online read-only assistant and managed-ingress lifecycle."""
 
     def __init__(
         self,
@@ -27,16 +29,21 @@ class ServiceV2ProcessRuntime:
         policy_service: object,
         contribution_registry: object,
         backend_availability: RuntimeContributionBackendAvailability,
+        llm_client: LLMClient,
+        harness_fixed_handlers: Mapping[str, ReadOnlyFixedHandler],
     ) -> None:
         self._availability = backend_availability
         self._harness = HarnessRuntime(
             policy_service=policy_service,
             contribution_registry=contribution_registry,
             backend_availability=backend_availability,
+            llm_client=llm_client,
+            fixed_handlers=harness_fixed_handlers,
         )
         self._conversations = HarnessConversationService(
             repository=InMemoryHarnessSessionRepository(),
             sidecar_factory=self._harness.sidecar_factory,
+            timeout_seconds=30,
         )
         self._ingress = ServiceV2ManagedIngress(
             policy_service=policy_service,

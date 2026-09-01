@@ -1263,6 +1263,8 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertIn("init_waybills_sql_from_feishu", registry_text)
         self.assertIn("track_waybill", registry_text)
         self.assertIn("automation_profile", registry_text)
+        # R7 implementations remain archived in the registry, but current
+        # automation, scheduler and Feishu entrypoints do not expose them.
         self.assertIn("r7_arrival_checkin", registry_text)
         self.assertIn("r7_departure_checkin", registry_text)
         self.assertIn("sql_only", registry_text)
@@ -1272,8 +1274,6 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         registrations = direct_tool_router.FEISHU_COMMAND_REGISTRATIONS
         self.assertEqual(
             {
-                "r7_arrival_checkin": "builtin.r7_arrival_checkin",
-                "r7_departure_checkin": "builtin.r7_departure_checkin",
                 "sync_scan_codes": "builtin.scan_codes",
                 "sync_arrive_list": "builtin.arrive_list",
                 "sync_daily_send_orders": "builtin.send_order",
@@ -1287,7 +1287,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
             },
             dict(direct_tool_router.FIRST_PARTY_FEISHU_ROUTE_KEYS),
         )
-        self.assertEqual(10, len(registrations))
+        self.assertEqual(8, len(registrations))
         with self.assertRaises(TypeError):
             direct_tool_router.FIRST_PARTY_FEISHU_ROUTE_KEYS["unexpected"] = "route"
 
@@ -1315,7 +1315,6 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
 
     def test_reserved_feishu_command_uses_the_fixed_router_contract(self):
         for text in (
-            "到达打卡",
             "同步到货清单",
             "报价 湖南省长沙市,1kg",
             "分批问题件",
@@ -1340,13 +1339,11 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertFalse(direct_tool_router.is_reserved_feishu_command_text("1"))
         self.assertFalse(direct_tool_router.is_reserved_feishu_command_text("2"))
 
-    def test_direct_router_maps_arrival_checkin_command_to_r7_tool(self):
-        request = direct_tool_router.direct_tool_request_from_text("到达打卡")
-
-        self.assertIsNotNone(request)
-        self.assertEqual("r7_arrival_checkin", request["tool_name"])
-        self.assertEqual({}, request["params"])
-        self.assertEqual("automation_project", request["mode"])
+    def test_direct_router_does_not_expose_removed_r7_commands(self):
+        for text in ("到达打卡", "R7 到达打卡", "发车", "R7 发车打卡"):
+            with self.subTest(text=text):
+                self.assertIsNone(direct_tool_router.direct_tool_request_from_text(text))
+                self.assertFalse(direct_tool_router.is_reserved_feishu_command_text(text))
 
     def test_direct_router_maps_arrive_list_command_to_sync_tool(self):
         for text in ("执行一次arrivelist脚本", "同步到货清单", "拉取预到达清单", "arrive-list"):
@@ -2159,15 +2156,10 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertEqual("yunda", set_result["profile"])
         self.assertEqual("韵达自动化", get_result["label"])
 
-    def test_direct_router_maps_departure_checkin_command_to_r7_tool(self):
+    def test_direct_router_keeps_departure_checkin_command_removed(self):
         for text in ("发车", "R7发车", "发车打卡"):
             with self.subTest(text=text):
-                request = direct_tool_router.direct_tool_request_from_text(text)
-
-                self.assertIsNotNone(request)
-                self.assertEqual("r7_departure_checkin", request["tool_name"])
-                self.assertEqual({}, request["params"])
-                self.assertEqual("r7_departure_choice", request["mode"])
+                self.assertIsNone(direct_tool_router.direct_tool_request_from_text(text))
 
     def test_r7_departure_expected_time_and_plate_normalization(self):
         self.assertEqual(

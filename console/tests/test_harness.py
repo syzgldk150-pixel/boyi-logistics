@@ -94,9 +94,9 @@ def _session_result() -> dict:
         "data": {
             "session_id": SESSION_UUID,
             "request_uuid": REQUEST_UUID,
-            "persistence_status": "MEMORY_ONLY_NON_PRODUCTION",
+            "persistence_status": "MEMORY_ONLY",
             "status": "READY",
-            "availability": "OFFLINE_RESTRICTED",
+            "availability": "ONLINE_READ_ONLY",
             "blocked_reason": None,
             "read_only": True,
             "tools": [
@@ -124,7 +124,7 @@ def _message_result() -> dict:
             "session_id": SESSION_UUID,
             "request_uuid": REQUEST_UUID,
             "message_id": MESSAGE_UUID,
-            "persistence_status": "MEMORY_ONLY_NON_PRODUCTION",
+            "persistence_status": "MEMORY_ONLY",
             "status": "COMPLETED",
             "process": [{"title": "受限处理", "summary": "已完成只读检索。"}],
             "evidence": [{"title": "投影记录", "summary": "来自离线测试投影。"}],
@@ -185,7 +185,7 @@ def test_session_create_forwards_exact_body_and_signed_mysql_principal() -> None
 
     assert app.sent[-1][0] == HTTPStatus.OK
     assert app.sent[-1][1]["ok"] is True
-    assert app.sent[-1][1]["data"]["availability"] == "OFFLINE_RESTRICTED"
+    assert app.sent[-1][1]["data"]["availability"] == "ONLINE_READ_ONLY"
     assert app.agent_calls == [
         {
             "method": "POST",
@@ -327,7 +327,8 @@ def test_template_and_script_keep_host_rendered_accessible_safe_surface() -> Non
     assert "appendMessage(\"user\"" in script
     assert "appendMessage(\"assistant\"" in script
     assert "event.isComposing" in script
-    assert "安全运行环境暂不可用" in script
+    assert "智能模型暂时无法连接" in script
+    assert "只读查询可用" in script
     assert "输入只读查询" in template
     assert "AI 助手" in template
     assert "ai-chat-20260901" in template

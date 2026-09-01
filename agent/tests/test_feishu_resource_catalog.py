@@ -125,7 +125,7 @@ class FeishuResourceCatalogTests(unittest.TestCase):
         self.assertEqual(first, cached)
         self.assertEqual("到货台账 / 到货记录", refreshed["sheet-resource"])
 
-    def test_missing_child_fails_without_static_name_fallback(self) -> None:
+    def test_missing_child_only_marks_that_resource_unavailable(self) -> None:
         resources = [
             (
                 "sheet-resource",
@@ -141,11 +141,82 @@ class FeishuResourceCatalogTests(unittest.TestCase):
             {"FEISHU_APP_ID": "app-id", "FEISHU_APP_SECRET": "app-secret"},
             clear=False,
         ), patch.object(catalog, "_request_json", side_effect=lambda _method, path, **_kwargs: self._payload(path)):
-            with self.assertRaisesRegex(
-                catalog.FeishuResourceCatalogError,
-                "对应的飞书表格不存在",
-            ):
-                catalog.resolve_live_feishu_resource_names(resources, now=100.0)
+            result = catalog.resolve_live_feishu_resource_catalog(resources, now=100.0)
+
+        self.assertEqual("", result.global_problem)
+        self.assertEqual("unavailable", result.resources["sheet-resource"].status)
+        self.assertEqual(
+            "RESOURCE_NOT_FOUND",
+            result.resources["sheet-resource"].problem_code,
+        )
+
+    def test_one_missing_sheet_does_not_clear_other_live_resources(self) -> None:
+        resources = [
+            (
+                "available-sheet",
+                {
+                    "resource_kind": "feishu_sheet",
+                    "spreadsheet_token": "spreadsheet-token",
+                    "sheet_id": "sheet-a",
+                },
+            ),
+            (
+                "missing-sheet",
+                {
+                    "resource_kind": "feishu_sheet",
+                    "spreadsheet_token": "spreadsheet-token",
+                    "sheet_id": "missing",
+                },
+            ),
+        ]
+        with patch.dict(
+            os.environ,
+            {"FEISHU_APP_ID": "app-id", "FEISHU_APP_SECRET": "app-secret"},
+            clear=False,
+        ), patch.object(
+            catalog,
+            "_request_json",
+            side_effect=lambda _method, path, **_kwargs: self._payload(path),
+        ):
+            result = catalog.resolve_live_feishu_resource_catalog(resources, now=100.0)
+
+        self.assertEqual("available", result.resources["available-sheet"].status)
+        self.assertEqual("到货台账 / 每日到货", result.resources["available-sheet"].name)
+        self.assertEqual("unavailable", result.resources["missing-sheet"].status)
+        self.assertEqual("", result.global_problem)
+
+    def test_explicit_refresh_discards_cached_names(self) -> None:
+        current_title = {"value": "每日到货"}
+
+        def request(_method: str, path: str, **_kwargs) -> dict:
+            payload = self._payload(path)
+            if path.endswith("/sheets/query"):
+                payload["data"]["sheets"][0]["title"] = current_title["value"]
+            return payload
+
+        resources = [
+            (
+                "sheet-resource",
+                {
+                    "resource_kind": "feishu_sheet",
+                    "spreadsheet_token": "spreadsheet-token",
+                    "sheet_id": "sheet-a",
+                },
+            )
+        ]
+        with patch.dict(
+            os.environ,
+            {"FEISHU_APP_ID": "app-id", "FEISHU_APP_SECRET": "app-secret"},
+            clear=False,
+        ), patch.object(catalog, "_request_json", side_effect=request):
+            first = catalog.resolve_live_feishu_resource_names(resources, now=100.0)
+            current_title["value"] = "已改名"
+            cached = catalog.resolve_live_feishu_resource_names(resources, now=101.0)
+            catalog.refresh_feishu_resource_catalog()
+            refreshed = catalog.resolve_live_feishu_resource_names(resources, now=102.0)
+
+        self.assertEqual(first, cached)
+        self.assertEqual("到货台账 / 已改名", refreshed["sheet-resource"])
 
     def test_managed_projection_uses_only_live_name_and_keeps_locator_private(self) -> None:
         rows = [
@@ -168,8 +239,17 @@ class FeishuResourceCatalogTests(unittest.TestCase):
             return_value=_Repository(rows),
         ), patch.object(
             catalog,
-            "resolve_live_feishu_resource_names",
-            return_value={"phase7.daily_sign_sheet": "应签台账 / 当日明细"},
+            "resolve_live_feishu_resource_catalog",
+            return_value=catalog.FeishuResourceCatalogResult(
+                resources={
+                    "phase7.daily_sign_sheet": catalog.FeishuResourceResult(
+                        name="应签台账 / 当日明细",
+                        status="available",
+                        purpose="静态旧名称",
+                        problem_code="",
+                    )
+                }
+            ),
         ):
             projected = workflow_resource_store.list_workflow_resource_descriptors()
 
@@ -180,13 +260,15 @@ class FeishuResourceCatalogTests(unittest.TestCase):
                     "name": "应签台账 / 当日明细",
                     "kind": "feishu_sheet",
                     "status": "available",
+                    "purpose": "静态旧名称",
+                    "problem_code": "",
                 }
             ],
             projected,
         )
         self.assertNotIn("private-document-token", repr(projected))
         self.assertNotIn("private-sheet-id", repr(projected))
-        self.assertNotIn("静态旧名称", repr(projected))
+        self.assertEqual("静态旧名称", projected[0]["purpose"])
 
 
 if __name__ == "__main__":

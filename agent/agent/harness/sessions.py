@@ -13,7 +13,7 @@ from agent.harness.models import HarnessMessage, HarnessSession, canonical_uuid,
 class InMemoryHarnessSessionRepository:
     """Bounded session repository with exact-principal and UUID idempotency gates."""
 
-    persistence_status = "MEMORY_ONLY_NON_PRODUCTION"
+    persistence_status = "MEMORY_ONLY"
 
     def __init__(
         self,

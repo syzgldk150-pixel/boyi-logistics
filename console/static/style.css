@@ -3083,6 +3083,17 @@ body .line-haul-tool-btn {
 .harness-feedback.is-success { color: #166534; background: #f0fdf4; }
 .harness-feedback.is-error { color: #991b1b; background: #fef2f2; }
 .harness-feedback.is-info { color: var(--text); background: var(--surface); }
+.harness-settings-link {
+  display: inline-flex;
+  width: fit-content;
+  margin: 0 4px 8px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.harness-settings-link[hidden] { display: none; }
 .harness-footnote { margin: 8px 8px 0; color: var(--muted); font-size: 0.72rem; line-height: 1.5; text-align: center; }
 
 @media (max-width: 767px) {

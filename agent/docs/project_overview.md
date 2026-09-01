@@ -172,7 +172,7 @@ updated: 2026-08-31
 - `sync_yunda_dispatch_forecast` 使用韵达独立登录态 `yunda`，默认每天 17:00 拉取次日“网点派件量预测主单表”并按应派时间覆盖写入飞书多维表格；融辉既有自动化继续使用 `ronghui/default` 登录态。
 - `sync_yunda_send_waybills` 使用同一套韵达登录态 `yunda`，拉取当天“寄件运单管理”列表，补查快件跟踪详情与小眼睛解密接口后写入 `phase7.yunda_send_waybills_bitable`；历史按天累积，同一运单号重复同步时更新原记录，并同步维护控制台 `waybills` SQL 表，将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按韵达运单号检索。
 - `init_waybills_sql_from_feishu` 可从飞书中的融辉寄件数据表和韵达寄件运单表全量回填控制台 `waybills` SQL 表，用作后台运单查询模块的初始化数据来源；该工具只写 SQL，不修改飞书。
-- `r7_arrival_checkin` 和 `r7_departure_checkin` 已接入后台 `/automations` 和飞书直达指令；R7 登录独立于顶部 TMS 登录态，后台中走 R7 页面的任务会显示 R7 标识。该接入当前只完成 Command/Gateway 治理：在缺少真实任务 ID 集合与远端版本的权威只读预览前，计划固定返回 `IMPACT_PREVIEW_REQUIRED/BLOCKED_DATA`，不会执行第三方打卡写入。
+- `r7_arrival_checkin` 和 `r7_departure_checkin` 已从当前发行的后台 `/automations`、调度注册和飞书直达入口移除；历史项目、运行及审计记录继续保留，不参与当前健康计数，也不会执行第三方打卡写入。
 - `sync_arrive_list` 当前拉取 TMS「派件预报」作为到货基础清单；`sync_arrival_stats` 以“目标日 arrive-list ∪ 目标日实际扫描主单”为当天范围，过滤历史已到齐且当天未重扫的重复主单，历史未齐主单以到货 0 保留，当天重扫主单始终保留。
 - 2026-05-18：`sync_arrival_stats` 会把 `20055750680002` 这类融辉纯数字子单归并到主单 `2005575068`，并在统计导出时过滤历史缓存中的子单行，避免旧误入库子单继续写入飞书。
 - `sync_arrival_stats` 以累计子单扫描数作为到货件数并按主单开单件数封顶；`count_result.quantity_gaps` 记录扫描不足，`quantity_adjustments` 记录超量封顶。

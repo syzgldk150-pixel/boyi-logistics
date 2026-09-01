@@ -54,16 +54,6 @@ class FeishuCommandRegistration:
 # resource resolved by the Feishu adapter; installing a plugin must never make
 # arbitrary text executable. Preview/formal tools intentionally share one route.
 FEISHU_COMMAND_REGISTRATIONS = (
-    FeishuCommandRegistration(
-        "r7_arrival_checkin",
-        "builtin.r7_arrival_checkin",
-        ("r7_arrival_checkin",),
-    ),
-    FeishuCommandRegistration(
-        "r7_departure_checkin",
-        "builtin.r7_departure_checkin",
-        ("r7_departure_checkin",),
-    ),
     FeishuCommandRegistration("scan_codes", "builtin.scan_codes", ("sync_scan_codes",)),
     FeishuCommandRegistration("arrive_list", "builtin.arrive_list", ("sync_arrive_list",)),
     FeishuCommandRegistration(
@@ -209,16 +199,6 @@ DATE_TEXT_RE = re.compile(
     r"(?P<year>20\d{2})\s*(?:年|-|/|\.)\s*(?P<month>\d{1,2})\s*(?:月|-|/|\.)\s*(?P<day>\d{1,2})\s*(?:日|号)?"
 )
 RONGHUI_PROFILE_HINT_RE = re.compile(r"(?:融辉|ronghui)", re.IGNORECASE)
-
-R7_ARRIVAL_CHECKIN_RE = re.compile(
-    r"^\s*(?:R7\s*)?到达\s*打卡\s*$",
-    re.IGNORECASE,
-)
-
-R7_DEPARTURE_CHECKIN_RE = re.compile(
-    r"^\s*(?:R7\s*)?(?:发车|发车\s*打卡)\s*$",
-    re.IGNORECASE,
-)
 
 CONFIRM_RE = re.compile(
     r"^\s*(?:确认|确定|是的|是|对|好的|好|执行|继续|同意|ok|yes|y)\s*[!！。.~]*\s*$",
@@ -728,15 +708,6 @@ def direct_tool_request_from_text(text: str) -> dict[str, Any] | None:
                 "description": SELF_PICKUP_PROBLEM_LABEL,
             },
         }
-
-    if R7_ARRIVAL_CHECKIN_RE.match(normalized):
-        return _automation_project_request("r7_arrival_checkin")
-
-    if R7_DEPARTURE_CHECKIN_RE.match(normalized):
-        return _automation_project_request(
-            "r7_departure_checkin",
-            mode="r7_departure_choice",
-        )
 
     if SCAN_SYNC_RE.match(normalized):
         return _automation_project_request("sync_scan_codes")

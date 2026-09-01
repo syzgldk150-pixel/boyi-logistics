@@ -1229,10 +1229,9 @@ def test_self_pickup_selection_preview_expired_has_stable_repreview_reply():
     assert "SELECTION_PREVIEW_EXPIRED" not in reply
 
 
-def test_r7_plate_choice_rechecks_committed_config_before_typed_invocation():
+def test_removed_r7_plate_choice_mode_cannot_invoke_project():
     service = _FakeProjectEntrypoints()
     agent = _FakeAgent()
-    pending = {}
     replies = []
     request = {
         "tool_name": "r7_departure_checkin",
@@ -1242,28 +1241,18 @@ def test_r7_plate_choice_rechecks_committed_config_before_typed_invocation():
         "dynamic_inputs": {},
     }
 
-    def set_pending(_chat_id, value, ttl_sec=600):
-        del ttl_sec
-        pending.clear()
-        pending.update(value)
-
     with (
         patch("feishu.bot.get_agent_core", return_value=agent),
         patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
         patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
-        patch.object(message_handler, "get_pending", side_effect=lambda _chat_id: pending or None),
-        patch.object(message_handler, "set_pending", side_effect=set_pending),
-        patch.object(message_handler, "clear_pending", side_effect=lambda _chat_id, **_kwargs: pending.clear()),
+        patch.object(message_handler, "get_pending", return_value=None),
+        patch.object(message_handler, "set_pending") as set_pending,
         patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
     ):
         _run_verified_text("departure-command", event_id="event-plate-choice")
-        assert pending["plate_numbers"] == ["ABC123", "XYZ789"]
-        assert "params" not in pending
-        _run_verified_text("ABC123", event_id="event-plate-selected")
 
-    assert service.calls[-1]["envelope"]["body"] == {
-        "plate_numbers": ["ABC123"]
-    }
+    set_pending.assert_not_called()
+    assert service.calls == []
 
 
 def test_account_override_and_unverified_generic_text_cannot_forge_project_context():

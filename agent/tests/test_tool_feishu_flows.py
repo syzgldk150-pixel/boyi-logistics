@@ -1316,7 +1316,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         self.assertIn("登录成功", replies[-1])
         self.assertIn("原事项运行已恢复", replies[-1])
 
-    def test_feishu_departure_message_executes_single_configured_plate(self):
+    def test_removed_r7_departure_message_is_not_routed_to_automation(self):
         calls: dict[str, Any] = {}
         replies: list[str] = []
         self.project_entrypoints.project_config["plate_numbers"] = ["湘AK6980"]
@@ -1353,7 +1353,8 @@ class ToolFeishuFlowTests(unittest.TestCase):
                 }
 
             async def handle_message(self, *args, **kwargs):
-                raise AssertionError("发车 should not be routed to LLM handle_message")
+                calls["handle_message"] = kwargs.get("message")
+                return {"reply": "未匹配到现有自动化。"}
 
         async def _fake_reply_text(_chat_id, text, receive_id_type="chat_id", *, reply_type="text"):
             replies.append(text)
@@ -1366,17 +1367,11 @@ class ToolFeishuFlowTests(unittest.TestCase):
             asyncio.run(message_handler._process_and_reply("发车", "user-1", "chat-1"))
 
         self.assertNotIn("execute_tool", calls)
-        self.assertEqual(
-            "builtin.r7_departure_checkin",
-            self.project_entrypoints.calls[-1]["route_key"],
-        )
-        self.assertEqual(
-            ["湘AK6980"],
-            self.project_entrypoints.calls[-1]["envelope"]["body"]["plate_numbers"],
-        )
-        self.assertTrue(replies)
+        self.assertEqual("发车", calls["handle_message"])
+        self.assertEqual([], self.project_entrypoints.calls)
+        self.assertEqual("未匹配到现有自动化。", replies[-1])
 
-    def test_feishu_departure_message_sets_pending_for_multiple_plates(self):
+    def test_removed_r7_departure_message_does_not_create_plate_pending(self):
         replies: list[str] = []
         pending_calls: list[tuple[str, dict[str, Any], int]] = []
 
@@ -1394,6 +1389,8 @@ class ToolFeishuFlowTests(unittest.TestCase):
                     }
                 ]
 
+        calls: dict[str, Any] = {}
+
         class _FakeAgent:
             memory = _FakeMemory()
 
@@ -1401,7 +1398,8 @@ class ToolFeishuFlowTests(unittest.TestCase):
                 raise AssertionError("multi-plate 发车 should wait for user choice")
 
             async def handle_message(self, *args, **kwargs):
-                raise AssertionError("发车 should not be routed to LLM handle_message")
+                calls["handle_message"] = kwargs.get("message")
+                return {"reply": "未匹配到现有自动化。"}
 
         async def _fake_reply_text(_chat_id, text, receive_id_type="chat_id", *, reply_type="text"):
             replies.append(text)
@@ -1417,19 +1415,12 @@ class ToolFeishuFlowTests(unittest.TestCase):
         ):
             asyncio.run(message_handler._process_and_reply("发车", "user-1", "chat-1"))
 
-        self.assertEqual(1, len(pending_calls))
-        self.assertEqual("chat-1", pending_calls[0][0])
-        self.assertEqual("r7_departure_plate_choice", pending_calls[0][1]["type"])
-        self.assertEqual(["湘AK6980", "湘B12345"], pending_calls[0][1]["plate_numbers"])
-        self.assertEqual(
-            "builtin.r7_departure_checkin",
-            pending_calls[0][1]["automation_route_key"],
-        )
-        self.assertNotIn("params", pending_calls[0][1])
-        self.assertIn("1. 湘AK6980", replies[-1])
-        self.assertIn("2. 湘B12345", replies[-1])
+        self.assertEqual([], pending_calls)
+        self.assertEqual("发车", calls["handle_message"])
+        self.assertEqual([], self.project_entrypoints.calls)
+        self.assertEqual("未匹配到现有自动化。", replies[-1])
 
-    def test_feishu_departure_pending_choice_executes_selected_plate(self):
+    def test_removed_r7_departure_pending_is_cleared_without_execution(self):
         calls: dict[str, Any] = {}
         replies: list[str] = []
         pending = {
@@ -1463,13 +1454,10 @@ class ToolFeishuFlowTests(unittest.TestCase):
 
         clear_pending.assert_called_once_with("chat-1")
         self.assertNotIn("execute_tool", calls)
-        self.assertEqual(
-            ["湘B12345"],
-            self.project_entrypoints.calls[-1]["envelope"]["body"]["plate_numbers"],
-        )
-        self.assertTrue(replies)
+        self.assertEqual([], self.project_entrypoints.calls)
+        self.assertIn("已移除", replies[-1])
 
-    def test_feishu_departure_pending_rejects_bare_numeric_choice(self):
+    def test_removed_r7_departure_pending_clears_numeric_reply_too(self):
         replies: list[str] = []
         pending = {
             "type": "r7_departure_plate_choice",
@@ -1496,9 +1484,8 @@ class ToolFeishuFlowTests(unittest.TestCase):
         ):
             asyncio.run(message_handler._process_and_reply("2", "user-1", "chat-1"))
 
-        clear_pending.assert_not_called()
-        self.assertIn("回复完整车牌号", replies[-1])
-        self.assertIn("2. 湘B12345", replies[-1])
+        clear_pending.assert_called_once_with("chat-1")
+        self.assertIn("已移除", replies[-1])
 
     def test_scan_sync_reply_never_labels_failed_batches_as_complete(self):
         reply = direct_tool_router.format_tool_reply(

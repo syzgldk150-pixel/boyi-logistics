@@ -12,6 +12,21 @@ from shared.runtime_repositories import WorkflowResourceRepository
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+class WorkflowResourceCatalog(list):
+    """List-compatible resource projection with one global health signal."""
+
+    def __init__(
+        self,
+        values: list[dict[str, str]],
+        *,
+        resource_pool_available: bool,
+        resource_pool_problem: str = "",
+    ) -> None:
+        super().__init__(values)
+        self.resource_pool_available = bool(resource_pool_available)
+        self.resource_pool_problem = str(resource_pool_problem or "")
+
+
 def _connect():
     return pymysql.connect(
         host=os.getenv("AGENT_DB_HOST", "127.0.0.1"),
@@ -52,7 +67,7 @@ def list_workflow_resources() -> list[dict]:
     return _repository().list_records(include_config=False)
 
 
-def list_workflow_resource_descriptors() -> list[dict[str, str]]:
+def list_workflow_resource_descriptors() -> WorkflowResourceCatalog:
     """Return the closed, non-secret resource pool used by plugin settings.
 
     Runtime bindings still resolve the complete record through
@@ -73,11 +88,14 @@ def list_workflow_resource_descriptors() -> list[dict[str, str]]:
         if resource_kind in {"feishu_sheet", "feishu_bitable"} and resource_id:
             feishu_resources.append((resource_id, config))
 
-    live_names: dict[str, str] = {}
+    live_resources: dict[str, object] = {}
+    global_problem = ""
     if feishu_resources:
-        from agent.feishu_resource_catalog import resolve_live_feishu_resource_names
+        from agent.feishu_resource_catalog import resolve_live_feishu_resource_catalog
 
-        live_names = resolve_live_feishu_resource_names(feishu_resources)
+        live_catalog = resolve_live_feishu_resource_catalog(feishu_resources)
+        live_resources = dict(live_catalog.resources)
+        global_problem = live_catalog.global_problem
 
     descriptors: list[dict[str, str]] = []
     for row in rows:
@@ -98,20 +116,42 @@ def list_workflow_resource_descriptors() -> list[dict[str, str]]:
             or not re.fullmatch(r"[0-9a-f]{64}", config_sha256)
         ):
             continue
+        live = live_resources.get(resource_id)
+        is_feishu = resource_kind in {"feishu_sheet", "feishu_bitable"}
         raw_name = (
-            live_names.get(resource_id)
-            if resource_kind in {"feishu_sheet", "feishu_bitable"}
+            getattr(live, "name", "")
+            if is_feishu
             else config.get("display_name") or config.get("name") or config.get("title")
         )
         name = str(raw_name or "").strip()
-        if not name or len(name) > 160:
+        purpose = str(
+            getattr(live, "purpose", "")
+            or config.get("display_name")
+            or config.get("name")
+            or config.get("title")
+            or "业务数据"
+        ).strip()[:80]
+        status = str(getattr(live, "status", "available") or "").strip().lower()
+        problem_code = str(getattr(live, "problem_code", "") or "").strip().upper()
+        if (
+            status not in {"available", "unavailable"}
+            or (status == "available" and (not name or len(name) > 160))
+            or (status == "unavailable" and name)
+            or not purpose
+        ):
             continue
         descriptors.append(
             {
                 "resource_id": resource_id,
                 "name": name,
                 "kind": resource_kind,
-                "status": "available",
+                "status": status,
+                "purpose": purpose,
+                "problem_code": problem_code,
             }
         )
-    return descriptors
+    return WorkflowResourceCatalog(
+        descriptors,
+        resource_pool_available=not bool(global_problem),
+        resource_pool_problem=global_problem,
+    )

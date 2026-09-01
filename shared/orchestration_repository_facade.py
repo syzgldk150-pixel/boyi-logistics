@@ -304,6 +304,12 @@ class OrchestrationRepositoryFacadeMixin:
         with self.unit_of_work() as uow:
             return uow.evidence.list(work_item_id, run_id=run_id, limit=limit)
 
+    def get_evidence(self, evidence_id: str) -> dict[str, Any] | None:
+        """Return one exact evidence record for a trusted read-only projection."""
+
+        with self.unit_of_work() as uow:
+            return uow.evidence.get(evidence_id)
+
     def get_approval(self, approval_id: str) -> dict[str, Any] | None:
         with self.unit_of_work() as uow:
             return uow.approvals.get(approval_id)

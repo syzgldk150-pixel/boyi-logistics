@@ -12,7 +12,7 @@
     <p><i data-feather="shield" aria-hidden="true"></i>只读查询，不会更改业务数据。</p>
     <div class="harness-state" data-harness-state aria-live="polite">
       <span class="harness-state-dot" aria-hidden="true"></span>
-      <span data-harness-state-label>等待提问</span>
+      <span data-harness-state-label>正在连接</span>
     </div>
   </header>
 
@@ -20,7 +20,7 @@
     <div class="harness-welcome" data-harness-welcome>
       <span class="harness-welcome-icon" aria-hidden="true"><i data-feather="message-circle"></i></span>
       <h3>有什么需要查询？</h3>
-      <p>可以让 AI 助手查看已开放的只读信息。会话只在当前服务进程中短暂保存。</p>
+      <p>直接用中文描述要查的内容。会话只在当前服务进程中短暂保存。</p>
       <div class="harness-tools-list" data-harness-tools aria-label="可用查询建议"></div>
       <span class="sr-only" data-harness-tools-count>未加载</span>
     </div>
@@ -38,6 +38,7 @@
 
   <div class="harness-composer-wrap">
     <p class="harness-feedback" data-harness-feedback role="status" aria-live="polite" hidden></p>
+    <a class="harness-settings-link" href="/settings/llm" data-harness-model-settings hidden>打开智能模型设置</a>
     <form class="harness-form" data-harness-form novalidate>
       <label class="sr-only" for="harness-message">输入消息</label>
       <textarea id="harness-message" name="message" maxlength="4000" rows="1" required data-harness-message placeholder="输入只读查询…"></textarea>

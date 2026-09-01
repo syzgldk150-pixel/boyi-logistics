@@ -13,7 +13,7 @@ from agent.harness.sidecar import SidecarResult
 from agent.harness_application import (
     FIXED_HARNESS_TOOL_IDS,
     HarnessConversationService,
-    MEMORY_ONLY_NON_PRODUCTION,
+    MEMORY_ONLY,
     ProductionGatedHarnessSidecar,
     ProductionGatedHarnessSidecarFactory,
     TrustedHarnessInvocationAdapter,
@@ -70,7 +70,7 @@ def test_conversation_binds_exact_admin_and_replays_without_sidecar_rerun() -> N
         sidecar_factory=factory,
     )
     created = service.create_session(actor=admin_actor(), request_id=SESSION_REQUEST)
-    assert created.persistence_status == MEMORY_ONLY_NON_PRODUCTION
+    assert created.persistence_status == MEMORY_ONLY
     assert created.replayed is False
 
     first = service.send_message(
@@ -94,7 +94,7 @@ def test_conversation_binds_exact_admin_and_replays_without_sidecar_rerun() -> N
     assert first.assistant_message.content == replay.assistant_message.content
     assert factory_calls == [(admin_actor(roles=("admin",)), REQUEST_ONE)]
     assert tuple(item.role for item in first.session.messages) == ("user", "assistant")
-    assert first.to_dict()["persistence_status"] == MEMORY_ONLY_NON_PRODUCTION
+    assert first.to_dict()["persistence_status"] == MEMORY_ONLY
     assert "principal_id" not in first.to_dict()
 
 

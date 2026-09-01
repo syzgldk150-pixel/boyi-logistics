@@ -85,9 +85,6 @@ AUTH_PENDING_CODE_KEYWORDS = (
 UNKNOWN_EXECUTION_REPLY = "没有匹配到可执行脚本，我不知道该执行哪个任务。"
 LOGIN_PENDING_TTL = 600
 LOGIN_ACCOUNT_CHOICE_TTL = 600
-R7_DEPARTURE_PENDING_TTL = 600
-R7_DEPARTURE_TASK_ID = "r7_departure_checkin"
-R7_DEPARTURE_DEFAULT_PLATE = "湘AK6980"
 SELF_PICKUP_PROBLEM_ACCOUNT_ID = "ronghui_self_pickup_problem"
 SELF_PICKUP_PREVIEW_TOOL_NAME = "preview_self_pickup_problems"
 SPLIT_TOOL_NAME = "split_pending_problem_upload"
@@ -162,8 +159,6 @@ TOOL_DISPLAY_NAMES = {
     "sync_yunda_send_waybills": "韵达寄件运单任务",
     "self_pickup_problem_upload": "自提到货问题件任务",
     "split_pending_problem_upload": "分批问题件任务",
-    "r7_arrival_checkin": "R7 到达打卡任务",
-    "r7_departure_checkin": "R7 发车打卡任务",
 }
 
 
@@ -789,89 +784,6 @@ async def _execute_split_formal(
 async def _reply_split_lines(chat_id: str, lines: list[str], *, reply_type: str) -> None:
     for chunk in _split_text_chunks(lines):
         await _reply_text(chat_id, chunk, reply_type=reply_type)
-
-
-def _normalize_plate_numbers(value: Any, *, default: str = R7_DEPARTURE_DEFAULT_PLATE) -> list[str]:
-    if value in (None, ""):
-        raw_items: list[Any] = [default]
-    elif isinstance(value, (list, tuple, set)):
-        raw_items = list(value)
-    else:
-        text = str(value)
-        for sep in ("，", "、", ";", "；", "\n", "\r", "\t"):
-            text = text.replace(sep, ",")
-        raw_items = text.split(",")
-
-    plates: list[str] = []
-    seen: set[str] = set()
-    for item in raw_items:
-        plate = str(item or "").strip()
-        if not plate or plate in seen:
-            continue
-        seen.add(plate)
-        plates.append(plate)
-    return plates or ([default] if default else [])
-
-
-def _committed_r7_departure_config(route_key: str) -> tuple[list[str], dict[str, Any]]:
-    route = _automation_entrypoints().describe_feishu_route(route_key)
-    config = dict(route.project_config)
-    raw_plates = config.get("plate_numbers")
-    if raw_plates in (None, ""):
-        raw_plates = config.get("plate_number")
-    plate_numbers = _normalize_plate_numbers(raw_plates, default="")
-    if not plate_numbers:
-        raise OrchestrationError(
-            "PROJECT_CONFIGURATION_INVALID",
-            "R7 departure project has no configured plate number",
-        )
-    return plate_numbers, config
-
-
-def _r7_departure_saved_params(agent: Any) -> dict[str, Any]:
-    try:
-        rows = agent.memory.list_scheduled_tasks()
-    except Exception as exc:
-        logger.warning("读取 R7 发车打卡后台配置失败: %s", redact_text(exc)[:200])
-        return {}
-
-    fallback: dict[str, Any] | None = None
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        params = row.get("tool_params")
-        if not isinstance(params, dict):
-            params = {}
-        if str(row.get("id") or "").strip() == R7_DEPARTURE_TASK_ID:
-            return dict(params)
-        if str(row.get("tool_name") or "").strip() == R7_DEPARTURE_TASK_ID and fallback is None:
-            fallback = dict(params)
-    return fallback or {}
-
-
-def _format_r7_departure_plate_choice(plate_numbers: list[str], params: dict[str, Any]) -> str:
-    class_name = str(params.get("class_name") or "邵阳操作场-长沙").strip()
-    fixed_time = str(params.get("departure_time_fixed") or "21:30:00").strip()
-    lines = [
-        "请选择本次 R7 发车打卡车牌，回复完整车牌号，不要只回复序号：",
-        f"班次：{class_name}",
-        f"计划发车：今天 {fixed_time}",
-    ]
-    for index, plate in enumerate(plate_numbers, start=1):
-        lines.append(f"{index}. {plate}")
-    lines.append('如需取消，回复"取消"。')
-    return "\n".join(lines)
-
-
-def _resolve_r7_departure_plate_choice(text: str, plate_numbers: list[str]) -> str | None:
-    normalized = str(text or "").strip()
-    if not normalized:
-        return None
-    compact = "".join(normalized.split()).upper()
-    for plate in plate_numbers:
-        if "".join(str(plate).split()).upper() == compact:
-            return plate
-    return None
 
 
 def _admin_base_url() -> str:
@@ -1812,44 +1724,6 @@ async def _execute_and_reply(
     await _reply_tool_result(chat_id, tool_name, result)
 
 
-async def _handle_r7_departure_direct(
-    chat_id: str,
-    route_key: str,
-) -> None:
-    try:
-        plate_numbers, config = _committed_r7_departure_config(route_key)
-    except OrchestrationError as exc:
-        await _reply_text(
-            chat_id,
-            f"R7 发车项目配置不可用（{exc.code}），请在自动化设置中检查。",
-            reply_type="r7_departure_project_rejected",
-        )
-        return
-
-    if len(plate_numbers) > 1:
-        clear_pending(chat_id)
-        set_pending(
-            chat_id,
-            {
-                "type": "r7_departure_plate_choice",
-                "automation_route_key": route_key,
-                "plate_numbers": plate_numbers,
-            },
-            ttl_sec=R7_DEPARTURE_PENDING_TTL,
-        )
-        await _reply_text(
-            chat_id,
-            _format_r7_departure_plate_choice(plate_numbers, config),
-        )
-        return
-
-    await _invoke_automation_project_and_reply(
-        route_key=route_key,
-        dynamic_inputs={"plate_numbers": plate_numbers},
-        receive_id=chat_id,
-    )
-
-
 def _event_id_from_sdk_event(event: Any, *, fallback: str = "") -> str:
     header = getattr(event, "header", None)
     if header is None:
@@ -2476,49 +2350,11 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
             return
 
         elif ptype == "r7_departure_plate_choice":
-            if is_cancel_text(text):
-                clear_pending(chat_id)
-                await _reply_text(chat_id, "已取消：R7 发车打卡")
-                return
-            route_key = str(pending.get("automation_route_key") or "").strip()
-            if _contains_account_override(pending) or not route_key:
-                clear_pending(chat_id)
-                await _reply_text(
-                    chat_id,
-                    "旧版车牌选择状态已失效，请重新发送 R7 发车打卡指令。",
-                )
-                return
-            try:
-                plate_numbers, config = _committed_r7_departure_config(route_key)
-            except OrchestrationError as exc:
-                clear_pending(chat_id)
-                await _reply_text(
-                    chat_id,
-                    f"R7 发车项目配置已变化（{exc.code}），请重新发起。",
-                )
-                return
-            if plate_numbers != _normalize_plate_numbers(
-                pending.get("plate_numbers"),
-                default="",
-            ):
-                clear_pending(chat_id)
-                await _reply_text(
-                    chat_id,
-                    "R7 发车项目的车牌配置已变化，请重新发起。",
-                )
-                return
-            selected_plate = _resolve_r7_departure_plate_choice(text, plate_numbers)
-            if selected_plate:
-                clear_pending(chat_id)
-                await _invoke_automation_project_and_reply(
-                    route_key=route_key,
-                    dynamic_inputs={"plate_numbers": [selected_plate]},
-                    receive_id=chat_id,
-                )
-                return
+            clear_pending(chat_id)
             await _reply_text(
                 chat_id,
-                _format_r7_departure_plate_choice(plate_numbers, config),
+                "R7 发车打卡自动化已移除，本次旧操作已清理。",
+                reply_type="removed_automation_pending_cleared",
             )
             return
 
@@ -2638,10 +2474,6 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
 
         if isinstance(local_result, dict):
             await _reply_tool_result(chat_id, tool_name, local_result)
-            return
-
-        if mode == "r7_departure_choice":
-            await _handle_r7_departure_direct(chat_id, automation_route_key)
             return
 
         if mode == "automation_project":

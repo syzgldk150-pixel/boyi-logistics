@@ -104,9 +104,9 @@ class HarnessSession:
 
     @property
     def persistence_status(self) -> str:
-        """Expose the explicit non-production persistence guarantee."""
+        """Expose the explicit process-memory persistence guarantee."""
 
-        return "MEMORY_ONLY_NON_PRODUCTION"
+        return "MEMORY_ONLY"
 
     def append(self, message: HarnessMessage) -> "HarnessSession":
         if len(self.messages) >= _MAX_MESSAGES_PER_SESSION:

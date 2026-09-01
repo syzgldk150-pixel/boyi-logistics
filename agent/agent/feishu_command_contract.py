@@ -70,14 +70,6 @@ _TOOL_CANCEL_COMMANDS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.IGNORECASE,
         ),
     ),
-    (
-        "r7_arrival_checkin",
-        re.compile(r"^\s*取消\s*(?:R7\s*)?到达\s*打卡\s*$", re.IGNORECASE),
-    ),
-    (
-        "r7_departure_checkin",
-        re.compile(r"^\s*取消\s*(?:R7\s*)?(?:发车|发车打卡)\s*$", re.IGNORECASE),
-    ),
 )
 
 

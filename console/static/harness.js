@@ -9,6 +9,7 @@
   const submitButton = page.querySelector("[data-harness-submit]");
   const resetButton = page.querySelector("[data-harness-reset]");
   const feedback = page.querySelector("[data-harness-feedback]");
+  const modelSettingsLink = page.querySelector("[data-harness-model-settings]");
   const stateLabel = page.querySelector("[data-harness-state-label]");
   const stateBadge = page.querySelector("[data-harness-state]");
   const sessionNote = page.querySelector("[data-harness-session]");
@@ -25,7 +26,6 @@
 
   const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
   const MAX_MESSAGE_CHARS = 4000;
-  const TOOL_COMMAND_PREFIX = "调用只读工具：";
   const HIDDEN_KEYS = new Set([
     "account_id",
     "actor",
@@ -164,6 +164,10 @@
     feedback.hidden = false;
     feedback.classList.add(`is-${kind || "info"}`);
     feedback.textContent = message;
+  }
+
+  function showModelSettings(visible) {
+    if (modelSettingsLink) modelSettingsLink.hidden = !visible;
   }
 
   function setState(label, stateClass) {
@@ -309,17 +313,19 @@
       button.type = "button";
       button.addEventListener("click", () => {
         if (!messageInput || busy) return;
-        messageInput.value = TOOL_COMMAND_PREFIX + title;
+        const examples = {
+          "knowledge.search": "帮我查询业务知识：",
+          "waybill.lookup": "帮我查一下这个运单：",
+          "tracking.lookup": "帮我查一下物流轨迹：",
+          "work_items.list_open": "帮我看看现在有哪些待处理事项",
+          "runs.get_summary": "帮我查看这个任务的运行结果：",
+          "artifact.inspect": "帮我查看这条运行证据：",
+        };
+        messageInput.value = examples[String(tool.tool_id || "")] || `帮我${title}`;
         resizeComposer();
         messageInput.focus();
       });
     });
-  }
-
-  function productionGated(data) {
-    return [data && data.status, data && data.availability, data && data.blocked_reason].some((value) => (
-      typeof value === "string" && value.toUpperCase().includes("PRODUCTION_GATED")
-    ));
   }
 
   function unavailableStatus(data) {
@@ -354,22 +360,23 @@
     if (details) details.hidden = false;
     setOutputState("已返回");
     appendMessage("assistant", responseText(response));
-    setState(productionGated(response) ? "生产能力未开放" : "只读会话可用", productionGated(response) ? "gated" : "ready");
+    setState("只读查询可用", "ready");
+    showModelSettings(false);
   }
 
   function describeError(error) {
     const code = String(error && error.code || "").toUpperCase();
-    if (code.includes("PRODUCTION_GATED")) {
-      return "AI 助手的生产查询能力尚未开放，未执行任何业务操作。";
+    if (code.includes("MODEL_NOT_CONFIGURED")) {
+      return "尚未启用智能模型，请先打开“智能模型”完成配置。";
     }
-    if (code.includes("SANDBOX")) {
-      return "AI 助手的安全运行环境暂不可用，请联系系统管理员检查服务器安全组件。未执行任何业务操作。";
+    if (code.includes("MODEL_UNAVAILABLE") || code.includes("TIMEOUT")) {
+      return "智能模型暂时无法连接，请稍后重试。";
     }
     if (code.includes("CAPABILITY_UNAVAILABLE") || code.includes("SIDECAR") || code.includes("UNREACHABLE")) {
       return "AI 助手当前无法启动只读会话，请稍后重试或联系系统管理员。未执行任何业务操作。";
     }
-    if (code.includes("MESSAGE_FORMAT")) {
-      return `请使用建议查询，或输入“${TOOL_COMMAND_PREFIX}工具标题”。`;
+    if (code.includes("LIMIT_EXCEEDED")) {
+      return "这次问题需要查询的内容过多，请缩小范围后重试。";
     }
     return String(error && error.message || "AI 助手请求失败，未执行任何业务操作。");
   }
@@ -382,14 +389,12 @@
     }
     setSession(createdSessionId);
     renderTools(data.tools);
-    if (productionGated(data)) {
-      throw new HarnessRequestError("PRODUCTION_GATED", "AI 助手生产能力尚未开放。", 503);
-    }
     const unavailable = unavailableStatus(data);
     if (unavailable) {
-      throw new HarnessRequestError(unavailable, "AI 助手安全运行环境暂不可用。", 503);
+      throw new HarnessRequestError(unavailable, "AI 助手暂时无法连接。", 503);
     }
-    setState("只读会话可用", "ready");
+    setState("只读查询可用", "ready");
+    showModelSettings(false);
     return createdSessionId;
   }
 
@@ -423,6 +428,24 @@
     clearDetails();
     setState("等待提问", "");
     setFeedback("", "info");
+    initializeSession();
+  }
+
+  async function initializeSession() {
+    if (busy || sessionId) return;
+    setBusy(true);
+    setState("正在连接", "busy");
+    showModelSettings(false);
+    try {
+      await createSession();
+    } catch (error) {
+      const code = String(error && error.code || "").toUpperCase();
+      setState(code.includes("MODEL_NOT_CONFIGURED") ? "模型未启用" : "暂时无法连接", "error");
+      setFeedback(describeError(error), "error");
+      showModelSettings(code.includes("MODEL_NOT_CONFIGURED"));
+    } finally {
+      setBusy(false);
+    }
   }
 
   function resizeComposer() {
@@ -452,7 +475,8 @@
       const readable = describeError(error);
       appendMessage("assistant", readable, "error");
       const code = String(error && error.code || "").toUpperCase();
-      setState(code.includes("PRODUCTION_GATED") ? "生产能力未开放" : "当前不可用", code.includes("PRODUCTION_GATED") ? "gated" : "error");
+      setState(code.includes("MODEL_NOT_CONFIGURED") ? "模型未启用" : "暂时无法连接", "error");
+      showModelSettings(code.includes("MODEL_NOT_CONFIGURED"));
       setFeedback("", "error");
     } finally {
       setBusy(false);
@@ -476,4 +500,5 @@
   setSession("");
   setBusy(false);
   resizeComposer();
+  initializeSession();
 })();

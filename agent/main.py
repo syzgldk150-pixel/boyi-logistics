@@ -206,6 +206,7 @@ from agent.http_security import INTERNAL_API_TOKEN_HEADER, authenticate_internal
 from agent.execution_boundary import EXECUTION_CAPABILITY_HEADER, authorize_tms_target
 from agent.phase7_resource_import import import_phase7_resources
 from agent.runtime_config import load_agent_environment
+from harness_composition import build_read_only_harness_gateway
 from agent.service_v2_process_runtime import (
     ServiceV2ProcessRuntime,
     service_v2_harness_conversations,
@@ -1355,14 +1356,14 @@ async def lifespan(app: FastAPI):
         migration_entrypoint_ownership=plugin_runtime.migration_entrypoint_ownership,
     )
     bind_service_v2_feishu_dispatcher(service_v2_feishu_dispatcher)
+    harness_gateway = build_read_only_harness_gateway(runtime, repository)
     process_service_v2_runtime = ServiceV2ProcessRuntime(
-        policy_service=project_policy_service,
-        contribution_registry=plugin_runtime.contribution_registry,
+        policy_service=project_policy_service, contribution_registry=plugin_runtime.contribution_registry,
         backend_availability=plugin_runtime.contribution_backend_availability,
+        llm_client=runtime.llm, harness_fixed_handlers=harness_gateway.handlers(),
     )
     harness_runtime_status = await asyncio.to_thread(process_service_v2_runtime.start)
-    logger.info("Restricted Harness runtime status=%s availability=%s",
-                harness_runtime_status.status, harness_runtime_status.availability)
+    logger.info("AI assistant runtime status=%s availability=%s", harness_runtime_status.status, harness_runtime_status.availability)
     runner = WorkflowRunner(
         repository=repository,
         catalog=catalog,
