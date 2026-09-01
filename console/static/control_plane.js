@@ -321,7 +321,7 @@
         row.append(ownerCell);
 
         const slaCell = createElement("td", "", formatDateTime(item.sla_deadline));
-        slaCell.dataset.label = "SLA 截止";
+        slaCell.dataset.label = "办理截止时间";
         row.append(slaCell);
 
         const updatedCell = createElement("td", "", formatDateTime(item.updated_at));
@@ -507,7 +507,7 @@
         makeDefinition("优先级", priorityLabel(item.priority)),
         makeDefinition("责任人", ownerLabel(item.owner || item.owner_id)),
         makeDefinition("来源", item.source),
-        makeDefinition("SLA 截止", formatDateTime(item.sla_deadline)),
+        makeDefinition("办理截止时间", formatDateTime(item.sla_deadline)),
         makeDefinition("更新时间", formatDateTime(item.updated_at)),
       );
       header.setAttribute("aria-busy", "false");
@@ -992,11 +992,11 @@
           try {
             updates = JSON.parse(updatesText);
           } catch (_error) {
-            showFeedback(feedback, "参数更新必须是有效的 JSON 对象。");
+            showFeedback(feedback, "参数更新必须是有效的结构化配置。");
             return;
           }
           if (!updates || Array.isArray(updates) || typeof updates !== "object") {
-            showFeedback(feedback, "参数更新必须是 JSON 对象。");
+            showFeedback(feedback, "参数更新必须是结构化配置。");
             return;
           }
           structured.argument_updates = updates;

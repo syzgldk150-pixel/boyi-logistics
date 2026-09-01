@@ -21,6 +21,7 @@ from console.services.automation import (
 )
 from console.services.automation_projects import (
     _normalize_plugin_account_roles,
+    _normalize_plugin_resources,
     _resource_display_name,
 )
 
@@ -427,7 +428,7 @@ class AutomationPluginCatalogTests(unittest.TestCase):
 
         for projected in (packages[0], instances[0]):
             self.assertEqual("ACTION_V1", projected["runtime_model"])
-            self.assertEqual("Action v1", projected["runtime_model_label"])
+            self.assertEqual("旧版操作", projected["runtime_model_label"])
             self.assertEqual("1.0.0", projected["plugin_api"])
             self.assertEqual("1.2.3", projected["active_version"])
             self.assertEqual("1.2.3", projected["target_version"])
@@ -978,7 +979,7 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         payload["resources"] = [
             {
                 "resource_id": "phase7.pending_arrivals_sheet",
-                "name": "phase7.pending_arrivals_sheet",
+                "name": "每日到货文档 / 未齐货物",
                 "kind": "feishu_sheet",
                 "status": "available",
             }
@@ -989,9 +990,9 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         binding = instances[0]["resource_role_bindings"][0]
         self.assertEqual("未齐货物表", binding["label"])
         self.assertIn("可选", binding["hint"])
-        self.assertEqual("未齐货物表", binding["options"][0]["display_name"])
+        self.assertEqual("每日到货文档 / 未齐货物", binding["options"][0]["display_name"])
         self.assertEqual("飞书电子表格", binding["options"][0]["kind_label"])
-        self.assertEqual("报价账单账号、未齐货物表", packages[0]["configuration_summary"])
+        self.assertEqual("报价账单账号、每日到货文档 / 未齐货物", packages[0]["configuration_summary"])
 
     def test_actual_sheet_name_takes_priority_over_internal_resource_copy(self):
         self.assertEqual(
@@ -1009,12 +1010,28 @@ class AutomationPluginCatalogTests(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            "每日到货表",
+            "",
             _resource_display_name(
                 "phase7.split_pending_source_sheet",
                 "phase7.split_pending_source_sheet",
+                kind="feishu_sheet",
             ),
         )
+
+    def test_feishu_internal_identifier_never_becomes_a_fake_table_name(self):
+        resources, valid = _normalize_plugin_resources(
+            [
+                {
+                    "resource_id": "phase7.daily_sign_sheet",
+                    "name": "phase7.daily_sign_sheet",
+                    "kind": "feishu_sheet",
+                    "status": "available",
+                }
+            ]
+        )
+
+        self.assertFalse(valid)
+        self.assertEqual([], resources)
 
     def test_resource_projection_with_extra_fields_fails_closed_without_leaking(self):
         payload = _catalog_payload()
@@ -2255,22 +2272,23 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertNotIn("data-plugin-instance-action", card)
         self.assertNotIn("data-plugin-upgrade", card)
 
-    def test_service_v2_runtime_services_are_visible_without_migration_controls(self):
+    def test_runtime_technical_details_stay_hidden_without_migration_controls(self):
         template_source = (CONSOLE_DIR / "templates" / "automation.html").read_text(
             encoding="utf-8"
         )
 
         self.assertIn("plugin.runtime_model == 'SERVICE_V2'", template_source)
-        self.assertIn("运行版本 {{ plugin.active_version or '尚未激活' }}", template_source)
-        self.assertIn("目标版本 {{ plugin.target_version }}", template_source)
-        self.assertIn("Host API {{ plugin.plugin_api }}", template_source)
-        self.assertIn("{% for service in plugin.provided_services %}", template_source)
+        self.assertNotIn("运行版本 {{ plugin.active_version or '尚未激活' }}", template_source)
+        self.assertNotIn("目标版本 {{ plugin.target_version }}", template_source)
+        self.assertNotIn("Host API {{ plugin.plugin_api }}", template_source)
+        self.assertNotIn("{% for service in plugin.provided_services %}", template_source)
         self.assertNotIn("data-plugin-migration", template_source)
         self.assertNotIn("建立 v1 → v2 并行迁移验证", template_source)
         self.assertIn("plugin.blocking_reason_labels | join('；')", template_source)
         self.assertIn('data-plugin-entrypoint-kind="{{ entrypoint_kind }}"', template_source)
         self.assertIn("'events': '事件订阅'", template_source)
-        self.assertIn("审计不是审批", template_source)
+        self.assertNotIn("审计不是审批", template_source)
+        self.assertIn("并保留每次运行记录", template_source)
         self.assertIn("{% elif task.approval_policy %}", template_source)
         self.assertIn('name="contribution_id"', template_source)
         self.assertIn("task.plugin.console_entrypoints | length > 1", template_source)

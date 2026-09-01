@@ -110,8 +110,8 @@
   {% if unsupported_automation_ids %}
   <div class="auto-feedback auto-feedback--error" role="alert">
     <div class="auto-feedback-head">
-      <strong>发现未完成插件迁移的自动化</strong>
-      <span>{{ unsupported_automation_ids | join('、') }}。这些项目禁止运行与配置，请先完成受控迁移。</span>
+      <strong>部分自动化暂不可用</strong>
+      <span>这些项目当前不能运行或设置，请联系系统管理员处理。</span>
     </div>
   </div>
   {% endif %}
@@ -149,7 +149,7 @@
     <div class="auto-provider-tabs" role="tablist" aria-label="自动化分类">
       <button class="auto-provider-tab" type="button" role="tab" data-automation-provider-tab data-provider="ronghui" aria-selected="true">
         <i data-feather="truck"></i>
-        <span>TMS融辉</span>
+        <span>融辉</span>
         <strong class="auto-provider-count">{{ provider_counts.get('ronghui', 0) }}</strong>
       </button>
       <button class="auto-provider-tab" type="button" role="tab" data-automation-provider-tab data-provider="yunda" aria-selected="false">
@@ -231,7 +231,7 @@
               {% elif task.task_mode == 'webhook' %}
               <span class="auto-mode-badge auto-mode-badge--webhook">
                 <i data-feather="zap"></i>
-                Webhook
+                外部调用
               </span>
               {% else %}
               <span class="auto-mode-badge auto-mode-badge--manual">
@@ -266,12 +266,12 @@
             <input type="hidden" name="contribution_id" value="{{ task.plugin.console_entrypoints[0] }}">
             {% elif task.plugin and task.plugin.runtime_model == 'SERVICE_V2' and task.plugin.console_entrypoints | length > 1 %}
             <label class="automation-plugin-contribution-select">
-              <span class="sr-only">选择要手动执行的 v2 能力</span>
-              <select class="review-input compact-input" name="contribution_id" aria-label="选择要手动执行的 v2 能力">
+              <span class="sr-only">选择要执行的功能</span>
+              <select class="review-input compact-input" name="contribution_id" aria-label="选择要执行的功能">
                 {% set contribution_selection = namespace(chosen=false) %}
                 {% for contribution_id in task.plugin.console_entrypoints %}
                 {% set contribution_enabled = contribution_id in task.plugin.enabled_console_entrypoints %}
-                <option value="{{ contribution_id }}" {% if not contribution_enabled %}disabled{% elif not contribution_selection.chosen %}selected{% set contribution_selection.chosen = true %}{% endif %}>{{ contribution_id }}</option>
+                <option value="{{ contribution_id }}" {% if not contribution_enabled %}disabled{% elif not contribution_selection.chosen %}selected{% set contribution_selection.chosen = true %}{% endif %}>功能 {{ loop.index }}</option>
                 {% endfor %}
               </select>
             </label>
@@ -320,25 +320,10 @@
             <div class="automation-plugin-instance-copy">
               <div class="automation-plugin-instance-line">
                 <span class="automation-plugin-state automation-plugin-state--{{ plugin.state | lower }}">{{ plugin.status_label }}</span>
-                {% if plugin.runtime_model == 'SERVICE_V2' %}
-                <span class="automation-plugin-model">{{ plugin.runtime_model_label }}</span>
-                <span>运行版本 {{ plugin.active_version or '尚未激活' }}</span>
-                {% if plugin.target_version and plugin.target_version != plugin.active_version %}<span>目标版本 {{ plugin.target_version }}</span>{% endif %}
-                {% if plugin.plugin_api %}<span>Host API {{ plugin.plugin_api }}</span>{% endif %}
-                {% else %}
-                <span>{{ plugin.version }}</span>
-                {% endif %}
-                <span>{{ plugin.platform_label }}</span>
                 <span>{{ '可设置定时' if plugin.can_schedule else '仅按允许入口触发' }}</span>
               </div>
               {% if plugin.action_summary %}<p>{{ plugin.action_summary }}</p>{% endif %}
               <small>需要设置：{{ plugin.configuration_summary }}</small>
-              {% if plugin.runtime_model == 'SERVICE_V2' and plugin.provided_services %}
-              <div class="automation-plugin-services" aria-label="项目已注册的服务">
-                <span>服务</span>
-                {% for service in plugin.provided_services %}<code>{{ service }}</code>{% endfor %}
-              </div>
-              {% endif %}
             </div>
           </div>
 
@@ -346,7 +331,7 @@
           <div class="automation-plugin-worker-binding">
             <label for="plugin-worker-{{ task.task_id }}">运行设备</label>
             <select id="plugin-worker-{{ task.task_id }}" class="review-input compact-input" data-plugin-worker-select {% if not can_manage_plugins %}disabled{% endif %}>
-              <option value="" {% if not plugin.device %}selected{% endif %}>请选择命名 Worker</option>
+              <option value="" {% if not plugin.device %}selected{% endif %}>请选择工作节点</option>
               {% for worker in task.plugin_worker_options | default([], true) %}
               <option value="{{ worker.device_id }}" {% if plugin.device and worker.device_id == plugin.device.device_id %}selected{% endif %} {% if not worker.binding_usable %}disabled{% endif %}>{{ worker.name }} · {{ worker.status_label }}</option>
               {% endfor %}
@@ -371,14 +356,14 @@
         {% else %}
         <div class="automation-plugin-block automation-plugin-block--missing" role="alert">
           <i data-feather="package-x"></i>
-          <span>{{ task.plugin_warning or '迁移/插件缺失：该任务禁止运行与配置。' }}</span>
+          <span>{{ task.plugin_warning or '扩展暂不可用，该任务当前不能运行或设置。' }}</span>
         </div>
         {% endif %}
 
         {% if task.plugin and task.plugin.runtime_model == 'SERVICE_V2' %}
         <section
           class="auto-project-governance auto-project-governance--active auto-project-governance--service-v2"
-          aria-label="{{ task.name_value }} v2 运行方式"
+          aria-label="{{ task.name_value }}运行方式"
         >
           <div class="auto-project-governance-row">
             <div class="auto-project-governance-copy">
@@ -387,7 +372,7 @@
                 运行方式
               </span>
               <strong>完全自动</strong>
-              <p>超级管理员安装后，依赖、配置和账号就绪即按 Manifest 默认入口运行。运行结果和写后 Evidence 继续留痕，审计不是审批。</p>
+              <p>项目设置完整且服务正常时会自动运行，并保留每次运行记录。</p>
             </div>
           </div>
         </section>
@@ -436,7 +421,7 @@
                 <input type="radio" name="project-policy-{{ task.task_id }}" value="PROJECT_FULL_AUTO" data-project-policy-mode {% if policy.configured_mode == 'PROJECT_FULL_AUTO' %}checked{% endif %}>
                 <span>
                   <strong>完全自动</strong>
-                  <small>项目清单允许的定时、后台、飞书与验签 Webhook 入口按已保存配置执行。</small>
+                  <small>项目清单允许的定时、后台、飞书与外部验签入口按已保存配置执行。</small>
                 </span>
               </label>
             </fieldset>
@@ -572,7 +557,7 @@
           <div class="auto-settings-section">
             <div class="auto-settings-label">
               <i data-feather="link" class="auto-settings-icon"></i>
-              Webhook 地址
+              外部调用地址
               <span style="color: var(--muted); font-weight: 500; font-size: 0.78rem; margin-left: 4px;">复制到飞书自动化的请求地址</span>
             </div>
             <div class="auto-webhook-url-wrap">
@@ -595,7 +580,7 @@
             <div class="auto-signing-hint auto-signing-hint--secure">
               <i data-feather="shield"></i>
               <div>
-                <strong>已启用静态 Webhook Token 校验</strong>
+                <strong>已启用静态外部调用密钥校验</strong>
                 <span>请求必须带上 <code>{{ task.webhook_header_name }}</code> 请求头，值需与服务器配置的固定 Token 一致。</span>
               </div>
             </div>
@@ -603,8 +588,8 @@
             <div class="auto-signing-hint auto-signing-hint--warning">
               <i data-feather="alert-triangle"></i>
               <div>
-                <strong>服务器尚未检测到静态 Webhook Token</strong>
-                <span>请在 Agent 环境变量中配置 <code>DOCFLOW_AGENT_WEBHOOK_TOKEN</code> 或 <code>AGENT_WEBHOOK_TOKEN</code>，并在飞书自动化请求头里附带 <code>{{ task.webhook_header_name }}</code>。</span>
+                <strong>服务器尚未检测到静态外部调用密钥</strong>
+                <span>请先在服务器配置外部调用密钥，再由系统管理员完成飞书自动化请求头设置。</span>
               </div>
             </div>
             {% endif %}
@@ -618,7 +603,7 @@
             <div class="auto-webhook-body-section">
               <div class="auto-settings-label" style="margin-top: 10px;">
                 <i data-feather="send" class="auto-settings-icon"></i>
-                请求体 (POST JSON)
+                请求内容
                 <span style="color: var(--muted); font-weight: 500; font-size: 0.78rem; margin-left: 4px;">填入飞书请求体</span>
               </div>
               <div class="auto-webhook-url-wrap">
@@ -725,7 +710,6 @@
                 <span class="automation-plugin-entrypoint-copy">
                   <strong>{{ {'scheduler': '系统定时', 'console': '后台手动', 'feishu': '飞书消息', 'webhook': '外部验签请求', 'events': '事件订阅'}.get(entrypoint_kind, entrypoint_kind) }}</strong>
                   <small>
-                    {% if task.plugin.runtime_model == 'SERVICE_V2' %}<code>{{ entrypoint }}</code>{% endif %}
                     <span data-plugin-entrypoint-state>{% if entrypoint in task.plugin.enabled_entrypoints %}开启{% else %}关闭{% endif %}</span>
                   </small>
                 </span>
@@ -1479,6 +1463,18 @@
       return true;
     }
 
+    function localizedSelectionStatus(value) {
+      const normalized = String(value || "").trim().toLowerCase();
+      if (!normalized || normalized === "not_applicable") return "";
+      const labels = {
+        pending: "待处理",
+        failed: "处理失败",
+        success: "已处理",
+      };
+      if (labels[normalized]) return labels[normalized];
+      return /[\u3400-\u9fff]/u.test(String(value || "")) ? String(value).trim() : "状态未知";
+    }
+
     function selectionMeta(candidate, automationId) {
       if (automationId === "self_pickup_problem_upload") {
         return [
@@ -1491,9 +1487,9 @@
       return [
         candidate.problem_type,
         `应到 ${candidate.expected_quantity} / 已到 ${candidate.arrived_quantity} / 未到 ${candidate.pending_quantity}`,
-        candidate.problem_item_status,
-        candidate.complaint_status,
-      ];
+        localizedSelectionStatus(candidate.problem_item_status),
+        localizedSelectionStatus(candidate.complaint_status),
+      ].filter(Boolean);
     }
 
     function renderSelectionPreview(preview) {
@@ -1744,7 +1740,7 @@
         meta.className = "auto-resource-meta";
         card.appendChild(meta);
       }
-      meta.innerHTML = "<span>来源：backend_console</span><span>刚刚保存</span>";
+      meta.innerHTML = "<span>来源：后台手动</span><span>刚刚保存</span>";
 
       let details = card.querySelector(":scope > .auto-resource-edit");
       if (!details) {
@@ -1905,7 +1901,7 @@
           renderFeedback(form, {
             kind: "warning",
             title: "设置已保存",
-            message: result.message || "任务设置已保存，Agent 重载稍后生效。",
+            message: result.message || "任务设置已保存，智能服务重载后生效。",
           });
         } else {
           hideRunFeedback(form);
@@ -2864,7 +2860,7 @@
             return;
           }
           const runId = String(result.run_id || "").trim();
-          if (!runId) throw new Error("Agent 未返回可追踪的正式扫描 Run。");
+          if (!runId) throw new Error("智能服务未返回可追踪的正式扫描记录。");
           clearScanPreview({ force: true });
           if (termDrawer) {
             termDrawer.dataset.runStartedAt = "";
@@ -2985,7 +2981,7 @@
             return;
           }
           const runId = String(result.run_id || "").trim();
-          if (!runId) throw new Error("Agent 未返回可追踪的正式处理记录。");
+          if (!runId) throw new Error("智能服务未返回可追踪的正式处理记录。");
           clearSelectionPreview({ force: true });
           if (termDrawer) {
             termDrawer.dataset.runStartedAt = "";
@@ -3109,7 +3105,7 @@
           if (result.pending) {
             const startedAt = result.activity_value || stamp;
             const runId = String(result.run_id || "").trim();
-            if (!runId) throw new Error("Agent 未返回可追踪的 Run 标识。");
+            if (!runId) throw new Error("智能服务未返回可追踪的执行标识。");
             if (termDrawer) {
               termDrawer.dataset.runStartedAt = result.activity_value || "";
               termDrawer.dataset.runId = runId;

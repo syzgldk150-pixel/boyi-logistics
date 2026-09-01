@@ -181,7 +181,7 @@ class ControlPlaneServiceMixin:
                 handler,
                 HTTPStatus.BAD_GATEWAY,
                 "INVALID_AGENT_RUN_CONTRACT",
-                "Agent 未返回可追踪的 run_id。",
+                "智能服务未返回可追踪的执行编号。",
             )
             return
         self._control_plane_success(
@@ -320,7 +320,7 @@ class ControlPlaneServiceMixin:
                 handler,
                 HTTPStatus.BAD_GATEWAY,
                 "INVALID_AGENT_WORK_ITEM_CONTRACT",
-                "Agent 返回了无效的事项数据。",
+                "智能服务返回了无效的事项数据。",
             )
             return
         self._control_plane_success(handler, HTTPStatus.OK, data)
@@ -350,7 +350,7 @@ class ControlPlaneServiceMixin:
                 handler,
                 HTTPStatus.BAD_GATEWAY,
                 "INVALID_AGENT_RESPONSE",
-                "Agent 返回了无效的控制平面数据。",
+                "智能服务返回了无效的控制平面数据。",
             )
             return
         self._control_plane_success(handler, HTTPStatus.OK, data)
@@ -369,7 +369,7 @@ class ControlPlaneServiceMixin:
                 handler,
                 HTTPStatus.BAD_GATEWAY,
                 "INVALID_AGENT_RUN_CONTRACT",
-                "Agent 返回了无效的执行数据。",
+                "智能服务返回了无效的执行数据。",
             )
             return
         self._control_plane_success(handler, HTTPStatus.OK, data)
@@ -468,7 +468,7 @@ class ControlPlaneServiceMixin:
                 handler,
                 HTTPStatus.BAD_REQUEST,
                 "INVALID_JSON",
-                "请求体必须是 JSON 对象。",
+                "请求内容必须是有效的结构化数据。",
             )
             return None
         return values
@@ -522,7 +522,7 @@ class ControlPlaneServiceMixin:
             status,
             code or "AGENT_UPSTREAM_ERROR",
             self._bounded_text(result.get("error"), 1000)
-            or "Agent 控制平面暂时不可用。",
+            or "智能服务控制平面暂时不可用。",
             data=result.get("data"),
         )
 

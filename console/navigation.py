@@ -92,7 +92,7 @@ CONSOLE_MENU_REGISTRATIONS = register_console_menus(
         ConsoleMenuRegistration("dispatch", "/dispatch", "货拉拉调度", "调度", "map-pin", "primary"),
         ConsoleMenuRegistration("line_haul", "/line-haul-contacts", "专线分流", "专线", "map", "primary"),
         ConsoleMenuRegistration("automations", "/automations", "自动化", "自动化", "sliders", "primary"),
-        ConsoleMenuRegistration("harness", "/harness", "Harness 助手", "助手", "message-square", "primary"),
+        ConsoleMenuRegistration("harness", "/harness", "AI 助手", "助手", "message-square", "primary"),
         ConsoleMenuRegistration("automation_accounts", "/automation-accounts", "业务账号", "账号", "users", "primary"),
         ConsoleMenuRegistration("llm_settings", "/settings/llm", "智能模型", "模型", "cpu", "system"),
         ConsoleMenuRegistration(

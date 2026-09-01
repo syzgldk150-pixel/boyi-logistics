@@ -307,7 +307,7 @@
   <section id="finance-panel-sync" class="finance-tab-panel" role="tabpanel" aria-labelledby="finance-tab-sync" tabindex="0" hidden data-finance-panel="sync">
     <div class="finance-sync-actions">
       <form class="finance-panel finance-sync-form" data-finance-sync-form>
-        <div class="finance-panel-head"><div><h2>手动同步</h2><p>默认重扫最近 7 天，Agent 按账号管理绑定登录。</p></div></div>
+        <div class="finance-panel-head"><div><h2>手动同步</h2><p>默认重扫最近 7 天，智能服务按账号管理绑定登录。</p></div></div>
         <div class="finance-filter-grid finance-filter-grid--sync">
           <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option>{% for platform in finance_platforms %}<option value="{{ platform.value }}">{{ platform.label }}</option>{% endfor %}</select></label>
           <label class="finance-field"><span>账号</span><select name="account_id" data-finance-sync-account><option value="all">全部账号</option></select></label>

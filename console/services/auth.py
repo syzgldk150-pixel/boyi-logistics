@@ -530,15 +530,15 @@ class AuthServiceMixin:
         self._automation_accounts_cache_meta = {}
         result = self._agent_request("GET", endpoint, timeout=12 if prefer_cached else 45 if force else 12)
         if not result.get("ok"):
-            return [], normalize_feedback_text(result.get("error") or "Agent 当前不可达，无法获取业务账号状态。")
+            return [], normalize_feedback_text(result.get("error") or "智能服务当前不可达，无法获取业务账号状态。")
         payload = result.get("data")
         if not isinstance(payload, dict):
-            return [], "Agent 账号接口返回了无效数据。"
+            return [], "智能服务账号接口返回了无效数据。"
         if payload.get("ok") is False:
-            return [], normalize_feedback_text(payload.get("message") or payload.get("error") or "Agent 账号接口调用失败。")
+            return [], normalize_feedback_text(payload.get("message") or payload.get("error") or "智能服务账号接口调用失败。")
         raw_accounts = payload.get("accounts")
         if not isinstance(raw_accounts, list):
-            return [], "Agent 账号接口缺少 accounts 列表。"
+            return [], "智能服务账号接口缺少账号列表。"
         self._automation_accounts_cache_meta = {
             key: payload[key]
             for key in ("cached", "stale", "refreshing", "cache_age_sec")
@@ -646,11 +646,11 @@ class AuthServiceMixin:
         if not result.get("ok"):
             return {
                 "ok": False,
-                "message": f"Agent 调用失败：{normalize_feedback_text(result.get('error') or 'unknown error')}",
+                "message": f"智能服务调用失败：{normalize_feedback_text(result.get('error') or '未知错误')}",
             }
         payload = result.get("data")
         if not isinstance(payload, dict):
-            return {"ok": False, "message": "Agent 账号状态接口返回了无效数据。"}
+            return {"ok": False, "message": "智能服务账号状态接口返回了无效数据。"}
         if payload.get("ok") is False:
             return {
                 "ok": False,
@@ -1102,12 +1102,12 @@ class AuthServiceMixin:
         kind = "success"
         response_payload: dict[str, Any] | None = None
         if not result.get("ok"):
-            message = f"Agent 调用失败：{normalize_feedback_text(result.get('error') or 'unknown error')}"
+            message = f"智能服务调用失败：{normalize_feedback_text(result.get('error') or '未知错误')}"
             kind = "warning"
         else:
             raw_payload = result.get("data")
             if not isinstance(raw_payload, dict):
-                message = "Agent 账号接口返回了无效数据。"
+                message = "智能服务账号接口返回了无效数据。"
                 kind = "warning"
             else:
                 response_payload = raw_payload

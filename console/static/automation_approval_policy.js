@@ -295,7 +295,7 @@
   function renderPolicy(governance, policy) {
     const automationId = governance.dataset.automationId || "";
     if (!validPolicy(policy, automationId)) {
-      throw new Error("Agent 未返回完整的项目权限结果。");
+      throw new Error("智能服务未返回完整的项目权限结果。");
     }
     governance.dataset.projectPolicy = JSON.stringify(policy);
     const label = governance.querySelector("[data-project-policy-label]");
@@ -329,7 +329,7 @@
     }
     if (selected.value === PROJECT_FULL_AUTO) {
       const confirmed = window.confirm(
-        "确认将整个项目设为“完全自动”？\n\n项目清单允许且已启用的 Scheduler、Console、飞书和验签 Webhook 入口，都会仅按当前保存的参数、账号、资源与版本直接执行；通用 API 和 LLM 入口不在授权范围内。完全自动权限会持续保留；配置或插件版本变化时先同步运行环境，同步完成前不会运行旧配置，也不会自动改回审批。",
+        "确认将整个项目设为“完全自动”？\n\n项目清单允许且已启用的系统定时、后台手动、飞书和外部验签入口，都会仅按当前保存的参数、账号、资源与版本直接执行；通用接口和智能模型入口不在授权范围内。完全自动权限会持续保留；配置或扩展版本变化时先同步运行环境，同步完成前不会运行旧配置，也不会自动改回审批。",
       );
       if (!confirmed) return;
     }
@@ -380,7 +380,7 @@
   function renderPending(governance, pending) {
     const automationId = governance.dataset.automationId || "";
     if (!validPending(pending, automationId)) {
-      throw new Error("Agent 未返回有效的待审批集合。");
+      throw new Error("智能服务未返回有效的待审批集合。");
     }
     const current = pendingStates.get(governance) || {};
     pendingStates.set(governance, { ...current, pending, requestIds: {} });
@@ -488,7 +488,7 @@
         const decidedCount = payload?.data?.decided_count;
         const runReceipts = payload?.data?.run_receipts;
         if (!validApprovedRunReceipts(runReceipts, automationId, decidedCount)) {
-          throw new Error("服务端未返回完整的本次批准 Run 收据，卡片不会推测执行状态。");
+          throw new Error("服务端未返回完整的本次批准执行记录，卡片不会推测执行状态。");
         }
         governance.dispatchEvent(new CustomEvent("automation:approved-runs", {
           bubbles: true,
@@ -722,11 +722,11 @@
       const selected = worker.selectedOptions[0];
       if (!worker.value) {
         worker.focus();
-        throw new Error("请选择在线的命名 Windows Worker。");
+        throw new Error("请选择在线的工作节点。");
       }
       if (selected?.disabled) {
         worker.focus();
-        throw new Error("已选 Windows Worker 当前不可用。");
+        throw new Error("已选工作节点当前不可用。");
       }
       deviceId = worker.value;
     }

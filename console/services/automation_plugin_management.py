@@ -435,7 +435,7 @@ class AutomationPluginManagementServiceMixin:
                 "ok": False,
                 "status": HTTPStatus.SERVICE_UNAVAILABLE,
                 "error_code": "AGENT_INTERNAL_TOKEN_NOT_CONFIGURED",
-                "error": "Agent 内部接口未配置。",
+                "error": "智能服务内部接口未配置。",
             }
         try:
             package_size = package_path.stat().st_size
@@ -489,7 +489,7 @@ class AutomationPluginManagementServiceMixin:
                 "ok": False,
                 "status": HTTPStatus.SERVICE_UNAVAILABLE,
                 "error_code": "CONSOLE_SIGNING_SECRET_NOT_CONFIGURED",
-                "error": "Console-to-Agent 签名未配置。",
+                "error": "后台到智能服务的签名未配置。",
             }
         try:
             headers.update(
@@ -515,7 +515,7 @@ class AutomationPluginManagementServiceMixin:
                 raw = response.read().decode("utf-8")
                 payload = json.loads(raw) if raw else {}
                 if not isinstance(payload, dict) or not {"ok", "data", "error"}.issubset(payload):
-                    raise ValueError("Agent returned an invalid internal API contract")
+                    raise ValueError("智能服务返回了无法识别的数据")
                 if payload.get("ok") is not True:
                     error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
                     return {
@@ -593,7 +593,7 @@ class AutomationPluginManagementServiceMixin:
                 handler,
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
                 "PLUGIN_PACKAGE_TOO_LARGE",
-                "插件 ZIP 不能超过 32MB。",
+                "扩展压缩包不能超过 32 兆字节。",
             )
             return
         form = self._parse_multipart_form(handler)
@@ -625,7 +625,7 @@ class AutomationPluginManagementServiceMixin:
                 handler,
                 HTTPStatus.BAD_REQUEST,
                 "PLUGIN_ZIP_REQUIRED",
-                "请选择一个 ZIP 插件包。",
+                "请选择一个扩展压缩包。",
             )
             return
         request_id = self._normalize_browser_request_uuid(
@@ -649,7 +649,7 @@ class AutomationPluginManagementServiceMixin:
                 handler,
                 HTTPStatus.BAD_REQUEST,
                 "INVALID_PLUGIN_ZIP",
-                "插件包为空、超过 32MB 或不是有效 ZIP。",
+                "扩展压缩包为空、超过 32 兆字节或格式无效。",
             )
             return
 
@@ -758,7 +758,7 @@ class AutomationPluginManagementServiceMixin:
                     handler,
                     HTTPStatus.BAD_GATEWAY,
                     "INVALID_SERVICE_V2_INSPECTION_CONTRACT",
-                    "Agent 返回了无效的插件检查结果。",
+                    "智能服务返回了无效的扩展检查结果。",
                 )
                 return
             warnings: list[str] = []
@@ -886,7 +886,7 @@ class AutomationPluginManagementServiceMixin:
                     handler,
                     HTTPStatus.BAD_GATEWAY,
                     "INVALID_PLUGIN_INSTANCE_RESPONSE",
-                    "Agent 返回了不匹配的插件实例。",
+                    "智能服务返回了不匹配的扩展实例。",
                 )
                 return
             created_id = automation_id
@@ -895,7 +895,7 @@ class AutomationPluginManagementServiceMixin:
                 handler,
                 HTTPStatus.BAD_GATEWAY,
                 "INVALID_PLUGIN_INSTANCE_RESPONSE",
-                "Agent 未返回有效的插件实例。",
+                "智能服务未返回有效的扩展实例。",
             )
             return
         if endpoint == "/internal/v1/automation/plugins/install-v2" and (
@@ -1255,7 +1255,7 @@ class AutomationPluginManagementServiceMixin:
                 handler,
                 HTTPStatus.BAD_GATEWAY,
                 "PLUGIN_RECOVERY_RESPONSE_INVALID",
-                "Agent 返回了无法识别的恢复结果。",
+                "智能服务返回了无法识别的恢复结果。",
             )
             return
         self._send_json(

@@ -200,13 +200,13 @@ class DocumentServiceMixin:
                 slug="ocr",
                 name="运单录入",
                 status="ready",
-                summary="支持手工录单与 OCR 图文复核，确认后写回数据库。",
+                summary="支持手工录单与图片文字识别复核，确认后写回数据库。",
                 code_path="console/",
                 docs_path="docs/ocr/",
                 route="/modules/ocr",
                 workspace_path="/ocr",
-                current_focus="手工录单、批量 OCR、人工复核流转与 MySQL 回写。",
-                inputs=("手工表单", "运单图片", "Qwen OCR API", "人工复核"),
+                current_focus="手工录单、批量图片识别、人工复核流转与数据库回写。",
+                inputs=("手工表单", "运单图片", "通义千问图片识别服务", "人工复核"),
                 outputs=("结构化字段", "归档原图", "预处理图片", "数据库记录"),
                 dependencies=(),
                 consumers=("finance", "ai-service", "customer-service"),
@@ -216,13 +216,13 @@ class DocumentServiceMixin:
                 slug="pricing",
                 name="价格获取",
                 status="maintained",
-                summary="基于地址库和荣辉 TMS 生成报价资产与成本底表。",
+                summary="基于地址库和融辉系统生成报价资产与成本底表。",
                 code_path="price_scripts/",
                 docs_path="docs/price_scripts/",
                 route="/modules/pricing",
                 workspace_path="",
-                current_focus="地址标准化、TMS 批量取价与报价单产出。",
-                inputs=("地址数据库", "TMS 登录态", "网点映射规则"),
+                current_focus="地址标准化、融辉批量取价与报价单产出。",
+                inputs=("地址数据库", "融辉登录状态", "网点映射规则"),
                 outputs=("全国报价表", "客户报价单", "价格图表", "网点报价表"),
                 dependencies=(),
                 consumers=("finance", "ai-service", "customer-service"),
@@ -267,13 +267,13 @@ class DocumentServiceMixin:
                 slug="ai-service",
                 name="AI客服",
                 status="planned",
-                summary="消费 OCR、报价和财务结果，为客服问答提供统一入口。",
+                summary="使用图片识别、报价和财务结果，为客服问答提供统一入口。",
                 code_path="agent/ + feishu/",
                 docs_path="docs/ai_service/",
                 route="/modules/ai-service",
                 workspace_path="",
                 current_focus="报价问答、查询回复和异常解释编排。",
-                inputs=("OCR 字段", "客户报价表", "财务结果", "知识规则"),
+                inputs=("图片识别字段", "客户报价表", "财务结果", "知识规则"),
                 outputs=("客服回复", "报价回答", "异常说明", "工单"),
                 dependencies=("ocr", "pricing", "finance"),
                 consumers=(),
@@ -328,7 +328,7 @@ class DocumentServiceMixin:
                 "metric_label": "产出文件",
                 "metric_value": f"{pricing_file_count} 个",
                 "highlights": [
-                    "地址库 -> TMS 取价 -> 客户报价表",
+                    "地址库 → 融辉取价 → 客户报价表",
                     "支撑客服报价与财务成本底表",
                     "作为价格资产层持续维护",
                 ],
@@ -339,7 +339,7 @@ class DocumentServiceMixin:
                 "metric_value": "在线账本",
                 "highlights": [
                     "融辉 / 韵达真实页面逐笔采集",
-                    "共享 MySQL 账本与版本化费用映射",
+                    "共享业务账本与版本化费用映射",
                     "BI、运单事实与同步失败审计",
                 ],
                 "workspace_label": "查看财务模块",
@@ -358,7 +358,7 @@ class DocumentServiceMixin:
                 "metric_label": "文件数",
                 "metric_value": f"{ai_file_count} 个",
                 "highlights": [
-                    "消费 OCR、报价和财务结果",
+                    "使用图片识别、报价和财务结果",
                     "处理报价问答与订单查询",
                     "当前以规划和接口对接为主",
                 ],
@@ -404,15 +404,15 @@ class DocumentServiceMixin:
     def _build_relationship_cards(self) -> list[dict[str, object]]:
         return [
             {
-                "title": "OCR 入库",
-                "description": "运单图片先进入 OCR，再经过排队、识别和人工复核。",
-                "inputs": ["图片目录", "Qwen OCR API", "复核规则"],
+                "title": "图片识别入库",
+                "description": "运单图片先进入图片识别，再经过排队、识别和人工复核。",
+                "inputs": ["图片目录", "通义千问图片识别服务", "复核规则"],
                 "outputs": ["结构化字段", "归档图片"],
             },
             {
                 "title": "报价资产",
-                "description": "价格模块基于地址数据和荣辉 TMS 生成标准报价表。",
-                "inputs": ["地址库", "TMS 登录态", "网点映射"],
+                "description": "价格模块基于地址数据和融辉系统生成标准报价表。",
+                "inputs": ["地址库", "融辉登录状态", "网点映射"],
                 "outputs": ["全国报价表", "客户报价单", "价格图表"],
             },
             {
@@ -435,8 +435,8 @@ class DocumentServiceMixin:
             },
             {
                 "title": "AI 客服编排",
-                "description": "AI 客服模块消费 OCR、报价和财务结果，对外提供问答能力。",
-                "inputs": ["OCR 字段", "报价表", "财务差异信息"],
+                "description": "智能客服模块使用图片识别、报价和财务结果，对外提供问答能力。",
+                "inputs": ["图片识别字段", "报价表", "财务差异信息"],
                 "outputs": ["客服回复", "异常说明", "工单"],
             },
         ]
@@ -458,12 +458,12 @@ class DocumentServiceMixin:
 
     def _validate_template_spec(self, spec: dict[str, Any]) -> str | None:
         if not isinstance(spec, dict):
-            return "Template JSON must be an object."
+            return "模板配置必须是有效的结构化对象。"
         if not isinstance(spec.get("preprocess"), dict):
-            return "Template JSON must include a preprocess object."
+            return "模板配置必须包含预处理设置。"
         fields = spec.get("fields")
         if not isinstance(fields, list):
-            return "Template JSON must include a fields array."
+            return "模板配置必须包含字段列表。"
         for index, field in enumerate(fields, start=1):
             if not isinstance(field, dict):
                 return f"fields[{index}] must be an object."
@@ -499,7 +499,7 @@ class DocumentServiceMixin:
             self._render_template_editor(
                 handler,
                 original_template_name or None,
-                {"message": [f"Template JSON parse failed: {exc.msg}"], "kind": ["warning"]},
+                {"message": [f"模板配置解析失败：{exc.msg}"], "kind": ["warning"]},
                 spec_override={"template_name": template_name, "description": description, "preprocess": {}, "fields": []},
                 template_json_override=template_json,
                 original_template_name_override=original_template_name,
@@ -510,7 +510,7 @@ class DocumentServiceMixin:
             self._render_template_editor(
                 handler,
                 original_template_name or None,
-                {"message": ["Template JSON must be an object."], "kind": ["warning"]},
+                {"message": ["模板配置必须是有效的结构化对象。"], "kind": ["warning"]},
                 spec_override={"template_name": template_name, "description": description, "preprocess": {}, "fields": []},
                 template_json_override=template_json,
                 original_template_name_override=original_template_name,

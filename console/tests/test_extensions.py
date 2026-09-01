@@ -155,7 +155,7 @@ class ExtensionProjectionTests(unittest.TestCase):
         self.assertIn("data-extension-open", source)
         self.assertIn("data-extension-dialog", source)
         self.assertIn("data-extension-dropzone", source)
-        self.assertIn("把扩展 ZIP 拖到这里", source)
+        self.assertIn("把扩展压缩包拖到这里", source)
         self.assertNotIn("data-extension-legacy-install-form", source)
         self.assertNotIn("安装旧版 Action v1", source)
         self.assertNotIn("安装 Service v2", source)

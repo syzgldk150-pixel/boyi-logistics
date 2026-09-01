@@ -40,8 +40,8 @@
           <option value="glm">GLM</option>
         </select>
       </label>
-      <label><span>模型 ID</span><input name="model_id" list="llm-model-options" maxlength="191" required placeholder="例如 deepseek-chat" spellcheck="false" autocomplete="off"><datalist id="llm-model-options" data-model-options></datalist></label>
-      <label class="llm-key-field"><span>API Key</span><input name="api_key" type="password" placeholder="留空表示保留已保存密钥" autocomplete="new-password" spellcheck="false"><small>已保存密钥不会回显；替换时必须输入完整新 Key。</small></label>
+      <label><span>模型标识</span><input name="model_id" list="llm-model-options" maxlength="191" required placeholder="请选择模型" spellcheck="false" autocomplete="off"><datalist id="llm-model-options" data-model-options></datalist></label>
+      <label class="llm-key-field"><span>接口密钥</span><input name="api_key" type="password" placeholder="留空表示保留已保存密钥" autocomplete="new-password" spellcheck="false"><small>已保存密钥不会回显；替换时必须输入完整新密钥。</small></label>
       <button class="primary-btn" type="submit" data-save-candidate>保存候选</button>
     </form>
   </section>

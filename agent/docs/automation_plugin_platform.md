@@ -8,7 +8,7 @@ related:
   - ../../docs/plugin-platform-v2.md
   - code_navigation_index.md
 status: active
-updated: 2026-08-31
+updated: 2026-09-01
 ---
 
 # 自动化插件平台 v1（ACTION_V1）
@@ -224,6 +224,9 @@ Console 启用/停用使用浏览器动作 UUID 与实例 `record_version` 做�
 Agent 运行时，不得进入 Console 或浏览器。Console 再按签名 resource role 的 `kind` 精确过滤候选，
 不会默认选中第一项；已保存 ID 也必须重新核验状态与类型。provider 不可用、descriptor 字段多/缺、
 必填绑定缺失、资源停用或类型漂移时，目录投影标记资源池不可用，项目配置与执行 fail closed。
+飞书电子表格与多维表格的 `name` 由 `agent/feishu_resource_catalog.py` 按当前文档名与工作表名组合生成
+并短时缓存，飞书改名后自动刷新。凭据、权限、定位信息或任一表格元数据缺失时，完整资源池显式不可用，
+不得回退静态别名、历史名称或内部资源 ID。
 目录响应中的 `hidden_automation_ids` 只列出当前发行明确排除且确实存在于持久化实例表的身份；
 Console 自动化列表成员只来自该目录的实例与持久化定时行，不维护本地隐藏名单，也不在目录故障时从静态
 工作流元数据补卡。目录原始实例与安全规范化结果不一一对应时整份实例投影失败关闭；未关联实例的定时行

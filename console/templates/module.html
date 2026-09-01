@@ -173,8 +173,8 @@
 <section class="panel" data-reveal="ocr-recent">
   <div class="section-head">
     <div class="heading-stack">
-      <span class="kicker">OCR 队列</span>
-      <h2 class="section-title">OCR 最近单据</h2>
+      <span class="kicker">图片识别队列</span>
+      <h2 class="section-title">最近识别单据</h2>
       <p class="section-note">从模块页直接跳回应急单据，不再绕回首页。</p>
     </div>
     <a class="ghost-btn" href="/ocr">进入工作区</a>
@@ -192,7 +192,7 @@
     <table>
       <thead>
         <tr>
-          <th>ID</th>
+          <th>标识</th>
           <th>状态</th>
           <th>原文件</th>
           <th>来源路径</th>
@@ -212,7 +212,7 @@
         </tr>
         {% else %}
         <tr>
-          <td colspan="6" class="table-empty">还没有 OCR 单据记录。</td>
+          <td colspan="6" class="table-empty">还没有图片识别单据记录。</td>
         </tr>
         {% endfor %}
       </tbody>

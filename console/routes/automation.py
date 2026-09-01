@@ -177,7 +177,7 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
         app._handle_automation_admin_action(
             handler,
             endpoint="/internal/v1/admin/reload",
-            success_message="Agent 运行时配置已重载。",
+            success_message="智能服务运行配置已重新加载。",
         )
         return True
     return False

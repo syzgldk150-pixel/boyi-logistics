@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
 {% block breadcrumb %}调度工作台{% endblock %}
-{% block subtitle %}韵达与融辉 TMS 实时待办{% endblock %}
+{% block subtitle %}韵达与融辉实时待办{% endblock %}
 
 {% block page_actions %}
 <button class="primary-btn monitoring-refresh" type="button" data-monitoring-refresh aria-label="刷新首页数据" title="刷新首页数据">
@@ -338,7 +338,7 @@
   <div class="notice notice--error" role="alert" data-monitoring-agent-status hidden>
     <div class="notice-copy">
       <i data-feather="alert-circle"></i>
-      <span><strong>Agent 服务不可用。</strong>监控数据暂时无法获取，请稍后重试。</span>
+      <span><strong>智能服务不可用。</strong>监控数据暂时无法获取，请稍后重试。</span>
     </div>
   </div>
   <div class="monitor-metrics">
@@ -353,7 +353,7 @@
       <small>问题件、回复、待办事项</small>
     </div>
     <div class="monitor-metric">
-      <span>融辉 TMS</span>
+      <span>融辉</span>
       <strong data-monitoring-ronghui>加载中</strong>
       <small>消息源定位中</small>
     </div>
@@ -482,7 +482,7 @@
     const counts = payload?.counts || {};
     if (payload?.ok === false) {
       setText(els.dailySign, '不可用');
-      setText(els.dailySignMeta, 'Agent 服务不可用，应签明细暂时无法获取');
+      setText(els.dailySignMeta, '智能服务不可用，应签明细暂时无法获取');
       return;
     }
     setText(els.dailySign, fmt(counts.unsigned_today));
@@ -566,8 +566,8 @@
     setText(els.yunda, '不可用');
     setText(els.ronghui, '不可用');
     setText(els.exception, '不可用');
-    setText(els.updated, 'Agent 服务不可用');
-    renderEmptySystems('Agent 服务不可用，监控数据暂时无法获取。');
+    setText(els.updated, '智能服务不可用');
+    renderEmptySystems('智能服务不可用，监控数据暂时无法获取。');
     if (els.agentStatus) els.agentStatus.hidden = false;
     refreshIconsSoon();
   }
@@ -760,7 +760,7 @@
         signal: controller.signal
       });
       const payload = await response.json();
-      if (!response.ok || payload?.ok === false) throw new Error('Agent 服务不可用');
+      if (!response.ok || payload?.ok === false) throw new Error('智能服务不可用');
       return payload;
     } finally {
       window.clearTimeout(timeout);

@@ -428,7 +428,7 @@ class LocalDocFlowApp(
                 {
                     "ok": False,
                     "error_code": "ACTIVE_ORIGINAL_PAGE_DISABLED",
-                    "message": "韵达活动原页与写动作已停用；请使用本地 OCR、手工运单或控制平面命令。",
+                    "message": "韵达活动原页与写动作已停用；请使用本地图片识别、手工运单或控制平面命令。",
                 },
             )
             return
@@ -493,7 +493,7 @@ class LocalDocFlowApp(
             self._handle_automation_admin_action(
                 handler,
                 endpoint="/internal/v1/admin/reload",
-                success_message="Agent 运行时配置已重载。",
+                success_message="智能服务运行配置已重新加载。",
             )
             return
         if path.startswith("/documents/") and path.endswith("/review"):

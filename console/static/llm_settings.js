@@ -11,6 +11,22 @@
     "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
   })[char]);
 
+  const statusLabel = (value) => ({
+    active: "正在使用",
+    tested: "测试通过",
+    draft: "待测试",
+    inactive: "未启用",
+  }[String(value || "").toLowerCase()] || "状态未知");
+
+  const auditActionLabel = (value) => ({
+    create: "新增配置",
+    update: "更新配置",
+    test: "测试配置",
+    activate: "启用配置",
+    rollback: "恢复配置",
+    clear_credentials: "清除密钥",
+  }[String(value || "").toLowerCase()] || "配置变更");
+
   function showFeedback(message, tone = "info") {
     if (!feedback) return;
     feedback.hidden = false;
@@ -57,8 +73,8 @@
     if (!grid) return;
     grid.innerHTML = (state.providers || []).map((item) => `
       <article class="provider-card">
-        <header><h3>${item.provider === "deepseek" ? "DeepSeek" : "GLM"}</h3><span class="llm-badge" data-tone="${item.configured ? "success" : "warning"}">${item.configured ? "已配置 Key" : "未配置 Key"}</span></header>
-        <dl><dt>官方 API</dt><dd>${escapeHtml(item.base_url || "固定官方地址")}</dd><dt>密钥标识</dt><dd>${escapeHtml(item.key_hint || (item.configured ? "已配置" : "—"))}</dd></dl>
+        <header><h3>${item.provider === "deepseek" ? "DeepSeek" : "GLM"}</h3><span class="llm-badge" data-tone="${item.configured ? "success" : "warning"}">${item.configured ? "已配置密钥" : "未配置密钥"}</span></header>
+        <dl><dt>官方接口</dt><dd>${escapeHtml(item.base_url || "固定官方地址")}</dd><dt>密钥标识</dt><dd>${escapeHtml(item.key_hint || (item.configured ? "已配置" : "—"))}</dd></dl>
         ${canEdit && item.configured ? `<button class="llm-action" data-clear-provider="${escapeHtml(item.provider)}" data-danger="true" type="button">清除该供应商密钥</button>` : ""}
       </article>`).join("");
   }
@@ -76,7 +92,7 @@
   function testSummary(version) {
     const result = version.test_result || {};
     if (!version.tested_at) return "尚未测试";
-    if (result.passed) return `${version.tested_at} · ${result.latency_ms ?? "—"} ms`;
+    if (result.passed) return `${version.tested_at} · ${result.latency_ms ?? "—"} 毫秒`;
     return version.test_error_message || result.error || "测试未通过";
   }
 
@@ -93,7 +109,7 @@
       }
       if (item.status === "tested" && item.test_result?.passed) actions.push(`<button type="button" class="llm-action" data-action="activate" data-id="${item.id}">激活</button>`);
       if (item.status === "inactive" && item.test_result?.passed) actions.push(`<button type="button" class="llm-action" data-action="rollback" data-id="${item.id}">回滚到此版本</button>`);
-      return `<tr><td>#${item.id}</td><td><strong>${escapeHtml(item.provider)}</strong><br>${escapeHtml(item.model_id)}</td><td><span class="llm-badge" data-tone="${tone}">${escapeHtml(item.status)}</span></td><td>${escapeHtml(testSummary(item))}</td><td><div class="llm-table-actions">${actions.join("") || "—"}</div></td></tr>`;
+      return `<tr><td>#${item.id}</td><td><strong>${escapeHtml(item.provider)}</strong><br>${escapeHtml(item.model_id)}</td><td><span class="llm-badge" data-tone="${tone}">${escapeHtml(statusLabel(item.status))}</span></td><td>${escapeHtml(testSummary(item))}</td><td><div class="llm-table-actions">${actions.join("") || "—"}</div></td></tr>`;
     }).join("") : '<tr><td colspan="5">尚无数据库配置版本。</td></tr>';
   }
 
@@ -102,7 +118,7 @@
     const container = root.querySelector("[data-audit-list]");
     const payload = await request("/settings/llm/audit");
     const rows = payload.items || [];
-    container.innerHTML = rows.length ? rows.map((item) => `<div class="audit-row"><span>${escapeHtml(item.created_at)}</span><strong>${escapeHtml(item.changed_by)} · ${escapeHtml(item.action)}</strong><span>${item.api_key_changed ? "密钥已变更" : "密钥未变更"}</span></div>`).join("") : "<p>暂无配置变更。</p>";
+    container.innerHTML = rows.length ? rows.map((item) => `<div class="audit-row"><span>${escapeHtml(item.created_at)}</span><strong>${escapeHtml(item.changed_by)} · ${escapeHtml(auditActionLabel(item.action))}</strong><span>${item.api_key_changed ? "密钥已变更" : "密钥未变更"}</span></div>`).join("") : "<p>暂无配置变更。</p>";
   }
 
   async function load() {
@@ -145,7 +161,7 @@
     const actionButton = event.target.closest("[data-action]");
     if (!clear && !actionButton) return;
     const button = clear || actionButton;
-    if (clear && !window.confirm(`确认清除 ${clear.dataset.clearProvider} 的已保存 API Key？`)) return;
+    if (clear && !window.confirm(`确认清除 ${clear.dataset.clearProvider} 的已保存接口密钥？`)) return;
     button.disabled = true;
     try {
       let path; let data;

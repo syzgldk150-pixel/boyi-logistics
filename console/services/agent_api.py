@@ -72,7 +72,7 @@ class AgentApiServiceMixin:
             or invalid_segment
             or any(ord(char) < 32 for char in value)
         ):
-            raise ValueError("Agent endpoint must be a canonical /internal/v1/* relative path")
+            raise ValueError("智能服务接口路径不符合要求")
         return value
 
     @staticmethod
@@ -110,7 +110,7 @@ class AgentApiServiceMixin:
                     "error_code": str(
                         result.get("error_code") or "COMMAND_SUBMIT_FAILED"
                     ),
-                    "message": str(result.get("error") or "Agent 命令提交失败。"),
+                    "message": str(result.get("error") or "智能服务任务提交失败。"),
                 },
             )
             return
@@ -205,7 +205,7 @@ class AgentApiServiceMixin:
                 "ok": False,
                 "status": HTTPStatus.BAD_GATEWAY,
                 "error_code": "INVALID_AGENT_RUN_CONTRACT",
-                "error": "Agent 未返回可追踪的 run_id。",
+                "error": "智能服务未返回可追踪的执行编号。",
             }
         return {
             "ok": True,
@@ -251,7 +251,7 @@ class AgentApiServiceMixin:
                 "ok": False,
                 "status": HTTPStatus.BAD_REQUEST,
                 "error_code": "INVALID_CALLER_CONTEXT",
-                "error": "Console principal must not be supplied in the Agent request body",
+                "error": "请求内容不得自行指定控制台身份",
             }
         signed_principal = console_principal
         if (
@@ -265,8 +265,7 @@ class AgentApiServiceMixin:
                     "status": HTTPStatus.FORBIDDEN,
                     "error_code": "MYSQL_ADMIN_SESSION_REQUIRED",
                     "error": (
-                        "Agent administration requests require a real MySQL "
-                        "administrator session"
+                        "管理请求需要真实的数据库管理员会话"
                     ),
                 }
         if request_payload is not None:
@@ -279,7 +278,7 @@ class AgentApiServiceMixin:
                     "ok": False,
                     "status": HTTPStatus.SERVICE_UNAVAILABLE,
                     "error_code": "CONSOLE_SIGNING_SECRET_NOT_CONFIGURED",
-                    "error": "Console-to-Agent signing secret is not configured",
+                    "error": "控制台与智能服务之间的签名配置缺失",
                 }
             parsed_url = urlparse(url)
             request_target = parsed_url.path or "/"
@@ -321,7 +320,7 @@ class AgentApiServiceMixin:
                         return {
                             "ok": False,
                             "status": response.status,
-                            "error": "Agent returned an invalid internal API contract",
+                            "error": "智能服务返回了无法识别的数据",
                             "error_code": "invalid_internal_contract",
                         }
                     if data.get("ok") is not True:

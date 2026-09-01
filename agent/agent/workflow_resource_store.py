@@ -62,8 +62,25 @@ def list_workflow_resource_descriptors() -> list[dict[str, str]]:
     never cross this boundary.
     """
 
+    rows = _repository().list_records(include_config=True)
+    feishu_resources: list[tuple[str, Mapping[str, object]]] = []
+    for row in rows:
+        config = row.get("config")
+        if not isinstance(config, Mapping):
+            continue
+        resource_id = str(row.get("resource_key") or "").strip()
+        resource_kind = str(config.get("resource_kind") or "").strip().lower()
+        if resource_kind in {"feishu_sheet", "feishu_bitable"} and resource_id:
+            feishu_resources.append((resource_id, config))
+
+    live_names: dict[str, str] = {}
+    if feishu_resources:
+        from agent.feishu_resource_catalog import resolve_live_feishu_resource_names
+
+        live_names = resolve_live_feishu_resource_names(feishu_resources)
+
     descriptors: list[dict[str, str]] = []
-    for row in _repository().list_records(include_config=True):
+    for row in rows:
         config = row.get("config")
         if not isinstance(config, Mapping):
             continue
@@ -81,10 +98,14 @@ def list_workflow_resource_descriptors() -> list[dict[str, str]]:
             or not re.fullmatch(r"[0-9a-f]{64}", config_sha256)
         ):
             continue
-        raw_name = config.get("display_name") or config.get("name") or config.get("title")
-        name = str(raw_name or resource_id).strip()
+        raw_name = (
+            live_names.get(resource_id)
+            if resource_kind in {"feishu_sheet", "feishu_bitable"}
+            else config.get("display_name") or config.get("name") or config.get("title")
+        )
+        name = str(raw_name or "").strip()
         if not name or len(name) > 160:
-            name = resource_id
+            continue
         descriptors.append(
             {
                 "resource_id": resource_id,

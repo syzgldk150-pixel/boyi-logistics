@@ -136,8 +136,8 @@
     <details style="margin-top: 10px;" id="adv-settings">
       <summary style="font-size: 0.76rem; color: var(--muted); font-weight: 600; cursor: pointer; user-select: none;">可选估算条件</summary>
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;">
-        <input type="number" id="dispatch-est-weight" class="route-input" placeholder="重量(kg)" style="height: 32px;">
-        <input type="number" id="dispatch-est-volume" class="route-input" placeholder="体积(m³)" style="height: 32px;">
+        <input type="number" id="dispatch-est-weight" class="route-input" placeholder="重量（千克）" style="height: 32px;">
+        <input type="number" id="dispatch-est-volume" class="route-input" placeholder="体积（立方米）" style="height: 32px;">
       </div>
     </details>
 
@@ -157,7 +157,7 @@
           <span style="font-size: 0.7rem; color: var(--muted);" id="route-duration-label">等待路线规划</span>
         </div>
         <div class="distance-val" id="route-distance-label">
-          <strong>--</strong><span>km</span>
+          <strong>--</strong><span>公里</span>
         </div>
       </div>
 
@@ -353,7 +353,7 @@
   }
 
   function setDistancePlaceholder() {
-    getDispatchElement("route-distance-label").innerHTML = "<strong>--</strong><span>km</span>";
+    getDispatchElement("route-distance-label").innerHTML = "<strong>--</strong><span>公里</span>";
   }
 
   function setPriceCardsIdle(statusText = DEFAULT_STATUS_TEXT) {
@@ -1279,7 +1279,7 @@
 
       getDispatchElement("dispatch-origin").title = originGeocode.formattedAddress || origin;
       getDispatchElement("dispatch-dest").title = destGeocode.formattedAddress || dest;
-      getDispatchElement("route-distance-label").innerHTML = `<strong>${formatDistance(distanceMeters)}</strong><span>km</span>`;
+      getDispatchElement("route-distance-label").innerHTML = `<strong>${formatDistance(distanceMeters)}</strong><span>公里</span>`;
       getDispatchElement("route-duration-label").innerText = formatDuration(durationSeconds);
       updateEstimateCards(distanceMeters);
     } catch (error) {

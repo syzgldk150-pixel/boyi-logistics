@@ -357,10 +357,10 @@ class CustomerServiceMixin:
             error = result.get("error")
             if isinstance(error, dict):
                 return None, str(error.get("error") or error.get("message") or error)
-            return None, str(error or "Agent 调用失败。")
+            return None, str(error or "智能服务调用失败。")
         data = result.get("data")
         if not isinstance(data, dict):
-            return None, "Agent 返回了无效数据。"
+            return None, "智能服务返回了无效数据。"
         if isinstance(data.get("data"), dict):
             nested = data["data"]
             if (
@@ -586,7 +586,7 @@ class CustomerServiceMixin:
         try:
             image_bytes = base64.b64decode(encoded, validate=True)
         except Exception:
-            self._send_json(handler, HTTPStatus.BAD_GATEWAY, {"ok": False, "message": "Agent 返回的附件图片内容无效。"})
+            self._send_json(handler, HTTPStatus.BAD_GATEWAY, {"ok": False, "message": "智能服务返回的附件图片内容无效。"})
             return
         content_type = self._customer_service_raster_mime_type(image_bytes)
         if not content_type:

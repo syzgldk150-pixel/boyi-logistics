@@ -236,7 +236,7 @@ class ExtensionsServiceMixin:
             {
                 "ok": False,
                 "error_code": "MYSQL_ADMIN_REQUIRED",
-                "message": "扩展中心只对真实 MySQL 管理员会话开放。",
+                "message": "扩展中心只对真实的数据库管理员会话开放。",
             },
         )
         return False
