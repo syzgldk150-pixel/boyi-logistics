@@ -18,7 +18,7 @@
   <form class="automation-account-create" action="/automation-accounts/create" method="post">
     <label>
       <span>账号标识</span>
-      <input class="review-input compact-input" type="text" name="account_id" pattern="[A-Za-z0-9][A-Za-z0-9_-]{1,63}" placeholder="ronghui_ops_01" autocomplete="off" required>
+      <input class="review-input compact-input" type="text" name="account_id" pattern="[A-Za-z0-9][A-Za-z0-9_-]{1,63}" placeholder="例如：融辉运营账号01" autocomplete="off" required>
     </label>
     <label>
       <span>名称</span>
@@ -67,7 +67,7 @@
   {% if account_warning %}
   <div class="auto-feedback auto-feedback--error">
     <div class="auto-feedback-head">
-      <strong>Agent 状态异常</strong>
+      <strong>智能服务状态异常</strong>
       <span>{{ account_warning }}</span>
     </div>
   </div>
@@ -774,7 +774,7 @@
       });
       const contentType = response.headers.get("Content-Type") || "";
       if (!contentType.includes("application/json")) {
-        throw new Error("接口未返回 JSON，操作未完成。");
+        throw new Error("接口未返回有效数据，操作未完成。");
       }
       const payload = await response.json();
       if (payload.account) applyAccountMetadata(row, payload.account);

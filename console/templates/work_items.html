@@ -53,20 +53,20 @@
     </label>
     <label class="cp-field">
       <span>类型</span>
-      <input type="text" name="type" maxlength="64" autocomplete="off" placeholder="例如 daily_sign">
+      <input type="text" name="type" maxlength="64" autocomplete="off" placeholder="例如：每日应签">
     </label>
     <label class="cp-field">
       <span>责任人</span>
       <input type="text" name="owner" maxlength="128" autocomplete="off" placeholder="姓名或账号">
     </label>
     <label class="cp-field">
-      <span>SLA</span>
+      <span>办理时限</span>
       <select name="sla">
-        <option value="">全部 SLA</option>
+        <option value="">全部办理时限</option>
         <option value="overdue">已逾期</option>
         <option value="today">今日到期</option>
         <option value="upcoming">后续到期</option>
-        <option value="missing">缺少 SLA</option>
+        <option value="missing">缺少办理时限</option>
       </select>
     </label>
     <div class="cp-filter-actions">
@@ -92,7 +92,7 @@
           <th scope="col">类型 / 来源</th>
           <th scope="col">优先级</th>
           <th scope="col">责任人</th>
-          <th scope="col">SLA 截止</th>
+          <th scope="col">办理截止时间</th>
           <th scope="col">更新时间</th>
           <th scope="col"><span class="sr-only">操作</span></th>
         </tr>

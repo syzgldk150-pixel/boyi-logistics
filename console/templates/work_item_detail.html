@@ -54,7 +54,7 @@
     <aside class="cp-detail-aside" aria-label="执行状态与时间线">
       <section class="cp-section" aria-labelledby="cp-run-heading">
         <div class="cp-section-heading">
-          <div><p class="cp-eyebrow">Agent Run</p><h3 id="cp-run-heading">当前执行</h3></div>
+          <div><p class="cp-eyebrow">执行记录</p><h3 id="cp-run-heading">当前执行</h3></div>
           <span data-cp-poll-state></span>
         </div>
         <div data-cp-run-content class="cp-section-content" aria-busy="true">
@@ -64,7 +64,7 @@
 
       <section class="cp-section" aria-labelledby="cp-timeline-heading">
         <div class="cp-section-heading">
-          <div><p class="cp-eyebrow">Audit Trail</p><h3 id="cp-timeline-heading">时间线</h3></div>
+          <div><p class="cp-eyebrow">审计记录</p><h3 id="cp-timeline-heading">时间线</h3></div>
           <span data-cp-timeline-count></span>
         </div>
         <ol data-cp-timeline-list class="cp-timeline" aria-busy="true">
@@ -111,10 +111,10 @@
           <input data-cp-clarification-account-id type="text" maxlength="191" autocomplete="off">
         </label>
         <label class="cp-field">
-          <span>参数更新 JSON（可选）</span>
+          <span>参数更新配置（可选）</span>
           <textarea data-cp-clarification-arguments rows="6" spellcheck="false" placeholder='{"field": "value"}'></textarea>
         </label>
-        <p class="cp-muted">参数必须是 JSON 对象，并重新通过工具 input_schema、账号范围、策略和计划哈希校验；普通说明不会被猜成业务参数。</p>
+        <p class="cp-muted">参数必须是结构化配置，并重新通过工具输入规则、账号范围、策略和计划摘要校验；普通说明不会被猜成业务参数。</p>
       </div>
       <div class="cp-dialog-actions">
         <button class="ghost-btn" value="cancel">取消</button>
@@ -130,8 +130,8 @@
         <button class="cp-icon-button" value="cancel" aria-label="关闭分配窗口"><i data-feather="x"></i></button>
       </div>
       <label class="cp-field">
-        <span>责任人管理员 ID</span>
-        <input data-cp-assign-owner type="text" maxlength="128" autocomplete="off" required placeholder="输入 MySQL 管理员 ID">
+        <span>责任人管理员标识</span>
+        <input data-cp-assign-owner type="text" maxlength="128" autocomplete="off" required placeholder="输入数据库管理员标识">
       </label>
       <p class="cp-muted">指派动作会记录真实管理员会话；责任人 ID 不从浏览器 actor 字段读取。</p>
       <div class="cp-dialog-actions">

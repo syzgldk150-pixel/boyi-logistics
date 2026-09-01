@@ -859,7 +859,7 @@
 
     const validateIntent = (intent, configError = "") => {
       if (!intent.instance_name || intent.instance_name.length > MAX_NAME_LENGTH) return "请填写 1 至 120 个字符的项目名称。";
-      if (!state.packageFile || !fileIsZip(state.packageFile)) return "请保留已检查的 ZIP 扩展包。";
+      if (!state.packageFile || !fileIsZip(state.packageFile)) return "请保留已检查的扩展压缩包。";
       if (!intent.permissions_confirmed) return "请先确认扩展权限。";
       if (configError) return configError;
       const requiredAccountRoleWithoutChoice = state.projection.account_roles.some(
@@ -883,11 +883,11 @@
       for (const control of wizard.querySelectorAll("[data-extension-binding-required=\"true\"]")) {
         const value = String(control.value || "").trim();
         if (!value) return `请填写必需绑定：${control.dataset.extensionBindingRole || "未命名角色"}。`;
-        if (!SAFE_BINDING_ID.test(value)) return "账号或资源绑定 ID 格式无效。";
+        if (!SAFE_BINDING_ID.test(value)) return "账号或资源绑定标识格式无效。";
       }
       for (const control of wizard.querySelectorAll("[data-extension-binding-required=\"false\"]")) {
         const value = String(control.value || "").trim();
-        if (value && !SAFE_BINDING_ID.test(value)) return "账号或资源绑定 ID 格式无效。";
+        if (value && !SAFE_BINDING_ID.test(value)) return "账号或资源绑定标识格式无效。";
       }
       for (const control of wizard.querySelectorAll("[data-extension-config-path]")) {
         if (typeof control.checkValidity === "function" && !control.checkValidity()) {
@@ -955,7 +955,7 @@
       if (!state.packageFile) return;
       if (fileName instanceof HTMLElement) fileName.textContent = state.packageFile.name;
       if (!fileIsZip(state.packageFile)) {
-        setFeedback(inspectFeedback, "请选择一个 ZIP 扩展包。", "error");
+        setFeedback(inspectFeedback, "请选择一个扩展压缩包。", "error");
         return;
       }
       window.requestAnimationFrame(() => inspectForm.requestSubmit());
@@ -986,7 +986,7 @@
       if (state.finalSent) return;
       const file = fileInput?.files?.[0];
       if (!fileIsZip(file)) {
-        setFeedback(inspectFeedback, "请选择一个 ZIP 扩展包。", "error");
+        setFeedback(inspectFeedback, "请选择一个扩展压缩包。", "error");
         return;
       }
       state.packageFile = file;
@@ -1005,7 +1005,7 @@
         inspectButton.textContent = "检查中…";
         inspectButton.setAttribute("aria-busy", "true");
       }
-      setFeedback(inspectFeedback, "正在检查 ZIP，未安装项目。", "warning");
+      setFeedback(inspectFeedback, "正在检查扩展压缩包，尚未安装项目。", "warning");
       try {
         const response = await fetch(inspectForm.action, {
           method: "POST",
@@ -1019,21 +1019,21 @@
         });
         const payload = await response.json().catch(() => null);
         if (state.packageFile !== inspectedFile || state.requestId !== inspectedRequestId) return;
-        if (!response.ok || payload?.ok !== true) throw new Error(responseMessage(payload, "ZIP 检查失败，请重试。"));
+        if (!response.ok || payload?.ok !== true) throw new Error(responseMessage(payload, "扩展压缩包检查失败，请重试。"));
         const projection = safeProjection(payload.data);
-        if (!projection) throw new Error("Agent 返回的检查投影无效，未进入安装流程。");
+        if (!projection) throw new Error("智能服务返回的检查结果无效，未进入安装流程。");
         state.projection = projection;
         renderInspection(projection);
-        setFeedback(inspectFeedback, "ZIP 检查完成，请继续确认。", "success");
+        setFeedback(inspectFeedback, "扩展压缩包检查完成，请继续确认。", "success");
       } catch (error) {
         if (state.packageFile !== inspectedFile || state.requestId !== inspectedRequestId) return;
         state.projection = null;
         if (inspection instanceof HTMLElement) inspection.hidden = true;
-        setFeedback(inspectFeedback, error instanceof Error ? error.message : "ZIP 检查失败，请重试。", "error");
+        setFeedback(inspectFeedback, error instanceof Error ? error.message : "扩展压缩包检查失败，请重试。", "error");
       } finally {
         if (inspectButton instanceof HTMLButtonElement) {
           inspectButton.disabled = state.finalSent;
-          inspectButton.textContent = "检查 ZIP";
+          inspectButton.textContent = "检查扩展";
           inspectButton.removeAttribute("aria-busy");
         }
       }
@@ -1052,7 +1052,7 @@
         return;
       }
       if (!state.projection) {
-        setFeedback(finalFeedback, "请先完成 ZIP 检查。", "error");
+        setFeedback(finalFeedback, "请先完成扩展检查。", "error");
         return;
       }
       const builtConfig = buildConfig();
@@ -1133,7 +1133,7 @@
         if (
           action === "uninstall"
           && !window.confirm(
-            "确认卸载此 Service v2 项目？系统会撤销项目权限并停止接收新任务，只删除本应用自有数据；外部系统中已经产生的结果无法撤销。",
+            "确认卸载此最新版项目？系统会撤销项目权限并停止接收新任务，只删除本应用自有数据；外部系统中已经产生的结果无法撤销。",
           )
         ) return;
 
@@ -1149,7 +1149,7 @@
           const packageFile = upgradeInput?.files?.[0];
           if (!(packageFile instanceof File) || !/\.zip$/i.test(packageFile.name || "")) {
             delete button.dataset.requestId;
-            setFeedback(feedback, "请先选择 ZIP 扩展包。", "error");
+            setFeedback(feedback, "请先选择扩展压缩包。", "error");
             return;
           }
           body = new FormData();

@@ -119,8 +119,8 @@ AUTOMATION_PLUGIN_MIGRATION_PAIR_ID_RE = re.compile(
     re.IGNORECASE,
 )
 AUTOMATION_PLUGIN_RUNTIME_MODEL_LABELS = {
-    "ACTION_V1": "Action v1",
-    "SERVICE_V2": "Service v2",
+    "ACTION_V1": "旧版操作",
+    "SERVICE_V2": "最新版服务",
     "UNSUPPORTED": "不支持的运行时",
 }
 AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL = "UNSUPPORTED"
@@ -293,26 +293,11 @@ AUTOMATION_PLUGIN_RESOURCE_ROLE_COPY = {
 }
 
 AUTOMATION_RESOURCE_DISPLAY_NAMES = {
-    "phase7.send_order_bitable": "当日寄件表",
-    "phase7.delivery_status_bitable": "签收状态表",
     "phase7.delivery_status_webhook": "签收状态外部入口",
     "phase7.price_query_webhook": "价格查询外部入口",
-    "phase7.daily_sign_bitable": "每日应签明细表",
-    "phase7.daily_sign_sheet": "每日应签结果表",
-    "phase7.site_send_bitable": "网点出港明细表",
-    "phase7.site_send_sheet": "网点出港结果表",
-    "phase7.arrive_primary_sheet": "每日到货表",
-    "phase7.arrive_secondary_sheet": "每日到货备用表",
-    "phase7.pending_arrivals_sheet": "未齐货物表",
-    "phase7.yunda_dispatch_forecast_bitable": "韵达派件预测表",
-    "phase7.yunda_send_waybills_bitable": "韵达寄件明细表",
-    "phase7.yunda_send_waybills_sheet": "韵达寄件结果表",
     "phase7.scan_webhook": "扫描外部入口",
     "phase7.scan_flow_webhook": "扫描后续流程入口",
     "phase7.stats_webhook": "到货统计外部入口",
-    "phase7.stats_archive_sheet": "到货统计归档",
-    "phase7.split_pending_source_sheet": "每日到货表",
-    "phase7.split_pending_target_sheet": "分批及有发未到表",
     "phase7.stats_flow_webhook": "到货统计后续流程入口",
     "automation.feishu_route.arrival_stats": "到货统计飞书入口",
     "automation.feishu_route.arrive_list": "每日到货飞书入口",
@@ -351,10 +336,12 @@ def _plain_role_copy(
     return fallback_label, fallback_hint
 
 
-def _resource_display_name(resource_id: str, raw_name: object) -> str:
+def _resource_display_name(resource_id: str, raw_name: object, *, kind: str = "") -> str:
     projected = normalize_feedback_text(redact_text(str(raw_name or "")))[:160]
     if projected and projected != resource_id:
         return projected
+    if kind in {"feishu_sheet", "feishu_bitable"}:
+        return ""
     known = AUTOMATION_RESOURCE_DISPLAY_NAMES.get(resource_id)
     if known:
         return known
@@ -544,7 +531,7 @@ def build_automation_project_policy_view(
     }
     if not isinstance(item, dict):
         if not load_error:
-            base["summary"] = "未取得该项目权限，后台执行已阻断；请刷新或检查 Agent。"
+            base["summary"] = "未取得该项目权限，后台执行已阻断；请刷新或检查智能服务。"
         return base
 
     configured_mode = str(item["configured_mode"])
@@ -553,8 +540,8 @@ def build_automation_project_policy_view(
     runtime_status = str(item.get("runtime_status") or "UNAVAILABLE")
     summary = str(item.get("summary") or "").strip()
     if effective_mode == "LEGACY_SCHEDULE_ONLY" or effective_status == "LEGACY_SCHEDULE_ONLY":
-        label = "旧版计划权限"
-        default_summary = "当前仍按旧版单计划权限生效；请选择新的项目权限完成迁移。"
+        label = "运行权限待确认"
+        default_summary = "当前运行权限需要重新确认，请选择项目运行方式。"
     elif effective_mode == "PROJECT_FULL_AUTO":
         if runtime_status == "RECONCILING":
             label = "完全自动，运行环境同步中"
@@ -567,7 +554,7 @@ def build_automation_project_policy_view(
             default_summary = "完全自动权限已保留；运行环境修复前项目不可运行。"
         else:
             label = "完全自动"
-            default_summary = "项目清单允许且已启用的定时、后台、飞书与验签 Webhook 入口按当前保存配置运行。"
+            default_summary = "项目清单允许且已启用的定时、后台、飞书与外部验签入口按当前保存配置运行。"
     else:
         if runtime_status == "RECONCILING":
             label = "每次运行审批，运行环境同步中"
@@ -893,11 +880,14 @@ def _normalize_plugin_resources(value: Any) -> tuple[list[dict[str, str]], bool]
         ):
             return [], False
         seen.add(resource_id)
+        display_name = _resource_display_name(resource_id, name, kind=kind)
+        if not display_name:
+            return [], False
         resources.append(
             {
                 "resource_id": resource_id,
                 "name": name,
-                "display_name": _resource_display_name(resource_id, name),
+                "display_name": display_name,
                 "kind": kind,
                 "kind_label": AUTOMATION_RESOURCE_KIND_LABELS.get(kind, "业务资源"),
                 "status": status,
@@ -1477,7 +1467,7 @@ AUTOMATION_PLUGIN_MISSING_REQUIREMENT_LABELS = {
     "project_config": "项目配置未完整",
     "account_binding": "必需账号尚未绑定",
     "resource_binding": "必需资源尚未绑定",
-    "device_binding": "命名 Windows Worker 尚未绑定",
+    "device_binding": "指定的工作节点尚未绑定",
 }
 
 
@@ -2221,7 +2211,7 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin):
                 [],
                 [],
                 frozenset(),
-                "插件目录只对真实 MySQL 管理员会话开放。",
+                "插件目录只对真实的数据库管理员会话开放。",
                 False,
             )
 
@@ -2313,7 +2303,7 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin):
             item.get("execution_platform") == "windows" for item in instances
         ):
             code = str(workers_result.get("error_code") or "WORKERS_UNAVAILABLE")
-            warning = f"Windows Worker 列表当前不可用（{code}），相关项目已阻断。"
+            warning = f"工作节点列表当前不可用（{code}），相关项目已阻断。"
         return (
             packages,
             instances,
@@ -2357,7 +2347,7 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin):
             task["approval_policy"] = policy
             apply_automation_project_execution_gate(task, policy)
         if principal is None:
-            warning = "项目权限只对真实 MySQL 管理员会话开放。"
+            warning = "项目权限只对真实的数据库管理员会话开放。"
             for task in governed_tasks:
                 automation_id = str(task.get("task_id") or "")
                 policy = build_automation_project_policy_view(
@@ -2583,7 +2573,7 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin):
                 handler,
                 HTTPStatus.BAD_GATEWAY,
                 "INVALID_PROJECT_POLICY_RESPONSE",
-                "Agent 未返回完整的项目权限结果。",
+                "智能服务未返回完整的项目权限结果。",
             )
             return
         self._send_json(
@@ -2634,7 +2624,7 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin):
                 handler,
                 HTTPStatus.BAD_GATEWAY,
                 "INVALID_PENDING_APPROVALS_RESPONSE",
-                "Agent 未返回有效的待审批集合。",
+                "智能服务未返回有效的待审批集合。",
             )
             return
         self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": {"pending": pending}})
@@ -2674,7 +2664,7 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin):
                 handler,
                 HTTPStatus.BAD_REQUEST,
                 "UNSUPPORTED_PENDING_APPROVAL_FIELDS",
-                "批量审批请求不能包含审批 ID 或计划哈希。",
+                "批量审批请求不能包含审批标识或计划摘要。",
             )
             return
         expected_hash = str(values.get("expected_pending_set_hash") or "").strip()
@@ -2740,7 +2730,7 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin):
                 handler,
                 HTTPStatus.BAD_GATEWAY,
                 "INVALID_PENDING_APPROVAL_ACTION_RESPONSE",
-                "Agent 未返回完整的批量审批结果。",
+                "智能服务未返回完整的批量审批结果。",
             )
             return
         safe_data: dict[str, Any] = {
@@ -2921,7 +2911,7 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin):
                 handler,
                 HTTPStatus.BAD_GATEWAY,
                 "INVALID_PLUGIN_CONFIGURATION_RESPONSE",
-                "Agent 未返回新的项目配置版本，请刷新页面核对后重试。",
+                "智能服务未返回新的项目配置版本，请刷新页面核对后重试。",
             )
             return
         response_data: dict[str, Any] = {

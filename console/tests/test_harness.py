@@ -143,7 +143,7 @@ def test_harness_is_the_fifteenth_fixed_core_module_and_navigation_entry() -> No
     assert len(CONSOLE_MENU_REGISTRATIONS) == 15
     assert menu_ids.index("harness") == menu_ids.index("automations") + 1
     harness_item = next(item for item in CONSOLE_NAVIGATION if item["route"] == "/harness")
-    assert harness_item["label"] == "Harness 助手"
+    assert harness_item["label"] == "AI 助手"
     assert harness_item["icon"] == "message-square"
     assert "harness" in CORE_MODULE_CODES
     harness_module = next(item for item in BUSINESS_MODULE_CATALOG if item.module_code == "harness")
@@ -329,6 +329,11 @@ def test_template_and_script_keep_host_rendered_accessible_safe_surface() -> Non
     assert "event.isComposing" in script
     assert "安全运行环境暂不可用" in script
     assert "输入只读查询" in template
+    assert "AI 助手" in template
+    assert "ai-chat-20260901" in template
+    assert "Harness 助手" not in template
+    assert 'PENDING: "等待处理"' in script
+    assert 'NOT_APPLICABLE: "不适用"' in script
     assert "harness-layout" not in template
     assert ".harness-page" in styles
     assert ".harness-thread" in styles

@@ -622,7 +622,18 @@ body.dispatch-page .notice { display: none; }
 .selection-preview-list { max-height: 340px; overflow: auto; margin-top: 10px; }
 .selection-preview-item { display: flex; align-items: flex-start; gap: 12px; min-height: 52px; padding: 10px 8px; border-bottom: 1px solid var(--line); cursor: pointer; }
 .selection-preview-item:hover { background: color-mix(in srgb, var(--surface) 72%, transparent); }
-.selection-preview-item input { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--primary); }
+.selection-preview-item input[type="checkbox"] {
+  appearance: auto;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  margin: 2px 0 0;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+.selection-preview-item:has(input[type="checkbox"]:checked) { background: var(--surface); }
+.selection-preview-item input[type="checkbox"]:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; }
+.selection-preview-item input[type="checkbox"]:disabled { cursor: not-allowed; opacity: 0.55; }
 .selection-preview-item-copy { display: grid; min-width: 0; gap: 3px; }
 .selection-preview-item-copy strong { color: var(--text-strong); font-size: 0.9rem; font-variant-numeric: tabular-nums; line-height: 1.4; }
 .selection-preview-item-copy small { color: var(--muted); font-size: 0.76rem; line-height: 1.45; overflow-wrap: anywhere; }

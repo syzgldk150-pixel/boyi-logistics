@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
-{% block title %}{% if document %}运单 #{{ document.id }}{% elif boyi_frame_mode|default(false) %}博益录单{% elif yunda_mode %}韵达录单{% elif ronghui_mode %}融辉录单{% elif ocr_mode %}OCR 队列{% else %}运单录入{% endif %}{% endblock %}
-{% block breadcrumb %}{% if document %}运单审核{% elif boyi_frame_mode|default(false) %}博益录单{% elif yunda_mode %}韵达录单{% elif ronghui_mode %}融辉录单{% elif ocr_mode %}OCR 队列{% else %}运单录入{% endif %}{% endblock %}
+{% block title %}{% if document %}运单 #{{ document.id }}{% elif boyi_frame_mode|default(false) %}博益录单{% elif yunda_mode %}韵达录单{% elif ronghui_mode %}融辉录单{% elif ocr_mode %}图片识别队列{% else %}运单录入{% endif %}{% endblock %}
+{% block breadcrumb %}{% if document %}运单审核{% elif boyi_frame_mode|default(false) %}博益录单{% elif yunda_mode %}韵达录单{% elif ronghui_mode %}融辉录单{% elif ocr_mode %}图片识别队列{% else %}运单录入{% endif %}{% endblock %}
 {% block subtitle %}{% if document %}核对识别结果并完成运单{% elif ocr_mode %}上传单据并处理识别队列{% else %}录入、报价与打印运单{% endif %}{% endblock %}
 
 {% block body_class %}ocr-page no-scroll{% if boyi_frame_mode|default(false) %} boyi-frame-page{% elif (not document) and (not ocr_mode) %} entry-tabs-page{% elif yunda_mode %} yunda-live-page{% elif ronghui_mode %} ronghui-live-page{% endif %}{% endblock %}
@@ -546,7 +546,7 @@
       <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="boyi"><i data-feather="plus"></i> 新建博益</button>
       <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="yunda"><i data-feather="truck"></i> 韵达原页</button>
       <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="ronghui"><i data-feather="truck"></i> 融辉原页</button>
-      <a class="ghost-btn entry-ocr-link" data-entry-ocr-link href="/ocr?mode=ocr"><i data-feather="image"></i> OCR队列</a>
+      <a class="ghost-btn entry-ocr-link" data-entry-ocr-link href="/ocr?mode=ocr"><i data-feather="image"></i> 图片识别队列</a>
     </div>
   </div>
   <div class="entry-tab-limit" data-entry-tab-limit hidden>最多同时打开 6 个录单页签，请先关闭不需要的页签。</div>
@@ -640,9 +640,9 @@
           <i data-feather="map-pin"></i> 地址解析
         </button>
         {% if not is_boyi_frame %}
-        <div class="mode-switch" aria-label="Entry Mode">
+        <div class="mode-switch" aria-label="录入方式">
           <a href="/ocr" data-mode-link="manual" aria-pressed="{{ 'true' if is_manual else 'false' }}">博益</a>
-          <a href="/ocr?mode=ocr" data-mode-link="ocr" aria-pressed="{{ 'true' if is_ocr_mode else 'false' }}"><i data-feather="image"></i> OCR</a>
+          <a href="/ocr?mode=ocr" data-mode-link="ocr" aria-pressed="{{ 'true' if is_ocr_mode else 'false' }}"><i data-feather="image"></i> 图片识别</a>
         </div>
         {% endif %}
       </div>
@@ -719,7 +719,7 @@
             {{ render_manual_field('package_type_lines', '包装类型', required=True) }}
             {{ render_manual_field('quantity_lines', '件数', required=True) }}
             <div class="manual-row">
-              <label class="manual-label" for="field_weight_kg">重量 kg</label>
+              <label class="manual-label" for="field_weight_kg">重量（千克）</label>
               <input id="field_weight_kg" name="field_weight_kg" class="manual-input" type="number" min="0" step="0.01" inputmode="decimal" data-weight-input data-quote-input>
             </div>
             <div class="manual-row">
@@ -856,23 +856,23 @@
   <section class="ocr-figure-panel ocr-mode-figure">
     <div class="manual-head">
       <div class="manual-title">
-        <h3>OCR模式</h3>
+        <h3>图片识别模式</h3>
         <span class="manual-chip">图文复核</span>
       </div>
       <div class="manual-head-tools">
         <a class="ghost-btn ocr-template-btn" href="/templates/new">
           <i data-feather="settings"></i>模板配置
         </a>
-        <div class="mode-switch" aria-label="Entry Mode">
+        <div class="mode-switch" aria-label="录入方式">
           <a href="/ocr" data-mode-link="manual" aria-pressed="{{ 'true' if is_manual else 'false' }}">博益</a>
-          <a href="/ocr?mode=ocr" data-mode-link="ocr" aria-pressed="{{ 'true' if is_ocr_mode else 'false' }}"><i data-feather="image"></i> OCR</a>
+          <a href="/ocr?mode=ocr" data-mode-link="ocr" aria-pressed="{{ 'true' if is_ocr_mode else 'false' }}"><i data-feather="image"></i> 图片识别</a>
         </div>
       </div>
     </div>
     <div class="ocr-mode-upload-area">
       <i data-feather="image"></i>
       <h3>上传单据图像</h3>
-      <p>上传 JPG / PNG 图片后进入原 OCR 识别与运单复核流程</p>
+      <p>上传常用格式图片后进入图片识别与运单复核流程</p>
       <div class="ocr-mode-upload-actions">
         <button type="button" class="primary-btn action-btn" onclick="document.getElementById('quick-upload-input').click()">
           <i data-feather="upload"></i> 快速上传图像
@@ -888,7 +888,7 @@
   <section class="ocr-review-panel ocr-queue-panel">
     <div class="ocr-review-head">
       <div style="display:flex;gap:12px;align-items:center;">
-        <h3>待复核 OCR 单据</h3>
+        <h3>待复核识别单据</h3>
         <span class="manual-chip">{{ pending_docs|length }} 条</span>
       </div>
       <a class="ghost-btn" style="height:28px;min-height:28px;padding:0 10px;font-size:.76rem;" href="/ocr">
@@ -907,7 +907,7 @@
       {% else %}
       <div class="ocr-queue-empty">
         <strong>暂无待复核单据</strong>
-        <div style="margin-top:4px;">上传图片后会进入 OCR 队列</div>
+        <div style="margin-top:4px;">上传图片后会进入识别队列</div>
       </div>
       {% endfor %}
     </div>
@@ -935,7 +935,7 @@
       </div>
       <div style="display:flex;gap:8px;">
         <a class="ghost-btn" style="height:28px;min-height:28px;padding:0 10px;font-size:.76rem;" href="/ocr?mode=ocr">
-          <i data-feather="image" style="width:14px;"></i>OCR队列
+          <i data-feather="image" style="width:14px;"></i>图片识别队列
         </a>
         <a class="ghost-btn" style="height:28px;min-height:28px;padding:0 10px;font-size:.76rem;" href="/ocr">
           <i data-feather="layout" style="width:14px;"></i>手工录单

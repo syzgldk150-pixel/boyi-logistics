@@ -129,7 +129,7 @@
     } catch (_error) {
       throw new HarnessRequestError(
         "HARNESS_UNREACHABLE",
-        "Harness 服务暂时无法连接，未执行任何业务操作。",
+        "AI 助手服务暂时无法连接，未执行任何业务操作。",
         0,
       );
     }
@@ -140,7 +140,7 @@
     } catch (_error) {
       throw new HarnessRequestError(
         "INVALID_HARNESS_RESPONSE",
-        "Harness 返回了无法读取的响应。",
+        "AI 助手返回了无法读取的响应。",
         response.status,
       );
     }
@@ -148,7 +148,7 @@
       const error = asObject(payload && payload.error);
       const code = error && typeof error.code === "string" ? error.code : "HARNESS_UPSTREAM_ERROR";
       const message = error && typeof error.message === "string" ? error.message.trim() : "";
-      throw new HarnessRequestError(code, message || "Harness 请求未成功。", response.status);
+      throw new HarnessRequestError(code, message || "AI 助手请求未成功。", response.status);
     }
     return payload.data;
   }
@@ -198,7 +198,7 @@
     if (sessionNote) {
       sessionNote.textContent = value
         ? "当前为只读会话，回复请结合原始业务系统复核。"
-        : "Harness 仅使用已开放的只读能力，回复请结合原始业务系统复核。";
+        : "AI 助手仅使用已开放的只读能力，回复请结合原始业务系统复核。";
     }
   }
 
@@ -215,7 +215,7 @@
     const article = createElement("article", `harness-message harness-message--${role}`);
     if (kind === "error") article.classList.add("harness-message--error");
     const body = createElement("div", "harness-message-body");
-    appendText(body, "span", "harness-message-label", role === "user" ? "你" : "Harness");
+    appendText(body, "span", "harness-message-label", role === "user" ? "你" : "AI 助手");
     appendText(body, "p", "harness-message-copy", message);
     article.append(body);
     thread.append(article);
@@ -223,7 +223,23 @@
   }
 
   function displayLabel(key) {
-    return KEY_LABELS[key] || key.replaceAll("_", " ");
+    return KEY_LABELS[key] || "补充信息";
+  }
+
+  function displayScalar(value) {
+    if (value === true) return "是";
+    if (value === false) return "否";
+    const text = String(value);
+    const labels = {
+      CAPABILITY_UNAVAILABLE: "查询能力暂不可用",
+      PRODUCTION_GATED: "尚未开放",
+      PENDING: "等待处理",
+      RUNNING: "处理中",
+      SUCCEEDED: "已完成",
+      FAILED: "处理失败",
+      NOT_APPLICABLE: "不适用",
+    };
+    return labels[text.toUpperCase()] || text;
   }
 
   function renderValue(container, value, depth) {
@@ -233,7 +249,7 @@
       return;
     }
     if (value == null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-      appendText(container, "p", "harness-value", value == null ? "无数据" : String(value));
+      appendText(container, "p", "harness-value", value == null ? "无数据" : displayScalar(value));
       return;
     }
     if (Array.isArray(value)) {
@@ -327,7 +343,7 @@
     const response = asObject(data) || {};
     const returnedSessionId = canonicalUuid(response.session_id);
     if (returnedSessionId && sessionId && returnedSessionId !== sessionId) {
-      throw new HarnessRequestError("INVALID_HARNESS_RESPONSE", "Agent 返回了不匹配的会话。", 502);
+      throw new HarnessRequestError("INVALID_HARNESS_RESPONSE", "智能服务返回了不匹配的会话。", 502);
     }
     if (returnedSessionId) setSession(returnedSessionId);
     if (response.tools !== undefined) renderTools(response.tools);
@@ -344,34 +360,34 @@
   function describeError(error) {
     const code = String(error && error.code || "").toUpperCase();
     if (code.includes("PRODUCTION_GATED")) {
-      return "Harness 的生产查询能力尚未开放，未执行任何业务操作。";
+      return "AI 助手的生产查询能力尚未开放，未执行任何业务操作。";
     }
     if (code.includes("SANDBOX")) {
-      return "Harness 的安全运行环境暂不可用，请联系系统管理员检查服务器安全组件。未执行任何业务操作。";
+      return "AI 助手的安全运行环境暂不可用，请联系系统管理员检查服务器安全组件。未执行任何业务操作。";
     }
     if (code.includes("CAPABILITY_UNAVAILABLE") || code.includes("SIDECAR") || code.includes("UNREACHABLE")) {
-      return "Harness 当前无法启动只读会话，请稍后重试或联系系统管理员。未执行任何业务操作。";
+      return "AI 助手当前无法启动只读会话，请稍后重试或联系系统管理员。未执行任何业务操作。";
     }
     if (code.includes("MESSAGE_FORMAT")) {
       return `请使用建议查询，或输入“${TOOL_COMMAND_PREFIX}工具标题”。`;
     }
-    return String(error && error.message || "Harness 请求失败，未执行任何业务操作。");
+    return String(error && error.message || "AI 助手请求失败，未执行任何业务操作。");
   }
 
   async function createSession() {
     const data = await postJson("/harness/sessions", { request_uuid: requestUuid() });
     const createdSessionId = canonicalUuid(data.session_id);
     if (!createdSessionId) {
-      throw new HarnessRequestError("INVALID_HARNESS_RESPONSE", "Agent 未返回有效会话。", 502);
+      throw new HarnessRequestError("INVALID_HARNESS_RESPONSE", "智能服务未返回有效会话。", 502);
     }
     setSession(createdSessionId);
     renderTools(data.tools);
     if (productionGated(data)) {
-      throw new HarnessRequestError("PRODUCTION_GATED", "Harness 生产能力尚未开放。", 503);
+      throw new HarnessRequestError("PRODUCTION_GATED", "AI 助手生产能力尚未开放。", 503);
     }
     const unavailable = unavailableStatus(data);
     if (unavailable) {
-      throw new HarnessRequestError(unavailable, "Harness 安全运行环境暂不可用。", 503);
+      throw new HarnessRequestError(unavailable, "AI 助手安全运行环境暂不可用。", 503);
     }
     setState("只读会话可用", "ready");
     return createdSessionId;

@@ -3,19 +3,19 @@
 {% block title %}{% if is_new %}新增模板{% else %}编辑模板{% endif %}{% endblock %}
 
 {% block breadcrumb %}{% if is_new %}新增模板{% else %}编辑模板{% endif %}{% endblock %}
-{% block subtitle %}OCR 工作区 / 模板配置{% endblock %}
+{% block subtitle %}图片识别工作区 / 模板配置{% endblock %}
 
 {% block page_actions %}
-<a class="ghost-btn" href="/ocr?mode=ocr">返回 OCR 工作区</a>
+<a class="ghost-btn" href="/ocr?mode=ocr">返回图片识别工作区</a>
 {% endblock %}
 
 {% block content %}
 <div class="template-editor-layout" data-reveal="editor">
   <section class="panel panel--hero template-editor-summary">
     <div class="heading-stack">
-      <span class="kicker">OCR 模板</span>
+      <span class="kicker">图片识别模板</span>
       <p class="hero-summary">
-        在这里维护模板名称、说明以及 OCR 预处理和字段配置。保存后会立即影响后续上传任务的识别规则。
+        在这里维护模板名称、说明、图片预处理和字段配置。保存后会立即影响后续上传任务的识别规则。
       </p>
     </div>
   </section>
@@ -36,7 +36,7 @@
       </div>
 
       <label class="template-field">
-        <span class="template-label">模板 JSON</span>
+        <span class="template-label">模板配置</span>
         <textarea class="review-input template-json" name="template_json" spellcheck="false">{{ template_json }}</textarea>
       </label>
 
@@ -75,8 +75,8 @@
   </section>
 
   <section class="premium-card">
-    <div class="premium-badge"><i data-feather="settings"></i> Tips</div>
-    <p class="premium-desc">模板 JSON 至少保留两部分：`preprocess` 负责预处理，`fields` 负责字段定义。</p>
+    <div class="premium-badge"><i data-feather="settings"></i> 提示</div>
+    <p class="premium-desc">模板配置至少保留两部分：“预处理”负责图片处理，“字段”负责识别内容定义。</p>
     <p class="premium-desc">字段里至少保留 `name`、`label`，必填项额外加 `required`。</p>
   </section>
 </div>

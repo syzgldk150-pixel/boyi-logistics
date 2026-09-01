@@ -125,30 +125,30 @@ def _bounded_error_code(value: object) -> str:
 def _bounded_error_message(value: object) -> str:
     if isinstance(value, Mapping):
         value = value.get("message")
-    message = redact_text(value if isinstance(value, str) else "Harness 服务暂时不可用。").strip()
-    return message[:500] or "Harness 服务暂时不可用。"
+    message = redact_text(value if isinstance(value, str) else "AI 助手服务暂时不可用。").strip()
+    return message[:500] or "AI 助手服务暂时不可用。"
 
 
 def _safe_response_value(value: object, *, depth: int = 0) -> Any:
     """Copy only finite JSON and reject forbidden fields before browser output."""
 
     if depth > HARNESS_RESPONSE_MAX_DEPTH:
-        raise ValueError("Harness response is too deeply nested")
+        raise ValueError("AI 助手返回的数据层级过深")
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
-            raise ValueError("Harness response contains a non-finite number")
+            raise ValueError("AI 助手返回了无效数字")
         return value
     if isinstance(value, str):
         if len(value) > HARNESS_RESPONSE_MAX_TEXT:
-            raise ValueError("Harness response text is too long")
+            raise ValueError("AI 助手返回的文字过长")
         return redact_text(value)
     if isinstance(value, Mapping):
         if len(value) > HARNESS_RESPONSE_MAX_ITEMS:
-            raise ValueError("Harness response object is too large")
+            raise ValueError("AI 助手返回的数据过大")
         projected: dict[str, Any] = {}
         for raw_key, raw_value in value.items():
             key = str(raw_key)
@@ -161,25 +161,25 @@ def _safe_response_value(value: object, *, depth: int = 0) -> Any:
                     not in {"persistence_status", "session_id", "request_uuid", "message_id"}
                 )
             ):
-                raise ValueError("Harness response contains a forbidden field")
+                raise ValueError("AI 助手返回了不允许展示的字段")
             projected[key] = _safe_response_value(raw_value, depth=depth + 1)
         return projected
     if isinstance(value, (list, tuple)):
         if len(value) > HARNESS_RESPONSE_MAX_ITEMS:
-            raise ValueError("Harness response list is too large")
+            raise ValueError("AI 助手返回的列表过长")
         return [_safe_response_value(item, depth=depth + 1) for item in value]
-    raise ValueError("Harness response contains a non-JSON value")
+    raise ValueError("AI 助手返回了无法识别的数据")
 
 
 def _project_harness_response(data: object) -> dict[str, Any]:
     if not isinstance(data, Mapping):
-        raise ValueError("Harness response data must be an object")
+        raise ValueError("AI 助手返回内容必须是结构化对象")
     unknown = set(data) - _HARNESS_TOP_LEVEL_RESPONSE_FIELDS
     if unknown:
-        raise ValueError("Harness response contains an unsupported top-level field")
+        raise ValueError("AI 助手返回了不支持的顶层字段")
     projected = _safe_response_value(data)
     if not isinstance(projected, dict):  # pragma: no cover - guarded above
-        raise ValueError("Harness response data must be an object")
+        raise ValueError("AI 助手返回内容必须是结构化对象")
     for field_name in ("session_id", "request_uuid", "message_id"):
         if field_name in projected:
             _canonical_uuid(projected[field_name], field_name=field_name)
@@ -214,7 +214,7 @@ class HarnessServiceMixin:
                 handler,
                 HTTPStatus.FORBIDDEN,
                 "MYSQL_ADMIN_SESSION_REQUIRED",
-                "Harness 写操作仅允许已登录的管理员会话。",
+                "AI 助手写操作仅允许已登录的管理员会话。",
             )
             return None
         if not self._require_same_origin_write(handler):
@@ -233,7 +233,7 @@ class HarnessServiceMixin:
                 handler,
                 HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
                 "JSON_REQUIRED",
-                "Harness 请求只接受 application/json。",
+                "AI 助手请求只接受标准结构化数据。",
             )
             return None
         try:
@@ -245,7 +245,7 @@ class HarnessServiceMixin:
                 handler,
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
                 "REQUEST_TOO_LARGE",
-                "Harness 请求体超过允许大小。",
+                "AI 助手请求体超过允许大小。",
             )
             return None
         raw = handler.rfile.read(content_length) if content_length else b""
@@ -254,7 +254,7 @@ class HarnessServiceMixin:
                 handler,
                 HTTPStatus.BAD_REQUEST,
                 "INVALID_JSON",
-                "Harness 请求体长度与声明不一致。",
+                "AI 助手请求体长度与声明不一致。",
             )
             return None
         try:
@@ -264,7 +264,7 @@ class HarnessServiceMixin:
                 handler,
                 HTTPStatus.BAD_REQUEST,
                 "INVALID_JSON",
-                "Harness 请求体必须是无重复字段的 JSON 对象。",
+                "AI 助手请求体必须是无重复字段的结构化对象。",
             )
             return None
         if not isinstance(values, dict) or set(values) != set(allowed_fields):
@@ -272,7 +272,7 @@ class HarnessServiceMixin:
                 handler,
                 HTTPStatus.BAD_REQUEST,
                 "INVALID_HARNESS_REQUEST",
-                "Harness 请求字段不符合闭合合同。",
+                "AI 助手请求字段不符合闭合合同。",
             )
             return None
         return values
@@ -357,7 +357,7 @@ class HarnessServiceMixin:
                 handler,
                 HTTPStatus.BAD_GATEWAY,
                 "INVALID_HARNESS_RESPONSE",
-                "Agent 返回了无效的 Harness 响应。",
+                "智能服务返回了无效的 AI 助手响应。",
             )
             return
         if result.get("ok") is not True:
@@ -377,7 +377,7 @@ class HarnessServiceMixin:
                 handler,
                 HTTPStatus.BAD_GATEWAY,
                 "INVALID_HARNESS_RESPONSE",
-                "Agent 返回了无效的 Harness 数据。",
+                "智能服务返回了无效的 AI 助手数据。",
             )
             return
         if any(field_name not in data for field_name in required_fields):
@@ -385,7 +385,7 @@ class HarnessServiceMixin:
                 handler,
                 HTTPStatus.BAD_GATEWAY,
                 "INVALID_HARNESS_RESPONSE",
-                "Agent 返回的 Harness 数据缺少必要字段。",
+                "智能服务返回的 AI 助手数据缺少必要字段。",
             )
             return
         try:
@@ -397,7 +397,7 @@ class HarnessServiceMixin:
                 handler,
                 HTTPStatus.BAD_GATEWAY,
                 "INVALID_HARNESS_RESPONSE",
-                "Agent 返回了不一致的 Harness 状态。",
+                "智能服务返回了不一致的 AI 助手状态。",
             )
             return
         status = upstream_status

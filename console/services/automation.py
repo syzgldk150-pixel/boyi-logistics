@@ -360,7 +360,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             return {
                 "ok": False,
                 "status": HTTPStatus.BAD_GATEWAY,
-                "error": "Agent 未返回可追踪的 run_id。",
+                "error": "智能服务未返回可追踪的执行标识。",
                 "error_code": "INVALID_AGENT_RUN_CONTRACT",
             }
 
@@ -675,9 +675,9 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 task["schedule_editable"] = False
                 task["plugin_blocked"] = True
                 task["plugin_warning"] = (
-                    "迁移/插件缺失：定时任务未关联 automation_id，已作为独立阻断项显示，禁止按任务名推断归属。"
+                    "扩展信息不完整：定时任务未关联项目标识，当前已停止运行。"
                     if task.get("automation_link_missing")
-                    else "迁移/插件缺失：该任务不在 Agent 已安装实例目录中，运行与配置均已阻断。"
+                    else "扩展信息缺失：该任务当前不能运行或设置。"
                 )
                 continue
 
@@ -755,7 +755,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                     dict.fromkeys(
                         [
                             *list(plugin.get("missing_requirements") or []),
-                            "旧定时不符合签名动作包的调度合同，禁止猜测迁移",
+                            "定时设置与当前扩展不匹配，请联系系统管理员处理",
                         ]
                     )
                 )
@@ -779,7 +779,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                         dict.fromkeys(
                             [
                                 *list(plugin.get("missing_requirements") or []),
-                                "已绑定 Windows Worker 不在线或会话不可用",
+                                "已绑定工作节点不在线或会话不可用",
                             ]
                         )
                     )
@@ -884,7 +884,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             try:
                 resource_payload = json.loads(resources_json)
             except json.JSONDecodeError as exc:
-                message = f"批量资源 JSON 解析失败：{exc.msg}"
+                message = f"批量资源配置解析失败：{exc.msg}"
                 if ajax_request:
                     self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": message})
                     return
@@ -892,7 +892,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 return
 
             if not isinstance(resource_payload, dict):
-                message = "批量资源必须是 JSON 对象。"
+                message = "批量资源必须是结构化配置。"
                 if ajax_request:
                     self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": message})
                     return
@@ -911,10 +911,10 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 try:
                     parsed_config = json.loads(config_text)
                 except json.JSONDecodeError as exc:
-                    errors.append(f"{key}: JSON 解析失败：{exc.msg}")
+                    errors.append(f"{key}: 配置解析失败：{exc.msg}")
                     continue
                 if not isinstance(parsed_config, dict):
-                    errors.append(f"{key}: 必须是 JSON 对象")
+                    errors.append(f"{key}: 必须是结构化配置")
                     continue
                 parsed_resources[key] = parsed_config
 
@@ -962,7 +962,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         except json.JSONDecodeError as exc:
             self._render_automations(
                 handler,
-                {"message": [f"资源 {resource_key} 的 JSON 解析失败：{exc.msg}"], "kind": ["warning"]},
+                {"message": [f"资源 {resource_key} 的配置解析失败：{exc.msg}"], "kind": ["warning"]},
                 resource_overrides={resource_key: {"config_json": config_json}},
                 open_task_id=open_task_id or None,
             )
@@ -971,7 +971,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         if not isinstance(config, dict):
             self._render_automations(
                 handler,
-                {"message": [f"资源 {resource_key} 必须是 JSON 对象。"], "kind": ["warning"]},
+                {"message": [f"资源 {resource_key} 必须是结构化配置。"], "kind": ["warning"]},
                 resource_overrides={resource_key: {"config_json": config_json}},
                 open_task_id=open_task_id or None,
             )
@@ -997,7 +997,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             return
 
         if payload.get("project_plugin_instance"):
-            message = "插件项目设置只能通过当前卡片的“保存项目设置”提交到 Agent。"
+            message = "扩展项目设置只能通过当前卡片的“保存项目设置”提交到智能服务。"
             if ajax_request:
                 self._send_json(
                     handler,
@@ -1030,7 +1030,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             self._redirect_with_message(
                 handler,
                 "/automations",
-                f"任务已保存。Agent 当前未连接，稍后重载后生效：{reload_result.get('error', 'unknown error')}",
+                f"任务已保存。智能服务当前未连接，稍后重载后生效：{reload_result.get('error', '未知错误')}",
                 "warning",
             )
             return
@@ -1168,7 +1168,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 return
             self._render_automations(
                 handler,
-                {"message": [f"任务已保存，但 Agent 当前不可达，无法立即执行：{failure_message}"], "kind": ["warning"]},
+                {"message": [f"任务已保存，但智能服务当前不可达，无法立即执行：{failure_message}"], "kind": ["warning"]},
                 task_overrides=override,
                 task_feedbacks={
                     payload["task_id"]: {
@@ -1188,7 +1188,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         )
         if not run_result.get("ok"):
             failure_message = normalize_feedback_text(
-                run_result.get("error") or "Agent 命令提交失败"
+                run_result.get("error") or "智能服务命令提交失败"
             )
             response_payload = {
                 "ok": False,
@@ -1343,7 +1343,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 {
                     "ok": False,
                     "error_code": "INVALID_AGENT_RUN_CONTRACT",
-                    "message": "Agent 未返回可追踪的正式扫描 Run。",
+                    "message": "智能服务未返回可追踪的正式扫描记录。",
                 },
             )
             return
@@ -1428,7 +1428,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 {
                     "ok": False,
                     "error_code": "INVALID_AGENT_RUN_CONTRACT",
-                    "message": "Agent 未返回可追踪的候选读取记录。",
+                    "message": "智能服务未返回可追踪的候选读取记录。",
                 },
             )
             return
@@ -1550,7 +1550,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 {
                     "ok": False,
                     "error_code": "INVALID_AGENT_RUN_CONTRACT",
-                    "message": "Agent 未返回可追踪的正式处理记录。",
+                    "message": "智能服务未返回可追踪的正式处理记录。",
                 },
             )
             return
@@ -1760,7 +1760,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                             payload["scan_preview_error"] = {
                                 "error_code": "INVALID_SCAN_PREVIEW_CONTRACT",
                                 "message": (
-                                    "Agent 返回的扫描预览合同无效，确认执行已阻断。"
+                                    "智能服务返回的扫描预览数据无效，确认执行已阻断。"
                                 ),
                             }
                         else:
@@ -1949,10 +1949,10 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         try:
             tool_params = json.loads(tool_params_json or "{}")
         except json.JSONDecodeError as exc:
-            return None, override, f"任务 {task_id} 的参数 JSON 解析失败：{exc.msg}"
+            return None, override, f"任务 {task_id} 的参数配置解析失败：{exc.msg}"
 
         if not isinstance(tool_params, dict):
-            return None, override, f"任务 {task_id} 的参数必须是 JSON 对象。"
+            return None, override, f"任务 {task_id} 的参数必须是结构化配置。"
 
         if project_plugin_instance:
             tool_params = {}
@@ -1992,7 +1992,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             try:
                 parsed_schedule_times = json.loads(schedule_times_json)
             except json.JSONDecodeError as exc:
-                return None, override, f"任务 {task_id} 的执行时间 JSON 解析失败：{exc.msg}"
+                return None, override, f"任务 {task_id} 的执行时间配置解析失败：{exc.msg}"
             if not isinstance(parsed_schedule_times, list):
                 return None, override, f"任务 {task_id} 的执行时间必须是数组。"
             schedule_times = normalize_schedule_times(
@@ -2133,7 +2133,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         self._redirect_with_message(
             handler,
             "/automations",
-            f"Agent call failed: {result.get('error', 'unknown error')}",
+            f"智能服务调用失败：{result.get('error', '未知错误')}",
             "warning",
         )
 
@@ -2333,12 +2333,12 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
 
     def _normalize_tms_session_status_payload(self, payload: Any) -> dict[str, Any]:
         if not isinstance(payload, dict):
-            return self._default_tms_session_status(last_error_summary="TMS 登录态接口返回了无效数据。")
+            return self._default_tms_session_status(last_error_summary="融辉登录态接口返回了无效数据。")
 
         if payload.get("ok") is False:
             return self._default_tms_session_status(
                 last_error_summary=normalize_feedback_text(
-                    payload.get("message") or payload.get("error") or "TMS 登录态接口调用失败。"
+                    payload.get("message") or payload.get("error") or "融辉登录态接口调用失败。"
                 ),
             )
 
@@ -2392,7 +2392,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         if not result.get("ok"):
             return self._default_tms_session_status(
                 last_error_summary=normalize_feedback_text(
-                    result.get("error") or f"Agent 当前不可达，无法获取{label}登录态。"
+                    result.get("error") or f"智能服务当前不可达，无法获取{label}登录态。"
                 ),
             )
         return self._normalize_tms_session_status_payload(result.get("data"))
@@ -2525,7 +2525,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
 
         if response_payload.get("ok") is False:
             error_text = normalize_feedback_text(
-                response_payload.get("message") or response_payload.get("error") or "TMS 登录态操作失败。"
+                response_payload.get("message") or response_payload.get("error") or "融辉登录态操作失败。"
             )
             error_code = str(response_payload.get("error_code") or "").strip().upper()
             kind = "warning" if error_code in {"AUTH_REQUIRED", "AUTH_PENDING_CODE"} else "error"

@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 
-{% block title %}Harness 助手 | {{ app_title }}{% endblock %}
-{% block breadcrumb %}Harness 助手{% endblock %}
+{% block title %}AI 助手 | {{ app_title }}{% endblock %}
+{% block breadcrumb %}AI 助手{% endblock %}
 {% block subtitle %}只读查询助手{% endblock %}
 {% block main_class %}harness-main{% endblock %}
 {% block body_class %}harness-page-body{% endblock %}
 
 {% block content %}
-<section class="harness-page" data-harness-page aria-label="Harness 对话">
+<section class="harness-page" data-harness-page aria-label="AI 助手对话">
   <header class="harness-chat-header">
     <p><i data-feather="shield" aria-hidden="true"></i>只读查询，不会更改业务数据。</p>
     <div class="harness-state" data-harness-state aria-live="polite">
@@ -16,11 +16,11 @@
     </div>
   </header>
 
-  <div class="harness-thread" data-harness-thread aria-live="polite" aria-label="Harness 会话">
+  <div class="harness-thread" data-harness-thread aria-live="polite" aria-label="AI 助手会话">
     <div class="harness-welcome" data-harness-welcome>
       <span class="harness-welcome-icon" aria-hidden="true"><i data-feather="message-circle"></i></span>
       <h3>有什么需要查询？</h3>
-      <p>可以让 Harness 查看已开放的只读信息。会话只在当前服务进程中短暂保存。</p>
+      <p>可以让 AI 助手查看已开放的只读信息。会话只在当前服务进程中短暂保存。</p>
       <div class="harness-tools-list" data-harness-tools aria-label="可用查询建议"></div>
       <span class="sr-only" data-harness-tools-count>未加载</span>
     </div>
@@ -53,11 +53,11 @@
         </div>
       </div>
     </form>
-    <p class="harness-footnote" data-harness-session aria-live="polite">Harness 仅使用已开放的只读能力，回复请结合原始业务系统复核。</p>
+    <p class="harness-footnote" data-harness-session aria-live="polite">AI 助手仅使用已开放的只读能力，回复请结合原始业务系统复核。</p>
   </div>
 </section>
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/harness.js?v=harness-chat-20260901"></script>
+<script src="/static/harness.js?v=ai-chat-20260901"></script>
 {% endblock %}

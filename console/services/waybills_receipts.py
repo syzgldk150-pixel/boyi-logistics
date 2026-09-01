@@ -83,7 +83,7 @@ class WaybillsReceiptsServiceMixin:
             return str(error.get("error") or error.get("message") or error.get("detail") or error)
         if error:
             return str(error)
-        return "Agent 调用失败。"
+        return "智能服务调用失败。"
 
     def _render_waybills(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
         def first_value(name: str, default: str = "") -> str:
@@ -518,15 +518,15 @@ class WaybillsReceiptsServiceMixin:
             timeout=max(50, payload["timeout_sec"] + 5),
         )
         if not response.get("ok"):
-            return {}, self._receipt_detail_text(response.get("error")) or "TMS 详情接口不可达"
+            return {}, self._receipt_detail_text(response.get("error")) or "融辉详情接口不可达"
         data = response.get("data")
         if isinstance(data, dict) and data.get("ok") is False:
-            return {}, self._receipt_detail_text(data.get("message") or data.get("error")) or "TMS 详情接口返回失败"
+            return {}, self._receipt_detail_text(data.get("message") or data.get("error")) or "融辉详情接口返回失败"
         row, error = self._receipt_detail_first_matching_row(self._receipt_detail_rows_from_agent_payload(data), waybill_no)
         if error:
             return {}, error
         if not row:
-            return {}, "TMS 详情接口未返回数据"
+            return {}, "融辉详情接口未返回数据"
         values = {
             "recipient_name": row.get("recipient_name"),
             "recipient_address": row.get("recipient_address"),
@@ -808,7 +808,7 @@ class WaybillsReceiptsServiceMixin:
             message=str(
                 receipt.get("run_id")
                 or command_result.get("error")
-                or "Agent command submission failed"
+                or "智能服务任务提交失败"
             ),
         )
         self._send_console_command_receipt(
@@ -1286,7 +1286,7 @@ class WaybillsReceiptsServiceMixin:
             message=str(
                 receipt.get("run_id")
                 or command_result.get("error")
-                or "Agent command submission failed"
+                or "智能服务任务提交失败"
             ),
         )
         self._send_console_command_receipt(

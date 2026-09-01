@@ -16,12 +16,12 @@ from console.navigation import CONSOLE_CONTROL_PLANE_NAVIGATION, CONSOLE_NAVIGAT
 
 
 _SYSTEM_HEALTH_COMPONENTS = (
-    ("mysql", "MySQL"),
+    ("mysql", "业务数据库"),
     ("scheduler", "调度器"),
     ("workflow_runner", "工作流执行器"),
     ("automation_plugins", "自动化扩展"),
-    ("automation_workers", "自动化 Worker"),
-    ("tms_session", "TMS 会话"),
+    ("automation_workers", "自动化工作节点"),
+    ("tms_session", "融辉登录会话"),
 )
 _UNAVAILABLE = "不可用"
 _CURRENT_REQUEST_USER = object()

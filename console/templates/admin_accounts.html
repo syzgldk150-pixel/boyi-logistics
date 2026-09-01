@@ -2,7 +2,7 @@
 
 {% block title %}{{ '系统状态' if system_status_only else '后台账号管理' }} - {{ app_title }}{% endblock %}
 {% block breadcrumb %}{{ '系统状态' if system_status_only else '系统管理' }}{% endblock %}
-{% block subtitle %}{{ 'Agent 与平台组件健康概览' if system_status_only else '管理员账号与登录安全' }}{% endblock %}
+{% block subtitle %}{{ '智能服务与平台组件健康概览' if system_status_only else '管理员账号与登录安全' }}{% endblock %}
 
 {% block content %}
 {% if system_status_only %}
@@ -11,12 +11,12 @@
     <div class="account-admin-title">
       <strong id="system-status-title">系统状态</strong>
       <span class="status-pill {{ 'status-pill--success' if system_health.available else 'status-pill--muted' }}">
-        {{ 'Agent 已连接' if system_health.available else 'Agent 不可用' }}
+        {{ '智能服务已连接' if system_health.available else '智能服务不可用' }}
       </span>
     </div>
     <a class="ghost-btn" href="/settings/accounts">返回系统管理</a>
   </div>
-  <p class="muted-copy">仅展示经鉴权 Agent 健康接口允许的系统级字段；未返回的字段明确标记为不可用。</p>
+  <p class="muted-copy">仅展示经鉴权健康接口允许的系统级字段；未返回的字段明确标记为不可用。</p>
   <div class="account-table-wrap">
     <table class="account-table">
       <tbody>

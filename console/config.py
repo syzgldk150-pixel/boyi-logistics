@@ -201,7 +201,7 @@ def load_settings() -> Settings:
     return Settings(
         host=os.getenv("DOCFLOW_HOST", "127.0.0.1"),
         port=_env_int("DOCFLOW_PORT", 8765),
-        app_title=os.getenv("DOCFLOW_APP_TITLE", "物流 Agent 本地控制台"),
+        app_title=os.getenv("DOCFLOW_APP_TITLE", "物流智能本地控制台"),
         runtime_dir=runtime_dir,
         state_dir=state_dir,
         originals_dir=runtime_dir / "originals",

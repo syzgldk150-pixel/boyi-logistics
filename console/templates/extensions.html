@@ -91,7 +91,7 @@
     {% else %}
     <div class="extension-empty">
       <i data-feather="package"></i><strong>还没有安装扩展</strong>
-      <p>点击“安装扩展”，或把扩展 ZIP 拖进安装窗口。</p>
+      <p>点击“安装扩展”，或把扩展压缩包拖进安装窗口。</p>
       {% if can_manage_extensions %}<button class="primary-btn" type="button" data-extension-open>安装第一个扩展</button>{% endif %}
     </div>
     {% endif %}
@@ -101,7 +101,7 @@
   <dialog class="extension-install-dialog" data-extension-dialog aria-labelledby="extension-dialog-title">
     <section class="extension-install-wizard" data-extension-wizard>
       <header class="extension-dialog-header">
-        <div><h2 id="extension-dialog-title">安装扩展</h2><p>选择扩展 ZIP，系统会先检查再安装。</p></div>
+        <div><h2 id="extension-dialog-title">安装扩展</h2><p>选择扩展压缩包，系统会先检查再安装。</p></div>
         <button class="extension-dialog-close" type="button" data-extension-close aria-label="关闭安装窗口"><i data-feather="x"></i></button>
       </header>
 
@@ -111,9 +111,9 @@
           <span class="extension-dropzone__icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" focusable="false"><path d="M9.5 3.5a2.5 2.5 0 0 1 5 0V6H18a2 2 0 0 1 2 2v3.5h-2.5a2.5 2.5 0 0 0 0 5H20V20a2 2 0 0 1-2 2h-3.5v-2.5a2.5 2.5 0 0 0-5 0V22H6a2 2 0 0 1-2-2v-3.5h2.5a2.5 2.5 0 0 0 0-5H4V8a2 2 0 0 1 2-2h3.5V3.5Z"/></svg>
           </span>
-          <strong>把扩展 ZIP 拖到这里</strong>
+          <strong>把扩展压缩包拖到这里</strong>
           <span>也可以点击选择文件</span>
-          <small data-extension-file-name>仅支持 .zip 文件</small>
+          <small data-extension-file-name>仅支持扩展压缩包</small>
         </label>
         <button type="submit" data-extension-inspect-submit hidden>检查扩展</button>
         <p class="automation-plugin-feedback extension-install-feedback" data-extension-feedback role="status" aria-live="polite" hidden></p>

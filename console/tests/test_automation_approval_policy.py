@@ -89,7 +89,7 @@ class AutomationProjectPolicyProjectionTests(unittest.TestCase):
         normalized = normalize_automation_project_policy_items([legacy_effective])
         self.assertEqual("LEGACY_SCHEDULE_ONLY", normalized[0]["effective_mode"])
         view = build_automation_project_policy_view("clockin_daxiang", normalized[0])
-        self.assertEqual("旧版计划权限", view["label"])
+        self.assertEqual("运行权限待确认", view["label"])
 
     def test_missing_dynamic_project_is_fail_closed_without_policy_downgrade(self):
         view = build_automation_project_policy_view("finance_startup_catchup", None)
@@ -776,7 +776,9 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
 
         self.assertIn(".auto-project-governance", style)
         self.assertIn(".auto-pending-approvals[hidden]", style)
-        self.assertIn("style.css?v=cal-console-20260901-extensions1", base)
+        self.assertIn('.selection-preview-item input[type="checkbox"]', style)
+        self.assertIn("appearance: auto", style)
+        self.assertIn("style.css?v=cal-console-20260901-ai1", base)
         self.assertNotIn(".automation-plugin-install-panel", style)
         self.assertNotIn(
             ".automation-plugin-install-form { display: grid; grid-template-columns:",
