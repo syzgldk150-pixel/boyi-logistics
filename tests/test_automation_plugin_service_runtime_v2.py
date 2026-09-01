@@ -1491,6 +1491,66 @@ def test_applied_service_effects_restore_once_after_process_restart() -> None:
         registry.require_provider("plugin.restore_plugin.runner@1")
 
 
+def test_pre_contribution_generation_restores_only_its_service_registration() -> None:
+    snapshot = _snapshot(
+        automation_id="legacy-service-project",
+        plugin_id="legacy_service_plugin",
+        package_sha256="d" * 64,
+        manifest_sha256="e" * 64,
+    )
+    legacy_metadata = copy.deepcopy(dict(snapshot.execution_metadata))
+    legacy_metadata.pop("contributions")
+    legacy_snapshot = replace(snapshot, execution_metadata=legacy_metadata)
+    service_material = _service_registration_material(legacy_snapshot)
+    service_effect = RuntimeEffectRecord(
+        effect_id="legacy-service-registration",
+        automation_id=legacy_snapshot.automation_id,
+        generation=legacy_snapshot.generation,
+        sequence=1,
+        kind=RuntimeEffectKind.SERVICE_REGISTRATION,
+        state=RuntimeEffectState.APPLIED,
+        reversible=True,
+        effect_key=(
+            f"services:{legacy_snapshot.automation_id}:"
+            f"{legacy_snapshot.generation}"
+        ),
+        payload=service_material,
+    )
+    record = RuntimeGenerationRecord(
+        snapshot=legacy_snapshot,
+        state=RuntimeGenerationState.COMMITTED,
+        effects=(service_effect,),
+    )
+
+    class _Repository:
+        @staticmethod
+        def list_project_runtimes():
+            return (SimpleNamespace(automation_id=legacy_snapshot.automation_id),)
+
+        @staticmethod
+        def list_project_generations(_automation_id: str):
+            return (record,)
+
+    service_registry = ServiceRegistry()
+    contribution_registry = ManagedContributionRegistry()
+    driver = ProductionRuntimeEffectDriver(
+        broker_handler_keys=(),
+        service_registry=service_registry,
+        contribution_registry=contribution_registry,
+    )
+
+    driver.restore_from_repository(_Repository())
+
+    reference = service_registry.project_reference(
+        automation_id=legacy_snapshot.automation_id,
+        generation=legacy_snapshot.generation,
+    )
+    assert reference is not None
+    assert reference.accepts_new_calls is True
+    assert contribution_registry.snapshot() == ()
+    assert contribution_registry.active_generation(legacy_snapshot.automation_id) is None
+
+
 @pytest.mark.parametrize(
     "activation_phase",
     [RuntimeActivationPhase.PENDING_PROJECTION, RuntimeActivationPhase.BLOCKED],

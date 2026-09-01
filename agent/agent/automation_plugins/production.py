@@ -1090,14 +1090,33 @@ class ProductionRuntimeEffectDriver:
                             "multiple committed contribution generations were restored",
                             code="CONTRIBUTION_REGISTRATION_CONFLICT",
                         )
-                    committed_contribution_effects[generation_key] = (snapshot, [])
-                if generation.state in {
-                    RuntimeGenerationState.DRAINING,
-                    RuntimeGenerationState.DISPOSING,
-                } or generation.activation_phase in {
-                    RuntimeActivationPhase.BLOCKED,
-                    RuntimeActivationPhase.ROLLED_BACK,
-                }:
+                    # Generations committed before managed contributions were
+                    # introduced have neither this contract nor contribution
+                    # effects.  Restore their durable service registration,
+                    # but do not invent an empty contribution contract for
+                    # them.  A present (even malformed) contract, or any
+                    # persisted contribution effect, still takes the strict
+                    # validation path below.
+                    if "contributions" in snapshot.execution_metadata:
+                        committed_contribution_effects[generation_key] = (
+                            snapshot,
+                            [],
+                        )
+                if (
+                    "contributions" in snapshot.execution_metadata
+                    and (
+                        generation.state
+                        in {
+                            RuntimeGenerationState.DRAINING,
+                            RuntimeGenerationState.DISPOSING,
+                        }
+                        or generation.activation_phase
+                        in {
+                            RuntimeActivationPhase.BLOCKED,
+                            RuntimeActivationPhase.ROLLED_BACK,
+                        }
+                    )
+                ):
                     contribution_groups.setdefault(
                         generation_key, (generation.state, snapshot, [])
                     )
