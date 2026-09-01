@@ -273,6 +273,7 @@ INSERT INTO automation_project_reviewed_resource_map_018 (
         'feishu_sheet',
         TRUE,
         JSON_OBJECT(
+            'display_name', '每日到货表',
             'resource_kind', 'feishu_sheet',
             'spreadsheet_token', 'F0NVsI5dlhaWugtw14YcmdrQnvh',
             'sheet_id', '8fc516',
@@ -284,6 +285,7 @@ INSERT INTO automation_project_reviewed_resource_map_018 (
         'feishu_sheet',
         TRUE,
         JSON_OBJECT(
+            'display_name', '分批及有发未到表',
             'resource_kind', 'feishu_sheet',
             'spreadsheet_token', 'F0NVsI5dlhaWugtw14YcmdrQnvh',
             'sheet_id', 'bNhh7u',
