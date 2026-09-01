@@ -2257,3 +2257,18 @@ def test_activation_transition_migration_closes_phase_and_before_image() -> None
         "policy_updated_at",
     ):
         assert field in sql
+
+
+def test_expired_invalid_generation_lease_migration_is_pre_write_only() -> None:
+    sql = Path(
+        "agent/migrations/035_finalize_expired_invalid_generation_leases.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "lease.outcome IN ('RUNNING', 'VERIFYING')" in sql
+    assert "lease.expires_at <= UTC_TIMESTAMP(6)" in sql
+    assert "run.status = 'FAILED_TERMINAL'" in sql
+    assert "run.error_code = 'GENERATION_LEASE_INVALID'" in sql
+    assert "NOT EXISTS" in sql
+    assert "automation_write_attempt_receipts" in sql
+    assert "lease.outcome = 'FAILED_BEFORE_WRITE'" in sql
+    assert "WRITE_OUTCOME_UNKNOWN" not in sql
