@@ -307,6 +307,8 @@ def test_template_and_script_keep_host_rendered_accessible_safe_surface() -> Non
     assert '{% extends "base.html" %}' in template
     for marker in (
         "data-harness-form",
+        "data-harness-thread",
+        "data-harness-welcome",
         "data-harness-process",
         "data-harness-evidence",
         "data-harness-result",
@@ -322,7 +324,14 @@ def test_template_and_script_keep_host_rendered_accessible_safe_surface() -> Non
     assert "insertAdjacentHTML" not in script
     assert '"/harness/sessions"' in script
     assert '"/harness/messages"' in script
-    assert "调用只读工具：完整标题" in template
+    assert "appendMessage(\"user\"" in script
+    assert "appendMessage(\"assistant\"" in script
+    assert "event.isComposing" in script
+    assert "安全运行环境暂不可用" in script
+    assert "输入只读查询" in template
+    assert "harness-layout" not in template
     assert ".harness-page" in styles
+    assert ".harness-thread" in styles
+    assert ".harness-message--user" in styles
     assert ":focus" in styles
     assert "@media (prefers-reduced-motion: reduce)" in styles

@@ -7,12 +7,14 @@
   const form = page.querySelector("[data-harness-form]");
   const messageInput = page.querySelector("[data-harness-message]");
   const submitButton = page.querySelector("[data-harness-submit]");
-  const submitLabel = submitButton?.querySelector("span");
   const resetButton = page.querySelector("[data-harness-reset]");
   const feedback = page.querySelector("[data-harness-feedback]");
   const stateLabel = page.querySelector("[data-harness-state-label]");
   const stateBadge = page.querySelector("[data-harness-state]");
   const sessionNote = page.querySelector("[data-harness-session]");
+  const thread = page.querySelector("[data-harness-thread]");
+  const welcome = page.querySelector("[data-harness-welcome]");
+  const details = page.querySelector("[data-harness-details]");
   const outputState = page.querySelector("[data-harness-output-state]");
   const toolsCount = page.querySelector("[data-harness-tools-count]");
   const toolsList = page.querySelector("[data-harness-tools]");
@@ -23,6 +25,7 @@
 
   const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
   const MAX_MESSAGE_CHARS = 4000;
+  const TOOL_COMMAND_PREFIX = "调用只读工具：";
   const HIDDEN_KEYS = new Set([
     "account_id",
     "actor",
@@ -85,12 +88,6 @@
     return element;
   }
 
-  function clearAndAppendEmpty(container, message) {
-    if (!container) return;
-    container.replaceChildren();
-    appendText(container, "p", "harness-empty", message);
-  }
-
   function canonicalUuid(value) {
     const candidate = typeof value === "string" ? value : "";
     return UUID_PATTERN.test(candidate) ? candidate : "";
@@ -101,16 +98,15 @@
     if (typeof generator !== "function") {
       throw new HarnessRequestError(
         "BROWSER_UUID_UNAVAILABLE",
-        "当前浏览器无法生成安全请求标识，操作未提交。",
+        "当前浏览器无法生成安全请求标识，消息未发送。",
         0,
       );
     }
-    const value = generator.call(window.crypto);
-    const normalized = canonicalUuid(value);
+    const normalized = canonicalUuid(generator.call(window.crypto));
     if (!normalized) {
       throw new HarnessRequestError(
         "BROWSER_UUID_INVALID",
-        "浏览器生成的请求标识无效，操作未提交。",
+        "浏览器生成的请求标识无效，消息未发送。",
         0,
       );
     }
@@ -121,28 +117,19 @@
     return value && typeof value === "object" && !Array.isArray(value) ? value : null;
   }
 
-  function errorMessage(payload, fallback) {
-    const error = asObject(payload && payload.error);
-    const message = error && typeof error.message === "string" ? error.message.trim() : "";
-    return message || fallback;
-  }
-
   async function postJson(path, body) {
     let response;
     try {
       response = await window.fetch(path, {
         method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        },
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
         credentials: "same-origin",
         body: JSON.stringify(body),
       });
     } catch (_error) {
       throw new HarnessRequestError(
-        "HARNESS_UNAVAILABLE",
-        "Harness 服务暂时不可达，未执行任何业务写入。",
+        "HARNESS_UNREACHABLE",
+        "Harness 服务暂时无法连接，未执行任何业务操作。",
         0,
       );
     }
@@ -153,28 +140,25 @@
     } catch (_error) {
       throw new HarnessRequestError(
         "INVALID_HARNESS_RESPONSE",
-        "Harness 返回了无法读取的响应，未显示为成功。",
+        "Harness 返回了无法读取的响应。",
         response.status,
       );
     }
     if (!asObject(payload) || payload.ok !== true || !asObject(payload.data)) {
       const error = asObject(payload && payload.error);
       const code = error && typeof error.code === "string" ? error.code : "HARNESS_UPSTREAM_ERROR";
-      throw new HarnessRequestError(
-        code,
-        errorMessage(payload, "Harness 请求未成功，未显示为成功。"),
-        response.status,
-      );
+      const message = error && typeof error.message === "string" ? error.message.trim() : "";
+      throw new HarnessRequestError(code, message || "Harness 请求未成功。", response.status);
     }
     return payload.data;
   }
 
   function setFeedback(message, kind) {
     if (!feedback) return;
-    feedback.replaceChildren();
     feedback.classList.remove("is-error", "is-success", "is-info");
     if (!message) {
       feedback.hidden = true;
+      feedback.textContent = "";
       return;
     }
     feedback.hidden = false;
@@ -184,57 +168,68 @@
 
   function setState(label, stateClass) {
     if (stateLabel) stateLabel.textContent = label;
-    if (stateBadge) {
-      stateBadge.classList.remove("is-ready", "is-busy", "is-error", "is-gated");
-      if (stateClass) stateBadge.classList.add(`is-${stateClass}`);
-    }
+    if (!stateBadge) return;
+    stateBadge.classList.remove("is-ready", "is-busy", "is-error", "is-gated");
+    if (stateClass) stateBadge.classList.add(`is-${stateClass}`);
   }
 
-  function setOutputState(label, stateClass) {
-    if (!outputState) return;
-    outputState.textContent = label;
-    outputState.classList.remove("is-ready", "is-error", "is-gated");
-    if (stateClass) outputState.classList.add(`is-${stateClass}`);
+  function setOutputState(label) {
+    if (outputState) outputState.textContent = label;
   }
 
   function setBusy(value) {
     busy = value;
-    if (!submitButton) return;
-    submitButton.disabled = value;
-    submitButton.setAttribute("aria-busy", value ? "true" : "false");
-    if (submitLabel) submitLabel.textContent = value ? "处理中…" : sessionId ? "发送只读查询" : "创建会话并发送";
+    if (submitButton) {
+      submitButton.disabled = value;
+      submitButton.setAttribute("aria-busy", value ? "true" : "false");
+    }
     if (resetButton) {
       resetButton.disabled = value || !sessionId;
       resetButton.setAttribute("aria-disabled", resetButton.disabled ? "true" : "false");
     }
   }
 
-  function setSession(session) {
-    sessionId = session;
-    if (sessionNote) {
-      sessionNote.textContent = session
-        ? "会话状态：已建立（内存保存）；生产数据和真实模型均未声明可用。"
-        : "会话状态：尚未建立；生产数据和真实模型均未声明可用。";
-    }
+  function setSession(value) {
+    sessionId = value;
     if (resetButton) {
-      resetButton.disabled = !session || busy;
+      resetButton.disabled = !value || busy;
       resetButton.setAttribute("aria-disabled", resetButton.disabled ? "true" : "false");
     }
-    if (submitLabel && !busy) submitLabel.textContent = session ? "发送只读查询" : "创建会话并发送";
+    if (sessionNote) {
+      sessionNote.textContent = value
+        ? "当前为只读会话，回复请结合原始业务系统复核。"
+        : "Harness 仅使用已开放的只读能力，回复请结合原始业务系统复核。";
+    }
+  }
+
+  function scrollConversation() {
+    if (!thread) return;
+    window.requestAnimationFrame(() => {
+      thread.scrollTop = thread.scrollHeight;
+    });
+  }
+
+  function appendMessage(role, message, kind) {
+    if (!thread) return;
+    if (welcome) welcome.hidden = true;
+    const article = createElement("article", `harness-message harness-message--${role}`);
+    if (kind === "error") article.classList.add("harness-message--error");
+    const body = createElement("div", "harness-message-body");
+    appendText(body, "span", "harness-message-label", role === "user" ? "你" : "Harness");
+    appendText(body, "p", "harness-message-copy", message);
+    article.append(body);
+    thread.append(article);
+    scrollConversation();
   }
 
   function displayLabel(key) {
     return KEY_LABELS[key] || key.replaceAll("_", " ");
   }
 
-  function isHiddenKey(key) {
-    return HIDDEN_KEYS.has(String(key));
-  }
-
   function renderValue(container, value, depth) {
     const level = depth || 0;
     if (level > 5) {
-      appendText(container, "p", "harness-value", "内容层级过深，已停止展开。 ");
+      appendText(container, "p", "harness-value", "内容层级过深，已停止展开。");
       return;
     }
     if (value == null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
@@ -243,7 +238,7 @@
     }
     if (Array.isArray(value)) {
       if (!value.length) {
-        appendText(container, "p", "harness-empty", "无条目。 ");
+        appendText(container, "p", "harness-empty", "无条目。");
         return;
       }
       const list = createElement("ul", "harness-value-list");
@@ -256,13 +251,11 @@
       return;
     }
     const objectValue = asObject(value);
-    if (!objectValue) {
-      appendText(container, "p", "harness-value", "无可展示数据。 ");
-      return;
-    }
-    const entries = Object.entries(objectValue).filter(([key]) => !isHiddenKey(key));
+    const entries = objectValue
+      ? Object.entries(objectValue).filter(([key]) => !HIDDEN_KEYS.has(String(key)))
+      : [];
     if (!entries.length) {
-      appendText(container, "p", "harness-empty", "无可展示数据。 ");
+      appendText(container, "p", "harness-empty", "无可展示数据。");
       return;
     }
     const definitionList = createElement("dl", "harness-value-list harness-value-list--definition");
@@ -291,96 +284,96 @@
     if (!toolsList || !toolsCount) return;
     toolsList.replaceChildren();
     const items = Array.isArray(tools) ? tools : [];
-    toolsCount.textContent = items.length ? `${items.length} 项` : "不可用";
-    if (!items.length) {
-      appendText(toolsList, "p", "harness-empty", "当前没有可展示的受限工具。 ");
-      return;
-    }
+    toolsCount.textContent = items.length ? `${items.length} 项` : "暂无可用查询";
     items.forEach((value) => {
       const tool = asObject(value) || {};
-      const item = createElement("article", "harness-tool");
-      const title = typeof tool.title === "string" && tool.title.trim() ? tool.title : "只读工具";
-      appendText(item, "h4", "", title);
-      if (typeof tool.description === "string" && tool.description.trim()) {
-        appendText(item, "p", "", tool.description);
-      }
-      appendText(item, "span", "harness-tool-effect", "只读");
-      toolsList.append(item);
+      const title = typeof tool.title === "string" ? tool.title.trim() : "";
+      if (!title) return;
+      const button = appendText(toolsList, "button", "harness-tool-prompt", title);
+      button.type = "button";
+      button.addEventListener("click", () => {
+        if (!messageInput || busy) return;
+        messageInput.value = TOOL_COMMAND_PREFIX + title;
+        resizeComposer();
+        messageInput.focus();
+      });
     });
   }
 
   function productionGated(data) {
-    const values = [data && data.status, data && data.availability, data && data.blocked_reason];
-    return values.some((value) => {
-      if (typeof value === "string") return value.toUpperCase().includes("PRODUCTION_GATED");
-      const objectValue = asObject(value);
-      return objectValue && Object.values(objectValue).some((nested) => (
-        typeof nested === "string" && nested.toUpperCase().includes("PRODUCTION_GATED")
-      ));
-    });
+    return [data && data.status, data && data.availability, data && data.blocked_reason].some((value) => (
+      typeof value === "string" && value.toUpperCase().includes("PRODUCTION_GATED")
+    ));
+  }
+
+  function unavailableStatus(data) {
+    const response = asObject(data) || {};
+    if (String(response.status || "").toUpperCase() !== "CAPABILITY_UNAVAILABLE") return "";
+    return String(response.blocked_reason || response.availability || "CAPABILITY_UNAVAILABLE");
+  }
+
+  function responseText(response) {
+    const value = response.result !== undefined ? response.result : response.assistant_message;
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (value == null) return "查询已完成，但没有可展示的结果。";
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch (_error) {
+      return "查询已完成，结果无法展示。";
+    }
   }
 
   function renderResponse(data) {
     const response = asObject(data) || {};
     const returnedSessionId = canonicalUuid(response.session_id);
     if (returnedSessionId && sessionId && returnedSessionId !== sessionId) {
-      throw new HarnessRequestError(
-        "INVALID_HARNESS_RESPONSE",
-        "Agent 返回了不匹配的会话，结果未显示。",
-        502,
-      );
+      throw new HarnessRequestError("INVALID_HARNESS_RESPONSE", "Agent 返回了不匹配的会话。", 502);
     }
     if (returnedSessionId) setSession(returnedSessionId);
     if (response.tools !== undefined) renderTools(response.tools);
-    renderOutput(processContent, response.process || response.status || response.availability, "当前没有可展示的过程摘要。 ");
-    renderOutput(evidenceContent, response.evidence, "当前没有可展示的证据。 ");
-    renderOutput(resultContent, response.result || response.assistant_message, "当前没有可展示的结果。 ");
-    renderOutput(toolSummariesContent, response.tool_summaries || response.tool_calls, "本次响应尚无工具摘要。 ");
-
-    if (productionGated(response)) {
-      setState("生产能力未开放", "gated");
-      setOutputState("PRODUCTION_GATED", "gated");
-      setFeedback("当前 Harness 仅返回受限状态，生产能力尚未开放。", "info");
-    } else {
-      setState("会话可用", "ready");
-      setOutputState("已返回受限结果", "ready");
-    }
-  }
-
-  function clearOutput() {
-    clearAndAppendEmpty(processContent, "发送消息后，这里显示受限处理摘要。 ");
-    clearAndAppendEmpty(evidenceContent, "当前没有可展示的证据。 ");
-    clearAndAppendEmpty(resultContent, "查询结果会显示在这里。 ");
-    clearAndAppendEmpty(toolSummariesContent, "本次响应尚无工具摘要。 ");
-    if (toolsList) {
-      toolsList.replaceChildren();
-      appendText(toolsList, "p", "harness-empty", "建立会话后显示受限工具摘要。 ");
-    }
-    if (toolsCount) toolsCount.textContent = "未加载";
-    setOutputState("等待查询", "");
+    renderOutput(processContent, response.process || response.status || response.availability, "无处理摘要。");
+    renderOutput(evidenceContent, response.evidence, "无可展示证据。");
+    renderOutput(resultContent, response.result || response.assistant_message, "无可展示结果。");
+    renderOutput(toolSummariesContent, response.tool_summaries || response.tool_calls, "无工具摘要。");
+    if (details) details.hidden = false;
+    setOutputState("已返回");
+    appendMessage("assistant", responseText(response));
+    setState(productionGated(response) ? "生产能力未开放" : "只读会话可用", productionGated(response) ? "gated" : "ready");
   }
 
   function describeError(error) {
     const code = String(error && error.code || "").toUpperCase();
-    if (code.includes("PRODUCTION_GATED")) return "当前生产能力尚未开放，Harness 未执行任何生产操作。";
-    if (code.includes("SANDBOX") || code.includes("UNAVAILABLE") || code.includes("UNREACHABLE")) {
-      return "受限 Harness 当前不可用，未执行任何业务写入。";
+    if (code.includes("PRODUCTION_GATED")) {
+      return "Harness 的生产查询能力尚未开放，未执行任何业务操作。";
     }
-    return String(error && error.message || "Harness 请求失败，未显示为成功。");
+    if (code.includes("SANDBOX")) {
+      return "Harness 的安全运行环境暂不可用，请联系系统管理员检查服务器安全组件。未执行任何业务操作。";
+    }
+    if (code.includes("CAPABILITY_UNAVAILABLE") || code.includes("SIDECAR") || code.includes("UNREACHABLE")) {
+      return "Harness 当前无法启动只读会话，请稍后重试或联系系统管理员。未执行任何业务操作。";
+    }
+    if (code.includes("MESSAGE_FORMAT")) {
+      return `请使用建议查询，或输入“${TOOL_COMMAND_PREFIX}工具标题”。`;
+    }
+    return String(error && error.message || "Harness 请求失败，未执行任何业务操作。");
   }
 
   async function createSession() {
     const data = await postJson("/harness/sessions", { request_uuid: requestUuid() });
     const createdSessionId = canonicalUuid(data.session_id);
     if (!createdSessionId) {
-      throw new HarnessRequestError(
-        "INVALID_HARNESS_RESPONSE",
-        "Agent 未返回有效会话，结果未显示。",
-        502,
-      );
+      throw new HarnessRequestError("INVALID_HARNESS_RESPONSE", "Agent 未返回有效会话。", 502);
     }
     setSession(createdSessionId);
-    renderResponse(data);
+    renderTools(data.tools);
+    if (productionGated(data)) {
+      throw new HarnessRequestError("PRODUCTION_GATED", "Harness 生产能力尚未开放。", 503);
+    }
+    const unavailable = unavailableStatus(data);
+    if (unavailable) {
+      throw new HarnessRequestError(unavailable, "Harness 安全运行环境暂不可用。", 503);
+    }
+    setState("只读会话可用", "ready");
     return createdSessionId;
   }
 
@@ -394,6 +387,34 @@
     renderResponse(data);
   }
 
+  function clearDetails() {
+    [processContent, evidenceContent, resultContent, toolSummariesContent].forEach((container) => {
+      if (container) container.replaceChildren();
+    });
+    if (details) {
+      details.hidden = true;
+      details.open = false;
+    }
+    setOutputState("等待查询");
+  }
+
+  function resetConversation() {
+    if (thread) thread.querySelectorAll(".harness-message").forEach((item) => item.remove());
+    if (welcome) welcome.hidden = false;
+    if (toolsList) toolsList.replaceChildren();
+    if (toolsCount) toolsCount.textContent = "未加载";
+    setSession("");
+    clearDetails();
+    setState("等待提问", "");
+    setFeedback("", "info");
+  }
+
+  function resizeComposer() {
+    if (!messageInput) return;
+    messageInput.style.height = "auto";
+    messageInput.style.height = `${Math.min(messageInput.scrollHeight, 180)}px`;
+  }
+
   form?.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (busy || !messageInput) return;
@@ -403,36 +424,40 @@
       messageInput.focus();
       return;
     }
+    appendMessage("user", message);
+    messageInput.value = "";
+    resizeComposer();
     setBusy(true);
-    setState(sessionId ? "正在处理" : "正在建立会话", "busy");
-    setOutputState("处理中…", "");
-    setFeedback("正在通过受限 Harness 处理，请稍候。", "info");
+    setState(sessionId ? "正在查询" : "正在建立安全会话", "busy");
+    setFeedback("", "info");
     try {
       await sendMessage(message);
-      setFeedback("响应已返回；以上内容仅代表受限只读投影。", "success");
     } catch (error) {
-      setState(
-        String(error && error.code || "").toUpperCase().includes("PRODUCTION_GATED")
-          ? "生产能力未开放"
-          : "当前不可用",
-        String(error && error.code || "").toUpperCase().includes("PRODUCTION_GATED") ? "gated" : "error",
-      );
-      setOutputState("未返回结果", "error");
-      setFeedback(describeError(error), "error");
+      const readable = describeError(error);
+      appendMessage("assistant", readable, "error");
+      const code = String(error && error.code || "").toUpperCase();
+      setState(code.includes("PRODUCTION_GATED") ? "生产能力未开放" : "当前不可用", code.includes("PRODUCTION_GATED") ? "gated" : "error");
+      setFeedback("", "error");
     } finally {
       setBusy(false);
+      messageInput.focus();
     }
+  });
+
+  messageInput?.addEventListener("input", resizeComposer);
+  messageInput?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    form?.requestSubmit();
   });
 
   resetButton?.addEventListener("click", () => {
     if (busy) return;
-    setSession("");
-    clearOutput();
-    setState("尚未建立会话", "");
-    setFeedback("会话已在浏览器中清空；没有发送清理请求。", "info");
+    resetConversation();
     messageInput?.focus();
   });
 
   setSession("");
   setBusy(false);
+  resizeComposer();
 })();
