@@ -204,7 +204,10 @@ from agent.llm_settings import (
 )
 from agent.http_security import INTERNAL_API_TOKEN_HEADER, authenticate_internal_request
 from agent.execution_boundary import EXECUTION_CAPABILITY_HEADER, authorize_tms_target
-from agent.phase7_resource_import import import_phase7_resources
+from agent.phase7_resource_import import (
+    import_phase7_resources,
+    sync_reviewed_phase7_resource_metadata,
+)
 from agent.runtime_config import load_agent_environment
 from harness_composition import build_read_only_harness_gateway
 from agent.service_v2_process_runtime import (
@@ -1494,7 +1497,13 @@ async def lifespan(app: FastAPI):
         try:
             from agent.workflow_resource_store import list_workflow_resource_descriptors
 
+            updated_metadata = sync_reviewed_phase7_resource_metadata()
             list_workflow_resource_descriptors()
+            if updated_metadata:
+                logger.info(
+                    "Workflow resource metadata synchronized count=%d",
+                    len(updated_metadata),
+                )
         except Exception:
             logger.warning("Workflow resource catalog warm-up failed")
 
