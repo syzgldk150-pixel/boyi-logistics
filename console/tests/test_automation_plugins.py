@@ -992,7 +992,11 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertIn("可选", binding["hint"])
         self.assertEqual("每日到货文档 / 未齐货物", binding["options"][0]["display_name"])
         self.assertEqual("飞书电子表格", binding["options"][0]["kind_label"])
-        self.assertEqual("报价账单账号、每日到货文档 / 未齐货物", packages[0]["configuration_summary"])
+        self.assertEqual("报价账单账号、未齐货物表", packages[0]["configuration_summary"])
+        self.assertEqual(
+            "报价账单账号、每日到货文档 / 未齐货物",
+            instances[0]["configuration_summary"],
+        )
 
     def test_actual_sheet_name_takes_priority_over_internal_resource_copy(self):
         self.assertEqual(

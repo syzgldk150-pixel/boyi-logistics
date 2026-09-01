@@ -352,13 +352,24 @@ def _configuration_summary(
     account_roles: list[dict[str, Any]],
     resource_roles: list[dict[str, Any]],
 ) -> str:
+    resource_labels: list[str] = []
+    for item in resource_roles:
+        selected_resource_id = str(item.get("selected_resource_id") or "").strip()
+        selected_name = ""
+        if selected_resource_id:
+            for option in item.get("options") or []:
+                if str(option.get("resource_id") or "").strip() == selected_resource_id:
+                    selected_name = str(option.get("display_name") or "").strip()
+                    break
+        resource_labels.append(selected_name or str(item.get("label") or "").strip())
     labels = list(
         dict.fromkeys(
             str(item.get("label") or "").strip()
-            for item in [*account_roles, *resource_roles]
+            for item in account_roles
             if str(item.get("label") or "").strip()
         )
     )
+    labels.extend(label for label in resource_labels if label and label not in labels)
     if not labels:
         return "无需额外选择账号或表格"
     visible = labels[:4]
@@ -2054,7 +2065,7 @@ def normalize_automation_plugin_catalog(
                 "resource_bindings": resource_bindings,
                 "resource_role_bindings": resource_role_bindings,
                 "configuration_summary": _configuration_summary(
-                    account_roles, resource_roles
+                    account_roles, resource_role_bindings
                 ),
                 "resource_pool_available": resource_pool_available,
                 "config_fields": config_fields,

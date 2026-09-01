@@ -631,11 +631,11 @@ class ManualWaybillTemplateTests(unittest.TestCase):
             manual_amap_sdk_should_load=False,
         )
 
-        self.assertIn("OCR模式", html)
+        self.assertIn("图片识别模式", html)
         self.assertIn('class="ghost-btn ocr-template-btn" href="/templates/new"', html)
         self.assertIn("模板配置", html)
         self.assertIn("上传单据图像", html)
-        self.assertIn("待复核 OCR 单据", html)
+        self.assertIn("待复核识别单据", html)
         self.assertIn("sample.png", html)
         self.assertIn('href="/documents/7"', html)
         self.assertIn('action="/ocr/upload"', html)

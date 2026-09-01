@@ -10,7 +10,7 @@ class DocumentModeSwitchTemplateTests(unittest.TestCase):
     def test_mode_switches_use_requested_order_and_labels(self):
         template = (CONSOLE_DIR / "templates" / "document.html").read_text(encoding="utf-8")
         switches = re.findall(
-            r'<div class="mode-switch" aria-label="Entry Mode">(.*?)</div>',
+            r'<div class="mode-switch" aria-label="录入方式">(.*?)</div>',
             template,
             flags=re.S,
         )
@@ -22,7 +22,7 @@ class DocumentModeSwitchTemplateTests(unittest.TestCase):
             self.assertEqual(
                 [
                     ("manual", "\u535a\u76ca"),
-                    ("ocr", "OCR"),
+                    ("ocr", "图片识别"),
                 ],
                 compact_labels,
             )
