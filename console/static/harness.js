@@ -11,57 +11,14 @@
   const feedback = page.querySelector("[data-harness-feedback]");
   const modelSettingsLink = page.querySelector("[data-harness-model-settings]");
   const stateLabel = page.querySelector("[data-harness-state-label]");
-  const stateBadge = page.querySelector("[data-harness-state]");
   const sessionNote = page.querySelector("[data-harness-session]");
   const thread = page.querySelector("[data-harness-thread]");
   const welcome = page.querySelector("[data-harness-welcome]");
-  const details = page.querySelector("[data-harness-details]");
-  const outputState = page.querySelector("[data-harness-output-state]");
   const toolsCount = page.querySelector("[data-harness-tools-count]");
   const toolsList = page.querySelector("[data-harness-tools]");
-  const processContent = page.querySelector("[data-harness-process]");
-  const evidenceContent = page.querySelector("[data-harness-evidence]");
-  const resultContent = page.querySelector("[data-harness-result]");
-  const toolSummariesContent = page.querySelector("[data-harness-tool-summaries]");
 
   const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
   const MAX_MESSAGE_CHARS = 4000;
-  const HIDDEN_KEYS = new Set([
-    "account_id",
-    "actor",
-    "actor_roles",
-    "automation_id",
-    "command_type",
-    "contribution_id",
-    "contract_hash",
-    "file_path",
-    "filename",
-    "operation",
-    "path",
-    "plan_hash",
-    "provider_id",
-    "resource_id",
-    "service",
-    "source_code",
-    "task_id",
-    "tool_name",
-  ]);
-  const KEY_LABELS = Object.freeze({
-    assistant_message: "助手摘要",
-    availability: "可用性",
-    blocked_reason: "受限原因",
-    created_at: "时间",
-    description: "说明",
-    message_id: "消息标识",
-    next_poll_after_ms: "下次检查",
-    persistence_status: "会话保存",
-    read_only: "只读状态",
-    result: "结果",
-    status: "状态",
-    summary: "摘要",
-    title: "标题",
-    tool_calls: "工具调用次数",
-  });
 
   let sessionId = "";
   let busy = false;
@@ -170,15 +127,8 @@
     if (modelSettingsLink) modelSettingsLink.hidden = !visible;
   }
 
-  function setState(label, stateClass) {
+  function setState(label) {
     if (stateLabel) stateLabel.textContent = label;
-    if (!stateBadge) return;
-    stateBadge.classList.remove("is-ready", "is-busy", "is-error", "is-gated");
-    if (stateClass) stateBadge.classList.add(`is-${stateClass}`);
-  }
-
-  function setOutputState(label) {
-    if (outputState) outputState.textContent = label;
   }
 
   function setBusy(value) {
@@ -224,80 +174,6 @@
     article.append(body);
     thread.append(article);
     scrollConversation();
-  }
-
-  function displayLabel(key) {
-    return KEY_LABELS[key] || "补充信息";
-  }
-
-  function displayScalar(value) {
-    if (value === true) return "是";
-    if (value === false) return "否";
-    const text = String(value);
-    const labels = {
-      CAPABILITY_UNAVAILABLE: "查询能力暂不可用",
-      PRODUCTION_GATED: "尚未开放",
-      PENDING: "等待处理",
-      RUNNING: "处理中",
-      SUCCEEDED: "已完成",
-      FAILED: "处理失败",
-      NOT_APPLICABLE: "不适用",
-    };
-    return labels[text.toUpperCase()] || text;
-  }
-
-  function renderValue(container, value, depth) {
-    const level = depth || 0;
-    if (level > 5) {
-      appendText(container, "p", "harness-value", "内容层级过深，已停止展开。");
-      return;
-    }
-    if (value == null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-      appendText(container, "p", "harness-value", value == null ? "无数据" : displayScalar(value));
-      return;
-    }
-    if (Array.isArray(value)) {
-      if (!value.length) {
-        appendText(container, "p", "harness-empty", "无条目。");
-        return;
-      }
-      const list = createElement("ul", "harness-value-list");
-      value.forEach((item) => {
-        const row = createElement("li");
-        renderValue(row, item, level + 1);
-        list.append(row);
-      });
-      container.append(list);
-      return;
-    }
-    const objectValue = asObject(value);
-    const entries = objectValue
-      ? Object.entries(objectValue).filter(([key]) => !HIDDEN_KEYS.has(String(key)))
-      : [];
-    if (!entries.length) {
-      appendText(container, "p", "harness-empty", "无可展示数据。");
-      return;
-    }
-    const definitionList = createElement("dl", "harness-value-list harness-value-list--definition");
-    entries.forEach(([key, item]) => {
-      const wrapper = createElement("div", "harness-value-definition");
-      appendText(wrapper, "dt", "", displayLabel(key));
-      const definition = createElement("dd");
-      renderValue(definition, item, level + 1);
-      wrapper.append(definition);
-      definitionList.append(wrapper);
-    });
-    container.append(definitionList);
-  }
-
-  function renderOutput(container, value, emptyMessage) {
-    if (!container) return;
-    container.replaceChildren();
-    if (value == null || value === "" || (Array.isArray(value) && !value.length)) {
-      appendText(container, "p", "harness-empty", emptyMessage);
-      return;
-    }
-    renderValue(container, value, 0);
   }
 
   function renderTools(tools) {
@@ -353,14 +229,8 @@
     }
     if (returnedSessionId) setSession(returnedSessionId);
     if (response.tools !== undefined) renderTools(response.tools);
-    renderOutput(processContent, response.process || response.status || response.availability, "无处理摘要。");
-    renderOutput(evidenceContent, response.evidence, "无可展示证据。");
-    renderOutput(resultContent, response.result || response.assistant_message, "无可展示结果。");
-    renderOutput(toolSummariesContent, response.tool_summaries || response.tool_calls, "无工具摘要。");
-    if (details) details.hidden = false;
-    setOutputState("已返回");
     appendMessage("assistant", responseText(response));
-    setState("只读查询可用", "ready");
+    setState("可以继续提问");
     showModelSettings(false);
   }
 
@@ -393,7 +263,7 @@
     if (unavailable) {
       throw new HarnessRequestError(unavailable, "AI 助手暂时无法连接。", 503);
     }
-    setState("只读查询可用", "ready");
+    setState("可以开始提问");
     showModelSettings(false);
     return createdSessionId;
   }
@@ -408,25 +278,13 @@
     renderResponse(data);
   }
 
-  function clearDetails() {
-    [processContent, evidenceContent, resultContent, toolSummariesContent].forEach((container) => {
-      if (container) container.replaceChildren();
-    });
-    if (details) {
-      details.hidden = true;
-      details.open = false;
-    }
-    setOutputState("等待查询");
-  }
-
   function resetConversation() {
     if (thread) thread.querySelectorAll(".harness-message").forEach((item) => item.remove());
     if (welcome) welcome.hidden = false;
     if (toolsList) toolsList.replaceChildren();
     if (toolsCount) toolsCount.textContent = "未加载";
     setSession("");
-    clearDetails();
-    setState("等待提问", "");
+    setState("等待提问");
     setFeedback("", "info");
     initializeSession();
   }
@@ -434,13 +292,13 @@
   async function initializeSession() {
     if (busy || sessionId) return;
     setBusy(true);
-    setState("正在连接", "busy");
+    setState("正在连接");
     showModelSettings(false);
     try {
       await createSession();
     } catch (error) {
       const code = String(error && error.code || "").toUpperCase();
-      setState(code.includes("MODEL_NOT_CONFIGURED") ? "模型未启用" : "暂时无法连接", "error");
+      setState(code.includes("MODEL_NOT_CONFIGURED") ? "模型未启用" : "暂时无法连接");
       setFeedback(describeError(error), "error");
       showModelSettings(code.includes("MODEL_NOT_CONFIGURED"));
     } finally {
@@ -467,7 +325,7 @@
     messageInput.value = "";
     resizeComposer();
     setBusy(true);
-    setState(sessionId ? "正在查询" : "正在建立安全会话", "busy");
+    setState(sessionId ? "正在查询" : "正在建立会话");
     setFeedback("", "info");
     try {
       await sendMessage(message);
@@ -475,7 +333,7 @@
       const readable = describeError(error);
       appendMessage("assistant", readable, "error");
       const code = String(error && error.code || "").toUpperCase();
-      setState(code.includes("MODEL_NOT_CONFIGURED") ? "模型未启用" : "暂时无法连接", "error");
+      setState(code.includes("MODEL_NOT_CONFIGURED") ? "模型未启用" : "暂时无法连接");
       showModelSettings(code.includes("MODEL_NOT_CONFIGURED"));
       setFeedback("", "error");
     } finally {

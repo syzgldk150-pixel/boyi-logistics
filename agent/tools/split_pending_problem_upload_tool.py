@@ -33,7 +33,7 @@ from tools.tms_tool import call_http_service
 
 
 SOURCE_RESOURCE_KEY = "phase7.split_pending_source_sheet"
-EXPECTED_SOURCE_SHEET_ID = "8fc516"
+EXPECTED_SOURCE_SHEET_TITLE = "每日到货表"
 UPLOAD_TIMEOUT_SEC = 7200
 
 
@@ -70,7 +70,7 @@ def _sheet_values(payload: Any) -> list[list[Any]]:
     return []
 
 
-def _sheet_ref(resource: dict[str, Any], expected_sheet_id: str, *, resource_key: str) -> tuple[str, str, str]:
+def _sheet_ref(resource: dict[str, Any], expected_sheet_title: str, *, resource_key: str) -> tuple[str, str, str]:
     spreadsheet_token = _clean_text(resource.get("spreadsheet_token"))
     value_range = _clean_text(resource.get("range"))
     sheet_id = _clean_text(resource.get("sheet_id"))
@@ -80,8 +80,8 @@ def _sheet_ref(resource: dict[str, Any], expected_sheet_id: str, *, resource_key
         raise ValueError(f"{resource_key} 缺少 spreadsheet_token、sheet_id 或 range")
     if spreadsheet_token != EXPECTED_SPREADSHEET_TOKEN:
         raise ValueError(f"{resource_key} 未绑定指定的每日到货文档")
-    if sheet_id != expected_sheet_id:
-        raise ValueError(f"{resource_key} 绑定了错误的 sheet_id: {sheet_id}")
+    if _clean_text(resource.get("sheet_title")) != expected_sheet_title:
+        raise ValueError(f"{resource_key} 未绑定指定的每日到货工作表")
     return spreadsheet_token, sheet_id, value_range
 
 
@@ -178,7 +178,7 @@ def _read_source_values() -> tuple[list[list[Any]], dict[str, Any]]:
     resource = get_required_resource(SOURCE_RESOURCE_KEY)
     spreadsheet_token, sheet_id, value_range = _sheet_ref(
         resource,
-        EXPECTED_SOURCE_SHEET_ID,
+        EXPECTED_SOURCE_SHEET_TITLE,
         resource_key=SOURCE_RESOURCE_KEY,
     )
     result = feishu_operation(

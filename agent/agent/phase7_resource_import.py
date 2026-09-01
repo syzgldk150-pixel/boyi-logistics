@@ -92,6 +92,7 @@ BUILTIN_RESOURCES: dict[str, dict] = {
     "phase7.split_pending_source_sheet": {
         "spreadsheet_token": "F0NVsI5dlhaWugtw14YcmdrQnvh",
         "sheet_id": "8fc516",
+        "sheet_title": "每日到货表",
         "range": "8fc516!A1:S5000",
     },
     "phase7.split_pending_target_sheet": {

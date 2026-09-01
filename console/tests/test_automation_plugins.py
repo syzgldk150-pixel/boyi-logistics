@@ -970,6 +970,36 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertTrue(binding["selected_available"])
         self.assertFalse(instances[0]["blocked"])
 
+    def test_route_resources_are_hidden_because_entrypoint_switches_own_them(self):
+        payload = _catalog_payload()
+        route_role = {
+            "role": "feishu_route",
+            "label": "飞书消息入口",
+            "allowed_kinds": ["feishu_route"],
+            "required": False,
+        }
+        payload["plugins"][0]["resource_roles"] = [route_role]
+        payload["instances"][0]["resource_roles"] = [route_role]
+        payload["instances"][0]["resource_bindings"] = {}
+        payload["instances"][0]["missing_requirements"] = []
+
+        packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+
+        self.assertFalse(packages[0]["resource_roles"][0]["ui_visible"])
+        self.assertFalse(instances[0]["resource_role_bindings"][0]["ui_visible"])
+        self.assertTrue(instances[0]["resource_bindings_ready"])
+        self.assertNotIn("飞书消息入口", instances[0]["configuration_summary"])
+
+    def test_empty_plugin_configuration_section_is_not_rendered(self):
+        source = (CONSOLE_DIR / "templates" / "automation.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("这个任务无需额外设置。", source)
+        self.assertIn(
+            "task.plugin and (task.plugin.config_fields or not task.plugin.config_schema_supported)",
+            source,
+        )
+
     def test_arrival_stats_resource_copy_uses_business_names(self):
         payload = _catalog_payload()
         role = {
@@ -1264,7 +1294,7 @@ class AutomationPluginHandlerTests(unittest.TestCase):
             calls,
         )
 
-    def test_hidden_automation_ids_are_returned_per_request_without_shared_state(self):
+    def test_catalog_cache_is_scoped_and_explicit_refresh_bypasses_it(self):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
         app._mysql_console_principal = lambda _user: {
             "actor_id": "17",
@@ -1279,9 +1309,13 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         app._agent_request = lambda *_args, **_kwargs: responses.pop(0)
 
         successful = app._load_automation_plugin_catalog(self._handler())
-        failed = app._load_automation_plugin_catalog(self._handler())
+        cached = app._load_automation_plugin_catalog(self._handler())
+        failed = app._load_automation_plugin_catalog(
+            self._handler(), refresh_resources=True
+        )
 
         self.assertEqual(frozenset({"r7_arrival_checkin"}), successful[4])
+        self.assertEqual(successful, cached)
         self.assertEqual(frozenset(), failed[4])
         self.assertFalse(hasattr(app, "_automation_hidden_ids"))
 

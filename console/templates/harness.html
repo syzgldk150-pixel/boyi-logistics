@@ -8,13 +8,7 @@
 
 {% block content %}
 <section class="harness-page" data-harness-page aria-label="AI 助手对话">
-  <header class="harness-chat-header">
-    <p><i data-feather="shield" aria-hidden="true"></i>只读查询，不会更改业务数据。</p>
-    <div class="harness-state" data-harness-state aria-live="polite">
-      <span class="harness-state-dot" aria-hidden="true"></span>
-      <span data-harness-state-label>正在连接</span>
-    </div>
-  </header>
+  <p class="sr-only" data-harness-state aria-live="polite"><span data-harness-state-label>正在连接</span></p>
 
   <div class="harness-thread" data-harness-thread aria-live="polite" aria-label="AI 助手会话">
     <div class="harness-welcome" data-harness-welcome>
@@ -25,16 +19,6 @@
       <span class="sr-only" data-harness-tools-count>未加载</span>
     </div>
   </div>
-
-  <details class="harness-details" data-harness-details hidden>
-    <summary>查看本次查询依据 <span data-harness-output-state>等待查询</span></summary>
-    <div class="harness-details-grid">
-      <section><h3>过程</h3><div data-harness-process></div></section>
-      <section><h3>证据</h3><div data-harness-evidence></div></section>
-      <section><h3>结果</h3><div data-harness-result></div></section>
-      <section><h3>工具摘要</h3><div data-harness-tool-summaries></div></section>
-    </div>
-  </details>
 
   <div class="harness-composer-wrap">
     <p class="harness-feedback" data-harness-feedback role="status" aria-live="polite" hidden></p>
@@ -60,5 +44,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/harness.js?v=ai-chat-20260901"></script>
+<script src="/static/harness.js?v=ai-chat-20260902"></script>
 {% endblock %}

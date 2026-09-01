@@ -2928,38 +2928,11 @@ body .line-haul-tool-btn {
 .harness-main { padding-bottom: 0; }
 .harness-page {
   display: grid;
-  grid-template-rows: auto minmax(240px, 1fr) auto auto;
+  grid-template-rows: minmax(240px, 1fr) auto;
   width: min(100%, 960px);
   min-height: calc(100vh - var(--header-h) - 24px);
   margin: 0 auto;
 }
-.harness-chat-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 2px 8px 18px;
-  border-bottom: 1px solid var(--line);
-}
-.harness-chat-header > p { display: inline-flex; align-items: center; gap: 8px; margin: 0; color: var(--muted); line-height: 1.5; }
-.harness-chat-header > p .feather { width: 16px; height: 16px; }
-.harness-state {
-  display: inline-flex;
-  min-height: 32px;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 8px;
-  padding: 0 10px;
-  border-radius: var(--radius-pill);
-  color: var(--muted);
-  background: var(--surface-muted);
-  font-size: 0.78rem;
-}
-.harness-state-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
-.harness-state.is-ready .harness-state-dot { background: #15803d; }
-.harness-state.is-busy .harness-state-dot { background: #b45309; }
-.harness-state.is-error .harness-state-dot { background: #b91c1c; }
-.harness-state.is-gated .harness-state-dot { background: #6b7280; }
 .harness-thread {
   min-height: 0;
   overflow-y: auto;
@@ -3015,19 +2988,6 @@ body .line-haul-tool-btn {
 }
 .harness-message-label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 0.75rem; }
 .harness-message-copy { margin: 0; white-space: pre-wrap; }
-.harness-details { margin: 0 clamp(8px, 3vw, 28px) 14px; border-top: 1px solid var(--line); }
-.harness-details summary { padding: 12px 2px; color: var(--muted); cursor: pointer; font-size: 0.8rem; }
-.harness-details summary span { margin-left: 6px; }
-.harness-details-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; padding: 4px 2px 14px; }
-.harness-details-grid section { min-width: 0; padding: 12px 0; border-top: 1px solid var(--surface-muted); }
-.harness-details-grid h3 { margin: 0 0 8px; color: var(--text-strong); font-size: 0.82rem; }
-.harness-value { margin: 0; color: var(--text); line-height: 1.6; overflow-wrap: anywhere; }
-.harness-value-list { display: grid; gap: 8px; margin: 0; padding-left: 20px; color: var(--text); }
-.harness-value-list--definition { padding: 0; list-style: none; }
-.harness-value-definition { display: grid; grid-template-columns: minmax(96px, 0.38fr) minmax(0, 1fr); gap: 10px; padding: 6px 0; }
-.harness-value-definition dt { color: var(--muted); font-size: 0.78rem; }
-.harness-value-definition dd { min-width: 0; margin: 0; }
-.harness-empty { margin: 0; color: var(--muted); line-height: 1.55; }
 .harness-composer-wrap {
   position: sticky;
   bottom: 0;
@@ -3099,23 +3059,17 @@ body .line-haul-tool-btn {
 @media (max-width: 767px) {
   .harness-main { padding-bottom: 72px; }
   .harness-page { min-height: calc(100vh - var(--header-h) - 88px); }
-  .harness-chat-header { align-items: center; padding-inline: 2px; }
-  .harness-chat-header > p { font-size: 0.75rem; }
   .harness-thread { padding: 20px 2px 24px; }
   .harness-welcome { margin-top: 30px; }
   .harness-welcome > p { max-width: 34ch; }
   .harness-message-body { max-width: 88%; }
-  .harness-details { margin-inline: 2px; }
-  .harness-details-grid { grid-template-columns: 1fr; }
   .harness-composer-wrap { padding-inline: 2px; }
   .harness-footnote { display: none; }
-  .harness-value-definition { grid-template-columns: 1fr; gap: 3px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .harness-thread { scroll-behavior: auto; }
   .harness-tool-prompt,
   .harness-icon-button,
-  .harness-state,
   .harness-feedback { transition: none !important; }
 }

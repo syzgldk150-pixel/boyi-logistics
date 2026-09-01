@@ -908,6 +908,7 @@ class AutomationPluginManagementServiceMixin:
                 "插件已保持停用并等待运行环境就绪；请原样重试这次安装请求。",
             )
             return
+        self._clear_automation_plugin_catalog_cache()
         self._send_json(
             handler,
             HTTPStatus.OK,
@@ -1018,6 +1019,7 @@ class AutomationPluginManagementServiceMixin:
                 fallback_message="插件实例操作失败。",
             )
             return
+        self._clear_automation_plugin_catalog_cache()
         self._send_json(
             handler,
             HTTPStatus.OK,

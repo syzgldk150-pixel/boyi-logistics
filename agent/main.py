@@ -1490,6 +1490,19 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("TMS session alert monitor skipped because this instance does not hold the Feishu lease.")
 
+    def warm_workflow_resource_catalog() -> None:
+        try:
+            from agent.workflow_resource_store import list_workflow_resource_descriptors
+
+            list_workflow_resource_descriptors()
+        except Exception:
+            logger.warning("Workflow resource catalog warm-up failed")
+
+    resource_catalog_warm_task = asyncio.create_task(
+        asyncio.to_thread(warm_workflow_resource_catalog),
+        name="workflow-resource-catalog-warm-up",
+    )
+
     logger.info("Agent service started instance_id=%s", INSTANCE_ID)
     yield
 
@@ -1500,6 +1513,10 @@ async def lifespan(app: FastAPI):
         tms_session_alert_task.cancel()
         with suppress(asyncio.CancelledError):
             await tms_session_alert_task
+    if not resource_catalog_warm_task.done():
+        resource_catalog_warm_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await resource_catalog_warm_task
     scheduler.shutdown(wait=False)
     register_account_session_restored(None)
     bind_agent_command_runtime(None)
