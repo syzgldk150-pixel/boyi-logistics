@@ -31,6 +31,7 @@ from tests.first_party_action_payload_support import (
 )
 from agent.automation_plugins.core_adapter import AccountManagerSessionResolver, RegisteredCoreAutomationBrokerAdapter
 from agent.automation_plugins.execution import PluginExecutionRouter
+from agent.automation_plugins.errors import PluginPackageError
 from agent.automation_plugins.first_party_handlers import (
     FirstPartyCoreHandlerPorts,
     build_first_party_core_handler_map,
@@ -44,6 +45,7 @@ from agent.automation_plugins.manifest import (
     canonical_json_bytes,
     governance_anchor_from_tool_contract,
 )
+from agent.automation_plugins.release_scope import DEFERRED_R7_PLUGIN_IDS
 from agent.automation_plugins.models import (
     GenerationBoundResult,
     PluginTrustSource,
@@ -792,7 +794,7 @@ def test_all_first_party_manifests_are_subprocess_actions(manifests) -> None:
         assert not forbidden
 
 
-def test_unextracted_first_party_actions_fail_closed_without_broker_calls(manifests) -> None:
+def test_removed_r7_first_party_actions_have_no_packaged_source(manifests) -> None:
     executable_or_evidence_pending = {
         "clock_in_dual",
         "sync_arrive_list",
@@ -812,16 +814,8 @@ def test_unextracted_first_party_actions_fail_closed_without_broker_calls(manife
     blocked = sorted(set(manifests) - executable_or_evidence_pending)
     assert blocked == ["r7_arrival_checkin", "r7_departure_checkin"]
     for plugin_id in blocked:
-        action = _load_action(plugin_id)
-        broker_calls: list[object] = []
-
-        def forbidden_broker(*args, **kwargs):
-            broker_calls.append((args, kwargs))
-            raise AssertionError("blocked action must not reach the core broker")
-
-        with pytest.raises(RuntimeError, match="^ACTION_PRIMITIVES_UNAVAILABLE$"):
-            action.run_action({}, forbidden_broker)
-        assert broker_calls == [], plugin_id
+        with pytest.raises(FileNotFoundError):
+            _load_action(plugin_id)
 
 
 def test_customer_problem_payload_owns_pagination_dedupe_and_recheck() -> None:
@@ -1344,6 +1338,10 @@ def test_arrival_stats_payload_owns_union_counting_and_commit_order(manifests) -
 
 def test_every_first_party_zip_contains_action_bytes_not_core_bridge(manifests) -> None:
     for plugin_id, manifest in manifests.items():
+        if plugin_id in DEFERRED_R7_PLUGIN_IDS:
+            with pytest.raises(PluginPackageError, match="action source is incomplete"):
+                first_party_payload_files(manifest)
+            continue
         payload_files = first_party_payload_files(manifest)
         assert set(payload_files) == {
             "payload/main.py",
