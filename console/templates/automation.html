@@ -160,6 +160,21 @@
     </div>
   </div>
 
+  {% set resource_notice = namespace(message='') %}
+  {% for task in scheduled_tasks %}
+    {% if not resource_notice.message and task.plugin and task.plugin.resource_pool_problem_label %}
+      {% set resource_notice.message = task.plugin.resource_pool_problem_label %}
+    {% endif %}
+  {% endfor %}
+  {% if resource_notice.message %}
+  <div class="automation-plugin-block automation-resource-global-notice" role="alert">
+    <i data-feather="alert-triangle" aria-hidden="true"></i>
+    <span>{{ resource_notice.message }}。已成功读取的表格仍可继续使用。</span>
+    <a class="ghost-btn" href="/automations?refresh_resources=1">刷新表格列表</a>
+    <a class="ghost-btn" href="/automation-accounts">检查飞书权限</a>
+  </div>
+  {% endif %}
+
   {# ── 统计栏 ── #}
   <div class="auto-stats-bar">
     <span class="auto-stat">
@@ -725,7 +740,6 @@
               <i data-feather="database" class="auto-settings-icon"></i>
               数据从哪里读取、保存到哪里
             </div>
-            {% if task.plugin.resource_pool_available %}
             <div class="auto-account-role-stack">
               {% for binding in task.plugin.resource_role_bindings %}
               {% set resource_input_id = 'resource-role-' ~ task.task_id ~ '-' ~ binding.role %}
@@ -748,24 +762,14 @@
                   <option value="{{ binding.selected_resource_id }}" selected disabled>之前选择的表格已不可用</option>
                   {% endif %}
                   {% for resource in binding.options %}
-                  <option value="{{ resource.resource_id }}" {% if resource.resource_id == binding.selected_resource_id %}selected{% endif %}>{{ resource.display_name }}（{{ resource.kind_label }}）</option>
+                  <option value="{{ resource.resource_id }}" {% if resource.resource_id == binding.selected_resource_id %}selected{% endif %}>{{ resource.display_name }}</option>
                   {% endfor %}
                 </select>
                 {% if binding.blocked_reason %}<small class="auto-account-blocked">{{ binding.blocked_reason }}</small>{% endif %}
-                <details class="auto-technical-details">
-                  <summary>排查信息</summary>
-                  <span>配置项：{{ binding.technical_name }}{% if binding.selected_resource_id %}<br>资源标识：{{ binding.selected_resource_id }}{% endif %}</span>
-                </details>
               </div>
               {% endfor %}
             </div>
             <p class="auto-webhook-note">页面不会显示表格密钥等敏感信息。没有明确选择时，系统不会替你猜测。</p>
-            {% else %}
-            <div class="automation-plugin-block" role="alert">
-              <i data-feather="alert-triangle"></i>
-              <span>暂时无法读取可用表格，任务已暂停。请稍后刷新页面再试。</span>
-            </div>
-            {% endif %}
           </div>
           {% endif %}
           {% endif %}
@@ -921,7 +925,7 @@
           <div class="auto-settings-footer">
             {% if task.plugin %}
             {% set plugin_settings_feedback_id = 'plugin-settings-feedback-' ~ task.task_id %}
-            <button class="primary-btn auto-save-btn" type="button" data-plugin-configuration-save aria-describedby="{{ plugin_settings_feedback_id }}" {% if not can_manage_plugins or not task.plugin.config_schema_supported or (has_plugin_resource_roles and not task.plugin.resource_pool_available) or not task.plugin_schedule_supported or not task.plugin.lifecycle_actions_allowed %}disabled{% endif %}>
+            <button class="primary-btn auto-save-btn" type="button" data-plugin-configuration-save aria-describedby="{{ plugin_settings_feedback_id }}" {% if not can_manage_plugins or not task.plugin.config_schema_supported or (has_plugin_resource_roles and not task.plugin.resource_bindings_ready) or not task.plugin_schedule_supported or not task.plugin.lifecycle_actions_allowed %}disabled{% endif %}>
               <i data-feather="check"></i>
               保存项目设置
             </button>

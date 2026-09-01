@@ -7,6 +7,7 @@ import binascii
 import copy
 import hashlib
 import json
+import logging
 import re
 import uuid
 from collections.abc import Callable, Sequence
@@ -22,6 +23,7 @@ from agent.automation_plugins.errors import (
     PluginPackageError,
 )
 from agent.automation_plugins.first_party import RECOVERABLE_WRITE_PROJECT_PLUGINS
+from agent.automation_plugins.release_scope import DEFERRED_R7_PLUGIN_IDS
 from agent.automation_plugins.lifecycle import AutomationPluginService
 from agent.automation_plugins.inspection_v2 import service_v2_wizard_projection
 from agent.automation_plugins.manifest_v2 import canonical_json_bytes
@@ -46,6 +48,9 @@ from shared.orchestration_repository_support import (
     ConcurrentUpdateError,
     IdempotencyConflict,
 )
+
+
+logger = logging.getLogger("agent")
 
 
 _DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -521,6 +526,12 @@ class AutomationPluginManagementService:
     def catalog_projection(self, *, actor: Actor) -> dict[str, Any]:
         self._require_console_actor(actor, super_admin=False)
         projection = self._catalog.safe_projection()
+        projection["hidden_automation_ids"] = sorted(
+            {
+                *projection.get("hidden_automation_ids", []),
+                *DEFERRED_R7_PLUGIN_IDS,
+            }
+        )
         instances = projection.get("instances")
         if isinstance(instances, list):
             for instance in instances:
@@ -551,29 +562,49 @@ class AutomationPluginManagementService:
                     ]
         resources: list[dict[str, str]] = []
         resource_pool_available = self._resource_catalog_provider is not None
+        resource_pool_problem = "" if resource_pool_available else "RESOURCE_CATALOG_UNAVAILABLE"
         if self._resource_catalog_provider is not None:
             try:
                 raw_resources = self._resource_catalog_provider()
+                resource_pool_available = bool(
+                    getattr(raw_resources, "resource_pool_available", True)
+                )
+                resource_pool_problem = str(
+                    getattr(raw_resources, "resource_pool_problem", "") or ""
+                ).strip().upper()
                 seen: set[str] = set()
                 for raw in raw_resources:
-                    if not isinstance(raw, Mapping) or set(raw) != {
-                        "resource_id",
-                        "name",
-                        "kind",
-                        "status",
+                    if not isinstance(raw, Mapping) or frozenset(raw) not in {
+                        frozenset({"resource_id", "name", "kind", "status"}),
+                        frozenset(
+                            {
+                                "resource_id",
+                                "name",
+                                "kind",
+                                "status",
+                                "purpose",
+                                "problem_code",
+                            }
+                        ),
                     }:
                         raise ValueError("managed resource projection is not closed")
                     resource_id = str(raw.get("resource_id") or "").strip()
                     name = str(raw.get("name") or "").strip()
                     kind = str(raw.get("kind") or "").strip().lower()
                     status = str(raw.get("status") or "").strip().lower()
+                    purpose = str(raw.get("purpose") or name).strip()
+                    problem_code = str(raw.get("problem_code") or "").strip().upper()
                     if (
                         resource_id in seen
                         or not re.fullmatch(r"[A-Za-z0-9_.:@/-]{1,160}", resource_id)
-                        or not name
-                        or len(name) > 160
+                        or (status == "available" and (not name or len(name) > 160))
+                        or (status == "unavailable" and bool(name))
                         or not re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", kind)
-                        or status != "available"
+                        or status not in {"available", "unavailable"}
+                        or not purpose
+                        or len(purpose) > 80
+                        or (status == "available" and bool(problem_code))
+                        or (status == "unavailable" and not problem_code)
                     ):
                         raise ValueError("managed resource projection is invalid")
                     seen.add(resource_id)
@@ -583,13 +614,21 @@ class AutomationPluginManagementService:
                             "name": name,
                             "kind": kind,
                             "status": status,
+                            "purpose": purpose,
+                            "problem_code": problem_code,
                         }
                     )
             except Exception:  # noqa: BLE001 - read projection must fail closed
                 resources = []
                 resource_pool_available = False
+                resource_pool_problem = "RESOURCE_CATALOG_UNAVAILABLE"
+                logger.warning(
+                    "Managed resource catalog unavailable code=%s",
+                    resource_pool_problem,
+                )
         projection["resources"] = sorted(resources, key=lambda item: item["resource_id"])
         projection["resource_pool_available"] = resource_pool_available
+        projection["resource_pool_problem"] = resource_pool_problem
         return projection
 
     def recover_arrival_stats_not_applied(

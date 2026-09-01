@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from agent.feishu_resource_catalog import (
+    FeishuResourceCatalogResult,
+    FeishuResourceResult,
+)
 from agent import workflow_resource_store
 
 
@@ -39,8 +43,17 @@ def test_managed_resource_projection_is_closed_and_credential_free() -> None:
     with (
         patch.object(workflow_resource_store, "_repository", return_value=_Repository()),
         patch(
-            "agent.feishu_resource_catalog.resolve_live_feishu_resource_names",
-            return_value={"phase7.input_sheet": "飞书中的实际 Sheet 名"},
+            "agent.feishu_resource_catalog.resolve_live_feishu_resource_catalog",
+            return_value=FeishuResourceCatalogResult(
+                resources={
+                    "phase7.input_sheet": FeishuResourceResult(
+                        name="飞书中的实际 Sheet 名",
+                        status="available",
+                        purpose="飞书中的实际 Sheet 名",
+                        problem_code="",
+                    )
+                }
+            ),
         ),
     ):
         resources = workflow_resource_store.list_workflow_resource_descriptors()
@@ -51,6 +64,8 @@ def test_managed_resource_projection_is_closed_and_credential_free() -> None:
             "name": "飞书中的实际 Sheet 名",
             "kind": "feishu_sheet",
             "status": "available",
+            "purpose": "飞书中的实际 Sheet 名",
+            "problem_code": "",
         }
     ]
     serialized = repr(resources)

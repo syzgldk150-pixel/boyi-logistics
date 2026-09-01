@@ -79,16 +79,12 @@ TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `er
 | `韵达寄件运单` / `韵达寄件运单管理` / `yunda send waybills` 等 | `sync_yunda_send_waybills` | deferred（异步执行；默认拉取当天寄件运单，补充快件跟踪详情和小眼睛解密字段后按运单号更新飞书多维表格，并同步控制台 `waybills` SQL 表） |
 | `扫描` / `获取并扫描数据` / `同步扫描` 等 | `sync_scan_codes` | deferred（异步执行；拉取扫描记录、刷新扫描索引并执行 scan_next） |
 | `统计` / `到货统计` / `统计到货数据` / `刷新统计` 等 | `sync_arrival_stats` | deferred（异步执行） |
-| `到达打卡` / `R7到达打卡` | `r7_arrival_checkin` | deferred（异步执行；R7 登录独立于 TMS 登录态） |
-| `发车` / `R7发车` / `发车打卡` | `r7_departure_checkin` | deferred（异步执行；多车牌配置时先进入车牌选择 pending） |
+| `到达打卡` / `R7到达打卡` | `r7_arrival_checkin` | 已移除（当前发行不显示、不注册、不执行） |
+| `发车` / `R7发车` / `发车打卡` | `r7_departure_checkin` | 已移除（当前发行不显示、不注册、不执行） |
 | `分批`（仅精确文本） | `split_pending_problem_upload` | reply（dry-run 完整编号列表 → “确认”直接执行全部；输入序号后回显并二次确认部分执行） |
 | `自提到货问题件` / `自提部到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` / `开单为自提件问题件` 等 | `self_pickup_problem_upload` | reply（先 dry_run 预览，再确认执行；默认不上传截图） |
 
-`r7_arrival_checkin` 会写入 MySQL 表 `r7_arrival_checkin_log`。默认匹配 R7 运输状态 `车辆到达` 后执行 `到达待卸`；历史定时任务里保存的 `status_text=已调度` 会在执行到达待卸时自动纠偏为 `车辆到达`。参数 `daily_success_limit` 表示当天需要成功打卡的次数，达到后当天后续定时触发只记录 skipped，不再打开 R7 执行真实打卡。
-
-`r7_departure_checkin` 会写入 MySQL 表 `r7_departure_checkin_log`。后台可配置单个或多个车牌；执行时间可为空（不创建定时任务，仅保留手动/飞书触发）；飞书触发时如果有多个车牌，机器人先回复车牌列表，用户必须回复完整车牌号后再执行真实发车打卡。计划发车时间按分钟匹配，兼容 R7 页面只显示到分钟而脚本参数带秒的情况；纯数字 `1` / `2` 只用于登录账号选择，不作为 R7 车牌序号执行。
-
-后台 `/automations` 中走 R7 页面的任务使用 `system_badges` 标记 R7 图标，当前包括 `R7 到达打卡` 和 `R7 发车打卡`；`arrive-list` 走 TMS 派件预报基础清单。
+R7 两个历史工具和日志表仅为既有记录追溯保留。当前发行把两个项目列入隐藏集合，Scheduler 不注册 Job，飞书不提供直达命令，后台也不补回卡片；不得从静态元数据或历史定时行恢复其执行入口。
 
 `self_pickup_problem_upload` 的当前执行链路是：飞书文本 `自提到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` → committed project route 的签名 dry-run → 已验签并持久化的 `selection_preview` → 飞书保存 `preview_run_id` 并默认选择全部候选 → 确认时服务端从同一候选 Run 恢复指纹和正式参数 → `automation.self_pickup_problem_upload.run`。旧 `agent/direct_tool_router.py`、`tools/self_pickup_problem_upload_tool.py` 与 `/tms/self_pickup_problem_upload` 不再参与飞书预览或正式写入。签名动作读取项目绑定的来源表，按两条来源规则筛单：`目的站点=邵阳自提部` 进入自提部来源；`目的站点=邵阳大祥S站` 且 `派送方式=自提` 进入大祥S站来源；两类来源都必须满足 `累计到货件数 = 件数/货物件数`，未到齐或缺少件数列时不进入上传候选。候选运单号统一只裁剪前后空白；裁剪后仍含空白时显式报告来源行，预览与正式执行都不会删除内部空白或猜测单号。候选指纹按规范内容排序计算，来源行顺序变化不会造成假过期；内容变化则返回 `SELECTION_PREVIEW_EXPIRED` 且在任何 TMS 写入前终止。真实执行时每个来源分别通过签名 Broker 定位 TMS `问题件录入`，问题件类型固定为 `开单为自提件`，问题件科目为 `特殊时效`；保存前读取登记问题件列表，已有同类型或同文案记录则跳过，新增后必须独立读回验证。自提部与大祥S站来源分别使用项目设置显式绑定的 `account_id` 与 `daxiang_s_account_id`；后台改绑后下一次运行使用新账号，脚本不内置默认站点、账号或 session profile。
 

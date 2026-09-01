@@ -13,6 +13,12 @@ from console.services.automation_project_contributions import (
 from console.services.automation_plugin_management import (
     AutomationPluginManagementServiceMixin,
 )
+from console.services.automation_resource_catalog import (
+    RESOURCE_KIND_LABELS as AUTOMATION_RESOURCE_KIND_LABELS,
+    RESOURCE_PROBLEM_LABELS,
+    normalize_plugin_resources,
+    resource_display_name,
+)
 
 
 AUTOMATION_PROJECT_POLICY_ENDPOINT = "/internal/v1/automation-project-policies"
@@ -311,14 +317,6 @@ AUTOMATION_RESOURCE_DISPLAY_NAMES = {
     "automation.feishu_route.yunda_send_waybills": "韵达寄件飞书入口",
 }
 
-AUTOMATION_RESOURCE_KIND_LABELS = {
-    "feishu_sheet": "飞书电子表格",
-    "feishu_bitable": "飞书多维表格",
-    "feishu_route": "飞书消息入口",
-    "webhook_route": "外部调用入口",
-}
-
-
 def _plain_role_copy(
     role: str,
     raw_label: object,
@@ -337,15 +335,8 @@ def _plain_role_copy(
 
 
 def _resource_display_name(resource_id: str, raw_name: object, *, kind: str = "") -> str:
-    projected = normalize_feedback_text(redact_text(str(raw_name or "")))[:160]
-    if projected and projected != resource_id:
-        return projected
-    if kind in {"feishu_sheet", "feishu_bitable"}:
-        return ""
-    known = AUTOMATION_RESOURCE_DISPLAY_NAMES.get(resource_id)
-    if known:
-        return known
-    return "业务资源"
+    name = normalize_feedback_text(redact_text(str(raw_name or "")))[:160]
+    return resource_display_name(resource_id, name, kind, AUTOMATION_RESOURCE_DISPLAY_NAMES)
 
 
 def _configuration_summary(
@@ -868,43 +859,10 @@ def _normalize_plugin_resource_roles(value: Any) -> list[dict[str, Any]]:
 
 
 def _normalize_plugin_resources(value: Any) -> tuple[list[dict[str, str]], bool]:
-    """Accept only the closed, credential-free managed-resource projection."""
-
-    if not isinstance(value, list):
-        return [], False
-    resources: list[dict[str, str]] = []
-    seen: set[str] = set()
-    expected_fields = {"resource_id", "name", "kind", "status"}
-    for raw in value:
-        if not isinstance(raw, dict) or set(raw) != expected_fields:
-            return [], False
-        resource_id = str(raw.get("resource_id") or "").strip()
-        name = normalize_feedback_text(redact_text(str(raw.get("name") or "")))[:160]
-        kind = str(raw.get("kind") or "").strip().lower()
-        status = str(raw.get("status") or "").strip().lower()
-        if (
-            resource_id in seen
-            or not AUTOMATION_PLUGIN_BINDING_ID_RE.fullmatch(resource_id)
-            or not name
-            or not re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", kind)
-            or status != "available"
-        ):
-            return [], False
-        seen.add(resource_id)
-        display_name = _resource_display_name(resource_id, name, kind=kind)
-        if not display_name:
-            return [], False
-        resources.append(
-            {
-                "resource_id": resource_id,
-                "name": name,
-                "display_name": display_name,
-                "kind": kind,
-                "kind_label": AUTOMATION_RESOURCE_KIND_LABELS.get(kind, "业务资源"),
-                "status": status,
-            }
-        )
-    return sorted(resources, key=lambda item: item["resource_id"]), True
+    return normalize_plugin_resources(
+        value,
+        known_names=AUTOMATION_RESOURCE_DISPLAY_NAMES,
+    )
 
 
 def _plugin_config_value(config: dict[str, Any], path: list[str]) -> tuple[bool, Any]:
@@ -1496,6 +1454,10 @@ def normalize_automation_plugin_catalog(
     if not isinstance(raw_instances, list):
         raw_instances = value.get("items") if isinstance(value.get("items"), list) else []
     resources, resources_valid = _normalize_plugin_resources(value.get("resources"))
+    resource_pool_problem = str(value.get("resource_pool_problem") or "").strip().upper()
+    if resource_pool_problem and resource_pool_problem not in RESOURCE_PROBLEM_LABELS:
+        resources_valid = False
+        resource_pool_problem = "RESOURCE_CATALOG_UNAVAILABLE"
     resource_pool_available = (
         value.get("resource_pool_available") is True and resources_valid
     )
@@ -1786,7 +1748,8 @@ def normalize_automation_plugin_catalog(
                 dict(resource)
                 for resource in resources
                 if resource["kind"] in allowed_kinds
-            ] if resource_pool_available else []
+                and resource["status"] == "available"
+            ]
             options.sort(
                 key=lambda item: (
                     item["resource_id"] != selected_resource_id,
@@ -1801,14 +1764,31 @@ def normalize_automation_plugin_catalog(
                     for option in options
                 )
             )
+            selected_resource = next(
+                (
+                    resource
+                    for resource in resources
+                    if resource["resource_id"] == selected_resource_id
+                ),
+                None,
+            )
             blocked_reason = ""
-            if not resource_pool_available:
-                if bool(role_definition.get("required")) or selected_resource_id:
-                    blocked_reason = "表格列表暂时无法读取，请稍后刷新"
+            if not resource_pool_available and not options:
+                blocked_reason = (
+                    RESOURCE_PROBLEM_LABELS.get(resource_pool_problem, "")
+                    or "表格列表暂时无法读取，请稍后刷新"
+                )
             elif selected_resource_id and not selected_available:
-                blocked_reason = "之前选择的数据位置已停用或无法使用，请重新选择"
+                blocked_reason = (
+                    str((selected_resource or {}).get("problem_label") or "")
+                    or "之前选择的数据位置已停用或无法使用，请重新选择"
+                )
             elif bool(role_definition.get("required")) and not selected_resource_id:
-                blocked_reason = f"请选择{role_definition['label']}"
+                blocked_reason = (
+                    RESOURCE_PROBLEM_LABELS.get(resource_pool_problem, "")
+                    if not options and resource_pool_problem
+                    else f"请选择{role_definition['label']}"
+                )
             if blocked_reason:
                 resource_bindings_ready = False
             resource_role_bindings.append(
@@ -2068,6 +2048,12 @@ def normalize_automation_plugin_catalog(
                     account_roles, resource_role_bindings
                 ),
                 "resource_pool_available": resource_pool_available,
+                "resource_pool_problem": resource_pool_problem,
+                "resource_pool_problem_label": RESOURCE_PROBLEM_LABELS.get(
+                    resource_pool_problem,
+                    "",
+                ),
+                "resource_bindings_ready": resource_bindings_ready,
                 "config_fields": config_fields,
                 "code_owned_config_fields": sorted(code_owned_config_fields),
                 "config_schema_supported": config_schema_supported,
@@ -2201,6 +2187,8 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin):
     def _load_automation_plugin_catalog(
         self,
         handler: BaseHTTPRequestHandler,
+        *,
+        refresh_resources: bool = False,
     ) -> tuple[
         list[dict[str, Any]],
         list[dict[str, Any]],
@@ -2226,9 +2214,12 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin):
                 False,
             )
 
+        catalog_endpoint = AUTOMATION_PLUGIN_CATALOG_ENDPOINT
+        if refresh_resources:
+            catalog_endpoint = f"{catalog_endpoint}?refresh_resources=1"
         catalog_result = self._agent_request(
             "GET",
-            AUTOMATION_PLUGIN_CATALOG_ENDPOINT,
+            catalog_endpoint,
             timeout=15,
             console_principal=principal,
         )

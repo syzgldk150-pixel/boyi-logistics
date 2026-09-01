@@ -545,6 +545,23 @@ def create_automation_plugin_management_router(
     @router.get("/internal/v1/automation/plugins/catalog", response_model=None)
     async def plugin_catalog(request: Request) -> dict[str, Any] | JSONResponse:
         actor = actor_provider(request)
+        refresh_resources = request.query_params.get("refresh_resources")
+        if refresh_resources not in {None, "1"}:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "ok": False,
+                    "data": None,
+                    "error": {
+                        "code": "RESOURCE_REFRESH_INVALID",
+                        "message": "表格目录刷新参数无效",
+                    },
+                },
+            )
+        if refresh_resources == "1":
+            from agent.feishu_resource_catalog import refresh_feishu_resource_catalog
+
+            refresh_feishu_resource_catalog()
         return await _service_response(
             lambda: service_provider().catalog_projection(actor=actor)
         )

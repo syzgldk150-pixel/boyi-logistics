@@ -15,6 +15,7 @@ from agent.harness_application import (
     HarnessConversationService,
     TrustedHarnessInvocationAdapter,
 )
+from agent.harness_online import visible_descriptors
 from agent.orchestration.models import Actor
 from shared.contracts import api_failure, api_success
 from shared.redaction import redact_text
@@ -59,7 +60,10 @@ def public_harness_tools(
             "title": str(item["title"]),
             "description": str(item["description"]),
         }
-        for item in catalog.public_tools()
+        for item in (
+            descriptor.public_mapping()
+            for descriptor in visible_descriptors(catalog)
+        )
     ]
 
 
@@ -188,7 +192,7 @@ def _harness_runtime_status(
     if (
         (status, availability)
         not in {
-            ("READY", "OFFLINE_RESTRICTED"),
+            ("READY", "ONLINE_READ_ONLY"),
             ("CAPABILITY_UNAVAILABLE", "CAPABILITY_UNAVAILABLE"),
         }
         or (blocked_reason is not None and not isinstance(blocked_reason, str))
@@ -227,6 +231,8 @@ def harness_error_response(request: Request, exc: HarnessError) -> JSONResponse:
         "HARNESS_CATALOG_UNAVAILABLE": 503,
         "HARNESS_GATEWAY_UNAVAILABLE": 503,
         "HARNESS_GATEWAY_FAILED": 502,
+        "HARNESS_MODEL_NOT_CONFIGURED": 503,
+        "HARNESS_MODEL_UNAVAILABLE": 502,
         "HARNESS_SIDECAR_FAILED": 502,
         "HARNESS_TIMEOUT": 504,
     }

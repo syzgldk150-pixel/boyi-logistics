@@ -53,7 +53,7 @@ def test_agent_harness_session_binds_signed_actor_and_projects_gate() -> None:
             return SimpleNamespace(
                 session_id=SESSION_UUID,
                 request_id=REQUEST_UUID,
-                persistence_status="MEMORY_ONLY_NON_PRODUCTION",
+                persistence_status="MEMORY_ONLY",
             )
 
     service = Service()
@@ -77,7 +77,7 @@ def test_agent_harness_session_binds_signed_actor_and_projects_gate() -> None:
     assert result["data"] == {
         "session_id": SESSION_UUID,
         "request_uuid": REQUEST_UUID,
-        "persistence_status": "MEMORY_ONLY_NON_PRODUCTION",
+        "persistence_status": "MEMORY_ONLY",
         "status": "PRODUCTION_GATED",
         "availability": "PRODUCTION_GATED",
         "blocked_reason": "HARNESS_RUNTIME_PRODUCTION_GATED",
@@ -104,7 +104,7 @@ def test_agent_harness_message_returns_only_bounded_conversation_projection() ->
             return SimpleNamespace(
                 session_id=SESSION_UUID,
                 request_id=REQUEST_UUID,
-                persistence_status="MEMORY_ONLY_NON_PRODUCTION",
+                persistence_status="MEMORY_ONLY",
                 assistant_message=SimpleNamespace(
                     message_id=MESSAGE_UUID,
                     content="Offline result",
@@ -133,7 +133,7 @@ def test_agent_harness_message_returns_only_bounded_conversation_projection() ->
         "request_uuid": REQUEST_UUID,
         "message_id": MESSAGE_UUID,
         "created_at": "2026-08-31T00:00:00+00:00",
-        "persistence_status": "MEMORY_ONLY_NON_PRODUCTION",
+        "persistence_status": "MEMORY_ONLY",
         "status": "COMPLETED",
         "assistant_message": "Offline result",
         "result": "Offline result",
@@ -205,7 +205,7 @@ def test_agent_harness_session_projects_restricted_runtime_readiness() -> None:
         create_session=lambda **_kwargs: SimpleNamespace(
             session_id=SESSION_UUID,
             request_id=REQUEST_UUID,
-            persistence_status="MEMORY_ONLY_NON_PRODUCTION",
+            persistence_status="MEMORY_ONLY",
         )
     )
     result = asyncio.run(
@@ -217,11 +217,11 @@ def test_agent_harness_session_projects_restricted_runtime_readiness() -> None:
             actor_provider=main._require_console_admin_request,
             availability_provider=lambda: {
                 "status": "READY",
-                "availability": "OFFLINE_RESTRICTED",
+                "availability": "ONLINE_READ_ONLY",
                 "blocked_reason": None,
             },
         )
     )
     assert result["data"]["status"] == "READY"
-    assert result["data"]["availability"] == "OFFLINE_RESTRICTED"
+    assert result["data"]["availability"] == "ONLINE_READ_ONLY"
     assert result["data"]["blocked_reason"] is None

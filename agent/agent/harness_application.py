@@ -1,4 +1,4 @@
-"""Agent composition boundary for the offline Harness conversation.
+"""Agent composition boundary for the memory-only AI assistant conversation.
 
 The low-level :mod:`agent.harness` package intentionally contains only closed
 value objects and ports.  This module is the small application layer that
@@ -6,9 +6,9 @@ binds those objects to a signed Console administrator, an injected sidecar,
 and the project-policy invocation bridge.  It does not load configuration,
 open files, use a database, or contact a business system.
 
-The default sidecar is deliberately production-gated.  A caller must inject a
-sidecar factory (normally a test/offline implementation in this phase) before
-any assistant response can be produced.
+The composition root injects the active model adapter and the closed read-only
+gateway.  Offline sidecars remain available to tests, but are never an implicit
+production fallback.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from agent.harness.sidecar import SidecarResult
 from agent.orchestration.models import Actor, ActorType
 
 
-MEMORY_ONLY_NON_PRODUCTION = "MEMORY_ONLY_NON_PRODUCTION"
+MEMORY_ONLY = "MEMORY_ONLY"
 _SIGNED_CONSOLE_AUTHENTICATION = "mysql_admin_session"
 _ADMIN_ROLES = frozenset({"admin", "super_admin"})
 _FORBIDDEN_RECEIPT_KEYS = frozenset(
@@ -165,7 +165,7 @@ class HarnessSessionReceipt:
 
     @property
     def persistence_status(self) -> str:
-        return MEMORY_ONLY_NON_PRODUCTION
+        return MEMORY_ONLY
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -192,7 +192,7 @@ class HarnessMessageReceipt:
 
     @property
     def persistence_status(self) -> str:
-        return MEMORY_ONLY_NON_PRODUCTION
+        return MEMORY_ONLY
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -210,7 +210,7 @@ class HarnessMessageReceipt:
 class HarnessConversationService:
     """Process-bounded conversation service over the memory-only repository."""
 
-    persistence_status = MEMORY_ONLY_NON_PRODUCTION
+    persistence_status = MEMORY_ONLY
 
     def __init__(
         self,
@@ -474,8 +474,8 @@ def build_fixed_harness_tools() -> tuple[FixedHarnessTool, ...]:
     descriptors = (
         ToolDescriptor(
             tool_id="knowledge.search",
-            title="Search knowledge",
-            description="Search the host-provided knowledge index.",
+            title="查询业务知识",
+            description="查询已经整理并允许读取的业务知识。",
             input_schema=_object_schema(
                 {
                     "query": {"type": "string", "maxLength": 500},
@@ -486,20 +486,20 @@ def build_fixed_harness_tools() -> tuple[FixedHarnessTool, ...]:
         ),
         ToolDescriptor(
             tool_id="waybill.lookup",
-            title="Look up waybill",
-            description="Read one waybill from the host-provided gateway.",
+            title="查询运单信息",
+            description="按完整运单号精确查询一票运单。",
             input_schema=_object_schema({"waybill_number": string_id}, ("waybill_number",)),
         ),
         ToolDescriptor(
             tool_id="tracking.lookup",
-            title="Look up tracking",
-            description="Read one tracking record from the host-provided gateway.",
+            title="查询物流轨迹",
+            description="按完整运单号查询物流轨迹。",
             input_schema=_object_schema({"tracking_number": string_id}, ("tracking_number",)),
         ),
         ToolDescriptor(
             tool_id="work_items.list_open",
-            title="List open work items",
-            description="Read bounded open work items from the host.",
+            title="查看待处理事项",
+            description="查看当前待处理、受阻或需要关注的事项。",
             input_schema=_object_schema(
                 {"limit": {"type": "integer", "minimum": 1, "maximum": 50}},
                 ("limit",),
@@ -507,14 +507,14 @@ def build_fixed_harness_tools() -> tuple[FixedHarnessTool, ...]:
         ),
         ToolDescriptor(
             tool_id="runs.get_summary",
-            title="Read run summary",
-            description="Read one orchestration run summary from the host.",
+            title="查看任务运行结果",
+            description="按任务运行编号查看安全摘要。",
             input_schema=_object_schema({"run_id": string_id}, ("run_id",)),
         ),
         ToolDescriptor(
             tool_id="artifact.inspect",
-            title="Inspect artifact",
-            description="Read one bounded artifact descriptor from the host.",
+            title="查看运行证据",
+            description="按证据编号查看脱敏后的运行证据摘要。",
             input_schema=_object_schema({"artifact_id": string_id}, ("artifact_id",)),
         ),
     )
@@ -732,7 +732,7 @@ __all__ = [
     "HarnessSessionReceipt",
     "HarnessSidecar",
     "HarnessSidecarFactory",
-    "MEMORY_ONLY_NON_PRODUCTION",
+    "MEMORY_ONLY",
     "ProductionGatedHarnessSidecar",
     "ProductionGatedHarnessSidecarFactory",
     "TrustedHarnessInvocationAdapter",

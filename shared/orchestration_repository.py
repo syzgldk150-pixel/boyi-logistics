@@ -21,6 +21,7 @@ from shared.orchestration_repository_support import (
     _safe_comment, _safe_error, _status,
 )
 from shared.orchestration_schema import orchestration_schema_requirements
+from shared.orchestration_evidence_lookup import EvidenceLookupMixin
 from shared.scheduled_task_approval_repository import ScheduledTaskApprovalPolicyRepository
 from shared.automation_project_policy_repository import AutomationProjectPolicyRepository
 from shared.feishu_approval_repository import FeishuApprovalRepository
@@ -43,7 +44,6 @@ class CommandRepository(_RepositoryBase):
         "parameters_json",
         "automation_invocation_json",
     )
-
     def get(self, command_id: str, *, for_update: bool = False) -> dict[str, Any] | None:
         suffix = " FOR UPDATE" if for_update else ""
         with self.cursor() as cursor:
@@ -2034,7 +2034,7 @@ class ApprovalRepository(_RepositoryBase):
             "invalidated_count": invalidated_count,
         }
 
-class EvidenceRepository(_RepositoryBase):
+class EvidenceRepository(EvidenceLookupMixin, _RepositoryBase):
     def add(self, row: Mapping[str, Any]) -> dict[str, Any]:
         evidence_id = _required_text(row.get("evidence_id"), "evidence_id")
         summary = row.get("summary_json", row.get("summary"))

@@ -121,8 +121,8 @@ def test_sessions_enforce_exact_principal_uuid_idempotency_and_memory_only_statu
     repeated = repo.create_or_get(principal_id="signed:one", request_id=request)
 
     assert created == repeated
-    assert created.persistence_status == "MEMORY_ONLY_NON_PRODUCTION"
-    assert repo.persistence_status == "MEMORY_ONLY_NON_PRODUCTION"
+    assert created.persistence_status == "MEMORY_ONLY"
+    assert repo.persistence_status == "MEMORY_ONLY"
     with pytest.raises(HarnessError, match="session is unavailable") as denied:
         repo.get(principal_id="signed:two", session_id=created.session_id)
     assert denied.value.code == "HARNESS_SESSION_NOT_FOUND"

@@ -567,6 +567,8 @@ def test_catalog_projects_only_closed_managed_resource_descriptors() -> None:
             "name": "输入表格",
             "kind": "feishu_sheet",
             "status": "available",
+            "purpose": "输入表格",
+            "problem_code": "",
         }
     ]
     assert "token" not in repr(projection)

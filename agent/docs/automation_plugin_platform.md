@@ -211,7 +211,7 @@ payload/version 合同、Outbox fan-out、ACK/retry/dead-letter/replay、跨进�
 注入均为 `PRODUCTION_GATED`。既有 `shared/runtime_events.py`、事务 Outbox、Host `event.publish`、`ACTION_V1`、
 Webhook 和 Feishu 保持不变，自定义插件前端也未开放。
 
-固定 `/harness` 模块只接受真实 MySQL 管理员会话的同源请求，并通过签名 principal 调用 Agent 的闭合 Session/Message API。Session 当前仅进程内保存；真实 LLM、固定业务读网关、生产受限 sandbox 和持久会话均为 `PRODUCTION_GATED`。动态工具只从 Registry 私有 active snapshot 取得，绑定 exact generation 与真实签名 `runtime_permissions`，且只允许 `read/compute + harness_allowed=true + broker_effect=read`；任意网络、浏览器、文件、Broker operation、写能力或权限字段缺失均关闭失败。浏览器和 sidecar 只见 opaque tool id，不能提交项目、服务、操作、账号或资源身份，也不回退 Legacy Agent、直接数据库或真实 TMS/飞书工具。
+固定 `/harness`（页面名为“AI 助手”）模块只接受真实 MySQL 管理员会话的同源请求，并通过签名 principal 调用 Agent 的闭合 Session/Message API。Session 仅进程内保存；对话直接使用“智能模型”当前激活的统一客户端，并开放六类代码拥有的只读业务网关，不依赖生产 sandbox、不接受固定技术命令，也不提供离线回答或隐式模型降级。动态工具只从 Registry 私有 active snapshot 取得，绑定 exact generation 与真实签名 `runtime_permissions`，同时要求中文名称以及 `read/compute + harness_allowed=true + broker_effect=read`；任意网络、浏览器、文件、Broker operation、写能力或权限字段缺失均关闭失败。浏览器和模型不能提交项目、服务、操作、账号或资源身份；模型输入和工具输出先最小化、脱敏。
 `startup` 项目使用一次性 DateTrigger 和“上海业务日 + 配置版本”的稳定 Command 身份；release hold 启动
 不注册任何 startup Job。
 Console 启用/停用使用浏览器动作 UUID 与实例 `record_version` 做精确 CAS，并在同一事务写入
@@ -220,13 +220,12 @@ Console 启用/停用使用浏览器动作 UUID 与实例 `record_version` 做�
 协调中撤销新运行权限，但升级或卸载中的实例仍拒绝并发停用。
 
 业务账号池和资源池只能通过闭合安全 descriptor 进入管理投影。资源 descriptor 精确为
-`resource_id/name/kind/status`；Token、表格 ID、读写范围、文件路径、配置哈希/版本和原始配置留在
+`resource_id/name/kind/status/purpose/problem_code`；Token、表格 ID、读写范围、文件路径、配置哈希/版本和原始配置留在
 Agent 运行时，不得进入 Console 或浏览器。Console 再按签名 resource role 的 `kind` 精确过滤候选，
 不会默认选中第一项；已保存 ID 也必须重新核验状态与类型。provider 不可用、descriptor 字段多/缺、
-必填绑定缺失、资源停用或类型漂移时，目录投影标记资源池不可用，项目配置与执行 fail closed。
+必填绑定缺失、资源停用或类型漂移时，只有依赖异常资源的项目配置与执行 fail closed；认证或网络整体失败才标记全局目录问题。
 飞书电子表格与多维表格的 `name` 由 `agent/feishu_resource_catalog.py` 按当前文档名与工作表名组合生成
-并短时缓存，飞书改名后自动刷新。凭据、权限、定位信息或任一表格元数据缺失时，完整资源池显式不可用，
-不得回退静态别名、历史名称或内部资源 ID。
+并短时缓存，飞书改名后自动刷新。资源逐项读取；单项权限不足、已删除、定位缺失、名称冲突或暂时超时不会清空其他资源。缓存过期且来源仍不可达时仅将该资源标记不可用，不得回退静态别名、历史名称或内部资源 ID。
 目录响应中的 `hidden_automation_ids` 只列出当前发行明确排除且确实存在于持久化实例表的身份；
 Console 自动化列表成员只来自该目录的实例与持久化定时行，不维护本地隐藏名单，也不在目录故障时从静态
 工作流元数据补卡。目录原始实例与安全规范化结果不一一对应时整份实例投影失败关闭；未关联实例的定时行

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from console.app import LocalDocFlowApp
+from console.app_support import AUTOMATION_WORKFLOW_CATALOG
 from console.routes import automation as automation_routes
 from console.services.automation import (
     _automation_plugin_block_warning,
@@ -28,6 +29,12 @@ from console.services.automation_projects import (
 
 REQUEST_ID = "12345678-1234-4234-8234-123456789abc"
 CONSOLE_DIR = Path(__file__).resolve().parents[1]
+
+
+def test_removed_r7_automations_are_not_in_console_fallback_catalog():
+    task_ids = {str(item.get("task_id") or "") for item in AUTOMATION_WORKFLOW_CATALOG}
+    assert "r7_arrival_checkin" not in task_ids
+    assert "r7_departure_checkin" not in task_ids
 
 
 def _node_host_path(path: Path, node_binary: str) -> str:
@@ -2269,7 +2276,8 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertNotIn('value="phase7.first_sheet" selected', resource_select)
         self.assertIn("页面不会显示表格密钥等敏感信息", card)
         self.assertIn("数据从哪里读取、保存到哪里", card)
-        self.assertIn("项目已绑定表格（飞书电子表格）", card)
+        self.assertIn("项目已绑定表格", card)
+        self.assertNotIn("项目已绑定表格（飞书电子表格）", card)
         self.assertNotIn("data-cron-editor", card)
         self.assertNotIn("policy_hash", card)
         self.assertIn('name="project-policy-finance_action_east"', card)
