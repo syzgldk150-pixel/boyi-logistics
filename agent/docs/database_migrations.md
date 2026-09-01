@@ -146,8 +146,12 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   失败只在目标新代从未产生任何 lease 且项目、策略、任务 hash 均未漂移时执行 reverse CAS；否则按 token
   标记 `BLOCKED`，由运行时关闭调度门和全部进程路由。回滚后的 target 保持 `PREPARED/ROLLED_BACK`，
   可用新 token 精确重试；跨版本回滚恢复旧插件版本但保留升级意图状态。
+- `035_finalize_expired_invalid_generation_leases.sql`：仅收敛已过期、关联 Run 已以
+  `FAILED_TERMINAL/GENERATION_LEASE_INVALID` 终止且完全不存在 write-attempt receipt 的
+  `RUNNING/VERIFYING` generation lease。该闭合证据证明未跨过外部写边界，迁移只将租约
+  幂等标记为 `FAILED_BEFORE_WRITE`；存在任何写回执、非终态 Run 或未过期租约均保持不变。
 
-生产迁移序列当前从 `001` 连续到 `034`，固定递增且不得改写已执行文件；发布器只按顺序补执行
+生产迁移序列当前从 `001` 连续到 `035`，固定递增且不得改写已执行文件；发布器只按顺序补执行
 `schema_migrations` 尚未记录的迁移，并对所有已执行版本保持原始校验和。`016`/`017`/`018` 在业务行
 变更前各自保存完整行备份；`027` 与 `030` 额外允许 MySQL DDL 已部分提交但 history 尚未登记时按精确
 结构合同前向续跑。远端发布必须在变更前捕获各项迁移状态和 bootstrap marker 状态，`pending_dirty`
