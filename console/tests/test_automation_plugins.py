@@ -2229,7 +2229,7 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertNotIn("data-plugin-instance-action", card)
         self.assertNotIn("data-plugin-upgrade", card)
 
-    def test_service_v2_runtime_services_and_migration_are_visible_in_project_card(self):
+    def test_service_v2_runtime_services_are_visible_without_migration_controls(self):
         template_source = (CONSOLE_DIR / "templates" / "automation.html").read_text(
             encoding="utf-8"
         )
@@ -2239,7 +2239,8 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertIn("目标版本 {{ plugin.target_version }}", template_source)
         self.assertIn("Host API {{ plugin.plugin_api }}", template_source)
         self.assertIn("{% for service in plugin.provided_services %}", template_source)
-        self.assertIn("{{ plugin.migration.status_label }}", template_source)
+        self.assertNotIn("data-plugin-migration", template_source)
+        self.assertNotIn("建立 v1 → v2 并行迁移验证", template_source)
         self.assertIn("plugin.blocking_reason_labels | join('；')", template_source)
         self.assertIn('data-plugin-entrypoint-kind="{{ entrypoint_kind }}"', template_source)
         self.assertIn("'events': '事件订阅'", template_source)
@@ -2259,14 +2260,15 @@ class AutomationPluginTemplateTests(unittest.TestCase):
             service_source,
         )
 
-    def test_automation_page_links_to_extensions_without_package_lifecycle_ui(self):
+    def test_automation_page_has_one_extension_entry_without_package_lifecycle_ui(self):
         template_source = (CONSOLE_DIR / "templates" / "automation.html").read_text(
             encoding="utf-8"
         )
         script_source = (
             CONSOLE_DIR / "static" / "automation_approval_policy.js"
         ).read_text(encoding="utf-8")
-        self.assertIn('href="/extensions"', template_source)
+        self.assertEqual(1, template_source.count('href="/extensions"'))
+        self.assertNotIn('href="/extensions/{{', template_source)
         self.assertIn(
             'form.querySelector(\'input[name="project_plugin_instance"]\')',
             template_source,
@@ -2274,7 +2276,7 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertNotIn("data-plugin-install", template_source)
         self.assertNotIn("data-plugin-upgrade", template_source)
         self.assertNotIn("data-plugin-instance-action", template_source)
-        self.assertIn("data-plugin-migration-create-form", template_source)
+        self.assertNotIn("data-plugin-migration-create-form", template_source)
         for removed_selector in (
             "data-plugin-install",
             "data-plugin-upgrade",
@@ -2285,8 +2287,8 @@ class AutomationPluginTemplateTests(unittest.TestCase):
             self.assertNotIn(removed_selector, script_source)
         self.assertNotIn("initializePluginInstall", script_source)
         self.assertNotIn("pluginJsonAction", script_source)
-        self.assertIn("data-plugin-migration-create-form", script_source)
-        self.assertIn("data-plugin-migration-action", script_source)
+        self.assertNotIn("data-plugin-migration-create-form", script_source)
+        self.assertNotIn("data-plugin-migration-action", script_source)
         self.assertIn("data-plugin-recover-unknown-write", script_source)
         self.assertIn("recoverUnknownWrite", script_source)
 

@@ -29,6 +29,7 @@ class ConsoleMenuRegistration:
     mobile_label: str
     icon: str
     section: str
+    show_in_navigation: bool = True
 
     def __post_init__(self) -> None:
         if not _MENU_ID_PATTERN.fullmatch(self.menu_id):
@@ -42,6 +43,8 @@ class ConsoleMenuRegistration:
             raise ValueError("menu icon must be a lowercase kebab-case name")
         if self.section not in _MENU_SECTIONS:
             raise ValueError("menu section must be primary or system")
+        if not isinstance(self.show_in_navigation, bool):
+            raise TypeError("show_in_navigation must be a boolean")
 
     def to_navigation_item(self) -> dict[str, str]:
         return {
@@ -92,7 +95,15 @@ CONSOLE_MENU_REGISTRATIONS = register_console_menus(
         ConsoleMenuRegistration("harness", "/harness", "Harness 助手", "助手", "message-square", "primary"),
         ConsoleMenuRegistration("automation_accounts", "/automation-accounts", "业务账号", "账号", "users", "primary"),
         ConsoleMenuRegistration("llm_settings", "/settings/llm", "智能模型", "模型", "cpu", "system"),
-        ConsoleMenuRegistration("work_items", "/work-items", "事项中心", "事项", "inbox", "system"),
+        ConsoleMenuRegistration(
+            "work_items",
+            "/work-items",
+            "事项中心",
+            "事项",
+            "inbox",
+            "system",
+            show_in_navigation=False,
+        ),
         ConsoleMenuRegistration("system_settings", "/settings/accounts", "系统管理", "设置", "settings", "system"),
     )
 )
@@ -108,10 +119,12 @@ CONSOLE_NAVIGATION_REGISTRATIONS = register_console_menus(
     (*CONSOLE_MENU_REGISTRATIONS, *CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS)
 )
 
-# The existing static projection remains the fifteen fixed module identities.
-# Request-scoped navigation adds control-plane entries after authorization.
+# The static registration remains the fifteen fixed module identities. The
+# visible projection omits internal-only control surfaces such as work items.
 CONSOLE_NAVIGATION: tuple[dict[str, str], ...] = tuple(
-    registration.to_navigation_item() for registration in CONSOLE_MENU_REGISTRATIONS
+    registration.to_navigation_item()
+    for registration in CONSOLE_MENU_REGISTRATIONS
+    if registration.show_in_navigation
 )
 CONSOLE_CONTROL_PLANE_NAVIGATION: tuple[dict[str, str], ...] = tuple(
     registration.to_navigation_item() for registration in CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS
@@ -124,7 +137,7 @@ NAVIGATION_BY_ROUTE = {
 MOBILE_NAVIGATION_CANDIDATES = tuple(
     registration.to_navigation_item()
     for registration in CONSOLE_NAVIGATION_REGISTRATIONS
-    if registration.route != "/"
+    if registration.route != "/" and registration.show_in_navigation
 )
 MOBILE_NAVIGATION_ROUTES = frozenset(item["route"] for item in MOBILE_NAVIGATION_CANDIDATES)
 

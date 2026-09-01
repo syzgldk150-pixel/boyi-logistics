@@ -142,45 +142,6 @@
   </div>
   {% endif %}
 
-  {% if can_manage_plugins %}
-  <details class="panel auto-migration-create-panel">
-    <summary>建立 v1 → v2 并行迁移验证</summary>
-    <p>迁移配对属于项目验证流程；扩展包安装与生命周期统一在扩展中心管理。</p>
-    <form class="auto-migration-create-form" data-plugin-migration-create-form>
-      <label>
-        <span>现有 v1 项目</span>
-        <select class="review-input compact-input" name="source_automation_id" required>
-          <option value="">请选择旧项目</option>
-          {% for candidate in automation_plugin_instances if candidate.runtime_model == 'ACTION_V1' and not candidate.migration %}
-          <option value="{{ candidate.automation_id }}">{{ candidate.instance_name }} · {{ candidate.automation_id }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>
-        <span>新 v2 项目</span>
-        <select class="review-input compact-input" name="target_automation_id" required>
-          <option value="">请选择 v2 项目</option>
-          {% for candidate in automation_plugin_instances if candidate.runtime_model == 'SERVICE_V2' and not candidate.migration %}
-          <option value="{{ candidate.automation_id }}">{{ candidate.instance_name }} · {{ candidate.automation_id }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>
-        <span>防重复业务字段</span>
-        <input class="review-input compact-input" type="text" name="business_key_fields" maxlength="256" autocomplete="off" placeholder="例如 business_date；多个字段用逗号分隔" required>
-      </label>
-      <label>
-        <span>业务键命名空间（可选）</span>
-        <input class="review-input compact-input" type="text" name="business_key_namespace" maxlength="96" autocomplete="off" placeholder="例如 clockin-daxiang">
-      </label>
-      <div class="auto-migration-create-actions">
-        <button class="primary-btn" type="submit" data-plugin-migration-create-submit>开始并行验证</button>
-      </div>
-      <p class="automation-plugin-feedback" data-plugin-migration-create-feedback role="status" aria-live="polite" hidden></p>
-    </form>
-  </details>
-  {% endif %}
-
   {# ── 分类切换 ── #}
   {% set provider_counts = automation_provider_counts | default({}, true) %}
   {% set provider_enabled_counts = automation_provider_enabled_counts | default({}, true) %}
@@ -378,26 +339,7 @@
                 {% for service in plugin.provided_services %}<code>{{ service }}</code>{% endfor %}
               </div>
               {% endif %}
-              {% if plugin.migration %}
-              <div class="automation-plugin-migration" data-plugin-migration data-migration-pair-id="{{ plugin.migration.migration_pair_id }}" data-migration-record-version="{{ plugin.migration.record_version }}">
-                <div class="automation-plugin-migration-copy">
-                  <span>{{ plugin.migration.status_label }}</span>
-                  {% if plugin.migration.test_status_label %}<span>{{ plugin.migration.test_status_label }}</span>{% endif %}
-                  {% if plugin.migration.paired_automation_id %}<span>配对项目 {{ plugin.migration.paired_automation_id }}</span>{% endif %}
-                  {% if plugin.migration.entrypoint_owner_automation_id %}<span>当前入口：{{ '本项目' if plugin.migration.owns_entrypoints else plugin.migration.entrypoint_owner_automation_id }}</span>{% endif %}
-                </div>
-                {% if can_manage_plugins and plugin.migration.role == 'TARGET' %}
-                <div class="automation-plugin-migration-actions">
-                  {% if plugin.migration.can_mark_ready %}<button class="ghost-btn" type="button" data-plugin-migration-action="ready">标记验证就绪</button>{% endif %}
-                  {% if plugin.migration.can_cutover %}<button class="primary-btn" type="button" data-plugin-migration-action="cutover">接管自动执行</button>{% endif %}
-                  {% if plugin.migration.can_rollback %}<button class="ghost-btn" type="button" data-plugin-migration-action="rollback">回滚到旧项目</button>{% endif %}
-                  {% if plugin.migration.can_complete %}<button class="ghost-btn" type="button" data-plugin-migration-action="complete">完成迁移</button>{% endif %}
-                </div>
-                {% endif %}
-              </div>
-              {% endif %}
             </div>
-            <a class="ghost-btn" href="/extensions/{{ plugin.plugin_id | urlencode }}">在扩展中心管理包</a>
           </div>
 
           {% if plugin.execution_platform == 'windows' %}

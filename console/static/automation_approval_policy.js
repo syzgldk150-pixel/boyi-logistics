@@ -548,67 +548,6 @@
     return "";
   }
 
-  function initializePluginMigrationCreate() {
-    const form = document.querySelector("[data-plugin-migration-create-form]");
-    if (!(form instanceof HTMLFormElement)) return;
-    const submit = form.querySelector("[data-plugin-migration-create-submit]");
-    const feedback = form.querySelector("[data-plugin-migration-create-feedback]");
-    form.addEventListener("input", () => {
-      if (submit instanceof HTMLButtonElement) delete submit.dataset.requestId;
-      setFeedback(feedback, "", "");
-    });
-    form.addEventListener("submit", async event => {
-      event.preventDefault();
-      if (!(submit instanceof HTMLButtonElement)) return;
-      const data = new FormData(form);
-      const source = String(data.get("source_automation_id") || "").trim();
-      const target = String(data.get("target_automation_id") || "").trim();
-      const fields = String(data.get("business_key_fields") || "")
-        .split(/[,，]/)
-        .map(value => value.trim())
-        .filter(Boolean);
-      const namespace = String(data.get("business_key_namespace") || "").trim();
-      if (!source || !target || source === target || !fields.length || new Set(fields).size !== fields.length) {
-        setFeedback(feedback, "请选择不同的旧项目和 v2 项目，并填写不重复的业务字段。", "error");
-        return;
-      }
-      const requestId = submit.dataset.requestId || secureRequestId(feedback);
-      if (!requestId) return;
-      submit.dataset.requestId = requestId;
-      setBusy(submit, true, "创建中…");
-      try {
-        const response = await fetch("/automations/plugin-migrations/create", {
-          method: "POST",
-          credentials: "same-origin",
-          headers: {
-            "Accept": "application/json",
-            "Content-Type": "application/json; charset=UTF-8",
-            "X-Browser-Request-UUID": requestId,
-            "X-Requested-With": "XMLHttpRequest",
-          },
-          body: JSON.stringify({
-            source_automation_id: source,
-            target_automation_id: target,
-            business_key_fields: fields,
-            business_key_namespace: namespace || null,
-            request_id: requestId,
-          }),
-        });
-        const payload = await response.json().catch(() => null);
-        if (!response.ok || payload?.ok !== true) {
-          throw new Error(responseMessage(payload, "迁移对创建失败，请核对两个项目状态。"));
-        }
-        delete submit.dataset.requestId;
-        setFeedback(feedback, payload.message || "迁移对已创建。", "success");
-        window.location.reload();
-      } catch (error) {
-        setFeedback(feedback, error instanceof Error ? error.message : "迁移对创建失败。", "error");
-      } finally {
-        setBusy(submit, false, "");
-      }
-    });
-  }
-
   async function recoverUnknownWrite(instance, button) {
     const automationId = instance.dataset.automationId || "";
     const feedback = instance.querySelector("[data-plugin-instance-feedback]");
@@ -645,59 +584,6 @@
       setBusy(button, false, "");
     }
   }
-  async function pluginMigrationAction(instance, button, action) {
-    const migration = button.closest("[data-plugin-migration]");
-    const feedback = instance.querySelector("[data-plugin-instance-feedback]");
-    const pairId = migration?.dataset.migrationPairId || "";
-    const recordVersion = Number(migration?.dataset.migrationRecordVersion || 0);
-    if (!pairId || !Number.isInteger(recordVersion) || recordVersion < 1) {
-      setFeedback(feedback, "迁移状态快照无效，请刷新后重试。", "error");
-      return;
-    }
-    const confirmations = {
-      ready: "确认检查真实执行 Evidence 并标记验证就绪？缺少写后核验或存在未知写入时，系统会拒绝。",
-      cutover: "确认让 v2 项目接管自动执行？系统会排空旧运行租约，并原子切换定时和入口。",
-      rollback: "确认把后续自动执行恢复到旧项目？已经发生的外部业务写入不会撤销。",
-      complete: "确认完成迁移？完成后旧项目可以单独卸载，已经发生的外部业务写入不会撤销。",
-    };
-    if (!confirmations[action] || !window.confirm(confirmations[action])) return;
-    const requestId = button.dataset.requestId || secureRequestId(feedback);
-    if (!requestId) return;
-    button.dataset.requestId = requestId;
-    setBusy(button, true, "提交中…");
-    try {
-      const response = await fetch(
-        `/automations/plugin-migrations/${encodeURIComponent(pairId)}/${action}`,
-        {
-          method: "POST",
-          credentials: "same-origin",
-          headers: {
-            "Accept": "application/json",
-            "Content-Type": "application/json; charset=UTF-8",
-            "X-Browser-Request-UUID": requestId,
-            "X-Requested-With": "XMLHttpRequest",
-          },
-          body: JSON.stringify({
-            request_id: requestId,
-            expected_record_version: recordVersion,
-            confirm: true,
-          }),
-        },
-      );
-      const payload = await response.json().catch(() => null);
-      if (!response.ok || payload?.ok !== true) {
-        throw new Error(responseMessage(payload, "迁移操作失败，请核对运行和 Evidence 状态。"));
-      }
-      delete button.dataset.requestId;
-      setFeedback(feedback, payload.message || "迁移状态已更新。", "success");
-      window.location.reload();
-    } catch (error) {
-      setFeedback(feedback, error instanceof Error ? error.message : "迁移操作失败。", "error");
-    } finally {
-      setBusy(button, false, "");
-    }
-  }
-
   function setNestedConfig(target, path, value) {
     const parts = String(path || "").split(".").filter(Boolean);
     if (!parts.length) throw new Error("配置字段路径无效。");
@@ -1013,17 +899,6 @@
   }
 
   function initializePluginInstance(instance) {
-    instance.querySelectorAll("[data-plugin-migration-action]").forEach(button => {
-      button.addEventListener("click", () => {
-        if (!(button instanceof HTMLButtonElement)) return;
-        void pluginMigrationAction(
-          instance,
-          button,
-          button.dataset.pluginMigrationAction || "",
-        );
-      });
-    });
-
     const recoverButton = instance.querySelector("[data-plugin-recover-unknown-write]");
     recoverButton?.addEventListener("click", () => {
       if (!(recoverButton instanceof HTMLButtonElement)) return;
@@ -1108,7 +983,6 @@
 
   function initializePlugins() {
     initializePluginConfigurationDelegation();
-    initializePluginMigrationCreate();
     document.querySelectorAll("[data-plugin-instance]").forEach(initializePluginInstance);
   }
   function initialize() {
