@@ -19,7 +19,10 @@ from console.services.automation import (
     build_automation_project_policy_view,
     normalize_automation_plugin_catalog,
 )
-from console.services.automation_projects import _normalize_plugin_account_roles
+from console.services.automation_projects import (
+    _normalize_plugin_account_roles,
+    _resource_display_name,
+)
 
 
 REQUEST_ID = "12345678-1234-4234-8234-123456789abc"
@@ -989,6 +992,29 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertEqual("未齐货物表", binding["options"][0]["display_name"])
         self.assertEqual("飞书电子表格", binding["options"][0]["kind_label"])
         self.assertEqual("报价账单账号、未齐货物表", packages[0]["configuration_summary"])
+
+    def test_actual_sheet_name_takes_priority_over_internal_resource_copy(self):
+        self.assertEqual(
+            "每日到货表",
+            _resource_display_name(
+                "phase7.split_pending_source_sheet",
+                "每日到货表",
+            ),
+        )
+        self.assertEqual(
+            "分批及有发未到表",
+            _resource_display_name(
+                "phase7.split_pending_target_sheet",
+                "分批及有发未到表",
+            ),
+        )
+        self.assertEqual(
+            "每日到货表",
+            _resource_display_name(
+                "phase7.split_pending_source_sheet",
+                "phase7.split_pending_source_sheet",
+            ),
+        )
 
     def test_resource_projection_with_extra_fields_fails_closed_without_leaking(self):
         payload = _catalog_payload()

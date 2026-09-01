@@ -310,6 +310,71 @@ def _scan_capability(tmp_path: Path) -> dict[str, Any]:
     return capability
 
 
+def _selection_v1_capability(tmp_path: Path) -> dict[str, Any]:
+    capability = _capability(
+        tmp_path,
+        automation_id="split_pending_problem_upload",
+    )
+    capability["operation_type"] = "external_write"
+    capability["risk_level"] = "high"
+    metadata = capability["_plugin_runtime"]
+    metadata["plugin_id"] = "split_pending_problem_upload"
+    metadata["runtime_permissions"] = {
+        "network": True,
+        "browser": True,
+        "office": False,
+        "file_roles": [],
+        "broker_operations": [
+            {
+                "operation": "network.request",
+                "action": "feishu.sheet.read_rows",
+                "roles": ["split_pending_source_sheet"],
+                "effect": "read",
+            },
+            {
+                "operation": "projection.invoke",
+                "action": "split_pending.snapshot.read",
+                "roles": ["split_pending_target_sheet"],
+                "effect": "read",
+            },
+            {
+                "operation": "browser.invoke",
+                "action": "ronghui.problem.create",
+                "roles": ["account_id"],
+                "effect": "write",
+            },
+        ],
+        "max_broker_calls": 100,
+    }
+    metadata["account_roles"] = [
+        {
+            "role": "account_id",
+            "allowed_systems": ["ronghui"],
+            "required": True,
+            "argument_field": None,
+            "collection": False,
+        }
+    ]
+    metadata["resource_roles"] = [
+        {
+            "role": "split_pending_source_sheet",
+            "allowed_kinds": ["feishu_sheet"],
+            "required": True,
+        },
+        {
+            "role": "split_pending_target_sheet",
+            "allowed_kinds": ["feishu_sheet"],
+            "required": True,
+        },
+    ]
+    metadata["account_bindings"] = {"account_id": "account-1"}
+    metadata["resource_bindings"] = {
+        "split_pending_source_sheet": "phase7.split_pending_source_sheet",
+        "split_pending_target_sheet": "phase7.split_pending_target_sheet",
+    }
+    return capability
+
+
 def _mixed_effect_service_v2_capability(tmp_path: Path) -> dict[str, Any]:
     capability = _capability(tmp_path, automation_id="mixed-service")
     service = "plugin.mixed_service.runner@1"
@@ -1537,6 +1602,82 @@ def test_scan_preview_uses_read_lease_and_only_the_read_page_broker_grant(
     }
     verified = ResultVerifier(leases).verify(step, raw, capability)
     assert verified.accepted is True
+    assert leases.finalized == []
+
+
+def test_selection_preview_uses_read_lease_and_keeps_trusted_account_proof(
+    tmp_path: Path,
+) -> None:
+    capability = _selection_v1_capability(tmp_path)
+    leases = _LeaseRepository({"split_pending_problem_upload": capability})
+    issuer = _Issuer(started_mutating_calls=0)
+    router = PluginExecutionRouter(
+        core_executor=_Core(),
+        capability_issuer=issuer,
+        integrity_verifier=_Integrity(),
+        sandbox_launcher=_OutputSandbox(
+            canonical_json_bytes(_plugin_result("split_pending_problem_upload"))
+        ),
+        generation_leases=leases,
+        release_hold_provider=lambda: False,
+    )
+    adapter = RegisteredToolExecutionAdapter(
+        catalog=_Catalog(capability),
+        executor=router,
+    )
+    step = PlanStep(
+        step_key="preview",
+        tool_name=str(capability["name"]),
+        tool_version="1.0.0",
+        operation_type=OperationType.READ,
+        arguments={
+            "dry_run": True,
+            "preview_fingerprint": "",
+            "selected_bill_codes": [],
+        },
+        account_id=None,
+        depends_on=(),
+        idempotency_key="selection-preview-1",
+        expected_evidence=tuple(capability["evidence"]),
+        postconditions=tuple(capability["postconditions"]),
+        risk_level=RiskLevel.LOW,
+        requires_approval=False,
+    )
+
+    raw = asyncio.run(
+        adapter.execute_step(
+            step,
+            run_id=str(uuid.uuid4()),
+            step_id=str(uuid.uuid4()),
+            execution_context={
+                "source": "console",
+                "_automation_project_invocation": _project_invocation(capability),
+            },
+        )
+    )
+
+    assert isinstance(raw, GenerationBoundResult)
+    assert raw.generation_verification.started_mutating_call_count == 0
+    assert raw.generation_verification.requires_write_verification is False
+    assert leases.released[0][1] is RuntimeLeaseOutcome.SUCCEEDED
+    assert issuer.last_issue is not None
+    permissions = issuer.last_issue["runtime_permissions"]
+    assert permissions["max_broker_calls"] == 2
+    assert permissions["browser"] is False
+    assert {
+        (item["operation"], item["action"])
+        for item in permissions["broker_operations"]
+    } == {
+        ("network.request", "feishu.sheet.read_rows"),
+        ("projection.invoke", "split_pending.snapshot.read"),
+    }
+
+    verified = ResultVerifier(leases).verify(step, raw, capability)
+    assert verified.accepted is True
+    assert verified.result is not None
+    assert verified.result.meta["account_id"] == (
+        "binding-set:" + _digest(capability["_plugin_runtime"]["account_bindings"])
+    )
     assert leases.finalized == []
 
 

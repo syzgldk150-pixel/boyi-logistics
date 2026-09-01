@@ -17,7 +17,7 @@ class _Repository:
                 "config_sha256": "a" * 64,
                 "config": {
                     "resource_kind": "feishu_sheet",
-                    "display_name": "输入表格",
+                    "display_name": "飞书中的实际 Sheet 名",
                     "spreadsheet_token": "must-not-cross-boundary",
                     "read_range": "must-not-cross-boundary",
                 },
@@ -42,7 +42,7 @@ def test_managed_resource_projection_is_closed_and_credential_free() -> None:
     assert resources == [
         {
             "resource_id": "phase7.input_sheet",
-            "name": "输入表格",
+            "name": "飞书中的实际 Sheet 名",
             "kind": "feishu_sheet",
             "status": "available",
         }

@@ -26,6 +26,27 @@ _SELECTION_PROJECTS = frozenset(
         ("split_pending_problem_upload", "split_pending_problem_upload"),
     }
 )
+_SELECTION_PREVIEW_BROKER_ACTIONS: Mapping[
+    tuple[str, str], frozenset[tuple[str, str]]
+] = {
+    (
+        "self_pickup_problem_upload",
+        "self_pickup_problem_upload",
+    ): frozenset(
+        {
+            ("network.request", "feishu.sheet.read_rows"),
+        }
+    ),
+    (
+        "split_pending_problem_upload",
+        "split_pending_problem_upload",
+    ): frozenset(
+        {
+            ("network.request", "feishu.sheet.read_rows"),
+            ("projection.invoke", "split_pending.snapshot.read"),
+        }
+    ),
+}
 _SELECTION_FIELDS = (
     "dry_run",
     "preview_fingerprint",
@@ -389,4 +410,57 @@ def apply_scan_execution_boundary(
     resolved["operation_type"] = "read"
     resolved["risk_level"] = "low"
     resolved["postconditions"] = [{"name": SCAN_PREVIEW_POSTCONDITION}]
+    return resolved
+
+
+def apply_selection_execution_boundary(
+    capability: Mapping[str, Any],
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Restrict first-party selection previews to their exact read primitives."""
+
+    resolved = copy.deepcopy(dict(capability))
+    phase = resolve_selection_capability_phase(resolved, arguments)
+    if phase != SELECTION_PHASE_PREVIEW:
+        return resolved
+
+    metadata = resolved.get("_plugin_runtime")
+    identity = (
+        str(metadata.get("automation_id") or "") if isinstance(metadata, Mapping) else "",
+        str(metadata.get("plugin_id") or "") if isinstance(metadata, Mapping) else "",
+    )
+    expected_actions = _SELECTION_PREVIEW_BROKER_ACTIONS.get(identity)
+    permissions = metadata.get("runtime_permissions") if isinstance(metadata, Mapping) else None
+    operations = permissions.get("broker_operations") if isinstance(permissions, Mapping) else None
+    if not expected_actions or not isinstance(operations, list):
+        raise ValueError("selection preview runtime permissions are missing")
+
+    allowed = [
+        copy.deepcopy(dict(item))
+        for item in operations
+        if isinstance(item, Mapping)
+        and (str(item.get("operation") or ""), str(item.get("action") or ""))
+        in expected_actions
+        and item.get("effect") == "read"
+    ]
+    actual_actions = {
+        (str(item.get("operation") or ""), str(item.get("action") or ""))
+        for item in allowed
+    }
+    if len(allowed) != len(expected_actions) or actual_actions != set(expected_actions):
+        raise ValueError("selection preview read permissions are missing or ambiguous")
+
+    restricted_permissions = {
+        "network": any(item["operation"] == "network.request" for item in allowed),
+        "browser": any(item["operation"] == "browser.invoke" for item in allowed),
+        "office": False,
+        "file_roles": [],
+        "broker_operations": allowed,
+        "max_broker_calls": len(allowed),
+    }
+    restricted_metadata = dict(metadata)
+    restricted_metadata["runtime_permissions"] = restricted_permissions
+    resolved["_plugin_runtime"] = restricted_metadata
+    resolved["operation_type"] = "read"
+    resolved["risk_level"] = "low"
     return resolved

@@ -17,7 +17,10 @@ from agent.automation_plugins.broker import (
     LocalCoreAutomationBroker,
     _assert_redacted,
 )
-from agent.automation_plugins.code_owned_fields import apply_scan_execution_boundary
+from agent.automation_plugins.code_owned_fields import (
+    apply_scan_execution_boundary,
+    apply_selection_execution_boundary,
+)
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.execution import PluginExecutionRouter
 from agent.automation_plugins.host_capability_registry import (
@@ -843,6 +846,92 @@ def test_scan_preview_broker_rejects_every_non_page_read_before_dispatch(
 
     assert raised.value.code == "BROKER_OPERATION_DENIED"
     assert issuer.started_mutating_call_count(token) == 0
+
+
+@pytest.mark.parametrize(
+    ("automation_id", "plugin_id", "expected_actions"),
+    (
+        (
+            "self_pickup_problem_upload",
+            "self_pickup_problem_upload",
+            {("network.request", "feishu.sheet.read_rows")},
+        ),
+        (
+            "split_pending_problem_upload",
+            "split_pending_problem_upload",
+            {
+                ("network.request", "feishu.sheet.read_rows"),
+                ("projection.invoke", "split_pending.snapshot.read"),
+            },
+        ),
+    ),
+)
+def test_selection_preview_boundary_keeps_only_exact_read_primitives(
+    automation_id: str,
+    plugin_id: str,
+    expected_actions: set[tuple[str, str]],
+) -> None:
+    capability = apply_selection_execution_boundary(
+        {
+            "operation_type": "external_write",
+            "risk_level": "high",
+            "_plugin_runtime": {
+                "automation_id": automation_id,
+                "plugin_id": plugin_id,
+                "trust_source": "ed25519_first_party",
+                "runtime_permissions": {
+                    "network": True,
+                    "browser": True,
+                    "office": False,
+                    "file_roles": [],
+                    "max_broker_calls": 100,
+                    "broker_operations": [
+                        {
+                            "operation": "network.request",
+                            "action": "feishu.sheet.read_rows",
+                            "roles": ["source"],
+                            "effect": "read",
+                        },
+                        {
+                            "operation": "projection.invoke",
+                            "action": "split_pending.snapshot.read",
+                            "roles": ["target"],
+                            "effect": "read",
+                        },
+                        {
+                            "operation": "browser.invoke",
+                            "action": "ronghui.problem.query",
+                            "roles": ["account_id"],
+                            "effect": "read",
+                        },
+                        {
+                            "operation": "browser.invoke",
+                            "action": "ronghui.problem.create",
+                            "roles": ["account_id"],
+                            "effect": "write",
+                        },
+                    ],
+                },
+            },
+        },
+        {
+            "dry_run": True,
+            "preview_fingerprint": "",
+            "selected_bill_codes": [],
+        },
+    )
+
+    permissions = capability["_plugin_runtime"]["runtime_permissions"]
+    actions = {
+        (item["operation"], item["action"])
+        for item in permissions["broker_operations"]
+    }
+    assert capability["operation_type"] == "read"
+    assert capability["risk_level"] == "low"
+    assert actions == expected_actions
+    assert permissions["max_broker_calls"] == len(expected_actions)
+    assert permissions["network"] is True
+    assert permissions["browser"] is False
 
 
 def test_broker_accepts_only_the_closed_verified_write_noop_contract(tmp_path: Path) -> None:

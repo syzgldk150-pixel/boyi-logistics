@@ -311,8 +311,8 @@ AUTOMATION_RESOURCE_DISPLAY_NAMES = {
     "phase7.scan_flow_webhook": "扫描后续流程入口",
     "phase7.stats_webhook": "到货统计外部入口",
     "phase7.stats_archive_sheet": "到货统计归档",
-    "phase7.split_pending_source_sheet": "分批未到来源表",
-    "phase7.split_pending_target_sheet": "分批未到结果表",
+    "phase7.split_pending_source_sheet": "每日到货表",
+    "phase7.split_pending_target_sheet": "分批及有发未到表",
     "phase7.stats_flow_webhook": "到货统计后续流程入口",
     "automation.feishu_route.arrival_stats": "到货统计飞书入口",
     "automation.feishu_route.arrive_list": "每日到货飞书入口",
@@ -352,12 +352,12 @@ def _plain_role_copy(
 
 
 def _resource_display_name(resource_id: str, raw_name: object) -> str:
-    known = AUTOMATION_RESOURCE_DISPLAY_NAMES.get(resource_id)
-    if known:
-        return known
     projected = normalize_feedback_text(redact_text(str(raw_name or "")))[:160]
     if projected and projected != resource_id:
         return projected
+    known = AUTOMATION_RESOURCE_DISPLAY_NAMES.get(resource_id)
+    if known:
+        return known
     return "业务资源"
 
 
