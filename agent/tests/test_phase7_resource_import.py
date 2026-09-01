@@ -87,3 +87,39 @@ def test_phase7_import_persists_problem_resources_without_key_inference() -> Non
             phase7_resource_import.BUILTIN_RESOURCES[resource_key],
             source="local-config-import",
         ) in upsert.call_args_list
+
+
+def test_reviewed_metadata_sync_preserves_live_sheet_locator() -> None:
+    current = {
+        "resource_kind": "feishu_sheet",
+        "spreadsheet_token": "live-document-token",
+        "sheet_id": "live-sheet-id",
+        "range": "live-sheet-id!A1:S5000",
+        "_meta": {"configuration_version": 8},
+    }
+    with (
+        patch.object(
+            phase7_resource_import,
+            "get_workflow_resource",
+            side_effect=lambda key: (
+                current
+                if key == "phase7.split_pending_source_sheet"
+                else phase7_resource_import.BUILTIN_RESOURCES.get(key)
+            ),
+        ),
+        patch.object(phase7_resource_import, "upsert_workflow_resource") as upsert,
+    ):
+        updated = phase7_resource_import.sync_reviewed_phase7_resource_metadata()
+
+    assert updated == ["phase7.split_pending_source_sheet"]
+    upsert.assert_called_once_with(
+        "phase7.split_pending_source_sheet",
+        {
+            "resource_kind": "feishu_sheet",
+            "spreadsheet_token": "live-document-token",
+            "sheet_id": "live-sheet-id",
+            "sheet_title": "每日到货表",
+            "range": "live-sheet-id!A1:S5000",
+        },
+        source="reviewed-metadata-sync",
+    )

@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-from agent.workflow_resource_store import upsert_workflow_resource
+from agent.workflow_resource_store import get_workflow_resource, upsert_workflow_resource
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -141,3 +141,33 @@ def import_phase7_resources() -> list[str]:
         upsert_workflow_resource(resource_key, config, source="local-config-import")
         imported.append(resource_key)
     return imported
+
+
+def sync_reviewed_phase7_resource_metadata() -> list[str]:
+    """Merge reviewed human-readable locators without resetting live IDs."""
+
+    updated: list[str] = []
+    for resource_key, reviewed_config in BUILTIN_RESOURCES.items():
+        reviewed_metadata = {
+            key: reviewed_config[key]
+            for key in ("sheet_title", "table_title", "business_purpose")
+            if str(reviewed_config.get(key) or "").strip()
+        }
+        if not reviewed_metadata:
+            continue
+        current = get_workflow_resource(resource_key)
+        merged = {
+            key: value
+            for key, value in (current or reviewed_config).items()
+            if key != "_meta"
+        }
+        if all(merged.get(key) == value for key, value in reviewed_metadata.items()):
+            continue
+        merged.update(reviewed_metadata)
+        upsert_workflow_resource(
+            resource_key,
+            merged,
+            source="reviewed-metadata-sync",
+        )
+        updated.append(resource_key)
+    return updated
