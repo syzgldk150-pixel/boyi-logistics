@@ -20,8 +20,11 @@ from agent.automation_plugins.host_capability_registry import (
 )
 from agent.automation_plugins.code_owned_fields import (
     SCAN_PHASE_PREVIEW,
+    SELECTION_PHASE_PREVIEW,
     apply_scan_execution_boundary,
+    apply_selection_execution_boundary,
     resolve_scan_capability_phase,
+    resolve_selection_capability_phase,
 )
 from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.migration import (
@@ -1083,6 +1086,25 @@ class PluginExecutionRouter:
                     "scan execution boundary is invalid",
                     code="SCAN_EXECUTION_BOUNDARY_INVALID",
                 ) from exc
+            try:
+                initial_selection_phase = resolve_selection_capability_phase(
+                    capability,
+                    params,
+                )
+                resolved_selection_phase = resolve_selection_capability_phase(
+                    resolved,
+                    params,
+                )
+                if initial_selection_phase != resolved_selection_phase:
+                    raise ValueError(
+                        "selection execution phase changed with the generation lease"
+                    )
+                resolved = apply_selection_execution_boundary(resolved, params)
+            except ValueError as exc:
+                raise PluginExecutionError(
+                    "selection execution boundary is invalid",
+                    code="SELECTION_EXECUTION_BOUNDARY_INVALID",
+                ) from exc
         except (Exception, asyncio.CancelledError):
             await self._release_generation_lease(
                 lease,
@@ -1094,6 +1116,7 @@ class PluginExecutionRouter:
             )
             raise
         is_scan_preview = resolved_scan_phase == SCAN_PHASE_PREVIEW
+        is_selection_preview = resolved_selection_phase == SELECTION_PHASE_PREVIEW
         outcome = RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
         execution_state: dict[str, object] = {
             "process_launched": False,
@@ -1116,6 +1139,16 @@ class PluginExecutionRouter:
                 raise PluginExecutionError(
                     "scan preview write-boundary evidence is unavailable or nonzero",
                     code="SCAN_PREVIEW_WRITE_BOUNDARY_INVALID",
+                )
+            if (
+                is_selection_preview
+                and execution_state["started_mutating_call_count"] != 0
+            ):
+                if isinstance(execution_state["started_mutating_call_count"], int):
+                    outcome = RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
+                raise PluginExecutionError(
+                    "selection preview write-boundary evidence is unavailable or nonzero",
+                    code="SELECTION_PREVIEW_WRITE_BOUNDARY_INVALID",
                 )
             outcome = self._lease_outcome(
                 resolved,
