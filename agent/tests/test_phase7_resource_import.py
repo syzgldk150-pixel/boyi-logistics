@@ -67,6 +67,10 @@ def test_problem_sheet_resources_are_explicit_managed_rows() -> None:
     assert resources["phase7.split_pending_target_sheet"]["clear_range"].startswith(
         f"{resources['phase7.split_pending_target_sheet']['sheet_id']}!A2:S"
     )
+    assert (
+        resources["phase7.split_pending_source_sheet"]["sheet_title"]
+        == "每日到货表"
+    )
 
 
 def test_phase7_import_persists_problem_resources_without_key_inference() -> None:

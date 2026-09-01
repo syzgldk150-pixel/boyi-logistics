@@ -37,7 +37,9 @@
       {% else %}
       <button class="ghost-btn" type="button" data-extension-action="enable" {% if not instance.enable_allowed %}disabled{% endif %}>启用扩展</button>
       {% endif %}
-      <button class="ghost-btn extension-action--danger" type="button" data-extension-action="uninstall" {% if not instance.lifecycle_actions_allowed %}disabled{% endif %}>卸载扩展</button>
+    {% endif %}
+    {% if can_manage %}
+      <button class="ghost-btn extension-action--danger" type="button" data-extension-action="uninstall" {% if not instance.lifecycle_actions_allowed %}disabled title="项目正在处理其他操作，请稍后刷新"{% endif %}>卸载此项目</button>
     {% endif %}
   </div>
   <p class="automation-plugin-feedback" data-extension-feedback role="status" aria-live="polite" hidden></p>
@@ -163,5 +165,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/extensions.js?v=extension-center-20260901"></script>
+<script src="/static/extensions.js?v=extension-center-20260902"></script>
 {% endblock %}

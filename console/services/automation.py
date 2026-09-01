@@ -827,14 +827,22 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 str(item.get("name_value") or ""),
             ),
         )
-        (
-            automation_approval_policy_warning,
-            can_manage_approval_policies,
-        ) = self._load_automation_project_policies(handler, tasks)
-        automation_accounts, automation_account_warning = self._fetch_automation_accounts(
-            force=False,
-            prefer_cached=True,
-        )
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            policy_future = executor.submit(
+                self._load_automation_project_policies,
+                handler,
+                tasks,
+            )
+            accounts_future = executor.submit(
+                self._fetch_automation_accounts,
+                force=False,
+                prefer_cached=True,
+            )
+            (
+                automation_approval_policy_warning,
+                can_manage_approval_policies,
+            ) = policy_future.result()
+            automation_accounts, automation_account_warning = accounts_future.result()
         self._enrich_automation_tasks_with_accounts(tasks, automation_accounts)
         automation_provider_counts = {
             provider: sum(1 for row in tasks if str(row.get("provider") or "ronghui") == provider)

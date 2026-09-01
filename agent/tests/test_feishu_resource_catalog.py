@@ -29,6 +29,24 @@ class _Repository:
         return self.rows
 
 
+class _MutableRepository:
+    def __init__(self, row: dict) -> None:
+        self.row = row
+        self.upserts: list[tuple[str, dict, str]] = []
+
+    def get_record(self, resource_key: str) -> dict | None:
+        return dict(self.row) if resource_key == self.row["resource_key"] else None
+
+    def upsert(self, resource_key: str, config: dict, *, source: str) -> None:
+        self.upserts.append((resource_key, dict(config), source))
+        self.row = {
+            **self.row,
+            "config": dict(config),
+            "configuration_version": int(self.row["configuration_version"]) + 1,
+            "config_sha256": "b" * 64,
+        }
+
+
 class FeishuResourceCatalogTests(unittest.TestCase):
     def setUp(self) -> None:
         catalog._reset_caches_for_tests()
@@ -147,6 +165,72 @@ class FeishuResourceCatalogTests(unittest.TestCase):
         self.assertEqual("unavailable", result.resources["sheet-resource"].status)
         self.assertEqual(
             "RESOURCE_NOT_FOUND",
+            result.resources["sheet-resource"].problem_code,
+        )
+
+    def test_stale_sheet_id_is_repaired_only_by_one_exact_reviewed_title(self) -> None:
+        resources = [
+            (
+                "sheet-resource",
+                {
+                    "resource_kind": "feishu_sheet",
+                    "spreadsheet_token": "spreadsheet-token",
+                    "sheet_id": "stale-sheet",
+                    "sheet_title": "每日到货",
+                    "range": "stale-sheet!A1:S5000",
+                },
+            )
+        ]
+        with patch.dict(
+            os.environ,
+            {"FEISHU_APP_ID": "app-id", "FEISHU_APP_SECRET": "app-secret"},
+            clear=False,
+        ), patch.object(
+            catalog,
+            "_request_json",
+            side_effect=lambda _method, path, **_kwargs: self._payload(path),
+        ):
+            result = catalog.resolve_live_feishu_resource_catalog(resources, now=100.0)
+            repaired = catalog.resolve_live_feishu_resource_config(
+                resources[0][0], resources[0][1]
+            )
+
+        self.assertEqual("available", result.resources["sheet-resource"].status)
+        self.assertEqual("sheet-a", result.resources["sheet-resource"].resolved_child_id)
+        self.assertEqual("sheet-a", repaired["sheet_id"])
+        self.assertEqual("sheet-a!A1:S5000", repaired["range"])
+
+    def test_duplicate_reviewed_titles_fail_without_selecting_first(self) -> None:
+        def request(_method: str, path: str, **_kwargs) -> dict:
+            payload = self._payload(path)
+            if path.endswith("/sheets/query"):
+                payload["data"]["sheets"] = [
+                    {"sheet_id": "sheet-a", "title": "每日到货"},
+                    {"sheet_id": "sheet-b", "title": "每日到货"},
+                ]
+            return payload
+
+        resources = [
+            (
+                "sheet-resource",
+                {
+                    "resource_kind": "feishu_sheet",
+                    "spreadsheet_token": "spreadsheet-token",
+                    "sheet_id": "stale-sheet",
+                    "sheet_title": "每日到货",
+                },
+            )
+        ]
+        with patch.dict(
+            os.environ,
+            {"FEISHU_APP_ID": "app-id", "FEISHU_APP_SECRET": "app-secret"},
+            clear=False,
+        ), patch.object(catalog, "_request_json", side_effect=request):
+            result = catalog.resolve_live_feishu_resource_catalog(resources, now=100.0)
+
+        self.assertEqual("unavailable", result.resources["sheet-resource"].status)
+        self.assertEqual(
+            "RESOURCE_NAME_CONFLICT",
             result.resources["sheet-resource"].problem_code,
         )
 
@@ -269,6 +353,47 @@ class FeishuResourceCatalogTests(unittest.TestCase):
         self.assertNotIn("private-document-token", repr(projected))
         self.assertNotIn("private-sheet-id", repr(projected))
         self.assertEqual("静态旧名称", projected[0]["purpose"])
+
+    def test_runtime_repair_is_persisted_before_the_new_locator_is_returned(self) -> None:
+        repository = _MutableRepository(
+            {
+                "resource_key": "phase7.split_pending_source_sheet",
+                "source": "local-config-import",
+                "configuration_version": 1,
+                "config_sha256": "a" * 64,
+                "updated_at": "now",
+                "created_at": "before",
+                "config": {
+                    "resource_kind": "feishu_sheet",
+                    "spreadsheet_token": "private-document-token",
+                    "sheet_id": "stale-sheet",
+                    "sheet_title": "每日到货表",
+                    "range": "stale-sheet!A1:S5000",
+                },
+            }
+        )
+        with patch.object(
+            workflow_resource_store,
+            "_repository",
+            return_value=repository,
+        ), patch.object(
+            catalog,
+            "resolve_live_feishu_resource_config",
+            return_value={
+                "resource_kind": "feishu_sheet",
+                "spreadsheet_token": "private-document-token",
+                "sheet_id": "live-sheet",
+                "sheet_title": "每日到货表",
+                "range": "live-sheet!A1:S5000",
+            },
+        ):
+            resource = workflow_resource_store.get_workflow_resource(
+                "phase7.split_pending_source_sheet"
+            )
+
+        self.assertEqual("live-sheet", resource["sheet_id"])
+        self.assertEqual(2, resource["_meta"]["configuration_version"])
+        self.assertEqual(1, len(repository.upserts))
 
 
 if __name__ == "__main__":

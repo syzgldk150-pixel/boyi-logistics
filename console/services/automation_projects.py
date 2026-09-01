@@ -1,6 +1,9 @@
 """Console application services grouped by business responsibility."""
 
+import copy
 import math
+import threading
+import time
 from collections.abc import Mapping
 
 from console.app_support import *  # noqa: F403
@@ -345,6 +348,8 @@ def _configuration_summary(
 ) -> str:
     resource_labels: list[str] = []
     for item in resource_roles:
+        if item.get("ui_visible") is False:
+            continue
         selected_resource_id = str(item.get("selected_resource_id") or "").strip()
         selected_name = ""
         if selected_resource_id:
@@ -853,6 +858,7 @@ def _normalize_plugin_resource_roles(value: Any) -> list[dict[str, Any]]:
                     for kind in kinds
                 ],
                 "required": bool(raw_role.get("required", True)),
+                "ui_visible": not set(kinds) <= {"feishu_route", "webhook_route"},
             }
         )
     return roles
@@ -1789,7 +1795,7 @@ def normalize_automation_plugin_catalog(
                     if not options and resource_pool_problem
                     else f"请选择{role_definition['label']}"
                 )
-            if blocked_reason:
+            if blocked_reason and role_definition.get("ui_visible") is not False:
                 resource_bindings_ready = False
             resource_role_bindings.append(
                 {
@@ -2184,7 +2190,51 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin):
         _valid_migration_business_key_field
     )
 
+    def _clear_automation_plugin_catalog_cache(self) -> None:
+        lock = getattr(self, "_automation_catalog_cache_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._automation_catalog_cache_lock = lock
+        with lock:
+            self._automation_catalog_cache = {}
+
     def _load_automation_plugin_catalog(
+        self,
+        handler: BaseHTTPRequestHandler,
+        *,
+        refresh_resources: bool = False,
+    ):
+        if refresh_resources:
+            self._clear_automation_plugin_catalog_cache()
+            return self._load_automation_plugin_catalog_uncached(
+                handler,
+                refresh_resources=True,
+            )
+        user = getattr(handler, "current_admin_user", None)
+        principal = self._mysql_console_principal(user)
+        cache_key = (
+            str((principal or {}).get("actor_id") or ""),
+            tuple(sorted(str(item) for item in (principal or {}).get("roles") or [])),
+        )
+        lock = getattr(self, "_automation_catalog_cache_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._automation_catalog_cache_lock = lock
+        current = time.monotonic()
+        with lock:
+            cache = getattr(self, "_automation_catalog_cache", {})
+            cached = cache.get(cache_key)
+            if cached is not None and cached[0] > current:
+                return copy.deepcopy(cached[1])
+        result = self._load_automation_plugin_catalog_uncached(handler)
+        if not result[5]:
+            with lock:
+                cache = getattr(self, "_automation_catalog_cache", {})
+                cache[cache_key] = (time.monotonic() + 20.0, copy.deepcopy(result))
+                self._automation_catalog_cache = cache
+        return result
+
+    def _load_automation_plugin_catalog_uncached(
         self,
         handler: BaseHTTPRequestHandler,
         *,

@@ -309,10 +309,7 @@ def test_template_and_script_keep_host_rendered_accessible_safe_surface() -> Non
         "data-harness-form",
         "data-harness-thread",
         "data-harness-welcome",
-        "data-harness-process",
-        "data-harness-evidence",
-        "data-harness-result",
-        "data-harness-tool-summaries",
+        "data-harness-state",
         'maxlength="4000"',
         'aria-live="polite"',
     ):
@@ -328,13 +325,15 @@ def test_template_and_script_keep_host_rendered_accessible_safe_surface() -> Non
     assert "appendMessage(\"assistant\"" in script
     assert "event.isComposing" in script
     assert "智能模型暂时无法连接" in script
-    assert "只读查询可用" in script
+    assert "可以开始提问" in script
     assert "输入只读查询" in template
     assert "AI 助手" in template
-    assert "ai-chat-20260901" in template
+    assert "ai-chat-20260902" in template
     assert "Harness 助手" not in template
-    assert 'PENDING: "等待处理"' in script
-    assert 'NOT_APPLICABLE: "不适用"' in script
+    assert "查看本次查询依据" not in template
+    assert "data-harness-process" not in template
+    assert "只读查询，不会更改业务数据" not in template
+    assert "harness-chat-header" not in template
     assert "harness-layout" not in template
     assert ".harness-page" in styles
     assert ".harness-thread" in styles

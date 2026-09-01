@@ -134,6 +134,27 @@ class ExtensionProjectionTests(unittest.TestCase):
         self.assertNotIn("ACTION_V1", html)
         self.assertEqual(1, html.count("data-extension-open"))
 
+    def test_action_v1_project_has_an_independent_uninstall_action(self):
+        app = _ExtensionApp()
+        packages, warning, can_manage = app._extension_catalog(self._handler())
+        template_dir = Path(__file__).parents[1] / "templates"
+        template = Environment(
+            loader=FileSystemLoader(template_dir),
+            autoescape=select_autoescape(("html",)),
+        ).get_template("extensions.html")
+
+        html = template.render(
+            app_title="Console",
+            packages=(),
+            detail=packages[0],
+            extension_warning=warning,
+            can_manage_extensions=can_manage,
+        )
+
+        self.assertIn("卸载此项目", html)
+        self.assertIn('data-extension-action="uninstall"', html)
+        self.assertNotIn("更新扩展", html)
+
     def test_extension_view_requires_real_non_legacy_mysql_admin(self):
         app = _ExtensionApp()
         self.assertTrue(app._ensure_extension_view_access(self._handler()))
@@ -356,6 +377,7 @@ class ExtensionRouteTests(unittest.TestCase):
         self.assertTrue(extension_routes.handle_post(app, "handler", "/extensions/inspect", "/extensions/inspect", {}))
         self.assertTrue(extension_routes.handle_post(app, "handler", "/extensions/install", "/extensions/install", {}))
         self.assertTrue(extension_routes.handle_post(app, "handler", "/extensions/project_east/enable", "/extensions/project_east/enable", {}))
+        self.assertTrue(extension_routes.handle_post(app, "handler", "/extensions/project_east/uninstall", "/extensions/project_east/uninstall", {}))
         self.assertTrue(extension_routes.handle_post(app, "handler", "/extensions/project_east/upgrade", "/extensions/project_east/upgrade", {}))
         self.assertFalse(extension_routes.handle_post(app, "handler", "/extensions/project_east/nope", "/extensions/project_east/nope", {}))
         self.assertEqual(
@@ -363,6 +385,7 @@ class ExtensionRouteTests(unittest.TestCase):
                 ("upload", {"inspect_only": True}),
                 ("upload", {}),
                 ("action", "project_east", "enable"),
+                ("action", "project_east", "uninstall"),
                 ("upload", {"automation_id": "project_east"}),
             ],
             app.calls,

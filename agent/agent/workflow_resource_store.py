@@ -48,10 +48,36 @@ def upsert_workflow_resource(resource_key: str, config: dict, source: str = "man
 
 
 def get_workflow_resource(resource_key: str) -> dict | None:
-    row = _repository().get_record(resource_key)
+    repository = _repository()
+    row = repository.get_record(resource_key)
     if not row:
         return None
     config = dict(row.get("config") or {})
+    resource_kind = str(config.get("resource_kind") or "").strip().lower()
+    title_locator = str(
+        (
+            config.get("sheet_title")
+            if resource_kind == "feishu_sheet"
+            else config.get("table_title")
+            if resource_kind == "feishu_bitable"
+            else ""
+        )
+        or ""
+    ).strip()
+    if title_locator:
+        from agent.feishu_resource_catalog import resolve_live_feishu_resource_config
+
+        resolved_config = resolve_live_feishu_resource_config(resource_key, config)
+        if resolved_config != config:
+            repository.upsert(
+                resource_key,
+                resolved_config,
+                source=str(row.get("source") or "live-catalog-reconciliation"),
+            )
+            row = repository.get_record(resource_key)
+            if not row:
+                raise RuntimeError("飞书资源定位更新后无法重新读取")
+            config = dict(row.get("config") or {})
     config["_meta"] = {
         "resource_key": row.get("resource_key"),
         "source": row.get("source"),

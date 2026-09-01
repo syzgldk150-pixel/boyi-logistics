@@ -220,7 +220,7 @@
         {% set has_params = task.plugin.config_fields if task.plugin else task.tool_param_fields %}
         {% set has_webhook = task.has_webhook %}
         {% set has_resources = task.resource_bindings if not task.plugin else [] %}
-        {% set has_plugin_resource_roles = task.plugin.resource_roles if task.plugin else [] %}
+        {% set has_plugin_resource_roles = task.plugin.resource_roles | selectattr('ui_visible') | list if task.plugin else [] %}
         {% set has_account_roles = task.account_role_bindings %}
         {% set is_webhook = task.task_mode == 'webhook' %}
         {% set can_save = task.can_save | default(true) %}
@@ -675,7 +675,7 @@
           </div>
           {% endif %}
 
-          {% if task.plugin %}
+          {% if task.plugin and (task.plugin.config_fields or not task.plugin.config_schema_supported) %}
           <div class="auto-settings-section automation-plugin-config-section">
             <div class="auto-settings-label">
               <i data-feather="sliders" class="auto-settings-icon"></i>
@@ -700,8 +700,6 @@
                 </div>
               </details>
               {% endif %}
-              {% else %}
-              <p class="auto-webhook-note">这个任务无需额外设置。</p>
               {% endif %}
             {% else %}
             <div class="automation-plugin-block" role="alert">
@@ -710,7 +708,9 @@
             </div>
             {% endif %}
           </div>
+          {% endif %}
 
+          {% if task.plugin %}
           <div class="auto-settings-section automation-plugin-entrypoints">
             <div class="auto-settings-label">
               <i data-feather="git-branch" class="auto-settings-icon"></i>
@@ -741,7 +741,7 @@
               数据从哪里读取、保存到哪里
             </div>
             <div class="auto-account-role-stack">
-              {% for binding in task.plugin.resource_role_bindings %}
+              {% for binding in task.plugin.resource_role_bindings if binding.ui_visible %}
               {% set resource_input_id = 'resource-role-' ~ task.task_id ~ '-' ~ binding.role %}
               <div class="auto-account-role-row">
                 <label class="auto-account-role-label" for="{{ resource_input_id }}">

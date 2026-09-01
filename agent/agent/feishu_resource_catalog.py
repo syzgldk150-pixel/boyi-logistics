@@ -24,7 +24,7 @@ _REQUEST_TIMEOUT_SECONDS = 12
 _MAX_ATTEMPTS = 3
 
 _cache_lock = threading.RLock()
-_name_cache: dict[tuple[str, str, str], tuple[float, str]] = {}
+_name_cache: dict[tuple[str, str, str], tuple[float, str, str]] = {}
 _token_cache: tuple[float, str] | None = None
 logger = logging.getLogger("agent")
 
@@ -44,6 +44,7 @@ class FeishuResourceResult:
     status: str
     purpose: str
     problem_code: str
+    resolved_child_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -321,6 +322,7 @@ def resolve_live_feishu_resource_catalog(
     current = time.monotonic() if now is None else float(now)
     requested: dict[str, tuple[str, str, str]] = {}
     purposes: dict[str, str] = {}
+    configs: dict[str, Mapping[str, Any]] = {}
     results: dict[str, FeishuResourceResult] = {}
     for resource_id, config in resources:
         kind = str(config.get("resource_kind") or "").strip().lower()
@@ -328,6 +330,7 @@ def resolve_live_feishu_resource_catalog(
             continue
         safe_resource_id = str(resource_id)
         purposes[safe_resource_id] = _purpose(config)
+        configs[safe_resource_id] = config
         locator = _locator(kind, config)
         if not locator[1] or not locator[2]:
             results[safe_resource_id] = FeishuResourceResult(
@@ -356,6 +359,7 @@ def resolve_live_feishu_resource_catalog(
                     status="available",
                     purpose=purposes[resource_id],
                     problem_code="",
+                    resolved_child_id=cached[2],
                 )
             else:
                 missing[resource_id] = locator
@@ -409,7 +413,38 @@ def resolve_live_feishu_resource_catalog(
             )
             continue
         document_name, children = catalog
+        resolved_child_id = child_id
         child_name = children.get(child_id)
+        requested_title = str(
+            (
+                configs[resource_id].get("sheet_title")
+                if kind == "feishu_sheet"
+                else configs[resource_id].get("table_title")
+            )
+            or ""
+        ).strip()
+        if not child_name and requested_title:
+            exact_matches = [
+                candidate_id
+                for candidate_id, candidate_name in children.items()
+                if candidate_name == requested_title
+            ]
+            if len(exact_matches) == 1:
+                resolved_child_id = exact_matches[0]
+                child_name = children[resolved_child_id]
+            elif len(exact_matches) > 1:
+                results[resource_id] = FeishuResourceResult(
+                    name="",
+                    status="unavailable",
+                    purpose=purposes[resource_id],
+                    problem_code="RESOURCE_NAME_CONFLICT",
+                )
+                logger.warning(
+                    "Feishu resource unavailable code=%s resource=%s",
+                    "RESOURCE_NAME_CONFLICT",
+                    resource_id,
+                )
+                continue
         if not child_name:
             results[resource_id] = FeishuResourceResult(
                 name="",
@@ -430,11 +465,22 @@ def resolve_live_feishu_resource_catalog(
             status="available",
             purpose=purposes[resource_id],
             problem_code="",
+            resolved_child_id=resolved_child_id,
         )
     with _cache_lock:
         expires_at = current + _CACHE_TTL_SECONDS
         for locator, display_name in refreshed.items():
-            _name_cache[locator] = (expires_at, display_name)
+            resolved_id = next(
+                (
+                    result.resolved_child_id
+                    for resource_id, requested_locator in requested.items()
+                    if requested_locator == locator
+                    for result in (results[resource_id],)
+                    if result.status == "available"
+                ),
+                locator[2],
+            )
+            _name_cache[locator] = (expires_at, display_name, resolved_id)
     return _resolve_name_conflicts(results, global_problem=global_problem)
 
 
@@ -463,6 +509,7 @@ def _resolve_name_conflicts(
                     status="available",
                     purpose=original.purpose,
                     problem_code="",
+                    resolved_child_id=original.resolved_child_id,
                 )
             continue
         for resource_id in resource_ids:
@@ -499,6 +546,46 @@ def resolve_live_feishu_resource_names(
     }
 
 
+def resolve_live_feishu_resource_config(
+    resource_id: str,
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return an exact live child locator when a reviewed title repairs a stale ID.
+
+    The title is only used when the configured immutable child ID no longer exists,
+    and only one exact match is accepted.  Callers must persist the returned config
+    before using it so the configuration revision continues to describe the bytes
+    actually used at runtime.
+    """
+
+    resolved = resolve_live_feishu_resource_catalog([(resource_id, config)]).resources.get(
+        resource_id
+    )
+    if resolved is None or resolved.status != "available":
+        code = resolved.problem_code if resolved is not None else "RESOURCE_NOT_FOUND"
+        raise FeishuResourceCatalogError(
+            "飞书数据位置当前不可用",
+            code=code or "RESOURCE_TEMPORARILY_UNAVAILABLE",
+        )
+    kind = str(config.get("resource_kind") or "").strip().lower()
+    current_child_id = _locator(kind, config)[2]
+    live_child_id = str(resolved.resolved_child_id or "").strip()
+    normalized = dict(config)
+    if not live_child_id or live_child_id == current_child_id:
+        return normalized
+    if kind == "feishu_sheet":
+        normalized["sheet_id"] = live_child_id
+        for key, value in tuple(normalized.items()):
+            if key != "range" and not str(key).endswith("_range"):
+                continue
+            text = str(value or "").strip()
+            if "!" in text:
+                normalized[key] = f"{live_child_id}!{text.split('!', 1)[1]}"
+    elif kind == "feishu_bitable":
+        normalized["table_id"] = live_child_id
+    return normalized
+
+
 def _reset_caches_for_tests() -> None:
     refresh_feishu_resource_catalog()
 
@@ -508,5 +595,6 @@ __all__ = [
     "FeishuResourceCatalogResult",
     "FeishuResourceResult",
     "resolve_live_feishu_resource_catalog",
+    "resolve_live_feishu_resource_config",
     "resolve_live_feishu_resource_names",
 ]
