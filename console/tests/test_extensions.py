@@ -102,6 +102,14 @@ class ExtensionProjectionTests(unittest.TestCase):
         self.assertNotIn("account_bindings", instance)
         self.assertNotIn("secret-like-value", str(package))
 
+    def test_known_business_extensions_use_plain_chinese_names(self):
+        self.assertEqual(
+            "到货统计",
+            ExtensionsServiceMixin._extension_display_name(
+                {"plugin_id": "arrival_stats", "name": "arrival_stats"}, []
+            ),
+        )
+
     def test_extension_list_keeps_runtime_details_out_of_the_novice_view(self):
         app = _ExtensionApp()
         packages, warning, can_manage = app._extension_catalog(self._handler())
@@ -124,6 +132,7 @@ class ExtensionProjectionTests(unittest.TestCase):
         self.assertNotIn("权限 · 账号", html)
         self.assertNotIn("Host API", html)
         self.assertNotIn("ACTION_V1", html)
+        self.assertEqual(1, html.count("data-extension-open"))
 
     def test_extension_view_requires_real_non_legacy_mysql_admin(self):
         app = _ExtensionApp()

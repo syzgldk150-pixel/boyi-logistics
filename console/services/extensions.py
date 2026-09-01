@@ -12,6 +12,34 @@ from shared.business_modules import BUSINESS_MODULE_CATALOG
 
 _EXTENSION_RUNTIME_MODELS = frozenset({"ACTION_V1", "SERVICE_V2"})
 _FIXED_MODULE_CODES = frozenset(item.module_code for item in BUSINESS_MODULE_CATALOG)
+_EXTENSION_DISPLAY_NAMES = {
+    "clock_in_dual": "融辉到港与离港打卡",
+    "clockin_daxiang": "融辉到港与离港打卡",
+    "self_pickup_problem_upload": "自提问题件上传",
+    "split_pending_problem_upload": "分批未到问题件上传",
+    "sync_arrival_stats": "到货统计",
+    "arrival_stats": "到货统计",
+    "sync_arrive_list": "到货清单同步",
+    "arrive_list": "到货清单同步",
+    "sync_customer_service_problems": "客服问题件同步",
+    "customer_problems_shadow": "客服问题件同步",
+    "sync_daily_send_orders": "每日寄件同步",
+    "send_order": "每日寄件同步",
+    "sync_daily_should_sign": "每日应签",
+    "daily_sign": "每日应签",
+    "sync_delivery_status": "签收状态同步",
+    "delivery_status": "签收状态同步",
+    "sync_finance_bills": "财务账单同步",
+    "finance_bills": "财务账单同步",
+    "sync_scan_codes": "扫描码同步",
+    "scan_codes": "扫描码同步",
+    "sync_site_send_list": "网点出港同步",
+    "site_send": "网点出港同步",
+    "sync_yunda_dispatch_forecast": "韵达派件预测",
+    "yunda_dispatch_forecast": "韵达派件预测",
+    "sync_yunda_send_waybills": "韵达寄件运单同步",
+    "yunda_send_waybills": "韵达寄件运单同步",
+}
 
 
 class ExtensionsServiceMixin:
@@ -48,6 +76,10 @@ class ExtensionsServiceMixin:
     def _extension_display_name(
         package: Mapping[str, Any], instances: list[dict[str, Any]]
     ) -> str:
+        plugin_id = str(package["plugin_id"])
+        known_name = _EXTENSION_DISPLAY_NAMES.get(plugin_id)
+        if known_name:
+            return known_name
         name = str(package.get("name") or package["plugin_id"]).strip()
         if any("\u4e00" <= character <= "\u9fff" for character in name):
             return name
