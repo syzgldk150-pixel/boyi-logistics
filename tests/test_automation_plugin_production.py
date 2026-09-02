@@ -55,7 +55,11 @@ from agent.automation_plugins.first_party import (
 from agent.automation_plugins.manifest import AutomationPluginManifest, canonical_json_bytes
 from agent.tool_registry import ToolRegistry
 from shared.automation_plugin_repository import AutomationPluginRepository
-from shared.orchestration_repository_support import IdempotencyConflict, _json_hash
+from shared.orchestration_repository_support import (
+    ConcurrentUpdateError,
+    IdempotencyConflict,
+    _json_hash,
+)
 
 
 def _sha(value: Any) -> str:
@@ -1281,6 +1285,30 @@ def test_reconcile_all_quarantines_value_error_and_continues() -> None:
     assert visited == ["bad-project", "good-project"]
     assert target_service.reconciliation_failures()["bad-project"]["code"] == (
         "PLUGIN_PROJECT_DATA_INVALID"
+    )
+
+
+def test_reconcile_all_quarantines_concurrent_project_update_and_continues() -> None:
+    target_service = object.__new__(MySQLRuntimeTargetService)
+    target_service._catalog = SimpleNamespace(
+        persisted_automation_ids=lambda: ("stale-project", "ready-project")
+    )
+    visited: list[str] = []
+
+    def _reconcile(automation_id: str) -> str:
+        visited.append(automation_id)
+        if automation_id == "stale-project":
+            raise ConcurrentUpdateError(
+                "automation project policy generation changed before commit"
+            )
+        return automation_id
+
+    target_service.reconcile_project = _reconcile
+
+    assert target_service.reconcile_all() == ("ready-project",)
+    assert visited == ["stale-project", "ready-project"]
+    assert target_service.reconciliation_failures()["stale-project"]["code"] == (
+        "PLUGIN_PROJECT_CONCURRENT_UPDATE"
     )
 
 
