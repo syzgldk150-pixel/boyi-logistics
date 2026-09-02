@@ -14,6 +14,7 @@ from typing import Any, Mapping
 from agent.automation_plugins.errors import PluginConflictError, PluginPackageError, PluginUninstallBlocked
 from agent.automation_plugins.manifest import AutomationPluginManifest
 from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
+from agent.automation_plugins.inspection_v2 import validate_service_v2_install_contract
 from agent.automation_plugins.models import (
     ExecutionBlockKind,
     PluginInstanceRecord,
@@ -398,6 +399,7 @@ class AutomationPluginService:
                 "the installation wizard accepts service-v2 packages only",
                 code="PLUGIN_SERVICE_V2_REQUIRED",
             )
+        validate_service_v2_install_contract(verified)
         return verified
 
     def install_upload(
@@ -416,6 +418,8 @@ class AutomationPluginService:
         self._validate_super_admin(actor_id, actor_role, request_id)
 
         verified = self._verified_upload(package_source, transport_package_sha256)
+        if isinstance(verified, VerifiedPluginPackageV2):
+            validate_service_v2_install_contract(verified)
         normalized_name = str(instance_name or "").strip() or verified.manifest.name
         if len(normalized_name) > 120:
             raise PluginPackageError("instance_name must be no longer than 120 characters")
@@ -457,9 +461,10 @@ class AutomationPluginService:
         current = self._repository.get_instance(automation_id)
         if current is None:
             raise PluginConflictError(f"automation instance does not exist: {automation_id}")
-        prepared = self._materialize_upload(
-            self._verified_upload(package_source, transport_package_sha256)
-        )
+        verified = self._verified_upload(package_source, transport_package_sha256)
+        if isinstance(verified, VerifiedPluginPackageV2):
+            validate_service_v2_install_contract(verified)
+        prepared = self._materialize_upload(verified)
         if prepared.record.runtime_model is not current.active_version.runtime_model:
             raise PluginConflictError(
                 "runtime model changes require a new parallel automation project",

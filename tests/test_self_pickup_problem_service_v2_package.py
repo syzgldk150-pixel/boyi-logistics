@@ -80,6 +80,9 @@ def test_self_pickup_v2_zip_is_deterministic_and_embeds_v1_action_and_result_byt
             "payload/boyi_plugin_sdk.py",
             "payload/main.py",
             "payload/plugin.py",
+            "settings/index.html",
+            "settings/settings.css",
+            "settings/settings.js",
         }
         assert set(archive.namelist()) == expected_members
         assert archive.read("payload/action.py") == V1_ACTION.read_bytes()
@@ -147,8 +150,12 @@ def test_self_pickup_v2_zip_is_deterministic_and_embeds_v1_action_and_result_byt
         "limit",
     }
     projection = ServiceV2ProjectContract.from_manifest(manifest)
-    assert projection.allowed_entrypoints == ("execute_console", "execute_feishu")
-    assert projection.default_entrypoints == ()
+    assert projection.allowed_entrypoints == (
+        "execute_console",
+        "execute_feishu",
+        "assistant_preview",
+    )
+    assert projection.default_entrypoints == ("assistant_preview",)
     assert projection.scheduling == {
         "supported": False,
         "allowed_kinds": [],

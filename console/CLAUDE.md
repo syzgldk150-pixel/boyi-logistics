@@ -17,7 +17,7 @@
 
 ## 目录职责
 
-`console/` 是单仓内与 `agent/` 并列的控制台工作区，负责控制台页面、OCR 工作区、货拉拉地图调度与比价页面、扩展中心、自动化项目配置页、财务工作台、客服系统工作台，以及控制台对 MySQL 的读写。
+`console/` 是单仓内与 `agent/` 并列的控制台工作区，负责控制台页面、OCR 工作区、货拉拉地图调度与比价页面、自动化与插件一体化管理、财务工作台、客服系统工作台，以及控制台对 MySQL 的读写。
 
 Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/internal/v1/*` 并发送 `X-Agent-Internal-Token`；该 Token 只证明服务连接。涉及管理员命令、审批或账号管理时，服务端还必须用独立 `CONSOLE_AGENT_SIGNING_SECRET` 对 method、精确 path/query、原始 body 哈希、时间戳、一次性 nonce 和真实 MySQL 管理员会话快照签名；浏览器不能提交 `_console_principal`，签名密钥缺失时显式返回 503。响应在该边界统一解包 `ok/data/error`，异常与审计内容使用 `shared/redaction.py` 脱敏。
 
@@ -38,11 +38,12 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 
 - Webhook/Event 状态中的所有 `READY` 简称都必须解释为“持久注册与当前进程可信 `ServiceV2ManagedIngress` 绑定同时有效”的离线 backend；未绑定调用返回 `PROJECT_RUNTIME_PROJECTION_STALE`。该状态不代表公网入口、外部事件源或可靠投递。
 - Agent 的 `/internal/v1/automation/plugins/catalog` 是动作包与项目实例的运行权威。自动化列表成员只来自 Agent Catalog 实例与持久化定时行，静态工作流元数据只提供文案/排序，禁止在 Catalog 不可用时补出虚拟项目卡。目录返回的 `hidden_automation_ids` 只包含真实持久化、当前发行明确排除的身份，Console 不维护第二套隐藏名单；同 ID 合法碰撞仍保留为阻断卡。任一原始实例被规范化丢弃时整个 Catalog 投影失败关闭，不得静默显示部分列表。任何持久化定时行若无法关联到已安装实例，Console 只能显示普通用户可理解的“扩展信息缺失”阻断提示，禁止运行和配置；纯服务器目录不请求 Windows Worker 列表。
-- `/extensions` 与 `/extensions/{plugin_id}` 是扩展列表、使用状态和包生命周期的日常入口；列表只显示用户可理解的名称、用途、项目数和当前状态，已知一方扩展在 `services/extensions.py` 按精确 `plugin_id` 单点映射中文业务名，已有扩展时只保留页首一个安装入口，不展示运行模型、内部扩展 ID、Host API、入口 ID 或权限矩阵，详情为每个项目提供设置与独立卸载；Action v1 和 Service v2 都能卸载当前项目，升级与启停仍按运行模型实际能力显示。`/automations` 只维护项目配置、绑定、入口、定时、权限和运行。v1→v2 迁移编排只保留既有签名后台接口，自动化页面不展示迁移创建、状态或切换控件。扩展中心复用同一个 Agent Catalog、同一组安装/升级/启停/卸载处理器和同一实例仓储，不得新增第二套插件表、包目录或生命周期状态机。查看仅对真实非 legacy MySQL `admin/super_admin` 开放，写操作仍只允许 `super_admin`；浏览器投影不得包含配置、账号/资源绑定、包路径或原始 manifest。
+- `/automations` 是插件和自动化的唯一日常入口，统一承载 Catalog 列表、安装、升级、启停、手动执行、取消、定时、运行输出、插件专属设置和按 `automation_id` 卸载。侧栏不得出现“扩展中心”；`/extensions` 与旧详情 GET 只重定向到自动化及对应插件筛选，旧生命周期 POST 返回 410。两者继续复用同一个 Agent Catalog、实例仓储、包目录和生命周期状态机，不新增第二套管理面。查看仅对真实非 legacy MySQL `admin/super_admin` 开放，写操作只允许 `super_admin`；浏览器不得获得包路径、原始 Manifest、凭据或内部资源标识。
 
-- 自动化首屏对同一管理员短时复用深拷贝后的安全 Catalog，安装、升级、启停、卸载和显式资源刷新必须立即清缓存；项目权限与账号快照并行读取，避免串行等待。空配置项目不显示“任务怎么运行”，`feishu_route/webhook_route` 仅由“允许从哪里启动”控制，不作为重复的数据资源选择框显示。
+- 自动化首屏对同一管理员短时复用深拷贝后的安全 Catalog，安装、升级、启停、卸载和显式资源刷新必须立即清缓存；项目权限与账号快照并行读取，避免串行等待。插件卡片不得恢复“任务怎么运行”“允许从哪里启动”“数据从哪里读取、保存到哪里”等统一业务表单；插件业务字段只在包内专属设置页出现，Console 卡片只保留执行、取消、启停、定时、权限、状态、输出、升级和卸载。
 - 自动化首屏把账号快照放入工作线程时，必须先从当前 HTTP handler 捕获真实 MySQL 管理员 principal 并显式传入 Agent 请求；不得依赖工作线程继承请求上下文，也不得在 principal 丢失时把正常账号误报为不存在。
-- 安装与升级只允许同源、真实 MySQL `super_admin` 会话。扩展中心只提供一个“安装扩展”拼图入口，不展示旧版 Action v1 上传入口；原生对话框支持点击或拖入 ZIP，选择后自动以 `package/request_id` 请求无副作用检查，再以面向普通用户的安装设置和权限确认完成安装。最终 multipart 只含同一 `package`、稳定 `request_id` 与闭合 `intent`，`intent` 精确为 `instance_name/config/account_bindings/resource_bindings/enabled_entrypoints/schedule/permissions_confirmed`。浏览器不能指定 `automation_id/device_id`、manifest、摘要、路径、服务或操作；Console 限制 ZIP/请求体和 intent 大小，在受限临时目录暂存并及时清理，按收到的字节计算传输 SHA 后再用签名 principal 转发。最终提交一旦发出必须冻结 ZIP、序列化 intent 和根 UUID，失败只允许原样重放，不得编辑后生成第二个项目。Agent 必须重新验证最终 ZIP，不信任检查响应；实例配置、reconcile 和高层启用按顺序续做，只有 committed generation 稳定才启用。超级管理员上传的 v2 ZIP 不要求包签名，也不进入发布或运行审批，但 Agent 仍执行 ZIP、Manifest、运行环境与内容冲突检查并记录 SHA-256 和安装审计；历史 v1 包继续按原签名合同校验。重复安装生成独立项目，升级/启停/卸载只作用于路径中的具体实例并使用版本 CAS。
+- 安装与升级只允许同源、真实 MySQL `super_admin` 会话。自动化页右上角“安装扩展”支持点击或拖入 ZIP，先以 `package/request_id` 无副作用检查，再以同一 ZIP、稳定请求 UUID 和闭合 intent 安装；Service v2 intent 精确只含 `instance_name/permissions_confirmed`，不得提交通用配置、账号、资源、入口、定时、项目 ID、设备、Manifest、摘要、路径、服务或操作。安装后创建默认停用且未配置的独立实例；重复安装同一版本生成互不影响的实例。升级、启停和卸载只作用于路径中的精确 `automation_id` 并使用 CAS；最后一个引用卸载后才清理共享包和隔离环境。
+- Service v2 业务设置不再由自动化卡片统一渲染账号、入口、数据来源或保存位置。Manifest 可选声明固定 `settings_ui.entry=settings/index.html` 和 `bridge_api=1.0.0`；声明必需配置/账号/资源角色时必须提供设置页。点击“设置”进入 `/automations/{automation_id}/settings`，包内页面运行在无 `allow-same-origin` 的 sandbox iframe，CSP 禁止外网、顶层跳转、弹窗、下载和非包内资源，只能经会话绑定、来源校验的 `postMessage` 桥读取自身配置、脱敏账号状态、脱敏飞书目录并保存不透明引用。插件设置 CAS 只更新配置/绑定且保留定时；Console 调度 CAS 只更新时间计划且保留插件设置。
 - Catalog 的 v2 增量字段只通过 Console 白名单投影：`runtime_model/plugin_api/active_version/target_version/dependency_state/provided_services/migration/blocking_reasons/entrypoint_kinds`。仅缺失运行模型字段按历史 `ACTION_V1` 展示；显式未知值标记为 `UNSUPPORTED` 并阻断运行、启用和生命周期操作。v2 必须分别显示依赖阻断、需要配置、账号未登录和写入结果未知，不能把 `BLOCKED_UNKNOWN_WRITE` 折叠为普通异常；迁移区只展示状态、验证状态、配对项目与当前入口归属，不投影快照、Provider 内部标识或其他原始字段；持久化 `PREPARING` 迁移显示“准备迁移项目”，并禁用验证就绪、接管、回滚和完成操作。v1 入口仍固定为四类历史值；v2 入口按规范 contribution ID 与 Agent 提供的 `entrypoint_kinds` 映射展示和保存，浏览器只回传选中的 ID 列表，最终子集仍由 Agent 项目合同校验。SERVICE_V2 手工执行只向 Agent 提交所选 console `contribution_id`，不得让浏览器指定服务名、操作、账号或运行参数；其治理区固定展示完全自动和“审计不是审批”，不显示逐次审批选项。
 - Service v2 的运行入口归一化额外只消费 Agent 白名单 `active_contributions` 与 `contribution_projection_state`；状态只接受 `ACTIVE/STALE/INACTIVE`，每条 active 记录只接受 `contribution_id/contribution_kind/generation/phase/backend_status`。Manifest 声明的 `entrypoints/entrypoint_kinds/enabled_entrypoints` 继续用于设置展示；实际 `console_entrypoints` 与 `enabled_console_entrypoints` 只从当前 committed generation 的 exact `COMMITTED/READY` Console 记录派生，已启用入口种类可同时安全展示 Console/Scheduler/Feishu/Webhook/Event 状态。Feishu、Webhook 与 Event contribution 绝不进入浏览器手工调用清单；Webhook 的 `managed_webhook_router READY` 只表示无网络宿主 Dispatcher backend，Event 的 `managed_event_dispatcher READY` 只表示 `durable=false`、接受前可能丢失的离线 best-effort backend，`durable=true` 仍为 `CAPABILITY_UNAVAILABLE` 且不得降级。二者都不表示公网或生产入口所有权。缺字段、重复或跨代的记录只关闭对应入口，未知状态或 stale/inactive 则关闭整组运行入口。真实 event source、payload/version、Outbox fan-out、ACK/retry/dead-letter/replay、跨进程仲裁、数据库迁移、部署和生产故障注入仍为 `PRODUCTION_GATED`。此规则不改变 runtime events、Outbox、Host `event.publish`、`ACTION_V1`、Webhook 或 Feishu，也不允许插件提供或注入自定义 HTML/CSS/JavaScript 前端。
 - TASK-EXT-010 的 `waybill_entry.actions/validators` 只挂载本地博益手工录单 frame `/ocr/boyi/frame`，不进入韵达/融辉跨域原页。`_render_document` 只消费 Agent 的 `{slot,handle,title}` 安全投影；模板只使用固定 Host HTML/JS/CSS，title 经 Jinja autoescape，动态反馈只经 `textContent` 写入，绝不解释插件前端。动作按钮的浏览器 POST `/waybill-entry/extensions/{slot}/{handle}/invoke` 必须同源、具有真实 MySQL 管理员 Session，header `X-Browser-Request-UUID` 与 body UUID 一致，body 精确为 `{request_id,waybill}`；21 个字段从 `shared.waybill_entry_extensions` 导入传入 Jinja，JavaScript 不复制业务字段表，也不提交项目、service、operation、effect、账号、资源、Actor、角色或任意 args。validator 不在客户端作为保存门禁：`_handle_manual_waybill` 在实际 `apply_manual_waybill` 前从同一 POST 的 21 个 `field_*` 构造闭合 draft，以服务端 UUID 和签名 principal 调 Agent `/validators/invoke-active`；invalid、不可达、超时、畸形响应或 active 集合漂移都显式阻止本次，稳定空集合才恢复核心原生保存。GET 投影失败只影响展示，不会被旧 DOM 当作 validator 集合。只允许 `read/compute`，无数据库迁移；真实外部写、生产数据库、真实 TMS/飞书和部署继续 `PRODUCTION_GATED`。
@@ -55,7 +56,7 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 - 自动化页不再渲染顶部账号登录绿点、登录态 popover、凭据表单或账号管理快捷入口，也不再探测旧 TMS session 接口；旧 `/automations/*-session/*` 和 `/automations/session-context` 不得路由。凭据和登录态只在侧栏“业务账号”模块管理；项目卡仅从 Agent catalog 的 `account_bindings` 显示业务账号池下拉，不回显凭据、不选默认/首项。未选、停用或 session 失效必须阻断运行、启用和完全自动。
 - 每日应签的两个账号角色来自两个不同系统：`r13_account_id` 显示为“R13 应签查询账号”，负责读取该账号所属站点范围和应签清单；`account_id` 显示为“融辉到货与签收核验账号”，负责到货、问题件和主单签收证据。两者都只取项目当前绑定，后台改绑后下一次运行生效，不固定账号或站点。
 - 资源池投影只允许 `resource_id/name/kind/status` 四个字段，Token、表格 ID、读写范围、文件路径、配置哈希/版本及原始配置不得进入 Console 或浏览器。飞书资源只显示 Agent 按当前文档名与工作表名解析的实时名称，不使用 Console 静态业务别名或内部资源 ID；改名随服务端短时缓存刷新。项目卡按签名 manifest 的 resource role 与 kind 精确生成候选，已有选择也必须重新核验可用性；不默认选择第一项。资源池不可用、descriptor 多/缺字段、必填资源未选、已停用或 kind 不匹配时，原卡显示阻断原因并 fail closed。
-- Console 自动化服务按职责拆分：`services/automation.py` 保留既有任务投影、运行控制、页面组合和兼容会话逻辑，纯 preview 合同、字段校验和调度分组 helper 位于 `services/automation_preview_support.py`；`services/automation_projects.py` 维护项目级权限、卡内待审批集合、插件目录和项目配置；`services/automation_plugin_management.py` 专门维护 ZIP 上传、实例生命周期、v2 迁移及未知写恢复，并由 `AutomationServiceMixin` 组合复用；`services/extensions.py` 只在上述目录之上生成浏览器安全扩展投影，`routes/extensions.py` 复用既有生命周期处理器。原 `services.automation` 的公共导入保持兼容。
+- Console 自动化服务按职责拆分：`services/automation.py` 保留既有任务投影、运行控制、页面组合和兼容会话逻辑，纯 preview 合同、字段校验和调度分组 helper 位于 `services/automation_preview_support.py`；`services/automation_projects.py` 维护项目级权限、卡内待审批集合、插件目录和项目配置；`services/automation_plugin_management.py` 维护 ZIP 上传、实例生命周期、设置桥、v2 迁移及未知写恢复，并由 `AutomationServiceMixin` 组合复用；`routes/automation.py` 是当前插件生命周期入口，`routes/extensions.py` 只保留 GET 重定向与 POST 410。原 `services.automation` 的公共导入保持兼容。
 
 `scheduled_tasks`、`workflow_resources` 和 `waybills` 的结构由 Agent 发布迁移统一管理；Console 只做业务读写，不在启动或请求路径中建表、改表或忽略迁移错误。前两张表必须通过 `shared/runtime_repositories.py` 访问。
 
@@ -96,11 +97,12 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `services/auth.py`
   - `routes/automation.py`
   - `static/style.css`
-- 改扩展中心包清单、详情和生命周期入口：
-  - `templates/extensions.html`
+- 改自动化页的插件安装、专属设置和生命周期入口：
+  - `templates/_automation_extension_install_dialog.html`
+  - `templates/automation_plugin_settings.html`
   - `static/extensions.js`
-  - `services/extensions.py`
-  - `routes/extensions.py`
+  - `routes/extensions.py`（仅兼容重定向/410）
+  - `routes/automation.py`
   - `services/automation_plugin_management.py`
   - `static/style.css`
 - 改博益手工录单固定扩展槽、保存前校验或 Host 动作：
@@ -217,10 +219,10 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 ## 移动端导航与视觉壳层
 
-- 唯一菜单注册目录：`navigation.py`。15 个固定模块保留在不可变 `CONSOLE_MENU_REGISTRATIONS`，其中 `work_items` 只保留内部路由与权限身份并明确 `show_in_navigation=False`；`CONSOLE_NAVIGATION` 只投影可见模块。`extensions` 与 `system_status` 是同文件声明的控制平面注册，不属于固定模块目录，由 `services/business_modules.py` 按真实 MySQL 管理员角色请求级追加。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用这些投影，不得维护模板内副本。菜单注册不承载权限或运行健康状态。
+- 唯一菜单注册目录：`navigation.py`。15 个固定模块保留在不可变 `CONSOLE_MENU_REGISTRATIONS`，其中 `work_items` 只保留内部路由与权限身份并明确 `show_in_navigation=False`；`CONSOLE_NAVIGATION` 只投影可见模块。“扩展中心”不再注册菜单，插件管理归入自动化；`system_status` 仍由 `services/business_modules.py` 按真实 MySQL 管理员角色请求级追加。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用这些投影，不得维护模板内副本。菜单注册不承载权限或运行健康状态。
 - 模块查看权限目录：`permission_registry.py`。每个已注册菜单必须恰有一个 `console.menu.<menu_id>.view` 权限，当前只登记 MySQL 管理员既有 `admin` / `super_admin` 角色事实；未知角色、未知权限、缺失或多余菜单均关闭失败。该注册表不改变路由认证、菜单显示或超级管理员写边界；应急 Basic Auth 没有可签名管理员身份，不进入模块权限注册。
 - 模块代码注册状态目录：`module_status_registry.py`。它按 15 个固定模块顺序登记唯一 `code_registered`，不包含控制平面“系统状态”；该事实只表示当前源码构建已包含注册，不代表 healthy、ready、生产发布或可切换状态。目录只读且不提供 HTTP/启停接口；`ProjectModule` 的 ready/maintained/in-progress/planned 是独立的文档卡成熟度，禁止混用。
-- 系统区可见固定模块顺序为“智能模型 → 系统管理”，真实管理员随后按权限追加“扩展中心”，super_admin 再追加“系统状态”；`/work-items` 只允许业务页或 Codex 按需深链，不进入导航候选。旧移动偏好中的 `/settings/modules` 必须被修复，不得恢复旧入口。任何模块深链接直接打开或刷新时，顶部必须先建立不可关闭的“概览”固定标签，再激活当前模块；概览首次点击可懒加载，前进/后退或关闭当前模块不能丢失概览。
+- 系统区可见固定模块顺序为“智能模型 → 系统管理”，super_admin 再追加“系统状态”；插件安装与管理只位于“自动化”，不得恢复“扩展中心”菜单。`/work-items` 只允许业务页或 Codex 按需深链，不进入导航候选。旧移动偏好中的 `/settings/modules` 必须被修复，不得恢复旧入口。任何模块深链接直接打开或刷新时，顶部必须先建立不可关闭的“概览”固定标签，再激活当前模块；概览首次点击可懒加载，前进/后退或关闭当前模块不能丢失概览。
 - 偏好存储：`admin_users.ui_preferences_json`，由 `agent/migrations/008_admin_ui_preferences.sql` 在部署期创建；运行时只能校验和读写，不得执行 DDL。Basic Auth 没有管理员 ID，必须返回明确的不可同步错误。
 - 统一 Logo：使用内容哈希命名的 `static/assets/boyi-logistics-logo-7e1f2994.webp`。字体按首屏、常用字与完整回退分层存放在 `static/assets/fonts/`，中文固定用思源黑体，英文和数字固定用 Inter；Feather 图标固定使用 `static/vendor/feather-4.29.2.min.js`。不得引入在线字体或图标服务。发布白名单只允许 `console/static/` 下的源码 WebP，不得扩大到运行时图片目录。移动公共交互位于 `templates/base.html`、`static/style.css`、`static/console_ui.js`，需保持安全区、44px 触控、键盘焦点、焦点锁定与 `prefers-reduced-motion` 支持。
 - 视觉约束请先看根目录 `PRODUCT.md`、`DESIGN.md` 与 `.impeccable/design.json`。
@@ -238,5 +240,5 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 ## 固定业务模块与系统状态
 
 - 15 个固定模块不再由旧数据库生命周期状态、版本或 Agent 可达性控制；导航、页面、API 与新 Command 只依赖代码注册、既有登录/角色权限和各业务自身前置条件。不得重新引入生命周期状态门禁，也不得改变现有模块权限。
-- “扩展中心”是控制平面入口而非第 15 个固定业务模块；它只展示 Agent 真实 Catalog 中的非固定 `ACTION_V1/SERVICE_V2` 包，不得把固定模块包装成插件，也不得虚构尚未实现的 Connector 类型。
+- 插件管理不是第 15 个固定业务模块，只在“自动化”页投影 Agent 真实 Catalog 中的非固定 `ACTION_V1/SERVICE_V2` 包；不得把固定模块包装成插件，也不得虚构尚未实现的 Connector 类型。
 - `/settings/modules` 只重定向到 `/settings/system-status`；旧 `/settings/modules/data`、详情和 audit 路径仅为真实 MySQL `super_admin` 保留签名只读兼容，生命周期 POST 不再路由。`/settings/system-status` 同样只对真实非 legacy `super_admin` 显示，且只投影 `/internal/v1/health` 白名单字段，Agent 不可达或字段缺失时明确显示“不可用”。

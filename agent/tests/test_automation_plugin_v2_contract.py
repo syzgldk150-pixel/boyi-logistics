@@ -156,12 +156,35 @@ def _manifest_mapping(
                     "default_enabled": False,
                 }
             ],
+            "harness": [
+                {
+                    "id": "assistant_preview",
+                    "title": "查询测试插件状态",
+                    "description": "只读查看测试插件的当前状态。",
+                    "scenarios": ["查询测试插件状态"],
+                    "input_schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {},
+                        "required": [],
+                    },
+                    "service": service,
+                    "operation": "receive",
+                    "effect": "read",
+                    "confirmation_policy": "none",
+                    "preview_operation": None,
+                }
+            ],
         },
         "config_schema": {
             "type": "object",
             "additionalProperties": False,
             "properties": {"dry_run": {"type": "boolean"}},
             "required": ["dry_run"],
+        },
+        "settings_ui": {
+            "entry": "settings/index.html",
+            "bridge_api": "1.0.0",
         },
         "storage": {
             "kv": True,
@@ -209,7 +232,7 @@ def test_manifest_v2_connector_requirement_is_closed_and_legacy_hash_is_stable()
     legacy_source = _manifest_mapping()
     legacy = AutomationPluginManifestV2.from_mapping(legacy_source)
     assert legacy.to_mapping() == legacy_source
-    assert legacy.manifest_sha256 == "0a30eae53800608b79d1607a34bb7ec50250f940aac3b0383b72d5b475ba886f"
+    assert legacy.manifest_sha256 == "9e70b4a6319c4a444001f7c110b3ddf3f5884adf2504b84fbd516ef1f7f9e7b6"
 
     legacy_consumer_source = _manifest_mapping(
         "legacy_consumer",
@@ -218,7 +241,7 @@ def test_manifest_v2_connector_requirement_is_closed_and_legacy_hash_is_stable()
     legacy_consumer = AutomationPluginManifestV2.from_mapping(legacy_consumer_source)
     assert legacy_consumer.to_mapping() == legacy_consumer_source
     assert legacy_consumer.manifest_sha256 == (
-        "4c250a4c238fb01076bbff96bf9de40c7e5a2e6d7296ea71bcfaf9e1852bc1b9"
+        "831109f2a886970c220d2db4d5ae2b8b0c7e14645cd6d649f4ce0e08e70cf6ff"
     )
 
     source = _manifest_mapping(

@@ -3,7 +3,7 @@
   "runtime_model": "service_v2",
   "plugin_id": "self_pickup_problem_upload_v2",
   "name": "自提问题件 v2",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "通过受管 Connector 预览并按已确认运单逐票登记自提问题件的离线候选 Service v2 包。",
   "host_api": {
     "minimum": "2.0.0",
@@ -16,6 +16,10 @@
     "entrypoint": "payload/main.py",
     "requirements_lock": null,
     "wheelhouse": []
+  },
+  "settings_ui": {
+    "entry": "settings/index.html",
+    "bridge_api": "1.0.0"
   },
   "provides": [
     {
@@ -100,6 +104,21 @@
       }
     ],
     "events": []
+    ,
+    "harness": [
+      {
+        "id": "assistant_preview",
+        "title": "查询自提到货问题件候选",
+        "description": "读取当前实例绑定的每日到货表，查询自提到货问题件候选；只读预览，不登记问题件。",
+        "scenarios": ["自提到货问题件有哪些", "检查当前自提货物候选"],
+        "input_schema": {"type": "object", "additionalProperties": false, "properties": {}, "required": []},
+        "service": "plugin.self_pickup_problem_upload_v2.self_pickup_problem_upload@1",
+        "operation": "preview",
+        "effect": "read",
+        "confirmation_policy": "none",
+        "preview_operation": null
+      }
+    ]
   },
   "config_schema": {
     "type": "object",

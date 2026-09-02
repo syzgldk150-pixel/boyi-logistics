@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block title %}{{ instance_name }} · {{ app_title }}{% endblock %}
+{% block breadcrumb %}插件设置{% endblock %}
+{% block subtitle %}自动化 / {{ instance_name }}{% endblock %}
+{% block body_class %}automation-plugin-settings-page{% endblock %}
+
+{% block page_actions %}
+<a class="ghost-btn" href="/automations"><i data-feather="arrow-left"></i>返回自动化</a>
+{% endblock %}
+
+{% block content %}
+<section class="plugin-settings-shell" aria-labelledby="plugin-settings-title">
+  <header class="plugin-settings-shell__header">
+    <div>
+      <p class="eyebrow">{{ plugin_name }} · {{ plugin_version }}</p>
+      <h2 id="plugin-settings-title">{{ instance_name }}</h2>
+      <p>此页面由插件自己提供；Console 只提供脱敏账号状态、飞书资源目录和原子保存能力。</p>
+    </div>
+    <span class="plugin-settings-state plugin-settings-state--{{ 'ready' if configured else 'pending' }}">
+      {{ '已配置' if configured else '等待配置' }}
+    </span>
+  </header>
+  <div class="plugin-settings-shell__feedback" data-plugin-settings-host-feedback role="status" aria-live="polite" hidden></div>
+  <iframe
+    class="plugin-settings-frame"
+    title="{{ instance_name }} 设置"
+    src="/automations/{{ automation_id }}/settings/assets/index.html?bridge_session={{ bridge_session }}"
+    sandbox="allow-scripts"
+    referrerpolicy="no-referrer"
+    data-plugin-settings-frame
+  ></iframe>
+</section>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+(() => {
+  "use strict";
+  const iframe = document.querySelector("[data-plugin-settings-frame]");
+  const feedback = document.querySelector("[data-plugin-settings-host-feedback]");
+  const bridgeSession = {{ bridge_session | tojson }};
+  const endpoint = {{ ('/automations/' ~ automation_id ~ '/settings/bridge') | tojson }};
+  if (!(iframe instanceof HTMLIFrameElement)) return;
+
+  function hostFeedback(message, kind) {
+    if (!(feedback instanceof HTMLElement)) return;
+    feedback.textContent = String(message || "");
+    feedback.dataset.kind = String(kind || "");
+    feedback.hidden = !message;
+  }
+
+  function respond(request, payload) {
+    iframe.contentWindow?.postMessage({
+      type: "boyi.settings.response",
+      bridge_session: bridgeSession,
+      request_id: request.request_id,
+      ...payload,
+    }, "*");
+  }
+
+  window.addEventListener("message", async event => {
+    if (event.source !== iframe.contentWindow) return;
+    const request = event.data;
+    if (
+      !request
+      || typeof request !== "object"
+      || request.type !== "boyi.settings.request"
+      || request.bridge_session !== bridgeSession
+      || !["context", "save"].includes(request.operation)
+      || typeof request.request_id !== "string"
+      || request.request_id.length > 128
+      || !request.payload
+      || typeof request.payload !== "object"
+      || Array.isArray(request.payload)
+    ) return;
+    hostFeedback(request.operation === "save" ? "正在保存插件设置…" : "正在连接插件设置…", "info");
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json; charset=UTF-8",
+          "X-Requested-With": "XMLHttpRequest",
+        },
+        body: JSON.stringify({
+          bridge_session: bridgeSession,
+          operation: request.operation,
+          payload: request.payload,
+        }),
+      });
+      const result = await response.json().catch(() => null);
+      if (!response.ok || result?.ok !== true) {
+        throw new Error(result?.message || result?.error?.message || "插件设置服务暂时不可用。");
+      }
+      hostFeedback(request.operation === "save" ? "插件设置已保存。" : "", "success");
+      respond(request, { ok: true, data: result.data, message: result.message || "" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "插件设置服务暂时不可用。";
+      hostFeedback(message, "error");
+      respond(request, { ok: false, data: null, message });
+    }
+  });
+})();
+</script>
+{% endblock %}

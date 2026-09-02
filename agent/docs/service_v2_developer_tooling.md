@@ -31,7 +31,7 @@ PYTHONPATH=agent PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin --
 
 | 命令 | 调用形式 | 结果与边界 |
 |---|---|---|
-| `init` | `init DESTINATION --plugin-id ID [--name NAME] [--version VERSION]` | 只在不存在的目标目录创建最小 `compute` + Console 示例；创建前先在内存中走完整包与项目合同校验，不预建 Scheduler、Webhook、飞书、Event 或 Harness。 |
+| `init` | `init DESTINATION --plugin-id ID [--name NAME] [--version VERSION]` | 只在不存在的目标目录创建最小 `compute` + Console + 只读 Harness 示例；创建前先在内存中走完整包与项目合同校验，不预建 Scheduler、Webhook、飞书或 Event。 |
 | `validate` | `validate ARTIFACT` | 对源码目录先做确定性内存打包，对 ZIP 直接校验；只返回从真实字节计算的 identity 与合同回执。 |
 | `package` | `package SOURCE OUTPUT` | 生成确定性 ZIP；输出已存在时拒绝覆盖，最终路径出现前先完成权威验证。 |
 | `inspect` | `inspect ARTIFACT` | 只投影 canonical identity、成员相对路径/大小/摘要、合同摘要与安装向导材料；不输出文件正文、绝对路径或环境。 |
@@ -57,16 +57,20 @@ PYTHONPATH=agent PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin co
 
 ## 3. 源目录、SDK 与确定性 ZIP
 
-源码根目录必须精确只有以下两个入口：
+源码根目录必须精确只有运行入口，以及按需声明的插件专属设置资源：
 
 ```text
 manifest.json
 payload/
   main.py
   ...
+settings/                    # 可选
+  index.html
+  settings.css
+  settings.js
 ```
 
-`manifest.json` 必须是普通文件，`payload/` 必须是真实目录，递归成员只能是普通目录或普通文件。符号链接、特殊文件、额外根成员和源码自带的 `payload/boyi_plugin_sdk.py` 都会失败。SDK 不由插件作者复制；打包器从仓库当前 Service v2 SDK 单点注入，防止源码携带不同实现。
+`manifest.json` 必须是普通文件，`payload/` 必须是真实目录，可选 `settings/` 只允许包内相对 HTML/CSS/JavaScript 和静态资源；递归成员只能是普通目录或普通文件。符号链接、特殊文件、其他根成员和源码自带的 `payload/boyi_plugin_sdk.py` 都会失败。SDK 不由插件作者复制；打包器从仓库当前 Service v2 SDK 单点注入，防止源码携带不同实现。声明必需配置、账号或资源角色时，Manifest 必须提供固定 `settings_ui.entry=settings/index.html` 与 `bridge_api=1.0.0`。
 
 目录遍历先检查全部目录项名称，再读取任何成员内容。`.env*`、credential、secret、key、certificate、session、token、Cookie 和密码等敏感候选名称会在打开文件前被拒绝；工具不会为了判断候选内容而读取该文件。显式 JSON 场景文件同样使用敏感名称检查、`lstat`、`O_NOFOLLOW` 和读取前后文件身份/时间元数据核对，只接受严格 UTF-8、无重复键、无非有限数字的根对象。
 
@@ -106,7 +110,7 @@ fallback；因此它不是 generic `service_v2_plugin package` 示例的生产�
 `plugin.self_pickup_problem_upload_v2.self_pickup_problem_upload@1` 的两个不可变
 operation：`preview/read` 与 `execute/external_write`。Console 和 Feishu
 contribution 都声明 `operation=execute`、`selection_preview_operation=preview`，
-且 `default_enabled=false`；不存在 Scheduler、Webhook、Event 或 Harness。
+且 `default_enabled=false`；不存在 Scheduler、Webhook 或 Event，并提供只读 Harness 候选预览能力与插件专属设置页。
 Preview 请求必须是 `dry_run=true` 且不带选择；正式执行必须是 `dry_run=false`，并带
 规范的非空 `selected_bill_codes` 与 `preview_fingerprint`。Feishu 的生产入口切换
 还必须支持“preview → 用户多轮选择 → 带原 preview fingerprint 的 execute”，不能
@@ -146,7 +150,7 @@ Service v2 离线候选包。确定性构建器逐字节嵌入 v1
 result helper；插件 payload 不导入 `agent`、`tools` 或 legacy whole-tool，也不修改
 `sys.path`。包提供同一 service 的 `preview/read` 和 `execute/external_write`；Console
 与 exact 飞书命令“分批”都声明 execute + selection preview，且无
-Scheduler/Webhook/Event/Harness。
+Scheduler/Webhook/Event；包同时提供只读 Harness 候选预览能力与插件专属设置页。
 
 v1 action 继续唯一拥有 A:S 19 列校验、分批/有发未到分类、逐票
 `expected_quantity = arrived_quantity + pending_quantity`、汇总数量守恒、候选指纹、
@@ -187,7 +191,7 @@ input/output cap 下实测，禁止截断。五个真实 Connector、账号/资�
 payload 不导入 `agent`、`tools` 或 legacy whole-tool，也不修改 `sys.path`。包提供
 `plugin.sync_scan_codes_v2.scan_codes@1` 的 `preview/read` 与
 `execute/external_write`。Console 和精确飞书命令“扫描”都指向 execute 且默认关闭，
-不声明通用 `selection_preview_operation`、Scheduler、Webhook、Event 或 Harness；
+不声明通用 `selection_preview_operation`、Scheduler、Webhook 或 Event；包同时提供只读 Harness 扫描预览能力与插件专属设置页；
 配置 Schema 也不接受 Host-owned 的 `dry_run` 或 `_scan_preview_binding`。
 
 嵌入的 v1 action 继续唯一拥有稳定分页、等价重复合并、冲突目标拒绝、H 单排除、

@@ -37,7 +37,7 @@ _ROLE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _ROUTE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _EVENT_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 
-_TOP_LEVEL_FIELDS = frozenset(
+_TOP_LEVEL_REQUIRED_FIELDS = frozenset(
     {
         "schema_version",
         "runtime_model",
@@ -57,6 +57,8 @@ _TOP_LEVEL_FIELDS = frozenset(
         "storage",
     }
 )
+_TOP_LEVEL_FIELDS = _TOP_LEVEL_REQUIRED_FIELDS | {"settings_ui"}
+_SETTINGS_UI_FIELDS = frozenset({"entry", "bridge_api"})
 _HOST_API_FIELDS = frozenset({"minimum", "maximum_exclusive"})
 _RUNTIME_FIELDS = frozenset(
     {
@@ -124,7 +126,18 @@ _EVENT_FIELDS = frozenset(
     }
 )
 _HARNESS_FIELDS = frozenset(
-    {"id", "title", "description", "service", "operation", "effect"}
+    {
+        "id",
+        "title",
+        "description",
+        "scenarios",
+        "input_schema",
+        "service",
+        "operation",
+        "effect",
+        "confirmation_policy",
+        "preview_operation",
+    }
 )
 _CONFIG_SCHEMA_FIELDS = frozenset({"type", "additionalProperties", "properties", "required"})
 _STORAGE_FIELDS = frozenset({"kv", "collections"})
@@ -1011,13 +1024,10 @@ def _validate_contributes(
             declared_effect = CapabilityEffect(item["effect"])
         except (TypeError, ValueError) as exc:
             raise PluginManifestError(
-                f"{path}.effect must be read or compute"
+                f"{path}.effect is invalid"
             ) from exc
-        if declared_effect not in {
-            CapabilityEffect.READ,
-            CapabilityEffect.COMPUTE,
-        }:
-            raise PluginManifestError(f"{path}.effect must be read or compute")
+        if declared_effect is CapabilityEffect.DESTRUCTIVE:
+            raise PluginManifestError(f"{path}.effect must not be destructive")
         authoritative_effect = provided_operation_effects.get((service, operation))
         if authoritative_effect is None:
             # The target check above should make this unreachable, but keep the
@@ -1029,6 +1039,22 @@ def _validate_contributes(
             raise PluginManifestError(
                 f"{path}.effect must match the provided operation effect"
             )
+        confirmation_policy = item["confirmation_policy"]
+        preview_operation = item["preview_operation"]
+        is_write = declared_effect in {
+            CapabilityEffect.INTERNAL_WRITE,
+            CapabilityEffect.EXTERNAL_WRITE,
+        }
+        if (confirmation_policy != ("exact_preview" if is_write else "none")):
+            raise PluginManifestError(f"{path}.confirmation_policy does not match effect")
+        if is_write:
+            preview_operation = _identifier(preview_operation, f"{path}.preview_operation")
+            if provided_operation_effects.get((service, preview_operation)) is not CapabilityEffect.READ:
+                raise PluginManifestError(f"{path}.preview_operation must target a read operation")
+        elif preview_operation is not None:
+            raise PluginManifestError(f"{path}.preview_operation must be null for read/compute")
+        input_schema = _validate_config_schema(item["input_schema"])
+        scenarios = _string_array(item["scenarios"], f"{path}.scenarios", non_empty=True)
         result["harness"].append(
             {
                 "id": _contribution_id(item["id"], f"{path}.id", seen=seen_ids),
@@ -1038,11 +1064,15 @@ def _validate_contributes(
                     f"{path}.description",
                     maximum=500,
                 ),
+                "scenarios": scenarios,
+                "input_schema": input_schema,
                 "service": service,
                 "operation": operation,
                 # This is a redundant declaration.  ServiceV2ProjectContract
                 # derives governance from the Provider effect, never here.
                 "effect": declared_effect.value,
+                "confirmation_policy": confirmation_policy,
+                "preview_operation": preview_operation,
             }
         )
 
@@ -1249,12 +1279,19 @@ class AutomationPluginManifestV2:
     contributes: Mapping[str, Any]
     config_schema: Mapping[str, Any]
     storage: Mapping[str, Any]
+    settings_ui: Mapping[str, Any] | None = None
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "AutomationPluginManifestV2":
         if not isinstance(raw, Mapping):
             raise PluginManifestError("manifest must be an object")
-        data = _mapping(raw, "manifest", _TOP_LEVEL_FIELDS)
+        data = _mapping(raw, "manifest")
+        unknown = set(data) - _TOP_LEVEL_FIELDS
+        missing = _TOP_LEVEL_REQUIRED_FIELDS - set(data)
+        if unknown:
+            raise PluginManifestError(f"manifest has unsupported fields: {sorted(unknown)}")
+        if missing:
+            raise PluginManifestError(f"manifest is missing fields: {sorted(missing)}")
         if isinstance(data["schema_version"], bool) or data["schema_version"] != 2:
             raise PluginManifestError("schema_version must be 2")
         if data["runtime_model"] != "service_v2":
@@ -1305,6 +1342,15 @@ class AutomationPluginManifestV2:
         )
         _validate_default_scheduler_host_compatibility(contributes)
         config_schema = _validate_config_schema(data["config_schema"])
+        settings_ui = None
+        if "settings_ui" in data:
+            raw_settings_ui = _mapping(data["settings_ui"], "settings_ui", _SETTINGS_UI_FIELDS)
+            if raw_settings_ui["entry"] != "settings/index.html":
+                raise PluginManifestError("settings_ui.entry must be settings/index.html")
+            bridge_api = _semver(raw_settings_ui["bridge_api"], "settings_ui.bridge_api")
+            if bridge_api != "1.0.0":
+                raise PluginManifestError("settings_ui.bridge_api must be 1.0.0")
+            settings_ui = {"entry": "settings/index.html", "bridge_api": bridge_api}
         normalized = cls(
             schema_version=2,
             runtime_model="service_v2",
@@ -1322,12 +1368,13 @@ class AutomationPluginManifestV2:
             contributes=_deep_freeze(contributes),
             config_schema=_deep_freeze(config_schema),
             storage=_deep_freeze(storage),
+            settings_ui=_deep_freeze(settings_ui) if settings_ui is not None else None,
         )
         canonical_json_bytes(normalized.to_mapping())
         return normalized
 
     def to_mapping(self) -> dict[str, Any]:
-        return {
+        result = {
             "schema_version": self.schema_version,
             "runtime_model": self.runtime_model,
             "plugin_id": self.plugin_id,
@@ -1345,6 +1392,9 @@ class AutomationPluginManifestV2:
             "config_schema": _deep_thaw(self.config_schema),
             "storage": _deep_thaw(self.storage),
         }
+        if self.settings_ui is not None:
+            result["settings_ui"] = _deep_thaw(self.settings_ui)
+        return result
 
     @property
     def manifest_sha256(self) -> str:

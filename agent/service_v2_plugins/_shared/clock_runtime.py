@@ -282,6 +282,89 @@ def _submit_and_verify(
     return result, refs, None
 
 
+def preview_clock_service(
+    arguments: dict[str, object],
+    broker: Callable[..., object],
+    *,
+    expected_site_name: str,
+    service_name: str,
+) -> dict[str, object]:
+    """Read the live precheck once without entering either write primitive."""
+
+    if set(arguments) - _ARGUMENT_FIELDS:
+        raise ValueError("plugin arguments contain unsupported fields")
+    site = _site(arguments, expected_site_name)
+    first_type = _required_text(arguments.get("first_type"), "first_type", 32)
+    second_type = _required_text(arguments.get("second_type"), "second_type", 32)
+    if first_type == second_type:
+        raise ValueError("dual clock types must be distinct")
+    try:
+        precheck = _object(
+            broker(
+                _CAPABILITY,
+                action=_PRECHECK,
+                role=_ROLE,
+                arguments={"clock_types": [first_type, second_type], "site": site},
+            ),
+            "clock precheck result",
+        )
+    except Exception as exc:
+        return failure_result(
+            code=_safe_error_code(exc, "CLOCK_PRECHECK_FAILED"),
+            write_outcome="NOT_APPLIED",
+        )
+    if (
+        precheck.get("ready") is not True
+        or not _same_site(precheck.get("site"), site)
+        or list(precheck.get("clock_types") or []) != [first_type, second_type]
+    ):
+        return failure_result(code="CLOCK_PRECHECK_NOT_READY", write_outcome="NOT_APPLIED")
+    try:
+        evidence_ref = _evidence_ref(precheck, "clock precheck evidence")
+    except ValueError:
+        return failure_result(
+            code="CLOCK_PRECHECK_EVIDENCE_MISSING",
+            write_outcome="NOT_APPLIED",
+        )
+    observed_at = _utc_now()
+    data = {
+        "ready": True,
+        "site_name": site["sitename"],
+        "distribution_name": site["sitefbname"],
+        "clock_types": [first_type, second_type],
+        "evidence": {
+            "service": service_name,
+            "operation": "preview",
+            "outcome": "READ_ONLY",
+            "observed_at": observed_at,
+        },
+    }
+    return {
+        "status": "SUCCESS",
+        "data": data,
+        "meta": {
+            "source_system": "ronghui",
+            "observed_at": observed_at,
+            "record_count": 1,
+            "pagination_complete": True,
+            "evidence_refs": [evidence_ref],
+            "postconditions": {"0": True},
+            "postcondition_evidence": {
+                "0": {
+                    "condition": "plugin_result_contract_valid",
+                    "verified": True,
+                    "observed_at": observed_at,
+                    "evidence_ref": evidence_ref,
+                    "details": {"result_summary": data, "evidence_refs": [evidence_ref]},
+                }
+            },
+            "write_outcome": "NOT_APPLIED",
+        },
+        "warnings": [],
+        "error": None,
+    }
+
+
 def run_clock_service(
     arguments: dict[str, object],
     broker: Callable[..., object],

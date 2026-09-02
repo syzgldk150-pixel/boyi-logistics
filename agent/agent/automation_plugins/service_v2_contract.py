@@ -352,6 +352,10 @@ class ServiceV2ProjectContract:
                 kinds[entrypoint_id] = contribution_kind
                 if item.get("default_enabled") is True:
                     defaults.append(entrypoint_id)
+                elif contribution_kind == "harness":
+                    # AI projection follows the instance lifecycle.  It has no
+                    # separate user-facing entrypoint switch.
+                    defaults.append(entrypoint_id)
                 try:
                     effect = provided_operation_effects[(str(item["service"]), str(item["operation"]))]
                 except KeyError as exc:
@@ -385,8 +389,12 @@ class ServiceV2ProjectContract:
                         raise PluginManifestError(
                             "harness contribution governance is not read-only"
                         )
-                    invocation_input_schema = _HARNESS_INPUT_SCHEMA
-                    argument_template = {}
+                    # Model-supplied fields are described by the Harness
+                    # declaration, while the subprocess still receives only
+                    # the instance's server-owned configuration.  Harness
+                    # arguments never replace project configuration.
+                    invocation_input_schema = input_schema
+                    argument_template = template
                 if contribution_kind == "module_slots":
                     try:
                         normalize_waybill_entry_slot(item.get("slot"))

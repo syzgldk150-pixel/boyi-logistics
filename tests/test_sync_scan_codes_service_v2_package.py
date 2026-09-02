@@ -58,6 +58,9 @@ def test_scan_v2_zip_is_deterministic_and_embeds_reviewed_v1_bytes(
             "payload/boyi_plugin_sdk.py",
             "payload/main.py",
             "payload/plugin.py",
+            "settings/index.html",
+            "settings/settings.css",
+            "settings/settings.js",
         }
         assert set(archive.namelist()) == expected_members
         assert archive.read("payload/action.py") == V1_ACTION.read_bytes()
@@ -116,8 +119,12 @@ def test_scan_manifest_closes_two_operations_connectors_and_correlated_budget() 
         for item in contract.runtime_permissions["broker_operations"]
     } == expected_limits
 
-    assert contract.allowed_entrypoints == ("execute_console", "execute_feishu")
-    assert contract.default_entrypoints == ()
+    assert contract.allowed_entrypoints == (
+        "execute_console",
+        "execute_feishu",
+        "assistant_preview",
+    )
+    assert contract.default_entrypoints == ("assistant_preview",)
     assert manifest.contributes["console"] == (
         {
             "id": "execute_console",

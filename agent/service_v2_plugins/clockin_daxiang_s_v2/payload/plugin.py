@@ -6,6 +6,7 @@ CONTRIBUTION_ID = "manual_run"
 CONTRIBUTION_TARGETS = {
     "console": (CONTRIBUTION_ID, "console"),
     "scheduler": ("daily_clockin", "scheduler"),
+    "harness": ("assistant_preview", "harness"),
     "service": ("host.service.invoke", "service"),
 }
 EXPECTED_SITE_NAME = "邵阳大祥S站"

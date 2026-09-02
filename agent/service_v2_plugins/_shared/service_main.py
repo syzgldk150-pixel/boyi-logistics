@@ -8,7 +8,7 @@ import sys
 from collections.abc import Mapping
 
 from boyi_plugin_sdk import broker_call
-from clock_runtime import failure_result, run_clock_service
+from clock_runtime import failure_result, preview_clock_service, run_clock_service
 from plugin import CONTRIBUTION_TARGETS, EXPECTED_SITE_NAME, PLUGIN_ID, SERVICE_NAME
 
 
@@ -66,34 +66,36 @@ def _read_request() -> dict[str, object]:
         raise ValueError("service request entrypoint is invalid")
     target = request.get("target")
     governance = request.get("governance")
+    operation = "preview" if entrypoint == "harness" else "run"
     expected_target = {
         "service": SERVICE_NAME,
-        "operation": "run",
+        "operation": operation,
         "contribution_id": contribution_target[0],
         "contribution_kind": contribution_target[1],
     }
     if not isinstance(target, Mapping) or dict(target) != expected_target:
         raise ValueError("service target is invalid")
-    if (
-        not isinstance(governance, Mapping)
-        or governance.get("effect") != "external_write"
-        or governance.get("operation_type") != "external_write"
-        or governance.get("broker_effect") != "write"
-        or governance.get("harness_allowed") is not False
+    expected_governance = (
+        {"effect": "read", "operation_type": "read", "broker_effect": "read", "harness_allowed": True}
+        if operation == "preview"
+        else {"effect": "external_write", "operation_type": "external_write", "broker_effect": "write", "harness_allowed": False}
+    )
+    if not isinstance(governance, Mapping) or any(
+        governance.get(key) != value for key, value in expected_governance.items()
     ):
         raise ValueError("service governance is invalid")
     _reject_sensitive(request["arguments"])
+    request["selected_operation"] = operation
     return request
 
 
 def main() -> int:
     try:
         request = _read_request()
-        result = run_clock_service(
-            dict(request["arguments"]),
-            broker_call,
-            expected_site_name=EXPECTED_SITE_NAME,
-            service_name=SERVICE_NAME,
+        runner = preview_clock_service if request["selected_operation"] == "preview" else run_clock_service
+        result = runner(
+            dict(request["arguments"]), broker_call,
+            expected_site_name=EXPECTED_SITE_NAME, service_name=SERVICE_NAME,
         )
         _reject_sensitive(result)
     except ValueError:

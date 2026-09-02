@@ -11,7 +11,7 @@ from pathlib import PurePath
 from typing import Any, Literal
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -108,6 +108,24 @@ class PluginConfigurationRequest(BaseModel):
     schedule: PluginScheduleRequest
     request_id: str = Field(min_length=1, max_length=64)
     expected_project_configuration_version: int = Field(ge=1)
+
+
+class PluginSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    config: dict[str, Any]
+    account_bindings: dict[str, Any]
+    resource_bindings: dict[str, Any]
+    request_id: str = Field(min_length=1, max_length=64)
+    expected_project_configuration_version: int = Field(ge=0)
+
+
+class PluginScheduleUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schedule: PluginScheduleRequest
+    request_id: str = Field(min_length=1, max_length=64)
+    expected_project_configuration_version: int = Field(ge=0)
 
 
 class ArrivalStatsRecoveryReadbackRequest(BaseModel):
@@ -1037,6 +1055,144 @@ def create_automation_plugin_management_router(
                 "schedule_runtime_enabled": bool(
                     runtime_state == "ACTIVE"
                 ),
+                "scheduler_refresh_completed": refresh_completed,
+            }
+        )
+        return response
+
+    @router.get(
+        "/internal/v1/automation/instances/{automation_id}/settings-context",
+        response_model=None,
+    )
+    async def read_plugin_settings_context(
+        automation_id: str,
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        return await _service_response(
+            lambda: service_provider().settings_context(automation_id, actor=actor)
+        )
+
+    @router.get(
+        "/internal/v1/automation/instances/{automation_id}/settings-assets/{asset_path:path}",
+        response_model=None,
+    )
+    async def read_plugin_settings_asset(
+        automation_id: str,
+        asset_path: str,
+        request: Request,
+    ) -> Response:
+        actor = actor_provider(request)
+        try:
+            data, media_type = await run_in_threadpool(
+                lambda: service_provider().settings_asset(
+                    automation_id,
+                    asset_path,
+                    actor=actor,
+                )
+            )
+        except AutomationPluginError as exc:
+            return _plugin_error_response(exc)
+        return Response(
+            content=data,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "private, no-store",
+                "Content-Security-Policy": (
+                    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                    "img-src 'self' data:; font-src 'self'; connect-src 'none'; "
+                    "frame-ancestors 'self'; base-uri 'none'; form-action 'none'"
+                ),
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @router.put(
+        "/internal/v1/automation/instances/{automation_id}/plugin-settings",
+        response_model=None,
+    )
+    async def save_plugin_settings(
+        automation_id: str,
+        payload: PluginSettingsRequest,
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        return await _service_response(
+            lambda: service_provider().save_plugin_settings(
+                automation_id,
+                config=payload.config,
+                account_bindings=payload.account_bindings,
+                resource_bindings=payload.resource_bindings,
+                request_id=payload.request_id,
+                expected_project_configuration_version=(
+                    payload.expected_project_configuration_version
+                ),
+                actor=actor,
+            )
+        )
+
+    @router.put(
+        "/internal/v1/automation/instances/{automation_id}/schedule",
+        response_model=None,
+    )
+    async def save_plugin_schedule(
+        automation_id: str,
+        payload: PluginScheduleUpdateRequest,
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        service = service_provider()
+        response = await _service_response(
+            lambda: service_provider().save_console_schedule(
+                automation_id,
+                schedule=payload.schedule.model_dump(),
+                request_id=payload.request_id,
+                expected_project_configuration_version=(
+                    payload.expected_project_configuration_version
+                ),
+                actor=actor,
+            )
+        )
+        if isinstance(response, JSONResponse):
+            return response
+        data = response.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("plugin schedule response is invalid")
+        schedule = data.get("schedule")
+        schedule_enabled = bool(
+            isinstance(schedule, Mapping) and schedule.get("enabled") is True
+        )
+        scheduler_entrypoint_enabled = _scheduler_contribution_enabled(
+            data,
+            service=service,
+            actor=actor,
+            automation_id=automation_id,
+        )
+        refresh_completed = False
+        if data.get("generation_ready") is not True:
+            runtime_state = "BLOCKED_GENERATION"
+        else:
+            try:
+                refreshed = (
+                    scheduler_refresh_provider()
+                    if scheduler_refresh_provider is not None
+                    else {"initialized": False}
+                )
+                refresh_completed = _scheduler_refresh_succeeded(refreshed)
+            except Exception:  # noqa: BLE001 - schedule is durable
+                refresh_completed = False
+            if not refresh_completed:
+                runtime_state = "REFRESH_FAILED"
+            elif not schedule_enabled:
+                runtime_state = "DISABLED"
+            elif not scheduler_entrypoint_enabled:
+                runtime_state = "ENTRYPOINT_DISABLED"
+            else:
+                runtime_state = "ACTIVE"
+        data.update(
+            {
+                "schedule_runtime_state": runtime_state,
+                "schedule_runtime_enabled": runtime_state == "ACTIVE",
                 "scheduler_refresh_completed": refresh_completed,
             }
         )

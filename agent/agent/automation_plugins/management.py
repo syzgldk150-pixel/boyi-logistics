@@ -8,6 +8,7 @@ import copy
 import hashlib
 import json
 import logging
+import mimetypes
 import re
 import uuid
 from collections.abc import Callable, Sequence
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from agent.automation_plugins.catalog import PluginCatalog, PluginCatalogEntry
+from agent.automation_plugins.code_owned_fields import first_party_code_owned_config_fields
 from agent.automation_plugins.configuration import AutomationProjectConfigurationService
 from agent.automation_plugins.errors import (
     PluginConflictError,
@@ -25,7 +27,10 @@ from agent.automation_plugins.errors import (
 from agent.automation_plugins.first_party import RECOVERABLE_WRITE_PROJECT_PLUGINS
 from agent.automation_plugins.release_scope import DEFERRED_R7_PLUGIN_IDS
 from agent.automation_plugins.lifecycle import AutomationPluginService
-from agent.automation_plugins.inspection_v2 import service_v2_wizard_projection
+from agent.automation_plugins.inspection_v2 import (
+    service_v2_wizard_projection,
+    validate_service_v2_install_contract,
+)
 from agent.automation_plugins.manifest_v2 import canonical_json_bytes
 from agent.automation_plugins.migration import PluginMigrationControlPlane
 from agent.automation_plugins.migration_entrypoint_ownership import (
@@ -59,11 +64,6 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SERVICE_V2_INSTALL_INTENT_FIELDS = frozenset(
     {
         "instance_name",
-        "config",
-        "account_bindings",
-        "resource_bindings",
-        "enabled_entrypoints",
-        "schedule",
         "permissions_confirmed",
     }
 )
@@ -956,6 +956,7 @@ class AutomationPluginManagementService:
             package_bytes,
             transport_package_sha256=transport_package_sha256,
         )
+        validate_service_v2_install_contract(verified)
         return self._service_v2_wizard_projection(verified)
 
     @staticmethod
@@ -981,6 +982,11 @@ class AutomationPluginManagementService:
         forbidden_keys = {
             "automation_id",
             "device_id",
+            "config",
+            "account_bindings",
+            "resource_bindings",
+            "enabled_entrypoints",
+            "schedule",
             "manifest",
             "manifest_sha256",
             "package_digest",
@@ -1013,44 +1019,13 @@ class AutomationPluginManagementService:
                 "service-v2 instance_name is invalid",
                 code="PLUGIN_INSTALL_INTENT_INVALID",
             )
-        normalized = {
-            "instance_name": instance_name.strip(),
-            "config": decoded.get("config"),
-            "account_bindings": decoded.get("account_bindings"),
-            "resource_bindings": decoded.get("resource_bindings"),
-            "enabled_entrypoints": decoded.get("enabled_entrypoints"),
-            "schedule": decoded.get("schedule"),
-            "permissions_confirmed": decoded.get("permissions_confirmed"),
-        }
-        if (
-            not isinstance(normalized["config"], Mapping)
-            or not isinstance(normalized["account_bindings"], Mapping)
-            or not isinstance(normalized["resource_bindings"], Mapping)
-            or not isinstance(normalized["enabled_entrypoints"], list)
-            or not isinstance(normalized["schedule"], Mapping)
-            or normalized["permissions_confirmed"] is not True
-        ):
+        if decoded.get("permissions_confirmed") is not True:
             raise PluginConflictError(
                 "service-v2 installation intent values are invalid",
                 code="PLUGIN_INSTALL_INTENT_INVALID",
             )
-        if len(normalized["enabled_entrypoints"]) > 64 or any(
-            not isinstance(value, str) or not value.strip() or len(value) > 128
-            for value in normalized["enabled_entrypoints"]
-        ):
-            raise PluginConflictError(
-                "service-v2 enabled entrypoints are invalid",
-                code="PLUGIN_INSTALL_INTENT_INVALID",
-            )
         return {
-            "instance_name": normalized["instance_name"],
-            "config": copy.deepcopy(dict(normalized["config"])),
-            "account_bindings": copy.deepcopy(dict(normalized["account_bindings"])),
-            "resource_bindings": copy.deepcopy(dict(normalized["resource_bindings"])),
-            "enabled_entrypoints": tuple(
-                str(value).strip() for value in normalized["enabled_entrypoints"]
-            ),
-            "schedule": copy.deepcopy(dict(normalized["schedule"])),
+            "instance_name": instance_name.strip(),
             "permissions_confirmed": True,
         }
 
@@ -1091,78 +1066,8 @@ class AutomationPluginManagementService:
             install_payload_sha256=intent_sha256,
         )
         entry = self._catalog.require(instance.automation_id)
-        # Always ask the audited configuration transaction to prove the exact
-        # deterministic child request.  Looking only at ``configured`` would
-        # accept a later administrator edit as the original install result.
-        configure_request_id = str(
-            uuid.uuid5(uuid.UUID(request_id), "service-v2-initial-config")
-        )
-        self._configuration.save(
-            instance.automation_id,
-            config=intent["config"],
-            account_bindings=intent["account_bindings"],
-            resource_bindings=intent["resource_bindings"],
-            enabled_entrypoints=intent["enabled_entrypoints"],
-            schedule=intent["schedule"],
-            device_id=None,
-            actor_id=actor.actor_id,
-            actor_role=role,
-            request_id=configure_request_id,
-            expected_project_configuration_version=(
-                _SERVICE_V2_INSTALL_INITIAL_CONFIG_VERSION
-            ),
-        )
-        reconcile_failed = False
-        try:
-            self._targets.reconcile_project(instance.automation_id)
-        except Exception:  # noqa: BLE001 - durable desired state remains disabled
-            reconcile_failed = True
-        entry = self._catalog.require(instance.automation_id)
-        if not reconcile_failed:
-            self._retry_v2_consumers_after_provider_change(instance.automation_id)
-            # Re-read after Provider consumers may have changed the local
-            # projection.  A high-level enable performs its own final CAS and
-            # committed-generation check; no lifecycle low-level enable here.
-            entry = self._catalog.require(instance.automation_id)
-            if entry.configured:
-                self._require_committed_ready(entry)
-                try:
-                    enable_base_record_version = (
-                        self._lifecycle.claim_service_v2_install_enable_base(
-                            instance.automation_id,
-                            root_request_id=request_id,
-                            install_payload_sha256=intent_sha256,
-                            configuration_request_id=configure_request_id,
-                            actor_id=actor.actor_id,
-                            actor_role=role,
-                        )
-                    )
-                except (ConcurrentUpdateError, IdempotencyConflict) as exc:
-                    raise PluginConflictError(
-                        "service-v2 install enable baseline changed or is incomplete",
-                        code="PLUGIN_INSTALL_PROGRESS_CONFLICT",
-                    ) from exc
-                enable_request_id, enable_expected_version, enable_context = (
-                    self._service_v2_install_enable_claim(
-                        entry,
-                        base_record_version=enable_base_record_version,
-                        root_request_id=request_id,
-                        install_payload_sha256=intent_sha256,
-                        actor_id=actor.actor_id,
-                        actor_role=role,
-                    )
-                )
-                self.set_enabled(
-                    instance.automation_id,
-                    enabled=True,
-                    request_id=enable_request_id,
-                    expected_record_version=enable_expected_version,
-                    actor=actor,
-                    _state_change_context=enable_context,
-                )
-                entry = self._catalog.require(instance.automation_id)
         projection = self._catalog_instance_projection(entry)
-        projection.update(self._transition_projection(entry, reconcile_failed))
+        projection.update(self._transition_projection(entry, False))
         return projection
 
     def upgrade(
@@ -2165,28 +2070,6 @@ class AutomationPluginManagementService:
         if not reconcile_failed:
             self._retry_v2_consumers_after_provider_change(automation_id)
         entry = self._catalog.require(automation_id)
-        if (
-            not reconcile_failed
-            and self._is_committed_ready(entry)
-            and getattr(entry, "runtime_model", PluginRuntimeModel.ACTION_V1.value)
-            == PluginRuntimeModel.SERVICE_V2.value
-            and entry.configured
-            and entry.current_enabled_entrypoints
-            and not entry.enabled
-        ):
-            # The configuration write is durable before reconcile.  Only a
-            # committed-ready v2 generation may cross the high-level enable
-            # boundary; a failed reconcile must leave the project disabled.
-            self.set_enabled(
-                automation_id,
-                enabled=True,
-                request_id=str(
-                    uuid.uuid5(uuid.UUID(request_id), "service-v2-auto-enable")
-                ),
-                expected_record_version=entry.record_version,
-                actor=actor,
-            )
-            entry = self._catalog.require(automation_id)
         projection.update(
             {
                 "target_generation": entry.target_generation,
@@ -2196,6 +2079,176 @@ class AutomationPluginManagementService:
             }
         )
         return projection
+
+    def settings_context(self, automation_id: str, *, actor: Actor) -> dict[str, Any]:
+        """Return only the plugin-owned, credential-free settings projection."""
+
+        self._require_console_actor(actor, super_admin=True)
+        entry = self._catalog.require(automation_id)
+        if entry.runtime_model != PluginRuntimeModel.SERVICE_V2.value:
+            raise PluginConflictError(
+                "plugin settings UI requires service-v2",
+                code="PLUGIN_SETTINGS_UI_UNAVAILABLE",
+            )
+        code_owned_fields = set(
+            first_party_code_owned_config_fields(
+                automation_id=entry.automation_id,
+                plugin_id=entry.plugin_id,
+                trust_source=entry.trust_source,
+            )
+        )
+        config_schema = copy.deepcopy(dict(entry.config_schema))
+        properties = config_schema.get("properties")
+        if isinstance(properties, Mapping):
+            config_schema["properties"] = {
+                key: copy.deepcopy(value)
+                for key, value in properties.items()
+                if key not in code_owned_fields
+            }
+        required = config_schema.get("required")
+        if isinstance(required, list):
+            config_schema["required"] = [
+                key for key in required if key not in code_owned_fields
+            ]
+        return {
+            "automation_id": entry.automation_id,
+            "instance_name": entry.display_name,
+            "plugin_name": entry.name,
+            "plugin_version": entry.installed_version,
+            "enabled": entry.enabled,
+            "configured": entry.configured,
+            "project_configuration_version": entry.project_config_version,
+            "settings_ui": (
+                copy.deepcopy(dict(entry.settings_ui))
+                if entry.settings_ui is not None
+                else None
+            ),
+            "config_schema": config_schema,
+            "config": {
+                key: copy.deepcopy(value)
+                for key, value in entry.project_config.items()
+                if key not in code_owned_fields
+            },
+            "account_roles": [copy.deepcopy(dict(item)) for item in entry.account_roles],
+            "resource_roles": [copy.deepcopy(dict(item)) for item in entry.resource_roles],
+            "account_bindings": copy.deepcopy(dict(entry.account_bindings)),
+            "resource_bindings": copy.deepcopy(dict(entry.resource_bindings)),
+        }
+
+    def save_plugin_settings(
+        self,
+        automation_id: str,
+        *,
+        config: Mapping[str, Any],
+        account_bindings: Mapping[str, Any],
+        resource_bindings: Mapping[str, Any],
+        request_id: str,
+        expected_project_configuration_version: int,
+        actor: Actor,
+    ) -> dict[str, Any]:
+        """Update plugin-owned settings while preserving Console scheduling."""
+
+        entry = self._catalog.require(automation_id)
+        enabled_entrypoints = (
+            entry.current_enabled_entrypoints
+            if entry.current_enabled_entrypoints
+            else entry.default_entrypoints
+        )
+        return self.save_configuration(
+            automation_id,
+            config=copy.deepcopy(dict(config)),
+            account_bindings=account_bindings,
+            resource_bindings=resource_bindings,
+            enabled_entrypoints=tuple(enabled_entrypoints),
+            schedule=entry.project_schedule,
+            device_id=(
+                str(entry.device_binding.get("device_id") or "")
+                if entry.device_binding
+                else None
+            ),
+            request_id=request_id,
+            expected_project_configuration_version=expected_project_configuration_version,
+            actor=actor,
+        )
+
+    def save_console_schedule(
+        self,
+        automation_id: str,
+        *,
+        schedule: Mapping[str, Any],
+        request_id: str,
+        expected_project_configuration_version: int,
+        actor: Actor,
+    ) -> dict[str, Any]:
+        """Update only the Console-owned schedule and scheduler entrypoint."""
+
+        entry = self._catalog.require(automation_id)
+        scheduler_entrypoints = {
+            key
+            for key, contract in entry.invocation_contracts.items()
+            if str(contract.get("contribution_kind") or "") == "scheduler"
+        }
+        enabled_entrypoints = set(entry.current_enabled_entrypoints)
+        if schedule.get("enabled") is True:
+            enabled_entrypoints.update(scheduler_entrypoints)
+        else:
+            enabled_entrypoints.difference_update(scheduler_entrypoints)
+        return self.save_configuration(
+            automation_id,
+            config=entry.project_config,
+            account_bindings=entry.account_bindings,
+            resource_bindings=entry.resource_bindings,
+            enabled_entrypoints=tuple(sorted(enabled_entrypoints)),
+            schedule=schedule,
+            device_id=(
+                str(entry.device_binding.get("device_id") or "")
+                if entry.device_binding
+                else None
+            ),
+            request_id=request_id,
+            expected_project_configuration_version=expected_project_configuration_version,
+            actor=actor,
+        )
+
+    def settings_asset(
+        self,
+        automation_id: str,
+        relative_path: str,
+        *,
+        actor: Actor,
+    ) -> tuple[bytes, str]:
+        """Read one verified package settings asset without exposing its path."""
+
+        self._require_console_actor(actor, super_admin=True)
+        entry = self._catalog.require(automation_id)
+        if entry.settings_ui is None or not entry.install_root:
+            raise PluginNotFoundError("plugin settings asset is unavailable")
+        raw_path = str(relative_path or "").replace("\\", "/").strip("/")
+        parts = tuple(part for part in raw_path.split("/") if part)
+        if not parts or any(part in {".", ".."} for part in parts):
+            raise PluginConflictError(
+                "plugin settings asset path is invalid",
+                code="PLUGIN_SETTINGS_ASSET_INVALID",
+            )
+        settings_root = (Path(entry.install_root) / "settings").resolve()
+        target = (settings_root / Path(*parts)).resolve()
+        try:
+            target.relative_to(settings_root)
+        except ValueError as exc:
+            raise PluginConflictError(
+                "plugin settings asset path is invalid",
+                code="PLUGIN_SETTINGS_ASSET_INVALID",
+            ) from exc
+        if target.is_symlink() or not target.is_file():
+            raise PluginNotFoundError("plugin settings asset is unavailable")
+        data = target.read_bytes()
+        if not data or len(data) > 2 * 1024 * 1024:
+            raise PluginConflictError(
+                "plugin settings asset size is invalid",
+                code="PLUGIN_SETTINGS_ASSET_INVALID",
+            )
+        media_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        return data, media_type
 
     def _reconcile_v2_after_enabled_change(
         self,

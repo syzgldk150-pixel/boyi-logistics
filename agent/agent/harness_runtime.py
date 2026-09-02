@@ -16,7 +16,7 @@ import sysconfig
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from threading import RLock
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from agent.automation_plugins.runtime_backend_availability import (
     RuntimeContributionBackendAvailability,
@@ -420,6 +420,7 @@ class HarnessRuntime:
         llm_client: LLMClient,
         fixed_handlers: Mapping[str, ReadOnlyFixedHandler],
         launcher: BubblewrapHarnessModelLauncher | None = None,
+        instance_name_resolver: Callable[[str], str] | None = None,
     ) -> None:
         if not isinstance(backend_availability, RuntimeContributionBackendAvailability):
             raise TypeError("backend_availability is invalid")
@@ -438,6 +439,7 @@ class HarnessRuntime:
         self._backend_availability = backend_availability
         self._llm = llm_client
         self._fixed_handlers = dict(fixed_handlers)
+        self._instance_name_resolver = instance_name_resolver
         self._launcher = launcher or BubblewrapHarnessModelLauncher()
         self._lock = RLock()
         self._started = False
@@ -521,6 +523,7 @@ class HarnessRuntime:
             invocation_port=adapter,
             fixed_tools=build_fixed_harness_tools(),
             snapshot_provider=self._contribution_registry,
+            instance_name_resolver=self._instance_name_resolver,
         )
 
     def public_tools(self, actor: Actor, request_id: str) -> list[dict[str, str]]:

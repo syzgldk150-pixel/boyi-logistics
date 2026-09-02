@@ -147,6 +147,58 @@ def _service_success_result(
     }
 
 
+def _service_preview_result(
+    value: object,
+    tracker: _ExecutionTracker,
+) -> dict[str, object]:
+    if tracker.mutating_started:
+        raise ValueError("arrival statistics preview entered a write primitive")
+    if not isinstance(value, Mapping) or value.get("status") != "SUCCESS":
+        raise ValueError("arrival statistics preview did not return success")
+    data = value.get("data")
+    meta = value.get("meta")
+    if not isinstance(data, Mapping) or not isinstance(meta, Mapping):
+        raise ValueError("arrival statistics preview result is invalid")
+    refs = list(tracker.host_refs)
+    if not refs or len(refs) != len(set(refs)):
+        raise ValueError("arrival statistics preview evidence is invalid")
+    observed_at = str(meta.get("observed_at") or "").strip() or _utc_now()
+    projected_data = dict(data)
+    projected_data["evidence"] = {
+        "service": SERVICE_NAME,
+        "operation": "preview",
+        "outcome": "READ_ONLY",
+        "observed_at": observed_at,
+    }
+    projected_meta = dict(meta)
+    projected_meta.update(
+        {
+            "evidence_refs": refs,
+            "write_outcome": "NOT_APPLIED",
+            "postconditions": {"0": True},
+            "postcondition_evidence": {
+                "0": {
+                    "condition": "plugin_result_contract_valid",
+                    "verified": True,
+                    "observed_at": observed_at,
+                    "evidence_ref": refs[-1],
+                    "details": {
+                        "result_summary": projected_data,
+                        "evidence_refs": refs,
+                    },
+                }
+            },
+        }
+    )
+    return {
+        "status": "SUCCESS",
+        "data": projected_data,
+        "meta": projected_meta,
+        "warnings": list(value.get("warnings") or []),
+        "error": None,
+    }
+
+
 def _failure_result(*, code: str, write_outcome: str) -> dict[str, object]:
     observed_at = _utc_now()
     blocked_status = "BLOCKED_LOGIN" if code in {
@@ -177,7 +229,7 @@ def _failure_result(*, code: str, write_outcome: str) -> dict[str, object]:
     }
 
 
-def _read_request() -> dict[str, object]:
+def _read_request() -> tuple[str, dict[str, object]]:
     request = json.load(sys.stdin)
     if not isinstance(request, dict) or set(request) != _REQUEST_FIELDS:
         raise ValueError("service request schema is invalid")
@@ -201,39 +253,44 @@ def _read_request() -> dict[str, object]:
     ):
         raise ValueError("service request entrypoint is invalid")
     target = request.get("target")
+    operation = "preview" if entrypoint == "harness" else "run"
     expected_target = {
         "service": SERVICE_NAME,
-        "operation": "run",
+        "operation": operation,
         "contribution_id": contribution_target[0],
         "contribution_kind": contribution_target[1],
     }
     if not isinstance(target, Mapping) or dict(target) != expected_target:
         raise ValueError("service target is invalid")
     governance = request.get("governance")
-    if (
-        not isinstance(governance, Mapping)
-        or governance.get("effect") != "external_write"
-        or governance.get("operation_type") != "external_write"
-        or governance.get("broker_effect") != "write"
-        or governance.get("harness_allowed") is not False
+    expected_governance = (
+        {"effect": "read", "operation_type": "read", "broker_effect": "read", "harness_allowed": True}
+        if operation == "preview"
+        else {"effect": "external_write", "operation_type": "external_write", "broker_effect": "write", "harness_allowed": False}
+    )
+    if not isinstance(governance, Mapping) or any(
+        governance.get(key) != value for key, value in expected_governance.items()
     ):
         raise ValueError("service governance is invalid")
-    arguments = request["arguments"]
+    arguments = dict(request["arguments"])
+    if operation == "preview":
+        arguments["dry_run"] = True
     if (
         "pending_sheet_disabled" not in arguments
         or not isinstance(arguments.get("pending_sheet_disabled"), bool)
     ):
         raise ValueError("pending_sheet_disabled must be explicitly configured")
     _reject_sensitive(arguments)
-    return request
+    return operation, arguments
 
 
 def main() -> int:
     tracker = _ExecutionTracker()
     try:
-        request = _read_request()
+        operation, arguments = _read_request()
         result = run_arrival_service(
-            dict(request["arguments"]),
+            arguments,
+            operation=operation,
             tracker=tracker,
         )
         _reject_sensitive(result)
@@ -261,6 +318,7 @@ def main() -> int:
 def run_arrival_service(
     arguments: dict[str, object],
     *,
+    operation: str = "run",
     tracker: _ExecutionTracker | None = None,
 ) -> dict[str, object]:
     """Run the first-party algorithm through the closed Connector adapter."""
@@ -292,7 +350,13 @@ def run_arrival_service(
             execution.host_refs.append(reference)
         return result
 
+    if operation not in {"preview", "run"}:
+        raise ValueError("arrival statistics operation is invalid")
+    if operation == "preview":
+        arguments = {**arguments, "dry_run": True}
     result = action.run_action(arguments, broker)
+    if operation == "preview":
+        return _service_preview_result(result, execution)
     if arguments.get("dry_run") is True:
         return _failure_result(code="DRY_RUN_NOT_APPLIED", write_outcome="NOT_APPLIED")
     if not execution.mutating_started:

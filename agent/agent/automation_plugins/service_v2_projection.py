@@ -168,14 +168,30 @@ def _harness_runtime_permissions(value: object | None = None) -> dict[str, Any]:
         or value.get("browser") is not False
         or value.get("office") is not False
         or file_roles
-        or broker_operations
-        or max_broker_calls
     ):
         raise PluginConflictError(
             "harness runtime permissions expose an unsafe capability surface",
             code="CAPABILITY_UNAVAILABLE",
         )
-    return copy.deepcopy(dict(value))
+    allowed_operations: list[dict[str, Any]] = []
+    for raw_operation in broker_operations:
+        operation = dict(raw_operation)
+        governance = operation.get("governance")
+        dynamic_read = (
+            operation.get("operation") == "service.invoke"
+            and operation.get("dynamic_effect") is True
+        )
+        if dynamic_read:
+            allowed_operations.append(copy.deepcopy(operation))
+    projected = {
+        "network": False,
+        "browser": False,
+        "office": False,
+        "file_roles": [],
+        "broker_operations": allowed_operations,
+        "max_broker_calls": max_broker_calls if allowed_operations else 0,
+    }
+    return projected
 
 
 def _harness_contract_from_declaration(
@@ -187,9 +203,13 @@ def _harness_contract_from_declaration(
         "id",
         "title",
         "description",
+        "scenarios",
+        "input_schema",
         "service",
         "operation",
         "effect",
+        "confirmation_policy",
+        "preview_operation",
     }
     if set(declaration) != expected_fields:
         raise PluginConflictError(
@@ -247,18 +267,54 @@ def _harness_contract_from_declaration(
             "v2 harness contributions must be read or compute",
             code="CAPABILITY_UNAVAILABLE",
         )
+    scenarios = declaration.get("scenarios")
+    if (
+        not isinstance(scenarios, (list, tuple))
+        or not scenarios
+        or any(
+            not isinstance(item, str)
+            or not item.strip()
+            or item != item.strip()
+            or len(item) > 200
+            for item in scenarios
+        )
+    ):
+        raise PluginConflictError(
+            "v2 harness contribution scenarios are invalid",
+            code="PLUGIN_CONTRACT_INVALID",
+        )
+    input_schema = declaration.get("input_schema")
+    if (
+        not isinstance(input_schema, Mapping)
+        or input_schema.get("type") != "object"
+        or input_schema.get("additionalProperties") is not False
+        or not isinstance(input_schema.get("properties"), Mapping)
+        or not isinstance(input_schema.get("required"), (list, tuple))
+    ):
+        raise PluginConflictError(
+            "v2 harness contribution input schema is invalid",
+            code="PLUGIN_CONTRACT_INVALID",
+        )
+    if declaration.get("confirmation_policy") != "none" or declaration.get("preview_operation") is not None:
+        raise PluginConflictError(
+            "v2 read-only harness contribution confirmation contract is invalid",
+            code="PLUGIN_CONTRACT_INVALID",
+        )
     governance = governance_for_effect(effect).to_mapping()
     return {
         "id": declaration["id"],
         "title": declaration["title"],
         "description": declaration["description"],
+        "scenarios": list(scenarios),
         "service": declaration["service"],
         "operation": declaration["operation"],
         "effect": effect.value,
         "operation_type": str(governance["operation_type"]),
         "harness_allowed": governance["harness_allowed"],
         "broker_effect": governance["broker_effect"],
-        "input_schema": copy.deepcopy(_EMPTY_HARNESS_INPUT_SCHEMA),
+        "confirmation_policy": "none",
+        "preview_operation": None,
+        "input_schema": copy.deepcopy(dict(input_schema)),
     }
 
 
@@ -481,6 +537,18 @@ class ManagedContributionRegistry:
                     "harness contribution contract is missing",
                     code="PLUGIN_CONTRACT_INVALID",
                 )
+        safe_harness_permissions: dict[str, Any] = {}
+        if contribution_kind == "harness":
+            safe_harness_permissions = _harness_runtime_permissions(
+                material.get("runtime_permissions")
+            )
+            if canonical_json_bytes(safe_harness_permissions) != canonical_json_bytes(
+                dict(material["runtime_permissions"])
+            ):
+                raise PluginConflictError(
+                    "harness runtime permissions expose an unsafe capability surface",
+                    code="CAPABILITY_UNAVAILABLE",
+                )
         return ManagedContributionRegistration(
             registration_id=str(material["registration_id"]),
             automation_id=str(material["automation_id"]),
@@ -511,11 +579,7 @@ class ManagedContributionRegistry:
             schedule_sha256=str(material["schedule_sha256"]),
             phase=phase,
             runtime_model=str(material.get("runtime_model") or "SERVICE_V2"),
-            runtime_permissions=(
-                _harness_runtime_permissions(material.get("runtime_permissions"))
-                if contribution_kind == "harness"
-                else {}
-            ),
+            runtime_permissions=safe_harness_permissions,
             harness_contract=copy.deepcopy(
                 dict(raw_harness_contract or {})
             ),

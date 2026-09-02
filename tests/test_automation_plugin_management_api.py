@@ -166,7 +166,9 @@ def test_service_v2_inspect_projection_excludes_service_operation_and_package_au
                 "console": ({"id": "run_now", "title": "Run now", "service": "plugin.example_service.run@1", "operation": "run", "default_enabled": True},),
                 "scheduler": ({"id": "nightly", "title": "Nightly", "service": "plugin.example_service.run@1", "operation": "run", "default_enabled": True, "schedule": {"kind": "cron", "expression": "5 18 * * *", "timezone": "Asia/Shanghai"}},),
                 "webhook": (), "feishu": (), "events": (),
+                "harness": ({"id": "assistant_preview", "title": "AI 查询", "description": "查询运行状态", "effect": "read", "service": "plugin.example_service.run@1", "operation": "preview"},),
             },
+            settings_ui=None,
         )
     )
 
@@ -178,6 +180,7 @@ def test_service_v2_inspect_projection_excludes_service_operation_and_package_au
     assert set(projection) == {
         "plugin_id", "name", "version", "host_api", "permissions", "account_roles",
         "resource_roles", "config_schema", "contributions", "scheduling",
+        "settings_ui",
     }
     assert all("service" not in item and "operation" not in item for item in projection["contributions"])
     assert "package_sha256" not in projection
@@ -213,7 +216,9 @@ def test_service_v2_inspect_projection_preserves_signed_action_call_limits() -> 
                 "webhook": (),
                 "feishu": (),
                 "events": (),
+                "harness": ({"id": "assistant_preview", "title": "AI 查询", "description": "查询运行状态", "effect": "read", "service": "plugin.example_service.run@1", "operation": "preview"},),
             },
+            settings_ui=None,
         )
     )
 
@@ -532,7 +537,7 @@ def test_uninstall_projection_refresh_error_is_explicitly_retryable_and_not_read
     assert refresh_calls == []
 
 
-def test_service_v2_wizard_installs_unknown_package_without_registry_and_enables_only_after_ready() -> None:
+def test_service_v2_wizard_installs_unknown_package_disabled_without_generic_configuration() -> None:
     initial = _entry(
         automation_id="unregistered-v2",
         plugin_id="unknown_service",
@@ -633,26 +638,17 @@ def test_service_v2_wizard_installs_unknown_package_without_registry_and_enables
         b"unknown-v2-package",
         request_id=str(uuid.uuid4()),
         transport_package_sha256="a" * 64,
-        raw_intent=json.dumps(
-            _service_v2_install_intent(enabled_entrypoints=["run_now"])
-        ),
+        raw_intent=json.dumps(_service_v2_install_intent()),
         actor=_console_actor(),
     )
 
-    assert calls == [
-        "install",
-        "configure",
-        "reconcile",
-        "reconcile",
-        "lifecycle-enable",
-        "reconcile",
-    ]
+    assert calls == ["install"]
     assert result["automation_id"] == "unregistered-v2"
-    assert catalog.current.enabled is True
+    assert catalog.current.enabled is False
     assert "unknown_service" not in str(calls)
 
 
-def test_service_v2_install_replay_proves_config_and_exact_enable_child() -> None:
+def test_service_v2_install_replay_does_not_configure_or_enable_instance() -> None:
     ready = _entry(
         automation_id="replay-v2",
         plugin_id="replay_service",
@@ -723,26 +719,20 @@ def test_service_v2_install_replay_proves_config_and_exact_enable_child() -> Non
         "package_bytes": b"replay-v2-package",
         "request_id": root_request_id,
         "transport_package_sha256": "a" * 64,
-        "raw_intent": json.dumps(
-            _service_v2_install_intent(enabled_entrypoints=["run_now"])
-        ),
+        "raw_intent": json.dumps(_service_v2_install_intent()),
         "actor": _console_actor(),
     }
 
     first = service.install_service_v2(**arguments)
     second = service.install_service_v2(**arguments)
 
-    assert first["enabled"] is True
+    assert first["enabled"] is False
     assert second == first
-    assert len(config_calls) == 2
-    assert {call["expected_project_configuration_version"] for call in config_calls} == {1}
-    assert len(state_calls) == 2
-    assert state_calls[0] == state_calls[1]
-    assert state_calls[0]["expected_record_version"] == 4
-    assert state_calls[0]["state_change_context"]["phase"] == "enable"
+    assert config_calls == []
+    assert state_calls == []
 
 
-def test_service_v2_post_enable_failure_rolls_back_and_same_root_resumes_next_audited_attempt() -> None:
+def test_service_v2_install_does_not_enter_enable_or_reconcile_workflow() -> None:
     ready = _entry(
         automation_id="recover-v2",
         plugin_id="recover_service",
@@ -840,29 +830,18 @@ def test_service_v2_post_enable_failure_rolls_back_and_same_root_resumes_next_au
         "package_bytes": b"recover-v2-package",
         "request_id": root_request_id,
         "transport_package_sha256": "a" * 64,
-        "raw_intent": json.dumps(
-            _service_v2_install_intent(enabled_entrypoints=["run_now"])
-        ),
+        "raw_intent": json.dumps(_service_v2_install_intent()),
         "actor": _console_actor(),
     }
 
-    with pytest.raises(PluginConflictError) as error:
-        service.install_service_v2(**arguments)
+    installed = service.install_service_v2(**arguments)
 
-    assert error.value.code == "PLUGIN_ENABLE_RECONCILE_FAILED"
+    assert installed["enabled"] is False
     assert ready.enabled is False
-    assert ready.state == PluginProjectState.DISABLED.value
-    assert ready.record_version == 6
-    assert [call["enabled"] for call in state_calls] == [True, False]
-    assert state_calls[0]["state_change_context"]["attempt"] == 1
-    assert state_calls[1]["state_change_context"]["phase"] == "rollback"
-
-    resumed = service.install_service_v2(**arguments)
-
-    assert resumed["enabled"] is True
-    assert ready.record_version == 7
-    assert state_calls[-1]["expected_record_version"] == 6
-    assert state_calls[-1]["state_change_context"]["attempt"] == 2
+    assert ready.state == PluginProjectState.INSTALLED.value
+    assert ready.record_version == 4
+    assert state_calls == []
+    assert reconcile_calls == 0
 
 
 def test_service_v2_install_replay_never_treats_manual_disable_as_its_rollback() -> None:

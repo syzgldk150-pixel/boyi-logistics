@@ -1541,6 +1541,9 @@ def normalize_automation_plugin_catalog(
             # an explicit unsupported runtime label and a blocked contract.
             provided_services = []
             blocking_reasons = []
+        settings_ui = raw.get("settings_ui")
+        if settings_ui != {"entry": "settings/index.html", "bridge_api": "1.0.0"}:
+            settings_ui = None
         package = {
             "plugin_id": plugin_id,
             "name": normalize_feedback_text(redact_text(str(raw.get("name") or plugin_id)))[:120],
@@ -1583,6 +1586,7 @@ def normalize_automation_plugin_catalog(
             "migration": _normalize_plugin_migration(
                 raw.get("migration"), automation_id=""
             ),
+            "settings_ui": dict(settings_ui) if settings_ui else None,
         }
         packages.append(package)
         packages_by_id[plugin_id] = package
@@ -1680,7 +1684,7 @@ def normalize_automation_plugin_catalog(
             or record_version < 1
             or isinstance(project_configuration_version, bool)
             or not isinstance(project_configuration_version, int)
-            or project_configuration_version < 1
+            or project_configuration_version < 0
         ):
             continue
         raw_account_roles = raw.get("account_roles")
@@ -1983,6 +1987,9 @@ def normalize_automation_plugin_catalog(
             or not enabled_entrypoints_valid
         )
         seen_instances.add(automation_id)
+        settings_ui = raw.get("settings_ui", package.get("settings_ui"))
+        if settings_ui != {"entry": "settings/index.html", "bridge_api": "1.0.0"}:
+            settings_ui = None
         instances.append(
             {
                 "automation_id": automation_id,
@@ -2075,6 +2082,7 @@ def normalize_automation_plugin_catalog(
                 "device": device,
                 "missing_requirements": missing_requirements,
                 "blocked": blocked,
+                "settings_ui": dict(settings_ui) if settings_ui else None,
             }
         )
 
@@ -3010,6 +3018,147 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin):
             {
                 "ok": True,
                 "data": response_data,
+                "message": messages[runtime_state],
+            },
+        )
+
+    def _handle_automation_plugin_schedule_save(
+        self,
+        handler: BaseHTTPRequestHandler,
+        automation_id: str,
+    ) -> None:
+        """Save only Console-owned scheduling state for one plugin instance."""
+
+        automation_id = self._automation_project_id(automation_id)
+        if not automation_id:
+            self._control_plane_error(
+                handler,
+                HTTPStatus.NOT_FOUND,
+                "AUTOMATION_PLUGIN_INSTANCE_NOT_FOUND",
+                "插件实例不存在。",
+            )
+            return
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
+        if "super_admin" not in list(trusted_context.get("actor_roles") or []):
+            self._control_plane_error(
+                handler,
+                HTTPStatus.FORBIDDEN,
+                "SUPER_ADMIN_REQUIRED",
+                "只有超级管理员可以保存定时计划。",
+            )
+            return
+        values = self._read_control_plane_json(handler)
+        if values is None:
+            return
+        if set(values) != {
+            "schedule",
+            "request_id",
+            "expected_project_configuration_version",
+        }:
+            self._control_plane_error(
+                handler,
+                HTTPStatus.BAD_REQUEST,
+                "INVALID_PLUGIN_SCHEDULE_FIELDS",
+                "定时计划包含不支持的字段。",
+            )
+            return
+        request_id = self._normalize_browser_request_uuid(values.get("request_id"))
+        expected_version = values.get("expected_project_configuration_version")
+        raw_schedule = values.get("schedule")
+        schedule: dict[str, Any] = {}
+        if isinstance(raw_schedule, dict) and set(raw_schedule) == {"kind", "times", "enabled"}:
+            kind = str(raw_schedule.get("kind") or "").strip().lower()
+            times_raw = raw_schedule.get("times")
+            enabled = raw_schedule.get("enabled")
+            if isinstance(times_raw, list) and isinstance(enabled, bool):
+                times = [str(item or "").strip() for item in times_raw]
+                if (
+                    kind in {"none", "daily_times", "startup"}
+                    and len(times) <= AUTOMATION_PLUGIN_SCHEDULE_MAX_DAILY_TIMES
+                    and len(times) == len(set(times))
+                    and all(
+                        re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", item)
+                        for item in times
+                    )
+                    and (
+                        (kind == "none" and not times and not enabled)
+                        or (kind == "startup" and not times)
+                        or (kind == "daily_times" and bool(times))
+                    )
+                ):
+                    schedule = {"kind": kind, "times": sorted(times), "enabled": enabled}
+        if (
+            not request_id
+            or isinstance(expected_version, bool)
+            or not isinstance(expected_version, int)
+            or expected_version < 1
+            or not schedule
+        ):
+            self._control_plane_error(
+                handler,
+                HTTPStatus.BAD_REQUEST,
+                "INVALID_PLUGIN_SCHEDULE",
+                "定时计划或配置版本无效，请刷新后重试。",
+            )
+            return
+        result = self._agent_request(
+            "PUT",
+            f"/internal/v1/automation/instances/{quote(automation_id, safe='')}/schedule",
+            payload={
+                "schedule": schedule,
+                "request_id": request_id,
+                "expected_project_configuration_version": expected_version,
+            },
+            timeout=25,
+            console_principal=trusted_context["_console_principal"],
+        )
+        if not result.get("ok"):
+            self._automation_project_agent_error(
+                handler,
+                result,
+                automation_id=automation_id,
+                fallback_code="PLUGIN_SCHEDULE_SAVE_FAILED",
+                fallback_message="定时计划保存失败。",
+            )
+            return
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        new_version = data.get("project_configuration_version")
+        runtime_state = str(data.get("schedule_runtime_state") or "REFRESH_FAILED").upper()
+        if (
+            isinstance(new_version, bool)
+            or not isinstance(new_version, int)
+            or new_version < 1
+            or runtime_state not in AUTOMATION_PLUGIN_SCHEDULE_RUNTIME_STATES
+        ):
+            self._control_plane_error(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                "INVALID_PLUGIN_SCHEDULE_RESPONSE",
+                "定时计划可能已保存，请刷新页面核对状态。",
+            )
+            return
+        self._clear_automation_plugin_catalog_cache()
+        messages = {
+            "ACTIVE": "定时计划已保存并生效。",
+            "DISABLED": "定时计划已关闭。",
+            "ENTRYPOINT_DISABLED": "定时计划已保存，但插件没有开放系统定时入口。",
+            "BLOCKED_GENERATION": "定时计划已保存，运行环境就绪后才会执行。",
+            "REFRESH_FAILED": "定时计划已保存，但调度状态尚未同步，请稍后刷新。",
+        }
+        self._send_json(
+            handler,
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "data": {
+                    "automation_id": automation_id,
+                    "project_configuration_version": new_version,
+                    "schedule_runtime_state": runtime_state,
+                    "schedule_runtime_enabled": data.get("schedule_runtime_enabled") is True,
+                    "scheduler_refresh_completed": data.get("scheduler_refresh_completed") is True,
+                },
                 "message": messages[runtime_state],
             },
         )

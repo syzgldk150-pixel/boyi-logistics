@@ -3073,3 +3073,73 @@ body .line-haul-tool-btn {
   .harness-icon-button,
   .harness-feedback { transition: none !important; }
 }
+/* Isolated plugin-owned settings surface. */
+.plugin-settings-shell {
+  display: grid;
+  gap: 20px;
+  padding: 24px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 18px;
+  background: #fff;
+}
+
+.plugin-settings-shell__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.plugin-settings-shell__header h2 { margin: 4px 0 8px; }
+.plugin-settings-shell__header p { margin: 0; color: #667085; }
+.plugin-settings-state {
+  flex: none;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #f2f4f7;
+  color: #475467;
+  font-size: 13px;
+}
+.plugin-settings-state--ready { background: #ecfdf3; color: #067647; }
+.plugin-settings-shell__feedback {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f5f7fa;
+  color: #344054;
+}
+.plugin-settings-shell__feedback[data-kind="error"] { background: #fef3f2; color: #b42318; }
+.plugin-settings-shell__feedback[data-kind="success"] { background: #ecfdf3; color: #067647; }
+.plugin-settings-frame {
+  width: 100%;
+  min-height: 620px;
+  border: 0;
+  border-radius: 14px;
+  background: #f8fafc;
+}
+
+@media (max-width: 760px) {
+  .plugin-settings-shell { padding: 16px; }
+  .plugin-settings-shell__header { display: grid; }
+  .plugin-settings-frame { min-height: 720px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plugin-settings-frame { scroll-behavior: auto; }
+}
+.automation-filter-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 10px;
+  background: var(--surface-muted, #f8fafc);
+  color: var(--text-secondary, #64748b);
+}
+
+.automation-filter-notice a {
+  color: inherit;
+  font-weight: 600;
+}

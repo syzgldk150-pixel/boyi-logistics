@@ -19,6 +19,7 @@ CONTRIBUTION_TARGETS = {
     "console": ("manual_run", "console"),
     "scheduler": ("daily_arrival_stats", "scheduler"),
     "feishu": ("arrival_stats_command", "feishu"),
+    "harness": ("assistant_preview", "harness"),
     "service": ("host.service.invoke", "service"),
 }
 

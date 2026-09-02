@@ -1,0 +1,43 @@
+<dialog class="extension-install-dialog" data-extension-dialog aria-labelledby="extension-dialog-title">
+  <section class="extension-install-wizard" data-extension-wizard>
+    <header class="extension-dialog-header">
+      <div><h2 id="extension-dialog-title">安装扩展</h2><p>选择扩展压缩包，检查权限后创建一个停用的自动化。</p></div>
+      <button class="extension-dialog-close" type="button" data-extension-close aria-label="关闭安装窗口"><i data-feather="x"></i></button>
+    </header>
+    <form class="extension-install-form" action="/automations/extensions/inspect" method="post" enctype="multipart/form-data" data-extension-inspect-form novalidate>
+      <label class="extension-dropzone" data-extension-dropzone>
+        <input class="extension-package-input" type="file" name="package" accept=".zip,application/zip" required>
+        <span class="extension-dropzone__icon" aria-hidden="true"><i data-feather="package"></i></span>
+        <strong>把扩展压缩包拖到这里</strong><span>也可以点击选择文件</span>
+        <small data-extension-file-name>仅支持 .zip 文件</small>
+      </label>
+      <button type="submit" data-extension-inspect-submit hidden>检查扩展</button>
+      <p class="automation-plugin-feedback extension-install-feedback" data-extension-feedback role="status" aria-live="polite" hidden></p>
+    </form>
+    <section class="extension-wizard-result" data-extension-inspection hidden aria-labelledby="extension-inspection-title">
+      <div class="extension-install-ready">
+        <span class="extension-install-ready__icon" aria-hidden="true"><i data-feather="check"></i></span>
+        <div><h3 id="extension-inspection-title">扩展可以安装</h3><p data-extension-inspection-name>检查完成，请确认名称和权限。</p></div>
+        <button class="ghost-btn" type="button" data-extension-reset>换一个文件</button>
+      </div>
+      <dl class="extension-install-summary" data-extension-inspection-summary></dl>
+      <div class="extension-wizard-warnings" data-extension-inspection-warnings role="status" aria-live="polite"></div>
+      <section class="extension-install-section" aria-labelledby="extension-settings-title">
+        <div class="extension-wizard-section-heading"><div><h3 id="extension-settings-title">实例名称</h3><p>业务设置将在安装后进入插件自己的设置页完成。</p></div></div>
+        <label class="extension-wizard-field"><span>自动化名称</span><input class="review-input compact-input" maxlength="120" autocomplete="off" data-extension-instance-name placeholder="例如：每日到货统计"></label>
+      </section>
+      <section class="extension-install-section extension-install-permissions" aria-labelledby="extension-permissions-title">
+        <div class="extension-wizard-section-heading"><div><h3 id="extension-permissions-title">使用权限</h3><p>安装不会立即启用或执行扩展。</p></div></div>
+        <div class="extension-permission-list" data-extension-permissions></div>
+        <label class="extension-confirm-option"><input type="checkbox" data-extension-permissions-confirmed><span>我了解并允许以上访问</span></label>
+      </section>
+      <form class="extension-final-form" action="/automations/extensions/install" method="post" data-extension-final-form>
+        <div class="extension-dialog-actions">
+          <p class="automation-plugin-feedback" data-extension-final-feedback role="status" aria-live="polite" hidden></p>
+          <button class="ghost-btn" type="button" data-extension-close>取消</button>
+          <button class="primary-btn" type="submit" data-extension-install-submit disabled>安装扩展</button>
+        </div>
+      </form>
+    </section>
+  </section>
+</dialog>

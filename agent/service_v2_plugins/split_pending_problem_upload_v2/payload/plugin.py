@@ -20,6 +20,7 @@ SYSTEM_ROLE = "__system__"
 CONTRIBUTION_TARGETS = {
     "console": ("execute_console", "console"),
     "feishu": ("execute_feishu", "feishu"),
+    "harness": ("assistant_preview", "harness"),
     "service": ("host.service.invoke", "service"),
 }
 

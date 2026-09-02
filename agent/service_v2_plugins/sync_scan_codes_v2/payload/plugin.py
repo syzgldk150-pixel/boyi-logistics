@@ -18,6 +18,7 @@ SYSTEM_ROLE = "__system__"
 CONTRIBUTION_TARGETS = {
     "console": ("execute_console", "console", EXECUTE_OPERATION),
     "feishu": ("execute_feishu", "feishu", EXECUTE_OPERATION),
+    "harness": ("assistant_preview", "harness", PREVIEW_OPERATION),
 }
 
 SCAN_CONNECTOR = "connector.boyi.scan_ronghui@1"

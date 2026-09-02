@@ -1364,6 +1364,9 @@ async def lifespan(app: FastAPI):
         policy_service=project_policy_service, contribution_registry=plugin_runtime.contribution_registry,
         backend_availability=plugin_runtime.contribution_backend_availability,
         llm_client=runtime.llm, harness_fixed_handlers=harness_gateway.handlers(),
+        instance_name_resolver=lambda automation_id: plugin_runtime.catalog.require(
+            automation_id
+        ).display_name,
     )
     harness_runtime_status = await asyncio.to_thread(process_service_v2_runtime.start)
     logger.info("AI assistant runtime status=%s availability=%s", harness_runtime_status.status, harness_runtime_status.availability)

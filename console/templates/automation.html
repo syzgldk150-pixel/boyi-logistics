@@ -5,7 +5,7 @@
 {% block subtitle %}脚本、定时任务与运行状态{% endblock %}
 
 {% block page_actions %}
-{% if can_view_extensions %}<a class="ghost-btn" href="/extensions"><i data-feather="package"></i>扩展中心</a>{% endif %}
+{% if can_manage_plugins %}<button class="extension-install-trigger" type="button" data-extension-open><i data-feather="package"></i><span>安装扩展</span></button>{% endif %}
 <label class="automation-toolbar-field">
   <span>排序</span>
   <select class="automation-sort-select" data-automation-sort>
@@ -57,47 +57,14 @@
   </label>
 {% endmacro %}
 
-{% macro render_plugin_config_field(field, prefix) %}
-  {% set input_id = prefix ~ '-' ~ field.path|replace('.', '-') %}
-  <label class="auto-field">
-    <span class="auto-field-label">{{ field.label }}{% if field.required %}<em aria-hidden="true"> *</em>{% endif %}</span>
-    {% if field.kind == "checkbox" %}
-    <div class="auto-checkbox-wrap">
-      <input id="{{ input_id }}" class="auto-toggle-checkbox" type="checkbox" data-plugin-config-path="{{ field.path }}" data-plugin-config-kind="checkbox" data-plugin-config-present="{{ 'true' if field.present else 'false' }}" {% if field.value %}checked{% endif %}>
-      <span class="auto-checkbox-label">{{ '已启用' if field.value else '未启用' }}</span>
-    </div>
-    {% elif field.kind == "list" %}
-    <textarea id="{{ input_id }}" class="review-input auto-list-input" data-plugin-config-path="{{ field.path }}" data-plugin-config-kind="list" data-plugin-config-item-type="{{ field.item_type }}" data-plugin-config-present="{{ 'true' if field.present else 'false' }}" data-plugin-config-required="{{ 'true' if field.required else 'false' }}" placeholder="每行一个值">{{ field.value | join('\n') if field.value is iterable and field.value is not string else '' }}</textarea>
-    {% elif field.kind == "select" %}
-    <select id="{{ input_id }}" class="review-input compact-input" data-plugin-config-path="{{ field.path }}" data-plugin-config-kind="select" data-plugin-config-present="{{ 'true' if field.present else 'false' }}" data-plugin-config-required="{{ 'true' if field.required else 'false' }}">
-      {% if not field.required %}<option value="" {% if not field.present %}selected{% endif %}>不设置</option>{% endif %}
-      {% for option in field.enum %}<option value="{{ loop.index0 }}" data-plugin-option-value="{{ option | tojson | forceescape }}" {% if field.present and option == field.value %}selected{% endif %}>{{ option }}</option>{% endfor %}
-    </select>
-    {% else %}
-    <input
-      id="{{ input_id }}"
-      class="review-input compact-input"
-      type="{{ 'password' if field.secret else 'number' if field.kind == 'number' else 'text' }}"
-      value="{{ field.value }}"
-      data-plugin-config-path="{{ field.path }}"
-      data-plugin-config-kind="{{ field.kind }}"
-      data-plugin-config-present="{{ 'true' if field.present else 'false' }}"
-      data-plugin-config-required="{{ 'true' if field.required else 'false' }}"
-      {% if field.secret %}autocomplete="new-password" data-plugin-config-secret="true"{% endif %}
-      {% if field.step %}step="{{ field.step }}"{% endif %}
-      {% if field.minimum is not none %}min="{{ field.minimum }}"{% endif %}
-      {% if field.maximum is not none %}max="{{ field.maximum }}"{% endif %}
-      {% if field.min_length is not none %}minlength="{{ field.min_length }}"{% endif %}
-      {% if field.max_length is not none %}maxlength="{{ field.max_length }}"{% endif %}
-      placeholder="{{ '输入新值（不会回显）' if field.secret else field.label }}"
-    >
-    {% endif %}
-    {% if field.hint %}<span class="auto-field-hint">{{ field.hint }}</span>{% endif %}
-  </label>
-{% endmacro %}
-
 {% block content %}
 <section class="auto-page" data-reveal="tasks">
+  {% if automation_plugin_filter %}
+  <div class="automation-filter-notice" role="status">
+    <span>正在查看对应扩展的自动化实例</span>
+    <a href="/automations">查看全部</a>
+  </div>
+  {% endif %}
 
   {% if automation_plugin_warning %}
   <div class="auto-feedback auto-feedback--warning" role="status">
@@ -199,6 +166,7 @@
       data-sort-recent="{{ task.last_activity_value }}"
       data-sort-mode="{{ task.task_mode }}"
       data-automation-provider="{{ task.provider | default('ronghui', true) }}"
+      data-plugin-id="{{ task.plugin.plugin_id if task.plugin else '' }}"
     >
       {% set is_scan_preview_workflow = task.task_id == 'scan_codes' and task.plugin and task.plugin.plugin_id == 'sync_scan_codes' %}
       {% set is_selection_preview_workflow = task.task_id in ['self_pickup_problem_upload', 'split_pending_problem_upload'] and task.plugin %}
@@ -217,11 +185,11 @@
         <button type="submit" hidden data-save-trigger></button>
 
         {% set has_schedule = task.is_schedulable and task.schedule_supported %}
-        {% set has_params = task.plugin.config_fields if task.plugin else task.tool_param_fields %}
-        {% set has_webhook = task.has_webhook %}
+        {% set has_params = [] if task.plugin else task.tool_param_fields %}
+        {% set has_webhook = false if task.plugin else task.has_webhook %}
         {% set has_resources = task.resource_bindings if not task.plugin else [] %}
-        {% set has_plugin_resource_roles = task.plugin.resource_roles | selectattr('ui_visible') | list if task.plugin else [] %}
-        {% set has_account_roles = task.account_role_bindings %}
+        {% set has_plugin_resource_roles = [] %}
+        {% set has_account_roles = [] if task.plugin else task.account_role_bindings %}
         {% set is_webhook = task.task_mode == 'webhook' %}
         {% set can_save = task.can_save | default(true) %}
         {% set can_run_now = task.can_run_now | default(true) %}
@@ -230,7 +198,7 @@
           {% set can_run_now = false %}
           {% set run_disabled_reason = '未声明后台手动入口' %}
         {% endif %}
-        {% set has_expandable_settings = can_save and (has_webhook or task.is_schedulable or has_params or has_resources or has_account_roles or has_plugin_resource_roles or (task.plugin and task.plugin.entrypoints)) %}
+        {% set has_expandable_settings = can_save and ((has_schedule) if task.plugin else (has_webhook or task.is_schedulable or has_params or has_resources or has_account_roles)) %}
 
         {# ── 卡片主行 ── #}
         <div class="auto-card-row">
@@ -324,7 +292,7 @@
         {% set plugin = task.plugin %}
         <section
           class="automation-plugin-instance{% if task.plugin_blocked %} automation-plugin-instance--blocked{% endif %}"
-          data-plugin-instance
+          data-plugin-instance data-extension-instance
           data-automation-id="{{ task.task_id }}"
           data-record-version="{{ plugin.record_version }}"
           data-project-configuration-version="{{ plugin.project_configuration_version }}"
@@ -340,9 +308,18 @@
               {% if plugin.action_summary %}<p>{{ plugin.action_summary }}</p>{% endif %}
               <small>需要设置：{{ plugin.configuration_summary }}</small>
             </div>
+            {% if can_manage_plugins %}
+            <div class="extension-instance__actions">
+              {% if plugin.settings_ui %}<a class="ghost-btn" href="/automations/{{ task.task_id | urlencode }}/settings"><i data-feather="settings"></i>设置</a>{% endif %}
+              <label class="ghost-btn extension-upgrade"><span>选择更新包</span><input type="file" accept=".zip,application/zip" data-extension-upgrade {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}></label>
+              <button class="ghost-btn" type="button" data-extension-action="upgrade" {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>升级</button>
+              {% if plugin.enabled %}<button class="ghost-btn" type="button" data-extension-action="disable" {% if not plugin.disable_allowed %}disabled{% endif %}>暂停</button>{% else %}<button class="ghost-btn" type="button" data-extension-action="enable" {% if not plugin.enable_allowed %}disabled{% endif %}>启用</button>{% endif %}
+              <button class="ghost-btn extension-action--danger" type="button" data-extension-action="uninstall" {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>卸载</button>
+            </div>
+            {% endif %}
           </div>
 
-          {% if plugin.execution_platform == 'windows' %}
+          {% if false and plugin.execution_platform == 'windows' %}
           <div class="automation-plugin-worker-binding">
             <label for="plugin-worker-{{ task.task_id }}">运行设备</label>
             <select id="plugin-worker-{{ task.task_id }}" class="review-input compact-input" data-plugin-worker-select {% if not can_manage_plugins %}disabled{% endif %}>
@@ -366,7 +343,7 @@
             {% endif %}
           </div>
           {% endif %}
-          <p class="automation-plugin-feedback" data-plugin-instance-feedback role="status" aria-live="polite" hidden></p>
+          <p class="automation-plugin-feedback" data-plugin-instance-feedback data-extension-feedback role="status" aria-live="polite" hidden></p>
         </section>
         {% else %}
         <div class="automation-plugin-block automation-plugin-block--missing" role="alert">
@@ -375,23 +352,7 @@
         </div>
         {% endif %}
 
-        {% if task.plugin and task.plugin.runtime_model == 'SERVICE_V2' %}
-        <section
-          class="auto-project-governance auto-project-governance--active auto-project-governance--service-v2"
-          aria-label="{{ task.name_value }}运行方式"
-        >
-          <div class="auto-project-governance-row">
-            <div class="auto-project-governance-copy">
-              <span class="auto-project-governance-kicker">
-                <i data-feather="shield"></i>
-                运行方式
-              </span>
-              <strong>完全自动</strong>
-              <p>项目设置完整且服务正常时会自动运行，并保留每次运行记录。</p>
-            </div>
-          </div>
-        </section>
-        {% elif task.approval_policy %}
+        {% if task.approval_policy %}
         {% set policy = task.approval_policy | default({}, true) %}
         <section
           class="auto-project-governance auto-project-governance--{{ policy.effective_status | default('unavailable', true) | lower }}"
@@ -675,105 +636,6 @@
           </div>
           {% endif %}
 
-          {% if task.plugin and (task.plugin.config_fields or not task.plugin.config_schema_supported) %}
-          <div class="auto-settings-section automation-plugin-config-section">
-            <div class="auto-settings-label">
-              <i data-feather="sliders" class="auto-settings-icon"></i>
-              任务怎么运行
-              {% if task.plugin.config_fields %}<span class="auto-settings-count">{{ task.plugin.config_fields|length }}</span>{% endif %}
-            </div>
-            {% if task.plugin.config_schema_supported %}
-              {% if task.plugin.config_fields %}
-              {% set common_fields = task.plugin.config_fields | rejectattr('advanced') | list %}
-              {% set advanced_fields = task.plugin.config_fields | selectattr('advanced') | list %}
-              {% if common_fields %}
-              <div class="auto-param-grid" data-plugin-config-fields>
-                {% for field in common_fields %}{{ render_plugin_config_field(field, 'plugin-config-' ~ task.task_id) }}{% endfor %}
-              </div>
-              {% endif %}
-              {% if advanced_fields %}
-              <details class="automation-plugin-advanced-config">
-                <summary>更多设置 <span>{{ advanced_fields|length }}</span></summary>
-                <p>日常使用通常无需修改。需要限制处理范围或排查任务时再展开设置。</p>
-                <div class="auto-param-grid" data-plugin-config-fields>
-                  {% for field in advanced_fields %}{{ render_plugin_config_field(field, 'plugin-config-' ~ task.task_id) }}{% endfor %}
-                </div>
-              </details>
-              {% endif %}
-              {% endif %}
-            {% else %}
-            <div class="automation-plugin-block" role="alert">
-              <i data-feather="alert-triangle"></i>
-              <span>{{ task.plugin.config_schema_error or '该插件配置 Schema 不受 Console 安全表单支持，已阻断配置。' }}</span>
-            </div>
-            {% endif %}
-          </div>
-          {% endif %}
-
-          {% if task.plugin %}
-          <div class="auto-settings-section automation-plugin-entrypoints">
-            <div class="auto-settings-label">
-              <i data-feather="git-branch" class="auto-settings-icon"></i>
-              允许从哪里启动
-            </div>
-            <div class="automation-plugin-entrypoint-grid">
-              {% for entrypoint in task.plugin.entrypoints %}
-              {% set entrypoint_kind = task.plugin.entrypoint_kinds.get(entrypoint, entrypoint) %}
-              <label class="automation-plugin-entrypoint-option">
-                <input type="checkbox" role="switch" value="{{ entrypoint }}" data-plugin-entrypoint data-plugin-entrypoint-kind="{{ entrypoint_kind }}" {% if entrypoint in task.plugin.enabled_entrypoints %}checked{% endif %} aria-label="{{ {'scheduler': '系统定时', 'console': '后台手动', 'feishu': '飞书消息', 'webhook': '外部验签请求', 'events': '事件订阅'}.get(entrypoint_kind, entrypoint_kind) }}">
-                <span class="automation-plugin-entrypoint-track" aria-hidden="true"></span>
-                <span class="automation-plugin-entrypoint-copy">
-                  <strong>{{ {'scheduler': '系统定时', 'console': '后台手动', 'feishu': '飞书消息', 'webhook': '外部验签请求', 'events': '事件订阅'}.get(entrypoint_kind, entrypoint_kind) }}</strong>
-                  <small>
-                    <span data-plugin-entrypoint-state>{% if entrypoint in task.plugin.enabled_entrypoints %}开启{% else %}关闭{% endif %}</span>
-                  </small>
-                </span>
-              </label>
-              {% endfor %}
-            </div>
-            <p class="auto-webhook-note">关闭某个入口后，将不能从该位置启动任务，已保存的设置不会丢失。</p>
-          </div>
-
-          {% if has_plugin_resource_roles %}
-          <div class="auto-settings-section">
-            <div class="auto-settings-label">
-              <i data-feather="database" class="auto-settings-icon"></i>
-              数据从哪里读取、保存到哪里
-            </div>
-            <div class="auto-account-role-stack">
-              {% for binding in task.plugin.resource_role_bindings if binding.ui_visible %}
-              {% set resource_input_id = 'resource-role-' ~ task.task_id ~ '-' ~ binding.role %}
-              <div class="auto-account-role-row">
-                <label class="auto-account-role-label" for="{{ resource_input_id }}">
-                  <span class="auto-setting-title-line">
-                    <strong>{{ binding.label }}</strong>
-                    <span class="auto-requirement-badge{% if not binding.required %} auto-requirement-badge--optional{% endif %}">{{ '必选' if binding.required else '可选' }}</span>
-                  </span>
-                  <small>{{ binding.hint }}</small>
-                </label>
-                <select
-                  id="{{ resource_input_id }}"
-                  class="review-input compact-input auto-account-select"
-                  data-plugin-resource-role="{{ binding.role }}"
-                  data-plugin-resource-required="{{ 'true' if binding.required else 'false' }}"
-                >
-                  <option value="" {% if not binding.selected_resource_id %}selected{% endif %}>{{ '请选择表格' if binding.required else '暂不使用' }}</option>
-                  {% if binding.selected_resource_id and not binding.selected_available %}
-                  <option value="{{ binding.selected_resource_id }}" selected disabled>之前选择的表格已不可用</option>
-                  {% endif %}
-                  {% for resource in binding.options %}
-                  <option value="{{ resource.resource_id }}" {% if resource.resource_id == binding.selected_resource_id %}selected{% endif %}>{{ resource.display_name }}</option>
-                  {% endfor %}
-                </select>
-                {% if binding.blocked_reason %}<small class="auto-account-blocked">{{ binding.blocked_reason }}</small>{% endif %}
-              </div>
-              {% endfor %}
-            </div>
-            <p class="auto-webhook-note">页面不会显示表格密钥等敏感信息。没有明确选择时，系统不会替你猜测。</p>
-          </div>
-          {% endif %}
-          {% endif %}
-
           {% if has_resources %}
           <div class="auto-settings-section">
             <div class="auto-settings-label">
@@ -901,7 +763,6 @@
               <i data-feather="plus"></i>
               添加时间
             </button>
-            {% if task.plugin %}<p class="auto-account-blocked" data-plugin-schedule-effect {% if not (task.plugin.schedule.enabled and 'scheduler' not in task.plugin.enabled_entrypoint_kinds) %}hidden{% endif %}>定时时间会保留，但“系统定时”入口关闭，当前不会运行。</p>{% endif %}
             {% if task.plugin %}<p class="auto-webhook-note">时间由系统保存，修改后点击“保存项目设置”。{% if task.plugin_schedule_source == 'legacy_migration' %} 当前显示旧任务时间，保存后会统一到项目设置。{% endif %}</p>{% endif %}
           </div>
           {% endif %}
@@ -925,9 +786,9 @@
           <div class="auto-settings-footer">
             {% if task.plugin %}
             {% set plugin_settings_feedback_id = 'plugin-settings-feedback-' ~ task.task_id %}
-            <button class="primary-btn auto-save-btn" type="button" data-plugin-configuration-save aria-describedby="{{ plugin_settings_feedback_id }}" {% if not can_manage_plugins or not task.plugin.config_schema_supported or (has_plugin_resource_roles and not task.plugin.resource_bindings_ready) or not task.plugin_schedule_supported or not task.plugin.lifecycle_actions_allowed %}disabled{% endif %}>
+            <button class="primary-btn auto-save-btn" type="button" data-plugin-configuration-save aria-describedby="{{ plugin_settings_feedback_id }}" {% if not can_manage_plugins or not task.plugin.configured or not task.plugin_schedule_supported or not task.plugin.lifecycle_actions_allowed %}disabled{% endif %}>
               <i data-feather="check"></i>
-              保存项目设置
+              保存定时计划
             </button>
             <p id="{{ plugin_settings_feedback_id }}" class="automation-plugin-feedback automation-plugin-settings-feedback" data-plugin-settings-feedback role="status" aria-live="polite" hidden></p>
             {% else %}
@@ -974,10 +835,12 @@
   </div>
   {% endif %}
 </section>
+{% if can_manage_plugins %}{% include "_automation_extension_install_dialog.html" %}{% endif %}
 {% endblock %}
 
 {% block scripts %}
 {{ super() }}
+<script src="/static/extensions.js?v=automation-extensions-20260902"></script>
 <script>
   /* ── helpers ── */
   function setDeep(target, path, value) {

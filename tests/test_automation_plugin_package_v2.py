@@ -61,6 +61,25 @@ def _manifest() -> dict[str, object]:
             "webhook": [],
             "feishu": [],
             "events": [],
+            "harness": [
+                {
+                    "id": "assistant_run",
+                    "title": "查询示例结果",
+                    "description": "读取示例插件的安全结果。",
+                    "scenarios": ["查询示例插件的运行结果"],
+                    "input_schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {},
+                        "required": [],
+                    },
+                    "service": "plugin.sample_plugin.runner@1",
+                    "operation": "run",
+                    "effect": "read",
+                    "confirmation_policy": "none",
+                    "preview_operation": None,
+                }
+            ],
         },
         "config_schema": {
             "type": "object",

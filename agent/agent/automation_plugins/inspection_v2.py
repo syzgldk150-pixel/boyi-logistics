@@ -18,6 +18,33 @@ def _thaw_json(value: Any) -> Any:
     return value
 
 
+def validate_service_v2_install_contract(verified: Any) -> None:
+    """Enforce install/upgrade requirements without changing manifest parsing."""
+
+    manifest = getattr(verified, "manifest", None)
+    if manifest is None:
+        raise PluginConflictError(
+            "service-v2 inspection requires a verified package",
+            code="PLUGIN_CONTRACT_INVALID",
+        )
+    harness_contributions = manifest.contributes.get("harness", ())
+    if not isinstance(harness_contributions, (list, tuple)) or not harness_contributions:
+        raise PluginConflictError(
+            "service-v2 installation requires at least one AI assistant capability",
+            code="PLUGIN_AI_CAPABILITY_REQUIRED",
+        )
+    required_config = manifest.config_schema.get("required", ())
+    required_binding = any(
+        isinstance(item, Mapping) and item.get("required") is True
+        for item in (*manifest.account_roles, *manifest.resource_roles)
+    )
+    if (required_config or required_binding) and manifest.settings_ui is None:
+        raise PluginConflictError(
+            "service-v2 required settings need a plugin-owned settings UI",
+            code="PLUGIN_SETTINGS_UI_REQUIRED",
+        )
+
+
 def service_v2_wizard_projection(
     verified: Any,
 ) -> dict[str, Any]:
@@ -128,7 +155,15 @@ def service_v2_wizard_projection(
             "supported": any(item["kind"] == "scheduler" for item in contributions),
             "default_schedule": default_schedule,
         },
+        "settings_ui": (
+            _thaw_json(manifest.settings_ui)
+            if getattr(manifest, "settings_ui", None) is not None
+            else None
+        ),
     }
 
 
-__all__ = ["service_v2_wizard_projection"]
+__all__ = [
+    "service_v2_wizard_projection",
+    "validate_service_v2_install_contract",
+]

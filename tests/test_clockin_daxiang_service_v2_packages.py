@@ -283,8 +283,12 @@ def test_both_clock_packages_build_deterministically_and_validate_as_independent
             assert manifest.contributes[disabled_kind] == ()
 
         projected = ServiceV2ProjectContract.from_manifest(manifest)
-        assert projected.allowed_entrypoints == ("manual_run", "daily_clockin")
-        assert projected.default_entrypoints == ("manual_run",)
+        assert projected.allowed_entrypoints == (
+            "manual_run",
+            "daily_clockin",
+            "assistant_preview",
+        )
+        assert projected.default_entrypoints == ("manual_run", "assistant_preview")
         assert projected.invocation_contracts["manual_run"]["service"] == metadata["service"]
         assert projected.invocation_contracts["manual_run"]["contribution_kind"] == "console"
         assert projected.invocation_contracts["daily_clockin"]["service"] == metadata["service"]
@@ -421,13 +425,18 @@ def test_built_packages_have_only_declarative_manifest_and_compilable_python_mod
         "payload/clock_runtime.py",
         "payload/main.py",
         "payload/plugin.py",
+        "settings/index.html",
+        "settings/settings.css",
+        "settings/settings.js",
     }
     for plugin_id, metadata in PACKAGES.items():
         package_bytes = _build(metadata["source"], tmp_path / f"{plugin_id}.zip")
         with zipfile.ZipFile(Path(tmp_path) / f"{plugin_id}.zip") as archive:
             assert set(archive.namelist()) == expected_members
             assert all(
-                not name.endswith((".css", ".html", ".js", ".ts", ".tsx", ".wasm")) for name in archive.namelist()
+                name.startswith("settings/")
+                for name in archive.namelist()
+                if name.endswith((".css", ".html", ".js"))
             )
             for member in sorted(expected_members):
                 source = archive.read(member)
