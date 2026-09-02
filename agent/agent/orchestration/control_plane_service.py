@@ -967,13 +967,133 @@ def _customer_problem_open_refs(uow: Any) -> list[dict[str, Any]]:
 
 def _run_dto(row: Mapping[str, Any]) -> dict[str, Any]:
     result = _select(row, _RUN_PUBLIC_FIELDS)
-    result["steps"] = [_select(step, _STEP_PUBLIC_FIELDS) for step in row.get("steps", ()) if isinstance(step, Mapping)]
+    raw_steps = [step for step in row.get("steps", ()) if isinstance(step, Mapping)]
+    result["steps"] = [_select(step, _STEP_PUBLIC_FIELDS) for step in raw_steps]
     plan = row.get("plan_json")
     if isinstance(plan, Mapping):
         result["plan"] = _safe_plan(plan)
+    stage = _run_stage_projection(row, raw_steps)
+    result.update(stage)
     result["allowed_actions"] = _run_actions(str(row.get("status") or ""))
     result["next_poll_after_ms"] = _next_poll_after_ms(str(row.get("status") or ""))
     return result
+
+
+_PUBLIC_PROBLEM_CODES = {
+    "AUTH_REQUIRED": "ACCOUNT_LOGIN_REQUIRED",
+    "BLOCKED_LOGIN": "ACCOUNT_LOGIN_REQUIRED",
+    "BROKER_ACCOUNT_UNAVAILABLE": "ACCOUNT_LOGIN_REQUIRED",
+    "BROKER_CONCURRENCY_BLOCKED": "RESOURCE_BUSY",
+    "BROKER_RESOURCE_INVALID": "RESOURCE_UNAVAILABLE",
+    "BROKER_RESOURCE_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
+    "BROKER_SOURCE_FAILED": "SOURCE_UNAVAILABLE",
+    "BROKER_SOURCE_INVALID": "SOURCE_SCHEMA_CHANGED",
+    "EXECUTION_LOCK_CONTEXT_REQUIRED": "EXECUTION_CONTEXT_MISSING",
+    "PLUGIN_GENERATION_UNAVAILABLE": "RUNTIME_GENERATION_UNSTABLE",
+    "PLUGIN_PROCESS_FAILED": "PLUGIN_EXECUTION_FAILED",
+    "PROJECT_ROUTE_NOT_FOUND": "PROJECT_ROUTE_NOT_FOUND",
+    "RESOURCE_PERMISSION_DENIED": "RESOURCE_PERMISSION_DENIED",
+    "RUNTIME_GENERATION_UNSTABLE": "RUNTIME_GENERATION_UNSTABLE",
+    "SOURCE_SCHEMA_CHANGED": "SOURCE_SCHEMA_CHANGED",
+    "SOURCE_SHEET_NOT_FOUND": "SOURCE_SHEET_NOT_FOUND",
+    "SOURCE_UNAVAILABLE": "SOURCE_UNAVAILABLE",
+    "WRITE_OUTCOME_UNKNOWN": "WRITE_OUTCOME_UNKNOWN",
+}
+
+
+def _public_problem_code(row: Mapping[str, Any], steps: Sequence[Mapping[str, Any]]) -> str:
+    candidates = [str(row.get("error_code") or "").strip().upper()]
+    candidates.extend(
+        str(step.get("error_code") or "").strip().upper()
+        for step in reversed(steps)
+    )
+    for code in candidates:
+        if not code:
+            continue
+        mapped = _PUBLIC_PROBLEM_CODES.get(code)
+        if mapped:
+            return mapped
+        if "PERMISSION" in code or code.endswith("_FORBIDDEN"):
+            return "RESOURCE_PERMISSION_DENIED"
+        if "RESOURCE" in code and any(marker in code for marker in ("MISSING", "INVALID", "UNAVAILABLE", "NOT_FOUND")):
+            return "RESOURCE_UNAVAILABLE"
+        if "SOURCE" in code and any(marker in code for marker in ("SCHEMA", "INVALID", "FIELD")):
+            return "SOURCE_SCHEMA_CHANGED"
+        if "SOURCE" in code and any(marker in code for marker in ("FAILED", "UNAVAILABLE", "TIMEOUT")):
+            return "SOURCE_UNAVAILABLE"
+    status = str(row.get("status") or "").upper()
+    if status == RunStatus.BLOCKED_LOGIN.value:
+        return "ACCOUNT_LOGIN_REQUIRED"
+    if status in {
+        RunStatus.BLOCKED_DATA.value,
+        RunStatus.FAILED_RETRYABLE.value,
+        RunStatus.FAILED_TERMINAL.value,
+        RunStatus.PARTIAL.value,
+    }:
+        return "EXECUTION_FAILED"
+    return ""
+
+
+def _run_stage_projection(
+    row: Mapping[str, Any],
+    steps: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    status = str(row.get("status") or "").upper()
+    ordered = sorted(steps, key=lambda value: int(value.get("step_order") or 0))
+    active = next(
+        (
+            step
+            for step in ordered
+            if str(step.get("status") or "").upper() in {"RUNNING", "VERIFYING"}
+        ),
+        None,
+    )
+    terminal = status in {
+        RunStatus.COMPLETED.value,
+        RunStatus.PARTIAL.value,
+        RunStatus.FAILED_TERMINAL.value,
+        RunStatus.CANCELLED.value,
+        RunStatus.BLOCKED_LOGIN.value,
+        RunStatus.BLOCKED_DATA.value,
+        RunStatus.FAILED_RETRYABLE.value,
+        RunStatus.NEEDS_CLARIFICATION.value,
+    }
+    if terminal:
+        phase, stage_code, description = "finished", "FINISHED", "本次运行已结束"
+    elif status == RunStatus.VERIFYING.value or (
+        active is not None and str(active.get("status") or "").upper() == "VERIFYING"
+    ):
+        phase, stage_code, description = "verifying", "VERIFYING_RESULT", "正在核验结果"
+    elif active is None:
+        if status == RunStatus.WAITING_APPROVAL.value:
+            phase, stage_code, description = "queued", "WAITING_APPROVAL", "正在等待审批"
+        else:
+            phase, stage_code, description = "queued", "WAITING_EXECUTION_SLOT", "正在等待执行通道"
+    else:
+        operation = str(active.get("operation_type") or "").lower()
+        if operation == "read":
+            phase, stage_code, description = "source_read", "READING_SOURCE", "正在读取数据"
+        elif operation in {
+            "internal_projection_write",
+            "external_write",
+            "financial_write",
+            "destructive",
+        }:
+            phase, stage_code, description = "writing", "WRITING_RESULT", "正在写入结果"
+        else:
+            phase, stage_code, description = "processing", "PROCESSING_DATA", "正在处理数据"
+    stage_started_at = (
+        active.get("started_at")
+        if active is not None
+        else row.get("finished_at") if terminal else row.get("created_at")
+    )
+    return {
+        "execution_phase": phase,
+        "stage_code": stage_code,
+        "stage_started_at": _json_value(stage_started_at),
+        "stage_description": description,
+        "public_problem_code": _public_problem_code(row, ordered),
+    }
 
 
 def _work_item_dto(row: Mapping[str, Any]) -> dict[str, Any]:

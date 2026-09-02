@@ -73,6 +73,19 @@ SELECTION_PREVIEW_ERROR_MESSAGES = {
     "SELECTION_REQUIRED": "请至少选择一票运单。",
     "SELECTION_INVALID": "所选运单无效，请重新选择。",
     "REQUEST_ID_REUSED": "本次请求标识已被使用，请重新点击确认。",
+    "ACCOUNT_LOGIN_REQUIRED": "候选读取失败：业务账号登录已失效，请重新登录后再试。",
+    "BROKER_ACCOUNT_UNAVAILABLE": "候选读取失败：所选业务账号当前不可用。",
+    "BROKER_RESOURCE_INVALID": "候选读取失败：已绑定的数据位置无效，请重新选择。",
+    "BROKER_RESOURCE_UNAVAILABLE": "候选读取失败：飞书数据位置暂时不可用，请检查权限和工作表状态。",
+    "BROKER_SOURCE_FAILED": "候选读取失败：业务数据源暂时不可达，请稍后重试。",
+    "BROKER_SOURCE_INVALID": "候选读取失败：来源字段结构已变化，请检查每日到货工作表。",
+    "PROJECT_ROUTE_NOT_FOUND": "候选读取失败：该插件的项目运行位置尚未就绪。",
+    "RESOURCE_PERMISSION_DENIED": "候选读取失败：当前账号无权读取所选飞书数据位置。",
+    "RESOURCE_UNAVAILABLE": "候选读取失败：所选飞书数据位置已停用、被删除或不可用。",
+    "RUNTIME_GENERATION_UNSTABLE": "候选读取失败：插件运行环境正在同步，请稍后重试。",
+    "SOURCE_SCHEMA_CHANGED": "候选读取失败：每日到货工作表字段结构已变化，请检查表头。",
+    "SOURCE_SHEET_NOT_FOUND": "候选读取失败：未找到绑定的每日到货工作表，请重新选择。",
+    "SOURCE_UNAVAILABLE": "候选读取失败：每日到货数据暂时不可达，请稍后重试。",
 }
 SCAN_PREVIEW_PUBLIC_FIELDS = frozenset(
     {

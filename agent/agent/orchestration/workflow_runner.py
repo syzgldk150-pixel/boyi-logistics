@@ -907,27 +907,12 @@ class WorkflowRunner:
         if step.operation_type in {OperationType.READ, OperationType.COMPUTE}:
             return ()
 
-        account_ids = {
-            str(value).strip()
-            for value in (step.account_id, step.arguments.get("account_id"))
-            if str(value or "").strip()
-        }
-        raw_account_ids = step.arguments.get("account_ids")
-        if isinstance(raw_account_ids, (list, tuple, set, frozenset)):
-            account_ids.update(
-                str(value).strip()
-                for value in raw_account_ids
-                if str(value or "").strip()
-            )
+        account_ids = self._execution_account_ids(step, capability)
 
         plugin_runtime = capability.get("_plugin_runtime")
-        runtime_account_bindings: Mapping[str, Any] = {}
         runtime_resource_bindings: Mapping[str, Any] = {}
         runtime_target = ""
         if isinstance(plugin_runtime, Mapping):
-            raw_bindings = plugin_runtime.get("account_bindings")
-            if isinstance(raw_bindings, Mapping):
-                runtime_account_bindings = raw_bindings
             raw_resources = plugin_runtime.get("resource_bindings")
             if isinstance(raw_resources, Mapping):
                 runtime_resource_bindings = raw_resources
@@ -937,17 +922,6 @@ class WorkflowRunner:
                 or plugin_runtime.get("automation_id")
                 or ""
             ).strip()
-        for raw_binding in runtime_account_bindings.values():
-            values = (
-                raw_binding
-                if isinstance(raw_binding, (list, tuple, set, frozenset))
-                else (raw_binding,)
-            )
-            account_ids.update(
-                str(value).strip()
-                for value in values
-                if str(value or "").strip()
-            )
 
         keys: set[tuple[str, ...]] = {
             ("account-write", account_id)
@@ -1044,6 +1018,60 @@ class WorkflowRunner:
             )
         return tuple(sorted(keys))
 
+    @staticmethod
+    def _execution_account_ids(
+        step: PlanStep,
+        capability: Mapping[str, Any],
+    ) -> set[str]:
+        """Resolve exact account identities shared by writes and browser lanes."""
+
+        account_ids = {
+            str(value).strip()
+            for value in (step.account_id, step.arguments.get("account_id"))
+            if str(value or "").strip()
+        }
+        raw_account_ids = step.arguments.get("account_ids")
+        if isinstance(raw_account_ids, (list, tuple, set, frozenset)):
+            account_ids.update(
+                str(value).strip()
+                for value in raw_account_ids
+                if str(value or "").strip()
+            )
+
+        plugin_runtime = capability.get("_plugin_runtime")
+        runtime_account_bindings: Mapping[str, Any] = {}
+        if isinstance(plugin_runtime, Mapping):
+            raw_bindings = plugin_runtime.get("account_bindings")
+            if isinstance(raw_bindings, Mapping):
+                runtime_account_bindings = raw_bindings
+        for raw_binding in runtime_account_bindings.values():
+            values = (
+                raw_binding
+                if isinstance(raw_binding, (list, tuple, set, frozenset))
+                else (raw_binding,)
+            )
+            account_ids.update(
+                str(value).strip()
+                for value in values
+                if str(value or "").strip()
+            )
+
+        return account_ids
+
+    def _browser_session_lock_keys(
+        self,
+        step: PlanStep,
+        capability: Mapping[str, Any],
+    ) -> tuple[tuple[str, ...], ...]:
+        if not self._is_browser_step(step, capability):
+            return ()
+        account_ids = self._execution_account_ids(step, capability)
+        if not account_ids:
+            # Unbound browser work cannot be proven to use an independent
+            # session, so it stays in one conservative lane.
+            return (("browser-account", "unbound"),)
+        return tuple(("browser-account", account_id) for account_id in sorted(account_ids))
+
     def _is_browser_step(
         self,
         step: PlanStep,
@@ -1073,7 +1101,12 @@ class WorkflowRunner:
         plan: Plan,
         capability: Mapping[str, Any],
     ) -> Callable[[], None]:
-        keys = self._execution_lock_keys(step, plan, capability)
+        keys = tuple(
+            sorted(
+                set(self._execution_lock_keys(step, plan, capability))
+                | set(self._browser_session_lock_keys(step, capability))
+            )
+        )
         is_browser = self._is_browser_step(step, capability)
         if not keys and not is_browser:
             return _noop_finish

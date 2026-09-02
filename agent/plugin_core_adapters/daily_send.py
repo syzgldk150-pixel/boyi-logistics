@@ -86,6 +86,28 @@ def _error(message: str, code: str) -> PluginExecutionError:
     return PluginExecutionError(message, code=code)
 
 
+def _normalize_source_total(value: object) -> int:
+    """Return a strictly verified non-negative integer source total.
+
+    Ronghui may serialize an integer as either a JSON number or an equivalent
+    decimal string such as ``"12.0"``.  Those representations are equivalent;
+    booleans, fractions, non-finite values and malformed text remain invalid.
+    """
+
+    if isinstance(value, bool) or value is None:
+        raise _error("the Ronghui send-order total is invalid", "BROKER_SOURCE_INVALID")
+    try:
+        number = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError) as exc:
+        raise _error(
+            "the Ronghui send-order total is invalid",
+            "BROKER_SOURCE_INVALID",
+        ) from exc
+    if not number.is_finite() or number < 0 or number != number.to_integral_value():
+        raise _error("the Ronghui send-order total is invalid", "BROKER_SOURCE_INVALID")
+    return int(number)
+
+
 def _required_profile(descriptor: Mapping[str, Any]) -> str:
     profile = str(descriptor.get("session_profile") or "").strip()
     if not profile:
@@ -142,14 +164,9 @@ def _default_source_page(
         raise _error("the Ronghui send-order page is invalid", "BROKER_SOURCE_INVALID")
     rows = payload.get("data")
     total = payload.get("total")
-    if not isinstance(rows, list) or isinstance(total, bool):
+    if not isinstance(rows, list):
         raise _error("the Ronghui send-order page is invalid", "BROKER_SOURCE_INVALID")
-    try:
-        total_value = int(total)
-    except (TypeError, ValueError) as exc:
-        raise _error("the Ronghui send-order total is invalid", "BROKER_SOURCE_INVALID") from exc
-    if str(total_value) != str(total).strip() or total_value < 0:
-        raise _error("the Ronghui send-order total is invalid", "BROKER_SOURCE_INVALID")
+    total_value = _normalize_source_total(total)
     return {"items": rows, "total": total_value}
 
 

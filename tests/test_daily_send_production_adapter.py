@@ -5,7 +5,10 @@ from copy import deepcopy
 import pytest
 
 from agent.automation_plugins.errors import PluginExecutionError
-from plugin_core_adapters.daily_send import build_production_daily_send_ports
+from plugin_core_adapters.daily_send import (
+    _normalize_source_total,
+    build_production_daily_send_ports,
+)
 
 
 _FIELDS = {
@@ -76,6 +79,18 @@ class _AccountManager:
     def require_authenticated_binding(self, account_id):
         self.authenticated_binding_calls.append(account_id)
         raise AssertionError("describe_account must not authenticate online")
+
+
+@pytest.mark.parametrize("value", [0, 12, "12", "12.0", "0012.000"])
+def test_source_total_accepts_verified_equivalent_integer_formats(value):
+    assert _normalize_source_total(value) == int(float(value))
+
+
+@pytest.mark.parametrize("value", [None, True, False, -1, "-1", "1.5", "nan", "inf", ""])
+def test_source_total_rejects_non_integer_or_malformed_formats(value):
+    with pytest.raises(PluginExecutionError) as failure:
+        _normalize_source_total(value)
+    assert failure.value.code == "BROKER_SOURCE_INVALID"
 
 
 def _resource_loader(resource_id):

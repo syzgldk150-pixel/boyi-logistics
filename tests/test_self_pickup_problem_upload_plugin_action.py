@@ -611,22 +611,19 @@ def test_inconclusive_readback_fails_closed_after_the_external_write():
 
 
 @pytest.mark.parametrize(
-    ("headers", "error"),
+    "headers",
     [
-        (["运单编号", "目的站点", "派送方式", "件数"], "arrival-count column"),
-        (
-            ["运单编号", "单号", "目的站点", "派送方式", "件数", "累计到货件数"],
-            "ambiguous waybill column",
-        ),
+        ["运单编号", "目的站点", "派送方式", "件数"],
+        ["运单编号", "单号", "目的站点", "派送方式", "件数", "累计到货件数"],
     ],
 )
-def test_missing_or_ambiguous_headers_fail_closed(headers, error):
+def test_missing_or_ambiguous_headers_fail_with_stable_source_problem(headers):
     action, _ = _load_action()
 
     def broker(operation, *, action, role, arguments):
         return _source_response([headers])
 
-    with pytest.raises(ValueError, match=error):
+    with pytest.raises(RuntimeError, match="^SOURCE_SCHEMA_CHANGED$"):
         action.run_action({}, broker)
 
 
@@ -638,7 +635,7 @@ def test_invalid_target_count_fails_instead_of_silently_dropping_the_waybill():
     def broker(operation, *, action, role, arguments):
         return _source_response(rows)
 
-    with pytest.raises(ValueError, match="R_SELF arrival count"):
+    with pytest.raises(RuntimeError, match="^SOURCE_SCHEMA_CHANGED$"):
         action.run_action({}, broker)
 
 

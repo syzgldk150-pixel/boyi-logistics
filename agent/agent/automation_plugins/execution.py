@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import signal
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -1744,11 +1745,18 @@ class PluginExecutionRouter:
                     "retryable": False,
                 }
             if proc.returncode != 0:
+                safe_stderr = redact_text(stderr.decode("utf-8", errors="replace"))[-500:]
+                diagnostic = re.search(
+                    r"(?:^|\n)FIRST_PARTY_ACTION_FAILED:([A-Z][A-Z0-9_]{2,63}):"
+                    r"FRAME=action\.py:\d+:[A-Za-z_][A-Za-z0-9_]*(?:\n|$)",
+                    safe_stderr,
+                )
+                failure_code = diagnostic.group(1) if diagnostic else "PLUGIN_PROCESS_FAILED"
                 return {
                     "success": False,
-                    "error": redact_text(stderr.decode("utf-8", errors="replace"))[-500:],
+                    "error": safe_stderr,
                     "error_code": self._failure_code(
-                        capability, "PLUGIN_PROCESS_FAILED", token, execution_state
+                        capability, failure_code, token, execution_state
                     ),
                     "retryable": False,
                 }

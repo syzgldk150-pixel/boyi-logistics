@@ -1266,6 +1266,14 @@ def shorten_error_message(message: Any, limit: int = 180) -> str:
 
 
 _AUTOMATION_RUN_ERROR_MESSAGES = {
+    "ACCOUNT_LOGIN_REQUIRED": "业务账号登录已失效，请重新登录后再执行。",
+    "BROKER_ACCOUNT_UNAVAILABLE": "所选业务账号当前不可用，请检查登录状态后再执行。",
+    "BROKER_CONCURRENCY_BLOCKED": "相同账号或数据位置正在被另一项任务使用，请等待其完成后重试。",
+    "BROKER_RESOURCE_INVALID": "已绑定的数据位置无效，请在插件设置中重新选择。",
+    "BROKER_RESOURCE_UNAVAILABLE": "已绑定的数据位置暂时不可用，请检查飞书权限和工作表状态。",
+    "BROKER_SOURCE_FAILED": "业务数据源暂时不可达，本次任务未进行写入，请稍后重试。",
+    "BROKER_SOURCE_INVALID": "业务数据源结构已变化，本次任务未进行写入，请检查来源页面后重试。",
+    "EXECUTION_CONTEXT_MISSING": "任务缺少可验证的账号或数据位置，本次任务未执行。",
     "IMPACT_PREVIEW_REQUIRED": (
         "执行前检查未完成，本次任务未进行任何写入。请刷新页面后重试；"
         "若仍出现，请联系系统管理员。"
@@ -1273,6 +1281,14 @@ _AUTOMATION_RUN_ERROR_MESSAGES = {
     "IMPACT_PREVIEW_STALE": "执行前检查结果已过期，本次任务未进行任何写入，请重新执行。",
     "AUTH_REQUIRED": "业务账号登录已失效，请重新登录后再执行。",
     "PROJECT_ROUTE_NOT_FOUND": "任务运行位置尚未就绪，请检查项目账号和数据设置后重试。",
+    "RESOURCE_BUSY": "相同账号或数据位置正在被另一项任务使用，请等待其完成后重试。",
+    "RESOURCE_PERMISSION_DENIED": "当前账号无权读取所选数据位置，请检查飞书共享权限。",
+    "RESOURCE_UNAVAILABLE": "所选数据位置已停用、被删除或暂时不可用，请在插件设置中重新选择。",
+    "RUNTIME_GENERATION_UNSTABLE": "插件运行环境正在同步，请等待同步完成后重试。",
+    "SOURCE_SCHEMA_CHANGED": "业务数据源结构已变化，本次任务未进行写入，请检查字段或页面结构后重试。",
+    "SOURCE_SHEET_NOT_FOUND": "未找到插件绑定的工作表，请在插件设置中重新选择准确位置。",
+    "SOURCE_UNAVAILABLE": "业务数据源暂时不可达，本次任务未进行写入，请稍后重试。",
+    "WRITE_OUTCOME_UNKNOWN": "写入结果暂时无法确认，请先核对目标数据，避免立即重复执行。",
 }
 
 _AUTOMATION_RUN_STATUS_MESSAGES = {

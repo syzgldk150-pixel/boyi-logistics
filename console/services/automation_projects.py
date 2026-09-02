@@ -2211,6 +2211,7 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin):
         handler: BaseHTTPRequestHandler,
         *,
         refresh_resources: bool = False,
+        prefer_stale: bool = False,
     ):
         if refresh_resources:
             self._clear_automation_plugin_catalog_cache()
@@ -2232,13 +2233,16 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin):
         with lock:
             cache = getattr(self, "_automation_catalog_cache", {})
             cached = cache.get(cache_key)
-            if cached is not None and cached[0] > current:
+            if cached is not None and (
+                cached[0] > current
+                or (prefer_stale and cached[0] + 300.0 > current)
+            ):
                 return copy.deepcopy(cached[1])
         result = self._load_automation_plugin_catalog_uncached(handler)
         if not result[5]:
             with lock:
                 cache = getattr(self, "_automation_catalog_cache", {})
-                cache[cache_key] = (time.monotonic() + 20.0, copy.deepcopy(result))
+                cache[cache_key] = (time.monotonic() + 60.0, copy.deepcopy(result))
                 self._automation_catalog_cache = cache
         return result
 
@@ -2378,6 +2382,8 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin):
         self,
         handler: BaseHTTPRequestHandler,
         tasks: list[dict[str, Any]],
+        *,
+        timeout_seconds: float = 12,
     ) -> tuple[str, bool]:
         user = getattr(handler, "current_admin_user", None)
         principal = self._mysql_console_principal(user)
@@ -2422,7 +2428,7 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin):
         result = self._agent_request(
             "GET",
             AUTOMATION_PROJECT_POLICY_ENDPOINT,
-            timeout=12,
+            timeout=max(0.5, float(timeout_seconds)),
             console_principal=principal,
         )
         data = result.get("data") if isinstance(result.get("data"), dict) else {}

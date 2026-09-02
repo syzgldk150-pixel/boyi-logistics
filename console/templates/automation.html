@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 
 {% block title %}自动化 | {{ app_title }}{% endblock %}
+{% block body_class %}automation-page{% endblock %}
 {% block breadcrumb %}自动化{% endblock %}
 {% block subtitle %}脚本、定时任务与运行状态{% endblock %}
 
@@ -1923,8 +1924,8 @@
         });
         renderFeedback(form, {
           kind: "info",
-          title: "等待状态同步",
-          message: "命令已提交，正在等待控制平面进入下一状态。",
+          title: data.queued ? "排队中" : "等待状态同步",
+          message: data.stage_description || "命令已提交，正在等待控制平面进入下一状态。",
           showTimer: false,
           stampText: startedAt ? `提交于：${startedAt}` : "",
           body: "",
@@ -1994,10 +1995,14 @@
               cancelRequested: !!data.cancel_requested,
             });
             startRunProgress(startedAt);
+            const progressLabel = form.querySelector("[data-task-progress-label]");
+            if (progressLabel && data.stage_description) {
+              progressLabel.textContent = data.stage_description;
+            }
             renderFeedback(form, {
               kind: "info",
-              title: data.cancel_requested ? "取消中" : "执行中",
-              message: data.cancel_requested ? "已发送取消请求，正在停止脚本。" : "脚本已开始执行，结果会自动更新。",
+              title: data.cancel_requested ? "取消中" : (data.stage_description || "执行中"),
+              message: data.cancel_requested ? "已发送取消请求，正在停止脚本。" : (data.stage_description || "脚本已开始执行，结果会自动更新。"),
               showTimer: true,
               stampText: startedAt ? `开始：${startedAt}` : "",
               body: "",
@@ -2041,7 +2046,7 @@
               termStatus.textContent = "待审批";
               termStatus.className = "auto-terminal-status auto-terminal-status--cancel";
             } else if (pendingRun) {
-              termStatus.textContent = "等待状态同步";
+              termStatus.textContent = data.queued ? "排队中" : "等待状态同步";
               termStatus.className = "auto-terminal-status auto-terminal-status--running";
             } else if (data.running && data.cancel_requested) {
               termStatus.textContent = "取消中";
@@ -2091,7 +2096,10 @@
           if (data.running || awaitingApproval || (pendingRun && !data.attention)) {
             termNeedsFinalRuntimePoll = false;
             termFinalRuntimePollCount = 0;
-            termPollTimer = setTimeout(pollOutput, data.next_poll_after_ms || 1000);
+            termPollTimer = setTimeout(
+              pollOutput,
+              document.hidden ? Math.max(Number(data.next_poll_after_ms) || 1000, 5000) : (Number(data.next_poll_after_ms) || 1000),
+            );
           } else if (!data.attention && !data.runtime && termFinalRuntimePollCount < 10) {
             termNeedsFinalRuntimePoll = true;
             termFinalRuntimePollCount += 1;
