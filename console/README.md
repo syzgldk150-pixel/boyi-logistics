@@ -41,7 +41,7 @@ Console 不负责：
 - `app.py`：组合根、HTTP 生命周期、认证门禁和最终请求分发；业务逻辑不应继续堆入这里。
 - `routes/`：按业务域识别 GET/POST 路径，再把请求交给对应服务。
 - `services/`：认证、Agent API、自动化、控制平面、业务模块、客服、财务、TMS 代理、回单/运单和 OCR 文档等领域服务。
-- `navigation.py`：15 个固定模块菜单和“扩展中心 / 系统状态”控制平面菜单的唯一静态注册处。
+- `navigation.py`：15 个固定模块菜单与“系统状态”控制平面菜单的唯一静态注册处；插件管理归入自动化，不注册“扩展中心”。
 - `database.py`：MySQL 文档仓储；只验证结构及读写数据。
 - `config.py`：无副作用配置解析；`runtime_config.py` 只由服务入口执行一次运行时 bootstrap。
 - `finance_service.py`：财务查询、分页、金额字符串和受控命令参数的 Console 适配层。
@@ -88,14 +88,13 @@ Console 运行时唯一业务数据库是与 Agent 共用的 MySQL；没有 SQLi
 - `/modules/finance`：财务工作台
 - `/dispatch`：map-only 路线、距离与运输方案比价，不包含车辆档案或真实派单
 - `/line-haul-contacts`：专线分流资料
-- `/extensions`：真实 Agent Catalog 中的扩展包、权限摘要、已安装项目健康状态和生命周期
-- `/extensions/{plugin_id}`：单个扩展包及其项目；项目设置深链回自动化页
-- `/automations`：自动化项目配置、绑定、入口、定时、权限和运行；v1→v2 迁移只保留签名后台接口，不在页面展示
+- `/extensions` 与旧详情 GET：重定向到自动化或对应插件筛选；旧生命周期 POST 返回 410
+- `/automations`：插件安装、实例设置、升级、启停、卸载、定时、权限、运行状态与输出的唯一日常入口；v1→v2 迁移只保留签名后台接口，不在页面展示
 - `/automation-accounts`：业务账号凭据与登录态的唯一 UI
 - `/settings/llm`：智能模型设置
 - `/work-items`：内部控制平面的跨项目历史、审批、Evidence 和异常恢复深链，不进入导航
 
-`/extensions` 与 `/automations` 复用同一个 Agent Catalog 和实例仓储：前者统一管理包与生命周期，后者只管理项目配置与运行；自动化卡片不重复提供包管理入口，Console 不维护第二套插件目录。Service v2 在扩展中心以同一页连续完成 ZIP 检查、权限确认、账号/资源、配置、入口/定时和最终安装；检查不落库，最终请求重新上传并验证同一 ZIP，发送后冻结根 UUID 与规范意图，响应丢失只原样重试。`/automations` 不保存凭据，也不提供登录快捷入口；项目只绑定 Agent Catalog 投影的业务账号。管理员账号与业务自动化账号是两套独立系统。
+插件和自动化复用同一个 Agent Catalog、实例仓储和生命周期状态机，并统一在 `/automations` 管理，Console 不维护第二套插件目录。Service v2 安装弹窗只完成 ZIP 检查、权限确认、实例名称和安装确认；最终请求重新上传并验证同一 ZIP，发送后冻结根 UUID 与最小意图，响应丢失只原样重试。插件业务配置在隔离的专属设置页中完成，只能通过闭合桥读取脱敏账号状态、飞书资源目录并保存不透明引用；Console 独立保存启停、定时、取消和运行审批。页面不保存或展示凭据，管理员账号与业务自动化账号仍是两套独立系统。
 
 ## 本地启动
 

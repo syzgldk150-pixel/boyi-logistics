@@ -80,7 +80,6 @@ CONSOLE_PERMISSION_REGISTRATIONS = register_console_permissions(
         ConsolePermissionRegistration("console.menu.llm_settings.view", "llm_settings", "查看智能模型", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.work_items.view", "work_items", "查看事项中心", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.system_settings.view", "system_settings", "查看系统管理", _ALL_ADMIN_ROLES),
-        ConsolePermissionRegistration("console.menu.extensions.view", "extensions", "查看扩展中心", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.system_status.view", "system_status", "查看系统状态", ("super_admin",)),
     ),
     known_menu_ids=tuple(item.menu_id for item in CONSOLE_NAVIGATION_REGISTRATIONS),

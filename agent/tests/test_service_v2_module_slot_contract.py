@@ -35,7 +35,10 @@ def _manifest_mapping(*, effect: str = "read") -> dict[str, Any]:
         "provides": [
             {
                 "service": service,
-                "operations": [{"name": "validate", "effect": effect}],
+                "operations": [
+                    {"name": "validate", "effect": effect},
+                    {"name": "assistant_preview", "effect": "read"},
+                ],
             }
         ],
         "requires": [],
@@ -58,12 +61,35 @@ def _manifest_mapping(*, effect: str = "read") -> dict[str, Any]:
                     "default_enabled": True,
                 }
             ],
+            "harness": [
+                {
+                    "id": "assistant_preview",
+                    "title": "查询运单校验状态",
+                    "description": "只读查看运单校验插件状态。",
+                    "scenarios": ["查询运单校验插件状态"],
+                    "input_schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {},
+                        "required": [],
+                    },
+                    "service": service,
+                    "operation": "assistant_preview",
+                    "effect": "read",
+                    "confirmation_policy": "none",
+                    "preview_operation": None,
+                }
+            ],
         },
         "config_schema": {
             "type": "object",
             "additionalProperties": False,
             "properties": {"mode": {"type": "string"}},
             "required": ["mode"],
+        },
+        "settings_ui": {
+            "entry": "settings/index.html",
+            "bridge_api": "1.0.0",
         },
         "storage": {"kv": False, "collections": []},
     }
@@ -76,7 +102,10 @@ def test_optional_module_slot_round_trips_and_compiles_one_host_resolver() -> No
     assert manifest.to_mapping() == source
     contract = ServiceV2ProjectContract.from_manifest(manifest)
     invocation = contract.invocation_contracts["validate_waybill"]
-    assert contract.contribution_kinds == {"validate_waybill": "module_slots"}
+    assert contract.contribution_kinds == {
+        "validate_waybill": "module_slots",
+        "assistant_preview": "harness",
+    }
     assert invocation["contribution_kind"] == "module_slots"
     assert invocation["argument_template"] == {
         "mode": {"source": "project_config", "key": "mode"}

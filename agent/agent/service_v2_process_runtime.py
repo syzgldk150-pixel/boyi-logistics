@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from threading import RLock
-from typing import Mapping
+from typing import Callable, Mapping
 
 from agent.automation_plugins.runtime_backend_availability import (
     RuntimeContributionBackendAvailability,
@@ -31,6 +31,7 @@ class ServiceV2ProcessRuntime:
         backend_availability: RuntimeContributionBackendAvailability,
         llm_client: LLMClient,
         harness_fixed_handlers: Mapping[str, ReadOnlyFixedHandler],
+        instance_name_resolver: Callable[[str], str] | None = None,
     ) -> None:
         self._availability = backend_availability
         self._harness = HarnessRuntime(
@@ -39,6 +40,7 @@ class ServiceV2ProcessRuntime:
             backend_availability=backend_availability,
             llm_client=llm_client,
             fixed_handlers=harness_fixed_handlers,
+            instance_name_resolver=instance_name_resolver,
         )
         self._conversations = HarnessConversationService(
             repository=InMemoryHarnessSessionRepository(),

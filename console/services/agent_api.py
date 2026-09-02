@@ -376,3 +376,57 @@ class AgentApiServiceMixin:
                 "error": redact_text(exc),
                 "error_code": "agent_request_failed",
             }
+
+    def _agent_binary_request(
+        self,
+        endpoint: str,
+        *,
+        timeout: int = 12,
+        console_principal: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Read one bounded non-JSON internal response with the normal identity proof."""
+
+        try:
+            endpoint = self._validate_internal_agent_endpoint(endpoint)
+        except ValueError as exc:
+            return {"ok": False, "status": HTTPStatus.BAD_REQUEST, "error": str(exc)}
+        token = str(getattr(self.settings, "agent_internal_api_token", "") or "").strip()
+        if not token:
+            return {"ok": False, "status": None, "error": "智能服务连接配置缺失"}
+        url = f"{self.settings.agent_base_url.rstrip('/')}{endpoint}"
+        headers = {"X-Agent-Internal-Token": token}
+        principal = console_principal
+        if principal is None and self._agent_admin_endpoint_requires_principal(endpoint):
+            principal = self._mysql_console_principal()
+        if principal is None:
+            return {"ok": False, "status": HTTPStatus.FORBIDDEN, "error": "需要管理员登录"}
+        signing_secret = str(os.getenv("CONSOLE_AGENT_SIGNING_SECRET", "") or "").strip()
+        if not signing_secret:
+            return {"ok": False, "status": HTTPStatus.SERVICE_UNAVAILABLE, "error": "服务签名配置缺失"}
+        parsed_url = urlparse(url)
+        target = parsed_url.path or "/"
+        if parsed_url.query:
+            target += f"?{parsed_url.query}"
+        try:
+            headers.update(
+                build_console_identity_headers(
+                    secret=signing_secret,
+                    method="GET",
+                    request_target=target,
+                    body=b"",
+                    principal=principal,
+                    nonce=secrets.token_urlsafe(24),
+                )
+            )
+            with urlopen(Request(url, headers=headers, method="GET"), timeout=timeout) as response:
+                data = response.read(2 * 1024 * 1024 + 1)
+                if not data or len(data) > 2 * 1024 * 1024:
+                    return {"ok": False, "status": HTTPStatus.BAD_GATEWAY, "error": "设置资源大小无效"}
+                return {
+                    "ok": True,
+                    "status": response.status,
+                    "data": data,
+                    "content_type": str(response.headers.get_content_type() or "application/octet-stream"),
+                }
+        except (ConsoleIdentityError, HTTPError, URLError, OSError) as exc:
+            return {"ok": False, "status": getattr(exc, "code", None), "error": redact_text(exc)}

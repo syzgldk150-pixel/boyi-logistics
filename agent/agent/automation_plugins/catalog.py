@@ -59,6 +59,7 @@ class PluginCatalogEntry:
     account_roles: tuple[Mapping[str, Any], ...]
     resource_roles: tuple[Mapping[str, Any], ...]
     allowed_entrypoints: tuple[str, ...]
+    default_entrypoints: tuple[str, ...]
     invocation_contracts: Mapping[str, Mapping[str, Any]]
     governance_anchor: Mapping[str, Any]
     governance_anchor_sha256: str
@@ -99,6 +100,7 @@ class PluginCatalogEntry:
     declared_capabilities: tuple[Mapping[str, Any], ...] = ()
     storage_contract: Mapping[str, Any] = field(default_factory=dict)
     service_contracts: Mapping[str, Any] = field(default_factory=dict)
+    settings_ui: Mapping[str, Any] | None = None
 
     @property
     def action_id(self) -> str:
@@ -367,6 +369,7 @@ def _entry_from_project(
     project_configuration: AutomationProjectConfigurationPort | None = None,
 ) -> PluginCatalogEntry:
     version = project.active_version
+    service_contract: ServiceV2ProjectContract | None = None
     if version.runtime_model is PluginRuntimeModel.SERVICE_V2:
         manifest = AutomationPluginManifestV2.from_mapping(version.manifest)
         service_contract = ServiceV2ProjectContract.from_manifest(manifest)
@@ -397,6 +400,7 @@ def _entry_from_project(
         contributions = manifest.to_mapping()["contributes"]
         declared_capabilities = manifest.capabilities
         storage_contract = manifest.storage
+        settings_ui = manifest.settings_ui
     else:
         manifest = AutomationPluginManifest.from_mapping(version.manifest)
         signed_manifest = manifest.to_signed_mapping()
@@ -419,6 +423,7 @@ def _entry_from_project(
         declared_capabilities = ()
         storage_contract = {}
         service_contracts = {}
+        settings_ui = None
     if manifest.plugin_id != project.plugin_id or version.plugin_id != project.plugin_id:
         raise PluginConflictError("persisted plugin_id does not match its manifest")
     if manifest.version != version.version:
@@ -481,6 +486,11 @@ def _entry_from_project(
         account_roles=tuple(copy.deepcopy(dict(item)) for item in account_roles),
         resource_roles=tuple(copy.deepcopy(dict(item)) for item in resource_roles),
         allowed_entrypoints=tuple(allowed_entrypoints),
+        default_entrypoints=(
+            tuple(service_contract.default_entrypoints)
+            if service_contract is not None
+            else tuple(allowed_entrypoints)
+        ),
         invocation_contracts={
             key: copy.deepcopy(dict(value))
             for key, value in invocation_contracts.items()
@@ -542,6 +552,9 @@ def _entry_from_project(
         ),
         storage_contract=copy.deepcopy(dict(storage_contract)),
         service_contracts=copy.deepcopy(dict(service_contracts)),
+        settings_ui=(
+            copy.deepcopy(dict(settings_ui)) if settings_ui is not None else None
+        ),
     )
 
 
@@ -1303,6 +1316,11 @@ class PluginCatalog:
                 "config_schema": copy.deepcopy(dict(entry.config_schema)),
                 "scheduling": copy.deepcopy(dict(entry.scheduling)),
                 "entrypoints": list(entry.allowed_entrypoints),
+                "settings_ui": (
+                    copy.deepcopy(dict(entry.settings_ui))
+                    if entry.settings_ui is not None
+                    else None
+                ),
                 "entrypoint_kinds": {
                     key: str(value.get("contribution_kind") or key)
                     for key, value in sorted(entry.invocation_contracts.items())
@@ -1352,6 +1370,11 @@ class PluginCatalog:
                 "config_schema": self._safe_instance_config_schema(entry),
                 "scheduling": copy.deepcopy(dict(entry.scheduling)),
                 "entrypoints": list(entry.allowed_entrypoints),
+                "settings_ui": (
+                    copy.deepcopy(dict(entry.settings_ui))
+                    if entry.settings_ui is not None
+                    else None
+                ),
                 "entrypoint_kinds": {
                     key: str(value.get("contribution_kind") or key)
                     for key, value in sorted(entry.invocation_contracts.items())

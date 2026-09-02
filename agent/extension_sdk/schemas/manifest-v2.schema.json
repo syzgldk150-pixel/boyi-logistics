@@ -151,7 +151,8 @@
         "scheduler",
         "webhook",
         "feishu",
-        "events"
+        "events",
+        "harness"
       ],
       "properties": {
         "console": {
@@ -186,6 +187,7 @@
         },
         "harness": {
           "type": "array",
+          "minItems": 1,
           "items": {
             "$ref": "#/$defs/harness_contribution"
           }
@@ -225,6 +227,15 @@
             "minLength": 1
           }
         }
+      }
+    },
+    "settings_ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entry", "bridge_api"],
+      "properties": {
+        "entry": {"const": "settings/index.html"},
+        "bridge_api": {"const": "1.0.0"}
       }
     },
     "storage": {
@@ -725,9 +736,13 @@
         "id",
         "title",
         "description",
+        "scenarios",
+        "input_schema",
         "service",
         "operation",
-        "effect"
+        "effect",
+        "confirmation_policy",
+        "preview_operation"
       ],
       "properties": {
         "id": {
@@ -743,6 +758,23 @@
           "minLength": 1,
           "maxLength": 500
         },
+        "scenarios": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 200}
+        },
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "additionalProperties", "properties", "required"],
+          "properties": {
+            "type": {"const": "object"},
+            "additionalProperties": {"const": false},
+            "properties": {"type": "object"},
+            "required": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+          }
+        },
         "service": {
           "$ref": "#/$defs/service"
         },
@@ -752,8 +784,14 @@
         "effect": {
           "enum": [
             "read",
-            "compute"
+            "compute",
+            "internal_write",
+            "external_write"
           ]
+        },
+        "confirmation_policy": {"enum": ["none", "exact_preview"]},
+        "preview_operation": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/identifier"}]
         }
       }
     },

@@ -24,11 +24,6 @@
     "CANCELLED",
   ]);
   const PLUGIN_CONFIGURATION_CONTROL_SELECTOR = [
-    "[data-plugin-config-path]",
-    "[data-plugin-account-role]",
-    "[data-plugin-resource-role]",
-    "[data-plugin-entrypoint]",
-    "[data-plugin-worker-select]",
     "[data-plugin-schedule-kind]",
     "[data-automation-toggle]",
     "[data-schedule-time]",
@@ -191,7 +186,7 @@
     }
     setPluginConfigurationFeedback(
       instance,
-      "项目设置尚未保存；保存后才能按新配置运行。",
+      "定时计划尚未保存；保存后才能按新计划运行。",
       "warning",
     );
     if (runButton instanceof HTMLButtonElement && !runButton.disabled) {
@@ -200,77 +195,6 @@
       runButton.dataset.disabledForPluginConfig = "true";
       runButton.title = "请先保存项目设置";
     }
-  }
-
-  function nestedConfigHasPath(value, rawPath) {
-    const parts = String(rawPath || "").split(".").filter(Boolean);
-    let cursor = value;
-    for (const part of parts) {
-      if (
-        !cursor
-        || typeof cursor !== "object"
-        || !Object.prototype.hasOwnProperty.call(cursor, part)
-      ) return false;
-      cursor = cursor[part];
-    }
-    return parts.length > 0;
-  }
-
-  function syncPluginConfigurationSavedState(instance, settings) {
-    const form = instance.closest("form");
-    form?.querySelectorAll("[data-plugin-config-path]").forEach(control => {
-      control.dataset.pluginConfigPresent = String(
-        nestedConfigHasPath(settings.config, control.dataset.pluginConfigPath),
-      );
-      control.dataset.pluginConfigTouched = "false";
-    });
-    const runButton = form?.querySelector("[data-run-now]");
-    if (!(runButton instanceof HTMLButtonElement)) return;
-    const consoleEntrypoints = [...(form?.querySelectorAll("[data-plugin-entrypoint]") || [])]
-      .filter(control => (
-        control instanceof HTMLInputElement
-        && control.dataset.pluginEntrypointKind === "console"
-      ));
-    const enabledConsoleIds = new Set(
-      consoleEntrypoints
-        .map(control => control.value)
-        .filter(entrypointId => settings.enabled_entrypoints.includes(entrypointId)),
-    );
-    const contribution = form?.querySelector("[name='contribution_id']");
-    if (contribution instanceof HTMLSelectElement) {
-      [...contribution.options].forEach(option => {
-        option.disabled = !enabledConsoleIds.has(option.value);
-      });
-      if (!enabledConsoleIds.has(contribution.value)) {
-        const nextOption = [...contribution.options].find(option => !option.disabled);
-        contribution.value = nextOption?.value || "";
-      }
-    }
-    const selectedContribution = contribution instanceof HTMLInputElement
-      || contribution instanceof HTMLSelectElement
-      ? contribution.value
-      : "";
-    const consoleEnabled = selectedContribution
-      ? enabledConsoleIds.has(selectedContribution)
-      : enabledConsoleIds.size > 0;
-    if (!consoleEnabled) {
-      runButton.disabled = true;
-      delete runButton.dataset.disabledForPluginConfig;
-      runButton.dataset.disabledForPluginEntrypoint = "true";
-      runButton.title = "后台手动入口已关闭";
-      return;
-    }
-    if (
-      runButton.dataset.disabledForPluginConfig !== "true"
-      && runButton.dataset.disabledForPluginEntrypoint !== "true"
-    ) return;
-    runButton.disabled = false;
-    delete runButton.dataset.disabledForPluginConfig;
-    delete runButton.dataset.disabledForPluginEntrypoint;
-    const previousTitle = runButton.dataset.runTitleBeforePluginConfig || "";
-    if (previousTitle) runButton.title = previousTitle;
-    else runButton.removeAttribute("title");
-    delete runButton.dataset.runTitleBeforePluginConfig;
   }
 
   function announce(governance, message) {
@@ -584,153 +508,9 @@
       setBusy(button, false, "");
     }
   }
-  function setNestedConfig(target, path, value) {
-    const parts = String(path || "").split(".").filter(Boolean);
-    if (!parts.length) throw new Error("配置字段路径无效。");
-    let cursor = target;
-    parts.forEach((part, index) => {
-      if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(part)) {
-        throw new Error("配置字段路径无效。");
-      }
-      if (index === parts.length - 1) {
-        cursor[part] = value;
-        return;
-      }
-      if (!cursor[part] || typeof cursor[part] !== "object" || Array.isArray(cursor[part])) {
-        cursor[part] = {};
-      }
-      cursor = cursor[part];
-    });
-  }
-
-  function pluginConfigControlValue(control) {
-    const kind = control.dataset.pluginConfigKind || "text";
-    const required = control.dataset.pluginConfigRequired === "true";
-    const present = control.dataset.pluginConfigPresent === "true";
-    const touched = control.dataset.pluginConfigTouched === "true";
-    if (kind === "checkbox") {
-      if (!required && !present && !touched && !control.checked) return { omitted: true };
-      return { value: control.checked };
-    }
-    if (kind === "select") {
-      if (!(control instanceof HTMLSelectElement)) throw new Error("配置选项无效。");
-      const option = control.selectedOptions[0];
-      if (!option || !option.dataset.pluginOptionValue) {
-        if (required) throw new Error("请补齐必填配置项。");
-        return { omitted: true };
-      }
-      try {
-        return { value: JSON.parse(option.dataset.pluginOptionValue) };
-      } catch (_) {
-        throw new Error("配置选项值无效。");
-      }
-    }
-    const raw = String(control.value || "");
-    if (control.dataset.pluginConfigSecret === "true" && !raw) {
-      if (required) throw new Error("受保护配置不会回显，请重新填写必填值。");
-      return { omitted: true };
-    }
-    if (kind === "list") {
-      const lines = raw.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
-      if (!lines.length && !required && !present && !touched) return { omitted: true };
-      const itemType = control.dataset.pluginConfigItemType || "string";
-      if (itemType === "string") return { value: lines };
-      const values = lines.map(item => Number(item));
-      if (values.some(value => !Number.isFinite(value))) throw new Error("列表中包含无效数字。");
-      if (itemType === "integer" && values.some(value => !Number.isInteger(value))) {
-        throw new Error("列表中包含非整数值。");
-      }
-      return { value: values };
-    }
-    if (!raw && !required && !present) return { omitted: true };
-    if (required && !raw) throw new Error("请补齐必填配置项。");
-    if (kind === "number") {
-      const value = Number(raw);
-      if (!Number.isFinite(value)) throw new Error("配置中包含无效数字。");
-      if (control.getAttribute("step") === "1" && !Number.isInteger(value)) {
-        throw new Error("该配置项必须是整数。");
-      }
-      return { value };
-    }
-    return { value: raw };
-  }
-
-  function collectPluginConfiguration(instance) {
+  function collectPluginSchedule(instance) {
     const form = instance.closest("form");
     if (!(form instanceof HTMLFormElement)) throw new Error("项目设置表单不存在。");
-    const config = {};
-    form.querySelectorAll("[data-plugin-config-path]").forEach(control => {
-      if (!(control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement || control instanceof HTMLSelectElement)) return;
-      if (!control.checkValidity()) {
-        control.reportValidity();
-        control.focus();
-        throw new Error("请检查“任务怎么运行”中的填写内容。");
-      }
-      const normalized = pluginConfigControlValue(control);
-      if (!normalized.omitted) setNestedConfig(config, control.dataset.pluginConfigPath, normalized.value);
-    });
-
-    const accountBindings = {};
-    form.querySelectorAll("[data-plugin-account-role]").forEach(control => {
-      if (!(control instanceof HTMLSelectElement)) return;
-      const role = control.dataset.pluginAccountRole || "";
-      const selected = [...control.selectedOptions];
-      const required = control.dataset.pluginAccountRequired === "true";
-      const many = control.dataset.pluginAccountCardinality === "many";
-      if (selected.some(option => option.disabled)) {
-        control.focus();
-        throw new Error("已选账号已停用或登录态无效，请重新选择。");
-      }
-      const selectedIds = selected.map(option => option.value).filter(Boolean);
-      if (!selectedIds.length) {
-        if (required) {
-          control.focus();
-          throw new Error("请为每个必需角色选择可用业务账号。");
-        }
-        return;
-      }
-      accountBindings[role] = many ? selectedIds : selectedIds[0];
-    });
-
-    const resourceBindings = {};
-    form.querySelectorAll("[data-plugin-resource-role]").forEach(control => {
-      if (!(control instanceof HTMLSelectElement)) return;
-      const role = control.dataset.pluginResourceRole || "";
-      const selected = control.selectedOptions[0];
-      const required = control.dataset.pluginResourceRequired === "true";
-      if (selected?.disabled) {
-        control.focus();
-        throw new Error("已保存资源不可用或类型不匹配，请重新选择。");
-      }
-      const resourceId = String(control.value || "").trim();
-      if (!resourceId) {
-        if (required) {
-          control.focus();
-          throw new Error("请为每个必需角色选择可用资源。");
-        }
-        return;
-      }
-      resourceBindings[role] = resourceId;
-    });
-
-    const enabledEntrypoints = [...form.querySelectorAll("[data-plugin-entrypoint]:checked")]
-      .map(control => String(control.value || "").trim())
-      .filter(Boolean);
-    const worker = instance.querySelector("[data-plugin-worker-select]");
-    let deviceId = null;
-    if (worker instanceof HTMLSelectElement) {
-      const selected = worker.selectedOptions[0];
-      if (!worker.value) {
-        worker.focus();
-        throw new Error("请选择在线的工作节点。");
-      }
-      if (selected?.disabled) {
-        worker.focus();
-        throw new Error("已选工作节点当前不可用。");
-      }
-      deviceId = worker.value;
-    }
-
     const kindControl = form.querySelector("[data-plugin-schedule-kind]");
     const enabledControl = form.querySelector("[data-automation-toggle]");
     const scheduleKind = kindControl instanceof HTMLSelectElement ? kindControl.value : "none";
@@ -757,20 +537,12 @@
     if (!["none", "daily_times", "startup"].includes(scheduleKind)) {
       throw new Error("当前旧定时无法安全迁移，请先处理调度合同。");
     }
-    const schedule = {
+    return {
       kind: scheduleKind,
       times,
       enabled: scheduleKind === "none"
         ? false
         : enabledControl instanceof HTMLInputElement && enabledControl.checked,
-    };
-    return {
-      config,
-      account_bindings: accountBindings,
-      resource_bindings: resourceBindings,
-      enabled_entrypoints: enabledEntrypoints,
-      device_id: deviceId,
-      schedule,
     };
   }
 
@@ -793,7 +565,7 @@
     }
     let settings;
     try {
-      settings = collectPluginConfiguration(instance);
+      settings = collectPluginSchedule(instance);
     } catch (error) {
       setPluginConfigurationFeedback(
         instance,
@@ -815,7 +587,7 @@
     setBusy(button, true, "保存中…");
     try {
       const response = await fetch(
-        `/automations/plugins/${encodeURIComponent(automationId)}/configuration`,
+        `/automations/plugins/${encodeURIComponent(automationId)}/schedule`,
         {
           method: "POST",
           credentials: "same-origin",
@@ -826,7 +598,7 @@
             "X-Requested-With": "XMLHttpRequest",
           },
           body: JSON.stringify({
-            ...settings,
+            schedule: settings,
             request_id: requestId,
             expected_project_configuration_version: configurationVersion,
           }),
@@ -872,11 +644,10 @@
         return;
       }
       instance.dataset.projectConfigurationVersion = String(newVersion);
-      syncPluginConfigurationSavedState(instance, settings);
       delete button.dataset.requestId;
       setPluginConfigurationFeedback(
         instance,
-        payload.message || "项目设置已保存。",
+        payload.message || "定时计划已保存。",
         "success",
         { summary: true },
       );
@@ -909,45 +680,13 @@
     const scheduleKind = form?.querySelector("[data-plugin-schedule-kind]");
     const scheduleStack = form?.querySelector("[data-schedule-stack]");
     const addSchedule = form?.querySelector("[data-add-schedule-time]");
-    const scheduleToggle = form?.querySelector("[data-automation-toggle]");
-    const scheduleEffect = form?.querySelector("[data-plugin-schedule-effect]");
     const syncScheduleVisibility = () => {
       const showTimes = scheduleKind instanceof HTMLSelectElement && scheduleKind.value === "daily_times";
       if (scheduleStack instanceof HTMLElement) scheduleStack.hidden = !showTimes;
       if (addSchedule instanceof HTMLElement) addSchedule.hidden = !showTimes;
-      const schedulerEntrypoints = [...(form?.querySelectorAll("[data-plugin-entrypoint]") || [])]
-        .filter(control => (
-          control instanceof HTMLInputElement
-          && control.dataset.pluginEntrypointKind === "scheduler"
-        ));
-      const scheduleRequested = scheduleKind instanceof HTMLSelectElement
-        && scheduleKind.value !== "none"
-        && scheduleToggle instanceof HTMLInputElement
-        && scheduleToggle.checked;
-      if (scheduleEffect instanceof HTMLElement) {
-        scheduleEffect.hidden = !(
-          scheduleRequested
-          && schedulerEntrypoints.length > 0
-          && !schedulerEntrypoints.some(control => control.checked)
-        );
-      }
     };
     syncScheduleVisibility();
     scheduleKind?.addEventListener("change", syncScheduleVisibility);
-    scheduleToggle?.addEventListener("change", syncScheduleVisibility);
-
-    const syncEntrypointState = control => {
-      if (!(control instanceof HTMLInputElement) || !control.matches("[data-plugin-entrypoint]")) return;
-      const state = control.closest("label")?.querySelector("[data-plugin-entrypoint-state]");
-      if (state) state.textContent = control.checked ? "开启" : "关闭";
-    };
-    form?.querySelectorAll("[data-plugin-entrypoint]").forEach(control => {
-      syncEntrypointState(control);
-      control.addEventListener("change", () => {
-        syncEntrypointState(control);
-        syncScheduleVisibility();
-      });
-    });
   }
 
   function initializePluginConfigurationDelegation() {
@@ -958,7 +697,6 @@
     const markFromControl = event => {
       const control = event.target instanceof Element ? event.target : null;
       if (!control?.matches(PLUGIN_CONFIGURATION_CONTROL_SELECTOR)) return;
-      if (control.dataset.pluginConfigPath) control.dataset.pluginConfigTouched = "true";
       const context = pluginConfigurationContext(control);
       if (context) markPluginConfigurationDirty(context.instance);
     };

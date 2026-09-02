@@ -155,13 +155,11 @@ class ExtensionProjectionTests(unittest.TestCase):
         self.assertIn('data-extension-action="uninstall"', html)
         self.assertNotIn("更新扩展", html)
 
-    def test_extension_view_requires_real_non_legacy_mysql_admin(self):
-        app = _ExtensionApp()
-        self.assertTrue(app._ensure_extension_view_access(self._handler()))
-        self.assertFalse(app._ensure_extension_view_access(self._handler(legacy=True)))
-        self.assertEqual(HTTPStatus.FORBIDDEN, app.sent[0])
-        self.assertEqual("MYSQL_ADMIN_REQUIRED", app.sent[1]["error_code"])
-        self.assertFalse(app._ensure_extension_view_access(self._handler(user_id=0)))
+    def test_standalone_extension_center_is_absent_from_navigation(self):
+        from console.navigation import CONSOLE_NAVIGATION
+
+        self.assertNotIn("/extensions", {item["route"] for item in CONSOLE_NAVIGATION})
+        self.assertIn("/automations", {item["route"] for item in CONSOLE_NAVIGATION})
 
     def test_extension_template_uses_one_current_drag_install_entry(self):
         source = (Path(__file__).parents[1] / "templates" / "extensions.html").read_text(
@@ -218,7 +216,7 @@ class ExtensionProjectionTests(unittest.TestCase):
         self.assertNotIn('innerHTML', script)
 
     def test_service_v2_intent_has_exact_keys_and_no_browser_authority_fields(self):
-        source = (Path(__file__).parents[1] / "templates" / "extensions.html").read_text(
+        source = (Path(__file__).parents[1] / "templates" / "_automation_extension_install_dialog.html").read_text(
             encoding="utf-8"
         )
         styles = (Path(__file__).parents[1] / "static" / "style.css").read_text(
@@ -227,17 +225,19 @@ class ExtensionProjectionTests(unittest.TestCase):
         script = (Path(__file__).parents[1] / "static" / "extensions.js").read_text(
             encoding="utf-8"
         )
-        expected_keys = (
-            "instance_name",
-            "config",
-            "account_bindings",
-            "resource_bindings",
-            "enabled_entrypoints",
-            "schedule",
-            "permissions_confirmed",
-        )
+        expected_keys = ("instance_name", "permissions_confirmed")
+        intent_start = script.index("const buildIntent = () => ({")
+        intent_block = script[intent_start:script.index("const validateIntent", intent_start)]
         for key in expected_keys:
-            self.assertIn(f"{key}:", script)
+            self.assertIn(f"{key}:", intent_block)
+        for removed in (
+            "config:",
+            "account_bindings:",
+            "resource_bindings:",
+            "enabled_entrypoints:",
+            "schedule:",
+        ):
+            self.assertNotIn(removed, intent_block)
         final_form = source.split('data-extension-final-form', 1)[1].split('</form>', 1)[0]
         for forbidden in (
             "automation_id",
@@ -249,27 +249,16 @@ class ExtensionProjectionTests(unittest.TestCase):
             "credential",
         ):
             self.assertNotIn(f'name="{forbidden}"', final_form)
-        self.assertIn("account_options", script)
-        self.assertIn("resource_options", script)
-        self.assertIn("account_pool_available", script)
-        self.assertIn("resource_pool_available", script)
         self.assertIn("warnings", script)
         self.assertIn("operations:", script)
-        self.assertIn("SAFE_BINDING_ID", script)
-        self.assertIn("select.disabled = !hasUsableOptions", script)
-        self.assertIn("if (!configSchema || !scheduling) return null;", script)
-        self.assertIn("extensionConfigItemType", script)
-        self.assertIn("Number.isInteger", script)
-        self.assertIn("Number.isFinite", script)
-        self.assertIn("control.checkValidity", script)
-        self.assertIn("extensionConfigObjectRequired", script)
         self.assertIn('permissionConfirmation.checked = false', script)
-        self.assertIn("JSON.stringify(path)", script)
-        self.assertIn("请选择", script)
-        self.assertIn("item.status_label", script)
+        self.assertNotIn("buildConfigInput", script)
+        self.assertNotIn("buildBindings", script)
+        self.assertNotIn("buildSchedule", script)
+        self.assertNotIn("业务账号", source)
+        self.assertNotIn("飞书表格", source)
+        self.assertNotIn("定时", source)
         self.assertNotIn('["startup"', script)
-        self.assertNotIn('control.type = "text"', script)
-        self.assertIn("MAX_SCHEDULE_TIMES", script)
         self.assertNotIn("border-left: 3px", styles)
         self.assertNotIn("border-left: 2px", styles)
 
@@ -312,43 +301,25 @@ global.window = {{
   crypto: {{ randomUUID: () => "00000000-0000-4000-8000-000000000001" }},
 }};
 vm.runInThisContext(fs.readFileSync(0, "utf8"));
-const {{safeProjection, setStructuredPath}} = window.__extensionWizardTest;
+const {{safeProjection}} = window.__extensionWizardTest;
 const base = {{
   plugin_id: "example_service",
   name: "Example service",
   version: "2.0.0",
   host_api: {{minimum: "2.0.0", maximum_exclusive: "3.0.0"}},
   permissions: [], account_roles: [], resource_roles: [],
-  config_schema: {{
-    type: "object", additionalProperties: false,
-    properties: {{
-      "runtime.mode": {{type: "string", enum: ["safe"], default: "safe"}},
-      nested: {{type: "object", additionalProperties: false,
-        properties: {{count: {{type: "integer", enum: [1, 2]}}}}, required: ["count"]}},
-    }}, required: ["runtime.mode", "nested"],
-  }},
   contributions: [{{
     id: "waybill_check", kind: "module_slots", title: "Waybill check", default_enabled: true,
   }}],
-  scheduling: {{supported: false, default_schedule: {{kind: "none", times: [], enabled: false}}}},
-  account_options: [], resource_options: [], account_pool_available: true,
-  resource_pool_available: true, warnings: [],
+  warnings: [],
 }};
 const valid = safeProjection(base);
-if (!valid || !valid.config_schema.properties["runtime.mode"] || !valid.config_schema.properties.nested) throw new Error("valid projection rejected");
+if (!valid) throw new Error("valid projection rejected");
 if (valid.contributions.length !== 1 || valid.contributions[0].kind !== "module_slots") throw new Error("module slot contribution rejected");
-if (Object.keys(valid.contributions[0]).sort().join(",") !== "default_enabled,id,kind,title") throw new Error("module slot contribution widened");
-const structured = {{}};
-if (!setStructuredPath(structured, ["runtime.mode"], "safe") || structured["runtime.mode"] !== "safe") throw new Error("dot property path changed shape");
-const unknown = JSON.parse(JSON.stringify(base));
-unknown.config_schema.properties.bad = {{type: "string", pattern: "^secret$"}};
-if (safeProjection(unknown) !== null) throw new Error("unsupported schema keyword accepted");
-const mismatched = JSON.parse(JSON.stringify(base));
-mismatched.config_schema.properties["runtime.mode"] = {{type: "integer", enum: [1.5]}};
-if (safeProjection(mismatched) !== null) throw new Error("mismatched enum accepted");
-const nullOnly = JSON.parse(JSON.stringify(base));
-nullOnly.config_schema.properties["runtime.mode"] = {{type: "string", enum: [null]}};
-if (safeProjection(nullOnly) !== null) throw new Error("null enum accepted");
+if (Object.keys(valid.contributions[0]).sort().join(",") !== "effect,id,kind,title") throw new Error("module slot contribution widened");
+const malformed = JSON.parse(JSON.stringify(base));
+malformed.contributions[0].id = "not safe";
+if (safeProjection(malformed)?.contributions.length !== 0) throw new Error("invalid contribution accepted");
 """.replace("{{", "{").replace("}}", "}")
         result = subprocess.run(
             [node_executable, "--input-type=commonjs", "-e", node_script],
@@ -361,35 +332,32 @@ if (safeProjection(nullOnly) !== null) throw new Error("null enum accepted");
 
 
 class ExtensionRouteTests(unittest.TestCase):
-    def test_get_routes_only_list_and_single_detail(self):
+    def test_get_routes_redirect_to_unified_automation_page(self):
         app = SimpleNamespace(calls=[])
-        app._render_extensions = lambda handler, query: app.calls.append(("list", handler, query))
-        app._render_extension_detail = lambda handler, plugin_id, query: app.calls.append(("detail", plugin_id, query))
+        app._redirect = lambda handler, location: app.calls.append((handler, location))
         self.assertTrue(extension_routes.handle_get(app, "handler", "/extensions", "/extensions", {"x": ["1"]}))
         self.assertTrue(extension_routes.handle_get(app, "handler", "/extensions/example", "/extensions/example", {}))
         self.assertFalse(extension_routes.handle_get(app, "handler", "/extensions/example/more", "/extensions/example/more", {}))
-        self.assertEqual([("list", "handler", {"x": ["1"]}), ("detail", "example", {})], app.calls)
+        self.assertEqual(
+            [("handler", "/automations"), ("handler", "/automations?plugin=example")],
+            app.calls,
+        )
 
-    def test_post_reuses_existing_lifecycle_handlers(self):
+    def test_legacy_post_routes_return_gone(self):
         app = SimpleNamespace(calls=[])
-        app._handle_automation_plugin_package_upload = lambda handler, **kwargs: app.calls.append(("upload", kwargs))
-        app._handle_automation_plugin_instance_action = lambda handler, automation_id, action: app.calls.append(("action", automation_id, action))
+        app._control_plane_error = lambda handler, status, code, message: app.calls.append(
+            (handler, status, code, message)
+        )
         self.assertTrue(extension_routes.handle_post(app, "handler", "/extensions/inspect", "/extensions/inspect", {}))
         self.assertTrue(extension_routes.handle_post(app, "handler", "/extensions/install", "/extensions/install", {}))
         self.assertTrue(extension_routes.handle_post(app, "handler", "/extensions/project_east/enable", "/extensions/project_east/enable", {}))
         self.assertTrue(extension_routes.handle_post(app, "handler", "/extensions/project_east/uninstall", "/extensions/project_east/uninstall", {}))
         self.assertTrue(extension_routes.handle_post(app, "handler", "/extensions/project_east/upgrade", "/extensions/project_east/upgrade", {}))
-        self.assertFalse(extension_routes.handle_post(app, "handler", "/extensions/project_east/nope", "/extensions/project_east/nope", {}))
-        self.assertEqual(
-            [
-                ("upload", {"inspect_only": True}),
-                ("upload", {}),
-                ("action", "project_east", "enable"),
-                ("action", "project_east", "uninstall"),
-                ("upload", {"automation_id": "project_east"}),
-            ],
-            app.calls,
-        )
+        self.assertTrue(extension_routes.handle_post(app, "handler", "/extensions/project_east/nope", "/extensions/project_east/nope", {}))
+        self.assertFalse(extension_routes.handle_post(app, "handler", "/extensions/project_east/nope/more", "/extensions/project_east/nope/more", {}))
+        self.assertEqual(6, len(app.calls))
+        self.assertTrue(all(call[1] == HTTPStatus.GONE for call in app.calls))
+        self.assertTrue(all(call[2] == "EXTENSION_CENTER_RETIRED" for call in app.calls))
 
     def test_extension_project_setting_link_uses_strict_automation_deep_link(self):
         app = SimpleNamespace(calls=[])

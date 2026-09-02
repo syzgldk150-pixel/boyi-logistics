@@ -174,9 +174,9 @@ class AutomationProjectConfigurationService:
         if (
             isinstance(expected_project_configuration_version, bool)
             or not isinstance(expected_project_configuration_version, int)
-            or expected_project_configuration_version < 1
+            or expected_project_configuration_version < 0
         ):
-            raise PluginConflictError("expected_config_version must be a positive integer")
+            raise PluginConflictError("expected_config_version must be a non-negative integer")
         if not isinstance(config, Mapping):
             raise PluginConflictError("project config must be an object")
         entry = self._catalog.require(automation_id)
@@ -232,8 +232,16 @@ class AutomationProjectConfigurationService:
                 role=role,
                 resource_id=resource_id,
             )
-        sources = tuple(str(item or "").strip() for item in enabled_entrypoints)
-        if any(not item for item in sources) or len(sources) != len(set(sources)):
+        requested_sources = tuple(
+            str(item or "").strip() for item in enabled_entrypoints
+        )
+        mandatory_harness = tuple(
+            source
+            for source, contract in entry.invocation_contracts.items()
+            if str(contract.get("contribution_kind") or "") == "harness"
+        )
+        sources = tuple(dict.fromkeys((*requested_sources, *mandatory_harness)))
+        if any(not item for item in requested_sources) or len(requested_sources) != len(set(requested_sources)):
             raise PluginConflictError("enabled_entrypoints must be a unique list")
         if not set(sources) <= set(entry.allowed_entrypoints):
             raise PluginConflictError("enabled_entrypoints exceed the signed plugin contract")

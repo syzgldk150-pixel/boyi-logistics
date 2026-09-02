@@ -8,7 +8,7 @@ import json
 import re
 from dataclasses import dataclass
 from threading import RLock
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from agent.harness.errors import HarnessError
 from agent.harness.models import strict_json
@@ -35,14 +35,20 @@ _MANAGED_CONTRACT_FIELDS = frozenset(
         "id",
         "title",
         "description",
+        "scenarios",
         "service",
         "operation",
         "effect",
         "operation_type",
         "harness_allowed",
         "broker_effect",
+        "confirmation_policy",
+        "preview_operation",
         "input_schema",
     }
+)
+_LEGACY_MANAGED_CONTRACT_FIELDS = _MANAGED_CONTRACT_FIELDS - frozenset(
+    {"scenarios", "confirmation_policy", "preview_operation"}
 )
 
 
@@ -219,23 +225,41 @@ def _package_is_safe(record: Mapping[str, Any], contract: Mapping[str, Any]) -> 
     permissions = record.get("runtime_permissions")
     if not isinstance(permissions, Mapping) or set(permissions) != _RUNTIME_PERMISSION_FIELDS:
         return False
-    if any(
-        type(permissions.get(field_name)) is not bool
-        or permissions.get(field_name) is not False
-        for field_name in ("network", "browser", "office")
-    ):
+    if any(type(permissions.get(field_name)) is not bool for field_name in ("network", "browser", "office")):
         return False
     file_roles = permissions.get("file_roles")
     broker_operations = permissions.get("broker_operations")
     max_broker_calls = permissions.get("max_broker_calls")
     if not isinstance(file_roles, (list, tuple)) or file_roles:
         return False
-    if not isinstance(broker_operations, (list, tuple)) or broker_operations:
+    if (
+        permissions.get("network") is not False
+        or permissions.get("browser") is not False
+        or permissions.get("office") is not False
+        or not isinstance(broker_operations, (list, tuple))
+    ):
         return False
-    return type(max_broker_calls) is int and max_broker_calls == 0
+    for raw_operation in broker_operations:
+        if not isinstance(raw_operation, Mapping):
+            return False
+        dynamic_read = (
+            raw_operation.get("operation") == "service.invoke"
+            and raw_operation.get("dynamic_effect") is True
+        )
+        if not dynamic_read:
+            return False
+    if type(max_broker_calls) is not int or max_broker_calls < 0:
+        return False
+    if bool(broker_operations) != (max_broker_calls > 0):
+        return False
+    return True
 
 
-def _managed_entry(record: Mapping[str, Any]) -> _CatalogEntry:
+def _managed_entry(
+    record: Mapping[str, Any],
+    *,
+    instance_name_resolver: Callable[[str], str] | None = None,
+) -> _CatalogEntry:
     if str(record.get("contribution_kind") or "") != "harness":
         raise HarnessError("dynamic contribution kind is invalid", code="HARNESS_TOOL_INVALID")
     automation_id = _safe_text(record.get("automation_id"), field_name="automation identity", max_length=160)
@@ -244,7 +268,10 @@ def _managed_entry(record: Mapping[str, Any]) -> _CatalogEntry:
         raise HarnessError("dynamic generation is invalid", code="HARNESS_TOOL_INVALID")
     contribution_id = _safe_text(record.get("contribution_id"), field_name="contribution identity", max_length=160)
     contract = record.get("harness_contract")
-    if not isinstance(contract, Mapping) or set(contract) != _MANAGED_CONTRACT_FIELDS:
+    if not isinstance(contract, Mapping) or set(contract) not in {
+        _MANAGED_CONTRACT_FIELDS,
+        _LEGACY_MANAGED_CONTRACT_FIELDS,
+    }:
         raise HarnessError("dynamic Harness contract is missing", code="HARNESS_TOOL_INVALID")
     if not _package_is_safe(record, contract):
         raise HarnessError("dynamic package has a forbidden surface", code="HARNESS_TOOL_INVALID")
@@ -260,18 +287,41 @@ def _managed_entry(record: Mapping[str, Any]) -> _CatalogEntry:
     _safe_text(contract.get("service"), field_name="dynamic service", max_length=191)
     _safe_text(contract.get("operation"), field_name="dynamic operation", max_length=128)
     input_schema = _closed_object_schema(contract.get("input_schema"))
-    if input_schema["properties"] != {} or input_schema["required"] != []:
-        raise HarnessError("dynamic tool input schema is not empty", code="HARNESS_TOOL_INVALID")
+    confirmation_policy = contract.get("confirmation_policy", "none")
+    if confirmation_policy != "none" or contract.get("preview_operation") is not None:
+        raise HarnessError("dynamic tool confirmation contract is unsafe", code="HARNESS_TOOL_INVALID")
     opaque_identity = json.dumps(
         [automation_id, generation, contribution_id],
         ensure_ascii=True,
         separators=(",", ":"),
     ).encode("utf-8")
     derived_tool_id = f"managed.{hashlib.sha256(opaque_identity).hexdigest()}"
+    title = _safe_text(
+        contract.get("title"), field_name="dynamic tool title", max_length=120
+    )
+    description = _safe_text(
+        contract.get("description"),
+        field_name="dynamic tool description",
+        max_length=500,
+    )
+    if instance_name_resolver is not None:
+        try:
+            instance_name = str(instance_name_resolver(automation_id) or "").strip()
+        except Exception:  # noqa: BLE001 - display metadata must fail closed to base copy
+            instance_name = ""
+        if instance_name:
+            safe_instance_name = instance_name[:80]
+            title_suffix = f"（{safe_instance_name}）"
+            description_suffix = f" 适用实例：{safe_instance_name}。"
+            title = f"{title[: max(1, 120 - len(title_suffix))]}{title_suffix}"
+            description = (
+                f"{description[: max(1, 500 - len(description_suffix))]}"
+                f"{description_suffix}"
+            )
     descriptor = ToolDescriptor(
         tool_id=derived_tool_id,
-        title=_safe_text(contract.get("title"), field_name="dynamic tool title", max_length=120),
-        description=_safe_text(contract.get("description"), field_name="dynamic tool description", max_length=500),
+        title=title,
+        description=description,
         input_schema=input_schema,
     )
     return _CatalogEntry(
@@ -290,10 +340,12 @@ class HarnessToolCatalog:
         invocation_port: TrustedHarnessInvocationPort,
         fixed_tools: Sequence[FixedHarnessTool] = (),
         snapshot_provider: ManagedContributionSnapshotProvider | None = None,
+        instance_name_resolver: Callable[[str], str] | None = None,
     ) -> None:
         self._invocation_port = invocation_port
         self._fixed_tools = tuple(fixed_tools)
         self._snapshot_provider = snapshot_provider
+        self._instance_name_resolver = instance_name_resolver
         self._lock = RLock()
         self._entries: dict[str, _CatalogEntry] = {}
         self.refresh()
@@ -327,7 +379,10 @@ class HarnessToolCatalog:
                 record = _mapping(raw)
                 if record.get("contribution_kind") != "harness":
                     continue
-                entry = _managed_entry(record)
+                entry = _managed_entry(
+                    record,
+                    instance_name_resolver=self._instance_name_resolver,
+                )
                 if entry.descriptor.tool_id in candidates:
                     raise HarnessError("Harness tool collision", code="HARNESS_TOOL_COLLISION")
                 candidates[entry.descriptor.tool_id] = entry
@@ -366,7 +421,10 @@ class HarnessToolCatalog:
                 )
             except Exception as exc:
                 raise HarnessError("dynamic Harness tool is stale", code="HARNESS_TOOL_STALE") from exc
-            fresh_entry = _managed_entry(fresh)
+            fresh_entry = _managed_entry(
+                fresh,
+                instance_name_resolver=self._instance_name_resolver,
+            )
             if fresh_entry.handle != handle or fresh_entry.descriptor != entry.descriptor:
                 raise HarnessError("dynamic Harness tool is stale", code="HARNESS_TOOL_STALE")
             handle = fresh_entry.handle

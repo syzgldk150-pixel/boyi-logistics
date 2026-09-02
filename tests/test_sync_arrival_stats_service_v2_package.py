@@ -92,6 +92,9 @@ def test_arrival_stats_v2_zip_is_deterministic_and_embeds_authoritative_v1_bytes
             "payload/boyi_plugin_sdk.py",
             "payload/main.py",
             "payload/plugin.py",
+            "settings/index.html",
+            "settings/settings.css",
+            "settings/settings.js",
         }
         assert set(archive.namelist()) == expected_members
         assert archive.read("payload/action.py") == (
@@ -148,7 +151,7 @@ def test_arrival_stats_v2_zip_is_deterministic_and_embeds_authoritative_v1_bytes
         parsed.config_schema,
     )
     projection = ServiceV2ProjectContract.from_manifest(parsed)
-    assert projection.default_entrypoints == ("manual_run",)
+    assert projection.default_entrypoints == ("manual_run", "assistant_preview")
     assert projection.contribution_kinds["arrival_stats_command"] == "feishu"
 
 

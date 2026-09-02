@@ -329,7 +329,7 @@ def _read_request() -> tuple[str, dict[str, object]]:
         raise ValueError("service request identity is invalid")
     entrypoint = str(request.get("entrypoint") or "")
     target = request.get("target")
-    if entrypoint in {"console", "feishu"}:
+    if entrypoint in {"console", "feishu", "harness"}:
         expected_identity = CONTRIBUTION_TARGETS[entrypoint]
     elif entrypoint == "service":
         expected_identity = ("host.service.invoke", "service")
@@ -346,6 +346,8 @@ def _read_request() -> tuple[str, dict[str, object]]:
     ):
         raise ValueError("service target is invalid")
     operation = str(target["operation"])
+    if entrypoint == "harness" and operation != PREVIEW_OPERATION:
+        raise ValueError("Harness may invoke only the split-pending preview")
     governance = request.get("governance")
     expected_governance = {
         PREVIEW_OPERATION: {
@@ -367,6 +369,8 @@ def _read_request() -> tuple[str, dict[str, object]]:
     ):
         raise ValueError("service governance is invalid")
     arguments = dict(request["arguments"])
+    if entrypoint == "harness":
+        arguments["dry_run"] = True
     _reject_sensitive(arguments)
     _validate_operation_arguments(operation, arguments)
     return operation, arguments

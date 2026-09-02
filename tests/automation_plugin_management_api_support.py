@@ -322,11 +322,6 @@ def _configuration_request_payload() -> dict[str, Any]:
 def _service_v2_install_intent(**overrides: Any) -> dict[str, Any]:
     value: dict[str, Any] = {
         "instance_name": "Example service project",
-        "config": {},
-        "account_bindings": {},
-        "resource_bindings": {},
-        "enabled_entrypoints": [],
-        "schedule": {"kind": "none", "times": [], "enabled": False},
         "permissions_confirmed": True,
     }
     value.update(overrides)

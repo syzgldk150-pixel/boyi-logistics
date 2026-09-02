@@ -38,6 +38,25 @@ def _automation_plugin_route(path: str) -> tuple[str, str] | None:
     return automation_id, action
 
 
+def _automation_extension_route(path: str) -> str | None:
+    prefix = "/automations/extensions/"
+    if not path.startswith(prefix):
+        return None
+    action = path[len(prefix) :]
+    return action if action in {"inspect", "install"} else None
+
+
+def _automation_plugin_settings_asset_route(path: str) -> tuple[str, str] | None:
+    prefix = "/automations/"
+    marker = "/settings/assets/"
+    if not path.startswith(prefix) or marker not in path:
+        return None
+    automation_id, separator, asset_path = path[len(prefix) :].partition(marker)
+    if not separator or not automation_id or "/" in automation_id or not asset_path:
+        return None
+    return automation_id, asset_path
+
+
 def _automation_plugin_migration_route(path: str) -> tuple[str, str] | None:
     prefix = "/automations/plugin-migrations/"
     if not path.startswith(prefix):
@@ -71,6 +90,19 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     if path == "/automations/tasks/output":
         app._handle_automation_task_output(handler, query)
         return True
+    settings_asset_route = _automation_plugin_settings_asset_route(path)
+    if settings_asset_route:
+        app._handle_automation_plugin_settings_asset(
+            handler,
+            settings_asset_route[0],
+            settings_asset_route[1],
+        )
+        return True
+    if path.startswith("/automations/") and path.endswith("/settings"):
+        automation_id = path[len("/automations/") : -len("/settings")].strip("/")
+        if automation_id and "/" not in automation_id:
+            app._render_automation_plugin_settings(handler, automation_id, query)
+            return True
     project_route = _automation_project_route(path)
     if project_route and project_route[1] == "/pending-approvals":
         app._handle_automation_project_pending_approvals_get(
@@ -82,6 +114,13 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
 
 
 def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[str, list[str]]) -> bool:
+    extension_action = _automation_extension_route(path)
+    if extension_action == "inspect":
+        app._handle_automation_plugin_package_upload(handler, inspect_only=True)
+        return True
+    if extension_action == "install":
+        app._handle_automation_plugin_package_upload(handler)
+        return True
     if app._handle_automation_account_post(handler, path):
         return True
     if path == "/automations/resources/save":
@@ -145,6 +184,14 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     if plugin_route and plugin_route[1] == "configuration":
         app._handle_automation_plugin_configuration_save(handler, plugin_route[0])
         return True
+    if plugin_route and plugin_route[1] == "schedule":
+        app._handle_automation_plugin_schedule_save(handler, plugin_route[0])
+        return True
+    if path.startswith("/automations/") and path.endswith("/settings/bridge"):
+        automation_id = path[len("/automations/") : -len("/settings/bridge")].strip("/")
+        if automation_id and "/" not in automation_id:
+            app._handle_automation_plugin_settings_bridge(handler, automation_id)
+            return True
     project_route = _automation_project_route(path)
     if project_route and project_route[1] == "/approval-policy":
         app._handle_automation_project_approval_policy(handler, project_route[0])

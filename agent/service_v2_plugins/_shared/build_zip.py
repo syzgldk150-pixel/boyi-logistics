@@ -39,6 +39,11 @@ _SCAN_PLUGIN_ID = "sync_scan_codes_v2"
 _SOURCE_FILES = {
     "manifest.json": "manifest.json",
     "payload/plugin.py": "payload/plugin.py",
+    "settings/index.html": "settings/index.html",
+}
+_SETTINGS_SHARED_FILES = {
+    "settings/settings.js": "settings.js",
+    "settings/settings.css": "settings.css",
 }
 _FIXED_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
@@ -129,6 +134,12 @@ def build_plugin_zip(source_directory: Path | str, output_path: Path | str) -> P
         )
     entries.update(
         {package_path: (shared / source_path).read_bytes() for package_path, source_path in shared_files.items()}
+    )
+    entries.update(
+        {
+            package_path: (shared / source_path).read_bytes()
+            for package_path, source_path in _SETTINGS_SHARED_FILES.items()
+        }
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(

@@ -476,6 +476,8 @@ def _scan_payload_directory(
     current_descriptor: int,
     current_metadata: os.stat_result,
     files: list[_ScannedRegularFile],
+    *,
+    archive_prefix: str = "payload",
 ) -> None:
     try:
         names = sorted(os.listdir(current_descriptor))
@@ -514,8 +516,8 @@ def _scan_payload_directory(
                 code="UNSAFE_SOURCE_OBJECT",
             )
         relative = path.relative_to(payload_root).as_posix()
-        archive_path = f"payload/{relative}"
-        if archive_path.casefold() == _SDK_ARCHIVE_PATH.casefold():
+        archive_path = f"{archive_prefix}/{relative}"
+        if archive_prefix == "payload" and archive_path.casefold() == _SDK_ARCHIVE_PATH.casefold():
             raise ServiceV2DeveloperError(
                 "source must not provide the Host-owned Service v2 SDK",
                 code="SDK_SOURCE_FORBIDDEN",
@@ -556,6 +558,7 @@ def _scan_payload_directory(
                 child_descriptor,
                 current,
                 files,
+                archive_prefix=archive_prefix,
             )
         finally:
             _close_descriptor(child_descriptor)
@@ -582,9 +585,9 @@ def _scan_source_from_anchor(
             "source tree contains a forbidden sensitive-name candidate",
             code="SENSITIVE_SOURCE_NAME",
         )
-    if set(root_names) != {"manifest.json", "payload"}:
+    if set(root_names) not in ({"manifest.json", "payload"}, {"manifest.json", "payload", "settings"}):
         raise ServiceV2DeveloperError(
-            "source root must contain only manifest.json and payload/",
+            "source root must contain only manifest.json, payload/ and optional settings/",
             code="SOURCE_LAYOUT_INVALID",
         )
     try:
@@ -649,6 +652,41 @@ def _scan_source_from_anchor(
             payload_metadata,
             files,
         )
+        if "settings" in root_names:
+            try:
+                settings_metadata = os.stat(
+                    "settings",
+                    dir_fd=root_descriptor,
+                    follow_symlinks=False,
+                )
+                settings_descriptor = os.open(
+                    "settings",
+                    _directory_open_flags(),
+                    dir_fd=root_descriptor,
+                )
+            except OSError as exc:
+                raise ServiceV2DeveloperError(
+                    "source settings directory cannot be opened safely",
+                    code="LOCAL_ARTIFACT_CHANGED",
+                ) from exc
+            try:
+                if not stat.S_ISDIR(settings_metadata.st_mode) or not _same_directory_identity(
+                    os.fstat(settings_descriptor), settings_metadata
+                ):
+                    raise ServiceV2DeveloperError(
+                        "source settings directory changed while it was being inspected",
+                        code="LOCAL_ARTIFACT_CHANGED",
+                    )
+                _scan_payload_directory(
+                    root / "settings",
+                    root / "settings",
+                    settings_descriptor,
+                    settings_metadata,
+                    files,
+                    archive_prefix="settings",
+                )
+            finally:
+                _close_descriptor(settings_descriptor)
         if len(files) + 1 > MAX_FILES:
             raise PluginPackageError("source tree exceeds the package file-count limit")
         if any(item.stat_result.st_size > MAX_FILE_BYTES for item in files):
@@ -1230,15 +1268,16 @@ def _read_request() -> dict[str, object]:
         or request.get("plugin_id") != os.environ.get("BOYI_PLUGIN_ID", "")
         or request.get("plugin_version") != PLUGIN_VERSION
         or request.get("plugin_version") != os.environ.get("BOYI_PLUGIN_VERSION", "")
-        or request.get("entrypoint") != "console"
+        or request.get("entrypoint") not in {"console", "harness"}
         or request.get("arguments") != {}
     ):
         raise ValueError("service request identity is invalid")
+    contribution_id = "run" if request.get("entrypoint") == "console" else "assistant_run"
     expected_target = {
         "service": SERVICE_NAME,
         "operation": "run",
-        "contribution_id": "run",
-        "contribution_kind": "console",
+        "contribution_id": contribution_id,
+        "contribution_kind": str(request.get("entrypoint")),
     }
     target = request.get("target")
     governance = request.get("governance")
@@ -1336,6 +1375,25 @@ def _minimal_manifest(
             "webhook": [],
             "feishu": [],
             "events": [],
+            "harness": [
+                {
+                    "id": "assistant_run",
+                    "title": "运行计算示例",
+                    "description": "运行当前插件的无写入计算示例并返回结果。",
+                    "scenarios": ["运行这个计算插件", "检查计算示例"],
+                    "input_schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {},
+                        "required": [],
+                    },
+                    "service": service,
+                    "operation": "run",
+                    "effect": "compute",
+                    "confirmation_policy": "none",
+                    "preview_operation": None,
+                }
+            ],
         },
         "config_schema": {
             "type": "object",

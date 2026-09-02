@@ -252,6 +252,7 @@ def _catalog_entry(
         account_roles=account_roles,
         resource_roles=(),
         allowed_entrypoints=("run_now",),
+        default_entrypoints=("run_now",),
         invocation_contracts={
             "run_now": {
                 "service": service,

@@ -34,7 +34,10 @@ from agent.automation_plugins.service_v2_projection import (
     ManagedContributionRegistry,
     _service_v2_contribution_effect_plans,
 )
-from agent.automation_plugins.inspection_v2 import service_v2_wizard_projection
+from agent.automation_plugins.inspection_v2 import (
+    service_v2_wizard_projection,
+    validate_service_v2_install_contract,
+)
 from agent.harness.catalog import HarnessToolCatalog, ManagedToolHandle
 from agent.harness.errors import HarnessError
 from shared.automation_project_manifest import TRUSTED_AUTOMATION_ENTRYPOINTS
@@ -74,9 +77,18 @@ def _manifest_mapping(
                 "id": "analyze_tool",
                 "title": "Analyze problems",
                 "description": "Reads an offline projection and computes a report.",
+                "scenarios": ["分析当前问题件结果"],
+                "input_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {},
+                    "required": [],
+                },
                 "service": service,
                 "operation": "analyze",
                 "effect": declared_effect,
+                "confirmation_policy": "none",
+                "preview_operation": None,
             }
         ]
     return {
@@ -142,9 +154,18 @@ def _runtime_snapshot(
         "id": "analyze_tool",
         "title": title,
         "description": "Reads an offline projection and computes a report.",
+        "scenarios": ["分析当前问题件结果"],
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {},
+            "required": [],
+        },
         "service": service,
         "operation": "analyze",
         "effect": "read",
+        "confirmation_policy": "none",
+        "preview_operation": None,
     }
     contributions = {
         "console": [],
@@ -243,11 +264,13 @@ def _harness_material(snapshot: RuntimeGenerationSnapshot) -> dict[str, Any]:
     return copy.deepcopy(dict(plan.payload))
 
 
-def test_harness_is_optional_for_old_service_v2_manifests_and_closed_when_present() -> None:
+def test_harness_is_required_for_service_v2_manifests_and_closed_when_present() -> None:
     legacy_source = _manifest_mapping(include_harness=False)
-    legacy = AutomationPluginManifestV2.from_mapping(legacy_source)
-    assert "harness" not in legacy.contributes
-    assert legacy.to_mapping() == legacy_source
+    legacy_manifest = AutomationPluginManifestV2.from_mapping(legacy_source)
+    with pytest.raises(PluginConflictError, match="AI assistant capability"):
+        validate_service_v2_install_contract(
+            SimpleNamespace(manifest=legacy_manifest)
+        )
 
     source = _manifest_mapping()
     manifest = AutomationPluginManifestV2.from_mapping(source)
@@ -261,7 +284,7 @@ def test_harness_is_optional_for_old_service_v2_manifests_and_closed_when_presen
 @pytest.mark.parametrize(
     ("provider_effect", "declared_effect", "message"),
     (
-        ("external_write", "external_write", "read or compute"),
+        ("external_write", "external_write", "confirmation_policy"),
         ("read", "compute", "match the provided operation effect"),
         ("external_write", "read", "match the provided operation effect"),
     ),
@@ -332,6 +355,7 @@ def test_harness_schema_is_closed_and_keeps_legacy_required_kinds() -> None:
         "webhook",
         "feishu",
         "events",
+        "harness",
     ]
     harness = contributes["properties"]["harness"]
     assert harness["items"] == {"$ref": "#/$defs/harness_contribution"}
@@ -341,13 +365,19 @@ def test_harness_schema_is_closed_and_keeps_legacy_required_kinds() -> None:
         "id",
         "title",
         "description",
+        "scenarios",
+        "input_schema",
         "service",
         "operation",
         "effect",
+        "confirmation_policy",
+        "preview_operation",
     ]
     assert harness_definition["properties"]["effect"]["enum"] == [
         "read",
         "compute",
+        "internal_write",
+        "external_write",
     ]
 
 

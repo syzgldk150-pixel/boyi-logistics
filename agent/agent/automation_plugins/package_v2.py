@@ -260,8 +260,18 @@ def _safe_member_name(raw_name: str) -> str:
     if normalized != raw_name or len(normalized) > 240:
         raise PluginPackageError("ZIP member path is not normalized or is too long")
     if normalized != MANIFEST_NAME:
-        if not normalized.startswith("payload/"):
-            raise PluginPackageError("v2 package files must be manifest.json or below payload/")
+        is_settings_asset = normalized.startswith("settings/")
+        if not normalized.startswith("payload/") and not is_settings_asset:
+            raise PluginPackageError(
+                "v2 package files must be manifest.json or below payload/ or settings/"
+            )
+        if is_settings_asset:
+            settings_suffixes = frozenset(
+                {".html", ".css", ".js", ".json", ".svg", ".png", ".jpg", ".jpeg", ".webp", ".woff2"}
+            )
+            if pure.suffix.casefold() not in settings_suffixes:
+                raise PluginPackageError("settings assets use an unsupported file type")
+            return normalized
         payload_parts = tuple(part.casefold() for part in pure.parts[1:])
         if set(payload_parts[:-1]) & _FORBIDDEN_FRONTEND_PARTS:
             raise PluginPackageError("plugins cannot provide custom frontend assets")

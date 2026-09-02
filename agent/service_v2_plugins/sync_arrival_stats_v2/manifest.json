@@ -3,7 +3,7 @@
   "runtime_model": "service_v2",
   "plugin_id": "sync_arrival_stats_v2",
   "name": "到货统计 v2",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "以 v1 已验证算法为唯一业务来源的离线候选到货统计 Service v2 包。",
   "host_api": {
     "minimum": "2.0.0",
@@ -17,10 +17,15 @@
     "requirements_lock": null,
     "wheelhouse": []
   },
+  "settings_ui": {
+    "entry": "settings/index.html",
+    "bridge_api": "1.0.0"
+  },
   "provides": [
     {
       "service": "plugin.sync_arrival_stats_v2.arrival_stats@1",
       "operations": [
+        {"name": "preview", "effect": "read"},
         {"name": "run", "effect": "external_write"}
       ]
     }
@@ -146,7 +151,21 @@
         "default_enabled": false
       }
     ],
-    "events": []
+    "events": [],
+    "harness": [
+      {
+        "id": "assistant_preview",
+        "title": "预览到货统计",
+        "description": "读取当前实例的到货与扫描数据并生成统计预览；只读计算，不写入飞书表格或统计快照。",
+        "scenarios": ["预览今天的到货统计", "检查到货统计数据是否齐全"],
+        "input_schema": {"type": "object", "additionalProperties": false, "properties": {}, "required": []},
+        "service": "plugin.sync_arrival_stats_v2.arrival_stats@1",
+        "operation": "preview",
+        "effect": "read",
+        "confirmation_policy": "none",
+        "preview_operation": null
+      }
+    ]
   },
   "config_schema": {
     "type": "object",

@@ -111,7 +111,6 @@ CONSOLE_MENU_REGISTRATIONS = register_console_menus(
 # This is a Console control-plane entry, not a fifteenth fixed business module.
 CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS = register_console_menus(
     (
-        ConsoleMenuRegistration("extensions", "/extensions", "扩展中心", "扩展", "package", "system"),
         ConsoleMenuRegistration("system_status", "/settings/system-status", "系统状态", "状态", "activity", "system"),
     )
 )

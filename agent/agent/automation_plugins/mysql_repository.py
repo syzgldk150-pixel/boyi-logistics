@@ -1113,6 +1113,12 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     enabled_entrypoints=persisted_sources,
                 )
                 sources = migrated_sources or persisted_sources
+                mandatory_harness = tuple(
+                    source
+                    for source, invocation in contract.invocation_contracts.items()
+                    if str(invocation.get("contribution_kind") or "") == "harness"
+                )
+                sources = tuple(dict.fromkeys((*sources, *mandatory_harness)))
                 if not set(sources) <= set(manifest.allowed_entrypoints):
                     raise PluginConflictError(
                         "enabled entrypoints differ from the release contract"

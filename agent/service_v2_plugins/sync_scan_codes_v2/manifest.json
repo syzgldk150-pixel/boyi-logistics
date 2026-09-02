@@ -3,7 +3,7 @@
   "runtime_model": "service_v2",
   "plugin_id": "sync_scan_codes_v2",
   "name": "扫描同步 v2",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "通过受管 Connector 分页预览扫描数据，并在正式阶段重读后完成快照与逐批服务端核验的离线候选 Service v2 包。",
   "host_api": {
     "minimum": "2.0.0",
@@ -16,6 +16,10 @@
     "entrypoint": "payload/main.py",
     "requirements_lock": null,
     "wheelhouse": []
+  },
+  "settings_ui": {
+    "entry": "settings/index.html",
+    "bridge_api": "1.0.0"
   },
   "provides": [
     {
@@ -80,7 +84,21 @@
         "default_enabled": false
       }
     ],
-    "events": []
+    "events": [],
+    "harness": [
+      {
+        "id": "assistant_preview",
+        "title": "查询待同步扫描数据",
+        "description": "分页读取当前实例账号的扫描数据并生成只读同步预览，不提交扫描或写入快照。",
+        "scenarios": ["今天有多少扫描数据待同步", "预览下一批扫描任务"],
+        "input_schema": {"type": "object", "additionalProperties": false, "properties": {}, "required": []},
+        "service": "plugin.sync_scan_codes_v2.scan_codes@1",
+        "operation": "preview",
+        "effect": "read",
+        "confirmation_policy": "none",
+        "preview_operation": null
+      }
+    ]
   },
   "config_schema": {
     "type": "object",

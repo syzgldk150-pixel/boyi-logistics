@@ -827,6 +827,21 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 str(item.get("name_value") or ""),
             ),
         )
+        plugin_filter = ""
+        raw_plugin_filter = query.get("plugin")
+        if isinstance(raw_plugin_filter, list) and len(raw_plugin_filter) == 1:
+            candidate = str(raw_plugin_filter[0] or "").strip()
+            if candidate and len(candidate) <= 160:
+                plugin_filter = candidate
+                tasks = [
+                    task
+                    for task in tasks
+                    if task.get("plugin")
+                    and (
+                        str(task["plugin"].get("plugin_id") or "") == candidate
+                        or str(task.get("task_id") or "") == candidate
+                    )
+                ]
         accounts_principal = self._mysql_console_principal(
             getattr(handler, "current_admin_user", None)
         )
@@ -883,11 +898,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             unsupported_automation_ids=unsupported_automation_ids,
             automation_plugin_warning=automation_plugin_warning,
             can_manage_plugins=can_manage_plugins,
-            can_view_extensions=bool(
-                getattr(self, "_can_see_extensions_navigation", lambda _user: False)(
-                    getattr(handler, "current_admin_user", None) or current_admin_user()
-                )
-            ),
+            automation_plugin_filter=plugin_filter,
         )
         self._send_html(handler, body)
 

@@ -1,8 +1,10 @@
-"""Extension-center routing; lifecycle writes remain in the existing handlers."""
+"""Compatibility redirects for the retired standalone extension center."""
 
 from __future__ import annotations
 
+from http import HTTPStatus
 from typing import Any
+from urllib.parse import quote
 
 
 def _extension_action(path: str) -> tuple[str, str] | None:
@@ -18,29 +20,22 @@ def _extension_action(path: str) -> tuple[str, str] | None:
 
 def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[str, list[str]]) -> bool:
     if path == "/extensions":
-        app._render_extensions(handler, query)
+        app._redirect(handler, "/automations")
         return True
     if path.startswith("/extensions/") and "/" not in path[len("/extensions/") :]:
-        app._render_extension_detail(handler, path[len("/extensions/") :], query)
+        plugin_id = path[len("/extensions/") :]
+        app._redirect(handler, f"/automations?plugin={quote(plugin_id, safe='')}")
         return True
     return False
 
 
 def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[str, list[str]]) -> bool:
-    if path == "/extensions/inspect":
-        app._handle_automation_plugin_package_upload(handler, inspect_only=True)
-        return True
-    if path == "/extensions/install":
-        app._handle_automation_plugin_package_upload(handler)
-        return True
-    route = _extension_action(path)
-    if route is None:
+    if path not in {"/extensions/inspect", "/extensions/install"} and _extension_action(path) is None:
         return False
-    automation_id, action = route
-    if action == "upgrade":
-        app._handle_automation_plugin_package_upload(handler, automation_id=automation_id)
-        return True
-    if action in {"enable", "disable", "uninstall"}:
-        app._handle_automation_plugin_instance_action(handler, automation_id, action)
-        return True
-    return False
+    app._control_plane_error(
+        handler,
+        HTTPStatus.GONE,
+        "EXTENSION_CENTER_RETIRED",
+        "扩展中心已合并到自动化，请刷新页面后从自动化管理扩展。",
+    )
+    return True

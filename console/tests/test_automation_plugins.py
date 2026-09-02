@@ -164,6 +164,10 @@ def _service_v2_inspection() -> dict:
             "properties": {},
             "required": [],
         },
+        "settings_ui": {
+            "entry": "settings/index.html",
+            "bridge_api": "1.0.0",
+        },
         "contributions": [
             {
                 "id": "run_now",
@@ -182,6 +186,13 @@ def _service_v2_inspection() -> dict:
                 "kind": "module_slots",
                 "title": "录单校验",
                 "default_enabled": True,
+            },
+            {
+                "id": "assistant_preview",
+                "kind": "harness",
+                "title": "查询示例服务",
+                "description": "只读查看示例服务状态。",
+                "effect": "read",
             },
         ],
         "scheduling": {
@@ -1020,10 +1031,10 @@ class AutomationPluginCatalogTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertNotIn("这个任务无需额外设置。", source)
-        self.assertIn(
-            "task.plugin and (task.plugin.config_fields or not task.plugin.config_schema_supported)",
-            source,
-        )
+        self.assertNotIn("任务怎么运行", source)
+        self.assertNotIn("允许从哪里启动", source)
+        self.assertNotIn("数据从哪里读取、保存到哪里", source)
+        self.assertNotIn("render_plugin_config_field", source)
 
     def test_arrival_stats_resource_copy_uses_business_names(self):
         payload = _catalog_payload()
@@ -1802,40 +1813,12 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         )
         app, captured = self._app()
         app._parse_multipart_form = lambda _handler: form
-        app._fetch_automation_accounts = lambda **_kwargs: (
-            [
-                {
-                    "account_id": "acct-east",
-                    "name": "华东账号",
-                    "system": "ronghui",
-                    "is_active": True,
-                    "session_capable": True,
-                    "status": {"status": "authenticated", "label": "已登录"},
-                    "credentials": {"password": "must-not-cross-boundary"},
-                }
-            ],
-            "",
+        app._fetch_automation_accounts = lambda **_kwargs: self.fail(
+            "inspection must not load account choices"
         )
-        catalog_calls = []
-
-        def agent_request(method, endpoint, **kwargs):
-            catalog_calls.append((method, endpoint, kwargs))
-            return {
-                "ok": True,
-                "data": {
-                    "resources": [
-                        {
-                            "resource_id": "sheet.input",
-                            "name": "输入表格",
-                            "kind": "feishu_sheet",
-                            "status": "available",
-                        }
-                    ],
-                    "resource_pool_available": True,
-                },
-            }
-
-        app._agent_request = agent_request
+        app._agent_request = lambda *_args, **_kwargs: self.fail(
+            "inspection must not load resource choices"
+        )
         forwarded = {}
         with tempfile.TemporaryDirectory(dir=CONSOLE_DIR.parent) as runtime_dir:
             app.settings = SimpleNamespace(runtime_dir=Path(runtime_dir))
@@ -1866,10 +1849,6 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         )
         self.assertEqual({"request_id": REQUEST_ID}, forwarded["fields"])
         self.assertEqual(package_bytes, forwarded["package_bytes"])
-        self.assertEqual(
-            [("GET", "/internal/v1/automation/plugins/catalog")],
-            [(method, endpoint) for method, endpoint, _kwargs in catalog_calls],
-        )
         result = captured["payload"]["data"]
         module_slot = next(
             item for item in result["contributions"] if item["kind"] == "module_slots"
@@ -1877,17 +1856,12 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         self.assertEqual(
             {"id", "kind", "title", "default_enabled"}, set(module_slot)
         )
+        self.assertEqual([], result["account_options"])
+        self.assertEqual([], result["resource_options"])
         self.assertEqual(
-            {
-                "account_id": "acct-east",
-                "name": "华东账号",
-                "system": "ronghui",
-                "available": True,
-                "status_label": "已登录",
-            },
-            result["account_options"][0],
+            {"entry": "settings/index.html", "bridge_api": "1.0.0"},
+            result["settings_ui"],
         )
-        self.assertEqual("sheet.input", result["resource_options"][0]["resource_id"])
         self.assertNotIn("credentials", repr(result))
         self.assertNotIn("must-not-cross-boundary", repr(result))
 
@@ -1898,11 +1872,6 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         package_bytes = package_buffer.getvalue()
         intent = {
             "permissions_confirmed": True,
-            "schedule": {"enabled": False, "times": [], "kind": "none"},
-            "enabled_entrypoints": ["run_now"],
-            "resource_bindings": {"input_sheet": "sheet.input"},
-            "account_bindings": {"source_account": "acct-east"},
-            "config": {},
             "instance_name": "示例服务项目",
         }
         form = _MultipartForm(
@@ -1952,17 +1921,12 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         self.assertEqual(intent, json.loads(forwarded["fields"]["intent"]))
         self.assertNotIn("package_sha256", forwarded["fields"])
 
-    def test_service_v2_preparing_result_is_retryable_and_never_reported_ready(self):
+    def test_service_v2_install_stays_disabled_while_generation_prepares(self):
         package_buffer = io.BytesIO()
         with zipfile.ZipFile(package_buffer, "w") as archive:
             archive.writestr("manifest.json", "{}")
         intent = {
             "instance_name": "示例服务项目",
-            "config": {},
-            "account_bindings": {},
-            "resource_bindings": {},
-            "enabled_entrypoints": ["run_now"],
-            "schedule": {"kind": "none", "times": [], "enabled": False},
             "permissions_confirmed": True,
         }
         app, captured = self._app()
@@ -1998,11 +1962,13 @@ class AutomationPluginHandlerTests(unittest.TestCase):
 
             app._handle_automation_plugin_package_upload(handler)
 
-        self.assertEqual(HTTPStatus.CONFLICT, captured["status"])
+        self.assertEqual(HTTPStatus.OK, captured["status"])
         self.assertEqual(
-            "PLUGIN_INSTALL_PREPARING",
-            captured["payload"]["error"]["code"],
+            "example_service_east",
+            captured["payload"]["data"]["automation_id"],
         )
+        self.assertIn("保持停用", captured["payload"]["message"])
+        self.assertEqual(intent, json.loads(forwarded[0][1]["intent"]))
         self.assertEqual(REQUEST_ID, forwarded[0][1]["request_id"])
 
     def test_service_v2_install_rejects_nested_browser_authority_before_forwarding(self):
@@ -2190,6 +2156,120 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         self.assertEqual([(handler, pair_id, "cutover")], called)
 
 
+class AutomationPluginSettingsBridgeTests(unittest.TestCase):
+    def test_bridge_session_is_bound_to_actor_and_automation(self):
+        app = LocalDocFlowApp.__new__(LocalDocFlowApp)
+        app._session_secret = "test-only-session-secret"
+        token = app._automation_plugin_settings_bridge_token(
+            "finance_action_east",
+            "17",
+        )
+
+        self.assertTrue(
+            app._automation_plugin_settings_bridge_token_valid(
+                token,
+                automation_id="finance_action_east",
+                actor_id="17",
+            )
+        )
+        self.assertFalse(
+            app._automation_plugin_settings_bridge_token_valid(
+                token,
+                automation_id="finance_action_south",
+                actor_id="17",
+            )
+        )
+        self.assertFalse(
+            app._automation_plugin_settings_bridge_token_valid(
+                token,
+                automation_id="finance_action_east",
+                actor_id="18",
+            )
+        )
+        tampered = f"{token[:-1]}{'1' if token[-1] != '1' else '2'}"
+        self.assertFalse(
+            app._automation_plugin_settings_bridge_token_valid(
+                tampered,
+                automation_id="finance_action_east",
+                actor_id="17",
+            )
+        )
+
+    def test_settings_routes_are_closed_to_one_instance(self):
+        calls = []
+        app = SimpleNamespace(
+            _render_automation_plugin_settings=lambda handler, automation_id, query: calls.append(
+                ("page", handler, automation_id, query)
+            ),
+            _handle_automation_plugin_settings_asset=lambda handler, automation_id, asset: calls.append(
+                ("asset", handler, automation_id, asset)
+            ),
+            _handle_automation_plugin_settings_bridge=lambda handler, automation_id: calls.append(
+                ("bridge", handler, automation_id)
+            ),
+            _handle_automation_account_post=lambda *_args: False,
+        )
+
+        self.assertTrue(
+            automation_routes.handle_get(
+                app,
+                "handler",
+                "/automations/finance_action_east/settings",
+                "/automations/finance_action_east/settings",
+                {},
+            )
+        )
+        self.assertTrue(
+            automation_routes.handle_get(
+                app,
+                "handler",
+                "/automations/finance_action_east/settings/assets/index.html",
+                "/automations/finance_action_east/settings/assets/index.html",
+                {},
+            )
+        )
+        self.assertTrue(
+            automation_routes.handle_post(
+                app,
+                "handler",
+                "/automations/finance_action_east/settings/bridge",
+                "/automations/finance_action_east/settings/bridge",
+                {},
+            )
+        )
+        self.assertEqual(
+            [
+                ("page", "handler", "finance_action_east", {}),
+                ("asset", "handler", "finance_action_east", "index.html"),
+                ("bridge", "handler", "finance_action_east"),
+            ],
+            calls,
+        )
+
+    def test_settings_iframe_and_asset_policy_remain_isolated(self):
+        template_source = (
+            CONSOLE_DIR / "templates" / "automation_plugin_settings.html"
+        ).read_text(encoding="utf-8")
+        service_source = (
+            CONSOLE_DIR / "services" / "automation_plugin_management.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('sandbox="allow-scripts"', template_source)
+        self.assertNotIn("allow-same-origin", template_source)
+        self.assertNotIn("allow-popups", template_source)
+        self.assertNotIn("allow-downloads", template_source)
+        self.assertIn('referrerpolicy="no-referrer"', template_source)
+        self.assertIn('event.source !== iframe.contentWindow', template_source)
+        self.assertIn("connect-src 'none'", service_source)
+        self.assertIn("frame-ancestors 'self'", service_source)
+        self.assertIn('expected_fields = {', service_source)
+        save_block = service_source.split('if operation == "save":', 1)[1].split(
+            'if values["payload"]:', 1
+        )[0]
+        self.assertNotIn('"schedule"', save_block)
+        self.assertNotIn('"enabled_entrypoints"', save_block)
+
+
 class AutomationPluginTemplateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -2314,34 +2394,30 @@ class AutomationPluginTemplateTests(unittest.TestCase):
             automation_provider_enabled_counts={"ronghui": 1, "yunda": 0},
         )
         card = html.split('class="auto-card"', 1)[1].split("</article>", 1)[0]
-        account_select = card.split('data-plugin-account-role="finance_quote_source"', 1)[1]
-        account_select = account_select.split("</select>", 1)[0]
-        resource_select = card.split('data-plugin-resource-role="input_sheet"', 1)[1]
-        resource_select = resource_select.split("</select>", 1)[0]
 
-        self.assertIn('href="/extensions"', html)
+        self.assertNotIn('href="/extensions"', html)
+        self.assertEqual(1, html.count("data-extension-open"))
+        self.assertIn("data-extension-dialog", html)
         self.assertNotIn("data-plugin-install-form", html)
-        self.assertNotIn("automation-plugin-manager-dialog", html)
         self.assertIn("华东财务同步", card)
         self.assertIn("1.2.3", card)
         self.assertEqual(1, card.count("data-project-policy-toggle"))
         self.assertEqual(2, card.count("data-project-policy-mode"))
         self.assertIn("data-plugin-configuration-save", card)
         self.assertIn("data-plugin-schedule-kind", card)
-        self.assertIn("data-plugin-schedule-effect", card)
-        self.assertIn('value="acct-east" selected', account_select)
-        self.assertNotIn('value="acct-first" selected', account_select)
-        self.assertIn('value="phase7.bound_sheet" selected', resource_select)
-        self.assertNotIn('value="phase7.first_sheet" selected', resource_select)
-        self.assertIn("页面不会显示表格密钥等敏感信息", card)
-        self.assertIn("数据从哪里读取、保存到哪里", card)
-        self.assertIn("项目已绑定表格", card)
-        self.assertNotIn("项目已绑定表格（飞书电子表格）", card)
+        self.assertNotIn("data-plugin-schedule-effect", card)
+        self.assertNotIn("data-plugin-account-role", card)
+        self.assertNotIn("data-plugin-resource-role", card)
+        self.assertNotIn("任务怎么运行", card)
+        self.assertNotIn("允许从哪里启动", card)
+        self.assertNotIn("数据从哪里读取、保存到哪里", card)
         self.assertNotIn("data-cron-editor", card)
         self.assertNotIn("policy_hash", card)
         self.assertIn('name="project-policy-finance_action_east"', card)
-        self.assertNotIn("data-plugin-instance-action", card)
-        self.assertNotIn("data-plugin-upgrade", card)
+        self.assertIn('data-extension-action="upgrade"', card)
+        self.assertIn('data-extension-action="disable"', card)
+        self.assertIn('data-extension-action="uninstall"', card)
+        self.assertIn("data-extension-upgrade", card)
 
     def test_runtime_technical_details_stay_hidden_without_migration_controls(self):
         template_source = (CONSOLE_DIR / "templates" / "automation.html").read_text(
@@ -2356,11 +2432,12 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertNotIn("data-plugin-migration", template_source)
         self.assertNotIn("建立 v1 → v2 并行迁移验证", template_source)
         self.assertIn("plugin.blocking_reason_labels | join('；')", template_source)
-        self.assertIn('data-plugin-entrypoint-kind="{{ entrypoint_kind }}"', template_source)
-        self.assertIn("'events': '事件订阅'", template_source)
+        self.assertNotIn('data-plugin-entrypoint-kind="{{ entrypoint_kind }}"', template_source)
+        self.assertNotIn("允许从哪里启动", template_source)
+        self.assertNotIn("数据从哪里读取、保存到哪里", template_source)
         self.assertNotIn("审计不是审批", template_source)
-        self.assertIn("并保留每次运行记录", template_source)
-        self.assertIn("{% elif task.approval_policy %}", template_source)
+        self.assertIn("每次运行都先进入本项目待审批", template_source)
+        self.assertIn("{% if task.approval_policy %}", template_source)
         self.assertIn('name="contribution_id"', template_source)
         self.assertIn("task.plugin.console_entrypoints | length > 1", template_source)
         service_source = (CONSOLE_DIR / "services" / "automation.py").read_text(
@@ -2375,21 +2452,31 @@ class AutomationPluginTemplateTests(unittest.TestCase):
             service_source,
         )
 
-    def test_automation_page_has_one_extension_entry_without_package_lifecycle_ui(self):
+    def test_automation_page_owns_extension_install_and_lifecycle_ui(self):
         template_source = (CONSOLE_DIR / "templates" / "automation.html").read_text(
             encoding="utf-8"
         )
         script_source = (
             CONSOLE_DIR / "static" / "automation_approval_policy.js"
         ).read_text(encoding="utf-8")
-        self.assertEqual(1, template_source.count('href="/extensions"'))
+        extension_script = (
+            CONSOLE_DIR / "static" / "extensions.js"
+        ).read_text(encoding="utf-8")
+        dialog_source = (
+            CONSOLE_DIR / "templates" / "_automation_extension_install_dialog.html"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn('href="/extensions"', template_source)
         self.assertNotIn('href="/extensions/{{', template_source)
+        self.assertEqual(1, template_source.count("data-extension-open"))
+        self.assertIn('_automation_extension_install_dialog.html', template_source)
+        self.assertIn('/static/extensions.js', template_source)
         self.assertIn(
             'form.querySelector(\'input[name="project_plugin_instance"]\')',
             template_source,
         )
         self.assertNotIn("data-plugin-install", template_source)
-        self.assertNotIn("data-plugin-upgrade", template_source)
+        self.assertIn("data-extension-upgrade", template_source)
+        self.assertIn("data-extension-action", template_source)
         self.assertNotIn("data-plugin-instance-action", template_source)
         self.assertNotIn("data-plugin-migration-create-form", template_source)
         for removed_selector in (
@@ -2406,6 +2493,9 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertNotIn("data-plugin-migration-action", script_source)
         self.assertIn("data-plugin-recover-unknown-write", script_source)
         self.assertIn("recoverUnknownWrite", script_source)
+        self.assertIn("/automations/extensions/inspect", dialog_source)
+        self.assertIn("/automations/extensions/install", dialog_source)
+        self.assertIn("/automations/plugins/${automationId}/${action}", extension_script)
 
     def test_project_settings_save_is_delegated_and_survives_partial_navigation(self):
         node_binary = shutil.which("node") or shutil.which("node.exe")

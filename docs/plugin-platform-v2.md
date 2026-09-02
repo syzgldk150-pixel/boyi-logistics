@@ -58,7 +58,7 @@ v1 与 v2 继续并存，但二者不是同一种包：
 
 安装器只读取 `schema_version + runtime_model` 做一次严格分流。v2 解析失败不会回退 v1，v1 解析失败也不会尝试 v2。历史 v1 包和已安装字节保持原样，v2 不要求、也不生成 Ed25519 签名。
 
-Console 信息架构同样只有一个状态源：`/extensions` 与详情页展示真实 Catalog 中的包、权限摘要、实例健康并承载安装/升级/启停/卸载；`/automations` 维护每个项目的配置、绑定、入口、定时、权限、运行和 v1→v2 并行迁移验证。扩展中心只是现有 Catalog 和生命周期处理器的安全投影，不新增表、包仓、安装框架或运行状态。固定 15 个业务模块不属于扩展，尚未实现的 Connector 也不得预先伪造为可安装类型。
+Console 信息架构只有一个状态源和一个日常入口：`/automations` 聚合真实 Catalog、插件实例、调度和运行状态，并承载安装、升级、启停、执行、取消、定时、插件专属设置和按 `automation_id` 卸载。侧栏不再注册“扩展中心”；`/extensions` 与旧详情 GET 只重定向到自动化或对应插件筛选，旧生命周期 POST 返回 410。合并只复用现有 Catalog、实例仓储、包目录和生命周期处理器，不新增表、包仓、安装框架或运行状态。固定业务模块不属于扩展，尚未实现的 Connector 也不得预先伪造为可安装类型。
 
 当前实现已经具备 v2 Manifest/ZIP 校验、内容摘要、Linux Python 3.10 环境、独立可查询的 Host Capability Registry、五态 effect 治理、代际注册、单 Provider 服务注册表、Catalog 就绪状态、受管 KV/collection、跨插件 `service.invoke`、数据保留以及迁移 pair/run-key 的持久化原语。以下边界必须如实显示：
 
@@ -78,7 +78,7 @@ Console 信息架构同样只有一个状态源：`/extensions` 与详情页展�
 
 ## 2. ZIP 目录合同
 
-ZIP 根目录不能再包一层项目文件夹，只允许一个根 `manifest.json` 和 `payload/` 下的普通文件：
+ZIP 根目录不能再包一层项目文件夹，只允许一个根 `manifest.json`、`payload/` 下的运行文件，以及 Manifest 声明时可选的 `settings/` 静态设置资源：
 
 ```text
 manifest.json
@@ -88,6 +88,10 @@ payload/
   requirements.lock          # 可选
   wheelhouse/                # 有 requirements.lock 时使用
     dependency-1.2.3-py3-none-any.whl
+settings/                    # 可选；仅用于插件专属设置页
+  index.html
+  settings.css
+  settings.js
 ```
 
 开发规则如下：
@@ -95,7 +99,7 @@ payload/
 1. `runtime.entrypoint` 必须是 `payload/` 下的 `.py` 文件；所有文本文件使用 UTF-8，包内路径使用 POSIX `/`。
 2. 依赖可不带；若声明 `requirements_lock`，必须同时把清单逐个列出的 wheel 放入 `payload/wheelhouse/`。安装只允许离线、哈希锁定、`--no-deps` 的二进制 wheel，不访问软件源。
 3. ZIP 不允许绝对路径、`..`、反斜杠、大小写冲突、目录项、符号链接、加密成员、异常压缩比或非普通文件。
-4. 不允许 `setup.py`、`pyproject.toml`、安装/卸载 hook，亦不允许 HTML、CSS、JavaScript、Wasm、模板或 `static/frontend/ui/web` 自定义前端。Console 只从 Manifest Schema 渲染系统表单。
+4. 不允许 `setup.py`、`pyproject.toml`、安装/卸载 hook、Wasm、模板或其他自定义前端目录。HTML、CSS、JavaScript 的唯一例外是 Manifest `settings_ui` 指向的包内 `settings/index.html` 及其相对静态资源；它们只能在隔离 iframe 中运行，不能作为 Console 页面代码或运行时 payload 加载。
 5. Console 上传入口限制为 32 MiB；校验器还限制成员数量、单文件大小、解压总量和压缩比。不要用大 ZIP 携带业务数据。
 6. 包内不得包含账号、密码、Cookie、Token、私钥、真实账号 ID、数据库连接串或客户业务原始资料。
 
@@ -105,7 +109,7 @@ payload/
 
 仓库根目录以 `PYTHONPATH=agent PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin ...` 运行统一开发入口。它提供七个纯本地命令：`init` 创建最小无写 compute + Console 源码，`validate` 走 ZIP verifier 与项目合同权威链，`package` 生成确定性且不可覆盖的 ZIP，`inspect` 只显示 identity/成员摘要/合同向导，`permissions` 只投影声明权限而不授权，`diff` 比较两个已验证工件但不声称项目兼容，`test` 使用闭合 scenarios 在真实本地 sandbox 中运行。
 
-源码目录精确只能有根 `manifest.json` 与 `payload/`，其中只能包含普通目录和普通文件；源码不得携带 `payload/boyi_plugin_sdk.py`，打包时由仓库当前 SDK 单点注入。遍历先按目录项名称拒绝 `.env*`、credential、secret、key/cert、session/token/Cookie/密码等敏感候选，再读取任何成员内容；符号链接、特殊文件、额外根成员均失败。相同成员字节按固定顺序和 ZIP 元数据产生相同包 identity，输出已存在或并发出现时拒绝覆盖，最终文件发布前必须完成权威验证。
+源码目录精确只能有根 `manifest.json`、`payload/` 与可选 `settings/`，其中只能包含普通目录和普通文件；源码不得携带 `payload/boyi_plugin_sdk.py`，打包时由仓库当前 SDK 单点注入。`settings/` 仅允许同包相对 HTML/CSS/JavaScript 和静态资源，不能包含可执行服务端代码。遍历先按目录项名称拒绝 `.env*`、credential、secret、key/cert、session/token/Cookie/密码等敏感候选，再读取任何成员内容；符号链接、特殊文件、额外根成员均失败。相同成员字节按固定顺序和 ZIP 元数据产生相同包 identity，输出已存在或并发出现时拒绝覆盖，最终文件发布前必须完成权威验证。
 
 `validate/inspect/permissions/diff` 都只消费显式本地路径和已验证工件，不读取项目仓储、活动 generation、账号池、环境配置或生产状态。Manifest 编辑器 Schema 在 `agent/extension_sdk/schemas/manifest-v2.schema.json`，但不能代替运行时 parser/contract。完整命令语法、scenario Schema 和输出边界见 `agent/docs/service_v2_developer_tooling.md`。
 
@@ -127,7 +131,8 @@ payload/
 | `capabilities` | 只声明实际使用的能力、精确 action、账号角色或资源角色；仅 `service.invoke` 可选 `action_call_limits`，其键必须精确覆盖 operations 且每项为 `1..1000` 整数；相关 action 的声明上限合计可超过 1000，但运行时全局上限仍固定为 1000，未声明时保留旧的每 action 64 次默认 |
 | `account_roles` | 声明角色、允许系统和是否必填；账号由项目绑定，不进入配置 JSON |
 | `resource_roles` | 声明角色、允许资源种类和是否必填 |
-| `contributes` | 必须同时含 `console/scheduler/webhook/feishu/events` 五个数组，可选 `harness/module_slots`；所有 contribution `id` 在包内全局唯一 |
+| `settings_ui` | 可选；字段精确为 `entry=settings/index.html` 与 `bridge_api=1.0.0`。声明必需配置、账号角色或资源角色时必须提供 |
+| `contributes` | 必须同时含 `console/scheduler/webhook/feishu/events/harness` 六个数组，可选 `module_slots`；`harness` 至少一项，所有 contribution `id` 在包内全局唯一 |
 | `config_schema` | 顶层必须是 `type=object`、`additionalProperties=false`，只含 `properties/required`；禁止账号 ID 和凭据类字段名 |
 | `storage` | 明确 `kv` 与 `collections`；不需要存储时也要写 `false` 和空数组 |
 
@@ -139,6 +144,7 @@ payload/
 - 飞书：声明命令文本，但发布时仍需宿主侧受审路由能力；不能借此把任意文本变成特权入口。
 - Selection：仅 Console/Feishu 可选增加 `selection_preview_operation`；原 `operation` 是 execute。两者必须属于同一 service，preview effect 必须是 `read`、execute effect 必须是 `external_write` 且名称不同；同一包的 Console/Feishu selection 声明还必须共享完全相同的 service/preview/execute 三元组，其他 contribution kind 禁止该字段。
 - Event：声明全局 exact 事件名、是否 durable 和目标服务操作；当前只有 `durable=false` 可进入离线 best-effort Dispatcher，`durable=true` 明确不可用且不降级。
+- Harness：每个插件至少声明一项，字段精确包含中文名称、中文用途、适用场景、闭合参数 Schema、Provider 服务/操作、`read|compute|write` 影响类型、`none|exact_preview` 确认策略和可选预览操作。当前运行目录只注册可机械证明为 `read/compute` 的能力；`write` 必须具备工具专属精确预览并完成同一会话确认，否则显式拒绝执行。
 - Module Slot：可选 `module_slots` 中每项字段精确为 `id/slot/title/service/operation/default_enabled`；当前 slot 只允许 `waybill_entry.actions` 与 `waybill_entry.validators`，目标 Provider operation 只允许 `read/compute`，插件不能携带或返回前端代码。
 
 ### 3.2 可复制的最小示例
@@ -151,6 +157,10 @@ payload/
   "name": "示例快照服务",
   "version": "1.0.0",
   "description": "展示 Service v2 的最小声明式合同。",
+  "settings_ui": {
+    "entry": "settings/index.html",
+    "bridge_api": "1.0.0"
+  },
   "host_api": {
     "minimum": "2.0.0",
     "maximum_exclusive": "3.0.0"
@@ -167,6 +177,7 @@ payload/
     {
       "service": "plugin.demo_snapshot_v2.snapshot@1",
       "operations": [
+        {"name": "preview", "effect": "read"},
         {"name": "run", "effect": "internal_write"}
       ]
     }
@@ -208,7 +219,26 @@ payload/
     ],
     "webhook": [],
     "feishu": [],
-    "events": []
+    "events": [],
+    "harness": [
+      {
+        "id": "preview_snapshot",
+        "title": "查询示例快照",
+        "description": "只读查看示例快照运行前信息。",
+        "scenarios": ["查看示例快照", "检查快照状态"],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {},
+          "required": []
+        },
+        "service": "plugin.demo_snapshot_v2.snapshot@1",
+        "operation": "preview",
+        "effect": "read",
+        "confirmation_policy": "none",
+        "preview_operation": null
+      }
+    ]
   },
   "config_schema": {
     "type": "object",
@@ -335,8 +365,8 @@ Provider effect 来自 `provides[*].operations[*].effect`，Host capability effe
 管理员操作流程：
 
 1. 使用已验证的 Console `super_admin` 会话把 ZIP 拖入安装区；Console 计算收到字节的传输 SHA，Agent 复用最终安装的同一验证器做无副作用技术检查，只返回闭合权限、角色、配置 Schema、贡献点和调度投影。
-2. 管理员在同一个连续向导中确认权限，选择账号、资源、配置、入口和定时。浏览器不提交 Manifest、摘要、项目 ID、设备、服务或操作，只提交同一 ZIP、稳定根请求 UUID 和闭合安装意图。
-3. 最终安装重新验证 ZIP，不信任前一次检查投影；服务器规范化 `instance_name/config/account_bindings/resource_bindings/enabled_entrypoints/schedule/permissions_confirmed`，把包 SHA、完整意图和操作者绑定为根幂等身份，再建立新的 disabled 项目和不可变版本目录。
+2. 管理员在同一个连续向导中确认权限并填写实例名称。浏览器不提交 Manifest、摘要、项目 ID、设备、服务、操作、账号、资源、入口或定时，只提交同一 ZIP、稳定根请求 UUID 与闭合的 `instance_name/permissions_confirmed` 安装意图。
+3. 最终安装重新验证 ZIP，不信任前一次检查投影；服务器规范化最小安装意图，把包 SHA、完整意图和操作者绑定为根幂等身份，再建立新的 disabled、未配置独立实例和不可变版本目录。同一包版本可供多个实例共享，实例设置、账号/资源绑定、定时和运行状态相互隔离。
 4. 项目用确定性子 UUID 保存配置并 reconcile desired generation；只有目标 generation 已精确 `COMMITTED/STABLE` 后，仓储事务才会校验初始配置审计、已提交 generation 和此前零状态变更，并把当时真实的项目 `record_version` 持久化为启用基线。配置、依赖、运行环境或协调失败均保留 disabled `PREPARING/BLOCKED_DEPENDENCY`，不要求重启服务。
 5. 响应丢失时，同一根 UUID 只读取原安装并续做尚未完成的配置、reconcile 或启用阶段；ZIP、操作者或任一规范意图字段漂移必须返回幂等冲突，不得生成第二个项目或用最新状态冒充旧请求结果。启用和同步失败后的停用补偿使用连续、确定性的审计 witness；缺少任一 witness 或出现人工状态变更即停止旧请求重放。启用事务提交后进程崩溃、或补偿写不可用的恢复演练尚未在线完成，明确标记为 `PRODUCTION_GATED`，在演练通过前不把安装链路描述为零半启用窗口。
 6. Catalog 展示目标版本、活动版本、运行模型、Host API、服务、贡献点、依赖状态和阻断原因。“包已安装”与“v2 generation 已稳定运行”必须分开显示。迁移项目例外，初始只开放 Console 人工入口。
@@ -357,21 +387,27 @@ Agent 启动时先完成审批策略与项目调用器装配，再构造但不�
 
 停用和卸载使用同一顺序：先严格刷新物理 Scheduler 计划，成功后再整代 withdraw Console/Scheduler/Harness/Feishu/Webhook/Event/Module Slot 注册；失败保留切换前对象并保持 pending，调用仍由 durable 项目状态 fail closed。只提供 service、没有已启用受管 contribution 的 v2 generation 不创建伪 marker。关闭最后一个受管 contribution 的权威空 generation 仍执行原子刷新：旧代即使仍有 lease 也立即从 active map 清除并进入 DRAINING；DRAINING 记录不再接收流量或占用全局飞书命令、Webhook route、event name 或 module-slot handle，但继续保留作租约排空与诊断。
 
-Catalog 只输出白名单 `active_contributions` 与 `contribution_projection_state`；状态仅为 `ACTIVE/STALE/INACTIVE`，每条公开 active 记录只含 `contribution_id/contribution_kind/generation/phase/backend_status`。Console 手工执行入口仍只从与当前 committed generation 精确一致、`phase=COMMITTED`、`backend_status=READY` 且状态为 `ACTIVE` 的 Console 记录派生；Feishu/Webhook/Event/Module Slot 记录可以进入已启用种类展示，但绝不进入通用 Console 手工调用清单。Module Slot 只能经 7.6 的固定录单宿主调用。Harness 使用同一 Registry 的独立私有只读 snapshot，每次调用前再次解析 exact active generation；动态飞书、动态 Webhook、non-durable Event Dispatcher 与 Module Slot Host 都只解析 exact active generation，Policy 还会在创建 Command 前和同一接受 UOW 内再次核对 Registry identity。缺失、歧义、跨代、stale 或 inactive 均关闭失败。这不改变 `ACTION_V1`、既有 Webhook/Feishu、`shared/runtime_events.py`、事务 Outbox 或 Host `event.publish` 合同，也不开放自定义插件前端；`durable=true` Event 仍为 `CAPABILITY_UNAVAILABLE`。
+Catalog 只输出白名单 `active_contributions` 与 `contribution_projection_state`；状态仅为 `ACTIVE/STALE/INACTIVE`，每条公开 active 记录只含 `contribution_id/contribution_kind/generation/phase/backend_status`。Console 手工执行入口仍只从与当前 committed generation 精确一致、`phase=COMMITTED`、`backend_status=READY` 且状态为 `ACTIVE` 的 Console 记录派生；Feishu/Webhook/Event/Module Slot 记录可以进入已启用种类展示，但绝不进入通用 Console 手工调用清单。Module Slot 只能经 7.7 的固定录单宿主调用。Harness 使用同一 Registry 的独立私有只读 snapshot，每次调用前再次解析 exact active generation；动态飞书、动态 Webhook、non-durable Event Dispatcher 与 Module Slot Host 都只解析 exact active generation，Policy 还会在创建 Command 前和同一接受 UOW 内再次核对 Registry identity。缺失、歧义、跨代、stale 或 inactive 均关闭失败。这不改变 `ACTION_V1`、既有 Webhook/Feishu、`shared/runtime_events.py`、事务 Outbox 或 Host `event.publish` 合同。插件专属设置页是唯一允许的包内前端，只能通过下述设置桥访问脱敏设置上下文；`durable=true` Event 仍为 `CAPABILITY_UNAVAILABLE`。
 
 Selection contribution 的首次预览对调用方是零业务参数：`dry_run=true`、空选集和空指纹由 Host 注入，签名 preview operation 以 read/low 治理执行；持久 preview 有效期 15 分钟。确认调用面只接受 `preview_run_id + selected_bill_codes` 以及既有已验证 transport/Actor，项目、代际、配置、contract、contribution、service、operation、effect、账号、资源、完整 fingerprint 和 `dry_run=false` 均由 Host 恢复。Command 接受 UOW 内重新锁定 Run，要求选集为原候选子集并复核全部身份与 phase 后原子 consume；同一 request 按 Command 幂等恢复，另一个 request 重用 preview 返回 `SELECTION_PREVIEW_ALREADY_CONSUMED`。过期、结果篡改、身份或 operation/effect 漂移全部关闭失败。
 
-### 7.2 AI 助手只读边界
+### 7.2 插件设置页与桥边界
+
+点击自动化卡片“设置”进入 `/automations/{automation_id}/settings`。宿主只装载同一已验证包的 `settings/index.html` 与相对资源，并使用无 `allow-same-origin` 的 sandbox iframe、禁止外网的 CSP、会话绑定 nonce、严格 `postMessage` 来源和消息类型校验。页面不能读取父页面、发起任意 HTTP、打开窗口、顶层跳转或下载。
+
+设置桥只提供闭合能力：读取自身配置；带配置版本 CAS 原子保存自身配置及不透明账号/资源引用；读取脱敏账号显示信息与登录状态；读取脱敏飞书资源目录、可用状态和稳定问题代码。桥不返回密码、Cookie、Token、会话内容、飞书内部标识、数据库连接或任意命令能力。插件设置事务保留 Console 调度字段；`/automations/{automation_id}/schedule` 的调度事务保留插件配置，两者不能相互覆盖。无需配置的插件可以不声明 `settings_ui`，自动化卡片也不显示“设置”。
+
+### 7.3 AI 助手受治理边界
 
 `/harness` 是代码拥有、不可停用的固定 Console 模块。浏览器只能提交规范请求 UUID、Agent 签发的 Session UUID 和最多 4,000 字符的消息；Console 只接受真实 MySQL `admin/super_admin` 会话与同源写请求，再通过既有签名 principal 调用 Agent `/internal/v1/harness/sessions` 和 `/internal/v1/harness/messages`。浏览器或模型均不能提交 `automation_id/service/operation/account_id/resource_id` 等运行身份，动态工具只公开不可逆的 opaque tool id、标题和说明。
 
-六类固定业务工具由宿主代码拥有并接入真实只读 handler：查询业务知识、查询运单信息、查询物流轨迹、查看待处理事项、查看任务运行结果、查看运行证据。运单、运行与证据身份精确匹配，结果先做最小化和脱敏；缺少编号、多候选、未知工具、参数错误、超限或来源异常均显式失败。动态工具只来自当前 exact active 的 `contributes.harness`，还必须具有中文名称，其 Provider effect 必须是 `read` 或 `compute`，且机械治理必须同时满足 `harness_allowed=true`、`broker_effect=read`。网络、浏览器、Office、文件角色、Broker operation 或运行权限任一开放、字段缺失或漂移都会拒绝注册，不能生成默认值。
+六类固定业务工具由宿主代码拥有并接入真实只读 handler：查询业务知识、查询运单信息、查询物流轨迹、查看待处理事项、查看任务运行结果、查看运行证据。运单、运行与证据身份精确匹配，结果先做最小化和脱敏；缺少编号、多候选、未知工具、参数错误、超限或来源异常均显式失败。动态工具只来自当前 exact active 的 `contributes.harness`，并使用中文能力名称、用途、场景和实例名称建立目录；只有已配置、已启用且 generation 稳定的实例可执行。同插件多实例若不能根据网点、业务名或实例名唯一确定，助手必须列出中文实例名并询问，不能默认选择第一项。当前可执行 Provider effect 必须是 `read` 或 `compute`，且机械治理同时满足 `harness_allowed=true`、`broker_effect=read`。网络、浏览器、Office、文件角色、Broker operation 或运行权限任一开放、字段缺失或漂移都会拒绝注册，不能生成默认值。
 
 Session 仅保存在进程内有界仓储，状态为 `MEMORY_ONLY`，并精确绑定已签名管理员身份。生产对话直接复用“智能模型”当前激活的统一客户端，下一次请求立即反映模型激活、切换、回滚或清除；就绪状态为 `READY/ONLINE_READ_ONLY`。生产对话不依赖 Bubblewrap 启动状态；Bubblewrap 只用于离线测试和扩展隔离。模型未配置、接口超时或供应商异常分别返回稳定中文提示，不回退 Legacy Agent、旧离线模拟模型或其他供应商。
 
-交互接受正常中文自然语言；“你好”等普通对话无需调用工具，业务查询由模型在六类固定网关和通过治理的动态只读工具中选择。单次回答最多调用 8 次工具且总时限 30 秒，工具输出的规范 JSON 仍受 8 KiB 上限约束。模型请求和工具结果都会移除手机号、地址、账号、内部参数、密钥、长哈希及原始异常详情。持久 Session、写工具和未经治理的外部能力仍为 `PRODUCTION_GATED`。
+交互接受正常中文自然语言；“你好”等普通对话无需调用工具，业务查询由模型在六类固定网关和通过治理的动态只读工具中选择。单次回答最多调用 8 次工具且总时限 30 秒，工具输出的规范 JSON 仍受 8 KiB 上限约束。模型请求和工具结果都会移除手机号、地址、账号、内部参数、密钥、长哈希及原始异常详情。持久 Session、没有工具专属精确预览的写工具和未经治理的外部能力仍为 `PRODUCTION_GATED`。安装、升级、启停、配置和卸载会立即重建动态能力投影，不依赖服务重启。
 
-### 7.3 动态飞书 Dispatcher 边界
+### 7.4 动态飞书 Dispatcher 边界
 
 `contributes.feishu[*].commands` 的每条文本以大小写敏感的精确 UTF-8 字节生成全局 `feishu:command:<sha256>` 路由键，键不包含项目 ID；哈希命中后仍必须回查 committed declaration 中存在完全相同的 command，不能用哈希命中替代文本核对。不同项目或同一 generation 的两个 contribution 争用同一 command 时，整批 prepare 以 `CONTRIBUTION_ROUTE_CONFLICT` 失败且不产生部分注册；同一项目相邻 generation 可同时保留材料，但 active map 始终只允许一个 committed generation 接收调用。
 
@@ -381,15 +417,15 @@ Dispatcher 从 Registry 只取得 `automation_id/generation/contribution_id`，�
 
 以上只证明离线 fixture、Webhook/WS 共享稳定事件身份的代码链和进程内单 Registry 冲突语义。真实飞书 tenant、Webhook/WS 消费、机器人回复、事件重放以及多 Agent 进程的全局 command 仲裁均为 `PRODUCTION_GATED`；未完成权威单 reconciler 或数据库级 claim 方案前，不得声称生产多进程冲突已闭合。
 
-### 7.4 动态 Webhook Dispatcher 离线边界
+### 7.5 动态 Webhook Dispatcher 离线边界
 
 `contributes.webhook[*]` 只接受严格大写 `POST` 和稳定 route 段。Registry 用大小写敏感的全局 exact `POST + route` 身份准备整代 reservation；同一 generation 内重复或跨项目争用都以 `CONTRIBUTION_ROUTE_CONFLICT` 原子失败，不留下其他 contribution 的部分 reservation。相邻 generation 的材料可以共存，但只有 exact committed/READY generation 进入 active map；停用、卸载、权威空 generation、DRAINING、BLOCKED、ROLLED_BACK 和重启恢复继续服从 7.1 的整代语义。
 
 无网络 `ServiceV2WebhookDispatcher` 的调用面只接收适配器已验证的 method、route 和稳定 `source_event_id`。调用方不能提交或覆盖项目、service、operation、业务参数、账号、资源、Actor、原始 body、query 或 headers；Dispatcher 从 Registry 得到 exact contribution identity，Policy 只按签名项目合同编译调用。Policy 在创建 Command 前、以及同一 Command 接受 UOW 内再次核对 exact Registry identity，路由在两次检查之间被撤销或换代时关闭失败，不用旧目标继续执行。
 
-composition root 启动时构造并绑定唯一 `ServiceV2ManagedIngress`，运输适配器只能通过 `dispatch_verified_webhook(method, route, source_event_id)` 进入已有 Dispatcher。绑定失败会阻止 Agent 启动；未绑定调用返回 `PROJECT_RUNTIME_PROJECTION_STALE`。`managed_webhook_router READY` 只代表持久注册与当前进程绑定同时有效，不代表已有公网入口。本链路未新增 HTTP 路由；现有 `ACTION_V1` Webhook 路由、验签和动态参数合同保持原样，不能被 Service v2 Dispatcher 复用或隐式接管。Event contribution 的独立离线边界见 7.5。真实公网 namespace、逐 route token/signature 及轮换、Nginx/反向代理、真实流量与 replay、跨进程全局 route 仲裁、部署和生产等价故障注入全部为 `PRODUCTION_GATED`。
+composition root 启动时构造并绑定唯一 `ServiceV2ManagedIngress`，运输适配器只能通过 `dispatch_verified_webhook(method, route, source_event_id)` 进入已有 Dispatcher。绑定失败会阻止 Agent 启动；未绑定调用返回 `PROJECT_RUNTIME_PROJECTION_STALE`。`managed_webhook_router READY` 只代表持久注册与当前进程绑定同时有效，不代表已有公网入口。本链路未新增 HTTP 路由；现有 `ACTION_V1` Webhook 路由、验签和动态参数合同保持原样，不能被 Service v2 Dispatcher 复用或隐式接管。Event contribution 的独立离线边界见 7.6。真实公网 namespace、逐 route token/signature 及轮换、Nginx/反向代理、真实流量与 replay、跨进程全局 route 仲裁、部署和生产等价故障注入全部为 `PRODUCTION_GATED`。
 
-### 7.5 Non-durable Event Dispatcher 离线边界
+### 7.6 Non-durable Event Dispatcher 离线边界
 
 `contributes.events[*]` 使用大小写敏感的全局 exact event name。只有 `durable=false` 可以进入 `managed_event_dispatcher READY`；同一 generation 内重复或跨项目争用必须令整代 prepare 原子失败，不能留下其他 contribution 的部分 reservation。相邻 generation、权威空 generation、DRAINING、BLOCKED、ROLLED_BACK、停用、卸载和重启恢复继续服从 7.1 的 exact committed/READY active-map 语义。`durable=true` 在 prepare 时保持 `CAPABILITY_UNAVAILABLE`，绝不静默降级为 non-durable。
 
@@ -397,7 +433,7 @@ composition root 启动时构造并绑定唯一 `ServiceV2ManagedIngress`，运�
 
 真实 event source、payload/version 合同、Outbox fan-out、ACK/retry/dead-letter/replay、跨进程全局 event-name 仲裁、数据库迁移、部署和生产等价故障注入全部为 `PRODUCTION_GATED`。既有 `shared/runtime_events.py`、事务 Outbox、Host `event.publish`、`ACTION_V1`、Webhook 和 Feishu 链路保持不变，不得把它们接成隐式 Event 总线或降级兜底。
 
-### 7.6 固定录单 Module Slot 边界
+### 7.7 固定录单 Module Slot 边界
 
 Module Slot 只挂载在 Console 本地博益手工录单 frame `/ocr/boyi/frame`；韵达、融辉等跨域原页不读取投影、不渲染按钮，也不接入该调用链。浏览器看到的唯一扩展描述是 Agent GET `/internal/v1/automation-projects/module-slots/waybill-entry` 返回的闭合 `data.module_slots[*] = {slot,handle,title}`。`handle` 是绑定 active generation 的不透明标识；项目、generation、contribution、service、operation、effect、账号、资源、Actor 与角色均不进入浏览器。Console 只使用仓库内固定 HTML/JavaScript/CSS：模板中的 title 经 Jinja autoescape，动态反馈只经 `textContent` 写入；宿主不解释插件 HTML/JavaScript/CSS，也不加载远程前端代码。
 
@@ -509,13 +545,13 @@ MIG001 的真实 TMS 读取、Feishu/资源写、内部投影写、独立新鲜�
 
 ### 9.6 MIG003 分批问题件独立包
 
-`split_pending_problem_upload_v2` 位于 `agent/service_v2_plugins/split_pending_problem_upload_v2/`，确定性构建器逐字节嵌入 v1 `payload/action.py` 与共享结果 helper，不导入 legacy 工具或整链路运行时。它提供同一 service 上的 `preview/read` 与 `execute/external_write`；Console/Feishu 均绑定 `selection_preview_operation=preview` 且默认关闭，无 Scheduler/Webhook/Event/Harness。v1 action 继续唯一拥有 A:S 19 列校验、`应到=已到+未到`、候选指纹、最多 90 票有序选择、全部 query 先于任何写、全量 snapshot/Sheet 投影，以及逐票 create → fresh verify → event → result 的 Evidence 顺序。
+`split_pending_problem_upload_v2` 位于 `agent/service_v2_plugins/split_pending_problem_upload_v2/`，确定性构建器逐字节嵌入 v1 `payload/action.py` 与共享结果 helper，不导入 legacy 工具或整链路运行时。它提供同一 service 上的 `preview/read` 与 `execute/external_write`；Console/Feishu 均绑定 `selection_preview_operation=preview` 且默认关闭，无 Scheduler/Webhook/Event，并提供只读 Harness 候选预览能力与插件专属设置页。v1 action 继续唯一拥有 A:S 19 列校验、`应到=已到+未到`、候选指纹、最多 90 票有序选择、全部 query 先于任何写、全量 snapshot/Sheet 投影，以及逐票 create → fresh verify → event → result 的 Evidence 顺序。
 
 包声明源 Sheet、目标 Sheet、内部 projection、融辉账号和同 `account_id` 事件 ledger 五个 Connector；preview 首次调用只预检源 Sheet与 projection，execute 首次调用预检全部五项且不重复。九个 `service.invoke` action 的精确上限合计 454 次。写 marker 从全量 `snapshot_replace` 前开始，此后任何响应丢失、ACK/读回不闭合或后续票失败都保留 `WRITE_OUTCOME_UNKNOWN`，不得重放或回落 whole-tool。离线 fixture 只证明字节嵌入、代表性 19 列/数量守恒、v1-v2 投影与 primitive 顺序、逐票 Host Evidence 和错误边界；五个真实 Connector descriptor/handler/grant、真实 Sheet/MySQL/TMS 数据与写入、安装、committed generation、Console/固定飞书多轮选择 ownership 切换、生产 Evidence、数据库故障演练和部署全部为 `PRODUCTION_GATED`。
 
 ### 9.7 MIG004 扫描同步独立包
 
-`sync_scan_codes_v2` 位于 `agent/service_v2_plugins/sync_scan_codes_v2/`，确定性构建器逐字节嵌入 v1 `sync_scan_codes/payload/action.py` 与共享结果 helper，不导入 legacy whole-tool。包提供 `plugin.sync_scan_codes_v2.scan_codes@1` 上的 `preview/read` 与 `execute/external_write`；Console 和精确飞书命令“扫描”都指向 execute 且默认关闭，不声明通用 `selection_preview_operation`、Scheduler、Webhook、Event 或 Harness。配置 Schema 不保存 Host-owned 的 `dry_run` 与 `_scan_preview_binding`。
+`sync_scan_codes_v2` 位于 `agent/service_v2_plugins/sync_scan_codes_v2/`，确定性构建器逐字节嵌入 v1 `sync_scan_codes/payload/action.py` 与共享结果 helper，不导入 legacy whole-tool。包提供 `plugin.sync_scan_codes_v2.scan_codes@1` 上的 `preview/read` 与 `execute/external_write`；Console 和精确飞书命令“扫描”都指向 execute 且默认关闭，不声明通用 `selection_preview_operation`、Scheduler、Webhook 或 Event，并提供只读 Harness 扫描预览能力与插件专属设置页。配置 Schema 不保存 Host-owned 的 `dry_run` 与 `_scan_preview_binding`。
 
 嵌入 action 继续唯一拥有稳定分页、等价重复合并、H 单排除、主子单分类、候选排序/截断、PREVIEW/FORMAL、15 分钟到期和正式权威重读。包仅声明账号绑定的 `connector.boyi.scan_ronghui@1` 与 Host 内部 `connector.boyi.scan_projection@1`；`read_page/snapshot_replace/submit/verify` 的逐 action 上限为 `500/1/499/499`，声明 maxima 合计 1499，而运行时与 Broker 的全局上限始终为 1000。Preview 首次调用只预检扫描 Connector，execute 首次调用预检两项且不重复。
 
@@ -542,7 +578,7 @@ v2 离线包没有复制 v1 身份专属的一次性 preview 消费机制；现�
 
 - [ ] `plugin_id`、版本、服务名和 major 稳定；同版本重新构建得到相同字节或明确提升版本。
 - [ ] Manifest 只有闭合字段，Host API 区间覆盖 `2.0.0`；每个 `provides[*].operations` 项精确包含 `name/effect`，所有 contribution 指向本包提供的真实操作。
-- [ ] 包内没有凭据、账号 ID、前端、hook、任意下载脚本、SQL/DDL 或其他插件源码。
+- [ ] 包内没有凭据、账号 ID、hook、任意下载脚本、SQL/DDL 或其他插件源码；如有前端，仅为已声明的 `settings/` 隔离设置资源。
 - [ ] `capabilities[*].operations` 只列 Registry 已注册的 action 字符串，不复制或自报 Host effect；缺失数据、歧义、空响应和写后无法核验均显式失败。
 - [ ] 每个 contribution 的 effect、target 和 governance 在编译、Plan 与运行时一致；跨插件调用不超过调用方 ceiling，读/计算路径保持零写标记。
 - [ ] Selection contribution 的同 service preview/read 与 execute/external_write 配对闭合，Host-owned 输入、15 分钟候选子集与一次性消费均通过；`service.invoke.action_call_limits` 精确覆盖 operations 且预算边界闭合。

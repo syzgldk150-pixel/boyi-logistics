@@ -68,15 +68,13 @@ def test_registered_menu_projection_preserves_existing_console_contract() -> Non
 def test_system_status_is_a_control_plane_registration_after_fixed_menus() -> None:
     assert len(BUSINESS_MODULE_CATALOG) == 15
     assert tuple(item.menu_id for item in CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS) == (
-        "extensions",
         "system_status",
     )
-    assert tuple(item.menu_id for item in CONSOLE_NAVIGATION_REGISTRATIONS)[-3:] == (
+    assert tuple(item.menu_id for item in CONSOLE_NAVIGATION_REGISTRATIONS)[-2:] == (
         "system_settings",
-        "extensions",
         "system_status",
     )
-    status = CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS[1]
+    status = CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS[0]
     assert status.route == "/settings/system-status"
     assert status.icon == "activity"
     assert status.section == "system"

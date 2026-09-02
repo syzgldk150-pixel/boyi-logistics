@@ -12,11 +12,6 @@ from shared.service_identity import (
 _SERVICE_V2_INSTALL_INTENT_FIELDS = frozenset(
     {
         "instance_name",
-        "config",
-        "account_bindings",
-        "resource_bindings",
-        "enabled_entrypoints",
-        "schedule",
         "permissions_confirmed",
     }
 )
@@ -32,6 +27,7 @@ _SERVICE_V2_INSPECTION_FIELDS = frozenset(
         "config_schema",
         "contributions",
         "scheduling",
+        "settings_ui",
     }
 )
 _SERVICE_V2_INTENT_MAX_BYTES = 16 * 1024
@@ -53,6 +49,386 @@ _SERVICE_V2_FORBIDDEN_BROWSER_AUTHORITY = frozenset(
 
 
 class AutomationPluginManagementServiceMixin:
+    def _automation_plugin_settings_bridge_token(
+        self,
+        automation_id: str,
+        actor_id: str,
+    ) -> str:
+        payload = {
+            "automation_id": automation_id,
+            "actor_id": actor_id,
+            "expires_at": int(time.time()) + 30 * 60,
+            "nonce": secrets.token_urlsafe(18),
+        }
+        encoded = base64.urlsafe_b64encode(
+            json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii").rstrip("=")
+        signature = hmac.new(
+            str(self._session_secret).encode("utf-8"),
+            encoded.encode("ascii"),
+            hashlib.sha256,
+        ).hexdigest()
+        return f"{encoded}.{signature}"
+
+    def _automation_plugin_settings_bridge_token_valid(
+        self,
+        token: Any,
+        *,
+        automation_id: str,
+        actor_id: str,
+    ) -> bool:
+        encoded, separator, signature = str(token or "").partition(".")
+        if not separator or len(encoded) > 2048 or not re.fullmatch(r"[0-9a-f]{64}", signature):
+            return False
+        expected = hmac.new(
+            str(self._session_secret).encode("utf-8"),
+            encoded.encode("ascii"),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            return False
+        try:
+            raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+            payload = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        return bool(
+            isinstance(payload, dict)
+            and set(payload) == {"automation_id", "actor_id", "expires_at", "nonce"}
+            and payload.get("automation_id") == automation_id
+            and payload.get("actor_id") == actor_id
+            and isinstance(payload.get("expires_at"), int)
+            and int(time.time()) <= payload["expires_at"] <= int(time.time()) + 30 * 60
+            and isinstance(payload.get("nonce"), str)
+            and 12 <= len(payload["nonce"]) <= 128
+        )
+
+    def _render_automation_plugin_settings(
+        self,
+        handler: BaseHTTPRequestHandler,
+        automation_id: str,
+        query: dict[str, list[str]],
+    ) -> None:
+        automation_id = self._automation_project_id(automation_id)
+        trusted_context = self._control_plane_read_context(handler)
+        if not automation_id or trusted_context is None:
+            return
+        if "super_admin" not in list(trusted_context.get("actor_roles") or []):
+            self._control_plane_error(
+                handler,
+                HTTPStatus.FORBIDDEN,
+                "SUPER_ADMIN_REQUIRED",
+                "只有超级管理员可以打开插件设置。",
+            )
+            return
+        result = self._agent_request(
+            "GET",
+            f"/internal/v1/automation/instances/{quote(automation_id, safe='')}/settings-context",
+            timeout=15,
+            console_principal=trusted_context["_console_principal"],
+        )
+        data = result.get("data") if isinstance(result.get("data"), dict) else None
+        settings_ui = data.get("settings_ui") if isinstance(data, dict) else None
+        if not result.get("ok") or not isinstance(data, dict):
+            self._automation_project_agent_error(
+                handler,
+                result,
+                automation_id=automation_id,
+                fallback_code="PLUGIN_SETTINGS_UNAVAILABLE",
+                fallback_message="插件设置暂时无法打开。",
+            )
+            return
+        if settings_ui != {"entry": "settings/index.html", "bridge_api": "1.0.0"}:
+            self._control_plane_error(
+                handler,
+                HTTPStatus.NOT_FOUND,
+                "PLUGIN_SETTINGS_UI_UNAVAILABLE",
+                "这个插件不需要单独设置。",
+            )
+            return
+        actor_id = str(trusted_context["actor"].get("actor_id") or "")
+        bridge_session = self._automation_plugin_settings_bridge_token(
+            automation_id,
+            actor_id,
+        )
+        template = self.template_env.get_template("automation_plugin_settings.html")
+        body = template.render(
+            app_title=self.settings.app_title,
+            message=query.get("message", [""])[0],
+            message_kind=query.get("kind", ["info"])[0],
+            automation_id=automation_id,
+            instance_name=normalize_feedback_text(data.get("instance_name") or "插件设置"),
+            plugin_name=normalize_feedback_text(data.get("plugin_name") or "插件"),
+            plugin_version=str(data.get("plugin_version") or ""),
+            enabled=data.get("enabled") is True,
+            configured=data.get("configured") is True,
+            bridge_session=bridge_session,
+        )
+        self._send_html(handler, body)
+
+    def _handle_automation_plugin_settings_asset(
+        self,
+        handler: BaseHTTPRequestHandler,
+        automation_id: str,
+        asset_path: str,
+    ) -> None:
+        automation_id = self._automation_project_id(automation_id)
+        trusted_context = self._control_plane_read_context(handler)
+        if not automation_id or trusted_context is None:
+            return
+        raw_path = unquote(str(asset_path or ""))
+        if (
+            not raw_path
+            or len(raw_path) > 512
+            or "\\" in raw_path
+            or any(part in {"", ".", ".."} for part in raw_path.split("/"))
+        ):
+            self._control_plane_error(
+                handler,
+                HTTPStatus.BAD_REQUEST,
+                "PLUGIN_SETTINGS_ASSET_INVALID",
+                "插件设置资源地址无效。",
+            )
+            return
+        endpoint = (
+            f"/internal/v1/automation/instances/{quote(automation_id, safe='')}"
+            f"/settings-assets/{quote(raw_path, safe='/')}"
+        )
+        result = self._agent_binary_request(
+            endpoint,
+            timeout=15,
+            console_principal=trusted_context["_console_principal"],
+        )
+        if not result.get("ok") or not isinstance(result.get("data"), bytes):
+            self._control_plane_error(
+                handler,
+                HTTPStatus.BAD_GATEWAY,
+                "PLUGIN_SETTINGS_ASSET_UNAVAILABLE",
+                "插件设置资源暂时无法读取。",
+            )
+            return
+        content_type = str(result.get("content_type") or "application/octet-stream").lower()
+        allowed_types = {
+            "text/html",
+            "text/css",
+            "text/javascript",
+            "application/javascript",
+            "application/json",
+            "image/svg+xml",
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "font/woff2",
+        }
+        if content_type not in allowed_types:
+            self._control_plane_error(
+                handler,
+                HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                "PLUGIN_SETTINGS_ASSET_TYPE_UNSUPPORTED",
+                "插件设置资源类型不受支持。",
+            )
+            return
+        self._send_bytes(
+            handler,
+            HTTPStatus.OK,
+            result["data"],
+            content_type,
+            cache_control="private, max-age=300",
+            extra_headers={
+                "Content-Security-Policy": (
+                    "default-src 'none'; script-src 'self'; style-src 'self'; "
+                    "img-src 'self' data:; font-src 'self'; connect-src 'none'; "
+                    "frame-ancestors 'self'; base-uri 'none'; form-action 'none'"
+                ),
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    def _handle_automation_plugin_settings_bridge(
+        self,
+        handler: BaseHTTPRequestHandler,
+        automation_id: str,
+    ) -> None:
+        automation_id = self._automation_project_id(automation_id)
+        trusted_context = self._control_plane_write_context(handler)
+        if not automation_id or trusted_context is None:
+            return
+        if "super_admin" not in list(trusted_context.get("actor_roles") or []):
+            self._control_plane_error(
+                handler,
+                HTTPStatus.FORBIDDEN,
+                "SUPER_ADMIN_REQUIRED",
+                "只有超级管理员可以保存插件设置。",
+            )
+            return
+        values = self._read_control_plane_json(handler)
+        if values is None:
+            return
+        operation = str(values.get("operation") or "").strip().lower()
+        actor_id = str(trusted_context["actor"].get("actor_id") or "")
+        if (
+            set(values) != {"bridge_session", "operation", "payload"}
+            or operation not in {"context", "save"}
+            or not self._automation_plugin_settings_bridge_token_valid(
+                values.get("bridge_session"),
+                automation_id=automation_id,
+                actor_id=actor_id,
+            )
+            or not isinstance(values.get("payload"), dict)
+        ):
+            self._control_plane_error(
+                handler,
+                HTTPStatus.BAD_REQUEST,
+                "PLUGIN_SETTINGS_BRIDGE_INVALID",
+                "插件设置会话已失效，请返回自动化页面后重新打开。",
+            )
+            return
+        if operation == "save":
+            payload = values["payload"]
+            expected_fields = {
+                "config",
+                "account_bindings",
+                "resource_bindings",
+                "request_id",
+                "expected_project_configuration_version",
+            }
+            request_id = self._normalize_browser_request_uuid(payload.get("request_id"))
+            expected_version = payload.get("expected_project_configuration_version")
+            if (
+                set(payload) != expected_fields
+                or not request_id
+                or isinstance(expected_version, bool)
+                or not isinstance(expected_version, int)
+                or expected_version < 0
+                or not all(
+                    isinstance(payload.get(field), dict)
+                    and self._service_v2_json_tree_is_safe(payload[field])
+                    for field in ("config", "account_bindings", "resource_bindings")
+                )
+            ):
+                self._control_plane_error(
+                    handler,
+                    HTTPStatus.BAD_REQUEST,
+                    "PLUGIN_SETTINGS_VALUES_INVALID",
+                    "插件设置内容无效，请检查后重试。",
+                )
+                return
+            result = self._agent_request(
+                "PUT",
+                f"/internal/v1/automation/instances/{quote(automation_id, safe='')}/plugin-settings",
+                payload={**payload, "request_id": request_id},
+                timeout=25,
+                console_principal=trusted_context["_console_principal"],
+            )
+            if not result.get("ok"):
+                self._automation_project_agent_error(
+                    handler,
+                    result,
+                    automation_id=automation_id,
+                    fallback_code="PLUGIN_SETTINGS_SAVE_FAILED",
+                    fallback_message="插件设置保存失败。",
+                )
+                return
+            self._clear_automation_plugin_catalog_cache()
+            self._send_json(
+                handler,
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "data": result.get("data") if isinstance(result.get("data"), dict) else {},
+                    "message": "插件设置已保存。",
+                },
+            )
+            return
+
+        if values["payload"]:
+            self._control_plane_error(
+                handler,
+                HTTPStatus.BAD_REQUEST,
+                "PLUGIN_SETTINGS_CONTEXT_FIELDS_INVALID",
+                "读取设置上下文时不能提交业务参数。",
+            )
+            return
+        settings_result = self._agent_request(
+            "GET",
+            f"/internal/v1/automation/instances/{quote(automation_id, safe='')}/settings-context",
+            timeout=15,
+            console_principal=trusted_context["_console_principal"],
+        )
+        catalog_result = self._agent_request(
+            "GET",
+            "/internal/v1/automation/plugins/catalog",
+            timeout=15,
+            console_principal=trusted_context["_console_principal"],
+        )
+        settings_data = settings_result.get("data")
+        if not settings_result.get("ok") or not isinstance(settings_data, dict):
+            self._automation_project_agent_error(
+                handler,
+                settings_result,
+                automation_id=automation_id,
+                fallback_code="PLUGIN_SETTINGS_CONTEXT_UNAVAILABLE",
+                fallback_message="插件设置上下文暂时无法读取。",
+            )
+            return
+        raw_accounts, account_warning = self._fetch_automation_accounts(
+            force=False,
+            prefer_cached=True,
+            console_principal=trusted_context["_console_principal"],
+        )
+        safe_accounts = []
+        for account in raw_accounts if not account_warning else []:
+            if not isinstance(account, dict):
+                continue
+            account_id = str(account.get("account_id") or "").strip()
+            if not _SERVICE_V2_BINDING_ID_RE.fullmatch(account_id):
+                continue
+            status = account.get("status") if isinstance(account.get("status"), dict) else {}
+            safe_accounts.append(
+                {
+                    "account_ref": account_id,
+                    "name": normalize_feedback_text(account.get("name") or "业务账号")[:160],
+                    "system": str(account.get("system") or "").strip().lower(),
+                    "system_label": normalize_feedback_text(account.get("system_label") or "业务系统")[:80],
+                    "available": bool(account.get("is_active", True))
+                    and (
+                        account.get("session_capable") is not True
+                        or str(status.get("status") or "").lower() == "authenticated"
+                    ),
+                    "status_label": normalize_feedback_text(
+                        account.get("status_label") or status.get("label") or "状态未知"
+                    )[:80],
+                }
+            )
+        safe_accounts.sort(key=lambda item: (item["system_label"], item["name"], item["account_ref"]))
+
+        from console.services.automation_projects import _normalize_plugin_resources
+
+        catalog_data = catalog_result.get("data") if isinstance(catalog_result.get("data"), dict) else {}
+        resources, resources_valid = _normalize_plugin_resources(catalog_data.get("resources"))
+        if not catalog_result.get("ok") or not resources_valid:
+            resources = []
+        self._send_json(
+            handler,
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "data": {
+                    "settings": settings_data,
+                    "accounts": safe_accounts,
+                    "account_catalog_available": not bool(account_warning),
+                    "resources": resources,
+                    "resource_catalog_available": bool(
+                        catalog_result.get("ok")
+                        and resources_valid
+                        and catalog_data.get("resource_pool_available") is True
+                    ),
+                    "bridge_api": "1.0.0",
+                },
+                "message": "插件设置已连接。",
+            },
+        )
+
     @staticmethod
     def _service_v2_json_tree_is_safe(value: Any, *, depth: int = 0) -> bool:
         """Bound JSON crossing the Agent-to-browser wizard projection."""
@@ -240,39 +616,47 @@ class AutomationPluginManagementServiceMixin:
             "feishu",
             "events",
             "module_slots",
+            "harness",
         }
         if not isinstance(raw_contributions, list) or len(raw_contributions) > 128:
             return None
         seen_contributions: set[str] = set()
         for raw in raw_contributions:
-            if not isinstance(raw, dict) or set(raw) != {
-                "id",
-                "kind",
-                "title",
-                "default_enabled",
-            }:
+            if not isinstance(raw, dict):
                 return None
             contribution_id = str(raw.get("id") or "").strip()
             kind = str(raw.get("kind") or "").strip()
             title = normalize_feedback_text(redact_text(raw.get("title") or "")).strip()
-            if (
+            expected_fields = (
+                {"id", "kind", "title", "description", "effect"}
+                if kind == "harness"
+                else {"id", "kind", "title", "default_enabled"}
+            )
+            if set(raw) != expected_fields or (
                 contribution_id in seen_contributions
                 or not _SERVICE_V2_IDENTIFIER_RE.fullmatch(contribution_id)
                 or kind not in allowed_kinds
                 or not title
                 or len(title) > 160
-                or not isinstance(raw.get("default_enabled"), bool)
+                or (kind != "harness" and not isinstance(raw.get("default_enabled"), bool))
             ):
                 return None
             seen_contributions.add(contribution_id)
-            contributions.append(
-                {
+            normalized_contribution = {
                     "id": contribution_id,
                     "kind": kind,
                     "title": title,
-                    "default_enabled": raw["default_enabled"],
-                }
-            )
+            }
+            if kind == "harness":
+                normalized_contribution.update(
+                    {
+                        "description": normalize_feedback_text(redact_text(raw.get("description") or "")),
+                        "effect": str(raw.get("effect") or ""),
+                    }
+                )
+            else:
+                normalized_contribution["default_enabled"] = raw["default_enabled"]
+            contributions.append(normalized_contribution)
 
         scheduling = value.get("scheduling")
         if (
@@ -301,6 +685,12 @@ class AutomationPluginManagementServiceMixin:
             return None
         if len(schema_bytes) > 128 * 1024:
             return None
+        settings_ui = value.get("settings_ui")
+        if settings_ui is not None and settings_ui != {
+            "entry": "settings/index.html",
+            "bridge_api": "1.0.0",
+        }:
+            return None
         return {
             "plugin_id": plugin_id,
             "name": name,
@@ -318,6 +708,7 @@ class AutomationPluginManagementServiceMixin:
                 "supported": scheduling["supported"],
                 "default_schedule": dict(default_schedule),
             },
+            "settings_ui": dict(settings_ui) if settings_ui is not None else None,
         }
 
     @staticmethod
@@ -357,44 +748,13 @@ class AutomationPluginManagementServiceMixin:
         ):
             return None
         instance_name = normalize_feedback_text(str(value.get("instance_name") or "")).strip()
-        config = value.get("config")
-        account_bindings = value.get("account_bindings")
-        resource_bindings = value.get("resource_bindings")
-        entrypoints = value.get("enabled_entrypoints")
-        schedule = cls._normalize_service_v2_schedule(value.get("schedule"))
         if (
             not instance_name
             or len(instance_name) > 120
-            or not isinstance(config, dict)
-            or not cls._service_v2_json_tree_is_safe(config)
-            or not isinstance(account_bindings, dict)
-            or not isinstance(resource_bindings, dict)
-            or not isinstance(entrypoints, list)
-            or len(entrypoints) > 64
-            or len(entrypoints) != len(set(entrypoints))
-            or not all(
-                isinstance(item, str) and _SERVICE_V2_IDENTIFIER_RE.fullmatch(item)
-                for item in entrypoints
-            )
-            or schedule is None
         ):
             return None
-        for bindings in (account_bindings, resource_bindings):
-            if len(bindings) > 64 or any(
-                not isinstance(role, str)
-                or not _SERVICE_V2_IDENTIFIER_RE.fullmatch(role)
-                or not isinstance(binding_id, str)
-                or not _SERVICE_V2_BINDING_ID_RE.fullmatch(binding_id)
-                for role, binding_id in bindings.items()
-            ):
-                return None
         normalized = {
             "instance_name": instance_name,
-            "config": config,
-            "account_bindings": account_bindings,
-            "resource_bindings": resource_bindings,
-            "enabled_entrypoints": entrypoints,
-            "schedule": schedule,
             "permissions_confirmed": True,
         }
         try:
@@ -761,107 +1121,6 @@ class AutomationPluginManagementServiceMixin:
                     "智能服务返回了无效的扩展检查结果。",
                 )
                 return
-            warnings: list[str] = []
-            allowed_systems = {
-                system
-                for role in inspection["account_roles"]
-                for system in role["allowed_systems"]
-            }
-            account_options: list[dict[str, Any]] = []
-            account_pool_available = not allowed_systems
-            if allowed_systems:
-                raw_accounts, account_warning = self._fetch_automation_accounts(
-                    force=False,
-                    prefer_cached=True,
-                )
-                account_pool_available = not bool(account_warning)
-                if account_warning:
-                    warnings.append("账号列表暂时不可用，不能完成需要账号的安装。")
-                seen_account_ids: set[str] = set()
-                for raw_account in raw_accounts if not account_warning else []:
-                    if not isinstance(raw_account, dict):
-                        continue
-                    account_id = str(raw_account.get("account_id") or "").strip()
-                    system = str(raw_account.get("system") or "").strip().lower()
-                    name = normalize_feedback_text(
-                        redact_text(raw_account.get("name") or account_id)
-                    ).strip()
-                    status = (
-                        raw_account.get("status")
-                        if isinstance(raw_account.get("status"), dict)
-                        else {}
-                    )
-                    status_value = str(status.get("status") or "").strip().lower()
-                    status_label = normalize_feedback_text(
-                        redact_text(
-                            raw_account.get("status_label")
-                            or status.get("label")
-                            or "状态未知"
-                        )
-                    ).strip()[:80]
-                    session_capable = raw_account.get("session_capable") is True
-                    is_active = raw_account.get("is_active", True) is True
-                    if (
-                        account_id in seen_account_ids
-                        or not _SERVICE_V2_BINDING_ID_RE.fullmatch(account_id)
-                        or system not in allowed_systems
-                        or not name
-                        or len(name) > 160
-                    ):
-                        continue
-                    seen_account_ids.add(account_id)
-                    account_options.append(
-                        {
-                            "account_id": account_id,
-                            "name": name,
-                            "system": system,
-                            "available": is_active
-                            and (not session_capable or status_value == "authenticated"),
-                            "status_label": status_label,
-                        }
-                    )
-                account_options.sort(key=lambda item: (item["system"], item["name"], item["account_id"]))
-
-            allowed_resource_kinds = {
-                kind
-                for role in inspection["resource_roles"]
-                for kind in role["allowed_kinds"]
-            }
-            resource_options: list[dict[str, str]] = []
-            resource_pool_available = not allowed_resource_kinds
-            if allowed_resource_kinds:
-                catalog_result = self._agent_request(
-                    "GET",
-                    "/internal/v1/automation/plugins/catalog",
-                    timeout=12,
-                    console_principal=trusted_context["_console_principal"],
-                )
-                catalog_data = catalog_result.get("data")
-                if catalog_result.get("ok") and isinstance(catalog_data, dict):
-                    from console.services.automation_projects import (
-                        _normalize_plugin_resources,
-                    )
-
-                    normalized_resources, resources_valid = _normalize_plugin_resources(
-                        catalog_data.get("resources")
-                    )
-                    resource_pool_available = (
-                        catalog_data.get("resource_pool_available") is True
-                        and resources_valid
-                    )
-                    if resource_pool_available:
-                        resource_options = [
-                            {
-                                "resource_id": item["resource_id"],
-                                "name": item["name"],
-                                "kind": item["kind"],
-                                "status": item["status"],
-                            }
-                            for item in normalized_resources
-                            if item["kind"] in allowed_resource_kinds
-                        ]
-                if not resource_pool_available:
-                    warnings.append("资源列表暂时不可用，不能完成需要资源的安装。")
             self._send_json(
                 handler,
                 HTTPStatus.OK,
@@ -869,13 +1128,13 @@ class AutomationPluginManagementServiceMixin:
                     "ok": True,
                     "data": {
                         **inspection,
-                        "account_options": account_options,
-                        "resource_options": resource_options,
-                        "account_pool_available": account_pool_available,
-                        "resource_pool_available": resource_pool_available,
-                        "warnings": warnings,
+                        "account_options": [],
+                        "resource_options": [],
+                        "account_pool_available": True,
+                        "resource_pool_available": True,
+                        "warnings": [],
                     },
-                    "message": "插件包已检查，请完成权限、账号、资源、配置与入口设置。",
+                    "message": "插件包已检查，请确认实例名称和权限。",
                 },
             )
             return
@@ -898,16 +1157,6 @@ class AutomationPluginManagementServiceMixin:
                 "智能服务未返回有效的扩展实例。",
             )
             return
-        if endpoint == "/internal/v1/automation/plugins/install-v2" and (
-            data.get("generation_ready") is not True or data.get("enabled") is not True
-        ):
-            self._control_plane_error(
-                handler,
-                HTTPStatus.CONFLICT,
-                "PLUGIN_INSTALL_PREPARING",
-                "插件已保持停用并等待运行环境就绪；请原样重试这次安装请求。",
-            )
-            return
         self._clear_automation_plugin_catalog_cache()
         self._send_json(
             handler,
@@ -918,7 +1167,7 @@ class AutomationPluginManagementServiceMixin:
                 "message": (
                     "自动化已升级。"
                     if automation_id
-                    else "自动化已安装并完成运行准备。"
+                    else "自动化已安装并保持停用，请完成插件设置后再启用。"
                 ),
             },
         )

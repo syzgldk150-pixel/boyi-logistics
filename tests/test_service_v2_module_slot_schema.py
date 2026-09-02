@@ -24,6 +24,7 @@ def test_sdk_schema_adds_only_the_optional_closed_module_slot_contract() -> None
         "webhook",
         "feishu",
         "events",
+        "harness",
     ]
     assert contributes["properties"]["module_slots"] == {
         "type": "array",

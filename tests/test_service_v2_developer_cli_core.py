@@ -667,7 +667,8 @@ def test_manifest_schema_matches_template_envelope_and_authoritative_contract(
     assert schema["$defs"]["connector_service"]["pattern"].startswith("^connector\\.")
     verified = load_verified_local_artifact(source)
     projected = ServiceV2ProjectContract.from_manifest(verified.manifest)
-    assert projected.allowed_entrypoints == ("run",)
+    assert projected.allowed_entrypoints == ("run", "assistant_run")
+    assert projected.default_entrypoints == ("run", "assistant_run")
     assert projected.tool_contract["effect"] == "compute"
 
 
