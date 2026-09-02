@@ -1265,6 +1265,41 @@ def shorten_error_message(message: Any, limit: int = 180) -> str:
     return compact[: limit - 1] + "…" if len(compact) > limit else compact
 
 
+_AUTOMATION_RUN_ERROR_MESSAGES = {
+    "IMPACT_PREVIEW_REQUIRED": (
+        "执行前检查未完成，本次任务未进行任何写入。请刷新页面后重试；"
+        "若仍出现，请联系系统管理员。"
+    ),
+    "IMPACT_PREVIEW_STALE": "执行前检查结果已过期，本次任务未进行任何写入，请重新执行。",
+    "AUTH_REQUIRED": "业务账号登录已失效，请重新登录后再执行。",
+    "PROJECT_ROUTE_NOT_FOUND": "任务运行位置尚未就绪，请检查项目账号和数据设置后重试。",
+}
+
+_AUTOMATION_RUN_STATUS_MESSAGES = {
+    "BLOCKED_DATA": "执行前检查未通过，本次任务未进行任何写入。请检查任务设置后重试。",
+    "BLOCKED_LOGIN": "业务账号登录已失效，请重新登录后再执行。",
+    "NEEDS_CLARIFICATION": "还需要补充任务信息，请检查设置后再执行。",
+    "FAILED_RETRYABLE": "服务暂时无法完成任务，请稍后重试。",
+    "FAILED_TERMINAL": "本次任务未完成，请检查设置后重新执行。",
+    "PARTIAL": "本次任务仅完成了一部分，请检查任务结果后再处理。",
+    "CANCELLED": "本次执行已取消。",
+}
+
+
+def automation_run_feedback_message(*, error_code: Any, status: Any) -> str:
+    """Project stable run state to Chinese UI copy without backend internals."""
+
+    code = str(error_code or "").strip().upper()
+    state = str(status or "").strip().upper()
+    return _AUTOMATION_RUN_ERROR_MESSAGES.get(
+        code,
+        _AUTOMATION_RUN_STATUS_MESSAGES.get(
+            state,
+            "任务状态暂时无法确认，请稍后刷新。",
+        ),
+    )
+
+
 def automation_runtime_feedback_meta(
     *,
     ok: bool,

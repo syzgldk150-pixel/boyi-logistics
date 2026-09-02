@@ -419,6 +419,18 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         self.assertIn("signal: controller.signal", terminal_fetch_block)
         self.assertIn("clearTimeout(timeoutId)", terminal_fetch_block)
 
+    def test_run_feedback_hides_internal_run_ids_and_technical_statuses(self):
+        source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
+            encoding="utf-8"
+        )
+
+        attention_start = source.index("function renderAttentionRun(data)")
+        attention_block = source[attention_start : attention_start + 1800]
+        self.assertNotIn("Run：${runId}", attention_block)
+        self.assertNotIn("状态：${status}", attention_block)
+        self.assertIn('body: ""', attention_block)
+        self.assertIn("执行前检查未通过", attention_block)
+
     def test_scan_confirmation_uses_stable_request_uuid_and_only_public_run_id(self):
         source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
             encoding="utf-8"
@@ -513,7 +525,7 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         )
 
         self.assertIn("function renderAttentionRun(data)", source)
-        self.assertIn('"数据阻塞"', source)
+        self.assertIn('"执行前检查未通过"', source)
         self.assertIn('"登录已失效"', source)
         self.assertIn("if (data.attention)", source)
         self.assertIn("pendingRun && !data.attention", source)
