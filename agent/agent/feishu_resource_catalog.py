@@ -13,7 +13,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import requests
 
@@ -226,6 +226,66 @@ def _spreadsheet_names(token: str, spreadsheet_token: str) -> tuple[str, dict[st
     return document_name, sheets
 
 
+def _sheet_column_index(column: str) -> int:
+    value = str(column or "").strip().upper()
+    if not value or any(char < "A" or char > "Z" for char in value):
+        return -1
+    result = 0
+    for char in value:
+        result = result * 26 + (ord(char) - ord("A") + 1)
+    return result - 1
+
+
+def _sheet_header_constraints(config: Mapping[str, Any]) -> dict[int, frozenset[str]]:
+    raw = config.get("sheet_header_constraints")
+    if not isinstance(raw, Mapping):
+        return {}
+    normalized: dict[int, frozenset[str]] = {}
+    for column, accepted in raw.items():
+        index = _sheet_column_index(str(column))
+        values = accepted if isinstance(accepted, Sequence) and not isinstance(accepted, str) else []
+        choices = frozenset(str(value or "").strip() for value in values if str(value or "").strip())
+        if index < 0 or not choices:
+            return {}
+        normalized[index] = choices
+    return normalized
+
+
+def _sheet_matches_reviewed_headers(
+    token: str,
+    spreadsheet_token: str,
+    sheet_id: str,
+    constraints: Mapping[int, frozenset[str]],
+) -> bool:
+    if not constraints:
+        return False
+    last_column_index = max(constraints)
+    column = ""
+    value = last_column_index + 1
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        column = chr(ord("A") + remainder) + column
+    value_range = quote(f"{sheet_id}!A1:{column}1", safe="")
+    payload = _data(
+        _get(
+            token,
+            f"/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values/{value_range}"
+            "?valueRenderOption=FormattedValue",
+        )
+    )
+    raw_range = payload.get("valueRange")
+    if not isinstance(raw_range, Mapping):
+        return False
+    rows = raw_range.get("values")
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], list):
+        return False
+    headers = [str(value or "").strip() for value in rows[0]]
+    return all(
+        index < len(headers) and headers[index] in accepted
+        for index, accepted in constraints.items()
+    )
+
+
 def _bitable_names(token: str, base_token: str) -> tuple[str, dict[str, str]]:
     info = _data(_get(token, f"/open-apis/bitable/v1/apps/{base_token}"))
     app = info.get("app")
@@ -306,6 +366,7 @@ def _locator(resource_kind: str, config: Mapping[str, Any]) -> tuple[str, str, s
 def _purpose(config: Mapping[str, Any]) -> str:
     return str(
         config.get("display_name")
+        or config.get("business_purpose")
         or config.get("name")
         or config.get("title")
         or "业务数据"
@@ -433,18 +494,49 @@ def resolve_live_feishu_resource_catalog(
                 resolved_child_id = exact_matches[0]
                 child_name = children[resolved_child_id]
             elif len(exact_matches) > 1:
-                results[resource_id] = FeishuResourceResult(
-                    name="",
-                    status="unavailable",
-                    purpose=purposes[resource_id],
-                    problem_code="RESOURCE_NAME_CONFLICT",
-                )
-                logger.warning(
-                    "Feishu resource unavailable code=%s resource=%s",
-                    "RESOURCE_NAME_CONFLICT",
-                    resource_id,
-                )
-                continue
+                constraints = _sheet_header_constraints(configs[resource_id])
+                matching_headers: list[str] = []
+                if kind == "feishu_sheet" and constraints and len(exact_matches) <= 20:
+                    try:
+                        matching_headers = [
+                            candidate_id
+                            for candidate_id in exact_matches
+                            if _sheet_matches_reviewed_headers(
+                                access_token,
+                                document_token,
+                                candidate_id,
+                                constraints,
+                            )
+                        ]
+                    except FeishuResourceCatalogError as exc:
+                        results[resource_id] = FeishuResourceResult(
+                            name="",
+                            status="unavailable",
+                            purpose=purposes[resource_id],
+                            problem_code=exc.code,
+                        )
+                        logger.warning(
+                            "Feishu resource unavailable code=%s resource=%s",
+                            exc.code,
+                            resource_id,
+                        )
+                        continue
+                if len(matching_headers) == 1:
+                    resolved_child_id = matching_headers[0]
+                    child_name = children[resolved_child_id]
+                if len(matching_headers) != 1:
+                    results[resource_id] = FeishuResourceResult(
+                        name="",
+                        status="unavailable",
+                        purpose=purposes[resource_id],
+                        problem_code="RESOURCE_NAME_CONFLICT",
+                    )
+                    logger.warning(
+                        "Feishu resource unavailable code=%s resource=%s",
+                        "RESOURCE_NAME_CONFLICT",
+                        resource_id,
+                    )
+                    continue
         if not child_name:
             results[resource_id] = FeishuResourceResult(
                 name="",

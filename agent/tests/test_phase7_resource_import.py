@@ -71,6 +71,11 @@ def test_problem_sheet_resources_are_explicit_managed_rows() -> None:
         resources["phase7.split_pending_source_sheet"]["sheet_title"]
         == "每日到货表"
     )
+    assert resources["phase7.split_pending_source_sheet"]["sheet_header_constraints"] == {
+        "A": ["运单编号", "单号"],
+        "E": ["件数"],
+        "S": ["累计到货件数", "已到货件数", "到货件数"],
+    }
 
 
 def test_phase7_import_persists_problem_resources_without_key_inference() -> None:
@@ -119,6 +124,12 @@ def test_reviewed_metadata_sync_preserves_live_sheet_locator() -> None:
             "spreadsheet_token": "live-document-token",
             "sheet_id": "live-sheet-id",
             "sheet_title": "每日到货表",
+            "business_purpose": "分批及有发未到问题件来源",
+            "sheet_header_constraints": {
+                "A": ["运单编号", "单号"],
+                "E": ["件数"],
+                "S": ["累计到货件数", "已到货件数", "到货件数"],
+            },
             "range": "live-sheet-id!A1:S5000",
         },
         source="reviewed-metadata-sync",

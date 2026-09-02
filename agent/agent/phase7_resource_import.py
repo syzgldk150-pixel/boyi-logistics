@@ -93,6 +93,12 @@ BUILTIN_RESOURCES: dict[str, dict] = {
         "spreadsheet_token": "F0NVsI5dlhaWugtw14YcmdrQnvh",
         "sheet_id": "8fc516",
         "sheet_title": "每日到货表",
+        "business_purpose": "分批及有发未到问题件来源",
+        "sheet_header_constraints": {
+            "A": ["运单编号", "单号"],
+            "E": ["件数"],
+            "S": ["累计到货件数", "已到货件数", "到货件数"],
+        },
         "range": "8fc516!A1:S5000",
     },
     "phase7.split_pending_target_sheet": {
@@ -150,7 +156,12 @@ def sync_reviewed_phase7_resource_metadata() -> list[str]:
     for resource_key, reviewed_config in BUILTIN_RESOURCES.items():
         reviewed_metadata = {
             key: reviewed_config[key]
-            for key in ("sheet_title", "table_title", "business_purpose")
+            for key in (
+                "sheet_title",
+                "table_title",
+                "business_purpose",
+                "sheet_header_constraints",
+            )
             if str(reviewed_config.get(key) or "").strip()
         }
         if not reviewed_metadata:

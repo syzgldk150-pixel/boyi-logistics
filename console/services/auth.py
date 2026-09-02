@@ -518,6 +518,7 @@ class AuthServiceMixin:
         *,
         force: bool = True,
         prefer_cached: bool = False,
+        console_principal: dict[str, Any] | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
         query_params = {}
         if force:
@@ -528,7 +529,12 @@ class AuthServiceMixin:
         if query_params:
             endpoint = f"{endpoint}?{urlencode(query_params)}"
         self._automation_accounts_cache_meta = {}
-        result = self._agent_request("GET", endpoint, timeout=12 if prefer_cached else 45 if force else 12)
+        result = self._agent_request(
+            "GET",
+            endpoint,
+            timeout=12 if prefer_cached else 45 if force else 12,
+            console_principal=console_principal,
+        )
         if not result.get("ok"):
             return [], normalize_feedback_text(result.get("error") or "智能服务当前不可达，无法获取业务账号状态。")
         payload = result.get("data")

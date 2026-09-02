@@ -234,6 +234,69 @@ class FeishuResourceCatalogTests(unittest.TestCase):
             result.resources["sheet-resource"].problem_code,
         )
 
+    def test_duplicate_reviewed_titles_use_unique_reviewed_header_contract(self) -> None:
+        matching_headers = [
+            "运单编号",
+            "货物名称",
+            "包装类型",
+            "派送方式",
+            "件数",
+            "回单号",
+            "实际重量",
+            "体积",
+            "备注",
+            "目的站点",
+            "收件人",
+            "收件电话",
+            "收件地址",
+            "结算重量",
+            "体积重",
+            "运费",
+            "支付类型",
+            "到付款",
+            "累计到货件数",
+        ]
+
+        def request(_method: str, path: str, **_kwargs) -> dict:
+            payload = self._payload(path) if "/values/" not in path else None
+            if path.endswith("/sheets/query"):
+                payload["data"]["sheets"] = [
+                    {"sheet_id": "sheet-a", "title": "每日到货"},
+                    {"sheet_id": "sheet-b", "title": "每日到货"},
+                ]
+            if "/values/" in path:
+                headers = ["归档编号"] if "sheet-a%21" in path else matching_headers
+                return {
+                    "code": 0,
+                    "data": {"valueRange": {"values": [headers]}},
+                }
+            return payload
+
+        resource = (
+            "sheet-resource",
+            {
+                "resource_kind": "feishu_sheet",
+                "spreadsheet_token": "spreadsheet-token",
+                "sheet_id": "stale-sheet",
+                "sheet_title": "每日到货",
+                "sheet_header_constraints": {
+                    "A": ["运单编号", "单号"],
+                    "E": ["件数"],
+                    "S": ["累计到货件数", "已到货件数", "到货件数"],
+                },
+                "range": "stale-sheet!A1:S5000",
+            },
+        )
+        with patch.dict(
+            os.environ,
+            {"FEISHU_APP_ID": "app-id", "FEISHU_APP_SECRET": "app-secret"},
+            clear=False,
+        ), patch.object(catalog, "_request_json", side_effect=request):
+            repaired = catalog.resolve_live_feishu_resource_config(*resource)
+
+        self.assertEqual("sheet-b", repaired["sheet_id"])
+        self.assertEqual("sheet-b!A1:S5000", repaired["range"])
+
     def test_one_missing_sheet_does_not_clear_other_live_resources(self) -> None:
         resources = [
             (

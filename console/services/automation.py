@@ -827,6 +827,9 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 str(item.get("name_value") or ""),
             ),
         )
+        accounts_principal = self._mysql_console_principal(
+            getattr(handler, "current_admin_user", None)
+        )
         with ThreadPoolExecutor(max_workers=2) as executor:
             policy_future = executor.submit(
                 self._load_automation_project_policies,
@@ -837,6 +840,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 self._fetch_automation_accounts,
                 force=False,
                 prefer_cached=True,
+                console_principal=accounts_principal,
             )
             (
                 automation_approval_policy_warning,
