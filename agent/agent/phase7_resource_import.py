@@ -124,7 +124,24 @@ BUILTIN_RESOURCES["phase7.self_pickup_source_sheet"] = {
         "spreadsheet_token"
     ],
     "sheet_id": "UeBd3I",
+    "sheet_title": "每日到货表",
+    "business_purpose": "自提到货问题件来源",
+    "sheet_header_constraints": {
+        "A": ["运单编号", "单号"],
+        "E": ["件数"],
+        "S": ["累计到货件数", "已到货件数", "到货件数"],
+    },
     "range": "UeBd3I!A1:S5000",
+}
+
+# Some resources intentionally represent an entire spreadsheet document.  The
+# arrival archive creates and reads date-named child sheets at runtime, so it
+# must never be forced to bind one arbitrary worksheet from that document.
+REVIEWED_RESOURCE_METADATA: dict[str, dict] = {
+    "phase7.stats_archive_sheet": {
+        "resource_scope": "spreadsheet",
+        "business_purpose": "到货统计归档",
+    },
 }
 
 
@@ -153,7 +170,13 @@ def sync_reviewed_phase7_resource_metadata() -> list[str]:
     """Merge reviewed human-readable locators without resetting live IDs."""
 
     updated: list[str] = []
-    for resource_key, reviewed_config in BUILTIN_RESOURCES.items():
+    reviewed_resources = {
+        resource_key: dict(config)
+        for resource_key, config in BUILTIN_RESOURCES.items()
+    }
+    for resource_key, metadata in REVIEWED_RESOURCE_METADATA.items():
+        reviewed_resources.setdefault(resource_key, {}).update(metadata)
+    for resource_key, reviewed_config in reviewed_resources.items():
         reviewed_metadata = {
             key: reviewed_config[key]
             for key in (
@@ -161,12 +184,17 @@ def sync_reviewed_phase7_resource_metadata() -> list[str]:
                 "table_title",
                 "business_purpose",
                 "sheet_header_constraints",
+                "resource_scope",
             )
             if str(reviewed_config.get(key) or "").strip()
         }
         if not reviewed_metadata:
             continue
         current = get_workflow_resource(resource_key)
+        if current is None:
+            # Metadata-only contracts describe an existing managed resource;
+            # they must not invent a new locator when production has none.
+            continue
         merged = {
             key: value
             for key, value in (current or reviewed_config).items()

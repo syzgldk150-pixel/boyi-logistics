@@ -76,6 +76,11 @@ def test_problem_sheet_resources_are_explicit_managed_rows() -> None:
         "E": ["件数"],
         "S": ["累计到货件数", "已到货件数", "到货件数"],
     }
+    assert resources["phase7.self_pickup_source_sheet"]["sheet_title"] == "每日到货表"
+    assert (
+        resources["phase7.self_pickup_source_sheet"]["sheet_header_constraints"]
+        == resources["phase7.split_pending_source_sheet"]["sheet_header_constraints"]
+    )
 
 
 def test_phase7_import_persists_problem_resources_without_key_inference() -> None:
@@ -109,6 +114,8 @@ def test_reviewed_metadata_sync_preserves_live_sheet_locator() -> None:
             side_effect=lambda key: (
                 current
                 if key == "phase7.split_pending_source_sheet"
+                else None
+                if key == "phase7.stats_archive_sheet"
                 else phase7_resource_import.BUILTIN_RESOURCES.get(key)
             ),
         ),
@@ -131,6 +138,39 @@ def test_reviewed_metadata_sync_preserves_live_sheet_locator() -> None:
                 "S": ["累计到货件数", "已到货件数", "到货件数"],
             },
             "range": "live-sheet-id!A1:S5000",
+        },
+        source="reviewed-metadata-sync",
+    )
+
+
+def test_reviewed_metadata_sync_marks_archive_as_document_scoped() -> None:
+    current = {
+        "resource_kind": "feishu_sheet",
+        "spreadsheet_token": "live-archive-document-token",
+        "default_write_range": "A1:S199",
+        "_meta": {"configuration_version": 3},
+    }
+    with (
+        patch.object(
+            phase7_resource_import,
+            "get_workflow_resource",
+            side_effect=lambda key: (
+                current if key == "phase7.stats_archive_sheet" else None
+            ),
+        ),
+        patch.object(phase7_resource_import, "upsert_workflow_resource") as upsert,
+    ):
+        updated = phase7_resource_import.sync_reviewed_phase7_resource_metadata()
+
+    assert updated == ["phase7.stats_archive_sheet"]
+    upsert.assert_called_once_with(
+        "phase7.stats_archive_sheet",
+        {
+            "resource_kind": "feishu_sheet",
+            "spreadsheet_token": "live-archive-document-token",
+            "default_write_range": "A1:S199",
+            "resource_scope": "spreadsheet",
+            "business_purpose": "到货统计归档",
         },
         source="reviewed-metadata-sync",
     )
