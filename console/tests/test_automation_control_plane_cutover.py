@@ -645,7 +645,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             "SOURCE_SCHEMA_CHANGED",
             payload["selection_preview_error"]["error_code"],
         )
-        self.assertIn("数据结构", payload["selection_preview_error"]["message"])
+        self.assertIn("字段结构", payload["selection_preview_error"]["message"])
         self.assertNotIn("SOURCE_SCHEMA_CHANGED", payload["runtime"]["message"])
 
 

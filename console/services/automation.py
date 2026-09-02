@@ -436,11 +436,13 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 handler,
                 refresh_resources=True,
             )
-        else:
+        elif partial_navigation:
             plugin_catalog = self._load_automation_plugin_catalog(
                 handler,
-                prefer_stale=partial_navigation,
+                prefer_stale=True,
             )
+        else:
+            plugin_catalog = self._load_automation_plugin_catalog(handler)
         (
             automation_plugin_packages,
             automation_plugin_instances,
