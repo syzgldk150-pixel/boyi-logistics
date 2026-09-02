@@ -1924,7 +1924,7 @@ def normalize_automation_plugin_catalog(
         projection_warnings.extend(
             str(binding["blocked_reason"])
             for binding in resource_role_bindings
-            if binding.get("blocked_reason")
+            if binding.get("blocked_reason") and binding.get("ui_visible") is not False
         )
         if not enabled_entrypoints_valid:
             projection_warnings.append("运行入口配置无效")
