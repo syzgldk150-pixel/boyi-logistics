@@ -22,8 +22,8 @@ from shared.automation_project_authorization import (
 class WriteImpactPreviewTests(unittest.TestCase):
     def test_daxiang_project_aliases_use_bound_account_and_exact_site_actions(self):
         for tool_name in (
-            "automation.clocking_daxiang.run",
-            "automation.clocking_daxiang_s.run",
+            "automation.clockin_daxiang.run",
+            "automation.clockin_daxiang_s.run",
         ):
             with self.subTest(tool_name=tool_name):
                 impact = build_write_impact(
@@ -52,7 +52,7 @@ class WriteImpactPreviewTests(unittest.TestCase):
                 )
 
     def test_project_clock_plan_uses_immutable_operator_binding(self):
-        tool_name = "automation.clocking_daxiang.run"
+        tool_name = "automation.clockin_daxiang.run"
 
         class _Catalog:
             catalog_hash = "catalog-digest"
@@ -94,7 +94,7 @@ class WriteImpactPreviewTests(unittest.TestCase):
             },
             idempotency_key="clock-project-1",
             automation_invocation=AutomationProjectInvocation(
-                automation_id="clocking_daxiang",
+                automation_id="clockin_daxiang",
                 automation_generation=1,
                 entrypoint=AutomationEntrypoint.CONSOLE,
                 contract_id="manual_run",
