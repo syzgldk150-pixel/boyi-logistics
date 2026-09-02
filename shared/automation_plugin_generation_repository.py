@@ -66,6 +66,58 @@ datetime = _repository.datetime
 uuid = _repository.uuid
 
 
+def _project_policy_matches_generation_commit(
+    policy: Mapping[str, Any],
+    *,
+    target_generation: int,
+    target_configuration_version: int,
+    expected_committed_generation: int | None,
+) -> bool:
+    """Accept the stable policy lineage and the already-staged target policy.
+
+    Saving project configuration binds the policy to the target generation
+    before runtime preparation finishes.  Low-level recovery callers can still
+    present the previously committed generation.  Both states are safe only
+    when they name the exact configuration snapshot being committed.
+    """
+
+    try:
+        policy_generation = _positive_int(
+            policy.get("project_generation"),
+            "policy project_generation",
+        )
+        policy_configuration_version = _positive_int(
+            policy.get("project_configuration_version"),
+            "policy project_configuration_version",
+        )
+        safe_target_generation = _positive_int(
+            target_generation,
+            "target_generation",
+        )
+        safe_target_configuration_version = _positive_int(
+            target_configuration_version,
+            "target_configuration_version",
+        )
+        safe_expected_committed = (
+            _positive_int(
+                expected_committed_generation,
+                "expected_committed_generation",
+            )
+            if expected_committed_generation is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        return False
+
+    allowed_generations = {safe_target_generation}
+    if safe_expected_committed is not None:
+        allowed_generations.add(safe_expected_committed)
+    return (
+        policy_generation in allowed_generations
+        and policy_configuration_version == safe_target_configuration_version
+    )
+
+
 class AutomationPluginGenerationRepositoryMixin(
     AutomationPluginGenerationTransitionRepositoryMixin,
 ):
@@ -1184,13 +1236,13 @@ class AutomationPluginGenerationRepositoryMixin(
                 raise OrchestrationPersistenceError(
                     "automation project policy disappeared before generation switch"
                 )
-            expected_policy_generation = (
-                expected_committed
-                if expected_committed is not None
-                else safe_generation
-            )
-            if int(policy.get("project_generation") or 0) != int(
-                expected_policy_generation
+            if not _project_policy_matches_generation_commit(
+                policy,
+                target_generation=safe_generation,
+                target_configuration_version=int(
+                    execution_metadata["project_config_version"]
+                ),
+                expected_committed_generation=expected_committed,
             ):
                 raise ConcurrentUpdateError(
                     "automation project policy generation changed before commit"

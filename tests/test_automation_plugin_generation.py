@@ -38,10 +38,58 @@ from agent.automation_plugins.production import (
     ProductionRuntimeEffectDriver,
     ProductionRuntimeEffectPlanner,
 )
+from shared.automation_plugin_generation_repository import (
+    _project_policy_matches_generation_commit,
+)
 
 
 class _LegacyExceptionWithoutAddNote(Exception):
     add_note = None
+
+
+def test_generation_commit_accepts_stable_or_already_staged_policy_lineage() -> None:
+    base_policy = {
+        "project_generation": 3,
+        "project_configuration_version": 7,
+    }
+    staged_policy = {
+        "project_generation": 4,
+        "project_configuration_version": 7,
+    }
+
+    assert _project_policy_matches_generation_commit(
+        base_policy,
+        target_generation=4,
+        target_configuration_version=7,
+        expected_committed_generation=3,
+    )
+    assert _project_policy_matches_generation_commit(
+        staged_policy,
+        target_generation=4,
+        target_configuration_version=7,
+        expected_committed_generation=3,
+    )
+
+
+def test_generation_commit_rejects_unrelated_or_stale_policy_binding() -> None:
+    assert not _project_policy_matches_generation_commit(
+        {
+            "project_generation": 5,
+            "project_configuration_version": 7,
+        },
+        target_generation=4,
+        target_configuration_version=7,
+        expected_committed_generation=3,
+    )
+    assert not _project_policy_matches_generation_commit(
+        {
+            "project_generation": 4,
+            "project_configuration_version": 6,
+        },
+        target_generation=4,
+        target_configuration_version=7,
+        expected_committed_generation=3,
+    )
 
 
 def test_exception_notes_are_preserved_on_python_310() -> None:

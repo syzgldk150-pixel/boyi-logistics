@@ -380,6 +380,48 @@ class FeishuResourceCatalogTests(unittest.TestCase):
         self.assertEqual("unavailable", result.resources["missing-sheet"].status)
         self.assertEqual("", result.global_problem)
 
+    def test_same_live_table_uses_business_purpose_to_keep_roles_distinguishable(self) -> None:
+        resources = [
+            (
+                "send-order-resource",
+                {
+                    "resource_kind": "feishu_bitable",
+                    "base_token": "base-token",
+                    "table_id": "table-a",
+                    "business_purpose": "当日寄件数据",
+                },
+            ),
+            (
+                "delivery-status-resource",
+                {
+                    "resource_kind": "feishu_bitable",
+                    "base_token": "base-token",
+                    "table_id": "table-a",
+                    "business_purpose": "签收状态查询与更新",
+                },
+            ),
+        ]
+        with patch.dict(
+            os.environ,
+            {"FEISHU_APP_ID": "app-id", "FEISHU_APP_SECRET": "app-secret"},
+            clear=False,
+        ), patch.object(
+            catalog,
+            "_request_json",
+            side_effect=lambda _method, path, **_kwargs: self._payload(path),
+        ):
+            result = catalog.resolve_live_feishu_resource_catalog(resources, now=100.0)
+
+        self.assertEqual("available", result.resources["send-order-resource"].status)
+        self.assertEqual(
+            "物流明细 / 当日寄件（当日寄件数据）",
+            result.resources["send-order-resource"].name,
+        )
+        self.assertEqual(
+            "物流明细 / 当日寄件（签收状态查询与更新）",
+            result.resources["delivery-status-resource"].name,
+        )
+
     def test_explicit_refresh_discards_cached_names(self) -> None:
         current_title = {"value": "每日到货"}
 
