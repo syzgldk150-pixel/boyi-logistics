@@ -71,6 +71,23 @@ class NavigationPerformanceTests(unittest.TestCase):
         self.assertIn("currentPageRuntime = tab.runtime", script)
         self.assertIn("originalWindowClearInterval", script)
         self.assertIn("updateActiveNav(url.pathname)", script)
+        self.assertIn("function showModuleLoadingPlaceholder", script)
+        self.assertLess(
+            script.index("showModuleLoadingPlaceholder(url, tabKey)"),
+            script.index("await fetch(url.href"),
+        )
+
+    def test_automation_loading_skeleton_and_offscreen_cards_are_lightweight(self):
+        script = (CONSOLE_DIR / "static" / "console_ui.js").read_text(encoding="utf-8")
+        stylesheet = (CONSOLE_DIR / "static" / "style.css").read_text(encoding="utf-8")
+
+        self.assertIn('main.setAttribute("aria-busy", "true")', script)
+        self.assertIn('main.setAttribute("aria-live", "polite")', script)
+        self.assertIn("module-loading-card", stylesheet)
+        self.assertIn("content-visibility: auto", stylesheet)
+        self.assertIn("contain-intrinsic-size: 220px", stylesheet)
+        automation_template = (CONSOLE_DIR / "templates" / "automation.html").read_text(encoding="utf-8")
+        self.assertIn("{% block body_class %}automation-page{% endblock %}", automation_template)
 
     def test_console_ui_refreshes_feather_icons_with_root_scope(self):
         script = (CONSOLE_DIR / "static" / "console_ui.js").read_text(encoding="utf-8")
@@ -85,19 +102,19 @@ class NavigationPerformanceTests(unittest.TestCase):
         login_template = (CONSOLE_DIR / "templates" / "login.html").read_text(encoding="utf-8")
 
         self.assertNotIn("cdn.jsdelivr.net/npm/chart.js", template)
-        self.assertIn("/static/style.css?v=cal-console-20260901-ai1", template)
+        self.assertIn("/static/style.css?v=cal-console-20260903-automation-perf1", template)
         self.assertIn("/static/assets/fonts/InterVariable-Latin.woff2", template)
         self.assertIn("/static/assets/fonts/SourceHanSansCN-UI.woff2", template)
         self.assertIn("/static/vendor/feather-4.29.2.min.js", template)
-        self.assertIn("/static/console_ui.js?v=cal-console-20260815-tabs2", template)
+        self.assertIn("/static/console_ui.js?v=cal-console-20260903-automation-perf1", template)
         self.assertIn(
-            "/static/style.css?v=cal-console-20260901-ai1",
+            "/static/style.css?v=cal-console-20260903-automation-perf1",
             login_template,
         )
         self.assertIn("/static/assets/fonts/InterVariable-Latin.woff2", login_template)
         self.assertIn("/static/assets/fonts/SourceHanSansCN-UI.woff2", login_template)
         self.assertIn("/static/vendor/feather-4.29.2.min.js", login_template)
-        self.assertIn("/static/console_ui.js?v=cal-console-20260815-tabs2", login_template)
+        self.assertIn("/static/console_ui.js?v=cal-console-20260903-automation-perf1", login_template)
         self.assertNotIn("unpkg.com", template)
         self.assertNotIn("unpkg.com", login_template)
         self.assertNotIn("api.dicebear.com", template)

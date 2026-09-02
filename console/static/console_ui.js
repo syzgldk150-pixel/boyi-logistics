@@ -1077,6 +1077,46 @@
     }
   }
 
+  function showModuleLoadingPlaceholder(url, tabKey) {
+    const shell = document.querySelector(".app-shell");
+    if (!shell) {
+      return null;
+    }
+    shell.querySelectorAll(":scope > .main-content, :scope > .right-sidebar").forEach((node) => {
+      node.hidden = true;
+    });
+    const navMeta = getNavMeta(tabKey);
+    const main = document.createElement("main");
+    main.className = "main-content module-loading-main";
+    main.dataset.consoleLoadingPlaceholder = "";
+    main.setAttribute("aria-busy", "true");
+    main.setAttribute("aria-live", "polite");
+    main.innerHTML = `
+      <header class="top-header module-loading-header">
+        <div class="breadcrumb-group">
+          <h1 class="page-title" data-module-loading-title></h1>
+          <p class="page-subtitle">正在加载首批任务信息</p>
+        </div>
+      </header>
+      <section class="module-loading-summary" aria-label="正在加载自动化列表">
+        <span class="module-loading-line module-loading-line--short"></span>
+        <span class="module-loading-line module-loading-line--medium"></span>
+      </section>
+      <section class="module-loading-list">
+        <article class="module-loading-card"><span></span><span></span><span></span></article>
+        <article class="module-loading-card"><span></span><span></span><span></span></article>
+        <article class="module-loading-card"><span></span><span></span><span></span></article>
+      </section>
+    `;
+    const title = main.querySelector("[data-module-loading-title]");
+    if (title) {
+      title.textContent = navMeta.label || "正在打开";
+    }
+    shell.appendChild(main);
+    window.scrollTo({ top: 0, left: 0 });
+    return main;
+  }
+
   async function ensureModuleTab(url, options = {}) {
     const tabKey = getTabKey(url);
     let existing = openTabs.get(tabKey);
@@ -1101,6 +1141,7 @@
     navigationController = controller;
     updateActiveNav(url.pathname);
     document.body.classList.add("content-loading");
+    const loadingMain = showModuleLoadingPlaceholder(url, tabKey);
 
     try {
       const runtime = createPageRuntime();
@@ -1147,6 +1188,7 @@
         importedAside.hidden = true;
       }
 
+      loadingMain?.remove();
       shell.appendChild(importedMain);
       if (importedAside) {
         shell.appendChild(importedAside);
@@ -1189,6 +1231,7 @@
       console.warn("Partial navigation failed, falling back to full navigation.", error);
       window.location.assign(url.href);
     } finally {
+      loadingMain?.remove();
       if (sequence === navigationSeq) {
         navigationController = null;
         document.body.classList.remove("content-loading");

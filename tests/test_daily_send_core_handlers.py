@@ -309,7 +309,7 @@ def test_read_handler_never_marks_a_write_boundary() -> None:
     assert result["total"] == 1
 
 
-def test_lease_handlers_mark_only_after_their_final_state_validation() -> None:
+def test_lease_handlers_never_mark_a_business_write_boundary() -> None:
     events: list[str] = []
     handlers = build_daily_send_handler_map(_ports(), cursor_secret=_SECRET)
     acquire_context = replace(
@@ -331,7 +331,7 @@ def test_lease_handlers_mark_only_after_their_final_state_validation() -> None:
     with pytest.raises(PluginExecutionError) as forged:
         release(release_context, {"lease_ref": "forged"})
     assert forged.value.code == "BROKER_CURSOR_INVALID"
-    assert events == ["marker"]
+    assert events == []
 
     release(release_context, {"lease_ref": acquired["lease_ref"]})
-    assert events == ["marker", "marker"]
+    assert events == []

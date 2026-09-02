@@ -610,6 +610,44 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                 self.assertNotIn(run_status, payload["lines"][0])
                 self.assertEqual(0, payload["next_poll_after_ms"])
 
+    def test_blocked_self_pickup_preview_reports_candidate_read_failure(self):
+        app = _App(
+            {
+                "ok": True,
+                "status": 200,
+                "data": {
+                    "run": {
+                        "run_id": "run-self-pickup-preview",
+                        "status": "BLOCKED_DATA",
+                        "updated_at": "2026-09-03 01:00:00",
+                        "public_problem_code": "SOURCE_SCHEMA_CHANGED",
+                        "error_code": "SOURCE_SCHEMA_CHANGED",
+                    },
+                    "next_poll_after_ms": 3000,
+                },
+            }
+        )
+
+        app._handle_automation_task_output(
+            object(),
+            {
+                "run_id": ["run-self-pickup-preview"],
+                "task_id": ["self_pickup_problem_upload"],
+                "selection_phase": ["preview"],
+                "offset": ["0"],
+            },
+        )
+
+        payload = app.sent[1]
+        self.assertFalse(payload["pending"])
+        self.assertEqual("候选读取失败", payload["runtime"]["title"])
+        self.assertEqual(
+            "SOURCE_SCHEMA_CHANGED",
+            payload["selection_preview_error"]["error_code"],
+        )
+        self.assertIn("数据结构", payload["selection_preview_error"]["message"])
+        self.assertNotIn("SOURCE_SCHEMA_CHANGED", payload["runtime"]["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

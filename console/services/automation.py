@@ -413,6 +413,11 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         resource_overrides = resource_overrides or {}
         task_overrides = task_overrides or {}
         task_feedbacks = task_feedbacks or {}
+        request_headers = getattr(handler, "headers", {})
+        partial_navigation = (
+            str(request_headers.get("X-Requested-With") or "")
+            == "ConsolePartialNavigation"
+        )
 
         automation_db_warning = ""
         try:
@@ -432,7 +437,10 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 refresh_resources=True,
             )
         else:
-            plugin_catalog = self._load_automation_plugin_catalog(handler)
+            plugin_catalog = self._load_automation_plugin_catalog(
+                handler,
+                prefer_stale=partial_navigation,
+            )
         (
             automation_plugin_packages,
             automation_plugin_instances,
@@ -846,17 +854,32 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             getattr(handler, "current_admin_user", None)
         )
         with ThreadPoolExecutor(max_workers=2) as executor:
-            policy_future = executor.submit(
-                self._load_automation_project_policies,
-                handler,
-                tasks,
-            )
-            accounts_future = executor.submit(
-                self._fetch_automation_accounts,
-                force=False,
-                prefer_cached=True,
-                console_principal=accounts_principal,
-            )
+            if partial_navigation:
+                policy_future = executor.submit(
+                    self._load_automation_project_policies,
+                    handler,
+                    tasks,
+                    timeout_seconds=3,
+                )
+                accounts_future = executor.submit(
+                    self._fetch_automation_accounts,
+                    force=False,
+                    prefer_cached=True,
+                    console_principal=accounts_principal,
+                    timeout_seconds=3,
+                )
+            else:
+                policy_future = executor.submit(
+                    self._load_automation_project_policies,
+                    handler,
+                    tasks,
+                )
+                accounts_future = executor.submit(
+                    self._fetch_automation_accounts,
+                    force=False,
+                    prefer_cached=True,
+                    console_principal=accounts_principal,
+                )
             (
                 automation_approval_policy_warning,
                 can_manage_approval_policies,
@@ -1701,8 +1724,11 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             data = result.get("data") if isinstance(result.get("data"), dict) else {}
             run = data.get("run") if isinstance(data.get("run"), dict) else {}
             status = str(run.get("status") or "").upper()
+            execution_phase = str(run.get("execution_phase") or "").strip().lower()
+            stage_code = str(run.get("stage_code") or "").strip().upper()
+            stage_description = str(run.get("stage_description") or "").strip()
             terminal_statuses = {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
-            running_statuses = {"RUNNING", "VERIFYING"}
+            active_phases = {"source_read", "processing", "writing", "verifying"}
             attention_titles = {
                 "BLOCKED_DATA": "执行前检查未通过",
                 "BLOCKED_LOGIN": "登录已失效",
@@ -1727,25 +1753,49 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             }
             is_terminal = status in terminal_statuses
             awaiting_approval = status == "WAITING_APPROVAL"
-            attention_title = attention_titles.get(status, "")
+            error_code = str(
+                run.get("public_problem_code") or run.get("error_code") or ""
+            ).strip().upper()
+            problem_titles = {
+                "ACCOUNT_LOGIN_REQUIRED": "登录已失效",
+                "RESOURCE_BUSY": "等待相同账号或数据位置",
+                "RESOURCE_PERMISSION_DENIED": "飞书权限不足",
+                "RESOURCE_UNAVAILABLE": "数据位置不可用",
+                "RUNTIME_GENERATION_UNSTABLE": "运行环境同步中",
+                "SOURCE_SCHEMA_CHANGED": "数据源结构已变化",
+                "SOURCE_SHEET_NOT_FOUND": "未找到目标工作表",
+                "SOURCE_UNAVAILABLE": "数据源暂时不可达",
+                "WRITE_OUTCOME_UNKNOWN": "写入结果待确认",
+            }
+            attention_title = problem_titles.get(error_code) or attention_titles.get(status, "")
             attention = bool(attention_title)
-            error_code = str(run.get("error_code") or "").strip().upper()
             attention_message = automation_run_feedback_message(
                 error_code=error_code,
                 status=status,
             )
-            state_line = f"状态：{public_status_labels.get(status, '正在同步')}"
+            state_label = stage_description or public_status_labels.get(status, "正在同步")
+            state_line = f"状态：{state_label}"
             payload: dict[str, Any] = {
                 "lines": [state_line] if offset <= 0 else [],
-                "running": status in running_statuses,
+                "running": execution_phase in active_phases,
+                "queued": execution_phase == "queued",
                 "pending": not is_terminal,
                 "awaiting_approval": awaiting_approval,
                 "cancel_requested": bool(run.get("cancel_requested_at")),
-                "started_at": str(run.get("started_at") or run.get("created_at") or started_at),
+                "started_at": str(
+                    run.get("stage_started_at")
+                    or run.get("started_at")
+                    or run.get("created_at")
+                    or started_at
+                ),
                 "offset": 1,
                 "total": 1,
                 "run_id": run_id,
                 "status": status,
+                "execution_phase": execution_phase,
+                "stage_code": stage_code,
+                "stage_description": stage_description,
+                "public_problem_code": str(run.get("public_problem_code") or ""),
                 "attention": attention,
                 "attention_title": attention_title,
                 "attention_message": attention_message,
@@ -1878,6 +1928,58 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                                 error_code, preview_result.get("error")
                             ),
                         }
+                elif (
+                    not ok
+                    and task_id in SELECTION_PREVIEW_PROJECT_IDS
+                    and selection_phase == "preview"
+                ):
+                    preview_error_code = str(
+                        run.get("public_problem_code") or run.get("error_code") or ""
+                    ).strip()
+                    preview_message = selection_preview_error_message(
+                        preview_error_code,
+                        automation_run_feedback_message(
+                            error_code=preview_error_code,
+                            status=status,
+                        ),
+                    )
+                    payload["selection_preview_error"] = {
+                        "error_code": preview_error_code or "SELECTION_PREVIEW_UNAVAILABLE",
+                        "message": preview_message,
+                    }
+                    payload["runtime"]["title"] = "候选读取失败"
+                    payload["runtime"]["message"] = preview_message
+            if (
+                attention
+                and task_id in SELECTION_PREVIEW_PROJECT_IDS
+                and selection_phase == "preview"
+                and "selection_preview_error" not in payload
+            ):
+                preview_error_code = str(
+                    run.get("public_problem_code") or run.get("error_code") or ""
+                ).strip()
+                preview_message = selection_preview_error_message(
+                    preview_error_code,
+                    automation_run_feedback_message(
+                        error_code=preview_error_code,
+                        status=status,
+                    ),
+                )
+                payload["selection_preview_error"] = {
+                    "error_code": preview_error_code or "SELECTION_PREVIEW_UNAVAILABLE",
+                    "message": preview_message,
+                }
+                payload["runtime"] = {
+                    "ok": False,
+                    "cancelled": False,
+                    "title": "候选读取失败",
+                    "message": preview_message,
+                    "last_run": str(run.get("updated_at") or ""),
+                    "duration_label": "",
+                    "error": "",
+                    "payload": {},
+                }
+                payload["pending"] = False
             self._send_json(handler, HTTPStatus.OK, payload)
             return
         if not tool_name:

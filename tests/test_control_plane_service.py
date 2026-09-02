@@ -49,6 +49,7 @@ def _run(
                 "run_id": run_id,
                 "step_key": "step-1",
                 "tool_name": "query_waybill",
+                "operation_type": "read",
                 "status": "PENDING",
                 "input_summary_json": {"password": "do-not-return"},
             }
@@ -401,6 +402,36 @@ class ControlPlaneServiceTests(unittest.TestCase):
         self.assertEqual("[REDACTED]", evidence["items"][0]["summary"]["password"])
         self.assertNotIn("content_sha256", evidence["items"][0])
         self.assertIn("token=[REDACTED]", evidence["items"][0]["storage_ref"])
+
+    def test_run_projection_distinguishes_queue_from_actual_source_read(self):
+        queued = _run("run-1", "RUNNING")
+        repository = _FakeRepository([queued])
+        service, _approval = self._service(repository)
+
+        queued_dto = service.get_run("run-1")["run"]
+        self.assertEqual("queued", queued_dto["execution_phase"])
+        self.assertEqual("WAITING_EXECUTION_SLOT", queued_dto["stage_code"])
+
+        repository.runs["run-1"]["steps"][0].update(
+            {
+                "status": "RUNNING",
+                "started_at": datetime(2026, 9, 3, 1, 2, 3),
+            }
+        )
+        active_dto = service.get_run("run-1")["run"]
+        self.assertEqual("source_read", active_dto["execution_phase"])
+        self.assertEqual("READING_SOURCE", active_dto["stage_code"])
+        self.assertEqual("正在读取数据", active_dto["stage_description"])
+
+    def test_run_projection_maps_internal_source_error_to_stable_public_code(self):
+        failed = _run("run-1", "BLOCKED_DATA")
+        failed["error_code"] = "BROKER_SOURCE_INVALID"
+        repository = _FakeRepository([failed])
+        service, _approval = self._service(repository)
+
+        run = service.get_run("run-1")["run"]
+        self.assertEqual("finished", run["execution_phase"])
+        self.assertEqual("SOURCE_SCHEMA_CHANGED", run["public_problem_code"])
 
     def test_failed_retryable_continues_same_run_and_persists_event(self):
         repository = _FakeRepository([_run("run-1", "FAILED_RETRYABLE")])

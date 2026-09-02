@@ -519,6 +519,7 @@ class AuthServiceMixin:
         force: bool = True,
         prefer_cached: bool = False,
         console_principal: dict[str, Any] | None = None,
+        timeout_seconds: float | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
         query_params = {}
         if force:
@@ -532,7 +533,11 @@ class AuthServiceMixin:
         result = self._agent_request(
             "GET",
             endpoint,
-            timeout=12 if prefer_cached else 45 if force else 12,
+            timeout=(
+                max(0.5, float(timeout_seconds))
+                if timeout_seconds is not None
+                else 12 if prefer_cached else 45 if force else 12
+            ),
             console_principal=console_principal,
         )
         if not result.get("ok"):

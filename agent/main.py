@@ -1385,8 +1385,8 @@ async def lifespan(app: FastAPI):
         ),
         worker_id=f"{INSTANCE_ID}:runs",
         protected_step_start_guard=schedule_policy_service.begin_protected_step_start,
-        worker_concurrency=_positive_runtime_int("WORKFLOW_RUNNER_CONCURRENCY", 2),
-        browser_concurrency=_positive_runtime_int("WORKFLOW_BROWSER_CONCURRENCY", 1),
+        worker_concurrency=_positive_runtime_int("WORKFLOW_RUNNER_CONCURRENCY", 4),
+        browser_concurrency=_positive_runtime_int("WORKFLOW_BROWSER_CONCURRENCY", 3),
     )
     runner_holder["runner"] = runner
     plugin_runtime.target_service.set_wake_runner(runner.wake)
