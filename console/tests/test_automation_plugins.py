@@ -990,6 +990,31 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertTrue(instances[0]["resource_bindings_ready"])
         self.assertNotIn("飞书消息入口", instances[0]["configuration_summary"])
 
+    def test_unavailable_hidden_route_does_not_block_project(self):
+        payload = _catalog_payload()
+        route_role = {
+            "role": "feishu_route",
+            "label": "飞书消息入口",
+            "allowed_kinds": ["feishu_route"],
+            "required": False,
+        }
+        payload["plugins"][0]["resource_roles"] = [route_role]
+        payload["instances"][0]["resource_roles"] = [route_role]
+        payload["instances"][0]["resource_bindings"] = {
+            "feishu_route": "phase7.retired_route"
+        }
+        payload["instances"][0]["missing_requirements"] = []
+
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+
+        binding = instances[0]["resource_role_bindings"][0]
+        self.assertFalse(binding["ui_visible"])
+        self.assertFalse(binding["selected_available"])
+        self.assertTrue(binding["blocked_reason"])
+        self.assertTrue(instances[0]["resource_bindings_ready"])
+        self.assertNotIn(binding["blocked_reason"], instances[0]["missing_requirements"])
+        self.assertFalse(instances[0]["blocked"])
+
     def test_empty_plugin_configuration_section_is_not_rendered(self):
         source = (CONSOLE_DIR / "templates" / "automation.html").read_text(
             encoding="utf-8"
