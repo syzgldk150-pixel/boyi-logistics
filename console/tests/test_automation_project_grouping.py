@@ -18,6 +18,8 @@ class AutomationProjectGroupingTests(unittest.TestCase):
         plugin_instances=None,
         hidden_automation_ids=frozenset(),
         plugin_warning="",
+        account_fetch=None,
+        account_principal=None,
     ):
         captured = {}
 
@@ -44,12 +46,34 @@ class AutomationProjectGroupingTests(unittest.TestCase):
             False,
         )
         service._load_automation_project_policies = lambda _handler, _tasks: ("", False)
-        service._fetch_automation_accounts = lambda **_kwargs: ([], "")
+        service._fetch_automation_accounts = account_fetch or (lambda **_kwargs: ([], ""))
+        service._mysql_console_principal = lambda _user: account_principal
         service._enrich_automation_tasks_with_accounts = lambda _tasks, _accounts: None
         service._send_html = lambda _handler, _body: None
 
-        service._render_automations(SimpleNamespace(), {})
+        service._render_automations(SimpleNamespace(current_admin_user={"username": "admin"}), {})
         return captured["scheduled_tasks"]
+
+    def test_parallel_account_load_keeps_authenticated_request_principal(self):
+        captured = {}
+        principal = {
+            "username": "admin",
+            "roles": ["super_admin"],
+            "auth_source": "mysql",
+        }
+
+        def fetch_accounts(**kwargs):
+            captured.update(kwargs)
+            return [], ""
+
+        self._rendered_tasks(
+            account_fetch=fetch_accounts,
+            account_principal=principal,
+        )
+
+        self.assertEqual(principal, captured["console_principal"])
+        self.assertFalse(captured["force"])
+        self.assertTrue(captured["prefer_cached"])
 
     def test_same_project_groups_arbitrary_scheduled_row_ids(self):
         rows = [
