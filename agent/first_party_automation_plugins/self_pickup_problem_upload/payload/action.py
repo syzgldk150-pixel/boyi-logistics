@@ -506,17 +506,11 @@ def run_action(
     limit = _limit(values.get("limit"))
     selected_bill_codes = _selected_bill_codes(values, dry_run=dry_run)
 
-    try:
-        candidates, duplicate_count, source_ref = _read_candidates(
-            include_daxiang=include_daxiang,
-            limit=limit,
-            broker=broker,
-        )
-    except ValueError as exc:
-        # Candidate generation is read-only.  Preserve source schema failures
-        # as a stable public problem instead of reporting a generic execution
-        # failure or implying that a write was attempted.
-        raise RuntimeError("SOURCE_SCHEMA_CHANGED") from exc
+    candidates, duplicate_count, source_ref = _read_candidates(
+        include_daxiang=include_daxiang,
+        limit=limit,
+        broker=broker,
+    )
     fingerprint = _preview_fingerprint(candidates)
     previews = [_candidate_preview(candidate) for candidate in candidates]
     common_data: dict[str, object] = {

@@ -999,9 +999,25 @@ _PUBLIC_PROBLEM_CODES = {
     "SOURCE_UNAVAILABLE": "SOURCE_UNAVAILABLE",
     "WRITE_OUTCOME_UNKNOWN": "WRITE_OUTCOME_UNKNOWN",
 }
+_SELF_PICKUP_TOOLS = frozenset(
+    {
+        "automation.self_pickup_problem_upload.run",
+        "automation.self_pickup_problem_upload_v2.run",
+    }
+)
 
 
 def _public_problem_code(row: Mapping[str, Any], steps: Sequence[Mapping[str, Any]]) -> str:
+    for step in reversed(steps):
+        if (
+            str(step.get("error_code") or "").strip().upper()
+            == "ACTION_VALUE_ERROR"
+            and str(step.get("tool_name") or "").strip() in _SELF_PICKUP_TOOLS
+        ):
+            # Host input validation has already completed before the signed
+            # self-pickup subprocess starts. Its remaining value failures are
+            # closed source/header/count validation during the read-only phase.
+            return "SOURCE_SCHEMA_CHANGED"
     candidates = [str(row.get("error_code") or "").strip().upper()]
     candidates.extend(
         str(step.get("error_code") or "").strip().upper()
