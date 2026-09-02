@@ -128,6 +128,7 @@ from agent.automation_plugins.service_registry import (
     package_provider_registration_id,
 )
 from agent.automation_plugins.host_capability_registry import CapabilityEffect
+from shared.orchestration_repository_support import ConcurrentUpdateError
 from agent.automation_plugins.service_v2_projection import (
     _CONTRIBUTION_EFFECT_CONTRACT_VERSION,
     _MANAGED_CONTRIBUTION_KINDS,
@@ -2290,6 +2291,16 @@ class MySQLRuntimeTargetService:
                 except ValueError as exc:
                     failures[automation_id] = {
                         "code": "PLUGIN_PROJECT_DATA_INVALID",
+                        "error_summary": redact_text(exc)[:300],
+                    }
+                    continue
+                except ConcurrentUpdateError as exc:
+                    # A stale prepared generation belongs to one automation
+                    # project.  Quarantine it for an explicit retry instead of
+                    # preventing every healthy project and core tool from
+                    # starting.
+                    failures[automation_id] = {
+                        "code": "PLUGIN_PROJECT_CONCURRENT_UPDATE",
                         "error_summary": redact_text(exc)[:300],
                     }
                     continue
