@@ -554,9 +554,19 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         self.assertEqual("WAITING_APPROVAL", payload["status"])
 
     def test_output_poll_projects_blocked_runs_as_attention_without_polling(self):
-        for run_status, expected_title in (
-            ("BLOCKED_DATA", "数据阻塞"),
-            ("BLOCKED_LOGIN", "登录已失效"),
+        for run_status, expected_title, error_code, expected_message in (
+            (
+                "BLOCKED_DATA",
+                "执行前检查未通过",
+                "IMPACT_PREVIEW_REQUIRED",
+                "执行前检查未完成，本次任务未进行任何写入。请刷新页面后重试；若仍出现，请联系系统管理员。",
+            ),
+            (
+                "BLOCKED_LOGIN",
+                "登录已失效",
+                "AUTH_REQUIRED",
+                "业务账号登录已失效，请重新登录后再执行。",
+            ),
         ):
             with self.subTest(run_status=run_status):
                 app = _App(
@@ -568,7 +578,11 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                                 "run_id": "run-blocked-1",
                                 "status": run_status,
                                 "created_at": "2026-08-24 01:00:00",
-                                "error_summary": "需要处理后继续",
+                                "error_code": error_code,
+                                "error_summary": (
+                                    "Tool automation.internal.run is disabled until an exact "
+                                    "read-only impact preview is available"
+                                ),
                             },
                             "next_poll_after_ms": 3000,
                         },
@@ -589,7 +603,11 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                 self.assertTrue(payload["pending"])
                 self.assertTrue(payload["attention"])
                 self.assertEqual(expected_title, payload["attention_title"])
-                self.assertEqual("需要处理后继续", payload["attention_message"])
+                self.assertEqual(expected_message, payload["attention_message"])
+                self.assertNotIn("Tool", payload["attention_message"])
+                self.assertNotIn("automation.internal.run", payload["attention_message"])
+                self.assertNotIn("run-blocked-1", payload["lines"][0])
+                self.assertNotIn(run_status, payload["lines"][0])
                 self.assertEqual(0, payload["next_poll_after_ms"])
 
 

@@ -206,7 +206,7 @@ class DeterministicPlanner:
         ) or build_write_impact(
             tool_name=tool_name,
             operation_type=operation_type,
-            account_id=account_id,
+            account_id=_impact_account_id(capability, account_id),
             arguments=arguments,
         )
         impact = write_impact or _derive_impact(command, tool_name, operation_type, account_id, arguments)
@@ -465,6 +465,22 @@ def _input_schema_accepts_account_id(capability: Mapping[str, Any]) -> bool:
     schema = capability.get("input_schema")
     properties = schema.get("properties") if isinstance(schema, Mapping) else None
     return isinstance(properties, Mapping) and "account_id" in properties
+
+
+def _impact_account_id(
+    capability: Mapping[str, Any],
+    explicit_account_id: str | None,
+) -> str | None:
+    """Use the immutable operator binding in write previews without exposing it as input."""
+
+    if explicit_account_id:
+        return explicit_account_id
+    runtime = capability.get("_plugin_runtime")
+    bindings = runtime.get("account_bindings") if isinstance(runtime, Mapping) else None
+    operator = bindings.get("operator") if isinstance(bindings, Mapping) else None
+    if isinstance(operator, str) and operator.strip():
+        return operator.strip()
+    return None
 
 
 def _operation_type(capability: Mapping[str, Any]) -> OperationType:

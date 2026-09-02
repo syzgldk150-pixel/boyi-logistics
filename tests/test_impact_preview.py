@@ -20,6 +20,99 @@ from shared.automation_project_authorization import (
 
 
 class WriteImpactPreviewTests(unittest.TestCase):
+    def test_daxiang_project_aliases_use_bound_account_and_exact_site_actions(self):
+        for tool_name in (
+            "automation.clocking_daxiang.run",
+            "automation.clocking_daxiang_s.run",
+        ):
+            with self.subTest(tool_name=tool_name):
+                impact = build_write_impact(
+                    tool_name=tool_name,
+                    operation_type=OperationType.EXTERNAL_WRITE,
+                    account_id="bound-operator",
+                    arguments={
+                        "sitecode": "SITE-A",
+                        "sitefbcode": "SITE-B",
+                        "sitename": "A",
+                        "sitefbname": "B",
+                        "first_type": "交件到港",
+                        "second_type": "接件离港",
+                    },
+                )
+
+                assert impact is not None
+                self.assertEqual("bound-operator", impact["account_id"])
+                self.assertEqual(
+                    ["SITE-A:交件到港", "SITE-B:接件离港"],
+                    [row["entity_id"] for row in impact["entities"]],
+                )
+                validate_write_impact(
+                    operation_type=OperationType.EXTERNAL_WRITE,
+                    impact=impact,
+                )
+
+    def test_project_clock_plan_uses_immutable_operator_binding(self):
+        tool_name = "automation.clocking_daxiang.run"
+
+        class _Catalog:
+            catalog_hash = "catalog-digest"
+
+            @staticmethod
+            def get_capability(requested_tool_name):
+                if requested_tool_name != tool_name:
+                    return None
+                return {
+                    "version": "1.1.0",
+                    "operation_type": "external_write",
+                    "risk_level": "high",
+                    "llm_exposed": False,
+                    "evidence": [],
+                    "postconditions": [{"name": "site_clock_actions_verified"}],
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                    "_plugin_runtime": {
+                        "account_bindings": {"operator": "bound-operator"},
+                    },
+                }
+
+        command = Command(
+            command_type="automation.project.invoke",
+            source="console",
+            actor=Actor(ActorType.CONSOLE_ADMIN, "user-1", roles=("super_admin",)),
+            parameters={
+                "tool_name": tool_name,
+                "arguments": {
+                    "sitecode": "SITE-A",
+                    "sitefbcode": "SITE-B",
+                    "sitename": "A",
+                    "sitefbname": "B",
+                    "first_type": "交件到港",
+                    "second_type": "接件离港",
+                },
+            },
+            idempotency_key="clock-project-1",
+            automation_invocation=AutomationProjectInvocation(
+                automation_id="clocking_daxiang",
+                automation_generation=1,
+                entrypoint=AutomationEntrypoint.CONSOLE,
+                contract_id="manual_run",
+                contract_hash="d" * 64,
+                policy_version=1,
+                project_configuration_version=1,
+                request_id="clock-project-1",
+            ),
+        )
+
+        plan = DeterministicPlanner(_Catalog()).plan(command, ContextSnapshot(values={}))
+
+        self.assertEqual("bound-operator", plan.impact["account_id"])
+        self.assertEqual(
+            ["SITE-A:交件到港", "SITE-B:接件离港"],
+            [row["entity_id"] for row in plan.impact["entities"]],
+        )
+
     def test_clock_in_has_two_exact_site_action_entities(self):
         impact = build_write_impact(
             tool_name="clock_in_dual",

@@ -1916,7 +1916,7 @@
           kind: "error",
           title: "保存失败",
           message: "未能提交任务设置。",
-          body: err instanceof Error ? err.message : String(err || ""),
+          body: "",
         });
       } finally {
         setButtonLoading(submitter, false);
@@ -2033,8 +2033,8 @@
           title: "待审批",
           message: "手工运行已进入本项目待审批，可在当前卡片原位处理；审批通过后脚本才会开始执行。",
           showTimer: false,
-          stampText: runId ? `Run：${runId}` : startedAt ? `提交于：${startedAt}` : "",
-          body: "状态：WAITING_APPROVAL",
+          stampText: startedAt ? `提交于：${startedAt}` : "",
+          body: "",
         });
         syncRuntimeFeedback(form, null);
       }
@@ -2063,8 +2063,8 @@
           title: "等待状态同步",
           message: "命令已提交，正在等待控制平面进入下一状态。",
           showTimer: false,
-          stampText: runId ? `Run：${runId}` : startedAt ? `提交于：${startedAt}` : "",
-          body: status ? `状态：${status}` : "",
+          stampText: startedAt ? `提交于：${startedAt}` : "",
+          body: "",
         });
         syncRuntimeFeedback(form, null);
       }
@@ -2075,7 +2075,7 @@
         const runId = String(data.run_id || runUiState.runId || termDrawer.dataset.runId || "").trim();
         const status = String(data.status || "").toUpperCase();
         const fallbackTitles = {
-          BLOCKED_DATA: "数据阻塞",
+          BLOCKED_DATA: "执行前检查未通过",
           BLOCKED_LOGIN: "登录已失效",
           NEEDS_CLARIFICATION: "需要补充信息",
           FAILED_RETRYABLE: "执行暂时失败",
@@ -2094,10 +2094,10 @@
         renderFeedback(form, {
           kind: status === "FAILED_RETRYABLE" ? "error" : "warning",
           title: data.attention_title || fallbackTitles[status] || "需要处理",
-          message: data.attention_message || "当前 Run 已停止推进，请按提示处理后再继续。",
+          message: data.attention_message || "当前任务已停止推进，请按提示处理后再继续。",
           showTimer: false,
-          stampText: runId ? `Run：${runId}` : startedAt ? `提交于：${startedAt}` : "",
-          body: status ? `状态：${status}` : "",
+          stampText: startedAt ? `提交于：${startedAt}` : "",
+          body: "",
         });
         syncRuntimeFeedback(form, null);
       }
@@ -2389,7 +2389,7 @@
         const freshStates = await Promise.all(fetchReceipts.map(async receipt => {
           const state = await fetchOutputState({ runId: receipt.run_id, offset: 0 });
           if (!state || state.error) {
-            throw new Error(state?.error || "Run 状态暂不可用");
+            throw new Error(state?.error || "任务状态暂不可用");
           }
           const statePollAfterMs = Number(state.next_poll_after_ms);
           const receiptPollAfterMs = Number(receipt.next_poll_after_ms);
@@ -2408,7 +2408,7 @@
           approvedBatchStates.get(String(receipt.run_id || ""))
         ));
         if (states.some(state => !state)) {
-          throw new Error("Run 状态集合不完整");
+          throw new Error("任务状态集合不完整");
         }
         if (generation !== approvedBatchGeneration) return;
 
@@ -2441,7 +2441,7 @@
             renderFeedback(form, {
               kind: "warning",
               title: "执行需要处理",
-              message: `${attentionCount} 个 Run 正在等待补充信息、登录恢复或可重试状态处理；其余 Run 继续跟踪。`,
+              message: `${attentionCount} 个任务正在等待补充信息、登录恢复或重试处理；其余任务继续跟踪。`,
               showTimer: false,
             });
           }
@@ -2455,7 +2455,7 @@
         }
 
         if (attentionCount > 0) {
-          const message = `${attentionCount} 个 Run 需要补充信息、恢复登录或人工处理；已停止自动跟踪。`;
+          const message = `${attentionCount} 个任务需要补充信息、恢复登录或人工处理；已停止自动跟踪。`;
           updateApprovedBatchPill("执行需要处理", settledCount, total);
           setRunUiState({
             running: false,
@@ -2488,8 +2488,8 @@
             ? "批量执行已取消"
             : "批量执行已结束";
         const message = unsuccessfulCount === 0
-          ? `本次批准的 ${total} 个 Run 均已完成。`
-          : `本次批准的 ${total} 个 Run 中，完成 ${completedCount} 个，未成功 ${unsuccessfulCount} 个。`;
+          ? `本次批准的 ${total} 个任务均已完成。`
+          : `本次批准的 ${total} 个任务中，完成 ${completedCount} 个，未成功 ${unsuccessfulCount} 个。`;
         updateApprovedBatchPill(title, terminalCount, total);
         setRunUiState({
           running: false,
@@ -2520,7 +2520,7 @@
           title: "执行状态暂不可达",
           message: "本次批准已生效，卡片会继续查询这些 Run，不会重新提交或重试执行。",
           showTimer: false,
-          body: error instanceof Error ? error.message : "Run 状态暂不可用",
+          body: "",
         });
         scheduleApprovedBatchPoll(receipts, generation, 3000);
       }
@@ -2567,11 +2567,11 @@
       renderFeedback(form, {
         kind: "info",
         title: "审批已通过",
-        message: `正在原位跟踪本次批准的 ${approvedBatchReceipts.length} 个 Run。`,
+        message: `正在原位跟踪本次批准的 ${approvedBatchReceipts.length} 个任务。`,
         showTimer: false,
-        stampText: `${approvedBatchReceipts.length} 个 Run`,
+        stampText: `${approvedBatchReceipts.length} 个任务`,
       });
-      announceApprovedBatch(`已批准 ${approvedBatchReceipts.length} 个 Run，正在等待执行。`);
+      announceApprovedBatch(`已批准 ${approvedBatchReceipts.length} 个任务，正在等待执行。`);
       void pollApprovedBatch(approvedBatchReceipts, generation);
     });
 
@@ -2692,7 +2692,7 @@
         renderFeedback(form, {
           kind: "error",
           title: "无法取消",
-          message: "当前页面没有可追踪的 Run 标识，请刷新当前项目卡片后重试；只有状态异常时再到事项中心核查历史。",
+          message: "当前页面没有可继续跟踪的任务，请刷新项目卡片后重试；只有状态异常时再到事项中心核查历史。",
           showTimer: false,
         });
         return;
@@ -2712,9 +2712,9 @@
       renderFeedback(form, {
         kind: "warning",
         title: "取消中",
-        message: wasAwaitingApproval ? "已发送取消请求，正在取消等待审批的 Run。" : wasPendingRun ? "已发送取消请求，正在取消已提交的 Run。" : "已发送取消请求，正在停止脚本。",
+        message: wasAwaitingApproval ? "已发送取消请求，正在取消等待审批的任务。" : wasPendingRun ? "已发送取消请求，正在取消已提交的任务。" : "已发送取消请求，正在停止脚本。",
         showTimer: !(wasAwaitingApproval || wasPendingRun),
-        stampText: (wasAwaitingApproval || wasPendingRun) && runId ? `Run：${runId}` : startedAt ? `开始：${startedAt}` : "",
+        stampText: startedAt ? `开始：${startedAt}` : "",
       });
 
       try {
@@ -2749,9 +2749,9 @@
           renderFeedback(form, {
             kind: "warning",
             title: result.title || "取消中",
-            message: result.message || (wasAwaitingApproval ? "已发送取消请求，正在取消等待审批的 Run。" : wasPendingRun ? "已发送取消请求，正在取消已提交的 Run。" : "已发送取消请求，正在停止脚本。"),
+            message: result.message || (wasAwaitingApproval ? "已发送取消请求，正在取消等待审批的任务。" : wasPendingRun ? "已发送取消请求，正在取消已提交的任务。" : "已发送取消请求，正在停止脚本。"),
             showTimer: !(wasAwaitingApproval || wasPendingRun),
-            stampText: (wasAwaitingApproval || wasPendingRun) && runId ? `Run：${runId}` : cancelStartedAt ? `开始：${cancelStartedAt}` : "",
+            stampText: cancelStartedAt ? `开始：${cancelStartedAt}` : "",
           });
           startPolling(cancelStartedAt);
           return;
@@ -2787,7 +2787,7 @@
           message: "未能提交取消请求。",
           showTimer: false,
           stampText: startedAt ? `开始：${startedAt}` : "",
-          body: err instanceof Error ? err.message : String(err || ""),
+          body: "",
         });
       } finally {
         setButtonLoading(runBtn, false);
@@ -2884,7 +2884,7 @@
             title: result.title || "正式扫描请求已受理",
             message: result.message || "正式请求已绑定本次预览。",
             showTimer: false,
-            stampText: `Run：${runId}`,
+            stampText: "候选清单已提交",
           });
           startPolling();
         } catch (error) {
@@ -2893,7 +2893,7 @@
             title: "确认结果暂时未知",
             message: "请保留当前页面并再次点击确认；页面会复用原请求标识，不会创建第二次正式请求。",
             showTimer: false,
-            body: error instanceof Error ? error.message : String(error || ""),
+            body: "",
           });
         } finally {
           setButtonLoading(scanPreviewConfirm, false);
@@ -3005,7 +3005,7 @@
             title: result.title || "所选运单已提交",
             message: result.message || "执行结果会在当前卡片更新。",
             showTimer: false,
-            stampText: `Run：${runId}`,
+            stampText: "候选清单已提交",
           });
           startPolling();
         } catch (error) {
@@ -3014,7 +3014,7 @@
             title: "确认结果暂时未知",
             message: "请保留当前页面并再次点击确认；页面会复用原请求标识。",
             showTimer: false,
-            body: error instanceof Error ? error.message : String(error || ""),
+            body: "",
           });
         } finally {
           setButtonLoading(selectionPreviewConfirm, false);
@@ -3041,7 +3041,7 @@
           renderFeedback(form, {
             kind: "error",
             title: "正式扫描仍处于阻断状态",
-            message: "请先查询原 Run 或前往事项中心处理，当前页面不会生成新的扫描预览。",
+            message: "请先查询原任务记录或前往事项中心处理，当前页面不会生成新的扫描预览。",
             showTimer: false,
           });
           return;
@@ -3073,7 +3073,7 @@
         renderFeedback(form, {
           kind: "info",
           title: "已提交",
-          message: "命令正在提交到控制平面，后续会按 Run 状态自动更新。",
+          message: "任务正在提交，页面会自动更新执行状态。",
           showTimer: false,
           stampText: `提交于：${stamp}`,
         });
@@ -3119,9 +3119,9 @@
             renderFeedback(form, {
               kind: "info",
               title: result.title || "命令已受理",
-              message: result.message || "命令已提交，正在等待控制平面返回最新 Run 状态。",
+              message: result.message || "任务已提交，正在等待服务返回最新状态。",
               showTimer: false,
-              stampText: runId ? `Run：${runId}` : `提交于：${startedAt}`,
+              stampText: startedAt ? `提交于：${startedAt}` : "",
             });
             syncRuntimeFeedback(form, null);
             startPolling(result.activity_value || "");
@@ -3138,7 +3138,7 @@
             showTimer: false,
             timerText: result.duration_label ? `耗时 ${result.duration_label}` : "",
             stampText: result.activity_value ? `运行于 ${result.activity_value}` : "",
-            body: result.error || (result.payload ? JSON.stringify(result.payload, null, 2) : ""),
+            body: "",
           });
           syncRuntimeFeedback(form, {
             ok: !!result.ok,
@@ -3147,8 +3147,8 @@
             message: result.message || "",
             last_run: result.activity_value || "",
             duration_label: result.duration_label || "",
-            error: result.error || "",
-            payload: result.payload || null,
+            error: "",
+            payload: null,
           });
 
           if (!result.ok) {
@@ -3208,7 +3208,7 @@
             message: "未能获取执行结果。",
             showTimer: false,
             stampText: `开始：${stamp}`,
-            body: err instanceof Error ? err.message : String(err || ""),
+            body: "",
           });
         } finally {
           setButtonLoading(runBtn, false);

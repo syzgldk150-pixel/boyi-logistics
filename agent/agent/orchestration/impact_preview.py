@@ -404,6 +404,8 @@ def _self_pickup_problem(
 _EXACT_BUILDERS: dict[str, ImpactBuilder] = {
     "receipts_audit": _receipt_audit,
     "clock_in_dual": _clock_in,
+    "automation.clocking_daxiang.run": _clock_in,
+    "automation.clocking_daxiang_s.run": _clock_in,
     "customer_service_problem_mark_read": _mark_read,
     "customer_service_problem_reply": _reply,
     "customer_service_problem_publish": _publish,

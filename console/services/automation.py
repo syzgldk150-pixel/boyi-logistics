@@ -1245,7 +1245,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             "pending": True,
             "task_id": payload["task_id"],
             "title": "命令已受理",
-            "message": "命令已提交到控制平面，后续会按 Run 状态自动更新。",
+            "message": "任务已提交，页面会自动更新执行状态。",
             "status_label": "等待状态同步",
             "activity_label": "提交时间",
             "activity_value": started_stamp,
@@ -1683,7 +1683,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                         "running": False,
                         "offset": 0,
                         "total": 0,
-                        "error": normalize_feedback_text(result.get("error") or "Run 状态查询失败"),
+                        "error": "任务状态暂时无法读取，请稍后刷新。",
                     },
                 )
                 return
@@ -1693,17 +1693,37 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             terminal_statuses = {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
             running_statuses = {"RUNNING", "VERIFYING"}
             attention_titles = {
-                "BLOCKED_DATA": "数据阻塞",
+                "BLOCKED_DATA": "执行前检查未通过",
                 "BLOCKED_LOGIN": "登录已失效",
                 "NEEDS_CLARIFICATION": "需要补充信息",
                 "FAILED_RETRYABLE": "执行暂时失败",
+            }
+            public_status_labels = {
+                "RECEIVED": "已收到",
+                "PLANNED": "准备执行",
+                "WAITING_APPROVAL": "等待审批",
+                "APPROVED": "已通过审批",
+                "RUNNING": "执行中",
+                "VERIFYING": "正在核验",
+                "COMPLETED": "已完成",
+                "PARTIAL": "部分完成",
+                "NEEDS_CLARIFICATION": "需要补充信息",
+                "BLOCKED_LOGIN": "登录已失效",
+                "BLOCKED_DATA": "执行前检查未通过",
+                "FAILED_RETRYABLE": "执行暂时失败",
+                "FAILED_TERMINAL": "执行未完成",
+                "CANCELLED": "已取消",
             }
             is_terminal = status in terminal_statuses
             awaiting_approval = status == "WAITING_APPROVAL"
             attention_title = attention_titles.get(status, "")
             attention = bool(attention_title)
-            attention_message = normalize_feedback_text(run.get("error_summary") or "")
-            state_line = f"Run {run_id} · {status or 'UNKNOWN'}"
+            error_code = str(run.get("error_code") or "").strip().upper()
+            attention_message = automation_run_feedback_message(
+                error_code=error_code,
+                status=status,
+            )
+            state_line = f"状态：{public_status_labels.get(status, '正在同步')}"
             payload: dict[str, Any] = {
                 "lines": [state_line] if offset <= 0 else [],
                 "running": status in running_statuses,
@@ -1725,7 +1745,14 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             if is_terminal:
                 cancelled = status == "CANCELLED"
                 ok = status == "COMPLETED"
-                error_message = normalize_feedback_text(run.get("error_summary") or "")
+                error_message = (
+                    ""
+                    if ok
+                    else automation_run_feedback_message(
+                        error_code=error_code,
+                        status=status,
+                    )
+                )
                 payload["runtime"] = {
                     "ok": ok,
                     "cancelled": cancelled,
@@ -1733,8 +1760,8 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                     "message": error_message,
                     "last_run": str(run.get("finished_at") or run.get("updated_at") or ""),
                     "duration_label": "",
-                    "error": error_message,
-                    "payload": {"run_id": run_id, "status": status},
+                    "error": "",
+                    "payload": {},
                 }
                 last_status = "success" if ok else "cancelled" if cancelled else "error"
                 last_run = str(run.get("finished_at") or run.get("updated_at") or "")
