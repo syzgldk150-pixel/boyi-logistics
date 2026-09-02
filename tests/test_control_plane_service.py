@@ -433,6 +433,22 @@ class ControlPlaneServiceTests(unittest.TestCase):
         self.assertEqual("finished", run["execution_phase"])
         self.assertEqual("SOURCE_SCHEMA_CHANGED", run["public_problem_code"])
 
+    def test_self_pickup_action_validation_maps_to_source_structure_problem(self):
+        failed = _run("run-1", "BLOCKED_DATA")
+        failed["steps"][0].update(
+            {
+                "tool_name": "automation.self_pickup_problem_upload.run",
+                "error_code": "ACTION_VALUE_ERROR",
+                "status": "BLOCKED_DATA",
+            }
+        )
+        repository = _FakeRepository([failed])
+        service, _approval = self._service(repository)
+
+        run = service.get_run("run-1")["run"]
+
+        self.assertEqual("SOURCE_SCHEMA_CHANGED", run["public_problem_code"])
+
     def test_failed_retryable_continues_same_run_and_persists_event(self):
         repository = _FakeRepository([_run("run-1", "FAILED_RETRYABLE")])
         wakes = []

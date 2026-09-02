@@ -277,7 +277,7 @@ def test_first_party_descriptors_are_16_actions_and_18_instances(
     assert all(manifest.runtime_permissions["broker_operations"] for manifest in manifests.values())
     assert manifests["sync_scan_codes"].version == "1.0.23"
     assert manifests["sync_arrival_stats"].version == "1.0.22"
-    assert manifests["self_pickup_problem_upload"].version == "1.0.27"
+    assert manifests["self_pickup_problem_upload"].version == "1.0.26"
     assert manifests["split_pending_problem_upload"].version == "1.0.25"
     assert manifests["sync_arrival_stats"].runtime_permissions["max_broker_calls"] == 1000
     assert {
@@ -305,7 +305,7 @@ def test_first_party_descriptors_are_16_actions_and_18_instances(
         seed.version
         for seed in seeds
         if seed.plugin_id == "self_pickup_problem_upload"
-    } == {"1.0.27"}
+    } == {"1.0.26"}
     assert {
         seed.version
         for seed in seeds
