@@ -22,6 +22,7 @@ _API_ROOT = "https://open.feishu.cn"
 _CACHE_TTL_SECONDS = 300.0
 _REQUEST_TIMEOUT_SECONDS = 12
 _MAX_ATTEMPTS = 3
+_SPREADSHEET_DOCUMENT_CHILD = "@spreadsheet"
 
 _cache_lock = threading.RLock()
 _name_cache: dict[tuple[str, str, str], tuple[float, str, str]] = {}
@@ -349,10 +350,13 @@ def _sheet_id(config: Mapping[str, Any]) -> str:
 
 def _locator(resource_kind: str, config: Mapping[str, Any]) -> tuple[str, str, str]:
     if resource_kind == "feishu_sheet":
+        child_id = _sheet_id(config)
+        if str(config.get("resource_scope") or "").strip().lower() == "spreadsheet":
+            child_id = _SPREADSHEET_DOCUMENT_CHILD
         return (
             resource_kind,
             str(config.get("spreadsheet_token") or "").strip(),
-            _sheet_id(config),
+            child_id,
         )
     if resource_kind == "feishu_bitable":
         return (
@@ -475,7 +479,10 @@ def resolve_live_feishu_resource_catalog(
             continue
         document_name, children = catalog
         resolved_child_id = child_id
-        child_name = children.get(child_id)
+        document_scope = (
+            kind == "feishu_sheet" and child_id == _SPREADSHEET_DOCUMENT_CHILD
+        )
+        child_name = document_name if document_scope else children.get(child_id)
         requested_title = str(
             (
                 configs[resource_id].get("sheet_title")
@@ -550,14 +557,14 @@ def resolve_live_feishu_resource_catalog(
                 resource_id,
             )
             continue
-        display_name = f"{document_name} / {child_name}"
+        display_name = document_name if document_scope else f"{document_name} / {child_name}"
         refreshed[locator] = display_name
         results[resource_id] = FeishuResourceResult(
             name=display_name,
             status="available",
             purpose=purposes[resource_id],
             problem_code="",
-            resolved_child_id=resolved_child_id,
+            resolved_child_id="" if document_scope else resolved_child_id,
         )
     with _cache_lock:
         expires_at = current + _CACHE_TTL_SECONDS
@@ -663,6 +670,8 @@ def resolve_live_feishu_resource_config(
     current_child_id = _locator(kind, config)[2]
     live_child_id = str(resolved.resolved_child_id or "").strip()
     normalized = dict(config)
+    if current_child_id == _SPREADSHEET_DOCUMENT_CHILD:
+        return normalized
     if not live_child_id or live_child_id == current_child_id:
         return normalized
     if kind == "feishu_sheet":

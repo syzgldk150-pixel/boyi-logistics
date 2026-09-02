@@ -110,6 +110,54 @@ class FeishuResourceCatalogTests(unittest.TestCase):
         self.assertEqual("到货台账 / 每日到货", names["sheet-resource"])
         self.assertEqual("物流明细 / 当日寄件", names["bitable-resource"])
 
+    def test_document_scoped_spreadsheet_uses_live_document_name(self) -> None:
+        resource = (
+            "archive-resource",
+            {
+                "resource_kind": "feishu_sheet",
+                "resource_scope": "spreadsheet",
+                "spreadsheet_token": "spreadsheet-token",
+                "default_write_range": "A1:S199",
+                "business_purpose": "到货统计归档",
+            },
+        )
+        with patch.dict(
+            os.environ,
+            {"FEISHU_APP_ID": "app-id", "FEISHU_APP_SECRET": "app-secret"},
+            clear=False,
+        ), patch.object(
+            catalog,
+            "_request_json",
+            side_effect=lambda _method, path, **_kwargs: self._payload(path),
+        ):
+            result = catalog.resolve_live_feishu_resource_catalog([resource], now=100.0)
+            normalized = catalog.resolve_live_feishu_resource_config(*resource)
+
+        resolved = result.resources["archive-resource"]
+        self.assertEqual("available", resolved.status)
+        self.assertEqual("到货台账", resolved.name)
+        self.assertEqual("", resolved.resolved_child_id)
+        self.assertEqual(resource[1], normalized)
+
+    def test_token_without_document_scope_still_requires_a_child_locator(self) -> None:
+        result = catalog.resolve_live_feishu_resource_catalog(
+            [
+                (
+                    "invalid-resource",
+                    {
+                        "resource_kind": "feishu_sheet",
+                        "spreadsheet_token": "spreadsheet-token",
+                    },
+                )
+            ],
+            now=100.0,
+        )
+
+        self.assertEqual(
+            "RESOURCE_LOCATOR_MISSING",
+            result.resources["invalid-resource"].problem_code,
+        )
+
     def test_cache_is_refreshed_after_ttl_so_renames_follow_feishu(self) -> None:
         current_title = {"value": "每日到货"}
 
