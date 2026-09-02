@@ -110,29 +110,34 @@ BUILTIN_RESOURCES: dict[str, dict] = {
 }
 
 # Problem-action packages bind resource identities, never document locators.
-# Reuse the already reviewed daily-arrival document locator for its distinct
-# self-pickup worksheet and normalize both split worksheets to the managed
-# ``feishu_sheet`` kind expected by the signed manifests.
+# Both split-pending and self-pickup candidates are read from the same reviewed
+# daily-arrival worksheet.  Keep two resource identities so each project role
+# remains explicit, but keep their immutable Feishu locator identical.
 for _problem_sheet_key in (
     "phase7.split_pending_source_sheet",
     "phase7.split_pending_target_sheet",
 ):
     BUILTIN_RESOURCES[_problem_sheet_key]["resource_kind"] = "feishu_sheet"
+_DAILY_ARRIVAL_SOURCE = BUILTIN_RESOURCES["phase7.split_pending_source_sheet"]
 BUILTIN_RESOURCES["phase7.self_pickup_source_sheet"] = {
     "resource_kind": "feishu_sheet",
-    "spreadsheet_token": BUILTIN_RESOURCES["phase7.split_pending_source_sheet"][
-        "spreadsheet_token"
-    ],
-    "sheet_id": "UeBd3I",
+    "spreadsheet_token": _DAILY_ARRIVAL_SOURCE["spreadsheet_token"],
+    "sheet_id": _DAILY_ARRIVAL_SOURCE["sheet_id"],
     "sheet_title": "每日到货表",
     "business_purpose": "自提到货问题件来源",
-    "sheet_header_constraints": {
-        "A": ["运单编号", "单号"],
-        "E": ["件数"],
-        "S": ["累计到货件数", "已到货件数", "到货件数"],
-    },
-    "range": "UeBd3I!A1:S5000",
+    "sheet_header_constraints": dict(_DAILY_ARRIVAL_SOURCE["sheet_header_constraints"]),
+    "range": _DAILY_ARRIVAL_SOURCE["range"],
 }
+
+_SHARED_DAILY_ARRIVAL_SOURCE_KEY = "phase7.split_pending_source_sheet"
+_SELF_PICKUP_SOURCE_KEY = "phase7.self_pickup_source_sheet"
+_SHEET_LOCATOR_KEYS = (
+    "resource_kind",
+    "spreadsheet_token",
+    "sheet_id",
+    "range",
+    "sheet_range",
+)
 
 # Some resources intentionally represent an entire spreadsheet document.  The
 # arrival archive creates and reads date-named child sheets at runtime, so it
@@ -209,4 +214,39 @@ def sync_reviewed_phase7_resource_metadata() -> list[str]:
             source="reviewed-metadata-sync",
         )
         updated.append(resource_key)
+
+    # Older releases registered a separate, still-existing worksheet for the
+    # self-pickup role.  Because that worksheet remained readable, live-name
+    # repair could not detect that it was the wrong business source and a valid
+    # preview incorrectly returned zero candidates.  The business contract now
+    # explicitly shares the exact source used by split-pending.  Copy the current
+    # persisted locator (including a live rename repair), never a guessed match.
+    shared_source = get_workflow_resource(_SHARED_DAILY_ARRIVAL_SOURCE_KEY)
+    self_pickup_source = get_workflow_resource(_SELF_PICKUP_SOURCE_KEY)
+    if shared_source is not None and self_pickup_source is not None:
+        aligned = {
+            key: value
+            for key, value in self_pickup_source.items()
+            if key != "_meta" and key not in _SHEET_LOCATOR_KEYS
+        }
+        aligned.update(
+            {
+                key: shared_source[key]
+                for key in _SHEET_LOCATOR_KEYS
+                if key in shared_source
+            }
+        )
+        current = {
+            key: value
+            for key, value in self_pickup_source.items()
+            if key != "_meta"
+        }
+        if current != aligned:
+            upsert_workflow_resource(
+                _SELF_PICKUP_SOURCE_KEY,
+                aligned,
+                source="reviewed-shared-source-sync",
+            )
+            if _SELF_PICKUP_SOURCE_KEY not in updated:
+                updated.append(_SELF_PICKUP_SOURCE_KEY)
     return updated
