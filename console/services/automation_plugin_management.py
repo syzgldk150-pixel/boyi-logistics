@@ -1158,12 +1158,28 @@ class AutomationPluginManagementServiceMixin:
             )
             return
         self._clear_automation_plugin_catalog_cache()
+        lifecycle_projection: dict[str, Any] = {"automation_id": created_id}
+        record_version = data.get("record_version")
+        if (
+            not isinstance(record_version, bool)
+            and isinstance(record_version, int)
+            and record_version >= 1
+        ):
+            lifecycle_projection["record_version"] = record_version
+        version = str(data.get("version") or "").strip()
+        if self._automation_plugin_version_re.fullmatch(version):
+            lifecycle_projection["version"] = version
+        if isinstance(data.get("enabled"), bool):
+            lifecycle_projection["enabled"] = data["enabled"]
+        state = str(data.get("state") or "").strip().upper()
+        if state in {"ENABLED", "DISABLED", "INSTALLING", "UPGRADING", "ERROR"}:
+            lifecycle_projection["state"] = state
         self._send_json(
             handler,
             HTTPStatus.OK,
             {
                 "ok": True,
-                "data": {"automation_id": created_id},
+                "data": lifecycle_projection,
                 "message": (
                     "自动化已升级。"
                     if automation_id
@@ -1269,12 +1285,26 @@ class AutomationPluginManagementServiceMixin:
             )
             return
         self._clear_automation_plugin_catalog_cache()
+        result_data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        lifecycle_projection: dict[str, Any] = {"automation_id": automation_id}
+        record_version = result_data.get("record_version")
+        if (
+            not isinstance(record_version, bool)
+            and isinstance(record_version, int)
+            and record_version >= 1
+        ):
+            lifecycle_projection["record_version"] = record_version
+        if isinstance(result_data.get("enabled"), bool):
+            lifecycle_projection["enabled"] = result_data["enabled"]
+        state = str(result_data.get("state") or "").strip().upper()
+        if state in {"ENABLED", "DISABLED", "INSTALLING", "UPGRADING", "ERROR"}:
+            lifecycle_projection["state"] = state
         self._send_json(
             handler,
             HTTPStatus.OK,
             {
                 "ok": True,
-                "data": {"automation_id": automation_id},
+                "data": lifecycle_projection,
                 "message": {
                     "enable": "自动化实例已启用。",
                     "disable": "自动化实例已停用。",
