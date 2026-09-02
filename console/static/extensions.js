@@ -432,9 +432,53 @@
   document.querySelectorAll("[data-extension-instance]").forEach((card) => {
     const feedback = card.querySelector("[data-extension-feedback]");
     const automationId = encodeURIComponent(card.dataset.automationId || "");
-    const recordVersion = Number(card.dataset.recordVersion || "0");
     const upgradeInput = card.querySelector("[data-extension-upgrade]");
     const upgradeButton = card.querySelector('[data-extension-action="upgrade"]');
+
+    const updateLifecycleCard = (action, payload) => {
+      const projection = payload?.data && typeof payload.data === "object" ? payload.data : {};
+      const nextRecordVersion = Number(projection.record_version || 0);
+      if (Number.isInteger(nextRecordVersion) && nextRecordVersion >= 1) {
+        card.dataset.recordVersion = String(nextRecordVersion);
+      }
+      if (/^\d+\.\d+\.\d+$/.test(String(projection.version || ""))) {
+        card.dataset.currentVersion = String(projection.version);
+      }
+      if (action === "uninstall") {
+        const article = card.closest("[data-automation-task-row]");
+        const provider = article?.dataset.automationProvider || "";
+        const enabled = card.querySelector('[data-extension-action="disable"]') instanceof HTMLButtonElement;
+        article?.remove();
+        const providerTab = document.querySelector(`[data-automation-provider-tab][data-provider="${CSS.escape(provider)}"]`);
+        const providerCount = providerTab?.querySelector(".auto-provider-count");
+        if (providerCount instanceof HTMLElement) {
+          providerCount.textContent = String(Math.max(0, Number(providerCount.textContent || "0") - 1));
+        }
+        if (providerTab?.getAttribute("aria-selected") === "true") {
+          const total = document.querySelector("[data-total-count]");
+          const enabledTotal = document.querySelector("[data-enabled-count]");
+          if (total instanceof HTMLElement) total.textContent = String(Math.max(0, Number(total.textContent || "0") - 1));
+          if (enabled && enabledTotal instanceof HTMLElement) {
+            enabledTotal.textContent = String(Math.max(0, Number(enabledTotal.textContent || "0") - 1));
+          }
+        }
+        return;
+      }
+      const stateBadge = card.querySelector(".automation-plugin-state");
+      if (stateBadge instanceof HTMLElement && typeof projection.enabled === "boolean") {
+        stateBadge.textContent = projection.enabled ? "已启用" : "已停用";
+        stateBadge.className = `automation-plugin-state automation-plugin-state--${projection.enabled ? "enabled" : "disabled"}`;
+      }
+      if (["enable", "disable"].includes(action)) {
+        const stateButton = card.querySelector(`[data-extension-action="${action}"]`);
+        if (stateButton instanceof HTMLButtonElement && typeof projection.enabled === "boolean") {
+          stateButton.dataset.extensionAction = projection.enabled ? "disable" : "enable";
+          stateButton.textContent = projection.enabled ? "暂停" : "启用";
+          stateButton.disabled = false;
+        }
+      }
+      setFeedback(feedback, payload?.message || "项目状态已更新。", "success");
+    };
 
     upgradeInput?.addEventListener("change", () => {
       if (upgradeButton instanceof HTMLButtonElement) delete upgradeButton.dataset.requestId;
@@ -445,6 +489,7 @@
       button.addEventListener("click", async () => {
         if (!(button instanceof HTMLButtonElement)) return;
         const action = button.dataset.extensionAction || "";
+        const recordVersion = Number(card.dataset.recordVersion || "0");
         if (
           !["upgrade", "enable", "disable", "uninstall"].includes(action)
           || !automationId
@@ -515,7 +560,8 @@
             throw new Error(responseMessage(payload, "操作失败，请重试。"));
           }
           delete button.dataset.requestId;
-          window.location.reload();
+          updateLifecycleCard(action, payload);
+          if (action !== "uninstall") button.disabled = false;
         } catch (error) {
           setFeedback(
             feedback,

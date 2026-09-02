@@ -186,6 +186,7 @@ class ExtensionProjectionTests(unittest.TestCase):
         self.assertIn("inspectForm.requestSubmit()", script)
         self.assertIn("dialog.showModal()", script)
         self.assertIn('credentials: "same-origin"', script)
+        self.assertNotIn("window.location.reload()", script)
 
     def test_current_extension_dialog_uses_closed_projection_and_safe_two_phase_install(self):
         source = (Path(__file__).parents[1] / "templates" / "extensions.html").read_text(
