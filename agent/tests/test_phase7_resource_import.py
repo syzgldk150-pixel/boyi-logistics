@@ -245,3 +245,39 @@ def test_reviewed_metadata_sync_marks_archive_as_document_scoped() -> None:
         },
         source="reviewed-metadata-sync",
     )
+
+
+def test_reviewed_metadata_sync_adds_distinct_bitable_business_purposes() -> None:
+    send_order = {
+        "resource_kind": "feishu_bitable",
+        "base_token": "live-base-token",
+        "table_id": "live-table-id",
+        "_meta": {"configuration_version": 5},
+    }
+
+    def load_resource(key: str):
+        if key == "phase7.send_order_bitable":
+            return send_order
+        return None
+
+    with (
+        patch.object(
+            phase7_resource_import,
+            "get_workflow_resource",
+            side_effect=load_resource,
+        ),
+        patch.object(phase7_resource_import, "upsert_workflow_resource") as upsert,
+    ):
+        updated = phase7_resource_import.sync_reviewed_phase7_resource_metadata()
+
+    assert updated == ["phase7.send_order_bitable"]
+    upsert.assert_called_once_with(
+        "phase7.send_order_bitable",
+        {
+            "resource_kind": "feishu_bitable",
+            "base_token": "live-base-token",
+            "table_id": "live-table-id",
+            "business_purpose": "当日寄件数据",
+        },
+        source="reviewed-metadata-sync",
+    )

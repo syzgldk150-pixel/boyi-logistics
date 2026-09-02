@@ -19,6 +19,7 @@ BUILTIN_RESOURCES: dict[str, dict] = {
         "table_id": "tblX96gGAuBfJrtW",
         "view_name": "未签收明细",
         "view_id": "veweDmbdIS",
+        "business_purpose": "签收状态查询与更新",
     },
     "phase7.yunda_dispatch_forecast_bitable": {
         "resource_kind": "feishu_bitable",
@@ -143,6 +144,9 @@ _SHEET_LOCATOR_KEYS = (
 # arrival archive creates and reads date-named child sheets at runtime, so it
 # must never be forced to bind one arbitrary worksheet from that document.
 REVIEWED_RESOURCE_METADATA: dict[str, dict] = {
+    "phase7.send_order_bitable": {
+        "business_purpose": "当日寄件数据",
+    },
     "phase7.stats_archive_sheet": {
         "resource_scope": "spreadsheet",
         "business_purpose": "到货统计归档",
