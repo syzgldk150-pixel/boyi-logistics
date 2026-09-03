@@ -282,16 +282,30 @@ def _read_sheet_rows(
             and observed(row, 3) == "自提"
             for row in data_rows
         )
+        visible_station_values = sorted(
+            {
+                observed(row, 9)
+                for row in data_rows
+                if observed(row, 3) == "自提" or "邵阳" in observed(row, 9)
+            }
+        )
         logger.info(
             "self-pickup sheet observation | sheet=%s | rows=%s | "
             "headers=%s | self_pickup_rows=%s | daxiang_rows=%s | "
-            "daxiang_self_pickup_rows=%s",
+            "daxiang_self_pickup_rows=%s | visible_station_values=%s",
             resource["sheet_id"],
             len(rows),
             [observed(rows[0], index) for index in range(19)] if rows else [],
             self_pickup_rows,
             daxiang_rows,
             daxiang_self_pickup_rows,
+            [
+                {
+                    "text": value,
+                    "codepoints": [f"U+{ord(character):04X}" for character in value],
+                }
+                for value in visible_station_values
+            ],
         )
     return {"complete": True, "rows": rows}
 
