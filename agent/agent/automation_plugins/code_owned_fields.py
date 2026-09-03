@@ -155,7 +155,7 @@ _CODE_OWNED_ENTRYPOINT_TRANSITIONS: Mapping[
 }
 
 _SELF_PICKUP_SOURCE_ROLE = "self_pickup_source_sheet"
-_LEGACY_SELF_PICKUP_SOURCE_RESOURCE = "phase7.arrive_primary_sheet"
+_LEGACY_SELF_PICKUP_SOURCE_RESOURCE = "phase7.arrive_secondary_sheet"
 _REVIEWED_SELF_PICKUP_SOURCE_RESOURCE = "phase7.self_pickup_source_sheet"
 _CODE_OWNED_RESOURCE_BINDING_REPAIRS = frozenset(
     {

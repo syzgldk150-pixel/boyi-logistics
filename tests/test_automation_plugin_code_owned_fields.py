@@ -113,7 +113,7 @@ def test_problem_plugin_1023_enables_verified_console_after_bridge(
 def test_self_pickup_bootstrap_repairs_only_the_reviewed_legacy_source_binding() -> None:
     legacy = {
         "feishu_route": "automation.feishu_route.self_pickup_problem_upload",
-        "self_pickup_source_sheet": "phase7.arrive_primary_sheet",
+        "self_pickup_source_sheet": "phase7.arrive_secondary_sheet",
     }
     expected = {
         **legacy,
@@ -132,7 +132,7 @@ def test_self_pickup_bootstrap_repairs_only_the_reviewed_legacy_source_binding()
         **identity,
         resource_bindings=legacy,
     ) == expected
-    assert legacy["self_pickup_source_sheet"] == "phase7.arrive_primary_sheet"
+    assert legacy["self_pickup_source_sheet"] == "phase7.arrive_secondary_sheet"
 
     for changed in (
         {**identity, "automation_id": "another_project"},
@@ -155,6 +155,15 @@ def test_self_pickup_bootstrap_repairs_only_the_reviewed_legacy_source_binding()
         **identity,
         resource_bindings=custom,
     ) == custom
+
+    former_assumption = {
+        **legacy,
+        "self_pickup_source_sheet": "phase7.arrive_primary_sheet",
+    }
+    assert normalize_first_party_code_owned_resource_bindings(
+        **identity,
+        resource_bindings=former_assumption,
+    ) == former_assumption
 
 
 def test_scan_phase_requires_binding_absence_or_a_nonempty_formal_binding() -> None:
