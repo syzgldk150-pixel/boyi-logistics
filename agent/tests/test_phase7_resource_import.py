@@ -85,10 +85,14 @@ def test_problem_sheet_resources_are_explicit_managed_rows() -> None:
         resources["phase7.self_pickup_source_sheet"]["spreadsheet_token"],
         resources["phase7.self_pickup_source_sheet"]["sheet_id"],
         resources["phase7.self_pickup_source_sheet"]["range"],
+        resources["phase7.self_pickup_source_sheet"]["formula_source_sheet_id"],
+        resources["phase7.self_pickup_source_sheet"]["formula_source_range"],
     ) == (
         resources["phase7.split_pending_source_sheet"]["spreadsheet_token"],
         "UeBd3I",
         "UeBd3I!A1:S5000",
+        "8fc516",
+        "8fc516!A1:S197",
     )
     assert (
         resources["phase7.self_pickup_source_sheet"]["sheet_id"]
@@ -198,6 +202,8 @@ def test_reviewed_metadata_sync_repoints_self_pickup_to_daxiang_arrival_source()
             "spreadsheet_token": "F0NVsI5dlhaWugtw14YcmdrQnvh",
             "sheet_id": "UeBd3I",
             "sheet_title": "每日到货表",
+            "formula_source_sheet_id": "8fc516",
+            "formula_source_range": "8fc516!A1:S197",
             "business_purpose": "自提到货问题件来源",
             "sheet_header_constraints": {
                 "A": ["运单编号", "单号"],

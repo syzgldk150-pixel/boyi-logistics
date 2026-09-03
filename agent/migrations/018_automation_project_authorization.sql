@@ -265,7 +265,9 @@ INSERT INTO automation_project_reviewed_resource_map_018 (
             'resource_kind', 'feishu_sheet',
             'spreadsheet_token', 'F0NVsI5dlhaWugtw14YcmdrQnvh',
             'sheet_id', 'UeBd3I',
-            'range', 'UeBd3I!A1:S5000'
+            'range', 'UeBd3I!A1:S5000',
+            'formula_source_sheet_id', '8fc516',
+            'formula_source_range', '8fc516!A1:S197'
         )
     ),
     (

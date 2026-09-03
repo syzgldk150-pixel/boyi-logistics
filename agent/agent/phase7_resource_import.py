@@ -120,11 +120,14 @@ for _problem_sheet_key in (
     BUILTIN_RESOURCES[_problem_sheet_key]["resource_kind"] = "feishu_sheet"
 _SPLIT_PENDING_SOURCE = BUILTIN_RESOURCES["phase7.split_pending_source_sheet"]
 _SELF_PICKUP_SOURCE_SHEET_ID = "UeBd3I"
+_SELF_PICKUP_FORMULA_SOURCE_SHEET_ID = "8fc516"
 BUILTIN_RESOURCES["phase7.self_pickup_source_sheet"] = {
     "resource_kind": "feishu_sheet",
     "spreadsheet_token": _SPLIT_PENDING_SOURCE["spreadsheet_token"],
     "sheet_id": _SELF_PICKUP_SOURCE_SHEET_ID,
     "sheet_title": "每日到货表",
+    "formula_source_sheet_id": _SELF_PICKUP_FORMULA_SOURCE_SHEET_ID,
+    "formula_source_range": f"{_SELF_PICKUP_FORMULA_SOURCE_SHEET_ID}!A1:S197",
     "business_purpose": "自提到货问题件来源",
     "sheet_header_constraints": dict(_SPLIT_PENDING_SOURCE["sheet_header_constraints"]),
     "range": f"{_SELF_PICKUP_SOURCE_SHEET_ID}!A1:S5000",
@@ -137,6 +140,8 @@ _SHEET_LOCATOR_KEYS = (
     "sheet_id",
     "range",
     "sheet_range",
+    "formula_source_sheet_id",
+    "formula_source_range",
 )
 
 # Some resources intentionally represent an entire spreadsheet document.  The
