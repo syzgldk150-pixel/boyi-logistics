@@ -23,6 +23,7 @@ from agent.automation_plugins.errors import (
 from agent.automation_plugins.code_owned_fields import (
     normalize_first_party_code_owned_config,
     normalize_first_party_code_owned_entrypoints,
+    normalize_first_party_code_owned_resource_bindings,
 )
 from agent.automation_plugins.invocation import compile_instance_arguments
 from agent.automation_plugins.configuration import (
@@ -1091,6 +1092,14 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     manifest.resource_roles,
                     kind="resource",
                 )
+                resources = normalize_first_party_code_owned_resource_bindings(
+                    automation_id=seed.automation_id,
+                    plugin_id=seed.plugin_id,
+                    trust_source=version.trust_source.value,
+                    current_version=expected_current_version,
+                    target_version=version.version,
+                    resource_bindings=resources,
+                )
                 normalized_schedule = normalize_project_schedule(
                     schedule,
                     manifest.scheduling,
@@ -1158,6 +1167,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 canonical_json_bytes(left) != canonical_json_bytes(right)
                 for left, right in (
                     (normalized_config, raw_config),
+                    (resources, resource_bindings),
                     (list(sources), enabled_entrypoints),
                     (normalized_schedule, schedule),
                     (compiled_after, compiled_before),
