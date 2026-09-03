@@ -977,7 +977,20 @@ def _validate_automation_project_authorization_restore(runtime, cursor) -> bool:
         if int((cursor.fetchone() or {}).get('active_count') or 0):
             raise RuntimeError('018 restore blocked by an incomplete plugin purge')
     if runtime["_column_exists"](cursor, 'workflow_resources', 'configuration_version'):
-        cursor.execute('\n            SELECT COUNT(*) AS changed_count FROM workflow_resources\n            WHERE configuration_version <> 1 FOR UPDATE\n            ')
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS changed_count
+            FROM workflow_resources
+            WHERE configuration_version <> 1
+              AND NOT (
+                  %s = TRUE
+                  AND BINARY resource_key = BINARY %s
+                  AND configuration_version = 2
+              )
+            FOR UPDATE
+            """,
+            (migration_036_applied, _SELF_PICKUP_RESOURCE_KEY),
+        )
         if int((cursor.fetchone() or {}).get('changed_count') or 0):
             raise RuntimeError('018 restore refuses to discard post-migration resource revisions')
     if runtime["_table_exists"](cursor, 'automation_projects'):
