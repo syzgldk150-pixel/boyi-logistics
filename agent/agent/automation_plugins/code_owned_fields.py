@@ -157,13 +157,13 @@ _CODE_OWNED_ENTRYPOINT_TRANSITIONS: Mapping[
 _SELF_PICKUP_SOURCE_ROLE = "self_pickup_source_sheet"
 _LEGACY_SELF_PICKUP_SOURCE_RESOURCE = "phase7.arrive_primary_sheet"
 _REVIEWED_SELF_PICKUP_SOURCE_RESOURCE = "phase7.self_pickup_source_sheet"
-_CODE_OWNED_RESOURCE_BINDING_TRANSITIONS = frozenset(
+_CODE_OWNED_RESOURCE_BINDING_REPAIRS = frozenset(
     {
         (
             "self_pickup_problem_upload",
             "self_pickup_problem_upload",
             "1.0.26",
-            "1.0.27",
+            "1.0.26",
         ),
     }
 )
@@ -286,9 +286,9 @@ def normalize_first_party_code_owned_resource_bindings(
     """Apply one exact, reviewed first-party resource migration.
 
     The historical self-pickup project was installed with the general daily
-    arrival sheet.  Release 1.0.27 moves only that exact legacy binding to the
-    dedicated self-pickup resource.  Already-correct and administrator-chosen
-    resource identities are preserved.
+    arrival sheet.  Release bootstrap moves only that exact legacy binding to
+    the dedicated self-pickup resource.  Already-correct and administrator-
+    chosen resource identities are preserved.
     """
 
     normalized = copy.deepcopy(dict(resource_bindings))
@@ -299,8 +299,13 @@ def normalize_first_party_code_owned_resource_bindings(
         str(target_version or "").strip(),
     )
     if (
-        str(trust_source or "").strip() == _FIRST_PARTY_TRUST_SOURCE
-        and identity in _CODE_OWNED_RESOURCE_BINDING_TRANSITIONS
+        first_party_code_owned_resource_binding_repair_applies(
+            automation_id=identity[0],
+            plugin_id=identity[1],
+            trust_source=trust_source,
+            current_version=identity[2],
+            target_version=identity[3],
+        )
         and normalized.get(_SELF_PICKUP_SOURCE_ROLE)
         == _LEGACY_SELF_PICKUP_SOURCE_RESOURCE
     ):
@@ -308,6 +313,28 @@ def normalize_first_party_code_owned_resource_bindings(
             _REVIEWED_SELF_PICKUP_SOURCE_RESOURCE
         )
     return normalized
+
+
+def first_party_code_owned_resource_binding_repair_applies(
+    *,
+    automation_id: str,
+    plugin_id: str,
+    trust_source: str,
+    current_version: str,
+    target_version: str,
+) -> bool:
+    """Return whether release bootstrap owns this exact resource repair."""
+
+    identity = (
+        str(automation_id or "").strip(),
+        str(plugin_id or "").strip(),
+        str(current_version or "").strip(),
+        str(target_version or "").strip(),
+    )
+    return bool(
+        str(trust_source or "").strip() == _FIRST_PARTY_TRUST_SOURCE
+        and identity in _CODE_OWNED_RESOURCE_BINDING_REPAIRS
+    )
 
 
 def resolve_scan_execution_phase(

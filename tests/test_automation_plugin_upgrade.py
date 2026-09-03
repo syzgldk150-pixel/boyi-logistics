@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 import pytest
 
+from agent.automation_plugins import mysql_repository as mysql_repository_module
 from agent.automation_plugins.catalog import PluginCatalog
 from agent.automation_plugins.errors import PluginConflictError
 from agent.automation_plugins.manifest import (
@@ -872,6 +873,55 @@ def test_first_party_upgrade_preparation_recompiles_preserved_configuration() ->
         }
     }
     assert orchestration.policies.expired == ["upgrade-instance"]
+
+
+def test_first_party_bootstrap_stages_an_exact_same_version_resource_repair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, orchestration, version = _harness(enabled=True)
+    seed = FirstPartyInstanceSeed(
+        automation_id="upgrade-instance",
+        plugin_id=version.plugin_id,
+        version=version.version,
+        display_name="Synthetic upgrade instance",
+        allowed_entrypoints=("console",),
+    )
+    repair_calls: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(
+        mysql_repository_module,
+        "first_party_code_owned_resource_binding_repair_applies",
+        lambda **_payload: True,
+    )
+    monkeypatch.setattr(
+        mysql_repository_module,
+        "normalize_first_party_code_owned_resource_bindings",
+        lambda **payload: {**dict(payload["resource_bindings"]), "repaired": "yes"},
+    )
+
+    def prepare_resource_repair(**payload: Any) -> tuple[str, int, str | None]:
+        repair_calls.append(payload)
+        return version.version, 1, None
+
+    monkeypatch.setattr(
+        repository,
+        "_prepare_first_party_upgrade_configuration",
+        prepare_resource_repair,
+    )
+
+    result = repository.bootstrap_missing(
+        (version,),
+        (seed,),
+        release_sha="a" * 40,
+    )
+
+    assert result.created == ()
+    assert result.existing == ("upgrade-instance",)
+    assert len(repair_calls) == 1
+    assert repair_calls[0]["expected_current_version"] == version.version
+    assert repair_calls[0]["allow_same_version_resource_repair"] is True
+    assert repair_calls[0]["allow_blocked_unknown_write_archive"] is False
+    assert orchestration.commit_count == 1
 
 
 def test_first_party_bootstrap_advances_blocked_unknown_write_and_stable_lineages() -> None:

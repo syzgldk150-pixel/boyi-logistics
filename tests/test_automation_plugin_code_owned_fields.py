@@ -11,6 +11,7 @@ from agent.automation_plugins.configuration import (
 from agent.automation_plugins.code_owned_fields import (
     SCAN_PHASE_FORMAL,
     SCAN_PHASE_PREVIEW,
+    first_party_code_owned_resource_binding_repair_applies,
     first_party_code_owned_config_fields,
     first_party_code_owned_plan_fields,
     normalize_first_party_code_owned_config,
@@ -109,7 +110,7 @@ def test_problem_plugin_1023_enables_verified_console_after_bridge(
     ) == ("console", "feishu")
 
 
-def test_self_pickup_1027_repairs_only_the_reviewed_legacy_source_binding() -> None:
+def test_self_pickup_bootstrap_repairs_only_the_reviewed_legacy_source_binding() -> None:
     legacy = {
         "feishu_route": "automation.feishu_route.self_pickup_problem_upload",
         "self_pickup_source_sheet": "phase7.arrive_primary_sheet",
@@ -123,9 +124,10 @@ def test_self_pickup_1027_repairs_only_the_reviewed_legacy_source_binding() -> N
         "plugin_id": "self_pickup_problem_upload",
         "trust_source": FIRST_PARTY_TRUST,
         "current_version": "1.0.26",
-        "target_version": "1.0.27",
+        "target_version": "1.0.26",
     }
 
+    assert first_party_code_owned_resource_binding_repair_applies(**identity)
     assert normalize_first_party_code_owned_resource_bindings(
         **identity,
         resource_bindings=legacy,
@@ -137,8 +139,9 @@ def test_self_pickup_1027_repairs_only_the_reviewed_legacy_source_binding() -> N
         {**identity, "plugin_id": "another_plugin"},
         {**identity, "trust_source": "ed25519_upload"},
         {**identity, "current_version": "1.0.25"},
-        {**identity, "target_version": "1.0.28"},
+        {**identity, "target_version": "1.0.27"},
     ):
+        assert not first_party_code_owned_resource_binding_repair_applies(**changed)
         assert normalize_first_party_code_owned_resource_bindings(
             **changed,
             resource_bindings=legacy,

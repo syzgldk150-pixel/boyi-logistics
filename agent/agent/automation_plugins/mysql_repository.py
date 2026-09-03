@@ -21,6 +21,7 @@ from agent.automation_plugins.errors import (
     PluginPackageError,
 )
 from agent.automation_plugins.code_owned_fields import (
+    first_party_code_owned_resource_binding_repair_applies,
     normalize_first_party_code_owned_config,
     normalize_first_party_code_owned_entrypoints,
     normalize_first_party_code_owned_resource_bindings,
@@ -1004,6 +1005,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         release_sha: str,
         expected_current_version: str,
         allow_blocked_unknown_write_archive: bool,
+        allow_same_version_resource_repair: bool = False,
     ) -> tuple[str, int, str | None]:
         """Recompile preserved settings against a signed first-party target.
 
@@ -1040,7 +1042,10 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     "first-party automation project changed before release upgrade",
                     code="PLUGIN_INSTANCE_VERSION_CONFLICT",
                 )
-            if persisted_version == version.version:
+            if (
+                persisted_version == version.version
+                and not allow_same_version_resource_repair
+            ):
                 uow.commit()
                 return (
                     persisted_version,
@@ -1249,6 +1254,9 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         upgrades: list[
             tuple[FirstPartyInstanceSeed, PluginVersionRecord, str, bool]
         ] = []
+        resource_repairs: list[
+            tuple[FirstPartyInstanceSeed, PluginVersionRecord]
+        ] = []
         with self._orchestration.unit_of_work() as uow:
             for version in versions:
                 self._register(
@@ -1287,16 +1295,16 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                             "first-party release cannot downgrade an installed instance",
                             code="PLUGIN_UPGRADE_VERSION_INVALID",
                         )
+                    committed_generation = current.get("committed_generation")
+                    closed_stable_lineage = bool(
+                        current.get("reconcile_state") == "STABLE"
+                        and isinstance(committed_generation, int)
+                        and not isinstance(committed_generation, bool)
+                        and committed_generation > 0
+                        and current.get("target_generation")
+                        == committed_generation
+                    )
                     if current_key < target_key:
-                        committed_generation = current.get("committed_generation")
-                        closed_stable_lineage = bool(
-                            current.get("reconcile_state") == "STABLE"
-                            and isinstance(committed_generation, int)
-                            and not isinstance(committed_generation, bool)
-                            and committed_generation > 0
-                            and current.get("target_generation")
-                            == committed_generation
-                        )
                         blocked_unknown_write = False
                         if (
                             current.get("reconcile_state") == "BLOCKED_UNKNOWN_WRITE"
@@ -1334,6 +1342,44 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                                     blocked_unknown_write,
                                 )
                             )
+                    elif (
+                        closed_stable_lineage
+                        and first_party_code_owned_resource_binding_repair_applies(
+                            automation_id=seed.automation_id,
+                            plugin_id=seed.plugin_id,
+                            trust_source=version.trust_source.value,
+                            current_version=current_version,
+                            target_version=seed.version,
+                        )
+                    ):
+                        current_config = uow.automation_plugins.get_project_config(
+                            seed.automation_id,
+                            for_update=True,
+                        )
+                        raw_resources = (
+                            current_config.get("resource_bindings_json")
+                            if isinstance(current_config, Mapping)
+                            else None
+                        )
+                        if not isinstance(raw_resources, Mapping):
+                            raise PluginConflictError(
+                                "first-party automation project configuration is not closed",
+                                code="PLUGIN_UPGRADE_CONFIGURATION_INCOMPATIBLE",
+                            )
+                        repaired_resources = (
+                            normalize_first_party_code_owned_resource_bindings(
+                                automation_id=seed.automation_id,
+                                plugin_id=seed.plugin_id,
+                                trust_source=version.trust_source.value,
+                                current_version=current_version,
+                                target_version=seed.version,
+                                resource_bindings=raw_resources,
+                            )
+                        )
+                        if canonical_json_bytes(repaired_resources) != canonical_json_bytes(
+                            raw_resources
+                        ):
+                            resource_repairs.append((seed, version))
                     existing.append(seed.automation_id)
                     continue
                 manifest = AutomationPluginManifest.from_mapping(version.manifest)
@@ -1469,6 +1515,23 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 )
                 created.append(seed.automation_id)
             uow.commit()
+
+        for seed, version in resource_repairs:
+            prepared_version, _record_version, _request_id = (
+                self._prepare_first_party_upgrade_configuration(
+                    seed=seed,
+                    version=version,
+                    release_sha=release_sha,
+                    expected_current_version=version.version,
+                    allow_blocked_unknown_write_archive=False,
+                    allow_same_version_resource_repair=True,
+                )
+            )
+            if prepared_version != version.version:
+                raise PluginConflictError(
+                    "first-party project changed during resource repair",
+                    code="PLUGIN_INSTANCE_VERSION_CONFLICT",
+                )
 
         # Package registration and missing-instance creation are committed
         # before upgrades so each upgrade can retain its own idempotent audit
