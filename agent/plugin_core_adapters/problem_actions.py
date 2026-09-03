@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -21,9 +20,6 @@ from plugin_core_adapters.capability_session import (
     CapabilityAuthorizer,
     authorize_target_capability,
 )
-
-
-logger = logging.getLogger("agent")
 
 
 ResourceLoader = Callable[[str], Mapping[str, Any] | None]
@@ -150,6 +146,29 @@ def _exact_sheet_resource(
             "the exact problem sheet range changed",
             "BROKER_RESOURCE_INVALID",
         )
+    formula_source_sheet_id = str(
+        resource.get("formula_source_sheet_id") or ""
+    ).strip()
+    formula_source_range = str(resource.get("formula_source_range") or "").strip()
+    if bool(formula_source_sheet_id) != bool(formula_source_range):
+        raise _error(
+            "the exact problem sheet formula source is incomplete",
+            "BROKER_RESOURCE_INVALID",
+        )
+    formula_source_match = (
+        _SHEET_RANGE_RE.fullmatch(formula_source_range)
+        if formula_source_sheet_id
+        else None
+    )
+    if formula_source_sheet_id and (
+        formula_source_match is None
+        or formula_source_match.group("sheet") != formula_source_sheet_id
+        or formula_source_match.group("start") != "1"
+    ):
+        raise _error(
+            "the exact problem sheet formula source changed",
+            "BROKER_RESOURCE_INVALID",
+        )
     if require_clear_range:
         clear_match = _SHEET_RANGE_RE.fullmatch(clear_range)
         if clear_match is None or clear_match.group("sheet") != sheet_id:
@@ -162,6 +181,12 @@ def _exact_sheet_resource(
     return {
         "clear_range": clear_range,
         "clear_end": int(clear_match.group("end")) if clear_match else 0,
+        "read_sheet_id": formula_source_sheet_id or sheet_id,
+        "read_end": (
+            int(formula_source_match.group("end"))
+            if formula_source_match is not None
+            else int(template_match.group("end"))
+        ),
         "sheet_id": sheet_id,
         "spreadsheet_token": token,
         "template_end": int(template_match.group("end")),
@@ -250,7 +275,8 @@ def _read_sheet_rows(
             "problem sheet row bound exceeds its managed range",
             "BROKER_RESOURCE_INVALID",
         )
-    value_range = f"{resource['sheet_id']}!A1:S{max_rows}"
+    read_end = min(max_rows, int(resource["read_end"]))
+    value_range = f"{resource['read_sheet_id']}!A1:S{read_end}"
     try:
         result = feishu_operation(
             "read_sheet",
@@ -259,6 +285,7 @@ def _read_sheet_rows(
                 "range": value_range,
                 "as": "bot",
                 "dry_run": False,
+                "value_render_option": "FormattedValue",
             },
         )
     except Exception as exc:
@@ -266,47 +293,6 @@ def _read_sheet_rows(
     rows = _sheet_values(result)
     if len(rows) > max_rows or any(len(row) > 19 for row in rows):
         raise _error("problem sheet response exceeds its bound", "BROKER_SOURCE_INVALID")
-    if resource_id == "phase7.self_pickup_source_sheet":
-        def observed(row: Sequence[object], index: int) -> str:
-            return str(row[index] if index < len(row) else "").strip()
-
-        data_rows = rows[1:] if rows else []
-        self_pickup_rows = sum(
-            observed(row, 9) == "邵阳自提部" for row in data_rows
-        )
-        daxiang_rows = sum(
-            observed(row, 9) == "邵阳大祥S站" for row in data_rows
-        )
-        daxiang_self_pickup_rows = sum(
-            observed(row, 9) == "邵阳大祥S站"
-            and observed(row, 3) == "自提"
-            for row in data_rows
-        )
-        visible_station_values = sorted(
-            {
-                observed(row, 9)
-                for row in data_rows
-                if observed(row, 3) == "自提" or "邵阳" in observed(row, 9)
-            }
-        )
-        logger.info(
-            "self-pickup sheet observation | sheet=%s | rows=%s | "
-            "headers=%s | self_pickup_rows=%s | daxiang_rows=%s | "
-            "daxiang_self_pickup_rows=%s | visible_station_values=%s",
-            resource["sheet_id"],
-            len(rows),
-            [observed(rows[0], index) for index in range(19)] if rows else [],
-            self_pickup_rows,
-            daxiang_rows,
-            daxiang_self_pickup_rows,
-            [
-                {
-                    "text": value,
-                    "codepoints": [f"U+{ord(character):04X}" for character in value],
-                }
-                for value in visible_station_values
-            ],
-        )
     return {"complete": True, "rows": rows}
 
 

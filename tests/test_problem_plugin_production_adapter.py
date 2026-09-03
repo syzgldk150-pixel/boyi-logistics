@@ -152,6 +152,12 @@ class _Harness:
                 clear_range="split-target-sheet!A2:S5000",
             ),
         }
+        self.resources[_SELF_RESOURCE].update(
+            {
+                "formula_source_sheet_id": "self-formula-source-sheet",
+                "formula_source_range": "self-formula-source-sheet!A1:S2000",
+            }
+        )
         self.sheet_values = {
             "self-token": [
                 [
@@ -199,6 +205,10 @@ class _Harness:
         token = str(params["spreadsheet_token"])
         self.calls.append(f"feishu:{action}:{token}")
         if action == "read_sheet":
+            if token != "split-target-token":
+                assert params["value_render_option"] == "FormattedValue"
+            if token == "self-token":
+                assert params["range"] == "self-formula-source-sheet!A1:S2000"
             return {"data": {"values": self.sheet_values[token]}}
         if action == "clear_sheet":
             self.sheet_values[token] = []

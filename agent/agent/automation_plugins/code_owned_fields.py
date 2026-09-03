@@ -167,16 +167,6 @@ _CODE_OWNED_RESOURCE_BINDING_REPAIRS = frozenset(
         ),
     }
 )
-_CODE_OWNED_CONFIG_REPAIRS = frozenset(
-    {
-        (
-            "self_pickup_problem_upload",
-            "self_pickup_problem_upload",
-            "1.0.26",
-            "1.0.26",
-        ),
-    }
-)
 
 
 def _declared_fields(
@@ -247,62 +237,6 @@ def normalize_first_party_code_owned_config(
     ):
         normalized["_startup_catchup"] = True
     return normalized
-
-
-def normalize_first_party_code_owned_versioned_config(
-    *,
-    automation_id: str,
-    plugin_id: str,
-    trust_source: str,
-    current_version: str,
-    target_version: str,
-    config: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Apply an exact, reviewed repair to persisted first-party config.
-
-    The historical self-pickup project can contain ``limit=0`` even though an
-    omitted limit means "read every candidate".  That value turns a successful
-    preview into an empty one, so release bootstrap removes only this exact
-    no-op value.  Positive administrator limits remain authoritative.
-    """
-
-    normalized = copy.deepcopy(dict(config))
-    if (
-        first_party_code_owned_config_repair_applies(
-            automation_id=automation_id,
-            plugin_id=plugin_id,
-            trust_source=trust_source,
-            current_version=current_version,
-            target_version=target_version,
-        )
-        and isinstance(normalized.get("limit"), int)
-        and not isinstance(normalized.get("limit"), bool)
-        and normalized.get("limit") == 0
-    ):
-        normalized.pop("limit")
-    return normalized
-
-
-def first_party_code_owned_config_repair_applies(
-    *,
-    automation_id: str,
-    plugin_id: str,
-    trust_source: str,
-    current_version: str,
-    target_version: str,
-) -> bool:
-    """Return whether release bootstrap owns this exact config repair."""
-
-    identity = (
-        str(automation_id or "").strip(),
-        str(plugin_id or "").strip(),
-        str(current_version or "").strip(),
-        str(target_version or "").strip(),
-    )
-    return bool(
-        str(trust_source or "").strip() == _FIRST_PARTY_TRUST_SOURCE
-        and identity in _CODE_OWNED_CONFIG_REPAIRS
-    )
 
 
 def normalize_first_party_code_owned_entrypoints(
