@@ -875,7 +875,7 @@ def test_first_party_upgrade_preparation_recompiles_preserved_configuration() ->
     assert orchestration.policies.expired == ["upgrade-instance"]
 
 
-def test_first_party_bootstrap_stages_an_exact_same_version_resource_repair(
+def test_first_party_bootstrap_stages_an_exact_same_version_repair(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository, orchestration, version = _harness(enabled=True)
@@ -890,13 +890,18 @@ def test_first_party_bootstrap_stages_an_exact_same_version_resource_repair(
 
     monkeypatch.setattr(
         mysql_repository_module,
-        "first_party_code_owned_resource_binding_repair_applies",
+        "first_party_code_owned_config_repair_applies",
         lambda **_payload: True,
     )
     monkeypatch.setattr(
         mysql_repository_module,
-        "normalize_first_party_code_owned_resource_bindings",
-        lambda **payload: {**dict(payload["resource_bindings"]), "repaired": "yes"},
+        "first_party_code_owned_resource_binding_repair_applies",
+        lambda **_payload: False,
+    )
+    monkeypatch.setattr(
+        mysql_repository_module,
+        "normalize_first_party_code_owned_versioned_config",
+        lambda **payload: {**dict(payload["config"]), "repaired": "yes"},
     )
 
     def prepare_resource_repair(**payload: Any) -> tuple[str, int, str | None]:
@@ -919,7 +924,7 @@ def test_first_party_bootstrap_stages_an_exact_same_version_resource_repair(
     assert result.existing == ("upgrade-instance",)
     assert len(repair_calls) == 1
     assert repair_calls[0]["expected_current_version"] == version.version
-    assert repair_calls[0]["allow_same_version_resource_repair"] is True
+    assert repair_calls[0]["allow_same_version_repair"] is True
     assert repair_calls[0]["allow_blocked_unknown_write_archive"] is False
     assert orchestration.commit_count == 1
 
