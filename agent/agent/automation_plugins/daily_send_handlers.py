@@ -336,6 +336,7 @@ class _LeaseRegistry:
     def acquire(
         self,
         context: CoreBrokerInvocationContext,
+        mark_write_started: Callable[[], None] | None = None,
     ) -> str:
         now = time.monotonic()
         owner = (context.automation_id, context.plugin_version)
@@ -344,6 +345,8 @@ class _LeaseRegistry:
         with self._lock:
             if self._lease is not None and self._lease.expires_at > now:
                 raise _error("daily-send synchronization is already running", "BROKER_CONCURRENCY_BLOCKED")
+            if mark_write_started is not None:
+                mark_write_started()
             self._lease = _Lease(
                 owner=owner,
                 nonce_sha256=nonce_sha256,
@@ -359,6 +362,7 @@ class _LeaseRegistry:
         self,
         context: CoreBrokerInvocationContext,
         lease_ref: object,
+        mark_write_started: Callable[[], None] | None = None,
     ) -> None:
         payload = self._codec.decode(context, "lease", lease_ref)
         nonce = _text(payload.get("nonce"), "lease nonce", maximum=256)
@@ -374,6 +378,8 @@ class _LeaseRegistry:
                 digest,
             ):
                 raise _error("daily-send lease is not active", "BROKER_CURSOR_INVALID")
+            if mark_write_started is not None:
+                mark_write_started()
             self._lease = None
 
 
@@ -495,7 +501,7 @@ class _DailySendHandlers:
         )
         _strict(arguments, set())
         _account_descriptor(self._ports, context)
-        lease_ref = self._leases.acquire(context)
+        lease_ref = self._leases.acquire(context, context.mark_write_started)
         proof = {"acquired": True, "owner": context.automation_id}
         return {
             "acquired": True,
@@ -516,7 +522,11 @@ class _DailySendHandlers:
         )
         values = _strict(arguments, {"lease_ref"})
         _account_descriptor(self._ports, context)
-        self._leases.release(context, values.get("lease_ref"))
+        self._leases.release(
+            context,
+            values.get("lease_ref"),
+            context.mark_write_started,
+        )
         proof = {"released": True, "owner": context.automation_id}
         return {
             "committed": True,

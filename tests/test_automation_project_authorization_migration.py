@@ -13,8 +13,10 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from agent.automation_plugins.first_party import release_first_party_automation_ids
-from agent.phase7_resource_import import BUILTIN_RESOURCES
 from shared.automation_project_manifest import FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES
+from tests.automation_project_migration_contract import (
+    migration_018_code_owned_resources,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -326,7 +328,7 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         )[1].split("ON DUPLICATE KEY UPDATE", 1)[0]
         materialized_configs = {
             resource_key: config
-            for resource_key, config in BUILTIN_RESOURCES.items()
+            for resource_key, config in migration_018_code_owned_resources().items()
             if resource_key
             not in {
                 "automation.feishu_route.r7_arrival_checkin",
