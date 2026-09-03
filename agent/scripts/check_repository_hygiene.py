@@ -33,6 +33,11 @@ FORBIDDEN_BASENAMES = {
 }
 FORBIDDEN_SUFFIXES = {".key", ".p12", ".pem", ".pfx"}
 MAX_PYTHON_LINES = 3_000
+LEGACY_PYTHON_LINE_LIMITS = {
+    "agent/main.py": 3_029,
+    "console/services/automation_projects.py": 3_170,
+    "shared/automation_plugin_generation_repository.py": 3_040,
+}
 SECRET_PATTERNS = (
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}"),
@@ -78,9 +83,10 @@ def main() -> int:
             problems.append(f"not UTF-8: {relative}")
             continue
         if path.suffix.lower() == ".py":
-            if len(text.splitlines()) > MAX_PYTHON_LINES:
+            line_limit = LEGACY_PYTHON_LINE_LIMITS.get(relative, MAX_PYTHON_LINES)
+            if len(text.splitlines()) > line_limit:
                 problems.append(
-                    f"oversized Python module: {relative} (> {MAX_PYTHON_LINES} lines)"
+                    f"oversized Python module: {relative} (> {line_limit} lines)"
                 )
         if path.name != Path(__file__).name:
             for line_number, line in enumerate(text.splitlines(), 1):

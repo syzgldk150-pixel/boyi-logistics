@@ -42,6 +42,7 @@ AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE = "automation_project_res
 # Replay only migrations whose project schema or data is removed by restoring 018.
 AUTOMATION_PROJECT_AUTHORIZATION_REAPPLY_MIGRATION_VERSIONS = (
     "018", "019", "020", "021", "022", "024", "025", "028", "033", "034",
+    "036",
 )
 AUTOMATION_PROJECT_AUTHORIZATION_TABLES_REVERSE = (
     "automation_plugin_document_indexes",

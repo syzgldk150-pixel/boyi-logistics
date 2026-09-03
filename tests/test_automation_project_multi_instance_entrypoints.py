@@ -327,10 +327,24 @@ class _AutomationPlugins:
         return self.state.configs.get(automation_id)
 
 
+class _Commands:
+    @staticmethod
+    def get_by_idempotency(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+class _Runs:
+    @staticmethod
+    def get_active_for_automation(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
 class _UnitOfWork:
     def __init__(self, state: "_ServiceState") -> None:
         self.automation_projects = _AutomationProjects(state)
         self.automation_plugins = _AutomationPlugins(state)
+        self.commands = _Commands()
+        self.runs = _Runs()
 
     def __enter__(self) -> "_UnitOfWork":
         return self

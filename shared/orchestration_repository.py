@@ -20,7 +20,7 @@ from shared.orchestration_repository_support import (
     _json_param, _json_value, _optional_text, _required_text, _row_dict, _rows,
     _safe_comment, _safe_error, _status,
 )
-from shared.orchestration_schema import orchestration_schema_requirements
+from shared import automation_run_lookup, orchestration_schema
 from shared.orchestration_evidence_lookup import EvidenceLookupMixin
 from shared.scheduled_task_approval_repository import ScheduledTaskApprovalPolicyRepository
 from shared.automation_project_policy_repository import AutomationProjectPolicyRepository
@@ -572,7 +572,7 @@ class PilotProjectionSourceRepository(_RepositoryBase):
             )
             return _rows(cursor)
 
-class AgentRunRepository(_RepositoryBase):
+class AgentRunRepository(automation_run_lookup.AutomationRunLookupMixin, _RepositoryBase):
     JSON_FIELDS = ("plan_json",)
     RETRY_SOURCE_STATUSES = frozenset({"PARTIAL", "FAILED_TERMINAL"})
 
@@ -2851,7 +2851,7 @@ class OrchestrationUnitOfWork:
 
     def validate_schema(self, *, include_windows_worker: bool = True) -> None:
         self._require_active()
-        required_tables, required_columns = orchestration_schema_requirements(
+        required_tables, required_columns = orchestration_schema.orchestration_schema_requirements(
             include_windows_worker=include_windows_worker
         )
         with self.commands.cursor() as cursor:
