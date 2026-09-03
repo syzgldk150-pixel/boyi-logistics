@@ -1242,6 +1242,10 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             browser_request_uuid=browser_request_uuid,
         )
         if not run_result.get("ok"):
+            error_code = str(
+                run_result.get("error_code") or "COMMAND_SUBMIT_FAILED"
+            )
+            already_running = error_code == "AUTOMATION_ALREADY_RUNNING"
             failure_message = normalize_feedback_text(
                 run_result.get("error") or "智能服务命令提交失败"
             )
@@ -1249,10 +1253,14 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 "ok": False,
                 "pending": False,
                 "task_id": payload["task_id"],
-                "title": "立即执行未开始",
-                "message": failure_message,
+                "title": "该脚本已在运行" if already_running else "立即执行未开始",
+                "message": (
+                    "请等待当前运行结束后再执行。"
+                    if already_running
+                    else failure_message
+                ),
                 "error": failure_message,
-                "error_code": str(run_result.get("error_code") or "COMMAND_SUBMIT_FAILED"),
+                "error_code": error_code,
             }
             if ajax_request:
                 try:

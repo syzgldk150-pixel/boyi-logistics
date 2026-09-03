@@ -1092,6 +1092,7 @@ def test_policy_write_rejects_stale_task_configuration_after_lock(monkeypatch, m
         "ACCOUNT_EXECUTION_IN_PROGRESS",
         "ACCOUNT_CREDENTIAL_ACTIVE_RUN",
         "ACCOUNT_POLICY_REVOCATION_CONFLICT",
+        "AUTOMATION_ALREADY_RUNNING",
     ),
 )
 def test_scheduled_policy_conflicts_map_to_http_409(error_code):

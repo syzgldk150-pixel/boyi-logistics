@@ -1674,18 +1674,22 @@ class AutomationProjectPolicyService:
         )
 
         def guard(uow: Any) -> None:
-            if (
+            selection_confirmation = bool(
                 safe_selection_preview_run_id is not None
                 and selection_expectation is not None
                 and selection_context is not None
                 and selected_bill_codes is not None
-            ):
+            )
+
+            def accepted_command_exists(*, for_update: bool) -> bool:
                 existing_command = uow.commands.get_by_idempotency(
                     command.source,
                     command.idempotency_key,
-                    for_update=True,
+                    for_update=for_update,
                 )
-                if existing_command is not None:
+                if existing_command is None:
+                    return False
+                if selection_confirmation:
                     restore_selection_preview_replay(
                         uow,
                         source=source.value,
@@ -1703,7 +1707,10 @@ class AutomationProjectPolicyService:
                         expected_generation=expected_generation,
                         expected_configuration_version=expected_configuration,
                     )
-                    return
+                return True
+
+            if accepted_command_exists(for_update=selection_confirmation):
+                return
             locked_contract, _config = self._lock_and_compile_contract(
                 uow,
                 entry,
@@ -1739,6 +1746,26 @@ class AutomationProjectPolicyService:
                     invocation_contract=invocation_contract,
                     context=context,
                     expected_event_name=expected_event_name,
+                )
+            # Project/config rows above serialize all accepted entrypoints for
+            # this automation. Recheck the idempotency key after taking that
+            # lock so a concurrent retry reuses its original Command, while a
+            # distinct Console/Scheduler/Feishu request is rejected before a
+            # second Run can be created.
+            if accepted_command_exists(for_update=True):
+                return
+            active_run = uow.runs.get_active_for_automation(
+                safe_id,
+                for_update=True,
+            )
+            if active_run is not None:
+                raise OrchestrationError(
+                    "AUTOMATION_ALREADY_RUNNING",
+                    "该脚本已在运行",
+                    details={
+                        "active_run_id": str(active_run.get("run_id") or ""),
+                        "active_status": str(active_run.get("status") or ""),
+                    },
                 )
             if (
                 safe_selection_preview_run_id is not None
