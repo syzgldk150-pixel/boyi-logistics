@@ -104,11 +104,13 @@ OLD_CODE_OWNED_RESOURCE_KEYS = frozenset(
 def _project_resource_contract():
     """Return the exact 018 reviewed sets from the authoritative defaults."""
 
-    from agent.phase7_resource_import import BUILTIN_RESOURCES
+    from tests.automation_project_migration_contract import (
+        migrated_code_owned_resources,
+    )
 
     code_owned = {
         resource_key: dict(config)
-        for resource_key, config in BUILTIN_RESOURCES.items()
+        for resource_key, config in migrated_code_owned_resources().items()
         if resource_key not in DEFERRED_R7_RESOURCE_KEYS
     }
     required_existing = {
@@ -323,7 +325,12 @@ def run_test_automation_project_018_forward_restore_reapply_and_atomic_config(ca
             }
             case.assertEqual(set(reviewed_resources), set(reviewed_resource_keys))
             for resource_key, row in reviewed_resources.items():
-                case.assertEqual(row["configuration_version"], 1)
+                expected_version = (
+                    2
+                    if resource_key == "phase7.self_pickup_source_sheet"
+                    else 1
+                )
+                case.assertEqual(row["configuration_version"], expected_version)
                 case.assertEqual(row["hash_valid"], 1)
                 if resource_key in original_resource_configs:
                     expected_config = dict(original_resource_configs[resource_key])
