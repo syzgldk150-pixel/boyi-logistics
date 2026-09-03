@@ -81,6 +81,9 @@ _BOOTSTRAP_COMPLETED_BY = "system:automation-project-bootstrap-018"
 _BOOTSTRAP_RESTORE_IN_PROGRESS = (
     "system:automation-project-bootstrap-018:restore-in-progress"
 )
+_SELF_PICKUP_RESOURCE_KEY = "phase7.self_pickup_source_sheet"
+_SELF_PICKUP_FORMULA_SOURCE_SHEET_ID = "8fc516"
+_SELF_PICKUP_FORMULA_SOURCE_RANGE = "8fc516!A1:S197"
 _BOOTSTRAP_SOURCE_FIELDS = frozenset(
     {
         "schema_version",
@@ -642,6 +645,15 @@ def _validate_automation_project_authorization_restore(runtime, cursor) -> bool:
     resource_hash_exists = runtime["_column_exists"](
         cursor, 'workflow_resources', 'config_sha256'
     )
+    migration_036_applied = False
+    if runtime.get("_migration_table_exists") and runtime["_migration_table_exists"](
+        cursor
+    ):
+        cursor.execute(
+            "SELECT 1 FROM schema_migrations WHERE BINARY version = BINARY %s",
+            ("036",),
+        )
+        migration_036_applied = cursor.fetchone() is not None
     if (not resource_backup_exists) and (
         capture_started
         or schedule_column_exists
@@ -684,37 +696,108 @@ def _validate_automation_project_authorization_restore(runtime, cursor) -> bool:
                     '018 reviewed-resource hashes exist without their schema'
                 )
             if resource_hash_count:
+                migration_018_config = """
+                    CASE
+                        WHEN backup.existed_before = TRUE THEN
+                            CASE
+                                WHEN JSON_EXTRACT(
+                                    backup.config_json, '$.resource_kind'
+                                ) IS NULL
+                                THEN JSON_SET(
+                                    backup.config_json,
+                                    '$.resource_kind',
+                                    reviewed.expected_kind
+                                )
+                                ELSE backup.config_json
+                            END
+                        ELSE reviewed.default_config_json
+                    END
+                """
                 cursor.execute(
                     f"""
                     SELECT COUNT(*) AS changed_count
                     FROM {runtime["AUTOMATION_PROJECT_AUTHORIZATION_RESOURCE_BACKUP_TABLE"]} AS backup
+                    INNER JOIN {runtime["AUTOMATION_PROJECT_AUTHORIZATION_REVIEWED_RESOURCE_MAP_TABLE"]} AS reviewed
+                      ON BINARY reviewed.resource_key = BINARY backup.resource_key
                     LEFT JOIN workflow_resources AS resource
                       ON BINARY resource.resource_key = BINARY backup.resource_key
                     WHERE backup.migration_config_sha256 IS NOT NULL
-                      AND (
-                        resource.resource_key IS NULL
-                        OR resource.configuration_version <> 1
-                        OR BINARY resource.config_sha256 <>
-                           BINARY backup.migration_config_sha256
-                        OR BINARY resource.config_sha256 <> BINARY SHA2(
-                             CAST(resource.config_json AS CHAR CHARACTER SET utf8mb4),
-                             256
+                      AND NOT (
+                        (
+                            resource.resource_key IS NOT NULL
+                            AND resource.configuration_version = 1
+                            AND BINARY resource.config_sha256 =
+                                BINARY backup.migration_config_sha256
+                            AND BINARY resource.config_sha256 = BINARY SHA2(
+                                CAST(resource.config_json AS CHAR CHARACTER SET utf8mb4),
+                                256
+                            )
+                            AND (
+                                (
+                                    backup.existed_before = TRUE
+                                    AND BINARY resource.source <=> BINARY backup.source
+                                )
+                                OR (
+                                    backup.existed_before = FALSE
+                                    AND BINARY resource.source =
+                                        BINARY 'migration-018-reviewed-builtin'
+                                )
+                            )
                         )
                         OR (
-                             backup.existed_before = TRUE
-                             AND NOT (
-                                 BINARY resource.source <=>
-                                 BINARY backup.source
-                             )
-                        )
-                        OR (
-                             backup.existed_before = FALSE
-                             AND BINARY resource.source <>
-                                 BINARY 'migration-018-reviewed-builtin'
+                            %s = TRUE
+                            AND BINARY backup.resource_key = BINARY %s
+                            AND resource.resource_key IS NOT NULL
+                            AND resource.configuration_version = 2
+                            AND BINARY backup.migration_config_sha256 = BINARY SHA2(
+                                CAST(({migration_018_config}) AS CHAR CHARACTER SET utf8mb4),
+                                256
+                            )
+                            AND NOT COALESCE((
+                                BINARY JSON_UNQUOTE(JSON_EXTRACT(
+                                    ({migration_018_config}),
+                                    '$.formula_source_sheet_id'
+                                )) = BINARY %s
+                                AND BINARY JSON_UNQUOTE(JSON_EXTRACT(
+                                    ({migration_018_config}),
+                                    '$.formula_source_range'
+                                )) = BINARY %s
+                            ), FALSE)
+                            AND BINARY resource.config_sha256 = BINARY SHA2(
+                                CAST(resource.config_json AS CHAR CHARACTER SET utf8mb4),
+                                256
+                            )
+                            AND BINARY resource.config_sha256 = BINARY SHA2(
+                                CAST(JSON_SET(
+                                    ({migration_018_config}),
+                                    '$.formula_source_sheet_id', %s,
+                                    '$.formula_source_range', %s
+                                ) AS CHAR CHARACTER SET utf8mb4),
+                                256
+                            )
+                            AND (
+                                (
+                                    backup.existed_before = TRUE
+                                    AND BINARY resource.source <=> BINARY backup.source
+                                )
+                                OR (
+                                    backup.existed_before = FALSE
+                                    AND BINARY resource.source =
+                                        BINARY 'migration-018-reviewed-builtin'
+                                )
+                            )
                         )
                       )
                     FOR UPDATE
-                    """
+                    """,
+                    (
+                        migration_036_applied,
+                        _SELF_PICKUP_RESOURCE_KEY,
+                        _SELF_PICKUP_FORMULA_SOURCE_SHEET_ID,
+                        _SELF_PICKUP_FORMULA_SOURCE_RANGE,
+                        _SELF_PICKUP_FORMULA_SOURCE_SHEET_ID,
+                        _SELF_PICKUP_FORMULA_SOURCE_RANGE,
+                    ),
                 )
                 if int((cursor.fetchone() or {}).get('changed_count') or 0):
                     raise RuntimeError(
