@@ -11,12 +11,14 @@ from agent.automation_plugins.configuration import (
 from agent.automation_plugins.code_owned_fields import (
     SCAN_PHASE_FORMAL,
     SCAN_PHASE_PREVIEW,
+    first_party_code_owned_config_repair_applies,
     first_party_code_owned_resource_binding_repair_applies,
     first_party_code_owned_config_fields,
     first_party_code_owned_plan_fields,
     normalize_first_party_code_owned_config,
     normalize_first_party_code_owned_entrypoints,
     normalize_first_party_code_owned_resource_bindings,
+    normalize_first_party_code_owned_versioned_config,
     resolve_scan_execution_phase,
     resolve_selection_execution_phase,
 )
@@ -164,6 +166,34 @@ def test_self_pickup_bootstrap_repairs_only_the_reviewed_legacy_source_binding()
         **identity,
         resource_bindings=former_assumption,
     ) == former_assumption
+
+
+def test_self_pickup_bootstrap_removes_only_the_exact_zero_candidate_limit() -> None:
+    identity = {
+        "automation_id": "self_pickup_problem_upload",
+        "plugin_id": "self_pickup_problem_upload",
+        "trust_source": FIRST_PARTY_TRUST,
+        "current_version": "1.0.26",
+        "target_version": "1.0.26",
+    }
+
+    assert first_party_code_owned_config_repair_applies(**identity)
+    assert normalize_first_party_code_owned_versioned_config(
+        **identity,
+        config={"include_daxiang_s_self_pickup": True, "limit": 0},
+    ) == {"include_daxiang_s_self_pickup": True}
+    for preserved in ({"limit": 1}, {"limit": False}, {}):
+        assert normalize_first_party_code_owned_versioned_config(
+            **identity,
+            config=preserved,
+        ) == preserved
+
+    changed = {**identity, "target_version": "1.0.27"}
+    assert not first_party_code_owned_config_repair_applies(**changed)
+    assert normalize_first_party_code_owned_versioned_config(
+        **changed,
+        config={"limit": 0},
+    ) == {"limit": 0}
 
 
 def test_scan_phase_requires_binding_absence_or_a_nonempty_formal_binding() -> None:
