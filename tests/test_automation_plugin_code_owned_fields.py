@@ -15,6 +15,7 @@ from agent.automation_plugins.code_owned_fields import (
     first_party_code_owned_plan_fields,
     normalize_first_party_code_owned_config,
     normalize_first_party_code_owned_entrypoints,
+    normalize_first_party_code_owned_resource_bindings,
     resolve_scan_execution_phase,
     resolve_selection_execution_phase,
 )
@@ -106,6 +107,51 @@ def test_problem_plugin_1023_enables_verified_console_after_bridge(
         target_version="1.0.23",
         enabled_entrypoints=("feishu",),
     ) == ("console", "feishu")
+
+
+def test_self_pickup_1027_repairs_only_the_reviewed_legacy_source_binding() -> None:
+    legacy = {
+        "feishu_route": "automation.feishu_route.self_pickup_problem_upload",
+        "self_pickup_source_sheet": "phase7.arrive_primary_sheet",
+    }
+    expected = {
+        **legacy,
+        "self_pickup_source_sheet": "phase7.self_pickup_source_sheet",
+    }
+    identity = {
+        "automation_id": "self_pickup_problem_upload",
+        "plugin_id": "self_pickup_problem_upload",
+        "trust_source": FIRST_PARTY_TRUST,
+        "current_version": "1.0.26",
+        "target_version": "1.0.27",
+    }
+
+    assert normalize_first_party_code_owned_resource_bindings(
+        **identity,
+        resource_bindings=legacy,
+    ) == expected
+    assert legacy["self_pickup_source_sheet"] == "phase7.arrive_primary_sheet"
+
+    for changed in (
+        {**identity, "automation_id": "another_project"},
+        {**identity, "plugin_id": "another_plugin"},
+        {**identity, "trust_source": "ed25519_upload"},
+        {**identity, "current_version": "1.0.25"},
+        {**identity, "target_version": "1.0.28"},
+    ):
+        assert normalize_first_party_code_owned_resource_bindings(
+            **changed,
+            resource_bindings=legacy,
+        ) == legacy
+
+    custom = {
+        **legacy,
+        "self_pickup_source_sheet": "custom.self_pickup_source_sheet",
+    }
+    assert normalize_first_party_code_owned_resource_bindings(
+        **identity,
+        resource_bindings=custom,
+    ) == custom
 
 
 def test_scan_phase_requires_binding_absence_or_a_nonempty_formal_binding() -> None:
