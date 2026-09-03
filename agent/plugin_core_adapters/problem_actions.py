@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -20,6 +21,9 @@ from plugin_core_adapters.capability_session import (
     CapabilityAuthorizer,
     authorize_target_capability,
 )
+
+
+logger = logging.getLogger("agent")
 
 
 ResourceLoader = Callable[[str], Mapping[str, Any] | None]
@@ -262,6 +266,33 @@ def _read_sheet_rows(
     rows = _sheet_values(result)
     if len(rows) > max_rows or any(len(row) > 19 for row in rows):
         raise _error("problem sheet response exceeds its bound", "BROKER_SOURCE_INVALID")
+    if resource_id == "phase7.self_pickup_source_sheet":
+        def observed(row: Sequence[object], index: int) -> str:
+            return str(row[index] if index < len(row) else "").strip()
+
+        data_rows = rows[1:] if rows else []
+        self_pickup_rows = sum(
+            observed(row, 9) == "邵阳自提部" for row in data_rows
+        )
+        daxiang_rows = sum(
+            observed(row, 9) == "邵阳大祥S站" for row in data_rows
+        )
+        daxiang_self_pickup_rows = sum(
+            observed(row, 9) == "邵阳大祥S站"
+            and observed(row, 3) == "自提"
+            for row in data_rows
+        )
+        logger.info(
+            "self-pickup sheet observation | sheet=%s | rows=%s | "
+            "headers=%s | self_pickup_rows=%s | daxiang_rows=%s | "
+            "daxiang_self_pickup_rows=%s",
+            resource["sheet_id"],
+            len(rows),
+            [observed(rows[0], index) for index in range(19)] if rows else [],
+            self_pickup_rows,
+            daxiang_rows,
+            daxiang_self_pickup_rows,
+        )
     return {"complete": True, "rows": rows}
 
 
