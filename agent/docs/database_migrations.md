@@ -4,7 +4,7 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-08-30
+updated: 2026-09-03
 ---
 
 # 数据库迁移
@@ -150,8 +150,11 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   `FAILED_TERMINAL/GENERATION_LEASE_INVALID` 终止且完全不存在 write-attempt receipt 的
   `RUNNING/VERIFYING` generation lease。该闭合证据证明未跨过外部写边界，迁移只将租约
   幂等标记为 `FAILED_BEFORE_WRITE`；存在任何写回执、非终态 Run 或未过期租约均保持不变。
+- `036_self_pickup_formula_source_locator.sql`：保持自提问题件项目逻辑绑定
+  `UeBd3I` 不变，仅在完整校验工作簿、工作表、范围、配置版本与哈希后，为受管资源补入其
+  `FILTER` 公式明确指向的 `8fc516!A1:S197` 源区域；已有定位缺失时补齐，存在冲突定位时阻断。
 
-生产迁移序列当前从 `001` 连续到 `035`，固定递增且不得改写已执行文件；发布器只按顺序补执行
+生产迁移序列当前从 `001` 连续到 `036`，固定递增且不得改写已执行文件；发布器只按顺序补执行
 `schema_migrations` 尚未记录的迁移，并对所有已执行版本保持原始校验和。`016`/`017`/`018` 在业务行
 变更前各自保存完整行备份；`027` 与 `030` 额外允许 MySQL DDL 已部分提交但 history 尚未登记时按精确
 结构合同前向续跑。远端发布必须在变更前捕获各项迁移状态和 bootstrap marker 状态，`pending_dirty`
