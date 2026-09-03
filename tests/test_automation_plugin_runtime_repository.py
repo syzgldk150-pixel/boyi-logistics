@@ -2272,3 +2272,19 @@ def test_expired_invalid_generation_lease_migration_is_pre_write_only() -> None:
     assert "automation_write_attempt_receipts" in sql
     assert "lease.outcome = 'FAILED_BEFORE_WRITE'" in sql
     assert "WRITE_OUTCOME_UNKNOWN" not in sql
+
+
+def test_self_pickup_formula_source_locator_migration_is_exact_and_idempotent() -> None:
+    sql = Path(
+        "agent/migrations/036_self_pickup_formula_source_locator.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "phase7.self_pickup_source_sheet" in sql
+    assert "F0NVsI5dlhaWugtw14YcmdrQnvh" in sql
+    assert "UeBd3I!A1:S5000" in sql
+    assert "$.formula_source_sheet_id" in sql
+    assert "8fc516!A1:S197" in sql
+    assert "@cp036_resource_count = 1" in sql
+    assert "@cp036_invalid_resource_count = 0" in sql
+    assert "configuration_version = configuration_version + IF(" in sql
+    assert "config_sha256 = SHA2(" in sql
