@@ -61,7 +61,7 @@ def test_problem_sheet_resources_are_explicit_managed_rows() -> None:
         "feishu_sheet"
     }
     assert len({config["spreadsheet_token"] for config in resources.values()}) == 1
-    assert len({config["sheet_id"] for config in resources.values()}) == 2
+    assert len({config["sheet_id"] for config in resources.values()}) == 3
     for config in resources.values():
         assert config["range"].startswith(f"{config['sheet_id']}!A1:S")
     assert resources["phase7.split_pending_target_sheet"]["clear_range"].startswith(
@@ -87,8 +87,12 @@ def test_problem_sheet_resources_are_explicit_managed_rows() -> None:
         resources["phase7.self_pickup_source_sheet"]["range"],
     ) == (
         resources["phase7.split_pending_source_sheet"]["spreadsheet_token"],
-        resources["phase7.split_pending_source_sheet"]["sheet_id"],
-        resources["phase7.split_pending_source_sheet"]["range"],
+        "UeBd3I",
+        "UeBd3I!A1:S5000",
+    )
+    assert (
+        resources["phase7.self_pickup_source_sheet"]["sheet_id"]
+        != resources["phase7.split_pending_source_sheet"]["sheet_id"]
     )
 
 
@@ -155,35 +159,23 @@ def test_reviewed_metadata_sync_preserves_live_sheet_locator() -> None:
     )
 
 
-def test_reviewed_metadata_sync_aligns_self_pickup_to_live_daily_arrival_source() -> None:
-    shared_source = {
+def test_reviewed_metadata_sync_repoints_self_pickup_to_daxiang_arrival_source() -> None:
+    stale_self_pickup_source = {
         "resource_kind": "feishu_sheet",
-        "spreadsheet_token": "live-document-token",
-        "sheet_id": "live-daily-arrival-sheet",
+        "spreadsheet_token": "F0NVsI5dlhaWugtw14YcmdrQnvh",
+        "sheet_id": "8fc516",
         "sheet_title": "每日到货表",
-        "business_purpose": "分批及有发未到问题件来源",
+        "business_purpose": "自提到货问题件来源",
         "sheet_header_constraints": {
             "A": ["运单编号", "单号"],
             "E": ["件数"],
             "S": ["累计到货件数", "已到货件数", "到货件数"],
         },
-        "range": "live-daily-arrival-sheet!A1:S5000",
-        "_meta": {"configuration_version": 12},
-    }
-    stale_self_pickup_source = {
-        "resource_kind": "feishu_sheet",
-        "spreadsheet_token": "live-document-token",
-        "sheet_id": "stale-but-readable-sheet",
-        "sheet_title": "每日到货表",
-        "business_purpose": "自提到货问题件来源",
-        "sheet_header_constraints": shared_source["sheet_header_constraints"],
-        "range": "stale-but-readable-sheet!A1:S5000",
+        "range": "8fc516!A1:S5000",
         "_meta": {"configuration_version": 4},
     }
 
     def load_resource(key: str):
-        if key == "phase7.split_pending_source_sheet":
-            return shared_source
         if key == "phase7.self_pickup_source_sheet":
             return stale_self_pickup_source
         return None
@@ -203,14 +195,18 @@ def test_reviewed_metadata_sync_aligns_self_pickup_to_live_daily_arrival_source(
         "phase7.self_pickup_source_sheet",
         {
             "resource_kind": "feishu_sheet",
-            "spreadsheet_token": "live-document-token",
-            "sheet_id": "live-daily-arrival-sheet",
+            "spreadsheet_token": "F0NVsI5dlhaWugtw14YcmdrQnvh",
+            "sheet_id": "UeBd3I",
             "sheet_title": "每日到货表",
             "business_purpose": "自提到货问题件来源",
-            "sheet_header_constraints": shared_source["sheet_header_constraints"],
-            "range": "live-daily-arrival-sheet!A1:S5000",
+            "sheet_header_constraints": {
+                "A": ["运单编号", "单号"],
+                "E": ["件数"],
+                "S": ["累计到货件数", "已到货件数", "到货件数"],
+            },
+            "range": "UeBd3I!A1:S5000",
         },
-        source="reviewed-shared-source-sync",
+        source="reviewed-self-pickup-source-sync",
     )
 
 
