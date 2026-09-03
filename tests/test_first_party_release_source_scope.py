@@ -108,13 +108,8 @@ def test_staged_scope_rejects_even_one_deferred_package_directory(tmp_path: Path
     _copy_staged_scope(tmp_path)
     verify_staged_tree(tmp_path)
 
-    deferred_id = next(
-        path.name
-        for path in FIRST_PARTY_ROOT.iterdir()
-        if path.is_dir()
-        and path.name != "_runtime"
-        and path.name not in release_first_party_plugin_ids()
-    )
+    deferred_id = "synthetic_deferred_package"
+    assert deferred_id not in release_first_party_plugin_ids()
     deferred_action = (
         tmp_path
         / "agent"

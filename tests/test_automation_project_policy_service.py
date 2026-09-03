@@ -86,6 +86,48 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         self.assertEqual(1, command.automation_invocation.automation_generation)
         self.assertEqual(CONTRACT_HASH, command.automation_invocation.contract_hash)
 
+    def test_distinct_project_invocation_is_rejected_while_a_run_is_unfinished(self):
+        self.repository.state.active_automation_run = {
+            "run_id": "run-active",
+            "status": "RUNNING",
+        }
+
+        with self.assertRaises(OrchestrationError) as raised:
+            self.service.invoke_console(
+                AUTOMATION_ID,
+                request_id="request-second",
+                actor=_admin(),
+            )
+
+        self.assertEqual("AUTOMATION_ALREADY_RUNNING", raised.exception.code)
+        self.assertEqual("该脚本已在运行", raised.exception.message)
+        self.assertEqual(
+            {"active_run_id": "run-active", "active_status": "RUNNING"},
+            raised.exception.details,
+        )
+        self.assertIsNone(self.gateway.command)
+
+    def test_exact_request_replay_is_not_blocked_by_its_active_run(self):
+        request_id = "request-replay"
+        idempotency_key = (
+            f"automation:{AUTOMATION_ID}:console:{_admin().actor_id}:{request_id}"
+        )
+        self.repository.state.commands_by_idempotency[
+            ("console", idempotency_key)
+        ] = {"command_id": "command-existing"}
+        self.repository.state.active_automation_run = {
+            "run_id": "run-active",
+            "status": "RUNNING",
+        }
+
+        receipt = self.service.invoke_console(
+            AUTOMATION_ID,
+            request_id=request_id,
+            actor=_admin(),
+        )
+
+        self.assertEqual("run-invoke", receipt.run_id)
+
     def test_service_v2_console_invoke_requires_exact_active_contribution(self):
         self._set_service_v2_console_contract()
         registry = _ContributionRegistry()

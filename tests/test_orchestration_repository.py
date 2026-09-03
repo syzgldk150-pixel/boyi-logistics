@@ -452,6 +452,31 @@ class OrchestrationRepositoryTests(unittest.TestCase):
         claim_update = next(sql for sql, _ in cursor.calls if "UPDATE agent_runs" in sql)
         self.assertNotIn("execution_attempt_count", claim_update)
 
+    def test_active_automation_run_lookup_is_exact_nonterminal_and_lockable(self):
+        cursor = _Cursor(
+            row={
+                "run_id": "run-active",
+                "status": "RUNNING",
+                "command_source": "scheduler",
+            }
+        )
+        repository = AgentRunRepository(_Connection(cursor))
+
+        row = repository.get_active_for_automation(
+            "daily_sign",
+            for_update=True,
+        )
+
+        select_sql, select_params = cursor.calls[0]
+        self.assertIn("BINARY c.automation_id=BINARY %s", select_sql)
+        self.assertIn(
+            "'COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED'",
+            select_sql,
+        )
+        self.assertIn("LIMIT 1 FOR UPDATE", select_sql)
+        self.assertEqual(("daily_sign",), select_params)
+        self.assertEqual("run-active", row["run_id"])
+
     def test_cancellation_claim_excludes_every_terminal_status(self):
         cursor = _ClaimCursor()
         repository = AgentRunRepository(_Connection(cursor))

@@ -228,6 +228,7 @@ class _State:
         self.policy_events: list[dict] = []
         self.domain_events: list[dict] = []
         self.commands_by_idempotency: dict[tuple[str, str], dict] = {}
+        self.active_automation_run: dict | None = None
         self.fail_decision_at: int | None = None
 
 
@@ -381,6 +382,13 @@ class _Runs:
     def make_waiting_approval_runnable(self, run_id):
         self._repository.runnable_run_ids.append(str(run_id))
         return {"run_id": str(run_id), "status": "WAITING_APPROVAL"}
+
+    def get_active_for_automation(self, automation_id, *, for_update=False):
+        del for_update
+        if automation_id != AUTOMATION_ID:
+            return None
+        row = self._repository.state.active_automation_run
+        return copy.deepcopy(row) if row is not None else None
 
 
 class _Commands:

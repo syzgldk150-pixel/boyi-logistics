@@ -779,6 +779,52 @@ class AutomationSubmissionTests(unittest.TestCase):
                     captured["payload"]["error_code"],
                 )
 
+    def test_run_now_reports_existing_project_run_without_resubmitting(self):
+        app = LocalDocFlowApp.__new__(LocalDocFlowApp)
+        app._is_ajax_request = lambda _handler: True
+        app._control_plane_write_context = lambda _handler: {
+            "_console_principal": {"actor_id": "17"}
+        }
+        app._collect_automation_task_submission = (
+            lambda _handler, allow_missing_schedule=False: (
+                {
+                    "task_id": "daily_sign",
+                    "task_mode": "scheduled",
+                    "project_plugin_instance": True,
+                },
+                {},
+                "",
+            )
+        )
+        app._start_automation_task_run = (
+            lambda _payload, trusted_context, browser_request_uuid: {
+                "ok": False,
+                "status": HTTPStatus.CONFLICT,
+                "error": "该脚本已在运行",
+                "error_code": "AUTOMATION_ALREADY_RUNNING",
+            }
+        )
+        captured = {}
+        app._send_json = lambda _handler, status, payload: captured.update(
+            status=status,
+            payload=payload,
+        )
+
+        app._handle_automation_task_run_now(
+            SimpleNamespace(headers={"X-Browser-Request-UUID": "request-2"})
+        )
+
+        self.assertEqual(HTTPStatus.CONFLICT, captured["status"])
+        self.assertEqual("该脚本已在运行", captured["payload"]["title"])
+        self.assertEqual(
+            "请等待当前运行结束后再执行。",
+            captured["payload"]["message"],
+        )
+        self.assertEqual(
+            "AUTOMATION_ALREADY_RUNNING",
+            captured["payload"]["error_code"],
+        )
+
     def test_batch_resource_save_persists_multiple_resources(self):
         saved = []
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
