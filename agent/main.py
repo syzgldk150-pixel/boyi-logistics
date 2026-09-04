@@ -266,8 +266,8 @@ from tools.feishu_cli_tool import feishu_operation
 from tools.price_tool import run_price_tool
 from tools.track_waybill_tool import run_track_waybill
 from plugin_core_adapters import build_production_first_party_core_handler_map
+from plugin_core_adapters.first_party import recover_first_party_unknown_write
 from plugin_core_adapters.arrival import (
-    recover_arrival_stats_unknown_write,
     recover_arrival_stats_unknown_writes_on_startup,
 )
 from shared.orchestration_repository import (
@@ -1274,8 +1274,8 @@ async def lifespan(app: FastAPI):
         wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
     )
 
-    arrival_stats_unknown_write_recovery = partial(
-        recover_arrival_stats_unknown_write,
+    first_party_unknown_write_recovery = partial(
+        recover_first_party_unknown_write,
         plugin_runtime,
     )
 
@@ -1286,7 +1286,7 @@ async def lifespan(app: FastAPI):
         command_gateway=gateway,
         wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
         dynamic_resolver=TrustedDynamicArgumentResolver(),
-        unknown_write_recovery=arrival_stats_unknown_write_recovery,
+        unknown_write_recovery=first_party_unknown_write_recovery,
         release_hold_provider=scheduler_release_hold_requested,
         contribution_registry=plugin_runtime.contribution_registry,
     )

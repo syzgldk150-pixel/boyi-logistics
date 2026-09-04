@@ -764,6 +764,7 @@ RECOVERABLE_WRITE_PROJECT_PLUGINS: Mapping[str, str] = {
     "daily_sign": "sync_daily_should_sign",
     "delivery_status": "sync_delivery_status",
     "finance_startup_catchup": "sync_finance_bills",
+    "scan_codes": "sync_scan_codes",
 }
 
 
