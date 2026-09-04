@@ -367,7 +367,11 @@ def test_direct_feishu_project_rejection_does_not_claim_execution_started():
             OrchestrationError(
                 "AUTOMATION_ALREADY_RUNNING",
                 "该脚本已在运行",
-                details={"active_run_id": "private-run", "active_status": "BLOCKED_DATA"},
+                details={
+                    "blocking_kind": "UNKNOWN_WRITE",
+                    "active_run_id": "private-run",
+                    "active_status": "BLOCKED_DATA",
+                },
             )
         ]
     )
@@ -399,10 +403,61 @@ def test_direct_feishu_project_rejection_does_not_claim_execution_started():
         message_handler._COMMAND_CONTEXT.reset(token)
 
     assert len(replies) == 1
-    assert "未重复提交" in replies[0][0]
-    assert "数据阻塞" in replies[0][0]
+    assert "写入结果待人工核验" in replies[0][0]
     assert "已开始" not in replies[0][0]
     assert "private-run" not in replies[0][0]
+
+
+def test_direct_feishu_project_rejection_distinguishes_blocking_kinds():
+    expected = {
+        "ACTIVE": "仍在执行",
+        "RETRY_PENDING": "等待自动重试",
+        "UNKNOWN_WRITE": "写入结果待人工核验",
+        "NEEDS_ATTENTION": "需要处理的旧事项",
+    }
+    for blocking_kind, phrase in expected.items():
+        service = _FakeProjectEntrypoints(
+            results=[
+                OrchestrationError(
+                    "AUTOMATION_ALREADY_RUNNING",
+                    "该脚本存在未结束任务",
+                    details={
+                        "blocking_kind": blocking_kind,
+                        "active_run_id": "private-run",
+                    },
+                )
+            ]
+        )
+        replies = []
+        token = message_handler._COMMAND_CONTEXT.set(
+            message_handler.FeishuCommandContext(
+                event_id=f"event-{blocking_kind.lower()}",
+                actor_id="user-one",
+                chat_id="chat-one",
+            )
+        )
+        try:
+            with (
+                patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+                patch.object(
+                    message_handler,
+                    "_reply_text",
+                    side_effect=_reply_recorder(replies),
+                ),
+            ):
+                asyncio.run(
+                    message_handler._invoke_automation_project_and_reply(
+                        route_key="builtin.arrival_stats",
+                        dynamic_inputs={},
+                        receive_id="chat-one",
+                    )
+                )
+        finally:
+            message_handler._COMMAND_CONTEXT.reset(token)
+
+        assert phrase in replies[0][0]
+        assert "已开始" not in replies[0][0]
+        assert "private-run" not in replies[0][0]
 
 
 def test_direct_feishu_project_explains_blocked_data_reason():

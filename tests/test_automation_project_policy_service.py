@@ -100,12 +100,224 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             )
 
         self.assertEqual("AUTOMATION_ALREADY_RUNNING", raised.exception.code)
-        self.assertEqual("该脚本已在运行", raised.exception.message)
+        self.assertEqual("该脚本存在未结束任务", raised.exception.message)
         self.assertEqual(
-            {"active_run_id": "run-active", "active_status": "RUNNING"},
+            {
+                "blocking_kind": "ACTIVE",
+                "active_run_id": "run-active",
+                "active_status": "RUNNING",
+                "blocking_count": 1,
+            },
             raised.exception.details,
         )
         self.assertIsNone(self.gateway.command)
+
+    def test_safe_suspended_runs_are_atomically_superseded_by_new_invocation(self):
+        self.repository.state.automation_runs = [
+            {"run_id": "run-old-1", "status": "NEEDS_CLARIFICATION"},
+            {"run_id": "run-old-2", "status": "BLOCKED_DATA"},
+        ]
+
+        receipt = self.service.invoke_console(
+            AUTOMATION_ID,
+            request_id="request-successor",
+            actor=_admin(),
+        )
+
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual(
+            ["CANCELLED", "CANCELLED"],
+            [row["status"] for row in self.repository.state.automation_runs],
+        )
+        self.assertTrue(
+            all(
+                item["status"] == "CANCELLED"
+                for item in self.repository.state.work_items.values()
+            )
+        )
+        self.assertTrue(
+            all(
+                item["resolution_json"]["successor_run_id"] == "run-invoke"
+                for item in self.repository.state.work_items.values()
+            )
+        )
+        self.assertEqual(
+            [
+                "agent.run.status_changed",
+                "work_item.superseded_by_new_invocation",
+                "agent.run.status_changed",
+                "work_item.superseded_by_new_invocation",
+            ],
+            [row["event_type"] for row in self.repository.state.domain_events],
+        )
+        self.assertTrue(
+            all(
+                row["payload"]["successor_run_id"] == "run-invoke"
+                and row["payload"]["successor_command_id"]
+                == self.gateway.command.command_id
+                for row in self.repository.state.domain_events
+            )
+        )
+        self.assertEqual(4, len(self.repository.state.outbox_events))
+
+    def test_supersession_and_a_failed_successor_create_roll_back_together(self):
+        self.repository.state.automation_runs = [
+            {"run_id": "run-old", "status": "BLOCKED_LOGIN"},
+        ]
+        self.repository.state.fail_gateway_create_after_guard = True
+
+        with self.assertRaises(InvalidStateError):
+            self.service.invoke_console(
+                AUTOMATION_ID,
+                request_id="request-fails-after-guard",
+                actor=_admin(),
+            )
+
+        self.assertEqual(
+            "BLOCKED_LOGIN",
+            self.repository.state.automation_runs[0]["status"],
+        )
+        self.assertEqual([], self.repository.state.domain_events)
+        self.assertEqual([], self.repository.state.outbox_events)
+
+    def test_retry_pending_run_is_not_superseded(self):
+        self.repository.state.automation_runs = [
+            {"run_id": "run-retry", "status": "FAILED_RETRYABLE"},
+        ]
+
+        with self.assertRaises(OrchestrationError) as raised:
+            self.service.invoke_console(
+                AUTOMATION_ID,
+                request_id="request-during-retry",
+                actor=_admin(),
+            )
+
+        self.assertEqual("RETRY_PENDING", raised.exception.details["blocking_kind"])
+        self.assertEqual("FAILED_RETRYABLE", self.repository.state.automation_runs[0]["status"])
+
+    def test_safe_status_with_live_lease_or_inflight_step_remains_active(self):
+        active_cases = (
+            (
+                {
+                    "worker_id": "worker-one",
+                    "lease_expires_at": datetime.now(timezone.utc)
+                    + timedelta(minutes=5),
+                },
+                {},
+            ),
+            ({}, {"has_inflight_step": True}),
+            ({}, {"has_live_generation_lease": True}),
+        )
+        for index, (run_values, facts) in enumerate(active_cases):
+            with self.subTest(index=index):
+                run_id = f"run-active-safe-status-{index}"
+                self.repository.state.automation_runs = [
+                    {
+                        "run_id": run_id,
+                        "status": "BLOCKED_DATA",
+                        **run_values,
+                    },
+                ]
+                self.repository.state.automation_run_facts = {run_id: facts}
+                with self.assertRaises(OrchestrationError) as raised:
+                    self.service.invoke_console(
+                        AUTOMATION_ID,
+                        request_id=f"request-active-case-{index}",
+                        actor=_admin(),
+                    )
+                self.assertEqual(
+                    "ACTIVE",
+                    raised.exception.details["blocking_kind"],
+                )
+
+    def test_work_item_status_mismatch_fails_closed_without_mutation(self):
+        self.repository.state.automation_runs = [
+            {"run_id": "run-mismatch", "status": "BLOCKED_DATA"},
+        ]
+        self.repository.state.work_items = {
+            "work-run-mismatch": {
+                "work_item_id": "work-run-mismatch",
+                "command_id": "command-run-mismatch",
+                "status": "OPEN",
+                "version": 1,
+            }
+        }
+
+        with self.assertRaises(OrchestrationError) as raised:
+            self.service.invoke_console(
+                AUTOMATION_ID,
+                request_id="request-mismatch",
+                actor=_admin(),
+            )
+
+        self.assertEqual("NEEDS_ATTENTION", raised.exception.details["blocking_kind"])
+        self.assertEqual("BLOCKED_DATA", self.repository.state.automation_runs[0]["status"])
+
+    def test_verified_protected_write_requires_old_item_attention(self):
+        self.repository.state.automation_runs = [
+            {"run_id": "run-protected", "status": "BLOCKED_DATA"},
+        ]
+        self.repository.state.automation_run_facts = {
+            "run-protected": {"has_protected_write_receipt": True},
+        }
+
+        with self.assertRaises(OrchestrationError) as raised:
+            self.service.invoke_console(
+                AUTOMATION_ID,
+                request_id="request-protected",
+                actor=_admin(),
+            )
+
+        self.assertEqual("NEEDS_ATTENTION", raised.exception.details["blocking_kind"])
+
+    def test_unknown_or_started_protected_write_is_never_superseded(self):
+        for facts in (
+            {"has_unknown_write_receipt": True},
+            {"has_unclosed_protected_write": True},
+        ):
+            with self.subTest(facts=facts):
+                self.repository.state.automation_runs = [
+                    {"run_id": "run-write", "status": "BLOCKED_DATA"},
+                ]
+                self.repository.state.automation_run_facts = {
+                    "run-write": facts,
+                }
+                with self.assertRaises(OrchestrationError) as raised:
+                    self.service.invoke_console(
+                        AUTOMATION_ID,
+                        request_id=f"request-write-{len(facts)}",
+                        actor=_admin(),
+                    )
+                self.assertEqual(
+                    "UNKNOWN_WRITE",
+                    raised.exception.details["blocking_kind"],
+                )
+                self.assertEqual(
+                    "BLOCKED_DATA",
+                    self.repository.state.automation_runs[0]["status"],
+                )
+
+    def test_unfinished_run_scan_limit_fails_closed(self):
+        self.repository.state.automation_runs = [
+            {"run_id": f"run-{index}", "status": "BLOCKED_DATA"}
+            for index in range(101)
+        ]
+
+        with self.assertRaises(OrchestrationError) as raised:
+            self.service.invoke_console(
+                AUTOMATION_ID,
+                request_id="request-over-limit",
+                actor=_admin(),
+            )
+
+        self.assertEqual("NEEDS_ATTENTION", raised.exception.details["blocking_kind"])
+        self.assertEqual(
+            "UNFINISHED_RUN_LIMIT_EXCEEDED",
+            raised.exception.details["active_status"],
+        )
+        self.assertTrue(
+            all(row["status"] == "BLOCKED_DATA" for row in self.repository.state.automation_runs)
+        )
 
     def test_exact_request_replay_is_not_blocked_by_its_active_run(self):
         request_id = "request-replay"
@@ -127,6 +339,11 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         )
 
         self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual(
+            "RUNNING",
+            self.repository.state.active_automation_run["status"],
+        )
+        self.assertEqual([], self.repository.state.domain_events)
 
     def test_service_v2_console_invoke_requires_exact_active_contribution(self):
         self._set_service_v2_console_contract()

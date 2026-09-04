@@ -477,6 +477,54 @@ class OrchestrationRepositoryTests(unittest.TestCase):
         self.assertEqual(("daily_sign",), select_params)
         self.assertEqual("run-active", row["run_id"])
 
+    def test_unfinished_automation_run_discovery_is_bounded_and_read_only(self):
+        cursor = _Cursor(
+            rows=[{"run_id": "run-1"}, {"run_id": "run-2"}],
+        )
+        repository = AgentRunRepository(_Connection(cursor))
+
+        run_ids = repository.list_unfinished_for_automation(
+            "daily_sign",
+            limit=101,
+        )
+
+        select_sql, select_params = cursor.calls[0]
+        self.assertIn("BINARY c.automation_id=BINARY %s", select_sql)
+        self.assertIn(
+            "'COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED'",
+            select_sql,
+        )
+        self.assertNotIn("FOR UPDATE", select_sql)
+        self.assertEqual(("daily_sign", 101), select_params)
+        self.assertEqual(["run-1", "run-2"], run_ids)
+
+    def test_automation_supersession_facts_cover_steps_leases_and_receipts(self):
+        cursor = _Cursor(
+            row={
+                "has_inflight_step": 1,
+                "has_unknown_step": 0,
+                "has_live_generation_lease": 1,
+                "has_unknown_generation_lease": 0,
+                "has_unknown_write_receipt": 0,
+                "has_unclosed_protected_write": 1,
+                "has_protected_write_receipt": 1,
+            }
+        )
+        repository = AgentRunRepository(_Connection(cursor))
+
+        facts = repository.get_automation_supersession_facts("run-1")
+
+        select_sql, select_params = cursor.calls[0]
+        self.assertIn("automation_project_generation_leases", select_sql)
+        self.assertIn("automation_write_attempt_receipts", select_sql)
+        self.assertIn("WRITE_OUTCOME_UNKNOWN", select_sql)
+        self.assertIn("EXTERNAL_WRITE", select_sql)
+        self.assertEqual(("run-1",) * 7, select_params)
+        self.assertTrue(facts["has_inflight_step"])
+        self.assertTrue(facts["has_live_generation_lease"])
+        self.assertTrue(facts["has_unclosed_protected_write"])
+        self.assertTrue(facts["has_protected_write_receipt"])
+
     def test_cancellation_claim_excludes_every_terminal_status(self):
         cursor = _ClaimCursor()
         repository = AgentRunRepository(_Connection(cursor))

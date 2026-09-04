@@ -65,6 +65,7 @@ __all__ = [
     "_Approvals",
     "_Events",
     "_Runs",
+    "_WorkItems",
     "_Commands",
     "_Uow",
     "_Repository",
@@ -227,8 +228,13 @@ class _State:
         self.batches: dict[tuple[str, str], dict] = {}
         self.policy_events: list[dict] = []
         self.domain_events: list[dict] = []
+        self.outbox_events: list[dict] = []
         self.commands_by_idempotency: dict[tuple[str, str], dict] = {}
         self.active_automation_run: dict | None = None
+        self.automation_runs: list[dict] = []
+        self.automation_run_facts: dict[str, dict] = {}
+        self.work_items: dict[str, dict] = {}
+        self.fail_gateway_create_after_guard = False
         self.fail_decision_at: int | None = None
 
 
@@ -371,8 +377,23 @@ class _Events:
     def __init__(self, repository: "_Repository") -> None:
         self._repository = repository
 
-    def append_with_outbox(self, event, _outbox):
+    def append_with_outbox(self, event, outbox):
         self._repository.state.domain_events.append(copy.deepcopy(dict(event)))
+        self._repository.state.outbox_events.extend(
+            copy.deepcopy(list(outbox))
+        )
+
+
+def _default_work_item_status(run_status: str) -> str:
+    return {
+        "NEEDS_CLARIFICATION": "NEEDS_CLARIFICATION",
+        "BLOCKED_LOGIN": "BLOCKED_LOGIN",
+        "BLOCKED_DATA": "BLOCKED_DATA",
+        "WAITING_APPROVAL": "WAITING_APPROVAL",
+        "RUNNING": "IN_PROGRESS",
+        "VERIFYING": "IN_PROGRESS",
+        "FAILED_RETRYABLE": "OPEN",
+    }.get(run_status, "OPEN")
 
 
 class _Runs:
@@ -383,12 +404,127 @@ class _Runs:
         self._repository.runnable_run_ids.append(str(run_id))
         return {"run_id": str(run_id), "status": "WAITING_APPROVAL"}
 
+    def _rows(self) -> list[dict]:
+        state = self._repository.state
+        if not state.automation_runs and state.active_automation_run is not None:
+            state.automation_runs.append(copy.deepcopy(state.active_automation_run))
+        for index, row in enumerate(state.automation_runs, start=1):
+            run_id = str(row.get("run_id") or f"run-{index}")
+            row.setdefault("run_id", run_id)
+            row.setdefault("command_id", f"command-{run_id}")
+            row.setdefault("work_item_id", f"work-{run_id}")
+            row.setdefault("version", 1)
+            row.setdefault("correlation_id", f"correlation-{run_id}")
+            row.setdefault("worker_id", None)
+            row.setdefault("lease_expires_at", None)
+            row.setdefault("error_code", None)
+            item_id = str(row["work_item_id"])
+            state.work_items.setdefault(
+                item_id,
+                {
+                    "work_item_id": item_id,
+                    "command_id": row["command_id"],
+                    "status": _default_work_item_status(str(row.get("status") or "")),
+                    "version": 1,
+                },
+            )
+        return state.automation_runs
+
+    def list_unfinished_for_automation(self, automation_id, *, limit=101):
+        if automation_id != AUTOMATION_ID:
+            return []
+        terminal = {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
+        return [
+            str(row["run_id"])
+            for row in self._rows()
+            if str(row.get("status") or "") not in terminal
+        ][:limit]
+
+    def get(self, run_id, *, for_update=False):
+        del for_update
+        row = next(
+            (row for row in self._rows() if row.get("run_id") == run_id),
+            None,
+        )
+        return copy.deepcopy(row) if row is not None else None
+
+    def get_automation_supersession_facts(self, run_id):
+        return copy.deepcopy(
+            self._repository.state.automation_run_facts.get(run_id, {})
+        )
+
+    def cancel_suspended(
+        self,
+        run_id,
+        *,
+        expected_version,
+        expected_statuses,
+        error_code,
+        error_summary,
+        finished_at,
+    ):
+        row = next(item for item in self._rows() if item["run_id"] == run_id)
+        if row["version"] != expected_version or row["status"] not in expected_statuses:
+            raise InvalidStateError("run CAS mismatch")
+        row.update(
+            {
+                "status": "CANCELLED",
+                "error_code": error_code,
+                "error_summary": error_summary,
+                "retryable": False,
+                "next_attempt_at": None,
+                "worker_id": None,
+                "lease_expires_at": None,
+                "finished_at": finished_at,
+                "version": int(row["version"]) + 1,
+            }
+        )
+        return copy.deepcopy(row)
+
     def get_active_for_automation(self, automation_id, *, for_update=False):
         del for_update
         if automation_id != AUTOMATION_ID:
             return None
         row = self._repository.state.active_automation_run
         return copy.deepcopy(row) if row is not None else None
+
+
+class _WorkItems:
+    def __init__(self, repository: "_Repository") -> None:
+        self._repository = repository
+
+    def get(self, work_item_id, *, for_update=False):
+        del for_update
+        _Runs(self._repository)._rows()
+        row = self._repository.state.work_items.get(work_item_id)
+        return copy.deepcopy(row) if row is not None else None
+
+    def transition(
+        self,
+        work_item_id,
+        *,
+        expected_version,
+        expected_statuses,
+        status,
+        reason_code=None,
+        reason_summary=None,
+        resolution=None,
+        closed_at=None,
+    ):
+        row = self._repository.state.work_items[work_item_id]
+        if row["version"] != expected_version or row["status"] not in expected_statuses:
+            raise InvalidStateError("work item CAS mismatch")
+        row.update(
+            {
+                "status": status,
+                "current_reason_code": reason_code,
+                "current_reason_summary": reason_summary,
+                "resolution_json": copy.deepcopy(resolution),
+                "closed_at": closed_at,
+                "version": int(row["version"]) + 1,
+            }
+        )
+        return copy.deepcopy(row)
 
 
 class _Commands:
@@ -402,6 +538,22 @@ class _Commands:
         )
         return copy.deepcopy(row) if row is not None else None
 
+    def get(self, command_id, *, for_update=False):
+        del for_update
+        _Runs(self._repository)._rows()
+        row = next(
+            (
+                {
+                    "command_id": item["command_id"],
+                    "automation_id": AUTOMATION_ID,
+                }
+                for item in self._repository.state.automation_runs
+                if item.get("command_id") == command_id
+            ),
+            None,
+        )
+        return copy.deepcopy(row) if row is not None else None
+
 
 class _Uow:
     def __init__(self, repository: "_Repository") -> None:
@@ -411,6 +563,7 @@ class _Uow:
         self.approvals = _Approvals(repository)
         self.events = _Events(repository)
         self.runs = _Runs(repository)
+        self.work_items = _WorkItems(repository)
         self.commands = _Commands(repository)
         self.scheduled_policies = SimpleNamespace()
         self._snapshot: _State | None = None
@@ -477,10 +630,27 @@ class _Gateway:
         self.command = None
         self.run_result = None
 
-    def submit(self, command, *, uow_guard=None):
+    def submit(
+        self,
+        command,
+        *,
+        uow_guard=None,
+        uow_acceptance_guard=None,
+    ):
         with self.repository.unit_of_work() as uow:
             if uow_guard is not None:
                 uow_guard(uow)
+            if uow_acceptance_guard is not None:
+                uow_acceptance_guard(
+                    uow,
+                    {
+                        "command_id": command.command_id,
+                        "work_item_id": "work-invoke",
+                        "run_id": "run-invoke",
+                    },
+                )
+            if self.repository.state.fail_gateway_create_after_guard:
+                raise InvalidStateError("synthetic gateway create failure")
             uow.commit()
         self.command = command
         return CommandReceipt(

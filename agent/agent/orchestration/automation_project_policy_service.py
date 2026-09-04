@@ -55,6 +55,9 @@ from agent.orchestration.models import (
     RiskLevel,
     new_id,
 )
+from agent.orchestration.automation_run_supersession import (
+    supersede_safely_suspended_runs,
+)
 from agent.orchestration.policy_engine import ProjectPolicyEvaluation
 from agent.orchestration.automation_project_policy_support import (
     _automation_id,
@@ -1676,7 +1679,7 @@ class AutomationProjectPolicyService:
             automation_invocation=invocation,
         )
 
-        def guard(uow: Any) -> None:
+        def guard(uow: Any, acceptance: Mapping[str, str]) -> None:
             selection_confirmation = bool(
                 safe_selection_preview_run_id is not None
                 and selection_expectation is not None
@@ -1757,19 +1760,13 @@ class AutomationProjectPolicyService:
             # second Run can be created.
             if accepted_command_exists(for_update=True):
                 return
-            active_run = uow.runs.get_active_for_automation(
-                safe_id,
-                for_update=True,
+            supersede_safely_suspended_runs(
+                uow,
+                automation_id=safe_id,
+                successor=acceptance,
+                source=source.value,
+                request_id=safe_request_id,
             )
-            if active_run is not None:
-                raise OrchestrationError(
-                    "AUTOMATION_ALREADY_RUNNING",
-                    "该脚本已在运行",
-                    details={
-                        "active_run_id": str(active_run.get("run_id") or ""),
-                        "active_status": str(active_run.get("status") or ""),
-                    },
-                )
             if (
                 safe_selection_preview_run_id is not None
                 and selection_expectation is not None
@@ -1842,7 +1839,10 @@ class AutomationProjectPolicyService:
                         occurred_at=occurred_at,
                     )
 
-        return self._command_gateway.submit(command, uow_guard=guard)
+        return self._command_gateway.submit(
+            command,
+            uow_acceptance_guard=guard,
+        )
 
     async def invoke_trusted_and_wait(
         self,

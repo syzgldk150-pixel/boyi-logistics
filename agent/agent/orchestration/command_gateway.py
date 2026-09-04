@@ -38,6 +38,9 @@ class CommandGateway:
         command: Command,
         *,
         uow_guard: Callable[[Any], None] | None = None,
+        uow_acceptance_guard: (
+            Callable[[Any, Mapping[str, str]], None] | None
+        ) = None,
     ) -> CommandReceipt:
         work_item_type, title, dedupe_key = self._classify_work_item(command)
         work_item_id = new_id()
@@ -137,6 +140,15 @@ class CommandGateway:
             with self._repository.unit_of_work() as uow:
                 if uow_guard is not None:
                     uow_guard(uow)
+                if uow_acceptance_guard is not None:
+                    uow_acceptance_guard(
+                        uow,
+                        {
+                            "command_id": command.command_id,
+                            "work_item_id": work_item_id,
+                            "run_id": run_id,
+                        },
+                    )
                 receipt = uow.command_gateway_create(
                     command_row,
                     work_item_row,
