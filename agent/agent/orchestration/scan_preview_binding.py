@@ -366,7 +366,6 @@ def scan_preview_recovery_plan_projection(
         )
     value = dict(plan.impact)
     entities = value.get("entities")
-    source_version = value.get("source_version")
     if (
         value.get("operation_type")
         not in {
@@ -377,50 +376,18 @@ def scan_preview_recovery_plan_projection(
         or not isinstance(entities, list)
         or len(entities) != 1
         or not isinstance(entities[0], Mapping)
-        or (
-            source_version is not None
-            and not isinstance(source_version, Mapping)
-        )
     ):
         raise _error(
             "SCAN_PREVIEW_CONTEXT_INVALID",
             "The legacy scan impact schema is invalid",
         )
     entity = dict(entities[0])
-    metadata = entity.get("metadata")
-    current_reference = (
-        entity.get("source_system") == "ronghui"
-        and entity.get("relation_type") == "impact"
-        and isinstance(metadata, Mapping)
-        and metadata.get("action") == "scan_next"
-        and (
-            source_version is None
-            or source_version.get("kind") == "completed_scan_preview"
-        )
-    )
-    legacy_reference = (
-        source_version is None
-        and isinstance(metadata, Mapping)
-        and not metadata
-        and entity.get("source_system") in {None, "", "ronghui"}
-        and entity.get("relation_type") in {None, "subject", "impact"}
-    )
-    if entity.get("entity_type") != "scan_selection" or not (
-        current_reference or legacy_reference
-    ):
+    if entity.get("entity_type") != "scan_selection":
         raise _error(
             "SCAN_PREVIEW_CONTEXT_INVALID",
             "The legacy scan impact identity is invalid",
-    )
-    preview_run_id = normalize_preview_run_id(entity.get("entity_id"))
-    if (
-        isinstance(source_version, Mapping)
-        and source_version.get("preview_run_id") != preview_run_id
-    ):
-        raise _error(
-            "SCAN_PREVIEW_CONTEXT_INVALID",
-            "The legacy scan preview identity changed",
         )
+    preview_run_id = normalize_preview_run_id(entity.get("entity_id"))
     persisted = _load_persisted_scan_preview(
         uow,
         preview_run_id=preview_run_id,
@@ -429,34 +396,6 @@ def scan_preview_recovery_plan_projection(
         for_update=False,
     )
     evidence = persisted.evidence
-    expected_metadata = {
-        "action": "scan_next",
-        "target_date": evidence["target_date"],
-        "selection_count": evidence["selection_count"],
-        "selection_sha256": evidence["selection_sha256"],
-        "batch_count": evidence["batch_count"],
-        "batch_plan_sha256": evidence["batch_plan_sha256"],
-        "source_snapshot_sha256": evidence["source_snapshot_sha256"],
-    }
-    expected_source_version = {
-        "kind": "completed_scan_preview",
-        "preview_run_id": persisted.run_id,
-        "preview_step_id": str(persisted.step.get("step_id") or "").strip(),
-        "preview_result_sha256": persisted.result_digest,
-        "observed_at": _iso_utc(persisted.observed_at),
-        "expires_at": _iso_utc(persisted.expires_at),
-    }
-    if (
-        not legacy_reference
-        and dict(metadata) != expected_metadata
-    ) or (
-        isinstance(source_version, Mapping)
-        and dict(source_version) != expected_source_version
-    ):
-        raise _error(
-            "SCAN_PREVIEW_CONTEXT_INVALID",
-            "The legacy scan impact is stale",
-        )
     return {
         "preview_run_id": persisted.run_id,
         "target_date": evidence["target_date"],
