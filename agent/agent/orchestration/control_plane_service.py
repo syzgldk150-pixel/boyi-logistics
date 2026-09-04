@@ -24,7 +24,7 @@ from agent.orchestration.models import (
     canonical_json,
     new_id,
 )
-from agent.orchestration.automation_project_policy_service import (
+from agent.orchestration.automation_run_supersession import (
     AUTOMATION_BLOCKING_ACTIVE,
     AUTOMATION_BLOCKING_NEEDS_ATTENTION,
     AUTOMATION_BLOCKING_SAFE_SUPERSEDE,
