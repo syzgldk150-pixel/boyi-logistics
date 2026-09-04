@@ -869,19 +869,17 @@ def recover_arrival_stats_unknown_write(
             or any(not isinstance(receipt, Mapping) for receipt in receipts)
         ):
             return None
-        semantic_sha256s.add(hashlib.sha256(canonical_json_bytes([
-            {
-                field: str(receipt.get(field) or "")
-                for field in (
-                    "operation",
-                    "action",
-                    "argument_sha256",
-                    "role_sha256",
-                    "binding_sha256",
-                )
-            }
-            for receipt in receipts
-        ])).hexdigest())
+        final_receipt = receipts[-1]
+        semantic_sha256s.add(hashlib.sha256(canonical_json_bytes({
+            field: str(final_receipt.get(field) or "")
+            for field in (
+                "operation",
+                "action",
+                "argument_sha256",
+                "role_sha256",
+                "binding_sha256",
+            )
+        })).hexdigest())
     if len(semantic_sha256s) != 1:
         logger.info(
             "Arrival statistics unknown-write recovery not proven "
