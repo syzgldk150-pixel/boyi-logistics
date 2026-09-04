@@ -208,6 +208,7 @@ from agent.http_security import INTERNAL_API_TOKEN_HEADER, authenticate_internal
 from agent.execution_boundary import EXECUTION_CAPABILITY_HEADER, authorize_tms_target
 from agent.phase7_resource_import import (
     import_phase7_resources,
+    repair_missing_fixed_automation_routes,
     sync_reviewed_phase7_resource_metadata,
 )
 from agent.runtime_config import load_agent_environment
@@ -1163,6 +1164,16 @@ async def lifespan(app: FastAPI):
         include_windows_worker=WINDOWS_WORKER_RELEASE_ENABLED,
     )
     logger.info("Orchestration persistence ready mysql=%s", mysql_version)
+
+    repaired_routes = await asyncio.to_thread(
+        repair_missing_fixed_automation_routes
+    )
+    if repaired_routes:
+        logger.warning(
+            "Missing fixed automation routes repaired count=%d routes=%s",
+            len(repaired_routes),
+            ",".join(sorted(repaired_routes)),
+        )
 
     tool_executor = ToolExecutor()
     core_catalog = runtime.registry
