@@ -297,6 +297,47 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                     self.repository.state.automation_runs[0]["status"],
                 )
 
+    def test_exact_server_readback_resumes_unknown_run_without_superseding_it(self):
+        recovery_calls: list[tuple[str, str]] = []
+        service = AutomationProjectPolicyService(
+            self.repository,
+            core_catalog=SimpleNamespace(),
+            plugin_catalog=_Catalog(self.entry),
+            command_gateway=self.gateway,
+            wake_runner=self.woken_run_ids.append,
+            unknown_write_recovery=lambda automation_id, request_id: (
+                recovery_calls.append((automation_id, request_id))
+                or {"recovery_status": "APPLIED", "transitioned": True}
+            ),
+        )
+        service._load_contract = lambda _automation_id: (self.entry, self.contract)
+        service._lock_and_compile_contract = lambda _uow, _entry, **_kwargs: (
+            self.contract,
+            dict(self.repository.state.config),
+        )
+        self.repository.state.automation_runs = [
+            {"run_id": "run-write", "status": "BLOCKED_DATA"},
+        ]
+        self.repository.state.automation_run_facts = {
+            "run-write": {"has_unknown_write_receipt": True},
+        }
+
+        with self.assertRaises(OrchestrationError) as raised:
+            service.invoke_console(
+                AUTOMATION_ID,
+                request_id="request-readback",
+                actor=_admin(),
+            )
+
+        self.assertEqual("AUTOMATION_ALREADY_RUNNING", raised.exception.code)
+        self.assertEqual("ACTIVE", raised.exception.details["blocking_kind"])
+        self.assertEqual([(AUTOMATION_ID, "request-readback")], recovery_calls)
+        self.assertEqual(
+            "BLOCKED_DATA",
+            self.repository.state.automation_runs[0]["status"],
+        )
+        self.assertIsNone(self.gateway.command)
+
     def test_unfinished_run_scan_limit_fails_closed(self):
         self.repository.state.automation_runs = [
             {"run_id": f"run-{index}", "status": "BLOCKED_DATA"}

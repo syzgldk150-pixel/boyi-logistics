@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Mapping
 
 from shared.orchestration_repository_support import (
     ConcurrentUpdateError,
@@ -30,6 +30,7 @@ def recover_unknown_automation_write(
     request_id: str,
     actor_id: str,
     actor_role: str,
+    authoritative_applied_proof: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     """Resolve one receipt-backed interrupted write in the caller's UoW."""
 
@@ -96,6 +97,69 @@ def recover_unknown_automation_write(
         for item in receipts
     ):
         raise IdempotencyConflict("locked write receipt identity changed")
+    receipt_identity_sha256 = _json_hash([
+        {field: str(item.get(field) or "") for field in (
+            "receipt_id", "operation", "action", "argument_sha256",
+            "target_ref_sha256",
+        )}
+        for item in receipts
+    ])
+    if authoritative_applied_proof is not None:
+        proof = dict(authoritative_applied_proof)
+        if set(proof) != {"receipt_identity_sha256", "evidence_sha256"}:
+            raise ValueError("authoritative unknown-write proof is invalid")
+        proof_identity = str(proof.get("receipt_identity_sha256") or "")
+        proof_evidence = str(proof.get("evidence_sha256") or "")
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", proof_identity)
+            or not re.fullmatch(r"[0-9a-f]{64}", proof_evidence)
+        ):
+            raise ValueError("authoritative unknown-write proof digest is invalid")
+        if proof_identity != receipt_identity_sha256:
+            return _unknown(
+                "AUTHORITATIVE_READBACK_PROOF_STALE",
+                run_id,
+                step_id,
+                {
+                    "receipt_count": len(receipts),
+                    "receipt_digest": receipt_identity_sha256,
+                },
+            )
+        if not receipts or any(
+            str(item.get("outcome") or "") != "WRITE_OUTCOME_UNKNOWN"
+            for item in receipts
+        ):
+            return _unknown(
+                "AUTHORITATIVE_READBACK_RECEIPTS_CHANGED",
+                run_id,
+                step_id,
+                {
+                    "receipt_count": len(receipts),
+                    "receipt_digest": receipt_identity_sha256,
+                },
+            )
+        marker = getattr(
+            uow.automation_plugins,
+            "mark_locked_unknown_write_receipts_verified_row",
+            None,
+        )
+        if not callable(marker):
+            raise OrchestrationPersistenceError(
+                "authoritative unknown-write recovery is unavailable"
+            )
+        marker(
+            lease_id=str(lease_id),
+            expected_count=len(receipts),
+            evidence_sha256=proof_evidence,
+        )
+        receipts = [
+            {
+                **dict(item),
+                "outcome": "WRITE_VERIFIED",
+                "evidence_sha256": proof_evidence,
+            }
+            for item in receipts
+        ]
     receipt_digest = _json_hash([
         {field: str(item.get(field) or "") for field in (
             "receipt_id", "operation", "action", "argument_sha256",

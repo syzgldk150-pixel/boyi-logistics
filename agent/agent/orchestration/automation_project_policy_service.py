@@ -56,6 +56,7 @@ from agent.orchestration.models import (
     new_id,
 )
 from agent.orchestration.automation_run_supersession import (
+    raise_after_unknown_write_recovery,
     supersede_safely_suspended_runs,
 )
 from agent.orchestration.policy_engine import ProjectPolicyEvaluation
@@ -173,6 +174,9 @@ class AutomationProjectPolicyService:
         command_gateway: CommandGateway | None = None,
         wake_runner: Callable[[str], None] | None = None,
         dynamic_resolver: (Callable[[str, str, Mapping[str, Any]], Any] | None) = None,
+        unknown_write_recovery: (
+            Callable[[str, str], Mapping[str, Any] | None] | None
+        ) = None,
         release_hold_provider: Callable[[], bool] | None = None,
         contribution_registry: Any | None = None,
     ) -> None:
@@ -182,6 +186,7 @@ class AutomationProjectPolicyService:
         self._command_gateway = command_gateway
         self._wake_runner = wake_runner
         self._dynamic_resolver = dynamic_resolver
+        self._unknown_write_recovery = unknown_write_recovery
         self._release_hold_provider = release_hold_provider
         self._contribution_registry = contribution_registry
 
@@ -1839,10 +1844,19 @@ class AutomationProjectPolicyService:
                         occurred_at=occurred_at,
                     )
 
-        return self._command_gateway.submit(
-            command,
-            uow_acceptance_guard=guard,
-        )
+        try:
+            return self._command_gateway.submit(
+                command,
+                uow_acceptance_guard=guard,
+            )
+        except OrchestrationError as exc:
+            raise_after_unknown_write_recovery(
+                exc,
+                self._unknown_write_recovery,
+                automation_id=safe_id,
+                request_id=safe_request_id,
+            )
+            raise AssertionError("unknown-write recovery must raise")
 
     async def invoke_trusted_and_wait(
         self,

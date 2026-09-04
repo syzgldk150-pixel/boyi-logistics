@@ -10,8 +10,10 @@ import socket
 import sys
 import time
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, time as datetime_time, timedelta, timezone
 from contextlib import asynccontextmanager, suppress
+from functools import partial
 from logging.handlers import TimedRotatingFileHandler
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -263,6 +265,10 @@ from tools.feishu_cli_tool import feishu_operation
 from tools.price_tool import run_price_tool
 from tools.track_waybill_tool import run_track_waybill
 from plugin_core_adapters import build_production_first_party_core_handler_map
+from plugin_core_adapters.arrival import (
+    recover_arrival_stats_unknown_write,
+    recover_arrival_stats_unknown_writes_on_startup,
+)
 from shared.orchestration_repository import (
     OrchestrationPersistenceError,
     OrchestrationRepository,
@@ -1256,6 +1262,12 @@ async def lifespan(app: FastAPI):
         repository,
         wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
     )
+
+    arrival_stats_unknown_write_recovery = partial(
+        recover_arrival_stats_unknown_write,
+        plugin_runtime,
+    )
+
     project_policy_service = AutomationProjectPolicyService(
         repository,
         core_catalog,
@@ -1263,6 +1275,7 @@ async def lifespan(app: FastAPI):
         command_gateway=gateway,
         wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
         dynamic_resolver=TrustedDynamicArgumentResolver(),
+        unknown_write_recovery=arrival_stats_unknown_write_recovery,
         release_hold_provider=scheduler_release_hold_requested,
         contribution_registry=plugin_runtime.contribution_registry,
     )
@@ -1455,6 +1468,18 @@ async def lifespan(app: FastAPI):
     await runner.start(held_for_release=release_hold)
     await dispatcher.start()
     await retention_worker.start()
+    startup_recoveries = await asyncio.to_thread(
+        recover_arrival_stats_unknown_writes_on_startup,
+        plugin_runtime,
+        _release_sha(),
+    )
+    for recovery_automation_id, recovery_result in startup_recoveries:
+        logger.info(
+            "Arrival statistics startup recovery project=%s status=%s transitioned=%s",
+            recovery_automation_id,
+            str(recovery_result.get("recovery_status") or "UNKNOWN"),
+            bool(recovery_result.get("transitioned")),
+        )
     bind_agent_runtime(runtime, loop)
     bind_agent_command_runtime(runtime)
 

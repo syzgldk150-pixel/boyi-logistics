@@ -2961,11 +2961,10 @@ class OrchestrationUnitOfWork:
         self,
         *,
         automation_id: str,
-        generation: int,
-        lease_id: str,
+        generation: int, lease_id: str,
         request_id: str,
-        actor_id: str,
-        actor_role: str,
+        actor_id: str, actor_role: str,
+        authoritative_applied_proof: Mapping[str, object] | None = None,
     ) -> dict[str, Any]:
         # Public UoW entry point; implementation is configuration-free.
         from shared.automation_unknown_write_recovery import recover_unknown_automation_write
@@ -2974,6 +2973,7 @@ class OrchestrationUnitOfWork:
             self, automation_id=automation_id, generation=generation,
             lease_id=lease_id, request_id=request_id, actor_id=actor_id,
             actor_role=actor_role,
+            authoritative_applied_proof=authoritative_applied_proof,
         )
 
     def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> bool:

@@ -982,6 +982,52 @@ class MySQLAutomationPluginRuntimeAdapter:
             raise ValueError("unknown-write recovery evidence is invalid")
         return dict(result)
 
+    def inspect_current_unknown_write_recovery(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+    ) -> dict[str, Any]:
+        """Inspect the sole current unknown lease without accepting its identity."""
+
+        with self._orchestration.unit_of_work() as uow:
+            candidate_reader = getattr(
+                uow.automation_plugins,
+                "unique_unknown_write_recovery_lease_row",
+                None,
+            )
+            snapshot_reader = getattr(
+                uow.automation_plugins,
+                "unknown_write_recovery_snapshot_row",
+                None,
+            )
+            if not callable(candidate_reader) or not callable(snapshot_reader):
+                raise ValueError("unknown-write recovery evidence is unavailable")
+            candidate = candidate_reader(
+                automation_id=automation_id,
+                generation=generation,
+            )
+            if not isinstance(candidate, Mapping):
+                raise ValueError("unknown-write recovery candidate is invalid")
+            state = str(candidate.get("state") or "")
+            if state != "FOUND":
+                return {
+                    "state": (
+                        "RECOVERY_LEASE_AMBIGUOUS"
+                        if state == "AMBIGUOUS"
+                        else "RECOVERY_LEASE_MISSING"
+                    ),
+                    "receipt_count": 0,
+                }
+            result = snapshot_reader(
+                automation_id=automation_id,
+                generation=generation,
+                lease_id=str(candidate.get("lease_id") or ""),
+            )
+        if not isinstance(result, Mapping):
+            raise ValueError("unknown-write recovery evidence is invalid")
+        return dict(result)
+
     def resolve_unknown_write_not_applied(
         self,
         *,
@@ -1058,6 +1104,7 @@ class MySQLAutomationPluginRuntimeAdapter:
         request_id: str,
         actor_id: str,
         actor_role: str,
+        authoritative_applied_proof: Mapping[str, object] | None = None,
     ) -> dict[str, Any]:
         """Run the server-owned receipt recovery as one orchestration UoW."""
 
@@ -1072,6 +1119,7 @@ class MySQLAutomationPluginRuntimeAdapter:
                 request_id=request_id,
                 actor_id=actor_id,
                 actor_role=actor_role,
+                authoritative_applied_proof=authoritative_applied_proof,
             )
             uow.commit()
         if not isinstance(result, Mapping):
@@ -1086,6 +1134,7 @@ class MySQLAutomationPluginRuntimeAdapter:
         request_id: str,
         actor_id: str,
         actor_role: str,
+        authoritative_applied_proof: Mapping[str, object] | None = None,
     ) -> dict[str, Any]:
         """Recover only when the current generation has one unresolved lease."""
 
@@ -1126,6 +1175,7 @@ class MySQLAutomationPluginRuntimeAdapter:
                 request_id=request_id,
                 actor_id=actor_id,
                 actor_role=actor_role,
+                authoritative_applied_proof=authoritative_applied_proof,
             )
             uow.commit()
         if not isinstance(result, Mapping):

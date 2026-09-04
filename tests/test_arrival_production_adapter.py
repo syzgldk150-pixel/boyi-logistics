@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from copy import deepcopy
 from datetime import date
 from decimal import Decimal
@@ -727,6 +728,204 @@ def test_split_pending_sheet_rechecks_after_lost_write_response_without_rewritin
     assert result["record_count"] == 1
     assert write_calls == ["clear_sheet", "write_sheet"]
     assert sleeps == [0.5]
+
+
+def _split_pending_recovery_snapshot(
+    *,
+    account_id: str,
+    primary_resource_id: str,
+    secondary_resource_id: str,
+    target_resource_id: str,
+) -> dict[str, Any]:
+    calls = (
+        ("projection.invoke", "scan.snapshot.replace", "account_id", account_id),
+        ("projection.invoke", "scan.snapshot.cleanup", "account_id", account_id),
+        ("projection.invoke", "waybill.snapshot.replace", "account_id", account_id),
+        (
+            "network.request",
+            "feishu.sheet.replace",
+            "arrival_stats_primary_sheet",
+            primary_resource_id,
+        ),
+        (
+            "network.request",
+            "feishu.sheet.replace",
+            "arrival_stats_secondary_sheet",
+            secondary_resource_id,
+        ),
+        (
+            "projection.invoke",
+            "split_pending.snapshot.refresh",
+            "account_id",
+            account_id,
+        ),
+        (
+            "network.request",
+            "feishu.sheet.replace",
+            "arrival_stats_split_pending_sheet",
+            target_resource_id,
+        ),
+    )
+    identities = [
+        {
+            "receipt_id": f"receipt-{sequence}",
+            "operation": operation,
+            "action": action,
+            "argument_sha256": f"{sequence:x}" * 64,
+            "target_ref_sha256": f"{sequence + 8:x}" * 64,
+        }
+        for sequence, (operation, action, _role, _binding) in enumerate(calls, start=1)
+    ]
+    return {
+        "state": "RECEIPTS_IDENTIFIED",
+        "receipt_count": len(identities),
+        "receipt_identity_sha256": hashlib.sha256(
+            arrival.canonical_json_bytes(identities)
+        ).hexdigest(),
+        "receipts": [
+            {
+                **identity,
+                "role_sha256": hashlib.sha256(role.encode("utf-8")).hexdigest(),
+                "binding_sha256": hashlib.sha256(
+                    binding.encode("utf-8")
+                ).hexdigest(),
+                "outcome": "WRITE_OUTCOME_UNKNOWN",
+                "sequence": sequence,
+            }
+            for sequence, (identity, (_operation, _action, role, binding)) in enumerate(
+                zip(identities, calls),
+                start=1,
+            )
+        ],
+    }
+
+
+def test_split_pending_unknown_write_recovery_uses_read_only_exact_comparison(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_id = "ronghui-default"
+    primary_id = "resource-stats-primary"
+    secondary_id = "resource-stats-secondary"
+    target_id = "resource-split-pending"
+    primary = {
+        "resource_kind": "feishu_sheet",
+        "spreadsheet_token": "primary-token",
+        "snapshot_range": "Stats!A2:S100",
+        "clear_range": "Stats!A2:S100",
+        "title_range": "Stats!A1:S1",
+        "_meta": {"resource_key": primary_id},
+    }
+    target = {
+        "resource_kind": "feishu_sheet",
+        "spreadsheet_token": "target-token",
+        "sheet_id": "Split",
+        "range": "Split!A1:S1",
+        "clear_range": "Split!A2:S5000",
+        "_meta": {"resource_key": target_id},
+    }
+    records = [_stats_record()]
+    primary_values = arrival._stats_values("stats", records, "2026-08-15")
+    target_values = arrival._stats_values("split_pending", records, "2026-08-15")
+    reads: list[str] = []
+
+    monkeypatch.setattr(
+        arrival,
+        "_load_resource",
+        lambda resource_id: {primary_id: primary, target_id: target}.get(resource_id),
+    )
+
+    def fresh(_resource, value_range, *, width):
+        reads.append(value_range)
+        values = {
+            "Stats!A1:S1": [primary_values[0]],
+            "Stats!A2:S100": primary_values[1:],
+            "Split!A1:S5000": target_values,
+        }[value_range]
+        return arrival._canonical_rows(values, width=width)
+
+    monkeypatch.setattr(arrival, "_fresh_sheet_rows", fresh)
+
+    result = arrival.verify_arrival_stats_split_pending_recovery(
+        account_bindings={"account_id": account_id},
+        resource_bindings={
+            "arrival_stats_primary_sheet": primary_id,
+            "arrival_stats_secondary_sheet": secondary_id,
+            "arrival_stats_split_pending_sheet": target_id,
+        },
+        recovery_snapshot=_split_pending_recovery_snapshot(
+            account_id=account_id,
+            primary_resource_id=primary_id,
+            secondary_resource_id=secondary_id,
+            target_resource_id=target_id,
+        ),
+    )
+
+    assert result["status"] == "APPLIED"
+    assert len(result["evidence_sha256"]) == 64
+    assert reads == ["Stats!A1:S1", "Stats!A2:S100", "Split!A1:S5000"]
+
+
+def test_split_pending_unknown_write_recovery_keeps_mismatch_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_id = "ronghui-default"
+    primary_id = "resource-stats-primary"
+    secondary_id = "resource-stats-secondary"
+    target_id = "resource-split-pending"
+    resources = {
+        primary_id: {
+            "resource_kind": "feishu_sheet",
+            "spreadsheet_token": "primary-token",
+            "snapshot_range": "Stats!A2:S100",
+            "clear_range": "Stats!A2:S100",
+            "title_range": "Stats!A1:S1",
+            "_meta": {"resource_key": primary_id},
+        },
+        target_id: {
+            "resource_kind": "feishu_sheet",
+            "spreadsheet_token": "target-token",
+            "sheet_id": "Split",
+            "range": "Split!A1:S1",
+            "clear_range": "Split!A2:S5000",
+            "_meta": {"resource_key": target_id},
+        },
+    }
+    primary_values = arrival._stats_values(
+        "stats", [_stats_record()], "2026-08-15"
+    )
+    monkeypatch.setattr(arrival, "_load_resource", resources.get)
+    monkeypatch.setattr(
+        arrival,
+        "_fresh_sheet_rows",
+        lambda _resource, value_range, *, width: arrival._canonical_rows(
+            {
+                "Stats!A1:S1": [primary_values[0]],
+                "Stats!A2:S100": primary_values[1:],
+                "Split!A1:S5000": [["运单编号"]],
+            }[value_range],
+            width=width,
+        ),
+    )
+
+    result = arrival.verify_arrival_stats_split_pending_recovery(
+        account_bindings={"account_id": account_id},
+        resource_bindings={
+            "arrival_stats_primary_sheet": primary_id,
+            "arrival_stats_secondary_sheet": secondary_id,
+            "arrival_stats_split_pending_sheet": target_id,
+        },
+        recovery_snapshot=_split_pending_recovery_snapshot(
+            account_id=account_id,
+            primary_resource_id=primary_id,
+            secondary_resource_id=secondary_id,
+            target_resource_id=target_id,
+        ),
+    )
+
+    assert result == {
+        "status": "UNKNOWN",
+        "reason": "RECOVERY_READBACK_NOT_PROVEN",
+    }
 
 
 def test_arrival_archive_binds_target_date_sheet_and_exact_rows(

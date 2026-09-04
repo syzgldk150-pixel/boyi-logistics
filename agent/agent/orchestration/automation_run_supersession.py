@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -42,6 +42,39 @@ _TERMINAL_RUN_STATUS_VALUES = frozenset(
         RunStatus.CANCELLED.value,
     }
 )
+
+
+def raise_after_unknown_write_recovery(
+    error: OrchestrationError,
+    recovery: Callable[[str, str], Mapping[str, Any] | None] | None,
+    *,
+    automation_id: str,
+    request_id: str,
+) -> None:
+    """Attempt exact server readback, then preserve one project mutex."""
+
+    details = error.details if isinstance(error.details, dict) else {}
+    if (
+        error.code != "AUTOMATION_ALREADY_RUNNING"
+        or str(details.get("blocking_kind") or "").upper()
+        != AUTOMATION_BLOCKING_UNKNOWN_WRITE
+        or recovery is None
+    ):
+        raise error
+    try:
+        result = recovery(automation_id, request_id)
+    except Exception:  # noqa: BLE001 - retain the original fail-closed blocker
+        raise error
+    if (
+        isinstance(result, Mapping)
+        and str(result.get("recovery_status") or "").upper() == "APPLIED"
+    ):
+        raise OrchestrationError(
+            "AUTOMATION_ALREADY_RUNNING",
+            "The previous write was verified and its Run is resuming",
+            details={"blocking_kind": AUTOMATION_BLOCKING_ACTIVE},
+        ) from error
+    raise error
 
 
 def classify_automation_run_blocking_kind(

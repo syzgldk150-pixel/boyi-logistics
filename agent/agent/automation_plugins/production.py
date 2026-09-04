@@ -2177,6 +2177,7 @@ class MySQLRuntimeTargetService:
         request_id: str,
         actor_id: str,
         actor_role: str,
+        authoritative_applied_proof: Mapping[str, object] | None = None,
     ) -> dict[str, Any]:
         """Resolve only from server-owned durable receipt evidence."""
 
@@ -2187,6 +2188,7 @@ class MySQLRuntimeTargetService:
             request_id=request_id,
             actor_id=actor_id,
             actor_role=actor_role,
+            authoritative_applied_proof=authoritative_applied_proof,
         )
         run_id = str(result.get("run_id") or "")
         if result.get("transitioned") is True and run_id and self._wake_runner:
@@ -2201,6 +2203,7 @@ class MySQLRuntimeTargetService:
         request_id: str,
         actor_id: str,
         actor_role: str,
+        authoritative_applied_proof: Mapping[str, object] | None = None,
     ) -> dict[str, Any]:
         """Resolve the sole current unknown lease from server-owned evidence."""
 
@@ -2210,11 +2213,21 @@ class MySQLRuntimeTargetService:
             request_id=request_id,
             actor_id=actor_id,
             actor_role=actor_role,
+            authoritative_applied_proof=authoritative_applied_proof,
         )
         run_id = str(result.get("run_id") or "")
         if result.get("transitioned") is True and run_id and self._wake_runner:
             self._wake_runner(run_id)
         return result
+
+    def inspect_current_unknown_write(
+        self, *, automation_id: str, generation: int,
+    ) -> dict[str, Any]:
+        """Return the sole current receipt locator for server readback."""
+        return self._runtime.inspect_current_unknown_write_recovery(
+            automation_id=automation_id,
+            generation=generation,
+        )
 
     def _reconciliation_automation_ids(self) -> tuple[str, ...]:
         """Discover project identities without compiling every catalog entry.

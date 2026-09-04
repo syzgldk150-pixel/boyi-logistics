@@ -2275,18 +2275,22 @@ class AutomationPluginGenerationRepositoryMixin(
                 """
                 SELECT receipt.receipt_id, receipt.operation, receipt.action,
                        receipt.argument_sha256, receipt.target_ref_sha256,
+                       receipt.target_ref_json,
                        receipt.outcome, receipt.evidence_sha256,
                        receipt.orchestration_run_id,
-                       receipt.step_id,
+                       receipt.step_id, receipt.created_at,
                        step.run_id AS persisted_step_run_id
                 FROM automation_write_attempt_receipts AS receipt
                 LEFT JOIN agent_run_steps AS step ON step.step_id=receipt.step_id
                 WHERE receipt.lease_id=%s
-                ORDER BY receipt.receipt_id FOR UPDATE
+                ORDER BY receipt.created_at, receipt.receipt_id FOR UPDATE
                 """,
                 (safe_lease_id,),
             )
-            receipts = _rows(cursor)
+            receipts = [
+                _decode_row(row, ("target_ref_json",))
+                for row in _rows(cursor)
+            ]
         if not receipts:
             return {"state": "HISTORICAL_RECEIPT_UNAVAILABLE", "receipt_count": 0}
         valid = all(
@@ -2298,6 +2302,9 @@ class AutomationPluginGenerationRepositoryMixin(
             and bool(str(row.get("action") or ""))
             and bool(str(row.get("argument_sha256") or ""))
             and bool(str(row.get("target_ref_sha256") or ""))
+            and isinstance(row.get("target_ref_json"), Mapping)
+            and str(row["target_ref_json"].get("role_sha256") or "")
+            and str(row["target_ref_json"].get("binding_sha256") or "")
             for row in receipts
         )
         applied = valid and all(
@@ -2305,24 +2312,42 @@ class AutomationPluginGenerationRepositoryMixin(
             and bool(str(row.get("evidence_sha256") or ""))
             for row in receipts
         )
+        receipt_identities = [
+            {
+                field: str(row.get(field) or "")
+                for field in (
+                    "receipt_id", "operation", "action", "argument_sha256",
+                    "target_ref_sha256",
+                )
+            }
+            for row in receipts
+        ]
         return {
             "state": (
                 "RECEIPTS_APPLIED" if applied else
                 "RECEIPTS_IDENTIFIED" if valid else "RECEIPT_IDENTITY_MISMATCH"
             ),
+            "lease_id": safe_lease_id,
             "receipt_count": len(receipts),
-            "receipt_digest": _json_hash(
-                [
-                    {
-                        field: str(row.get(field) or "")
-                        for field in (
-                            "receipt_id", "operation", "action", "argument_sha256",
-                            "target_ref_sha256",
-                        )
-                    }
-                    for row in receipts
-                ]
-            ),
+            "receipt_digest": _json_hash(receipt_identities),
+            "receipt_identity_sha256": _json_hash(receipt_identities),
+            "receipts": [
+                {
+                    **identity,
+                    "role_sha256": str(
+                        (row.get("target_ref_json") or {}).get("role_sha256") or ""
+                    ),
+                    "binding_sha256": str(
+                        (row.get("target_ref_json") or {}).get("binding_sha256") or ""
+                    ),
+                    "outcome": str(row.get("outcome") or ""),
+                    "sequence": sequence,
+                }
+                for sequence, (identity, row) in enumerate(
+                    zip(receipt_identities, receipts),
+                    start=1,
+                )
+            ],
         }
 
     def unique_unknown_write_recovery_lease_row(
@@ -2440,11 +2465,38 @@ class AutomationPluginGenerationRepositoryMixin(
                 SELECT receipt_id, orchestration_run_id, step_id, operation, action,
                        argument_sha256, target_ref_sha256, outcome, evidence_sha256
                 FROM automation_write_attempt_receipts
-                WHERE lease_id=%s ORDER BY receipt_id FOR UPDATE
+                WHERE lease_id=%s ORDER BY created_at, receipt_id FOR UPDATE
                 """,
                 (_required_text(lease_id, "lease_id"),),
             )
             return _rows(cursor)
+
+    def mark_locked_unknown_write_receipts_verified_row(
+        self,
+        *,
+        lease_id: str,
+        expected_count: int,
+        evidence_sha256: str,
+    ) -> None:
+        """Verify the exact receipt set already locked by recovery."""
+
+        safe_lease_id = _required_text(lease_id, "lease_id")
+        safe_evidence = _sha256(evidence_sha256, "evidence_sha256")
+        if type(expected_count) is not int or expected_count <= 0:
+            raise ValueError("unknown-write receipt count is invalid")
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE automation_write_attempt_receipts
+                SET outcome='WRITE_VERIFIED', evidence_sha256=%s, updated_at=NOW(6)
+                WHERE lease_id=%s AND outcome='WRITE_OUTCOME_UNKNOWN'
+                """,
+                (safe_evidence, safe_lease_id),
+            )
+            if int(getattr(cursor, "rowcount", 0) or 0) != expected_count:
+                raise ConcurrentUpdateError(
+                    "unknown-write receipts changed before verified recovery"
+                )
 
     def settle_unknown_write_recovery_row(
         self,
