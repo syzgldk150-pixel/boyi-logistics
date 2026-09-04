@@ -594,6 +594,23 @@ def test_planner_persists_compact_scan_impact_for_the_signed_project():
         "result_summary_json"
     ]["data"]["preview_evidence"]["items"]
 
+    source_less_impact = copy.deepcopy(plan.impact)
+    source_less_impact.pop("source_version")
+    source_less_impact.pop("amounts")
+    source_less_impact.pop("preview_fingerprint")
+    source_less_plan = replace(legacy_plan, impact=source_less_impact)
+    recovered_source_less = scan_preview_recovery_plan_projection(
+        _Uow(_fixture()),
+        plan=source_less_plan,
+        expected_plan_hash=source_less_plan.plan_hash,
+        expectation=_expectation(),
+        now=NOW + timedelta(days=1),
+    )
+    assert recovered_source_less["preview_run_id"] == RUN_ID
+    assert recovered_source_less["items"] == _fixture()["steps"][RUN_ID][0][
+        "result_summary_json"
+    ]["data"]["preview_evidence"]["items"]
+
     tampered = copy.deepcopy(plan.impact)
     tampered["entities"][0]["metadata"]["selection_count"] = 1
     with pytest.raises(OrchestrationError) as invalid:
