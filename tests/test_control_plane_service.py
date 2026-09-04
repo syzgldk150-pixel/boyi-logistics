@@ -103,6 +103,35 @@ class _FakeRuns:
         current["version"] += 1
         return copy.deepcopy(current)
 
+    def get_automation_supersession_facts(self, run_id: str):
+        return copy.deepcopy(self.repository.run_facts.get(run_id, {}))
+
+    def cancel_suspended(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+        expected_statuses,
+        error_code: str,
+        error_summary: str,
+        finished_at,
+    ):
+        current = self.repository.runs[run_id]
+        if current["version"] != expected_version or current["status"] not in expected_statuses:
+            raise RuntimeError("CAS conflict")
+        current.update(
+            {
+                "status": "CANCELLED",
+                "error_code": error_code,
+                "error_summary": error_summary,
+                "finished_at": finished_at,
+                "worker_id": None,
+                "lease_expires_at": None,
+                "version": current["version"] + 1,
+            }
+        )
+        return copy.deepcopy(current)
+
     def transition(
         self,
         run_id: str,
@@ -172,9 +201,51 @@ class _FakeWorkItems:
                 return copy.deepcopy(item)
         return None
 
+    def get(self, work_item_id: str, *, for_update: bool = False):
+        del for_update
+        item = self.repository.work_items.get(work_item_id)
+        return copy.deepcopy(item) if item else None
+
+    def transition(
+        self,
+        work_item_id: str,
+        *,
+        expected_version: int,
+        expected_statuses,
+        status: str,
+        reason_code=None,
+        reason_summary=None,
+        resolution=None,
+        closed_at=None,
+    ):
+        current = self.repository.work_items[work_item_id]
+        if current["version"] != expected_version or current["status"] not in expected_statuses:
+            raise RuntimeError("CAS conflict")
+        current.update(
+            {
+                "status": status,
+                "current_reason_code": reason_code,
+                "current_reason_summary": reason_summary,
+                "resolution_json": copy.deepcopy(resolution),
+                "closed_at": closed_at,
+                "version": current["version"] + 1,
+            }
+        )
+        return copy.deepcopy(current)
+
     @staticmethod
     def list_by_type(_item_type: str):
         return []
+
+
+class _FakeCommands:
+    def __init__(self, repository):
+        self.repository = repository
+
+    def get(self, command_id: str, *, for_update: bool = False):
+        del for_update
+        row = self.repository.commands.get(command_id)
+        return copy.deepcopy(row) if row else None
 
 
 class _FakeEvents:
@@ -230,6 +301,7 @@ class _FakeUow:
         self.repository = repository
         self.runs = repository.run_store
         self.work_items = _FakeWorkItems(repository)
+        self.commands = _FakeCommands(repository)
         self.events = _FakeEvents(repository)
         self.committed = False
 
@@ -249,6 +321,14 @@ class _FakeRepository:
         self.runs = {row["run_id"]: copy.deepcopy(row) for row in (runs or [])}
         self.run_store = _FakeRuns(self)
         self.work_items = {"work-1": _work_item()}
+        self.commands = {
+            str(row["command_id"]): {
+                "command_id": str(row["command_id"]),
+                "automation_id": "daily_sign",
+            }
+            for row in (runs or [])
+        }
+        self.run_facts: dict[str, dict] = {}
         self.events: list[dict] = []
         self.outbox: list[dict] = []
         self.evidence = [
@@ -660,6 +740,47 @@ class ControlPlaneServiceTests(unittest.TestCase):
 
 
 class ControlPlaneServiceAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_safe_suspended_run_is_cancelled_immediately(self):
+        repository = _FakeRepository([_run("run-1", "BLOCKED_DATA")])
+        repository.work_items["work-1"]["status"] = "BLOCKED_DATA"
+        active = []
+        wakes = []
+
+        async def cancel_active(run_id):
+            active.append(run_id)
+
+        service = ControlPlaneService(
+            repository,
+            _FakeApprovalService(repository),
+            cancel_active=cancel_active,
+            wake_runner=wakes.append,
+        )
+
+        result = await service.cancel_run("run-1", actor=ACTOR, comment="stop")
+
+        self.assertEqual("CANCELLED", result["run"]["status"])
+        self.assertEqual("CANCELLED", repository.work_items["work-1"]["status"])
+        self.assertEqual([], repository.cancel_requests)
+        self.assertEqual([], active)
+        self.assertEqual([], wakes)
+        self.assertEqual("agent.run.cancelled", repository.events[-1]["event_type"])
+
+    async def test_unknown_write_suspended_run_cannot_be_cancelled(self):
+        repository = _FakeRepository([_run("run-1", "BLOCKED_DATA")])
+        repository.work_items["work-1"]["status"] = "BLOCKED_DATA"
+        repository.run_facts["run-1"] = {"has_unknown_write_receipt": True}
+        service = ControlPlaneService(
+            repository,
+            _FakeApprovalService(repository),
+        )
+
+        with self.assertRaises(OrchestrationError) as raised:
+            await service.cancel_run("run-1", actor=ACTOR, comment="stop")
+
+        self.assertEqual("RUN_WRITE_OUTCOME_UNKNOWN", raised.exception.code)
+        self.assertEqual("BLOCKED_DATA", repository.runs["run-1"]["status"])
+        self.assertEqual([], repository.cancel_requests)
+
     async def test_cancel_requests_persistence_and_cancels_active_execution(self):
         repository = _FakeRepository([_run("run-1", "RUNNING")])
         active = []

@@ -18,8 +18,18 @@ from agent.orchestration.models import (
     Actor,
     OrchestrationError,
     RunStatus,
+    WorkItemStatus,
+    assert_run_transition,
+    assert_work_item_transition,
     canonical_json,
     new_id,
+)
+from agent.orchestration.automation_run_supersession import (
+    AUTOMATION_BLOCKING_ACTIVE,
+    AUTOMATION_BLOCKING_NEEDS_ATTENTION,
+    AUTOMATION_BLOCKING_SAFE_SUPERSEDE,
+    AUTOMATION_BLOCKING_UNKNOWN_WRITE,
+    classify_automation_run_blocking_kind,
 )
 from shared.redaction import is_sensitive_key, redact_sensitive, redact_text
 
@@ -283,6 +293,7 @@ class ControlPlaneService:
         }:
             raise OrchestrationError("RUN_TERMINAL", "Terminal run cannot accept cancellation")
         safe_comment = _bounded_text(comment, 500)
+        cancelled_immediately = False
         with self._repository.unit_of_work() as uow:
             locked = uow.runs.get(str(current["run_id"]), for_update=True)
             if locked is None:
@@ -301,26 +312,110 @@ class ControlPlaneService:
                 RunStatus.CANCELLED,
             }:
                 raise OrchestrationError("RUN_TERMINAL", "Terminal run cannot accept cancellation")
-            run = uow.runs.request_cancel(
-                str(locked["run_id"]),
-                requested_by_type=actor.actor_type.value,
-                requested_by_id=actor.actor_id,
-                reason=safe_comment,
-            )
-            event = self._append_action_event(
-                uow,
-                run=run,
-                event_type="agent.run.cancel_requested",
-                actor=actor,
-                payload={
-                    "previous_status": locked_status.value,
-                    "comment": safe_comment,
-                },
-            )
+            if locked_status in {
+                RunStatus.NEEDS_CLARIFICATION,
+                RunStatus.BLOCKED_LOGIN,
+                RunStatus.BLOCKED_DATA,
+            }:
+                command_id = str(locked.get("command_id") or "").strip()
+                work_item_id = str(locked.get("work_item_id") or "").strip()
+                command = (
+                    uow.commands.get(command_id, for_update=True)
+                    if command_id
+                    else None
+                )
+                item = (
+                    uow.work_items.get(work_item_id, for_update=True)
+                    if work_item_id
+                    else None
+                )
+                if command is None or item is None or not str(
+                    command.get("automation_id") or ""
+                ).strip():
+                    direct_kind = AUTOMATION_BLOCKING_NEEDS_ATTENTION
+                else:
+                    direct_kind = classify_automation_run_blocking_kind(
+                        locked,
+                        item,
+                        uow.runs.get_automation_supersession_facts(
+                            str(locked["run_id"])
+                        ),
+                    )
+                if direct_kind == AUTOMATION_BLOCKING_UNKNOWN_WRITE:
+                    raise OrchestrationError(
+                        "RUN_WRITE_OUTCOME_UNKNOWN",
+                        "写入结果尚未核验，不能直接取消该事项",
+                    )
+                if direct_kind == AUTOMATION_BLOCKING_NEEDS_ATTENTION:
+                    raise OrchestrationError(
+                        "RUN_CANCELLATION_REQUIRES_ATTENTION",
+                        "运行与事项状态不一致，需要先处理旧事项",
+                    )
+                if direct_kind == AUTOMATION_BLOCKING_SAFE_SUPERSEDE:
+                    now = _naive_utc_now()
+                    assert_run_transition(locked_status, RunStatus.CANCELLED)
+                    run = uow.runs.cancel_suspended(
+                        str(locked["run_id"]),
+                        expected_version=int(locked["version"]),
+                        expected_statuses=(locked_status.value,),
+                        error_code="CANCELLED_BY_ACTOR",
+                        error_summary=safe_comment or "已由用户取消",
+                        finished_at=now,
+                    )
+                    item_status = WorkItemStatus(str(item["status"]))
+                    assert_work_item_transition(
+                        item_status,
+                        WorkItemStatus.CANCELLED,
+                    )
+                    uow.work_items.transition(
+                        str(item["work_item_id"]),
+                        expected_version=int(item["version"]),
+                        expected_statuses=(item_status.value,),
+                        status=WorkItemStatus.CANCELLED.value,
+                        reason_code="CANCELLED_BY_ACTOR",
+                        reason_summary=safe_comment or "已由用户取消",
+                        resolution={"run_id": run["run_id"]},
+                        closed_at=now,
+                    )
+                    event = self._append_action_event(
+                        uow,
+                        run=run,
+                        event_type="agent.run.cancelled",
+                        actor=actor,
+                        payload={
+                            "previous_status": locked_status.value,
+                            "comment": safe_comment,
+                            "immediate": True,
+                        },
+                    )
+                    cancelled_immediately = True
+                elif direct_kind != AUTOMATION_BLOCKING_ACTIVE:
+                    raise OrchestrationError(
+                        "RUN_CANCELLATION_REQUIRES_ATTENTION",
+                        "该运行当前不能直接取消",
+                    )
+            if not cancelled_immediately:
+                run = uow.runs.request_cancel(
+                    str(locked["run_id"]),
+                    requested_by_type=actor.actor_type.value,
+                    requested_by_id=actor.actor_id,
+                    reason=safe_comment,
+                )
+                event = self._append_action_event(
+                    uow,
+                    run=run,
+                    event_type="agent.run.cancel_requested",
+                    actor=actor,
+                    payload={
+                        "previous_status": locked_status.value,
+                        "comment": safe_comment,
+                    },
+                )
             uow.commit()
-        if self._cancel_active is not None:
+        if not cancelled_immediately and self._cancel_active is not None:
             await _maybe_await(self._cancel_active(str(run["run_id"])))
-        self._wake(str(run["run_id"]))
+        if not cancelled_immediately:
+            self._wake(str(run["run_id"]))
         self._wake_events()
         return {"run": _run_dto(run), "event": _event_dto(event)}
 

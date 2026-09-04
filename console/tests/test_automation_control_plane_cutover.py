@@ -318,6 +318,37 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         self.assertEqual(console_principal, app.calls[0][4])
         self.assertTrue(app.sent[1]["cancel_requested"])
 
+    def test_cancelled_suspended_run_is_reported_as_terminal_immediately(self):
+        app = _App(
+            {
+                "ok": True,
+                "status": 200,
+                "data": {"run": {"run_id": "run-1", "status": "CANCELLED"}},
+            }
+        )
+        app._parse_urlencoded_form = lambda _handler: {
+            "task_id": "daily_sign",
+            "run_id": "run-1",
+        }
+        app._control_plane_write_context = lambda _handler: {
+            "actor": {
+                "actor_type": "console_admin",
+                "actor_id": "17",
+                "roles": ["admin"],
+            },
+            "actor_roles": ["admin"],
+            "source": "console",
+            "_console_principal": {"actor_id": "17"},
+        }
+
+        app._handle_automation_task_cancel(object())
+
+        self.assertEqual(HTTPStatus.OK, app.sent[0])
+        self.assertEqual("已取消", app.sent[1]["title"])
+        self.assertTrue(app.sent[1]["cancelled"])
+        self.assertFalse(app.sent[1]["pending"])
+        self.assertFalse(app.sent[1]["cancel_requested"])
+
     def test_scan_confirmation_forwards_only_new_request_and_preview_ids(self):
         preview_run_id = "11111111-1111-4111-8111-111111111111"
         request_id = "22222222-2222-4222-8222-222222222222"

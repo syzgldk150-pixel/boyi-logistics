@@ -352,19 +352,27 @@ async def _invoke_automation_project_and_reply(
         )
         if exc.code == "AUTOMATION_ALREADY_RUNNING":
             details = exc.details if isinstance(exc.details, dict) else {}
-            active_status = str(details.get("active_status") or "").strip().upper()
-            status_label = {
-                "RUNNING": "执行中",
-                "VERIFYING": "核验中",
-                "WAITING_APPROVAL": "待审批",
-                "NEEDS_CLARIFICATION": "待补充信息",
-                "BLOCKED_LOGIN": "登录阻塞",
-                "BLOCKED_DATA": "数据阻塞",
-                "FAILED_RETRYABLE": "可重试失败",
-            }.get(active_status, "未终结")
-            rejected_reply = (
-                f"{task_name}未重复提交：已有一条未结束任务（状态：{status_label}）。"
-                "请到事项中心处理或取消后再重试。"
+            blocking_kind = str(
+                details.get("blocking_kind") or "NEEDS_ATTENTION"
+            ).strip().upper()
+            rejected_reply = {
+                "ACTIVE": (
+                    f"{task_name}未提交：当前任务仍在执行，请等待完成后再试。"
+                ),
+                "RETRY_PENDING": (
+                    f"{task_name}未提交：旧任务正在等待自动重试，请先等待重试结果。"
+                ),
+                "UNKNOWN_WRITE": (
+                    f"{task_name}未提交：旧任务的写入结果待人工核验，"
+                    "请先到事项中心确认结果。"
+                ),
+                "NEEDS_ATTENTION": (
+                    f"{task_name}未提交：存在需要处理的旧事项，"
+                    "请先到事项中心处理或取消。"
+                ),
+            }.get(
+                blocking_kind,
+                f"{task_name}未提交：存在需要处理的旧事项，请先到事项中心处理。",
             )
         else:
             rejected_reply = (

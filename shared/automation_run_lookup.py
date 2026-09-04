@@ -2,12 +2,201 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
-from shared.orchestration_repository_support import _required_text, _row_dict
+from shared.orchestration_repository_support import (
+    ConcurrentUpdateError,
+    RUN_STATUSES,
+    _required_text,
+    _row_dict,
+    _rows,
+    _safe_error,
+    _status,
+)
+
+
+AUTOMATION_UNFINISHED_RUN_LIMIT = 100
 
 
 class AutomationRunLookupMixin:
+    def list_unfinished_for_automation(
+        self,
+        automation_id: str,
+        *,
+        limit: int = AUTOMATION_UNFINISHED_RUN_LIMIT + 1,
+    ) -> list[str]:
+        """Discover a bounded, deterministic set of unfinished project Runs.
+
+        Discovery deliberately does not lock a join.  Callers lock and
+        revalidate each aggregate in the canonical Run -> Command -> Work Item
+        order before changing state.
+        """
+
+        bounded_limit = max(
+            1,
+            min(int(limit), AUTOMATION_UNFINISHED_RUN_LIMIT + 1),
+        )
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT r.run_id
+                FROM agent_commands AS c
+                INNER JOIN agent_runs AS r ON r.command_id=c.command_id
+                WHERE BINARY c.automation_id=BINARY %s
+                  AND r.status NOT IN (
+                      'COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED'
+                  )
+                ORDER BY c.requested_at, r.created_at, r.run_id
+                LIMIT %s
+                """,
+                (
+                    _required_text(automation_id, "automation_id"),
+                    bounded_limit,
+                ),
+            )
+            return [str(row["run_id"]) for row in _rows(cursor)]
+
+    def get_automation_supersession_facts(
+        self,
+        run_id: str,
+    ) -> dict[str, Any]:
+        """Return fail-closed execution and write facts for one locked Run."""
+
+        safe_run_id = _required_text(run_id, "run_id")
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    EXISTS (
+                        SELECT 1
+                        FROM agent_run_steps AS step
+                        WHERE step.run_id=%s
+                          AND step.status IN ('RUNNING', 'VERIFYING')
+                    ) AS has_inflight_step,
+                    EXISTS (
+                        SELECT 1
+                        FROM agent_run_steps AS step
+                        WHERE step.run_id=%s
+                          AND step.error_code='WRITE_OUTCOME_UNKNOWN'
+                    ) AS has_unknown_step,
+                    EXISTS (
+                        SELECT 1
+                        FROM automation_project_generation_leases AS lease
+                        WHERE lease.orchestration_run_id=%s
+                          AND lease.outcome IN ('RUNNING', 'VERIFYING')
+                          AND lease.expires_at > UTC_TIMESTAMP(6)
+                    ) AS has_live_generation_lease,
+                    EXISTS (
+                        SELECT 1
+                        FROM automation_project_generation_leases AS lease
+                        WHERE lease.orchestration_run_id=%s
+                          AND lease.outcome='WRITE_OUTCOME_UNKNOWN'
+                    ) AS has_unknown_generation_lease,
+                    EXISTS (
+                        SELECT 1
+                        FROM automation_write_attempt_receipts AS receipt
+                        WHERE receipt.orchestration_run_id=%s
+                          AND receipt.outcome='WRITE_OUTCOME_UNKNOWN'
+                    ) AS has_unknown_write_receipt,
+                    EXISTS (
+                        SELECT 1
+                        FROM automation_write_attempt_receipts AS receipt
+                        INNER JOIN agent_run_steps AS step
+                            ON step.step_id=receipt.step_id
+                           AND step.run_id=receipt.orchestration_run_id
+                        WHERE receipt.orchestration_run_id=%s
+                          AND step.operation_type IN (
+                              'EXTERNAL_WRITE', 'FINANCIAL_WRITE', 'DESTRUCTIVE'
+                          )
+                          AND receipt.outcome='STARTED'
+                    ) AS has_unclosed_protected_write,
+                    EXISTS (
+                        SELECT 1
+                        FROM automation_write_attempt_receipts AS receipt
+                        INNER JOIN agent_run_steps AS step
+                            ON step.step_id=receipt.step_id
+                           AND step.run_id=receipt.orchestration_run_id
+                        WHERE receipt.orchestration_run_id=%s
+                          AND step.operation_type IN (
+                              'EXTERNAL_WRITE', 'FINANCIAL_WRITE', 'DESTRUCTIVE'
+                          )
+                          AND receipt.outcome IN (
+                              'STARTED', 'WRITE_VERIFIED',
+                              'WRITE_OUTCOME_UNKNOWN'
+                          )
+                    ) AS has_protected_write_receipt
+                """,
+                (safe_run_id,) * 7,
+            )
+            row = _row_dict(cursor, cursor.fetchone()) or {}
+        return {
+            "has_inflight_step": bool(row.get("has_inflight_step")),
+            "has_unknown_step": bool(row.get("has_unknown_step")),
+            "has_live_generation_lease": bool(
+                row.get("has_live_generation_lease")
+            ),
+            "has_unknown_generation_lease": bool(
+                row.get("has_unknown_generation_lease")
+            ),
+            "has_unknown_write_receipt": bool(
+                row.get("has_unknown_write_receipt")
+            ),
+            "has_unclosed_protected_write": bool(
+                row.get("has_unclosed_protected_write")
+            ),
+            "has_protected_write_receipt": bool(
+                row.get("has_protected_write_receipt")
+            ),
+        }
+
+    def cancel_suspended(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+        expected_statuses: Iterable[str],
+        error_code: str,
+        error_summary: str,
+        finished_at: Any,
+    ) -> dict[str, Any]:
+        """Terminalize an already locked, non-executing Run in one CAS write."""
+
+        allowed = sorted(
+            {
+                _status(item, RUN_STATUSES, "expected run status")
+                for item in expected_statuses
+            }
+        )
+        if not allowed:
+            raise ValueError("expected_statuses is required")
+        placeholders = ", ".join("%s" for _ in allowed)
+        with self.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE agent_runs
+                SET status='CANCELLED', error_code=%s, error_summary=%s,
+                    retryable=FALSE, next_attempt_at=NULL,
+                    worker_id=NULL, lease_expires_at=NULL,
+                    finished_at=%s, version=version+1
+                WHERE run_id=%s AND version=%s
+                  AND status IN ({placeholders})
+                """,
+                (
+                    _required_text(error_code, "error_code"),
+                    _safe_error(error_summary),
+                    finished_at,
+                    _required_text(run_id, "run_id"),
+                    int(expected_version),
+                    *allowed,
+                ),
+            )
+            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+                raise ConcurrentUpdateError(
+                    "suspended run state changed before cancellation"
+                )
+        return self.get(run_id, for_update=True) or {}
+
     def get_active_for_automation(
         self,
         automation_id: str,
