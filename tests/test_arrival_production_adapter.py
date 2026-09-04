@@ -846,6 +846,10 @@ def test_split_pending_unknown_write_recovery_uses_read_only_exact_comparison(
         return arrival._canonical_rows(values, width=width)
 
     monkeypatch.setattr(arrival, "_fresh_sheet_rows", fresh)
+    from tools.split_pending_snapshot import classify_sheet_values
+
+    candidates, _source_rows = classify_sheet_values(primary_values)
+    monkeypatch.setattr(arrival, "_read_split_projection", lambda: candidates)
 
     result = arrival.verify_arrival_stats_split_pending_recovery(
         account_bindings={"account_id": account_id},
@@ -867,7 +871,7 @@ def test_split_pending_unknown_write_recovery_uses_read_only_exact_comparison(
     assert reads == ["Stats!A1:S1", "Stats!A2:S100", "Split!A1:S5000"]
 
 
-def test_split_pending_unknown_write_recovery_keeps_mismatch_unknown(
+def test_split_pending_unknown_write_recovery_identifies_empty_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     account_id = "ronghui-default"
@@ -896,6 +900,10 @@ def test_split_pending_unknown_write_recovery_keeps_mismatch_unknown(
         "stats", [_stats_record()], "2026-08-15"
     )
     monkeypatch.setattr(arrival, "_load_resource", resources.get)
+    from tools.split_pending_snapshot import TARGET_HEADERS, classify_sheet_values
+
+    candidates, _source_rows = classify_sheet_values(primary_values)
+    monkeypatch.setattr(arrival, "_read_split_projection", lambda: candidates)
     monkeypatch.setattr(
         arrival,
         "_fresh_sheet_rows",
@@ -903,7 +911,7 @@ def test_split_pending_unknown_write_recovery_keeps_mismatch_unknown(
             {
                 "Stats!A1:S1": [primary_values[0]],
                 "Stats!A2:S100": primary_values[1:],
-                "Split!A1:S5000": [["运单编号"]],
+                "Split!A1:S5000": [list(TARGET_HEADERS)],
             }[value_range],
             width=width,
         ),
@@ -924,10 +932,9 @@ def test_split_pending_unknown_write_recovery_keeps_mismatch_unknown(
         ),
     )
 
-    assert result == {
-        "status": "UNKNOWN",
-        "reason": "RECOVERY_READBACK_NOT_PROVEN",
-    }
+    assert result["status"] == "NOT_APPLIED"
+    assert result["reason"] == "ARRIVAL_STATS_SPLIT_PENDING_EMPTY_READBACK"
+    assert len(result["evidence_sha256"]) == 64
 
 
 def test_split_pending_unknown_write_recovery_logs_closed_snapshot_state(
@@ -993,6 +1000,54 @@ def test_arrival_unknown_write_startup_recovery_includes_disabled_instances(
     ]
 
 
+def test_arrival_unknown_write_repair_completes_only_empty_split_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline = [["header", *([""] * 18)]]
+    expected = [baseline[0], ["A-100", *([""] * 18)]]
+    target = {
+        "spreadsheet_token": "target-token",
+        "clear_range": "Split!A2:S5000",
+    }
+    monkeypatch.setattr(
+        arrival,
+        "_arrival_stats_split_pending_recovery_readback",
+        lambda *_args: {
+            "expected": expected,
+            "baseline": baseline,
+            "observed": baseline,
+            "target": target,
+            "managed_range": "Split!A1:S5000",
+            "sheet_id": "Split",
+        },
+    )
+    writes: list[str] = []
+    monkeypatch.setattr(
+        arrival,
+        "_write_sheet_call",
+        lambda action, _params: writes.append(action) or True,
+    )
+    readbacks = iter((baseline, expected))
+    monkeypatch.setattr(
+        arrival,
+        "_fresh_sheet_rows",
+        lambda *_args, **_kwargs: next(readbacks),
+    )
+
+    result = arrival._repair_arrival_stats_split_pending_recovery(
+        {
+            "arrival_stats_primary_sheet": "primary-resource",
+            "arrival_stats_split_pending_sheet": "target-resource",
+        }
+    )
+
+    assert result == {
+        "status": "APPLIED",
+        "reason": "ARRIVAL_STATS_SPLIT_PENDING_REPAIRED",
+    }
+    assert writes == ["clear_sheet", "write_sheet"]
+
+
 def test_arrival_unknown_write_recovery_resolves_identical_sibling_leases(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1037,11 +1092,23 @@ def test_arrival_unknown_write_recovery_resolves_identical_sibling_leases(
         ),
         target_service=TargetService(),
     )
+    repair_state = {"applied": False, "calls": 0}
+
+    def repair(_resource_bindings):
+        repair_state["applied"] = True
+        repair_state["calls"] += 1
+        return {"status": "APPLIED", "reason": "REPAIRED"}
+
+    monkeypatch.setattr(
+        arrival,
+        "_repair_arrival_stats_split_pending_recovery",
+        repair,
+    )
     monkeypatch.setattr(
         arrival,
         "verify_arrival_stats_split_pending_recovery",
         lambda **kwargs: {
-            "status": "APPLIED",
+            "status": "APPLIED" if repair_state["applied"] else "NOT_APPLIED",
             "receipt_identity_sha256": hashlib.sha256(
                 str(kwargs["recovery_snapshot"]["lease_id"]).encode("utf-8")
             ).hexdigest(),
@@ -1056,6 +1123,7 @@ def test_arrival_unknown_write_recovery_resolves_identical_sibling_leases(
     )
 
     assert result == {"recovery_status": "APPLIED", "transitioned": True}
+    assert repair_state["calls"] == 1
     assert [call["lease_id"] for call in recoveries] == ["lease-1", "lease-2"]
     assert all(call["actor_role"] == "system" for call in recoveries)
 
