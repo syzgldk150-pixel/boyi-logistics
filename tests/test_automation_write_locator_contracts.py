@@ -14,6 +14,15 @@ from agent.automation_plugins.first_party import recoverable_write_broker_action
 
 
 def _arguments(action: str) -> dict[str, object]:
+    if action == "ronghui.scan_next.submit":
+        return {
+            "items": [
+                {
+                    "bill_code": "TRACKING-RAW-001",
+                    "station_name": "TEST-STATION",
+                }
+            ]
+        }
     if action in {
         "waybill.snapshot.replace", "arrival.forecast_snapshot.replace",
         "scan.snapshot.replace", "arrival.snapshot.replace",
@@ -73,6 +82,7 @@ class WriteLocatorContractTests(unittest.TestCase):
                     "daily_sign": "sync_daily_should_sign",
                     "delivery_status": "sync_delivery_status",
                     "finance_startup_catchup": "sync_finance_bills",
+                    "scan_codes": "sync_scan_codes",
                 }[automation_id],
                 "generation": 2,
                 "lease_id": str(uuid.uuid4()),
@@ -82,7 +92,7 @@ class WriteLocatorContractTests(unittest.TestCase):
         )
         return issuer, capability, receipts
 
-    def test_signed_five_project_write_set_equals_broker_locator_set(self):
+    def test_signed_six_project_write_set_equals_broker_locator_set(self):
         expected = {
             ("arrive_list", "projection.invoke", "waybill.snapshot.replace"),
             ("arrive_list", "projection.invoke", "arrival.forecast_snapshot.replace"),
@@ -100,10 +110,12 @@ class WriteLocatorContractTests(unittest.TestCase):
             ("finance_startup_catchup", "ledger.invoke", "finance.batch.acquire"),
             ("finance_startup_catchup", "ledger.invoke", "finance.source_snapshot.write"),
             ("finance_startup_catchup", "ledger.invoke", "finance.projection.commit"),
+            ("scan_codes", "projection.invoke", "scan.snapshot.replace"),
+            ("scan_codes", "browser.invoke", "ronghui.scan_next.submit"),
         }
         self.assertEqual(expected, recoverable_write_broker_actions())
         self.assertEqual(expected, recoverable_write_action_contracts())
-        self.assertEqual(16, len(expected))
+        self.assertEqual(18, len(expected))
 
     def test_every_signed_write_emits_payload_free_stable_locator(self):
         root = Path(self._testMethodName)

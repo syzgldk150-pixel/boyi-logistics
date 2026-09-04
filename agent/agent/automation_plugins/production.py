@@ -120,7 +120,9 @@ from agent.automation_plugins.runtime_repository import (
 )
 from agent.orchestration.scan_preview_binding import (
     SCAN_PREVIEW_CONTEXT_KEY,
+    ScanPreviewExpectation,
     normalize_preview_run_id,
+    scan_preview_recovery_impact_projection,
     scan_preview_recovery_projection,
 )
 from agent.automation_plugins.runtime_backend_availability import (
@@ -2376,17 +2378,50 @@ class MySQLRuntimeTargetService:
                 if isinstance(execution_context, Mapping)
                 else None
             )
-            if not isinstance(preview_context, Mapping):
-                raise ValueError("scan recovery preview binding is unavailable")
-            preview_run_id = normalize_preview_run_id(
-                preview_context.get("preview_run_id")
-            )
-            preview = scan_preview_recovery_projection(
-                uow,
-                preview_run_id=preview_run_id,
-                trusted_context=preview_context,
-                now=datetime.now(timezone.utc),
-            )
+            if isinstance(preview_context, Mapping):
+                preview_run_id = normalize_preview_run_id(
+                    preview_context.get("preview_run_id")
+                )
+                preview = scan_preview_recovery_projection(
+                    uow,
+                    preview_run_id=preview_run_id,
+                    trusted_context=preview_context,
+                    now=datetime.now(timezone.utc),
+                )
+            else:
+                plan = run.get("plan_json")
+                invocation = command.get("automation_invocation_json")
+                if not isinstance(plan, Mapping) or not isinstance(
+                    invocation, Mapping
+                ):
+                    raise ValueError("scan recovery legacy plan binding is unavailable")
+                invocation_generation = invocation.get("automation_generation")
+                configuration_version = invocation.get(
+                    "project_configuration_version"
+                )
+                contract_digest = str(invocation.get("contract_hash") or "").strip()
+                if (
+                    invocation.get("automation_id") != automation_id
+                    or invocation_generation != generation
+                    or type(configuration_version) is not int
+                    or configuration_version <= 0
+                    or plan.get("automation_id") != automation_id
+                    or plan.get("automation_generation") != generation
+                    or plan.get("automation_contract_hash") != contract_digest
+                    or not isinstance(plan.get("impact"), Mapping)
+                ):
+                    raise ValueError("scan recovery legacy plan identity is invalid")
+                preview = scan_preview_recovery_impact_projection(
+                    uow,
+                    impact=plan["impact"],
+                    expectation=ScanPreviewExpectation(
+                        project_instance_id=automation_id,
+                        generation=generation,
+                        contract_digest=contract_digest,
+                        configuration_version=configuration_version,
+                    ),
+                    now=datetime.now(timezone.utc),
+                )
             steps = uow.steps.list_for_run(run_id)
             if len(steps) != 1 or not isinstance(steps[0], Mapping):
                 raise ValueError("scan recovery step identity is invalid")
