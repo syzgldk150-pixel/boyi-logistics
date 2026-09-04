@@ -946,13 +946,21 @@ def recover_arrival_stats_unknown_write(
                     },
                 },
             )
-        recovered = batch_not_applied_recovery(
-            automation_id=automation_id,
-            generation=generation,
-            recoveries=recoveries,
-            actor_id="system:arrival-stats-readback",
-            actor_role="system",
-        )
+        try:
+            recovered = batch_not_applied_recovery(
+                automation_id=automation_id,
+                generation=generation,
+                recoveries=recoveries,
+                actor_id="system:arrival-stats-readback",
+                actor_role="system",
+            )
+        except Exception as exc:  # noqa: BLE001 - preserve the whole batch
+            logger.warning(
+                "Arrival statistics divergent unknown-write recovery unavailable "
+                "code=%s",
+                str(exc)[:120],
+            )
+            return None
         return dict(recovered) if isinstance(recovered, Mapping) else None
     if needs_repair:
         repair = _repair_arrival_stats_split_pending_recovery(
