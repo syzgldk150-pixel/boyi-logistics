@@ -2274,6 +2274,65 @@ class MySQLRuntimeTargetService:
             generation=generation,
         )
 
+    def inspect_scan_unknown_write_candidates(
+        self,
+        *,
+        automation_id: str,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Inspect unresolved scan leases across committed and archived generations."""
+
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("scan recovery candidate limit is invalid")
+        candidates: list[dict[str, Any]] = []
+        generations = sorted(
+            self._runtime.list_project_generations(automation_id),
+            key=lambda item: item.snapshot.generation,
+        )
+        for item in generations:
+            generation = int(item.snapshot.generation)
+            batch = self._runtime.inspect_current_unknown_write_recoveries(
+                automation_id=automation_id,
+                generation=generation,
+            )
+            state = str(batch.get("state") or "")
+            if state == "RECOVERY_LEASE_LIMIT_EXCEEDED":
+                return {
+                    "state": "RECOVERY_LEASE_LIMIT_EXCEEDED",
+                    "candidate_count": int(batch.get("lease_count") or 0),
+                    "candidates": [],
+                }
+            if state == "RECOVERY_LEASE_MISSING":
+                continue
+            snapshots = batch.get("snapshots")
+            if (
+                state != "RECOVERY_LEASES_IDENTIFIED"
+                or not isinstance(snapshots, list)
+                or any(not isinstance(snapshot, Mapping) for snapshot in snapshots)
+            ):
+                return {
+                    "state": "RECOVERY_CANDIDATES_INVALID",
+                    "candidate_count": 0,
+                    "candidates": [],
+                }
+            for snapshot in snapshots:
+                candidates.append({"generation": generation, "snapshot": dict(snapshot)})
+                if len(candidates) > limit:
+                    return {
+                        "state": "RECOVERY_LEASE_LIMIT_EXCEEDED",
+                        "candidate_count": len(candidates),
+                        "candidates": [],
+                    }
+        return {
+            "state": (
+                "RECOVERY_CANDIDATES_IDENTIFIED"
+                if candidates
+                else "RECOVERY_LEASE_MISSING"
+            ),
+            "candidate_count": len(candidates),
+            "candidates": candidates,
+        }
+
     def inspect_scan_unknown_write_context(
         self,
         *,

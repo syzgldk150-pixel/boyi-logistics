@@ -839,120 +839,149 @@ def recover_scan_codes_unknown_write(
     entry = plugin_runtime.catalog.require(automation_id)
     if str(entry.plugin_id) != "sync_scan_codes":
         return None
-    generation = entry.committed_generation
+    current_generation = entry.committed_generation
     if (
-        type(generation) is not int
-        or generation <= 0
-        or entry.target_generation != generation
+        type(current_generation) is not int
+        or current_generation <= 0
+        or entry.target_generation != current_generation
     ):
         return None
     target = plugin_runtime.target_service
-    snapshot_reader = getattr(target, "inspect_current_unknown_write", None)
+    candidate_reader = getattr(target, "inspect_scan_unknown_write_candidates", None)
     context_reader = getattr(target, "inspect_scan_unknown_write_context", None)
     recover = getattr(target, "recover_unknown_write", None)
-    if not all(callable(item) for item in (snapshot_reader, context_reader, recover)):
+    if not all(callable(item) for item in (candidate_reader, context_reader, recover)):
         return None
     try:
-        snapshot = snapshot_reader(
+        batch = candidate_reader(
             automation_id=automation_id,
-            generation=generation,
+            limit=100,
         )
-        if not isinstance(snapshot, Mapping) or snapshot.get("state") != "RECEIPTS_IDENTIFIED":
-            return None
-        receipts = snapshot.get("receipts")
-        identity_sha256 = str(snapshot.get("receipt_identity_sha256") or "")
+        candidates = batch.get("candidates") if isinstance(batch, Mapping) else None
         if (
-            not isinstance(receipts, list)
-            or not receipts
-            or not re.fullmatch(r"[0-9a-f]{64}", identity_sha256)
-            or not any(
-                isinstance(receipt, Mapping)
-                and str(receipt.get("action") or "")
-                in {"ronghui.scan_next.submit", "ronghui.scan_next.verify"}
-                and str(receipt.get("outcome") or "") == "WRITE_OUTCOME_UNKNOWN"
-                for receipt in receipts
-            )
+            not isinstance(batch, Mapping)
+            or batch.get("state") != "RECOVERY_CANDIDATES_IDENTIFIED"
+            or not isinstance(candidates, list)
+            or not candidates
+            or batch.get("candidate_count") != len(candidates)
         ):
-            return None
-        context = context_reader(
-            automation_id=automation_id,
-            generation=generation,
-            lease_id=str(snapshot.get("lease_id") or ""),
-        )
-        if (
-            not isinstance(context, Mapping)
-            or context.get("state") != "SCAN_RECOVERY_CONTEXT_IDENTIFIED"
-        ):
-            return None
-        items = context.get("items")
-        started_at = context.get("attempt_started_at")
-        finished_at = context.get("attempt_finished_at")
-        if (
-            not isinstance(items, list)
-            or not items
-            or any(not isinstance(item, Mapping) for item in items)
-            or not isinstance(started_at, datetime)
-            or not isinstance(finished_at, datetime)
-        ):
-            return None
-        windows = _scan_recovery_windows(started_at, finished_at)
-        if not windows:
             return None
         account_id = str(entry.account_bindings.get("account_id") or "").strip()
         if not account_id:
             return None
         descriptor = get_account_manager().require_active_binding_descriptor(account_id)
-        normalized_items = [
-            {
-                "bill_code": str(item.get("bill_code") or "").strip(),
-                "station_name": str(item.get("station_name") or "").strip(),
-            }
-            for item in items
-        ]
-        readback = _scan_next_readback_state(descriptor, normalized_items, windows)
-        if readback.get("state") != "NOT_APPLIED":
-            logger.info(
-                "Scan unknown-write recovery kept blocked project=%s state=%s",
-                automation_id,
-                str(readback.get("state") or "UNKNOWN"),
+        expected_account_binding = hashlib.sha256(account_id.encode("utf-8")).hexdigest()
+        for candidate in candidates:
+            if not isinstance(candidate, Mapping):
+                return None
+            generation = candidate.get("generation")
+            snapshot = candidate.get("snapshot")
+            if (
+                type(generation) is not int
+                or generation <= 0
+                or not isinstance(snapshot, Mapping)
+                or snapshot.get("state") != "RECEIPTS_IDENTIFIED"
+            ):
+                return None
+            receipts = snapshot.get("receipts")
+            identity_sha256 = str(snapshot.get("receipt_identity_sha256") or "")
+            scan_receipts = [
+                receipt
+                for receipt in receipts or ()
+                if isinstance(receipt, Mapping)
+                and str(receipt.get("action") or "")
+                in {"ronghui.scan_next.submit", "ronghui.scan_next.verify"}
+                and str(receipt.get("outcome") or "") == "WRITE_OUTCOME_UNKNOWN"
+            ]
+            if (
+                not isinstance(receipts, list)
+                or not receipts
+                or not scan_receipts
+                or not re.fullmatch(r"[0-9a-f]{64}", identity_sha256)
+                or any(
+                    str(receipt.get("binding_sha256") or "")
+                    != expected_account_binding
+                    for receipt in scan_receipts
+                )
+            ):
+                return None
+            context = context_reader(
+                automation_id=automation_id,
+                generation=generation,
+                lease_id=str(snapshot.get("lease_id") or ""),
             )
-            return None
-        evidence = {
-            "schema": 1,
-            "kind": "scan_next_exact_empty_readback",
-            "receipt_identity_sha256": identity_sha256,
-            "selection_sha256": _scan_next_identities_sha256(normalized_items),
-            "window_count": len(windows),
-            "record_count": int(readback.get("record_count") or 0),
-        }
-        evidence_sha256 = hashlib.sha256(
-            json.dumps(
-                evidence,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
-        request_key = str(
-            uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                "boyi:scan-unknown-write-not-applied:"
-                f"{automation_id}:{trigger_request_id}:{identity_sha256}",
-            )
-        )
-        result = recover(
-            automation_id=automation_id,
-            generation=generation,
-            lease_id=str(snapshot.get("lease_id") or ""),
-            request_id=request_key,
-            actor_id="system:scan-readback",
-            actor_role="system",
-            authoritative_not_applied_proof={
+            if (
+                not isinstance(context, Mapping)
+                or context.get("state") != "SCAN_RECOVERY_CONTEXT_IDENTIFIED"
+            ):
+                return None
+            items = context.get("items")
+            started_at = context.get("attempt_started_at")
+            finished_at = context.get("attempt_finished_at")
+            if (
+                not isinstance(items, list)
+                or not items
+                or any(not isinstance(item, Mapping) for item in items)
+                or not isinstance(started_at, datetime)
+                or not isinstance(finished_at, datetime)
+            ):
+                return None
+            windows = _scan_recovery_windows(started_at, finished_at)
+            if not windows:
+                return None
+            normalized_items = [
+                {
+                    "bill_code": str(item.get("bill_code") or "").strip(),
+                    "station_name": str(item.get("station_name") or "").strip(),
+                }
+                for item in items
+            ]
+            readback = _scan_next_readback_state(descriptor, normalized_items, windows)
+            if readback.get("state") != "NOT_APPLIED":
+                logger.info(
+                    "Scan unknown-write recovery kept blocked project=%s generation=%d state=%s",
+                    automation_id,
+                    generation,
+                    str(readback.get("state") or "UNKNOWN"),
+                )
+                return None
+            evidence = {
+                "schema": 1,
+                "kind": "scan_next_exact_empty_readback",
                 "receipt_identity_sha256": identity_sha256,
-                "evidence_sha256": evidence_sha256,
-            },
-        )
-        return dict(result) if isinstance(result, Mapping) else None
+                "selection_sha256": _scan_next_identities_sha256(normalized_items),
+                "window_count": len(windows),
+                "record_count": int(readback.get("record_count") or 0),
+            }
+            evidence_sha256 = hashlib.sha256(
+                json.dumps(
+                    evidence,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            request_key = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    "boyi:scan-unknown-write-not-applied:"
+                    f"{automation_id}:{trigger_request_id}:{identity_sha256}",
+                )
+            )
+            result = recover(
+                automation_id=automation_id,
+                generation=generation,
+                lease_id=str(snapshot.get("lease_id") or ""),
+                request_id=request_key,
+                actor_id="system:scan-readback",
+                actor_role="system",
+                authoritative_not_applied_proof={
+                    "receipt_identity_sha256": identity_sha256,
+                    "evidence_sha256": evidence_sha256,
+                },
+            )
+            return dict(result) if isinstance(result, Mapping) else None
+        return None
     except Exception as exc:  # noqa: BLE001 - recovery must remain fail closed
         logger.warning(
             "Scan unknown-write recovery was not proven code=%s",
