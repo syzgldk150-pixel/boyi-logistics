@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from copy import deepcopy
 from datetime import date
 from decimal import Decimal
@@ -926,6 +927,26 @@ def test_split_pending_unknown_write_recovery_keeps_mismatch_unknown(
         "status": "UNKNOWN",
         "reason": "RECOVERY_READBACK_NOT_PROVEN",
     }
+
+
+def test_split_pending_unknown_write_recovery_logs_closed_snapshot_state(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.INFO, logger="agent"):
+        result = arrival.verify_arrival_stats_split_pending_recovery(
+            account_bindings={},
+            resource_bindings={},
+            recovery_snapshot={
+                "state": "HISTORICAL_RECEIPT_UNAVAILABLE",
+                "receipt_count": 0,
+            },
+        )
+
+    assert result == {
+        "status": "UNKNOWN",
+        "reason": "RECOVERY_READBACK_NOT_PROVEN",
+    }
+    assert "RECEIPT_SNAPSHOT_HISTORICAL_RECEIPT_UNAVAILABLE" in caplog.text
 
 
 def test_arrival_unknown_write_startup_recovery_includes_disabled_instances(
