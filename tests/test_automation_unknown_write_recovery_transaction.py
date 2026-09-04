@@ -507,7 +507,7 @@ class UnknownWriteRecoveryTransactionTests(unittest.TestCase):
         self.assertEqual("c" * 64, plugins.receipts[0]["evidence_sha256"])
         self.assertEqual("FAILED_TERMINAL", steps.row["status"])
         self.assertEqual("FAILED_TERMINAL", runs.row["status"])
-        self.assertEqual("RESOLVED", uow.work_items.row["status"])
+        self.assertEqual("CANCELLED", uow.work_items.row["status"])
 
     def test_applied_completes_exact_step_and_wakes_runner(self):
         receipt = {

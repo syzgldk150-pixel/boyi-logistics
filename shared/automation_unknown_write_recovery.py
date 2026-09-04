@@ -240,19 +240,11 @@ def recover_unknown_automation_write(
         and step.get("retry_safe") is not True
         and current_item_status not in {"CANCELLED", "RESOLVED"}
     ):
-        if current_item_status != "OPEN":
-            item = uow.work_items.transition(
-                str(item["work_item_id"]),
-                expected_version=int(item["version"]),
-                expected_statuses=(current_item_status,),
-                status="OPEN",
-                reason_code="RECONCILED_NOT_APPLIED",
-            )
         uow.work_items.transition(
             str(item["work_item_id"]),
             expected_version=int(item["version"]),
-            expected_statuses=("OPEN",),
-            status="RESOLVED",
+            expected_statuses=(current_item_status,),
+            status="CANCELLED",
             reason_code="RECONCILED_NOT_APPLIED",
             reason_summary="Fresh target readback proved the intended write is not present",
             resolution={
@@ -262,7 +254,7 @@ def recover_unknown_automation_write(
             },
             closed_at=datetime.now(),
         )
-        current_item_status = "RESOLVED"
+        current_item_status = "CANCELLED"
     desired_item_status = (
         "CANCELLED"
         if current_item_status == "CANCELLED"
