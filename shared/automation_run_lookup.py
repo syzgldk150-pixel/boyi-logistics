@@ -176,7 +176,7 @@ class AutomationRunLookupMixin:
                 f"""
                 UPDATE agent_runs
                 SET status='CANCELLED', error_code=%s, error_summary=%s,
-                    retryable=FALSE, next_attempt_at=NULL,
+                    retryable=FALSE,
                     worker_id=NULL, lease_expires_at=NULL,
                     finished_at=%s, version=version+1
                 WHERE run_id=%s AND version=%s
