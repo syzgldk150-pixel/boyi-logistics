@@ -179,6 +179,31 @@ def import_phase7_resources() -> list[str]:
     return imported
 
 
+def repair_missing_fixed_automation_routes() -> list[str]:
+    """Restore only missing, code-owned transport route descriptors.
+
+    Route identities are part of the reviewed first-party command contract.
+    They contain no tenant-selected document/account locator, so recreating a
+    missing row is deterministic.  Existing rows are deliberately untouched:
+    their configuration revision remains governed by the normal project
+    reconciliation path.
+    """
+
+    repaired: list[str] = []
+    for resource_key, config in BUILTIN_RESOURCES.items():
+        if config.get("resource_kind") not in {"feishu_route", "webhook_route"}:
+            continue
+        if get_workflow_resource(resource_key) is not None:
+            continue
+        upsert_workflow_resource(
+            resource_key,
+            config,
+            source="reviewed-route-repair",
+        )
+        repaired.append(resource_key)
+    return repaired
+
+
 def sync_reviewed_phase7_resource_metadata() -> list[str]:
     """Merge reviewed human-readable locators without resetting live IDs."""
 

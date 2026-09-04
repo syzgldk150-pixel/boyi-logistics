@@ -460,6 +460,117 @@ def test_direct_feishu_project_rejection_distinguishes_blocking_kinds():
         assert "private-run" not in replies[0][0]
 
 
+def test_selection_preview_waits_for_active_project_then_runs() -> None:
+    preview_run_id = "22222222-2222-4222-8222-222222222222"
+    service = _FakeProjectEntrypoints(
+        results=[
+            OrchestrationError(
+                "AUTOMATION_ALREADY_RUNNING",
+                "该脚本仍在运行",
+                details={"blocking_kind": "ACTIVE"},
+            ),
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": preview_run_id,
+                "selection_preview": _selection_preview(
+                    preview_run_id,
+                    "split_pending_problem_upload",
+                    [],
+                    {
+                        "complete_count": 0,
+                        "hidden_completed_count": 0,
+                        "split_count": 0,
+                        "pending_count": 0,
+                    },
+                ),
+            },
+        ]
+    )
+    replies = []
+    token = message_handler._COMMAND_CONTEXT.set(
+        message_handler.FeishuCommandContext(
+            event_id="event-queued-preview",
+            actor_id="user-one",
+            chat_id="chat-one",
+        )
+    )
+    try:
+        with (
+            patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+            patch.object(
+                message_handler,
+                "_reply_text",
+                side_effect=_reply_recorder(replies),
+            ),
+            patch.object(message_handler.asyncio, "sleep", return_value=None) as sleep,
+        ):
+            result = asyncio.run(
+                message_handler._invoke_selection_preview_and_reply(
+                    route_key="builtin.split_pending_problem_upload",
+                    tool_name="preview_split_pending_problems",
+                    receive_id="chat-one",
+                )
+            )
+    finally:
+        message_handler._COMMAND_CONTEXT.reset(token)
+
+    assert result is not None
+    assert len(service.calls) == 2
+    sleep.assert_awaited_once_with(1.0)
+    assert [reply[1]["reply_type"] for reply in replies[:2]] == [
+        "selection_preview_started",
+        "automation_preview_queued",
+    ]
+    assert "待执行分批运单 0 单" in replies[-1][0]
+    assert replies[-1][1]["reply_type"] == "split_candidate_list"
+
+
+def test_selection_preview_unknown_write_is_not_queued_or_hidden() -> None:
+    service = _FakeProjectEntrypoints(
+        results=[
+            OrchestrationError(
+                "AUTOMATION_ALREADY_RUNNING",
+                "旧写入结果未知",
+                details={"blocking_kind": "UNKNOWN_WRITE"},
+            )
+        ]
+    )
+    replies = []
+    token = message_handler._COMMAND_CONTEXT.set(
+        message_handler.FeishuCommandContext(
+            event_id="event-unknown-preview",
+            actor_id="user-one",
+            chat_id="chat-one",
+        )
+    )
+    try:
+        with (
+            patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+            patch.object(
+                message_handler,
+                "_reply_text",
+                side_effect=_reply_recorder(replies),
+            ),
+            patch.object(message_handler.asyncio, "sleep", return_value=None) as sleep,
+        ):
+            result = asyncio.run(
+                message_handler._invoke_selection_preview_and_reply(
+                    route_key="builtin.split_pending_problem_upload",
+                    tool_name="preview_split_pending_problems",
+                    receive_id="chat-one",
+                )
+            )
+    finally:
+        message_handler._COMMAND_CONTEXT.reset(token)
+
+    assert result is None
+    assert len(service.calls) == 1
+    sleep.assert_not_awaited()
+    assert "写入结果待人工核验" in replies[-1][0]
+    assert replies[-1][1]["reply_type"] == "automation_preview_rejected"
+
+
 def test_direct_feishu_project_explains_blocked_data_reason():
     service = _FakeProjectEntrypoints(
         results=[

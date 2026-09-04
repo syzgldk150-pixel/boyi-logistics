@@ -88,6 +88,16 @@ LOGIN_PENDING_TTL = 600
 LOGIN_ACCOUNT_CHOICE_TTL = 600
 SELF_PICKUP_PROBLEM_ACCOUNT_ID = "ronghui_self_pickup_problem"
 SELF_PICKUP_PREVIEW_TOOL_NAME = "preview_self_pickup_problems"
+SELECTION_PREVIEW_ACTIVE_RETRY_DELAYS = (
+    1.0,
+    2.0,
+    3.0,
+    5.0,
+    8.0,
+    10.0,
+    15.0,
+    15.0,
+)
 SPLIT_TOOL_NAME = "split_pending_problem_upload"
 SPLIT_PREVIEW_TOOL_NAME = "preview_split_pending_problems"
 SCAN_FEISHU_ROUTE_KEY = "builtin.scan_codes"
@@ -469,23 +479,73 @@ async def _invoke_selection_preview_and_reply(
         start_reply,
         reply_type="selection_preview_started",
     )
-    try:
-        result = await _invoke_automation_project(
-            route_key=route_key,
-            dynamic_inputs={},
-        )
-    except OrchestrationError as exc:
-        logger.warning(
-            "trusted Feishu selection preview rejected | route=%s | code=%s",
-            str(route_key or "")[:191],
-            exc.code,
-        )
-        await _reply_text(
-            receive_id,
-            f"候选清单未生成（{exc.code}），请检查项目账号和数据表绑定后重试。",
-            reply_type="automation_preview_rejected",
-        )
-        return None
+    queued_reply_sent = False
+    retry_delays = iter(SELECTION_PREVIEW_ACTIVE_RETRY_DELAYS)
+    while True:
+        try:
+            result = await _invoke_automation_project(
+                route_key=route_key,
+                dynamic_inputs={},
+            )
+            break
+        except OrchestrationError as exc:
+            details = exc.details if isinstance(exc.details, dict) else {}
+            blocking_kind = str(
+                details.get("blocking_kind") or "NEEDS_ATTENTION"
+            ).strip().upper()
+            retry_delay = next(retry_delays, None)
+            if (
+                exc.code == "AUTOMATION_ALREADY_RUNNING"
+                and blocking_kind == "ACTIVE"
+                and retry_delay is not None
+            ):
+                if not queued_reply_sent:
+                    queued_reply_sent = True
+                    await _reply_text(
+                        receive_id,
+                        "当前项目仍在执行，候选任务已排队等待。",
+                        reply_type="automation_preview_queued",
+                    )
+                await asyncio.sleep(retry_delay)
+                continue
+            logger.warning(
+                "trusted Feishu selection preview rejected | route=%s | "
+                "code=%s | blocking_kind=%s",
+                str(route_key or "")[:191],
+                exc.code,
+                blocking_kind,
+            )
+            if exc.code == "AUTOMATION_ALREADY_RUNNING":
+                rejected_reply = {
+                    "ACTIVE": "候选清单未生成：当前项目仍在执行，请稍后重试。",
+                    "RETRY_PENDING": (
+                        "候选清单未生成：旧任务正在等待自动重试，请先等待重试结果。"
+                    ),
+                    "UNKNOWN_WRITE": (
+                        "候选清单未生成：旧任务的写入结果待人工核验，"
+                        "请先到事项中心确认结果。"
+                    ),
+                    "NEEDS_ATTENTION": (
+                        "候选清单未生成：存在需要处理的旧事项，"
+                        "请先到事项中心处理或取消。"
+                    ),
+                }.get(
+                    blocking_kind,
+                    "候选清单未生成：存在需要处理的旧事项，请先到事项中心处理。",
+                )
+            elif exc.code == "PROJECT_ROUTE_NOT_FOUND":
+                rejected_reply = "候选清单未生成：项目入口尚未就绪，请稍后重试。"
+            else:
+                rejected_reply = (
+                    f"候选清单未生成（{exc.code}），"
+                    "请检查项目账号和数据表绑定后重试。"
+                )
+            await _reply_text(
+                receive_id,
+                rejected_reply,
+                reply_type="automation_preview_rejected",
+            )
+            return None
 
     status = str(result.get("status") or "").strip().upper()
     run_id = str(result.get("run_id") or "").strip()

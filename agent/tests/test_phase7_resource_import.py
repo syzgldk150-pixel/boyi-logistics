@@ -116,6 +116,47 @@ def test_phase7_import_persists_problem_resources_without_key_inference() -> Non
         ) in upsert.call_args_list
 
 
+def test_missing_fixed_route_repair_creates_only_absent_reviewed_routes() -> None:
+    missing_key = "automation.feishu_route.self_pickup_problem_upload"
+
+    def load_resource(key: str):
+        if key == missing_key:
+            return None
+        return {"resource_kind": "existing"}
+
+    with (
+        patch.object(
+            phase7_resource_import,
+            "get_workflow_resource",
+            side_effect=load_resource,
+        ),
+        patch.object(phase7_resource_import, "upsert_workflow_resource") as upsert,
+    ):
+        repaired = phase7_resource_import.repair_missing_fixed_automation_routes()
+
+    assert repaired == [missing_key]
+    upsert.assert_called_once_with(
+        missing_key,
+        phase7_resource_import.BUILTIN_RESOURCES[missing_key],
+        source="reviewed-route-repair",
+    )
+
+
+def test_missing_fixed_route_repair_never_rewrites_existing_route() -> None:
+    with (
+        patch.object(
+            phase7_resource_import,
+            "get_workflow_resource",
+            return_value={"resource_kind": "feishu_route", "route_key": "live"},
+        ),
+        patch.object(phase7_resource_import, "upsert_workflow_resource") as upsert,
+    ):
+        repaired = phase7_resource_import.repair_missing_fixed_automation_routes()
+
+    assert repaired == []
+    upsert.assert_not_called()
+
+
 def test_reviewed_metadata_sync_preserves_live_sheet_locator() -> None:
     current = {
         "resource_kind": "feishu_sheet",
