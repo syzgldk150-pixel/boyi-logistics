@@ -2328,6 +2328,9 @@ class AutomationPluginGenerationRepositoryMixin(
                 "RECEIPTS_IDENTIFIED" if valid else "RECEIPT_IDENTITY_MISMATCH"
             ),
             "lease_id": safe_lease_id,
+            "orchestration_run_sha256": _json_hash(
+                {"run_id": str(lease.get("orchestration_run_id") or "")}
+            ),
             "receipt_count": len(receipts),
             "receipt_digest": _json_hash(receipt_identities),
             "receipt_identity_sha256": _json_hash(receipt_identities),

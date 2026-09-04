@@ -881,9 +881,15 @@ def recover_arrival_stats_unknown_write(
             )
         })).hexdigest())
     if len(semantic_sha256s) != 1:
+        run_sha256s = {
+            str(snapshot.get("orchestration_run_sha256") or "")
+            for snapshot in snapshots
+        }
         logger.info(
             "Arrival statistics unknown-write recovery not proven "
-            "code=RECOVERY_BATCH_SEMANTIC_MISMATCH",
+            "code=RECOVERY_BATCH_SEMANTIC_MISMATCH lease_count=%d same_run=%s",
+            len(snapshots),
+            "true" if len(run_sha256s) == 1 else "false",
         )
         return None
 
