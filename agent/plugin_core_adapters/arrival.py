@@ -441,8 +441,25 @@ def verify_arrival_stats_split_pending_recovery(
         return unknown
 
     try:
-        if str(recovery_snapshot.get("state") or "") != "RECEIPTS_IDENTIFIED":
-            return not_proven("RECEIPT_SNAPSHOT_UNAVAILABLE")
+        snapshot_state = str(recovery_snapshot.get("state") or "")
+        if snapshot_state != "RECEIPTS_IDENTIFIED":
+            safe_snapshot_states = {
+                "RECOVERY_LEASE_AMBIGUOUS",
+                "RECOVERY_LEASE_MISSING",
+                "MISSING_LEASE",
+                "LEASE_IDENTITY_MISMATCH",
+                "FAILED_BEFORE_WRITE",
+                "LEASE_NOT_UNKNOWN",
+                "HISTORICAL_RECEIPT_UNAVAILABLE",
+                "RECEIPT_IDENTITY_MISMATCH",
+                "RECEIPTS_APPLIED",
+            }
+            safe_state = (
+                snapshot_state
+                if snapshot_state in safe_snapshot_states
+                else "UNRECOGNIZED"
+            )
+            return not_proven(f"RECEIPT_SNAPSHOT_{safe_state}")
         receipts = recovery_snapshot.get("receipts")
         if (
             not isinstance(receipts, list)
