@@ -852,6 +852,7 @@ def recover_scan_codes_unknown_write(
     recover = getattr(target, "recover_unknown_write", None)
     if not all(callable(item) for item in (candidate_reader, context_reader, recover)):
         return None
+    phase = "candidate_read"
     try:
         batch = candidate_reader(
             automation_id=automation_id,
@@ -866,12 +867,14 @@ def recover_scan_codes_unknown_write(
             or batch.get("candidate_count") != len(candidates)
         ):
             return None
+        phase = "account_binding"
         account_id = str(entry.account_bindings.get("account_id") or "").strip()
         if not account_id:
             return None
         descriptor = get_account_manager().require_active_binding_descriptor(account_id)
         expected_account_binding = hashlib.sha256(account_id.encode("utf-8")).hexdigest()
         for candidate in candidates:
+            phase = "candidate_validation"
             if not isinstance(candidate, Mapping):
                 return None
             generation = candidate.get("generation")
@@ -905,6 +908,7 @@ def recover_scan_codes_unknown_write(
                 )
             ):
                 return None
+            phase = "preview_context_read"
             context = context_reader(
                 automation_id=automation_id,
                 generation=generation,
@@ -936,6 +940,7 @@ def recover_scan_codes_unknown_write(
                 }
                 for item in items
             ]
+            phase = "authoritative_readback"
             readback = _scan_next_readback_state(descriptor, normalized_items, windows)
             if readback.get("state") != "NOT_APPLIED":
                 logger.info(
@@ -968,6 +973,7 @@ def recover_scan_codes_unknown_write(
                     f"{automation_id}:{trigger_request_id}:{identity_sha256}",
                 )
             )
+            phase = "transactional_resolution"
             result = recover(
                 automation_id=automation_id,
                 generation=generation,
@@ -984,7 +990,8 @@ def recover_scan_codes_unknown_write(
         return None
     except Exception as exc:  # noqa: BLE001 - recovery must remain fail closed
         logger.warning(
-            "Scan unknown-write recovery was not proven code=%s",
+            "Scan unknown-write recovery was not proven phase=%s code=%s",
+            phase,
             str(getattr(exc, "code", type(exc).__name__))[:80],
         )
         return None
