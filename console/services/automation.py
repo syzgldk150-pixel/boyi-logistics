@@ -24,6 +24,31 @@ from console.services.automation_preview_support import (
 )
 
 
+def _automation_blocking_feedback(details: Any) -> tuple[str, str]:
+    payload = details if isinstance(details, Mapping) else {}
+    blocking_kind = str(
+        payload.get("blocking_kind") or "NEEDS_ATTENTION"
+    ).strip().upper()
+    return {
+        "ACTIVE": ("正在执行", "当前任务仍在执行，请等待完成后再试。"),
+        "RETRY_PENDING": (
+            "等待自动重试",
+            "旧任务正在等待自动重试，请先等待重试结果。",
+        ),
+        "UNKNOWN_WRITE": (
+            "写入结果待人工核验",
+            "旧任务的写入结果尚未确认，请先到事项中心人工核验。",
+        ),
+        "NEEDS_ATTENTION": (
+            "需要处理旧事项",
+            "旧事项状态需要处理，请先到事项中心处理或取消。",
+        ),
+    }.get(
+        blocking_kind,
+        ("需要处理旧事项", "存在未结束的旧事项，请先到事项中心处理。"),
+    )
+
+
 class AutomationServiceMixin(AutomationProjectsServiceMixin):
     def _build_virtual_automation_task(
         self,
@@ -1249,13 +1274,16 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             failure_message = normalize_feedback_text(
                 run_result.get("error") or "智能服务命令提交失败"
             )
+            blocking_title, blocking_message = _automation_blocking_feedback(
+                run_result.get("data")
+            )
             response_payload = {
                 "ok": False,
                 "pending": False,
                 "task_id": payload["task_id"],
-                "title": "该脚本已在运行" if already_running else "立即执行未开始",
+                "title": blocking_title if already_running else "立即执行未开始",
                 "message": (
-                    "请等待当前运行结束后再执行。"
+                    blocking_message
                     if already_running
                     else failure_message
                 ),
@@ -1277,8 +1305,20 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 return
             self._render_automations(
                 handler,
-                {"message": [failure_message], "kind": ["warning"]},
+                {
+                    "message": [
+                        blocking_message if already_running else failure_message
+                    ],
+                    "kind": ["warning"],
+                },
                 task_overrides=override,
+                task_feedbacks={
+                    payload["task_id"]: {
+                        "kind": "warning",
+                        "title": response_payload["title"],
+                        "message": response_payload["message"],
+                    }
+                },
                 open_task_id=payload["task_id"],
             )
             return
@@ -1681,18 +1721,24 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             payload = {}
 
         run = payload.get("run") if isinstance(payload.get("run"), dict) else {}
+        cancelled = str(run.get("status") or "").strip().upper() == "CANCELLED"
         self._send_json(
             handler,
-            HTTPStatus.ACCEPTED,
+            HTTPStatus.OK if cancelled else HTTPStatus.ACCEPTED,
             {
                 "ok": True,
                 "task_id": task_id,
                 "run_id": run_id,
-                "title": "取消中",
-                "message": "已发送取消请求，正在安全停止当前 Run。",
+                "title": "已取消" if cancelled else "取消中",
+                "message": (
+                    "该暂停任务已取消。"
+                    if cancelled
+                    else "已发送取消请求，正在安全停止当前 Run。"
+                ),
                 "activity_value": str(run.get("started_at") or run.get("created_at") or ""),
-                "pending": True,
-                "cancel_requested": True,
+                "pending": not cancelled,
+                "cancel_requested": not cancelled,
+                "cancelled": cancelled,
             },
         )
 

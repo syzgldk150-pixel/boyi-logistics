@@ -338,6 +338,10 @@ class _Runs:
     def get_active_for_automation(*_args: Any, **_kwargs: Any) -> None:
         return None
 
+    @staticmethod
+    def list_unfinished_for_automation(*_args: Any, **_kwargs: Any) -> list[str]:
+        return []
+
 
 class _UnitOfWork:
     def __init__(self, state: "_ServiceState") -> None:
@@ -431,13 +435,28 @@ class _Gateway:
         self.repository = repository
         self.commands: list[Command] = []
 
-    def submit(self, command: Command, *, uow_guard: Any = None) -> CommandReceipt:
+    def submit(
+        self,
+        command: Command,
+        *,
+        uow_guard: Any = None,
+        uow_acceptance_guard: Any = None,
+    ) -> CommandReceipt:
+        sequence = len(self.commands) + 1
         with self.repository.unit_of_work() as uow:
             if uow_guard is not None:
                 uow_guard(uow)
+            if uow_acceptance_guard is not None:
+                uow_acceptance_guard(
+                    uow,
+                    {
+                        "command_id": command.command_id,
+                        "work_item_id": f"work-{sequence}",
+                        "run_id": f"run-{sequence}",
+                    },
+                )
             uow.commit()
         self.commands.append(command)
-        sequence = len(self.commands)
         return CommandReceipt(
             command_id=command.command_id,
             work_item_id=f"work-{sequence}",

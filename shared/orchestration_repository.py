@@ -1326,6 +1326,53 @@ class AgentRunRepository(automation_run_lookup.AutomationRunLookupMixin, _Reposi
             )
         return self.get(run_id, for_update=True) or {}
 
+    def cancel_suspended(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+        expected_statuses: Iterable[str],
+        error_code: str,
+        error_summary: str,
+        finished_at: Any,
+    ) -> dict[str, Any]:
+        """Terminalize an already locked, non-executing Run in one CAS write."""
+
+        allowed = sorted(
+            {
+                _status(item, RUN_STATUSES, "expected run status")
+                for item in expected_statuses
+            }
+        )
+        if not allowed:
+            raise ValueError("expected_statuses is required")
+        placeholders = ", ".join("%s" for _ in allowed)
+        with self.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE agent_runs
+                SET status='CANCELLED', error_code=%s, error_summary=%s,
+                    retryable=FALSE, next_attempt_at=NULL,
+                    worker_id=NULL, lease_expires_at=NULL,
+                    finished_at=%s, version=version+1
+                WHERE run_id=%s AND version=%s
+                  AND status IN ({placeholders})
+                """,
+                (
+                    _required_text(error_code, "error_code"),
+                    _safe_error(error_summary),
+                    finished_at,
+                    _required_text(run_id, "run_id"),
+                    int(expected_version),
+                    *allowed,
+                ),
+            )
+            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+                raise ConcurrentUpdateError(
+                    "suspended run state changed before cancellation"
+                )
+        return self.get(run_id, for_update=True) or {}
+
     def create_or_get(self, row: Mapping[str, Any]) -> dict[str, Any]:
         run_id = _required_text(row.get("run_id"), "run_id")
         work_item_id = _required_text(row.get("work_item_id"), "work_item_id")

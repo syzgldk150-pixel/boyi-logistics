@@ -12,6 +12,7 @@ from app import (
     build_virtual_task_defaults,
     flatten_automation_fields,
 )
+from console.services.automation import _automation_blocking_feedback
 
 
 class AutomationSubmissionTests(unittest.TestCase):
@@ -19,6 +20,21 @@ class AutomationSubmissionTests(unittest.TestCase):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
         app._parse_urlencoded_form = lambda handler: form_values
         return app
+
+    def test_automation_blocking_feedback_distinguishes_all_internal_kinds(self):
+        expected = {
+            "ACTIVE": "正在执行",
+            "RETRY_PENDING": "等待自动重试",
+            "UNKNOWN_WRITE": "写入结果待人工核验",
+            "NEEDS_ATTENTION": "需要处理旧事项",
+        }
+        for blocking_kind, title in expected.items():
+            with self.subTest(blocking_kind=blocking_kind):
+                actual_title, message = _automation_blocking_feedback(
+                    {"blocking_kind": blocking_kind}
+                )
+                self.assertEqual(title, actual_title)
+                self.assertTrue(message)
 
     def test_account_name_action_proxies_note_without_status_refresh(self):
         app = self._make_app({"name": "  融辉自提专用账号  "})
@@ -802,6 +818,7 @@ class AutomationSubmissionTests(unittest.TestCase):
                 "status": HTTPStatus.CONFLICT,
                 "error": "该脚本已在运行",
                 "error_code": "AUTOMATION_ALREADY_RUNNING",
+                "data": {"blocking_kind": "ACTIVE"},
             }
         )
         captured = {}
@@ -815,9 +832,9 @@ class AutomationSubmissionTests(unittest.TestCase):
         )
 
         self.assertEqual(HTTPStatus.CONFLICT, captured["status"])
-        self.assertEqual("该脚本已在运行", captured["payload"]["title"])
+        self.assertEqual("正在执行", captured["payload"]["title"])
         self.assertEqual(
-            "请等待当前运行结束后再执行。",
+            "当前任务仍在执行，请等待完成后再试。",
             captured["payload"]["message"],
         )
         self.assertEqual(
