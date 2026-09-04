@@ -1062,7 +1062,13 @@ def test_arrival_unknown_write_recovery_resolves_identical_sibling_leases(
     snapshots = [
         {
             "lease_id": f"lease-{index}",
-            "receipts": [{"receipt_id": f"receipt-{index}", **common_receipt}],
+            "receipts": [
+                {
+                    "receipt_id": f"receipt-{index}",
+                    **common_receipt,
+                    "target_ref_sha256": str(index) * 64,
+                }
+            ],
         }
         for index in (1, 2)
     ]
