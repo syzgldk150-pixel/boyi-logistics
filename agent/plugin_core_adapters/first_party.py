@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import re
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any, Collection, Mapping, NoReturn
+from typing import Any, Collection, Mapping, NoReturn, Sequence
 from zoneinfo import ZoneInfo
 
 from agent.automation_plugins.core_adapter import CoreBrokerHandler
@@ -27,7 +30,10 @@ from agent.automation_plugins.delivery_site_handlers import (
 )
 from agent.tms_runtime.account_manager import AutomationAccountManager, get_account_manager
 from agent.tms_runtime.errors import TMSAuthStateError
-from plugin_core_adapters.arrival import build_production_arrival_write_ports
+from plugin_core_adapters.arrival import (
+    build_production_arrival_write_ports,
+    recover_arrival_stats_unknown_write,
+)
 from plugin_core_adapters.capability_session import (
     CapabilityAuthorizer,
     authorize_target_capability,
@@ -40,6 +46,9 @@ from plugin_core_adapters.delivery_site import (
 from plugin_core_adapters.finance import build_production_finance_handler_map
 from plugin_core_adapters.problem_actions import build_production_problem_handler_map
 from plugin_core_adapters.scan_snapshot import replace_scan_snapshot_verified
+
+
+logger = logging.getLogger(__name__)
 
 
 def _required_profile(descriptor: Mapping[str, Any]) -> str:
@@ -577,61 +586,20 @@ def _scan_next_identities_sha256(items: list[dict[str, str]]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _scan_next_verify(
-    descriptor: Mapping[str, Any],
-    items: list[dict[str, str]],
-    write_started_at: str,
-    write_finished_at: str,
-) -> Mapping[str, Any]:
-    """Read the authoritative send-scan ledger after the browser write.
+def _scan_next_query_rows(
+    session: Any,
+    *,
+    site_code: str,
+    bill_codes: list[str],
+    local_start: datetime,
+    local_end: datetime,
+) -> list[Mapping[str, Any]]:
+    from agent.tms_runtime.scripts import get_scan
 
-    The UI's cleared table is not durable evidence.  This verifier queries the
-    same authenticated Ronghui account's ``FIND_SEND_SCAN_RECORD`` source and
-    requires exactly one fresh, identity-complete server row per submitted
-    write.  Any unavailable, zero, duplicate, stale, or incomplete result is
-    an unknown write outcome; it is never reported as a retry-safe failure.
-    """
-
-    if not items:
-        return {
-            "ok": True,
-            "verified": True,
-            "record_count": 0,
-            "identities_sha256": _scan_next_identities_sha256(items),
-        }
-
-    from agent.tms_runtime.scripts import get_scan, receipts_sync
-    from agent.tms_runtime.scripts.login_manager import TMSAuth
-
-    started = _scan_next_aware_timestamp(write_started_at, "write_started_at")
-    finished = _scan_next_aware_timestamp(write_finished_at, "write_finished_at")
-    if finished < started:
-        _scan_next_unknown("scan-next write timestamps are reversed")
-    # Ronghui records only whole seconds and its application clock may differ
-    # slightly from the Agent clock.  The identity predicates remain exact;
-    # widening the time window cannot silently choose an old/ambiguous row
-    # because duplicate candidates fail closed below.
-    local_start = started.astimezone(_RONGHUI_TIMEZONE) - timedelta(minutes=2)
-    local_end = finished.astimezone(_RONGHUI_TIMEZONE) + timedelta(minutes=2)
-
-    try:
-        auth = TMSAuth(profile=_required_profile(descriptor))
-        session = auth.login_and_get_session()
-    except Exception as exc:
-        _scan_next_unknown("scan-next authoritative readback login failed", cause=exc)
-    if session is None:
-        _scan_next_unknown("scan-next authoritative readback login failed")
-    user_info = receipts_sync._read_user_info_cookie(session)
-    site_code = receipts_sync._resolve_login_site_code_from_user_info(user_info)
-    if not site_code:
-        _scan_next_unknown("scan-next authoritative readback site identity is missing")
-
-    bill_codes = [str(item["bill_code"]).strip() for item in items]
     date_range = {
         "start": local_start.strftime("%Y-%m-%d %H:%M:%S"),
         "end": local_end.strftime("%Y-%m-%d %H:%M:%S"),
     }
-    page_size = 500
     rows: list[Mapping[str, Any]] = []
     declared_total: int | None = None
     for page_index in range(20):
@@ -640,13 +608,9 @@ def _scan_next_verify(
             site_code,
             "\u53d1\u4ef6",
             page_index,
-            page_size,
+            500,
         )
-        # Ronghui's scan-record page explicitly accepts multiple waybills only
-        # when they are separated by line breaks.  MiniUI pageIndex is also
-        # zero-based, matching get_scan.collect_scan_rows().
-        joined = "\n".join(bill_codes)
-        payload["searchOrderInput"] = joined
+        payload["searchOrderInput"] = "\n".join(bill_codes)
         try:
             response = session.post(
                 get_scan.SCAN_URL,
@@ -657,7 +621,9 @@ def _scan_next_verify(
                 timeout=20,
             )
             if response.status_code != 200:
-                _scan_next_unknown("scan-next authoritative readback returned a non-success status")
+                _scan_next_unknown(
+                    "scan-next authoritative readback returned a non-success status"
+                )
             raw = response.json()
         except PluginExecutionError:
             raise
@@ -688,37 +654,332 @@ def _scan_next_verify(
             _scan_next_unknown("scan-next authoritative readback ended early")
     else:
         _scan_next_unknown("scan-next authoritative readback exceeded its page limit")
+    return rows
+
+
+def _scan_next_readback_state(
+    descriptor: Mapping[str, Any],
+    items: list[dict[str, str]],
+    local_windows: Sequence[tuple[datetime, datetime]],
+) -> Mapping[str, Any]:
+    """Classify exact server-ledger rows across one or more attempt windows."""
+
+    if not items:
+        return {
+            "state": "APPLIED",
+            "record_count": 0,
+            "identities_sha256": _scan_next_identities_sha256(items),
+        }
+    if not local_windows:
+        _scan_next_unknown("scan-next authoritative readback window is missing")
+
+    from agent.tms_runtime.scripts import receipts_sync
+    from agent.tms_runtime.scripts.login_manager import TMSAuth
+
+    try:
+        auth = TMSAuth(profile=_required_profile(descriptor))
+        session = auth.login_and_get_session()
+    except Exception as exc:
+        _scan_next_unknown("scan-next authoritative readback login failed", cause=exc)
+    if session is None:
+        _scan_next_unknown("scan-next authoritative readback login failed")
+    user_info = receipts_sync._read_user_info_cookie(session)
+    site_code = receipts_sync._resolve_login_site_code_from_user_info(user_info)
+    if not site_code:
+        _scan_next_unknown("scan-next authoritative readback site identity is missing")
 
     expected = {item["bill_code"]: item["station_name"] for item in items}
-    matches: dict[str, list[Mapping[str, Any]]] = {code: [] for code in expected}
-    for row in rows:
-        code = str(row.get("BILL_CODE") or "").strip()
-        if code not in expected:
-            continue
-        if not _SCAN_SEND_RECORD_FIELDS.issubset(row):
-            _scan_next_unknown("scan-next authoritative row is incomplete")
-        timestamp = _scan_next_record_timestamp(row)
-        if timestamp is None:
-            _scan_next_unknown("scan-next authoritative row timestamp is invalid")
+    bill_codes = list(expected)
+    matches: dict[str, dict[str, Mapping[str, Any]]] = {
+        code: {} for code in expected
+    }
+    for local_start, local_end in local_windows:
         if (
-            str(row.get("SCAN_TYPE") or "").strip() != "\u53d1\u4ef6"
-            or str(row.get("DATA_FROM") or "").strip() != "K13"
-            or str(row.get("SCAN_SITE_CODE") or "").strip() != site_code
-            or str(row.get("PRE_OR_NEXT_STATION") or "").strip() != expected[code]
-            or not str(row.get("ROW_ID") or "").strip()
-            or timestamp < local_start
-            or timestamp > local_end
+            local_start.tzinfo is None
+            or local_end.tzinfo is None
+            or local_end < local_start
         ):
-            continue
-        matches[code].append(row)
-    if any(len(found) != 1 for found in matches.values()):
+            _scan_next_unknown("scan-next authoritative readback window is invalid")
+        rows = _scan_next_query_rows(
+            session,
+            site_code=site_code,
+            bill_codes=bill_codes,
+            local_start=local_start,
+            local_end=local_end,
+        )
+        for row in rows:
+            code = str(row.get("BILL_CODE") or "").strip()
+            if code not in expected:
+                continue
+            if not _SCAN_SEND_RECORD_FIELDS.issubset(row):
+                _scan_next_unknown("scan-next authoritative row is incomplete")
+            timestamp = _scan_next_record_timestamp(row)
+            if timestamp is None:
+                _scan_next_unknown("scan-next authoritative row timestamp is invalid")
+            if (
+                str(row.get("SCAN_TYPE") or "").strip() != "\u53d1\u4ef6"
+                or str(row.get("DATA_FROM") or "").strip() != "K13"
+                or str(row.get("SCAN_SITE_CODE") or "").strip() != site_code
+                or str(row.get("PRE_OR_NEXT_STATION") or "").strip()
+                != expected[code]
+                or not str(row.get("ROW_ID") or "").strip()
+                or timestamp < local_start
+                or timestamp > local_end
+            ):
+                continue
+            row_id = str(row.get("ROW_ID") or "").strip()
+            matches[code][row_id] = row
+
+    counts = [len(found) for found in matches.values()]
+    if all(count == 1 for count in counts):
+        state = "APPLIED"
+    elif all(count == 0 for count in counts):
+        state = "NOT_APPLIED"
+    else:
+        state = "UNKNOWN"
+    return {
+        "state": state,
+        "record_count": sum(counts),
+        "identities_sha256": _scan_next_identities_sha256(items),
+    }
+
+
+def _scan_next_verify(
+    descriptor: Mapping[str, Any],
+    items: list[dict[str, str]],
+    write_started_at: str,
+    write_finished_at: str,
+) -> Mapping[str, Any]:
+    """Read the authoritative send-scan ledger after the browser write.
+
+    The UI's cleared table is not durable evidence.  This verifier queries the
+    same authenticated Ronghui account's ``FIND_SEND_SCAN_RECORD`` source and
+    requires exactly one fresh, identity-complete server row per submitted
+    write.  Any unavailable, zero, duplicate, stale, or incomplete result is
+    an unknown write outcome; it is never reported as a retry-safe failure.
+    """
+
+    if not items:
+        return {
+            "ok": True,
+            "verified": True,
+            "record_count": 0,
+            "identities_sha256": _scan_next_identities_sha256(items),
+        }
+
+    started = _scan_next_aware_timestamp(write_started_at, "write_started_at")
+    finished = _scan_next_aware_timestamp(write_finished_at, "write_finished_at")
+    if finished < started:
+        _scan_next_unknown("scan-next write timestamps are reversed")
+    # Ronghui records only whole seconds and its application clock may differ
+    # slightly from the Agent clock.  The identity predicates remain exact;
+    # widening the time window cannot silently choose an old/ambiguous row
+    # because duplicate candidates fail closed below.
+    local_start = started.astimezone(_RONGHUI_TIMEZONE) - timedelta(minutes=2)
+    local_end = finished.astimezone(_RONGHUI_TIMEZONE) + timedelta(minutes=2)
+
+    readback = _scan_next_readback_state(
+        descriptor,
+        items,
+        ((local_start, local_end),),
+    )
+    if readback.get("state") != "APPLIED":
         _scan_next_unknown("scan-next authoritative readback found zero or multiple exact rows")
     return {
         "ok": True,
         "verified": True,
         "record_count": len(items),
-        "identities_sha256": _scan_next_identities_sha256(items),
+        "identities_sha256": str(readback["identities_sha256"]),
     }
+
+
+def _scan_recovery_windows(
+    started_at: datetime,
+    finished_at: datetime,
+) -> tuple[tuple[datetime, datetime], ...]:
+    """Cover both legacy naive-UTC and naive-local timestamp storage."""
+
+    if (started_at.tzinfo is None) != (finished_at.tzinfo is None):
+        return ()
+    interpretations = (
+        (timezone.utc, _RONGHUI_TIMEZONE)
+        if started_at.tzinfo is None
+        else (None,)
+    )
+    windows: list[tuple[datetime, datetime]] = []
+    for assumed_zone in interpretations:
+        started = (
+            started_at.replace(tzinfo=assumed_zone)
+            if assumed_zone is not None
+            else started_at
+        )
+        finished = (
+            finished_at.replace(tzinfo=assumed_zone)
+            if assumed_zone is not None
+            else finished_at
+        )
+        if finished < started:
+            return ()
+        window = (
+            started.astimezone(_RONGHUI_TIMEZONE) - timedelta(minutes=2),
+            finished.astimezone(_RONGHUI_TIMEZONE) + timedelta(minutes=2),
+        )
+        if window not in windows:
+            windows.append(window)
+    return tuple(windows)
+
+
+def recover_scan_codes_unknown_write(
+    plugin_runtime: Any,
+    automation_id: str,
+    trigger_request_id: str,
+) -> dict[str, Any] | None:
+    """Close an old scan attempt only after an exact empty server readback."""
+
+    entry = plugin_runtime.catalog.require(automation_id)
+    if str(entry.plugin_id) != "sync_scan_codes":
+        return None
+    generation = entry.committed_generation
+    if (
+        type(generation) is not int
+        or generation <= 0
+        or entry.target_generation != generation
+    ):
+        return None
+    target = plugin_runtime.target_service
+    snapshot_reader = getattr(target, "inspect_current_unknown_write", None)
+    context_reader = getattr(target, "inspect_scan_unknown_write_context", None)
+    recover = getattr(target, "recover_unknown_write", None)
+    if not all(callable(item) for item in (snapshot_reader, context_reader, recover)):
+        return None
+    try:
+        snapshot = snapshot_reader(
+            automation_id=automation_id,
+            generation=generation,
+        )
+        if not isinstance(snapshot, Mapping) or snapshot.get("state") != "RECEIPTS_IDENTIFIED":
+            return None
+        receipts = snapshot.get("receipts")
+        identity_sha256 = str(snapshot.get("receipt_identity_sha256") or "")
+        if (
+            not isinstance(receipts, list)
+            or not receipts
+            or not re.fullmatch(r"[0-9a-f]{64}", identity_sha256)
+            or not any(
+                isinstance(receipt, Mapping)
+                and str(receipt.get("action") or "")
+                in {"ronghui.scan_next.submit", "ronghui.scan_next.verify"}
+                and str(receipt.get("outcome") or "") == "WRITE_OUTCOME_UNKNOWN"
+                for receipt in receipts
+            )
+        ):
+            return None
+        context = context_reader(
+            automation_id=automation_id,
+            generation=generation,
+            lease_id=str(snapshot.get("lease_id") or ""),
+        )
+        if (
+            not isinstance(context, Mapping)
+            or context.get("state") != "SCAN_RECOVERY_CONTEXT_IDENTIFIED"
+        ):
+            return None
+        items = context.get("items")
+        started_at = context.get("attempt_started_at")
+        finished_at = context.get("attempt_finished_at")
+        if (
+            not isinstance(items, list)
+            or not items
+            or any(not isinstance(item, Mapping) for item in items)
+            or not isinstance(started_at, datetime)
+            or not isinstance(finished_at, datetime)
+        ):
+            return None
+        windows = _scan_recovery_windows(started_at, finished_at)
+        if not windows:
+            return None
+        account_id = str(entry.account_bindings.get("account_id") or "").strip()
+        if not account_id:
+            return None
+        descriptor = get_account_manager().require_active_binding_descriptor(account_id)
+        normalized_items = [
+            {
+                "bill_code": str(item.get("bill_code") or "").strip(),
+                "station_name": str(item.get("station_name") or "").strip(),
+            }
+            for item in items
+        ]
+        readback = _scan_next_readback_state(descriptor, normalized_items, windows)
+        if readback.get("state") != "NOT_APPLIED":
+            logger.info(
+                "Scan unknown-write recovery kept blocked project=%s state=%s",
+                automation_id,
+                str(readback.get("state") or "UNKNOWN"),
+            )
+            return None
+        evidence = {
+            "schema": 1,
+            "kind": "scan_next_exact_empty_readback",
+            "receipt_identity_sha256": identity_sha256,
+            "selection_sha256": _scan_next_identities_sha256(normalized_items),
+            "window_count": len(windows),
+            "record_count": int(readback.get("record_count") or 0),
+        }
+        evidence_sha256 = hashlib.sha256(
+            json.dumps(
+                evidence,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        request_key = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                "boyi:scan-unknown-write-not-applied:"
+                f"{automation_id}:{trigger_request_id}:{identity_sha256}",
+            )
+        )
+        result = recover(
+            automation_id=automation_id,
+            generation=generation,
+            lease_id=str(snapshot.get("lease_id") or ""),
+            request_id=request_key,
+            actor_id="system:scan-readback",
+            actor_role="system",
+            authoritative_not_applied_proof={
+                "receipt_identity_sha256": identity_sha256,
+                "evidence_sha256": evidence_sha256,
+            },
+        )
+        return dict(result) if isinstance(result, Mapping) else None
+    except Exception as exc:  # noqa: BLE001 - recovery must remain fail closed
+        logger.warning(
+            "Scan unknown-write recovery was not proven code=%s",
+            str(getattr(exc, "code", type(exc).__name__))[:80],
+        )
+        return None
+
+
+def recover_first_party_unknown_write(
+    plugin_runtime: Any,
+    automation_id: str,
+    trigger_request_id: str,
+) -> dict[str, Any] | None:
+    """Dispatch recovery by the exact committed first-party package."""
+
+    entry = plugin_runtime.catalog.require(automation_id)
+    if str(entry.plugin_id) == "sync_scan_codes":
+        return recover_scan_codes_unknown_write(
+            plugin_runtime,
+            automation_id,
+            trigger_request_id,
+        )
+    return recover_arrival_stats_unknown_write(
+        plugin_runtime,
+        automation_id,
+        trigger_request_id,
+    )
 
 
 def _waybill_detail_read(
@@ -2464,4 +2725,8 @@ def build_production_first_party_core_handler_map(
     return {key: handler for key, handler in handlers.items() if key in allowed}
 
 
-__all__ = ["build_production_first_party_core_handler_map"]
+__all__ = [
+    "build_production_first_party_core_handler_map",
+    "recover_first_party_unknown_write",
+    "recover_scan_codes_unknown_write",
+]

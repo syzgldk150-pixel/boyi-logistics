@@ -118,6 +118,11 @@ from agent.automation_plugins.runtime_repository import (
     MySQLAutomationPluginRuntimeAdapter,
     MySQLAutomationProjectConfigurationReadAdapter,
 )
+from agent.orchestration.scan_preview_binding import (
+    SCAN_PREVIEW_CONTEXT_KEY,
+    normalize_preview_run_id,
+    scan_preview_recovery_projection,
+)
 from agent.automation_plugins.runtime_backend_availability import (
     RuntimeContributionBackendAvailability,
 )
@@ -2268,6 +2273,103 @@ class MySQLRuntimeTargetService:
             automation_id=automation_id,
             generation=generation,
         )
+
+    def inspect_scan_unknown_write_context(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        lease_id: str,
+    ) -> dict[str, Any]:
+        """Return the server-owned scan selection and attempt timestamps.
+
+        The lease selects the formal Run.  That Run's persisted Command then
+        selects the compact preview binding, and the binding is independently
+        matched to the completed preview Step before any business identities
+        are returned to the recovery reader.
+        """
+
+        with self._orchestration.unit_of_work() as uow:
+            runtime_context = (
+                uow.automation_plugins.lock_unknown_write_recovery_context_row(
+                    automation_id=automation_id,
+                    generation=generation,
+                    lease_id=lease_id,
+                )
+            )
+            lease = runtime_context.get("lease")
+            if not isinstance(lease, Mapping):
+                raise ValueError("scan recovery lease context is invalid")
+            run_id = str(lease.get("orchestration_run_id") or "").strip()
+            run = uow.runs.get(run_id, for_update=False) if run_id else None
+            if not isinstance(run, Mapping):
+                raise ValueError("scan recovery run is unavailable")
+            command_id = str(run.get("command_id") or "").strip()
+            command = uow.commands.get(command_id, for_update=False) if command_id else None
+            if not isinstance(command, Mapping):
+                raise ValueError("scan recovery command is unavailable")
+            parameters = command.get("parameters_json", command.get("parameters"))
+            if not isinstance(parameters, Mapping):
+                raise ValueError("scan recovery command parameters are invalid")
+            execution_context = parameters.get("execution_context")
+            preview_context = (
+                execution_context.get(SCAN_PREVIEW_CONTEXT_KEY)
+                if isinstance(execution_context, Mapping)
+                else None
+            )
+            if not isinstance(preview_context, Mapping):
+                raise ValueError("scan recovery preview binding is unavailable")
+            preview_run_id = normalize_preview_run_id(
+                preview_context.get("preview_run_id")
+            )
+            preview = scan_preview_recovery_projection(
+                uow,
+                preview_run_id=preview_run_id,
+                trusted_context=preview_context,
+                now=datetime.now(timezone.utc),
+            )
+            steps = uow.steps.list_for_run(run_id)
+            if len(steps) != 1 or not isinstance(steps[0], Mapping):
+                raise ValueError("scan recovery step identity is invalid")
+            step = steps[0]
+
+        started_at = next(
+            (
+                value
+                for value in (
+                    step.get("started_at"),
+                    step.get("created_at"),
+                    run.get("started_at"),
+                    run.get("created_at"),
+                    command.get("requested_at"),
+                )
+                if isinstance(value, datetime)
+            ),
+            None,
+        )
+        finished_at = next(
+            (
+                value
+                for value in (
+                    step.get("completed_at"),
+                    step.get("updated_at"),
+                    run.get("completed_at"),
+                    run.get("updated_at"),
+                )
+                if isinstance(value, datetime)
+            ),
+            started_at,
+        )
+        if not isinstance(started_at, datetime) or not isinstance(finished_at, datetime):
+            raise ValueError("scan recovery attempt timestamps are unavailable")
+        return {
+            "state": "SCAN_RECOVERY_CONTEXT_IDENTIFIED",
+            "run_id": run_id,
+            "target_date": str(preview["target_date"]),
+            "items": [dict(item) for item in preview["items"]],
+            "attempt_started_at": started_at,
+            "attempt_finished_at": finished_at,
+        }
 
     def _reconciliation_automation_ids(self) -> tuple[str, ...]:
         """Discover project identities without compiling every catalog entry.
