@@ -264,6 +264,61 @@ def scan_preview_public_projection(
     }
 
 
+def scan_preview_recovery_projection(
+    uow: Any,
+    *,
+    preview_run_id: str,
+    trusted_context: Mapping[str, Any],
+    now: datetime,
+) -> dict[str, Any]:
+    """Load the exact persisted selection for server-owned write recovery.
+
+    Recovery is allowed to inspect an expired preview, but it must still prove
+    that the formal Command's compact context names the same completed,
+    verified preview result and selection digests.  No browser-supplied item
+    list is accepted here.
+    """
+
+    context = validate_scan_preview_context(trusted_context)
+    expectation = ScanPreviewExpectation(
+        project_instance_id=str(context["project_instance_id"]),
+        generation=int(context["generation"]),
+        contract_digest=str(context["contract_digest"]),
+        configuration_version=int(context["configuration_version"]),
+    )
+    persisted = _load_persisted_scan_preview(
+        uow,
+        preview_run_id=preview_run_id,
+        expectation=expectation,
+        now=_aware_utc(now, "now"),
+        for_update=False,
+    )
+    evidence = persisted.evidence
+    compared = {
+        "preview_run_id": persisted.run_id,
+        "preview_step_id": str(persisted.step.get("step_id") or "").strip(),
+        "preview_result_sha256": persisted.result_digest,
+        "target_date": evidence["target_date"],
+        "observed_at": _iso_utc(persisted.observed_at),
+        "source_page_count": evidence["source_page_count"],
+        "normalized_record_count": evidence["normalized_record_count"],
+        "source_snapshot_sha256": evidence["source_snapshot_sha256"],
+        "selection_count": evidence["selection_count"],
+        "selection_sha256": evidence["selection_sha256"],
+        "batch_count": evidence["batch_count"],
+        "batch_plan_sha256": evidence["batch_plan_sha256"],
+    }
+    if any(context.get(field) != value for field, value in compared.items()):
+        raise _error(
+            "SCAN_PREVIEW_CONTEXT_INVALID",
+            "The formal scan context no longer matches its persisted preview",
+        )
+    return {
+        **compared,
+        "items": [dict(item) for item in evidence["items"]],
+    }
+
+
 def normalize_scan_preview_public_projection(
     value: Any,
     *,
