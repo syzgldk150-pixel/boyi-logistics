@@ -1064,6 +1064,15 @@ def test_arrival_unknown_write_recovery_resolves_identical_sibling_leases(
             "lease_id": f"lease-{index}",
             "receipts": [
                 {
+                    "receipt_id": f"early-receipt-{index}",
+                    "operation": "projection.invoke",
+                    "action": "scan.snapshot.replace",
+                    "argument_sha256": str(index) * 64,
+                    "target_ref_sha256": str(index) * 64,
+                    "role_sha256": "f" * 64,
+                    "binding_sha256": "0" * 64,
+                },
+                {
                     "receipt_id": f"receipt-{index}",
                     **common_receipt,
                     "target_ref_sha256": str(index) * 64,
