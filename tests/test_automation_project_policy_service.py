@@ -675,6 +675,35 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         self.assertTrue(result["success"])
         self.assertEqual(projection, result["scan_preview"])
 
+    def test_trusted_wait_notifies_only_after_command_acceptance(self):
+        events = []
+        original_wait = self.gateway.wait_for_run
+
+        async def on_accepted(receipt):
+            events.append(("accepted", receipt.run_id))
+
+        async def wait_for_run(run_id, *, timeout_seconds):
+            self.assertEqual([("accepted", "run-invoke")], events)
+            events.append(("wait", run_id))
+            return await original_wait(run_id, timeout_seconds=timeout_seconds)
+
+        self.gateway.wait_for_run = wait_for_run
+        result = asyncio.run(
+            self.service.invoke_trusted_and_wait(
+                AUTOMATION_ID,
+                entrypoint=AutomationEntrypoint.CONSOLE,
+                request_id="request-acceptance-callback",
+                actor=_admin(),
+                on_accepted=on_accepted,
+            )
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(
+            [("accepted", "run-invoke"), ("wait", "run-invoke")],
+            events,
+        )
+
     def test_release_hold_blocks_project_writes_and_typed_invoke(self):
         service = AutomationProjectPolicyService(
             self.repository,
