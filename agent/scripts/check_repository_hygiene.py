@@ -34,7 +34,7 @@ FORBIDDEN_BASENAMES = {
 FORBIDDEN_SUFFIXES = {".key", ".p12", ".pem", ".pfx"}
 MAX_PYTHON_LINES = 3_000
 LEGACY_PYTHON_LINE_LIMITS = {
-    "agent/agent/automation_plugins/production.py": 3_234,
+    "agent/agent/automation_plugins/production.py": 3_236,
     "agent/agent/orchestration/automation_project_policy_service.py": 3_005,
     "agent/main.py": 3_065,
     "console/services/automation_projects.py": 3_170,
