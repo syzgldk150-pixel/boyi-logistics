@@ -36,6 +36,21 @@ class _Plugins:
     def lock_unknown_write_receipt_rows(self, _lease_id):
         return [dict(row) for row in self.receipts]
 
+    def mark_locked_unknown_write_receipts_verified_row(
+        self, *, lease_id, expected_count, evidence_sha256
+    ):
+        assert lease_id == "lease-1"
+        changed = [
+            row
+            for row in self.receipts
+            if row["outcome"] == "WRITE_OUTCOME_UNKNOWN"
+        ]
+        if len(changed) != expected_count:
+            raise ValueError("receipt count changed")
+        for row in changed:
+            row["outcome"] = "WRITE_VERIFIED"
+            row["evidence_sha256"] = evidence_sha256
+
     def settle_unknown_write_recovery_row(self, *, recovery_status, evidence_sha256, **_kwargs):
         outcome = "WRITE_VERIFIED" if recovery_status == "APPLIED" else "FAILED_BEFORE_WRITE"
         if self.lease["outcome"] == outcome:
@@ -251,6 +266,52 @@ class UnknownWriteRecoveryTransactionTests(unittest.TestCase):
             actor_id="admin-1",
             actor_role="super_admin",
         )
+
+    def test_authoritative_exact_readback_verifies_unknown_receipt_atomically(self):
+        receipt = {
+            "receipt_id": "receipt-1",
+            "orchestration_run_id": "run-1",
+            "step_id": "step-1",
+            "operation": "network.request",
+            "action": "feishu.sheet.replace",
+            "argument_sha256": "a" * 64,
+            "target_ref_sha256": "b" * 64,
+            "outcome": "WRITE_OUTCOME_UNKNOWN",
+            "evidence_sha256": "",
+        }
+        identity_sha256 = _json_hash([
+            {
+                field: receipt[field]
+                for field in (
+                    "receipt_id", "operation", "action", "argument_sha256",
+                    "target_ref_sha256",
+                )
+            }
+        ])
+        uow, plugins, runs, steps = _uow(
+            outcome="WRITE_OUTCOME_UNKNOWN",
+            receipts=[receipt],
+        )
+
+        result = OrchestrationUnitOfWork.recover_unknown_automation_write(
+            uow,
+            automation_id="arrival_stats",
+            generation=2,
+            lease_id="lease-1",
+            request_id="request-readback",
+            actor_id="system:arrival-stats-readback",
+            actor_role="system",
+            authoritative_applied_proof={
+                "receipt_identity_sha256": identity_sha256,
+                "evidence_sha256": "c" * 64,
+            },
+        )
+
+        self.assertEqual("APPLIED", result["recovery_status"])
+        self.assertEqual("WRITE_VERIFIED", plugins.receipts[0]["outcome"])
+        self.assertEqual("c" * 64, plugins.receipts[0]["evidence_sha256"])
+        self.assertEqual("COMPLETED", steps.row["status"])
+        self.assertEqual("CONTEXT_READY", runs.row["status"])
 
     def test_applied_completes_exact_step_and_wakes_runner(self):
         receipt = {

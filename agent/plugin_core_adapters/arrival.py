@@ -14,6 +14,7 @@ import logging
 import re
 import time
 import unicodedata
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -410,6 +411,288 @@ def _fresh_sheet_rows(
         return _canonical_rows(_sheet_values(raw), width=width)
     except Exception as exc:
         _unknown("arrival sheet fresh readback failed", cause=exc)
+
+
+def verify_arrival_stats_split_pending_recovery(
+    *,
+    account_bindings: Mapping[str, object],
+    resource_bindings: Mapping[str, str],
+    recovery_snapshot: Mapping[str, Any],
+) -> dict[str, str]:
+    """Prove one interrupted split-pending Sheet replace by fresh readback.
+
+    The proof is intentionally narrow: one unknown receipt must identify the
+    signed split-pending role and its current managed-resource binding.  The
+    primary arrival statistics Sheet is then read and classified again, and
+    the complete managed target range must match that independently derived
+    snapshot.  This function never writes either Sheet.
+    """
+
+    unknown = {"status": "UNKNOWN", "reason": "RECOVERY_READBACK_NOT_PROVEN"}
+    try:
+        if str(recovery_snapshot.get("state") or "") != "RECEIPTS_IDENTIFIED":
+            return unknown
+        receipts = recovery_snapshot.get("receipts")
+        if (
+            not isinstance(receipts, list)
+            or not receipts
+            or recovery_snapshot.get("receipt_count") != len(receipts)
+        ):
+            return unknown
+        if any(not isinstance(receipt, Mapping) for receipt in receipts):
+            return unknown
+        identity_fields = (
+            "receipt_id",
+            "operation",
+            "action",
+            "argument_sha256",
+            "target_ref_sha256",
+        )
+        identities = [
+            {field: str(receipt.get(field) or "") for field in identity_fields}
+            for receipt in receipts
+        ]
+        identity_sha256 = hashlib.sha256(
+            canonical_json_bytes(identities)
+        ).hexdigest()
+        role = lambda value: hashlib.sha256(value.encode("utf-8")).hexdigest()
+        mandatory_start = (
+            ("projection.invoke", "scan.snapshot.replace", "account_id"),
+        )
+        mandatory_prefix = (
+            ("projection.invoke", "waybill.snapshot.replace", "account_id"),
+            ("network.request", "feishu.sheet.replace", "arrival_stats_primary_sheet"),
+            ("network.request", "feishu.sheet.replace", "arrival_stats_secondary_sheet"),
+        )
+        mandatory_suffix = (
+            ("projection.invoke", "split_pending.snapshot.refresh", "account_id"),
+            ("network.request", "feishu.sheet.replace", "arrival_stats_split_pending_sheet"),
+        )
+        optional_calls = (
+            ("projection.invoke", "scan.snapshot.cleanup", "account_id"),
+            ("network.request", "feishu.sheet.replace", "arrival_stats_pending_sheet"),
+            ("network.request", "feishu.sheet.add", "arrival_stats_archive_sheet"),
+        )
+        allowed_sequences = {
+            tuple(
+                (operation, action, role(role_name))
+                for operation, action, role_name in (
+                    *mandatory_start,
+                    *((optional_calls[0],) if mask & 1 else ()),
+                    *mandatory_prefix,
+                    *((optional_calls[1],) if mask & 2 else ()),
+                    *((optional_calls[2],) if mask & 4 else ()),
+                    *mandatory_suffix,
+                )
+            )
+            for mask in range(8)
+        }
+        observed_sequence = tuple(
+            (
+                str(receipt.get("operation") or ""),
+                str(receipt.get("action") or ""),
+                str(receipt.get("role_sha256") or ""),
+            )
+            for receipt in receipts
+        )
+        if (
+            observed_sequence not in allowed_sequences
+            or [receipt.get("sequence") for receipt in receipts]
+            != list(range(1, len(receipts) + 1))
+            or any(
+                str(receipt.get("outcome") or "") != "WRITE_OUTCOME_UNKNOWN"
+                for receipt in receipts
+            )
+            or any(
+                not all(
+                    re.fullmatch(r"[0-9a-f]{64}", identity[field])
+                    for field in ("argument_sha256", "target_ref_sha256")
+                )
+                for identity in identities
+            )
+            or identity_sha256
+            != str(recovery_snapshot.get("receipt_identity_sha256") or "")
+        ):
+            return unknown
+
+        primary_resource_id = str(
+            resource_bindings.get("arrival_stats_primary_sheet") or ""
+        ).strip()
+        target_resource_id = str(
+            resource_bindings.get("arrival_stats_split_pending_sheet") or ""
+        ).strip()
+        if not primary_resource_id or not target_resource_id:
+            return unknown
+        binding_values: dict[str, object] = {
+            "account_id": account_bindings.get("account_id"),
+            **{
+                role_name: resource_bindings.get(role_name)
+                for role_name in (
+                    "arrival_stats_primary_sheet",
+                    "arrival_stats_secondary_sheet",
+                    "arrival_stats_pending_sheet",
+                    "arrival_stats_archive_sheet",
+                    "arrival_stats_split_pending_sheet",
+                )
+            },
+        }
+        for receipt, (_operation, _action, role_sha256) in zip(
+            receipts,
+            observed_sequence,
+        ):
+            role_names = [name for name in binding_values if role(name) == role_sha256]
+            if len(role_names) != 1:
+                return unknown
+            binding = binding_values[role_names[0]]
+            if (
+                not isinstance(binding, str)
+                or not binding.strip()
+                or str(receipt.get("binding_sha256") or "")
+                != hashlib.sha256(binding.strip().encode("utf-8")).hexdigest()
+            ):
+                return unknown
+
+        primary = _exact_sheet_resource(
+            primary_resource_id,
+            required_any=(("snapshot_range", "range"),),
+            required=("spreadsheet_token", "clear_range"),
+        )
+        target = _exact_sheet_resource(
+            target_resource_id,
+            required_any=(),
+            required=("spreadsheet_token", "sheet_id", "range", "clear_range"),
+        )
+        from tools.arrival_stats_sync_tool import _stats_clear_range, _stats_title_range
+        from tools.split_pending_snapshot import TARGET_HEADERS, classify_sheet_values
+
+        template_range = str(primary.get("snapshot_range") or primary.get("range"))
+        clear_range = _stats_clear_range(
+            str(primary["clear_range"]), template_range, [[""] * 19]
+        )
+        title_range = _stats_title_range(
+            primary.get("title_range"), template_range, [[""] * 19]
+        )
+        primary_rows = (
+            _fresh_sheet_rows(primary, title_range, width=19)
+            if title_range is not None
+            else []
+        )
+        primary_rows.extend(_fresh_sheet_rows(primary, clear_range, width=19))
+        candidates, _source_rows = classify_sheet_values(primary_rows)
+        expected = _canonical_rows(
+            [list(TARGET_HEADERS), *[list(item["sheet_values"]) for item in candidates]],
+            width=19,
+        )
+
+        sheet_id = str(target["sheet_id"])
+        target_clear = _range_shape(target["clear_range"], label="split-pending clear")
+        target_title = _range_shape(target["range"], label="split-pending title")
+        if target_clear["sheet"] != sheet_id or target_title["sheet"] != sheet_id:
+            return unknown
+        observed = _fresh_sheet_rows(
+            target,
+            f"{sheet_id}!A1:S{target_clear['end_row']}",
+            width=19,
+        )
+        if observed != expected:
+            _log_sheet_mismatch("split_pending_recovery", expected, observed)
+            return unknown
+
+        evidence = {
+            "schema": 1,
+            "kind": "arrival_stats_split_pending_exact_readback",
+            "receipt_identity_sha256": identity_sha256,
+            "source_sha256": _records_sha256([{"row": row} for row in primary_rows]),
+            "target_sha256": _records_sha256([{"row": row} for row in observed]),
+        }
+        return {
+            "status": "APPLIED",
+            "reason": "ARRIVAL_STATS_SPLIT_PENDING_EXACT_READBACK",
+            "receipt_identity_sha256": identity_sha256,
+            "evidence_sha256": hashlib.sha256(canonical_json_bytes(evidence)).hexdigest(),
+        }
+    except Exception as exc:  # noqa: BLE001 - recovery must remain fail closed
+        logger.warning(
+            "Arrival statistics unknown-write readback was not proven code=%s",
+            str(getattr(exc, "code", type(exc).__name__))[:80],
+        )
+        return unknown
+
+
+def recover_arrival_stats_unknown_write(
+    plugin_runtime: Any,
+    automation_id: str,
+    trigger_request_id: str,
+) -> dict[str, Any] | None:
+    """Inspect, prove, and atomically resolve one current arrival write."""
+
+    entry = plugin_runtime.catalog.require(automation_id)
+    if str(entry.plugin_id) != "sync_arrival_stats":
+        return None
+    generation = entry.committed_generation
+    if (
+        type(generation) is not int
+        or generation <= 0
+        or entry.target_generation != generation
+    ):
+        return None
+    snapshot = plugin_runtime.target_service.inspect_current_unknown_write(
+        automation_id=automation_id,
+        generation=generation,
+    )
+    verification = verify_arrival_stats_split_pending_recovery(
+        account_bindings=entry.account_bindings,
+        resource_bindings=entry.resource_bindings,
+        recovery_snapshot=snapshot,
+    )
+    if str(verification.get("status") or "") != "APPLIED":
+        return None
+    request_key = str(uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        "boyi:arrival-stats-unknown-write-readback:"
+        f"{automation_id}:{trigger_request_id}",
+    ))
+    return plugin_runtime.target_service.recover_current_unknown_write(
+        automation_id=automation_id,
+        generation=generation,
+        request_id=request_key,
+        actor_id="system:arrival-stats-readback",
+        actor_role="system",
+        authoritative_applied_proof={
+            "receipt_identity_sha256": str(
+                verification["receipt_identity_sha256"]
+            ),
+            "evidence_sha256": str(verification["evidence_sha256"]),
+        },
+    )
+
+
+def recover_arrival_stats_unknown_writes_on_startup(
+    plugin_runtime: Any,
+    release_sha: str,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Recover eligible instances at startup; unavailable proof stays blocked."""
+
+    recovered: list[tuple[str, dict[str, Any]]] = []
+    for entry in plugin_runtime.catalog.list(include_disabled=False):
+        if str(entry.plugin_id) != "sync_arrival_stats":
+            continue
+        try:
+            result = recover_arrival_stats_unknown_write(
+                plugin_runtime,
+                entry.automation_id,
+                f"startup:{release_sha}",
+            )
+        except Exception as exc:  # noqa: BLE001 - startup recovery is fail closed
+            logger.warning(
+                "Arrival statistics startup recovery unavailable project=%s code=%s",
+                entry.automation_id,
+                str(getattr(exc, "code", type(exc).__name__))[:80],
+            )
+            continue
+        if isinstance(result, Mapping):
+            recovered.append((entry.automation_id, dict(result)))
+    return recovered
 
 
 def _canonical_arrive_readback(
