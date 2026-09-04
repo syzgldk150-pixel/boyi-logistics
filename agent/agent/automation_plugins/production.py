@@ -122,9 +122,10 @@ from agent.orchestration.scan_preview_binding import (
     SCAN_PREVIEW_CONTEXT_KEY,
     ScanPreviewExpectation,
     normalize_preview_run_id,
-    scan_preview_recovery_impact_projection,
+    scan_preview_recovery_plan_projection,
     scan_preview_recovery_projection,
 )
+from agent.orchestration.automation_project_policy_plan import plan_from_mapping
 from agent.automation_plugins.runtime_backend_availability import (
     RuntimeContributionBackendAvailability,
 )
@@ -2395,6 +2396,7 @@ class MySQLRuntimeTargetService:
                     invocation, Mapping
                 ):
                     raise ValueError("scan recovery legacy plan binding is unavailable")
+                legacy_plan = plan_from_mapping(plan)
                 invocation_generation = invocation.get("automation_generation")
                 configuration_version = invocation.get(
                     "project_configuration_version"
@@ -2405,15 +2407,15 @@ class MySQLRuntimeTargetService:
                     or invocation_generation != generation
                     or type(configuration_version) is not int
                     or configuration_version <= 0
-                    or plan.get("automation_id") != automation_id
-                    or plan.get("automation_generation") != generation
-                    or plan.get("automation_contract_hash") != contract_digest
-                    or not isinstance(plan.get("impact"), Mapping)
+                    or legacy_plan.automation_id != automation_id
+                    or legacy_plan.automation_generation != generation
+                    or legacy_plan.automation_contract_hash != contract_digest
                 ):
                     raise ValueError("scan recovery legacy plan identity is invalid")
-                preview = scan_preview_recovery_impact_projection(
+                preview = scan_preview_recovery_plan_projection(
                     uow,
-                    impact=plan["impact"],
+                    plan=legacy_plan,
+                    expected_plan_hash=str(run.get("plan_hash") or ""),
                     expectation=ScanPreviewExpectation(
                         project_instance_id=automation_id,
                         generation=generation,
