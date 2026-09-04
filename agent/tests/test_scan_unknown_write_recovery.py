@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
@@ -24,15 +25,27 @@ class _Target:
     def __init__(self) -> None:
         self.recovery_calls: list[dict[str, object]] = []
 
-    def inspect_current_unknown_write(self, **_kwargs: object) -> dict[str, object]:
+    def inspect_scan_unknown_write_candidates(self, **_kwargs: object) -> dict[str, object]:
         return {
-            "state": "RECEIPTS_IDENTIFIED",
-            "lease_id": "lease-1",
-            "receipt_identity_sha256": "a" * 64,
-            "receipts": [
+            "state": "RECOVERY_CANDIDATES_IDENTIFIED",
+            "candidate_count": 1,
+            "candidates": [
                 {
-                    "action": "ronghui.scan_next.submit",
-                    "outcome": "WRITE_OUTCOME_UNKNOWN",
+                    "generation": 2,
+                    "snapshot": {
+                        "state": "RECEIPTS_IDENTIFIED",
+                        "lease_id": "lease-1",
+                        "receipt_identity_sha256": "a" * 64,
+                        "receipts": [
+                            {
+                                "action": "ronghui.scan_next.submit",
+                                "outcome": "WRITE_OUTCOME_UNKNOWN",
+                                "binding_sha256": hashlib.sha256(
+                                    b"account-1"
+                                ).hexdigest(),
+                            }
+                        ],
+                    },
                 }
             ],
         }
@@ -94,6 +107,7 @@ class ScanUnknownWriteRecoveryTests(unittest.TestCase):
 
         self.assertEqual(result["recovery_status"], "NOT_APPLIED")
         self.assertEqual(len(target.recovery_calls), 1)
+        self.assertEqual(target.recovery_calls[0]["generation"], 2)
         proof = target.recovery_calls[0]["authoritative_not_applied_proof"]
         self.assertEqual(proof["receipt_identity_sha256"], "a" * 64)
         self.assertEqual(len(proof["evidence_sha256"]), 64)
