@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -955,8 +956,9 @@ def _replace_arrival_stats_sheet(
                 "dry_run": False,
             },
         )
+        write_acknowledged = False
         if clear_result:
-            _write_sheet_call(
+            write_acknowledged = _write_sheet_call(
                 "write_sheet",
                 {
                     "spreadsheet_token": resource["spreadsheet_token"],
@@ -967,13 +969,31 @@ def _replace_arrival_stats_sheet(
                 },
             )
         managed_range = f"{sheet_id}!A1:S{clear['end_row']}"
-        observed = _fresh_sheet_rows(resource, managed_range, width=19)
         try:
             expected = _canonical_rows(values, width=19)
         except ValueError as exc:
             raise _error("split-pending sheet arguments are invalid", "BROKER_ARGUMENT_INVALID") from exc
-        if observed != expected:
-            _unknown("split-pending sheet fresh readback did not match")
+        readback_delays = (0.0,) if write_acknowledged else (0.0, 0.5, 1.0, 2.0)
+        readback_error: PluginExecutionError | None = None
+        observed: list[list[str]] = []
+        for delay in readback_delays:
+            if delay:
+                time.sleep(delay)
+            try:
+                observed = _fresh_sheet_rows(resource, managed_range, width=19)
+            except PluginExecutionError as exc:
+                if exc.code != "WRITE_OUTCOME_UNKNOWN":
+                    raise
+                readback_error = exc
+                continue
+            if observed == expected:
+                break
+        else:
+            _log_sheet_mismatch("split_pending", expected, observed)
+            _unknown(
+                "split-pending sheet fresh readback did not match",
+                cause=readback_error,
+            )
         return {
             "ok": True,
             "verified": True,

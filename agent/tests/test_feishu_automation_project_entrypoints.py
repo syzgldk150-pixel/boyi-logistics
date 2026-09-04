@@ -1334,6 +1334,27 @@ def test_self_pickup_selection_preview_expired_has_stable_repreview_reply():
     assert "SELECTION_PREVIEW_EXPIRED" not in reply
 
 
+def test_unknown_write_reply_does_not_expose_internal_failure_or_invite_replay():
+    reply, reply_type = message_handler._automation_result_reply(
+        task_name="统计到货数据",
+        result={
+            "status": "BLOCKED_DATA",
+            "error_summary": (
+                "FIRST_PARTY_ACTION_FAILED:WRITE_OUTCOME_UNKNOWN:"
+                "FRAME=action.py:660:run_action"
+            ),
+        },
+    )
+
+    assert reply_type == "automation_project_write_outcome_unknown"
+    assert reply == (
+        "统计到货数据的目标表可能已更新，但最终核验暂未确认。"
+        "请不要重复执行；请在事项中心核对写入结果。"
+    )
+    assert "FIRST_PARTY_ACTION_FAILED" not in reply
+    assert "WRITE_OUTCOME_UNKNOWN" not in reply
+
+
 def test_removed_r7_plate_choice_mode_cannot_invoke_project():
     service = _FakeProjectEntrypoints()
     agent = _FakeAgent()
