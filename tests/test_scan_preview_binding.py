@@ -619,12 +619,13 @@ def test_planner_persists_compact_scan_impact_for_the_signed_project():
             {
                 "entity_type": "scan_selection",
                 "entity_id": RUN_ID,
-                "source_system": "",
-                "relation_type": "subject",
-                "metadata": {},
+                "source_system": "legacy",
+                "relation_type": "legacy",
+                "metadata": {"legacy_reference": True},
             }
         ],
         "amounts": {},
+        "source_version": {"kind": "legacy"},
     }
     legacy_reference_plan = replace(
         legacy_plan,
