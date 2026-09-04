@@ -13,7 +13,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Awaitable
 
 from agent.automation_plugins.catalog import (
     PluginCatalog,
@@ -1127,6 +1127,7 @@ class AutomationProjectPolicyService:
         expected_automation_generation: int | None = None,
         expected_project_configuration_version: int | None = None,
         timeout_seconds: float = 1800.0,
+        on_accepted: Callable[[Any], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         """Confirm a persisted selection without accepting its fingerprint.
 
@@ -1167,6 +1168,7 @@ class AutomationProjectPolicyService:
                     expected_project_configuration_version
                 ),
                 timeout_seconds=timeout_seconds,
+                on_accepted=on_accepted,
             )
         entry, contract = self._load_contract(safe_id)
         expectation = _selection_preview_expectation(entry, contract)
@@ -1193,6 +1195,7 @@ class AutomationProjectPolicyService:
                 expected_project_configuration_version
             ),
             timeout_seconds=timeout_seconds,
+            on_accepted=on_accepted,
         )
 
     def invoke_console(
@@ -1857,6 +1860,7 @@ class AutomationProjectPolicyService:
         selected_bill_codes: Sequence[str] | None = None,
         contribution_id: str | None = None,
         timeout_seconds: float = 1800.0,
+        on_accepted: Callable[[Any], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         receipt = self.invoke_trusted(
             automation_id,
@@ -1872,6 +1876,8 @@ class AutomationProjectPolicyService:
             selected_bill_codes=selected_bill_codes,
             contribution_id=contribution_id,
         )
+        if on_accepted is not None:
+            await on_accepted(receipt)
         if self._command_gateway is None:  # defensive; invoke_trusted checked it
             raise OrchestrationError(
                 "PROJECT_INVOKE_UNAVAILABLE",

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime, timedelta
 from typing import Any, Mapping, Protocol
@@ -697,6 +698,7 @@ class AutomationProjectEntrypoints:
         chat_id: str,
         envelope: Mapping[str, Any] | None = None,
         preview_run_id: str | None = None,
+        on_accepted: Callable[[Any], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         route = self._require_route(AutomationEntrypoint.FEISHU, route_key)
         safe_event_id = _stable_identifier(event_id, "event_id")
@@ -759,6 +761,7 @@ class AutomationProjectEntrypoints:
                 expected_project_configuration_version=(
                     route.project_configuration_version
                 ),
+                on_accepted=on_accepted,
             )
         if selection_route:
             dynamic_inputs = {
@@ -779,6 +782,7 @@ class AutomationProjectEntrypoints:
                 route.project_configuration_version
             ),
             preview_run_id=(safe_preview_run_id if not selection_route else None),
+            on_accepted=on_accepted,
         )
         if selection_route and str(result.get("status") or "").upper() == "COMPLETED":
             result["selection_preview"] = self._policy.get_selection_preview_projection(

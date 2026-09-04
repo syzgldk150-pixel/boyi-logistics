@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 from contextvars import ContextVar, Token
 from concurrent.futures import Future
 from dataclasses import dataclass
@@ -271,6 +272,7 @@ async def _invoke_automation_project(
     route_key: str,
     dynamic_inputs: dict[str, Any] | None,
     preview_run_id: str | None = None,
+    on_accepted: Callable[[Any], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Invoke one exact committed project from a verified Feishu event."""
 
@@ -294,6 +296,7 @@ async def _invoke_automation_project(
         chat_id=context.chat_id,
         envelope={"body": inputs, "query": {}},
         preview_run_id=preview_run_id,
+        on_accepted=on_accepted,
     )
 
 
@@ -314,17 +317,32 @@ async def _invoke_automation_project_and_reply(
         start_reply = "已开始生成扫描预览，完成后我会发回待扫描清单。"
     else:
         start_reply = f"已开始执行：{task_name}。完成后我会反馈结果。"
-    await _reply_text(
-        receive_id,
-        start_reply,
-        receive_id_type=receive_id_type,
-        reply_type="automation_project_started",
-    )
+    accepted_notified = False
+
+    async def notify_accepted(_receipt: Any) -> None:
+        nonlocal accepted_notified
+        if accepted_notified:
+            return
+        accepted_notified = True
+        try:
+            await _reply_text(
+                receive_id,
+                start_reply,
+                receive_id_type=receive_id_type,
+                reply_type="automation_project_started",
+            )
+        except Exception:
+            logger.exception(
+                "trusted Feishu automation acceptance reply failed | route=%s",
+                safe_route_key[:191],
+            )
+
     try:
         result = await _invoke_automation_project(
             route_key=safe_route_key,
             dynamic_inputs=dynamic_inputs,
             preview_run_id=preview_run_id,
+            on_accepted=notify_accepted,
         )
     except OrchestrationError as exc:
         logger.warning(
@@ -332,14 +350,32 @@ async def _invoke_automation_project_and_reply(
             str(route_key or "")[:191],
             exc.code,
         )
-        await _reply_text(
-            receive_id,
-            (
+        if exc.code == "AUTOMATION_ALREADY_RUNNING":
+            details = exc.details if isinstance(exc.details, dict) else {}
+            active_status = str(details.get("active_status") or "").strip().upper()
+            status_label = {
+                "RUNNING": "执行中",
+                "VERIFYING": "核验中",
+                "WAITING_APPROVAL": "待审批",
+                "NEEDS_CLARIFICATION": "待补充信息",
+                "BLOCKED_LOGIN": "登录阻塞",
+                "BLOCKED_DATA": "数据阻塞",
+                "FAILED_RETRYABLE": "可重试失败",
+            }.get(active_status, "未终结")
+            rejected_reply = (
+                f"{task_name}未重复提交：已有一条未结束任务（状态：{status_label}）。"
+                "请到事项中心处理或取消后再重试。"
+            )
+        else:
+            rejected_reply = (
                 _scan_preview_error_message(exc.code)
                 if safe_route_key == SCAN_FEISHU_ROUTE_KEY
                 and exc.code in SCAN_PREVIEW_ERROR_MESSAGES
                 else f"自动化任务未提交（{exc.code}），请检查项目设置后重试。"
-            ),
+            )
+        await _reply_text(
+            receive_id,
+            rejected_reply,
             receive_id_type=receive_id_type,
             reply_type="automation_project_rejected",
         )

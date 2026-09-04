@@ -38,7 +38,13 @@ class _FakeProjectEntrypoints:
             result = self.results.pop(0)
             if isinstance(result, Exception):
                 raise result
+            on_accepted = kwargs.get("on_accepted")
+            if on_accepted is not None:
+                await on_accepted(SimpleNamespace(run_id=result.get("run_id", "")))
             return dict(result)
+        on_accepted = kwargs.get("on_accepted")
+        if on_accepted is not None:
+            await on_accepted(SimpleNamespace(run_id="run-feishu-one"))
         return {
             "success": self.status == "COMPLETED",
             "status": self.status,
@@ -353,6 +359,50 @@ def test_direct_feishu_project_reports_waiting_approval_without_generic_executio
     assert service.calls[0]["route_key"] == "builtin.scan_codes"
     assert "已开始生成扫描预览" in replies[0][0]
     assert "等待审批" in replies[-1][0]
+
+
+def test_direct_feishu_project_rejection_does_not_claim_execution_started():
+    service = _FakeProjectEntrypoints(
+        results=[
+            OrchestrationError(
+                "AUTOMATION_ALREADY_RUNNING",
+                "该脚本已在运行",
+                details={"active_run_id": "private-run", "active_status": "BLOCKED_DATA"},
+            )
+        ]
+    )
+    replies = []
+    token = message_handler._COMMAND_CONTEXT.set(
+        message_handler.FeishuCommandContext(
+            event_id="event-already-running",
+            actor_id="user-one",
+            chat_id="chat-one",
+        )
+    )
+    try:
+        with (
+            patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+            patch.object(
+                message_handler,
+                "_reply_text",
+                side_effect=_reply_recorder(replies),
+            ),
+        ):
+            asyncio.run(
+                message_handler._invoke_automation_project_and_reply(
+                    route_key="builtin.arrival_stats",
+                    dynamic_inputs={},
+                    receive_id="chat-one",
+                )
+            )
+    finally:
+        message_handler._COMMAND_CONTEXT.reset(token)
+
+    assert len(replies) == 1
+    assert "未重复提交" in replies[0][0]
+    assert "数据阻塞" in replies[0][0]
+    assert "已开始" not in replies[0][0]
+    assert "private-run" not in replies[0][0]
 
 
 def test_direct_feishu_project_explains_blocked_data_reason():
