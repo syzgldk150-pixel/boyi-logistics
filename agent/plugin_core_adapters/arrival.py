@@ -413,6 +413,74 @@ def _fresh_sheet_rows(
         _unknown("arrival sheet fresh readback failed", cause=exc)
 
 
+def _arrival_stats_split_pending_recovery_readback(
+    primary_resource_id: str,
+    target_resource_id: str,
+) -> dict[str, Any]:
+    """Read the signed source, pre-write projection, and managed target."""
+
+    primary = _exact_sheet_resource(
+        primary_resource_id,
+        required_any=(("snapshot_range", "range"),),
+        required=("spreadsheet_token", "clear_range"),
+    )
+    target = _exact_sheet_resource(
+        target_resource_id,
+        required_any=(),
+        required=("spreadsheet_token", "sheet_id", "range", "clear_range"),
+    )
+    from tools.arrival_stats_sync_tool import _stats_clear_range, _stats_title_range
+    from tools.split_pending_snapshot import TARGET_HEADERS, classify_sheet_values
+
+    template_range = str(primary.get("snapshot_range") or primary.get("range"))
+    clear_range = _stats_clear_range(
+        str(primary["clear_range"]), template_range, [[""] * 19]
+    )
+    title_range = _stats_title_range(
+        primary.get("title_range"), template_range, [[""] * 19]
+    )
+    primary_rows = (
+        _fresh_sheet_rows(primary, title_range, width=19)
+        if title_range is not None
+        else []
+    )
+    primary_rows.extend(_fresh_sheet_rows(primary, clear_range, width=19))
+    candidates, _source_rows = classify_sheet_values(primary_rows)
+    projection = list(_read_split_projection())
+    _require_exact_records(
+        candidates,
+        projection,
+        fields=_SPLIT_FIELDS,
+        identity_field="tracking_number",
+        label="split-pending recovery projection",
+    )
+    expected = _canonical_rows(
+        [list(TARGET_HEADERS), *[list(item["sheet_values"]) for item in candidates]],
+        width=19,
+    )
+    baseline = _canonical_rows([list(TARGET_HEADERS)], width=19)
+
+    sheet_id = str(target["sheet_id"])
+    target_clear = _range_shape(target["clear_range"], label="split-pending clear")
+    target_title = _range_shape(target["range"], label="split-pending title")
+    if target_clear["sheet"] != sheet_id or target_title["sheet"] != sheet_id:
+        raise _error(
+            "the split-pending recovery ranges changed identity",
+            "BROKER_RESOURCE_MISMATCH",
+        )
+    managed_range = f"{sheet_id}!A1:S{target_clear['end_row']}"
+    observed = _fresh_sheet_rows(target, managed_range, width=19)
+    return {
+        "primary_rows": primary_rows,
+        "expected": expected,
+        "baseline": baseline,
+        "observed": observed,
+        "target": target,
+        "managed_range": managed_range,
+        "sheet_id": sheet_id,
+    }
+
+
 def verify_arrival_stats_split_pending_recovery(
     *,
     account_bindings: Mapping[str, object],
@@ -580,50 +648,35 @@ def verify_arrival_stats_split_pending_recovery(
             ):
                 return not_proven("RECEIPT_BINDING_STALE")
 
-        primary = _exact_sheet_resource(
+        readback = _arrival_stats_split_pending_recovery_readback(
             primary_resource_id,
-            required_any=(("snapshot_range", "range"),),
-            required=("spreadsheet_token", "clear_range"),
-        )
-        target = _exact_sheet_resource(
             target_resource_id,
-            required_any=(),
-            required=("spreadsheet_token", "sheet_id", "range", "clear_range"),
         )
-        from tools.arrival_stats_sync_tool import _stats_clear_range, _stats_title_range
-        from tools.split_pending_snapshot import TARGET_HEADERS, classify_sheet_values
-
-        template_range = str(primary.get("snapshot_range") or primary.get("range"))
-        clear_range = _stats_clear_range(
-            str(primary["clear_range"]), template_range, [[""] * 19]
-        )
-        title_range = _stats_title_range(
-            primary.get("title_range"), template_range, [[""] * 19]
-        )
-        primary_rows = (
-            _fresh_sheet_rows(primary, title_range, width=19)
-            if title_range is not None
-            else []
-        )
-        primary_rows.extend(_fresh_sheet_rows(primary, clear_range, width=19))
-        candidates, _source_rows = classify_sheet_values(primary_rows)
-        expected = _canonical_rows(
-            [list(TARGET_HEADERS), *[list(item["sheet_values"]) for item in candidates]],
-            width=19,
-        )
-
-        sheet_id = str(target["sheet_id"])
-        target_clear = _range_shape(target["clear_range"], label="split-pending clear")
-        target_title = _range_shape(target["range"], label="split-pending title")
-        if target_clear["sheet"] != sheet_id or target_title["sheet"] != sheet_id:
-            return not_proven("TARGET_RANGE_INVALID")
-        observed = _fresh_sheet_rows(
-            target,
-            f"{sheet_id}!A1:S{target_clear['end_row']}",
-            width=19,
-        )
+        primary_rows = readback["primary_rows"]
+        expected = readback["expected"]
+        observed = readback["observed"]
         if observed != expected:
             _log_sheet_mismatch("split_pending_recovery", expected, observed)
+            if observed == readback["baseline"]:
+                evidence = {
+                    "schema": 1,
+                    "kind": "arrival_stats_split_pending_empty_readback",
+                    "receipt_identity_sha256": identity_sha256,
+                    "source_sha256": _records_sha256(
+                        [{"row": row} for row in primary_rows]
+                    ),
+                    "target_sha256": _records_sha256(
+                        [{"row": row} for row in observed]
+                    ),
+                }
+                return {
+                    "status": "NOT_APPLIED",
+                    "reason": "ARRIVAL_STATS_SPLIT_PENDING_EMPTY_READBACK",
+                    "receipt_identity_sha256": identity_sha256,
+                    "evidence_sha256": hashlib.sha256(
+                        canonical_json_bytes(evidence)
+                    ).hexdigest(),
+                }
             return not_proven("TARGET_CONTENT_MISMATCH")
 
         evidence = {
@@ -645,6 +698,86 @@ def verify_arrival_stats_split_pending_recovery(
             str(getattr(exc, "code", type(exc).__name__))[:80],
         )
         return unknown
+
+
+def _repair_arrival_stats_split_pending_recovery(
+    resource_bindings: Mapping[str, str],
+) -> dict[str, str]:
+    """Complete only the missing final replace covered by the old receipt."""
+
+    unknown = {"status": "UNKNOWN", "reason": "RECOVERY_REPAIR_NOT_PROVEN"}
+    primary_resource_id = str(
+        resource_bindings.get("arrival_stats_primary_sheet") or ""
+    ).strip()
+    target_resource_id = str(
+        resource_bindings.get("arrival_stats_split_pending_sheet") or ""
+    ).strip()
+    if not primary_resource_id or not target_resource_id:
+        return unknown
+    try:
+        readback = _arrival_stats_split_pending_recovery_readback(
+            primary_resource_id,
+            target_resource_id,
+        )
+        expected = readback["expected"]
+        if readback["observed"] == expected:
+            return {"status": "APPLIED", "reason": "ALREADY_APPLIED"}
+        if readback["observed"] != readback["baseline"]:
+            return unknown
+        target = readback["target"]
+        _write_sheet_call(
+            "clear_sheet",
+            {
+                "spreadsheet_token": target["spreadsheet_token"],
+                "range": target["clear_range"],
+                "as": "bot",
+                "dry_run": False,
+            },
+        )
+        cleared = _fresh_sheet_rows(
+            target,
+            str(readback["managed_range"]),
+            width=19,
+        )
+        if cleared != readback["baseline"]:
+            _log_sheet_mismatch(
+                "split_pending_recovery_clear",
+                readback["baseline"],
+                cleared,
+            )
+            return unknown
+        write_acknowledged = _write_sheet_call(
+            "write_sheet",
+            {
+                "spreadsheet_token": target["spreadsheet_token"],
+                "range": f"{readback['sheet_id']}!A1:S{len(expected)}",
+                "values": expected,
+                "as": "bot",
+                "dry_run": False,
+            },
+        )
+        delays = (0.0,) if write_acknowledged else (0.0, 0.5, 1.0, 2.0)
+        observed: list[list[str]] = []
+        for delay in delays:
+            if delay:
+                time.sleep(delay)
+            observed = _fresh_sheet_rows(
+                target,
+                str(readback["managed_range"]),
+                width=19,
+            )
+            if observed == expected:
+                return {
+                    "status": "APPLIED",
+                    "reason": "ARRIVAL_STATS_SPLIT_PENDING_REPAIRED",
+                }
+        _log_sheet_mismatch("split_pending_recovery_write", expected, observed)
+    except Exception as exc:  # noqa: BLE001 - recovery repair remains fail closed
+        logger.warning(
+            "Arrival statistics unknown-write repair was not proven code=%s",
+            str(getattr(exc, "code", type(exc).__name__))[:80],
+        )
+    return unknown
 
 
 def recover_arrival_stats_unknown_write(
@@ -727,18 +860,14 @@ def recover_arrival_stats_unknown_write(
             )
         ]
 
-    verifications: list[dict[str, str]] = []
     semantic_sha256s: set[str] = set()
     for snapshot in snapshots:
-        verification = verify_arrival_stats_split_pending_recovery(
-            account_bindings=entry.account_bindings,
-            resource_bindings=entry.resource_bindings,
-            recovery_snapshot=snapshot,
-        )
-        if str(verification.get("status") or "") != "APPLIED":
-            return None
         receipts = snapshot.get("receipts")
-        if not isinstance(receipts, list):
+        if (
+            not isinstance(receipts, list)
+            or not receipts
+            or any(not isinstance(receipt, Mapping) for receipt in receipts)
+        ):
             return None
         semantic_sha256s.add(hashlib.sha256(canonical_json_bytes([
             {
@@ -753,15 +882,43 @@ def recover_arrival_stats_unknown_write(
                 )
             }
             for receipt in receipts
-            if isinstance(receipt, Mapping)
         ])).hexdigest())
-        verifications.append(verification)
     if len(semantic_sha256s) != 1:
         logger.info(
             "Arrival statistics unknown-write recovery not proven "
             "code=RECOVERY_BATCH_SEMANTIC_MISMATCH",
         )
         return None
+
+    verifications: list[dict[str, str]] = []
+    needs_repair = False
+    for snapshot in snapshots:
+        verification = verify_arrival_stats_split_pending_recovery(
+            account_bindings=entry.account_bindings,
+            resource_bindings=entry.resource_bindings,
+            recovery_snapshot=snapshot,
+        )
+        status = str(verification.get("status") or "")
+        if status not in {"APPLIED", "NOT_APPLIED"}:
+            return None
+        needs_repair = needs_repair or status == "NOT_APPLIED"
+        verifications.append(verification)
+    if needs_repair:
+        repair = _repair_arrival_stats_split_pending_recovery(
+            entry.resource_bindings,
+        )
+        if str(repair.get("status") or "") != "APPLIED":
+            return None
+        verifications = []
+        for snapshot in snapshots:
+            verification = verify_arrival_stats_split_pending_recovery(
+                account_bindings=entry.account_bindings,
+                resource_bindings=entry.resource_bindings,
+                recovery_snapshot=snapshot,
+            )
+            if str(verification.get("status") or "") != "APPLIED":
+                return None
+            verifications.append(verification)
 
     result: dict[str, Any] | None = None
     if callable(batch_reader) and callable(explicit_recovery):
