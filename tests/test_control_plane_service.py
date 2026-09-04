@@ -434,6 +434,12 @@ class _Command:
 
 
 ACTOR = Actor(ActorType.CONSOLE_ADMIN, "admin-1", ("admin",))
+SUPER_ADMIN = Actor(
+    ActorType.CONSOLE_ADMIN,
+    "super-admin-1",
+    ("super_admin",),
+    authenticated_by="mysql_admin_session",
+)
 
 
 class ControlPlaneServiceTests(unittest.TestCase):
@@ -780,6 +786,49 @@ class ControlPlaneServiceAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("RUN_WRITE_OUTCOME_UNKNOWN", raised.exception.code)
         self.assertEqual("BLOCKED_DATA", repository.runs["run-1"]["status"])
         self.assertEqual([], repository.cancel_requests)
+
+    async def test_super_admin_can_explicitly_cancel_unknown_write_suspended_run(self):
+        repository = _FakeRepository([_run("run-1", "BLOCKED_DATA")])
+        repository.work_items["work-1"]["status"] = "BLOCKED_DATA"
+        repository.run_facts["run-1"] = {"has_unknown_write_receipt": True}
+        service = ControlPlaneService(
+            repository,
+            _FakeApprovalService(repository),
+        )
+
+        result = await service.cancel_run(
+            "run-1",
+            actor=SUPER_ADMIN,
+            comment="旧扫描已结束，明确取消残留事项",
+        )
+
+        self.assertEqual("CANCELLED", result["run"]["status"])
+        self.assertEqual(
+            "CANCELLED_UNKNOWN_WRITE_BY_SUPER_ADMIN",
+            result["run"]["error_code"],
+        )
+        self.assertEqual("CANCELLED", repository.work_items["work-1"]["status"])
+        self.assertEqual([], repository.cancel_requests)
+        self.assertTrue(
+            repository.events[-1]["payload_json"][
+                "write_outcome_unknown_acknowledged"
+            ]
+        )
+
+    async def test_super_admin_unknown_write_cancellation_requires_reason(self):
+        repository = _FakeRepository([_run("run-1", "BLOCKED_DATA")])
+        repository.work_items["work-1"]["status"] = "BLOCKED_DATA"
+        repository.run_facts["run-1"] = {"has_unknown_write_receipt": True}
+        service = ControlPlaneService(
+            repository,
+            _FakeApprovalService(repository),
+        )
+
+        with self.assertRaises(OrchestrationError) as raised:
+            await service.cancel_run("run-1", actor=SUPER_ADMIN)
+
+        self.assertEqual("RUN_CANCELLATION_REASON_REQUIRED", raised.exception.code)
+        self.assertEqual("BLOCKED_DATA", repository.runs["run-1"]["status"])
 
     async def test_cancel_requests_persistence_and_cancels_active_execution(self):
         repository = _FakeRepository([_run("run-1", "RUNNING")])
