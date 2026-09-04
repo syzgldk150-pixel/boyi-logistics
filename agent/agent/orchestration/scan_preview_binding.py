@@ -24,6 +24,7 @@ from agent.orchestration.models import (
     EntityRef,
     OperationType,
     OrchestrationError,
+    Plan,
     new_id,
     sha256_json,
 )
@@ -319,26 +320,54 @@ def scan_preview_recovery_projection(
     }
 
 
-def scan_preview_recovery_impact_projection(
+def scan_preview_recovery_plan_projection(
     uow: Any,
     *,
-    impact: Mapping[str, Any],
+    plan: Plan,
+    expected_plan_hash: str,
     expectation: ScanPreviewExpectation,
     now: datetime,
 ) -> dict[str, Any]:
-    """Recover a legacy formal binding from its hash-bound Plan impact."""
+    """Recover a legacy formal binding from one integrity-bound Plan."""
 
-    value = dict(impact)
-    supplied_fingerprint = str(value.get("preview_fingerprint") or "").strip()
-    unhashed = dict(value)
-    unhashed.pop("preview_fingerprint", None)
     if (
-        not _HEX_SHA256.fullmatch(supplied_fingerprint)
-        or sha256_json(unhashed) != supplied_fingerprint
+        plan.plan_hash != expected_plan_hash
+        or plan.automation_id != expectation.project_instance_id
+        or plan.automation_generation != expectation.generation
+        or plan.automation_contract_hash != expectation.contract_digest
+        or len(plan.steps) != 1
     ):
         raise _error(
             "SCAN_PREVIEW_CONTEXT_INVALID",
-            "The legacy scan impact hash is invalid",
+            "The legacy scan Plan integrity is invalid",
+        )
+    step = plan.steps[0]
+    value = dict(plan.impact)
+    supplied_fingerprint = str(value.get("preview_fingerprint") or "").strip()
+    if (
+        not _HEX_SHA256.fullmatch(supplied_fingerprint)
+        or set(value)
+        != {
+            "tool_name",
+            "operation_type",
+            "account_id",
+            "entities",
+            "amounts",
+            "source_version",
+            "revalidation",
+            "preview_fingerprint",
+        }
+        or value.get("tool_name") != step.tool_name
+        or step.tool_name
+        != f"automation.{expectation.project_instance_id}.run"
+        or value.get("operation_type") != step.operation_type.value
+        or value.get("account_id") != step.account_id
+        or value.get("revalidation")
+        != "authoritative_source_and_selection_must_match_and_preview_is_one_time_consumed"
+    ):
+        raise _error(
+            "SCAN_PREVIEW_CONTEXT_INVALID",
+            "The legacy scan impact identity is invalid",
         )
     entities = value.get("entities")
     source_version = value.get("source_version")
