@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable
 from agent.automation_plugins.first_party_handlers import customer_problem_identity
 from agent.orchestration.models import (
     Actor,
+    ActorType,
     OrchestrationError,
     RunStatus,
     WorkItemStatus,
@@ -341,24 +342,44 @@ class ControlPlaneService:
                             str(locked["run_id"])
                         ),
                     )
+                unknown_write_acknowledged = (
+                    direct_kind == AUTOMATION_BLOCKING_UNKNOWN_WRITE
+                    and actor.actor_type is ActorType.CONSOLE_ADMIN
+                    and "super_admin" in actor.roles
+                    and actor.authenticated_by == "mysql_admin_session"
+                )
                 if direct_kind == AUTOMATION_BLOCKING_UNKNOWN_WRITE:
-                    raise OrchestrationError(
-                        "RUN_WRITE_OUTCOME_UNKNOWN",
-                        "写入结果尚未核验，不能直接取消该事项",
-                    )
+                    if not unknown_write_acknowledged:
+                        raise OrchestrationError(
+                            "RUN_WRITE_OUTCOME_UNKNOWN",
+                            "写入结果尚未核验，只有超级管理员可明确取消该事项",
+                        )
+                    if not safe_comment:
+                        raise OrchestrationError(
+                            "RUN_CANCELLATION_REASON_REQUIRED",
+                            "取消写入结果未知的事项必须填写原因",
+                        )
                 if direct_kind == AUTOMATION_BLOCKING_NEEDS_ATTENTION:
                     raise OrchestrationError(
                         "RUN_CANCELLATION_REQUIRES_ATTENTION",
                         "运行与事项状态不一致，需要先处理旧事项",
                     )
-                if direct_kind == AUTOMATION_BLOCKING_SAFE_SUPERSEDE:
+                if direct_kind in {
+                    AUTOMATION_BLOCKING_SAFE_SUPERSEDE,
+                    AUTOMATION_BLOCKING_UNKNOWN_WRITE,
+                }:
                     now = _naive_utc_now()
+                    cancellation_code = (
+                        "CANCELLED_UNKNOWN_WRITE_BY_SUPER_ADMIN"
+                        if unknown_write_acknowledged
+                        else "CANCELLED_BY_ACTOR"
+                    )
                     assert_run_transition(locked_status, RunStatus.CANCELLED)
                     run = uow.runs.cancel_suspended(
                         str(locked["run_id"]),
                         expected_version=int(locked["version"]),
                         expected_statuses=(locked_status.value,),
-                        error_code="CANCELLED_BY_ACTOR",
+                        error_code=cancellation_code,
                         error_summary=safe_comment or "已由用户取消",
                         finished_at=now,
                     )
@@ -372,7 +393,7 @@ class ControlPlaneService:
                         expected_version=int(item["version"]),
                         expected_statuses=(item_status.value,),
                         status=WorkItemStatus.CANCELLED.value,
-                        reason_code="CANCELLED_BY_ACTOR",
+                        reason_code=cancellation_code,
                         reason_summary=safe_comment or "已由用户取消",
                         resolution={"run_id": run["run_id"]},
                         closed_at=now,
@@ -386,6 +407,9 @@ class ControlPlaneService:
                             "previous_status": locked_status.value,
                             "comment": safe_comment,
                             "immediate": True,
+                            "write_outcome_unknown_acknowledged": (
+                                unknown_write_acknowledged
+                            ),
                         },
                     )
                     cancelled_immediately = True
