@@ -240,7 +240,7 @@ def recover_unknown_automation_write(
         and step.get("retry_safe") is not True
         and current_item_status not in {"CANCELLED", "RESOLVED"}
     ):
-        uow.work_items.transition(
+        item = uow.work_items.transition(
             str(item["work_item_id"]),
             expected_version=int(item["version"]),
             expected_statuses=(current_item_status,),
@@ -254,7 +254,7 @@ def recover_unknown_automation_write(
             },
             closed_at=datetime.now(),
         )
-        current_item_status = "CANCELLED"
+        current_item_status = str(item.get("status") or "")
     desired_item_status = (
         "CANCELLED"
         if current_item_status == "CANCELLED"

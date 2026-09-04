@@ -198,7 +198,11 @@ class _WorkItems:
         self.get_lock_modes.append(for_update)
         return dict(self.row)
 
-    def transition(self, _work_item_id, *, status, **_kwargs):
+    def transition(self, _work_item_id, *, status, **kwargs):
+        if int(kwargs["expected_version"]) != int(self.row["version"]):
+            raise RuntimeError("work item version changed")
+        if self.row["status"] not in set(kwargs["expected_statuses"]):
+            raise RuntimeError("work item status changed")
         self.row["status"] = status
         self.row["version"] += 1
         return dict(self.row)
