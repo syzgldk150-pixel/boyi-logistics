@@ -254,6 +254,20 @@ class _CancelCursor(_Cursor):
             self.row = {"status": "PARTIAL"}
 
 
+class _SuspendedCancelCursor(_Cursor):
+    def execute(self, sql, params=None):
+        super().execute(sql, params)
+        if "UPDATE agent_runs" in sql:
+            self.rowcount = 1
+        elif "SELECT * FROM agent_runs WHERE run_id=" in sql:
+            self.row = {
+                "run_id": "run-1",
+                "status": "CANCELLED",
+                "next_attempt_at": datetime(2026, 8, 13, 2, 30),
+                "version": 2,
+            }
+
+
 class _OutboxClaimCursor(_Cursor):
     def execute(self, sql, params=None):
         super().execute(sql, params)
@@ -556,6 +570,23 @@ class OrchestrationRepositoryTests(unittest.TestCase):
             repository.request_cancel("run-1", requested_by_type="admin")
 
         self.assertFalse(any("UPDATE agent_runs" in sql for sql, _ in cursor.calls))
+
+    def test_suspended_cancellation_preserves_required_next_attempt_at(self):
+        cursor = _SuspendedCancelCursor()
+        repository = AgentRunRepository(_Connection(cursor))
+
+        result = repository.cancel_suspended(
+            "run-1",
+            expected_version=1,
+            expected_statuses=("BLOCKED_DATA",),
+            error_code="CANCELLED_BY_ACTOR",
+            error_summary="cancelled",
+            finished_at=datetime(2026, 8, 13, 3, 0),
+        )
+
+        update_sql = next(sql for sql, _ in cursor.calls if "UPDATE agent_runs" in sql)
+        self.assertNotIn("next_attempt_at=NULL", update_sql)
+        self.assertEqual("CANCELLED", result["status"])
 
     def test_run_create_accepts_an_explicit_initial_schedule(self):
         scheduled_at = datetime(2026, 8, 13, 2, 30)
