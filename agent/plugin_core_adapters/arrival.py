@@ -817,6 +817,11 @@ def recover_arrival_stats_unknown_write(
         "recover_unknown_write",
         None,
     )
+    batch_not_applied_recovery = getattr(
+        plugin_runtime.target_service,
+        "recover_unknown_writes_not_applied",
+        None,
+    )
     if callable(batch_reader) and callable(explicit_recovery):
         batch = batch_reader(
             automation_id=automation_id,
@@ -880,7 +885,8 @@ def recover_arrival_stats_unknown_write(
                 "binding_sha256",
             )
         })).hexdigest())
-    if len(semantic_sha256s) != 1:
+    semantic_mismatch = len(semantic_sha256s) != 1
+    if semantic_mismatch:
         run_sha256s = {
             str(snapshot.get("orchestration_run_sha256") or "")
             for snapshot in snapshots
@@ -891,7 +897,6 @@ def recover_arrival_stats_unknown_write(
             len(snapshots),
             "true" if len(run_sha256s) == 1 else "false",
         )
-        return None
 
     verifications: list[dict[str, str]] = []
     needs_repair = False
@@ -906,6 +911,49 @@ def recover_arrival_stats_unknown_write(
             return None
         needs_repair = needs_repair or status == "NOT_APPLIED"
         verifications.append(verification)
+    if semantic_mismatch:
+        if (
+            not callable(batch_not_applied_recovery)
+            or any(
+                str(verification.get("status") or "") != "NOT_APPLIED"
+                for verification in verifications
+            )
+        ):
+            logger.info(
+                "Arrival statistics unknown-write recovery not proven "
+                "code=RECOVERY_BATCH_DIVERGENT_CONTENT_PRESENT",
+            )
+            return None
+        recoveries: list[dict[str, object]] = []
+        for snapshot, verification in zip(snapshots, verifications):
+            request_key = str(uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                "boyi:arrival-stats-unknown-write-not-applied:"
+                f"{automation_id}:{trigger_request_id}:"
+                f"{verification['receipt_identity_sha256']}",
+            ))
+            recoveries.append(
+                {
+                    "lease_id": str(snapshot.get("lease_id") or ""),
+                    "request_id": request_key,
+                    "authoritative_not_applied_proof": {
+                        "receipt_identity_sha256": str(
+                            verification["receipt_identity_sha256"]
+                        ),
+                        "evidence_sha256": str(
+                            verification["evidence_sha256"]
+                        ),
+                    },
+                },
+            )
+        recovered = batch_not_applied_recovery(
+            automation_id=automation_id,
+            generation=generation,
+            recoveries=recoveries,
+            actor_id="system:arrival-stats-readback",
+            actor_role="system",
+        )
+        return dict(recovered) if isinstance(recovered, Mapping) else None
     if needs_repair:
         repair = _repair_arrival_stats_split_pending_recovery(
             entry.resource_bindings,

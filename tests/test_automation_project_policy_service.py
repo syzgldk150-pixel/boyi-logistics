@@ -338,6 +338,52 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         )
         self.assertIsNone(self.gateway.command)
 
+    def test_exact_empty_readback_clears_old_run_and_accepts_current_request(self):
+        recovery_calls: list[tuple[str, str]] = []
+
+        def recover(automation_id: str, request_id: str):
+            recovery_calls.append((automation_id, request_id))
+            self.repository.state.automation_runs[0]["status"] = "FAILED_TERMINAL"
+            self.repository.state.automation_run_facts["run-write"] = {}
+            return {"recovery_status": "NOT_APPLIED", "transitioned": True}
+
+        service = AutomationProjectPolicyService(
+            self.repository,
+            core_catalog=SimpleNamespace(),
+            plugin_catalog=_Catalog(self.entry),
+            command_gateway=self.gateway,
+            wake_runner=self.woken_run_ids.append,
+            unknown_write_recovery=recover,
+        )
+        service._load_contract = lambda _automation_id: (self.entry, self.contract)
+        service._lock_and_compile_contract = lambda _uow, _entry, **_kwargs: (
+            self.contract,
+            dict(self.repository.state.config),
+        )
+        self.repository.state.automation_runs = [
+            {"run_id": "run-write", "status": "BLOCKED_DATA"},
+        ]
+        self.repository.state.automation_run_facts = {
+            "run-write": {"has_unknown_write_receipt": True},
+        }
+
+        receipt = service.invoke_console(
+            AUTOMATION_ID,
+            request_id="request-empty-readback",
+            actor=_admin(),
+        )
+
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual(
+            [(AUTOMATION_ID, "request-empty-readback")],
+            recovery_calls,
+        )
+        self.assertEqual(
+            "FAILED_TERMINAL",
+            self.repository.state.automation_runs[0]["status"],
+        )
+        self.assertIsNotNone(self.gateway.command)
+
     def test_unfinished_run_scan_limit_fails_closed(self):
         self.repository.state.automation_runs = [
             {"run_id": f"run-{index}", "status": "BLOCKED_DATA"}

@@ -2531,6 +2531,33 @@ class AutomationPluginGenerationRepositoryMixin(
                     "unknown-write receipts changed before verified recovery"
                 )
 
+    def mark_locked_unknown_write_receipts_not_applied_row(
+        self,
+        *,
+        lease_id: str,
+        expected_count: int,
+        evidence_sha256: str,
+    ) -> None:
+        """Close the exact locked receipt set from authoritative empty readback."""
+
+        safe_lease_id = _required_text(lease_id, "lease_id")
+        safe_evidence = _sha256(evidence_sha256, "evidence_sha256")
+        if type(expected_count) is not int or expected_count <= 0:
+            raise ValueError("unknown-write receipt count is invalid")
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE automation_write_attempt_receipts
+                SET outcome='NOT_APPLIED', evidence_sha256=%s, updated_at=NOW(6)
+                WHERE lease_id=%s AND outcome='WRITE_OUTCOME_UNKNOWN'
+                """,
+                (safe_evidence, safe_lease_id),
+            )
+            if int(getattr(cursor, "rowcount", 0) or 0) != expected_count:
+                raise ConcurrentUpdateError(
+                    "unknown-write receipts changed before not-applied recovery"
+                )
+
     def settle_unknown_write_recovery_row(
         self,
         *,

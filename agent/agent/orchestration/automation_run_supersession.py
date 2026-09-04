@@ -50,7 +50,7 @@ def raise_after_unknown_write_recovery(
     *,
     automation_id: str,
     request_id: str,
-) -> None:
+) -> bool:
     """Attempt exact server readback, then preserve one project mutex."""
 
     details = error.details if isinstance(error.details, dict) else {}
@@ -74,6 +74,11 @@ def raise_after_unknown_write_recovery(
             "The previous write was verified and its Run is resuming",
             details={"blocking_kind": AUTOMATION_BLOCKING_ACTIVE},
         ) from error
+    if (
+        isinstance(result, Mapping)
+        and str(result.get("recovery_status") or "").upper() == "NOT_APPLIED"
+    ):
+        return True
     raise error
 
 

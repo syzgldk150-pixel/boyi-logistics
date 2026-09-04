@@ -1205,6 +1205,82 @@ def test_arrival_unknown_write_recovery_rejects_divergent_sibling_leases(
     assert recoveries == []
 
 
+def test_arrival_unknown_write_recovery_closes_divergent_empty_sibling_leases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshots = [
+        {
+            "lease_id": f"lease-{index}",
+            "orchestration_run_sha256": str(index) * 64,
+            "receipts": [
+                {
+                    "receipt_id": f"receipt-{index}",
+                    "operation": "network.request",
+                    "action": "feishu.sheet.replace",
+                    "argument_sha256": argument_sha256,
+                    "target_ref_sha256": "b" * 64,
+                    "role_sha256": "c" * 64,
+                    "binding_sha256": "d" * 64,
+                }
+            ],
+        }
+        for index, argument_sha256 in ((1, "a" * 64), (2, "f" * 64))
+    ]
+    batches: list[dict[str, Any]] = []
+
+    def recover_batch(**kwargs):
+        batches.append(kwargs)
+        return {"recovery_status": "NOT_APPLIED", "transitioned": True}
+
+    runtime = SimpleNamespace(
+        catalog=SimpleNamespace(
+            require=lambda _automation_id: SimpleNamespace(
+                plugin_id="sync_arrival_stats",
+                committed_generation=2,
+                target_generation=2,
+                account_bindings={},
+                resource_bindings={},
+            )
+        ),
+        target_service=SimpleNamespace(
+            inspect_current_unknown_writes=lambda **_kwargs: {
+                "state": "RECOVERY_LEASES_IDENTIFIED",
+                "lease_count": 2,
+                "snapshots": snapshots,
+            },
+            recover_unknown_write=lambda **_kwargs: None,
+            recover_unknown_writes_not_applied=recover_batch,
+        ),
+    )
+    monkeypatch.setattr(
+        arrival,
+        "verify_arrival_stats_split_pending_recovery",
+        lambda **kwargs: {
+            "status": "NOT_APPLIED",
+            "receipt_identity_sha256": hashlib.sha256(
+                str(kwargs["recovery_snapshot"]["lease_id"]).encode("utf-8")
+            ).hexdigest(),
+            "evidence_sha256": "2" * 64,
+        },
+    )
+
+    result = arrival.recover_arrival_stats_unknown_write(
+        runtime,
+        "arrival-project",
+        "trigger-request",
+    )
+
+    assert result == {"recovery_status": "NOT_APPLIED", "transitioned": True}
+    assert len(batches) == 1
+    assert [
+        call["lease_id"] for call in batches[0]["recoveries"]
+    ] == ["lease-1", "lease-2"]
+    assert all(
+        "authoritative_not_applied_proof" in call
+        for call in batches[0]["recoveries"]
+    )
+
+
 def test_arrival_archive_binds_target_date_sheet_and_exact_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

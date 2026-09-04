@@ -2178,6 +2178,7 @@ class MySQLRuntimeTargetService:
         actor_id: str,
         actor_role: str,
         authoritative_applied_proof: Mapping[str, object] | None = None,
+        authoritative_not_applied_proof: Mapping[str, object] | None = None,
     ) -> dict[str, Any]:
         """Resolve only from server-owned durable receipt evidence."""
 
@@ -2189,6 +2190,7 @@ class MySQLRuntimeTargetService:
             actor_id=actor_id,
             actor_role=actor_role,
             authoritative_applied_proof=authoritative_applied_proof,
+            authoritative_not_applied_proof=authoritative_not_applied_proof,
         )
         run_id = str(result.get("run_id") or "")
         if result.get("transitioned") is True and run_id and self._wake_runner:
@@ -2204,6 +2206,7 @@ class MySQLRuntimeTargetService:
         actor_id: str,
         actor_role: str,
         authoritative_applied_proof: Mapping[str, object] | None = None,
+        authoritative_not_applied_proof: Mapping[str, object] | None = None,
     ) -> dict[str, Any]:
         """Resolve the sole current unknown lease from server-owned evidence."""
 
@@ -2214,10 +2217,38 @@ class MySQLRuntimeTargetService:
             actor_id=actor_id,
             actor_role=actor_role,
             authoritative_applied_proof=authoritative_applied_proof,
+            authoritative_not_applied_proof=authoritative_not_applied_proof,
         )
         run_id = str(result.get("run_id") or "")
         if result.get("transitioned") is True and run_id and self._wake_runner:
             self._wake_runner(run_id)
+        return result
+
+    def recover_unknown_writes_not_applied(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        recoveries: Sequence[Mapping[str, object]],
+        actor_id: str,
+        actor_role: str,
+    ) -> dict[str, Any]:
+        """Resolve one bounded sibling set only from exact empty readback."""
+
+        result = self._runtime.resolve_unknown_writes_not_applied(
+            automation_id=automation_id,
+            generation=generation,
+            recoveries=recoveries,
+            actor_id=actor_id,
+            actor_role=actor_role,
+        )
+        if self._wake_runner:
+            for recovered in result.get("results", ()):
+                if not isinstance(recovered, Mapping):
+                    continue
+                run_id = str(recovered.get("run_id") or "")
+                if recovered.get("transitioned") is True and run_id:
+                    self._wake_runner(run_id)
         return result
 
     def inspect_current_unknown_write(

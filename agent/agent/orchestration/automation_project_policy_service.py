@@ -1850,13 +1850,18 @@ class AutomationProjectPolicyService:
                 uow_acceptance_guard=guard,
             )
         except OrchestrationError as exc:
-            raise_after_unknown_write_recovery(
+            blocker_cleared = raise_after_unknown_write_recovery(
                 exc,
                 self._unknown_write_recovery,
                 automation_id=safe_id,
                 request_id=safe_request_id,
             )
-            raise AssertionError("unknown-write recovery must raise")
+            if blocker_cleared:
+                return self._command_gateway.submit(
+                    command,
+                    uow_acceptance_guard=guard,
+                )
+            raise AssertionError("unknown-write recovery must raise or clear the blocker")
 
     async def invoke_trusted_and_wait(
         self,
