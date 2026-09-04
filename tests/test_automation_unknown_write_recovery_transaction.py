@@ -208,6 +208,38 @@ def _uow(*, outcome: str, receipts: list[dict], retry_safe: bool = True):
 
 
 class CurrentUnknownWriteResolutionTests(unittest.TestCase):
+    def test_bounded_sibling_inspection_returns_each_snapshot_in_order(self):
+        repository = _CurrentRecoveryRepository(
+            {"state": "FOUND", "lease_id": "unused"}
+        )
+        repository.uow.bounded_unknown_write_recovery_lease_rows = (
+            lambda **_kwargs: [
+                {"lease_id": "lease-1"},
+                {"lease_id": "lease-2"},
+            ]
+        )
+        repository.uow.unknown_write_recovery_snapshot_row = (
+            lambda **kwargs: {
+                "state": "RECEIPTS_IDENTIFIED",
+                "lease_id": kwargs["lease_id"],
+                "receipt_count": 1,
+                "receipts": [],
+            }
+        )
+        adapter = MySQLAutomationPluginRuntimeAdapter(repository)
+
+        result = adapter.inspect_current_unknown_write_recoveries(
+            automation_id="arrival_stats",
+            generation=2,
+        )
+
+        self.assertEqual("RECOVERY_LEASES_IDENTIFIED", result["state"])
+        self.assertEqual(2, result["lease_count"])
+        self.assertEqual(
+            ["lease-1", "lease-2"],
+            [snapshot["lease_id"] for snapshot in result["snapshots"]],
+        )
+
     def test_unique_server_candidate_is_recovered_without_actor_lease(self):
         repository = _CurrentRecoveryRepository(
             {"state": "FOUND", "lease_id": "lease-1"}
@@ -971,6 +1003,30 @@ class GenerationWriteLockOrderSqlTests(unittest.TestCase):
                 self.assertEqual(state, result["state"])
                 self.assertEqual(lease_id, result["lease_id"])
                 self.assertIn("LIMIT 2", cursor.executed[0])
+
+    def test_bounded_recovery_candidates_preserve_acquisition_order(self):
+        rows = [{"lease_id": "lease-1"}, {"lease_id": "lease-2"}]
+        cursor = _WriteLockOrderCursor()
+        cursor.params = []
+
+        def execute(statement, params=()):
+            cursor.executed.append(" ".join(statement.split()))
+            cursor.params.append(params)
+            cursor._rows = list(rows)
+
+        cursor.execute = execute
+        fake = SimpleNamespace(cursor=lambda: cursor)
+
+        result = AutomationPluginRepository.bounded_unknown_write_recovery_lease_rows(
+            fake,
+            automation_id="arrival_stats",
+            generation=2,
+            limit=17,
+        )
+
+        self.assertEqual(rows, result)
+        self.assertIn("ORDER BY acquired_at, lease_id", cursor.executed[0])
+        self.assertEqual(("arrival_stats", 2, 17), cursor.params[0])
 
 
 if __name__ == "__main__":

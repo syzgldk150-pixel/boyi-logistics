@@ -2382,6 +2382,36 @@ class AutomationPluginGenerationRepositoryMixin(
             "lease_id": _required_text(rows[0].get("lease_id"), "lease_id"),
         }
 
+    def bounded_unknown_write_recovery_lease_rows(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """List a bounded current-generation recovery set in lock order."""
+
+        safe_automation_id = _required_text(automation_id, "automation_id")
+        safe_generation = _positive_int(generation, "generation")
+        if type(limit) is not int or limit <= 0 or limit > 100:
+            raise ValueError("unknown-write recovery lease limit is invalid")
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT lease_id
+                FROM automation_project_generation_leases
+                WHERE automation_id=%s AND generation=%s
+                  AND outcome='WRITE_OUTCOME_UNKNOWN'
+                ORDER BY acquired_at, lease_id
+                LIMIT %s
+                """,
+                (safe_automation_id, safe_generation, limit),
+            )
+            return [
+                {"lease_id": _required_text(row.get("lease_id"), "lease_id")}
+                for row in _rows(cursor)
+            ]
+
     def lock_unknown_write_recovery_context_row(
         self,
         *,
