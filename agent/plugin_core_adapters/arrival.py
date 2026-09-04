@@ -876,7 +876,6 @@ def recover_arrival_stats_unknown_write(
                     "operation",
                     "action",
                     "argument_sha256",
-                    "target_ref_sha256",
                     "role_sha256",
                     "binding_sha256",
                 )
