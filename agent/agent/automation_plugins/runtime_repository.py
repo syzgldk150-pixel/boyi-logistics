@@ -1166,6 +1166,7 @@ class MySQLAutomationPluginRuntimeAdapter:
         actor_id: str,
         actor_role: str,
         authoritative_applied_proof: Mapping[str, object] | None = None,
+        authoritative_not_applied_proof: Mapping[str, object] | None = None,
     ) -> dict[str, Any]:
         """Run the server-owned receipt recovery as one orchestration UoW."""
 
@@ -1181,11 +1182,64 @@ class MySQLAutomationPluginRuntimeAdapter:
                 actor_id=actor_id,
                 actor_role=actor_role,
                 authoritative_applied_proof=authoritative_applied_proof,
+                authoritative_not_applied_proof=authoritative_not_applied_proof,
             )
             uow.commit()
         if not isinstance(result, Mapping):
             raise ValueError("transactional unknown-write recovery returned invalid data")
         return dict(result)
+
+    def resolve_unknown_writes_not_applied(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+        recoveries: Sequence[Mapping[str, object]],
+        actor_id: str,
+        actor_role: str,
+    ) -> dict[str, Any]:
+        """Resolve a bounded empty-readback sibling set in one transaction."""
+
+        rows = [dict(item) for item in recoveries]
+        if not rows or len(rows) > _UNKNOWN_WRITE_RECOVERY_BATCH_LIMIT:
+            raise ValueError("unknown-write recovery batch is invalid")
+        results: list[dict[str, Any]] = []
+        with self._orchestration.unit_of_work() as uow:
+            resolver = getattr(uow, "recover_unknown_automation_write", None)
+            if not callable(resolver):
+                raise ValueError("transactional unknown-write recovery is unavailable")
+            for row in rows:
+                if set(row) != {
+                    "lease_id",
+                    "request_id",
+                    "authoritative_not_applied_proof",
+                }:
+                    raise ValueError("unknown-write recovery batch row is invalid")
+                result = resolver(
+                    automation_id=automation_id,
+                    generation=generation,
+                    lease_id=str(row["lease_id"]),
+                    request_id=str(row["request_id"]),
+                    actor_id=actor_id,
+                    actor_role=actor_role,
+                    authoritative_not_applied_proof=row[
+                        "authoritative_not_applied_proof"
+                    ],
+                )
+                if (
+                    not isinstance(result, Mapping)
+                    or str(result.get("recovery_status") or "") != "NOT_APPLIED"
+                ):
+                    raise ValueError(
+                        "unknown-write recovery batch was not authoritatively empty"
+                    )
+                results.append(dict(result))
+            uow.commit()
+        return {
+            "recovery_status": "NOT_APPLIED",
+            "transitioned": any(item.get("transitioned") is True for item in results),
+            "results": results,
+        }
 
     def resolve_current_unknown_write_recovery(
         self,
@@ -1196,6 +1250,7 @@ class MySQLAutomationPluginRuntimeAdapter:
         actor_id: str,
         actor_role: str,
         authoritative_applied_proof: Mapping[str, object] | None = None,
+        authoritative_not_applied_proof: Mapping[str, object] | None = None,
     ) -> dict[str, Any]:
         """Recover only when the current generation has one unresolved lease."""
 
@@ -1237,6 +1292,7 @@ class MySQLAutomationPluginRuntimeAdapter:
                 actor_id=actor_id,
                 actor_role=actor_role,
                 authoritative_applied_proof=authoritative_applied_proof,
+                authoritative_not_applied_proof=authoritative_not_applied_proof,
             )
             uow.commit()
         if not isinstance(result, Mapping):

@@ -51,6 +51,21 @@ class _Plugins:
             row["outcome"] = "WRITE_VERIFIED"
             row["evidence_sha256"] = evidence_sha256
 
+    def mark_locked_unknown_write_receipts_not_applied_row(
+        self, *, lease_id, expected_count, evidence_sha256
+    ):
+        assert lease_id == "lease-1"
+        changed = [
+            row
+            for row in self.receipts
+            if row["outcome"] == "WRITE_OUTCOME_UNKNOWN"
+        ]
+        if len(changed) != expected_count:
+            raise ValueError("receipt count changed")
+        for row in changed:
+            row["outcome"] = "NOT_APPLIED"
+            row["evidence_sha256"] = evidence_sha256
+
     def settle_unknown_write_recovery_row(self, *, recovery_status, evidence_sha256, **_kwargs):
         outcome = "WRITE_VERIFIED" if recovery_status == "APPLIED" else "FAILED_BEFORE_WRITE"
         if self.lease["outcome"] == outcome:
@@ -208,6 +223,107 @@ def _uow(*, outcome: str, receipts: list[dict], retry_safe: bool = True):
 
 
 class CurrentUnknownWriteResolutionTests(unittest.TestCase):
+    def test_empty_readback_siblings_resolve_in_one_commit(self):
+        class BatchUow:
+            def __init__(self):
+                self.calls = []
+                self.committed = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def recover_unknown_automation_write(self, **kwargs):
+                self.calls.append(kwargs)
+                return {
+                    "recovery_status": "NOT_APPLIED",
+                    "run_id": f"run-{len(self.calls)}",
+                    "transitioned": True,
+                }
+
+            def commit(self):
+                self.committed = True
+
+        uow = BatchUow()
+        adapter = MySQLAutomationPluginRuntimeAdapter(
+            SimpleNamespace(unit_of_work=lambda: uow)
+        )
+
+        result = adapter.resolve_unknown_writes_not_applied(
+            automation_id="arrival_stats",
+            generation=2,
+            recoveries=[
+                {
+                    "lease_id": f"lease-{index}",
+                    "request_id": f"request-{index}",
+                    "authoritative_not_applied_proof": {
+                        "receipt_identity_sha256": str(index) * 64,
+                        "evidence_sha256": "e" * 64,
+                    },
+                }
+                for index in (1, 2)
+            ],
+            actor_id="system:arrival-stats-readback",
+            actor_role="system",
+        )
+
+        self.assertEqual("NOT_APPLIED", result["recovery_status"])
+        self.assertTrue(result["transitioned"])
+        self.assertEqual(["lease-1", "lease-2"], [
+            call["lease_id"] for call in uow.calls
+        ])
+        self.assertTrue(uow.committed)
+
+    def test_empty_readback_sibling_failure_does_not_commit(self):
+        class BatchUow:
+            def __init__(self):
+                self.calls = 0
+                self.committed = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def recover_unknown_automation_write(self, **_kwargs):
+                self.calls += 1
+                if self.calls == 2:
+                    raise RuntimeError("second recovery failed")
+                return {"recovery_status": "NOT_APPLIED", "transitioned": True}
+
+            def commit(self):
+                self.committed = True
+
+        uow = BatchUow()
+        adapter = MySQLAutomationPluginRuntimeAdapter(
+            SimpleNamespace(unit_of_work=lambda: uow)
+        )
+        recoveries = [
+            {
+                "lease_id": f"lease-{index}",
+                "request_id": f"request-{index}",
+                "authoritative_not_applied_proof": {
+                    "receipt_identity_sha256": str(index) * 64,
+                    "evidence_sha256": "e" * 64,
+                },
+            }
+            for index in (1, 2)
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "second recovery failed"):
+            adapter.resolve_unknown_writes_not_applied(
+                automation_id="arrival_stats",
+                generation=2,
+                recoveries=recoveries,
+                actor_id="system:arrival-stats-readback",
+                actor_role="system",
+            )
+
+        self.assertFalse(uow.committed)
+
     def test_bounded_sibling_inspection_returns_each_snapshot_in_order(self):
         repository = _CurrentRecoveryRepository(
             {"state": "FOUND", "lease_id": "unused"}
@@ -344,6 +460,54 @@ class UnknownWriteRecoveryTransactionTests(unittest.TestCase):
         self.assertEqual("c" * 64, plugins.receipts[0]["evidence_sha256"])
         self.assertEqual("COMPLETED", steps.row["status"])
         self.assertEqual("CONTEXT_READY", runs.row["status"])
+
+    def test_authoritative_empty_readback_closes_unknown_receipt_atomically(self):
+        receipt = {
+            "receipt_id": "receipt-1",
+            "orchestration_run_id": "run-1",
+            "step_id": "step-1",
+            "operation": "network.request",
+            "action": "feishu.sheet.replace",
+            "argument_sha256": "a" * 64,
+            "target_ref_sha256": "b" * 64,
+            "outcome": "WRITE_OUTCOME_UNKNOWN",
+            "evidence_sha256": "",
+        }
+        identity_sha256 = _json_hash([
+            {
+                field: receipt[field]
+                for field in (
+                    "receipt_id", "operation", "action", "argument_sha256",
+                    "target_ref_sha256",
+                )
+            }
+        ])
+        uow, plugins, runs, steps = _uow(
+            outcome="WRITE_OUTCOME_UNKNOWN",
+            receipts=[receipt],
+            retry_safe=False,
+        )
+
+        result = OrchestrationUnitOfWork.recover_unknown_automation_write(
+            uow,
+            automation_id="arrival_stats",
+            generation=2,
+            lease_id="lease-1",
+            request_id="request-empty-readback",
+            actor_id="system:arrival-stats-readback",
+            actor_role="system",
+            authoritative_not_applied_proof={
+                "receipt_identity_sha256": identity_sha256,
+                "evidence_sha256": "c" * 64,
+            },
+        )
+
+        self.assertEqual("NOT_APPLIED", result["recovery_status"])
+        self.assertEqual("NOT_APPLIED", plugins.receipts[0]["outcome"])
+        self.assertEqual("c" * 64, plugins.receipts[0]["evidence_sha256"])
+        self.assertEqual("FAILED_TERMINAL", steps.row["status"])
+        self.assertEqual("FAILED_TERMINAL", runs.row["status"])
+        self.assertEqual("RESOLVED", uow.work_items.row["status"])
 
     def test_applied_completes_exact_step_and_wakes_runner(self):
         receipt = {

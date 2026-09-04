@@ -31,6 +31,7 @@ def recover_unknown_automation_write(
     actor_id: str,
     actor_role: str,
     authoritative_applied_proof: Mapping[str, object] | None = None,
+    authoritative_not_applied_proof: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     """Resolve one receipt-backed interrupted write in the caller's UoW."""
 
@@ -104,8 +105,18 @@ def recover_unknown_automation_write(
         )}
         for item in receipts
     ])
-    if authoritative_applied_proof is not None:
-        proof = dict(authoritative_applied_proof)
+    if (
+        authoritative_applied_proof is not None
+        and authoritative_not_applied_proof is not None
+    ):
+        raise ValueError("authoritative unknown-write proofs are mutually exclusive")
+    authoritative_proof = (
+        authoritative_applied_proof
+        if authoritative_applied_proof is not None
+        else authoritative_not_applied_proof
+    )
+    if authoritative_proof is not None:
+        proof = dict(authoritative_proof)
         if set(proof) != {"receipt_identity_sha256", "evidence_sha256"}:
             raise ValueError("authoritative unknown-write proof is invalid")
         proof_identity = str(proof.get("receipt_identity_sha256") or "")
@@ -138,9 +149,14 @@ def recover_unknown_automation_write(
                     "receipt_digest": receipt_identity_sha256,
                 },
             )
+        proof_applied = authoritative_applied_proof is not None
         marker = getattr(
             uow.automation_plugins,
-            "mark_locked_unknown_write_receipts_verified_row",
+            (
+                "mark_locked_unknown_write_receipts_verified_row"
+                if proof_applied
+                else "mark_locked_unknown_write_receipts_not_applied_row"
+            ),
             None,
         )
         if not callable(marker):
@@ -155,7 +171,7 @@ def recover_unknown_automation_write(
         receipts = [
             {
                 **dict(item),
-                "outcome": "WRITE_VERIFIED",
+                "outcome": "WRITE_VERIFIED" if proof_applied else "NOT_APPLIED",
                 "evidence_sha256": proof_evidence,
             }
             for item in receipts
@@ -219,9 +235,39 @@ def recover_unknown_automation_write(
         locked_context=context,
     )
     current_item_status = str(item.get("status") or "")
+    if (
+        recovery_status == "NOT_APPLIED"
+        and step.get("retry_safe") is not True
+        and current_item_status not in {"CANCELLED", "RESOLVED"}
+    ):
+        if current_item_status != "OPEN":
+            item = uow.work_items.transition(
+                str(item["work_item_id"]),
+                expected_version=int(item["version"]),
+                expected_statuses=(current_item_status,),
+                status="OPEN",
+                reason_code="RECONCILED_NOT_APPLIED",
+            )
+        uow.work_items.transition(
+            str(item["work_item_id"]),
+            expected_version=int(item["version"]),
+            expected_statuses=("OPEN",),
+            status="RESOLVED",
+            reason_code="RECONCILED_NOT_APPLIED",
+            reason_summary="Fresh target readback proved the intended write is not present",
+            resolution={
+                "run_id": run_id,
+                "step_id": step_id,
+                "recovery_status": recovery_status,
+            },
+            closed_at=datetime.now(),
+        )
+        current_item_status = "RESOLVED"
     desired_item_status = (
         "CANCELLED"
         if current_item_status == "CANCELLED"
+        else "RESOLVED"
+        if current_item_status == "RESOLVED"
         else "IN_PROGRESS"
         if str(run.get("status") or "") == "CONTEXT_READY" or recovery_status == "APPLIED"
         else "OPEN"
