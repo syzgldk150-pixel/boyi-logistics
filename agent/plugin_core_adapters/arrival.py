@@ -652,7 +652,7 @@ def recover_arrival_stats_unknown_write(
     automation_id: str,
     trigger_request_id: str,
 ) -> dict[str, Any] | None:
-    """Inspect, prove, and atomically resolve one current arrival write."""
+    """Inspect, prove, and resolve a bounded identical arrival write set."""
 
     entry = plugin_runtime.catalog.require(automation_id)
     if str(entry.plugin_id) != "sync_arrival_stats":
@@ -674,17 +674,126 @@ def recover_arrival_stats_unknown_write(
             automation_id,
         )
         return None
-    snapshot = plugin_runtime.target_service.inspect_current_unknown_write(
-        automation_id=automation_id,
-        generation=generation,
+    batch_reader = getattr(
+        plugin_runtime.target_service,
+        "inspect_current_unknown_writes",
+        None,
     )
-    verification = verify_arrival_stats_split_pending_recovery(
-        account_bindings=entry.account_bindings,
-        resource_bindings=entry.resource_bindings,
-        recovery_snapshot=snapshot,
+    explicit_recovery = getattr(
+        plugin_runtime.target_service,
+        "recover_unknown_write",
+        None,
     )
-    if str(verification.get("status") or "") != "APPLIED":
+    if callable(batch_reader) and callable(explicit_recovery):
+        batch = batch_reader(
+            automation_id=automation_id,
+            generation=generation,
+        )
+        if not isinstance(batch, Mapping):
+            logger.info(
+                "Arrival statistics unknown-write recovery not proven "
+                "code=RECOVERY_BATCH_INVALID",
+            )
+            return None
+        batch_state = str(batch.get("state") or "")
+        snapshots = batch.get("snapshots")
+        if (
+            batch_state != "RECOVERY_LEASES_IDENTIFIED"
+            or not isinstance(snapshots, list)
+            or not snapshots
+            or batch.get("lease_count") != len(snapshots)
+            or any(not isinstance(snapshot, Mapping) for snapshot in snapshots)
+        ):
+            safe_state = (
+                batch_state
+                if batch_state in {
+                    "RECOVERY_LEASE_MISSING",
+                    "RECOVERY_LEASE_LIMIT_EXCEEDED",
+                    "RECOVERY_LEASES_IDENTIFIED",
+                }
+                else "UNRECOGNIZED"
+            )
+            logger.info(
+                "Arrival statistics unknown-write recovery not proven "
+                "code=RECOVERY_BATCH_%s",
+                safe_state,
+            )
+            return None
+    else:
+        snapshots = [
+            plugin_runtime.target_service.inspect_current_unknown_write(
+                automation_id=automation_id,
+                generation=generation,
+            )
+        ]
+
+    verifications: list[dict[str, str]] = []
+    semantic_sha256s: set[str] = set()
+    for snapshot in snapshots:
+        verification = verify_arrival_stats_split_pending_recovery(
+            account_bindings=entry.account_bindings,
+            resource_bindings=entry.resource_bindings,
+            recovery_snapshot=snapshot,
+        )
+        if str(verification.get("status") or "") != "APPLIED":
+            return None
+        receipts = snapshot.get("receipts")
+        if not isinstance(receipts, list):
+            return None
+        semantic_sha256s.add(hashlib.sha256(canonical_json_bytes([
+            {
+                field: str(receipt.get(field) or "")
+                for field in (
+                    "operation",
+                    "action",
+                    "argument_sha256",
+                    "target_ref_sha256",
+                    "role_sha256",
+                    "binding_sha256",
+                )
+            }
+            for receipt in receipts
+            if isinstance(receipt, Mapping)
+        ])).hexdigest())
+        verifications.append(verification)
+    if len(semantic_sha256s) != 1:
+        logger.info(
+            "Arrival statistics unknown-write recovery not proven "
+            "code=RECOVERY_BATCH_SEMANTIC_MISMATCH",
+        )
         return None
+
+    result: dict[str, Any] | None = None
+    if callable(batch_reader) and callable(explicit_recovery):
+        for snapshot, verification in zip(snapshots, verifications):
+            request_key = str(uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                "boyi:arrival-stats-unknown-write-readback:"
+                f"{automation_id}:{trigger_request_id}:"
+                f"{verification['receipt_identity_sha256']}",
+            ))
+            recovered = explicit_recovery(
+                automation_id=automation_id,
+                generation=generation,
+                lease_id=str(snapshot.get("lease_id") or ""),
+                request_id=request_key,
+                actor_id="system:arrival-stats-readback",
+                actor_role="system",
+                authoritative_applied_proof={
+                    "receipt_identity_sha256": str(
+                        verification["receipt_identity_sha256"]
+                    ),
+                    "evidence_sha256": str(verification["evidence_sha256"]),
+                },
+            )
+            if not isinstance(recovered, Mapping):
+                return None
+            result = dict(recovered)
+            if str(result.get("recovery_status") or "") != "APPLIED":
+                return result
+        return result
+
+    verification = verifications[0]
     request_key = str(uuid.uuid5(
         uuid.NAMESPACE_URL,
         "boyi:arrival-stats-unknown-write-readback:"

@@ -52,6 +52,9 @@ from shared.automation_plugin_generation_unknown_write_repository import (
 from shared.redaction import redact_sensitive
 
 
+_UNKNOWN_WRITE_RECOVERY_BATCH_LIMIT = 16
+
+
 def _utc_datetime(value: object, field: str) -> datetime:
     if isinstance(value, datetime):
         result = value
@@ -1027,6 +1030,64 @@ class MySQLAutomationPluginRuntimeAdapter:
         if not isinstance(result, Mapping):
             raise ValueError("unknown-write recovery evidence is invalid")
         return dict(result)
+
+    def inspect_current_unknown_write_recoveries(
+        self,
+        *,
+        automation_id: str,
+        generation: int,
+    ) -> dict[str, Any]:
+        """Inspect a bounded sibling set without accepting actor identities."""
+
+        with self._orchestration.unit_of_work() as uow:
+            candidate_reader = getattr(
+                uow.automation_plugins,
+                "bounded_unknown_write_recovery_lease_rows",
+                None,
+            )
+            snapshot_reader = getattr(
+                uow.automation_plugins,
+                "unknown_write_recovery_snapshot_row",
+                None,
+            )
+            if not callable(candidate_reader) or not callable(snapshot_reader):
+                raise ValueError("unknown-write recovery evidence is unavailable")
+            candidates = candidate_reader(
+                automation_id=automation_id,
+                generation=generation,
+                limit=_UNKNOWN_WRITE_RECOVERY_BATCH_LIMIT + 1,
+            )
+            if not isinstance(candidates, list):
+                raise ValueError("unknown-write recovery candidates are invalid")
+            if not candidates:
+                return {
+                    "state": "RECOVERY_LEASE_MISSING",
+                    "lease_count": 0,
+                    "snapshots": [],
+                }
+            if len(candidates) > _UNKNOWN_WRITE_RECOVERY_BATCH_LIMIT:
+                return {
+                    "state": "RECOVERY_LEASE_LIMIT_EXCEEDED",
+                    "lease_count": len(candidates),
+                    "snapshots": [],
+                }
+            snapshots: list[dict[str, Any]] = []
+            for candidate in candidates:
+                if not isinstance(candidate, Mapping):
+                    raise ValueError("unknown-write recovery candidate is invalid")
+                snapshot = snapshot_reader(
+                    automation_id=automation_id,
+                    generation=generation,
+                    lease_id=str(candidate.get("lease_id") or ""),
+                )
+                if not isinstance(snapshot, Mapping):
+                    raise ValueError("unknown-write recovery evidence is invalid")
+                snapshots.append(dict(snapshot))
+        return {
+            "state": "RECOVERY_LEASES_IDENTIFIED",
+            "lease_count": len(snapshots),
+            "snapshots": snapshots,
+        }
 
     def resolve_unknown_write_not_applied(
         self,

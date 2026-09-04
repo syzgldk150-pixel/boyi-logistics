@@ -2229,6 +2229,15 @@ class MySQLRuntimeTargetService:
             generation=generation,
         )
 
+    def inspect_current_unknown_writes(
+        self, *, automation_id: str, generation: int,
+    ) -> dict[str, Any]:
+        """Return a bounded current sibling set for exact server readback."""
+        return self._runtime.inspect_current_unknown_write_recoveries(
+            automation_id=automation_id,
+            generation=generation,
+        )
+
     def _reconciliation_automation_ids(self) -> tuple[str, ...]:
         """Discover project identities without compiling every catalog entry.
 

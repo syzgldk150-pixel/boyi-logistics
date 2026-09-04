@@ -5,6 +5,7 @@ import logging
 from copy import deepcopy
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -990,6 +991,135 @@ def test_arrival_unknown_write_startup_recovery_includes_disabled_instances(
             },
         )
     ]
+
+
+def test_arrival_unknown_write_recovery_resolves_identical_sibling_leases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    common_receipt = {
+        "operation": "network.request",
+        "action": "feishu.sheet.replace",
+        "argument_sha256": "a" * 64,
+        "target_ref_sha256": "b" * 64,
+        "role_sha256": "c" * 64,
+        "binding_sha256": "d" * 64,
+    }
+    snapshots = [
+        {
+            "lease_id": f"lease-{index}",
+            "receipts": [{"receipt_id": f"receipt-{index}", **common_receipt}],
+        }
+        for index in (1, 2)
+    ]
+    recoveries: list[dict[str, Any]] = []
+
+    class TargetService:
+        def inspect_current_unknown_writes(self, **_kwargs):
+            return {
+                "state": "RECOVERY_LEASES_IDENTIFIED",
+                "lease_count": 2,
+                "snapshots": snapshots,
+            }
+
+        def recover_unknown_write(self, **kwargs):
+            recoveries.append(kwargs)
+            return {"recovery_status": "APPLIED", "transitioned": True}
+
+    runtime = SimpleNamespace(
+        catalog=SimpleNamespace(
+            require=lambda _automation_id: SimpleNamespace(
+                plugin_id="sync_arrival_stats",
+                committed_generation=2,
+                target_generation=2,
+                account_bindings={},
+                resource_bindings={},
+            )
+        ),
+        target_service=TargetService(),
+    )
+    monkeypatch.setattr(
+        arrival,
+        "verify_arrival_stats_split_pending_recovery",
+        lambda **kwargs: {
+            "status": "APPLIED",
+            "receipt_identity_sha256": hashlib.sha256(
+                str(kwargs["recovery_snapshot"]["lease_id"]).encode("utf-8")
+            ).hexdigest(),
+            "evidence_sha256": "e" * 64,
+        },
+    )
+
+    result = arrival.recover_arrival_stats_unknown_write(
+        runtime,
+        "arrival-project",
+        "trigger-request",
+    )
+
+    assert result == {"recovery_status": "APPLIED", "transitioned": True}
+    assert [call["lease_id"] for call in recoveries] == ["lease-1", "lease-2"]
+    assert all(call["actor_role"] == "system" for call in recoveries)
+
+
+def test_arrival_unknown_write_recovery_rejects_divergent_sibling_leases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshots = [
+        {
+            "lease_id": f"lease-{index}",
+            "receipts": [
+                {
+                    "receipt_id": f"receipt-{index}",
+                    "operation": "network.request",
+                    "action": "feishu.sheet.replace",
+                    "argument_sha256": argument_sha256,
+                    "target_ref_sha256": "b" * 64,
+                    "role_sha256": "c" * 64,
+                    "binding_sha256": "d" * 64,
+                }
+            ],
+        }
+        for index, argument_sha256 in ((1, "a" * 64), (2, "f" * 64))
+    ]
+    recoveries: list[dict[str, Any]] = []
+    target = SimpleNamespace(
+        inspect_current_unknown_writes=lambda **_kwargs: {
+            "state": "RECOVERY_LEASES_IDENTIFIED",
+            "lease_count": 2,
+            "snapshots": snapshots,
+        },
+        recover_unknown_write=lambda **kwargs: recoveries.append(kwargs),
+    )
+    runtime = SimpleNamespace(
+        catalog=SimpleNamespace(
+            require=lambda _automation_id: SimpleNamespace(
+                plugin_id="sync_arrival_stats",
+                committed_generation=2,
+                target_generation=2,
+                account_bindings={},
+                resource_bindings={},
+            )
+        ),
+        target_service=target,
+    )
+    monkeypatch.setattr(
+        arrival,
+        "verify_arrival_stats_split_pending_recovery",
+        lambda **_kwargs: {
+            "status": "APPLIED",
+            "receipt_identity_sha256": "1" * 64,
+            "evidence_sha256": "2" * 64,
+        },
+    )
+
+    assert (
+        arrival.recover_arrival_stats_unknown_write(
+            runtime,
+            "arrival-project",
+            "trigger-request",
+        )
+        is None
+    )
+    assert recoveries == []
 
 
 def test_arrival_archive_binds_target_date_sheet_and_exact_rows(
