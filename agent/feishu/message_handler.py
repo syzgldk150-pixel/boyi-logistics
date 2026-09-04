@@ -184,6 +184,9 @@ def _automation_result_reply(
 
     status = str(result.get("status") or "").strip().upper()
     reason = str(result.get("error_summary") or "").strip()
+    problem_code = str(
+        result.get("public_problem_code") or result.get("error_code") or ""
+    ).strip().upper()
     if status in {"WAITING_APPROVAL", "PENDING_APPROVAL"}:
         return (
             f"{task_name}已提交，正在等待审批。",
@@ -198,6 +201,11 @@ def _automation_result_reply(
         )
     if status == "CANCELLED":
         return f"{task_name}已取消。", "automation_project_cancelled"
+    if problem_code == "WRITE_OUTCOME_UNKNOWN" or "WRITE_OUTCOME_UNKNOWN" in reason:
+        return (
+            f"{task_name}的目标表可能已更新，但最终核验暂未确认。请不要重复执行；请在事项中心核对写入结果。",
+            "automation_project_write_outcome_unknown",
+        )
     if status == "PARTIAL":
         detail = reason or "只完成了部分数据，请查看任务详情后重试未完成部分。"
         return f"{task_name}部分完成：{detail[:300]}", "automation_project_partial"

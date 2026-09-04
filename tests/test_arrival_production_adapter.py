@@ -683,6 +683,52 @@ def test_split_pending_sheet_uses_exact_resource_and_rejects_mismatch_as_unknown
     assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
 
 
+def test_split_pending_sheet_rechecks_after_lost_write_response_without_rewriting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resource_id = "resource-split-pending"
+    resource = {
+        "resource_kind": "feishu_sheet",
+        "spreadsheet_token": "managed-token",
+        "sheet_id": "Split",
+        "range": "Split!A1:S1",
+        "clear_range": "Split!A2:S5000",
+        "_meta": {"resource_key": resource_id},
+    }
+    records = [_stats_record()]
+    values = arrival._stats_values("split_pending", records, "2026-08-15")
+    expected = arrival._canonical_rows(values, width=19)
+    write_calls: list[str] = []
+    reads = iter([[], expected])
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(arrival, "_load_resource", lambda _exact: resource)
+
+    def write(action: str, _params: dict[str, object]) -> bool:
+        write_calls.append(action)
+        return action == "clear_sheet"
+
+    monkeypatch.setattr(arrival, "_write_sheet_call", write)
+    monkeypatch.setattr(
+        arrival,
+        "_fresh_sheet_rows",
+        lambda *_args, **_kwargs: next(reads),
+    )
+    monkeypatch.setattr(arrival.time, "sleep", sleeps.append)
+
+    result = arrival._replace_arrival_stats_sheet(
+        resource_id,
+        "split_pending",
+        records,
+        "2026-08-15",
+    )
+
+    assert result["verified"] is True
+    assert result["record_count"] == 1
+    assert write_calls == ["clear_sheet", "write_sheet"]
+    assert sleeps == [0.5]
+
+
 def test_arrival_archive_binds_target_date_sheet_and_exact_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
