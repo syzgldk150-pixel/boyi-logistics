@@ -928,6 +928,49 @@ def test_split_pending_unknown_write_recovery_keeps_mismatch_unknown(
     }
 
 
+def test_arrival_unknown_write_startup_recovery_includes_disabled_instances(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    include_disabled: list[bool] = []
+    entry = type(
+        "Entry",
+        (),
+        {"plugin_id": "sync_arrival_stats", "automation_id": "arrival-project"},
+    )()
+
+    class Catalog:
+        def list(self, *, include_disabled: bool = False) -> list[object]:
+            include_disabled_values.append(include_disabled)
+            return [entry]
+
+    include_disabled_values = include_disabled
+    runtime = type("Runtime", (), {"catalog": Catalog()})()
+    monkeypatch.setattr(
+        arrival,
+        "recover_arrival_stats_unknown_write",
+        lambda _runtime, automation_id, request_id: {
+            "automation_id": automation_id,
+            "request_id": request_id,
+        },
+    )
+
+    recovered = arrival.recover_arrival_stats_unknown_writes_on_startup(
+        runtime,
+        "release-sha",
+    )
+
+    assert include_disabled == [True]
+    assert recovered == [
+        (
+            "arrival-project",
+            {
+                "automation_id": "arrival-project",
+                "request_id": "startup:release-sha",
+            },
+        )
+    ]
+
+
 def test_arrival_archive_binds_target_date_sheet_and_exact_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

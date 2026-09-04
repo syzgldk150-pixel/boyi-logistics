@@ -429,18 +429,29 @@ def verify_arrival_stats_split_pending_recovery(
     """
 
     unknown = {"status": "UNKNOWN", "reason": "RECOVERY_READBACK_NOT_PROVEN"}
+
+    def not_proven(code: str) -> dict[str, str]:
+        # Recovery diagnostics must never include bindings, receipt identities,
+        # or Sheet content.  A closed reason code is enough to distinguish a
+        # stale/malformed receipt chain from a readback mismatch in production.
+        logger.info(
+            "Arrival statistics unknown-write recovery not proven code=%s",
+            code,
+        )
+        return unknown
+
     try:
         if str(recovery_snapshot.get("state") or "") != "RECEIPTS_IDENTIFIED":
-            return unknown
+            return not_proven("RECEIPT_SNAPSHOT_UNAVAILABLE")
         receipts = recovery_snapshot.get("receipts")
         if (
             not isinstance(receipts, list)
             or not receipts
             or recovery_snapshot.get("receipt_count") != len(receipts)
         ):
-            return unknown
+            return not_proven("RECEIPT_COUNT_INVALID")
         if any(not isinstance(receipt, Mapping) for receipt in receipts):
-            return unknown
+            return not_proven("RECEIPT_SHAPE_INVALID")
         identity_fields = (
             "receipt_id",
             "operation",
@@ -513,7 +524,7 @@ def verify_arrival_stats_split_pending_recovery(
             or identity_sha256
             != str(recovery_snapshot.get("receipt_identity_sha256") or "")
         ):
-            return unknown
+            return not_proven("RECEIPT_SEQUENCE_INVALID")
 
         primary_resource_id = str(
             resource_bindings.get("arrival_stats_primary_sheet") or ""
@@ -522,7 +533,7 @@ def verify_arrival_stats_split_pending_recovery(
             resource_bindings.get("arrival_stats_split_pending_sheet") or ""
         ).strip()
         if not primary_resource_id or not target_resource_id:
-            return unknown
+            return not_proven("RESOURCE_BINDING_MISSING")
         binding_values: dict[str, object] = {
             "account_id": account_bindings.get("account_id"),
             **{
@@ -542,7 +553,7 @@ def verify_arrival_stats_split_pending_recovery(
         ):
             role_names = [name for name in binding_values if role(name) == role_sha256]
             if len(role_names) != 1:
-                return unknown
+                return not_proven("RECEIPT_ROLE_INVALID")
             binding = binding_values[role_names[0]]
             if (
                 not isinstance(binding, str)
@@ -550,7 +561,7 @@ def verify_arrival_stats_split_pending_recovery(
                 or str(receipt.get("binding_sha256") or "")
                 != hashlib.sha256(binding.strip().encode("utf-8")).hexdigest()
             ):
-                return unknown
+                return not_proven("RECEIPT_BINDING_STALE")
 
         primary = _exact_sheet_resource(
             primary_resource_id,
@@ -588,7 +599,7 @@ def verify_arrival_stats_split_pending_recovery(
         target_clear = _range_shape(target["clear_range"], label="split-pending clear")
         target_title = _range_shape(target["range"], label="split-pending title")
         if target_clear["sheet"] != sheet_id or target_title["sheet"] != sheet_id:
-            return unknown
+            return not_proven("TARGET_RANGE_INVALID")
         observed = _fresh_sheet_rows(
             target,
             f"{sheet_id}!A1:S{target_clear['end_row']}",
@@ -596,7 +607,7 @@ def verify_arrival_stats_split_pending_recovery(
         )
         if observed != expected:
             _log_sheet_mismatch("split_pending_recovery", expected, observed)
-            return unknown
+            return not_proven("TARGET_CONTENT_MISMATCH")
 
         evidence = {
             "schema": 1,
@@ -628,6 +639,11 @@ def recover_arrival_stats_unknown_write(
 
     entry = plugin_runtime.catalog.require(automation_id)
     if str(entry.plugin_id) != "sync_arrival_stats":
+        logger.info(
+            "Arrival statistics unknown-write recovery skipped project=%s "
+            "code=PLUGIN_SCOPE_MISMATCH",
+            automation_id,
+        )
         return None
     generation = entry.committed_generation
     if (
@@ -635,6 +651,11 @@ def recover_arrival_stats_unknown_write(
         or generation <= 0
         or entry.target_generation != generation
     ):
+        logger.info(
+            "Arrival statistics unknown-write recovery skipped project=%s "
+            "code=GENERATION_NOT_CURRENT",
+            automation_id,
+        )
         return None
     snapshot = plugin_runtime.target_service.inspect_current_unknown_write(
         automation_id=automation_id,
@@ -674,7 +695,7 @@ def recover_arrival_stats_unknown_writes_on_startup(
     """Recover eligible instances at startup; unavailable proof stays blocked."""
 
     recovered: list[tuple[str, dict[str, Any]]] = []
-    for entry in plugin_runtime.catalog.list(include_disabled=False):
+    for entry in plugin_runtime.catalog.list(include_disabled=True):
         if str(entry.plugin_id) != "sync_arrival_stats":
             continue
         try:
