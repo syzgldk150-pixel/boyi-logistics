@@ -342,33 +342,29 @@ def scan_preview_recovery_plan_projection(
             "The legacy scan Plan integrity is invalid",
         )
     step = plan.steps[0]
-    value = dict(plan.impact)
-    supplied_fingerprint = str(value.get("preview_fingerprint") or "").strip()
     if (
-        not _HEX_SHA256.fullmatch(supplied_fingerprint)
-        or set(value)
-        != {
-            "tool_name",
-            "operation_type",
-            "account_id",
-            "entities",
-            "amounts",
-            "source_version",
-            "revalidation",
-            "preview_fingerprint",
+        step.tool_name != f"automation.{expectation.project_instance_id}.run"
+        or step.operation_type
+        not in {
+            OperationType.INTERNAL_PROJECTION_WRITE,
+            OperationType.EXTERNAL_WRITE,
         }
-        or value.get("tool_name") != step.tool_name
-        or step.tool_name
-        != f"automation.{expectation.project_instance_id}.run"
-        or value.get("operation_type") != step.operation_type.value
-        or value.get("account_id") != step.account_id
-        or value.get("revalidation")
-        != "authoritative_source_and_selection_must_match_and_preview_is_one_time_consumed"
     ):
         raise _error(
             "SCAN_PREVIEW_CONTEXT_INVALID",
-            "The legacy scan impact identity is invalid",
+            "The legacy scan Plan step is invalid",
         )
+    trusted_context = step.arguments.get(SCAN_PREVIEW_PAYLOAD_BINDING_FIELD)
+    if isinstance(trusted_context, Mapping):
+        return scan_preview_recovery_projection(
+            uow,
+            preview_run_id=normalize_preview_run_id(
+                trusted_context.get("preview_run_id")
+            ),
+            trusted_context=trusted_context,
+            now=now,
+        )
+    value = dict(plan.impact)
     entities = value.get("entities")
     source_version = value.get("source_version")
     if (

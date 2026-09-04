@@ -573,10 +573,19 @@ def test_planner_persists_compact_scan_impact_for_the_signed_project():
     assert plan.steps[0].arguments["_scan_preview_binding"] == context
     assert "items" not in plan.steps[0].arguments["_scan_preview_binding"]
 
+    legacy_step = replace(
+        plan.steps[0],
+        arguments={
+            key: value
+            for key, value in plan.steps[0].arguments.items()
+            if key != "_scan_preview_binding"
+        },
+    )
+    legacy_plan = replace(plan, steps=(legacy_step,))
     recovered = scan_preview_recovery_plan_projection(
         _Uow(_fixture()),
-        plan=plan,
-        expected_plan_hash=plan.plan_hash,
+        plan=legacy_plan,
+        expected_plan_hash=legacy_plan.plan_hash,
         expectation=_expectation(),
         now=NOW + timedelta(days=1),
     )
@@ -590,8 +599,8 @@ def test_planner_persists_compact_scan_impact_for_the_signed_project():
     with pytest.raises(OrchestrationError) as invalid:
         scan_preview_recovery_plan_projection(
             _Uow(_fixture()),
-            plan=replace(plan, impact=tampered),
-            expected_plan_hash=plan.plan_hash,
+            plan=replace(legacy_plan, impact=tampered),
+            expected_plan_hash=legacy_plan.plan_hash,
             expectation=_expectation(),
             now=NOW + timedelta(days=1),
         )
