@@ -611,6 +611,37 @@ def test_planner_persists_compact_scan_impact_for_the_signed_project():
         "result_summary_json"
     ]["data"]["preview_evidence"]["items"]
 
+    legacy_reference_impact = {
+        "tool_name": plan.impact["tool_name"],
+        "operation_type": plan.impact["operation_type"],
+        "account_id": plan.impact["account_id"],
+        "entities": [
+            {
+                "entity_type": "scan_selection",
+                "entity_id": RUN_ID,
+                "source_system": "",
+                "relation_type": "subject",
+                "metadata": {},
+            }
+        ],
+        "amounts": {},
+    }
+    legacy_reference_plan = replace(
+        legacy_plan,
+        impact=legacy_reference_impact,
+    )
+    recovered_legacy_reference = scan_preview_recovery_plan_projection(
+        _Uow(_fixture()),
+        plan=legacy_reference_plan,
+        expected_plan_hash=legacy_reference_plan.plan_hash,
+        expectation=_expectation(),
+        now=NOW + timedelta(days=1),
+    )
+    assert recovered_legacy_reference["preview_run_id"] == RUN_ID
+    assert recovered_legacy_reference["items"] == _fixture()["steps"][RUN_ID][0][
+        "result_summary_json"
+    ]["data"]["preview_evidence"]["items"]
+
     tampered = copy.deepcopy(plan.impact)
     tampered["entities"][0]["metadata"]["selection_count"] = 1
     with pytest.raises(OrchestrationError) as invalid:

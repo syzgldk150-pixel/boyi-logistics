@@ -388,16 +388,25 @@ def scan_preview_recovery_plan_projection(
         )
     entity = dict(entities[0])
     metadata = entity.get("metadata")
-    if (
-        entity.get("entity_type") != "scan_selection"
-        or entity.get("source_system") != "ronghui"
-        or entity.get("relation_type") != "impact"
-        or not isinstance(metadata, Mapping)
-        or metadata.get("action") != "scan_next"
-        or (
-            isinstance(source_version, Mapping)
-            and source_version.get("kind") != "completed_scan_preview"
+    current_reference = (
+        entity.get("source_system") == "ronghui"
+        and entity.get("relation_type") == "impact"
+        and isinstance(metadata, Mapping)
+        and metadata.get("action") == "scan_next"
+        and (
+            source_version is None
+            or source_version.get("kind") == "completed_scan_preview"
         )
+    )
+    legacy_reference = (
+        source_version is None
+        and isinstance(metadata, Mapping)
+        and not metadata
+        and entity.get("source_system") in {None, "", "ronghui"}
+        and entity.get("relation_type") in {None, "subject", "impact"}
+    )
+    if entity.get("entity_type") != "scan_selection" or not (
+        current_reference or legacy_reference
     ):
         raise _error(
             "SCAN_PREVIEW_CONTEXT_INVALID",
@@ -437,7 +446,10 @@ def scan_preview_recovery_plan_projection(
         "observed_at": _iso_utc(persisted.observed_at),
         "expires_at": _iso_utc(persisted.expires_at),
     }
-    if dict(metadata) != expected_metadata or (
+    if (
+        not legacy_reference
+        and dict(metadata) != expected_metadata
+    ) or (
         isinstance(source_version, Mapping)
         and dict(source_version) != expected_source_version
     ):
