@@ -373,11 +373,14 @@ def scan_preview_recovery_plan_projection(
             OperationType.INTERNAL_PROJECTION_WRITE.value,
             OperationType.EXTERNAL_WRITE.value,
         }
-        or value.get("amounts") != {}
+        or value.get("amounts", {}) != {}
         or not isinstance(entities, list)
         or len(entities) != 1
         or not isinstance(entities[0], Mapping)
-        or not isinstance(source_version, Mapping)
+        or (
+            source_version is not None
+            and not isinstance(source_version, Mapping)
+        )
     ):
         raise _error(
             "SCAN_PREVIEW_CONTEXT_INVALID",
@@ -391,14 +394,20 @@ def scan_preview_recovery_plan_projection(
         or entity.get("relation_type") != "impact"
         or not isinstance(metadata, Mapping)
         or metadata.get("action") != "scan_next"
-        or source_version.get("kind") != "completed_scan_preview"
+        or (
+            isinstance(source_version, Mapping)
+            and source_version.get("kind") != "completed_scan_preview"
+        )
     ):
         raise _error(
             "SCAN_PREVIEW_CONTEXT_INVALID",
             "The legacy scan impact identity is invalid",
-        )
+    )
     preview_run_id = normalize_preview_run_id(entity.get("entity_id"))
-    if source_version.get("preview_run_id") != preview_run_id:
+    if (
+        isinstance(source_version, Mapping)
+        and source_version.get("preview_run_id") != preview_run_id
+    ):
         raise _error(
             "SCAN_PREVIEW_CONTEXT_INVALID",
             "The legacy scan preview identity changed",
@@ -428,7 +437,10 @@ def scan_preview_recovery_plan_projection(
         "observed_at": _iso_utc(persisted.observed_at),
         "expires_at": _iso_utc(persisted.expires_at),
     }
-    if dict(metadata) != expected_metadata or dict(source_version) != expected_source_version:
+    if dict(metadata) != expected_metadata or (
+        isinstance(source_version, Mapping)
+        and dict(source_version) != expected_source_version
+    ):
         raise _error(
             "SCAN_PREVIEW_CONTEXT_INVALID",
             "The legacy scan impact is stale",
