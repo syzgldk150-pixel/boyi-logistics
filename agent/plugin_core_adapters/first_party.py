@@ -989,10 +989,12 @@ def recover_scan_codes_unknown_write(
             return dict(result) if isinstance(result, Mapping) else None
         return None
     except Exception as exc:  # noqa: BLE001 - recovery must remain fail closed
+        safe_reason = " ".join(str(exc).split())[:120]
         logger.warning(
-            "Scan unknown-write recovery was not proven phase=%s code=%s",
+            "Scan unknown-write recovery was not proven phase=%s code=%s reason=%s",
             phase,
             str(getattr(exc, "code", type(exc).__name__))[:80],
+            safe_reason,
         )
         return None
 
