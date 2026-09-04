@@ -27,6 +27,7 @@ from agent.orchestration.scan_preview_binding import (
     require_scan_formal_governance,
     resolve_scan_preview,
     restore_scan_preview_replay,
+    scan_preview_recovery_impact_projection,
     scan_preview_public_projection,
 )
 from shared.automation_project_authorization import (
@@ -571,6 +572,28 @@ def test_planner_persists_compact_scan_impact_for_the_signed_project():
     assert len(plan.impact["preview_fingerprint"]) == 64
     assert plan.steps[0].arguments["_scan_preview_binding"] == context
     assert "items" not in plan.steps[0].arguments["_scan_preview_binding"]
+
+    recovered = scan_preview_recovery_impact_projection(
+        _Uow(_fixture()),
+        impact=plan.impact,
+        expectation=_expectation(),
+        now=NOW + timedelta(days=1),
+    )
+    assert recovered["preview_run_id"] == RUN_ID
+    assert recovered["items"] == _fixture()["steps"][RUN_ID][0][
+        "result_summary_json"
+    ]["data"]["preview_evidence"]["items"]
+
+    tampered = copy.deepcopy(plan.impact)
+    tampered["entities"][0]["metadata"]["selection_count"] = 1
+    with pytest.raises(OrchestrationError) as invalid:
+        scan_preview_recovery_impact_projection(
+            _Uow(_fixture()),
+            impact=tampered,
+            expectation=_expectation(),
+            now=NOW + timedelta(days=1),
+        )
+    assert invalid.value.code == "SCAN_PREVIEW_CONTEXT_INVALID"
 
 
 def test_planner_keeps_dry_run_preview_free_of_formal_binding():

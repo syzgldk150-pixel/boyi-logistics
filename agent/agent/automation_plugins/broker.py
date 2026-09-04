@@ -93,6 +93,8 @@ _RECOVERABLE_WRITE_ACTIONS = frozenset(
         ("finance_startup_catchup", "ledger.invoke", "finance.batch.acquire"),
         ("finance_startup_catchup", "ledger.invoke", "finance.source_snapshot.write"),
         ("finance_startup_catchup", "ledger.invoke", "finance.projection.commit"),
+        ("scan_codes", "projection.invoke", "scan.snapshot.replace"),
+        ("scan_codes", "browser.invoke", "ronghui.scan_next.submit"),
     }
 )
 # Recovery eligibility belongs to the signed package identity, never to a
@@ -117,6 +119,8 @@ _RECOVERABLE_WRITE_PLUGIN_ACTIONS = frozenset(
         ("sync_finance_bills", "ledger.invoke", "finance.batch.acquire"),
         ("sync_finance_bills", "ledger.invoke", "finance.source_snapshot.write"),
         ("sync_finance_bills", "ledger.invoke", "finance.projection.commit"),
+        ("sync_scan_codes", "projection.invoke", "scan.snapshot.replace"),
+        ("sync_scan_codes", "browser.invoke", "ronghui.scan_next.submit"),
     }
 )
 _TARGET_REF_FIELDS = frozenset(
@@ -278,7 +282,13 @@ def _require_locator_arguments(action: str, arguments: Mapping[str, Any]) -> Non
         "split_pending.snapshot.refresh", "feishu.sheet.replace",
         "feishu.sheet.add", "feishu.bitable.write_records",
     }
-    if action in list_actions:
+    if action == "ronghui.scan_next.submit":
+        if not isinstance(arguments.get("items"), list):
+            raise PluginExecutionError(
+                "write locator requires scan items",
+                code="WRITE_ATTEMPT_LOCATOR_INVALID",
+            )
+    elif action in list_actions:
         if not any(isinstance(arguments.get(field), list) for field in ("records", "values")):
             raise PluginExecutionError(
                 "write locator requires records or values",
@@ -321,7 +331,7 @@ def _extract_write_target_ref(
 ) -> tuple[dict[str, Any], str]:
     """Build a payload-free locator before adapter invocation.
 
-    Only the five explicitly recoverable signed packages use the closed,
+    Only the explicitly recoverable signed packages use the closed,
     action-specific validation.  Every other signed write receives the same
     redacted durable receipt shape through a permissive generic locator so a
     newly protected write cannot regress existing first-party behavior.
