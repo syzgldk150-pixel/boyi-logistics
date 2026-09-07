@@ -19,6 +19,14 @@ bash tests/v32_acceptance/isolated_environment.sh run --database v32_final_ci_te
 bash tests/v32_acceptance/isolated_environment.sh run --database v32_e2e_test python -m tests.v32_acceptance.prepare_database --reset-owned-fixture
 ```
 
+六包局部 CLI 的真实财务协议测试使用独立的 `v32_cli_test`。干净环境会创建该库并应用真实迁移；如果该库曾用于迁移定稿前的开发，校验和不符会明确失败，不会自动覆盖历史。保留失败日志并确认没有其他 CLI 测试正在使用该库后，才可显式重建这个本轮合成库，再运行完整入口：
+
+```sh
+bash tests/v32_acceptance/isolated_environment.sh run --database v32_cli_test python -c 'from tests.v32_acceptance.finance_maintenance import prepare_database; prepare_database(database="v32_cli_test", reset=True)'
+```
+
+该准备函数执行独立测试库的删除、重建和迁移核验，并关闭其中的合成计划；不修改迁移历史记录来消除校验错误。不得将参数改为业务库或他人测试库。
+
 ```sh
 mkdir -p .task_tmp/v32/final
 bash tests/v32_acceptance/isolated_environment.sh run --database v32_final_ci_test python -m tests.v32_acceptance.host_freeze freeze .task_tmp/v32/final/host-freeze.json

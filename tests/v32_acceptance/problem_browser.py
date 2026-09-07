@@ -1,7 +1,8 @@
 """Actual authenticated Console controls for isolated self/split problem actions."""
 from __future__ import annotations
+import json
 import os
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import sync_playwright
 
@@ -15,8 +16,29 @@ class ProblemBrowser:
         self.context.route('**/*', lambda route: route.continue_() if urlparse(route.request.url).hostname == '127.0.0.1' else route.abort())
         self.page = self.context.new_page()
         self.errors = []
+        self.preview_errors = {}
         self.page.on('pageerror', lambda error:self.errors.append(str(error)))
+        self.page.on('response', self._record_preview_error)
         console.login(self.page, next_path='/automations')
+
+    def _record_preview_error(self, response):
+        parsed = urlparse(response.url)
+        if parsed.path != '/automations/tasks/output':
+            return
+        query = parse_qs(parsed.query)
+        if query.get('selection_phase') != ['preview'] or len(query.get('run_id', [])) != 1:
+            return
+        try:
+            error = response.json().get('selection_preview_error')
+        except Exception as exc:
+            self.preview_errors[query['run_id'][0]] = {'capture_error':type(exc).__name__}
+            return
+        if isinstance(error, dict):
+            self.preview_errors[query['run_id'][0]] = {
+                'http_status':response.status,
+                'error_code':str(error.get('error_code') or ''),
+                'message':str(error.get('message') or ''),
+            }
 
     def card(self, automation_id):
         return self.page.locator(f'[data-plugin-instance][data-automation-id="{automation_id}"]')
@@ -33,12 +55,28 @@ class ProblemBrowser:
         body = response.value.json()
         if response.value.status != 202 or body.get('ok') is not True:
             raise AssertionError(f'actual selection preview rejected: {body}')
-        self.page.wait_for_function("([id,count]) => document.querySelector(`[data-plugin-instance][data-automation-id=\"${id}\"]`).closest('form').querySelectorAll('[data-selection-preview-list] input[type=checkbox]').length === count",
-            arg=[automation_id, len(expected_codes)], timeout=60000)
+        self._wait_preview_candidates(automation_id, body['run_id'], expected_count=len(expected_codes))
         codes = form.locator('[data-selection-preview-list] input[type=checkbox]').evaluate_all('nodes => nodes.map(node => node.value)')
         if sorted(codes) != sorted(expected_codes):
             raise AssertionError(f'actual candidate DOM differs: {codes}')
         return {'run_id':body['run_id'], 'codes':codes}
+
+    def _wait_preview_candidates(self, automation_id, run_id, *, expected_count):
+        state = self.page.wait_for_function("""([id,count]) => {
+            const form = document.querySelector(`[data-plugin-instance][data-automation-id="${id}"]`).closest('form');
+            const panel = form.querySelector('[data-selection-preview-panel]');
+            if (panel && !panel.hidden && panel.classList.contains('is-error')) {
+                return {error:panel.querySelector('[data-selection-preview-message]')?.textContent || ''};
+            }
+            return form.querySelectorAll('[data-selection-preview-list] input[type=checkbox]').length === count ? {ready:true} : false;
+        }""", arg=[automation_id, expected_count], timeout=60000).json_value()
+        if 'error' in state:
+            evidence = {'automation_id':automation_id, 'run_id':run_id,
+                'page_message':state['error'], 'response':self.preview_errors.get(run_id),
+                'javascript_errors':self.errors}
+            (self.console.runtime/'problem-preview-failure.json').write_text(
+                json.dumps(evidence,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+            raise AssertionError('actual selection preview reported a terminal error: '+json.dumps(evidence,ensure_ascii=False))
 
     def confirm(self, automation_id):
         form = self.card(automation_id).locator('xpath=ancestor::form')
