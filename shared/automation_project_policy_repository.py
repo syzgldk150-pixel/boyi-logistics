@@ -62,10 +62,15 @@ class AutomationProjectPolicyRepository(RepositoryBase):
     POLICY_JSON_FIELDS = ("contract_snapshot_json",)
     EVENT_JSON_FIELDS = ("contract_snapshot_json",)
 
-    def list_policies(self) -> list[dict[str, Any]]:
+    def list_policies(self, *, automation_ids: Sequence[str] | None = None) -> list[dict[str, Any]]:
+        selected = tuple(_required_text(value, "automation_id") for value in automation_ids) if automation_ids is not None else None
+        if selected is not None and (not 1 <= len(selected) <= 1000 or len(set(selected)) != len(selected)):
+            raise ValueError("policy display requires 1 to 1000 distinct instance IDs")
+        where = " WHERE automation_id IN (" + ",".join(["%s"] * len(selected)) + ")" if selected is not None else ""
         with self.cursor() as cursor:
             cursor.execute(
-                "SELECT * FROM automation_project_policies ORDER BY automation_id"
+                "SELECT * FROM automation_project_policies" + where + " ORDER BY automation_id",
+                selected or (),
             )
             return [
                 _decode_row(row, self.POLICY_JSON_FIELDS) or {}

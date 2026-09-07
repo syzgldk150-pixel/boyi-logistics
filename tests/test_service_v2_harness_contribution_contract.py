@@ -264,13 +264,11 @@ def _harness_material(snapshot: RuntimeGenerationSnapshot) -> dict[str, Any]:
     return copy.deepcopy(dict(plan.payload))
 
 
-def test_harness_is_required_for_service_v2_manifests_and_closed_when_present() -> None:
+def test_harness_is_optional_for_service_v2_and_closed_when_present() -> None:
     legacy_source = _manifest_mapping(include_harness=False)
     legacy_manifest = AutomationPluginManifestV2.from_mapping(legacy_source)
-    with pytest.raises(PluginConflictError, match="AI assistant capability"):
-        validate_service_v2_install_contract(
-            SimpleNamespace(manifest=legacy_manifest)
-        )
+    validate_service_v2_install_contract(SimpleNamespace(manifest=legacy_manifest))
+    assert legacy_manifest.to_mapping() == legacy_source
 
     source = _manifest_mapping()
     manifest = AutomationPluginManifestV2.from_mapping(source)

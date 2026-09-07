@@ -7,17 +7,19 @@ runtime generation material.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, UUID4
 
 from agent.orchestration.automation_project_policy_service import (
     AutomationProjectPolicyService,
 )
-from agent.orchestration.models import Actor
+from agent.orchestration.models import Actor, OrchestrationError
+from agent.orchestration.automation_project_policy_support import policy_list_automation_ids
 from agent.orchestration.service_v2_waybill_entry_extension_host import (
     ServiceV2WaybillEntryExtensionHost,
 )
@@ -81,9 +83,17 @@ def create_automation_project_router(
     router = APIRouter()
 
     @router.get("/internal/v1/automation-project-policies")
-    async def list_project_policies(request: Request) -> dict[str, Any]:
+    async def list_project_policies(
+        request: Request, automation_ids: str | None = Query(default=None, max_length=128999),
+    ) -> dict[str, Any]:
         actor_provider(request)
-        return api_success(service_provider().list_policies())
+        if automation_ids is None:
+            return api_success(await asyncio.to_thread(service_provider().list_policies))
+        try:
+            selected = policy_list_automation_ids(automation_ids.split(","))
+        except OrchestrationError as exc:
+            raise HTTPException(status_code=422, detail=exc.code) from exc
+        return api_success(await asyncio.to_thread(service_provider().list_policies, automation_ids=sorted(selected)))
 
     @router.post(
         "/internal/v1/automation-projects/{automation_id}/approval-policy"
@@ -255,7 +265,7 @@ def create_automation_project_router(
         }
         if payload.contribution_id is not None:
             invocation_arguments["contribution_id"] = payload.contribution_id
-        receipt = service_provider().invoke_console(
+        receipt = await asyncio.to_thread(service_provider().invoke_console,
             automation_id,
             **invocation_arguments,
         )

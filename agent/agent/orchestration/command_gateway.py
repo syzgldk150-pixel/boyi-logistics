@@ -15,6 +15,7 @@ from agent.orchestration.models import (
     new_id,
     sha256_json,
 )
+from shared.orchestration_repository_support import IdempotencyConflict
 
 
 WAITING_RUN_STATUSES = frozenset(
@@ -39,7 +40,7 @@ class CommandGateway:
         *,
         uow_guard: Callable[[Any], None] | None = None,
         uow_acceptance_guard: (
-            Callable[[Any, Mapping[str, str]], None] | None
+            Callable[[Any, Mapping[str, str]], Mapping[str, Any] | None] | None
         ) = None,
     ) -> CommandReceipt:
         work_item_type, title, dedupe_key = self._classify_work_item(command)
@@ -140,8 +141,9 @@ class CommandGateway:
             with self._repository.unit_of_work() as uow:
                 if uow_guard is not None:
                     uow_guard(uow)
+                acceptance_result = None
                 if uow_acceptance_guard is not None:
-                    uow_acceptance_guard(
+                    acceptance_result = uow_acceptance_guard(
                         uow,
                         {
                             "command_id": command.command_id,
@@ -149,27 +151,40 @@ class CommandGateway:
                             "run_id": run_id,
                         },
                     )
+                accepted_command_row = command_row
+                if acceptance_result is not None:
+                    replay = acceptance_result.get("replay_command")
+                    if replay is not None:
+                        accepted_command_row = _validated_replay_row(
+                            command_row,
+                            replay,
+                        )
                 receipt = uow.command_gateway_create(
-                    command_row,
+                    accepted_command_row,
                     work_item_row,
                     run_row,
                     event_row,
                     outbox_rows,
                 )
-                for ref in command.entity_refs:
-                    uow.work_items.add_entity(
-                        {
-                            "work_item_id": receipt["work_item_id"],
-                            "relation_type": ref.relation_type,
-                            "entity_type": ref.entity_type,
-                            "entity_id": ref.entity_id,
-                            "source_system": ref.source_system or command.source,
-                            "metadata_json": dict(ref.metadata),
-                        }
-                    )
+                if bool((receipt.get("created") or {}).get("command")):
+                    for ref in command.entity_refs:
+                        uow.work_items.add_entity(
+                            {
+                                "work_item_id": receipt["work_item_id"],
+                                "relation_type": ref.relation_type,
+                                "entity_type": ref.entity_type,
+                                "entity_id": ref.entity_id,
+                                "source_system": ref.source_system or command.source,
+                                "metadata_json": dict(ref.metadata),
+                            }
+                        )
                 uow.commit()
         except OrchestrationError:
             raise
+        except IdempotencyConflict as exc:
+            raise OrchestrationError(
+                "IDEMPOTENCY_CONFLICT", "Request id was reused with different command semantics",
+            ) from exc
         except Exception as exc:
             raise OrchestrationError("PERSISTENCE_UNAVAILABLE", "Command could not be persisted") from exc
 
@@ -265,3 +280,27 @@ def _next_poll_ms(status: RunStatus) -> int:
     if status in WAITING_RUN_STATUSES:
         return 5000
     return 1000
+
+
+def _validated_replay_row(
+    submitted: Mapping[str, Any],
+    persisted: Any,
+) -> Mapping[str, Any]:
+    """Allow a guard to replay only the exact accepted command identity."""
+
+    if not isinstance(persisted, Mapping) or any(
+        str(persisted.get(field) or "") != str(submitted.get(field) or "")
+        for field in (
+            "command_type",
+            "source",
+            "actor_type",
+            "actor_id",
+            "automation_id",
+            "idempotency_key",
+        )
+    ):
+        raise OrchestrationError(
+            "REQUEST_ID_REUSED",
+            "The accepted command identity differs from this request",
+        )
+    return persisted

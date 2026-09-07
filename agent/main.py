@@ -239,7 +239,7 @@ from agent.tms_runtime.routes import ensure_account_list_cache
 from agent.tms_runtime.routes import update_account_list_cache_status
 from agent.tms_runtime.routes import bind_agent_command_runtime
 from agent.tms_runtime.session_broker import get_session_broker
-from agent.workflow_resource_store import get_workflow_resource, list_workflow_resources
+from agent.workflow_resource_store import get_saved_workflow_resource, get_workflow_resource, list_workflow_resources
 from agent.tool_executor import ToolExecutor
 from feishu.bot import (
     bind_agent_runtime,
@@ -555,12 +555,10 @@ def _project_finance_failure_event(
     steps: list[dict[str, Any]],
     failure_status: str,
 ) -> dict[str, Any]:
-    finance_steps = [
-        step
-        for step in steps
-        if str(step.get("tool_name") or "").strip() == "sync_finance_bills"
-    ]
-    if not finance_steps:
+    from shared.collector_navigation import finance_failure_ownership
+    finance_steps, navigation = finance_failure_ownership(
+        getattr(uow, "connection", None), str(run.get("run_id") or ""), steps)
+    if not finance_steps and navigation.get("module") != "finance":
         return {"event_id": delivery.get("event_id"), "projected": False}
 
     source_payload = delivery.get("payload_json")
@@ -610,6 +608,7 @@ def _project_finance_failure_event(
                 "error_code": error_code or "FINANCE_SYNC_FAILED",
                 "error_summary": error_summary,
                 "startup_catchup": startup_catchup,
+                "collector_navigation": navigation,
             },
         },
         (
@@ -741,7 +740,8 @@ def _finance_sync_failure_handler(delivery, _uow):
             "anomaly_type": error_code or "FINANCE_SYNC_FAILED",
             "title": "\u8d22\u52a1\u540c\u6b65\u5931\u8d25\u6216\u963b\u585e",
             "details": details[:500],
-            "admin_url": "/modules/finance#sync",
+            "admin_url": "/modules/finance/data-sources",
+            "collector_navigation": payload.get("collector_navigation"),
         }
     )
     if not sent:
@@ -1394,7 +1394,7 @@ async def lifespan(app: FastAPI):
     )
     harness_runtime_status = await asyncio.to_thread(process_service_v2_runtime.start)
     logger.info("AI assistant runtime status=%s availability=%s", harness_runtime_status.status, harness_runtime_status.availability)
-    runner = WorkflowRunner(
+    runner = WorkflowRunner(saved_resource_provider=get_saved_workflow_resource,
         repository=repository,
         catalog=catalog,
         execution_port=execution_port,
@@ -1623,9 +1623,8 @@ app.include_router(
         service_provider=lambda: _automation_plugins().management,
         actor_provider=lambda request: _require_console_admin_request(request),
         include_worker_routes=WINDOWS_WORKER_RELEASE_ENABLED,
-        scheduler_refresh_provider=lambda: (
-            _automation_plugins().service_effect_driver.refresh_contribution_projection()
-        ),
+        scheduler_refresh_provider=lambda: _automation_plugins().service_effect_driver.refresh_contribution_projection(),
+        policy_service_provider=_automation_project_policies,
     )
 )
 app.include_router(

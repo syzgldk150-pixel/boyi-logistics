@@ -2042,6 +2042,271 @@ def run_test_grouped_approval_second_cas_failure_is_atomic(case):
             )
 
 
+def run_test_project_invocation_serializes_and_replays_on_real_mysql(case):
+    """Prove the project row lock closes RR races and preserves replay bytes."""
+
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from agent.orchestration.automation_project_policy_service import (
+        AutomationProjectPolicyService,
+    )
+    from agent.orchestration.command_gateway import CommandGateway
+    from agent.orchestration.models import Actor, ActorType, OrchestrationError
+    from shared.automation_plugin_repository import AutomationPluginRepository
+    from tests.automation_project_policy_service_support import (
+        _Catalog,
+        _contract,
+    )
+
+    database = case.project_approval_atomic_database
+    case._run_migrations(database)
+    suffix = uuid4().hex[:12]
+    automation_id = f"integration_project_mutex_{suffix}"
+    plugin_id = f"integration_project_mutex_plugin_{suffix}"
+    digest_fields = {
+        "package_sha256": "1" * 64,
+        "manifest_sha256": "2" * 64,
+        "tool_contract_sha256": "3" * 64,
+        "config_schema_sha256": "4" * 64,
+        "allowed_entrypoints_sha256": "5" * 64,
+        "invocation_contracts_sha256": "6" * 64,
+        "worker_requirement_sha256": "7" * 64,
+        "runtime_sha256": "8" * 64,
+        "scheduling_sha256": "9" * 64,
+        "install_root_metadata_sha256": "a" * 64,
+    }
+    with case._connection(database) as connection:
+        plugins = AutomationPluginRepository(
+            connection,
+            cursor_factory=case.pymysql.cursors.DictCursor,
+        )
+        plugins.register_package_version(
+            package={
+                "plugin_id": plugin_id,
+                "display_name": "Project mutex integration",
+                "description": "test-only signed package",
+            },
+            version={
+                "version": "1.0.0",
+                **digest_fields,
+                "manifest_json": {
+                    "allowed_entrypoints": ["console"],
+                    "runtime": {
+                        "kind": "core_tool_ref",
+                        "tool_name": "integration_probe",
+                    },
+                },
+                "project_full_auto_allowed": False,
+                "trust_source": "ed25519_first_party",
+                "install_root_metadata_json": {},
+                "installed_by_actor_id": "integration-admin",
+            },
+        )
+        plugins.install_project_instance(
+            {
+                "automation_id": automation_id,
+                "plugin_id": plugin_id,
+                "plugin_version": "1.0.0",
+                "display_name": "Project mutex instance",
+                "install_request_id": str(uuid4()),
+                "install_payload_sha256": "b" * 64,
+                "installed_by_actor_id": "integration-admin",
+                "migration_authority": False,
+            }
+        )
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE automation_projects SET enabled=TRUE, state='ENABLED' "
+                "WHERE automation_id=%s",
+                (automation_id,),
+            )
+            case.assertEqual(1, cursor.rowcount)
+        connection.commit()
+
+    repository = case._repository(database)
+    with repository.unit_of_work() as uow:
+        uow.automation_projects.ensure_default(
+            automation_id,
+            mode="REQUIRE_EACH_RUN",
+            project_generation=1,
+            project_configuration_version=1,
+        )
+        uow.commit()
+
+    base_contract = replace(
+        _contract(),
+        automation_id=automation_id,
+        tool_name=f"automation.{automation_id}.run",
+        snapshot={"automation_id": automation_id},
+    )
+    contract_box = {"value": base_contract}
+    entry = SimpleNamespace(automation_id=automation_id)
+    service = AutomationProjectPolicyService(
+        repository,
+        core_catalog=SimpleNamespace(),
+        plugin_catalog=_Catalog(entry),
+        command_gateway=CommandGateway(repository),
+    )
+    service._load_contract = lambda _automation_id: (  # type: ignore[method-assign]
+        entry,
+        contract_box["value"],
+    )
+    service._lock_and_compile_contract = (  # type: ignore[method-assign]
+        lambda _uow, _entry, **_kwargs: (
+            contract_box["value"],
+            {"automation_id": automation_id, "config_version": 1},
+        )
+    )
+    actor = Actor(
+        ActorType.CONSOLE_ADMIN,
+        "integration-admin",
+        roles=("admin",),
+        authenticated_by="mysql_admin_session",
+    )
+    first_has_lock = threading.Event()
+    second_lock_attempt = threading.Event()
+    original_get_project = AutomationPluginRepository.get_project
+
+    def synchronize_project_lock(
+        plugin_repository,
+        requested_automation_id,
+        *,
+        for_update=False,
+    ):
+        if requested_automation_id != automation_id or not for_update:
+            return original_get_project(
+                plugin_repository,
+                requested_automation_id,
+                for_update=for_update,
+            )
+        if threading.current_thread().name == "project-mutex-first":
+            row = original_get_project(
+                plugin_repository,
+                requested_automation_id,
+                for_update=True,
+            )
+            first_has_lock.set()
+            if not second_lock_attempt.wait(timeout=5):
+                raise AssertionError("second invocation did not attempt the project lock")
+            return row
+        if threading.current_thread().name == "project-mutex-second":
+            if not first_has_lock.wait(timeout=5):
+                raise AssertionError("first invocation did not acquire the project lock")
+            second_lock_attempt.set()
+        return original_get_project(
+            plugin_repository,
+            requested_automation_id,
+            for_update=True,
+        )
+
+    receipts = {}
+    errors = {}
+
+    def invoke(label, request_id, idempotency_key):
+        try:
+            receipts[label] = service.invoke_trusted(
+                automation_id,
+                entrypoint="console",
+                request_id=request_id,
+                actor=actor,
+                idempotency_key=idempotency_key,
+            )
+        except Exception as exc:  # noqa: BLE001 - assert exact cross-thread outcome
+            errors[label] = exc
+
+    first_request_id = str(uuid4())
+    first_key = f"integration-project-mutex:first:{suffix}"
+    first_thread = threading.Thread(
+        target=invoke,
+        args=("first", first_request_id, first_key),
+        name="project-mutex-first",
+    )
+    second_thread = threading.Thread(
+        target=invoke,
+        args=(
+            "second",
+            str(uuid4()),
+            f"integration-project-mutex:second:{suffix}",
+        ),
+        name="project-mutex-second",
+    )
+    with patch.object(
+        AutomationPluginRepository,
+        "get_project",
+        new=synchronize_project_lock,
+    ):
+        first_thread.start()
+        case.assertTrue(first_has_lock.wait(timeout=5))
+        second_thread.start()
+        first_thread.join(timeout=10)
+        second_thread.join(timeout=10)
+
+    case.assertFalse(first_thread.is_alive())
+    case.assertFalse(second_thread.is_alive())
+    case.assertNotIn("first", errors)
+    case.assertIn("first", receipts)
+    case.assertNotIn("second", receipts)
+    case.assertIsInstance(errors.get("second"), OrchestrationError)
+    case.assertEqual("AUTOMATION_ALREADY_RUNNING", errors["second"].code)
+    case.assertEqual("ACTIVE", errors["second"].details["blocking_kind"])
+
+    original_receipt = receipts["first"]
+    with repository.unit_of_work() as uow:
+        original_command = uow.commands.get(original_receipt.command_id)
+    case.assertIsNotNone(original_command)
+    contract_box["value"] = replace(
+        base_contract,
+        contract_hash="e" * 64,
+        project_configuration_version=2,
+    )
+    replay = service.invoke_trusted(
+        automation_id,
+        entrypoint="console",
+        request_id=first_request_id,
+        actor=actor,
+        idempotency_key=first_key,
+    )
+    case.assertTrue(replay.reused)
+    case.assertEqual(original_receipt.command_id, replay.command_id)
+    case.assertEqual(original_receipt.work_item_id, replay.work_item_id)
+    case.assertEqual(original_receipt.run_id, replay.run_id)
+    with repository.unit_of_work() as uow:
+        replayed_command = uow.commands.get(replay.command_id)
+    case.assertEqual(original_command["requested_at"], replayed_command["requested_at"])
+    case.assertEqual(
+        original_command["parameters_json"],
+        replayed_command["parameters_json"],
+    )
+    case.assertEqual(
+        original_command["automation_invocation_json"],
+        replayed_command["automation_invocation_json"],
+    )
+    with case._connection(database) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) AS n FROM agent_commands WHERE automation_id=%s",
+                (automation_id,),
+            )
+            case.assertEqual(1, cursor.fetchone()["n"])
+            cursor.execute(
+                "SELECT COUNT(*) AS n FROM work_items AS item "
+                "INNER JOIN agent_commands AS command "
+                "ON command.command_id=item.command_id "
+                "WHERE command.automation_id=%s",
+                (automation_id,),
+            )
+            case.assertEqual(1, cursor.fetchone()["n"])
+            cursor.execute(
+                "SELECT COUNT(*) AS n FROM agent_runs AS run "
+                "INNER JOIN agent_commands AS command "
+                "ON command.command_id=run.command_id "
+                "WHERE command.automation_id=%s",
+                (automation_id,),
+            )
+            case.assertEqual(1, cursor.fetchone()["n"])
+
+
 def run_test_automation_project_024_original_plugin_full_auto(case):
     """Exercise the exact original six-key plugin recovery on real MySQL."""
 
@@ -2521,256 +2786,7 @@ def run_test_automation_project_024_original_plugin_full_auto(case):
             case.assertIsNone(replayed["lease_expires_at"])
 
 
-def run_test_scheduler_supersession_selector_is_exact_and_terminal_retry_observes_cancellation(case):
-        """Exercise the selector and its Run -> Command -> WorkItem lock order."""
-
-        from shared.automation_project_authorization import (
-            AutomationEntrypoint,
-            AutomationProjectInvocation,
-        )
-        from shared.orchestration_repository import InvalidStateError
-
-        repository = case._repository()
-        task_id = f"scheduler-supersession-{uuid4()}"
-        automation_id = f"project_{uuid4().hex}"
-
-        def create_scheduler_run(
-            label: str,
-            *,
-            task: str,
-            project: str,
-            run_status: str,
-            work_item_status: str = "OPEN",
-            scheduled_for: str = "2026-08-22T00:00:00+00:00",
-        ) -> dict[str, str]:
-            command, item, run, event, outbox = case._aggregate_rows(label)
-            invocation = AutomationProjectInvocation(
-                automation_id=project,
-                automation_generation=1,
-                entrypoint=AutomationEntrypoint.SCHEDULER,
-                contract_id=f"integration-contract-{project}",
-                contract_hash="a" * 64,
-                policy_version=1,
-                project_configuration_version=1,
-                request_id=f"scheduler:{task}:{uuid4()}",
-            )
-            command.update(
-                {
-                    "command_type": "automation.project.invoke",
-                    "source": "scheduler",
-                    "actor_type": "scheduler",
-                    "actor_id": task,
-                    "parameters": {
-                        "tool_name": f"automation.{project}.run",
-                        "arguments": {},
-                        "execution_context": {
-                            "task_id": task,
-                            "scheduled_for": scheduled_for,
-                        },
-                    },
-                    "automation_id": project,
-                    "automation_generation": 1,
-                    "automation_invocation": invocation.to_dict(),
-                }
-            )
-            item["source"] = "scheduler"
-            with repository.unit_of_work() as uow:
-                receipt = uow.command_gateway_create(command, item, run, event, outbox)
-                uow.commit()
-            with case._connection(autocommit=True) as connection, connection.cursor() as cursor:
-                cursor.execute(
-                    "UPDATE agent_runs SET status=%s WHERE run_id=%s",
-                    (run_status, receipt["run_id"]),
-                )
-                cursor.execute(
-                    "UPDATE work_items SET status=%s WHERE work_item_id=%s",
-                    (work_item_status, receipt["work_item_id"]),
-                )
-            return {
-                "run_id": str(receipt["run_id"]),
-                "work_item_id": str(receipt["work_item_id"]),
-            }
-
-        exact = create_scheduler_run(
-            "scheduler-supersession-exact",
-            task=task_id,
-            project=automation_id,
-            run_status="FAILED_TERMINAL",
-        )
-        create_scheduler_run(
-            "scheduler-supersession-other-task",
-            task=f"other-{task_id}",
-            project=automation_id,
-            run_status="FAILED_TERMINAL",
-        )
-        create_scheduler_run(
-            "scheduler-supersession-other-project",
-            task=task_id,
-            project=f"other_{automation_id}",
-            run_status="FAILED_TERMINAL",
-        )
-        blocked = create_scheduler_run(
-            "scheduler-supersession-blocked",
-            task=task_id,
-            project=automation_id,
-            run_status="BLOCKED_DATA",
-            work_item_status="BLOCKED_DATA",
-        )
-        unknown = create_scheduler_run(
-            "scheduler-supersession-unknown",
-            task=task_id,
-            project=automation_id,
-            run_status="BLOCKED_DATA",
-            work_item_status="BLOCKED_DATA",
-        )
-        with case._connection(autocommit=True) as connection, connection.cursor() as cursor:
-            cursor.execute(
-                "UPDATE agent_runs SET error_code='WRITE_OUTCOME_UNKNOWN' WHERE run_id=%s",
-                (unknown["run_id"],),
-            )
-        nonterminal = create_scheduler_run(
-            "scheduler-supersession-nonterminal",
-            task=task_id,
-            project=automation_id,
-            run_status="RUNNING",
-            work_item_status="IN_PROGRESS",
-        )
-        superseded_by_retry = create_scheduler_run(
-            "scheduler-supersession-latest",
-            task=task_id,
-            project=automation_id,
-            run_status="FAILED_TERMINAL",
-        )
-        repository.create_linked_retry_run(
-            superseded_by_retry["run_id"],
-            new_run_id=str(uuid4()),
-            new_command_id=str(uuid4()),
-        )
-        reverse_completion = create_scheduler_run(
-            "scheduler-supersession-reverse-completion",
-            task=task_id,
-            project=automation_id,
-            run_status="FAILED_TERMINAL",
-            scheduled_for="2026-08-24T00:00:00+00:00",
-        )
-
-        with repository.unit_of_work() as uow:
-            selected = uow.runs.list_open_failed_scheduler_run_ids_for_supersession(
-                automation_id=automation_id,
-                scheduler_task_id=task_id,
-                successful_work_item_id=str(uuid4()),
-                successful_occurrence=datetime(2026, 8, 23, 0, 0),
-            )
-        case.assertEqual([exact["run_id"]], selected)
-        case.assertNotIn(blocked["run_id"], selected)
-        case.assertNotIn(unknown["run_id"], selected)
-        case.assertNotIn(nonterminal["run_id"], selected)
-        case.assertNotIn(reverse_completion["run_id"], selected)
-
-        reverse_task_id = f"scheduler-supersession-race-{uuid4()}"
-        reverse_project_id = f"project_{uuid4().hex}"
-        reverse_race = create_scheduler_run(
-            "scheduler-supersession-reverse-race",
-            task=reverse_task_id,
-            project=reverse_project_id,
-            run_status="FAILED_TERMINAL",
-        )
-        with repository.unit_of_work() as cleanup_uow:
-            candidate_ids = cleanup_uow.runs.list_open_failed_scheduler_run_ids_for_supersession(
-                automation_id=reverse_project_id,
-                scheduler_task_id=reverse_task_id,
-                successful_work_item_id=str(uuid4()),
-                successful_occurrence=datetime(2026, 8, 23, 0, 0),
-            )
-            case.assertEqual([reverse_race["run_id"]], candidate_ids)
-            child = repository.create_linked_retry_run(
-                reverse_race["run_id"],
-                new_run_id=str(uuid4()),
-                new_command_id=str(uuid4()),
-            )
-            source = cleanup_uow.runs.get(reverse_race["run_id"], for_update=True)
-            case.assertIsNotNone(source)
-            latest = cleanup_uow.runs.get_latest_for_work_item(
-                reverse_race["work_item_id"],
-                for_update=True,
-            )
-            case.assertIsNotNone(latest)
-            case.assertEqual(child["run_id"], latest["run_id"])
-            case.assertNotEqual(source["run_id"], latest["run_id"])
-        with case._connection() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT status FROM work_items WHERE work_item_id=%s",
-                (reverse_race["work_item_id"],),
-            )
-            case.assertEqual("OPEN", cursor.fetchone()["status"])
-            cursor.execute(
-                "SELECT status FROM agent_runs WHERE run_id=%s",
-                (child["run_id"],),
-            )
-            case.assertEqual("RECEIVED", cursor.fetchone()["status"])
-
-        source_locked = threading.Event()
-        release_source = threading.Event()
-        outcomes: list[str] = []
-        unexpected: list[BaseException] = []
-
-        def supersede() -> None:
-            try:
-                with repository.unit_of_work() as uow:
-                    source = uow.runs.get(exact["run_id"], for_update=True)
-                    case.assertIsNotNone(source)
-                    source_locked.set()
-                    case.assertTrue(release_source.wait(10))
-                    command = uow.commands.get(str(source["command_id"]), for_update=True)
-                    case.assertIsNotNone(command)
-                    item = uow.work_items.get(exact["work_item_id"], for_update=True)
-                    case.assertIsNotNone(item)
-                    uow.work_items.transition(
-                        exact["work_item_id"],
-                        expected_version=int(item["version"]),
-                        expected_statuses=("OPEN",),
-                        status="CANCELLED",
-                        reason_code="SUPERSEDED_BY_LATER_SUCCESS",
-                        reason_summary="已由后续成功运行取代",
-                        resolution={"successful_run_id": "successful-run"},
-                        closed_at=datetime.now(),
-                    )
-                    uow.commit()
-                outcomes.append("superseded")
-            except BaseException as exc:  # pragma: no cover - surfaced below
-                unexpected.append(exc)
-
-        def retry() -> None:
-            try:
-                repository.create_linked_retry_run(
-                    exact["run_id"],
-                    new_run_id=str(uuid4()),
-                    new_command_id=str(uuid4()),
-                )
-                outcomes.append("retry-created")
-            except InvalidStateError:
-                outcomes.append("retry-rejected")
-            except BaseException as exc:  # pragma: no cover - surfaced below
-                unexpected.append(exc)
-
-        supersede_thread = threading.Thread(target=supersede, daemon=True)
-        retry_thread = threading.Thread(target=retry, daemon=True)
-        supersede_thread.start()
-        case.assertTrue(source_locked.wait(10))
-        retry_thread.start()
-        release_source.set()
-        supersede_thread.join(10)
-        retry_thread.join(10)
-
-        case.assertFalse(supersede_thread.is_alive() or retry_thread.is_alive())
-        case.assertEqual([], unexpected)
-        case.assertCountEqual(["superseded", "retry-rejected"], outcomes)
-        with case._connection() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT status FROM work_items WHERE work_item_id=%s",
-                (exact["work_item_id"],),
-            )
-            case.assertEqual("CANCELLED", cursor.fetchone()["status"])
+from tests.mysql_scheduler_supersession_scenarios import run_test_scheduler_supersession_selector_is_exact_and_terminal_retry_observes_cancellation as run_test_scheduler_supersession_selector_is_exact_and_terminal_retry_observes_cancellation
 
 
 def _load_generation_write_scenarios():

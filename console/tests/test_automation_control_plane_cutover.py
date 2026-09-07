@@ -471,6 +471,42 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         self.assertFalse(app.sent[1]["running"])
         self.assertTrue(app.sent[1]["runtime"]["ok"])
 
+    def test_output_poll_requires_active_run_status_and_execution_phase(self):
+        for status, execution_phase, expected_running in (
+            ("RUNNING", "source_read", True),
+            ("VERIFYING", "verifying", True),
+            ("COMPLETED", "writing", False),
+            ("BLOCKED_DATA", "processing", False),
+            ("RUNNING", "queued", False),
+        ):
+            with self.subTest(status=status, execution_phase=execution_phase):
+                app = _App(
+                    {
+                        "ok": True,
+                        "status": 200,
+                        "data": {
+                            "run": {
+                                "run_id": "run-state-1",
+                                "status": status,
+                                "execution_phase": execution_phase,
+                                "created_at": "2026-09-05 09:00:00",
+                            },
+                            "next_poll_after_ms": 1000,
+                        },
+                    }
+                )
+
+                app._handle_automation_task_output(
+                    object(),
+                    {
+                        "run_id": ["run-state-1"],
+                        "task_id": ["daily_sign"],
+                        "offset": ["0"],
+                    },
+                )
+
+                self.assertEqual(expected_running, app.sent[1]["running"])
+
     def test_completed_scan_preview_returns_only_bounded_projection(self):
         run_id = "11111111-1111-4111-8111-111111111111"
         projection = {

@@ -97,6 +97,13 @@ def test_pending_view_scan_updates_only_newly_signed_records():
     result = module.run_action({}, broker)
 
     assert result["status"] == "SUCCESS"
+    assert set(result) == {"status", "data", "meta", "warnings", "error"}
+    assert result["meta"]["source_system"] == "ronghui+feishu+mysql"
+    assert result["meta"]["record_count"] == 2
+    assert result["meta"]["pagination_complete"] is True
+    assert result["meta"]["evidence_refs"]
+    assert result["meta"]["postconditions"] == {"0": True}
+    assert result["meta"]["postcondition_evidence"]["0"]["verified"] is True
     assert result["data"] | {
         "mode": "pending_view",
         "scanned": 3,

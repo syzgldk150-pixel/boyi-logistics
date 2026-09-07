@@ -977,7 +977,10 @@ def test_catalog_accepts_legacy_signed_runtime_permissions_during_upgrade() -> N
             self,
             automation_id: str,
             generation: int,
+            *,
+            include_execution_details: bool = True,
         ) -> Mapping[str, Any] | None:
+            assert not include_execution_details
             if (automation_id, generation) == (
                 snapshot.automation_id,
                 snapshot.generation,
@@ -1119,7 +1122,10 @@ def test_catalog_accepts_exact_legacy_normalized_committed_descriptor() -> None:
             self,
             automation_id: str,
             generation: int,
+            *,
+            include_execution_details: bool = True,
         ) -> Mapping[str, Any] | None:
+            assert not include_execution_details
             if (automation_id, generation) == (
                 snapshot.automation_id,
                 snapshot.generation,
@@ -1202,7 +1208,10 @@ def test_catalog_accepts_blocked_committed_generation_for_reconciliation() -> No
             self,
             automation_id: str,
             generation: int,
+            *,
+            include_execution_details: bool = True,
         ) -> Mapping[str, Any] | None:
+            assert not include_execution_details
             if automation_id == "blocked-instance" and generation == 1:
                 return generation_row
             return None
@@ -1246,6 +1255,16 @@ def test_catalog_accepts_blocked_committed_generation_for_reconciliation() -> No
         assert "missing or not committed" in str(exc)
     else:
         raise AssertionError("disposed committed generation was accepted")
+
+    row["state"] = PluginProjectState.UNINSTALLING.value
+    with pytest.raises(ValueError, match="missing or not committed"):
+        MySQLAutomationPluginCatalogRepositoryAdapter._project_from_row(_CatalogLowLevel(), row)
+    row["enabled"] = 0
+    for state in (RuntimeGenerationState.DRAINING, RuntimeGenerationState.DISPOSING, RuntimeGenerationState.DISPOSED):
+        generation_row["state"] = state.value
+        revoked = MySQLAutomationPluginCatalogRepositoryAdapter._project_from_row(_CatalogLowLevel(), row)
+        assert revoked.state is PluginProjectState.UNINSTALLING and revoked.enabled is False
+        assert revoked.committed_snapshot == snapshot
 
 
 def test_catalog_and_leases_remain_pinned_across_atomic_generation_switch() -> None:
@@ -1649,6 +1668,7 @@ def test_generation_decoder_exposes_base_and_closed_activation_transition() -> N
 
 
 def test_runtime_adapter_delegates_token_guarded_activation_transitions() -> None:
+    from agent.automation_plugins.runtime_repository import _service_v2_signed_activation_contract
     calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
 
     class _LowLevel:
@@ -1719,7 +1739,8 @@ def test_runtime_adapter_delegates_token_guarded_activation_transitions() -> Non
         (
             "complete",
             ("adapter-transition-instance", 2),
-            {"expected_transition_token": transition_token},
+            {"expected_transition_token": transition_token,
+             "service_v2_contract_projector": _service_v2_signed_activation_contract},
         ),
         (
             "block",

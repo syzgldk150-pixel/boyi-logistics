@@ -27,6 +27,7 @@ from agent.automation_plugins.code_owned_fields import (
     normalize_first_party_code_owned_resource_bindings,
 )
 from agent.automation_plugins.invocation import compile_instance_arguments
+from agent.automation_plugins.historical_version import require_committed_history
 from agent.automation_plugins.configuration import (
     _closed_bindings,
     normalize_project_schedule,
@@ -64,6 +65,7 @@ from shared.automation_plugin_repository import (
     AutomationPluginPreparedTargetOccupied,
     FIRST_PARTY_RELEASE_ACTOR_ID,
 )
+from agent.automation_plugins.catalog_read_scope import catalog_read_transaction
 
 
 _MIGRATION_ACTOR_ID = "system:migration:automation-plugin-v1"
@@ -326,8 +328,71 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
     def list_instance_ids(self) -> Sequence[str]:
         return self._catalog.list_instance_ids()
 
+    def list_instance_ids_for_module(self, module: str) -> Sequence[str]:
+        return self._catalog.list_instance_ids_for_module(module)
+
+    def prefetch_catalog_instances(self, identities: Sequence[str]) -> None:
+        self._catalog.prefetch_catalog_instances(identities)
+
+    def catalog_read_scope(self):
+        return self._catalog.catalog_read_scope()
+
     def list_instances(self) -> Sequence[PluginInstanceRecord]:
         return self._catalog.list_instances()
+
+    def plugin_settings_history(self, automation_id: str) -> Sequence[Mapping[str, Any]]:
+        with self._orchestration.unit_of_work() as uow:
+            rows = uow.automation_plugins.list_generation_rows(automation_id)
+            uow.commit()
+        return rows
+
+    def plugin_settings_snapshot(self, automation_id: str, generation: int) -> Mapping[str, Any]:
+        with self._orchestration.unit_of_work() as uow:
+            row = uow.automation_plugins.get_generation_row(automation_id, generation)
+            uow.commit()
+        if row is None:
+            raise PluginConflictError("settings generation does not exist", code="PLUGIN_SETTINGS_HISTORY_MISSING")
+        return row
+
+    def continue_data_source(self, source_id: str, *, producer_instance_id: str,
+                             expected_revision: int, expected_producer_instance_id: str | None,
+                             request_id: str) -> Mapping[str, Any]:
+        from shared.data_sources import DataSourceRepository, DataSourceError
+        from shared.plugin_management import management_for
+
+        with self._orchestration.unit_of_work() as uow:
+            sources = DataSourceRepository(uow.connection)
+            source = sources.get(source_id, for_update=True)
+            target = uow.automation_plugins.get_project(producer_instance_id, for_update=True)
+            if target is None:
+                raise DataSourceError("SOURCE_PRODUCER_NOT_FOUND")
+            if expected_producer_instance_id:
+                previous = uow.automation_plugins.get_project(expected_producer_instance_id, for_update=True)
+                if previous and previous.get("state") not in {"DISABLED", "INSTALLED", "UNINSTALLING"}:
+                    raise DataSourceError("SOURCE_PREVIOUS_PRODUCER_MUST_BE_DISABLED")
+            version = uow.automation_plugins.get_version(target["plugin_id"], target["plugin_version"])
+            if version is None:
+                raise DataSourceError("SOURCE_PRODUCER_PACKAGE_UNAVAILABLE")
+            metadata = management_for(target["plugin_id"], version["manifest_json"].get("management"))
+            if metadata["module"] != source["module"] or metadata["dataset"] != source["dataset"] or metadata["version"] != source["contract_version"]:
+                raise DataSourceError("SOURCE_DATASET_INCOMPATIBLE")
+            config = uow.automation_plugins.get_project_config(producer_instance_id, for_update=True)
+            bindings = config.get("account_bindings_json") if config else None
+            if not isinstance(bindings, Mapping):
+                raise DataSourceError("SOURCE_ACCOUNT_BINDINGS_MISSING")
+            accounts = tuple(item for value in bindings.values() for item in (value if isinstance(value, list) else [value]))
+            identity = sources.verify_aliases_source(source_id, account_ids=accounts)
+            generation = target.get("committed_generation")
+            if not generation or generation != target["target_generation"]:
+                raise DataSourceError("SOURCE_PRODUCER_GENERATION_NOT_READY")
+            result = sources.switch_producer(
+                source_id, expected_revision=expected_revision,
+                expected_producer_instance_id=expected_producer_instance_id,
+                producer_instance_id=producer_instance_id, producer_generation=int(generation),
+                identity=identity, request_id=request_id,
+            )
+            uow.commit()
+        return result
 
     def get_state_change_witness(
         self,
@@ -496,6 +561,10 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
             return uow.automation_plugins.get_active_plugin_migration_pair_for_automation(
                 automation_id
             )
+
+    def get_catalog_migration_pair(self, automation_id: str) -> Mapping[str, Any] | None:
+        with catalog_read_transaction(self._orchestration) as uow:
+            return uow.automation_plugins.get_active_plugin_migration_pair_for_automation(automation_id, for_update=False)
 
     def get_authoritative_plugin_migration_pair_for_automation(
         self, automation_id: str
@@ -736,11 +805,12 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 "plugin upgrade versions must be semantic versions",
                 code="PLUGIN_UPGRADE_VERSION_INVALID",
             ) from exc
-        if len(current_key) != 3 or len(target_key) != 3 or target_key < current_key:
+        if len(current_key) != 3 or len(target_key) != 3:
             raise PluginConflictError(
-                "plugin upgrade target cannot be older than the expected version",
+                "plugin upgrade versions must have three components",
                 code="PLUGIN_UPGRADE_VERSION_INVALID",
             )
+        restoring_history = target_key < current_key
 
         manifest, contract = _version_contract(version)
         if manifest.plugin_id != version.plugin_id or manifest.version != version.version:
@@ -770,6 +840,10 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 raise PluginConflictError(
                     "an upgrade cannot change the instance plugin_id",
                     code="PLUGIN_UPGRADE_PLUGIN_ID_CONFLICT",
+                )
+            if restoring_history:
+                require_committed_history(
+                    uow.automation_plugins, automation_id, project, version,
                 )
 
             config_json = config.get("config_json")
@@ -946,7 +1020,10 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                         "actor_id": actor_id,
                         "actor_role": actor_role,
                         "actor_display_name": None,
-                        "reason": "PLUGIN_VERSION_CHANGED",
+                        "reason": (
+                            "PLUGIN_HISTORICAL_VERSION_RESTORED"
+                            if restoring_history else "PLUGIN_VERSION_CHANGED"
+                        ),
                         "comment": None,
                         "correlation_id": request_id,
                     }
@@ -977,6 +1054,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                             "from_version": expected_current_version,
                             "to_version": version.version,
                             "target_generation": generation,
+                            "operation": "rollback" if restoring_history else "upgrade",
                         },
                     },
                     (
@@ -1705,33 +1783,34 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         journal: Mapping[str, Any],
     ) -> HardUninstallPreparation:
         automation_id = str(journal.get("automation_id") or "")
-        instance = self.get_instance(automation_id)
-        if instance is None:
-            snapshot = journal.get("instance_snapshot_json")
-            if not isinstance(snapshot, Mapping):
-                raise PluginConflictError("purge journal has no instance snapshot")
-            version = self.get_package_version(
-                str(journal.get("plugin_id") or ""),
-                str(journal.get("plugin_version") or ""),
-            )
-            if version is None:
-                raise PluginConflictError("purge journal plugin version disappeared")
-            from agent.automation_plugins.models import (
-                PluginProjectState,
-                RuntimeReconcileState,
-            )
+        # Preparation has already revoked the instance and drained its
+        # generation. Runtime catalog validation must stay strict; cleanup uses
+        # the exact snapshot persisted by that transaction instead.
+        snapshot = journal.get("instance_snapshot_json")
+        if not isinstance(snapshot, Mapping):
+            raise PluginConflictError("purge journal has no instance snapshot")
+        version = self.get_package_version(
+            str(journal.get("plugin_id") or ""),
+            str(journal.get("plugin_version") or ""),
+        )
+        if version is None or version.package_sha256 != str(journal.get("package_sha256") or ""):
+            raise PluginConflictError("purge journal plugin version disappeared or changed")
+        from agent.automation_plugins.models import (
+            PluginProjectState,
+            RuntimeReconcileState,
+        )
 
-            instance = PluginInstanceRecord(
-                automation_id=automation_id,
-                display_name=str(snapshot.get("display_name") or ""),
-                plugin_id=str(journal.get("plugin_id") or ""),
-                state=PluginProjectState.UNINSTALLING,
-                active_version=version,
-                record_version=int(snapshot.get("record_version") or 1),
-                target_generation=int(snapshot.get("target_generation") or 1),
-                committed_generation=snapshot.get("committed_generation"),
-                reconcile_state=RuntimeReconcileState.DRAINING,
-            )
+        instance = PluginInstanceRecord(
+            automation_id=automation_id,
+            display_name=str(snapshot.get("display_name") or ""),
+            plugin_id=str(journal.get("plugin_id") or ""),
+            state=PluginProjectState.UNINSTALLING,
+            active_version=version,
+            record_version=int(snapshot["record_version"]),
+            target_generation=int(snapshot["target_generation"]),
+            committed_generation=snapshot.get("committed_generation"),
+            reconcile_state=RuntimeReconcileState.DRAINING,
+        )
         prepared_at = journal.get("created_at")
         if not isinstance(prepared_at, datetime):
             prepared_at = datetime.now(timezone.utc)

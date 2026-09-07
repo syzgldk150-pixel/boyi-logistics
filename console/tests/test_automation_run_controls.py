@@ -408,6 +408,18 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         self.assertIn("setTimeout(pollOutput, 3000)", catch_block)
         self.assertIn("runUiState.running", catch_block)
 
+    def test_submit_recovery_never_infers_running_from_historical_output(self):
+        source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
+            encoding="utf-8"
+        )
+
+        recovery_start = source.index("let outputState = null;")
+        recovery_end = source.index("} finally {", recovery_start)
+        recovery_block = source[recovery_start:recovery_end]
+        self.assertIn("if (outputState?.running)", recovery_block)
+        self.assertIn("renderPendingRun(outputState)", recovery_block)
+        self.assertNotIn("(outputState.total || 0) > 0", recovery_block)
+
     def test_terminal_output_polling_has_browser_side_timeout(self):
         source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
             encoding="utf-8"

@@ -20,6 +20,12 @@ YUNDA_MANAGED_RESOURCES = {
         "resource_kind": "feishu_sheet",
         "spreadsheet_token": "GILYss6KhhBBuRt9FPWcXbben7c",
         "sheet_id": "Sheet1",
+        "sheet_title": "Sheet1",
+        "business_purpose": "韵达寄件结果表",
+        "sheet_header_constraints": {
+            "A": ["5.14编号", "运单编号", "运单号"],
+            "Y": ["日期"],
+        },
         "sheet_range": "Sheet1!A2:A2",
         "clear_range": "Sheet1!A2:Y5000",
     },
@@ -122,6 +128,12 @@ def test_missing_fixed_route_repair_creates_only_absent_reviewed_routes() -> Non
     def load_resource(key: str):
         if key == missing_key:
             return None
+        builtin = phase7_resource_import.BUILTIN_RESOURCES.get(key)
+        if isinstance(builtin, dict) and builtin.get("resource_kind") in {
+            "feishu_route",
+            "webhook_route",
+        }:
+            return builtin
         return {"resource_kind": "existing"}
 
     with (
@@ -142,19 +154,63 @@ def test_missing_fixed_route_repair_creates_only_absent_reviewed_routes() -> Non
     )
 
 
-def test_missing_fixed_route_repair_never_rewrites_existing_route() -> None:
+def test_fixed_route_repair_reconciles_wrong_feishu_route_key_and_preserves_fields() -> None:
+    route_key = "automation.feishu_route.self_pickup_problem_upload"
+    current = {
+        "resource_kind": "feishu_route",
+        "route_key": "legacy.self_pickup",
+        "display_name": "管理员自定义显示名",
+        "tenant_locator": "tenant-owned-value",
+        "_meta": {"configuration_version": 7},
+    }
     with (
         patch.object(
             phase7_resource_import,
             "get_workflow_resource",
-            return_value={"resource_kind": "feishu_route", "route_key": "live"},
+            side_effect=lambda key: current
+            if key == route_key
+            else phase7_resource_import.BUILTIN_RESOURCES.get(key),
+        ),
+        patch.object(phase7_resource_import, "upsert_workflow_resource") as upsert,
+    ):
+        repaired = phase7_resource_import.repair_missing_fixed_automation_routes()
+
+    assert repaired == [route_key]
+    upsert.assert_any_call(
+        route_key,
+        {
+            "resource_kind": "feishu_route",
+            "route_key": phase7_resource_import.BUILTIN_RESOURCES[route_key]["route_key"],
+            "display_name": "管理员自定义显示名",
+            "tenant_locator": "tenant-owned-value",
+        },
+        source="reviewed-route-repair",
+    )
+
+
+def test_fixed_route_repair_leaves_correct_feishu_route_unchanged() -> None:
+    route_key = "automation.feishu_route.self_pickup_problem_upload"
+    current = {
+        **phase7_resource_import.BUILTIN_RESOURCES[route_key],
+        "display_name": "管理员自定义显示名",
+        "_meta": {"configuration_version": 7},
+    }
+    with (
+        patch.object(
+            phase7_resource_import,
+            "get_workflow_resource",
+            side_effect=lambda key: current
+            if key == route_key
+            else phase7_resource_import.BUILTIN_RESOURCES.get(key),
         ),
         patch.object(phase7_resource_import, "upsert_workflow_resource") as upsert,
     ):
         repaired = phase7_resource_import.repair_missing_fixed_automation_routes()
 
     assert repaired == []
-    upsert.assert_not_called()
+    assert all(
+        call_args.args[0] != route_key for call_args in upsert.call_args_list
+    )
 
 
 def test_reviewed_metadata_sync_preserves_live_sheet_locator() -> None:
@@ -199,6 +255,47 @@ def test_reviewed_metadata_sync_preserves_live_sheet_locator() -> None:
                 "S": ["累计到货件数", "已到货件数", "到货件数"],
             },
             "range": "live-sheet-id!A1:S5000",
+        },
+        source="reviewed-metadata-sync",
+    )
+
+
+def test_reviewed_metadata_sync_adds_yunda_sheet_recovery_identity() -> None:
+    current = {
+        "resource_kind": "feishu_sheet",
+        "spreadsheet_token": "live-yunda-document-token",
+        "sheet_id": "stale-sheet-id",
+        "sheet_range": "stale-sheet-id!A2:A2",
+        "clear_range": "stale-sheet-id!A2:Y5000",
+        "_meta": {"configuration_version": 4},
+    }
+    with (
+        patch.object(
+            phase7_resource_import,
+            "get_workflow_resource",
+            side_effect=lambda key: (
+                current if key == "phase7.yunda_send_waybills_sheet" else None
+            ),
+        ),
+        patch.object(phase7_resource_import, "upsert_workflow_resource") as upsert,
+    ):
+        updated = phase7_resource_import.sync_reviewed_phase7_resource_metadata()
+
+    assert updated == ["phase7.yunda_send_waybills_sheet"]
+    upsert.assert_called_once_with(
+        "phase7.yunda_send_waybills_sheet",
+        {
+            "resource_kind": "feishu_sheet",
+            "spreadsheet_token": "live-yunda-document-token",
+            "sheet_id": "stale-sheet-id",
+            "sheet_title": "Sheet1",
+            "business_purpose": "韵达寄件结果表",
+            "sheet_header_constraints": {
+                "A": ["5.14编号", "运单编号", "运单号"],
+                "Y": ["日期"],
+            },
+            "sheet_range": "stale-sheet-id!A2:A2",
+            "clear_range": "stale-sheet-id!A2:Y5000",
         },
         source="reviewed-metadata-sync",
     )

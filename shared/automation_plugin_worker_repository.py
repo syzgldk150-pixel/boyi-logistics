@@ -47,6 +47,32 @@ base64 = _repository.base64
 hashlib = _repository.hashlib
 uuid = _repository.uuid
 
+# An accepted command retains RECEIVED after its run is created. Only commands
+# without a run are pending on that status; otherwise the durable run decides.
+_CONTROL_PLANE_UNINSTALL_BLOCK_PREDICATE = """(
+    (command.status='RECEIVED' AND run.run_id IS NULL)
+    OR run.status NOT IN ('COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED')
+)"""
+
+
+def _delete_disposed_execution_references(cursor: Any, automation_id: str) -> None:
+    cursor.execute("""SELECT generation FROM automation_project_generations
+        WHERE automation_id=%s AND state<>'DISPOSED' FOR UPDATE""", (automation_id,))
+    if _rows(cursor):
+        raise AutomationPluginPurgeBlocked("runtime generation effects were not fully disposed")
+    cursor.execute("""SELECT lease_id FROM automation_project_generation_leases
+        WHERE automation_id=%s AND outcome IN ('RUNNING','VERIFYING','WRITE_OUTCOME_UNKNOWN') FOR UPDATE""", (automation_id,))
+    if _rows(cursor):
+        raise AutomationPluginPurgeBlocked("active or uncertain runtime lease blocks uninstall cleanup")
+    cursor.execute("""SELECT receipt_id FROM automation_write_attempt_receipts
+        WHERE automation_id=%s AND outcome IN ('STARTED','WRITE_OUTCOME_UNKNOWN') FOR UPDATE""", (automation_id,))
+    if _rows(cursor):
+        raise AutomationPluginPurgeBlocked("unresolved write receipt blocks uninstall cleanup")
+    # Migration 025 receipts reference leases and runs; migration 019 leases
+    # reference runs. Remove only resolved control-plane children in that order.
+    cursor.execute("DELETE FROM automation_write_attempt_receipts WHERE automation_id=%s", (automation_id,))
+    cursor.execute("DELETE FROM automation_project_generation_leases WHERE automation_id=%s", (automation_id,))
+
 
 class AutomationPluginWorkerRepositoryMixin:
     def get_worker_device(
@@ -1445,17 +1471,12 @@ class AutomationPluginWorkerRepositoryMixin:
             )
             blocked = _row_dict(cursor, cursor.fetchone()) or {}
             cursor.execute(
-                """
+                f"""
                 SELECT command.command_id, run.run_id
                 FROM agent_commands AS command
                 LEFT JOIN agent_runs AS run ON run.command_id=command.command_id
                 WHERE command.automation_id=%s
-                  AND (
-                      command.status='RECEIVED'
-                      OR run.status NOT IN (
-                          'COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED'
-                      )
-                  )
+                  AND {_CONTROL_PLANE_UNINSTALL_BLOCK_PREDICATE}
                 FOR UPDATE
                 """,
                 (_required_text(automation_id, "automation_id"),),
@@ -2140,7 +2161,7 @@ class AutomationPluginWorkerRepositoryMixin:
                     }
                 )
             cursor.execute(
-                """
+                f"""
                 SELECT command.command_id, run.run_id, run.status,
                        EXISTS (
                            SELECT 1 FROM agent_run_steps AS blocked_step
@@ -2150,12 +2171,7 @@ class AutomationPluginWorkerRepositoryMixin:
                 FROM agent_commands AS command
                 LEFT JOIN agent_runs AS run ON run.command_id=command.command_id
                 WHERE command.automation_id=%s
-                  AND (
-                      command.status='RECEIVED'
-                      OR run.status NOT IN (
-                          'COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED'
-                      )
-                  )
+                  AND {_CONTROL_PLANE_UNINSTALL_BLOCK_PREDICATE}
                 ORDER BY run.run_id
                 """,
                 (safe_automation_id,),
@@ -2204,6 +2220,12 @@ class AutomationPluginWorkerRepositoryMixin:
                         "message": "runtime generation lease blocks plugin uninstall",
                     }
                 )
+            cursor.execute("""SELECT receipt_id FROM automation_write_attempt_receipts
+                WHERE automation_id=%s AND outcome IN ('STARTED','WRITE_OUTCOME_UNKNOWN')
+                ORDER BY receipt_id""", (safe_automation_id,))
+            for row in _rows(cursor):
+                blocks.append({"kind": "WRITE_OUTCOME_UNKNOWN", "run_id": str(row["receipt_id"]),
+                    "message": "unresolved write receipt blocks plugin uninstall"})
         return blocks
 
     def reserve_purge_finalize(self, purge_id: str) -> dict[str, Any]:
@@ -2286,17 +2308,12 @@ class AutomationPluginWorkerRepositoryMixin:
             )
             blocked_jobs = _rows(cursor)
             cursor.execute(
-                """
+                f"""
                 SELECT command.command_id, run.run_id
                 FROM agent_commands AS command
                 LEFT JOIN agent_runs AS run ON run.command_id=command.command_id
                 WHERE command.automation_id=%s
-                  AND (
-                      command.status='RECEIVED'
-                      OR run.status NOT IN (
-                          'COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED'
-                      )
-                  )
+                  AND {_CONTROL_PLANE_UNINSTALL_BLOCK_PREDICATE}
                 FOR UPDATE
                 """,
                 (automation_id,),
@@ -2411,6 +2428,8 @@ class AutomationPluginWorkerRepositoryMixin:
                 raise AutomationPluginPurgeBlocked(
                     "worker execution became active during hard uninstall"
                 )
+
+            _delete_disposed_execution_references(cursor, automation_id)
 
             command_ids = _selected_ids(
                 cursor,
@@ -2578,17 +2597,6 @@ class AutomationPluginWorkerRepositoryMixin:
                 (automation_id,),
             )
             cursor.execute(
-                """
-                SELECT generation, state FROM automation_project_generations
-                WHERE automation_id=%s AND state<>'DISPOSED' FOR UPDATE
-                """,
-                (automation_id,),
-            )
-            if _rows(cursor):
-                raise AutomationPluginPurgeBlocked(
-                    "runtime generation effects were not fully disposed"
-                )
-            cursor.execute(
                 "SELECT id FROM scheduled_tasks WHERE automation_id=%s FOR UPDATE",
                 (automation_id,),
             )
@@ -2631,13 +2639,6 @@ class AutomationPluginWorkerRepositoryMixin:
             )
             cursor.execute(
                 """
-                DELETE FROM automation_project_generation_leases
-                WHERE automation_id=%s
-                """,
-                (automation_id,),
-            )
-            cursor.execute(
-                """
                 DELETE FROM automation_project_generation_effects
                 WHERE automation_id=%s
                 """,
@@ -2648,6 +2649,10 @@ class AutomationPluginWorkerRepositoryMixin:
                 DELETE FROM automation_project_generation_coeffects
                 WHERE automation_id=%s
                 """,
+                (automation_id,),
+            )
+            cursor.execute(
+                "DELETE FROM automation_project_generation_transitions WHERE automation_id=%s",
                 (automation_id,),
             )
             cursor.execute(
@@ -2666,6 +2671,14 @@ class AutomationPluginWorkerRepositoryMixin:
                 raise ConcurrentUpdateError(
                     "automation project deletion changed while locked"
                 )
+            # Source identity, published details and operator fields outlive code.
+            # This runs only after the existing lease/unknown-write purge barrier.
+            cursor.execute(
+                """UPDATE module_data_sources SET producer_instance_id=NULL,
+                    revision=revision+1,status='history_only',updated_at=UTC_TIMESTAMP(6)
+                    WHERE producer_instance_id=%s""",
+                (automation_id,),
+            )
             cursor.execute(
                 """
                 UPDATE automation_plugin_purge_journal

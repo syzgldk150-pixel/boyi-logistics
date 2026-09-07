@@ -1,8 +1,10 @@
 """Console-side ZIP plugin upload and lifecycle management helpers."""
 
 import uuid
+from shared.plugin_management import MODULE_PATHS, management_for
 
 from console.app_support import *  # noqa: F403
+from console.services.plugin_settings_assets import SettingsAssetError, assemble_settings_html
 from shared.service_identity import (
     ConsoleIdentityError,
     build_console_identity_headers,
@@ -28,6 +30,9 @@ _SERVICE_V2_INSPECTION_FIELDS = frozenset(
         "contributions",
         "scheduling",
         "settings_ui",
+        "management",
+        "settings_mode",
+        "runtime_model",
     }
 )
 _SERVICE_V2_INTENT_MAX_BYTES = 16 * 1024
@@ -138,12 +143,13 @@ class AutomationPluginManagementServiceMixin:
                 fallback_message="插件设置暂时无法打开。",
             )
             return
-        if settings_ui != {"entry": "settings/index.html", "bridge_api": "1.0.0"}:
+        mode = data.get("settings_mode", "custom" if settings_ui else "none")
+        if mode == "unavailable":
             self._control_plane_error(
                 handler,
                 HTTPStatus.NOT_FOUND,
                 "PLUGIN_SETTINGS_UI_UNAVAILABLE",
-                "这个插件不需要单独设置。",
+                "这个插件需要专属设置页面，请更新兼容插件后继续。",
             )
             return
         actor_id = str(trusted_context["actor"].get("actor_id") or "")
@@ -163,6 +169,11 @@ class AutomationPluginManagementServiceMixin:
             enabled=data.get("enabled") is True,
             configured=data.get("configured") is True,
             bridge_session=bridge_session,
+            settings_mode=mode,
+            return_url=MODULE_PATHS[management_for(str(data.get("plugin_id") or ""), data.get("management"))["module"]],
+            return_label={"automation": "自动化", "finance": "财务数据源", "customer_service": "客服数据源"}[
+                management_for(str(data.get("plugin_id") or ""), data.get("management"))["module"]
+            ],
         )
         self._send_html(handler, body)
 
@@ -228,16 +239,40 @@ class AutomationPluginManagementServiceMixin:
                 "插件设置资源类型不受支持。",
             )
             return
+        document = result["data"]
+        nonce = secrets.token_urlsafe(24)
+        if content_type == "text/html":
+            def read_package_asset(path: str) -> tuple[bytes, str]:
+                asset_result = self._agent_binary_request(
+                    f"/internal/v1/automation/instances/{quote(automation_id, safe='')}"
+                    f"/settings-assets/{quote(path, safe='/')}",
+                    timeout=15,
+                    console_principal=trusted_context["_console_principal"],
+                )
+                if not asset_result.get("ok") or not isinstance(asset_result.get("data"), bytes):
+                    raise SettingsAssetError("authenticated settings asset read failed")
+                return asset_result["data"], str(asset_result.get("content_type") or "")
+
+            try:
+                document = assemble_settings_html(document, entry=raw_path, reader=read_package_asset, nonce=nonce)
+            except SettingsAssetError:
+                self._control_plane_error(
+                    handler,
+                    HTTPStatus.BAD_GATEWAY,
+                    "PLUGIN_SETTINGS_DOCUMENT_UNAVAILABLE",
+                    "插件设置页面包含无法读取或不受支持的资源，请更新兼容插件后继续。",
+                )
+                return
         self._send_bytes(
             handler,
             HTTPStatus.OK,
-            result["data"],
+            document,
             content_type,
-            cache_control="private, max-age=300",
+            cache_control="no-store",
             extra_headers={
                 "Content-Security-Policy": (
-                    "default-src 'none'; script-src 'self'; style-src 'self'; "
-                    "img-src 'self' data:; font-src 'self'; connect-src 'none'; "
+                    f"sandbox allow-scripts; default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; "
+                    "img-src data:; font-src 'none'; connect-src 'none'; "
                     "frame-ancestors 'self'; base-uri 'none'; form-action 'none'"
                 ),
                 "X-Content-Type-Options": "nosniff",
@@ -268,7 +303,7 @@ class AutomationPluginManagementServiceMixin:
         actor_id = str(trusted_context["actor"].get("actor_id") or "")
         if (
             set(values) != {"bridge_session", "operation", "payload"}
-            or operation not in {"context", "save"}
+            or operation not in {"context", "save", "history", "restore"}
             or not self._automation_plugin_settings_bridge_token_valid(
                 values.get("bridge_session"),
                 automation_id=automation_id,
@@ -282,6 +317,23 @@ class AutomationPluginManagementServiceMixin:
                 "PLUGIN_SETTINGS_BRIDGE_INVALID",
                 "插件设置会话已失效，请返回自动化页面后重新打开。",
             )
+            return
+        if operation in {"history", "restore"}:
+            payload = values["payload"]
+            expected = set() if operation == "history" else {"generation", "request_id", "expected_project_configuration_version"}
+            if set(payload) != expected:
+                self._control_plane_error(handler, HTTPStatus.BAD_REQUEST, "PLUGIN_SETTINGS_VALUES_INVALID", "配置恢复参数无效。")
+                return
+            endpoint = "settings-history" if operation == "history" else "settings-restore"
+            result = self._agent_request(
+                "GET" if operation == "history" else "PUT",
+                f"/internal/v1/automation/instances/{quote(automation_id, safe='')}/{endpoint}",
+                **({"payload": payload} if operation == "restore" else {}),
+                timeout=25, console_principal=trusted_context["_console_principal"],
+            )
+            if operation == "restore" and result.get("ok"):
+                self._clear_automation_plugin_catalog_cache()
+            self._send_json(handler, HTTPStatus.OK if result.get("ok") else HTTPStatus.CONFLICT, result)
             return
         if operation == "save":
             payload = values["payload"]
@@ -355,12 +407,6 @@ class AutomationPluginManagementServiceMixin:
             timeout=15,
             console_principal=trusted_context["_console_principal"],
         )
-        catalog_result = self._agent_request(
-            "GET",
-            "/internal/v1/automation/plugins/catalog",
-            timeout=15,
-            console_principal=trusted_context["_console_principal"],
-        )
         settings_data = settings_result.get("data")
         if not settings_result.get("ok") or not isinstance(settings_data, dict):
             self._automation_project_agent_error(
@@ -371,11 +417,27 @@ class AutomationPluginManagementServiceMixin:
                 fallback_message="插件设置上下文暂时无法读取。",
             )
             return
-        raw_accounts, account_warning = self._fetch_automation_accounts(
-            force=False,
-            prefer_cached=True,
-            console_principal=trusted_context["_console_principal"],
-        )
+        catalog_result = {"ok": True, "data": {"resources": [], "resource_pool_available": True}}
+        from shared.plugin_management import simple_settings_schema
+        from console.services.automation_catalog_projection import _normalize_plugin_config_schema
+
+        if settings_data.get("settings_mode") != "custom" and simple_settings_schema(settings_data.get("config_schema")):
+            config_fields, supported, problem = _normalize_plugin_config_schema(settings_data["config_schema"], settings_data.get("config"))
+            if not supported or any(field["secret"] for field in config_fields):
+                self._control_plane_error(handler, HTTPStatus.BAD_GATEWAY, "PLUGIN_SETTINGS_SCHEMA_INVALID", "设置字段无效，请联系管理员修复。")
+                return
+            settings_data = {**settings_data, "default_config_fields": config_fields}
+        if settings_data.get("resource_roles") and settings_data.get("settings_mode") == "custom":
+            catalog_result = self._agent_request(
+                "GET", "/internal/v1/automation/plugins/catalog",
+                timeout=15, console_principal=trusted_context["_console_principal"],
+            )
+        raw_accounts, account_warning = [], ""
+        if settings_data.get("account_roles"):
+            raw_accounts, account_warning = self._fetch_automation_accounts(
+                force=False, prefer_cached=True,
+                console_principal=trusted_context["_console_principal"],
+            )
         safe_accounts = []
         for account in raw_accounts if not account_warning else []:
             if not isinstance(account, dict):
@@ -402,7 +464,7 @@ class AutomationPluginManagementServiceMixin:
             )
         safe_accounts.sort(key=lambda item: (item["system_label"], item["name"], item["account_ref"]))
 
-        from console.services.automation_projects import _normalize_plugin_resources
+        from console.services.automation_catalog_projection import _normalize_plugin_resources
 
         catalog_data = catalog_result.get("data") if isinstance(catalog_result.get("data"), dict) else {}
         resources, resources_valid = _normalize_plugin_resources(catalog_data.get("resources"))
@@ -475,23 +537,28 @@ class AutomationPluginManagementServiceMixin:
     ) -> dict[str, Any] | None:
         """Copy only the closed, display-safe inspection contract."""
 
-        if not isinstance(value, dict) or set(value) != _SERVICE_V2_INSPECTION_FIELDS:
+        if (not isinstance(value, dict)
+                or not (_SERVICE_V2_INSPECTION_FIELDS - {"management", "settings_mode", "runtime_model"}) <= set(value)
+                or not set(value) <= _SERVICE_V2_INSPECTION_FIELDS):
             return None
         plugin_id = str(value.get("plugin_id") or "").strip()
         name = normalize_feedback_text(redact_text(value.get("name") or "")).strip()
         version = str(value.get("version") or "").strip()
         host_api = value.get("host_api")
+        runtime_model = value.get("runtime_model", "SERVICE_V2")
+        if runtime_model not in {"ACTION_V1", "SERVICE_V2"}:
+            return None
+        host_api_valid = host_api is None if runtime_model == "ACTION_V1" else (
+            isinstance(host_api, dict)
+            and set(host_api) == {"minimum", "maximum_exclusive"}
+            and all(_SERVICE_V2_VERSION_RE.fullmatch(str(host_api.get(key) or ""))
+                for key in ("minimum", "maximum_exclusive")))
         if (
             not _SERVICE_V2_PLUGIN_ID_RE.fullmatch(plugin_id)
             or not name
             or len(name) > 160
             or not _SERVICE_V2_VERSION_RE.fullmatch(version)
-            or not isinstance(host_api, dict)
-            or set(host_api) != {"minimum", "maximum_exclusive"}
-            or not all(
-                _SERVICE_V2_VERSION_RE.fullmatch(str(host_api.get(key) or ""))
-                for key in ("minimum", "maximum_exclusive")
-            )
+            or not host_api_valid
         ):
             return None
 
@@ -695,7 +762,7 @@ class AutomationPluginManagementServiceMixin:
             "plugin_id": plugin_id,
             "name": name,
             "version": version,
-            "host_api": {
+            "host_api": None if runtime_model == "ACTION_V1" else {
                 "minimum": str(host_api["minimum"]),
                 "maximum_exclusive": str(host_api["maximum_exclusive"]),
             },
@@ -709,6 +776,9 @@ class AutomationPluginManagementServiceMixin:
                 "default_schedule": dict(default_schedule),
             },
             "settings_ui": dict(settings_ui) if settings_ui is not None else None,
+            "management": management_for(plugin_id, value.get("management")),
+            "settings_mode": str(value.get("settings_mode") or "none"),
+            "runtime_model": runtime_model,
         }
 
     @staticmethod
@@ -914,7 +984,11 @@ class AutomationPluginManagementServiceMixin:
         *,
         automation_id: str = "",
         inspect_only: bool = False,
+        module: str | None = None,
     ) -> None:
+        if module is not None and module not in MODULE_PATHS:
+            self._control_plane_error(handler, HTTPStatus.BAD_REQUEST, "PLUGIN_MODULE_INVALID", "数据源模块无效。")
+            return
         requested_automation_id = str(automation_id or "").strip()
         automation_id = self._automation_project_id(requested_automation_id)
         if inspect_only and requested_automation_id:
@@ -1084,6 +1158,8 @@ class AutomationPluginManagementServiceMixin:
                 os.chmod(target, 0o600)
             except OSError:
                 pass
+            if module is not None:
+                endpoint += "?" + urlencode({"module": module})
             result = self._agent_plugin_multipart_request(
                 endpoint,
                 package_path=target,

@@ -215,6 +215,57 @@ def test_persistence_fresh_readback_binds_every_exact_row_set() -> None:
     assert result["persistence_sha256"] == marker["marker_sha256"]
 
 
+def test_persistence_business_marker_ignores_valid_observation_time_changes() -> None:
+    first = _row_sets()
+    second = copy.deepcopy(first)
+    second["ledger_rows"][0]["first_seen_r13_at"] = datetime(
+        2026, 8, 15, 4, 59, 59
+    )
+    second["ledger_rows"][0]["last_seen_r13_at"] = datetime(
+        2026, 8, 15, 6, 0, 0
+    )
+    second["publication_rows"][0] = copy.deepcopy(second["ledger_rows"][0])
+
+    assert build_daily_sign_persistence_marker(
+        **first
+    ) == build_daily_sign_persistence_marker(**second)
+
+
+def test_persistence_fresh_readback_accepts_monotonic_observation_time_drift() -> None:
+    row_sets = _row_sets()
+    marker = build_daily_sign_persistence_marker(**row_sets)
+    database_rows = _database_rows(row_sets, marker)
+    database_rows["ledger"][0]["first_seen_r13_at"] = "2026-08-15T04:59:59"
+    database_rows["ledger"][0]["last_seen_r13_at"] = "2026-08-15 06:00:00"
+
+    result = _verify(row_sets, database_rows, marker)
+
+    assert result["verified"] is True
+    assert result["ledger_rows"]["sha256"] == marker["ledger_rows"]["sha256"]
+
+
+@pytest.mark.parametrize(
+    ("first_seen", "last_seen", "message"),
+    [
+        ("not-an-iso-time", "2026-08-15 06:00:00", "ISO datetime"),
+        ("2026-08-15 06:00:01", "2026-08-15 06:00:00", "not monotonic"),
+    ],
+)
+def test_persistence_fresh_readback_rejects_invalid_observation_times(
+    first_seen: str,
+    last_seen: str,
+    message: str,
+) -> None:
+    row_sets = _row_sets()
+    marker = build_daily_sign_persistence_marker(**row_sets)
+    database_rows = _database_rows(row_sets, marker)
+    database_rows["ledger"][0]["first_seen_r13_at"] = first_seen
+    database_rows["ledger"][0]["last_seen_r13_at"] = last_seen
+
+    with pytest.raises(DailySignPersistenceReadbackError, match=message):
+        _verify(row_sets, database_rows, marker)
+
+
 def test_persistence_fresh_readback_rejects_event_field_tamper() -> None:
     row_sets = _row_sets()
     marker = build_daily_sign_persistence_marker(**row_sets)

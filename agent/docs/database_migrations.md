@@ -43,6 +43,8 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
 
 ## 控制平面迁移
 
+- `041_scan_write_recovery_snapshot.sql`：新增封闭扫描原始快照 receipt 列和日期投影所有者表；日期主键锁保护恢复不覆盖新发布事实，原 receipt 按审计保留、日期所有者与业务历史独立保留，无新增外键。018 恢复后重放 041，旧核心回退保留新增结构。详见 `../../docs/scan_recovery_v32.md`。
+
 - `010_daily_sign_ledger.sql`：建立每日应签权威账本、来源同步运行、到货快照、问题件事件、
   主单签收事件和影子投影对账结构。只有明确完整的来源运行可以驱动事项投影。
 - `011_agent_orchestration_core.sql`：建立 `agent_commands`、`work_items`、

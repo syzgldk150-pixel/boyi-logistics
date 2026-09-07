@@ -624,7 +624,8 @@ def test_recovered_running_run_rechecks_revoked_exact_policy_before_executor():
     step_start_index = repository.trace.index(
         ("step_transition", "PENDING", "RUNNING")
     )
-    assert repository.trace[step_start_index - 1] == ("run_get", True, "RUNNING")
+    assert repository.trace[step_start_index - 2] == ("run_get", True, "RUNNING")
+    assert repository.trace[step_start_index - 1] == ("run_transition", "RUNNING", "RUNNING")
 
 
 def test_new_approval_waits_before_outbox_request_and_sleeps_until_expiry():
@@ -711,8 +712,9 @@ def test_policy_change_during_approval_request_cannot_lose_its_wakeup():
     claimed = repository.claim_current()
     asyncio.run(runner._process_claimed(claimed))
 
-    assert execution.execute_calls == 1
-    assert repository.run["status"] == RunStatus.COMPLETED.value
+    assert execution.execute_calls == 0
+    assert repository.run["status"] == RunStatus.BLOCKED_DATA.value
+    assert repository.run["error_code"] == "APPROVAL_POLICY_CHANGED"
 
 
 def test_real_approval_decision_resumes_once_and_resolves_the_work_item():
@@ -837,7 +839,7 @@ def test_decision_racing_with_a_polling_lease_stays_immediately_due():
     )
 
 
-def test_waiting_run_resumes_when_policy_becomes_fully_automatic() -> None:
+def test_waiting_run_never_resumes_automatically_when_policy_becomes_fully_automatic() -> None:
     plan = _plan()
     repository = _Repository(plan)
     execution = _Execution()
@@ -856,10 +858,18 @@ def test_waiting_run_resumes_when_policy_becomes_fully_automatic() -> None:
     asyncio.run(runner._process_claimed(claimed))
 
     assert repository.approval["status"] == "INVALIDATED"
-    assert execution.execute_calls == 1
-    assert repository.run["status"] == RunStatus.COMPLETED.value
-    assert repository.work_item["status"] == "RESOLVED"
-    assert ("run_transition", "WAITING_APPROVAL", "RUNNING") in repository.trace
+    assert execution.execute_calls == 0
+    assert repository.run["status"] == RunStatus.BLOCKED_DATA.value
+    assert repository.run["error_code"] == "APPROVAL_POLICY_CHANGED"
+    assert repository.work_item["status"] == "BLOCKED_DATA"
+    assert ("run_transition", "WAITING_APPROVAL", "RUNNING") not in repository.trace
+
+    fresh_repository = _Repository(plan)
+    fresh_execution = _Execution()
+    fresh_runner = _runner(fresh_repository, plan, fresh_execution, policy=policy)
+    asyncio.run(fresh_runner._process_claimed(copy.deepcopy(fresh_repository.run)))
+    assert fresh_execution.execute_calls == 1
+    assert fresh_repository.run["status"] == RunStatus.COMPLETED.value
 
 
 def test_waiting_v1_run_replans_with_its_persisted_hash_schema() -> None:
@@ -1149,7 +1159,7 @@ def test_typed_project_policy_is_rechecked_under_project_uow_before_step_start()
     )
 
 
-def test_real_project_policy_service_resumes_old_waiting_run_under_current_mode():
+def test_real_project_policy_service_blocks_old_unapproved_run_under_new_automatic_mode():
     invocation = AutomationProjectInvocation(
         automation_id="instance-one",
         automation_generation=1,
@@ -1272,6 +1282,7 @@ def test_real_project_policy_service_resumes_old_waiting_run_under_current_mode(
     claimed = repository.claim_current()
     asyncio.run(runner._process_claimed(claimed))
 
-    assert execution.execute_calls == 1
-    assert repository.run["status"] == RunStatus.COMPLETED.value
-    assert repository.work_item["status"] == "RESOLVED"
+    assert execution.execute_calls == 0
+    assert repository.run["status"] == RunStatus.BLOCKED_DATA.value
+    assert repository.run["error_code"] == "APPROVAL_POLICY_CHANGED"
+    assert repository.work_item["status"] == "BLOCKED_DATA"

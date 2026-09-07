@@ -925,6 +925,21 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertFalse(instance["config_schema_supported"])
         self.assertIn("表格列表暂时无法读取", "；".join(instance["missing_requirements"]))
 
+    def test_summary_does_not_block_an_unselected_optional_resource(self):
+        for deferred in (True, False):
+            for required, selected, ready in ((False, "", True), (True, "", False), (True, "source-1", deferred)):
+                with self.subTest(deferred=deferred, required=required, selected=selected):
+                    payload = _catalog_payload()
+                    role = {"role": "input_sheet", "label": "输入表格",
+                        "allowed_kinds": ["feishu_sheet"], "required": required}
+                    payload["plugins"][0]["resource_roles"] = [role]
+                    for instance in payload["instances"]:
+                        instance["resource_roles"] = [role]
+                        instance["resource_bindings"] = {"input_sheet": selected} if selected else {}
+                    payload.update(resource_pool_available=False, resources_deferred=deferred)
+                    _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+                    self.assertEqual(ready, instances[0]["resource_bindings_ready"])
+
     def test_resource_pool_filters_exact_kind_and_never_selects_first(self):
         payload = _catalog_payload()
         role = {
@@ -1372,7 +1387,7 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         self.assertEqual([], result[2])
         self.assertEqual([], result[3])
         self.assertEqual(frozenset(), result[4])
-        self.assertIn("实例投影不完整", result[5])
+        self.assertIn("实例身份无法核验", result[5])
         self.assertTrue(result[6])
 
     @staticmethod

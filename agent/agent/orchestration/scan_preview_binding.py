@@ -33,6 +33,7 @@ from shared.automation_project_authorization import (
     canonical_sha256,
 )
 from shared.orchestration_repository_support import IdempotencyConflict
+from agent.orchestration.signed_preview_maintenance import signed_preview_contract_compatible
 
 
 SCAN_PROJECT_ID = "scan_codes"
@@ -99,8 +100,10 @@ def is_scan_preview_project(entry: Any) -> bool:
         == SCAN_PROJECT_ID
         and str(getattr(entry, "plugin_id", "") or "").strip()
         == SCAN_PLUGIN_ID
-        and str(getattr(entry, "trust_source", "") or "").strip()
-        == "ed25519_first_party"
+        and (
+            str(getattr(entry, "trust_source", "") or "").strip() == "ed25519_first_party"
+            or signed_preview_contract_compatible(entry)
+        )
     )
 
 
@@ -143,7 +146,10 @@ def require_scan_formal_governance(entry: Any) -> None:
         and governance_anchor_sha256 == canonical_sha256(anchor)
         and isinstance(postconditions, list)
         and postconditions == [{"name": SCAN_FORMAL_POSTCONDITION}]
-        and installed_version == SCAN_FORMAL_PLUGIN_VERSION
+        and (
+            installed_version == SCAN_FORMAL_PLUGIN_VERSION
+            or signed_preview_contract_compatible(entry)
+        )
         and bool(_HEX_SHA256.fullmatch(package_sha256))
         and bool(_HEX_SHA256.fullmatch(manifest_sha256))
         and isinstance(committed_generation, int)
@@ -165,7 +171,7 @@ def require_scan_formal_governance(entry: Any) -> None:
                 getattr(snapshot, "trust_source", ""),
             )
         )
-        == "ed25519_first_party"
+        == str(getattr(entry, "trust_source", "") or "").strip()
     )
     if not ready:
         raise _error(

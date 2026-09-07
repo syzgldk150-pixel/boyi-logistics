@@ -1,5 +1,8 @@
 # 最高优先级：Git 版本控制
 
+
+本轮 V3.2 维护边界以 [docs/low_maintenance_v32.md](docs/low_maintenance_v32.md) 为权威索引：自动化只列功能插件；财务/客服采集在所属模块；AI contribution 可选；账号引用及平铺常用参数使用宿主简单设置；历史包回退须有本实例已提交版本证据。局部入口见 `agent/scripts/plugin_maintenance.py`（仓库根相对路径），整轮入口为 `agent/scripts/accept_low_maintenance_v32.py`。
+
 本节优先级高于本项目内其他规则。除首次 GitHub 基线初始化外，每项改动必须先在仓库根目录执行 `git status -sb`，确认工作区归属后从最新 `main` 创建 `agent/<任务名>` 分支。验证通过后只能显式暂存本任务文件，禁止在混合工作区执行 `git add -A`；随后必须提交、推送并创建 Draft PR。不得提交 `.env`、凭据、Token、Cookie、业务原始资料、财务 `metadata`、OCR 原图、运行态或输出报表。推送或 Draft PR 未成功时，项目改动不视为完成。首次基线直接提交并推送 `main` 是唯一初始化例外；之后不得直接推送 `main`，除非用户明确授权。
 
 ## 固定执行流程
@@ -21,6 +24,7 @@
 - `agent/`：Agent 服务、飞书接入、TMS 自动化工具、发布脚本及其模块文档。
 - `console/`：Console 服务、模板和静态资源。
 - `shared/`：共享领域模型、金额规则、接口契约与仓储抽象；不得读取环境变量或产生导入副作用。
+- `shared/collector_navigation.py`：从已提交运行代际和本次持久采集证明生成所属模块/来源链接；运行记录与财务通知复用，未知或已清理的运行明确未核验，不从当前账号或生产者猜历史归属。
 - `tests/`：跨模块共享测试；模块测试仍保留在各自目录。
 
 原始业务表格/PDF、财务元数据、OCR 原图、生成报表和运行态不属于源码仓库。所有配置凭据只通过环境变量或部署环境注入，禁止写入代码或文档。
@@ -59,7 +63,7 @@
 - TASK-MIG-003 的 `split_pending_problem_upload_v2` 是独立离线候选包，唯一业务算法源为逐字节嵌入的 v1 action 与共享结果 helper。A:S 19 列、`应到=已到+未到`、全量快照/Sheet 投影、最多 90 票有序选择、所有票先 query 再开始写、逐票 create/fresh verify/event/result Evidence 顺序均由该 action 保持；正式最坏预算为 454 次精确 `service.invoke`。源/目标 Sheet、内部投影、融辉账号和同账号问题事件账本使用五个独立 Connector，preview 首次调用预检源 Sheet+投影，execute 首次调用预检全部五项；写边界从全量 snapshot replace 开始，之后异常统一 `WRITE_OUTCOME_UNKNOWN`。迁移绑定只认 `agent/agent/automation_plugins/migration_binding_mapping.py` 中分批 source/target/account 的显式一对一映射。真实 Connector、Sheet/MySQL/TMS 数据和写入、安装、入口切换、生产数据库与部署均为 `PRODUCTION_GATED`，不得导入或回落 whole-tool。
 - TASK-MIG-004 的 `sync_scan_codes_v2` 是默认关闭的独立离线候选包，逐字节嵌入 v1 扫描 action 与共享结果 helper，继续由该 action 唯一拥有分页、H 单排除、主子单分类、去重、批次和 PREVIEW/FORMAL 复核语义。包声明 `preview/read` 与 `execute/external_write`；Console 和精确飞书命令“扫描”均指向 execute 且默认关闭，AI 助手只注册 `preview/read` 的中文只读能力，不声明通用 `selection_preview_operation`、Scheduler、Webhook 或 Event。融辉扫描账号与 Host 内部扫描投影使用两个 Connector；`read_page/snapshot_replace/submit/verify` 的逐 action 上限为 `500/1/499/499`，声明合计 1499，但运行时与 Broker 的全局硬上限仍为 1000。正式阶段必须权威重读、先独立核验一次全量快照，再对每批严格 submit → fresh server-ledger verify；候选、排入、遗漏、扫描和跳过数量必须守恒，写边界后的不确定结果不得重试。一次性 preview 消费继续只由 v1 生产身份拥有；安装、绑定、scan-preview handoff、Console/飞书验收、真实扫描、cutover、生产数据库与部署均为 `PRODUCTION_GATED`，迁移固定返回 `PLUGIN_MIGRATION_SCAN_PREVIEW_PRODUCTION_GATED`。
 - 系统保持 Agent + Console 双服务；业务编排、审批、执行恢复和事务 Outbox 全部位于 Agent，禁止新增独立 LLM 服务、消息中间件或 Console 侧编排器。完整规范见 `agent/docs/control_plane_v1.md`。
-- 新 Command 使用依赖切片 Schema v2 Plan Hash，历史等待审批 Run 保持原 Schema；同一 `automation_id` 实行项目级 single-flight，Command 接受事务在锁定项目与配置后检查非终态 Run，不同请求命中时返回 `AUTOMATION_ALREADY_RUNNING` 且不创建第二个 Run，同一幂等请求仍复用原 Command。WorkflowRunner 默认四个有界 Worker、浏览器通道最多三个并发（分别可由 `WORKFLOW_RUNNER_CONCURRENCY`、`WORKFLOW_BROWSER_CONCURRENCY` 配置）。浏览器步骤按精确账号会话串行，同账号或未绑定账号的会话不得并发；不同账号可受控并行。只读/计算不使用写互斥，受保护写仍按完整账号、外部目标、资源与写类型精确串行。Run 必须投影 `execution_phase/stage_code/stage_started_at/public_problem_code`，排队时间不得计入真实执行阶段。Outbox 按投影/审批/财务职责分消费者，慢财务分析必须进入独立 Command/Run 和工具子进程。
+- 新 Command 使用依赖切片 Schema v2 Plan Hash，历史等待审批 Run 保持原 Schema；同一 `automation_id` 实行项目级 single-flight，Command 接受事务在锁定项目与配置后只把刚接受待领取的 `RECEIVED/CONTEXT_READY/PLANNED/VALIDATED`、有效 Run/generation 租约、真实 `RUNNING/VERIFYING` Step 和 `FAILED_RETRYABLE` 视为互斥。已停止且无租约的历史未知写和闭合写回执保留事项、Evidence 与审计但不阻止全新 Command，也不得被安全清理伪装成成功；无写入事实的孤儿、登录或数据暂停 Run 每次最多原子取消 100 条，剩余历史不拒绝新任务。同一幂等请求仍复用原 Command，并发不同请求只能接受一个。Scheduler 只在 Command 尚未接受且返回 `PERSISTENCE_UNAVAILABLE` 时以相同幂等身份按 2/10/30 秒重试；入口只有在接受事务提交成功后才发送“已开始”，进度按状态变化去重，每个任务最终只发送一次结果。WorkflowRunner 默认四个有界 Worker、浏览器通道最多三个并发（分别可由 `WORKFLOW_RUNNER_CONCURRENCY`、`WORKFLOW_BROWSER_CONCURRENCY` 配置）。浏览器步骤按精确账号会话串行，同账号或未绑定账号的会话不得并发；不同账号可受控并行。只读/计算不使用写互斥，受保护写仍按完整账号、外部目标、资源与写类型精确串行。Run 必须投影 `execution_phase/stage_code/stage_started_at/public_problem_code`，排队时间不得计入真实执行阶段。Outbox 按投影/审批/财务职责分消费者，慢财务分析必须进入独立 Command/Run 和工具子进程。
 - 除登录/验证码、Console 本地 OCR 与手工运单 CRUD 外，Console、飞书、APScheduler、Webhook 和兼容工具 API 必须提交 Command；只有 `agent/agent/orchestration/workflow_runner.py` 可以调用 `ToolExecutionPort`。
 - Command、Work Item、Run、Step、Approval、Evidence、Domain Event 和 Outbox 使用 `shared/orchestration_repository.py` 的显式 Unit of Work；通用仓储原语、项目活动 Run 查询、未知写恢复状态机、结构要求和定时审批仓储分别位于 `shared/orchestration_repository_support.py`、`shared/automation_run_lookup.py`、`shared/automation_unknown_write_recovery.py`、`shared/orchestration_schema.py`、`shared/scheduled_task_approval_repository.py`。连接必须 `autocommit=False`，运行时不得执行 DDL。Worker 领取只支持 MySQL 8 `FOR UPDATE SKIP LOCKED`。
 - Run 澄清只接受闭合 v1 字段 `note/account_id/argument_updates`；纯文本仅作审计 note。业务覆盖必须绑定原 `command_id`，重新通过工具 input_schema、权威账号、策略与 plan hash 校验，禁止猜测自然语言或跨 Command 复用。

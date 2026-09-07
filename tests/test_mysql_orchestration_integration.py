@@ -30,36 +30,18 @@ def _load_migration_runner():
     return module
 
 
-def _load_automation_project_scenarios():
-    path = PROJECT_ROOT / "tests" / "mysql_automation_project_scenarios.py"
-    spec = importlib.util.spec_from_file_location("mysql_automation_project_scenarios", path)
+def _load_test_scenarios(module_name: str):
+    path = PROJECT_ROOT / "tests" / f"{module_name}.py"
+    spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
 
 
-def _load_daily_sign_scenarios():
-    path = PROJECT_ROOT / "tests" / "mysql_daily_sign_scenarios.py"
-    spec = importlib.util.spec_from_file_location("mysql_daily_sign_scenarios", path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
-def _load_feishu_queue_scenarios():
-    path = PROJECT_ROOT / "tests" / "mysql_feishu_queue_scenarios.py"
-    spec = importlib.util.spec_from_file_location("mysql_feishu_queue_scenarios", path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
-AUTOMATION_PROJECT_SCENARIOS = _load_automation_project_scenarios()
-DAILY_SIGN_SCENARIOS = _load_daily_sign_scenarios()
-FEISHU_QUEUE_SCENARIOS = _load_feishu_queue_scenarios()
+AUTOMATION_PROJECT_SCENARIOS = _load_test_scenarios("mysql_automation_project_scenarios")
+DAILY_SIGN_SCENARIOS = _load_test_scenarios("mysql_daily_sign_scenarios")
+FEISHU_QUEUE_SCENARIOS = _load_test_scenarios("mysql_feishu_queue_scenarios")
 
 
 @unittest.skipUnless(RUN_MYSQL, "set RUN_MYSQL_INTEGRATION=1 for real MySQL 8 tests")
@@ -2983,6 +2965,11 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
 
     def test_automation_project_grouped_approval_rolls_back_real_mysql_transaction(self):
         AUTOMATION_PROJECT_SCENARIOS.run_test_grouped_approval_second_cas_failure_is_atomic(
+            self
+        )
+
+    def test_automation_project_invocation_serializes_and_replays_on_real_mysql(self):
+        AUTOMATION_PROJECT_SCENARIOS.run_test_project_invocation_serializes_and_replays_on_real_mysql(
             self
         )
 

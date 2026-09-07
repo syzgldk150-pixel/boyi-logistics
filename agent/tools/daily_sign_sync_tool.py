@@ -11,6 +11,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any
 
+from agent import feishu_readback as _feishu_readback
 from agent.tms_runtime.account_manager import get_account_manager
 from agent.workflow_resource_store import get_workflow_resource
 from tools.daily_sign_rules import (
@@ -41,7 +42,6 @@ from tools.daily_sign_store import (
     verify_daily_sign_persistence,
 )
 from tools.daily_sign_readback import (
-    DailySignReadbackError,
     verify_bitable_schema,
     verify_bitable_snapshot,
     verify_sheet_snapshot,
@@ -62,6 +62,7 @@ DAILY_SIGN_SHEET_RESOURCE_KEY = "phase7.daily_sign_sheet"
 DAILY_SIGN_BITABLE_RESOURCE_KEY = "phase7.daily_sign_bitable"
 DAILY_SIGN_LEGACY_SHEET_COL_COUNT = 8
 DAILY_SIGN_SHEET_COL_COUNT = 9
+_FEISHU_READBACK_DELAYS = _feishu_readback.FEISHU_READBACK_DELAYS
 SHEET_HEADERS = [
     "运单编号",
     "R13应签收时间",
@@ -1299,14 +1300,33 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
     spreadsheet_token, configured_range = resolve_sheet_target(params, DAILY_SIGN_SHEET_RESOURCE_KEY)
     info = parse_a1_range(configured_range)
     header_range = f"{info['sheet']}!A1:I1"
-    read_result = feishu_operation(
-        "read_sheet",
-        {"spreadsheet_token": spreadsheet_token, "range": header_range, "as": params.get("as", "bot")},
-    )
-    if read_result.get("error"):
-        return {"error": f"读取应签表头失败: {read_result.get('error')}"}
-    values = _sheet_values(read_result)
-    actual_headers = [clean_text(value) for value in (values[0] if values else [])]
+
+    def read_headers() -> list[str]:
+        result = feishu_operation(
+            "read_sheet",
+            {
+                "spreadsheet_token": spreadsheet_token,
+                "range": header_range,
+                "as": params.get("as", "bot"),
+            },
+        )
+        if (
+            not isinstance(result, dict)
+            or result.get("error")
+            or result.get("errors")
+        ):
+            raise RuntimeError("daily-sign Sheet header read failed")
+        values = _sheet_values(result)
+        return [clean_text(value) for value in (values[0] if values else [])]
+
+    try:
+        actual_headers = read_headers()
+    except Exception as exc:
+        return {
+            "error": "读取应签表头失败。",
+            "error_code": "PROJECTION_READ_FAILED",
+            "cause": clean_text(exc),
+        }
     legacy_eight_headers_match = (
         actual_headers[:DAILY_SIGN_LEGACY_SHEET_COL_COUNT]
         == SHEET_HEADERS[:DAILY_SIGN_LEGACY_SHEET_COL_COUNT]
@@ -1319,32 +1339,49 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
         actual_headers[:DAILY_SIGN_SHEET_COL_COUNT] == LEGACY_VERBOSE_SHEET_HEADERS
     )
     if legacy_eight_headers_match or legacy_verbose_headers_match:
-        header_write = feishu_operation(
-            "write_sheet",
-            {
-                "spreadsheet_token": spreadsheet_token,
-                "range": header_range,
-                "values": [SHEET_HEADERS],
-                "as": params.get("as", "bot"),
-                "dry_run": bool(params.get("dry_run", False)),
-            },
-        )
-        if header_write.get("error"):
-            return _write_outcome_unknown("每日应签电子表格补充到货件数表头后的终态未知。")
-        fresh_header = feishu_operation(
-            "read_sheet",
-            {
-                "spreadsheet_token": spreadsheet_token,
-                "range": header_range,
-                "as": params.get("as", "bot"),
-            },
-        )
-        if fresh_header.get("error"):
-            return _write_outcome_unknown("每日应签电子表格表头新鲜回读不可用。")
-        fresh_values = _sheet_values(fresh_header)
-        actual_headers = [
-            clean_text(value) for value in (fresh_values[0] if fresh_values else [])
-        ]
+        header_error: Exception | None = None
+        try:
+            header_write = feishu_operation(
+                "write_sheet",
+                {
+                    "spreadsheet_token": spreadsheet_token,
+                    "range": header_range,
+                    "values": [SHEET_HEADERS],
+                    "as": params.get("as", "bot"),
+                    "dry_run": bool(params.get("dry_run", False)),
+                },
+            )
+            if (
+                not isinstance(header_write, dict)
+                or header_write.get("error")
+                or header_write.get("errors")
+            ):
+                header_error = RuntimeError("daily-sign Sheet header write failed")
+        except Exception as exc:
+            # The write may have committed before its response was lost.  Do
+            # not repeat it; reconcile with fresh reads below.
+            header_error = exc
+
+        def header_matches(observed: object) -> bool:
+            return (
+                isinstance(observed, list)
+                and len(observed) == DAILY_SIGN_SHEET_COL_COUNT
+                and observed == SHEET_HEADERS
+            )
+
+        try:
+            actual_headers = _feishu_readback.retry_readback(
+                read_headers,
+                header_matches,
+                label="daily-sign Sheet header",
+                initial_error=header_error,
+                convert_non_retryable=True,
+            )
+        except Exception as exc:
+            return _write_outcome_unknown(
+                "每日应签电子表格补充到货件数表头后的终态未知。",
+                cause=clean_text(exc),
+            )
     if actual_headers[:DAILY_SIGN_SHEET_COL_COUNT] != SHEET_HEADERS:
         actual_summary = "、".join(actual_headers[:DAILY_SIGN_SHEET_COL_COUNT]) or "未读取到表头"
         return {
@@ -1357,55 +1394,104 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
         f"{info['sheet']}!A2:I2", max(len(sheet_values), 1), DAILY_SIGN_SHEET_COL_COUNT
     )
     write_result: dict[str, Any] = {"ok": True, "skipped": True, "rows": 0}
+    mutation_error: Exception | None = None
+    mutation_attempted = False
     if sheet_values:
-        write_result = feishu_operation(
-            "write_sheet",
-            {
-                "spreadsheet_token": spreadsheet_token,
-                "range": write_range,
-                "values": sheet_values,
-                "as": params.get("as", "bot"),
-                "dry_run": bool(params.get("dry_run", False)),
-            },
-        )
-        if write_result.get("error"):
-            return _write_outcome_unknown("写入应签明细后的终态未知。")
+        mutation_attempted = True
+        try:
+            write_result = feishu_operation(
+                "write_sheet",
+                {
+                    "spreadsheet_token": spreadsheet_token,
+                    "range": write_range,
+                    "values": sheet_values,
+                    "as": params.get("as", "bot"),
+                    "dry_run": bool(params.get("dry_run", False)),
+                },
+            )
+            if (
+                not isinstance(write_result, dict)
+                or write_result.get("error")
+                or write_result.get("errors")
+            ):
+                mutation_error = RuntimeError("daily-sign Sheet data write failed")
+        except Exception as exc:
+            # Stop before a second mutation when the first write outcome is
+            # ambiguous.  The final readback will decide whether it committed.
+            mutation_error = exc
+            write_result = {"ok": False}
     old_end_row = max(info["end_row"], 2)
     tail_start = 2 + len(sheet_values)
     clear_result: dict[str, Any] = {"ok": True, "skipped": True}
-    if tail_start <= old_end_row:
-        clear_result = feishu_operation(
-            "clear_sheet",
-            {
-                "spreadsheet_token": spreadsheet_token,
-                "range": f"{info['sheet']}!A{tail_start}:I{old_end_row}",
-                "as": params.get("as", "bot"),
-                "dry_run": bool(params.get("dry_run", False)),
-            },
-        )
-        if clear_result.get("error"):
-            return _write_outcome_unknown("清理应签明细旧行后的终态未知。")
+    # A data write with an ambiguous result is not followed by a clear: the
+    # clear is a separate destructive mutation and the uncertain write must be
+    # reconciled first.  A successful data write (or an empty target) may
+    # proceed to the one required tail cleanup.
+    if mutation_error is None and tail_start <= old_end_row:
+        mutation_attempted = True
+        try:
+            clear_result = feishu_operation(
+                "clear_sheet",
+                {
+                    "spreadsheet_token": spreadsheet_token,
+                    "range": f"{info['sheet']}!A{tail_start}:I{old_end_row}",
+                    "as": params.get("as", "bot"),
+                    "dry_run": bool(params.get("dry_run", False)),
+                },
+            )
+            if (
+                not isinstance(clear_result, dict)
+                or clear_result.get("error")
+                or clear_result.get("errors")
+            ):
+                mutation_error = RuntimeError("daily-sign Sheet tail clear failed")
+        except Exception as exc:
+            mutation_error = exc
+            clear_result = {"ok": False}
     readback_end = max(old_end_row, 1 + len(sheet_values))
     readback_range = f"{info['sheet']}!A2:I{readback_end}"
-    readback_result = feishu_operation(
-        "read_sheet",
-        {
-            "spreadsheet_token": spreadsheet_token,
-            "range": readback_range,
-            "as": params.get("as", "bot"),
-        },
-    )
-    if readback_result.get("error"):
-        return _write_outcome_unknown("每日应签电子表格新鲜回读不可用。")
-    try:
-        readback = verify_sheet_snapshot(
+
+    def readback() -> dict[str, Any]:
+        result = feishu_operation(
+            "read_sheet",
+            {
+                "spreadsheet_token": spreadsheet_token,
+                "range": readback_range,
+                "as": params.get("as", "bot"),
+            },
+        )
+        if (
+            not isinstance(result, dict)
+            or result.get("error")
+            or result.get("errors")
+        ):
+            raise RuntimeError("daily-sign Sheet snapshot read failed")
+        return verify_sheet_snapshot(
             sheet_values,
-            _sheet_values(readback_result),
+            _sheet_values(result),
             observed_row_capacity=readback_end - 1,
             columns=DAILY_SIGN_SHEET_COL_COUNT,
         )
-    except DailySignReadbackError:
-        return _write_outcome_unknown("每日应签电子表格新鲜回读不匹配。")
+
+    try:
+        if mutation_attempted:
+            readback = _feishu_readback.retry_readback(
+                readback,
+                lambda observed: (
+                    isinstance(observed, dict)
+                    and observed.get("verified") is True
+                ),
+                label="daily-sign Sheet snapshot",
+                initial_error=mutation_error,
+                convert_non_retryable=True,
+            )
+        else:
+            readback = readback()
+    except Exception as exc:
+        return _write_outcome_unknown(
+            "每日应签电子表格新鲜回读不匹配。",
+            cause=clean_text(exc),
+        )
     return {
         "ok": True,
         "rows": len(sheet_values),
@@ -1423,30 +1509,64 @@ def _field_items(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _ensure_bitable_schema(base_token: str, table_id: str, params: dict[str, Any]) -> dict[str, Any]:
-    result = feishu_operation("list_fields", {"base_token": base_token, "table_id": table_id, "as": params.get("as", "bot")})
-    if result.get("error"):
-        return {"error": result["error"]}
-    by_name = {clean_text(item.get("field_name")): item for item in _field_items(result)}
-    old = by_name.get("应签收时间")
-    schema_changed = False
-    if old and "R13应签收时间" not in by_name:
-        rename = feishu_operation(
-            "update_field",
+    try:
+        result = feishu_operation(
+            "list_fields",
             {
                 "base_token": base_token,
                 "table_id": table_id,
-                "field_id": old.get("field_id"),
-                "field_name": "R13应签收时间",
-                "type": old.get("type"),
-                "property": old.get("property") if isinstance(old.get("property"), dict) else {},
-                "dry_run": bool(params.get("dry_run", False)),
+                "as": params.get("as", "bot"),
             },
         )
-        if rename.get("error"):
-            return _write_outcome_unknown("每日应签多维表字段重命名后的终态未知。")
+    except Exception as exc:
+        return {
+            "error": "读取每日应签多维表字段失败。",
+            "error_code": "PROJECTION_READ_FAILED",
+            "cause": clean_text(exc),
+        }
+    if (
+        not isinstance(result, dict)
+        or result.get("error")
+        or result.get("errors")
+    ):
+        return {
+            "error": "读取每日应签多维表字段失败。",
+            "error_code": "PROJECTION_READ_FAILED",
+        }
+    by_name = {clean_text(item.get("field_name")): item for item in _field_items(result)}
+    old = by_name.get("应签收时间")
+    schema_changed = False
+    schema_error: Exception | None = None
+    if old and "R13应签收时间" not in by_name:
         schema_changed = True
-        by_name["R13应签收时间"] = {**old, "field_name": "R13应签收时间"}
-    date_type = _to_int((by_name.get("R13应签收时间") or {}).get("type")) or 1
+        try:
+            rename = feishu_operation(
+                "update_field",
+                {
+                    "base_token": base_token,
+                    "table_id": table_id,
+                    "field_id": old.get("field_id"),
+                    "field_name": "R13应签收时间",
+                    "type": old.get("type"),
+                    "property": old.get("property") if isinstance(old.get("property"), dict) else {},
+                    "dry_run": bool(params.get("dry_run", False)),
+                },
+            )
+            if (
+                not isinstance(rename, dict)
+                or rename.get("error")
+                or rename.get("errors")
+            ):
+                schema_error = RuntimeError("daily-sign Bitable field rename failed")
+            else:
+                by_name["R13应签收时间"] = {**old, "field_name": "R13应签收时间"}
+        except Exception as exc:
+            # A lost schema response is reconciled by readback.  Do not issue
+            # another rename or continue with additional mutations here.
+            schema_error = exc
+    date_type = _to_int(
+        (by_name.get("R13应签收时间") or old or {}).get("type")
+    ) or 1
     required_types = {
         "运单编号": 1,
         "R13应签收时间": date_type,
@@ -1459,49 +1579,81 @@ def _ensure_bitable_schema(base_token: str, table_id: str, params: dict[str, Any
         "到货件数": 2,
     }
     for name, expected_type in required_types.items():
+        if schema_error is not None:
+            break
         existing = by_name.get(name)
         if existing:
             if _to_int(existing.get("type")) != expected_type:
+                if schema_changed:
+                    return _write_outcome_unknown(
+                        "每日应签多维表字段变更后的终态未知。"
+                    )
                 return {"error": f"多维表字段类型不匹配: {name}", "expected_type": expected_type, "actual_type": existing.get("type")}
             continue
-        created = feishu_operation(
-            "create_field",
+        schema_changed = True
+        try:
+            created = feishu_operation(
+                "create_field",
+                {
+                    "base_token": base_token,
+                    "table_id": table_id,
+                    "field_name": name,
+                    "type": expected_type,
+                    "dry_run": bool(params.get("dry_run", False)),
+                },
+            )
+            if (
+                not isinstance(created, dict)
+                or created.get("error")
+                or created.get("errors")
+            ):
+                schema_error = RuntimeError("daily-sign Bitable field creation failed")
+        except Exception as exc:
+            schema_error = exc
+
+    def read_schema() -> dict[str, Any]:
+        fresh_result = feishu_operation(
+            "list_fields",
             {
                 "base_token": base_token,
                 "table_id": table_id,
-                "field_name": name,
-                "type": expected_type,
-                "dry_run": bool(params.get("dry_run", False)),
+                "as": params.get("as", "bot"),
             },
         )
-        if created.get("error"):
-            return _write_outcome_unknown("每日应签多维表字段创建后的终态未知。")
-        schema_changed = True
-    fresh_result = feishu_operation(
-        "list_fields",
-        {
-            "base_token": base_token,
-            "table_id": table_id,
-            "as": params.get("as", "bot"),
-        },
-    )
-    if fresh_result.get("error"):
-        code = "WRITE_OUTCOME_UNKNOWN" if schema_changed else "PROJECTION_READ_FAILED"
-        return {
-            "error": "每日应签多维表字段新鲜回读不可用。",
-            "error_code": code,
-        }
-    try:
-        readback = verify_bitable_schema(
-            required_types,
-            _field_items(fresh_result),
-        )
-    except DailySignReadbackError:
-        code = "WRITE_OUTCOME_UNKNOWN" if schema_changed else "PROJECTION_READ_FAILED"
-        return {
-            "error": "每日应签多维表字段新鲜回读不匹配。",
-            "error_code": code,
-        }
+        if (
+            not isinstance(fresh_result, dict)
+            or fresh_result.get("error")
+            or fresh_result.get("errors")
+        ):
+            raise RuntimeError("daily-sign Bitable schema readback failed")
+        return verify_bitable_schema(required_types, _field_items(fresh_result))
+
+    if schema_changed:
+        try:
+            readback = _feishu_readback.retry_readback(
+                read_schema,
+                lambda observed: (
+                    isinstance(observed, dict)
+                    and observed.get("verified") is True
+                ),
+                label="daily-sign Bitable schema",
+                initial_error=schema_error,
+                convert_non_retryable=True,
+            )
+        except Exception as exc:
+            return _write_outcome_unknown(
+                "每日应签多维表字段新鲜回读不匹配。",
+                cause=clean_text(exc),
+            )
+    else:
+        try:
+            readback = read_schema()
+        except Exception as exc:
+            return {
+                "error": "每日应签多维表字段新鲜回读不可用。",
+                "error_code": "PROJECTION_READ_FAILED",
+                "cause": clean_text(exc),
+            }
     return {"ok": True, "fields": required_types, "readback": readback}
 
 
@@ -1517,12 +1669,31 @@ def _sync_bitable(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[st
     schema_result = _ensure_bitable_schema(base_token, table_id, params)
     if schema_result.get("error"):
         return schema_result
-    existing_result = feishu_operation(
-        "list_records",
-        {"base_token": base_token, "table_id": table_id, "limit": 5000, "as": params.get("as", "bot")},
-    )
-    if existing_result.get("error"):
-        return {"error": f"读取多维表记录失败: {existing_result.get('error')}"}
+    try:
+        existing_result = feishu_operation(
+            "list_records",
+            {
+                "base_token": base_token,
+                "table_id": table_id,
+                "limit": 5000,
+                "as": params.get("as", "bot"),
+            },
+        )
+    except Exception as exc:
+        return {
+            "error": "读取多维表记录失败。",
+            "error_code": "PROJECTION_READ_FAILED",
+            "cause": clean_text(exc),
+        }
+    if (
+        not isinstance(existing_result, dict)
+        or existing_result.get("error")
+        or existing_result.get("errors")
+    ):
+        return {
+            "error": "读取多维表记录失败。",
+            "error_code": "PROJECTION_READ_FAILED",
+        }
     existing_by_code: dict[str, dict[str, Any]] = {}
     for item in _record_items(existing_result):
         fields = item.get("fields") if isinstance(item.get("fields"), dict) else {}
@@ -1547,64 +1718,116 @@ def _sync_bitable(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[st
             continue
         writes.append({**record, **({"record_id": existing.get("record_id")} if existing else {})})
     write_result: dict[str, Any] = {"ok": True, "written": 0, "skipped": True}
+    mutation_error: Exception | None = None
+    mutation_attempted = False
     if writes:
-        write_result = feishu_operation(
-            "write_records",
-            {
-                "base_token": base_token,
-                "table_id": table_id,
-                "records": writes,
-                "as": params.get("as", "bot"),
-                "dry_run": bool(params.get("dry_run", False)),
-            },
-        )
-        if write_result.get("error") or write_result.get("errors"):
-            return _write_outcome_unknown("每日应签多维表差异写入后的终态未知。")
+        mutation_attempted = True
+        try:
+            write_result = feishu_operation(
+                "write_records",
+                {
+                    "base_token": base_token,
+                    "table_id": table_id,
+                    "records": writes,
+                    "as": params.get("as", "bot"),
+                    "dry_run": bool(params.get("dry_run", False)),
+                },
+            )
+            if (
+                not isinstance(write_result, dict)
+                or write_result.get("error")
+                or write_result.get("errors")
+            ):
+                mutation_error = RuntimeError("daily-sign Bitable record write failed")
+        except Exception as exc:
+            # A response can be lost after a successful write.  Never retry
+            # the mutation; the exact snapshot below decides the outcome.
+            mutation_error = exc
+            write_result = {"ok": False}
     delete_ids = [
         clean_text(item.get("record_id"))
         for code, item in existing_by_code.items()
         if code not in target_codes and clean_text(item.get("record_id"))
     ]
     delete_result: dict[str, Any] = {"ok": True, "deleted": 0, "skipped": True}
-    if delete_ids:
-        delete_result = feishu_operation(
-            "delete_records",
+    delete_attempted = False
+    # Do not issue cleanup after an uncertain record write: the write must be
+    # reconciled as one boundary.  If it succeeded, the stale-record delete
+    # is safe to perform once and is likewise reconciled by the final read.
+    if mutation_error is None and delete_ids:
+        delete_attempted = True
+        mutation_attempted = True
+        try:
+            delete_result = feishu_operation(
+                "delete_records",
+                {
+                    "base_token": base_token,
+                    "table_id": table_id,
+                    "record_ids": delete_ids,
+                    "as": params.get("as", "bot"),
+                    "dry_run": bool(params.get("dry_run", False)),
+                },
+            )
+            if (
+                not isinstance(delete_result, dict)
+                or delete_result.get("error")
+                or delete_result.get("errors")
+            ):
+                mutation_error = RuntimeError("daily-sign Bitable record delete failed")
+        except Exception as exc:
+            mutation_error = exc
+            delete_result = {"ok": False}
+
+    readback_limit = max(len(target_records) + 1, 1)
+
+    def readback() -> dict[str, Any]:
+        result = feishu_operation(
+            "list_records",
             {
                 "base_token": base_token,
                 "table_id": table_id,
-                "record_ids": delete_ids,
+                "limit": readback_limit,
                 "as": params.get("as", "bot"),
-                "dry_run": bool(params.get("dry_run", False)),
             },
         )
-        if delete_result.get("error") or delete_result.get("errors"):
-            return _write_outcome_unknown("每日应签多维表旧记录清理后的终态未知。")
-    readback_result = feishu_operation(
-        "list_records",
-        {
-            "base_token": base_token,
-            "table_id": table_id,
-            "limit": max(len(target_records) + 1, 1),
-            "as": params.get("as", "bot"),
-        },
-    )
-    if readback_result.get("error"):
-        return _write_outcome_unknown("每日应签多维表新鲜回读不可用。")
-    try:
-        readback = verify_bitable_snapshot(
+        if (
+            not isinstance(result, dict)
+            or result.get("error")
+            or result.get("errors")
+        ):
+            raise RuntimeError("daily-sign Bitable snapshot read failed")
+        return verify_bitable_snapshot(
             target_records,
-            readback_result,
+            result,
             identity_field="运单编号",
         )
-    except DailySignReadbackError:
-        return _write_outcome_unknown("每日应签多维表新鲜回读不匹配。")
+
+    try:
+        if mutation_attempted:
+            readback_result = _feishu_readback.retry_readback(
+                readback,
+                lambda observed: (
+                    isinstance(observed, dict)
+                    and observed.get("verified") is True
+                ),
+                label="daily-sign Bitable snapshot",
+                initial_error=mutation_error,
+                convert_non_retryable=True,
+            )
+        else:
+            readback_result = readback()
+    except Exception as exc:
+        return _write_outcome_unknown(
+            "每日应签多维表新鲜回读不匹配。",
+            cause=clean_text(exc),
+        )
     return {
         "ok": True,
         "written": len(writes),
         "unchanged": unchanged,
-        "deleted": len(delete_ids),
+        "deleted": len(delete_ids) if delete_attempted else 0,
         "schema_result": schema_result,
-        "readback": readback,
+        "readback": readback_result,
     }
 
 

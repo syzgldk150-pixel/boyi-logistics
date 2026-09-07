@@ -10,6 +10,8 @@
 <link rel="stylesheet" href="/static/finance.css?v=finance-workbench-20260712-3">
 {% endblock %}
 
+{% block page_actions %}<a class="ghost-btn" data-console-navigate href="/modules/finance/data-sources">数据源</a>{% endblock %}
+
 {% block content %}
 <section
   class="finance-workbench"
@@ -40,6 +42,10 @@
       </label>
     </div>
 
+    <label class="finance-field">
+      <span>来源</span>
+      <select data-finance-source data-source-selector="finance"><option value="">全部来源</option></select>
+    </label>
     <label class="finance-field">
       <span>平台</span>
       <select data-finance-platform>
@@ -346,5 +352,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/finance.js?v=finance-sources-20260813"></script>
+<script src="/static/finance.js?v=v32"></script>
+<script src="/static/module_source_selector.js?v=v32"></script>
 {% endblock %}

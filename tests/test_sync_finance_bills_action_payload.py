@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import ast
 import copy
-import importlib.util
 import json
-import sys
 from collections.abc import Mapping
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -39,29 +37,8 @@ SCALE = Decimal("0.0001")
 
 
 def _load_action():
-    result_spec = importlib.util.spec_from_file_location(
-        "boyi_plugin_result",
-        RESULT_PATH,
-    )
-    assert result_spec is not None and result_spec.loader is not None
-    result_module = importlib.util.module_from_spec(result_spec)
-    previous = sys.modules.get("boyi_plugin_result")
-    sys.modules["boyi_plugin_result"] = result_module
-    result_spec.loader.exec_module(result_module)
-    action_spec = importlib.util.spec_from_file_location(
-        "sync_finance_bills_payload_action",
-        ACTION_PATH,
-    )
-    assert action_spec is not None and action_spec.loader is not None
-    action_module = importlib.util.module_from_spec(action_spec)
-    try:
-        action_spec.loader.exec_module(action_module)
-    finally:
-        if previous is None:
-            sys.modules.pop("boyi_plugin_result", None)
-        else:
-            sys.modules["boyi_plugin_result"] = previous
-    return action_module
+    from tests.first_party_action_payload_support import load_first_party_action
+    return load_first_party_action("sync_finance_bills")
 
 
 def _fixture(name: str) -> dict[str, Any]:

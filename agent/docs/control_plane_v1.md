@@ -121,6 +121,23 @@ Phase 7 签收与到货统计 Webhook 为兼容线上旧调用方，可省略 `a
 `userInfo` 唯一解析身份；请求中的站点别名若存在，必须与会话完全一致。缺字段、多候选或
 冲突时进入明确账号/数据阻塞，不能使用历史值或硬编码默认站点。
 
+## 项目互斥、接受重试与消息
+
+同一自动化项目只允许一个真实执行占用互斥。Command 接受事务按固定锁序检查全部相关事实，
+刚接受待 Runner 领取的 `RECEIVED/CONTEXT_READY/PLANNED/VALIDATED` Run、尚未到期的 Run 或
+generation lease、真实 `RUNNING/VERIFYING` Step，以及等待 Runner 自动重试的 `FAILED_RETRYABLE`
+Run 会拒绝并发新触发。已停止且无有效租约的历史未知写、闭合写回执
+和人工核验事项继续保留原 receipt、Evidence 与审计，但不阻止全新 Command，也不得自动改写为
+成功或删除。没有写入事实的孤儿、登录暂停和数据暂停 Run 每次最多在同一事务取消 100 条；历史
+多于一批时只清理当前批，剩余数量不构成拒绝理由。相同幂等键始终复用原 Command，并发不同请求
+仍由项目锁保证最多接受一个。
+
+Scheduler 只有在 Command 尚未返回接受回执且错误为 `PERSISTENCE_UNAVAILABLE` 时，才以原
+`scheduled_for`、request ID 和幂等键按 2、10、30 秒重试；一旦接受回调发生，任何后续错误都不再
+重交。Console、飞书、Webhook 与 Scheduler 都只能在接受事务提交后发布“已开始”。运行进度只在
+关键状态变化时发送并按投递身份去重；内部异常栈、Run ID 和重复“仍在执行”不得外发，每个任务
+只发送一次完成、无数据、等待选择或失败结果。
+
 ## 计划、权限与审批
 
 新 Command 固定生成 Schema v2 计划。每步仍包含工具名/版本、操作类型、规范化参数、账号、

@@ -31,6 +31,11 @@ class OrchestrationRepositoryFacadeMixin:
     def unit_of_work(self) -> OrchestrationUnitOfWork:
         return OrchestrationUnitOfWork(self._connection_factory, self._cursor_factory)
 
+    def get_unknown_execution_resource_keys(self):
+        from shared.execution_resource_journal import unknown_execution_keys
+
+        return unknown_execution_keys(self)
+
     def validate_mysql8(self) -> str:
         """Require real MySQL 8+ because worker claims use SKIP LOCKED."""
 

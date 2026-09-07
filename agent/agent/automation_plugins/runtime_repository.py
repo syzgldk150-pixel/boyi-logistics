@@ -50,9 +50,24 @@ from shared.automation_plugin_generation_unknown_write_repository import (
     stabilize_project_after_archival_unknown,
 )
 from shared.redaction import redact_sensitive
+from agent.automation_plugins.catalog_read_scope import catalog_read_scope, catalog_read_transaction, catalog_version_cache, catalog_row_cache
 
 
 _UNKNOWN_WRITE_RECOVERY_BATCH_LIMIT = 16
+
+
+def _service_v2_signed_activation_contract(manifest_mapping: Mapping[str, Any]) -> dict[str, Any]:
+    """Rebuild the activation identity from the exact locked installed manifest."""
+    manifest = AutomationPluginManifestV2.from_mapping(manifest_mapping)
+    contract = ServiceV2ProjectContract.from_manifest(manifest)
+    return {
+        "tool_contract": dict(contract.tool_contract),
+        "governance_anchor": dict(contract.governance_anchor),
+        "runtime": manifest.to_mapping()["runtime"],
+        "runtime_permissions": dict(contract.runtime_permissions),
+        "account_roles": [dict(role) for role in contract.account_roles],
+        "resource_roles": [dict(role) for role in contract.resource_roles],
+    }
 
 
 def _utc_datetime(value: object, field: str) -> datetime:
@@ -322,24 +337,29 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
             raise TypeError("orchestration_repository must expose unit_of_work()")
         self._orchestration = orchestration_repository
 
+    def catalog_read_scope(self):
+        return catalog_read_scope(self._orchestration)
+
     def get_package_version(
         self,
         plugin_id: str,
         version: str,
     ) -> PluginVersionRecord | None:
-        with self._orchestration.unit_of_work() as uow:
+        with catalog_read_transaction(self._orchestration) as uow:
             row = uow.automation_plugins.get_version(plugin_id, version)
             return _version_from_row(row) if row is not None else None
 
     def get_instance(self, automation_id: str) -> PluginInstanceRecord | None:
-        with self._orchestration.unit_of_work() as uow:
-            row = uow.automation_plugins.get_project(automation_id)
-            return self._project_from_row(uow.automation_plugins, row) if row else None
+        with catalog_read_transaction(self._orchestration) as uow:
+            rows = (catalog_row_cache(self._orchestration) or {}).get(automation_id)
+            row = rows.projects.get(automation_id) if rows is not None else uow.automation_plugins.get_project(automation_id)
+            return self._project_from_row(uow.automation_plugins, row,
+                version_cache=catalog_version_cache(self._orchestration), catalog_rows=rows) if row else None
 
     def list_instance_ids(self) -> Sequence[str]:
         """Read project identities without compiling persisted plugin objects."""
 
-        with self._orchestration.unit_of_work() as uow:
+        with catalog_read_transaction(self._orchestration) as uow:
             return tuple(
                 str(row.get("automation_id") or "").strip()
                 if isinstance(row, Mapping)
@@ -347,34 +367,49 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
                 for row in uow.automation_plugins.list_projects()
             )
 
+    def list_instance_ids_for_module(self, module: str) -> Sequence[str]:
+        with catalog_read_transaction(self._orchestration) as uow:
+            return tuple(uow.automation_plugins.list_project_module_ids(module))
+
+    def prefetch_catalog_instances(self, identities: Sequence[str]) -> None:
+        with catalog_read_transaction(self._orchestration) as uow:
+            cache = catalog_row_cache(self._orchestration)
+            reader = getattr(uow.automation_plugins, "read_catalog_rows", None)
+            if cache is not None and callable(reader) and any(item not in cache for item in identities):
+                rows = reader(identities)
+                cache.update({item: rows for item in identities})
+
     def list_instances(self) -> Sequence[PluginInstanceRecord]:
-        with self._orchestration.unit_of_work() as uow:
+        with catalog_read_transaction(self._orchestration) as uow:
             return tuple(
                 self._project_from_row(uow.automation_plugins, row)
                 for row in uow.automation_plugins.list_projects()
             )
 
     @staticmethod
-    def _project_from_row(low_level: Any, row: Mapping[str, Any]) -> PluginInstanceRecord:
+    def _project_from_row(low_level: Any, row: Mapping[str, Any], *, version_cache=None, catalog_rows=None) -> PluginInstanceRecord:
         automation_id = str(row.get("automation_id") or "")
         committed_generation = row.get("committed_generation")
         committed_snapshot: RuntimeGenerationSnapshot | None = None
+        committed_version_row = None
         desired_version_name = str(row.get("plugin_version") or "")
         if committed_generation is not None:
-            generation_row = low_level.get_generation_row(
+            generation_row = catalog_rows.generation(low_level, automation_id, int(committed_generation)) if catalog_rows is not None else low_level.get_generation_row(
                 automation_id,
                 int(committed_generation),
+                include_execution_details=False,
             )
-            if generation_row is None or str(generation_row.get("state") or "") not in {
-                "COMMITTED",
-                "BLOCKED",
-            }:
+            readable_states = {"COMMITTED", "BLOCKED"}
+            if row.get("state") == "UNINSTALLING" and row.get("enabled") in (False, 0):
+                # Revoked projects remain inspectable solely for their existing
+                # uninstall reconciler. Active execution keeps the strict fence.
+                readable_states.update({"DRAINING", "DISPOSING", "DISPOSED"})
+            if generation_row is None or str(generation_row.get("state") or "") not in readable_states:
                 raise ValueError("project committed generation is missing or not committed")
             committed_snapshot = generation_from_row(generation_row).snapshot
-            committed_version_row = low_level.get_version(
-                str(row.get("plugin_id") or ""),
-                committed_snapshot.plugin_version,
-            )
+            package_key = (str(row.get("plugin_id") or ""), committed_snapshot.plugin_version)
+            cached_package = version_cache.get(package_key) if version_cache is not None else None
+            committed_version_row = cached_package[0] if cached_package is not None else low_level.get_version(*package_key)
             if committed_version_row is None:
                 raise ValueError("project committed plugin version disappeared")
             committed_version = _version_from_row(committed_version_row)
@@ -390,7 +425,7 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
                     "project committed generation differs from its immutable package"
                 )
             if committed_version.runtime_model is PluginRuntimeModel.SERVICE_V2:
-                committed_manifest = AutomationPluginManifestV2.from_mapping(
+                committed_manifest = cached_package[1] if cached_package is not None else AutomationPluginManifestV2.from_mapping(
                     committed_version.manifest
                 )
                 projected = ServiceV2ProjectContract.from_manifest(
@@ -403,7 +438,7 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
                 expected_resource_roles = projected.resource_roles
                 expected_governance_anchor = projected.governance_anchor
             else:
-                committed_manifest = AutomationPluginManifest.from_mapping(
+                committed_manifest = cached_package[1] if cached_package is not None else AutomationPluginManifest.from_mapping(
                     committed_version.manifest
                 )
                 committed_manifest_mapping = committed_manifest.to_signed_mapping()
@@ -423,6 +458,8 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
                 != committed_version.manifest_sha256
             ):
                 raise ValueError("project committed package differs from its manifest")
+            if version_cache is not None:
+                version_cache[package_key] = (committed_version_row, committed_manifest)
             committed_capability = project_capability_from_snapshot(
                 committed_snapshot
             )
@@ -475,7 +512,7 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
                 raise ValueError(
                     "project committed generation differs from its immutable installation"
                 )
-        version_row = low_level.get_version(
+        version_row = committed_version_row if committed_snapshot is not None and committed_snapshot.plugin_version == desired_version_name else low_level.get_version(
             str(row.get("plugin_id") or ""),
             desired_version_name,
         )
@@ -512,8 +549,9 @@ class MySQLAutomationProjectConfigurationReadAdapter:
         self,
         automation_id: str,
     ) -> AutomationProjectConfigRecord | None:
-        with self._orchestration.unit_of_work() as uow:
-            row = uow.automation_plugins.get_project_config(automation_id)
+        with catalog_read_transaction(self._orchestration) as uow:
+            rows = (catalog_row_cache(self._orchestration) or {}).get(automation_id)
+            row = rows.config(uow.automation_plugins, automation_id) if rows is not None else uow.automation_plugins.get_project_config(automation_id)
         if row is None:
             return None
         for field in (
@@ -621,6 +659,7 @@ class MySQLAutomationPluginRuntimeAdapter:
                 snapshot_to_row(snapshot),
                 expected_committed_generation=expected_committed_generation,
                 request_id=request_id,
+                service_v2_contract_projector=_service_v2_signed_activation_contract,
             )
             uow.commit()
         return generation_from_row(row)
@@ -722,6 +761,7 @@ class MySQLAutomationPluginRuntimeAdapter:
                 automation_id,
                 generation,
                 expected_committed_generation=expected_committed_generation,
+                service_v2_contract_projector=_service_v2_signed_activation_contract,
             )
             uow.commit()
         return _runtime_from_row(row)
@@ -758,6 +798,7 @@ class MySQLAutomationPluginRuntimeAdapter:
                 automation_id,
                 generation,
                 expected_transition_token=expected_transition_token,
+                service_v2_contract_projector=_service_v2_signed_activation_contract,
             )
             uow.commit()
 
@@ -1167,6 +1208,7 @@ class MySQLAutomationPluginRuntimeAdapter:
         actor_role: str,
         authoritative_applied_proof: Mapping[str, object] | None = None,
         authoritative_not_applied_proof: Mapping[str, object] | None = None,
+        scan_applied_recovery: Mapping[str, object] | None = None,
     ) -> dict[str, Any]:
         """Run the server-owned receipt recovery as one orchestration UoW."""
 
@@ -1183,6 +1225,7 @@ class MySQLAutomationPluginRuntimeAdapter:
                 actor_role=actor_role,
                 authoritative_applied_proof=authoritative_applied_proof,
                 authoritative_not_applied_proof=authoritative_not_applied_proof,
+                scan_applied_recovery=scan_applied_recovery,
             )
             uow.commit()
         if not isinstance(result, Mapping):

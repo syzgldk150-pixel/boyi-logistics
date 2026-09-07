@@ -1,5 +1,8 @@
 ---
 module: 自动化插件平台 v2
+
+V3.2 补充：模块归属、最小设置、AI 可选、来源保留和维护入口以仓库 `docs/low_maintenance_v32.md` 为准；未冲突的包校验、隔离、授权和代际要求继续有效。
+
 type: 开发与迁移手册
 tags: [ZIP 插件, service_v2, Host API, 能力代理, 双轨迁移]
 related:
@@ -131,7 +134,7 @@ settings/                    # 可选；仅用于插件专属设置页
 | `capabilities` | 只声明实际使用的能力、精确 action、账号角色或资源角色；仅 `service.invoke` 可选 `action_call_limits`，其键必须精确覆盖 operations 且每项为 `1..1000` 整数；相关 action 的声明上限合计可超过 1000，但运行时全局上限仍固定为 1000，未声明时保留旧的每 action 64 次默认 |
 | `account_roles` | 声明角色、允许系统和是否必填；账号由项目绑定，不进入配置 JSON |
 | `resource_roles` | 声明角色、允许资源种类和是否必填 |
-| `settings_ui` | 可选；字段精确为 `entry=settings/index.html` 与 `bridge_api=1.0.0`。声明必需配置、账号角色或资源角色时必须提供 |
+| `settings_ui` | 可选；字段精确为 `entry=settings/index.html` 与 `bridge_api=1.0.0`。只有账号角色时使用宿主默认页；复杂必填配置或资源角色时提供专属页 |
 | `contributes` | 必须同时含 `console/scheduler/webhook/feishu/events/harness` 六个数组，可选 `module_slots`；`harness` 至少一项，所有 contribution `id` 在包内全局唯一 |
 | `config_schema` | 顶层必须是 `type=object`、`additionalProperties=false`，只含 `properties/required`；禁止账号 ID 和凭据类字段名 |
 | `storage` | 明确 `kv` 与 `collections`；不需要存储时也要写 `false` 和空数组 |

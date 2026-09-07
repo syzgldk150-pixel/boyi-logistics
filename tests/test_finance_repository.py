@@ -78,11 +78,7 @@ class RouterConnection:
 class FinanceRepositoryTests(unittest.TestCase):
     @staticmethod
     def _enabled_source_params() -> tuple[str, ...]:
-        return tuple(
-            value
-            for spec in enabled_finance_source_specs()
-            for value in (spec.platform, spec.account_id)
-        )
+        return enabled_finance_platforms()
 
     def _assert_placeholder_counts(
         self, records: list[tuple[str, tuple[Any, ...]]]
@@ -229,10 +225,8 @@ class FinanceRepositoryTests(unittest.TestCase):
         clauses, params = repository._entry_filters(query)
 
         source_clause = clauses[1]
-        self.assertEqual(
-            len(enabled_finance_source_specs()),
-            source_clause.count("(t.platform = %s AND t.account_id = %s)"),
-        )
+        self.assertIn("t.platform IN (%s)", source_clause)
+        self.assertNotIn("t.account_id = %s AND", source_clause)
         self.assertEqual(
             [
                 dt.date(2026, 1, 1),
@@ -304,10 +298,8 @@ class FinanceRepositoryTests(unittest.TestCase):
         self.assertEqual(0, result["total"])
         count_sql, count_params = records[0]
         data_sql, data_params = records[1]
-        self.assertEqual(
-            len(enabled_finance_source_specs()),
-            count_sql.count("(f.platform = %s AND f.account_id = %s)"),
-        )
+        self.assertIn("f.platform IN (%s)", count_sql)
+        self.assertEqual(1, count_sql.count("f.account_id = %s"))
         expected_scope = (
             dt.date(2026, 1, 1),
             dt.date(2026, 1, 31),
@@ -340,10 +332,8 @@ class FinanceRepositoryTests(unittest.TestCase):
         self.assertIn("fi.platform IN", review_data_sql)
 
         anomaly_sql, anomaly_params = records[2]
-        self.assertEqual(
-            len(enabled_finance_source_specs()),
-            anomaly_sql.count("(a.platform = %s AND a.account_id = %s)"),
-        )
+        self.assertIn("a.platform IN (%s)", anomaly_sql)
+        self.assertNotIn("a.account_id = %s AND", anomaly_sql)
         self.assertEqual((*self._enabled_source_params(), 37), anomaly_params)
         self._assert_placeholder_counts(records)
 
@@ -526,7 +516,7 @@ class FinanceRepositoryTests(unittest.TestCase):
         ]
         status, records = coverage_status(complete_rows)
         self.assertEqual(status, "complete")
-        coverage_sql = records[0][0]
+        coverage_sql = next(sql for sql, _params in records if "AS terminal_dates" in sql)
         self.assertIn("MAX(id) AS latest_run_id", coverage_sql)
         self.assertIn("r.status IN (%s, %s)", coverage_sql)
         self.assertIn("r.validation_status = %s", coverage_sql)
@@ -828,7 +818,7 @@ class FinanceRepositoryTests(unittest.TestCase):
                 validation=validation,
             )
 
-        self.assertEqual(1, len(records))
+        self.assertTrue(all(sql.startswith("SELECT") for sql, _params in records))
         self.assertTrue(records[0][0].startswith("SELECT * FROM finance_sync_runs"))
 
     def test_seed_mapping_scan_is_limited_to_enabled_platforms(self) -> None:

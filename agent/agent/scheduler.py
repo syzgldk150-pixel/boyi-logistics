@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
 import os
@@ -9,7 +10,7 @@ import stat
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import RLock
-from typing import Any, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -21,7 +22,7 @@ from agent.automation_plugins.release_scope import (
     DEFERRED_R7_LEGACY_SCHEDULE_GENERATION,
     DEFERRED_R7_PLUGIN_IDS,
 )
-from agent.orchestration.models import Actor, ActorType
+from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
 from shared.automation_project_manifest import get_first_party_automation_project
 from shared.finance.sources import enabled_finance_platforms
@@ -41,6 +42,7 @@ FINANCE_STARTUP_TASK_ID = "finance_startup_catchup"
 AUTOMATION_JOB_OWNER_MARKER = "_boyi_automation_owner_v1"
 SCHEDULER_RELEASE_HOLD_ENV = "BOYI_SCHEDULER_RELEASE_HOLD_FILE"
 SCHEDULER_RELEASE_HOLD_NAME = "scheduler-release.pause"
+SCHEDULER_ACCEPTANCE_RETRY_DELAYS_SECONDS = (2.0, 10.0, 30.0)
 
 
 class DeferredR7ScheduleIdentityError(RuntimeError):
@@ -1133,33 +1135,91 @@ async def _execute_scheduled_tool(
         invoker = automation_project_invoker or _automation_project_invoker
         if invoker is None or not hasattr(invoker, "invoke_trusted_and_wait"):
             raise RuntimeError("Scheduled automation project invoker is unavailable")
-        return await invoker.invoke_trusted_and_wait(
-            project_id,
-            entrypoint="scheduler",
-            request_id=idempotency_key,
-            actor=Actor(
-                ActorType.SCHEDULER,
-                task_id,
-                roles=("system",),
-                authenticated_by="apscheduler",
-            ),
-            trusted_context=execution_context,
-            idempotency_key=idempotency_key,
-            expected_automation_generation=automation_generation,
-            expected_project_configuration_version=configuration_version,
+        acceptance = {"accepted": False}
+
+        async def mark_accepted(_receipt: Any) -> None:
+            acceptance["accepted"] = True
+
+        async def submit_project_once() -> Any:
+            return await invoker.invoke_trusted_and_wait(
+                project_id,
+                entrypoint="scheduler",
+                request_id=idempotency_key,
+                actor=Actor(
+                    ActorType.SCHEDULER,
+                    task_id,
+                    roles=("system",),
+                    authenticated_by="apscheduler",
+                ),
+                trusted_context=execution_context,
+                idempotency_key=idempotency_key,
+                expected_automation_generation=automation_generation,
+                expected_project_configuration_version=configuration_version,
+                on_accepted=mark_accepted,
+            )
+
+        return await _retry_unaccepted_persistence(
+            submit_project_once,
+            accepted=lambda: acceptance["accepted"],
         )
     if str(tool_name or "").startswith("automation."):
         raise RuntimeError(
             "Scheduled automation command is missing an explicit project identity"
         )
-    return await agent_core.execute_tool(
-        tool_name,
-        arguments,
-        actor=Actor(ActorType.SCHEDULER, task_id, roles=("system",)),
-        source="scheduler",
-        idempotency_key=idempotency_key,
-        execution_context=execution_context,
+    acceptance = {"accepted": False}
+
+    def mark_submitted(_receipt: Mapping[str, Any]) -> None:
+        acceptance["accepted"] = True
+
+    async def submit_tool_once() -> Any:
+        return await agent_core.execute_tool(
+            tool_name,
+            arguments,
+            actor=Actor(ActorType.SCHEDULER, task_id, roles=("system",)),
+            source="scheduler",
+            idempotency_key=idempotency_key,
+            execution_context=execution_context,
+            on_submitted=mark_submitted,
+        )
+
+    return await _retry_unaccepted_persistence(
+        submit_tool_once,
+        accepted=lambda: acceptance["accepted"],
     )
+
+
+async def _retry_unaccepted_persistence(
+    submit_once: Callable[[], Awaitable[Any]],
+    *,
+    accepted: Callable[[], bool],
+) -> Any:
+    """Retry only a Command acceptance that never returned a receipt."""
+
+    retry_delays = SCHEDULER_ACCEPTANCE_RETRY_DELAYS_SECONDS
+    for attempt in range(len(retry_delays) + 1):
+        try:
+            result = await submit_once()
+        except OrchestrationError as exc:
+            if (
+                accepted()
+                or exc.code != "PERSISTENCE_UNAVAILABLE"
+                or attempt >= len(retry_delays)
+            ):
+                raise
+        else:
+            persistence_unavailable = (
+                isinstance(result, Mapping)
+                and str(result.get("error_code") or "").strip().upper()
+                == "PERSISTENCE_UNAVAILABLE"
+            )
+            if (
+                accepted()
+                or not persistence_unavailable
+                or attempt >= len(retry_delays)
+            ):
+                return result
+        await asyncio.sleep(retry_delays[attempt])
+    raise AssertionError("scheduler acceptance retry loop exhausted unexpectedly")
 
 
 def _update_task_status(agent_core, task_id: str, status: str, result: Any) -> None:

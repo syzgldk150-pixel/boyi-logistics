@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -47,6 +48,21 @@ class PluginStateRequest(BaseModel):
     enabled: bool
     request_id: str = Field(min_length=1, max_length=64)
     expected_record_version: int = Field(ge=1)
+
+
+class SourceContinuationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    producer_instance_id: str = Field(min_length=1, max_length=128)
+    expected_revision: int = Field(ge=1)
+    expected_producer_instance_id: str | None
+    request_id: str = Field(min_length=36, max_length=36)
+
+
+class PluginSettingsRestoreRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    generation: int = Field(ge=1)
+    expected_project_configuration_version: int = Field(ge=0)
+    request_id: str = Field(min_length=36, max_length=36)
 
 
 class PluginUninstallRequest(BaseModel):
@@ -555,6 +571,7 @@ def create_automation_plugin_management_router(
     actor_provider: Callable[[Request], Actor],
     include_worker_routes: bool = True,
     scheduler_refresh_provider: Callable[[], Mapping[str, Any]] | None = None,
+    policy_service_provider: Callable[[], Any] | None = None,
 ) -> APIRouter:
     """Build the plugin API without importing the Agent composition root."""
 
@@ -564,6 +581,13 @@ def create_automation_plugin_management_router(
     async def plugin_catalog(request: Request) -> dict[str, Any] | JSONResponse:
         actor = actor_provider(request)
         refresh_resources = request.query_params.get("refresh_resources")
+        module = request.query_params.get("module")
+        summary = request.query_params.get("summary")
+        if module not in {None, "automation", "finance", "customer_service"} or summary not in {None, "1"}:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "data": None,
+                "error": {"code": "PLUGIN_MODULE_INVALID", "message": "插件所属模块无效"},
+            })
         if refresh_resources not in {None, "1"}:
             return JSONResponse(
                 status_code=400,
@@ -580,9 +604,10 @@ def create_automation_plugin_management_router(
             from agent.feishu_resource_catalog import refresh_feishu_resource_catalog
 
             refresh_feishu_resource_catalog()
-        return await _service_response(
-            lambda: service_provider().catalog_projection(actor=actor)
-        )
+        options = {"module": module, "summary": summary == "1"} if module is not None or summary else {}
+        if summary == "1" and policy_service_provider is not None:
+            options["policy_projection"] = lambda identities: policy_service_provider().list_policies(automation_ids=identities)
+        return await _service_response(lambda: service_provider().catalog_projection(actor=actor, **options))
 
     if include_worker_routes:
 
@@ -631,6 +656,7 @@ def create_automation_plugin_management_router(
                 request_id=fields["request_id"],
                 transport_package_sha256=fields["package_sha256"],
                 actor=actor,
+                **({"module": request.query_params["module"]} if "module" in request.query_params else {}),
             )
         )
         return _refresh_after_committed_operation(
@@ -664,6 +690,7 @@ def create_automation_plugin_management_router(
                 request_id=fields["request_id"],
                 transport_package_sha256=fields["package_sha256"],
                 actor=actor,
+                **({"module": request.query_params["module"]} if "module" in request.query_params else {}),
             )
         )
 
@@ -692,6 +719,7 @@ def create_automation_plugin_management_router(
                 transport_package_sha256=fields["package_sha256"],
                 raw_intent=fields["intent"],
                 actor=actor,
+                **({"module": request.query_params["module"]} if "module" in request.query_params else {}),
             )
         )
         return _refresh_after_committed_operation(
@@ -1073,10 +1101,6 @@ def create_automation_plugin_management_router(
             lambda: service_provider().settings_context(automation_id, actor=actor)
         )
 
-    @router.get(
-        "/internal/v1/automation/instances/{automation_id}/settings-assets/{asset_path:path}",
-        response_model=None,
-    )
     async def read_plugin_settings_asset(
         automation_id: str,
         asset_path: str,
@@ -1099,13 +1123,36 @@ def create_automation_plugin_management_router(
             headers={
                 "Cache-Control": "private, no-store",
                 "Content-Security-Policy": (
-                    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                    "sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
                     "img-src 'self' data:; font-src 'self'; connect-src 'none'; "
                     "frame-ancestors 'self'; base-uri 'none'; form-action 'none'"
                 ),
                 "X-Content-Type-Options": "nosniff",
             },
         )
+
+    # Verified HTML/CSS/JS are binary assets. Keep authentication and the closed
+    # error envelope above, but do not JSON-decode a successful asset response.
+    router.add_api_route(
+        "/internal/v1/automation/instances/{automation_id}/settings-assets/{asset_path:path}",
+        read_plugin_settings_asset, methods=["GET"], response_model=None,
+        route_class_override=APIRoute,
+    )
+
+    @router.put("/internal/v1/automation/data-sources/{source_id}/producer", response_model=None)
+    async def continue_source(source_id: str, payload: SourceContinuationRequest, request: Request):
+        actor = actor_provider(request)
+        return await _service_response(lambda: service_provider().continue_data_source(
+            source_id, **payload.model_dump(), actor=actor,
+        ))
+
+    @router.get("/internal/v1/automation/instances/{automation_id}/settings-history", response_model=None)
+    async def settings_history(automation_id: str, request: Request):
+        return await _service_response(lambda: service_provider().plugin_settings_history(automation_id, actor=actor_provider(request)))
+
+    @router.put("/internal/v1/automation/instances/{automation_id}/settings-restore", response_model=None)
+    async def restore_settings(automation_id: str, payload: PluginSettingsRestoreRequest, request: Request):
+        return await _service_response(lambda: service_provider().restore_plugin_settings(automation_id, **payload.model_dump(), actor=actor_provider(request)))
 
     @router.put(
         "/internal/v1/automation/instances/{automation_id}/plugin-settings",

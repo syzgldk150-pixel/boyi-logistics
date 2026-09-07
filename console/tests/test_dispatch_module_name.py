@@ -47,8 +47,14 @@ class AutomationModuleNameTests(unittest.TestCase):
     def test_automation_page_title_and_breadcrumb_use_short_name(self):
         automation_template = (CONSOLE_DIR / "templates" / "automation.html").read_text(encoding="utf-8")
 
-        self.assertIn("{% block title %}自动化 | {{ app_title }}{% endblock %}", automation_template)
-        self.assertIn("{% block breadcrumb %}自动化{% endblock %}", automation_template)
+        from jinja2 import Environment, FileSystemLoader
+        env = Environment(loader=FileSystemLoader(CONSOLE_DIR / "templates"))
+        env.filters["urlencode"] = str
+        template = env.get_template("automation.html")
+        for title in ("自动化", "财务数据源", "客服数据源"):
+            context = template.new_context({"app_title": "Console", "management_title": title})
+            self.assertEqual(f"{title} | Console", "".join(template.blocks["title"](context)))
+            self.assertEqual(title, "".join(template.blocks["breadcrumb"](context)))
         self.assertNotIn("Agent 自动化", automation_template)
 
     def test_yunda_login_alert_uses_short_automation_name(self):

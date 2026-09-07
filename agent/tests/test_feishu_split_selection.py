@@ -29,6 +29,8 @@ class FakeProjectEntrypoints:
 
     async def invoke_feishu(self, **kwargs):
         self.calls.append(dict(kwargs))
+        if kwargs.get("on_accepted") is not None:
+            await kwargs["on_accepted"]({"run_id": "run-split"})
         if self.results:
             return dict(self.results.pop(0))
         return {
@@ -249,7 +251,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         ), patch.object(message_handler, "_reply_text", side_effect=fake_reply):
             asyncio.run(message_handler._process_and_reply("分批", "user", "chat"))
 
-        self.assertTrue(any("正在生成" in reply for reply in replies))
+        self.assertTrue(any("已开始生成分批问题件候选清单" in reply for reply in replies))
         self.assertFalse(any("脚本正在执行中" in reply for reply in replies))
         self.assertEqual(preview_run_id, pending_store["chat"]["preview_run_id"])
         self.assertEqual(1, len(self.project_entrypoints.calls))

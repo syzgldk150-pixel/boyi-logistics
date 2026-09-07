@@ -230,6 +230,9 @@ class _State:
         self.domain_events: list[dict] = []
         self.outbox_events: list[dict] = []
         self.commands_by_idempotency: dict[tuple[str, str], dict] = {}
+        self.command_models_by_id: dict[str, object] = {}
+        self.gateway_receipts: dict[str, dict] = {}
+        self.acceptance_lock_trace: list[str] = []
         self.active_automation_run: dict | None = None
         self.automation_runs: list[dict] = []
         self.automation_run_facts: dict[str, dict] = {}
@@ -246,8 +249,8 @@ class _AutomationProjects:
     def _state(self) -> _State:
         return self._repository.state
 
-    def list_policies(self):
-        return [dict(self._state.policy)]
+    def list_policies(self, *, automation_ids=None):
+        return [dict(self._state.policy)] if automation_ids is None or self._state.policy["automation_id"] in automation_ids else []
 
     def get_policy(self, automation_id, **_kwargs):
         del automation_id
@@ -338,12 +341,12 @@ class _AutomationPlugins:
     def __init__(self, repository: "_Repository") -> None:
         self._repository = repository
 
-    def get_project(self, automation_id, **_kwargs):
-        return (
-            dict(self._repository.state.project)
-            if automation_id == AUTOMATION_ID
-            else None
-        )
+    def get_project(self, automation_id, **kwargs):
+        if kwargs.get("for_update"):
+            self._repository.state.acceptance_lock_trace.append("project:lock")
+        project = dict(self._repository.state.project)
+        project["automation_id"] = automation_id
+        return project
 
     def get_project_config(self, automation_id, **_kwargs):
         return (
@@ -371,6 +374,30 @@ class _Approvals:
         state.pending.remove(target)
         state.decisions.append(dict(row))
         return dict(row)
+
+    def get_latest_for_run(self, run_id, *, for_update=False):
+        del for_update
+        rows = [row for row in self._repository.state.pending if row["run_id"] == run_id]
+        if not rows:
+            return None
+        row = max(rows, key=lambda value: int(value.get("approval_round") or 0))
+        result = copy.deepcopy(row)
+        result.setdefault("status", "PENDING")
+        return result
+
+    def invalidate_pending(self, *, run_id, reason=None):
+        del reason
+        changed = 0
+        for row in self._repository.state.pending:
+            if row["run_id"] != run_id or row.get("status", "PENDING") not in {
+                "PENDING",
+                "APPROVED",
+            }:
+                continue
+            row["status"] = "INVALIDATED"
+            row["decided_at"] = datetime.now(timezone.utc)
+            changed += 1
+        return changed
 
 
 class _Events:
@@ -430,14 +457,51 @@ class _Runs:
             )
         return state.automation_runs
 
-    def list_unfinished_for_automation(self, automation_id, *, limit=101):
+    def list_unfinished_for_automation(self, automation_id, *, limit=100):
+        self._repository.state.acceptance_lock_trace.append("unfinished:scan")
         if automation_id != AUTOMATION_ID:
             return []
         terminal = {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
-        return [
-            str(row["run_id"])
+        rows = [
+            row
             for row in self._rows()
             if str(row.get("status") or "") not in terminal
+        ]
+
+        def is_blocking(row):
+            facts = self._repository.state.automation_run_facts.get(
+                str(row["run_id"]),
+                {},
+            )
+            lease_expires_at = row.get("lease_expires_at")
+            now = datetime.now(timezone.utc)
+            if (
+                isinstance(lease_expires_at, datetime)
+                and lease_expires_at.tzinfo is None
+            ):
+                now = now.replace(tzinfo=None)
+            live_run_lease = bool(str(row.get("worker_id") or "").strip()) and (
+                isinstance(lease_expires_at, datetime)
+                and lease_expires_at > now
+            )
+            return (
+                str(row.get("status") or "")
+                in {
+                    "RECEIVED",
+                    "CONTEXT_READY",
+                    "PLANNED",
+                    "VALIDATED",
+                    "FAILED_RETRYABLE",
+                }
+                or live_run_lease
+                or bool(facts.get("has_inflight_step"))
+                or bool(facts.get("has_live_generation_lease"))
+            )
+
+        rows.sort(key=lambda row: 0 if is_blocking(row) else 1)
+        return [
+            str(row["run_id"])
+            for row in rows
         ][:limit]
 
     def get(self, run_id, *, for_update=False):
@@ -472,7 +536,6 @@ class _Runs:
                 "error_code": error_code,
                 "error_summary": error_summary,
                 "retryable": False,
-                "next_attempt_at": None,
                 "worker_id": None,
                 "lease_expires_at": None,
                 "finished_at": finished_at,
@@ -532,7 +595,9 @@ class _Commands:
         self._repository = repository
 
     def get_by_idempotency(self, source, idempotency_key, *, for_update=False):
-        del for_update
+        self._repository.state.acceptance_lock_trace.append(
+            "idempotency:lock" if for_update else "idempotency:plain"
+        )
         row = self._repository.state.commands_by_idempotency.get(
             (source, idempotency_key)
         )
@@ -641,7 +706,7 @@ class _Gateway:
             if uow_guard is not None:
                 uow_guard(uow)
             if uow_acceptance_guard is not None:
-                uow_acceptance_guard(
+                acceptance_result = uow_acceptance_guard(
                     uow,
                     {
                         "command_id": command.command_id,
@@ -649,10 +714,55 @@ class _Gateway:
                         "run_id": "run-invoke",
                     },
                 )
+            else:
+                acceptance_result = None
             if self.repository.state.fail_gateway_create_after_guard:
                 raise InvalidStateError("synthetic gateway create failure")
             uow.commit()
+        replay_row = (
+            acceptance_result.get("replay_command")
+            if isinstance(acceptance_result, dict)
+            else None
+        )
+        if replay_row is not None:
+            command_id = str(replay_row["command_id"])
+            receipt = self.repository.state.gateway_receipts.get(command_id, {})
+            self.command = self.repository.state.command_models_by_id.get(
+                command_id,
+                command,
+            )
+            return CommandReceipt(
+                command_id=command_id,
+                work_item_id=str(receipt.get("work_item_id") or "work-invoke"),
+                run_id=str(receipt.get("run_id") or "run-invoke"),
+                status=RunStatus(str(receipt.get("status") or "RECEIVED")),
+                reused=True,
+            )
         self.command = command
+        self.repository.state.commands_by_idempotency[
+            (command.source, command.idempotency_key)
+        ] = {
+            "command_id": command.command_id,
+            "command_type": command.command_type,
+            "source": command.source,
+            "actor_type": command.actor.actor_type.value,
+            "actor_id": command.actor.actor_id,
+            "actor_roles_json": list(command.actor.roles),
+            "entity_refs_json": [ref.to_dict() for ref in command.entity_refs],
+            "parameters_json": copy.deepcopy(dict(command.parameters)),
+            "automation_id": command.automation_invocation.automation_id,
+            "automation_generation": command.automation_invocation.automation_generation,
+            "automation_invocation_json": command.automation_invocation.to_dict(),
+            "idempotency_key": command.idempotency_key,
+            "correlation_id": command.correlation_id,
+            "requested_at": command.requested_at,
+        }
+        self.repository.state.command_models_by_id[command.command_id] = command
+        self.repository.state.gateway_receipts[command.command_id] = {
+            "work_item_id": "work-invoke",
+            "run_id": "run-invoke",
+            "status": "RECEIVED",
+        }
         return CommandReceipt(
             command_id=command.command_id,
             work_item_id="work-invoke",

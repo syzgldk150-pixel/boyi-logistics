@@ -562,7 +562,9 @@ class ServiceV2ProjectContract:
             "heavy": True,
             "mutating": mutating,
             **summary_governance,
-            "permissions": sorted(capability_names),
+            # Actor roles belong to the core policy contract. Host capability
+            # grants are separately bound in runtime_permissions above.
+            "permissions": {"required_roles": ["admin"]},
             "service": primary["service"],
             "operation": primary["operation"],
         }
