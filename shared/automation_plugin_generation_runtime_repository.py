@@ -301,7 +301,10 @@ def get_generation_row(
     generation: int,
     *,
     for_update: bool = False,
+    include_execution_details: bool = True,
 ) -> dict[str, Any] | None:
+    if type(include_execution_details) is not bool or (for_update and not include_execution_details):
+        raise ValueError("locked runtime generation reads require complete execution details")
     suffix = " FOR UPDATE" if for_update else ""
     safe_automation_id = _required_text(automation_id, "automation_id")
     safe_generation = _positive_int(generation, "generation")
@@ -319,6 +322,8 @@ def get_generation_row(
         if row is None:
             return None
         row = _validated_generation_row(row)
+        if not include_execution_details:
+            return row
         cursor.execute(
             f"""
             SELECT * FROM automation_project_generation_coeffects

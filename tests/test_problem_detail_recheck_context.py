@@ -314,6 +314,7 @@ def test_open_problem_context_uses_exact_persisted_source_identity() -> None:
         account_id="account-1",
         platform="yunda",
         external_id="external-1",
+        source_direction="received",
     )
     assert _customer_problem_open_refs(_Uow()) == [
         {

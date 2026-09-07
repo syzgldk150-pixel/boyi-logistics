@@ -64,6 +64,7 @@ def customer_problem_identity(
     account_id: str,
     platform: str,
     external_id: str,
+    source_direction: str = "",
 ) -> str:
     """Return a stable pseudonymous identity without exposing ``account_id``.
 
@@ -74,15 +75,21 @@ def customer_problem_identity(
     generation side channel; plugin JSON never receives those IDs.
     """
 
-    material = canonical_json_bytes(
-        {
+    identity = {
             "domain": _CUSTOMER_IDENTITY_DOMAIN,
             "account_id": _text(account_id, "account_id", maximum=128),
             "platform": _text(platform, "platform", maximum=32).lower(),
             "external_id": _text(external_id, "external_id", maximum=256),
         }
-    )
-    return f"problem:v1:{hashlib.sha256(material).hexdigest()}"
+    version = "v1"
+    if source_direction:
+        direction = _text(source_direction, "source_direction", maximum=32).lower()
+        if direction not in {"received", "registered", "query", "published"}:
+            raise _error("customer source direction is unsupported", "BROKER_SOURCE_IDENTITY_MISMATCH")
+        identity["source_direction"] = direction
+        identity["domain"] = "boyi.customer-problem.identity.v2"
+        version = "v2"
+    return f"problem:{version}:{hashlib.sha256(canonical_json_bytes(identity)).hexdigest()}"
 
 
 def _error(message: str, code: str) -> PluginExecutionError:
@@ -294,12 +301,14 @@ class _OpaqueCodec:
         account_id: str,
         platform: str,
         external_id: str,
+        source_direction: str = "",
     ) -> str:
         del context
         return customer_problem_identity(
             account_id=account_id,
             platform=platform,
             external_id=external_id,
+            source_direction=source_direction,
         )
 
     def evidence(
@@ -410,9 +419,17 @@ def _customer_public_item(
                 account_id=account_id,
                 platform=platform,
                 external_id=external_id,
+                source_direction=source_direction,
             ),
         }
     )
+    if "raw_fields" in row:
+        if not isinstance(row["raw_fields"], Mapping):
+            raise _error("customer raw business fields are invalid", "BROKER_SOURCE_INVALID")
+        result["raw_fields"] = _scrub_business_value(row["raw_fields"])
+        if not isinstance(row.get("site_policy_required"), bool):
+            raise _error("customer source queue scope is unverified", "BROKER_SOURCE_INVALID")
+        result["site_policy_required"] = row["site_policy_required"]
     return result
 
 

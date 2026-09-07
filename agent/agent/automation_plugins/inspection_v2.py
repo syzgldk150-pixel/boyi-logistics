@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from agent.automation_plugins.errors import PluginConflictError
+from shared.plugin_management import management_for, settings_mode
 
 
 def _thaw_json(value: Any) -> Any:
@@ -27,20 +28,15 @@ def validate_service_v2_install_contract(verified: Any) -> None:
             "service-v2 inspection requires a verified package",
             code="PLUGIN_CONTRACT_INVALID",
         )
-    harness_contributions = manifest.contributes.get("harness", ())
-    if not isinstance(harness_contributions, (list, tuple)) or not harness_contributions:
-        raise PluginConflictError(
-            "service-v2 installation requires at least one AI assistant capability",
-            code="PLUGIN_AI_CAPABILITY_REQUIRED",
-        )
-    required_config = manifest.config_schema.get("required", ())
-    required_binding = any(
-        isinstance(item, Mapping) and item.get("required") is True
-        for item in (*manifest.account_roles, *manifest.resource_roles)
+    mode = settings_mode(
+        settings_ui=manifest.settings_ui,
+        account_roles=manifest.account_roles,
+        resource_roles=manifest.resource_roles,
+        config_schema=manifest.config_schema,
     )
-    if (required_config or required_binding) and manifest.settings_ui is None:
+    if mode == "unavailable":
         raise PluginConflictError(
-            "service-v2 required settings need a plugin-owned settings UI",
+            "required business configuration or resources need a plugin settings UI",
             code="PLUGIN_SETTINGS_UI_REQUIRED",
         )
 
@@ -159,6 +155,11 @@ def service_v2_wizard_projection(
             _thaw_json(manifest.settings_ui)
             if getattr(manifest, "settings_ui", None) is not None
             else None
+        ),
+        "management": management_for(manifest.plugin_id, getattr(manifest, "management", None)),
+        "settings_mode": settings_mode(
+            settings_ui=manifest.settings_ui, account_roles=manifest.account_roles,
+            resource_roles=manifest.resource_roles, config_schema=manifest.config_schema,
         ),
     }
 

@@ -1183,6 +1183,7 @@ class PluginExecutionRouter:
                     result,
                     verification=GenerationVerificationContext(
                         automation_id=lease.automation_id,
+                        plugin_id=lease.snapshot.plugin_id,
                         generation=lease.generation,
                         lease_id=lease.lease_id,
                         account_ids=tuple(account_ids),

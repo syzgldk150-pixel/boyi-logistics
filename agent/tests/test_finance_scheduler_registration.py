@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import yaml
 
-from agent.orchestration.models import ActorType
+from agent.orchestration.models import ActorType, OrchestrationError
 from agent.task_templates import (
     GOVERNED_SCHEDULED_TASK_IDS,
     GOVERNED_SCHEDULED_TASK_TEMPLATES,
@@ -588,6 +588,148 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
         finally:
             scheduler_module._scheduler = previous_scheduler
             scheduler_module._include_startup_catchup_for_process = previous_include
+
+    def test_scheduler_retries_unaccepted_project_persistence_with_stable_identity(self):
+        scheduler_module = _scheduler_module_for_gate_tests()
+        delays = []
+
+        async def record_sleep(delay):
+            delays.append(delay)
+
+        class _TransientInvoker:
+            def __init__(self):
+                self.calls = []
+
+            async def invoke_trusted_and_wait(self, automation_id, **kwargs):
+                self.calls.append((automation_id, kwargs))
+                if len(self.calls) <= 3:
+                    raise OrchestrationError(
+                        "PERSISTENCE_UNAVAILABLE",
+                        "synthetic transient persistence failure",
+                    )
+                await kwargs["on_accepted"](SimpleNamespace(run_id="run-1"))
+                return {"success": True, "status": "COMPLETED"}
+
+        core = _AgentCore()
+        invoker = _TransientInvoker()
+        scheduled_for = datetime.fromisoformat("2026-08-15T07:00:00+08:00")
+        with patch.object(scheduler_module.asyncio, "sleep", new=record_sleep):
+            result = asyncio.run(
+                scheduler_module._execute_scheduled_tool(
+                    core,
+                    task_id="scan_0700",
+                    tool_name="automation.scan_project.run",
+                    arguments={},
+                    scheduled_for=scheduled_for,
+                    cron_expression="0 7 * * *",
+                    configuration_version=3,
+                    automation_id="scan_project",
+                    automation_generation=4,
+                    automation_project_invoker=invoker,
+                )
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual([2.0, 10.0, 30.0], delays)
+        self.assertEqual(4, len(invoker.calls))
+        self.assertEqual(
+            {"scheduler:scan_0700:2026-08-15T07:00:00+08:00"},
+            {call[1]["idempotency_key"] for call in invoker.calls},
+        )
+        self.assertEqual(
+            {scheduled_for.isoformat()},
+            {
+                call[1]["trusted_context"]["scheduled_for"]
+                for call in invoker.calls
+            },
+        )
+
+    def test_scheduler_never_retries_a_persistence_error_after_acceptance(self):
+        scheduler_module = _scheduler_module_for_gate_tests()
+        delays = []
+
+        async def record_sleep(delay):
+            delays.append(delay)
+
+        class _AcceptedInvoker:
+            def __init__(self):
+                self.calls = 0
+
+            async def invoke_trusted_and_wait(self, _automation_id, **kwargs):
+                self.calls += 1
+                await kwargs["on_accepted"](SimpleNamespace(run_id="run-1"))
+                raise OrchestrationError(
+                    "PERSISTENCE_UNAVAILABLE",
+                    "synthetic post-acceptance failure",
+                )
+
+        invoker = _AcceptedInvoker()
+        with patch.object(scheduler_module.asyncio, "sleep", new=record_sleep):
+            with self.assertRaises(OrchestrationError):
+                asyncio.run(
+                    scheduler_module._execute_scheduled_tool(
+                        _AgentCore(),
+                        task_id="scan_0700",
+                        tool_name="automation.scan_project.run",
+                        arguments={},
+                        scheduled_for=datetime.fromisoformat(
+                            "2026-08-15T07:00:00+08:00"
+                        ),
+                        cron_expression="0 7 * * *",
+                        configuration_version=3,
+                        automation_id="scan_project",
+                        automation_generation=4,
+                        automation_project_invoker=invoker,
+                    )
+                )
+
+        self.assertEqual(1, invoker.calls)
+        self.assertEqual([], delays)
+
+    def test_fixed_scheduler_task_retries_only_before_submission_receipt(self):
+        scheduler_module = _scheduler_module_for_gate_tests()
+        delays = []
+
+        async def record_sleep(delay):
+            delays.append(delay)
+
+        class _TransientCore(_AgentCore):
+            async def execute_tool(self, tool_name, params, **trusted_context):
+                self.calls.append((tool_name, params, trusted_context))
+                if len(self.calls) == 1:
+                    return {
+                        "success": False,
+                        "error_code": "PERSISTENCE_UNAVAILABLE",
+                    }
+                trusted_context["on_submitted"]({"run_id": "run-1"})
+                return {"success": True}
+
+        core = _TransientCore()
+        with patch.object(scheduler_module.asyncio, "sleep", new=record_sleep):
+            result = asyncio.run(
+                scheduler_module._execute_scheduled_tool(
+                    core,
+                    task_id="finance_bills_0010",
+                    tool_name="sync_finance_bills",
+                    arguments={"mode": "sync"},
+                    scheduled_for=datetime.fromisoformat(
+                        "2026-08-15T00:10:00+08:00"
+                    ),
+                    cron_expression="10 0 * * *",
+                )
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual([2.0], delays)
+        self.assertEqual(2, len(core.calls))
+        self.assertEqual(
+            core.calls[0][2]["idempotency_key"],
+            core.calls[1][2]["idempotency_key"],
+        )
+        self.assertEqual(
+            core.calls[0][2]["execution_context"]["scheduled_for"],
+            core.calls[1][2]["execution_context"]["scheduled_for"],
+        )
 
     def test_reload_replaces_daily_jobs_and_removes_disabled_rows(self):
         if not HAS_APSCHEDULER:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase
 
 from agent.automation_plugins.errors import PluginConflictError
@@ -53,6 +54,9 @@ class _Policy:
         **kwargs: object,
     ) -> dict[str, object]:
         self.calls.append((automation_id, dict(kwargs)))
+        on_accepted = kwargs.get("on_accepted")
+        if callable(on_accepted):
+            await on_accepted(SimpleNamespace(run_id="run-service-v2"))
         return {"status": "COMPLETED", "success": True}
 
 
@@ -133,6 +137,26 @@ class ServiceV2FeishuDispatcherTests(IsolatedAsyncioTestCase):
             },
             kwargs,
         )
+
+    async def test_dispatch_forwards_post_commit_acceptance_callback(self):
+        registry = _Registry()
+        dispatcher, policy, _actor_calls = self._dispatcher(registry)
+        accepted: list[str] = []
+
+        async def on_accepted(receipt: object) -> None:
+            accepted.append(str(getattr(receipt, "run_id", "")))
+
+        result = await dispatcher.dispatch(
+            command_text="精确命令",
+            event_id="event-callback",
+            sender_id="sender-one",
+            chat_id="chat-one",
+            on_accepted=on_accepted,
+        )
+
+        self.assertEqual({"status": "COMPLETED", "success": True}, result)
+        self.assertEqual(["run-service-v2"], accepted)
+        self.assertIs(policy.calls[0][1]["on_accepted"], on_accepted)
 
     async def test_matching_command_requires_bounded_stable_transport_identity(self):
         for field_name in ("event_id", "sender_id", "chat_id"):

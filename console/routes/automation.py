@@ -71,6 +71,13 @@ def _automation_plugin_migration_route(path: str) -> tuple[str, str] | None:
 
 
 def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[str, list[str]]) -> bool:
+    if path in {"/module-data-sources/finance", "/module-data-sources/customer_service"}:
+        app._handle_module_sources_get(handler, path.rsplit("/", 1)[1])
+        return True
+    if path in {"/modules/finance/data-sources", "/modules/customer-service/data-sources"}:
+        module = "finance" if path == "/modules/finance/data-sources" else "customer_service"
+        app._render_automations(handler, query, module=module)
+        return True
     if path in {"/automations", "/workspaces/automations"}:
         app._render_automations(
             handler,
@@ -114,12 +121,17 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
 
 
 def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[str, list[str]]) -> bool:
+    if path.startswith("/module-data-sources/") and path.endswith("/producer"):
+        source_id = path[len("/module-data-sources/"):-len("/producer")]
+        if source_id and "/" not in source_id:
+            app._handle_source_continuation(handler, source_id)
+            return True
     extension_action = _automation_extension_route(path)
     if extension_action == "inspect":
-        app._handle_automation_plugin_package_upload(handler, inspect_only=True)
+        app._handle_automation_plugin_package_upload(handler, inspect_only=True, module=(_query.get("module") or [None])[0])
         return True
     if extension_action == "install":
-        app._handle_automation_plugin_package_upload(handler)
+        app._handle_automation_plugin_package_upload(handler, module=(_query.get("module") or [None])[0])
         return True
     if app._handle_automation_account_post(handler, path):
         return True

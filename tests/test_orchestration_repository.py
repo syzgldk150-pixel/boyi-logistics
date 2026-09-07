@@ -336,13 +336,13 @@ class _StubCommands:
 
 class _StubWorkItems:
     def get_by_command(self, command_id, *, for_update=False):
-        assert command_id == "old-command" and for_update
+        assert command_id == "old-command" and not for_update
         return {"work_item_id": "old-item"}
 
 
 class _StubRuns:
     def get_first_for_work_item(self, work_item_id, *, for_update=False):
-        assert work_item_id == "old-item" and for_update
+        assert work_item_id == "old-item" and not for_update
         return {"run_id": "old-run"}
 
 
@@ -508,8 +508,11 @@ class OrchestrationRepositoryTests(unittest.TestCase):
             "'COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED'",
             select_sql,
         )
+        self.assertIn("'PLANNED', 'VALIDATED', 'FAILED_RETRYABLE'", select_sql)
+        self.assertIn("blocking_step.status IN", select_sql)
+        self.assertIn("blocking_lease.expires_at", select_sql)
         self.assertNotIn("FOR UPDATE", select_sql)
-        self.assertEqual(("daily_sign", 101), select_params)
+        self.assertEqual(("daily_sign", 100), select_params)
         self.assertEqual(["run-1", "run-2"], run_ids)
 
     def test_automation_supersession_facts_cover_steps_leases_and_receipts(self):

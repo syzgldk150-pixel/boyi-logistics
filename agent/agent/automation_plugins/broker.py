@@ -397,6 +397,7 @@ class BrokerGrant:
     # consume still rejects every write unless its exact context and recorder
     # are present.
     write_attempt_context: Mapping[str, object] = field(default_factory=dict)
+    execution_resource_keys: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass
@@ -476,6 +477,8 @@ class LocalBrokerCapabilityIssuer:
         ttl = max(1, min(int(ttl_seconds), 3600))
         token = secrets.token_urlsafe(32)
         digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+        from shared.execution_resource_journal import EXECUTION_RESOURCE_KEYS
+
         grant = BrokerGrant(
             automation_id=str(automation_id),
             plugin_version=str(plugin_version),
@@ -487,6 +490,7 @@ class LocalBrokerCapabilityIssuer:
             account_bindings=dict(account_bindings),
             resource_bindings=dict(resource_bindings),
             write_attempt_context=dict(write_attempt_context or {}),
+            execution_resource_keys=EXECUTION_RESOURCE_KEYS.get(),
         )
         raw_limit = runtime_permissions.get("max_broker_calls")
         if isinstance(raw_limit, bool) or not isinstance(raw_limit, int) or not 0 <= raw_limit <= 1000:
@@ -928,6 +932,16 @@ class LocalBrokerCapabilityIssuer:
                     "target_ref_sha256": target_ref_sha256,
                     "target_ref_json": target_ref,
                 }
+                if current.grant.execution_resource_keys:
+                    receipt['execution_resource_keys_json'] = [list(key) for key in current.grant.execution_resource_keys]
+                if (
+                    receipt_context["plugin_id"] == "sync_scan_codes"
+                    and operation == "projection.invoke"
+                    and action == "scan.snapshot.replace"
+                ):
+                    from shared.scan_snapshot_recovery import closed_scan_payload
+
+                    receipt["scan_recovery_payload_json"] = closed_scan_payload(arguments)
                 recorder(receipt)
             except Exception:
                 with self._lock:

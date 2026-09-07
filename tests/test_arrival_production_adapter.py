@@ -553,6 +553,8 @@ def test_arrive_sheet_mismatch_after_write_is_unknown(
     )
     monkeypatch.setattr(arrival, "_write_sheet_call", lambda _action, _params: True)
     monkeypatch.setattr(arrival, "_fresh_sheet_rows", lambda *_args, **_kwargs: [])
+    sleeps: list[float] = []
+    monkeypatch.setattr(arrival.time, "sleep", sleeps.append)
 
     with pytest.raises(PluginExecutionError) as exc:
         arrival._replace_arrive_sheet(
@@ -562,6 +564,7 @@ def test_arrive_sheet_mismatch_after_write_is_unknown(
         )
 
     assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
+    assert sleeps == [0.5, 1.0, 2.0]
 
 
 def test_arrive_sheet_binding_failure_stays_prewrite_and_never_calls_feishu(
@@ -656,6 +659,51 @@ def test_arrival_stats_sheet_accepts_lost_response_only_after_exact_fresh_readba
     assert result["record_count"] == 1
 
 
+def test_arrival_stats_sheet_rechecks_acknowledged_write_until_exact_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resource_id = "resource-stats-primary"
+    resource = {
+        "resource_kind": "feishu_sheet",
+        "spreadsheet_token": "managed-token",
+        "snapshot_range": "Stats!A2:S100",
+        "clear_range": "Stats!A2:S100",
+        "title_range": "Stats!A1:S1",
+        "_meta": {"resource_key": resource_id},
+    }
+    records = [_stats_record()]
+    values = arrival._stats_values("stats", records, "2026-08-15")
+    expected_data = arrival._canonical_rows(values[1:], width=19)
+    expected_title = arrival._canonical_rows([values[0]], width=19)
+    data_reads = iter([[], expected_data])
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(arrival, "_load_resource", lambda _exact: resource)
+    monkeypatch.setattr(arrival, "_write_sheet_call", lambda _action, _params: True)
+
+    def fresh(_resource, value_range, *, width):
+        assert _resource == resource
+        assert width == 19
+        if value_range == "Stats!A2:S100":
+            return next(data_reads)
+        if value_range == "Stats!A1:S1":
+            return expected_title
+        raise AssertionError(value_range)
+
+    monkeypatch.setattr(arrival, "_fresh_sheet_rows", fresh)
+    monkeypatch.setattr(arrival.time, "sleep", sleeps.append)
+
+    result = arrival._replace_arrival_stats_sheet(
+        resource_id,
+        "stats",
+        records,
+        "2026-08-15",
+    )
+
+    assert result["verified"] is True
+    assert sleeps == [0.5]
+
+
 def test_split_pending_sheet_uses_exact_resource_and_rejects_mismatch_as_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -674,6 +722,8 @@ def test_split_pending_sheet_uses_exact_resource_and_rejects_mismatch_as_unknown
     )
     monkeypatch.setattr(arrival, "_write_sheet_call", lambda _action, _params: True)
     monkeypatch.setattr(arrival, "_fresh_sheet_rows", lambda *_args, **_kwargs: [])
+    sleeps: list[float] = []
+    monkeypatch.setattr(arrival.time, "sleep", sleeps.append)
 
     with pytest.raises(PluginExecutionError) as exc:
         arrival._replace_arrival_stats_sheet(
@@ -684,6 +734,7 @@ def test_split_pending_sheet_uses_exact_resource_and_rejects_mismatch_as_unknown
         )
 
     assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
+    assert sleeps == [0.5, 1.0, 2.0]
 
 
 def test_split_pending_sheet_rechecks_after_lost_write_response_without_rewriting(
@@ -729,6 +780,46 @@ def test_split_pending_sheet_rechecks_after_lost_write_response_without_rewritin
     assert result["verified"] is True
     assert result["record_count"] == 1
     assert write_calls == ["clear_sheet", "write_sheet"]
+    assert sleeps == [0.5]
+
+
+def test_split_pending_sheet_rechecks_acknowledged_write_until_exact_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resource_id = "resource-split-pending"
+    resource = {
+        "resource_kind": "feishu_sheet",
+        "spreadsheet_token": "managed-token",
+        "sheet_id": "Split",
+        "range": "Split!A1:S1",
+        "clear_range": "Split!A2:S5000",
+        "_meta": {"resource_key": resource_id},
+    }
+    records = [_stats_record()]
+    expected = arrival._canonical_rows(
+        arrival._stats_values("split_pending", records, "2026-08-15"),
+        width=19,
+    )
+    reads = iter([[], expected])
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(arrival, "_load_resource", lambda _exact: resource)
+    monkeypatch.setattr(arrival, "_write_sheet_call", lambda _action, _params: True)
+    monkeypatch.setattr(
+        arrival,
+        "_fresh_sheet_rows",
+        lambda *_args, **_kwargs: next(reads),
+    )
+    monkeypatch.setattr(arrival.time, "sleep", sleeps.append)
+
+    result = arrival._replace_arrival_stats_sheet(
+        resource_id,
+        "split_pending",
+        records,
+        "2026-08-15",
+    )
+
+    assert result["verified"] is True
     assert sleeps == [0.5]
 
 
@@ -1441,6 +1532,8 @@ def test_arrival_archive_rejects_add_ack_for_another_fresh_sheet(
         "_write_sheet_call",
         lambda *args, **kwargs: writes.append((args, kwargs)) or True,
     )
+    sleeps: list[float] = []
+    monkeypatch.setattr(arrival.time, "sleep", sleeps.append)
 
     with pytest.raises(PluginExecutionError) as exc:
         arrival._archive_arrival_stats_sheet(
@@ -1451,6 +1544,7 @@ def test_arrival_archive_rejects_add_ack_for_another_fresh_sheet(
 
     assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
     assert writes == []
+    assert sleeps == [0.5, 1.0, 2.0]
 
 
 def test_arrival_archive_lookup_rejects_duplicate_target_date_titles(

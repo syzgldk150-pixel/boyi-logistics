@@ -714,6 +714,7 @@ def _validate_installed_target_version(
     cursor: Any,
     *,
     snapshot: Mapping[str, Any],
+    service_v2_contract_projector: Any = None,
 ) -> Mapping[str, Any]:
     runtime_model, plugin_api = _runtime_contract(snapshot)
     cursor.execute(
@@ -773,6 +774,19 @@ def _validate_installed_target_version(
         raise OrchestrationPersistenceError(
             "installed plugin manifest is invalid"
         )
+    if runtime_model == "SERVICE_V2":
+        if not callable(service_v2_contract_projector):
+            raise OrchestrationPersistenceError("service-v2 signed contract projector is required")
+        if _json_hash(manifest) != str(version.get("manifest_sha256") or ""):
+            raise ConcurrentUpdateError("installed service-v2 manifest digest changed")
+        # The Agent composition supplies its single manifest compiler. Shared
+        # only compares its result and never imports an Agent implementation.
+        manifest = service_v2_contract_projector(manifest)
+        if not isinstance(manifest, Mapping) or set(manifest) != {
+            "tool_contract", "governance_anchor", "runtime", "runtime_permissions",
+            "account_roles", "resource_roles",
+        }:
+            raise OrchestrationPersistenceError("service-v2 signed contract projection is not closed")
     action_contract_hash = _json_hash(execution_metadata.get("action_contract"))
     if action_contract_hash != str(
         version.get("tool_contract_sha256") or ""
@@ -817,6 +831,7 @@ class AutomationPluginGenerationTransitionRepositoryMixin:
         generation: int,
         *,
         expected_transition_token: str,
+        service_v2_contract_projector: Any = None,
     ) -> None:
         safe_automation_id = _required_text(automation_id, "automation_id")
         safe_generation = _positive_int(generation, "generation")
@@ -903,6 +918,7 @@ class AutomationPluginGenerationTransitionRepositoryMixin:
                 self,
                 cursor,
                 snapshot=snapshot,
+                service_v2_contract_projector=service_v2_contract_projector,
             )
             cursor.execute(
                 """

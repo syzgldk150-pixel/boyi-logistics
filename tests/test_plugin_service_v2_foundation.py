@@ -126,6 +126,9 @@ def test_service_generation_duplicates_runtime_contract_in_indexed_columns():
         "trust_source": "super_admin_upload",
         "enabled_entrypoints": [],
         "execution_metadata": {
+            "runtime_model": "SERVICE_V2", "plugin_api": "2.0.0",
+            "service_contracts": {"provides": [], "requires": []},
+            "contributions": {}, "storage_contract": {},
             "project_config_version": 1,
             "project_config": {},
             "account_bindings": {},
@@ -147,6 +150,28 @@ def test_service_generation_duplicates_runtime_contract_in_indexed_columns():
         "snapshot_sha256": _json_hash(snapshot),
     }
     assert _validated_generation_row(row)["runtime_model"] == "SERVICE_V2"
+    from shared.automation_plugin_repository import AutomationPluginRepository
+    from tests.test_automation_plugin_repository import _ScriptedConnection
+
+    for include_details in (True, False):
+        actions = [("FROM automation_project_generations", row, 1)]
+        if include_details:
+            actions += [("FROM automation_project_generation_coeffects", [], 0), ("FROM automation_project_generation_effects", [], 0)]
+        actions.append(("FROM automation_project_generation_transitions", {"phase": "STABLE", "transition_token": "isolated-transition"}, 1))
+        connection = _ScriptedConnection(actions)
+        read = AutomationPluginRepository(connection).get_generation_row("service-v2", 1, include_execution_details=include_details)
+        assert read["snapshot_sha256"] == row["snapshot_sha256"]
+        assert read["activation_phase"] == "STABLE"
+        assert read["activation_transition_token"] == "isolated-transition"
+        assert ("effects" in read) is include_details
+        assert ("coeffects" in read) is include_details
+        assert not connection.cursor_instance._actions
+    denied = AutomationPluginRepository(_ScriptedConnection([]))
+    with pytest.raises(ValueError, match="complete execution details"):
+        denied.get_generation_row("service-v2", 1, for_update=True, include_execution_details=False)
+    invalid = _ScriptedConnection([("FROM automation_project_generations", {**row, "plugin_api": "2.1.0"}, 1)])
+    with pytest.raises(Exception, match="snapshot integrity"):
+        AutomationPluginRepository(invalid).get_generation_row("service-v2", 1, include_execution_details=False)
     with pytest.raises(Exception, match="snapshot integrity"):
         _validated_generation_row({**row, "plugin_api": "2.1.0"})
 

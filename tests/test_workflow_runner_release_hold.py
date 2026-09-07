@@ -11,7 +11,7 @@ from agent.orchestration.models import (
     Plan,
     PlanStep,
 )
-from agent.orchestration.workflow_runner import WorkflowRunner
+from agent.orchestration.workflow_runner import WorkflowRunner, _ResourceWait
 
 
 class _ClaimRepository:
@@ -203,11 +203,12 @@ class WorkflowRunnerReleaseHoldTests(unittest.TestCase):
                 timeout=0.2,
             )
             await asyncio.sleep(0)
-            self.assertFalse(same_account.done())
+            with self.assertRaises(_ResourceWait):
+                await same_account
 
             other_release()
             first_release()
-            second_release = await asyncio.wait_for(same_account, timeout=0.2)
+            second_release = await runner._acquire_execution_slot(first_step, _plan(first_step), {})
             second_release()
             self.assertFalse(runner._execution_locks)
 
@@ -278,9 +279,10 @@ class WorkflowRunnerReleaseHoldTests(unittest.TestCase):
                 runner._acquire_execution_slot(browser_step, plan, capability)
             )
             await asyncio.sleep(0)
-            self.assertFalse(second.done())
+            with self.assertRaises(_ResourceWait):
+                await second
             first_release()
-            second_release = await asyncio.wait_for(second, timeout=0.2)
+            second_release = await runner._acquire_execution_slot(browser_step, plan, capability)
             second_release()
 
         asyncio.run(exercise())
@@ -311,10 +313,11 @@ class WorkflowRunnerReleaseHoldTests(unittest.TestCase):
                 )
             )
             await asyncio.sleep(0)
-            self.assertFalse(clock_slot.done())
+            with self.assertRaises(_ResourceWait):
+                await clock_slot
 
             price_release()
-            clock_release = await asyncio.wait_for(clock_slot, timeout=0.2)
+            clock_release = await runner._acquire_execution_slot(clock_step, _plan(clock_step), {"heavy": False})
             clock_release()
 
             ocr_step = _step(

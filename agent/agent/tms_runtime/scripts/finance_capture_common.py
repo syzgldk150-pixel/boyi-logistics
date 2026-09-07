@@ -49,6 +49,17 @@ class CaptureResult:
     summary_semantics: SummarySemantics = SummarySemantics.GROSS_BY_FEE_DIRECTION
 
 
+@dataclass(frozen=True)
+class RawFinanceCapture:
+    """Authenticated, fully paginated supplier rows for the signed parser."""
+
+    rows: list[dict[str, Any]]
+    summaries: list[dict[str, Any]]
+    source_site_code: str
+    source_site_name: str
+    validation: dict[str, Any]
+
+
 TRANSACTION_WHITELIST = frozenset(
     {
         "platform",

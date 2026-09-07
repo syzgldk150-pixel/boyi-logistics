@@ -19,12 +19,17 @@
   const openTabs = new Map();
   let activeTabKey = "";
   let currentPageRuntime = createPageRuntime();
+  const nativeFetch = window.fetch.bind(window);
+  const pageScriptCache = new Map();
 
   function createPageRuntime() {
     return {
       intervals: new Set(),
       timeouts: new Set(),
       listeners: [],
+      requests: new Set(),
+      cleanups: [],
+      closed: false,
     };
   }
 
@@ -71,12 +76,40 @@
     });
     runtime.intervals.forEach((id) => window.clearInterval(id));
     runtime.timeouts.forEach((id) => window.clearTimeout(id));
+    runtime.closed = true;
+    runtime.cleanups.forEach(cleanup => cleanup());
+    runtime.cleanups = [];
+    runtime.requests.forEach((controller) => controller.abort());
+    runtime.requests.clear();
     runtime.listeners = [];
     runtime.intervals.clear();
     runtime.timeouts.clear();
     if (runtime === currentPageRuntime) {
       currentPageRuntime = createPageRuntime();
     }
+  }
+
+  function pageRequest() {
+    const runtime = currentPageRuntime;
+    return async (input, options = {}) => {
+      if (runtime.closed) throw new DOMException("Page closed", "AbortError");
+      const controller = new AbortController();
+      const inherited = options.signal || (input instanceof Request ? input.signal : null);
+      const abort = () => controller.abort();
+      if (inherited?.aborted) abort();
+      else inherited?.addEventListener("abort", abort, {once: true});
+      runtime.requests.add(controller);
+      try {return await nativeFetch(input, {...options, signal: controller.signal});}
+      finally {
+        runtime.requests.delete(controller);
+        inherited?.removeEventListener("abort", abort);
+      }
+    };
+  }
+
+  function onPageCleanup(cleanup) {
+    if (currentPageRuntime.closed) cleanup();
+    else currentPageRuntime.cleanups.push(cleanup);
   }
 
   function applyReducedMotionState() {
@@ -111,6 +144,8 @@
 
   function getTabKey(url) {
     const pathname = url.pathname || "/";
+    if (["/modules/finance/data-sources", "/modules/customer-service/data-sources"].includes(pathname)
+        || /^\/automations\/[^/]+\/settings$/.test(pathname)) return pathname;
     if (pathname === "/" || pathname === "/portal") {
       return "/";
     }
@@ -376,6 +411,15 @@
     activateTab(key, { pushState: false, skipScroll: true });
   }
 
+  function updatePageQuery(key, value) {
+    const tab = openTabs.get(activeTabKey);
+    const url = new URL(window.location.href);
+    if (value) url.searchParams.set(key, value);
+    else url.searchParams.delete(key);
+    if (tab) tab.url = url;
+    window.history.replaceState(window.history.state, "", url.href);
+  }
+
   function applyPageChrome(tab) {
     const shell = document.querySelector(".app-shell");
     if (shell && tab.shellClass) {
@@ -535,7 +579,10 @@
   }
 
   function updateActiveNav(pathname = window.location.pathname) {
-    const currentPath = pathname || "/";
+    const owner = document.querySelector(".main-content:not([hidden]) [data-module-owner-url]")?.dataset.moduleOwnerUrl;
+    const currentPath = /^\/automations\/[^/]+\/settings$/.test(pathname)
+      && ["/automations", "/modules/finance/data-sources", "/modules/customer-service/data-sources"].includes(owner)
+      ? owner : pathname || "/";
     const navLinks = Array.from(document.querySelectorAll("[data-nav-list] .nav-link, .mobile-bottom-nav__item[href]"));
     const hasSpecificNavMatch = navLinks.some((link) => {
       const href = link.getAttribute("href");
@@ -1061,6 +1108,10 @@
   async function executeBodyScripts(nextDocument) {
     const scripts = Array.from(nextDocument.body.querySelectorAll("script"));
     for (const script of scripts) {
+      const scriptType = (script.getAttribute("type") || "").trim().toLowerCase();
+      if (scriptType && !["text/javascript", "application/javascript"].includes(scriptType)) {
+        continue;
+      }
       const src = script.getAttribute("src") || "";
       if (src.includes("/static/console_ui.js")) {
         continue;
@@ -1070,7 +1121,17 @@
         continue;
       }
       if (src) {
-        await appendExternalScript(script, document.body);
+        const url = new URL(src, window.location.href);
+        if (url.origin === window.location.origin && url.pathname.startsWith("/static/")) {
+          if (!pageScriptCache.has(url.href)) {
+            const response = await nativeFetch(url.href, {credentials: "same-origin"});
+            if (!response.ok) throw new Error(`Page script unavailable: ${url.pathname}`);
+            pageScriptCache.set(url.href, await response.text());
+          }
+          runInlineScript(pageScriptCache.get(url.href));
+        } else {
+          await appendExternalScript(script, document.body);
+        }
       } else {
         runInlineScript(code);
       }
@@ -1125,8 +1186,10 @@
       existing = null;
     }
     if (existing && !options.reload) {
+      const queryChanged = existing.url.search !== url.search;
       existing.url = url;
       activateTab(tabKey, { pushState: options.pushState !== false });
+      if (queryChanged) existing.main.dispatchEvent(new CustomEvent("console:querychange", {detail: {url: url.href}}));
       return existing;
     }
     if (existing && options.reload) {
@@ -1290,7 +1353,7 @@
       "click",
       (event) => {
         const target = event.target instanceof Element ? event.target : null;
-        const link = target?.closest("[data-nav-list] a[href], [data-shell-home-link][href]");
+        const link = target?.closest("[data-nav-list] a[href], [data-shell-home-link][href], a[data-console-navigate][href]");
         if (!shouldHandleSidebarLink(event, link)) {
           return;
         }
@@ -1353,6 +1416,9 @@
   }
 
   window.ConsoleUI = {
+    pageRequest,
+    onPageCleanup,
+    updatePageQuery,
     refreshIcons,
     initPage,
     navigateContent,

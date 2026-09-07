@@ -6,6 +6,7 @@
 {% block subtitle %}处理融辉与韵达问题件{% endblock %}
 
 {% block page_actions %}
+<a class="ghost-btn" data-console-navigate href="/modules/customer-service/data-sources">数据源</a>
 <button class="ghost-btn customer-service-icon-btn" type="button" data-cs-publish-open title="发布问题件" aria-label="发布问题件">
   <i data-feather="send"></i>
   <span>发布</span>
@@ -33,6 +34,7 @@
 
   <section class="customer-service-toolbar">
     <form class="customer-service-filter-form customer-service-filter-form--compact" data-cs-filter-form>
+      <label class="customer-service-field"><span>来源</span><select data-cs-source data-source-selector="customer_service"><option value="">全部来源</option></select></label>
       <label class="customer-service-field customer-service-field--wide">
         <span>关键词</span>
         <input type="search" name="q" placeholder="单号 / 问题内容" autocomplete="off" data-cs-q>
@@ -285,5 +287,8 @@
     </div>
   </div>
 </section>
-<script src="/static/customer_service.js?v=20260621d"></script>
+{% endblock %}
+{% block scripts %}
+<script src="/static/customer_service.js?v=v32"></script>
+<script src="/static/module_source_selector.js?v=v32"></script>
 {% endblock %}

@@ -366,6 +366,9 @@ def test_self_pickup_contract_has_verified_human_selection_fields() -> None:
         }
     assert set(template.allowed_entrypoints) == {"console", "feishu"}
     assert template.legacy_arguments["dry_run"] is True
+    assert template.resource_bindings["feishu_route"] == (
+        "automation.feishu_route.self_pickup_problem_upload"
+    )
 
 
 def test_arrival_bootstrap_persists_disabled_pending_sheet_invocations() -> None:

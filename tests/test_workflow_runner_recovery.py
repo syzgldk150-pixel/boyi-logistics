@@ -277,7 +277,9 @@ class WorkflowRunnerRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("RUNNING", run["status"])
         calls = repository.uow.calls
         self.assertEqual(1, calls.count("enter"))
-        run_transition = ("run_transition", "RUNNING", True)
+        # Approval consumption admits the plan, but business attempt timing
+        # only starts after its execution resources have been acquired.
+        run_transition = ("run_transition", "RUNNING", False)
         self.assertLess(calls.index(("prepare", "run-id", "plan-hash")), calls.index(run_transition))
         self.assertLess(calls.index(run_transition), calls.index("commit"))
 

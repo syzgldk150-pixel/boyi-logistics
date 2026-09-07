@@ -67,6 +67,8 @@ FIRST_PARTY_RESULT_PATH = FIRST_PARTY_ROOT / "_runtime" / "result.py"
 # Payload and Broker-effect changes advance the signed executable contract.
 FIRST_PARTY_PACKAGE_VERSION = "1.0.20"
 _FIRST_PARTY_PACKAGE_VERSION_OVERRIDES: Mapping[str, str] = {
+    "sync_finance_bills": "1.0.21",
+    "sync_customer_service_problems": "1.0.21",
     "self_pickup_problem_upload": "1.0.26",
     "split_pending_problem_upload": "1.0.25",
     "sync_arrival_stats": "1.0.22",
@@ -1387,12 +1389,27 @@ def first_party_payload_files(manifest: AutomationPluginManifest) -> dict[str, b
         raise PluginPackageError(
             "first-party action source is incomplete: " + ", ".join(missing)
         )
-    return {
+    files = {
         "payload/main.py": FIRST_PARTY_RUNTIME_PATH.read_bytes(),
         "payload/action.py": action_path.read_bytes(),
         "payload/boyi_plugin_result.py": FIRST_PARTY_RESULT_PATH.read_bytes(),
         "payload/boyi_plugin_sdk.py": PLUGIN_SDK_SOURCE.encode("utf-8"),
     }
+    parser_file = {
+        "sync_customer_service_problems": "customer_problem_fields.py",
+        "sync_finance_bills": "finance_fields.py",
+    }.get(manifest.plugin_id)
+    if parser_file is not None:
+        fields_path = action_path.parent / parser_file
+        if not fields_path.is_file():
+            raise PluginPackageError("source field parser is missing")
+        files[f"payload/{parser_file}"] = fields_path.read_bytes()
+    if manifest.plugin_id == "sync_customer_service_problems":
+        policy_path = FIRST_PARTY_ROOT.parent.parent / "shared" / "customer_problem_policy.py"
+        if not policy_path.is_file():
+            raise PluginPackageError("customer queue policy source is missing")
+        files["payload/customer_queue_policy.py"] = policy_path.read_bytes()
+    return files
 
 
 def _builtin_release_files(manifest: AutomationPluginManifest) -> dict[str, bytes]:

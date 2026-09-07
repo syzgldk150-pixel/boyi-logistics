@@ -53,6 +53,7 @@ class _Target:
     def inspect_scan_unknown_write_context(self, **_kwargs: object) -> dict[str, object]:
         return {
             "state": "SCAN_RECOVERY_CONTEXT_IDENTIFIED",
+            "account_id": "account-1",
             "items": [{"bill_code": "R1", "station_name": "下一站"}],
             "attempt_started_at": datetime(2026, 9, 1, 11, 29),
             "attempt_finished_at": datetime(2026, 9, 1, 11, 30),
@@ -64,6 +65,26 @@ class _Target:
 
 
 class ScanUnknownWriteRecoveryTests(unittest.TestCase):
+    @patch("plugin_core_adapters.first_party.get_account_manager")
+    @patch("plugin_core_adapters.first_party._scan_next_readback_state")
+    def test_applied_proof_preserves_original_station_order_and_account(self, readback, account_manager):
+        from shared.automation_project_authorization import canonical_sha256
+
+        runtime, target = self._runtime()
+        runtime.catalog._entry.account_bindings = {"account_id": "new-account-not-original"}
+        original_context = target.inspect_scan_unknown_write_context()
+        items = [{"bill_code": "R2", "station_name": "A"}, {"bill_code": "R1", "station_name": "B"}]
+        original_context['items'] = items
+        target.inspect_scan_unknown_write_context = lambda **kwargs: original_context
+        readback.return_value = {"state": "APPLIED", "record_count": 2}
+        account_manager.return_value.require_active_binding_descriptor.return_value = {"session_profile": "original-profile"}
+        result = recover_scan_codes_unknown_write(runtime, "scan_codes", "trigger-original")
+        self.assertIsNotNone(result)
+        account_manager.return_value.require_active_binding_descriptor.assert_called_once_with('account-1')
+        proof = target.recovery_calls[0]['scan_applied_recovery']
+        self.assertEqual(proof['selection_sha256'], canonical_sha256(items))
+        self.assertEqual(proof['readback_count'], 2)
+
     def _runtime(self) -> tuple[object, _Target]:
         target = _Target()
         entry = SimpleNamespace(
@@ -133,6 +154,31 @@ class ScanUnknownWriteRecoveryTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual(target.recovery_calls, [])
+
+    @patch("plugin_core_adapters.first_party.get_account_manager")
+    @patch("plugin_core_adapters.first_party._scan_next_readback_state")
+    def test_invalid_preview_context_is_preserved_for_control_plane_review(
+        self,
+        readback: object,
+        account_manager: object,
+    ) -> None:
+        runtime, target = self._runtime()
+        target.inspect_scan_unknown_write_context = lambda **_kwargs: {
+            "state": "SCAN_RECOVERY_CONTEXT_INVALID"
+        }
+        account_manager.return_value.require_active_binding_descriptor.return_value = {
+            "session_profile": "profile-1"
+        }
+
+        result = recover_scan_codes_unknown_write(
+            runtime,
+            "scan_codes",
+            "request-1",
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(target.recovery_calls, [])
+        readback.assert_not_called()
 
 
 if __name__ == "__main__":

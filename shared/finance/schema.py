@@ -1,6 +1,6 @@
 """Migration-owned schema contract for the shared finance ledger.
 
-Finance DDL lives in ``agent/migrations/004_finance_runtime_tables.sql``.
+Finance DDL lives in the deployment migrations, including V3.2 migration 039.
 Runtime code may only validate that the deployment has applied it.
 """
 
@@ -25,6 +25,9 @@ FINANCE_REQUIRED_TABLES = frozenset(
         "finance_waybill_facts",
         "finance_anomalies",
         "finance_knowledge_exports",
+        "module_data_sources",
+        "module_data_source_accounts",
+        "finance_source_run_bindings",
     }
 )
 

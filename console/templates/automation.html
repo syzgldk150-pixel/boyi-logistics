@@ -1,12 +1,17 @@
 {% extends "base.html" %}
 
-{% block title %}自动化 | {{ app_title }}{% endblock %}
+{% block title %}{{ management_title|default("自动化") }} | {{ app_title }}{% endblock %}
 {% block body_class %}automation-page{% endblock %}
-{% block breadcrumb %}自动化{% endblock %}
+{% block breadcrumb %}{{ management_title|default("自动化") }}{% endblock %}
 {% block subtitle %}脚本、定时任务与运行状态{% endblock %}
 
 {% block page_actions %}
 {% if can_manage_plugins %}<button class="extension-install-trigger" type="button" data-extension-open><i data-feather="package"></i><span>安装扩展</span></button>{% endif %}
+<label class="automation-toolbar-field">
+  <span>搜索</span>
+  <input class="review-input compact-input" type="search" data-automation-search
+    aria-label="搜索当前模块实例" placeholder="搜索当前模块实例" autocomplete="off">
+</label>
 <label class="automation-toolbar-field">
   <span>排序</span>
   <select class="automation-sort-select" data-automation-sort>
@@ -59,7 +64,8 @@
 {% endmacro %}
 
 {% block content %}
-<section class="auto-page" data-reveal="tasks">
+{% include "_module_source_history.html" %}
+<section class="auto-page" data-reveal="tasks" data-management-module="{{ management_module|default('automation') }}">
   {% if automation_plugin_filter %}
   <div class="automation-filter-notice" role="status">
     <span>正在查看对应扩展的自动化实例</span>
@@ -311,7 +317,7 @@
             </div>
             {% if can_manage_plugins %}
             <div class="extension-instance__actions">
-              {% if plugin.settings_ui %}<a class="ghost-btn" href="/automations/{{ task.task_id | urlencode }}/settings"><i data-feather="settings"></i>设置</a>{% endif %}
+              {% if plugin.settings_mode in ["custom", "accounts", "none"] or plugin.settings_ui %}<a class="ghost-btn" data-console-navigate href="/automations/{{ task.task_id | urlencode }}/settings"><i data-feather="settings"></i>设置</a>{% endif %}
               <label class="ghost-btn extension-upgrade"><span>选择更新包</span><input type="file" accept=".zip,application/zip" data-extension-upgrade {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}></label>
               <button class="ghost-btn" type="button" data-extension-action="upgrade" {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>升级</button>
               {% if plugin.enabled %}<button class="ghost-btn" type="button" data-extension-action="disable" {% if not plugin.disable_allowed %}disabled{% endif %}>暂停</button>{% else %}<button class="ghost-btn" type="button" data-extension-action="enable" {% if not plugin.enable_allowed %}disabled{% endif %}>启用</button>{% endif %}
@@ -319,19 +325,6 @@
             </div>
             {% endif %}
           </div>
-
-          {% if false and plugin.execution_platform == 'windows' %}
-          <div class="automation-plugin-worker-binding">
-            <label for="plugin-worker-{{ task.task_id }}">运行设备</label>
-            <select id="plugin-worker-{{ task.task_id }}" class="review-input compact-input" data-plugin-worker-select {% if not can_manage_plugins %}disabled{% endif %}>
-              <option value="" {% if not plugin.device %}selected{% endif %}>请选择工作节点</option>
-              {% for worker in task.plugin_worker_options | default([], true) %}
-              <option value="{{ worker.device_id }}" {% if plugin.device and worker.device_id == plugin.device.device_id %}selected{% endif %} {% if not worker.binding_usable %}disabled{% endif %}>{{ worker.name }} · {{ worker.status_label }}</option>
-              {% endfor %}
-            </select>
-            <small>设备绑定会随“保存项目设置”一起提交。</small>
-          </div>
-          {% endif %}
 
           {% if task.plugin_blocked %}
           <div class="automation-plugin-block" role="status">
@@ -819,6 +812,7 @@
               </button>
             </div>
           </div>
+          <nav data-run-source-links aria-label="运行所属来源" hidden></nav>
           <pre class="auto-terminal-body" data-terminal-body></pre>
         </div>
 
@@ -840,9 +834,14 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/module_data_sources.js?v=v32"></script>
 {{ super() }}
 <script src="/static/extensions.js?v=automation-extensions-20260902"></script>
 <script>
+(() => {
+  const pageRoot = document.querySelector(".main-content:not([hidden])");
+  if (!pageRoot || pageRoot.dataset.automationInitialized) return;
+  pageRoot.dataset.automationInitialized = "true";
   /* ── helpers ── */
   function setDeep(target, path, value) {
     const parts = path.split(".");
@@ -1084,7 +1083,7 @@
   }
 
   function currentAutomationProvider() {
-    const selected = document.querySelector("[data-automation-provider-tab][aria-selected='true']");
+    const selected = pageRoot.querySelector("[data-automation-provider-tab][aria-selected='true']");
     const provider = selected ? selected.dataset.provider : "";
     return AUTOMATION_PROVIDERS.has(provider) ? provider : "ronghui";
   }
@@ -1094,8 +1093,8 @@
   }
 
   function updateAutomationStats(rows, provider) {
-    const totalCounter = document.querySelector("[data-total-count]");
-    const enabledCounter = document.querySelector("[data-enabled-count]");
+    const totalCounter = pageRoot.querySelector("[data-total-count]");
+    const enabledCounter = pageRoot.querySelector("[data-enabled-count]");
     const scopedRows = rows.filter(row => rowMatchesAutomationProvider(row, provider));
     const enabled = scopedRows.filter(row => row.querySelector("[data-automation-toggle]:checked")).length;
     if (totalCounter) totalCounter.textContent = scopedRows.length;
@@ -1104,7 +1103,7 @@
 
   function setAutomationProvider(provider, persist = true) {
     const nextProvider = AUTOMATION_PROVIDERS.has(provider) ? provider : "ronghui";
-    document.querySelectorAll("[data-automation-provider-tab]").forEach(tab => {
+    pageRoot.querySelectorAll("[data-automation-provider-tab]").forEach(tab => {
       const selected = tab.dataset.provider === nextProvider;
       tab.setAttribute("aria-selected", selected ? "true" : "false");
       tab.classList.toggle("is-active", selected);
@@ -1118,7 +1117,7 @@
 
   /* ── 统计栏实时同步 ── */
   function syncEnabledCount() {
-    const list = document.querySelector("[data-automation-list]");
+    const list = pageRoot.querySelector("[data-automation-list]");
     if (!list) return;
     const rows = Array.from(list.querySelectorAll("[data-automation-task-row]"));
     updateAutomationStats(rows, currentAutomationProvider());
@@ -1141,7 +1140,7 @@
   }
 
   /* ── 初始化每个表单 ── */
-  document.querySelectorAll(".js-automation-task-form").forEach(form => {
+  pageRoot.querySelectorAll(".js-automation-task-form").forEach(form => {
     syncScheduleUI(form);
     hideLegacyFeedback(form);
     const runtimeBox = form.querySelector("[data-runtime-feedback-box]");
@@ -1864,11 +1863,38 @@
             },
             signal: controller.signal,
           });
-          return await res.json();
+          const payload = await res.json();
+          renderRunSourceLinks(payload.collector_navigation);
+          return payload;
         } finally {
           clearTimeout(timeoutId);
         }
       };
+
+      function renderRunSourceLinks(navigation) {
+          const links = termDrawer.querySelector("[data-run-source-links]");
+          if (links && navigation) {
+            links.replaceChildren();
+            links.hidden = navigation.status === "not_collector";
+            if (navigation.module_url) {
+              const moduleLink = document.createElement("a");
+              moduleLink.href = navigation.module_url;
+              moduleLink.textContent = "返回所属数据源页";
+              moduleLink.dataset.consoleNavigate = "";
+              links.append(moduleLink, document.createTextNode(" · "));
+            }
+            for (const source of navigation.sources || []) {
+              const sourceLink = document.createElement("a");
+              sourceLink.href = source.url;
+              sourceLink.textContent = source.display_name;
+              sourceLink.dataset.consoleNavigate = "";
+              links.append(sourceLink, document.createTextNode(" · "));
+            }
+            if (!(navigation.sources || []).length && navigation.message) {
+              links.append(document.createTextNode(navigation.message));
+            }
+          }
+      }
 
       function termScrollToBottom() {
         if (autoScroll && termBody) termBody.scrollTop = termBody.scrollHeight;
@@ -3046,7 +3072,14 @@
             return;
           }
 
-          if (outputState && (outputState.running || (outputState.total || 0) > 0)) {
+          const pendingRun = !!outputState?.pending && !outputState.running && !outputState.runtime;
+          if (outputState && pendingRun) {
+            renderPendingRun(outputState);
+            startPolling(outputState.started_at || "");
+            return;
+          }
+
+          if (outputState?.running) {
             const startedAt = outputState.started_at || stamp;
             if (termDrawer && outputState.started_at) {
               termDrawer.dataset.runStartedAt = outputState.started_at;
@@ -3067,6 +3100,14 @@
             });
             syncRuntimeFeedback(form, null);
             startPolling(outputState.started_at || "");
+            return;
+          }
+
+          if (outputState?.runtime) {
+            stopRunProgress();
+            setRunUiState({ running: false, awaitingApproval: false, pendingRun: false });
+            syncRuntimeFeedback(form, outputState.runtime);
+            hideRunFeedback(form);
             return;
           }
 
@@ -3091,10 +3132,11 @@
 
   /* ── 列表排序 ── */
   function applyListState() {
-    const list = document.querySelector("[data-automation-list]");
+    const list = pageRoot.querySelector("[data-automation-list]");
     if (!list) return;
-    const sortSelect = document.querySelector("[data-automation-sort]");
-    const empty = document.querySelector("[data-automation-empty]");
+    const sortSelect = pageRoot.querySelector("[data-automation-sort]");
+    const empty = pageRoot.querySelector("[data-automation-empty]");
+    const query = (pageRoot.querySelector("[data-automation-search]")?.value || "").trim().toLocaleLowerCase();
     const mode = sortSelect ? sortSelect.value : "name";
     const provider = currentAutomationProvider();
     const rows = Array.from(list.querySelectorAll("[data-automation-task-row]"));
@@ -3117,27 +3159,29 @@
     let visible = 0;
     rows.forEach(r => {
       const providerOk = rowMatchesAutomationProvider(r, provider);
-      const ok = providerOk;
+      const ok = providerOk && (!query || (r.dataset.searchText || "").toLocaleLowerCase().includes(query));
       r.hidden = !ok;
       if (ok) visible++;
     });
     if (empty) empty.hidden = visible > 0;
   }
 
-  document.querySelectorAll("[data-automation-provider-tab]").forEach(tab => {
+  pageRoot.querySelectorAll("[data-automation-provider-tab]").forEach(tab => {
     tab.addEventListener("click", () => setAutomationProvider(tab.dataset.provider || "ronghui"));
     tab.addEventListener("keydown", event => {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
       event.preventDefault();
       setAutomationProvider(tab.dataset.provider === "yunda" ? "ronghui" : "yunda");
-      document.querySelector("[data-automation-provider-tab][aria-selected='true']")?.focus();
+      pageRoot.querySelector("[data-automation-provider-tab][aria-selected='true']")?.focus();
     });
   });
-  document.querySelector("[data-automation-sort]")?.addEventListener("change", applyListState);
+  pageRoot.querySelector("[data-automation-sort]")?.addEventListener("change", applyListState);
+  pageRoot.querySelector("[data-automation-search]")?.addEventListener("input", applyListState);
   setAutomationProvider(readAutomationProvider(), false);
 
 
-  feather.replace();
+  window.ConsoleUI.refreshIcons(pageRoot);
+})();
 </script>
 <script src="/static/automation_approval_policy.js?v=20260829-project-settings-save" defer></script>
 {% endblock %}

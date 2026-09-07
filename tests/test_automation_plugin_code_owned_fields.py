@@ -233,11 +233,15 @@ def test_code_owned_fields_require_exact_first_party_instance_identity() -> None
             "builtin_release",
         ),
     ):
+        expected_config = ("recheck_items",) if (
+            plugin_id == "sync_customer_service_problems"
+            and trust_source in {FIRST_PARTY_TRUST, "ed25519_upload"}
+        ) else ()
         assert first_party_code_owned_config_fields(
             automation_id=automation_id,
             plugin_id=plugin_id,
             trust_source=trust_source,
-        ) == ()
+        ) == expected_config
         assert first_party_code_owned_plan_fields(
             automation_id=automation_id,
             plugin_id=plugin_id,
@@ -366,11 +370,11 @@ class _Bindings:
         raise AssertionError("test instances have no resource bindings")
 
 
-def _finance_service(automation_id: str) -> tuple[AutomationProjectConfigurationService, _Repository]:
+def _finance_service(automation_id: str, *, trust_source=FIRST_PARTY_TRUST) -> tuple[AutomationProjectConfigurationService, _Repository]:
     entry = SimpleNamespace(
         automation_id=automation_id,
         plugin_id="sync_finance_bills",
-        trust_source=FIRST_PARTY_TRUST,
+        trust_source=trust_source,
         config_schema={
             "type": "object",
             "additionalProperties": False,
@@ -446,3 +450,32 @@ def test_configuration_save_applies_exact_finance_startup_marker() -> None:
     _save(daily_service, "finance_bills", {"mode": "sync"})
     assert daily_repository.saved is not None
     assert daily_repository.saved[1]["config"] == {"mode": "sync"}
+
+
+@pytest.mark.parametrize("automation_id", ("new-collector-instance", "finance_startup_catchup"))
+def test_signed_collector_upload_cannot_configure_or_gain_startup_mode(automation_id):
+    service, repository = _finance_service(automation_id, trust_source="ed25519_upload")
+    with pytest.raises(PluginConflictError) as raised:
+        _save(service, automation_id, {"mode": "sync", "_startup_catchup": True})
+    assert raised.value.code == "PROJECT_CONFIG_CODE_OWNED_FIELD"
+    assert repository.saved is None
+    _save(service, automation_id, {"mode": "sync"})
+    assert repository.saved[1]["config"] == {"mode": "sync"}
+
+
+@pytest.mark.parametrize("plugin_id,field", (("sync_finance_bills", "_startup_catchup"),
+    ("sync_customer_service_problems", "recheck_items")))
+def test_signed_collector_internal_fields_are_hidden_without_new_plan_authority(plugin_id, field):
+    identity = {"automation_id": "new-collector-instance", "plugin_id": plugin_id, "trust_source": "ed25519_upload"}
+    assert first_party_code_owned_config_fields(**identity) == (field,)
+    assert first_party_code_owned_plan_fields(**identity) == ()
+    assert normalize_first_party_code_owned_config(**identity, config={field: True, "mode": "sync"}) == {"mode": "sync"}
+
+
+def test_signed_scan_and_selection_upgrade_keep_preview_restrictions():
+    assert resolve_scan_execution_phase(automation_id="scan_codes", plugin_id="sync_scan_codes",
+        trust_source="ed25519_upload", arguments={"dry_run": True}) == SCAN_PHASE_PREVIEW
+    assert resolve_selection_execution_phase(automation_id="self_pickup_problem_upload", plugin_id="self_pickup_problem_upload",
+        trust_source="ed25519_upload", arguments={"dry_run": True, "selected_bill_codes": [], "preview_fingerprint": ""}) == "PREVIEW"
+    assert first_party_code_owned_config_fields(automation_id="scan_codes", plugin_id="sync_scan_codes",
+        trust_source="ed25519_upload") == ("_scan_preview_binding", "dry_run")

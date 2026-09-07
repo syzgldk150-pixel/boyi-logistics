@@ -52,7 +52,17 @@ class RegisteredToolExecutionAdapter:
             if direct_runner is not None:
                 timeout = max(1, int(capability.get("timeout") or 60))
                 with execution_capability_scope(step.tool_name, ttl_seconds=timeout + 30):
-                    raw = await asyncio.to_thread(direct_runner, dict(step.arguments))
+                    direct_task = asyncio.create_task(
+                        asyncio.to_thread(direct_runner, dict(step.arguments))
+                    )
+                    try:
+                        raw = await asyncio.shield(direct_task)
+                    except asyncio.CancelledError:
+                        # A running synchronous tool cannot be stopped by
+                        # cancelling its Future. Retain Runner resources until
+                        # the real function has exited; never claim zero effect.
+                        await asyncio.gather(direct_task, return_exceptions=True)
+                        raise
                 process_result: Mapping[str, Any] = {
                     "success": not (isinstance(raw, Mapping) and (raw.get("error") or raw.get("ok") is False)),
                     "data": raw,

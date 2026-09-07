@@ -50,6 +50,8 @@
     return SAFE_ENTRYPOINT.test(id) ? id : "";
   };
 
+  const safeRole = (value) => value === null ? null : safeEntryPoint(value);
+
   const safeProjection = (raw) => {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
     const pluginId = safeText(raw.plugin_id);
@@ -254,7 +256,9 @@
         if (!response.ok || payload?.ok !== true) throw new Error(responseMessage(payload, "安装失败，请重试相同请求。"));
         setFeedback(finalFeedback, "扩展安装请求已提交。", "success");
         if (finalButton instanceof HTMLButtonElement) finalButton.textContent = "已提交";
-        window.location.assign("/automations");
+        const module = new URL(finalForm.action).searchParams.get("module") || "automation";
+        const destination = {finance: "/modules/finance/data-sources", customer_service: "/modules/customer-service/data-sources", automation: "/automations"}[module];
+        window.location.assign(destination || "/automations");
       } catch (error) {
         setFeedback(finalFeedback, error instanceof Error ? error.message : "安装失败，请重试相同请求。", "error");
         if (finalButton instanceof HTMLButtonElement) {

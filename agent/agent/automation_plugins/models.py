@@ -339,6 +339,7 @@ class GenerationVerificationContext:
     started_mutating_call_count: int | None = None
     orchestration_run_id: str | None = None
     host_call_observations: tuple[Mapping[str, Any], ...] = ()
+    plugin_id: str = ""
 
 
 class GenerationBoundResult(dict[str, Any]):

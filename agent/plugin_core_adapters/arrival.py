@@ -12,7 +12,6 @@ import hashlib
 import json
 import logging
 import re
-import time
 import unicodedata
 import uuid
 from dataclasses import dataclass
@@ -20,6 +19,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Mapping, NoReturn, Sequence
 
+from agent import feishu_readback as _feishu_readback
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.manifest import canonical_json_bytes
 
@@ -118,6 +118,10 @@ _SHEET_RANGE_RE = re.compile(
     r"(?P<sheet>[^!]+)!(?P<start>[A-Z]+)(?P<start_row>[1-9][0-9]*):"
     r"(?P<end>[A-Z]+)(?P<end_row>[1-9][0-9]*)"
 )
+# Kept as compatibility aliases for focused adapter tests and older callers;
+# the retry policy itself lives in ``agent.feishu_readback``.
+time = _feishu_readback.time
+_FEISHU_READBACK_DELAYS = _feishu_readback.FEISHU_READBACK_DELAYS
 
 
 def _error(message: str, code: str) -> PluginExecutionError:
@@ -411,6 +415,36 @@ def _fresh_sheet_rows(
         return _canonical_rows(_sheet_values(raw), width=width)
     except Exception as exc:
         _unknown("arrival sheet fresh readback failed", cause=exc)
+
+
+def _retry_readback(
+    reader: Callable[[], Any],
+    matches: Callable[[Any], bool],
+    *,
+    label: str,
+) -> Any:
+    """Retry one fresh observation schedule without repeating the write."""
+
+    return _feishu_readback.retry_readback(
+        reader,
+        matches,
+        label=label,
+        retryable_error_codes={"WRITE_OUTCOME_UNKNOWN"},
+    )
+
+
+def _require_exact_readback(
+    reader: Callable[[], Any],
+    expected: Any,
+    *,
+    label: str,
+) -> Any:
+    return _feishu_readback.require_exact_readback(
+        reader,
+        expected,
+        label=label,
+        retryable_error_codes={"WRITE_OUTCOME_UNKNOWN"},
+    )
 
 
 def _arrival_stats_split_pending_recovery_readback(
@@ -734,19 +768,16 @@ def _repair_arrival_stats_split_pending_recovery(
                 "dry_run": False,
             },
         )
-        cleared = _fresh_sheet_rows(
-            target,
-            str(readback["managed_range"]),
-            width=19,
+        _require_exact_readback(
+            lambda: _fresh_sheet_rows(
+                target,
+                str(readback["managed_range"]),
+                width=19,
+            ),
+            readback["baseline"],
+            label="split-pending recovery clear",
         )
-        if cleared != readback["baseline"]:
-            _log_sheet_mismatch(
-                "split_pending_recovery_clear",
-                readback["baseline"],
-                cleared,
-            )
-            return unknown
-        write_acknowledged = _write_sheet_call(
+        _write_sheet_call(
             "write_sheet",
             {
                 "spreadsheet_token": target["spreadsheet_token"],
@@ -756,22 +787,19 @@ def _repair_arrival_stats_split_pending_recovery(
                 "dry_run": False,
             },
         )
-        delays = (0.0,) if write_acknowledged else (0.0, 0.5, 1.0, 2.0)
-        observed: list[list[str]] = []
-        for delay in delays:
-            if delay:
-                time.sleep(delay)
-            observed = _fresh_sheet_rows(
+        _require_exact_readback(
+            lambda: _fresh_sheet_rows(
                 target,
                 str(readback["managed_range"]),
                 width=19,
-            )
-            if observed == expected:
-                return {
-                    "status": "APPLIED",
-                    "reason": "ARRIVAL_STATS_SPLIT_PENDING_REPAIRED",
-                }
-        _log_sheet_mismatch("split_pending_recovery_write", expected, observed)
+            ),
+            expected,
+            label="split-pending recovery write",
+        )
+        return {
+            "status": "APPLIED",
+            "reason": "ARRIVAL_STATS_SPLIT_PENDING_REPAIRED",
+        }
     except Exception as exc:  # noqa: BLE001 - recovery repair remains fail closed
         logger.warning(
             "Arrival statistics unknown-write repair was not proven code=%s",
@@ -1498,28 +1526,33 @@ def _replace_arrive_sheet(
             "dry_run": False,
         },
     )
-    observed_rows = _fresh_sheet_rows(resource, clear["range"], width=width)
-    observed_rows = _canonical_arrive_readback(observed_rows, width=width)
-    if observed_rows == []:
-        if expected_rows:
-            _write_sheet_call(
-                "write_sheet",
-                {
-                    "spreadsheet_token": resource["spreadsheet_token"],
-                    "range": build_range_from_template(template["range"], len(expected_rows), width),
-                    "values": expected_rows,
-                    "as": "bot",
-                    "dry_run": False,
-                },
-            )
-            observed_rows = _fresh_sheet_rows(resource, clear["range"], width=width)
-            observed_rows = _canonical_arrive_readback(observed_rows, width=width)
-            if observed_rows != expected_snapshot:
-                _log_sheet_mismatch("data_write", expected_snapshot, observed_rows)
-                _unknown("arrive sheet data write was not confirmed by fresh readback")
-    elif observed_rows != expected_snapshot:
-        _log_sheet_mismatch("clear", expected_snapshot, observed_rows)
-        _unknown("arrive sheet clear was not confirmed by fresh readback")
+    observed_rows = _retry_readback(
+        lambda: _canonical_arrive_readback(
+            _fresh_sheet_rows(resource, clear["range"], width=width),
+            width=width,
+        ),
+        lambda observed: observed == [] or observed == expected_snapshot,
+        label="arrive sheet clear",
+    )
+    if observed_rows == [] and expected_rows:
+        _write_sheet_call(
+            "write_sheet",
+            {
+                "spreadsheet_token": resource["spreadsheet_token"],
+                "range": build_range_from_template(template["range"], len(expected_rows), width),
+                "values": expected_rows,
+                "as": "bot",
+                "dry_run": False,
+            },
+        )
+        observed_rows = _require_exact_readback(
+            lambda: _canonical_arrive_readback(
+                _fresh_sheet_rows(resource, clear["range"], width=width),
+                width=width,
+            ),
+            expected_snapshot,
+            label="arrive sheet data write",
+        )
 
     if title is not None:
         _write_sheet_call(
@@ -1532,10 +1565,11 @@ def _replace_arrive_sheet(
                 "dry_run": False,
             },
         )
-        observed_title = _fresh_sheet_rows(resource, title["range"], width=width)
-        if observed_title != title_canonical:
-            _log_sheet_mismatch("title", title_canonical, observed_title)
-            _unknown("arrive sheet title write was not confirmed by fresh readback")
+        observed_title = _require_exact_readback(
+            lambda: _fresh_sheet_rows(resource, title["range"], width=width),
+            title_canonical,
+            label="arrive sheet title write",
+        )
     else:
         observed_title = []
     return {
@@ -1602,9 +1636,8 @@ def _replace_arrival_stats_sheet(
                 "dry_run": False,
             },
         )
-        write_acknowledged = False
         if clear_result:
-            write_acknowledged = _write_sheet_call(
+            _write_sheet_call(
                 "write_sheet",
                 {
                     "spreadsheet_token": resource["spreadsheet_token"],
@@ -1619,27 +1652,11 @@ def _replace_arrival_stats_sheet(
             expected = _canonical_rows(values, width=19)
         except ValueError as exc:
             raise _error("split-pending sheet arguments are invalid", "BROKER_ARGUMENT_INVALID") from exc
-        readback_delays = (0.0,) if write_acknowledged else (0.0, 0.5, 1.0, 2.0)
-        readback_error: PluginExecutionError | None = None
-        observed: list[list[str]] = []
-        for delay in readback_delays:
-            if delay:
-                time.sleep(delay)
-            try:
-                observed = _fresh_sheet_rows(resource, managed_range, width=19)
-            except PluginExecutionError as exc:
-                if exc.code != "WRITE_OUTCOME_UNKNOWN":
-                    raise
-                readback_error = exc
-                continue
-            if observed == expected:
-                break
-        else:
-            _log_sheet_mismatch("split_pending", expected, observed)
-            _unknown(
-                "split-pending sheet fresh readback did not match",
-                cause=readback_error,
-            )
+        observed = _require_exact_readback(
+            lambda: _fresh_sheet_rows(resource, managed_range, width=19),
+            expected,
+            label="split-pending sheet",
+        )
         return {
             "ok": True,
             "verified": True,
@@ -1715,19 +1732,23 @@ def _replace_arrival_stats_sheet(
             },
         )
     width = len(values[0]) if values else 1
-    observed_data = _fresh_sheet_rows(resource, clear_target, width=width)
-    observed_title = (
-        _fresh_sheet_rows(resource, title["range"], width=width)
-        if title is not None
-        else []
-    )
     try:
         expected_data = _canonical_rows(write_values, width=width)
         expected_title = _canonical_rows([values[0]], width=width) if title is not None else []
     except ValueError as exc:
         raise _error("arrival statistics sheet arguments are invalid", "BROKER_ARGUMENT_INVALID") from exc
-    if observed_data != expected_data or observed_title != expected_title:
-        _unknown("arrival statistics sheet fresh readback did not match")
+    observed_data, observed_title = _require_exact_readback(
+        lambda: (
+            _fresh_sheet_rows(resource, clear_target, width=width),
+            (
+                _fresh_sheet_rows(resource, title["range"], width=width)
+                if title is not None
+                else []
+            ),
+        ),
+        (expected_data, expected_title),
+        label="arrival statistics sheet",
+    )
     return {
         "ok": True,
         "verified": True,
@@ -1778,21 +1799,35 @@ def _archive_arrival_stats_sheet(
             if isinstance(add_result, dict)
             else None
         )
-        try:
-            sheet_info = archive_tool._find_archive_sheet(
-                resource,
-                target_date,
-                refresh=True,
+        def read_created_sheet() -> Mapping[str, Any] | None:
+            try:
+                return archive_tool._find_archive_sheet(
+                    resource,
+                    target_date,
+                    refresh=True,
+                )
+            except Exception as exc:
+                _unknown("arrival archive sheet creation readback failed", cause=exc)
+
+        def created_sheet_matches(observed: object) -> bool:
+            if not isinstance(observed, Mapping):
+                return False
+            observed_id = str(observed.get("sheet_id") or "").strip()
+            return bool(
+                observed_id
+                and str(observed.get("title") or "").strip() == target_date
+                and (
+                    not acknowledged_sheet_id
+                    or str(acknowledged_sheet_id).strip() == observed_id
+                )
             )
-        except Exception as exc:
-            _unknown("arrival archive sheet creation readback failed", cause=exc)
-        if sheet_info is None:
-            _unknown("arrival archive sheet creation found no exact target-date sheet")
+
+        sheet_info = _retry_readback(
+            read_created_sheet,
+            created_sheet_matches,
+            label="arrival archive sheet creation",
+        )
         sheet_id = str(sheet_info.get("sheet_id") or "").strip()
-        if not sheet_id:
-            _unknown("arrival archive sheet creation returned no exact sheet identity")
-        if acknowledged_sheet_id and str(acknowledged_sheet_id).strip() != sheet_id:
-            _unknown("arrival archive creation acknowledgement changed sheet identity")
     else:
         sheet_id = str(sheet_info["sheet_id"])
     if str(sheet_info.get("title") or "").strip() != target_date:
@@ -1835,13 +1870,15 @@ def _archive_arrival_stats_sheet(
                 "dry_run": False,
             },
         )
-    observed = _fresh_sheet_rows(resource, clear_range, width=len(values[0]))
     try:
         expected = _canonical_rows(values, width=len(values[0]))
     except ValueError as exc:
         raise _error("arrival archive arguments are invalid", "BROKER_ARGUMENT_INVALID") from exc
-    if observed != expected:
-        _unknown("arrival archive fresh readback did not match the target-date snapshot")
+    observed = _require_exact_readback(
+        lambda: _fresh_sheet_rows(resource, clear_range, width=len(values[0])),
+        expected,
+        label="arrival archive",
+    )
     return {
         "ok": True,
         "verified": True,

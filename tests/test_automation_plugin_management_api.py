@@ -12,6 +12,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+
 from agent.automation_plugins.errors import PluginConflictError, PluginPackageError
 from agent.automation_plugins.management import (
     AutomationPluginManagementService,
@@ -44,6 +45,11 @@ from tests.automation_plugin_management_api_support import (
     _service_v2_install_intent,
 )
 
+
+def _verified_wizard_package():
+    return SimpleNamespace(package_sha256="a" * 64, manifest=SimpleNamespace(
+        schema_version=2, settings_ui=None, account_roles=(), resource_roles=(),
+        config_schema={"type": "object", "properties": {}, "required": []}))
 
 
 
@@ -180,7 +186,7 @@ def test_service_v2_inspect_projection_excludes_service_operation_and_package_au
     assert set(projection) == {
         "plugin_id", "name", "version", "host_api", "permissions", "account_roles",
         "resource_roles", "config_schema", "contributions", "scheduling",
-        "settings_ui",
+        "settings_ui", "management", "settings_mode",
     }
     assert all("service" not in item and "operation" not in item for item in projection["contributions"])
     assert "package_sha256" not in projection
@@ -619,9 +625,7 @@ def test_service_v2_wizard_installs_unknown_package_disabled_without_generic_con
     service = AutomationPluginManagementService(
         catalog=catalog,  # type: ignore[arg-type]
         lifecycle=SimpleNamespace(
-            inspect_service_v2_upload=lambda *_args, **_kwargs: SimpleNamespace(
-                package_sha256="a" * 64
-            ),
+            inspect_upload=lambda *_args, **_kwargs: _verified_wizard_package(),
             install_upload=install_upload,
             claim_service_v2_install_enable_base=claim_enable_base,
             set_enabled=set_enabled,
@@ -696,9 +700,7 @@ def test_service_v2_install_replay_does_not_configure_or_enable_instance() -> No
     service = AutomationPluginManagementService(
         catalog=catalog,  # type: ignore[arg-type]
         lifecycle=SimpleNamespace(
-            inspect_service_v2_upload=lambda *_args, **_kwargs: SimpleNamespace(
-                package_sha256="a" * 64
-            ),
+            inspect_upload=lambda *_args, **_kwargs: _verified_wizard_package(),
             install_upload=lambda *_args, **_kwargs: instance(),
             claim_service_v2_install_enable_base=(
                 lambda *_args, **_kwargs: 4
@@ -805,9 +807,7 @@ def test_service_v2_install_does_not_enter_enable_or_reconcile_workflow() -> Non
             raise RuntimeError("injected post-enable failure")
 
     lifecycle = SimpleNamespace(
-        inspect_service_v2_upload=lambda *_args, **_kwargs: SimpleNamespace(
-            package_sha256="a" * 64
-        ),
+        inspect_upload=lambda *_args, **_kwargs: _verified_wizard_package(),
         install_upload=lambda *_args, **_kwargs: instance(),
         claim_service_v2_install_enable_base=lambda *_args, **_kwargs: 4,
         set_enabled=set_enabled,
@@ -1194,6 +1194,7 @@ def test_service_v2_transition_readiness_requires_exact_enabled_projection_gener
             },
         )
         return _entry(
+            enabled=True,
             runtime_model=PluginRuntimeModel.SERVICE_V2.value,
             target_generation=4,
             committed_generation=4,
@@ -1233,6 +1234,16 @@ def test_service_v2_transition_readiness_requires_exact_enabled_projection_gener
 
     legacy_adapter = service(None)._transition_projection(partial)
     assert legacy_adapter == {"generation_ready": True, "transition_state": "READY"}
+
+    disabled = ready_entry(("run_now",))
+    disabled.enabled = False
+    inactive = service(_ContributionRegistry(None))._transition_projection(disabled)
+    assert inactive == {"generation_ready": True, "transition_state": "READY"}
+    stale_disabled = service(_ContributionRegistry(3))._transition_projection(disabled)
+    assert stale_disabled["generation_ready"] is False
+    assert service(_ContributionRegistry(4))._transition_projection(disabled)["generation_ready"] is False
+    disabled.target_generation += 1
+    assert service(_ContributionRegistry(None))._transition_projection(disabled)["generation_ready"] is False
 
 
 def test_disable_revokes_authority_while_generation_is_reconciling() -> None:

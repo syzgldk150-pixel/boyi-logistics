@@ -1085,18 +1085,18 @@ class AutomationPluginV2RepositoryMixin:
             return cursor.fetchone() is None
 
     def get_active_plugin_migration_pair_for_automation(
-        self, automation_id: str
+        self, automation_id: str, *, for_update: bool = True,
     ) -> dict[str, Any] | None:
         """Return the single non-terminal pair guarding an automation project."""
 
         project_id = _required_text(automation_id, "automation_id")
         with self.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 SELECT * FROM automation_plugin_migration_pairs
                 WHERE (source_automation_id=%s OR target_automation_id=%s)
                   AND state IN ('PREPARING', 'TESTING', 'READY', 'CUTOVER', 'ROLLING_BACK')
-                ORDER BY created_at, migration_pair_id FOR UPDATE
+                ORDER BY created_at, migration_pair_id{' FOR UPDATE' if for_update else ''}
                 """,
                 (project_id, project_id),
             )

@@ -183,6 +183,7 @@ class PolicyEngine:
         highest_risk = RiskLevel.LOW
         required_roles: set[str] = set()
         requires_approval = False
+        project_policy_required = False
 
         for step in plan.steps:
             capability = self._catalog.get_capability(step.tool_name)
@@ -201,11 +202,22 @@ class PolicyEngine:
             approval = capability.get("approval") or {}
             if not isinstance(approval, Mapping):
                 raise OrchestrationError("INVALID_APPROVAL_CONTRACT", f"Invalid approval contract: {step.tool_name}")
+            raw_mode = str(approval.get("mode") or "none")
+            if raw_mode == "project_policy":
+                runtime = capability.get("_plugin_runtime")
+                if (
+                    automation_invocation is None or self._project_policy_provider is None
+                    or not isinstance(runtime, Mapping) or runtime.get("runtime_model") != "SERVICE_V2"
+                    or runtime.get("automation_id") != automation_invocation.automation_id
+                ):
+                    raise OrchestrationError("PROJECT_AUTHORIZATION_UNAVAILABLE", "Service v2 execution requires its typed project authorization")
+                project_policy_required = True
+                raw_mode = "none" if step.operation_type in {OperationType.READ, OperationType.COMPUTE} else "required"
             try:
                 mode = (
                     ApprovalMode.NONE
                     if scan_phase == SCAN_PHASE_PREVIEW
-                    else ApprovalMode(str(approval.get("mode") or "none"))
+                    else ApprovalMode(raw_mode)
                 )
             except ValueError as exc:
                 raise OrchestrationError("INVALID_APPROVAL_MODE", f"Invalid approval mode: {step.tool_name}") from exc
@@ -349,6 +361,8 @@ class PolicyEngine:
                 reason=project.reason,
             )
         if project.requires_approval is None:
+            if project_policy_required:
+                raise OrchestrationError("PROJECT_AUTHORIZATION_UNAVAILABLE", "Service v2 project policy must provide an explicit authorization decision")
             return baseline
         return PolicyDecision(
             allowed=True,

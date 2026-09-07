@@ -18,9 +18,11 @@ class _FakeProjectEntrypoints:
         *,
         status: str = "COMPLETED",
         results: list[dict | Exception] | None = None,
+        accepted_errors: dict[int, Exception] | None = None,
     ) -> None:
         self.status = status
         self.results = list(results or [])
+        self.accepted_errors = dict(accepted_errors or {})
         self.calls: list[dict] = []
         self.project_config = {
             "plate_numbers": ["ABC123", "XYZ789"],
@@ -34,6 +36,12 @@ class _FakeProjectEntrypoints:
 
     async def invoke_feishu(self, **kwargs):
         self.calls.append(dict(kwargs))
+        accepted_error = self.accepted_errors.get(len(self.calls))
+        if accepted_error is not None:
+            on_accepted = kwargs.get("on_accepted")
+            if on_accepted is not None:
+                await on_accepted(SimpleNamespace(run_id="run-accepted"))
+            raise accepted_error
         if self.results:
             result = self.results.pop(0)
             if isinstance(result, Exception):
@@ -88,13 +96,23 @@ class _FakeServiceV2FeishuDispatcher:
         *,
         result: dict | None = None,
         error: Exception | None = None,
+        acceptance_notifications: int = 1,
+        error_after_acceptance: bool = False,
     ) -> None:
         self.result = result
         self.error = error
+        self.acceptance_notifications = acceptance_notifications
+        self.error_after_acceptance = error_after_acceptance
         self.calls: list[dict] = []
 
     async def dispatch(self, **kwargs):
+        on_accepted = kwargs.pop("on_accepted", None)
         self.calls.append(dict(kwargs))
+        if self.error is not None and not self.error_after_acceptance:
+            raise self.error
+        if (self.result is not None or self.error_after_acceptance) and on_accepted is not None:
+            for _ in range(self.acceptance_notifications):
+                await on_accepted(SimpleNamespace(run_id="run-service-v2"))
         if self.error is not None:
             raise self.error
         return self.result
@@ -195,8 +213,10 @@ def test_service_v2_feishu_dispatches_verified_exact_context_and_hides_internal_
         }
     ]
     assert agent.chat_calls == []
+    assert replies[0][1]["reply_type"] == "service_v2_feishu_started"
+    assert "已开始执行" in replies[0][0]
     assert replies[-1][0] == (
-        "扩展任务执行失败：数据读取或写入校验未通过，请查看任务详情。"
+        "扩展任务执行失败：执行未完成，请在自动化页面查看处理建议。"
     )
     public_reply = replies[-1][0]
     for private_value in (
@@ -226,6 +246,53 @@ def test_service_v2_feishu_unknown_command_continues_to_existing_agent_path():
     assert dispatcher.calls[0]["command_text"] == "普通未知消息"
     assert len(agent.chat_calls) == 1
     assert replies[-1][0] == message_handler.UNKNOWN_EXECUTION_REPLY
+
+
+def test_service_v2_feishu_deduplicates_acceptance_and_sends_one_final_reply():
+    dispatcher = _FakeServiceV2FeishuDispatcher(
+        result={"success": True, "status": "COMPLETED"},
+        acceptance_notifications=2,
+    )
+    replies = []
+    with (
+        patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
+        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=None),
+        patch.object(message_handler, "get_pending", return_value=None),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        _run_verified_text("插件只读日报", event_id="event-dynamic-dedup")
+
+    assert [reply[1]["reply_type"] for reply in replies] == [
+        "service_v2_feishu_started",
+        "automation_project_completed",
+    ]
+
+
+def test_service_v2_post_acceptance_wait_failure_never_claims_not_submitted():
+    dispatcher = _FakeServiceV2FeishuDispatcher(
+        error=OrchestrationError("RUN_WAIT_TIMEOUT", "synthetic wait timeout"),
+        error_after_acceptance=True,
+    )
+    replies = []
+    with (
+        patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
+        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=None),
+        patch.object(message_handler, "get_pending", return_value=None),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        _run_verified_text("插件只读日报", event_id="event-dynamic-timeout")
+
+    assert [reply[1]["reply_type"] for reply in replies] == [
+        "service_v2_feishu_started",
+        "service_v2_feishu_result_pending",
+    ]
+    assert "已提交" in replies[-1][0]
+    assert "未能执行" not in replies[-1][0]
+    assert "重试" not in replies[-1][0]
 
 
 def test_fixed_action_v1_command_wins_without_calling_dynamic_dispatcher():
@@ -408,6 +475,53 @@ def test_direct_feishu_project_rejection_does_not_claim_execution_started():
     assert "private-run" not in replies[0][0]
 
 
+@pytest.mark.parametrize("wait_error", [
+    OrchestrationError("RUN_WAIT_TIMEOUT", "synthetic wait timeout"),
+    TimeoutError("synthetic result read timeout"),
+    RuntimeError("synthetic result storage unavailable"),
+])
+def test_direct_project_post_acceptance_wait_failure_reports_background_run(wait_error):
+    service = _FakeProjectEntrypoints(
+        accepted_errors={
+            1: wait_error
+        }
+    )
+    replies = []
+    token = message_handler._COMMAND_CONTEXT.set(
+        message_handler.FeishuCommandContext(
+            event_id="event-accepted-timeout",
+            actor_id="user-one",
+            chat_id="chat-one",
+        )
+    )
+    try:
+        with (
+            patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+            patch.object(
+                message_handler,
+                "_reply_text",
+                side_effect=_reply_recorder(replies),
+            ),
+        ):
+            asyncio.run(
+                message_handler._invoke_automation_project_and_reply(
+                    route_key="builtin.arrival_stats",
+                    dynamic_inputs={},
+                    receive_id="chat-one",
+                )
+            )
+    finally:
+        message_handler._COMMAND_CONTEXT.reset(token)
+
+    assert [reply[1]["reply_type"] for reply in replies] == [
+        "automation_project_started",
+        "automation_project_result_pending",
+    ]
+    assert "已提交" in replies[-1][0]
+    assert "未提交" not in replies[-1][0]
+    assert "重试" not in replies[-1][0]
+
+
 def test_direct_feishu_project_rejection_distinguishes_blocking_kinds():
     expected = {
         "ACTIVE": "仍在执行",
@@ -519,11 +633,58 @@ def test_selection_preview_waits_for_active_project_then_runs() -> None:
     assert len(service.calls) == 2
     sleep.assert_awaited_once_with(1.0)
     assert [reply[1]["reply_type"] for reply in replies[:2]] == [
-        "selection_preview_started",
         "automation_preview_queued",
+        "selection_preview_started",
     ]
     assert "待执行分批运单 0 单" in replies[-1][0]
     assert replies[-1][1]["reply_type"] == "split_candidate_list"
+
+
+@pytest.mark.parametrize("wait_error", [
+    OrchestrationError("RUN_WAIT_TIMEOUT", "synthetic wait timeout"),
+    TimeoutError("synthetic result read timeout"),
+    RuntimeError("synthetic result storage unavailable"),
+])
+def test_selection_preview_post_acceptance_wait_failure_does_not_invite_replay(wait_error):
+    service = _FakeProjectEntrypoints(
+        accepted_errors={
+            1: wait_error
+        }
+    )
+    replies = []
+    token = message_handler._COMMAND_CONTEXT.set(
+        message_handler.FeishuCommandContext(
+            event_id="event-selection-timeout",
+            actor_id="user-one",
+            chat_id="chat-one",
+        )
+    )
+    try:
+        with (
+            patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+            patch.object(
+                message_handler,
+                "_reply_text",
+                side_effect=_reply_recorder(replies),
+            ),
+        ):
+            result = asyncio.run(
+                message_handler._invoke_selection_preview_and_reply(
+                    route_key="builtin.split_pending_problem_upload",
+                    tool_name="split_pending_problem_upload",
+                    receive_id="chat-one",
+                )
+            )
+    finally:
+        message_handler._COMMAND_CONTEXT.reset(token)
+
+    assert result is None
+    assert [reply[1]["reply_type"] for reply in replies] == [
+        "selection_preview_started",
+        "automation_preview_result_pending",
+    ]
+    assert "已提交" in replies[-1][0]
+    assert "重试" not in replies[-1][0]
 
 
 def test_selection_preview_unknown_write_is_not_queued_or_hidden() -> None:
@@ -567,6 +728,10 @@ def test_selection_preview_unknown_write_is_not_queued_or_hidden() -> None:
     assert result is None
     assert len(service.calls) == 1
     sleep.assert_not_awaited()
+    assert all(
+        reply[1]["reply_type"] != "selection_preview_started"
+        for reply in replies
+    )
     assert "写入结果待人工核验" in replies[-1][0]
     assert replies[-1][1]["reply_type"] == "automation_preview_rejected"
 
@@ -840,6 +1005,62 @@ def test_unknown_scan_confirmation_locks_out_new_event_identity():
     assert service.calls[1]["event_id"] == service.calls[2]["event_id"]
     assert pending == {}
     assert "正式扫描已完成" in replies[-1][0]
+
+
+def test_scan_confirmation_post_acceptance_timeout_reports_background_run():
+    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    service = _FakeProjectEntrypoints(
+        results=[
+            {
+                "success": True,
+                "status": "COMPLETED",
+                "run_id": preview_run_id,
+                "scan_preview": _scan_preview(preview_run_id),
+            }
+        ],
+        accepted_errors={
+            2: OrchestrationError("RUN_WAIT_TIMEOUT", "synthetic wait timeout")
+        },
+    )
+    pending = {}
+    replies = []
+
+    def set_pending(_chat_id, value, ttl_sec=600, *, persist=True):
+        del ttl_sec, persist
+        pending.clear()
+        pending.update(value)
+
+    request = {
+        "tool_name": "sync_scan_codes",
+        "params": {},
+        "mode": "automation_project",
+        "automation_route_key": "builtin.scan_codes",
+        "dynamic_inputs": {},
+    }
+    with (
+        patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
+        patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
+        patch.object(message_handler, "get_pending", side_effect=lambda _chat_id: pending or None),
+        patch.object(message_handler, "set_pending", side_effect=set_pending),
+        patch.object(
+            message_handler,
+            "clear_pending",
+            side_effect=lambda _chat_id, **_kwargs: pending.clear(),
+        ),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        _run_verified_text("扫描", event_id="event-preview-accepted-timeout")
+        _run_verified_text("确认扫描", event_id="event-confirm-accepted-timeout")
+
+    assert pending["confirmation_state"] == "unknown"
+    assert pending["confirmation_event_id"] == "event-confirm-accepted-timeout"
+    assert [reply[1]["reply_type"] for reply in replies][-2:] == [
+        "scan_preview_formal_started",
+        "scan_preview_confirmation_result_pending",
+    ]
+    assert "正式扫描已提交" in replies[-1][0]
+    assert "重试" not in replies[-1][0]
 
 
 def test_consumed_scan_preview_blocks_new_preview_in_same_pending_state():
@@ -1426,6 +1647,8 @@ def test_split_action_value_error_has_safe_repreview_reply():
     )
     assert other_reply_type == "automation_project_failed"
     assert "本次未执行外部写入" not in other_reply
+    assert "ACTION_VALUE_ERROR" not in other_reply
+    assert "FRAME=" not in other_reply
 
 
 def test_self_pickup_selection_preview_expired_has_stable_repreview_reply():
@@ -1460,7 +1683,7 @@ def test_unknown_write_reply_does_not_expose_internal_failure_or_invite_replay()
     assert reply_type == "automation_project_write_outcome_unknown"
     assert reply == (
         "统计到货数据的目标表可能已更新，但最终核验暂未确认。"
-        "请不要重复执行；请在事项中心核对写入结果。"
+        "系统已保留核验记录，新任务不会因此被阻塞。"
     )
     assert "FIRST_PARTY_ACTION_FAILED" not in reply
     assert "WRITE_OUTCOME_UNKNOWN" not in reply

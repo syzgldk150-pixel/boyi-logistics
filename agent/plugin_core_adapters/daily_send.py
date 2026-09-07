@@ -6,6 +6,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Mapping, Sequence
 
+from agent import feishu_readback as _feishu_readback
 from agent.automation_plugins.daily_send_handlers import (
     DailySendHandlerPorts,
     build_daily_send_handler_map,
@@ -80,6 +81,10 @@ _PROJECTION_FIELDS = (
 )
 _MAX_PAGES = 50
 _PAGE_SIZE = 200
+# Compatibility aliases for focused adapter tests.  The shared module owns
+# the actual schedule and retry implementation.
+time = _feishu_readback.time
+_FEISHU_READBACK_DELAYS = _feishu_readback.FEISHU_READBACK_DELAYS
 
 
 def _error(message: str, code: str) -> PluginExecutionError:
@@ -479,6 +484,7 @@ def build_production_daily_send_ports(
                 "BROKER_SOURCE_INVALID",
             )
         preserved_ids = before_ids - set(record_ids)
+        write_error: Exception | None = None
         try:
             invoke_feishu(
                 "delete_records",
@@ -489,29 +495,39 @@ def build_production_daily_send_ports(
                     "as": "bot",
                 },
             )
-        except Exception:
-            pass
-        try:
-            observed = _list_all(
+        except Exception as exc:
+            # A lost response does not prove that the delete was not applied;
+            # the fresh authoritative read below is the source of truth.
+            write_error = exc
+
+        def readback() -> list[dict[str, Any]]:
+            return _list_all(
                 resource_loader=load_resource,
                 feishu_operation=invoke_feishu,
                 resource_id=resource_id,
                 fields=("运单编号", "发件日期"),
             )
-        except Exception as exc:
-            raise _error(
-                "daily-send Bitable delete readback is invalid",
+
+        def matches(observed: Sequence[Mapping[str, Any]]) -> bool:
+            remaining_ids = {str(item.get("record_id") or "") for item in observed}
+            return not (set(record_ids) & remaining_ids) and preserved_ids <= remaining_ids
+
+        _feishu_readback.retry_readback(
+            readback,
+            matches,
+            label="daily-send Bitable delete",
+            retryable_error_codes={
+                "BROKER_RESOURCE_UNAVAILABLE",
+                "BROKER_SOURCE_FAILED",
                 "WRITE_OUTCOME_UNKNOWN",
-            ) from exc
-        remaining_ids = {str(item.get("record_id") or "") for item in observed}
-        verified = (
-            not (set(record_ids) & remaining_ids)
-            and preserved_ids <= remaining_ids
+            },
+            initial_error=write_error,
+            convert_non_retryable=True,
         )
         return {
-            "ok": verified,
-            "verified": verified,
-            "deleted": len(record_ids) if verified else 0,
+            "ok": True,
+            "verified": True,
+            "deleted": len(record_ids),
         }
 
     def write_records(resource_id: str, records: list[dict[str, Any]]) -> Mapping[str, Any]:
@@ -522,6 +538,7 @@ def build_production_daily_send_ports(
             resource_id=resource_id,
         )
         before_ids = {str(item.get("record_id") or "") for item in before}
+        write_error: Exception | None = None
         try:
             invoke_feishu(
                 "write_records",
@@ -532,29 +549,42 @@ def build_production_daily_send_ports(
                     "as": "bot",
                 },
             )
-        except Exception:
-            pass
-        try:
-            observed = _list_all(
+        except Exception as exc:
+            # Treat an unavailable ACK as ambiguous and reconcile by fresh
+            # reads; never issue a second write.
+            write_error = exc
+
+        def readback() -> list[dict[str, Any]]:
+            return _list_all(
                 resource_loader=load_resource,
                 feishu_operation=invoke_feishu,
                 resource_id=resource_id,
             )
-        except Exception as exc:
-            raise _error(
-                "daily-send Bitable write readback is invalid",
+
+        def matches(observed: Sequence[Mapping[str, Any]]) -> bool:
+            after_ids = {str(item.get("record_id") or "") for item in observed}
+            return (
+                before_ids <= after_ids
+                and len(after_ids - before_ids) == len(records)
+                and _verify_bitable_records(records, observed)
+            )
+
+        _feishu_readback.retry_readback(
+            readback,
+            matches,
+            label="daily-send Bitable write",
+            retryable_error_codes={
+                "BROKER_RESOURCE_UNAVAILABLE",
+                "BROKER_SOURCE_FAILED",
                 "WRITE_OUTCOME_UNKNOWN",
-            ) from exc
-        after_ids = {str(item.get("record_id") or "") for item in observed}
-        verified = (
-            before_ids <= after_ids
-            and len(after_ids - before_ids) == len(records)
-            and _verify_bitable_records(records, observed)
+            },
+            initial_error=write_error,
+            convert_non_retryable=True,
         )
         return {
-            "ok": verified,
-            "verified": verified,
-            "written": len(records) if verified else 0,
+            "ok": True,
+            "verified": True,
+            "written": len(records),
         }
 
     def replace_projection(

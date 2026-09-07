@@ -1,5 +1,9 @@
 (() => {
   "use strict";
+  const pageRoot = document.querySelector(".main-content:not([hidden]) .auto-page");
+  if (!pageRoot || pageRoot.dataset.approvalInitialized) return;
+  pageRoot.dataset.approvalInitialized = "true";
+  const fetch = window.ConsoleUI.pageRequest();
 
   const REQUIRE_EACH_RUN = "REQUIRE_EACH_RUN";
   const PROJECT_FULL_AUTO = "PROJECT_FULL_AUTO";
@@ -340,6 +344,7 @@
       if (!quiet) setFeedback(feedback, "", "");
       return payload.data.pending;
     } catch (error) {
+      if (error?.name === "AbortError") return null;
       if (bar instanceof HTMLElement) {
         bar.hidden = false;
         bar.classList.add("is-error");
@@ -586,7 +591,10 @@
     button.dataset.requestId = requestId;
     setBusy(button, true, "保存中…");
     try {
-      const response = await fetch(
+      // Document-level delegation outlives the page that installed it. Bind
+      // this save to the page active when the operator clicks the button.
+      const saveRequest = window.ConsoleUI.pageRequest();
+      const response = await saveRequest(
         `/automations/plugins/${encodeURIComponent(automationId)}/schedule`,
         {
           method: "POST",
@@ -721,11 +729,11 @@
 
   function initializePlugins() {
     initializePluginConfigurationDelegation();
-    document.querySelectorAll("[data-plugin-instance]").forEach(initializePluginInstance);
+    pageRoot.querySelectorAll("[data-plugin-instance]").forEach(initializePluginInstance);
   }
   function initialize() {
     initializePlugins();
-    const panels = [...document.querySelectorAll("[data-automation-project-governance]")];
+    const panels = [...pageRoot.querySelectorAll("[data-automation-project-governance]")];
     panels.forEach(initializeGovernance);
     if ("IntersectionObserver" in window) {
       const observer = new IntersectionObserver(entries => {
@@ -736,6 +744,7 @@
         });
       }, { rootMargin: "240px" });
       panels.forEach(panel => observer.observe(panel));
+      window.ConsoleUI.onPageCleanup(() => observer.disconnect());
     } else {
       panels.forEach(panel => void loadPending(panel));
     }

@@ -35,6 +35,12 @@ BUILTIN_RESOURCES: dict[str, dict] = {
         "resource_kind": "feishu_sheet",
         "spreadsheet_token": "GILYss6KhhBBuRt9FPWcXbben7c",
         "sheet_id": "Sheet1",
+        "sheet_title": "Sheet1",
+        "business_purpose": "韵达寄件结果表",
+        "sheet_header_constraints": {
+            "A": ["5.14编号", "运单编号", "运单号"],
+            "Y": ["日期"],
+        },
         "sheet_range": "Sheet1!A2:A2",
         "clear_range": "Sheet1!A2:Y5000",
     },
@@ -180,24 +186,49 @@ def import_phase7_resources() -> list[str]:
 
 
 def repair_missing_fixed_automation_routes() -> list[str]:
-    """Restore only missing, code-owned transport route descriptors.
+    """Restore and reconcile code-owned fixed transport route descriptors.
 
     Route identities are part of the reviewed first-party command contract.
     They contain no tenant-selected document/account locator, so recreating a
-    missing row is deterministic.  Existing rows are deliberately untouched:
-    their configuration revision remains governed by the normal project
-    reconciliation path.
+    missing row is deterministic.  For the Feishu command routes, the route
+    key is also code-owned: an old or manually-corrupted value would otherwise
+    leave the command registry pointing at the wrong handler.  Reconcile only
+    that one field and preserve every other field on an existing row, including
+    tenant-owned metadata and locators.
     """
 
     repaired: list[str] = []
     for resource_key, config in BUILTIN_RESOURCES.items():
         if config.get("resource_kind") not in {"feishu_route", "webhook_route"}:
             continue
-        if get_workflow_resource(resource_key) is not None:
+        current = get_workflow_resource(resource_key)
+        if current is None:
+            upsert_workflow_resource(
+                resource_key,
+                config,
+                source="reviewed-route-repair",
+            )
+            repaired.append(resource_key)
             continue
+
+        # A fixed Feishu route is a code-owned identity.  Keep all other
+        # persisted values intact so this repair cannot overwrite user-owned
+        # resource fields.  Webhook route rows retain their existing lifecycle
+        # reconciliation semantics and are only recreated when missing.
+        if config.get("resource_kind") != "feishu_route":
+            continue
+        expected_route_key = config.get("route_key")
+        if current.get("route_key") == expected_route_key:
+            continue
+        merged = {
+            key: value
+            for key, value in current.items()
+            if key != "_meta"
+        }
+        merged["route_key"] = expected_route_key
         upsert_workflow_resource(
             resource_key,
-            config,
+            merged,
             source="reviewed-route-repair",
         )
         repaired.append(resource_key)

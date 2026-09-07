@@ -158,17 +158,15 @@ def _validate_enabled_finance_account(
 ) -> None:
     if account_id is None:
         return
-    if not callable(shared_enabled_finance_source_specs):
-        raise FinanceUnavailableError("共享财务来源注册表不可用。")
-    matches = [
-        spec
-        for spec in shared_enabled_finance_source_specs()
-        if spec.account_id == account_id
-    ]
-    if len(matches) != 1:
+    # Legacy account filters remain exact aliases. Source membership is read
+    # from the persistent ledger; a static account list cannot hide history.
+    if len(account_id) > 191 or any(ord(char) < 32 for char in account_id):
+        raise FinanceValidationError("财务账号筛选格式无效。")
+    # A known unsupported provider alias remains unsupported; this does not
+    # turn the legacy role list into a whitelist of all valid new sources.
+    from shared.finance.sources import FINANCE_SOURCE_SPECS
+    if any(spec.account_id == account_id and not spec.production_ready for spec in FINANCE_SOURCE_SPECS):
         raise FinanceValidationError(f"账号 {account_id} 不是已启用的财务来源。")
-    if platform is not None and matches[0].platform != platform:
-        raise FinanceValidationError("财务账号与平台不匹配。")
 
 
 def _enum_value(enum_class: Any, value: str | None, *, field_name: str) -> Any:
@@ -190,6 +188,7 @@ class FinanceFilters:
     fee_level: str | None = None
     fee_name: str | None = None
     waybill_no: str | None = None
+    source_ids: tuple[str, ...] = ()
 
     def to_shared_query(self) -> Any:
         if SharedFinanceQuery is None:
@@ -203,6 +202,7 @@ class FinanceFilters:
             fee_level=_enum_value(SharedFeeLevel, self.fee_level, field_name="费用级别"),
             fee_name=self.fee_name,
             waybill_no=self.waybill_no,
+            source_ids=self.source_ids,
         )
 
 
@@ -234,6 +234,7 @@ def parse_finance_filters(query: Mapping[str, Any], *, today: date | None = None
         end_date=end_date,
         platform=platform,
         account_id=account_id,
+        source_ids=tuple(value for value in _first(query, "source_ids").split(",") if value),
         direction=_optional_filter(_first(query, "direction"), field_name="方向", max_length=32),
         fee_level=_optional_filter(_first(query, "fee_level"), field_name="费用级别", max_length=32),
         fee_name=_optional_filter(_first(query, "fee_name"), field_name="费用项目", max_length=160),
@@ -590,6 +591,7 @@ class FinanceService:
                     end_date=filters.end_date,
                     platform=filters.platform,
                     account_id=filters.account_id,
+                    source_ids=filters.source_ids,
                     waybill_no=waybill_no or None,
                     limit=page.page_size,
                     offset=page.offset,

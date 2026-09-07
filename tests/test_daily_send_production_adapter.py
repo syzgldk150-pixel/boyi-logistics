@@ -168,10 +168,12 @@ def test_bitable_write_fails_closed_when_fresh_fields_do_not_match():
         projection_read=lambda _date: [],
         projection_lookup=lambda _waybill: None,
     )
-    assert ports.bitable_write(
-        "exact-resource",
-        [{"fields": deepcopy(_FIELDS)}],
-    ) == {"ok": False, "verified": False, "written": 0}
+    with pytest.raises(PluginExecutionError) as exc:
+        ports.bitable_write(
+            "exact-resource",
+            [{"fields": deepcopy(_FIELDS)}],
+        )
+    assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
 
 
 @pytest.mark.parametrize("mutation", ["write", "delete"])
@@ -280,14 +282,15 @@ def test_bitable_mutation_must_preserve_every_prior_unmanaged_record(
     )
 
     if mutation == "write":
-        result = ports.bitable_write(
-            "exact-resource",
-            [{"fields": deepcopy(_FIELDS)}],
-        )
-        assert result == {"ok": False, "verified": False, "written": 0}
+        with pytest.raises(PluginExecutionError) as exc:
+            ports.bitable_write(
+                "exact-resource",
+                [{"fields": deepcopy(_FIELDS)}],
+            )
     else:
-        result = ports.bitable_delete("exact-resource", ("target",))
-        assert result == {"ok": False, "verified": False, "deleted": 0}
+        with pytest.raises(PluginExecutionError) as exc:
+            ports.bitable_delete("exact-resource", ("target",))
+    assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
 
 
 def test_projection_counts_and_success_come_from_prestate_and_fresh_rows():

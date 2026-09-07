@@ -299,6 +299,7 @@ def test_customer_handlers_own_bound_source_pagination_and_opaque_identity() -> 
                     "status": "待处理",
                 }
             ],
+            "source_site_code": "fixture-site",
             "stats": {
                 "total": 1,
                 "returned": 1,
@@ -340,7 +341,7 @@ def test_customer_handlers_own_bound_source_pagination_and_opaque_identity() -> 
     ]
     records = [item for page in pages for item in page["items"]]
     assert len(records) == 4
-    assert all(str(item["dedupe_key"]).startswith("problem:v1:") for item in records)
+    assert all(str(item["dedupe_key"]).startswith("problem:v2:") for item in records)
     assert all("customer-rh" not in str(item) and "customer-yd" not in str(item) for item in records)
 
     detail_context = _context(
@@ -477,6 +478,7 @@ def test_registered_broker_and_handler_only_revalidate_local_account_binding() -
         return {
             "ok": True,
             "rows": [],
+            "source_site_code": "fixture-site",
             "stats": {"total": 0, "returned": 0, "total_authoritative": True},
         }
 
@@ -874,6 +876,7 @@ def test_production_clock_uses_exact_low_level_write_and_readback(monkeypatch) -
 
 def test_production_customer_binding_calls_low_level_endpoint_adapter(monkeypatch) -> None:
     manager = _Manager()
+    manager.public_credentials = lambda account_id: {"username": "synthetic-customer-login"}
     calls: list[dict[str, Any]] = []
 
     def lower_run_once(arguments):
@@ -881,6 +884,7 @@ def test_production_customer_binding_calls_low_level_endpoint_adapter(monkeypatc
         return {
             "ok": True,
             "rows": [],
+            "source_site_code": "fixture-site",
             "stats": {"total": 0, "returned": 0, "total_authoritative": True},
         }
 
@@ -1844,6 +1848,7 @@ def test_production_yunda_resource_primitive_never_substitutes_a_binding(
     assert writes[0][1]["table_id"] == "table-exact"
 
     ambiguous_calls: list[str] = []
+    readback_sleeps: list[float] = []
 
     def ambiguous_write(operation: str, _arguments: dict[str, Any]):
         ambiguous_calls.append(operation)
@@ -1855,10 +1860,23 @@ def test_production_yunda_resource_primitive_never_substitutes_a_binding(
         "tools.feishu_cli_tool.feishu_operation",
         ambiguous_write,
     )
+    monkeypatch.setattr(
+        "agent.feishu_readback.time.sleep",
+        readback_sleeps.append,
+    )
     with pytest.raises(PluginExecutionError) as unknown_exc:
         handlers[(
             "network.request",
             "feishu.bitable.append_yunda_dispatch_forecast",
         )](context, arguments)
     assert unknown_exc.value.code == "WRITE_OUTCOME_UNKNOWN"
-    assert ambiguous_calls == ["list_records", "write_records", "list_records"]
+    assert ambiguous_calls == [
+        "list_records",
+        "write_records",
+        "list_records",
+        "list_records",
+        "list_records",
+        "list_records",
+    ]
+    assert ambiguous_calls.count("write_records") == 1
+    assert readback_sleeps == [0.5, 1.0, 2.0]

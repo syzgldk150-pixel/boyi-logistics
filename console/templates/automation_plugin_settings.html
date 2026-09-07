@@ -1,27 +1,28 @@
 {% extends "base.html" %}
 
 {% block title %}{{ instance_name }} · {{ app_title }}{% endblock %}
-{% block breadcrumb %}插件设置{% endblock %}
-{% block subtitle %}自动化 / {{ instance_name }}{% endblock %}
+{% block breadcrumb %}{{ instance_name }}设置{% endblock %}
+{% block subtitle %}{{ return_label }} / {{ instance_name }}{% endblock %}
 {% block body_class %}automation-plugin-settings-page{% endblock %}
 
 {% block page_actions %}
-<a class="ghost-btn" href="/automations"><i data-feather="arrow-left"></i>返回自动化</a>
+<a class="ghost-btn" data-console-navigate href="{{ return_url }}"><i data-feather="arrow-left"></i>返回{{ return_label }}</a>
 {% endblock %}
 
 {% block content %}
-<section class="plugin-settings-shell" aria-labelledby="plugin-settings-title">
+<section class="plugin-settings-shell" aria-labelledby="plugin-settings-title" data-module-owner-url="{{ return_url }}">
   <header class="plugin-settings-shell__header">
     <div>
-      <p class="eyebrow">{{ plugin_name }} · {{ plugin_version }}</p>
+      <p class="eyebrow">{{ return_label }} · {{ plugin_version }}</p>
       <h2 id="plugin-settings-title">{{ instance_name }}</h2>
-      <p>此页面由插件自己提供；Console 只提供脱敏账号状态、飞书资源目录和原子保存能力。</p>
+      <p>{{ '按业务需要设置并保存。' if settings_mode == 'custom' else '设置业务账号与常用参数，登录状态在账号管理中维护。' }}</p>
     </div>
     <span class="plugin-settings-state plugin-settings-state--{{ 'ready' if configured else 'pending' }}">
       {{ '已配置' if configured else '等待配置' }}
     </span>
   </header>
   <div class="plugin-settings-shell__feedback" data-plugin-settings-host-feedback role="status" aria-live="polite" hidden></div>
+  {% if settings_mode == 'custom' %}
   <iframe
     class="plugin-settings-frame"
     title="{{ instance_name }} 设置"
@@ -30,16 +31,38 @@
     referrerpolicy="no-referrer"
     data-plugin-settings-frame
   ></iframe>
+  {% else %}
+  <form data-default-plugin-settings
+    data-endpoint="/automations/{{ automation_id }}/settings/bridge"
+    data-session="{{ bridge_session }}">
+    <div data-account-fields aria-busy="true">正在读取账号设置…</div>
+    <div data-config-fields></div>
+    <p><a href="/automation-accounts">打开账号管理</a></p>
+    <button class="primary-btn" type="submit" disabled>保存设置</button>
+    <p data-settings-feedback role="status" aria-live="polite"></p>
+  </form>
+  {% endif %}
+  <details data-plugin-settings-history data-endpoint="/automations/{{ automation_id }}/settings/bridge" data-session="{{ bridge_session }}">
+    <summary>恢复已保存的设置</summary>
+    <p>恢复账号和业务参数，保留当前定时计划。可选择当前插件版本曾成功应用的设置。</p>
+    <label>历史设置 <select class="review-input compact-input" aria-label="历史设置"><option value="">请选择</option></select></label>
+    <button type="button" class="ghost-btn">恢复设置</button>
+    <p role="status"></p>
+  </details>
 </section>
 {% endblock %}
 
 {% block scripts %}
 {{ super() }}
+<script src="/static/plugin_default_settings.js?v=v32"></script>
+<script src="/static/plugin_settings_history.js?v=v32"></script>
 <script>
 (() => {
   "use strict";
-  const iframe = document.querySelector("[data-plugin-settings-frame]");
-  const feedback = document.querySelector("[data-plugin-settings-host-feedback]");
+  const fetch = window.ConsoleUI.pageRequest();
+  const page = document.querySelector(".main-content:not([hidden])");
+  const iframe = page?.querySelector("[data-plugin-settings-frame]");
+  const feedback = page?.querySelector("[data-plugin-settings-host-feedback]");
   const bridgeSession = {{ bridge_session | tojson }};
   const endpoint = {{ ('/automations/' ~ automation_id ~ '/settings/bridge') | tojson }};
   if (!(iframe instanceof HTMLIFrameElement)) return;

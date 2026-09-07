@@ -28,6 +28,7 @@ from agent.automation_plugins.delivery_site_handlers import (
     DELIVERY_WRITE_ACTION_KEYS,
     SITE_WRITE_ACTION_KEYS,
 )
+from agent.feishu_readback import retry_readback as _retry_feishu_readback
 from agent.tms_runtime.account_manager import AutomationAccountManager, get_account_manager
 from agent.tms_runtime.errors import TMSAuthStateError
 from plugin_core_adapters.arrival import (
@@ -46,6 +47,7 @@ from plugin_core_adapters.delivery_site import (
 from plugin_core_adapters.finance import build_production_finance_handler_map
 from plugin_core_adapters.problem_actions import build_production_problem_handler_map
 from plugin_core_adapters.scan_snapshot import replace_scan_snapshot_verified
+from shared.automation_project_authorization import canonical_sha256
 
 
 logger = logging.getLogger(__name__)
@@ -76,10 +78,20 @@ def _describe_active_account(
         ) from exc
 
 
-def _customer_action(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+def _customer_action(arguments: Mapping[str, Any], *, account_manager: AutomationAccountManager) -> Mapping[str, Any]:
     from agent.tms_runtime.scripts.customer_service_problem import run_once
 
-    return run_once(dict(arguments))
+    result = run_once(dict(arguments))
+    if arguments.get("raw_source") is True and result.get("ok") is True:
+        from shared.customer_problem_policy import CUSTOMER_SERVICE_SITE_FILTER_LOGIN
+
+        public_identity = account_manager.public_credentials(str(arguments["account_id"]))
+        login = str(public_identity.get("username") or "").strip()
+        if not login:
+            raise PluginExecutionError("customer public login identity is unavailable", code="BROKER_ACCOUNT_UNAVAILABLE")
+        result = {**result, "rows": [{**row, "site_policy_required": login == CUSTOMER_SERVICE_SITE_FILTER_LOGIN}
+            for row in result["rows"]]}
+    return result
 
 
 def _clock_site(arguments: Mapping[str, Any]) -> dict[str, str]:
@@ -834,7 +846,7 @@ def recover_scan_codes_unknown_write(
     automation_id: str,
     trigger_request_id: str,
 ) -> dict[str, Any] | None:
-    """Close an old scan attempt only after an exact empty server readback."""
+    """Resolve only exact original scan effects and restore their saved result."""
 
     entry = plugin_runtime.catalog.require(automation_id)
     if str(entry.plugin_id) != "sync_scan_codes":
@@ -867,12 +879,6 @@ def recover_scan_codes_unknown_write(
             or batch.get("candidate_count") != len(candidates)
         ):
             return None
-        phase = "account_binding"
-        account_id = str(entry.account_bindings.get("account_id") or "").strip()
-        if not account_id:
-            return None
-        descriptor = get_account_manager().require_active_binding_descriptor(account_id)
-        expected_account_binding = hashlib.sha256(account_id.encode("utf-8")).hexdigest()
         for candidate in candidates:
             phase = "candidate_validation"
             if not isinstance(candidate, Mapping):
@@ -901,11 +907,6 @@ def recover_scan_codes_unknown_write(
                 or not receipts
                 or not scan_receipts
                 or not re.fullmatch(r"[0-9a-f]{64}", identity_sha256)
-                or any(
-                    str(receipt.get("binding_sha256") or "")
-                    != expected_account_binding
-                    for receipt in scan_receipts
-                )
             ):
                 return None
             phase = "preview_context_read"
@@ -918,6 +919,14 @@ def recover_scan_codes_unknown_write(
                 not isinstance(context, Mapping)
                 or context.get("state") != "SCAN_RECOVERY_CONTEXT_IDENTIFIED"
             ):
+                return None
+            phase = "original_account_binding"
+            account_id = context.get("account_id")
+            if not isinstance(account_id, str) or not account_id:
+                return None
+            descriptor = get_account_manager().require_active_binding_descriptor(account_id)
+            expected_account_binding = hashlib.sha256(account_id.encode("utf-8")).hexdigest()
+            if any(receipt.get("binding_sha256") != expected_account_binding for receipt in scan_receipts):
                 return None
             items = context.get("items")
             started_at = context.get("attempt_started_at")
@@ -942,7 +951,8 @@ def recover_scan_codes_unknown_write(
             ]
             phase = "authoritative_readback"
             readback = _scan_next_readback_state(descriptor, normalized_items, windows)
-            if readback.get("state") != "NOT_APPLIED":
+            resolution = readback.get("state")
+            if resolution not in {"APPLIED", "NOT_APPLIED"}:
                 logger.info(
                     "Scan unknown-write recovery kept blocked project=%s generation=%d state=%s",
                     automation_id,
@@ -952,9 +962,9 @@ def recover_scan_codes_unknown_write(
                 return None
             evidence = {
                 "schema": 1,
-                "kind": "scan_next_exact_empty_readback",
+                "kind": "scan_next_exact_applied_readback" if resolution == "APPLIED" else "scan_next_exact_empty_readback",
                 "receipt_identity_sha256": identity_sha256,
-                "selection_sha256": _scan_next_identities_sha256(normalized_items),
+                "selection_sha256": canonical_sha256(normalized_items),
                 "window_count": len(windows),
                 "record_count": int(readback.get("record_count") or 0),
             }
@@ -969,11 +979,22 @@ def recover_scan_codes_unknown_write(
             request_key = str(
                 uuid.uuid5(
                     uuid.NAMESPACE_URL,
-                    "boyi:scan-unknown-write-not-applied:"
+                    "boyi:scan-unknown-write-" + resolution.lower() + ":"
                     f"{automation_id}:{trigger_request_id}:{identity_sha256}",
                 )
             )
             phase = "transactional_resolution"
+            proof_arguments = {
+                "authoritative_applied_proof" if resolution == "APPLIED" else "authoritative_not_applied_proof": {
+                    "receipt_identity_sha256": identity_sha256, "evidence_sha256": evidence_sha256,
+                },
+            }
+            if resolution == "APPLIED":
+                proof_arguments["scan_applied_recovery"] = {
+                    "readback_count": readback["record_count"],
+                    "selection_sha256": evidence["selection_sha256"],
+                    "evidence_sha256": evidence_sha256,
+                }
             result = recover(
                 automation_id=automation_id,
                 generation=generation,
@@ -981,10 +1002,7 @@ def recover_scan_codes_unknown_write(
                 request_id=request_key,
                 actor_id="system:scan-readback",
                 actor_role="system",
-                authoritative_not_applied_proof={
-                    "receipt_identity_sha256": identity_sha256,
-                    "evidence_sha256": evidence_sha256,
-                },
+                **proof_arguments,
             )
             return dict(result) if isinstance(result, Mapping) else None
         return None
@@ -2264,18 +2282,29 @@ def _append_yunda_dispatch_bitable(
         )
     except Exception:
         pass
-    after = _list_exact_bitable_records(base_token, table_id)
-    after_record_ids = {str(item["record_id"]) for item in after}
-    if not prior_record_ids.issubset(after_record_ids) or len(after_record_ids - prior_record_ids) != len(records):
-        _yunda_write_unknown("Yunda append readback did not preserve the exact prior resource set")
-    digest = _verify_exact_bitable_records(
-        actual_records=after,
-        expected_payload=payload,
-        canonical_by_actual=canonical_by_actual,
-        identity_actual_field=identity_actual_field,
-        number_fields=sink.NUMBER_FIELDS,
-        require_exact_date_snapshot=False,
-        forbidden_record_ids=prior_record_ids,
+    def readback_digest() -> str:
+        after = _list_exact_bitable_records(base_token, table_id)
+        after_record_ids = {str(item["record_id"]) for item in after}
+        if not prior_record_ids.issubset(after_record_ids) or len(
+            after_record_ids - prior_record_ids
+        ) != len(records):
+            _yunda_write_unknown(
+                "Yunda append readback did not preserve the exact prior resource set"
+            )
+        return _verify_exact_bitable_records(
+            actual_records=after,
+            expected_payload=payload,
+            canonical_by_actual=canonical_by_actual,
+            identity_actual_field=identity_actual_field,
+            number_fields=sink.NUMBER_FIELDS,
+            require_exact_date_snapshot=False,
+            forbidden_record_ids=prior_record_ids,
+        )
+
+    digest = _retry_feishu_readback(
+        readback_digest,
+        lambda observed: isinstance(observed, str) and len(observed) == 64,
+        label="Yunda dispatch Bitable append",
     )
     return {
         "ok": True,
@@ -2392,20 +2421,29 @@ def _replace_yunda_send_bitable(
             )
         except Exception:
             pass
-    after = _list_exact_bitable_records(base_token, table_id)
-    after_ids = {str(item["record_id"]) for item in after}
-    if not prior_non_target_ids.issubset(after_ids):
-        _yunda_write_unknown("Yunda replacement readback did not preserve non-target resource rows")
-    digest = _verify_exact_bitable_records(
-        actual_records=after,
-        expected_payload=payload,
-        canonical_by_actual=canonical_by_actual,
-        identity_actual_field=normalized_field_map[sink.INDEX_FIELD_NAME],
-        number_fields=sink.NUMBER_FIELDS,
-        exact_date_field=date_field_name,
-        exact_date=target_date,
-        date_parser=sink._date_text_from_field_value,
-        require_exact_date_snapshot=True,
+    def readback_digest() -> str:
+        after = _list_exact_bitable_records(base_token, table_id)
+        after_ids = {str(item["record_id"]) for item in after}
+        if not prior_non_target_ids.issubset(after_ids):
+            _yunda_write_unknown(
+                "Yunda replacement readback did not preserve non-target resource rows"
+            )
+        return _verify_exact_bitable_records(
+            actual_records=after,
+            expected_payload=payload,
+            canonical_by_actual=canonical_by_actual,
+            identity_actual_field=normalized_field_map[sink.INDEX_FIELD_NAME],
+            number_fields=sink.NUMBER_FIELDS,
+            exact_date_field=date_field_name,
+            exact_date=target_date,
+            date_parser=sink._date_text_from_field_value,
+            require_exact_date_snapshot=True,
+        )
+
+    digest = _retry_feishu_readback(
+        readback_digest,
+        lambda observed: isinstance(observed, str) and len(observed) == 64,
+        label="Yunda send-waybill Bitable replacement",
     )
     return {
         "ok": True,
@@ -2463,30 +2501,37 @@ def _replace_yunda_send_sheet(
         sync_sheet_snapshot(resource_id, values, params)
     except Exception:
         pass
-    try:
-        read_result = feishu_operation(
-            "read_sheet",
-            {
-                "spreadsheet_token": str(resource["spreadsheet_token"]),
-                "range": clear_range,
-                "as": "bot",
-                "dry_run": False,
-            },
+    def readback_digest() -> str:
+        try:
+            read_result = feishu_operation(
+                "read_sheet",
+                {
+                    "spreadsheet_token": str(resource["spreadsheet_token"]),
+                    "range": clear_range,
+                    "as": "bot",
+                    "dry_run": False,
+                },
+            )
+        except Exception as exc:
+            _yunda_write_unknown("Yunda sheet readback request failed", cause=exc)
+        observed_values = _strict_sheet_values(read_result)
+        while observed_values and not any(
+            _feishu_field_text(cell) for cell in observed_values[-1]
+        ):
+            observed_values.pop()
+        return _verify_exact_sheet_values(
+            expected=values,
+            actual=observed_values,
+            field_names=sink.FIELD_NAMES,
+            number_fields=sink.NUMBER_FIELDS,
+            date_field=sink.DATE_FIELD_NAME,
+            date_parser=sink._date_text_from_field_value,
         )
-    except Exception as exc:
-        _yunda_write_unknown("Yunda sheet readback request failed", cause=exc)
-    observed_values = _strict_sheet_values(read_result)
-    while observed_values and not any(
-        _feishu_field_text(cell) for cell in observed_values[-1]
-    ):
-        observed_values.pop()
-    digest = _verify_exact_sheet_values(
-        expected=values,
-        actual=observed_values,
-        field_names=sink.FIELD_NAMES,
-        number_fields=sink.NUMBER_FIELDS,
-        date_field=sink.DATE_FIELD_NAME,
-        date_parser=sink._date_text_from_field_value,
+
+    digest = _retry_feishu_readback(
+        readback_digest,
+        lambda observed: isinstance(observed, str) and len(observed) == 64,
+        label="Yunda send-waybill Sheet replacement",
     )
     return {
         "ok": True,
@@ -2635,7 +2680,7 @@ def build_production_first_party_core_handler_map(
         describe_account=lambda account_id: _describe_active_account(manager, account_id),
         authorize_capability=authorize_capability,
         clock_action=_clock_action,
-        customer_action=_customer_action,
+        customer_action=lambda arguments: _customer_action(arguments, account_manager=manager),
         daily_sign_sync=run_daily_sign_with_bound_resources,
         arrive_list_read_page=_arrive_list_read_page,
         site_send_read_page=_site_send_read_page,
