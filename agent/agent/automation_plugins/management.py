@@ -31,6 +31,7 @@ from agent.automation_plugins.inspection_v2 import (
     service_v2_wizard_projection,
     validate_service_v2_install_contract,
 )
+from agent.automation_plugins.inspection_action_v1 import action_v1_wizard_projection
 from agent.automation_plugins.manifest_v2 import canonical_json_bytes
 from agent.automation_plugins.migration import PluginMigrationControlPlane
 from agent.automation_plugins.migration_entrypoint_ownership import (
@@ -49,6 +50,7 @@ from agent.automation_plugins.models import (
 )
 from agent.automation_plugins.ports import PluginStoragePort
 from agent.orchestration.models import Actor, ActorType
+from shared.plugin_management import management_for, settings_mode
 from shared.orchestration_repository_support import (
     ConcurrentUpdateError,
     IdempotencyConflict,
@@ -387,13 +389,14 @@ class AutomationPluginManagementService:
     def _registry_active_contribution_projection(
         self,
         automation_id: str,
+        records: object = None,
     ) -> tuple[int | None, list[dict[str, Any]]]:
         registry = self._contribution_registry
         snapshot = getattr(registry, "snapshot", None)
         if not callable(snapshot):
             raise ValueError("managed contribution registry is incomplete")
         generation = self._active_contribution_generation(automation_id)
-        records = snapshot()
+        records = snapshot() if records is None else records
         if not isinstance(records, (list, tuple)):
             raise ValueError("managed contribution snapshot is invalid")
 
@@ -436,6 +439,7 @@ class AutomationPluginManagementService:
     def _service_v2_contribution_projection(
         self,
         instance: Mapping[str, Any],
+        registry_records: object = None,
     ) -> dict[str, Any]:
         committed_generation = instance.get("committed_generation")
         if committed_generation is None:
@@ -482,7 +486,7 @@ class AutomationPluginManagementService:
             return _contribution_projection(state)
         try:
             active_generation, active = self._registry_active_contribution_projection(
-                str(automation_id or "")
+                str(automation_id or ""), records=registry_records,
             )
         except Exception:  # noqa: BLE001 - Catalog status must fail closed
             return _contribution_projection("STALE")
@@ -523,9 +527,28 @@ class AutomationPluginManagementService:
             state = "STALE"
         return _contribution_projection(state, active)
 
-    def catalog_projection(self, *, actor: Actor) -> dict[str, Any]:
+    def catalog_projection(
+        self, *, actor: Actor, module: str | None = None, summary: bool = False,
+        policy_projection: Callable[[Sequence[str]], Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        from contextlib import nullcontext
+
+        reader = getattr(self._catalog, "read_scope", None)
+        with reader() if callable(reader) else nullcontext():
+            result = self._catalog_projection(actor=actor, module=module, summary=summary)
+            if policy_projection is not None:
+                identities = [item["automation_id"] for item in result.get("instances", [])]
+                try:
+                    result["project_policies"] = policy_projection(identities)
+                except Exception:
+                    result["project_policies"] = {"items": [], "error_code": "PROJECT_POLICY_SERVICE_UNAVAILABLE"}
+            return result
+
+    def _catalog_projection(
+        self, *, actor: Actor, module: str | None = None, summary: bool = False,
+    ) -> dict[str, Any]:
         self._require_console_actor(actor, super_admin=False)
-        projection = self._catalog.safe_projection()
+        projection = self._catalog.safe_projection(module=module) if module is not None else self._catalog.safe_projection()
         projection["hidden_automation_ids"] = sorted(
             {
                 *projection.get("hidden_automation_ids", []),
@@ -534,13 +557,19 @@ class AutomationPluginManagementService:
         )
         instances = projection.get("instances")
         if isinstance(instances, list):
+            registry_records = None
+            if self._contribution_registry is not None:
+                try:
+                    registry_records = self._contribution_registry.snapshot()
+                except Exception:  # Each v2 row reports the unavailable projection.
+                    registry_records = False
             for instance in instances:
                 if not isinstance(instance, dict) or self._runtime_model_value(
                     instance.get("runtime_model")
                 ) != PluginRuntimeModel.SERVICE_V2.value:
                     continue
                 contribution_projection = self._service_v2_contribution_projection(
-                    instance
+                    instance, registry_records=registry_records,
                 )
                 instance.update(contribution_projection)
                 if (
@@ -560,6 +589,12 @@ class AutomationPluginManagementService:
                             "message": "运行时贡献投影与当前已提交代际不一致",
                         },
                     ]
+        if summary:
+            projection.update({
+                "resources": [], "resource_pool_available": False,
+                "resource_pool_problem": "", "resources_deferred": True,
+            })
+            return projection
         resources: list[dict[str, str]] = []
         resource_pool_available = self._resource_catalog_provider is not None
         resource_pool_problem = "" if resource_pool_available else "RESOURCE_CATALOG_UNAVAILABLE"
@@ -886,6 +921,16 @@ class AutomationPluginManagementService:
         )
         return self._worker_row_projection(persisted)
 
+    @staticmethod
+    def _require_package_module(verified: Any, module: str | None, *, expected: Mapping[str, str] | None = None) -> None:
+        if module is None and expected is None:
+            return
+        ownership = management_for(verified.manifest.plugin_id, getattr(verified.manifest, "management", None))
+        if module is not None and ownership["module"] != module:
+            raise PluginConflictError("package belongs to another module", code="PLUGIN_MODULE_MISMATCH")
+        if expected is not None and ownership != dict(expected):
+            raise PluginConflictError("dataset or module changes require a core migration", code="PLUGIN_DATASET_INCOMPATIBLE")
+
     def install(
         self,
         package_bytes: bytes,
@@ -894,9 +939,14 @@ class AutomationPluginManagementService:
         request_id: str,
         transport_package_sha256: str,
         actor: Actor,
+        module: str | None = None,
     ) -> dict[str, Any]:
         role = self._require_console_actor(actor, super_admin=True)
         self._require_mutation_allowed()
+        if module is not None:
+            self._require_package_module(self._lifecycle.inspect_upload(
+                package_bytes, transport_package_sha256=transport_package_sha256,
+            ), module)
         # The legacy endpoint remains ACTION_V1-compatible, but service-v2
         # packages must go through the wizard endpoint so every configuration
         # and binding decision participates in one durable request identity.
@@ -943,6 +993,7 @@ class AutomationPluginManagementService:
         request_id: str,
         transport_package_sha256: str,
         actor: Actor,
+        module: str | None = None,
     ) -> dict[str, Any]:
         self._require_console_actor(actor, super_admin=True)
         try:
@@ -952,10 +1003,15 @@ class AutomationPluginManagementService:
                 "plugin inspection request_id must be UUID",
                 code="PLUGIN_INSTALL_INTENT_INVALID",
             ) from exc
-        verified = self._lifecycle.inspect_service_v2_upload(
+        # The established wizard serves both signed runtime formats. Runtime
+        # authority comes only from the existing package verifier.
+        verified = self._lifecycle.inspect_upload(
             package_bytes,
             transport_package_sha256=transport_package_sha256,
         )
+        self._require_package_module(verified, module)
+        if verified.manifest.schema_version == 1:
+            return action_v1_wizard_projection(verified)
         validate_service_v2_install_contract(verified)
         return self._service_v2_wizard_projection(verified)
 
@@ -1037,16 +1093,24 @@ class AutomationPluginManagementService:
         transport_package_sha256: str,
         raw_intent: str,
         actor: Actor,
+        module: str | None = None,
     ) -> dict[str, Any]:
-        """Install a v2 project only through its complete, replayable intent."""
+        """Install a verified wizard package through its replayable intent.
+
+        The legacy method/route name remains compatible with existing v2
+        callers; the same closed intent now also admits signed ACTION_V1.
+        """
 
         role = self._require_console_actor(actor, super_admin=True)
         self._require_mutation_allowed()
         intent = self._parse_service_v2_install_intent(raw_intent)
-        verified = self._lifecycle.inspect_service_v2_upload(
+        verified = self._lifecycle.inspect_upload(
             package_bytes,
             transport_package_sha256=transport_package_sha256,
         )
+        self._require_package_module(verified, module)
+        if verified.manifest.schema_version != 1:
+            validate_service_v2_install_contract(verified)
         intent_sha256 = hashlib.sha256(
             canonical_json_bytes(
                 {
@@ -1349,6 +1413,16 @@ class AutomationPluginManagementService:
                 "the committed contribution projection is unavailable",
                 code="PLUGIN_GENERATION_NOT_READY",
             ) from exc
+        if entry.enabled is False:
+            # A disabled committed instance deliberately has no active route.
+            # Enable retains the exact material checks above and activates its
+            # projection through the normal audited lifecycle/reconciler below.
+            if active_generation is None:
+                return
+            raise PluginConflictError(
+                "a disabled instance still has an active contribution projection",
+                code="PLUGIN_GENERATION_NOT_READY",
+            )
         if active_generation != entry.committed_generation:
             raise PluginConflictError(
                 "the committed contribution projection is not active",
@@ -2085,11 +2159,6 @@ class AutomationPluginManagementService:
 
         self._require_console_actor(actor, super_admin=True)
         entry = self._catalog.require(automation_id)
-        if entry.runtime_model != PluginRuntimeModel.SERVICE_V2.value:
-            raise PluginConflictError(
-                "plugin settings UI requires service-v2",
-                code="PLUGIN_SETTINGS_UI_UNAVAILABLE",
-            )
         code_owned_fields = set(
             first_party_code_owned_config_fields(
                 automation_id=entry.automation_id,
@@ -2118,6 +2187,12 @@ class AutomationPluginManagementService:
             "enabled": entry.enabled,
             "configured": entry.configured,
             "project_configuration_version": entry.project_config_version,
+            "management": management_for(entry.plugin_id, entry.management),
+            "settings_mode": settings_mode(
+                settings_ui=entry.settings_ui, account_roles=entry.account_roles,
+                resource_roles=entry.resource_roles, config_schema=config_schema,
+                resource_bindings=entry.resource_bindings,
+            ),
             "settings_ui": (
                 copy.deepcopy(dict(entry.settings_ui))
                 if entry.settings_ui is not None
@@ -2129,11 +2204,29 @@ class AutomationPluginManagementService:
                 for key, value in entry.project_config.items()
                 if key not in code_owned_fields
             },
-            "account_roles": [copy.deepcopy(dict(item)) for item in entry.account_roles],
+            "account_roles": PluginCatalog._safe_account_roles(entry),
             "resource_roles": [copy.deepcopy(dict(item)) for item in entry.resource_roles],
             "account_bindings": copy.deepcopy(dict(entry.account_bindings)),
             "resource_bindings": copy.deepcopy(dict(entry.resource_bindings)),
         }
+
+    def continue_data_source(self, source_id: str, *, producer_instance_id: str,
+                             expected_revision: int, expected_producer_instance_id: str | None,
+                             request_id: str, actor: Actor) -> dict[str, Any]:
+        from shared.data_sources import DataSourceError
+
+        self._require_console_actor(actor, super_admin=True)
+        self._require_mutation_allowed()
+        try:
+            uuid.UUID(request_id)
+            row = self._packages.continue_data_source(
+                source_id, producer_instance_id=producer_instance_id,
+                expected_revision=expected_revision,
+                expected_producer_instance_id=expected_producer_instance_id, request_id=request_id,
+            )
+        except (DataSourceError, ValueError) as exc:
+            raise PluginConflictError(str(exc), code="SOURCE_CONTINUATION_REJECTED") from exc
+        return {key: row[key] for key in ("source_id", "revision", "producer_instance_id", "producer_generation", "status")}
 
     def save_plugin_settings(
         self,
@@ -2151,7 +2244,7 @@ class AutomationPluginManagementService:
         entry = self._catalog.require(automation_id)
         enabled_entrypoints = (
             entry.current_enabled_entrypoints
-            if entry.current_enabled_entrypoints
+            if entry.project_config_version > 0
             else entry.default_entrypoints
         )
         return self.save_configuration(
@@ -2169,6 +2262,41 @@ class AutomationPluginManagementService:
             request_id=request_id,
             expected_project_configuration_version=expected_project_configuration_version,
             actor=actor,
+        )
+
+    def plugin_settings_history(self, automation_id: str, *, actor: Actor) -> dict[str, Any]:
+        self._require_console_actor(actor, super_admin=True)
+        entry = self._catalog.require(automation_id)
+        versions = []
+        for row in self._packages.plugin_settings_history(automation_id):
+            snapshot = row.get("snapshot_json")
+            if not isinstance(snapshot, Mapping):
+                continue
+            if snapshot.get("manifest_sha256") != entry.manifest_sha256:
+                continue
+            if row.get("state") not in {"COMMITTED", "DRAINING", "DISPOSED"} or row.get("committed_at") is None:
+                continue
+            versions.append({"generation": int(row["generation"]), "plugin_version": snapshot["plugin_version"], "created_at": str(row["created_at"])})
+        return {"versions": sorted(versions, key=lambda item: item["generation"], reverse=True)}
+
+    def restore_plugin_settings(self, automation_id: str, *, generation: int,
+                                expected_project_configuration_version: int, request_id: str,
+                                actor: Actor) -> dict[str, Any]:
+        self._require_console_actor(actor, super_admin=True)
+        entry = self._catalog.require(automation_id)
+        row = self._packages.plugin_settings_snapshot(automation_id, generation)
+        snapshot = row.get("snapshot_json")
+        if (not isinstance(snapshot, Mapping) or snapshot.get("manifest_sha256") != entry.manifest_sha256
+                or row.get("state") not in {"COMMITTED", "DRAINING", "DISPOSED"}
+                or row.get("committed_at") is None):
+            raise PluginConflictError("settings history is not compatible with this plugin version", code="PLUGIN_SETTINGS_HISTORY_INCOMPATIBLE")
+        values = snapshot.get("execution_metadata")
+        if not isinstance(values, Mapping) or any(not isinstance(values.get(key), Mapping) for key in ("project_config", "account_bindings", "resource_bindings")):
+            raise PluginConflictError("settings history is incomplete", code="PLUGIN_SETTINGS_HISTORY_INVALID")
+        return self.save_plugin_settings(
+            automation_id, config=values["project_config"], account_bindings=values["account_bindings"],
+            resource_bindings=values["resource_bindings"], request_id=request_id,
+            expected_project_configuration_version=expected_project_configuration_version, actor=actor,
         )
 
     def save_console_schedule(
@@ -2230,7 +2358,7 @@ class AutomationPluginManagementService:
                 "plugin settings asset path is invalid",
                 code="PLUGIN_SETTINGS_ASSET_INVALID",
             )
-        settings_root = (Path(entry.install_root) / "settings").resolve()
+        settings_root = (Path(entry.install_root) / "package" / "settings").resolve()
         target = (settings_root / Path(*parts)).resolve()
         try:
             target.relative_to(settings_root)
@@ -2439,19 +2567,10 @@ class AutomationPluginManagementService:
         strict: bool = False,
         provider_services: Sequence[str] | None = None,
     ) -> None:
-        """Wake all waiting v2 consumers when this project may provide a service.
+        """Reconcile this provider and its actual transitive consumers only."""
 
-        Service registration is a coeffect shared by otherwise independent
-        projects.  Re-running only the changed Provider leaves consumers in
-        ``WAITING_COEFFECTS`` indefinitely, so a successful Provider/config
-        reconcile schedules a bounded all-project pass.  The mutation that
-        made the Provider durable is never rolled back if that best-effort
-        pass encounters an unrelated project failure; the target service
-        records such failures for the next health/reconcile cycle.
-        """
-
+        entry = self._catalog.require(automation_id)
         if provider_services is None:
-            entry = self._catalog.require(automation_id)
             provider_services = tuple(getattr(entry, "provided_services", ()))
             runtime_model = getattr(
                 entry, "runtime_model", PluginRuntimeModel.ACTION_V1.value
@@ -2460,19 +2579,21 @@ class AutomationPluginManagementService:
             runtime_model = PluginRuntimeModel.SERVICE_V2.value
         if runtime_model != PluginRuntimeModel.SERVICE_V2.value or not provider_services:
             return
-        retry_all = getattr(self._targets, "reconcile_all", None)
-        if not callable(retry_all):
+        reconcile_tree = getattr(self._targets, "reconcile_provider_dependency_tree", None)
+        if not callable(reconcile_tree):
             if strict:
                 raise PluginConflictError(
                     "plugin consumer reconciler is unavailable",
                     code="PLUGIN_CONSUMER_RECONCILE_UNAVAILABLE",
                 )
             return
+        def retry_consumers():
+            return reconcile_tree(automation_id, provider_services=provider_services, enabled=entry.enabled)
         if strict:
-            retry_all()
+            retry_consumers()
             return
         try:
-            retry_all()
+            retry_consumers()
         except Exception:  # noqa: BLE001 - desired Provider state is durable
             return
 

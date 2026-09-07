@@ -50,6 +50,7 @@ from feishu.migration_entrypoint_router import (
 from feishu.automation_messages import (
     TOOL_DISPLAY_NAMES,
     accepted_result_pending_message as _accepted_result_pending_message,
+    submission_unavailable_reply as _submission_unavailable_reply,
     automation_result_reply as _automation_result_reply,
 )
 from feishu.notify import remember_chat_id
@@ -355,6 +356,13 @@ async def _invoke_automation_project_and_reply(
             reply_type="automation_project_rejected",
         )
         return None
+    except Exception as exc:
+        logger.error("trusted Feishu automation unavailable | route=%s | error_type=%s", safe_route_key[:191], type(exc).__name__)
+        reply, reply_type = _submission_unavailable_reply(
+            task_name, accepted=accepted_notified, reply_prefix="automation_project",
+        )
+        await _reply_text(receive_id, reply, receive_id_type=receive_id_type, reply_type=reply_type)
+        return None
 
     status = str(result.get("status") or "").strip().upper()
     run_id = str(result.get("run_id") or "").strip()
@@ -522,6 +530,13 @@ async def _invoke_selection_preview_and_reply(
                 rejected_reply,
                 reply_type="automation_preview_rejected",
             )
+            return None
+        except Exception as exc:
+            logger.error("trusted Feishu selection preview unavailable | route=%s | error_type=%s", str(route_key or "")[:191], type(exc).__name__)
+            reply, reply_type = _submission_unavailable_reply(
+                "候选清单任务", accepted=accepted_notified, reply_prefix="automation_preview",
+            )
+            await _reply_text(receive_id, reply, reply_type=reply_type)
             return None
 
     status = str(result.get("status") or "").strip().upper()

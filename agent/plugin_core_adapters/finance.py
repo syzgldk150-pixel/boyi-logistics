@@ -13,7 +13,7 @@ import hmac
 import secrets
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
 from typing import Any, Callable, Collection, Mapping, Protocol, Sequence
@@ -30,7 +30,7 @@ from plugin_core_adapters.capability_session import (
     CapabilityAuthorizer,
     authorize_target_capability,
 )
-from agent.tms_runtime.scripts.finance_capture_common import CaptureResult
+from agent.tms_runtime.scripts.finance_capture_common import CaptureResult, RawFinanceCapture
 from agent.tms_runtime.scripts.finance_live_capture import build_live_finance_adapter
 from shared.finance import FinanceRepository, SummarySemantics, SyncStatus
 from tools.finance_sync_service import (
@@ -139,7 +139,7 @@ class FinanceRepositoryPort(Protocol):
 
 
 RepositoryFactory = Callable[[], FinanceRepositoryPort]
-CapturePort = Callable[[Mapping[str, Any], date], CaptureResult]
+CapturePort = Callable[[Mapping[str, Any], date], CaptureResult | RawFinanceCapture]
 
 
 def _error(message: str, code: str) -> PluginExecutionError:
@@ -430,7 +430,7 @@ def _canonical_run_commit_proof(value: Mapping[str, Any]) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class _CapturedSource:
-    capture: CaptureResult
+    capture: CaptureResult | RawFinanceCapture
     transactions: tuple[Any, ...]
     summaries: tuple[Any, ...]
     public_transactions: tuple[dict[str, Any], ...]
@@ -440,6 +440,7 @@ class _CapturedSource:
     source_total: int
     source_site_code: str
     source_site_name: str
+    raw_source: Mapping[str, Any] | None = None
 
 
 @dataclass
@@ -588,6 +589,21 @@ class _FinanceBrokerHandlers:
     ) -> _CapturedSource:
         target = date.fromisoformat(target_date)
         capture = self._capture_port(descriptor, target)
+        if isinstance(capture, RawFinanceCapture):
+            from agent.automation_plugins.first_party_handler_common import _scrub_business_value
+
+            total = _integer(capture.validation.get("source_total"), "source_total", maximum=_PAGE_SIZE * _MAX_PAGES)
+            if total != len(capture.rows):
+                raise _error("finance raw source total is not closed", "BROKER_SOURCE_INVALID")
+            site_code = _text(capture.source_site_code, "source site code", maximum=191)
+            site_name = _text(capture.source_site_name, "source site name", maximum=191)
+            raw = _scrub_business_value({"rows": capture.rows, "summaries": capture.summaries})
+            identities = [_text(row.get("GUID"), "source stable key", maximum=191) for row in raw["rows"]]
+            if len(set(identities)) != total:
+                raise _error("finance raw source identity is not unique", "BROKER_SOURCE_INVALID")
+            return _CapturedSource(capture=capture, transactions=(), summaries=(), public_transactions=(),
+                public_summaries=(), plugin_transactions=(), plugin_summaries=(), source_total=total,
+                source_site_code=site_code, source_site_name=site_name, raw_source=raw)
         if not isinstance(capture, CaptureResult):
             raise _error("finance capture returned an invalid contract", "BROKER_SOURCE_INVALID")
         if capture.summary_semantics is not SummarySemantics.SIGNED_NET_BY_FEE:
@@ -959,7 +975,9 @@ class _FinanceBrokerHandlers:
             start == state.captured.source_total and state.captured.source_total > 0
         ):
             raise _error("finance page exceeds the source total", "BROKER_ARGUMENT_INVALID")
-        items = [dict(row) for row in state.captured.public_transactions[start:end]]
+        source_rows = (state.captured.raw_source["rows"] if state.captured.raw_source is not None
+            else state.captured.public_transactions)
+        items = [dict(row) for row in source_rows[start:end]]
         complete = end >= state.captured.source_total
         proof = {
             "capture_ref_sha256": _sha256(state.capture_ref),
@@ -978,6 +996,8 @@ class _FinanceBrokerHandlers:
             "pagination_complete": complete,
             "next_page_number": None if complete else page_number + 1,
             "evidence_ref": self._evidence(context, "capture-page", proof),
+            **({"raw_source": {"summaries": state.captured.raw_source["summaries"],
+                "sha256": _sha256(state.captured.raw_source)}} if state.captured.raw_source is not None else {}),
         }
 
     def verify_source_totals(
@@ -1002,7 +1022,7 @@ class _FinanceBrokerHandlers:
                 "transaction_count",
                 "page_row_counts",
                 "computed_metrics",
-            },
+            } | ({"raw_source_sha256", "transactions", "summaries"} if "raw_source_sha256" in arguments else set()),
             "finance source verification",
         )
         if values.get("schema_version") != 1:
@@ -1028,6 +1048,29 @@ class _FinanceBrokerHandlers:
             or state.source_context_ref != source_context_ref
         ):
             raise _error("finance verification context changed", "BROKER_CURSOR_INVALID")
+        if state.captured.raw_source is not None:
+            if values.get("raw_source_sha256") != _sha256(state.captured.raw_source):
+                raise _error("finance raw source proof changed", "BROKER_SOURCE_MISMATCH")
+            canonical_rows = self._validate_public_transactions(values.get("transactions"), target_date)
+            canonical_summaries = self._validate_public_summaries(values.get("summaries"), target_date)
+            if sorted(row["source_record_key"] for row in canonical_rows) != sorted(row["GUID"] for row in state.captured.raw_source["rows"]):
+                raise _error("finance parser changed stable source identities", "BROKER_SOURCE_MISMATCH")
+            from shared.finance.models import TransactionRecord, SummarySnapshot
+
+            descriptor = descriptors[context.role]
+            parsed_transactions = tuple(TransactionRecord(platform="ronghui", account_id=accounts[context.role],
+                login_account=descriptor["login_account"], **row) for row in canonical_rows)
+            parsed_summaries = tuple(SummarySnapshot(platform="ronghui", account_id=accounts[context.role],
+                **row) for row in canonical_summaries)
+            materialized = CaptureResult(transactions=[], summaries=[],
+                source_site_code=state.captured.source_site_code, source_site_name=state.captured.source_site_name,
+                validation=dict(state.captured.capture.validation), summary_semantics=SummarySemantics.SIGNED_NET_BY_FEE)
+            state.captured = replace(state.captured, capture=materialized, transactions=parsed_transactions,
+                summaries=parsed_summaries, public_transactions=tuple(_canonical_transaction(row) for row in parsed_transactions),
+                public_summaries=tuple(_canonical_summary(row) for row in parsed_summaries),
+                plugin_transactions=tuple(canonical_rows), plugin_summaries=tuple(canonical_summaries))
+        elif "raw_source_sha256" in values:
+            raise _error("finance parser contract does not match capture", "BROKER_SOURCE_MISMATCH")
         expected_capture_sha256 = _sha256(
             {
                 "target_date": target_date,
@@ -1062,6 +1105,11 @@ class _FinanceBrokerHandlers:
             "ronghui_finance",
         )
         fresh = self._capture_source(descriptors[context.role], target_date)
+        if state.captured.raw_source is not None:
+            if (fresh.raw_source != state.captured.raw_source or fresh.source_site_code != state.captured.source_site_code
+                    or fresh.source_site_name != state.captured.source_site_name or fresh.source_total != state.captured.source_total):
+                raise _error("finance source changed during independent verification", "BROKER_SOURCE_CHANGED")
+            fresh = state.captured
         if (
             fresh.public_transactions != state.captured.public_transactions
             or fresh.public_summaries != state.captured.public_summaries
@@ -1312,6 +1360,9 @@ class _FinanceBrokerHandlers:
                 target_date=target_date,
                 source_site_code=capture_state.captured.source_site_code,
                 source_site_name=capture_state.captured.source_site_name,
+                producer_instance_id=context.automation_id,
+                producer_generation=context.generation,
+                require_runtime_provenance=True,
             )
             try:
                 if outcome == "no_data":
@@ -1597,7 +1648,7 @@ def _default_repository_factory() -> FinanceRepositoryPort:
 def _default_capture_port(
     descriptor: Mapping[str, Any],
     target_date: date,
-) -> CaptureResult:
+) -> CaptureResult | RawFinanceCapture:
     binding = FinanceAccountBinding(
         system=str(descriptor["system"]),
         account_id=str(descriptor["account_id"]),
@@ -1609,7 +1660,7 @@ def _default_capture_port(
         discovered = adapter.discover()
         if not isinstance(discovered, Mapping):
             raise _error("finance source discovery is invalid", "BROKER_SOURCE_INVALID")
-        capture = adapter.fetch_day(target_date)
+        capture = adapter.fetch_day(target_date, raw_source=True)
         source_site_code = str(discovered.get("source_site_code") or "").strip()
         source_site_name = str(discovered.get("source_site_name") or "").strip()
         if (

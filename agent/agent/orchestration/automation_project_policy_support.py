@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from datetime import datetime
 from typing import Any
 
@@ -27,6 +28,21 @@ from shared.automation_project_authorization import (
     CompiledAutomationProjectContract,
     canonical_sha256,
 )
+
+
+def scoped_policy_projection(repository, catalog, selected, describe_entry):
+    """Keep scoped display reads within one catalog read transaction."""
+    with repository.unit_of_work() as uow:
+        rows = uow.automation_projects.list_policies(automation_ids=tuple(sorted(selected))) if selected is not None else uow.automation_projects.list_policies()
+        policies = {str(row.get("automation_id") or ""): row for row in rows}
+    scope = getattr(catalog, "read_scope", None)
+    with scope() if callable(scope) else nullcontext():
+        entries = catalog.list() if selected is None else (catalog.get(key) for key in sorted(selected))
+        items = [describe_entry(entry, policies.get(entry.automation_id)) for entry in entries if entry is not None]
+    result = {"items": sorted(items, key=lambda item: item["automation_id"])}
+    if selected is not None:
+        result["missing_automation_ids"] = sorted(selected - {item["automation_id"] for item in items})
+    return result
 
 
 _TRUSTED_CONTEXT_FIELDS = {
@@ -378,6 +394,19 @@ def _automation_id(value: Any) -> str:
     return automation_id
 
 
+def policy_list_automation_ids(values: Sequence[str]) -> frozenset[str]:
+    """Validate an exact read-only projection scope, never an execution grant."""
+    if isinstance(values, (str, bytes)) or not 1 <= len(values) <= 1000:
+        raise OrchestrationError("PROJECT_LIST_FILTER_INVALID", "Expected 1 to 1000 exact automation identities")
+    try:
+        validated = [_automation_id(value) for value in values]
+    except OrchestrationError as exc:
+        raise OrchestrationError("PROJECT_LIST_FILTER_INVALID", "Invalid automation identity filter") from exc
+    if list(values) != validated or len(set(validated)) != len(validated):
+        raise OrchestrationError("PROJECT_LIST_FILTER_INVALID", "Automation identity filter contains whitespace or duplicates")
+    return frozenset(validated)
+
+
 def _request_id(value: Any) -> str:
     request_id = str(value or "").strip()
     if not request_id or len(request_id) > 191:
@@ -487,8 +516,12 @@ def _locked_command_replay(
     expected_generation: int | None,
     expected_configuration_version: int | None,
 ) -> Mapping[str, Any] | None:
+    # The exact project row is already locked by the caller. Commands are
+    # immutable, and the later unique-key insert owns replay arbitration.
+    # Locking a missing key here gap-locks unrelated requests on an empty
+    # idempotency index and deadlocks their concurrent inserts on MySQL 8.
     persisted = uow.commands.get_by_idempotency(
-        command.source, command.idempotency_key, for_update=True
+        command.source, command.idempotency_key, for_update=False
     )
     if persisted is None:
         return None

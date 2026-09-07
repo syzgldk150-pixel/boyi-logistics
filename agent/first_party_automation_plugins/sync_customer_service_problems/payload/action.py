@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 
+from customer_problem_fields import normalize_problem_rows
+from customer_queue_policy import legacy_customer_problem_included, CUSTOMER_SERVICE_SITE_FILTER_LOGIN
+
 from boyi_plugin_result import (
     broker_evidence_ref,
     postcondition_proof,
@@ -206,6 +209,18 @@ def _collect_pages(
             raise ValueError("customer problem page items are invalid")
         for raw_item in items:
             item = _object(raw_item, "customer problem item")
+            if "raw_fields" in item:
+                parsed = normalize_problem_rows(str(item["platform"]),
+                    [_object(item["raw_fields"], "raw problem fields")], account_id="",
+                    account_label="", source_direction=str(item["source_direction"]))[0]
+                if parsed["external_id"] != item["external_id"]:
+                    raise ValueError("customer parser changed stable external identity")
+                if not isinstance(item.get("site_policy_required"), bool):
+                    raise ValueError("customer queue scope is unverified")
+                parsed["queue_included"] = legacy_customer_problem_included(parsed,
+                    account_login=CUSTOMER_SERVICE_SITE_FILTER_LOGIN if item["site_policy_required"] else "")
+                item = {key: value for key, value in parsed.items()
+                    if key not in {"account_id", "account_label", "raw"}} | {"dedupe_key": item["dedupe_key"]}
             key = _dedupe_key(item)
             resolved, resolution_reason = _resolution(item)
             item["resolved"] = resolved

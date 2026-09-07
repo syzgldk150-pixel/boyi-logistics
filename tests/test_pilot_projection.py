@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 
 import pytest
 
@@ -128,6 +129,9 @@ class FakeWorkItems:
     def add_entity(self, row: dict) -> None:
         self.entities.append(deepcopy(row))
 
+    def list_entities(self, work_item_id: str) -> list[dict]:
+        return [row for row in self.entities if row.get("work_item_id") == work_item_id]
+
     def _by_id(self, work_item_id: str) -> dict:
         return next(item for item in self.items.values() if item["work_item_id"] == work_item_id)
 
@@ -151,7 +155,16 @@ class FakeEvents:
         return {"event": event, "outbox": list(outbox)}
 
 
+@pytest.fixture(autouse=True)
+def isolate_customer_repository_boundary(monkeypatch):
+    # These tests assert work-item transitions. The durable publication boundary
+    # is exercised against MySQL in test_module_data_sources_mysql.py.
+    monkeypatch.setattr("agent.orchestration.pilot_projection.publish_customer_collection",
+        lambda connection, **kwargs: None)
+
+
 class FakeUow:
+    connection = object()
     def __init__(self, items: list[dict] | None = None) -> None:
         self.pilot_sources = FakePilotSources()
         self.work_items = FakeWorkItems(items)
@@ -272,6 +285,7 @@ def _plugin_customer_result(*, external_id: str = "opaque-1") -> ToolResult:
         account_id="account-1",
         platform="yunda",
         external_id=external_id,
+        source_direction="query",
     )
     return ToolResult(
         status="SUCCESS",
@@ -340,7 +354,8 @@ def _plugin_customer_context_error_result(
     )
 
 
-def test_plugin_customer_projection_resolves_opaque_identity_from_trusted_side_channel() -> None:
+@pytest.mark.parametrize("tool_name", ["sync_customer_service_problems", "automation.customer-project.run"])
+def test_plugin_customer_projection_resolves_opaque_identity_from_trusted_side_channel(tool_name) -> None:
     result = _plugin_customer_result()
     opaque_key = str(result.data["records"][0]["dedupe_key"])
     uow = FakeUow()
@@ -349,10 +364,10 @@ def test_plugin_customer_projection_resolves_opaque_identity_from_trusted_side_c
         uow=uow,
         run=_run(),
         step_row=_step_row(),
-        step=_step("sync_customer_service_problems"),
+        step=_step(tool_name),
         command=_command(),
         result=result,
-        generation_verification=_plugin_customer_verification(),
+        generation_verification=replace(_plugin_customer_verification(), plugin_id="sync_customer_service_problems"),
     )
 
     assert opaque_key in uow.work_items.items
@@ -366,6 +381,18 @@ def test_plugin_customer_projection_resolves_opaque_identity_from_trusted_side_c
     assert outcome.candidate_keys == (opaque_key,)
 
 
+def test_customer_projection_rejects_wrapper_from_another_generation_instance() -> None:
+    uow = FakeUow()
+    outcome = PilotProjectionService().project_successful_step(
+        uow=uow, run=_run(), step_row=_step_row(), step=_step("automation.another-instance.run"),
+        command=_command(), result=_plugin_customer_result(),
+        generation_verification=replace(_plugin_customer_verification(), plugin_id="sync_customer_service_problems"),
+    )
+    assert outcome is None
+    assert uow.work_items.items == {}
+    assert uow.evidence.rows == []
+
+
 def test_plugin_customer_projection_reuses_legacy_item_without_exposing_account() -> None:
     external_id = "legacy-1"
     legacy_key = f"problem:yunda:account-1:{external_id}"
@@ -373,6 +400,9 @@ def test_plugin_customer_projection_reuses_legacy_item_without_exposing_account(
         [_existing_item(legacy_key, "CUSTOMER_SERVICE_PROBLEM")]
     )
     result = _plugin_customer_result(external_id=external_id)
+    uow.work_items.add_entity({"work_item_id": uow.work_items.items[legacy_key]["work_item_id"],
+        "relation_type": "subject", "entity_type": "customer_problem", "entity_id": external_id,
+        "source_system": "yunda", "metadata_json": {"account_id": "account-1", "source_direction": "query"}})
 
     PilotProjectionService().project_successful_step(
         uow=uow,
@@ -386,6 +416,23 @@ def test_plugin_customer_projection_reuses_legacy_item_without_exposing_account(
 
     assert list(uow.work_items.items) == [legacy_key]
     assert "account_id" not in result.data["records"][0]
+
+
+@pytest.mark.parametrize("directions", [[], ["query", "published"]])
+def test_plugin_customer_legacy_continuation_rejects_missing_or_ambiguous_direction(directions) -> None:
+    external_id = "synthetic-legacy-direction"
+    legacy_key = f"problem:yunda:account-1:{external_id}"
+    uow = FakeUow([_existing_item(legacy_key, "CUSTOMER_SERVICE_PROBLEM")])
+    for direction in directions:
+        uow.work_items.add_entity({"work_item_id": uow.work_items.items[legacy_key]["work_item_id"],
+            "relation_type": "subject", "entity_type": "customer_problem", "entity_id": external_id,
+            "source_system": "yunda", "metadata_json": {"account_id": "account-1", "source_direction": direction}})
+    with pytest.raises(OrchestrationError) as failure:
+        PilotProjectionService().project_successful_step(uow=uow, run=_run(), step_row=_step_row(),
+            step=_step("sync_customer_service_problems"), command=_command(),
+            result=_plugin_customer_result(external_id=external_id), generation_verification=_plugin_customer_verification())
+    assert failure.value.code == "PROBLEM_LEGACY_DIRECTION_UNVERIFIED"
+    assert list(uow.work_items.items) == [legacy_key]
 
 
 def test_plugin_customer_projection_rejects_binding_set_mismatch_before_mutation() -> None:

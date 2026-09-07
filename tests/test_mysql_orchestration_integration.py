@@ -30,36 +30,18 @@ def _load_migration_runner():
     return module
 
 
-def _load_automation_project_scenarios():
-    path = PROJECT_ROOT / "tests" / "mysql_automation_project_scenarios.py"
-    spec = importlib.util.spec_from_file_location("mysql_automation_project_scenarios", path)
+def _load_test_scenarios(module_name: str):
+    path = PROJECT_ROOT / "tests" / f"{module_name}.py"
+    spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
 
 
-def _load_daily_sign_scenarios():
-    path = PROJECT_ROOT / "tests" / "mysql_daily_sign_scenarios.py"
-    spec = importlib.util.spec_from_file_location("mysql_daily_sign_scenarios", path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
-def _load_feishu_queue_scenarios():
-    path = PROJECT_ROOT / "tests" / "mysql_feishu_queue_scenarios.py"
-    spec = importlib.util.spec_from_file_location("mysql_feishu_queue_scenarios", path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
-AUTOMATION_PROJECT_SCENARIOS = _load_automation_project_scenarios()
-DAILY_SIGN_SCENARIOS = _load_daily_sign_scenarios()
-FEISHU_QUEUE_SCENARIOS = _load_feishu_queue_scenarios()
+AUTOMATION_PROJECT_SCENARIOS = _load_test_scenarios("mysql_automation_project_scenarios")
+DAILY_SIGN_SCENARIOS = _load_test_scenarios("mysql_daily_sign_scenarios")
+FEISHU_QUEUE_SCENARIOS = _load_test_scenarios("mysql_feishu_queue_scenarios")
 
 
 @unittest.skipUnless(RUN_MYSQL, "set RUN_MYSQL_INTEGRATION=1 for real MySQL 8 tests")

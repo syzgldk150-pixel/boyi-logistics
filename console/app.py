@@ -32,6 +32,12 @@ def _validate_console_service_identity() -> None:
     )
 
 
+class ConsoleHTTPServer(ThreadingHTTPServer):
+    # Several browsers can request a page's independent assets together.
+    # TCPServer's small default backlog otherwise causes connection retries.
+    request_queue_size = 128
+
+
 class LocalDocFlowApp(
     AuthServiceMixin,
     AgentApiServiceMixin,
@@ -83,6 +89,7 @@ class LocalDocFlowApp(
         self.template_env.globals["mobile_navigation_for_user"] = (
             self._business_module_mobile_navigation_for_user
         )
+        self._prepare_management_templates()
         self.project_modules = self._build_project_modules()
         self.finance_service = FinanceService(
             self.repository,
@@ -97,6 +104,15 @@ class LocalDocFlowApp(
         self._original_page_tickets: dict[str, dict[str, Any]] = {}
         self._original_page_capabilities: dict[str, dict[str, Any]] = {}
         self.routes = ConsoleRouteDispatcher()
+
+    def _prepare_management_templates(self) -> None:
+        # Compile code once before serving concurrent first-page requests.
+        # This renders no user data and does not warm any business cache.
+        for name in (
+            "base.html", "automation.html", "_module_source_history.html",
+            "_automation_extension_install_dialog.html",
+        ):
+            self.template_env.get_template(name)
 
     def _ensure_seed_admin_user(self) -> None:
         if self.repository.count_admin_users() > 0:
@@ -121,7 +137,7 @@ class LocalDocFlowApp(
     def run(self) -> None:
         _validate_console_service_identity()
         handler = self._build_handler()
-        server = ThreadingHTTPServer((self.settings.host, self.settings.port), handler)
+        server = ConsoleHTTPServer((self.settings.host, self.settings.port), handler)
         print(
             f"Logistics Agent local console: http://{self.settings.host}:{self.settings.port} "
             f"(Qwen workers={self.settings.ocr_worker_count})"

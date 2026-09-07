@@ -89,6 +89,18 @@ def get_workflow_resource(resource_key: str) -> dict | None:
     return config
 
 
+def get_saved_workflow_resource(resource_key: str) -> dict | None:
+    """Read the integrity-checked saved locator without network or mutations."""
+    row = _repository().get_record(resource_key)
+    if row is None:
+        return None
+    return {**dict(row["config"]), "_meta": {
+        "resource_key": row["resource_key"],
+        "configuration_version": row["configuration_version"],
+        "config_sha256": row["config_sha256"],
+    }}
+
+
 def list_workflow_resources() -> list[dict]:
     return _repository().list_records(include_config=False)
 

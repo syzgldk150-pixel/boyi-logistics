@@ -1,0 +1,7 @@
+{% if management_module in ["finance", "customer_service"] %}
+<section class="auto-card" data-module-source-history data-module="{{ management_module }}" data-producers="{{ source_producers|tojson|forceescape }}" data-can-manage="{{ 'true' if can_manage_plugins else 'false' }}" data-query-url="{{ '/finance' if management_module == 'finance' else '/customer-service' }}">
+  <h2>数据与历史</h2>
+  <p role="status">正在读取已保存的数据源记录。</p>
+  <div class="table-wrap module-source-table" tabindex="0" role="region" aria-label="数据源历史列表"><table><thead><tr><th>来源</th><th>状态</th><th>当前采集器</th><th>维护</th></tr></thead><tbody></tbody></table></div>
+</section>
+{% endif %}

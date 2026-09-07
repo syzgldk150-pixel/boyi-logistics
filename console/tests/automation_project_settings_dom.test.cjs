@@ -123,14 +123,23 @@ class FakeCustomEvent {
 }
 
 const document = new FakeDocument();
+document.setQuery(".main-content:not([hidden]) .auto-page", new FakeElement("main"));
 let reloadCalls = 0;
 let uuidCounter = 0;
+let pageRuntime = {closed: false};
 const window = {
   crypto: { randomUUID: () => `12345678-1234-4234-8234-${String(++uuidCounter).padStart(12, "0")}` },
   location: { reload: () => { reloadCalls += 1; } },
   setTimeout,
   clearTimeout,
   confirm: () => false,
+  ConsoleUI: {pageRequest: () => {
+    const runtime = pageRuntime;
+    return (...args) => {
+      if (runtime.closed) throw new DOMException("Page closed", "AbortError");
+      return global.fetch(...args);
+    };
+  }},
 };
 
 global.window = window;
@@ -243,10 +252,17 @@ async function settle() {
   assert.equal(saved.summary.dataset.kind, "success");
   assert.equal(saved.local.hidden, true);
 
+  // Closing a Console tab closes its request runtime. A newly imported page
+  // gets a new runtime while document-level delegation remains installed.
+  pageRuntime.closed = true;
+  pageRuntime = {closed: false};
+  document.setQuery(".main-content:not([hidden]) .auto-page", new FakeElement("main"));
+  vm.runInThisContext(fs.readFileSync(scriptPath, "utf8"), {filename: scriptPath});
+  assert.equal(document.listeners.get("click").length, 1, "partial navigation must not duplicate document delegation");
   const refreshFailed = buildProject("refresh-failed");
   document.dispatchEvent({ type: "click", target: refreshFailed.button });
   await settle();
-  assert.equal(fetchCalls, 2);
+  assert.equal(fetchCalls, 2, "new page save must use its live request runtime after the old tab closes");
   assert.equal(refreshFailed.savedEvents(), 0);
   assert.equal(refreshFailed.local.hidden, false);
   assert.equal(refreshFailed.local.dataset.kind, "warning");

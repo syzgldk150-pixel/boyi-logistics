@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
@@ -40,6 +42,29 @@ from agent.automation_plugins.models import (
 from agent.automation_plugins.service_v2_contract import ServiceV2ProjectContract
 from agent.automation_plugins.ports import AutomationPluginRepositoryPort, AutomationProjectConfigurationPort
 from agent.tool_registry import validate_schema_instance
+from shared.plugin_management import MODULE_PATHS, management_for, settings_mode
+from shared.orchestration_repository_support import OrchestrationPersistenceError
+
+
+_CATALOG_ENTRIES = ContextVar("plugin_catalog_request_entries", default=None)
+_CATALOG_MANIFESTS = ContextVar("plugin_catalog_request_manifests", default=None)
+
+
+def _display_manifest(version):
+    """Reuse identical immutable package parsing only within a display request."""
+    cache = _CATALOG_MANIFESTS.get()
+    key = (version.runtime_model, _canonical_digest(version.manifest)) if cache is not None else None
+    if cache is not None and key in cache:
+        return cache[key]
+    manifest = (AutomationPluginManifestV2.from_mapping(version.manifest)
+        if version.runtime_model is PluginRuntimeModel.SERVICE_V2
+        else AutomationPluginManifest.from_mapping(version.manifest))
+    contract = (ServiceV2ProjectContract.from_manifest(manifest)
+        if version.runtime_model is PluginRuntimeModel.SERVICE_V2 else None)
+    result = manifest, contract
+    if cache is not None:
+        cache[key] = result
+    return result
 
 
 @dataclass(frozen=True)
@@ -101,6 +126,7 @@ class PluginCatalogEntry:
     storage_contract: Mapping[str, Any] = field(default_factory=dict)
     service_contracts: Mapping[str, Any] = field(default_factory=dict)
     settings_ui: Mapping[str, Any] | None = None
+    management: Mapping[str, str] | None = None
 
     @property
     def action_id(self) -> str:
@@ -123,27 +149,11 @@ class PluginCatalogEntry:
         )
 
 
-_EXECUTION_METADATA_FIELDS = frozenset(
-    {
-        "project_config_version",
-        "project_config",
-        "account_bindings",
-        "resource_bindings",
-        "device_binding",
-        "schedule",
-        "compiled_invocations",
-        "runtime_descriptor",
-        "action_contract",
-        "governance_anchor",
-    }
+# Both persistence and runtime projection use the same closed envelope.
+from shared.plugin_generation_contract import (  # noqa: E402
+    EXECUTION_METADATA_FIELDS_V1 as _EXECUTION_METADATA_FIELDS,
+    EXECUTION_METADATA_FIELDS_V2 as _EXECUTION_METADATA_FIELDS_V2,
 )
-_EXECUTION_METADATA_FIELDS_V2 = _EXECUTION_METADATA_FIELDS | {
-    "runtime_model",
-    "plugin_api",
-    "service_contracts",
-    "contributions",
-    "storage_contract",
-}
 _RUNTIME_DESCRIPTOR_FIELDS = frozenset(
     {
         "install_metadata",
@@ -369,10 +379,8 @@ def _entry_from_project(
     project_configuration: AutomationProjectConfigurationPort | None = None,
 ) -> PluginCatalogEntry:
     version = project.active_version
-    service_contract: ServiceV2ProjectContract | None = None
+    manifest, service_contract = _display_manifest(version)
     if version.runtime_model is PluginRuntimeModel.SERVICE_V2:
-        manifest = AutomationPluginManifestV2.from_mapping(version.manifest)
-        service_contract = ServiceV2ProjectContract.from_manifest(manifest)
         account_roles = service_contract.account_roles
         resource_roles = service_contract.resource_roles
         allowed_entrypoints = service_contract.allowed_entrypoints
@@ -393,17 +401,18 @@ def _entry_from_project(
         project_full_auto_allowed = True
         provided_services = manifest.provided_services
         required_services = manifest.required_services
+        manifest_projection = manifest.to_mapping()
         service_contracts = {
-            "provides": [copy.deepcopy(dict(item)) for item in manifest.provides],
-            "requires": [copy.deepcopy(dict(item)) for item in manifest.requires],
+            "provides": manifest_projection["provides"],
+            "requires": manifest_projection["requires"],
         }
-        contributions = manifest.to_mapping()["contributes"]
-        declared_capabilities = manifest.capabilities
-        storage_contract = manifest.storage
+        contributions = manifest_projection["contributes"]
+        declared_capabilities = manifest_projection["capabilities"]
+        storage_contract = manifest_projection["storage"]
         settings_ui = manifest.settings_ui
     else:
-        manifest = AutomationPluginManifest.from_mapping(version.manifest)
         signed_manifest = manifest.to_signed_mapping()
+        manifest_projection = signed_manifest
         account_roles = manifest.account_roles
         resource_roles = manifest.resource_roles
         allowed_entrypoints = manifest.allowed_entrypoints
@@ -482,7 +491,7 @@ def _entry_from_project(
         trust_source=version.trust_source.value,
         package_sha256=version.package_sha256,
         manifest_sha256=version.manifest_sha256,
-        config_schema=copy.deepcopy(dict(manifest.config_schema)),
+        config_schema=copy.deepcopy(manifest_projection["config_schema"]),
         account_roles=tuple(copy.deepcopy(dict(item)) for item in account_roles),
         resource_roles=tuple(copy.deepcopy(dict(item)) for item in resource_roles),
         allowed_entrypoints=tuple(allowed_entrypoints),
@@ -500,7 +509,7 @@ def _entry_from_project(
         tool_contract=copy.deepcopy(dict(tool_contract)),
         worker_requirement=copy.deepcopy(dict(worker_requirement)),
         execution_platform=execution_platform,
-        runtime=copy.deepcopy(dict(manifest.runtime)),
+        runtime=copy.deepcopy(manifest_projection["runtime"]),
         scheduling=copy.deepcopy(dict(scheduling)),
         project_full_auto_allowed=project_full_auto_allowed,
         runtime_permissions=copy.deepcopy(dict(runtime_permissions)),
@@ -555,6 +564,7 @@ def _entry_from_project(
         settings_ui=(
             copy.deepcopy(dict(settings_ui)) if settings_ui is not None else None
         ),
+        management=management_for(manifest.plugin_id, getattr(manifest, "management", None)),
     )
 
 
@@ -695,14 +705,17 @@ class PluginCatalog:
     def _project_is_excluded(self, project: PluginInstanceRecord) -> bool:
         if project.automation_id in self._excluded_automation_ids:
             return True
-        raw_manifest = project.active_version.manifest
+        if (
+            project.automation_id not in self._excluded_automation_plugins
+            and project.plugin_id not in self._excluded_plugin_ids
+            and (self._allowed_execution_platforms is None or (
+                project.active_version.runtime_model is PluginRuntimeModel.SERVICE_V2
+                and "server" in self._allowed_execution_platforms
+            ))
+        ):
+            return False  # Inclusion still requires the full entry validation.
         try:
-            manifest = (
-                AutomationPluginManifestV2.from_mapping(raw_manifest)
-                if project.active_version.runtime_model
-                is PluginRuntimeModel.SERVICE_V2
-                else AutomationPluginManifest.from_mapping(raw_manifest)
-            )
+            manifest, _ = _display_manifest(project.active_version)
         except Exception:
             # Missing or corrupt platform data remains visible and therefore
             # fails closed in _entry_from_project instead of being hidden.
@@ -773,12 +786,17 @@ class PluginCatalog:
 
     def _partition_projects(
         self,
+        *,
+        module: str | None = None,
     ) -> tuple[
         list[PluginInstanceRecord],
         frozenset[str],
         dict[str, dict[str, str]],
     ]:
         raw_id_reader = getattr(self._repository, "list_instance_ids", None)
+        module_reader = getattr(self._repository, "list_instance_ids_for_module", None)
+        if module is not None and callable(module_reader):
+            raw_id_reader = lambda: module_reader(module)
         loaded_projects: dict[str, PluginInstanceRecord] | None = None
         if callable(raw_id_reader):
             automation_ids = self._validate_project_identities(tuple(raw_id_reader()))
@@ -794,6 +812,9 @@ class PluginCatalog:
         visible: list[PluginInstanceRecord] = []
         hidden: set[str] = set()
         failures: dict[str, dict[str, str]] = {}
+        prefetch = getattr(self._repository, "prefetch_catalog_instances", None)
+        if loaded_projects is None and callable(prefetch):
+            prefetch(tuple(item for item in automation_ids if item not in self._excluded_automation_ids))
         for automation_id in automation_ids:
             if automation_id in self._excluded_automation_ids:
                 hidden.add(automation_id)
@@ -801,7 +822,7 @@ class PluginCatalog:
             if loaded_projects is None:
                 try:
                     project = self._repository.get_instance(automation_id)
-                except (AutomationPluginError, ValueError) as exc:
+                except (AutomationPluginError, ValueError, OrchestrationPersistenceError) as exc:
                     failures[automation_id] = self._project_data_failure(exc)
                     continue
                 if project is None:
@@ -833,23 +854,41 @@ class PluginCatalog:
 
     def _entries_with_failures(
         self,
+        *,
+        module: str | None = None,
     ) -> tuple[
         list[PluginCatalogEntry],
         frozenset[str],
         dict[str, dict[str, str]],
     ]:
-        projects, hidden_automation_ids, failures = self._partition_projects()
+        projects, hidden_automation_ids, failures = self._partition_projects(module=module)
+        hidden = set(hidden_automation_ids)
+        if module is not None:
+            for other_module in MODULE_PATHS:
+                reader = getattr(self._repository, "list_instance_ids_for_module", None)
+                if other_module != module and callable(reader):
+                    hidden.update(reader(other_module))
         entries: list[PluginCatalogEntry] = []
         for project in projects:
             try:
-                entries.append(
-                    _entry_from_project(project, self._project_configuration)
-                )
-            except (AutomationPluginError, ValueError) as exc:
+                if module is not None:
+                    manifest = project.active_version.manifest
+                    ownership = management_for(
+                        project.plugin_id, manifest.get("management")
+                    )
+                    if ownership["module"] != module:
+                        hidden.add(project.automation_id)
+                        continue
+                entry = _entry_from_project(project, self._project_configuration)
+                cache = self._entry_cache()
+                if cache is not None:
+                    cache[entry.automation_id] = entry
+                entries.append(entry)
+            except (AutomationPluginError, ValueError, OrchestrationPersistenceError) as exc:
                 failures[project.automation_id] = self._project_data_failure(exc)
         return (
             sorted(entries, key=lambda item: item.automation_id),
-            hidden_automation_ids,
+            frozenset(hidden),
             dict(sorted(failures.items())),
         )
 
@@ -1272,7 +1311,30 @@ class PluginCatalog:
             )
         return "READY", []
 
-    def safe_projection(self) -> dict[str, Any]:
+    def safe_projection(self, *, module: str | None = None) -> dict[str, Any]:
+        with self.read_scope():
+            return self._safe_projection(module=module)
+
+    def _entry_cache(self):
+        state = _CATALOG_ENTRIES.get()
+        return state[1] if state is not None and state[0] is self else None
+
+    @contextmanager
+    def read_scope(self):
+        if self._entry_cache() is not None:
+            yield
+            return
+        reader = getattr(self._repository, "catalog_read_scope", None)
+        with reader() if callable(reader) else nullcontext():
+            token = _CATALOG_ENTRIES.set((self, {}))
+            manifest_token = _CATALOG_MANIFESTS.set({})
+            try:
+                yield
+            finally:
+                _CATALOG_MANIFESTS.reset(manifest_token)
+                _CATALOG_ENTRIES.reset(token)
+
+    def _safe_projection(self, *, module: str | None = None) -> dict[str, Any]:
         """Return the closed Console projection without integrity or filesystem data.
 
         The projection intentionally excludes raw manifests, integrity digests,
@@ -1281,10 +1343,13 @@ class PluginCatalog:
         uniform Console configuration form.
         """
 
-        entries, hidden_automation_ids, unavailable_projects = (
-            self._entries_with_failures()
-        )
-        dependency_statuses = self._v2_dependency_statuses(entries)
+        if module is not None and module not in MODULE_PATHS:
+            raise PluginConflictError("unsupported plugin module", code="PLUGIN_MODULE_INVALID")
+        entries, hidden_automation_ids, unavailable_projects = self._entries_with_failures(module=module)
+        # A module filter must not hide providers used by one of its plugins.
+        # Account-only actions avoid compiling unrelated projects altogether.
+        dependency_entries = self.list() if module and any(entry.required_services for entry in entries) else entries
+        dependency_statuses = self._v2_dependency_statuses(dependency_entries)
         newest: dict[str, PluginCatalogEntry] = {}
         for entry in entries:
             current = newest.get(entry.plugin_id)
@@ -1320,6 +1385,11 @@ class PluginCatalog:
                     copy.deepcopy(dict(entry.settings_ui))
                     if entry.settings_ui is not None
                     else None
+                ),
+                "management": management_for(entry.plugin_id, entry.management),
+                "settings_mode": settings_mode(
+                    settings_ui=entry.settings_ui, account_roles=entry.account_roles,
+                    resource_roles=entry.resource_roles, config_schema=entry.config_schema,
                 ),
                 "entrypoint_kinds": {
                     key: str(value.get("contribution_kind") or key)
@@ -1374,6 +1444,13 @@ class PluginCatalog:
                     copy.deepcopy(dict(entry.settings_ui))
                     if entry.settings_ui is not None
                     else None
+                ),
+                "management": management_for(entry.plugin_id, entry.management),
+                "settings_mode": settings_mode(
+                    settings_ui=entry.settings_ui, account_roles=entry.account_roles,
+                    resource_roles=entry.resource_roles,
+                    config_schema=self._safe_instance_config_schema(entry),
+                    resource_bindings=entry.resource_bindings,
                 ),
                 "entrypoint_kinds": {
                     key: str(value.get("contribution_kind") or key)
@@ -1472,14 +1549,20 @@ class PluginCatalog:
         safe_automation_id = str(automation_id or "").strip()
         if safe_automation_id in self._excluded_automation_ids:
             return None
+        cache = self._entry_cache()
+        if cache is not None and safe_automation_id in cache:
+            return cache[safe_automation_id]
         project = self._repository.get_instance(safe_automation_id)
         if project is not None and self._project_is_excluded(project):
             return None
-        return (
+        entry = (
             _entry_from_project(project, self._project_configuration)
             if project is not None
             else None
         )
+        if cache is not None:
+            cache[safe_automation_id] = entry
+        return entry
 
     def require(self, automation_id: str) -> PluginCatalogEntry:
         entry = self.get(automation_id)

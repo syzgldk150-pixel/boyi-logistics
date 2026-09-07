@@ -46,6 +46,7 @@ from agent.automation_plugins.service_v2_contract import (
     ServiceV2ProjectContract,
 )
 from shared.redaction import redact_text
+from shared.plugin_management import management_for
 
 
 @dataclass(frozen=True)
@@ -402,6 +403,13 @@ class AutomationPluginService:
         validate_service_v2_install_contract(verified)
         return verified
 
+    def inspect_upload(
+        self, package_source: bytes | bytearray | Path | str, *,
+        transport_package_sha256: str,
+    ) -> _VerifiedPackage:
+        """Use the installation verifier for module ownership checks."""
+        return self._verified_upload(package_source, transport_package_sha256)
+
     def install_upload(
         self,
         package_source: bytes | bytearray | Path | str,
@@ -462,6 +470,10 @@ class AutomationPluginService:
         if current is None:
             raise PluginConflictError(f"automation instance does not exist: {automation_id}")
         verified = self._verified_upload(package_source, transport_package_sha256)
+        current_ownership = management_for(current.plugin_id, current.active_version.manifest.get("management"))
+        target_ownership = management_for(verified.manifest.plugin_id, verified.manifest.management)
+        if current_ownership != target_ownership:
+            raise PluginConflictError("dataset or module changes require a core migration", code="PLUGIN_DATASET_INCOMPATIBLE")
         if isinstance(verified, VerifiedPluginPackageV2):
             validate_service_v2_install_contract(verified)
         prepared = self._materialize_upload(verified)
@@ -570,15 +582,6 @@ class AutomationPluginService:
             expected_current_version=expected_current_version,
             expected_record_version=expected_record_version,
         )
-        try:
-            self._repository.persist_cleanup_requests(preparation)
-        except Exception as exc:
-            self._repository.mark_purge_failed(
-                preparation,
-                error_code=type(exc).__name__.upper()[:64],
-                error_summary=redact_text(exc)[:500],
-            )
-            raise
         if before_finalize is not None:
             try:
                 before_finalize(automation_id)
@@ -592,6 +595,15 @@ class AutomationPluginService:
                     error_summary=redact_text(exc)[:500],
                 )
                 raise
+        try:
+            self._repository.persist_cleanup_requests(preparation)
+        except Exception as exc:
+            self._repository.mark_purge_failed(
+                preparation,
+                error_code=type(exc).__name__.upper()[:64],
+                error_summary=redact_text(exc)[:500],
+            )
+            raise
         if preparation.cleanup_requests:
             return PluginUninstallResult(
                 automation_id=automation_id,

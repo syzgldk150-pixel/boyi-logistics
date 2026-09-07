@@ -5,6 +5,7 @@ import hashlib
 import json
 import uuid
 from datetime import datetime, timezone
+from dataclasses import replace
 from typing import Any, Mapping
 
 import pytest
@@ -243,6 +244,7 @@ def _generation_row(snapshot: RuntimeGenerationSnapshot) -> dict[str, Any]:
     return {
         **raw,
         "state": "COMMITTED",
+        "committed_at": datetime.now(timezone.utc),
         "snapshot_json": raw,
         "snapshot_sha256": _persisted_sha(raw),
         "enabled_entrypoints_sha256": _persisted_sha(
@@ -334,8 +336,9 @@ class _LowLevelPluginRepository:
         generation: int,
         *,
         for_update: bool = False,
+        include_execution_details: bool = True,
     ) -> dict[str, Any] | None:
-        del for_update
+        assert not for_update or include_execution_details
         row = self.generations.get((automation_id, generation))
         return copy.deepcopy(row) if row is not None else None
 
@@ -736,6 +739,61 @@ def _upgrade(
         expected_current_version=expected_current_version,
         expected_record_version=expected_record_version,
     )
+
+
+def _committed_v2_harness():
+    repository, orchestration, version_v1 = _harness()
+    version_v2 = _version(_synthetic_manifest("2.0.0"), "2")
+    snapshot = replace(_snapshot(_synthetic_manifest("2.0.0"), version_v2), generation=2)
+    low_level = orchestration.low_level
+    low_level.versions[(version_v2.plugin_id, version_v2.version)] = _version_row(version_v2)
+    low_level.generations[("upgrade-instance", 1)]["state"] = "DISPOSED"
+    low_level.generations[("upgrade-instance", 2)] = _generation_row(snapshot)
+    low_level.projects["upgrade-instance"].update(
+        plugin_version="2.0.0", committed_generation=2, target_generation=2, record_version=2,
+    )
+    return repository, orchestration, version_v1
+
+
+def test_signed_historical_rollback_preserves_live_generation_and_is_idempotent():
+    repository, orchestration, historical_version = _committed_v2_harness()
+    request_id = str(uuid.uuid4())
+    first = _upgrade(repository, historical_version, request_id=request_id,
+        expected_current_version="2.0.0", expected_record_version=2)
+    repeated = _upgrade(repository, historical_version, request_id=request_id,
+        expected_current_version="2.0.0", expected_record_version=2)
+    assert first.target_generation == repeated.target_generation == 3
+    assert first.active_version.version == "1.0.0"
+    assert first.committed_snapshot.plugin_version == "2.0.0"
+    assert len(orchestration.policies.events) == 1
+    assert orchestration.policies.events[0]["reason"] == "PLUGIN_HISTORICAL_VERSION_RESTORED"
+    assert orchestration.events.items[0][0]["payload"]["operation"] == "rollback"
+
+
+@pytest.mark.parametrize("failure", ["never_committed", "other_instance", "invalid_digest", "incompatible_config"])
+def test_historical_rollback_rejects_unproven_or_incompatible_target_atomically(failure):
+    repository, orchestration, historical_version = _committed_v2_harness()
+    low_level = orchestration.low_level
+    if failure == "never_committed":
+        low_level.generations[("upgrade-instance", 1)]["committed_at"] = None
+    elif failure == "other_instance":
+        low_level.generations[("another-instance", 1)] = low_level.generations.pop(("upgrade-instance", 1))
+    elif failure == "invalid_digest":
+        low_level.generations[("upgrade-instance", 1)]["snapshot_sha256"] = "0" * 64
+    else:
+        low_level.configs["upgrade-instance"]["config_json"]["only_v2"] = True
+    before = orchestration.export_state()
+    expected = {
+        "never_committed": "PLUGIN_ROLLBACK_HISTORY_REQUIRED",
+        "other_instance": "PLUGIN_ROLLBACK_HISTORY_REQUIRED",
+        "invalid_digest": "PLUGIN_ROLLBACK_HISTORY_INVALID",
+        "incompatible_config": "PLUGIN_UPGRADE_CONFIGURATION_INCOMPATIBLE",
+    }[failure]
+    with pytest.raises(PluginConflictError) as caught:
+        _upgrade(repository, historical_version, request_id=str(uuid.uuid4()),
+            expected_current_version="2.0.0", expected_record_version=2)
+    assert caught.value.code == expected
+    assert orchestration.export_state() == before
 
 
 def test_upgrade_stages_desired_version_once_and_keeps_committed_v1() -> None:

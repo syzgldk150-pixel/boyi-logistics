@@ -506,6 +506,7 @@ class _FirstPartyCoreHandlers:
                 "account_label": account_id,
                 "session_profile": str(descriptor.get("session_profile") or ""),
                 "action": "query",
+                "raw_source": True,
                 "direction": source_direction,
                 "filters": {
                     "direction": source_direction,
@@ -571,6 +572,15 @@ class _FirstPartyCoreHandlers:
         }
         return {
             "items": public_items,
+            "source_context": {
+                "provider": platform,
+                "organization_key": _text(raw.get("source_site_code"), "source organization", maximum=191),
+                "account_ref": self._codec.identity(context, account_id=account_id,
+                    platform=platform, external_id="source-identity"),
+                "direction": source_direction,
+                "required_directions": list(_source_directions(platform, direction)),
+                "source_complete": source_complete,
+            },
             "next_cursor": next_cursor,
             "pagination_complete": final,
             "evidence_ref": self._codec.evidence(context, "customer-list-page", evidence_payload),
@@ -606,6 +616,7 @@ class _FirstPartyCoreHandlers:
                 account_id=account_id,
                 platform=platform,
                 external_id=external_id,
+                source_direction=source_direction,
             )
             if hmac.compare_digest(dedupe_key, expected):
                 matches.append((account_id, descriptor))
@@ -1869,7 +1880,10 @@ class _FirstPartyCoreHandlers:
         ).hexdigest()
         self._mark_write_started(context)
         try:
-            raw = self._ports.replace_scan_snapshot(records, target_date)
+            from shared.scan_snapshot_recovery import scan_snapshot_write_identity
+
+            with scan_snapshot_write_identity(context.write_attempt_identity):
+                raw = self._ports.replace_scan_snapshot(records, target_date)
         except PluginExecutionError as exc:
             if exc.code == "WRITE_OUTCOME_UNKNOWN":
                 raise

@@ -7,6 +7,8 @@ no filesystem operations and never stores account credentials or sessions.
 
 from __future__ import annotations
 
+from shared.plugin_generation_contract import validate_execution_envelope
+
 import base64
 import binascii
 import hashlib
@@ -688,6 +690,7 @@ def _generation_snapshot(
     snapshot["execution_metadata"] = _generation_execution_metadata(
         snapshot.get("execution_metadata"),
         enabled_entrypoints=snapshot["enabled_entrypoints"],
+        runtime_model=runtime_model, plugin_api=plugin_api,
     )
     created_at = snapshot.get("created_at")
     if isinstance(created_at, str):
@@ -700,23 +703,10 @@ def _generation_snapshot(
 
 
 def _generation_execution_metadata(
-    value: Any,
-    *,
-    enabled_entrypoints: Sequence[str],
+    value: Any, *, enabled_entrypoints: Sequence[str],
+    runtime_model: str = "ACTION_V1", plugin_api: str = "1.0.0",
 ) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != {
-        "project_config_version",
-        "project_config",
-        "account_bindings",
-        "resource_bindings",
-        "device_binding",
-        "schedule",
-        "compiled_invocations",
-        "runtime_descriptor",
-        "action_contract",
-        "governance_anchor",
-    }:
-        raise ValueError("generation execution metadata fields are not closed")
+    validate_execution_envelope(value, runtime_model=runtime_model, plugin_api=plugin_api)
     normalized = dict(value)
     _positive_int(
         normalized.get("project_config_version"),
@@ -1535,6 +1525,33 @@ class AutomationPluginRepository(
             cursor.execute(f"SELECT * FROM automation_projects{where} ORDER BY automation_id")
             return _rows(cursor)
 
+    def list_project_module_ids(self, module: str) -> list[str]:
+        """Filter persisted package ownership before loading runtime snapshots."""
+        from shared.plugin_management import LEGACY_COLLECTOR_MODULES, MODULE_PATHS
+
+        if module not in MODULE_PATHS:
+            raise ValueError("unsupported plugin module")
+        cases = " ".join("WHEN p.plugin_id=%s THEN %s" for _ in LEGACY_COLLECTOR_MODULES)
+        values = [value for pair in LEGACY_COLLECTOR_MODULES.items() for value in pair]
+        # Unknown ownership must reach strict validation and remain visibly quarantined.
+        targets = tuple(key for key in MODULE_PATHS if key != "automation") if module == "automation" else (module,)
+        predicate = "NOT IN (" + ",".join("%s" for _ in targets) + ")" if module == "automation" else "=%s"
+        with self.cursor() as cursor:
+            cursor.execute(
+                "SELECT p.automation_id FROM automation_projects p "
+                "LEFT JOIN automation_plugin_versions v ON v.plugin_id=p.plugin_id "
+                "AND v.version=p.plugin_version "
+                "WHERE COALESCE(JSON_UNQUOTE(JSON_EXTRACT(v.manifest_json, '$.management.module')), "
+                f"CASE {cases} ELSE 'automation' END) {predicate} ORDER BY p.automation_id",
+                (*values, *targets),
+            )
+            return [str(row["automation_id"]) for row in _rows(cursor)]
+
+    def read_catalog_rows(self, automation_ids: Sequence[str]):
+        from shared.automation_plugin_catalog_rows import CatalogDisplayRows
+
+        return CatalogDisplayRows(self, automation_ids, schedule_from_rows=_schedule_from_rows, validate_generation_row=_validated_generation_row)
+
     def install_project_instance(self, row: Mapping[str, Any]) -> dict[str, Any]:
         """Persist one server-generated instance id with request idempotency."""
 
@@ -2063,15 +2080,9 @@ class AutomationPluginRepository(
                 (_required_text(automation_id, "automation_id"),),
             )
             schedule_rows = _rows(cursor)
-        desired_schedule = config.get("desired_schedule_json")
-        if not isinstance(desired_schedule, Mapping):
-            raise OrchestrationPersistenceError(
-                "automation project desired schedule is invalid"
-            )
-        config["schedule"] = dict(desired_schedule)
-        config["committed_schedule"] = _schedule_from_rows(schedule_rows)
-        config["scheduled_task_ids"] = tuple(str(row["id"]) for row in schedule_rows)
-        return config
+        from shared.automation_plugin_catalog_rows import project_config_with_schedule
+
+        return project_config_with_schedule(config, schedule_rows, schedule_from_rows=_schedule_from_rows)
 
     def initialize_project_config(
         self,

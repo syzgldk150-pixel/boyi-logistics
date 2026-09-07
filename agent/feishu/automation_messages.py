@@ -27,6 +27,13 @@ def accepted_result_pending_message(task_name: str) -> str:
     )
 
 
+def submission_unavailable_reply(task_name: str, *, accepted: bool, reply_prefix: str) -> tuple[str, str]:
+    """Preserve the commit boundary when the submission/result transport fails."""
+    if accepted:
+        return accepted_result_pending_message(task_name), f"{reply_prefix}_result_pending"
+    return f"{task_name}暂时无法提交，请稍后重试。", f"{reply_prefix}_rejected"
+
+
 def _public_failure_detail(value: Any) -> str:
     """Keep plain business explanations while dropping internal diagnostics."""
 
@@ -109,4 +116,5 @@ __all__ = [
     "TOOL_DISPLAY_NAMES",
     "accepted_result_pending_message",
     "automation_result_reply",
+    "submission_unavailable_reply",
 ]

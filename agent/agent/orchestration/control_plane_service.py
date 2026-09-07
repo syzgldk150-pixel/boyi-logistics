@@ -971,7 +971,7 @@ def _customer_problem_open_refs(uow: Any) -> list[dict[str, Any]]:
         legacy_identity = len(parts) == 4 and parts[0] == "problem" and all(parts[1:])
         opaque_identity = (
             len(persisted_key) == len("problem:v1:") + 64
-            and persisted_key.startswith("problem:v1:")
+            and persisted_key.startswith(("problem:v1:", "problem:v2:"))
             and all(character in "0123456789abcdef" for character in persisted_key[-64:])
         )
         if not legacy_identity and not opaque_identity:
@@ -1030,13 +1030,19 @@ def _customer_problem_open_refs(uow: Any) -> list[dict[str, Any]]:
             context_error = context_error or "SUBJECT_ENTITY_IDENTITY_MISMATCH"
             opaque_key = persisted_key
         else:
-            opaque_key = customer_problem_identity(
+            legacy_key = customer_problem_identity(
                 account_id=account_id,
                 platform=platform,
                 external_id=external_id,
             )
-            if opaque_identity and opaque_key != persisted_key:
+            source_direction = str(metadata.get("source_direction") or "").strip().lower()
+            opaque_key = (customer_problem_identity(account_id=account_id, platform=platform,
+                external_id=external_id, source_direction=source_direction)
+                if source_direction in _CUSTOMER_PROBLEM_SOURCE_DIRECTIONS else legacy_key)
+            if opaque_identity and persisted_key not in {legacy_key, opaque_key}:
                 context_error = "SUBJECT_ENTITY_IDENTITY_MISMATCH"
+            if not source_direction:
+                context_error = context_error or "SOURCE_DIRECTION_MISSING"
         # ``platform`` and ``external_id`` are optional in the signed
         # recheck-item schema so an invalid historical identity can be carried
         # forward with ``context_error`` and handled as BLOCKED_DATA by the

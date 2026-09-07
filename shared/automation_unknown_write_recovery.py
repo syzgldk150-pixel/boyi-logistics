@@ -32,6 +32,7 @@ def recover_unknown_automation_write(
     actor_role: str,
     authoritative_applied_proof: Mapping[str, object] | None = None,
     authoritative_not_applied_proof: Mapping[str, object] | None = None,
+    scan_applied_recovery: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     """Resolve one receipt-backed interrupted write in the caller's UoW."""
 
@@ -92,6 +93,9 @@ def recover_unknown_automation_write(
     if step is None:
         raise AssertionError("recovery step must be resolved before receipt locking")
     step_id = str(step.get("step_id") or "")
+    restored_result = None
+    if str(run.get("status") or "") in {"RUNNING", "VERIFYING"}:
+        return _unknown("RUN_RECOVERY_NOT_SETTLED", run_id, step_id)
     if any(
         str(item.get("orchestration_run_id") or "") != run_id
         or str(item.get("step_id") or "") != step_id
@@ -150,6 +154,13 @@ def recover_unknown_automation_write(
                 },
             )
         proof_applied = authoritative_applied_proof is not None
+        if scan_applied_recovery is not None:
+            if not proof_applied or safe_actor_id != "system:scan-readback" or safe_actor_role != "system" or scan_applied_recovery.get("evidence_sha256") != proof_evidence:
+                raise ValueError("scan result restoration requires its server-owned applied proof")
+            from shared.scan_snapshot_recovery import restore_scan_result
+
+            restored_result = restore_scan_result(uow, command=command, run=run, step=step, context=context,
+                receipts=receipts, proof=scan_applied_recovery)
         marker = getattr(
             uow.automation_plugins,
             (
@@ -228,6 +239,7 @@ def recover_unknown_automation_write(
     step_transitioned, run_transitioned, run = _transition_recovery(
         uow, run, step, run_id, recovery_status, terminal, receipt_digest,
         retry_safe=retry_safe,
+        restored_result=restored_result,
     )
     settled = uow.automation_plugins.settle_unknown_write_recovery_row(
         automation_id=automation_id, generation=generation, lease_id=lease_id,
@@ -306,7 +318,7 @@ def _unknown(reason: str, run_id: str, step_id: str | None, evidence: dict[str, 
 
 def _transition_recovery(uow: Any, run: dict[str, Any], step: dict[str, Any], run_id: str,
                          recovery_status: str, terminal: bool, receipt_digest: str,
-                         *, retry_safe: bool) -> tuple[bool, bool, dict[str, Any]]:
+                         *, retry_safe: bool, restored_result: Mapping[str, Any] | None = None) -> tuple[bool, bool, dict[str, Any]]:
     run_status, step_status = str(run.get("status") or ""), str(step.get("status") or "")
     applied = recovery_status == "APPLIED"
     complete_status = (
@@ -317,7 +329,7 @@ def _transition_recovery(uow: Any, run: dict[str, Any], step: dict[str, Any], ru
             "expected_version": int(step["version"]),
             "expected_statuses": ("BLOCKED_DATA",),
             "status": complete_status,
-            "result_summary": {"reconciliation": recovery_status, "receipt_digest": receipt_digest},
+            "result_summary": dict(restored_result) if restored_result is not None else {"reconciliation": recovery_status, "receipt_digest": receipt_digest},
             "postcondition_status": (
                 "VERIFIED_RECEIPT"
                 if applied
@@ -351,7 +363,7 @@ def _transition_recovery(uow: Any, run: dict[str, Any], step: dict[str, Any], ru
             "expected_version": int(step["version"]),
             "expected_statuses": ("BLOCKED_DATA",),
             "status": complete_status,
-            "result_summary": {"reconciliation": recovery_status, "receipt_digest": receipt_digest},
+            "result_summary": dict(restored_result) if restored_result is not None else {"reconciliation": recovery_status, "receipt_digest": receipt_digest},
             "postcondition_status": "VERIFIED_RECEIPT" if applied else "NOT_APPLIED",
             "finished_at": datetime.now(),
         }

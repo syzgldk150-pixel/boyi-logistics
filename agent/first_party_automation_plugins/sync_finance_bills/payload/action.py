@@ -17,6 +17,8 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 
+from finance_fields import canonical_ronghui_row, canonical_ronghui_summaries
+
 from boyi_plugin_result import (
     broker_evidence_ref,
     executor_success_evidence,
@@ -751,6 +753,9 @@ def _collect_and_verify(
     source_context_ref = ""
     source_total: int | None = None
     duplicate_rows = 0
+    raw_source_rows: list[dict[str, object]] = []
+    raw_summaries: list[dict[str, object]] | None = None
+    raw_source_sha256: str | None = None
     for page_number in range(1, _MAX_PAGES + 1):
         try:
             raw_page = broker.call(
@@ -773,7 +778,17 @@ def _collect_and_verify(
                 "CAPTURE_PRIMITIVE_FAILED",
                 "capture_page",
             ) from exc
-        page = _exact_object(raw_page, _CAPTURE_RESPONSE_FIELDS, "capture_page")
+        source_context = raw_page.get("raw_source") if isinstance(raw_page, Mapping) else None
+        page_fields = _CAPTURE_RESPONSE_FIELDS | ({"raw_source"} if source_context is not None else set())
+        page = _exact_object(raw_page, page_fields, "capture_page")
+        if source_context is not None:
+            source_context = _exact_object(source_context, {"summaries", "sha256"}, "raw_finance_source")
+            if not isinstance(source_context["summaries"], list):
+                raise FinanceActionError("FIELD_DRIFT", "raw_finance_source")
+            if raw_source_sha256 is not None and raw_source_sha256 != source_context["sha256"]:
+                raise FinanceActionError("SOURCE_CONTEXT_MISMATCH", "raw_finance_source")
+            raw_source_sha256 = str(source_context["sha256"])
+            raw_summaries = source_context["summaries"]
         if page.get("schema_version") != 1:
             raise FinanceActionError("FIELD_DRIFT", "capture_page")
         observed_capture_ref = _required_text(
@@ -807,6 +822,10 @@ def _collect_and_verify(
             raise FinanceActionError("PAGINATION_TOTAL_DRIFT", "capture_page")
         page_row_counts.append(page_row_count)
         for item in items:
+            if raw_source_sha256 is not None:
+                raw_source_rows.append(_object(item, "raw_finance_row"))
+                item = canonical_ronghui_row(item, target_date=target_date,
+                    amount_storage_text=lambda value, *, field: _amount_text(_decimal(value, field)))
             row = _normalize_transaction(item, target_date)
             key = str(row["source_record_key"])
             previous = transactions_by_key.get(key)
@@ -843,6 +862,15 @@ def _collect_and_verify(
             "transactions": transactions,
         }
     )
+    raw_verification = {}
+    if raw_source_sha256 is not None:
+        if _sha256({"rows": raw_source_rows, "summaries": raw_summaries}) != raw_source_sha256:
+            raise FinanceActionError("SOURCE_CONTEXT_MISMATCH", "raw_finance_source")
+        parsed_summaries = [_normalize_summary(row, target_date) for row in canonical_ronghui_summaries(
+            raw_summaries, raw_source_rows, target_date=target_date,
+            amount_storage_text=lambda value, *, field: _amount_text(_decimal(value, field)))]
+        raw_verification = {"raw_source_sha256": raw_source_sha256,
+            "transactions": transactions, "summaries": parsed_summaries}
     try:
         raw_verify = broker.call(
             "browser.invoke",
@@ -857,6 +885,7 @@ def _collect_and_verify(
                 "transaction_count": len(transactions),
                 "page_row_counts": page_row_counts,
                 "computed_metrics": computed_metrics,
+                **raw_verification,
             },
             reserve=reserve,
         )

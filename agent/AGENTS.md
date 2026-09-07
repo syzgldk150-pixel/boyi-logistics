@@ -1,5 +1,8 @@
 # 物流 Agent 系统
 
+
+本轮 V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v32.md) 为权威索引：自动化只列功能插件；财务/客服采集在所属模块；AI contribution 可选；账号引用及平铺常用参数使用宿主简单设置；历史包回退须有本实例已提交版本证据。局部入口见 `agent/scripts/plugin_maintenance.py`（仓库根相对路径），整轮入口为 `agent/scripts/accept_low_maintenance_v32.py`。
+
 > 企业级物流业务自动化系统，包含价格采集、财务对账、OCR识别、车辆调度、AI客服五大模块。
 > 远期目标：LangChain/LangGraph Agent 系统整合。
 
@@ -14,6 +17,7 @@
 - 生产控制台固定入口为 `https://boyi.homes`；Nginx 配置、ACME 启动配置和续期 reload 钩子统一维护在 `deploy/nginx/`，公网不得直接暴露 Console `8765` 端口。
 - 当前 Linux/ECS 发行明确不包含 Windows Worker/Tray：Agent 不装载其签名密钥、transport 或路由，发布器不以 Worker mTLS、服务端身份或 dispatcher readiness 阻断其余服务端插件。版本化 `deploy/nginx/boyi-worker-mtls.conf` 仅保留为未来重新启用时的安全合同；重新启用必须在同一受审提交中恢复精确 mTLS location、身份验证、发布预检和健康门禁，不得通过环境变量旁路打开。
 - 数据库结构由 `migrations/` 的顺序 SQL 和 `scripts/run_migrations.py` 管理；运行期模块不得新增 `CREATE TABLE`、`ALTER TABLE` 或吞掉迁移异常，详见 `docs/database_migrations.md`。
+- V3.2 扫描未知写恢复使用 041 的原快照 journal 和日期所有者 CAS；核心/数据库更新、保留与回滚边界见 `../docs/scan_recovery_v32.md`。
 - MySQL binlog 由 `deploy/mysql/zz-boyi-binlog-retention.cnf` 固定保留最近 30 天，迁移 `032` 只校验参数且不扩大应用数据库账号权限；禁止直接删除 `/var/lib/mysql` 下的日志文件。
 - 发布白名单必须包含受管的 `migrations/` 和 `scripts/`，但不得递归发布业务数据、凭据或运行态目录。
 - `scripts/automation_project_resource_preflight.py` 封装迁移 018 的八项 required-existing 资源只读前检；`scripts/automation_project_schedule_identity_preflight.py` 从共享迁移清单构造 71 项历史计划任务身份并仅在 018 待执行时做只读前检，其中 R7 发车身份只供迁移审计且不进入当前发行或执行面；`scripts/automation_project_release_manifest_preflight.py` 在 018 应用后独立核验 committed generation、typed schedule、14 条 deferred R7、一次性项目策略 marker 与不可变证据链，插件升级历史的六键/七键元数据证据由 `scripts/automation_project_plugin_policy_history.py` 严格校验；首次切换必须精确得到 71 行/68 启用/16 策略，后续切换按当前 committed 配置和历史 marker 证据校验，前向恢复后的 bootstrap generation 仅在未知写证据持久化、无活动 lease、无其他不安全 generation 且当前 successor 已稳定提交时允许保持 BLOCKED 归档；`scripts/automation_plugin_install_ownership_preflight.py` 只读输出首方签名包的安全不可变身份并在内部核验确定性安装根，不得输出数据库元数据或绝对路径；`scripts/automation_project_version_preflight.py` 仅按恢复源码与对应 release index 给出的精确实例 ID、插件 ID 和版本做只读回滚兼容检查，禁止扫描或降级其他项目；`run_migrations.py` 仅通过脚本同目录 exact-path loader 绑定这些公开检查函数，loader 必须完整恢复临时模块及 `shared` 命名空间，禁止裸导入或修改全局 `sys.path`。

@@ -251,6 +251,7 @@ WORK_ITEM_TRANSITIONS: dict[WorkItemStatus, frozenset[WorkItemStatus]] = {
             WorkItemStatus.OPEN,
             WorkItemStatus.IN_PROGRESS,
             WorkItemStatus.NEEDS_CLARIFICATION,
+            WorkItemStatus.BLOCKED_DATA,
             WorkItemStatus.CANCELLED,
         }
     ),

@@ -71,6 +71,18 @@ from tests.automation_project_policy_service_support import (
 
 
 class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase):
+    def test_list_scope_filters_before_contract_projection_and_unknown_ids_are_empty(self):
+        def no_full_catalog():
+            raise AssertionError("scoped list must not construct unrelated catalog entries")
+
+        self.service._plugin_catalog.list = no_full_catalog
+        result = self.service.list_policies(automation_ids=[AUTOMATION_ID])
+        self.assertEqual([AUTOMATION_ID], [row["automation_id"] for row in result["items"]])
+        self.assertFalse(result["items"][0]["runnable"])
+        self.assertEqual({"items": [], "missing_automation_ids": ["not-installed"]}, self.service.list_policies(automation_ids=["not-installed"]))
+        with self.assertRaises(OrchestrationError):
+            self.service.list_policies(automation_ids=[AUTOMATION_ID, AUTOMATION_ID])
+
     def test_console_invoke_builds_only_server_owned_project_identity(self):
         receipt = self.service.invoke_console(
             AUTOMATION_ID,
@@ -144,7 +156,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         self.assertIs(first_command, self.gateway.command)
         self.assertEqual([], self.repository.state.domain_events)
 
-    def test_acceptance_locks_project_before_current_idempotency_and_run_scan(self):
+    def test_acceptance_locks_project_and_avoids_absent_idempotency_gap_locks(self):
         self.service.invoke_console(
             AUTOMATION_ID,
             request_id="request-lock-order",
@@ -152,11 +164,11 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         )
 
         self.assertEqual(
-            ["project:lock", "idempotency:lock", "unfinished:scan"],
+            ["project:lock", "idempotency:plain", "unfinished:scan"],
             self.repository.state.acceptance_lock_trace,
         )
         self.assertNotIn(
-            "idempotency:plain",
+            "idempotency:lock",
             self.repository.state.acceptance_lock_trace,
         )
 
@@ -416,7 +428,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             self.repository.state.automation_run_facts["run-protected"],
         )
 
-    def test_stopped_unknown_write_history_is_preserved_but_does_not_block(self):
+    def test_stopped_unknown_write_history_is_preserved_and_blocks_new_write(self):
         for facts in (
             {"has_unknown_write_receipt": True},
             {"has_unclosed_protected_write": True},
@@ -428,12 +440,11 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                 self.repository.state.automation_run_facts = {
                     "run-write": facts,
                 }
-                receipt = self.service.invoke_console(
-                    AUTOMATION_ID,
-                    request_id=f"request-write-{next(iter(facts))}",
-                    actor=_admin(),
-                )
-                self.assertEqual("run-invoke", receipt.run_id)
+                with self.assertRaises(OrchestrationError) as blocked:
+                    self.service.invoke_console(AUTOMATION_ID,
+                        request_id=f"request-write-{next(iter(facts))}", actor=_admin())
+                self.assertEqual('AUTOMATION_ALREADY_RUNNING', blocked.exception.code)
+                self.assertEqual('UNKNOWN_WRITE', blocked.exception.details['blocking_kind'])
                 self.assertEqual(
                     "BLOCKED_DATA",
                     self.repository.state.automation_runs[0]["status"],
@@ -443,7 +454,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                     self.repository.state.automation_run_facts["run-write"],
                 )
 
-    def test_stopped_unknown_history_does_not_trigger_recovery_before_acceptance(self):
+    def test_stopped_unknown_history_requires_recovery_and_resuming_original_before_acceptance(self):
         recovery_calls: list[tuple[str, str]] = []
         service = AutomationProjectPolicyService(
             self.repository,
@@ -468,19 +479,16 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             "run-write": {"has_unknown_write_receipt": True},
         }
 
-        receipt = service.invoke_console(
-            AUTOMATION_ID,
-            request_id="request-readback",
-            actor=_admin(),
-        )
-
-        self.assertEqual("run-invoke", receipt.run_id)
-        self.assertEqual([], recovery_calls)
+        with self.assertRaises(OrchestrationError) as blocked:
+            service.invoke_console(AUTOMATION_ID, request_id="request-readback", actor=_admin())
+        self.assertEqual('AUTOMATION_ALREADY_RUNNING', blocked.exception.code)
+        self.assertEqual('ACTIVE', blocked.exception.details['blocking_kind'])
+        self.assertEqual([(AUTOMATION_ID, 'request-readback')], recovery_calls)
         self.assertEqual(
             "BLOCKED_DATA",
             self.repository.state.automation_runs[0]["status"],
         )
-        self.assertIsNotNone(self.gateway.command)
+        self.assertIsNone(self.gateway.command)
 
     def test_orphaned_running_status_without_live_facts_is_safely_cancelled(self):
         self.repository.state.automation_runs = [
@@ -795,7 +803,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             )
 
         self.assertEqual("run-invoke", receipt.run_id)
-        self.assertEqual([False, True, False], lookups)
+        self.assertEqual([False, False, False], lookups)
         self.assertEqual(1, resolve.call_count)
         self.assertFalse(resolve.call_args.kwargs["for_update"])
         lock_contract.assert_not_called()

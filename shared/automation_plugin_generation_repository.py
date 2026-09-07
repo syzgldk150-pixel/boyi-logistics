@@ -148,9 +148,11 @@ class AutomationPluginGenerationRepositoryMixin(
         generation: int,
         *,
         for_update: bool = False,
+        include_execution_details: bool = True,
     ) -> dict[str, Any] | None:
         row = _get_generation_row(
-            self, automation_id, generation, for_update=for_update
+            self, automation_id, generation, for_update=for_update,
+            include_execution_details=include_execution_details,
         )
         if row is None:
             return None
@@ -166,9 +168,7 @@ class AutomationPluginGenerationRepositoryMixin(
             )
             transition = _row_dict(cursor, cursor.fetchone())
         if transition is not None:
-            row["activation_transition_token"] = transition.get(
-                "transition_token"
-            )
+            row["activation_transition_token"] = transition.get("transition_token")
             row["activation_phase"] = transition.get("phase")
         return row
 
@@ -204,6 +204,7 @@ class AutomationPluginGenerationRepositoryMixin(
         *,
         expected_committed_generation: int | None,
         request_id: str,
+        service_v2_contract_projector: Any = None,
     ) -> dict[str, Any]:
         """Persist a closed target snapshot without switching live routes."""
 
@@ -301,9 +302,8 @@ class AutomationPluginGenerationRepositoryMixin(
                     "a new plugin version requires an explicit upgrade state"
                 )
             _validate_installed_target_version(
-                self,
-                cursor,
-                snapshot=normalized,
+                self, cursor, snapshot=normalized,
+                service_v2_contract_projector=service_v2_contract_projector,
             )
             cursor.execute(
                 """
@@ -973,6 +973,7 @@ class AutomationPluginGenerationRepositoryMixin(
         generation: int,
         *,
         expected_committed_generation: int | None,
+        service_v2_contract_projector: Any = None,
     ) -> dict[str, Any]:
         safe_automation_id = _required_text(automation_id, "automation_id")
         safe_generation = _positive_int(generation, "generation")
@@ -1082,9 +1083,8 @@ class AutomationPluginGenerationRepositoryMixin(
                 )
             snapshot = normalized_snapshot
             _validate_installed_target_version(
-                self,
-                cursor,
-                snapshot=snapshot,
+                self, cursor, snapshot=snapshot,
+                service_v2_contract_projector=service_v2_contract_projector,
             )
             if str(project.get("plugin_id") or "") != str(
                 snapshot.get("plugin_id") or ""

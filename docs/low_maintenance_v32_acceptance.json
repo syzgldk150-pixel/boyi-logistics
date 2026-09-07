@@ -1,0 +1,854 @@
+{
+  "schema_version": 1,
+  "source": "BOYI_CODEX_LOW_MAINTENANCE_PHASE1_V3_2.md",
+  "groups": [
+    {
+      "id": "A01",
+      "scenario": "四个核心业务分别从实际入口到真实业务函数执行",
+      "requirement": "分为扫描、统计、分批、自提四个必测子项；仅替换隔离外部边界，分别核对输出、目标集合、计数／字段与副作用次数；不只断言 202",
+      "tests": [
+        "tests/test_first_party_action_payloads.py",
+        "tests/test_problem_plugin_production_adapter.py",
+        "probe:daily_scan_statistics",
+        "probe:daily_problems"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "四脚本均由实际Console预览/确认或执行按钮进入真实签名包、4worker Runner、原生产业务函数及隔离HTTP协议；分别验证MySQL结果、实际目标/计数、外部副作用及同请求重放。"
+    },
+    {
+      "id": "A02",
+      "scenario": "四个独立业务任务共同运行，另一个注入失败",
+      "requirement": "在已有总容量／浏览器上限下独立推进；失败不取消其他任务；真实共享资源和业务依赖仍遵守约束",
+      "tests": [
+        "tests/test_workflow_runner_durable_admission.py",
+        "probe:daily_concurrency"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "实际四个日常任务同时受理，外部协议barrier观测并行与真实共享资源等待；第五个真实bwrap插件故障，四任务不取消并全部完成和验证，副作用准确。"
+    },
+    {
+      "id": "A03",
+      "scenario": "4 个工作槽，1 个任务占资源，至少 4 个不同任务等待该资源，再提交独立任务",
+      "requirement": "有真实空闲容量时独立任务在 2 秒内开始业务执行；不能靠增大工作槽通过",
+      "tests": [
+        "tests/test_workflow_runner_durable_admission.py::test_four_workers_return_resource_wait_claims_and_cancel"
+      ],
+      "minimum_cases": 20,
+      "coverage_gaps": [],
+      "evidence_note": "A03使用真实MySQL、CommandGateway、WorkflowRunner和注册的隔离合成工作负载，4个worker/3个浏览器容量名额；不声称运行四个真实业务脚本。"
+    },
+    {
+      "id": "A04",
+      "scenario": "同账号不同资源，跨插件／角色／凭据访问同一资源",
+      "requirement": "经验证独立的前者可并行；冲突的后者互斥，不因不同 runtime_target 或角色逃过保护",
+      "tests": [
+        "tests/test_workflow_runner_durable_admission.py::test_saved_mysql_resource_aliases_overlap_and_unknown_account_scope"
+      ],
+      "minimum_cases": 20,
+      "coverage_gaps": [],
+      "evidence_note": "真实MySQL保存的、宿主完整性校验过的合成Sheet/Bitable locator，经生产Runner准入。跨插件/角色/凭据物理别名互斥，独立子表可并行；整表与局部范围保守按同表互斥，建表动作持有父资源；未知操作或URL-only保留同账号保守锁。不能推断没有权威locator的跨凭据物理别名，也不声称跨进程资源协调。"
+    },
+    {
+      "id": "A05",
+      "scenario": "整表覆盖与表内写，多个资源反向申请",
+      "requirement": "作用范围重叠被识别，准入无死锁、无部分锁泄漏；不要求开发不需要的行级锁框架",
+      "tests": [
+        "tests/test_workflow_runner_durable_admission.py::test_saved_mysql_resource_aliases_overlap_and_unknown_account_scope"
+      ],
+      "minimum_cases": 20,
+      "coverage_gaps": [],
+      "evidence_note": "真实MySQL保存的、宿主完整性校验过的合成Sheet/Bitable locator，经生产Runner准入。跨插件/角色/凭据物理别名互斥，独立子表可并行；整表与局部范围保守按同表互斥，建表动作持有父资源；未知操作或URL-only保留同账号保守锁。不能推断没有权威locator的跨凭据物理别名，也不声称跨进程资源协调。"
+    },
+    {
+      "id": "A06",
+      "scenario": "并发使用登录态、临时目录、环境与输出",
+      "requirement": "无账号、会话、参数、输出串扰；共享会话正确串行，不牵连其他资源",
+      "tests": [
+        "agent/tests/test_session_process_isolation.py",
+        "tests/test_session_boundaries.py",
+        "tests/test_plugin_runtime_isolation_mysql.py",
+        "tests/test_workflow_runner_durable_admission.py::test_saved_mysql_resource_aliases_overlap_and_unknown_account_scope"
+      ],
+      "minimum_cases": 20,
+      "coverage_gaps": [],
+      "evidence_note": "同一真实4worker Runner并发两个真实安装实例，经bwrap子进程执行：20轮相同/tmp文件名隔离、配置与环境身份/输出不串扰，实际子进程单调时钟区间有交叠；会话共享串行由同组真实MySQL锁及session边界回归复用。新并发测试揭示并修复首次受理缺失幂等索引gap锁死锁，项目锁与唯一键语义冲突校验保留。"
+    },
+    {
+      "id": "A07",
+      "scenario": "等待跨至少两个租约周期，旧领取与恢复领取竞争",
+      "requirement": "无重复授权执行；旧 claim 不能继续新写或覆盖新结果；可用可控时钟，不依赖长时间人工观察",
+      "tests": [
+        "tests/test_workflow_runner_durable_admission.py::test_claim_round_fences_same_process_late_start_and_release",
+        "tests/test_workflow_runner_durable_admission.py::test_preparation_and_heartbeat_progress_with_the_ordinary_io_pool_full"
+      ],
+      "minimum_cases": 21,
+      "coverage_gaps": [],
+      "evidence_note": "实际续租跨两个周期；可控时钟20轮过期/恢复竞争，旧claim被拒绝开始、释放和覆盖真实MySQL已验证新结果。实际注册隔离工作负载，仅外部业务范围由A01验证。"
+    },
+    {
+      "id": "A08",
+      "scenario": "等待取消、运行取消、租约丢失",
+      "requirement": "等待任务 2 秒内取消并且之后不开始任何业务写；运行中请求可能已发出时进入真实终止／核验，不虚报零副作用",
+      "tests": [
+        "tests/test_workflow_runner_durable_admission.py",
+        "tests/test_workflow_runner_cancellation.py",
+        "agent/tests/test_tool_executor_cancel.py::test_same_tool_runs_in_parallel_and_bound_cancel_is_exact",
+        "probe:scan_cancel_recovery"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "外部已真实提交后请求取消20轮：Run保持CANCELLED，原lease/receipt UNKNOWN再独立只读核验补齐实际已写原结果，外部恰好一次且无关真实任务继续。结合原20轮等待取消<=2s/真实两子进程精确终止/线程退出与claim fencing。"
+    },
+    {
+      "id": "A09",
+      "scenario": "同一 request_id 并发重发至少 20 次",
+      "requirement": "一次逻辑执行；相同 key 的语义冲突被拒绝；还要核对业务副作用，不只核对 Run 数",
+      "tests": [
+        "tests/test_workflow_runner_durable_admission.py::test_twenty_concurrent_replays_execute_once_and_reject_changed_semantics"
+      ],
+      "minimum_cases": 20,
+      "coverage_gaps": [],
+      "evidence_note": "20轮各20次同key并发，经实际CommandGateway/MySQL/Runner/注册隔离工作负载，断言业务函数副作用计数恰好一次；同key参数冲突拒绝。四个业务脚本独立整链属于A01。"
+    },
+    {
+      "id": "A10",
+      "scenario": "已写响应丢失、确实未写、结果未知",
+      "requirement": "分别补结果、按契约安全重试、受影响范围保护；不重复已经确认的写，无关任务继续",
+      "tests": [
+        "tests/test_workflow_runner_recovery.py",
+        "tests/test_result_verifier.py",
+        "agent/tests/test_scan_unknown_write_recovery.py",
+        "probe:scan_recovery",
+        "tests/test_scan_snapshot_recovery_mysql.py",
+        "tests/test_scan_readback_protocol.py",
+        "probe:unknown_resource_scope",
+        "probe:daily_concurrency"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "原三态各20轮扫描恢复和日期CAS之外，实际scan/统计HTTP失败产生非空MySQL原锁键，销毁原Runner后新4worker Runner用生产准入函数验证20轮跨插件/角色/账号别名互斥和独立已知范围继续；此后半使用受控metadata和注册本地工作负载，并非第二套已装插件完整业务。实际安装插件共享资源完整链复用A02。旧NULL原键显式UNKNOWN_WRITE_SCOPE_UNAVAILABLE，不能猜测。"
+    },
+    {
+      "id": "A11",
+      "scenario": "超时／重试与取消本次运行",
+      "requirement": "重试有界；等待不扣业务重试次数；未来正常定时和必须核验的计划不丢失；重启不重复触发同一个定时发生实例",
+      "tests": [
+        "tests/test_scheduled_task_contracts.py",
+        "tests/test_workflow_runner_scheduler_supersession.py",
+        "tests/test_scheduler_runner_lifecycle_mysql.py",
+        "tests/test_mysql_orchestration_integration.py::test_scheduler_supersession_selector_is_exact_and_terminal_retry_observes_cancellation"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "实际Scheduler→AgentCore→Gateway→MySQL四worker Runner→隔离HTTP读超时有界三次；取消一次请求，重建Runner/core同occurrence重放原Run无新HTTP，未来occurrence执行，计划与未知核验保护由原MySQL场景组合。"
+    },
+    {
+      "id": "A12",
+      "scenario": "预览、排除、候选选择、确认、过期或配置变化",
+      "requirement": "预览零写入；正式目标与用户确认一致；重复确认幂等；不叠加额外审批，不放开旧任务自动执行",
+      "tests": [
+        "tests/test_scan_preview_binding.py",
+        "tests/test_selection_preview_binding.py",
+        "agent/tests/test_feishu_split_selection.py",
+        "tests/test_workflow_runner_policy_recheck.py",
+        "probe:daily_scan_statistics",
+        "probe:daily_problems"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "真实扫描/问题件入口预览零写与确认目标、重放结果，结合不可变预览过期/配置变化/排除选择绑定、旧审批任务转自动阻断回归。"
+    },
+    {
+      "id": "A13",
+      "scenario": "后台固定按钮、飞书固定指令和已开放定时",
+      "requirement": "进入同一权威链路，不调用 LLM；保留同义词／取消语义，不新增本来未开放的定时或 AI 写入口",
+      "tests": [
+        "agent/tests/test_feishu_automation_project_entrypoints.py",
+        "tests/test_automation_project_entrypoints.py",
+        "tests/test_scheduled_task_contracts.py",
+        "tests/test_control_plane_execution_boundaries.py",
+        "tests/test_automation_project_api.py",
+        "tests/test_mysql_orchestration_integration.py::test_automation_project_invocation_serializes_and_replays_on_real_mysql"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "实际固定按钮/飞书同义词和取消解析、Scheduler精确发生实例及可信actor/generation参数边界回归，结合唯一Runner执行入口检查及真实MySQL命令受理重放，核验统一权威链。四日常业务的外部协议和结果分别由A01验证，不额外制造十二套组合要求。"
+    },
+    {
+      "id": "A14",
+      "scenario": "飞书资源／Worker／全量账号探测延迟 30 秒或失败",
+      "requirement": "冷首屏和本地轻量列表仍按性能目标完成；调用跟踪证明首屏不等待这些依赖，而非仅显示骨架",
+      "tests": [
+        "agent/tests/test_feishu_resource_catalog.py",
+        "probe:browser_performance"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "独立浏览器命令实际注入三类外部依赖30秒延迟/503，并验证3个模块冷导航真实列表与初始化原阈值；退出码或性能失败即整组FAIL。"
+    },
+    {
+      "id": "A15",
+      "scenario": "单个坏实例、重复 ID、局部依赖故障",
+      "requirement": "合法独立实例仍可展示和操作；坏实例有提示；有真实依赖的实例不被错误放行",
+      "tests": [
+        "tests/test_automation_plugin_platform.py::test_catalog_quarantines_one_corrupt_persisted_project",
+        "tests/test_automation_plugin_platform.py::test_catalog_identity_corruption_remains_global",
+        "tests/test_automation_project_policy_service.py",
+        "probe:customer_collection_flow",
+        "tests/test_automation_plugin_catalog_batch.py"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "真实浏览器目录坏实例/重复ID/目标账号停用时合法实例仍显示并进入真实Runner；依赖目标明确拒绝，原始HTTP不调用被阻断账号。目录批量测试保留逐实例校验与隔离。"
+    },
+    {
+      "id": "A16",
+      "scenario": "无可信首次目录、并发刷新、卸载与刷新竞态",
+      "requirement": "不造假可运行项目；同 key 合并刷新；旧响应不覆盖新配置，不使已卸载实例复活",
+      "tests": [
+        "console/tests/test_plugin_catalog_singleflight.py",
+        "probe:catalog_delivery",
+        "tests/test_automation_plugin_catalog_batch.py"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "真实签名目录响应已取得后阻塞传输，实际卸载并失效缓存，再放行旧响应；原调用者拒绝旧结果且实例不复活。结合首次不可达不造数据、singleflight及请求结束缓存清除回归。"
+    },
+    {
+      "id": "A17",
+      "scenario": "20 次已打开标签切换，再关闭标签／设置页",
+      "requirement": "无重复整页获取和重复初始化；监听器、轮询、在途请求没有线性积累；终态停止、隐藏退避、关闭清理",
+      "tests": [
+        "console/tests/test_control_plane_ui.py",
+        "probe:navigation_probe"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "实际Chromium已打开20次保留DOM标签切换及设置保存/关闭重开，结合页面控制器监听/轮询/终态清理回归；性能和错误由本次navigation probe判断。"
+    },
+    {
+      "id": "A18",
+      "scenario": "页面旧快照后项目被停用、权限或绑定变化",
+      "requirement": "服务端按新事实处理，旧快照不构成授权；缓存不跨不相容权限范围泄漏",
+      "tests": [
+        "tests/test_automation_project_policy_service.py",
+        "console/tests/test_plugin_catalog_singleflight.py",
+        "tests/test_automation_project_authorization.py",
+        "probe:customer_collection_flow"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "实际旧DOM保留后停用项目，再从旧页面提交得到HTTP422 PLUGIN_DISABLED且supplier零调用；结合可信actor/绑定/权限作用域变更回归。"
+    },
+    {
+      "id": "A19",
+      "scenario": "对单个同步查询注入慢响应，普通执行池饱和",
+      "requirement": "同一事件循环仍可推进；无关心跳／取消／状态响应不被整体堵住；整库不可用不伪装为可用",
+      "tests": [
+        "tests/test_workflow_runner_durable_admission.py::test_preparation_and_heartbeat_progress_with_the_ordinary_io_pool_full",
+        "tests/test_automation_project_api.py::test_concurrent_acceptance_does_not_block_the_http_event_loop",
+        "probe:catalog_delivery"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "实际查询慢与普通I/O满池时续租/取消和HTTP事件循环可推进；真实loopback ECONNREFUSED数据库故障明确不可用且零可执行卡片，恢复后真实bwrap任务COMPLETED。"
+    },
+    {
+      "id": "A20",
+      "scenario": "真实 MySQL 8 领取／事务／唯一约束／必要迁移",
+      "requirement": "使用明确测试库；旧状态样例可升级；需要完整业务集合的查询不滥用 SKIP LOCKED；回滚兼容性有证据",
+      "tests": [
+        "tests/test_mysql_orchestration_integration.py::test_empty_upgrade_and_partial_migrations_are_reentrant",
+        "tests/test_mysql_orchestration_integration.py::test_json_unique_foreign_key_and_transaction_rollback",
+        "tests/test_mysql_orchestration_integration.py::test_immutable_014_forward_chain_017_restore_partial_and_reapply",
+        "tests/test_mysql_orchestration_integration.py::test_017_finance_startup_create_seed_restore_and_reapply_are_exact",
+        "tests/test_mysql_orchestration_integration.py::test_two_workers_skip_locked_without_duplicate_claim",
+        "tests/test_mysql_orchestration_integration.py::test_two_outbox_workers_skip_locked_without_duplicate_claim",
+        "tests/test_mysql_orchestration_integration.py::test_two_outbox_workers_recover_distinct_expired_leases",
+        "tests/test_mysql_orchestration_integration.py::test_concurrent_approval_decisions_accept_only_the_first_commit",
+        "tests/test_mysql_orchestration_integration.py::test_feishu_queue_has_a_database_single_active_binding_constraint",
+        "tests/test_mysql_orchestration_integration.py::test_feishu_notification_lease_holds_the_database_binding_lane",
+        "tests/test_mysql_orchestration_integration.py::test_feishu_queue_migration_requeues_ambiguous_active_rows_and_resends",
+        "tests/test_mysql_orchestration_integration.py::test_linked_terminal_retry_reuses_the_first_child_run",
+        "tests/test_mysql_orchestration_integration.py::test_scheduler_supersession_selector_is_exact_and_terminal_retry_observes_cancellation",
+        "tests/test_mysql_orchestration_integration.py::test_scheduled_task_approval_policy_schema_defaults_and_constraints",
+        "tests/test_mysql_orchestration_integration.py::test_policy_fk_aligns_to_preexisting_parent_collation_and_retains_events",
+        "tests/test_mysql_orchestration_integration.py::test_scheduled_task_policy_event_request_is_idempotent_and_exact_is_audited",
+        "tests/test_mysql_orchestration_integration.py::test_policy_bootstrap_restore_is_exact_reentrant_and_transactional",
+        "tests/test_mysql_orchestration_integration.py::test_database_backed_pre_018_release_manifest_initial_and_later_policy_gates",
+        "tests/test_mysql_orchestration_integration.py::test_protected_write_gate_uses_real_mysql_step_state",
+        "tests/test_mysql_orchestration_integration.py::test_automation_project_018_forward_restore_reapply_and_atomic_config",
+        "tests/test_mysql_orchestration_integration.py::test_automation_project_018_partial_rerun_is_safe",
+        "tests/test_mysql_orchestration_integration.py::test_automation_project_018_case_drift_fails_before_ddl",
+        "tests/test_mysql_orchestration_integration.py::test_automation_project_grouped_approval_rolls_back_real_mysql_transaction",
+        "tests/test_mysql_orchestration_integration.py::test_automation_project_invocation_serializes_and_replays_on_real_mysql",
+        "tests/test_mysql_orchestration_integration.py::test_automation_project_024_restores_only_original_plugin_writer",
+        "tests/test_mysql_orchestration_integration.py::test_generation_write_lock_order_races",
+        "tests/test_mysql_orchestration_integration.py::test_daily_sign_fresh_readback_rejects_event_and_publication_tamper"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "实际MySQL8测试库的全部适用原集成场景；原入口保留。Windows专属Worker为本轮明确不适用，不据其跳过阻断本组。需要完整待审批集合的生产SQL使用FOR UPDATE而不使用SKIP LOCKED，分组审批真实MySQL事务回滚覆盖该完整集合。 三项旧014方案测试保留在原CI collected入口，其既有skip理由与已替代的实际forward/restore测试分别列明；不把skip写成PASS。",
+      "not_applicable_references": {
+        "tests/test_mysql_orchestration_integration.py::test_empty_cutover_seed_rollback_is_reentrant_and_preserves_prior_rows": "旧可回写014方案被不可变014与017向前恢复链替代",
+        "tests/test_mysql_orchestration_integration.py::test_legacy_finance_yunda_startup_apply_restore_and_reapply_are_exact": "旧可回写014方案被不可变014与017向前恢复链替代",
+        "tests/test_mysql_orchestration_integration.py::test_task_cutover_exact_production_set_is_reentrant_and_fail_closed": "014生产字节不可变，实际升级改用016/017正向迁移"
+      }
+    },
+    {
+      "id": "A21",
+      "scenario": "插件安装、设置、启停、定时、升级和多实例",
+      "requirement": "既有能力保留；配置和定时不互相覆盖；不同实例不误改；在途运行不混用版本；升级失败不全平台停摆",
+      "tests": [
+        "tests/test_automation_plugin_lifecycle.py",
+        "tests/test_automation_project_policy_service.py",
+        "probe:navigation_probe",
+        "probe:run_acceptance",
+        "tests/test_service_v2_policy_runtime.py",
+        "tests/test_plugin_service_v2_foundation.py",
+        "probe:settings_effective",
+        "probe:customer_collection_flow",
+        "probe:field_maintenance"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "真实默认设置/两实例、账号与配置历史恢复、模块采集设置与真实单Scheduler Job、完整签名版本升级/失败候选/在途旧版本与新Run新版本/历史回退组合。所有操作走既有管理服务，不要求每种入口重复同一生命周期。"
+    },
+    {
+      "id": "A22",
+      "scenario": "录单／OCR、运单、跟踪、回单、客服、财务、登录与导航",
+      "requirement": "受共享改动影响的现有回归和页面冒烟通过；不通过移除已有功能来换取通过",
+      "tests": [
+        "console/tests/test_customer_service_module.py",
+        "console/tests/test_finance_module.py",
+        "agent/tests/test_session_broker.py",
+        "probe:navigation_probe",
+        "console/tests/test_manual_waybill.py",
+        "console/tests/test_document_mode_switch.py",
+        "console/tests/test_waybill_entry_extensions.py",
+        "console/tests/test_waybill_query.py",
+        "console/tests/test_tracking_query.py",
+        "console/tests/test_receipts_management.py",
+        "console/tests/test_admin_auth.py",
+        "console/tests/test_mobile_navigation.py",
+        "console/tests/test_menu_registration.py",
+        "probe:legacy_page_smoke"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "受影响Console原录单/OCR模式/运单/跟踪/回单/登录菜单回归与真实登录/模块导航/数据查询冒烟组合；不声称未打开的外部业务页面已做真实在线操作。"
+    },
+    {
+      "id": "A23",
+      "scenario": "通知失败、可重建展示更新失败",
+      "requirement": "已确认业务成功不被改为业务失败；可靠重试通知／展示，不重跑外部写；关键账本失败则不能假报成功",
+      "tests": [
+        "agent/tests/test_outbox_dispatcher.py",
+        "tests/test_feishu_readback_delayed.py",
+        "probe:daily_concurrency"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "四个实际日常Run完成后，真实Outbox消费者分别外部HTTP503后200、原生产可重建展示事件事务失败回滚后重试；PENDING attempt1到PUBLISHED attempt2，业务Run/Step/执行次数及TMS/Sheet ledger不变。关键账本写失败不可完成沿用真实扫描/财务失败和发布门。"
+    },
+    {
+      "id": "A24",
+      "scenario": "扫描→统计等真实数据依赖",
+      "requirement": "后续动作不读取未发布／不匹配快照；依赖等待不占满无关执行槽；不得为了并发取消依赖",
+      "tests": [
+        "tests/test_sync_scan_codes_v1_v2_parity.py",
+        "tests/test_sync_arrival_stats_v1_v2_parity.py",
+        "probe:daily_scan_statistics",
+        "probe:daily_concurrency"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "真实scan写入barrier尚未释放时stats尚未started、attempts0、Step PENDING且无发车来源HTTP查询；释放后stats实际开始晚于scan verified完成，原扫描投影驱动真实统计结果。独立任务与四槽资源等待复用A02/A03。"
+    },
+    {
+      "id": "B01",
+      "scenario": "采集插件、AI 或外部资源目录不可用，业务 DB 正常",
+      "requirement": "财务等固定页面和已经保存的业务数据仍可查询；菜单不依赖该插件生命周期；状态如实标识",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "console/tests/test_finance_module.py",
+        "tests/test_module_data_sources_mysql.py::test_recent_failed_collection_keeps_published_history",
+        "probe:detail_browser",
+        "probe:customer_collection_flow"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "真实财务/客服本地查询与目录不可用性能探针、采集失败保留上次完整发布数据、卸载后历史来源查询组合；不把不存在的本次数据伪装成功。"
+    },
+    {
+      "id": "B02",
+      "scenario": "财务采集适配器的外部字段／响应变化",
+      "requirement": "在现有真实调用链上，只调整测试适配实现便可产生相同标准账单；核心金额规则、去重和页面查询无需修改；不是无人调用的演示接口",
+      "tests": [
+        "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows"
+      ],
+      "minimum_cases": 3,
+      "coverage_gaps": [],
+      "evidence_note": "实际三个采集路径用真实业务payload/Broker/财务仓储；字段变化只改独立执行payload映射，断言父进程宿主映射未变，并验证真实MySQL发布、账单金额和后续查询。冻结宿主升级回退的附加要求由M02独立判定。"
+    },
+    {
+      "id": "B03",
+      "scenario": "隔离环境停用、卸载、重装某采集实例",
+      "requirement": "业务历史、人工字段、来源记录和其他实例数据保留；不能误删共享账号／资源；没有未处理在途任务后再清理专属临时资源",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "probe:customer_collection_flow"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "实际DOM停用/卸载与新UUID重装后同历史source、人工字段、独立来源和共享账号保持；原在途和purge顺序精确生命周期测试组合。"
+    },
+    {
+      "id": "B04",
+      "scenario": "合法插件没有 AI 声明，模型未配置或 API 超时",
+      "requirement": "插件正常安装、配置和执行本来支持的入口；四日常业务不依赖模型；AI 故障不耗尽必要控制容量",
+      "tests": [
+        "tests/test_service_v2_harness_contribution_contract.py",
+        "tests/test_automation_plugin_manifest_contract.py",
+        "probe:run_acceptance",
+        "probe:daily_scan_statistics",
+        "probe:daily_problems",
+        "probe:daily_concurrency"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "实际签名包安装/配置/四脚本及100无Harness V2任务的组合根未构造模型客户端，模型未配置分支真实完成；Manifest不要求AI。控制容量和普通I/O隔离复用实际并发/取消，不宣称模拟AI超时。原要求为未配置或超时，不扩成全部双故障。"
+    },
+    {
+      "id": "B05",
+      "scenario": "同一业务数据分别由允许的不同入口重复提交",
+      "requirement": "使用同一权威更新规则；业务键幂等；金额、筛选、状态转换不漂移；不覆盖约定的人工字段",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_finance_validation.py",
+        "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+        "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+        "probe:customer_collection_flow"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "实际Console和生产Scheduler→CommandGateway→Runner→rawHTTP调用同一publisher，标准业务键、方向、状态与人工字段一致；相同发生实例重放原Run且零新增读取。"
+    },
+    {
+      "id": "B06",
+      "scenario": "财务采集写入半批后中断，并重新提交",
+      "requirement": "最新已发布成功快照继续可查，半批不伪装完整；恢复后无重复账单；不要求为此新建一套批处理平台",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_finance_repository_rolls_back_with_autocommit_factory",
+        "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
+        "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "真实adapter先成功完整发布；第二批写一来源后实际中断未finalize，SQL running/finished_at NULL/半批一行但查询仍旧完整发布；相同输入通过真实parser/adapter重新提交，明细/BI/业务键均无重复。"
+    },
+    {
+      "id": "B07",
+      "scenario": "本次触及模块的依赖与导入边界",
+      "requirement": "路由调用服务，服务显式依赖必要仓储／适配器；财务领域不导入供应商插件内部类型；新拆分无反向依赖聚合模块和导入时 I/O",
+      "tests": [
+        "tests/test_control_plane_execution_boundaries.py",
+        "tests/test_automation_plugin_catalog_batch.py"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "已只读核查受改路由→管理/策略服务→明确仓储/适配器链；目录批量拆分的两处反向聚合导入改为必传原纯函数，无逻辑复制。原逐实例代际校验与fresh写授权保留，请求缓存不进入执行。实际MySQL目录回归和runtime_import_boundaries通过；完整入口仍强制本次imports/编译/正确性gate成功，非仅报告文字。 最终只读审查发现的未知模块归属消失问题已由实际MySQL负例验证修复：坏声明进入严格解析的不可用提示，不成为可操作实例，正确跨模块隔离保留。"
+    },
+    {
+      "id": "B08",
+      "scenario": "停用某插件后保留固定业务、其他独立任务及既有管理功能",
+      "requirement": "生命周期只作用目标实例及真实依赖；启停／设置／历史查询不因无关坏实例被锁死；现有 Connector／Host 访问边界未被绕过",
+      "tests": [
+        "tests/test_automation_plugin_lifecycle.py",
+        "probe:customer_collection_flow"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "实际停用/卸载目标实例后独立实例仍真实执行，固定来源历史与管理入口可用；沿用Host/Broker授权边界。"
+    },
+    {
+      "id": "C01",
+      "scenario": "自动化／财务／客服归属",
+      "requirement": "四个独立功能插件仍在自动化；财务与客服采集实例仅在所属模块的日常列表、计数与搜索中出现；不新增全局插件中心；不是前端隐藏",
+      "tests": [
+        "tests/test_automation_plugin_platform.py",
+        "probe:module_scope",
+        "tests/test_plugin_module_management.py"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "真实MySQL三模块各50已安装实例，真实Agent过滤和DOM归属、150实例无交叉；每模块搜索唯一实例1、无匹配0、清空50，由module_scope本次子进程重新执行。冷首屏性能另由A14独立按原阈值判定。"
+    },
+    {
+      "id": "C02",
+      "scenario": "所属模块内安装／实例操作",
+      "requirement": "财务与客服都可上传并安装兼容包、配置、同步、查记录、升级／卸载；错误模块或不兼容数据契约安装被准确拒绝；调用同一安装与执行服务",
+      "tests": [
+        "tests/test_automation_plugin_lifecycle.py",
+        "tests/test_plugin_module_management.py",
+        "tests/test_action_v1_module_installation.py",
+        "probe:customer_collection_flow",
+        "probe:field_maintenance"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "客服真实模块安装/配置/同步/查询/卸载/重装，财务真实模块安装/多账号设置/采集/查询/签名升级和回退；错误模块/数据契约真实包校验拒绝由既有服务测试组合。"
+    },
+    {
+      "id": "C03",
+      "scenario": "默认设置页",
+      "requirement": "只有账号需求且无 settings/index.html 的合法插件可安装并用宿主默认页；无账号无需配置；多个必要角色正确显示；不出现 Cookie／Token／数据库等无关输入",
+      "tests": [
+        "tests/test_automation_plugin_manifest_contract.py",
+        "probe:navigation_probe",
+        "tests/test_plugin_module_management.py",
+        "tests/test_automation_plugin_code_owned_fields.py",
+        "probe:settings_effective",
+        "probe:customer_collection_flow"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "无专属页面合法插件默认设置在真实浏览器保存与重开；实际账号引用多角色与布尔设置变更/恢复生效，内部字段封闭校验和无账号配置由相关契约测试组合。"
+    },
+    {
+      "id": "C04",
+      "scenario": "专属设置与保存",
+      "requirement": "有特殊需求的插件自有页面可用且复用账号能力；默认／专属页保存同一配置事实；并发版本检查有效；设置与计划互不覆盖；有未满足必填配置不假报就绪",
+      "tests": [
+        "tests/test_automation_project_policy_service.py",
+        "tests/test_plugin_module_management.py",
+        "tests/test_automation_plugin_management_api.py",
+        "probe:custom_settings"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "真实clock专属设置UI，经原packager/inspect/install加载opaque iframe：两账号保存、第二次改绑、stale CAS拒绝、历史恢复/重开，父窗口不可读、业务调用零。测试副本仅移除可选AI harness声明并改变版本，业务payload/settings各成员与原包相同；原AI组合被现有授权保护拒绝不标为修复，也不将此设置验收当作打卡业务验收。"
+    },
+    {
+      "id": "C05",
+      "scenario": "Agent 账号复用",
+      "requirement": "插件选择统一账号引用，失效只影响对应来源／任务，统一恢复后可继续；不复制账号库、不静默换账号，浏览器不获得原始凭据；账号显示不触发全量在线探测",
+      "tests": [
+        "agent/tests/test_session_broker.py",
+        "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+        "tests/test_automation_project_entrypoints.py",
+        "agent/tests/test_session_process_isolation.py",
+        "probe:customer_collection_flow",
+        "probe:settings_effective"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "实际统一账号引用绑定和停用/恢复，仅依赖目标阻断；M01真实同实例更换账号下一Run使用新账号、历史恢复再使用原账号。浏览器字段与Session隔离回归不复制凭据。"
+    },
+    {
+      "id": "C06",
+      "scenario": "财务完整用户路径",
+      "requirement": "真实浏览器从财务安装／迁入已实现采集器、绑定账号、同步到真实业务函数与测试库、选择来源、查看原有明细／BI；金额、业务键、覆盖范围和汇总正确",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "agent/tests/test_finance_sync_service.py",
+        "probe:field_maintenance",
+        "probe:finance_source_state"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "真实财务浏览器安装采集包、统一三角色账号、原生产raw采集/独立parser/Runner/MySQL、来源明细和BI完整数学核对；source状态probe额外覆盖无数据/单源失败与历史金额。冻结局部变更由M02严格单独验证。"
+    },
+    {
+      "id": "C07",
+      "scenario": "客服完整用户路径",
+      "requirement": "客服模块同样完成实际采集、来源选择、问题件列表与既有统计；不只占位；客服采集不触发上传／回复／发布；内部人工处理字段不被覆盖",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "agent/tests/test_customer_service_problem_sync_tool.py",
+        "probe:customer_collection_flow"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "真实客服模块浏览器安装/配置/采集/来源查询，签名子进程与原Host采集、parser、MySQL双方向标准数据，人工字段复采保留且无回复发布操作。韵达权威组织缺失另明确阻断，不冒充真实已配置韵达采集。"
+    },
+    {
+      "id": "C08",
+      "scenario": "动态来源注册和历史筛选",
+      "requirement": "合法新来源经安装配置出现，无需改 Python 来源常量；仅登录账号不会自动变成可用来源；停用／卸载来源仍可查询其历史；SQL 和其他校验未残留错误静态限制",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_legacy_finance_import_is_incremental_and_reports_missing_identity",
+        "probe:navigation_probe",
+        "probe:detail_browser",
+        "probe:customer_collection_flow"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "真实动态来源注册、仅账号不构成来源、停用/卸载后相同source历史查询；结合财务增量历史导入及浏览器来源过滤。"
+    },
+    {
+      "id": "C09",
+      "scenario": "BI 绑定与数据状态",
+      "requirement": "选择来源与类型后刷新可恢复必要选择；查询绑定稳定来源而非插件存活；未成功采集显示尚无数据；失败来源不悄悄从总额剔除；兼容范围内聚合且显示更新差异",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "console/tests/test_finance_service.py",
+        "tests/test_module_data_sources_mysql.py::test_recent_failed_collection_keeps_published_history",
+        "probe:detail_browser",
+        "probe:finance_source_state"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "真实财务未采集空态→三角色成功→保存source/platform/direction/fee_level并刷新恢复→单raw账号503，失败状态明确、旧完整发布历史/汇总金额保留并显示更新时间差异。"
+    },
+    {
+      "id": "C10",
+      "scenario": "最后实例卸载和多实例",
+      "requirement": "卸载最后一个采集实例后仍保留来源、历史、人工字段、报表引用和必要溯源；其他实例／共享账号不被误删；在途结束前不删执行环境",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "probe:customer_collection_flow",
+        "tests/test_lifecycle_disposal_order.py"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "真实DOM卸载最后来源实例，source historyOnly且业务/人工字段/原producer版本与包摘要保留，另一实例可查；在途/资源处置顺序由实际生命周期边界回归验证。"
+    },
+    {
+      "id": "C11",
+      "scenario": "替换采集器接续同来源",
+      "requirement": "兼容替换保留 source_id／报表；旧生产者不再新写，迟到结果不覆盖；切换重试不重复采集；不同站点／账本不得仅凭同名接续",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py::test_management_adapter_continues_verified_source_atomically",
+        "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields"
+      ],
+      "minimum_cases": 21,
+      "coverage_gaps": [],
+      "evidence_note": "20轮真实MySQL管理adapter接续CAS与同请求重放，验证已绑定可信别名、固定source_id/revision、迟到旧producer拒写；来源层实际不同组织/同名拒接续及人工字段/历史不变组合验证。安装/卸载整链另由C02/C10负责，不扩大本组。"
+    },
+    {
+      "id": "C12",
+      "scenario": "多来源、账号与重复业务",
+      "requirement": "既有多账号实例保留角色和计划；不同凭据采同一账本不会在合并中重复计入；不同真实业务不误去重；变更到不同站点不覆盖原历史",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+        "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
+        "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+        "tests/test_mysql_orchestration_integration.py::test_017_finance_startup_create_seed_restore_and_reapply_are_exact",
+        "tests/test_mysql_orchestration_integration.py::test_automation_project_018_forward_restore_reapply_and_atomic_config"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "实际多来源/同账本双凭据不重复计金额、不同业务与组织不误并、换站点保留历史；原多账号角色和计划配置使用现存017/018真实升级恢复与当前source迁移全行前后不变的SQL证据。"
+    },
+    {
+      "id": "C13",
+      "scenario": "旧实例与引用迁移",
+      "requirement": "测试旧结构、旧自动化卡片／深链／来源筛选的增量迁移；重复运行迁移不重复造实例、来源或 Job；Run／UUID／账号／启停／计划及汇总对得上；未识别项有诊断",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_migration_reentry_is_safe",
+        "tests/test_module_data_sources_mysql.py::test_legacy_finance_import_is_incremental_and_reports_missing_identity",
+        "tests/test_mysql_orchestration_integration.py::test_017_finance_startup_create_seed_restore_and_reapply_are_exact",
+        "tests/test_mysql_orchestration_integration.py::test_automation_project_018_forward_restore_reapply_and_atomic_config",
+        "tests/test_mysql_orchestration_integration.py::test_automation_project_018_partial_rerun_is_safe",
+        "probe:customer_collection_flow",
+        "probe:navigation_probe"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "真实旧结构017/018升级/恢复/重入保留必要UUID/计划/账号；本轮来源增量迁移对projects/configs/schedules/commands/runs全行前后相等，未知身份显式诊断；实际模块设置深链/来源筛选与Scheduler同发生实例不重复Job组合。不引用已skip旧014方案作为PASS。"
+    },
+    {
+      "id": "C14",
+      "scenario": "采集与消费解耦",
+      "requirement": "插件停用、账号掉线、外部目录失败时，数据库正常的财务／客服查询可用；当前不可采集状态与历史可读状态正确分离，陈旧页面不能越过服务端实际启停",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_recent_failed_collection_keeps_published_history",
+        "probe:detail_browser",
+        "probe:customer_collection_flow"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "真实来源查询与财务/客服DOM，加上客服账号停用/恢复、卸载historyOnly和旧DOM提交被最新服务端启停事实拒绝；目录延迟不影响本地查询复用A14/detail probe。"
+    },
+    {
+      "id": "C15",
+      "scenario": "分模块轻量列表",
+      "requirement": "调用跟踪证明先按归属查询摘要，不构造全部重目录；三个入口及 BI 选择不触发实时采集／全量外部校验；A14、性能和缓存竞态覆盖新页面",
+      "tests": [
+        "tests/test_automation_plugin_platform.py",
+        "probe:browser_performance",
+        "tests/test_plugin_module_management.py",
+        "console/tests/test_plugin_catalog_singleflight.py",
+        "probe:catalog_delivery",
+        "tests/test_automation_plugin_catalog_batch.py"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "真实按模块先过滤摘要、固定三模块冷首屏+列表控件原阈值及三类30秒目录故障；真实旧响应卸载竞态与请求作用域隔离组合，BI来源本地查询不实时采集。"
+    },
+    {
+      "id": "C16",
+      "scenario": "计划、结果与导航",
+      "requirement": "模块采集复用现有 Scheduler，重启和页面迁移不多造 Job；运行记录／通知回到正确模块与来源；回到设置所属页不强制跳自动化；原固定指令语义保留",
+      "tests": [
+        "tests/test_scheduled_task_contracts.py",
+        "agent/tests/test_feishu_automation_project_entrypoints.py",
+        "probe:navigation_probe",
+        "probe:run_acceptance",
+        "tests/test_collector_navigation.py",
+        "agent/tests/test_finance_alert_policy.py",
+        "console/tests/test_automation_control_plane_cutover.py",
+        "probe:finance_source_state",
+        "probe:customer_collection_flow",
+        "probe:field_maintenance"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "财务成功/客服两个实际Run output DOM来源链接，财务真实失败事件经生产投影和原Feishu formatter只捕获发送边界；真实Scheduler同业务source与同occurrence复用、普通非采集Run的实际输出not_collector、缺失Run/source明确诊断组合。原通知策略/固定指令回归保留，不触发真实飞书写。"
+    },
+    {
+      "id": "C17",
+      "scenario": "固定模块与操作范围",
+      "requirement": "财务／客服增加入口但原业务不被移除或整体重做；运单、回单、OCR 等回归；换页面不扩大账号／数据权限；已有模块外部动作不被误列为采集",
+      "tests": [
+        "console/tests/test_customer_service_module.py",
+        "console/tests/test_finance_module.py",
+        "tests/test_control_plane_execution_boundaries.py",
+        "tests/test_plugin_module_management.py",
+        "probe:customer_collection_flow",
+        "console/tests/test_manual_waybill.py",
+        "console/tests/test_waybill_query.py",
+        "console/tests/test_tracking_query.py",
+        "console/tests/test_receipts_management.py",
+        "console/tests/test_document_mode_switch.py",
+        "console/tests/test_menu_registration.py",
+        "console/tests/test_permission_registry.py"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "原业务与权限/菜单全部Console回归、实际客服采集及禁止回复发布边界组合，不通过删除旧模块或将业务写入伪装采集。"
+    },
+    {
+      "id": "C18",
+      "scenario": "部分发布、增量游标与迟到更新",
+      "requirement": "缺页／中断／单源失败不清空历史、不发布伪完整批次、不推进未确认游标；重试与迟到修正按业务键生效；旧采集器迟到批次不能盖掉新发布，人工字段保留",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+        "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
+        "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+        "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows",
+        "tests/test_first_party_action_payloads.py::test_customer_problem_payload_rejects_repeated_cursor"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "现采集为完整分页/日期窗口重采，无持久high-water游标，不新增游标平台。适用链为真实半批中断不发布/重提业务键幂等、重复分页cursor明确拒绝、完整发布门、旧producer迟到拒写及人工字段保留。"
+    },
+    {
+      "id": "M01",
+      "scenario": "常用配置的局部修改与恢复",
+      "requirement": "从真实页面修改一个实际常用参数／账号／运行窗口，校验错误值；保存后目标新任务使用新配置、在途不混用、恢复可用；不改源码／数据库结构、不手写 JSON、不重启主服务；不能为此强制所有逻辑配置化",
+      "tests": [
+        "tests/test_automation_project_policy_service.py",
+        "probe:settings_effective"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "实际默认设置布尔与统一账号变更→下一Run结果变化；DOM历史恢复→新generation下一Run回到原结果。插件版本、宿主PID/starttick不变。"
+    },
+    {
+      "id": "M02",
+      "scenario": "一个已接入采集器的字段／解析变化",
+      "requirement": "按 5.8 冻结宿主，用隔离外部目标复现等价字段变化；仅改并打包对应采集逻辑，经模块升级后输出原标准数据；宿主核心文件摘要、Agent／Console 启动标识不变，原查询／BI 无需修改；不得 mock 整个解析器或只换测试服务数据",
+      "tests": [
+        "probe:field_maintenance"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "入口强制host-freeze并验核心文件SHA与Agent/Console启动标识，真实财务字段变化只修改签名payload后模块升级，原标准数据/明细/BI一致，默认宿主及算法不改。未冻结或PREPARATION产物明确失败。"
+    },
+    {
+      "id": "M03",
+      "scenario": "一个真实业务的局部决策变化",
+      "requirement": "只改对应插件中的实际局部判断及其样例，安装隔离候选包后经真实入口得到预定分支；回退恢复旧行为；无公共接口／主系统重发，无新增通用节点编辑器；最终默认规则不被测试变体污染",
+      "tests": [
+        "probe:decision_maintenance"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "入口强制冻结manifest，原自提实际局部判断候选包经真实Console预览/确认和原生产handler/raw HTTP生成预定分支，回退原签名包恢复默认结果，无关真实任务持续运行且Host标识不变。"
+    },
+    {
+      "id": "M04",
+      "scenario": "升级失败、在途版本和回退",
+      "requirement": "目标包校验失败保留原版本；成功切换时在途保持旧快照，新任务用新版本；无关任务持续推进；相同操作重试不重复 Job／写入；恢复前核验配置和契约兼容；业务历史、source_id、账号、计划与报表引用不丢；不把回退代码当成撤销已发生外部写入",
+      "tests": [
+        "tests/test_automation_plugin_lifecycle.py",
+        "probe:field_maintenance",
+        "probe:decision_maintenance"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "实际M02旧任务在途受控暂停、坏签名候选真实拒绝且当前版本不变，正常升级后旧任务旧版本/新任务新版本，设置计划/业务数据保留、历史签名包受控回退；M03验证真实业务分支回退。"
+    },
+    {
+      "id": "M05",
+      "scenario": "独立更新的真实边界与依赖",
+      "requirement": "兼容包只更换目标版本及其必要私有环境，不改共享依赖、不执行宿主部署命令；构造一个不兼容 Host／数据契约或系统依赖候选被明确识别为需核心更新／不能激活，不能偷偷改宿主；无权限自扩张、任意 SQL／Shell 或动态生产代码覆盖",
+      "tests": [
+        "tests/test_service_v2_developer_cli.py",
+        "tests/test_service_v2_developer_simulator.py::test_simulator_broker_socket_path_fits_hosted_checkout_and_fails_closed_when_too_long",
+        "tests/test_service_v2_developer_simulator.py::test_real_sandbox_blocks_host_environment_file_and_network_and_report_is_stable",
+        "tests/test_service_v2_developer_simulator.py::test_write_faults_are_single_attempt_and_classified_without_bodies",
+        "tests/test_service_v2_developer_simulator.py::test_successful_host_write_then_plugin_failure_is_forced_unknown",
+        "tests/test_service_v2_developer_simulator.py::test_successful_host_write_and_plugin_success_still_requires_real_verification",
+        "tests/test_service_v2_developer_simulator.py::test_suite_schema_and_nested_sensitive_material_fail_closed",
+        "tests/test_service_v2_developer_simulator.py::test_call_mismatch_is_not_replayed_and_report_omits_arguments",
+        "tests/test_service_v2_developer_simulator.py::test_replayed_request_id_is_rejected_without_consuming_next_fixture",
+        "tests/test_service_v2_developer_simulator.py::test_per_action_fixture_limit_is_enforced_before_sandbox",
+        "tests/test_service_v2_developer_simulator.py::test_service_invoke_fixture_fails_without_offline_provider_contract",
+        "tests/test_service_v2_developer_simulator.py::test_dependency_package_fails_closed_before_sandbox_execution",
+        "tests/test_service_v2_developer_simulator.py::test_process_failure_does_not_leak_stderr_and_cleans_task_temp",
+        "tests/test_service_v2_developer_simulator.py::test_plugin_controlled_code_and_sensitive_result_are_normalized",
+        "tests/test_service_v2_developer_simulator.py::test_stdin_backpressure_is_inside_timeout_and_cleans_process_temp",
+        "tests/test_service_v2_developer_simulator.py::test_cancelled_execution_kills_and_reaps_the_process_group",
+        "tests/test_service_v2_developer_simulator.py::test_missing_exact_manifest_python_fails_closed_and_cleans_temp",
+        "tests/test_service_v2_developer_simulator.py::test_missing_bubblewrap_fails_closed_without_running_plugin",
+        "tests/test_plugin_maintenance.py",
+        "tests/test_action_v1_module_installation.py",
+        "tests/test_plugin_service_v2_foundation.py",
+        "probe:plugin_cli_batch",
+        "probe:field_maintenance"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "六插件实际describe/test/package限定所属payload并对core diff明确CORE_UPDATE_REQUIRED；包/Manifest/API/数据契约不兼容通过原真实安装校验拒绝，兼容候选沿同管理服务升级。公共接口/共享数据库/Runner改动在本轮归为核心更新，冻结后不得混入插件迭代。",
+      "not_applicable_references": {
+        "tests/test_service_v2_developer_simulator.py::test_manifest_python_probe_rejects_wrong_interpreter_version": "本轮要求并实际使用Python3.10，该原测试仅在当前解释器与Manifest要求不同时运行。完整CI保留其原SKIP；适用的缺失精确解释器/沙箱/不兼容契约负例仍实际执行，不将此SKIP记为PASS。"
+      }
+    },
+    {
+      "id": "M06",
+      "scenario": "Codex 局部维护交付与可复现测试",
+      "requirement": "复用现有工具提供经过运行验证的局部测试／契约检查／必要回归／打包入口，产物关联包摘要和提交；一次“字段变化”和一次“判断变化”都有修改范围、测试、工件、升级／回退证据；用户不手动选几十条命令；共享变更自动扩大或明确升级测试范围，正式 CI 不被关闭",
+      "tests": [
+        "tests/test_service_v2_developer_cli.py",
+        "probe:plugin_cli_batch",
+        "probe:field_maintenance",
+        "probe:decision_maintenance",
+        "tests/test_low_maintenance_v32_acceptance.py"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "evidence_note": "实际六插件局部测试和签名打包入口保留命令、原始日志、版本和ZIP SHA，两个维护probe只收本次fresh执行完整结果；56组机器矩阵缺失/失败/旧工件均非零，维护归属/复现/发布回滚随最终交付核对。"
+    }
+  ]
+}

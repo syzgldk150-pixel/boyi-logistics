@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from app import LocalDocFlowApp
+from console.app import LocalDocFlowApp
 
 
 CONSOLE_DIR = Path(__file__).resolve().parents[1]
@@ -106,7 +106,7 @@ class NavigationPerformanceTests(unittest.TestCase):
         self.assertIn("/static/assets/fonts/InterVariable-Latin.woff2", template)
         self.assertIn("/static/assets/fonts/SourceHanSansCN-UI.woff2", template)
         self.assertIn("/static/vendor/feather-4.29.2.min.js", template)
-        self.assertIn("/static/console_ui.js?v=cal-console-20260903-automation-perf1", template)
+        self.assertIn("/static/console_ui.js?v=v32", template)
         self.assertIn(
             "/static/style.css?v=cal-console-20260903-automation-perf1",
             login_template,
@@ -114,7 +114,7 @@ class NavigationPerformanceTests(unittest.TestCase):
         self.assertIn("/static/assets/fonts/InterVariable-Latin.woff2", login_template)
         self.assertIn("/static/assets/fonts/SourceHanSansCN-UI.woff2", login_template)
         self.assertIn("/static/vendor/feather-4.29.2.min.js", login_template)
-        self.assertIn("/static/console_ui.js?v=cal-console-20260903-automation-perf1", login_template)
+        self.assertIn("/static/console_ui.js?v=v32", login_template)
         self.assertNotIn("unpkg.com", template)
         self.assertNotIn("unpkg.com", login_template)
         self.assertNotIn("api.dicebear.com", template)

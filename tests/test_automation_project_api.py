@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from typing import Any
+import asyncio
+import threading
+
+import httpx
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -20,7 +24,8 @@ class _Service:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    def list_policies(self) -> dict[str, Any]:
+    def list_policies(self, *, automation_ids=None) -> dict[str, Any]:
+        self.calls.append(("list", {"automation_ids": automation_ids}))
         return {"items": []}
 
     def update_policy(self, automation_id: str, **kwargs: Any) -> dict[str, Any]:
@@ -101,6 +106,18 @@ def _client() -> tuple[TestClient, _Service, Actor]:
         )
     )
     return TestClient(app), service, actor
+
+
+def test_policy_list_exact_scope_is_optional_and_validated():
+    client, service, _ = _client()
+    assert client.get("/internal/v1/automation-project-policies").status_code == 200
+    assert service.calls[-1] == ("list", {"automation_ids": None})
+    response = client.get("/internal/v1/automation-project-policies", params={"automation_ids": "project-b,project-a"})
+    assert response.status_code == 200
+    assert service.calls[-1] == ("list", {"automation_ids": ["project-a", "project-b"]})
+    for invalid in ("", "project-a,project-a", " project-a", "project-a,", "../outside", ",".join(f"p-{index}" for index in range(1001))):
+        assert client.get("/internal/v1/automation-project-policies", params={"automation_ids": invalid}).status_code == 422
+    assert len(service.calls) == 2
 
 
 def test_project_policy_route_derives_actor_and_accepts_only_cas_fields() -> None:
@@ -272,3 +289,26 @@ def test_selection_preview_routes_keep_fingerprint_server_side() -> None:
         },
     )
     assert "preview_fingerprint" not in confirmed.request.content.decode("utf-8")
+
+
+def test_concurrent_acceptance_does_not_block_the_http_event_loop():
+    client, service, _actor = _client()
+    barrier = threading.Barrier(2, timeout=2)
+
+    def accept(automation_id, **arguments):
+        # Both real API requests must reach the synchronous persistence boundary
+        # concurrently; running it on the HTTP event loop breaks this barrier.
+        barrier.wait()
+        return _Service.invoke_console(service, automation_id, **arguments)
+
+    service.invoke_console = accept
+
+    async def invoke_both():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client.app), base_url="http://isolated") as transport:
+            return await asyncio.gather(*(transport.post(
+                "/internal/v1/automation-projects/project-a/invoke", json={"request_id": f"parallel-{index}"},
+            ) for index in range(2)))
+
+    responses = asyncio.run(invoke_both())
+    assert [response.status_code for response in responses] == [200, 200]
+    assert sorted(call[1]["request_id"] for call in service.calls) == ["parallel-0", "parallel-1"]

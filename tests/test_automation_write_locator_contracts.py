@@ -23,9 +23,11 @@ def _arguments(action: str) -> dict[str, object]:
                 }
             ]
         }
+    if action == "scan.snapshot.replace":
+        return {"records": [{"raw_code": "TRACKING-RAW-001", "destination": "TEST-STATION", "code_type": "main", "main_tracking": "TRACKING-RAW-001"}], "target_date": "2026-08-22"}
     if action in {
         "waybill.snapshot.replace", "arrival.forecast_snapshot.replace",
-        "scan.snapshot.replace", "arrival.snapshot.replace",
+        "arrival.snapshot.replace",
         "split_pending.snapshot.refresh", "feishu.sheet.replace",
         "feishu.sheet.add", "feishu.bitable.write_records",
     }:

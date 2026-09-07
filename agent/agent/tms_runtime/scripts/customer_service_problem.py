@@ -309,84 +309,18 @@ def _normalize_direction(value: Any, *, platform: str) -> str:
     return aliases.get(text, text)
 
 
-def normalize_problem_rows(
-    platform: str,
-    rows: list[dict[str, Any]],
-    *,
-    account_id: str,
-    account_label: str,
-    source_direction: str,
-) -> list[dict[str, Any]]:
-    normalized_platform = _normalize_platform(platform)
-    if normalized_platform not in SUPPORTED_PLATFORMS:
-        raise CustomerServiceProblemError("UNSUPPORTED_PLATFORM", f"不支持的平台：{platform}")
-
-    output: list[dict[str, Any]] = []
-    for index, row in enumerate(rows):
-        if not isinstance(row, dict):
-            continue
-        if normalized_platform == "ronghui":
-            external_id = _first_text(row, "GUID")
-            waybill_no = _first_text(row, "BILL_CODE", "bill_code")
-            status = _first_text(row, "REVERSION_STATUS", "BL_CHECKOK_STR", "BL_RETURN", "IS_REPLY")
-            problem_type = _first_text(row, "TYPE")
-            problem_text = _first_text(row, "PROBLEM_CAUSE")
-            reply_text = _first_text(row, "REVERSION", "DEAL_RESULT")
-            created_at = _first_text(row, "REGISTER_DATE", "REGISTER_SAVE_DATE")
-            registered_at = _first_text(row, "REGISTER_DATE")
-            registration_saved_at = _first_text(row, "REGISTER_SAVE_DATE")
-            registered_site = _first_text(row, "REGISTER_SITE")
-            updated_at = _first_text(row, "REVERSION_DATE")
-            problem_type = _first_text(row, "TYPE")
-            registered_at = _first_text(row, "REGISTER_DATE")
-            registration_saved_at = _first_text(row, "REGISTER_SAVE_DATE")
-            registered_site = _first_text(row, "REGISTER_SITE")
-        else:
-            external_id = _first_text(row, "prob_main_id")
-            waybill_no = _first_text(row, "ship_no", "LogisticsId")
-            status = _first_text(row, "prob_status", "check_status", "issue_check_status")
-            problem_text = _first_text(row, "prob_text")
-            problem_type = _first_text(row, "prob_type", "issue_type")
-            reply_text = _first_text(row, "reply_text")
-            created_at = _first_text(row, "created_time")
-            registered_at = created_at
-            registration_saved_at = ""
-            registered_site = _first_text(row, "register_site", "site_name")
-            updated_at = _first_text(row, "modified_time", "reply_time")
-            problem_type = _first_text(row, "problem_type", "prob_type")
-            registered_at = created_at
-            registration_saved_at = created_at
-            registered_site = _first_text(row, "register_site", "site_name")
-        if not external_id:
-            raise CustomerServiceProblemError(
-                "MISSING_EXTERNAL_ID",
-                f"{normalized_platform} 问题件第 {index + 1} 行缺少唯一键，已停止处理。",
-            )
-        output.append(
-            {
-                "platform": normalized_platform,
-                "account_id": _clean_text(account_id),
-                "account_label": _clean_text(account_label) or _clean_text(account_id),
-                "source_direction": _clean_text(source_direction),
-                "external_id": external_id,
-                "waybill_no": waybill_no,
-                "status": _display_problem_status(status, row, reply_text),
-                "problem_type": problem_type,
-                "problem_text": problem_text,
-                "reply_text": reply_text,
-                "created_at": created_at,
-                "registered_at": registered_at,
-                "registration_saved_at": registration_saved_at,
-                "registered_site": registered_site,
-                "updated_at": updated_at,
-                "problem_type": problem_type,
-                "registered_at": registered_at,
-                "registration_saved_at": registration_saved_at,
-                "registered_site": registered_site,
-                "raw": _safe_json(row),
-            }
-        )
-    return output
+def normalize_problem_rows(platform, rows, *, account_id, account_label, source_direction):
+    # Compatibility readers reuse the source implementation. Signed collectors
+    # receive raw business fields and run their installed generation's parser.
+    from first_party_automation_plugins.sync_customer_service_problems.payload.customer_problem_fields import (
+        CustomerServiceProblemError as ParseError,
+        normalize_problem_rows as normalize,
+    )
+    try:
+        return normalize(_normalize_platform(platform), [_safe_json(row) for row in rows],
+            account_id=account_id, account_label=account_label, source_direction=source_direction)
+    except ParseError as exc:
+        raise CustomerServiceProblemError(exc.code, str(exc)) from exc
 
 
 def _safe_business_item(params: dict[str, Any]) -> dict[str, Any]:
@@ -730,17 +664,23 @@ def _ronghui_query(session: Any, params: dict[str, Any]) -> dict[str, Any]:
     payload = _response_json(response, label="融辉问题件查询")
     _raise_if_source_failed(payload, label="融辉问题件查询")
     raw_rows = _extract_rows(payload)
-    rows = normalize_problem_rows(
-        "ronghui",
-        raw_rows,
-        account_id=_clean_text(params.get("account_id")),
-        account_label=_clean_text(params.get("account_label")),
-        source_direction=RONGHUI_QUERY_DIRECTIONS.get(menu_text, direction),
-    )
+    if params.get("raw_source") is True:
+        rows = [{"platform": "ronghui", "source_direction": direction,
+                 "external_id": _first_text(row, "GUID"), "raw_fields": _safe_json(row)}
+                for row in raw_rows]
+    else:
+        rows = normalize_problem_rows(
+            "ronghui",
+            raw_rows,
+            account_id=_clean_text(params.get("account_id")),
+            account_label=_clean_text(params.get("account_label")),
+            source_direction=RONGHUI_QUERY_DIRECTIONS.get(menu_text, direction),
+        )
     declared_total = _extract_declared_total(payload)
     return {
         "ok": True,
         "rows": rows,
+        "source_site_code": login_site_code,
         "stats": {
             "total": declared_total if declared_total is not None else len(raw_rows),
             "returned": len(rows),
@@ -1163,13 +1103,17 @@ def _yunda_query(session: Any, params: dict[str, Any]) -> dict[str, Any]:
         preserve_empty=preserve_empty,
     )
     raw_rows = _extract_rows(data)
-    rows = normalize_problem_rows(
-        "yunda",
-        raw_rows,
-        account_id=_clean_text(params.get("account_id")),
-        account_label=_clean_text(params.get("account_label")),
-        source_direction=source_direction,
-    )
+    if params.get("raw_source") is True:
+        raise CustomerServiceProblemError("SOURCE_ORGANIZATION_UNVERIFIED",
+            "韵达问题件接口未提供已验证的组织身份，不能发布为本地权威来源。")
+    else:
+        rows = normalize_problem_rows(
+            "yunda",
+            raw_rows,
+            account_id=_clean_text(params.get("account_id")),
+            account_label=_clean_text(params.get("account_label")),
+            source_direction=source_direction,
+        )
     return {"ok": True, "rows": rows, "stats": {"total": _extract_total(data, raw_rows), "returned": len(rows)}}
 
 

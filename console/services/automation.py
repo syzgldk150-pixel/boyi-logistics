@@ -434,6 +434,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         task_overrides: dict[str, dict[str, Any]] | None = None,
         task_feedbacks: dict[str, dict[str, Any]] | None = None,
         open_task_id: str | None = None,
+        module: str = "automation",
     ) -> None:
         resource_overrides = resource_overrides or {}
         task_overrides = task_overrides or {}
@@ -458,16 +459,16 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
 
         if query.get("refresh_resources") == ["1"]:
             plugin_catalog = self._load_automation_plugin_catalog(
-                handler,
+                handler, module=module, summary=True,
                 refresh_resources=True,
             )
         elif partial_navigation:
             plugin_catalog = self._load_automation_plugin_catalog(
-                handler,
+                handler, module=module, summary=True,
                 prefer_stale=True,
             )
         else:
-            plugin_catalog = self._load_automation_plugin_catalog(handler)
+            plugin_catalog = self._load_automation_plugin_catalog(handler, module=module, summary=True)
         (
             automation_plugin_packages,
             automation_plugin_instances,
@@ -489,6 +490,8 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         tasks_by_id: dict[str, dict[str, Any]] = {}
         for scheduled_group in scheduled_row_groups:
             base_task_id = str(scheduled_group["task_id"])
+            if module != "automation" and base_task_id not in plugin_instances_by_id:
+                continue
             if (
                 base_task_id in hidden_automation_ids
                 and not bool(scheduled_group["missing_automation_id"])
@@ -877,42 +880,14 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                         or str(task.get("task_id") or "") == candidate
                     )
                 ]
-        accounts_principal = self._mysql_console_principal(
-            getattr(handler, "current_admin_user", None)
-        )
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            if partial_navigation:
-                policy_future = executor.submit(
-                    self._load_automation_project_policies,
-                    handler,
-                    tasks,
-                    timeout_seconds=3,
-                )
-                accounts_future = executor.submit(
-                    self._fetch_automation_accounts,
-                    force=False,
-                    prefer_cached=True,
-                    console_principal=accounts_principal,
-                    timeout_seconds=3,
-                )
-            else:
-                policy_future = executor.submit(
-                    self._load_automation_project_policies,
-                    handler,
-                    tasks,
-                )
-                accounts_future = executor.submit(
-                    self._fetch_automation_accounts,
-                    force=False,
-                    prefer_cached=True,
-                    console_principal=accounts_principal,
-                )
-            (
-                automation_approval_policy_warning,
-                can_manage_approval_policies,
-            ) = policy_future.result()
-            automation_accounts, automation_account_warning = accounts_future.result()
-        self._enrich_automation_tasks_with_accounts(tasks, automation_accounts)
+        policy_options = {"timeout_seconds": 3} if partial_navigation else {}
+        (
+            automation_approval_policy_warning,
+            can_manage_approval_policies,
+        ) = self._load_automation_project_policies(handler, tasks, **policy_options)
+        # Account candidate lists and external resource checks belong to settings.
+        # Runtime readiness in the signed catalog still gates every action.
+        automation_account_warning = ""
         automation_provider_counts = {
             provider: sum(1 for row in tasks if str(row.get("provider") or "ronghui") == provider)
             for provider in AUTOMATION_PROVIDER_LABELS
@@ -933,6 +908,10 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             message_kind=query.get("kind", ["info"])[0],
             settings=self.settings,
             scheduled_tasks=tasks,
+            management_module=module,
+            source_producers=[{"automation_id": item["automation_id"], "name": item["instance_name"]} for item in automation_plugin_instances],
+            management_title={"automation": "自动化", "finance": "财务数据源", "customer_service": "客服数据源"}[module],
+            management_url={"automation": "/automations", "finance": "/modules/finance/data-sources", "customer_service": "/modules/customer-service/data-sources"}[module],
             scheduled_task_count=len(tasks),
             enabled_task_count=sum(1 for row in tasks if row.get("enabled_value")),
             automation_provider_labels=AUTOMATION_PROVIDER_LABELS,
@@ -1861,6 +1840,13 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                     0 if attention else data.get("next_poll_after_ms", 1000)
                 ),
             }
+            from shared.collector_navigation import collector_run_navigation
+            try:
+                with self.repository.connect() as connection:
+                    payload["collector_navigation"] = collector_run_navigation(connection, run_id)
+            except Exception:
+                payload["collector_navigation"] = {"status": "unavailable", "sources": [],
+                    "message": "运行所属来源暂时无法读取。"}
             if is_terminal:
                 cancelled = status == "CANCELLED"
                 ok = status == "COMPLETED"

@@ -22,6 +22,7 @@
   function initFinanceWorkbench(root) {
     if (!root || root.dataset.financeBound === "true") return;
     root.dataset.financeBound = "true";
+    const fetch = window.ConsoleUI.pageRequest();
 
     const $ = (selector) => root.querySelector(selector);
     const $$ = (selector) => Array.from(root.querySelectorAll(selector));
@@ -38,6 +39,9 @@
       loadingBatches: false,
       loadingReviews: false,
       loadingWaybillFacts: false,
+      overviewRequest: 0,
+      entriesRequest: 0,
+      waybillRequest: 0,
     };
 
     const statusNode = $("[data-finance-status]");
@@ -202,7 +206,51 @@
         end_date: endDateInput?.value || "",
         platform: platformSelect?.value || "all",
         account_id: accountSelect?.value || "all",
+        source_ids: $("[data-finance-source]")?.value || "",
       };
+    }
+
+    function savedFilterControls() {
+      return {
+        finance_platform: platformSelect,
+        finance_direction: entryForm?.elements.direction,
+        finance_fee_level: entryForm?.elements.fee_level,
+        start_date: startDateInput,
+        end_date: endDateInput,
+      };
+    }
+
+    function rememberFinanceSelection() {
+      Object.entries(savedFilterControls()).forEach(([key, control]) => {
+        if (control) window.ConsoleUI.updatePageQuery(key, control.value === "all" ? "" : control.value);
+      });
+      window.ConsoleUI.updatePageQuery("finance_tab", state.activeTab === "overview" ? "" : state.activeTab);
+    }
+
+    function restoreFinanceSelection() {
+      const query = new URLSearchParams(location.search);
+      for (const [key, control] of Object.entries(savedFilterControls())) {
+        if (!control || !query.has(key)) continue;
+        const value = query.get(key);
+        const valid = control.tagName === "SELECT"
+          ? Array.from(control.options).some(option => option.value === value)
+          : parseDateKey(value) && formatDateKey(parseDateKey(value)) === value;
+        if (!valid) throw new Error("保存的财务筛选条件无效，请重新选择。");
+        control.value = value;
+      }
+      const tab = query.get("finance_tab") || "overview";
+      if (!$$('[data-finance-tab]').some(item => item.dataset.financeTab === tab)) {
+        throw new Error("保存的财务视图无效，请重新选择。");
+      }
+      filterAllAccountSelects();
+      return tab;
+    }
+
+    function selectedSourceReady() {
+      const requested = new URLSearchParams(location.search).get("source_id") || "";
+      if (requested === globalFilters().source_ids) return true;
+      setStatus("所选来源尚未验证，请查看来源提示。", "warning");
+      return false;
     }
 
     function formatDateKey(date) {
@@ -305,6 +353,7 @@
       const panel = $(`[data-finance-panel="${name}"]`);
       if (!tab || !panel) return;
       state.activeTab = name;
+      rememberFinanceSelection();
       $$('[data-finance-tab]').forEach((item) => {
         const active = item === tab;
         item.classList.toggle("is-active", active);
@@ -348,6 +397,7 @@
     }
 
     function renderMetrics(summary) {
+      const unpublished = summary.validation_status === "unavailable" && !summary.latest_success_at;
       const moneyKeys = new Set(["total_income", "total_expense", "net_change", "waybill_net", "operating_net", "unclassified_net"]);
       const labels = {
         waybill_net: "运单财务净额",
@@ -361,7 +411,7 @@
         if (!value) return;
         value.classList.remove("finance-skeleton-line");
         value.removeAttribute("aria-hidden");
-        value.textContent = moneyKeys.has(key) ? moneyText(summary[key]) : displayText(summary[key], "无数据");
+        value.textContent = unpublished ? "尚无数据" : moneyKeys.has(key) ? moneyText(summary[key]) : displayText(summary[key], "无数据");
       });
     }
 
@@ -550,7 +600,11 @@
         return;
       }
       warning.hidden = false;
-      warning.textContent = `部分来源同步失败（${failures.length} 项）。已成功来源的数据仍可查看，请到“同步记录”检查失败原因并重试。`;
+      const scopes = failures.map(row => {
+        const account = (summary.accounts || []).find(item => item.platform === row.platform && item.account_id === row.account_id);
+        return `${platformLabel(row.platform)} / ${displayText(account?.login_account, row.account_id)}（${displayText(row.target_date)}）`;
+      });
+      warning.textContent = `部分来源同步失败（${failures.length} 项）：${scopes.join("、")}。汇总保留这些来源此前已发布的数据，各来源更新时间可能不同。请到“同步记录”检查失败原因并重试。`;
     }
 
     function setOverviewLoading() {
@@ -570,18 +624,19 @@
     }
 
     async function loadOverview() {
-      if (!isRootActive()) return;
+      if (!isRootActive() || !selectedSourceReady()) return;
+      const request = ++state.overviewRequest;
       showError("");
       setOverviewLoading();
       setButtonBusy(refreshButton, true, "刷新中");
       setStatus("正在查询汇总和趋势数据。", "");
       const query = toQuery(globalFilters());
-      const [summaryResult, trendResult, operatingTrendResult, llmResult] = await Promise.allSettled([
+      const [summaryResult, trendResult, operatingTrendResult] = await Promise.allSettled([
         fetchJson(`${ENDPOINTS.summary}?${query}`),
         fetchJson(`${ENDPOINTS.trend}?${query}`),
         fetchJson(`${ENDPOINTS.trend}?${toQuery({ ...globalFilters(), fee_level: "operating" })}`),
-        fetchJson(ENDPOINTS.llmStatus),
       ]);
+      if (request !== state.overviewRequest || !root.isConnected) return;
       const failures = [];
       if (summaryResult.status === "fulfilled") {
         const summary = summaryResult.value;
@@ -607,11 +662,6 @@
       } else {
         failures.push(`运营级趋势：${operatingTrendResult.reason.message}`);
         renderOperatingTrend([]);
-      }
-      if (llmResult.status === "fulfilled") renderModelHealth(llmResult.value);
-      else {
-        const node = $("[data-finance-llm-health]");
-        if (node) node.textContent = "智能模型：状态不可达";
       }
       setButtonBusy(refreshButton, false, "刷新中");
       const coreFailures = [summaryResult, trendResult].filter((item) => item.status === "rejected").length;
@@ -715,20 +765,23 @@
     }
 
     async function loadEntries() {
-      if (state.loadingEntries || !entryForm) return;
+      if (!entryForm || !selectedSourceReady()) return;
+      const request = ++state.entriesRequest;
       state.loadingEntries = true;
       const tableState = $("[data-finance-entry-state]");
       setPanelState(tableState, "正在查询交易明细。", "loading");
-      const params = { ...formValues(entryForm), page: state.entryPage, page_size: state.entryPageSize };
+      const params = { ...formValues(entryForm), source_ids: globalFilters().source_ids, page: state.entryPage, page_size: state.entryPageSize };
       try {
         const payload = await fetchJson(`${ENDPOINTS.entries}?${toQuery(params)}`);
+        if (request !== state.entriesRequest || !root.isConnected) return;
         renderEntries(payload);
         setStatus("交易明细已更新。", "success");
       } catch (error) {
+        if (request !== state.entriesRequest || !root.isConnected) return;
         setPanelState(tableState, `交易明细查询失败：${error.message}`, "error");
         setStatus("交易明细查询失败。", "error");
       } finally {
-        state.loadingEntries = false;
+        if (request === state.entriesRequest) state.loadingEntries = false;
       }
     }
 
@@ -1012,22 +1065,27 @@
     }
 
     async function loadWaybillFacts() {
-      if (state.loadingWaybillFacts || !waybillForm) return;
+      if (!waybillForm || !selectedSourceReady()) return;
+      const request = ++state.waybillRequest;
       state.loadingWaybillFacts = true;
       const panelState = $("[data-finance-waybill-state]");
       setPanelState(panelState, "正在读取运单财务事实…", "loading");
       try {
         const query = { ...globalFilters(), ...formValues(waybillForm) };
         const payload = await fetchJson(`${ENDPOINTS.waybillFacts}?${toQuery(query)}`);
+        if (request !== state.waybillRequest || !root.isConnected) return;
         renderWaybillFacts(payload);
         const knowledge = await fetchJson(ENDPOINTS.knowledge);
+        if (request !== state.waybillRequest || !root.isConnected) return;
         const link = $("[data-finance-knowledge-link]");
         if (link && knowledge.consistent && knowledge.latest_export?.relative_path) {
           link.href = `/runtime/${encodeURI(knowledge.latest_export.relative_path)}`;
           link.hidden = false;
         }
-      } catch (error) { setPanelState(panelState, `运单财务读取失败：${error.message}`, "error"); }
-      finally { state.loadingWaybillFacts = false; }
+      } catch (error) {
+        if (request === state.waybillRequest && root.isConnected) setPanelState(panelState, `运单财务读取失败：${error.message}`, "error");
+      }
+      finally { if (request === state.waybillRequest) state.loadingWaybillFacts = false; }
     }
 
     function renderBatches(payload) {
@@ -1125,9 +1183,26 @@
       tab.addEventListener("keydown", handleTabKeydown);
     });
     $$('[data-finance-range]').forEach((button) => button.addEventListener("click", () => applyDatePreset(button.dataset.financeRange)));
-    [startDateInput, endDateInput].forEach((input) => input?.addEventListener("change", () => setDateRange(startDateInput.value, endDateInput.value, "custom")));
-    refreshButton?.addEventListener("click", loadOverview);
-    platformSelect?.addEventListener("change", () => { filterAllAccountSelects(); });
+    [startDateInput, endDateInput].forEach((input) => input?.addEventListener("change", () => {
+      setDateRange(startDateInput.value, endDateInput.value, "custom");
+      rememberFinanceSelection();
+    }));
+    function refreshSelectedSource() {
+      state.entryPage = 1;
+      state.entriesRequest += 1;
+      state.waybillRequest += 1;
+      state.loadedTabs.delete("entries");
+      state.loadedTabs.delete("waybill-facts");
+      loadOverview();
+      if (state.activeTab === "entries") loadEntries();
+      if (state.activeTab === "waybill-facts") loadWaybillFacts();
+    }
+    refreshButton?.addEventListener("click", refreshSelectedSource);
+    $("[data-finance-source]")?.addEventListener("module-source-change", refreshSelectedSource);
+    platformSelect?.addEventListener("change", () => { filterAllAccountSelects(); rememberFinanceSelection(); });
+    [entryForm?.elements.direction, entryForm?.elements.fee_level].forEach(control => {
+      control?.addEventListener("change", rememberFinanceSelection);
+    });
     entryForm?.elements.platform?.addEventListener("change", filterAllAccountSelects);
     syncForm?.elements.platform?.addEventListener("change", filterAllAccountSelects);
     backfillForm?.elements.platform?.addEventListener("change", filterAllAccountSelects);
@@ -1201,10 +1276,17 @@
     });
 
     $$('table.finance-entry-table, table.finance-mapping-table, table.finance-review-table, table.finance-waybill-table, table.finance-sync-table').forEach((table) => table.classList.add("finance-table--responsive"));
+    let restoredTab;
+    try { restoredTab = restoreFinanceSelection(); }
+    catch (error) { setStatus(error.message, "error"); return; }
     setOverviewLoading();
     syncEntryDates();
-    activateTab("overview");
+    activateTab(restoredTab);
     loadOverview();
+    fetchJson(ENDPOINTS.llmStatus).then(renderModelHealth).catch(() => {
+      const node = $("[data-finance-llm-health]");
+      if (node) node.textContent = "智能模型：状态不可达";
+    });
   }
 
   if (document.readyState === "loading") {

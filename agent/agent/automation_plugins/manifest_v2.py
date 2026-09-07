@@ -57,7 +57,7 @@ _TOP_LEVEL_REQUIRED_FIELDS = frozenset(
         "storage",
     }
 )
-_TOP_LEVEL_FIELDS = _TOP_LEVEL_REQUIRED_FIELDS | {"settings_ui"}
+_TOP_LEVEL_FIELDS = _TOP_LEVEL_REQUIRED_FIELDS | {"settings_ui", "management"}
 _SETTINGS_UI_FIELDS = frozenset({"entry", "bridge_api"})
 _HOST_API_FIELDS = frozenset({"minimum", "maximum_exclusive"})
 _RUNTIME_FIELDS = frozenset(
@@ -1280,6 +1280,7 @@ class AutomationPluginManifestV2:
     config_schema: Mapping[str, Any]
     storage: Mapping[str, Any]
     settings_ui: Mapping[str, Any] | None = None
+    management: Mapping[str, str] | None = None
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "AutomationPluginManifestV2":
@@ -1342,6 +1343,14 @@ class AutomationPluginManifestV2:
         )
         _validate_default_scheduler_host_compatibility(contributes)
         config_schema = _validate_config_schema(data["config_schema"])
+        management = None
+        if "management" in data:
+            from shared.plugin_management import validate_management
+
+            try:
+                management = validate_management(data["management"])
+            except ValueError as exc:
+                raise PluginManifestError(str(exc)) from exc
         settings_ui = None
         if "settings_ui" in data:
             raw_settings_ui = _mapping(data["settings_ui"], "settings_ui", _SETTINGS_UI_FIELDS)
@@ -1369,6 +1378,7 @@ class AutomationPluginManifestV2:
             config_schema=_deep_freeze(config_schema),
             storage=_deep_freeze(storage),
             settings_ui=_deep_freeze(settings_ui) if settings_ui is not None else None,
+            management=_deep_freeze(management) if management is not None else None,
         )
         canonical_json_bytes(normalized.to_mapping())
         return normalized
@@ -1394,6 +1404,8 @@ class AutomationPluginManifestV2:
         }
         if self.settings_ui is not None:
             result["settings_ui"] = _deep_thaw(self.settings_ui)
+        if self.management is not None:
+            result["management"] = _deep_thaw(self.management)
         return result
 
     @property

@@ -242,6 +242,11 @@ def send_finance_anomaly_alert(payload: dict[str, Any]) -> bool:
     if not receive_id_type or not receive_id:
         logger.warning("No Feishu notify target configured for finance anomaly alert.")
         return False
+    return send_text_sync(receive_id, build_finance_anomaly_message(payload), receive_id_type=receive_id_type)
+
+
+def build_finance_anomaly_message(payload: dict[str, Any]) -> str:
+    """Pure formatter used by the existing durable finance alert delivery."""
     anomaly_type = str(payload.get("anomaly_type") or "FINANCE_ANOMALY").strip()
     title = str(payload.get("title") or "财务异常待处理").strip()
     details = str(payload.get("details") or "").strip()
@@ -251,4 +256,11 @@ def send_finance_anomaly_alert(payload: dict[str, Any]) -> bool:
         lines.append(f"摘要：{details[:500]}")
     if admin_url:
         lines.append(f"后台：{admin_url}")
-    return send_text_sync(receive_id, "\n".join(lines), receive_id_type=receive_id_type)
+    navigation = payload.get("collector_navigation")
+    if isinstance(navigation, dict):
+        if navigation.get("module") == "finance" and navigation.get("status") == "known":
+            for source in navigation.get("sources", []):
+                lines.append(f"已记录来源：{source['display_name']} {source['url']}")
+        if not navigation.get("sources"):
+            lines.append(str(navigation.get("message") or "本次运行尚无已核验的来源记录。"))
+    return "\n".join(lines)

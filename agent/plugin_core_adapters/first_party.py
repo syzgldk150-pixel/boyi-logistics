@@ -47,6 +47,7 @@ from plugin_core_adapters.delivery_site import (
 from plugin_core_adapters.finance import build_production_finance_handler_map
 from plugin_core_adapters.problem_actions import build_production_problem_handler_map
 from plugin_core_adapters.scan_snapshot import replace_scan_snapshot_verified
+from shared.automation_project_authorization import canonical_sha256
 
 
 logger = logging.getLogger(__name__)
@@ -77,10 +78,20 @@ def _describe_active_account(
         ) from exc
 
 
-def _customer_action(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+def _customer_action(arguments: Mapping[str, Any], *, account_manager: AutomationAccountManager) -> Mapping[str, Any]:
     from agent.tms_runtime.scripts.customer_service_problem import run_once
 
-    return run_once(dict(arguments))
+    result = run_once(dict(arguments))
+    if arguments.get("raw_source") is True and result.get("ok") is True:
+        from shared.customer_problem_policy import CUSTOMER_SERVICE_SITE_FILTER_LOGIN
+
+        public_identity = account_manager.public_credentials(str(arguments["account_id"]))
+        login = str(public_identity.get("username") or "").strip()
+        if not login:
+            raise PluginExecutionError("customer public login identity is unavailable", code="BROKER_ACCOUNT_UNAVAILABLE")
+        result = {**result, "rows": [{**row, "site_policy_required": login == CUSTOMER_SERVICE_SITE_FILTER_LOGIN}
+            for row in result["rows"]]}
+    return result
 
 
 def _clock_site(arguments: Mapping[str, Any]) -> dict[str, str]:
@@ -835,7 +846,7 @@ def recover_scan_codes_unknown_write(
     automation_id: str,
     trigger_request_id: str,
 ) -> dict[str, Any] | None:
-    """Close an old scan attempt only after an exact empty server readback."""
+    """Resolve only exact original scan effects and restore their saved result."""
 
     entry = plugin_runtime.catalog.require(automation_id)
     if str(entry.plugin_id) != "sync_scan_codes":
@@ -868,12 +879,6 @@ def recover_scan_codes_unknown_write(
             or batch.get("candidate_count") != len(candidates)
         ):
             return None
-        phase = "account_binding"
-        account_id = str(entry.account_bindings.get("account_id") or "").strip()
-        if not account_id:
-            return None
-        descriptor = get_account_manager().require_active_binding_descriptor(account_id)
-        expected_account_binding = hashlib.sha256(account_id.encode("utf-8")).hexdigest()
         for candidate in candidates:
             phase = "candidate_validation"
             if not isinstance(candidate, Mapping):
@@ -902,11 +907,6 @@ def recover_scan_codes_unknown_write(
                 or not receipts
                 or not scan_receipts
                 or not re.fullmatch(r"[0-9a-f]{64}", identity_sha256)
-                or any(
-                    str(receipt.get("binding_sha256") or "")
-                    != expected_account_binding
-                    for receipt in scan_receipts
-                )
             ):
                 return None
             phase = "preview_context_read"
@@ -919,6 +919,14 @@ def recover_scan_codes_unknown_write(
                 not isinstance(context, Mapping)
                 or context.get("state") != "SCAN_RECOVERY_CONTEXT_IDENTIFIED"
             ):
+                return None
+            phase = "original_account_binding"
+            account_id = context.get("account_id")
+            if not isinstance(account_id, str) or not account_id:
+                return None
+            descriptor = get_account_manager().require_active_binding_descriptor(account_id)
+            expected_account_binding = hashlib.sha256(account_id.encode("utf-8")).hexdigest()
+            if any(receipt.get("binding_sha256") != expected_account_binding for receipt in scan_receipts):
                 return None
             items = context.get("items")
             started_at = context.get("attempt_started_at")
@@ -943,7 +951,8 @@ def recover_scan_codes_unknown_write(
             ]
             phase = "authoritative_readback"
             readback = _scan_next_readback_state(descriptor, normalized_items, windows)
-            if readback.get("state") != "NOT_APPLIED":
+            resolution = readback.get("state")
+            if resolution not in {"APPLIED", "NOT_APPLIED"}:
                 logger.info(
                     "Scan unknown-write recovery kept blocked project=%s generation=%d state=%s",
                     automation_id,
@@ -953,9 +962,9 @@ def recover_scan_codes_unknown_write(
                 return None
             evidence = {
                 "schema": 1,
-                "kind": "scan_next_exact_empty_readback",
+                "kind": "scan_next_exact_applied_readback" if resolution == "APPLIED" else "scan_next_exact_empty_readback",
                 "receipt_identity_sha256": identity_sha256,
-                "selection_sha256": _scan_next_identities_sha256(normalized_items),
+                "selection_sha256": canonical_sha256(normalized_items),
                 "window_count": len(windows),
                 "record_count": int(readback.get("record_count") or 0),
             }
@@ -970,11 +979,22 @@ def recover_scan_codes_unknown_write(
             request_key = str(
                 uuid.uuid5(
                     uuid.NAMESPACE_URL,
-                    "boyi:scan-unknown-write-not-applied:"
+                    "boyi:scan-unknown-write-" + resolution.lower() + ":"
                     f"{automation_id}:{trigger_request_id}:{identity_sha256}",
                 )
             )
             phase = "transactional_resolution"
+            proof_arguments = {
+                "authoritative_applied_proof" if resolution == "APPLIED" else "authoritative_not_applied_proof": {
+                    "receipt_identity_sha256": identity_sha256, "evidence_sha256": evidence_sha256,
+                },
+            }
+            if resolution == "APPLIED":
+                proof_arguments["scan_applied_recovery"] = {
+                    "readback_count": readback["record_count"],
+                    "selection_sha256": evidence["selection_sha256"],
+                    "evidence_sha256": evidence_sha256,
+                }
             result = recover(
                 automation_id=automation_id,
                 generation=generation,
@@ -982,10 +1002,7 @@ def recover_scan_codes_unknown_write(
                 request_id=request_key,
                 actor_id="system:scan-readback",
                 actor_role="system",
-                authoritative_not_applied_proof={
-                    "receipt_identity_sha256": identity_sha256,
-                    "evidence_sha256": evidence_sha256,
-                },
+                **proof_arguments,
             )
             return dict(result) if isinstance(result, Mapping) else None
         return None
@@ -2663,7 +2680,7 @@ def build_production_first_party_core_handler_map(
         describe_account=lambda account_id: _describe_active_account(manager, account_id),
         authorize_capability=authorize_capability,
         clock_action=_clock_action,
-        customer_action=_customer_action,
+        customer_action=lambda arguments: _customer_action(arguments, account_manager=manager),
         daily_sign_sync=run_daily_sign_with_bound_resources,
         arrive_list_read_page=_arrive_list_read_page,
         site_send_read_page=_site_send_read_page,
