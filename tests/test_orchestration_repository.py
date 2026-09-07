@@ -641,7 +641,7 @@ class OrchestrationRepositoryTests(unittest.TestCase):
         insert_sql, insert_params = next(
             (sql, params) for sql, params in cursor.calls if "INSERT INTO agent_runs" in sql
         )
-        self.assertIn("COALESCE(%s, NOW(6))", insert_sql)
+        self.assertIn("COALESCE(%s, UTC_TIMESTAMP(6))", insert_sql)
         self.assertIs(scheduled_at, insert_params[20])
         self.assertTrue(created["_created"])
 
@@ -653,6 +653,7 @@ class OrchestrationRepositoryTests(unittest.TestCase):
 
         update_sql = next(sql for sql, _ in cursor.calls if "UPDATE agent_runs" in sql)
         self.assertIn("status='WAITING_APPROVAL'", update_sql)
+        self.assertIn("next_attempt_at=UTC_TIMESTAMP(6)", update_sql)
         self.assertNotIn("worker_id IS NULL", update_sql)
         self.assertNotIn("version=version+1", update_sql)
         self.assertEqual("polling-worker", run["worker_id"])
@@ -1010,7 +1011,7 @@ class OrchestrationRepositoryTests(unittest.TestCase):
         self.assertEqual(1, len(expiry_sql))
         self.assertIn("status='PENDING'", expiry_sql[0])
         self.assertNotIn("'APPROVED'", expiry_sql[0])
-        self.assertTrue(any("expires_at <= NOW(6)" in item for item in sql))
+        self.assertTrue(any("expires_at <= UTC_TIMESTAMP(6)" in item for item in sql))
         self.assertTrue(any("LIMIT 1 FOR UPDATE" in item for item in sql))
 
     def test_approved_execution_still_expires_pending_approval(self):

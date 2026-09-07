@@ -67,6 +67,7 @@ _RUN_PUBLIC_FIELDS = (
     "version",
     "started_at",
     "finished_at",
+    "submitted_at",
     "created_at",
     "updated_at",
 )
@@ -652,7 +653,7 @@ class ControlPlaneService:
                 {
                     "event_id": str(event.get("event_id") or ""),
                     "run_id": str(event.get("run_id") or ""),
-                    "observed_at": _json_value(event.get("observed_at")),
+                    "observed_at": _json_value(event.get("observed_at"), utc=True),
                     "clarification": normalized,
                 }
             )
@@ -930,15 +931,29 @@ def _naive_utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _json_value(value: Any) -> Any:
+# Only these persisted instants have an explicit application-UTC contract.
+# Database-generated metadata and legacy mixed-clock fields carry no offset;
+# a naive DATETIME cannot truthfully be relabelled as UTC.
+_UTC_TIME_FIELDS = frozenset({
+    "submitted_at", "started_at", "finished_at", "cancel_requested_at",
+    "expires_at", "occurred_at", "observed_at",
+})
+
+
+def _json_value(value: Any, *, utc: bool = False) -> Any:
     if isinstance(value, datetime):
+        if value.tzinfo is None and not utc:
+            return value.isoformat()
         aware = value.replace(tzinfo=value.tzinfo or timezone.utc).astimezone(timezone.utc)
         return aware.isoformat().replace("+00:00", "Z")
     return redact_sensitive(value)
 
 
 def _select(row: Mapping[str, Any], fields: Sequence[str]) -> dict[str, Any]:
-    return {field: _json_value(row[field]) for field in fields if field in row}
+    return {
+        field: _json_value(row[field], utc=field in _UTC_TIME_FIELDS)
+        for field in fields if field in row
+    }
 
 
 _OPEN_CUSTOMER_PROBLEM_STATUSES = frozenset(
@@ -1253,8 +1268,19 @@ def _run_stage_projection(
     elif active is None:
         if status == RunStatus.WAITING_APPROVAL.value:
             phase, stage_code, description = "queued", "WAITING_APPROVAL", "正在等待审批"
+        elif str(row.get("error_code") or "").upper() == "RESOURCE_WAIT":
+            descriptions = {
+                "execution resource is busy": "正在等待相同账号或数据位置空闲",
+                "browser capacity is busy": "正在等待浏览器执行名额",
+                "execution resource has an unresolved external write": "相同账号或数据位置存在待核验写入，正在等待核验",
+                "account credentials are being changed": "账号信息正在更新，等待更新完成",
+            }
+            phase, stage_code = "queued", "RESOURCE_WAIT"
+            description = descriptions.get(
+                str(row.get("error_summary") or ""), "所需执行资源暂不可用，正在等待重试"
+            )
         else:
-            phase, stage_code, description = "queued", "WAITING_EXECUTION_SLOT", "正在等待执行通道"
+            phase, stage_code, description = "queued", "WAITING_EXECUTION_SLOT", "任务已受理，等待开始执行"
     else:
         operation = str(active.get("operation_type") or "").lower()
         if operation == "read":
@@ -1275,12 +1301,16 @@ def _run_stage_projection(
         if terminal
         else row.get("started_at")
         if has_valid_run_lease
-        else row.get("created_at")
+        else row.get("submitted_at") or row.get("created_at")
+    )
+    stage_time_is_utc = (
+        active is not None or terminal or has_valid_run_lease
+        or row.get("submitted_at") is not None
     )
     return {
         "execution_phase": phase,
         "stage_code": stage_code,
-        "stage_started_at": _json_value(stage_started_at),
+        "stage_started_at": _json_value(stage_started_at, utc=stage_time_is_utc),
         "stage_description": description,
         "public_problem_code": _public_problem_code(row, ordered),
     }

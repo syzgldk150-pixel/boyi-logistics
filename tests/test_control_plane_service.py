@@ -549,6 +549,7 @@ class ControlPlaneServiceTests(unittest.TestCase):
         queued_dto = service.get_run("run-1")["run"]
         self.assertEqual("queued", queued_dto["execution_phase"])
         self.assertEqual("WAITING_EXECUTION_SLOT", queued_dto["stage_code"])
+        self.assertEqual("任务已受理，等待开始执行", queued_dto["stage_description"])
 
         repository.runs["run-1"]["steps"][0].update(
             {
@@ -586,6 +587,32 @@ class ControlPlaneServiceTests(unittest.TestCase):
         between_steps = service.get_run("run-1")["run"]
         self.assertEqual("processing", between_steps["execution_phase"])
         self.assertEqual("PROCESSING_DATA", between_steps["stage_code"])
+
+    def test_unclaimed_run_phases_do_not_claim_channel_contention(self):
+        for status in ("RECEIVED", "CONTEXT_READY", "PLANNED", "VALIDATED", "RUNNING", "VERIFYING"):
+            with self.subTest(status=status):
+                service, _approval = self._service(_FakeRepository([_run("run-1", status)]))
+                dto = service.get_run("run-1")["run"]
+                self.assertEqual("queued", dto["execution_phase"])
+                self.assertEqual("WAITING_EXECUTION_SLOT", dto["stage_code"])
+                self.assertEqual("任务已受理，等待开始执行", dto["stage_description"])
+
+    def test_run_projection_reports_actual_resource_wait_reason(self):
+        reasons = {
+            "execution resource is busy": "正在等待相同账号或数据位置空闲",
+            "browser capacity is busy": "正在等待浏览器执行名额",
+            "execution resource has an unresolved external write": "相同账号或数据位置存在待核验写入，正在等待核验",
+            "account credentials are being changed": "账号信息正在更新，等待更新完成",
+        }
+        for reason, description in reasons.items():
+            with self.subTest(reason=reason):
+                run = _run("run-1", "RUNNING")
+                run.update(error_code="RESOURCE_WAIT", error_summary=reason)
+                service, _approval = self._service(_FakeRepository([run]))
+                dto = service.get_run("run-1")["run"]
+                self.assertEqual("queued", dto["execution_phase"])
+                self.assertEqual("RESOURCE_WAIT", dto["stage_code"])
+                self.assertEqual(description, dto["stage_description"])
 
     def test_run_projection_maps_internal_source_error_to_stable_public_code(self):
         failed = _run("run-1", "BLOCKED_DATA")
