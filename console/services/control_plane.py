@@ -47,6 +47,7 @@ class ControlPlaneServiceMixin:
         body = template.render(
             app_title=self.settings.app_title,
             work_item_id=work_item_id,
+            can_verify_unknown_write=(getattr(handler, "current_admin_user", None) or {}).get("control_plane_role") == "super_admin",
         )
         self._send_html(handler, body)
 
@@ -109,6 +110,73 @@ class ControlPlaneServiceMixin:
             f"/internal/v1/runs/{quote(run_id, safe='')}",
             contract="run",
         )
+
+    def _handle_control_plane_unknown_write_verify(self, handler, work_item_id: str) -> None:
+        context = self._control_plane_write_context(handler)
+        if context is None:
+            return
+        if "super_admin" not in context["actor_roles"]:
+            self._control_plane_error(handler, HTTPStatus.FORBIDDEN, "SUPER_ADMIN_REQUIRED", "只有超级管理员可以核验历史写入。")
+            return
+        values = self._read_control_plane_json(handler)
+        if values is None:
+            return
+        try:
+            request_id = str(uuid.UUID(str(values.get("request_id", ""))))
+            if set(values) != {"request_id", "run_id", "lease_id"} or any(
+                not isinstance(values.get(name), str) or not 1 <= len(values[name]) <= 191
+                for name in ("run_id", "lease_id")
+            ):
+                raise ValueError("invalid selection")
+        except (ValueError, TypeError, AttributeError):
+            self._control_plane_error(handler, HTTPStatus.BAD_REQUEST, "PLUGIN_RECOVERY_REQUEST_INVALID", "请选择具体历史写入记录后核验。")
+            return
+        detail = self._agent_request(
+            "GET", f"/internal/v1/work-items/{quote(work_item_id, safe='')}",
+            timeout=self.settings.agent_timeout_seconds, console_principal=context["_console_principal"],
+        )
+        if not detail.get("ok"):
+            self._control_plane_agent_error(handler, detail)
+            return
+        detail_data = detail.get("data")
+        candidates = detail_data.get("unknown_write_recoveries") if isinstance(detail_data, dict) else None
+        if not isinstance(candidates, list):
+            self._control_plane_error(handler, HTTPStatus.BAD_GATEWAY, "INVALID_AGENT_RESPONSE", "历史核验记录暂不可读取。")
+            return
+        selected = [row for row in candidates if isinstance(row, dict)
+                    and row.get("work_item_id") == work_item_id
+                    and row.get("run_id") == values["run_id"]
+                    and row.get("lease_id") == values["lease_id"]
+                    and row.get("identity_valid") is True]
+        if len(selected) != 1:
+            self._control_plane_error(handler, HTTPStatus.CONFLICT, "PLUGIN_RECOVERY_SELECTION_STALE", "记录已变化或不属于此事项，请刷新后查看核验记录。")
+            return
+        row = selected[0]
+        if row.get("recovery_supported") is not True:
+            self._control_plane_error(handler, HTTPStatus.CONFLICT, "PLUGIN_RECOVERY_SCOPE_INVALID", "该插件尚无已审核的证据核验入口，保留历史记录待处理。")
+            return
+        result = self._agent_request(
+            "POST", f"/internal/v1/automation/instances/{quote(str(row['automation_id']), safe='')}/generation/recover-unknown-write",
+            payload={"generation": row["generation"], "lease_id": row["lease_id"],
+                     "request_id": request_id, "resume_run": False,
+                     "expected_run_id": row["run_id"], "expected_work_item_id": work_item_id},
+            timeout=30, console_principal=context["_console_principal"],
+        )
+        if not result.get("ok"):
+            self._control_plane_agent_error(handler, result)
+            return
+        data = result.get("data")
+        if not isinstance(data, dict) or data.get("recovery_status") not in {"APPLIED", "NOT_APPLIED", "UNKNOWN"}:
+            self._control_plane_error(handler, HTTPStatus.BAD_GATEWAY, "INVALID_AGENT_RESPONSE", "核验服务返回了无法确认的结果。")
+            return
+        self._control_plane_success(handler, HTTPStatus.OK, {
+            "recovery_status": data["recovery_status"], "resume_run": False,
+            "message": {
+                "APPLIED": "服务端证据确认该条写入已发生；原任务保持停止，没有重跑业务。",
+                "NOT_APPLIED": "服务端证据确认该条写入未发生；原任务保持停止，没有重跑业务。",
+                "UNKNOWN": "现有服务端证据仍不足以确认该条写入。核验记录已保留，没有重跑业务。",
+            }[data["recovery_status"]],
+        })
 
     def _handle_control_plane_command_post(
         self,

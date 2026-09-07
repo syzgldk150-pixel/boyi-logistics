@@ -1209,6 +1209,9 @@ class MySQLAutomationPluginRuntimeAdapter:
         authoritative_applied_proof: Mapping[str, object] | None = None,
         authoritative_not_applied_proof: Mapping[str, object] | None = None,
         scan_applied_recovery: Mapping[str, object] | None = None,
+        resume_run: bool = True,
+        expected_run_id: str | None = None,
+        expected_work_item_id: str | None = None,
     ) -> dict[str, Any]:
         """Run the server-owned receipt recovery as one orchestration UoW."""
 
@@ -1216,6 +1219,10 @@ class MySQLAutomationPluginRuntimeAdapter:
             resolver = getattr(uow, "recover_unknown_automation_write", None)
             if not callable(resolver):
                 raise ValueError("transactional unknown-write recovery is unavailable")
+            manual = {} if resume_run else {
+                "resume_run": False, "expected_run_id": expected_run_id,
+                "expected_work_item_id": expected_work_item_id,
+            }
             result = resolver(
                 automation_id=automation_id,
                 generation=generation,
@@ -1226,6 +1233,7 @@ class MySQLAutomationPluginRuntimeAdapter:
                 authoritative_applied_proof=authoritative_applied_proof,
                 authoritative_not_applied_proof=authoritative_not_applied_proof,
                 scan_applied_recovery=scan_applied_recovery,
+                **manual,
             )
             uow.commit()
         if not isinstance(result, Mapping):

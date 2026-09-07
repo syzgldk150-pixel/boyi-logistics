@@ -236,6 +236,8 @@ REQUIRED_COLUMNS = frozenset(
         ("automation_write_attempt_receipts", "target_ref_json"),
         ("automation_write_attempt_receipts", "outcome"),
         ("automation_write_attempt_receipts", "evidence_sha256"),
+        ("automation_write_attempt_receipts", "execution_resource_keys_json"),
+        ("automation_write_attempt_receipts", "legacy_scope_quarantined_at"),
         ("automation_plugin_versions", "package_sha256"),
         ("automation_plugin_package_events", "request_id"),
         ("automation_project_events", "request_id"),

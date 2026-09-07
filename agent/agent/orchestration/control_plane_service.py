@@ -250,6 +250,17 @@ class ControlPlaneService:
             "runs": [_run_dto(run) for run in runs],
             "allowed_actions": _detail_actions(item, current, approval),
         }
+        result["unknown_write_recoveries"] = self._repository.list_work_item_unknown_writes(
+            str(item["work_item_id"]),
+        )
+        from agent.automation_plugins.first_party import RECOVERABLE_WRITE_PROJECT_PLUGINS
+
+        supported_plugins = frozenset(RECOVERABLE_WRITE_PROJECT_PLUGINS.values())
+        for record in result["unknown_write_recoveries"]:
+            record["recovery_supported"] = record.get("plugin_id") in supported_plugins
+            record["recovery_unavailable_reason"] = (
+                "" if record["recovery_supported"] else "该插件尚无已审核的证据核验入口，保留历史记录待处理。"
+            )
         if current is not None:
             result["run"] = _run_dto(current)
             result["current_run_id"] = str(current["run_id"])

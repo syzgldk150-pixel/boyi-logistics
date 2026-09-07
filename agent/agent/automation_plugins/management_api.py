@@ -13,7 +13,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from agent.api_contracts import EnvelopedRoute
@@ -170,6 +170,17 @@ class UnknownWriteRecoveryRequest(BaseModel):
     generation: int = Field(ge=1)
     lease_id: str = Field(min_length=1, max_length=64)
     request_id: str = Field(min_length=1, max_length=64)
+    resume_run: bool = True
+    expected_run_id: str | None = Field(default=None, min_length=1, max_length=191)
+    expected_work_item_id: str | None = Field(default=None, min_length=1, max_length=191)
+
+    @model_validator(mode="after")
+    def require_manual_identity(self):
+        if not self.resume_run and (not self.expected_run_id or not self.expected_work_item_id):
+            raise ValueError("manual verification requires exact work item and Run")
+        if self.resume_run and (self.expected_run_id is not None or self.expected_work_item_id is not None):
+            raise ValueError("manual identity requires verification-only mode")
+        return self
 
 
 class CurrentUnknownWriteRecoveryRequest(BaseModel):
@@ -1277,6 +1288,10 @@ def create_automation_plugin_management_router(
         request: Request,
     ) -> dict[str, Any] | JSONResponse:
         actor = actor_provider(request)
+        manual = {} if payload.resume_run else {
+            "resume_run": False, "expected_run_id": payload.expected_run_id,
+            "expected_work_item_id": payload.expected_work_item_id,
+        }
         return await _service_response(
             lambda: service_provider().recover_unknown_write(
                 automation_id,
@@ -1284,6 +1299,7 @@ def create_automation_plugin_management_router(
                 lease_id=payload.lease_id,
                 request_id=payload.request_id,
                 actor=actor,
+                **manual,
             )
         )
 
