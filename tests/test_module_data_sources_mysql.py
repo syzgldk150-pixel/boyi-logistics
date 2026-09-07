@@ -20,18 +20,26 @@ def database():
     import pymysql
     from tests import test_mysql_orchestration_integration as support
 
-    name = os.environ["AGENT_DB_NAME"]
-    if not re.fullmatch(r"[a-z0-9_]+_test", name):
+    requested_name = os.environ["AGENT_DB_NAME"]
+    if not re.fullmatch(r"[a-z0-9_]+_test", requested_name):
         pytest.fail("source integration tests require an explicitly test-scoped database")
-    fixture = support.MySqlOrchestrationIntegrationTests
+    # Own a fresh database just like the existing integration bootstrap. The
+    # CI service's pre-created database can use a different default collation;
+    # reusing it with IF NOT EXISTS makes migration order affect this fixture.
+    name = f"v32_sources_{uuid4().hex}_test"
+    fixture = type("SourceDatabase", (support.MySqlOrchestrationIntegrationTests,), {})
     fixture.pymysql, fixture.runner = pymysql, support._load_migration_runner()
     fixture.host, fixture.port = os.environ["AGENT_DB_HOST"], int(os.environ["AGENT_DB_PORT"])
     fixture.user, fixture.password = os.environ["AGENT_DB_USER"], os.environ["AGENT_DB_PASS"]
     with fixture._server_connection() as connection, connection.cursor() as cursor:
-        cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
-    fixture._run_migrations(name)
-    fixture._run_migrations(name, check_only=True)
-    return fixture, name
+        cursor.execute(f"CREATE DATABASE `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+    try:
+        fixture._run_migrations(name)
+        fixture._run_migrations(name, check_only=True)
+        yield fixture, name
+    finally:
+        with fixture._server_connection() as connection, connection.cursor() as cursor:
+            cursor.execute(f"DROP DATABASE `{name}`")
 
 
 def identity(organization: str) -> SourceIdentity:

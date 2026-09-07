@@ -33,7 +33,10 @@ from shared.contracts import api_success
 class RunnerFixture:
     def __init__(self, management, *, handlers=None, account_manager=None, context_builder=None, saved_resource_provider=None):
         self.management = management
-        self.temporary = tempfile.TemporaryDirectory(prefix="v32-runner-", dir=os.environ["TMPDIR"])
+        # The real Linux Broker needs a short Unix socket path. Own this
+        # directory explicitly instead of requiring an optional TMPDIR value
+        # or inheriting a checkout path that can exceed the socket limit.
+        self.temporary = tempfile.TemporaryDirectory(prefix="v32-runner-", dir="/tmp")
         self.catalog = CompositeToolRegistry(management.core_catalog, management.catalog)
         self.issuer = LocalBrokerCapabilityIssuer(Path(self.temporary.name) / "broker.sock",
             write_attempt_recorder=management.runtime_repository.record_write_attempt)
