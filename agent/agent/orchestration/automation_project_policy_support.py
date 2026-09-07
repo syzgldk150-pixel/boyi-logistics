@@ -10,11 +10,15 @@ from agent.automation_plugins.catalog import PluginCatalogEntry
 from agent.orchestration.automation_project_service_v2 import (
     normalize_service_v2_module_slot_context,
 )
-from agent.orchestration.models import OrchestrationError
+from agent.orchestration.models import Command, OrchestrationError
 from agent.orchestration.policy_engine import ProjectPolicyEvaluation
-from agent.orchestration.scan_preview_binding import SCAN_PREVIEW_CONTEXT_KEY
+from agent.orchestration.scan_preview_binding import (
+    SCAN_PREVIEW_CONTEXT_KEY,
+    restore_scan_preview_replay,
+)
 from agent.orchestration.selection_preview_binding import (
     SelectionPreviewExpectation,
+    restore_selection_preview_replay,
     selection_preview_contribution,
 )
 from shared.automation_project_authorization import (
@@ -432,6 +436,100 @@ def _idempotency_key(value: Any) -> str:
             "A bounded stable idempotency key is required",
         )
     return key
+
+
+def _validate_command_replay_identity(
+    persisted: Mapping[str, Any],
+    command: Command,
+) -> None:
+    """Reject an idempotency collision while allowing immutable replay bytes."""
+
+    invocation = command.automation_invocation
+    persisted_invocation = persisted.get(
+        "automation_invocation_json",
+        persisted.get("automation_invocation"),
+    )
+    persisted_roles = persisted.get("actor_roles_json", persisted.get("actor_roles"))
+    raw_refs = persisted.get("entity_refs_json", persisted.get("entity_refs"))
+    expected_refs = [ref.to_dict() for ref in command.entity_refs]
+    if (
+        invocation is None
+        or not isinstance(persisted_invocation, Mapping)
+        or str(persisted.get("command_type") or "") != command.command_type
+        or str(persisted.get("source") or "") != command.source
+        or str(persisted.get("idempotency_key") or "") != command.idempotency_key
+        or str(persisted.get("actor_type") or "") != command.actor.actor_type.value
+        or str(persisted.get("actor_id") or "") != command.actor.actor_id
+        or canonical_sha256(persisted_roles) != canonical_sha256(list(command.actor.roles))
+        or canonical_sha256(raw_refs) != canonical_sha256(expected_refs)
+        or persisted_invocation.get("automation_id") != invocation.automation_id
+        or persisted_invocation.get("entrypoint") != invocation.entrypoint.value
+        or persisted_invocation.get("request_id") != invocation.request_id
+    ):
+        raise OrchestrationError(
+            "REQUEST_ID_REUSED",
+            "Request id was already used for a different automation command",
+        )
+
+
+def _locked_command_replay(
+    uow: Any,
+    command: Command,
+    *,
+    actor: Any,
+    trusted_context: Mapping[str, Any],
+    project_instance_id: str,
+    request_id: str,
+    scan_preview_run_id: str | None,
+    selection_preview_run_id: str | None,
+    selected_bill_codes: Sequence[str] | None,
+    expected_selection_contribution_id: str | None,
+    expected_generation: int | None,
+    expected_configuration_version: int | None,
+) -> Mapping[str, Any] | None:
+    persisted = uow.commands.get_by_idempotency(
+        command.source, command.idempotency_key, for_update=True
+    )
+    if persisted is None:
+        return None
+    if selection_preview_run_id is not None and selected_bill_codes is not None:
+        restored = restore_selection_preview_replay(
+            uow,
+            source=command.source,
+            idempotency_key=command.idempotency_key,
+            actor=actor,
+            trusted_context=trusted_context,
+            project_instance_id=project_instance_id,
+            request_id=request_id,
+            preview_run_id=selection_preview_run_id,
+            selected_bill_codes=selected_bill_codes,
+            expected_entrypoint=command.source,
+            expected_contribution_id=expected_selection_contribution_id,
+            expected_generation=expected_generation,
+            expected_configuration_version=expected_configuration_version,
+        )
+    elif scan_preview_run_id is not None:
+        restored = restore_scan_preview_replay(
+            uow,
+            source=command.source,
+            idempotency_key=command.idempotency_key,
+            actor=actor,
+            trusted_context=trusted_context,
+            project_instance_id=project_instance_id,
+            request_id=request_id,
+            preview_run_id=scan_preview_run_id,
+            expected_generation=expected_generation,
+            expected_configuration_version=expected_configuration_version,
+        )
+    else:
+        _validate_command_replay_identity(persisted, command)
+        restored = command
+    if restored is None:
+        raise OrchestrationError(
+            "REQUEST_ID_REUSED",
+            "Accepted command replay could not be restored",
+        )
+    return {"replay_command": persisted}
 
 
 def _comment(value: Any) -> str:

@@ -248,6 +248,33 @@ class FeishuResourceCatalogTests(unittest.TestCase):
         self.assertEqual("sheet-a", repaired["sheet_id"])
         self.assertEqual("sheet-a!A1:S5000", repaired["range"])
 
+    def test_stale_yunda_sheet_id_repairs_all_managed_ranges(self) -> None:
+        resource = (
+            "phase7.yunda_send_waybills_sheet",
+            {
+                "resource_kind": "feishu_sheet",
+                "spreadsheet_token": "spreadsheet-token",
+                "sheet_id": "stale-sheet",
+                "sheet_title": "每日到货",
+                "sheet_range": "stale-sheet!A2:A2",
+                "clear_range": "stale-sheet!A2:Y5000",
+            },
+        )
+        with patch.dict(
+            os.environ,
+            {"FEISHU_APP_ID": "app-id", "FEISHU_APP_SECRET": "app-secret"},
+            clear=False,
+        ), patch.object(
+            catalog,
+            "_request_json",
+            side_effect=lambda _method, path, **_kwargs: self._payload(path),
+        ):
+            repaired = catalog.resolve_live_feishu_resource_config(*resource)
+
+        self.assertEqual("sheet-a", repaired["sheet_id"])
+        self.assertEqual("sheet-a!A2:A2", repaired["sheet_range"])
+        self.assertEqual("sheet-a!A2:Y5000", repaired["clear_range"])
+
     def test_duplicate_reviewed_titles_fail_without_selecting_first(self) -> None:
         def request(_method: str, path: str, **_kwargs) -> dict:
             payload = self._payload(path)

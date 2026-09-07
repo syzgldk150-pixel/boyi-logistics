@@ -7,6 +7,7 @@ import secrets
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Mapping, NoReturn, Sequence
 
+from agent import feishu_readback as _feishu_readback
 from agent.automation_plugins.delivery_site_handlers import (
     DELIVERY_SITE_WRITE_ACTION_KEYS,
     DeliverySiteHandlerPorts,
@@ -58,6 +59,10 @@ _SITE_SHEET_COLUMNS = (
     "weight",
     "destination",
 )
+# Compatibility aliases for focused adapter tests; the shared module owns the
+# actual schedule and retry loop.
+time = _feishu_readback.time
+_FEISHU_READBACK_DELAYS = _feishu_readback.FEISHU_READBACK_DELAYS
 
 
 def _error(message: str, code: str) -> PluginExecutionError:
@@ -74,10 +79,13 @@ def _write_unknown(message: str, *, cause: Exception | None = None) -> NoReturn:
 def _write_started(marker: WriteStartMarker) -> bool:
     """Return the delegated marker state when the closed handler tracks it."""
 
-    return (
-        getattr(marker, "observable", False) is True
-        and getattr(marker, "started", False) is True
-    )
+    return getattr(marker, "started", False) is True
+
+
+def _write_not_started(marker: WriteStartMarker) -> bool:
+    """Classify a write as pre-boundary only with an observable marker."""
+
+    return getattr(marker, "observable", False) is True and not _write_started(marker)
 
 
 def _nested_write_failure(
@@ -575,6 +583,26 @@ def _response_count(
     )
 
 
+def _retry_fresh_readback(
+    reader: Callable[[], Any],
+    matches: Callable[[Any], bool],
+    *,
+    label: str,
+) -> Any:
+    """Retry only the authoritative readback; never repeat the write."""
+
+    return _feishu_readback.retry_readback(
+        reader,
+        matches,
+        label=label,
+        retryable_error_codes={
+            "BROKER_RESOURCE_UNAVAILABLE",
+            "WRITE_OUTCOME_UNKNOWN",
+        },
+        convert_non_retryable=True,
+    )
+
+
 def _projection_snapshot(
     rows: Sequence[Mapping[str, Any]],
     requested: tuple[str, ...],
@@ -669,31 +697,32 @@ def build_production_delivery_site_ports(
             )
         except Exception as exc:
             write_error = exc
-        if write_error is not None and not _write_started(write_started):
+        if write_error is not None and _write_not_started(write_started):
             _nested_write_failure(
                 write_started,
                 "site-send Bitable write failed before mutation",
                 cause=write_error,
             )
-        if isinstance(response, Mapping) and (response.get("error") or response.get("errors")) and not _write_started(write_started):
+        if (
+            isinstance(response, Mapping)
+            and (response.get("error") or response.get("errors"))
+            and _write_not_started(write_started)
+        ):
             _nested_write_failure(
                 write_started,
                 "site-send Bitable write failed before mutation",
             )
-        try:
-            after = _site_bitable_snapshot(
+        after = _retry_fresh_readback(
+            lambda: _site_bitable_snapshot(
                 _read_all_bitable(
                     invoke_feishu,
                     base_token=base_token,
                     table_id=table_id,
                 )
-            )
-        except Exception as exc:
-            _write_unknown("site-send Bitable post-write read failed", cause=exc)
-        if write_error is not None:
-            _write_unknown("site-send Bitable write response was lost", cause=write_error)
-        if not _response_count(response, field="written", expected=len(records)):
-            _write_unknown("site-send Bitable write response was incomplete")
+            ),
+            lambda observed: observed == expected,
+            label="site-send Bitable post-write",
+        )
         if after != expected:
             _write_unknown("site-send Bitable post-write snapshot changed")
         return _verified_result(before=before, after=after, count=len(records))
@@ -748,23 +777,22 @@ def build_production_delivery_site_ports(
             # authoritative empty pre-read, that clear is a false mutation:
             # retain the marker and prove the no-op with a second fresh read.
             try:
-                after = _site_sheet_snapshot(
-                    _read_sheet(
-                        invoke_feishu,
-                        spreadsheet_token=spreadsheet_token,
-                        value_range=clear_range,
-                    )
+                after = _retry_fresh_readback(
+                    lambda: _site_sheet_snapshot(
+                        _read_sheet(
+                            invoke_feishu,
+                            spreadsheet_token=spreadsheet_token,
+                            value_range=clear_range,
+                        )
+                    ),
+                    lambda observed: observed == expected,
+                    label="site-send Sheet no-op",
                 )
             except Exception as exc:
                 _nested_write_failure(
                     write_started,
                     "site-send Sheet no-op post-read failed before mutation",
                     cause=exc,
-                )
-            if after != expected:
-                _nested_write_failure(
-                    write_started,
-                    "site-send Sheet no-op snapshot changed before mutation",
                 )
             return _verified_result(before=before, after=after, count=0)
         write_error: Exception | None = None
@@ -785,31 +813,32 @@ def build_production_delivery_site_ports(
             )
         except Exception as exc:
             write_error = exc
-        if write_error is not None and not _write_started(write_started):
+        if write_error is not None and _write_not_started(write_started):
             _nested_write_failure(
                 write_started,
                 "site-send Sheet write failed before mutation",
                 cause=write_error,
             )
-        if isinstance(response, Mapping) and (response.get("error") or response.get("errors")) and not _write_started(write_started):
+        if (
+            isinstance(response, Mapping)
+            and (response.get("error") or response.get("errors"))
+            and _write_not_started(write_started)
+        ):
             _nested_write_failure(
                 write_started,
                 "site-send Sheet write failed before mutation",
             )
-        try:
-            after = _site_sheet_snapshot(
+        after = _retry_fresh_readback(
+            lambda: _site_sheet_snapshot(
                 _read_sheet(
                     invoke_feishu,
                     spreadsheet_token=spreadsheet_token,
                     value_range=clear_range,
                 )
-            )
-        except Exception as exc:
-            _write_unknown("site-send Sheet post-write read failed", cause=exc)
-        if write_error is not None:
-            _write_unknown("site-send Sheet write response was lost", cause=write_error)
-        if not _response_count(response, field="rows", expected=len(rows)):
-            _write_unknown("site-send Sheet write response was incomplete")
+            ),
+            lambda observed: observed == expected,
+            label="site-send Sheet post-write",
+        )
         if after != expected:
             _write_unknown("site-send Sheet post-write snapshot changed")
         return _verified_result(before=before, after=after, count=len(rows))
@@ -870,27 +899,24 @@ def build_production_delivery_site_ports(
             )
         except Exception as exc:
             write_error = exc
-        if write_error is not None and not _write_started(write_started):
+        if write_error is not None and _write_not_started(write_started):
             _nested_write_failure(
                 write_started,
                 "delivery Bitable write failed before mutation",
                 cause=write_error,
             )
-        try:
-            after = _delivery_bitable_snapshot(
+        after = _retry_fresh_readback(
+            lambda: _delivery_bitable_snapshot(
                 _read_exact_bitable_records(
                     invoke_feishu,
                     base_token=base_token,
                     table_id=table_id,
                     record_ids=target_record_ids,
                 )
-            )
-        except Exception as exc:
-            _write_unknown("delivery Bitable post-write read failed", cause=exc)
-        if write_error is not None:
-            _write_unknown("delivery Bitable write response was lost", cause=write_error)
-        if not _response_count(response, field="written", expected=len(records)):
-            _write_unknown("delivery Bitable write response was incomplete")
+            ),
+            lambda observed: observed == expected,
+            label="delivery Bitable post-write",
+        )
         if after != expected:
             _write_unknown("delivery Bitable post-write snapshot changed")
         return _verified_result(before=before, after=after, count=len(records))

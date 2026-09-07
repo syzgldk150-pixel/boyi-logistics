@@ -1844,6 +1844,7 @@ def test_production_yunda_resource_primitive_never_substitutes_a_binding(
     assert writes[0][1]["table_id"] == "table-exact"
 
     ambiguous_calls: list[str] = []
+    readback_sleeps: list[float] = []
 
     def ambiguous_write(operation: str, _arguments: dict[str, Any]):
         ambiguous_calls.append(operation)
@@ -1855,10 +1856,23 @@ def test_production_yunda_resource_primitive_never_substitutes_a_binding(
         "tools.feishu_cli_tool.feishu_operation",
         ambiguous_write,
     )
+    monkeypatch.setattr(
+        "agent.feishu_readback.time.sleep",
+        readback_sleeps.append,
+    )
     with pytest.raises(PluginExecutionError) as unknown_exc:
         handlers[(
             "network.request",
             "feishu.bitable.append_yunda_dispatch_forecast",
         )](context, arguments)
     assert unknown_exc.value.code == "WRITE_OUTCOME_UNKNOWN"
-    assert ambiguous_calls == ["list_records", "write_records", "list_records"]
+    assert ambiguous_calls == [
+        "list_records",
+        "write_records",
+        "list_records",
+        "list_records",
+        "list_records",
+        "list_records",
+    ]
+    assert ambiguous_calls.count("write_records") == 1
+    assert readback_sleeps == [0.5, 1.0, 2.0]

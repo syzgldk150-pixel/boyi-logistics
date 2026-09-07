@@ -2986,6 +2986,11 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             self
         )
 
+    def test_automation_project_invocation_serializes_and_replays_on_real_mysql(self):
+        AUTOMATION_PROJECT_SCENARIOS.run_test_project_invocation_serializes_and_replays_on_real_mysql(
+            self
+        )
+
     def test_automation_project_024_restores_only_original_plugin_writer(self):
         AUTOMATION_PROJECT_SCENARIOS.run_test_automation_project_024_original_plugin_full_auto(
             self

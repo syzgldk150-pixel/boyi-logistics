@@ -47,6 +47,11 @@ from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
 from feishu.migration_entrypoint_router import (
     dispatch_migrated_fixed_feishu_entrypoint,
 )
+from feishu.automation_messages import (
+    TOOL_DISPLAY_NAMES,
+    accepted_result_pending_message as _accepted_result_pending_message,
+    automation_result_reply as _automation_result_reply,
+)
 from feishu.notify import remember_chat_id
 from feishu.selection_preview import (
     FEISHU_SAFE_TEXT_BYTES,
@@ -161,18 +166,6 @@ MENU_KEY_ALIASES = {
 RUNNING_CANCEL_PENDING_TTL = 300
 ACTIVE_RUN_PENDING_TTL = 21600
 RUN_TERMINAL_STATUSES = {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
-TOOL_DISPLAY_NAMES = {
-    "sync_scan_codes": "扫描任务",
-    "sync_arrival_stats": "统计到货数据任务",
-    "sync_arrive_list": "到货清单任务",
-    "sync_daily_send_orders": "当日寄件数据任务",
-    "sync_yunda_dispatch_forecast": "韵达派件预测任务",
-    "sync_yunda_send_waybills": "韵达寄件运单任务",
-    "self_pickup_problem_upload": "自提到货问题件任务",
-    "split_pending_problem_upload": "分批问题件任务",
-}
-
-
 def _automation_task_name(route_key: str) -> str:
     """Return the business-facing name for one fixed Feishu project route."""
 
@@ -183,63 +176,6 @@ def _automation_task_name(route_key: str) -> str:
         if candidate_route == safe_route_key and tool_name in TOOL_DISPLAY_NAMES
     ]
     return matching_names[0] if matching_names else "自动化任务"
-
-
-def _automation_result_reply(
-    *,
-    task_name: str,
-    result: dict[str, Any],
-) -> tuple[str, str]:
-    """Render one terminal project result without exposing control-plane jargon."""
-
-    status = str(result.get("status") or "").strip().upper()
-    reason = str(result.get("error_summary") or "").strip()
-    problem_code = str(
-        result.get("public_problem_code") or result.get("error_code") or ""
-    ).strip().upper()
-    if status in {"WAITING_APPROVAL", "PENDING_APPROVAL"}:
-        return (
-            f"{task_name}已提交，正在等待审批。",
-            "automation_project_waiting_approval",
-        )
-    if status == "COMPLETED":
-        return f"{task_name}已完成。", "automation_project_completed"
-    if status == "BLOCKED_LOGIN":
-        return (
-            f"{task_name}未完成：绑定的业务账号需要重新登录。",
-            "automation_project_blocked_login",
-        )
-    if status == "CANCELLED":
-        return f"{task_name}已取消。", "automation_project_cancelled"
-    if problem_code == "WRITE_OUTCOME_UNKNOWN" or "WRITE_OUTCOME_UNKNOWN" in reason:
-        return (
-            f"{task_name}的目标表可能已更新，但最终核验暂未确认。请不要重复执行；请在事项中心核对写入结果。",
-            "automation_project_write_outcome_unknown",
-        )
-    if status == "PARTIAL":
-        detail = reason or "只完成了部分数据，请查看任务详情后重试未完成部分。"
-        return f"{task_name}部分完成：{detail[:300]}", "automation_project_partial"
-    if status in {"BLOCKED_DATA", "FAILED_RETRYABLE", "FAILED_TERMINAL"}:
-        if (
-            task_name == TOOL_DISPLAY_NAMES["self_pickup_problem_upload"]
-            and "SELECTION_PREVIEW_EXPIRED" in reason
-        ):
-            return (
-                "候选清单已变化，请重新发送“自提到货问题件”；本次未写入。",
-                "self_pickup_preview_stale",
-            )
-        if (
-            task_name == TOOL_DISPLAY_NAMES[SPLIT_TOOL_NAME]
-            and "ACTION_VALUE_ERROR:FRAME=action.py:642:run_action" in reason
-        ):
-            return (
-                "分批候选清单或执行参数已变化，请重新发送“分批”生成最新清单；本次未执行外部写入。",
-                "split_preview_stale",
-            )
-        detail = reason or "数据读取或写入校验未通过，请查看任务详情。"
-        return f"{task_name}执行失败：{detail[:300]}", "automation_project_failed"
-    detail = reason or "结果暂时无法确认，请前往事项中心查看任务详情。"
-    return f"{task_name}未完成：{detail[:300]}", "automation_project_status"
 async def _selection_pending_actor_allowed(
     *,
     chat_id: str,
@@ -363,6 +299,19 @@ async def _invoke_automation_project_and_reply(
             on_accepted=notify_accepted,
         )
     except OrchestrationError as exc:
+        if accepted_notified:
+            logger.warning(
+                "trusted Feishu automation result wait interrupted | route=%s | code=%s",
+                str(route_key or "")[:191],
+                exc.code,
+            )
+            await _reply_text(
+                receive_id,
+                _accepted_result_pending_message(task_name),
+                receive_id_type=receive_id_type,
+                reply_type="automation_project_result_pending",
+            )
+            return None
         logger.warning(
             "trusted Feishu automation rejected | route=%s | code=%s",
             str(route_key or "")[:191],
@@ -470,15 +419,29 @@ async def _invoke_selection_preview_and_reply(
         else "split_pending_problem_upload"
     )
     start_reply = (
-        "正在生成自提到货问题件候选清单，完成后我会发回结果。"
+        "已开始生成自提到货问题件候选清单，完成后我会发回结果。"
         if tool_name == SELF_PICKUP_PREVIEW_TOOL_NAME
-        else "正在生成分批问题件候选清单；任务繁忙时可能需要排队，完成后我会反馈结果。"
+        else "已开始生成分批问题件候选清单，完成后我会反馈结果。"
     )
-    await _reply_text(
-        receive_id,
-        start_reply,
-        reply_type="selection_preview_started",
-    )
+    accepted_notified = False
+
+    async def notify_accepted(_receipt: Any) -> None:
+        nonlocal accepted_notified
+        if accepted_notified:
+            return
+        accepted_notified = True
+        try:
+            await _reply_text(
+                receive_id,
+                start_reply,
+                reply_type="selection_preview_started",
+            )
+        except Exception:
+            logger.exception(
+                "trusted Feishu selection preview acceptance reply failed | route=%s",
+                str(route_key or "")[:191],
+            )
+
     queued_reply_sent = False
     retry_delays = iter(SELECTION_PREVIEW_ACTIVE_RETRY_DELAYS)
     while True:
@@ -486,9 +449,23 @@ async def _invoke_selection_preview_and_reply(
             result = await _invoke_automation_project(
                 route_key=route_key,
                 dynamic_inputs={},
+                on_accepted=notify_accepted,
             )
             break
         except OrchestrationError as exc:
+            if accepted_notified:
+                logger.warning(
+                    "trusted Feishu selection preview result wait interrupted | "
+                    "route=%s | code=%s",
+                    str(route_key or "")[:191],
+                    exc.code,
+                )
+                await _reply_text(
+                    receive_id,
+                    _accepted_result_pending_message("候选清单任务"),
+                    reply_type="automation_preview_result_pending",
+                )
+                return None
             details = exc.details if isinstance(exc.details, dict) else {}
             blocking_kind = str(
                 details.get("blocking_kind") or "NEEDS_ATTENTION"
@@ -757,19 +734,44 @@ async def _confirm_scan_preview_and_reply(
             reply_type="scan_preview_expired",
         )
         return
-    await _reply_text(
-        chat_id,
-        "已开始执行：正式扫描。完成后我会反馈结果。",
-        reply_type="scan_preview_formal_started",
-    )
+    accepted_notified = False
+
+    async def notify_accepted(_receipt: Any) -> None:
+        nonlocal accepted_notified
+        if accepted_notified:
+            return
+        accepted_notified = True
+        try:
+            await _reply_text(
+                chat_id,
+                "已开始执行：正式扫描。完成后我会反馈结果。",
+                reply_type="scan_preview_formal_started",
+            )
+        except Exception:
+            logger.exception("trusted Feishu scan acceptance reply failed")
+
     try:
         result = await _invoke_automation_project(
             route_key=SCAN_FEISHU_ROUTE_KEY,
             dynamic_inputs={},
             preview_run_id=preview_run_id,
+            on_accepted=notify_accepted,
         )
     except OrchestrationError as exc:
         code = str(exc.code or "").strip()
+        if accepted_notified:
+            logger.warning(
+                "Feishu scan confirmation result wait interrupted | code=%s",
+                code,
+            )
+            unknown = {**locked_pending, "confirmation_state": "unknown"}
+            _store_scan_confirmation_pending(pending_key, unknown)
+            await _reply_text(
+                chat_id,
+                _accepted_result_pending_message("正式扫描"),
+                reply_type="scan_preview_confirmation_result_pending",
+            )
+            return
         if code == "REQUEST_ID_REUSED":
             unlocked = {
                 **pending,
@@ -817,8 +819,16 @@ async def _confirm_scan_preview_and_reply(
         _store_scan_confirmation_pending(pending_key, unknown)
         await _reply_text(
             chat_id,
-            _scan_preview_error_message(""),
-            reply_type="scan_preview_confirmation_unknown",
+            (
+                _accepted_result_pending_message("正式扫描")
+                if accepted_notified
+                else _scan_preview_error_message("")
+            ),
+            reply_type=(
+                "scan_preview_confirmation_result_pending"
+                if accepted_notified
+                else "scan_preview_confirmation_unknown"
+            ),
         )
         return
 
@@ -2704,15 +2714,39 @@ async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str) -> 
     if dispatcher is None:
         return False
     context = _COMMAND_CONTEXT.get() or FeishuCommandContext("", "", "")
+    accepted_notified = False
+
+    async def notify_accepted(_receipt: Any) -> None:
+        nonlocal accepted_notified
+        if accepted_notified:
+            return
+        accepted_notified = True
+        try:
+            await _reply_text(
+                receive_id,
+                "已开始执行：扩展任务。完成后我会反馈结果。",
+                reply_type="service_v2_feishu_started",
+            )
+        except Exception:
+            logger.exception("managed Feishu command acceptance reply failed")
+
     try:
         result = await dispatcher.dispatch(
             command_text=text, event_id=context.event_id,
             sender_id=context.actor_id, chat_id=context.chat_id,
+            on_accepted=notify_accepted,
         )
         if result is not None and not isinstance(result, dict):
             raise TypeError("managed Feishu command result must be a dict or None")
     except OrchestrationError as exc:
         logger.warning("managed Feishu command rejected | code=%s", exc.code)
+        if accepted_notified:
+            await _reply_text(
+                receive_id,
+                _accepted_result_pending_message("扩展任务"),
+                reply_type="service_v2_feishu_result_pending",
+            )
+            return True
         await _reply_text(
             receive_id,
             "扩展任务未能执行：消息身份不完整或当前入口不可用。",
@@ -2723,11 +2757,18 @@ async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str) -> 
         logger.error(
             "managed Feishu command failed | error_type=%s", type(exc).__name__,
         )
-        await _reply_text(
-            receive_id,
-            "扩展任务暂时无法执行，请稍后重试。",
-            reply_type="service_v2_feishu_failed",
-        )
+        if accepted_notified:
+            await _reply_text(
+                receive_id,
+                _accepted_result_pending_message("扩展任务"),
+                reply_type="service_v2_feishu_result_pending",
+            )
+        else:
+            await _reply_text(
+                receive_id,
+                "扩展任务暂时无法执行，请稍后重试。",
+                reply_type="service_v2_feishu_failed",
+            )
         return True
     if result is None:
         return False

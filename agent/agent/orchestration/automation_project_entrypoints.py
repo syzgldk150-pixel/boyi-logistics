@@ -479,6 +479,7 @@ class ServiceV2FeishuDispatcher:
         event_id: str,
         sender_id: str,
         chat_id: str,
+        on_accepted: Callable[[Any], Awaitable[None]] | None = None,
     ) -> dict[str, Any] | None:
         """Dispatch an exact active command, or return ``None`` if unknown."""
 
@@ -512,18 +513,23 @@ class ServiceV2FeishuDispatcher:
                 "Feishu actor identity does not match the verified sender",
             )
 
-        return await self._policy.invoke_trusted_and_wait(
-            getattr(target, "automation_id", None),
-            entrypoint=AutomationEntrypoint.FEISHU,
-            request_id=safe_event_id,
-            actor=actor,
-            trusted_context={
+        invoke_kwargs: dict[str, Any] = {
+            "entrypoint": AutomationEntrypoint.FEISHU,
+            "request_id": safe_event_id,
+            "actor": actor,
+            "trusted_context": {
                 "event_id": safe_event_id,
                 "chat_id": safe_chat_id,
             },
-            idempotency_key=f"feishu:{safe_event_id}",
-            expected_automation_generation=getattr(target, "generation", None),
-            contribution_id=getattr(target, "contribution_id", None),
+            "idempotency_key": f"feishu:{safe_event_id}",
+            "expected_automation_generation": getattr(target, "generation", None),
+            "contribution_id": getattr(target, "contribution_id", None),
+        }
+        if on_accepted is not None:
+            invoke_kwargs["on_accepted"] = on_accepted
+        return await self._policy.invoke_trusted_and_wait(
+            getattr(target, "automation_id", None),
+            **invoke_kwargs,
         )
 
 

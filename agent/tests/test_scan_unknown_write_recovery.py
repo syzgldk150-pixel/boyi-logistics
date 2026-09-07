@@ -134,6 +134,31 @@ class ScanUnknownWriteRecoveryTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(target.recovery_calls, [])
 
+    @patch("plugin_core_adapters.first_party.get_account_manager")
+    @patch("plugin_core_adapters.first_party._scan_next_readback_state")
+    def test_invalid_preview_context_is_preserved_for_control_plane_review(
+        self,
+        readback: object,
+        account_manager: object,
+    ) -> None:
+        runtime, target = self._runtime()
+        target.inspect_scan_unknown_write_context = lambda **_kwargs: {
+            "state": "SCAN_RECOVERY_CONTEXT_INVALID"
+        }
+        account_manager.return_value.require_active_binding_descriptor.return_value = {
+            "session_profile": "profile-1"
+        }
+
+        result = recover_scan_codes_unknown_write(
+            runtime,
+            "scan_codes",
+            "request-1",
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(target.recovery_calls, [])
+        readback.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

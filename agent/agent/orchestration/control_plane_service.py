@@ -31,6 +31,8 @@ from agent.orchestration.automation_run_supersession import (
     AUTOMATION_BLOCKING_SAFE_SUPERSEDE,
     AUTOMATION_BLOCKING_UNKNOWN_WRITE,
     classify_automation_run_blocking_kind,
+    has_live_automation_execution,
+    invalidate_pending_approval_for_cancelled_run,
 )
 from shared.redaction import is_sensitive_key, redact_sensitive, redact_text
 
@@ -314,6 +316,13 @@ class ControlPlaneService:
             }:
                 raise OrchestrationError("RUN_TERMINAL", "Terminal run cannot accept cancellation")
             if locked_status in {
+                RunStatus.RECEIVED,
+                RunStatus.CONTEXT_READY,
+                RunStatus.PLANNED,
+                RunStatus.VALIDATED,
+                RunStatus.RUNNING,
+                RunStatus.VERIFYING,
+                RunStatus.WAITING_APPROVAL,
                 RunStatus.NEEDS_CLARIFICATION,
                 RunStatus.BLOCKED_LOGIN,
                 RunStatus.BLOCKED_DATA,
@@ -335,8 +344,19 @@ class ControlPlaneService:
                 ).strip():
                     direct_kind = AUTOMATION_BLOCKING_NEEDS_ATTENTION
                 else:
+                    classification_run = locked
+                    if locked_status in {
+                        RunStatus.RECEIVED,
+                        RunStatus.CONTEXT_READY,
+                        RunStatus.PLANNED,
+                        RunStatus.VALIDATED,
+                    }:
+                        classification_run = {
+                            **locked,
+                            "status": RunStatus.RUNNING.value,
+                        }
                     direct_kind = classify_automation_run_blocking_kind(
-                        locked,
+                        classification_run,
                         item,
                         uow.runs.get_automation_supersession_facts(
                             str(locked["run_id"])
@@ -374,6 +394,14 @@ class ControlPlaneService:
                         if unknown_write_acknowledged
                         else "CANCELLED_BY_ACTOR"
                     )
+                    if locked_status is RunStatus.WAITING_APPROVAL:
+                        invalidate_pending_approval_for_cancelled_run(
+                            uow,
+                            run=locked,
+                            reason=cancellation_code,
+                            occurred_at=now,
+                            causation_id=locked.get("causation_id"),
+                        )
                     assert_run_transition(locked_status, RunStatus.CANCELLED)
                     run = uow.runs.cancel_suspended(
                         str(locked["run_id"]),
@@ -1183,6 +1211,10 @@ def _run_stage_projection(
         ),
         None,
     )
+    has_valid_run_lease = status in {
+        RunStatus.RUNNING.value,
+        RunStatus.VERIFYING.value,
+    } and has_live_automation_execution(row, {})
     terminal = status in {
         RunStatus.COMPLETED.value,
         RunStatus.PARTIAL.value,
@@ -1195,10 +1227,12 @@ def _run_stage_projection(
     }
     if terminal:
         phase, stage_code, description = "finished", "FINISHED", "本次运行已结束"
-    elif status == RunStatus.VERIFYING.value or (
+    elif (status == RunStatus.VERIFYING.value and has_valid_run_lease) or (
         active is not None and str(active.get("status") or "").upper() == "VERIFYING"
     ):
         phase, stage_code, description = "verifying", "VERIFYING_RESULT", "正在核验结果"
+    elif active is None and has_valid_run_lease:
+        phase, stage_code, description = "processing", "PROCESSING_DATA", "正在处理数据"
     elif active is None:
         if status == RunStatus.WAITING_APPROVAL.value:
             phase, stage_code, description = "queued", "WAITING_APPROVAL", "正在等待审批"
@@ -1220,7 +1254,11 @@ def _run_stage_projection(
     stage_started_at = (
         active.get("started_at")
         if active is not None
-        else row.get("finished_at") if terminal else row.get("created_at")
+        else row.get("finished_at")
+        if terminal
+        else row.get("started_at")
+        if has_valid_run_lease
+        else row.get("created_at")
     )
     return {
         "execution_phase": phase,

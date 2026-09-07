@@ -23,6 +23,7 @@
   - `../agent/core.py`
 - 回复文案结构、卡片/文本格式：
   - `reply_formatter.py`
+  - `automation_messages.py`（受管自动化的已开始、终态与等待结果文案）
 - 飞书表格、消息发送、文件上传等 CLI 操作：
   - `../tools/feishu_cli_tool.py`
 - 多轮对话状态（先预览后确认 / 登录态过期恢复）：

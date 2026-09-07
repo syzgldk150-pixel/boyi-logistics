@@ -1784,6 +1784,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             stage_code = str(run.get("stage_code") or "").strip().upper()
             stage_description = str(run.get("stage_description") or "").strip()
             terminal_statuses = {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
+            active_statuses = {"RUNNING", "VERIFYING"}
             active_phases = {"source_read", "processing", "writing", "verifying"}
             attention_titles = {
                 "BLOCKED_DATA": "执行前检查未通过",
@@ -1831,9 +1832,10 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             )
             state_label = stage_description or public_status_labels.get(status, "正在同步")
             state_line = f"状态：{state_label}"
+            is_running = status in active_statuses and execution_phase in active_phases
             payload: dict[str, Any] = {
                 "lines": [state_line] if offset <= 0 else [],
-                "running": execution_phase in active_phases,
+                "running": is_running,
                 "queued": execution_phase == "queued",
                 "pending": not is_terminal,
                 "awaiting_approval": awaiting_approval,

@@ -7,6 +7,9 @@ from shared.scheduled_task_contracts import (
     ScheduledTaskContractError,
     validate_persisted_scheduled_task,
 )
+from shared.automation_project_manifest import (
+    FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES,
+)
 
 
 EXPECTED_APPROVED_TASK_IDS = {
@@ -189,6 +192,15 @@ def test_only_two_complete_clock_contracts_are_code_approved() -> None:
             "second_type": "接件离港",
             "delay_seconds": 2,
         }
+
+
+def test_clock_migration_templates_bind_each_exact_reviewed_account() -> None:
+    assert FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES[
+        "clockin_daxiang"
+    ].legacy_account_bindings == {"account_id": "ronghui_default"}
+    assert FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES[
+        "clockin_daxiang_s"
+    ].legacy_account_bindings == {"account_id": "ronghui_daxiang_s"}
 
 
 @pytest.mark.parametrize(
