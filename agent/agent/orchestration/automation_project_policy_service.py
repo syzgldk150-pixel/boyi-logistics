@@ -20,6 +20,7 @@ from agent.automation_plugins.catalog import (
     PluginCatalogEntry,
     project_contract_fragment,
 )
+from agent.automation_plugins.catalog_read_scope import catalog_read_transaction
 from agent.automation_plugins.code_owned_fields import (
     SCAN_PHASE_FORMAL,
     SCAN_PHASE_PREVIEW,
@@ -61,7 +62,7 @@ from agent.orchestration.automation_run_supersession import (
 )
 from agent.orchestration.policy_engine import ProjectPolicyEvaluation
 from agent.orchestration.automation_project_policy_support import (
-    _automation_id,
+    policy_list_automation_ids, scoped_policy_projection, _automation_id,
     _bootstrap_automation_ids,
     _bootstrap_project_is_stable,
     _comment,
@@ -197,14 +198,9 @@ class AutomationProjectPolicyService:
             raise OrchestrationError("PROJECT_INVOKE_UNAVAILABLE", "Automation project command gateway is unavailable")
         return self._command_gateway
 
-    def list_policies(self) -> dict[str, Any]:
-        with self._repository.unit_of_work() as uow:
-            policies = {str(row.get("automation_id") or ""): row for row in uow.automation_projects.list_policies()}
-        items = [
-            self._describe_entry(entry, policies.get(entry.automation_id))
-            for entry in self._plugin_catalog.list()
-        ]
-        return {"items": sorted(items, key=lambda item: item["automation_id"])}
+    def list_policies(self, *, automation_ids: Sequence[str] | None = None) -> dict[str, Any]:
+        selected = policy_list_automation_ids(automation_ids) if automation_ids is not None else None
+        return scoped_policy_projection(self._repository, self._plugin_catalog, selected, self._describe_entry)
 
     def get_policy_projection(self, automation_id: str) -> dict[str, Any]:
         safe_id = _automation_id(automation_id)
@@ -1757,6 +1753,7 @@ class AutomationProjectPolicyService:
                 successor=acceptance,
                 source=source.value,
                 request_id=safe_request_id,
+                read_only_preview=bool((scan_preview_project and safe_preview_run_id is None) or (selection_invocation and safe_selection_preview_run_id is None)),
             )
             if (
                 safe_selection_preview_run_id is not None
@@ -2402,7 +2399,7 @@ class AutomationProjectPolicyService:
         contract: CompiledAutomationProjectContract | None = None
         contract_error: str | None = None
         try:
-            with self._repository.unit_of_work() as uow:
+            with catalog_read_transaction(self._repository) as uow:
                 rows = uow.automation_projects.list_configuration_rows(
                     entry.automation_id
                 )

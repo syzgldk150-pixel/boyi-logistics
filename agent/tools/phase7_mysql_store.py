@@ -11,6 +11,11 @@ from typing import Any, Callable
 
 import pymysql
 from shared.runtime_repositories import WaybillRepository
+from shared.scan_snapshot_recovery import (
+    SNAPSHOT_UPSERT_SQL as _SCAN_CODES_SNAPSHOT_UPSERT_SQL,
+    lock_snapshot_head,
+    record_snapshot_head,
+)
 
 _DECIMAL_2 = Decimal("0.01")
 _DECIMAL_3 = Decimal("0.001")
@@ -649,20 +654,6 @@ _SCAN_CODES_UPSERT_SQL = """
         seen_count = seen_count + 1
 """
 
-_SCAN_CODES_SNAPSHOT_UPSERT_SQL = """
-    INSERT INTO scan_codes (
-        raw_code, destination, code_type, main_tracking,
-        snapshot_date, last_seen_at, seen_count
-    ) VALUES (%s, %s, %s, %s, %s, %s, 1)
-    ON DUPLICATE KEY UPDATE
-        destination = VALUES(destination),
-        code_type = VALUES(code_type),
-        main_tracking = VALUES(main_tracking),
-        last_seen_at = VALUES(last_seen_at),
-        seen_count = seen_count + 1
-"""
-
-
 def _upsert_scan_rows(cur: Any, rows: list[dict[str, str]]) -> None:
     if rows:
         cur.executemany(
@@ -699,6 +690,7 @@ def replace_scan_codes_snapshot(
     try:
         conn.begin()
         with conn.cursor() as cur:
+            lock_snapshot_head(cur, start_date.isoformat())
             cur.execute(
                 """
                 DELETE FROM scan_codes
@@ -719,6 +711,7 @@ def replace_scan_codes_snapshot(
                         for row in rows
                     ],
                 )
+            record_snapshot_head(cur, start_date.isoformat(), rows)
         conn.commit()
         return {
             "ok": True,

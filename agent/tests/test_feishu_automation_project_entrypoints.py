@@ -475,10 +475,15 @@ def test_direct_feishu_project_rejection_does_not_claim_execution_started():
     assert "private-run" not in replies[0][0]
 
 
-def test_direct_project_post_acceptance_wait_failure_reports_background_run():
+@pytest.mark.parametrize("wait_error", [
+    OrchestrationError("RUN_WAIT_TIMEOUT", "synthetic wait timeout"),
+    TimeoutError("synthetic result read timeout"),
+    RuntimeError("synthetic result storage unavailable"),
+])
+def test_direct_project_post_acceptance_wait_failure_reports_background_run(wait_error):
     service = _FakeProjectEntrypoints(
         accepted_errors={
-            1: OrchestrationError("RUN_WAIT_TIMEOUT", "synthetic wait timeout")
+            1: wait_error
         }
     )
     replies = []
@@ -635,10 +640,15 @@ def test_selection_preview_waits_for_active_project_then_runs() -> None:
     assert replies[-1][1]["reply_type"] == "split_candidate_list"
 
 
-def test_selection_preview_post_acceptance_wait_failure_does_not_invite_replay():
+@pytest.mark.parametrize("wait_error", [
+    OrchestrationError("RUN_WAIT_TIMEOUT", "synthetic wait timeout"),
+    TimeoutError("synthetic result read timeout"),
+    RuntimeError("synthetic result storage unavailable"),
+])
+def test_selection_preview_post_acceptance_wait_failure_does_not_invite_replay(wait_error):
     service = _FakeProjectEntrypoints(
         accepted_errors={
-            1: OrchestrationError("RUN_WAIT_TIMEOUT", "synthetic wait timeout")
+            1: wait_error
         }
     )
     replies = []

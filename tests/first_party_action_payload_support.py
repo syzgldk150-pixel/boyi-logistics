@@ -38,9 +38,26 @@ def load_first_party_action(plugin_id: str):
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    package_previous = {}
+    local_sources = [(path.stem, path) for path in source.parent.glob("*.py")]
+    if plugin_id == "sync_customer_service_problems":
+        local_sources.append(("customer_queue_policy", FIRST_PARTY_ROOT.parent.parent / "shared" / "customer_problem_policy.py"))
+    for local_name, local_source in local_sources:
+        if local_source.name == "action.py":
+            continue
+        package_previous[local_name] = sys.modules.get(local_name)
+        local_spec = importlib.util.spec_from_file_location(local_name, local_source)
+        local_module = importlib.util.module_from_spec(local_spec)
+        sys.modules[local_name] = local_module
+        local_spec.loader.exec_module(local_module)
     try:
         spec.loader.exec_module(module)
     finally:
+        for local_name, old_module in package_previous.items():
+            if old_module is None:
+                sys.modules.pop(local_name, None)
+            else:
+                sys.modules[local_name] = old_module
         if previous is None:
             sys.modules.pop("boyi_plugin_result", None)
         else:

@@ -6,6 +6,7 @@
   function initCustomerServiceRoot(root) {
     if (!root || root.dataset.bound === "true") return;
     root.dataset.bound = "true";
+    const fetch = window.ConsoleUI.pageRequest();
 
     const parseData = (name, fallback) => {
       try {
@@ -23,7 +24,7 @@
     const settings = parseData("settings", {});
     const accounts = parseData("accounts", []);
     const accountById = new Map(accounts.map((account) => [String(account.account_id || ""), account]));
-    const state = { rows: [], selected: null, selectedDetails: [], querying: false, replying: false, errors: [] };
+    const state = { rows: [], selected: null, selectedDetails: [], querying: false, queryRequest: 0, replying: false, errors: [] };
     const seenKey = "shipnow.customerService.seenKeys";
     const seen = new Set(JSON.parse(localStorage.getItem(seenKey) || "[]"));
 
@@ -429,9 +430,12 @@
     }
 
     async function runQuery() {
-      if (state.querying) return;
+      const request = ++state.queryRequest;
       const accountIds = selectedAccounts();
-      if (!accountIds.length) {
+      const sourceId = $("[data-cs-source]")?.value || "";
+      if (!accountIds.length && !sourceId) {
+        state.querying = false;
+        setQueryBusy(false);
         setStatus("请先选择账号", "warning");
         return;
       }
@@ -441,22 +445,28 @@
       try {
         const data = await postJson("/customer-service/problems/query", {
           platforms: selectedPlatforms(),
-          account_ids: accountIds,
+          account_ids: sourceId ? [] : accountIds,
+          source_ids: sourceId ? [sourceId] : [],
           filters: filters(),
         }, { command: true });
+        if (request !== state.queryRequest || !root.isConnected) return;
         renderRows(data.rows || []);
         refreshBadges(data.rows || [], data.errors || []);
         const errorText = data.errors && data.errors.length ? `，${data.errors.length} 个账号异常` : "";
         setStatus(`查询完成：已返回 ${(data.rows || []).length} 条${errorText}`, data.ok ? "success" : "warning");
       } catch (error) {
+        if (request !== state.queryRequest || !root.isConnected) return;
         renderRows([]);
         refreshBadges([], [{ message: error.message }]);
         setStatus(`查询失败：${error.message || "未知错误"}`, "error");
       } finally {
-        state.querying = false;
-        setQueryBusy(false);
+        if (request === state.queryRequest) {
+          state.querying = false;
+          setQueryBusy(false);
+        }
       }
     }
+    $("[data-cs-source]")?.addEventListener("module-source-change", runQuery);
 
     function buildSettingsPayload() {
       return {

@@ -1,5 +1,8 @@
 ---
 module: 自动化插件平台
+
+V3.2 补充：模块归属、最小设置、AI 可选、来源保留和维护入口以仓库 `docs/low_maintenance_v32.md` 为准；未冲突的包校验、隔离、授权和代际要求继续有效。
+
 type: 架构与运行手册
 tags: [自动化插件, ACTION_V1, Ed25519, generation, Windows Worker, Cordis]
 related:

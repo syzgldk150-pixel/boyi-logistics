@@ -20,6 +20,7 @@ from agent.tms_runtime.session_broker import (
 from agent.tms_runtime.scripts.browser_manager import launch_browser
 from agent.tms_runtime.scripts.finance_capture_common import (
     CaptureResult,
+    RawFinanceCapture,
     FinanceCaptureError,
     amount_storage_text,
     clean_text,
@@ -42,18 +43,7 @@ from agent.tms_runtime.scripts.yunda_finance_adapter import (
 
 
 RONGHUI_MENU_TEXT = "结算明细查询"
-RONGHUI_FIELD_BINDINGS = {
-    "trade_time": "BALANCE_DATE",
-    "fee_name": "BALANCE_TYPE",
-    "amount": "BALANCE_CUR_MONEY_TEXT",
-    "bill_time": "FINANCE_DATE",
-    "waybill_no": "BILL_CODE",
-    "old_amount": "BALANCE_PRE_CONFIRM_MONEY",
-    "new_amount": "BALANCE_BACK_CONFIRM_MONEY",
-    "balance_order": "BALANCE_ORDER",
-    "bill_code": "BILL_CODE",
-}
-
+from first_party_automation_plugins.sync_finance_bills.payload.finance_fields import RONGHUI_FIELD_BINDINGS
 
 def _ronghui_schema_evidence(html: str, *, expected_markers: set[str]) -> str:
     """Return field-name-only evidence; never include page values or auth data."""
@@ -311,119 +301,25 @@ def _replay_ronghui_request(
     return response_json(response, platform="融辉", stage="request_replay")
 
 
-def _normalize_signed_summary(
-    rows: Sequence[Mapping[str, Any]],
-    *,
-    platform: str,
-    account_id: str,
-    target_date: dt.date,
-    fee_key: str,
-    amount_key: str,
-    fee_level_2_key: str = "",
-) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for row in rows:
-        fee_name = clean_text(row.get(fee_key))
-        secondary = clean_text(row.get(fee_level_2_key)) if fee_level_2_key else ""
-        if not fee_name:
-            raise FinanceCaptureError("SUMMARY_FIELD_DRIFT", "财务汇总费用项目为空", stage="summary_normalize")
-        amount = amount_storage_text(row.get(amount_key), field="summary_amount")
-        from shared.finance.money import to_decimal
-
-        value = to_decimal(amount)
-        if value == 0:
-            raise FinanceCaptureError("AMOUNT_DIRECTION_INVALID", "财务汇总金额方向不明确", stage="summary_normalize")
-        zero = amount_storage_text("0", field="summary_zero")
-        result.append(
-            {
-                "platform": platform,
-                "account_id": account_id,
-                "snapshot_date": target_date.isoformat(),
-                "fee_level_1": fee_name,
-                "fee_level_2": secondary,
-                "fee_name": secondary or fee_name,
-                "income": amount if value > 0 else zero,
-                "expend": amount_storage_text(-value, field="summary_expense") if value < 0 else zero,
-            }
-        )
-    return result
+def _normalize_signed_summary(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+    from first_party_automation_plugins.sync_finance_bills.payload.finance_fields import (
+        FinanceFieldError, _normalize_signed_summary as normalize,
+    )
+    try:
+        return normalize(*args, **kwargs, amount_storage_text=amount_storage_text)
+    except FinanceFieldError as exc:
+        raise FinanceCaptureError(exc.code, str(exc), stage=exc.stage) from exc
 
 
-def _discover_ronghui_summary_fields(
-    summary_rows: Sequence[Mapping[str, Any]],
-    detail_rows: Sequence[Mapping[str, Any]],
-    *,
-    field_bindings: Mapping[str, str],
-) -> tuple[str, str]:
-    if not summary_rows:
-        return "", ""
-    fee_source_key = clean_text(field_bindings.get("fee_name"))
-    amount_source_key = clean_text(field_bindings.get("amount"))
-    if not fee_source_key or not amount_source_key:
-        raise FinanceCaptureError(
-            "FIELD_DRIFT",
-            "融辉明细缺少汇总校验所需字段绑定",
-            stage="summary_discovery",
-        )
-    detail_fees: set[str] = set()
-    signed_by_fee: dict[str, Any] = {}
-    from shared.finance.money import InvalidAmountError, MissingAmountError, ZERO, quantize_storage
-
-    for row in detail_rows:
-        missing_keys = [key for key in (fee_source_key, amount_source_key) if key not in row]
-        if missing_keys:
-            raise FinanceCaptureError(
-                "FIELD_DRIFT",
-                f"融辉明细响应缺少汇总校验字段：{','.join(sorted(missing_keys))}",
-                stage="summary_discovery",
-            )
-        fee = clean_text(row.get(fee_source_key))
-        if not fee:
-            raise FinanceCaptureError(
-                "FIELD_DRIFT",
-                f"融辉明细费用字段为空：{fee_source_key}",
-                stage="summary_discovery",
-            )
-        try:
-            amount = quantize_storage(row.get(amount_source_key))
-        except MissingAmountError as exc:
-            raise FinanceCaptureError(
-                "AMOUNT_MISSING",
-                f"融辉明细金额字段为空：{amount_source_key}",
-                stage="summary_discovery",
-            ) from exc
-        except InvalidAmountError as exc:
-            raise FinanceCaptureError(
-                "AMOUNT_INVALID",
-                f"融辉明细金额字段格式异常：{amount_source_key}",
-                stage="summary_discovery",
-            ) from exc
-        detail_fees.add(fee)
-        signed_by_fee[fee] = signed_by_fee.get(fee, ZERO) + amount
-    common_keys = set(summary_rows[0])
-    for row in summary_rows[1:]:
-        common_keys &= set(row)
-    fee_candidates = [
-        key
-        for key in common_keys
-        if all(clean_text(row.get(key)) in detail_fees for row in summary_rows)
-    ]
-    if len(fee_candidates) != 1:
-        raise FinanceCaptureError("SUMMARY_FIELD_DRIFT", "融辉汇总费用项目字段无法唯一确认", stage="summary_discovery")
-    fee_key = fee_candidates[0]
-    amount_candidates: list[str] = []
-    for key in common_keys - {fee_key}:
-        try:
-            if all(
-                quantize_storage(row.get(key)) == signed_by_fee[clean_text(row.get(fee_key))]
-                for row in summary_rows
-            ):
-                amount_candidates.append(key)
-        except Exception:
-            continue
-    if len(amount_candidates) != 1:
-        raise FinanceCaptureError("SUMMARY_FIELD_DRIFT", "融辉汇总金额字段无法唯一确认", stage="summary_discovery")
-    return fee_key, amount_candidates[0]
+def _discover_ronghui_summary_fields(*args: Any, **kwargs: Any) -> tuple[str, str]:
+    from first_party_automation_plugins.sync_finance_bills.payload.finance_fields import (
+        FinanceFieldError, _discover_ronghui_summary_fields as discover,
+    )
+    from shared.finance.money import quantize_storage
+    try:
+        return discover(*args, **kwargs, quantize_storage=quantize_storage)
+    except FinanceFieldError as exc:
+        raise FinanceCaptureError(exc.code, str(exc), stage=exc.stage) from exc
 
 
 def _all_pages_from_template(
@@ -763,7 +659,7 @@ class RonghuiLiveFinanceAdapter:
                 continue
         raise FinanceCaptureError("FIELD_DRIFT", "融辉原页未触发目标财务 callId", stage="query_capture")
 
-    def fetch_day(self, target_date: dt.date) -> CaptureResult:
+    def fetch_day(self, target_date: dt.date, *, raw_source: bool = False) -> CaptureResult | RawFinanceCapture:
         detail_template = _ronghui_request_template(
             self._page_context,
             call_id=RONGHUI_DETAIL_CALL_ID,
@@ -797,13 +693,14 @@ class RonghuiLiveFinanceAdapter:
             detail_cache[page] = payload
             return payload
 
-        detail_rows = paginate_by_source_key(
+        detail_batch = paginate_by_source_key(
             detail_fetch,
             source_key=RONGHUI_SOURCE_KEY,
             page_size=self.page_size,
             max_pages=self.max_pages,
             stage="ronghui_detail_discovery",
-        ).rows
+        )
+        detail_rows = detail_batch.rows
 
         summary_template = _ronghui_request_template(
             self._page_context,
@@ -842,6 +739,15 @@ class RonghuiLiveFinanceAdapter:
             stage="ronghui_summary",
             max_pages=self.max_pages,
         )
+        if raw_source:
+            return RawFinanceCapture(rows=detail_rows, summaries=raw_summaries,
+                source_site_code=self._source_site_code, source_site_name=self._source_site_name,
+                validation={"source_total": detail_batch.total,
+                    "page_row_counts": list(detail_batch.page_row_counts),
+                    "page_row_count": detail_batch.page_row_count,
+                    "unique_count": len(detail_rows), "accepted_rows": len(detail_rows),
+                    "excluded_other_dates": 0, "duplicate_page_rows": detail_batch.duplicate_rows,
+                    "pages": detail_batch.pages})
         if raw_summaries:
             fee_key, amount_key = _discover_ronghui_summary_fields(
                 raw_summaries,

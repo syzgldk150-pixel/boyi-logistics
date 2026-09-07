@@ -5,7 +5,7 @@ tags: [documentation, navigation, authority, lifecycle]
 status: active
 authority: canonical
 owner: repository
-updated: 2026-08-30
+updated: 2026-09-07
 ---
 
 # 仓库文档索引
@@ -21,6 +21,8 @@ updated: 2026-08-30
 
 ## 现行权威文档
 
+- [V3.2 第一轮维护边界与归属](low_maintenance_v32.md)：本轮模块入口、简单设置、插件局部维护及来源历史规则；取代旧文档中与本轮范围冲突的集中入口和强制 AI/专属 HTML 要求。
+- [V3.2 复现与发布回退](low_maintenance_v32_release.md)、[逐组验收要求](low_maintenance_v32_acceptance.json)及[扫描未知写恢复](scan_recovery_v32.md)：代码入口、隔离证据和首次核心更新边界。
 - [代码定位索引](../agent/docs/code_navigation_index.md)：需求到代码、测试和模块说明的入口。
 - [项目总览](../agent/docs/project_overview.md)：当前服务边界和模块目录。
 - [扩展化平台架构基准](extension-platform-baseline.md)：固定核心模块、Service v2、自动化中心、Harness、Connector 与迁移路线图的现行基准。

@@ -11,6 +11,7 @@ from typing import Any
 
 from agent.automation_plugins.first_party_handlers import customer_problem_identity
 from agent.automation_plugins.models import GenerationVerificationContext
+from agent.orchestration.customer_source_projection import publish_customer_collection
 from agent.orchestration.models import (
     Command,
     OrchestrationError,
@@ -38,7 +39,7 @@ OPEN_ITEM_STATUSES = frozenset(
         WorkItemStatus.BLOCKED_DATA.value,
     }
 )
-_OPAQUE_CUSTOMER_PROBLEM_RE = re.compile(r"^problem:v1:[0-9a-f]{64}$")
+_OPAQUE_CUSTOMER_PROBLEM_RE = re.compile(r"^problem:v[12]:[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -139,7 +140,12 @@ class PilotProjectionService:
         result: ToolResult,
         generation_verification: GenerationVerificationContext | None = None,
     ) -> ProjectionOutcome | None:
-        if step.tool_name == DAILY_SIGN_TOOL:
+        tool_name = step.tool_name
+        if generation_verification is not None and generation_verification.plugin_id:
+            expected_tool = f"automation.{generation_verification.automation_id}.run"
+            if step.tool_name == expected_tool:
+                tool_name = generation_verification.plugin_id
+        if tool_name == DAILY_SIGN_TOOL:
             return self._project_daily_sign(
                 uow=uow,
                 run=run,
@@ -147,7 +153,7 @@ class PilotProjectionService:
                 command=command,
                 result=result,
             )
-        if step.tool_name == CUSTOMER_PROBLEM_TOOL:
+        if tool_name == CUSTOMER_PROBLEM_TOOL:
             return self._project_customer_problems(
                 uow=uow,
                 run=run,
@@ -664,7 +670,7 @@ class PilotProjectionService:
         verification = _validated_customer_generation(result, verification)
         data = result.data
         records = _mapping_list(data.get("records"), "records")
-        open_rows, resolved_rows = _split_plugin_customer_rows(records)
+        open_rows, resolved_rows = _split_plugin_customer_rows([row for row in records if row.get("queue_included") is not False])
         collection_evidence = data.get("evidence")
         if (
             not isinstance(collection_evidence, Mapping)
@@ -682,7 +688,7 @@ class PilotProjectionService:
             str(item["dedupe_key"]): item
             for item in uow.work_items.list_by_type(CUSTOMER_PROBLEM_ITEM_TYPE, for_update=True)
         }
-        existing_aliases = _customer_existing_aliases(existing)
+        existing_aliases = _customer_existing_aliases(existing, work_items=uow.work_items)
         detail_rechecks = _opaque_detail_recheck_map(
             data.get("rechecks", []),
             verification,
@@ -705,6 +711,12 @@ class PilotProjectionService:
                 )
             seen_aliases.add(source_key)
             existing_item = existing_aliases.get(source_key)
+            legacy_alias = customer_problem_identity(account_id=identity["account_id"], platform=identity["platform"],
+                external_id=identity["external_id"])
+            if existing_item is None and legacy_alias in existing_aliases:
+                raise OrchestrationError("PROBLEM_LEGACY_DIRECTION_UNVERIFIED",
+                    "Existing customer item lacks one authoritative persisted direction; continuation was rejected.",
+                    details={"status": "BLOCKED_DATA"})
             persisted_key = (
                 str(existing_item["dedupe_key"])
                 if existing_item is not None
@@ -912,6 +924,8 @@ class PilotProjectionService:
                 }
             )
         )
+        publish_customer_collection(uow.connection, verification=verification,
+            run_id=str(run["run_id"]), records=records, rechecks=tuple(detail_rechecks.values()))
         outcome = _shadow_outcome(
             projection_type="customer_service_problem",
             candidates=candidate_keys,
@@ -1621,6 +1635,10 @@ def _opaque_problem_identity(
             details={"status": "BLOCKED_DATA"},
         )
     external_id = _required_text(row.get("external_id"), "external_id")
+    source_direction = _required_text(row.get("source_direction"), "source_direction").lower()
+    if source_direction not in {"received", "registered", "query", "published"}:
+        raise OrchestrationError("PROBLEM_IDENTITY_MISMATCH", "Customer source direction is unsupported.",
+            details={"status": "BLOCKED_DATA"})
     supplied = _required_text(row.get("dedupe_key"), "dedupe_key")
     if not _OPAQUE_CUSTOMER_PROBLEM_RE.fullmatch(supplied):
         raise OrchestrationError(
@@ -1635,6 +1653,7 @@ def _opaque_problem_identity(
             account_id=account_id,
             platform=platform,
             external_id=external_id,
+            source_direction=source_direction,
         )
         == supplied
     ]
@@ -1654,6 +1673,7 @@ def _opaque_problem_identity(
 
 def _customer_existing_aliases(
     existing: Mapping[str, Mapping[str, Any]],
+    *, work_items: Any,
 ) -> dict[str, Mapping[str, Any]]:
     aliases: dict[str, Mapping[str, Any]] = {}
     for persisted_key, item in existing.items():
@@ -1674,6 +1694,22 @@ def _customer_existing_aliases(
                     platform=platform,
                     external_id=external_id,
                 )
+        if not persisted_key.startswith("problem:v2:"):
+            subjects = [row for row in work_items.list_entities(str(item["work_item_id"]))
+                if row.get("relation_type") == "subject" and row.get("entity_type") == "customer_problem"]
+            if len(subjects) == 1:
+                subject = subjects[0]
+                metadata = subject.get("metadata_json")
+                metadata = metadata if isinstance(metadata, Mapping) else {}
+                account = str(metadata.get("account_id") or "")
+                provider = str(subject.get("source_system") or "")
+                external = str(subject.get("entity_id") or "")
+                direction = str(metadata.get("source_direction") or "")
+                if account and provider in {"ronghui", "yunda"} and external and direction in {"received", "registered", "query", "published"}:
+                    observed_legacy = customer_problem_identity(account_id=account, platform=provider, external_id=external)
+                    if alias == observed_legacy:
+                        alias = customer_problem_identity(account_id=account, platform=provider, external_id=external,
+                            source_direction=direction)
         previous = aliases.get(alias)
         if previous is not None and str(previous.get("work_item_id")) != str(item.get("work_item_id")):
             raise OrchestrationError(

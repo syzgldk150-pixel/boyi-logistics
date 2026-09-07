@@ -7,6 +7,11 @@ from typing import Any, Mapping, Sequence
 
 
 _FIRST_PARTY_TRUST_SOURCE = "ed25519_first_party"
+_SIGNED_TRUST_SOURCES = frozenset({_FIRST_PARTY_TRUST_SOURCE, "ed25519_upload"})
+_COLLECTOR_INTERNAL_CONFIG_FIELDS = {
+    "sync_finance_bills": ("_startup_catchup",),
+    "sync_customer_service_problems": ("recheck_items",),
+}
 _SCAN_AUTOMATION_ID = "scan_codes"
 _SCAN_PLUGIN_ID = "sync_scan_codes"
 _SCAN_PREVIEW_BINDING_FIELD = "_scan_preview_binding"
@@ -189,6 +194,17 @@ def first_party_code_owned_config_fields(
 ) -> tuple[str, ...]:
     """Return fields hidden from and rejected in administrator config input."""
 
+    identity = (str(automation_id or "").strip(), str(plugin_id or "").strip())
+    source = str(trust_source or "").strip()
+    if source in _SIGNED_TRUST_SOURCES:
+        # Hiding/rejecting these Host-owned inputs only narrows administrator
+        # authority. It applies to signed collector instances with new IDs;
+        # it does not grant startup catch-up or service-produced plan fields.
+        collector_fields = _COLLECTOR_INTERNAL_CONFIG_FIELDS.get(identity[1])
+        if collector_fields is not None:
+            return collector_fields
+        if identity in _SELECTION_PROJECTS or identity == (_SCAN_AUTOMATION_ID, _SCAN_PLUGIN_ID):
+            return _CODE_OWNED_CONFIG_FIELDS[identity]
     return _declared_fields(
         _CODE_OWNED_CONFIG_FIELDS,
         automation_id=str(automation_id or "").strip(),
@@ -205,6 +221,12 @@ def first_party_code_owned_plan_fields(
 ) -> tuple[str, ...]:
     """Return service-produced plan fields admitted beyond saved config."""
 
+    if (
+        str(trust_source or "").strip() in _SIGNED_TRUST_SOURCES
+        and (str(automation_id or "").strip(), str(plugin_id or "").strip())
+        == (_SCAN_AUTOMATION_ID, _SCAN_PLUGIN_ID)
+    ):
+        return _CODE_OWNED_PLAN_FIELDS[(_SCAN_AUTOMATION_ID, _SCAN_PLUGIN_ID)]
     return _declared_fields(
         _CODE_OWNED_PLAN_FIELDS,
         automation_id=str(automation_id or "").strip(),
@@ -354,7 +376,7 @@ def resolve_scan_execution_phase(
     if (
         str(automation_id or "").strip() != _SCAN_AUTOMATION_ID
         or str(plugin_id or "").strip() != _SCAN_PLUGIN_ID
-        or str(trust_source or "").strip() != _FIRST_PARTY_TRUST_SOURCE
+        or str(trust_source or "").strip() not in _SIGNED_TRUST_SOURCES
     ):
         return None
     dry_run = arguments.get("dry_run")
@@ -402,7 +424,7 @@ def resolve_selection_execution_phase(
     )
     if (
         identity not in _SELECTION_PROJECTS
-        or str(trust_source or "").strip() != _FIRST_PARTY_TRUST_SOURCE
+        or str(trust_source or "").strip() not in _SIGNED_TRUST_SOURCES
     ):
         return None
     if any(field_name not in arguments for field_name in _SELECTION_FIELDS):

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from shared.orchestration_repository_support import (
@@ -112,7 +112,7 @@ class CommandRepository(_RepositoryBase):
             automation_invocation = parsed_invocation.to_dict()
         idempotency_key = _required_text(row.get("idempotency_key"), "idempotency_key")
         correlation_id = _required_text(row.get("correlation_id"), "correlation_id")
-        requested_at = row.get("requested_at") or datetime.now()
+        requested_at = row.get("requested_at") or datetime.now(timezone.utc).replace(tzinfo=None)
         status = _status(row.get("status"), COMMAND_STATUSES, "command status", default="RECEIVED")
         params = (
             command_id,
@@ -791,7 +791,7 @@ class AgentRunRepository(automation_run_lookup.AutomationRunLookupMixin, _Reposi
             raise InvalidStateError(
                 "retry source statuses must be terminal retry states: " + ", ".join(unsupported)
             )
-        effective_now = now or datetime.now()
+        effective_now = now or datetime.now(timezone.utc).replace(tzinfo=None)
         placeholders = ", ".join("%s" for _ in allowed)
         with self.cursor() as cursor:
             cursor.execute(
@@ -1023,7 +1023,7 @@ class AgentRunRepository(automation_run_lookup.AutomationRunLookupMixin, _Reposi
         if not allowed:
             raise ValueError("statuses is required")
         placeholders = ", ".join("%s" for _ in allowed)
-        effective_now = now or datetime.now()
+        effective_now = now or datetime.now(timezone.utc).replace(tzinfo=None)
         with self.cursor() as cursor:
             cursor.execute(
                 f"""
@@ -1058,7 +1058,7 @@ class AgentRunRepository(automation_run_lookup.AutomationRunLookupMixin, _Reposi
                 f"terminal run statuses are not claimable: {', '.join(terminal)}"
             )
         placeholders = ", ".join("%s" for _ in allowed)
-        effective_now = now or datetime.now()
+        effective_now = now or datetime.now(timezone.utc).replace(tzinfo=None)
         batch_size = max(1, min(int(limit), 500))
         lease = max(1, min(int(lease_seconds), 3600))
         with self.cursor() as cursor:
@@ -1111,7 +1111,7 @@ class AgentRunRepository(automation_run_lookup.AutomationRunLookupMixin, _Reposi
         """Lease cancellation work so queued runs cannot become stranded."""
 
         worker = _required_text(worker_id, "worker_id")
-        effective_now = now or datetime.now()
+        effective_now = now or datetime.now(timezone.utc).replace(tzinfo=None)
         batch_size = max(1, min(int(limit), 500))
         lease = max(1, min(int(lease_seconds), 3600))
         with self.cursor() as cursor:
@@ -1163,7 +1163,7 @@ class AgentRunRepository(automation_run_lookup.AutomationRunLookupMixin, _Reposi
         """Extend an owned run lease without changing the business CAS version."""
 
         worker = _required_text(worker_id, "worker_id")
-        effective_now = now or datetime.now()
+        effective_now = now or datetime.now(timezone.utc).replace(tzinfo=None)
         lease = max(1, min(int(lease_seconds), 3600))
         with self.cursor() as cursor:
             cursor.execute(
@@ -1172,9 +1172,10 @@ class AgentRunRepository(automation_run_lookup.AutomationRunLookupMixin, _Reposi
                 SET lease_expires_at=DATE_ADD(%s, INTERVAL {lease} SECOND)
                 WHERE run_id=%s
                   AND worker_id=%s
+                  AND lease_expires_at > %s
                   AND status NOT IN ('COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED')
                 """,
-                (effective_now, _required_text(run_id, "run_id"), worker),
+                (effective_now, _required_text(run_id, "run_id"), worker, effective_now),
             )
             if int(getattr(cursor, "rowcount", 0) or 0) != 1:
                 raise ConcurrentUpdateError("run lease is no longer owned by this worker")
@@ -1317,7 +1318,7 @@ class AgentRunRepository(automation_run_lookup.AutomationRunLookupMixin, _Reposi
                 WHERE run_id=%s
                 """,
                 (
-                    requested_at or datetime.now(),
+                    requested_at or datetime.now(timezone.utc).replace(tzinfo=None),
                     _required_text(requested_by_type, "requested_by_type"),
                     _optional_text(requested_by_id),
                     _safe_error(reason),
@@ -1936,7 +1937,7 @@ class ApprovalRepository(_RepositoryBase):
                     _json_param(row.get("actor_roles_json", row.get("actor_roles", [])), []),
                     decision,
                     _safe_error(row.get("reason")),
-                    row.get("decided_at") or datetime.now(),
+                    row.get("decided_at") or datetime.now(timezone.utc).replace(tzinfo=None),
                 ),
             )
             cursor.execute(
@@ -2068,7 +2069,7 @@ class EvidenceRepository(EvidenceLookupMixin, _RepositoryBase):
                     _required_text(row.get("entity_type"), "entity_type"),
                     _required_text(row.get("entity_id"), "entity_id"),
                     row.get("occurred_at"),
-                    row.get("observed_at") or datetime.now(),
+                    row.get("observed_at") or datetime.now(timezone.utc).replace(tzinfo=None),
                     completeness,
                     row.get("pagination_complete"),
                     row.get("record_count"),
@@ -2256,8 +2257,8 @@ class DomainEventRepository(_RepositoryBase):
                     _optional_text(event_row.get("work_item_id")),
                     _optional_text(event_row.get("run_id")),
                     _optional_text(event_row.get("step_id")),
-                    event_row.get("occurred_at") or datetime.now(),
-                    event_row.get("observed_at") or datetime.now(),
+                    event_row.get("occurred_at") or datetime.now(timezone.utc).replace(tzinfo=None),
+                    event_row.get("observed_at") or datetime.now(timezone.utc).replace(tzinfo=None),
                     _required_text(event_row.get("correlation_id"), "correlation_id"),
                     _optional_text(event_row.get("causation_id")),
                     _json_param(payload, {}),
@@ -2634,7 +2635,7 @@ class OutboxRepository(_RepositoryBase):
                 (
                     _required_text(consumer_name, "consumer_name"),
                     _required_text(event_id, "event_id"),
-                    processed_at or datetime.now(),
+                    processed_at or datetime.now(timezone.utc).replace(tzinfo=None),
                     result_sha,
                     result_json,
                 ),
@@ -2905,10 +2906,13 @@ class OrchestrationUnitOfWork:
         self._require_active()
         command = self.commands.create_or_get(command_row)
         if not command.get("_created"):
-            work_item = self.work_items.get_by_command(command["command_id"], for_update=True)
+            # The aggregate identities are immutable and were committed in one
+            # transaction. Replay needs no WorkItem/Run lock: taking them in
+            # that order deadlocks the Runner's Run -> WorkItem transition.
+            work_item = self.work_items.get_by_command(command["command_id"], for_update=False)
             if work_item is None:
                 raise IdempotencyConflict("persisted command has no gateway work item")
-            run = self.runs.get_first_for_work_item(work_item["work_item_id"], for_update=True)
+            run = self.runs.get_first_for_work_item(work_item["work_item_id"], for_update=False)
             if run is None:
                 raise IdempotencyConflict("persisted gateway work item has no initial run")
             event = self.events.get_first_for_entity("agent_command", command["command_id"])
@@ -2919,12 +2923,7 @@ class OrchestrationUnitOfWork:
                 "work_item_id": work_item["work_item_id"],
                 "run_id": run["run_id"],
                 "event_id": event["event_id"],
-                "created": {
-                    "command": False,
-                    "work_item": False,
-                    "run": False,
-                    "event": False,
-                },
+                "created": dict.fromkeys(("command", "work_item", "run", "event"), False),
                 "outbox": self.outbox.list_for_event(event["event_id"]),
             }
         item_input = dict(work_item_row)
@@ -2966,6 +2965,7 @@ class OrchestrationUnitOfWork:
         actor_id: str, actor_role: str,
         authoritative_applied_proof: Mapping[str, object] | None = None,
         authoritative_not_applied_proof: Mapping[str, object] | None = None,
+        scan_applied_recovery: Mapping[str, object] | None = None,
     ) -> dict[str, Any]:
         # Public UoW entry point; implementation is configuration-free.
         from shared.automation_unknown_write_recovery import recover_unknown_automation_write
@@ -2973,7 +2973,7 @@ class OrchestrationUnitOfWork:
         return recover_unknown_automation_write(
             self, automation_id=automation_id, generation=generation,
             lease_id=lease_id, request_id=request_id, actor_id=actor_id,
-            actor_role=actor_role,
+            actor_role=actor_role, scan_applied_recovery=scan_applied_recovery,
             authoritative_applied_proof=authoritative_applied_proof,
             authoritative_not_applied_proof=authoritative_not_applied_proof,
         )

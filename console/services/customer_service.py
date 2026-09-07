@@ -133,7 +133,25 @@ class CustomerServiceMixin:
         )
 
     def _render_customer_service(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
-        accounts, account_map, warning = self._customer_service_account_maps(force=False)
+        from shared.data_sources import DataSourceRepository
+
+        accounts, module_sources, warning = [], [], ""
+        try:
+            with self.repository.connect() as connection:
+                source_rows = DataSourceRepository(connection).list_sources("customer_service")
+                module_sources = [{key: source[key] for key in ("source_id", "display_name", "status")}
+                    for source in source_rows]
+                with connection.cursor() as cursor:
+                    cursor.execute("""SELECT a.account_id,a.provider,s.display_name,s.status
+                        FROM module_data_source_accounts a JOIN module_data_sources s ON s.source_id=a.source_id
+                        WHERE a.module='customer_service' ORDER BY a.provider,a.account_id""")
+                    accounts = [{"account_id": row["account_id"], "system": row["provider"],
+                        "name": row["display_name"], "status_label": "历史来源" if row["status"] == "history_only" else "已发布来源",
+                        "system_label": AUTOMATION_ACCOUNT_SYSTEM_LABELS.get(row["provider"], row["provider"])}
+                        for row in cursor.fetchall()]
+        except Exception:
+            warning = "本地来源暂不可用，请查看数据源状态。"
+        account_map = {row["account_id"]: row for row in accounts}
         settings = self._customer_service_settings(account_map)
         template = self.template_env.get_template("customer_service.html")
         body = template.render(
@@ -141,6 +159,7 @@ class CustomerServiceMixin:
             accounts=accounts,
             settings=settings,
             account_warning=warning,
+            module_sources=module_sources,
             message=query.get("message", [""])[0],
             message_kind=query.get("kind", ["info"])[0],
         )
@@ -377,94 +396,37 @@ class CustomerServiceMixin:
         return data, ""
 
     def _handle_customer_service_problem_query(self, handler: BaseHTTPRequestHandler) -> None:
-        trusted_context = self._control_plane_write_context(handler)
-        if trusted_context is None:
+        if self._control_plane_write_context(handler) is None:
             return
-        browser_request_uuid = str(
-            handler.headers.get("X-Browser-Request-UUID") or ""
-        )
+        from shared.customer_service_repository import CustomerServiceRepository
+        from shared.data_sources import DataSourceError
+
         body = self._parse_json_body(handler)
-        _accounts, account_map, warning = self._customer_service_account_maps(force=False)
-        if warning:
-            self._send_json(handler, HTTPStatus.BAD_GATEWAY, {"ok": False, "message": warning, "rows": []})
+        filters = body.get("filters") if isinstance(body.get("filters"), dict) else {}
+        source_ids = body.get("source_ids", [])
+        account_ids = body.get("account_ids", [])
+        if not isinstance(source_ids, list) or not isinstance(account_ids, list):
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "来源筛选格式无效。"})
             return
-        selected_accounts = self._customer_service_selected_accounts(body, account_map)
-        if not selected_accounts:
-            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "请先选择融辉或韵达账号。", "rows": []})
+        try:
+            with self.repository.connect() as connection:
+                result = CustomerServiceRepository(connection).query(
+                    source_ids=source_ids, account_ids=account_ids,
+                    direction=str(filters.get("direction") or ""),
+                    keyword=str(filters.get("q") or ""),
+                    start_date=str(filters.get("date_from") or ""),
+                    end_date=str(filters.get("date_to") or ""),
+                    limit=int(filters.get("rows", 200)),
+                    offset=(int(filters.get("page", 1)) - 1) * int(filters.get("rows", 200)),
+                )
+        except (DataSourceError, ValueError) as exc:
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc), "rows": []})
             return
-
-        rows: list[dict[str, Any]] = []
-        errors: list[dict[str, Any]] = []
-
-        def fetch_one(account: dict[str, Any]) -> dict[str, Any]:
-            payload = self._customer_service_agent_payload(account, "query", body)
-            result = self._call_customer_service_problem_agent(
-                payload,
-                trusted_context=trusted_context,
-                browser_request_uuid=browser_request_uuid,
-                timeout_sec=180,
-            )
-            data, error = self._unwrap_customer_service_agent_result(result)
-            return {"account": account, "payload": payload, "data": data, "error": error}
-
-        with ThreadPoolExecutor(max_workers=min(max(len(selected_accounts), 1), 6)) as executor:
-            futures = [executor.submit(fetch_one, account) for account in selected_accounts]
-            for future in as_completed(futures):
-                item = future.result()
-                account = item["account"]
-                data = item["data"]
-                if item["error"]:
-                    errors.append(
-                        {
-                            "platform": account["system"],
-                            "account_id": account["account_id"],
-                            "account_label": account.get("name") or account["account_id"],
-                            "account_login": account.get("login_account") or "",
-                            "message": item["error"],
-                            "error_code": (data or {}).get("error_code") if isinstance(data, dict) else "",
-                        }
-                    )
-                    continue
-                for row in (data or {}).get("rows") or []:
-                    if not isinstance(row, dict):
-                        continue
-                    if not str(row.get("external_id") or "").strip():
-                        errors.append(
-                            {
-                                "platform": account["system"],
-                                "account_id": account["account_id"],
-                                "account_label": account.get("name") or account["account_id"],
-                                "account_login": account.get("login_account") or "",
-                                "message": "原系统返回问题件缺少 external_id，已跳过该账号结果。",
-                                "error_code": "MISSING_EXTERNAL_ID",
-                            }
-                        )
-                        rows = [existing for existing in rows if existing.get("account_id") != account["account_id"]]
-                        break
-                    normalized = dict(row)
-                    normalized.setdefault("platform", account["system"])
-                    normalized.setdefault("account_id", account["account_id"])
-                    normalized.setdefault("account_label", account.get("name") or account["account_id"])
-                    normalized.setdefault("account_login", account.get("login_account") or "")
-                    if not self._customer_service_should_include_problem_row(normalized):
-                        continue
-                    rows.append(normalized)
-
-        rows.sort(key=lambda row: str(row.get("updated_at") or row.get("created_at") or ""), reverse=True)
-        self._send_json(
-            handler,
-            HTTPStatus.OK,
-            {
-                "ok": not errors,
-                "rows": rows,
-                "errors": errors,
-                "stats": {
-                    "account_count": len(selected_accounts),
-                    "row_count": len(rows),
-                    "error_count": len(errors),
-                },
-            },
-        )
+        except Exception:
+            self._send_json(handler, HTTPStatus.SERVICE_UNAVAILABLE,
+                {"ok": False, "message": "本地已发布数据暂不可用。", "rows": [], "error_code": "CUSTOMER_LOCAL_DATA_UNAVAILABLE"})
+            return
+        self._send_json(handler, HTTPStatus.OK, result)
 
     def _resolve_customer_service_action_account(
         self,

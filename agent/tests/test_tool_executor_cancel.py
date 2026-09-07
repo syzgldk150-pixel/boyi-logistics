@@ -293,55 +293,57 @@ class ToolExecutorCancelTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("live", self.executor._running_outputs)
 
     async def test_same_tool_runs_in_parallel_and_bound_cancel_is_exact(self):
-        tool_name = "parallel_cancel_tool"
-        capability = {
-            "name": tool_name,
-            "executor": self.executor_relpath,
-            "timeout": 30,
-            "heavy": True,
-        }
-        first = asyncio.create_task(
-            self.executor.execute(
-                capability,
-                {},
-                execution_identity={"run_id": "run-a", "step_id": "step-a"},
-            )
-        )
-        second = asyncio.create_task(
-            self.executor.execute(
-                capability,
-                {},
-                execution_identity={"run_id": "run-b", "step_id": "step-b"},
-            )
-        )
-        for _ in range(50):
-            info = self.executor.running_tool_info(tool_name)
-            if info.get("instances") == 2:
-                break
-            await asyncio.sleep(0.1)
-        else:
-            self.fail("same-name executions did not run concurrently")
+        for repetition in range(20):
+            with self.subTest(repetition=repetition):
+                tool_name = "parallel_cancel_tool"
+                capability = {
+                    "name": tool_name,
+                    "executor": self.executor_relpath,
+                    "timeout": 30,
+                    "heavy": True,
+                }
+                first = asyncio.create_task(
+                    self.executor.execute(
+                        capability,
+                        {},
+                        execution_identity={"run_id": "run-a", "step_id": "step-a"},
+                    )
+                )
+                second = asyncio.create_task(
+                    self.executor.execute(
+                        capability,
+                        {},
+                        execution_identity={"run_id": "run-b", "step_id": "step-b"},
+                    )
+                )
+                for _ in range(50):
+                    info = self.executor.running_tool_info(tool_name)
+                    if info.get("instances") == 2:
+                        break
+                    await asyncio.sleep(0.1)
+                else:
+                    self.fail("same-name executions did not run concurrently")
 
-        ambiguous = await self.executor.cancel_tool(tool_name)
-        self.assertEqual("AMBIGUOUS_TOOL_EXECUTION", ambiguous["code"])
+                ambiguous = await self.executor.cancel_tool(tool_name)
+                self.assertEqual("AMBIGUOUS_TOOL_EXECUTION", ambiguous["code"])
 
-        cancelled = await self.executor.cancel_bound_run(
-            tool_name=tool_name,
-            run_id="run-a",
-            step_id="step-a",
-        )
-        self.assertTrue(cancelled["ok"])
-        first_result = await asyncio.wait_for(first, timeout=5)
-        self.assertEqual("CANCELLED", first_result["error_code"])
-        self.assertFalse(second.done())
+                cancelled = await self.executor.cancel_bound_run(
+                    tool_name=tool_name,
+                    run_id="run-a",
+                    step_id="step-a",
+                )
+                self.assertTrue(cancelled["ok"])
+                first_result = await asyncio.wait_for(first, timeout=5)
+                self.assertEqual("CANCELLED", first_result["error_code"])
+                self.assertFalse(second.done())
 
-        await self.executor.cancel_bound_run(
-            tool_name=tool_name,
-            run_id="run-b",
-            step_id="step-b",
-        )
-        second_result = await asyncio.wait_for(second, timeout=5)
-        self.assertEqual("CANCELLED", second_result["error_code"])
+                await self.executor.cancel_bound_run(
+                    tool_name=tool_name,
+                    run_id="run-b",
+                    step_id="step-b",
+                )
+                second_result = await asyncio.wait_for(second, timeout=5)
+                self.assertEqual("CANCELLED", second_result["error_code"])
 
     async def test_unified_tool_failure_preserves_auth_required_classification(self):
         failure_script = self._write_temp_script(

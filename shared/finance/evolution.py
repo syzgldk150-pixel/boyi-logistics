@@ -10,13 +10,12 @@ import datetime as dt
 import hashlib
 import json
 from decimal import Decimal
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from shared.finance.money import ZERO, format_money
+from shared.finance.publication import VISIBLE_TRANSACTION_JOIN, source_alias_filter
 from shared.finance.sources import (
     enabled_finance_platforms,
-    enabled_finance_source_specs,
-    is_finance_source_enabled,
 )
 
 
@@ -31,16 +30,9 @@ def _enabled_platform_clause(column: str) -> tuple[str, list[Any]]:
 def _enabled_source_clause(
     *, platform_column: str, account_column: str
 ) -> tuple[str, list[Any]]:
-    specs = enabled_finance_source_specs()
-    if not specs:
-        return "1 = 0", []
-    pairs = " OR ".join(
-        f"({platform_column} = %s AND {account_column} = %s)" for _ in specs
-    )
-    return (
-        f"({pairs})",
-        [value for spec in specs for value in (spec.platform, spec.account_id)],
-    )
+    # Capability readiness may restrict providers, never the set of historical
+    # logical sources or credentials belonging to a supported provider.
+    return _enabled_platform_clause(platform_column)
 
 
 def _row(cursor: Any, value: Any) -> dict[str, Any] | None:
@@ -107,19 +99,7 @@ _EFFECTIVE_MAPPING_JOIN = """
 """
 
 
-_VISIBLE_TRANSACTION_JOIN = """
-    INNER JOIN (
-        SELECT platform, account_id, target_date, MAX(id) AS latest_run_id
-        FROM finance_sync_runs
-        WHERE status IN ('success', 'no_data')
-        GROUP BY platform, account_id, target_date
-    ) latest
-      ON latest.platform = t.platform
-     AND latest.account_id = t.account_id
-     AND latest.target_date = t.business_date
-     AND latest.latest_run_id = t.run_id
-"""
-
+_VISIBLE_TRANSACTION_JOIN = VISIBLE_TRANSACTION_JOIN
 
 class FinanceEvolutionMixin:
     """Methods mixed into the shared ``FinanceRepository``."""
@@ -190,7 +170,7 @@ class FinanceEvolutionMixin:
         run_id = int(run["id"])
         platform = str(run["platform"])
         account_id = str(run["account_id"])
-        if not is_finance_source_enabled(platform, account_id):
+        if platform not in enabled_finance_platforms():
             raise ValueError("finance source is not enabled")
         business_date = run["target_date"]
         now = _now()
@@ -869,6 +849,7 @@ class FinanceEvolutionMixin:
         end_date: dt.date,
         platform: str | None = None,
         account_id: str | None = None,
+        source_ids: Sequence[str] = (),
         waybill_no: str | None = None,
         limit: int = 100,
         offset: int = 0,
@@ -882,18 +863,24 @@ class FinanceEvolutionMixin:
             if value:
                 clauses.append(f"{column} = %s")
                 params.append(value)
+        if source_ids:
+            clauses.append(source_alias_filter(source_ids, platform_column="f.platform", account_column="f.account_id"))
+            params.extend(source_ids)
         where = " AND ".join(clauses)
+        from shared.finance.publication import LATEST_PUBLISHED_RUNS
+
+        facts_from = "finance_waybill_facts f INNER JOIN (" + LATEST_PUBLISHED_RUNS + ") published ON published.latest_run_id=f.source_run_id"
         with self._connection() as connection:
             cursor = connection.cursor()
             try:
-                cursor.execute(f"SELECT COUNT(*) AS total FROM finance_waybill_facts f WHERE {where}", tuple(params))
+                cursor.execute(f"SELECT COUNT(*) AS total FROM {facts_from} WHERE {where}", tuple(params))
                 total = int((_one(cursor) or {}).get("total") or 0)
                 cursor.execute(
                     f"""
                     SELECT f.platform, f.account_id, f.business_date, f.waybill_no,
                            s.subject_code, s.subject_name, f.income, f.expense,
                            f.net_change, f.transaction_count, f.mapping_version
-                    FROM finance_waybill_facts f
+                    FROM {facts_from}
                     INNER JOIN finance_fee_subjects s ON s.id = f.canonical_subject_id
                     WHERE {where}
                     ORDER BY f.business_date DESC, f.waybill_no, s.subject_name
@@ -918,6 +905,9 @@ class FinanceEvolutionMixin:
         if query.account_id:
             clauses.append("t.account_id = %s")
             params.append(query.account_id)
+        if query.source_ids:
+            clauses.append(source_alias_filter(query.source_ids, platform_column="t.platform", account_column="t.account_id"))
+            params.extend(query.source_ids)
         where = " AND ".join(clauses)
         with self._connection() as connection:
             cursor = connection.cursor()

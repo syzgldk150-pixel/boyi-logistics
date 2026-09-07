@@ -38,9 +38,10 @@ from shared.finance.schema import validate_finance_schema
 from shared.finance.sources import (
     enabled_finance_platforms,
     enabled_finance_source_specs,
-    is_finance_source_enabled,
 )
 from shared.finance.validation import ValidationReport
+from shared.finance.publication import PUBLISHED_BATCH_PREDICATE, VISIBLE_TRANSACTION_JOIN, LATEST_PUBLISHED_RUNS, source_alias_filter
+from shared.data_sources import DataSourceRepository, SourceIdentity
 from shared.finance.evolution import (
     FinanceEvolutionMixin,
     _enabled_platform_clause,
@@ -147,9 +148,26 @@ class FinanceRepository(FinanceEvolutionMixin):
         resource = self._connection_factory()
         if hasattr(resource, "__enter__") and hasattr(resource, "__exit__"):
             with resource as connection:
-                yield connection
+                with self._transaction(connection):
+                    yield connection
             return
         connection = resource
+        try:
+            with self._transaction(connection):
+                yield connection
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+
+    @staticmethod
+    @contextmanager
+    def _transaction(connection: Any) -> Iterator[Any]:
+        # The production factory enables autocommit. Source ownership checks,
+        # immutable snapshot writes and publication must share an actual lock.
+        autocommit = getattr(connection, "autocommit", None)
+        if callable(autocommit):
+            autocommit(False)
         try:
             yield connection
             commit = getattr(connection, "commit", None)
@@ -160,10 +178,6 @@ class FinanceRepository(FinanceEvolutionMixin):
             if callable(rollback):
                 rollback()
             raise
-        finally:
-            close = getattr(connection, "close", None)
-            if callable(close):
-                close()
 
     def initialize_schema(self) -> None:
         """Validate the migration-owned schema without executing runtime DDL."""
@@ -228,16 +242,31 @@ class FinanceRepository(FinanceEvolutionMixin):
         target_date: dt.date | str,
         source_site_code: str | None = None,
         source_site_name: str | None = None,
+        producer_instance_id: str | None = None,
+        producer_generation: int | None = None,
+        require_runtime_provenance: bool = False,
     ) -> int:
         platform_value = Platform(platform).value
         account = _required_text(account_id, "account_id")
-        if not is_finance_source_enabled(platform_value, account):
+        if platform_value not in enabled_finance_platforms():
             raise ValueError("finance source is not enabled")
         login = _required_text(login_account, "login_account")
         profile = _required_text(session_profile, "session_profile")
         target = _date(target_date, "target_date")
         now = _now()
         with self._connection() as connection, _managed_cursor(connection) as cursor:
+            if producer_instance_id is not None:
+                identity = SourceIdentity(module="finance", provider=platform_value,
+                    organization_key=_required_text(source_site_code, "source_site_code"),
+                    dataset="finance.transactions", contract_version="1", dedup_contract="provider-guid-per-business-date-v1")
+                sources = DataSourceRepository(connection)
+                producer_snapshot = sources.producer_snapshot(producer_instance_id, producer_generation,
+                    required=require_runtime_provenance)
+                source = sources.register_source(identity,
+                    display_name=_required_text(source_site_name, "source_site_name"),
+                    producer_instance_id=producer_instance_id,
+                    producer_generation=producer_generation, request_id=f"finance-batch:{batch_id}")
+                sources.bind_account_alias(source["source_id"], provider=platform_value, account_id=account)
             cursor.execute(
                 "SELECT id, status FROM finance_sync_batches WHERE id = %s FOR UPDATE",
                 (int(batch_id),),
@@ -279,7 +308,13 @@ class FinanceRepository(FinanceEvolutionMixin):
                     now,
                 ),
             )
-            return int(cursor.lastrowid)
+            run_id = int(cursor.lastrowid)
+            if producer_instance_id is not None:
+                cursor.execute("""INSERT INTO finance_source_run_bindings
+                    (run_id,source_id,producer_instance_id,producer_generation,source_revision,producer_snapshot_json)
+                    VALUES(%s,%s,%s,%s,%s,%s)""", (run_id, source["source_id"], producer_instance_id,
+                    producer_generation, source["revision"], _json_text(producer_snapshot) if producer_snapshot is not None else None))
+            return run_id
 
     def start_failed_run(
         self,
@@ -295,7 +330,7 @@ class FinanceRepository(FinanceEvolutionMixin):
 
         platform_value = Platform(platform).value
         account = _required_text(account_id, "account_id")
-        if not is_finance_source_enabled(platform_value, account):
+        if platform_value not in enabled_finance_platforms():
             raise ValueError("finance source is not enabled")
         target = _date(target_date, "target_date")
         code = _required_text(error_code, "error_code")
@@ -355,6 +390,17 @@ class FinanceRepository(FinanceEvolutionMixin):
             raise FinanceNotFoundError("sync run does not exist")
         if str(row.get("status")) != SyncStatus.RUNNING.value:
             raise FinanceRepositoryError("sync run is not running")
+        cursor.execute("""SELECT b.producer_instance_id AS expected_producer,
+            b.producer_generation AS expected_generation,b.source_revision,
+            s.producer_instance_id,s.producer_generation,s.revision,s.status
+            FROM finance_source_run_bindings b JOIN module_data_sources s ON s.source_id=b.source_id
+            WHERE b.run_id=%s FOR UPDATE""", (int(run_id),))
+        binding = _fetchone(cursor)
+        if binding and (binding["status"] != "active"
+                or binding["producer_instance_id"] != binding["expected_producer"]
+                or binding["producer_generation"] != binding["expected_generation"]
+                or binding["revision"] != binding["source_revision"]):
+            raise FinanceSnapshotRejectedError("SOURCE_PRODUCER_STALE")
         return row
 
     def _upsert_fee_item(self, cursor: Any, record: TransactionRecord) -> int:
@@ -566,7 +612,7 @@ class FinanceRepository(FinanceEvolutionMixin):
             run = self._load_run_for_update(cursor, run_id)
             expected_platform = str(run["platform"])
             expected_account = str(run["account_id"])
-            if not is_finance_source_enabled(expected_platform, expected_account):
+            if expected_platform not in enabled_finance_platforms():
                 raise FinanceSnapshotRejectedError("finance source is not enabled")
             expected_login = str(run.get("login_account") or "")
             expected_date = _date(run["target_date"], "target_date")
@@ -688,7 +734,9 @@ class FinanceRepository(FinanceEvolutionMixin):
                     int(run_id),
                 ),
             )
-            derivatives = self._refresh_run_derivatives(cursor, run)
+            # A completed run is still private until its containing batch
+            # publishes. Do not replace public facts or review aggregates here.
+            derivatives = {"publication_pending": True}
             report["metrics"].update(derivatives)
             cursor.execute(
                 "UPDATE finance_sync_runs SET validation_report_json = %s WHERE id = %s",
@@ -713,9 +761,7 @@ class FinanceRepository(FinanceEvolutionMixin):
         now = _now()
         with self._connection() as connection, _managed_cursor(connection) as cursor:
             run = self._load_run_for_update(cursor, run_id)
-            if not is_finance_source_enabled(
-                str(run["platform"]), str(run["account_id"])
-            ):
+            if str(run["platform"]) not in enabled_finance_platforms():
                 raise FinanceSnapshotRejectedError("finance source is not enabled")
             report["metrics"]["written_row_count"] = 0
             cursor.execute(
@@ -771,6 +817,13 @@ class FinanceRepository(FinanceEvolutionMixin):
             )
             if not _fetchone(cursor):
                 raise FinanceNotFoundError("sync batch does not exist")
+            cursor.execute("""SELECT COUNT(*) AS stale_count FROM finance_source_run_bindings b
+                JOIN finance_sync_runs r ON r.id=b.run_id JOIN module_data_sources s ON s.source_id=b.source_id
+                WHERE r.batch_id=%s AND (s.status<>'active' OR s.producer_instance_id<>b.producer_instance_id
+                  OR s.producer_instance_id IS NULL OR s.producer_generation<>b.producer_generation
+                  OR s.revision<>b.source_revision)""", (int(batch_id),))
+            if int((_fetchone(cursor) or {}).get("stale_count") or 0):
+                raise FinanceSnapshotRejectedError("SOURCE_PRODUCER_STALE")
             cursor.execute(
                 """
                 SELECT status, COUNT(*) AS total
@@ -801,6 +854,18 @@ class FinanceRepository(FinanceEvolutionMixin):
                 """,
                 (status.value, _now(), int(batch_id)),
             )
+            cursor.execute("SELECT id,platform,account_id,target_date FROM finance_sync_runs WHERE batch_id=%s AND status IN ('success','no_data')", (int(batch_id),))
+            published_runs = _fetchall(cursor)
+            for published_run in published_runs:
+                self._refresh_run_derivatives(cursor, published_run)
+            if completed:
+                cursor.execute("""UPDATE module_data_sources s JOIN (
+                    SELECT DISTINCT b.source_id FROM finance_source_run_bindings b
+                    JOIN finance_sync_runs r ON r.id=b.run_id
+                    WHERE r.batch_id=%s AND r.status IN ('success','no_data')
+                ) published ON published.source_id=s.source_id
+                SET s.latest_published_at=UTC_TIMESTAMP(6),s.updated_at=UTC_TIMESTAMP(6)""",
+                    (int(batch_id),))
             return status
 
     def read_batch_commit_proof(self, batch_id: int) -> dict[str, Any]:
@@ -935,7 +1000,7 @@ class FinanceRepository(FinanceEvolutionMixin):
     ) -> list[dt.date]:
         platform_value = Platform(platform).value
         account = _required_text(account_id, "account_id")
-        if not is_finance_source_enabled(platform_value, account):
+        if platform_value not in enabled_finance_platforms():
             raise ValueError("finance source is not enabled")
         start = _date(start_date, "start_date")
         end = _date(end_date, "end_date")
@@ -949,6 +1014,12 @@ class FinanceRepository(FinanceEvolutionMixin):
                 WHERE platform = %s AND account_id = %s
                   AND target_date BETWEEN %s AND %s
                   AND status IN (%s, %s)
+                  AND EXISTS (
+    SELECT 1 FROM finance_sync_batches published_batch
+    WHERE published_batch.id = finance_sync_runs.batch_id
+      AND published_batch.status IN ('success','no_data','partial_failed')
+      AND published_batch.finished_at IS NOT NULL
+)
                 """,
                 (
                     platform_value,
@@ -1014,7 +1085,7 @@ class FinanceRepository(FinanceEvolutionMixin):
 
         platform_value = Platform(platform)
         account = _required_text(account_id, "account_id")
-        if not is_finance_source_enabled(platform_value.value, account):
+        if platform_value.value not in enabled_finance_platforms():
             raise ValueError("finance source is not enabled")
         target = _date(target_date, "target_date")
         keys = sorted(
@@ -1311,18 +1382,7 @@ class FinanceRepository(FinanceEvolutionMixin):
                     seeded += 1
         return seeded
 
-    _VISIBLE_ENTRY_FROM = """
-        FROM finance_transactions t
-        INNER JOIN (
-            SELECT platform, account_id, target_date, MAX(id) AS latest_run_id
-            FROM finance_sync_runs
-            WHERE status IN ('success', 'no_data')
-            GROUP BY platform, account_id, target_date
-        ) latest
-          ON latest.platform = t.platform
-         AND latest.account_id = t.account_id
-         AND latest.target_date = t.business_date
-         AND latest.latest_run_id = t.run_id
+    _VISIBLE_ENTRY_FROM = "FROM finance_transactions t " + VISIBLE_TRANSACTION_JOIN + """
         INNER JOIN finance_sync_runs visible_run ON visible_run.id = t.run_id
         INNER JOIN finance_fee_items fi ON fi.id = t.fee_item_id
         LEFT JOIN finance_fee_mappings fm ON fm.id = (
@@ -1347,6 +1407,9 @@ class FinanceRepository(FinanceEvolutionMixin):
         )
         clauses = ["t.business_date BETWEEN %s AND %s", enabled_clause]
         params: list[Any] = [query.start_date, query.end_date, *enabled_params]
+        if query.source_ids:
+            clauses.append(source_alias_filter(query.source_ids, platform_column="t.platform", account_column="t.account_id"))
+            params.extend(query.source_ids)
         if query.platform:
             clauses.append("t.platform = %s")
             params.append(query.platform.value)
@@ -1418,6 +1481,9 @@ class FinanceRepository(FinanceEvolutionMixin):
         if query.account_id:
             clauses.append("r.account_id = %s")
             params.append(query.account_id)
+        if query.source_ids:
+            clauses.append(source_alias_filter(query.source_ids, platform_column="r.platform", account_column="r.account_id"))
+            params.extend(query.source_ids)
         sql = f"""
             SELECT r.platform, r.account_id, r.target_date, r.error_code, r.error_message
             FROM finance_sync_runs r
@@ -1453,6 +1519,9 @@ class FinanceRepository(FinanceEvolutionMixin):
         if query.account_id:
             clauses.append("r.account_id = %s")
             params.append(query.account_id)
+        if query.source_ids:
+            clauses.append(source_alias_filter(query.source_ids, platform_column="r.platform", account_column="r.account_id"))
+            params.extend(query.source_ids)
         sql = f"""
             SELECT MAX(r.finished_at) AS latest_success_at,
                    MAX(r.target_date) AS data_through_date,
@@ -1461,7 +1530,7 @@ class FinanceRepository(FinanceEvolutionMixin):
             INNER JOIN (
                 SELECT platform, account_id, target_date, MAX(id) AS latest_run_id
                 FROM finance_sync_runs
-                WHERE status IN (%s, %s)
+                WHERE status IN (%s, %s) AND {PUBLISHED_BATCH_PREDICATE}
                 GROUP BY platform, account_id, target_date
             ) latest ON latest.latest_run_id = r.id
             WHERE {' AND '.join(clauses)}
@@ -1490,14 +1559,12 @@ class FinanceRepository(FinanceEvolutionMixin):
             with self._connection() as owned_connection:
                 return self._coverage_status(query, connection=owned_connection)
 
-        expected_sources = {
+        legacy_sources = {
             (spec.platform, spec.account_id)
             for spec in enabled_finance_source_specs()
             if (query.platform is None or spec.platform == query.platform.value)
             and (not query.account_id or spec.account_id == query.account_id)
         }
-        if not expected_sources:
-            return "unavailable"
         enabled_clause, enabled_params = _enabled_source_clause(
             platform_column="r.platform", account_column="r.account_id"
         )
@@ -1509,21 +1576,45 @@ class FinanceRepository(FinanceEvolutionMixin):
         if query.account_id:
             clauses.append("r.account_id = %s")
             params.append(query.account_id)
+        if query.source_ids:
+            clauses.append(source_alias_filter(query.source_ids, platform_column="r.platform", account_column="r.account_id"))
+            params.extend(query.source_ids)
+        with _managed_cursor(connection) as cursor:
+            # Persistent identities determine the selection. The explicit
+            # legacy set remains only for pre-migration historical aliases.
+            source_clauses = ["a.module='finance'"]
+            source_params: list[Any] = []
+            if query.platform:
+                source_clauses.append("a.provider=%s")
+                source_params.append(query.platform.value)
+            if query.account_id:
+                source_clauses.append("a.account_id=%s")
+                source_params.append(query.account_id)
+            if query.source_ids:
+                source_clauses.append("a.source_id IN (" + ",".join(["%s"] * len(query.source_ids)) + ")")
+                source_params.extend(query.source_ids)
+            cursor.execute("SELECT a.provider AS platform,a.account_id,a.source_id FROM module_data_source_accounts a WHERE " + " AND ".join(source_clauses), tuple(source_params))
+            persisted_sources = {(str(row["platform"]), str(row["source_id"])) for row in _fetchall(cursor)}
+        expected_sources = persisted_sources if persisted_sources or query.source_ids else {
+            (provider, "legacy-account:" + account) for provider, account in legacy_sources}
+        if not expected_sources:
+            return "unavailable"
         sql = f"""
-            SELECT r.platform, r.account_id,
+            SELECT r.platform, MIN(r.account_id) AS account_id,
+                   COALESCE(source_alias.source_id,CONCAT('legacy-account:',r.account_id)) AS source_identity,
                    COUNT(DISTINCT r.target_date) AS terminal_dates,
                    COUNT(DISTINCT CASE
                        WHEN r.validation_status = %s THEN r.target_date
                        ELSE NULL END) AS verified_dates
             FROM finance_sync_runs r
             INNER JOIN (
-                SELECT platform, account_id, target_date, MAX(id) AS latest_run_id
-                FROM finance_sync_runs
-                GROUP BY platform, account_id, target_date
+                {LATEST_PUBLISHED_RUNS}
             ) latest ON latest.latest_run_id = r.id
+            LEFT JOIN module_data_source_accounts source_alias ON source_alias.module='finance'
+              AND BINARY source_alias.provider=BINARY r.platform AND BINARY source_alias.account_id=BINARY r.account_id
             WHERE {' AND '.join(clauses)}
               AND r.status IN (%s, %s)
-            GROUP BY r.platform, r.account_id
+            GROUP BY r.platform, source_identity
         """
         with _managed_cursor(connection) as cursor:
             cursor.execute(
@@ -1540,7 +1631,7 @@ class FinanceRepository(FinanceEvolutionMixin):
             return "unavailable"
         expected_days = (query.end_date - query.start_date).days + 1
         covered = {
-            (str(row.get("platform") or ""), str(row.get("account_id") or "")): (
+            (str(row.get("platform") or ""), str(row.get("source_identity") or "legacy-account:" + str(row.get("account_id") or ""))): (
                 _integer_count(row.get("terminal_dates"), "terminal_dates"),
                 _integer_count(row.get("verified_dates"), "verified_dates"),
             )
@@ -1621,6 +1712,9 @@ class FinanceRepository(FinanceEvolutionMixin):
         if query.account_id:
             presence_clauses.append("r.account_id = %s")
             presence_params.append(query.account_id)
+        if query.source_ids:
+            presence_clauses.append(source_alias_filter(query.source_ids, platform_column="r.platform", account_column="r.account_id"))
+            presence_params.extend(query.source_ids)
         account_presence_sql = f"""
             SELECT r.platform, r.account_id,
                    MAX(COALESCE(r.login_account, '')) AS login_account
@@ -1628,7 +1722,7 @@ class FinanceRepository(FinanceEvolutionMixin):
             INNER JOIN (
                 SELECT platform, account_id, target_date, MAX(id) AS latest_run_id
                 FROM finance_sync_runs
-                WHERE status IN (%s, %s)
+                WHERE status IN (%s, %s) AND {PUBLISHED_BATCH_PREDICATE}
                 GROUP BY platform, account_id, target_date
             ) latest ON latest.latest_run_id = r.id
             WHERE {' AND '.join(presence_clauses)}
@@ -1780,13 +1874,16 @@ class FinanceRepository(FinanceEvolutionMixin):
         if query.account_id:
             presence_clauses.append("r.account_id = %s")
             presence_params.append(query.account_id)
+        if query.source_ids:
+            presence_clauses.append(source_alias_filter(query.source_ids, platform_column="r.platform", account_column="r.account_id"))
+            presence_params.extend(query.source_ids)
         date_presence_sql = f"""
             SELECT DISTINCT r.target_date AS date
             FROM finance_sync_runs r
             INNER JOIN (
                 SELECT platform, account_id, target_date, MAX(id) AS latest_run_id
                 FROM finance_sync_runs
-                WHERE status IN (%s, %s)
+                WHERE status IN (%s, %s) AND {PUBLISHED_BATCH_PREDICATE}
                 GROUP BY platform, account_id, target_date
             ) latest ON latest.latest_run_id = r.id
             WHERE {' AND '.join(presence_clauses)}

@@ -336,13 +336,13 @@ class _StubCommands:
 
 class _StubWorkItems:
     def get_by_command(self, command_id, *, for_update=False):
-        assert command_id == "old-command" and for_update
+        assert command_id == "old-command" and not for_update
         return {"work_item_id": "old-item"}
 
 
 class _StubRuns:
     def get_first_for_work_item(self, work_item_id, *, for_update=False):
-        assert work_item_id == "old-item" and for_update
+        assert work_item_id == "old-item" and not for_update
         return {"run_id": "old-run"}
 
 

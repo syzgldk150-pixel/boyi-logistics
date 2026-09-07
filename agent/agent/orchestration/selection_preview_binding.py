@@ -17,6 +17,7 @@ from agent.orchestration.models import (
     new_id,
 )
 from agent.orchestration.scan_preview_binding import normalize_preview_run_id
+from agent.orchestration.signed_preview_maintenance import signed_preview_contract_compatible
 from shared.automation_project_authorization import (
     AutomationProjectInvocation,
     canonical_sha256,
@@ -106,8 +107,10 @@ def is_selection_preview_project(entry: Any) -> bool:
         spec
         and str(getattr(entry, "plugin_id", "") or "").strip()
         == str(spec["plugin_id"])
-        and str(getattr(entry, "trust_source", "") or "").strip()
-        == "ed25519_first_party"
+        and (
+            str(getattr(entry, "trust_source", "") or "").strip() == "ed25519_first_party"
+            or signed_preview_contract_compatible(entry)
+        )
     ):
         return True
     return any(

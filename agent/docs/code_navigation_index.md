@@ -145,3 +145,17 @@ updated: 2026-08-31
 | 需求类型 | 优先查看文件 | 说明 |
 |---|---|---|
 | 分批及有发未到问题件 | `first_party_automation_plugins/split_pending_problem_upload/payload/action.py` `agent/orchestration/selection_preview_binding.py` `agent/automation_plugins/problem_handlers.py` `plugin_core_adapters/problem_actions.py` `tools/split_pending_snapshot.py` `tools/phase7_mysql_store.py` `agent/tms_runtime/scripts/split_pending_problem_upload.py` `agent/tms_runtime/scripts/ronghui_problem_upload.py` `feishu/message_handler.py` | 签名包严格解析 19 列来源、整数件数和问题分类；部分到货直接登记“少货/分批 / 交接异常”，内容严格为 `应到XX件 实际到XX件`，不进入投诉方登记。飞书 pending 或 Console 已验签候选 Run 恢复服务端指纹和显式运单集合。正式动作先完成全部问题件预检，再更新精确绑定的快照与目标表并逐票执行；目标表、MySQL 快照、每日应签问题事件均需精确写后回读，事件验证成功后才提交该票 MySQL 成功结果，避免下游事件失败时隐藏候选。 |
+
+## V3.2 局部维护入口
+
+- 产品边界、维护归属和来源：仓库 `docs/low_maintenance_v32.md`；复现、首次核心发布及插件回退顺序：`docs/low_maintenance_v32_release.md`。
+- 指定插件的局部测试与打包：`scripts/plugin_maintenance.py`、`docs/plugin_maintenance.md`。
+- 本轮完整验收：`scripts/accept_low_maintenance_v32.py`、仓库 `docs/low_maintenance_v32_acceptance.json`；真实浏览器/协议组合：仓库 `tests/v32_acceptance/`。
+- 模块归属与闭合代际信封：仓库 `shared/plugin_management.py`、`shared/plugin_generation_contract.py`；目录只读事务：`agent/automation_plugins/catalog_read_scope.py`。
+- 同一模块目录批量读取：仓库 `shared/automation_plugin_catalog_rows.py`；仍逐实例校验原始代际与配置，缓存不进入执行或修改链路。
+- ACTION_V1 上传检查、相容预览与历史包回退：`agent/automation_plugins/inspection_action_v1.py`、`agent/orchestration/signed_preview_maintenance.py`、`agent/automation_plugins/historical_version.py`。
+- 隔离环境复现、宿主冻结与两次维护演练：仓库 `tests/v32_acceptance/environment.md`、`isolated_environment.sh`、`host_freeze.py`、`finance_maintenance_drill.py`、`decision_maintenance.py`。
+- 来源身份/接续/历史：仓库 `shared/data_sources.py`、`shared/data_source_migration.py`、`scripts/migrate_module_data_sources.py`；增量结构 `migrations/039_module_data_sources.sql`，卸载后生产者溯源为 `migrations/040_source_producer_provenance.sql`。
+- Console 投影与本地来源：仓库 `console/services/automation_catalog_projection.py`、`console/services/module_data_sources.py`；默认/专属设置共用原管理服务和设置桥。
+- 真实验收组合：仓库 `tests/v32_acceptance/daily_concurrency.py`、`settings_effective.py`、`catalog_guards.py`；延迟目录及整库故障为 `catalog_delivery.py`，业务成功后的通知/展示投递为 `post_success_delivery.py`；调度超时/取消/重启为 `tests/test_scheduler_runner_lifecycle_mysql.py`。隔离库准备复用 `owned_database.py` 和已有正式迁移器。
+- 扫描写后恢复与未知写资源隔离：仓库 `docs/scan_recovery_v32.md`、`shared/scan_snapshot_recovery.py`、`shared/execution_resource_journal.py`、`agent/agent/automation_plugins/scan_recovery_context.py`；扫描快照与原执行资源日志使用 `migrations/041_scan_write_recovery_snapshot.sql`。

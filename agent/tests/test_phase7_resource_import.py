@@ -199,7 +199,9 @@ def test_fixed_route_repair_leaves_correct_feishu_route_unchanged() -> None:
         patch.object(
             phase7_resource_import,
             "get_workflow_resource",
-            side_effect=lambda key: current if key == route_key else None,
+            side_effect=lambda key: current
+            if key == route_key
+            else phase7_resource_import.BUILTIN_RESOURCES.get(key),
         ),
         patch.object(phase7_resource_import, "upsert_workflow_resource") as upsert,
     ):

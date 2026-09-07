@@ -362,6 +362,7 @@ global.requestAnimationFrame = (callback) => callback();
 global.fetch = async () => {
   throw new Error("deep-link boot unexpectedly attempted a network request");
 };
+window.fetch = global.fetch;
 
 const consoleUiPath = process.argv[2];
 if (!consoleUiPath) throw new Error("console_ui.js path is required");

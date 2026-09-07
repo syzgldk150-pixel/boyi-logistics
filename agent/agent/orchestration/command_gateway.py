@@ -15,6 +15,7 @@ from agent.orchestration.models import (
     new_id,
     sha256_json,
 )
+from shared.orchestration_repository_support import IdempotencyConflict
 
 
 WAITING_RUN_STATUSES = frozenset(
@@ -180,6 +181,10 @@ class CommandGateway:
                 uow.commit()
         except OrchestrationError:
             raise
+        except IdempotencyConflict as exc:
+            raise OrchestrationError(
+                "IDEMPOTENCY_CONFLICT", "Request id was reused with different command semantics",
+            ) from exc
         except Exception as exc:
             raise OrchestrationError("PERSISTENCE_UNAVAILABLE", "Command could not be persisted") from exc
 

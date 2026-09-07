@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from agent.automation_plugins.errors import PluginManifestError
+from shared.plugin_management import validate_management
 
 
 _AUTOMATION_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
@@ -308,10 +309,18 @@ class AutomationPluginManifest:
         repr=False,
         compare=False,
     )
+    management: Mapping[str, str] | None = None
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "AutomationPluginManifest":
-        data = _mapping(copy.deepcopy(dict(raw)), "manifest", _TOP_LEVEL_FIELDS)
+        data = copy.deepcopy(dict(raw))
+        management = data.pop("management", None)
+        if "management" in raw:
+            try:
+                management = validate_management(management)
+            except ValueError as exc:
+                raise PluginManifestError(str(exc)) from exc
+        data = _mapping(data, "manifest", _TOP_LEVEL_FIELDS)
         if data["schema_version"] != 1:
             raise PluginManifestError("schema_version must be 1")
         plugin_id = _non_empty_text(data["plugin_id"], "plugin_id", maximum=64)
@@ -681,6 +690,7 @@ class AutomationPluginManifest:
             _legacy_missing_effect_operations=frozenset(
                 legacy_missing_effect_operations
             ),
+            management=MappingProxyType(management) if management is not None else None,
         )
 
     def to_signed_mapping(self) -> dict[str, Any]:
@@ -694,7 +704,7 @@ class AutomationPluginManifest:
         return signed
 
     def to_mapping(self) -> dict[str, Any]:
-        return {
+        result = {
             "schema_version": self.schema_version,
             "plugin_id": self.plugin_id,
             "name": self.name,
@@ -717,6 +727,9 @@ class AutomationPluginManifest:
             "project_full_auto_allowed": self.project_full_auto_allowed,
             "runtime_permissions": copy.deepcopy(dict(self.runtime_permissions)),
         }
+        if self.management is not None:
+            result["management"] = dict(self.management)
+        return result
 
     @property
     def manifest_sha256(self) -> str:

@@ -36,7 +36,7 @@ class AutomationProjectGroupingTests(unittest.TestCase):
         service.settings = SimpleNamespace(app_title="Console", agent_base_url="http://agent")
         service.automation_virtual_task_state = {}
         service.template_env = SimpleNamespace(get_template=lambda _name: _Template())
-        service._load_automation_plugin_catalog = lambda _handler: (
+        service._load_automation_plugin_catalog = lambda _handler, **_scope: (
             [],
             list(plugin_instances or []),
             [],
@@ -54,7 +54,7 @@ class AutomationProjectGroupingTests(unittest.TestCase):
         service._render_automations(SimpleNamespace(current_admin_user={"username": "admin"}), {})
         return captured["scheduled_tasks"]
 
-    def test_parallel_account_load_keeps_authenticated_request_principal(self):
+    def test_first_page_defers_account_directory_until_settings(self):
         captured = {}
         principal = {
             "username": "admin",
@@ -71,9 +71,7 @@ class AutomationProjectGroupingTests(unittest.TestCase):
             account_principal=principal,
         )
 
-        self.assertEqual(principal, captured["console_principal"])
-        self.assertFalse(captured["force"])
-        self.assertTrue(captured["prefer_cached"])
+        self.assertEqual({}, captured)
 
     def test_same_project_groups_arbitrary_scheduled_row_ids(self):
         rows = [

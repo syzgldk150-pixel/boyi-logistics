@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import threading
 from datetime import datetime
 
 import pytest
@@ -102,6 +103,18 @@ class _Runs:
         if self.repository.run["run_id"] != run_id:
             return None
         return copy.deepcopy(self.repository.run)
+
+    def transition(self, run_id, *, expected_version, expected_statuses, status, **values):
+        row = self.repository.run
+        assert row["run_id"] == run_id
+        assert row["version"] == expected_version
+        assert row["status"] in expected_statuses
+        increment = values.pop("increment_execution_attempt", False)
+        row.update(copy.deepcopy(values))
+        row["status"] = status
+        row["version"] += 1
+        row["execution_attempt_count"] += int(increment)
+        return copy.deepcopy(row)
 
     def release_or_schedule(self, run_id, *, worker_id, status, **values):
         row = self.repository.run
@@ -275,7 +288,57 @@ def _runner(repository, process_result, *, capability=None):
     runner._worker_id = "worker-1"
     runner._lease_seconds = 120
     runner._active = {}
+    runner._loop = None
+    runner._wake = asyncio.Event()
     return runner
+
+
+@pytest.mark.parametrize("round_number", range(20))
+def test_cancelled_direct_thread_retains_resources_until_real_exit(round_number):
+    del round_number
+    async def exercise():
+        entered = threading.Event()
+        exit_allowed = threading.Event()
+        exited = threading.Event()
+        calls = []
+
+        def direct_workload(arguments):
+            calls.append(arguments)
+            entered.set()
+            if not exit_allowed.wait(3):
+                raise TimeoutError("isolated direct workload deadline")
+            exited.set()
+            return {"rows": []}
+
+        repository = _Repository()
+        runner = _runner(repository, {})
+        runner._browser_tool_names = frozenset({"cancel_tool"})
+        runner._browser_semaphore = asyncio.Semaphore(3)
+        runner._execution_port = RegisteredToolExecutionAdapter(
+            catalog=runner._catalog, executor=None,
+            direct_runners={"cancel_tool": direct_workload},
+        )
+        task = asyncio.create_task(runner._execute_plan(
+            copy.deepcopy(repository.run), _plan(_step()), _command(),
+        ))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            assert not exited.is_set()
+            assert runner._active
+            assert runner._browser_semaphore._value == 2
+            exit_allowed.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert exited.is_set() and len(calls) == 1
+            assert not runner._active and not runner._execution_locks
+            assert runner._browser_semaphore._value == 3
+        finally:
+            exit_allowed.set()
+            await asyncio.gather(task, return_exceptions=True)
+    asyncio.run(exercise())
 
 
 async def _execute_and_release_failure(runner, repository):
@@ -358,8 +421,14 @@ def test_cancel_request_is_checked_before_failed_step_commit():
             "error_code": "PERMANENT_TOOL_FAILURE",
         },
     )
-    repository.run["cancel_requested_at"] = datetime(2026, 8, 13, 11, 59, 0)
-    repository.run["cancel_reason"] = "cancel won the result race"
+    original_execute = runner._execution_port.execute_step
+
+    async def cancel_after_start(*args, **kwargs):
+        repository.run["cancel_requested_at"] = datetime(2026, 8, 13, 11, 59, 0)
+        repository.run["cancel_reason"] = "cancel won the result race"
+        return await original_execute(*args, **kwargs)
+
+    runner._execution_port.execute_step = cancel_after_start
 
     error = asyncio.run(_execute_and_release_failure(runner, repository))
 
@@ -372,8 +441,6 @@ def test_cancel_request_is_checked_before_failed_step_commit():
 
 def test_cancel_request_cannot_overwrite_started_write_unknown_result():
     repository = _Repository()
-    repository.run["cancel_requested_at"] = datetime(2026, 8, 13, 11, 59, 0)
-    repository.run["cancel_reason"] = "operator cancelled after the signed write started"
     capability = _capability()
     capability["operation_type"] = OperationType.EXTERNAL_WRITE.value
     runner = _runner(
@@ -386,6 +453,14 @@ def test_cancel_request_cannot_overwrite_started_write_unknown_result():
         },
         capability=capability,
     )
+    original_execute = runner._execution_port.execute_step
+
+    async def cancel_after_start(*args, **kwargs):
+        repository.run["cancel_requested_at"] = datetime(2026, 8, 13, 11, 59, 0)
+        repository.run["cancel_reason"] = "operator cancelled after the signed write started"
+        return await original_execute(*args, **kwargs)
+
+    runner._execution_port.execute_step = cancel_after_start
 
     error = asyncio.run(_execute_and_release_failure(runner, repository))
 

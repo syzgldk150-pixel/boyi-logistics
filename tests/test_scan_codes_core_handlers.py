@@ -273,10 +273,23 @@ def test_scan_snapshot_store_atomically_deletes_before_insert(
             return None
 
         def execute(self, statement, params=None):
+            if "automation_scan_snapshot_heads" in statement:
+                if statement.startswith("INSERT"):
+                    events.append("head_init")
+                elif statement.startswith("SELECT"):
+                    assert "FOR UPDATE" in statement
+                    events.append("head_lock")
+                else:
+                    assert statement.startswith("UPDATE")
+                    events.append("head_publish")
+                return
             assert "DELETE FROM scan_codes" in statement
             assert "snapshot_date = %s" in statement
             assert params == ("2026-08-24",)
             events.append("delete")
+
+        def fetchone(self):
+            return {"snapshot_date": "2026-08-24"}
 
         def executemany(self, statement, values):
             assert "INSERT INTO scan_codes" in statement
@@ -316,8 +329,11 @@ def test_scan_snapshot_store_atomically_deletes_before_insert(
     }
     assert events == [
         "begin",
+        "head_init",
+        "head_lock",
         "delete",
         *(["insert"] if rows else []),
+        "head_publish",
         "commit",
         "close",
     ]

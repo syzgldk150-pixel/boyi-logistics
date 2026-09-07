@@ -46,11 +46,25 @@ class AutomationRunLookupMixin:
                 FROM agent_commands AS c
                 INNER JOIN agent_runs AS r ON r.command_id=c.command_id
                 WHERE BINARY c.automation_id=BINARY %s
-                  AND r.status NOT IN (
+                  AND (r.status NOT IN (
                       'COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED'
+                  ) OR EXISTS (
+                      SELECT 1 FROM automation_project_generation_leases AS unresolved
+                      WHERE unresolved.orchestration_run_id=r.run_id
+                        AND unresolved.outcome='WRITE_OUTCOME_UNKNOWN'
+                  ) OR EXISTS (
+                      SELECT 1 FROM automation_write_attempt_receipts AS unresolved_receipt
+                      WHERE unresolved_receipt.orchestration_run_id=r.run_id
+                        AND unresolved_receipt.outcome='WRITE_OUTCOME_UNKNOWN'
+                  )
                   )
                 ORDER BY
                     CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM automation_project_generation_leases AS unknown_lease
+                            WHERE unknown_lease.orchestration_run_id=r.run_id
+                              AND unknown_lease.outcome='WRITE_OUTCOME_UNKNOWN'
+                        ) THEN 0
                         WHEN r.status IN (
                               'RECEIVED', 'CONTEXT_READY',
                               'PLANNED', 'VALIDATED', 'FAILED_RETRYABLE'

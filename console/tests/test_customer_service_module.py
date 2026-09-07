@@ -539,199 +539,58 @@ class CustomerServiceModuleTests(unittest.TestCase):
         self.assertNotIn("sound_enabled", app.sent_payload["settings"])
         self.assertNotIn("cookie", saved)
 
-    def test_problem_query_aggregates_selected_accounts_with_source_fields(self):
+    def _query_published_fixture(self, result, body):
+        from contextlib import nullcontext
+        from unittest.mock import patch
         app = self._build_app()
-        calls = []
+        app.repository.connect = lambda: nullcontext(object())
+        def no_remote(*args, **kwargs):
+            raise AssertionError("published queries must not call Agent or probe accounts")
+        app._agent_request = no_remote
+        app._customer_service_account_maps = no_remote
+        handler = _Handler(json.dumps(body).encode("utf-8"), {"Content-Type": "application/json"})
+        with patch("shared.customer_service_repository.CustomerServiceRepository") as repository:
+            repository.return_value.query.return_value = result
+            app._handle_customer_service_problem_query(handler)
+            return app, repository.return_value.query.call_args.kwargs
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
-            params = payload["params"]
-            calls.append({"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout})
-            return {
-                "ok": True,
-                "status": 200,
-                "data": {
-                    "ok": True,
-                    "rows": [
-                        {
-                            "platform": params["platform"],
-                            "account_id": params["account_id"],
-                            "account_label": params["account_label"],
-                            "account_login": params["account_login"],
-                            "source_direction": params["filters"]["direction"],
-                            "external_id": f'{params["platform"]}-1',
-                            "waybill_no": "2606000040",
-                            "raw": {"REGISTER_SITE": "邵阳操作场", "SEND_SITE": "邵阳操作场"}
-                            if params["account_login"] == "739010002"
-                            else {"REGISTER_SITE": "长沙操作场", "SEND_SITE": "株洲操作场"},
-                        }
-                    ],
-                    "stats": {"total": 1},
-                },
-            }
-
-        app._agent_request = types.MethodType(agent_request, app)
-        handler = _Handler(
-            json.dumps(
-                {
-                    "platforms": ["ronghui", "yunda"],
-                    "account_ids": ["ronghui-a", "yunda-a"],
-                    "filters": {"direction": "received"},
-                },
-                ensure_ascii=False,
-            ).encode("utf-8"),
-            {
-                "Content-Type": "application/json",
-                "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
-            },
-        )
-
-        app._handle_customer_service_problem_query(handler)
-
+    def test_problem_query_aggregates_selected_accounts_with_source_fields(self):
+        result = {"ok": True, "query_source": "published_local", "rows": [
+            {"account_id": "ronghui-a", "source_id": "synthetic-source-a", "platform": "ronghui"},
+            {"account_id": "yunda-a", "source_id": "synthetic-source-b", "platform": "yunda"}],
+            "stats": {"row_count": 2, "open_count": 2, "resolved_count": 0}, "errors": []}
+        app, arguments = self._query_published_fixture(result,
+            {"account_ids": ["ronghui-a", "yunda-a"], "filters": {"direction": "received"}})
         self.assertEqual(HTTPStatus.OK, app.sent_status)
-        self.assertTrue(app.sent_payload["ok"])
-        self.assertEqual(2, len(app.sent_payload["rows"]))
-        self.assertEqual({"ronghui-a", "yunda-a"}, {item["account_id"] for item in app.sent_payload["rows"]})
-        self.assertEqual({"739010002", "56739382003"}, {item["account_login"] for item in app.sent_payload["rows"]})
-        self.assertEqual("/internal/v1/tms/customer_service_problem", calls[0]["endpoint"])
-        self.assertEqual("query", calls[0]["payload"]["params"]["action"])
-        self.assertEqual("console", calls[0]["payload"]["source"])
-        self.assertEqual("console_admin", calls[0]["payload"]["actor"]["actor_type"])
-        self.assertTrue(calls[0]["payload"]["idempotency_key"].startswith("console:9:tool.execute:"))
-        self.assertIn("account_login", calls[0]["payload"]["params"])
-        self.assertNotIn("password", json.dumps(calls, ensure_ascii=False).lower())
+        self.assertEqual(result, app.sent_payload)
+        self.assertEqual(["ronghui-a", "yunda-a"], arguments["account_ids"])
+        self.assertEqual("received", arguments["direction"])
 
     def test_problem_query_filters_739010002_to_shaoyang_operation_site(self):
+        # The existing scope policy is also bundled unchanged into the collector;
+        # its persisted queue_included result is exercised against real MySQL in
+        # test_module_data_sources_mysql, without querying an external page here.
         app = self._build_app()
-
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
-            params = payload["params"]
-            if params["account_login"] == "739010002":
-                rows = [
-                    {
-                        "platform": "ronghui",
-                        "account_id": params["account_id"],
-                        "account_login": params["account_login"],
-                        "external_id": "keep",
-                        "waybill_no": "R-keep",
-                        "raw": {"REGISTER_SITE": "邵阳操作场", "SEND_SITE": "邵阳操作场"},
-                    },
-                    {
-                        "platform": "ronghui",
-                        "account_id": params["account_id"],
-                        "account_login": params["account_login"],
-                        "external_id": "wrong-notified",
-                        "waybill_no": "R-notified",
-                        "raw": {"REGISTER_SITE": "邵阳操作场", "SEND_SITE": "长沙操作场"},
-                    },
-                    {
-                        "platform": "ronghui",
-                        "account_id": params["account_id"],
-                        "account_login": params["account_login"],
-                        "external_id": "wrong-publish",
-                        "waybill_no": "R-publish",
-                        "raw": {"REGISTER_SITE": "长沙操作场", "SEND_SITE": "邵阳操作场"},
-                    },
-                    {
-                        "platform": "ronghui",
-                        "account_id": params["account_id"],
-                        "account_login": params["account_login"],
-                        "external_id": "missing-site",
-                        "waybill_no": "R-missing",
-                        "raw": {"REGISTER_SITE": "邵阳操作场"},
-                    },
-                ]
-            else:
-                rows = [
-                    {
-                        "platform": "yunda",
-                        "account_id": params["account_id"],
-                        "account_login": params["account_login"],
-                        "external_id": "other-account",
-                        "waybill_no": "Y-keep",
-                        "raw": {"site_id": "长沙操作场", "recv_site_id": "株洲操作场"},
-                    }
-                ]
-            return {"ok": True, "status": 200, "data": {"ok": True, "rows": rows}}
-
-        app._agent_request = types.MethodType(agent_request, app)
-        handler = _Handler(
-            json.dumps(
-                {
-                    "platforms": ["ronghui", "yunda"],
-                    "account_ids": ["ronghui-a", "yunda-a"],
-                    "filters": {"direction": "published_to_me"},
-                },
-                ensure_ascii=False,
-            ).encode("utf-8"),
-            {
-                "Content-Type": "application/json",
-                "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
-            },
-        )
-
-        app._handle_customer_service_problem_query(handler)
-
-        self.assertEqual(HTTPStatus.OK, app.sent_status)
-        self.assertEqual({"keep", "other-account"}, {row["external_id"] for row in app.sent_payload["rows"]})
-        self.assertNotIn("wrong-notified", {row["external_id"] for row in app.sent_payload["rows"]})
-        self.assertNotIn("wrong-publish", {row["external_id"] for row in app.sent_payload["rows"]})
-        self.assertNotIn("missing-site", {row["external_id"] for row in app.sent_payload["rows"]})
+        rows = [
+            {"external_id": "keep", "account_login": "739010002", "raw": {"REGISTER_SITE": "邵阳操作场", "SEND_SITE": "邵阳操作场"}},
+            {"external_id": "wrong-notified", "account_login": "739010002", "raw": {"REGISTER_SITE": "邵阳操作场", "SEND_SITE": "长沙操作场"}},
+            {"external_id": "wrong-publish", "account_login": "739010002", "raw": {"REGISTER_SITE": "长沙操作场", "SEND_SITE": "邵阳操作场"}},
+            {"external_id": "missing-site", "account_login": "739010002", "raw": {"REGISTER_SITE": "邵阳操作场"}},
+            {"external_id": "other-account", "account_login": "synthetic-other", "raw": {"REGISTER_SITE": "长沙操作场", "SEND_SITE": "株洲操作场"}},
+        ]
+        self.assertEqual({"keep", "other-account"}, {row["external_id"] for row in rows if app._customer_service_should_include_problem_row(row)})
 
     def test_problem_query_preserves_per_account_error_diagnostics(self):
-        app = self._build_app()
-        failures = [
-            {
-                "account_id": "ronghui-a",
-                "message": "页面结构变化",
-                "error_code": "AMBIGUOUS_GRID_URL",
-            },
-            {
-                "account_id": "yunda-a",
-                "message": "需要重新登录",
-                "error_code": "AUTH_REQUIRED",
-            },
-        ]
-
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
-            params = payload["params"]
-            match = next(item for item in failures if item["account_id"] == params["account_id"])
-            return {
-                "ok": True,
-                "status": 200,
-                "data": {
-                    "ok": False,
-                    "message": match["message"],
-                    "error_code": match["error_code"],
-                },
-            }
-
-        app._agent_request = types.MethodType(agent_request, app)
-        handler = _Handler(
-            json.dumps(
-                {
-                    "platforms": ["ronghui", "yunda"],
-                    "account_ids": ["ronghui-a", "yunda-a"],
-                    "filters": {"direction": "received"},
-                },
-                ensure_ascii=False,
-            ).encode("utf-8"),
-            {
-                "Content-Type": "application/json",
-                "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
-            },
-        )
-
-        app._handle_customer_service_problem_query(handler)
-
+        failures = [{"source_id": "synthetic-source-a", "error_code": "AMBIGUOUS_GRID_URL"},
+            {"source_id": "synthetic-source-b", "error_code": "AUTH_REQUIRED"}]
+        result = {"ok": True, "query_source": "published_local", "rows": [{"external_id": "published-history"}],
+            "stats": {"row_count": 1, "error_count": len(failures)}, "errors": failures}
+        app, arguments = self._query_published_fixture(result,
+            {"source_ids": ["synthetic-source-a", "synthetic-source-b"], "filters": {"direction": "received"}})
         self.assertEqual(HTTPStatus.OK, app.sent_status)
-        self.assertFalse(app.sent_payload["ok"])
-        self.assertEqual([], app.sent_payload["rows"])
-        self.assertEqual(2, app.sent_payload["stats"]["error_count"])
-        self.assertEqual(
-            {"AMBIGUOUS_GRID_URL", "AUTH_REQUIRED"},
-            {item["error_code"] for item in app.sent_payload["errors"]},
-        )
-        self.assertEqual({"ronghui-a", "yunda-a"}, {item["account_id"] for item in app.sent_payload["errors"]})
+        self.assertEqual(result, app.sent_payload)
+        self.assertEqual([], arguments["account_ids"])
+        self.assertEqual(["synthetic-source-a", "synthetic-source-b"], arguments["source_ids"])
 
     def test_problem_reply_submits_precise_durable_command(self):
         app = self._build_app()

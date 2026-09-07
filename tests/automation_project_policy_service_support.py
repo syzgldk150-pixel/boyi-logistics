@@ -249,8 +249,8 @@ class _AutomationProjects:
     def _state(self) -> _State:
         return self._repository.state
 
-    def list_policies(self):
-        return [dict(self._state.policy)]
+    def list_policies(self, *, automation_ids=None):
+        return [dict(self._state.policy)] if automation_ids is None or self._state.policy["automation_id"] in automation_ids else []
 
     def get_policy(self, automation_id, **_kwargs):
         del automation_id

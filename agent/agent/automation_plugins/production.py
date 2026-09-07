@@ -12,6 +12,7 @@ import copy
 import hashlib
 import os
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -804,8 +805,6 @@ class ProductionRuntimeEffectDriver:
                     )
                 else:
                     refresh()
-            elif operation in {"apply", "withdraw"}:
-                refresh()
             else:
                 raise PluginConflictError(
                     "runtime projection transition is invalid",
@@ -1867,7 +1866,8 @@ class MySQLRuntimeTargetService:
 
         pending_services = {str(service).strip() for service in provider_services if str(service).strip()}
         affected: set[str] = set()
-        entries = tuple(self._catalog.list())
+        with getattr(self._catalog, "read_scope", nullcontext)():
+            entries = tuple(self._catalog.list())
         changed = True
         while changed:
             changed = False
@@ -2187,6 +2187,7 @@ class MySQLRuntimeTargetService:
         actor_role: str,
         authoritative_applied_proof: Mapping[str, object] | None = None,
         authoritative_not_applied_proof: Mapping[str, object] | None = None,
+        scan_applied_recovery: Mapping[str, object] | None = None,
     ) -> dict[str, Any]:
         """Resolve only from server-owned durable receipt evidence."""
 
@@ -2199,6 +2200,7 @@ class MySQLRuntimeTargetService:
             actor_role=actor_role,
             authoritative_applied_proof=authoritative_applied_proof,
             authoritative_not_applied_proof=authoritative_not_applied_proof,
+            scan_applied_recovery=scan_applied_recovery,
         )
         run_id = str(result.get("run_id") or "")
         if result.get("transitioned") is True and run_id and self._wake_runner:
@@ -2343,13 +2345,7 @@ class MySQLRuntimeTargetService:
         generation: int,
         lease_id: str,
     ) -> dict[str, Any]:
-        """Return the server-owned scan selection and attempt timestamps.
-
-        The lease selects the formal Run.  That Run's persisted Command then
-        selects the compact preview binding, and the binding is independently
-        matched to the completed preview Step before any business identities
-        are returned to the recovery reader.
-        """
+        """Match the original lease, Command, completed preview and account."""
 
         with self._orchestration.unit_of_work() as uow:
             runtime_context = (
@@ -2428,6 +2424,9 @@ class MySQLRuntimeTargetService:
             if len(steps) != 1 or not isinstance(steps[0], Mapping):
                 raise ValueError("scan recovery step identity is invalid")
             step = steps[0]
+            from agent.automation_plugins.scan_recovery_context import original_scan_account
+
+            original_account = original_scan_account(runtime_context)
 
         started_at = next(
             (
@@ -2460,8 +2459,9 @@ class MySQLRuntimeTargetService:
             raise ValueError("scan recovery attempt timestamps are unavailable")
         return {
             "state": "SCAN_RECOVERY_CONTEXT_IDENTIFIED",
-            "run_id": run_id,
-            "target_date": str(preview["target_date"]),
+            "run_id": run_id, "target_date": str(preview["target_date"]),
+            "account_id": original_account,
+            "preview": dict(preview),
             "items": [dict(item) for item in preview["items"]],
             "attempt_started_at": started_at,
             "attempt_finished_at": finished_at,
@@ -3031,7 +3031,7 @@ def build_production_automation_plugin_runtime(
         excluded_automation_plugins=deferred_first_party_automation_plugins(),
         excluded_plugin_ids=deferred_first_party_plugin_ids(),
         allowed_execution_platforms=("server",),
-        migration_pair_provider=(repository.get_active_plugin_migration_pair_for_automation),
+        migration_pair_provider=repository.get_catalog_migration_pair,
         account_binding_ready=lambda account_id, allowed_systems: bool(
             catalog_account_resolver.require_active_binding_descriptor(
                 account_id=account_id,

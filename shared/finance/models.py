@@ -383,6 +383,7 @@ class FinanceQuery:
     fee_level: FeeLevel | str | None = None
     fee_name: str | None = None
     waybill_no: str | None = None
+    source_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         start_date = _as_date(self.start_date, "start_date")
@@ -405,3 +406,8 @@ class FinanceQuery:
             object.__setattr__(self, "fee_level", None)
         for field_name in ("account_id", "fee_name", "waybill_no"):
             object.__setattr__(self, field_name, _optional_text(getattr(self, field_name)))
+        if not isinstance(self.source_ids, (tuple, list)) or any(
+            not isinstance(value, str) or len(value) != 36 for value in self.source_ids
+        ):
+            raise ValueError("source_ids must contain stable source IDs")
+        object.__setattr__(self, "source_ids", tuple(dict.fromkeys(self.source_ids)))

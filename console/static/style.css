@@ -533,6 +533,23 @@ body.dispatch-page .notice { display: none; }
 /* ── Automation page ── */
 .automation-toolbar-field { display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; color: var(--muted); font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
 .automation-sort-select { min-width: 120px; min-height: 0; height: 32px; padding: 4px 10px; font-size: 0.8rem; font-weight: 600; color: var(--text-strong); background: #fff; border: 1px solid var(--line); border-radius: var(--radius-sm); cursor: pointer; appearance: auto; }
+.module-source-table { max-height: 16rem; overflow: auto; }
+.module-source-table th { position: sticky; top: 0; z-index: 1; background: var(--canvas); }
+.module-source-table td:last-child { display: flex; align-items: center; gap: 8px; }
+.module-source-table select { width: auto; min-width: 150px; max-width: 250px; }
+[data-default-plugin-settings] { max-width: 620px; }
+[data-default-plugin-settings] .form-group { display: grid; gap: 8px; margin-bottom: 24px; }
+[data-default-plugin-settings] .form-group label { font-weight: 600; }
+[data-default-plugin-settings] .form-group p { margin: 0; color: var(--muted); font-size: .85rem; }
+[data-default-plugin-settings] select[multiple] { min-height: 104px; padding: 8px; }
+[data-plugin-settings-history] { margin-top: 24px; }
+@media (min-width: 1100px) {
+  .automation-page .top-header { flex-wrap: wrap; height: auto; gap: 8px 24px; padding-bottom: 12px; }
+  .automation-page .top-header-right { flex: 1 1 100%; width: 100%; max-width: none; gap: 16px; }
+  .automation-page .top-header-search { flex: 1 1 auto; width: auto; min-width: 220px; }
+  .automation-page .top-header-actions--page { flex-wrap: wrap; }
+  .automation-page [data-automation-search] { width: clamp(160px, 17vw, 240px); }
+}
 
 .auto-page { display: flex; flex-direction: column; gap: 20px; }
 

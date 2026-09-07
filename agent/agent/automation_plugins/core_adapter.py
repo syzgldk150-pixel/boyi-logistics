@@ -126,6 +126,8 @@ class CoreBrokerInvocationContext:
     # intentionally optional so closed handler unit tests can exercise their
     # validation branches without manufacturing write-attempt state.
     mark_write_started: Callable[[], None] | None = None
+    generation: int = 0
+    write_attempt_identity: Mapping[str, object] = field(default_factory=dict, repr=False)
 
 
 CoreBrokerHandler = Callable[
@@ -709,6 +711,8 @@ class RegisteredCoreAutomationBrokerAdapter:
                 grant.runtime_permissions.get("_service_effect_ceiling") or ""
             ),
             mark_write_started=mark_write_started,
+            generation=int(grant.write_attempt_context.get("generation", 0)),
+            write_attempt_identity=dict(grant.write_attempt_context),
         )
         try:
             return handler(context, dict(arguments))

@@ -110,6 +110,8 @@ def classify_automation_run_blocking_kind(
     status = str(run.get("status") or "").strip().upper()
     item_status = str(work_item.get("status") or "").strip().upper()
     if status in _TERMINAL_RUN_STATUS_VALUES:
+        if any(facts.get(name) for name in ('has_unknown_generation_lease', 'has_unknown_write_receipt', 'has_unclosed_protected_write')):
+            return AUTOMATION_BLOCKING_UNKNOWN_WRITE
         return AUTOMATION_BLOCKING_NEEDS_ATTENTION
 
     if (
@@ -127,9 +129,8 @@ def classify_automation_run_blocking_kind(
         or bool(facts.get("has_unknown_write_receipt"))
         or bool(facts.get("has_unclosed_protected_write"))
     ):
-        # Historical unknown-write facts remain available for explicit
-        # reconciliation/cancellation, but without a live execution fact they
-        # are not a project mutex for a brand-new Command.
+        # A stopped process cannot prove an external write did not happen.
+        # Only exact server-owned readback may release this write scope.
         return AUTOMATION_BLOCKING_UNKNOWN_WRITE
     if bool(facts.get("has_protected_write_receipt")):
         # A closed protected-write receipt is durable audit history.  It does
@@ -180,6 +181,7 @@ def supersede_safely_suspended_runs(
     successor: Mapping[str, str],
     source: str,
     request_id: str,
+    read_only_preview: bool = False,
 ) -> None:
     """Cancel one safe history batch or reject a revalidated live blocker."""
 
@@ -193,7 +195,7 @@ def supersede_safely_suspended_runs(
     blockers: list[tuple[str, dict[str, Any]]] = []
     for run_id in candidate_ids:
         run = uow.runs.get(run_id, for_update=True)
-        if run is None or str(run.get("status") or "") in _TERMINAL_RUN_STATUS_VALUES:
+        if run is None:
             continue
         command_id = str(run.get("command_id") or "").strip()
         work_item_id = str(run.get("work_item_id") or "").strip()
@@ -217,7 +219,7 @@ def supersede_safely_suspended_runs(
         if kind in {
             AUTOMATION_BLOCKING_ACTIVE,
             AUTOMATION_BLOCKING_RETRY_PENDING,
-        }:
+        } or (kind == AUTOMATION_BLOCKING_UNKNOWN_WRITE and not read_only_preview):
             blockers.append((kind, run))
             continue
         if (
