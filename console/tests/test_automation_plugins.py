@@ -2506,8 +2506,8 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertNotIn("pluginJsonAction", script_source)
         self.assertNotIn("data-plugin-migration-create-form", script_source)
         self.assertNotIn("data-plugin-migration-action", script_source)
-        self.assertIn("data-plugin-recover-unknown-write", script_source)
-        self.assertIn("recoverUnknownWrite", script_source)
+        self.assertNotIn("data-plugin-recover-unknown-write", script_source)
+        self.assertNotIn("recoverUnknownWrite", script_source)
         self.assertIn("/automations/extensions/inspect", dialog_source)
         self.assertIn("/automations/extensions/install", dialog_source)
         self.assertIn("/automations/plugins/${automationId}/${action}", extension_script)
@@ -2551,7 +2551,7 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertIn(".automation-plugin-settings-feedback", stylesheet)
         self.assertIn(".auto-settings { transition: none; }", stylesheet)
 
-    def test_unknown_write_recovery_control_is_server_owned_and_visible_only_when_blocked(self):
+    def test_unknown_write_recovery_uses_exact_work_item_evidence_selection(self):
         template_source = (CONSOLE_DIR / "templates" / "automation.html").read_text(
             encoding="utf-8"
         )
@@ -2560,13 +2560,16 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("plugin.reconcile_state == 'BLOCKED_UNKNOWN_WRITE'", template_source)
-        self.assertIn("data-plugin-recover-unknown-write", template_source)
-        self.assertIn(
-            '`/automations/plugins/${encodeURIComponent(automationId)}/recover`',
-            script_source,
-        )
-        self.assertIn("body: JSON.stringify({ request_id: requestId })", script_source)
-        self.assertNotIn("lease_id", script_source)
+        self.assertIn('href="/work-items">历史事项与核验', template_source)
+        self.assertIn('href="/work-items">选择历史事项核验', template_source)
+        self.assertNotIn("data-plugin-recover-unknown-write", template_source)
+        self.assertNotIn("recoverUnknownWrite", script_source)
+        evidence_script = (CONSOLE_DIR / "static" / "unknown_write_recovery.js").read_text(encoding="utf-8")
+        self.assertIn("row.recovery_supported !== true", evidence_script)
+        self.assertIn('root.dataset.canVerifyUnknownWrite === "true"', evidence_script)
+        self.assertIn("检查已保存证据", evidence_script)
+        self.assertIn("lease_id: row.lease_id", evidence_script)
+        self.assertIn("run_id: row.run_id", evidence_script)
 
     def test_unstable_service_v2_state_disables_conflicting_extension_operations(self):
         source = (CONSOLE_DIR / "templates" / "extensions.html").read_text(

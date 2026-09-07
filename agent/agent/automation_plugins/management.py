@@ -692,11 +692,18 @@ class AutomationPluginManagementService:
         lease_id: str,
         request_id: str,
         actor: Actor,
+        resume_run: bool = True,
+        expected_run_id: str | None = None,
+        expected_work_item_id: str | None = None,
     ) -> dict[str, Any]:
         """Resolve an unknown write using only server-owned durable evidence."""
 
         self._require_console_actor(actor, super_admin=True)
         self._require_mutation_allowed()
+        if type(resume_run) is not bool or (
+            not resume_run and (not expected_run_id or not expected_work_item_id)
+        ):
+            raise PluginConflictError("manual recovery requires exact work item and Run", code="PLUGIN_RECOVERY_IDENTITY_REQUIRED")
         entry = self._catalog.require(automation_id)
         # Scope is package identity, not the display/default instance id: a
         # reviewed first-party package may be installed under another exact
@@ -712,6 +719,10 @@ class AutomationPluginManagementService:
                 "server recovery reader is unavailable",
                 code="PLUGIN_RECOVERY_UNAVAILABLE",
             )
+        manual = {} if resume_run else {
+            "resume_run": False, "expected_run_id": expected_run_id,
+            "expected_work_item_id": expected_work_item_id,
+        }
         result = reader(
             automation_id=automation_id,
             generation=generation,
@@ -719,6 +730,7 @@ class AutomationPluginManagementService:
             request_id=request_id,
             actor_id=actor.actor_id,
             actor_role="super_admin",
+            **manual,
         )
         if not isinstance(result, Mapping) or result.get("recovery_status") not in {
             "APPLIED", "NOT_APPLIED", "UNKNOWN",

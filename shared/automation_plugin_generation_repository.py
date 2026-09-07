@@ -24,6 +24,7 @@ from shared.automation_plugin_generation_transition_repository import (
 )
 from shared.automation_plugin_generation_unknown_write_repository import (
     block_generation_unknown_write_row as _block_generation_unknown_write_row,
+    settle_unknown_write_recovery_row as _settle_unknown_write_recovery_row,
     lock_archival_unknown_predecessor as _lock_archival_unknown_predecessor,
     stabilize_project_after_archival_unknown as _stabilize_project_after_archival_unknown,
 )
@@ -2567,145 +2568,13 @@ class AutomationPluginGenerationRepositoryMixin(
         recovery_status: str,
         evidence_sha256: str,
         locked_context: Mapping[str, Mapping[str, Any]] | None = None,
+        allow_historical: bool = False,
     ) -> dict[str, Any]:
-        """Persist a receipt-proven recovery while caller-owned locks are held."""
-
-        safe_automation_id = _required_text(automation_id, "automation_id")
-        safe_generation = _positive_int(generation, "generation")
-        safe_lease_id = _required_text(lease_id, "lease_id")
-        safe_evidence = _sha256(evidence_sha256, "evidence_sha256")
-        status = str(recovery_status or "").upper()
-        if status not in {"APPLIED", "NOT_APPLIED"}:
-            raise ValueError("unknown-write recovery status is invalid")
-        desired_lease_outcome = (
-            "WRITE_VERIFIED" if status == "APPLIED" else "FAILED_BEFORE_WRITE"
+        return _settle_unknown_write_recovery_row(
+            self, automation_id=automation_id, generation=generation, lease_id=lease_id,
+            recovery_status=recovery_status, evidence_sha256=evidence_sha256,
+            locked_context=locked_context, allow_historical=allow_historical,
         )
-        with self.cursor() as cursor:
-            # Transactional recovery already holds project -> generation ->
-            # lease before locking its Run/Step and receipts.  Do not reissue
-            # those FOR UPDATE statements after the orchestration locks: even
-            # though MySQL treats them as re-entrant, that is an inverse lock
-            # trace and obscures the contract.  The standalone compatibility
-            # path acquires the same hierarchy itself.
-            if locked_context is None:
-                cursor.execute(
-                    """
-                    SELECT target_generation, committed_generation, reconcile_state
-                    FROM automation_projects
-                    WHERE automation_id=%s FOR UPDATE
-                    """,
-                    (safe_automation_id,),
-                )
-                project = _row_dict(cursor, cursor.fetchone())
-                cursor.execute(
-                    """
-                    SELECT state FROM automation_project_generations
-                    WHERE automation_id=%s AND generation=%s FOR UPDATE
-                    """,
-                    (safe_automation_id, safe_generation),
-                )
-                generation_row = _row_dict(cursor, cursor.fetchone())
-                cursor.execute(
-                    """
-                    SELECT outcome, verification_evidence_sha256, automation_id, generation
-                    FROM automation_project_generation_leases
-                    WHERE lease_id=%s FOR UPDATE
-                    """,
-                    (safe_lease_id,),
-                )
-                lease = _row_dict(cursor, cursor.fetchone())
-            else:
-                project = dict(locked_context.get("project") or {})
-                generation_row = dict(locked_context.get("generation") or {})
-                lease = dict(locked_context.get("lease") or {})
-            if project is None or generation_row is None or lease is None:
-                raise OrchestrationPersistenceError("runtime recovery rows disappeared")
-            if (
-                str(lease.get("automation_id") or "") != safe_automation_id
-                or int(lease.get("generation") or 0) != safe_generation
-                or str(lease.get("lease_id") or safe_lease_id) != safe_lease_id
-            ):
-                raise IdempotencyConflict("runtime recovery does not match its generation lease")
-            if (
-                int(project.get("target_generation") or 0) != safe_generation
-                or int(project.get("committed_generation") or 0) != safe_generation
-            ):
-                raise ConcurrentUpdateError(
-                    "runtime recovery generation is no longer the current committed target"
-                )
-            current = str(lease.get("outcome") or "")
-            lease_transitioned = False
-            if current == desired_lease_outcome:
-                existing_evidence = str(lease.get("verification_evidence_sha256") or "")
-                if existing_evidence and existing_evidence != safe_evidence:
-                    raise IdempotencyConflict("runtime recovery was reused with different evidence")
-                if existing_evidence != safe_evidence:
-                    cursor.execute(
-                        """
-                        UPDATE automation_project_generation_leases
-                        SET verification_evidence_sha256=%s,
-                            released_at=COALESCE(released_at, NOW(6)), updated_at=NOW(6)
-                        WHERE lease_id=%s AND outcome=%s
-                          AND verification_evidence_sha256 IS NULL
-                        """,
-                        (safe_evidence, safe_lease_id, current),
-                    )
-                    if int(getattr(cursor, "rowcount", 0) or 0) != 1:
-                        raise ConcurrentUpdateError("runtime recovery lease evidence changed")
-                    lease_transitioned = True
-            else:
-                allowed = (
-                    {"WRITE_OUTCOME_UNKNOWN"}
-                    if status == "APPLIED"
-                    else {"WRITE_OUTCOME_UNKNOWN", "FAILED_BEFORE_WRITE"}
-                )
-                if current not in allowed:
-                    raise ConcurrentUpdateError("runtime lease is not recoverable")
-                cursor.execute(
-                    """
-                    UPDATE automation_project_generation_leases
-                    SET outcome=%s, verification_evidence_sha256=%s,
-                        released_at=COALESCE(released_at, NOW(6)), updated_at=NOW(6)
-                    WHERE lease_id=%s AND outcome=%s
-                    """,
-                    (desired_lease_outcome, safe_evidence, safe_lease_id, current),
-                )
-                if int(getattr(cursor, "rowcount", 0) or 0) != 1:
-                    raise ConcurrentUpdateError("runtime recovery lease changed")
-                lease_transitioned = True
-            if lock_remaining_unknown_generation_leases(cursor, safe_automation_id, safe_generation):
-                return {"transitioned": lease_transitioned, "outcome": desired_lease_outcome}
-            if (
-                str(generation_row.get("state") or "") == "COMMITTED"
-                and str(project.get("reconcile_state") or "") == "STABLE"
-            ):
-                return {"transitioned": lease_transitioned, "outcome": desired_lease_outcome}
-            cursor.execute(
-                """
-                UPDATE automation_project_generations
-                SET state='COMMITTED', error_code=NULL, error_summary=NULL,
-                    committed_at=COALESCE(committed_at, NOW(6)),
-                    record_version=record_version+1, updated_at=NOW(6)
-                WHERE automation_id=%s AND generation=%s
-                  AND state IN ('BLOCKED', 'COMMITTED')
-                """,
-                (safe_automation_id, safe_generation),
-            )
-            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
-                raise ConcurrentUpdateError("runtime generation is not recoverable")
-            cursor.execute(
-                """
-                UPDATE automation_projects
-                SET reconcile_state='STABLE', updated_at=NOW(6)
-                WHERE automation_id=%s AND target_generation=%s
-                  AND committed_generation=%s
-                  AND reconcile_state IN ('BLOCKED_UNKNOWN_WRITE', 'STABLE')
-                """,
-                (safe_automation_id, safe_generation, safe_generation),
-            )
-            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
-                raise ConcurrentUpdateError("runtime project is not recoverable")
-        return {"transitioned": True, "outcome": desired_lease_outcome}
 
     def reserve_generation_dispose_row(
         self,
