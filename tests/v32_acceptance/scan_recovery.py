@@ -23,6 +23,7 @@ from tests.v32_acceptance.daily_scan import ACTOR, ROOT, connect, prepare_databa
 from tests.v32_acceptance.first_party_fixture import bootstrap, isolated_migration_accounts
 from tests.v32_acceptance.management_fixture import ManagementFixture
 from tests.v32_acceptance.runner_fixture import RunnerFixture
+from tests.v32_acceptance.scan_preview_observation import checkpoint_case, observe_preview_timestamps
 from tests.v32_acceptance.unrelated_fixture import install_unrelated
 
 DATABASE = 'v32_recovery_test'
@@ -197,7 +198,7 @@ def main():
     migration_accounts = isolated_migration_accounts()
     migration_accounts['scan_codes'] = {'account_id': [ACCOUNT_ID]}
     migration_accounts['arrival_stats'] = {'account_id': [ACCOUNT_ID]}
-    with LostReplyProtocol() as boundary, boundary.authentication_boundaries(), patch('plugin_core_adapters.first_party.get_account_manager', return_value=accounts):
+    with LostReplyProtocol() as boundary, boundary.authentication_boundaries(), patch('plugin_core_adapters.first_party.get_account_manager', return_value=accounts), observe_preview_timestamps(runtime_root / 'preview-timing.json'):
         handlers = build_production_first_party_core_handler_map(cursor_secret=secrets.token_bytes(32),
             account_manager=accounts, allowed_action_keys=keys, capability_authorizer=boundary.authorize)
         with ManagementFixture(connection_factory=connection_factory, runtime_root=runtime_root, account_manager=accounts,
@@ -216,10 +217,12 @@ def main():
                 cases = []
                 for round_number in range(0 if args.physical_scope else args.rounds):
                     if args.cancel_only:
-                        cases.append(run_cancel_case(management, runner, boundary, unrelated, round_number))
+                        checkpoint_case(run_cancel_case, management, runner, boundary, unrelated, round_number=round_number,
+                            completed=cases, path=runtime_root / 'case-progress.json')
                     else:
                         for mode in ('APPLIED', 'NOT_APPLIED', 'UNKNOWN'):
-                            cases.append(run_case(management, runner, boundary, unrelated, mode=mode, round_number=round_number))
+                            checkpoint_case(run_case, management, runner, boundary, unrelated, mode=mode, round_number=round_number,
+                                completed=cases, path=runtime_root / 'case-progress.json')
                 if args.physical_scope:
                     from tests.v32_acceptance.unknown_resource_scope import exercise
 

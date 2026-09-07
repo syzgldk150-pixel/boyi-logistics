@@ -63,8 +63,33 @@ from shared.service_identity import ConsoleIdentityError, ConsoleIdentityVerifie
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TASK_ENV = PROJECT_ROOT / ".task_tmp" / "v32" / "environment"
+E2E_RUNTIME_SUBDIRECTORIES = ("plugin-installed", "synthetic-plugins", "console-runtime")
 QUERY_STATS = {"connections": 0, "queries": Counter(), "sql_seconds": 0.0}
 QUERY_LOCK = threading.Lock()
+
+
+def e2e_fixture_lock(*, exclusive=False):
+    """Hold shared use, or exclusive reset, of this dedicated E2E fixture."""
+    import fcntl
+
+    if (os.environ.get("AGENT_DB_NAME") != "v32_e2e_test"
+            or os.environ.get("AGENT_DB_HOST") != "127.0.0.1"
+            or os.environ.get("AGENT_DB_PORT") != "33326"
+            or TASK_ENV.resolve() != TASK_ENV):
+        raise RuntimeError("E2E runtime lock requires its exact owned environment")
+    TASK_ENV.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(TASK_ENV / "e2e-fixture.lock", os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+    handle = os.fdopen(descriptor, "a+b")
+    try:
+        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        fcntl.flock(handle.fileno(), mode | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        handle.close()
+        raise RuntimeError("E2E fixture is in use; wait for all participants before preparing or resetting it") from exc
+    except BaseException:
+        handle.close()
+        raise
+    return handle
 
 
 class MeasuredCursor(pymysql.cursors.DictCursor):
@@ -112,6 +137,7 @@ class ManagementFixture:
         self.startup_id = str(uuid4())
         if not os.environ.get("AGENT_DB_NAME", "").endswith("_test") or os.environ.get("AGENT_DB_HOST") != "127.0.0.1":
             raise RuntimeError("explicit isolated loopback test database required")
+        self._e2e_lock = e2e_fixture_lock() if os.environ["AGENT_DB_NAME"] == "v32_e2e_test" else None
         self.task_env = Path(runtime_root) if runtime_root is not None else TASK_ENV
         self.task_env.mkdir(parents=True, exist_ok=True)
         self.account_manager = account_manager or EmptyIsolatedAccountDirectory()
@@ -347,6 +373,9 @@ class ManagementFixture:
         self.socket.close()
         if self.thread.is_alive():
             raise RuntimeError("isolated management server did not stop")
+        if self._e2e_lock is not None:
+            self._e2e_lock.close()
+            self._e2e_lock = None
 
     def __enter__(self):
         return self

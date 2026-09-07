@@ -844,11 +844,13 @@
         "probe:plugin_cli_batch",
         "probe:field_maintenance",
         "probe:decision_maintenance",
-        "tests/test_low_maintenance_v32_acceptance.py"
+        "tests/test_low_maintenance_v32_acceptance.py",
+        "tests/test_v32_e2e_fixture_reset.py",
+        "tests/test_scan_preview_observation.py"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "实际六插件局部测试和签名打包入口保留命令、原始日志、版本和ZIP SHA，两个维护probe只收本次fresh执行完整结果；56组机器矩阵缺失/失败/旧工件均非零，维护归属/复现/发布回滚随最终交付核对。"
+      "evidence_note": "实际六插件局部测试和签名打包入口保留命令、原始日志、版本和ZIP SHA，两个维护probe只收本次fresh执行完整结果；56组机器矩阵缺失/失败/旧工件均非零，维护归属/复现/发布回滚随最终交付核对。test_v32_e2e_fixture_reset.py仅支持隔离测试环境的安全重建入口，验证参与者互斥及精确路径范围，不计作产品业务验收，也不替代六插件工件和两次真实维护演练。"
     }
   ]
 }
