@@ -24,18 +24,20 @@ class AutomationRunLookupMixin:
         self,
         automation_id: str,
         *,
-        limit: int = AUTOMATION_UNFINISHED_RUN_LIMIT + 1,
+        limit: int = AUTOMATION_UNFINISHED_RUN_LIMIT,
     ) -> list[str]:
-        """Discover a bounded, deterministic set of unfinished project Runs.
+        """Discover a bounded, blocker-first set of unfinished project Runs.
 
         Discovery deliberately does not lock a join.  Callers lock and
         revalidate each aggregate in the canonical Run -> Command -> Work Item
-        order before changing state.
+        order before changing state.  Durable pre-claim states and live
+        execution facts sort ahead of historical rows so more than one cleanup
+        batch can never hide a real project mutex.
         """
 
         bounded_limit = max(
             1,
-            min(int(limit), AUTOMATION_UNFINISHED_RUN_LIMIT + 1),
+            min(int(limit), AUTOMATION_UNFINISHED_RUN_LIMIT),
         )
         with self.cursor() as cursor:
             cursor.execute(
@@ -47,7 +49,39 @@ class AutomationRunLookupMixin:
                   AND r.status NOT IN (
                       'COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED'
                   )
-                ORDER BY c.requested_at, r.created_at, r.run_id
+                ORDER BY
+                    CASE
+                        WHEN r.status IN (
+                              'RECEIVED', 'CONTEXT_READY',
+                              'PLANNED', 'VALIDATED', 'FAILED_RETRYABLE'
+                          )
+                          OR (
+                              NULLIF(TRIM(r.worker_id), '') IS NOT NULL
+                              AND r.lease_expires_at > UTC_TIMESTAMP(6)
+                          )
+                          OR EXISTS (
+                              SELECT 1
+                              FROM agent_run_steps AS blocking_step
+                              WHERE blocking_step.run_id=r.run_id
+                                AND blocking_step.status IN (
+                                    'RUNNING', 'VERIFYING'
+                                )
+                          )
+                          OR EXISTS (
+                              SELECT 1
+                              FROM automation_project_generation_leases
+                                   AS blocking_lease
+                              WHERE blocking_lease.orchestration_run_id=r.run_id
+                                AND blocking_lease.outcome IN (
+                                    'RUNNING', 'VERIFYING'
+                                )
+                                AND blocking_lease.expires_at
+                                    > UTC_TIMESTAMP(6)
+                          )
+                        THEN 0
+                        ELSE 1
+                    END,
+                    c.requested_at, r.created_at, r.run_id
                 LIMIT %s
                 """,
                 (

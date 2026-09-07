@@ -28,6 +28,7 @@ from agent.automation_plugins.delivery_site_handlers import (
     DELIVERY_WRITE_ACTION_KEYS,
     SITE_WRITE_ACTION_KEYS,
 )
+from agent.feishu_readback import retry_readback as _retry_feishu_readback
 from agent.tms_runtime.account_manager import AutomationAccountManager, get_account_manager
 from agent.tms_runtime.errors import TMSAuthStateError
 from plugin_core_adapters.arrival import (
@@ -2264,18 +2265,29 @@ def _append_yunda_dispatch_bitable(
         )
     except Exception:
         pass
-    after = _list_exact_bitable_records(base_token, table_id)
-    after_record_ids = {str(item["record_id"]) for item in after}
-    if not prior_record_ids.issubset(after_record_ids) or len(after_record_ids - prior_record_ids) != len(records):
-        _yunda_write_unknown("Yunda append readback did not preserve the exact prior resource set")
-    digest = _verify_exact_bitable_records(
-        actual_records=after,
-        expected_payload=payload,
-        canonical_by_actual=canonical_by_actual,
-        identity_actual_field=identity_actual_field,
-        number_fields=sink.NUMBER_FIELDS,
-        require_exact_date_snapshot=False,
-        forbidden_record_ids=prior_record_ids,
+    def readback_digest() -> str:
+        after = _list_exact_bitable_records(base_token, table_id)
+        after_record_ids = {str(item["record_id"]) for item in after}
+        if not prior_record_ids.issubset(after_record_ids) or len(
+            after_record_ids - prior_record_ids
+        ) != len(records):
+            _yunda_write_unknown(
+                "Yunda append readback did not preserve the exact prior resource set"
+            )
+        return _verify_exact_bitable_records(
+            actual_records=after,
+            expected_payload=payload,
+            canonical_by_actual=canonical_by_actual,
+            identity_actual_field=identity_actual_field,
+            number_fields=sink.NUMBER_FIELDS,
+            require_exact_date_snapshot=False,
+            forbidden_record_ids=prior_record_ids,
+        )
+
+    digest = _retry_feishu_readback(
+        readback_digest,
+        lambda observed: isinstance(observed, str) and len(observed) == 64,
+        label="Yunda dispatch Bitable append",
     )
     return {
         "ok": True,
@@ -2392,20 +2404,29 @@ def _replace_yunda_send_bitable(
             )
         except Exception:
             pass
-    after = _list_exact_bitable_records(base_token, table_id)
-    after_ids = {str(item["record_id"]) for item in after}
-    if not prior_non_target_ids.issubset(after_ids):
-        _yunda_write_unknown("Yunda replacement readback did not preserve non-target resource rows")
-    digest = _verify_exact_bitable_records(
-        actual_records=after,
-        expected_payload=payload,
-        canonical_by_actual=canonical_by_actual,
-        identity_actual_field=normalized_field_map[sink.INDEX_FIELD_NAME],
-        number_fields=sink.NUMBER_FIELDS,
-        exact_date_field=date_field_name,
-        exact_date=target_date,
-        date_parser=sink._date_text_from_field_value,
-        require_exact_date_snapshot=True,
+    def readback_digest() -> str:
+        after = _list_exact_bitable_records(base_token, table_id)
+        after_ids = {str(item["record_id"]) for item in after}
+        if not prior_non_target_ids.issubset(after_ids):
+            _yunda_write_unknown(
+                "Yunda replacement readback did not preserve non-target resource rows"
+            )
+        return _verify_exact_bitable_records(
+            actual_records=after,
+            expected_payload=payload,
+            canonical_by_actual=canonical_by_actual,
+            identity_actual_field=normalized_field_map[sink.INDEX_FIELD_NAME],
+            number_fields=sink.NUMBER_FIELDS,
+            exact_date_field=date_field_name,
+            exact_date=target_date,
+            date_parser=sink._date_text_from_field_value,
+            require_exact_date_snapshot=True,
+        )
+
+    digest = _retry_feishu_readback(
+        readback_digest,
+        lambda observed: isinstance(observed, str) and len(observed) == 64,
+        label="Yunda send-waybill Bitable replacement",
     )
     return {
         "ok": True,
@@ -2463,30 +2484,37 @@ def _replace_yunda_send_sheet(
         sync_sheet_snapshot(resource_id, values, params)
     except Exception:
         pass
-    try:
-        read_result = feishu_operation(
-            "read_sheet",
-            {
-                "spreadsheet_token": str(resource["spreadsheet_token"]),
-                "range": clear_range,
-                "as": "bot",
-                "dry_run": False,
-            },
+    def readback_digest() -> str:
+        try:
+            read_result = feishu_operation(
+                "read_sheet",
+                {
+                    "spreadsheet_token": str(resource["spreadsheet_token"]),
+                    "range": clear_range,
+                    "as": "bot",
+                    "dry_run": False,
+                },
+            )
+        except Exception as exc:
+            _yunda_write_unknown("Yunda sheet readback request failed", cause=exc)
+        observed_values = _strict_sheet_values(read_result)
+        while observed_values and not any(
+            _feishu_field_text(cell) for cell in observed_values[-1]
+        ):
+            observed_values.pop()
+        return _verify_exact_sheet_values(
+            expected=values,
+            actual=observed_values,
+            field_names=sink.FIELD_NAMES,
+            number_fields=sink.NUMBER_FIELDS,
+            date_field=sink.DATE_FIELD_NAME,
+            date_parser=sink._date_text_from_field_value,
         )
-    except Exception as exc:
-        _yunda_write_unknown("Yunda sheet readback request failed", cause=exc)
-    observed_values = _strict_sheet_values(read_result)
-    while observed_values and not any(
-        _feishu_field_text(cell) for cell in observed_values[-1]
-    ):
-        observed_values.pop()
-    digest = _verify_exact_sheet_values(
-        expected=values,
-        actual=observed_values,
-        field_names=sink.FIELD_NAMES,
-        number_fields=sink.NUMBER_FIELDS,
-        date_field=sink.DATE_FIELD_NAME,
-        date_parser=sink._date_text_from_field_value,
+
+    digest = _retry_feishu_readback(
+        readback_digest,
+        lambda observed: isinstance(observed, str) and len(observed) == 64,
+        label="Yunda send-waybill Sheet replacement",
     )
     return {
         "ok": True,

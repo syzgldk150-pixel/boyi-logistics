@@ -24,16 +24,32 @@ AUTOMATION_BLOCKING_UNKNOWN_WRITE = "UNKNOWN_WRITE"
 AUTOMATION_BLOCKING_NEEDS_ATTENTION = "NEEDS_ATTENTION"
 _SAFE_SUPERSEDE_RUN_STATUSES = frozenset(
     {
+        RunStatus.RUNNING.value,
+        RunStatus.VERIFYING.value,
+        RunStatus.WAITING_APPROVAL.value,
         RunStatus.NEEDS_CLARIFICATION.value,
         RunStatus.BLOCKED_LOGIN.value,
         RunStatus.BLOCKED_DATA.value,
     }
 )
-_SAFE_SUPERSEDE_WORK_ITEM_STATUS = {
-    RunStatus.NEEDS_CLARIFICATION.value: WorkItemStatus.NEEDS_CLARIFICATION.value,
-    RunStatus.BLOCKED_LOGIN.value: WorkItemStatus.BLOCKED_LOGIN.value,
-    RunStatus.BLOCKED_DATA.value: WorkItemStatus.BLOCKED_DATA.value,
-}
+_SAFE_SUPERSEDE_WORK_ITEM_STATUSES = frozenset(
+    {
+        WorkItemStatus.OPEN.value,
+        WorkItemStatus.IN_PROGRESS.value,
+        WorkItemStatus.NEEDS_CLARIFICATION.value,
+        WorkItemStatus.WAITING_APPROVAL.value,
+        WorkItemStatus.BLOCKED_LOGIN.value,
+        WorkItemStatus.BLOCKED_DATA.value,
+    }
+)
+_QUEUED_EXECUTION_RUN_STATUSES = frozenset(
+    {
+        RunStatus.RECEIVED.value,
+        RunStatus.CONTEXT_READY.value,
+        RunStatus.PLANNED.value,
+        RunStatus.VALIDATED.value,
+    }
+)
 _TERMINAL_RUN_STATUS_VALUES = frozenset(
     {
         RunStatus.COMPLETED.value,
@@ -95,6 +111,14 @@ def classify_automation_run_blocking_kind(
     item_status = str(work_item.get("status") or "").strip().upper()
     if status in _TERMINAL_RUN_STATUS_VALUES:
         return AUTOMATION_BLOCKING_NEEDS_ATTENTION
+
+    if (
+        status in _QUEUED_EXECUTION_RUN_STATUSES
+        or has_live_automation_execution(run, facts, now=now)
+    ):
+        return AUTOMATION_BLOCKING_ACTIVE
+    if status == RunStatus.FAILED_RETRYABLE.value:
+        return AUTOMATION_BLOCKING_RETRY_PENDING
     if (
         str(run.get("error_code") or "").strip().upper()
         == "WRITE_OUTCOME_UNKNOWN"
@@ -103,7 +127,30 @@ def classify_automation_run_blocking_kind(
         or bool(facts.get("has_unknown_write_receipt"))
         or bool(facts.get("has_unclosed_protected_write"))
     ):
+        # Historical unknown-write facts remain available for explicit
+        # reconciliation/cancellation, but without a live execution fact they
+        # are not a project mutex for a brand-new Command.
         return AUTOMATION_BLOCKING_UNKNOWN_WRITE
+    if bool(facts.get("has_protected_write_receipt")):
+        # A closed protected-write receipt is durable audit history.  It does
+        # not prove a live execution, but automatic supersession must not
+        # relabel that historical item as cancelled.
+        return AUTOMATION_BLOCKING_NEEDS_ATTENTION
+    if (
+        status in _SAFE_SUPERSEDE_RUN_STATUSES
+        and item_status in _SAFE_SUPERSEDE_WORK_ITEM_STATUSES
+    ):
+        return AUTOMATION_BLOCKING_SAFE_SUPERSEDE
+    return AUTOMATION_BLOCKING_NEEDS_ATTENTION
+
+
+def has_live_automation_execution(
+    run: Mapping[str, Any],
+    facts: Mapping[str, Any],
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Return only current execution facts, excluding a durable queue status."""
 
     effective_now = now or datetime.now(timezone.utc).replace(tzinfo=None)
     if effective_now.tzinfo is not None:
@@ -119,39 +166,11 @@ def classify_automation_run_blocking_kind(
         and isinstance(lease_expires_at, datetime)
         and lease_expires_at > effective_now
     )
-    has_invalid_worker_lease = has_worker and not isinstance(
-        lease_expires_at,
-        datetime,
-    )
-    has_orphaned_lease = not has_worker and lease_expires_at is not None
-    if (
+    return bool(
         has_valid_run_lease
-        or bool(facts.get("has_inflight_step"))
-        or bool(facts.get("has_live_generation_lease"))
-        or status
-        in {
-            RunStatus.RECEIVED.value,
-            RunStatus.CONTEXT_READY.value,
-            RunStatus.PLANNED.value,
-            RunStatus.VALIDATED.value,
-            RunStatus.RUNNING.value,
-            RunStatus.VERIFYING.value,
-            RunStatus.WAITING_APPROVAL.value,
-        }
-    ):
-        return AUTOMATION_BLOCKING_ACTIVE
-    if status == RunStatus.FAILED_RETRYABLE.value:
-        return AUTOMATION_BLOCKING_RETRY_PENDING
-    if bool(facts.get("has_protected_write_receipt")):
-        return AUTOMATION_BLOCKING_NEEDS_ATTENTION
-    if (
-        status in _SAFE_SUPERSEDE_RUN_STATUSES
-        and not has_invalid_worker_lease
-        and not has_orphaned_lease
-        and item_status == _SAFE_SUPERSEDE_WORK_ITEM_STATUS[status]
-    ):
-        return AUTOMATION_BLOCKING_SAFE_SUPERSEDE
-    return AUTOMATION_BLOCKING_NEEDS_ATTENTION
+        or facts.get("has_inflight_step")
+        or facts.get("has_live_generation_lease")
+    )
 
 
 def supersede_safely_suspended_runs(
@@ -162,23 +181,13 @@ def supersede_safely_suspended_runs(
     source: str,
     request_id: str,
 ) -> None:
-    """Atomically cancel every safe blocker or reject without mutation."""
+    """Cancel one safe history batch or reject a revalidated live blocker."""
 
     superseded_at = datetime.now(timezone.utc).replace(tzinfo=None)
     candidate_ids = uow.runs.list_unfinished_for_automation(
         automation_id,
-        limit=AUTOMATION_UNFINISHED_RUN_LIMIT + 1,
-    )
-    if len(candidate_ids) > AUTOMATION_UNFINISHED_RUN_LIMIT:
-        raise OrchestrationError(
-            "AUTOMATION_ALREADY_RUNNING",
-            "该脚本存在过多未结束事项",
-            details={
-                "blocking_kind": AUTOMATION_BLOCKING_NEEDS_ATTENTION,
-                "active_status": "UNFINISHED_RUN_LIMIT_EXCEEDED",
-                "blocking_count": len(candidate_ids),
-            },
-        )
+        limit=AUTOMATION_UNFINISHED_RUN_LIMIT,
+    )[:AUTOMATION_UNFINISHED_RUN_LIMIT]
 
     safe_rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
     blockers: list[tuple[str, dict[str, Any]]] = []
@@ -188,11 +197,29 @@ def supersede_safely_suspended_runs(
             continue
         command_id = str(run.get("command_id") or "").strip()
         work_item_id = str(run.get("work_item_id") or "").strip()
-        if not command_id or not work_item_id:
-            blockers.append((AUTOMATION_BLOCKING_NEEDS_ATTENTION, run))
+        command = (
+            uow.commands.get(command_id, for_update=True)
+            if command_id
+            else None
+        )
+        item = (
+            uow.work_items.get(work_item_id, for_update=True)
+            if work_item_id
+            else None
+        )
+        facts = uow.runs.get_automation_supersession_facts(run_id)
+        kind = classify_automation_run_blocking_kind(
+            run,
+            item or {},
+            facts,
+            now=superseded_at,
+        )
+        if kind in {
+            AUTOMATION_BLOCKING_ACTIVE,
+            AUTOMATION_BLOCKING_RETRY_PENDING,
+        }:
+            blockers.append((kind, run))
             continue
-        command = uow.commands.get(command_id, for_update=True)
-        item = uow.work_items.get(work_item_id, for_update=True)
         if (
             command is None
             or item is None
@@ -200,26 +227,14 @@ def supersede_safely_suspended_runs(
             or str(item.get("work_item_id") or "")
             != str(run.get("work_item_id") or "")
         ):
-            blockers.append((AUTOMATION_BLOCKING_NEEDS_ATTENTION, run))
             continue
-        facts = uow.runs.get_automation_supersession_facts(run_id)
-        kind = classify_automation_run_blocking_kind(
-            run,
-            item,
-            facts,
-            now=superseded_at,
-        )
         if kind == AUTOMATION_BLOCKING_SAFE_SUPERSEDE:
             safe_rows.append((dict(run), dict(item)))
-        else:
-            blockers.append((kind, run))
 
     if blockers:
         priority = {
-            AUTOMATION_BLOCKING_UNKNOWN_WRITE: 0,
-            AUTOMATION_BLOCKING_ACTIVE: 1,
-            AUTOMATION_BLOCKING_RETRY_PENDING: 2,
-            AUTOMATION_BLOCKING_NEEDS_ATTENTION: 3,
+            AUTOMATION_BLOCKING_ACTIVE: 0,
+            AUTOMATION_BLOCKING_RETRY_PENDING: 1,
         }
         blocking_kind, blocking_run = sorted(
             blockers,
@@ -238,6 +253,14 @@ def supersede_safely_suspended_runs(
 
     for previous_run, previous_item in safe_rows:
         previous_status = str(previous_run["status"])
+        if previous_status == RunStatus.WAITING_APPROVAL.value:
+            invalidate_pending_approval_for_cancelled_run(
+                uow,
+                run=previous_run,
+                reason="SUPERSEDED_BY_NEW_INVOCATION",
+                occurred_at=superseded_at,
+                causation_id=successor["command_id"],
+            )
         assert_run_transition(previous_status, RunStatus.CANCELLED)
         cancelled_run = uow.runs.cancel_suspended(
             str(previous_run["run_id"]),
@@ -278,6 +301,80 @@ def supersede_safely_suspended_runs(
             request_id=request_id,
             occurred_at=superseded_at,
         )
+
+
+def invalidate_pending_approval_for_cancelled_run(
+    uow: Any,
+    *,
+    run: Mapping[str, Any],
+    reason: str,
+    occurred_at: datetime,
+    causation_id: str | None,
+) -> None:
+    """Invalidate one current approval and its delivery in the caller's UoW."""
+
+    run_id = str(run["run_id"])
+    approval = uow.approvals.get_latest_for_run(run_id, for_update=True)
+    invalidated = uow.approvals.invalidate_pending(run_id=run_id, reason=reason)
+    actionable = approval is not None and str(approval.get("status") or "") in {
+        "PENDING",
+        "APPROVED",
+    }
+    if invalidated != int(actionable):
+        raise OrchestrationError(
+            "AUTOMATION_ALREADY_RUNNING",
+            "等待审批的旧任务无法安全终结",
+            details={
+                "blocking_kind": AUTOMATION_BLOCKING_NEEDS_ATTENTION,
+                "active_run_id": run_id,
+                "active_status": str(run.get("status") or ""),
+            },
+        )
+    if not actionable or approval is None:
+        return
+    if (
+        str(approval.get("run_id") or "") != run_id
+        or str(approval.get("work_item_id") or "")
+        != str(run.get("work_item_id") or "")
+    ):
+        raise OrchestrationError(
+            "AUTOMATION_ALREADY_RUNNING",
+            "等待审批的旧任务与审批记录不一致",
+            details={"blocking_kind": AUTOMATION_BLOCKING_NEEDS_ATTENTION},
+        )
+    event_type = "agent.approval.invalidated"
+    uow.events.append_with_outbox(
+        {
+            "event_id": new_id(),
+            "event_type": event_type,
+            "schema_version": 1,
+            "source_system": "agent",
+            "source_event_id": f"approval-invalidated:{approval['approval_id']}:{reason}",
+            "entity_type": "approval_request",
+            "entity_id": approval["approval_id"],
+            "work_item_id": approval["work_item_id"],
+            "run_id": run_id,
+            "occurred_at": occurred_at,
+            "observed_at": occurred_at,
+            "correlation_id": run["correlation_id"],
+            "causation_id": causation_id,
+            "payload": {"plan_hash": approval.get("plan_hash"), "reason": reason},
+        },
+        (
+            {
+                "consumer_name": "orchestration.audit",
+                "topic": event_type,
+                "partition_key": str(approval["work_item_id"]),
+                "max_attempts": 10,
+            },
+            {
+                "consumer_name": "feishu.approval",
+                "topic": event_type,
+                "partition_key": str(approval["approval_id"]),
+                "max_attempts": 20,
+            },
+        ),
+    )
 
 
 def _append_supersession_events(

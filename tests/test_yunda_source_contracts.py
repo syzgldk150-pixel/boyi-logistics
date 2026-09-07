@@ -261,7 +261,7 @@ def _send_sink_record() -> dict[str, object]:
     return record
 
 
-def test_dispatch_bitable_write_is_followed_by_a_fresh_exact_resource_read(
+def test_dispatch_bitable_lost_write_response_succeeds_after_exact_resource_read(
     monkeypatch: pytest.MonkeyPatch,
 ):
     record = _dispatch_sink_record()
@@ -297,7 +297,7 @@ def test_dispatch_bitable_write_is_followed_by_a_fresh_exact_resource_read(
         if action == "list_records" and calls.count("list_records") == 1:
             return {"data": {"items": [], "has_more": False}}
         if action == "write_records":
-            return {"ok": True, "written": 1}
+            raise TimeoutError("response lost after commit")
         if action == "list_records":
             return {
                 "data": {
@@ -318,6 +318,7 @@ def test_dispatch_bitable_write_is_followed_by_a_fresh_exact_resource_read(
     )
 
     assert calls == ["list_records", "write_records", "list_records"]
+    assert calls.count("write_records") == 1
     assert result | {
         "ok": True,
         "record_count": 1,
@@ -391,7 +392,8 @@ def test_dispatch_bitable_non_exact_readback_is_write_outcome_unknown(
         incomplete_fields = dict(expected_payload[0]["fields"])
         incomplete_fields.pop(dispatch_sink.FIELD_NAMES[-1])
         observed = [{"record_id": "fresh-1", "fields": incomplete_fields}]
-    list_calls = 0
+    calls: list[str] = []
+    sleeps: list[float] = []
 
     monkeypatch.setattr(
         adapters,
@@ -410,16 +412,16 @@ def test_dispatch_bitable_non_exact_readback_is_write_outcome_unknown(
     )
 
     def operation(action, _params):
-        nonlocal list_calls
+        calls.append(action)
         if action == "list_records":
-            list_calls += 1
-            items = [] if list_calls == 1 else observed
+            items = [] if calls.count("list_records") == 1 else observed
             return {"data": {"items": items, "has_more": False}}
         if action == "write_records":
             return {"ok": True, "written": 1}
         raise AssertionError(action)
 
     monkeypatch.setattr(feishu_cli_tool, "feishu_operation", operation)
+    monkeypatch.setattr("agent.feishu_readback.time.sleep", sleeps.append)
     with pytest.raises(PluginExecutionError) as exc:
         adapters._append_yunda_dispatch_bitable(
             "resource",
@@ -428,9 +430,12 @@ def test_dispatch_bitable_non_exact_readback_is_write_outcome_unknown(
             True,
         )
     assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
+    assert calls.count("write_records") == 1
+    assert calls.count("list_records") == 5
+    assert sleeps == [0.5, 1.0, 2.0]
 
 
-def test_send_bitable_replace_reads_back_the_exact_target_date_snapshot(
+def test_send_bitable_ack_waits_for_delayed_exact_readback_without_rewriting(
     monkeypatch: pytest.MonkeyPatch,
 ):
     record = _send_sink_record()
@@ -449,6 +454,7 @@ def test_send_bitable_replace_reads_back_the_exact_target_date_snapshot(
         },
     }
     calls: list[str] = []
+    sleeps: list[float] = []
 
     monkeypatch.setattr(
         adapters,
@@ -474,6 +480,8 @@ def test_send_bitable_replace_reads_back_the_exact_target_date_snapshot(
         if action == "write_records":
             return {"ok": True, "written": 1}
         if action == "list_records":
+            if calls.count("list_records") < 5:
+                return {"data": {"items": [old], "has_more": False}}
             return {
                 "data": {
                     "items": [
@@ -485,6 +493,7 @@ def test_send_bitable_replace_reads_back_the_exact_target_date_snapshot(
         raise AssertionError(action)
 
     monkeypatch.setattr(feishu_cli_tool, "feishu_operation", operation)
+    monkeypatch.setattr("agent.feishu_readback.time.sleep", sleeps.append)
     result = adapters._replace_yunda_send_bitable(
         "resource",
         [record],
@@ -492,7 +501,18 @@ def test_send_bitable_replace_reads_back_the_exact_target_date_snapshot(
         True,
     )
 
-    assert calls == ["list_records", "delete_records", "write_records", "list_records"]
+    assert calls == [
+        "list_records",
+        "delete_records",
+        "write_records",
+        "list_records",
+        "list_records",
+        "list_records",
+        "list_records",
+    ]
+    assert calls.count("delete_records") == 1
+    assert calls.count("write_records") == 1
+    assert sleeps == [0.5, 1.0, 2.0]
     assert result | {
         "ok": True,
         "record_count": 1,
@@ -503,7 +523,7 @@ def test_send_bitable_replace_reads_back_the_exact_target_date_snapshot(
     } == result
 
 
-def test_send_sheet_replace_reads_back_every_identity_and_field(
+def test_send_sheet_lost_response_waits_for_delayed_exact_readback_without_rewriting(
     monkeypatch: pytest.MonkeyPatch,
 ):
     record = _send_sink_record()
@@ -511,7 +531,11 @@ def test_send_sheet_replace_reads_back_every_identity_and_field(
         [record],
         target_date=adapters.date(2026, 8, 15),
     )
-    calls: list[str] = []
+    read_calls: list[str] = []
+    sync_calls: list[str] = []
+    sleeps: list[float] = []
+    stale_values = [list(values[0])]
+    stale_values[0][1] = "stale"
     monkeypatch.setattr(
         adapters,
         "_exact_workflow_resource",
@@ -522,21 +546,27 @@ def test_send_sheet_replace_reads_back_every_identity_and_field(
             "sheet_clear_range": "A2:Y5000",
         },
     )
+
+    def sync_snapshot(resource_id, written, params):
+        assert written == values
+        assert params["dry_run"] is False
+        sync_calls.append(resource_id)
+        raise TimeoutError("response lost after commit")
+
     monkeypatch.setattr(
         "tools.phase7_sync_common.sync_sheet_snapshot",
-        lambda resource_id, written, params: {
-            "ok": True,
-            "rows": len(written),
-        },
+        sync_snapshot,
     )
 
     def operation(action, _params):
-        calls.append(action)
+        read_calls.append(action)
         assert action == "read_sheet"
         assert _params["range"] == "Sheet1!A2:Y5000"
-        return {"ok": True, "data": {"valueRange": {"values": values}}}
+        observed = stale_values if len(read_calls) < 4 else values
+        return {"ok": True, "data": {"valueRange": {"values": observed}}}
 
     monkeypatch.setattr(feishu_cli_tool, "feishu_operation", operation)
+    monkeypatch.setattr("agent.feishu_readback.time.sleep", sleeps.append)
     result = adapters._replace_yunda_send_sheet(
         "resource",
         [record],
@@ -544,7 +574,9 @@ def test_send_sheet_replace_reads_back_every_identity_and_field(
         False,
     )
 
-    assert calls == ["read_sheet"]
+    assert read_calls == ["read_sheet"] * 4
+    assert sync_calls == ["resource"]
+    assert sleeps == [0.5, 1.0, 2.0]
     assert result | {
         "ok": True,
         "record_count": 1,
@@ -552,25 +584,6 @@ def test_send_sheet_replace_reads_back_every_identity_and_field(
         "verified": True,
         "readback_count": 1,
     } == result
-
-    changed = [list(values[0])]
-    changed[0][1] = "changed"
-    monkeypatch.setattr(
-        feishu_cli_tool,
-        "feishu_operation",
-        lambda *_args, **_kwargs: {
-            "ok": True,
-            "data": {"valueRange": {"values": changed}},
-        },
-    )
-    with pytest.raises(PluginExecutionError) as exc:
-        adapters._replace_yunda_send_sheet(
-            "resource",
-            [record],
-            "2026-08-15",
-            False,
-        )
-    assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
 
 
 def test_send_sheet_replace_rejects_a_stale_managed_tail_after_clear_ack(
@@ -581,6 +594,9 @@ def test_send_sheet_replace_rejects_a_stale_managed_tail_after_clear_ack(
         [record],
         target_date=adapters.date(2026, 8, 15),
     )
+    read_calls: list[str] = []
+    sync_calls: list[str] = []
+    sleeps: list[float] = []
     monkeypatch.setattr(
         adapters,
         "_exact_workflow_resource",
@@ -593,12 +609,14 @@ def test_send_sheet_replace_rejects_a_stale_managed_tail_after_clear_ack(
     )
     monkeypatch.setattr(
         "tools.phase7_sync_common.sync_sheet_snapshot",
-        lambda *_args, **_kwargs: {"ok": True},
+        lambda resource_id, *_args, **_kwargs: (
+            sync_calls.append(resource_id) or {"ok": True}
+        ),
     )
-    monkeypatch.setattr(
-        feishu_cli_tool,
-        "feishu_operation",
-        lambda *_args, **_kwargs: {
+
+    def operation(action, _params):
+        read_calls.append(action)
+        return {
             "ok": True,
             "data": {
                 "valueRange": {
@@ -609,8 +627,10 @@ def test_send_sheet_replace_rejects_a_stale_managed_tail_after_clear_ack(
                     ]
                 }
             },
-        },
-    )
+        }
+
+    monkeypatch.setattr(feishu_cli_tool, "feishu_operation", operation)
+    monkeypatch.setattr("agent.feishu_readback.time.sleep", sleeps.append)
 
     with pytest.raises(PluginExecutionError) as exc:
         adapters._replace_yunda_send_sheet(
@@ -621,6 +641,9 @@ def test_send_sheet_replace_rejects_a_stale_managed_tail_after_clear_ack(
         )
 
     assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
+    assert read_calls == ["read_sheet"] * 4
+    assert sync_calls == ["resource"]
+    assert sleeps == [0.5, 1.0, 2.0]
 
 
 def test_yunda_projection_uses_exact_fresh_source_date_readback(

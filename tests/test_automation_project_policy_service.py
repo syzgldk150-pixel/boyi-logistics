@@ -91,6 +91,9 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             "run_id": "run-active",
             "status": "RUNNING",
         }
+        self.repository.state.automation_run_facts = {
+            "run-active": {"has_inflight_step": True},
+        }
 
         with self.assertRaises(OrchestrationError) as raised:
             self.service.invoke_console(
@@ -111,6 +114,74 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             raised.exception.details,
         )
         self.assertIsNone(self.gateway.command)
+
+    def test_second_distinct_request_cannot_cancel_a_just_accepted_command(self):
+        first = self.service.invoke_console(
+            AUTOMATION_ID,
+            request_id="request-first",
+            actor=_admin(),
+        )
+        first_command = self.gateway.command
+        self.repository.state.automation_runs = [
+            {
+                "run_id": first.run_id,
+                "work_item_id": first.work_item_id,
+                "command_id": first.command_id,
+                "status": "RECEIVED",
+            },
+        ]
+
+        with self.assertRaises(OrchestrationError) as raised:
+            self.service.invoke_console(
+                AUTOMATION_ID,
+                request_id="request-second-distinct-key",
+                actor=_admin(),
+            )
+
+        self.assertEqual("AUTOMATION_ALREADY_RUNNING", raised.exception.code)
+        self.assertEqual("ACTIVE", raised.exception.details["blocking_kind"])
+        self.assertEqual("RECEIVED", self.repository.state.automation_runs[0]["status"])
+        self.assertIs(first_command, self.gateway.command)
+        self.assertEqual([], self.repository.state.domain_events)
+
+    def test_acceptance_locks_project_before_current_idempotency_and_run_scan(self):
+        self.service.invoke_console(
+            AUTOMATION_ID,
+            request_id="request-lock-order",
+            actor=_admin(),
+        )
+
+        self.assertEqual(
+            ["project:lock", "idempotency:lock", "unfinished:scan"],
+            self.repository.state.acceptance_lock_trace,
+        )
+        self.assertNotIn(
+            "idempotency:plain",
+            self.repository.state.acceptance_lock_trace,
+        )
+
+    def test_every_durable_preclaim_queue_state_blocks_a_distinct_request(self):
+        for status in ("RECEIVED", "CONTEXT_READY", "PLANNED", "VALIDATED"):
+            with self.subTest(status=status):
+                run_id = f"queued-{status.lower()}"
+                self.repository.state.automation_runs = [
+                    {"run_id": run_id, "status": status},
+                ]
+                self.repository.state.automation_run_facts = {}
+                with self.assertRaises(OrchestrationError) as raised:
+                    self.service.invoke_console(
+                        AUTOMATION_ID,
+                        request_id=f"request-during-{status.lower()}",
+                        actor=_admin(),
+                    )
+                self.assertEqual(
+                    "ACTIVE",
+                    raised.exception.details["blocking_kind"],
+                )
+                self.assertEqual(
+                    status,
+                    self.repository.state.automation_runs[0]["status"],
+                )
 
     def test_safe_suspended_runs_are_atomically_superseded_by_new_invocation(self):
         self.repository.state.automation_runs = [
@@ -180,6 +251,67 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         self.assertEqual([], self.repository.state.domain_events)
         self.assertEqual([], self.repository.state.outbox_events)
 
+    def test_waiting_approval_supersession_invalidates_delivery_atomically(self):
+        approval = _pending("approval-old", _invocation())
+        self.repository.state.pending = [approval]
+        self.repository.state.automation_runs = [
+            {
+                "run_id": approval["run_id"],
+                "work_item_id": approval["work_item_id"],
+                "status": "WAITING_APPROVAL",
+            }
+        ]
+
+        self.service.invoke_console(
+            AUTOMATION_ID,
+            request_id="request-after-approval",
+            actor=_admin(),
+        )
+
+        self.assertEqual("INVALIDATED", self.repository.state.pending[0]["status"])
+        self.assertEqual(
+            [
+                "agent.approval.invalidated",
+                "agent.run.status_changed",
+                "work_item.superseded_by_new_invocation",
+            ],
+            [event["event_type"] for event in self.repository.state.domain_events],
+        )
+        self.assertEqual(
+            ["orchestration.audit", "feishu.approval"],
+            [
+                row["consumer_name"]
+                for row in self.repository.state.outbox_events[:2]
+            ],
+        )
+
+    def test_waiting_approval_invalidation_rolls_back_with_successor_failure(self):
+        approval = _pending("approval-rollback", _invocation())
+        self.repository.state.pending = [approval]
+        self.repository.state.automation_runs = [
+            {
+                "run_id": approval["run_id"],
+                "work_item_id": approval["work_item_id"],
+                "status": "WAITING_APPROVAL",
+            }
+        ]
+        self.repository.state.fail_gateway_create_after_guard = True
+
+        with self.assertRaises(InvalidStateError):
+            self.service.invoke_console(
+                AUTOMATION_ID,
+                request_id="request-approval-rollback",
+                actor=_admin(),
+            )
+
+        self.assertNotIn("status", self.repository.state.pending[0])
+        self.assertEqual(
+            "WAITING_APPROVAL",
+            self.repository.state.automation_runs[0]["status"],
+        )
+        self.assertEqual([], self.repository.state.domain_events)
+        self.assertEqual([], self.repository.state.outbox_events)
+
     def test_retry_pending_run_is_not_superseded(self):
         self.repository.state.automation_runs = [
             {"run_id": "run-retry", "status": "FAILED_RETRYABLE"},
@@ -230,7 +362,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                     raised.exception.details["blocking_kind"],
                 )
 
-    def test_work_item_status_mismatch_fails_closed_without_mutation(self):
+    def test_stale_nonterminal_work_item_status_is_cancelled_without_blocking(self):
         self.repository.state.automation_runs = [
             {"run_id": "run-mismatch", "status": "BLOCKED_DATA"},
         ]
@@ -243,17 +375,20 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             }
         }
 
-        with self.assertRaises(OrchestrationError) as raised:
-            self.service.invoke_console(
-                AUTOMATION_ID,
-                request_id="request-mismatch",
-                actor=_admin(),
-            )
+        receipt = self.service.invoke_console(
+            AUTOMATION_ID,
+            request_id="request-mismatch",
+            actor=_admin(),
+        )
 
-        self.assertEqual("NEEDS_ATTENTION", raised.exception.details["blocking_kind"])
-        self.assertEqual("BLOCKED_DATA", self.repository.state.automation_runs[0]["status"])
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual("CANCELLED", self.repository.state.automation_runs[0]["status"])
+        self.assertEqual(
+            "CANCELLED",
+            self.repository.state.work_items["work-run-mismatch"]["status"],
+        )
 
-    def test_verified_protected_write_requires_old_item_attention(self):
+    def test_stopped_verified_write_history_is_preserved_without_blocking(self):
         self.repository.state.automation_runs = [
             {"run_id": "run-protected", "status": "BLOCKED_DATA"},
         ]
@@ -261,16 +396,27 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             "run-protected": {"has_protected_write_receipt": True},
         }
 
-        with self.assertRaises(OrchestrationError) as raised:
-            self.service.invoke_console(
-                AUTOMATION_ID,
-                request_id="request-protected",
-                actor=_admin(),
-            )
+        receipt = self.service.invoke_console(
+            AUTOMATION_ID,
+            request_id="request-protected",
+            actor=_admin(),
+        )
 
-        self.assertEqual("NEEDS_ATTENTION", raised.exception.details["blocking_kind"])
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual(
+            "BLOCKED_DATA",
+            self.repository.state.automation_runs[0]["status"],
+        )
+        self.assertEqual(
+            "BLOCKED_DATA",
+            self.repository.state.work_items["work-run-protected"]["status"],
+        )
+        self.assertEqual(
+            {"has_protected_write_receipt": True},
+            self.repository.state.automation_run_facts["run-protected"],
+        )
 
-    def test_unknown_or_started_protected_write_is_never_superseded(self):
+    def test_stopped_unknown_write_history_is_preserved_but_does_not_block(self):
         for facts in (
             {"has_unknown_write_receipt": True},
             {"has_unclosed_protected_write": True},
@@ -282,22 +428,22 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                 self.repository.state.automation_run_facts = {
                     "run-write": facts,
                 }
-                with self.assertRaises(OrchestrationError) as raised:
-                    self.service.invoke_console(
-                        AUTOMATION_ID,
-                        request_id=f"request-write-{len(facts)}",
-                        actor=_admin(),
-                    )
-                self.assertEqual(
-                    "UNKNOWN_WRITE",
-                    raised.exception.details["blocking_kind"],
+                receipt = self.service.invoke_console(
+                    AUTOMATION_ID,
+                    request_id=f"request-write-{next(iter(facts))}",
+                    actor=_admin(),
                 )
+                self.assertEqual("run-invoke", receipt.run_id)
                 self.assertEqual(
                     "BLOCKED_DATA",
                     self.repository.state.automation_runs[0]["status"],
                 )
+                self.assertEqual(
+                    facts,
+                    self.repository.state.automation_run_facts["run-write"],
+                )
 
-    def test_exact_server_readback_resumes_unknown_run_without_superseding_it(self):
+    def test_stopped_unknown_history_does_not_trigger_recovery_before_acceptance(self):
         recovery_calls: list[tuple[str, str]] = []
         service = AutomationProjectPolicyService(
             self.repository,
@@ -322,115 +468,146 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             "run-write": {"has_unknown_write_receipt": True},
         }
 
-        with self.assertRaises(OrchestrationError) as raised:
-            service.invoke_console(
-                AUTOMATION_ID,
-                request_id="request-readback",
-                actor=_admin(),
-            )
+        receipt = service.invoke_console(
+            AUTOMATION_ID,
+            request_id="request-readback",
+            actor=_admin(),
+        )
 
-        self.assertEqual("AUTOMATION_ALREADY_RUNNING", raised.exception.code)
-        self.assertEqual("ACTIVE", raised.exception.details["blocking_kind"])
-        self.assertEqual([(AUTOMATION_ID, "request-readback")], recovery_calls)
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual([], recovery_calls)
         self.assertEqual(
             "BLOCKED_DATA",
             self.repository.state.automation_runs[0]["status"],
         )
-        self.assertIsNone(self.gateway.command)
+        self.assertIsNotNone(self.gateway.command)
 
-    def test_exact_empty_readback_clears_old_run_and_accepts_current_request(self):
-        recovery_calls: list[tuple[str, str]] = []
-
-        def recover(automation_id: str, request_id: str):
-            recovery_calls.append((automation_id, request_id))
-            self.repository.state.automation_runs[0]["status"] = "FAILED_TERMINAL"
-            self.repository.state.automation_run_facts["run-write"] = {}
-            return {"recovery_status": "NOT_APPLIED", "transitioned": True}
-
-        service = AutomationProjectPolicyService(
-            self.repository,
-            core_catalog=SimpleNamespace(),
-            plugin_catalog=_Catalog(self.entry),
-            command_gateway=self.gateway,
-            wake_runner=self.woken_run_ids.append,
-            unknown_write_recovery=recover,
-        )
-        service._load_contract = lambda _automation_id: (self.entry, self.contract)
-        service._lock_and_compile_contract = lambda _uow, _entry, **_kwargs: (
-            self.contract,
-            dict(self.repository.state.config),
-        )
+    def test_orphaned_running_status_without_live_facts_is_safely_cancelled(self):
         self.repository.state.automation_runs = [
-            {"run_id": "run-write", "status": "BLOCKED_DATA"},
+            {"run_id": "run-orphan", "status": "RUNNING"},
         ]
-        self.repository.state.automation_run_facts = {
-            "run-write": {"has_unknown_write_receipt": True},
-        }
 
-        receipt = service.invoke_console(
+        receipt = self.service.invoke_console(
             AUTOMATION_ID,
-            request_id="request-empty-readback",
+            request_id="request-after-orphan",
             actor=_admin(),
         )
 
         self.assertEqual("run-invoke", receipt.run_id)
         self.assertEqual(
-            [(AUTOMATION_ID, "request-empty-readback")],
-            recovery_calls,
-        )
-        self.assertEqual(
-            "FAILED_TERMINAL",
+            "CANCELLED",
             self.repository.state.automation_runs[0]["status"],
         )
-        self.assertIsNotNone(self.gateway.command)
 
-    def test_unfinished_run_scan_limit_fails_closed(self):
+    def test_unfinished_history_cancels_at_most_one_hundred_without_rejection(self):
         self.repository.state.automation_runs = [
             {"run_id": f"run-{index}", "status": "BLOCKED_DATA"}
             for index in range(101)
         ]
+        retry_at = datetime(2026, 8, 30, 1, 2, 3)
+        self.repository.state.automation_runs[0]["next_attempt_at"] = retry_at
+
+        receipt = self.service.invoke_console(
+            AUTOMATION_ID,
+            request_id="request-over-limit",
+            actor=_admin(),
+        )
+
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual(
+            100,
+            sum(
+                row["status"] == "CANCELLED"
+                for row in self.repository.state.automation_runs
+            ),
+        )
+        self.assertEqual(
+            1,
+            sum(
+                row["status"] == "BLOCKED_DATA"
+                for row in self.repository.state.automation_runs
+            ),
+        )
+        self.assertEqual(retry_at, self.repository.state.automation_runs[0]["next_attempt_at"])
+
+    def test_live_blocker_after_more_than_one_hundred_history_rows_is_prioritized(self):
+        self.repository.state.automation_runs = [
+            {"run_id": f"run-{index}", "status": "BLOCKED_DATA"}
+            for index in range(100)
+        ] + [{"run_id": "run-retry", "status": "FAILED_RETRYABLE"}]
 
         with self.assertRaises(OrchestrationError) as raised:
             self.service.invoke_console(
                 AUTOMATION_ID,
-                request_id="request-over-limit",
+                request_id="request-with-late-retry",
                 actor=_admin(),
             )
 
-        self.assertEqual("NEEDS_ATTENTION", raised.exception.details["blocking_kind"])
-        self.assertEqual(
-            "UNFINISHED_RUN_LIMIT_EXCEEDED",
-            raised.exception.details["active_status"],
-        )
+        self.assertEqual("RETRY_PENDING", raised.exception.details["blocking_kind"])
         self.assertTrue(
-            all(row["status"] == "BLOCKED_DATA" for row in self.repository.state.automation_runs)
+            all(
+                row["status"] != "CANCELLED"
+                for row in self.repository.state.automation_runs
+            )
         )
 
     def test_exact_request_replay_is_not_blocked_by_its_active_run(self):
         request_id = "request-replay"
-        idempotency_key = (
-            f"automation:{AUTOMATION_ID}:console:{_admin().actor_id}:{request_id}"
+        first = self.service.invoke_console(
+            AUTOMATION_ID,
+            request_id=request_id,
+            actor=_admin(),
         )
-        self.repository.state.commands_by_idempotency[
-            ("console", idempotency_key)
-        ] = {"command_id": "command-existing"}
+        first_command = self.gateway.command
+        self.contract = replace(
+            self.contract,
+            contract_hash="e" * 64,
+            project_configuration_version=2,
+        )
         self.repository.state.active_automation_run = {
-            "run_id": "run-active",
+            "run_id": first.run_id,
+            "work_item_id": first.work_item_id,
+            "command_id": first.command_id,
             "status": "RUNNING",
         }
 
-        receipt = self.service.invoke_console(
+        replay = self.service.invoke_console(
             AUTOMATION_ID,
             request_id=request_id,
             actor=_admin(),
         )
 
-        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual(first.command_id, replay.command_id)
+        self.assertEqual(first.work_item_id, replay.work_item_id)
+        self.assertEqual(first.run_id, replay.run_id)
+        self.assertTrue(replay.reused)
+        self.assertIs(first_command, self.gateway.command)
         self.assertEqual(
             "RUNNING",
             self.repository.state.active_automation_run["status"],
         )
         self.assertEqual([], self.repository.state.domain_events)
+
+    def test_same_idempotency_key_with_different_request_still_conflicts(self):
+        key = "automation-replay-collision"
+        self.service.invoke_trusted(
+            AUTOMATION_ID,
+            entrypoint="console",
+            request_id="request-original",
+            actor=_admin(),
+            idempotency_key=key,
+        )
+
+        with self.assertRaises(OrchestrationError) as raised:
+            self.service.invoke_trusted(
+                AUTOMATION_ID,
+                entrypoint="console",
+                request_id="request-different",
+                actor=_admin(),
+                idempotency_key=key,
+            )
+
+        self.assertEqual("REQUEST_ID_REUSED", raised.exception.code)
 
     def test_service_v2_console_invoke_requires_exact_active_contribution(self):
         self._set_service_v2_console_contract()
@@ -887,6 +1064,12 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
     def test_scan_preview_formal_invoke_stays_disabled_under_current_governance(self):
         self._set_scan_project()
         self.entry.installed_version = "1.0.22"
+        recovery_calls = []
+        self.service._unknown_write_recovery = (  # type: ignore[method-assign]
+            lambda automation_id, request_id: recovery_calls.append(
+                (automation_id, request_id)
+            )
+        )
 
         with self.assertRaises(OrchestrationError) as raised:
             self.service.invoke_console(
@@ -900,6 +1083,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             "SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED",
             raised.exception.code,
         )
+        self.assertEqual([], recovery_calls)
         self.assertIsNone(self.gateway.command)
 
     def test_exact_scan_project_injects_read_only_preview_server_side(self):
@@ -920,6 +1104,111 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             "scan_preview",
             self.gateway.command.parameters["execution_context"],
         )
+
+    def test_new_scan_preview_recovers_proven_empty_history_before_submit(self):
+        self._set_scan_project()
+        old_run = {
+            "run_id": "run-old-scan",
+            "work_item_id": "work-old-scan",
+            "status": "BLOCKED_DATA",
+        }
+        old_facts = {
+            "has_unknown_write_receipt": True,
+            "evidence_sha256": "e" * 64,
+        }
+        self.repository.state.automation_runs = [old_run]
+        self.repository.state.automation_run_facts = {
+            "run-old-scan": old_facts,
+        }
+        self.repository.state.work_items = {
+            "work-old-scan": {
+                "work_item_id": "work-old-scan",
+                "command_id": "command-run-old-scan",
+                "status": "BLOCKED_DATA",
+                "version": 1,
+            }
+        }
+        events = []
+        original_submit = self.gateway.submit
+
+        def recover(automation_id, request_id):
+            events.append(("recover", automation_id, request_id))
+            old_run["status"] = "FAILED_TERMINAL"
+            self.repository.state.work_items["work-old-scan"]["status"] = (
+                "CANCELLED"
+            )
+            return {"recovery_status": "NOT_APPLIED", "transitioned": True}
+
+        def submit(command, **kwargs):
+            events.append(("submit", command.command_id))
+            return original_submit(command, **kwargs)
+
+        self.service._unknown_write_recovery = recover  # type: ignore[method-assign]
+        self.gateway.submit = submit
+
+        receipt = self.service.invoke_console(
+            AUTOMATION_ID,
+            request_id="request-new-scan-preview",
+            actor=_admin(),
+        )
+
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual(
+            ("recover", AUTOMATION_ID, "request-new-scan-preview"),
+            events[0],
+        )
+        self.assertEqual("submit", events[1][0])
+        self.assertEqual("FAILED_TERMINAL", old_run["status"])
+        self.assertEqual(
+            "CANCELLED",
+            self.repository.state.work_items["work-old-scan"]["status"],
+        )
+        self.assertEqual(
+            old_facts,
+            self.repository.state.automation_run_facts["run-old-scan"],
+        )
+        self.assertTrue(self.gateway.command.parameters["arguments"]["dry_run"])
+
+    def test_unproven_scan_recovery_keeps_history_and_accepts_fresh_preview(self):
+        self._set_scan_project()
+        old_run = {"run_id": "run-old-scan", "status": "BLOCKED_DATA"}
+        old_facts = {
+            "has_unknown_write_receipt": True,
+            "evidence_sha256": "e" * 64,
+        }
+        self.repository.state.automation_runs = [old_run]
+        self.repository.state.automation_run_facts = {
+            "run-old-scan": old_facts,
+        }
+        recovery_calls = []
+
+        def recover(automation_id, request_id):
+            recovery_calls.append((automation_id, request_id))
+            raise RuntimeError("synthetic unavailable readback")
+
+        self.service._unknown_write_recovery = recover  # type: ignore[method-assign]
+
+        with self.assertLogs(
+            "agent.orchestration.automation_project_policy_service",
+            level="WARNING",
+        ):
+            receipt = self.service.invoke_console(
+                AUTOMATION_ID,
+                request_id="request-scan-after-unproven-history",
+                actor=_admin(),
+            )
+
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual(
+            [(AUTOMATION_ID, "request-scan-after-unproven-history")],
+            recovery_calls,
+        )
+        self.assertEqual("BLOCKED_DATA", old_run["status"])
+        self.assertEqual(
+            old_facts,
+            self.repository.state.automation_run_facts["run-old-scan"],
+        )
+        self.assertTrue(self.gateway.command.parameters["arguments"]["dry_run"])
 
     def test_selection_preview_injects_server_owned_read_only_arguments(self):
         self._set_selection_project()

@@ -3046,7 +3046,14 @@
             return;
           }
 
-          if (outputState && (outputState.running || (outputState.total || 0) > 0)) {
+          const pendingRun = !!outputState?.pending && !outputState.running && !outputState.runtime;
+          if (outputState && pendingRun) {
+            renderPendingRun(outputState);
+            startPolling(outputState.started_at || "");
+            return;
+          }
+
+          if (outputState?.running) {
             const startedAt = outputState.started_at || stamp;
             if (termDrawer && outputState.started_at) {
               termDrawer.dataset.runStartedAt = outputState.started_at;
@@ -3067,6 +3074,14 @@
             });
             syncRuntimeFeedback(form, null);
             startPolling(outputState.started_at || "");
+            return;
+          }
+
+          if (outputState?.runtime) {
+            stopRunProgress();
+            setRunUiState({ running: false, awaitingApproval: false, pendingRun: false });
+            syncRuntimeFeedback(form, outputState.runtime);
+            hideRunFeedback(form);
             return;
           }
 

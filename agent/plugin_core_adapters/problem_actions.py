@@ -8,6 +8,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Mapping, Sequence
 
+from agent import feishu_readback as _feishu_readback
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.problem_handlers import (
@@ -48,6 +49,10 @@ _SNAPSHOT_COMPARE_FIELDS = (
     "problem_owner_type",
     "problem_cause",
 )
+# Compatibility aliases for focused adapter tests; the shared module owns the
+# actual schedule and retry loop.
+time = _feishu_readback.time
+_FEISHU_READBACK_DELAYS = _feishu_readback.FEISHU_READBACK_DELAYS
 
 
 def _error(message: str, code: str) -> PluginExecutionError:
@@ -256,6 +261,25 @@ def _canonical_rows(
     return output
 
 
+def _retry_fresh_sheet_readback(
+    reader: Callable[[], Any],
+    matches: Callable[[Any], bool],
+    *,
+    label: str,
+    initial_error: Exception | None = None,
+) -> Any:
+    """Retry only fresh reads after a Sheet mutation; never repeat writes."""
+
+    return _feishu_readback.retry_readback(
+        reader,
+        matches,
+        label=label,
+        retryable_error_codes={"BROKER_SOURCE_FAILED", "WRITE_OUTCOME_UNKNOWN"},
+        initial_error=initial_error,
+        convert_non_retryable=True,
+    )
+
+
 def _read_sheet_rows(
     resource_loader: ResourceLoader,
     feishu_operation: FeishuOperation,
@@ -311,6 +335,7 @@ def _replace_sheet_rows(
         raise _error("problem target rows exceed the managed range", "BROKER_ARGUMENT_INVALID")
     value_range = f"{resource['sheet_id']}!A1:S{len(rows)}"
     managed_range = f"{resource['sheet_id']}!A1:S{resource['clear_end']}"
+    write_error: Exception | None = None
     try:
         clear = feishu_operation(
             "clear_sheet",
@@ -336,12 +361,13 @@ def _replace_sheet_rows(
         if not isinstance(write, Mapping) or write.get("error") or write.get("errors"):
             raise RuntimeError("write failed")
     except Exception as exc:
-        raise _error(
-            "problem target sheet write outcome is unknown",
-            "WRITE_OUTCOME_UNKNOWN",
-        ) from exc
-    try:
-        readback = feishu_operation(
+        # The provider may acknowledge the mutation and then lose its HTTP
+        # response.  Keep the exact write error, but prove the final state
+        # through the bounded readback before deciding the outcome.
+        write_error = exc
+    canonical_expected = _canonical_rows(rows, width=19)
+    def readback() -> list[list[str]]:
+        readback_payload = feishu_operation(
             "read_sheet",
             {
                 "spreadsheet_token": resource["spreadsheet_token"],
@@ -350,21 +376,17 @@ def _replace_sheet_rows(
                 "dry_run": False,
             },
         )
-        observed = _sheet_values(readback)
-    except Exception as exc:
-        raise _error(
-            "problem target sheet readback failed",
-            "WRITE_OUTCOME_UNKNOWN",
-        ) from exc
-    canonical_observed = _canonical_rows(observed, width=19)
-    while canonical_observed and not any(canonical_observed[-1]):
-        canonical_observed.pop()
-    canonical_expected = _canonical_rows(rows, width=19)
-    if canonical_observed != canonical_expected:
-        raise _error(
-            "problem target sheet readback did not match the write",
-            "WRITE_OUTCOME_UNKNOWN",
-        )
+        observed = _canonical_rows(_sheet_values(readback_payload), width=19)
+        while observed and not any(observed[-1]):
+            observed.pop()
+        return observed
+
+    canonical_observed = _retry_fresh_sheet_readback(
+        readback,
+        lambda observed: observed == canonical_expected,
+        label="problem target sheet",
+        initial_error=write_error,
+    )
     return {
         "ok": True,
         "verified": True,

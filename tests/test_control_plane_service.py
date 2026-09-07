@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import unittest
 
@@ -248,6 +248,25 @@ class _FakeCommands:
         return copy.deepcopy(row) if row else None
 
 
+class _FakeApprovals:
+    def __init__(self, repository):
+        self.repository = repository
+
+    def get_latest_for_run(self, run_id: str, *, for_update: bool = False):
+        del for_update
+        row = self.repository.approvals.get(run_id)
+        return copy.deepcopy(row) if row else None
+
+    def invalidate_pending(self, run_id: str, **kwargs):
+        del kwargs
+        current = self.repository.approvals.get(run_id)
+        if current is None or current.get("status") not in {"PENDING", "APPROVED"}:
+            return 0
+        current["status"] = "INVALIDATED"
+        current["decided_at"] = datetime(2026, 8, 13, 1, 2, 3)
+        return 1
+
+
 class _FakeEvents:
     def __init__(self, repository):
         self.repository = repository
@@ -302,14 +321,29 @@ class _FakeUow:
         self.runs = repository.run_store
         self.work_items = _FakeWorkItems(repository)
         self.commands = _FakeCommands(repository)
+        self.approvals = _FakeApprovals(repository)
         self.events = _FakeEvents(repository)
         self.committed = False
+        self._snapshot = None
 
     def __enter__(self):
+        self._snapshot = copy.deepcopy(
+            {
+                "runs": self.repository.runs,
+                "work_items": self.repository.work_items,
+                "approvals": self.repository.approvals,
+                "events": self.repository.events,
+                "outbox": self.repository.outbox,
+                "cancel_requests": self.repository.cancel_requests,
+            }
+        )
         return self
 
     def __exit__(self, exc_type, exc, traceback):
-        del exc_type, exc, traceback
+        del exc, traceback
+        if exc_type is not None and self._snapshot is not None:
+            for name, value in self._snapshot.items():
+                setattr(self.repository, name, value)
         return False
 
     def commit(self):
@@ -508,6 +542,32 @@ class ControlPlaneServiceTests(unittest.TestCase):
         self.assertEqual("source_read", active_dto["execution_phase"])
         self.assertEqual("READING_SOURCE", active_dto["stage_code"])
         self.assertEqual("正在读取数据", active_dto["stage_description"])
+
+    def test_run_projection_only_shows_run_activity_for_a_valid_lease(self):
+        verifying = _run("run-1", "VERIFYING")
+        repository = _FakeRepository([verifying])
+        service, _approval = self._service(repository)
+
+        orphan = service.get_run("run-1")["run"]
+        self.assertEqual("queued", orphan["execution_phase"])
+        self.assertEqual("WAITING_EXECUTION_SLOT", orphan["stage_code"])
+
+        repository.runs["run-1"].update(
+            {
+                "worker_id": "worker-1",
+                "lease_expires_at": datetime.now(timezone.utc)
+                + timedelta(minutes=1),
+                "started_at": datetime(2026, 9, 3, 1, 2, 3),
+            }
+        )
+        leased = service.get_run("run-1")["run"]
+        self.assertEqual("verifying", leased["execution_phase"])
+        self.assertEqual("VERIFYING_RESULT", leased["stage_code"])
+
+        repository.runs["run-1"]["status"] = "RUNNING"
+        between_steps = service.get_run("run-1")["run"]
+        self.assertEqual("processing", between_steps["execution_phase"])
+        self.assertEqual("PROCESSING_DATA", between_steps["stage_code"])
 
     def test_run_projection_maps_internal_source_error_to_stable_public_code(self):
         failed = _run("run-1", "BLOCKED_DATA")
@@ -832,6 +892,7 @@ class ControlPlaneServiceAsyncTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancel_requests_persistence_and_cancels_active_execution(self):
         repository = _FakeRepository([_run("run-1", "RUNNING")])
+        repository.run_facts["run-1"] = {"has_inflight_step": True}
         active = []
         wakes = []
 
@@ -850,6 +911,122 @@ class ControlPlaneServiceAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["run-1"], active)
         self.assertEqual(["run-1"], wakes)
         self.assertEqual("stop", repository.cancel_requests[0][1]["reason"])
+
+    async def test_unclaimed_and_orphan_runs_cancel_immediately_without_rescheduling(self):
+        statuses = (
+            "RECEIVED",
+            "CONTEXT_READY",
+            "PLANNED",
+            "VALIDATED",
+            "RUNNING",
+            "VERIFYING",
+        )
+        scheduled = datetime(2026, 9, 6, 1, 2, 3)
+        for status in statuses:
+            with self.subTest(status=status):
+                run = _run("run-1", status)
+                run["next_attempt_at"] = scheduled
+                repository = _FakeRepository([run])
+                active = []
+                wakes = []
+                service = ControlPlaneService(
+                    repository,
+                    _FakeApprovalService(repository),
+                    cancel_active=active.append,
+                    wake_runner=wakes.append,
+                )
+
+                result = await service.cancel_run(
+                    "run-1",
+                    actor=ACTOR,
+                    comment="stop",
+                )
+
+                self.assertEqual("CANCELLED", result["run"]["status"])
+                self.assertEqual(scheduled, repository.runs["run-1"]["next_attempt_at"])
+                self.assertEqual("CANCELLED", repository.work_items["work-1"]["status"])
+                self.assertEqual([], repository.cancel_requests)
+                self.assertEqual([], active)
+                self.assertEqual([], wakes)
+
+    async def test_valid_run_lease_between_steps_uses_cooperative_cancellation(self):
+        run = _run("run-1", "RUNNING")
+        run.update(
+            {
+                "worker_id": "worker-1",
+                "lease_expires_at": datetime.now(timezone.utc)
+                + timedelta(minutes=1),
+            }
+        )
+        repository = _FakeRepository([run])
+        active = []
+        service = ControlPlaneService(
+            repository,
+            _FakeApprovalService(repository),
+            cancel_active=active.append,
+        )
+
+        result = await service.cancel_run("run-1", actor=ACTOR, comment="stop")
+
+        self.assertEqual("RUNNING", result["run"]["status"])
+        self.assertEqual(["run-1"], active)
+        self.assertEqual(1, len(repository.cancel_requests))
+
+    async def test_waiting_approval_cancellation_invalidates_delivery_atomically(self):
+        repository = _FakeRepository([_run("run-1", "WAITING_APPROVAL")])
+        repository.work_items["work-1"]["status"] = "WAITING_APPROVAL"
+        repository.approvals["run-1"] = {
+            "approval_id": "approval-1",
+            "run_id": "run-1",
+            "work_item_id": "work-1",
+            "plan_hash": "plan-hash",
+            "status": "PENDING",
+        }
+        service = ControlPlaneService(repository, _FakeApprovalService(repository))
+
+        result = await service.cancel_run("run-1", actor=ACTOR, comment="stop")
+
+        self.assertEqual("CANCELLED", result["run"]["status"])
+        self.assertEqual("INVALIDATED", repository.approvals["run-1"]["status"])
+        self.assertEqual(
+            ["agent.approval.invalidated", "agent.run.cancelled"],
+            [row["event_type"] for row in repository.events],
+        )
+        self.assertEqual(
+            {"orchestration.audit", "feishu.approval"},
+            {
+                row["consumer_name"]
+                for row in repository.outbox
+                if row["topic"] == "agent.approval.invalidated"
+            },
+        )
+
+    async def test_waiting_approval_cancellation_rolls_back_invalidation_on_failure(self):
+        repository = _FakeRepository([_run("run-1", "WAITING_APPROVAL")])
+        repository.work_items["work-1"]["status"] = "WAITING_APPROVAL"
+        repository.approvals["run-1"] = {
+            "approval_id": "approval-1",
+            "run_id": "run-1",
+            "work_item_id": "work-1",
+            "plan_hash": "plan-hash",
+            "status": "PENDING",
+        }
+
+        def fail_cancel(*args, **kwargs):
+            del args, kwargs
+            raise RuntimeError("forced cancellation failure")
+
+        repository.run_store.cancel_suspended = fail_cancel
+        service = ControlPlaneService(repository, _FakeApprovalService(repository))
+
+        with self.assertRaisesRegex(RuntimeError, "forced cancellation failure"):
+            await service.cancel_run("run-1", actor=ACTOR, comment="stop")
+
+        self.assertEqual("WAITING_APPROVAL", repository.runs["run-1"]["status"])
+        self.assertEqual("WAITING_APPROVAL", repository.work_items["work-1"]["status"])
+        self.assertEqual("PENDING", repository.approvals["run-1"]["status"])
+        self.assertEqual([], repository.events)
+        self.assertEqual([], repository.outbox)
 
     async def test_session_restore_pages_completely_and_resumes_exact_matches(self):
         first = _run("run-1", "BLOCKED_LOGIN", version=1)

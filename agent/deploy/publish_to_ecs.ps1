@@ -440,6 +440,7 @@ function Get-ReleaseFingerprints() {
         "agent/scripts/automation_project_schedule_identity_preflight.py",
         "agent/scripts/automation_plugin_install_ownership_preflight.py",
         "agent/scripts/automation_project_version_preflight.py",
+        "agent/scripts/repair_yunda_send_waybills_sheet.py",
         "agent/scripts/verify_locked_environment.py"
     )
     $sharedConsolePaths = @("console/requirements.txt", "console/requirements.lock")

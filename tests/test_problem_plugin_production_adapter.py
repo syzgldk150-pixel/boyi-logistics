@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+import plugin_core_adapters.problem_actions as problem_actions
 from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
 from agent.automation_plugins.errors import PluginExecutionError
 from plugin_core_adapters.problem_actions import (
@@ -25,6 +26,13 @@ _DAXIANG = "daxiang-account"
 _SELF_RESOURCE = "self-source"
 _SPLIT_SOURCE = "split-source"
 _SPLIT_TARGET = "split-target"
+
+
+@pytest.fixture(autouse=True)
+def _disable_readback_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the four production readback attempts fast in unit tests."""
+
+    monkeypatch.setattr(problem_actions.time, "sleep", lambda _delay: None)
 
 
 def _load_action(plugin_id: str):
@@ -483,3 +491,41 @@ def test_target_sheet_stale_managed_tail_after_clear_ack_is_unknown() -> None:
         )
 
     assert unknown.value.code == "WRITE_OUTCOME_UNKNOWN"
+
+
+def test_target_sheet_delayed_readback_accepts_lost_ack_without_rewriting() -> None:
+    harness = _Harness()
+    expected = [_split_header()]
+    read_count = 0
+    clear_count = 0
+    write_count = 0
+
+    def delayed_feishu(action: str, _params: dict[str, Any]):
+        nonlocal read_count, clear_count, write_count
+        if action == "clear_sheet":
+            clear_count += 1
+            return {"ok": True}
+        if action == "write_sheet":
+            write_count += 1
+            # Simulate a successful mutation whose response was lost.
+            return {"error": "upstream 502 after commit"}
+        if action == "read_sheet":
+            read_count += 1
+            if read_count < 3:
+                return {"data": {"values": []}}
+            return {"data": {"values": expected}}
+        raise AssertionError(action)
+
+    result = _replace_sheet_rows(
+        harness.resource_loader,
+        delayed_feishu,
+        _SPLIT_TARGET,
+        expected,
+    )
+
+    assert result["ok"] is True
+    assert result["verified"] is True
+    assert clear_count == 1
+    assert write_count == 1
+    assert read_count == 3
+    assert problem_actions._FEISHU_READBACK_DELAYS == (0.0, 0.5, 1.0, 2.0)

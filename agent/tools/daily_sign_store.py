@@ -79,6 +79,12 @@ _LEDGER_TEMPORAL_FIELDS = frozenset(
         "tms_signed_at",
     }
 )
+_LEDGER_OBSERVATION_TEMPORAL_FIELDS = frozenset(
+    {"first_seen_r13_at", "last_seen_r13_at"}
+)
+_LEDGER_BUSINESS_FIELDS = tuple(
+    field for field in LEDGER_FIELDS if field not in _LEDGER_OBSERVATION_TEMPORAL_FIELDS
+)
 
 
 class DailySignPersistenceReadbackError(RuntimeError):
@@ -150,6 +156,60 @@ def _canonical_ledger_row(row: Mapping[str, Any]) -> dict[str, Any]:
             "daily-sign ledger readback identity is missing"
         )
     return output
+
+
+def _parse_observation_datetime(value: Any, *, field: str, label: str) -> datetime | None:
+    canonical = _temporal_value(value)
+    if canonical is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(canonical)
+    except (TypeError, ValueError) as exc:
+        raise DailySignPersistenceReadbackError(
+            f"daily-sign {label} {field} is not an ISO datetime"
+        ) from exc
+    if "T" not in canonical and " " not in canonical:
+        raise DailySignPersistenceReadbackError(
+            f"daily-sign {label} {field} is not an ISO datetime"
+        )
+    return parsed
+
+
+def _canonical_ledger_business_rows(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    label: str,
+) -> list[dict[str, Any]]:
+    """Canonicalize stable facts while validating observation clocks separately."""
+
+    business_rows: list[dict[str, Any]] = []
+    for row in rows:
+        canonical = _canonical_ledger_row(row)
+        first_seen = _parse_observation_datetime(
+            canonical.get("first_seen_r13_at"),
+            field="first_seen_r13_at",
+            label=label,
+        )
+        last_seen = _parse_observation_datetime(
+            canonical.get("last_seen_r13_at"),
+            field="last_seen_r13_at",
+            label=label,
+        )
+        if first_seen is not None and last_seen is not None:
+            try:
+                monotonic = first_seen <= last_seen
+            except TypeError as exc:
+                raise DailySignPersistenceReadbackError(
+                    f"daily-sign {label} observation timestamps are not comparable"
+                ) from exc
+            if not monotonic:
+                raise DailySignPersistenceReadbackError(
+                    f"daily-sign {label} observation timestamps are not monotonic"
+                )
+        business_rows.append(
+            {field: canonical[field] for field in _LEDGER_BUSINESS_FIELDS}
+        )
+    return business_rows
 
 
 def _canonical_json_object(value: Any) -> dict[str, Any]:
@@ -254,7 +314,14 @@ def build_daily_sign_persistence_marker(
         identity_fields=("tracking_number",),
         label="每日应签发布集合",
     )
-    canonical_publication = [_canonical_ledger_row(row) for row in publication]
+    canonical_ledger = _canonical_ledger_business_rows(
+        normalized_ledger,
+        label="ledger rows",
+    )
+    canonical_publication = _canonical_ledger_business_rows(
+        publication,
+        label="publication rows",
+    )
     if any(row["tms_signed"] for row in canonical_publication):
         raise ValueError("每日应签发布集合不得包含已签收主单")
     material = {
@@ -277,9 +344,7 @@ def build_daily_sign_persistence_marker(
         },
         "ledger_rows": {
             "count": len(normalized_ledger),
-            "sha256": snapshot_fingerprint(
-                [_canonical_ledger_row(row) for row in normalized_ledger]
-            ),
+            "sha256": snapshot_fingerprint(canonical_ledger),
         },
         "publication_rows": {
             "count": len(canonical_publication),
@@ -1089,6 +1154,10 @@ def persist_daily_sign_snapshot(
     normalized_verifications = _normalize_sign_verification_states(
         sign_verification_states or []
     )
+    canonical_ledger = _canonical_ledger_business_rows(
+        normalized_ledger,
+        label="ledger rows",
+    )
     marker: dict[str, Any] | None = None
     if any(value is not None for value in (publication_rows, run_id, persistence_marker)):
         if publication_rows is None or not clean_text(run_id) or persistence_marker is None:
@@ -1143,7 +1212,7 @@ def persist_daily_sign_snapshot(
         "sign_events": len(normalized_signs),
         "sign_verification_states": len(normalized_verifications),
         "ledger_rows": len(normalized_ledger),
-        "fingerprint": snapshot_fingerprint(normalized_ledger),
+        "fingerprint": snapshot_fingerprint(canonical_ledger),
         "persistence_marker": marker,
     }
 
@@ -1312,10 +1381,14 @@ def verify_daily_sign_persistence(
     expected_problems = _problem_event_material(normalized_problems)
     expected_signs = _sign_event_material(normalized_signs)
     expected_verifications = _verification_material(normalized_verifications)
-    expected_ledger = [_canonical_ledger_row(row) for row in normalized_ledger]
-    expected_publication = [
-        _canonical_ledger_row(row) for row in normalized_publication
-    ]
+    expected_ledger = _canonical_ledger_business_rows(
+        normalized_ledger,
+        label="expected ledger rows",
+    )
+    expected_publication = _canonical_ledger_business_rows(
+        normalized_publication,
+        label="expected publication rows",
+    )
     ensure_daily_sign_tables()
     connection = _daily_sign_connect()
     try:
@@ -1424,7 +1497,10 @@ def verify_daily_sign_persistence(
         marker=expected_marker.get("sign_verification_states"),
         identity_fields=("tracking_number",),
     )
-    observed_ledger = [_canonical_ledger_row(row) for row in raw_ledger]
+    observed_ledger = _canonical_ledger_business_rows(
+        raw_ledger,
+        label="ledger readback",
+    )
     publication_proof = _verify_row_set(
         label="publication rows",
         expected=expected_publication,

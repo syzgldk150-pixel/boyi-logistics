@@ -5,6 +5,7 @@ from typing import Any, Mapping
 
 import pytest
 
+import plugin_core_adapters.delivery_site as delivery_site
 from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
 from agent.automation_plugins.delivery_site_handlers import (
     DeliverySiteHandlerPorts,
@@ -20,6 +21,13 @@ _SECRET = b"delivery-site-fresh-readback-test-secret"
 _RESOURCE_ID = "phase7.delivery_status_bitable"
 _SITE_BITABLE_ID = "phase7.site_send_bitable"
 _SITE_SHEET_ID = "phase7.site_send_sheet"
+
+
+@pytest.fixture(autouse=True)
+def _disable_readback_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the four production readback attempts fast in unit tests."""
+
+    monkeypatch.setattr(delivery_site.time, "sleep", lambda _delay: None)
 
 
 def _stub_site_send_read(
@@ -436,7 +444,7 @@ def test_delivery_write_response_loss_is_unknown_even_when_readback_matches() ->
 
 
 @pytest.mark.parametrize("response_count", [0, 1, 3])
-def test_delivery_bitable_rejects_zero_partial_or_extra_write_counts(
+def test_delivery_bitable_readback_overrides_zero_partial_or_extra_write_counts(
     response_count: int,
 ) -> None:
     rows = [
@@ -463,17 +471,17 @@ def test_delivery_bitable_rejects_zero_partial_or_extra_write_counts(
         feishu_operation=feishu,
     )
 
-    with pytest.raises(PluginExecutionError) as exc:
-        _delivery_handlers(ports)[("network.request", "feishu.bitable.write_records")](
-            _resource_context(),
-            {
-                "records": [
-                    {"record_id": "record-1", "status": "已签收"},
-                    {"record_id": "record-2", "status": "已签收"},
-                ]
-            },
-        )
-    assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
+    result = _delivery_handlers(ports)[("network.request", "feishu.bitable.write_records")](
+        _resource_context(),
+        {
+            "records": [
+                {"record_id": "record-1", "status": "已签收"},
+                {"record_id": "record-2", "status": "已签收"},
+            ]
+        },
+    )
+    assert result["committed"] is True
+    assert result["written"] == 2
 
 
 def test_delivery_pre_write_resource_binding_error_keeps_original_code() -> None:
@@ -804,6 +812,58 @@ def test_site_writes_bind_same_target_date_and_verify_both_exact_resources() -> 
     assert sheet_marks == ["started"]
 
 
+def test_site_bitable_delayed_readback_accepts_lost_ack_without_rewriting() -> None:
+    before_rows = [_external_site_row("old", "OLD")]
+    after_rows = [_external_site_row("new", "WB-1")]
+    observations = [before_rows, before_rows, after_rows]
+    read_count = 0
+    write_count = 0
+
+    def feishu(action: str, _params: dict[str, Any]) -> Mapping[str, Any]:
+        nonlocal read_count
+        assert action == "list_records"
+        observation = observations[min(read_count, len(observations) - 1)]
+        read_count += 1
+        return {"items": deepcopy(observation), "has_more": False}
+
+    def sync(_resource_id, _records, _params, write_started):
+        nonlocal write_count
+        write_count += 1
+        write_started()
+        # Simulate a provider that applied the mutation but lost its ACK.
+        return {"error": "upstream 502 after commit"}
+
+    handlers = _delivery_handlers(
+        build_production_delivery_site_ports(
+            account_manager=_Manager(),
+            resource_loader=lambda resource_id: {
+                "resource_kind": "feishu_bitable",
+                "base_token": "site-base",
+                "table_id": "site-table",
+                "_meta": {"resource_key": resource_id},
+            },
+            feishu_operation=feishu,
+            site_bitable_sync=sync,
+        )
+    )
+
+    # The fake readback becomes authoritative after the third read.  The
+    # adapter must not issue a second Bitable write while waiting for it.
+    result = handlers[("network.request", "feishu.bitable.replace_snapshot")](
+        _site_context(
+            action="feishu.bitable.replace_snapshot",
+            role="site_send_bitable",
+            resource_id=_SITE_BITABLE_ID,
+        ),
+        {"records": [_site_record("WB-1")], "target_date": "2026-08-15"},
+    )
+
+    assert result["committed"] is True
+    assert read_count == 3
+    assert write_count == 1
+    assert delivery_site._FEISHU_READBACK_DELAYS == (0.0, 0.5, 1.0, 2.0)
+
+
 @pytest.mark.parametrize(
     "post_rows",
     [
@@ -920,7 +980,7 @@ def test_site_sheet_post_write_anomalies_are_unknown(
     assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
 
 
-def test_site_write_response_loss_is_unknown_and_target_date_is_required() -> None:
+def test_site_write_response_loss_is_verified_by_readback_and_target_date_is_required() -> None:
     rows = [_external_site_row("old", "OLD")]
 
     def feishu(action: str, params: dict[str, Any]) -> Mapping[str, Any]:
@@ -954,12 +1014,11 @@ def test_site_write_response_loss_is_unknown_and_target_date_is_required() -> No
         resource_id=_SITE_BITABLE_ID,
     )
 
-    with pytest.raises(PluginExecutionError) as lost:
-        handlers[("network.request", "feishu.bitable.replace_snapshot")](
-            context,
-            {"records": [_site_record("WB-1")], "target_date": "2026-08-15"},
-        )
-    assert lost.value.code == "WRITE_OUTCOME_UNKNOWN"
+    result = handlers[("network.request", "feishu.bitable.replace_snapshot")](
+        context,
+        {"records": [_site_record("WB-1")], "target_date": "2026-08-15"},
+    )
+    assert result["committed"] is True
 
     with pytest.raises(PluginExecutionError) as missing:
         handlers[("network.request", "feishu.bitable.replace_snapshot")](
@@ -1201,7 +1260,7 @@ def test_delivery_bitable_marker_callback_failure_is_failed_before_write() -> No
 
 @pytest.mark.parametrize("response_count", [0, 1, 3])
 @pytest.mark.parametrize("sink", ["bitable", "sheet"])
-def test_site_sinks_reject_zero_partial_or_extra_write_counts(
+def test_site_sinks_readback_overrides_zero_partial_or_extra_write_counts(
     sink: str,
     response_count: int,
 ) -> None:
@@ -1261,23 +1320,22 @@ def test_site_sinks_reject_zero_partial_or_extra_write_counts(
         )
     )
 
-    with pytest.raises(PluginExecutionError) as exc:
-        if sink == "bitable":
-            handlers[("network.request", "feishu.bitable.replace_snapshot")](
-                _site_context(
-                    action="feishu.bitable.replace_snapshot",
-                    role="site_send_bitable",
-                    resource_id=_SITE_BITABLE_ID,
-                ),
-                {"records": desired_records, "target_date": "2026-08-15"},
-            )
-        else:
-            handlers[("network.request", "feishu.sheet.replace")](
-                _site_context(
-                    action="feishu.sheet.replace",
-                    role="site_send_sheet",
-                    resource_id=_SITE_SHEET_ID,
-                ),
-                {"values": desired_rows, "target_date": "2026-08-15"},
-            )
-    assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
+    if sink == "bitable":
+        result = handlers[("network.request", "feishu.bitable.replace_snapshot")](
+            _site_context(
+                action="feishu.bitable.replace_snapshot",
+                role="site_send_bitable",
+                resource_id=_SITE_BITABLE_ID,
+            ),
+            {"records": desired_records, "target_date": "2026-08-15"},
+        )
+    else:
+        result = handlers[("network.request", "feishu.sheet.replace")](
+            _site_context(
+                action="feishu.sheet.replace",
+                role="site_send_sheet",
+                resource_id=_SITE_SHEET_ID,
+            ),
+            {"values": desired_rows, "target_date": "2026-08-15"},
+        )
+    assert result["committed"] is True

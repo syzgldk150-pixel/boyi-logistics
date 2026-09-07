@@ -68,6 +68,7 @@ from agent.orchestration.automation_project_policy_support import (
     _datetime_text,
     _entrypoint,
     _idempotency_key,
+    _locked_command_replay,
     _pending_set_hash,
     _policy_summary,
     _positive_int,
@@ -1684,49 +1685,41 @@ class AutomationProjectPolicyService:
             automation_invocation=invocation,
         )
 
-        def guard(uow: Any, acceptance: Mapping[str, str]) -> None:
-            selection_confirmation = bool(
-                safe_selection_preview_run_id is not None
-                and selection_expectation is not None
-                and selection_context is not None
-                and selected_bill_codes is not None
+        def guard(
+            uow: Any,
+            acceptance: Mapping[str, str],
+        ) -> Mapping[str, Any] | None:
+            locked_project = uow.automation_plugins.get_project(
+                safe_id,
+                for_update=True,
             )
-
-            def accepted_command_exists(*, for_update: bool) -> bool:
-                existing_command = uow.commands.get_by_idempotency(
-                    command.source,
-                    command.idempotency_key,
-                    for_update=for_update,
+            if locked_project is None:
+                raise OrchestrationError(
+                    "AUTOMATION_PROJECT_NOT_FOUND",
+                    "Automation project is not installed",
                 )
-                if existing_command is None:
-                    return False
-                if selection_confirmation:
-                    restore_selection_preview_replay(
-                        uow,
-                        source=source.value,
-                        idempotency_key=command_idempotency_key,
-                        actor=actor,
-                        trusted_context=context,
-                        project_instance_id=safe_id,
-                        request_id=safe_request_id,
-                        preview_run_id=safe_selection_preview_run_id,
-                        selected_bill_codes=selected_bill_codes,
-                        expected_entrypoint=source.value,
-                        expected_contribution_id=(
-                            expected_selection_contribution_id
-                        ),
-                        expected_generation=expected_generation,
-                        expected_configuration_version=expected_configuration,
-                    )
-                return True
-
-            if accepted_command_exists(for_update=selection_confirmation):
-                return
+            replay = _locked_command_replay(
+                uow,
+                command,
+                actor=actor,
+                trusted_context=context,
+                project_instance_id=safe_id,
+                request_id=safe_request_id,
+                scan_preview_run_id=safe_preview_run_id,
+                selection_preview_run_id=safe_selection_preview_run_id,
+                selected_bill_codes=selected_bill_codes,
+                expected_selection_contribution_id=expected_selection_contribution_id,
+                expected_generation=expected_generation,
+                expected_configuration_version=expected_configuration,
+            )
+            if replay is not None:
+                return replay
             locked_contract, _config = self._lock_and_compile_contract(
                 uow,
                 entry,
                 expected=contract,
                 require_enabled=True,
+                locked_project=locked_project,
             )
             current_policy = uow.automation_projects.get_policy(
                 safe_id,
@@ -1758,13 +1751,6 @@ class AutomationProjectPolicyService:
                     context=context,
                     expected_event_name=expected_event_name,
                 )
-            # Project/config rows above serialize all accepted entrypoints for
-            # this automation. Recheck the idempotency key after taking that
-            # lock so a concurrent retry reuses its original Command, while a
-            # distinct Console/Scheduler/Feishu request is rejected before a
-            # second Run can be created.
-            if accepted_command_exists(for_update=True):
-                return
             supersede_safely_suspended_runs(
                 uow,
                 automation_id=safe_id,
@@ -1821,28 +1807,40 @@ class AutomationProjectPolicyService:
                     now=occurred_at,
                     for_update=True,
                 )
-                existing_command = uow.commands.get_by_idempotency(
-                    command.source,
-                    command.idempotency_key,
-                    for_update=True,
+                ensure_scan_preview_active(
+                    locked_preview.context,
+                    now=datetime.now(timezone.utc),
                 )
-                if existing_command is None:
-                    ensure_scan_preview_active(
-                        locked_preview.context,
-                        now=datetime.now(timezone.utc),
+                if locked_preview.context.get("context_sha256") != preview_context.get("context_sha256"):
+                    raise OrchestrationError(
+                        "SCAN_PREVIEW_STALE",
+                        "The scan preview changed before command acceptance",
+                        details={"status": "BLOCKED_DATA"},
                     )
-                    if locked_preview.context.get("context_sha256") != preview_context.get("context_sha256"):
-                        raise OrchestrationError(
-                            "SCAN_PREVIEW_STALE",
-                            "The scan preview changed before command acceptance",
-                            details={"status": "BLOCKED_DATA"},
-                        )
-                    consume_scan_preview(
-                        uow,
-                        context=locked_preview.context,
-                        command=command,
-                        occurred_at=occurred_at,
-                    )
+                consume_scan_preview(
+                    uow,
+                    context=locked_preview.context,
+                    command=command,
+                    occurred_at=occurred_at,
+                )
+
+        if (
+            scan_preview_project
+            and safe_preview_run_id is None
+            and self._unknown_write_recovery is not None
+        ):
+            # Recovery owns its own transaction and may terminalize history only
+            # after an authoritative empty readback.  An unavailable or
+            # inconclusive readback must preserve the old receipt/Evidence, but
+            # stopped UNKNOWN_WRITE history must not prevent a fresh preview.
+            try:
+                self._unknown_write_recovery(safe_id, safe_request_id)
+            except Exception as exc:  # noqa: BLE001 - preview remains available
+                logger.warning(
+                    "Scan preview recovery was not proven automation_id=%s code=%s",
+                    safe_id,
+                    str(getattr(exc, "code", type(exc).__name__))[:80],
+                )
 
         try:
             return self._command_gateway.submit(
@@ -2309,11 +2307,11 @@ class AutomationProjectPolicyService:
         expected: CompiledAutomationProjectContract | None = None,
         require_enabled: bool,
         lock_rows: bool = True,
+        locked_project: Mapping[str, Any] | None = None,
     ) -> tuple[CompiledAutomationProjectContract, Mapping[str, Any]]:
         automation_id = entry.automation_id
-        project = uow.automation_plugins.get_project(
-            automation_id,
-            for_update=lock_rows,
+        project = locked_project or uow.automation_plugins.get_project(
+            automation_id, for_update=lock_rows
         )
         if project is None:
             raise OrchestrationError(
