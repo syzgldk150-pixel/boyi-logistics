@@ -8,6 +8,7 @@
 
 - 改 Command Gateway、状态机、计划/策略/审批、Worker、Evidence、Outbox 与恢复：
   - `orchestration/`；完整边界见 `../docs/control_plane_v1.md`
+  - 领取时间、恢复唤醒与审批期限使用 UTC，数据库生成的历史元数据不猜时区；候选快照迁移和页面语义见 `../../docs/control_plane_timebase.md`。
   - 只有 `orchestration/workflow_runner.py` 可以调用 `ToolExecutionPort`；`core.py`、HTTP/飞书/调度入口、TMS 路由和兼容 API 只能提交 Command。
   - `main.py` 是唯一组合根；`orchestration/` 不得导入 `tools`、`feishu` 或 Console。持久化统一走 `../../shared/orchestration_repository.py` 的显式 Unit of Work。
   - 第三方/财务写步骤崩溃恢复时，没有精确 reconciliation 就让该 Run 进入 `BLOCKED_DATA/WRITE_OUTCOME_UNKNOWN`，不得重放原 Run；新的 Command 仍可建立全新的 Run 与 lease 重新执行项目。

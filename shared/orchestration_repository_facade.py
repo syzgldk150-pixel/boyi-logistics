@@ -94,7 +94,7 @@ class OrchestrationRepositoryFacadeMixin:
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         with self.unit_of_work() as uow:
-            run = uow.runs.get(run_id)
+            run = uow.runs.get_with_submission(run_id)
             if run is not None:
                 run["steps"] = uow.steps.list_for_run(run_id)
             return run

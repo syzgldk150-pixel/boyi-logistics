@@ -1,3 +1,5 @@
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -403,10 +405,152 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        catch_index = source.index('termStatus.textContent = "连接失败";')
+        catch_index = source.index('termStatus.textContent = "状态读取失败";')
         catch_block = source[catch_index : catch_index + 500]
-        self.assertIn("setTimeout(pollOutput, 3000)", catch_block)
-        self.assertIn("runUiState.running", catch_block)
+        self.assertIn("setTimeout(pollOutput, document.hidden ? 5000 : 3000)", catch_block)
+        self.assertIn("if (trackingRun)", catch_block)
+
+    def test_terminal_poll_lifecycle_executes_in_node(self):
+        source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
+            encoding="utf-8"
+        )
+        node = shutil.which("node") or shutil.which("node.exe")
+        if node is None:
+            self.skipTest("Node.js is unavailable")
+        script = r'''
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+const source = require("node:fs").readFileSync(0, "utf8");
+const controls = source.slice(source.indexOf("function syncRunButtonVisual()"), source.indexOf("const resourceEditors ="));
+const polling = source.slice(source.indexOf("let startPolling = function() {};"), source.indexOf("const batchTerminalStatuses ="))
+  .replace("// 初次进入页面保持干净，不自动展开历史执行结果。", "globalThis.pollTest = {startPolling, pollOutput};");
+
+async function exercise(failure) {
+  const timers = new Map();
+  const intervals = new Map();
+  const responses = [];
+  const requests = [];
+  const feedback = [];
+  const handlers = {};
+  let timerId = 0;
+  let runtime = null;
+  let feedbackHidden = false;
+  class HTMLElement {}
+  const runLabel = {textContent: ""};
+  const runBtn = Object.assign(new HTMLElement(), {
+    dataset: {}, classList: {toggle() {}}, hasAttribute: () => false,
+    querySelector: selector => selector === "[data-run-label]" ? runLabel : null,
+  });
+  const termStatus = {textContent: "", className: ""};
+  const termBody = {textContent: "", scrollTop: 0, scrollHeight: 0};
+  const termBtn = {
+    expanded: "false",
+    getAttribute() { return this.expanded; },
+    addEventListener(name, callback) { handlers[name] = callback; },
+  };
+  const context = {
+    URLSearchParams, AbortController, HTMLElement, runBtn, termBtn,
+    termDrawer: {
+      dataset: {toolName: "automation.daily_sign.run", taskId: "daily_sign", runId: "accepted-run"},
+      querySelector: selector => ({"[data-terminal-body]": termBody, "[data-terminal-status]": termStatus}[selector] || null),
+    },
+    form: {querySelector: () => null}, document: {hidden: false}, feather: {replace() {}},
+    isScanPreviewWorkflow: false, isSelectionPreviewWorkflow: false,
+    scanConfirmationRetryOnly: false, scanPreviewTerminalBlocked: false,
+    selectionConfirmationRetryOnly: false, termAttentionLatched: false,
+    runTimer: null, fetchOutputState: null,
+    runUiState: {running: false, awaitingApproval: false, pendingRun: true, runId: "accepted-run"},
+    renderFeedback: (_form, value) => {feedback.push(value); feedbackHidden = false;},
+    syncRuntimeFeedback: (_form, value) => {runtime = value;},
+    hideRunFeedback: () => {feedbackHidden = true;},
+    togglePanel: button => {button.expanded = button.expanded === "true" ? "false" : "true";},
+    fetch: async url => {
+      requests.push(url);
+      assert.ok(responses.length, "unexpected extra status request");
+      return responses.shift();
+    },
+    setTimeout: (callback, delay) => {const id = ++timerId; timers.set(id, {callback, delay}); return id;},
+    clearTimeout: id => timers.delete(id),
+    setInterval: callback => {const id = ++timerId; intervals.set(id, callback); return id;},
+    clearInterval: id => intervals.delete(id),
+  };
+  context.window = context;
+  vm.createContext(context);
+  vm.runInContext(controls + polling, context);
+  const queue = {
+    run_id: "accepted-run", status: "RECEIVED", pending: true, queued: true, running: false,
+    started_at: "2026-09-08T01:36:04Z", lines: [], total: 0,
+    stage_description: "任务已受理，等待开始执行", next_poll_after_ms: 1000,
+  };
+  const response = (payload, ok = true) => ({ok, json: async () => payload});
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  async function advance() {
+    assert.equal(timers.size, 1, "only the existing task poll may remain scheduled");
+    const [id, task] = [...timers.entries()][0];
+    timers.delete(id);
+    await task.callback();
+    await flush();
+  }
+
+  responses.push(response(queue));
+  context.pollTest.startPolling();
+  await flush();
+  assert.equal(feedback.at(-1).title, "等待执行");
+  assert.equal(feedback.at(-1).message, queue.stage_description);
+  assert.equal(timers.size, 1);
+
+  let resolveQueued;
+  responses.push({ok: true, json: () => new Promise(resolve => {resolveQueued = resolve;})});
+  handlers.click(); // Open the output drawer using its actual event handler.
+  await flush();
+  assert.equal(termBtn.expanded, "true");
+  handlers.click(); // Closing the drawer must not stop accepted Run tracking.
+  handlers.click(); // Reopening during the same request must not create another poll.
+  assert.equal(requests.length, 2);
+  handlers.click();
+  resolveQueued(queue);
+  await flush();
+  assert.equal(termBtn.expanded, "false");
+  assert.equal(timers.size, 1);
+
+  responses.push(failure(response));
+  await advance();
+  assert.equal(feedback.at(-1).title, "状态暂不可用");
+  assert.equal(termStatus.textContent, "状态读取失败");
+  assert.equal(context.runUiState.runId, "accepted-run");
+  assert.equal(context.runUiState.pendingRun, true);
+  assert.equal(runBtn.dataset.runMode, "cancel", "failed polling must not expose another submit action");
+  assert.equal([...timers.values()][0].delay, 3000);
+
+  responses.push(response({...queue, status: "RUNNING", queued: false, running: true,
+    execution_phase: "source_read", stage_description: "正在读取数据"}));
+  await advance();
+  assert.equal(termBtn.expanded, "false");
+  assert.equal(feedback.at(-1).message, "正在读取数据");
+  assert.equal(context.runUiState.runId, "accepted-run");
+
+  responses.push(response({...queue, status: "COMPLETED", pending: false, queued: false,
+    next_poll_after_ms: 0, runtime: {ok: true, title: "已完成"}}));
+  await advance();
+  assert.equal(runtime.ok, true);
+  assert.equal(feedbackHidden, true);
+  assert.equal(termStatus.textContent, "已完成");
+  assert.equal(timers.size, 0, "a terminal Run must stop polling");
+  assert.equal(intervals.size, 0, "a terminal Run must stop its progress timer");
+  assert.equal(runBtn.dataset.runMode, "start");
+  assert.ok(requests.every(url => new URL(url, "https://console.invalid").searchParams.get("run_id") === "accepted-run"));
+}
+(async () => {
+  await exercise(response => response({running: false, error: "unavailable"}, false));
+  await exercise(response => response({error: "unavailable"}));
+  await exercise(() => ({ok: true, json: async () => {throw new SyntaxError("invalid response");}}));
+})().catch(error => {console.error(error); process.exitCode = 1;});
+'''
+        result = subprocess.run(
+            [node, "--input-type=commonjs", "-e", script], input=source,
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+        self.assertEqual(0, result.returncode, result.stderr or result.stdout)
 
     def test_submit_recovery_never_infers_running_from_historical_output(self):
         source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
@@ -426,7 +570,8 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         )
 
         terminal_fetch_index = source.index("fetch(`/automations/tasks/output?")
-        terminal_fetch_block = source[terminal_fetch_index - 300 : terminal_fetch_index + 500]
+        terminal_fetch_end = source.index("function renderRunSourceLinks", terminal_fetch_index)
+        terminal_fetch_block = source[terminal_fetch_index - 300 : terminal_fetch_end]
         self.assertIn("AbortController", terminal_fetch_block)
         self.assertIn("signal: controller.signal", terminal_fetch_block)
         self.assertIn("clearTimeout(timeoutId)", terminal_fetch_block)
@@ -565,10 +710,8 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         self.assertIn("let termAttentionLatched = false;", source)
         self.assertIn("termAttentionLatched = true;", source)
         self.assertIn("if (outputState?.attention)", source)
-        self.assertIn(
-            "if (!termAttentionLatched && (runUiState.running || termDrawer.dataset.runStartedAt))",
-            source,
-        )
+        self.assertIn("if (termAttentionLatched) return;", source)
+        self.assertIn("const trackingRun = runUiState.running || runUiState.awaitingApproval || runUiState.pendingRun;", source)
         self.assertIn(
             'options.runId || runUiState.runId || termDrawer.dataset.runId || ""',
             source,
