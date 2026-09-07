@@ -1942,7 +1942,7 @@ def test_arrival_stats_runs_closed_production_primitives_through_write_verifier(
 
     async def run():
         issuer = LocalBrokerCapabilityIssuer(
-            tmp_path / "arrival-stats-router-broker.sock",
+            tmp_path / "b.sock",
             write_attempt_recorder=leases.record_write_attempt,
         )
         manager = Manager()
