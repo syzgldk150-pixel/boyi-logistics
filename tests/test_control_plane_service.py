@@ -401,6 +401,9 @@ class _FakeRepository:
         item = self.work_items.get(work_item_id)
         return copy.deepcopy(item) if item else None
 
+    def list_work_item_unknown_writes(self, work_item_id: str):
+        return copy.deepcopy(getattr(self, "unknown_writes", []))
+
     def get_timeline(self, work_item_id: str, *, limit: int):
         return copy.deepcopy([row for row in self.events if row["work_item_id"] == work_item_id][:limit])
 
@@ -480,6 +483,21 @@ class ControlPlaneServiceTests(unittest.TestCase):
     def _service(self, repository, **kwargs):
         approval = _FakeApprovalService(repository)
         return ControlPlaneService(repository, approval, **kwargs), approval
+
+    def test_work_item_includes_multiple_old_unknown_writes_without_current_state_gate(self):
+        repository = _FakeRepository([_run("run-1", "CANCELLED")])
+        repository.unknown_writes = [
+            {"lease_id": "old-a", "generation": 1, "run_id": "run-1", "plugin_id": "sync_arrival_stats"},
+            {"lease_id": "old-b", "generation": 2, "run_id": "run-1", "plugin_id": "daily_send_orders"},
+        ]
+        service, _ = self._service(repository)
+        result = service.get_work_item("work-1")
+        records = result["unknown_write_recoveries"]
+        self.assertEqual(["old-a", "old-b"], [record["lease_id"] for record in records])
+        self.assertTrue(records[0]["recovery_supported"])
+        self.assertEqual("", records[0]["recovery_unavailable_reason"])
+        self.assertFalse(records[1]["recovery_supported"])
+        self.assertIn("尚无已审核", records[1]["recovery_unavailable_reason"])
 
     def test_read_dtos_are_whitelisted_and_recursively_redacted(self):
         repository = _FakeRepository([_run("run-1", "WAITING_APPROVAL")])

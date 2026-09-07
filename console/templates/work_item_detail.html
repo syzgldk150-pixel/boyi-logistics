@@ -6,7 +6,7 @@
 {% block subtitle %}计划、证据和执行时间线{% endblock %}
 
 {% block head %}
-  <link rel="stylesheet" href="/static/control_plane.css?v=20260813-1">
+  <link rel="stylesheet" href="/static/control_plane.css?v=20260908-1">
 {% endblock %}
 
 {% block page_actions %}
@@ -14,7 +14,7 @@
 {% endblock %}
 
 {% block content %}
-<article class="cp-page cp-detail" data-cp-detail-page data-work-item-id="{{ work_item_id | e }}">
+<article class="cp-page cp-detail" data-cp-detail-page data-work-item-id="{{ work_item_id | e }}" data-can-verify-unknown-write="{{ 'true' if can_verify_unknown_write else 'false' }}">
   <div class="cp-feedback" data-cp-detail-feedback role="status" aria-live="polite"></div>
 
   <header class="cp-detail-header" data-cp-detail-header aria-busy="true">
@@ -30,6 +30,14 @@
 
   <div class="cp-detail-layout">
     <div class="cp-detail-main">
+      <section class="cp-section" data-unknown-write-section hidden aria-label="历史写入核验">
+        <div class="cp-section-heading"><h3>历史写入核验</h3></div>
+        <div class="cp-section-content">
+          <p class="cp-muted">每次只检查选中记录已保存的证据；证据不足时继续保留待核验状态。原任务保持停止；需要再次执行业务时，请重新发起任务。</p>
+          <div class="cp-record-list" data-unknown-write-list></div>
+          <p class="cp-muted" data-unknown-write-feedback role="status" aria-live="polite"></p>
+        </div>
+      </section>
       <section class="cp-section" aria-labelledby="cp-plan-heading">
         <div class="cp-section-heading">
           <div><p class="cp-eyebrow">受约束执行</p><h3 id="cp-plan-heading">当前计划</h3></div>
@@ -144,5 +152,6 @@
 {% endblock %}
 
 {% block scripts %}
-  <script src="/static/control_plane.js?v=20260813-1" defer></script>
+  <script src="/static/control_plane.js?v=20260908-1" defer></script>
+  <script src="/static/unknown_write_recovery.js?v=20260908-1" defer></script>
 {% endblock %}

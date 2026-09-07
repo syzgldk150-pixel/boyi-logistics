@@ -38,7 +38,7 @@
 - 改 Service v2 动态飞书命令：
   - `automation_plugins/service_v2_projection.py` 只维护全局 exact command digest、整代冲突和 active generation；不得导入飞书或业务工具。DRAINING 旧代不接流量、不占命令，权威空 generation 必须原子清 active map。
   - `orchestration/automation_project_entrypoints.py` 的 `ServiceV2FeishuDispatcher` 只接 verified event/sender/chat，并只从 Registry 取得项目/代际/contribution；`automation_project_policy_service.py` 在 Command 接受事务内再次核对 exact `COMMITTED/READY` identity。service、operation、参数、账号和资源不得来自消息。
-  - `orchestration/automation_run_supersession.py` 是项目未结束 Run 的唯一安全取代分类与事务取消实现；有效租约、自动重试、未知写、受保护写回执或状态不一致都必须失败关闭，不得在入口复制判断或增加超时猜测。
+  - `orchestration/automation_run_supersession.py` 是项目未结束 Run 的唯一安全取代分类与事务取消实现；待领取、有效租约、真实运行步骤和自动重试继续互斥；已停止未知写保留原记录，由写步骤原始资源范围决定真实冲突，不得伪造成功或重放旧 Run。固定历史范围兼容与事项只核验规则见 `../../docs/historical_write_recovery.md`。
   - `sync_scan_codes` 未知写恢复读取原正式 lease、Command、已验签 preview 与原代际账号，在独立外部账本精确证明 APPLIED / NOT_APPLIED；041 保存原快照和原资源键，APPLIED 仅按原日期所有者 CAS 补齐投影与结果，NOT_APPLIED 按原重试契约处理，不确定范围继续阻断。历史紧凑上下文缺失时仍须验证同 Run 的完整 Plan hash 和原预览结果摘要，不得猜测。实现索引、保留/回滚与隔离验收边界见 `../../docs/scan_recovery_v32.md`。
   - `feishu_command_contract.py` 是宿主无条件取消、扫描确认和审批绑定文本的纯解析单点；`direct_tool_router.py` 复用它和登录/固定 Action v1 parser，并通过组合根注入的纯判定器阻止动态 contribution 安装同文案。动态未知才可继续既有 Agent/LLM；匹配后身份缺失必须停止，不得回退。
 - 改固定 Harness Session、只读 Tool Catalog 或受限 sidecar：

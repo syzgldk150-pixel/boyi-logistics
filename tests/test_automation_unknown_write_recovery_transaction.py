@@ -934,6 +934,22 @@ class _SettlementCursor:
 
 
 class SettlementTargetIdentityTests(unittest.TestCase):
+    def test_manual_old_generation_settlement_never_repoints_current_generation(self):
+        cursor = _WriteLockOrderCursor(lease_outcome="WRITE_OUTCOME_UNKNOWN")
+        fake = SimpleNamespace(cursor=lambda: cursor)
+        result = AutomationPluginRepository.settle_unknown_write_recovery_row(
+            fake, automation_id="arrival_stats", generation=2, lease_id="lease-1",
+            recovery_status="APPLIED", evidence_sha256="a" * 64, allow_historical=True,
+            locked_context={
+                "project": {"target_generation": 3, "committed_generation": 3, "reconcile_state": "STABLE"},
+                "generation": {"state": "BLOCKED", "error_code": "WRITE_OUTCOME_UNKNOWN"},
+                "lease": {"automation_id": "arrival_stats", "generation": 2, "lease_id": "lease-1", "outcome": "WRITE_OUTCOME_UNKNOWN"},
+            },
+        )
+        self.assertTrue(result["transitioned"])
+        self.assertTrue(any("SET state='DRAINING'" in statement for statement in cursor.executed))
+        self.assertFalse(any(statement.startswith("UPDATE automation_projects ") for statement in cursor.executed))
+
     def test_old_generation_cannot_unblock_current_project(self):
         cursor = _SettlementCursor()
         fake = SimpleNamespace(cursor=lambda: cursor)

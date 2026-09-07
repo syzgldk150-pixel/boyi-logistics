@@ -322,6 +322,7 @@
               <button class="ghost-btn" type="button" data-extension-action="upgrade" {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>升级</button>
               {% if plugin.enabled %}<button class="ghost-btn" type="button" data-extension-action="disable" {% if not plugin.disable_allowed %}disabled{% endif %}>暂停</button>{% else %}<button class="ghost-btn" type="button" data-extension-action="enable" {% if not plugin.enable_allowed %}disabled{% endif %}>启用</button>{% endif %}
               <button class="ghost-btn extension-action--danger" type="button" data-extension-action="uninstall" {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>卸载</button>
+              <a class="ghost-btn" href="/work-items">历史事项与核验</a>
             </div>
             {% endif %}
           </div>
@@ -331,9 +332,7 @@
             <i data-feather="alert-triangle"></i>
             <span>{{ plugin.blocking_reason_labels | join('；') if plugin.blocking_reason_labels else task.plugin_warning or '项目配置尚未完整；运行、启用和完全自动均已阻断。' }}</span>
             {% if can_manage_plugins and plugin.reconcile_state == 'BLOCKED_UNKNOWN_WRITE' %}
-            <button class="ghost-btn" type="button" data-plugin-recover-unknown-write>
-              检查结果并恢复
-            </button>
+            <a class="ghost-btn" href="/work-items">选择历史事项核验</a>
             {% endif %}
           </div>
           {% endif %}
@@ -3183,5 +3182,5 @@
   window.ConsoleUI.refreshIcons(pageRoot);
 })();
 </script>
-<script src="/static/automation_approval_policy.js?v=20260829-project-settings-save" defer></script>
+<script src="/static/automation_approval_policy.js?v=20260908-historical-evidence" defer></script>
 {% endblock %}

@@ -908,6 +908,8 @@
           refreshCollections(),
         ]);
         updateStateFromDetail(detailData);
+        root.unknownWriteRecoveries = detailData.unknown_write_recoveries;
+        root.dispatchEvent(new CustomEvent("work-item-detail-loaded", { detail: detailData }));
         if (state.runId && !Object.keys(state.run).length) {
           const runData = asObject(await request(`/control-plane/runs/${encodeURIComponent(state.runId)}`));
           state.run = asObject(runData.run);

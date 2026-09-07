@@ -101,6 +101,20 @@ class ControlPlaneUiTests(unittest.TestCase):
         self.assertNotIn("transition: all", self.styles)
         self.assertNotIn("linear-gradient", self.styles)
 
+    def test_historical_verification_is_evidence_only_and_supported_before_button(self):
+        script = (CONSOLE_DIR / "static" / "unknown_write_recovery.js").read_text(encoding="utf-8")
+        self.assertIn("检查已保存证据", script)
+        self.assertIn("证据不足时继续保留待核验状态", self.detail_template)
+        self.assertLess(script.index("row.recovery_supported !== true"), script.index('const button = text("button"'))
+        self.assertIn("row.recovery_unavailable_reason", script)
+        self.assertIn("lease_id: row.lease_id", script)
+        self.assertNotIn("innerHTML", script)
+        self.assertIn('item.className = "cp-record"', script)
+        self.assertIn('meta.className = "cp-record-meta"', script)
+        section = self.detail_template.split("data-unknown-write-section", 1)[1].split("</section>", 1)[0]
+        self.assertIn('<div class="cp-section-content">', section)
+        self.assertIn('[data-unknown-write-section] .cp-section-content', self.styles)
+
 
 if __name__ == "__main__":
     unittest.main()

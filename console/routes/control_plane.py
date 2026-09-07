@@ -75,6 +75,13 @@ def handle_post(
         app._handle_control_plane_command_post(handler)
         return True
 
+    match = re.fullmatch(rf"/control-plane/work-items/{_SEGMENT}/verify-unknown-write", path)
+    if match:
+        work_item_id = _decoded_id(match.group(1))
+        if work_item_id:
+            app._handle_control_plane_unknown_write_verify(handler, work_item_id)
+            return True
+
     match = re.fullmatch(rf"/control-plane/runs/{_SEGMENT}/(cancel|retry|clarify)", path)
     if match:
         run_id = _decoded_id(match.group(1))

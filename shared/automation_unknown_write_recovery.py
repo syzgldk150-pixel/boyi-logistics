@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from shared.orchestration_repository_support import (
@@ -33,6 +33,9 @@ def recover_unknown_automation_write(
     authoritative_applied_proof: Mapping[str, object] | None = None,
     authoritative_not_applied_proof: Mapping[str, object] | None = None,
     scan_applied_recovery: Mapping[str, object] | None = None,
+    resume_run: bool = True,
+    expected_run_id: str | None = None,
+    expected_work_item_id: str | None = None,
 ) -> dict[str, Any]:
     """Resolve one receipt-backed interrupted write in the caller's UoW."""
 
@@ -40,6 +43,11 @@ def recover_unknown_automation_write(
     safe_request_id = _required_text(request_id, "request_id")
     safe_actor_id = _required_text(actor_id, "actor_id")
     safe_actor_role = _required_text(actor_role, "actor_role")
+    if type(resume_run) is not bool:
+        raise ValueError("resume_run must be boolean")
+    if not resume_run:
+        _required_text(expected_run_id, "expected_run_id")
+        _required_text(expected_work_item_id, "expected_work_item_id")
     context = uow.automation_plugins.lock_unknown_write_recovery_context_row(
         automation_id=automation_id, generation=generation, lease_id=lease_id,
     )
@@ -54,6 +62,8 @@ def recover_unknown_automation_write(
     if run_identity is None:
         raise OrchestrationPersistenceError("runtime recovery Run does not exist")
     work_item_id = _required_text(run_identity.get("work_item_id"), "work_item_id")
+    if not resume_run and (expected_run_id != run_id or expected_work_item_id != work_item_id):
+        raise IdempotencyConflict("recovery selection does not match the exact work item and Run")
     item = uow.work_items.get(work_item_id, for_update=True)
     if item is None:
         raise OrchestrationPersistenceError("recovery Run work item does not exist")
@@ -95,6 +105,12 @@ def recover_unknown_automation_write(
     step_id = str(step.get("step_id") or "")
     restored_result = None
     if str(run.get("status") or "") in {"RUNNING", "VERIFYING"}:
+        return _unknown("RUN_RECOVERY_NOT_SETTLED", run_id, step_id)
+    if not resume_run and (
+        str(run.get("status") or "") not in {"BLOCKED_DATA", "CANCELLED", "FAILED_TERMINAL", "PARTIAL", "COMPLETED"}
+        or str(step.get("status") or "") in {"RUNNING", "VERIFYING"}
+        or _has_live_or_invalid_claim(run)
+    ):
         return _unknown("RUN_RECOVERY_NOT_SETTLED", run_id, step_id)
     if any(
         str(item.get("orchestration_run_id") or "") != run_id
@@ -213,9 +229,33 @@ def recover_unknown_automation_write(
     )
     if not applied and not not_applied:
         return _unknown("RECEIPTS_NOT_AUTHORITATIVELY_RESOLVED", run_id, step_id, evidence)
-    if not_applied and not receipt_not_applied and step.get("retry_safe") is not True:
+    if resume_run and not_applied and not receipt_not_applied and step.get("retry_safe") is not True:
         return _unknown("UNSAFE_WRITE_RETRY_BLOCKED", run_id, step_id, evidence)
     recovery_status = "APPLIED" if applied else "NOT_APPLIED"
+    if not resume_run:
+        # Manual verification closes only this evidence-backed write scope.
+        # The original Run/Step and its cancelled/blocked state remain intact.
+        # No worker event or implicit continuation is created.
+        settled = uow.automation_plugins.settle_unknown_write_recovery_row(
+            automation_id=automation_id, generation=generation, lease_id=lease_id,
+            recovery_status=recovery_status, evidence_sha256=receipt_digest,
+            locked_context=context,
+            allow_historical=True,
+        )
+        event = _event(run, step_id, automation_id, generation, lease_id, recovery_status,
+                       receipt_digest, safe_request_id, safe_actor_id, safe_actor_role)
+        event["payload"]["resume_run"] = False
+        receipt = uow.events.append_with_outbox(event, ({
+            "consumer_name": "orchestration.audit", "topic": "automation_plugin.write_recovered",
+            "partition_key": work_item_id, "max_attempts": 10,
+        },))
+        transitioned = bool(settled["transitioned"])
+        return {
+            "recovery_status": recovery_status, "reason": "MANUAL_VERIFICATION_ONLY",
+            "run_id": run_id, "step_id": step_id, "transitioned": transitioned,
+            "idempotent": not transitioned and not bool(receipt["event"].get("_created")),
+            "evidence": evidence, "resume_run": False,
+        }
     if str(run.get("status") or "") in {"RUNNING", "VERIFYING"}:
         # Management recovery never steals a live Runner claim.  Runner first
         # persists its unknown-write boundary as BLOCKED_DATA, then recovery
@@ -314,6 +354,17 @@ def _unknown(reason: str, run_id: str, step_id: str | None, evidence: dict[str, 
         "step_id": step_id, "transitioned": False, "idempotent": False,
         "evidence": evidence or {"receipt_count": 0, "receipt_digest": _json_hash([])},
     }
+
+
+def _has_live_or_invalid_claim(run: Mapping[str, Any]) -> bool:
+    if not run.get("worker_id") or run.get("lease_expires_at") is None:
+        return False
+    expires_at = run["lease_expires_at"]
+    if not isinstance(expires_at, datetime):
+        return True
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at > datetime.now(timezone.utc)
 
 
 def _transition_recovery(uow: Any, run: dict[str, Any], step: dict[str, Any], run_id: str,

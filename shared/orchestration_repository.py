@@ -20,6 +20,9 @@ from shared.orchestration_repository_support import (
     _json_param, _json_value, _optional_text, _required_text, _row_dict, _rows,
     _safe_comment, _safe_error, _status,
 )
+from shared.automation_unknown_write_recovery import (
+    recover_unknown_automation_write as _recover_unknown_automation_write,
+)
 from shared import automation_run_lookup, orchestration_schema
 from shared.orchestration_evidence_lookup import EvidenceLookupMixin
 from shared.scheduled_task_approval_repository import ScheduledTaskApprovalPolicyRepository
@@ -2956,27 +2959,9 @@ class OrchestrationUnitOfWork:
             "outbox": event_receipt["outbox"],
         }
 
-    def recover_unknown_automation_write(
-        self,
-        *,
-        automation_id: str,
-        generation: int, lease_id: str,
-        request_id: str,
-        actor_id: str, actor_role: str,
-        authoritative_applied_proof: Mapping[str, object] | None = None,
-        authoritative_not_applied_proof: Mapping[str, object] | None = None,
-        scan_applied_recovery: Mapping[str, object] | None = None,
-    ) -> dict[str, Any]:
-        # Public UoW entry point; implementation is configuration-free.
-        from shared.automation_unknown_write_recovery import recover_unknown_automation_write
-
-        return recover_unknown_automation_write(
-            self, automation_id=automation_id, generation=generation,
-            lease_id=lease_id, request_id=request_id, actor_id=actor_id,
-            actor_role=actor_role, scan_applied_recovery=scan_applied_recovery,
-            authoritative_applied_proof=authoritative_applied_proof,
-            authoritative_not_applied_proof=authoritative_not_applied_proof,
-        )
+    # The configuration-free function is also the public bound UoW method;
+    # keep its signature and transaction logic in one place.
+    recover_unknown_automation_write = _recover_unknown_automation_write
 
     def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> bool:
         connection = self.connection

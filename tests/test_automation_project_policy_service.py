@@ -14,6 +14,7 @@ from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.orchestration.automation_project_policy_service import (
     AutomationProjectPolicyService,
 )
+from agent.orchestration.automation_run_supersession import classify_automation_run_blocking_kind
 from agent.orchestration.models import (
     Actor,
     ActorType,
@@ -374,6 +375,19 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                     raised.exception.details["blocking_kind"],
                 )
 
+    def test_terminal_projection_does_not_override_live_execution_lease(self):
+        now = datetime.now(timezone.utc)
+        for status in ("COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"):
+            for unknown in (False, True):
+                for lease in ("worker", "generation", "expired"):
+                    with self.subTest(status=status, unknown=unknown, lease=lease):
+                        run = {"status": status, "worker_id": "worker",
+                               "lease_expires_at": now + timedelta(minutes=5 if lease == "worker" else -5)}
+                        facts = {"has_inflight_step": True, "has_unknown_write_receipt": unknown,
+                                 "has_live_generation_lease": lease == "generation"}
+                        expected = "ACTIVE" if lease != "expired" else ("UNKNOWN_WRITE" if unknown else "NEEDS_ATTENTION")
+                        self.assertEqual(expected, classify_automation_run_blocking_kind(run, {}, facts, now=now))
+
     def test_stale_nonterminal_work_item_status_is_cancelled_without_blocking(self):
         self.repository.state.automation_runs = [
             {"run_id": "run-mismatch", "status": "BLOCKED_DATA"},
@@ -428,10 +442,11 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             self.repository.state.automation_run_facts["run-protected"],
         )
 
-    def test_stopped_unknown_write_history_is_preserved_and_blocks_new_write(self):
+    def test_stopped_unknown_write_history_is_preserved_when_accepting_new_command(self):
         for facts in (
             {"has_unknown_write_receipt": True},
             {"has_unclosed_protected_write": True},
+            {"has_unknown_generation_lease": True},
         ):
             with self.subTest(facts=facts):
                 self.repository.state.automation_runs = [
@@ -440,11 +455,9 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                 self.repository.state.automation_run_facts = {
                     "run-write": facts,
                 }
-                with self.assertRaises(OrchestrationError) as blocked:
-                    self.service.invoke_console(AUTOMATION_ID,
-                        request_id=f"request-write-{next(iter(facts))}", actor=_admin())
-                self.assertEqual('AUTOMATION_ALREADY_RUNNING', blocked.exception.code)
-                self.assertEqual('UNKNOWN_WRITE', blocked.exception.details['blocking_kind'])
+                receipt = self.service.invoke_console(AUTOMATION_ID,
+                    request_id=f"request-write-{next(iter(facts))}", actor=_admin())
+                self.assertNotEqual("run-write", receipt.run_id)
                 self.assertEqual(
                     "BLOCKED_DATA",
                     self.repository.state.automation_runs[0]["status"],
@@ -453,8 +466,11 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                     facts,
                     self.repository.state.automation_run_facts["run-write"],
                 )
+                self.assertEqual("BLOCKED_DATA", self.repository.state.work_items["work-run-write"]["status"])
+                self.assertEqual([], self.repository.state.domain_events)
+                self.assertNotIn("run-write", self.woken_run_ids)
 
-    def test_stopped_unknown_history_requires_recovery_and_resuming_original_before_acceptance(self):
+    def test_new_command_does_not_recover_or_resume_stopped_unknown_history(self):
         recovery_calls: list[tuple[str, str]] = []
         service = AutomationProjectPolicyService(
             self.repository,
@@ -479,15 +495,28 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             "run-write": {"has_unknown_write_receipt": True},
         }
 
-        with self.assertRaises(OrchestrationError) as blocked:
-            service.invoke_console(AUTOMATION_ID, request_id="request-readback", actor=_admin())
-        self.assertEqual('AUTOMATION_ALREADY_RUNNING', blocked.exception.code)
-        self.assertEqual('ACTIVE', blocked.exception.details['blocking_kind'])
-        self.assertEqual([(AUTOMATION_ID, 'request-readback')], recovery_calls)
+        receipt = service.invoke_console(AUTOMATION_ID, request_id="request-readback", actor=_admin())
+        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual([], recovery_calls)
         self.assertEqual(
             "BLOCKED_DATA",
             self.repository.state.automation_runs[0]["status"],
         )
+        # The gateway owns new-command wakeup; policy must not wake the old Run.
+        self.assertEqual([], self.woken_run_ids)
+
+    def test_unknown_history_with_live_execution_still_blocks_new_command(self):
+        self.repository.state.automation_runs = [{
+            "run_id": "run-live-write", "status": "BLOCKED_DATA",
+            "worker_id": "live-worker",
+            "lease_expires_at": datetime.now(timezone.utc) + timedelta(minutes=5),
+        }]
+        self.repository.state.automation_run_facts = {
+            "run-live-write": {"has_unknown_write_receipt": True},
+        }
+        with self.assertRaises(OrchestrationError) as blocked:
+            self.service.invoke_console(AUTOMATION_ID, request_id="request-live-unknown", actor=_admin())
+        self.assertEqual("ACTIVE", blocked.exception.details["blocking_kind"])
         self.assertIsNone(self.gateway.command)
 
     def test_orphaned_running_status_without_live_facts_is_safely_cancelled(self):

@@ -48,6 +48,14 @@ class AutomationRunLookupMixin:
                 WHERE BINARY c.automation_id=BINARY %s
                   AND (r.status NOT IN (
                       'COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED'
+                  ) OR (
+                      NULLIF(TRIM(r.worker_id), '') IS NOT NULL
+                      AND r.lease_expires_at > UTC_TIMESTAMP(6)
+                  ) OR EXISTS (
+                      SELECT 1 FROM automation_project_generation_leases AS live_lease
+                      WHERE live_lease.orchestration_run_id=r.run_id
+                        AND live_lease.outcome IN ('RUNNING', 'VERIFYING')
+                        AND live_lease.expires_at > UTC_TIMESTAMP(6)
                   ) OR EXISTS (
                       SELECT 1 FROM automation_project_generation_leases AS unresolved
                       WHERE unresolved.orchestration_run_id=r.run_id
@@ -60,18 +68,11 @@ class AutomationRunLookupMixin:
                   )
                 ORDER BY
                     CASE
-                        WHEN EXISTS (
-                            SELECT 1 FROM automation_project_generation_leases AS unknown_lease
-                            WHERE unknown_lease.orchestration_run_id=r.run_id
-                              AND unknown_lease.outcome='WRITE_OUTCOME_UNKNOWN'
-                        ) THEN 0
-                        WHEN r.status IN (
+                        WHEN r.status NOT IN (
+                              'COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED'
+                          ) AND (r.status IN (
                               'RECEIVED', 'CONTEXT_READY',
                               'PLANNED', 'VALIDATED', 'FAILED_RETRYABLE'
-                          )
-                          OR (
-                              NULLIF(TRIM(r.worker_id), '') IS NOT NULL
-                              AND r.lease_expires_at > UTC_TIMESTAMP(6)
                           )
                           OR EXISTS (
                               SELECT 1
@@ -80,6 +81,10 @@ class AutomationRunLookupMixin:
                                 AND blocking_step.status IN (
                                     'RUNNING', 'VERIFYING'
                                 )
+                          ))
+                          OR (
+                              NULLIF(TRIM(r.worker_id), '') IS NOT NULL
+                              AND r.lease_expires_at > UTC_TIMESTAMP(6)
                           )
                           OR EXISTS (
                               SELECT 1

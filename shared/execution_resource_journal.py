@@ -20,17 +20,34 @@ def closed_execution_keys(value):
 
 
 def unknown_execution_keys(repository):
+    """Return retained exact scopes, excluding explicit migration quarantine.
+
+    The migration marker does not settle a receipt or make it replayable. It
+    prevents legacy, scope-less history from inventing a global resource lock.
+    Missing/malformed scopes without that marker still fail explicitly.
+    """
     with repository.unit_of_work() as uow, uow.connection.cursor() as cursor:
-        cursor.execute("SELECT receipt_id,execution_resource_keys_json FROM automation_write_attempt_receipts WHERE outcome='WRITE_OUTCOME_UNKNOWN' ORDER BY receipt_id LIMIT 1001")
-        rows = cursor.fetchall()
-        if len(rows) > 1000:
-            raise ValueError('UNKNOWN_WRITE_SCOPE_LIMIT_EXCEEDED')
         result = set()
-        for row in rows:
-            receipt_id, raw = (row['receipt_id'], row['execution_resource_keys_json']) if isinstance(row, Mapping) else row
-            if isinstance(raw, (str, bytes)):
-                raw = json.loads(raw)
-            if raw is None or not raw:
-                raise ValueError('UNKNOWN_WRITE_SCOPE_UNAVAILABLE:' + str(receipt_id))
-            result.update(closed_execution_keys(raw))
+        after_receipt_id = ''
+        while True:
+            cursor.execute("""SELECT receipt_id,execution_resource_keys_json
+                FROM automation_write_attempt_receipts
+                WHERE outcome='WRITE_OUTCOME_UNKNOWN'
+                  AND (legacy_scope_quarantined_at IS NULL
+                       OR (execution_resource_keys_json IS NOT NULL
+                           AND (JSON_TYPE(execution_resource_keys_json)<>'ARRAY'
+                                OR JSON_LENGTH(execution_resource_keys_json)>0)))
+                  AND receipt_id>%s
+                ORDER BY receipt_id LIMIT 500""", (after_receipt_id,))
+            rows = cursor.fetchall()
+            for row in rows:
+                receipt_id, raw = (row['receipt_id'], row['execution_resource_keys_json']) if isinstance(row, Mapping) else row
+                if isinstance(raw, (str, bytes)):
+                    raw = json.loads(raw)
+                if raw is None or not raw:
+                    raise ValueError('UNKNOWN_WRITE_SCOPE_UNAVAILABLE:' + str(receipt_id))
+                result.update(closed_execution_keys(raw))
+                after_receipt_id = str(receipt_id)
+            if len(rows) < 500:
+                break
         return tuple(sorted(result))

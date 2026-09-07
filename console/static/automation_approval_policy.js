@@ -477,42 +477,6 @@
     return "";
   }
 
-  async function recoverUnknownWrite(instance, button) {
-    const automationId = instance.dataset.automationId || "";
-    const feedback = instance.querySelector("[data-plugin-instance-feedback]");
-    const fallback = "系统仍无法确认上次是否已经保存。任务会继续暂停，也没有重复执行。请先到对应业务表格核对实际结果。";
-    const requestId = button.dataset.requestId || secureRequestId(feedback);
-    if (!requestId) return;
-    button.dataset.requestId = requestId;
-    setBusy(button, true, "提交中…");
-    try {
-      const response = await fetch(
-        `/automations/plugins/${encodeURIComponent(automationId)}/recover`,
-        {
-          method: "POST",
-          credentials: "same-origin",
-          headers: {
-            "Accept": "application/json",
-            "Content-Type": "application/json; charset=UTF-8",
-            "X-Browser-Request-UUID": requestId,
-            "X-Requested-With": "XMLHttpRequest",
-          },
-          body: JSON.stringify({ request_id: requestId }),
-        },
-      );
-      const payload = await response.json().catch(() => null);
-      if (!response.ok || payload?.ok !== true) {
-        throw new Error(responseMessage(payload, fallback));
-      }
-      delete button.dataset.requestId;
-      setFeedback(feedback, payload.message || "未知写入状态已重新核对。", "success");
-      window.location.reload();
-    } catch (error) {
-      setFeedback(feedback, error instanceof Error ? error.message : fallback, "error");
-    } finally {
-      setBusy(button, false, "");
-    }
-  }
   function collectPluginSchedule(instance) {
     const form = instance.closest("form");
     if (!(form instanceof HTMLFormElement)) throw new Error("项目设置表单不存在。");
@@ -678,12 +642,6 @@
   }
 
   function initializePluginInstance(instance) {
-    const recoverButton = instance.querySelector("[data-plugin-recover-unknown-write]");
-    recoverButton?.addEventListener("click", () => {
-      if (!(recoverButton instanceof HTMLButtonElement)) return;
-      void recoverUnknownWrite(instance, recoverButton);
-    });
-
     const form = instance.closest("form");
     const scheduleKind = form?.querySelector("[data-plugin-schedule-kind]");
     const scheduleStack = form?.querySelector("[data-schedule-stack]");

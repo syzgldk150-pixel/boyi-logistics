@@ -91,6 +91,56 @@ class _ControlPlaneApp(ControlPlaneServiceMixin, AuthServiceMixin):
 
 
 class ControlPlaneServiceTests(unittest.TestCase):
+    def test_manual_unknown_write_verification_binds_selected_history_and_never_resumes(self):
+        row = {"work_item_id": "wi-1", "run_id": "old-run", "lease_id": "old-lease",
+               "automation_id": "stable-instance", "generation": 2, "identity_valid": True, "recovery_supported": True}
+        app = _ControlPlaneApp({"ok": True, "data": {"unknown_write_recoveries": [row], "recovery_status": "UNKNOWN"}})
+        handler = _Handler({"run_id": "old-run", "lease_id": "old-lease", "request_id": "f117c816-061c-4ec2-a803-9b3a14ce2a25"})
+        handler.current_admin_user["control_plane_role"] = "super_admin"
+        app._handle_control_plane_unknown_write_verify(handler, "wi-1")
+        self.assertEqual(HTTPStatus.OK, app.sent_status)
+        self.assertEqual("UNKNOWN", app.sent_payload["data"]["recovery_status"])
+        self.assertFalse(app.sent_payload["data"]["resume_run"])
+        self.assertEqual("GET", app.agent_calls[0][0])
+        method, endpoint, payload, _timeout = app.agent_calls[1]
+        self.assertEqual("POST", method)
+        self.assertIn("/stable-instance/generation/recover-unknown-write", endpoint)
+        self.assertEqual(2, payload["generation"])
+        self.assertEqual("old-run", payload["expected_run_id"])
+        self.assertEqual("wi-1", payload["expected_work_item_id"])
+        self.assertFalse(payload["resume_run"])
+
+    def test_manual_verification_rejects_wrong_item_selection_and_browser_overrides(self):
+        for forged in ({"lease_id": "another-lease"}, {"resume_run": True}, {"automation_id": "another-project"}):
+            with self.subTest(forged=forged):
+                row = {"work_item_id": "wi-1", "run_id": "old-run", "lease_id": "old-lease", "identity_valid": True}
+                app = _ControlPlaneApp({"ok": True, "data": {"unknown_write_recoveries": [row]}})
+                handler = _Handler({"run_id": "old-run", "lease_id": "old-lease", "request_id": "f117c816-061c-4ec2-a803-9b3a14ce2a25", **forged})
+                handler.current_admin_user["control_plane_role"] = "super_admin"
+                app._handle_control_plane_unknown_write_verify(handler, "wi-1")
+                self.assertIn(app.sent_status, {HTTPStatus.BAD_REQUEST, HTTPStatus.CONFLICT})
+                self.assertFalse(any(call[0] == "POST" for call in app.agent_calls))
+
+    def test_manual_verification_requires_super_admin_and_same_origin(self):
+        for origin, role in (("https://console.test", "admin"), ("https://foreign.test", "super_admin")):
+            with self.subTest(origin=origin, role=role):
+                app = _ControlPlaneApp({})
+                handler = _Handler({}, origin=origin)
+                handler.current_admin_user["control_plane_role"] = role
+                app._handle_control_plane_unknown_write_verify(handler, "wi-1")
+                self.assertEqual(HTTPStatus.FORBIDDEN, app.sent_status)
+                self.assertEqual([], app.agent_calls)
+
+    def test_unsupported_plugin_is_explicitly_unavailable_without_posting_recovery(self):
+        row = {"work_item_id": "wi-1", "run_id": "old-run", "lease_id": "old-lease",
+               "identity_valid": True, "recovery_supported": False}
+        app = _ControlPlaneApp({"ok": True, "data": {"unknown_write_recoveries": [row]}})
+        handler = _Handler({"run_id": "old-run", "lease_id": "old-lease", "request_id": "f117c816-061c-4ec2-a803-9b3a14ce2a25"})
+        handler.current_admin_user["control_plane_role"] = "super_admin"
+        app._handle_control_plane_unknown_write_verify(handler, "wi-1")
+        self.assertEqual(HTTPStatus.CONFLICT, app.sent_status)
+        self.assertFalse(any(call[0] == "POST" for call in app.agent_calls))
+
     def test_command_rebuilds_trusted_context_and_returns_202_with_run_location(self):
         app = _ControlPlaneApp(
             {

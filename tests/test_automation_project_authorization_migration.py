@@ -1874,7 +1874,7 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
             [
                 (
                     "DELETE FROM schema_migrations "
-                    "WHERE BINARY version IN (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "WHERE BINARY version IN (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (
                         "018",
                         "019",
@@ -1888,6 +1888,7 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
                         "034",
                         "036",
                         "041",
+                        "042",
                     ),
                 )
             ],

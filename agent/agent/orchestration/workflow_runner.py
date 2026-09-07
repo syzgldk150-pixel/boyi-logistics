@@ -376,6 +376,8 @@ class WorkflowRunner:
             if run.get("cancel_requested_at"):
                 await self._cancel_claimed(run)
                 return
+            if str(run["status"]) in {"RUNNING", "VERIFYING", "WAITING_APPROVAL"}:
+                await asyncio.to_thread(self._recover_claimed_read_steps, run_id)
             command = await asyncio.to_thread(self._load_command, str(run["command_id"]))
             status = RunStatus(str(run["status"]))
             recovered_running = status is RunStatus.RUNNING
@@ -1920,6 +1922,31 @@ class WorkflowRunner:
         )
         raise AssertionError("unreachable")
 
+    def _recover_claimed_read_steps(self, run_id: str) -> None:
+        """Close interrupted reads before context or approval can pause a Run.
+
+        This executes only at the start of a new claim, before its executor
+        starts. The locked claim fences the previous worker; write steps and
+        unknown-write history stay on their existing reconciliation path.
+        """
+        with self._repository.unit_of_work() as uow:
+            run = uow.runs.get(run_id, for_update=True)
+            if run is None:
+                raise OrchestrationError("RUN_NOT_FOUND", "Run disappeared during read recovery")
+            self._require_claim(run)
+            if str(run.get("error_code") or "").upper() == "WRITE_OUTCOME_UNKNOWN":
+                return
+            for step_row in uow.steps.list_for_run(run_id):
+                if (
+                    str(step_row.get("status") or "").upper() in {"RUNNING", "VERIFYING"}
+                    and str(step_row.get("operation_type") or "").lower() in {"read", "compute"}
+                ):
+                    self._mark_interrupted_step_retryable_in_uow(
+                        uow, step_row, code="INTERRUPTED_READ_RETRY",
+                        summary="Interrupted read/compute step is safe to execute again",
+                    )
+            uow.commit()
+
     def _mark_interrupted_step_retryable(
         self,
         step_row: Mapping[str, Any],
@@ -1929,19 +1956,29 @@ class WorkflowRunner:
         result_summary: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self._repository.unit_of_work() as uow:
-            updated = uow.steps.transition(
-                str(step_row["step_id"]),
-                expected_version=int(step_row["version"]),
-                expected_statuses=("RUNNING", "VERIFYING"),
-                status="FAILED_RETRYABLE",
-                result_summary=dict(result_summary or {}),
-                postcondition_status="RETRY_ALLOWED",
-                error_code=code,
-                error_summary=summary,
-                finished_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            updated = self._mark_interrupted_step_retryable_in_uow(
+                uow, step_row, code=code, summary=summary,
+                result_summary=result_summary,
             )
             uow.commit()
         return updated
+
+    @staticmethod
+    def _mark_interrupted_step_retryable_in_uow(
+        uow: Any, step_row: Mapping[str, Any], *, code: str, summary: str,
+        result_summary: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return uow.steps.transition(
+            str(step_row["step_id"]),
+            expected_version=int(step_row["version"]),
+            expected_statuses=("RUNNING", "VERIFYING"),
+            status="FAILED_RETRYABLE",
+            result_summary=dict(result_summary or {}),
+            postcondition_status="RETRY_ALLOWED",
+            error_code=code,
+            error_summary=summary,
+            finished_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
 
     def _block_interrupted_write(
         self,

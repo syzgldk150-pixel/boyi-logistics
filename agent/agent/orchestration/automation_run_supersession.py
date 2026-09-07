@@ -110,6 +110,12 @@ def classify_automation_run_blocking_kind(
     status = str(run.get("status") or "").strip().upper()
     item_status = str(work_item.get("status") or "").strip().upper()
     if status in _TERMINAL_RUN_STATUS_VALUES:
+        # A terminal projection may outlive a step marker, but it cannot
+        # invalidate a worker or generation lease that still owns execution.
+        if has_live_automation_execution(
+            run, {"has_live_generation_lease": facts.get("has_live_generation_lease")}, now=now,
+        ):
+            return AUTOMATION_BLOCKING_ACTIVE
         if any(facts.get(name) for name in ('has_unknown_generation_lease', 'has_unknown_write_receipt', 'has_unclosed_protected_write')):
             return AUTOMATION_BLOCKING_UNKNOWN_WRITE
         return AUTOMATION_BLOCKING_NEEDS_ATTENTION
@@ -219,9 +225,12 @@ def supersede_safely_suspended_runs(
         if kind in {
             AUTOMATION_BLOCKING_ACTIVE,
             AUTOMATION_BLOCKING_RETRY_PENDING,
-        } or (kind == AUTOMATION_BLOCKING_UNKNOWN_WRITE and not read_only_preview):
+        }:
             blockers.append((kind, run))
             continue
+        # Stopped unknown writes retain their original Run, receipts and
+        # Evidence. New commands are governed by the exact write-resource
+        # conflict gate; accepting one must never resume or relabel this Run.
         if (
             command is None
             or item is None

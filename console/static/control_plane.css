@@ -459,6 +459,11 @@
   padding: 15px;
 }
 
+[data-unknown-write-section] .cp-section-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .cp-plan-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -31,6 +31,11 @@ class OrchestrationRepositoryFacadeMixin:
     def unit_of_work(self) -> OrchestrationUnitOfWork:
         return OrchestrationUnitOfWork(self._connection_factory, self._cursor_factory)
 
+    def list_work_item_unknown_writes(self, work_item_id: str) -> list[dict[str, Any]]:
+        from shared.automation_write_recovery_views import list_work_item_unknown_writes
+
+        return list_work_item_unknown_writes(self, work_item_id)
+
     def get_unknown_execution_resource_keys(self):
         from shared.execution_resource_journal import unknown_execution_keys
 
