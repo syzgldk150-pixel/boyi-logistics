@@ -57,7 +57,12 @@ def repository():
     helper._run_migrations(helper.database)
     result = helper._repository()
     result.validate_mysql8()
-    yield result
+    # Runtime resource-store facades use the configured database directly.
+    # Bind them to this fixture's real database too, then restore the caller's
+    # environment so later modules cannot inherit this database after teardown.
+    with pytest.MonkeyPatch.context() as environment:
+        environment.setenv("AGENT_DB_NAME", helper.database)
+        yield result
     with helper._server_connection() as connection, connection.cursor() as cursor:
         cursor.execute("DROP DATABASE v32_reliability_test")
 
