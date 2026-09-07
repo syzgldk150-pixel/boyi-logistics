@@ -585,6 +585,16 @@ class AgentRunRepository(automation_run_lookup.AutomationRunLookupMixin, _Reposi
             cursor.execute(f"SELECT * FROM agent_runs WHERE run_id=%s{suffix}", (run_id,))
             return _decode_row(_row_dict(cursor, cursor.fetchone()), self.JSON_FIELDS)
 
+    def get_with_submission(self, run_id: str) -> dict[str, Any] | None:
+        """Read UTC submission metadata without changing the Run-first lock path."""
+        with self.cursor() as cursor:
+            cursor.execute(
+                "SELECT r.*, c.requested_at AS submitted_at FROM agent_runs r "
+                "JOIN agent_commands c ON c.command_id=r.command_id WHERE r.run_id=%s",
+                (run_id,),
+            )
+            return _decode_row(_row_dict(cursor, cursor.fetchone()), self.JSON_FIELDS)
+
     def list_nonterminal_with_commands(self) -> list[dict[str, Any]]:
         """Return the complete non-terminal Run set with command parameters.
 
@@ -757,9 +767,10 @@ class AgentRunRepository(automation_run_lookup.AutomationRunLookupMixin, _Reposi
         with self.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT * FROM agent_runs
-                WHERE work_item_id=%s
-                ORDER BY run_no, created_at, run_id
+                SELECT r.*, c.requested_at AS submitted_at FROM agent_runs r
+                JOIN agent_commands c ON c.command_id=r.command_id
+                WHERE r.work_item_id=%s
+                ORDER BY r.run_no, r.created_at, r.run_id
                 LIMIT %s OFFSET %s
                 """,
                 (
@@ -1252,7 +1263,7 @@ class AgentRunRepository(automation_run_lookup.AutomationRunLookupMixin, _Reposi
                 f"""
                 UPDATE agent_runs
                 SET status=%s, worker_id=NULL, lease_expires_at=NULL,
-                    next_attempt_at=NOW(6), error_code=%s, error_summary=%s,
+                    next_attempt_at=UTC_TIMESTAMP(6), error_code=%s, error_summary=%s,
                     retryable=%s, version=version+1
                 WHERE run_id=%s AND version=%s AND status IN ({placeholders})
                 """,
@@ -1285,7 +1296,7 @@ class AgentRunRepository(automation_run_lookup.AutomationRunLookupMixin, _Reposi
             cursor.execute(
                 """
                 UPDATE agent_runs
-                SET next_attempt_at=NOW(6)
+                SET next_attempt_at=UTC_TIMESTAMP(6)
                 WHERE run_id=%s AND status='WAITING_APPROVAL'
                 """,
                 (_required_text(run_id, "run_id"),),
@@ -1350,7 +1361,7 @@ class AgentRunRepository(automation_run_lookup.AutomationRunLookupMixin, _Reposi
                     error_summary, retryable, next_attempt_at, started_at, finished_at
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s, NOW(6)), %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s, UTC_TIMESTAMP(6)), %s, %s
                 )
                 ON DUPLICATE KEY UPDATE run_id = run_id
                 """,
@@ -1820,9 +1831,9 @@ class ApprovalRepository(_RepositoryBase):
             cursor.execute(
                 """
                 UPDATE approval_requests
-                SET status='EXPIRED', decided_at=NOW(6)
+                SET status='EXPIRED', decided_at=UTC_TIMESTAMP(6)
                 WHERE run_id=%s AND status='PENDING'
-                  AND expires_at <= NOW(6)
+                  AND expires_at <= UTC_TIMESTAMP(6)
                 """,
                 (run_id,),
             )
@@ -1830,7 +1841,7 @@ class ApprovalRepository(_RepositoryBase):
             cursor.execute(
                 """
                 UPDATE approval_requests
-                SET status='INVALIDATED', decided_at=NOW(6)
+                SET status='INVALIDATED', decided_at=UTC_TIMESTAMP(6)
                 WHERE run_id=%s AND status IN ('PENDING', 'APPROVED')
                   AND plan_hash <> %s
                 """,
@@ -1852,7 +1863,7 @@ class ApprovalRepository(_RepositoryBase):
             raise ValueError("approval invalidation uses the MySQL clock")
         sql = """
             UPDATE approval_requests
-            SET status='INVALIDATED', decided_at=NOW(6)
+            SET status='INVALIDATED', decided_at=UTC_TIMESTAMP(6)
             WHERE run_id=%s AND status IN ('PENDING', 'APPROVED')
         """
         params: list[Any] = [run_id]
@@ -1870,9 +1881,9 @@ class ApprovalRepository(_RepositoryBase):
             cursor.execute(
                 """
                 UPDATE approval_requests
-                SET status='EXPIRED', decided_at=NOW(6)
+                SET status='EXPIRED', decided_at=UTC_TIMESTAMP(6)
                 WHERE approval_id=%s AND status='PENDING'
-                  AND expires_at <= NOW(6)
+                  AND expires_at <= UTC_TIMESTAMP(6)
                 """,
                 (approval_id,),
             )
@@ -1895,7 +1906,7 @@ class ApprovalRepository(_RepositoryBase):
             cursor.execute(
                 """
                 SELECT ar.*, r.plan_hash AS current_plan_hash,
-                       (ar.expires_at <= NOW(6)) AS is_expired
+                       (ar.expires_at <= UTC_TIMESTAMP(6)) AS is_expired
                 FROM approval_requests ar
                 JOIN agent_runs r ON r.run_id = ar.run_id
                 WHERE ar.approval_id=%s FOR UPDATE
@@ -1911,8 +1922,8 @@ class ApprovalRepository(_RepositoryBase):
                 cursor.execute(
                     """
                     UPDATE approval_requests
-                    SET status='EXPIRED', decided_at=NOW(6)
-                    WHERE approval_id=%s AND status='PENDING' AND expires_at <= NOW(6)
+                    SET status='EXPIRED', decided_at=UTC_TIMESTAMP(6)
+                    WHERE approval_id=%s AND status='PENDING' AND expires_at <= UTC_TIMESTAMP(6)
                     """,
                     (approval_id,),
                 )
@@ -1960,7 +1971,7 @@ class ApprovalRepository(_RepositoryBase):
             )
             if next_status != "PENDING":
                 cursor.execute(
-                    "UPDATE approval_requests SET status=%s, decided_at=NOW(6) WHERE approval_id=%s",
+                    "UPDATE approval_requests SET status=%s, decided_at=UTC_TIMESTAMP(6) WHERE approval_id=%s",
                     (next_status, approval_id),
                 )
         return self.get(approval_id, for_update=True) or {}
@@ -1991,9 +2002,9 @@ class ApprovalRepository(_RepositoryBase):
             cursor.execute(
                 """
                 UPDATE approval_requests
-                SET status='EXPIRED', decided_at=NOW(6)
+                SET status='EXPIRED', decided_at=UTC_TIMESTAMP(6)
                 WHERE run_id=%s AND status='PENDING'
-                  AND expires_at <= NOW(6)
+                  AND expires_at <= UTC_TIMESTAMP(6)
                 """,
                 (run_id,),
             )
@@ -2001,7 +2012,7 @@ class ApprovalRepository(_RepositoryBase):
             cursor.execute(
                 """
                 UPDATE approval_requests
-                SET status='INVALIDATED', decided_at=NOW(6)
+                SET status='INVALIDATED', decided_at=UTC_TIMESTAMP(6)
                 WHERE run_id=%s AND status IN ('PENDING', 'APPROVED')
                   AND plan_hash <> %s
                 """,

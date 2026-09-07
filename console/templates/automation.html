@@ -1827,6 +1827,7 @@
       const toolName = termDrawer.dataset.toolName;
       const taskId = termDrawer.dataset.taskId || "";
       let termPollTimer = null;
+      let termPollingInFlight = false;
       let termOffset = 0;
       let autoScroll = true;
       let termNeedsFinalRuntimePoll = false;
@@ -1863,6 +1864,9 @@
             signal: controller.signal,
           });
           const payload = await res.json();
+          if (!res.ok || !payload || typeof payload !== "object" || (runId && payload.error)) {
+            throw new Error("任务状态暂时无法读取。");
+          }
           renderRunSourceLinks(payload.collector_navigation);
           return payload;
         } finally {
@@ -1949,7 +1953,7 @@
         });
         renderFeedback(form, {
           kind: "info",
-          title: data.queued ? "排队中" : "等待状态同步",
+          title: data.queued ? "等待执行" : "等待状态同步",
           message: data.stage_description || "命令已提交，正在等待控制平面进入下一状态。",
           showTimer: false,
           stampText: startedAt ? `提交于：${startedAt}` : "",
@@ -1992,7 +1996,9 @@
       }
 
       async function pollOutput() {
-        if (!toolName || runUiState.batchTracking) return;
+        if (!toolName || runUiState.batchTracking || termPollingInFlight) return;
+        termPollTimer = null;
+        termPollingInFlight = true;
         try {
           const data = await fetchOutputState();
           if (runUiState.batchTracking) return;
@@ -2071,7 +2077,7 @@
               termStatus.textContent = "待审批";
               termStatus.className = "auto-terminal-status auto-terminal-status--cancel";
             } else if (pendingRun) {
-              termStatus.textContent = data.queued ? "排队中" : "等待状态同步";
+              termStatus.textContent = data.queued ? "等待执行" : "等待状态同步";
               termStatus.className = "auto-terminal-status auto-terminal-status--running";
             } else if (data.running && data.cancel_requested) {
               termStatus.textContent = "取消中";
@@ -2134,13 +2140,32 @@
             termFinalRuntimePollCount = 0;
           }
         } catch (err) {
+          if (termAttentionLatched) return;
+          const trackingRun = runUiState.running || runUiState.awaitingApproval || runUiState.pendingRun;
+          stopRunProgress();
+          if (trackingRun) {
+            // Keep the accepted Run identity and cancel action while its state is unknown.
+            setRunUiState({ running: false, awaitingApproval: false, pendingRun: true });
+          }
+          renderFeedback(form, {
+            kind: "warning",
+            title: "状态暂不可用",
+            message: trackingRun
+              ? "暂时无法读取本次任务状态，正在重试。请勿重复提交。"
+              : "暂时无法读取任务状态，请稍后重新打开运行输出。",
+            showTimer: false,
+            body: "",
+          });
+          syncRuntimeFeedback(form, null);
           if (termStatus) {
-            termStatus.textContent = "连接失败";
+            termStatus.textContent = "状态读取失败";
             termStatus.className = "auto-terminal-status auto-terminal-status--error";
           }
-          if (!termAttentionLatched && (runUiState.running || termDrawer.dataset.runStartedAt)) {
-            termPollTimer = setTimeout(pollOutput, 3000);
+          if (trackingRun) {
+            termPollTimer = setTimeout(pollOutput, document.hidden ? 5000 : 3000);
           }
+        } finally {
+          termPollingInFlight = false;
         }
       }
 
@@ -2217,7 +2242,7 @@
         const isOpen = termBtn.getAttribute("aria-expanded") === "true";
         if (isOpen) {
           if (!runUiState.batchTracking) startPolling();
-        } else {
+        } else if (!runUiState.running && !runUiState.awaitingApproval && !runUiState.pendingRun) {
           stopPolling();
         }
       });
