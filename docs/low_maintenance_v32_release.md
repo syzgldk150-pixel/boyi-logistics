@@ -8,16 +8,22 @@
 
 ```sh
 bash tests/v32_acceptance/isolated_environment.sh setup
-bash tests/v32_acceptance/isolated_environment.sh run python agent/scripts/accept_low_maintenance_v32.py --phase ci
+bash tests/v32_acceptance/isolated_environment.sh run --database v32_final_ci_test python agent/scripts/accept_low_maintenance_v32.py --phase ci
 ```
 
 `--phase ci` 是诊断模式，即使全部代码检查通过，也不会宣称整轮验收通过。宿主源代码提交后，创建新的冻结文件，再运行完整验收；输出目录必须先存在，冻结文件不能覆盖旧证据。
 
+示例明确使用新的 CI 测试库 `v32_final_ci_test`。如果开发中的未发布迁移发生演进，旧测试库出现迁移校验和不符，应保留失败证据并改用新的 CI 测试库，不能修改迁移历史表或校验和来伪装通过。浏览器共用的 `v32_e2e_test` 只能由其所属准备入口显式重建；先转存旧测试证据，并确认该库没有正在执行的采样或演练。此命令仅适用于本任务的隔离合成库，不得改为其他人的库或业务库：
+
+```sh
+bash tests/v32_acceptance/isolated_environment.sh run --database v32_e2e_test python -m tests.v32_acceptance.prepare_database --reset-owned-fixture
+```
+
 ```sh
 mkdir -p .task_tmp/v32/final
-bash tests/v32_acceptance/isolated_environment.sh run python -m tests.v32_acceptance.host_freeze freeze .task_tmp/v32/final/host-freeze.json
-bash tests/v32_acceptance/isolated_environment.sh run python agent/scripts/accept_low_maintenance_v32.py --host-freeze .task_tmp/v32/final/host-freeze.json
-bash tests/v32_acceptance/isolated_environment.sh run python -m tests.v32_acceptance.host_freeze verify .task_tmp/v32/final/host-freeze.json
+bash tests/v32_acceptance/isolated_environment.sh run --database v32_final_ci_test python -m tests.v32_acceptance.host_freeze freeze .task_tmp/v32/final/host-freeze.json
+bash tests/v32_acceptance/isolated_environment.sh run --database v32_final_ci_test python agent/scripts/accept_low_maintenance_v32.py --host-freeze .task_tmp/v32/final/host-freeze.json
+bash tests/v32_acceptance/isolated_environment.sh run --database v32_final_ci_test python -m tests.v32_acceptance.host_freeze verify .task_tmp/v32/final/host-freeze.json
 ```
 
 完整入口重新执行原验收组、实际浏览器性能、业务链路和维护演练，报告中保留各子命令及日志。它不接受上次遗留的 PASS 文件；缺失、失败、跳过的必要证据均不能算通过。字段和决策演练核对冻结文件、宿主进程启动标识、实际结果、升级/回退和无关任务；演练包只用隔离信任材料。

@@ -159,3 +159,4 @@ updated: 2026-08-31
 - Console 投影与本地来源：仓库 `console/services/automation_catalog_projection.py`、`console/services/module_data_sources.py`；默认/专属设置共用原管理服务和设置桥。
 - 真实验收组合：仓库 `tests/v32_acceptance/daily_concurrency.py`、`settings_effective.py`、`catalog_guards.py`；延迟目录及整库故障为 `catalog_delivery.py`，业务成功后的通知/展示投递为 `post_success_delivery.py`；调度超时/取消/重启为 `tests/test_scheduler_runner_lifecycle_mysql.py`。隔离库准备复用 `owned_database.py` 和已有正式迁移器。
 - 扫描写后恢复与未知写资源隔离：仓库 `docs/scan_recovery_v32.md`、`shared/scan_snapshot_recovery.py`、`shared/execution_resource_journal.py`、`agent/agent/automation_plugins/scan_recovery_context.py`；扫描快照与原执行资源日志使用 `migrations/041_scan_write_recovery_snapshot.sql`。
+- 验收环境完整重建及时间诊断：仓库 `tests/v32_acceptance/prepare_database.py`、`management_fixture.py`、`scan_preview_observation.py`；运行目录与测试库互斥重建，扫描逐轮进度和原时间拒绝证据保留，均不改变宿主业务校验。

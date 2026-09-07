@@ -27,6 +27,8 @@ bash tests/v32_acceptance/isolated_environment.sh run python agent/scripts/verif
 
 浏览器库的持久准备入口是 `python -m tests.v32_acceptance.prepare_database`，默认只迁移，显式加 `--reset-owned-fixture` 才重建。随后依次执行 `tests.v32_acceptance.management_fixture`、`tests.v32_acceptance.data_fixture`、`tests.v32_acceptance.browser_performance`、`tests.v32_acceptance.detail_browser`、`tests.v32_acceptance.navigation_probe`、`tests.v32_acceptance.run_acceptance`（均使用 `python -m`）。简单设置实际生效入口为 `python -m tests.v32_acceptance.settings_effective`，要求明确 `--database v32_m01_test`；通过真实页面保存参数和账号，执行下一次插件，再从页面恢复原历史设置并再次执行。
 
+E2E 显式 reset 必须在所有参与者退出并转存旧证据后执行：它在独占文件锁内重建 `v32_e2e_test`，同时清理该环境内精确的 `plugin-installed`、`synthetic-plugins`、`console-runtime`，避免新数据库与旧不可变插件目录冲突。清理直接复用插件存储的只读树删除实现：数据库变更前先验证全部目标及内部文件，拒绝软/硬链接，再只为这些已验证目录恢复删除所需权限；宿主运行时的不可变保护保持原样。普通准备不清理运行目录；E2E ManagementFixture 持共享锁，使用中或路径被符号链接重定向时 reset 明确拒绝。解释器、MySQL daemon/data、其他测试库和报告目录均不删除。安全重置命令为 `bash tests/v32_acceptance/isolated_environment.sh run --database v32_e2e_test python -m tests.v32_acceptance.prepare_database --reset-owned-fixture`，完成后再顺序 seed 与 all 验收；禁止在旧版本未持锁的验收进程尚未退出时使用该命令。
+
 已有固定页面的真实登录与导航冒烟为 `python -m tests.v32_acceptance.legacy_page_smoke`（`v32_e2e_test`）；该检查不运行本地打印程序、OCR业务或外部系统写操作。已有专属插件设置页的账号、配置保存及并发版本验证为 `python -m tests.v32_acceptance.custom_settings`，只使用自己的 `v32_c04_test`。六包 CLI 入口使用 `v32_cli_test`，见 `python -m tests.v32_acceptance.plugin_cli_batch --help`；`--report` 可向严格验收目录写入完整的新报告，仍保留每包原日志与 ZIP。
 
 `custom_settings` 使用现有 `clockin_daxiang_v2` 的真实业务 payload、设置 HTML/JS/CSS 与账号 schema，只在隔离副本中把版本改为 `98.4.0`、移除可选 `contributes.harness`，经原 packager、检查及正常安装。原 `1.2.0` 的 Harness 声明被现有权限保护拒绝，关闭实例入口仍不能提交该组合；这项限制没有修复，也不作为本轮 AI 验收。报告包含 TEST_ONLY ZIP、逐成员不变比较和精确 Manifest patch；真实默认停用实例只进行设置/账号保存、并发版本冲突、历史恢复与重开，不启用定时或调用打卡。
