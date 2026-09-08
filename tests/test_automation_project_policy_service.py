@@ -103,6 +103,8 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         self.repository.state.active_automation_run = {
             "run_id": "run-active",
             "status": "RUNNING",
+            "worker_id": "active-worker",
+            "lease_expires_at": datetime.now(timezone.utc) + timedelta(minutes=5),
         }
         self.repository.state.automation_run_facts = {
             "run-active": {"has_inflight_step": True},
@@ -325,22 +327,20 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         self.assertEqual([], self.repository.state.domain_events)
         self.assertEqual([], self.repository.state.outbox_events)
 
-    def test_retry_pending_run_is_not_superseded(self):
+    def test_stopped_retry_history_is_preserved_without_blocking_a_new_command(self):
         self.repository.state.automation_runs = [
             {"run_id": "run-retry", "status": "FAILED_RETRYABLE"},
         ]
 
-        with self.assertRaises(OrchestrationError) as raised:
-            self.service.invoke_console(
-                AUTOMATION_ID,
-                request_id="request-during-retry",
-                actor=_admin(),
-            )
-
-        self.assertEqual("RETRY_PENDING", raised.exception.details["blocking_kind"])
+        receipt = self.service.invoke_console(
+            AUTOMATION_ID,
+            request_id="request-after-failed-retry",
+            actor=_admin(),
+        )
+        self.assertNotEqual("run-retry", receipt.run_id)
         self.assertEqual("FAILED_RETRYABLE", self.repository.state.automation_runs[0]["status"])
 
-    def test_safe_status_with_live_lease_or_inflight_step_remains_active(self):
+    def test_safe_status_with_live_lease_remains_active(self):
         active_cases = (
             (
                 {
@@ -350,7 +350,6 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                 },
                 {},
             ),
-            ({}, {"has_inflight_step": True}),
             ({}, {"has_live_generation_lease": True}),
         )
         for index, (run_values, facts) in enumerate(active_cases):
@@ -374,6 +373,22 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                     "ACTIVE",
                     raised.exception.details["blocking_kind"],
                 )
+
+    def test_stale_inflight_step_without_a_lease_does_not_block_a_new_command(self):
+        for status in ("RUNNING", "VERIFYING", "FAILED_RETRYABLE", "BLOCKED_DATA"):
+            for unknown in (False, True):
+                with self.subTest(status=status, unknown=unknown):
+                    run_id = f"stopped-{status}-{unknown}"
+                    self.repository.state.automation_runs = [{"run_id": run_id, "status": status}]
+                    facts = {"has_inflight_step": True, "has_unknown_write_receipt": unknown}
+                    self.repository.state.automation_run_facts = {run_id: facts}
+                    receipt = self.service.invoke_console(
+                        AUTOMATION_ID, request_id=f"new-{status}-{unknown}", actor=_admin(),
+                    )
+                    self.assertNotEqual(run_id, receipt.run_id)
+                    self.assertEqual(facts, self.repository.state.automation_run_facts[run_id])
+                    if unknown:
+                        self.assertEqual(status, self.repository.state.automation_runs[0]["status"])
 
     def test_terminal_projection_does_not_override_live_execution_lease(self):
         now = datetime.now(timezone.utc)
@@ -571,16 +586,16 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         self.repository.state.automation_runs = [
             {"run_id": f"run-{index}", "status": "BLOCKED_DATA"}
             for index in range(100)
-        ] + [{"run_id": "run-retry", "status": "FAILED_RETRYABLE"}]
+        ] + [{"run_id": "run-new-queued", "status": "RECEIVED"}]
 
         with self.assertRaises(OrchestrationError) as raised:
             self.service.invoke_console(
                 AUTOMATION_ID,
-                request_id="request-with-late-retry",
+                request_id="request-with-late-new-command",
                 actor=_admin(),
             )
 
-        self.assertEqual("RETRY_PENDING", raised.exception.details["blocking_kind"])
+        self.assertEqual("ACTIVE", raised.exception.details["blocking_kind"])
         self.assertTrue(
             all(
                 row["status"] != "CANCELLED"
@@ -1142,7 +1157,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             self.gateway.command.parameters["execution_context"],
         )
 
-    def test_new_scan_preview_recovers_proven_empty_history_before_submit(self):
+    def test_new_scan_preview_never_recovers_or_mutates_history_before_submit(self):
         self._set_scan_project()
         old_run = {
             "run_id": "run-old-scan",
@@ -1190,14 +1205,11 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         )
 
         self.assertEqual("run-invoke", receipt.run_id)
+        self.assertEqual(1, len(events))
+        self.assertEqual("submit", events[0][0])
+        self.assertEqual("BLOCKED_DATA", old_run["status"])
         self.assertEqual(
-            ("recover", AUTOMATION_ID, "request-new-scan-preview"),
-            events[0],
-        )
-        self.assertEqual("submit", events[1][0])
-        self.assertEqual("FAILED_TERMINAL", old_run["status"])
-        self.assertEqual(
-            "CANCELLED",
+            "BLOCKED_DATA",
             self.repository.state.work_items["work-old-scan"]["status"],
         )
         self.assertEqual(
@@ -1206,7 +1218,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         )
         self.assertTrue(self.gateway.command.parameters["arguments"]["dry_run"])
 
-    def test_unproven_scan_recovery_keeps_history_and_accepts_fresh_preview(self):
+    def test_scan_preview_does_not_call_unavailable_historical_recovery(self):
         self._set_scan_project()
         old_run = {"run_id": "run-old-scan", "status": "BLOCKED_DATA"}
         old_facts = {
@@ -1225,21 +1237,14 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
 
         self.service._unknown_write_recovery = recover  # type: ignore[method-assign]
 
-        with self.assertLogs(
-            "agent.orchestration.automation_project_policy_service",
-            level="WARNING",
-        ):
-            receipt = self.service.invoke_console(
-                AUTOMATION_ID,
-                request_id="request-scan-after-unproven-history",
-                actor=_admin(),
-            )
+        receipt = self.service.invoke_console(
+            AUTOMATION_ID,
+            request_id="request-scan-after-unproven-history",
+            actor=_admin(),
+        )
 
         self.assertEqual("run-invoke", receipt.run_id)
-        self.assertEqual(
-            [(AUTOMATION_ID, "request-scan-after-unproven-history")],
-            recovery_calls,
-        )
+        self.assertEqual([], recovery_calls)
         self.assertEqual("BLOCKED_DATA", old_run["status"])
         self.assertEqual(
             old_facts,

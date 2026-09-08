@@ -937,6 +937,7 @@ class ControlPlaneServiceAsyncTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancel_requests_persistence_and_cancels_active_execution(self):
         repository = _FakeRepository([_run("run-1", "RUNNING")])
+        repository.runs["run-1"].update(worker_id="active-worker", lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5))
         repository.run_facts["run-1"] = {"has_inflight_step": True}
         active = []
         wakes = []
@@ -1077,6 +1078,7 @@ class ControlPlaneServiceAsyncTests(unittest.IsolatedAsyncioTestCase):
         first = _run("run-1", "BLOCKED_LOGIN", version=1)
         second = _run("run-2", "BLOCKED_LOGIN", run_no=2, version=3)
         repository = _FakeRepository([first, second])
+        repository.commands["command-1"]["automation_id"] = None
         repository.blocked_pages = [
             {
                 "items": [copy.deepcopy(first)],
@@ -1111,6 +1113,28 @@ class ControlPlaneServiceAsyncTests(unittest.IsolatedAsyncioTestCase):
             ["account.session_restored", "account.session_restored"],
             [event["event_type"] for event in repository.events],
         )
+
+    async def test_session_restore_leaves_old_automation_runs_untouched(self):
+        automation = _run("automation", "BLOCKED_LOGIN", command_id="automation-command")
+        ordinary = _run("ordinary", "BLOCKED_LOGIN", command_id="ordinary-command")
+        orphan = _run("orphan", "BLOCKED_LOGIN", command_id="missing-command")
+        repository = _FakeRepository([automation, ordinary, orphan])
+        repository.commands["ordinary-command"]["automation_id"] = None
+        del repository.commands["missing-command"]
+        repository.blocked_pages = [{"items": [automation, ordinary, orphan], "is_complete": True}]
+        before_automation = copy.deepcopy(repository.runs["automation"])
+        before_orphan = copy.deepcopy(repository.runs["orphan"])
+        wakes = []
+        service = ControlPlaneService(repository, _FakeApprovalService(repository), wake_runner=wakes.append)
+
+        result = await service.publish_session_restored("account-1")
+
+        self.assertEqual(1, result["resumed_count"])
+        self.assertEqual(["ordinary"], wakes)
+        self.assertEqual("CONTEXT_READY", repository.runs["ordinary"]["status"])
+        self.assertEqual(before_automation, repository.runs["automation"])
+        self.assertEqual(before_orphan, repository.runs["orphan"])
+        self.assertEqual(["ordinary"], [event["run_id"] for event in repository.events])
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@
 
 | 维护内容 | 唯一实现位置 | 更新范围 |
 |---|---|---|
-| 新任务互斥与中断读取恢复 | `automation_run_supersession.py`、`automation_run_lookup.py`、`workflow_runner.py` | 核心 |
+| 新任务互斥、失败终结与中断请求隔离 | `automation_run_supersession.py`、`automation_run_lookup.py`、`workflow_runner.py` | 核心 |
 | 原始写入范围与历史隔离 | `execution_resource_journal.py`、迁移 `042` | 核心和共享数据库 |
 | 精确证据核验与代际闭合 | `automation_unknown_write_recovery.py`、`automation_plugin_generation_unknown_write_repository.py` | 核心 |
 | 核验后是否唤醒执行 | `production_write_recovery.py` | 核心 |
@@ -14,14 +14,16 @@
 
 ## 执行规则
 
-- 新 Command 的项目互斥只依据待领取、有效执行租约、真实运行步骤或待自动重试。已停止的历史未知写保留原 Run、Step、receipt、lease、Evidence 和事项，不作为整个项目的永久互斥锁。原 Run 不会被重新领取或伪装为成功。
-- 进入写步骤时，仍按回执保存的原始资源范围检查冲突。有可靠原范围的未知写继续阻止实际冲突；不同范围可以执行。
+- 新 Command 的项目互斥只依据新近接受的待领取请求与有效执行租约。取消、失败、历史 UNKNOWN 和没有有效租约的旧步骤标记不阻止新请求；新请求不恢复旧 Run，历史写入事实仍供查看和人工核验。
+- 自动化资源忙、登录失败、数据错误和可重试错误均结束本次 Run 为 `FAILED_TERMINAL`，保留具体原因，不进入资源等待或自动业务重试。取消仍为取消；已开始写入但结果未知的步骤保留 `WRITE_OUTCOME_UNKNOWN`，不得当作未写入。
+- Runner 启动和从发布 hold 恢复时记录 UTC 接受边界。边界之前的旧自动化请求、旧 `RESOURCE_WAIT` 与 `FAILED_RETRYABLE` 在领取后直接结束，不调用业务；尚待明确人工审批的请求继续遵守原审批合同。此规则没有人为设置的分钟数期限。普通非自动化流程的恢复合同保持原样。
+- 启动、重新登录和新扫描预览不再自动核验或补跑历史自动化。进入写步骤时，仅在原 Command/Run/Step 关联闭合且原 Run worker 或原 generation 仍持有未过期活动租约时，才按回执原范围保护正在执行的写入。
 - 混合任务按已经审核的具体写动作申请范围：飞书按原物理表、已审核的融辉扫描按实际写账号、本地投影按实际共享表互斥。只用于读取的账号不再被当作这些动作的全账号写目标；范围不明的通用写仍保守互斥。整个步骤持有各写动作的范围并集，单条回执记录对应动作的范围。
 - 可选资源只有在签名角色唯一声明 `required=false`、绑定键完全不存在且没有账号角色歧义时，才从已审核飞书写动作的范围中排除；Broker 仍在任何写入开始前拒绝调用未绑定角色。空值、损坏绑定、必填资源和未知／动态动作继续保守处理，不根据插件业务配置猜测是否会调用。
 - 旧混合任务可能把整份执行范围复制给一笔飞书写入。只有精确原 lease 的完整性摘要、回执角色／绑定摘要唯一匹配的原绑定、原资源键和唯一原物理表共同证明该笔写入目标时，读取冲突范围才缩至该物理表，并保留针对通用账号写的关联标记。额外绑定只有在原签名描述中声明为入口路由、且任何 Broker 操作均不能调用时才可排除；额外业务资源仍保守处理，不能把另一业务表的物理范围归到本回执。缺少任一证明或存在多候选／多物理目标时仍保留原范围；不使用当前配置补造历史目标，不修改 UNKNOWN、原始键、回执或 Run。
 - `042` 只标记迁移 `041` 引入原始范围日志前已停止、原始范围为 SQL NULL 或空数组、且没有有效执行租约的未知回执。固定边界取已有 `schema_migrations[041].applied_at`，与 Run/回执创建时间同属数据库本地时标，不按“过了多久”或当前会话时区动态豁免；执行租约仍按 UTC 判断。`legacy_scope_quarantined_at` 表示历史范围缺失待核验，不表示写入成功、未发生或可以重放。运行时写入入口不能设置该标记。
-- 新的缺范围回执、损坏范围和仍在执行的记录继续明确报错。已标记回执若后来补回有效原范围，会重新进入冲突检查。回执按稳定主键分页读取，历史数量增加不会触发全局数量上限错误。
-- Runner 重新领取中断任务后，在重新建立上下文或等待审批前闭合中断的 read/compute 步骤；写步骤继续走原有未知写核验。有效的其他 Worker 领取不会被覆盖。
+- 有效执行租约上的缺失、损坏范围仍明确报错；停止历史无论有无原范围都不会生成新任务锁。回执按稳定主键分页读取，历史数量增加不会触发全局数量上限错误。
+- 普通非自动化 Runner 继续恢复中断的 read/compute 步骤；自动化旧请求只结束未完成步骤，不调用原业务或写回执恢复器。有效的其他 Worker 领取不会被覆盖。
 
 ## 人工查看与核验
 
@@ -31,7 +33,7 @@
 
 现有 `GET /control-plane/work-items/{work_item_id}` 的 `unknown_write_recoveries[].write_attempts` 提供该 lease 的只读回执诊断：精确回执 ID、已记录的操作与 action、结果状态、记录数量和创建／更新时间，以及原始范围的类别与缺失、损坏、历史隔离标记。`scope_derivation_reason` 与 `derived_scope_key_kinds` 复用 Runner 的同一证明函数，只输出范围计算原因码和类别。创建／更新时间不是写后验证时间；没有保存的字段不推断补齐。查询必须同时匹配该事项已关联的 lease、项目、代际与 Run，每个事项最多返回 1000 条回执，超过上限明确失败。
 
-该诊断不返回账号、资源键原值、定位器、请求参数或业务行，也不改动回执、锁或任务状态。`RESOURCE_WAIT` 的 `error_summary` 能区分通道占用与未知写冲突；回执诊断用于查明具体操作，不能只凭插件名或某条 lease 的历史隔离标记断言其是否阻塞当前任务。页面中的“检查已保存证据”仍沿用上述证明规则。
+该诊断不返回账号、资源键原值、定位器、请求参数或业务行，也不改动回执、锁或任务状态。自动化 `EXECUTION_RESOURCE_BUSY` 保留通道或实际写冲突的原因；旧 `RESOURCE_WAIT` 仅是历史记录。回执诊断不能只凭插件名或历史隔离标记断言当前冲突。页面中的“检查已保存证据”仍沿用上述证明规则。
 
 已归档代际的最后一条未知写闭合后，仅其 `BLOCKED/WRITE_OUTCOME_UNKNOWN` 状态进入既有 DRAINING 清理流程，不恢复旧项目路由。其他独立错误保持原样。未知证据仍须保留，卸载和数据保留规则不因此绕过。
 
@@ -43,6 +45,7 @@
 PYTHONPATH=agent:. pytest -q \
   tests/test_legacy_unknown_scope_migration_mysql.py \
   tests/test_historical_receipt_execution_scopes.py \
+  tests/test_automation_fail_fast_mysql.py \
   tests/test_workflow_runner_read_recovery_mysql.py \
   tests/test_manual_unknown_write_recovery.py \
   tests/test_automation_write_recovery_views.py \
@@ -54,6 +57,6 @@ PYTHONPATH=agent:. pytest -q \
 
 ## 发布与回退
 
-按 [ECS 发布流程](../agent/deploy/publish_to_ecs.md) 使用通过 CI 的最终 Git SHA 和对应签名包索引，执行 shared/migration 更新。先保存生产一致性备份，在隔离副本上验证 `042` 幂等、原回执/Run/Step 不变和范围门禁；副本只用于备份与演练，不上传替换生产数据库。
+按 [ECS 发布流程](../agent/deploy/publish_to_ecs.md) 使用通过 CI 的最终 Git SHA 和对应签名包索引，执行核心更新。本次失败终结修复不新增或改写迁移；既有 `042` 保持原字节。先保存生产一致性备份，隔离验证通过后发布；副本只用于备份与演练，不上传替换生产数据库。
 
 `042` 是增加可空列和标记历史记录，回退代码时保留该列、迁移记录和所有原证据。旧应用可以忽略新增列，但会恢复旧的全局阻塞行为。不得删除未知回执、修改成功状态、删除迁移校验和或用旧数据库覆盖发布后业务。保留标准发布器生成的本次精确回滚材料，按其中恢复流程排空运行后回退代码与服务。

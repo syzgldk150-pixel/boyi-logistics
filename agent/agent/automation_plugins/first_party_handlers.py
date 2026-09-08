@@ -100,6 +100,7 @@ IdentityReadPort = Callable[[str], Sequence[str]]
 SnapshotCleanupPort = Callable[[int], Mapping[str, Any]]
 ResourceRecordReplacePort = Callable[[str, str, list[dict[str, Any]], str], Mapping[str, Any]]
 ResourceArchivePort = Callable[[str, list[dict[str, Any]], str], Mapping[str, Any]]
+ArrivalReportReadPort = Callable[[str, str, str], Mapping[str, Any]]
 YundaDispatchPagePort = Callable[[Mapping[str, Any], str, str, int, int], Mapping[str, Any]]
 YundaSendPagePort = Callable[[Mapping[str, Any], str, int, int], Mapping[str, Any]]
 YundaRecordReadPort = Callable[[Mapping[str, Any], str], Mapping[str, Any]]
@@ -147,6 +148,7 @@ class FirstPartyCoreHandlerPorts:
     replace_waybill_snapshot: ProjectionReplacePort | None = None
     replace_arrival_forecast_snapshot: ProjectionReplacePort | None = None
     replace_arrive_sheet_resource: ResourceReplacePort | None = None
+    read_arrival_report_publication: ArrivalReportReadPort | None = None
     replace_sheet_resource: ResourceReplacePort | None = None
     replace_bitable_resource: ResourceReplacePort | None = None
     scan_read_page: PageReaderPort | None = None
@@ -1789,6 +1791,25 @@ class _FirstPartyCoreHandlers:
             tool_names={_ARRIVE_TOOL},
         )
 
+    def read_arrival_report_publication(
+        self, context: CoreBrokerInvocationContext, arguments: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        if (context.tool_name != _ARRIVE_TOOL
+                or context.role not in {"arrive_primary_sheet", "arrive_secondary_sheet"}
+                or not context.resource_id):
+            raise _error("arrival report reader context is invalid", "BROKER_CONTEXT_INVALID")
+        if self._ports.read_arrival_report_publication is None:
+            raise _error("arrival report reader is unavailable", "BROKER_ACTION_UNAVAILABLE")
+        target_date = _business_date(_strict_arguments(arguments, {"target_date"}).get("target_date"))
+        account_id = _one_role_account(context, "account_id")
+        raw = self._ports.read_arrival_report_publication(account_id, context.resource_id, target_date)
+        if (not isinstance(raw, Mapping) or raw.get("target_date") != target_date
+                or type(raw.get("statistics_published")) is not bool
+                or type(raw.get("record_count")) is not int or raw["record_count"] < 0):
+            raise _error("arrival report ownership is invalid", "BROKER_SOURCE_INVALID")
+        proof = {key: raw[key] for key in ("target_date", "statistics_published", "record_count")}
+        return {**proof, "evidence_ref": self._codec.evidence(context, "arrival-report-publication-read", proof)}
+
     def waybill_detail(
         self,
         context: CoreBrokerInvocationContext,
@@ -2766,6 +2787,8 @@ class _FirstPartyCoreHandlers:
             handlers[("projection.invoke", "arrival.forecast_snapshot.replace")] = (
                 self.replace_arrival_forecast_snapshot
             )
+        if self._ports.read_arrival_report_publication is not None:
+            handlers[("projection.invoke", "arrival.report.publication.read")] = self.read_arrival_report_publication
         if self._ports.replace_scan_snapshot is not None:
             handlers[("projection.invoke", "scan.snapshot.replace")] = self.replace_scan_snapshot
         if self._ports.read_scan_snapshot is not None:

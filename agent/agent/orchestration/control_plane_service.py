@@ -776,6 +776,11 @@ class ControlPlaneService:
             if str(source.get("status") or "") != RunStatus.BLOCKED_LOGIN.value:
                 continue
             with self._repository.unit_of_work() as uow:
+                command = uow.commands.get(str(source.get("command_id") or ""))
+                if command is None or str(command.get("automation_id") or "").strip():
+                    # Login repairs the account for the next explicit execution.
+                    # It must not revive queued automation business writes.
+                    continue
                 run = uow.runs.transition(
                     str(source["run_id"]),
                     expected_version=int(source["version"]),
