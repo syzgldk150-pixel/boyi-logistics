@@ -5,7 +5,7 @@ from datetime import datetime
 import json
 import re
 
-from shared.execution_resource_journal import closed_execution_keys
+from shared.execution_resource_journal import closed_execution_keys, historical_receipt_execution_scope
 
 
 _SCOPE_KEY_KINDS = frozenset({
@@ -15,17 +15,32 @@ _SCOPE_KEY_KINDS = frozenset({
 _MAX_WRITE_ATTEMPTS = 1000
 
 
-def _scope_summary(raw) -> dict:
+def _scope_summary(row: Mapping) -> dict:
+    raw = row.get("execution_resource_keys_json")
+    result = {"original_scope_key_kinds": [], "scope_missing": False, "scope_malformed": False,
+              "scope_derivation_reason": "ORIGINAL_SCOPE_MALFORMED", "derived_scope_key_kinds": []}
     try:
         value = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
         if value is None or value == []:
-            return {"original_scope_key_kinds": [], "scope_missing": True, "scope_malformed": False}
+            result.update(scope_missing=True, scope_derivation_reason=(
+                "LEGACY_SCOPE_QUARANTINED" if row.get("legacy_scope_quarantined_at") is not None
+                else "ORIGINAL_SCOPE_MISSING"))
+            return result
         keys = closed_execution_keys(value)
         unknown = any(key[0] not in _SCOPE_KEY_KINDS for key in keys)
         kinds = sorted({key[0] if key[0] in _SCOPE_KEY_KINDS else "unknown" for key in keys})
-        return {"original_scope_key_kinds": kinds, "scope_missing": False, "scope_malformed": unknown}
+        result.update(original_scope_key_kinds=kinds, scope_malformed=unknown)
+        if row.get("outcome") != "WRITE_OUTCOME_UNKNOWN":
+            result["scope_derivation_reason"] = "RECEIPT_NOT_UNKNOWN"
+            return result
+        derived, reason = historical_receipt_execution_scope(row, keys)
+        result.update(scope_derivation_reason=reason, derived_scope_key_kinds=sorted({
+            key[0] if key[0] in _SCOPE_KEY_KINDS else "unknown" for key in derived
+        }))
+        return result
     except (ValueError, TypeError):
-        return {"original_scope_key_kinds": [], "scope_missing": False, "scope_malformed": True}
+        result["scope_malformed"] = True
+        return result
 
 
 def _write_attempt(row: Mapping) -> dict:
@@ -47,7 +62,7 @@ def _write_attempt(row: Mapping) -> dict:
         # Receipt times retain their stored database timebase. In particular,
         # updated_at is not a verified-at timestamp and must not be renamed.
         result[name] = value.isoformat() if isinstance(value, datetime) else None
-    result.update(_scope_summary(row.get("execution_resource_keys_json")))
+    result.update(_scope_summary(row))
     result["scope_quarantined"] = row.get("legacy_scope_quarantined_at") is not None
     return result
 
@@ -88,7 +103,9 @@ def list_work_item_unknown_writes(repository, work_item_id: str) -> list[dict]:
                       a.operation, a.action, a.outcome, a.created_at, a.updated_at,
                       CASE WHEN JSON_TYPE(JSON_EXTRACT(a.target_ref_json, '$.record_count'))='INTEGER'
                            THEN JSON_EXTRACT(a.target_ref_json, '$.record_count') END AS record_count,
-                      a.execution_resource_keys_json, a.legacy_scope_quarantined_at
+                      a.execution_resource_keys_json, a.legacy_scope_quarantined_at,
+                      a.target_ref_json, a.target_ref_sha256,
+                      l.runtime_metadata_json, l.runtime_metadata_sha256
                FROM automation_write_attempt_receipts a
                JOIN automation_project_generation_leases l
                  ON l.lease_id=a.lease_id AND l.automation_id=a.automation_id

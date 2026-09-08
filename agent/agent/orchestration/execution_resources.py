@@ -67,6 +67,25 @@ def _saved_physical_key(resource_id: str, record: Mapping[str, Any]) -> LockKey 
     return ("physical-write", str(kind), parent, child)
 
 
+def _unbound_optional_resource_role(runtime: Mapping[str, Any], role: str) -> bool:
+    """Prove this signed role cannot pass Broker.consume's binding check.
+
+    An absent optional role is different from an invalid bound resource. Never
+    use plugin arguments/configuration to predict that a callable write will
+    be skipped, and never infer optionality from a missing role declaration.
+    """
+    declarations = runtime.get("resource_roles")
+    if not isinstance(declarations, (list, tuple)):
+        return False
+    matches = [item for item in declarations if isinstance(item, Mapping) and item.get("role") == role]
+    if len(matches) != 1 or matches[0].get("required") is not False:
+        return False
+    account_roles = runtime.get("account_roles", ())
+    if not isinstance(account_roles, (list, tuple)):
+        return False
+    return not any(isinstance(item, Mapping) and item.get("role") == role for item in account_roles)
+
+
 def canonical_resource_write_locks(
     capability: Mapping[str, Any], account_ids: set[str],
     saved_resource_provider: Callable[[str], Mapping[str, Any] | None] | None,
@@ -108,6 +127,11 @@ def canonical_resource_write_locks(
         for role in roles:
             scoped: set[LockKey] = set()
             if op in {"network.request", "http.request"} and action in FEISHU_CHILD_WRITE_ACTIONS | FEISHU_PARENT_WRITE_ACTIONS:
+                if (role not in bindings and role not in account_bindings
+                        and _unbound_optional_resource_role(runtime, role)):
+                    # No action scope is issued: Broker rejects this missing
+                    # binding before an adapter or write marker can run.
+                    continue
                 resource_id = bindings.get(role)
                 if isinstance(resource_id, str) and resource_id and saved_resource_provider is not None:
                     if resource_id not in saved:

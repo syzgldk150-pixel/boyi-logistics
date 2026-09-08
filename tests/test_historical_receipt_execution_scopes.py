@@ -4,13 +4,14 @@ import asyncio
 import hashlib
 import json
 import os
+from uuid import uuid4
 
 import pytest
 
 from agent.orchestration.execution_resources import execution_keys_conflict
 from shared.orchestration_repository_support import _json_hash
 from shared.execution_resource_journal import (
-    closed_execution_keys, historical_receipt_execution_keys, unknown_execution_keys,
+    closed_execution_keys, historical_receipt_execution_keys, historical_receipt_execution_scope, unknown_execution_keys,
 )
 from tests.test_legacy_unknown_scope_migration_mysql import database as database
 from tests.test_legacy_unknown_scope_migration_mysql import _projection_runner
@@ -48,6 +49,7 @@ def test_single_original_resource_proof_preserves_physical_and_generic_conflicts
     row, keys, physical = _case()
     before = deepcopy(row)
     scoped = historical_receipt_execution_keys(row, keys)
+    assert historical_receipt_execution_scope(row, keys) == (scoped, "ORIGINAL_RESOURCE_SCOPE_DERIVED")
     assert scoped == tuple(sorted((physical, ("account-resource", "ronghui-read-account", *physical[1:]))))
     assert row == before
     assert physical in scoped
@@ -62,7 +64,7 @@ def test_single_original_resource_proof_preserves_physical_and_generic_conflicts
 
 
 @pytest.mark.parametrize("change", [
-    "unknown_action", "unknown_operation", "missing_lease", "multiple_bindings",
+    "unknown_action", "unknown_operation", "missing_lease", "multiple_resource_keys",
     "wrong_role", "wrong_binding", "wrong_project", "wrong_locator_action",
     "missing_physical", "multiple_physical", "wrong_kind", "invalid_physical",
     "missing_resource_key", "wrong_resource_key", "malformed_bindings", "malformed_target",
@@ -76,8 +78,9 @@ def test_incomplete_original_proof_cannot_shrink_scope(change):
         row["operation"] = "browser.invoke"
     elif change == "missing_lease":
         row["runtime_metadata_json"]["resource_bindings"] = None
-    elif change == "multiple_bindings":
-        row["runtime_metadata_json"]["resource_bindings"]["second"] = "another-resource"
+    elif change == "multiple_resource_keys":
+        key = next(key for key in keys if key[0] == "resource-write")
+        keys = (*keys, (key[0], "another-account", *key[2:]))
     elif change in {"wrong_role", "wrong_binding", "wrong_project", "wrong_locator_action"}:
         field = {"wrong_role": "role_sha256", "wrong_binding": "binding_sha256",
                  "wrong_project": "automation_id", "wrong_locator_action": "action"}[change]
@@ -105,6 +108,71 @@ def test_incomplete_original_proof_cannot_shrink_scope(change):
     if change == "target_integrity":
         row["target_ref_sha256"] = _hash("mismatch")
     assert historical_receipt_execution_keys(row, keys) == keys
+    reasons = {
+        "unknown_action": "ACTION_SCOPE_UNREVIEWED", "unknown_operation": "ACTION_SCOPE_UNREVIEWED",
+        "missing_lease": "ORIGINAL_BINDINGS_UNAVAILABLE", "malformed_bindings": "ORIGINAL_BINDINGS_UNAVAILABLE",
+        "malformed_target": "TARGET_LOCATOR_UNAVAILABLE", "metadata_integrity": "LEASE_METADATA_DIGEST_MISMATCH",
+        "target_integrity": "TARGET_LOCATOR_DIGEST_MISMATCH", "wrong_role": "TARGET_BINDING_NOT_UNIQUE",
+        "wrong_binding": "TARGET_BINDING_NOT_UNIQUE", "wrong_project": "TARGET_IDENTITY_MISMATCH",
+        "wrong_locator_action": "TARGET_IDENTITY_MISMATCH", "missing_resource_key": "ORIGINAL_RESOURCE_KEY_NOT_UNIQUE",
+        "wrong_resource_key": "ORIGINAL_RESOURCE_KEY_NOT_UNIQUE", "multiple_resource_keys": "ORIGINAL_RESOURCE_KEY_NOT_UNIQUE",
+        "missing_physical": "ORIGINAL_PHYSICAL_SCOPE_NOT_SINGLE", "multiple_physical": "ORIGINAL_PHYSICAL_SCOPE_NOT_SINGLE",
+        "wrong_kind": "ORIGINAL_PHYSICAL_SCOPE_INVALID", "invalid_physical": "ORIGINAL_PHYSICAL_SCOPE_INVALID",
+    }
+    assert historical_receipt_execution_scope(row, keys) == (keys, reasons[change])
+
+
+def test_unrelated_original_bindings_do_not_make_this_receipt_a_multi_target_write():
+    row, keys, physical = _case()
+    row["runtime_metadata_json"]["resource_bindings"].update(
+        webhook_route="original-webhook-route", feishu_route="original-feishu-route", second="another-resource")
+    row["runtime_metadata_sha256"] = _json_hash(row["runtime_metadata_json"])
+    scoped, reason = historical_receipt_execution_scope(row, keys)
+    assert reason == "ORIGINAL_RESOURCE_SCOPE_DERIVED" and physical in scoped
+    assert not any(key[0] == "account-write" for key in scoped)
+    second_physical = (*physical[:3], _hash("another-table"))
+    assert historical_receipt_execution_keys(row, (*keys, second_physical)) == (*keys, second_physical)
+
+
+def _production_case():
+    """Use the actual release compiler, Broker locator and repository JSON format."""
+    from agent.automation_plugins.broker import _extract_write_target_ref
+    from shared.orchestration_repository_support import _json_param
+    from tests.test_automation_plugin_release_generation_stability import _build_release_world
+
+    world = _build_release_world()
+    snapshot = world.snapshots["delivery_status"]
+    metadata = snapshot.execution_metadata
+    assert set(metadata["resource_bindings"]) == {"webhook_route", "delivery_status_bitable"}
+    role = "delivery_status_bitable"
+    resource = metadata["resource_bindings"][role]
+    account = metadata["account_bindings"]["account_id"]
+    assert isinstance(account, str)
+    target, target_hash = _extract_write_target_ref(
+        automation_id=snapshot.automation_id, plugin_id=snapshot.plugin_id,
+        operation="network.request", action="feishu.bitable.write_records", role=role,
+        binding=resource, request_id=str(uuid4()), arguments={"records": []},
+    )
+    physical = ("physical-write", "feishu_bitable", _hash("original-base"), _hash("original-table"))
+    keys = closed_execution_keys([
+        ("account-write", account), physical,
+        ("resource-write", account, snapshot.plugin_id, role, resource, "INTERNAL_PROJECTION_WRITE"),
+        ("resource-write", account, snapshot.plugin_id, "webhook_route",
+         metadata["resource_bindings"]["webhook_route"], "INTERNAL_PROJECTION_WRITE"),
+    ])
+    row = {"automation_id": snapshot.automation_id, "operation": target["operation"], "action": target["action"],
+           "runtime_metadata_json": _json_param(metadata, {}), "runtime_metadata_sha256": _json_hash(metadata),
+           "target_ref_json": _json_param(target, {}), "target_ref_sha256": target_hash}
+    return row, keys, physical
+
+
+def test_real_production_snapshot_route_binding_and_broker_locator_survive_storage_serialization():
+    row, keys, physical = _production_case()
+    before = deepcopy(row)
+    result, reason = historical_receipt_execution_scope(row, keys)
+    assert reason == "ORIGINAL_RESOURCE_SCOPE_DERIVED" and physical in result
+    assert {key[0] for key in result} == {"physical-write", "account-resource"}
+    assert row == before
 
 
 def test_parent_write_requires_captured_parent_scope():

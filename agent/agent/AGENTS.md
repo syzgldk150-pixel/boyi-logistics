@@ -15,7 +15,7 @@
   - 澄清事件只允许闭合 v1 字段 `note/account_id/argument_updates` 并绑定原 `command_id`；纯文本只作审计 note。Planner 合并显式覆盖后仍要通过 input_schema、权威账号、策略和 plan hash 校验。
   - 新 Command 使用依赖切片 Schema v2 Plan Hash；已等待审批的历史 Schema v1 Run 保持 v1 直到终态。生产组合默认四个有界 Worker、三个浏览器名额；共享浏览器会话仍按账号串行。资源不就绪时使用原队列 `next_attempt_at` 归还 claim，并记录 `RESOURCE_WAIT` 和首次等待事件，不扣业务重试；Step 真正准入才计业务开始。每轮领取使用独立持久 owner，心跳覆盖准备／执行／必要落库，控制心跳使用独立有界线程容量；执行锁保留到结果核验及关键结果落库完成。
   - `orchestration/execution_resources.py` 只从 `workflow_resource_store.get_saved_workflow_resource` 的宿主完整性校验记录归一已审核 Sheet/Bitable 写范围。已知同表别名跨插件／角色／凭据互斥，缺少子表 ID 或创建归档表时持有整个父资源；未知动作、URL-only、未知 locator 保留同账号保守锁，并与该账号已知资源双向冲突。无权威物理身份的跨凭据范围及多个独立 Runner 进程之间的资源协调仍是明确限制，不可描述为已覆盖。
-  - 混合步骤按已审核 Broker 动作持有写范围并集：扫描提交只保护实际写账号，本地投影按真实共享表跨账号互斥，飞书保留物理范围；只读账号角色不扩大成全账号写锁。Runner 冻结的逐动作范围沿执行上下文进入 Broker 收据，无法证明的动作保留原保守范围。历史收据只读投影和明确限制见 `../../docs/historical_write_recovery.md`。
+  - 混合步骤按已审核 Broker 动作持有写范围并集：扫描提交只保护实际写账号，本地投影按真实共享表跨账号互斥，飞书保留物理范围；只读账号角色不扩大成全账号写锁。签名唯一声明可选、绑定键完全缺失且无账号歧义的资源角色可排除，Broker 仍在写前拒绝该角色。Runner 冻结的逐动作范围沿执行上下文进入 Broker 收据，无法证明的动作保留原保守范围。历史收据只读投影和明确限制见 `../../docs/historical_write_recovery.md`。
   - `orchestration/signed_preview_maintenance.py` 核验固定扫描／自提／分批实例的 V1 签名 ZIP 维护兼容：版本与 payload 可变，Host 工具、调用、治理、Broker 和角色契约必须与宿主审核来源一致，且 committed 快照身份及摘要一致；不把 `ed25519_upload` 改写为首发信任。内部配置拒写与预览只读裁剪继续由 `automation_plugins/code_owned_fields.py` 统一执行；财务／客服新签名实例的内部字段不可编辑，也不因此获得启动补采或额外计划字段权限。
   - Session 登录使用按 profile 隔离、默认 120 秒的 staged 子进程；token/epoch 防止迟到提交，同 profile 登录中直接 `BLOCKED_LOGIN`。业务适配器不得先跑全系统鉴权，只打开保存态并以实际目标响应判断登录；完整 capability 矩阵仅供后台监控。
 - 改 HTTP API、健康检查、Webhook 入口：
