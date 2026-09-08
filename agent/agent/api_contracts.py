@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
 from shared.contracts import api_failure, api_success
-from shared.redaction import redact_text
+from shared.redaction import redact_sensitive, redact_text
 
 
 def validation_failure(exc: RequestValidationError) -> dict:
@@ -56,7 +56,20 @@ class EnvelopedRoute(APIRoute):
                     status_code=502,
                     content=api_failure("invalid_internal_response", "Internal route returned non-JSON data"),
                 )
-            if isinstance(payload, dict) and set(payload) >= {"ok", "data", "error"}:
+            if (
+                isinstance(payload, dict)
+                and payload.get("ok") is False
+                and not isinstance(payload.get("error"), dict)
+            ):
+                # Legacy TMS failures use a flat machine code and string error,
+                # including HTTP 200 auth failures with an empty data object.
+                code = payload.get("error_code") or (
+                    f"http_{response.status_code}" if response.status_code >= 400 else "internal_api_failed"
+                )
+                message = payload.get("error") or payload.get("message") or payload.get("detail") or "Internal request failed"
+                data = payload["data"] if "data" in payload else redact_sensitive(payload)
+                envelope = api_failure(str(code), redact_text(message), data=data)
+            elif isinstance(payload, dict) and set(payload) >= {"ok", "data", "error"}:
                 envelope = payload
             elif response.status_code >= 400:
                 message = "Internal request failed"

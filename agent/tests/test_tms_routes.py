@@ -1,12 +1,16 @@
 """Focused tests extracted from the former TMS runtime aggregate."""
 
 from _tms_runtime_test_support import *  # noqa: F403
+from agent.api_contracts import EnvelopedRoute
 from agent.execution_boundary import (
     EXECUTION_CAPABILITY_HEADER,
     issue_execution_capability,
     revoke_execution_capability,
 )
+from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime.scripts import ronghui_waybill_proxy, yunda_waybill_proxy
+from console.services.agent_api import AgentApiServiceMixin
+from fastapi.responses import JSONResponse
 
 
 class TMSRoutesTests(unittest.TestCase):
@@ -17,6 +21,103 @@ class TMSRoutesTests(unittest.TestCase):
         app.include_router(router)
         app.include_router(router, prefix="/internal/v1")
         self.client = TestClient(app)
+
+    def test_dispatch_auth_failure_reaches_console_with_code_and_redacted_reason(self):
+        """Exercise dispatcher -> versioned route -> real Console client parsing."""
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def verified_principal(request, call_next):
+            request.state.console_principal = {
+                "actor_id": "fixture-admin", "roles": ["super_admin"],
+            }
+            return await call_next(request)
+
+        app.include_router(router, prefix="/internal/v1")
+        client = TestClient(app)
+        console = AgentApiServiceMixin()
+        console.settings = types.SimpleNamespace(
+            agent_base_url="http://agent.test", agent_timeout_seconds=10,
+            agent_internal_api_token="fixture-internal-token",
+        )
+        responses = []
+
+        class TransportResponse:
+            def __init__(self, response):
+                self.status = response.status_code
+                self.body = response.content
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return self.body
+
+        def local_transport(request, **_kwargs):
+            response = client.post(request.full_url, content=request.data)
+            responses.append(response)
+            return TransportResponse(response)
+
+        with patch(
+            "agent.tms_runtime.dispatch.resolve_account_params",
+            side_effect=TMSAuthStateError("AUTH_REQUIRED", "请重新登录。 token=synthetic-private-value"),
+        ), patch(
+            "agent.tms_runtime.dispatch._load_callable",
+            side_effect=AssertionError("auth failure must not execute a TMS script"),
+        ) as load_callable, patch("console.services.agent_api.urlopen", side_effect=local_transport):
+            for provider, path in (("yunda", "/ky_inms/public/index.php/elecStock.html"),
+                                   ("ronghui", "/module/index")):
+                with self.subTest(provider=provider):
+                    result = console._agent_request(
+                        "POST", f"/internal/v1/tms/{provider}_waybill_proxy",
+                        payload={"source": "console", "params": {
+                            "method": "GET", "path": path,
+                            "proxy_prefix": f"/original/{provider}",
+                        }},
+                    )
+                    self.assertEqual(200, result["status"])
+                    self.assertFalse(result["ok"])
+                    self.assertEqual("AUTH_REQUIRED", result["error_code"])
+                    self.assertEqual("请重新登录。 token=[REDACTED]", result["error"])
+                    self.assertEqual({}, result["data"])
+                    self.assertNotIn("synthetic-private-value", responses[-1].text)
+                    self.assertEqual("AUTH_REQUIRED", responses[-1].json()["error"]["code"])
+            load_callable.assert_not_called()
+
+    def test_versioned_route_preserves_standard_envelopes_and_normalizes_flat_failures(self):
+        cases = (
+            (200, {"ok": True, "data": {"rows": []}, "error": None}),
+            (409, {"ok": False, "data": {"run_id": "fixture-run"},
+                   "error": {"code": "EXISTING_RUN", "message": "Already running"}}),
+            (200, {"ok": False, "error_code": "AUTH_REQUIRED", "message": "Login required"}),
+            (503, {"ok": False, "error_code": "SOURCE_UNAVAILABLE", "error": "Unavailable", "data": {}}),
+            (200, {"ok": False, "error_code": "AUTH_REQUIRED", "error": "Login required token=synthetic-private-value"}),
+        )
+        for status, payload in cases:
+            with self.subTest(status=status, payload=payload):
+                app = FastAPI()
+                app.router.route_class = EnvelopedRoute
+
+                @app.get("/internal/v1/fixture")
+                def endpoint():
+                    return JSONResponse(status_code=status, content=payload, headers={"X-Fixture": "retained"})
+
+                response = TestClient(app).get("/internal/v1/fixture")
+                self.assertEqual(status, response.status_code)
+                self.assertEqual("retained", response.headers["X-Fixture"])
+                if "error_code" not in payload:
+                    self.assertEqual(payload, response.json())
+                else:
+                    self.assertFalse(response.json()["ok"])
+                    self.assertEqual(payload["error_code"], response.json()["error"]["code"])
+                    expected_message = (payload.get("error") or payload["message"]).replace(
+                        "synthetic-private-value", "[REDACTED]",
+                    )
+                    self.assertEqual(expected_message, response.json()["error"]["message"])
+                    self.assertNotIn("synthetic-private-value", response.text)
 
     def test_legacy_yunda_entry_never_executes_even_if_capability_check_would_allow(self):
         targets = ("yunda_waybill_entry",)
