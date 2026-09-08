@@ -12,7 +12,7 @@ from html import escape, unescape
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
-from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
+from agent.tms_runtime.account_contracts import require_session_profile
 from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime.ronghui_user_context import decode_js_cookie_value, parse_ronghui_user_info_cookie
 from agent.tms_runtime.session_broker import BASE_ORIGIN as RONGHUI_ORIGIN
@@ -24,7 +24,6 @@ from shared.manual_entry_contracts import (
 
 
 ORDER_ENTRY_MENU_ID = "1622"
-RONGHUI_WAYBILL_SESSION_PROFILE = PRICE_SESSION_PROFILE
 RONGHUI_ENTRY_PATH = "/widget/home"
 RONGHUI_ENTRY_REFERER = f"{RONGHUI_ORIGIN}{RONGHUI_ENTRY_PATH}"
 MENU_PATH = "/menuTreeExtend/loadMenu"
@@ -441,7 +440,7 @@ def _single_query_value(pairs: list[tuple[str, str]], key: str) -> str:
     return ""
 
 
-def _cacheable_lookup_key(method: str, path: str, query: str) -> str:
+def _cacheable_lookup_key(method: str, path: str, query: str, *, session_profile: str) -> str:
     if method != "GET":
         return ""
     pairs = _query_pairs_without_cache_buster(query)
@@ -463,7 +462,7 @@ def _cacheable_lookup_key(method: str, path: str, query: str) -> str:
         return ""
 
     normalized_query = urlencode(sorted(pairs), doseq=True)
-    return f"{path}?{normalized_query}"
+    return json.dumps([session_profile, path, normalized_query], ensure_ascii=False)
 
 
 def _get_lookup_cache_entry(cache_key: str) -> dict[str, Any] | None:
@@ -1853,10 +1852,11 @@ def run_once(params: dict[str, Any]) -> dict[str, Any]:
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         return {"ok": False, "error_code": "INVALID_PROXY_METHOD", "error": f"Unsupported method: {method}"}
 
+    session_profile = require_session_profile(params)
     raw_path = _clean_text(params.get("path"))
     session = None
     if not raw_path or raw_path == "/":
-        session = get_session_broker(RONGHUI_WAYBILL_SESSION_PROFILE).build_requests_session(validate=False)
+        session = get_session_broker(session_profile).build_requests_session(validate=False)
     try:
         path, query, remote_url = _target_from_params(
             session,
@@ -1868,9 +1868,9 @@ def run_once(params: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         return {"ok": False, "error_code": "INVALID_PROXY_PATH", "error": str(exc)}
     if session is None:
-        session = get_session_broker(RONGHUI_WAYBILL_SESSION_PROFILE).build_requests_session(validate=False)
+        session = get_session_broker(session_profile).build_requests_session(validate=False)
     user_info_cookie = _client_user_info_cookie_from_session(session)
-    cache_key = _cacheable_lookup_key(method, path, query)
+    cache_key = _cacheable_lookup_key(method, path, query, session_profile=session_profile)
     cached_payload = _get_lookup_cache_entry(cache_key)
     if cached_payload is not None:
         cached_payload["remote_url"] = remote_url

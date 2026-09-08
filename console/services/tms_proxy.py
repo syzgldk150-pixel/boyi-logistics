@@ -773,7 +773,12 @@ class TmsProxyServiceMixin:
             self._send_json(
                 handler,
                 HTTPStatus.BAD_GATEWAY,
-                {"ok": False, "message": "韵达原页代理调用失败。", "error": result.get("error")},
+                {
+                    "ok": False,
+                    "message": "韵达原页代理调用失败。",
+                    "error": result.get("error"),
+                    "error_code": result.get("error_code"),
+                },
             )
             return
         proxy_payload = self._unwrap_yunda_live_proxy_payload(result)
@@ -878,7 +883,12 @@ class TmsProxyServiceMixin:
             self._send_json(
                 handler,
                 HTTPStatus.BAD_GATEWAY,
-                {"ok": False, "message": "融辉原页代理调用失败。", "error": result.get("error")},
+                {
+                    "ok": False,
+                    "message": "融辉原页代理调用失败。",
+                    "error": result.get("error"),
+                    "error_code": result.get("error_code"),
+                },
             )
             return
         agent_payload = result.get("data") if isinstance(result.get("data"), dict) else {}

@@ -61,6 +61,20 @@ class AgentInternalApiContractTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual("invalid_internal_contract", result["error_code"])
 
+    def test_auth_failure_envelope_retains_machine_code_and_reason_on_http_200(self):
+        envelope = {
+            "ok": False,
+            "data": {},
+            "error": {"code": "AUTH_REQUIRED", "message": "当前未登录或登录态已过期。"},
+        }
+        with patch("console.services.agent_api.urlopen", return_value=_Response(envelope)):
+            result = self._app()._agent_request("POST", "/internal/v1/tms/yunda_waybill_proxy", payload={})
+
+        self.assertEqual({
+            "ok": False, "status": 200, "data": {},
+            "error_code": "AUTH_REQUIRED", "error": "当前未登录或登录态已过期。",
+        }, result)
+
     def test_accepted_status_is_preserved_for_asynchronous_commands(self):
         envelope = {"ok": True, "data": {"run_id": "run-1"}, "error": None}
         with patch(
