@@ -1531,6 +1531,15 @@ def test_arrive_payload_runs_closed_production_primitives_through_write_verifier
 
     monkeypatch.setattr(arrival_adapter, "_replace_arrive_sheet", write_sheet)
 
+    from plugin_core_adapters import arrival_report
+    monkeypatch.setattr(arrival_report, "_read_publications", lambda _date: [])
+    from agent import workflow_resource_store
+    monkeypatch.setattr(workflow_resource_store, "get_saved_workflow_resource", lambda resource_id: {
+        "resource_kind": "feishu_sheet", "spreadsheet_token": "isolated-report",
+        "sheet_id": resource_id, "clear_range": f"{resource_id}!A2:S500",
+        "_meta": {"resource_key": resource_id},
+    })
+
     forecast_runs: list[dict[str, Any]] = []
 
     def save_forecast(business_date, records):

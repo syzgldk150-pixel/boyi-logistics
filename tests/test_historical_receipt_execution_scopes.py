@@ -243,9 +243,9 @@ def test_parent_write_requires_captured_parent_scope():
 
 
 @pytest.mark.skipif(os.getenv("RUN_MYSQL_INTEGRATION") != "1", reason="requires explicit isolated MySQL 8")
-def test_real_mysql_scope_projection_never_changes_receipt_or_resolves_old_run(database):
+def test_real_mysql_active_scope_projection_never_changes_receipt_or_resolves_old_run(database):
     row, keys, physical = _case()
-    old = database.seed(keys=keys)
+    old = database.seed(keys=keys, live_worker=True)
     row["automation_id"] = row["target_ref_json"]["automation_id"] = database.project_id
     row["target_ref_sha256"] = _json_hash(row["target_ref_json"])
     metadata = {"resource_bindings": row["runtime_metadata_json"]["resource_bindings"]}

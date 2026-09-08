@@ -201,6 +201,7 @@ def test_production_map_registers_only_available_closed_primitives() -> None:
         ("browser.invoke", "ronghui.problem.verify"),
         ("projection.invoke", "waybill.snapshot.replace"),
         ("projection.invoke", "arrival.forecast_snapshot.replace"),
+        ("projection.invoke", "arrival.report.publication.read"),
         ("projection.invoke", "scan.snapshot.replace"),
         ("projection.invoke", "scan.snapshot.read"),
         ("projection.invoke", "scan.snapshot.cleanup"),

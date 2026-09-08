@@ -18,6 +18,9 @@ def test_empty_source_reports_verified_snapshot_and_clears_all_sinks() -> None:
                 "next_cursor": None,
                 "evidence_ref": "broker-evidence:arrive-empty-source",
             }
+        if action == "arrival.report.publication.read":
+            return {"target_date": arguments["target_date"], "statistics_published": False,
+                    "record_count": 0, "evidence_ref": f"broker-evidence:report:{role}"}
         if action in {
             "waybill.snapshot.replace",
             "arrival.forecast_snapshot.replace",
@@ -41,6 +44,8 @@ def test_empty_source_reports_verified_snapshot_and_clears_all_sinks() -> None:
     assert result["data"]["evidence"]["execution_result"] == "no_data_cleared"
     assert calls == [
         "ronghui.arrive_list.read_page",
+        "arrival.report.publication.read",
+        "arrival.report.publication.read",
         "waybill.snapshot.replace",
         "feishu.sheet.replace",
         "feishu.sheet.replace",

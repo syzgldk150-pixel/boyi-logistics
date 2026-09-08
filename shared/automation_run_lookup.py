@@ -72,15 +72,7 @@ class AutomationRunLookupMixin:
                               'COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED'
                           ) AND (r.status IN (
                               'RECEIVED', 'CONTEXT_READY',
-                              'PLANNED', 'VALIDATED', 'FAILED_RETRYABLE'
-                          )
-                          OR EXISTS (
-                              SELECT 1
-                              FROM agent_run_steps AS blocking_step
-                              WHERE blocking_step.run_id=r.run_id
-                                AND blocking_step.status IN (
-                                    'RUNNING', 'VERIFYING'
-                                )
+                              'PLANNED', 'VALIDATED'
                           ))
                           OR (
                               NULLIF(TRIM(r.worker_id), '') IS NOT NULL

@@ -170,6 +170,7 @@ class WorkflowRunner:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._active: dict[str, tuple[str, asyncio.Task]] = {}
         self._release_hold = False
+        self._automation_acceptance_floor: datetime | None = None
         self._control_executor: ThreadPoolExecutor | None = None
 
     async def start(self, *, held_for_release: bool = False) -> None:
@@ -178,6 +179,7 @@ class WorkflowRunner:
         self._loop = asyncio.get_running_loop()
         self._control_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="run-control")
         self._release_hold = bool(held_for_release)
+        self._automation_acceptance_floor = datetime.now(timezone.utc)
         self._stop.clear()
         self._task = asyncio.create_task(
             self._run_pool(),
@@ -217,6 +219,8 @@ class WorkflowRunner:
 
         if self._task is None or self._task.done():
             raise RuntimeError("Workflow runner is not available for release activation")
+        if self._release_hold:
+            self._automation_acceptance_floor = datetime.now(timezone.utc)
         self._release_hold = False
         self.wake()
         return self.runtime_status()
@@ -371,6 +375,7 @@ class WorkflowRunner:
 
     async def _process_claimed_inner(self, claimed: Mapping[str, Any]) -> None:
         run_id = str(claimed["run_id"])
+        command: Command | None = None
         try:
             run = await asyncio.to_thread(self._repository.get_run, run_id)
             if run is None:
@@ -379,9 +384,16 @@ class WorkflowRunner:
             if run.get("cancel_requested_at"):
                 await self._cancel_claimed(run)
                 return
+            command = await asyncio.to_thread(self._load_command, str(run["command_id"]))
+            if self._automation_request_is_obsolete(run, command):
+                await asyncio.to_thread(self._finish_obsolete_automation_steps, run)
+                raise OrchestrationError(
+                    "AUTOMATION_REQUEST_INTERRUPTED",
+                    "服务已重启或该请求曾等待重试，旧自动化请求已结束，请重新执行。",
+                    details={"status": RunStatus.FAILED_TERMINAL.value},
+                )
             if str(run["status"]) in {"RUNNING", "VERIFYING", "WAITING_APPROVAL"}:
                 await asyncio.to_thread(self._recover_claimed_read_steps, run_id)
-            command = await asyncio.to_thread(self._load_command, str(run["command_id"]))
             status = RunStatus(str(run["status"]))
             recovered_running = status is RunStatus.RUNNING
 
@@ -650,7 +662,14 @@ class WorkflowRunner:
                 finished=str(run["status"]) in TERMINAL_STATUSES,
             )
         except _ResourceWait as exc:
-            await asyncio.to_thread(self._defer_resource_wait, run_id, exc.reason)
+            if command is not None and command.automation_invocation is not None:
+                await asyncio.to_thread(
+                    self._fail_claimed, run_id,
+                    OrchestrationError("EXECUTION_RESOURCE_BUSY", exc.reason,
+                        details={"status": RunStatus.FAILED_TERMINAL.value}),
+                )
+            else:
+                await asyncio.to_thread(self._defer_resource_wait, run_id, exc.reason)
         except OrchestrationError as exc:
             await asyncio.to_thread(self._fail_claimed, run_id, exc)
         except Exception as exc:
@@ -1599,6 +1618,8 @@ class WorkflowRunner:
             failure_status = outcome.run_status
             failure_code = outcome.code
             failure_message = outcome.message
+            if command.automation_invocation is not None and failure_status is not RunStatus.CANCELLED:
+                failure_status = RunStatus.FAILED_TERMINAL
             step_status = failure_status.value
             if step_status not in {
                 "BLOCKED_LOGIN",
@@ -1658,7 +1679,7 @@ class WorkflowRunner:
                     step_id=str(step_row["step_id"]),
                     payload={"step_key": step.step_key, "code": failure_code, "status": step_status},
                 )
-                if step_status == RunStatus.BLOCKED_LOGIN.value:
+                if outcome.run_status is RunStatus.BLOCKED_LOGIN:
                     failure_meta = (
                         raw_result.get("meta")
                         if isinstance(raw_result.get("meta"), Mapping)
@@ -1733,6 +1754,41 @@ class WorkflowRunner:
                 )
             uow.commit()
 
+    def _automation_request_is_obsolete(self, run: Mapping[str, Any], command: Command) -> bool:
+        """A new process never turns an old automatic request into fresh work."""
+        if command.automation_invocation is None:
+            return False
+        if run.get("error_code") == "RESOURCE_WAIT" or run.get("status") == RunStatus.FAILED_RETRYABLE.value:
+            return True
+        # An explicit pending approval is a user decision, not an execution
+        # failure. Preserve that contract and recheck authorization normally.
+        if run.get("status") == RunStatus.WAITING_APPROVAL.value:
+            return False
+        floor = self._automation_acceptance_floor
+        requested = command.requested_at
+        if requested.tzinfo is None:
+            requested = requested.replace(tzinfo=timezone.utc)
+        return floor is not None and requested < floor
+
+    def _finish_obsolete_automation_steps(self, run: Mapping[str, Any]) -> None:
+        """Close unfinished steps without invoking tools or rewriting receipts."""
+        with self._repository.unit_of_work() as uow:
+            current = uow.runs.get(str(run["run_id"]), for_update=True)
+            if current is None:
+                raise OrchestrationError("RUN_NOT_FOUND", "Interrupted run was not found")
+            self._require_claim(current)
+            for row in uow.steps.list_for_run(str(run["run_id"])):
+                status = str(row.get("status") or "")
+                if status in {"COMPLETED", "FAILED_TERMINAL", "CANCELLED"}:
+                    continue
+                started_write = status in {"RUNNING", "VERIFYING"} and str(row.get("operation_type") or "").lower() not in {"read", "compute"}
+                code = "WRITE_OUTCOME_UNKNOWN" if started_write or row.get("error_code") == "WRITE_OUTCOME_UNKNOWN" else "AUTOMATION_REQUEST_INTERRUPTED"
+                uow.steps.transition(str(row["step_id"]), expected_version=int(row["version"]),
+                    expected_statuses=(status,), status=RunStatus.FAILED_TERMINAL.value,
+                    error_code=code, error_summary="旧自动化请求已结束，不自动补跑；历史写入结果保持原记录。",
+                    finished_at=datetime.now(timezone.utc).replace(tzinfo=None))
+            uow.commit()
+
     def _persist_blocked_pilot_projection(
         self,
         *,
@@ -1746,12 +1802,13 @@ class WorkflowRunner:
     ) -> None:
         """Commit projection-failure evidence after the projection UoW rolled back."""
 
+        failed_status = RunStatus.FAILED_TERMINAL if command.automation_invocation is not None else RunStatus.BLOCKED_DATA
         with self._repository.unit_of_work() as uow:
             blocked_step = uow.steps.transition(
                 str(started_step["step_id"]),
                 expected_version=int(started_step["version"]),
                 expected_statuses=("RUNNING",),
-                status=RunStatus.BLOCKED_DATA.value,
+                status=failed_status.value,
                 result_summary=result.to_dict() if result is not None else dict(raw_result),
                 postcondition_status="PROJECTION_INCOMPLETE",
                 error_code=error.code,
@@ -1776,7 +1833,7 @@ class WorkflowRunner:
                 payload={
                     "step_key": step.step_key,
                     "code": error.code,
-                    "status": RunStatus.BLOCKED_DATA.value,
+                    "status": failed_status.value,
                 },
             )
             uow.commit()
@@ -2450,6 +2507,13 @@ class WorkflowRunner:
             current = uow.runs.get(run_id, for_update=True)
             if current is None:
                 raise OrchestrationError("RUN_NOT_FOUND", "Run was not found while releasing its lease")
+            command_row = uow.commands.get(str(current["command_id"]))
+            if command_row is not None and command_row.get("automation_id") and status in {
+                RunStatus.NEEDS_CLARIFICATION.value, RunStatus.BLOCKED_LOGIN.value,
+                RunStatus.BLOCKED_DATA.value, RunStatus.FAILED_RETRYABLE.value,
+            }:
+                status = RunStatus.FAILED_TERMINAL.value
+                finished = True
             if (
                 honor_cancel_request
                 and current.get("cancel_requested_at")
@@ -2805,7 +2869,7 @@ def _is_governing_unknown_write(status: str, error_code: str | None) -> bool:
     """
 
     return (
-        status == RunStatus.BLOCKED_DATA.value
+        status in {RunStatus.BLOCKED_DATA.value, RunStatus.FAILED_TERMINAL.value}
         and str(error_code or "").upper() == "WRITE_OUTCOME_UNKNOWN"
     )
 

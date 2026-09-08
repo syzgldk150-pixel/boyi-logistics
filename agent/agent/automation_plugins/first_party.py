@@ -72,6 +72,7 @@ _FIRST_PARTY_PACKAGE_VERSION_OVERRIDES: Mapping[str, str] = {
     "self_pickup_problem_upload": "1.0.26",
     "split_pending_problem_upload": "1.0.25",
     "sync_arrival_stats": "1.0.22",
+    "sync_arrive_list": "1.0.21",
     "sync_scan_codes": "1.0.23",
 }
 _RELEASE_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
@@ -469,6 +470,7 @@ _FIRST_PARTY_READ_BROKER_ACTIONS = frozenset(
         "feishu.bitable.list_views",
         "feishu.sheet.read_rows",
         "arrival.snapshot.completed_before",
+        "arrival.report.publication.read",
         "r7.checkin_log.read_daily_success",
         "scan.snapshot.read",
         "split_pending.snapshot.read",
@@ -601,6 +603,7 @@ _FIRST_PARTY_BROKER_ACTIONS: Mapping[str, tuple[FirstPartyBrokerAction, ...]] = 
     ),
     "sync_arrive_list": (
         _broker_action("browser.invoke", "ronghui.arrive_list.read_page", "account_id"),
+        _broker_action("projection.invoke", "arrival.report.publication.read", "account_id", "arrive_primary_sheet", "arrive_secondary_sheet"),
         _broker_action("projection.invoke", "waybill.snapshot.replace", "account_id"),
         _broker_action("projection.invoke", "arrival.forecast_snapshot.replace", "account_id"),
         _broker_action(

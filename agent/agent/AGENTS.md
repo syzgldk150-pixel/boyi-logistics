@@ -13,7 +13,7 @@
   - `main.py` 是唯一组合根；`orchestration/` 不得导入 `tools`、`feishu` 或 Console。持久化统一走 `../../shared/orchestration_repository.py` 的显式 Unit of Work。
   - 第三方/财务写步骤崩溃恢复时，没有精确 reconciliation 就让该 Run 进入 `BLOCKED_DATA/WRITE_OUTCOME_UNKNOWN`，不得重放原 Run；新的 Command 仍可建立全新的 Run 与 lease 重新执行项目。
   - 澄清事件只允许闭合 v1 字段 `note/account_id/argument_updates` 并绑定原 `command_id`；纯文本只作审计 note。Planner 合并显式覆盖后仍要通过 input_schema、权威账号、策略和 plan hash 校验。
-  - 新 Command 使用依赖切片 Schema v2 Plan Hash；已等待审批的历史 Schema v1 Run 保持 v1 直到终态。生产组合默认四个有界 Worker、三个浏览器名额；共享浏览器会话仍按账号串行。资源不就绪时使用原队列 `next_attempt_at` 归还 claim，并记录 `RESOURCE_WAIT` 和首次等待事件，不扣业务重试；Step 真正准入才计业务开始。每轮领取使用独立持久 owner，心跳覆盖准备／执行／必要落库，控制心跳使用独立有界线程容量；执行锁保留到结果核验及关键结果落库完成。
+  - 新 Command 使用依赖切片 Schema v2 Plan Hash；已等待审批的历史 Schema v1 Run 保持 v1 直到终态。生产组合默认四个有界 Worker、三个浏览器名额；共享浏览器会话仍按账号串行。自动化资源不就绪直接 `FAILED_TERMINAL/EXECUTION_RESOURCE_BUSY`，登录、数据与可重试错误同样终结，不自动补跑；普通非自动化仍可使用原资源等待队列；Step 真正准入才计业务开始。每轮领取使用独立持久 owner，心跳覆盖准备／执行／必要落库，控制心跳使用独立有界线程容量；执行锁保留到结果核验及关键结果落库完成。
   - `orchestration/execution_resources.py` 只从 `workflow_resource_store.get_saved_workflow_resource` 的宿主完整性校验记录归一已审核 Sheet/Bitable 写范围。已知同表别名跨插件／角色／凭据互斥，缺少子表 ID 或创建归档表时持有整个父资源；未知动作、URL-only、未知 locator 保留同账号保守锁，并与该账号已知资源双向冲突。无权威物理身份的跨凭据范围及多个独立 Runner 进程之间的资源协调仍是明确限制，不可描述为已覆盖。
   - 混合步骤按已审核 Broker 动作持有写范围并集：扫描提交只保护实际写账号，本地投影按真实共享表跨账号互斥，飞书保留物理范围；只读账号角色不扩大成全账号写锁。签名唯一声明可选、绑定键完全缺失且无账号歧义的资源角色可排除，Broker 仍在写前拒绝该角色。Runner 冻结的逐动作范围沿执行上下文进入 Broker 收据，无法证明的动作保留原保守范围。历史收据只读投影和明确限制见 `../../docs/historical_write_recovery.md`。
   - `orchestration/signed_preview_maintenance.py` 核验固定扫描／自提／分批实例的 V1 签名 ZIP 维护兼容：版本与 payload 可变，Host 工具、调用、治理、Broker 和角色契约必须与宿主审核来源一致，且 committed 快照身份及摘要一致；不把 `ed25519_upload` 改写为首发信任。内部配置拒写与预览只读裁剪继续由 `automation_plugins/code_owned_fields.py` 统一执行；财务／客服新签名实例的内部字段不可编辑，也不因此获得启动补采或额外计划字段权限。
@@ -40,8 +40,8 @@
 - 改 Service v2 动态飞书命令：
   - `automation_plugins/service_v2_projection.py` 只维护全局 exact command digest、整代冲突和 active generation；不得导入飞书或业务工具。DRAINING 旧代不接流量、不占命令，权威空 generation 必须原子清 active map。
   - `orchestration/automation_project_entrypoints.py` 的 `ServiceV2FeishuDispatcher` 只接 verified event/sender/chat，并只从 Registry 取得项目/代际/contribution；`automation_project_policy_service.py` 在 Command 接受事务内再次核对 exact `COMMITTED/READY` identity。service、operation、参数、账号和资源不得来自消息。
-  - `orchestration/automation_run_supersession.py` 是项目未结束 Run 的唯一安全取代分类与事务取消实现；待领取、有效租约、真实运行步骤和自动重试继续互斥；已停止未知写保留原记录，由写步骤原始资源范围决定真实冲突，不得伪造成功或重放旧 Run。固定历史范围兼容与事项只核验规则见 `../../docs/historical_write_recovery.md`。
-  - `sync_scan_codes` 未知写恢复读取原正式 lease、Command、已验签 preview 与原代际账号，在独立外部账本精确证明 APPLIED / NOT_APPLIED；041 保存原快照和原资源键，APPLIED 仅按原日期所有者 CAS 补齐投影与结果，NOT_APPLIED 按原重试契约处理，不确定范围继续阻断。历史紧凑上下文缺失时仍须验证同 Run 的完整 Plan hash 和原预览结果摘要，不得猜测。实现索引、保留/回滚与隔离验收边界见 `../../docs/scan_recovery_v32.md`。
+  - `orchestration/automation_run_supersession.py` 是项目未结束 Run 的唯一安全取代分类与事务取消实现；新近接受待领取请求和有效执行租约继续互斥；仅遗留步骤标记、失败、取消与停止 UNKNOWN 保留原记录且不阻新请求，不得伪造成功或重放旧 Run。固定历史范围兼容与事项只核验规则见 `../../docs/historical_write_recovery.md`。
+  - `sync_scan_codes` 未知写恢复读取原正式 lease、Command、已验签 preview 与原代际账号，在独立外部账本精确证明 APPLIED / NOT_APPLIED；041 保存原快照和原资源键，APPLIED 仅按原日期所有者 CAS 补齐投影与结果，显式人工核验不唤醒原 Run；停止历史的不确定结果保留 UNKNOWN，不阻止新请求。历史紧凑上下文缺失时仍须验证同 Run 的完整 Plan hash 和原预览结果摘要，不得猜测。实现索引、保留/回滚与隔离验收边界见 `../../docs/scan_recovery_v32.md`。
   - `feishu_command_contract.py` 是宿主无条件取消、扫描确认和审批绑定文本的纯解析单点；`direct_tool_router.py` 复用它和登录/固定 Action v1 parser，并通过组合根注入的纯判定器阻止动态 contribution 安装同文案。动态未知才可继续既有 Agent/LLM；匹配后身份缺失必须停止，不得回退。
 - 改固定 Harness Session、只读 Tool Catalog 或受限 sidecar：
   - `harness/` 只放无环境、数据库、网络、文件、TMS 和飞书依赖的领域模型、内存 Session、Catalog、协议与 fail-closed launcher；`harness_application.py` 绑定真实签名 MySQL 管理员、可信项目调用 adapter 和组合根注入的只读处理器；`harness_api.py` 只承载闭合内部 HTTP 请求、响应投影和错误映射。

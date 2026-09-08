@@ -491,10 +491,8 @@ class _Runs:
                     "CONTEXT_READY",
                     "PLANNED",
                     "VALIDATED",
-                    "FAILED_RETRYABLE",
                 }
                 or live_run_lease
-                or bool(facts.get("has_inflight_step"))
                 or bool(facts.get("has_live_generation_lease"))
             )
 
