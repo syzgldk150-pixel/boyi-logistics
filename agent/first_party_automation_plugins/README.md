@@ -2,7 +2,7 @@
 module: automation-plugin-platform
 type: source-guide
 status: active
-updated: 2026-08-30
+updated: 2026-09-08
 ---
 
 # First-party automation plugin sources and digest lock
@@ -23,6 +23,16 @@ account selection remain control-plane data. A package declares account roles,
 while each installed automation instance binds those roles to accounts from the
 system business-account pool. The same package can therefore back multiple
 independent instances without receiving account identifiers in plugin JSON.
+
+`sync_arrive_list` 1.0.21 reads the closed `arrival.report.publication.read`
+primitive before any write. A same-day statistics publication owns its exact
+shared Sheet; the list still replaces its current MySQL list and forecast, but
+does not clear that statistical report. The host reader joins the completed
+Run, verified Step, original generation and verified Sheet/final snapshot
+receipts, then checks the current Sheet header, row count and quantities. The
+source account and physical Sheet must match. A new statistics run repairs an
+earlier damaged/rebound publication; missing proof never reconstructs old rows.
+This new read primitive requires a core update together with the list plugin.
 
 `digests.json` pins the canonical manifest and deterministic package archive
 hashes. `MIGRATION_MATRIX.md` records which extracted actions have complete,

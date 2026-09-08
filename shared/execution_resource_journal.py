@@ -141,11 +141,13 @@ def historical_receipt_execution_keys(row, keys):
 
 
 def unknown_execution_keys(repository):
-    """Return retained exact scopes, excluding explicit migration quarantine.
+    """Protect exact scopes only while the originating execution is live.
 
-    The migration marker does not settle a receipt or make it replayable. It
-    prevents legacy, scope-less history from inventing a global resource lock.
-    Missing/malformed scopes without that marker still fail explicitly.
+    An unresolved receipt is audit history, not a perpetual execution lease.
+    New automation Runs are independent once the original worker and original
+    generation lease have stopped. Keep every historical outcome unchanged;
+    malformed scopes still fail for a proven live execution. Broken historical
+    associations cannot manufacture a global lock for unrelated new Runs.
     """
     with repository.unit_of_work() as uow, uow.connection.cursor() as cursor:
         result = set()
@@ -155,10 +157,19 @@ def unknown_execution_keys(repository):
                        a.operation,a.action,a.automation_id,a.target_ref_json,a.target_ref_sha256,
                        l.runtime_metadata_json,l.runtime_metadata_sha256
                 FROM automation_write_attempt_receipts a
+                INNER JOIN agent_runs r ON r.run_id=a.orchestration_run_id
+                INNER JOIN agent_commands c ON c.command_id=r.command_id
+                  AND BINARY c.automation_id=BINARY a.automation_id
+                  AND c.automation_generation=a.generation
+                INNER JOIN agent_run_steps s ON s.step_id=a.step_id AND s.run_id=r.run_id
                 LEFT JOIN automation_project_generation_leases l
                   ON l.lease_id=a.lease_id AND l.automation_id=a.automation_id
                  AND l.generation=a.generation AND l.orchestration_run_id=a.orchestration_run_id
                 WHERE a.outcome='WRITE_OUTCOME_UNKNOWN'
+                  AND ((NULLIF(TRIM(r.worker_id),'') IS NOT NULL
+                        AND r.lease_expires_at>UTC_TIMESTAMP(6))
+                       OR (l.outcome IN ('RUNNING','VERIFYING')
+                           AND l.expires_at>UTC_TIMESTAMP(6)))
                   AND (a.legacy_scope_quarantined_at IS NULL
                        OR (a.execution_resource_keys_json IS NOT NULL
                            AND (JSON_TYPE(a.execution_resource_keys_json)<>'ARRAY'

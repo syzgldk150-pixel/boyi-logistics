@@ -57,7 +57,6 @@ from agent.orchestration.models import (
     new_id,
 )
 from agent.orchestration.automation_run_supersession import (
-    raise_after_unknown_write_recovery,
     supersede_safely_suspended_runs,
 )
 from agent.orchestration.policy_engine import ProjectPolicyEvaluation
@@ -1821,42 +1820,12 @@ class AutomationProjectPolicyService:
                     occurred_at=occurred_at,
                 )
 
-        if (
-            scan_preview_project
-            and safe_preview_run_id is None
-            and self._unknown_write_recovery is not None
-        ):
-            # Recovery owns its own transaction and may terminalize history only
-            # after an authoritative empty readback.  An unavailable or
-            # inconclusive readback must preserve the old receipt/Evidence, but
-            # stopped UNKNOWN_WRITE history must not prevent a fresh preview.
-            try:
-                self._unknown_write_recovery(safe_id, safe_request_id)
-            except Exception as exc:  # noqa: BLE001 - preview remains available
-                logger.warning(
-                    "Scan preview recovery was not proven automation_id=%s code=%s",
-                    safe_id,
-                    str(getattr(exc, "code", type(exc).__name__))[:80],
-                )
-
-        try:
-            return self._command_gateway.submit(
-                command,
-                uow_acceptance_guard=guard,
-            )
-        except OrchestrationError as exc:
-            blocker_cleared = raise_after_unknown_write_recovery(
-                exc,
-                self._unknown_write_recovery,
-                automation_id=safe_id,
-                request_id=safe_request_id,
-            )
-            if blocker_cleared:
-                return self._command_gateway.submit(
-                    command,
-                    uow_acceptance_guard=guard,
-                )
-            raise AssertionError("unknown-write recovery must raise or clear the blocker")
+        # A fresh invocation never reconciles or resumes a historical Run.
+        # Explicit receipt verification remains available through its own API.
+        return self._command_gateway.submit(
+            command,
+            uow_acceptance_guard=guard,
+        )
 
     async def invoke_trusted_and_wait(
         self,

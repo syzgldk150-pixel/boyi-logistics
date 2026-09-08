@@ -238,7 +238,9 @@ def test_large_unknown_history_preserves_audit_and_cannot_hide_project_blocker(d
     before = history.snapshot()
     for status, live, kind in (
         ("RECEIVED", False, "ACTIVE"),
-        ("FAILED_RETRYABLE", False, "RETRY_PENDING"),
+        # Retry history alone is no longer a blocker; an actual worker lease
+        # remains protected regardless of the persisted status projection.
+        ("FAILED_RETRYABLE", True, "ACTIVE"),
         ("RUNNING", True, "ACTIVE"),
         ("COMPLETED", True, "ACTIVE"),
         ("PARTIAL", True, "ACTIVE"),

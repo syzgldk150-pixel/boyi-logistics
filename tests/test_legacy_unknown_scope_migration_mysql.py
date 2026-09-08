@@ -210,14 +210,15 @@ def test_migration_is_idempotent_and_only_labels_stopped_pre_release_missing_sco
     assert database.snapshot() == first, "reapplying must retain the original quarantine timestamp"
 
 
-def test_post_release_missing_scope_still_fails_after_reapplying_migration(database):
+def test_post_release_stopped_missing_scope_is_history_without_a_global_lock(database):
     database.seed()
     database.apply()
     assert unknown_execution_keys(database.repository) == ()
-    new = database.seed(created_at=RELEASE_CUTOFF + timedelta(seconds=1))
+    database.seed(created_at=RELEASE_CUTOFF + timedelta(seconds=1))
     database.apply()
-    with pytest.raises(ValueError, match="UNKNOWN_WRITE_SCOPE_UNAVAILABLE:" + new["receipt_id"]):
-        unknown_execution_keys(database.repository)
+    before = database.snapshot()
+    assert unknown_execution_keys(database.repository) == ()
+    assert database.snapshot() == before
 
 
 @pytest.mark.parametrize("original_zone,hours,later_zone", [("+00:00", 0, "+08:00"), ("+08:00", 8, "+00:00")])
@@ -242,11 +243,10 @@ def test_persisted_database_local_boundary_survives_session_timezone_changes(dat
     assert all(labels[row["receipt_id"]] is None for row in excluded)
     database.apply(session_time_zone=later_zone)
     assert database.snapshot() == before
-    with pytest.raises(ValueError, match="UNKNOWN_WRITE_SCOPE_UNAVAILABLE:"):
-        unknown_execution_keys(database.repository)
+    assert unknown_execution_keys(database.repository) == ()
 
 
-def test_quarantine_does_not_hide_original_scope_when_it_becomes_available(database):
+def test_recovered_original_scope_only_protects_a_live_execution(database):
     old = database.seed()
     database.apply()
     assert unknown_execution_keys(database.repository) == ()
@@ -254,8 +254,12 @@ def test_quarantine_does_not_hide_original_scope_when_it_becomes_available(datab
         cursor.execute("UPDATE automation_write_attempt_receipts SET execution_resource_keys_json=%s WHERE receipt_id=%s",
             (json.dumps([["account-write", "recovered-original-account"]]), old["receipt_id"]))
         connection.commit()
-    assert unknown_execution_keys(database.repository) == (("account-write", "recovered-original-account"),)
+    assert unknown_execution_keys(database.repository) == ()
     database.apply()
+    with database.helper._connection() as connection, connection.cursor() as cursor:
+        cursor.execute("UPDATE agent_runs SET worker_id='isolated-live-worker',"
+                       "lease_expires_at=UTC_TIMESTAMP(6)+INTERVAL 1 DAY WHERE run_id=%s", (old["run_id"],))
+        connection.commit()
     assert unknown_execution_keys(database.repository) == (("account-write", "recovered-original-account"),)
     for malformed in ("{}", "null", '""'):
         with database.helper._connection() as connection, connection.cursor() as cursor:
@@ -266,7 +270,11 @@ def test_quarantine_does_not_hide_original_scope_when_it_becomes_available(datab
             unknown_execution_keys(database.repository)
 
 
-@pytest.mark.parametrize("active", [{"live_generation_lease": True}, {"live_worker": True}, {"run_status": "RUNNING"}])
+@pytest.mark.parametrize("active", [
+    {"live_generation_lease": True, "lease_outcome": "RUNNING"},
+    {"live_generation_lease": True, "lease_outcome": "VERIFYING"},
+    {"live_worker": True},
+])
 def test_active_missing_scope_is_not_quarantined(database, active):
     old = database.seed(**active)
     database.apply()
@@ -274,8 +282,60 @@ def test_active_missing_scope_is_not_quarantined(database, active):
         unknown_execution_keys(database.repository)
 
 
+@pytest.mark.parametrize("run_status", ["CANCELLED", "FAILED_TERMINAL", "BLOCKED_DATA", "RUNNING", "VERIFYING"])
+@pytest.mark.parametrize("raw_keys", [None, "[]", "{}", '[["account-write","isolated-account"]]'])
+def test_stopped_history_never_locks_new_execution_even_with_stale_step_markers(database, run_status, raw_keys):
+    database.seed(run_status=run_status, step_status="VERIFYING", raw_keys_json=raw_keys)
+    before = database.snapshot()
+    assert unknown_execution_keys(database.repository) == ()
+    assert database.snapshot() == before, "reading execution scope must not rewrite unknown outcomes or audit history"
+
+
+@pytest.mark.parametrize("active", [
+    {"live_worker": True},
+    {"live_generation_lease": True, "lease_outcome": "RUNNING"},
+    {"live_generation_lease": True, "lease_outcome": "VERIFYING"},
+])
+def test_actual_live_lease_protects_scope_until_it_expires_without_settling_receipt(database, active):
+    keys = (("account-write", "isolated-account"),)
+    old = database.seed(keys=keys, **active)
+    before = database.snapshot()
+    assert unknown_execution_keys(database.repository) == keys
+    assert database.snapshot() == before
+    with database.helper._connection() as connection, connection.cursor() as cursor:
+        cursor.execute("UPDATE agent_runs SET lease_expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 DAY WHERE run_id=%s", (old["run_id"],))
+        cursor.execute("UPDATE automation_project_generation_leases SET expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 DAY WHERE lease_id=%s", (old["lease_id"],))
+        connection.commit()
+    after_expiry = database.snapshot()
+    assert unknown_execution_keys(database.repository) == ()
+    assert database.snapshot() == after_expiry
+    assert before["automation_write_attempt_receipts"] == after_expiry["automation_write_attempt_receipts"]
+
+
+@pytest.mark.parametrize("mismatch", ["command_project", "command_generation", "step_run", "lease_run"])
+def test_unrelated_live_lease_cannot_turn_broken_history_into_a_global_lock(database, mismatch):
+    old = database.seed(keys=[["account-write", "isolated-account"]],
+                        live_generation_lease=True, lease_outcome="RUNNING")
+    other = database.seed()
+    with database.helper._connection() as connection, connection.cursor() as cursor:
+        if mismatch == "command_project":
+            cursor.execute("UPDATE agent_commands SET automation_id=NULL WHERE command_id=%s", (old["command_id"],))
+        elif mismatch == "command_generation":
+            cursor.execute("UPDATE agent_commands SET automation_generation=NULL WHERE command_id=%s", (old["command_id"],))
+        elif mismatch == "step_run":
+            cursor.execute("UPDATE automation_write_attempt_receipts SET step_id=%s WHERE receipt_id=%s",
+                           (other["step_id"], old["receipt_id"]))
+        else:
+            cursor.execute("UPDATE automation_project_generation_leases SET orchestration_run_id=%s WHERE lease_id=%s",
+                           (other["run_id"], old["lease_id"]))
+        connection.commit()
+    before = database.snapshot()
+    assert unknown_execution_keys(database.repository) == ()
+    assert database.snapshot() == before
+
+
 def test_scope_reader_pages_all_valid_receipts_and_retains_real_conflicts(database):
-    old = database.seed(keys=[["account-write", "recorded-account"]])
+    old = database.seed(keys=[["account-write", "recorded-account"]], live_worker=True)
     with database.helper._connection() as connection, connection.cursor() as cursor:
         cursor.execute("SELECT target_ref_json FROM automation_write_attempt_receipts WHERE receipt_id=%s", (old["receipt_id"],))
         original_target = json.loads(cursor.fetchone()["target_ref_json"])
@@ -310,6 +370,20 @@ def test_scope_reader_pages_all_valid_receipts_and_retains_real_conflicts(databa
     asyncio.run(exercise())
 
 
+def test_live_and_newly_queued_runs_sort_ahead_of_more_than_one_cleanup_batch(database):
+    for number in range(120):
+        database.seed(run_status="FAILED_RETRYABLE" if number % 2 else "RUNNING",
+                      step_status="VERIFYING", keys=[["account-write", "historical-account"]])
+    queued = database.seed(run_status="RECEIVED")
+    active = database.seed(run_status="RUNNING", live_worker=True, step_status="RUNNING")
+    before = database.snapshot()
+    with database.repository.unit_of_work() as uow:
+        candidates = uow.runs.list_unfinished_for_automation(database.project_id, limit=100)
+    assert len(candidates) == 100
+    assert set(candidates[:2]) == {queued["run_id"], active["run_id"]}
+    assert database.snapshot() == before
+
+
 class _ProjectionCatalog(_Catalog):
     def get_capability(self, tool_name):
         return {**super().get_capability(tool_name), "operation_type": "internal_projection_write"}
@@ -339,9 +413,10 @@ def _projection_runner(database, calls=None):
         worker_id="isolated-scope-regression", poll_interval_seconds=0.1)
 
 
-def test_real_runner_performs_new_sql_write_once_without_replaying_quarantined_run(database):
-    old = database.seed()
-    database.apply()
+@pytest.mark.parametrize("run_status", ["CANCELLED", "FAILED_TERMINAL"])
+@pytest.mark.parametrize("keys", [None, [["account-write", "isolated-account"]]])
+def test_real_runner_performs_new_sql_write_once_without_replaying_stopped_history(database, run_status, keys):
+    old = database.seed(run_status=run_status, keys=keys)
     before = database.snapshot()
     calls = Counter()
     runner = _projection_runner(database, calls)
