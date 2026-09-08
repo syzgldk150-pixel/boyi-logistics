@@ -124,6 +124,74 @@ class _Workload:
         return {"job": job, "rows": [{"value": sum(range(len(job) + 1))}]}
 
 
+def test_runner_execution_context_reaches_real_broker_action_receipts(repository, tmp_path):
+    """Real MySQL Runner -> registered local port -> thread -> Broker issuer.
+
+    This is an admission/receipt slice; it performs no external business calls.
+    Neither the Runner nor its task-context handoff is patched.
+    """
+    from agent.automation_plugins.broker import LocalBrokerCapabilityIssuer
+    from tests.test_execution_action_scopes import capability, issue_receipts, scopes
+
+    cap, saved = capability()
+    receipts = []
+    issuer = LocalBrokerCapabilityIssuer(tmp_path / "broker.sock", write_attempt_recorder=receipts.append)
+
+    class ScopedCatalog(_Catalog):
+        def get_capability(self, tool_name):
+            # The registered workload writes only this local test's receipt
+            # list. Its effect is internal; no external impact gate is bypassed.
+            return {**super().get_capability(tool_name), **cap,
+                "operation_type": OperationType.INTERNAL_PROJECTION_WRITE.value}
+
+    def execute(arguments):
+        issue_receipts(issuer, cap)
+        return {"job": arguments["job"], "rows": [{"value": len(receipts)}]}
+
+    async def exercise():
+        catalog = ScopedCatalog()
+        policy = PolicyEngine(catalog)
+        runner = WorkflowRunner(
+            repository=repository, catalog=catalog,
+            execution_port=RegisteredToolExecutionAdapter(catalog=catalog, executor=None,
+                direct_runners={"v32_local_workload": execute}),
+            context_builder=ContextBuilder(account_resolver=lambda command: [
+                {"account_id": command.parameters["account_id"], "is_active": True},
+            ]),
+            planner=DeterministicPlanner(catalog), validator=PlanValidator(catalog), policy=policy,
+            approval_service=ApprovalService(repository, policy), verifier=ResultVerifier(),
+            saved_resource_provider=saved.get, worker_id="action-scope-receipts", poll_interval_seconds=0.1,
+        )
+        gateway = CommandGateway(repository, wake_runner=runner.wake)
+        await runner.start()
+        try:
+            receipt = await asyncio.to_thread(gateway.submit, _command("scope-receipts", account="account-a"))
+            final = await _until(lambda: repository.get_run(receipt.run_id),
+                lambda row: row["status"] in {"COMPLETED", "BLOCKED_DATA", "WAITING_APPROVAL", "FAILED_TERMINAL"})
+            if final["status"] == "WAITING_APPROVAL":
+                def latest_approval():
+                    with repository.unit_of_work() as uow:
+                        return uow.approvals.get_latest_for_run(receipt.run_id)
+                approval = await _until(latest_approval, lambda row: row is not None)
+                await asyncio.to_thread(runner._approval_service.decide,
+                    approval_id=approval["approval_id"], plan_hash=approval["plan_hash"],
+                    actor=Actor(ActorType.CONSOLE_ADMIN, "isolated-approver", (approval["required_role"],),
+                        authenticated_by="mysql_admin_session"),
+                    source="console", decision="APPROVED")
+                runner.wake()
+                final = await _until(lambda: repository.get_run(receipt.run_id),
+                    lambda row: row["status"] in {"COMPLETED", "BLOCKED_DATA", "FAILED_TERMINAL"})
+            assert final["status"] == "COMPLETED", {key: final[key] for key in ("status", "error_code", "error_summary")}
+            assert len(receipts) == 2
+            _keys, _bounded, actions = scopes(cap, saved)
+            for item in receipts:
+                role = "delivery_status_bitable" if item["operation"] == "network.request" else "account_id"
+                assert item["execution_resource_keys_json"] == [list(key) for key in actions[(item["operation"], item["action"], role)]]
+        finally:
+            await runner.stop()
+    asyncio.run(exercise())
+
+
 def _command(job, *, key=None, account="shared-session"):
     return Command(
         command_type="tool.execute", source="console",

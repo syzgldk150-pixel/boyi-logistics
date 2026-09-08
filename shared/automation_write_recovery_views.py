@@ -10,6 +10,7 @@ from shared.execution_resource_journal import closed_execution_keys
 
 _SCOPE_KEY_KINDS = frozenset({
     "account-write", "account-resource", "physical-write", "resource-write", "browser-account",
+    "browser-write", "projection-write",
 })
 _MAX_WRITE_ATTEMPTS = 1000
 
