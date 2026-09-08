@@ -2676,6 +2676,7 @@ def build_production_first_party_core_handler_map(
     manager = account_manager or get_account_manager()
     authorize_capability = capability_authorizer or authorize_target_capability
     arrival_writes = build_production_arrival_write_ports()
+    from plugin_core_adapters.arrival_report import read_arrival_report_publication
     ports = FirstPartyCoreHandlerPorts(
         describe_account=lambda account_id: _describe_active_account(manager, account_id),
         authorize_capability=authorize_capability,
@@ -2689,6 +2690,7 @@ def build_production_first_party_core_handler_map(
         replace_waybill_snapshot=arrival_writes.replace_waybill_snapshot,
         replace_arrival_forecast_snapshot=arrival_writes.replace_arrival_forecast_snapshot,
         replace_arrive_sheet_resource=arrival_writes.replace_arrive_sheet_resource,
+        read_arrival_report_publication=read_arrival_report_publication,
         replace_scan_snapshot=replace_scan_snapshot_verified,
         scan_next_submit=_scan_next_submit,
         scan_next_verify=_scan_next_verify,

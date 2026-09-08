@@ -235,6 +235,21 @@ def run_action(arguments: dict[str, object], broker: Callable[..., object]) -> d
             postconditions={"0": True},
             postcondition_evidence={"0": result_proof},
         )
+    # The same physical daily report can be bound to both plugins. Once its
+    # current-day statistics were published, the simpler list must not erase
+    # those counts. Read both decisions before any write (including SQL).
+    preserved_sheets = []
+    for slot in ("arrive_primary_sheet", "arrive_secondary_sheet"):
+        publication = _object(broker(
+            "projection.invoke", action="arrival.report.publication.read", role=slot,
+            arguments={"target_date": target_date},
+        ), "arrival report publication")
+        evidence_refs.append(broker_evidence_ref(publication, "arrival report publication"))
+        if (publication.get("target_date") != target_date
+                or type(publication.get("statistics_published")) is not bool):
+            raise ValueError("arrival report publication is invalid")
+        if publication["statistics_published"]:
+            preserved_sheets.append(slot)
     projection = _committed(
         broker(
             "projection.invoke",
@@ -247,6 +262,8 @@ def run_action(arguments: dict[str, object], broker: Callable[..., object]) -> d
     evidence_refs.append(broker_evidence_ref(projection, "waybill snapshot"))
     values = _sheet_rows(records)
     for slot in ("arrive_primary_sheet", "arrive_secondary_sheet"):
+        if slot in preserved_sheets:
+            continue
         sheet_result = _committed(
             broker(
                 "network.request",
@@ -272,13 +289,15 @@ def run_action(arguments: dict[str, object], broker: Callable[..., object]) -> d
         "bill_codes": len(records),
         "skipped_receipt_like": skipped_receipts,
         "detail_records": len(records),
+        "statistics_sheets_preserved": preserved_sheets,
         "evidence": {
             "source": "signed_first_party_plugin",
             "observed_at": observed_at,
             "pagination_complete": True,
             "page_count": page_count,
             "execution_result": (
-                "no_data_cleared" if not records else "all_snapshots_committed"
+                "statistics_preserved_forecast_updated" if preserved_sheets
+                else "no_data_cleared" if not records else "all_snapshots_committed"
             ),
         },
     }

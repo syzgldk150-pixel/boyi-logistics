@@ -4,8 +4,10 @@ type: 模块文档
 tags: [Agent自动化, 飞书触发器, 直达指令, pending状态机, 登录恢复, TMS自动化]
 related: [../project_overview.md, ../code_navigation_index.md, ../ai_service/module_overview.md]
 status: active
-updated: 2026-08-30
+updated: 2026-09-08
 ---
+
+> 2026-09-08：签名到货清单插件在写入前读取 `arrival.report.publication.read`，同一业务日、同一来源账号、同一物理工作表已有成功统计时保留统计表和累计到货件数，仅更新本次 MySQL 基础清单与预计快照。判定使用已完成 Run、已核验 Step、原代际账号/资源绑定以及写入回执，并现场读取表头、行数与件数；已有统计被覆盖、账号或位置变化及证据损坏时显式要求重新统计，新的成功统计替代旧发布版本。次日或该目标没有当日统计时仍正常写清单。读 primitive 是核心更新，业务取舍仍在 `first_party_automation_plugins/sync_arrive_list/payload/action.py`，精确资源读取在 `plugin_core_adapters/arrival_report.py`。
 
 > 2026-08-30: 账号管理的现行入口统一为 `/admin/accounts/{account_id}/*`，旧 `/admin/tms/*-session` 只保留兼容且不得作为新入口。韵达/融辉旧同源活动原页路径固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`；活动原页只允许经一次性 ticket 在 `https://www.boyi.homes/original/{provider}/` 独立 origin 使用路径限定 capability。
 > 2026-08-29: Agent `_monitor_tms_session_alerts` 是唯一周期主动登录态检查器；检查完成后把同一份最终状态写入 `/admin/accounts` 共享快照，Console `/automation-accounts` 只用 `prefer_cached=1` 被动读取。即使请求同时携带 `force=1`，缓存读取也不得触发外部校验或后台刷新。同账号已有检查或登录在执行时，`BLOCKED_LOGIN` 只跳过本轮，不覆盖快照、不累计自动登录失败，也不发送飞书断线告警；显式手动登录和单账号状态操作仍更新这份共享快照。
@@ -186,7 +188,7 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 | 到货统计编排 | `tools/arrival_stats_sync_tool.py` + `tools/split_pending_snapshot.py` |
 | 工具对外注册 | `tools/registry.yaml` |
 
-`sync_arrive_list` 的执行链路是：飞书文本 `arrivelist/到货清单/预到达清单` → `agent/direct_tool_router.py` → `tools/arrive_list_sync_tool.py` → `/fetch_dispatch` → MySQL + 飞书表格。派件预报返回的 18 列字段会直接规范化为 `waybill_data` 基础清单；`H...` / `HR...` 回单号只允许作为回单字段保留，不能作为主单号进入表格首列。后台卡片的 `target_date` 留空时使用执行当天，选择日期时拉取指定单日。`sync_arrival_stats` 每次也会重新拉取目标日 `/fetch_dispatch` 与目标日 `/get_scan`，以“目标日 arrive-list 主单 ∪ 目标日实际到件扫描主单”生成当天统计范围：arrive-list 有但未扫描且历史未到齐（包括历史到货为 0）的单号继续以到货 0 展示；每票目标日前最近一份有效成功快照已经到齐、且目标日未再次扫描的 arrive-list 重复主单会被过滤；目标日实际重扫主单始终保留；扫描存在但 arrive-list 缺失的主单通过 `/query_waybill_detail` 补齐详情。仅存在于累计扫描索引的旧主单不得进入当天表。累计扫描索引仍用于计算当天范围内每票的累计到货件数，支持跨日分批到货，但输出以开单件数封顶，并通过 `historical_filter_result` 与 `count_result.quantity_adjustments` 返回过滤、保留和超量封顶计数。
+`sync_arrive_list` 的当前执行链路是：飞书文本 `arrivelist/到货清单/预到达清单` → `agent/direct_tool_router.py` 提交 committed 项目 Command → WorkflowRunner → 签名插件 `first_party_automation_plugins/sync_arrive_list/payload/action.py` → 闭合 Broker / `plugin_core_adapters/` → TMS、MySQL 与飞书。`tools/arrive_list_sync_tool.py` 保留公共表头等兼容辅助函数，不是插件的 whole-tool 回退入口。派件预报返回的 18 列字段会直接规范化为 `waybill_data` 基础清单；`H...` / `HR...` 回单号只允许作为回单字段保留，不能作为主单号进入表格首列。后台卡片的 `target_date` 留空时使用执行当天，选择日期时拉取指定单日。`sync_arrival_stats` 每次也会重新拉取目标日 `/fetch_dispatch` 与目标日 `/get_scan`，以“目标日 arrive-list 主单 ∪ 目标日实际到件扫描主单”生成当天统计范围：arrive-list 有但未扫描且历史未到齐（包括历史到货为 0）的单号继续以到货 0 展示；每票目标日前最近一份有效成功快照已经到齐、且目标日未再次扫描的 arrive-list 重复主单会被过滤；目标日实际重扫主单始终保留；扫描存在但 arrive-list 缺失的主单通过 `/query_waybill_detail` 补齐详情。仅存在于累计扫描索引的旧主单不得进入当天表。累计扫描索引仍用于计算当天范围内每票的累计到货件数，支持跨日分批到货，但输出以开单件数封顶，并通过 `historical_filter_result` 与 `count_result.quantity_adjustments` 返回过滤、保留和超量封顶计数。
 
 `sync_scan_codes` 的执行链路是：后台“获取并扫描数据”、飞书扫描指令或 Webhook → `tools/scan_sync_tool.py` → `/get_scan` → 刷新扫描索引 → 分批执行 `/scan_next`。后台卡片的 `target_date` 留空时不发送日期覆盖参数，`get_scan` 按执行当天查询；选择日期时工具将 `YYYY-MM-DD` 转换为融辉扫描记录查询使用的 `YYYY/MM/DD` 单日范围。`target_date` 与高级 `request_body.params.date/start/end` 不能同时设置，冲突时显式失败。调度器选定账号后，`scan_next` 必须沿用该账号的 `session_profile`，并在发件扫描同源 iframe/父页/顶层页登录上下文完整就绪且值一致后再录单；扫描员和网点字段严格采用原页 `$Z.user.getUserInfo()`，禁止页头/默认值回退，站点只接受唯一精确匹配。任何批次失败都会立刻终止余下批次并返回顶层 `SCAN_NEXT_BATCH_FAILED`，后续 webhook 不执行；显式 `child_item_limit/max_batches` 导致的未排入子单通过 `omitted_items/truncated` 返回，避免把限定执行误报为全量完成。
 

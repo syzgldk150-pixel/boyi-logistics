@@ -164,6 +164,7 @@ class _Events:
 
 class _Uow:
     def __init__(self, repository):
+        self.commands = _Commands(repository)
         self.steps = _Steps(repository)
         self.runs = _Runs(repository)
         self.work_items = _WorkItems(repository)
@@ -179,6 +180,15 @@ class _Uow:
 
     def commit(self):
         self.repository.commits += 1
+
+
+class _Commands:
+    def __init__(self, repository):
+        self.repository = repository
+
+    def get(self, command_id):
+        assert command_id == self.repository.run["command_id"]
+        return {"command_id": command_id, "automation_id": None}
 
 
 class _Repository:

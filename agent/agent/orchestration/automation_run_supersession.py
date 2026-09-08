@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -19,7 +19,6 @@ from shared.automation_run_lookup import AUTOMATION_UNFINISHED_RUN_LIMIT
 
 AUTOMATION_BLOCKING_SAFE_SUPERSEDE = "SAFE_SUPERSEDE"
 AUTOMATION_BLOCKING_ACTIVE = "ACTIVE"
-AUTOMATION_BLOCKING_RETRY_PENDING = "RETRY_PENDING"
 AUTOMATION_BLOCKING_UNKNOWN_WRITE = "UNKNOWN_WRITE"
 AUTOMATION_BLOCKING_NEEDS_ATTENTION = "NEEDS_ATTENTION"
 _SAFE_SUPERSEDE_RUN_STATUSES = frozenset(
@@ -60,44 +59,6 @@ _TERMINAL_RUN_STATUS_VALUES = frozenset(
 )
 
 
-def raise_after_unknown_write_recovery(
-    error: OrchestrationError,
-    recovery: Callable[[str, str], Mapping[str, Any] | None] | None,
-    *,
-    automation_id: str,
-    request_id: str,
-) -> bool:
-    """Attempt exact server readback, then preserve one project mutex."""
-
-    details = error.details if isinstance(error.details, dict) else {}
-    if (
-        error.code != "AUTOMATION_ALREADY_RUNNING"
-        or str(details.get("blocking_kind") or "").upper()
-        != AUTOMATION_BLOCKING_UNKNOWN_WRITE
-        or recovery is None
-    ):
-        raise error
-    try:
-        result = recovery(automation_id, request_id)
-    except Exception:  # noqa: BLE001 - retain the original fail-closed blocker
-        raise error
-    if (
-        isinstance(result, Mapping)
-        and str(result.get("recovery_status") or "").upper() == "APPLIED"
-    ):
-        raise OrchestrationError(
-            "AUTOMATION_ALREADY_RUNNING",
-            "The previous write was verified and its Run is resuming",
-            details={"blocking_kind": AUTOMATION_BLOCKING_ACTIVE},
-        ) from error
-    if (
-        isinstance(result, Mapping)
-        and str(result.get("recovery_status") or "").upper() == "NOT_APPLIED"
-    ):
-        return True
-    raise error
-
-
 def classify_automation_run_blocking_kind(
     run: Mapping[str, Any],
     work_item: Mapping[str, Any],
@@ -125,8 +86,6 @@ def classify_automation_run_blocking_kind(
         or has_live_automation_execution(run, facts, now=now)
     ):
         return AUTOMATION_BLOCKING_ACTIVE
-    if status == RunStatus.FAILED_RETRYABLE.value:
-        return AUTOMATION_BLOCKING_RETRY_PENDING
     if (
         str(run.get("error_code") or "").strip().upper()
         == "WRITE_OUTCOME_UNKNOWN"
@@ -135,8 +94,8 @@ def classify_automation_run_blocking_kind(
         or bool(facts.get("has_unknown_write_receipt"))
         or bool(facts.get("has_unclosed_protected_write"))
     ):
-        # A stopped process cannot prove an external write did not happen.
-        # Only exact server-owned readback may release this write scope.
+        # Unknown outcomes stay truthful audit history. They must not be
+        # relabelled by supersession or used to reject a new execution.
         return AUTOMATION_BLOCKING_UNKNOWN_WRITE
     if bool(facts.get("has_protected_write_receipt")):
         # A closed protected-write receipt is durable audit history.  It does
@@ -175,7 +134,6 @@ def has_live_automation_execution(
     )
     return bool(
         has_valid_run_lease
-        or facts.get("has_inflight_step")
         or facts.get("has_live_generation_lease")
     )
 
@@ -222,15 +180,12 @@ def supersede_safely_suspended_runs(
             facts,
             now=superseded_at,
         )
-        if kind in {
-            AUTOMATION_BLOCKING_ACTIVE,
-            AUTOMATION_BLOCKING_RETRY_PENDING,
-        }:
+        if kind == AUTOMATION_BLOCKING_ACTIVE:
             blockers.append((kind, run))
             continue
         # Stopped unknown writes retain their original Run, receipts and
-        # Evidence. New commands are governed by the exact write-resource
-        # conflict gate; accepting one must never resume or relabel this Run.
+        # Evidence. Only a live lease protects execution resources; accepting
+        # a new command must never resume or relabel this stopped Run.
         if (
             command is None
             or item is None
@@ -243,14 +198,7 @@ def supersede_safely_suspended_runs(
             safe_rows.append((dict(run), dict(item)))
 
     if blockers:
-        priority = {
-            AUTOMATION_BLOCKING_ACTIVE: 0,
-            AUTOMATION_BLOCKING_RETRY_PENDING: 1,
-        }
-        blocking_kind, blocking_run = sorted(
-            blockers,
-            key=lambda pair: priority.get(pair[0], 99),
-        )[0]
+        blocking_kind, blocking_run = blockers[0]
         raise OrchestrationError(
             "AUTOMATION_ALREADY_RUNNING",
             "该脚本存在未结束任务",

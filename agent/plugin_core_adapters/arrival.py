@@ -231,9 +231,15 @@ def _exact_sheet_resource(
     *,
     required_any: tuple[tuple[str, ...], ...],
     required: tuple[str, ...],
+    saved_only: bool = False,
 ) -> dict[str, Any]:
     try:
-        raw = _load_resource(resource_id)
+        if saved_only:
+            from agent.workflow_resource_store import get_saved_workflow_resource
+
+            raw = get_saved_workflow_resource(resource_id)
+        else:
+            raw = _load_resource(resource_id)
     except Exception as exc:
         raise _error(
             "the exact arrival sheet resource is unavailable",
