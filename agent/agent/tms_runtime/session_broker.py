@@ -66,6 +66,7 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
         self._pending_login_state_path = self._state_dir / "pending_login_state.json"
         self._login_profile_path = self._state_dir / "login_profile.json"
         self._lock = threading.RLock()
+        self._original_page_request_lock = threading.Lock()
         self._login_operation_lock = threading.Lock()
         self._active_login_token: str | None = None
         self._state_epoch = 0
@@ -214,6 +215,57 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
 
     def build_requests_session_unchecked(self) -> requests.Session:
         return self.build_requests_session(validate=False)
+
+    def request_original_page(
+        self, method: str, url: str, *, timeout: float,
+        deadline_monotonic: float | None = None, cancelled: threading.Event | None = None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Carry upstream response state across this profile's raw page requests."""
+        deadline = time.monotonic() + timeout
+        if deadline_monotonic is not None:
+            deadline = min(deadline, deadline_monotonic)
+
+        def remaining_budget() -> float:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or (cancelled is not None and cancelled.is_set()):
+                raise TimeoutError("原页请求已超时或取消，本次等待中的动作未发送。")
+            return remaining
+
+        with self._lock:
+            epoch = self._state_epoch
+            if self._active_login_token is not None:
+                raise TMSAuthStateError("BLOCKED_LOGIN", "该账号正在登录，本次动作未排队。")
+        # Serialize the request and commit so a parallel page resource cannot
+        # replace a newer cookie jar with the state it started with. Login and
+        # status operations retain their short, independent state lock.
+        if not self._original_page_request_lock.acquire(timeout=remaining_budget()):
+            raise TimeoutError("原页请求等待已超时，本次动作未发送。")
+        session = None
+        try:
+            with self._lock:
+                if epoch != self._state_epoch:
+                    raise TMSAuthStateError("BLOCKED_LOGIN", "账号登录状态已变化，本次等待中的动作未发送。")
+                remaining_budget()
+                session = self.build_requests_session(validate=False)
+                domain = urlparse(self.resolve_login_config().base_origin).hostname or ""
+                before = self._storage_cookies_from_requests_session(session, domain)
+            response = session.request(method, url, timeout=remaining_budget(), **kwargs)
+            after = self._storage_cookies_from_requests_session(session, domain)
+            with self._lock:
+                if epoch != self._state_epoch or self._active_login_token is not None:
+                    raise TMSAuthStateError("BLOCKED_LOGIN", "账号登录状态已变化，本次旧响应未采用。")
+                if after != before:
+                    # HTTP errors can also set session state. Preserve
+                    # browser origins and login metadata; this is not login.
+                    state = self._load_storage_state()
+                    state["cookies"] = after
+                    self._state_store.write_dict(self._storage_state_path, state)
+            return response
+        finally:
+            if session is not None:
+                session.close()
+            self._original_page_request_lock.release()
 
     def get_storage_state_path(self, *, validate: bool = True) -> str:
         if validate:
