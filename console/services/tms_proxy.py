@@ -1,7 +1,7 @@
 """Console application services grouped by business responsibility."""
 
 from console.app_support import *  # noqa: F403
-from shared.manual_entry_contracts import canonical_manual_proxy_path
+from shared.manual_entry_contracts import canonical_manual_proxy_path, manual_proxy_request_allowed
 
 
 class TmsProxyServiceMixin:
@@ -181,7 +181,7 @@ class TmsProxyServiceMixin:
         if not provider:
             self._redirect(handler, f"{ORIGINAL_PAGE_PRIMARY_ORIGIN}/")
             return True
-        query = parse_qs(parsed.query)
+        query = parse_qs(parsed.query, keep_blank_values=True)
         prefix = ORIGINAL_PAGE_PREFIXES[provider]
         ticket = str((query.get("ticket") or [""])[0]).strip()
         if ticket:
@@ -735,19 +735,6 @@ class TmsProxyServiceMixin:
                 {"ok": False, "message": "韵达原页代理路径不存在。", "error_code": "INVALID_PROXY_PATH"},
             )
             return
-        if method.upper() != "GET" and not (
-            method.upper() == "POST" and remote_path == YUNDA_LIVE_SAVE_PATH
-        ):
-            self._send_json(
-                handler,
-                HTTPStatus.METHOD_NOT_ALLOWED,
-                {
-                    "ok": False,
-                    "error_code": "MANUAL_PROXY_WRITE_DISABLED",
-                    "message": "Only the verified waybill save endpoint may write through this proxy.",
-                },
-            )
-            return
         request_body = self._read_request_body(handler) if method.upper() != "GET" else b""
         request_content_type = str(handler.headers.get("Content-Type") or "")
         params = {
@@ -760,6 +747,17 @@ class TmsProxyServiceMixin:
         }
         if request_body:
             params["body_base64"] = base64.b64encode(request_body).decode("ascii")
+        if not manual_proxy_request_allowed("yunda", params):
+            self._send_json(
+                handler,
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                {
+                    "ok": False,
+                    "error_code": "MANUAL_PROXY_WRITE_DISABLED",
+                    "message": "该原页请求尚未验证，已阻止。请联系维护人员。",
+                },
+            )
+            return
         result = self._agent_request(
             "POST",
             "/internal/v1/tms/yunda_waybill_proxy",
@@ -836,19 +834,6 @@ class TmsProxyServiceMixin:
                 {"ok": False, "message": "融辉原页代理路径不存在。", "error_code": "INVALID_PROXY_PATH"},
             )
             return
-        if method.upper() != "GET" and not (
-            method.upper() == "POST" and remote_path == RONGHUI_LIVE_SAVE_PATH
-        ):
-            self._send_json(
-                handler,
-                HTTPStatus.METHOD_NOT_ALLOWED,
-                {
-                    "ok": False,
-                    "error_code": "MANUAL_PROXY_WRITE_DISABLED",
-                    "message": "Only the verified waybill save endpoint may write through this proxy.",
-                },
-            )
-            return
         request_body = self._read_request_body(handler) if method.upper() != "GET" else b""
         request_content_type = str(handler.headers.get("Content-Type") or "")
         params = {
@@ -861,6 +846,17 @@ class TmsProxyServiceMixin:
         }
         if request_body:
             params["body_base64"] = base64.b64encode(request_body).decode("ascii")
+        if not manual_proxy_request_allowed("ronghui", params):
+            self._send_json(
+                handler,
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                {
+                    "ok": False,
+                    "error_code": "MANUAL_PROXY_WRITE_DISABLED",
+                    "message": "该原页请求尚未验证，已阻止。请联系维护人员。",
+                },
+            )
+            return
         result = self._agent_request(
             "POST",
             "/internal/v1/tms/ronghui_waybill_proxy",

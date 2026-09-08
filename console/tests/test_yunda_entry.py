@@ -539,6 +539,125 @@ class YundaEntryBackendTests(unittest.TestCase):
         app._send_json = types.MethodType(capture_json, app)
         return app
 
+    def _post_original_page(self, provider, remote_path, *, query="", body=b"", headers=None, role="super_admin"):
+        repository = _OriginalPageRepository()
+        repository.session.update(role=role, control_plane_role=role)
+        app = self._app(repository)
+        # Restore the real identity and same-origin checks. Only the persisted
+        # session and Agent transport are synthetic; both proxy handlers run.
+        del app._control_plane_read_context
+        del app._control_plane_write_context
+        capability = f"{provider}-test-capability"
+        app._original_page_state_lock = threading.Lock()
+        app._original_page_tickets = {}
+        app._original_page_capabilities = {capability: {
+            "provider": provider, "session_id": "admin-session-1",
+            "expires_at": datetime.now().timestamp() + 60,
+        }}
+        app.agent_calls = []
+
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
+            self.agent_calls.append({"method": method, "endpoint": endpoint, "payload": payload,
+                                     "console_principal": console_principal})
+            return {"ok": True, "data": {"ok": True, "status_code": 200,
+                "headers": {"Content-Type": "application/json"},
+                "body_base64": base64.b64encode(b'{"rows":[]}').decode("ascii"),
+                "remote_path": remote_path}}
+
+        app._agent_request = types.MethodType(agent_request, app)
+        handler = _LiveHandler(body=body, headers={
+            "Host": "www.boyi.homes", "Origin": "https://www.boyi.homes",
+            "Cookie": f"shipnow_original_{provider}={capability}",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            **(headers or {}),
+        })
+        handler.path = f"/original/{provider}{remote_path}" + (f"?{query}" if query else "")
+        app.handle_post(handler)
+        return app, handler
+
+    def test_captured_initialization_posts_cross_real_console_proxy_without_waybill_writes(self):
+        yunda_root = "/ky_inms/public/index.php/"
+        ronghui_query = "/dataQuery/findAllByCallId"
+        # Request shapes captured from the logged-in entry pages on 2026-09-08.
+        # Account/site values below are synthetic and never copied from traffic.
+        cases = [
+            ("yunda", yunda_root + "elecStock.html", "", b""),
+            ("yunda", yunda_root + "getCostInfoPrompt.html", "", b""),
+            ("yunda", yunda_root + "business/waybill/entry/getTemplateList.html", "",
+             b"CreatedDotCode=test-site&IsNew=1&queryType=1"),
+            ("ronghui", ronghui_query, "id=FIND_SYS_DATE", b""),
+            ("ronghui", ronghui_query, "id=FIND_SITE_INFO_BY_SITE_CODE&SITE_CODE=test-site", b""),
+            ("ronghui", ronghui_query, "id=FIND_SITE_AND_CENTER&SITE_CODE=test-site", b""),
+            ("ronghui", ronghui_query, "id=FIND_TAB_SITE_BY_AGENT&SITE_CODE=test-site", b""),
+            ("ronghui", ronghui_query, "id=FIND_TAB_QUOTE_SWITCH_SITE&SITE_CODE=test-site", b""),
+            ("ronghui", ronghui_query, "", b"id=FIND_TMS_SYS_SHARE_SET&SHARE_CODE_IN=test-share"),
+            ("ronghui", ronghui_query, "id=FIND_TAB_SITE_BUSINESS_TYPE", b"SITE_CODE=test-site"),
+            ("ronghui", "/minic/combobox", "optionCode=WEIGHT_RATIO", b""),
+            ("ronghui", ronghui_query, "id=FIND_BILL_CHECK", b"CREATE_MAN_CODE=test-employee"),
+            ("ronghui", ronghui_query, "id=FIND_TAB_COLLAR_CURRENT_SITE",
+             b"BELONG_SITE_CODE=test-site&COLLAR_STATUS=0"),
+            ("ronghui", ronghui_query, "id=FIND_SITE_INFO_BY_SITE_CODE", b"SITE_CODE=test-site"),
+        ]
+        for provider, path, query, body in cases:
+            with self.subTest(provider=provider, path=path, query=query, body=body):
+                app, handler = self._post_original_page(provider, path, query=query, body=body)
+                self.assertEqual(HTTPStatus.OK, handler.status)
+                self.assertEqual(1, len(app.agent_calls))
+                call = app.agent_calls[0]
+                self.assertEqual("POST", call["method"])
+                self.assertEqual(f"/internal/v1/tms/{provider}_waybill_proxy", call["endpoint"])
+                params = call["payload"]["params"]
+                self.assertEqual("POST", params["method"])
+                self.assertEqual(path, params["path"])
+                self.assertEqual(parse_qs(query), parse_qs(params["query"]))
+                self.assertEqual(body, base64.b64decode(params.get("body_base64", "")))
+                self.assertEqual(handler.headers["Content-Type"], params["content_type"])
+                self.assertEqual(params["content_type"], params["headers"]["Content-Type"])
+                self.assertEqual(f"/original/{provider}", params["proxy_prefix"])
+                self.assertEqual("mysql_admin_session", call["console_principal"]["authenticated_by"])
+                self.assertEqual("7", call["console_principal"]["actor_id"])
+                self.assertNotIn("_console_principal", call["payload"])
+                self.assertEqual({"rows": []}, json.loads(handler.wfile.getvalue()))
+                self.assertEqual([], app.repository.upserts)
+                self.assertEqual([], app.repository.snapshots)
+
+    def test_unverified_or_ambiguous_read_posts_never_reach_agent(self):
+        path = "/dataQuery/findAllByCallId"
+        cases = [
+            ("ronghui", path, "id=UNKNOWN_CALL", b"", {}),
+            ("ronghui", path, "id=FIND_SYS_DATE&id=FIND_SYS_DATE", b"", {}),
+            ("ronghui", path, "id=FIND_SYS_DATE&id=", b"", {}),
+            ("ronghui", path, "id=FIND_SYS_DATE&%69d=UNKNOWN_CALL", b"", {}),
+            ("ronghui", path, "id=FIND_SYS_DATE", b"id=UNKNOWN_CALL", {}),
+            ("ronghui", path, "id=FIND_SYS_DATE", b"id=FIND_SYS_DATE", {}),
+            ("ronghui", path, "id=FIND_SYS_DATE", b"operationKey=DELETE", {}),
+            ("ronghui", path, "id=FIND_SYS_DATE", b"", {"content-type": "application/json"}),
+            ("ronghui", "/minic/combobox", "optionCode=UNVERIFIED_OPTION", b"", {}),
+            ("ronghui", "/file/upload", "", b"unverified-upload", {}),
+            ("yunda", "/ky_inms/public/index.php/elecStock.html", "", b"action=save", {}),
+            ("yunda", "/ky_inms/public/index.php/business/waybill/entry/getTemplateList.html", "",
+             b"CreatedDotCode=test-site&IsNew=1&queryType=1&action=save", {}),
+        ]
+        for provider, remote_path, query, body, headers in cases:
+            with self.subTest(provider=provider, path=remote_path, query=query, body=body, headers=headers):
+                app, handler = self._post_original_page(provider, remote_path, query=query, body=body, headers=headers)
+                self.assertEqual(HTTPStatus.METHOD_NOT_ALLOWED, app.sent_status)
+                self.assertEqual("MANUAL_PROXY_WRITE_DISABLED", app.sent_payload["error_code"])
+                self.assertIn("尚未验证", app.sent_payload["message"])
+                self.assertEqual([], app.agent_calls)
+                self.assertEqual([], app.repository.upserts)
+                self.assertEqual([], app.repository.snapshots)
+
+    def test_verified_read_post_still_requires_original_origin_and_admin_identity(self):
+        path = "/ky_inms/public/index.php/elecStock.html"
+        for kwargs in ({"headers": {"Origin": "https://boyi.homes"}}, {"role": "legacy_admin"}):
+            with self.subTest(kwargs=kwargs):
+                app, handler = self._post_original_page("yunda", path, **kwargs)
+                self.assertEqual(HTTPStatus.FORBIDDEN, handler.status or app.sent_status)
+                self.assertEqual([], app.agent_calls)
+                self.assertEqual([], app.repository.upserts)
+                self.assertEqual([], app.repository.snapshots)
+
     def test_isolated_original_page_uses_one_time_ticket_and_path_scoped_cookie(self):
         app = self._app(repository=_OriginalPageRepository())
         app._session_secret = "test-session-secret"

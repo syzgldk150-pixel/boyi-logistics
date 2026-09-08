@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import re
-from urllib.parse import unquote
+from collections.abc import Mapping
+from typing import Any
+from urllib.parse import parse_qsl, unquote, urlencode
 
 
 _ENCODED_PATH_META = re.compile(r"%(?:2e|2f|5c|25)", re.IGNORECASE)
@@ -92,3 +97,131 @@ RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES = (
     "/menuTreeExtend/",
     "/module/",
 )
+
+# Observed original-entry initialization calls. These shared endpoints also
+# dispatch other operations, so neither their path prefix nor FIND_* is a read
+# permission. Parameter names are the observed filters for each exact selector.
+_RONGHUI_INITIALIZATION_FIELDS = {
+    "FIND_SYS_DATE": frozenset(),
+    "FIND_SITE_INFO_BY_SITE_CODE": frozenset({"SITE_CODE"}),
+    "FIND_SITE_AND_CENTER": frozenset({"SITE_CODE"}),
+    "FIND_TAB_SITE_BY_AGENT": frozenset({"SITE_CODE"}),
+    "FIND_TAB_QUOTE_SWITCH_SITE": frozenset({"SITE_CODE"}),
+    "FIND_TMS_SYS_SHARE_SET": frozenset({"SHARE_CODE_IN"}),
+    "FIND_TAB_SITE_BUSINESS_TYPE": frozenset({"SITE_CODE"}),
+    "FIND_BILL_CHECK": frozenset({"CREATE_MAN_CODE"}),
+    "FIND_TAB_COLLAR_CURRENT_SITE": frozenset({"BELONG_SITE_CODE", "COLLAR_STATUS"}),
+}
+_YUNDA_EMPTY_INITIALIZATION_PATHS = frozenset({
+    "/ky_inms/public/index.php/elecStock.html",
+    "/ky_inms/public/index.php/getCostInfoPrompt.html",
+})
+_YUNDA_TEMPLATE_LIST_PATH = (
+    "/ky_inms/public/index.php/business/waybill/entry/getTemplateList.html"
+)
+_YUNDA_TEMPLATE_FIELDS = frozenset({"CreatedDotCode", "IsNew", "queryType"})
+
+
+def _unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in fields or not isinstance(key, str) or isinstance(value, (dict, list)):
+            raise ValueError("ambiguous proxy parameter")
+        fields[key] = value
+    return fields
+
+
+def _initialization_fields(params: Mapping[str, Any]) -> dict[str, Any]:
+    """Inspect the same body/header representation the proxy will transmit."""
+    headers = params.get("headers")
+    content_types = [
+        str(value).strip()
+        for key, value in headers.items()
+        if str(key or "").strip().lower() == "content-type"
+    ] if isinstance(headers, dict) else []
+    if len(content_types) > 1:
+        raise ValueError("duplicate content type")
+    declared_type = str(params.get("content_type") or "").strip()
+    if content_types and declared_type and content_types[0].lower() != declared_type.lower():
+        raise ValueError("conflicting content type")
+    content_type = content_types[0] if content_types else declared_type
+
+    # Both existing runtime adapters prefer non-empty base64 to the text body.
+    # Reject conflicting representations rather than checking the unused one.
+    raw_base64 = str(params.get("body_base64") or "").strip()
+    text_body = params.get("body")
+    body = str(text_body).encode("utf-8") if text_body is not None else b""
+    if raw_base64:
+        decoded = base64.b64decode(raw_base64, validate=True)
+        if text_body is not None and body != decoded:
+            raise ValueError("conflicting body representation")
+        body = decoded
+
+    query_value = params.get("query")
+    if isinstance(query_value, dict):
+        query = urlencode([
+            (str(key), str(value)) for key, value in query_value.items() if value is not None
+        ], doseq=True)
+    else:
+        query = str(query_value or "").strip().lstrip("?")
+    pairs = parse_qsl(query, keep_blank_values=True, errors="strict")
+    if body:
+        media_type, *parameters = content_type.lower().split(";")
+        for parameter in parameters:
+            name, separator, value = parameter.strip().partition("=")
+            if name == "charset" and (not separator or value.strip('" ') not in {"utf-8", "utf8"}):
+                raise ValueError("unsupported request charset")
+        text_body = body.decode("utf-8")
+        if media_type.strip() == "application/x-www-form-urlencoded":
+            pairs.extend(parse_qsl(text_body, keep_blank_values=True, errors="strict"))
+        elif media_type.strip() == "application/json":
+            fields = json.loads(text_body, object_pairs_hook=_unique_fields)
+            if not isinstance(fields, dict):
+                raise ValueError("proxy JSON must be an object")
+            pairs.extend(fields.items())
+        else:
+            raise ValueError("unsupported request body")
+    return _unique_fields(pairs)
+
+
+def manual_proxy_request_allowed(provider: str, params: Mapping[str, Any]) -> bool:
+    """Authorize the closed request contract; caller verifies origin/principal.
+
+    Pass the final transport params, including headers and body_base64. Parsing
+    failures, duplicate selectors and query/body conflicts never grant a read.
+    Existing GET paths and the two explicitly reviewed manual saves are retained.
+    """
+    if provider not in {"ronghui", "yunda"}:
+        return False
+    raw_path = str(params.get("path") or "").strip()
+    path = canonical_manual_proxy_path(raw_path) if raw_path else ""
+    if raw_path and not path:
+        return False
+    method = str(params.get("method") or "GET").strip().upper()
+    if method == "GET":
+        if provider == "yunda":
+            return path.startswith(YUNDA_MANUAL_PROXY_ALLOWED_PREFIXES)
+        return not path or path.startswith(RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES)
+    if method != "POST":
+        return False
+    save_path = (
+        YUNDA_MANUAL_PROXY_SAVE_PATH if provider == "yunda" else RONGHUI_MANUAL_PROXY_SAVE_PATH
+    )
+    if path == save_path:
+        return True
+    try:
+        fields = _initialization_fields(params)
+    except (ValueError, TypeError, UnicodeError, binascii.Error):
+        return False
+    if provider == "yunda":
+        if path in _YUNDA_EMPTY_INITIALIZATION_PATHS:
+            return not fields and not params.get("body") and not params.get("body_base64")
+        return path == _YUNDA_TEMPLATE_LIST_PATH and fields.keys() == _YUNDA_TEMPLATE_FIELDS
+    if path == "/minic/combobox":
+        return fields == {"optionCode": "WEIGHT_RATIO"}
+    if path != "/dataQuery/findAllByCallId":
+        return False
+    selector = fields.get("id")
+    if not isinstance(selector, str) or selector not in _RONGHUI_INITIALIZATION_FIELDS:
+        return False
+    return fields.keys() == _RONGHUI_INITIALIZATION_FIELDS[selector] | {"id"}

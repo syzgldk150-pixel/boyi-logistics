@@ -6,6 +6,7 @@ from agent.execution_boundary import (
     issue_execution_capability,
     revoke_execution_capability,
 )
+from agent.tms_runtime.scripts import ronghui_waybill_proxy, yunda_waybill_proxy
 
 
 class TMSRoutesTests(unittest.TestCase):
@@ -69,6 +70,7 @@ class TMSRoutesTests(unittest.TestCase):
                 console_principal_verified=True,
             )
         )
+
         self.assertFalse(
             routes_module.authorize_direct_manual_target(
                 "yunda_waybill_proxy",
@@ -81,6 +83,135 @@ class TMSRoutesTests(unittest.TestCase):
             )
         )
 
+    def test_isolated_lookup_route_preserves_real_adapter_transport(self):
+        """Use real route authorization and proxy code; replace only network I/O."""
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def verified_principal(request, call_next):
+            request.state.console_principal = {
+                "actor_id": "fixture-admin", "roles": ["super_admin"],
+            }
+            return await call_next(request)
+
+        app.include_router(router, prefix="/internal/v1")
+        client = TestClient(app)
+        calls = []
+
+        class Session:
+            cookies = []
+
+            def request(self, method, url, **kwargs):
+                calls.append((method, url, kwargs))
+                return types.SimpleNamespace(
+                    status_code=200, content=b'{"fixture_rows":[]}', text='{"fixture_rows":[]}',
+                    headers={"Content-Type": "application/json"}, url=url,
+                )
+
+        broker = types.SimpleNamespace(build_requests_session=lambda validate: Session())
+        modules = {"ronghui_waybill_proxy": ronghui_waybill_proxy, "yunda_waybill_proxy": yunda_waybill_proxy}
+
+        async def execute_proxy(endpoint, req):
+            return 200, modules[endpoint].run_once(req.params)
+
+        requests = (
+            ("ronghui", "/dataQuery/findAllByCallId", "id=FIND_SYS_DATE", b"", ""),
+            ("ronghui", "/dataQuery/findAllByCallId", "id=FIND_TAB_SITE_BUSINESS_TYPE",
+             b"SITE_CODE=fixture-site", "application/x-www-form-urlencoded; charset=UTF-8"),
+            ("ronghui", "/dataQuery/findAllByCallId", "",
+             b'{"id":"FIND_TMS_SYS_SHARE_SET","SHARE_CODE_IN":"fixture-rule"}', "application/json"),
+            ("ronghui", "/minic/combobox", "optionCode=WEIGHT_RATIO", b"", ""),
+            ("yunda", "/ky_inms/public/index.php/elecStock.html", "", b"", ""),
+            ("yunda", "/ky_inms/public/index.php/getCostInfoPrompt.html", "", b"", ""),
+            ("yunda", "/ky_inms/public/index.php/business/waybill/entry/getTemplateList.html", "",
+             b"CreatedDotCode=fixture-site&IsNew=1&queryType=fixture-type", "application/x-www-form-urlencoded"),
+        )
+        with patch.object(ronghui_waybill_proxy, "get_session_broker", return_value=broker), patch.object(
+            yunda_waybill_proxy, "get_session_broker", return_value=broker,
+        ), patch("agent.tms_runtime.routes.execute_target", side_effect=execute_proxy) as dispatched:
+            for provider, path, query, body, content_type in requests:
+                with self.subTest(provider=provider, path=path, query=query):
+                    params = {
+                        "method": "POST", "path": path, "query": query,
+                        "proxy_prefix": f"/original/{provider}",
+                        "headers": {"Content-Type": content_type} if content_type else {},
+                        "content_type": content_type,
+                    }
+                    if body:
+                        params["body_base64"] = base64.b64encode(body).decode()
+                    response = client.post(
+                        f"/internal/v1/tms/{provider}_waybill_proxy",
+                        json={"source": "console", "params": params},
+                    )
+                    self.assertEqual(200, response.status_code, response.text)
+                    self.assertTrue(response.json()["data"]["ok"])
+                    method, remote_url, transport = calls[-1]
+                    self.assertEqual("POST", method)
+                    self.assertTrue(remote_url.endswith(path + (f"?{query}" if query else "")))
+                    self.assertEqual(body or None, transport["data"])
+                    if content_type:
+                        self.assertEqual(content_type, transport["headers"]["Content-Type"])
+                    self.assertEqual(b'{"fixture_rows":[]}', base64.b64decode(
+                        response.json()["data"]["body_base64"],
+                    ))
+            self.assertEqual(len(requests), dispatched.call_count)
+            self.assertEqual(len(requests), len(calls))
+
+    def test_direct_agent_lookup_rejects_bypasses_before_dispatch(self):
+        app = FastAPI()
+        principal_present = True
+
+        @app.middleware("http")
+        async def verified_principal(request, call_next):
+            if principal_present:
+                request.state.console_principal = {
+                    "actor_id": "fixture-admin", "roles": ["super_admin"],
+                }
+            return await call_next(request)
+
+        app.include_router(router, prefix="/internal/v1")
+        client = TestClient(app)
+        safe = {
+            "method": "POST", "path": "/dataQuery/findAllByCallId", "query": "id=FIND_SYS_DATE",
+            "proxy_prefix": "/original/ronghui", "content_type": "application/x-www-form-urlencoded",
+        }
+        attempts = (
+            {**safe, "query": "id=FIND_UNREVIEWED"},
+            {**safe, "query": "id=FIND_SYS_DATE&id=DELETE_TABLE"},
+            {**safe, "body_base64": base64.b64encode(b"id=DELETE_TABLE").decode()},
+            {**safe, "query": "", "body": "id=FIND_SYS_DATE",
+             "body_base64": base64.b64encode(b"id=DELETE_TABLE").decode()},
+            {**safe, "query": "", "body": "id=FIND_SYS_DATE", "headers": {"Content-Type": "application/json"}},
+            {**safe, "query": "", "body": "id=FIND_SYS_DATE", "headers": {
+                "Content-Type": "application/x-www-form-urlencoded", "content-type": "application/json",
+            }},
+            {**safe, "body": "action=delete"},
+            {**safe, "path": "/dataQuery/findAllByCallId/extra"},
+            {**safe, "path": "/dataQuery/../dataOperation/deleteTables"},
+            {**safe, "proxy_prefix": "/ocr/ronghui/live"},
+            {**safe, "method": "DELETE"},
+        )
+        runtime = types.SimpleNamespace(execute_tool=Mock(side_effect=AssertionError("no Command allowed")))
+        with patch("agent.tms_runtime.routes._agent_command_runtime", runtime), patch(
+            "agent.tms_runtime.routes.execute_target", side_effect=AssertionError("rejected proxy dispatched"),
+        ) as dispatched:
+            for params in attempts:
+                with self.subTest(params=params):
+                    response = client.post(
+                        "/internal/v1/tms/ronghui_waybill_proxy",
+                        json={"source": "console", "params": params, "idempotency_key": "fixture-request"},
+                    )
+                    self.assertEqual(410, response.status_code, response.text)
+                    self.assertEqual("DIRECT_TMS_ENTRY_DISABLED", response.json()["data"]["error_code"])
+            principal_present = False
+            response = client.post(
+                "/internal/v1/tms/ronghui_waybill_proxy",
+                json={"source": "console", "params": safe, "idempotency_key": "fixture-request"},
+            )
+            self.assertEqual(403, response.status_code)
+            self.assertEqual("TRUSTED_CONSOLE_ACTOR_REQUIRED", response.json()["data"]["error_code"])
+            dispatched.assert_not_called()
+            runtime.execute_tool.assert_not_called()
     def test_versioned_admin_route_uses_standard_envelope(self):
         class FakeAccountManager:
             def list_accounts(self, *, include_status=True, validate=True, force=False):

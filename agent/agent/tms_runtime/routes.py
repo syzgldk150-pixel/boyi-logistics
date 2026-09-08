@@ -25,11 +25,7 @@ from agent.tms_runtime.monitoring import (
     build_monitoring_snapshot,
 )
 from shared.manual_entry_contracts import (
-    RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES,
-    RONGHUI_MANUAL_PROXY_SAVE_PATH,
-    YUNDA_MANUAL_PROXY_ALLOWED_PREFIXES,
-    YUNDA_MANUAL_PROXY_SAVE_PATH,
-    canonical_manual_proxy_path,
+    manual_proxy_request_allowed,
 )
 router = APIRouter(route_class=EnvelopedRoute)
 
@@ -116,20 +112,7 @@ def authorize_direct_manual_target(
     provider = "ronghui" if endpoint_name == "ronghui_waybill_proxy" else "yunda"
     if str(params.get("proxy_prefix") or "") != f"/original/{provider}":
         return False
-    method = str(params.get("method") or "GET").strip().upper()
-    raw_remote_path = str(params.get("path") or "").strip()
-    remote_path = canonical_manual_proxy_path(raw_remote_path) if raw_remote_path else ""
-    if raw_remote_path and not remote_path:
-        return False
-    if method == "GET":
-        if provider == "yunda":
-            return remote_path.startswith(YUNDA_MANUAL_PROXY_ALLOWED_PREFIXES)
-        return not remote_path or remote_path.startswith(RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES)
-    if method != "POST":
-        return False
-    if provider == "yunda":
-        return remote_path == YUNDA_MANUAL_PROXY_SAVE_PATH
-    return remote_path == RONGHUI_MANUAL_PROXY_SAVE_PATH
+    return manual_proxy_request_allowed(provider, params)
 
 
 class SubmitCodeRequest(BaseModel):
