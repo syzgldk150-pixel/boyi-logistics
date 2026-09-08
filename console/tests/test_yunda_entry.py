@@ -539,6 +539,24 @@ class YundaEntryBackendTests(unittest.TestCase):
         app._send_json = types.MethodType(capture_json, app)
         return app
 
+    def test_original_proxy_failure_preserves_agent_code_and_reason(self):
+        for provider, code in (("yunda", "AUTH_REQUIRED"), ("ronghui", "AUTH_PENDING_CODE")):
+            with self.subTest(provider=provider):
+                app = self._app()
+                app._agent_request = lambda *_args, **_kwargs: {
+                    "ok": False, "status": 200, "error_code": code,
+                    "error": "当前账号需要重新登录。",
+                }
+                handler = _LiveHandler(headers={"Accept": "application/json"})
+                getattr(app, f"_handle_{provider}_live_proxy")(
+                    handler, f"/original/{provider}/", method="GET", query={},
+                    proxy_prefix=f"/original/{provider}",
+                )
+                self.assertEqual(HTTPStatus.BAD_GATEWAY, app.sent_status)
+                self.assertFalse(app.sent_payload["ok"])
+                self.assertEqual(code, app.sent_payload["error_code"])
+                self.assertEqual("当前账号需要重新登录。", app.sent_payload["error"])
+
     def _post_original_page(self, provider, remote_path, *, query="", body=b"", headers=None, role="super_admin"):
         repository = _OriginalPageRepository()
         repository.session.update(role=role, control_plane_role=role)

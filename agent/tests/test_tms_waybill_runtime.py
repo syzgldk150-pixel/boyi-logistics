@@ -1,9 +1,71 @@
 """Focused tests extracted from the former TMS runtime aggregate."""
 
 from _tms_runtime_test_support import *  # noqa: F403
+from agent.tms_runtime.errors import TMSAuthStateError
 
 
 class TmsWaybillRuntimeTests(unittest.TestCase):
+    def test_original_proxies_use_each_resolved_profile_without_cross_account_cache(self):
+        for provider, path, query in (
+            ("yunda", "/ky_inms/public/index.php/elecStock.html", ""),
+            ("ronghui", "/minic/combobox", "optionCode=CARD_TYPE"),
+        ):
+            with self.subTest(provider=provider):
+                proxy = importlib.import_module(f"agent.tms_runtime.scripts.{provider}_waybill_proxy")
+                calls = []
+                cache = getattr(proxy, "_RONGHUI_PROXY_LOOKUP_CACHE", {})
+                cache.clear()
+
+                class Session:
+                    cookies = []
+
+                    def __init__(self, profile):
+                        self.profile = profile
+
+                    def request(self, method, url, **kwargs):
+                        calls.append((self.profile, method, url))
+                        content = json.dumps({"fixture_profile": self.profile}).encode("utf-8")
+                        return types.SimpleNamespace(
+                            status_code=200, content=content, text=content.decode("utf-8"),
+                            url=url, headers={"Content-Type": "application/json"},
+                        )
+
+                profiles = (f"{provider}_fixture_a", f"{provider}_fixture_b")
+                brokers = {
+                    profile: types.SimpleNamespace(
+                        build_requests_session=Mock(return_value=Session(profile)),
+                    ) for profile in profiles
+                }
+                try:
+                    with patch.object(proxy, "get_session_broker", side_effect=brokers.__getitem__) as get_broker:
+                        for profile in (*profiles, *profiles):
+                            result = proxy.run_once({
+                                "session_profile": profile, "method": "GET", "path": path,
+                                "query": query, "proxy_prefix": f"/original/{provider}",
+                            })
+                            get_broker.assert_called_with(profile)
+                            brokers[profile].build_requests_session.assert_called_with(validate=False)
+                            self.assertTrue(result["ok"])
+                            self.assertEqual(200, result["status_code"])
+                            self.assertEqual({"fixture_profile": profile}, json.loads(
+                                base64.b64decode(result["body_base64"]),
+                            ))
+                    self.assertEqual(2 if provider == "ronghui" else 4, len(calls))
+                    self.assertEqual(set(profiles), {call[0] for call in calls})
+                finally:
+                    cache.clear()
+
+    def test_original_proxies_require_profile_before_obtaining_a_session(self):
+        for provider, path in (("yunda", "/ky_inms/public/index.php/elecStock.html"), ("ronghui", "/")):
+            proxy = importlib.import_module(f"agent.tms_runtime.scripts.{provider}_waybill_proxy")
+            for fields in ({}, {"session_profile": None}, {"session_profile": ""},
+                           {"session_profile": " \t"}, {"session_profile": 7}, {"session_profile": {}}):
+                with self.subTest(provider=provider, fields=fields), patch.object(proxy, "get_session_broker") as get_broker:
+                    with self.assertRaises(TMSAuthStateError) as error:
+                        proxy.run_once({"method": "GET", "path": path, **fields})
+                    self.assertEqual("ACCOUNT_SESSION_PROFILE_REQUIRED", error.exception.code)
+                    get_broker.assert_not_called()
+
     def setUp(self):
         self.internal_token_patch = patch.dict(
             os.environ,
@@ -356,6 +418,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         with patch("agent.tms_runtime.scripts.yunda_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
+                    "session_profile": "yunda_fixture_selected",
                     "method": "GET",
                     "path": "/ky_inms/public/index.php/business/waybill/entry/indexNew.html",
                     "query": "page=tab&p=nil",
@@ -391,7 +454,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
     def test_yunda_waybill_proxy_rejects_non_yunda_public_path(self):
         proxy = importlib.import_module("agent.tms_runtime.scripts.yunda_waybill_proxy")
 
-        result = proxy.run_once({"method": "GET", "path": "https://example.com/evil.html"})
+        result = proxy.run_once({"session_profile": "yunda_fixture_selected", "method": "GET", "path": "https://example.com/evil.html"})
 
         self.assertFalse(result["ok"])
         self.assertEqual("INVALID_PROXY_PATH", result["error_code"])
@@ -426,6 +489,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         with patch("agent.tms_runtime.scripts.yunda_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
+                    "session_profile": "yunda_fixture_selected",
                     "method": "GET",
                     "path": "/ky_inms/public/static/inms/js/entry.js",
                     "proxy_prefix": "/ocr/yunda/live",
@@ -468,6 +532,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         with patch("agent.tms_runtime.scripts.yunda_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
+                    "session_profile": "yunda_fixture_selected",
                     "method": "GET",
                     "path": "/ky_inms/public/index.php/business/waybill/entry/indexNew.html",
                     "proxy_prefix": "/ocr/yunda/live",
@@ -498,7 +563,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
 
         broker = types.SimpleNamespace(build_requests_session=lambda validate=True: Session())
         with patch("agent.tms_runtime.scripts.yunda_waybill_proxy.get_session_broker", return_value=broker):
-            result = proxy.run_once({"method": "GET", "path": "/ky_inms/public/index.php/missing.html"})
+            result = proxy.run_once({"session_profile": "yunda_fixture_selected", "method": "GET", "path": "/ky_inms/public/index.php/missing.html"})
 
         self.assertTrue(result["ok"])
         self.assertEqual(404, result["status_code"])
@@ -527,6 +592,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         with patch("agent.tms_runtime.scripts.yunda_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
+                    "session_profile": "yunda_fixture_selected",
                     "method": "POST",
                     "path": "/ky_inms/public/index.php/price.html",
                     "headers": {
@@ -657,7 +723,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         session = Session()
         broker = types.SimpleNamespace(build_requests_session=lambda validate=True: session)
         with patch("agent.tms_runtime.scripts.ronghui_waybill_proxy.get_session_broker", return_value=broker):
-            result = proxy.run_once({"method": "GET", "path": "", "proxy_prefix": "/ocr/ronghui/live"})
+            result = proxy.run_once({"session_profile": "ronghui_fixture_selected", "method": "GET", "path": "", "proxy_prefix": "/ocr/ronghui/live"})
 
         self.assertTrue(result["ok"])
         self.assertEqual(
@@ -773,7 +839,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         session = Session()
         broker = types.SimpleNamespace(build_requests_session=lambda validate=True: session)
         with patch("agent.tms_runtime.scripts.ronghui_waybill_proxy.get_session_broker", return_value=broker):
-            result = proxy.run_once({"method": "GET", "path": "", "proxy_prefix": "/ocr/ronghui/live"})
+            result = proxy.run_once({"session_profile": "ronghui_fixture_selected", "method": "GET", "path": "", "proxy_prefix": "/ocr/ronghui/live"})
 
         self.assertTrue(result["ok"])
         self.assertEqual("POST", session.calls[0]["method"])
@@ -830,6 +896,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         with patch("agent.tms_runtime.scripts.ronghui_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
+                    "session_profile": "ronghui_fixture_selected",
                     "method": "GET",
                     "path": "",
                     "proxy_prefix": "/receipts/ronghui/live",
@@ -874,6 +941,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
             with patch("agent.tms_runtime.scripts.ronghui_waybill_proxy.get_session_broker", return_value=broker):
                 first = proxy.run_once(
                     {
+                        "session_profile": "ronghui_fixture_selected",
                         "method": "GET",
                         "path": "/minic/combobox",
                         "query": "optionCode=CARD_TYPE&_=1",
@@ -882,6 +950,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
                 )
                 second = proxy.run_once(
                     {
+                        "session_profile": "ronghui_fixture_selected",
                         "method": "GET",
                         "path": "/minic/combobox",
                         "query": "optionCode=CARD_TYPE&_=2",
@@ -951,6 +1020,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         with patch("agent.tms_runtime.scripts.ronghui_waybill_proxy.get_session_broker", return_value=broker) as get_broker:
             result = proxy.run_once(
                 {
+                    "session_profile": "ronghui_fixture_selected",
                     "method": "GET",
                     "path": "/widget/home",
                     "query": "page=next&_winid=abc",
@@ -959,7 +1029,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"])
-        get_broker.assert_called_once_with("price_default")
+        get_broker.assert_called_once_with("ronghui_fixture_selected")
         self.assertEqual(1, len(session.calls))
         self.assertEqual("https://tms.ronghuiwl.com/widget/home?page=next&_winid=abc", session.calls[0]["url"])
         self.assertEqual("/widget/home", result["remote_path"])
@@ -1006,7 +1076,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         broker = types.SimpleNamespace(build_requests_session=lambda validate=True: Session())
         with patch("agent.tms_runtime.scripts.ronghui_waybill_proxy.get_session_broker", return_value=broker):
             with self.assertRaises(TMSAuthStateError) as ctx:
-                proxy.run_once({"method": "GET", "path": "/widget/home", "proxy_prefix": "/ocr/ronghui/live"})
+                proxy.run_once({"session_profile": "ronghui_fixture_selected", "method": "GET", "path": "/widget/home", "proxy_prefix": "/ocr/ronghui/live"})
 
         self.assertEqual("AUTH_REQUIRED", getattr(ctx.exception, "code", ""))
 
@@ -1145,6 +1215,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         with patch("agent.tms_runtime.scripts.ronghui_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
+                    "session_profile": "ronghui_fixture_selected",
                     "method": "GET",
                     "path": "/dataQuery/findAllByCallId",
                     "query": "id=FILES",
@@ -1179,6 +1250,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         with patch("agent.tms_runtime.scripts.ronghui_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
+                    "session_profile": "ronghui_fixture_selected",
                     "method": "GET",
                     "path": "/commonOption/commonHttpGet",
                     "proxy_prefix": "/ocr/ronghui/live",
@@ -1220,6 +1292,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         with patch("agent.tms_runtime.scripts.ronghui_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
+                    "session_profile": "ronghui_fixture_selected",
                     "method": "GET",
                     "path": "/static/miniui2/boot.js",
                     "headers": {
@@ -1260,6 +1333,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         with patch("agent.tms_runtime.scripts.ronghui_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
+                    "session_profile": "ronghui_fixture_selected",
                     "method": "GET",
                     "path": "/static/miniui2/themes/default/miniui.css",
                     "proxy_prefix": "/ocr/ronghui/live",
@@ -1294,6 +1368,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         with patch("agent.tms_runtime.scripts.ronghui_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
+                    "session_profile": "ronghui_fixture_selected",
                     "method": "GET",
                     "path": "/module/config.xml",
                     "proxy_prefix": "/ocr/ronghui/live",
@@ -1323,6 +1398,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         with patch("agent.tms_runtime.scripts.ronghui_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
+                    "session_profile": "ronghui_fixture_selected",
                     "method": "GET",
                     "path": "/widget/home",
                     "proxy_prefix": "/ocr/ronghui/live",
@@ -1367,7 +1443,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
                 session = Session()
                 broker = types.SimpleNamespace(build_requests_session=lambda validate=True: session)
                 with patch("agent.tms_runtime.scripts.ronghui_waybill_proxy.get_session_broker", return_value=broker):
-                    result = proxy.run_once({"method": "GET", "path": auxiliary_path, "query": "id=1"})
+                    result = proxy.run_once({"session_profile": "ronghui_fixture_selected", "method": "GET", "path": auxiliary_path, "query": "id=1"})
 
                 self.assertTrue(result["ok"])
                 self.assertEqual(f"https://tms.ronghuiwl.com{auxiliary_path}?id=1", session.calls[0]["url"])
@@ -1395,6 +1471,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         with patch("agent.tms_runtime.scripts.ronghui_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
+                    "session_profile": "ronghui_fixture_selected",
                     "method": "POST",
                     "path": "/dataOperation/saveTables",
                     "headers": {
@@ -1450,6 +1527,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         with patch("agent.tms_runtime.scripts.ronghui_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
+                    "session_profile": "ronghui_fixture_selected",
                     "method": "GET",
                     "path": "/unauth/download/group1/M00/00/01/demo.jpg",
                     "proxy_prefix": "/receipts/ronghui/live",
@@ -1487,6 +1565,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         with patch("agent.tms_runtime.scripts.ronghui_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
+                    "session_profile": "ronghui_fixture_selected",
                     "method": "GET",
                     "path": "/unauth/download/group1/M00/00/01/demo.jpg",
                     "proxy_prefix": "/receipts/ronghui/live",
@@ -1526,6 +1605,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         with patch("agent.tms_runtime.scripts.ronghui_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
+                    "session_profile": "ronghui_fixture_selected",
                     "method": "POST",
                     "path": "/dataOperation/saveTables",
                     "proxy_prefix": "/ocr/ronghui/live",
@@ -1542,7 +1622,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
     def test_ronghui_waybill_proxy_rejects_non_ronghui_url(self):
         proxy = importlib.import_module("agent.tms_runtime.scripts.ronghui_waybill_proxy")
 
-        result = proxy.run_once({"method": "GET", "path": "https://example.com/static/app.js"})
+        result = proxy.run_once({"session_profile": "ronghui_fixture_selected", "method": "GET", "path": "https://example.com/static/app.js"})
 
         self.assertFalse(result["ok"])
         self.assertEqual("INVALID_PROXY_PATH", result["error_code"])

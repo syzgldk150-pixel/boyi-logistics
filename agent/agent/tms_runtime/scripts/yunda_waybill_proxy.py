@@ -8,6 +8,7 @@ from html import escape
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
+from agent.tms_runtime.account_contracts import require_session_profile
 from agent.tms_runtime.session_broker import get_session_broker
 from agent.tms_runtime.scripts.yunda_waybill_entry import (
     DEFAULT_TIMEOUT_SEC,
@@ -617,7 +618,8 @@ def run_once(params: dict[str, Any]) -> dict[str, Any]:
     content_type = _clean_text(params.get("content_type"))
     headers = _filter_request_headers(params.get("headers"), content_type=content_type)
     body = _decode_body(params)
-    session = get_session_broker("yunda").build_requests_session(validate=False)
+    session_profile = require_session_profile(params)
+    session = get_session_broker(session_profile).build_requests_session(validate=False)
     response = session.request(
         method,
         remote_url,
