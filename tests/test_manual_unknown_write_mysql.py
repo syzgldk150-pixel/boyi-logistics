@@ -1,6 +1,7 @@
 """Exact historical verification against the real migration schema, never production."""
 
 import os
+import json
 from uuid import uuid4
 
 import pytest
@@ -257,3 +258,72 @@ def test_default_settlement_rejects_history_and_still_recovers_current_generatio
     after = _state(database, current)
     assert after["generation"] == {"state": "COMMITTED", "error_code": None}
     assert after["project"]["reconcile_state"] == "STABLE"
+
+
+def test_public_receipt_diagnostics_use_real_columns_and_exact_lease_scope_without_writes(database):
+    identity = _seed(database, outcome="WRITE_OUTCOME_UNKNOWN")
+    unrelated = _seed(database, outcome="WRITE_OUTCOME_UNKNOWN")
+    second_lease = str(uuid4())
+    second_receipt = str(uuid4())
+    with database._connection() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """INSERT INTO automation_project_generation_leases (lease_id, automation_id, generation,
+                orchestration_run_id, lease_owner, runtime_metadata_json, runtime_metadata_sha256, outcome, expires_at)
+                SELECT %s, automation_id, generation, orchestration_run_id, lease_owner,
+                       runtime_metadata_json, runtime_metadata_sha256, outcome, expires_at
+                FROM automation_project_generation_leases WHERE lease_id=%s""",
+            (second_lease, identity["lease_id"]),
+        )
+        cursor.execute(
+            """INSERT INTO automation_write_attempt_receipts (receipt_id, automation_id, generation, lease_id,
+                orchestration_run_id, step_id, request_id, operation, action, argument_sha256,
+                target_ref_sha256, target_ref_json, outcome, execution_resource_keys_json,
+                legacy_scope_quarantined_at, created_at, updated_at)
+                SELECT %s, automation_id, generation, %s, orchestration_run_id, step_id, %s,
+                       operation, action, argument_sha256, target_ref_sha256, '{}', outcome, '[]',
+                       legacy_scope_quarantined_at, created_at, updated_at
+                FROM automation_write_attempt_receipts WHERE lease_id=%s""",
+            (second_receipt, second_lease, str(uuid4()), identity["lease_id"]),
+        )
+        cursor.execute(
+            """UPDATE automation_write_attempt_receipts
+               SET target_ref_json=%s, execution_resource_keys_json=%s, legacy_scope_quarantined_at=NULL,
+                   operation='network.request', action='feishu.sheet.replace_rows'
+               WHERE lease_id=%s""",
+            (json.dumps({"record_count": 17, "locator": "private-fixture-locator"}),
+             json.dumps([["account-write", "private-fixture-account"], ["physical-write", "feishu_sheet", "private-parent", "private-child"]]),
+             identity["lease_id"]),
+        )
+        connection.commit()
+
+    def stored_receipts():
+        with database._connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT * FROM automation_write_attempt_receipts WHERE lease_id IN (%s,%s,%s) ORDER BY receipt_id",
+                (identity["lease_id"], second_lease, unrelated["lease_id"]),
+            )
+            return cursor.fetchall()
+
+    before = stored_receipts()
+    before_run = _state(database, identity)
+    repository = OrchestrationRepository(lambda: _connection(database), database.pymysql.cursors.DictCursor)
+    rows = repository.list_work_item_unknown_writes(identity["work_item_id"])
+    assert {row["lease_id"] for row in rows} == {identity["lease_id"], second_lease}
+    attempts = {row["lease_id"]: row["write_attempts"] for row in rows}
+    first = attempts[identity["lease_id"]][0]
+    second = attempts[second_lease][0]
+    assert len(attempts[identity["lease_id"]]) == len(attempts[second_lease]) == 1
+    assert first["operation"] == "network.request" and first["action"] == "feishu.sheet.replace_rows"
+    assert first["record_count"] == 17 and first["outcome"] == "WRITE_OUTCOME_UNKNOWN"
+    assert first["original_scope_key_kinds"] == ["account-write", "physical-write"]
+    assert not first["scope_missing"] and not first["scope_malformed"] and not first["scope_quarantined"]
+    assert second["receipt_id"] == second_receipt and second["record_count"] is None
+    assert second["scope_missing"] and not second["scope_malformed"] and second["scope_quarantined"]
+    raw = next(row for row in before if row["receipt_id"] == first["receipt_id"])
+    assert first["created_at"] == raw["created_at"].isoformat()
+    assert first["updated_at"] == raw["updated_at"].isoformat()
+    assert not first["created_at"].endswith("Z") and "verified_at" not in first and "effect" not in first
+    serialized = json.dumps(rows)
+    assert "private" not in serialized and unrelated["lease_id"] not in serialized
+    assert "target_ref_json" not in serialized and "execution_resource_keys_json" not in serialized
+    assert stored_receipts() == before and _state(database, identity) == before_run
