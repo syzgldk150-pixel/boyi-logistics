@@ -69,7 +69,8 @@
         "agent/tests/test_session_process_isolation.py",
         "tests/test_session_boundaries.py",
         "tests/test_plugin_runtime_isolation_mysql.py",
-        "tests/test_workflow_runner_durable_admission.py::test_saved_mysql_resource_aliases_overlap_and_unknown_account_scope"
+        "tests/test_workflow_runner_durable_admission.py::test_saved_mysql_resource_aliases_overlap_and_unknown_account_scope",
+        "agent/tests/test_yunda_proxy_session_state.py"
       ],
       "minimum_cases": 20,
       "coverage_gaps": [],
@@ -128,7 +129,7 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "原三态各20轮扫描恢复和日期CAS之外，实际scan/统计HTTP失败产生非空MySQL原锁键，销毁原Runner后新4worker Runner用生产准入函数验证20轮跨插件/角色/账号别名互斥和独立已知范围继续；此后半使用受控metadata和注册本地工作负载，并非第二套已装插件完整业务。实际安装插件共享资源完整链复用A02。旧NULL原键显式UNKNOWN_WRITE_SCOPE_UNAVAILABLE，不能猜测。"
+      "evidence_note": "原三态各20轮扫描恢复和日期CAS之外，实际scan/统计HTTP失败产生非空MySQL原锁键，销毁原Runner后新4worker Runner用生产准入函数验证20轮跨插件/角色/账号别名互斥和独立已知范围继续；此后半使用受控metadata和注册本地工作负载，并非第二套已装插件完整业务。实际安装插件共享资源完整链复用A02。旧NULL原键显式UNKNOWN_WRITE_SCOPE_UNAVAILABLE，不能猜测。 当前同范围未知写以 RESOURCE_WAIT 保护：每轮重复确认实际检查等待期间独立任务完成、2秒内取消、精确预览消费拒绝，并在原写权威恢复后检查取消状态、零新增 receipt 与无隐藏 Run 残留；三态各20轮和每UNKNOWN轮20次确认不变。"
     },
     {
       "id": "A11",
@@ -526,11 +527,12 @@
         "tests/test_automation_project_policy_service.py",
         "tests/test_plugin_module_management.py",
         "tests/test_automation_plugin_management_api.py",
+        "console/tests/test_plugin_settings_initialization.py",
         "probe:custom_settings"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "真实clock专属设置UI，经原packager/inspect/install加载opaque iframe：两账号保存、第二次改绑、stale CAS拒绝、历史恢复/重开，父窗口不可读、业务调用零。测试副本仅移除可选AI harness声明并改变版本，业务payload/settings各成员与原包相同；原AI组合被现有授权保护拒绝不标为修复，也不将此设置验收当作打卡业务验收。"
+      "evidence_note": "真实clock专属设置UI，经原packager/inspect/install加载opaque iframe：两账号保存、第二次改绑、stale CAS拒绝、历史恢复/重开，父窗口不可读、业务调用零。测试副本仅移除可选AI harness声明并改变版本，业务payload/settings各成员与原包相同；原AI组合被现有授权保护拒绝不标为修复，也不将此设置验收当作打卡业务验收。 宿主先监听再加载 iframe；真实 Node 时序回归覆盖缓存子页首次请求、重开和其他来源消息拒绝，完整原浏览器 probe 验证保存与重开。"
     },
     {
       "id": "C05",
@@ -542,7 +544,8 @@
         "tests/test_automation_project_entrypoints.py",
         "agent/tests/test_session_process_isolation.py",
         "probe:customer_collection_flow",
-        "probe:settings_effective"
+        "probe:settings_effective",
+        "agent/tests/test_yunda_proxy_session_state.py"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],

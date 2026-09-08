@@ -58,13 +58,14 @@ def prepare_database(*, database=DATABASE):
         connection.commit()
 
 
-def wait_result(run_id, *, connection_factory=connect, allow_blocked=False):
+def wait_result(run_id, *, connection_factory=connect, allow_blocked=False, allow_resource_wait=False):
     deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
         with connection_factory() as connection, connection.cursor() as cursor:
             cursor.execute('SELECT status,error_code,error_summary FROM agent_runs WHERE run_id=%s', (run_id,))
             run = cursor.fetchone()
-            if run and run['status'] in ({'COMPLETED', 'FAILED_TERMINAL', 'CANCELLED', 'PARTIAL', 'WAITING_APPROVAL'} | ({'BLOCKED_DATA'} if allow_blocked else set())):
+            if run and (run['status'] in ({'COMPLETED', 'FAILED_TERMINAL', 'CANCELLED', 'PARTIAL', 'WAITING_APPROVAL'} | ({'BLOCKED_DATA'} if allow_blocked else set()))
+                    or (allow_resource_wait and run['error_code'] == 'RESOURCE_WAIT')):
                 cursor.execute('SELECT result_summary_json,postcondition_status FROM agent_run_steps WHERE run_id=%s ORDER BY step_order', (run_id,))
                 return {'run_id': run_id, **run, 'steps': cursor.fetchall()}
         time.sleep(0.1)

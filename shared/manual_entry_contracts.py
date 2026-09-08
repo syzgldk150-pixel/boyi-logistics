@@ -8,7 +8,7 @@ import json
 import re
 from collections.abc import Mapping
 from typing import Any
-from urllib.parse import parse_qsl, unquote, urlencode
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse
 
 
 _ENCODED_PATH_META = re.compile(r"%(?:2e|2f|5c|25)", re.IGNORECASE)
@@ -71,10 +71,11 @@ YUNDA_MANUAL_ENTRY_ROUTE_ACTIONS = {
 
 YUNDA_MANUAL_ENTRY_ACTIONS = frozenset(YUNDA_MANUAL_ENTRY_ROUTE_ACTIONS.values())
 
-# The original pages were observed posting these two save endpoints.  No other
-# remote write is authorized by the manual-entry exclusion.
+# Reviewed manual writes use these save endpoints or the exact Ronghui
+# single-number allocation selector below. Allocation is not a read operation.
 YUNDA_MANUAL_PROXY_SAVE_PATH = "/ky_inms/public/index.php/business/waybill/entry/save.html"
 RONGHUI_MANUAL_PROXY_SAVE_PATH = "/dataOperation/saveTables"
+RONGHUI_MANUAL_BILL_ALLOCATION_CALL_ID = "FIND_TMS_BILL_CODE_BY"
 
 # These are the only remote path families observed and reviewed for the
 # independent-origin manual-entry surface.  They are shared so Console and the
@@ -101,7 +102,7 @@ RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES = (
 # Observed original-entry initialization calls. These shared endpoints also
 # dispatch other operations, so neither their path prefix nor FIND_* is a read
 # permission. Parameter names are the observed filters for each exact selector.
-_RONGHUI_INITIALIZATION_FIELDS = {
+_RONGHUI_READ_QUERY_FIELDS = {
     "FIND_SYS_DATE": frozenset(),
     "FIND_SITE_INFO_BY_SITE_CODE": frozenset({"SITE_CODE"}),
     "FIND_SITE_AND_CENTER": frozenset({"SITE_CODE"}),
@@ -111,6 +112,7 @@ _RONGHUI_INITIALIZATION_FIELDS = {
     "FIND_TAB_SITE_BUSINESS_TYPE": frozenset({"SITE_CODE"}),
     "FIND_BILL_CHECK": frozenset({"CREATE_MAN_CODE"}),
     "FIND_TAB_COLLAR_CURRENT_SITE": frozenset({"BELONG_SITE_CODE", "COLLAR_STATUS"}),
+    "GET_BILL_BY_BILLCODE": frozenset({"BILL_CODE"}),
 }
 _YUNDA_EMPTY_INITIALIZATION_PATHS = frozenset({
     "/ky_inms/public/index.php/elecStock.html",
@@ -131,7 +133,7 @@ def _unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return fields
 
 
-def _initialization_fields(params: Mapping[str, Any]) -> dict[str, Any]:
+def _request_fields(params: Mapping[str, Any]) -> dict[str, Any]:
     """Inspect the same body/header representation the proxy will transmit."""
     headers = params.get("headers")
     content_types = [
@@ -188,8 +190,8 @@ def manual_proxy_request_allowed(provider: str, params: Mapping[str, Any]) -> bo
     """Authorize the closed request contract; caller verifies origin/principal.
 
     Pass the final transport params, including headers and body_base64. Parsing
-    failures, duplicate selectors and query/body conflicts never grant a read.
-    Existing GET paths and the two explicitly reviewed manual saves are retained.
+    failures, duplicate selectors and query/body conflicts grant no permission.
+    Reviewed manual writes retain the caller's administrator/origin checks.
     """
     if provider not in {"ronghui", "yunda"}:
         return False
@@ -201,6 +203,16 @@ def manual_proxy_request_allowed(provider: str, params: Mapping[str, Any]) -> bo
     if method == "GET":
         if provider == "yunda":
             return path.startswith(YUNDA_MANUAL_PROXY_ALLOWED_PREFIXES)
+        parsed_path = urlparse(path)
+        if parsed_path.path == "/dataQuery/findAllByCallId":
+            if parsed_path.query or parsed_path.fragment or parsed_path.params:
+                return False
+            try:
+                query_fields = _request_fields({"query": params.get("query")})
+            except (ValueError, TypeError, UnicodeError):
+                return False
+            if query_fields.get("id") == RONGHUI_MANUAL_BILL_ALLOCATION_CALL_ID:
+                return False
         return not path or path.startswith(RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES)
     if method != "POST":
         return False
@@ -210,7 +222,7 @@ def manual_proxy_request_allowed(provider: str, params: Mapping[str, Any]) -> bo
     if path == save_path:
         return True
     try:
-        fields = _initialization_fields(params)
+        fields = _request_fields(params)
     except (ValueError, TypeError, UnicodeError, binascii.Error):
         return False
     if provider == "yunda":
@@ -222,6 +234,16 @@ def manual_proxy_request_allowed(provider: str, params: Mapping[str, Any]) -> bo
     if path != "/dataQuery/findAllByCallId":
         return False
     selector = fields.get("id")
-    if not isinstance(selector, str) or selector not in _RONGHUI_INITIALIZATION_FIELDS:
+    if selector == RONGHUI_MANUAL_BILL_ALLOCATION_CALL_ID:
+        # Native refreshBillCode requests exactly one number. Its automatic
+        # invocation by the saved electronic-master preference remains native
+        # manual-entry behavior; never classify/cache it as an idempotent read.
+        count = fields.get("vCount")
+        return fields.keys() == {"id", "vCount"} and type(count) in {str, int} and str(count) == "1"
+    if not isinstance(selector, str) or selector not in _RONGHUI_READ_QUERY_FIELDS:
         return False
-    return fields.keys() == _RONGHUI_INITIALIZATION_FIELDS[selector] | {"id"}
+    if selector == "GET_BILL_BY_BILLCODE" and (
+        not isinstance(fields.get("BILL_CODE"), str) or not fields["BILL_CODE"].strip()
+    ):
+        return False
+    return fields.keys() == _RONGHUI_READ_QUERY_FIELDS[selector] | {"id"}
