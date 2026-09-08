@@ -210,10 +210,9 @@ class TMSRoutesTests(unittest.TestCase):
                 )
 
         broker = types.SimpleNamespace(build_requests_session=lambda validate: Session())
-        modules = {"ronghui_waybill_proxy": ronghui_waybill_proxy, "yunda_waybill_proxy": yunda_waybill_proxy}
-
-        async def execute_proxy(endpoint, req):
-            return 200, modules[endpoint].run_once(req.params)
+        def resolved_account_params(params, *, default_system, default_purpose):
+            self.assertEqual("price" if default_system == "ronghui" else "", default_purpose)
+            return {**params, "session_profile": f"{default_system}_fixture_selected"}
 
         requests = (
             ("ronghui", "/dataQuery/findAllByCallId", "id=FIND_SYS_DATE", b"", ""),
@@ -227,9 +226,11 @@ class TMSRoutesTests(unittest.TestCase):
             ("yunda", "/ky_inms/public/index.php/business/waybill/entry/getTemplateList.html", "",
              b"CreatedDotCode=fixture-site&IsNew=1&queryType=fixture-type", "application/x-www-form-urlencoded"),
         )
-        with patch.object(ronghui_waybill_proxy, "get_session_broker", return_value=broker), patch.object(
+        with patch.object(ronghui_waybill_proxy, "get_session_broker", return_value=broker) as ronghui_broker, patch.object(
             yunda_waybill_proxy, "get_session_broker", return_value=broker,
-        ), patch("agent.tms_runtime.routes.execute_target", side_effect=execute_proxy) as dispatched:
+        ) as yunda_broker, patch(
+            "agent.tms_runtime.dispatch.resolve_account_params", side_effect=resolved_account_params,
+        ) as resolved:
             for provider, path, query, body, content_type in requests:
                 with self.subTest(provider=provider, path=path, query=query):
                     params = {
@@ -246,6 +247,8 @@ class TMSRoutesTests(unittest.TestCase):
                     )
                     self.assertEqual(200, response.status_code, response.text)
                     self.assertTrue(response.json()["data"]["ok"])
+                    proxy_payload = response.json()["data"]["data"]
+                    self.assertTrue(proxy_payload["ok"])
                     method, remote_url, transport = calls[-1]
                     self.assertEqual("POST", method)
                     self.assertTrue(remote_url.endswith(path + (f"?{query}" if query else "")))
@@ -253,9 +256,11 @@ class TMSRoutesTests(unittest.TestCase):
                     if content_type:
                         self.assertEqual(content_type, transport["headers"]["Content-Type"])
                     self.assertEqual(b'{"fixture_rows":[]}', base64.b64decode(
-                        response.json()["data"]["body_base64"],
+                        proxy_payload["body_base64"],
                     ))
-            self.assertEqual(len(requests), dispatched.call_count)
+                    selected_broker = ronghui_broker if provider == "ronghui" else yunda_broker
+                    selected_broker.assert_called_with(f"{provider}_fixture_selected")
+            self.assertEqual(len(requests), resolved.call_count)
             self.assertEqual(len(requests), len(calls))
 
     def test_direct_agent_lookup_rejects_bypasses_before_dispatch(self):
