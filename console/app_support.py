@@ -50,7 +50,9 @@ from console.finance_service import FinanceError, FinanceService, FinanceValidat
 from shared.redaction import redact_sensitive, redact_text
 from shared.manual_entry_contracts import (
     RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES,
+    RONGHUI_MANUAL_PROXY_SAVE_PATH,
     YUNDA_MANUAL_ENTRY_ROUTE_ACTIONS,
+    YUNDA_MANUAL_PROXY_SAVE_PATH,
 )
 from shared.customer_problem_policy import (
     CUSTOMER_SERVICE_ALLOWED_ACCOUNT_SYSTEMS,
@@ -298,11 +300,11 @@ YUNDA_ENTRY_ACTIONS = dict(YUNDA_MANUAL_ENTRY_ROUTE_ACTIONS)
 
 YUNDA_LIVE_PROXY_PREFIX = "/ocr/yunda/live"
 YUNDA_LIVE_ENTRY_PATH = "/ky_inms/public/index.php/business/waybill/entry/indexNew.html"
-YUNDA_LIVE_SAVE_PATH = "/ky_inms/public/index.php/business/waybill/entry/save.html"
+YUNDA_LIVE_SAVE_PATH = YUNDA_MANUAL_PROXY_SAVE_PATH
 YUNDA_RECEIPT_LIVE_PROXY_PREFIX = "/receipts/yunda/live"
 YUNDA_RECEIPT_LIVE_ENTRY_PATH = "/ky_inms/public/index.php/business/waybill/mailing/index.html"
 RONGHUI_LIVE_PROXY_PREFIX = "/ocr/ronghui/live"
-RONGHUI_LIVE_SAVE_PATH = "/dataOperation/saveTables"
+RONGHUI_LIVE_SAVE_PATH = RONGHUI_MANUAL_PROXY_SAVE_PATH
 ORIGINAL_PAGE_PRIMARY_ORIGIN = "https://boyi.homes"
 ORIGINAL_PAGE_ISOLATED_ORIGIN = "https://www.boyi.homes"
 ORIGINAL_PAGE_ISOLATED_HOST = "www.boyi.homes"

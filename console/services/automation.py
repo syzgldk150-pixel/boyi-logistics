@@ -1,6 +1,7 @@
 """Console application services grouped by business responsibility."""
 
 from typing import Any, Mapping
+import re
 
 from console.app_support import *  # noqa: F403
 from console.services.automation_projects import *  # noqa: F403
@@ -22,6 +23,25 @@ from console.services.automation_preview_support import (
     scan_preview_error_message,
     selection_preview_error_message,
 )
+from shared.orchestration_repository_support import RUN_STATUSES
+
+
+def _automation_existing_run_receipt(details: Any) -> dict[str, str] | None:
+    if not isinstance(details, Mapping):
+        return None
+    run_id = details.get("active_run_id")
+    status = details.get("active_status")
+    kind = details.get("blocking_kind")
+    if (
+        not isinstance(run_id, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", run_id) is None
+        or not isinstance(status, str)
+        or status not in RUN_STATUSES
+        or not isinstance(kind, str)
+        or kind not in {"ACTIVE", "RETRY_PENDING"}
+    ):
+        return None
+    return {"run_id": run_id, "status": status, "blocking_kind": kind}
 
 
 def _automation_blocking_feedback(details: Any) -> tuple[str, str]:
@@ -1269,6 +1289,12 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 "error": failure_message,
                 "error_code": error_code,
             }
+            if already_running:
+                existing_run = _automation_existing_run_receipt(run_result.get("data"))
+                if existing_run is not None:
+                    # This identifies the prior Run. The rejected request is
+                    # still a 409 and is never presented as newly accepted.
+                    response_payload["existing_run"] = existing_run
             if ajax_request:
                 try:
                     upstream_status = HTTPStatus(int(run_result.get("status")))
