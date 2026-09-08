@@ -8,7 +8,7 @@ import pytest
 
 from shared.automation_plugin_repository import AutomationPluginRepository
 from shared.orchestration_repository import OrchestrationRepository
-from shared.orchestration_repository_support import ConcurrentUpdateError
+from shared.orchestration_repository_support import ConcurrentUpdateError, _json_hash, _json_param
 from tests import test_mysql_orchestration_integration as mysql_helpers
 
 
@@ -48,7 +48,7 @@ def _connection(case):
     )
 
 
-def _seed(case, *, current=2, generation_error="WRITE_OUTCOME_UNKNOWN", outcome="WRITE_VERIFIED"):
+def _seed(case, *, current=2, generation_error="WRITE_OUTCOME_UNKNOWN", outcome="WRITE_VERIFIED", runtime_metadata=None):
     identity = {name: str(uuid4()) for name in ("automation_id", "plugin_id", "command_id", "work_item_id", "run_id", "step_id", "lease_id")}
     with case._connection() as connection:
         plugins = AutomationPluginRepository(connection, cursor_factory=case.pymysql.cursors.DictCursor)
@@ -120,8 +120,9 @@ def _seed(case, *, current=2, generation_error="WRITE_OUTCOME_UNKNOWN", outcome=
             cursor.execute(
                 """INSERT INTO automation_project_generation_leases (lease_id, automation_id, generation,
                     orchestration_run_id, lease_owner, runtime_metadata_json, runtime_metadata_sha256, outcome, expires_at)
-                    VALUES (%s, %s, 1, %s, 'integration', '{}', %s, 'WRITE_OUTCOME_UNKNOWN', DATE_SUB(NOW(6), INTERVAL 1 DAY))""",
-                (identity["lease_id"], identity["automation_id"], identity["run_id"], "8" * 64),
+                    VALUES (%s, %s, 1, %s, 'integration', %s, %s, 'WRITE_OUTCOME_UNKNOWN', DATE_SUB(NOW(6), INTERVAL 1 DAY))""",
+                (identity["lease_id"], identity["automation_id"], identity["run_id"],
+                 _json_param(runtime_metadata, {}), _json_hash(runtime_metadata) if runtime_metadata is not None else "8" * 64),
             )
             cursor.execute(
                 """INSERT INTO automation_write_attempt_receipts (receipt_id, automation_id, generation, lease_id,
@@ -327,3 +328,37 @@ def test_public_receipt_diagnostics_use_real_columns_and_exact_lease_scope_witho
     assert "private" not in serialized and unrelated["lease_id"] not in serialized
     assert "target_ref_json" not in serialized and "execution_resource_keys_json" not in serialized
     assert stored_receipts() == before and _state(database, identity) == before_run
+
+
+def test_real_production_scope_metadata_with_ingress_route_is_readable_without_mutation(database):
+    from tests.test_historical_receipt_execution_scopes import _production_case
+
+    row, keys, _physical = _production_case()
+    metadata = json.loads(row["runtime_metadata_json"])
+    identity = _seed(database, outcome="WRITE_OUTCOME_UNKNOWN", runtime_metadata=metadata)
+    target = json.loads(row["target_ref_json"])
+    target["automation_id"] = identity["automation_id"]
+    with database._connection() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """UPDATE automation_write_attempt_receipts SET operation=%s,action=%s,argument_sha256=%s,
+                   target_ref_json=%s,target_ref_sha256=%s,execution_resource_keys_json=%s,
+                   legacy_scope_quarantined_at=NULL WHERE lease_id=%s""",
+            (row["operation"], row["action"], target["content_sha256"], _json_param(target, {}), _json_hash(target),
+             _json_param(keys, []), identity["lease_id"]),
+        )
+        connection.commit()
+
+    def read_receipt():
+        with database._connection() as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT * FROM automation_write_attempt_receipts WHERE lease_id=%s", (identity["lease_id"],))
+            return cursor.fetchone()
+
+    before, receipt_before = _state(database, identity), read_receipt()
+    repository = OrchestrationRepository(lambda: _connection(database), database.pymysql.cursors.DictCursor)
+    item = repository.list_work_item_unknown_writes(identity["work_item_id"])[0]["write_attempts"][0]
+    assert item["scope_derivation_reason"] == "ORIGINAL_RESOURCE_SCOPE_DERIVED"
+    assert item["derived_scope_key_kinds"] == ["account-resource", "physical-write"]
+    assert item["outcome"] == "WRITE_OUTCOME_UNKNOWN"
+    assert all(field not in json.dumps(item) for field in (
+        "runtime_metadata_json", "target_ref_json", "webhook_route", "delivery_status_bitable"))
+    assert _state(database, identity) == before and read_receipt() == receipt_before
