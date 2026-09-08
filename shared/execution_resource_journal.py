@@ -40,6 +40,36 @@ def _decoded_mapping(value):
     return value if isinstance(value, Mapping) else None
 
 
+def _additional_bindings_are_ingress_only(metadata, target_role):
+    extras = set(metadata["resource_bindings"]) - {target_role}
+    if not extras:
+        return True
+    descriptor = metadata.get("runtime_descriptor")
+    if not isinstance(descriptor, Mapping):
+        return False
+    declarations, permissions = descriptor.get("resource_roles"), descriptor.get("runtime_permissions")
+    if not isinstance(declarations, (list, tuple)) or not isinstance(permissions, Mapping):
+        return False
+    operations = permissions.get("broker_operations")
+    if not isinstance(operations, (list, tuple)):
+        return False
+    callable_roles = set()
+    for operation in operations:
+        roles = operation.get("roles") if isinstance(operation, Mapping) else None
+        if not isinstance(roles, (list, tuple)) or any(not isinstance(role, str) for role in roles):
+            return False
+        callable_roles.update(roles)
+    for role in extras:
+        declared = [item for item in declarations if isinstance(item, Mapping) and item.get("role") == role]
+        if len(declared) != 1 or role in callable_roles:
+            return False
+        kinds = declared[0].get("allowed_kinds")
+        if (not isinstance(kinds, (list, tuple)) or not kinds
+                or any(kind not in ("webhook_route", "feishu_route") for kind in kinds)):
+            return False
+    return True
+
+
 def historical_receipt_execution_scope(row, keys):
     """Project a proven single-resource receipt without changing its outcome.
 
@@ -80,8 +110,11 @@ def historical_receipt_execution_scope(row, keys):
     if len(candidates) != 1:
         return keys, "TARGET_BINDING_NOT_UNIQUE"
     role, resource_id = candidates[0]
+    if not _additional_bindings_are_ingress_only(metadata, role):
+        return keys, "ADDITIONAL_BINDING_SCOPE_UNPROVEN"
     # Ingress route bindings can accompany the business resource. Only the
-    # exact pair proven by this receipt's locator participates in this check.
+    # descriptor's non-callable ingress roles may be excluded. Another
+    # business binding could own the only captured physical key instead.
     matching_resources = [key for key in keys if key[0] == "resource-write" and len(key) in {5, 6}
                           and key[-3:-1] == (role, resource_id)]
     if len(matching_resources) != 1:

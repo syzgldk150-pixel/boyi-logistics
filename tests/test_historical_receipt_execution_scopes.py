@@ -122,16 +122,70 @@ def test_incomplete_original_proof_cannot_shrink_scope(change):
     assert historical_receipt_execution_scope(row, keys) == (keys, reasons[change])
 
 
-def test_unrelated_original_bindings_do_not_make_this_receipt_a_multi_target_write():
+@pytest.mark.parametrize("condition", [
+    "ingress_only", "business_resource", "missing_descriptor", "duplicate_declaration",
+    "missing_operations", "malformed_operation", "read_operation", "write_operation", "mixed_kinds",
+])
+def test_only_declared_non_callable_ingress_bindings_can_be_ignored(condition):
     row, keys, physical = _case()
-    row["runtime_metadata_json"]["resource_bindings"].update(
-        webhook_route="original-webhook-route", feishu_route="original-feishu-route", second="another-resource")
-    row["runtime_metadata_sha256"] = _json_hash(row["runtime_metadata_json"])
+    metadata = row["runtime_metadata_json"]
+    # Deliberately not named webhook_route: authority comes from the original
+    # declaration and call graph, never a role-name heuristic.
+    metadata["resource_bindings"]["extra"] = "original-extra-binding"
+    descriptor = {"resource_roles": [{"role": "extra", "allowed_kinds": ["webhook_route"]}],
+                  "runtime_permissions": {"broker_operations": []}}
+    metadata["runtime_descriptor"] = descriptor
+    if condition == "business_resource":
+        descriptor["resource_roles"][0]["allowed_kinds"] = ["feishu_bitable"]
+    elif condition == "missing_descriptor":
+        metadata.pop("runtime_descriptor")
+    elif condition == "duplicate_declaration":
+        descriptor["resource_roles"] *= 2
+    elif condition == "missing_operations":
+        descriptor["runtime_permissions"].clear()
+    elif condition == "malformed_operation":
+        descriptor["runtime_permissions"]["broker_operations"] = [{"roles": "extra"}]
+    elif condition in {"read_operation", "write_operation"}:
+        descriptor["runtime_permissions"]["broker_operations"] = [{
+            "operation": "network.request", "action": "synthetic.action", "roles": ["extra"],
+            "effect": "read" if condition == "read_operation" else "write",
+        }]
+    elif condition == "mixed_kinds":
+        descriptor["resource_roles"][0]["allowed_kinds"].append("feishu_bitable")
+    row["runtime_metadata_sha256"] = _json_hash(metadata)
     scoped, reason = historical_receipt_execution_scope(row, keys)
+    if condition != "ingress_only":
+        assert (scoped, reason) == (keys, "ADDITIONAL_BINDING_SCOPE_UNPROVEN")
+        return
     assert reason == "ORIGINAL_RESOURCE_SCOPE_DERIVED" and physical in scoped
     assert not any(key[0] == "account-write" for key in scoped)
     second_physical = (*physical[:3], _hash("another-table"))
     assert historical_receipt_execution_keys(row, (*keys, second_physical)) == (*keys, second_physical)
+
+
+def test_receipt_target_b_cannot_inherit_the_only_physical_key_from_business_resource_a():
+    row, keys, physical = _case()
+    metadata = row["runtime_metadata_json"]
+    metadata["resource_bindings"]["resource_a"] = "parseable-resource-a"
+    metadata["runtime_descriptor"] = {
+        "resource_roles": [
+            {"role": role, "allowed_kinds": ["feishu_bitable"]}
+            for role in ("resource_a", "delivery_status_bitable")
+        ],
+        "runtime_permissions": {"broker_operations": [{
+            "operation": row["operation"], "action": row["action"], "effect": "write",
+            "roles": ["resource_a", "delivery_status_bitable"],
+        }]},
+    }
+    row["runtime_metadata_sha256"] = _json_hash(metadata)
+    physical_a = (*physical[:2], _hash("only-a-base"), _hash("only-a-table"))
+    keys = tuple(physical_a if key == physical else key for key in keys) + (
+        ("resource-write", "ronghui-read-account", "sync_delivery_status", "resource_a",
+         "parseable-resource-a", "INTERNAL_PROJECTION_WRITE"),
+    )
+    # The locator still identifies B and its exact resource-write key, while
+    # only A yielded a physical scope. The original account protection stays.
+    assert historical_receipt_execution_scope(row, keys) == (keys, "ADDITIONAL_BINDING_SCOPE_UNPROVEN")
 
 
 def _production_case():
