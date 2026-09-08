@@ -67,6 +67,8 @@ def test_write_attempt_projection_is_closed_json_friendly_and_never_returns_scop
         "created_at": "2026-09-08T17:00:00", "updated_at": "2026-09-08T17:01:00",
         "original_scope_key_kinds": ["account-write", "physical-write"],
         "scope_missing": False, "scope_malformed": False, "scope_quarantined": False,
+        "scope_derivation_reason": "LEASE_METADATA_UNAVAILABLE",
+        "derived_scope_key_kinds": ["account-write", "physical-write"],
     }
     assert "private" not in json.dumps(result)
     sql, params = calls[1]
@@ -75,7 +77,9 @@ def test_write_attempt_projection_is_closed_json_friendly_and_never_returns_scop
     assert "l.generation=a.generation AND l.orchestration_run_id=a.orchestration_run_id" in sql
     assert "r.work_item_id=%s" in sql and "LIMIT 1001" in sql
     assert "FOR UPDATE" not in sql and "scan_recovery_payload_json" not in sql
-    assert "a.target_ref_json" not in sql.replace("JSON_EXTRACT(a.target_ref_json, '$.record_count')", "")
+    assert "a.target_ref_json, a.target_ref_sha256" in sql
+    assert "l.runtime_metadata_json, l.runtime_metadata_sha256" in sql
+    assert all(name not in json.dumps(result) for name in ("target_ref_json", "runtime_metadata_json", "sha256"))
 
 
 @pytest.mark.parametrize("scope,missing,malformed,kinds", [
@@ -94,6 +98,31 @@ def test_missing_malformed_and_quarantined_scopes_are_explicit(scope, missing, m
     assert row["scope_missing"] is missing and row["scope_malformed"] is malformed
     assert row["original_scope_key_kinds"] == kinds and row["scope_quarantined"]
     assert row["record_count"] is None and "private" not in json.dumps(row)
+    if missing:
+        assert row["scope_derivation_reason"] == "LEGACY_SCOPE_QUARANTINED"
+    elif malformed and not kinds:
+        assert row["scope_derivation_reason"] == "ORIGINAL_SCOPE_MALFORMED"
+
+
+@pytest.mark.parametrize("tamper,reason,kinds", [
+    (None, "ORIGINAL_RESOURCE_SCOPE_DERIVED", ["account-resource", "physical-write"]),
+    ("runtime_metadata_sha256", "LEASE_METADATA_DIGEST_MISMATCH", ["account-write", "physical-write", "resource-write"]),
+    ("target_ref_sha256", "TARGET_LOCATOR_DIGEST_MISMATCH", ["account-write", "physical-write", "resource-write"]),
+])
+def test_public_scope_reason_uses_the_same_proof_without_returning_original_material(tamper, reason, kinds):
+    from shared.orchestration_repository_support import _json_hash
+    from tests.test_historical_receipt_execution_scopes import _case
+
+    proof, keys, _physical = _case()
+    proof["automation_id"] = proof["target_ref_json"]["automation_id"] = "project-1"
+    proof["target_ref_sha256"] = _json_hash(proof["target_ref_json"])
+    if tamper:
+        proof[tamper] = "0" * 64
+    repo, _ = repository([lease()], [attempt(**proof, execution_resource_keys_json=keys)])
+    result = list_work_item_unknown_writes(repo, "work-1")[0]["write_attempts"][0]
+    assert result["scope_derivation_reason"] == reason and result["derived_scope_key_kinds"] == kinds
+    serialized = json.dumps(result)
+    assert all(value not in serialized for value in ("original-resource", "ronghui-read-account", "target_ref_json", "runtime_metadata_json"))
 
 
 @pytest.mark.parametrize("updates", [
