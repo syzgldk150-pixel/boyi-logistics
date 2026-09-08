@@ -528,10 +528,20 @@ class OrchestrationRepositoryTests(unittest.TestCase):
             "'COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED'",
             select_sql,
         )
-        self.assertIn("'PLANNED', 'VALIDATED', 'FAILED_RETRYABLE'", select_sql)
-        self.assertIn("blocking_step.status IN", select_sql)
-        self.assertIn("blocking_lease.expires_at", select_sql)
+        priority_sql = " ".join(select_sql.split("ORDER BY", 1)[1].split())
+        self.assertIn("'RECEIVED', 'CONTEXT_READY', 'PLANNED', 'VALIDATED'", priority_sql)
+        self.assertNotIn("FAILED_RETRYABLE", priority_sql)
+        self.assertNotIn("blocking_step", priority_sql)
+        self.assertIn("NULLIF(TRIM(r.worker_id), '') IS NOT NULL", priority_sql)
+        self.assertIn("r.lease_expires_at > UTC_TIMESTAMP(6)", priority_sql)
+        self.assertIn("blocking_lease.orchestration_run_id=r.run_id", priority_sql)
+        self.assertIn("blocking_lease.outcome IN ( 'RUNNING', 'VERIFYING' )", priority_sql)
+        self.assertIn("blocking_lease.expires_at > UTC_TIMESTAMP(6)", priority_sql)
+        self.assertIn("THEN 0 ELSE 1 END", priority_sql)
+        self.assertIn("LIMIT %s", select_sql)
         self.assertNotIn("FOR UPDATE", select_sql)
+        self.assertEqual(1, len(cursor.calls))
+        self.assertTrue(select_sql.lstrip().startswith("SELECT "))
         self.assertEqual(("daily_sign", 100), select_params)
         self.assertEqual(["run-1", "run-2"], run_ids)
 
