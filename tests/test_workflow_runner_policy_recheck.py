@@ -1283,6 +1283,7 @@ def test_real_project_policy_service_blocks_old_unapproved_run_under_new_automat
     asyncio.run(runner._process_claimed(claimed))
 
     assert execution.execute_calls == 0
-    assert repository.run["status"] == RunStatus.BLOCKED_DATA.value
+    assert repository.run["status"] == RunStatus.FAILED_TERMINAL.value
     assert repository.run["error_code"] == "APPROVAL_POLICY_CHANGED"
-    assert repository.work_item["status"] == "BLOCKED_DATA"
+    assert repository.run["finished_at"] is not None
+    assert repository.work_item["status"] == "OPEN"
