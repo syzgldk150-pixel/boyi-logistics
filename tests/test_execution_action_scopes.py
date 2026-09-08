@@ -8,7 +8,7 @@ import pytest
 
 from agent.automation_plugins.broker import LocalBrokerCapabilityIssuer
 from agent.automation_plugins.errors import PluginExecutionError
-from agent.automation_plugins.first_party import _FIRST_PARTY_BROKER_ACTIONS
+from agent.automation_plugins.first_party import _ACTION_RESOURCE_ROLES, _FIRST_PARTY_BROKER_ACTIONS
 from agent.orchestration.execution_resources import (
     EXECUTION_ACTION_SCOPES, canonical_resource_write_locks, execution_keys_conflict,
 )
@@ -33,6 +33,7 @@ def capability(plugin="sync_delivery_status", *, account="account-a", parent="bo
     return {"_plugin_runtime": {
         "plugin_id": plugin, "account_bindings": {"account_id": account},
         "resource_bindings": resources,
+        "resource_roles": [dict(item) for item in _ACTION_RESOURCE_ROLES.get(plugin, ())],
         "runtime_permissions": {"browser": True, "network": True, "office": False,
             "max_broker_calls": 20, "broker_operations": operations},
     }}, saved
@@ -136,6 +137,87 @@ def test_unknown_projection_conflicts_across_accounts_and_known_table_writers_sh
         }]
         scoped, bounded, _ = scopes(cap, saved)
         assert bounded and ("projection-write", "waybills") in scoped
+
+
+def test_first_party_unbound_optional_sheet_does_not_block_stats_and_broker_cannot_call_it(tmp_path):
+    cap, saved = capability("sync_arrival_stats")
+    runtime = cap["_plugin_runtime"]
+    role = "arrival_stats_pending_sheet"
+    assert next(item for item in runtime["resource_roles"] if item["role"] == role)["required"] is False
+    runtime["resource_bindings"].pop(role)
+    saved.pop(role)
+    keys, bounded, actions = scopes(cap, saved)
+    assert bounded and ("network.request", "feishu.sheet.replace", role) not in actions
+    assert not any(key[0] == "account-write" for key in keys)
+    delivery, delivery_saved = capability()
+    _, _, delivery_actions = scopes(delivery, delivery_saved)
+    old_feishu = delivery_actions[("network.request", "feishu.bitable.write_records", "delivery_status_bitable")]
+
+    async def admit():
+        runner = _runner(_ClaimRepository())
+        runner._saved_resource_provider = saved.get
+        runner._repository.get_unknown_execution_resource_keys = lambda: old_feishu
+        step = _step(operation=OperationType.INTERNAL_PROJECTION_WRITE, account_id="account-a")
+        slot = await runner._acquire_execution_slot(step, _plan(step), cap)
+        assert set(slot.resource_keys) == keys
+        slot()
+    asyncio.run(admit())
+
+    receipts = []
+    issuer = LocalBrokerCapabilityIssuer(tmp_path / "broker.sock", write_attempt_recorder=receipts.append)
+    token = issuer.issue(
+        automation_id="synthetic-stats", plugin_version="1.0.0", tool_name="automation.synthetic-stats.run",
+        ttl_seconds=60, runtime_permissions=runtime["runtime_permissions"],
+        account_roles=({"role": "account_id"},), resource_roles=tuple(runtime["resource_roles"]),
+        account_bindings=runtime["account_bindings"], resource_bindings=runtime["resource_bindings"],
+        write_attempt_context={"automation_id": "synthetic-stats", "plugin_id": "sync_arrival_stats",
+            "generation": 1, "lease_id": str(uuid4()), "orchestration_run_id": str(uuid4()), "step_id": str(uuid4())},
+    )
+    try:
+        with pytest.raises(PluginExecutionError) as error:
+            issuer.consume(token, request_id=str(uuid4()), operation="network.request",
+                action="feishu.sheet.replace", role=role, arguments={"records": []})
+        assert error.value.code == "BROKER_ROLE_UNBOUND"
+        assert issuer.consumed_call_count(token) == issuer.started_mutating_call_count(token) == 0
+        assert receipts == []
+    finally:
+        issuer.revoke(token)
+
+
+@pytest.mark.parametrize("change", [
+    "required", "undeclared", "duplicate", "account-role", "null-binding", "empty-binding",
+    "unknown-action", "dynamic-action",
+])
+def test_only_proven_absent_optional_roles_can_be_omitted(change):
+    cap, saved = capability("sync_arrival_stats")
+    runtime = cap["_plugin_runtime"]
+    role = "arrival_stats_pending_sheet"
+    declaration = next(item for item in runtime["resource_roles"] if item["role"] == role)
+    runtime["resource_bindings"].pop(role)
+    saved.pop(role)
+    if change == "required":
+        declaration["required"] = True
+    elif change == "undeclared":
+        runtime["resource_roles"].remove(declaration)
+    elif change == "duplicate":
+        runtime["resource_roles"].append(dict(declaration))
+    elif change == "account-role":
+        runtime["account_roles"] = [{"role": role}]
+    elif change in {"null-binding", "empty-binding"}:
+        runtime["resource_bindings"][role] = None if change == "null-binding" else ""
+    else:
+        operation = next(item for item in runtime["runtime_permissions"]["broker_operations"]
+            if item["action"] == "feishu.sheet.replace")
+        if change == "unknown-action":
+            operation["action"] = "custom.write"
+        else:
+            operation["dynamic_effect"] = True
+    _, bounded, _ = scopes(cap, saved)
+    assert not bounded
+    runner = _runner(_ClaimRepository())
+    runner._saved_resource_provider = saved.get
+    step = _step(operation=OperationType.INTERNAL_PROJECTION_WRITE, account_id="account-a")
+    assert ("account-write", "account-a") in runner._execution_lock_keys(step, _plan(step), cap)
 
 
 def issue_receipts(issuer, cap):

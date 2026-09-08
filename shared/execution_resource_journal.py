@@ -40,55 +40,71 @@ def _decoded_mapping(value):
     return value if isinstance(value, Mapping) else None
 
 
-def historical_receipt_execution_keys(row, keys):
+def historical_receipt_execution_scope(row, keys):
     """Project a proven single-resource receipt without changing its outcome.
 
     Older mixed tools copied their whole grant into each receipt. Narrow only
     when the exact original lease, target locator and original resource key
     prove which sole physical resource this reviewed action could write. No
     current configuration is consulted. Incomplete proof retains the scope.
+    The reason code contains no original identity or configuration values.
     """
     operation, action = row.get("operation"), row.get("action")
     if operation not in {"network.request", "http.request"} or action not in (
         FEISHU_CHILD_WRITE_ACTIONS | FEISHU_PARENT_WRITE_ACTIONS
     ):
-        return keys
+        return keys, "ACTION_SCOPE_UNREVIEWED"
     metadata = _decoded_mapping(row.get("runtime_metadata_json"))
     target = _decoded_mapping(row.get("target_ref_json"))
-    if not metadata or not target:
-        return keys
-    if (_json_hash(metadata) != row.get("runtime_metadata_sha256")
-            or _json_hash(target) != row.get("target_ref_sha256")):
-        return keys
+    if not metadata:
+        return keys, "LEASE_METADATA_UNAVAILABLE"
+    if not target:
+        return keys, "TARGET_LOCATOR_UNAVAILABLE"
+    if _json_hash(metadata) != row.get("runtime_metadata_sha256"):
+        return keys, "LEASE_METADATA_DIGEST_MISMATCH"
+    if _json_hash(target) != row.get("target_ref_sha256"):
+        return keys, "TARGET_LOCATOR_DIGEST_MISMATCH"
     bindings = metadata.get("resource_bindings")
-    if not isinstance(bindings, Mapping) or len(bindings) != 1:
-        return keys
-    role, resource_id = next(iter(bindings.items()))
-    if any(not isinstance(value, str) or not value or value != value.strip() for value in (role, resource_id)):
-        return keys
+    if not isinstance(bindings, Mapping) or not bindings:
+        return keys, "ORIGINAL_BINDINGS_UNAVAILABLE"
     if any(target.get(field) != value for field, value in (
         ("operation", operation), ("action", action), ("automation_id", row.get("automation_id")),
-        ("role_sha256", hashlib.sha256(role.encode()).hexdigest()),
-        ("binding_sha256", hashlib.sha256(resource_id.encode()).hexdigest()),
     )):
-        return keys
-    if not any(key[0] == "resource-write" and len(key) in {5, 6}
-               and key[-3:-1] == (role, resource_id) for key in keys):
-        return keys
+        return keys, "TARGET_IDENTITY_MISMATCH"
+    candidates = [
+        (role, resource_id) for role, resource_id in bindings.items()
+        if all(isinstance(value, str) and value and value == value.strip() for value in (role, resource_id))
+        and target.get("role_sha256") == hashlib.sha256(role.encode()).hexdigest()
+        and target.get("binding_sha256") == hashlib.sha256(resource_id.encode()).hexdigest()
+    ]
+    if len(candidates) != 1:
+        return keys, "TARGET_BINDING_NOT_UNIQUE"
+    role, resource_id = candidates[0]
+    # Ingress route bindings can accompany the business resource. Only the
+    # exact pair proven by this receipt's locator participates in this check.
+    matching_resources = [key for key in keys if key[0] == "resource-write" and len(key) in {5, 6}
+                          and key[-3:-1] == (role, resource_id)]
+    if len(matching_resources) != 1:
+        return keys, "ORIGINAL_RESOURCE_KEY_NOT_UNIQUE"
     physical = [key for key in keys if key[0] == "physical-write"]
     kind = "feishu_bitable" if action.startswith("feishu.bitable.") else "feishu_sheet"
     if len(physical) != 1:
-        return keys
+        return keys, "ORIGINAL_PHYSICAL_SCOPE_NOT_SINGLE"
     key = physical[0]
     if (len(key) != 4 or key[1] != kind or not re.fullmatch(r"[a-f0-9]{64}", key[2])
             or (key[3] != "*" and not re.fullmatch(r"[a-f0-9]{64}", key[3]))
             or (action in FEISHU_PARENT_WRITE_ACTIONS and key[3] != "*")):
-        return keys
+        return keys, "ORIGINAL_PHYSICAL_SCOPE_INVALID"
     # A generic writer with no proven action scope must still conflict with
     # this original account. Known TMS writes use their distinct TMS scope.
     accounts = {entry[1] for entry in keys if entry[0] == "account-write" and len(entry) == 2}
     markers = {("account-resource", account, *key[1:]) for account in accounts}
-    return tuple(sorted({key, *markers}))
+    return tuple(sorted({key, *markers})), "ORIGINAL_RESOURCE_SCOPE_DERIVED"
+
+
+def historical_receipt_execution_keys(row, keys):
+    """Return the same proof result used by the safe read-only diagnostics."""
+    return historical_receipt_execution_scope(row, keys)[0]
 
 
 def unknown_execution_keys(repository):
