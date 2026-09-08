@@ -1,4 +1,4 @@
-"""Closed original-page reads using observed shapes and synthetic field values."""
+"""Closed original-page reads/manual writes with synthetic field values."""
 
 import base64
 import json
@@ -54,6 +54,45 @@ class ManualProxyRequestContractTests(unittest.TestCase):
             path="/ky_inms/public/index.php/business/waybill/entry/getTemplateList.html",
             body="CreatedDotCode=fixture-site&IsNew=1&queryType=fixture-type",
         )))
+
+    def test_ronghui_manual_allocation_and_following_existence_check(self):
+        for body, content_type in (
+            ("vCount=1", "application/x-www-form-urlencoded"),
+            ('{"vCount":1}', "application/json"),
+            ('{"vCount":"1"}', "application/json"),
+        ):
+            with self.subTest(body=body):
+                self.assertTrue(manual_proxy_request_allowed("ronghui", self.request(
+                    query="id=FIND_TMS_BILL_CODE_BY", content_type=content_type,
+                    body=body, body_base64=base64.b64encode(body.encode()).decode(),
+                )))
+        self.assertTrue(manual_proxy_request_allowed("ronghui", self.request(
+            query="id=GET_BILL_BY_BILLCODE", body="BILL_CODE=fixture-bill",
+        )))
+
+    def test_ronghui_allocation_cannot_expand_count_or_hide_conflicting_fields(self):
+        selector = "id=FIND_TMS_BILL_CODE_BY"
+        attempts = [self.request(query=selector, body=f"vCount={count}")
+                    for count in ("", "0", "2", "-1", "1.0", "01", "true")]
+        attempts += [
+            {"method": "GET", "path": "/dataQuery/findAllByCallId", "query": selector + "&vCount=1"},
+            {"method": "GET", "path": "/dataQuery/findAllByCallId?" + selector + "&vCount=1"},
+            {"method": "GET", "path": "/dataQuery/findAllByCallId;ignored", "query": selector + "&vCount=1"},
+            self.request(query=selector),
+            self.request(query=selector + "&vCount=1", body="vCount=1"),
+            self.request(query=selector + "&id=FIND_SYS_DATE", body="vCount=1"),
+            self.request(query=selector, body="vCount=1&vCount=2"),
+            self.request(query=selector, body="vCount=1&action=delete"),
+            self.request(query=selector, body="vCount=1", body_base64=base64.b64encode(b"vCount=2").decode()),
+            self.request(query=selector, body='{"vCount":true}', content_type="application/json"),
+            self.request(query=selector, body='{"vCount":1.0}', content_type="application/json"),
+            self.request(query="id=GET_BILL_BY_BILLCODE", body="BILL_CODE="),
+            self.request(query="id=GET_BILL_BY_BILLCODE", body="BILL_CODE=x&action=delete"),
+            self.request(query="id=GET_BILL_BY_BILLCODE&BILL_CODE=x", body="BILL_CODE=y"),
+        ]
+        for params in attempts:
+            with self.subTest(params=params):
+                self.assertFalse(manual_proxy_request_allowed("ronghui", params))
 
     def test_form_json_and_base64_inspect_exact_final_body(self):
         for content_type, body in (

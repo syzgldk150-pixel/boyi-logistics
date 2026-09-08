@@ -6,6 +6,7 @@ from functools import partial
 import json
 import secrets
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
@@ -73,6 +74,23 @@ def recover(management):
     return recover_scan_codes_unknown_write(SimpleNamespace(catalog=management.catalog, target_service=management.targets), 'scan_codes', str(uuid4()))
 
 
+def scan_run_ids():
+    with connection_factory() as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT r.run_id FROM agent_runs r JOIN agent_commands c ON c.command_id=r.command_id WHERE c.automation_id='scan_codes'")
+        return {row['run_id'] for row in cursor.fetchall()}
+
+
+def unstarted_confirmation(run_id):
+    with connection_factory() as connection, connection.cursor() as cursor:
+        cursor.execute('SELECT status,started_at FROM agent_run_steps WHERE run_id=%s ORDER BY step_order', (run_id,))
+        steps = cursor.fetchall()
+        cursor.execute('SELECT COUNT(*) AS count FROM automation_write_attempt_receipts WHERE orchestration_run_id=%s', (run_id,))
+        receipt_count = cursor.fetchone()['count']
+    assert len(steps) == 1 and steps[0]['status'] == 'PENDING' and steps[0]['started_at'] is None, steps
+    assert receipt_count == 0, {'run_id': run_id, 'write_receipt_count': receipt_count}
+    return {'steps': steps, 'write_receipt_count': receipt_count}
+
+
 def run_case(management, runner, boundary, unrelated, *, mode, round_number):
     boundary.mode = mode
     boundary.ledger.clear()
@@ -94,20 +112,47 @@ def run_case(management, runner, boundary, unrelated, *, mode, round_number):
             assert {row['outcome'] for row in cursor.fetchall()} == {'WRITE_OUTCOME_UNKNOWN'}
         fresh_preview = invoke(management, runner)
         assert fresh_preview['status'] == 'COMPLETED' and len(boundary.ledger) == expected_writes
+        previous_run_ids = scan_run_ids()
         blocked_confirmations = []
+        accepted_confirmations = []
         for _ in range(20):
             try:
                 receipt = signed_request(management, '/internal/v1/automation-projects/scan_codes/invoke',
                     payload={'request_id': str(uuid4()), 'preview_run_id': fresh_preview['run_id']})
             except AssertionError as error:
-                assert 'AUTOMATION_ALREADY_RUNNING' in str(error) and 'UNKNOWN_WRITE' in str(error), str(error)
-                blocked_confirmations.append(str(error))
+                response = json.loads(str(error)[str(error).index('{'):])
+                code = response['error']['code']
+                if code == 'SCAN_PREVIEW_ALREADY_CONSUMED':
+                    assert accepted_confirmations, response
+                else:
+                    assert code == 'AUTOMATION_ALREADY_RUNNING' and response['data']['blocking_kind'] == 'UNKNOWN_WRITE', response
+                blocked_confirmations.append({'error_code': code, 'response': response})
             else:
                 runner.runner.wake(receipt['run_id'])
-                protected = wait_result(receipt['run_id'], connection_factory=connection_factory, allow_blocked=True)
-                assert protected['status'] in {'BLOCKED_DATA', 'FAILED_TERMINAL'} and len(boundary.ledger) == expected_writes, protected
-                blocked_confirmations.append(protected)
+                protected = wait_result(receipt['run_id'], connection_factory=connection_factory,
+                    allow_blocked=True, allow_resource_wait=True)
+                assert protected['status'] == 'RUNNING' and protected['error_code'] == 'RESOURCE_WAIT', protected
+                assert protected['error_summary'] == 'execution resource has an unresolved external write', protected
+                before_cancel = unstarted_confirmation(receipt['run_id'])
+                assert len(boundary.ledger) == expected_writes
+                while_waiting = invoke(management, runner, automation_id=unrelated)
+                assert while_waiting['status'] == 'COMPLETED', while_waiting
+                cancellation_started = time.monotonic()
+                cancellation = asyncio.run_coroutine_threadsafe(
+                    runner.control_plane.cancel_run(receipt['run_id'], actor=ACTOR), runner.loop).result(timeout=2)
+                cancelled = wait_result(receipt['run_id'], connection_factory=connection_factory)
+                cancellation_seconds = time.monotonic() - cancellation_started
+                assert cancelled['status'] == 'CANCELLED' and cancellation_seconds <= 2, (cancelled, cancellation_seconds)
+                after_cancel = unstarted_confirmation(receipt['run_id'])
+                assert len(boundary.ledger) == expected_writes
+                confirmation = {'protected': protected, 'before_cancel': before_cancel,
+                    'independent_while_waiting': while_waiting, 'cancellation': cancellation,
+                    'cancelled': cancelled, 'after_cancel': after_cancel, 'cancellation_seconds': cancellation_seconds}
+                accepted_confirmations.append(confirmation)
+                blocked_confirmations.append(confirmation)
         assert len(boundary.ledger) == expected_writes and len(blocked_confirmations) == 20
+        assert len(accepted_confirmations) == 1, accepted_confirmations
+        assert scan_run_ids() - previous_run_ids == {item['protected']['run_id'] for item in accepted_confirmations}
         # The source becomes reachable; re-read it rather than guessing success.
         boundary.mode = 'APPLIED'
     with connection_factory() as connection, connection.cursor() as cursor:
@@ -126,6 +171,14 @@ def run_case(management, runner, boundary, unrelated, *, mode, round_number):
     # Retrying the management observation cannot replay the business write.
     assert recover(management) is None
     assert len(boundary.ledger) == expected_writes
+    if mode == 'UNKNOWN':
+        for confirmation in accepted_confirmations:
+            run_id = confirmation['protected']['run_id']
+            settled = wait_result(run_id, connection_factory=connection_factory)
+            assert settled['status'] == 'CANCELLED', settled
+            confirmation['after_original_recovery'] = {'run': settled, **unstarted_confirmation(run_id)}
+        assert scan_run_ids() - previous_run_ids == {item['protected']['run_id'] for item in accepted_confirmations}
+        assert len(boundary.ledger) == expected_writes
     with connection_factory() as connection, connection.cursor() as cursor:
         cursor.execute('SELECT COUNT(*) AS count FROM scan_codes WHERE snapshot_date=%s', (head['snapshot_date'],))
         restored_count = cursor.fetchone()['count']
@@ -144,7 +197,8 @@ def run_case(management, runner, boundary, unrelated, *, mode, round_number):
     return {'mode': mode, 'round': round_number, 'blocked_run_id': blocked['run_id'], 'resolution': resolution,
         'result': result, 'independent_run': independent, 'safe_retry': safe_retry,
         'restored_count': restored_count, 'external_writes': len(boundary.ledger),
-        'blocked_confirmation_count': len(blocked_confirmations) if mode == 'UNKNOWN' else 0}
+        'blocked_confirmation_count': len(blocked_confirmations) if mode == 'UNKNOWN' else 0,
+        'confirmation_evidence': blocked_confirmations if mode == 'UNKNOWN' else []}
 
 
 def run_cancel_case(management, runner, boundary, unrelated, round_number):

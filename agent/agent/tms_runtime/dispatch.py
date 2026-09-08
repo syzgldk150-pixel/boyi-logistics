@@ -7,6 +7,7 @@ import importlib
 import logging
 import os
 import sys
+import threading
 import time
 import traceback
 from dataclasses import dataclass
@@ -261,6 +262,7 @@ async def execute_target(name: str, req: TaskRequest) -> tuple[int, dict[str, An
             _sanitize_params_for_log(req.params),
         )
         started = time.time()
+        original_page_cancelled = None
         try:
             target = TARGETS[name]
             input_params = dict(req.params)
@@ -301,6 +303,12 @@ async def execute_target(name: str, req: TaskRequest) -> tuple[int, dict[str, An
                     output_session_profile_field=role_binding.get("output_session_profile_field", "session_profile"),
                 )
             fn = _load_callable(target)
+            if name == "yunda_waybill_proxy":
+                # to_thread survives wait_for cancellation. A queued raw page
+                # request must not start network I/O after this caller expires.
+                original_page_cancelled = threading.Event()
+                effective_params["_original_page_deadline_monotonic"] = time.monotonic() + req.timeout_sec
+                effective_params["_original_page_cancelled"] = original_page_cancelled
             result = await asyncio.wait_for(
                 asyncio.to_thread(_run_sync, fn, effective_params),
                 timeout=req.timeout_sec,
@@ -324,9 +332,12 @@ async def execute_target(name: str, req: TaskRequest) -> tuple[int, dict[str, An
                 "cost_sec": cost,
                 "data": {},
             }
-        except asyncio.TimeoutError as exc:
+        except (asyncio.TimeoutError, TimeoutError) as exc:
             logger.warning("tms timeout %s after=%ss", name, req.timeout_sec)
             return 504, _error_payload(exc, override_type="Timeout", override_error=f"Task timeout after {req.timeout_sec}s")
         except Exception as exc:
             logger.error("tms error %s %s\n%s", name, exc, traceback.format_exc())
             return 500, _error_payload(exc)
+        finally:
+            if original_page_cancelled is not None:
+                original_page_cancelled.set()

@@ -619,14 +619,15 @@ def run_once(params: dict[str, Any]) -> dict[str, Any]:
     headers = _filter_request_headers(params.get("headers"), content_type=content_type)
     body = _decode_body(params)
     session_profile = require_session_profile(params)
-    session = get_session_broker(session_profile).build_requests_session(validate=False)
-    response = session.request(
+    response = get_session_broker(session_profile).request_original_page(
         method,
         remote_url,
         headers=headers,
         data=body if method != "GET" else None,
         allow_redirects=True,
         timeout=int(params.get("timeout_sec") or DEFAULT_TIMEOUT_SEC),
+        deadline_monotonic=params.get("_original_page_deadline_monotonic"),
+        cancelled=params.get("_original_page_cancelled"),
     )
     raw_content = _response_content(response)
     _auth_if_login_response(response, raw_content.decode("utf-8", errors="replace"))

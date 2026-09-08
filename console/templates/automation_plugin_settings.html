@@ -26,7 +26,7 @@
   <iframe
     class="plugin-settings-frame"
     title="{{ instance_name }} 设置"
-    src="/automations/{{ automation_id }}/settings/assets/index.html?bridge_session={{ bridge_session }}"
+    data-settings-src="/automations/{{ automation_id }}/settings/assets/index.html?bridge_session={{ bridge_session }}"
     sandbox="allow-scripts"
     referrerpolicy="no-referrer"
     data-plugin-settings-frame
@@ -126,6 +126,8 @@
       respond(request, { ok: false, data: null, message });
     }
   });
+  // A cached package must not send its one-shot context request before this listener exists.
+  iframe.src = iframe.dataset.settingsSrc;
 })();
 </script>
 {% endblock %}

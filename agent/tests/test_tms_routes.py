@@ -209,7 +209,10 @@ class TMSRoutesTests(unittest.TestCase):
                     headers={"Content-Type": "application/json"}, url=url,
                 )
 
-        broker = types.SimpleNamespace(build_requests_session=lambda validate: Session())
+        broker = types.SimpleNamespace(
+            build_requests_session=lambda validate: Session(),
+            request_original_page=Session().request,
+        )
         def resolved_account_params(params, *, default_system, default_purpose):
             self.assertEqual("price" if default_system == "ronghui" else "", default_purpose)
             return {**params, "session_profile": f"{default_system}_fixture_selected"}
@@ -282,6 +285,11 @@ class TMSRoutesTests(unittest.TestCase):
             "proxy_prefix": "/original/ronghui", "content_type": "application/x-www-form-urlencoded",
         }
         attempts = (
+            {**safe, "query": "id=FIND_TMS_BILL_CODE_BY", "body": "vCount=2"},
+            {**safe, "query": "id=FIND_TMS_BILL_CODE_BY", "body": "vCount=1&vCount=1"},
+            {**safe, "query": "id=FIND_TMS_BILL_CODE_BY", "body": "vCount=1&action=delete"},
+            {**safe, "query": "id=FIND_TMS_BILL_CODE_BY&vCount=1", "method": "GET"},
+            {**safe, "query": "id=GET_BILL_BY_BILLCODE", "body": "BILL_CODE="},
             {**safe, "query": "id=FIND_UNREVIEWED"},
             {**safe, "query": "id=FIND_SYS_DATE&id=DELETE_TABLE"},
             {**safe, "body_base64": base64.b64encode(b"id=DELETE_TABLE").decode()},

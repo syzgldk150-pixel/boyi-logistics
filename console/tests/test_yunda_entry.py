@@ -557,7 +557,8 @@ class YundaEntryBackendTests(unittest.TestCase):
                 self.assertEqual(code, app.sent_payload["error_code"])
                 self.assertEqual("当前账号需要重新登录。", app.sent_payload["error"])
 
-    def _post_original_page(self, provider, remote_path, *, query="", body=b"", headers=None, role="super_admin"):
+    def _post_original_page(self, provider, remote_path, *, query="", body=b"", headers=None, role="super_admin",
+                            agent_transport=None):
         repository = _OriginalPageRepository()
         repository.session.update(role=role, control_plane_role=role)
         app = self._app(repository)
@@ -577,6 +578,9 @@ class YundaEntryBackendTests(unittest.TestCase):
         def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             self.agent_calls.append({"method": method, "endpoint": endpoint, "payload": payload,
                                      "console_principal": console_principal})
+            if agent_transport is not None:
+                return agent_transport(self, method, endpoint, payload=payload, timeout=timeout,
+                                       console_principal=console_principal)
             return {"ok": True, "data": {"ok": True, "status_code": 200,
                 "headers": {"Content-Type": "application/json"},
                 "body_base64": base64.b64encode(b'{"rows":[]}').decode("ascii"),
@@ -672,6 +676,25 @@ class YundaEntryBackendTests(unittest.TestCase):
             with self.subTest(kwargs=kwargs):
                 app, handler = self._post_original_page("yunda", path, **kwargs)
                 self.assertEqual(HTTPStatus.FORBIDDEN, handler.status or app.sent_status)
+                self.assertEqual([], app.agent_calls)
+                self.assertEqual([], app.repository.upserts)
+                self.assertEqual([], app.repository.snapshots)
+
+    def test_ronghui_allocation_retains_real_identity_origin_and_parameter_checks(self):
+        for kwargs, expected in (
+            ({"body": b"vCount=2"}, HTTPStatus.METHOD_NOT_ALLOWED),
+            ({"body": b"vCount=1&vCount=1"}, HTTPStatus.METHOD_NOT_ALLOWED),
+            ({"body": b"vCount=1&action=delete"}, HTTPStatus.METHOD_NOT_ALLOWED),
+            ({"headers": {"Origin": "https://boyi.homes"}}, HTTPStatus.FORBIDDEN),
+            ({"headers": {"Cookie": ""}}, HTTPStatus.UNAUTHORIZED),
+            ({"role": "legacy_admin"}, HTTPStatus.FORBIDDEN),
+        ):
+            with self.subTest(kwargs=kwargs):
+                app, handler = self._post_original_page(
+                    "ronghui", "/dataQuery/findAllByCallId", query="id=FIND_TMS_BILL_CODE_BY",
+                    **{"body": b"vCount=1", **kwargs},
+                )
+                self.assertEqual(expected, handler.status or app.sent_status)
                 self.assertEqual([], app.agent_calls)
                 self.assertEqual([], app.repository.upserts)
                 self.assertEqual([], app.repository.snapshots)
