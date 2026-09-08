@@ -107,3 +107,5 @@
 
 - `split_pending_problem_upload` 仅由精确文本“分批”触发；融辉账号必须由自动化项目的 `account_id` 角色显式绑定，运行时不得注入 `ronghui_default` 或任何默认 profile。dry-run 编号列表后回复“确认”直接执行全部，输入序号、多选或区间时只选择对应运单并在回显后再次确认，运行时目标显式导入 `agent.tms_runtime.scripts.split_pending_problem_upload`。
 - 少货/分批直接复用 `agent.tms_runtime.scripts.ronghui_problem_upload` 的真实“问题件录入”能力，固定登记“少货/分批 / 交接异常”，内容为 `应到XX件 实际到XX件`，并从登记问题件列表权威回读；不得调用 `ronghui_split_complaint` 或恢复投诉 target。
+
+- 韵达原页通过 `tms_runtime/session_broker.py` 的 `request_original_page` 延续同账号的上游会话更新；只原子更新变化的保存态，保留 origins 与登录元数据，登录代际变化拒绝旧响应。账号隔离、并发和真实 HTTP 协议回归见 `../tests/test_yunda_proxy_session_state.py`，维护说明见 `../../docs/original_page_read_requests.md`。

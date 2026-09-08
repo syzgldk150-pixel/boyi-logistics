@@ -25,7 +25,6 @@ from tests.v32_acceptance.problem_fixture import ACCOUNTS, ProblemAccounts
 
 ROOT = Path(__file__).resolve().parents[2]
 DATABASE = 'v32_c04_test'
-OUTPUT = ROOT / '.task_tmp/v32/environment/custom-settings.json'
 ACTOR = Actor(ActorType.CONSOLE_ADMIN, 'v32-custom-settings', roles=('super_admin',), authenticated_by='mysql_admin_session')
 CONFIG = {'sitecode': 'synthetic-site', 'sitefbcode': 'synthetic-hub', 'sitename': '隔离合成站点',
     'sitefbname': '隔离合成分拨', 'first_type': '合成第一次', 'second_type': '合成第二次', 'delay_seconds': 0}
@@ -65,8 +64,12 @@ def save(page, frame, path):
 
 
 def main():
+    task_root = Path(os.environ.get('V32_C04_TASK_ROOT', ROOT / '.task_tmp/v32')).resolve()
+    task_root.relative_to((ROOT / '.task_tmp').resolve())
+    output = task_root / 'environment/custom-settings.json'
+    output.parent.mkdir(parents=True, exist_ok=True)
     prepare_owned(DATABASE)
-    runtime = ROOT / '.task_tmp/v32/custom-settings' / uuid4().hex
+    runtime = task_root / 'custom-settings' / uuid4().hex
     runtime.mkdir(parents=True)
     source = ROOT / 'agent/service_v2_plugins/clockin_daxiang_v2'
     baseline = runtime / 'clockin_daxiang_v2-original.zip'
@@ -196,6 +199,8 @@ def main():
                         raise AssertionError('incomplete form changed durable configuration')
                     other = context.new_page()
                     other.on('pageerror', lambda error: report['page_errors'].append(str(error)))
+                    other.on('response', lambda response: report['http_responses'].append({
+                        'page': 'reopened', 'path': urlparse(response.url).path, 'status': response.status}))
                     stale = ready(other, console, path)
                     choices = first.locator('[data-account-role="operator"] option').evaluate_all('nodes => nodes.map(node => node.value).filter(Boolean)')
                     if set(choices) != set(ACCOUNTS.values()):
@@ -279,8 +284,8 @@ def main():
         report.update(status='FAIL', error=type(exc).__name__ + ': ' + str(exc))
         raise
     finally:
-        OUTPUT.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-        print(json.dumps({'status': report['status'], 'output': str(OUTPUT)}))
+        output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        print(json.dumps({'status': report['status'], 'output': str(output)}))
 
 
 if __name__ == '__main__':

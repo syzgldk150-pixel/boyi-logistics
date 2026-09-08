@@ -34,6 +34,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
                 brokers = {
                     profile: types.SimpleNamespace(
                         build_requests_session=Mock(return_value=Session(profile)),
+                        request_original_page=Mock(side_effect=Session(profile).request),
                     ) for profile in profiles
                 }
                 try:
@@ -44,7 +45,11 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
                                 "query": query, "proxy_prefix": f"/original/{provider}",
                             })
                             get_broker.assert_called_with(profile)
-                            brokers[profile].build_requests_session.assert_called_with(validate=False)
+                            if provider == "yunda":
+                                self.assertEqual("GET", brokers[profile].request_original_page.call_args.args[0])
+                                brokers[profile].build_requests_session.assert_not_called()
+                            else:
+                                brokers[profile].build_requests_session.assert_called_with(validate=False)
                             self.assertTrue(result["ok"])
                             self.assertEqual(200, result["status_code"])
                             self.assertEqual({"fixture_profile": profile}, json.loads(
@@ -414,7 +419,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
                 return Response()
 
         session = Session()
-        broker = types.SimpleNamespace(build_requests_session=lambda validate=True: session)
+        broker = types.SimpleNamespace(request_original_page=session.request)
         with patch("agent.tms_runtime.scripts.yunda_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
@@ -485,7 +490,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
                 return Response()
 
         session = Session()
-        broker = types.SimpleNamespace(build_requests_session=lambda validate=True: session)
+        broker = types.SimpleNamespace(request_original_page=session.request)
         with patch("agent.tms_runtime.scripts.yunda_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
@@ -528,7 +533,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
             def request(self, method, url, **kwargs):
                 return Response()
 
-        broker = types.SimpleNamespace(build_requests_session=lambda validate=True: Session())
+        broker = types.SimpleNamespace(request_original_page=Session().request)
         with patch("agent.tms_runtime.scripts.yunda_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
@@ -561,7 +566,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
             def request(self, method, url, **kwargs):
                 return Response()
 
-        broker = types.SimpleNamespace(build_requests_session=lambda validate=True: Session())
+        broker = types.SimpleNamespace(request_original_page=Session().request)
         with patch("agent.tms_runtime.scripts.yunda_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once({"session_profile": "yunda_fixture_selected", "method": "GET", "path": "/ky_inms/public/index.php/missing.html"})
 
@@ -588,7 +593,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
                 return Response()
 
         session = Session()
-        broker = types.SimpleNamespace(build_requests_session=lambda validate=True: session)
+        broker = types.SimpleNamespace(request_original_page=session.request)
         with patch("agent.tms_runtime.scripts.yunda_waybill_proxy.get_session_broker", return_value=broker):
             result = proxy.run_once(
                 {
