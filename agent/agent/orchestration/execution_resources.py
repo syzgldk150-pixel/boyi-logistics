@@ -9,18 +9,36 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
+from types import MappingProxyType
 from typing import Any
 
+from shared.execution_resource_journal import FEISHU_CHILD_WRITE_ACTIONS, FEISHU_PARENT_WRITE_ACTIONS
+
 LockKey = tuple[str, ...]
+ActionKey = tuple[str, str, str]
+ActionScopes = dict[ActionKey, tuple[LockKey, ...]]
+# Admission freezes these alongside the whole Step's held keys. Only the host
+# context reaches the issuer; the plugin cannot supply or replace this map.
+EXECUTION_ACTION_SCOPES: ContextVar[Mapping[ActionKey, tuple[LockKey, ...]]] = ContextVar(
+    "execution_action_scopes", default=MappingProxyType({}),
+)
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
-# These reviewed Host handlers write only the bound child. Creating an archive
-# sheet can affect another child, so it instead takes the complete parent.
-_CHILD_WRITES = frozenset({
-    "feishu.sheet.replace_rows", "feishu.sheet.replace", "feishu.sheet.replace_yunda_send_waybills",
-    "feishu.bitable.delete_records", "feishu.bitable.write_records", "feishu.bitable.replace_snapshot",
-    "feishu.bitable.append_yunda_dispatch_forecast", "feishu.bitable.replace_yunda_send_waybills_date",
-})
-_PARENT_WRITES = frozenset({"feishu.sheet.add"})
+# Closed production adapters, not action-name heuristics. Other browser writes
+# retain their existing account-wide scope until their handler is reviewed.
+_BROWSER_WRITES = frozenset({"ronghui.scan_next.submit"})
+# These handlers mutate shared tables without an account partition. In
+# particular delivery status and source imports all share `waybills`.
+_PROJECTION_TABLES = {
+    "scan.snapshot.replace": ("scan_codes",),
+    "scan.snapshot.cleanup": ("scan_codes",),
+    "waybill.snapshot.replace": ("waybill_data",),
+    "arrival.forecast_snapshot.replace": ("arrival_forecast_runs", "arrival_forecast_items"),
+    "arrival.snapshot.replace": ("arrival_stat_runs", "arrival_stat_items"),
+    "split_pending.snapshot.refresh": ("split_pending_problem_items",),
+    "waybill.delivery_status.update": ("waybills",),
+    "waybill.yunda.replace_date": ("waybills",),
+}
 
 
 def _identity(value: object) -> str:
@@ -52,9 +70,10 @@ def _saved_physical_key(resource_id: str, record: Mapping[str, Any]) -> LockKey 
 def canonical_resource_write_locks(
     capability: Mapping[str, Any], account_ids: set[str],
     saved_resource_provider: Callable[[str], Mapping[str, Any] | None] | None,
+    *, action_scopes: ActionScopes | None = None,
 ) -> tuple[set[LockKey], bool]:
     runtime = capability.get("_plugin_runtime")
-    if not isinstance(runtime, Mapping) or saved_resource_provider is None:
+    if not isinstance(runtime, Mapping):
         return set(), False
     bindings = runtime.get("resource_bindings")
     permissions = runtime.get("runtime_permissions")
@@ -63,54 +82,66 @@ def canonical_resource_write_locks(
     operations = permissions.get("broker_operations")
     if not isinstance(operations, (list, tuple)) or not operations:
         return set(), False
-    write_roles: set[str] = set()
-    parent_roles: set[str] = set()
+    account_bindings = runtime.get("account_bindings")
+    account_bindings = account_bindings if isinstance(account_bindings, Mapping) else {}
+    saved: dict[str, Mapping[str, Any] | None] = {}
+    keys: set[LockKey] = set()
     all_writes_bounded = True
+    found_write = False
     for operation in operations:
         if not isinstance(operation, Mapping):
             all_writes_bounded = False
             continue
         effect = str(operation.get("broker_effect") or operation.get("effect") or "").lower()
-        if effect in {"read", "compute"}:
+        if effect in {"read", "compute"} and operation.get("dynamic_effect") is not True:
             continue
+        found_write = True
         roles = operation.get("roles")
-        known_resource_write = (
-            effect in {"write", "external_write"}
-            and operation.get("operation") in {"network.request", "http.request"}
-            and operation.get("action") in _CHILD_WRITES | _PARENT_WRITES
-            and isinstance(roles, (list, tuple)) and bool(roles)
-            and all(isinstance(role, str) and role in bindings for role in roles)
-            and operation.get("dynamic_effect") is not True
-        )
-        if known_resource_write:
-            write_roles.update(roles)
-            if operation["action"] in _PARENT_WRITES:
-                parent_roles.update(roles)
-        else:
+        op, action = operation.get("operation"), operation.get("action")
+        if (effect not in {"write", "external_write"} or operation.get("dynamic_effect") is True
+                or not isinstance(roles, (list, tuple)) or not roles
+                or any(not isinstance(role, str) or not role for role in roles)):
             all_writes_bounded = False
-    if not write_roles:
-        return set(), False
-    keys: set[LockKey] = set()
-    for role in sorted(write_roles):
-        resource_id = bindings[role]
-        if not isinstance(resource_id, str) or not resource_id:
-            all_writes_bounded = False
+            if op == "projection.invoke":
+                keys.add(("projection-write", "*"))
             continue
-        record = saved_resource_provider(resource_id)
-        key = _saved_physical_key(resource_id, record) if isinstance(record, Mapping) else None
-        if key is None:
-            all_writes_bounded = False
-            continue
-        if role in parent_roles:
-            key = (*key[:3], "*")
-        keys.add(key)
-    if not keys:
-        return set(), False
-    # Known resources are shared within an account; an unknown account-wide
-    # writer conflicts with every one of these markers in either order.
-    if all_writes_bounded:
-        keys.update(("account-resource", account_id, *key[1:]) for account_id in account_ids for key in tuple(keys))
-    return keys, all_writes_bounded
+        for role in roles:
+            scoped: set[LockKey] = set()
+            if op in {"network.request", "http.request"} and action in FEISHU_CHILD_WRITE_ACTIONS | FEISHU_PARENT_WRITE_ACTIONS:
+                resource_id = bindings.get(role)
+                if isinstance(resource_id, str) and resource_id and saved_resource_provider is not None:
+                    if resource_id not in saved:
+                        saved[resource_id] = saved_resource_provider(resource_id)
+                    record = saved[resource_id]
+                    key = _saved_physical_key(resource_id, record) if isinstance(record, Mapping) else None
+                    expected_kind = "feishu_bitable" if action.startswith("feishu.bitable.") else "feishu_sheet"
+                    if key is not None and key[1] == expected_kind:
+                        if action in FEISHU_PARENT_WRITE_ACTIONS:
+                            key = (*key[:3], "*")
+                        scoped.add(key)
+                        scoped.update(("account-resource", account, *key[1:]) for account in account_ids)
+            elif op in {"browser.invoke", "projection.invoke"}:
+                binding = account_bindings.get(role)
+                accounts = [binding] if isinstance(binding, str) else binding
+                if (isinstance(accounts, (list, tuple)) and accounts
+                        and all(isinstance(account, str) and account and account in account_ids for account in accounts)):
+                    if op == "browser.invoke" and action in _BROWSER_WRITES:
+                        scoped.update(("browser-write", account) for account in accounts)
+                    elif op == "projection.invoke" and action in _PROJECTION_TABLES:
+                        tables = _PROJECTION_TABLES[action]
+                        scoped.update(("projection-write", table) for table in tables)
+                        scoped.update(("account-resource", account, "projection", table) for account in accounts for table in tables)
+            if scoped:
+                keys.update(scoped)
+                if action_scopes is not None:
+                    action_scopes[(str(op), str(action), role)] = tuple(sorted(scoped))
+            else:
+                all_writes_bounded = False
+                if op == "projection.invoke":
+                    # Unknown internal writes cannot bypass a shared table by
+                    # selecting a different account.
+                    keys.add(("projection-write", "*"))
+    return keys, bool(found_write and keys and all_writes_bounded)
 
 
 def execution_keys_conflict(left: LockKey, right: LockKey) -> bool:
@@ -118,8 +149,10 @@ def execution_keys_conflict(left: LockKey, right: LockKey) -> bool:
         return True
     if left[0] == right[0] == "physical-write":
         return left[:3] == right[:3] and (left[3] == "*" or right[3] == "*")
-    if left[0] == "account-write" and right[0] == "account-resource":
+    if left[0] == right[0] == "projection-write":
+        return left[1] == "*" or right[1] == "*"
+    if left[0] == "account-write" and right[0] in {"account-resource", "browser-write"}:
         return left[1] == right[1]
-    if right[0] == "account-write" and left[0] == "account-resource":
+    if right[0] == "account-write" and left[0] in {"account-resource", "browser-write"}:
         return left[1] == right[1]
     return False

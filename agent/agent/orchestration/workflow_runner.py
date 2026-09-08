@@ -7,13 +7,15 @@ import logging
 from collections.abc import Collection, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar, copy_context
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from agent.orchestration.approval_service import ApprovalService
 from agent.orchestration.context_builder import ContextBuilder
-from agent.orchestration.execution_resources import canonical_resource_write_locks, execution_keys_conflict
+from agent.orchestration.execution_resources import (
+    EXECUTION_ACTION_SCOPES, ActionScopes, canonical_resource_write_locks, execution_keys_conflict,
+)
 from agent.orchestration.models import (
     Actor,
     ActorType,
@@ -82,6 +84,7 @@ class _ResourceWait(Exception):
 class _ExecutionSlot:
     release: Callable[[], None]
     resource_keys: tuple[tuple[str, ...], ...] = ()
+    action_scopes: ActionScopes = field(default_factory=dict)
 
     def __call__(self) -> None:
         self.release()
@@ -981,6 +984,7 @@ class WorkflowRunner:
         step: PlanStep,
         plan: Plan,
         capability: Mapping[str, Any],
+        *, action_scopes: ActionScopes | None = None,
     ) -> tuple[tuple[str, ...], ...]:
         """Derive only real write conflicts; never invent a global fallback."""
 
@@ -990,6 +994,7 @@ class WorkflowRunner:
         account_ids = self._execution_account_ids(step, capability)
         physical_keys, complete_scope = canonical_resource_write_locks(
             capability, account_ids, getattr(self, "_saved_resource_provider", None),
+            action_scopes=action_scopes,
         )
         if complete_scope:
             return tuple(sorted(physical_keys))
@@ -1187,7 +1192,10 @@ class WorkflowRunner:
         plan: Plan,
         capability: Mapping[str, Any],
     ) -> _ExecutionSlot:
-        write_keys = await asyncio.to_thread(self._execution_lock_keys, step, plan, capability)
+        action_scopes: ActionScopes = {}
+        write_keys = await asyncio.to_thread(
+            self._execution_lock_keys, step, plan, capability, action_scopes=action_scopes,
+        )
         keys = tuple(
             sorted(
                 set(write_keys)
@@ -1271,7 +1279,7 @@ class WorkflowRunner:
         except BaseException:
             finish()
             raise
-        return _ExecutionSlot(finish, tuple(write_keys))
+        return _ExecutionSlot(finish, tuple(write_keys), action_scopes)
 
     def _start_step_under_execution_slot(
         self,
@@ -1474,6 +1482,7 @@ class WorkflowRunner:
             # whichever task originally acquired the slot.
             task_context = copy_context()
             task_context.run(EXECUTION_RESOURCE_KEYS.set, finish_execution_slot.resource_keys)
+            task_context.run(EXECUTION_ACTION_SCOPES.set, finish_execution_slot.action_scopes)
             execution_task = task_context.run(asyncio.create_task,
                 self._execution_port.execute_step(
                     step,

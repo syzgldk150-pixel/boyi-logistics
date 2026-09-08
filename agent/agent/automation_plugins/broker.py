@@ -30,6 +30,7 @@ from agent.automation_plugins.service_v2_contract import (
     SYSTEM_CAPABILITY_ROLE,
 )
 from shared.redaction import redact_text
+from agent.orchestration.execution_resources import EXECUTION_ACTION_SCOPES, ActionKey, LockKey
 
 
 _OPERATIONS = frozenset(
@@ -398,6 +399,7 @@ class BrokerGrant:
     # are present.
     write_attempt_context: Mapping[str, object] = field(default_factory=dict)
     execution_resource_keys: tuple[tuple[str, ...], ...] = ()
+    execution_action_scopes: Mapping[ActionKey, tuple[LockKey, ...]] = field(default_factory=dict)
 
 
 @dataclass
@@ -491,6 +493,7 @@ class LocalBrokerCapabilityIssuer:
             resource_bindings=dict(resource_bindings),
             write_attempt_context=dict(write_attempt_context or {}),
             execution_resource_keys=EXECUTION_RESOURCE_KEYS.get(),
+            execution_action_scopes=dict(EXECUTION_ACTION_SCOPES.get()),
         )
         raw_limit = runtime_permissions.get("max_broker_calls")
         if isinstance(raw_limit, bool) or not isinstance(raw_limit, int) or not 0 <= raw_limit <= 1000:
@@ -932,8 +935,15 @@ class LocalBrokerCapabilityIssuer:
                     "target_ref_sha256": target_ref_sha256,
                     "target_ref_json": target_ref,
                 }
-                if current.grant.execution_resource_keys:
-                    receipt['execution_resource_keys_json'] = [list(key) for key in current.grant.execution_resource_keys]
+                scope = current.grant.execution_action_scopes.get((operation, action, role))
+                if scope and not set(scope).issubset(current.grant.execution_resource_keys):
+                    raise PluginExecutionError(
+                        "write action scope is not held by this execution",
+                        code="BROKER_WRITE_CONTEXT_REQUIRED",
+                    )
+                scope = scope or current.grant.execution_resource_keys
+                if scope:
+                    receipt['execution_resource_keys_json'] = [list(key) for key in scope]
                 if (
                     receipt_context["plugin_id"] == "sync_scan_codes"
                     and operation == "projection.invoke"
