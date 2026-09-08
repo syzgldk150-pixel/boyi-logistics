@@ -26,6 +26,10 @@
 
 事项中的人工入口使用 `resume_run=False`，Agent 在事务内重新验证事项、Run、项目、代际和 lease 的精确关联。只有原有证明规则确认 APPLIED / NOT_APPLIED 时才闭合该 lease 并写审计；原 Run 和 Step 保持停止，不投递执行消息、不唤醒 Runner。证据不足继续 UNKNOWN。本入口不代表每个插件都已实现第三方系统的现场回读。
 
+现有 `GET /control-plane/work-items/{work_item_id}` 的 `unknown_write_recoveries[].write_attempts` 提供该 lease 的只读回执诊断：精确回执 ID、已记录的操作与 action、结果状态、记录数量和创建／更新时间，以及原始范围的类别与缺失、损坏、历史隔离标记。创建／更新时间不是写后验证时间；没有保存的字段不推断补齐。查询必须同时匹配该事项已关联的 lease、项目、代际与 Run，每个事项最多返回 1000 条回执，超过上限明确失败。
+
+该诊断不返回账号、资源键原值、定位器、请求参数或业务行，也不改动回执、锁或任务状态。`RESOURCE_WAIT` 的 `error_summary` 能区分通道占用与未知写冲突；回执诊断用于查明具体操作，不能只凭插件名或某条 lease 的历史隔离标记断言其是否阻塞当前任务。页面中的“检查已保存证据”仍沿用上述证明规则。
+
 已归档代际的最后一条未知写闭合后，仅其 `BLOCKED/WRITE_OUTCOME_UNKNOWN` 状态进入既有 DRAINING 清理流程，不恢复旧项目路由。其他独立错误保持原样。未知证据仍须保留，卸载和数据保留规则不因此绕过。
 
 ## 隔离复现
