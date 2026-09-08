@@ -84,6 +84,7 @@ def test_write_attempt_projection_is_closed_json_friendly_and_never_returns_scop
     ([["account-write"]], False, True, []),
     ([["account-write", "private"], ["account-write", "private"]], False, True, []),
     ([["private-unrecognized-kind", "private"]], False, True, ["unknown"]),
+    ([["browser-write", "private"], ["projection-write", "waybills"]], False, False, ["browser-write", "projection-write"]),
 ])
 def test_missing_malformed_and_quarantined_scopes_are_explicit(scope, missing, malformed, kinds):
     repo, _ = repository([lease(legacy_scope_unavailable=1)], [attempt(
