@@ -196,6 +196,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 ## 运单录入与打印
 
+- 原页初始化的 POST 读取由 `../shared/manual_entry_contracts.py` 统一判定，Console 与 Agent 不得各自维护白名单；真实接口清单、已有任务冲突后的精确 Run 追踪及验证边界见 `../docs/original_page_read_requests.md`。
 - `/ocr` 默认进入多页签录单壳，最多 6 个页签；完整 OCR 上传/队列从 `/ocr?mode=ocr` 打开，单据详情仍走 `/documents/{id}`，博益手工录单由内部 `/ocr/boyi/frame` 承载。`/ocr?mode=yunda` 与 `/ocr?mode=ronghui` 分别创建独立来源的韵达/融辉原页页签。
 - 为避免第三方活动 HTML/JavaScript 继承 Console 管理员同源权限，旧 `/ocr/yunda/*`、`/ocr/ronghui/live/*`、`/receipts/yunda/live/*` 与 `/receipts/ronghui/live/*` 对 GET/POST/PUT/PATCH/DELETE 固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，且必须在 Console 本地结束、不得调用 Agent。原页只能经 `/original-pages/{provider}/launch` 生成一次性 ticket，跳转到 `https://www.boyi.homes/original/{provider}/` 在独立 origin 兑换路径限定 capability；ticket 单次、30 秒失效，capability 不携带或复用主站会话 Cookie，写请求必须验证独立 origin。
 - 手工录单提交到 `/waybills/manual`，成功后写入 `waybills`；默认自动打印仍跳转 `/waybills/{id}/print?autoprint=1`，frame 内保存失败或不打印时可通过 `return_to=/ocr/boyi/frame` 留在本 frame。

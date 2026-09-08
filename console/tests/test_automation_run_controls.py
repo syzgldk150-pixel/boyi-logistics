@@ -424,8 +424,10 @@ const source = require("node:fs").readFileSync(0, "utf8");
 const controls = source.slice(source.indexOf("function syncRunButtonVisual()"), source.indexOf("const resourceEditors ="));
 const polling = source.slice(source.indexOf("let startPolling = function() {};"), source.indexOf("const batchTerminalStatuses ="))
   .replace("// 初次进入页面保持干净，不自动展开历史执行结果。", "globalThis.pollTest = {startPolling, pollOutput};");
+const submit = source.slice(source.indexOf('    if (runBtn) {\n      runBtn.addEventListener("click"'),
+  source.indexOf('\n  });\n\n  /* ── 列表排序'));
 
-async function exercise(failure) {
+async function exercise(failure, conflict = false) {
   const timers = new Map();
   const intervals = new Map();
   const responses = [];
@@ -440,6 +442,8 @@ async function exercise(failure) {
   const runBtn = Object.assign(new HTMLElement(), {
     dataset: {}, classList: {toggle() {}}, hasAttribute: () => false,
     querySelector: selector => selector === "[data-run-label]" ? runLabel : null,
+    getAttribute: () => "/automations/tasks/run-now",
+    addEventListener: (_name, callback) => {handlers.runClick = callback;},
   });
   const termStatus = {textContent: "", className: ""};
   const termBody = {textContent: "", scrollTop: 0, scrollHeight: 0};
@@ -450,8 +454,9 @@ async function exercise(failure) {
   };
   const context = {
     URLSearchParams, AbortController, HTMLElement, runBtn, termBtn,
+    FormData: class { forEach(callback) {callback("daily_sign", "task_id");} },
     termDrawer: {
-      dataset: {toolName: "automation.daily_sign.run", taskId: "daily_sign", runId: "accepted-run"},
+      dataset: {toolName: "automation.daily_sign.run", taskId: "daily_sign", runId: conflict ? "historical-run" : "accepted-run"},
       querySelector: selector => ({"[data-terminal-body]": termBody, "[data-terminal-status]": termStatus}[selector] || null),
     },
     form: {querySelector: () => null}, document: {hidden: false}, feather: {replace() {}},
@@ -459,13 +464,17 @@ async function exercise(failure) {
     scanConfirmationRetryOnly: false, scanPreviewTerminalBlocked: false,
     selectionConfirmationRetryOnly: false, termAttentionLatched: false,
     runTimer: null, fetchOutputState: null,
-    runUiState: {running: false, awaitingApproval: false, pendingRun: true, runId: "accepted-run"},
+    runUiState: {running: false, awaitingApproval: false, pendingRun: !conflict, runId: conflict ? "" : "accepted-run"},
     renderFeedback: (_form, value) => {feedback.push(value); feedbackHidden = false;},
     syncRuntimeFeedback: (_form, value) => {runtime = value;},
     hideRunFeedback: () => {feedbackHidden = true;},
+    hideLegacyFeedback() {}, serializeForm() {}, setButtonLoading() {},
+    fmtStamp: () => "2026-09-08T01:36:04Z", crypto: {randomUUID: () => "browser-request"},
+    requestTaskCancel: () => {throw new Error("existing Run must never be cancelled implicitly");},
+    location: {reload: () => {context.reloadCount = (context.reloadCount || 0) + 1;}},
     togglePanel: button => {button.expanded = button.expanded === "true" ? "false" : "true";},
-    fetch: async url => {
-      requests.push(url);
+    fetch: async (url, options = {}) => {
+      requests.push({url, method: options.method || "GET"});
       assert.ok(responses.length, "unexpected extra status request");
       return responses.shift();
     },
@@ -476,7 +485,7 @@ async function exercise(failure) {
   };
   context.window = context;
   vm.createContext(context);
-  vm.runInContext(controls + polling, context);
+  vm.runInContext(controls + polling + submit, context);
   const queue = {
     run_id: "accepted-run", status: "RECEIVED", pending: true, queued: true, running: false,
     started_at: "2026-09-08T01:36:04Z", lines: [], total: 0,
@@ -492,9 +501,55 @@ async function exercise(failure) {
     await flush();
   }
 
-  responses.push(response(queue));
-  context.pollTest.startPolling();
+  const missingIdentity = String(conflict).includes("missing");
+  const staleRequest = String(conflict).includes("stale");
+  let resolveHistorical;
+  if (staleRequest) {
+    responses.push({ok: true, json: () => new Promise(resolve => {resolveHistorical = resolve;})});
+    handlers.click();
+    await flush();
+    assert.equal(requests.length, 1);
+    assert.match(requests[0].url, /run_id=historical-run/);
+  }
+  if (conflict) {
+    responses.push(response({ok: false, pending: false, error_code: "AUTOMATION_ALREADY_RUNNING",
+      title: "正在执行", message: "已有任务", existing_run: missingIdentity ? null : {
+        run_id: "accepted-run", status: "RECEIVED", blocking_kind: "ACTIVE"}}, false));
+    if (!missingIdentity) responses.push(response(queue));
+    await handlers.runClick({preventDefault() {}});
+  } else {
+    responses.push(response(queue));
+    context.pollTest.startPolling();
+  }
   await flush();
+  if (staleRequest) {
+    assert.equal(runBtn.dataset.runMode, "refresh");
+    assert.equal(context.runUiState.runId, missingIdentity ? "" : "accepted-run");
+    resolveHistorical({...queue, run_id: "historical-run", status: "COMPLETED",
+      pending: false, queued: false, runtime: {ok: true, title: "历史完成"}});
+    await flush();
+    assert.equal(runBtn.dataset.runMode, "refresh", "old terminal output must not restore submit");
+    assert.equal(context.runUiState.runId, missingIdentity ? "" : "accepted-run");
+    assert.equal(runtime, null, "old runtime must not replace the new tracking state");
+    handlers.click(); // Close the historical output drawer before the remaining lifecycle.
+  }
+  const oldRequests = staleRequest ? 1 : 0;
+  if (missingIdentity) {
+    assert.equal(context.runUiState.runId, "");
+    assert.equal(runBtn.dataset.runMode, "refresh");
+    assert.equal(runLabel.textContent, "刷新状态");
+    assert.match(feedback.at(-1).message, /刷新/);
+    assert.equal(requests.length, 1 + oldRequests, "missing identity must not query old tool output");
+    const warning = feedback.at(-1);
+    handlers.click(); // Opening output must not fall back to a generic tool-output GET.
+    await flush();
+    assert.equal(requests.length, 1 + oldRequests);
+    assert.equal(feedback.at(-1), warning);
+    await handlers.runClick({preventDefault() {}});
+    assert.equal(context.reloadCount, 1);
+    assert.equal(requests.length, 1 + oldRequests, "refresh cannot resubmit or cancel");
+    return;
+  }
   assert.equal(feedback.at(-1).title, "等待执行");
   assert.equal(feedback.at(-1).message, queue.stage_description);
   assert.equal(timers.size, 1);
@@ -506,7 +561,7 @@ async function exercise(failure) {
   assert.equal(termBtn.expanded, "true");
   handlers.click(); // Closing the drawer must not stop accepted Run tracking.
   handlers.click(); // Reopening during the same request must not create another poll.
-  assert.equal(requests.length, 2);
+  assert.equal(requests.length, (conflict ? 3 : 2) + oldRequests);
   handlers.click();
   resolveQueued(queue);
   await flush();
@@ -514,12 +569,17 @@ async function exercise(failure) {
   assert.equal(timers.size, 1);
 
   responses.push(failure(response));
-  await advance();
+  if (conflict) {
+    await handlers.runClick({preventDefault() {}}); // Explicit refresh only reads the exact Run.
+    await flush();
+  } else {
+    await advance();
+  }
   assert.equal(feedback.at(-1).title, "状态暂不可用");
   assert.equal(termStatus.textContent, "状态读取失败");
   assert.equal(context.runUiState.runId, "accepted-run");
   assert.equal(context.runUiState.pendingRun, true);
-  assert.equal(runBtn.dataset.runMode, "cancel", "failed polling must not expose another submit action");
+  assert.equal(runBtn.dataset.runMode, conflict ? "refresh" : "cancel", "failed polling must not expose another submit action");
   assert.equal([...timers.values()][0].delay, 3000);
 
   responses.push(response({...queue, status: "RUNNING", queued: false, running: true,
@@ -538,12 +598,18 @@ async function exercise(failure) {
   assert.equal(timers.size, 0, "a terminal Run must stop polling");
   assert.equal(intervals.size, 0, "a terminal Run must stop its progress timer");
   assert.equal(runBtn.dataset.runMode, "start");
-  assert.ok(requests.every(url => new URL(url, "https://console.invalid").searchParams.get("run_id") === "accepted-run"));
+  assert.ok(requests.slice(oldRequests).filter(request => request.method === "GET").every(request =>
+    new URL(request.url, "https://console.invalid").searchParams.get("run_id") === "accepted-run"));
+  assert.equal(requests.filter(request => request.method === "POST").length, conflict ? 1 : 0);
 }
 (async () => {
   await exercise(response => response({running: false, error: "unavailable"}, false));
   await exercise(response => response({error: "unavailable"}));
   await exercise(() => ({ok: true, json: async () => {throw new SyntaxError("invalid response");}}));
+  await exercise(response => response({error: "unavailable"}, false), "existing");
+  await exercise(null, "missing");
+  await exercise(response => response({error: "unavailable"}, false), "stale-existing");
+  await exercise(null, "stale-missing");
 })().catch(error => {console.error(error); process.exitCode = 1;});
 '''
         result = subprocess.run(

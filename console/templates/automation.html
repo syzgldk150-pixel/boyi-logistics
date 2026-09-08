@@ -1155,6 +1155,8 @@
       awaitingApproval: false,
       pendingRun: false,
       batchTracking: false,
+      trackingExisting: false,
+      conflictUnresolved: false,
       startedAt: "",
       cancelRequested: false,
       runId: "",
@@ -1444,16 +1446,18 @@
       const isAwaitingApproval = !!runUiState.awaitingApproval;
       const isPendingRun = !!runUiState.pendingRun;
       const isBatchTracking = !!runUiState.batchTracking;
+      const isExistingTracking = !!runUiState.trackingExisting;
+      const isRefreshOnly = isExistingTracking || !!runUiState.conflictUnresolved;
       const isActive = isRunning || isAwaitingApproval || isPendingRun;
       const isCancelPending = isActive && !!runUiState.cancelRequested;
-      const iconName = isBatchTracking ? "loader" : isActive ? "x-circle" : "play";
+      const iconName = isRefreshOnly ? "refresh-cw" : isBatchTracking ? "loader" : isActive ? "x-circle" : "play";
       const idleLabel = isSelectionPreviewWorkflow ? "读取候选" : isScanPreviewWorkflow ? "生成预览" : "执行";
-      const labelText = isBatchTracking ? "跟踪中" : isCancelPending ? "取消中" : isActive ? "取消" : idleLabel;
+      const labelText = isRefreshOnly ? "刷新状态" : isBatchTracking ? "跟踪中" : isCancelPending ? "取消中" : isActive ? "取消" : idleLabel;
       const runIcon = runBtn.querySelector("[data-run-icon], .feather, [data-feather]");
       const runLabel = runBtn.querySelector("[data-run-label]");
 
-      runBtn.dataset.runMode = isBatchTracking ? "tracking" : isActive ? "cancel" : "start";
-      runBtn.classList.toggle("auto-run-btn--cancel", isActive && !isBatchTracking);
+      runBtn.dataset.runMode = isRefreshOnly ? "refresh" : isBatchTracking ? "tracking" : isActive ? "cancel" : "start";
+      runBtn.classList.toggle("auto-run-btn--cancel", isActive && !isBatchTracking && !isRefreshOnly);
       runBtn.classList.toggle("is-pending", isCancelPending);
       runBtn.disabled = (
         runBtn.hasAttribute("aria-busy")
@@ -1481,8 +1485,42 @@
         runUiState.startedAt = "";
         runUiState.cancelRequested = false;
         runUiState.runId = "";
+        runUiState.trackingExisting = false;
       }
       syncRunButtonVisual();
+    }
+
+    function trackExistingRunConflict(result) {
+      if (result.error_code !== "AUTOMATION_ALREADY_RUNNING") return false;
+      const receipt = result.existing_run;
+      const runId = typeof receipt?.run_id === "string" ? receipt.run_id : "";
+      stopRunProgress();
+      stopPolling();
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(runId) || !termDrawer) {
+        if (termDrawer) {
+          termDrawer.dataset.runId = "";
+          termDrawer.dataset.runStartedAt = "";
+        }
+        setRunUiState({running: false, awaitingApproval: false, pendingRun: false, conflictUnresolved: true});
+        renderFeedback(form, {
+          kind: "warning", title: "已有任务，状态暂不可达",
+          message: "服务未返回可追踪的已有任务标识。本次请求未新建任务，请刷新页面查看状态。",
+          showTimer: false, body: "",
+        });
+        return true;
+      }
+      termDrawer.dataset.runId = runId;
+      termDrawer.dataset.runStartedAt = "";
+      setRunUiState({running: false, awaitingApproval: false, pendingRun: true,
+        trackingExisting: true, conflictUnresolved: false, runId, startedAt: "", cancelRequested: false});
+      renderFeedback(form, {
+        kind: "info", title: "正在同步已有任务",
+        message: "本次请求未新建任务，正在查询已有任务的实际状态。",
+        showTimer: false, body: "",
+      });
+      syncRuntimeFeedback(form, null);
+      startPolling();
+      return true;
     }
 
     function stopRunProgress() {
@@ -1828,13 +1866,16 @@
       const taskId = termDrawer.dataset.taskId || "";
       let termPollTimer = null;
       let termPollingInFlight = false;
+      let termPollGeneration = 0;
+      let termPollingRequested = false;
       let termOffset = 0;
       let autoScroll = true;
       let termNeedsFinalRuntimePoll = false;
       let termFinalRuntimePollCount = 0;
 
       fetchOutputState = async function(options = {}) {
-        if (!toolName) return null;
+        if (!toolName || runUiState.conflictUnresolved) return null;
+        const generation = termPollGeneration;
         const startedAt = options.startedAt ?? termDrawer.dataset.runStartedAt ?? "";
         const runId = String(
           options.runId || runUiState.runId || termDrawer.dataset.runId || ""
@@ -1867,7 +1908,7 @@
           if (!res.ok || !payload || typeof payload !== "object" || (runId && payload.error)) {
             throw new Error("任务状态暂时无法读取。");
           }
-          renderRunSourceLinks(payload.collector_navigation);
+          if (generation === termPollGeneration) renderRunSourceLinks(payload.collector_navigation);
           return payload;
         } finally {
           clearTimeout(timeoutId);
@@ -1996,12 +2037,13 @@
       }
 
       async function pollOutput() {
-        if (!toolName || runUiState.batchTracking || termPollingInFlight) return;
+        if (!toolName || runUiState.batchTracking || runUiState.conflictUnresolved || termPollingInFlight) return;
+        const generation = termPollGeneration;
         termPollTimer = null;
         termPollingInFlight = true;
         try {
           const data = await fetchOutputState();
-          if (runUiState.batchTracking) return;
+          if (generation !== termPollGeneration || runUiState.batchTracking || runUiState.conflictUnresolved) return;
           if (data.lines && data.lines.length > 0) {
             const fragment = data.lines.join("\n") + "\n";
             termBody.textContent += fragment;
@@ -2140,6 +2182,7 @@
             termFinalRuntimePollCount = 0;
           }
         } catch (err) {
+          if (generation !== termPollGeneration || runUiState.conflictUnresolved) return;
           if (termAttentionLatched) return;
           const trackingRun = runUiState.running || runUiState.awaitingApproval || runUiState.pendingRun;
           stopRunProgress();
@@ -2166,10 +2209,16 @@
           }
         } finally {
           termPollingInFlight = false;
+          // A replaced Run must be queried after the old request settles; its response is ignored.
+          if (generation !== termPollGeneration && termPollingRequested && !runUiState.conflictUnresolved) {
+            pollOutput();
+          }
         }
       }
 
       startPolling = function(startedAt = "") {
+        if (runUiState.conflictUnresolved) return;
+        termPollingRequested = true;
         if (termPollTimer) { clearTimeout(termPollTimer); termPollTimer = null; }
         termAttentionLatched = false;
         termOffset = 0;
@@ -2183,6 +2232,8 @@
       };
 
       stopPolling = function() {
+        termPollGeneration += 1;
+        termPollingRequested = false;
         if (termPollTimer) {
           clearTimeout(termPollTimer);
           termPollTimer = null;
@@ -2949,6 +3000,14 @@
     if (runBtn) {
       runBtn.addEventListener("click", async e => {
         e.preventDefault();
+        if (runUiState.conflictUnresolved) {
+          window.location.reload();
+          return;
+        }
+        if (runUiState.trackingExisting) {
+          startPolling();
+          return;
+        }
         if (isScanPreviewWorkflow && scanConfirmationRetryOnly) {
           renderFeedback(form, {
             kind: "error",
@@ -3027,6 +3086,7 @@
             body: body.toString(),
           });
           const result = await res.json();
+          if (trackExistingRunConflict(result)) return;
           if (result.pending) {
             const startedAt = result.activity_value || stamp;
             const runId = String(result.run_id || "").trim();

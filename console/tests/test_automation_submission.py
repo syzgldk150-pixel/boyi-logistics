@@ -795,7 +795,7 @@ class AutomationSubmissionTests(unittest.TestCase):
                     captured["payload"]["error_code"],
                 )
 
-    def test_run_now_reports_existing_project_run_without_resubmitting(self):
+    def _run_now_existing_project_response(self, details):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
         app._is_ajax_request = lambda _handler: True
         app._control_plane_write_context = lambda _handler: {
@@ -818,7 +818,7 @@ class AutomationSubmissionTests(unittest.TestCase):
                 "status": HTTPStatus.CONFLICT,
                 "error": "该脚本已在运行",
                 "error_code": "AUTOMATION_ALREADY_RUNNING",
-                "data": {"blocking_kind": "ACTIVE"},
+                "data": details,
             }
         )
         captured = {}
@@ -830,6 +830,13 @@ class AutomationSubmissionTests(unittest.TestCase):
         app._handle_automation_task_run_now(
             SimpleNamespace(headers={"X-Browser-Request-UUID": "request-2"})
         )
+        return captured
+
+    def test_run_now_reports_existing_project_run_without_resubmitting(self):
+        captured = self._run_now_existing_project_response({
+            "blocking_kind": "ACTIVE", "active_run_id": "run-existing", "active_status": "RECEIVED",
+            "blocking_count": 2, "unrelated": {"private": "not-public"},
+        })
 
         self.assertEqual(HTTPStatus.CONFLICT, captured["status"])
         self.assertEqual("正在执行", captured["payload"]["title"])
@@ -841,6 +848,25 @@ class AutomationSubmissionTests(unittest.TestCase):
             "AUTOMATION_ALREADY_RUNNING",
             captured["payload"]["error_code"],
         )
+        self.assertFalse(captured["payload"]["ok"])
+        self.assertFalse(captured["payload"]["pending"])
+        self.assertNotIn("run_id", captured["payload"])
+        self.assertEqual({"run_id": "run-existing", "status": "RECEIVED", "blocking_kind": "ACTIVE"},
+            captured["payload"]["existing_run"])
+        self.assertNotIn("unrelated", captured["payload"])
+
+    def test_existing_run_receipt_is_omitted_when_identity_or_state_is_invalid(self):
+        for details in (
+            {"blocking_kind": "ACTIVE"},
+            {"blocking_kind": "ACTIVE", "active_run_id": "../another", "active_status": "RUNNING"},
+            {"blocking_kind": "ACTIVE", "active_run_id": {"run_id": "nested"}, "active_status": "RUNNING"},
+            {"blocking_kind": "ACTIVE", "active_run_id": "run-existing", "active_status": "not-a-run-state"},
+            {"blocking_kind": {}, "active_run_id": "run-existing", "active_status": "RUNNING"},
+        ):
+            with self.subTest(details=details):
+                captured = self._run_now_existing_project_response(details)
+                self.assertEqual(HTTPStatus.CONFLICT, captured["status"])
+                self.assertNotIn("existing_run", captured["payload"])
 
     def test_batch_resource_save_persists_multiple_resources(self):
         saved = []
