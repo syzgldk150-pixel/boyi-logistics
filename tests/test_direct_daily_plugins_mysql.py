@@ -1,5 +1,6 @@
 """Real daily packages, isolated raw HTTP/browser ports and immediate Invocation."""
 import json
+import os
 from pathlib import Path
 import secrets
 from uuid import uuid4
@@ -26,8 +27,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_statistics_scan_pickup_execute_in_parallel_without_a_queue(direct_repository, monkeypatch):  # noqa: F811 - imported pytest fixture
-    browser = Path("/home/deng/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome")
-    assert browser.is_file(), "real isolated scan requires installed Chromium"
+    browser = Path(os.environ["V32_CHROMIUM_EXECUTABLE"])
+    assert browser.is_absolute() and browser.is_file(), "real isolated scan requires installed Chromium"
     monkeypatch.setenv("V32_CHROMIUM_EXECUTABLE", str(browser))
     short_tmp = ROOT / ".t" / "tmp"
     short_tmp.mkdir(parents=True, exist_ok=True)
