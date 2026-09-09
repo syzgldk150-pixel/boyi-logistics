@@ -120,11 +120,20 @@ class FeishuApprovalService:
             authenticated_by="feishu_verified_event",
         )
 
-    def handle_text(self, open_id: str, chat_id: str, text: str) -> str | None:
+    def handle_binding_text(self, open_id: str, chat_id: str, text: str) -> str | None:
+        """Current Feishu ingress only binds identity; it never decides old Runs."""
         normalized = str(text or "").strip()
         match = match_feishu_approval_binding(normalized)
         if match:
             return self._bind(open_id, chat_id, match.group(1).upper())
+        return None
+
+    def handle_text(self, open_id: str, chat_id: str, text: str) -> str | None:
+        """Legacy approval protocol, disconnected from the current ingress."""
+        binding_reply = self.handle_binding_text(open_id, chat_id, text)
+        if binding_reply is not None:
+            return binding_reply
+        normalized = str(text or "").strip()
         if normalized not in {"1", "2"}:
             return None
         actor = self.resolve_actor(open_id)

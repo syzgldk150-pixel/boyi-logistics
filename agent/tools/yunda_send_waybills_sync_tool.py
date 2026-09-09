@@ -779,9 +779,12 @@ def _run_yunda_send_waybills_sync_for_date(params: dict[str, Any], target_date: 
                 sql_result = sync_console_waybills(
                     console_records,
                     source="yunda",
+                    account_id=require_explicit_account_id(params, label="waybill publication"),
                     target_date=target_date,
-                    replace_date=True,
+                    replace_date=False,
                 )
+                if sql_result.get("ok") is not True:
+                    return {"ok": False, "partial": True, "error": "寄件来源范围尚未核实，未更新 SQL 数据", "sql_result": sql_result, "error_code": sql_result.get("error_code")}
             except Exception as exc:
                 return {
                     "error": "SQL 写入韵达寄件运单失败",
@@ -923,9 +926,12 @@ def _run_yunda_send_waybills_sync_for_date(params: dict[str, Any], target_date: 
             sql_result = sync_console_waybills(
                 console_records,
                 source="yunda",
+                account_id=require_explicit_account_id(params, label="waybill publication"),
                 target_date=target_date,
                 replace_date=True,
             )
+            if sql_result.get("ok") is not True:
+                return {"ok": False, "partial": True, "error": "寄件来源范围尚未核实，未更新 SQL 数据", "sql_result": sql_result, "error_code": sql_result.get("error_code")}
         except Exception as exc:
             return {
                 "error": "SQL 写入韵达寄件运单失败",

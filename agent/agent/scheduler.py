@@ -1,4 +1,4 @@
-"""APScheduler entry adapter; every occurrence is submitted as a Command."""
+"""APScheduler trigger adapter; installed plugins execute one direct invocation."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from shared.redaction import redact_text
 logger = logging.getLogger("agent")
 _scheduler: AsyncIOScheduler | None = None
 _automation_project_invoker: Any | None = None
-_include_startup_catchup_for_process = True
+_include_startup_catchup_for_process = False
 _scheduler_reload_lock = RLock()
 _automation_project_job_tombstones: set[str] = set()
 FINANCE_MISFIRE_GRACE_SECONDS = 3600
@@ -292,7 +292,7 @@ def init_scheduler(
     agent_core,
     *,
     automation_project_invoker: Any | None = None,
-    include_startup_catchup: bool = True,
+    include_startup_catchup: bool = False,
 ) -> AsyncIOScheduler:
     global _automation_project_invoker, _include_startup_catchup_for_process, _scheduler
     _automation_project_invoker = automation_project_invoker
@@ -322,7 +322,7 @@ def init_scheduler(
         except Exception as exc:
             logger.warning("Finance startup catch-up initialization failed: %s", exc)
     else:
-        logger.info("Finance startup catch-up not registered for this held service start")
+        logger.info("Startup catch-up disabled; only future explicit schedule occurrences run")
     return _scheduler
 
 
@@ -1158,10 +1158,8 @@ async def _execute_scheduled_tool(
                 on_accepted=mark_accepted,
             )
 
-        return await _retry_unaccepted_persistence(
-            submit_project_once,
-            accepted=lambda: acceptance["accepted"],
-        )
+        # A failed occurrence ends here. No delayed business submission exists.
+        return await submit_project_once()
     if str(tool_name or "").startswith("automation."):
         raise RuntimeError(
             "Scheduled automation command is missing an explicit project identity"

@@ -1,6 +1,7 @@
 """Console application services grouped by business responsibility."""
 
 from console.app_support import *  # noqa: F403
+from console.services.business_calls import call_business
 
 
 class WaybillsReceiptsServiceMixin:
@@ -84,6 +85,40 @@ class WaybillsReceiptsServiceMixin:
         if error:
             return str(error)
         return "智能服务调用失败。"
+
+    def _refresh_waybill_sources(self, handler: BaseHTTPRequestHandler,
+                                filters: dict[str, Any]) -> dict[str, list[str]]:
+        status: dict[str, list[str]] = {"messages": [], "warnings": []}
+        if not self._waybill_sync_providers(str(filters.get("source") or "all")):
+            return status
+        start, end, error = self._waybill_sync_date_span(filters)
+        if error:
+            status["warnings"].append(error)
+            return status
+        if not start:
+            status["warnings"].append("未指定日期，本次仅查询本地数据；请选择日期补查原平台。")
+            return status
+        # A browser page read uses the same authenticated principal as other
+        # direct business reads. Never invent an account from a provider name.
+        user = getattr(handler, "current_admin_user", None)
+        if not isinstance(user, dict) or user.get("legacy"):
+            status["warnings"].append("原平台补查需要已登录的管理员会话，当前展示本地快照。")
+            return status
+        context = self._control_plane_read_context(handler)
+        if context is None:
+            status["warnings"].append("原平台补查身份不可用，当前展示本地快照。")
+            return status
+        import uuid
+        result = self._agent_request("POST", "/internal/v1/business/send-waybills-query", payload={
+            "params": {"source": filters["source"], "date_from": start, "date_to": end},
+            "request_id": str(uuid.uuid4()), "timeout_sec": 90,
+        }, timeout=95, console_principal=context["_console_principal"])
+        data = result.get("data") if isinstance(result.get("data"), dict) else result
+        if not result.get("ok") or not isinstance(data, dict) or data.get("complete") is not True:
+            status["warnings"].append("原平台数据未完整更新，以下列表和汇总仅代表已保存的本地数据。")
+        else:
+            status["messages"].append("已按原平台覆盖范围更新数据，列表和汇总使用同一数据库快照。")
+        return status
 
     def _render_waybills(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
         def first_value(name: str, default: str = "") -> str:
@@ -176,14 +211,11 @@ class WaybillsReceiptsServiceMixin:
             return result
 
         sync_status: dict[str, list[str]] = {"messages": [], "warnings": []}
-        if has_requested_date_filter and filters["source"] in {
-            "all",
-            "ronghui",
-            "yunda",
-        }:
-            sync_status["warnings"].append(
-                "当前列表只读取已持久化快照；GET 查询不会刷新外部来源，请从自动化页面显式提交同步计划。"
-            )
+        if has_active_filters:
+            try:
+                sync_status = self._refresh_waybill_sources(handler, filters)
+            except Exception:
+                sync_status["warnings"].append("原平台补查暂不可用，以下列表和汇总仅代表已保存的本地数据。")
 
         if has_active_filters:
             try:
@@ -300,7 +332,10 @@ class WaybillsReceiptsServiceMixin:
             result = self._empty_receipt_search_result(page_size=page_size)
         else:
             try:
-                result = self.repository.search_receipts(filters, page=page, page_size=page_size)
+                context = self._control_plane_read_context(handler)
+                if context is None:
+                    return
+                result = self._query_receipts_live(filters, page=page, page_size=page_size, trusted_context=context)
             except Exception as exc:
                 result = self._empty_receipt_search_result(page_size=page_size)
                 db_error = str(exc)
@@ -335,6 +370,9 @@ class WaybillsReceiptsServiceMixin:
         self._send_html(handler, body)
 
     def _handle_receipts_data(self, handler: BaseHTTPRequestHandler, query: dict[str, list[str]]) -> None:
+        trusted_context = self._control_plane_read_context(handler)
+        if trusted_context is None:
+            return
         filters = self._receipt_filters_from_query(query)
         page = self._receipt_positive_int(query, "page", 1)
         page_size = min(max(self._receipt_positive_int(query, "page_size", 50), 10), 100)
@@ -342,7 +380,7 @@ class WaybillsReceiptsServiceMixin:
             self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": self._empty_receipt_search_result(page_size=page_size)})
             return
         try:
-            result = self.repository.search_receipts(filters, page=page, page_size=page_size)
+            result = self._query_receipts_live(filters, page=page, page_size=page_size, trusted_context=trusted_context)
         except Exception as exc:
             self._send_json(
                 handler,
@@ -511,12 +549,9 @@ class WaybillsReceiptsServiceMixin:
             },
             "timeout_sec": max(45, min(120, int(getattr(self.settings, "agent_timeout_seconds", 30) or 30) + 15)),
         }
-        response = self._agent_request(
-            "POST",
-            "/internal/v1/tms/query_waybill_detail",
-            payload=payload,
-            timeout=max(50, payload["timeout_sec"] + 5),
-        )
+        response = call_business(self, "query_waybill_detail", payload["params"],
+            trusted_context={"_console_principal": self._mysql_console_principal()},
+            timeout_sec=payload["timeout_sec"])
         if not response.get("ok"):
             return {}, self._receipt_detail_text(response.get("error")) or "融辉详情接口不可达"
         data = response.get("data")
@@ -658,36 +693,15 @@ class WaybillsReceiptsServiceMixin:
                 },
             )
             return
-        command_result = self._submit_console_tool_command(
+        result = call_business(self, "receipt-feishu-detail", {"waybill_no": waybill_no},
             trusted_context=trusted_context,
-            browser_request_uuid=str(
-                handler.headers.get("X-Browser-Request-UUID") or ""
-            ),
-            tool_name="query_receipt_feishu_detail",
-            arguments={"waybill_no": waybill_no},
-            entity_refs=[
-                {
-                    "entity_type": "receipt",
-                    "entity_id": str(receipt_id),
-                    "source_system": "yunda",
-                    "relation_type": "subject",
-                    "metadata": {},
-                },
-                {
-                    "entity_type": "waybill",
-                    "entity_id": waybill_no,
-                    "source_system": "yunda",
-                    "relation_type": "related",
-                    "metadata": {},
-                },
-            ],
-            console_entry=f"/receipts/{receipt_id}/feishu-detail-query",
-        )
-        self._send_console_command_receipt(
-            handler,
-            command_result,
-            message="飞书回单详情精确查询已提交，请在事项中心查看运行证据。",
-        )
+            request_id=str(handler.headers.get("X-Browser-Request-UUID") or ""))
+        if not result.get("ok"):
+            self._send_json(handler, HTTPStatus.BAD_GATEWAY, {"ok": False,
+                "message": str(result.get("error") or "飞书明细查询失败。")})
+            return
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": result.get("data") or {},
+            "message": "飞书明细查询完成。"})
 
     def _parse_receipt_audit_path_id(self, path: str) -> int | None:
         raw = str(path or "").strip().rstrip("/")
@@ -764,59 +778,24 @@ class WaybillsReceiptsServiceMixin:
                 "return_waybill_no",
             )
         }
-        entity_refs = [
-            {
-                "entity_type": "receipt",
-                "entity_id": str(receipt_id),
-                "source_system": params["platform"],
-                "relation_type": "subject",
-                "metadata": {},
-            },
-            {
-                "entity_type": "waybill",
-                "entity_id": params["waybill_no"],
-                "source_system": params["platform"],
-                "relation_type": "related",
-                "metadata": {},
-            },
-        ]
-        command_result = self._submit_console_tool_command(
-            trusted_context=trusted_context,
-            browser_request_uuid=str(
-                handler.headers.get("X-Browser-Request-UUID") or ""
-            ),
-            tool_name="receipts_audit",
-            arguments=params,
-            entity_refs=entity_refs,
-            console_entry=f"/receipts/{receipt_id}/audit",
-        )
-        receipt = command_result.get("data") if isinstance(command_result.get("data"), dict) else {}
+        result = call_business(self, "receipts-audit", params,
+            trusted_context=trusted_context, write=True,
+            request_id=str(handler.headers.get("X-Browser-Request-UUID") or ""))
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        verified = result.get("ok") is True and data.get("verification", {}).get("verified") is True
+        updated = None
+        if verified:
+            updated = self.repository.update_receipt_audit_status(receipt_id, str(data.get("audit_status") or ""))
         self.repository.record_receipt_audit_log(
-            receipt_id=receipt_id,
-            platform=params["platform"],
-            direction=params["direction"],
-            action="audit_submit",
-            result_status="submitted" if command_result.get("ok") else "failed",
-            operator=operator,
-            request_summary=audit_log_request,
-            response_status=str(
-                receipt.get("status")
-                or command_result.get("error_code")
-                or command_result.get("status")
-                or ""
-            ),
-            message=str(
-                receipt.get("run_id")
-                or command_result.get("error")
-                or "智能服务任务提交失败"
-            ),
+            receipt_id=receipt_id, platform=params["platform"], direction=params["direction"],
+            action="audit", result_status="success" if verified else "failed", operator=operator,
+            request_summary=audit_log_request, response_status=str(result.get("error_code") or ""),
+            message=str(data.get("message") or result.get("error") or "回单审核结果未核验。"),
         )
-        self._send_console_command_receipt(
-            handler,
-            command_result,
-            message="回单审核计划已提交，请在事项中心完成审批并查看执行结果。",
-        )
-        return
+        self._send_json(handler, HTTPStatus.OK if verified else result.get("status") if result.get("status", 0) >= 400 else HTTPStatus.BAD_GATEWAY,
+            {"ok": verified, "record": updated or {}, "data": data,
+             "error_code": result.get("error_code"),
+             "message": str(data.get("message") if verified else result.get("error") or "回单审核结果未核验。")})
 
     def _handle_receipt_attachment(
         self,
@@ -1189,111 +1168,50 @@ class WaybillsReceiptsServiceMixin:
         # allow-listed image CDN URLs above remain available.
         return None
 
+    def _query_receipts_live(self, filters: dict[str, Any], *, page: int, page_size: int,
+                             trusted_context: dict[str, Any], request_id: str = "") -> dict[str, Any]:
+        params = {key: filters[key] for key in ("platform", "direction", "date_from", "date_to", "q", "receipt_status", "date_type", "code_type", "audit_status", "photo_status") if key in filters}
+        params.update({"page": page, "page_size": page_size})
+        response = call_business(self, "receipts-query", params, trusted_context=trusted_context,
+            request_id=request_id, timeout_sec=180)
+        data = response.get("data")
+        if not response.get("ok") or not isinstance(data, dict) or data.get("complete") is not True:
+            raise ValueError(str(response.get("error") or "原平台回单未完整返回。"))
+        rows = data.get("rows")
+        if not isinstance(rows, list) or not isinstance(data.get("pagination"), dict):
+            raise ValueError("原平台回单返回格式无效。")
+        saved_rows = []
+        for row in rows:
+            saved = self.repository.upsert_receipt_record(row)
+            if not isinstance(saved, dict) or not saved.get("id"):
+                raise ValueError("本次回单无法保存查询索引。")
+            for attachment in row.get("attachments") or []:
+                self.repository.upsert_receipt_attachment({**attachment, "record_id": saved["id"]})
+            if row.get("attachments"):
+                saved = self.repository.get_receipt_record(saved["id"]) or saved
+            saved_rows.append({**row, **saved})
+        return {**data, "rows": saved_rows}
+
     def _handle_receipts_sync(self, handler: BaseHTTPRequestHandler) -> None:
+        """The historical URL now queries a page; bulk archive remains separate."""
         trusted_context = self._control_plane_write_context(handler)
         if trusted_context is None:
             return
-        raw_body = self._read_request_body(handler)
-        content_type = str(handler.headers.get("Content-Type") or "").lower()
-        body: dict[str, Any] = {}
-        if raw_body and "json" in content_type:
-            try:
-                parsed_body = json.loads(raw_body.decode("utf-8"))
-                body = parsed_body if isinstance(parsed_body, dict) else {}
-            except json.JSONDecodeError:
-                body = {}
-        elif raw_body:
-            parsed = parse_qs(raw_body.decode("utf-8", errors="replace"), keep_blank_values=True)
-            body = {str(key): str(values[-1] if values else "") for key, values in parsed.items()}
-        safe_params = {
-            "platform": str(body.get("platform", "") or "all").strip().lower()
-            or "all",
-            "direction": "send",
-            "date_from": str(body.get("date_from", "") or "").strip(),
-            "date_to": str(body.get("date_to", "") or "").strip(),
-            "q": str(body.get("q", "") or "").strip(),
-            "receipt_status": str(body.get("receipt_status", "") or "").strip(),
-        }
-        for optional_name in ("date_type", "code_type"):
-            value = str(body.get(optional_name, "") or "").strip()
-            if value:
-                safe_params[optional_name] = value
-        if safe_params["platform"] not in {"all", "ronghui", "yunda"}:
-            self._send_json(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                {"ok": False, "message": "回单平台参数无效。"},
-            )
+        body = self._parse_receipt_audit_body(handler)
+        query = {str(key): [str(value)] for key, value in body.items()}
+        filters = self._receipt_filters_from_query(query)
+        if bool(filters.get("date_from")) != bool(filters.get("date_to")):
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "请选择完整的更新时间范围。"})
             return
-        has_date_from = bool(safe_params["date_from"])
-        has_date_to = bool(safe_params["date_to"])
-        if has_date_from != has_date_to:
-            self._send_json(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                {"ok": False, "message": "请选择完整的更新时间范围：开始日期和结束日期必须同时填写。"},
-            )
+        try:
+            data = self._query_receipts_live(filters, page=1,
+                page_size=min(max(self._receipt_positive_int(query, "page_size", 50), 10), 100),
+                trusted_context=trusted_context,
+                request_id=str(handler.headers.get("X-Browser-Request-UUID") or ""))
+        except (ValueError, TypeError) as exc:
+            self._send_json(handler, HTTPStatus.BAD_GATEWAY, {"ok": False, "message": str(exc)})
             return
-        if not has_date_from and not has_date_to:
-            today = self._receipt_default_date()
-            safe_params["date_from"] = today
-            safe_params["date_to"] = today
-        for date_name in ("date_from", "date_to"):
-            value = safe_params[date_name]
-            if not value:
-                continue
-            try:
-                datetime.strptime(value, "%Y-%m-%d")
-            except ValueError:
-                self._send_json(
-                    handler,
-                    HTTPStatus.BAD_REQUEST,
-                    {"ok": False, "message": "更新时间范围格式无效，请使用 YYYY-MM-DD。"},
-                )
-                return
-        safe_params["max_pages"] = RECEIPT_QUERY_MAX_PAGES
-        safe_params["timeout_sec"] = RECEIPT_QUERY_SOURCE_TIMEOUT_SEC
-        command_result = self._submit_console_tool_command(
-            trusted_context=trusted_context,
-            browser_request_uuid=str(
-                handler.headers.get("X-Browser-Request-UUID") or ""
-            ),
-            tool_name="receipts_sync",
-            arguments=safe_params,
-            entity_refs=[],
-            console_entry="/receipts/sync",
-        )
-        operator = str(
-            (getattr(handler, "current_admin_user", None) or {}).get("username")
-            or ""
-        )
-        receipt = (
-            command_result.get("data")
-            if isinstance(command_result.get("data"), dict)
-            else {}
-        )
-        self.repository.record_receipt_audit_log(
-            action="sync_submit",
-            result_status="submitted" if command_result.get("ok") else "failed",
-            operator=operator,
-            request_summary=safe_params,
-            response_status=str(
-                receipt.get("status")
-                or command_result.get("error_code")
-                or command_result.get("status")
-                or ""
-            ),
-            message=str(
-                receipt.get("run_id")
-                or command_result.get("error")
-                or "智能服务任务提交失败"
-            ),
-        )
-        self._send_console_command_receipt(
-            handler,
-            command_result,
-            message="回单同步计划已提交，请在事项中心完成审批并查看运行结果。",
-        )
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": data, "message": "回单查询完成。"})
 
     def _render_line_haul_contacts(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
         def first_value(name: str, default: str = "") -> str:
@@ -1429,6 +1347,9 @@ class WaybillsReceiptsServiceMixin:
         return data
 
     def _handle_tracking_query(self, handler: BaseHTTPRequestHandler) -> None:
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
         content_length = int(handler.headers.get("Content-Length", 0))
         raw = handler.rfile.read(content_length) if content_length else b""
         try:
@@ -1440,15 +1361,9 @@ class WaybillsReceiptsServiceMixin:
             self._send_json(handler, HTTPStatus.BAD_REQUEST, {"error": "请输入运单号"})
             return
 
-        result = self._agent_request(
-            "POST",
-            "/internal/v1/tms/tracking_query",
-            payload={
-                "params": {"tracking_number": tracking_number, "decrypt_masked": True},
-                "timeout_sec": 180,
-            },
-            timeout=max(195, self.settings.agent_timeout_seconds),
-        )
+        result = call_business(self, "tracking_query",
+            {"tracking_number": tracking_number, "decrypt_masked": True},
+            trusted_context=trusted_context, timeout_sec=180)
         if not result.get("ok"):
             error = result.get("error")
             message = "单号查询服务暂时不可用，请稍后重试。"

@@ -67,13 +67,14 @@ FIRST_PARTY_RESULT_PATH = FIRST_PARTY_ROOT / "_runtime" / "result.py"
 # Payload and Broker-effect changes advance the signed executable contract.
 FIRST_PARTY_PACKAGE_VERSION = "1.0.20"
 _FIRST_PARTY_PACKAGE_VERSION_OVERRIDES: Mapping[str, str] = {
-    "sync_finance_bills": "1.0.21",
+    "sync_finance_bills": "1.0.22",
     "sync_customer_service_problems": "1.0.21",
     "self_pickup_problem_upload": "1.0.26",
     "split_pending_problem_upload": "1.0.25",
     "sync_arrival_stats": "1.0.22",
     "sync_arrive_list": "1.0.21",
-    "sync_scan_codes": "1.0.23",
+    "sync_scan_codes": "1.0.24",
+    "sync_daily_send_orders": "1.0.21",
 }
 _RELEASE_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
 _ACCOUNT_SYSTEM_PREFIXES = {
@@ -122,6 +123,9 @@ _CODE_OWNED_ENTRYPOINT_DYNAMIC_FIELDS: Mapping[
     str,
     Mapping[str, tuple[str, ...]],
 ] = {
+    "sync_finance_bills": {
+        "console": ("mode", "target_date", "start_date", "end_date", "batch_id", "rescan_days"),
+    },
     "sync_delivery_status": {
         "webhook": ("BILL_CODE", "RECORD_ID"),
     },
@@ -1169,7 +1173,9 @@ def resolve_first_party_manifests(
                     else ""
                 )
                 resolvers[field] = (
-                    f"verified_{optional_prefix}{entrypoint}_{resolver_field}"
+                    f"configured_finance_console_{resolver_field}"
+                    if plugin_id == "sync_finance_bills" and entrypoint == "console"
+                    else f"verified_{optional_prefix}{entrypoint}_{resolver_field}"
                 )
             for field, resolver_name in fixed_resolvers.get(entrypoint, {}).items():
                 previous = resolvers.get(str(field))

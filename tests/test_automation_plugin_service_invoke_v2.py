@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import asyncio
 from dataclasses import replace
 import hashlib
@@ -228,6 +230,7 @@ def test_production_service_executor_routes_only_one_committed_project_reference
 
     result = asyncio.run(
         executor(
+            invocation_id="22222222-2222-4222-8222-222222222222",
             provider=provider,
             caller_automation_id="consumer-project",
             operation="run",
@@ -268,6 +271,7 @@ def test_production_service_executor_blocks_unacknowledged_generation(
     with pytest.raises(PluginExecutionError) as blocked:
         asyncio.run(
             executor(
+                invocation_id="22222222-2222-4222-8222-222222222222",
                 provider=provider,
                 caller_automation_id="consumer-project",
                 operation="run",
@@ -367,6 +371,7 @@ def test_resolved_old_route_cannot_obtain_execution_after_new_generation_switch(
     with pytest.raises(PluginExecutionError) as stale:
         asyncio.run(
             executor(
+                invocation_id="22222222-2222-4222-8222-222222222222",
                 provider=old_route,
                 caller_automation_id="consumer-project",
                 operation="run",
@@ -379,6 +384,7 @@ def test_resolved_old_route_cannot_obtain_execution_after_new_generation_switch(
 
     assert asyncio.run(
         executor(
+            invocation_id="22222222-2222-4222-8222-222222222222",
             provider=new_route,
             caller_automation_id="consumer-project",
             operation="run",
@@ -432,6 +438,7 @@ def test_production_service_executor_explicitly_blocks_resident_without_manager(
     with pytest.raises(PluginExecutionError) as blocked:
         asyncio.run(
             executor(
+                invocation_id="22222222-2222-4222-8222-222222222222",
                 provider=provider,
                 caller_automation_id="consumer-project",
                 operation="run",
@@ -519,18 +526,21 @@ def test_internal_service_write_is_finalized_only_after_provider_evidence(
         account_bindings_sha256="c" * 64,
         requires_write_verification=True,
         started_mutating_call_count=1,
-        orchestration_run_id="service-run",
+        orchestration_run_id=None,
+        invocation_id="22222222-2222-4222-8222-222222222222",
         host_call_observations=_provider_host_observations(result),
     )
 
     async def execute(*_args, **_kwargs):
         return GenerationBoundResult(result, verification=verification)
 
+    router.direct_invocations = SimpleNamespace(reserve_provider=lambda *_: ((), {}))
     monkeypatch.setattr(router, "execute", execute)
     public = asyncio.run(
         router.execute_service_operation(
             _capability("base-project", 3),
             {},
+            invocation_id="22222222-2222-4222-8222-222222222222",
             service=service,
             operation=operation,
             effect=CapabilityEffect.EXTERNAL_WRITE,
@@ -564,19 +574,22 @@ def test_internal_service_write_with_incomplete_evidence_becomes_unknown(
         account_bindings_sha256="c" * 64,
         requires_write_verification=True,
         started_mutating_call_count=1,
-        orchestration_run_id="service-run",
+        orchestration_run_id=None,
+        invocation_id="22222222-2222-4222-8222-222222222222",
         host_call_observations=_provider_host_observations(result),
     )
 
     async def execute(*_args, **_kwargs):
         return GenerationBoundResult(result, verification=verification)
 
+    router.direct_invocations = SimpleNamespace(reserve_provider=lambda *_: ((), {}))
     monkeypatch.setattr(router, "execute", execute)
     with pytest.raises(PluginExecutionError) as unknown:
         asyncio.run(
             router.execute_service_operation(
                 _capability("base-project", 3),
                 {},
+                invocation_id="22222222-2222-4222-8222-222222222222",
                 service=service,
                 operation="run",
                 effect=CapabilityEffect.EXTERNAL_WRITE,

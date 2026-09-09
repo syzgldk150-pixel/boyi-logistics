@@ -23,50 +23,32 @@ from console.services.automation_preview_support import (
     scan_preview_error_message,
     selection_preview_error_message,
 )
-from shared.orchestration_repository_support import RUN_STATUSES
+from shared.plugin_invocation_repository import ACTIVE_INVOCATION_STATUSES, TERMINAL_INVOCATION_STATUSES
+from console.services.automation_invocation_output import invocation_output_lines, invocation_start_feedback
+
+INVOCATION_STATUSES = ACTIVE_INVOCATION_STATUSES | TERMINAL_INVOCATION_STATUSES
 
 
 def _automation_existing_run_receipt(details: Any) -> dict[str, str] | None:
     if not isinstance(details, Mapping):
         return None
-    run_id = details.get("active_run_id")
+    invocation_id = details.get("active_invocation_id")
     status = details.get("active_status")
     kind = details.get("blocking_kind")
     if (
-        not isinstance(run_id, str)
-        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", run_id) is None
+        not isinstance(invocation_id, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", invocation_id) is None
         or not isinstance(status, str)
-        or status not in RUN_STATUSES
+        or status not in INVOCATION_STATUSES
         or not isinstance(kind, str)
-        or kind not in {"ACTIVE", "RETRY_PENDING"}
+        or kind != "ACTIVE"
     ):
         return None
-    return {"run_id": run_id, "status": status, "blocking_kind": kind}
+    return {"invocation_id": invocation_id, "status": status, "blocking_kind": kind}
 
 
 def _automation_blocking_feedback(details: Any) -> tuple[str, str]:
-    payload = details if isinstance(details, Mapping) else {}
-    blocking_kind = str(
-        payload.get("blocking_kind") or "NEEDS_ATTENTION"
-    ).strip().upper()
-    return {
-        "ACTIVE": ("正在执行", "当前任务仍在执行，请等待完成后再试。"),
-        "RETRY_PENDING": (
-            "等待自动重试",
-            "旧任务正在等待自动重试，请先等待重试结果。",
-        ),
-        "UNKNOWN_WRITE": (
-            "写入结果待人工核验",
-            "旧任务的写入结果尚未确认，请先到事项中心人工核验。",
-        ),
-        "NEEDS_ATTENTION": (
-            "需要处理旧事项",
-            "旧事项状态需要处理，请先到事项中心处理或取消。",
-        ),
-    }.get(
-        blocking_kind,
-        ("需要处理旧事项", "存在未结束的旧事项，请先到事项中心处理。"),
-    )
+    return ("本次未启动", "当前所需资源仍在使用，本次已结束，请稍后重新触发。")
 
 
 class AutomationServiceMixin(AutomationProjectsServiceMixin):
@@ -348,7 +330,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         *,
         trusted_context: dict[str, Any],
         browser_request_uuid: str,
-        preview_run_id: str | None = None,
+        preview_invocation_id: str | None = None,
     ) -> dict[str, Any]:
         """Invoke one saved automation project; Agent resolves its trusted configuration."""
 
@@ -377,9 +359,9 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                     "error_code": "INVALID_AUTOMATION_CONTRIBUTION",
                 }
             invoke_payload["contribution_id"] = contribution_id
-        if preview_run_id is not None:
-            safe_preview_run_id = self._normalize_browser_request_uuid(preview_run_id)
-            if automation_id != SCAN_PREVIEW_PROJECT_ID or not safe_preview_run_id:
+        if preview_invocation_id is not None:
+            safe_preview_invocation_id = self._normalize_browser_request_uuid(preview_invocation_id)
+            if automation_id != SCAN_PREVIEW_PROJECT_ID or not safe_preview_invocation_id:
                 return {
                     "ok": False,
                     "status": HTTPStatus.BAD_REQUEST,
@@ -388,7 +370,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                     ],
                     "error_code": "SCAN_PREVIEW_ID_INVALID",
                 }
-            invoke_payload["preview_run_id"] = safe_preview_run_id
+            invoke_payload["preview_invocation_id"] = safe_preview_invocation_id
         run_result = self._agent_request(
             "POST",
             f"/internal/v1/automation-projects/{quote(automation_id, safe='')}/invoke",
@@ -400,8 +382,8 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             return run_result
 
         receipt = run_result.get("data")
-        run_id = str(receipt.get("run_id") or "").strip() if isinstance(receipt, dict) else ""
-        if not run_id:
+        invocation_id = str(receipt.get("invocation_id") or "").strip() if isinstance(receipt, dict) else ""
+        if not invocation_id:
             return {
                 "ok": False,
                 "status": HTTPStatus.BAD_GATEWAY,
@@ -410,13 +392,17 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             }
 
         started_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        receipt_status = str(receipt.get("status") or "")
+        local_status = ("running" if receipt_status in ACTIVE_INVOCATION_STATUSES else
+                        "success" if receipt_status == "COMPLETED" else
+                        "cancelled" if receipt_status == "CANCELLED" else "error")
         if payload.get("task_mode") == "scheduled" and not payload.get(
             "project_plugin_instance"
         ):
             self.repository.update_scheduled_task_runtime(
                 base_task_id=payload["task_id"],
                 last_run=started_stamp,
-                last_status="running",
+                last_status=local_status,
                 last_duration_ms=None,
                 last_message="",
             )
@@ -425,21 +411,21 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 payload["task_id"],
                 payload=payload,
                 last_run=started_stamp,
-                last_status="running",
+                last_status=local_status,
                 last_duration_ms=None,
                 last_message="",
             )
         state = dict(self.automation_virtual_task_state.get(payload["task_id"], {}))
         state.update(
             {
-                "run_id": run_id,
+                "invocation_id": invocation_id,
                 "task_mode": (
                     "plugin"
                     if payload.get("project_plugin_instance")
                     else payload.get("task_mode")
                 ),
                 "last_run": started_stamp,
-                "last_status": "running",
+                "last_status": local_status,
             }
         )
         self.automation_virtual_task_state[payload["task_id"]] = state
@@ -1333,24 +1319,23 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             "ok": True,
             "pending": True,
             "task_id": payload["task_id"],
-            "title": "命令已受理",
-            "message": "任务已提交，页面会自动更新执行状态。",
+            "title": "执行已发起",
+            "message": "脚本直接执行，完成后显示本次结果。",
             "status_label": "等待状态同步",
             "activity_label": "提交时间",
             "activity_value": started_stamp,
             "duration_label": format_duration_label(0),
             "error": "",
-            "command_id": receipt.get("command_id"),
-            "work_item_id": receipt.get("work_item_id"),
-            "run_id": receipt.get("run_id"),
+            "invocation_id": receipt.get("invocation_id"),
             "next_poll_after_ms": receipt.get("next_poll_after_ms", 1000),
+            **invocation_start_feedback(receipt),
         }
         if ajax_request:
             self._send_json(handler, HTTPStatus.ACCEPTED, response_payload)
             return
         self._render_automations(
             handler,
-            {"message": [f"任务已开始执行：{payload['name']}"], "kind": ["success"]},
+            {"message": [response_payload["message"]], "kind": ["success" if response_payload["ok"] else "warning"]},
             task_overrides=override,
             task_feedbacks={
                 payload["task_id"]: {
@@ -1376,14 +1361,14 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         )
         values = self._parse_urlencoded_form(handler)
         task_id = str(values.get("task_id") or "").strip()
-        preview_run_id = self._normalize_browser_request_uuid(
-            values.get("preview_run_id")
+        preview_invocation_id = self._normalize_browser_request_uuid(
+            values.get("preview_invocation_id")
         )
         if (
             not request_id
-            or set(values) != {"task_id", "preview_run_id"}
+            or set(values) != {"task_id", "preview_invocation_id"}
             or task_id != SCAN_PREVIEW_PROJECT_ID
-            or not preview_run_id
+            or not preview_invocation_id
         ):
             self._send_json(
                 handler,
@@ -1410,7 +1395,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             },
             trusted_context=trusted_context,
             browser_request_uuid=request_id,
-            preview_run_id=preview_run_id,
+            preview_invocation_id=preview_invocation_id,
         )
         if not result.get("ok"):
             error_code = str(result.get("error_code") or "").strip()
@@ -1443,8 +1428,8 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             return
 
         receipt = result.get("data")
-        run_id = str(receipt.get("run_id") or "").strip() if isinstance(receipt, dict) else ""
-        if not run_id:
+        invocation_id = str(receipt.get("invocation_id") or "").strip() if isinstance(receipt, dict) else ""
+        if not invocation_id:
             self._send_json(
                 handler,
                 HTTPStatus.BAD_GATEWAY,
@@ -1463,10 +1448,9 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 "pending": True,
                 "title": "正式扫描请求已受理",
                 "message": "正式请求已绑定本次预览，后续状态会在当前卡片更新。",
-                "command_id": receipt.get("command_id"),
-                "work_item_id": receipt.get("work_item_id"),
-                "run_id": run_id,
+                "invocation_id": invocation_id,
                 "next_poll_after_ms": receipt.get("next_poll_after_ms", 1000),
+                **invocation_start_feedback(receipt),
             },
         )
 
@@ -1524,12 +1508,12 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             )
             return
         receipt = result.get("data")
-        run_id = (
-            str(receipt.get("run_id") or "").strip()
+        invocation_id = (
+            str(receipt.get("invocation_id") or "").strip()
             if isinstance(receipt, Mapping)
             else ""
         )
-        if not self._normalize_browser_request_uuid(run_id):
+        if not self._normalize_browser_request_uuid(invocation_id):
             self._send_json(
                 handler,
                 HTTPStatus.BAD_GATEWAY,
@@ -1548,10 +1532,9 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 "pending": True,
                 "title": "正在读取候选运单",
                 "message": "正在读取飞书来源表，完成后可直接勾选要处理的运单。",
-                "command_id": receipt.get("command_id"),
-                "work_item_id": receipt.get("work_item_id"),
-                "run_id": run_id,
+                "invocation_id": invocation_id,
                 "next_poll_after_ms": receipt.get("next_poll_after_ms", 1000),
+                **invocation_start_feedback(receipt),
             },
         )
 
@@ -1569,8 +1552,8 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         )
         values = self._parse_urlencoded_form(handler)
         task_id = str(values.get("task_id") or "").strip()
-        preview_run_id = self._normalize_browser_request_uuid(
-            values.get("preview_run_id")
+        preview_invocation_id = self._normalize_browser_request_uuid(
+            values.get("preview_invocation_id")
         )
         selected_raw = str(values.get("selected_bill_codes_json") or "")
         try:
@@ -1580,9 +1563,9 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         if (
             not request_id
             or set(values)
-            != {"task_id", "preview_run_id", "selected_bill_codes_json"}
+            != {"task_id", "preview_invocation_id", "selected_bill_codes_json"}
             or task_id not in SELECTION_PREVIEW_PROJECT_IDS
-            or not preview_run_id
+            or not preview_invocation_id
             or not isinstance(selected, list)
             or not selected
             or len(selected) > 10_000
@@ -1608,7 +1591,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             "POST",
             (
                 f"/internal/v1/automation-projects/{quote(task_id, safe='')}"
-                f"/selection-previews/{quote(preview_run_id, safe='')}/confirm"
+                f"/selection-previews/{quote(preview_invocation_id, safe='')}/confirm"
             ),
             payload={
                 "request_id": request_id,
@@ -1646,12 +1629,12 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             )
             return
         receipt = result.get("data")
-        run_id = (
-            str(receipt.get("run_id") or "").strip()
+        invocation_id = (
+            str(receipt.get("invocation_id") or "").strip()
             if isinstance(receipt, Mapping)
             else ""
         )
-        if not self._normalize_browser_request_uuid(run_id):
+        if not self._normalize_browser_request_uuid(invocation_id):
             self._send_json(
                 handler,
                 HTTPStatus.BAD_GATEWAY,
@@ -1670,19 +1653,18 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 "pending": True,
                 "title": "所选运单已提交",
                 "message": f"已提交 {len(selected)} 票运单，执行结果会在当前卡片更新。",
-                "command_id": receipt.get("command_id"),
-                "work_item_id": receipt.get("work_item_id"),
-                "run_id": run_id,
+                "invocation_id": invocation_id,
                 "next_poll_after_ms": receipt.get("next_poll_after_ms", 1000),
+                **invocation_start_feedback(receipt),
             },
         )
 
     def _handle_automation_task_cancel(self, handler: BaseHTTPRequestHandler) -> None:
         values = self._parse_urlencoded_form(handler)
         task_id = str(values.get("task_id", "") or "").strip()
-        run_id = str(values.get("run_id", "") or "").strip()
+        invocation_id = str(values.get("invocation_id", "") or "").strip()
 
-        if not task_id or not run_id:
+        if not task_id or not invocation_id:
             self._send_json(
                 handler,
                 HTTPStatus.BAD_REQUEST,
@@ -1697,15 +1679,22 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         trusted_context = self._control_plane_write_context(handler)
         if trusted_context is None:
             return
+        current = self._agent_request(
+            "GET", f"/internal/v1/automation-invocations/{quote(invocation_id, safe='')}",
+            timeout=5, console_principal=trusted_context.get("_console_principal"),
+        )
+        current_row = current.get("data") if isinstance(current.get("data"), dict) else {}
+        if (not current.get("ok") or current_row.get("invocation_id") != invocation_id
+                or not self._automation_project_id(task_id) or current_row.get("automation_id") != task_id):
+            self._send_json(handler, HTTPStatus.BAD_GATEWAY, {
+                "ok": False, "pending": False, "error_code": "INVALID_INVOCATION_RESULT",
+                "message": "无法确认这次执行属于当前卡片，取消请求未发送。",
+            })
+            return
         result = self._agent_request(
             "POST",
-            f"/internal/v1/runs/{quote(run_id, safe='')}/cancel",
-            payload={
-                "comment": "Console 自动化页面取消",
-                "actor": trusted_context["actor"],
-                "actor_roles": list(trusted_context.get("actor_roles") or []),
-                "source": "console",
-            },
+            f"/internal/v1/automation-invocations/{quote(invocation_id, safe='')}/cancel",
+            payload={},
             timeout=10,
             console_principal=trusted_context.get("_console_principal"),
         )
@@ -1725,30 +1714,41 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         if not isinstance(payload, dict):
             payload = {}
 
-        run = payload.get("run") if isinstance(payload.get("run"), dict) else {}
-        cancelled = str(run.get("status") or "").strip().upper() == "CANCELLED"
+        run = payload
+        status = str(run.get("status") or "").strip().upper()
+        if (run.get("invocation_id") != invocation_id or run.get("automation_id") != task_id
+                or status not in INVOCATION_STATUSES):
+            self._send_json(handler, HTTPStatus.BAD_GATEWAY, {
+                "ok": False, "pending": False, "error_code": "INVALID_INVOCATION_RESULT",
+                "message": "取消结果不完整或不匹配，请查看本次执行记录。",
+            })
+            return
+        cancelled = status == "CANCELLED"
+        pending = status in {"STARTING", "RUNNING", "CANCELLING"}
+        unknown = status == "WRITE_OUTCOME_UNKNOWN"
         self._send_json(
             handler,
-            HTTPStatus.OK if cancelled else HTTPStatus.ACCEPTED,
+            HTTPStatus.ACCEPTED if pending else HTTPStatus.OK,
             {
                 "ok": True,
                 "task_id": task_id,
-                "run_id": run_id,
-                "title": "已取消" if cancelled else "取消中",
+                "invocation_id": invocation_id,
+                "title": "取消中" if pending else ("已取消" if cancelled else "本次执行已结束"),
                 "message": (
-                    "该暂停任务已取消。"
-                    if cancelled
-                    else "已发送取消请求，正在安全停止当前 Run。"
+                    "已发送取消请求，正在停止本次执行。" if pending else
+                    "本次执行已停止，停止前的写入结果尚未确认，请核对实际结果。" if unknown else
+                    "本次执行已取消。" if cancelled else "本次执行已经结束。"
                 ),
                 "activity_value": str(run.get("started_at") or run.get("created_at") or ""),
-                "pending": not cancelled,
-                "cancel_requested": not cancelled,
+                "pending": pending,
+                "cancel_requested": pending,
                 "cancelled": cancelled,
+                "status": status,
             },
         )
 
     def _handle_automation_task_output(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
-        """Return durable Run state; legacy tool output remains read-only compatibility."""
+        """Return the result of this exact invocation; never reuse historical output."""
         trusted_context = self._control_plane_read_context(handler)
         if trusted_context is None:
             return
@@ -1757,15 +1757,15 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
         scan_phase = str(query.get("scan_phase", [""])[0]).strip().lower()
         selection_phase = str(query.get("selection_phase", [""])[0]).strip().lower()
         started_at = str(query.get("started_at", [""])[0]).strip()
-        run_id = str(query.get("run_id", [""])[0]).strip()
+        invocation_id = str(query.get("invocation_id", [""])[0]).strip()
         try:
             offset = int(query.get("offset", ["0"])[0])
         except (ValueError, IndexError):
             offset = 0
-        if run_id:
+        if invocation_id:
             result = self._agent_request(
                 "GET",
-                f"/internal/v1/runs/{quote(run_id, safe='')}",
+                f"/internal/v1/automation-invocations/{quote(invocation_id, safe='')}",
                 timeout=5,
                 console_principal=trusted_context["_console_principal"],
             )
@@ -1783,14 +1783,21 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 )
                 return
             data = result.get("data") if isinstance(result.get("data"), dict) else {}
-            run = data.get("run") if isinstance(data.get("run"), dict) else {}
+            run = data
             status = str(run.get("status") or "").upper()
             execution_phase = str(run.get("execution_phase") or "").strip().lower()
             stage_code = str(run.get("stage_code") or "").strip().upper()
             stage_description = str(run.get("stage_description") or "").strip()
-            terminal_statuses = {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
-            active_statuses = {"RUNNING", "VERIFYING"}
-            active_phases = {"source_read", "processing", "writing", "verifying"}
+            terminal_statuses = {"COMPLETED", "PARTIAL", "FAILED", "CANCELLED", "WRITE_OUTCOME_UNKNOWN"}
+            active_statuses = {"STARTING", "RUNNING", "CANCELLING"}
+            if (run.get("invocation_id") != invocation_id or not self._automation_project_id(task_id)
+                    or run.get("automation_id") != task_id or status not in terminal_statuses | active_statuses):
+                self._send_json(handler, HTTPStatus.BAD_GATEWAY, {
+                    "lines": [], "running": False, "pending": False, "offset": 0, "total": 0,
+                    "error": "本次执行记录不完整或不匹配，请刷新后查看。",
+                    "error_code": "INVALID_INVOCATION_RESULT",
+                })
+                return
             attention_titles = {
                 "BLOCKED_DATA": "执行前检查未通过",
                 "BLOCKED_LOGIN": "登录已失效",
@@ -1798,6 +1805,10 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 "FAILED_RETRYABLE": "执行暂时失败",
             }
             public_status_labels = {
+                "STARTING": "正在启动",
+                "CANCELLING": "正在取消",
+                "FAILED": "执行失败",
+                "WRITE_OUTCOME_UNKNOWN": "写入结果未确认",
                 "RECEIVED": "已收到",
                 "PLANNED": "准备执行",
                 "WAITING_APPROVAL": "等待审批",
@@ -1814,13 +1825,15 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 "CANCELLED": "已取消",
             }
             is_terminal = status in terminal_statuses
-            awaiting_approval = status == "WAITING_APPROVAL"
+            awaiting_approval = False
             error_code = str(
                 run.get("public_problem_code") or run.get("error_code") or ""
             ).strip().upper()
             problem_titles = {
                 "ACCOUNT_LOGIN_REQUIRED": "登录已失效",
-                "RESOURCE_BUSY": "等待相同账号或数据位置",
+                "AUTH_REQUIRED": "登录已失效",
+                "IMPACT_PREVIEW_REQUIRED": "执行前检查未通过",
+                "RESOURCE_BUSY": "当前资源被占用，本次未执行",
                 "RESOURCE_PERMISSION_DENIED": "飞书权限不足",
                 "RESOURCE_UNAVAILABLE": "数据位置不可用",
                 "RUNTIME_GENERATION_UNSTABLE": "运行环境同步中",
@@ -1836,13 +1849,13 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 status=status,
             )
             state_label = stage_description or public_status_labels.get(status, "正在同步")
-            state_line = f"状态：{state_label}"
-            is_running = status in active_statuses and execution_phase in active_phases
+            lines = invocation_output_lines(run, state_label=state_label)
+            is_running = status in active_statuses
             payload: dict[str, Any] = {
-                "lines": [state_line] if offset <= 0 else [],
+                "lines": lines[max(0, offset):],
                 "running": is_running,
-                "queued": execution_phase == "queued",
-                "pending": not is_terminal,
+                "queued": False,
+                "pending": status in active_statuses,
                 "awaiting_approval": awaiting_approval,
                 "cancel_requested": bool(run.get("cancel_requested_at")),
                 "started_at": str(
@@ -1851,10 +1864,11 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                     or run.get("created_at")
                     or started_at
                 ),
-                "offset": 1,
-                "total": 1,
-                "run_id": run_id,
+                "offset": len(lines),
+                "total": len(lines),
+                "invocation_id": invocation_id,
                 "status": status,
+                "collector_navigation": run.get("collector_navigation"),
                 "execution_phase": execution_phase,
                 "stage_code": stage_code,
                 "stage_description": stage_description,
@@ -1863,16 +1877,9 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 "attention_title": attention_title,
                 "attention_message": attention_message,
                 "next_poll_after_ms": (
-                    0 if attention else data.get("next_poll_after_ms", 1000)
+                    0 if attention or is_terminal else data.get("next_poll_after_ms", 1000)
                 ),
             }
-            from shared.collector_navigation import collector_run_navigation
-            try:
-                with self.repository.connect() as connection:
-                    payload["collector_navigation"] = collector_run_navigation(connection, run_id)
-            except Exception:
-                payload["collector_navigation"] = {"status": "unavailable", "sources": [],
-                    "message": "运行所属来源暂时无法读取。"}
             if is_terminal:
                 cancelled = status == "CANCELLED"
                 ok = status == "COMPLETED"
@@ -1892,7 +1899,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                     "last_run": str(run.get("finished_at") or run.get("updated_at") or ""),
                     "duration_label": "",
                     "error": "",
-                    "payload": {},
+                    "payload": run.get("result") or {},
                 }
                 last_status = "success" if ok else "cancelled" if cancelled else "error"
                 last_run = str(run.get("finished_at") or run.get("updated_at") or "")
@@ -1923,7 +1930,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                         "GET",
                         (
                             f"/internal/v1/automation-projects/{SCAN_PREVIEW_PROJECT_ID}"
-                            f"/scan-previews/{quote(run_id, safe='')}"
+                            f"/scan-previews/{quote(invocation_id, safe='')}"
                         ),
                         timeout=5,
                         console_principal=trusted_context["_console_principal"],
@@ -1931,7 +1938,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                     if preview_result.get("ok"):
                         projection = normalize_scan_preview_projection(
                             preview_result.get("data"),
-                            expected_run_id=run_id,
+                            expected_invocation_id=invocation_id,
                         )
                         if projection is None:
                             payload["scan_preview_error"] = {
@@ -1966,7 +1973,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                         "GET",
                         (
                             f"/internal/v1/automation-projects/{quote(task_id, safe='')}"
-                            f"/selection-previews/{quote(run_id, safe='')}"
+                            f"/selection-previews/{quote(invocation_id, safe='')}"
                         ),
                         timeout=5,
                         console_principal=trusted_context["_console_principal"],
@@ -1975,7 +1982,7 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                         projection = normalize_selection_preview_projection(
                             preview_result.get("data"),
                             expected_automation_id=task_id,
-                            expected_run_id=run_id,
+                            expected_invocation_id=invocation_id,
                         )
                         if projection is None:
                             payload["selection_preview_error"] = {
@@ -2047,55 +2054,15 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                     "last_run": str(run.get("updated_at") or ""),
                     "duration_label": "",
                     "error": "",
-                    "payload": {},
+                    "payload": run.get("result") or {},
                 }
                 payload["pending"] = False
             self._send_json(handler, HTTPStatus.OK, payload)
             return
-        if not tool_name:
-            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"error": "missing tool_name"})
-            return
-        query_string = f"/internal/v1/tool-output/{tool_name}?offset={offset}"
-        if started_at:
-            query_string += f"&started_at={quote(started_at, safe='')}"
-        result = self._agent_request(
-            "GET",
-            query_string,
-            timeout=5,
-            console_principal=trusted_context["_console_principal"],
-        )
-        if result.get("ok"):
-            payload = dict(result["data"])
-            if task_id:
-                runtime = self._runtime_from_local_task_state(task_id, since=started_at or None)
-                if runtime and payload.get("running"):
-                    payload["running"] = False
-                if not runtime and not payload.get("running"):
-                    runtime = self._sync_task_runtime_from_output_payload(task_id, payload)
-                    if not runtime:
-                        runtime = self._sync_task_runtime_from_latest_tool_log(
-                            task_id,
-                            tool_name,
-                            since=started_at or None,
-                            console_principal=trusted_context["_console_principal"],
-                        )
-                if runtime:
-                    payload["runtime"] = runtime
-            self._send_json(handler, HTTPStatus.OK, payload)
-        else:
-            payload = {"lines": [], "running": False, "offset": 0, "total": 0}
-            if task_id:
-                runtime = self._runtime_from_local_task_state(task_id, since=started_at or None)
-                if not runtime:
-                    runtime = self._sync_task_runtime_from_latest_tool_log(
-                        task_id,
-                        tool_name,
-                        since=started_at or None,
-                        console_principal=trusted_context["_console_principal"],
-                    )
-                if runtime:
-                    payload["runtime"] = runtime
-            self._send_json(handler, HTTPStatus.OK, payload)
+        self._send_json(handler, HTTPStatus.BAD_REQUEST, {
+            "error": "缺少本次执行标识，请从插件卡片发起新执行。",
+            "running": False, "pending": False, "lines": [], "offset": 0, "total": 0,
+        })
 
     def _merge_submitted_account_roles(
         self,

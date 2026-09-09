@@ -19,6 +19,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 from console import app as console_app
 from console.app_support import hash_admin_password
 from console.config import load_settings
+from tests.v32_acceptance.owned_database import ISOLATED_MYSQL_PORTS
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TASK_ENV = PROJECT_ROOT / ".task_tmp" / "v32" / "environment"
@@ -32,7 +33,7 @@ class ConsoleFixture:
         parsed = urlparse(agent_base_url)
         if parsed.hostname != "127.0.0.1" or parsed.scheme != "http":
             raise ValueError("fixture Agent must use explicit loopback HTTP")
-        if not os.environ.get("AGENT_DB_NAME", "").endswith("_test") or os.environ.get("AGENT_DB_HOST") != "127.0.0.1" or os.environ.get("AGENT_DB_PORT") != "33326":
+        if not os.environ.get("AGENT_DB_NAME", "").endswith("_test") or os.environ.get("AGENT_DB_HOST") != "127.0.0.1" or int(os.environ.get("AGENT_DB_PORT", "0")) not in ISOLATED_MYSQL_PORTS:
             raise ValueError("fixture requires explicitly isolated loopback test database")
         if os.environ.get("PYTHON_DOTENV_DISABLED") != "1":
             raise ValueError("fixture requires disabled dotenv")

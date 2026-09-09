@@ -242,7 +242,7 @@
 
     function newBrowserRequestUuid() {
       if (!window.crypto || typeof window.crypto.randomUUID !== "function") {
-        throw new Error("当前浏览器无法生成安全的请求标识，写入计划未提交。");
+        throw new Error("当前浏览器无法生成安全的请求标识，本次操作未执行。");
       }
       return window.crypto.randomUUID();
     }
@@ -429,11 +429,12 @@
         : "";
     }
 
-    async function runQuery() {
+    async function runQuery(live = false) {
+      live = live === true;
       const request = ++state.queryRequest;
       const accountIds = selectedAccounts();
       const sourceId = $("[data-cs-source]")?.value || "";
-      if (!accountIds.length && !sourceId) {
+      if ((!accountIds.length && !sourceId) || (live && !accountIds.length)) {
         state.querying = false;
         setQueryBusy(false);
         setStatus("请先选择账号", "warning");
@@ -443,10 +444,10 @@
       setQueryBusy(true);
       setStatus("正在查询问题件...", "loading");
       try {
-        const data = await postJson("/customer-service/problems/query", {
+        const data = await postJson(live ? "/customer-service/problems/live-query" : "/customer-service/problems/query", {
           platforms: selectedPlatforms(),
-          account_ids: sourceId ? [] : accountIds,
-          source_ids: sourceId ? [sourceId] : [],
+          account_ids: live ? accountIds : sourceId ? [] : accountIds,
+          source_ids: !live && sourceId ? [sourceId] : [],
           filters: filters(),
         }, { command: true });
         if (request !== state.queryRequest || !root.isConnected) return;
@@ -988,15 +989,6 @@
           { command: true },
         );
         assertActionSucceeded(data, "回复失败");
-        if (data.pending) {
-          const replyTextNode = $("[data-cs-reply-text]");
-          if (replyTextNode) replyTextNode.value = "";
-          setStatus(
-            data.message || `回复计划已提交（Run ${data.run_id || "待生成"}）`,
-            "success",
-          );
-          return;
-        }
         row.status = status;
         row.reply_text = replyText;
         row.reply_content = replyText;
@@ -1058,9 +1050,10 @@
           },
           { command: true },
         );
+        assertActionSucceeded(data, "发布失败");
         publishModal.hidden = true;
         setStatus(
-          data.message || `发布计划已提交（Run ${data.run_id || "待生成"}）`,
+          data.message || "问题件发布完成。",
           "success",
         );
       } catch (error) {
@@ -1136,6 +1129,11 @@
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       if (!target) return;
       if (!isRootActive()) return;
+      if (target.closest("[data-cs-live-query]")) {
+        event.preventDefault();
+        runQuery(true);
+        return;
+      }
       if (target.closest("[data-cs-query]")) {
         event.preventDefault();
         runQuery();

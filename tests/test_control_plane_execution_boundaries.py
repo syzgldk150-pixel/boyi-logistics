@@ -501,16 +501,18 @@ def test_compatibility_routes_execute_runtime_only_after_capability_check() -> N
     assert "request_params=req.params" in source
     assert "authorize_direct_manual_target(" in source
     assert "console_principal_verified=" in source
-    assert "return await _submit_compat_command(endpoint_name, req, request)" in source
+    assert "PLUGIN_ENTRY_REQUIRED" in source
+    assert "_submit_compat_command" not in source
 
 
-def test_routes_runtime_binding_accepts_only_injected_facade() -> None:
-    facade = SimpleNamespace(execute_tool=inspect.Signature)
-    routes.bind_agent_command_runtime(facade)
+def test_routes_bind_direct_service_without_legacy_command_facade() -> None:
+    service = SimpleNamespace(invoke=inspect.Signature)
+    routes.bind_direct_business_service(service)
     try:
-        assert routes._agent_command_runtime is facade
+        assert routes._direct_business_service is service
+        assert not hasattr(routes, "_agent_command_runtime")
     finally:
-        routes.bind_agent_command_runtime(None)
+        routes.bind_direct_business_service(None)
 
 
 def test_compatibility_route_rejects_malformed_json_instead_of_using_empty_params() -> None:
@@ -539,163 +541,70 @@ def test_compatibility_route_rejects_non_object_json_body() -> None:
     assert b"INVALID_REQUEST_BODY" in response.body
 
 
-def test_external_write_compatibility_route_requires_stable_idempotency_key() -> None:
-    facade = _Facade("external_write")
-    routes.bind_agent_command_runtime(facade)
+def _direct_request(body, principal=None):
+    class Request:
+        headers = {}
+        state = SimpleNamespace(console_principal=principal)
+        async def json(self):
+            return body
+    return Request()
+
+
+def test_external_write_requires_stable_uuid_before_platform_execution():
+    from agent.tool_registry import ToolRegistry
+    from agent.tms_runtime.direct_business import DirectBusinessService
+    from unittest.mock import AsyncMock
+    service = DirectBusinessService(registry=ToolRegistry(), target_executor=AsyncMock())
+    routes.bind_direct_business_service(service)
     try:
-        response = asyncio.run(
-            routes._submit_compat_command(
-                "receipts_audit",
-                routes.TaskRequest(
-                    params={
-                        "platform": "ronghui",
-                        "direction": "send",
-                        "result": "passed",
-                        "waybill_no": "2606000040",
-                    }
-                ),
-                SimpleNamespace(headers={}),
-            )
-        )
+        response = asyncio.run(routes._build_handler("receipts_audit")(_direct_request({"params": {
+            "platform": "ronghui", "direction": "send", "result": "passed", "waybill_no": "R1"}},
+            {"actor_id": "admin", "roles": ["super_admin"]})))
+        assert response.status_code == 422 and b"REQUEST_ID_REQUIRED" in response.body
+        service.target_executor.assert_not_awaited()
     finally:
-        routes.bind_agent_command_runtime(None)
-    assert response.status_code == 400
-    assert facade.calls == []
+        routes.bind_direct_business_service(None)
 
 
-def test_receipts_sync_compatibility_route_requires_stable_idempotency_key() -> None:
-    facade = _Facade("internal_write")
-    routes.bind_agent_command_runtime(facade)
+def test_receipts_archive_legacy_route_cannot_create_backlog():
+    response = asyncio.run(routes._build_handler("receipts_sync")(_direct_request({"params": {
+        "platform": "all", "direction": "both"}, "idempotency_key": "stable-old-id"})))
+    assert response.status_code == 410 and b"PLUGIN_ENTRY_REQUIRED" in response.body
+
+
+def test_direct_write_normalization_keeps_closed_input_contract():
+    normalized = routes._normalize_receipts_audit_params({"platform": "ronghui", "direction": "send",
+        "result": "passed", "waybill_no": "R1", "raw_payload": {"GUID": "forged"}})
+    assert normalized["waybill_no"] == "R1" and "raw_payload" not in normalized
+
+
+def test_internal_console_read_uses_verified_request_principal():
+    from unittest.mock import AsyncMock
+    service = SimpleNamespace(invoke=AsyncMock(return_value={"ok": True, "data": {"rows": []}, "error": None}))
+    routes.bind_direct_business_service(service)
     try:
-        response = asyncio.run(
-            routes._submit_compat_command(
-                "receipts_sync",
-                routes.TaskRequest(params={"platform": "all", "direction": "both"}),
-                SimpleNamespace(headers={}),
-            )
-        )
+        principal = {"actor_id": "9", "roles": ["admin"]}
+        response = asyncio.run(routes._build_handler("customer_service_problem")(_direct_request({"params": {
+            "action": "query", "platform": "ronghui", "account_id": "account-1", "filters": {"direction": "received"}},
+            "actor": {"actor_id": "forged"}, "source": "console"}, principal)))
+        assert response["ok"] is True
+        assert service.invoke.call_args.kwargs["principal"] == principal
+        assert service.invoke.call_args.args[0] == "customer-service-query"
     finally:
-        routes.bind_agent_command_runtime(None)
-    assert response.status_code == 400
-    assert facade.calls == []
+        routes.bind_direct_business_service(None)
 
 
-def test_external_write_compatibility_route_submits_precise_gateway_command() -> None:
-    facade = _Facade("external_write")
-    routes.bind_agent_command_runtime(facade)
+def test_public_compatibility_route_does_not_trust_forged_console_actor():
+    from agent.tool_registry import ToolRegistry
+    from agent.tms_runtime.direct_business import DirectBusinessService
+    from unittest.mock import AsyncMock
+    service = DirectBusinessService(registry=ToolRegistry(), target_executor=AsyncMock())
+    routes.bind_direct_business_service(service)
     try:
-        result = asyncio.run(
-            routes._submit_compat_command(
-                "receipts_audit",
-                routes.TaskRequest(
-                    params={
-                        "platform": "ronghui",
-                        "direction": "send",
-                        "result": "passed",
-                        "waybill_no": "2606000040",
-                        "raw_payload": {"GUID": "must-not-cross-command-boundary"},
-                    }
-                ),
-                SimpleNamespace(headers={"Idempotency-Key": "console:admin:receipt-audit:req-1"}),
-            )
-        )
+        response = asyncio.run(routes._build_handler("customer_service_problem")(_direct_request({"params": {
+            "action": "query", "platform": "ronghui", "account_id": "account-1", "filters": {"direction": "received"}},
+            "actor": {"actor_id": "forged", "roles": ["super_admin"]}, "source": "console"})))
+        assert response.status_code == 403
+        service.target_executor.assert_not_awaited()
     finally:
-        routes.bind_agent_command_runtime(None)
-
-    assert result["ok"] is True
-    tool_name, params, kwargs = facade.calls[0]
-    assert tool_name == "receipts_audit"
-    assert "raw_payload" not in params
-    assert kwargs["idempotency_key"] == "console:admin:receipt-audit:req-1"
-    assert kwargs["source"] == "legacy_api"
-    assert kwargs["actor"].roles == ()
-
-
-def test_internal_console_read_uses_server_supplied_admin_actor() -> None:
-    facade = _Facade("read")
-    routes.bind_agent_command_runtime(facade)
-    try:
-        result = asyncio.run(
-            routes._submit_compat_command(
-                "customer_service_problem",
-                routes.TaskRequest(
-                    params={
-                        "action": "query",
-                        "platform": "ronghui",
-                        "account_id": "account-1",
-                        "filters": {"direction": "received"},
-                    },
-                    actor={
-                        "actor_type": "console_admin",
-                        "actor_id": "9",
-                        "roles": ["admin"],
-                        "authenticated_by": "mysql_admin_session",
-                    },
-                    actor_roles=["admin"],
-                    source="console",
-                    idempotency_key="console:9:tool.execute:request-1",
-                ),
-                    SimpleNamespace(
-                        headers={},
-                        url=SimpleNamespace(path="/internal/v1/tms/customer_service_problem"),
-                        state=SimpleNamespace(
-                            console_principal={
-                                "actor_type": "console_admin",
-                                "actor_id": "9",
-                                "roles": ["admin"],
-                                "display_name": "",
-                                "authenticated_by": "mysql_admin_session",
-                            }
-                        ),
-                    ),
-            )
-        )
-    finally:
-        routes.bind_agent_command_runtime(None)
-
-    assert result["ok"] is True
-    tool_name, _params, kwargs = facade.calls[0]
-    assert tool_name == "customer_service_problem_query"
-    assert kwargs["source"] == "console"
-    assert kwargs["actor"].actor_type.value == "console_admin"
-    assert kwargs["actor"].actor_id == "9"
-    assert kwargs["actor"].roles == ("admin",)
-
-
-def test_public_compatibility_route_does_not_trust_forged_console_actor() -> None:
-    facade = _Facade("read")
-    routes.bind_agent_command_runtime(facade)
-    try:
-        result = asyncio.run(
-            routes._submit_compat_command(
-                "customer_service_problem",
-                routes.TaskRequest(
-                    params={
-                        "action": "query",
-                        "platform": "ronghui",
-                        "account_id": "account-1",
-                        "filters": {"direction": "received"},
-                    },
-                    actor={
-                        "actor_type": "console_admin",
-                        "actor_id": "forged",
-                        "roles": ["super_admin"],
-                        "authenticated_by": "mysql_admin_session",
-                    },
-                    actor_roles=["super_admin"],
-                    source="console",
-                ),
-                SimpleNamespace(
-                    headers={},
-                    url=SimpleNamespace(path="/tms/customer_service_problem"),
-                ),
-            )
-        )
-    finally:
-        routes.bind_agent_command_runtime(None)
-
-    assert result["ok"] is True
-    _tool_name, _params, kwargs = facade.calls[0]
-    assert kwargs["source"] == "legacy_api"
-    assert kwargs["actor"].actor_type.value == "legacy_api"
-    assert kwargs["actor"].roles == ()
+        routes.bind_direct_business_service(None)

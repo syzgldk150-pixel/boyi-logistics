@@ -697,7 +697,7 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
 
         self.assertEqual(1, card.count("data-project-policy-toggle"))
         self.assertEqual(2, card.count("data-project-policy-mode"))
-        self.assertIn("每次运行审批", card)
+        self.assertIn("仅允许手动操作", card)
         self.assertIn("完全自动", card)
         self.assertNotIn("data-project-policy-comment", card)
         self.assertNotIn("EXACT_SCHEDULE_EXEMPT", card)
@@ -705,14 +705,13 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
         self.assertNotIn("策略标识", card)
         self.assertNotIn("policy_hash", card)
 
-    def test_pending_strip_has_aggregate_summary_and_card_actions(self):
+    def test_historical_approval_strip_cannot_trigger_old_tasks(self):
         html = self._render()
 
-        self.assertIn("项待审批", html)
-        self.assertIn("最高风险", html)
-        self.assertIn("来源", html)
-        self.assertIn("全部审批通过", html)
-        self.assertIn("全部驳回", html)
+        self.assertNotIn("data-project-pending", html)
+        self.assertNotIn("data-pending-action", html)
+        self.assertNotIn("全部审批通过", html)
+        self.assertNotIn("全部驳回", html)
         self.assertIn("data-project-policy-cancel", html)
 
     def test_non_super_admin_sees_read_only_project_policy(self):
@@ -722,7 +721,7 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
         self.assertNotIn("data-project-policy-save", html)
         self.assertNotIn("data-pending-action", html)
 
-    def test_javascript_uses_project_contract_and_closed_batch_body(self):
+    def test_javascript_keeps_policy_contract_without_old_approval_execution(self):
         source = (
             Path(__file__).resolve().parents[1]
             / "static"
@@ -740,32 +739,20 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
         self.assertNotIn("EXACT_SCHEDULE_EXEMPT", source)
         self.assertIn("expected_policy_version", source)
         self.assertIn("expected_project_configuration_version", source)
-        self.assertIn("PENDING_SET_CHANGED", source)
+        self.assertNotIn("pending-approvals", source)
         self.assertNotIn("data-project-policy-comment", source)
-        batch_start = source.index("body: JSON.stringify({", source.index("async function actOnPending"))
-        batch_end = source.index("}),", batch_start)
-        batch_body = source[batch_start:batch_end]
-        self.assertIn("expected_pending_set_hash", batch_body)
-        self.assertIn("request_id", batch_body)
-        self.assertIn("comment", batch_body)
-        self.assertNotIn("approval_ids", batch_body)
-        self.assertNotIn("plan_hash", batch_body)
-        self.assertNotIn("automation_id", batch_body)
-        self.assertIn("validApprovedRunReceipts", source)
-        self.assertIn('new CustomEvent("automation:approved-runs"', source)
-        self.assertLess(
-            source.index("if (changed)"),
-            source.index('new CustomEvent("automation:approved-runs"'),
-        )
+        self.assertIn("request_id", source)
+        self.assertNotIn("actOnPending", source)
+        self.assertNotIn("automation:approved-runs", source)
 
         template_source = (
             Path(__file__).resolve().parents[1] / "templates" / "automation.html"
         ).read_text(encoding="utf-8")
-        self.assertIn('form.addEventListener("automation:approved-runs"', template_source)
-        self.assertIn("async function pollApprovedBatch", template_source)
-        self.assertIn("batchTerminalStatuses", template_source)
-        self.assertIn("已批准，等待执行", template_source)
-        self.assertIn("20260908-historical-evidence", template_source)
+        self.assertNotIn("automation:approved-runs", template_source)
+        self.assertNotIn("pollApprovedBatch", template_source)
+        self.assertNotIn("batchTerminalStatuses", template_source)
+        self.assertNotIn("已批准，等待执行", template_source)
+        self.assertIn("20260909-direct-invocation", template_source)
 
     def test_assets_are_cache_busted_with_project_governance_styles(self):
         static_dir = Path(__file__).resolve().parents[1] / "static"

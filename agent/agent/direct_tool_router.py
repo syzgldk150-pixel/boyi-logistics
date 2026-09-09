@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from types import MappingProxyType
 from typing import Any
 
+from agent.business_query import AutomationOperationsQueryService, BusinessQueryError
 from agent.feishu_command_contract import is_unconditional_host_feishu_command_text
 from agent.tms_runtime.account_contracts import PRICE_ACCOUNT_ID
 from agent.tracking_number_validation import validate_tracking_number
@@ -1994,61 +1995,34 @@ def _validated_automation_operations_payload(result: dict[str, Any]) -> dict[str
     if not isinstance(payload, dict) or payload.get("query_type") != "automation_operations":
         return None
     period = payload.get("period")
-    commands = payload.get("commands")
-    runs = payload.get("runs")
-    freshness = payload.get("freshness")
-    if (
-        payload.get("availability") not in {"DATA", "NO_DATA"}
-        or not isinstance(period, dict)
-        or not isinstance(commands, dict)
-        or not isinstance(runs, dict)
-        or not isinstance(freshness, dict)
+    invocations = payload.get("invocations")
+    if not isinstance(period, dict) or not isinstance(invocations, dict):
+        return None
+    total = invocations.get("total")
+    if isinstance(total, bool) or not isinstance(total, int):
+        return None
+    rate = invocations.get("success_rate")
+    if rate is not None and (
+        not isinstance(rate, dict)
+        or any(type(rate.get(field)) is not int for field in ("completed_invocations", "terminal_invocations"))
     ):
         return None
     try:
         start = dt.date.fromisoformat(period.get("start_date"))
         end = dt.date.fromisoformat(period.get("end_date"))
-    except (TypeError, ValueError):
+        if start > end:
+            return None
+        normalized = AutomationOperationsQueryService.validated_result(
+            {
+                "invocation_status_counts": invocations.get("status_counts"),
+                "freshness": payload.get("freshness"),
+            },
+            start_date=start,
+            end_date=end,
+        )
+    except (TypeError, ValueError, BusinessQueryError):
         return None
-    if start > end:
-        return None
-    for section in (commands, runs):
-        counts = section.get("status_counts")
-        total = section.get("total")
-        if (
-            not isinstance(counts, dict)
-            or isinstance(total, bool)
-            or not isinstance(total, int)
-            or total < 0
-            or any(
-                not isinstance(name, str)
-                or not re.fullmatch(r"[A-Z_]+", name)
-                or isinstance(count, bool)
-                or not isinstance(count, int)
-                or count < 0
-                for name, count in counts.items()
-            )
-        ):
-            return None
-        if sum(counts.values()) != total:
-            return None
-    success_rate = runs.get("success_rate")
-    if success_rate is not None:
-        if (
-            not isinstance(success_rate, dict)
-            or set(success_rate) != {"completed_runs", "terminal_runs", "value"}
-            or not isinstance(success_rate["completed_runs"], int)
-            or not isinstance(success_rate["terminal_runs"], int)
-            or not isinstance(success_rate["value"], str)
-            or not re.fullmatch(r"0\.\d{4}|1\.0000", success_rate["value"])
-            or success_rate["terminal_runs"] <= 0
-            or not 0 <= success_rate["completed_runs"] <= success_rate["terminal_runs"]
-        ):
-            return None
-    for value in freshness.values():
-        if value is not None and (not isinstance(value, str) or len(value) > 40):
-            return None
-    return payload
+    return normalized if normalized == payload else None
 
 
 def format_automation_operations_reply(result: dict[str, Any]) -> str:
@@ -2061,21 +2035,23 @@ def format_automation_operations_reply(result: dict[str, Any]) -> str:
     title = period["start_date"] if period["start_date"] == period["end_date"] else f"{period['start_date']} 至 {period['end_date']}"
     lines = [f"自动化运行情况（{title}）"]
     if payload["availability"] == "NO_DATA":
-        return "\n".join(lines + ["该期间没有已持久化的命令或运行记录。"])
-    for label, section in (("命令", payload["commands"]), ("运行", payload["runs"])):
-        counts = section["status_counts"]
-        detail = "、".join(f"{status} {count}" for status, count in sorted(counts.items())) or "无"
-        lines.append(f"{label}：{section['total']} 条（{detail}）")
-    rate = payload["runs"]["success_rate"]
+        return "\n".join(lines + ["该期间没有当前调用的执行记录。"])
+    invocations = payload["invocations"]
+    labels = {
+        "STARTING": "启动中", "RUNNING": "执行中", "CANCELLING": "取消中",
+        "COMPLETED": "完成", "FAILED": "失败", "CANCELLED": "取消",
+        "WRITE_OUTCOME_UNKNOWN": "写入结果未确认",
+    }
+    detail = "、".join(f"{labels[status]} {count}" for status, count in sorted(invocations["status_counts"].items()))
+    lines.append(f"执行：{invocations['total']} 次（{detail}）")
+    rate = invocations["success_rate"]
     if rate is None:
-        lines.append("终态成功率：暂无终态运行，无法计算。")
+        lines.append("终态成功率：暂无终态执行，无法计算。")
     else:
-        lines.append(f"终态成功率：{rate['value']}（完成 {rate['completed_runs']} / 终态 {rate['terminal_runs']}）")
+        lines.append(f"终态成功率：{rate['value']}（完成 {rate['completed_invocations']} / 终态 {rate['terminal_invocations']}）")
     freshness = payload["freshness"]
-    if freshness.get("latest_command_requested_at"):
-        lines.append(f"最新命令请求：{freshness['latest_command_requested_at']}")
-    if freshness.get("latest_run_updated_at"):
-        lines.append(f"最新运行更新：{freshness['latest_run_updated_at']}")
+    lines.append(f"最近开始执行：{freshness['latest_invocation_started_at']}")
+    lines.append(f"最近状态更新：{freshness['latest_invocation_updated_at']}")
     return "\n".join(lines)
 
 

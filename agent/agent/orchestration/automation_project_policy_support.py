@@ -307,8 +307,8 @@ def _policy_summary(
         return "仍处于旧版计划权限；保存新的项目权限后由项目统一接管。"
     if status == "UNSUPPORTED":
         safe_reason = str(reason or "PROJECT_CONTRACT_UNAVAILABLE")[:64]
-        return f"当前项目合同不可授予完全自动（{safe_reason}），每次运行均需审批。"
-    return "当前项目所有入口每次运行都需要审批。"
+        return f"当前项目合同不可授予完全自动（{safe_reason}），仅允许有权限的管理员手动执行。"
+    return "当前项目仅允许有权限的管理员在后台手动执行；自动触发会直接返回未授权。"
 
 
 def _selection_preview_expectation(

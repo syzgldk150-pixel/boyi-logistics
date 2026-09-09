@@ -1,7 +1,7 @@
-"""A11: actual scheduler entry, HTTP timeouts, MySQL Runner and restart.
+"""A11: real scheduler, installed plugin, HTTP timeout and direct lifecycle.
 
-The registered read workload talks only to an owned loopback HTTP fixture.
-No scheduler occurrence, Runner state transition or retry result is mocked.
+The package reads an isolated network-backed key/value fixture through the real
+Broker. No invocation, scheduler admission, subprocess or HTTP outcome is mocked.
 """
 from __future__ import annotations
 
@@ -10,33 +10,17 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+from pathlib import Path
 import threading
 from uuid import uuid4
 
 import httpx
 
-from agent.core import AgentCore
 from agent.scheduler import _execute_scheduled_tool
-from agent.orchestration.approval_service import ApprovalService
-from agent.orchestration.command_gateway import CommandGateway
-from agent.orchestration.context_builder import ContextBuilder
-from agent.orchestration.execution_adapter import RegisteredToolExecutionAdapter
-from agent.orchestration.plan_validator import PlanValidator
-from agent.orchestration.planner import DeterministicPlanner
-from agent.orchestration.policy_engine import PolicyEngine
-from agent.orchestration.result_verifier import ResultVerifier
-from agent.orchestration.workflow_runner import WorkflowRunner
-from tests.test_module_data_sources_mysql import database  # noqa: F401
-from tests.test_workflow_runner_durable_admission import _Catalog, _until
-
-
-class SchedulerCatalog(_Catalog):
-    def get_capability(self, tool_name):
-        value = super().get_capability(tool_name)
-        value['permissions'] = {'required_roles': ['system']}
-        value['input_schema']['properties']['account_id'] = {'type': 'string'}
-        value['input_schema']['required'].append('account_id')
-        return value
+from agent.automation_plugins.developer_v2 import build_service_v2_package, init_service_v2_source
+from tests.direct_invocation_fixture import DirectFixture, direct_repository  # noqa: F401
+from tests.test_direct_plugin_invocation_mysql import ACTOR, _install, _legacy_counts
+from tests.v32_acceptance.management_fixture import ManagementFixture
 
 
 class HttpReadWorkload:
@@ -44,6 +28,8 @@ class HttpReadWorkload:
         self.calls = Counter()
         self.timeouts = Counter()
         self.available = False
+        self.current_label = 'timeout'
+        self.release_cancel = threading.Event()
         self.jobs = {label: uuid4().hex + '-' + label for label in ('timeout', 'cancel', 'future')}
         owner = self
 
@@ -58,7 +44,9 @@ class HttpReadWorkload:
                     self.send_error(404)
                     return
                 owner.calls[labels[0]] += 1
-                if not owner.available:
+                if labels[0] == 'cancel':
+                    owner.release_cancel.wait(5)
+                elif not owner.available:
                     threading.Event().wait(.2)
                 body = json.dumps({'job': job, 'rows': [{'value': len(job)}]}).encode()
                 self.send_response(200)
@@ -74,7 +62,7 @@ class HttpReadWorkload:
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def execute(self, arguments):
-        with httpx.Client(trust_env=False, timeout=.05) as client:
+        with httpx.Client(trust_env=False, timeout=5 if self.current_label == 'cancel' else .05) as client:
             try:
                 response = client.get(f'http://127.0.0.1:{self.server.server_port}/' + arguments['job'])
                 response.raise_for_status()
@@ -97,96 +85,103 @@ class HttpReadWorkload:
         self.server.server_close()
 
 
-def make_runner(repository, workload):
-    catalog = SchedulerCatalog()
-    policy = PolicyEngine(catalog)
-    runner = WorkflowRunner(repository=repository, catalog=catalog,
-        execution_port=RegisteredToolExecutionAdapter(catalog=catalog, executor=None,
-            direct_runners={'v32_local_workload': workload.execute}),
-        context_builder=ContextBuilder(account_resolver=lambda command: [
-            {'account_id': command.parameters['account_id'], 'is_active': True}]),
-        planner=DeterministicPlanner(catalog), validator=PlanValidator(catalog), policy=policy,
-        approval_service=ApprovalService(repository, policy), verifier=ResultVerifier(),
-        worker_id='v32-scheduler-' + uuid4().hex, worker_concurrency=4, browser_concurrency=3,
-        poll_interval_seconds=.1)
-    # Use the real fixed scheduler -> AgentCore -> CommandGateway path without
-    # constructing unrelated LLM/production account clients.
-    core = AgentCore.__new__(AgentCore)
-    core.registry = catalog
-    core._orchestration_repository = repository
-    core._command_gateway = CommandGateway(repository, wake_runner=runner.wake)
-    return runner, core
+
+def make_package(directory):
+    source, archive = directory / "source", directory / "read.zip"
+    init_service_v2_source(source, plugin_id="scheduler_direct_read", name="Isolated scheduler read", version="1.0.0")
+    manifest_path = source / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    service = manifest["provides"][0]["service"]
+    manifest["provides"][0]["operations"][0]["effect"] = "read"
+    manifest["capabilities"] = [{"name": "storage.kv", "operations": ["get"], "account_role": None, "resource_role": None}]
+    manifest["storage"]["kv"] = True
+    manifest["contributes"]["harness"] = []
+    manifest["contributes"]["scheduler"] = [{"id": "scheduled_read", "title": "Isolated scheduled read", "service": service, "operation": "run", "default_enabled": True, "schedule": {"kind": "cron", "expression": "0 8 * * *", "timezone": "Asia/Shanghai"}}]
+    manifest_path.write_text(json.dumps(manifest))
+    (source / "payload/main.py").write_text('''import json, sys
+from datetime import datetime, timezone
+from boyi_plugin_sdk import broker_call
+request = json.load(sys.stdin)
+assert request['schema_version'] == 2 and request['entrypoint'] == 'scheduler'
+meta = {'source_system': 'isolated_network_storage', 'observed_at': datetime.now(timezone.utc).isoformat(), 'record_count': 0, 'pagination_complete': True, 'evidence_refs': []}
+try:
+    response = broker_call('storage.kv', action='get', role='__system__', arguments={'key': 'current-workload'})
+    assert response['found'] is True and response['version'] == 1
+    data = response['value']
+    meta['record_count'] = len(data['rows'])
+    meta['evidence_refs'] = [response.host_evidence_ref]
+    result = {'status': 'SUCCESS', 'data': data, 'meta': meta, 'warnings': [], 'error': None}
+except Exception as exc:
+    result = {'status': 'FAILED', 'data': {}, 'meta': meta, 'warnings': [], 'error': {'code': str(exc), 'message': 'Isolated source read failed'}}
+json.dump(result, sys.stdout)
+''')
+    build_service_v2_package(source, archive)
+    return archive.read_bytes()
 
 
-def test_timeout_cancel_future_occurrence_and_restart(database, record_property):
-    fixture, name = database
-    repository = fixture._repository(database=name)
-
-    def schedule_rows():
-        with fixture._connection(name) as connection, connection.cursor() as cursor:
-            cursor.execute('SELECT * FROM scheduled_tasks ORDER BY id')
-            return cursor.fetchall()
-
-    schedules_before = schedule_rows()
-    task_id = 'v32-timeout-' + uuid4().hex
+def test_timeout_cancel_future_occurrence_and_restart(direct_repository, record_property):  # noqa: F811 - imported pytest fixture
+    directory = Path(__file__).resolve().parents[1] / '.t' / ('sched-' + uuid4().hex[:6])
+    directory.mkdir(parents=True)
     occurrence = datetime.now(timezone.utc).replace(microsecond=0)
-
-    async def exercise(workload):
-        runner, core = make_runner(repository, workload)
-
-        async def invoke(job, at):
-            return await _execute_scheduled_tool(core, task_id=task_id,
-                tool_name='v32_local_workload', arguments={'job': workload.jobs[job], 'account_id': 'v32-http-reader'},
-                scheduled_for=at, cron_expression='0 8 * * *')
-
-        await runner.start()
-        try:
-            timed_out = await invoke('timeout', occurrence)
-            row = await _until(lambda: repository.get_run(timed_out['run_id']),
-                lambda value: value['status'] == 'FAILED_TERMINAL', timeout=20)
-            assert row['execution_attempt_count'] == workload.calls['timeout'] == workload.timeouts['timeout'] == 3
-            assert row['retryable'] == 0 and row['worker_id'] is None
-            pending = asyncio.create_task(invoke('cancel', occurrence + timedelta(days=1)))
-            await _until(lambda: workload.calls['cancel'], bool)
-            with repository.unit_of_work() as uow:
-                command = uow.commands.get_by_idempotency('scheduler',
-                    f'scheduler:{task_id}:{(occurrence + timedelta(days=1)).isoformat()}')
-            assert command is not None
-            with fixture._connection(name) as connection, connection.cursor() as cursor:
-                cursor.execute('SELECT run_id FROM agent_runs WHERE command_id=%s', (command['command_id'],))
-                cancelled_id = cursor.fetchone()['run_id']
-            await _until(lambda: repository.get_run(cancelled_id), lambda value: value['status'] == 'FAILED_RETRYABLE')
-            repository.request_run_cancel(cancelled_id, requested_by_type='console_admin',
-                requested_by_id='v32-isolated-admin', reason='Cancel only this occurrence')
-            runner.wake(cancelled_id)
-            await pending
-            cancelled = await _until(lambda: repository.get_run(cancelled_id),
-                lambda value: value['status'] == 'CANCELLED')
-            assert cancelled['status'] == 'CANCELLED', cancelled
-            assert workload.calls['cancel'] == 1
-        finally:
-            await runner.stop()
-        # Fresh Runner and scheduler entry object, same durable database and
-        # exact occurrence: no new execution after the restart.
-        workload.available = True
-        runner, core = make_runner(repository, workload)
-        await runner.start()
-        try:
-            replay = await invoke('timeout', occurrence)
-            cancelled_replay = await invoke('cancel', occurrence + timedelta(days=1))
-            assert replay['run_id'] == timed_out['run_id']
-            assert cancelled_replay['run_id'] == cancelled['run_id']
-            assert workload.calls == Counter({'timeout': 3, 'cancel': 1})
-            future = await invoke('future', occurrence + timedelta(days=2))
-            assert future['status'] == 'COMPLETED', future
-            assert workload.calls['future'] == 1
-            assert schedule_rows() == schedules_before
-            record_property('actual_http_calls', dict(workload.calls))
-            record_property('actual_read_timeouts', dict(workload.timeouts))
-            record_property('preserved_schedule_rows', len(schedules_before))
-            record_property('run_ids', [timed_out['run_id'], cancelled['run_id'], future['run_id']])
-        finally:
-            await runner.stop()
-
     with HttpReadWorkload() as workload:
-        asyncio.run(exercise(workload))
+        def read_storage(_context, arguments):
+            assert _context.operation == 'storage.kv' and _context.action == 'get'
+            assert arguments == {'key': 'current-workload'}
+            raw = workload.execute({'job': workload.jobs[workload.current_label]})
+            if 'error_code' in raw:
+                raise RuntimeError(raw['error_code'])
+            return {'found': True, 'version': 1, 'value': raw}
+        with ManagementFixture(connection_factory=direct_repository._connection_factory, runtime_root=directory / 'runtime', broker_handlers={('storage.kv', '*'): read_storage}, enable_directory_faults=False) as management:
+            identity = _install(management, make_package(directory))
+            entry = management.catalog.require(identity)
+            management.management.save_console_schedule(identity, schedule={'kind': 'daily_times', 'times': ['08:00'], 'enabled': True}, request_id=str(uuid4()), expected_project_configuration_version=entry.project_config_version, actor=ACTOR)
+            management.targets.reconcile_project(identity)
+            entry = management.catalog.require(identity)
+            def schedules():
+                with management.repository.unit_of_work() as uow, uow.automation_plugins.cursor() as cursor:
+                    cursor.execute('SELECT * FROM scheduled_tasks ORDER BY id')
+                    return cursor.fetchall()
+            schedules_before, legacy_before = schedules(), _legacy_counts(management.repository)
+            scheduled = [row for row in schedules_before if row['automation_id'] == identity]
+            assert len(scheduled) == 1, scheduled
+            task_id = scheduled[0]['id']
+            async def invoke(at):
+                return await _execute_scheduled_tool(None, task_id=task_id, tool_name=f'automation.{identity}.run', arguments={}, scheduled_for=at, cron_expression='0 8 * * *', configuration_version=entry.project_config_version, automation_id=identity, automation_generation=entry.committed_snapshot.generation, automation_project_invoker=management.policy)
+            with DirectFixture(management, directory=directory / 'ipc') as runtime:
+                timed_out = asyncio.run_coroutine_threadsafe(invoke(occurrence), runtime.loop).result(timeout=15)
+                assert timed_out['status'] == 'FAILED', timed_out
+                assert workload.calls['timeout'] == workload.timeouts['timeout'] == 1, json.dumps(timed_out)
+                workload.current_label = 'cancel'
+                pending = asyncio.run_coroutine_threadsafe(invoke(occurrence + timedelta(days=1)), runtime.loop)
+                async def cancel_actual_read():
+                    deadline = asyncio.get_running_loop().time() + 5
+                    while not workload.calls['cancel'] and asyncio.get_running_loop().time() < deadline:
+                        await asyncio.sleep(.01)
+                    assert workload.calls['cancel'] == 1
+                    calls = runtime.service.active_invocations()
+                    assert len(calls) == 1
+                    cancelling = asyncio.create_task(runtime.service.cancel(calls[0]['invocation_id']))
+                    await asyncio.sleep(.05)
+                    assert not cancelling.done(), 'The actual host read must drain before releasing the call.'
+                    workload.release_cancel.set()
+                    return await cancelling
+                cancelled = asyncio.run_coroutine_threadsafe(cancel_actual_read(), runtime.loop).result(timeout=10)
+                assert cancelled['status'] == 'CANCELLED', cancelled
+                assert pending.result(timeout=5)['invocation_id'] == cancelled['invocation_id']
+            # Restart only the direct process service; no history is submitted.
+            workload.available, workload.current_label = True, 'future'
+            with DirectFixture(management, directory=directory / 'restart') as runtime:
+                replay = asyncio.run_coroutine_threadsafe(invoke(occurrence), runtime.loop).result(timeout=10)
+                cancel_replay = asyncio.run_coroutine_threadsafe(invoke(occurrence + timedelta(days=1)), runtime.loop).result(timeout=10)
+                assert replay['invocation_id'] == timed_out['invocation_id']
+                assert cancel_replay['invocation_id'] == cancelled['invocation_id']
+                assert workload.calls == Counter({'timeout': 1, 'cancel': 1})
+                future = asyncio.run_coroutine_threadsafe(invoke(occurrence + timedelta(days=2)), runtime.loop).result(timeout=15)
+                assert future['status'] == 'COMPLETED', future
+                assert workload.calls['future'] == 1
+                assert schedules() == schedules_before
+                assert _legacy_counts(management.repository) == legacy_before
+                record_property('actual_http_calls', dict(workload.calls))
+                record_property('actual_read_timeouts', dict(workload.timeouts))
+                record_property('preserved_schedule_rows', len(schedules_before))
+                record_property('invocation_ids', [timed_out['invocation_id'], cancelled['invocation_id'], future['invocation_id']])

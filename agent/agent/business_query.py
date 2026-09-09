@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from shared.finance import FinanceQuery
+from shared.plugin_invocation_repository import ACTIVE_INVOCATION_STATUSES, TERMINAL_INVOCATION_STATUSES
 
 
 MAX_QUERY_DAYS = 366
@@ -243,7 +244,7 @@ class BusinessFinanceQueryService:
 
 
 class MySQLAutomationOperationsRepository:
-    """Fixed, read-only aggregation over the durable orchestration tables."""
+    """Read current invocations in one snapshot, grouped by China start date."""
 
     def __init__(self, connection_factory: Any) -> None:
         if not callable(connection_factory):
@@ -257,17 +258,8 @@ class MySQLAutomationOperationsRepository:
         try:
             with self._connection() as connection:
                 self._begin_consistent_read(connection)
-                command_rows = self._select_status_counts(
+                invocation_rows = self._select_status_counts(
                     connection,
-                    "agent_commands",
-                    "requested_at",
-                    start_utc,
-                    end_exclusive_utc,
-                )
-                run_rows = self._select_status_counts(
-                    connection,
-                    "agent_runs",
-                    "created_at",
                     start_utc,
                     end_exclusive_utc,
                 )
@@ -284,8 +276,7 @@ class MySQLAutomationOperationsRepository:
                 "automation operations repository is unavailable",
             ) from exc
         return {
-            "command_status_counts": _status_counts(command_rows),
-            "run_status_counts": _status_counts(run_rows),
+            "invocation_status_counts": _status_counts(invocation_rows),
             "freshness": dict(freshness_rows[0]) if freshness_rows else {},
         }
 
@@ -293,7 +284,7 @@ class MySQLAutomationOperationsRepository:
     def _begin_consistent_read(connection: Any) -> None:
         cursor = connection.cursor()
         try:
-            # All three fixed aggregates must observe one InnoDB snapshot.
+            # Status counts and freshness must observe the same InnoDB snapshot.
             cursor.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
         finally:
             close = getattr(cursor, "close", None)
@@ -316,11 +307,10 @@ class MySQLAutomationOperationsRepository:
                 close()
 
     @staticmethod
-    def _select_status_counts(connection: Any, table: str, column: str, start_utc: datetime, end_exclusive_utc: datetime) -> list[dict[str, Any]]:
-        # table and column are code constants, never caller input.
+    def _select_status_counts(connection: Any, start_utc: datetime, end_exclusive_utc: datetime) -> list[dict[str, Any]]:
         statement = (
-            f"SELECT status, COUNT(*) AS count FROM {table} "
-            f"WHERE {column} >= %s AND {column} < %s GROUP BY status"
+            "SELECT status, COUNT(*) AS count FROM automation_plugin_invocations "
+            "WHERE started_at >= %s AND started_at < %s GROUP BY status"
         )
         return _select_rows(connection, statement, (start_utc, end_exclusive_utc))
 
@@ -329,9 +319,10 @@ class MySQLAutomationOperationsRepository:
         return _select_rows(
             connection,
             "SELECT "
-            "(SELECT MAX(requested_at) FROM agent_commands WHERE requested_at >= %s AND requested_at < %s) AS latest_command_requested_at, "
-            "(SELECT MAX(updated_at) FROM agent_runs WHERE created_at >= %s AND created_at < %s) AS latest_run_updated_at",
-            (start_utc, end_exclusive_utc, start_utc, end_exclusive_utc),
+            "MAX(started_at) AS latest_invocation_started_at, "
+            "MAX(updated_at) AS latest_invocation_updated_at "
+            "FROM automation_plugin_invocations WHERE started_at >= %s AND started_at < %s",
+            (start_utc, end_exclusive_utc),
         )
 
 
@@ -363,36 +354,41 @@ class AutomationOperationsQueryService:
                 "AUTOMATION_OPERATIONS_UNAVAILABLE",
                 "automation operations repository is unavailable",
             ) from exc
-        return self._validated_result(raw, start_date=start_date, end_date=end_date)
+        return self.validated_result(raw, start_date=start_date, end_date=end_date)
 
     @staticmethod
-    def _validated_result(raw: object, *, start_date: date, end_date: date) -> dict[str, Any]:
+    def validated_result(raw: object, *, start_date: date, end_date: date) -> dict[str, Any]:
+        """Build the closed result; callers and renderers share its count checks."""
         if not isinstance(raw, Mapping):
             raise BusinessQueryError("AUTOMATION_OPERATIONS_CONTRACT_INVALID", "automation operations summary is invalid")
-        command_counts = _validated_status_counts(raw.get("command_status_counts"))
-        run_counts = _validated_status_counts(raw.get("run_status_counts"))
+        invocation_counts = _validated_status_counts(raw.get("invocation_status_counts"))
+        if set(invocation_counts) - (ACTIVE_INVOCATION_STATUSES | TERMINAL_INVOCATION_STATUSES):
+            raise BusinessQueryError("AUTOMATION_OPERATIONS_CONTRACT_INVALID", "automation invocation status is invalid")
         freshness = raw.get("freshness")
         if not isinstance(freshness, Mapping):
             raise BusinessQueryError("AUTOMATION_OPERATIONS_CONTRACT_INVALID", "automation operations freshness is invalid")
         normalized_freshness = {
-            "latest_command_requested_at": _timestamp_text(freshness.get("latest_command_requested_at")),
-            "latest_run_updated_at": _timestamp_text(freshness.get("latest_run_updated_at")),
+            "latest_invocation_started_at": _timestamp_text(freshness.get("latest_invocation_started_at")),
+            "latest_invocation_updated_at": _timestamp_text(freshness.get("latest_invocation_updated_at")),
         }
-        terminal = sum(run_counts.get(status, 0) for status in ("COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"))
-        completed = run_counts.get("COMPLETED", 0)
+        invocation_total = sum(invocation_counts.values())
+        if any(value is None for value in normalized_freshness.values()) != (invocation_total == 0) or (
+            invocation_total == 0 and any(value is not None for value in normalized_freshness.values())
+        ):
+            raise BusinessQueryError("AUTOMATION_OPERATIONS_CONTRACT_INVALID", "automation invocation freshness disagrees with counts")
+        terminal = sum(invocation_counts.get(status, 0) for status in TERMINAL_INVOCATION_STATUSES)
+        completed = invocation_counts.get("COMPLETED", 0)
         success_rate = None if terminal == 0 else {
-            "completed_runs": completed,
-            "terminal_runs": terminal,
+            "completed_invocations": completed,
+            "terminal_invocations": terminal,
             "value": format(Decimal(completed) / Decimal(terminal), ".4f"),
         }
-        command_total = sum(command_counts.values())
-        run_total = sum(run_counts.values())
         return {
             "query_type": "automation_operations",
-            "availability": "DATA" if command_total or run_total else "NO_DATA",
+            "record_source": "automation_plugin_invocations",
+            "availability": "DATA" if invocation_total else "NO_DATA",
             "period": {"start_date": start_date.isoformat(), "end_date": end_date.isoformat()},
-            "commands": {"status_counts": command_counts, "total": command_total},
-            "runs": {"status_counts": run_counts, "total": run_total, "success_rate": success_rate},
+            "invocations": {"status_counts": invocation_counts, "total": invocation_total, "success_rate": success_rate},
             "freshness": normalized_freshness,
         }
 
@@ -438,7 +434,10 @@ def _timestamp_text(value: object) -> str | None:
         normalized = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
         return normalized.isoformat(timespec="seconds").replace("+00:00", "Z")
     if isinstance(value, str) and value == value.strip() and value:
-        return value if value.endswith("Z") else f"{value}Z"
+        try:
+            return _timestamp_text(datetime.fromisoformat(value.replace("Z", "+00:00")))
+        except ValueError as exc:
+            raise BusinessQueryError("AUTOMATION_OPERATIONS_CONTRACT_INVALID", "automation operations freshness is invalid") from exc
     raise BusinessQueryError("AUTOMATION_OPERATIONS_CONTRACT_INVALID", "automation operations freshness is invalid")
 
 

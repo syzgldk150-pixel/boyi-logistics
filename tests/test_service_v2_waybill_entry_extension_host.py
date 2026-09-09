@@ -11,9 +11,7 @@ from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.orchestration.models import (
     Actor,
     ActorType,
-    CommandReceipt,
     OrchestrationError,
-    RunStatus,
 )
 from agent.orchestration.service_v2_waybill_entry_extension_host import (
     ServiceV2WaybillEntryExtensionHost,
@@ -93,29 +91,29 @@ class _Policy:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    def invoke_trusted(self, automation_id: str, **kwargs: Any) -> CommandReceipt:
+    def invoke_trusted(self, automation_id: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append((automation_id, kwargs))
-        return CommandReceipt(
-            command_id="command-1",
-            work_item_id="work-1",
-            run_id="run-1",
-            status=RunStatus.RECEIVED,
-            reused=False,
-        )
+        return {"invocation_id": "invocation-1", "status": "RUNNING"}
 
 
-class _Gateway:
+
+class _Invocations:
     def __init__(self, result: dict[str, Any] | None = None, error: Exception | None = None) -> None:
         self.result = result
         self.error = error
         self.calls: list[tuple[str, float]] = []
 
-    async def wait_for_run(self, run_id: str, *, timeout_seconds: float) -> dict[str, Any]:
+    async def wait(self, run_id: str, *, timeout_seconds: float) -> dict[str, Any]:
         self.calls.append((run_id, timeout_seconds))
         if self.error is not None:
-            raise self.error
-        assert self.result is not None
-        return self.result
+            return {"status": "RUNNING", "running": True}
+        if self.result is None:
+            return {"status": "COMPLETED", "result": {"status": "SUCCESS", "data": {"message": "checked"}, "meta": {}, "warnings": [], "error": None}}
+        steps = self.result.get("steps", [])
+        return {"status": self.result["status"], "result": steps[0]["result_summary_json"] if len(steps) == 1 else None}
+
+    async def cancel(self, invocation_id: str):
+        self.cancelled = invocation_id
 
 
 class _SnapshotRegistry:
@@ -141,14 +139,14 @@ def _host(
     *,
     run: dict[str, Any] | None = None,
     error: Exception | None = None,
-) -> tuple[ServiceV2WaybillEntryExtensionHost, _Registry, _Policy, _Gateway]:
+) -> tuple[ServiceV2WaybillEntryExtensionHost, _Registry, _Policy, _Invocations]:
     registry = _Registry(slot)
     policy = _Policy()
-    gateway = _Gateway(run, error)
+    gateway = _Invocations(run, error)
+    policy.direct_invocations = gateway
     host = ServiceV2WaybillEntryExtensionHost(
         policy_service=policy,  # type: ignore[arg-type]
         contribution_registry=registry,
-        command_gateway=gateway,  # type: ignore[arg-type]
         validator_timeout_seconds=2.5,
     )
     return host, registry, policy, gateway
@@ -195,17 +193,10 @@ def test_action_derives_target_and_idempotency_from_signed_actor_and_route() -> 
         == second
         == {
             "kind": "action",
-            "receipt": {
-                "command_id": "command-1",
-                "work_item_id": "work-1",
-                "run_id": "run-1",
-                "status": "RECEIVED",
-                "reused": False,
-                "next_poll_after_ms": 1000,
-            },
+            "result": {"message": "checked"},
         }
     )
-    assert gateway.calls == []
+    assert gateway.calls == [("invocation-1", 2.5), ("invocation-1", 2.5)]
     assert policy.calls[0][0] == "waybill-project"
     first_call = policy.calls[0][1]
     second_call = policy.calls[1][1]
@@ -259,7 +250,7 @@ def test_validator_waits_for_unique_closed_result() -> None:
     )
 
     assert result == {"kind": "validator", "validation": run["steps"][0]["result_summary_json"]["data"]}
-    assert gateway.calls == [("run-1", 2.5)]
+    assert gateway.calls == [("invocation-1", 2.5)]
 
 
 def test_active_validator_set_runs_one_snapshot_and_returns_closed_aggregate() -> None:
@@ -278,7 +269,6 @@ def test_active_validator_set_runs_one_snapshot_and_returns_closed_aggregate() -
     host = ServiceV2WaybillEntryExtensionHost(
         policy_service=_Policy(),  # type: ignore[arg-type]
         contribution_registry=registry,
-        command_gateway=_Gateway(),  # type: ignore[arg-type]
     )
     calls: list[dict[str, Any]] = []
 
@@ -354,7 +344,6 @@ def test_active_validator_set_accepts_one_stable_empty_snapshot() -> None:
     host = ServiceV2WaybillEntryExtensionHost(
         policy_service=_Policy(),  # type: ignore[arg-type]
         contribution_registry=registry,
-        command_gateway=_Gateway(),  # type: ignore[arg-type]
     )
 
     result = asyncio.run(
@@ -398,7 +387,6 @@ def test_active_validator_set_fails_closed_when_snapshot_drifts(
     host = ServiceV2WaybillEntryExtensionHost(
         policy_service=_Policy(),  # type: ignore[arg-type]
         contribution_registry=registry,
-        command_gateway=_Gateway(),  # type: ignore[arg-type]
     )
 
     async def invoke(**_kwargs: Any) -> dict[str, Any]:

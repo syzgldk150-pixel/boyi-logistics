@@ -1063,6 +1063,7 @@ class ServiceV2CapabilityProxy:
                 operation=operation,
                 arguments=public_arguments,
                 call_chain=call_chain,
+                invocation_id=str(context.write_attempt_identity.get("invocation_id") or ""),
             )
         if not isinstance(result, Mapping):
             raise _capability_error(

@@ -82,7 +82,8 @@ def test_payload_owns_full_replace_pagination_normalization_and_commit_order():
     source_rows = [
         {
             "BILL_CODE": " = 'R001' ",
-            "INSERT_DATE": "2026-05-12 08:00:00",
+            "REGISTER_DATE": "2026-05-12 08:00:00",
+            "INSERT_DATE": "2026-05-11 23:59:59",
             "BL_SIGNS_MARKING_TEXT": "已签收",
             "DESTINATION": "长沙",
             "ACCEPT_COUNTY": "大祥区",
@@ -108,15 +109,15 @@ def test_payload_owns_full_replace_pagination_normalization_and_commit_order():
         },
         {
             "BILL_CODE": "H001",
-            "INSERT_DATE": "2026-05-12 08:30:00",
+            "REGISTER_DATE": "2026-05-12 08:30:00",
         },
         {
             "BILL_CODE": "R001",
-            "INSERT_DATE": "2026-05-12 08:00:00",
+            "REGISTER_DATE": "2026-05-12 08:00:00",
         },
         {
             "BILL_CODE": "R002",
-            "INSERT_DATE": "2026-05-12 09:00:00",
+            "REGISTER_DATE": "2026-05-12 09:00:00",
             "PIECE_NUMBER": "1",
         },
     ]
@@ -305,6 +306,7 @@ def test_payload_owns_full_replace_pagination_normalization_and_commit_order():
     )
     projections = projection_arguments["records"]
     assert projections[0]["waybill_no"] == "R001"
+    assert projections[0]["open_date"] == "2026-05-12"
     assert projections[0]["freight_fee"] == "12.50"
     assert projections[0]["cod_amount"] == "3.40"
     assert projections[0]["status"] == "signed"
@@ -381,7 +383,7 @@ def test_sql_only_uses_the_account_bound_projection_and_never_feishu():
                 "items": [
                     {
                         "BILL_CODE": "R001",
-                        "INSERT_DATE": "2026-05-12",
+                        "REGISTER_DATE": "2026-05-12",
                         "GUEST_FREIGHT": "12.50",
                     }
                 ],
@@ -495,7 +497,7 @@ def test_dry_run_reads_the_existing_snapshot_but_never_mutates_any_sink():
             }
         if action == "ronghui.send_order.read_page":
             return {
-                "items": [{"BILL_CODE": "R001", "INSERT_DATE": "2026-05-12"}],
+                "items": [{"BILL_CODE": "R001", "REGISTER_DATE": "2026-05-12"}],
                 "total": 1,
                 "evidence_ref": evidence_ref,
             }
@@ -609,7 +611,7 @@ def test_invalid_financial_value_fails_before_any_external_write_and_releases_lo
                 "items": [
                     {
                         "BILL_CODE": "R001",
-                        "INSERT_DATE": "2026-05-12",
+                        "REGISTER_DATE": "2026-05-12",
                         "GUEST_FREIGHT": "not-an-amount",
                     }
                 ],
@@ -634,7 +636,18 @@ def test_invalid_financial_value_fails_before_any_external_write_and_releases_lo
     ]
 
 
-def test_source_row_outside_requested_date_fails_before_sink_access():
+@pytest.mark.parametrize(
+    ("source_dates", "expected_error"),
+    [
+        (
+            {"REGISTER_DATE": "2026-05-11 23:59:59", "INSERT_DATE": "2026-05-12 08:00:00"},
+            "outside the requested date",
+        ),
+        ({"INSERT_DATE": "2026-05-12 08:00:00"}, "invalid send date"),
+        ({"REGISTER_DATE": "", "INSERT_DATE": "2026-05-12 08:00:00"}, "invalid send date"),
+    ],
+)
+def test_source_row_outside_requested_date_fails_before_sink_access(source_dates, expected_error):
     action = _load_action()
     calls: list[str] = []
 
@@ -648,7 +661,7 @@ def test_source_row_outside_requested_date_fails_before_sink_access():
             }
         if action == "ronghui.send_order.read_page":
             return {
-                "items": [{"BILL_CODE": "R001", "INSERT_DATE": "2026-05-11 23:59:59"}],
+                "items": [{"BILL_CODE": "R001", **source_dates}],
                 "total": 1,
                 "evidence_ref": _evidence(len(calls)),
             }
@@ -660,7 +673,7 @@ def test_source_row_outside_requested_date_fails_before_sink_access():
             }
         raise AssertionError(action)
 
-    with pytest.raises(ValueError, match="outside the requested date"):
+    with pytest.raises(ValueError, match=expected_error):
         action.run_action({"target_date": "2026-05-12"}, broker)
 
     assert calls == [

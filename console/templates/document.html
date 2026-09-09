@@ -1722,11 +1722,11 @@
         setManualFeedback("正在执行录单扩展动作…", "info");
         try {
           const result = await invokeWaybillEntryExtension(button, readWaybillEntryExtensionDraft());
-          if (result?.kind !== "action" || !result.receipt) {
+          if (result?.kind !== "action" || !result.result) {
             throw new Error("录单扩展返回无效结果");
           }
           const title = String(button.textContent || "扩展动作").trim();
-          setManualFeedback(`${title}已提交，可在事项中心查看进度。`, "success");
+          setManualFeedback(`${title}已完成：${JSON.stringify(result.result)}`, "success");
         } catch (error) {
           setManualFeedback(error instanceof Error ? error.message : "录单扩展动作执行失败", "error");
         } finally {

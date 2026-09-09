@@ -1,4 +1,4 @@
-"""Real Ronghui customer collector installation, Runner, query and retirement."""
+"""Real Ronghui customer collector installation, direct call, query and retirement."""
 from __future__ import annotations
 
 import argparse
@@ -16,7 +16,6 @@ import httpx
 from agent.automation_plugins.first_party import first_party_payload_files, resolve_first_party_manifests
 from agent.automation_plugins.first_party_handlers import FirstPartyCoreHandlerPorts, build_first_party_core_handler_map
 from agent.automation_plugins.package import Ed25519PackageSigner, Ed25519TrustStore, build_signed_plugin_zip
-from agent.orchestration.context_builder import ContextBuilder
 from agent.tool_registry import ToolRegistry
 from shared.contracts import api_success
 from shared.customer_service_repository import CustomerServiceRepository
@@ -29,7 +28,7 @@ from tests.v32_acceptance.finance_maintenance_browser import FinanceBrowser
 from tests.v32_acceptance.finance_maintenance_drill import require_complete
 from tests.v32_acceptance.collector_navigation_probe import exercise_run_links
 from tests.v32_acceptance.management_fixture import ManagementFixture
-from tests.v32_acceptance.runner_fixture import RunnerFixture
+from tests.direct_invocation_fixture import DirectFixture
 
 DATABASE = "v32_customer_flow_test"
 connection_factory = partial(connect, database=DATABASE)
@@ -150,14 +149,14 @@ def query_browser(browser, source_id):
     return body
 
 
-def publication_provenance(source_id, manifest, expected_run_id):
+def publication_provenance(source_id, manifest, expected_invocation_id):
     with connection_factory() as connection, connection.cursor() as cursor:
         cursor.execute("""SELECT publication_id,run_id,producer_instance_id,producer_generation,record_count,
             content_sha256,published_at,producer_snapshot_json FROM customer_problem_publications
             WHERE source_id=%s ORDER BY published_at,publication_id""", (source_id,))
         rows = cursor.fetchall()
-    if expected_run_id not in {row["run_id"] for row in rows}:
-        raise AssertionError("published source history lost the exact verified run identity")
+    if expected_invocation_id not in {row["run_id"] for row in rows}:
+        raise AssertionError("published source history lost the exact verified Invocation identity")
     for row in rows:
         snapshot = json.loads(row.pop("producer_snapshot_json"))
         if snapshot["plugin_id"] != manifest.plugin_id or snapshot["plugin_version"] != manifest.version:
@@ -170,18 +169,18 @@ def publication_provenance(source_id, manifest, expected_run_id):
     return rows
 
 
-def unresolved_receipt_guard(browser, automation_id, source_id, run_id):
+def unresolved_receipt_guard(browser, automation_id, source_id, invocation_id):
     """Inject only an uncertain receipt to test rejection, never a fake write."""
     receipt_id = str(uuid4())
     digest = sha256(b"explicit isolated uncertain receipt fault").hexdigest()
     with connection_factory() as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT lease_id,generation FROM automation_project_generation_leases WHERE orchestration_run_id=%s", (run_id,))
+        cursor.execute("SELECT lease_id,generation FROM automation_project_generation_leases WHERE invocation_id=%s", (invocation_id,))
         lease = cursor.fetchone()
         cursor.execute("""INSERT INTO automation_write_attempt_receipts(receipt_id,automation_id,generation,
-            lease_id,orchestration_run_id,step_id,request_id,operation,action,argument_sha256,target_ref_sha256,
+            lease_id,invocation_id,request_id,operation,action,argument_sha256,target_ref_sha256,
             target_ref_json,outcome,created_at,updated_at)
-            VALUES(%s,%s,%s,%s,%s,%s,%s,'write','isolated_fault',%s,%s,'{}','STARTED',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))""",
-            (receipt_id, automation_id, lease["generation"], lease["lease_id"], run_id, str(uuid4()), str(uuid4()), digest, digest))
+            VALUES(%s,%s,%s,%s,%s,%s,'write','isolated_fault',%s,%s,'{}','STARTED',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))""",
+            (receipt_id, automation_id, lease["generation"], lease["lease_id"], invocation_id, str(uuid4()), digest, digest))
         connection.commit()
     try:
         rejection = browser.uninstall(automation_id, expect_success=False)
@@ -191,7 +190,7 @@ def unresolved_receipt_guard(browser, automation_id, source_id, run_id):
             cursor.execute("SELECT outcome FROM automation_write_attempt_receipts WHERE receipt_id=%s", (receipt_id,))
             assert cursor.fetchone()["outcome"] == "STARTED"
             assert DataSourceRepository(connection).get(source_id)["producer_instance_id"] == automation_id
-        return {"fault": "synthetic STARTED receipt on a completed test run; no external write occurred",
+        return {"fault": "synthetic STARTED receipt on a completed test Invocation; no external write occurred",
             "result": rejection, "restoration": "only this injected fixture row is removed; no write recovery claimed"}
     finally:
         with connection_factory() as connection, connection.cursor() as cursor:
@@ -222,12 +221,7 @@ def main():
                     upload_signature_verifier=Ed25519TrustStore({"customer-flow": key.public_key().export_key(format="raw")})) as management:
                 management.app.add_api_route("/internal/v1/admin/accounts",
                     lambda: api_success({"accounts": account_manager.list_accounts()}), methods=["GET"])
-                def accounts_for(command):
-                    entry = management.catalog.require(command.automation_invocation.automation_id)
-                    bound = entry.account_bindings["customer_service_source"]
-                    bound = [bound] if isinstance(bound, str) else bound
-                    return [account_manager.require_active_binding_descriptor(account) for account in bound]
-                with (RunnerFixture(management, context_builder=ContextBuilder(account_resolver=accounts_for)) as runner, ConsoleFixture(
+                with (DirectFixture(management) as runner, ConsoleFixture(
                         agent_base_url=management.url, internal_token=management.internal_token,
                         signing_secret=management.signing_secret, runtime_root=management.task_env / "console") as console,
                         FinanceBrowser(console, module="customer_service") as browser):
@@ -251,7 +245,7 @@ def main():
                             with connection.cursor() as cursor:
                                 cursor.execute("INSERT INTO customer_problem_manual_fields(source_id,external_id,source_direction,note,revision,updated_at) VALUES(%s,'CS-FLOW-GUID','received','隔离人工字段保留',1,UTC_TIMESTAMP(6))", (source_id,))
                             connection.commit()
-                        navigation = exercise_run_links(browser, automation_id, result["run_id"], [source_id])
+                        navigation = exercise_run_links(browser, automation_id, result["invocation_id"], [source_id])
                         report["steps"].append({"phase": "collect", "settings": settings, "run_links": navigation,
                             "run": result, "query": query_browser(browser, source_id)})
                         installed.append((automation_id, source_id))
@@ -270,11 +264,11 @@ def main():
                     retained = query_browser(browser, target_source)
                     if [row["note"] for row in retained["rows"] if row["source_direction"] == "received"] != ["隔离人工字段保留"]:
                         raise AssertionError("repeat collection changed independent manual fields")
-                    provenance_before = publication_provenance(target_source, manifest, repeated["run_id"])
-                    unknown_guard = unresolved_receipt_guard(browser, target, target_source, repeated["run_id"])
+                    provenance_before = publication_provenance(target_source, manifest, repeated["invocation_id"])
+                    unknown_guard = unresolved_receipt_guard(browser, target, target_source, repeated["invocation_id"])
                     removed = browser.uninstall(target)
                     history = query_browser(browser, target_source)
-                    provenance_after = publication_provenance(target_source, manifest, repeated["run_id"])
+                    provenance_after = publication_provenance(target_source, manifest, repeated["invocation_id"])
                     if provenance_after != provenance_before:
                         raise AssertionError("collector uninstall changed necessary source provenance")
                     with connection_factory() as connection:

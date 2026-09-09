@@ -12,12 +12,12 @@ from uuid import uuid4
 import pymysql
 
 from tests.v32_acceptance.console_fixture import ConsoleFixture
-from tests.v32_acceptance.daily_concurrency import wait_run
+from tests.v32_acceptance.daily_concurrency import wait_invocation
 from tests.v32_acceptance.daily_scan import ACTOR, signed_request
 from tests.v32_acceptance.management_fixture import ManagementFixture
 from tests.v32_acceptance.owned_database import connect_owned, prepare_owned
 from tests.v32_acceptance.problem_browser import ProblemBrowser
-from tests.v32_acceptance.runner_fixture import RunnerFixture
+from tests.direct_invocation_fixture import DirectFixture
 from tests.v32_acceptance.unrelated_fixture import install_unrelated
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -122,11 +122,11 @@ def main():
                     browser.open()
                     assert browser.card(independent).count() == 1
                     assert not browser.errors, browser.errors
-            with RunnerFixture(management) as runner:
+            with DirectFixture(management) as runner:
                 submitted = signed_request(management, f'/internal/v1/automation-projects/{independent}/invoke',
                     payload={'request_id': str(uuid4())})
-                result = wait_run(management, submitted['run_id'], expected='COMPLETED')
-                report['recovered_real_run'] = {key: result[key] for key in ('run_id', 'status', 'execution_attempt_count')}
+                result = wait_invocation(runner, submitted['invocation_id'], expected='COMPLETED')
+                report['recovered_real_invocation'] = {key: result[key] for key in ('invocation_id', 'status')}
                 report['runtime'] = runner.snapshot()
             report['status'] = 'PASS'
     except Exception as error:

@@ -70,8 +70,18 @@ class DataSourceRepository:
         if module not in {"finance", "customer_service"}:
             raise DataSourceError("SOURCE_MODULE_INVALID")
         with self.connection.cursor() as cursor:
-            cursor.execute("""SELECT s.*,r.status AS latest_collection_status,r.error_code AS latest_collection_error_code,
-                r.updated_at AS latest_collection_at FROM module_data_sources s
+            cursor.execute("""SELECT s.*,
+                CASE WHEN i.invocation_id IS NOT NULL THEN i.status ELSE r.status END AS latest_collection_status,
+                CASE WHEN i.invocation_id IS NOT NULL THEN i.error_code ELSE r.error_code END AS latest_collection_error_code,
+                CASE WHEN i.invocation_id IS NOT NULL THEN i.updated_at ELSE r.updated_at END AS latest_collection_at,
+                CASE WHEN i.invocation_id IS NOT NULL THEN 'invocation'
+                     WHEN r.run_id IS NOT NULL THEN 'historical_run' ELSE NULL END AS latest_collection_origin,
+                CASE WHEN i.invocation_id IS NOT NULL THEN i.invocation_id ELSE r.run_id END AS latest_collection_id
+                FROM module_data_sources s
+                LEFT JOIN automation_plugin_invocations i ON i.invocation_id=(
+                    SELECT recent.invocation_id FROM automation_plugin_invocations recent
+                    WHERE recent.automation_id=BINARY s.producer_instance_id
+                    ORDER BY recent.started_at DESC,recent.invocation_id DESC LIMIT 1)
                 LEFT JOIN agent_runs r ON r.run_id=(
                     SELECT recent.run_id FROM agent_commands command JOIN agent_runs recent ON recent.command_id=command.command_id
                     WHERE BINARY command.automation_id=BINARY s.producer_instance_id ORDER BY recent.created_at DESC,recent.run_id DESC LIMIT 1)

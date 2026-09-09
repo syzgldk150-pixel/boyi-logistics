@@ -13,8 +13,7 @@ from agent.orchestration.automation_project_policy_service import (
 from agent.orchestration.automation_project_service_v2 import (
     resolve_active_service_v2_module_slot,
 )
-from agent.orchestration.command_gateway import CommandGateway
-from agent.orchestration.models import Actor, ActorType, OrchestrationError, RunStatus
+from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
     canonical_sha256,
@@ -30,16 +29,6 @@ from shared.waybill_entry_extensions import (
 )
 
 
-_RECEIPT_FIELDS = frozenset(
-    {
-        "command_id",
-        "work_item_id",
-        "run_id",
-        "status",
-        "reused",
-        "next_poll_after_ms",
-    }
-)
 _RESULT_SUMMARY_FIELDS = frozenset({"status", "data", "meta", "warnings", "error"})
 
 
@@ -51,12 +40,10 @@ class ServiceV2WaybillEntryExtensionHost:
         *,
         policy_service: AutomationProjectPolicyService,
         contribution_registry: Any,
-        command_gateway: CommandGateway,
         validator_timeout_seconds: float = 30.0,
     ) -> None:
         self._policy = policy_service
         self._registry = contribution_registry
-        self._gateway = command_gateway
         self._validator_timeout_seconds = max(0.1, float(validator_timeout_seconds))
 
     def list_module_slots(self, *, actor: Actor) -> dict[str, Any]:
@@ -240,27 +227,21 @@ class ServiceV2WaybillEntryExtensionHost:
             expected_automation_generation=generation,
             contribution_id=contribution_id,
         )
+        invocation_id = str(receipt.get("invocation_id") or "") if isinstance(receipt, Mapping) else ""
+        if not invocation_id:
+            raise OrchestrationError("WAYBILL_EXTENSION_RESULT_INVALID", "Waybill-entry invocation identity is missing")
+        result = await self._policy.direct_invocations.wait(
+            invocation_id, timeout_seconds=self._validator_timeout_seconds)
+        if result.get("running"):
+            await self._policy.direct_invocations.cancel(invocation_id)
+            raise OrchestrationError("WAYBILL_EXTENSION_TIMEOUT", "Waybill-entry extension did not complete in time")
+        summary = self._summary_from_invocation(result)
         if safe_slot == WAYBILL_ENTRY_ACTIONS_SLOT:
-            return {"kind": "action", "receipt": self._safe_receipt(receipt)}
-        if safe_slot != WAYBILL_ENTRY_VALIDATORS_SLOT:
-            raise OrchestrationError(
-                "WAYBILL_EXTENSION_REQUEST_INVALID",
-                "Waybill-entry extension slot is invalid",
-            )
-        run_id = str(getattr(receipt, "run_id", "") or "")
+            return {"kind": "action", "result": dict(summary["data"])}
         try:
-            run = await self._gateway.wait_for_run(
-                run_id,
-                timeout_seconds=self._validator_timeout_seconds,
-            )
-        except OrchestrationError as exc:
-            if exc.code == "RUN_WAIT_TIMEOUT":
-                raise OrchestrationError(
-                    "WAYBILL_EXTENSION_TIMEOUT",
-                    "Waybill-entry validator did not complete in time",
-                ) from exc
-            raise
-        validation = self._validation_from_run(run)
+            validation = normalize_waybill_entry_validator_result(summary.get("data"))
+        except ValueError as exc:
+            raise OrchestrationError("WAYBILL_EXTENSION_RESULT_INVALID", "Waybill-entry validator result is invalid") from exc
         return {"kind": "validator", "validation": validation}
 
     @staticmethod
@@ -289,70 +270,15 @@ class ServiceV2WaybillEntryExtensionHost:
             )
 
     @staticmethod
-    def _safe_receipt(receipt: Any) -> dict[str, Any]:
-        raw = receipt.to_dict() if callable(getattr(receipt, "to_dict", None)) else receipt
-        if not isinstance(raw, Mapping) or set(raw) != _RECEIPT_FIELDS:
-            raise OrchestrationError(
-                "WAYBILL_EXTENSION_RESULT_INVALID",
-                "Waybill-entry action receipt is invalid",
-            )
-        identifiers = tuple(
-            raw.get(field)
-            for field in (
-                "command_id",
-                "work_item_id",
-                "run_id",
-            )
-        )
-        status = raw.get("status")
-        next_poll = raw.get("next_poll_after_ms")
-        if (
-            any(type(value) is not str or not value for value in identifiers)
-            or status not in {item.value for item in RunStatus}
-            or type(raw.get("reused")) is not bool
-            or type(next_poll) is not int
-            or next_poll < 0
-        ):
-            raise OrchestrationError(
-                "WAYBILL_EXTENSION_RESULT_INVALID",
-                "Waybill-entry action receipt is invalid",
-            )
-        return {field: raw[field] for field in _RECEIPT_FIELDS}
-
-    @staticmethod
-    def _validation_from_run(run: Any) -> dict[str, object]:
-        if not isinstance(run, Mapping) or run.get("status") != "COMPLETED":
-            raise OrchestrationError(
-                "WAYBILL_EXTENSION_EXECUTION_FAILED",
-                "Waybill-entry validator did not complete successfully",
-            )
-        steps = run.get("steps")
-        if not isinstance(steps, list) or len(steps) != 1:
-            raise OrchestrationError(
-                "WAYBILL_EXTENSION_RESULT_INVALID",
-                "Waybill-entry validator must produce exactly one result",
-            )
-        step = steps[0]
-        summary = step.get("result_summary_json") if isinstance(step, Mapping) else None
-        if (
-            not isinstance(step, Mapping)
-            or step.get("status") != "COMPLETED"
-            or not isinstance(summary, Mapping)
-            or set(summary) != _RESULT_SUMMARY_FIELDS
-            or summary.get("status") != "SUCCESS"
-            or summary.get("error") is not None
-        ):
-            raise OrchestrationError(
-                "WAYBILL_EXTENSION_RESULT_INVALID",
-                "Waybill-entry validator result is invalid",
-            )
-        try:
-            return normalize_waybill_entry_validator_result(summary.get("data"))
-        except ValueError as exc:
-            raise OrchestrationError(
-                "WAYBILL_EXTENSION_RESULT_INVALID",
-                "Waybill-entry validator result is invalid",
-            ) from exc
+    def _summary_from_invocation(invocation: Any) -> Mapping[str, Any]:
+        if not isinstance(invocation, Mapping) or invocation.get("status") != "COMPLETED":
+            raise OrchestrationError("WAYBILL_EXTENSION_EXECUTION_FAILED", "Waybill-entry extension did not complete successfully")
+        summary = invocation.get("result")
+        if (not isinstance(summary, Mapping) or set(summary) != _RESULT_SUMMARY_FIELDS
+                or summary.get("status") != "SUCCESS" or summary.get("error") is not None
+                or not isinstance(summary.get("data"), Mapping)):
+            raise OrchestrationError("WAYBILL_EXTENSION_RESULT_INVALID", "Waybill-entry extension result is invalid")
+        return summary
 
 
 __all__ = ["ServiceV2WaybillEntryExtensionHost"]

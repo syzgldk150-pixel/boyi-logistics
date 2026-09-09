@@ -3,6 +3,7 @@ import json
 import sys
 import types
 import unittest
+import uuid
 from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,8 +19,9 @@ from app import LocalDocFlowApp  # noqa: E402
 class _Handler:
     def __init__(self, payload):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.headers = {"Content-Length": str(len(body))}
+        self.headers = {"Content-Length": str(len(body)), "Host": "console.test", "Origin": "http://console.test"}
         self.rfile = io.BytesIO(body)
+        self.current_admin_user = {"id": 7, "username": "fixture-admin", "control_plane_role": "admin"}
 
 
 class TrackingQueryTests(unittest.TestCase):
@@ -34,11 +36,12 @@ class TrackingQueryTests(unittest.TestCase):
         app._send_json = types.MethodType(capture_json, app)
         return app
 
-    def test_ronghui_number_calls_unified_agent_tms_endpoint(self):
+    def test_ronghui_number_calls_direct_business_endpoint(self):
         app = self._build_app()
         calls = []
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
+            self.assert_principal = console_principal
             calls.append(
                 {
                     "method": method,
@@ -117,15 +120,19 @@ class TrackingQueryTests(unittest.TestCase):
         self.assertEqual("R000145133480001", app.sent_payload["child_detail_rows"][0]["child_waybill_no"])
         self.assertEqual("勇胜", app.sent_payload["waybill_stub"]["sender_name"])
         self.assertEqual("货物信息", app.sent_payload["waybill_info"][0]["title"])
-        self.assertEqual("/internal/v1/tms/tracking_query", calls[0]["endpoint"])
+        self.assertEqual("/internal/v1/business/tracking_query", calls[0]["endpoint"])
         self.assertEqual({"tracking_number": "R00014513348", "decrypt_masked": True}, calls[0]["payload"]["params"])
         self.assertEqual(180, calls[0]["payload"]["timeout_sec"])
+        self.assertEqual("7", app.assert_principal["actor_id"])
+        self.assertEqual("mysql_admin_session", app.assert_principal["authenticated_by"])
+        self.assertEqual(calls[0]["payload"]["request_id"], str(uuid.UUID(calls[0]["payload"]["request_id"])))
+        self.assertNotIn("run_id", app.sent_payload)
 
-    def test_yunda_number_calls_unified_agent_tms_endpoint(self):
+    def test_yunda_number_calls_direct_business_endpoint(self):
         app = self._build_app()
         calls = []
 
-        def agent_request(self, method, endpoint, *, payload=None, timeout=None):
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
             calls.append(
                 {
                     "method": method,
@@ -164,8 +171,23 @@ class TrackingQueryTests(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, app.sent_status)
         self.assertEqual("yunda", app.sent_payload["type"])
         self.assertEqual("湖南邵阳集配站 0739-5455259", app.sent_payload["route_rows"][0]["contact"])
-        self.assertEqual("/internal/v1/tms/tracking_query", calls[0]["endpoint"])
+        self.assertEqual("/internal/v1/business/tracking_query", calls[0]["endpoint"])
         self.assertEqual({"tracking_number": "977808459", "decrypt_masked": True}, calls[0]["payload"]["params"])
+
+    def test_tracking_rejects_missing_or_legacy_session_and_cross_origin_before_transport(self):
+        for rejected in ("missing", "legacy", "cross_origin"):
+            with self.subTest(rejected=rejected):
+                app = self._build_app()
+                app._agent_request = lambda *args, **kwargs: self.fail("Rejected request reached Agent")
+                handler = _Handler({"tracking_number": "977808459"})
+                if rejected == "missing":
+                    handler.current_admin_user = None
+                elif rejected == "legacy":
+                    handler.current_admin_user["is_legacy_basic_auth"] = True
+                else:
+                    handler.headers["Origin"] = "http://unrelated.test"
+                app._handle_tracking_query(handler)
+                self.assertEqual(HTTPStatus.FORBIDDEN, app.sent_status)
 
     def test_tracking_template_uses_scan_detail_and_child_tabs_without_r7(self):
         template = (CONSOLE_DIR / "templates" / "tracking.html").read_text(encoding="utf-8")

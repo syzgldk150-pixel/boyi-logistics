@@ -444,6 +444,7 @@ FIXED_HARNESS_TOOL_IDS = (
     "waybill.lookup",
     "tracking.lookup",
     "work_items.list_open",
+    "finance.summary",
     "runs.get_summary",
     "artifact.inspect",
 )
@@ -452,6 +453,7 @@ _FIXED_ARGUMENT_KEYS = {
     "knowledge.search": frozenset({"query", "limit"}),
     "waybill.lookup": frozenset({"waybill_number"}),
     "tracking.lookup": frozenset({"tracking_number"}),
+    "finance.summary": frozenset({"start_date", "end_date"}),
     "work_items.list_open": frozenset({"limit"}),
     "runs.get_summary": frozenset({"run_id"}),
     "artifact.inspect": frozenset({"artifact_id"}),
@@ -468,7 +470,7 @@ def _object_schema(properties: Mapping[str, Mapping[str, Any]], required: Iterab
 
 
 def build_fixed_harness_tools() -> tuple[FixedHarnessTool, ...]:
-    """Build the six host-rendered read-only tools without a default gateway."""
+    """Build the host-rendered read-only tools without a default gateway."""
 
     string_id = {"type": "string", "maxLength": 191}
     descriptors = (
@@ -503,6 +505,16 @@ def build_fixed_harness_tools() -> tuple[FixedHarnessTool, ...]:
             input_schema=_object_schema(
                 {"limit": {"type": "integer", "minimum": 1, "maximum": 50}},
                 ("limit",),
+            ),
+        ),
+        ToolDescriptor(
+            tool_id="finance.summary",
+            title="查询财务汇总",
+            description="读取指定日期范围的真实财务汇总，用于回答和分析；不触发采集。",
+            input_schema=_object_schema(
+                {"start_date": {"type": "string", "maxLength": 10},
+                 "end_date": {"type": "string", "maxLength": 10}},
+                ("start_date", "end_date"),
             ),
         ),
         ToolDescriptor(
@@ -620,11 +632,20 @@ class TrustedHarnessInvocationAdapter:
                 expected_automation_generation=handle.generation,
                 contribution_id=handle.contribution_id,
             )
+            if not isinstance(result, Mapping) or not result.get("invocation_id"):
+                raise _error("插件没有返回本次执行标识", "HARNESS_GATEWAY_FAILED")
+            _reject_forbidden_receipt_keys({key: value for key, value in result.items()
+                                           if key not in {"automation_id", "plugin_id", "operation", "result", "output"}})
+            completed = self._policy_service.direct_invocations.wait_sync(result["invocation_id"])
         except HarnessError:
             raise
         except Exception as exc:
             raise _error("Trusted Harness invocation failed", "HARNESS_GATEWAY_FAILED") from exc
-        return _strict_receipt(result)
+        return _strict_receipt({
+            "status": completed.get("status"),
+            "result": _public_plugin_result(completed.get("result")),
+            "error": completed.get("error_summary"),
+        })
 
     def _validate_dynamic_handle(self, handle: ManagedToolHandle) -> None:
         if (
@@ -657,6 +678,15 @@ class TrustedHarnessInvocationAdapter:
         except Exception as exc:
             raise _error("Fixed Harness handler failed", "HARNESS_GATEWAY_FAILED") from exc
         return _strict_receipt(result)
+
+
+def _public_plugin_result(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _public_plugin_result(nested) for key, nested in value.items()
+                if str(key).lower() not in _FORBIDDEN_RECEIPT_KEYS}
+    if isinstance(value, (list, tuple)):
+        return [_public_plugin_result(item) for item in value]
+    return value
 
 
 def _strict_receipt(result: object) -> dict[str, Any]:
@@ -711,6 +741,15 @@ def _validate_fixed_arguments(
             or not 1 <= safe["limit"] <= 20
         ):
             raise _error("Fixed Harness arguments are invalid", "HARNESS_ARGUMENT_INVALID")
+    elif handle_id == "finance.summary":
+        from datetime import date
+        try:
+            start = date.fromisoformat(safe["start_date"])
+            end = date.fromisoformat(safe["end_date"])
+        except (TypeError, ValueError) as exc:
+            raise _error("日期须为 YYYY-MM-DD", "HARNESS_ARGUMENT_INVALID") from exc
+        if start > end or (end - start).days >= 366:
+            raise _error("日期范围无效", "HARNESS_ARGUMENT_INVALID")
     elif handle_id == "work_items.list_open":
         if (
             isinstance(safe.get("limit"), bool)

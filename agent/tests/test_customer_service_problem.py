@@ -93,7 +93,7 @@ class CustomerServiceProblemTargetTests(unittest.TestCase):
 
         self.assertEqual(200, status)
         self.assertEqual("ronghui-a", observed["params"]["account_id"])
-        self.assertEqual("", observed["default_system"])
+        self.assertEqual("ronghui", observed["default_system"])
         self.assertEqual("", observed["default_purpose"])
         self.assertEqual("ronghui_custom_profile", payload["data"]["session_profile"])
 

@@ -649,6 +649,10 @@ def test_send_sheet_replace_rejects_a_stale_managed_tail_after_clear_ack(
 def test_yunda_projection_uses_exact_fresh_source_date_readback(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    from plugin_core_adapters import waybill_query
+    from shared.waybill_source_coverage import WaybillSourceScope
+    scope = WaybillSourceScope("yunda", "fixture/site", "fixture/all", "fixture-account")
+    monkeypatch.setattr(waybill_query, "resolve_source_scope", lambda source, account_id: scope)
     record = _send_sink_record()
     expected = send_sink._console_waybill_records(
         [record],
@@ -661,20 +665,20 @@ def test_yunda_projection_uses_exact_fresh_source_date_readback(
     }
     state = [stale]
 
-    def sync(rows, *, source, target_date, replace_date):
+    def sync(rows, *, source, target_date, complete, **kwargs):
         assert source == "yunda"
         assert target_date.isoformat() == "2026-08-15"
-        assert replace_date is True
+        assert complete is True
         state[:] = [{**rows[0], "source": "yunda"}]
         raise TimeoutError("response lost after commit")
 
     monkeypatch.setattr(
-        "tools.phase7_mysql_store.sync_console_waybills",
+        "plugin_core_adapters.waybill_query.publish_collected_waybills",
         sync,
     )
     monkeypatch.setattr(
-        "tools.phase7_mysql_store.list_console_waybills_by_source_date",
-        lambda **_kwargs: [dict(row) for row in state],
+        "shared.waybill_source_coverage.WaybillSourceRepository.read_scope",
+        lambda *_args, **_kwargs: [dict(row) for row in state],
     )
     monkeypatch.setattr(
         "tools.phase7_mysql_store.list_console_waybills_by_numbers",
@@ -683,7 +687,7 @@ def test_yunda_projection_uses_exact_fresh_source_date_readback(
 
     result = adapters._replace_yunda_waybill_projection(
         [record],
-        "2026-08-15",
+        "2026-08-15", {"account_id": "fixture-account"},
     )
 
     assert result | {
@@ -702,6 +706,10 @@ def test_yunda_projection_uses_exact_fresh_source_date_readback(
 def test_yunda_projection_ack_with_mismatched_fresh_row_is_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    from plugin_core_adapters import waybill_query
+    from shared.waybill_source_coverage import WaybillSourceScope
+    scope = WaybillSourceScope("yunda", "fixture/site", "fixture/all", "fixture-account")
+    monkeypatch.setattr(waybill_query, "resolve_source_scope", lambda source, account_id: scope)
     record = _send_sink_record()
     expected = send_sink._console_waybill_records(
         [record],
@@ -720,12 +728,12 @@ def test_yunda_projection_ack_with_mismatched_fresh_row_is_unknown(
         return {"ok": True, "upserted": 1}
 
     monkeypatch.setattr(
-        "tools.phase7_mysql_store.sync_console_waybills",
+        "plugin_core_adapters.waybill_query.publish_collected_waybills",
         sync,
     )
     monkeypatch.setattr(
-        "tools.phase7_mysql_store.list_console_waybills_by_source_date",
-        lambda **_kwargs: [dict(row) for row in state],
+        "shared.waybill_source_coverage.WaybillSourceRepository.read_scope",
+        lambda *_args, **_kwargs: [dict(row) for row in state],
     )
     monkeypatch.setattr(
         "tools.phase7_mysql_store.list_console_waybills_by_numbers",
@@ -735,7 +743,7 @@ def test_yunda_projection_ack_with_mismatched_fresh_row_is_unknown(
     with pytest.raises(PluginExecutionError) as exc:
         adapters._replace_yunda_waybill_projection(
             [record],
-            "2026-08-15",
+            "2026-08-15", {"account_id": "fixture-account"},
         )
 
     assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"

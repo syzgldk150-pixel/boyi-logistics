@@ -182,15 +182,6 @@
       };
     }
 
-    function financeReceiptText(receipt, prefix) {
-      const runId = String(receipt?.run_id || "").trim();
-      const workItemId = String(receipt?.work_item_id || "").trim();
-      const ids = [runId ? `Run ${runId}` : "", workItemId ? `事项 ${workItemId}` : ""]
-        .filter(Boolean)
-        .join(" / ");
-      return `${prefix}已提交${ids ? `（${ids}）` : ""}，请在事项中心完成审批并查看结果。`;
-    }
-
     function toQuery(params) {
       const query = new URLSearchParams();
       Object.entries(params || {}).forEach(([key, value]) => {
@@ -1032,8 +1023,14 @@
     async function analyzeReviews(button) {
       setButtonBusy(button, true, "分析中");
       try {
-        const result = await fetchJson(ENDPOINTS.analyzeReviews, { method: "POST", body: JSON.stringify({ limit: 20 }) });
-        setStatus(result.status === "pending" ? "当前没有激活模型，审批单继续保持待分析。" : `AI 分析完成：成功 ${result.completed || 0}，失败 ${result.failed || 0}。`, result.failed ? "warning" : "success");
+        const result = await fetchJson(ENDPOINTS.analyzeReviews, { method: "POST", body: JSON.stringify({ limit: 20, request_id: newBrowserRequestUuid() }) });
+        if (result.status === "pending") {
+          setStatus("当前没有激活模型，本次分析未执行。", "warning");
+        } else if (Number.isInteger(result.completed) && Number.isInteger(result.failed)) {
+          setStatus(`AI 分析完成：成功 ${result.completed}，失败 ${result.failed}。`, result.failed ? "warning" : "success");
+        } else {
+          throw new Error("分析结果缺少实际完成数量，请查看本次记录。");
+        }
         await loadReviews();
       } catch (error) { setStatus(`AI 分析失败：${error.message}`, "error"); }
       finally { setButtonBusy(button, false, "分析待处理项目"); }
@@ -1153,10 +1150,11 @@
       const body = formValues(form);
       setButtonBusy(button, true, busyLabel);
       try {
-        const receipt = await fetchJson(endpoint, financeCommandOptions(body));
-        setStatus(financeReceiptText(receipt, "财务同步计划"), "warning");
+        await fetchJson(endpoint, financeCommandOptions(body));
+        await loadBatches();
+        setStatus("财务采集完成。", "success");
       } catch (error) {
-        setStatus(`财务同步计划未提交：${error.message}`, "error");
+        setStatus(`财务采集失败：${error.message}`, "error");
       } finally {
         setButtonBusy(button, false, busyLabel);
       }
@@ -1166,13 +1164,14 @@
       const batchId = Number(row.dataset.batchId || 0);
       setButtonBusy(button, true, "重试中");
       try {
-        const receipt = await fetchJson(
+        await fetchJson(
           `${ENDPOINTS.batches}/${batchId}/retry`,
           financeCommandOptions({}),
         );
-        setStatus(financeReceiptText(receipt, `批次 #${batchId} 重试计划`), "warning");
+        await loadBatches();
+        setStatus(`批次 #${batchId} 重试完成。`, "success");
       } catch (error) {
-        setStatus(`批次重试计划未提交：${error.message}`, "error");
+        setStatus(`批次重试失败：${error.message}`, "error");
       } finally {
         setButtonBusy(button, false, "重试中");
       }

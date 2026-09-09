@@ -12,7 +12,7 @@ import zipfile
 from agent.automation_plugins.developer_v2 import build_service_v2_package, init_service_v2_source
 from tests.v32_acceptance.console_fixture import ConsoleFixture
 from tests.v32_acceptance.finance_maintenance import (
-    ACCOUNTS, ACTOR, RUNTIME, TARGET, composed, connect, setup_instance, wait_run,
+    ACCOUNTS, ACTOR, RUNTIME, TARGET, composed, connect, setup_instance, wait_invocation,
 )
 from tests.v32_acceptance.finance_maintenance_browser import FinanceBrowser
 from tests.v32_acceptance.host_freeze import process_identity, verify_host
@@ -38,18 +38,24 @@ def setup_unrelated(management):
     return automation_id
 
 
-def require_complete(run_id, *, connection_factory=connect):
-    result = wait_run(run_id, connection_factory=connection_factory)
+def require_complete(invocation_id, *, connection_factory=connect):
+    result = wait_invocation(invocation_id, connection_factory=connection_factory)
     if result["status"] != "COMPLETED":
-        raise AssertionError(f"actual Runner failed: {result}")
+        raise AssertionError(f"actual Invocation failed: {result}")
     with connection_factory() as connection, connection.cursor() as cursor:
         cursor.execute("""SELECT lease.generation,lease.outcome,version.plugin_version,
             lease.runtime_metadata_sha256,lease.released_at FROM automation_project_generation_leases lease
             JOIN automation_project_generations version ON version.automation_id=lease.automation_id AND version.generation=lease.generation
-            WHERE lease.orchestration_run_id=%s ORDER BY lease.acquired_at""", (run_id,))
+            WHERE lease.invocation_id=%s ORDER BY lease.acquired_at""", (invocation_id,))
         leases = cursor.fetchall()
-        cursor.execute("SELECT action,outcome,COUNT(*) AS n FROM automation_write_attempt_receipts WHERE orchestration_run_id=%s GROUP BY action,outcome ORDER BY action,outcome", (run_id,))
+        cursor.execute("SELECT action,outcome,COUNT(*) AS n FROM automation_write_attempt_receipts WHERE invocation_id=%s GROUP BY action,outcome ORDER BY action,outcome", (invocation_id,))
         receipts = cursor.fetchall()
+        cursor.execute("SELECT COUNT(*) AS n FROM agent_runs")
+        assert cursor.fetchone()["n"] == 0, "direct collection must not create or resume a Run"
+        cursor.execute("SELECT COUNT(*) AS n FROM agent_commands")
+        assert cursor.fetchone()["n"] == 0, "direct collection must not create a Command"
+    if not leases or any(lease["outcome"] not in {"SUCCEEDED", "WRITE_VERIFIED"} or not lease["released_at"] for lease in leases):
+        raise AssertionError(f"actual generation lease did not finish: {leases}")
     for lease in leases:
         lease["released_at"] = lease["released_at"].isoformat() if lease["released_at"] else None
     return {**result, "leases": leases, "receipts": receipts}
@@ -84,7 +90,8 @@ def business_proof(automation_id, *, expected_version):
             "validation_status": row.pop("validation_status"), "validation_report": json.loads(row.pop("validation_report_json"))})
         row["income"], row["expense"] = str(row["income"]), str(row["expense"])
         row["business_date"] = row["business_date"].isoformat()
-        if row["income"] != "0.0000" or row["expense"] != "1.2500" or not row["waybill_no"].startswith("M02-BILL-"):
+        if (row["income"] != "0.0000" or row["expense"] != "1.2500"
+                or row["business_date"] != TARGET or not row["waybill_no"].startswith("M02-BILL-")):
             raise AssertionError(f"canonical business data differs: {row}")
     return {"sources": sources, "rows": rows, "provenance": provenance}
 
@@ -108,13 +115,13 @@ def run_drill(*, host_freeze: Path | None, smoke: bool):
     RUNTIME.mkdir(parents=True, exist_ok=True)
     output = RUNTIME / ("preparation.json" if smoke else "maintenance-evidence.json")
     try:
-        with composed() as (management, runner, supplier, artifacts):
+        with composed() as (management, direct, supplier, artifacts):
             management.startup_id = str(uuid4())
             for name, artifact in artifacts.items():
                 (management.task_env / f"finance-{name}-{artifact['version']}.zip").write_bytes(artifact["bytes"])
             report["artifacts"] = {name: {key: value for key, value in artifact.items() if key != "bytes"}
                 for name, artifact in artifacts.items()}
-            report["runtime"] = runner.snapshot()
+            report["runtime"] = direct.snapshot()
             report["runtime_root"] = str(management.task_env)
             with ConsoleFixture(agent_base_url=management.url, internal_token=management.internal_token,
                     signing_secret=management.signing_secret, runtime_root=management.task_env / "console") as console:
@@ -144,10 +151,9 @@ def run_drill(*, host_freeze: Path | None, smoke: bool):
                         raise AssertionError("invalid candidate changed the installed version")
                     updated = browser.upgrade(automation_id, artifacts["candidate"])
                     unrelated = management.policy.invoke_console(unrelated_id, request_id=str(uuid4()), actor=ACTOR)
-                    runner.runner.wake(unrelated.run_id)
-                    unrelated_result = require_complete(unrelated.run_id)
+                    unrelated_result = require_complete(unrelated["invocation_id"])
                     ordinary_output = browser.context.request.get(console.url + "/automations/tasks/output",
-                        params={"task_id": unrelated_id, "run_id": unrelated.run_id})
+                        params={"task_id": unrelated_id, "invocation_id": unrelated["invocation_id"]})
                     assert ordinary_output.status == 200 and ordinary_output.json()["runtime"]["ok"] is True
                     assert ordinary_output.json()["collector_navigation"] == {"status": "not_collector", "sources": []}
                     unrelated_result["console_output"] = ordinary_output.json()
@@ -185,7 +191,7 @@ def run_drill(*, host_freeze: Path | None, smoke: bool):
                     if startup_before != startup_after or not management.thread.is_alive() or not console.thread.is_alive():
                         raise AssertionError("host service identity changed during maintenance")
                     report["startup_before"], report["startup_after"] = startup_before, startup_after
-                    report["topology"] = "Agent HTTP, Console HTTP and Runner run in distinct threads of one unchanged isolated host process"
+                    report["topology"] = "Agent HTTP, Console HTTP and direct Invocation runtime run in distinct threads of one unchanged isolated host process; no Command or Run"
                     report["supplier_requests"] = supplier.requests
                     report["host_after"] = verify_host(host_freeze) if host_freeze else before_host
                     report["status"] = "PREPARATION_PASSED" if smoke else "PASS"

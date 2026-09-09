@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from shared.invocation_summary import invocation_count_summary
 
 
 TOOL_DISPLAY_NAMES = {
@@ -22,8 +23,8 @@ def accepted_result_pending_message(task_name: str) -> str:
     """Describe a post-commit wait failure without inviting a duplicate run."""
 
     return (
-        f"{task_name}已提交，当前结果暂未返回，任务仍会在后台继续执行。"
-        "请勿重复触发，完成结果可在自动化页面查看。"
+        f"{task_name}已发起，本次结果暂时无法读取。"
+        "请在自动化页面查看这次执行记录；系统不会重跑历史任务。"
     )
 
 
@@ -43,7 +44,7 @@ def _public_failure_detail(value: Any) -> str:
     return detail
 
 
-def automation_result_reply(
+def _automation_result_reply_text(
     *,
     task_name: str,
     result: dict[str, Any],
@@ -58,7 +59,8 @@ def automation_result_reply(
     if status in {"WAITING_APPROVAL", "PENDING_APPROVAL"}:
         return f"{task_name}已提交，正在等待审批。", "automation_project_waiting_approval"
     if status == "COMPLETED":
-        return f"{task_name}已完成。", "automation_project_completed"
+        summary = invocation_count_summary(result)
+        return f"{task_name}已完成。" + (f"\n{summary}" if summary else ""), "automation_project_completed"
     if status == "BLOCKED_LOGIN":
         return (
             f"{task_name}未完成：绑定的业务账号需要重新登录。",
@@ -66,6 +68,8 @@ def automation_result_reply(
         )
     if status == "CANCELLED":
         return f"{task_name}已取消。", "automation_project_cancelled"
+    if status == "CANCELLING":
+        return f"{task_name}正在停止，停止后会更新本次结果。", "automation_project_cancelling"
     if problem_code == "WRITE_OUTCOME_UNKNOWN" or "WRITE_OUTCOME_UNKNOWN" in reason:
         return (
             f"{task_name}的目标表可能已更新，但最终核验暂未确认。"
@@ -82,7 +86,7 @@ def automation_result_reply(
             ),
             "automation_project_partial",
         )
-    if status in {"BLOCKED_DATA", "FAILED_RETRYABLE", "FAILED_TERMINAL"}:
+    if status in {"FAILED", "BLOCKED_DATA", "FAILED_RETRYABLE", "FAILED_TERMINAL"}:
         if (
             task_name == TOOL_DISPLAY_NAMES["self_pickup_problem_upload"]
             and "SELECTION_PREVIEW_EXPIRED" in reason
@@ -102,7 +106,8 @@ def automation_result_reply(
             )
         detail = _public_failure_detail(reason) or {
             "BLOCKED_DATA": "数据或资源校验未通过，请检查账号和数据表配置后重试。",
-            "FAILED_RETRYABLE": "执行暂时失败，系统会按既定策略自动重试。",
+            "FAILED": "本次执行已失败，请查看结果后重新触发。",
+            "FAILED_RETRYABLE": "本次执行已失败，请查看结果后重新触发。",
             "FAILED_TERMINAL": "执行未完成，请在自动化页面查看处理建议。",
         }[status]
         return f"{task_name}执行失败：{detail}", "automation_project_failed"
@@ -110,6 +115,19 @@ def automation_result_reply(
         f"{task_name}未完成，结果暂时无法确认，请在自动化页面查看状态。",
         "automation_project_status",
     )
+
+
+def automation_result_reply(*, task_name: str, result: dict[str, Any]) -> tuple[str, str]:
+    reply, reply_type = _automation_result_reply_text(task_name=task_name, result=result)
+    navigation = result.get("collector_navigation")
+    if isinstance(navigation, dict) and navigation.get("status") == "known":
+        links = [f"查看数据：{navigation['module_url']}"]
+        sources = navigation.get("sources", [])
+        links.extend(f"{source['display_name']}：{source['url']}" for source in sources)
+        if not sources:
+            links.append("本次执行尚无已核验的来源记录。")
+        reply += "\n" + "\n".join(links)
+    return reply, reply_type
 
 
 __all__ = [

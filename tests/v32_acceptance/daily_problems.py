@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from tests.v32_acceptance.console_fixture import ConsoleFixture
-from tests.v32_acceptance.decision_maintenance import ACTOR, composed, connect, prepare_database, setup_instance, wait_result
+from tests.v32_acceptance.decision_maintenance import ACTOR, composed, connect, prepare_database, setup_instance, wait_result, require_verified_result
 from tests.v32_acceptance.problem_browser import ProblemBrowser
 from tests.v32_acceptance.problem_fixture import ACCOUNTS, SPLIT_SOURCE, SPLIT_TARGET
 
@@ -46,8 +46,7 @@ def main():
                     for automation_id, expected in [(self_id,['R_M03_STANDARD']),(split_id,['SYNTHETIC-SPLIT','SYNTHETIC-NOT-ARRIVED'])]:
                         preview = browser.preview(automation_id,expected_codes=expected)
                         result = wait_result(browser.confirm(automation_id))
-                        if result['status'] != 'COMPLETED' or any(step['postcondition_status']!='VERIFIED' for step in result['steps']):
-                            raise AssertionError('actual daily problem execution failed: '+str(result))
+                        require_verified_result(result)
                         report['cases'][automation_id] = {'status':'PASS','preview':preview,'result':result}
                     if browser.errors:
                         raise AssertionError('actual Console script failure: '+str(browser.errors))
@@ -65,6 +64,7 @@ def main():
         report.update(status='FAIL',error=type(exc).__name__+': '+str(exc))
         raise
     finally:
+        OUTPUT.parent.mkdir(parents=True, exist_ok=True)
         OUTPUT.write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
         print(json.dumps({'status':report['status'],'cases':list(report['cases']),'output':str(OUTPUT)}))
 

@@ -326,6 +326,7 @@ class RuntimeGenerationLease:
     # New runtime acquisitions always populate this from the trusted
     # orchestration invocation context.
     orchestration_run_id: str | None = None
+    invocation_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -340,6 +341,7 @@ class GenerationVerificationContext:
     orchestration_run_id: str | None = None
     host_call_observations: tuple[Mapping[str, Any], ...] = ()
     plugin_id: str = ""
+    invocation_id: str | None = None
 
 
 class GenerationBoundResult(dict[str, Any]):

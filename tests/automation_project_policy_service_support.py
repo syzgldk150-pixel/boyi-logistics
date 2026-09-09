@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest import TestCase
+from uuid import uuid4
 from unittest.mock import patch
 
 from agent.automation_plugins.errors import PluginConflictError
@@ -858,11 +859,74 @@ class _ModuleSlotRegistry:
         )
 
 
+class _DirectCalls:
+    """Policy unit port: capture real invocation arguments, never build a Run."""
+    def __init__(self, policy_repository):
+        self.policy_repository = policy_repository
+        self.repository = self
+        self.call = None
+        self.calls = []
+        self.rows = {}
+        self.result = None
+
+    def by_request(self, key):
+        return next((row for row in self.rows.values() if row["request_key_sha256"] == key), None)
+
+    def get(self, identity):
+        return self.rows.get(identity)
+
+    def start(self, **fields):
+        from agent.automation_plugins.direct_invocation import public_invocation
+        invocation = fields["invocation"]
+        key = canonical_sha256([fields["source"], fields["actor_id"], "automation." + invocation.automation_id + ".run", fields["request_key"]])
+        replay = self.by_request(key)
+        if replay is not None:
+            return public_invocation(replay)
+        with self.policy_repository.unit_of_work() as uow:
+            fields["admission_guard"](uow)
+            if self.policy_repository.state.fail_gateway_create_after_guard:
+                raise InvalidStateError("synthetic direct invocation create failure")
+            uow.commit()
+        preview_id = fields.get("preview_invocation_id")
+        if preview_id is not None and self.rows[preview_id].get("preview_consumed_by"):
+            from shared.orchestration_repository_support import IdempotencyConflict
+            raise IdempotencyConflict("preview was already consumed")
+        self.call = SimpleNamespace(**fields)
+        self.calls.append(self.call)
+        identity = str(uuid4())
+        if preview_id is not None:
+            self.rows[preview_id]["preview_consumed_by"] = identity
+        row = {"invocation_id": identity, "request_id": invocation.request_id,
+            "request_key_sha256": canonical_sha256([fields["source"], fields["actor_id"], "automation." + invocation.automation_id + ".run", fields["request_key"]]),
+            "automation_id": invocation.automation_id, "generation": invocation.automation_generation,
+            "arguments_json": dict(fields["arguments"]), "invocation_json": invocation.to_dict(),
+            "actor_id": fields["actor_id"], "preview_invocation_id": fields.get("preview_invocation_id"),
+            "status": "STARTING", "result_json": None}
+        self.rows[identity] = row
+        return public_invocation(row)
+
+    async def wait(self, identity, *, timeout_seconds=None):
+        from agent.automation_plugins.direct_invocation import public_invocation
+        self.waited = identity, timeout_seconds
+        return self.result or public_invocation({**self.rows[identity], "status": "COMPLETED",
+            "result_json": {"status": "SUCCESS", "data": {}, "error": None}})
+
+
 class AutomationProjectPolicyServiceTestBase(TestCase):
     def setUp(self) -> None:
         self.repository = _Repository()
         self.contract = _contract()
-        self.entry = SimpleNamespace(automation_id=AUTOMATION_ID)
+        self.entry = SimpleNamespace(automation_id=AUTOMATION_ID, runtime_model="ACTION_V1", plugin_id="policy_fixture", committed_snapshot={})
+        self.direct = _DirectCalls(self.repository)
+        def capability(_snapshot):
+            return {"name": self.contract.tool_name, "operation_type": self.contract.operation_type,
+                "input_schema": {"type": "object", "additionalProperties": True},
+                "permissions": {"required_roles": ["admin"]}, "approval": {"mode": "required"},
+                "_plugin_runtime": {"automation_id": self.entry.automation_id,
+                    "plugin_id": self.entry.plugin_id, "runtime_model": self.entry.runtime_model}}
+        self.addCleanup(patch.stopall)
+        patch("agent.orchestration.direct_project_invocation.project_capability_from_snapshot", side_effect=capability).start()
+        patch("agent.orchestration.direct_project_invocation.PluginExecutionRouter._service_contribution_capability", side_effect=lambda capability, **_: capability).start()
         self.gateway = _Gateway(self.repository)
         self.woken_run_ids: list[str] = []
         self.service = AutomationProjectPolicyService(
@@ -871,6 +935,7 @@ class AutomationProjectPolicyServiceTestBase(TestCase):
             plugin_catalog=_Catalog(self.entry),
             command_gateway=self.gateway,
             wake_runner=self.woken_run_ids.append,
+            direct_invocations=self.direct,
         )
         self.service._load_contract = lambda _automation_id: (  # type: ignore[method-assign]
             self.entry,
@@ -893,6 +958,7 @@ class AutomationProjectPolicyServiceTestBase(TestCase):
             plugin_catalog=_Catalog(self.entry),
             command_gateway=self.gateway,
             wake_runner=self.woken_run_ids.append,
+            direct_invocations=self.direct,
             contribution_registry=registry,
         )
         service._load_contract = lambda _automation_id: (  # type: ignore[method-assign]

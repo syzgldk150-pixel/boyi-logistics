@@ -18,6 +18,7 @@ from agent.business_query import (
     _china_day_bounds,
 )
 from agent.core import AgentCore
+from agent.direct_readers import invoke_registered_reader
 from agent.direct_tool_router import (
     business_finance_request_from_text,
     business_operations_request_from_text,
@@ -39,7 +40,7 @@ from agent.orchestration.models import (
 from agent.orchestration.plan_validator import PlanValidator
 from agent.orchestration.planner import DeterministicPlanner
 from agent.orchestration.result_verifier import ResultVerifier
-from agent.tool_registry import ToolRegistry
+from agent.tool_registry import ToolRegistry, validate_schema_instance
 
 
 class _FinanceRepository:
@@ -58,11 +59,10 @@ class _FinanceRepository:
 class _OperationsRepository:
     def __init__(self, result=None, error: Exception | None = None) -> None:
         self.result = result if result is not None else {
-            "command_status_counts": {"ACCEPTED": 3, "REJECTED": 1},
-            "run_status_counts": {"COMPLETED": 2, "FAILED_TERMINAL": 1, "RUNNING": 1},
+            "invocation_status_counts": {"COMPLETED": 2, "FAILED": 1, "WRITE_OUTCOME_UNKNOWN": 1, "RUNNING": 1},
             "freshness": {
-                "latest_command_requested_at": "2026-08-25 10:00:00",
-                "latest_run_updated_at": "2026-08-25 10:01:00",
+                "latest_invocation_started_at": "2026-08-25 10:00:00",
+                "latest_invocation_updated_at": "2026-08-25 10:01:00",
             },
         }
         self.error = error
@@ -133,9 +133,8 @@ class AutomationOperationsQueryTests(unittest.TestCase):
             def execute(self, statement, params=()): self.connection.calls.append((statement, params))
             def fetchall(self):
                 statement = self.connection.calls[-1][0]
-                if "agent_commands" in statement and "GROUP BY" in statement: return [{"status": "ACCEPTED", "count": 1}]
-                if "agent_runs" in statement and "GROUP BY" in statement: return [{"status": "COMPLETED", "count": 1}]
-                return [{"latest_command_requested_at": dt.datetime(2026, 8, 25, 9), "latest_run_updated_at": dt.datetime(2026, 8, 25, 10)}]
+                if "automation_plugin_invocations" in statement and "GROUP BY" in statement: return [{"status": "COMPLETED", "count": 1}]
+                return [{"latest_invocation_started_at": dt.datetime(2026, 8, 25, 9), "latest_invocation_updated_at": dt.datetime(2026, 8, 25, 10)}]
             def close(self): pass
 
         class Connection:
@@ -149,7 +148,9 @@ class AutomationOperationsQueryTests(unittest.TestCase):
         )
         self.assertEqual(connection.calls[0][0], "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
         self.assertEqual(connection.calls[1][1], (dt.datetime(2026, 8, 24, 16), dt.datetime(2026, 8, 25, 16)))
-        self.assertEqual(raw["command_status_counts"], {"ACCEPTED": 1})
+        self.assertEqual(raw["invocation_status_counts"], {"COMPLETED": 1})
+        self.assertEqual(len(connection.calls), 3)
+        self.assertTrue(all("automation_plugin_invocations" in statement for statement, _ in connection.calls[1:]))
 
     def test_closed_date_range_returns_actual_status_counts_success_rate_and_freshness(self):
         repository = _OperationsRepository()
@@ -157,9 +158,10 @@ class AutomationOperationsQueryTests(unittest.TestCase):
             {"start_date": "2026-08-01", "end_date": "2026-08-25"}
         )
 
-        self.assertEqual(result["commands"]["status_counts"], {"ACCEPTED": 3, "REJECTED": 1})
-        self.assertEqual(result["runs"]["success_rate"], {"completed_runs": 2, "terminal_runs": 3, "value": "0.6667"})
-        self.assertEqual(result["freshness"]["latest_run_updated_at"], "2026-08-25 10:01:00Z")
+        self.assertEqual(result["record_source"], "automation_plugin_invocations")
+        self.assertEqual(result["invocations"]["status_counts"], repository.result["invocation_status_counts"])
+        self.assertEqual(result["invocations"]["success_rate"], {"completed_invocations": 2, "terminal_invocations": 4, "value": "0.5000"})
+        self.assertEqual(result["freshness"]["latest_invocation_updated_at"], "2026-08-25T10:01:00Z")
         self.assertEqual(repository.queries, [(dt.date(2026, 8, 1), dt.date(2026, 8, 25))])
 
     def test_operations_query_rejects_extra_fields_and_fails_explicitly_when_unavailable(self):
@@ -183,34 +185,54 @@ class AutomationOperationsQueryTests(unittest.TestCase):
                 ),
             }
         )
-        self.assertIn("终态成功率：0.6667", reply)
-        self.assertIn("最新命令请求：2026-08-25 10:00:00Z", reply)
+        self.assertIn("终态成功率：0.5000", reply)
+        self.assertIn("写入结果未确认 1", reply)
+        self.assertIn("最近开始执行：2026-08-25T10:00:00Z", reply)
+        self.assertNotIn("命令", reply)
 
     def test_operations_direct_runner_is_registered_tool_contract_compatible(self):
         catalog = ToolRegistry()
         service = AutomationOperationsQueryService(_OperationsRepository())
-        step = PlanStep(
-            step_key="automation-operations-query",
-            tool_name="query_automation_operations",
-            tool_version="1.0.0",
-            operation_type=OperationType.READ,
-            arguments={"start_date": "2026-08-01", "end_date": "2026-08-25"},
-            account_id=None,
-            depends_on=(),
-            idempotency_key="automation-operations-query-1",
-            expected_evidence=(),
-            postconditions=({"name": "authoritative_result_returned"},),
-            risk_level=RiskLevel.LOW,
-            requires_approval=False,
-        )
         result = asyncio.run(
-            RegisteredToolExecutionAdapter(
-                catalog=catalog, executor=object(), direct_runners={"query_automation_operations": service.run}
-            ).execute_step(step, run_id="run-operations", step_id="step-operations", execution_context={"source": "console"})
+            invoke_registered_reader(
+                catalog=catalog, name="query_automation_operations", handler=service.run,
+                arguments={"start_date": "2026-08-01", "end_date": "2026-08-25"},
+                actor=Actor(ActorType.FEISHU_USER, "bound-admin", roles=("admin",), authenticated_by="feishu_admin_binding"),
+                source="feishu", llm_selected=True,
+            )
         )
-        outcome = ResultVerifier().verify(step, result, catalog.get_capability("query_automation_operations"))
-        self.assertEqual(result["status"], "SUCCESS")
-        self.assertTrue(outcome.accepted)
+        self.assertTrue(result["success"])
+        validate_schema_instance(
+            "query_automation_operations output",
+            {"status": "SUCCESS", "data": result["data"], "meta": {}, "warnings": [], "error": None},
+            catalog.get_capability("query_automation_operations")["output_schema"],
+        )
+
+    def test_formatter_rejects_old_contract_and_corrupted_current_totals(self):
+        service = AutomationOperationsQueryService(_OperationsRepository())
+        payload = service.run({"start_date": "2026-08-01", "end_date": "2026-08-25"})
+        bad_payloads = [
+            {"query_type": "automation_operations", "commands": {}, "runs": {}},
+            payload | {"availability": "NO_DATA"},
+            payload | {"record_source": "agent_runs"},
+            payload | {"invocations": payload["invocations"] | {"total": True}},
+            payload | {"invocations": payload["invocations"] | {"success_rate": {"completed_invocations": 2, "terminal_invocations": 4, "value": "1.0000"}}},
+        ]
+        for bad in bad_payloads:
+            with self.subTest(payload=bad):
+                self.assertIn("结果校验失败", format_automation_operations_reply({"success": True, "data": bad}))
+
+    def test_unrecognized_status_or_missing_freshness_is_not_reported_as_no_data(self):
+        for changed in (
+            {"invocation_status_counts": {"FAILED_TERMINAL": 1}},
+            {"freshness": {"latest_invocation_started_at": None, "latest_invocation_updated_at": None}},
+            {"freshness": {"latest_invocation_started_at": "not-a-time", "latest_invocation_updated_at": "not-a-time"}},
+        ):
+            with self.subTest(changed=changed), self.assertRaises(BusinessQueryError) as invalid:
+                AutomationOperationsQueryService(_OperationsRepository(_OperationsRepository().result | changed)).run(
+                    {"start_date": "2026-08-01", "end_date": "2026-08-25"}
+                )
+            self.assertEqual(invalid.exception.code, "AUTOMATION_OPERATIONS_CONTRACT_INVALID")
 
 
 class BusinessFinanceQueryTests(unittest.TestCase):

@@ -175,6 +175,24 @@ def test_recent_failed_collection_keeps_published_history(database):
         assert result["rows"][0]["problem_text"] == "上次已发布历史"
         assert result["errors"][0]["error_code"] == "AUTH_REQUIRED"
         assert result["source_statuses"][0]["collection_status"] == "FAILED_TERMINAL"
+        assert result["source_statuses"][0]["collection_origin"] == "historical_run"
+        # Current calls take precedence over old queue history, including a
+        # newer successful call after a failed one, without changing the data.
+        for status, error in (("FAILED", "SOURCE_UNAVAILABLE"), ("COMPLETED", None)):
+            invocation_id = str(uuid4())
+            cursor.execute("""INSERT INTO automation_plugin_invocations
+                (invocation_id,request_key_sha256,request_sha256,request_id,automation_id,
+                 operation,source,actor_id,owner_id,status,invocation_json,arguments_json,
+                 error_code,started_at,finished_at,updated_at)
+                VALUES(%s,%s,%s,%s,%s,'collect','console','synthetic-admin',%s,%s,'{}','{}',%s,
+                    UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))""",
+                (invocation_id, uuid4().hex * 2, "a" * 64, invocation_id, producer, str(uuid4()), status, error))
+            result = CustomerServiceRepository(connection).query(source_ids=[source["source_id"]])
+            assert result["rows"][0]["problem_text"] == "上次已发布历史"
+            assert result["source_statuses"][0]["collection_status"] == status
+            assert result["source_statuses"][0]["collection_origin"] == "invocation"
+            assert result["source_statuses"][0]["collection_id"] == invocation_id
+            assert [item["error_code"] for item in result["errors"]] == ([error] if error else [])
         json.dumps(result)
         connection.rollback()
 
@@ -282,7 +300,7 @@ def test_host_observed_customer_identity_parser_publication_and_local_query(data
     from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
     from agent.automation_plugins.first_party_handlers import FirstPartyCoreHandlerPorts, build_first_party_core_handler_map
     from agent.automation_plugins.models import GenerationVerificationContext
-    from agent.orchestration.customer_source_projection import publish_customer_collection
+    from agent.customer_source_projection import publish_customer_collection
     from tests.first_party_action_payload_support import load_first_party_action
 
     fixture, name = database

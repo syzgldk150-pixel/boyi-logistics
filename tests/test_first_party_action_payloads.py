@@ -2601,7 +2601,7 @@ def test_yunda_send_runs_router_to_write_verifier_with_exact_bindings(
             "readback_sha256": "e" * 64,
         }
 
-    def projection(records, target_date):
+    def projection(records, target_date, descriptor):
         primitive_calls.append(("projection", len(records), target_date))
         return {
             "ok": True,

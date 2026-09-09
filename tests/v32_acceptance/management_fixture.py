@@ -71,10 +71,11 @@ QUERY_LOCK = threading.Lock()
 def e2e_fixture_lock(*, exclusive=False):
     """Hold shared use, or exclusive reset, of this dedicated E2E fixture."""
     import fcntl
+    from tests.v32_acceptance.owned_database import ISOLATED_MYSQL_PORTS
 
     if (os.environ.get("AGENT_DB_NAME") != "v32_e2e_test"
             or os.environ.get("AGENT_DB_HOST") != "127.0.0.1"
-            or os.environ.get("AGENT_DB_PORT") != "33326"
+            or int(os.environ.get("AGENT_DB_PORT", "0")) not in ISOLATED_MYSQL_PORTS
             or TASK_ENV.resolve() != TASK_ENV):
         raise RuntimeError("E2E runtime lock requires its exact owned environment")
     TASK_ENV.mkdir(parents=True, exist_ok=True)

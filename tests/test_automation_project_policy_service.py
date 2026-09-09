@@ -72,6 +72,32 @@ from tests.automation_project_policy_service_support import (
 
 
 class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase):
+    def _completed_selection_preview(self, service, request_id="selection-read"):
+        receipt = service.invoke_selection_preview(AUTOMATION_ID, request_id=request_id, actor=_admin())
+        row = self.direct.rows[receipt["invocation_id"]]
+        row.update(status="COMPLETED", result_json={"status": "SUCCESS", "error": None,
+            "meta": {"observed_at": datetime.now(timezone.utc).isoformat()},
+            "data": {"dry_run": True, "candidate_count": 1,
+                "candidates": [{"bill_code": "R0001"}], "preview_fingerprint": "f" * 64}})
+        return receipt["invocation_id"]
+
+    def _assert_history_independent(self, statuses, facts=None, *, fail_create=False):
+        self.repository.state.automation_runs = [{"run_id": f"legacy-{index}", "status": status} for index, status in enumerate(statuses)]
+        self.repository.state.automation_run_facts = {row["run_id"]: dict(facts or {}) for row in self.repository.state.automation_runs}
+        self.repository.state.fail_gateway_create_after_guard = fail_create
+        before = copy.deepcopy(self.repository.state.__dict__)
+        if fail_create:
+            with self.assertRaises(InvalidStateError):
+                self.service.invoke_console(AUTOMATION_ID, request_id="direct-create", actor=_admin())
+            self.assertEqual({}, self.direct.rows)
+        else:
+            receipt = self.service.invoke_console(AUTOMATION_ID, request_id="direct-create", actor=_admin())
+            self.assertIn("invocation_id", receipt)
+            self.assertNotIn("run_id", receipt)
+        self.assertEqual(before, self.repository.state.__dict__)
+        self.assertIsNone(self.gateway.command)
+        self.assertEqual([], self.woken_run_ids)
+
     def test_list_scope_filters_before_contract_projection_and_unknown_ids_are_empty(self):
         def no_full_catalog():
             raise AssertionError("scoped list must not construct unrelated catalog entries")
@@ -85,247 +111,51 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             self.service.list_policies(automation_ids=[AUTOMATION_ID, AUTOMATION_ID])
 
     def test_console_invoke_builds_only_server_owned_project_identity(self):
-        receipt = self.service.invoke_console(
-            AUTOMATION_ID,
-            request_id="request-console",
-            actor=_admin(),
-        )
+        receipt = self.service.invoke_console(AUTOMATION_ID, request_id="request-console", actor=_admin())
+        self.assertIn("invocation_id", receipt)
+        self.assertNotIn("run_id", receipt)
+        self.assertIsNone(self.gateway.command)
+        self.assertEqual({"mode": "saved"}, self.direct.call.arguments)
+        self.assertEqual(1, self.direct.call.invocation.automation_generation)
+        self.assertEqual(CONTRACT_HASH, self.direct.call.invocation.contract_hash)
 
-        self.assertEqual("run-invoke", receipt.run_id)
-        command = self.gateway.command
-        self.assertIsNotNone(command)
-        self.assertEqual("automation.project.invoke", command.command_type)
-        self.assertEqual({"mode": "saved"}, command.parameters["arguments"])
-        self.assertEqual(1, command.automation_invocation.automation_generation)
-        self.assertEqual(CONTRACT_HASH, command.automation_invocation.contract_hash)
+    def test_legacy_unfinished_run_does_not_block_direct_invocation(self):
+        self._assert_history_independent(("RUNNING",), {"has_inflight_step": True, "has_live_generation_lease": True})
 
-    def test_distinct_project_invocation_is_rejected_while_a_run_is_unfinished(self):
-        self.repository.state.active_automation_run = {
-            "run_id": "run-active",
-            "status": "RUNNING",
-            "worker_id": "active-worker",
-            "lease_expires_at": datetime.now(timezone.utc) + timedelta(minutes=5),
-        }
-        self.repository.state.automation_run_facts = {
-            "run-active": {"has_inflight_step": True},
-        }
-
-        with self.assertRaises(OrchestrationError) as raised:
-            self.service.invoke_console(
-                AUTOMATION_ID,
-                request_id="request-second",
-                actor=_admin(),
-            )
-
-        self.assertEqual("AUTOMATION_ALREADY_RUNNING", raised.exception.code)
-        self.assertEqual("该脚本存在未结束任务", raised.exception.message)
-        self.assertEqual(
-            {
-                "blocking_kind": "ACTIVE",
-                "active_run_id": "run-active",
-                "active_status": "RUNNING",
-                "blocking_count": 1,
-            },
-            raised.exception.details,
-        )
+    def test_second_distinct_request_cannot_cancel_a_just_accepted_invocation(self):
+        first = self.service.invoke_console(AUTOMATION_ID, request_id="first", actor=_admin())
+        saved = copy.deepcopy(self.direct.rows[first["invocation_id"]])
+        second = self.service.invoke_console(AUTOMATION_ID, request_id="second", actor=_admin())
+        self.assertNotEqual(first["invocation_id"], second["invocation_id"])
+        self.assertEqual(saved, self.direct.rows[first["invocation_id"]])
+        self.assertEqual([], self.repository.state.domain_events)
         self.assertIsNone(self.gateway.command)
 
-    def test_second_distinct_request_cannot_cancel_a_just_accepted_command(self):
-        first = self.service.invoke_console(
-            AUTOMATION_ID,
-            request_id="request-first",
-            actor=_admin(),
-        )
-        first_command = self.gateway.command
-        self.repository.state.automation_runs = [
-            {
-                "run_id": first.run_id,
-                "work_item_id": first.work_item_id,
-                "command_id": first.command_id,
-                "status": "RECEIVED",
-            },
-        ]
-
-        with self.assertRaises(OrchestrationError) as raised:
-            self.service.invoke_console(
-                AUTOMATION_ID,
-                request_id="request-second-distinct-key",
-                actor=_admin(),
-            )
-
-        self.assertEqual("AUTOMATION_ALREADY_RUNNING", raised.exception.code)
-        self.assertEqual("ACTIVE", raised.exception.details["blocking_kind"])
-        self.assertEqual("RECEIVED", self.repository.state.automation_runs[0]["status"])
-        self.assertIs(first_command, self.gateway.command)
-        self.assertEqual([], self.repository.state.domain_events)
-
     def test_acceptance_locks_project_and_avoids_absent_idempotency_gap_locks(self):
-        self.service.invoke_console(
-            AUTOMATION_ID,
-            request_id="request-lock-order",
-            actor=_admin(),
-        )
+        with patch.object(self.service, "_lock_and_compile_contract", wraps=self.service._lock_and_compile_contract) as guard:
+            receipt = self.service.invoke_console(AUTOMATION_ID, request_id="guard", actor=_admin())
+        guard.assert_called_once()
+        self.assertTrue(guard.call_args.kwargs["require_enabled"])
+        self.assertIn(receipt["invocation_id"], self.direct.rows)
+        self.assertEqual([], self.repository.state.acceptance_lock_trace)
+        self.assertIsNone(self.gateway.command)
 
-        self.assertEqual(
-            ["project:lock", "idempotency:plain", "unfinished:scan"],
-            self.repository.state.acceptance_lock_trace,
-        )
-        self.assertNotIn(
-            "idempotency:lock",
-            self.repository.state.acceptance_lock_trace,
-        )
+    def test_legacy_preclaim_queue_states_do_not_block_a_direct_request(self):
+        self._assert_history_independent(("RECEIVED", "CONTEXT_READY", "PLANNED", "VALIDATED"))
 
-    def test_every_durable_preclaim_queue_state_blocks_a_distinct_request(self):
-        for status in ("RECEIVED", "CONTEXT_READY", "PLANNED", "VALIDATED"):
-            with self.subTest(status=status):
-                run_id = f"queued-{status.lower()}"
-                self.repository.state.automation_runs = [
-                    {"run_id": run_id, "status": status},
-                ]
-                self.repository.state.automation_run_facts = {}
-                with self.assertRaises(OrchestrationError) as raised:
-                    self.service.invoke_console(
-                        AUTOMATION_ID,
-                        request_id=f"request-during-{status.lower()}",
-                        actor=_admin(),
-                    )
-                self.assertEqual(
-                    "ACTIVE",
-                    raised.exception.details["blocking_kind"],
-                )
-                self.assertEqual(
-                    status,
-                    self.repository.state.automation_runs[0]["status"],
-                )
+    def test_suspended_history_is_preserved_by_new_invocation(self):
+        self._assert_history_independent(("BLOCKED_DATA", "FAILED_RETRYABLE", "WAITING_APPROVAL"))
 
-    def test_safe_suspended_runs_are_atomically_superseded_by_new_invocation(self):
-        self.repository.state.automation_runs = [
-            {"run_id": "run-old-1", "status": "NEEDS_CLARIFICATION"},
-            {"run_id": "run-old-2", "status": "BLOCKED_DATA"},
-        ]
+    def test_failed_invocation_creation_preserves_suspended_history(self):
+        self._assert_history_independent(("BLOCKED_DATA", "FAILED_RETRYABLE"), fail_create=True)
 
-        receipt = self.service.invoke_console(
-            AUTOMATION_ID,
-            request_id="request-successor",
-            actor=_admin(),
-        )
+    def test_direct_invocation_preserves_legacy_approval_and_delivery(self):
+        self.repository.state.pending = [_pending("approval-history", _invocation())]
+        self._assert_history_independent(("WAITING_APPROVAL",))
 
-        self.assertEqual("run-invoke", receipt.run_id)
-        self.assertEqual(
-            ["CANCELLED", "CANCELLED"],
-            [row["status"] for row in self.repository.state.automation_runs],
-        )
-        self.assertTrue(
-            all(
-                item["status"] == "CANCELLED"
-                for item in self.repository.state.work_items.values()
-            )
-        )
-        self.assertTrue(
-            all(
-                item["resolution_json"]["successor_run_id"] == "run-invoke"
-                for item in self.repository.state.work_items.values()
-            )
-        )
-        self.assertEqual(
-            [
-                "agent.run.status_changed",
-                "work_item.superseded_by_new_invocation",
-                "agent.run.status_changed",
-                "work_item.superseded_by_new_invocation",
-            ],
-            [row["event_type"] for row in self.repository.state.domain_events],
-        )
-        self.assertTrue(
-            all(
-                row["payload"]["successor_run_id"] == "run-invoke"
-                and row["payload"]["successor_command_id"]
-                == self.gateway.command.command_id
-                for row in self.repository.state.domain_events
-            )
-        )
-        self.assertEqual(4, len(self.repository.state.outbox_events))
-
-    def test_supersession_and_a_failed_successor_create_roll_back_together(self):
-        self.repository.state.automation_runs = [
-            {"run_id": "run-old", "status": "BLOCKED_LOGIN"},
-        ]
-        self.repository.state.fail_gateway_create_after_guard = True
-
-        with self.assertRaises(InvalidStateError):
-            self.service.invoke_console(
-                AUTOMATION_ID,
-                request_id="request-fails-after-guard",
-                actor=_admin(),
-            )
-
-        self.assertEqual(
-            "BLOCKED_LOGIN",
-            self.repository.state.automation_runs[0]["status"],
-        )
-        self.assertEqual([], self.repository.state.domain_events)
-        self.assertEqual([], self.repository.state.outbox_events)
-
-    def test_waiting_approval_supersession_invalidates_delivery_atomically(self):
-        approval = _pending("approval-old", _invocation())
-        self.repository.state.pending = [approval]
-        self.repository.state.automation_runs = [
-            {
-                "run_id": approval["run_id"],
-                "work_item_id": approval["work_item_id"],
-                "status": "WAITING_APPROVAL",
-            }
-        ]
-
-        self.service.invoke_console(
-            AUTOMATION_ID,
-            request_id="request-after-approval",
-            actor=_admin(),
-        )
-
-        self.assertEqual("INVALIDATED", self.repository.state.pending[0]["status"])
-        self.assertEqual(
-            [
-                "agent.approval.invalidated",
-                "agent.run.status_changed",
-                "work_item.superseded_by_new_invocation",
-            ],
-            [event["event_type"] for event in self.repository.state.domain_events],
-        )
-        self.assertEqual(
-            ["orchestration.audit", "feishu.approval"],
-            [
-                row["consumer_name"]
-                for row in self.repository.state.outbox_events[:2]
-            ],
-        )
-
-    def test_waiting_approval_invalidation_rolls_back_with_successor_failure(self):
-        approval = _pending("approval-rollback", _invocation())
-        self.repository.state.pending = [approval]
-        self.repository.state.automation_runs = [
-            {
-                "run_id": approval["run_id"],
-                "work_item_id": approval["work_item_id"],
-                "status": "WAITING_APPROVAL",
-            }
-        ]
-        self.repository.state.fail_gateway_create_after_guard = True
-
-        with self.assertRaises(InvalidStateError):
-            self.service.invoke_console(
-                AUTOMATION_ID,
-                request_id="request-approval-rollback",
-                actor=_admin(),
-            )
-
-        self.assertNotIn("status", self.repository.state.pending[0])
-        self.assertEqual(
-            "WAITING_APPROVAL",
-            self.repository.state.automation_runs[0]["status"],
-        )
-        self.assertEqual([], self.repository.state.domain_events)
-        self.assertEqual([], self.repository.state.outbox_events)
+    def test_failed_invocation_preserves_legacy_approval_and_delivery(self):
+        self.repository.state.pending = [_pending("approval-history", _invocation())]
+        self._assert_history_independent(("WAITING_APPROVAL",), fail_create=True)
 
     def test_stopped_retry_history_is_preserved_without_blocking_a_new_command(self):
         self.repository.state.automation_runs = [
@@ -337,42 +167,11 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             request_id="request-after-failed-retry",
             actor=_admin(),
         )
-        self.assertNotEqual("run-retry", receipt.run_id)
+        self.assertNotEqual("run-retry", receipt["invocation_id"])
         self.assertEqual("FAILED_RETRYABLE", self.repository.state.automation_runs[0]["status"])
 
-    def test_safe_status_with_live_lease_remains_active(self):
-        active_cases = (
-            (
-                {
-                    "worker_id": "worker-one",
-                    "lease_expires_at": datetime.now(timezone.utc)
-                    + timedelta(minutes=5),
-                },
-                {},
-            ),
-            ({}, {"has_live_generation_lease": True}),
-        )
-        for index, (run_values, facts) in enumerate(active_cases):
-            with self.subTest(index=index):
-                run_id = f"run-active-safe-status-{index}"
-                self.repository.state.automation_runs = [
-                    {
-                        "run_id": run_id,
-                        "status": "BLOCKED_DATA",
-                        **run_values,
-                    },
-                ]
-                self.repository.state.automation_run_facts = {run_id: facts}
-                with self.assertRaises(OrchestrationError) as raised:
-                    self.service.invoke_console(
-                        AUTOMATION_ID,
-                        request_id=f"request-active-case-{index}",
-                        actor=_admin(),
-                    )
-                self.assertEqual(
-                    "ACTIVE",
-                    raised.exception.details["blocking_kind"],
-                )
+    def test_historical_lease_fields_do_not_reserve_current_process_resources(self):
+        self._assert_history_independent(("BLOCKED_DATA",), {"has_live_generation_lease": True})
 
     def test_stale_inflight_step_without_a_lease_does_not_block_a_new_command(self):
         for status in ("RUNNING", "VERIFYING", "FAILED_RETRYABLE", "BLOCKED_DATA"):
@@ -385,7 +184,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                     receipt = self.service.invoke_console(
                         AUTOMATION_ID, request_id=f"new-{status}-{unknown}", actor=_admin(),
                     )
-                    self.assertNotEqual(run_id, receipt.run_id)
+                    self.assertNotEqual(run_id, receipt["invocation_id"])
                     self.assertEqual(facts, self.repository.state.automation_run_facts[run_id])
                     if unknown:
                         self.assertEqual(status, self.repository.state.automation_runs[0]["status"])
@@ -403,31 +202,9 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                         expected = "ACTIVE" if lease != "expired" else ("UNKNOWN_WRITE" if unknown else "NEEDS_ATTENTION")
                         self.assertEqual(expected, classify_automation_run_blocking_kind(run, {}, facts, now=now))
 
-    def test_stale_nonterminal_work_item_status_is_cancelled_without_blocking(self):
-        self.repository.state.automation_runs = [
-            {"run_id": "run-mismatch", "status": "BLOCKED_DATA"},
-        ]
-        self.repository.state.work_items = {
-            "work-run-mismatch": {
-                "work_item_id": "work-run-mismatch",
-                "command_id": "command-run-mismatch",
-                "status": "OPEN",
-                "version": 1,
-            }
-        }
-
-        receipt = self.service.invoke_console(
-            AUTOMATION_ID,
-            request_id="request-mismatch",
-            actor=_admin(),
-        )
-
-        self.assertEqual("run-invoke", receipt.run_id)
-        self.assertEqual("CANCELLED", self.repository.state.automation_runs[0]["status"])
-        self.assertEqual(
-            "CANCELLED",
-            self.repository.state.work_items["work-run-mismatch"]["status"],
-        )
+    def test_stale_work_item_is_preserved_without_blocking(self):
+        self.repository.state.work_items = {"legacy-work": {"status": "OPEN", "version": 1}}
+        self._assert_history_independent(("BLOCKED_DATA",))
 
     def test_stopped_verified_write_history_is_preserved_without_blocking(self):
         self.repository.state.automation_runs = [
@@ -443,15 +220,12 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             actor=_admin(),
         )
 
-        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertIn("invocation_id", receipt)
         self.assertEqual(
             "BLOCKED_DATA",
             self.repository.state.automation_runs[0]["status"],
         )
-        self.assertEqual(
-            "BLOCKED_DATA",
-            self.repository.state.work_items["work-run-protected"]["status"],
-        )
+        self.assertEqual({}, self.repository.state.work_items)
         self.assertEqual(
             {"has_protected_write_receipt": True},
             self.repository.state.automation_run_facts["run-protected"],
@@ -472,7 +246,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                 }
                 receipt = self.service.invoke_console(AUTOMATION_ID,
                     request_id=f"request-write-{next(iter(facts))}", actor=_admin())
-                self.assertNotEqual("run-write", receipt.run_id)
+                self.assertNotEqual("run-write", receipt["invocation_id"])
                 self.assertEqual(
                     "BLOCKED_DATA",
                     self.repository.state.automation_runs[0]["status"],
@@ -481,7 +255,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                     facts,
                     self.repository.state.automation_run_facts["run-write"],
                 )
-                self.assertEqual("BLOCKED_DATA", self.repository.state.work_items["work-run-write"]["status"])
+                self.assertEqual({}, self.repository.state.work_items)
                 self.assertEqual([], self.repository.state.domain_events)
                 self.assertNotIn("run-write", self.woken_run_ids)
 
@@ -492,6 +266,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             core_catalog=SimpleNamespace(),
             plugin_catalog=_Catalog(self.entry),
             command_gateway=self.gateway,
+            direct_invocations=self.direct,
             wake_runner=self.woken_run_ids.append,
             unknown_write_recovery=lambda automation_id, request_id: (
                 recovery_calls.append((automation_id, request_id))
@@ -511,7 +286,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         }
 
         receipt = service.invoke_console(AUTOMATION_ID, request_id="request-readback", actor=_admin())
-        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertIn("invocation_id", receipt)
         self.assertEqual([], recovery_calls)
         self.assertEqual(
             "BLOCKED_DATA",
@@ -520,125 +295,27 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         # The gateway owns new-command wakeup; policy must not wake the old Run.
         self.assertEqual([], self.woken_run_ids)
 
-    def test_unknown_history_with_live_execution_still_blocks_new_command(self):
-        self.repository.state.automation_runs = [{
-            "run_id": "run-live-write", "status": "BLOCKED_DATA",
-            "worker_id": "live-worker",
-            "lease_expires_at": datetime.now(timezone.utc) + timedelta(minutes=5),
-        }]
-        self.repository.state.automation_run_facts = {
-            "run-live-write": {"has_unknown_write_receipt": True},
-        }
-        with self.assertRaises(OrchestrationError) as blocked:
-            self.service.invoke_console(AUTOMATION_ID, request_id="request-live-unknown", actor=_admin())
-        self.assertEqual("ACTIVE", blocked.exception.details["blocking_kind"])
-        self.assertIsNone(self.gateway.command)
+    def test_historical_unknown_lease_does_not_block_current_invocation(self):
+        self._assert_history_independent(("BLOCKED_DATA",), {"has_live_generation_lease": True, "has_unknown_write_receipt": True})
 
-    def test_orphaned_running_status_without_live_facts_is_safely_cancelled(self):
-        self.repository.state.automation_runs = [
-            {"run_id": "run-orphan", "status": "RUNNING"},
-        ]
+    def test_orphaned_historical_run_is_preserved_without_blocking(self):
+        self._assert_history_independent(("RUNNING",))
 
-        receipt = self.service.invoke_console(
-            AUTOMATION_ID,
-            request_id="request-after-orphan",
-            actor=_admin(),
-        )
+    def test_more_than_one_hundred_history_rows_remain_unchanged(self):
+        self._assert_history_independent(tuple("BLOCKED_DATA" for _ in range(150)))
 
-        self.assertEqual("run-invoke", receipt.run_id)
-        self.assertEqual(
-            "CANCELLED",
-            self.repository.state.automation_runs[0]["status"],
-        )
-
-    def test_unfinished_history_cancels_at_most_one_hundred_without_rejection(self):
-        self.repository.state.automation_runs = [
-            {"run_id": f"run-{index}", "status": "BLOCKED_DATA"}
-            for index in range(101)
-        ]
-        retry_at = datetime(2026, 8, 30, 1, 2, 3)
-        self.repository.state.automation_runs[0]["next_attempt_at"] = retry_at
-
-        receipt = self.service.invoke_console(
-            AUTOMATION_ID,
-            request_id="request-over-limit",
-            actor=_admin(),
-        )
-
-        self.assertEqual("run-invoke", receipt.run_id)
-        self.assertEqual(
-            100,
-            sum(
-                row["status"] == "CANCELLED"
-                for row in self.repository.state.automation_runs
-            ),
-        )
-        self.assertEqual(
-            1,
-            sum(
-                row["status"] == "BLOCKED_DATA"
-                for row in self.repository.state.automation_runs
-            ),
-        )
-        self.assertEqual(retry_at, self.repository.state.automation_runs[0]["next_attempt_at"])
-
-    def test_live_blocker_after_more_than_one_hundred_history_rows_is_prioritized(self):
-        self.repository.state.automation_runs = [
-            {"run_id": f"run-{index}", "status": "BLOCKED_DATA"}
-            for index in range(100)
-        ] + [{"run_id": "run-new-queued", "status": "RECEIVED"}]
-
-        with self.assertRaises(OrchestrationError) as raised:
-            self.service.invoke_console(
-                AUTOMATION_ID,
-                request_id="request-with-late-new-command",
-                actor=_admin(),
-            )
-
-        self.assertEqual("ACTIVE", raised.exception.details["blocking_kind"])
-        self.assertTrue(
-            all(
-                row["status"] != "CANCELLED"
-                for row in self.repository.state.automation_runs
-            )
-        )
+    def test_history_size_and_old_lease_do_not_change_current_admission(self):
+        self._assert_history_independent(tuple("BLOCKED_DATA" for _ in range(150)) + ("RUNNING",), {"has_live_generation_lease": True})
 
     def test_exact_request_replay_is_not_blocked_by_its_active_run(self):
-        request_id = "request-replay"
-        first = self.service.invoke_console(
-            AUTOMATION_ID,
-            request_id=request_id,
-            actor=_admin(),
-        )
-        first_command = self.gateway.command
-        self.contract = replace(
-            self.contract,
-            contract_hash="e" * 64,
-            project_configuration_version=2,
-        )
-        self.repository.state.active_automation_run = {
-            "run_id": first.run_id,
-            "work_item_id": first.work_item_id,
-            "command_id": first.command_id,
-            "status": "RUNNING",
-        }
-
-        replay = self.service.invoke_console(
-            AUTOMATION_ID,
-            request_id=request_id,
-            actor=_admin(),
-        )
-
-        self.assertEqual(first.command_id, replay.command_id)
-        self.assertEqual(first.work_item_id, replay.work_item_id)
-        self.assertEqual(first.run_id, replay.run_id)
-        self.assertTrue(replay.reused)
-        self.assertIs(first_command, self.gateway.command)
-        self.assertEqual(
-            "RUNNING",
-            self.repository.state.active_automation_run["status"],
-        )
-        self.assertEqual([], self.repository.state.domain_events)
+        first = self.service.invoke_console(AUTOMATION_ID, request_id="same-request", actor=_admin())
+        self.contract = replace(self.contract, contract_hash="e" * 64, project_configuration_version=2)
+        call = self.direct.call
+        replay = self.service.invoke_console(AUTOMATION_ID, request_id="same-request", actor=_admin())
+        self.assertEqual(first["invocation_id"], replay["invocation_id"])
+        self.assertIs(call, self.direct.call)
+        self.assertEqual(1, len(self.direct.rows))
+        self.assertIsNone(self.gateway.command)
 
     def test_same_idempotency_key_with_different_request_still_conflicts(self):
         key = "automation-replay-collision"
@@ -673,7 +350,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             contribution_id="run_now",
         )
 
-        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertIn("invocation_id", receipt)
         self.assertEqual(
             [
                 {
@@ -682,248 +359,65 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                     "contribution_kind": "console",
                     "contribution_id": "run_now",
                 }
-            ],
+            ] * 2,
             registry.calls,
         )
 
     def test_service_v2_selection_preview_is_host_owned_and_read_phase_bound(self):
         self._set_service_v2_selection_contract()
-        registry = _ContributionRegistry()
-        service = self._service_with_contribution_registry(registry)
-
-        receipt = service.invoke_selection_preview(
-            AUTOMATION_ID,
-            request_id="selection-preview",
-            actor=_admin(),
-        )
-
-        self.assertEqual("run-invoke", receipt.run_id)
-        command = self.gateway.command
-        self.assertEqual("execute_console", command.automation_invocation.contract_id)
-        self.assertEqual(
-            {
-                "mode": "saved",
-                "dry_run": True,
-                "selected_bill_codes": [],
-                "preview_fingerprint": "",
-            },
-            command.parameters["arguments"],
-        )
-        self.assertEqual(
-            "PREVIEW",
-            command.parameters["execution_context"]["selection_phase"],
-        )
-
-        with self.assertRaises(OrchestrationError) as raised:
-            service.invoke_console(
-                AUTOMATION_ID,
-                request_id="selection-direct",
-                actor=_admin(),
-                contribution_id="execute_console",
-            )
-        self.assertEqual("SELECTION_INPUT_INVALID", raised.exception.code)
+        service = self._service_with_contribution_registry(_ContributionRegistry())
+        receipt = service.invoke_selection_preview(AUTOMATION_ID, request_id="selection-preview", actor=_admin())
+        self.assertIn("invocation_id", receipt)
+        self.assertEqual("execute_console", self.direct.call.invocation.contract_id)
+        self.assertEqual({"mode": "saved", "dry_run": True, "selected_bill_codes": [], "preview_fingerprint": ""}, self.direct.call.arguments)
+        # A direct manual trigger also starts a read-only preview; it never
+        # invents a formal selection or writes without a completed preview.
+        service.invoke_console(AUTOMATION_ID, request_id="selection-direct", actor=_admin(), contribution_id="execute_console")
+        self.assertTrue(self.direct.call.arguments["dry_run"])
+        self.assertIsNone(self.gateway.command)
 
     def test_service_v2_selection_confirmation_replays_inside_and_after_ttl(self):
         self._set_service_v2_selection_contract()
-        registry = _ContributionRegistry()
-        service = self._service_with_contribution_registry(registry)
-        service._load_contract = (  # type: ignore[method-assign]
-            lambda _automation_id: self.fail(
-                "exact selection replay must precede current contract resolution"
-            )
-        )
-        now = datetime.now(timezone.utc)
-        cases = (
-            (
-                "11111111-1111-4111-8111-111111111111",
-                "selection-replay-active",
-                now - timedelta(minutes=5),
-            ),
-            (
-                "22222222-2222-4222-8222-222222222222",
-                "selection-replay-expired",
-                now - timedelta(minutes=20),
-            ),
-        )
-
-        for preview_run_id, request_id, observed_at in cases:
-            with self.subTest(request_id=request_id):
-                key, row = self._persisted_selection_confirmation(
-                    preview_run_id=preview_run_id,
-                    request_id=request_id,
-                    observed_at=observed_at,
-                )
-                self.repository.state.commands_by_idempotency[("console", key)] = row
-
-                receipt = service.confirm_selection_preview(
-                    AUTOMATION_ID,
-                    preview_run_id=preview_run_id,
-                    selected_bill_codes=["R0001"],
-                    request_id=request_id,
-                    actor=_admin(),
-                )
-
-                self.assertEqual(row["command_id"], receipt.command_id)
-                self.assertEqual(
-                    row["parameters_json"],
-                    self.gateway.command.parameters,
-                )
-
-        with self.assertRaises(OrchestrationError) as raised:
-            service.confirm_selection_preview(
-                AUTOMATION_ID,
-                preview_run_id=cases[-1][0],
-                selected_bill_codes=["R0002"],
-                request_id=cases[-1][1],
-                actor=_admin(),
-            )
-        self.assertEqual("REQUEST_ID_REUSED", raised.exception.code)
-        self.assertEqual([], registry.calls)
+        service = self._service_with_contribution_registry(_ContributionRegistry())
+        for age in (5, 20):
+            with self.subTest(age=age):
+                preview_id = self._completed_selection_preview(service, "preview-" + str(age))
+                request_id = "confirmation-" + str(age)
+                receipt = service.confirm_selection_preview(AUTOMATION_ID, preview_invocation_id=preview_id, selected_bill_codes=["R0001"], request_id=request_id, actor=_admin())
+                self.direct.rows[preview_id]["result_json"]["meta"]["observed_at"] = (datetime.now(timezone.utc)-timedelta(minutes=age)).isoformat()
+                with patch.object(service, "_load_contract", side_effect=AssertionError("exact replay does not recompile current generation")):
+                    replay = service.confirm_selection_preview(AUTOMATION_ID, preview_invocation_id=preview_id, selected_bill_codes=["R0001"], request_id=request_id, actor=_admin())
+                self.assertEqual(receipt["invocation_id"], replay["invocation_id"])
+                with self.assertRaises(OrchestrationError) as conflict:
+                    service.confirm_selection_preview(AUTOMATION_ID, preview_invocation_id=preview_id, selected_bill_codes=["R0002"], request_id=request_id, actor=_admin())
+                self.assertEqual("IDEMPOTENCY_CONFLICT", conflict.exception.code)
 
     def test_service_v2_selection_guard_replays_race_before_live_checks(self):
         self._set_service_v2_selection_contract()
-        registry = _ContributionRegistry()
-        service = self._service_with_contribution_registry(registry)
-        preview_run_id = "44444444-4444-4444-8444-444444444444"
-        request_id = "selection-concurrent-loser"
-        key, row = self._persisted_selection_confirmation(
-            preview_run_id=preview_run_id,
-            request_id=request_id,
-            observed_at=datetime.now(timezone.utc) - timedelta(minutes=5),
-        )
-        self.repository.state.commands_by_idempotency[("console", key)] = row
-        preview_context = row["parameters_json"]["execution_context"][
-            "selection_preview"
-        ]
-        formal_arguments = row["parameters_json"]["arguments"]
-        resolution = SimpleNamespace(
-            context=preview_context,
-            formal_arguments={
-                "dry_run": formal_arguments["dry_run"],
-                "selected_bill_codes": formal_arguments["selected_bill_codes"],
-                "preview_fingerprint": formal_arguments["preview_fingerprint"],
-            },
-        )
-        original_get = _Commands.get_by_idempotency
-        lookups: list[bool] = []
-
-        def race_lookup(
-            commands: _Commands,
-            source: str,
-            idempotency_key: str,
-            *,
-            for_update: bool = False,
-        ):
-            lookups.append(for_update)
-            if len(lookups) == 1:
-                return None
-            return original_get(
-                commands,
-                source,
-                idempotency_key,
-                for_update=for_update,
-            )
-
-        with (
-            patch.object(_Commands, "get_by_idempotency", race_lookup),
-            patch(
-                "agent.orchestration.automation_project_policy_service.resolve_selection_preview",
-                return_value=resolution,
-            ) as resolve,
-            patch.object(
-                service,
-                "_lock_and_compile_contract",
-                side_effect=AssertionError(
-                    "exact concurrent replay must precede live contract locking"
-                ),
-            ) as lock_contract,
-        ):
-            receipt = service.confirm_selection_preview(
-                AUTOMATION_ID,
-                preview_run_id=preview_run_id,
-                selected_bill_codes=["R0001"],
-                request_id=request_id,
-                actor=_admin(),
-            )
-
-        self.assertEqual("run-invoke", receipt.run_id)
-        self.assertEqual([False, False, False], lookups)
-        self.assertEqual(1, resolve.call_count)
-        self.assertFalse(resolve.call_args.kwargs["for_update"])
-        lock_contract.assert_not_called()
-        self.assertEqual(1, len(registry.calls))
+        service = self._service_with_contribution_registry(_ContributionRegistry())
+        preview_id = self._completed_selection_preview(service)
+        first = service.confirm_selection_preview(AUTOMATION_ID, preview_invocation_id=preview_id, selected_bill_codes=["R0001"], request_id="confirmation", actor=_admin())
+        original = self.direct.by_request
+        lookups = []
+        def racing_lookup(key):
+            lookups.append(key)
+            return None if len(lookups) == 1 else original(key)
+        with patch.object(self.direct, "by_request", side_effect=racing_lookup), patch.object(service, "_lock_and_compile_contract", side_effect=AssertionError("accepted race cannot dispatch again")):
+            replay = service.confirm_selection_preview(AUTOMATION_ID, preview_invocation_id=preview_id, selected_bill_codes=["R0001"], request_id="confirmation", actor=_admin())
+        self.assertEqual(first["invocation_id"], replay["invocation_id"])
+        self.assertEqual(2, len(lookups))
 
     def test_service_v2_selection_confirmation_pins_context_and_consumes_once(self):
         self._set_service_v2_selection_contract()
         service = self._service_with_contribution_registry(_ContributionRegistry())
-        preview_run_id = "33333333-3333-4333-8333-333333333333"
-        preview_context = {
-            "observed_at": "2026-08-31T01:02:03Z",
-            "context_sha256": "e" * 64,
-        }
-        resolution = SimpleNamespace(
-            context=preview_context,
-            formal_arguments={
-                "dry_run": False,
-                "selected_bill_codes": ["R0001"],
-                "preview_fingerprint": "f" * 64,
-            },
-        )
-        consumed = OrchestrationError(
-            "SELECTION_PREVIEW_ALREADY_CONSUMED",
-            "synthetic preview consumption conflict",
-        )
-
-        with (
-            patch(
-                "agent.orchestration.automation_project_policy_service.resolve_selection_preview",
-                return_value=resolution,
-            ) as resolve,
-            patch(
-                "agent.orchestration.automation_project_policy_service.ensure_selection_preview_active"
-            ) as ensure_active,
-            patch(
-                "agent.orchestration.automation_project_policy_service.consume_selection_preview"
-            ) as consume,
-        ):
-            receipt = service.confirm_selection_preview(
-                AUTOMATION_ID,
-                preview_run_id=preview_run_id,
-                selected_bill_codes=["R0001"],
-                request_id="selection-first-confirmation",
-                actor=_admin(),
-            )
-
-            self.assertEqual("run-invoke", receipt.run_id)
-            self.assertEqual(2, resolve.call_count)
-            self.assertFalse(resolve.call_args_list[0].kwargs["for_update"])
-            self.assertTrue(resolve.call_args_list[1].kwargs["for_update"])
-            ensure_active.assert_called_once()
-            consume.assert_called_once()
-            self.assertEqual(
-                preview_context,
-                self.gateway.command.parameters["execution_context"][
-                    "selection_preview"
-                ],
-            )
-            self.assertEqual(
-                preview_context["observed_at"],
-                self.gateway.command.parameters["execution_context"]["occurred_at"],
-            )
-
-            consume.side_effect = consumed
-            with self.assertRaises(OrchestrationError) as raised:
-                service.confirm_selection_preview(
-                    AUTOMATION_ID,
-                    preview_run_id=preview_run_id,
-                    selected_bill_codes=["R0001"],
-                    request_id="selection-different-request",
-                    actor=_admin(),
-                )
-            self.assertEqual(
-                "SELECTION_PREVIEW_ALREADY_CONSUMED",
-                raised.exception.code,
-            )
+        preview_id = self._completed_selection_preview(service)
+        receipt = service.confirm_selection_preview(AUTOMATION_ID, preview_invocation_id=preview_id, selected_bill_codes=["R0001"], request_id="first-confirmation", actor=_admin())
+        self.assertEqual(preview_id, self.direct.call.preview_invocation_id)
+        self.assertEqual({"mode": "saved", "dry_run": False, "selected_bill_codes": ["R0001"], "preview_fingerprint": "f" * 64}, self.direct.call.arguments)
+        self.assertEqual(receipt["invocation_id"], self.direct.rows[preview_id]["preview_consumed_by"])
+        with self.assertRaises(OrchestrationError) as consumed:
+            service.confirm_selection_preview(AUTOMATION_ID, preview_invocation_id=preview_id, selected_bill_codes=["R0001"], request_id="second-confirmation", actor=_admin())
+        self.assertEqual("SELECTION_PREVIEW_ALREADY_CONSUMED", consumed.exception.code)
 
     def test_service_v2_selection_project_allows_non_selection_sibling(self):
         self._set_service_v2_selection_contract()
@@ -958,10 +452,10 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             contribution_id="inspect_console",
         )
 
-        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertIn("invocation_id", receipt)
         self.assertNotIn(
             "selection_phase",
-            self.gateway.command.parameters["execution_context"],
+            self.direct.call.arguments,
         )
         invocation = AutomationProjectInvocation(
             automation_id=AUTOMATION_ID,
@@ -1078,7 +572,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             actor=_admin(),
         )
 
-        self.assertEqual("run-invoke", action_receipt.run_id)
+        self.assertIn("invocation_id", action_receipt)
         self.assertEqual([], registry.calls)
 
         self._set_service_v2_console_contract()
@@ -1105,7 +599,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                 entrypoint=AutomationEntrypoint.EVENTS,
                 request_id="event-one",
                 actor=self._verified_event_actor(),
-                trusted_context={"unexpected": "still-disabled-first"},
+                trusted_context={"event_name": "shipment.created", "source_event_id": "event-one"},
                 expected_automation_generation=1,
             )
 
@@ -1128,7 +622,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                 AUTOMATION_ID,
                 request_id="request-scan-formal-disabled",
                 actor=_admin(),
-                preview_run_id="11111111-1111-4111-8111-111111111111",
+                preview_invocation_id="11111111-1111-4111-8111-111111111111",
             )
 
         self.assertEqual(
@@ -1147,14 +641,14 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             actor=_admin(),
         )
 
-        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertIn("invocation_id", receipt)
         self.assertEqual(
             {"mode": "saved", "dry_run": True},
-            self.gateway.command.parameters["arguments"],
+            self.direct.call.arguments,
         )
         self.assertNotIn(
             "scan_preview",
-            self.gateway.command.parameters["execution_context"],
+            self.direct.call.arguments,
         )
 
     def test_new_scan_preview_never_recovers_or_mutates_history_before_submit(self):
@@ -1204,9 +698,9 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             actor=_admin(),
         )
 
-        self.assertEqual("run-invoke", receipt.run_id)
-        self.assertEqual(1, len(events))
-        self.assertEqual("submit", events[0][0])
+        self.assertIn("invocation_id", receipt)
+        self.assertEqual([], events)
+        self.assertIsNotNone(self.direct.call)
         self.assertEqual("BLOCKED_DATA", old_run["status"])
         self.assertEqual(
             "BLOCKED_DATA",
@@ -1216,7 +710,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             old_facts,
             self.repository.state.automation_run_facts["run-old-scan"],
         )
-        self.assertTrue(self.gateway.command.parameters["arguments"]["dry_run"])
+        self.assertTrue(self.direct.call.arguments["dry_run"])
 
     def test_scan_preview_does_not_call_unavailable_historical_recovery(self):
         self._set_scan_project()
@@ -1243,14 +737,14 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             actor=_admin(),
         )
 
-        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertIn("invocation_id", receipt)
         self.assertEqual([], recovery_calls)
         self.assertEqual("BLOCKED_DATA", old_run["status"])
         self.assertEqual(
             old_facts,
             self.repository.state.automation_run_facts["run-old-scan"],
         )
-        self.assertTrue(self.gateway.command.parameters["arguments"]["dry_run"])
+        self.assertTrue(self.direct.call.arguments["dry_run"])
 
     def test_selection_preview_injects_server_owned_read_only_arguments(self):
         self._set_selection_project()
@@ -1261,14 +755,14 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             actor=_admin(),
         )
 
-        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertIn("invocation_id", receipt)
         self.assertEqual(
             {
                 "dry_run": True,
                 "selected_bill_codes": [],
                 "preview_fingerprint": "",
             },
-            self.gateway.command.parameters["arguments"],
+            self.direct.call.arguments,
         )
 
     def test_selection_workflow_rejects_incomplete_server_inputs(self):
@@ -1288,12 +782,19 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
 
     def test_trusted_wait_returns_only_bounded_scan_preview_projection(self):
         self._set_scan_project()
+        self.service._load_catalog_entry = lambda _identity: self.entry
         projection = {
-            "contract_version": 1,
-            "preview_run_id": "run-invoke",
+            "contract_version": 2,
+            "preview_invocation_id": "33333333-3333-4333-8333-333333333333",
             "selection_count": 2,
             "can_confirm": True,
         }
+        original_wait = self.direct.wait
+        async def completed_preview(identity, **kwargs):
+            result = await original_wait(identity, **kwargs)
+            result["output"]["dry_run"] = True
+            return result
+        self.direct.wait = completed_preview
         self.service.get_scan_preview_projection = (  # type: ignore[method-assign]
             lambda _automation_id, **_kwargs: dict(projection)
         )
@@ -1310,34 +811,35 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         self.assertTrue(result["success"])
         self.assertEqual(projection, result["scan_preview"])
 
-    def test_trusted_wait_notifies_only_after_command_acceptance(self):
+    def test_trusted_wait_notifies_only_after_invocation_acceptance(self):
         events = []
-        original_wait = self.gateway.wait_for_run
-
+        original_wait = self.direct.wait
         async def on_accepted(receipt):
-            events.append(("accepted", receipt.run_id))
-
-        async def wait_for_run(run_id, *, timeout_seconds):
-            self.assertEqual([("accepted", "run-invoke")], events)
-            events.append(("wait", run_id))
-            return await original_wait(run_id, timeout_seconds=timeout_seconds)
-
-        self.gateway.wait_for_run = wait_for_run
-        result = asyncio.run(
-            self.service.invoke_trusted_and_wait(
-                AUTOMATION_ID,
-                entrypoint=AutomationEntrypoint.CONSOLE,
-                request_id="request-acceptance-callback",
-                actor=_admin(),
-                on_accepted=on_accepted,
-            )
-        )
-
+            events.append(("accepted", receipt["invocation_id"]))
+        async def wait(identity, *, timeout_seconds):
+            self.assertEqual([("accepted", identity)], events)
+            events.append(("wait", identity))
+            return await original_wait(identity, timeout_seconds=timeout_seconds)
+        self.direct.wait = wait
+        result = asyncio.run(self.service.invoke_trusted_and_wait(AUTOMATION_ID, entrypoint="console", request_id="callback", actor=_admin(), on_accepted=on_accepted))
+        self.assertEqual([("accepted", result["invocation_id"]), ("wait", result["invocation_id"])], events)
         self.assertTrue(result["success"])
-        self.assertEqual(
-            [("accepted", "run-invoke"), ("wait", "run-invoke")],
-            events,
-        )
+
+    def test_trusted_wait_does_not_announce_failed_admission_or_completed_replay(self):
+        for status, error in (("FAILED", "PLUGIN_RELEASE_HELD"), ("FAILED", "EXECUTION_RESOURCE_BUSY"), ("COMPLETED", None), ("CANCELLED", "CANCELLED"), ("WRITE_OUTCOME_UNKNOWN", "WRITE_OUTCOME_UNKNOWN")):
+            with self.subTest(status=status, error=error):
+                events = []
+                receipt = {"invocation_id": "terminal-invocation", "status": status,
+                           "error_code": error, "output": {}}
+                async def on_accepted(value):
+                    events.append(value)
+                async def wait(identity, *, timeout_seconds):
+                    self.assertEqual(receipt["invocation_id"], identity)
+                    return receipt
+                with patch.object(self.service, "invoke_trusted", return_value=receipt), patch.object(self.direct, "wait", side_effect=wait):
+                    result = asyncio.run(self.service.invoke_trusted_and_wait(AUTOMATION_ID, entrypoint="feishu", request_id="terminal-callback", actor=_admin(), on_accepted=on_accepted))
+                self.assertEqual(receipt, result)
+                self.assertEqual([], events)
 
     def test_release_hold_blocks_project_writes_and_typed_invoke(self):
         service = AutomationProjectPolicyService(
@@ -1375,7 +877,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         self.assertEqual("PROJECT_FULL_AUTO", result["configured_mode"])
         self.assertEqual([("commit",)], self.repository.account_lock_events)
 
-    def test_policy_change_invalidates_and_wakes_sleeping_approval_runs(self):
+    def test_policy_change_preserves_read_only_historical_approval_runs(self):
         self.repository.state.policy["mode"] = "REQUIRE_EACH_RUN"
         self.repository.state.pending = [
             {
@@ -1401,9 +903,9 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         )
 
         self.assertEqual("PROJECT_FULL_AUTO", result["configured_mode"])
-        self.assertEqual([], self.repository.state.pending)
-        self.assertEqual(["run-one"], self.repository.runnable_run_ids)
-        self.assertEqual(["run-one"], self.woken_run_ids)
+        self.assertEqual([{"approval_id": "approval-one", "run_id": "run-one", "run_status": "WAITING_APPROVAL"}], self.repository.state.pending)
+        self.assertEqual([], self.repository.runnable_run_ids)
+        self.assertEqual([], self.woken_run_ids)
 
     def test_project_takeover_event_request_fits_legacy_char36_and_is_idempotent(self):
         class _ScheduledPolicies:
@@ -1902,6 +1404,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         self.assertTrue(approval_required.requires_approval)
 
     def test_scheduler_invocation_binds_exact_row_generation_and_context(self):
+        self.repository.state.policy["mode"] = "PROJECT_FULL_AUTO"
         self.contract = _contract_for(AutomationEntrypoint.SCHEDULER)
         actor = Actor(
             ActorType.SCHEDULER,
@@ -1926,16 +1429,16 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             expected_project_configuration_version=1,
         )
 
-        self.assertEqual("run-invoke", receipt.run_id)
-        command = self.gateway.command
-        self.assertEqual("scheduler", command.source)
+        self.assertIn("invocation_id", receipt)
+        call = self.direct.call
+        self.assertEqual("scheduler", call.source)
         self.assertEqual(
             "scheduler:schedule-one",
-            command.automation_invocation.contract_id,
+            call.invocation.contract_id,
         )
         self.assertEqual(
             "schedule-one",
-            command.parameters["execution_context"]["task_id"],
+            call.actor_id,
         )
 
     def test_service_v2_scheduler_invoke_requires_exact_active_contribution(self):
@@ -1972,7 +1475,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             contribution_id="daily_run",
         )
 
-        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertIn("invocation_id", receipt)
         self.assertEqual(
             [
                 {
@@ -1981,17 +1484,20 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                     "contribution_kind": "scheduler",
                     "contribution_id": "daily_run",
                 }
-            ],
+            ] * 2,
             registry.calls,
         )
 
     def test_trusted_wait_preserves_terminal_error_for_scheduler_status(self):
+        self.repository.state.policy["mode"] = "PROJECT_FULL_AUTO"
         self.contract = _contract_for(AutomationEntrypoint.SCHEDULER)
-        self.gateway.run_result = {
+        self.direct.result = {
             "run_id": "run-invoke",
             "command_id": "command-failed",
             "work_item_id": "work-invoke",
-            "status": "FAILED_TERMINAL",
+            "status": "FAILED",
+            "success": False,
+            "invocation_id": "11111111-1111-4111-8111-111111111111",
             "correlation_id": "correlation-failed",
             "error_code": "PROJECT_INVOCATION_STALE",
             "error_summary": "Committed automation contract no longer matches",
@@ -2053,6 +1559,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         self.assertIsNone(self.gateway.command)
 
     def test_webhook_dynamic_values_come_only_from_verified_route_context(self):
+        self.repository.state.policy["mode"] = "PROJECT_FULL_AUTO"
         self.contract = _contract_for(
             AutomationEntrypoint.WEBHOOK,
             dynamic_resolvers={"BILL_CODE": "verified_webhook_field"},
@@ -2086,12 +1593,12 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             expected_automation_generation=1,
         )
 
-        command = self.gateway.command
+        call = self.direct.call
         self.assertEqual(
             {"mode": "saved", "BILL_CODE": "10001"},
-            command.parameters["arguments"],
+            call.arguments,
         )
-        self.assertNotIn("account_id", command.parameters["arguments"])
+        self.assertNotIn("account_id", call.arguments)
 
     def test_trusted_invocation_rejects_untrusted_actor_and_context_override(self):
         self.contract = _contract_for(AutomationEntrypoint.WEBHOOK)

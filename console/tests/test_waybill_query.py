@@ -28,6 +28,39 @@ class _RenderHandler:
         pass
 
 
+def test_authenticated_waybill_refresh_calls_direct_query_before_consistent_local_read():
+    repository = _WaybillRepo()
+    app = _build_waybill_app(repository)
+    handler = _RenderHandler()
+    handler.current_admin_user = {"id": 1}
+    principal = {"actor_id": "fixture-admin"}
+    app._control_plane_read_context = lambda _handler: {"_console_principal": principal}
+    calls = []
+    def direct(method, endpoint, **kwargs):
+        assert repository.calls == []
+        calls.append((method, endpoint, kwargs))
+        return {"ok": True, "data": {"complete": True}}
+    app._agent_request = direct
+    app._render_waybills(handler, {"source": ["yunda"], "date_from": ["2026-09-08"], "date_to": ["2026-09-08"]})
+    assert len(calls) == 1
+    assert calls[0][:2] == ("POST", "/internal/v1/business/send-waybills-query")
+    assert calls[0][2]["payload"]["params"] == {"source": "yunda", "date_from": "2026-09-08", "date_to": "2026-09-08"}
+    assert calls[0][2]["console_principal"] == principal
+    assert len(repository.calls) == 1
+
+
+def test_incomplete_provider_refresh_does_not_present_local_total_as_platform_total():
+    repository = _WaybillRepo()
+    app = _build_waybill_app(repository)
+    handler = _RenderHandler()
+    handler.current_admin_user = {"id": 1}
+    app._control_plane_read_context = lambda _handler: {"_console_principal": {"actor_id": "fixture"}}
+    app._agent_request = lambda *_args, **_kwargs: {"ok": False, "data": {"complete": False}}
+    app._render_waybills(handler, {"source": ["yunda"], "date_from": ["2026-09-08"]})
+    assert "仅代表已保存的本地数据" in handler.wfile.getvalue().decode("utf-8")
+    assert len(repository.calls) == 1
+
+
 class _PostHandler(_RenderHandler):
     def __init__(self, values):
         super().__init__()
@@ -445,7 +478,7 @@ class WaybillQueryRenderTests(unittest.TestCase):
         self.assertEqual(1, len(repository.calls))
         self.assertEqual("2026/05/12", repository.calls[0]["filters"]["date_from"])
         self.assertEqual("2026/05/13", repository.calls[0]["filters"]["date_to"])
-        self.assertIn("GET 查询不会刷新外部来源", handler.wfile.getvalue().decode("utf-8"))
+        self.assertIn("本地快照", handler.wfile.getvalue().decode("utf-8"))
 
     def test_date_filter_renders_read_only_snapshot_notice(self):
         repository = _WaybillRepo()
@@ -464,7 +497,7 @@ class WaybillQueryRenderTests(unittest.TestCase):
         )
 
         html = handler.wfile.getvalue().decode("utf-8")
-        self.assertIn("GET 查询不会刷新外部来源", html)
+        self.assertIn("本地快照", html)
 
     def test_keyword_filter_queries_waybills(self):
         repository = _WaybillRepo()
@@ -581,7 +614,7 @@ class WaybillQueryRenderTests(unittest.TestCase):
 
         self.assertEqual(1, len(repository.calls))
         html = handler.wfile.getvalue().decode("utf-8")
-        self.assertIn("GET 查询不会刷新外部来源", html)
+        self.assertIn("开单日期范围超过 31 天", html)
 
     def test_agent_unavailability_is_irrelevant_to_read_only_waybill_get(self):
         repository = _WaybillRepo()
@@ -604,7 +637,7 @@ class WaybillQueryRenderTests(unittest.TestCase):
 
         self.assertEqual(1, len(repository.calls))
         html = handler.wfile.getvalue().decode("utf-8")
-        self.assertIn("GET 查询不会刷新外部来源", html)
+        self.assertIn("本地快照", html)
 
     def test_keyword_where_only_searches_allowed_identity_fields(self):
         repository = DocumentRepository.__new__(DocumentRepository)

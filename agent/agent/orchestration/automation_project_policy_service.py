@@ -15,6 +15,8 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Awaitable
 
+from shared.plugin_invocation_repository import ACTIVE_INVOCATION_STATUSES
+
 from agent.automation_plugins.catalog import (
     PluginCatalog,
     PluginCatalogEntry,
@@ -180,6 +182,7 @@ class AutomationProjectPolicyService:
         ) = None,
         release_hold_provider: Callable[[], bool] | None = None,
         contribution_registry: Any | None = None,
+        direct_invocations: Any | None = None,
     ) -> None:
         self._repository = repository
         self._core_catalog = core_catalog
@@ -190,6 +193,7 @@ class AutomationProjectPolicyService:
         self._unknown_write_recovery = unknown_write_recovery
         self._release_hold_provider = release_hold_provider
         self._contribution_registry = contribution_registry
+        self.direct_invocations = direct_invocations
 
     @property
     def command_gateway(self) -> CommandGateway:
@@ -767,12 +771,13 @@ class AutomationProjectPolicyService:
                     correlation_id=correlation_id,
                     occurred_at=now,
                 )
-                wake_run_ids = (
-                    uow.automation_projects.invalidate_pending_approvals_and_wake_runs(
-                        safe_id,
-                        event_repository=uow.events,
+                if self.direct_invocations is None:
+                    wake_run_ids = (
+                        uow.automation_projects.invalidate_pending_approvals_and_wake_runs(
+                            safe_id,
+                            event_repository=uow.events,
+                        )
                     )
-                )
                 uow.commit()
         except ConcurrentUpdateError as exc:
             raise OrchestrationError(
@@ -963,65 +968,15 @@ class AutomationProjectPolicyService:
                 self._wake_runner(run_id)
         return result
 
-    def get_scan_preview_projection(
-        self,
-        automation_id: str,
-        *,
-        preview_run_id: str,
-    ) -> dict[str, Any]:
-        """Project one verified preview without exposing persisted item evidence."""
-        safe_id = _automation_id(automation_id)
-        entry, contract = self._load_contract(safe_id)
-        if not is_scan_preview_project(entry):
-            raise OrchestrationError(
-                "SCAN_PREVIEW_PROJECT_INVALID",
-                "A scan preview is only available for the signed scan project",
-                details={"status": "BLOCKED_DATA"},
-            )
-        expectation = ScanPreviewExpectation(
-            project_instance_id=safe_id,
-            generation=contract.automation_generation,
-            contract_digest=contract.contract_hash,
-            configuration_version=contract.project_configuration_version,
-        )
-        with self._repository.unit_of_work() as uow:
-            return scan_preview_public_projection(
-                uow,
-                preview_run_id=preview_run_id,
-                expectation=expectation,
-                now=datetime.now(timezone.utc),
-            )
+    def get_scan_preview_projection(self, automation_id: str, *, preview_invocation_id: str) -> dict[str, Any]:
+        from agent.orchestration.direct_invocation_previews import project_preview
+        entry, contract = self._load_contract(_automation_id(automation_id))
+        return project_preview(self.direct_invocations.repository, preview_invocation_id, entry=entry, contract=contract, scan=True)
 
-    def get_selection_preview_projection(
-        self,
-        automation_id: str,
-        *,
-        preview_run_id: str,
-    ) -> dict[str, Any]:
-        safe_id = _automation_id(automation_id)
-        entry, contract = self._load_contract(safe_id)
-        if not is_selection_preview_project(entry):
-            raise OrchestrationError(
-                "SELECTION_PREVIEW_PROJECT_INVALID",
-                "该自动化不支持后台候选选择。",
-                details={"status": "BLOCKED_DATA"},
-            )
-        expectation = _selection_preview_expectation(
-            entry,
-            contract,
-            entrypoint=AutomationEntrypoint.CONSOLE.value,
-            contribution_id=_selection_contribution_id(
-                entry,
-                AutomationEntrypoint.CONSOLE,
-            ),
-        )
-        with self._repository.unit_of_work() as uow:
-            return selection_preview_public_projection(
-                uow,
-                preview_run_id=preview_run_id,
-                expectation=expectation,
-                now=datetime.now(timezone.utc),
-            )
+    def get_selection_preview_projection(self, automation_id: str, *, preview_invocation_id: str) -> dict[str, Any]:
+        from agent.orchestration.direct_invocation_previews import project_preview
+        entry, contract = self._load_contract(_automation_id(automation_id))
+        return project_preview(self.direct_invocations.repository, preview_invocation_id, entry=entry, contract=contract, scan=False)
 
     def invoke_selection_preview(
         self,
@@ -1056,151 +1011,22 @@ class AutomationProjectPolicyService:
             contribution_id=contribution_id,
         )
 
-    def confirm_selection_preview(
-        self,
-        automation_id: str,
-        *,
-        preview_run_id: str,
-        selected_bill_codes: Sequence[str],
-        request_id: str,
-        actor: Actor,
-    ) -> Any:
-        safe_id = _automation_id(automation_id)
-        entry = self._load_catalog_entry(safe_id)
-        if not is_selection_preview_project(entry):
-            raise OrchestrationError(
-                "SELECTION_PREVIEW_PROJECT_INVALID",
-                "该自动化不支持后台候选选择。",
-            )
-        safe_preview_run_id = normalize_preview_run_id(preview_run_id)
-        idempotency_key = (
-            f"automation:{safe_id}:console:{actor.actor_id}:"
-            f"selection:{safe_preview_run_id}:{request_id}"
-        )
-        if str(getattr(entry, "runtime_model", "ACTION_V1") or "ACTION_V1") == "SERVICE_V2":
-            contribution_id = _selection_contribution_id(
-                entry,
-                AutomationEntrypoint.CONSOLE,
-            )
-            return self.invoke_trusted(
-                safe_id,
-                entrypoint=AutomationEntrypoint.CONSOLE,
-                request_id=request_id,
-                actor=actor,
-                trusted_context={},
-                selection_preview_run_id=safe_preview_run_id,
-                selected_bill_codes=selected_bill_codes,
-                contribution_id=contribution_id,
-                idempotency_key=idempotency_key,
-            )
-        entry, contract = self._load_contract(safe_id)
-        expectation = _selection_preview_expectation(entry, contract)
-        with self._repository.unit_of_work() as uow:
-            arguments = selection_confirmation_arguments(
-                uow,
-                preview_run_id=safe_preview_run_id,
-                expectation=expectation,
-                selected_bill_codes=selected_bill_codes,
-                now=datetime.now(timezone.utc),
-            )
-        contribution_id = _selection_contribution_id(
-            entry,
-            AutomationEntrypoint.CONSOLE,
-        )
-        return self.invoke_trusted(
-            safe_id,
-            entrypoint=AutomationEntrypoint.CONSOLE,
-            request_id=request_id,
-            actor=actor,
-            trusted_context={"dynamic_inputs": arguments},
-            contribution_id=contribution_id,
-            idempotency_key=idempotency_key,
-        )
+    def confirm_selection_preview(self, automation_id: str, *, preview_invocation_id: str, selected_bill_codes: Sequence[str], request_id: str, actor: Actor) -> Any:
+        entry = self._load_catalog_entry(automation_id)
+        return self.invoke_trusted(automation_id, entrypoint=AutomationEntrypoint.CONSOLE,
+            request_id=request_id, actor=actor, preview_invocation_id=preview_invocation_id,
+            selected_bill_codes=selected_bill_codes,
+            contribution_id=_selection_contribution_id(entry, AutomationEntrypoint.CONSOLE))
 
-    async def confirm_selection_preview_and_wait(
-        self,
-        automation_id: str,
-        *,
-        preview_run_id: str,
-        selected_bill_codes: Sequence[str],
-        entrypoint: AutomationEntrypoint | str,
-        request_id: str,
-        actor: Actor,
-        trusted_context: Mapping[str, Any] | None = None,
-        idempotency_key: str | None = None,
-        expected_automation_generation: int | None = None,
-        expected_project_configuration_version: int | None = None,
-        timeout_seconds: float = 1800.0,
-        on_accepted: Callable[[Any], Awaitable[None]] | None = None,
-    ) -> dict[str, Any]:
-        """Confirm a persisted selection without accepting its fingerprint.
-
-        Trusted transport adapters provide only the preview run identity and
-        the user's selected bill codes.  The immutable fingerprint and formal
-        action arguments are restored from the verified persisted preview.
-        """
-        safe_id = _automation_id(automation_id)
-        entry = self._load_catalog_entry(safe_id)
-        if not is_selection_preview_project(entry):
-            raise OrchestrationError(
-                "SELECTION_PREVIEW_PROJECT_INVALID",
-                "该自动化不支持后台候选选择。",
-            )
-        context = dict(trusted_context or {})
-        if "dynamic_inputs" in context:
-            raise OrchestrationError(
-                "SELECTION_INPUT_INVALID",
-                "Selection confirmation inputs must be restored by the server",
-                details={"status": "BLOCKED_DATA"},
-            )
-        safe_preview_run_id = normalize_preview_run_id(preview_run_id)
-        safe_entrypoint = _entrypoint(entrypoint)
-        if str(getattr(entry, "runtime_model", "ACTION_V1") or "ACTION_V1") == "SERVICE_V2":
-            contribution_id = _selection_contribution_id(entry, safe_entrypoint)
-            return await self.invoke_trusted_and_wait(
-                safe_id,
-                entrypoint=safe_entrypoint,
-                request_id=request_id,
-                actor=actor,
-                trusted_context=context,
-                selection_preview_run_id=safe_preview_run_id,
-                selected_bill_codes=selected_bill_codes,
-                contribution_id=contribution_id,
-                idempotency_key=idempotency_key,
-                expected_automation_generation=expected_automation_generation,
-                expected_project_configuration_version=(
-                    expected_project_configuration_version
-                ),
-                timeout_seconds=timeout_seconds,
-                on_accepted=on_accepted,
-            )
-        entry, contract = self._load_contract(safe_id)
-        expectation = _selection_preview_expectation(entry, contract)
-        with self._repository.unit_of_work() as uow:
-            arguments = selection_confirmation_arguments(
-                uow,
-                preview_run_id=safe_preview_run_id,
-                expectation=expectation,
-                selected_bill_codes=selected_bill_codes,
-                now=datetime.now(timezone.utc),
-            )
-        context["dynamic_inputs"] = arguments
-        contribution_id = _selection_contribution_id(entry, safe_entrypoint)
-        return await self.invoke_trusted_and_wait(
-            safe_id,
-            entrypoint=safe_entrypoint,
-            request_id=request_id,
-            actor=actor,
-            trusted_context=context,
-            contribution_id=contribution_id,
-            idempotency_key=idempotency_key,
-            expected_automation_generation=expected_automation_generation,
-            expected_project_configuration_version=(
-                expected_project_configuration_version
-            ),
-            timeout_seconds=timeout_seconds,
-            on_accepted=on_accepted,
-        )
+    async def confirm_selection_preview_and_wait(self, automation_id: str, *, preview_invocation_id: str, selected_bill_codes: Sequence[str], entrypoint: AutomationEntrypoint | str, request_id: str, actor: Actor, trusted_context=None, idempotency_key=None, expected_automation_generation=None, expected_project_configuration_version=None, timeout_seconds: float = 1800.0, on_accepted=None) -> dict[str, Any]:
+        entry = self._load_catalog_entry(automation_id)
+        return await self.invoke_trusted_and_wait(automation_id, entrypoint=entrypoint,
+            request_id=request_id, actor=actor, trusted_context=trusted_context,
+            preview_invocation_id=preview_invocation_id, selected_bill_codes=selected_bill_codes,
+            contribution_id=_selection_contribution_id(entry, _entrypoint(entrypoint)),
+            idempotency_key=idempotency_key, expected_automation_generation=expected_automation_generation,
+            expected_project_configuration_version=expected_project_configuration_version,
+            timeout_seconds=timeout_seconds, on_accepted=on_accepted)
 
     def invoke_console(
         self,
@@ -1208,7 +1034,7 @@ class AutomationProjectPolicyService:
         *,
         request_id: str,
         actor: Actor,
-        preview_run_id: str | None = None,
+        preview_invocation_id: str | None = None,
         contribution_id: str | None = None,
     ) -> Any:
         return self.invoke_trusted(
@@ -1216,7 +1042,7 @@ class AutomationProjectPolicyService:
             entrypoint=AutomationEntrypoint.CONSOLE,
             request_id=request_id,
             actor=actor,
-            preview_run_id=preview_run_id,
+            preview_invocation_id=preview_invocation_id,
             contribution_id=contribution_id,
         )
 
@@ -1244,588 +1070,9 @@ class AutomationProjectPolicyService:
             contribution_id=contribution_id,
         )
 
-    def invoke_trusted(
-        self,
-        automation_id: str,
-        *,
-        entrypoint: AutomationEntrypoint | str,
-        request_id: str,
-        actor: Actor,
-        trusted_context: Mapping[str, Any] | None = None,
-        idempotency_key: str | None = None,
-        expected_automation_generation: int | None = None,
-        expected_project_configuration_version: int | None = None,
-        preview_run_id: str | None = None,
-        selection_preview_run_id: str | None = None,
-        selected_bill_codes: Sequence[str] | None = None,
-        contribution_id: str | None = None,
-    ) -> Any:
-        """Submit one server-resolved invocation for a trusted entry adapter.
-
-        The adapter supplies only transport facts that it has already verified.
-        It cannot supply action arguments or any project/contract identity.  The
-        latter are compiled from the immutable committed generation and locked
-        again in the same Unit of Work that accepts the Command.
-        """
-        self._require_release_active()
-        if self._command_gateway is None:
-            raise OrchestrationError(
-                "PROJECT_INVOKE_UNAVAILABLE",
-                "Automation project command gateway is unavailable",
-            )
-        source = _entrypoint(entrypoint)
-        self._require_trusted_entrypoint_actor(source, actor)
-        safe_id = _automation_id(automation_id)
-        safe_request_id = _request_id(request_id)
-        safe_contribution_id = normalize_contribution_id(contribution_id)
-        contract: CompiledAutomationProjectContract | None = None
-        if selection_preview_run_id is not None:
-            entry = self._load_catalog_entry(safe_id)
-        else:
-            entry, contract = self._load_contract(safe_id)
-        is_service_v2 = getattr(entry, "runtime_model", "ACTION_V1") == "SERVICE_V2"
-        if source is AutomationEntrypoint.EVENTS and not is_service_v2:
-            raise OrchestrationError(
-                "PROJECT_ENTRYPOINT_DISABLED",
-                "Action V1 projects cannot invoke the managed Event entrypoint",
-            )
-        if (
-            source
-            in {
-                AutomationEntrypoint.HARNESS,
-                AutomationEntrypoint.MODULE_SLOTS,
-            }
-            and not is_service_v2
-        ):
-            raise OrchestrationError(
-                "PROJECT_ENTRYPOINT_DISABLED",
-                "Managed entrypoint accepts only Service V2 contributions",
-            )
-        command_idempotency_key = _idempotency_key(
-            idempotency_key
-            or (
-                f"automation:{safe_id}:{source.value}:"
-                + (f"{safe_contribution_id or 'default'}:" if is_service_v2 else "")
-                + f"{actor.actor_id}:{safe_request_id}"
-            )
-        )
-        context = _trusted_context(source, trusted_context)
-        expected_event_name = (
-            validate_service_v2_event_context(context, request_id=safe_request_id)
-            if is_service_v2 and source is AutomationEntrypoint.EVENTS
-            else None
-        )
-        if is_service_v2 and source is AutomationEntrypoint.WEBHOOK and "dynamic_inputs" in context:
-            raise OrchestrationError(
-                "TRUSTED_CONTEXT_INVALID",
-                "Managed Webhook arguments must come from the signed project contract",
-            )
-        expected_generation = (
-            _positive_int(
-                expected_automation_generation,
-                "expected_automation_generation",
-            )
-            if expected_automation_generation is not None
-            else None
-        )
-        expected_configuration = (
-            _positive_int(
-                expected_project_configuration_version,
-                "expected_project_configuration_version",
-            )
-            if expected_project_configuration_version is not None
-            else None
-        )
-        if source is not AutomationEntrypoint.CONSOLE and expected_generation is None:
-            raise OrchestrationError(
-                "PROJECT_GENERATION_REQUIRED",
-                "Trusted non-Console entrypoints must bind a committed generation",
-            )
-        scan_preview_project = is_scan_preview_project(entry)
-        selection_preview_project = is_selection_preview_project(entry)
-        safe_selection_preview_run_id = (
-            normalize_preview_run_id(selection_preview_run_id)
-            if selection_preview_run_id is not None
-            else None
-        )
-        service_v2_selection_contribution: Mapping[str, Any] | None = None
-        expected_selection_contribution_id: str | None = None
-        if selection_preview_project and is_service_v2:
-            service_v2_selection_contribution = selection_preview_contribution(
-                entry,
-                source.value,
-            )
-            expected_selection_contribution_id = str(
-                (service_v2_selection_contribution or {}).get("id") or ""
-            ).strip()
-        is_service_v2_selection_invocation = bool(
-            is_service_v2
-            and expected_selection_contribution_id
-            and safe_contribution_id == expected_selection_contribution_id
-        )
-        if safe_selection_preview_run_id is not None and (
-            not is_service_v2_selection_invocation
-        ):
-            raise OrchestrationError(
-                "SELECTION_PREVIEW_PROJECT_INVALID",
-                "Selection preview consumption is unavailable for this project",
-                details={"status": "BLOCKED_DATA"},
-            )
-        if (
-            is_service_v2_selection_invocation
-            and safe_selection_preview_run_id is None
-            and "dynamic_inputs" not in context
-        ):
-            raise OrchestrationError(
-                "SELECTION_INPUT_INVALID",
-                "Service v2 selection inputs must be resolved by the Host",
-                details={"status": "BLOCKED_DATA"},
-            )
-        if safe_selection_preview_run_id is not None:
-            if selected_bill_codes is None or "dynamic_inputs" in context:
-                raise OrchestrationError(
-                    "SELECTION_INPUT_INVALID",
-                    "Selection confirmation accepts only Host-resolved bill codes",
-                    details={"status": "BLOCKED_DATA"},
-                )
-            with self._repository.unit_of_work() as uow:
-                replay = restore_selection_preview_replay(
-                    uow,
-                    source=source.value,
-                    idempotency_key=command_idempotency_key,
-                    actor=actor,
-                    trusted_context=context,
-                    project_instance_id=safe_id,
-                    request_id=safe_request_id,
-                    preview_run_id=safe_selection_preview_run_id,
-                    selected_bill_codes=selected_bill_codes,
-                    expected_entrypoint=source.value,
-                    expected_contribution_id=expected_selection_contribution_id,
-                    expected_generation=expected_generation,
-                    expected_configuration_version=expected_configuration,
-                )
-            if replay is not None:
-                return self._command_gateway.submit(replay)
-        elif selected_bill_codes is not None:
-            raise OrchestrationError(
-                "SELECTION_INPUT_INVALID",
-                "Bill-code selection requires one persisted preview",
-                details={"status": "BLOCKED_DATA"},
-            )
-        if contract is None:
-            entry, contract = self._load_contract(safe_id)
-        is_service_v2 = getattr(entry, "runtime_model", "ACTION_V1") == "SERVICE_V2"
-        scan_preview_project = is_scan_preview_project(entry)
-        selection_preview_project = is_selection_preview_project(entry)
-        current_selection = (
-            selection_preview_contribution(entry, source.value)
-            if selection_preview_project and is_service_v2
-            else None
-        )
-        current_selection_contribution_id = str(
-            (current_selection or {}).get("id") or ""
-        ).strip()
-        is_service_v2_selection_invocation = bool(
-            is_service_v2
-            and current_selection_contribution_id
-            and safe_contribution_id == current_selection_contribution_id
-        )
-        selection_invocation = bool(
-            selection_preview_project
-            and (not is_service_v2 or is_service_v2_selection_invocation)
-        )
-        if safe_selection_preview_run_id is not None:
-            if (
-                not selection_invocation
-                or current_selection_contribution_id
-                != expected_selection_contribution_id
-            ):
-                raise OrchestrationError(
-                    "PROJECT_INVOCATION_STALE",
-                    "Selection contribution changed before invocation",
-                    details={"status": "BLOCKED_DATA"},
-                )
-        selection_expectation = (
-            _selection_preview_expectation(
-                entry,
-                contract,
-                entrypoint=(
-                    source.value if safe_selection_preview_run_id is not None else None
-                ),
-                contribution_id=(
-                    current_selection_contribution_id
-                    if safe_selection_preview_run_id is not None
-                    else None
-                ),
-            )
-            if selection_invocation and safe_selection_preview_run_id is not None
-            else None
-        )
-        safe_preview_run_id = None
-        if preview_run_id is not None:
-            safe_preview_run_id = normalize_preview_run_id(preview_run_id)
-            with self._repository.unit_of_work() as uow:
-                replay = restore_scan_preview_replay(
-                    uow,
-                    source=source.value,
-                    idempotency_key=command_idempotency_key,
-                    actor=actor,
-                    trusted_context=context,
-                    project_instance_id=safe_id,
-                    request_id=safe_request_id,
-                    preview_run_id=safe_preview_run_id,
-                    expected_generation=expected_generation,
-                    expected_configuration_version=expected_configuration,
-                )
-            if replay is not None:
-                return self._command_gateway.submit(replay)
-            require_scan_formal_governance(entry)
-        if expected_generation is not None and contract.automation_generation != expected_generation:
-            raise OrchestrationError(
-                "PROJECT_INVOCATION_STALE",
-                "Automation project generation changed before invocation",
-            )
-        if expected_configuration is not None and contract.project_configuration_version != expected_configuration:
-            raise OrchestrationError(
-                "PROJECT_INVOCATION_STALE",
-                "Automation project configuration changed before invocation",
-            )
-        invocation_contract_id = resolve_invocation_contract_id(
-            contract,
-            source=source,
-            contribution_id=safe_contribution_id,
-            context=context,
-        )
-        invocation_contract = contract.invocation_contracts.get(invocation_contract_id)
-        if invocation_contract is None or invocation_contract.entrypoint != source.value:
-            raise OrchestrationError(
-                "PROJECT_ENTRYPOINT_DISABLED",
-                "Requested entrypoint is not enabled for this automation project",
-            )
-        managed_projection_source = source in {
-            AutomationEntrypoint.CONSOLE,
-            AutomationEntrypoint.HARNESS,
-            AutomationEntrypoint.SCHEDULER,
-            AutomationEntrypoint.FEISHU,
-            AutomationEntrypoint.WEBHOOK,
-            AutomationEntrypoint.EVENTS,
-            AutomationEntrypoint.MODULE_SLOTS,
-        }
-        if is_service_v2 and managed_projection_source:
-            require_active_service_v2_dispatch(
-                self._contribution_registry,
-                source=source,
-                entry=entry,
-                automation_id=safe_id,
-                generation=contract.automation_generation,
-                invocation_contract=invocation_contract,
-                context=context,
-                expected_event_name=expected_event_name,
-            )
-        occurred_at = datetime.now(timezone.utc)
-        execution_context = {
-            "project_request_id": safe_request_id,
-            "entrypoint": source.value,
-            "occurred_at": occurred_at.isoformat(),
-            **context,
-        }
-        if is_service_v2:
-            execution_context["contribution_id"] = invocation_contract.contribution_id
-        selection_dynamic_inputs: Mapping[str, Any] | None = None
-        selection_context: Mapping[str, Any] | None = None
-        service_v2_selection_phase: str | None = None
-        if selection_invocation and "dynamic_inputs" in context:
-            raw_selection_inputs = context["dynamic_inputs"]
-            if not isinstance(raw_selection_inputs, Mapping) or set(raw_selection_inputs) != {
-                "dry_run",
-                "selected_bill_codes",
-                "preview_fingerprint",
-            }:
-                raise OrchestrationError(
-                    "SELECTION_INPUT_INVALID",
-                    "Selection workflow inputs must come from the server preview flow",
-                    details={"status": "BLOCKED_DATA"},
-                )
-            selection_dynamic_inputs = raw_selection_inputs
-            if is_service_v2:
-                try:
-                    service_v2_selection_phase = resolve_service_v2_selection_phase(
-                        raw_selection_inputs
-                    )
-                except ValueError as exc:
-                    raise OrchestrationError(
-                        "SELECTION_EXECUTION_PHASE_INVALID",
-                        "Service v2 selection phase is incomplete or ambiguous",
-                        details={"status": "BLOCKED_DATA"},
-                    ) from exc
-                execution_context["selection_phase"] = service_v2_selection_phase
-                if (
-                    service_v2_selection_phase == SELECTION_PHASE_FORMAL
-                    and safe_selection_preview_run_id is None
-                ) or (
-                    service_v2_selection_phase == SELECTION_PHASE_PREVIEW
-                    and safe_selection_preview_run_id is not None
-                ):
-                    raise OrchestrationError(
-                        "SELECTION_PREVIEW_REQUIRED",
-                        "Formal selection execution requires one persisted preview",
-                        details={"status": "BLOCKED_DATA"},
-                    )
-        arguments = dict(invocation_contract.expected_arguments)
-        for field_name, resolver_id in sorted(
-            invocation_contract.dynamic_argument_resolvers.items()
-        ):
-            if self._dynamic_resolver is None:
-                raise OrchestrationError(
-                    "PROJECT_DYNAMIC_INPUT_UNAVAILABLE",
-                    "Project invocation requires a server-owned dynamic resolver",
-                )
-            try:
-                resolved_value = self._dynamic_resolver(
-                    resolver_id,
-                    field_name,
-                    execution_context,
-                )
-                if resolved_value is OMIT_DYNAMIC_ARGUMENT:
-                    continue
-                arguments[field_name] = resolved_value
-            except Exception as exc:
-                raise OrchestrationError(
-                    "PROJECT_DYNAMIC_INPUT_UNAVAILABLE",
-                    "Dynamic project invocation input could not be resolved",
-                ) from exc
-        if scan_preview_project and safe_preview_run_id is None:
-            arguments["dry_run"] = True
-        if safe_selection_preview_run_id is not None:
-            if selection_expectation is None or selected_bill_codes is None:
-                raise OrchestrationError(
-                    "SELECTION_PREVIEW_PROJECT_INVALID",
-                    "Selection preview confirmation is unavailable",
-                    details={"status": "BLOCKED_DATA"},
-                )
-            with self._repository.unit_of_work() as uow:
-                selection = resolve_selection_preview(
-                    uow,
-                    preview_run_id=safe_selection_preview_run_id,
-                    expectation=selection_expectation,
-                    selected_bill_codes=selected_bill_codes,
-                    now=occurred_at,
-                    for_update=False,
-                )
-            selection_dynamic_inputs = dict(selection.formal_arguments)
-            selection_context = dict(selection.context)
-            execution_context["selection_phase"] = SELECTION_PHASE_FORMAL
-            execution_context[SELECTION_PREVIEW_CONTEXT_KEY] = selection_context
-            execution_context["occurred_at"] = selection_context["observed_at"]
-        if selection_dynamic_inputs is not None:
-            arguments.update(dict(selection_dynamic_inputs))
-        preview_expectation = ScanPreviewExpectation(
-            project_instance_id=safe_id,
-            generation=contract.automation_generation,
-            contract_digest=contract.contract_hash,
-            configuration_version=contract.project_configuration_version,
-        )
-        preview_context: Mapping[str, Any] | None = None
-        if safe_preview_run_id is not None:
-            with self._repository.unit_of_work() as uow:
-                preview = resolve_scan_preview(
-                    uow,
-                    preview_run_id=safe_preview_run_id,
-                    expectation=preview_expectation,
-                    formal_arguments=arguments,
-                    now=occurred_at,
-                    for_update=False,
-                )
-            arguments = dict(preview.formal_arguments)
-            preview_context = dict(preview.context)
-            execution_context[SCAN_PREVIEW_CONTEXT_KEY] = preview_context
-            # A stable preview observation time makes concurrent retries carry
-            # byte-identical immutable Command parameters.
-            execution_context["occurred_at"] = preview_context["observed_at"]
-        with self._repository.unit_of_work() as uow:
-            policy = uow.automation_projects.get_policy(safe_id)
-        if policy is None:
-            raise OrchestrationError(
-                "PROJECT_POLICY_NOT_INITIALIZED",
-                "Automation project policy is not initialized",
-            )
-        policy_version = _positive_int(int(policy.get("version") or 0), "policy_version")
-        invocation = AutomationProjectInvocation(
-            automation_id=safe_id,
-            automation_generation=contract.automation_generation,
-            entrypoint=source,
-            contract_id=invocation_contract.contract_id,
-            contract_hash=contract.contract_hash,
-            policy_version=policy_version,
-            project_configuration_version=contract.project_configuration_version,
-            request_id=safe_request_id,
-        )
-        command = Command(
-            command_type="automation.project.invoke",
-            source=source.value,
-            actor=actor,
-            parameters={
-                "tool_name": contract.tool_name,
-                "arguments": arguments,
-                "execution_context": execution_context,
-            },
-            idempotency_key=command_idempotency_key,
-            entity_refs=(
-                EntityRef(
-                    entity_type="automation_project",
-                    entity_id=safe_id,
-                    source_system="agent",
-                ),
-            ),
-            automation_invocation=invocation,
-        )
-
-        def guard(
-            uow: Any,
-            acceptance: Mapping[str, str],
-        ) -> Mapping[str, Any] | None:
-            locked_project = uow.automation_plugins.get_project(
-                safe_id,
-                for_update=True,
-            )
-            if locked_project is None:
-                raise OrchestrationError(
-                    "AUTOMATION_PROJECT_NOT_FOUND",
-                    "Automation project is not installed",
-                )
-            replay = _locked_command_replay(
-                uow,
-                command,
-                actor=actor,
-                trusted_context=context,
-                project_instance_id=safe_id,
-                request_id=safe_request_id,
-                scan_preview_run_id=safe_preview_run_id,
-                selection_preview_run_id=safe_selection_preview_run_id,
-                selected_bill_codes=selected_bill_codes,
-                expected_selection_contribution_id=expected_selection_contribution_id,
-                expected_generation=expected_generation,
-                expected_configuration_version=expected_configuration,
-            )
-            if replay is not None:
-                return replay
-            locked_contract, _config = self._lock_and_compile_contract(
-                uow,
-                entry,
-                expected=contract,
-                require_enabled=True,
-                locked_project=locked_project,
-            )
-            current_policy = uow.automation_projects.get_policy(
-                safe_id,
-                for_update=True,
-            )
-            if (
-                current_policy is None
-                or int(current_policy.get("version") or 0) != policy_version
-                or locked_contract.contract_hash != invocation.contract_hash
-                or locked_contract.automation_generation != invocation.automation_generation
-            ):
-                raise OrchestrationError(
-                    "PROJECT_INVOCATION_STALE",
-                    "Automation project changed before command acceptance",
-                )
-            if is_service_v2 and source in {
-                AutomationEntrypoint.FEISHU,
-                AutomationEntrypoint.WEBHOOK,
-                AutomationEntrypoint.EVENTS,
-                AutomationEntrypoint.MODULE_SLOTS,
-            }:
-                require_active_service_v2_dispatch(
-                    self._contribution_registry,
-                    source=source,
-                    entry=entry,
-                    automation_id=safe_id,
-                    generation=locked_contract.automation_generation,
-                    invocation_contract=invocation_contract,
-                    context=context,
-                    expected_event_name=expected_event_name,
-                )
-            supersede_safely_suspended_runs(
-                uow,
-                automation_id=safe_id,
-                successor=acceptance,
-                source=source.value,
-                request_id=safe_request_id,
-                read_only_preview=bool((scan_preview_project and safe_preview_run_id is None) or (selection_invocation and safe_selection_preview_run_id is None)),
-            )
-            if (
-                safe_selection_preview_run_id is not None
-                and selection_expectation is not None
-                and selection_context is not None
-                and selected_bill_codes is not None
-            ):
-                locked_selection = resolve_selection_preview(
-                    uow,
-                    preview_run_id=safe_selection_preview_run_id,
-                    expectation=selection_expectation,
-                    selected_bill_codes=selected_bill_codes,
-                    now=occurred_at,
-                    for_update=True,
-                )
-                ensure_selection_preview_active(
-                    locked_selection.context,
-                    now=datetime.now(timezone.utc),
-                )
-                accepted_selection_arguments = {
-                    field_name: arguments.get(field_name)
-                    for field_name in SELECTION_ARGUMENT_FIELDS
-                }
-                if (
-                    dict(locked_selection.formal_arguments)
-                    != accepted_selection_arguments
-                    or locked_selection.context.get("context_sha256")
-                    != selection_context.get("context_sha256")
-                ):
-                    raise OrchestrationError(
-                        "SELECTION_PREVIEW_STALE",
-                        "Selection preview changed before command acceptance",
-                        details={"status": "BLOCKED_DATA"},
-                    )
-                consume_selection_preview(
-                    uow,
-                    expectation=selection_expectation,
-                    context=locked_selection.context,
-                    command=command,
-                    occurred_at=occurred_at,
-                )
-            if preview_context is not None and safe_preview_run_id is not None:
-                locked_preview = resolve_scan_preview(
-                    uow,
-                    preview_run_id=safe_preview_run_id,
-                    expectation=preview_expectation,
-                    formal_arguments=arguments,
-                    now=occurred_at,
-                    for_update=True,
-                )
-                ensure_scan_preview_active(
-                    locked_preview.context,
-                    now=datetime.now(timezone.utc),
-                )
-                if locked_preview.context.get("context_sha256") != preview_context.get("context_sha256"):
-                    raise OrchestrationError(
-                        "SCAN_PREVIEW_STALE",
-                        "The scan preview changed before command acceptance",
-                        details={"status": "BLOCKED_DATA"},
-                    )
-                consume_scan_preview(
-                    uow,
-                    context=locked_preview.context,
-                    command=command,
-                    occurred_at=occurred_at,
-                )
-
-        # A fresh invocation never reconciles or resumes a historical Run.
-        # Explicit receipt verification remains available through its own API.
-        return self._command_gateway.submit(
-            command,
-            uow_acceptance_guard=guard,
-        )
+    def invoke_trusted(self, automation_id: str, **kwargs) -> Any:
+        from agent.orchestration.direct_project_invocation import invoke_direct
+        return invoke_direct(self, automation_id, **kwargs)
 
     async def invoke_trusted_and_wait(
         self,
@@ -1838,58 +1085,29 @@ class AutomationProjectPolicyService:
         idempotency_key: str | None = None,
         expected_automation_generation: int | None = None,
         expected_project_configuration_version: int | None = None,
-        preview_run_id: str | None = None,
-        selection_preview_run_id: str | None = None,
+        preview_invocation_id: str | None = None,
         selected_bill_codes: Sequence[str] | None = None,
         contribution_id: str | None = None,
         timeout_seconds: float = 1800.0,
         on_accepted: Callable[[Any], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         receipt = self.invoke_trusted(
-            automation_id,
-            entrypoint=entrypoint,
-            request_id=request_id,
-            actor=actor,
-            trusted_context=trusted_context,
-            idempotency_key=idempotency_key,
+            automation_id, entrypoint=entrypoint, request_id=request_id, actor=actor,
+            trusted_context=trusted_context, idempotency_key=idempotency_key,
             expected_automation_generation=expected_automation_generation,
-            expected_project_configuration_version=(expected_project_configuration_version),
-            preview_run_id=preview_run_id,
-            selection_preview_run_id=selection_preview_run_id,
-            selected_bill_codes=selected_bill_codes,
-            contribution_id=contribution_id,
+            expected_project_configuration_version=expected_project_configuration_version,
+            preview_invocation_id=preview_invocation_id,
+            selected_bill_codes=selected_bill_codes, contribution_id=contribution_id,
         )
-        if on_accepted is not None:
+        if on_accepted is not None and receipt.get("status") in ACTIVE_INVOCATION_STATUSES:
             await on_accepted(receipt)
-        if self._command_gateway is None:  # defensive; invoke_trusted checked it
-            raise OrchestrationError(
-                "PROJECT_INVOKE_UNAVAILABLE",
-                "Automation project command gateway is unavailable",
-            )
-        run = await self._command_gateway.wait_for_run(
-            receipt.run_id,
-            timeout_seconds=timeout_seconds,
-        )
-        status = str(run.get("status") or "")
-        result = {
-            "success": status == "COMPLETED",
-            "status": status,
-            "command_id": str(run.get("command_id") or receipt.command_id),
-            "work_item_id": str(run.get("work_item_id") or receipt.work_item_id),
-            "run_id": str(run.get("run_id") or receipt.run_id),
-            "correlation_id": str(run.get("correlation_id") or ""),
-            "error_code": str(run.get("error_code") or "").strip() or None,
-            "error_summary": (
-                redact_text(run.get("error_summary"))[:500] or None
-            ),
-        }
-        if status == "COMPLETED" and preview_run_id is None:
-            entry, _contract = self._load_contract(automation_id)
+        result = await self.direct_invocations.wait(receipt["invocation_id"], timeout_seconds=timeout_seconds)
+        if result["status"] == "COMPLETED" and preview_invocation_id is None and result.get("output", {}).get("dry_run") is True:
+            entry = self._load_catalog_entry(automation_id)
             if is_scan_preview_project(entry):
-                result["scan_preview"] = self.get_scan_preview_projection(
-                    automation_id,
-                    preview_run_id=str(run.get("run_id") or receipt.run_id),
-                )
+                result["scan_preview"] = self.get_scan_preview_projection(automation_id, preview_invocation_id=result["invocation_id"])
+            if is_selection_preview_project(entry):
+                result["selection_preview"] = self.get_selection_preview_projection(automation_id, preview_invocation_id=result["invocation_id"])
         return result
 
     def evaluate_invocation(
