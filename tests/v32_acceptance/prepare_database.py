@@ -36,9 +36,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--reset-owned-fixture',action='store_true')
     args = parser.parse_args()
-    expected = {'AGENT_DB_HOST':'127.0.0.1','AGENT_DB_PORT':'33326','AGENT_DB_NAME':'v32_e2e_test',
+    from tests.v32_acceptance.owned_database import ISOLATED_MYSQL_PORTS
+    expected = {'AGENT_DB_HOST':'127.0.0.1','AGENT_DB_NAME':'v32_e2e_test',
         'PYTHON_DOTENV_DISABLED':'1','MIGRATION_ENV_FILE':'/dev/null'}
-    if any(os.environ.get(key)!=value for key,value in expected.items()):
+    if any(os.environ.get(key)!=value for key,value in expected.items()) or int(os.environ.get('AGENT_DB_PORT', '0')) not in ISOLATED_MYSQL_PORTS:
         raise RuntimeError('E2E migration requires exact isolated test environment')
     from tests.v32_acceptance.management_fixture import e2e_fixture_lock
 
@@ -51,7 +52,7 @@ def _prepare_locked(*, reset_owned_fixture):
     if reset_owned_fixture:
         owned_runtime_paths()
     fixture = MySqlOrchestrationIntegrationTests
-    fixture.pymysql,fixture.host,fixture.port = pymysql,'127.0.0.1',33326
+    fixture.pymysql,fixture.host,fixture.port = pymysql,'127.0.0.1',int(os.environ['AGENT_DB_PORT'])
     fixture.user,fixture.password = os.environ['AGENT_DB_USER'],os.environ['AGENT_DB_PASS']
     fixture.runner = _load_migration_runner()
     with pymysql.connect(host=fixture.host,port=fixture.port,user=fixture.user,password=fixture.password,autocommit=True) as connection,connection.cursor() as cursor:

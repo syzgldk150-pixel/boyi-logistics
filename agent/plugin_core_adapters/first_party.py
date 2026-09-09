@@ -2544,118 +2544,15 @@ def _replace_yunda_send_sheet(
 
 
 def _replace_yunda_waybill_projection(
-    records: list[dict[str, Any]],
-    target_date: str,
+    records: list[dict[str, Any]], target_date: str, descriptor: Mapping[str, Any],
 ) -> Mapping[str, Any]:
     from tools.yunda_send_waybills_sync_tool import _console_waybill_records
-    from tools.phase7_mysql_store import (
-        list_console_waybills_by_numbers,
-        list_console_waybills_by_source_date,
-        normalize_console_waybill_record,
-        sync_console_waybills,
-    )
-
-    business_date = date.fromisoformat(target_date)
-    console_records = _console_waybill_records(records, target_date=business_date)
+    from plugin_core_adapters.waybill_query import publish_verified_waybills
+    console_records = _console_waybill_records(records, target_date=date.fromisoformat(target_date))
     if len(console_records) != len(records):
-        return {"ok": False, "record_count": 0}
-    expected: dict[str, dict[str, str]] = {}
-    for raw in console_records:
-        normalized = normalize_console_waybill_record(raw)
-        if (
-            normalized is None
-            or normalized["open_date"] != target_date
-            or normalized["waybill_no"] in expected
-        ):
-            return {"ok": False, "record_count": 0}
-        expected[normalized["waybill_no"]] = normalized
-    identities = sorted(expected)
-    try:
-        before = list_console_waybills_by_source_date(
-            source="yunda",
-            target_date=business_date,
-        )
-        prior_identity_rows = (
-            list_console_waybills_by_numbers(identities) if identities else []
-        )
-    except Exception as exc:
-        raise PluginExecutionError(
-            "Yunda projection pre-write snapshot is unavailable",
-            code="BROKER_SOURCE_FAILED",
-        ) from exc
-    existed = {
-        str(row.get("waybill_no") or "").strip()
-        for row in prior_identity_rows
-        if isinstance(row, Mapping)
-    }
-    try:
-        sync_console_waybills(
-            console_records,
-            source="yunda",
-            target_date=business_date,
-            replace_date=True,
-        )
-    except Exception:
-        pass
-    try:
-        after = list_console_waybills_by_source_date(
-            source="yunda",
-            target_date=business_date,
-        )
-    except Exception as exc:
-        _yunda_write_unknown("Yunda projection fresh readback failed", cause=exc)
-
-    actual: dict[str, list[dict[str, str]]] = {}
-    verified_rows: list[dict[str, Any]] = []
-    for raw in after:
-        if not isinstance(raw, Mapping):
-            _yunda_write_unknown("Yunda projection readback row is invalid")
-        normalized = normalize_console_waybill_record(dict(raw))
-        identity = str((normalized or {}).get("waybill_no") or "").strip()
-        if (
-            normalized is None
-            or str(raw.get("source") or "").strip() != "yunda"
-            or normalized["open_date"] != target_date
-        ):
-            _yunda_write_unknown("Yunda projection readback identity is invalid")
-        if identity not in expected and normalized["status"] == "cancelled":
-            continue
-        actual.setdefault(identity, []).append(normalized)
-    if set(actual) != set(expected) or any(
-        len(rows_for_identity) != 1 for rows_for_identity in actual.values()
-    ):
-        _yunda_write_unknown("Yunda projection readback identity set is not exact")
-    for identity in sorted(expected):
-        wanted = expected[identity]
-        observed = actual[identity][0]
-        for field_name, expected_value in wanted.items():
-            if field_name == "status" and observed[field_name] == "cancelled":
-                continue
-            if observed[field_name] != expected_value:
-                _yunda_write_unknown("Yunda projection readback field value changed")
-        verified_rows.append({"identity": identity, "fields": observed})
-
-    before_active = [
-        str(row.get("waybill_no") or "").strip()
-        for row in before
-        if isinstance(row, Mapping)
-        and str(row.get("status") or "").strip() != "cancelled"
-    ]
-    updates = len(set(identities) & existed)
-    creates = len(identities) - updates
-    return {
-        "ok": True,
-        "record_count": len(records),
-        "upserted": len(identities),
-        "updates": updates,
-        "creates": creates,
-        "deleted_stale": sum(
-            1 for identity in before_active if identity not in set(identities)
-        ),
-        "verified": True,
-        "readback_count": len(identities),
-        "readback_sha256": _readback_digest(verified_rows),
-    }
+        raise PluginExecutionError("Yunda projection normalization lost rows", code="BROKER_SOURCE_INVALID")
+    return publish_verified_waybills(console_records, source="yunda", target_date=target_date,
+        account_id=str(descriptor["account_id"]))
 
 
 def build_production_first_party_core_handler_map(

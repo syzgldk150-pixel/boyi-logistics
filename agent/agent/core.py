@@ -1,8 +1,8 @@
 """Compatibility facade for chat and legacy tool callers.
 
-All tool work is accepted by :class:`CommandGateway`.  This module deliberately
-does not own or call ``ToolExecutor``; the durable ``WorkflowRunner`` is the only
-caller of the governed execution port.
+Registered readers return data directly. Installed plugins are invoked through
+the signed plugin interface; historical Command access is retained only for
+explicit work-item inspection and administration.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from agent.direct_tool_router import (
     parse_login_send_code_session,
 )
 from agent.llm_client import LLMClient
+from agent.direct_readers import invoke_registered_reader
 from agent.finance_brain import FinanceBrain
 from agent.llm_settings import LLMSettingsRepository
 from shared.finance import FinanceRepository
@@ -70,9 +71,10 @@ class AgentCore:
         self._system_prompt = ""
         self._tool_selection_prompt = ""
         self._business_rules = ""
-        # Kept only for composition-root compatibility.  Runners are injected
-        # into RegisteredToolExecutionAdapter, never invoked from this facade.
+        # Closed host readers are direct requests. Plugins use their dedicated
+        # signed invocation entrypoints and never the historical Command path.
         self._direct_tool_runners = dict(direct_tool_runners or {})
+        self._direct_invocations = None
         self._today_provider = today_provider or (
             lambda: dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).date()
         )
@@ -81,6 +83,11 @@ class AgentCore:
         self._workflow_runner: Any | None = None
         self._execution_runtime: Any | None = None
         self._control_plane_service: Any | None = None
+
+    def configure_direct_readers(self, readers: Mapping[str, Callable[[dict], dict]], *, invocations=None) -> None:
+        self._direct_tool_runners.update(readers)
+        if invocations is not None:
+            self._direct_invocations = invocations
 
     def configure_orchestration(
         self,
@@ -446,67 +453,22 @@ class AgentCore:
         timeout_seconds: float = 1800.0,
         on_submitted: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        """Deprecated synchronous wrapper; it always traverses CommandGateway."""
+        """Invoke a registered short reader; ordinary queries create no queued work."""
 
-        if self._command_gateway is None or self._orchestration_repository is None:
-            return {
-                "success": False,
-                "error_code": "CONTROL_PLANE_UNAVAILABLE",
-                "error": "Agent control plane is not initialized",
-            }
-        capability = self.registry.get_capability(str(tool_name or ""))
-        if capability is None:
-            return {"success": False, "error_code": "UNKNOWN_TOOL", "error": f"未知工具: {tool_name}"}
-        if not isinstance(params, Mapping):
-            return {
-                "success": False,
-                "error_code": "INVALID_TOOL_ARGUMENTS",
-                "error": "tool arguments must be a JSON object",
-            }
-        trusted_actor = actor or Actor(ActorType.LEGACY_API, "legacy-api")
-        operation_type = str(capability.get("operation_type") or "")
-        if not idempotency_key and operation_type not in {"read", "compute"}:
-            return {
-                "success": False,
-                "error_code": "IDEMPOTENCY_KEY_REQUIRED",
-                "error": "write commands require a stable idempotency key",
-            }
-        key = str(idempotency_key or f"legacy:{trusted_actor.actor_id}:{tool_name}:{uuid.uuid4()}")
-        command = Command(
-            command_type="tool.execute",
-            source=str(source or "legacy_api"),
-            actor=trusted_actor,
-            parameters={
-                "tool_name": str(tool_name),
-                "arguments": dict(params),
-                "account_id": params.get("account_id"),
-                "execution_context": dict(execution_context or {}),
-                "llm_selected": bool(llm_selected),
-            },
-            idempotency_key=key,
-            correlation_id=str(correlation_id or new_id()),
-        )
-        try:
-            if on_submitted is None:
-                run = await self._command_gateway.submit_and_wait(
-                    command,
-                    timeout_seconds=timeout_seconds,
-                )
-            else:
-                receipt = self._command_gateway.submit(command)
-                on_submitted(receipt.to_dict())
-                run = await self._command_gateway.wait_for_run(
-                    receipt.run_id,
-                    timeout_seconds=timeout_seconds,
-                )
-            return self._legacy_result_from_run(run)
-        except OrchestrationError as exc:
-            return {
-                "success": False,
-                "error_code": exc.code,
-                "error": exc.message,
-                "details": exc.details,
-            }
+        direct_runner = self._direct_tool_runners.get(str(tool_name or ""))
+        if direct_runner is not None:
+            return await invoke_registered_reader(
+                catalog=self.registry, name=tool_name, arguments=params, handler=direct_runner,
+                actor=actor, source=source, llm_selected=llm_selected, timeout_seconds=timeout_seconds,
+                invocations=self._direct_invocations,
+            )
+        # Writes and installed plugins have their own explicit, authenticated
+        # interface. Do not turn an unregistered ordinary request into a Run.
+        return {
+            "success": False,
+            "error_code": "DIRECT_INTERFACE_REQUIRED",
+            "error": "此功能需要通过已注册的插件或业务接口调用",
+        }
 
     def submit_command(self, command: Command):
         """Submit a trusted command without exposing the Gateway implementation."""

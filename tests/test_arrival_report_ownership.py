@@ -73,6 +73,29 @@ def test_current_day_statistics_ownership_includes_zero_row_publication(publicat
     assert arrival_report.read_arrival_report_publication(ACCOUNT, RESOURCE, "2026-09-09")["statistics_published"] is False
 
 
+def test_direct_invocation_owns_statistics_without_any_legacy_run(publication_source):
+    publications, _values, _resource = publication_source
+    publication = _publication()
+    publication.pop("orchestration_run_id")
+    publication.update(invocation_id="direct-statistics", invocation_status="COMPLETED",
+                       publication_verified=True, result_json={"status": "SUCCESS", "data": {}, "error": None})
+    publications.append(publication)
+    assert arrival_report.read_arrival_report_publication(ACCOUNT, RESOURCE, DAY)["statistics_published"] is True
+
+
+@pytest.mark.parametrize("status", ["FAILED", "WRITE_OUTCOME_UNKNOWN", "RUNNING", "CANCELLED"])
+def test_latest_unverified_direct_statistics_cannot_be_overwritten_by_list(publication_source, status):
+    publications, _values, _resource = publication_source
+    publications.append(_publication(finished_at=datetime(2026, 9, 8, 11, tzinfo=timezone.utc)))
+    publication = _publication()
+    publication.pop("orchestration_run_id")
+    publication.update(invocation_id="direct-incomplete", invocation_status=status,
+                       publication_verified=False, result_json=None)
+    publications.append(publication)
+    with pytest.raises(PluginExecutionError, match="完整核验"):
+        arrival_report.read_arrival_report_publication(ACCOUNT, RESOURCE, DAY)
+
+
 @pytest.mark.parametrize("damage", ["binding", "account", "metadata", "locator", "scope", "header", "count", "quantity"])
 def test_changed_or_damaged_statistics_fail_before_any_list_write(publication_source, damage):
     publications, values, resource = publication_source

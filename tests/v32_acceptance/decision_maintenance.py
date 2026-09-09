@@ -20,14 +20,13 @@ from Crypto.PublicKey import ECC
 from agent.automation_plugins.first_party import first_party_payload_files, resolve_first_party_manifests
 from agent.automation_plugins.manifest import AutomationPluginManifest
 from agent.automation_plugins.package import Ed25519PackageSigner, Ed25519TrustStore, build_signed_plugin_zip, verify_signed_plugin_zip
-from agent.orchestration.context_builder import ContextBuilder
 from agent.orchestration.models import Actor, ActorType
 from agent.tool_registry import ToolRegistry
 from shared.contracts import api_success
 from plugin_core_adapters.problem_actions import build_production_problem_handler_map
 from tests.v32_acceptance.management_fixture import ManagementFixture
 from tests.v32_acceptance.problem_fixture import ACCOUNTS, RESOURCE_ID, ProblemAccounts, ProblemSupplier
-from tests.v32_acceptance.runner_fixture import RunnerFixture
+from tests.direct_invocation_fixture import DirectFixture
 from tests.v32_acceptance.first_party_fixture import bootstrap, isolated_migration_accounts
 from tests.v32_acceptance.console_fixture import ConsoleFixture
 from tests.v32_acceptance.problem_browser import ProblemBrowser
@@ -146,8 +145,7 @@ def composed():
             management.app.add_api_route('/internal/v1/admin/accounts',
                 lambda: api_success({'accounts': account_manager.list_accounts()}), methods=['GET'])
             management.bootstrap_result = bootstrap(management, private_key=private_key, trust=trust, key_id="v32-m03")
-            context = ContextBuilder(account_resolver=lambda _command: account_manager.list_accounts())
-            with RunnerFixture(management, context_builder=context) as runner:
+            with DirectFixture(management, saved_resource_provider=supplier.resource_loader) as runner:
                 yield management, runner, supplier, artifacts
 
 
@@ -172,27 +170,41 @@ def setup_instance(management, artifact):
     return automation_id
 
 
-def wait_result(run_id):
+def wait_result(invocation_id):
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         with connect() as connection, connection.cursor() as cursor:
-            cursor.execute("SELECT status,error_code,error_summary FROM agent_runs WHERE run_id=%s", (run_id,))
-            run = cursor.fetchone()
-            if run and run["status"] in {"COMPLETED", "FAILED_TERMINAL", "CANCELLED", "PARTIAL", "WAITING_APPROVAL"}:
-                cursor.execute("SELECT result_summary_json,postcondition_status FROM agent_run_steps WHERE run_id=%s ORDER BY step_order", (run_id,))
-                steps = cursor.fetchall()
-                cursor.execute('''SELECT lease.generation,lease.outcome,generation.plugin_version,
+            cursor.execute("SELECT invocation_id,status,error_code,error_summary,result_json FROM automation_plugin_invocations WHERE invocation_id=%s", (invocation_id,))
+            invocation = cursor.fetchone()
+            if invocation and invocation["status"] in {"COMPLETED", "FAILED", "CANCELLED", "WRITE_OUTCOME_UNKNOWN"}:
+                invocation['result'] = json.loads(invocation.pop('result_json') or '{}')
+                cursor.execute("""SELECT lease.generation,lease.outcome,generation.plugin_version,
                     lease.runtime_metadata_sha256,lease.released_at FROM automation_project_generation_leases lease
                     JOIN automation_project_generations generation ON generation.automation_id=lease.automation_id AND generation.generation=lease.generation
-                    WHERE lease.orchestration_run_id=%s ORDER BY lease.acquired_at''', (run_id,))
+                    WHERE lease.invocation_id=%s ORDER BY lease.acquired_at""", (invocation_id,))
                 leases = cursor.fetchall()
                 for lease in leases:
                     lease['released_at'] = lease['released_at'].isoformat() if lease['released_at'] else None
-                cursor.execute('SELECT action,outcome,COUNT(*) AS count FROM automation_write_attempt_receipts WHERE orchestration_run_id=%s GROUP BY action,outcome ORDER BY action,outcome', (run_id,))
-                receipts = cursor.fetchall()
-                return {"run_id": run_id, **run, "steps": steps, 'leases':leases, 'write_receipts':receipts}
+                cursor.execute('SELECT action,outcome,COUNT(*) AS count FROM automation_write_attempt_receipts WHERE invocation_id=%s GROUP BY action,outcome ORDER BY action,outcome', (invocation_id,))
+                return {**invocation, 'leases': leases, 'write_receipts': cursor.fetchall()}
         time.sleep(0.1)
-    raise RuntimeError("real M03 Runner did not reach a terminal result")
+    raise RuntimeError("real M03 Invocation did not reach a terminal result")
+
+
+def require_verified_result(invocation):
+    result = invocation['result']
+    if (invocation['status'] != 'COMPLETED' or result.get('status') != 'SUCCESS'
+            or result.get('error') is not None):
+        raise AssertionError('actual business execution failed: ' + str(invocation))
+    meta = result.get('meta', {})
+    conditions = meta.get('postconditions', {})
+    evidence = meta.get('postcondition_evidence', {})
+    if not conditions or any(value is not True or not evidence.get(key) for key, value in conditions.items()):
+        raise AssertionError('actual write postcondition evidence is missing')
+    if not invocation['leases'] or any(lease['released_at'] is None for lease in invocation['leases']):
+        raise AssertionError('actual plugin generation has not been released')
+    if not invocation['write_receipts'] or any(row['outcome'] == 'WRITE_STARTED' for row in invocation['write_receipts']):
+        raise AssertionError('actual write receipts are missing or unresolved')
 
 
 def main():
@@ -221,7 +233,7 @@ def main():
                     started = time.monotonic()
                     try:
                         receipt = management.policy.invoke_console(unrelated_id, request_id=str(uuid4()), actor=ACTOR)
-                        completed = wait_result(receipt.run_id)
+                        completed = wait_result(receipt['invocation_id'])
                         report['unrelated_runs'].append({'started':started, 'finished':time.monotonic(), **completed})
                         if completed['status'] != 'COMPLETED':
                             return
@@ -235,7 +247,7 @@ def main():
                 with ConsoleFixture(agent_base_url=management.url, internal_token=management.internal_token,
                         signing_secret=management.signing_secret, runtime_root=management.task_env/'console') as console:
                     startup = {'process':before_process,'agent_http_startup_id':management.startup_id,'console_http_startup_id':console.startup_id,
-                        'topology':'Agent HTTP, Console HTTP and Runner threads in one unchanged Python host process; actual isolated plugin subprocesses'}
+                        'topology':'Agent HTTP, Console HTTP and Direct Invocation threads in one unchanged Python host process; actual isolated plugin subprocesses'}
                     report['startup_before'] = startup
                     with ProblemBrowser(console) as browser:
                         for label, codes in [('baseline',['R_M03_STANDARD']),('candidate',['R_M03_STANDARD','R_M03_RESERVED']),('rollback',['R_M03_STANDARD'])]:
@@ -244,9 +256,8 @@ def main():
                                 phase['upgrade'] = browser.upgrade(instance, artifacts['candidate' if label == 'candidate' else 'baseline'])
                             preview = browser.preview(instance, expected_codes=codes)
                             result = wait_result(browser.confirm(instance))
-                            if result['status'] != 'COMPLETED' or any(step['postcondition_status'] != 'VERIFIED' for step in result['steps']):
-                                raise AssertionError(f'actual decision execution failed: {result}')
-                            actual_codes = [row['bill_code'] for step in result['steps'] for row in json.loads(step['result_summary_json'])['data']['results']]
+                            require_verified_result(result)
+                            actual_codes = [row['bill_code'] for row in result['result']['data']['results']]
                             if sorted(actual_codes) != sorted(codes):
                                 raise AssertionError('actual verified business results differ from selected candidate DOM')
                             expected_version = artifacts['candidate' if label=='candidate' else 'baseline']['version']

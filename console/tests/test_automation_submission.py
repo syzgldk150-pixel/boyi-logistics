@@ -21,12 +21,12 @@ class AutomationSubmissionTests(unittest.TestCase):
         app._parse_urlencoded_form = lambda handler: form_values
         return app
 
-    def test_automation_blocking_feedback_distinguishes_all_internal_kinds(self):
+    def test_automation_feedback_never_promises_old_retry_or_history_block(self):
         expected = {
-            "ACTIVE": "正在执行",
-            "RETRY_PENDING": "等待自动重试",
-            "UNKNOWN_WRITE": "写入结果待人工核验",
-            "NEEDS_ATTENTION": "需要处理旧事项",
+            "ACTIVE": "本次未启动",
+            "RETRY_PENDING": "本次未启动",
+            "UNKNOWN_WRITE": "本次未启动",
+            "NEEDS_ATTENTION": "本次未启动",
         }
         for blocking_kind, title in expected.items():
             with self.subTest(blocking_kind=blocking_kind):
@@ -167,7 +167,7 @@ class AutomationSubmissionTests(unittest.TestCase):
 
         def agent_request(method, endpoint, **kwargs):
             captured.update({"method": method, "endpoint": endpoint, **kwargs})
-            return {"ok": True, "data": {"run_id": "run-1"}}
+            return {"ok": True, "data": {"invocation_id": "invocation-1", "status": "STARTING"}}
 
         app._agent_request = agent_request
         result = app._start_automation_task_run(
@@ -834,14 +834,14 @@ class AutomationSubmissionTests(unittest.TestCase):
 
     def test_run_now_reports_existing_project_run_without_resubmitting(self):
         captured = self._run_now_existing_project_response({
-            "blocking_kind": "ACTIVE", "active_run_id": "run-existing", "active_status": "RECEIVED",
+            "blocking_kind": "ACTIVE", "active_invocation_id": "invocation-existing", "active_status": "RUNNING",
             "blocking_count": 2, "unrelated": {"private": "not-public"},
         })
 
         self.assertEqual(HTTPStatus.CONFLICT, captured["status"])
-        self.assertEqual("正在执行", captured["payload"]["title"])
+        self.assertEqual("本次未启动", captured["payload"]["title"])
         self.assertEqual(
-            "当前任务仍在执行，请等待完成后再试。",
+            "当前所需资源仍在使用，本次已结束，请稍后重新触发。",
             captured["payload"]["message"],
         )
         self.assertEqual(
@@ -851,17 +851,18 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertFalse(captured["payload"]["ok"])
         self.assertFalse(captured["payload"]["pending"])
         self.assertNotIn("run_id", captured["payload"])
-        self.assertEqual({"run_id": "run-existing", "status": "RECEIVED", "blocking_kind": "ACTIVE"},
+        self.assertEqual({"invocation_id": "invocation-existing", "status": "RUNNING", "blocking_kind": "ACTIVE"},
             captured["payload"]["existing_run"])
         self.assertNotIn("unrelated", captured["payload"])
 
     def test_existing_run_receipt_is_omitted_when_identity_or_state_is_invalid(self):
         for details in (
             {"blocking_kind": "ACTIVE"},
-            {"blocking_kind": "ACTIVE", "active_run_id": "../another", "active_status": "RUNNING"},
-            {"blocking_kind": "ACTIVE", "active_run_id": {"run_id": "nested"}, "active_status": "RUNNING"},
-            {"blocking_kind": "ACTIVE", "active_run_id": "run-existing", "active_status": "not-a-run-state"},
-            {"blocking_kind": {}, "active_run_id": "run-existing", "active_status": "RUNNING"},
+            {"blocking_kind": "ACTIVE", "active_invocation_id": "../another", "active_status": "RUNNING"},
+            {"blocking_kind": "ACTIVE", "active_invocation_id": {"invocation_id": "nested"}, "active_status": "RUNNING"},
+            {"blocking_kind": "ACTIVE", "active_invocation_id": "invocation-existing", "active_status": "not-a-call-state"},
+            {"blocking_kind": {}, "active_invocation_id": "invocation-existing", "active_status": "RUNNING"},
+            {"blocking_kind": "ACTIVE", "active_run_id": "historical-run", "active_status": "RUNNING"},
         ):
             with self.subTest(details=details):
                 captured = self._run_now_existing_project_response(details)
@@ -908,7 +909,7 @@ class AutomationSubmissionTests(unittest.TestCase):
         self.assertEqual("backend_console", saved[0][2])
         self.assertIn("phase7.stats_archive_sheet", captured["payload"]["saved"])
 
-    def test_task_output_returns_latest_runtime_when_agent_output_unavailable(self):
+    def test_task_output_without_current_identity_does_not_reuse_historical_success(self):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
         app.repository = SimpleNamespace(
             list_scheduled_task_group=lambda task_id: [
@@ -950,10 +951,9 @@ class AutomationSubmissionTests(unittest.TestCase):
         )
 
         self.assertEqual(False, captured["payload"]["running"])
-        self.assertEqual(True, captured["payload"]["runtime"]["ok"])
-        self.assertEqual("最近一次立即执行", captured["payload"]["runtime"]["title"])
-        self.assertEqual("2026-06-20 16:47:43", captured["payload"]["runtime"]["last_run"])
-        self.assertEqual("21 分 3 秒", captured["payload"]["runtime"]["duration_label"])
+        self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
+        self.assertNotIn("runtime", captured["payload"])
+        self.assertIn("缺少本次执行标识", captured["payload"]["error"])
 
 
 if __name__ == "__main__":

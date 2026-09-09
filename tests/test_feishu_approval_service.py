@@ -361,6 +361,19 @@ def test_one_time_binding_and_live_super_admin_role():
     assert service.resolve_actor("ou-1").roles == ()
 
 
+def test_current_binding_ingress_does_not_decide_historical_approvals():
+    service, repository, approvals = _service()
+    challenge = service.create_binding_challenge(7)
+    assert service.handle_binding_text("ou-1", "oc-1", challenge["command"])
+    repository.rows.active = {"approval_id": "old-pending", "plan_hash": "old-plan", "approval_status": "PENDING"}
+    before = dict(repository.rows.active)
+    assert service.handle_binding_text("ou-1", "oc-1", "1") is None
+    assert service.handle_binding_text("ou-1", "oc-1", "2") is None
+    assert repository.rows.active == before
+    assert repository.rows.finished == []
+    assert approvals.decisions == []
+
+
 def test_console_binding_status_does_not_expose_feishu_identifiers():
     service, _repository, _approvals = _service()
     challenge = service.create_binding_challenge(7)

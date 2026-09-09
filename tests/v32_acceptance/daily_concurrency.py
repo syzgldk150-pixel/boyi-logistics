@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 import secrets
 import threading
-import time
 from uuid import uuid4
 
 from Crypto.PublicKey import ECC
@@ -14,7 +13,6 @@ from Crypto.PublicKey import ECC
 from agent.automation_plugins.developer_v2 import build_service_v2_package, init_service_v2_source
 from agent.automation_plugins.first_party import resolve_first_party_manifests
 from agent.automation_plugins.package import Ed25519TrustStore
-from agent.orchestration.context_builder import ContextBuilder
 from agent.tool_registry import ToolRegistry
 from plugin_core_adapters.first_party import build_production_first_party_core_handler_map
 from plugin_core_adapters.problem_actions import build_production_problem_handler_map
@@ -28,8 +26,8 @@ from tests.v32_acceptance.first_party_fixture import bootstrap, isolated_migrati
 from tests.v32_acceptance.management_fixture import ManagementFixture
 from tests.v32_acceptance.owned_database import connect_owned, prepare_owned
 from tests.v32_acceptance.problem_fixture import ACCOUNTS, SPLIT_TARGET, ProblemAccounts, ProblemSupplier
-from tests.v32_acceptance.post_success_delivery import exercise_post_success
-from tests.v32_acceptance.runner_fixture import RunnerFixture
+from tests.direct_invocation_fixture import DirectFixture
+from tests.test_direct_plugin_invocation_mysql import _legacy_counts
 
 ROOT = Path(__file__).resolve().parents[2]
 DATABASE = 'v32_a02_test'
@@ -89,16 +87,11 @@ class ProblemBoundary(ProblemSupplier):
         return super()._post(path, payload)
 
 
-def wait_run(management, run_id, *, expected=None, timeout=90):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        row = management.repository.get_run(run_id)
-        if row and row['status'] in {'COMPLETED', 'FAILED_TERMINAL', 'CANCELLED', 'BLOCKED_DATA', 'PARTIAL'}:
-            if expected and row['status'] != expected:
-                raise AssertionError({key: row[key] for key in ('run_id', 'status', 'error_code', 'error_summary')})
-            return row
-        time.sleep(.05)
-    raise AssertionError('A02 actual Runner deadline: ' + run_id)
+def wait_invocation(runtime, invocation_id, *, expected=None, timeout=90):
+    row = runtime.service.wait_sync(invocation_id, timeout_seconds=timeout)
+    if expected and row['status'] != expected:
+        raise AssertionError(row)
+    return row
 
 
 def failing_package(management):
@@ -174,60 +167,71 @@ def main():
                 setup_instance(management, None)
                 setup_split(management)
                 failure_id = failing_package(management)
-                with RunnerFixture(management, saved_resource_provider=resources.get,
-                        context_builder=ContextBuilder(account_resolver=lambda _command: account_manager.list_accounts())) as runner:
+                with DirectFixture(management, saved_resource_provider=resources.get) as runner:
+                    before = _legacy_counts(management.repository)
+                    def invoke(identity, **fields):
+                        return signed_request(management, f'/internal/v1/automation-projects/{identity}/invoke',
+                            payload={'request_id': str(uuid4()), **fields})
+                    # Statistics can consume the last completed scan snapshot. It
+                    # must not wait for, or claim to include, a currently running scan.
+                    seed_preview = invoke('scan_codes')
+                    wait_invocation(runner, seed_preview['invocation_id'], expected='COMPLETED')
+                    seed_scan = invoke('scan_codes', preview_invocation_id=seed_preview['invocation_id'])
+                    wait_invocation(runner, seed_scan['invocation_id'], expected='COMPLETED')
+                    assert [row['BILL_CODE'] for row in daily.ledger] == [CHILD_CODE]
+                    daily.ledger.clear()
                     previews = {}
                     for identity in ('scan_codes', 'self_pickup_problem_upload', 'split_pending_problem_upload'):
                         path = f'/internal/v1/automation-projects/{identity}/' + ('invoke' if identity == 'scan_codes' else 'selection-previews')
                         preview = signed_request(management, path, payload={'request_id': str(uuid4())})
-                        wait_run(management, preview['run_id'], expected='COMPLETED')
-                        previews[identity] = preview['run_id']
+                        wait_invocation(runner, preview['invocation_id'], expected='COMPLETED')
+                        previews[identity] = preview['invocation_id']
                     assert daily.ledger == [] and problems.persisted_problems() == []
                     scan_gate.enabled = problem_gate.enabled = True
-                    runs = {}
-                    scan = signed_request(management, '/internal/v1/automation-projects/scan_codes/invoke',
-                        payload={'request_id': str(uuid4()), 'preview_run_id': previews['scan_codes']})
-                    runs['scan_codes'] = scan['run_id']
+                    invocations = {}
+                    scan = invoke('scan_codes', preview_invocation_id=previews['scan_codes'])
+                    invocations['scan_codes'] = scan['invocation_id']
                     assert scan_gate.started.wait(15), 'Actual scan did not reach isolated write boundary'
                     for identity, codes in [('self_pickup_problem_upload', ['R_M03_STANDARD']),
                             ('split_pending_problem_upload', ['SYNTHETIC-SPLIT', 'SYNTHETIC-NOT-ARRIVED'])]:
                         receipt = signed_request(management, f'/internal/v1/automation-projects/{identity}/selection-previews/{previews[identity]}/confirm',
                             payload={'request_id': str(uuid4()), 'selected_bill_codes': codes})
-                        runs[identity] = receipt['run_id']
+                        invocations[identity] = receipt['invocation_id']
                     assert problem_gate.started.wait(10), 'Actual problem task did not reach external boundary'
-                    receipt = signed_request(management, '/internal/v1/automation-projects/arrival_stats/invoke', payload={'request_id': str(uuid4())})
-                    runs['arrival_stats'] = receipt['run_id']
-                    receipt = signed_request(management, f'/internal/v1/automation-projects/{failure_id}/invoke', payload={'request_id': str(uuid4())})
-                    failed = wait_run(management, receipt['run_id'], expected='FAILED_TERMINAL', timeout=8)
-                    active_after_failure = {identity: management.repository.get_run(run_id)['status'] for identity, run_id in runs.items()}
-                    assert all(status not in {'CANCELLED', 'FAILED_TERMINAL', 'COMPLETED'} for status in active_after_failure.values()), active_after_failure
-                    waiting_stats = management.repository.get_run(runs['arrival_stats'])
-                    assert waiting_stats['started_at'] is None
-                    assert waiting_stats['execution_attempt_count'] == 0
-                    assert waiting_stats['steps'] and all(step['status'] == 'PENDING' for step in waiting_stats['steps'])
-                    assert not any(request['action'] == 'FIND_DISPATCH_FORECAST_CENTER' for request in daily.requests)
-                    report['dependency_wait'] = {'status': 'PASS', 'statistics_started_at': waiting_stats['started_at'],
-                        'statistics_attempts': waiting_stats['execution_attempt_count'],
-                        'statistics_step_states': [step['status'] for step in waiting_stats['steps']],
-                        'source_http_requests': list(daily.requests)}
+                    statistics = invoke('arrival_stats')
+                    invocations['arrival_stats'] = statistics['invocation_id']
+                    failure = invoke(failure_id)
+                    failed = wait_invocation(runner, failure['invocation_id'], expected='FAILED', timeout=8)
+                    active_after_failure = {identity: runner.service.get(identity_value)['status'] for identity, identity_value in invocations.items()}
+                    assert all(active_after_failure[identity] == 'RUNNING' for identity in ('scan_codes', 'self_pickup_problem_upload', 'split_pending_problem_upload')), active_after_failure
+                    stats_result = wait_invocation(runner, statistics['invocation_id'], expected='COMPLETED')
+                    assert runner.service.get(scan['invocation_id'])['status'] == 'RUNNING'
+                    assert any(request['action'] == 'FIND_DISPATCH_FORECAST_CENTER' for request in daily.requests)
+                    report['independent_statistics'] = {'status': 'PASS', 'result': stats_result,
+                        'scan_status_when_statistics_completed': runner.service.get(scan['invocation_id'])['status'],
+                        'snapshot': 'previous completed scan; the in-progress scan is not included'}
                     scan_gate.release.set()
                     problem_gate.release.set()
                     results = {}
-                    for identity, run_id in runs.items():
-                        row = wait_run(management, run_id, expected='COMPLETED')
-                        assert all(step['postcondition_status'] == 'VERIFIED' for step in row['steps'])
-                        results[identity] = {key: row[key] for key in ('run_id', 'status', 'started_at', 'finished_at', 'execution_attempt_count', 'steps')}
-                    assert results['arrival_stats']['started_at'] >= results['scan_codes']['finished_at']
+                    for identity, invocation_id in invocations.items():
+                        row = wait_invocation(runner, invocation_id, expected='COMPLETED')
+                        assert row['result']['status'] == 'SUCCESS' and row['result']['error'] is None
+                        results[identity] = row
+                    assert results['arrival_stats']['finished_at'] < results['scan_codes']['finished_at']
                     assert [row['BILL_CODE'] for row in daily.ledger] == [CHILD_CODE]
                     assert {row['bill_code'] for row in problems.persisted_problems()} == {'R_M03_STANDARD', 'SYNTHETIC-SPLIT', 'SYNTHETIC-NOT-ARRIVED'}
-                    report['post_success_delivery'] = exercise_post_success(management=management,
-                        connection_factory=lambda: connect_owned(DATABASE), run_ids=runs,
-                        external_state=lambda: {'scan_ledger': daily.ledger, 'problem_ledger': problems.persisted_problems(),
-                            'sheet_writes': daily.sheet_writes})
-                    report.update(status='PASS', results=results, failure={key: failed[key] for key in ('run_id', 'status', 'error_code')},
+                    assert _legacy_counts(management.repository) == before
+                    # A result lookup and a duplicate transport delivery cannot
+                    # execute a completed invocation again.
+                    prior_writes = list(daily.ledger), problems.persisted_problems()
+                    for row in results.values():
+                        assert runner.service.get(row['invocation_id']) == row
+                    assert (list(daily.ledger), problems.persisted_problems()) == prior_writes
+                    report.update(status='PASS', results=results, failure=failed,
                         active_after_failure=active_after_failure, runtime=runner.snapshot(), scan_ledger=daily.ledger,
                         problem_ledger=problems.persisted_problems(), sheet_writes=daily.sheet_writes,
-                        constraints='Scan/statistics share one account and real scan snapshot; self/split share account; statistics/split share a physical sheet. Existing constraints remain active.')
+                        legacy_counts_before=before, legacy_counts_after=_legacy_counts(management.repository),
+                        constraints='Account reads run concurrently; only an actual conflicting write operation holds its physical target briefly. No queued task or historical dependency.')
     except Exception as error:
         report.update(status='FAIL', error=type(error).__name__ + ': ' + str(error))
         raise

@@ -15,9 +15,9 @@ from agent.orchestration.automation_project_api import (
 from agent.orchestration.models import Actor, ActorType
 
 
-class _Receipt:
-    def to_dict(self) -> dict[str, str]:
-        return {"run_id": "run-1", "command_id": "command-1"}
+class _Receipt(dict):
+    def __init__(self):
+        super().__init__(invocation_id="11111111-1111-4111-8111-111111111111", status="STARTING")
 
 
 class _Service:
@@ -69,7 +69,7 @@ class _Service:
         self.calls.append((automation_id, kwargs))
         return {
             "contract_version": 1,
-            "preview_run_id": kwargs["preview_run_id"],
+            "preview_invocation_id": kwargs["preview_invocation_id"],
             "can_confirm": True,
         }
 
@@ -83,7 +83,7 @@ class _Service:
         **kwargs: Any,
     ) -> dict[str, Any]:
         self.calls.append((automation_id, kwargs))
-        return {"automation_id": automation_id, "preview_run_id": kwargs["preview_run_id"]}
+        return {"automation_id": automation_id, "preview_invocation_id": kwargs["preview_invocation_id"]}
 
     def confirm_selection_preview(self, automation_id: str, **kwargs: Any) -> _Receipt:
         self.calls.append((automation_id, kwargs))
@@ -167,27 +167,19 @@ def test_grouped_approval_route_never_accepts_approval_ids_or_plan_hashes() -> N
         json=body,
     )
 
-    assert approved.status_code == 200
-    automation_id, payload = service.calls[-1]
-    assert automation_id == "project-a"
-    assert payload["decision"] == "APPROVED"
-    assert payload["actor"] is actor
-    receipt = approved.json()["data"]["run_receipts"][0]
-    assert receipt == {
-        "automation_id": "project-a",
-        "work_item_id": "work-1",
-        "run_id": "run-1",
-        "status": "WAITING_APPROVAL",
-    }
-    assert "approval_id" not in receipt
-    assert "plan_hash" not in receipt
+    assert approved.status_code == 410
+    assert approved.json()["error"]["code"] == "HISTORICAL_RUN_READ_ONLY"
+    assert service.calls == []
+    denied = client.post("/internal/v1/automation-projects/project-a/pending-approvals/reject", json=body)
+    assert denied.status_code == 410
+    assert service.calls == []
 
     rejected = client.post(
         "/internal/v1/automation-projects/project-a/pending-approvals/approve",
         json={**body, "approval_ids": ["forged"], "plan_hash": "b" * 64},
     )
     assert rejected.status_code == 422
-    assert len(service.calls) == 1
+    assert len(service.calls) == 0
 
 
 def test_console_invoke_submits_only_server_resolved_project_identity() -> None:
@@ -199,20 +191,20 @@ def test_console_invoke_submits_only_server_resolved_project_identity() -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["data"] == {"run_id": "run-1", "command_id": "command-1"}
+    assert response.json()["data"] == dict(_Receipt())
     automation_id, payload = service.calls[-1]
     assert automation_id == "project-a"
     assert payload == {
         "request_id": "request-4",
         "actor": actor,
-        "preview_run_id": None,
+        "preview_invocation_id": None,
     }
 
     formal = client.post(
         "/internal/v1/automation-projects/project-a/invoke",
         json={
             "request_id": "request-5",
-            "preview_run_id": "11111111-1111-4111-8111-111111111111",
+            "preview_invocation_id": "11111111-1111-4111-8111-111111111111",
         },
     )
     assert formal.status_code == 200
@@ -221,7 +213,7 @@ def test_console_invoke_submits_only_server_resolved_project_identity() -> None:
         {
             "request_id": "request-5",
             "actor": actor,
-            "preview_run_id": "11111111-1111-4111-8111-111111111111",
+            "preview_invocation_id": "11111111-1111-4111-8111-111111111111",
         },
     )
 
@@ -237,12 +229,12 @@ def test_scan_preview_projection_route_uses_server_project_authority() -> None:
     assert response.status_code == 200
     assert response.json()["data"] == {
         "contract_version": 1,
-        "preview_run_id": "11111111-1111-4111-8111-111111111111",
+        "preview_invocation_id": "11111111-1111-4111-8111-111111111111",
         "can_confirm": True,
     }
     assert service.calls[-1] == (
         "scan_codes",
-        {"preview_run_id": "11111111-1111-4111-8111-111111111111"},
+        {"preview_invocation_id": "11111111-1111-4111-8111-111111111111"},
     )
 
 
@@ -267,7 +259,7 @@ def test_selection_preview_routes_keep_fingerprint_server_side() -> None:
     assert projection.status_code == 200
     assert service.calls[-1] == (
         "self_pickup_problem_upload",
-        {"preview_run_id": run_id},
+        {"preview_invocation_id": run_id},
     )
 
     confirmed = client.post(
@@ -282,7 +274,7 @@ def test_selection_preview_routes_keep_fingerprint_server_side() -> None:
     assert service.calls[-1] == (
         "self_pickup_problem_upload",
         {
-            "preview_run_id": run_id,
+            "preview_invocation_id": run_id,
             "selected_bill_codes": ["R0002"],
             "request_id": "request-selection-confirm",
             "actor": actor,

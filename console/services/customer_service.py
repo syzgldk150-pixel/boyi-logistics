@@ -1,8 +1,10 @@
 """Console application services grouped by business responsibility."""
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 from console.app_support import *  # noqa: F403
+from console.services.business_calls import call_business
 
 
 class CustomerServiceMixin:
@@ -265,20 +267,18 @@ class CustomerServiceMixin:
             uuid.UUID(normalized_uuid),
             f"customer_service_problem_{action}:{account_id}",
         )
-        return self._agent_request(
-            "POST",
-            "/internal/v1/tms/customer_service_problem",
-            payload={
-                "params": payload,
-                "timeout_sec": timeout_sec,
-                "actor": actor,
-                "actor_roles": list(trusted_context.get("actor_roles") or []),
-                "source": "console",
-                "idempotency_key": f"console:{actor_id}:tool.execute:{child_uuid}",
-            },
-            timeout=max(timeout_sec + 15, self.settings.agent_timeout_seconds),
-            console_principal=trusted_context.get("_console_principal"),
-        )
+        arguments = {key: payload[key] for key in ("platform", "account_id", "account_label") if key in payload}
+        if action == "query":
+            filters = payload.get("filters") if isinstance(payload.get("filters"), dict) else {}
+            arguments.update({key: filters[key] for key in ("direction", "q", "waybill_no", "date_from", "date_to", "page", "rows", "page_size") if key in filters})
+            arguments["direction"] = payload.get("direction") or arguments.get("direction")
+        elif action == "detail":
+            item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+            arguments.update({key: item[key] for key in ("external_id", "source_direction", "waybill_no", "status") if key in item})
+        elif action == "fetch_attachment":
+            arguments["source_url"] = (payload.get("payload") or {}).get("source_url")
+        return call_business(self, "customer-service-" + action.replace("_", "-"), arguments,
+            trusted_context=trusted_context, request_id=str(child_uuid), timeout_sec=timeout_sec)
 
     @staticmethod
     def _customer_service_command_arguments(
@@ -428,6 +428,49 @@ class CustomerServiceMixin:
             return
         self._send_json(handler, HTTPStatus.OK, result)
 
+    def _handle_customer_service_problem_live_query(self, handler: BaseHTTPRequestHandler) -> None:
+        """Return current platform results for explicitly selected accounts."""
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
+        body = self._parse_json_body(handler)
+        account_ids = body.get("account_ids")
+        if (not isinstance(account_ids, list) or not account_ids
+                or any(not isinstance(value, str) or not value for value in account_ids)
+                or len(set(account_ids)) != len(account_ids)):
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "请选择明确且不重复的业务账号。"})
+            return
+        _accounts, account_map, warning = self._customer_service_account_maps(force=False)
+        if warning or any(account_id not in account_map for account_id in account_ids):
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": warning or "所选业务账号不可用。"})
+            return
+        request_id = str(handler.headers.get("X-Browser-Request-UUID") or "")
+        if not self._normalize_browser_request_uuid(request_id):
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "缺少有效请求标识。"})
+            return
+
+        def query_account(account_id: str) -> tuple[str, dict[str, Any] | None, str]:
+            account = account_map[account_id]
+            payload = self._customer_service_agent_payload(account, "query", body)
+            result = self._call_customer_service_problem_agent(payload, trusted_context=trusted_context,
+                browser_request_uuid=request_id, timeout_sec=120)
+            data, error = self._unwrap_customer_service_agent_result(result)
+            if not error and (not isinstance(data, dict) or not isinstance(data.get("rows"), list)):
+                error = "原平台未返回有效问题件列表。"
+            return account_id, data, error
+
+        with ThreadPoolExecutor(max_workers=min(len(account_ids), 4)) as executor:
+            results = list(executor.map(query_account, account_ids))
+        rows, errors, sources = [], [], []
+        for account_id, data, error in results:
+            if error:
+                errors.append({"account_id": account_id, "message": error})
+                continue
+            rows.extend(data["rows"])
+            sources.append({"account_id": account_id, "total": data.get("total"), "returned": len(data["rows"])})
+        self._send_json(handler, HTTPStatus.OK, {"ok": not errors, "rows": rows, "errors": errors,
+            "sources": sources, "source": "live_platform"})
+
     def _resolve_customer_service_action_account(
         self,
         body: dict[str, Any],
@@ -473,21 +516,14 @@ class CustomerServiceMixin:
                 )
                 return
             arguments = self._customer_service_command_arguments(account, action, body)
-            result = self._submit_console_tool_command(
-                trusted_context=trusted_context,
-                browser_request_uuid=str(
-                    handler.headers.get("X-Browser-Request-UUID") or ""
-                ),
-                tool_name=tool_name,
-                arguments=arguments,
-                entity_refs=self._customer_service_entity_refs(arguments),
-                console_entry=f"/customer-service/problems/{action.replace('_', '-')}",
-            )
-            self._send_console_command_receipt(
-                handler,
-                result,
-                message="客服写入计划已提交，请在事项中心完成审批并查看执行结果。",
-            )
+            result = call_business(self, "customer-service-" + action.replace("_", "-"), arguments,
+                trusted_context=trusted_context, write=True,
+                request_id=str(handler.headers.get("X-Browser-Request-UUID") or ""))
+            if not result.get("ok"):
+                self._send_json(handler, result.get("status") if result.get("status", 0) >= 400 else HTTPStatus.BAD_GATEWAY, {"ok": False,
+                    "error_code": result.get("error_code"), "message": str(result.get("error") or "客服操作失败。")})
+                return
+            self._send_json(handler, HTTPStatus.OK, {"ok": True, **(result.get("data") or {})})
             return
         payload = self._customer_service_agent_payload(account, action, body)
         result = self._call_customer_service_problem_agent(
@@ -675,18 +711,13 @@ class CustomerServiceMixin:
             ).strip(),
             "file_path": str(target),
         }
-        result = self._submit_console_tool_command(
-            trusted_context=trusted_context,
-            browser_request_uuid=browser_request_uuid,
-            tool_name="customer_service_problem_upload_attachment",
-            arguments=arguments,
-            entity_refs=[],
-            console_entry="/customer-service/problems/attachments/upload",
-        )
-        if not result.get("ok") and not target_preexisted:
+        result = call_business(self, "customer-service-upload-attachment", arguments,
+            trusted_context=trusted_context, request_id=browser_request_uuid, write=True)
+        if result.get("ok"):
             target.unlink(missing_ok=True)
-        self._send_console_command_receipt(
-            handler,
-            result,
-            message="附件上传计划已提交，请在事项中心完成审批并查看执行结果。",
-        )
+        elif not target_preexisted and result.get("error_code") in {"INVALID_BUSINESS_INPUT", "BROWSER_REQUEST_UUID_REQUIRED"}:
+            target.unlink(missing_ok=True)
+        self._send_json(handler, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_GATEWAY,
+            {"ok": result.get("ok") is True, "error_code": result.get("error_code"),
+             "message": "附件上传完成。" if result.get("ok") else str(result.get("error") or "附件上传失败。"),
+             **((result.get("data") or {}) if result.get("ok") else {})})

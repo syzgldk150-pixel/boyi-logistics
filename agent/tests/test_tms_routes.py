@@ -305,8 +305,8 @@ class TMSRoutesTests(unittest.TestCase):
             {**safe, "proxy_prefix": "/ocr/ronghui/live"},
             {**safe, "method": "DELETE"},
         )
-        runtime = types.SimpleNamespace(execute_tool=Mock(side_effect=AssertionError("no Command allowed")))
-        with patch("agent.tms_runtime.routes._agent_command_runtime", runtime), patch(
+        self.assertFalse(hasattr(routes_module, "_agent_command_runtime"))
+        with patch(
             "agent.tms_runtime.routes.execute_target", side_effect=AssertionError("rejected proxy dispatched"),
         ) as dispatched:
             for params in attempts:
@@ -325,7 +325,6 @@ class TMSRoutesTests(unittest.TestCase):
             self.assertEqual(403, response.status_code)
             self.assertEqual("TRUSTED_CONSOLE_ACTOR_REQUIRED", response.json()["data"]["error_code"])
             dispatched.assert_not_called()
-            runtime.execute_tool.assert_not_called()
     def test_versioned_admin_route_uses_standard_envelope(self):
         class FakeAccountManager:
             def list_accounts(self, *, include_status=True, validate=True, force=False):

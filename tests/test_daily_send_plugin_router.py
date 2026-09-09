@@ -20,7 +20,7 @@ _RESOURCE_ID = "phase7.send_order_bitable"
 _TARGET_DATE = "2026-05-12"
 _SOURCE_ROW = {
     "BILL_CODE": "R001",
-    "INSERT_DATE": f"{_TARGET_DATE} 08:00:00",
+    "REGISTER_DATE": f"{_TARGET_DATE} 08:00:00",
     "BL_SIGNS_MARKING_TEXT": "已签收",
     "DESTINATION": "长沙",
     "ACCEPT_COUNTY": "大祥区",

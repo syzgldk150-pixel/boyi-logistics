@@ -1,4 +1,4 @@
-"""A01 scan: real signed Console receipt, Runner, package and loopback TMS."""
+"""A01 scan: real signed Console receipt, Invocation, package and loopback TMS."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 import secrets
-import time
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -16,14 +15,13 @@ from Crypto.PublicKey import ECC
 
 from agent.automation_plugins.first_party import resolve_first_party_manifests
 from agent.automation_plugins.package import Ed25519TrustStore
-from agent.orchestration.context_builder import ContextBuilder
 from agent.orchestration.models import Actor, ActorType
 from agent.tool_registry import ToolRegistry
 from plugin_core_adapters.first_party import build_production_first_party_core_handler_map
 from shared.service_identity import build_console_identity_headers
 from tests.v32_acceptance.daily_protocol import ACCOUNT_ID, CHILD_CODE, DailyAccounts, DailyProtocol
 from tests.v32_acceptance.management_fixture import ManagementFixture
-from tests.v32_acceptance.runner_fixture import RunnerFixture
+from tests.direct_invocation_fixture import DirectFixture
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = ROOT / '.task_tmp' / 'v32' / 'reliability' / ('daily-scan-' + uuid4().hex[:8])
@@ -56,20 +54,6 @@ def prepare_database(*, database=DATABASE):
     with connect(database=database) as connection, connection.cursor() as cursor:
         cursor.execute('UPDATE scheduled_tasks SET enabled=0')
         connection.commit()
-
-
-def wait_result(run_id, *, connection_factory=connect, allow_blocked=False, allow_resource_wait=False):
-    deadline = time.monotonic() + 90
-    while time.monotonic() < deadline:
-        with connection_factory() as connection, connection.cursor() as cursor:
-            cursor.execute('SELECT status,error_code,error_summary FROM agent_runs WHERE run_id=%s', (run_id,))
-            run = cursor.fetchone()
-            if run and (run['status'] in ({'COMPLETED', 'FAILED_TERMINAL', 'CANCELLED', 'PARTIAL', 'WAITING_APPROVAL'} | ({'BLOCKED_DATA'} if allow_blocked else set()))
-                    or (allow_resource_wait and run['error_code'] == 'RESOURCE_WAIT')):
-                cursor.execute('SELECT result_summary_json,postcondition_status FROM agent_run_steps WHERE run_id=%s ORDER BY step_order', (run_id,))
-                return {'run_id': run_id, **run, 'steps': cursor.fetchall()}
-        time.sleep(0.1)
-    raise RuntimeError('real scan Runner did not reach a terminal result')
 
 
 def signed_request(management, path, *, payload=None):
@@ -113,26 +97,24 @@ def run_scan(management, runner, boundary, *, browser=None, configure=True):
         setup_scan(management)
     path = '/internal/v1/automation-projects/scan_codes/invoke'
     preview = browser.run(automation_id) if browser else signed_request(management, path, payload={'request_id': str(uuid4())})
-    runner.runner.wake(preview['run_id'])
-    preview_result = wait_result(preview['run_id'])
+    preview_result = runner.service.wait_sync(preview['invocation_id'])
     if preview_result['status'] != 'COMPLETED':
         raise AssertionError(preview_result)
     assert boundary.ledger == []
-    projection = browser.scan_projection() if browser else signed_request(management, '/internal/v1/automation-projects/scan_codes/scan-previews/' + preview['run_id'])
+    projection = browser.scan_projection() if browser else signed_request(management, '/internal/v1/automation-projects/scan_codes/scan-previews/' + preview['invocation_id'])
     assert projection['selection_count'] == 1 and projection['can_confirm'] is True
     request_id = str(uuid4())
-    formal = browser.confirm_scan() if browser else signed_request(management, path, payload={'request_id': request_id, 'preview_run_id': preview['run_id']})
-    runner.runner.wake(formal['run_id'])
-    formal_result = wait_result(formal['run_id'])
+    formal = browser.confirm_scan() if browser else signed_request(management, path, payload={'request_id': request_id, 'preview_invocation_id': preview['invocation_id']})
+    formal_result = runner.service.wait_sync(formal['invocation_id'])
     if formal_result['status'] != 'COMPLETED':
         raise AssertionError(formal_result)
-    replay = browser.replay() if browser else signed_request(management, path, payload={'request_id': request_id, 'preview_run_id': preview['run_id']})
-    assert replay['run_id'] == formal['run_id']
+    replay = browser.replay() if browser else signed_request(management, path, payload={'request_id': request_id, 'preview_invocation_id': preview['invocation_id']})
+    assert replay['invocation_id'] == formal['invocation_id']
     assert [row['BILL_CODE'] for row in boundary.ledger] == [CHILD_CODE]
-    assert all(step['postcondition_status'] == 'VERIFIED' for step in formal_result['steps'])
+    assert formal_result['result']['status'] == 'SUCCESS' and formal_result['result']['error'] is None
     return {'status': 'PASS', 'entry': 'actual Console browser controls' if browser else 'signed Console Agent HTTP',
         'preview': preview_result, 'formal': formal_result, 'projection': projection,
-        'replay_run_id': replay['run_id'], 'external_side_effect_rows': len(boundary.ledger), 'external_requests': boundary.requests}
+        'replay_invocation_id': replay['invocation_id'], 'external_side_effect_rows': len(boundary.ledger), 'external_requests': boundary.requests}
 
 
 def main():
@@ -156,7 +138,7 @@ def main():
             reconciled = management.targets.reconcile_project('scan_codes')
             if management.catalog.require('scan_codes').committed_snapshot is None:
                 raise AssertionError('actual first-party reconciliation did not commit: ' + str(reconciled))
-            with RunnerFixture(management, context_builder=ContextBuilder(account_resolver=lambda _command: account_manager.list_accounts())) as runner:
+            with DirectFixture(management, saved_resource_provider=boundary.resource_loader) as runner:
                 report = run_scan(management, runner, boundary)
                 report.update(executed_at=datetime.now(timezone.utc).isoformat(), runtime=runner.snapshot())
     output = RUNTIME.parent / 'a01-scan.json'

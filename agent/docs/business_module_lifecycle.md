@@ -19,4 +19,4 @@ updated: 2026-08-30
 
 删除旧生命周期门禁不放宽其他边界：Console/Agent 登录、角色权限、签名 principal、同源校验、业务账号/资源绑定、Service v2 generation、Command/Run/Evidence、业务写后核验和未知写隔离继续按各自合同失败关闭。旧生命周期记录漂移只是不再参与固定模块可用性判断。
 
-`query_automation_operations` 是主库固定 SQL 的只读聚合：只接受闭合日期区间，返回 `agent_commands` / `agent_runs` 的实际状态计数、终态成功率（有分母时）和新鲜度。飞书已绑定管理员的“经营摘要/经营情况”固定入口复用财务日期解析，组合经验证的收入、支出、净变动与上述运行统计；客户收入维度和异常历史没有可信来源时明确标示不可得，金额数据不完整时不输出金额。
+`query_automation_operations` 的当前 `1.1.0` 合同是主库固定 SQL 的只读聚合：只接受闭合中国业务日期区间，按 `automation_plugin_invocations.started_at` 选样，在同一一致性快照返回 `invocations` 状态计数和 `started_at/updated_at` 新鲜度，不混入旧 Command/Run。成功率为 COMPLETED / (COMPLETED + FAILED + CANCELLED + WRITE_OUTCOME_UNKNOWN)，活跃调用不进入分母，无终态返回空成功率；查询无记录明确为 NO_DATA，查询失败不冒充空数据。隔离 MySQL 回归见 `../../tests/test_automation_operations_invocations_mysql.py`。飞书已绑定管理员的“经营摘要/经营情况”固定入口复用财务日期解析，组合经验证的收入、支出、净变动与上述运行统计；客户收入维度和异常历史没有可信来源时明确标示不可得，金额数据不完整时不输出金额。

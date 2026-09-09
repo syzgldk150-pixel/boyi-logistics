@@ -887,7 +887,7 @@
             <td><span class="receipt-chip {% if row.signed_confirmed in ['是', '已确认'] %}receipt-chip--ok{% else %}receipt-chip--muted{% endif %}">{{ row.signed_confirmed or '-' }}</span></td>
             <td class="receipt-updated-cell" title="{{ row.updated_at }}">{{ row.updated_at }}</td>
             <td>
-              <button class="receipt-icon-btn" type="button" data-receipt-original-open title="控制平面审核" aria-label="打开控制平面审核">
+              <button class="receipt-icon-btn" type="button" data-receipt-original-open title="回单审核" aria-label="打开回单审核">
                 <i data-feather="shield"></i>
               </button>
             </td>
@@ -991,14 +991,14 @@
     <div class="receipt-modal-card receipt-modal-card--audit" role="dialog" aria-modal="true" aria-labelledby="receipt-audit-title">
       <div class="receipt-modal-head">
         <div>
-          <h2 id="receipt-audit-title" data-receipt-audit-title>控制平面审核</h2>
+          <h2 id="receipt-audit-title" data-receipt-audit-title>回单审核</h2>
           <p data-receipt-audit-subtitle>请选择一条回单记录</p>
         </div>
         <button class="receipt-close-btn" type="button" data-receipt-audit-close aria-label="关闭审核"><i data-feather="x"></i></button>
       </div>
       <div class="receipt-audit-body">
         <div class="receipt-empty">
-          第三方活动原页已安全停用。审核仍会提交到控制平面，并在审批后由后台执行和读后核验。
+          审核直接提交原平台，并在核验实际结果后更新当前回单。
         </div>
       </div>
     </div>
@@ -2179,15 +2179,9 @@
       if (!response.ok || !payload.ok) {
         throw new Error(payload.message || `飞书回单详情查询提交失败（${response.status}）。`);
       }
-      const message = payload.message || `飞书精确查询已提交（Run ${payload.run_id || "待生成"}）。`;
+      const message = payload.message || "飞书明细查询完成。";
       if (reviewStatus) {
-        reviewStatus.replaceChildren(document.createTextNode(message));
-        if (payload.work_item_id) {
-          const link = document.createElement("a");
-          link.href = `/work-items/${encodeURIComponent(payload.work_item_id)}`;
-          link.textContent = " 打开事项";
-          reviewStatus.appendChild(link);
-        }
+        reviewStatus.textContent = `${message} ${JSON.stringify(payload.data || {})}`;
         reviewStatus.hidden = false;
       }
       if (reviewSubtitle) reviewSubtitle.textContent = message;
@@ -2225,13 +2219,6 @@
       error.payload = payload;
       throw error;
     }
-    if (payload.pending) {
-      const message = payload.message || `审核计划已提交（Run ${payload.run_id || "待生成"}）`;
-      if (reviewSubtitle) reviewSubtitle.textContent = message;
-      if (auditSubtitle) auditSubtitle.textContent = message;
-      hideFailReasonPanel();
-      return {pending: true, receipt: payload, message};
-    }
     return applyReceiptAuditPayload(audit, payload, `后台已执行${auditLabelForResult(audit.result)}。`);
   };
 
@@ -2259,16 +2246,16 @@
     table?.querySelectorAll("[data-receipt-id]").forEach((item) => item.classList.toggle("is-selected", item === row));
     openModal(auditModal);
     if (auditTitle) auditTitle.textContent = "正在加载";
-    if (auditSubtitle) auditSubtitle.textContent = "正在读取控制平面审核详情。";
+    if (auditSubtitle) auditSubtitle.textContent = "正在读取回单审核详情。";
     try {
       const detail = await fetchDetail(id);
       const record = detail.record || {};
-      const heading = record.waybill_no || record.receipt_no || "控制平面审核";
+      const heading = record.waybill_no || record.receipt_no || "回单审核";
       const meta = [record.platform_label || record.platform, record.direction_label || record.direction, record.audit_status]
         .filter(Boolean)
         .join(" · ");
       if (auditTitle) auditTitle.textContent = heading;
-      if (auditSubtitle) auditSubtitle.textContent = meta || "后台控制平面审核";
+      if (auditSubtitle) auditSubtitle.textContent = meta || "后台回单审核";
     } catch (error) {
       stopAuditAutoQuery();
       if (auditTitle) auditTitle.textContent = "加载失败";
@@ -2478,7 +2465,7 @@
           <td><span class="receipt-chip ${okClassFor(signedOk)}">${escapeHtml(row.signed_confirmed || "-")}</span></td>
           <td class="receipt-updated-cell" title="${escapeHtml(row.updated_at || "")}">${escapeHtml(row.updated_at || "")}</td>
           <td>
-            <button class="receipt-icon-btn" type="button" data-receipt-original-open title="控制平面审核" aria-label="打开控制平面审核">
+            <button class="receipt-icon-btn" type="button" data-receipt-original-open title="回单审核" aria-label="打开回单审核">
               <i data-feather="shield"></i>
             </button>
           </td>
@@ -2748,13 +2735,6 @@
         setSyncStatus(payload.message || "查询失败", "is-error");
         return {ok: false, payload};
       }
-      if (payload.pending) {
-        setSyncStatus(
-          payload.message || `回单同步计划已提交（Run ${payload.run_id || "待生成"}）`,
-          "is-warning",
-        );
-        return {ok: true, pending: true, payload};
-      }
       const stats = payload.stats || {};
       const warnings = payload.warnings || [];
       if (warnings.length) {
@@ -2774,9 +2754,14 @@
     setSubmitBusy(true);
     try {
       const result = await queryReceipts("正在从原系统查询回单...");
-      if (result?.ok && !result.pending) {
+      if (result?.ok) {
         if (queryMarker) queryMarker.value = "1";
-        const data = await refreshReceiptTable(1);
+        const data = result.payload.data || {};
+        renderReceiptRows(data.rows || []);
+        renderPagination(data.pagination || {});
+        if (receiptCount) receiptCount.textContent = `共 ${data.pagination?.total || 0} 条`;
+        detailCache.clear();
+        updateReceiptUrl(buildReceiptParams(1));
         const total = Number((data.pagination || {}).total || 0);
         const warnings = result.warnings || [];
         if (warnings.length) {

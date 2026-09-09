@@ -27,7 +27,7 @@ SourcePagePort = Callable[[Mapping[str, Any], str, int, int], Mapping[str, Any]]
 BitableListPort = Callable[[str, int, int, tuple[str, ...]], Sequence[Mapping[str, Any]]]
 BitableDeletePort = Callable[[str, tuple[str, ...]], Mapping[str, Any]]
 BitableWritePort = Callable[[str, list[dict[str, Any]]], Mapping[str, Any]]
-ProjectionReplacePort = Callable[[list[dict[str, Any]], str], Mapping[str, Any]]
+ProjectionReplacePort = Callable[[list[dict[str, Any]], str, Mapping[str, Any]], Mapping[str, Any]]
 
 
 _TOOL = "sync_daily_send_orders"
@@ -87,7 +87,7 @@ _NUMERIC_FIELDS = frozenset(
 _SOURCE_FIELDS = frozenset(
     {
         "BILL_CODE",
-        "INSERT_DATE",
+        "REGISTER_DATE",
         "BL_SIGNS_MARKING_TEXT",
         "DESTINATION",
         "ACCEPT_COUNTY",
@@ -741,13 +741,13 @@ class _DailySendHandlers:
             role=_ACCOUNT_ROLE,
         )
         values = _strict(arguments, {"records", "target_date"})
-        _account_descriptor(self._ports, context)
+        descriptor = _account_descriptor(self._ports, context)
         target_date = _business_date(values.get("target_date"))
         records = _projection_records(values.get("records"))
         if any(record["open_date"] != target_date for record in records):
             raise _error("daily-send projection date changed", "BROKER_ARGUMENT_INVALID")
         self._mark_write_started(context)
-        raw = self._ports.projection_replace(records, target_date)
+        raw = self._ports.projection_replace(records, target_date, descriptor)
         if not isinstance(raw, Mapping) or raw.get("ok") is not True or raw.get("verified") is not True:
             raise _error(
                 "daily-send projection was not confirmed by a fresh read",

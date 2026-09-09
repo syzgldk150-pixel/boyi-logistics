@@ -271,6 +271,14 @@ def _build_app(repository):
         },
     }
     app._control_plane_read_context = app._control_plane_write_context
+    app._mysql_console_principal = lambda: app._control_plane_read_context(None)["_console_principal"]
+    def direct_query(method, endpoint, *, payload=None, timeout=None, console_principal=None):
+        assert endpoint == "/internal/v1/business/receipts-query"
+        params = dict(payload["params"])
+        page, page_size = params.pop("page"), params.pop("page_size")
+        return {"ok": True, "data": {**repository.search_receipts(params, page=page, page_size=page_size), "complete": True}}
+    app._agent_request = direct_query
+
     app.template_env = Environment(
         loader=FileSystemLoader(CONSOLE_DIR / "templates"),
         autoescape=select_autoescape(["html", "xml"]),
@@ -684,8 +692,8 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertIn(f'value="{today}" data-receipt-date-from', html)
         self.assertIn(f'value="{today}" data-receipt-date-to', html)
         self.assertNotIn("/ky_inms/public/index.php/business/waybill/delivery/index.html", html)
-        self.assertIn("第三方活动原页已安全停用", html)
-        self.assertIn("控制平面审核", html)
+        self.assertIn("审核直接提交原平台", html)
+        self.assertIn("回单审核", html)
 
     def test_render_receipts_forces_send_direction_even_with_old_receive_query(self):
         repo = _ReceiptRepo()
@@ -845,7 +853,7 @@ class ReceiptRouteTests(unittest.TestCase):
         app = _build_app(repo)
         agent_calls = []
 
-        def fake_agent(method, endpoint, *, payload=None, timeout=None):
+        def fake_agent(method, endpoint, *, payload=None, timeout=None, console_principal=None):
             agent_calls.append({"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout})
             return {
                 "ok": True,
@@ -878,7 +886,7 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertEqual("融辉收货人", record["detail_summary"]["recipient_name"])
         self.assertEqual("106", record["detail_summary"]["actual_weight"])
         self.assertEqual("tms_detail", record["detail_summary_source"])
-        self.assertEqual("/internal/v1/tms/query_waybill_detail", agent_calls[0]["endpoint"])
+        self.assertEqual("/internal/v1/business/query_waybill_detail", agent_calls[0]["endpoint"])
         self.assertEqual(["2003441429"], agent_calls[0]["payload"]["params"]["bill_codes"])
 
     def test_receipt_detail_get_does_not_submit_or_execute_feishu_query(self):
@@ -898,7 +906,7 @@ class ReceiptRouteTests(unittest.TestCase):
         app = _build_app(repo)
         agent_calls = []
 
-        def fake_agent(method, endpoint, *, payload=None, timeout=None):
+        def fake_agent(method, endpoint, *, payload=None, timeout=None, console_principal=None):
             agent_calls.append({"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout})
             self.fail("receipt detail GET must not submit or execute a Feishu query")
 
@@ -912,7 +920,7 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertTrue(record["feishu_detail_query_available"])
         self.assertEqual([], agent_calls)
 
-    def test_receipt_feishu_detail_query_submits_narrow_read_command(self):
+    def test_receipt_feishu_detail_query_returns_direct_data(self):
         repo = _ReceiptRepo()
         app = _build_app(repo)
         calls = []
@@ -923,12 +931,7 @@ class ReceiptRouteTests(unittest.TestCase):
                 "ok": True,
                 "status": HTTPStatus.ACCEPTED,
                 "data": {
-                    "command_id": "command-feishu-1",
-                    "work_item_id": "work-item-feishu-1",
-                    "run_id": "run-feishu-1",
-                    "status": "RECEIVED",
-                    "reused": False,
-                    "next_poll_after_ms": 1000,
+                    "waybill_no": "979903652", "recipient_name": "fixture-recipient",
                 },
             }
 
@@ -947,23 +950,14 @@ class ReceiptRouteTests(unittest.TestCase):
         )
 
         payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
-        self.assertEqual(HTTPStatus.ACCEPTED, handler.status)
-        self.assertTrue(payload["pending"])
-        self.assertEqual("run-feishu-1", payload["run_id"])
-        self.assertEqual("/internal/v1/commands", calls[0]["endpoint"])
+        self.assertEqual(HTTPStatus.OK, handler.status)
+        self.assertTrue(payload["ok"])
+        self.assertNotIn("pending", payload)
+        self.assertEqual("fixture-recipient", payload["data"]["recipient_name"])
+        self.assertEqual("/internal/v1/business/receipt-feishu-detail", calls[0]["endpoint"])
         command = calls[0]["payload"]
-        self.assertEqual(
-            "query_receipt_feishu_detail",
-            command["parameters"]["tool_name"],
-        )
-        self.assertEqual(
-            {"waybill_no": "979903652"},
-            command["parameters"]["arguments"],
-        )
-        self.assertEqual(
-            f"console:7:tool.execute:{BROWSER_REQUEST_UUID}",
-            command["idempotency_key"],
-        )
+        self.assertEqual({"waybill_no": "979903652"}, command["params"])
+        self.assertEqual(BROWSER_REQUEST_UUID, command["request_id"])
 
     def test_receipt_detail_keeps_images_available_when_external_enrichment_fails(self):
         repo = _ReceiptRepo()
@@ -992,7 +986,7 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertIn("recipient_name", payload["data"]["record"]["detail_summary_missing"])
         self.assertIn("agent unavailable", payload["data"]["record"]["detail_summary_error"])
 
-    def test_receipt_audit_submits_durable_command_without_local_success_update(self):
+    def test_receipt_audit_updates_local_status_after_verified_direct_result(self):
         repo = _ReceiptRepo()
         app = _build_app(repo)
         calls = []
@@ -1003,12 +997,7 @@ class ReceiptRouteTests(unittest.TestCase):
                 "ok": True,
                 "status": HTTPStatus.ACCEPTED,
                 "data": {
-                    "command_id": "command-1",
-                    "work_item_id": "work-item-1",
-                    "run_id": "run-1",
-                    "status": "RECEIVED",
-                    "reused": False,
-                    "next_poll_after_ms": 1000,
+                    "audit_status": "审核通过", "verification": {"verified": True, "waybill_no": "979903652", "audit_status": "2", "external_id": "external-3"},
                 },
             }
 
@@ -1024,23 +1013,17 @@ class ReceiptRouteTests(unittest.TestCase):
         app._handle_receipt_audit(handler, "/receipts/3/audit")
 
         payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
-        self.assertEqual(HTTPStatus.ACCEPTED, handler.status)
+        self.assertEqual(HTTPStatus.OK, handler.status)
         self.assertTrue(payload["ok"])
-        self.assertTrue(payload["pending"])
-        self.assertEqual("run-1", payload["run_id"])
-        self.assertEqual([], repo.audit_status_updates)
-        self.assertEqual("submitted", repo.audit_logs[-1]["result_status"])
-        self.assertEqual("audit_submit", repo.audit_logs[-1]["action"])
-        self.assertEqual("/internal/v1/commands", calls[0]["endpoint"])
+        self.assertNotIn("pending", payload)
+        self.assertEqual([{"receipt_id": 3, "audit_status": "审核通过"}], repo.audit_status_updates)
+        self.assertEqual("success", repo.audit_logs[-1]["result_status"])
+        self.assertEqual("audit", repo.audit_logs[-1]["action"])
+        self.assertEqual("/internal/v1/business/receipts-audit", calls[0]["endpoint"])
         command = calls[0]["payload"]
-        self.assertEqual("tool.execute", command["command_type"])
-        self.assertEqual("receipts_audit", command["parameters"]["tool_name"])
-        self.assertEqual(
-            f"console:7:tool.execute:{BROWSER_REQUEST_UUID}",
-            command["idempotency_key"],
-        )
+        self.assertEqual(BROWSER_REQUEST_UUID, command["request_id"])
         self.assertNotIn("raw_payload", repo.audit_logs[-1]["request_summary"])
-        self.assertNotIn("raw_payload", command["parameters"]["arguments"])
+        self.assertNotIn("raw_payload", command["params"])
         self.assertNotIn("token", json.dumps(command, ensure_ascii=False))
 
     def test_receipt_audit_preserves_agent_error_without_local_status_update(self):
@@ -1069,7 +1052,7 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertEqual([], repo.audit_status_updates)
         self.assertEqual("failed", repo.audit_logs[-1]["result_status"])
 
-    def test_receipt_audit_ignores_original_page_bypass_and_submits_command(self):
+    def test_receipt_audit_ignores_original_page_bypass_and_calls_closed_operation(self):
         repo = _ReceiptRepo()
         app = _build_app(repo)
         calls = []
@@ -1080,12 +1063,7 @@ class ReceiptRouteTests(unittest.TestCase):
                 "ok": True,
                 "status": HTTPStatus.ACCEPTED,
                 "data": {
-                    "command_id": "command-original-page",
-                    "work_item_id": "work-item-original-page",
-                    "run_id": "run-original-page",
-                    "status": "RECEIVED",
-                    "reused": False,
-                    "next_poll_after_ms": 1000,
+                    "audit_status": "审核通过", "verification": {"verified": True, "waybill_no": "979903652", "audit_status": "2", "external_id": "external-3"},
                 },
             }
 
@@ -1101,14 +1079,12 @@ class ReceiptRouteTests(unittest.TestCase):
         app._handle_receipt_audit(handler, "/receipts/3/audit")
 
         payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
-        self.assertEqual(HTTPStatus.ACCEPTED, handler.status)
+        self.assertEqual(HTTPStatus.OK, handler.status)
         self.assertTrue(payload["ok"])
-        self.assertTrue(payload["pending"])
-        self.assertEqual([], repo.audit_status_updates)
-        self.assertEqual("audit_submit", repo.audit_logs[-1]["action"])
-        self.assertEqual("/internal/v1/commands", calls[0]["endpoint"])
-        arguments = calls[0]["payload"]["parameters"]["arguments"]
-        self.assertNotIn("execution", arguments)
+        self.assertNotIn("pending", payload)
+        self.assertEqual("audit", repo.audit_logs[-1]["action"])
+        self.assertEqual("/internal/v1/business/receipts-audit", calls[0]["endpoint"])
+        self.assertNotIn("execution", calls[0]["payload"]["params"])
 
     def test_receipt_attachment_serves_cached_file(self):
         repo = _ReceiptRepo()
@@ -1321,7 +1297,7 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual([], calls)
 
-    def test_receipts_sync_submits_closed_durable_command(self):
+    def test_receipts_query_returns_page_without_command(self):
         repo = _ReceiptRepo()
         app = _build_app(repo)
 
@@ -1331,12 +1307,7 @@ class ReceiptRouteTests(unittest.TestCase):
                 "ok": True,
                 "status": HTTPStatus.ACCEPTED,
                 "data": {
-                    "command_id": "command-sync-1",
-                    "work_item_id": "work-item-sync-1",
-                    "run_id": "run-sync-1",
-                    "status": "RECEIVED",
-                    "reused": False,
-                    "next_poll_after_ms": 1000,
+                    "rows": [], "pagination": {"page": 1, "page_size": 50, "total": 0}, "complete": True,
                 },
             }
 
@@ -1353,18 +1324,14 @@ class ReceiptRouteTests(unittest.TestCase):
         app._handle_receipts_sync(handler)
 
         payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
-        self.assertEqual(HTTPStatus.ACCEPTED, handler.status)
+        self.assertEqual(HTTPStatus.OK, handler.status)
         self.assertTrue(payload["ok"])
-        self.assertTrue(payload["pending"])
-        self.assertEqual("run-sync-1", payload["run_id"])
-        self.assertEqual("/internal/v1/commands", app.last_call["endpoint"])
-        command = app.last_call["payload"]
-        self.assertEqual("receipts_sync", command["parameters"]["tool_name"])
-        arguments = command["parameters"]["arguments"]
+        self.assertNotIn("pending", payload)
+        self.assertEqual("/internal/v1/business/receipts-query", app.last_call["endpoint"])
+        arguments = app.last_call["payload"]["params"]
         self.assertEqual("send", arguments["direction"])
-        self.assertEqual(5, arguments["max_pages"])
-        self.assertEqual(12, arguments["timeout_sec"])
-        self.assertNotIn("audit_status", arguments)
+        self.assertEqual(1, arguments["page"])
+        self.assertEqual(50, arguments["page_size"])
         self.assertNotIn("datagrid_url", arguments)
         self.assertEqual([], repo.upserted_records)
         self.assertEqual([], repo.upserted_attachments)
@@ -1380,12 +1347,7 @@ class ReceiptRouteTests(unittest.TestCase):
                 "ok": True,
                 "status": HTTPStatus.ACCEPTED,
                 "data": {
-                    "command_id": "command-sync-2",
-                    "work_item_id": "work-item-sync-2",
-                    "run_id": "run-sync-2",
-                    "status": "RECEIVED",
-                    "reused": False,
-                    "next_poll_after_ms": 1000,
+                    "rows": [], "pagination": {"page": 1, "page_size": 50, "total": 0}, "complete": True,
                 },
             }
 
@@ -1402,9 +1364,9 @@ class ReceiptRouteTests(unittest.TestCase):
         app._handle_receipts_sync(handler)
 
         payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
-        self.assertEqual(HTTPStatus.ACCEPTED, handler.status)
+        self.assertEqual(HTTPStatus.OK, handler.status)
         self.assertTrue(payload["ok"])
-        arguments = app.last_call["payload"]["parameters"]["arguments"]
+        arguments = app.last_call["payload"]["params"]
         self.assertEqual(today, arguments["date_from"])
         self.assertEqual(today, arguments["date_to"])
 
@@ -1525,8 +1487,8 @@ class ReceiptTemplateTests(unittest.TestCase):
         self.assertIn("data-receipt-original-open", template)
         self.assertIn("data-receipt-audit-modal", template)
         self.assertNotIn("data-receipt-audit-frame", template)
-        self.assertIn("第三方活动原页已安全停用", template)
-        self.assertIn("控制平面审核", template)
+        self.assertIn("审核直接提交原平台", template)
+        self.assertIn("回单审核", template)
         self.assertIn("data-receipt-query-marker", template)
         self.assertIn("data-receipt-date-range", template)
         self.assertIn("data-receipt-date-range-label", template)
@@ -1670,10 +1632,10 @@ class ReceiptTemplateTests(unittest.TestCase):
         template = (CONSOLE_DIR / "templates" / "receipts.html").read_text(encoding="utf-8")
 
         for expected in (
-            "第三方活动原页已安全停用",
-            "控制平面审核",
+            "审核直接提交原平台",
+            "回单审核",
             "submitReceiptAuditDirect",
-            "审核计划已提交",
+            "applyReceiptAuditPayload",
         ):
             self.assertIn(expected, template)
         for forbidden in (

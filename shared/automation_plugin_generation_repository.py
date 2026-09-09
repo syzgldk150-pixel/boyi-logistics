@@ -1452,7 +1452,9 @@ class AutomationPluginGenerationRepositoryMixin(
         expected_generation: int,
         expected_manifest_sha256: str,
         lease_id: str,
-        orchestration_run_id: str,
+        orchestration_run_id: str | None = None,
+        invocation_id: str | None = None,
+        provider_call: bool = False,
         expires_at: datetime,
         lease_owner: str,
     ) -> dict[str, Any]:
@@ -1466,10 +1468,10 @@ class AutomationPluginGenerationRepositoryMixin(
             "expected_manifest_sha256",
         )
         safe_lease_id = _required_text(lease_id, "lease_id")
-        safe_orchestration_run_id = _required_text(
-            orchestration_run_id,
-            "orchestration_run_id",
-        )
+        if bool(orchestration_run_id) == bool(invocation_id):
+            raise ValueError("lease requires exactly one execution identity")
+        safe_orchestration_run_id = _required_text(orchestration_run_id, "orchestration_run_id") if orchestration_run_id else None
+        safe_invocation_id = _required_text(invocation_id, "invocation_id") if invocation_id else None
         safe_expires_at = _mysql_datetime(expires_at, "expires_at")
         safe_owner = _required_text(lease_owner, "lease_owner")
         with self.cursor() as cursor:
@@ -1547,13 +1549,24 @@ class AutomationPluginGenerationRepositoryMixin(
                 )
             runtime_metadata = normalized_snapshot["execution_metadata"]
             metadata_hash = _json_hash(runtime_metadata)
+            if safe_invocation_id:
+                cursor.execute("SELECT automation_id, generation, status FROM automation_plugin_invocations WHERE invocation_id=%s FOR UPDATE", (safe_invocation_id,))
+                call = _row_dict(cursor, cursor.fetchone())
+                if not call or call["status"] not in {"STARTING", "RUNNING"}:
+                    raise ConcurrentUpdateError("invocation does not own this generation")
+                if provider_call:
+                    cursor.execute("SELECT lease_id FROM automation_project_generation_leases WHERE invocation_id=%s AND automation_id=%s AND generation=%s AND outcome='RUNNING' LIMIT 1", (safe_invocation_id, call["automation_id"], call["generation"]))
+                    if cursor.fetchone() is None:
+                        raise ConcurrentUpdateError("service call has no running root generation")
+                elif call["automation_id"] != safe_automation_id or call["generation"] != generation:
+                    raise ConcurrentUpdateError("invocation does not own this generation")
             cursor.execute(
                 """
                 INSERT INTO automation_project_generation_leases (
-                    lease_id, automation_id, generation, orchestration_run_id, lease_owner,
+                    lease_id, automation_id, generation, orchestration_run_id, invocation_id, lease_owner,
                     runtime_metadata_json, runtime_metadata_sha256,
                     outcome, acquired_at, expires_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'RUNNING', NOW(6), %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'RUNNING', NOW(6), %s)
                 ON DUPLICATE KEY UPDATE lease_id=lease_id
                 """,
                 (
@@ -1561,6 +1574,7 @@ class AutomationPluginGenerationRepositoryMixin(
                     safe_automation_id,
                     generation,
                     safe_orchestration_run_id,
+                    safe_invocation_id,
                     safe_owner,
                     _json_param(runtime_metadata, {}),
                     metadata_hash,
@@ -1583,8 +1597,8 @@ class AutomationPluginGenerationRepositoryMixin(
         if (
             str(lease.get("automation_id") or "") != safe_automation_id
             or int(lease.get("generation") or 0) != generation
-            or str(lease.get("orchestration_run_id") or "")
-            != safe_orchestration_run_id
+            or lease.get("orchestration_run_id") != safe_orchestration_run_id
+            or lease.get("invocation_id") != safe_invocation_id
             or str(lease.get("lease_owner") or "") != safe_owner
             or str(lease.get("runtime_metadata_sha256") or "") != metadata_hash
             or _mysql_datetime(lease.get("expires_at"), "expires_at")

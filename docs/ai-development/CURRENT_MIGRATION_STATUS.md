@@ -93,7 +93,7 @@ authority: non-authoritative
 - 对 LLM 开放：四个。
 - 开放工具：`query_waybill`、`track_waybill`、`get_price`、`query_automation_operations`。
 
-没有真实工具调用时，Agent 不自由生成业务结论。`query_business_finance` 已注册但保持对 LLM 隐藏，只返回共享财务账本中逐账号逐日完整覆盖且原始 Decimal 对账通过的期间收入、支出与净变动；不接受 SQL、账号或任意来源，不把净变动解释为利润。`query_automation_operations` 只接受闭合日期区间，参数化聚合主库 Command/Run 状态、终态成功率和新鲜度。已绑定飞书管理员的“经营摘要/经营情况”在 LLM 前确定性组合这两项结果；客户收入维度和异常历史没有可信来源时明确标注不可得。
+没有真实工具调用时，Agent 不自由生成业务结论。`query_business_finance` 已注册但保持对 LLM 隐藏，只返回共享财务账本中逐账号逐日完整覆盖且原始 Decimal 对账通过的期间收入、支出与净变动；不接受 SQL、账号或任意来源，不把净变动解释为利润。`query_automation_operations` 只接受闭合日期区间，按中国业务日期参数化聚合当前 Invocation 状态、终态成功率和新鲜度；未知写计入非成功终态，旧 Command/Run 不混入当前记录。已绑定飞书管理员的“经营摘要/经营情况”在 LLM 前确定性组合这两项结果；客户收入维度和异常历史没有可信来源时明确标注不可得。
 
 ### Console 当前能力
 

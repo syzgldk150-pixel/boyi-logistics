@@ -171,6 +171,8 @@ class CustomerServiceRepository:
                 continue
             status = {"source_id": source["source_id"], "source_label": source["display_name"],
                 "source_state": source["status"], "collection_status": source["latest_collection_status"],
+                "collection_origin": source.get("latest_collection_origin"),
+                "collection_id": source.get("latest_collection_id"),
                 "last_attempt_at": _timestamp(source["latest_collection_at"]), "last_published_at": _timestamp(source["latest_published_at"])}
             statuses.append(status)
             code = str(source["latest_collection_error_code"] or "")

@@ -72,7 +72,7 @@ def publish_customer_collection(connection: Any, *, verification: GenerationVeri
         if old is not None and old != row:
             raise DataSourceError("CUSTOMER_EQUIVALENT_SOURCE_CONFLICT")
         grouped[source["source_id"]][key] = row
-    # These rows have already passed the projection's exact existing-item and
+    # These rows have already passed the caller's exact existing-record and
     # detail-evidence checks. Retain all business/manual fields when closing.
     for check in rechecks:
         if (check.get("status") != "RESOLVED" or check.get("source_returned") is not True
@@ -90,8 +90,8 @@ def publish_customer_collection(connection: Any, *, verification: GenerationVeri
                 (source["source_id"], *key))
             previous = row_dict(cursor, cursor.fetchone())
         if previous is None:
-            # A legacy Work Item may predate module data publication. There is
-            # no business row to invent; its verified Work Item still closes.
+            # A verified legacy reference may predate business publication.
+            # There is no business row to invent or silently reconstruct.
             continue
         row = json.loads(previous["source_json"]) if isinstance(previous["source_json"], str) else dict(previous["source_json"])
         row.update(resolved=True, status="已解决", resolution_reason=check["resolution_reason"])

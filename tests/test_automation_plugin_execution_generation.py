@@ -685,7 +685,9 @@ class _LeaseRepository:
         expected_generation: int,
         expected_manifest_sha256: str,
         lease_id: str,
-        orchestration_run_id: str,
+        orchestration_run_id: str | None,
+        invocation_id: str | None = None,
+        provider_call: bool = False,
         expires_at: datetime,
     ) -> RuntimeGenerationLease:
         capability = self.capabilities[automation_id]
@@ -704,6 +706,7 @@ class _LeaseRepository:
             acquired_at=datetime.now(timezone.utc),
             expires_at=expires_at,
             orchestration_run_id=orchestration_run_id,
+            invocation_id=invocation_id,
         )
 
     def release_generation(
@@ -1078,6 +1081,13 @@ def test_internal_service_invocation_uses_normal_generation_lease_and_opaque_cha
         generation_leases=leases,
         release_hold_provider=lambda: False,
     )
+    identity = "11111111-1111-4111-8111-111111111111"
+    class DirectAdmission:
+        def reserve_provider(self, invocation_id, capability):
+            assert invocation_id == identity
+            assert capability["operation_type"] == "read"
+            return (), {}
+    router.direct_invocations = DirectAdmission()
 
     result = asyncio.run(
         router.execute_service_operation(
@@ -1087,6 +1097,7 @@ def test_internal_service_invocation_uses_normal_generation_lease_and_opaque_cha
             operation="get",
             effect=CapabilityEffect.READ,
             call_chain=(service,),
+            invocation_id=identity,
         )
     )
 
@@ -1094,6 +1105,8 @@ def test_internal_service_invocation_uses_normal_generation_lease_and_opaque_cha
     assert leases.released[0][1] is RuntimeLeaseOutcome.SUCCEEDED
     assert issuer.last_issue is not None
     assert issuer.last_issue["runtime_permissions"]["_service_call_chain"] == [service]
+    assert issuer.last_issue["write_attempt_context"]["invocation_id"] == identity
+    assert "orchestration_run_id" not in issuer.last_issue["write_attempt_context"]
 
 
 def test_direct_service_v2_read_contribution_does_not_inherit_summary_write_lease(

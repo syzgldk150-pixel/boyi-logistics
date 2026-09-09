@@ -17,6 +17,8 @@ from typing import Any, Callable
 from pydantic import BaseModel, Field
 
 from agent.tms_runtime.errors import TMSAuthStateError, auth_error_payload
+from agent.tms_runtime.direct_execution import call_blocking
+from agent.orchestration.models import OrchestrationError
 from agent.tms_runtime.account_manager import resolve_account_params, resolve_role_account_params
 
 
@@ -252,8 +254,12 @@ def _error_payload(exc: BaseException, *, override_type: str | None = None, over
     }
 
 
-async def execute_target(name: str, req: TaskRequest) -> tuple[int, dict[str, Any]]:
+async def execute_target(name: str, req: TaskRequest, *, wait_for_stop: bool = False,
+                         read_lifecycle: Any = None) -> tuple[int, dict[str, Any]]:
     semaphore = _SEMAPHORES[name]
+    if (wait_for_stop or read_lifecycle is not None) and semaphore.locked():
+        return 409, {"ok": False, "error_code": "BUSINESS_RESOURCE_BUSY",
+                     "error": "当前业务接口正在处理请求，请稍后重新操作。"}
     async with semaphore:
         logger.info(
             "tms start %s timeout_sec=%s params=%s",
@@ -291,11 +297,22 @@ async def execute_target(name: str, req: TaskRequest) -> tuple[int, dict[str, An
                     ],
                 )
             else:
+                default_system = TARGET_ACCOUNT_SYSTEMS.get(name, "")
+                if name == "tracking_query":
+                    from agent.tms_runtime.scripts.tracking_query import _resolve_tracking_number, detect_tracking_provider
+                    provider = str(input_params.get("provider") or "").strip().lower()
+                    if provider not in {"ronghui", "yunda", "zhuanxian"}:
+                        provider = detect_tracking_provider(_resolve_tracking_number(input_params))
+                    default_system = provider if provider in {"ronghui", "yunda"} else ""
+                elif name == "customer_service_problem":
+                    default_system = str(input_params.get("platform") or "")
                 effective_params = resolve_account_params(
                     input_params,
-                    default_system=TARGET_ACCOUNT_SYSTEMS.get(name, ""),
+                    default_system=default_system,
                     default_purpose=TARGET_ACCOUNT_PURPOSES.get(name, ""),
                 )
+                if read_lifecycle is not None and default_system and not effective_params.get("account_id"):
+                    raise TMSAuthStateError("AUTH_REQUIRED", "该业务查询未能确定实际业务账号，请检查账号设置。")
             for role_binding in TARGET_ACCOUNT_ROLE_FIELDS.get(name, []):
                 effective_params = resolve_role_account_params(
                     effective_params,
@@ -309,10 +326,21 @@ async def execute_target(name: str, req: TaskRequest) -> tuple[int, dict[str, An
                 original_page_cancelled = threading.Event()
                 effective_params["_original_page_deadline_monotonic"] = time.monotonic() + req.timeout_sec
                 effective_params["_original_page_cancelled"] = original_page_cancelled
-            result = await asyncio.wait_for(
-                asyncio.to_thread(_run_sync, fn, effective_params),
-                timeout=req.timeout_sec,
-            )
+            if read_lifecycle is not None:
+                account_ids = tuple(sorted({str(value) for key, value in effective_params.items()
+                    if (key == "account_id" or key.endswith("_account_id")) and value}))
+                result = await read_lifecycle.call_read(operation=f"tms.{name}", account_ids=account_ids,
+                    handler=lambda: call_blocking(_run_sync, fn, effective_params, timeout_sec=req.timeout_sec))
+            elif wait_for_stop:
+                # A direct call must retain its execution scope while a real
+                # synchronous platform request is still running. Cancelling a
+                # coroutine alone cannot stop that HTTP request.
+                result = await call_blocking(_run_sync, fn, effective_params, timeout_sec=req.timeout_sec)
+            else:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(_run_sync, fn, effective_params),
+                    timeout=req.timeout_sec,
+                )
             cost = round(time.time() - started, 3)
             payload = _jsonable(result)
             task_ok = True
@@ -332,6 +360,8 @@ async def execute_target(name: str, req: TaskRequest) -> tuple[int, dict[str, An
                 "cost_sec": cost,
                 "data": {},
             }
+        except OrchestrationError as exc:
+            return 409, {"ok": False, "error_code": exc.code, "error": str(exc)}
         except (asyncio.TimeoutError, TimeoutError) as exc:
             logger.warning("tms timeout %s after=%ss", name, req.timeout_sec)
             return 504, _error_payload(exc, override_type="Timeout", override_error=f"Task timeout after {req.timeout_sec}s")

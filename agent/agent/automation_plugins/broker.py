@@ -453,6 +453,34 @@ class LocalBrokerCapabilityIssuer:
         self._grants: dict[str, _BrokerGrantState] = {}
         self._lock = threading.Lock()
         self._write_attempt_recorder = write_attempt_recorder
+        self._closing: set[str] = set()
+        self._host_tasks: dict[str, set[asyncio.Task]] = {}
+
+    def register_host_call(self, capability: str, task: asyncio.Task) -> None:
+        digest = hashlib.sha256(capability.encode("ascii")).hexdigest()
+        with self._lock:
+            if digest in self._closing or digest not in self._grants:
+                raise PluginExecutionError("invocation is stopping", code="BROKER_CAPABILITY_INVALID")
+            self._host_tasks.setdefault(digest, set()).add(task)
+        task.add_done_callback(lambda done: self._host_tasks.get(digest, set()).discard(done))
+
+    async def drain_host_calls(self, capability: str) -> None:
+        """Stop admitting calls and wait for already dispatched host work.
+
+        Cancelling an await cannot stop a synchronous platform operation. Its
+        real completion must precede releasing the invocation's resources.
+        """
+        digest = hashlib.sha256(capability.encode("ascii")).hexdigest()
+        with self._lock:
+            self._closing.add(digest)
+            tasks = tuple(self._host_tasks.get(digest, ()))
+        if tasks:
+            waiter = asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await asyncio.shield(waiter)
+            except asyncio.CancelledError:
+                await asyncio.shield(waiter)
+                raise
 
     @property
     def broker_endpoint(self) -> str:
@@ -519,6 +547,8 @@ class LocalBrokerCapabilityIssuer:
         digest = hashlib.sha256(str(capability).encode("ascii", errors="ignore")).hexdigest()
         with self._lock:
             self._grants.pop(digest, None)
+            self._host_tasks.pop(digest, None)
+            self._closing.discard(digest)
 
     def consumed_call_count(self, capability: str) -> int:
         """Legacy diagnostic counter; never use this to infer a write."""
@@ -900,11 +930,15 @@ class LocalBrokerCapabilityIssuer:
                 current = self._grants.get(digest)
                 if current is not state or normalized_request_id not in current.pending_write_calls:
                     raise PluginExecutionError("write start marker is no longer valid", code="WRITE_ATTEMPT_START_INVALID")
+                if digest in self._closing:
+                    raise PluginExecutionError("invocation is stopping", code="BROKER_CAPABILITY_INVALID")
                 context = current.grant.write_attempt_context
                 required = {
                     "automation_id", "plugin_id", "generation", "lease_id",
                     "orchestration_run_id", "step_id",
                 }
+                if "invocation_id" in context:
+                    required = (required - {"orchestration_run_id", "step_id"}) | {"invocation_id"}
                 if set(context) != required or self._write_attempt_recorder is None:
                     raise PluginExecutionError("durable write attempt evidence is unavailable", code="WRITE_ATTEMPT_RECEIPT_UNAVAILABLE")
                 operation, action, role, binding, arguments = current.pending_write_calls[normalized_request_id]
@@ -1206,15 +1240,13 @@ class LocalCoreAutomationBroker:
                 self._issuer,
                 request,
             )
-            result = await self._adapter.invoke(
-                grant=prepared.grant,
-                operation=prepared.operation,
-                action=prepared.action,
-                role=prepared.role,
-                binding=prepared.binding,
-                arguments=prepared.arguments,
-                mark_write_started=prepared.mark_write_started,
-            )
+            self._issuer.register_host_call(prepared.capability, asyncio.current_task())
+            guard = getattr(self._issuer, "host_operation_guard", None)
+            if guard is not None and prepared.grant.write_attempt_context.get("invocation_id"):
+                async with guard(prepared):
+                    result = await self._invoke_adapter(prepared)
+            else:
+                result = await self._invoke_adapter(prepared)
             public_result = dict(result)
             if prepared.mark_write_started is not None and not prepared.dynamic_effect:
                 verified_noop = _is_verified_write_noop(
@@ -1281,6 +1313,13 @@ class LocalCoreAutomationBroker:
         finally:
             writer.close()
             await writer.wait_closed()
+
+    async def _invoke_adapter(self, prepared):
+        return await self._adapter.invoke(
+            grant=prepared.grant, operation=prepared.operation,
+            action=prepared.action, role=prepared.role, binding=prepared.binding,
+            arguments=prepared.arguments, mark_write_started=prepared.mark_write_started,
+        )
 
     @staticmethod
     async def _read_request_payload(reader: asyncio.StreamReader) -> bytes:

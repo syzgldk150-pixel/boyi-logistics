@@ -463,7 +463,7 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("yunda", pending_payload["auth_session"])
         self.assertIn("登录过期需要重新登录", replies[0])
 
-    async def test_authenticated_send_code_response_resumes_original_control_plane_run(self):
+    async def test_authenticated_send_code_response_does_not_resume_previous_call(self):
         replies: list[tuple[str, str]] = []
         executed: list[tuple[str, dict]] = []
 
@@ -503,7 +503,7 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(executed, [])
         self.assertEqual(replies[0][0], "send_code_start")
         self.assertEqual(replies[1][0], "login_success")
-        self.assertIn("原事项运行已恢复", replies[1][1])
+        self.assertIn("先前调用已经结束", replies[1][1])
 
     async def test_ronghui_authenticated_send_code_uses_auto_image_login_flow(self):
         replies: list[tuple[str, str]] = []
@@ -546,7 +546,7 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replies[0][0], "send_code_start")
         self.assertIn("自动识别图片验证码并登录", replies[0][1])
         self.assertEqual(replies[1][0], "login_success")
-        self.assertIn("原事项运行已恢复", replies[1][1])
+        self.assertIn("先前调用已经结束", replies[1][1])
 
     async def test_ronghui_pending_image_send_code_keeps_manual_fallback_prompt(self):
         replies: list[tuple[str, str]] = []

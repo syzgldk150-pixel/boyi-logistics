@@ -1551,6 +1551,9 @@ class DocumentRepository:
 
         with self.connect() as connection:
             cursor = connection.cursor()
+            # Keep count, page and summary in one repeatable-read snapshot.
+            cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            cursor.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
             cursor.execute(count_sql, params)
             total_row = cursor.fetchone() or {"row_count": 0}
             total = int(total_row.get("row_count") or 0)

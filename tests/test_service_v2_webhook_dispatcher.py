@@ -57,6 +57,7 @@ class _Policy:
         self.result: object = {
             "success": True,
             "status": "COMPLETED",
+            "invocation_id": "11111111-1111-4111-8111-111111111111",
             "command_id": "must-not-leak",
             "run_id": "must-not-leak",
             "correlation_id": "must-not-leak",
@@ -145,7 +146,7 @@ class ServiceV2WebhookDispatcherTests(IsolatedAsyncioTestCase):
         }
         owner_digest = _digest(owner)
         event_digest = _digest({"owner": owner, "source_event_id": "event-one"})
-        self.assertEqual({"success": True, "status": "COMPLETED"}, result)
+        self.assertEqual({"success": True, "status": "COMPLETED", "invocation_id": "11111111-1111-4111-8111-111111111111", **dict.fromkeys(("result", "output", "error", "error_code", "error_summary", "running", "status_url"))}, result)
         self.assertEqual(
             [{"method": "POST", "route": "status_update"}],
             registry.calls,

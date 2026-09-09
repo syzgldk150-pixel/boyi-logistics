@@ -11,10 +11,8 @@ from zoneinfo import ZoneInfo
 from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime.session_broker import get_session_broker
 
-try:
-    from yunda_original_data import ORIGINAL_DATA_URL, fetch_yunda_original_data
-except ImportError:  # pragma: no cover - package import fallback
-    from agent.tms_runtime.scripts.yunda_original_data import ORIGINAL_DATA_URL, fetch_yunda_original_data
+from agent.tms_runtime.scripts.yunda_original_data import ORIGINAL_DATA_URL, fetch_yunda_original_data
+from shared.waybill_pagination import authoritative_total, collect_complete_pages
 
 
 YUNDA_INMS_ORIGIN = "https://kyinms.yunda56.com"
@@ -183,6 +181,26 @@ def _extract_total(payload: Any) -> int | None:
     return None
 
 
+def _complete_page_shape(payload: Any) -> tuple[list[dict[str, Any]], int]:
+    """A successful paged snapshot needs actual rows and an exact total."""
+    if not isinstance(payload, dict):
+        raise ValueError("WAYBILL_PAGE_ROWS_INVALID")
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    candidates = [value for value in (payload.get("rows"), data.get("rows"), data.get("list"),
+        data.get("records"), payload.get("records"), payload.get("items")) if value is not None]
+    if not candidates or any(not isinstance(value, list) or value != candidates[0] for value in candidates):
+        raise ValueError("WAYBILL_PAGE_ROWS_INVALID")
+    rows = candidates[0]
+    if any(not isinstance(row, dict) for row in rows):
+        raise ValueError("WAYBILL_PAGE_ROWS_INVALID")
+    totals = [authoritative_total(value) for value in
+        (payload.get("total"), data.get("total"), payload.get("count"), data.get("count"))
+        if value is not None]
+    if not totals or len(set(totals)) != 1:
+        raise ValueError("WAYBILL_PAGE_TOTAL_MISSING_OR_AMBIGUOUS")
+    return rows, totals[0]
+
+
 def _send_list_form(target_date: dt.date, *, page: int, rows: int) -> dict[str, Any]:
     date_text = target_date.isoformat()
     return {
@@ -325,21 +343,12 @@ def collect_send_rows(
     page_size: int,
     max_pages: int,
 ) -> tuple[list[dict[str, Any]], int | None]:
-    rows: list[dict[str, Any]] = []
-    total: int | None = None
-    for page in range(1, max_pages + 1):
-        payload = fetch_send_page(session, params, target_date=target_date, page=page, page_size=page_size)
-        page_rows = _extract_rows(payload)
-        if total is None:
-            total = _extract_total(payload)
-        if not page_rows:
-            break
-        rows.extend(page_rows)
-        if total is not None and len(rows) >= total:
-            break
-        if len(page_rows) < page_size:
-            break
-    return rows, total
+    return collect_complete_pages(
+        lambda page: fetch_send_page(session, params, target_date=target_date, page=page, page_size=page_size),
+        rows_from=lambda payload: _complete_page_shape(payload)[0],
+        total_from=lambda payload: _complete_page_shape(payload)[1], identity="Logistics_Id",
+        first_page=1, page_size=page_size, max_pages=max_pages,
+    )
 
 
 def collect_special_line_rows(
@@ -350,21 +359,12 @@ def collect_special_line_rows(
     page_size: int,
     max_pages: int,
 ) -> tuple[list[dict[str, Any]], int | None]:
-    rows: list[dict[str, Any]] = []
-    total: int | None = None
-    for page in range(1, max_pages + 1):
-        payload = fetch_special_line_page(session, params, target_date=target_date, page=page, page_size=page_size)
-        page_rows = _extract_rows(payload)
-        if total is None:
-            total = _extract_total(payload)
-        if not page_rows:
-            break
-        rows.extend(page_rows)
-        if total is not None and len(rows) >= total:
-            break
-        if len(page_rows) < page_size:
-            break
-    return rows, total
+    return collect_complete_pages(
+        lambda page: fetch_special_line_page(session, params, target_date=target_date, page=page, page_size=page_size),
+        rows_from=lambda payload: _complete_page_shape(payload)[0],
+        total_from=lambda payload: _complete_page_shape(payload)[1], identity="Logistics_Id",
+        first_page=1, page_size=page_size, max_pages=max_pages,
+    )
 
 
 def _with_source(rows: list[dict[str, Any]], source: str) -> list[dict[str, Any]]:
@@ -384,31 +384,28 @@ def _merge_rows_by_waybill(*row_groups: list[dict[str, Any]]) -> list[dict[str, 
     return merged
 
 
-def _find_waybill_node(value: Any, bill_code: str) -> dict[str, Any] | None:
-    if isinstance(value, dict):
-        direct = value.get(bill_code)
-        if isinstance(direct, dict):
-            return direct
-        if isinstance(value.get("logistics"), dict):
-            return value
-        for item in value.values():
-            found = _find_waybill_node(item, bill_code)
-            if found is not None:
-                return found
-    elif isinstance(value, list):
-        for item in value:
-            found = _find_waybill_node(item, bill_code)
-            if found is not None:
-                return found
-    return None
-
-
 def _extract_logistics(payload: Any, bill_code: str) -> dict[str, Any]:
-    node = _find_waybill_node(payload, bill_code)
-    if not isinstance(node, dict):
-        return {}
-    logistics = node.get("logistics")
-    return logistics if isinstance(logistics, dict) else {}
+    # Native mail rows include parent and child waybills. Their Logistics_Id
+    # can all be the parent number, while the enclosing object key is the
+    # actual requested entity. Never choose the first logistics object.
+    matches: list[dict[str, Any]] = []
+    def visit(value):
+        if isinstance(value, dict):
+            if bill_code in value and isinstance(value[bill_code], dict):
+                matches.append(value[bill_code])
+            for key, item in value.items():
+                if key != "logistics":
+                    visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+    visit(payload)
+    if len(matches) != 1 or not isinstance(matches[0].get("logistics"), dict):
+        raise ValueError("WAYBILL_EXACT_QUERY_EMPTY_OR_AMBIGUOUS")
+    logistics = matches[0]["logistics"]
+    if _clean_str(logistics.get("Logistics_Id")) != bill_code:
+        raise ValueError("WAYBILL_EXACT_QUERY_IDENTITY_MISMATCH")
+    return logistics
 
 
 def fetch_waybill_detail(session: Any, bill_code: str, params: dict[str, Any]) -> dict[str, Any]:

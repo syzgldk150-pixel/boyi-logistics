@@ -8,7 +8,8 @@ from typing import Any
 
 from agent.feishu_command_contract import is_scan_cancel_text, is_scan_confirm_text
 from agent.orchestration.models import OrchestrationError
-from agent.orchestration.scan_preview_binding import normalize_preview_run_id
+from agent.orchestration.scan_preview_binding import normalize_preview_invocation_id
+from shared.automation_preview_contract import PREVIEW_CONTRACT_VERSION
 
 
 SELF_PICKUP_MAX_SELECTED = 250
@@ -160,13 +161,13 @@ def normalize_selection_preview_projection(
     value: Any,
     *,
     expected_automation_id: str,
-    expected_run_id: str,
+    expected_invocation_id: str,
 ) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     try:
-        preview_run_id = normalize_preview_run_id(value.get("preview_run_id"))
-        run_id = normalize_preview_run_id(expected_run_id)
+        preview_invocation_id = normalize_preview_invocation_id(value.get("preview_invocation_id"))
+        invocation_id = normalize_preview_invocation_id(expected_invocation_id)
         expires_at = datetime.fromisoformat(
             str(value.get("expires_at") or "").replace("Z", "+00:00")
         )
@@ -178,9 +179,9 @@ def normalize_selection_preview_projection(
     raw_count = value.get("candidate_count")
     raw_candidates = value.get("candidates")
     if (
-        value.get("contract_version") != 1
+        value.get("contract_version") != PREVIEW_CONTRACT_VERSION
         or str(value.get("automation_id") or "") != expected_automation_id
-        or preview_run_id != run_id
+        or preview_invocation_id != invocation_id
         or expires_at.tzinfo is None
         or observed_at.tzinfo is None
         or expires_at <= observed_at
@@ -204,7 +205,7 @@ def normalize_selection_preview_projection(
         candidate["bill_code"] = bill_code
         candidates.append(candidate)
     projection = dict(value)
-    projection["preview_run_id"] = preview_run_id
+    projection["preview_invocation_id"] = preview_invocation_id
     projection["candidates"] = candidates
     return projection
 

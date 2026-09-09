@@ -589,7 +589,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             scheduler_module._scheduler = previous_scheduler
             scheduler_module._include_startup_catchup_for_process = previous_include
 
-    def test_scheduler_retries_unaccepted_project_persistence_with_stable_identity(self):
+    def test_scheduler_fails_unaccepted_project_once_without_delayed_retry(self):
         scheduler_module = _scheduler_module_for_gate_tests()
         delays = []
 
@@ -602,19 +602,13 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
 
             async def invoke_trusted_and_wait(self, automation_id, **kwargs):
                 self.calls.append((automation_id, kwargs))
-                if len(self.calls) <= 3:
-                    raise OrchestrationError(
-                        "PERSISTENCE_UNAVAILABLE",
-                        "synthetic transient persistence failure",
-                    )
-                await kwargs["on_accepted"](SimpleNamespace(run_id="run-1"))
-                return {"success": True, "status": "COMPLETED"}
+                raise OrchestrationError("PERSISTENCE_UNAVAILABLE", "synthetic persistence failure")
 
         core = _AgentCore()
         invoker = _TransientInvoker()
         scheduled_for = datetime.fromisoformat("2026-08-15T07:00:00+08:00")
-        with patch.object(scheduler_module.asyncio, "sleep", new=record_sleep):
-            result = asyncio.run(
+        with patch.object(scheduler_module.asyncio, "sleep", new=record_sleep), self.assertRaises(OrchestrationError) as failure:
+            asyncio.run(
                 scheduler_module._execute_scheduled_tool(
                     core,
                     task_id="scan_0700",
@@ -629,9 +623,9 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
                 )
             )
 
-        self.assertTrue(result["success"])
-        self.assertEqual([2.0, 10.0, 30.0], delays)
-        self.assertEqual(4, len(invoker.calls))
+        self.assertEqual("PERSISTENCE_UNAVAILABLE", failure.exception.code)
+        self.assertEqual([], delays)
+        self.assertEqual(1, len(invoker.calls))
         self.assertEqual(
             {"scheduler:scan_0700:2026-08-15T07:00:00+08:00"},
             {call[1]["idempotency_key"] for call in invoker.calls},
@@ -2211,7 +2205,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
 
         self.assertEqual(["price_default"], [row["account_id"] for row in resolved])
 
-    def test_completed_finance_run_projects_durable_brain_event(self):
+    def test_completed_finance_run_records_event_without_starting_analysis(self):
         from main import _project_run_completed_event
 
         captured = {}
@@ -2256,7 +2250,7 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
             ["sync_finance_bills"],
             captured["event"]["payload"]["tool_names"],
         )
-        self.assertEqual("finance.brain", captured["outbox"][0]["consumer_name"])
+        self.assertEqual((), captured["outbox"])
 
     def test_finance_brain_consumer_ignores_non_finance_run(self):
         from main import _finance_brain_completed_handler
