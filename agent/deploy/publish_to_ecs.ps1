@@ -41,7 +41,7 @@ $scpArgs = @(
 
 $AgentFiles = @(
     "AGENTS.md", "CLAUDE.md", "README.md", "main.py", "requirements.txt", "requirements.lock",
-    "agent.service", "harness_composition.py", "start_agent.sh", "stop_agent.sh",
+    "agent.service", "business_composition.py", "harness_composition.py", "start_agent.sh", "stop_agent.sh",
     "dev_local_tunnel.sh"
 )
 $AgentDirs = @(

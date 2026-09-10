@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -1890,6 +1891,30 @@ class ReleaseBoundaryTests(unittest.TestCase):
                 self.assertFalse(
                     any(event.startswith("restart:") for event in events)
                 )
+
+    def test_release_includes_local_modules_imported_by_agent_entrypoint(self):
+        publisher = (REPOSITORY_ROOT / "agent/deploy/publish_to_ecs.ps1").read_text(encoding="utf-8")
+        allowed = set(re.findall(r'"([^"\n]+)"', publisher.split("$AgentFiles = @(", 1)[1].split("\n)", 1)[0]))
+        agent_root = REPOSITORY_ROOT / "agent"
+        pending = ["main.py"]
+        checked = set()
+        while pending:
+            filename = pending.pop()
+            if filename in checked:
+                continue
+            checked.add(filename)
+            self.assertIn(filename, allowed, f"Agent startup module missing from deployment: {filename}")
+            tree = ast.parse((agent_root / filename).read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                modules = []
+                if isinstance(node, ast.Import):
+                    modules = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    modules = [node.module]
+                for module in modules:
+                    sibling = module.split(".", 1)[0] + ".py"
+                    if (agent_root / sibling).is_file():
+                        pending.append(sibling)
 
     def test_release_keeps_ssh_verification_and_publishes_new_modules(self):
         publisher = (REPOSITORY_ROOT / "agent" / "deploy" / "publish_to_ecs.ps1").read_text(encoding="utf-8")

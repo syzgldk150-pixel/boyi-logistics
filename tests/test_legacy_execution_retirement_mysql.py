@@ -144,12 +144,88 @@ def test_cutover_closes_only_resumable_history_once_and_does_not_replay(database
     assert [row for row in _table(database, 'domain_events', 'event_id') if row['event_type'] == 'agent.legacy_execution.retired'] == events
 
 
+@pytest.mark.parametrize('parent_status', ['COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED'])
+@pytest.mark.parametrize('step_status', ['RUNNING', 'VERIFYING'])
+def test_cutover_preserves_stale_steps_of_fully_finished_unowned_parent(database, parent_status, step_status):
+    ordinary = _new_run(database)
+    finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    for receipt_outcome in ('WRITE_VERIFIED', 'WRITE_OUTCOME_UNKNOWN', 'STARTED'):
+        seeded = database.seed(
+            run_status=parent_status, step_status=step_status, receipt_outcome=receipt_outcome,
+            lease_outcome='WRITE_VERIFIED' if receipt_outcome == 'WRITE_VERIFIED' else 'WRITE_OUTCOME_UNKNOWN',
+        )
+        with database.helper._connection(autocommit=True) as connection, connection.cursor() as cursor:
+            cursor.execute('UPDATE agent_runs SET finished_at=%s,error_code=%s WHERE run_id=%s',
+                (finished_at, 'WRITE_OUTCOME_UNKNOWN', seeded['run_id']))
+            cursor.execute("""UPDATE agent_run_steps SET attempt_count=1,started_at=%s,
+                result_summary_json=%s,postcondition_json=%s,error_code='ORIGINAL_STEP_ERROR'
+                WHERE step_id=%s""", (finished_at, json.dumps({'partial_result': 'preserve without claiming success'}),
+                    json.dumps({'unresolved': True}), seeded['step_id']))
+    # Older ordinary writes may have no plugin receipt. Parent completion is
+    # execution ownership evidence, not evidence that any of these writes passed.
+    no_receipt = _new_run(database, status=parent_status, finished_at=finished_at)
+    _step(database, no_receipt, status=step_status, operation='INTERNAL_PROJECTION_WRITE', attempts=1)
+    _step(database, no_receipt, status=step_status, operation='READ', attempts=1, order=2)
+    with database.repository.unit_of_work() as uow:
+        run = uow.runs.get(seeded['run_id'])
+        uow.evidence.add({
+            'evidence_id': str(uuid4()), 'work_item_id': run['work_item_id'],
+            'run_id': seeded['run_id'], 'step_id': seeded['step_id'], 'source_system': 'isolated',
+            'source_record_type': 'partial_write_observation', 'source_record_id': 'isolated-observation',
+            'entity_type': 'isolated_record', 'entity_id': 'isolated-observation',
+            'completeness_status': 'INCOMPLETE', 'record_count': 1, 'summary': {'unresolved': True},
+        })
+        uow.commit()
+    before = database.snapshot()
+    evidence = _table(database, 'evidence_records', 'evidence_id')
+    outbox = _table(database, 'outbox_events', 'event_id')
+
+    _apply(database)
+
+    after = database.snapshot()
+    assert _runs(database)[ordinary]['status'] == 'CANCELLED'
+    for table in before:
+        if table == 'agent_runs':
+            assert [row for row in after[table] if row['run_id'] != ordinary] == [
+                row for row in before[table] if row['run_id'] != ordinary]
+        else:
+            assert after[table] == before[table]
+    assert _table(database, 'evidence_records', 'evidence_id') == evidence
+    assert _table(database, 'outbox_events', 'event_id') == outbox
+    events = [row for row in _table(database, 'domain_events', 'event_id') if row['event_type'] == 'agent.legacy_execution.retired']
+    assert [row['run_id'] for row in events] == [ordinary]
+    _apply(database, raw=True)
+    assert database.snapshot() == after
+
+
+@pytest.mark.parametrize('missing_proof', ['finished_at', 'worker', 'expired_lease', 'active_generation'])
+def test_stale_step_exclusion_requires_complete_parent_termination_proof(database, missing_proof):
+    ordinary = _new_run(database)
+    changes = {'finished_at': datetime.now(timezone.utc).replace(tzinfo=None)}
+    if missing_proof == 'finished_at':
+        changes['finished_at'] = None
+    elif missing_proof == 'worker':
+        changes['worker_id'] = 'still-owned'
+    elif missing_proof == 'expired_lease':
+        changes['lease_expires_at'] = datetime(2000, 1, 1)
+    historical = _new_run(database, status='FAILED_TERMINAL', **changes)
+    _step(database, historical, status='RUNNING', operation='INTERNAL_PROJECTION_WRITE', attempts=1)
+    if missing_proof == 'active_generation':
+        _add_lease(database, historical, outcome='RUNNING')
+    before = database.snapshot()
+    with pytest.raises(database.helper.pymysql.Error, match='(?i)cp046_execution_not_quiescent'):
+        _apply(database)
+    assert database.snapshot() == before
+    assert _runs(database)[ordinary]['status'] == 'RECEIVED'
+    assert not [row for row in _table(database, 'schema_migrations', 'version') if row['version'] == '046']
+
+
 @pytest.mark.parametrize('busy_kind', [
-    'running', 'verifying', 'owner', 'generation', 'step', 'invocation', 'unknown', 'unverified_write',
+    'running', 'verifying', 'owner', 'expired_run_lease', 'generation', 'step', 'invocation', 'unknown', 'unverified_write',
     'failed_postcondition', 'incorrect_passed_postcondition', 'verified_incomplete_step',
     'verified_step_unknown_receipt', 'verified_step_started_receipt', 'verified_step_unknown_run',
 ])
-def test_cutover_preflight_is_atomic_for_any_live_or_unverified_execution(database, busy_kind):
+def test_cutover_classifies_stopped_uncertainty_but_atomically_rejects_live_execution(database, busy_kind):
     ordinary = _new_run(database)
     blocked = _new_run(database)
     with database.helper._connection(autocommit=True) as connection, connection.cursor() as cursor:
@@ -157,6 +233,8 @@ def test_cutover_preflight_is_atomic_for_any_live_or_unverified_execution(databa
             cursor.execute('UPDATE agent_runs SET status=%s WHERE run_id=%s', (busy_kind.upper(), blocked))
         elif busy_kind == 'owner':
             cursor.execute("UPDATE agent_runs SET worker_id='still-owned' WHERE run_id=%s", (blocked,))
+        elif busy_kind == 'expired_run_lease':
+            cursor.execute('UPDATE agent_runs SET lease_expires_at=%s WHERE run_id=%s', (datetime(2000, 1, 1), blocked))
         elif busy_kind == 'invocation':
             identity = str(uuid4())
             cursor.execute("""INSERT INTO automation_plugin_invocations(invocation_id,request_key_sha256,request_sha256,
@@ -168,7 +246,7 @@ def test_cutover_preflight_is_atomic_for_any_live_or_unverified_execution(databa
     elif busy_kind == 'step':
         _step(database, blocked, status='VERIFYING', operation='EXTERNAL_WRITE')
     elif busy_kind == 'unknown':
-        database.seed(run_status='BLOCKED_DATA', receipt_outcome='WRITE_OUTCOME_UNKNOWN')
+        blocked = database.seed(run_status='BLOCKED_DATA', receipt_outcome='WRITE_OUTCOME_UNKNOWN')['run_id']
     elif busy_kind == 'unverified_write':
         _step(database, blocked, status='COMPLETED', operation='EXTERNAL_WRITE', attempts=1)
     elif busy_kind in {'failed_postcondition', 'incorrect_passed_postcondition', 'verified_incomplete_step'}:
@@ -179,6 +257,7 @@ def test_cutover_preflight_is_atomic_for_any_live_or_unverified_execution(databa
     elif busy_kind in {'verified_step_unknown_receipt', 'verified_step_started_receipt'}:
         seeded = database.seed(run_status='BLOCKED_DATA', step_status='COMPLETED',
             receipt_outcome='STARTED' if busy_kind == 'verified_step_started_receipt' else 'WRITE_OUTCOME_UNKNOWN')
+        blocked = seeded['run_id']
         with database.helper._connection(autocommit=True) as connection, connection.cursor() as cursor:
             cursor.execute("UPDATE agent_run_steps SET attempt_count=1,postcondition_status='VERIFIED' WHERE step_id=%s",
                            (seeded['step_id'],))
@@ -187,15 +266,74 @@ def test_cutover_preflight_is_atomic_for_any_live_or_unverified_execution(databa
               postcondition_status='VERIFIED_AFTER_RECOVERY')
         with database.helper._connection(autocommit=True) as connection, connection.cursor() as cursor:
             cursor.execute("UPDATE agent_runs SET error_code='WRITE_OUTCOME_UNKNOWN' WHERE run_id=%s", (blocked,))
+    uncertain_kinds = {
+        'unknown': 'WRITE_RECEIPT_UNCONFIRMED',
+        'unverified_write': 'ATTEMPTED_WRITE_WITHOUT_VERIFICATION',
+        'failed_postcondition': 'ATTEMPTED_WRITE_WITHOUT_VERIFICATION',
+        'incorrect_passed_postcondition': 'ATTEMPTED_WRITE_WITHOUT_VERIFICATION',
+        'verified_incomplete_step': 'ATTEMPTED_WRITE_WITHOUT_VERIFICATION',
+        'verified_step_unknown_receipt': 'WRITE_RECEIPT_UNCONFIRMED',
+        'verified_step_started_receipt': 'WRITE_RECEIPT_UNCONFIRMED',
+        'verified_step_unknown_run': 'RUN_WRITE_OUTCOME_UNCONFIRMED',
+    }
+    if busy_kind not in uncertain_kinds:
+        # A live execution also blocks retirement of unrelated stopped unknown
+        # writes; classification must not leave any partial migration behind.
+        database.seed(run_status='BLOCKED_DATA', receipt_outcome='WRITE_OUTCOME_UNKNOWN')
     before = _runs(database)
     steps = _table(database, 'agent_run_steps', 'step_id')
     evidence = _table(database, 'evidence_records', 'evidence_id')
     receipts = _table(database, 'automation_write_attempt_receipts', 'receipt_id')
+    leases = _table(database, 'automation_project_generation_leases', 'lease_id')
+    commands = _table(database, 'agent_commands', 'command_id')
+    outbox = _table(database, 'outbox_events', 'event_id')
+    if busy_kind in uncertain_kinds:
+        _apply(database)
+        after = _runs(database)
+        assert after[ordinary]['status'] == 'CANCELLED'
+        assert after[blocked]['status'] == 'FAILED_TERMINAL' and after[blocked]['finished_at']
+        assert not after[blocked]['retryable']
+        for field in before[blocked]:
+            if field not in {'status', 'finished_at', 'version', 'updated_at', 'retryable'}:
+                assert after[blocked][field] == before[blocked][field]
+        after_steps = {row['step_id']: row for row in _table(database, 'agent_run_steps', 'step_id')}
+        for step in steps:
+            updated = after_steps[step['step_id']]
+            if step['run_id'] == blocked and step['status'] in {'PENDING', 'WAITING_APPROVAL', 'BLOCKED_LOGIN', 'BLOCKED_DATA', 'FAILED_RETRYABLE'}:
+                assert updated['status'] == 'FAILED_TERMINAL' and updated['finished_at']
+                for field in step:
+                    if field not in {'status', 'finished_at', 'version', 'updated_at'}:
+                        assert updated[field] == step[field]
+            else:
+                assert updated == step
+        assert _table(database, 'evidence_records', 'evidence_id') == evidence
+        assert _table(database, 'automation_write_attempt_receipts', 'receipt_id') == receipts
+        assert _table(database, 'automation_project_generation_leases', 'lease_id') == leases
+        assert _table(database, 'agent_commands', 'command_id') == commands
+        assert _table(database, 'outbox_events', 'event_id') == outbox
+        retired = [row for row in _table(database, 'domain_events', 'event_id')
+                   if row['event_type'] == 'agent.legacy_execution.retired' and row['run_id'] == blocked]
+        assert len(retired) == 1
+        payload = json.loads(retired[0]['payload_json'])
+        assert payload['execution_retired'] is True and payload['write_outcome_unconfirmed'] is True
+        assert payload['to'] == 'FAILED_TERMINAL' and payload['from'] == before[blocked]['status']
+        assert payload['original_error_code'] == before[blocked]['error_code']
+        assert uncertain_kinds[busy_kind] in payload['unconfirmed_reasons']
+        assert database.repository.claim_runs('must-not-replay', ('BLOCKED_DATA', 'RECEIVED', 'FAILED_RETRYABLE')) == []
+        snapshot = database.snapshot()
+        _apply(database, raw=True)
+        assert database.snapshot() == snapshot
+        assert [row for row in _table(database, 'domain_events', 'event_id')
+                if row['event_type'] == 'agent.legacy_execution.retired' and row['run_id'] == blocked] == retired
+        return
     with pytest.raises(database.helper.pymysql.Error, match='(?i)cp046_'):
         _apply(database)
     assert _runs(database) == before and _runs(database)[ordinary]['status'] == 'RECEIVED'
     assert _table(database, 'agent_run_steps', 'step_id') == steps
     assert _table(database, 'evidence_records', 'evidence_id') == evidence
     assert _table(database, 'automation_write_attempt_receipts', 'receipt_id') == receipts
+    assert _table(database, 'automation_project_generation_leases', 'lease_id') == leases
+    assert _table(database, 'agent_commands', 'command_id') == commands
+    assert _table(database, 'outbox_events', 'event_id') == outbox
     assert not [row for row in _table(database, 'domain_events', 'event_id') if row['event_type'] == 'agent.legacy_execution.retired']
     assert not [row for row in _table(database, 'schema_migrations', 'version') if row['version'] == '046']
