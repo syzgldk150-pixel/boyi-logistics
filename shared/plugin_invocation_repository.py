@@ -32,7 +32,7 @@ class PluginInvocationRepository:
         return self._read("WHERE request_key_sha256=%s", (request_key_sha256,))
 
     def list_recent(self, automation_id: str, *, limit: int = 30) -> list[dict]:
-        return self._read("WHERE automation_id=%s ORDER BY started_at DESC, invocation_id DESC LIMIT %s", (automation_id, max(1, min(limit, 100))), many=True)
+        return self._read("WHERE automation_id=%s ORDER BY status IN ('STARTING','RUNNING','CANCELLING') DESC, started_at DESC, invocation_id DESC LIMIT %s", (automation_id, max(1, min(limit, 100))), many=True)
 
     def create(self, row: Mapping[str, Any], *, admission_guard=None) -> dict:
         """Reserve a request exactly once, consuming a preview in the same transaction."""

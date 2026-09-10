@@ -25,6 +25,7 @@ from console.services.automation_preview_support import (
 )
 from shared.plugin_invocation_repository import ACTIVE_INVOCATION_STATUSES, TERMINAL_INVOCATION_STATUSES
 from console.services.automation_invocation_output import invocation_output_lines, invocation_start_feedback
+from console.services.automation_invocation_history import AutomationInvocationHistoryMixin
 
 INVOCATION_STATUSES = ACTIVE_INVOCATION_STATUSES | TERMINAL_INVOCATION_STATUSES
 
@@ -51,7 +52,7 @@ def _automation_blocking_feedback(details: Any) -> tuple[str, str]:
     return ("本次未启动", "当前所需资源仍在使用，本次已结束，请稍后重新触发。")
 
 
-class AutomationServiceMixin(AutomationProjectsServiceMixin):
+class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProjectsServiceMixin):
     def _build_virtual_automation_task(
         self,
         task_id: str,
@@ -1754,14 +1755,8 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             return
         tool_name = str(query.get("tool_name", [""])[0]).strip()
         task_id = str(query.get("task_id", [""])[0]).strip()
-        scan_phase = str(query.get("scan_phase", [""])[0]).strip().lower()
-        selection_phase = str(query.get("selection_phase", [""])[0]).strip().lower()
         started_at = str(query.get("started_at", [""])[0]).strip()
         invocation_id = str(query.get("invocation_id", [""])[0]).strip()
-        try:
-            offset = int(query.get("offset", ["0"])[0])
-        except (ValueError, IndexError):
-            offset = 0
         if invocation_id:
             result = self._agent_request(
                 "GET",
@@ -1785,6 +1780,8 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             data = result.get("data") if isinstance(result.get("data"), dict) else {}
             run = data
             status = str(run.get("status") or "").upper()
+            invocation_phase = str(run.get("invocation_phase") or "run")
+            scan_phase = selection_phase = invocation_phase
             execution_phase = str(run.get("execution_phase") or "").strip().lower()
             stage_code = str(run.get("stage_code") or "").strip().upper()
             stage_description = str(run.get("stage_description") or "").strip()
@@ -1852,12 +1849,13 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
             lines = invocation_output_lines(run, state_label=state_label)
             is_running = status in active_statuses
             payload: dict[str, Any] = {
-                "lines": lines[max(0, offset):],
+                "lines": lines,
+                "output_mode": "snapshot",
                 "running": is_running,
                 "queued": False,
                 "pending": status in active_statuses,
                 "awaiting_approval": awaiting_approval,
-                "cancel_requested": bool(run.get("cancel_requested_at")),
+                "cancel_requested": status == "CANCELLING",
                 "started_at": str(
                     run.get("stage_started_at")
                     or run.get("started_at")
@@ -1867,6 +1865,8 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                 "offset": len(lines),
                 "total": len(lines),
                 "invocation_id": invocation_id,
+                "automation_id": task_id,
+                "invocation_phase": invocation_phase,
                 "status": status,
                 "collector_navigation": run.get("collector_navigation"),
                 "execution_phase": execution_phase,
@@ -1901,26 +1901,6 @@ class AutomationServiceMixin(AutomationProjectsServiceMixin):
                     "error": "",
                     "payload": run.get("result") or {},
                 }
-                last_status = "success" if ok else "cancelled" if cancelled else "error"
-                last_run = str(run.get("finished_at") or run.get("updated_at") or "")
-                if task_id:
-                    local_state = self.automation_virtual_task_state.get(task_id, {})
-                    if local_state.get("task_mode") == "scheduled":
-                        self.repository.update_scheduled_task_runtime(
-                            base_task_id=task_id,
-                            last_run=last_run,
-                            last_status=last_status,
-                            last_duration_ms=None,
-                            last_message=error_message,
-                        )
-                    else:
-                        self._record_virtual_task_runtime(
-                            task_id,
-                            last_run=last_run,
-                            last_status=last_status,
-                            last_duration_ms=None,
-                            last_message=error_message,
-                        )
                 if (
                     ok
                     and task_id == SCAN_PREVIEW_PROJECT_ID

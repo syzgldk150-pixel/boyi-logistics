@@ -61,7 +61,8 @@ SET @cp046_unknown = (
             WHERE step.run_id=run.run_id
               AND step.operation_type IN ('INTERNAL_PROJECTION_WRITE','EXTERNAL_WRITE','FINANCIAL_WRITE','DESTRUCTIVE')
               AND (step.attempt_count>0 OR step.started_at IS NOT NULL)
-              AND NOT (step.status='COMPLETED' AND COALESCE(step.postcondition_status,'')='passed')
+              AND NOT (step.status='COMPLETED'
+                  AND COALESCE(step.postcondition_status,'') IN ('VERIFIED','VERIFIED_AFTER_RECOVERY'))
               AND NOT (EXISTS(SELECT 1 FROM automation_write_attempt_receipts receipt
                     WHERE receipt.orchestration_run_id=run.run_id AND receipt.step_id=step.step_id)
                   AND NOT EXISTS(SELECT 1 FROM automation_write_attempt_receipts receipt

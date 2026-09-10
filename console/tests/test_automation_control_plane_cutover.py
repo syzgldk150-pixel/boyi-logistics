@@ -523,6 +523,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                     "status": 200,
                     "data": {
                             "invocation_id": invocation_id, "automation_id": "scan_codes",
+                            "invocation_phase": "preview",
                             "status": "COMPLETED",
                             "finished_at": "2026-08-24 12:00:00", "next_poll_after_ms": 0},
                 },
@@ -558,6 +559,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                 "status": 200,
                 "data": {
                         "invocation_id": invocation_id, "automation_id": "scan_codes",
+                        "invocation_phase": "formal",
                         "status": "COMPLETED",
                         "finished_at": "2026-08-24 12:00:00", "next_poll_after_ms": 0},
             }
@@ -663,6 +665,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                 "status": 200,
                 "data": {
                         "invocation_id": "run-self-pickup-preview", "automation_id": "self_pickup_problem_upload",
+                        "invocation_phase": "preview",
                         "status": "FAILED",
                         "updated_at": "2026-09-03 01:00:00",
                         "public_problem_code": "SOURCE_SCHEMA_CHANGED",

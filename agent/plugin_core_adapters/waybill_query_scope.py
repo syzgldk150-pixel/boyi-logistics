@@ -12,7 +12,7 @@ from html.parser import HTMLParser
 from typing import Any, Mapping
 
 from shared.automation_project_authorization import canonical_sha256
-from shared.waybill_source_coverage import WaybillSourceScope
+from shared.waybill_source_coverage import WaybillSourceScope, native_waybill_source_scope
 
 
 class _BusinessInputs(HTMLParser):
@@ -101,7 +101,7 @@ def observe_query_scope(source: str, account_id: str, session: Any) -> WaybillSo
         raise ValueError("WAYBILL_SOURCE_UNSUPPORTED")
     # Platform waybill numbers are the lookup identities used by each native
     # exact-detail endpoint. A new account or query profile reuses those entities.
-    return WaybillSourceScope(source, f"{source}:native-waybill", "query-v1:" + canonical_sha256(context), account_id)
+    return WaybillSourceScope(source, native_waybill_source_scope(source), "query-v1:" + canonical_sha256(context), account_id)
 
 
 def source_session(descriptor: Mapping[str, Any]):

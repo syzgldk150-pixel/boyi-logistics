@@ -4,6 +4,14 @@
 {% block body_class %}automation-page{% endblock %}
 {% block breadcrumb %}{{ management_title|default("自动化") }}{% endblock %}
 {% block subtitle %}脚本、定时任务与运行状态{% endblock %}
+{% block head %}
+<style>
+[data-invocation-history] { gap: 8px; color: #d4d4d4; }
+[data-invocation-history] label { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; font-size: .8rem; }
+[data-invocation-select] { min-width: 0; max-width: 100%; flex: 1; background: #252525; color: #ededed; border: 1px solid #666; border-radius: 4px; padding: 6px; }
+[data-invocation-refresh] { color: #d4d4d4; min-width: 44px; min-height: 44px; }
+</style>
+{% endblock %}
 
 {% block page_actions %}
 {% if can_manage_plugins %}<button class="extension-install-trigger" type="button" data-extension-open><i data-feather="package"></i><span>安装扩展</span></button>{% endif %}
@@ -273,9 +281,9 @@
               <span data-run-label>{{ '读取候选' if is_selection_preview_workflow else '生成预览' if is_scan_preview_workflow else '执行' }}</span>
             </button>
             {% else %}
-            <button class="primary-btn auto-run-btn" type="button" disabled title="{{ run_disabled_reason }}">
-              <i data-feather="lock"></i>
-              <span>{{ run_disabled_reason }}</span>
+            <button class="primary-btn auto-run-btn" type="button" disabled title="{{ run_disabled_reason }}" data-run-now data-run-mode="start" data-start-disabled="{{ run_disabled_reason }}">
+              <i data-feather="lock" data-run-icon></i>
+              <span data-run-label>{{ run_disabled_reason }}</span>
             </button>
             {% endif %}
 
@@ -792,6 +800,10 @@
                 <i data-feather="chevrons-down"></i>
               </button>
             </div>
+          </div>
+          <div class="auto-terminal-head" data-invocation-history>
+            <label>执行记录 <select data-invocation-select aria-label="选择执行记录"><option value="">打开后读取记录</option></select></label>
+            <button type="button" class="auto-terminal-action-btn" data-invocation-refresh aria-label="刷新执行记录" title="刷新执行记录"><i data-feather="refresh-cw"></i></button>
           </div>
           <nav data-run-source-links aria-label="运行所属来源" hidden></nav>
           <pre class="auto-terminal-body" data-terminal-body></pre>
@@ -1428,7 +1440,7 @@
       const isCancelPending = isActive && !!runUiState.cancelRequested;
       const iconName = isRefreshOnly ? "refresh-cw" : isActive ? "x-circle" : "play";
       const idleLabel = isSelectionPreviewWorkflow ? "读取候选" : isScanPreviewWorkflow ? "生成预览" : "执行";
-      const labelText = isRefreshOnly ? "刷新状态" : isCancelPending ? "取消中" : isActive ? "取消" : idleLabel;
+      const labelText = isRefreshOnly ? "刷新状态" : isCancelPending ? "取消中" : isActive ? "取消" : (runBtn.dataset.startDisabled || idleLabel);
       const runIcon = runBtn.querySelector("[data-run-icon], .feather, [data-feather]");
       const runLabel = runBtn.querySelector("[data-run-label]");
 
@@ -1437,6 +1449,7 @@
       runBtn.classList.toggle("is-pending", isCancelPending);
       runBtn.disabled = (
         runBtn.hasAttribute("aria-busy")
+        || (!isActive && !isRefreshOnly && !!runBtn.dataset.startDisabled)
         || isCancelPending
         || (isSelectionPreviewWorkflow && selectionConfirmationRetryOnly)
       );
@@ -1835,28 +1848,121 @@
       const termStatus = termDrawer.querySelector("[data-terminal-status]");
       const termClear = termDrawer.querySelector("[data-terminal-clear]");
       const termScrollLock = termDrawer.querySelector("[data-terminal-scroll-lock]");
+      const invocationSelect = termDrawer.querySelector("[data-invocation-select]");
+      const invocationRefresh = termDrawer.querySelector("[data-invocation-refresh]");
       const toolName = termDrawer.dataset.toolName;
       const taskId = termDrawer.dataset.taskId || "";
       let termPollTimer = null;
       let termPollingInFlight = false;
       let termPollGeneration = 0;
       let termPollingRequested = false;
-      let termOffset = 0;
       let autoScroll = true;
       let termNeedsFinalRuntimePoll = false;
       let termFinalRuntimePollCount = 0;
+      let recentInvocations = [];
+      let historyGeneration = 0;
+      const openOutputKey = `boyi:automation-output-open:${taskId}`;
+
+      const sources = {console: "后台", feishu: "飞书", scheduler: "定时", harness: "AI 助手", webhook: "外部触发", events: "事件", module_slots: "页面功能"};
+      const states = {STARTING: "正在启动", RUNNING: "执行中", CANCELLING: "取消中", COMPLETED: "已完成", FAILED: "失败", CANCELLED: "已取消", WRITE_OUTCOME_UNKNOWN: "写入结果未确认"};
+
+      function invocationLabel(item) {
+        const started = new Date(item.started_at).toLocaleString("zh-CN", {hour12: false});
+        return `${started} · ${sources[item.source] || "执行"} · ${states[item.status] || item.status}`;
+      }
+
+      function updateInvocationLabel(data) {
+        const item = recentInvocations.find(row => row.invocation_id === data.invocation_id);
+        if (!item) return;
+        item.status = data.status;
+        const option = Array.from(invocationSelect?.options || []).find(row => row.value === item.invocation_id);
+        if (option) option.textContent = invocationLabel(item);
+      }
+
+      function rememberOutput(open) {
+        try {
+          if (open) window.sessionStorage.setItem(openOutputKey, "1");
+          else window.sessionStorage.removeItem(openOutputKey);
+        } catch (_) {}
+      }
+
+      function selectInvocation(invocation) {
+        stopPolling();
+        if (isScanPreviewWorkflow) clearScanPreview({force: true});
+        if (isSelectionPreviewWorkflow) clearSelectionPreview({force: true});
+        termDrawer.dataset.invocationId = invocation.invocation_id;
+        termDrawer.dataset.runStartedAt = invocation.started_at || "";
+        termDrawer.dataset.scanPhase = invocation.invocation_phase;
+        termDrawer.dataset.selectionPhase = invocation.invocation_phase;
+        if (invocationSelect) invocationSelect.value = invocation.invocation_id;
+        const active = ["STARTING", "RUNNING", "CANCELLING"].includes(invocation.status);
+        if (active || !(runUiState.running || runUiState.pendingRun)) {
+          setRunUiState({running: active, pendingRun: false, trackingExisting: false,
+            conflictUnresolved: false, invocationId: invocation.invocation_id,
+            startedAt: invocation.started_at || "", cancelRequested: invocation.status === "CANCELLING"});
+        }
+        startPolling(invocation.started_at || "");
+      }
+
+      async function loadRecentInvocations() {
+        if (!taskId || runUiState.conflictUnresolved) return;
+        const generation = ++historyGeneration;
+        const pollGeneration = termPollGeneration;
+        if (invocationRefresh) invocationRefresh.disabled = true;
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), 10000);
+        try {
+          const response = await fetch(`/automations/projects/${encodeURIComponent(taskId)}/invocations`, {
+            headers: {"X-Requested-With": "XMLHttpRequest", "Accept": "application/json"}, signal: controller.signal,
+          });
+          const payload = await response.json();
+          if (generation !== historyGeneration || pollGeneration !== termPollGeneration) return;
+          if (!response.ok || payload.automation_id !== taskId || !Array.isArray(payload.items)
+              || payload.items.some(item => item.automation_id !== taskId || !item.invocation_id)) {
+            throw new Error("执行记录暂时无法读取，请重试。");
+          }
+          recentInvocations = payload.items;
+          if (invocationSelect) {
+            invocationSelect.replaceChildren();
+            for (const item of recentInvocations) {
+              const option = document.createElement("option");
+              option.value = item.invocation_id;
+              option.textContent = invocationLabel(item);
+              invocationSelect.append(option);
+            }
+            invocationSelect.disabled = recentInvocations.length === 0;
+          }
+          const active = recentInvocations.find(item => ["STARTING", "RUNNING", "CANCELLING"].includes(item.status));
+          const selected = active || recentInvocations[0];
+          if (selected) selectInvocation(selected);
+          else {
+            stopPolling();
+            termDrawer.dataset.invocationId = "";
+            termDrawer.dataset.runStartedAt = "";
+            setRunUiState({running: false, pendingRun: false});
+            termBody.textContent = "暂无执行记录。触发脚本后，可在这里查看结果。";
+            if (termStatus) termStatus.textContent = "尚未执行";
+          }
+        } catch (error) {
+          if (generation !== historyGeneration || pollGeneration !== termPollGeneration) return;
+          termBody.textContent = "执行记录暂时无法读取，请点击刷新执行记录重试。";
+          if (termStatus) termStatus.textContent = "读取失败";
+        } finally {
+          clearTimeout(timeoutId);
+          if (generation === historyGeneration && invocationRefresh) invocationRefresh.disabled = false;
+        }
+      }
 
       fetchOutputState = async function(options = {}) {
         if (!toolName || runUiState.conflictUnresolved) return null;
         const generation = termPollGeneration;
         const startedAt = options.startedAt ?? termDrawer.dataset.runStartedAt ?? "";
         const invocationId = String(
-          options.invocationId || runUiState.invocationId || termDrawer.dataset.invocationId || ""
+          options.invocationId || termDrawer.dataset.invocationId || runUiState.invocationId || ""
         ).trim();
-        const offset = options.offset ?? termOffset;
         const query = new URLSearchParams({
           tool_name: toolName,
-          offset: String(offset),
+          offset: "0",
         });
         if (taskId) query.set("task_id", taskId);
         const scanPhase = termDrawer.dataset.scanPhase || "";
@@ -1881,7 +1987,10 @@
           if (!res.ok || !payload || typeof payload !== "object" || (invocationId && payload.error)) {
             throw new Error("任务状态暂时无法读取。");
           }
-          if (generation === termPollGeneration) renderRunSourceLinks(payload.collector_navigation);
+          if (invocationId && (payload.invocation_id !== invocationId || payload.automation_id !== taskId)) {
+            throw new Error("执行记录与当前插件不匹配。");
+          }
+          if (generation === termPollGeneration && options.navigation !== false) renderRunSourceLinks(payload.collector_navigation);
           return payload;
         } finally {
           clearTimeout(timeoutId);
@@ -1890,8 +1999,9 @@
 
       function renderRunSourceLinks(navigation) {
           const links = termDrawer.querySelector("[data-run-source-links]");
-          if (links && navigation) {
+          if (links) {
             links.replaceChildren();
+            if (!navigation) { links.hidden = true; return; }
             links.hidden = navigation.status === "not_collector";
             if (navigation.module_url) {
               const moduleLink = document.createElement("a");
@@ -1980,6 +2090,59 @@
         syncRuntimeFeedback(form, null);
       }
 
+      function syncInvocationControls(data) {
+        const pendingRun = !!data.pending && !data.running && !data.runtime;
+        if (data.attention) {
+          renderAttentionRun(data);
+        } else if (data.running) {
+          const startedAt = data.started_at || runUiState.startedAt || "";
+          if (startedAt && data.invocation_id === termDrawer.dataset.invocationId) {
+            termDrawer.dataset.runStartedAt = startedAt;
+          }
+          setRunUiState({running: true, startedAt, cancelRequested: !!data.cancel_requested});
+          startRunProgress(startedAt);
+          const progressLabel = form.querySelector("[data-task-progress-label]");
+          if (progressLabel && data.stage_description) {
+            progressLabel.textContent = data.stage_description;
+          }
+          renderFeedback(form, {
+            kind: "info",
+            title: data.cancel_requested ? "取消中" : (data.stage_description || "执行中"),
+            message: data.cancel_requested ? "已发送取消请求，正在停止脚本。" : (data.stage_description || "脚本已开始执行，结果会自动更新。"),
+            showTimer: true,
+            stampText: startedAt ? `开始：${startedAt}` : "",
+            body: "",
+          });
+          syncRuntimeFeedback(form, null);
+        } else if (pendingRun) {
+          renderPendingRun(data);
+        }
+        if (data.scan_preview) {
+          renderScanPreview(data.scan_preview);
+          syncRuntimeFeedback(form, null);
+          hideRunFeedback(form);
+        } else if (data.scan_preview_error) {
+          renderScanPreviewError(data.scan_preview_error.message, data.scan_preview_error.error_code);
+          syncRuntimeFeedback(form, null);
+          hideRunFeedback(form);
+        } else if (data.selection_preview) {
+          renderSelectionPreview(data.selection_preview);
+          syncRuntimeFeedback(form, null);
+          hideRunFeedback(form);
+        } else if (data.selection_preview_error) {
+          renderSelectionPreviewError(data.selection_preview_error.message);
+          syncRuntimeFeedback(form, null);
+          hideRunFeedback(form);
+        } else if (data.runtime) {
+          syncRuntimeFeedback(form, data.runtime);
+          hideRunFeedback(form);
+        }
+        if (!data.running && !pendingRun && !data.attention) {
+          stopRunProgress();
+          setRunUiState({ running: false, pendingRun: false });
+        }
+      }
+
       async function pollOutput() {
         if (!toolName || runUiState.conflictUnresolved || termPollingInFlight) return;
         const generation = termPollGeneration;
@@ -1988,71 +2151,24 @@
         try {
           const data = await fetchOutputState();
           if (generation !== termPollGeneration || runUiState.conflictUnresolved) return;
-          if (data.lines && data.lines.length > 0) {
-            const fragment = data.lines.join("\n") + "\n";
-            termBody.textContent += fragment;
-            termOffset = data.total;
+          if (Array.isArray(data.lines)) {
+            termBody.textContent = data.lines.length ? data.lines.join("\n") + "\n" : "";
             termScrollToBottom();
           }
+          if (data.invocation_phase) {
+            termDrawer.dataset.scanPhase = data.invocation_phase;
+            termDrawer.dataset.selectionPhase = data.invocation_phase;
+          }
+          let controlData = data;
+          const currentId = runUiState.invocationId;
+          if ((runUiState.running || runUiState.pendingRun) && currentId && currentId !== data.invocation_id) {
+            controlData = await fetchOutputState({invocationId: currentId, navigation: false});
+            if (generation !== termPollGeneration || runUiState.conflictUnresolved) return;
+          }
+          updateInvocationLabel(data);
+          updateInvocationLabel(controlData);
+          syncInvocationControls(controlData);
           const pendingRun = !!data.pending && !data.running && !data.runtime;
-          if (data.attention) {
-            renderAttentionRun(data);
-
-          } else if (data.running) {
-            const startedAt = data.started_at || termDrawer.dataset.runStartedAt || "";
-            if (startedAt) {
-              termDrawer.dataset.runStartedAt = startedAt;
-            }
-            setRunUiState({
-              running: true,
-
-              startedAt,
-              cancelRequested: !!data.cancel_requested,
-            });
-            startRunProgress(startedAt);
-            const progressLabel = form.querySelector("[data-task-progress-label]");
-            if (progressLabel && data.stage_description) {
-              progressLabel.textContent = data.stage_description;
-            }
-            renderFeedback(form, {
-              kind: "info",
-              title: data.cancel_requested ? "取消中" : (data.stage_description || "执行中"),
-              message: data.cancel_requested ? "已发送取消请求，正在停止脚本。" : (data.stage_description || "脚本已开始执行，结果会自动更新。"),
-              showTimer: true,
-              stampText: startedAt ? `开始：${startedAt}` : "",
-              body: "",
-            });
-            syncRuntimeFeedback(form, null);
-          } else if (pendingRun) {
-            renderPendingRun(data);
-          }
-          if (data.scan_preview) {
-            renderScanPreview(data.scan_preview);
-            syncRuntimeFeedback(form, null);
-            hideRunFeedback(form);
-          } else if (data.scan_preview_error) {
-            renderScanPreviewError(
-              data.scan_preview_error.message,
-              data.scan_preview_error.error_code,
-            );
-            syncRuntimeFeedback(form, null);
-            hideRunFeedback(form);
-          } else if (data.selection_preview) {
-            renderSelectionPreview(data.selection_preview);
-            syncRuntimeFeedback(form, null);
-            hideRunFeedback(form);
-          } else if (data.selection_preview_error) {
-            renderSelectionPreviewError(data.selection_preview_error.message);
-            syncRuntimeFeedback(form, null);
-            hideRunFeedback(form);
-          } else if (data.runtime) {
-            syncRuntimeFeedback(form, data.runtime);
-            hideRunFeedback(form);
-          }
-          if (!data.running && !pendingRun && !data.attention) {
-            stopRunProgress();
-            setRunUiState({ running: false, pendingRun: false });
-          }
           if (termStatus) {
             if (data.attention) {
               termStatus.textContent = data.attention_title || "需要处理";
@@ -2106,7 +2222,7 @@
             }
           }
           // 非终态持续轮询；终态后再轮询若干次，等待 runtime 落库
-          if (data.running || (pendingRun && !data.attention)) {
+          if (data.running || (pendingRun && !data.attention) || controlData.running || controlData.pending) {
             termNeedsFinalRuntimePoll = false;
             termFinalRuntimePollCount = 0;
             termPollTimer = setTimeout(
@@ -2158,10 +2274,10 @@
 
       startPolling = function(startedAt = "") {
         if (runUiState.conflictUnresolved) return;
+        termPollGeneration += 1;
         termPollingRequested = true;
         if (termPollTimer) { clearTimeout(termPollTimer); termPollTimer = null; }
         termAttentionLatched = false;
-        termOffset = 0;
         termNeedsFinalRuntimePoll = false;
         termFinalRuntimePollCount = 0;
         termBody.textContent = "";
@@ -2182,60 +2298,29 @@
         termFinalRuntimePollCount = 0;
       };
 
-      async function resumeRunningTask() {
-        if (!toolName) return;
-        try {
-          const data = await fetchOutputState({ offset: 0 });
-          if (!data) return;
-          if (data.attention) {
-            renderAttentionRun(data);
-            return;
-          }
-          const pendingRun = !!data.pending && !data.running && !data.runtime;
-          if (pendingRun) {
-            renderPendingRun(data);
-            startPolling(data.started_at || "");
-            return;
-          }
-          if (data.running) {
-            const startedAt = data.started_at || termDrawer.dataset.runStartedAt || "";
-            if (startedAt) {
-              termDrawer.dataset.runStartedAt = startedAt;
-            }
-            hideLegacyFeedback(form);
-            syncRuntimeFeedback(form, null);
-            setRunUiState({
-              running: true,
-
-              pendingRun: false,
-              startedAt,
-              cancelRequested: !!data.cancel_requested,
-            });
-            startRunProgress(startedAt);
-            startPolling(startedAt);
-            return;
-          }
-          if (data.runtime) {
-            setRunUiState({ running: false, pendingRun: false });
-            syncRuntimeFeedback(form, data.runtime);
-          }
-        } catch (_) {}
-      }
-
       termBtn.addEventListener("click", () => {
         togglePanel(termBtn, termDrawer);
         const isOpen = termBtn.getAttribute("aria-expanded") === "true";
+        rememberOutput(isOpen);
         if (isOpen) {
-          startPolling();
+          if (runUiState.running || runUiState.pendingRun || !invocationSelect) startPolling();
+          else loadRecentInvocations();
         } else if (!runUiState.running && !runUiState.pendingRun) {
+          historyGeneration += 1;
           stopPolling();
         }
+      });
+
+      invocationRefresh?.addEventListener("click", loadRecentInvocations);
+      invocationSelect?.addEventListener("change", () => {
+        historyGeneration += 1;
+        const selected = recentInvocations.find(item => item.invocation_id === invocationSelect.value);
+        if (selected) selectInvocation(selected);
       });
 
       if (termClear) {
         termClear.addEventListener("click", () => {
           termBody.textContent = "";
-          termOffset = 0;
         });
       }
 
@@ -2248,7 +2333,16 @@
         termScrollLock.classList.add("is-active");
       }
 
-      // 初次进入页面保持干净，不自动展开历史执行结果。
+      // Only a previously opened output panel is restored; other cards stay lazy.
+      try {
+        if (invocationSelect && window.sessionStorage.getItem(openOutputKey) === "1") {
+          termDrawer.hidden = false;
+          termDrawer.classList.add("is-open");
+          termBtn.setAttribute("aria-expanded", "true");
+          loadRecentInvocations();
+        }
+      } catch (_) {}
+      // Invocation history initialization is complete.
     }
 
     // 反馈关闭按钮
@@ -2361,7 +2455,7 @@
     async function requestTaskCancel() {
       if (!(runBtn instanceof HTMLElement)) return;
       const taskId = form.querySelector('input[name="task_id"]')?.value || "";
-      const startedAt = (termDrawer?.dataset.runStartedAt || runUiState.startedAt || "").trim();
+      const startedAt = (runUiState.startedAt || termDrawer?.dataset.runStartedAt || "").trim();
       const invocationId = (runUiState.invocationId || termDrawer?.dataset.invocationId || "").trim();
 
       if (!invocationId) {
@@ -2410,7 +2504,7 @@
         const result = await res.json();
         if (result.ok) {
           const cancelStartedAt = result.activity_value || startedAt;
-          if (termDrawer && cancelStartedAt) {
+          if (termDrawer && termDrawer.dataset.invocationId === invocationId && cancelStartedAt) {
             termDrawer.dataset.runStartedAt = cancelStartedAt;
           }
           setRunUiState({
@@ -2428,7 +2522,7 @@
             showTimer: !(wasPendingRun),
             stampText: cancelStartedAt ? `开始：${cancelStartedAt}` : "",
           });
-          startPolling(cancelStartedAt);
+          startPolling(termDrawer?.dataset.invocationId === invocationId ? cancelStartedAt : "");
           return;
         }
 
@@ -2716,7 +2810,10 @@
           await requestTaskCancel();
           return;
         }
+        if (runBtn.dataset.startDisabled) return;
 
+        stopPolling();
+        if (termDrawer) termDrawer.dataset.invocationId = "";
         stopRunProgress();
         if (isScanPreviewWorkflow) clearScanPreview({ force: true });
         if (isSelectionPreviewWorkflow) clearSelectionPreview();
@@ -2732,7 +2829,7 @@
           if (isScanPreviewWorkflow) termDrawer.dataset.scanPhase = "preview";
           if (isSelectionPreviewWorkflow) termDrawer.dataset.selectionPhase = "preview";
         }
-        setRunUiState({ running: false, pendingRun: true, startedAt: stamp, cancelRequested: false });
+        setRunUiState({ running: false, pendingRun: true, startedAt: stamp, cancelRequested: false, invocationId: "" });
         stopRunProgress();
 
         renderFeedback(form, {

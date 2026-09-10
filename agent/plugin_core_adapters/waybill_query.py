@@ -110,10 +110,11 @@ def publish_verified_waybills(records, *, source, target_date, account_id,
         raise ValueError("WAYBILL_SOURCE_SCOPE_UNVERIFIED")
     repository = WaybillSourceRepository(connection_factory or waybill_connection)
     day = date.fromisoformat(str(target_date))
-    before = repository.read_scope(scope, day)
     expected = {row["waybill_no"]: WaybillRepository._normalized_record(row) for row in records}
     if len(expected) != len(records) or any(row is None for row in expected.values()):
         raise ValueError("WAYBILL_SOURCE_IDENTITY_INVALID")
+    before = repository.publication_baseline(
+        [{**row, "source_record_id": row["waybill_no"]} for row in records], scope=scope, business_date=day)
     def same_scope(provider, identity):
         if resolver(provider, identity) != scope:
             raise ValueError("WAYBILL_SOURCE_SCOPE_CHANGED")
@@ -152,9 +153,11 @@ def publish_verified_waybills(records, *, source, target_date, account_id,
     existed = {row["waybill_no"] for row in before}
     active_before = {row["waybill_no"] for row in before if row.get("status") != "cancelled"}
     updates = len(existed & set(expected))
+    counts = ({key: result[key] for key in ("updates", "creates", "deleted_stale")}
+              if result is not None else {"updates": updates, "creates": len(expected)-updates,
+                                         "deleted_stale": len(active_before-set(actual))})
     return {"ok": True, "complete": True, "verified": True, "upserted": len(expected),
-            "updates": updates, "creates": len(expected)-updates,
-            "deleted_stale": len(active_before-set(actual)), "record_count": len(expected),
+            **counts, "record_count": len(expected),
             "readback_count": len(actual),
             "readback_sha256": canonical_sha256([actual[key] for key in sorted(actual)])}
 

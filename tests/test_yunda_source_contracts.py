@@ -681,6 +681,10 @@ def test_yunda_projection_uses_exact_fresh_source_date_readback(
         lambda *_args, **_kwargs: [dict(row) for row in state],
     )
     monkeypatch.setattr(
+        "shared.waybill_source_coverage.WaybillSourceRepository.publication_baseline",
+        lambda *_args, **_kwargs: [dict(row) for row in state],
+    )
+    monkeypatch.setattr(
         "tools.phase7_mysql_store.list_console_waybills_by_numbers",
         lambda _identities: [],
     )
@@ -733,6 +737,10 @@ def test_yunda_projection_ack_with_mismatched_fresh_row_is_unknown(
     )
     monkeypatch.setattr(
         "shared.waybill_source_coverage.WaybillSourceRepository.read_scope",
+        lambda *_args, **_kwargs: [dict(row) for row in state],
+    )
+    monkeypatch.setattr(
+        "shared.waybill_source_coverage.WaybillSourceRepository.publication_baseline",
         lambda *_args, **_kwargs: [dict(row) for row in state],
     )
     monkeypatch.setattr(

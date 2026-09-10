@@ -32,7 +32,7 @@ def public_invocation(row: Mapping[str, Any]) -> dict[str, Any]:
     result = {
         key: row.get(key) for key in (
             "invocation_id", "request_id", "automation_id", "plugin_id", "plugin_version",
-            "generation", "operation", "status", "error_code", "error_summary",
+            "generation", "operation", "source", "status", "error_code", "error_summary",
             "started_at", "finished_at",
         )
     }
@@ -45,6 +45,10 @@ def public_invocation(row: Mapping[str, Any]) -> dict[str, Any]:
     result["output"] = (row.get("result_json") or {}).get("data")
     result["error"] = ({"code": row.get("error_code"), "message": row.get("error_summary")} if row.get("error_code") else None)
     result["running"] = row.get("status") in {"STARTING", "RUNNING", "CANCELLING"}
+    result["invocation_phase"] = (
+        "formal" if row.get("preview_invocation_id") else
+        "preview" if (row.get("arguments_json") or {}).get("dry_run") is True else "run"
+    )
     result["status_url"] = f"/internal/v1/automation-invocations/{row['invocation_id']}"
     return result
 
@@ -353,6 +357,13 @@ class DirectPluginInvocationService:
             active = self._active.get(invocation_id)
         if not active:
             return await asyncio.to_thread(self.get, invocation_id)
+        if self._loop is not asyncio.get_running_loop():
+            if self._loop is None or not self._loop.is_running():
+                raise OrchestrationError("INVOCATION_RUNTIME_UNAVAILABLE", "执行服务尚未启动")
+            # Public callers may own another loop; only the execution loop
+            # can cancel and await the live task and its finalizers.
+            future = asyncio.run_coroutine_threadsafe(self.cancel(invocation_id), self._loop)
+            return await asyncio.wrap_future(future)
         with self._lock:
             first_cancel = not active.get("cancel_requested")
             active["cancel_requested"] = True
