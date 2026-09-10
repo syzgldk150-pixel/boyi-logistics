@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -278,8 +279,77 @@ def validate_plugin_version_evidence(
     return prepared_request, legacy_downgrade, metadata_variant
 
 
+def valid_configuration_metadata_fields(
+    metadata: Any, *, automation_id: str, event: Mapping[str, Any],
+    configuration_evidence: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Accept target metadata only with its exact committed upgrade audit pair.
+
+    Ordinary configuration events keep their original closed shape. A release
+    preparation is written atomically with version staging, so the extra target
+    must be proved by that existing version evidence, not merely by its shape.
+    """
+    fields = {
+        "request_payload_sha256", "from_project_configuration_version",
+        "to_project_configuration_version", "schedule_sha256", "scheduled_task_count",
+    }
+    if not isinstance(metadata, Mapping):
+        return False
+    if set(metadata) == fields:
+        return True
+    target = metadata.get("first_party_upgrade_target")
+    if (
+        set(metadata) != fields | {"first_party_upgrade_target"}
+        or event.get("actor_id") != "system:release:first-party-upgrade"
+        or event.get("actor_role") != "super_admin"
+        or not isinstance(target, Mapping)
+        or set(target) != {"from_version", "to_version", "package_sha256"}
+        or not _valid_plugin_api(target.get("from_version"))
+        or not _valid_plugin_api(target.get("to_version"))
+        or target.get("from_version") == target.get("to_version")
+        or not _valid_sha256(target.get("package_sha256"))
+    ):
+        return False
+    request_id = event.get("request_id")
+    try:
+        if str(uuid.UUID(request_id)) != request_id:
+            return False
+    except (ValueError, TypeError, AttributeError):
+        return False
+    pairs = [row for row in configuration_evidence
+        if isinstance(row.get("configuration_metadata_json"), Mapping)
+        and row["configuration_metadata_json"].get("prepared_configuration_request_id") == request_id]
+    if len(pairs) != 1:
+        return False
+    joined = pairs[0]
+    upgrade = {field: joined.get(alias) for field, alias in _JOINED_POLICY_FIELDS.items()}
+    upgrade["request_id"] = joined.get("request_id")
+    upgrade_metadata = joined["configuration_metadata_json"]
+    try:
+        prepared_request, legacy_downgrade, _variant = validate_plugin_version_evidence(
+            upgrade, configuration_evidence,
+        )
+    except ValueError:
+        return False
+    return bool(
+        joined.get("automation_id") == automation_id
+        and prepared_request == request_id and not legacy_downgrade
+        and upgrade.get("reason") == "PLUGIN_VERSION_CHANGED"
+        and upgrade.get("actor_id") == event.get("actor_id")
+        and upgrade.get("actor_role") == event.get("actor_role")
+        and type(event.get("event_id")) is int
+        and upgrade["event_id"] > event["event_id"]
+        and upgrade.get("project_generation") == event.get("project_generation")
+        and upgrade.get("project_configuration_version") == event.get("project_configuration_version")
+        and all(upgrade_metadata.get(key) == value for key, value in target.items())
+        and isinstance(upgrade_metadata.get("immutable_version_identity"), Mapping)
+        and upgrade_metadata["immutable_version_identity"]["to_package"]["trust_source"] == "ed25519_first_party"
+    )
+
+
 __all__ = [
     "ORIGINAL",
     "PREPARED_AWARE",
     "validate_plugin_version_evidence",
+    "valid_configuration_metadata_fields",
 ]
