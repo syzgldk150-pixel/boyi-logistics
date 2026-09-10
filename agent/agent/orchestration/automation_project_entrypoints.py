@@ -225,6 +225,23 @@ class CommittedAutomationProjectRouteResolver:
         self._bindings = binding_resolver
         self._resource_provider = resource_provider
 
+    def resolve_instance_feishu_route(self, automation_id: str) -> AutomationProjectEntrypointRoute | None:
+        """Resolve a selected instance through its actual bound route resource."""
+        entry = self._catalog.require(automation_id)
+        snapshot = entry.committed_snapshot
+        if snapshot is None:
+            return None
+        resource_id = snapshot.execution_metadata["resource_bindings"].get("feishu_route")
+        if resource_id is None:
+            return None
+        resource = self._resource_provider(resource_id)
+        if not isinstance(resource, Mapping) or not resource.get("route_key"):
+            raise OrchestrationError("PROJECT_ROUTE_INVALID", "插件飞书入口不可用")
+        route = self.resolve_committed_route(entrypoint=AutomationEntrypoint.FEISHU, route_key=resource["route_key"])
+        if route is None or route.automation_id != automation_id:
+            raise OrchestrationError("PROJECT_ROUTE_INVALID", "插件飞书入口归属不匹配")
+        return route
+
     def resolve_committed_route(
         self,
         *,
@@ -487,6 +504,7 @@ class ServiceV2FeishuDispatcher:
         sender_id: str,
         chat_id: str,
         on_accepted: Callable[[Any], Awaitable[None]] | None = None,
+        conversation_target: Any = None,
     ) -> dict[str, Any] | None:
         """Dispatch an exact active command, or return ``None`` if unknown."""
 
@@ -501,6 +519,9 @@ class ServiceV2FeishuDispatcher:
             ) from exc
         if target is None:
             return None
+
+        if conversation_target is not None and (target.automation_id != conversation_target.automation_id or target.generation != conversation_target.generation or target.contribution_id != conversation_target.contribution_id):
+            raise OrchestrationError("PROJECT_INVOCATION_STALE", "对话中选择的插件已变化，请重新触发")
 
         safe_event_id = _stable_identifier(event_id, "event_id")
         safe_sender_id = _stable_identifier(sender_id, "sender_id")
@@ -534,6 +555,8 @@ class ServiceV2FeishuDispatcher:
         }
         if on_accepted is not None:
             invoke_kwargs["on_accepted"] = on_accepted
+        if conversation_target is not None:
+            invoke_kwargs.update(require_full_auto=True, expected_project_configuration_version=conversation_target.configuration_version)
         return await self._policy.invoke_trusted_and_wait(
             getattr(target, "automation_id", None),
             **invoke_kwargs,
@@ -758,8 +781,11 @@ class AutomationProjectEntrypoints:
         envelope: Mapping[str, Any] | None = None,
         preview_invocation_id: str | None = None,
         on_accepted: Callable[[Any], Awaitable[None]] | None = None,
+        conversation_target: Any = None,
     ) -> dict[str, Any]:
         route = self._require_route(AutomationEntrypoint.FEISHU, route_key)
+        if conversation_target is not None and (route.automation_id != conversation_target.automation_id or route.automation_generation != conversation_target.generation or route.project_configuration_version != conversation_target.configuration_version):
+            raise OrchestrationError("PROJECT_INVOCATION_STALE", "对话中选择的插件或设置已变化，请重新触发")
         safe_event_id = _stable_identifier(event_id, "event_id")
         safe_sender_id = _stable_identifier(sender_id, "sender_id")
         safe_chat_id = _stable_identifier(chat_id, "chat_id")
@@ -841,6 +867,7 @@ class AutomationProjectEntrypoints:
                 route.project_configuration_version
             ),
             preview_invocation_id=(safe_preview_invocation_id if not selection_route else None),
+            **({"require_full_auto": True} if conversation_target is not None else {}),
             on_accepted=on_accepted,
         )
         if selection_route and str(result.get("status") or "").upper() == "COMPLETED":

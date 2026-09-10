@@ -32,6 +32,7 @@ class ServiceV2ProcessRuntime:
         llm_client: LLMClient,
         harness_fixed_handlers: Mapping[str, ReadOnlyFixedHandler],
         instance_name_resolver: Callable[[str], str] | None = None,
+        plugin_conversations=None,
     ) -> None:
         self._availability = backend_availability
         self._harness = HarnessRuntime(
@@ -41,11 +42,13 @@ class ServiceV2ProcessRuntime:
             llm_client=llm_client,
             fixed_handlers=harness_fixed_handlers,
             instance_name_resolver=instance_name_resolver,
+            plugin_conversations=plugin_conversations,
         )
         self._conversations = HarnessConversationService(
             repository=InMemoryHarnessSessionRepository(),
             sidecar_factory=self._harness.sidecar_factory,
             timeout_seconds=30,
+            plugin_conversations=plugin_conversations,
         )
         self._ingress = ServiceV2ManagedIngress(
             policy_service=policy_service,

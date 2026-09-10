@@ -1,0 +1,70 @@
+"""Model boundary checks; no business execution or production configuration."""
+import asyncio
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+
+from agent.core import AgentCore
+from agent.harness.errors import HarnessError
+from agent.orchestration.models import Actor, ActorType
+from agent.plugin_conversations import ConversationPluginTarget, PluginConversationTurn
+
+
+ACTOR = Actor(ActorType.FEISHU_USER, "chat-test", ("admin", "super_admin"), authenticated_by="feishu_admin_binding")
+
+
+def make_core(response):
+    targets = tuple(ConversationPluginTarget(handle=f"run_plugin_{index}", automation_id=f"instance-{index}", generation=1,
+        configuration_version=1, contribution_id=None, title=title, description="隔离测试插件", effect="write", route_key=f"route-{index}")
+        for index, title in enumerate(("统计到货", "扫描", "财务采集")))
+    service = SimpleNamespace(targets=lambda **_: targets)
+    service.turn = lambda **kwargs: PluginConversationTurn(service, **kwargs)
+    core = AgentCore()
+    core.memory = SimpleNamespace(get_or_create_conversation=lambda *_: "intent-test", get_recent_messages=lambda *_args, **_kwargs: [],
+        search_knowledge=lambda *_args, **_kwargs: [], save_message=lambda *_args, **_kwargs: None)
+    core.registry = SimpleNamespace(get_openai_tools=lambda: [])
+    async def chat(messages, *, tools):
+        assert len(tools) == len(targets)
+        assert "不能替用户确认" in messages[0]["content"]
+        return response
+    core.llm = SimpleNamespace(chat=chat)
+    core.configure_plugin_conversations(service)
+    return core, targets
+
+
+@pytest.mark.parametrize("phrase,names", [("请帮我把统计和扫描都跑起来", [0, 1]), ("执行一下财务采集插件，同步财务数据", [2])])
+def test_natural_plugin_requests_reach_trusted_transport(phrase, names):
+    core, targets = make_core({"tool_calls": [{"id": f"call-{index}", "function": {"name": f"run_plugin_{index}", "arguments": "{}"}} for index in names]})
+    result = asyncio.run(core.handle_message(phrase, actor=ACTOR, source="feishu", request_id=str(uuid4())))
+    assert result["plugin_requests"] == tuple(targets[index] for index in names)
+    assert result["executed_tools"] == []  # The channel owns the actual start and result reply.
+
+
+@pytest.mark.parametrize("arguments", ['{"dry_run":false}', '{"account_id":"arbitrary"}', '[]'])
+def test_model_cannot_supply_plugin_confirmation_or_account(arguments):
+    core, _ = make_core({"tool_calls": [{"id": "call", "function": {"name": "run_plugin_0", "arguments": arguments}}]})
+    with pytest.raises(HarnessError):
+        asyncio.run(core.handle_message("请运行统计到货插件", actor=ACTOR, source="feishu", request_id=str(uuid4())))
+
+
+def test_clarification_does_not_create_plugin_requests():
+    core, _ = make_core({"content": "请指定要执行的插件名称。"})
+    result = asyncio.run(core.handle_message("帮我运行一个插件", actor=ACTOR, source="feishu", request_id=str(uuid4())))
+    assert "plugin_requests" not in result
+    assert "本次未发起插件执行" in result["reply"]
+
+
+def test_custom_feishu_preview_is_not_reported_as_formal_completion(monkeypatch):
+    from feishu import message_handler
+    from unittest.mock import AsyncMock
+    target = ConversationPluginTarget(handle="run_plugin_custom", automation_id="custom-selection", generation=1,
+        configuration_version=1, contribution_id="feishu-preview", title="自定义候选插件", description="选择候选", effect="write", command="自定义候选")
+    dispatch = AsyncMock(return_value={"status": "COMPLETED", "success": True, "selection_preview": {"can_confirm": True}})
+    reply = AsyncMock()
+    monkeypatch.setattr(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", SimpleNamespace(dispatch=dispatch))
+    monkeypatch.setattr(message_handler, "_reply_text", reply)
+    assert asyncio.run(message_handler._dispatch_service_v2_feishu_command(text=target.command, receive_id="isolated-chat", conversation_target=target))
+    assert dispatch.call_args.kwargs["conversation_target"] is target
+    assert "尚未执行正式处理" in reply.call_args.args[1]
+    assert reply.call_args.kwargs["reply_type"] == "service_v2_feishu_preview_ready"

@@ -324,11 +324,13 @@ def test_template_and_script_keep_host_rendered_accessible_safe_surface() -> Non
     assert "appendMessage(\"user\"" in script
     assert "appendMessage(\"assistant\"" in script
     assert "event.isComposing" in script
-    assert "智能模型暂时无法连接" in script
+    assert "请求响应暂未返回" in script
+    assert '"/harness/plugin-actions"' in script
+    assert "勿重复" in script
     assert "可以开始提问" in script
-    assert "输入只读查询" in template
+    assert "查询业务，或让我执行插件" in template
     assert "AI 助手" in template
-    assert "ai-chat-20260902" in template
+    assert "plugin-chat-20260910" in template
     assert "Harness 助手" not in template
     assert "查看本次查询依据" not in template
     assert "data-harness-process" not in template

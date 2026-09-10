@@ -13,6 +13,20 @@ updated: 2026-09-10
 `1d7866d092d88c07d7a6e765f288fb7549370c30`。本文定义当前代码职责，验收结果另以新鲜测试报告为准。
 该架构替代旧文档中“普通查询和插件均提交 Command 并由 Runner 领取”的规定。
 
+## AI 对话调用插件
+
+网页 AI 助手与已绑定管理员的飞书自然对话可选择当前已安装、启用、配置完成且允许自动执行的插件。目录来自当前 committed generation；模型仅选择不含业务身份的工具句柄，宿主使用已保存的账号、资源与参数，通过该渠道现有的 Console/Feishu 入口直接发起 Invocation。执行前再次核对插件版本、设置、权限与登录状态。
+
+同一句话可选择多个不同插件分别启动；同一次请求重读结果不重复启动。明确的飞书固定命令仍直接进入原入口。普通运单/轨迹/财务查询保持原只读接口，模型不能任意调用 HTTP、业务脚本或修改插件设置。未指定清楚插件实例、要求的参数无法由现有设置满足时先澄清。
+
+扫描、自提、分批首次只生成预览。网页对话展示本次 Invocation 的状态、返回数据与候选确认；确认仅接受用户勾选的候选下标，实际单号、指纹和配置版本由宿主从本次预览恢复。预览被使用或过期时禁用确认。飞书继续使用既有确认文本及最终结果跟随。页面网络读错不会把正在执行改成失败，不自动重试业务写入。
+
+飞书现有自提与分批共用一个候选选择入口，须分别发起并确认；统计、扫描与自提可同时发起。Service V2 自定义候选插件在飞书读取预览后明确引导至自动化页面确认，不把预览称为正式完成；网页 AI 对话可直接勾选确认。
+
+维护入口：`agent/agent/plugin_conversations.py`、`harness_online.py`、`harness_application.py` 与 `feishu/message_handler.py`。执行权限、预览和生命周期复用现有模块；无新队列、无数据库迁移。会话仍仅保留在服务内存，Invocation 结果持久化；刷新会话或服务重启后到自动化页面查看原记录。
+
+验证入口：`tests/test_plugin_conversation_intent.py`（模型边界）、`tests/test_plugin_conversations_mysql.py`（真实安装包与对话）、`tests/test_direct_daily_plugins_mysql.py`（真实统计/扫描/自提包及隔离 HTTP、浏览器、MySQL）。模型替身只用于可重复验证工具选择，不能作为真实模型准确率或生产业务执行成功的证据。
+
 ```mermaid
 flowchart TB
     Console[Console 后台] -->|录入、查询| Business[直接业务接口]
@@ -20,6 +34,7 @@ flowchart TB
     Feishu[飞书机器人] --> Split{消息分流}
     Split -->|固定关键词| Plugins
     Split -->|自然对话| Agent[Agent 接口调用和数据分析]
+    Agent -->|明确执行意图、当前插件目录| Plugins
     Console -->|AI 助手| Agent
     Agent --> Business
     Agent -->|已开放的插件能力| Plugins

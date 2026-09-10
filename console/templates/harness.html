@@ -2,7 +2,7 @@
 
 {% block title %}AI 助手 | {{ app_title }}{% endblock %}
 {% block breadcrumb %}AI 助手{% endblock %}
-{% block subtitle %}只读查询助手{% endblock %}
+{% block subtitle %}业务查询与插件执行{% endblock %}
 {% block main_class %}harness-main{% endblock %}
 {% block body_class %}harness-page-body{% endblock %}
 
@@ -13,8 +13,8 @@
   <div class="harness-thread" data-harness-thread aria-live="polite" aria-label="AI 助手会话">
     <div class="harness-welcome" data-harness-welcome>
       <span class="harness-welcome-icon" aria-hidden="true"><i data-feather="message-circle"></i></span>
-      <h3>有什么需要查询？</h3>
-      <p>直接用中文描述要查的内容。会话只在当前服务进程中短暂保存。</p>
+      <h3>有什么需要我处理？</h3>
+      <p>可以查询业务信息，也可以描述要执行的插件。需要确认的操作会先展示预览。</p>
       <div class="harness-tools-list" data-harness-tools aria-label="可用查询建议"></div>
       <span class="sr-only" data-harness-tools-count>未加载</span>
     </div>
@@ -25,9 +25,9 @@
     <a class="harness-settings-link" href="/settings/llm" data-harness-model-settings hidden>打开智能模型设置</a>
     <form class="harness-form" data-harness-form novalidate>
       <label class="sr-only" for="harness-message">输入消息</label>
-      <textarea id="harness-message" name="message" maxlength="4000" rows="1" required data-harness-message placeholder="输入只读查询…"></textarea>
+      <textarea id="harness-message" name="message" maxlength="4000" rows="1" required data-harness-message placeholder="查询业务，或让我执行插件…"></textarea>
       <div class="harness-composer-actions">
-        <span class="harness-readonly-chip"><i data-feather="shield" aria-hidden="true"></i>只读会话</span>
+        <span class="harness-readonly-chip"><i data-feather="shield" aria-hidden="true"></i>按插件权限执行</span>
         <div>
           <button class="harness-icon-button harness-reset" type="button" data-harness-reset disabled aria-disabled="true" aria-label="清空会话" title="清空会话">
             <i data-feather="rotate-ccw" aria-hidden="true"></i>
@@ -38,11 +38,11 @@
         </div>
       </div>
     </form>
-    <p class="harness-footnote" data-harness-session aria-live="polite">AI 助手仅使用已开放的只读能力，回复请结合原始业务系统复核。</p>
+    <p class="harness-footnote" data-harness-session aria-live="polite">插件使用已保存设置；实际执行结果会在对话中更新。</p>
   </div>
 </section>
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/harness.js?v=ai-chat-20260902"></script>
+<script src="/static/harness.js?v=plugin-chat-20260910"></script>
 {% endblock %}

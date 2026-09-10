@@ -20,6 +20,7 @@ from agent.harness.models import HarnessMessage, strict_json
 from agent.harness.sidecar import SidecarResult
 from agent.llm_client import LLMClient
 from shared.redaction import is_sensitive_key, redact_text
+from agent.plugin_conversations import PLUGIN_CHAT_INSTRUCTIONS, PluginConversationTurn
 
 
 _MAX_TOOL_CALLS = 8
@@ -195,13 +196,14 @@ def _run_chat(
 class OnlineHarnessSidecar:
     """Run one bounded active-model conversation with closed read-only tools."""
 
-    def __init__(self, *, catalog: HarnessToolCatalog, llm: LLMClient) -> None:
+    def __init__(self, *, catalog: HarnessToolCatalog, llm: LLMClient, plugin_turn: PluginConversationTurn | None = None) -> None:
         if not isinstance(catalog, HarnessToolCatalog):
             raise TypeError("catalog must be HarnessToolCatalog")
         if not isinstance(llm, LLMClient):
             raise TypeError("llm must be LLMClient")
         self._catalog = catalog
         self._llm = llm
+        self._plugins = plugin_turn
 
     def run(
         self,
@@ -217,6 +219,8 @@ class OnlineHarnessSidecar:
             raise _error("AI 助手超时设置无效", "HARNESS_PROTOCOL_INVALID")
         if not messages or not all(isinstance(item, HarnessMessage) for item in messages):
             raise _error("AI 助手会话内容无效", "HARNESS_PROTOCOL_INVALID")
+        if self._plugins is not None and self._plugins.selected:
+            return self._plugin_receipt(self._plugins.start_console(self._plugins.selected), 0)
         if not self._llm.public_status().get("configured"):
             raise _error(
                 "尚未启用智能模型，请先在智能模型页面完成配置",
@@ -226,6 +230,12 @@ class OnlineHarnessSidecar:
         descriptors = visible_descriptors(self._catalog)
         model_tools, name_to_id = _model_tools(descriptors)
         transcript: list[dict[str, Any]] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+        if self._plugins is not None:
+            model_tools.extend(self._plugins.model_tools())
+            transcript[0]["content"] = _SYSTEM_PROMPT.replace(
+                "你只能进行自然对话，或调用系统提供的只读查询。不得建议或声称已经执行审批、回单、财务、配置修改等写操作。",
+                "普通业务接口保持只读；插件执行由独立的已安装插件工具提供。",
+            ) + "\n" + PLUGIN_CHAT_INSTRUCTIONS
         transcript.extend(
             {"role": item.role, "content": _minimize_text(item.content)}
             for item in messages
@@ -262,6 +272,8 @@ class OnlineHarnessSidecar:
                     raise _error("智能模型工具请求无法读取", "HARNESS_PROTOCOL_INVALID")
                 name = str(function.get("name") or "").strip()
                 tool_id = name_to_id.get(name)
+                if self._plugins is not None and name in self._plugins.choices:
+                    tool_id = name
                 if tool_id is None:
                     raise _error("智能模型请求了未开放的查询", "HARNESS_TOOL_NOT_FOUND")
                 raw_arguments = function.get("arguments")
@@ -296,7 +308,12 @@ class OnlineHarnessSidecar:
                     "tool_calls": assistant_calls,
                 }
             )
+            plugin_calls = [(tool_id, arguments) for _, tool_id, arguments in resolved_calls
+                            if self._plugins is not None and tool_id in self._plugins.choices]
+            selected = self._plugins.select(plugin_calls) if plugin_calls else ()
             for call_id, tool_id, arguments in resolved_calls:
+                if self._plugins is not None and tool_id in self._plugins.choices:
+                    continue
                 result = self._catalog.invoke(tool_id=tool_id, arguments=arguments)
                 transcript.append(
                     {
@@ -312,6 +329,14 @@ class OnlineHarnessSidecar:
                     }
                 )
                 calls += 1
+            if selected:
+                receipts = self._plugins.start_console(selected)
+                return self._plugin_receipt(receipts, calls)
+
+    @staticmethod
+    def _plugin_receipt(receipts, calls):
+        content = "\n".join(f"{item['title']}：{item.get('message') or '本次执行状态及结果见下方。'}" for item in receipts)
+        return SidecarResult(content=content, tool_calls=calls + len(receipts), plugin_invocations=receipts)
 
 
 __all__ = ["OnlineHarnessSidecar", "visible_descriptors"]

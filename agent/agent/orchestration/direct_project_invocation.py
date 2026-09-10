@@ -16,7 +16,7 @@ from shared.automation_project_authorization import AutomationEntrypoint, Automa
 from shared.automation_project_authorization import canonical_sha256
 
 
-def invoke_direct(service, automation_id: str, *, entrypoint, request_id, actor, trusted_context=None, idempotency_key=None, expected_automation_generation=None, expected_project_configuration_version=None, preview_invocation_id=None, selected_bill_codes=None, contribution_id=None, **unsupported) -> dict[str, Any]:
+def invoke_direct(service, automation_id: str, *, entrypoint, request_id, actor, trusted_context=None, idempotency_key=None, expected_automation_generation=None, expected_project_configuration_version=None, preview_invocation_id=None, selected_bill_codes=None, contribution_id=None, require_full_auto=False, **unsupported) -> dict[str, Any]:
     if unsupported:
         raise OrchestrationError("INVOCATION_INPUT_INVALID", "直接调用参数包含旧任务身份")
     service._require_release_active()
@@ -117,6 +117,8 @@ def invoke_direct(service, automation_id: str, *, entrypoint, request_id, actor,
         raise OrchestrationError("TOOL_PERMISSION_DENIED", "当前账号没有此插件的读取权限")
     mode = policy.get("mode")
     full_auto = (is_v2 or mode == "PROJECT_FULL_AUTO") and contract.can_full_auto
+    if require_full_auto and not full_auto:
+        raise OrchestrationError("PROJECT_PERMISSION_REQUIRED", "该插件未允许自动执行，请先检查项目权限")
     legacy_schedule = source is AutomationEntrypoint.SCHEDULER and mode == "LEGACY_SCHEDULE_ONLY" and service._legacy_schedule_active(policy, contract)
     explicit_admin = source is AutomationEntrypoint.CONSOLE and (service._is_super_admin(actor) or bool(set(actor.roles).intersection(roles)))
     if write and not (full_auto or legacy_schedule or explicit_admin):

@@ -1090,6 +1090,7 @@ class AutomationProjectPolicyService:
         contribution_id: str | None = None,
         timeout_seconds: float = 1800.0,
         on_accepted: Callable[[Any], Awaitable[None]] | None = None,
+        require_full_auto: bool = False,
     ) -> dict[str, Any]:
         receipt = self.invoke_trusted(
             automation_id, entrypoint=entrypoint, request_id=request_id, actor=actor,
@@ -1098,6 +1099,7 @@ class AutomationProjectPolicyService:
             expected_project_configuration_version=expected_project_configuration_version,
             preview_invocation_id=preview_invocation_id,
             selected_bill_codes=selected_bill_codes, contribution_id=contribution_id,
+            require_full_auto=require_full_auto,
         )
         if on_accepted is not None and receipt.get("status") in ACTIVE_INVOCATION_STATUSES:
             await on_accepted(receipt)

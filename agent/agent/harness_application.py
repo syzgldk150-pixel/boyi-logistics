@@ -24,7 +24,8 @@ from agent.harness.errors import HarnessError
 from agent.harness.models import HarnessMessage, HarnessSession, canonical_uuid, strict_json
 from agent.harness.sessions import InMemoryHarnessSessionRepository
 from agent.harness.sidecar import SidecarResult
-from agent.orchestration.models import Actor, ActorType
+from agent.orchestration.models import Actor, ActorType, OrchestrationError
+from shared.redaction import redact_text
 
 
 MEMORY_ONLY = "MEMORY_ONLY"
@@ -185,6 +186,7 @@ class HarnessMessageReceipt:
     request_id: str
     replayed: bool
     tool_calls: int
+    plugin_invocations: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def session_id(self) -> str:
@@ -218,6 +220,7 @@ class HarnessConversationService:
         repository: InMemoryHarnessSessionRepository,
         sidecar_factory: HarnessSidecarFactory | None = None,
         timeout_seconds: int = 5,
+        plugin_conversations=None,
     ) -> None:
         if not isinstance(repository, InMemoryHarnessSessionRepository):
             raise TypeError("HarnessConversationService requires the memory-only repository")
@@ -237,6 +240,37 @@ class HarnessConversationService:
         self._lock = RLock()
         self._session_principals: dict[str, tuple[str, str, tuple[str, ...], str]] = {}
         self._message_tool_calls: dict[str, int] = {}
+        self._message_plugins: dict[str, tuple[Mapping[str, Any], ...]] = {}
+        self._pending_sidecars: dict[str, HarnessSidecar] = {}
+        self._session_invocations: dict[str, set[str]] = {}
+        self._plugin_conversations = plugin_conversations
+
+    @property
+    def plugin_execution_enabled(self) -> bool:
+        return self._plugin_conversations is not None
+
+    def plugin_action(self, *, actor: Actor, session_id: str, invocation_id: str, request_id: str, action: str, selected_indices: list[int]) -> dict[str, Any]:
+        bound_actor = _normalize_admin_actor(actor)
+        session_id = canonical_uuid(session_id, field_name="session_id")
+        invocation_id = canonical_uuid(invocation_id, field_name="invocation_id")
+        request_id = canonical_uuid(request_id, field_name="request_id")
+        if (action not in {"status", "confirm", "cancel"} or not isinstance(selected_indices, list)
+                or len(selected_indices) > 100 or any(type(index) is not int or index < 0 for index in selected_indices)
+                or len(set(selected_indices)) != len(selected_indices) or (action != "confirm" and selected_indices)):
+            raise _error("插件操作参数无效", "HARNESS_PLUGIN_REQUEST_INVALID")
+        with self._lock:
+            if self._plugin_conversations is None or self._session_principals.get(session_id) != _principal_fingerprint(bound_actor):
+                raise _error("会话权限不匹配", "HARNESS_PRINCIPAL_MISMATCH")
+            self._repository.get(principal_id=bound_actor.actor_id, session_id=session_id)
+            if invocation_id not in self._session_invocations.get(session_id, set()):
+                raise _error("本次执行不属于当前会话", "HARNESS_PLUGIN_FORBIDDEN")
+            try:
+                result = self._plugin_conversations.console_action(actor=bound_actor, invocation_id=invocation_id,
+                    action=action, request_id=request_id, selected_indices=selected_indices)
+            except OrchestrationError as exc:
+                raise _error(redact_text(str(exc))[:500], "HARNESS_PLUGIN_REQUEST_INVALID") from exc
+            self._session_invocations[session_id].add(result["invocation_id"])
+            return result
 
     def create_session(self, *, actor: Actor, request_id: str) -> HarnessSessionReceipt:
         bound_actor = _normalize_admin_actor(actor)
@@ -312,6 +346,7 @@ class HarnessConversationService:
                     request_id=safe_request_id,
                     replayed=True,
                     tool_calls=self._message_tool_calls[assistant_id],
+                    plugin_invocations=self._message_plugins.get(assistant_id, ()),
                 )
 
             user_message = HarnessMessage(
@@ -342,7 +377,10 @@ class HarnessConversationService:
                     message_id=assistant_id,
                 )
             )
-            sidecar = self._build_sidecar(bound_actor, safe_request_id)
+            sidecar = self._pending_sidecars.get(assistant_id)
+            if sidecar is None:
+                sidecar = self._build_sidecar(bound_actor, safe_request_id)
+                self._pending_sidecars[assistant_id] = sidecar
             try:
                 result = sidecar.run(
                     messages=session_with_user.messages,
@@ -370,6 +408,11 @@ class HarnessConversationService:
                 message=assistant_message,
             )
             self._message_tool_calls[assistant_id] = result.tool_calls
+            self._message_plugins[assistant_id] = result.plugin_invocations
+            self._session_invocations.setdefault(safe_session_id, set()).update(
+                item["invocation_id"] for item in result.plugin_invocations if item.get("invocation_id")
+            )
+            self._pending_sidecars.pop(assistant_id, None)
             final_session = self._repository.get(
                 principal_id=bound_actor.actor_id,
                 session_id=safe_session_id,
@@ -381,6 +424,7 @@ class HarnessConversationService:
                 request_id=safe_request_id,
                 replayed=False,
                 tool_calls=result.tool_calls,
+                plugin_invocations=result.plugin_invocations,
             )
 
     def _build_sidecar(self, actor: Actor, request_id: str) -> HarnessSidecar:

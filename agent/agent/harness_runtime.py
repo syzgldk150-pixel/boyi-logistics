@@ -426,6 +426,7 @@ class HarnessRuntime:
         fixed_handlers: Mapping[str, ReadOnlyFixedHandler],
         launcher: BubblewrapHarnessModelLauncher | None = None,
         instance_name_resolver: Callable[[str], str] | None = None,
+        plugin_conversations=None,
     ) -> None:
         if not isinstance(backend_availability, RuntimeContributionBackendAvailability):
             raise TypeError("backend_availability is invalid")
@@ -445,6 +446,7 @@ class HarnessRuntime:
         self._llm = llm_client
         self._fixed_handlers = dict(fixed_handlers)
         self._instance_name_resolver = instance_name_resolver
+        self._plugin_conversations = plugin_conversations
         self._launcher = launcher or BubblewrapHarnessModelLauncher()
         self._lock = RLock()
         self._started = False
@@ -505,7 +507,7 @@ class HarnessRuntime:
         self._backend_availability.mark_available("harness")
         return HarnessRuntimeStatus(
             status="READY",
-            availability="ONLINE_READ_ONLY",
+            availability="ONLINE_PLUGIN_ACTIONS" if self._plugin_conversations is not None else "ONLINE_READ_ONLY",
             blocked_reason=None,
         )
 
@@ -535,7 +537,7 @@ class HarnessRuntime:
         if self.status().status != "READY":
             return []
         catalog = self._catalog(actor, request_id)
-        return [
+        result = [
             {
                 "tool_id": str(item["tool_id"]),
                 "title": str(item["title"]),
@@ -546,12 +548,18 @@ class HarnessRuntime:
                 for descriptor in visible_descriptors(catalog)
             )
         ]
+        if self._plugin_conversations is not None:
+            result.extend({"tool_id": target.handle, "title": target.title, "description": target.description}
+                          for target in self._plugin_conversations.targets(actor=actor, source="console"))
+        return result
 
     def sidecar_factory(self, actor: Actor, request_id: str) -> OnlineHarnessSidecar:
         self._require_ready()
         return OnlineHarnessSidecar(
             catalog=self._catalog(actor, request_id),
             llm=self._llm,
+            plugin_turn=(self._plugin_conversations.turn(actor=actor, source="console", request_id=request_id)
+                         if self._plugin_conversations is not None else None),
         )
 
 

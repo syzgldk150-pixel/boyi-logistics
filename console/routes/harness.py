@@ -35,6 +35,9 @@ def handle_post(
     if path == "/harness/messages":
         app._handle_harness_message_post(handler)
         return True
+    if path == "/harness/plugin-actions":
+        app._handle_harness_plugin_action(handler)
+        return True
     return False
 
 

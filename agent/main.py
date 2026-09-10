@@ -1303,14 +1303,18 @@ async def lifespan(app: FastAPI):
         send_text=send_text_sync,
         notification_lease_seconds=DEFAULT_NOTIFICATION_LEASE_SECONDS,
     )
-    automation_project_entrypoints = AutomationProjectEntrypoints(
-        project_policy_service,
-        route_resolver=CommittedAutomationProjectRouteResolver(
+    conversation_routes = CommittedAutomationProjectRouteResolver(
             catalog=plugin_runtime.catalog,
             runtime_repository=plugin_runtime.runtime_repository,
             binding_resolver=plugin_runtime.binding_resolver,
             resource_provider=get_workflow_resource,
-        ),
+        )
+    from agent.plugin_conversations import PluginConversationService
+    plugin_conversations = PluginConversationService(project_policy_service, route_resolver=conversation_routes)
+    agent_core.configure_plugin_conversations(plugin_conversations)
+    automation_project_entrypoints = AutomationProjectEntrypoints(
+        project_policy_service,
+        route_resolver=conversation_routes,
         feishu_actor_resolver=feishu_approval_service.resolve_actor,
     )
     bind_automation_project_entrypoints(automation_project_entrypoints)
@@ -1324,6 +1328,7 @@ async def lifespan(app: FastAPI):
     bind_service_v2_feishu_dispatcher(service_v2_feishu_dispatcher)
     harness_gateway = build_read_only_harness_gateway(runtime, repository, finance_summary=business_finance_query.run, invocations=direct_invocations)
     process_service_v2_runtime = ServiceV2ProcessRuntime(
+        plugin_conversations=plugin_conversations,
         policy_service=project_policy_service, contribution_registry=plugin_runtime.contribution_registry,
         backend_availability=plugin_runtime.contribution_backend_availability,
         llm_client=runtime.llm, harness_fixed_handlers=harness_gateway.handlers(),

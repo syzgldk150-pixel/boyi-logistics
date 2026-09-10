@@ -37,6 +37,7 @@ def _assert_no_identity_fields(value: object) -> None:
 class SidecarResult:
     content: str
     tool_calls: int
+    plugin_invocations: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if (

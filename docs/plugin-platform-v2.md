@@ -67,7 +67,7 @@ Console 信息架构只有一个状态源和一个日常入口：`/automations` 
 
 | 能力 | offline_contract | offline_runtime | production_runtime |
 |---|---|---|---|
-| AI 助手 | `COMPLETE` | 激活模型与六类只读网关就绪时 `READY / ONLINE_READ_ONLY` | 持久会话与写能力仍为 `PRODUCTION_GATED` |
+| AI 助手 | `COMPLETE` | 激活模型、只读网关与已安装插件入口就绪时 `READY / ONLINE_PLUGIN_ACTIONS` | 会话仍仅内存保存；插件执行沿用渠道权限与预览确认，详见 `architecture_direct_invocation.md` |
 | Webhook / Event | `COMPLETE` | 只有当前进程已绑定可信 ingress 时 `READY` | `PRODUCTION_GATED` |
 | tracking Connector | `COMPLETE` | 仅显式 `connector-test` fixture 命令为 `READY` | `PRODUCTION_GATED` |
 

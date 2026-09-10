@@ -17,6 +17,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, Optional
 
 from agent.direct_tool_router import (
+    BUSINESS_FINANCE_WRITE_RE,
     business_finance_request_from_text,
     business_operations_request_from_text,
     direct_tool_request_from_text,
@@ -40,6 +41,7 @@ from agent.orchestration.models import (
 )
 from agent.tool_registry import ToolRegistry
 from shared.redaction import redact_text
+from agent.plugin_conversations import PLUGIN_CHAT_INSTRUCTIONS
 
 
 logger = logging.getLogger("agent")
@@ -75,6 +77,7 @@ class AgentCore:
         # signed invocation entrypoints and never the historical Command path.
         self._direct_tool_runners = dict(direct_tool_runners or {})
         self._direct_invocations = None
+        self._plugin_conversations = None
         self._today_provider = today_provider or (
             lambda: dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).date()
         )
@@ -110,6 +113,9 @@ class AgentCore:
         """Use the production-scoped catalog for discovery and preflight."""
 
         self.registry = catalog
+
+    def configure_plugin_conversations(self, service: Any) -> None:
+        self._plugin_conversations = service
 
     async def init(self) -> None:
         self._load_prompts()
@@ -307,6 +313,11 @@ class AgentCore:
             message,
             today=self._today_provider(),
         )
+        if (finance_request is not None and BUSINESS_FINANCE_WRITE_RE.search(message)
+                and self._plugin_conversations is not None and source == "feishu"
+                and trusted_actor.authenticated_by == "feishu_admin_binding"
+                and trusted_actor.roles == ("admin", "super_admin")):
+            finance_request = None  # Selection goes through the installed plugin catalog.
         if finance_request is not None:
             fixed_reply = finance_request.get("reply")
             if fixed_reply:
@@ -348,7 +359,14 @@ class AgentCore:
                 "executed_tools": executed_tools,
             }
 
-        tools = self.registry.get_openai_tools() or None
+        tools = self.registry.get_openai_tools() or []
+        plugin_turn = None
+        if (self._plugin_conversations is not None and source == "feishu"
+                and trusted_actor.authenticated_by == "feishu_admin_binding"
+                and trusted_actor.roles == ("admin", "super_admin")):
+            plugin_turn = self._plugin_conversations.turn(actor=trusted_actor, source=source, request_id=browser_request_id)
+            tools = [*tools, *plugin_turn.model_tools()]
+            messages[0]["content"] += "\n以下已安装插件可通过可信入口执行，替代此前只读限制；普通业务工具仍只读。\n" + PLUGIN_CHAT_INSTRUCTIONS
         final_content = ""
         executed_tool_calls = 0
         executed_tool_results: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
@@ -358,7 +376,7 @@ class AgentCore:
             tool_calls = llm_result.get("tool_calls")
             if not tool_calls:
                 if executed_tool_calls == 0:
-                    final_content = UNKNOWN_EXECUTION_REPLY
+                    final_content = (redact_text(content) + "\n本次未发起插件执行。") if plugin_turn and content.strip() else UNKNOWN_EXECUTION_REPLY
                     logger.warning(
                         "Blocked unverified LLM reply user=%s conversation=%s",
                         user_id,
@@ -370,6 +388,22 @@ class AgentCore:
                         for tool_name, _arguments, result in executed_tool_results
                     )
                 break
+
+            if plugin_turn:
+                plugin_calls = []
+                for call in tool_calls:
+                    function = call.get("function", {})
+                    name = function.get("name", "")
+                    if name in plugin_turn.choices:
+                        try:
+                            arguments = json.loads(function.get("arguments", "{}"))
+                        except (ValueError, TypeError) as exc:
+                            raise OrchestrationError("PLUGIN_ARGUMENTS_INVALID", "插件参数无效，本次未发起执行") from exc
+                        plugin_calls.append((name, arguments))
+                if plugin_calls:
+                    selected = plugin_turn.select(plugin_calls)
+                    # Only the trusted Feishu transport may consume these objects.
+                    return {"reply": "", "conversation_id": conv_id, "executed_tools": [], "plugin_requests": selected}
 
             assistant_message: dict[str, Any] = {"role": "assistant", "content": content}
             assistant_message["tool_calls"] = [

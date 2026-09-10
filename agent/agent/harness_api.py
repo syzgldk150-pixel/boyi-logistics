@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from agent.harness import HarnessError, HarnessToolCatalog
 from agent.harness_application import (
@@ -33,6 +33,15 @@ class HarnessMessageRequest(BaseModel):
     request_uuid: str
     session_id: str
     message: str = Field(min_length=1, max_length=4_000)
+
+
+class HarnessPluginActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_uuid: str
+    session_id: str
+    invocation_id: str
+    action: Literal["status", "confirm", "cancel"]
+    selected_indices: list[StrictInt] = Field(max_length=100)
 
 
 def public_harness_tools(
@@ -90,7 +99,7 @@ async def create_harness_session_response(
             "request_uuid": receipt.request_id,
             "persistence_status": receipt.persistence_status,
             **runtime_status,
-            "read_only": True,
+            "read_only": not conversation_provider().plugin_execution_enabled,
             "tools": tools,
         }
     )
@@ -123,7 +132,8 @@ async def post_harness_message_response(
             "status": "COMPLETED",
             "assistant_message": receipt.assistant_message.content,
             "result": receipt.assistant_message.content,
-            "read_only": True,
+            "read_only": not conversation_provider().plugin_execution_enabled,
+            "plugin_invocations": list(receipt.plugin_invocations),
             "tool_calls": int(getattr(receipt, "tool_calls", 0)),
             "tools": tools,
         }
@@ -166,6 +176,14 @@ def create_harness_router(
             actor_provider=actor_provider,
         )
 
+    @router.post("/internal/v1/harness/plugin-actions")
+    async def plugin_action(payload: HarnessPluginActionRequest, request: Request) -> dict[str, Any]:
+        result = await asyncio.to_thread(conversation_provider().plugin_action,
+            actor=actor_provider(request), session_id=payload.session_id,
+            invocation_id=payload.invocation_id, request_id=payload.request_uuid,
+            action=payload.action, selected_indices=payload.selected_indices)
+        return api_success({"session_id": payload.session_id, "plugin_invocations": [result]})
+
     return router
 
 
@@ -193,6 +211,7 @@ def _harness_runtime_status(
         (status, availability)
         not in {
             ("READY", "ONLINE_READ_ONLY"),
+            ("READY", "ONLINE_PLUGIN_ACTIONS"),
             ("CAPABILITY_UNAVAILABLE", "CAPABILITY_UNAVAILABLE"),
         }
         or (blocked_reason is not None and not isinstance(blocked_reason, str))
@@ -215,6 +234,7 @@ def harness_error_response(request: Request, exc: HarnessError) -> JSONResponse:
         raise exc
     status_by_code = {
         "HARNESS_PRINCIPAL_INVALID": 403,
+        "HARNESS_PLUGIN_FORBIDDEN": 403,
         "HARNESS_PRINCIPAL_MISMATCH": 403,
         "HARNESS_SESSION_NOT_FOUND": 404,
         "HARNESS_TOOL_NOT_FOUND": 404,
