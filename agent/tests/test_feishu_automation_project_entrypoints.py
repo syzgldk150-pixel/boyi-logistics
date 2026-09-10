@@ -4,12 +4,13 @@ import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from agent.orchestration.models import OrchestrationError
 from feishu import message_handler
+from feishu.invocation_results import InvocationResultFollower
 
 
 class _FakeProjectEntrypoints:
@@ -1046,6 +1047,98 @@ def test_scan_confirmation_post_acceptance_timeout_reports_background_run():
     ]
     assert "正式扫描已发起" in replies[-1][0]
     assert "重试" not in replies[-1][0]
+
+
+@pytest.mark.parametrize("initial", ["active", "read_error"])
+@pytest.mark.parametrize("status, final_text", [("COMPLETED", "正式扫描已完成"), ("FAILED", "正式扫描执行失败"), ("CANCELLED", "正式扫描已取消")])
+def test_formal_scan_waits_past_initial_window_and_replies_once_with_actual_terminal_result(initial, status, final_text):
+    preview_id = "11111111-1111-4111-8111-111111111111"
+    formal_id = "22222222-2222-4222-8222-222222222222"
+    receipt = {"invocation_id": formal_id, "automation_id": "scan_codes", "status": "RUNNING"}
+    pending = {}
+    replies = []
+
+    class DelayedResultEntrypoints(_FakeProjectEntrypoints):
+        async def invoke_feishu(self, **kwargs):
+            self.calls.append(kwargs)
+            if not kwargs["preview_invocation_id"]:
+                return {"status": "COMPLETED", "invocation_id": preview_id, "scan_preview": _scan_preview(preview_id)}
+            await kwargs["on_accepted"](receipt)
+            assert replies[-1][1]["reply_type"] == "scan_preview_formal_started"
+            if initial == "read_error":
+                raise RuntimeError("temporary storage failure")
+            return receipt
+
+    service = DelayedResultEntrypoints()
+
+    async def late_result(**kwargs):
+        assert kwargs["invocation_id"] == formal_id
+        assert kwargs["automation_id"] == "scan_codes"
+        assert kwargs["event_id"] == "event-late-confirm"
+        assert pending["confirmation_state"] == "submitting"
+        assert replies[-1][1]["reply_type"] == "scan_preview_confirmation_waiting_result"
+        return {**receipt, "status": status, "success": status == "COMPLETED"}
+
+    service.wait_feishu_invocation = AsyncMock(side_effect=late_result)
+
+    def set_pending(_chat_id, value, ttl_sec=600, *, persist=True):
+        del ttl_sec, persist
+        pending.clear()
+        pending.update(value)
+
+    request = {"tool_name": "sync_scan_codes", "params": {}, "mode": "automation_project", "automation_route_key": "builtin.scan_codes", "dynamic_inputs": {}}
+    with (
+        patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
+        patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+        patch.object(message_handler, "_INVOCATION_RESULTS", InvocationResultFollower(retry_delay=0)),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
+        patch.object(message_handler, "get_pending", side_effect=lambda _key: pending or None),
+        patch.object(message_handler, "set_pending", side_effect=set_pending),
+        patch.object(message_handler, "clear_pending", side_effect=lambda _key, **_kwargs: pending.clear()),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        _run_verified_text("扫描", event_id="event-late-preview")
+        _run_verified_text("确认扫描", event_id="event-late-confirm")
+
+    assert len(service.calls) == 2  # One preview, one formal submission; reads never invoke again.
+    assert service.wait_feishu_invocation.await_count == 1
+    assert pending == {}
+    assert final_text in replies[-1][0]
+    assert sum(final_text in text for text, _kwargs in replies) == 1
+    assert formal_id not in str(replies)
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+def test_fixed_and_dynamic_commands_follow_results_after_initial_wait(dynamic):
+    receipt = {"invocation_id": "33333333-3333-4333-8333-333333333333", "automation_id": "arrival_stats", "status": "RUNNING"}
+    replies = []
+    calls = []
+
+    async def accept(**kwargs):
+        calls.append(kwargs)
+        await kwargs["on_accepted"](receipt)
+        return receipt
+
+    service = _FakeProjectEntrypoints()
+    service.invoke_feishu = accept
+    service.wait_feishu_invocation = AsyncMock(return_value={**receipt, "status": "COMPLETED"})
+    dispatcher = SimpleNamespace(dispatch=accept)
+    request = None if dynamic else {"tool_name": "sync_arrival_stats", "params": {}, "mode": "automation_project", "automation_route_key": "builtin.arrival_stats", "dynamic_inputs": {}}
+    with (
+        patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
+        patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+        patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher if dynamic else None),
+        patch.object(message_handler, "_INVOCATION_RESULTS", InvocationResultFollower(retry_delay=0)),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
+        patch.object(message_handler, "get_pending", return_value=None),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        _run_verified_text("扩展统计" if dynamic else "统计", event_id="event-late-statistics")
+
+    assert len(calls) == service.wait_feishu_invocation.await_count == 1
+    assert "已完成" in replies[-1][0]
+    assert sum("已完成" in text for text, _kwargs in replies) == 1
+    assert receipt["invocation_id"] not in str(replies)
 
 
 def test_consumed_scan_preview_does_not_block_new_explicit_trigger():

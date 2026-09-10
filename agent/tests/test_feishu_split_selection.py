@@ -29,15 +29,22 @@ class FakeProjectEntrypoints:
 
     async def invoke_feishu(self, **kwargs):
         self.calls.append(dict(kwargs))
-        if kwargs.get("on_accepted") is not None:
-            await kwargs["on_accepted"]({"invocation_id": "run-split"})
         if self.results:
-            return dict(self.results.pop(0))
-        return {
-            "success": self.status == "COMPLETED",
-            "status": self.status,
-            "invocation_id": "run-split",
-        }
+            result = dict(self.results.pop(0))
+        else:
+            result = {
+                "success": self.status == "COMPLETED",
+                "status": self.status,
+                "invocation_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            }
+        result["automation_id"] = "split_pending_problem_upload"
+        if kwargs.get("on_accepted") is not None:
+            await kwargs["on_accepted"]({
+                "invocation_id": result["invocation_id"],
+                "automation_id": result["automation_id"],
+                "status": "RUNNING",
+            })
+        return result
 
 
 def run_verified_message(text: str, *, event_id: str) -> None:
@@ -160,7 +167,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         preview_invocation_id = "44444444-4444-4444-8444-444444444444"
         self.project_entrypoints.results = [
             selection_preview(preview_invocation_id, candidates(3), hidden_completed=2),
-            {"success": True, "status": "COMPLETED", "invocation_id": "formal-run"},
+            {"success": True, "status": "COMPLETED", "invocation_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"},
         ]
 
         class FakeAgent:
@@ -262,7 +269,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         preview_invocation_id = "66666666-6666-4666-8666-666666666666"
         self.project_entrypoints.results = [
             selection_preview(preview_invocation_id, candidates(3)),
-            {"success": True, "status": "COMPLETED", "invocation_id": "formal-run"},
+            {"success": True, "status": "COMPLETED", "invocation_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"},
         ]
 
         class FakeAgent:

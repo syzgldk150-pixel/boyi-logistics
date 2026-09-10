@@ -7,12 +7,14 @@ Neither a caller nor an LLM can submit action arguments or project identity.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime, timedelta
 from typing import Any, Mapping, Protocol
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from agent.orchestration.automation_project_policy_service import (
@@ -699,6 +701,39 @@ class AutomationProjectEntrypoints:
         self._policy = policy_service
         self._routes = route_resolver
         self._feishu_actor_resolver = feishu_actor_resolver
+
+    async def wait_feishu_invocation(self, *, invocation_id: str, automation_id: str,
+                                    event_id: str, sender_id: str, chat_id: str,
+                                    timeout_seconds: float = 30.0) -> dict[str, Any]:
+        """Read only the call accepted for this verified event and sender."""
+        event = _stable_identifier(event_id, "event_id")
+        _stable_identifier(chat_id, "chat_id")
+        sender = _stable_identifier(sender_id, "sender_id")
+        try:
+            valid_id = str(UUID(invocation_id)) == invocation_id
+        except (ValueError, TypeError, AttributeError):
+            valid_id = False
+        if not valid_id or not _is_exact_managed_identifier(automation_id):
+            raise OrchestrationError("INVOCATION_IDENTITY_INVALID", "执行记录标识无效")
+        if self._feishu_actor_resolver is None:
+            raise OrchestrationError("ACTOR_NOT_AUTHORIZED", "飞书身份未绑定")
+        actor = await asyncio.to_thread(self._feishu_actor_resolver, sender)
+        if not isinstance(actor, Actor) or actor.actor_id != sender:
+            raise OrchestrationError("ACTOR_NOT_AUTHORIZED", "飞书身份与消息发送者不匹配")
+        self._policy._require_trusted_entrypoint_actor(AutomationEntrypoint.FEISHU, actor)
+        row = await asyncio.to_thread(self._policy.direct_invocations.repository.get, invocation_id)
+        if row is None:
+            raise OrchestrationError("INVOCATION_NOT_FOUND", "本次执行记录不可读取")
+        if (row.get("source") != "feishu" or row.get("actor_id") != actor.actor_id
+                or row.get("request_id") != event or row.get("automation_id") != automation_id):
+            raise OrchestrationError("ACTOR_NOT_AUTHORIZED", "只能读取本次消息发起的执行")
+        result = await self._policy.direct_invocations.wait(invocation_id, timeout_seconds=timeout_seconds)
+        if result.get("invocation_id") != invocation_id or result.get("automation_id") != automation_id:
+            raise OrchestrationError("INVOCATION_IDENTITY_INVALID", "执行结果与本次调用不匹配")
+        return await asyncio.to_thread(
+            self._policy.project_completed_invocation_result, automation_id, result,
+            is_formal=bool(row.get("preview_invocation_id")),
+        )
 
     async def cancel_feishu_invocation(self, *, invocation_id: str, event_id: str, sender_id: str, chat_id: str) -> dict[str, Any]:
         _stable_identifier(event_id, "event_id")

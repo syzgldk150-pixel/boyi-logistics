@@ -54,6 +54,7 @@ from feishu.automation_messages import (
     automation_result_reply as _automation_result_reply,
 )
 from feishu.notify import remember_chat_id
+from feishu.invocation_results import InvocationResultFollower
 from feishu.selection_preview import (
     FEISHU_SAFE_TEXT_BYTES,
     SCAN_PREVIEW_ERROR_MESSAGES,
@@ -116,6 +117,7 @@ _AUTOMATION_PROJECT_ENTRYPOINTS: AutomationProjectEntrypoints | None = None
 _FEISHU_APPROVAL_RUNTIME: Any | None = None
 _SERVICE_V2_FEISHU_DISPATCHER: ServiceV2FeishuDispatcher | None = None
 _ACTIVE_PLUGIN_INVOCATIONS: dict[tuple[str, str, str], str] = {}
+_INVOCATION_RESULTS = InvocationResultFollower()
 
 
 def bind_automation_project_entrypoints(
@@ -231,7 +233,8 @@ async def _invoke_automation_project(
     dynamic_inputs: dict[str, Any] | None,
     preview_invocation_id: str | None = None,
     on_accepted: Callable[[Any], Awaitable[None]] | None = None,
-) -> dict[str, Any]:
+    on_waiting: Callable[[], Awaitable[None]] | None = None,
+) -> dict[str, Any] | None:
     """Invoke one exact committed project from a verified Feishu event."""
 
     context = _COMMAND_CONTEXT.get()
@@ -257,15 +260,27 @@ async def _invoke_automation_project(
         if on_accepted is not None:
             await on_accepted(receipt)
 
-    result = await _automation_entrypoints().invoke_feishu(
-        route_key=safe_route_key,
-        event_id=context.event_id,
-        sender_id=context.actor_id,
-        chat_id=context.chat_id,
-        envelope={"body": inputs, "query": {}},
-        preview_invocation_id=preview_invocation_id,
-        on_accepted=track_accepted,
+    service = _automation_entrypoints()
+
+    async def submit(callback):
+        return await service.invoke_feishu(
+            route_key=safe_route_key, event_id=context.event_id,
+            sender_id=context.actor_id, chat_id=context.chat_id,
+            envelope={"body": inputs, "query": {}},
+            preview_invocation_id=preview_invocation_id, on_accepted=callback,
+        )
+
+    async def waiting():
+        if on_waiting is not None:
+            await on_waiting()
+
+    result = await _INVOCATION_RESULTS.invoke(
+        service=service, event_id=context.event_id,
+        sender_id=context.actor_id, chat_id=context.chat_id,
+        submit=submit, on_accepted=track_accepted, on_waiting=waiting,
     )
+    if result is None:
+        return None
     if result.get("status") in {"COMPLETED", "FAILED", "CANCELLED", "WRITE_OUTCOME_UNKNOWN"}:
         if _ACTIVE_PLUGIN_INVOCATIONS.get(active_key) == result.get("invocation_id"):
             _ACTIVE_PLUGIN_INVOCATIONS.pop(active_key, None)
@@ -343,6 +358,10 @@ async def _invoke_automation_project_and_reply(
             dynamic_inputs=dynamic_inputs,
             preview_invocation_id=preview_invocation_id,
             on_accepted=notify_accepted,
+            on_waiting=lambda: _reply_text(
+                receive_id, f"{task_name}已发起，正在等待本次最终结果，完成后会继续回复。",
+                receive_id_type=receive_id_type, reply_type="automation_project_waiting_result",
+            ),
         )
     except OrchestrationError as exc:
         if accepted_notified:
@@ -383,6 +402,8 @@ async def _invoke_automation_project_and_reply(
         await _reply_text(receive_id, reply, receive_id_type=receive_id_type, reply_type=reply_type)
         return None
 
+    if result is None:
+        return None
     status = str(result.get("status") or "").strip().upper()
     run_id = str(result.get("invocation_id") or "").strip()
     if safe_route_key == SCAN_FEISHU_ROUTE_KEY and status == "COMPLETED":
@@ -472,6 +493,10 @@ async def _invoke_selection_preview_and_reply(
     try:
         result = await _invoke_automation_project(
             route_key=route_key, dynamic_inputs={}, on_accepted=notify_accepted,
+            on_waiting=lambda: _reply_text(
+                receive_id, "候选清单已发起，正在等待本次最终结果，完成后会继续回复。",
+                reply_type="automation_preview_waiting_result",
+            ),
         )
     except OrchestrationError as exc:
         message = (_accepted_result_pending_message("候选清单") if accepted_notified else
@@ -486,6 +511,8 @@ async def _invoke_selection_preview_and_reply(
         await _reply_text(receive_id, reply, reply_type=reply_type)
         return None
 
+    if result is None:
+        return None
     status = str(result.get("status") or "").strip().upper()
     run_id = str(result.get("invocation_id") or "").strip()
     if status != "COMPLETED":
@@ -718,6 +745,10 @@ async def _confirm_scan_preview_and_reply(
             dynamic_inputs={},
             preview_invocation_id=preview_invocation_id,
             on_accepted=notify_accepted,
+            on_waiting=lambda: _reply_text(
+                chat_id, "正式扫描已发起，正在等待本次最终结果，完成后会继续回复。",
+                reply_type="scan_preview_confirmation_waiting_result",
+            ),
         )
     except OrchestrationError as exc:
         code = str(exc.code or "").strip()
@@ -794,6 +825,8 @@ async def _confirm_scan_preview_and_reply(
         )
         return
 
+    if result is None:
+        return
     run_id = str(result.get("invocation_id") or "").strip()
     error_code = str(result.get("error_code") or "").strip()
     if not run_id:
@@ -2560,11 +2593,22 @@ async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str) -> 
         except Exception:
             logger.exception("managed Feishu command acceptance reply failed")
 
-    try:
-        result = await dispatcher.dispatch(
+    async def submit(callback):
+        return await dispatcher.dispatch(
             command_text=text, event_id=context.event_id,
             sender_id=context.actor_id, chat_id=context.chat_id,
-            on_accepted=notify_accepted,
+            on_accepted=callback,
+        )
+
+    try:
+        result = await _INVOCATION_RESULTS.invoke(
+            service=_AUTOMATION_PROJECT_ENTRYPOINTS,
+            event_id=context.event_id, sender_id=context.actor_id, chat_id=context.chat_id,
+            submit=submit, on_accepted=notify_accepted,
+            on_waiting=lambda: _reply_text(
+                receive_id, "扩展任务已发起，正在等待本次最终结果，完成后会继续回复。",
+                reply_type="service_v2_feishu_waiting_result",
+            ),
         )
         if result is not None and not isinstance(result, dict):
             raise TypeError("managed Feishu command result must be a dict or None")

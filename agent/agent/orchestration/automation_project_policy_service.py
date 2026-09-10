@@ -1102,7 +1102,11 @@ class AutomationProjectPolicyService:
         if on_accepted is not None and receipt.get("status") in ACTIVE_INVOCATION_STATUSES:
             await on_accepted(receipt)
         result = await self.direct_invocations.wait(receipt["invocation_id"], timeout_seconds=timeout_seconds)
-        if result["status"] == "COMPLETED" and preview_invocation_id is None and result.get("output", {}).get("dry_run") is True:
+        return self.project_completed_invocation_result(automation_id, result, is_formal=preview_invocation_id is not None)
+
+    def project_completed_invocation_result(self, automation_id: str, result: dict[str, Any], *, is_formal: bool = False) -> dict[str, Any]:
+        """Reuse the public preview projection when a later result read completes."""
+        if result["status"] == "COMPLETED" and not is_formal and (result.get("output") or {}).get("dry_run") is True:
             entry = self._load_catalog_entry(automation_id)
             if is_scan_preview_project(entry):
                 result["scan_preview"] = self.get_scan_preview_projection(automation_id, preview_invocation_id=result["invocation_id"])
