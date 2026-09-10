@@ -72,6 +72,8 @@ release index、包集合、签名、digest lock 与 Git SHA，任何漂移都�
 
 发布包只从 `git ls-files` 取得已提交文件，再按 Agent、Console、Shared 明确白名单构建。未跟踪文件即使位于项目目录中也不会上传。
 
+Agent 入口依赖的顶层组合模块 `business_composition.py` 与 `harness_composition.py` 必须随包发布；发布边界测试会沿 `main.py` 的本地顶层导入检查白名单，防止源码测试通过但安装后缺少启动模块。
+
 首方动作源码还要经过第二层精确过滤：`scripts/first_party_release_scope.py` 用 AST 读取代码 allowlist，
 只允许共享 `_runtime` 与当前 `RUNNABLE` 包进入暂存树；不会导入或解析 `BLOCKED` payload。PowerShell
 构包结束后与远端 `compileall` 之前都会重验 staged 包集合与 allowlist 完全相等，缺包或夹带包均

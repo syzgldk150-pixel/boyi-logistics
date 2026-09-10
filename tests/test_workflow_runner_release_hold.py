@@ -96,6 +96,21 @@ def _plan(step: PlanStep, *, source_system: str = "ronghui") -> Plan:
 
 
 class WorkflowRunnerReleaseHoldTests(unittest.TestCase):
+    def test_reserved_runner_never_claims_or_recovers_even_after_release(self):
+        async def exercise() -> None:
+            repository = _ClaimRepository()
+            runner = _runner(repository)
+            runner._execution_enabled = False
+            await runner.start(held_for_release=True)
+            self.assertEqual("held", runner.runtime_status()["state"])
+            self.assertEqual("reserved", runner.resume_after_release()["state"])
+            await asyncio.sleep(0.15)
+            self.assertEqual(0, repository.cancel_claims)
+            self.assertEqual(0, repository.run_claims)
+            await runner.stop()
+
+        asyncio.run(exercise())
+
     def test_default_pool_processes_two_claimed_runs_concurrently(self):
         async def exercise() -> None:
             repository = _ConcurrentClaimRepository()

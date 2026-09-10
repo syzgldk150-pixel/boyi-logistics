@@ -65,8 +65,8 @@ def lock_snapshot_head(cursor, target_date):
 
 def record_snapshot_head(cursor, target_date, records):
     identity = _WRITE_IDENTITY.get() or {}
-    cursor.execute("UPDATE automation_scan_snapshot_heads SET snapshot_sha256=%s,owner_run_id=%s,owner_lease_id=%s,revision=revision+1,updated_at=NOW(6) WHERE snapshot_date=%s",
-        (_json_hash(sorted(records, key=lambda row: row["raw_code"])), str(identity.get("orchestration_run_id") or ""), str(identity.get("lease_id") or ""), target_date))
+    cursor.execute("UPDATE automation_scan_snapshot_heads SET snapshot_sha256=%s,owner_run_id=%s,owner_invocation_id=%s,owner_lease_id=%s,revision=revision+1,updated_at=NOW(6) WHERE snapshot_date=%s",
+        (_json_hash(sorted(records, key=lambda row: row["raw_code"])), str(identity.get("orchestration_run_id") or ""), identity.get("invocation_id"), str(identity.get("lease_id") or ""), target_date))
 
 
 def restore_owned_snapshot(cursor, payload, *, run_id, lease_id):

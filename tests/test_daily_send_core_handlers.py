@@ -215,7 +215,7 @@ def test_write_and_projection_require_independent_verified_postconditions():
                 "verified": False,
                 "written": len(records),
             },
-            projection_replace=lambda records, _target_date: {
+            projection_replace=lambda records, _target_date, _descriptor: {
                 "ok": True,
                 "verified": False,
                 "upserted": len(records),

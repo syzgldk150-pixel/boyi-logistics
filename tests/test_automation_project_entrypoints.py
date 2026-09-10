@@ -347,7 +347,7 @@ class AutomationProjectEntrypointTests(TestCase):
             policy,
             route_resolver=_RouteResolver(route),
         )
-        preview_run_id = "11111111-1111-4111-8111-111111111111"
+        preview_invocation_id = "11111111-1111-4111-8111-111111111111"
 
         asyncio.run(
             service.invoke_feishu(
@@ -356,13 +356,13 @@ class AutomationProjectEntrypointTests(TestCase):
                 sender_id="user-one",
                 chat_id="chat-one",
                 envelope={"body": {}, "query": {}},
-                preview_run_id=preview_run_id,
+                preview_invocation_id=preview_invocation_id,
             )
         )
 
         automation_id, trusted = policy.calls[0]
         self.assertEqual("scan_codes", automation_id)
-        self.assertEqual(preview_run_id, trusted["preview_run_id"])
+        self.assertEqual(preview_invocation_id, trusted["preview_invocation_id"])
         self.assertEqual({}, trusted["trusted_context"]["dynamic_inputs"])
         self.assertEqual("feishu:event-confirm-scan", trusted["idempotency_key"])
 
@@ -381,7 +381,7 @@ class AutomationProjectEntrypointTests(TestCase):
                     event_id="event-confirm-other",
                     sender_id="user-one",
                     chat_id="chat-one",
-                    preview_run_id="11111111-1111-4111-8111-111111111111",
+                    preview_invocation_id="11111111-1111-4111-8111-111111111111",
                 )
             )
 
@@ -401,7 +401,7 @@ class AutomationProjectEntrypointTests(TestCase):
             policy,
             route_resolver=_RouteResolver(route),
         )
-        preview_run_id = "11111111-1111-4111-8111-111111111111"
+        preview_invocation_id = "11111111-1111-4111-8111-111111111111"
 
         asyncio.run(
             service.invoke_webhook(
@@ -409,13 +409,13 @@ class AutomationProjectEntrypointTests(TestCase):
                 source_event_id="event-confirm-scan",
                 webhook_path="webhook/phase7/scan",
                 envelope={"body": {}, "query": {}},
-                preview_run_id=preview_run_id,
+                preview_invocation_id=preview_invocation_id,
             )
         )
 
         automation_id, trusted = policy.calls[0]
         self.assertEqual("scan_codes", automation_id)
-        self.assertEqual(preview_run_id, trusted["preview_run_id"])
+        self.assertEqual(preview_invocation_id, trusted["preview_invocation_id"])
         self.assertEqual({}, trusted["trusted_context"]["dynamic_inputs"])
         self.assertEqual(
             "webhook:route-webhook:event-confirm-scan",
@@ -436,7 +436,7 @@ class AutomationProjectEntrypointTests(TestCase):
                     route_key="webhook-scan",
                     source_event_id="event-confirm-other",
                     webhook_path="phase7/scan",
-                    preview_run_id="11111111-1111-4111-8111-111111111111",
+                    preview_invocation_id="11111111-1111-4111-8111-111111111111",
                 )
             )
 
@@ -455,20 +455,20 @@ class AutomationProjectEntrypointTests(TestCase):
             route_resolver=_RouteResolver(route),
         )
 
-        for preview_run_id in (
+        for preview_invocation_id in (
             "NOT-A-CANONICAL-UUID",
             "11111111-1111-4111-8111-AAAAAAAAAAAA",
             " 11111111-1111-4111-8111-111111111111 ",
             111,
         ):
-            with self.subTest(preview_run_id=preview_run_id):
+            with self.subTest(preview_invocation_id=preview_invocation_id):
                 with self.assertRaises(OrchestrationError) as raised:
                     asyncio.run(
                         service.invoke_webhook(
                             route_key="webhook/phase7/scan",
                             source_event_id="event-confirm-invalid",
                             webhook_path="webhook/phase7/scan",
-                            preview_run_id=preview_run_id,
+                            preview_invocation_id=preview_invocation_id,
                         )
                     )
 

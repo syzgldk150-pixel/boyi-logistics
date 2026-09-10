@@ -568,6 +568,9 @@ def validate_scan_preview_context(value: Any) -> dict[str, Any]:
         "formal_arguments_sha256",
         "context_sha256",
     }
+    direct = context.get("contract_version") == 2
+    if direct:
+        expected_fields = (expected_fields - {"preview_run_id", "preview_step_id"}) | {"preview_invocation_id"}
     if set(context) != expected_fields:
         raise _error("SCAN_PREVIEW_CONTEXT_INVALID", "Scan preview context schema is invalid")
     supplied_digest = _digest(context.get("context_sha256"), "context_sha256")
@@ -575,12 +578,15 @@ def validate_scan_preview_context(value: Any) -> dict[str, Any]:
     unhashed.pop("context_sha256")
     if canonical_sha256(unhashed) != supplied_digest:
         raise _error("SCAN_PREVIEW_CONTEXT_INVALID", "Scan preview context digest is stale")
-    if context.get("contract_version") != SCAN_PREVIEW_CONTRACT_VERSION:
+    if context.get("contract_version") not in {SCAN_PREVIEW_CONTRACT_VERSION, 2}:
         raise _error("SCAN_PREVIEW_CONTEXT_INVALID", "Scan preview context version is unsupported")
     if context.get("plugin_id") != SCAN_PLUGIN_ID:
         raise _error("SCAN_PREVIEW_CONTEXT_INVALID", "Scan preview plugin identity is invalid")
-    normalize_preview_run_id(context.get("preview_run_id"))
-    _required_text(context.get("preview_step_id"), "preview_step_id", maximum=64)
+    if direct:
+        normalize_preview_invocation_id(context.get("preview_invocation_id"))
+    else:
+        normalize_preview_run_id(context.get("preview_run_id"))
+        _required_text(context.get("preview_step_id"), "preview_step_id", maximum=64)
     for name in (
         "preview_result_sha256",
         "contract_digest",
@@ -914,6 +920,17 @@ def normalize_preview_run_id(value: Any) -> str:
     if str(parsed) != text.lower():
         raise _error("SCAN_PREVIEW_ID_INVALID", "Scan preview run id must be canonical")
     return str(parsed)
+
+
+def normalize_preview_invocation_id(value: Any) -> str:
+    """Validate a real call record identity; never resolves an old Run."""
+    try:
+        normalized = str(uuid.UUID(value))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise _error("SCAN_PREVIEW_ID_INVALID", "候选调用标识无效") from exc
+    if normalized != value:
+        raise _error("SCAN_PREVIEW_ID_INVALID", "候选调用标识无效")
+    return normalized
 
 
 def _validate_preview_evidence(

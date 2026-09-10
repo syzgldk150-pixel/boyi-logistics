@@ -1850,11 +1850,12 @@ class _LeaseActivationGateCursor:
                 "automation_id": values[1],
                 "generation": values[2],
                 "orchestration_run_id": values[3],
-                "lease_owner": values[4],
-                "runtime_metadata_json": values[5],
-                "runtime_metadata_sha256": values[6],
+                "invocation_id": values[4],
+                "lease_owner": values[5],
+                "runtime_metadata_json": values[6],
+                "runtime_metadata_sha256": values[7],
                 "outcome": "RUNNING",
-                "expires_at": values[7],
+                "expires_at": values[8],
             }
             self._result = None
             self.rowcount = 1

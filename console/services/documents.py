@@ -4,6 +4,7 @@ import gzip
 from email.utils import formatdate
 
 from console.app_support import *  # noqa: F403
+from console.services.business_calls import call_business
 from shared.waybill_entry_extensions import (
     WAYBILL_ENTRY_ACTIONS_SLOT,
     WAYBILL_ENTRY_DRAFT_FIELDS,
@@ -711,6 +712,7 @@ class DocumentServiceMixin:
         endpoint: str,
         label: str,
         request: dict[str, Any],
+        trusted_context: dict[str, Any],
     ) -> dict[str, Any]:
         timeout_sec = 75
         payload = {
@@ -721,15 +723,14 @@ class DocumentServiceMixin:
             },
             "timeout_sec": timeout_sec,
         }
-        result = self._agent_request(
-            "POST",
-            endpoint,
-            payload=payload,
-            timeout=max(timeout_sec + 15, self.settings.agent_timeout_seconds),
-        )
+        result = call_business(self, endpoint.rsplit("/", 1)[-1], payload["params"],
+            trusted_context=trusted_context, timeout_sec=timeout_sec)
         return self._unwrap_quote_agent_result(result, label=label)
 
     def _handle_quote_options(self, handler: BaseHTTPRequestHandler) -> None:
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
         body = self._parse_json_body(handler)
         try:
             request = parse_quote_options_request(body)
@@ -753,6 +754,7 @@ class DocumentServiceMixin:
                     endpoint=endpoint,
                     label=label,
                     request=request,
+                    trusted_context=trusted_context,
                 ): provider
                 for provider, (endpoint, label) in sources.items()
             }

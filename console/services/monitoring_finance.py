@@ -2,6 +2,7 @@
 
 from console.app_support import *  # noqa: F403
 from shared.finance.sources import enabled_finance_source_specs
+from console.services.business_calls import call_business
 
 
 class MonitoringFinanceServiceMixin:
@@ -271,44 +272,15 @@ class MonitoringFinanceServiceMixin:
             self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": data})
             return
 
-        entity_refs = []
-        account_id = str(arguments.get("account_id") or "").strip()
-        if account_id:
-            entity_refs.append(
-                {
-                    "entity_type": "account",
-                    "entity_id": account_id,
-                    "source_system": str(arguments.get("platform") or "finance"),
-                    "relation_type": "scope",
-                    "metadata": {},
-                }
-            )
-        batch_id = arguments.get("batch_id")
-        if batch_id not in (None, ""):
-            entity_refs.append(
-                {
-                    "entity_type": "finance_sync_batch",
-                    "entity_id": str(batch_id),
-                    "source_system": "finance",
-                    "relation_type": "subject",
-                    "metadata": {},
-                }
-            )
-        command_result = self._submit_console_tool_command(
+        result = call_business(self, "finance-collect", arguments,
             trusted_context=trusted_context,
-            browser_request_uuid=str(
-                handler.headers.get("X-Browser-Request-UUID") or ""
-            ),
-            tool_name="sync_finance_bills",
-            arguments=arguments,
-            entity_refs=entity_refs,
-            console_entry=path or f"/finance/{action}",
-        )
-        self._send_console_command_receipt(
-            handler,
-            command_result,
-            message="财务同步计划已提交，请在事项中心审批并查看运行结果。",
-        )
+            request_id=str(handler.headers.get("X-Browser-Request-UUID") or ""),
+            timeout_sec=600, write=True)
+        success = result.get("ok") is True
+        self._send_json(handler, HTTPStatus.OK if success else HTTPStatus.BAD_GATEWAY,
+            {"ok": success, "data": result.get("data") or {},
+             "message": "财务采集完成。" if success else str(result.get("error") or "财务采集未完成。"),
+             "error_code": result.get("error_code")})
 
     def _send_finance_error(self, handler: BaseHTTPRequestHandler, error: FinanceError) -> None:
         try:

@@ -2043,268 +2043,48 @@ def run_test_grouped_approval_second_cas_failure_is_atomic(case):
 
 
 def run_test_project_invocation_serializes_and_replays_on_real_mysql(case):
-    """Prove the project row lock closes RR races and preserves replay bytes."""
-
-    from dataclasses import replace
-    from types import SimpleNamespace
-
-    from agent.orchestration.automation_project_policy_service import (
-        AutomationProjectPolicyService,
-    )
-    from agent.orchestration.command_gateway import CommandGateway
-    from agent.orchestration.models import Actor, ActorType, OrchestrationError
-    from shared.automation_plugin_repository import AutomationPluginRepository
-    from tests.automation_project_policy_service_support import (
-        _Catalog,
-        _contract,
-    )
-
+    """Actual signed processes: immediate atomic admission and immutable replay."""
+    import concurrent.futures
+    from pathlib import Path
+    from agent.orchestration.models import OrchestrationError
+    from tests.direct_invocation_fixture import DirectFixture
+    from tests.v32_acceptance.management_fixture import ManagementFixture
+    from tests.test_direct_plugin_invocation_mysql import ACTOR, _install, _service_package, _legacy_counts
     database = case.project_approval_atomic_database
     case._run_migrations(database)
-    suffix = uuid4().hex[:12]
-    automation_id = f"integration_project_mutex_{suffix}"
-    plugin_id = f"integration_project_mutex_plugin_{suffix}"
-    digest_fields = {
-        "package_sha256": "1" * 64,
-        "manifest_sha256": "2" * 64,
-        "tool_contract_sha256": "3" * 64,
-        "config_schema_sha256": "4" * 64,
-        "allowed_entrypoints_sha256": "5" * 64,
-        "invocation_contracts_sha256": "6" * 64,
-        "worker_requirement_sha256": "7" * 64,
-        "runtime_sha256": "8" * 64,
-        "scheduling_sha256": "9" * 64,
-        "install_root_metadata_sha256": "a" * 64,
-    }
-    with case._connection(database) as connection:
-        plugins = AutomationPluginRepository(
-            connection,
-            cursor_factory=case.pymysql.cursors.DictCursor,
-        )
-        plugins.register_package_version(
-            package={
-                "plugin_id": plugin_id,
-                "display_name": "Project mutex integration",
-                "description": "test-only signed package",
-            },
-            version={
-                "version": "1.0.0",
-                **digest_fields,
-                "manifest_json": {
-                    "allowed_entrypoints": ["console"],
-                    "runtime": {
-                        "kind": "core_tool_ref",
-                        "tool_name": "integration_probe",
-                    },
-                },
-                "project_full_auto_allowed": False,
-                "trust_source": "ed25519_first_party",
-                "install_root_metadata_json": {},
-                "installed_by_actor_id": "integration-admin",
-            },
-        )
-        plugins.install_project_instance(
-            {
-                "automation_id": automation_id,
-                "plugin_id": plugin_id,
-                "plugin_version": "1.0.0",
-                "display_name": "Project mutex instance",
-                "install_request_id": str(uuid4()),
-                "install_payload_sha256": "b" * 64,
-                "installed_by_actor_id": "integration-admin",
-                "migration_authority": False,
-            }
-        )
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "UPDATE automation_projects SET enabled=TRUE, state='ENABLED' "
-                "WHERE automation_id=%s",
-                (automation_id,),
-            )
-            case.assertEqual(1, cursor.rowcount)
-        connection.commit()
-
-    repository = case._repository(database)
-    with repository.unit_of_work() as uow:
-        uow.automation_projects.ensure_default(
-            automation_id,
-            mode="REQUIRE_EACH_RUN",
-            project_generation=1,
-            project_configuration_version=1,
-        )
-        uow.commit()
-
-    base_contract = replace(
-        _contract(),
-        automation_id=automation_id,
-        tool_name=f"automation.{automation_id}.run",
-        snapshot={"automation_id": automation_id},
-    )
-    contract_box = {"value": base_contract}
-    entry = SimpleNamespace(automation_id=automation_id)
-    service = AutomationProjectPolicyService(
-        repository,
-        core_catalog=SimpleNamespace(),
-        plugin_catalog=_Catalog(entry),
-        command_gateway=CommandGateway(repository),
-    )
-    service._load_contract = lambda _automation_id: (  # type: ignore[method-assign]
-        entry,
-        contract_box["value"],
-    )
-    service._lock_and_compile_contract = (  # type: ignore[method-assign]
-        lambda _uow, _entry, **_kwargs: (
-            contract_box["value"],
-            {"automation_id": automation_id, "config_version": 1},
-        )
-    )
-    actor = Actor(
-        ActorType.CONSOLE_ADMIN,
-        "integration-admin",
-        roles=("admin",),
-        authenticated_by="mysql_admin_session",
-    )
-    first_has_lock = threading.Event()
-    second_lock_attempt = threading.Event()
-    original_get_project = AutomationPluginRepository.get_project
-
-    def synchronize_project_lock(
-        plugin_repository,
-        requested_automation_id,
-        *,
-        for_update=False,
-    ):
-        if requested_automation_id != automation_id or not for_update:
-            return original_get_project(
-                plugin_repository,
-                requested_automation_id,
-                for_update=for_update,
-            )
-        if threading.current_thread().name == "project-mutex-first":
-            row = original_get_project(
-                plugin_repository,
-                requested_automation_id,
-                for_update=True,
-            )
-            first_has_lock.set()
-            if not second_lock_attempt.wait(timeout=5):
-                raise AssertionError("second invocation did not attempt the project lock")
-            return row
-        if threading.current_thread().name == "project-mutex-second":
-            if not first_has_lock.wait(timeout=5):
-                raise AssertionError("first invocation did not acquire the project lock")
-            second_lock_attempt.set()
-        return original_get_project(
-            plugin_repository,
-            requested_automation_id,
-            for_update=True,
-        )
-
-    receipts = {}
-    errors = {}
-
-    def invoke(label, request_id, idempotency_key):
-        try:
-            receipts[label] = service.invoke_trusted(
-                automation_id,
-                entrypoint="console",
-                request_id=request_id,
-                actor=actor,
-                idempotency_key=idempotency_key,
-            )
-        except Exception as exc:  # noqa: BLE001 - assert exact cross-thread outcome
-            errors[label] = exc
-
-    first_request_id = str(uuid4())
-    first_key = f"integration-project-mutex:first:{suffix}"
-    first_thread = threading.Thread(
-        target=invoke,
-        args=("first", first_request_id, first_key),
-        name="project-mutex-first",
-    )
-    second_thread = threading.Thread(
-        target=invoke,
-        args=(
-            "second",
-            str(uuid4()),
-            f"integration-project-mutex:second:{suffix}",
-        ),
-        name="project-mutex-second",
-    )
-    with patch.object(
-        AutomationPluginRepository,
-        "get_project",
-        new=synchronize_project_lock,
-    ):
-        first_thread.start()
-        case.assertTrue(first_has_lock.wait(timeout=5))
-        second_thread.start()
-        first_thread.join(timeout=10)
-        second_thread.join(timeout=10)
-
-    case.assertFalse(first_thread.is_alive())
-    case.assertFalse(second_thread.is_alive())
-    case.assertNotIn("first", errors)
-    case.assertIn("first", receipts)
-    case.assertNotIn("second", receipts)
-    case.assertIsInstance(errors.get("second"), OrchestrationError)
-    case.assertEqual("AUTOMATION_ALREADY_RUNNING", errors["second"].code)
-    case.assertEqual("ACTIVE", errors["second"].details["blocking_kind"])
-
-    original_receipt = receipts["first"]
-    with repository.unit_of_work() as uow:
-        original_command = uow.commands.get(original_receipt.command_id)
-    case.assertIsNotNone(original_command)
-    contract_box["value"] = replace(
-        base_contract,
-        contract_hash="e" * 64,
-        project_configuration_version=2,
-    )
-    replay = service.invoke_trusted(
-        automation_id,
-        entrypoint="console",
-        request_id=first_request_id,
-        actor=actor,
-        idempotency_key=first_key,
-    )
-    case.assertTrue(replay.reused)
-    case.assertEqual(original_receipt.command_id, replay.command_id)
-    case.assertEqual(original_receipt.work_item_id, replay.work_item_id)
-    case.assertEqual(original_receipt.run_id, replay.run_id)
-    with repository.unit_of_work() as uow:
-        replayed_command = uow.commands.get(replay.command_id)
-    case.assertEqual(original_command["requested_at"], replayed_command["requested_at"])
-    case.assertEqual(
-        original_command["parameters_json"],
-        replayed_command["parameters_json"],
-    )
-    case.assertEqual(
-        original_command["automation_invocation_json"],
-        replayed_command["automation_invocation_json"],
-    )
-    with case._connection(database) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT COUNT(*) AS n FROM agent_commands WHERE automation_id=%s",
-                (automation_id,),
-            )
-            case.assertEqual(1, cursor.fetchone()["n"])
-            cursor.execute(
-                "SELECT COUNT(*) AS n FROM work_items AS item "
-                "INNER JOIN agent_commands AS command "
-                "ON command.command_id=item.command_id "
-                "WHERE command.automation_id=%s",
-                (automation_id,),
-            )
-            case.assertEqual(1, cursor.fetchone()["n"])
-            cursor.execute(
-                "SELECT COUNT(*) AS n FROM agent_runs AS run "
-                "INNER JOIN agent_commands AS command "
-                "ON command.command_id=run.command_id "
-                "WHERE command.automation_id=%s",
-                (automation_id,),
-            )
-            case.assertEqual(1, cursor.fetchone()["n"])
+    directory = Path(__file__).resolve().parents[1] / ".t" / ("race-" + uuid4().hex[:6])
+    directory.mkdir(parents=True)
+    with ManagementFixture(connection_factory=case._repository(database)._connection_factory, runtime_root=directory / "runtime", enable_directory_faults=False) as management:
+        identity = _install(management, _service_package(directory, plugin_id="race_" + uuid4().hex[:8], sleep_seconds=.5))
+        with DirectFixture(management, directory=directory / "ipc") as runtime:
+            before = _legacy_counts(management.repository)
+            barrier = threading.Barrier(2)
+            request_ids = [str(uuid4()), str(uuid4())]
+            def submit(index):
+                barrier.wait(timeout=5)
+                return management.policy.invoke_console(identity, request_id=request_ids[index], actor=ACTOR)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                receipts = list(pool.map(submit, range(2)))
+            case.assertEqual(["FAILED", "STARTING"], sorted(row["status"] for row in receipts))
+            accepted = next(row for row in receipts if row["status"] == "STARTING")
+            denied = next(row for row in receipts if row["status"] == "FAILED")
+            case.assertEqual("EXECUTION_RESOURCE_BUSY", denied["error_code"])
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                replays = list(pool.map(lambda _: management.policy.invoke_console(identity, request_id=accepted["request_id"], actor=ACTOR), range(8)))
+            case.assertEqual({accepted["invocation_id"]}, {row["invocation_id"] for row in replays})
+            result = runtime.service.wait_sync(accepted["invocation_id"])
+            case.assertEqual("COMPLETED", result["status"])
+            fresh = management.policy.invoke_console(identity, request_id=str(uuid4()), actor=ACTOR)
+            case.assertEqual("COMPLETED", runtime.service.wait_sync(fresh["invocation_id"])["status"])
+            replay = management.policy.invoke_console(identity, request_id=accepted["request_id"], actor=ACTOR)
+            case.assertEqual(accepted["invocation_id"], replay["invocation_id"])
+            case.assertEqual(result["output"], replay["output"])
+            case.assertEqual(before, _legacy_counts(management.repository))
+            with management.repository.unit_of_work() as uow, uow.automation_plugins.cursor() as cursor:
+                cursor.execute("SELECT invocation_id,orchestration_run_id FROM automation_project_generation_leases WHERE invocation_id IN (%s,%s,%s)", tuple(row["invocation_id"] for row in (accepted, denied, fresh)))
+                leases = cursor.fetchall()
+            case.assertEqual({accepted["invocation_id"], fresh["invocation_id"]}, {row["invocation_id"] for row in leases})
+            case.assertTrue(all(row["orchestration_run_id"] is None for row in leases))
 
 
 def run_test_automation_project_024_original_plugin_full_auto(case):

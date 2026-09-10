@@ -1102,6 +1102,16 @@ class ResultVerifier:
             return "Formal scan observation time is inconsistent"
         return None
 
+    @staticmethod
+    def _verified_finance_failure(raw_result, verification) -> bool:
+        from agent.automation_plugins.finance_failure_proof import is_verified_finance_failure
+        return is_verified_finance_failure(
+            plugin_id=verification.plugin_id,
+            result=raw_result,
+            started_mutating_call_count=verification.started_mutating_call_count,
+            host_call_observations=verification.host_call_observations,
+        )
+
     def _finalize_generation_write(
         self,
         step: PlanStep,
@@ -1178,7 +1188,7 @@ class ResultVerifier:
             )
         final_outcome = (
             RuntimeLeaseOutcome.WRITE_VERIFIED
-            if outcome.accepted
+            if outcome.accepted or self._verified_finance_failure(raw_result, verification)
             else RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
         )
         evidence_value = outcome.result.to_dict() if outcome.result is not None else dict(raw_result)

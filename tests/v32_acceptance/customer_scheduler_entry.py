@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from agent.scheduler import _execute_scheduled_tool
 from shared.customer_service_repository import CustomerServiceRepository
+from tests.v32_acceptance.finance_maintenance import wait_invocation
 
 
 def exercise_scheduler_entry(*, management, connection_factory, automation_id, source_id, supplier, actor):
@@ -51,7 +52,8 @@ def exercise_scheduler_entry(*, management, connection_factory, automation_id, s
             with ThreadPoolExecutor(max_workers=1) as executor:
                 return executor.submit(lambda: asyncio.run(submit())).result(timeout=60)
 
-        first = scheduled_occurrence()
+        accepted = scheduled_occurrence()
+        first = wait_invocation(accepted["invocation_id"], connection_factory=connection_factory)
         if first["status"] != "COMPLETED":
             raise AssertionError(f"actual scheduled collector failed: {first}")
         after = business_rows()
@@ -59,15 +61,19 @@ def exercise_scheduler_entry(*, management, connection_factory, automation_id, s
             raise AssertionError("Console and Scheduler drifted in source business keys, state or manual fields")
         calls = len(supplier.requests)
         replay = scheduled_occurrence()
-        if replay["run_id"] != first["run_id"] or len(supplier.requests) != calls:
+        if replay["invocation_id"] != first["invocation_id"] or len(supplier.requests) != calls:
             raise AssertionError("replaying the same actual scheduler occurrence repeated collection")
         with connection_factory() as connection, connection.cursor() as cursor:
-            cursor.execute("SELECT source,automation_invocation_json FROM agent_commands WHERE command_id=%s", (first["command_id"],))
-            command = cursor.fetchone()
-        invocation = json.loads(command["automation_invocation_json"])
-        if command["source"] != "scheduler" or invocation["entrypoint"] != "scheduler":
+            cursor.execute("SELECT source,invocation_json FROM automation_plugin_invocations WHERE invocation_id=%s", (first["invocation_id"],))
+            call = cursor.fetchone()
+            cursor.execute("SELECT COUNT(*) AS n FROM agent_commands")
+            assert cursor.fetchone()["n"] == 0, "direct scheduler must not create a Command"
+            cursor.execute("SELECT COUNT(*) AS n FROM agent_runs")
+            assert cursor.fetchone()["n"] == 0, "direct scheduler must not create a Run"
+        invocation = json.loads(call["invocation_json"])
+        if call["source"] != "scheduler" or invocation["entrypoint"] != "scheduler":
             raise AssertionError("scheduled adapter did not persist its actual entrypoint")
-        return {"status": "PASS", "scheduled_task": task, "run": first, "replay_run_id": replay["run_id"],
+        return {"status": "PASS", "scheduled_task": task, "invocation": first, "replay_invocation_id": replay["invocation_id"],
             "before": before, "after": after, "entrypoint": invocation["entrypoint"],
             "committed_generation": entry.committed_generation}
     finally:

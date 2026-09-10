@@ -4,7 +4,6 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import tempfile
-import time
 from uuid import uuid4
 
 import pytest
@@ -13,7 +12,7 @@ from agent.automation_plugins.developer_v2 import build_service_v2_package, init
 from agent.orchestration.models import Actor, ActorType
 from tests.test_workflow_runner_durable_admission import repository, pytestmark  # noqa: F401
 from tests.v32_acceptance.management_fixture import ManagementFixture
-from tests.v32_acceptance.runner_fixture import RunnerFixture
+from tests.direct_invocation_fixture import DirectFixture
 
 ROOT = Path(__file__).resolve().parents[1]
 ACTOR = Actor(ActorType.CONSOLE_ADMIN, "isolated-runtime-admin", ("super_admin",), authenticated_by="mysql_admin_session")
@@ -86,7 +85,7 @@ def isolated_processes(repository):
                     expected_record_version=entry.record_version, actor=ACTOR)
                 management.targets.reconcile_project(identity)
                 entries[identity] = marker
-            with RunnerFixture(management) as runner:
+            with DirectFixture(management) as runner:
                 yield management, runner, entries
 
 
@@ -95,19 +94,12 @@ def test_actual_concurrent_plugins_keep_parameters_temporary_environment_and_res
     management, runner, entries = isolated_processes
     with ThreadPoolExecutor(max_workers=len(entries)) as pool:
         receipts = list(pool.map(lambda identity: management.policy.invoke_console(identity, request_id=str(uuid4()), actor=ACTOR), entries))
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        runs = [management.repository.get_run(receipt.run_id) for receipt in receipts]
-        if all(run["status"] in {"COMPLETED", "FAILED_TERMINAL", "PARTIAL", "BLOCKED_DATA"} for run in runs):
-            break
-        time.sleep(0.03)
+    runs = [runner.service.wait_sync(receipt['invocation_id'], timeout_seconds=15) for receipt in receipts]
     assert all(run["status"] == "COMPLETED" for run in runs), runs
     results = []
-    for identity, receipt in zip(entries, receipts):
-        with management.repository.unit_of_work() as uow:
-            steps = uow.steps.list_for_run(receipt.run_id)
-        assert len(steps) == 1
-        data = steps[0]["result_summary_json"]["data"]
+    for identity, invocation in zip(entries, runs):
+        assert invocation['automation_id'] == identity
+        data = invocation['result']['data']
         assert data["marker"] == data["private_environment"] == entries[identity]
         assert data["automation_id"] == identity and data["dotenv_disabled"] == "1"
         results.append(data)

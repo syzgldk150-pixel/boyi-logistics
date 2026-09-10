@@ -406,9 +406,9 @@ class Phase7SyncToolTests(unittest.TestCase):
                 self.calls.append({"url": url, "params": params, "data": data})
                 page_index = int(data["pageIndex"])
                 rows = [
-                    {"BILL_CODE": "R001", "INSERT_DATE": "2026-05-12 08:00:00", "PIECE_NUMBER": "1"},
-                    {"BILL_CODE": "R002", "INSERT_DATE": "2026-05-12 09:00:00", "PIECE_NUMBER": "2"},
-                    {"BILL_CODE": "R003", "INSERT_DATE": "2026-05-12 10:00:00", "PIECE_NUMBER": "3"},
+                    {"BILL_CODE": "R001", "REGISTER_DATE": "2026-05-12 08:00:00", "PIECE_NUMBER": "1"},
+                    {"BILL_CODE": "R002", "REGISTER_DATE": "2026-05-12 09:00:00", "PIECE_NUMBER": "2"},
+                    {"BILL_CODE": "R003", "REGISTER_DATE": "2026-05-12 10:00:00", "PIECE_NUMBER": "3"},
                 ]
                 start = page_index * 2
                 return Response({"total": 3, "data": rows[start:start + 2]})
@@ -418,6 +418,10 @@ class Phase7SyncToolTests(unittest.TestCase):
             rows = Send_order.run_once({"target_date": "2026-05-12", "page_size": 2})
 
         self.assertEqual(["R001", "R002", "R003"], [row["运单编号"] for row in rows])
+        self.assertEqual(
+            ["2026-05-12 08:00:00", "2026-05-12 09:00:00", "2026-05-12 10:00:00"],
+            [row["发件日期"] for row in rows],
+        )
         self.assertEqual(["0", "1"], [call["data"]["pageIndex"] for call in session.calls])
         self.assertIn("2026/05/12", session.calls[0]["data"]["REGISTER_DATE"])
 
@@ -429,7 +433,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             def json(self):
                 return {
                     "total": 3,
-                    "data": [{"BILL_CODE": "R003", "INSERT_DATE": "2026-05-12 10:00:00"}],
+                    "data": [{"BILL_CODE": "R003", "REGISTER_DATE": "2026-05-12 10:00:00"}],
                 }
 
         class Session:
@@ -445,6 +449,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             rows = Send_order.run_once({"target_date": "2026-05-12", "page_index": 1, "page_size": 2})
 
         self.assertEqual(["R003"], [row["运单编号"] for row in rows])
+        self.assertEqual("2026-05-12 10:00:00", rows[0]["发件日期"])
         self.assertEqual(1, len(session.calls))
         self.assertEqual("1", session.calls[0]["data"]["pageIndex"])
 
@@ -1235,7 +1240,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             http_calls.append((endpoint, payload))
             return tms_payload
 
-        def _fake_sync_console_waybills(records, *, source, target_date, replace_date):
+        def _fake_sync_console_waybills(records, *, source, target_date, replace_date, account_id):
             sql_calls.append(
                 {
                     "records": records,
@@ -1261,7 +1266,7 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.assertEqual(1, len(sql_calls))
         self.assertEqual("yunda", sql_calls[0]["source"])
         self.assertEqual(date(2026, 5, 15), sql_calls[0]["target_date"])
-        self.assertTrue(sql_calls[0]["replace_date"])
+        self.assertFalse(sql_calls[0]["replace_date"])
         self.assertEqual("978SQL001", sql_calls[0]["records"][0]["waybill_no"])
         self.assertTrue(result["ok"])
         self.assertTrue(result["sql_only"])
@@ -1280,7 +1285,7 @@ class Phase7SyncToolTests(unittest.TestCase):
                 },
             }
 
-        def _fake_sync_console_waybills(records, *, source, target_date, replace_date):
+        def _fake_sync_console_waybills(records, *, source, target_date, replace_date, account_id):
             return {"ok": True, "upserted": 1, "updates": 0, "creates": 1, "deleted_stale": int(target_date.day)}
 
         with (

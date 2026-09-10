@@ -48,7 +48,7 @@ class ProjectInvokeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_id: str
-    preview_run_id: str | None = None
+    preview_invocation_id: str | None = None
     contribution_id: str | None = Field(default=None, max_length=128)
 
 
@@ -81,6 +81,22 @@ def create_automation_project_router(
     """Build routes around injected providers without importing ``main``."""
 
     router = APIRouter()
+
+    @router.get("/internal/v1/automation-invocations/{invocation_id}")
+    async def get_invocation(invocation_id: str, request: Request):
+        actor_provider(request)
+        return api_success(await asyncio.to_thread(service_provider().direct_invocations.get, invocation_id))
+
+    @router.get("/internal/v1/automation-projects/{automation_id}/invocations")
+    async def list_invocations(automation_id: str, request: Request):
+        actor_provider(request)
+        return api_success({"items": await asyncio.to_thread(service_provider().direct_invocations.list_recent, automation_id)})
+
+    @router.post("/internal/v1/automation-invocations/{invocation_id}/cancel")
+    async def cancel_invocation(invocation_id: str, request: Request):
+        actor = actor_provider(request)
+        service_provider()._require_console_admin(actor)
+        return api_success(await service_provider().direct_invocations.cancel(invocation_id))
 
     @router.get("/internal/v1/automation-project-policies")
     async def list_project_policies(
@@ -136,16 +152,9 @@ def create_automation_project_router(
         *,
         decision: str,
     ) -> dict[str, Any]:
-        return api_success(
-            service_provider().decide_pending_approvals(
-                automation_id,
-                decision=decision,
-                expected_pending_set_hash=payload.expected_pending_set_hash,
-                request_id=payload.request_id,
-                comment=payload.comment,
-                actor=actor_provider(request),
-            )
-        )
+        actor_provider(request)
+        return JSONResponse(status_code=410, content={"ok": False, "error": {
+            "code": "HISTORICAL_RUN_READ_ONLY", "message": "历史执行记录仅供查看；请重新触发插件。"}})
 
     @router.post(
         "/internal/v1/automation-projects/{automation_id}/pending-approvals/approve"
@@ -178,18 +187,18 @@ def create_automation_project_router(
         )
 
     @router.get(
-        "/internal/v1/automation-projects/{automation_id}/scan-previews/{preview_run_id}"
+        "/internal/v1/automation-projects/{automation_id}/scan-previews/{preview_invocation_id}"
     )
     async def get_scan_preview(
         automation_id: str,
-        preview_run_id: str,
+        preview_invocation_id: str,
         request: Request,
     ) -> dict[str, Any]:
         actor_provider(request)
         return api_success(
             service_provider().get_scan_preview_projection(
                 automation_id,
-                preview_run_id=preview_run_id,
+                preview_invocation_id=preview_invocation_id,
             )
         )
 
@@ -214,33 +223,33 @@ def create_automation_project_router(
         return api_success(serialized)
 
     @router.get(
-        "/internal/v1/automation-projects/{automation_id}/selection-previews/{preview_run_id}"
+        "/internal/v1/automation-projects/{automation_id}/selection-previews/{preview_invocation_id}"
     )
     async def get_selection_preview(
         automation_id: str,
-        preview_run_id: str,
+        preview_invocation_id: str,
         request: Request,
     ) -> dict[str, Any]:
         actor_provider(request)
         return api_success(
             service_provider().get_selection_preview_projection(
                 automation_id,
-                preview_run_id=preview_run_id,
+                preview_invocation_id=preview_invocation_id,
             )
         )
 
     @router.post(
-        "/internal/v1/automation-projects/{automation_id}/selection-previews/{preview_run_id}/confirm"
+        "/internal/v1/automation-projects/{automation_id}/selection-previews/{preview_invocation_id}/confirm"
     )
     async def confirm_selection_preview(
         automation_id: str,
-        preview_run_id: str,
+        preview_invocation_id: str,
         payload: ProjectSelectionConfirmationRequest,
         request: Request,
     ) -> dict[str, Any]:
         receipt = service_provider().confirm_selection_preview(
             automation_id,
-            preview_run_id=preview_run_id,
+            preview_invocation_id=preview_invocation_id,
             selected_bill_codes=payload.selected_bill_codes,
             request_id=payload.request_id,
             actor=actor_provider(request),
@@ -261,7 +270,7 @@ def create_automation_project_router(
         invocation_arguments: dict[str, Any] = {
             "request_id": payload.request_id,
             "actor": actor_provider(request),
-            "preview_run_id": payload.preview_run_id,
+            "preview_invocation_id": payload.preview_invocation_id,
         }
         if payload.contribution_id is not None:
             invocation_arguments["contribution_id"] = payload.contribution_id

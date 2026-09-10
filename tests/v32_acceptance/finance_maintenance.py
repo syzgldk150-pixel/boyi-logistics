@@ -1,6 +1,6 @@
 """M02: real signed finance package lifecycle and raw external HTTP fixture.
 
-Only the external supplier boundary is synthetic. Parser, broker, Runner,
+Only the external supplier boundary is synthetic. Parser, broker, Invocation,
 generation leases, finance publication, signed management and Console are real.
 No production account directory or network destination is accessed.
 """
@@ -29,7 +29,6 @@ from Crypto.PublicKey import ECC
 from agent.automation_plugins.first_party import first_party_payload_files, resolve_first_party_manifests
 from agent.automation_plugins.manifest import AutomationPluginManifest
 from agent.automation_plugins.package import Ed25519PackageSigner, Ed25519TrustStore, build_signed_plugin_zip
-from agent.orchestration.context_builder import ContextBuilder
 from agent.orchestration.models import Actor, ActorType
 from agent.tms_runtime.scripts.finance_capture_common import RawFinanceCapture
 from agent.tool_registry import ToolRegistry
@@ -37,7 +36,8 @@ from plugin_core_adapters.finance import build_production_finance_handler_map
 from shared.finance import FinanceRepository
 from shared.contracts import api_success
 from tests.v32_acceptance.management_fixture import ManagementFixture
-from tests.v32_acceptance.runner_fixture import RunnerFixture
+from shared.plugin_invocation_repository import TERMINAL_INVOCATION_STATUSES
+from tests.direct_invocation_fixture import DirectFixture
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = ROOT / ".task_tmp" / "v32" / "m02"
@@ -184,7 +184,7 @@ class Accounts:
         return {"username": "synthetic-login-" + account_id}
 
 
-def packages(private_key, *, versions=("1.0.21", "1.0.22")):
+def packages(private_key, *, versions=("1.0.22", "1.0.23")):
     source = resolve_first_party_manifests(ToolRegistry())["sync_finance_bills"]
     result = {}
     for name, version in zip(("baseline", "candidate"), versions, strict=True):
@@ -222,14 +222,8 @@ def composed():
                 upload_signature_verifier=trust, enable_directory_faults=False) as management:
             management.app.add_api_route("/internal/v1/admin/accounts",
                 lambda: api_success({"accounts": account_manager.list_accounts()}), methods=["GET"])
-            def resolve_accounts(command):
-                invocation = command.automation_invocation
-                if invocation and management.catalog.require(invocation.automation_id).plugin_id == "sync_finance_bills":
-                    return [account_manager.require_active_binding_descriptor(value) for value in ACCOUNTS.values()]
-                return []
-            context = ContextBuilder(account_resolver=resolve_accounts)
-            with RunnerFixture(management, context_builder=context) as runner:
-                yield management, runner, supplier, artifacts
+            with DirectFixture(management, account_manager=account_manager) as direct:
+                yield management, direct, supplier, artifacts
 
 
 def setup_instance(management, artifact, *, automation_id=None):
@@ -249,16 +243,17 @@ def setup_instance(management, artifact, *, automation_id=None):
     return automation_id
 
 
-def wait_run(run_id, *, timeout=60, connection_factory=connect):
+def wait_invocation(invocation_id, *, timeout=60, connection_factory=connect):
     deadline = time.monotonic() + timeout
+    row = None
     while time.monotonic() < deadline:
         with connection_factory() as connection, connection.cursor() as cursor:
-            cursor.execute("SELECT run_id,status,error_code,error_summary FROM agent_runs WHERE run_id=%s", (run_id,))
+            cursor.execute("SELECT invocation_id,status,error_code,error_summary FROM automation_plugin_invocations WHERE invocation_id=%s", (invocation_id,))
             row = cursor.fetchone()
-        if row and row["status"] in {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED", "WAITING_APPROVAL", "BLOCKED_DATA"}:
+        if row and row["status"] in TERMINAL_INVOCATION_STATUSES:
             return row
         threading.Event().wait(0.1)
-    raise AssertionError(f"real Runner completion bound exceeded: {row}")
+    raise AssertionError(f"real Invocation completion bound exceeded: {row}")
 
 
 def main():

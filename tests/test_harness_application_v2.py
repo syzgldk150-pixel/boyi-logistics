@@ -212,6 +212,7 @@ def test_fixed_host_tool_definitions_are_exactly_six_closed_read_only_tools() ->
         "knowledge.search",
         "waybill.lookup",
         "tracking.lookup",
+        "finance.summary",
         "work_items.list_open",
         "runs.get_summary",
         "artifact.inspect",
@@ -236,12 +237,20 @@ class Receipt:
 
 
 class PolicyRecorder:
+    @property
+    def direct_invocations(self):
+        return self
+
+    def wait_sync(self, invocation_id):
+        assert invocation_id == "invocation-one"
+        return {"status": "COMPLETED", "result": {"data": {"found": True}}, "error_summary": None}
+
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
     def invoke_harness(self, automation_id: str, **kwargs: Any) -> Receipt:
         self.calls.append({"automation_id": automation_id, **kwargs})
-        return Receipt({"ok": True, "command_id": "command-one"})
+        return {"invocation_id": "invocation-one", "status": "STARTING"}
 
 
 def test_dynamic_adapter_forwards_exact_identity_generation_and_stable_request_ids() -> None:
@@ -265,7 +274,7 @@ def test_dynamic_adapter_forwards_exact_identity_generation_and_stable_request_i
     )
     replayed_adapter.invoke(handle=handle, arguments={})
 
-    assert first == {"ok": True, "command_id": "command-one"}
+    assert first == {"status": "COMPLETED", "result": {"data": {"found": True}}, "error": None}
     assert second == first
     assert policy.calls[0]["actor"].roles == ("admin", "super_admin")
     assert policy.calls[0]["actor"].actor_id == "admin-one"
@@ -338,7 +347,7 @@ def test_adapter_rejects_identity_fields_in_nested_receipts() -> None:
     class UnsafePolicy(PolicyRecorder):
         def invoke_harness(self, automation_id: str, **kwargs: Any) -> Mapping[str, Any]:
             del automation_id, kwargs
-            return {"ok": True, "data": [{"source_code": "blocked"}]}
+            return {"invocation_id": "invocation-one", "source_code": "blocked"}
 
     handle = ManagedToolHandle("project-one", 7, "lookup-one")
     adapter = TrustedHarnessInvocationAdapter(

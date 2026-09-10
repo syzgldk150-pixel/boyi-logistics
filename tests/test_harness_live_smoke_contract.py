@@ -45,7 +45,12 @@ def test_ci_runs_real_network_isolated_bubblewrap_canary() -> None:
         encoding="utf-8"
     )
 
-    assert "apparmor-profiles" in workflow
-    assert "bwrap-userns-restrict" in workflow
+    # This pinned distro permits unprivileged bwrap directly; Ubuntu 24's
+    # AppArmor opt-in profile is not part of its supported package layout.
+    agent_gate = workflow.split("agent-quality:", 1)[1].split("console-quality:", 1)[0]
+    assert "runs-on: ubuntu-22.04" in agent_gate
+    assert "sudo apt-get install --yes bubblewrap util-linux" in agent_gate
     assert "bwrap --unshare-all" in workflow
+    assert "--die-with-parent" in agent_gate
+    assert "/plugin/venv/bin/python -I -c" in agent_gate
     assert "--share-net" not in workflow

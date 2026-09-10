@@ -140,7 +140,9 @@ class WorkflowRunner:
         browser_concurrency: int = 1,
         browser_tool_names: Collection[str] = (),
         saved_resource_provider: Callable[[str], Mapping[str, Any] | None] | None = None,
+        execution_enabled: bool = True,
     ) -> None:
+        self._execution_enabled = execution_enabled
         self._repository = repository
         self._saved_resource_provider = saved_resource_provider
         self._catalog = catalog
@@ -174,6 +176,9 @@ class WorkflowRunner:
         self._control_executor: ThreadPoolExecutor | None = None
 
     async def start(self, *, held_for_release: bool = False) -> None:
+        if not self._execution_enabled:
+            self._release_hold = bool(held_for_release)
+            return
         if self._task is not None:
             return
         self._loop = asyncio.get_running_loop()
@@ -208,6 +213,9 @@ class WorkflowRunner:
     def hold_for_release(self) -> dict[str, Any]:
         """Stop new durable claims while a deployment marker is active."""
 
+        if not self._execution_enabled:
+            self._release_hold = True
+            return self.runtime_status()
         if self._task is None or self._task.done():
             raise RuntimeError("Workflow runner is not available for release hold")
         self._release_hold = True
@@ -217,6 +225,9 @@ class WorkflowRunner:
     def resume_after_release(self) -> dict[str, Any]:
         """Idempotently allow durable claims after all release gates pass."""
 
+        if not self._execution_enabled:
+            self._release_hold = False
+            return self.runtime_status()
         if self._task is None or self._task.done():
             raise RuntimeError("Workflow runner is not available for release activation")
         if self._release_hold:
@@ -227,7 +238,9 @@ class WorkflowRunner:
 
     def runtime_status(self) -> dict[str, Any]:
         task = self._task
-        if task is None or task.done():
+        if not self._execution_enabled:
+            state = "held" if self._release_hold else "reserved"
+        elif task is None or task.done():
             state = "stopped"
         elif self._release_hold:
             state = "held"

@@ -219,6 +219,7 @@ class BubblewrapPluginSandbox:
 
     def _canary_python(self) -> Path:
         candidates = (
+            self._trusted_base_prefix / "bin" / f"python{sys.version_info.major}.{sys.version_info.minor}",
             self._trusted_base_prefix / "bin" / "python",
             self._trusted_base_prefix / "bin" / "python3",
             Path(sys.executable).resolve(),

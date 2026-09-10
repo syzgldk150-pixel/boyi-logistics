@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from tests.v32_acceptance.console_fixture import ConsoleFixture
-from tests.v32_acceptance.decision_maintenance import composed, prepare_database, setup_instance, wait_result
+from tests.v32_acceptance.decision_maintenance import composed, prepare_database, setup_instance, wait_result, require_verified_result
 from tests.v32_acceptance.host_freeze import process_identity
 from tests.v32_acceptance.problem_browser import ProblemBrowser
 from tests.v32_acceptance.problem_fixture import ACCOUNTS
@@ -29,8 +29,7 @@ def actual_run(browser, supplier, automation_id, expected_codes, expected_accoun
     started = len(supplier.requests)
     preview = browser.preview(automation_id, expected_codes=expected_codes)
     result = wait_result(browser.confirm(automation_id))
-    if result['status'] != 'COMPLETED' or any(step['postcondition_status'] != 'VERIFIED' for step in result['steps']):
-        raise AssertionError('actual configured action failed: ' + str(result))
+    require_verified_result(result)
     calls = [item for item in supplier.requests[started:] if item['path'] == '/problem']
     observed = {}
     for item in calls:
@@ -101,6 +100,7 @@ def main():
         report.update(status='FAIL', error=type(exc).__name__ + ': ' + str(exc))
         raise
     finally:
+        OUTPUT.parent.mkdir(parents=True, exist_ok=True)
         OUTPUT.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         print(json.dumps({'status': report['status'], 'output': str(OUTPUT)}))
 

@@ -215,7 +215,6 @@ class ControlPlaneTaskCutoverPreflightError(RuntimeError):
         self.code = str(code)
         self.count = max(int(count), 1)
 
-
 def _require_mysql8(cursor) -> str:
     """Fail before bookkeeping unless MySQL enforces the required CHECK guards."""
 
@@ -245,7 +244,6 @@ def _require_mysql8(cursor) -> str:
         )
     return version
 
-
 def discover_migrations(migrations_dir: Path = MIGRATIONS_DIR) -> list[tuple[str, Path]]:
     migrations: list[tuple[str, Path]] = []
     for path in migrations_dir.glob("*.sql"):
@@ -259,10 +257,8 @@ def discover_migrations(migrations_dir: Path = MIGRATIONS_DIR) -> list[tuple[str
         raise RuntimeError("Duplicate migration version")
     return migrations
 
-
 def migration_checksum(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
 
 def split_sql_statements(text: str) -> list[str]:
     statements: list[str] = []
@@ -277,7 +273,6 @@ def split_sql_statements(text: str) -> list[str]:
         if normalized:
             statements.append(normalized)
     return statements
-
 
 def _connect():
     from dotenv import load_dotenv
@@ -296,11 +291,9 @@ def _connect():
         cursorclass=pymysql.cursors.DictCursor,
     )
 
-
 def _applied_migrations(cursor) -> dict[str, dict[str, str]]:
     cursor.execute("SELECT version, filename, checksum FROM schema_migrations")
     return {str(row["version"]): row for row in cursor.fetchall()}
-
 
 def _table_exists(cursor, table_name: str) -> bool:
     cursor.execute(
@@ -312,7 +305,6 @@ def _table_exists(cursor, table_name: str) -> bool:
         (table_name,),
     )
     return cursor.fetchone() is not None
-
 
 def _column_exists(cursor, table_name: str, column_name: str) -> bool:
     cursor.execute(
@@ -1930,6 +1922,12 @@ def check_running_protected_writes() -> int:
                 )
                 row = cursor.fetchone()
                 running_count = int((row or {}).get("running_count") or 0)
+            if _table_exists(cursor, "automation_plugin_invocations"):
+                cursor.execute(
+                    "SELECT COUNT(*) AS running_count FROM automation_plugin_invocations "
+                    "WHERE status IN ('STARTING','RUNNING','CANCELLING')"
+                )
+                running_count += int((cursor.fetchone() or {}).get("running_count") or 0)
             if running_count:
                 raise ControlPlaneTaskCutoverPreflightError(
                     "PROTECTED_WRITE_RUNNING",
@@ -2349,9 +2347,8 @@ check_automation_project_scheduled_task_identities = _load_script_helper("automa
 check_automation_plugin_install_ownership = _load_script_helper(
     "automation_plugin_install_ownership_preflight.py"
 ).check_automation_plugin_install_ownership
-check_rollback_exact_seed_compatibility = _load_script_helper(
-    "automation_project_version_preflight.py"
-).check_rollback_exact_seed_compatibility
+_ROLLBACK_PREFLIGHT = _load_script_helper("automation_project_version_preflight.py")
+check_rollback_exact_seed_compatibility = _ROLLBACK_PREFLIGHT.check_rollback_exact_seed_compatibility
 
 def _automation_project_authorization_artifacts(cursor) -> set[str]:
     return _MIGRATION_018_HELPER._automation_project_authorization_artifacts(
@@ -2896,13 +2893,8 @@ def main() -> int:
         action="store_true",
         help="Report safe deterministic identities owned before plugin installation",
     )
-    modes.add_argument(
-        "--check-rollback-exact-seed-compatibility",
-        action="store_true",
-        help="Read-only validation that existing exact project rows allow source rollback",
-    )
+    _ROLLBACK_PREFLIGHT.add_rollback_cli_arguments(parser, modes)
     parser.add_argument("--automation-plugin-install-root")
-    parser.add_argument("--rollback-exact-seed-manifest")
     parser.add_argument(
         "--expect-initial-production-manifest",
         action="store_true",
@@ -2941,6 +2933,8 @@ def main() -> int:
             "--rollback-exact-seed-manifest requires "
             "--check-rollback-exact-seed-compatibility"
         )
+    if args.rollback_restored_source_root and not args.check_rollback_exact_seed_compatibility:
+        parser.error("--rollback-restored-source-root requires --check-rollback-exact-seed-compatibility")
     if args.restore_control_plane_task_cutover:
         return restore_control_plane_task_cutover()
     if args.restore_scheduled_task_contract_upgrade:
@@ -2987,9 +2981,12 @@ def main() -> int:
             args.automation_plugin_install_root,
         )
     if args.check_rollback_exact_seed_compatibility:
+        options = ({"restored_source_root": args.rollback_restored_source_root}
+                   if args.rollback_restored_source_root else {})
         return check_rollback_exact_seed_compatibility(
             _connect,
             args.rollback_exact_seed_manifest,
+            **options,
         )
     return run(check_only=args.check)
 

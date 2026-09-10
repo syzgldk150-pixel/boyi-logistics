@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 import os
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from playwright.sync_api import sync_playwright
@@ -98,8 +98,10 @@ class FinanceBrowser:
         result = self.submit_current_run(automation_id)
         body = result["body"]
         if result["http_status"] != 202 or body.get("ok") is not True:
-            raise AssertionError(f"actual module Run acceptance failed: {body}")
-        return body["run_id"]
+            raise AssertionError(f"actual module Invocation acceptance failed: {body}")
+        if body.get("run_id") or not body.get("invocation_id"):
+            raise AssertionError(f"collector returned an old Run instead of its actual Invocation: {body}")
+        return body["invocation_id"]
 
     def submit_current_run(self, automation_id):
         """Click the current DOM without refreshing its potentially stale facts."""
@@ -160,15 +162,23 @@ class FinanceBrowser:
         self.page.locator("[data-finance-end-date]").fill(target_date)
         rows = []
         for source_id in source_ids:
-            with self.page.expect_response(lambda response: urlparse(response.url).path == "/finance/summary") as response:
+            with self.page.expect_response(lambda response: urlparse(response.url).path == "/finance/summary"
+                    and parse_qs(urlparse(response.url).query).get("source_ids") == [source_id]
+                    and parse_qs(urlparse(response.url).query).get("start_date") == [target_date]
+                    and parse_qs(urlparse(response.url).query).get("end_date") == [target_date]) as response:
                 self.page.locator("[data-source-selector]").select_option(source_id)
             body = response.value.json()
             if response.value.status != 200 or body.get("ok") is not True:
                 raise AssertionError(f"actual source-filtered finance query failed: {body}")
             self.page.wait_for_function("document.querySelector('[data-finance-status]')?.textContent === '财务总览已更新。' && !document.querySelector('[data-finance-refresh]').disabled")
             expense = self.page.locator('[data-finance-metric="total_expense"] strong').inner_text()
-            if Decimal(expense.replace("元", "").replace(",", "").strip()) != Decimal("1.2500"):
-                raise AssertionError(f"browser finance amount differs: {expense}")
+            from decimal import InvalidOperation
+            try:
+                displayed = Decimal(expense.replace("元", "").replace(",", "").strip())
+            except InvalidOperation as error:
+                raise AssertionError(f"browser finance amount missing: {expense}; source response={body}") from error
+            if displayed != Decimal("1.2500"):
+                raise AssertionError(f"browser finance amount differs: {expense}; source response={body}")
             entries = self.context.request.get(self.console.url + "/finance/entries", params={
                 "start_date": target_date, "end_date": target_date, "source_ids": source_id}).json()
             serialized = str(entries)

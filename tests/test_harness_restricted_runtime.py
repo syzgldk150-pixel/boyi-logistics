@@ -6,6 +6,7 @@ import json
 import uuid
 from pathlib import Path
 from typing import Any, Mapping
+from types import SimpleNamespace
 
 import pytest
 
@@ -149,10 +150,12 @@ class _MutableRegistry:
 class _Policy:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.direct_invocations = SimpleNamespace(wait_sync=lambda invocation_id: {
+            "invocation_id": invocation_id, "status": "COMPLETED", "result": {"synthetic_value": "ready"}})
 
     def invoke_harness(self, automation_id: str, **kwargs: Any) -> Mapping[str, Any]:
         self.calls.append({"automation_id": automation_id, **kwargs})
-        return {"status": "COMPLETED", "synthetic_value": "ready"}
+        return {"status": "STARTING", "invocation_id": str(uuid.uuid4())}
 
 
 def _actor() -> Actor:
@@ -232,7 +235,7 @@ def test_runtime_uses_active_model_and_localized_read_only_surface() -> None:
         item["title"] for item in runtime.public_tools(actor, str(uuid.uuid4()))
     ]
     registry.records = ()
-    assert len(runtime.public_tools(actor, str(uuid.uuid4()))) == 6
+    assert len(runtime.public_tools(actor, str(uuid.uuid4()))) == len(FIXED_HARNESS_TOOL_IDS)
     runtime.stop()
     assert availability.is_available("harness") is False
 

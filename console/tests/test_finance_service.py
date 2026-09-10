@@ -14,6 +14,7 @@ from finance_service import (  # noqa: E402
     FinanceService,
     FinanceUnprocessableError,
     FinanceUnavailableError,
+    FinanceUpstreamError,
     FinanceValidationError,
     parse_finance_filters,
 )
@@ -172,6 +173,22 @@ class FinanceServiceTests(unittest.TestCase):
             return self.agent_result
 
         self.service = FinanceService(self.repository, agent_request=agent_request)
+
+    def test_explicit_analysis_returns_completed_invocation_result(self):
+        request_id = "8304c92e-cb7f-457b-9d56-3b42cdcdab13"
+        self.agent_result = {"ok": True, "data": {"status": "COMPLETED", "result": {"reviewed": 2}}}
+        result = self.service.analyze_review_cases({"request_id": request_id, "limit": 2})
+        self.assertEqual({"reviewed": 2}, result)
+        self.assertEqual({"limit": 2, "request_id": request_id}, self.agent_calls[-1]["payload"])
+        self.assertNotIn("run_id", result)
+
+    def test_analysis_missing_uuid_and_unknown_outcome_are_not_success(self):
+        with self.assertRaises(FinanceValidationError):
+            self.service.analyze_review_cases({"limit": 2})
+        self.assertEqual([], self.agent_calls)
+        self.agent_result = {"ok": True, "data": {"status": "WRITE_OUTCOME_UNKNOWN", "result": {}}}
+        with self.assertRaises(FinanceUpstreamError):
+            self.service.analyze_review_cases({"request_id": "8304c92e-cb7f-457b-9d56-3b42cdcdab13"})
 
     def test_default_period_is_current_month_and_filters_are_explicit(self):
         filters = parse_finance_filters(

@@ -14,6 +14,8 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
+from shared.automation_preview_contract import PREVIEW_CONTRACT_VERSION, SCAN_PREVIEW_PUBLIC_FIELDS, normalize_scan_preview_projection
+
 from console.app_support import normalize_feedback_text
 from console.services.automation_projects import AUTOMATION_PROJECT_ID_RE
 
@@ -27,7 +29,7 @@ SELECTION_PREVIEW_PUBLIC_FIELDS = frozenset(
         "contract_version",
         "automation_id",
         "title",
-        "preview_run_id",
+        "preview_invocation_id",
         "observed_at",
         "expires_at",
         "candidate_count",
@@ -87,20 +89,6 @@ SELECTION_PREVIEW_ERROR_MESSAGES = {
     "SOURCE_SHEET_NOT_FOUND": "候选读取失败：未找到绑定的每日到货工作表，请重新选择。",
     "SOURCE_UNAVAILABLE": "候选读取失败：每日到货数据暂时不可达，请稍后重试。",
 }
-SCAN_PREVIEW_PUBLIC_FIELDS = frozenset(
-    {
-        "contract_version",
-        "preview_run_id",
-        "target_date",
-        "observed_at",
-        "expires_at",
-        "source_page_count",
-        "normalized_record_count",
-        "selection_count",
-        "batch_count",
-        "can_confirm",
-    }
-)
 SCAN_PREVIEW_ERROR_MESSAGES = {
     "SCAN_PREVIEW_ID_INVALID": "扫描预览标识无效，请重新生成预览。",
     "SCAN_PREVIEW_NOT_FOUND": "扫描预览不存在，请重新生成预览。",
@@ -117,62 +105,6 @@ SCAN_PREVIEW_ERROR_MESSAGES = {
 }
 
 
-def normalize_scan_preview_projection(
-    raw: Any,
-    *,
-    expected_run_id: str,
-) -> dict[str, Any] | None:
-    """Accept only the frozen public scan preview contract."""
-
-    if not isinstance(raw, Mapping) or set(raw) != SCAN_PREVIEW_PUBLIC_FIELDS:
-        return None
-    preview_run_id = str(raw.get("preview_run_id") or "").strip()
-    try:
-        normalized_preview_run_id = str(uuid.UUID(preview_run_id))
-    except (ValueError, AttributeError):
-        return None
-    if normalized_preview_run_id != preview_run_id or preview_run_id != expected_run_id:
-        return None
-    if raw.get("contract_version") != 1 or not isinstance(raw.get("can_confirm"), bool):
-        return None
-    target_date = str(raw.get("target_date") or "").strip()
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", target_date):
-        return None
-    try:
-        datetime.strptime(target_date, "%Y-%m-%d")
-    except ValueError:
-        return None
-    timestamps: dict[str, str] = {}
-    for field in ("observed_at", "expires_at"):
-        value = str(raw.get(field) or "").strip()
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        if not value or len(value) > 64 or parsed.tzinfo is None:
-            return None
-        timestamps[field] = value
-    counts: dict[str, int] = {}
-    for field in (
-        "source_page_count",
-        "normalized_record_count",
-        "selection_count",
-        "batch_count",
-    ):
-        value = raw.get(field)
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            return None
-        counts[field] = value
-    return {
-        "contract_version": 1,
-        "preview_run_id": preview_run_id,
-        "target_date": target_date,
-        **timestamps,
-        **counts,
-        "can_confirm": raw["can_confirm"],
-    }
-
-
 def scan_preview_error_message(error_code: Any, fallback: Any = "") -> str:
     code = str(error_code or "").strip()
     if code in SCAN_PREVIEW_ERROR_MESSAGES:
@@ -184,7 +116,7 @@ def normalize_selection_preview_projection(
     raw: Any,
     *,
     expected_automation_id: str,
-    expected_run_id: str,
+    expected_invocation_id: str,
 ) -> dict[str, Any] | None:
     """Accept only the simple, signed public selection contract."""
 
@@ -196,14 +128,14 @@ def normalize_selection_preview_projection(
         or automation_id not in SELECTION_PREVIEW_PROJECT_IDS
     ):
         return None
-    preview_run_id = str(raw.get("preview_run_id") or "").strip()
+    preview_invocation_id = str(raw.get("preview_invocation_id") or "").strip()
     try:
-        normalized_preview_run_id = str(uuid.UUID(preview_run_id))
+        normalized_preview_invocation_id = str(uuid.UUID(preview_invocation_id))
     except (ValueError, AttributeError):
         return None
-    if normalized_preview_run_id != preview_run_id or preview_run_id != expected_run_id:
+    if normalized_preview_invocation_id != preview_invocation_id or preview_invocation_id != expected_invocation_id:
         return None
-    if raw.get("contract_version") != 1 or not isinstance(raw.get("can_confirm"), bool):
+    if raw.get("contract_version") != PREVIEW_CONTRACT_VERSION or not isinstance(raw.get("can_confirm"), bool):
         return None
     title = str(raw.get("title") or "").strip()
     if not title or len(title) > 80:
@@ -243,10 +175,10 @@ def normalize_selection_preview_projection(
     if not isinstance(summary, Mapping):
         return None
     return {
-        "contract_version": 1,
+        "contract_version": PREVIEW_CONTRACT_VERSION,
         "automation_id": automation_id,
         "title": title,
-        "preview_run_id": preview_run_id,
+        "preview_invocation_id": preview_invocation_id,
         **timestamps,
         "candidate_count": candidate_count,
         "candidates": normalized_candidates,

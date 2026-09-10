@@ -548,7 +548,7 @@ def _run_send_order_sync_for_date(params: dict[str, Any], target_date: dt.date) 
                 "planned_creates": 0,
                 "planned_deletes": 0,
                 "planned_sql_upserts": len(console_records),
-                "planned_sql_deletes": len(console_records),
+                "planned_sql_deletes": 0,
             }
         sql_result: dict[str, Any] = {"ok": True, "skipped": True, "upserted": 0, "deleted_stale": 0}
         if params.get("sync_sql") is not False:
@@ -556,9 +556,12 @@ def _run_send_order_sync_for_date(params: dict[str, Any], target_date: dt.date) 
                 sql_result = sync_console_waybills(
                     console_records,
                     source="ronghui",
+                    account_id=require_explicit_account_id(params, label="waybill publication"),
                     target_date=target_date,
-                    replace_date=True,
+                    replace_date=False,
                 )
+                if sql_result.get("ok") is not True:
+                    return {"ok": False, "partial": True, "error": "寄件来源范围尚未核实，未更新 SQL 数据", "sql_result": sql_result, "error_code": sql_result.get("error_code")}
             except Exception as exc:
                 return {
                     "error": "SQL 写入融辉寄件运单失败",
@@ -680,9 +683,12 @@ def _run_send_order_sync_for_date(params: dict[str, Any], target_date: dt.date) 
             sql_result = sync_console_waybills(
                 console_records,
                 source="ronghui",
+                account_id=require_explicit_account_id(params, label="waybill publication"),
                 target_date=target_date,
                 replace_date=True,
             )
+            if sql_result.get("ok") is not True:
+                return {"ok": False, "partial": True, "error": "寄件来源范围尚未核实，未更新 SQL 数据", "sql_result": sql_result, "error_code": sql_result.get("error_code")}
         except Exception as exc:
             return {
                 "error": "SQL 写入融辉寄件运单失败",

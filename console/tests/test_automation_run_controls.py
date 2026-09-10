@@ -217,7 +217,9 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         task_html = html.split("<article", 1)[1].split("</article>", 1)[0]
 
         self.assertNotIn("data-automation-toggle", task_html)
-        self.assertNotIn("data-run-now", task_html)
+        run_button = task_html.split('data-run-now', 1)[0].rsplit('<button', 1)[1]
+        self.assertIn(' disabled ', run_button)
+        self.assertIn('data-start-disabled="当前不可执行"', task_html)
         self.assertNotIn("data-settings-toggle", task_html)
         self.assertNotIn("data-schedule-stack", task_html)
         self.assertIn("任务配置只读，但审批策略可以单独设置", task_html)
@@ -422,8 +424,8 @@ const assert = require("node:assert/strict");
 const vm = require("node:vm");
 const source = require("node:fs").readFileSync(0, "utf8");
 const controls = source.slice(source.indexOf("function syncRunButtonVisual()"), source.indexOf("const resourceEditors ="));
-const polling = source.slice(source.indexOf("let startPolling = function() {};"), source.indexOf("const batchTerminalStatuses ="))
-  .replace("// 初次进入页面保持干净，不自动展开历史执行结果。", "globalThis.pollTest = {startPolling, pollOutput};");
+const polling = source.slice(source.indexOf("let startPolling = function() {};"), source.indexOf("    // 反馈关闭按钮"))
+  .replace("// Invocation history initialization is complete.", "globalThis.pollTest = {startPolling, pollOutput};");
 const submit = source.slice(source.indexOf('    if (runBtn) {\n      runBtn.addEventListener("click"'),
   source.indexOf('\n  });\n\n  /* ── 列表排序'));
 
@@ -456,7 +458,7 @@ async function exercise(failure, conflict = false) {
     URLSearchParams, AbortController, HTMLElement, runBtn, termBtn,
     FormData: class { forEach(callback) {callback("daily_sign", "task_id");} },
     termDrawer: {
-      dataset: {toolName: "automation.daily_sign.run", taskId: "daily_sign", runId: conflict ? "historical-run" : "accepted-run"},
+      dataset: {toolName: "automation.daily_sign.run", taskId: "daily_sign", invocationId: conflict ? "historical-run" : "accepted-run"},
       querySelector: selector => ({"[data-terminal-body]": termBody, "[data-terminal-status]": termStatus}[selector] || null),
     },
     form: {querySelector: () => null}, document: {hidden: false}, feather: {replace() {}},
@@ -464,7 +466,7 @@ async function exercise(failure, conflict = false) {
     scanConfirmationRetryOnly: false, scanPreviewTerminalBlocked: false,
     selectionConfirmationRetryOnly: false, termAttentionLatched: false,
     runTimer: null, fetchOutputState: null,
-    runUiState: {running: false, awaitingApproval: false, pendingRun: !conflict, runId: conflict ? "" : "accepted-run"},
+    runUiState: {running: false, awaitingApproval: false, pendingRun: !conflict, invocationId: conflict ? "" : "accepted-run"},
     renderFeedback: (_form, value) => {feedback.push(value); feedbackHidden = false;},
     syncRuntimeFeedback: (_form, value) => {runtime = value;},
     hideRunFeedback: () => {feedbackHidden = true;},
@@ -487,7 +489,7 @@ async function exercise(failure, conflict = false) {
   vm.createContext(context);
   vm.runInContext(controls + polling + submit, context);
   const queue = {
-    run_id: "accepted-run", status: "RECEIVED", pending: true, queued: true, running: false,
+    invocation_id: "accepted-run", automation_id: "daily_sign", status: "RECEIVED", pending: true, queued: true, running: false,
     started_at: "2026-09-08T01:36:04Z", lines: [], total: 0,
     stage_description: "任务已受理，等待开始执行", next_poll_after_ms: 1000,
   };
@@ -509,12 +511,12 @@ async function exercise(failure, conflict = false) {
     handlers.click();
     await flush();
     assert.equal(requests.length, 1);
-    assert.match(requests[0].url, /run_id=historical-run/);
+    assert.match(requests[0].url, /invocation_id=historical-run/);
   }
   if (conflict) {
     responses.push(response({ok: false, pending: false, error_code: "AUTOMATION_ALREADY_RUNNING",
       title: "正在执行", message: "已有任务", existing_run: missingIdentity ? null : {
-        run_id: "accepted-run", status: "RECEIVED", blocking_kind: "ACTIVE"}}, false));
+        invocation_id: "accepted-run", status: "RECEIVED", blocking_kind: "ACTIVE"}}, false));
     if (!missingIdentity) responses.push(response(queue));
     await handlers.runClick({preventDefault() {}});
   } else {
@@ -524,18 +526,18 @@ async function exercise(failure, conflict = false) {
   await flush();
   if (staleRequest) {
     assert.equal(runBtn.dataset.runMode, "refresh");
-    assert.equal(context.runUiState.runId, missingIdentity ? "" : "accepted-run");
-    resolveHistorical({...queue, run_id: "historical-run", status: "COMPLETED",
+    assert.equal(context.runUiState.invocationId, missingIdentity ? "" : "accepted-run");
+    resolveHistorical({...queue, invocation_id: "historical-run", status: "COMPLETED",
       pending: false, queued: false, runtime: {ok: true, title: "历史完成"}});
     await flush();
     assert.equal(runBtn.dataset.runMode, "refresh", "old terminal output must not restore submit");
-    assert.equal(context.runUiState.runId, missingIdentity ? "" : "accepted-run");
+    assert.equal(context.runUiState.invocationId, missingIdentity ? "" : "accepted-run");
     assert.equal(runtime, null, "old runtime must not replace the new tracking state");
     handlers.click(); // Close the historical output drawer before the remaining lifecycle.
   }
   const oldRequests = staleRequest ? 1 : 0;
   if (missingIdentity) {
-    assert.equal(context.runUiState.runId, "");
+    assert.equal(context.runUiState.invocationId, "");
     assert.equal(runBtn.dataset.runMode, "refresh");
     assert.equal(runLabel.textContent, "刷新状态");
     assert.match(feedback.at(-1).message, /刷新/);
@@ -577,7 +579,7 @@ async function exercise(failure, conflict = false) {
   }
   assert.equal(feedback.at(-1).title, "状态暂不可用");
   assert.equal(termStatus.textContent, "状态读取失败");
-  assert.equal(context.runUiState.runId, "accepted-run");
+  assert.equal(context.runUiState.invocationId, "accepted-run");
   assert.equal(context.runUiState.pendingRun, true);
   assert.equal(runBtn.dataset.runMode, conflict ? "refresh" : "cancel", "failed polling must not expose another submit action");
   assert.equal([...timers.values()][0].delay, 3000);
@@ -587,7 +589,7 @@ async function exercise(failure, conflict = false) {
   await advance();
   assert.equal(termBtn.expanded, "false");
   assert.equal(feedback.at(-1).message, "正在读取数据");
-  assert.equal(context.runUiState.runId, "accepted-run");
+  assert.equal(context.runUiState.invocationId, "accepted-run");
 
   responses.push(response({...queue, status: "COMPLETED", pending: false, queued: false,
     next_poll_after_ms: 0, runtime: {ok: true, title: "已完成"}}));
@@ -599,7 +601,7 @@ async function exercise(failure, conflict = false) {
   assert.equal(intervals.size, 0, "a terminal Run must stop its progress timer");
   assert.equal(runBtn.dataset.runMode, "start");
   assert.ok(requests.slice(oldRequests).filter(request => request.method === "GET").every(request =>
-    new URL(request.url, "https://console.invalid").searchParams.get("run_id") === "accepted-run"));
+    new URL(request.url, "https://console.invalid").searchParams.get("invocation_id") === "accepted-run"));
   assert.equal(requests.filter(request => request.method === "POST").length, conflict ? 1 : 0);
 }
 (async () => {
@@ -642,19 +644,19 @@ async function exercise(failure, conflict = false) {
         self.assertIn("signal: controller.signal", terminal_fetch_block)
         self.assertIn("clearTimeout(timeoutId)", terminal_fetch_block)
 
-    def test_run_feedback_hides_internal_run_ids_and_technical_statuses(self):
+    def test_run_feedback_hides_internal_invocation_ids_and_technical_statuses(self):
         source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
             encoding="utf-8"
         )
 
         attention_start = source.index("function renderAttentionRun(data)")
         attention_block = source[attention_start : attention_start + 1800]
-        self.assertNotIn("Run：${runId}", attention_block)
+        self.assertNotIn("Run：${invocationId}", attention_block)
         self.assertNotIn("状态：${status}", attention_block)
         self.assertIn('body: ""', attention_block)
         self.assertIn("执行前检查未通过", attention_block)
 
-    def test_scan_confirmation_uses_stable_request_uuid_and_only_public_run_id(self):
+    def test_scan_confirmation_uses_stable_request_uuid_and_only_public_invocation_id(self):
         source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
             encoding="utf-8"
         )
@@ -664,7 +666,7 @@ async function exercise(failure, conflict = false) {
         )
         confirm_block = source[confirm_index - 240 : confirm_index + 700]
         self.assertIn('task_id: "scan_codes"', confirm_block)
-        self.assertIn("preview_run_id: previewRunId", confirm_block)
+        self.assertIn("preview_invocation_id: previewInvocationId", confirm_block)
         self.assertIn('"X-Browser-Request-UUID": confirmationRequestId', confirm_block)
         self.assertNotIn("dry_run", confirm_block)
         self.assertNotIn("selection_sha256", confirm_block)
@@ -696,34 +698,12 @@ async function exercise(failure, conflict = false) {
             ),
             fetch_index,
         )
-        self.assertIn(
-            "if (scanConfirmationRetryOnly || scanPreviewTerminalBlocked) return;\n        clearScanPreview();",
-            source,
-        )
-        self.assertIn(
-            "if (isScanPreviewWorkflow && scanConfirmationRetryOnly)",
-            source,
-        )
-        self.assertIn(
-            "|| (isScanPreviewWorkflow && scanConfirmationRetryOnly)",
-            source,
-        )
-        self.assertIn(
-            "|| (isScanPreviewWorkflow && scanPreviewTerminalBlocked)",
-            source,
-        )
-        self.assertIn(
-            "if (scanConfirmationRetryOnly || scanPreviewTerminalBlocked) return;",
-            source,
-        )
-        self.assertIn(
-            "if (isScanPreviewWorkflow && scanPreviewTerminalBlocked)",
-            source,
-        )
-        self.assertIn(
-            "当前页面不会生成新的扫描预览",
-            source,
-        )
+        self.assertNotIn("if (isScanPreviewWorkflow && scanConfirmationRetryOnly)", source)
+        self.assertNotIn("if (isScanPreviewWorkflow && scanPreviewTerminalBlocked)", source)
+        self.assertNotIn("|| (isScanPreviewWorkflow && scanConfirmationRetryOnly)", source)
+        self.assertNotIn("|| (isScanPreviewWorkflow && scanPreviewTerminalBlocked)", source)
+        self.assertIn("if (isScanPreviewWorkflow) clearScanPreview({ force: true });", source)
+        self.assertNotIn("当前页面不会生成新的扫描预览", source)
         render_preview_index = source.index("function renderScanPreview(preview)")
         next_preview_index = source.index(
             "const nextPreviewId",
@@ -753,20 +733,12 @@ async function exercise(failure, conflict = false) {
         self.assertIn("if (data.attention)", source)
         self.assertIn("pendingRun && !data.attention", source)
 
-    def test_approved_batch_attention_states_stop_tracking_when_settled(self):
-        source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn("const settledCount = terminalCount + attentionCount;", source)
-        self.assertIn("if (settledCount < total)", source)
-        self.assertIn("const activeStates = states.filter", source)
-        self.assertIn("if (attentionCount > 0)", source)
-        self.assertIn("let approvedBatchStates = new Map();", source)
-        self.assertIn("const fetchReceipts = receipts.filter", source)
-        self.assertIn("approvedBatchStates.set(state.run_id, state)", source)
-        self.assertNotIn("Number(state.next_poll_after_ms) ||", source)
-        self.assertNotIn("卡片会继续跟踪", source)
+    def test_retired_approval_batches_cannot_start_or_block_live_invocations(self):
+        source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(encoding="utf-8")
+        self.assertNotIn("approvedBatch", source)
+        self.assertNotIn("automation:approved-runs", source)
+        self.assertNotIn("WAITING_APPROVAL", source)
+        self.assertNotIn("awaitingApproval", source)
 
     def test_attention_latch_survives_poll_and_request_error_recovery(self):
         source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
@@ -777,12 +749,12 @@ async function exercise(failure, conflict = false) {
         self.assertIn("termAttentionLatched = true;", source)
         self.assertIn("if (outputState?.attention)", source)
         self.assertIn("if (termAttentionLatched) return;", source)
-        self.assertIn("const trackingRun = runUiState.running || runUiState.awaitingApproval || runUiState.pendingRun;", source)
+        self.assertIn("const trackingRun = runUiState.running || runUiState.pendingRun;", source)
         self.assertIn(
-            'options.runId || runUiState.runId || termDrawer.dataset.runId || ""',
+            'options.invocationId || termDrawer.dataset.invocationId || runUiState.invocationId || ""',
             source,
         )
-        self.assertNotIn("options.runId ?? runUiState.runId", source)
+        self.assertNotIn("options.invocationId ?? runUiState.invocationId", source)
 
 
 if __name__ == "__main__":

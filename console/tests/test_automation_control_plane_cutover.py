@@ -59,12 +59,12 @@ class _App(AutomationServiceMixin, AgentApiServiceMixin):
 
 class AutomationControlPlaneCutoverTests(unittest.TestCase):
     @staticmethod
-    def _selection_projection(run_id):
+    def _selection_projection(invocation_id):
         return {
-            "contract_version": 1,
+            "contract_version": 2,
             "automation_id": "self_pickup_problem_upload",
             "title": "自提到货问题件",
-            "preview_run_id": run_id,
+            "preview_invocation_id": invocation_id,
             "observed_at": "2026-08-27T07:00:00Z",
             "expires_at": "2026-08-27T07:15:00Z",
             "candidate_count": 1,
@@ -85,10 +85,11 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         }
 
     def test_scan_preview_projection_is_closed_and_bound_to_run(self):
-        run_id = "11111111-1111-4111-8111-111111111111"
+        invocation_id = "11111111-1111-4111-8111-111111111111"
         projection = {
-            "contract_version": 1,
-            "preview_run_id": run_id,
+            "contract_version": 2,
+            "automation_id": "scan_codes",
+            "preview_invocation_id": invocation_id,
             "target_date": "2026-08-24",
             "observed_at": "2026-08-24T03:58:00Z",
             "expires_at": "2026-08-24T04:13:00Z",
@@ -103,46 +104,46 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             projection,
             normalize_scan_preview_projection(
                 projection,
-                expected_run_id=run_id,
+                expected_invocation_id=invocation_id,
             ),
         )
         self.assertIsNone(
             normalize_scan_preview_projection(
                 {**projection, "selection_sha256": "1" * 64},
-                expected_run_id=run_id,
+                expected_invocation_id=invocation_id,
             )
         )
         self.assertIsNone(
             normalize_scan_preview_projection(
                 projection,
-                expected_run_id="22222222-2222-4222-8222-222222222222",
+                expected_invocation_id="22222222-2222-4222-8222-222222222222",
             )
         )
 
     def test_selection_preview_projection_is_closed_and_bound_to_project(self):
-        run_id = "11111111-1111-4111-8111-111111111111"
-        projection = self._selection_projection(run_id)
+        invocation_id = "11111111-1111-4111-8111-111111111111"
+        projection = self._selection_projection(invocation_id)
 
         self.assertEqual(
             projection,
             normalize_selection_preview_projection(
                 projection,
                 expected_automation_id="self_pickup_problem_upload",
-                expected_run_id=run_id,
+                expected_invocation_id=invocation_id,
             ),
         )
         self.assertIsNone(
             normalize_selection_preview_projection(
                 {**projection, "preview_fingerprint": "f" * 64},
                 expected_automation_id="self_pickup_problem_upload",
-                expected_run_id=run_id,
+                expected_invocation_id=invocation_id,
             )
         )
         self.assertIsNone(
             normalize_selection_preview_projection(
                 projection,
                 expected_automation_id="split_pending_problem_upload",
-                expected_run_id=run_id,
+                expected_invocation_id=invocation_id,
             )
         )
 
@@ -154,7 +155,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                 "status": 202,
                 "data": {
                     "command_id": "command-selection",
-                    "run_id": "11111111-1111-4111-8111-111111111111",
+                    "invocation_id": "11111111-1111-4111-8111-111111111111",
                 },
             }
         )
@@ -181,7 +182,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         self.assertEqual(HTTPStatus.ACCEPTED, app.sent[0])
 
     def test_selection_confirmation_forwards_only_selected_bills(self):
-        preview_run_id = "11111111-1111-4111-8111-111111111111"
+        preview_invocation_id = "11111111-1111-4111-8111-111111111111"
         request_id = "22222222-2222-4222-8222-222222222222"
         app = _App(
             {
@@ -189,7 +190,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                 "status": 202,
                 "data": {
                     "command_id": "command-formal",
-                    "run_id": "33333333-3333-4333-8333-333333333333",
+                    "invocation_id": "33333333-3333-4333-8333-333333333333",
                 },
             }
         )
@@ -198,7 +199,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         }
         app._parse_urlencoded_form = lambda _handler: {
             "task_id": "self_pickup_problem_upload",
-            "preview_run_id": preview_run_id,
+            "preview_invocation_id": preview_invocation_id,
             "selected_bill_codes_json": '["R0002"]',
         }
 
@@ -209,7 +210,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         _method, endpoint, payload, _timeout, _principal = app.calls[0]
         self.assertEqual(
             "/internal/v1/automation-projects/self_pickup_problem_upload/"
-            f"selection-previews/{preview_run_id}/confirm",
+            f"selection-previews/{preview_invocation_id}/confirm",
             endpoint,
         )
         self.assertEqual(
@@ -230,7 +231,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                 "data": {
                     "command_id": "cmd-1",
                     "work_item_id": "wi-1",
-                    "run_id": "run-1",
+                    "invocation_id": "run-1",
                     "status": "RECEIVED",
                 },
             }
@@ -272,9 +273,9 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         self.assertNotIn("tool_name", payload)
         self.assertNotIn("parameters", payload)
         self.assertEqual(console_principal, signed_principal)
-        self.assertEqual("run-1", app.automation_virtual_task_state["daily_sign"]["run_id"])
+        self.assertEqual("run-1", app.automation_virtual_task_state["daily_sign"]["invocation_id"])
 
-    def test_preview_run_id_cannot_be_forwarded_to_another_project(self):
+    def test_preview_invocation_id_cannot_be_forwarded_to_another_project(self):
         app = _App({"ok": True, "status": 202, "data": {}})
 
         result = app._start_automation_task_run(
@@ -288,7 +289,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             },
             trusted_context={"_console_principal": {"actor_id": "17"}},
             browser_request_uuid="22222222-2222-4222-8222-222222222222",
-            preview_run_id="11111111-1111-4111-8111-111111111111",
+            preview_invocation_id="11111111-1111-4111-8111-111111111111",
         )
 
         self.assertFalse(result["ok"])
@@ -296,8 +297,9 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         self.assertEqual([], app.calls)
 
     def test_cancel_targets_the_exact_run(self):
-        app = _App({"ok": True, "status": 200, "data": {"run": {"run_id": "run-1"}}})
-        app._parse_urlencoded_form = lambda _handler: {"task_id": "daily_sign", "run_id": "run-1"}
+        app = _App({"ok": True, "status": 200, "data": {"invocation_id": "run-1", "automation_id": "daily_sign", "status": "CANCELLING"}})
+        app.results.insert(0, dict(app.results[0]))
+        app._parse_urlencoded_form = lambda _handler: {"task_id": "daily_sign", "invocation_id": "run-1"}
         console_principal = {
             "actor_type": "console_admin",
             "actor_id": "17",
@@ -313,9 +315,9 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
 
         app._handle_automation_task_cancel(object())
 
-        self.assertEqual("/internal/v1/runs/run-1/cancel", app.calls[0][1])
-        self.assertNotIn("_console_principal", app.calls[0][2])
-        self.assertEqual(console_principal, app.calls[0][4])
+        self.assertEqual("/internal/v1/automation-invocations/run-1/cancel", app.calls[1][1])
+        self.assertNotIn("_console_principal", app.calls[1][2])
+        self.assertEqual(console_principal, app.calls[1][4])
         self.assertTrue(app.sent[1]["cancel_requested"])
 
     def test_cancelled_suspended_run_is_reported_as_terminal_immediately(self):
@@ -323,12 +325,13 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             {
                 "ok": True,
                 "status": 200,
-                "data": {"run": {"run_id": "run-1", "status": "CANCELLED"}},
+                "data": {"invocation_id": "run-1", "automation_id": "daily_sign", "status": "CANCELLED"},
             }
         )
+        app.results.insert(0, dict(app.results[0]))
         app._parse_urlencoded_form = lambda _handler: {
             "task_id": "daily_sign",
-            "run_id": "run-1",
+            "invocation_id": "run-1",
         }
         app._control_plane_write_context = lambda _handler: {
             "actor": {
@@ -350,16 +353,15 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         self.assertFalse(app.sent[1]["cancel_requested"])
 
     def test_scan_confirmation_forwards_only_new_request_and_preview_ids(self):
-        preview_run_id = "11111111-1111-4111-8111-111111111111"
+        preview_invocation_id = "11111111-1111-4111-8111-111111111111"
         request_id = "22222222-2222-4222-8222-222222222222"
         app = _App(
             {
                 "ok": True,
                 "status": 202,
                 "data": {
-                    "command_id": "cmd-formal",
-                    "work_item_id": "wi-formal",
-                    "run_id": "33333333-3333-4333-8333-333333333333",
+                    "status": "STARTING",
+                    "invocation_id": "33333333-3333-4333-8333-333333333333",
                 },
             }
         )
@@ -368,7 +370,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         }
         app._parse_urlencoded_form = lambda _handler: {
             "task_id": "scan_codes",
-            "preview_run_id": preview_run_id,
+            "preview_invocation_id": preview_invocation_id,
         }
 
         app._handle_scan_preview_confirmation(
@@ -382,7 +384,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             endpoint,
         )
         self.assertEqual(
-            {"request_id": request_id, "preview_run_id": preview_run_id},
+            {"request_id": request_id, "preview_invocation_id": preview_invocation_id},
             payload,
         )
         self.assertEqual(HTTPStatus.ACCEPTED, app.sent[0])
@@ -402,7 +404,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         }
         app._parse_urlencoded_form = lambda _handler: {
             "task_id": "scan_codes",
-            "preview_run_id": "11111111-1111-4111-8111-111111111111",
+            "preview_invocation_id": "11111111-1111-4111-8111-111111111111",
         }
 
         app._handle_scan_preview_confirmation(
@@ -429,7 +431,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         }
         app._parse_urlencoded_form = lambda _handler: {
             "task_id": "scan_codes",
-            "preview_run_id": "11111111-1111-4111-8111-111111111111",
+            "preview_invocation_id": "11111111-1111-4111-8111-111111111111",
             "dry_run": "false",
         }
 
@@ -452,32 +454,28 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                 "ok": True,
                 "status": 200,
                 "data": {
-                    "run": {
-                        "run_id": "run-1",
+                        "invocation_id": "run-1", "automation_id": "daily_sign",
                         "status": "COMPLETED",
-                        "finished_at": "2026-08-13 12:00:00",
-                    },
-                    "next_poll_after_ms": 0,
-                },
+                        "finished_at": "2026-08-13 12:00:00", "next_poll_after_ms": 0},
             }
         )
 
         app._handle_automation_task_output(
             object(),
-            {"run_id": ["run-1"], "task_id": ["daily_sign"], "offset": ["0"]},
+            {"invocation_id": ["run-1"], "task_id": ["daily_sign"], "offset": ["0"]},
         )
 
-        self.assertEqual("/internal/v1/runs/run-1", app.calls[0][1])
+        self.assertEqual("/internal/v1/automation-invocations/run-1", app.calls[0][1])
         self.assertFalse(app.sent[1]["running"])
         self.assertTrue(app.sent[1]["runtime"]["ok"])
 
-    def test_output_poll_requires_active_run_status_and_execution_phase(self):
+    def test_output_poll_uses_current_invocation_state_without_legacy_phase(self):
         for status, execution_phase, expected_running in (
             ("RUNNING", "source_read", True),
-            ("VERIFYING", "verifying", True),
+            ("CANCELLING", "verifying", True),
             ("COMPLETED", "writing", False),
-            ("BLOCKED_DATA", "processing", False),
-            ("RUNNING", "queued", False),
+            ("FAILED", "processing", False),
+            ("RUNNING", "queued", True),
         ):
             with self.subTest(status=status, execution_phase=execution_phase):
                 app = _App(
@@ -485,21 +483,17 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                         "ok": True,
                         "status": 200,
                         "data": {
-                            "run": {
-                                "run_id": "run-state-1",
+                                "invocation_id": "run-state-1", "automation_id": "daily_sign",
                                 "status": status,
                                 "execution_phase": execution_phase,
-                                "created_at": "2026-09-05 09:00:00",
-                            },
-                            "next_poll_after_ms": 1000,
-                        },
+                                "created_at": "2026-09-05 09:00:00", "next_poll_after_ms": 1000},
                     }
                 )
 
                 app._handle_automation_task_output(
                     object(),
                     {
-                        "run_id": ["run-state-1"],
+                        "invocation_id": ["run-state-1"],
                         "task_id": ["daily_sign"],
                         "offset": ["0"],
                     },
@@ -508,10 +502,11 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                 self.assertEqual(expected_running, app.sent[1]["running"])
 
     def test_completed_scan_preview_returns_only_bounded_projection(self):
-        run_id = "11111111-1111-4111-8111-111111111111"
+        invocation_id = "11111111-1111-4111-8111-111111111111"
         projection = {
-            "contract_version": 1,
-            "preview_run_id": run_id,
+            "contract_version": 2,
+            "automation_id": "scan_codes",
+            "preview_invocation_id": invocation_id,
             "target_date": "2026-08-24",
             "observed_at": "2026-08-24T03:58:00Z",
             "expires_at": "2026-08-24T04:13:00Z",
@@ -527,13 +522,10 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                     "ok": True,
                     "status": 200,
                     "data": {
-                        "run": {
-                            "run_id": run_id,
+                            "invocation_id": invocation_id, "automation_id": "scan_codes",
+                            "invocation_phase": "preview",
                             "status": "COMPLETED",
-                            "finished_at": "2026-08-24 12:00:00",
-                        },
-                        "next_poll_after_ms": 0,
-                    },
+                            "finished_at": "2026-08-24 12:00:00", "next_poll_after_ms": 0},
                 },
                 {"ok": True, "status": 200, "data": projection},
             ]
@@ -542,7 +534,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         app._handle_automation_task_output(
             object(),
             {
-                "run_id": [run_id],
+                "invocation_id": [invocation_id],
                 "task_id": ["scan_codes"],
                 "scan_phase": ["preview"],
                 "offset": ["0"],
@@ -552,7 +544,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         self.assertEqual(
             (
                 "/internal/v1/automation-projects/scan_codes/scan-previews/"
-                + run_id
+                + invocation_id
             ),
             app.calls[1][1],
         )
@@ -560,26 +552,23 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         self.assertNotIn("selection_sha256", app.sent[1]["scan_preview"])
 
     def test_completed_formal_scan_does_not_request_preview_projection(self):
-        run_id = "11111111-1111-4111-8111-111111111111"
+        invocation_id = "11111111-1111-4111-8111-111111111111"
         app = _App(
             {
                 "ok": True,
                 "status": 200,
                 "data": {
-                    "run": {
-                        "run_id": run_id,
+                        "invocation_id": invocation_id, "automation_id": "scan_codes",
+                        "invocation_phase": "formal",
                         "status": "COMPLETED",
-                        "finished_at": "2026-08-24 12:00:00",
-                    },
-                    "next_poll_after_ms": 0,
-                },
+                        "finished_at": "2026-08-24 12:00:00", "next_poll_after_ms": 0},
             }
         )
 
         app._handle_automation_task_output(
             object(),
             {
-                "run_id": [run_id],
+                "invocation_id": [invocation_id],
                 "task_id": ["scan_codes"],
                 "scan_phase": ["formal"],
                 "offset": ["0"],
@@ -595,20 +584,16 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                 "ok": True,
                 "status": 200,
                 "data": {
-                    "run": {
-                        "run_id": "run-approval-1",
+                        "invocation_id": "run-approval-1", "automation_id": "daily_sign",
                         "status": "WAITING_APPROVAL",
-                        "created_at": "2026-08-15 00:01:33",
-                    },
-                    "next_poll_after_ms": 3000,
-                },
+                        "created_at": "2026-08-15 00:01:33", "next_poll_after_ms": 3000},
             }
         )
 
         app._handle_automation_task_output(
             object(),
             {
-                "run_id": ["run-approval-1"],
+                "invocation_id": ["run-approval-1"],
                 "task_id": ["daily_sign"],
                 "offset": ["0"],
             },
@@ -616,20 +601,20 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
 
         payload = app.sent[1]
         self.assertFalse(payload["running"])
-        self.assertTrue(payload["pending"])
-        self.assertTrue(payload["awaiting_approval"])
-        self.assertEqual("WAITING_APPROVAL", payload["status"])
+        self.assertFalse(payload["pending"])
+        self.assertEqual(HTTPStatus.BAD_GATEWAY, app.sent[0])
+        self.assertEqual("INVALID_INVOCATION_RESULT", payload["error_code"])
 
     def test_output_poll_projects_blocked_runs_as_attention_without_polling(self):
         for run_status, expected_title, error_code, expected_message in (
             (
-                "BLOCKED_DATA",
+                "FAILED",
                 "执行前检查未通过",
                 "IMPACT_PREVIEW_REQUIRED",
                 "执行前检查未完成，本次任务未进行任何写入。请刷新页面后重试；若仍出现，请联系系统管理员。",
             ),
             (
-                "BLOCKED_LOGIN",
+                "FAILED",
                 "登录已失效",
                 "AUTH_REQUIRED",
                 "业务账号登录已失效，请重新登录后再执行。",
@@ -641,25 +626,21 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                         "ok": True,
                         "status": 200,
                         "data": {
-                            "run": {
-                                "run_id": "run-blocked-1",
+                                "invocation_id": "run-blocked-1", "automation_id": "arrive_list",
                                 "status": run_status,
                                 "created_at": "2026-08-24 01:00:00",
                                 "error_code": error_code,
                                 "error_summary": (
                                     "Tool automation.internal.run is disabled until an exact "
                                     "read-only impact preview is available"
-                                ),
-                            },
-                            "next_poll_after_ms": 3000,
-                        },
+                                ), "next_poll_after_ms": 3000},
                     }
                 )
 
                 app._handle_automation_task_output(
                     object(),
                     {
-                        "run_id": ["run-blocked-1"],
+                        "invocation_id": ["run-blocked-1"],
                         "task_id": ["arrive_list"],
                         "offset": ["0"],
                     },
@@ -667,7 +648,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
 
                 payload = app.sent[1]
                 self.assertFalse(payload["running"])
-                self.assertTrue(payload["pending"])
+                self.assertFalse(payload["pending"])
                 self.assertTrue(payload["attention"])
                 self.assertEqual(expected_title, payload["attention_title"])
                 self.assertEqual(expected_message, payload["attention_message"])
@@ -683,22 +664,19 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                 "ok": True,
                 "status": 200,
                 "data": {
-                    "run": {
-                        "run_id": "run-self-pickup-preview",
-                        "status": "BLOCKED_DATA",
+                        "invocation_id": "run-self-pickup-preview", "automation_id": "self_pickup_problem_upload",
+                        "invocation_phase": "preview",
+                        "status": "FAILED",
                         "updated_at": "2026-09-03 01:00:00",
                         "public_problem_code": "SOURCE_SCHEMA_CHANGED",
-                        "error_code": "SOURCE_SCHEMA_CHANGED",
-                    },
-                    "next_poll_after_ms": 3000,
-                },
+                        "error_code": "SOURCE_SCHEMA_CHANGED", "next_poll_after_ms": 3000},
             }
         )
 
         app._handle_automation_task_output(
             object(),
             {
-                "run_id": ["run-self-pickup-preview"],
+                "invocation_id": ["run-self-pickup-preview"],
                 "task_id": ["self_pickup_problem_upload"],
                 "selection_phase": ["preview"],
                 "offset": ["0"],
@@ -714,6 +692,22 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         )
         self.assertIn("字段结构", payload["selection_preview_error"]["message"])
         self.assertNotIn("SOURCE_SCHEMA_CHANGED", payload["runtime"]["message"])
+
+
+class InvocationCardOwnershipTests(unittest.TestCase):
+    def test_other_cards_invocation_is_never_persisted_or_cancelled(self):
+        response = {"ok": True, "data": {"invocation_id": "same-id", "automation_id": "scan_codes", "status": "COMPLETED"}}
+        app = _App(response)
+        app._handle_automation_task_output(object(), {"invocation_id": ["same-id"], "task_id": ["daily_sign"]})
+        self.assertEqual("INVALID_INVOCATION_RESULT", app.sent[1]["error_code"])
+        self.assertEqual([], app.repository.runtime_updates)
+        self.assertEqual({}, app.automation_virtual_task_state)
+        app = _App(response)
+        app._control_plane_write_context = app._control_plane_read_context
+        app._parse_urlencoded_form = lambda _: {"invocation_id": "same-id", "task_id": "daily_sign"}
+        app._handle_automation_task_cancel(object())
+        self.assertEqual("INVALID_INVOCATION_RESULT", app.sent[1]["error_code"])
+        self.assertEqual(["GET"], [call[0] for call in app.calls])
 
 
 if __name__ == "__main__":

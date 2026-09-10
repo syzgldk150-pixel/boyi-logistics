@@ -2075,6 +2075,9 @@ PY
 
 verify_rollback_first_party_version_compatibility() {
   local manifest output code
+  # Until the staged checker has read 046 and the restored execution contract,
+  # an unavailable manifest or database must not allow legacy activation.
+  ROLLBACK_KEEP_EXECUTION_HOLD=1
   manifest="$(mktemp "${BACKUP_DIR}/automation_project.rollback_seeds.XXXXXX")" || return 1
   if ! write_restored_first_party_seed_manifest "${manifest}"; then
     rm -f -- "${manifest}"
@@ -2084,10 +2087,12 @@ verify_rollback_first_party_version_compatibility() {
   if output="$(
     run_staged_migration_runner \
       --check-rollback-exact-seed-compatibility \
-      --rollback-exact-seed-manifest "${manifest}" 2>&1
+      --rollback-exact-seed-manifest "${manifest}" \
+      --rollback-restored-source-root "${ROOTS[agent]}" 2>&1
   )"; then
     rm -f -- "${manifest}"
     if [[ "${output}" =~ ^rollback_exact_seed_compatibility=ok\ checked_seeds=[0-9]+$ ]]; then
+      ROLLBACK_KEEP_EXECUTION_HOLD=0
       echo "${output}"
       return 0
     fi
@@ -2098,7 +2103,12 @@ verify_rollback_first_party_version_compatibility() {
   if [[ "${output}" =~ ^rollback_exact_seed_compatibility=blocked\ code=([A-Z_]+)$ ]]; then
     code="${BASH_REMATCH[1]}"
     case "${code}" in
+      LEGACY_EXECUTION_RETIRED|MIGRATION_STATE_INVALID)
+        ROLLBACK_KEEP_EXECUTION_HOLD=1
+        echo "rollback_forward_only_required reason=${code} services_stopped=1 release_hold_preserved=1" >&2
+        ;;
       DATABASE_PLUGIN_MISMATCH|DATABASE_VERSION_NEWER)
+        ROLLBACK_KEEP_EXECUTION_HOLD=0
         echo "rollback_forward_only_required reason=${code}" >&2
         ;;
       *)
@@ -2533,7 +2543,7 @@ try:
         or data.get("state") != "running"
         or data.get("release_hold") is not False
         or not isinstance(data.get("workflow_runner"), dict)
-        or data["workflow_runner"].get("state") != "running"
+        or data["workflow_runner"].get("state") != "reserved"
         or data["workflow_runner"].get("release_hold") is not False
         or not isinstance(data.get("automation_plugins"), dict)
         or data["automation_plugins"].get("ok") is not True
@@ -2698,7 +2708,11 @@ rollback() {
           # Selected runtime services are still stopped. Remove only this
           # release's verified hold so a forward repair can acquire a fresh
           # hold; the stage remains intact below for diagnosis.
-          clear_scheduler_release_hold_for_rollback || rollback_status=1
+          if [[ "${ROLLBACK_KEEP_EXECUTION_HOLD:-0}" == "1" ]]; then
+            echo "Rollback activation blocked: the retired legacy queue must not be restarted; keeping the release hold" >&2
+          else
+            clear_scheduler_release_hold_for_rollback || rollback_status=1
+          fi
         elif ! restart_runtime_services_for_rollback; then
           echo "Rollback runtime failed to start under the scheduler release hold" >&2
           stop_runtime_services_for_rollback || rollback_status=1

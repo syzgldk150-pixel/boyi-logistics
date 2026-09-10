@@ -14,19 +14,6 @@
     "ACTIVE", "RECONCILING", "UNAVAILABLE", "UNSUPPORTED", LEGACY_SCHEDULE_ONLY,
   ]);
   const RUNTIME_STATUSES = new Set(["READY", "RECONCILING", "UNAVAILABLE"]);
-  const PENDING_RISKS = new Set(["LOW", "MEDIUM", "HIGH", "CRITICAL"]);
-  const PENDING_HASH_PATTERN = /^[A-Za-z0-9._~-]{16,256}$/;
-  const RUN_RECEIPT_ID_PATTERN = /^[A-Za-z0-9_.:@-]{1,160}$/;
-  const RUN_RECEIPT_STATUSES = new Set([
-    "WAITING_APPROVAL",
-    "QUEUED",
-    "RUNNING",
-    "VERIFYING",
-    "COMPLETED",
-    "PARTIAL",
-    "FAILED_TERMINAL",
-    "CANCELLED",
-  ]);
   const PLUGIN_CONFIGURATION_CONTROL_SELECTOR = [
     "[data-plugin-schedule-kind]",
     "[data-automation-toggle]",
@@ -36,7 +23,6 @@
     "BLOCKED_GENERATION",
     "REFRESH_FAILED",
   ]);
-  const pendingStates = new WeakMap();
 
   function parseObject(value) {
     try {
@@ -80,57 +66,6 @@
       && Number.isInteger(policy.project_configuration_version)
       && policy.project_configuration_version > 0
     );
-  }
-
-  function validPending(pending, automationId) {
-    if (
-      !pending
-      || typeof pending !== "object"
-      || pending.automation_id !== automationId
-      || !Number.isInteger(pending.pending_count)
-      || pending.pending_count < 0
-    ) return false;
-    if (pending.pending_count === 0) return pending.expected_pending_set_hash === "";
-    return Boolean(
-      PENDING_RISKS.has(String(pending.highest_risk || "").toUpperCase())
-      && typeof pending.highest_risk_label === "string"
-      && pending.highest_risk_label
-      && typeof pending.source_summary === "string"
-      && pending.source_summary
-      && typeof pending.expected_pending_set_hash === "string"
-      && PENDING_HASH_PATTERN.test(pending.expected_pending_set_hash)
-    );
-  }
-
-  function validApprovedRunReceipts(receipts, automationId, decidedCount) {
-    if (
-      !Number.isInteger(decidedCount)
-      || decidedCount < 0
-      || !Array.isArray(receipts)
-      || receipts.length !== decidedCount
-    ) return false;
-    const runIds = new Set();
-    const workItemIds = new Set();
-    return receipts.every(receipt => {
-      const runId = String(receipt?.run_id || "");
-      const workItemId = String(receipt?.work_item_id || "");
-      const status = String(receipt?.status || "").toUpperCase();
-      const nextPollAfterMs = receipt?.next_poll_after_ms;
-      if (
-        receipt?.automation_id !== automationId
-        || !RUN_RECEIPT_ID_PATTERN.test(runId)
-        || !RUN_RECEIPT_ID_PATTERN.test(workItemId)
-        || !RUN_RECEIPT_STATUSES.has(status)
-        || !Number.isInteger(nextPollAfterMs)
-        || nextPollAfterMs < 250
-        || nextPollAfterMs > 10000
-        || runIds.has(runId)
-        || workItemIds.has(workItemId)
-      ) return false;
-      runIds.add(runId);
-      workItemIds.add(workItemId);
-      return true;
-    });
   }
 
   function setBusy(button, busy, busyLabel) {
@@ -228,7 +163,7 @@
     governance.dataset.projectPolicy = JSON.stringify(policy);
     const label = governance.querySelector("[data-project-policy-label]");
     const summary = governance.querySelector("[data-project-policy-summary]");
-    if (label) label.textContent = policy.label || (policy.effective_mode === PROJECT_FULL_AUTO ? "完全自动" : "每次运行审批");
+    if (label) label.textContent = policy.label || (policy.effective_mode === PROJECT_FULL_AUTO ? "完全自动" : "仅允许手动操作");
     if (summary) summary.textContent = policy.summary || "";
     governance.querySelectorAll("[data-project-policy-mode]").forEach(input => {
       if (!(input instanceof HTMLInputElement)) return;
@@ -305,140 +240,6 @@
     }
   }
 
-  function renderPending(governance, pending) {
-    const automationId = governance.dataset.automationId || "";
-    if (!validPending(pending, automationId)) {
-      throw new Error("智能服务未返回有效的待审批集合。");
-    }
-    const current = pendingStates.get(governance) || {};
-    pendingStates.set(governance, { ...current, pending, requestIds: {} });
-    const bar = governance.querySelector("[data-project-pending]");
-    if (!(bar instanceof HTMLElement)) return;
-    bar.hidden = pending.pending_count === 0;
-    bar.classList.remove("is-error");
-    const count = bar.querySelector("[data-pending-count]");
-    const risk = bar.querySelector("[data-pending-risk]");
-    const source = bar.querySelector("[data-pending-source]");
-    if (count) count.textContent = String(pending.pending_count);
-    if (risk) risk.textContent = pending.highest_risk_label || "—";
-    if (source) source.textContent = pending.source_summary || "—";
-    bar.querySelectorAll("[data-pending-action]").forEach(button => {
-      if (button instanceof HTMLButtonElement) button.disabled = pending.pending_count === 0;
-    });
-  }
-
-  async function loadPending(governance, { quiet = false } = {}) {
-    const automationId = governance.dataset.automationId || "";
-    const bar = governance.querySelector("[data-project-pending]");
-    const feedback = governance.querySelector("[data-pending-feedback]");
-    try {
-      const response = await fetch(
-        `/automations/projects/${encodeURIComponent(automationId)}/pending-approvals`,
-        { credentials: "same-origin", headers: { "Accept": "application/json" } },
-      );
-      const payload = await response.json().catch(() => null);
-      if (!response.ok || payload?.ok !== true) {
-        throw new Error(responseMessage(payload, "待审批集合加载失败。"));
-      }
-      renderPending(governance, payload?.data?.pending);
-      if (!quiet) setFeedback(feedback, "", "");
-      return payload.data.pending;
-    } catch (error) {
-      if (error?.name === "AbortError") return null;
-      if (bar instanceof HTMLElement) {
-        bar.hidden = false;
-        bar.classList.add("is-error");
-      }
-      setFeedback(feedback, error instanceof Error ? error.message : "待审批集合加载失败。", "error");
-      return null;
-    }
-  }
-
-  async function actOnPending(governance, action, button) {
-    const state = pendingStates.get(governance);
-    const pending = state?.pending;
-    const automationId = governance.dataset.automationId || "";
-    const feedback = governance.querySelector("[data-pending-feedback]");
-    const comment = governance.querySelector("[data-pending-comment]");
-    if (!validPending(pending, automationId) || pending.pending_count === 0) {
-      await loadPending(governance);
-      return;
-    }
-    const verb = action === "approve" ? "通过" : "驳回";
-    if (!window.confirm(`确认批量${verb}该项目当前 ${pending.pending_count} 项待审批？\n\n集合若已变化，系统会阻止提交并原位刷新。`)) return;
-    if (!window.crypto || typeof window.crypto.randomUUID !== "function") {
-      setFeedback(feedback, "当前浏览器无法生成安全请求标识，批量操作未提交。", "error");
-      return;
-    }
-    const commentValue = comment instanceof HTMLInputElement ? comment.value.trim() : "";
-    const replayKey = `${action}:${pending.expected_pending_set_hash}:${commentValue}`;
-    const requestId = state.requestIds?.[replayKey] || window.crypto.randomUUID();
-    state.requestIds = { [replayKey]: requestId };
-    setFeedback(feedback, "", "");
-    setBusy(button, true, action === "approve" ? "通过中…" : "驳回中…");
-    try {
-      const response = await fetch(
-        `/automations/projects/${encodeURIComponent(automationId)}/pending-approvals/${action}`,
-        {
-          method: "POST",
-          credentials: "same-origin",
-          headers: {
-            "Accept": "application/json",
-            "Content-Type": "application/json; charset=UTF-8",
-            "X-Browser-Request-UUID": requestId,
-            "X-Requested-With": "XMLHttpRequest",
-          },
-          body: JSON.stringify({
-            expected_pending_set_hash: pending.expected_pending_set_hash,
-            request_id: requestId,
-            comment: commentValue,
-          }),
-        },
-      );
-      const payload = await response.json().catch(() => null);
-      const changed = response.status === 409
-        || String(payload?.error?.code || payload?.error_code || "") === "PENDING_SET_CHANGED";
-      const returnedPending = payload?.data?.pending;
-      if (validPending(returnedPending, automationId)) {
-        renderPending(governance, returnedPending);
-      } else {
-        await loadPending(governance, { quiet: true });
-      }
-      if (changed) {
-        const message = "待审批集合已变化，已原位刷新；请核对后重试。";
-        setFeedback(feedback, message, "warning");
-        announce(governance, message);
-        return;
-      }
-      if (!response.ok || payload?.ok !== true) {
-        throw new Error(responseMessage(payload, `批量${verb}失败，请重试。`));
-      }
-      if (action === "approve") {
-        const decidedCount = payload?.data?.decided_count;
-        const runReceipts = payload?.data?.run_receipts;
-        if (!validApprovedRunReceipts(runReceipts, automationId, decidedCount)) {
-          throw new Error("服务端未返回完整的本次批准执行记录，卡片不会推测执行状态。");
-        }
-        governance.dispatchEvent(new CustomEvent("automation:approved-runs", {
-          bubbles: true,
-          detail: {
-            automation_id: automationId,
-            decided_count: decidedCount,
-            run_receipts: runReceipts,
-          },
-        }));
-      }
-      if (comment instanceof HTMLInputElement) comment.value = "";
-      const message = payload.message || `已批量${verb}。`;
-      setFeedback(feedback, message, "success");
-      announce(governance, message);
-    } catch (error) {
-      setFeedback(feedback, error instanceof Error ? error.message : `批量${verb}失败，请重试。`, "error");
-    } finally {
-      setBusy(button, false, "");
-    }
-  }
-
   function initializeGovernance(governance) {
     const automationId = governance.dataset.automationId || "";
     const policy = parseObject(governance.dataset.projectPolicy);
@@ -462,11 +263,7 @@
         setFeedback(governance.querySelector("[data-project-policy-feedback]"), "", "");
       });
     });
-    governance.querySelectorAll("[data-pending-action]").forEach(button => {
-      button.addEventListener("click", () => {
-        if (button instanceof HTMLButtonElement) void actOnPending(governance, button.dataset.pendingAction, button);
-      });
-    });
+
   }
 
   function secureRequestId(feedback) {
@@ -693,19 +490,6 @@
     initializePlugins();
     const panels = [...pageRoot.querySelectorAll("[data-automation-project-governance]")];
     panels.forEach(initializeGovernance);
-    if ("IntersectionObserver" in window) {
-      const observer = new IntersectionObserver(entries => {
-        entries.forEach(entry => {
-          if (!entry.isIntersecting) return;
-          observer.unobserve(entry.target);
-          void loadPending(entry.target);
-        });
-      }, { rootMargin: "240px" });
-      panels.forEach(panel => observer.observe(panel));
-      window.ConsoleUI.onPageCleanup(() => observer.disconnect());
-    } else {
-      panels.forEach(panel => void loadPending(panel));
-    }
   }
 
   if (document.readyState === "loading") {

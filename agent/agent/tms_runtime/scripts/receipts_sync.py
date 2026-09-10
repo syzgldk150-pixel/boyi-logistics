@@ -143,6 +143,8 @@ def _extract_rows(payload: Any) -> list[dict[str, Any]]:
         return [row for row in payload if isinstance(row, dict)]
     if not isinstance(payload, dict):
         return []
+    if payload.get("ok") is False or payload.get("success") is False or payload.get("error"):
+        raise ValueError("receipt source explicitly rejected the query")
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     candidates = (
         payload.get("rows"),
@@ -765,7 +767,8 @@ def _fetch_yunda(params: dict[str, Any], *, direction: str) -> tuple[list[dict[s
     page_size = _coerce_int(params.get("page_size"), DEFAULT_PAGE_SIZE)
     max_pages = _coerce_int(params.get("max_pages"), DEFAULT_MAX_PAGES)
     timeout_sec = _coerce_int(params.get("timeout_sec"), 60)
-    session = get_session_broker("yunda").build_requests_session(validate=False)
+    session_profile = _clean(params.get("session_profile")) or "yunda"
+    session = get_session_broker(session_profile).build_requests_session(validate=False)
     data_url = _clean(params.get("yunda_datagrid_url") or params.get("datagrid_url"))
     if not data_url:
         data_url = _discover_yunda_datagrid_url(session, direction=direction, timeout_sec=timeout_sec)

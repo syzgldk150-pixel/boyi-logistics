@@ -4,6 +4,14 @@
 {% block body_class %}automation-page{% endblock %}
 {% block breadcrumb %}{{ management_title|default("自动化") }}{% endblock %}
 {% block subtitle %}脚本、定时任务与运行状态{% endblock %}
+{% block head %}
+<style>
+[data-invocation-history] { gap: 8px; color: #d4d4d4; }
+[data-invocation-history] label { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; font-size: .8rem; }
+[data-invocation-select] { min-width: 0; max-width: 100%; flex: 1; background: #252525; color: #ededed; border: 1px solid #666; border-radius: 4px; padding: 6px; }
+[data-invocation-refresh] { color: #d4d4d4; min-width: 44px; min-height: 44px; }
+</style>
+{% endblock %}
 
 {% block page_actions %}
 {% if can_manage_plugins %}<button class="extension-install-trigger" type="button" data-extension-open><i data-feather="package"></i><span>安装扩展</span></button>{% endif %}
@@ -273,9 +281,9 @@
               <span data-run-label>{{ '读取候选' if is_selection_preview_workflow else '生成预览' if is_scan_preview_workflow else '执行' }}</span>
             </button>
             {% else %}
-            <button class="primary-btn auto-run-btn" type="button" disabled title="{{ run_disabled_reason }}">
-              <i data-feather="lock"></i>
-              <span>{{ run_disabled_reason }}</span>
+            <button class="primary-btn auto-run-btn" type="button" disabled title="{{ run_disabled_reason }}" data-run-now data-run-mode="start" data-start-disabled="{{ run_disabled_reason }}">
+              <i data-feather="lock" data-run-icon></i>
+              <span data-run-label>{{ run_disabled_reason }}</span>
             </button>
             {% endif %}
 
@@ -382,8 +390,8 @@
               <label class="auto-project-policy-option">
                 <input type="radio" name="project-policy-{{ task.task_id }}" value="REQUIRE_EACH_RUN" data-project-policy-mode {% if policy.configured_mode == 'REQUIRE_EACH_RUN' %}checked{% endif %}>
                 <span>
-                  <strong>每次运行审批</strong>
-                  <small>项目已启用的全部可信入口，每次运行都先进入本项目待审批。</small>
+                  <strong>仅允许手动操作</strong>
+                  <small>写入操作由具备插件权限的管理员在后台手动触发；读取仍按权限执行。</small>
                 </span>
               </label>
               <label class="auto-project-policy-option">
@@ -405,24 +413,6 @@
             <p class="auto-project-policy-feedback" data-project-policy-feedback role="status" aria-live="polite" hidden></p>
           </div>
 
-          <div class="auto-pending-approvals" data-project-pending hidden>
-            <div class="auto-pending-approvals-copy">
-              <strong><span data-pending-count>0</span> 项待审批</strong>
-              <span>最高风险：<b data-pending-risk>—</b></span>
-              <span>来源：<b data-pending-source>—</b></span>
-            </div>
-            {% if can_manage_approval_policies %}
-            <label class="auto-pending-comment">
-              <span class="sr-only">批量处理说明（可选）</span>
-              <input class="review-input compact-input" type="text" maxlength="500" autocomplete="off" placeholder="批量处理说明（可选）" data-pending-comment>
-            </label>
-            <div class="auto-pending-actions">
-              <button class="primary-btn" type="button" data-pending-action="approve">全部审批通过</button>
-              <button class="ghost-btn auto-pending-reject" type="button" data-pending-action="reject">全部驳回</button>
-            </div>
-            {% endif %}
-            <p class="auto-pending-feedback" data-pending-feedback role="status" aria-live="polite" hidden></p>
-          </div>
           <p class="sr-only" data-governance-live role="status" aria-live="polite"></p>
         </section>
         {% endif %}
@@ -811,6 +801,10 @@
               </button>
             </div>
           </div>
+          <div class="auto-terminal-head" data-invocation-history>
+            <label>执行记录 <select data-invocation-select aria-label="选择执行记录"><option value="">打开后读取记录</option></select></label>
+            <button type="button" class="auto-terminal-action-btn" data-invocation-refresh aria-label="刷新执行记录" title="刷新执行记录"><i data-feather="refresh-cw"></i></button>
+          </div>
           <nav data-run-source-links aria-label="运行所属来源" hidden></nav>
           <pre class="auto-terminal-body" data-terminal-body></pre>
         </div>
@@ -1145,21 +1139,17 @@
     const runtimeBox = form.querySelector("[data-runtime-feedback-box]");
     const runBtn = form.querySelector("[data-run-now]");
     let runTimer = null;
-    let approvedBatchPollTimer = null;
-    let approvedBatchGeneration = 0;
-    let approvedBatchReceipts = [];
-    let approvedBatchStates = new Map();
     let termAttentionLatched = false;
     let runUiState = {
       running: false,
-      awaitingApproval: false,
+
       pendingRun: false,
-      batchTracking: false,
+
       trackingExisting: false,
       conflictUnresolved: false,
       startedAt: "",
       cancelRequested: false,
-      runId: "",
+      invocationId: "",
     };
     const isScanPreviewWorkflow = form.dataset.scanPreviewWorkflow === "true";
     const isSelectionPreviewWorkflow = form.dataset.selectionPreviewWorkflow === "true";
@@ -1182,7 +1172,7 @@
     let selectionConfirmationRetryOnly = false;
 
     function syncScanPreviewActionLocks() {
-      const locked = scanConfirmationRetryOnly || scanPreviewTerminalBlocked;
+      const locked = !!runUiState.running || !!runUiState.pendingRun;
       if (scanPreviewDismiss) scanPreviewDismiss.disabled = locked;
       if (scanPreviewRegenerate) scanPreviewRegenerate.disabled = locked;
       syncRunButtonVisual();
@@ -1230,7 +1220,7 @@
     function renderScanPreview(preview) {
       if (!scanPreviewPanel || !preview) return;
       if (scanPreviewTerminalBlocked) return;
-      const nextPreviewId = String(preview.preview_run_id || "");
+      const nextPreviewId = String(preview.preview_invocation_id || "");
       if (activeScanPreviewId !== nextPreviewId) activeScanConfirmationRequestId = "";
       activeScanPreviewId = nextPreviewId;
       const canConfirm = preview.can_confirm === true;
@@ -1362,7 +1352,7 @@
 
     function renderSelectionPreview(preview) {
       if (!selectionPreviewPanel || !selectionPreviewList || !preview) return;
-      const nextPreviewId = String(preview.preview_run_id || "");
+      const nextPreviewId = String(preview.preview_invocation_id || "");
       if (activeSelectionPreviewId !== nextPreviewId) {
         activeSelectionConfirmationRequestId = "";
       }
@@ -1443,28 +1433,24 @@
     function syncRunButtonVisual() {
       if (!(runBtn instanceof HTMLElement)) return;
       const isRunning = !!runUiState.running;
-      const isAwaitingApproval = !!runUiState.awaitingApproval;
       const isPendingRun = !!runUiState.pendingRun;
-      const isBatchTracking = !!runUiState.batchTracking;
       const isExistingTracking = !!runUiState.trackingExisting;
       const isRefreshOnly = isExistingTracking || !!runUiState.conflictUnresolved;
-      const isActive = isRunning || isAwaitingApproval || isPendingRun;
+      const isActive = isRunning || isPendingRun;
       const isCancelPending = isActive && !!runUiState.cancelRequested;
-      const iconName = isRefreshOnly ? "refresh-cw" : isBatchTracking ? "loader" : isActive ? "x-circle" : "play";
+      const iconName = isRefreshOnly ? "refresh-cw" : isActive ? "x-circle" : "play";
       const idleLabel = isSelectionPreviewWorkflow ? "读取候选" : isScanPreviewWorkflow ? "生成预览" : "执行";
-      const labelText = isRefreshOnly ? "刷新状态" : isBatchTracking ? "跟踪中" : isCancelPending ? "取消中" : isActive ? "取消" : idleLabel;
+      const labelText = isRefreshOnly ? "刷新状态" : isCancelPending ? "取消中" : isActive ? "取消" : (runBtn.dataset.startDisabled || idleLabel);
       const runIcon = runBtn.querySelector("[data-run-icon], .feather, [data-feather]");
       const runLabel = runBtn.querySelector("[data-run-label]");
 
-      runBtn.dataset.runMode = isRefreshOnly ? "refresh" : isBatchTracking ? "tracking" : isActive ? "cancel" : "start";
-      runBtn.classList.toggle("auto-run-btn--cancel", isActive && !isBatchTracking && !isRefreshOnly);
+      runBtn.dataset.runMode = isRefreshOnly ? "refresh" : isActive ? "cancel" : "start";
+      runBtn.classList.toggle("auto-run-btn--cancel", isActive && !isRefreshOnly);
       runBtn.classList.toggle("is-pending", isCancelPending);
       runBtn.disabled = (
         runBtn.hasAttribute("aria-busy")
+        || (!isActive && !isRefreshOnly && !!runBtn.dataset.startDisabled)
         || isCancelPending
-        || isBatchTracking
-        || (isScanPreviewWorkflow && scanConfirmationRetryOnly)
-        || (isScanPreviewWorkflow && scanPreviewTerminalBlocked)
         || (isSelectionPreviewWorkflow && selectionConfirmationRetryOnly)
       );
       if (runLabel) {
@@ -1481,10 +1467,10 @@
         ...runUiState,
         ...next,
       };
-      if (!runUiState.running && !runUiState.awaitingApproval && !runUiState.pendingRun && !runUiState.batchTracking) {
+      if (!runUiState.running && !runUiState.pendingRun) {
         runUiState.startedAt = "";
         runUiState.cancelRequested = false;
-        runUiState.runId = "";
+        runUiState.invocationId = "";
         runUiState.trackingExisting = false;
       }
       syncRunButtonVisual();
@@ -1493,15 +1479,15 @@
     function trackExistingRunConflict(result) {
       if (result.error_code !== "AUTOMATION_ALREADY_RUNNING") return false;
       const receipt = result.existing_run;
-      const runId = typeof receipt?.run_id === "string" ? receipt.run_id : "";
+      const invocationId = typeof receipt?.invocation_id === "string" ? receipt.invocation_id : "";
       stopRunProgress();
       stopPolling();
-      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(runId) || !termDrawer) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(invocationId) || !termDrawer) {
         if (termDrawer) {
-          termDrawer.dataset.runId = "";
+          termDrawer.dataset.invocationId = "";
           termDrawer.dataset.runStartedAt = "";
         }
-        setRunUiState({running: false, awaitingApproval: false, pendingRun: false, conflictUnresolved: true});
+        setRunUiState({running: false, pendingRun: false, conflictUnresolved: true});
         renderFeedback(form, {
           kind: "warning", title: "已有任务，状态暂不可达",
           message: "服务未返回可追踪的已有任务标识。本次请求未新建任务，请刷新页面查看状态。",
@@ -1509,10 +1495,10 @@
         });
         return true;
       }
-      termDrawer.dataset.runId = runId;
+      termDrawer.dataset.invocationId = invocationId;
       termDrawer.dataset.runStartedAt = "";
-      setRunUiState({running: false, awaitingApproval: false, pendingRun: true,
-        trackingExisting: true, conflictUnresolved: false, runId, startedAt: "", cancelRequested: false});
+      setRunUiState({running: false, pendingRun: true,
+        trackingExisting: true, conflictUnresolved: false, invocationId, startedAt: "", cancelRequested: false});
       renderFeedback(form, {
         kind: "info", title: "正在同步已有任务",
         message: "本次请求未新建任务，正在查询已有任务的实际状态。",
@@ -1542,9 +1528,9 @@
       const progTimer = form.querySelector("[data-task-progress-timer]");
       setRunUiState({
         running: true,
-        awaitingApproval: false,
+
         pendingRun: false,
-        batchTracking: false,
+
         startedAt: startedAt || "",
         cancelRequested: runUiState.cancelRequested,
       });
@@ -1862,28 +1848,121 @@
       const termStatus = termDrawer.querySelector("[data-terminal-status]");
       const termClear = termDrawer.querySelector("[data-terminal-clear]");
       const termScrollLock = termDrawer.querySelector("[data-terminal-scroll-lock]");
+      const invocationSelect = termDrawer.querySelector("[data-invocation-select]");
+      const invocationRefresh = termDrawer.querySelector("[data-invocation-refresh]");
       const toolName = termDrawer.dataset.toolName;
       const taskId = termDrawer.dataset.taskId || "";
       let termPollTimer = null;
       let termPollingInFlight = false;
       let termPollGeneration = 0;
       let termPollingRequested = false;
-      let termOffset = 0;
       let autoScroll = true;
       let termNeedsFinalRuntimePoll = false;
       let termFinalRuntimePollCount = 0;
+      let recentInvocations = [];
+      let historyGeneration = 0;
+      const openOutputKey = `boyi:automation-output-open:${taskId}`;
+
+      const sources = {console: "后台", feishu: "飞书", scheduler: "定时", harness: "AI 助手", webhook: "外部触发", events: "事件", module_slots: "页面功能"};
+      const states = {STARTING: "正在启动", RUNNING: "执行中", CANCELLING: "取消中", COMPLETED: "已完成", FAILED: "失败", CANCELLED: "已取消", WRITE_OUTCOME_UNKNOWN: "写入结果未确认"};
+
+      function invocationLabel(item) {
+        const started = new Date(item.started_at).toLocaleString("zh-CN", {hour12: false});
+        return `${started} · ${sources[item.source] || "执行"} · ${states[item.status] || item.status}`;
+      }
+
+      function updateInvocationLabel(data) {
+        const item = recentInvocations.find(row => row.invocation_id === data.invocation_id);
+        if (!item) return;
+        item.status = data.status;
+        const option = Array.from(invocationSelect?.options || []).find(row => row.value === item.invocation_id);
+        if (option) option.textContent = invocationLabel(item);
+      }
+
+      function rememberOutput(open) {
+        try {
+          if (open) window.sessionStorage.setItem(openOutputKey, "1");
+          else window.sessionStorage.removeItem(openOutputKey);
+        } catch (_) {}
+      }
+
+      function selectInvocation(invocation) {
+        stopPolling();
+        if (isScanPreviewWorkflow) clearScanPreview({force: true});
+        if (isSelectionPreviewWorkflow) clearSelectionPreview({force: true});
+        termDrawer.dataset.invocationId = invocation.invocation_id;
+        termDrawer.dataset.runStartedAt = invocation.started_at || "";
+        termDrawer.dataset.scanPhase = invocation.invocation_phase;
+        termDrawer.dataset.selectionPhase = invocation.invocation_phase;
+        if (invocationSelect) invocationSelect.value = invocation.invocation_id;
+        const active = ["STARTING", "RUNNING", "CANCELLING"].includes(invocation.status);
+        if (active || !(runUiState.running || runUiState.pendingRun)) {
+          setRunUiState({running: active, pendingRun: false, trackingExisting: false,
+            conflictUnresolved: false, invocationId: invocation.invocation_id,
+            startedAt: invocation.started_at || "", cancelRequested: invocation.status === "CANCELLING"});
+        }
+        startPolling(invocation.started_at || "");
+      }
+
+      async function loadRecentInvocations() {
+        if (!taskId || runUiState.conflictUnresolved) return;
+        const generation = ++historyGeneration;
+        const pollGeneration = termPollGeneration;
+        if (invocationRefresh) invocationRefresh.disabled = true;
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), 10000);
+        try {
+          const response = await fetch(`/automations/projects/${encodeURIComponent(taskId)}/invocations`, {
+            headers: {"X-Requested-With": "XMLHttpRequest", "Accept": "application/json"}, signal: controller.signal,
+          });
+          const payload = await response.json();
+          if (generation !== historyGeneration || pollGeneration !== termPollGeneration) return;
+          if (!response.ok || payload.automation_id !== taskId || !Array.isArray(payload.items)
+              || payload.items.some(item => item.automation_id !== taskId || !item.invocation_id)) {
+            throw new Error("执行记录暂时无法读取，请重试。");
+          }
+          recentInvocations = payload.items;
+          if (invocationSelect) {
+            invocationSelect.replaceChildren();
+            for (const item of recentInvocations) {
+              const option = document.createElement("option");
+              option.value = item.invocation_id;
+              option.textContent = invocationLabel(item);
+              invocationSelect.append(option);
+            }
+            invocationSelect.disabled = recentInvocations.length === 0;
+          }
+          const active = recentInvocations.find(item => ["STARTING", "RUNNING", "CANCELLING"].includes(item.status));
+          const selected = active || recentInvocations[0];
+          if (selected) selectInvocation(selected);
+          else {
+            stopPolling();
+            termDrawer.dataset.invocationId = "";
+            termDrawer.dataset.runStartedAt = "";
+            setRunUiState({running: false, pendingRun: false});
+            termBody.textContent = "暂无执行记录。触发脚本后，可在这里查看结果。";
+            if (termStatus) termStatus.textContent = "尚未执行";
+          }
+        } catch (error) {
+          if (generation !== historyGeneration || pollGeneration !== termPollGeneration) return;
+          termBody.textContent = "执行记录暂时无法读取，请点击刷新执行记录重试。";
+          if (termStatus) termStatus.textContent = "读取失败";
+        } finally {
+          clearTimeout(timeoutId);
+          if (generation === historyGeneration && invocationRefresh) invocationRefresh.disabled = false;
+        }
+      }
 
       fetchOutputState = async function(options = {}) {
         if (!toolName || runUiState.conflictUnresolved) return null;
         const generation = termPollGeneration;
         const startedAt = options.startedAt ?? termDrawer.dataset.runStartedAt ?? "";
-        const runId = String(
-          options.runId || runUiState.runId || termDrawer.dataset.runId || ""
+        const invocationId = String(
+          options.invocationId || termDrawer.dataset.invocationId || runUiState.invocationId || ""
         ).trim();
-        const offset = options.offset ?? termOffset;
         const query = new URLSearchParams({
           tool_name: toolName,
-          offset: String(offset),
+          offset: "0",
         });
         if (taskId) query.set("task_id", taskId);
         const scanPhase = termDrawer.dataset.scanPhase || "";
@@ -1893,7 +1972,7 @@
           query.set("selection_phase", selectionPhase);
         }
         if (startedAt) query.set("started_at", startedAt);
-        if (runId) query.set("run_id", runId);
+        if (invocationId) query.set("invocation_id", invocationId);
         const controller = new AbortController();
         const timeoutId = window.setTimeout(() => controller.abort(), 10000);
         try {
@@ -1905,10 +1984,13 @@
             signal: controller.signal,
           });
           const payload = await res.json();
-          if (!res.ok || !payload || typeof payload !== "object" || (runId && payload.error)) {
+          if (!res.ok || !payload || typeof payload !== "object" || (invocationId && payload.error)) {
             throw new Error("任务状态暂时无法读取。");
           }
-          if (generation === termPollGeneration) renderRunSourceLinks(payload.collector_navigation);
+          if (invocationId && (payload.invocation_id !== invocationId || payload.automation_id !== taskId)) {
+            throw new Error("执行记录与当前插件不匹配。");
+          }
+          if (generation === termPollGeneration && options.navigation !== false) renderRunSourceLinks(payload.collector_navigation);
           return payload;
         } finally {
           clearTimeout(timeoutId);
@@ -1917,8 +1999,9 @@
 
       function renderRunSourceLinks(navigation) {
           const links = termDrawer.querySelector("[data-run-source-links]");
-          if (links && navigation) {
+          if (links) {
             links.replaceChildren();
+            if (!navigation) { links.hidden = true; return; }
             links.hidden = navigation.status === "not_collector";
             if (navigation.module_url) {
               const moduleLink = document.createElement("a");
@@ -1944,58 +2027,29 @@
         if (autoScroll && termBody) termBody.scrollTop = termBody.scrollHeight;
       }
 
-      function renderAwaitingApproval(data) {
-        const startedAt = data.started_at || termDrawer.dataset.runStartedAt || "";
-        const runId = String(data.run_id || runUiState.runId || termDrawer.dataset.runId || "").trim();
-        if (startedAt) {
-          termDrawer.dataset.runStartedAt = startedAt;
-        }
-        if (runId) {
-          termDrawer.dataset.runId = runId;
-        }
-        stopRunProgress();
-        setRunUiState({
-          running: false,
-          awaitingApproval: true,
-          pendingRun: false,
-          startedAt,
-          cancelRequested: !!data.cancel_requested,
-          runId,
-        });
-        renderFeedback(form, {
-          kind: "warning",
-          title: "待审批",
-          message: "手工运行已进入本项目待审批，可在当前卡片原位处理；审批通过后脚本才会开始执行。",
-          showTimer: false,
-          stampText: startedAt ? `提交于：${startedAt}` : "",
-          body: "",
-        });
-        syncRuntimeFeedback(form, null);
-      }
-
       function renderPendingRun(data) {
         const startedAt = data.started_at || termDrawer.dataset.runStartedAt || "";
-        const runId = String(data.run_id || runUiState.runId || termDrawer.dataset.runId || "").trim();
+        const invocationId = String(data.invocation_id || runUiState.invocationId || termDrawer.dataset.invocationId || "").trim();
         const status = String(data.status || "").toUpperCase();
         if (startedAt) {
           termDrawer.dataset.runStartedAt = startedAt;
         }
-        if (runId) {
-          termDrawer.dataset.runId = runId;
+        if (invocationId) {
+          termDrawer.dataset.invocationId = invocationId;
         }
         stopRunProgress();
         setRunUiState({
           running: false,
-          awaitingApproval: false,
+
           pendingRun: true,
           startedAt,
           cancelRequested: !!data.cancel_requested,
-          runId,
+          invocationId,
         });
         renderFeedback(form, {
           kind: "info",
           title: data.queued ? "等待执行" : "等待状态同步",
-          message: data.stage_description || "命令已提交，正在等待控制平面进入下一状态。",
+          message: data.stage_description || "正在确认本次调用的执行状态。",
           showTimer: false,
           stampText: startedAt ? `提交于：${startedAt}` : "",
           body: "",
@@ -2006,7 +2060,7 @@
       function renderAttentionRun(data) {
         termAttentionLatched = true;
         const startedAt = data.started_at || termDrawer.dataset.runStartedAt || "";
-        const runId = String(data.run_id || runUiState.runId || termDrawer.dataset.runId || "").trim();
+        const invocationId = String(data.invocation_id || runUiState.invocationId || termDrawer.dataset.invocationId || "").trim();
         const status = String(data.status || "").toUpperCase();
         const fallbackTitles = {
           BLOCKED_DATA: "执行前检查未通过",
@@ -2015,15 +2069,15 @@
           FAILED_RETRYABLE: "执行暂时失败",
         };
         if (startedAt) termDrawer.dataset.runStartedAt = startedAt;
-        if (runId) termDrawer.dataset.runId = runId;
+        if (invocationId) termDrawer.dataset.invocationId = invocationId;
         stopRunProgress();
         setRunUiState({
           running: false,
-          awaitingApproval: false,
-          pendingRun: true,
+
+          pendingRun: false,
           startedAt,
           cancelRequested: !!data.cancel_requested,
-          runId,
+          invocationId,
         });
         renderFeedback(form, {
           kind: status === "FAILED_RETRYABLE" ? "error" : "warning",
@@ -2036,88 +2090,90 @@
         syncRuntimeFeedback(form, null);
       }
 
+      function syncInvocationControls(data) {
+        const pendingRun = !!data.pending && !data.running && !data.runtime;
+        if (data.attention) {
+          renderAttentionRun(data);
+        } else if (data.running) {
+          const startedAt = data.started_at || runUiState.startedAt || "";
+          if (startedAt && data.invocation_id === termDrawer.dataset.invocationId) {
+            termDrawer.dataset.runStartedAt = startedAt;
+          }
+          setRunUiState({running: true, startedAt, cancelRequested: !!data.cancel_requested});
+          startRunProgress(startedAt);
+          const progressLabel = form.querySelector("[data-task-progress-label]");
+          if (progressLabel && data.stage_description) {
+            progressLabel.textContent = data.stage_description;
+          }
+          renderFeedback(form, {
+            kind: "info",
+            title: data.cancel_requested ? "取消中" : (data.stage_description || "执行中"),
+            message: data.cancel_requested ? "已发送取消请求，正在停止脚本。" : (data.stage_description || "脚本已开始执行，结果会自动更新。"),
+            showTimer: true,
+            stampText: startedAt ? `开始：${startedAt}` : "",
+            body: "",
+          });
+          syncRuntimeFeedback(form, null);
+        } else if (pendingRun) {
+          renderPendingRun(data);
+        }
+        if (data.scan_preview) {
+          renderScanPreview(data.scan_preview);
+          syncRuntimeFeedback(form, null);
+          hideRunFeedback(form);
+        } else if (data.scan_preview_error) {
+          renderScanPreviewError(data.scan_preview_error.message, data.scan_preview_error.error_code);
+          syncRuntimeFeedback(form, null);
+          hideRunFeedback(form);
+        } else if (data.selection_preview) {
+          renderSelectionPreview(data.selection_preview);
+          syncRuntimeFeedback(form, null);
+          hideRunFeedback(form);
+        } else if (data.selection_preview_error) {
+          renderSelectionPreviewError(data.selection_preview_error.message);
+          syncRuntimeFeedback(form, null);
+          hideRunFeedback(form);
+        } else if (data.runtime) {
+          syncRuntimeFeedback(form, data.runtime);
+          hideRunFeedback(form);
+        }
+        if (!data.running && !pendingRun && !data.attention) {
+          stopRunProgress();
+          setRunUiState({ running: false, pendingRun: false });
+        }
+      }
+
       async function pollOutput() {
-        if (!toolName || runUiState.batchTracking || runUiState.conflictUnresolved || termPollingInFlight) return;
+        if (!toolName || runUiState.conflictUnresolved || termPollingInFlight) return;
         const generation = termPollGeneration;
         termPollTimer = null;
         termPollingInFlight = true;
         try {
           const data = await fetchOutputState();
-          if (generation !== termPollGeneration || runUiState.batchTracking || runUiState.conflictUnresolved) return;
-          if (data.lines && data.lines.length > 0) {
-            const fragment = data.lines.join("\n") + "\n";
-            termBody.textContent += fragment;
-            termOffset = data.total;
+          if (generation !== termPollGeneration || runUiState.conflictUnresolved) return;
+          if (Array.isArray(data.lines)) {
+            termBody.textContent = data.lines.length ? data.lines.join("\n") + "\n" : "";
             termScrollToBottom();
           }
-          const awaitingApproval = !!data.awaiting_approval || String(data.status || "").toUpperCase() === "WAITING_APPROVAL";
-          const pendingRun = !!data.pending && !data.running && !awaitingApproval && !data.runtime;
-          if (data.attention) {
-            renderAttentionRun(data);
-          } else if (awaitingApproval) {
-            renderAwaitingApproval(data);
-          } else if (data.running) {
-            const startedAt = data.started_at || termDrawer.dataset.runStartedAt || "";
-            if (startedAt) {
-              termDrawer.dataset.runStartedAt = startedAt;
-            }
-            setRunUiState({
-              running: true,
-              awaitingApproval: false,
-              startedAt,
-              cancelRequested: !!data.cancel_requested,
-            });
-            startRunProgress(startedAt);
-            const progressLabel = form.querySelector("[data-task-progress-label]");
-            if (progressLabel && data.stage_description) {
-              progressLabel.textContent = data.stage_description;
-            }
-            renderFeedback(form, {
-              kind: "info",
-              title: data.cancel_requested ? "取消中" : (data.stage_description || "执行中"),
-              message: data.cancel_requested ? "已发送取消请求，正在停止脚本。" : (data.stage_description || "脚本已开始执行，结果会自动更新。"),
-              showTimer: true,
-              stampText: startedAt ? `开始：${startedAt}` : "",
-              body: "",
-            });
-            syncRuntimeFeedback(form, null);
-          } else if (pendingRun) {
-            renderPendingRun(data);
+          if (data.invocation_phase) {
+            termDrawer.dataset.scanPhase = data.invocation_phase;
+            termDrawer.dataset.selectionPhase = data.invocation_phase;
           }
-          if (data.scan_preview) {
-            renderScanPreview(data.scan_preview);
-            syncRuntimeFeedback(form, null);
-            hideRunFeedback(form);
-          } else if (data.scan_preview_error) {
-            renderScanPreviewError(
-              data.scan_preview_error.message,
-              data.scan_preview_error.error_code,
-            );
-            syncRuntimeFeedback(form, null);
-            hideRunFeedback(form);
-          } else if (data.selection_preview) {
-            renderSelectionPreview(data.selection_preview);
-            syncRuntimeFeedback(form, null);
-            hideRunFeedback(form);
-          } else if (data.selection_preview_error) {
-            renderSelectionPreviewError(data.selection_preview_error.message);
-            syncRuntimeFeedback(form, null);
-            hideRunFeedback(form);
-          } else if (data.runtime) {
-            syncRuntimeFeedback(form, data.runtime);
-            hideRunFeedback(form);
+          let controlData = data;
+          const currentId = runUiState.invocationId;
+          if ((runUiState.running || runUiState.pendingRun) && currentId && currentId !== data.invocation_id) {
+            controlData = await fetchOutputState({invocationId: currentId, navigation: false});
+            if (generation !== termPollGeneration || runUiState.conflictUnresolved) return;
           }
-          if (!data.running && !awaitingApproval && !pendingRun && !data.attention) {
-            stopRunProgress();
-            setRunUiState({ running: false, awaitingApproval: false, pendingRun: false });
-          }
+          updateInvocationLabel(data);
+          updateInvocationLabel(controlData);
+          syncInvocationControls(controlData);
+          const pendingRun = !!data.pending && !data.running && !data.runtime;
           if (termStatus) {
             if (data.attention) {
               termStatus.textContent = data.attention_title || "需要处理";
               termStatus.className = "auto-terminal-status auto-terminal-status--error";
-            } else if (awaitingApproval) {
-              termStatus.textContent = "待审批";
-              termStatus.className = "auto-terminal-status auto-terminal-status--cancel";
+
             } else if (pendingRun) {
               termStatus.textContent = data.queued ? "等待执行" : "等待状态同步";
               termStatus.className = "auto-terminal-status auto-terminal-status--running";
@@ -2166,7 +2222,7 @@
             }
           }
           // 非终态持续轮询；终态后再轮询若干次，等待 runtime 落库
-          if (data.running || awaitingApproval || (pendingRun && !data.attention)) {
+          if (data.running || (pendingRun && !data.attention) || controlData.running || controlData.pending) {
             termNeedsFinalRuntimePoll = false;
             termFinalRuntimePollCount = 0;
             termPollTimer = setTimeout(
@@ -2184,11 +2240,11 @@
         } catch (err) {
           if (generation !== termPollGeneration || runUiState.conflictUnresolved) return;
           if (termAttentionLatched) return;
-          const trackingRun = runUiState.running || runUiState.awaitingApproval || runUiState.pendingRun;
+          const trackingRun = runUiState.running || runUiState.pendingRun;
           stopRunProgress();
           if (trackingRun) {
             // Keep the accepted Run identity and cancel action while its state is unknown.
-            setRunUiState({ running: false, awaitingApproval: false, pendingRun: true });
+            setRunUiState({ running: false, pendingRun: true });
           }
           renderFeedback(form, {
             kind: "warning",
@@ -2218,10 +2274,10 @@
 
       startPolling = function(startedAt = "") {
         if (runUiState.conflictUnresolved) return;
+        termPollGeneration += 1;
         termPollingRequested = true;
         if (termPollTimer) { clearTimeout(termPollTimer); termPollTimer = null; }
         termAttentionLatched = false;
-        termOffset = 0;
         termNeedsFinalRuntimePoll = false;
         termFinalRuntimePollCount = 0;
         termBody.textContent = "";
@@ -2242,66 +2298,29 @@
         termFinalRuntimePollCount = 0;
       };
 
-      async function resumeRunningTask() {
-        if (!toolName) return;
-        try {
-          const data = await fetchOutputState({ offset: 0 });
-          if (!data) return;
-          const awaitingApproval = !!data.awaiting_approval || String(data.status || "").toUpperCase() === "WAITING_APPROVAL";
-          if (data.attention) {
-            renderAttentionRun(data);
-            return;
-          }
-          if (awaitingApproval) {
-            renderAwaitingApproval(data);
-            startPolling(data.started_at || "");
-            return;
-          }
-          const pendingRun = !!data.pending && !data.running && !data.runtime;
-          if (pendingRun) {
-            renderPendingRun(data);
-            startPolling(data.started_at || "");
-            return;
-          }
-          if (data.running) {
-            const startedAt = data.started_at || termDrawer.dataset.runStartedAt || "";
-            if (startedAt) {
-              termDrawer.dataset.runStartedAt = startedAt;
-            }
-            hideLegacyFeedback(form);
-            syncRuntimeFeedback(form, null);
-            setRunUiState({
-              running: true,
-              awaitingApproval: false,
-              pendingRun: false,
-              startedAt,
-              cancelRequested: !!data.cancel_requested,
-            });
-            startRunProgress(startedAt);
-            startPolling(startedAt);
-            return;
-          }
-          if (data.runtime) {
-            setRunUiState({ running: false, awaitingApproval: false, pendingRun: false });
-            syncRuntimeFeedback(form, data.runtime);
-          }
-        } catch (_) {}
-      }
-
       termBtn.addEventListener("click", () => {
         togglePanel(termBtn, termDrawer);
         const isOpen = termBtn.getAttribute("aria-expanded") === "true";
+        rememberOutput(isOpen);
         if (isOpen) {
-          if (!runUiState.batchTracking) startPolling();
-        } else if (!runUiState.running && !runUiState.awaitingApproval && !runUiState.pendingRun) {
+          if (runUiState.running || runUiState.pendingRun || !invocationSelect) startPolling();
+          else loadRecentInvocations();
+        } else if (!runUiState.running && !runUiState.pendingRun) {
+          historyGeneration += 1;
           stopPolling();
         }
+      });
+
+      invocationRefresh?.addEventListener("click", loadRecentInvocations);
+      invocationSelect?.addEventListener("change", () => {
+        historyGeneration += 1;
+        const selected = recentInvocations.find(item => item.invocation_id === invocationSelect.value);
+        if (selected) selectInvocation(selected);
       });
 
       if (termClear) {
         termClear.addEventListener("click", () => {
           termBody.textContent = "";
-          termOffset = 0;
         });
       }
 
@@ -2314,238 +2333,17 @@
         termScrollLock.classList.add("is-active");
       }
 
-      // 初次进入页面保持干净，不自动展开历史执行结果。
-    }
-
-    const batchTerminalStatuses = new Set(["COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"]);
-    const batchQueuedStatuses = new Set(["RECEIVED", "CONTEXT_READY", "PLANNED", "VALIDATED", "WAITING_APPROVAL"]);
-    const batchAttentionStatuses = new Set(["NEEDS_CLARIFICATION", "BLOCKED_LOGIN", "BLOCKED_DATA", "FAILED_RETRYABLE"]);
-    const batchReceiptIdPattern = /^[A-Za-z0-9_.:@-]{1,160}$/;
-
-    function updateApprovedBatchPill(label, completed, total) {
-      const progress = form.querySelector("[data-task-progress]");
-      const progressLabel = form.querySelector("[data-task-progress-label]");
-      const progressTimer = form.querySelector("[data-task-progress-timer]");
-      if (progress) progress.hidden = false;
-      if (progressLabel) progressLabel.textContent = label;
-      if (progressTimer) progressTimer.textContent = `${completed}/${total}`;
-    }
-
-    function announceApprovedBatch(message) {
-      const live = form.querySelector("[data-governance-live]");
-      if (live) live.textContent = message;
-    }
-
-    function scheduleApprovedBatchPoll(receipts, generation, delayMs) {
-      if (approvedBatchPollTimer) clearTimeout(approvedBatchPollTimer);
-      approvedBatchPollTimer = window.setTimeout(
-        () => void pollApprovedBatch(receipts, generation),
-        Math.max(500, Math.min(Number(delayMs) || 1000, 5000)),
-      );
-    }
-
-    async function pollApprovedBatch(receipts, generation) {
-      if (generation !== approvedBatchGeneration || !runUiState.batchTracking) return;
-      if (document.hidden) {
-        scheduleApprovedBatchPoll(receipts, generation, 1000);
-        return;
-      }
+      // Only a previously opened output panel is restored; other cards stay lazy.
       try {
-        const fetchReceipts = receipts.filter(receipt => {
-          const state = approvedBatchStates.get(String(receipt.run_id || ""));
-          return !state || (
-            !batchTerminalStatuses.has(state.status)
-            && !batchAttentionStatuses.has(state.status)
-          );
-        });
-        const freshStates = await Promise.all(fetchReceipts.map(async receipt => {
-          const state = await fetchOutputState({ runId: receipt.run_id, offset: 0 });
-          if (!state || state.error) {
-            throw new Error(state?.error || "任务状态暂不可用");
-          }
-          const statePollAfterMs = Number(state.next_poll_after_ms);
-          const receiptPollAfterMs = Number(receipt.next_poll_after_ms);
-          return {
-            run_id: String(receipt.run_id),
-            status: String(state.status || "").toUpperCase(),
-            next_poll_after_ms: Number.isFinite(statePollAfterMs) && statePollAfterMs >= 0
-              ? statePollAfterMs
-              : Number.isFinite(receiptPollAfterMs) && receiptPollAfterMs > 0
-                ? receiptPollAfterMs
-                : 1000,
-          };
-        }));
-        freshStates.forEach(state => approvedBatchStates.set(state.run_id, state));
-        const states = receipts.map(receipt => (
-          approvedBatchStates.get(String(receipt.run_id || ""))
-        ));
-        if (states.some(state => !state)) {
-          throw new Error("任务状态集合不完整");
+        if (invocationSelect && window.sessionStorage.getItem(openOutputKey) === "1") {
+          termDrawer.hidden = false;
+          termDrawer.classList.add("is-open");
+          termBtn.setAttribute("aria-expanded", "true");
+          loadRecentInvocations();
         }
-        if (generation !== approvedBatchGeneration) return;
-
-        const total = states.length;
-        const terminalCount = states.filter(state => batchTerminalStatuses.has(state.status)).length;
-        const runningCount = states.filter(state => state.status === "RUNNING" || state.status === "VERIFYING").length;
-        const attentionCount = states.filter(state => batchAttentionStatuses.has(state.status)).length;
-        const settledCount = terminalCount + attentionCount;
-        if (settledCount < total) {
-          const knownCount = states.filter(state => (
-            batchTerminalStatuses.has(state.status)
-            || batchQueuedStatuses.has(state.status)
-            || batchAttentionStatuses.has(state.status)
-            || state.status === "RUNNING"
-            || state.status === "VERIFYING"
-          )).length;
-          const label = attentionCount
-            ? "执行需要处理"
-            : knownCount < total
-              ? "等待状态同步"
-              : runningCount
-                ? "批量执行中"
-                : "已批准，等待执行";
-          updateApprovedBatchPill(
-            label,
-            settledCount,
-            total,
-          );
-          if (attentionCount) {
-            renderFeedback(form, {
-              kind: "warning",
-              title: "执行需要处理",
-              message: `${attentionCount} 个任务正在等待补充信息、登录恢复或重试处理；其余任务继续跟踪。`,
-              showTimer: false,
-            });
-          }
-          const activeStates = states.filter(state => (
-            !batchTerminalStatuses.has(state.status)
-            && !batchAttentionStatuses.has(state.status)
-          ));
-          const nextPollAfterMs = Math.min(...activeStates.map(state => state.next_poll_after_ms));
-          scheduleApprovedBatchPoll(receipts, generation, nextPollAfterMs);
-          return;
-        }
-
-        if (attentionCount > 0) {
-          const message = `${attentionCount} 个任务需要补充信息、恢复登录或人工处理；已停止自动跟踪。`;
-          updateApprovedBatchPill("执行需要处理", settledCount, total);
-          setRunUiState({
-            running: false,
-            awaitingApproval: false,
-            pendingRun: false,
-            batchTracking: false,
-            cancelRequested: false,
-            runId: "",
-          });
-          renderFeedback(form, {
-            kind: "warning",
-            title: "执行需要处理",
-            message,
-            showTimer: false,
-          });
-          announceApprovedBatch(message);
-          approvedBatchReceipts = [];
-          approvedBatchStates = new Map();
-          approvedBatchPollTimer = null;
-          return;
-        }
-
-        const completedCount = states.filter(state => state.status === "COMPLETED").length;
-        const cancelledCount = states.filter(state => state.status === "CANCELLED").length;
-        const unsuccessfulCount = total - completedCount;
-        const allCancelled = total > 0 && cancelledCount === total;
-        const title = unsuccessfulCount === 0
-          ? "批量执行完成"
-          : allCancelled
-            ? "批量执行已取消"
-            : "批量执行已结束";
-        const message = unsuccessfulCount === 0
-          ? `本次批准的 ${total} 个任务均已完成。`
-          : `本次批准的 ${total} 个任务中，完成 ${completedCount} 个，未成功 ${unsuccessfulCount} 个。`;
-        updateApprovedBatchPill(title, terminalCount, total);
-        setRunUiState({
-          running: false,
-          awaitingApproval: false,
-          pendingRun: false,
-          batchTracking: false,
-          cancelRequested: false,
-          runId: "",
-        });
-        syncRuntimeFeedback(form, {
-          ok: unsuccessfulCount === 0,
-          cancelled: allCancelled,
-          title,
-          message,
-          last_run: fmtStamp(Date.now()),
-          error: unsuccessfulCount > 0 && !allCancelled ? message : "",
-        });
-        announceApprovedBatch(message);
-        approvedBatchReceipts = [];
-        approvedBatchStates = new Map();
-        approvedBatchPollTimer = null;
-      } catch (error) {
-        if (generation !== approvedBatchGeneration) return;
-        const total = receipts.length;
-        updateApprovedBatchPill("状态同步中断", 0, total);
-        renderFeedback(form, {
-          kind: "warning",
-          title: "执行状态暂不可达",
-          message: "本次批准已生效，卡片会继续查询这些 Run，不会重新提交或重试执行。",
-          showTimer: false,
-          body: "",
-        });
-        scheduleApprovedBatchPoll(receipts, generation, 3000);
-      }
+      } catch (_) {}
+      // Invocation history initialization is complete.
     }
-
-    form.addEventListener("automation:approved-runs", event => {
-      const detail = event.detail;
-      const automationId = form.querySelector('input[name="task_id"]')?.value || "";
-      const receipts = Array.isArray(detail?.run_receipts) ? detail.run_receipts : [];
-      const valid = detail?.automation_id === automationId
-        && Number.isInteger(detail?.decided_count)
-        && detail.decided_count === receipts.length
-        && receipts.every(receipt => (
-          receipt?.automation_id === automationId
-          && batchReceiptIdPattern.test(String(receipt?.run_id || ""))
-          && batchReceiptIdPattern.test(String(receipt?.work_item_id || ""))
-        ));
-      if (!valid || receipts.length === 0) return;
-
-      if (!runUiState.batchTracking) approvedBatchStates = new Map();
-      const merged = new Map(approvedBatchReceipts.map(receipt => [receipt.run_id, receipt]));
-      receipts.forEach(receipt => merged.set(receipt.run_id, receipt));
-      approvedBatchReceipts = [...merged.values()];
-      approvedBatchGeneration += 1;
-      const generation = approvedBatchGeneration;
-      if (approvedBatchPollTimer) clearTimeout(approvedBatchPollTimer);
-      approvedBatchPollTimer = null;
-      stopPolling();
-      stopRunProgress();
-      if (termDrawer) {
-        delete termDrawer.dataset.runId;
-        delete termDrawer.dataset.runStartedAt;
-      }
-      setRunUiState({
-        running: false,
-        awaitingApproval: false,
-        pendingRun: false,
-        batchTracking: true,
-        startedAt: fmtStamp(Date.now()),
-        cancelRequested: false,
-        runId: "",
-      });
-      updateApprovedBatchPill("已批准，等待执行", 0, approvedBatchReceipts.length);
-      renderFeedback(form, {
-        kind: "info",
-        title: "审批已通过",
-        message: `正在原位跟踪本次批准的 ${approvedBatchReceipts.length} 个任务。`,
-        showTimer: false,
-        stampText: `${approvedBatchReceipts.length} 个任务`,
-      });
-      announceApprovedBatch(`已批准 ${approvedBatchReceipts.length} 个任务，正在等待执行。`);
-      void pollApprovedBatch(approvedBatchReceipts, generation);
-    });
 
     // 反馈关闭按钮
     const feedbackClose = form.querySelector("[data-feedback-close]");
@@ -2657,10 +2455,10 @@
     async function requestTaskCancel() {
       if (!(runBtn instanceof HTMLElement)) return;
       const taskId = form.querySelector('input[name="task_id"]')?.value || "";
-      const startedAt = (termDrawer?.dataset.runStartedAt || runUiState.startedAt || "").trim();
-      const runId = (runUiState.runId || termDrawer?.dataset.runId || "").trim();
+      const startedAt = (runUiState.startedAt || termDrawer?.dataset.runStartedAt || "").trim();
+      const invocationId = (runUiState.invocationId || termDrawer?.dataset.invocationId || "").trim();
 
-      if (!runId) {
+      if (!invocationId) {
         renderFeedback(form, {
           kind: "error",
           title: "无法取消",
@@ -2671,28 +2469,27 @@
       }
 
       setButtonLoading(runBtn, true);
-      const wasAwaitingApproval = !!runUiState.awaitingApproval;
       const wasPendingRun = !!runUiState.pendingRun;
       setRunUiState({
-        running: !(wasAwaitingApproval || wasPendingRun),
-        awaitingApproval: wasAwaitingApproval,
+        running: !(wasPendingRun),
+
         pendingRun: wasPendingRun,
         startedAt,
         cancelRequested: true,
-        runId,
+        invocationId,
       });
       renderFeedback(form, {
         kind: "warning",
         title: "取消中",
-        message: wasAwaitingApproval ? "已发送取消请求，正在取消等待审批的任务。" : wasPendingRun ? "已发送取消请求，正在取消已提交的任务。" : "已发送取消请求，正在停止脚本。",
-        showTimer: !(wasAwaitingApproval || wasPendingRun),
+        message: wasPendingRun ? "已发送取消请求，正在取消已提交的任务。" : "已发送取消请求，正在停止脚本。",
+        showTimer: !(wasPendingRun),
         stampText: startedAt ? `开始：${startedAt}` : "",
       });
 
       try {
         const body = new URLSearchParams();
         body.set("task_id", taskId);
-        body.set("run_id", runId);
+        body.set("invocation_id", invocationId);
         if (startedAt) body.set("started_at", startedAt);
 
         const res = await fetch("/automations/tasks/cancel", {
@@ -2707,37 +2504,37 @@
         const result = await res.json();
         if (result.ok) {
           const cancelStartedAt = result.activity_value || startedAt;
-          if (termDrawer && cancelStartedAt) {
+          if (termDrawer && termDrawer.dataset.invocationId === invocationId && cancelStartedAt) {
             termDrawer.dataset.runStartedAt = cancelStartedAt;
           }
           setRunUiState({
-            running: !(wasAwaitingApproval || wasPendingRun),
-            awaitingApproval: wasAwaitingApproval,
+            running: !(wasPendingRun),
+
             pendingRun: wasPendingRun,
             startedAt: cancelStartedAt,
             cancelRequested: true,
-            runId,
+            invocationId,
           });
           renderFeedback(form, {
             kind: "warning",
             title: result.title || "取消中",
-            message: result.message || (wasAwaitingApproval ? "已发送取消请求，正在取消等待审批的任务。" : wasPendingRun ? "已发送取消请求，正在取消已提交的任务。" : "已发送取消请求，正在停止脚本。"),
-            showTimer: !(wasAwaitingApproval || wasPendingRun),
+            message: result.message || (wasPendingRun ? "已发送取消请求，正在取消已提交的任务。" : "已发送取消请求，正在停止脚本。"),
+            showTimer: !(wasPendingRun),
             stampText: cancelStartedAt ? `开始：${cancelStartedAt}` : "",
           });
-          startPolling(cancelStartedAt);
+          startPolling(termDrawer?.dataset.invocationId === invocationId ? cancelStartedAt : "");
           return;
         }
 
         if (result.runtime) {
           stopRunProgress();
-          setRunUiState({ running: false, awaitingApproval: false, pendingRun: false });
+          setRunUiState({ running: false, pendingRun: false });
           syncRuntimeFeedback(form, result.runtime);
           hideRunFeedback(form);
           return;
         }
 
-        setRunUiState({ running: false, awaitingApproval: false, pendingRun: false });
+        setRunUiState({ running: false, pendingRun: false });
         renderFeedback(form, {
           kind: "warning",
           title: "取消未生效",
@@ -2747,8 +2544,8 @@
         });
       } catch (err) {
         setRunUiState({
-          running: !(runUiState.awaitingApproval || runUiState.pendingRun),
-          awaitingApproval: !!runUiState.awaitingApproval,
+          running: !(runUiState.pendingRun),
+
           pendingRun: !!runUiState.pendingRun,
           startedAt,
           cancelRequested: false,
@@ -2769,15 +2566,15 @@
 
     if (scanPreviewDismiss) {
       scanPreviewDismiss.addEventListener("click", () => {
-        if (scanConfirmationRetryOnly || scanPreviewTerminalBlocked) return;
-        clearScanPreview();
+        if (runUiState.running || runUiState.pendingRun) return;
+        clearScanPreview({ force: true });
       });
     }
 
     if (scanPreviewRegenerate) {
       scanPreviewRegenerate.addEventListener("click", () => {
-        if (scanConfirmationRetryOnly || scanPreviewTerminalBlocked) return;
-        clearScanPreview();
+        if (runUiState.running || runUiState.pendingRun) return;
+        clearScanPreview({ force: true });
         runBtn?.click();
       });
     }
@@ -2790,14 +2587,14 @@
           return;
         }
         setButtonLoading(scanPreviewConfirm, true);
-        const previewRunId = activeScanPreviewId;
+        const previewInvocationId = activeScanPreviewId;
         const confirmationRequestId = activeScanConfirmationRequestId || window.crypto.randomUUID();
         activeScanConfirmationRequestId = confirmationRequestId;
         setScanConfirmationRetryOnly(true);
         try {
           const body = new URLSearchParams({
             task_id: "scan_codes",
-            preview_run_id: previewRunId,
+            preview_invocation_id: previewInvocationId,
           });
           const res = await fetch("/automations/tasks/confirm-scan-preview", {
             method: "POST",
@@ -2835,21 +2632,21 @@
             renderScanPreviewError(result.message, errorCode);
             return;
           }
-          const runId = String(result.run_id || "").trim();
-          if (!runId) throw new Error("智能服务未返回可追踪的正式扫描记录。");
+          const invocationId = String(result.invocation_id || "").trim();
+          if (!invocationId) throw new Error("智能服务未返回可追踪的正式扫描记录。");
           clearScanPreview({ force: true });
           if (termDrawer) {
             termDrawer.dataset.runStartedAt = "";
-            termDrawer.dataset.runId = runId;
+            termDrawer.dataset.invocationId = invocationId;
             termDrawer.dataset.scanPhase = "formal";
           }
           setRunUiState({
             running: false,
-            awaitingApproval: false,
+
             pendingRun: true,
             startedAt: "",
             cancelRequested: false,
-            runId,
+            invocationId,
           });
           renderFeedback(form, {
             kind: "info",
@@ -2917,7 +2714,7 @@
           const taskId = String(form.querySelector("input[name='task_id']")?.value || "");
           const body = new URLSearchParams({
             task_id: taskId,
-            preview_run_id: activeSelectionPreviewId,
+            preview_invocation_id: activeSelectionPreviewId,
             selected_bill_codes_json: JSON.stringify(selected),
           });
           const res = await fetch("/automations/tasks/confirm-selection-preview", {
@@ -2956,21 +2753,21 @@
             renderSelectionPreviewError(result.message);
             return;
           }
-          const runId = String(result.run_id || "").trim();
-          if (!runId) throw new Error("智能服务未返回可追踪的正式处理记录。");
+          const invocationId = String(result.invocation_id || "").trim();
+          if (!invocationId) throw new Error("智能服务未返回可追踪的正式处理记录。");
           clearSelectionPreview({ force: true });
           if (termDrawer) {
             termDrawer.dataset.runStartedAt = "";
-            termDrawer.dataset.runId = runId;
+            termDrawer.dataset.invocationId = invocationId;
             termDrawer.dataset.selectionPhase = "formal";
           }
           setRunUiState({
             running: false,
-            awaitingApproval: false,
+
             pendingRun: true,
             startedAt: "",
             cancelRequested: false,
-            runId,
+            invocationId,
           });
           renderFeedback(form, {
             kind: "info",
@@ -3008,32 +2805,17 @@
           startPolling();
           return;
         }
-        if (isScanPreviewWorkflow && scanConfirmationRetryOnly) {
-          renderFeedback(form, {
-            kind: "error",
-            title: "请先确认原请求结果",
-            message: "当前确认结果暂时未知，只能再次点击“确认执行”并复用原请求标识。",
-            showTimer: false,
-          });
-          return;
-        }
-        if (isScanPreviewWorkflow && scanPreviewTerminalBlocked) {
-          renderFeedback(form, {
-            kind: "error",
-            title: "正式扫描仍处于阻断状态",
-            message: "请先查询原任务记录或前往事项中心处理，当前页面不会生成新的扫描预览。",
-            showTimer: false,
-          });
-          return;
-        }
-        if (runUiState.running || runUiState.awaitingApproval || runUiState.pendingRun) {
+        if (runUiState.running || runUiState.pendingRun) {
           if (runUiState.cancelRequested || runBtn.hasAttribute("aria-busy")) return;
           await requestTaskCancel();
           return;
         }
+        if (runBtn.dataset.startDisabled) return;
 
+        stopPolling();
+        if (termDrawer) termDrawer.dataset.invocationId = "";
         stopRunProgress();
-        if (isScanPreviewWorkflow) clearScanPreview();
+        if (isScanPreviewWorkflow) clearScanPreview({ force: true });
         if (isSelectionPreviewWorkflow) clearSelectionPreview();
         serializeForm(form);
         hideLegacyFeedback(form);
@@ -3047,7 +2829,7 @@
           if (isScanPreviewWorkflow) termDrawer.dataset.scanPhase = "preview";
           if (isSelectionPreviewWorkflow) termDrawer.dataset.selectionPhase = "preview";
         }
-        setRunUiState({ running: false, awaitingApproval: false, pendingRun: true, startedAt: stamp, cancelRequested: false });
+        setRunUiState({ running: false, pendingRun: true, startedAt: stamp, cancelRequested: false, invocationId: "" });
         stopRunProgress();
 
         renderFeedback(form, {
@@ -3089,13 +2871,13 @@
           if (trackExistingRunConflict(result)) return;
           if (result.pending) {
             const startedAt = result.activity_value || stamp;
-            const runId = String(result.run_id || "").trim();
-            if (!runId) throw new Error("智能服务未返回可追踪的执行标识。");
+            const invocationId = String(result.invocation_id || "").trim();
+            if (!invocationId) throw new Error("智能服务未返回可追踪的执行标识。");
             if (termDrawer) {
               termDrawer.dataset.runStartedAt = result.activity_value || "";
-              termDrawer.dataset.runId = runId;
+              termDrawer.dataset.invocationId = invocationId;
             }
-            setRunUiState({ running: false, awaitingApproval: false, pendingRun: true, startedAt, cancelRequested: false, runId });
+            setRunUiState({ running: false, pendingRun: true, startedAt, cancelRequested: false, invocationId });
             stopRunProgress();
             renderFeedback(form, {
               kind: "info",
@@ -3110,7 +2892,7 @@
           }
 
           stopRunProgress();
-          setRunUiState({ running: false, awaitingApproval: false, pendingRun: false });
+          setRunUiState({ running: false, pendingRun: false });
 
           renderFeedback(form, {
             kind: result.cancelled ? "warning" : result.ok ? "success" : "error",
@@ -3149,13 +2931,6 @@
             return;
           }
 
-          const awaitingApproval = !!outputState?.awaiting_approval || String(outputState?.status || "").toUpperCase() === "WAITING_APPROVAL";
-          if (outputState && awaitingApproval) {
-            renderAwaitingApproval(outputState);
-            startPolling(outputState.started_at || "");
-            return;
-          }
-
           const pendingRun = !!outputState?.pending && !outputState.running && !outputState.runtime;
           if (outputState && pendingRun) {
             renderPendingRun(outputState);
@@ -3170,7 +2945,7 @@
             }
             setRunUiState({
               running: !!outputState.running,
-              awaitingApproval: false,
+
               pendingRun: false,
               startedAt,
               cancelRequested: !!outputState.cancel_requested,
@@ -3189,14 +2964,14 @@
 
           if (outputState?.runtime) {
             stopRunProgress();
-            setRunUiState({ running: false, awaitingApproval: false, pendingRun: false });
+            setRunUiState({ running: false, pendingRun: false });
             syncRuntimeFeedback(form, outputState.runtime);
             hideRunFeedback(form);
             return;
           }
 
           stopRunProgress();
-          setRunUiState({ running: false, awaitingApproval: false, pendingRun: false });
+          setRunUiState({ running: false, pendingRun: false });
           syncRuntimeFeedback(form, null);
           renderFeedback(form, {
             kind: "error",
@@ -3267,5 +3042,5 @@
   window.ConsoleUI.refreshIcons(pageRoot);
 })();
 </script>
-<script src="/static/automation_approval_policy.js?v=20260908-historical-evidence" defer></script>
+<script src="/static/automation_approval_policy.js?v=20260909-direct-invocation" defer></script>
 {% endblock %}

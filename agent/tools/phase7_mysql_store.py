@@ -432,16 +432,24 @@ def sync_console_waybills(
     source: str,
     target_date: date | str | None = None,
     replace_date: bool = False,
+    account_id: str | None = None,
 ) -> dict[str, Any]:
     """Upsert synced waybills into the console `/waybills` backing table."""
+    if account_id is not None:
+        from plugin_core_adapters.waybill_query import publish_collected_waybills
+        return publish_collected_waybills(records, source=source, target_date=target_date,
+            account_id=account_id, complete=replace_date)
+
     source_text = _clean_text(source)[:32] or "sync"
     date_text = target_date.isoformat() if isinstance(target_date, date) else _clean_text(target_date)
     normalized_by_waybill: dict[str, dict[str, str]] = {}
     for record in records:
         normalized = normalize_console_waybill_record(record)
         if not normalized:
-            continue
-        normalized_by_waybill.setdefault(normalized["waybill_no"], normalized)
+            raise ValueError("waybill record is missing its identity")
+        if normalized["waybill_no"] in normalized_by_waybill:
+            raise ValueError("duplicate waybill identity in source publication")
+        normalized_by_waybill[normalized["waybill_no"]] = normalized
 
     ensure_console_waybill_table()
     return WaybillRepository(_connect).sync_records(
