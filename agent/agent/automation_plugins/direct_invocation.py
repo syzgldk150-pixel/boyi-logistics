@@ -312,6 +312,14 @@ class DirectPluginInvocationService:
         with self._lock:
             active = self._active.get(invocation_id)
         if active:
+            if self._loop is not asyncio.get_running_loop():
+                if self._loop is None or not self._loop.is_running():
+                    raise OrchestrationError("INVOCATION_RUNTIME_UNAVAILABLE", "执行服务尚未启动")
+                # A scheduler/tool adapter may have its own event loop. Only
+                # the owner loop can await its task; cancelling this bridge
+                # cancels the waiter, while the task stays shielded below.
+                future = asyncio.run_coroutine_threadsafe(self.wait(invocation_id, timeout_seconds=timeout_seconds), self._loop)
+                return await asyncio.wrap_future(future)
             # The launch callback runs immediately on this loop, not a worker
             # polling persisted records. Yield once for cross-thread callers.
             if active["task"] is None:

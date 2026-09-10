@@ -4,7 +4,7 @@
 本轮 V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v32.md) 为权威索引：自动化只列功能插件；财务/客服采集在所属模块；AI contribution 可选；账号引用及平铺常用参数使用宿主简单设置；历史包回退须有本实例已提交版本证据。局部入口见 `agent/scripts/plugin_maintenance.py`（仓库根相对路径），整轮入口为 `agent/scripts/accept_low_maintenance_v32.py`。
 
 > 企业级物流业务自动化系统，包含价格采集、财务对账、OCR识别、车辆调度、AI客服五大模块。
-> 远期目标：LangChain/LangGraph Agent 系统整合。
+> 当前架构见 [业务接口与独立插件调用](../docs/architecture_direct_invocation.md)：最小 Agent 仅接已注册接口、开放插件和显式分析；本轮不新增模型框架。
 
 ---
 
@@ -80,12 +80,12 @@
 - 首方启动 bootstrap 除补齐缺失实例外，还必须把仍指向较旧版本的保留实例按本次签名发布自动推进到目标版本；若旧 target 可在首轮协调完成，启动流程必须先完成该精确签名 generation，再重新 bootstrap 并进行第二次协调，使正常恢复和发行升级在同一 Agent 启动内收敛，禁止依赖人工二次重启。仍受真实 coeffect 阻塞的 target 必须保持不可运行，并在依赖恢复后的下一次显式协调中重试，不能伪造收敛。管理员配置、账号/资源绑定、入口空集、定时与权限模式保持不变，较新实例绝不降级。旧不可变包只为尚未排空的 generation lease、审计和可恢复回滚保留，不得继续作为活动 Catalog 版本。交互选择、预览指纹、客服复核引用和财务启动标记等代码拥有字段必须由精确首方身份声明、进入合同哈希并由 Agent 规范化，Console 不得让用户编辑或因其 Schema 形状阻断整个配置表单。
 - `042` 历史范围兼容、精确资源互斥和事项人工核验规则见 `../docs/historical_write_recovery.md`。`production_write_recovery.py` 统一核验与唤醒边界；事项人工核验传入由服务端重验的事项/Run/lease 身份和 `resume_run=False`；有证据才闭合 lease，仅写审计、不唤醒 Runner，不复活已取消任务。
 - 当前 committed generation 发生 WRITE_OUTCOME_UNKNOWN 时保留 Invocation、lease、receipt 与 Evidence，本次调用终结且不重放。新的明确触发建立新 Invocation 和 lease，不被历史结果拦截；代次清理、升级或卸载仍要核实在用字节和未知写证据，不能删除未解决事实。
-- Console 的“核验并恢复”仅用于闭合历史未知 receipt，不是重新执行入口；浏览器只提交请求 UUID，Agent 只依据持久 receipt 与权威回读判定 `WRITE_VERIFIED`、`NOT_APPLIED` 或 `UNKNOWN`，不得接受浏览器提交 generation 或 evidence；事项人工入口只允许选择服务端列出的 lease，并在 Agent 事务中重新验证完整关联，也不得重放原 Run。启动、登录恢复和新扫描预览都不再核验或恢复旧 Run。新的自动化 Command 与旧取消、失败、未知写历史独立；只保护仍具有效执行租约的原写范围，不自动补跑。显式人工核验仍须原正式 Command、预览、账号和独立账本证明；证据不全保留 UNKNOWN。仅签名 MySQL `super_admin` 可通过 Console 的显式取消动作、填写非空原因后把已经暂停的未知写 Run 与 Work Item 终结为 `CANCELLED_UNKNOWN_WRITE_BY_SUPER_ADMIN`；该动作只解除项目互斥，不改写旧 receipt、lease 或 Evidence，也不把原 Run 伪装为成功或重放。
+- Console 的“核验并恢复”仅用于闭合历史未知 receipt，不是重新执行入口；浏览器只提交请求 UUID，Agent 只依据持久 receipt 与权威回读判定 `WRITE_VERIFIED`、`NOT_APPLIED` 或 `UNKNOWN`，不得接受浏览器提交 generation 或 evidence；事项人工入口只允许选择服务端列出的 lease，并在 Agent 事务中重新验证完整关联，也不得重放原 Run。启动、登录恢复和新扫描预览都不再核验或恢复旧 Run。新的自动化 Invocation 与旧取消、失败、未知写历史独立；只保护仍具有效执行租约的原写范围，不自动补跑。显式人工核验仍须原正式 Command、预览、账号和独立账本证明；证据不全保留 UNKNOWN。旧 `CANCELLED_UNKNOWN_WRITE_BY_SUPER_ADMIN` 状态只保留历史审计；当前取消/重试等旧 Run 写入口返回 410，历史未知写的显式证据核验不能重放原业务或伪造成功。
 - Business Account 池与 `workflow_resources` 资源池进入插件目录前只能投影闭合的安全 descriptor；资源固定为 `resource_id/name/kind/status`，不得把 Token、表格 ID、读写范围、文件路径、配置哈希/版本或原始配置送入浏览器。飞书资源的 `name` 必须由服务端按当前文档名与工作表名逐项解析并短时缓存，改单个名称后自动刷新；代码审阅为 `resource_scope=spreadsheet` 的按日期动态工作表集合只显示实时文档名且不得强制绑定任一子表。单项权限、删除、定位或元数据异常只阻断依赖它的项目，整体认证或网络失败才形成全局状态，禁止回退静态业务别名或内部资源 ID。服务启动时只合并代码审阅过的人类可读定位元数据，不得覆盖已经解析并持久化的实时工作表 ID、范围或其他运行配置。旧工作表 ID 只允许用代码审阅过的精确标题在唯一匹配时修复并持久化新配置版本；多个同名工作表只允许再按代码审阅过的表头列约束唯一识别，零个或多个匹配都必须失败，绝不按顺序取第一项。插件目录的 `hidden_automation_ids` 只投影真实持久化且当前发行明确排除的身份，不得用它生成静态项目；Console 只能按签名清单声明的 role 与 kind 精确筛选并保存 ID，不默认选择第一项；所有签名项目自动化运行只接受项目当前提交的精确账号绑定，后台改绑后下一次运行使用新 ID，脚本、Broker、调度器均不得按 `is_default`、列表顺序或固定账号补齐；池不可用、descriptor 漂移、必填绑定缺失/停用/类型不符时，配置、运行、启用和完全自动均 fail closed。
-- v1 `ACTION_V1` 包只声明调度能力，不携带 cron 或实际执行时刻；v2 `SERVICE_V2` Scheduler contribution 可携带审计用 cron 建议，但当前宿主只有默认启用且可无损映射为 `Asia/Shanghai` 固定 `minute hour * * *` 时才自动采用，其他实际时刻仍由安装后的项目实例配置。定时与项目配置、账号/资源绑定和授权在同一版本化合同内保存；同一插件的重复安装实例可分别选择账号、资源和定时，只有 ACTION_V1 仍可选择逐次审批或完全自动，SERVICE_V2 固定完全自动。Service v2 安装先对上传字节做无副作用技术检查，再以同一 ZIP 和闭合 `instance_name/config/account_bindings/resource_bindings/enabled_entrypoints/schedule/permissions_confirmed` 意图提交；最终安装重新验证字节，根请求哈希绑定包、规范意图和操作者，同一 UUID 的响应丢失只续做缺失阶段，任一意图漂移必须幂等冲突。实例始终先 disabled，配置后 reconcile，只有 committed generation 精确稳定才经仓储事务持久化实际启用基线并进入高层启用；同步的启用后 reconcile 失败必须用同一根请求的确定性审计链补偿回 disabled，claim 之前已有状态历史或缺少精确 enable/rollback witness 时禁止重放。启用事务提交后进程崩溃或补偿仓储不可用的窗口仍属 `PRODUCTION_GATED`，完成恢复演练前不得宣称生产安装无半启用窗口。配置响应丢失重放必须绑定同一请求、操作者和精确目标配置版本；稳定 generation 提交后必须原子刷新进程内 Scheduler，刷新失败保留旧 Job 集并显式报告。通用项目 `startup` 只在未处于 release hold 的进程注册一次性 DateTrigger，并用上海业务日、任务配置版本和项目 generation 构造稳定 Command 身份。
+- v1 `ACTION_V1` 包只声明调度能力，不携带 cron 或实际执行时刻；v2 `SERVICE_V2` Scheduler contribution 可携带审计用 cron 建议，但当前宿主只有默认启用且可无损映射为 `Asia/Shanghai` 固定 `minute hour * * *` 时才自动采用，其他实际时刻仍由安装后的项目实例配置。定时与项目配置、账号/资源绑定和授权在同一版本化合同内保存；同一插件的重复安装实例可分别选择账号、资源和定时，ACTION_V1 的手动/自动权限由当前项目设置决定，旧 REQUIRE_EACH_RUN 只解释为需管理员明确触发，不产生逐次审批队列；SERVICE_V2 固定完全自动。Service v2 安装先对上传字节做无副作用技术检查，再以同一 ZIP 和闭合 `instance_name/config/account_bindings/resource_bindings/enabled_entrypoints/schedule/permissions_confirmed` 意图提交；最终安装重新验证字节，根请求哈希绑定包、规范意图和操作者，同一 UUID 的响应丢失只续做缺失阶段，任一意图漂移必须幂等冲突。实例始终先 disabled，配置后 reconcile，只有 committed generation 精确稳定才经仓储事务持久化实际启用基线并进入高层启用；同步的启用后 reconcile 失败必须用同一根请求的确定性审计链补偿回 disabled，claim 之前已有状态历史或缺少精确 enable/rollback witness 时禁止重放。启用事务提交后进程崩溃或补偿仓储不可用的窗口仍属 `PRODUCTION_GATED`，完成恢复演练前不得宣称生产安装无半启用窗口。配置响应丢失重放必须绑定同一请求、操作者和精确目标配置版本；稳定 generation 提交后必须原子刷新进程内 Scheduler，刷新失败保留旧 Job 集并显式报告。通用项目 `startup` 只在未处于 release hold 的进程注册一次性 DateTrigger，并用上海业务日、任务配置版本和项目 generation 构造本次 Invocation 的稳定请求身份。
 - 首方 Action v1 飞书直达入口由 `agent/orchestration/automation_project_entrypoints.py` 的 `AutomationProjectEntrypoints` 提供，并在 `feishu/message_handler.py` 通过组合根注入：文本、菜单与 pending 只能按 committed generation 中唯一的 `feishu_route.route_key` 构造 typed invocation，重复别名、多候选、账号覆盖或缺少稳定事件 ID 均 fail closed。Service v2 动态文本使用同文件独立的 `ServiceV2FeishuDispatcher`：只在所有状态流程和固定路由未命中后，按大小写敏感的 exact command 从 active Registry 取得 `automation_id/generation/contribution_id`，只接受已验证 event/sender/chat，并在 Invocation 接受事务内再次核对 exact active identity。两条路径均不接受调用方提交 service、operation、参数、账号或资源；通用 Command/LLM 不得伪造项目上下文。
 - 首方飞书固定短语只在 `agent/direct_tool_router.py` 的只读 `FEISHU_COMMAND_REGISTRATIONS` 注册；命令 ID、route key 和触发工具名必须分别唯一，预览与正式工具只能在同一命令族内共享 route，且始终优先于动态 Dispatcher。Service v2 动态命令只能来自已验证 Manifest 和 committed generation；与任一固定 deterministic 文本或其他项目动态命令冲突时整批 prepare 失败，不得按加载顺序覆盖或保留不可达入口。
-- 精确 `builtin.scan_codes` 飞书入口固定为两步：首次“扫描”或菜单点击只显示 Agent 的闭合公共预览，并建立不落盘、最长十五分钟的用户确认态；服务重启、确认态丢失或超时后必须重新预览。只有同一发起人发送精确“确认扫描”才把公共 `preview_invocation_id` 作为专用参数提交，正式请求使用该确认消息的新事件 ID；“取消扫描”只清除尚未提交的确认态。结果未知时只允许同一事件 ID 精确重放，其他消息、新预览和取消均阻断；已消费或正式治理关闭保持终态阻断，不得回退旧扫描链路。
+- 精确 `builtin.scan_codes` 飞书入口固定为两步：首次“扫描”或菜单点击只显示 Agent 的闭合公共预览，并建立不落盘、最长十五分钟的用户确认态；服务重启、确认态丢失或超时后必须重新预览。只有同一发起人发送精确“确认扫描”才把公共 `preview_invocation_id` 作为专用参数提交，正式请求使用该确认消息的新事件 ID；“取消扫描”只清除尚未提交的确认态。同一正式确认结果未知时只允许原事件 ID 读回同一次结果，不得重复确认已消费预览；新的明确扫描触发可以生成新预览，旧未知记录不阻新调用，不得回退旧扫描链路。
 - 精确 `webhook/phase7/scan` 验签入口固定为无状态两步：首次请求使用新的 `source_event_id` 且不携带 `preview_invocation_id`，只返回闭合公共预览；调用方明确确认后，第二次请求必须使用新的 `source_event_id`，并只把公共 `preview_invocation_id` 作为保留控制字段提交。HTTP 边界必须在动态参数解析前提取并删除该字段；其他 Webhook 路由、冲突 body/query 值、非规范 UUID 均显式拒绝。网络结果未知只能用同一正式 `source_event_id` 与同一预览精确重放，不得换身份自动重试或回退旧扫描链路。
 - 历史 Run/Work Item 只读、按模型/CAS 核验，不作为当前准入或自动续跑条件。037/038 的原有范围、取消标记和审计只用于历史迁移；046 结清旧执行队列，不删除 UNKNOWN 或业务结果。新 Invocation 的失败、取消和结果未知均结束本次请求。
 - 旧 Run 澄清和人工 retry 不再开启业务执行。新操作必须重新验证当前参数、绑定、权限与代次，不复制旧 Scheduler 身份或旧审批。
@@ -116,7 +116,7 @@
 | 财务工作台 | `../shared/finance/`、`agent/business_query.py`、`agent/direct_tool_router.py`、`agent/core.py`、`agent/tms_runtime/scripts/*finance*`、`tools/finance_sync_service.py`、`tools/sync_finance_bills_tool.py`、`../console/finance_service.py` | `docs/finance_module.md` | 融辉逐笔账本、费用绑定、BI、00:10 同步与失败审计，以及不向 LLM 暴露、只允许飞书管理员绑定使用的确定性自然语言只读经营汇总；韵达财务未启用，并与旧 Excel ETL 隔离 |
 | OCR识别 | `console/` | `docs/ocr/` | Qwen-OCR、人工复核与 MySQL 入库已运行；自学习/Paddle 方案未实施 |
 | 车辆调度 | `console/` | `docs/dispatch/` | `map_only`：仅地图路线规划与本地试算，无真实派单/车辆/平台接口 |
-| Agent 自动化能力 | `agent/ + feishu/ + tools/` | `docs/agent_automation/` | 飞书机器人承载的全部能力都在此（直达指令 / pending 状态机 / 登录恢复） |
+| Agent 自动化能力 | `agent/ + feishu/ + tools/` | `docs/agent_automation/` | 飞书机器人承载的全部能力都在此（直接插件/reader / 预览确认 / 账号登录） |
 | 自动化插件平台 | `agent/automation_plugins/`、`first_party_automation_plugins/`、`plugin_core_adapters/`、`agent/windows_worker/`、`service_v2_plugins/` | `docs/automation_plugin_platform.md`、`../docs/plugin-platform-v2.md`、`first_party_automation_plugins/README.md`、`first_party_automation_plugins/MIGRATION_MATRIX.md` | v1 签名动作继续运行；新能力使用 Service v2 无签名 ZIP、Host API 与声明式 Console，双轨迁移后逐项接管；Windows Worker/Tray 与 R7 打卡仍延后 |
 | AI客服 | `agent/ + feishu/`（规划中） | `docs/ai_service/` | 暂未开发；待启动后从 Agent 自动化能力剥离客户对话能力 |
 | 通用规范 | — | `docs/common/` | 活跃 |
@@ -133,7 +133,7 @@ docs/
 ├── ai_service/
 │   └── module_overview.md           # 模块文档：AI客服定位与上下游
 ├── agent_automation/
-│   └── module_overview.md           # 模块文档：飞书直达指令 / pending 状态机 / 登录恢复
+│   └── module_overview.md           # 模块文档：飞书直接插件/reader / 预览确认 / 账号登录
 ├── price_scripts/
 │   ├── 01-amap-address-fetch.md      # 历史快照：旧高德 POI 地址库
 │   ├── 02-tms-price-fetch.md         # 历史快照：旧 TMS 批量报价采集
@@ -222,7 +222,7 @@ docs/
 ## 固定模块与旧生命周期只读兼容
 
 - `shared/business_modules.py` 定义 15 个固定模块身份；固定模块的新调用 不再查询或锁定旧生命周期行，其可用性只受代码路由、调用方身份权限和各业务自身前置条件约束。`migrations/027_business_module_lifecycle.sql`、历史表和 Lite 审计继续保留且不得改写；历史迁移固定保留 14 行 seed，不得为 Harness 改写；`/internal/v1/admin/modules` 只保留签名管理员读取目录、详情和审计，生命周期 POST 已移除。迁移合同仍在 seed 前精确校验结构且只补齐历史缺行。
-- `query_automation_operations` 的实现与直连 runner 位于 `agent/business_query.py` / `main.py`，只接受闭合日期、参数化读取主库命令和运行状态。飞书“经营摘要/经营情况”在 `direct_tool_router.py` / `core.py`，复用财务日期与管理员绑定；金额、客户收入和异常历史均不得猜测。
+- `query_automation_operations` 的查询与 direct reader 接线位于 `agent/business_query.py` / `main.py`，只接受闭合中国业务日期，按同一只读快照聚合当前 Invocation 状态和新鲜度；未知写不计成功，旧 Command/Run 不混入当前记录。飞书“经营摘要/经营情况”在 `direct_tool_router.py` / `core.py`，复用财务日期与管理员绑定；金额、客户收入和异常历史均不得猜测。
 
 
 

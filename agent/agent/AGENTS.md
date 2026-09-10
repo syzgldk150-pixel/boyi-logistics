@@ -98,12 +98,12 @@
   - TMS 工具返回登录态错误时必须顶层包含 `error_code=AUTH_REQUIRED` / `AUTH_PENDING_CODE`，不能只返回“格式异常”；共享解析在 `../tools/phase7_sync_common.py`
   - `self_pickup_problem_upload` 两个来源分别使用项目当前显式绑定的 `account_id` 与 `daxiang_s_account_id`；Broker 从精确绑定账号解析会话与站点，后台改绑后下一次运行使用新账号，禁止固定账号、固定站点、默认 profile 或 `price_default` 回落。
 - 改"先预览-后确认"或"登录恢复"等多轮交互的待确认状态：
-  - `pending_actions.py`（按 chat_id 维护带 TTL 的 pending；写入 `agent/tms_runtime/state/pending_actions.json`，服务重启后可恢复未过期状态）
-  - 与 `feishu/message_handler.py` 的选择、登录恢复和验证码 pending 配合；自提/分批选择状态仅保存 `preview_run_id`、候选/选择和到期时间，不保存账号或指纹
+  - `pending_actions.py`（登录等兼容 pending 保留带 TTL 的存储；扫描、自提/分批预览确认使用 persist=False 的进程内状态，重启后不恢复执行）
+  - 与 `feishu/message_handler.py` 的选择、登录恢复和验证码 pending 配合；自提/分批选择状态仅保存 `preview_invocation_id`、候选/选择和到期时间，不保存账号或指纹
 
 ## 不要先读的内容
 
-- 只改单个业务工具时，不要先深入 `agent/`，先看 `../tools/`
+- 只改已插件化业务算法时，先看对应 `../first_party_automation_plugins/<id>/payload/`；公共协议和核心能力变化才进入宿主。
 - 只改控制台页面时，不要先扫这里
 
 ## 相关文档

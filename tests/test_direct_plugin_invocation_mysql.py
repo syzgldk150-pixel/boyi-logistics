@@ -66,6 +66,57 @@ def test_real_service_plugin_uses_invocation_foreign_key_without_legacy_rows(dir
     assert leases[0]["outcome"] == "SUCCEEDED"
 
 
+@pytest.mark.parametrize("wait_outcome", ["complete", "timeout", "cancel"])
+def test_foreign_loop_wait_keeps_real_invocation_owned(direct_runtime, monkeypatch, wait_outcome):
+    management, runtime, identity = direct_runtime
+    entered, release = threading.Event(), threading.Event()
+    original = runtime.service.verifier.verify
+
+    def verify(*args, **kwargs):
+        entered.set()
+        if not release.wait(10):
+            raise AssertionError("cross-loop verification barrier timed out")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.service.verifier, "verify", verify)
+    before = _legacy_counts(management.repository)
+    receipt = management.policy.invoke_console(identity, request_id=str(uuid4()), actor=ACTOR)
+    assert entered.wait(10), "real plugin did not reach verification"
+    invocation_id = receipt["invocation_id"]
+
+    async def foreign_caller():
+        assert asyncio.get_running_loop() is not runtime.loop
+        if wait_outcome == "timeout":
+            interim = await runtime.service.wait(invocation_id, timeout_seconds=0.01)
+            assert interim["status"] == "RUNNING"
+        else:
+            waiter = asyncio.create_task(runtime.service.wait(invocation_id))
+            await asyncio.sleep(0)
+            assert not waiter.done()
+            if wait_outcome == "cancel":
+                waiter.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await waiter
+        with runtime.service._lock:
+            owner_task = runtime.service._active[invocation_id]["task"]
+            assert owner_task.get_loop() is runtime.loop
+            assert not owner_task.done() and not owner_task.cancelled()
+        release.set()
+        if wait_outcome == "complete":
+            return await waiter
+        return await runtime.service.wait(invocation_id, timeout_seconds=10)
+
+    try:
+        result = asyncio.run(foreign_caller())
+    finally:
+        release.set()
+        runtime.service.wait_sync(invocation_id, timeout_seconds=10)
+    assert result["status"] == "COMPLETED", result
+    assert result["result"]["data"] == {"message": "Service v2 example is ready."}
+    assert not any(row["invocation_id"] == invocation_id for row in runtime.service.active_invocations())
+    assert _legacy_counts(management.repository) == before
+
+
 def test_business_request_dedup_and_explicit_new_call(direct_runtime):
     management, runtime, _identity = direct_runtime
     before = _legacy_counts(management.repository)

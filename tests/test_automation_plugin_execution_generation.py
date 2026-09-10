@@ -2190,7 +2190,24 @@ def test_bubblewrap_outer_process_always_starts_new_session(
     )
     assert command[7] == str(executable)
     assert "--clearenv" not in command
-    assert str(sys.base_prefix) in command
+    readonly_binds = [
+        (Path(command[index + 1]), Path(command[index + 2]))
+        for index, item in enumerate(command)
+        if item == "--ro-bind"
+    ]
+    base_prefix = Path(sys.base_prefix)
+    assert any(
+        source == destination
+        and (source == base_prefix or source in base_prefix.parents)
+        for source, destination in readonly_binds
+    ), "the trusted Python base must be available through an identity read-only bind"
+    permitted_identity_roots = {Path(root) for root in ("/usr", "/bin", "/lib", "/lib64")}
+    permitted_identity_roots.add(base_prefix)
+    assert all(
+        (source == destination and source in permitted_identity_roots)
+        or (source == install_root and destination == Path("/plugin"))
+        for source, destination in readonly_binds
+    ), "the interpreter bind must not expose the Agent venv or a broader host directory"
 
 
 @pytest.mark.skipif(not hasattr(os, "getuid"), reason="Linux /proc contract")

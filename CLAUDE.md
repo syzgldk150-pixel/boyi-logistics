@@ -116,4 +116,4 @@
 ## 业务模块与经营只读入口
 
 - `shared/business_modules.py` 是 15 个 Console 固定模块身份的唯一不可变目录，其中 Harness 为不可停用核心模块；固定模块只由代码路由、登录和既有用户权限控制，不得读取旧生命周期状态决定菜单、页面、API 或调用可用性。`027_business_module_lifecycle.sql`、历史表和 Lite 审计继续保留；Agent `/internal/v1/admin/modules` GET 保持既有签名管理员读取权限，Console 旧 data/audit 代理路径仅供真实 `super_admin` 只读兼容，生命周期写入口已退役。`/settings/modules` 只重定向到 `/settings/system-status`，后者只投影鉴权 `/internal/v1/health` 的白名单系统字段。
-- `query_automation_operations` 只读聚合 `agent_commands` / `agent_runs` 固定日期区间的状态与新鲜度；已绑定飞书管理员的“经营摘要/经营情况”复用闭合财务日期，金额不完整不输出金额，也不推断客户收入或异常历史。
+- `query_automation_operations` 只读聚合 `automation_plugin_invocations` 固定日期区间的状态与新鲜度，未知写不计为成功；已绑定飞书管理员的“经营摘要/经营情况”复用闭合财务日期，金额不完整不输出金额，也不推断客户收入或异常历史。
