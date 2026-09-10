@@ -8,7 +8,9 @@ SKIP_RESTART="${4:-0}"
 SKIP_HEALTH="${5:-0}"
 EMERGENCY_SCHEDULED_WINDOW_ARGUMENT="--emergency-scheduled-window-override=emergency_user_authorized"
 EMERGENCY_SCHEDULED_WINDOW_OVERRIDE=0
-if (( $# > 6 )); then
+RECOVER_RELEASE_HOLD_SHA=""
+SCHEDULER_RELEASE_HOLD_ADOPTED=0
+if (( $# > 7 )); then
   echo "emergency_scheduled_window_override=blocked reason=UNEXPECTED_ARGUMENT_COUNT" >&2
   exit 2
 fi
@@ -22,6 +24,14 @@ case "${6:-}" in
     exit 2
     ;;
 esac
+if [[ -n "${7:-}" ]]; then
+  if [[ "${7}" =~ ^--recover-held-release=([0-9a-f]{40})$ ]]; then
+    RECOVER_RELEASE_HOLD_SHA="${BASH_REMATCH[1]}"
+  else
+    echo "scheduler_release_hold=blocked reason=INVALID_RECOVERY_ARGUMENT" >&2
+    exit 2
+  fi
+fi
 # Current production scope is server-only. Windows Worker transport, signer,
 # Nginx mTLS prerequisites and dispatcher health are deliberately excluded.
 WINDOWS_WORKER_RELEASE_ENABLED=0
@@ -157,7 +167,38 @@ acquire_release_lock() {
   echo "release_lock=acquired"
 }
 
+validate_scheduler_release_hold_recovery() {
+  [[ "${COORDINATED_RELEASE}" == "1" &&
+     "${RECOVER_RELEASE_HOLD_SHA}" =~ ^[0-9a-f]{40}$ &&
+     -f "${SCHEDULER_RELEASE_HOLD_FILE}" && ! -L "${SCHEDULER_RELEASE_HOLD_FILE}" &&
+     "$(tr -d '[:space:]' <"${SCHEDULER_RELEASE_HOLD_FILE}")" == "${RECOVER_RELEASE_HOLD_SHA}" ]] || {
+    echo "scheduler_release_hold=blocked reason=HELD_RELEASE_IDENTITY_MISMATCH" >&2
+    return 1
+  }
+  local target
+  for target in agent console; do
+    [[ "$(systemctl show "${SERVICES[$target]}" -p ActiveState --value)" == "inactive" &&
+       "$(systemctl show "${SERVICES[$target]}" -p MainPID --value)" == "0" &&
+       "$(systemctl show "${SERVICES[$target]}" -p ControlPID --value)" == "0" ]] || {
+      echo "scheduler_release_hold=blocked reason=RECOVERY_SERVICE_NOT_STOPPED service=${SERVICES[$target]}" >&2
+      return 1
+    }
+  done
+}
+
 create_scheduler_release_hold() {
+  if [[ -n "${RECOVER_RELEASE_HOLD_SHA}" ]]; then
+    validate_scheduler_release_hold_recovery || return 1
+    local replacement
+    replacement="$(mktemp "${SCHEDULER_RELEASE_HOLD_FILE}.XXXXXX")"
+    printf '%s\n' "${RELEASE_SHA}" >"${replacement}"
+    printf '%s\n' "${RECOVER_RELEASE_HOLD_SHA}" >"${BACKUP_DIR}/recovered_scheduler_release_hold.sha"
+    mv -T -- "${replacement}" "${SCHEDULER_RELEASE_HOLD_FILE}"
+    SCHEDULER_RELEASE_HOLD_CREATED=1
+    SCHEDULER_RELEASE_HOLD_ADOPTED=1
+    echo "scheduler_release_hold=adopted previous_release=${RECOVER_RELEASE_HOLD_SHA}"
+    return
+  fi
   [[ ! -e "${SCHEDULER_RELEASE_HOLD_FILE}" && ! -L "${SCHEDULER_RELEASE_HOLD_FILE}" ]] || {
     echo "scheduler_release_hold=blocked reason=STALE_RELEASE_HOLD" >&2
     return 1
@@ -189,6 +230,10 @@ ensure_scheduler_release_hold() {
 
 clear_scheduler_release_hold_for_rollback() {
   [[ "${SCHEDULER_RELEASE_HOLD_CREATED}" == "1" ]] || return 0
+  if [[ "${SCHEDULER_RELEASE_HOLD_ADOPTED}" == "1" ]]; then
+    echo "scheduler_release_hold=retained reason=RECOVERED_HELD_RELEASE" >&2
+    return 1
+  fi
   [[ -f "${SCHEDULER_RELEASE_HOLD_FILE}" && ! -L "${SCHEDULER_RELEASE_HOLD_FILE}" ]] || {
     echo "Current release scheduler hold is missing or unsafe" >&2
     return 1
@@ -215,10 +260,17 @@ validate_environment() {
     return 1
   }
   if [[ "${AGENT_RELEASE}" == "1" ]]; then
-    [[ ! -e "${SCHEDULER_RELEASE_HOLD_FILE}" && ! -L "${SCHEDULER_RELEASE_HOLD_FILE}" ]] || {
-      echo "A stale scheduler release hold requires manual recovery" >&2
-      return 1
-    }
+    if [[ -n "${RECOVER_RELEASE_HOLD_SHA}" ]]; then
+      validate_scheduler_release_hold_recovery || return 1
+    else
+      [[ ! -e "${SCHEDULER_RELEASE_HOLD_FILE}" && ! -L "${SCHEDULER_RELEASE_HOLD_FILE}" ]] || {
+        echo "A stale scheduler release hold requires manual recovery" >&2
+        return 1
+      }
+    fi
+  elif [[ -n "${RECOVER_RELEASE_HOLD_SHA}" ]]; then
+    echo "scheduler_release_hold=blocked reason=RECOVERY_REQUIRES_SHARED_RELEASE" >&2
+    return 1
   fi
   [[ "${PIP_INDEX_URL}" =~ ^https://[^[:space:]]+$ ]] || {
     echo "Dependency index must be an HTTPS URL" >&2
@@ -2825,10 +2877,10 @@ run_release() {
     preflight_scheduled_write_window
     RELEASE_STAGE="capture_preexisting_automation_plugin_db_ownership"
     capture_preexisting_automation_plugin_db_ownership
-    if [[ "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}" == "1" ]]; then
+    if [[ "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}" == "1" || -n "${RECOVER_RELEASE_HOLD_SHA}" ]]; then
       RELEASE_STAGE="capture_control_plane_release_state"
       capture_control_plane_release_state
-      RELEASE_STAGE="create_emergency_scheduler_release_hold"
+      RELEASE_STAGE="create_pre_mutation_scheduler_release_hold"
       create_scheduler_release_hold
       RELEASE_STAGE="preflight_running_protected_writes_immediately_before_quiesce"
       preflight_running_protected_writes

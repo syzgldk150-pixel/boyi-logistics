@@ -542,7 +542,7 @@ def test_first_party_bootstrap_stages_existing_older_instance_to_release_version
             "_prepare_first_party_upgrade_configuration",
             return_value=("1.0.0", 5, None),
         ) as prepare,
-        patch.object(repository, "upgrade_instance") as upgrade,
+        patch.object(repository, "_stage_instance_upgrade") as upgrade,
     ):
         result = repository.bootstrap_missing(
             (version,),
@@ -558,15 +558,16 @@ def test_first_party_bootstrap_stages_existing_older_instance_to_release_version
         release_sha="a" * 40,
         expected_current_version="1.0.0",
         allow_blocked_unknown_write_archive=False,
+        _unit_of_work=repository._orchestration.uow,
     )
     upgrade.assert_called_once()
     call = upgrade.call_args
-    assert call.args == (template.automation_id, version)
+    assert call.args == (repository._orchestration.uow, template.automation_id, version)
     assert call.kwargs["actor_role"] == "super_admin"
     assert call.kwargs["expected_current_version"] == "1.0.0"
     assert call.kwargs["expected_record_version"] == 5
-    assert "prepared_configuration_request_id" not in call.kwargs
-    assert "allow_blocked_unknown_write_archive" not in call.kwargs
+    assert call.kwargs["prepared_configuration_request_id"] is None
+    assert call.kwargs["allow_blocked_unknown_write_archive"] is False
     uuid.UUID(call.kwargs["request_id"])
 
     with (
@@ -576,7 +577,7 @@ def test_first_party_bootstrap_stages_existing_older_instance_to_release_version
             "_prepare_first_party_upgrade_configuration",
             return_value=(version.version, 6, None),
         ),
-        patch.object(repository, "upgrade_instance") as replayed_upgrade,
+        patch.object(repository, "_stage_instance_upgrade") as replayed_upgrade,
     ):
         replayed = repository.bootstrap_missing(
             (version,),
@@ -596,19 +597,18 @@ def test_first_party_bootstrap_stages_existing_older_instance_to_release_version
         ),
         patch.object(
             repository,
-            "upgrade_instance",
+            "_stage_instance_upgrade",
             side_effect=AutomationPluginPreparedTargetOccupied(
                 "prepared target is no longer empty"
             ),
         ),
+        pytest.raises(AutomationPluginPreparedTargetOccupied),
     ):
-        deferred = repository.bootstrap_missing(
+        repository.bootstrap_missing(
             (version,),
             (seed,),
             release_sha="a" * 40,
         )
-
-    assert deferred.existing == (template.automation_id,)
 
     with (
         patch.object(repository, "_register"),
@@ -619,7 +619,7 @@ def test_first_party_bootstrap_stages_existing_older_instance_to_release_version
         ),
         patch.object(
             repository,
-            "upgrade_instance",
+            "_stage_instance_upgrade",
             side_effect=ConcurrentUpdateError("policy lineage changed"),
         ),
         pytest.raises(ConcurrentUpdateError, match="policy lineage changed"),
