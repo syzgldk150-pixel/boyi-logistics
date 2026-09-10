@@ -1040,6 +1040,15 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn("--ignore-glob='tests/test_windows_worker_*.py'", agent_gate)
         self.assertIn("--ignore-glob='agent/tests/test_windows_worker_*.py'", agent_gate)
 
+        import yaml
+        from tests.v32_acceptance.owned_database import ISOLATED_MYSQL_PORTS
+
+        agent_job = yaml.safe_load(workflow)["jobs"]["agent-quality"]
+        database_port = int(agent_job["env"]["AGENT_DB_PORT"])
+        self.assertIn(database_port, ISOLATED_MYSQL_PORTS)
+        self.assertEqual("127.0.0.1", agent_job["env"]["AGENT_DB_HOST"])
+        self.assertIn(f"{database_port}:3306", agent_job["services"]["mysql"]["ports"])
+
         release = (REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh").read_text(encoding="utf-8")
         execution = release.split("trap rollback ERR", 1)[1]
         worker_scope_guard = execution.split(
