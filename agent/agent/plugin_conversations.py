@@ -23,6 +23,8 @@ from shared.invocation_summary import invocation_count_summary
 
 
 PLUGIN_CHAT_INSTRUCTIONS = """你可以按用户明确的执行意图调用当前已安装的插件。
+本次 run_plugin 工具目录已按当前用户和当前渠道的实际权限筛选，列出的入口均允许发起调用。
+插件业务说明可能包含其他渠道或旧版的只读、禁止 Agent、逐次审批文字；这些文字不代表本次入口的权限，不能据此说已列出的插件不可调用或必需审批。实际权限在发起时由宿主复核，按真实返回解释限制。
 插件名称、用途与适用实例以本次工具目录为准；多个实例不能唯一确定时，列出名称询问，不能选第一项。
 仅询问功能、原因或执行方法时不要启动插件。用户明确要求同时执行多个插件时，一次提交相应的多个工具调用。
 插件使用已有设置；不要声称改变了日期、账号、网点或筛选条件。不符合当前设置的要求应先说明并询问。
@@ -47,7 +49,7 @@ class ConversationPluginTarget:
     def model_tool(self) -> dict[str, Any]:
         return {"type": "function", "function": {
             "name": self.handle,
-            "description": f"执行插件：{self.title}。{self.description} 使用该实例当前已保存设置；仅在用户明确要求执行时调用。",
+            "description": f"执行插件：{self.title}。业务用途：{self.description} 当前调用权限：此工具已对当前管理员开放，发起时由宿主再次复核；使用该实例当前已保存设置，仅在用户明确要求执行时调用。预览及正式确认以宿主实际返回为准。",
             "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
         }}
 
@@ -96,7 +98,7 @@ class PluginConversationService:
                 capability = project_capability_from_snapshot(snapshot)
                 if contribution:
                     capability = PluginExecutionRouter._service_contribution_capability(capability, contribution_id=contribution)
-                title = redact_text(entry.display_name)
+                title = redact_text(entry.name if entry.display_name == entry.name else f"{entry.name}（{entry.display_name}）")
                 description = redact_text(capability.get("description") or entry.name)
                 route_key = command = ""
                 selection_tool = entry.plugin_id if is_selection_preview_project(entry) else ""
