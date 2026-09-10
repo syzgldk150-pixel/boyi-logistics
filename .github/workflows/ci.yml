@@ -20,7 +20,8 @@ jobs:
           MYSQL_ROOT_HOST: "%"
           MYSQL_DATABASE: agent_control_plane_test
         ports:
-          - 3306:3306
+          # Match the loopback-only acceptance fixture's isolated port boundary.
+          - 33330:3306
         options: >-
           --health-cmd="mysqladmin ping --silent"
           --health-interval=10s
@@ -31,7 +32,7 @@ jobs:
       PYTHON_DOTENV_DISABLED: "1"
       RUN_MYSQL_INTEGRATION: "1"
       AGENT_DB_HOST: 127.0.0.1
-      AGENT_DB_PORT: "3306"
+      AGENT_DB_PORT: "33330"
       AGENT_DB_USER: root
       AGENT_DB_PASS: ""
       AGENT_DB_NAME: agent_control_plane_test
