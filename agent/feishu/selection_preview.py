@@ -9,7 +9,7 @@ from typing import Any
 from agent.feishu_command_contract import is_scan_cancel_text, is_scan_confirm_text
 from agent.orchestration.models import OrchestrationError
 from agent.orchestration.scan_preview_binding import normalize_preview_invocation_id
-from shared.automation_preview_contract import PREVIEW_CONTRACT_VERSION
+from shared.automation_preview_contract import PREVIEW_CONTRACT_VERSION, valid_preview_state
 
 
 SELF_PICKUP_MAX_SELECTED = 250
@@ -189,7 +189,7 @@ def normalize_selection_preview_projection(
         or not isinstance(raw_candidates, list)
         or raw_count != len(raw_candidates)
         or not isinstance(value.get("summary"), dict)
-        or type(value.get("can_confirm")) is not bool
+        or not valid_preview_state(value)
     ):
         return None
     candidates: list[dict[str, Any]] = []

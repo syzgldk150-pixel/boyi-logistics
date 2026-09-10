@@ -836,6 +836,26 @@
   if (!pageRoot || pageRoot.dataset.automationInitialized) return;
   pageRoot.dataset.automationInitialized = "true";
   /* ── helpers ── */
+  function previewFeedback(preview, kind) {
+    const noun = kind === "scan" ? "扫描预览" : "候选清单";
+    const state = preview.preview_state;
+    if (state === "CONSUMED") {
+      return { label: "已使用", title: `${noun}已使用`,
+        message: "这份预览已用于提交正式执行，处理结果请查看对应的正式执行记录。", expired: false };
+    }
+    if (state === "EXPIRED") {
+      return { label: "已过期", title: `${noun}已过期`,
+        message: "十五分钟确认窗口已结束，请重新读取。", expired: true };
+    }
+    if (state === "AVAILABLE" && preview.can_confirm === true) {
+      return { label: kind === "scan" ? "可确认" : "可选择", title: `${noun}待确认`,
+        message: kind === "scan"
+          ? "请核对日期、来源记录、待扫描数量和批次数。确认后才会申请正式执行。"
+          : "只处理您勾选的运单；提交前会重新核对来源数据。", expired: false };
+    }
+    return { label: "不可用", title: `${noun}不可用`, message: "预览状态无法确认，请重新读取。", expired: false };
+  }
+
   function setDeep(target, path, value) {
     const parts = path.split(".");
     let cursor = target;
@@ -1168,6 +1188,7 @@
     const selectionPreviewToggleAll = form.querySelector("[data-selection-preview-toggle-all]");
     const selectionPreviewList = form.querySelector("[data-selection-preview-list]");
     let activeSelectionPreviewId = "";
+    let selectionPreviewCanConfirm = false;
     let activeSelectionConfirmationRequestId = "";
     let selectionConfirmationRetryOnly = false;
 
@@ -1224,6 +1245,7 @@
       if (activeScanPreviewId !== nextPreviewId) activeScanConfirmationRequestId = "";
       activeScanPreviewId = nextPreviewId;
       const canConfirm = preview.can_confirm === true;
+      const feedback = previewFeedback(preview, "scan");
       const values = {
         "[data-scan-preview-target-date]": preview.target_date,
         "[data-scan-preview-source-pages]": preview.source_page_count,
@@ -1239,15 +1261,11 @@
       const title = scanPreviewPanel.querySelector("[data-scan-preview-title]");
       const message = scanPreviewPanel.querySelector("[data-scan-preview-message]");
       const state = scanPreviewPanel.querySelector("[data-scan-preview-state]");
-      if (title) title.textContent = canConfirm ? "扫描预览待确认" : "扫描预览已过期";
-      if (message) {
-        message.textContent = canConfirm
-          ? "请核对日期、来源记录、待扫描数量和批次数。确认后才会申请正式执行。"
-          : "十五分钟确认窗口已结束，请重新读取扫描数据。";
-      }
-      if (state) state.textContent = canConfirm ? "可确认" : "已过期";
+      if (title) title.textContent = feedback.title;
+      if (message) message.textContent = feedback.message;
+      if (state) state.textContent = feedback.label;
       scanPreviewPanel.hidden = false;
-      scanPreviewPanel.classList.toggle("is-expired", !canConfirm);
+      scanPreviewPanel.classList.toggle("is-expired", feedback.expired);
       scanPreviewPanel.classList.remove("is-error");
       if (scanPreviewConfirm) scanPreviewConfirm.disabled = !canConfirm;
       if (scanPreviewRegenerate) scanPreviewRegenerate.hidden = canConfirm;
@@ -1298,7 +1316,7 @@
       const selectedTarget = selectionPreviewPanel?.querySelector("[data-selection-preview-selected]");
       if (selectedTarget) selectedTarget.textContent = String(selected.length);
       if (selectionPreviewConfirm) {
-        selectionPreviewConfirm.disabled = !activeSelectionPreviewId || selected.length === 0;
+        selectionPreviewConfirm.disabled = !selectionPreviewCanConfirm || !activeSelectionPreviewId || selected.length === 0;
       }
       if (selectionPreviewToggleAll) {
         const allSelected = checkboxes.length > 0 && selected.length === checkboxes.length;
@@ -1309,6 +1327,7 @@
     function clearSelectionPreview({ force = false } = {}) {
       if (selectionConfirmationRetryOnly && !force) return false;
       activeSelectionPreviewId = "";
+      selectionPreviewCanConfirm = false;
       activeSelectionConfirmationRequestId = "";
       selectionConfirmationRetryOnly = false;
       if (!selectionPreviewPanel) return true;
@@ -1359,6 +1378,8 @@
       activeSelectionPreviewId = nextPreviewId;
       selectionConfirmationRetryOnly = false;
       const canConfirm = preview.can_confirm === true;
+      selectionPreviewCanConfirm = canConfirm;
+      const feedback = previewFeedback(preview, "selection");
       const candidates = Array.isArray(preview.candidates) ? preview.candidates : [];
       const title = selectionPreviewPanel.querySelector("[data-selection-preview-title]");
       const message = selectionPreviewPanel.querySelector("[data-selection-preview-message]");
@@ -1367,12 +1388,8 @@
       const expires = selectionPreviewPanel.querySelector("[data-selection-preview-expires]");
       const empty = selectionPreviewPanel.querySelector("[data-selection-preview-empty]");
       if (title) title.textContent = preview.title || "候选运单";
-      if (message) {
-        message.textContent = canConfirm
-          ? "只处理您勾选的运单；提交前会重新核对来源数据。"
-          : "候选清单已过期，请重新读取。";
-      }
-      if (state) state.textContent = canConfirm ? "可选择" : "已过期";
+      if (message) message.textContent = feedback.message;
+      if (state) state.textContent = feedback.label;
       if (count) count.textContent = String(preview.candidate_count ?? candidates.length);
       if (expires) expires.textContent = formatScanPreviewTime(preview.expires_at);
       selectionPreviewList.replaceChildren();
@@ -1399,8 +1416,9 @@
       });
       if (empty) empty.hidden = candidates.length > 0;
       selectionPreviewPanel.hidden = false;
-      selectionPreviewPanel.classList.toggle("is-expired", !canConfirm);
+      selectionPreviewPanel.classList.toggle("is-expired", feedback.expired);
       selectionPreviewPanel.classList.remove("is-error");
+      if (selectionPreviewToggleAll) selectionPreviewToggleAll.disabled = !canConfirm;
       if (selectionPreviewRegenerate) selectionPreviewRegenerate.hidden = canConfirm;
       syncSelectionPreviewCount();
       syncRunButtonVisual();
@@ -1413,6 +1431,7 @@
     function renderSelectionPreviewError(message) {
       if (!selectionPreviewPanel) return;
       activeSelectionPreviewId = "";
+      selectionPreviewCanConfirm = false;
       activeSelectionConfirmationRequestId = "";
       selectionConfirmationRetryOnly = false;
       selectionPreviewPanel.hidden = false;
@@ -2184,18 +2203,16 @@
               termStatus.textContent = "运行中";
               termStatus.className = "auto-terminal-status auto-terminal-status--running";
             } else if (data.scan_preview) {
-              termStatus.textContent = data.scan_preview.can_confirm ? "待确认" : "预览已过期";
-              termStatus.className = data.scan_preview.can_confirm
-                ? "auto-terminal-status auto-terminal-status--cancel"
-                : "auto-terminal-status auto-terminal-status--error";
+              const feedback = previewFeedback(data.scan_preview, "scan");
+              termStatus.textContent = data.scan_preview.can_confirm ? "待确认" : feedback.title;
+              termStatus.className = "auto-terminal-status auto-terminal-status--" + (feedback.expired ? "error" : "cancel");
             } else if (data.scan_preview_error) {
               termStatus.textContent = "预览不可用";
               termStatus.className = "auto-terminal-status auto-terminal-status--error";
             } else if (data.selection_preview) {
-              termStatus.textContent = data.selection_preview.can_confirm ? "待选择" : "候选已过期";
-              termStatus.className = data.selection_preview.can_confirm
-                ? "auto-terminal-status auto-terminal-status--cancel"
-                : "auto-terminal-status auto-terminal-status--error";
+              const feedback = previewFeedback(data.selection_preview, "selection");
+              termStatus.textContent = data.selection_preview.can_confirm ? "待选择" : feedback.title;
+              termStatus.className = "auto-terminal-status auto-terminal-status--" + (feedback.expired ? "error" : "cancel");
             } else if (data.selection_preview_error) {
               termStatus.textContent = "候选不可用";
               termStatus.className = "auto-terminal-status auto-terminal-status--error";
@@ -2700,7 +2717,7 @@
     if (selectionPreviewConfirm) {
       selectionPreviewConfirm.addEventListener("click", async () => {
         const selected = selectedBillCodes();
-        if (!activeSelectionPreviewId || !selected.length || selectionPreviewConfirm.hasAttribute("aria-busy")) return;
+        if (!selectionPreviewCanConfirm || !activeSelectionPreviewId || !selected.length || selectionPreviewConfirm.hasAttribute("aria-busy")) return;
         if (!window.crypto || typeof window.crypto.randomUUID !== "function") {
           renderSelectionPreviewError("当前浏览器无法生成安全的请求标识，所选运单未提交。");
           return;

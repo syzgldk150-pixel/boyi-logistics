@@ -784,10 +784,11 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         self._set_scan_project()
         self.service._load_catalog_entry = lambda _identity: self.entry
         projection = {
-            "contract_version": 2,
+            "contract_version": 3,
             "preview_invocation_id": "33333333-3333-4333-8333-333333333333",
             "selection_count": 2,
             "can_confirm": True,
+            "preview_state": "AVAILABLE",
         }
         original_wait = self.direct.wait
         async def completed_preview(identity, **kwargs):

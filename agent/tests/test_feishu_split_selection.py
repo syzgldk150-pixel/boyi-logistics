@@ -89,7 +89,7 @@ def selection_preview(
         "status": "COMPLETED",
         "invocation_id": run_id,
         "selection_preview": {
-            "contract_version": 2,
+            "contract_version": 3,
             "automation_id": "split_pending_problem_upload",
             "title": "分批/未到问题件",
             "preview_invocation_id": run_id,
@@ -108,6 +108,7 @@ def selection_preview(
                 ),
             },
             "can_confirm": True,
+            "preview_state": "AVAILABLE",
         },
     }
 

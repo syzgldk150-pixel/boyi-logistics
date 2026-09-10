@@ -1268,6 +1268,7 @@ def shorten_error_message(message: Any, limit: int = 180) -> str:
 
 
 _AUTOMATION_RUN_ERROR_MESSAGES = {
+    "CAPABILITY_UNAVAILABLE": "所需平台功能当前不可用，本次执行已失败。请检查业务账号的平台权限或页面接口。",
     "ACCOUNT_LOGIN_REQUIRED": "业务账号登录已失效，请重新登录后再执行。",
     "BROKER_ACCOUNT_UNAVAILABLE": "所选业务账号当前不可用，请检查登录状态后再执行。",
     "BROKER_CONCURRENCY_BLOCKED": "相同账号或数据位置正在被另一项任务使用，请等待其完成后重试。",
@@ -1294,6 +1295,8 @@ _AUTOMATION_RUN_ERROR_MESSAGES = {
 }
 
 _AUTOMATION_RUN_STATUS_MESSAGES = {
+    "FAILED": "本次执行已失败，请查看运行输出中的具体原因。",
+    "WRITE_OUTCOME_UNKNOWN": "写入结果暂时无法确认，请先核对目标数据，避免立即重复执行。",
     "BLOCKED_DATA": "执行前检查未通过，本次任务未进行任何写入。请检查任务设置后重试。",
     "BLOCKED_LOGIN": "业务账号登录已失效，请重新登录后再执行。",
     "NEEDS_CLARIFICATION": "还需要补充任务信息，请检查设置后再执行。",
