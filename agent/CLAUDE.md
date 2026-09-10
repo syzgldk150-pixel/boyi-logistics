@@ -6,6 +6,8 @@
 > 企业级物流业务自动化系统，包含价格采集、财务对账、OCR识别、车辆调度、AI客服五大模块。
 > 当前架构见 [业务接口与独立插件调用](../docs/architecture_direct_invocation.md)：最小 Agent 仅接已注册接口、开放插件和显式分析；本轮不新增模型框架。
 
+首方升级配置事件的 `first_party_upgrade_target` 由 `scripts/automation_project_plugin_policy_history.py` 按同项目、精确请求、版本及不可变包身份，与真实升级事件配对核验；普通配置事件仍保持原五字段合同。发布门禁与真实 MySQL 写入回读回归见 `../tests/test_first_party_upgrade_release_manifest.py`。
+
 ---
 
 ## ECS 发布入口
