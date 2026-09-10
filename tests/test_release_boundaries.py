@@ -1125,7 +1125,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
             'RELEASE_STAGE="preflight_scheduled_write_window_before_mutation"', 1
         )[1]
         emergency_and_later = pre_mutation.split(
-            'if [[ "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}" == "1" ]]; then', 1
+            'if [[ "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}" == "1" || -n "${RECOVER_RELEASE_HOLD_SHA}" ]]; then', 1
         )[1]
         emergency_branch, normal_and_later = emergency_and_later.split(
             "\n    else", 1
@@ -1136,12 +1136,12 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertLess(
             emergency_branch.index('RELEASE_STAGE="capture_control_plane_release_state"'),
             emergency_branch.index(
-                'RELEASE_STAGE="create_emergency_scheduler_release_hold"'
+                'RELEASE_STAGE="create_pre_mutation_scheduler_release_hold"'
             ),
         )
         self.assertLess(
             emergency_branch.index(
-                'RELEASE_STAGE="create_emergency_scheduler_release_hold"'
+                'RELEASE_STAGE="create_pre_mutation_scheduler_release_hold"'
             ),
             emergency_branch.index(
                 'RELEASE_STAGE="preflight_running_protected_writes_immediately_before_quiesce"'
@@ -2005,6 +2005,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
 
         unexpected_extra = _run_remote_release_argument_harness(
             "--emergency-scheduled-window-override=emergency_user_authorized",
+            "extra",
             "extra",
         )
         self.assertEqual(2, unexpected_extra.returncode)

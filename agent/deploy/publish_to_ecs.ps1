@@ -6,6 +6,8 @@ param(
     [string]$SshKeyPath = "C:\Users\DENG\.ssh\codex_ecs_ed25519",
     [string]$AutomationPluginArtifactRoot,
     [string]$AutomationPluginTrustRoot,
+    [ValidatePattern("^[0-9a-f]{40}$")]
+    [string]$RecoverReleaseHoldSha,
     [switch]$SkipRestart,
     [switch]$SkipHealthCheck,
     [switch]$EmergencyUserAuthorizedScheduledWindowOverride
@@ -606,6 +608,12 @@ try {
         if ($EmergencyUserAuthorizedScheduledWindowOverride) {
             Write-Warning "Emergency scheduled-window override requested: emergency_user_authorized=true"
             $remoteReleaseCommand += " '--emergency-scheduled-window-override=emergency_user_authorized'"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($RecoverReleaseHoldSha)) {
+            if (-not $EmergencyUserAuthorizedScheduledWindowOverride) {
+                $remoteReleaseCommand += " ''"
+            }
+            $remoteReleaseCommand += " '--recover-held-release=$RecoverReleaseHoldSha'"
         }
         Invoke-Remote $remoteReleaseCommand
         $remoteStageCreated = $false
