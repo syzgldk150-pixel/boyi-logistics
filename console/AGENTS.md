@@ -5,6 +5,8 @@
 
 专属设置资源由 `services/plugin_settings_assets.py` 在认证 HTML 响应内组装：仅支持包内同目录 classic JS/CSS 文件及内联 script/style，以每响应 nonce 执行；拒绝外链、路径穿越和不支持的脚本加载形式。图片仅允许 data URI，字体与连接被 CSP 禁止；新增资源形式须明确调整协议，不能宣称支持任意网页。iframe 保持 `sandbox="allow-scripts"`，不授予同源 Cookie，配置与统一账号仍只经现有会话绑定 Host 桥保存。真实入口验收见 `tests/v32_acceptance/custom_settings.py`（仓库根相对路径）。
 
+- 自动化预览消费版本 3 的明确状态：已使用清单显示“已使用”并关闭选择／确认，只有时间到期显示“已过期”；正式业务结果以对应 Invocation 为准。`FAILED` 显示明确执行失败，不能提示等待刷新；未知写继续提示核对目标数据。
+
 ## ECS 发布入口
 
 - 当用户提到“同步 ECS”“发版”“发布到 ECS”“部署到 ECS”时，优先直接运行固定脚本，不要先搜索其它发布入口：

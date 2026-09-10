@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from shared.redaction import redact_sensitive, redact_text
 from shared.invocation_summary import invocation_count_summary
 from shared.plugin_invocation_repository import ACTIVE_INVOCATION_STATUSES
+from console.app_support import automation_run_feedback_message
 
 
 def invocation_output_lines(invocation: Mapping[str, Any], *, state_label: str) -> list[str]:
@@ -39,7 +40,7 @@ def invocation_start_feedback(invocation: Mapping[str, Any]) -> dict[str, Any]:
         "title": "执行已发起" if pending else "已完成" if completed else "本次执行已结束",
         "message": ("脚本直接执行，完成后显示本次结果。" if pending else
                     invocation_count_summary(invocation) if completed else
-                    redact_text(invocation.get("error_summary") or "本次未完成，请查看对应执行记录。")),
+                    automation_run_feedback_message(error_code=invocation.get("error_code"), status=status)),
         "invocation_id": invocation.get("invocation_id"),
         "next_poll_after_ms": 1000 if pending else 0,
     }

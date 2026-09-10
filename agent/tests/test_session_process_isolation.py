@@ -589,6 +589,39 @@ class SessionProcessIsolationTests(unittest.TestCase):
         self.assertEqual("ok", result["capabilities"]["ronghui_clock"]["status"])
         self.assertEqual("UNKNOWN", result["capabilities"]["ronghui_write"]["status"])
 
+    def test_clock_probe_accepts_reviewed_new_menu_and_rejects_ambiguity(self):
+        broker = self._broker("clock_reviewed_menu")
+        config = SimpleNamespace(base_origin="https://tms.example.test")
+        for label in ("网点到离港记录", "网点到离港记录-新"):
+            calls = []
+            session = SimpleNamespace(get=lambda url, **kwargs: (
+                calls.append(url) or SimpleNamespace(status_code=200, url=url,
+                    text="FIND_REACH_OR_LEAVE_PORT_DETNEW", headers={})
+            ))
+            broker._validate_ronghui_menu_capability_once(session, config, "ronghui_clock",
+                menu_nodes=[{"text": label, "url": "/widget/home?view=clock"}])
+            self.assertEqual(["https://tms.example.test/widget/home?view=clock"], calls)
+
+        session = SimpleNamespace(get=lambda *_a, **_kw: self.fail("ambiguous menu must not request a page"))
+        for nodes in (
+            [{"text": "网点到离港时间", "url": "/widget/home?view=time"}],
+            [{"text": "网点到离港记录-新", "url": "/widget/home?view=one"},
+             {"text": "网点到离港记录-新", "url": "/widget/home?view=two"}],
+        ):
+            with self.assertRaises(TMSAuthStateError) as caught:
+                broker._validate_ronghui_menu_capability_once(session, config, "ronghui_clock", menu_nodes=nodes)
+            self.assertEqual("CAPABILITY_UNAVAILABLE", caught.exception.code)
+
+    def test_clock_probe_new_menu_still_requires_real_page_markers(self):
+        broker = self._broker("clock_reviewed_markers")
+        session = SimpleNamespace(get=lambda url, **kwargs: SimpleNamespace(
+            status_code=200, url=url, text="unrelated page", headers={}))
+        with self.assertRaises(TMSAuthStateError) as caught:
+            broker._validate_ronghui_menu_capability_once(session,
+                SimpleNamespace(base_origin="https://tms.example.test"), "ronghui_clock",
+                menu_nodes=[{"text": "网点到离港记录-新", "url": "/widget/home?view=clock"}])
+        self.assertEqual("CAPABILITY_UNAVAILABLE", caught.exception.code)
+
     def test_ronghui_write_capability_has_no_synthetic_online_probe(self):
         broker = self._broker("ronghui_write_unknown")
         with (

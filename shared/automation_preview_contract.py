@@ -6,7 +6,17 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-PREVIEW_CONTRACT_VERSION = 2
+PREVIEW_CONTRACT_VERSION = 3
+PREVIEW_STATES = frozenset({"AVAILABLE", "CONSUMED", "EXPIRED"})
+
+
+def valid_preview_state(raw: Mapping[str, Any]) -> bool:
+    return (
+        isinstance(raw.get("preview_state"), str)
+        and raw["preview_state"] in PREVIEW_STATES
+        and type(raw.get("can_confirm")) is bool
+        and raw["can_confirm"] == (raw["preview_state"] == "AVAILABLE")
+    )
 SCAN_PREVIEW_PUBLIC_FIELDS = frozenset(
     {
         "contract_version",
@@ -20,6 +30,7 @@ SCAN_PREVIEW_PUBLIC_FIELDS = frozenset(
         "selection_count",
         "batch_count",
         "can_confirm",
+        "preview_state",
     }
 )
 
@@ -41,7 +52,7 @@ def normalize_scan_preview_projection(
     if normalized_preview_invocation_id != preview_invocation_id or preview_invocation_id != expected_invocation_id:
         return None
     if (raw.get("contract_version") != PREVIEW_CONTRACT_VERSION or raw.get("automation_id") != expected_automation_id
-            or not isinstance(raw.get("can_confirm"), bool)):
+            or not valid_preview_state(raw)):
         return None
     target_date = str(raw.get("target_date") or "").strip()
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", target_date):
@@ -79,4 +90,5 @@ def normalize_scan_preview_projection(
         **timestamps,
         **counts,
         "can_confirm": raw["can_confirm"],
+        "preview_state": raw["preview_state"],
     }

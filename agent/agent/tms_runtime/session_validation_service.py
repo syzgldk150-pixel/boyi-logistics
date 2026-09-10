@@ -23,21 +23,21 @@ _YUNDA_CAPABILITIES = frozenset(
 )
 _KNOWN_CAPABILITIES = _RONGHUI_CAPABILITIES | _YUNDA_CAPABILITIES
 
-_RONGHUI_MENU_PROBES: dict[str, tuple[str, tuple[str, ...]]] = {
+_RONGHUI_MENU_PROBES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "ronghui_scan": (
-        "快件跟踪",
+        ("快件跟踪",),
         ("FIND_SACN_TRACK_BY_CODE", "快件跟踪"),
     ),
     "ronghui_problem": (
-        "登记问题件查询",
+        ("登记问题件查询",),
         ("FIND_PROBLEM_REGISTER_LIST", "登记问题件查询"),
     ),
     "ronghui_clock": (
-        "网点到离港记录",
+        ("网点到离港记录", "网点到离港记录-新"),
         ("FIND_REACH_OR_LEAVE_PORT_DETNEW", "REACH_OR_LEAVE_PORT_TYPE", "网点到离港记录"),
     ),
     "ronghui_finance": (
-        "结算明细查询",
+        ("结算明细查询",),
         (
             "FIND_BALANCE_QRY_WST_WITH_SITE",
             "FIND_BALANCE_QRY_TJ_WST",
@@ -190,13 +190,14 @@ class SessionValidationMixin:
         *,
         menu_nodes: list[Any] | None = None,
     ) -> None:
-        menu_text, markers = _RONGHUI_MENU_PROBES[capability]
+        menu_labels, markers = _RONGHUI_MENU_PROBES[capability]
+        menu_text = " / ".join(menu_labels)
         nodes = menu_nodes if menu_nodes is not None else self._load_ronghui_menu_once(session, config)
         candidates: set[str] = set()
         for node in self._walk_ronghui_menu_nodes(nodes):
             label = str(node.get("text") or node.get("name") or "").strip()
             raw_url = str(node.get("url") or "").strip()
-            if label == menu_text and raw_url and "/widget/home" in raw_url:
+            if label in menu_labels and raw_url and "/widget/home" in raw_url:
                 candidates.add(_join_origin_path(config.base_origin, raw_url))
         if len(candidates) != 1:
             raise TMSAuthStateError(

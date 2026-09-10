@@ -61,7 +61,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
     @staticmethod
     def _selection_projection(invocation_id):
         return {
-            "contract_version": 2,
+            "contract_version": 3,
             "automation_id": "self_pickup_problem_upload",
             "title": "自提到货问题件",
             "preview_invocation_id": invocation_id,
@@ -82,12 +82,13 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             ],
             "summary": {"duplicate_source_rows": 0},
             "can_confirm": True,
+            "preview_state": "AVAILABLE",
         }
 
     def test_scan_preview_projection_is_closed_and_bound_to_run(self):
         invocation_id = "11111111-1111-4111-8111-111111111111"
         projection = {
-            "contract_version": 2,
+            "contract_version": 3,
             "automation_id": "scan_codes",
             "preview_invocation_id": invocation_id,
             "target_date": "2026-08-24",
@@ -98,6 +99,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             "selection_count": 2,
             "batch_count": 1,
             "can_confirm": True,
+            "preview_state": "AVAILABLE",
         }
 
         self.assertEqual(
@@ -504,7 +506,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
     def test_completed_scan_preview_returns_only_bounded_projection(self):
         invocation_id = "11111111-1111-4111-8111-111111111111"
         projection = {
-            "contract_version": 2,
+            "contract_version": 3,
             "automation_id": "scan_codes",
             "preview_invocation_id": invocation_id,
             "target_date": "2026-08-24",
@@ -515,6 +517,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             "selection_count": 2,
             "batch_count": 1,
             "can_confirm": True,
+            "preview_state": "AVAILABLE",
         }
         app = _App(
             [

@@ -6,6 +6,9 @@
 
 - `business_query.py` 的经营摘要按中国业务日期读取当前 `automation_plugin_invocations.started_at`，计数及新鲜度来自同一只读快照；终态口径复用共享 Invocation 定义，未知写不计成功，空数据明确返回 `NO_DATA`。旧 Command/Run 不混入当前执行统计；直接 reader 继续校验角色与参数，财务金额仍由原账本聚合。隔离 MySQL 验证见 `../../tests/test_automation_operations_invocations_mysql.py`。
 
+- 当前扫描／自提／分批公共预览合同为版本 3：`preview_state` 明确区分 `AVAILABLE/CONSUMED/EXPIRED`，`can_confirm` 只能在 AVAILABLE 时为真。已使用优先于到期状态，正式处理结果仍读取对应 Invocation；不改变签名插件的业务预览绑定或一次性消费边界。
+- 融辉打卡的只读能力检查接受已核验的“网点到离港记录”和“网点到离港记录-新”精确菜单名称，仍要求唯一入口与真实页面标记；不使用包含匹配或任意首条菜单。
+
 ## 目录职责
 
 `agent/` 负责直接业务接口、独立插件调用、工具注册、既有定时、账号会话及 Agent 对话；旧编排代码只保留历史与未启用的长任务架构。

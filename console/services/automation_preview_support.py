@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from shared.automation_preview_contract import PREVIEW_CONTRACT_VERSION, SCAN_PREVIEW_PUBLIC_FIELDS, normalize_scan_preview_projection
+from shared.automation_preview_contract import PREVIEW_CONTRACT_VERSION, SCAN_PREVIEW_PUBLIC_FIELDS, normalize_scan_preview_projection, valid_preview_state
 
 from console.app_support import normalize_feedback_text
 from console.services.automation_projects import AUTOMATION_PROJECT_ID_RE
@@ -36,6 +36,7 @@ SELECTION_PREVIEW_PUBLIC_FIELDS = frozenset(
         "candidates",
         "summary",
         "can_confirm",
+        "preview_state",
     }
 )
 SELECTION_PREVIEW_CANDIDATE_FIELDS = {
@@ -135,7 +136,7 @@ def normalize_selection_preview_projection(
         return None
     if normalized_preview_invocation_id != preview_invocation_id or preview_invocation_id != expected_invocation_id:
         return None
-    if raw.get("contract_version") != PREVIEW_CONTRACT_VERSION or not isinstance(raw.get("can_confirm"), bool):
+    if raw.get("contract_version") != PREVIEW_CONTRACT_VERSION or not valid_preview_state(raw):
         return None
     title = str(raw.get("title") or "").strip()
     if not title or len(title) > 80:
@@ -184,6 +185,7 @@ def normalize_selection_preview_projection(
         "candidates": normalized_candidates,
         "summary": dict(summary),
         "can_confirm": raw["can_confirm"],
+        "preview_state": raw["preview_state"],
     }
 
 

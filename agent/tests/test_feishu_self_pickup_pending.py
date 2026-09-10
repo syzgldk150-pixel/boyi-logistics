@@ -30,7 +30,7 @@ class FeishuSelfPickupPendingTests(unittest.TestCase):
                     "status": "COMPLETED",
                     "invocation_id": preview_invocation_id,
                     "selection_preview": {
-                        "contract_version": 2,
+                        "contract_version": 3,
                         "automation_id": "self_pickup_problem_upload",
                         "title": "自提到货问题件",
                         "preview_invocation_id": preview_invocation_id,
@@ -42,6 +42,7 @@ class FeishuSelfPickupPendingTests(unittest.TestCase):
                         "candidates": [],
                         "summary": {"duplicate_source_rows": 0},
                         "can_confirm": True,
+                        "preview_state": "AVAILABLE",
                     },
                 }
 

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from console.services.automation_invocation_output import invocation_start_feedback
+from console.app_support import automation_run_feedback_message
 from feishu import message_handler
 
 
@@ -15,6 +16,17 @@ def test_failed_or_unknown_initial_receipt_never_claims_running():
         assert value["ok"] is False
         assert value["next_poll_after_ms"] == 0
     assert invocation_start_feedback({"status": "RUNNING"})["pending"] is True
+
+
+def test_terminal_failure_feedback_never_claims_status_is_pending():
+    failed = automation_run_feedback_message(error_code="UNMAPPED_PLUGIN_ERROR", status="FAILED")
+    capability = automation_run_feedback_message(error_code="CAPABILITY_UNAVAILABLE", status="FAILED")
+    unknown_write = automation_run_feedback_message(error_code="", status="WRITE_OUTCOME_UNKNOWN")
+    assert "已失败" in failed and "稍后刷新" not in failed
+    assert "平台功能" in capability and "已失败" in capability
+    assert "核对目标数据" in unknown_write
+    immediate = invocation_start_feedback({"status": "FAILED", "error_code": "CAPABILITY_UNAVAILABLE"})
+    assert immediate["message"] == capability
 
 
 def test_cancelling_previous_call_cannot_remove_new_call_tracking():

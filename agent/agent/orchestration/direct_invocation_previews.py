@@ -9,6 +9,7 @@ from agent.orchestration.models import OrchestrationError
 from agent.orchestration.scan_preview_binding import _validate_preview_evidence, _bind_formal_arguments, validate_scan_preview_context
 from agent.orchestration.selection_preview_binding import SELECTION_PREVIEW_PROJECTS, _validate_candidates, _validate_generic_candidates, _selected_bill_codes, _summary, _service_v2_summary
 from shared.automation_project_authorization import canonical_sha256
+from shared.automation_preview_contract import PREVIEW_CONTRACT_VERSION
 
 
 def _load(repository, invocation_id, *, entry, contract, actor_id=None):
@@ -55,7 +56,8 @@ def _candidates(entry, data):
 
 def project_preview(repository, invocation_id, *, entry, contract, scan):
     row, result, data, observed, expires = _load(repository, invocation_id, entry=entry, contract=contract)
-    projection = {"contract_version": 2, "preview_invocation_id": invocation_id, "automation_id": entry.automation_id, "observed_at": observed.isoformat(), "expires_at": expires.isoformat(), "can_confirm": datetime.now(timezone.utc) < expires and not row.get("preview_consumed_by")}
+    state = "CONSUMED" if row.get("preview_consumed_by") else "AVAILABLE" if datetime.now(timezone.utc) < expires else "EXPIRED"
+    projection = {"contract_version": PREVIEW_CONTRACT_VERSION, "preview_invocation_id": invocation_id, "automation_id": entry.automation_id, "observed_at": observed.isoformat(), "expires_at": expires.isoformat(), "can_confirm": state == "AVAILABLE", "preview_state": state}
     if scan:
         evidence = _validate_preview_evidence(data.get("preview_evidence", {}), row["arguments_json"])
         projection.update({key: evidence[key] for key in ("target_date", "source_page_count", "normalized_record_count", "selection_count", "batch_count")})

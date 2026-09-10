@@ -4,7 +4,7 @@ type: implementation
 status: active
 authority: canonical
 owner: repository
-updated: 2026-09-09
+updated: 2026-09-10
 ---
 
 # 业务接口与独立插件调用
@@ -53,6 +53,14 @@ OCR 仍是录单内的能力；货拉拉接口尚未完成接入，地图功能�
 `COMPLETED/FAILED/CANCELLED/WRITE_OUTCOME_UNKNOWN`。旧控制平面表保留历史查询能力。
 主组合根以 `execution_enabled=False` 构造旧 Runner；发布激活后其状态为 `reserved`，不领取历史任务。
 通用旧命令提交和重试接口返回明确不可用结果，不能隐式退回旧链。
+
+## 预览与失败提示修正（2026-09-10）
+
+扫描、自提和分批的公共预览合同升级为版本 3，新增 `preview_state`，由持久化消费记录和服务端时间生成。`CONSUMED` 表示已经提交过正式执行，即使之后超过确认时间也显示“已使用”；只有未使用且超时的预览显示 `EXPIRED`。已使用不代表业务成功，业务结果仍读取正式 Invocation。Agent、Console、飞书须一起更新；现有签名插件包和数据库结构不变。
+
+融辉“大祥 S 站”真实菜单核验发现当前名称为“网点到离港记录-新”，查询页包含 `FIND_REACH_OR_LEAVE_PORT_DETNEW`、`REACH_OR_LEAVE_PORT_TYPE`、`SITE_FB_NAME` 和 `REALITY_DATE`。原检查仅接受旧名称导致写入前失败。检查现接受两个已审核精确名称，仍要求唯一 URL、有效页面和登录状态；未放宽提交或写后独立核验。Console 对 `FAILED` 和 `CAPABILITY_UNAVAILABLE` 给出失败提示，不再把终态描述为等待刷新。
+
+回归入口为 `tests/test_direct_preview_state.py`、`tests/test_direct_invocation_feedback.py` 和 `agent/tests/test_session_process_isolation.py`，并联动 Console 预览及飞书确认用例。真实页面只读核验不等于重新执行打卡。
 
 ## 维护归属
 

@@ -146,7 +146,7 @@ def _run_verified_text(text: str, *, event_id: str) -> None:
 def _scan_preview(run_id: str) -> dict:
     observed_at = datetime.now(timezone.utc).replace(microsecond=0)
     return {
-        "contract_version": 2,
+        "contract_version": 3,
         "automation_id": "scan_codes",
         "preview_invocation_id": run_id,
         "target_date": observed_at.date().isoformat(),
@@ -157,6 +157,7 @@ def _scan_preview(run_id: str) -> dict:
         "selection_count": 7,
         "batch_count": 1,
         "can_confirm": True,
+        "preview_state": "AVAILABLE",
     }
 
 
@@ -168,7 +169,7 @@ def _selection_preview(
 ) -> dict:
     observed_at = datetime.now(timezone.utc).replace(microsecond=0)
     return {
-        "contract_version": 2,
+        "contract_version": 3,
         "automation_id": automation_id,
         "title": automation_id,
         "preview_invocation_id": run_id,
@@ -178,6 +179,7 @@ def _selection_preview(
         "candidates": candidates,
         "summary": summary,
         "can_confirm": True,
+        "preview_state": "AVAILABLE",
     }
 
 
