@@ -2037,6 +2037,7 @@ def _bootstrap_event_for_project(
 def _validate_followup_configuration_event(
     contract: Mapping[str, Any],
     *,
+    automation_id: str,
     event: Mapping[str, Any],
     configuration_evidence: Sequence[Mapping[str, Any]],
 ) -> bool:
@@ -2083,11 +2084,9 @@ def _validate_followup_configuration_event(
         != event.get("actor_id")
         or joined.get("configuration_actor_role")
         != event.get("actor_role")
-        or not isinstance(metadata, Mapping)
-        or set(metadata) != {
-            "request_payload_sha256", "from_project_configuration_version",
-            "to_project_configuration_version", "schedule_sha256", "scheduled_task_count",
-        }
+        or not plugin_policy_history.valid_configuration_metadata_fields(
+            metadata, automation_id=automation_id, event=event, configuration_evidence=configuration_evidence,
+        )
         or not _valid_sha256(metadata.get("request_payload_sha256"))
         or not _valid_sha256(metadata.get("schedule_sha256"))
         or metadata.get("to_project_configuration_version")
@@ -2275,6 +2274,7 @@ def _validate_later_project_policy_chain(
         elif reason == contract["bootstrap_evidence"]["plugin_reason"]:
             legacy_configuration = _validate_followup_configuration_event(
                 contract,
+                automation_id=automation_id,
                 event=event,
                 configuration_evidence=configuration_evidence,
             )
