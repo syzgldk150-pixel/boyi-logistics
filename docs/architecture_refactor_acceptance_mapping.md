@@ -12,6 +12,9 @@
 TASK_PYTHON="$(command -v python)"
 # 填写测试环境实际安装的 Chromium 可执行文件。
 TASK_CHROMIUM=/absolute/path/to/chromium
+if ! git check-ignore --quiet -- .t/; then
+  printf '\n/.t/\n' >> "$(git rev-parse --git-path info/exclude)"
+fi
 mkdir -p .t/tmp .t/home .task_tmp/v1-report
 isolated() {
   env -i HOME="$PWD/.t/home" TMPDIR="$PWD/.t/tmp" LANG=C.UTF-8 TZ=UTC \
@@ -26,7 +29,7 @@ FREEZE="$PWD/.task_tmp/v1-report/host-freeze.json"
 OUTPUT="$PWD/.task_tmp/v1-report/acceptance"
 ```
 
-`.t/f` 使用短路径是为了满足 Linux 本地通信套接字的路径长度限制。每个完整验收应独占这些测试目录和测试库；不能并行启动另一个完整验收。
+`.t/f` 使用短路径是为了满足 Linux 本地通信套接字的路径长度限制。上面的本地 Git 忽略仅用于这些测试产物，避免插件维护工具把它们识别为未提交核心代码；工具仍检查实际源码变化。每个完整验收应独占这些测试目录和测试库；不能并行启动另一个完整验收。报告归档后清理本次测试目录，并移除本次新增的本地忽略规则。
 
 ```bash
 isolated "$TASK_PYTHON" -m tests.v32_acceptance.host_freeze freeze "$FREEZE"

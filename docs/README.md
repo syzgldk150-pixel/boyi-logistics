@@ -5,7 +5,7 @@ tags: [documentation, navigation, authority, lifecycle]
 status: active
 authority: canonical
 owner: repository
-updated: 2026-09-07
+updated: 2026-09-10
 ---
 
 # 仓库文档索引
@@ -22,6 +22,7 @@ updated: 2026-09-07
 ## 现行权威文档
 
 - [业务接口与独立插件调用架构](architecture_direct_invocation.md)：V1 本轮实现入口与维护归属，替代旧的统一 Command/Run 调用要求。
+- [架构 V1 验收与复现映射](architecture_refactor_acceptance_mapping.md)、[寄件查询与范围覆盖](direct_waybill_query.md)、[旧执行链退役与回退](legacy_execution_retirement.md)：当前接口迁移、验证入口及历史保留边界。
 
 - [V3.2 第一轮维护边界与归属](low_maintenance_v32.md)：本轮模块入口、简单设置、插件局部维护及来源历史规则；取代旧文档中与本轮范围冲突的集中入口和强制 AI/专属 HTML 要求。
 - [V3.2 复现与发布回退](low_maintenance_v32_release.md)、[逐组验收要求](low_maintenance_v32_acceptance.json)及[扫描未知写恢复](scan_recovery_v32.md)：代码入口、隔离证据和首次核心更新边界。

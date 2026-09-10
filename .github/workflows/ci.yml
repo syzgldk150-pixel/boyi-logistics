@@ -7,7 +7,10 @@ on:
 
 jobs:
   agent-quality:
-    runs-on: ubuntu-latest
+    # The plugin runtime requires the distro's trusted Python 3.10 at /usr.
+    # A relocated setup-python build retains its compiled /opt fallback prefix
+    # and cannot start a nested copied plugin venv inside the restricted sandbox.
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
     services:
       mysql:
@@ -38,55 +41,29 @@ jobs:
       - name: Install restricted Harness sandbox dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes apparmor apparmor-profiles bubblewrap patchelf util-linux
-          sudo apparmor_parser -r \
-            /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+          sudo apt-get install --yes bubblewrap util-linux python3.10 python3.10-venv
           bwrap --unshare-all --die-with-parent \
             --ro-bind / / /usr/bin/true
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
       - name: Install trusted system Python for offline plugin execution
         run: |
-          # Materialize the setup-python runtime at the simulator's existing
-          # trusted system path; the sandbox intentionally does not mount /opt.
-          sudo -- "$(command -v python)" -I - <<'PY'
-          from pathlib import Path
-          import shutil
-          import sys
-
-          assert sys.version_info[:2] == (3, 10)
-          source = Path(sys.base_prefix).resolve()
-          destination = Path("/usr/local")
-          executable = destination / "bin/python3.10"
-          assert not executable.is_symlink()
-          shutil.copy2(Path(sys.executable).resolve(), executable)
-          shutil.copytree(
-              source / "lib/python3.10",
-              destination / "lib/python3.10",
-              dirs_exist_ok=True,
-              ignore=shutil.ignore_patterns("site-packages", "__pycache__"),
-          )
-          libraries = list((source / "lib").glob("libpython3.10.so*"))
-          assert libraries, "setup-python must provide the Python shared library"
-          for library in libraries:
-              shutil.copy2(library.resolve(), destination / "lib" / library.name)
-          PY
-          # Every subsequent test uses this real venv, so the Agent and the
-          # offline simulator agree on the same trusted /usr/local base prefix.
-          sudo patchelf --set-rpath /usr/local/lib /usr/local/bin/python3.10
+          # Production dependencies, tests and simulator all use one real venv
+          # built from the trusted distro runtime, without changing system pip.
           ci_runtime="$RUNNER_TEMP/boyi-ci-venv"
-          /usr/local/bin/python3.10 -m venv --copies "$ci_runtime"
-          probe='import ctypes, encodings, json, sqlite3, ssl, sys, venv, zlib; assert sys.version_info[:2] == (3, 10); assert sys.flags.isolated; assert sys.base_prefix == "/usr/local"; assert sys.prefix != sys.base_prefix; assert not any(path.startswith("/opt/") for path in sys.path); print(json.dumps({"version": sys.version, "prefix": sys.prefix, "base_prefix": sys.base_prefix}))'
+          plugin_runtime="$RUNNER_TEMP/boyi-plugin-probe"
+          /usr/bin/python3.10 -m venv --copies "$ci_runtime"
+          "$ci_runtime/bin/python" -m venv --copies --without-pip "$plugin_runtime/venv"
+          probe='import ctypes, encodings, json, sqlite3, ssl, sys, venv, zlib; assert sys.version_info[:2] == (3, 10); assert sys.flags.isolated; assert sys.base_prefix == "/usr"; assert sys.prefix != sys.base_prefix; assert not any(path.startswith("/opt/") for path in sys.path); print(json.dumps({"version": sys.version, "prefix": sys.prefix, "base_prefix": sys.base_prefix}))'
           env -i PATH=/usr/bin:/bin LANG=C.UTF-8 \
             "$ci_runtime/bin/python" -I -c "$probe"
+          # Match actual materialization: only the nested plugin venv is bound,
+          # so its outer Agent venv cannot accidentally supply the stdlib.
           bwrap --unshare-all --die-with-parent --new-session --clearenv \
             --ro-bind /usr /usr --ro-bind /bin /bin \
             --ro-bind /lib /lib --ro-bind /lib64 /lib64 \
-            --ro-bind "$ci_runtime" /ci-runtime \
+            --ro-bind "$plugin_runtime" /plugin \
             --proc /proc --dev /dev --tmpfs /tmp --chdir /tmp \
             --setenv PATH /usr/bin:/bin --setenv LANG C.UTF-8 \
-            /ci-runtime/bin/python -I -c "$probe"
+            /plugin/venv/bin/python -I -c "$probe"
           printf '%s\n' "$ci_runtime/bin" >> "$GITHUB_PATH"
       - name: Install shared production locks and Agent quality tools
         run: |

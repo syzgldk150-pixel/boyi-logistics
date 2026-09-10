@@ -1012,7 +1012,9 @@ class ReleaseBoundaryTests(unittest.TestCase):
 
     def test_ci_and_production_use_python_310_locked_environments(self):
         workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        self.assertEqual(3, workflow.count('python-version: "3.10"'))
+        # Console and the deferred Windows job use setup-python. Agent uses
+        # the distro's trusted 3.10 so copied plugin venvs can start in bwrap.
+        self.assertEqual(2, workflow.count('python-version: "3.10"'))
         self.assertIn(
             "python -m pip install -r agent/requirements.lock -r console/requirements.lock",
             workflow,
@@ -1027,6 +1029,12 @@ class ReleaseBoundaryTests(unittest.TestCase):
         agent_gate = workflow.split("agent-quality:", 1)[1].split(
             "console-quality:", 1
         )[0]
+        self.assertIn("runs-on: ubuntu-22.04", agent_gate)
+        self.assertIn("python3.10 python3.10-venv", agent_gate)
+        self.assertIn('/usr/bin/python3.10 -m venv --copies "$ci_runtime"', agent_gate)
+        self.assertIn('"$ci_runtime/bin/python" -m venv --copies --without-pip', agent_gate)
+        self.assertIn("assert sys.version_info[:2] == (3, 10)", agent_gate)
+        self.assertIn('"$ci_runtime/bin" >> "$GITHUB_PATH"', agent_gate)
         self.assertIn("windows_worker($|/)", agent_gate)
         self.assertIn("--exclude agent/agent/windows_worker", agent_gate)
         self.assertIn("--ignore-glob='tests/test_windows_worker_*.py'", agent_gate)
