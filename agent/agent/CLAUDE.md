@@ -12,6 +12,7 @@
 
 ## 修改入口
 
+- 首方版本升级：`automation_plugins/mysql_repository.py` 在同一 Unit of Work 内准备目标合同配置并暂存版本，失败整体回滚，已提交代次保持不变；`../../shared/automation_plugin_configuration_contract.py` 统一配置 witness 与精确升级目标校验。真实 MySQL 回归见 `../../tests/test_first_party_upgrade_configuration_mysql.py`。
 - 改直接调用、权限、执行记录和历史查询：
   - 当前入口为 `automation_plugins/direct_invocation.py`、`orchestration/direct_project_invocation.py` 与 `tms_runtime/direct_business.py`；`../docs/control_plane_v1.md` 仅供旧控制平面历史/离线核验。
   - 当前 Invocation 开始/结束使用明确 UTC；旧领取、唤醒和审批时间只用于历史解释，数据库历史时区不猜测；见 `../../docs/control_plane_timebase.md`。

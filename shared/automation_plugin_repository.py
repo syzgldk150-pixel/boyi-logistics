@@ -19,6 +19,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from shared.automation_project_policy_repository import PROJECT_POLICY_MODES
+from shared.automation_plugin_configuration_contract import (
+    PLUGIN_RUNTIME_MODELS as _PLUGIN_RUNTIME_MODELS,
+    configuration_contract_witness as _configuration_contract_witness,
+    lock_upgrade_configuration_contract,
+)
 from shared.orchestration_repository_support import (
     ConcurrentUpdateError,
     IdempotencyConflict,
@@ -84,7 +89,6 @@ _PLUGIN_TRUST_SOURCES = frozenset(
         "builtin_bundle",
     }
 )
-_PLUGIN_RUNTIME_MODELS = frozenset({"ACTION_V1", "SERVICE_V2"})
 _MIGRATION_PAIR_STATES = frozenset(
     {
         "PREPARING",
@@ -502,54 +506,6 @@ def _normalized_project_schedule(value: Mapping[str, Any]) -> dict[str, Any]:
         ):
             raise ValueError("daily schedule time must be canonical HH:MM")
     return {"kind": "daily_times", "times": normalized_times, "enabled": enabled}
-
-
-def _configuration_contract_witness(value: Mapping[str, Any]) -> dict[str, Any]:
-    """Close the catalog proof used to save one project configuration.
-
-    The caller has already parsed and verified the package through the catalog.
-    Persistence compares this proof to immutable version digests instead of
-    reparsing a Service v2 manifest from the database.
-    """
-
-    if not isinstance(value, Mapping) or set(value) != {
-        "runtime_model",
-        "allowed_entrypoints",
-        "invocation_contracts",
-        "scheduling",
-    }:
-        raise ValueError("project configuration contract witness is invalid")
-    runtime_model = _required_text(value.get("runtime_model"), "runtime_model")
-    if runtime_model not in _PLUGIN_RUNTIME_MODELS:
-        raise ValueError("project configuration runtime_model is invalid")
-    raw_entrypoints = value.get("allowed_entrypoints")
-    if not isinstance(raw_entrypoints, list):
-        raise ValueError("project configuration allowed_entrypoints are invalid")
-    allowed_entrypoints = [
-        _required_text(item, "allowed_entrypoint") for item in raw_entrypoints
-    ]
-    if len(allowed_entrypoints) != len(set(allowed_entrypoints)):
-        raise ValueError("project configuration allowed_entrypoints are duplicated")
-    raw_contracts = value.get("invocation_contracts")
-    if not isinstance(raw_contracts, Mapping) or set(raw_contracts) != set(
-        allowed_entrypoints
-    ):
-        raise ValueError("project configuration invocation contracts are invalid")
-    invocation_contracts: dict[str, dict[str, Any]] = {}
-    for entrypoint in allowed_entrypoints:
-        contract = raw_contracts.get(entrypoint)
-        if not isinstance(contract, Mapping):
-            raise ValueError("project configuration invocation contract is invalid")
-        invocation_contracts[entrypoint] = dict(contract)
-    scheduling = value.get("scheduling")
-    if not isinstance(scheduling, Mapping):
-        raise ValueError("project configuration scheduling witness is invalid")
-    return {
-        "runtime_model": runtime_model,
-        "allowed_entrypoints": allowed_entrypoints,
-        "invocation_contracts": invocation_contracts,
-        "scheduling": dict(scheduling),
-    }
 
 
 _QUARTER_HOUR_DAILY_TIMES = tuple(
@@ -1940,6 +1896,13 @@ class AutomationPluginRepository(
                     raise ConcurrentUpdateError(
                         "prepared configuration request does not match the project target"
                     )
+                prepared_upgrade_target = prepared_metadata.get("first_party_upgrade_target")
+                if prepared_upgrade_target is not None and prepared_upgrade_target != {
+                    "from_version": safe_from,
+                    "to_version": safe_to,
+                    "package_sha256": safe_package_sha,
+                }:
+                    raise ConcurrentUpdateError("prepared configuration belongs to another upgrade target")
                 try:
                     _sha256(
                         prepared_metadata.get("request_payload_sha256"),
@@ -2295,6 +2258,7 @@ class AutomationPluginRepository(
         request_id: str,
         expected_project_configuration_version: int,
         allow_blocked_unknown_write_archive: bool = False,
+        first_party_upgrade_target: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """CAS project settings, schedules and authorization in one Unit of Work.
 
@@ -2312,6 +2276,17 @@ class AutomationPluginRepository(
         normalized_actor = _required_text(actor_id, "actor_id")
         normalized_role = _required_text(actor_role, "actor_role")
         normalized_request = _required_text(request_id, "request_id")
+        upgrade_target = None
+        if first_party_upgrade_target is not None:
+            if normalized_actor != FIRST_PARTY_RELEASE_ACTOR_ID or normalized_role != "super_admin":
+                raise ValueError("upgrade configuration authority belongs to first-party release")
+            if not isinstance(first_party_upgrade_target, Mapping) or set(first_party_upgrade_target) != {"from_version", "to_version", "package_sha256"}:
+                raise ValueError("upgrade configuration target is invalid")
+            upgrade_target = {
+                "from_version": _required_text(first_party_upgrade_target["from_version"], "from_version"),
+                "to_version": _required_text(first_party_upgrade_target["to_version"], "to_version"),
+                "package_sha256": _sha256(first_party_upgrade_target["package_sha256"], "package_sha256"),
+            }
         if type(allow_blocked_unknown_write_archive) is not bool:
             raise ValueError("unknown-write archive authority must be boolean")
         if (
@@ -2428,6 +2403,8 @@ class AutomationPluginRepository(
         }
         if allow_blocked_unknown_write_archive:
             request_payload["blocked_unknown_write_archive"] = True
+        if upgrade_target is not None:
+            request_payload["first_party_upgrade_target"] = upgrade_target
         request_payload_sha256 = _json_hash(request_payload)
 
         with self.cursor() as cursor:
@@ -2450,6 +2427,8 @@ class AutomationPluginRepository(
             if project is None:
                 raise OrchestrationPersistenceError("automation project is not installed")
             _stageable_project_state(project.get("state"))
+            if upgrade_target is not None:
+                project = lock_upgrade_configuration_contract(cursor, project, upgrade_target)
             persisted_runtime_model = str(project.get("runtime_model") or "ACTION_V1")
             if persisted_runtime_model != runtime_model:
                 raise OrchestrationPersistenceError(
@@ -2939,6 +2918,8 @@ class AutomationPluginRepository(
                 "schedule_sha256": _json_hash(normalized_schedule),
                 "scheduled_task_count": len(target_tasks),
             }
+            if upgrade_target is not None:
+                event_metadata["first_party_upgrade_target"] = upgrade_target
             cursor.execute(
                 """
                 INSERT INTO automation_project_events (
