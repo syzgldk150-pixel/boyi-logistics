@@ -243,7 +243,12 @@ class BubblewrapHarnessModelLauncher:
         if not stdlib.is_dir():
             raise _error("Trusted Python standard library is unavailable", "HARNESS_SANDBOX_UNAVAILABLE")
 
-        mounts = [(str(executable), str(executable)), (str(stdlib), str(stdlib))]
+        # Keep host installation prefixes out of the isolated filesystem,
+        # including when the trusted interpreter is installed below /home.
+        runtime_prefix = Path("/runtime")
+        runtime_python = runtime_prefix / "bin" / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        runtime_stdlib = runtime_prefix / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        mounts = [(str(executable), str(runtime_python)), (str(stdlib), str(runtime_stdlib))]
         mounts.extend(_shared_library_mounts(executable))
         parent_dirs = {"/work"}
         for _source, destination in mounts:
@@ -277,7 +282,7 @@ class BubblewrapHarnessModelLauncher:
             and Path(value).resolve().is_relative_to(stdlib)
         }
         for site_path in sorted(site_paths):
-            command.extend(("--tmpfs", site_path))
+            command.extend(("--tmpfs", str(runtime_stdlib / Path(site_path).relative_to(stdlib))))
         isolated_source = (
             "import os as _harness_os\n"
             "_harness_os.environ.clear()\n"
@@ -290,7 +295,7 @@ class BubblewrapHarnessModelLauncher:
                 "/work",
                 "--unsetenv",
                 "PWD",
-                str(executable),
+                str(runtime_python),
                 "-I",
                 "-S",
                 "-c",

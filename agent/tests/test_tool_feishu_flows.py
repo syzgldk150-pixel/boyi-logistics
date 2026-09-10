@@ -207,7 +207,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         replies: list[str] = []
 
         class _ApprovalRuntime:
-            def handle_text(self, *_args):
+            def handle_binding_text(self, *_args):
                 return None
 
             def resolve_actor(self, open_id):
@@ -1276,7 +1276,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         self.assertEqual("price", pending_calls[0][1]["auth_session"])
         self.assertIn("验证码已发送", replies[-1])
 
-    def test_feishu_price_sms_code_resumes_original_control_plane_run(self):
+    def test_feishu_price_sms_code_does_not_resume_previous_call(self):
         replies: list[str] = []
         admin_calls: list[tuple[str, dict[str, Any] | None]] = []
         execute_calls: list[tuple[str, dict[str, Any]]] = []
@@ -1314,7 +1314,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
         self.assertEqual([("/admin/tms/price-session/submit-code", {"code": "123456"})], admin_calls)
         self.assertEqual([], execute_calls)
         self.assertIn("登录成功", replies[-1])
-        self.assertIn("原事项运行已恢复", replies[-1])
+        self.assertIn("先前调用已经结束", replies[-1])
 
     def test_removed_r7_departure_message_is_not_routed_to_automation(self):
         calls: dict[str, Any] = {}

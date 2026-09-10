@@ -15,7 +15,7 @@ CONSOLE_DIR = Path(__file__).resolve().parents[1]
 BROWSER_REQUEST_UUID = "123e4567-e89b-42d3-a456-426614174000"
 
 from console.app import LocalDocFlowApp
-from console.finance_service import FinanceValidationError
+from console.finance_service import FinanceService, FinanceValidationError
 from console.navigation import CONSOLE_NAVIGATION
 
 
@@ -89,7 +89,7 @@ class _FakeFinanceService:
 class FinanceModuleWorkbenchTests(unittest.TestCase):
     def setUp(self):
         self.app = LocalDocFlowApp.__new__(LocalDocFlowApp)
-        self.app.settings = SimpleNamespace(app_title="ShipNow")
+        self.app.settings = SimpleNamespace(app_title="ShipNow", agent_timeout_seconds=5)
         self.app.finance_service = _FakeFinanceService()
         self.app.template_env = Environment(
             loader=FileSystemLoader(CONSOLE_DIR / "templates"),
@@ -142,7 +142,15 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
                 **result["data"],
             }
 
-        self.app._submit_console_tool_command = types.MethodType(submit_command, self.app)
+        def direct_request(method, endpoint, *, payload=None, timeout=None, console_principal=None):
+            self.assertEqual("POST", method)
+            self.assertEqual("/internal/v1/business/finance-collect", endpoint)
+            self.assertEqual("7", console_principal["actor_id"])
+            self.command_submissions.append(payload)
+            return {"ok": True, "status": 200, "data": {"status": "SUCCESS", "data": {"done": True}}}
+
+        self.app._agent_request = direct_request
+        self.app._submit_console_tool_command = lambda **kwargs: self.fail("old Command must not be submitted")
         self.app._send_console_command_receipt = types.MethodType(send_receipt, self.app)
 
     def test_sidebar_links_to_dedicated_finance_workbench(self):
@@ -194,7 +202,7 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
             rendered,
             flags=re.DOTALL,
         )
-        self.assertEqual(5, len(platform_selects))
+        self.assertEqual(3, len(platform_selects))
         for options in platform_selects:
             self.assertEqual(["all", "ronghui"], re.findall(r'<option value="([^"]+)">', options))
         self.assertIn(
@@ -206,6 +214,29 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertNotIn("集配站费用", rendered)
         self.assertNotIn("增值服务费", rendered)
         self.assertNotIn("平台费", rendered)
+
+    def test_collection_forms_match_bound_source_plugin_scope(self):
+        self.app._render_finance(_Handler(), {})
+        service = FinanceService.__new__(FinanceService)
+        cases = (
+            ("sync", {"target_date": "2026-09-09", "rescan_days": "7"},
+             service.build_sync_arguments),
+            ("backfill", {"start_date": "2026-09-01", "end_date": "2026-09-09"},
+             service.build_backfill_arguments),
+        )
+        for name, values, build in cases:
+            with self.subTest(form=name):
+                form = re.search(
+                    rf'<form\b[^>]*data-finance-{name}-form[^>]*>(.*?)</form>',
+                    self.sent_html, flags=re.DOTALL,
+                ).group(1)
+                fields = re.findall(r'<(?:input|select)\b[^>]*\bname="([^"]+)"', form)
+                self.assertEqual(set(values), set(fields))
+                self.assertIn("已配置的全部数据源", form)
+                arguments = build({field: values[field] for field in fields})
+                self.assertEqual(name, arguments["mode"])
+                self.assertNotIn("account_id", arguments)
+                self.assertNotIn("platform", arguments)
 
     def test_frontend_keeps_yunda_label_only_for_historical_sync_records(self):
         script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")
@@ -249,12 +280,13 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertNotIn("parseFloat(row.expense", script)
         self.assertNotIn("total_income +", script)
 
-    def test_frontend_submits_stable_browser_uuid_and_uses_run_receipt(self):
+    def test_frontend_submits_stable_uuid_and_displays_completed_result(self):
         script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")
 
         self.assertIn('"X-Browser-Request-UUID": newBrowserRequestUuid()', script)
-        self.assertIn("receipt?.run_id", script)
-        self.assertIn("事项中心完成审批", script)
+        self.assertNotIn("receipt?.run_id", script)
+        self.assertNotIn("事项中心完成审批", script)
+        self.assertIn("财务采集完成", script)
         self.assertNotIn("await loadBatches();\n        await loadOverview();", script)
 
     def test_finance_api_routes_include_review_fact_and_knowledge_workflows(self):
@@ -294,18 +326,17 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
 
     def test_post_handlers_cover_sync_backfill_mapping_and_retry(self):
         self.app._handle_finance_post(_Handler({"rescan_days": 7}), "sync")
-        self.assertEqual(HTTPStatus.ACCEPTED, self.sent_status)
-        self.assertTrue(self.sent_payload["pending"])
-        self.assertEqual("sync_finance_bills", self.command_submissions[-1]["tool_name"])
-        self.assertEqual("sync", self.command_submissions[-1]["arguments"]["resource"])
-        self.assertEqual(BROWSER_REQUEST_UUID, self.command_submissions[-1]["browser_request_uuid"])
+        self.assertEqual(HTTPStatus.OK, self.sent_status)
+        self.assertNotIn("pending", self.sent_payload)
+        self.assertEqual("sync", self.command_submissions[-1]["params"]["resource"])
+        self.assertEqual(BROWSER_REQUEST_UUID, self.command_submissions[-1]["request_id"])
 
         self.app._handle_finance_post(
             _Handler({"start_date": "2026-07-01", "end_date": "2026-07-11"}),
             "backfill",
         )
-        self.assertEqual(HTTPStatus.ACCEPTED, self.sent_status)
-        self.assertEqual("backfill", self.command_submissions[-1]["arguments"]["resource"])
+        self.assertEqual(HTTPStatus.OK, self.sent_status)
+        self.assertEqual("backfill", self.command_submissions[-1]["params"]["resource"])
 
         with patch(
             "console.services.monitoring_finance.current_admin_user",
@@ -324,8 +355,8 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
             "retry_batch",
             path="/finance/sync-batches/8/retry",
         )
-        self.assertEqual(HTTPStatus.ACCEPTED, self.sent_status)
-        self.assertEqual("retry_batch", self.command_submissions[-1]["arguments"]["resource"])
+        self.assertEqual(HTTPStatus.OK, self.sent_status)
+        self.assertEqual("retry_batch", self.command_submissions[-1]["params"]["resource"])
 
     def test_validation_errors_are_readable_json(self):
         self.app.finance_service.fail_next = True

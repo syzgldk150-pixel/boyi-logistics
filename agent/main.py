@@ -30,6 +30,12 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 from shared.redaction import redact_text
 from shared.contracts import api_failure, api_success
 from shared.finance import FinanceRepository
+from shared.plugin_invocation_repository import PluginInvocationRepository
+from agent.automation_plugins.direct_invocation import DirectPluginInvocationService
+from agent.plugin_business_results import PluginBusinessResults
+from agent.tms_runtime.routes import bind_direct_business_service
+from business_composition import build_business_service
+from agent.tms_runtime.finance_business import FinancePluginBusinessService
 from shared.finance.sources import (
     enabled_finance_account_ids,
     enabled_finance_platforms,
@@ -183,6 +189,7 @@ from agent.orchestration.models import (
 )
 from agent.orchestration.outbox_dispatcher import OutboxDispatcher, OutboxDispatcherGroup
 from agent.orchestration.control_plane_retention import ControlPlaneRetentionWorker
+from agent.tms_runtime.account_change_guard import compose_account_change_guards
 from agent.orchestration.plan_validator import PlanValidator
 from agent.orchestration.planner import DeterministicPlanner
 from agent.orchestration.policy_engine import PolicyEngine
@@ -237,7 +244,6 @@ from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime.monitoring import configure_feishu_operation
 from agent.tms_runtime.routes import ensure_account_list_cache
 from agent.tms_runtime.routes import update_account_list_cache_status
-from agent.tms_runtime.routes import bind_agent_command_runtime
 from agent.tms_runtime.session_broker import get_session_broker
 from agent.workflow_resource_store import get_saved_workflow_resource, get_workflow_resource, list_workflow_resources
 from agent.tool_executor import ToolExecutor
@@ -687,14 +693,7 @@ def _project_run_completed_event(delivery, uow):
                 "tool_names": tool_names,
             },
         },
-        (
-            {
-                "consumer_name": "finance.brain",
-                "topic": "agent.run.completed",
-                "partition_key": run_id,
-                "max_attempts": 5,
-            },
-        ),
+        (),
     )
     return {
         "event_id": delivery.get("event_id"),
@@ -750,82 +749,10 @@ def _finance_sync_failure_handler(delivery, _uow):
     }
 
 
-def _finance_review_analysis_command(
-    *,
-    trigger_id: str,
-    source_run_id: str,
-    limit: int,
-    source: str,
-    actor: Actor,
-    idempotency_key: str,
-    correlation_id: str,
-) -> Command:
-    """Build the one governed command used by automatic and manual analysis."""
-
-    safe_trigger_id = str(trigger_id or "").strip()
-    safe_source_run_id = str(source_run_id or "").strip()
-    if not safe_trigger_id or not safe_source_run_id:
-        raise RuntimeError("finance analysis trigger identity is missing")
-    if isinstance(limit, bool) or not 1 <= int(limit) <= 100:
-        raise RuntimeError("finance analysis limit must be between 1 and 100")
-    return Command(
-        command_type="tool.execute",
-        source=source,
-        actor=actor,
-        parameters={
-            "tool_name": "analyze_finance_reviews",
-            "arguments": {
-                "trigger_id": safe_trigger_id,
-                "source_run_id": safe_source_run_id,
-                "limit": int(limit),
-            },
-        },
-        idempotency_key=idempotency_key,
-        entity_refs=(
-            EntityRef(
-                entity_type="finance_review_queue",
-                entity_id="pending",
-                source_system="finance",
-            ),
-        ),
-        correlation_id=correlation_id,
-    )
-
-
-def _finance_brain_completed_handler(command_submitter, delivery, _uow):
-    """Submit durable post-sync analysis and return without running FinanceBrain."""
-
-    payload = delivery.get("payload_json")
-    tool_names = payload.get("tool_names") if isinstance(payload, dict) else None
-    if (
-        str(delivery.get("event_type") or "") != "agent.run.completed"
-        or not isinstance(tool_names, list)
-        or "sync_finance_bills" not in tool_names
-    ):
-        return {"event_id": delivery.get("event_id"), "processed": False}
-    event_id = str(delivery.get("event_id") or "").strip()
-    source_run_id = str(payload.get("run_id") or delivery.get("run_id") or "").strip()
-    if not event_id or not source_run_id:
-        raise RuntimeError("finance completion event is missing identity")
-    command = _finance_review_analysis_command(
-        trigger_id=event_id,
-        source_run_id=source_run_id,
-        limit=20,
-        source="system",
-        actor=Actor(
-            ActorType.SYSTEM,
-            "finance-brain-outbox",
-            authenticated_by="durable_outbox",
-        ),
-        idempotency_key=f"finance-analysis:v1:{event_id}",
-        correlation_id=str(delivery.get("correlation_id") or source_run_id),
-    )
-    receipt = command_submitter(command)
-    return {
-        "event_id": event_id,
-        "processed": True,
-        **receipt.to_dict(),
-    }
+def _finance_brain_completed_handler(_command_submitter, delivery, _uow):
+    """Acknowledge an old notification without starting another business call."""
+    return {"event_id": delivery.get("event_id"), "processed": False,
+            "reason": "analysis_requires_explicit_invocation"}
 
 
 def _actor_from_payload(
@@ -1219,6 +1146,10 @@ async def lifespan(app: FastAPI):
     automation_operations_query = AutomationOperationsQueryService(
         MySQLAutomationOperationsRepository(runtime.memory.connection_factory)
     )
+    runtime.configure_direct_readers({
+        "query_business_finance": business_finance_query.run,
+        "query_automation_operations": automation_operations_query.run,
+    })
     execution_port = RegisteredToolExecutionAdapter(
         catalog=catalog,
         executor=plugin_runtime.execution_router,
@@ -1247,9 +1178,6 @@ async def lifespan(app: FastAPI):
         },
         bootstrap_allowed_tool_names=release_first_party_plugin_ids(),
     )
-    account_manager.set_credentials_change_guard(
-        schedule_policy_service.begin_credentials_change
-    )
     scheduled_task_approval_service = schedule_policy_service
     scheduled_task_approval_bootstrap = await asyncio.to_thread(
         schedule_policy_service.bootstrap_reviewed_policies
@@ -1270,6 +1198,25 @@ async def lifespan(app: FastAPI):
         wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
     )
 
+    plugin_business_results = PluginBusinessResults(repository)
+    direct_invocations = DirectPluginInvocationService(
+        PluginInvocationRepository(repository),
+        plugin_runtime.execution_router,
+        ResultVerifier(plugin_runtime.runtime_repository, plugin_runtime.migration_runtime),
+        release_hold_provider=scheduler_release_hold_requested,
+        saved_resource_provider=get_saved_workflow_resource,
+        account_validator=account_manager.require_active_binding_descriptor,
+        prepare_arguments=plugin_business_results.prepare,
+        publish_result=plugin_business_results.publish,
+    )
+    await direct_invocations.startup()
+    runtime.configure_direct_readers({}, invocations=direct_invocations)
+    account_manager.set_credentials_change_guard(compose_account_change_guards(
+        direct_invocations.begin_credentials_change,
+        schedule_policy_service.begin_credentials_change,
+    ))
+    business_service = build_business_service(catalog=core_catalog, invocations=direct_invocations)
+    bind_direct_business_service(business_service)
     project_policy_service = AutomationProjectPolicyService(
         repository,
         core_catalog,
@@ -1279,7 +1226,9 @@ async def lifespan(app: FastAPI):
         dynamic_resolver=TrustedDynamicArgumentResolver(),
         release_hold_provider=scheduler_release_hold_requested,
         contribution_registry=plugin_runtime.contribution_registry,
+        direct_invocations=direct_invocations,
     )
+    business_service.register_call("finance-collect", FinancePluginBusinessService(project_policy_service, core_catalog))
     # Construct a stopped Scheduler and bind its strict projection callbacks
     # before runtime generation recovery. A PENDING_PROJECTION generation may
     # only be acknowledged after the exact Console/Scheduler contribution set
@@ -1289,7 +1238,7 @@ async def lifespan(app: FastAPI):
     scheduler = init_scheduler(
         runtime,
         automation_project_invoker=project_policy_service,
-        include_startup_catchup=not release_hold,
+        include_startup_catchup=False,
     )
     plugin_runtime.service_effect_driver.bind_scheduler_projection_refresher(
         lambda: reload_scheduler(
@@ -1373,7 +1322,7 @@ async def lifespan(app: FastAPI):
         migration_entrypoint_ownership=plugin_runtime.migration_entrypoint_ownership,
     )
     bind_service_v2_feishu_dispatcher(service_v2_feishu_dispatcher)
-    harness_gateway = build_read_only_harness_gateway(runtime, repository)
+    harness_gateway = build_read_only_harness_gateway(runtime, repository, finance_summary=business_finance_query.run, invocations=direct_invocations)
     process_service_v2_runtime = ServiceV2ProcessRuntime(
         policy_service=project_policy_service, contribution_registry=plugin_runtime.contribution_registry,
         backend_availability=plugin_runtime.contribution_backend_availability,
@@ -1385,6 +1334,7 @@ async def lifespan(app: FastAPI):
     harness_runtime_status = await asyncio.to_thread(process_service_v2_runtime.start)
     logger.info("AI assistant runtime status=%s availability=%s", harness_runtime_status.status, harness_runtime_status.availability)
     runner = WorkflowRunner(saved_resource_provider=get_saved_workflow_resource,
+        execution_enabled=False,
         repository=repository,
         catalog=catalog,
         execution_port=execution_port,
@@ -1407,8 +1357,6 @@ async def lifespan(app: FastAPI):
     outbox_handlers = {
         "orchestration.run_worker": _noop_outbox_handler,
         "orchestration.audit": _project_run_completed_event,
-        "feishu.approval": feishu_approval_service.handle_outbox,
-        "feishu.approval.expiry": feishu_approval_service.handle_outbox,
         "finance.failure_alert": _finance_sync_failure_handler,
         "finance.brain": lambda delivery, uow: _finance_brain_completed_handler(
             gateway.submit,
@@ -1418,8 +1366,8 @@ async def lifespan(app: FastAPI):
     }
     dispatchers = []
     for consumer_name, handler in outbox_handlers.items():
-        # Each consumer claims only its own rows. FinanceBrain now submits a
-        # separate Run, so every outbox handler has the same short lease.
+        # Only notification/audit delivery remains here. Financial analysis
+        # runs exclusively from its explicit business interface.
         handler_uses_uow = consumer_name not in {
             "feishu.approval",
             "feishu.approval.expiry",
@@ -1470,10 +1418,9 @@ async def lifespan(app: FastAPI):
     await dispatcher.start()
     await retention_worker.start()
     bind_agent_runtime(runtime, loop)
-    bind_agent_command_runtime(runtime)
 
     async def handle_session_restored(account_id: str) -> None:
-        await service.publish_session_restored(account_id)
+        # A restored login only makes future calls available; ended calls stay ended.
         await asyncio.to_thread(
             plugin_runtime.reconcile_after_dependency_change,
             account_id=account_id,
@@ -1545,7 +1492,6 @@ async def lifespan(app: FastAPI):
         await resource_catalog_warm_task
     scheduler.shutdown(wait=False)
     register_account_session_restored(None)
-    bind_agent_command_runtime(None)
     bind_automation_project_entrypoints(None)
     bind_feishu_approval_runtime(None)
     bind_service_v2_feishu_dispatcher(None)
@@ -1553,6 +1499,8 @@ async def lifespan(app: FastAPI):
     await retention_worker.stop()
     await runner.stop()
     await dispatcher.stop()
+    await direct_invocations.stop()
+    bind_direct_business_service(None)
     await plugin_runtime.stop()
     await runtime.close()
     control_plane_service = None
@@ -1583,7 +1531,6 @@ app.include_router(
         module_slot_host_provider=lambda: ServiceV2WaybillEntryExtensionHost(
             policy_service=_automation_project_policies(),
             contribution_registry=_automation_plugins().contribution_registry,
-            command_gateway=_automation_project_policies().command_gateway,
         ),
     )
 )
@@ -1816,6 +1763,8 @@ def _admin_request_requires_console_principal(path: str) -> bool:
         or normalized == "/internal/v1/automation-project-policies"
         or normalized.startswith("/internal/v1/harness/")
         or normalized.startswith("/internal/v1/automation-projects/")
+        or normalized.startswith("/internal/v1/automation-invocations/")
+        or normalized.startswith("/internal/v1/business/")
         or normalized.startswith("/internal/v1/automation/")
         or normalized in {"/admin", "/internal/v1/admin"}
         or normalized.startswith(
@@ -2079,6 +2028,11 @@ def _internal_health_payload() -> dict[str, Any]:
             "status": "ok",
             "release_sha": _release_sha(),
             "instance_id": INSTANCE_ID,
+            "direct_invocations": {
+                "active_count": len(automation_project_policy_service.direct_invocations.active_invocations())
+                + automation_project_policy_service.direct_invocations.active_read_count()
+                if automation_project_policy_service is not None else 0,
+            },
             "uptime": uptime_str,
             "memory_mb": round(mem_mb, 1),
             "components": {
@@ -2324,56 +2278,40 @@ async def revoke_feishu_approval_binding(request: Request):
     return api_success({"revoked": True})
 
 
-@app.post("/internal/v1/commands", status_code=202)
+@app.post("/internal/v1/commands")
 async def submit_command(req: CommandRequest, request: Request):
-    receipt = _runtime().submit_command(_command_from_request(req, request))
+    _command_from_request(req, request)
     return JSONResponse(
-        status_code=202,
-        content=api_success(receipt.to_dict()),
-        headers={"Location": f"/internal/v1/runs/{receipt.run_id}"},
+        status_code=410,
+        content=api_failure("DIRECT_INTERFACE_REQUIRED", "请从对应页面或插件发起新的直接调用；历史任务仅供查阅。"),
     )
 
 
 @app.get("/internal/v1/runs/{run_id}")
 async def get_control_plane_run(run_id: str, request: Request):
     _require_console_admin_request(request)
-    return api_success(_control_plane().get_run(run_id))
+    return api_success({**_control_plane().get_run(run_id), "allowed_actions": [], "read_only": True})
 
 
 @app.post("/internal/v1/runs/{run_id}/cancel")
 async def cancel_control_plane_run(run_id: str, req: CancelRunRequest, request: Request):
-    return api_success(
-        await _control_plane().cancel_run(
-            run_id,
-            actor=_require_console_admin_action(req, request),
-            comment=req.comment,
-        )
-    )
+    _require_console_admin_action(req, request)
+    return _historical_read_only()
 
 
 @app.post("/internal/v1/runs/{run_id}/retry")
 async def retry_control_plane_run(run_id: str, req: RetryRunRequest, request: Request):
-    return api_success(
-        _control_plane().retry_run(
-            run_id,
-            actor=_require_console_admin_action(req, request),
-            reason=req.reason,
-        )
+    _require_console_admin_action(req, request)
+    return JSONResponse(
+        status_code=410,
+        content=api_failure("HISTORICAL_RUN_READ_ONLY", "历史任务不会重跑，请从对应插件重新触发。"),
     )
 
 
 @app.post("/internal/v1/runs/{run_id}/clarify")
 async def clarify_control_plane_run(run_id: str, req: ClarifyRunRequest, request: Request):
-    clarification = req.clarification
-    if isinstance(clarification, ClarificationPayload):
-        clarification = clarification.model_dump(exclude_none=True)
-    return api_success(
-        _control_plane().clarify_run(
-            run_id,
-            actor=_require_console_admin_action(req, request),
-            clarification=clarification,
-        )
-    )
+    _require_console_admin_action(req, request)
+    return _historical_read_only()
 
 
 @app.get("/internal/v1/work-items")
@@ -2440,7 +2378,7 @@ def _work_item_sla_filter(
 @app.get("/internal/v1/work-items/{work_item_id}")
 async def get_control_plane_work_item(work_item_id: str, request: Request):
     _require_console_admin_request(request)
-    return api_success(_control_plane().get_work_item(work_item_id))
+    return api_success({**_control_plane().get_work_item(work_item_id), "allowed_actions": [], "read_only": True})
 
 
 @app.get("/internal/v1/work-items/{work_item_id}/timeline")
@@ -2470,19 +2408,8 @@ async def assign_control_plane_work_item(
     req: AssignWorkItemRequest,
     request: Request,
 ):
-    actor = _require_console_admin_action(req, request)
-    current = _orchestration_repo().get_work_item(work_item_id)
-    if current is None:
-        raise OrchestrationError("WORK_ITEM_NOT_FOUND", "Work item was not found")
-    expected_version = req.expected_version if req.expected_version is not None else int(current["version"])
-    return api_success(
-        _control_plane().assign_work_item(
-            work_item_id,
-            expected_version=expected_version,
-            owner_type=actor.actor_type.value,
-            owner_id=req.owner_id,
-        )
-    )
+    _require_console_admin_action(req, request)
+    return _historical_read_only()
 
 
 @app.post("/internal/v1/approvals/{approval_id}/approve")
@@ -2493,15 +2420,8 @@ async def approve_control_plane_plan(
 ):
     if req.approval_id and req.approval_id != approval_id:
         raise OrchestrationError("APPROVAL_ID_MISMATCH", "Path and body approval IDs do not match")
-    return api_success(
-        _control_plane().approve(
-            approval_id,
-            plan_hash=req.plan_hash,
-            actor=_require_console_admin_action(req, request),
-            source="console",
-            comment=req.comment,
-        )
-    )
+    _require_console_admin_action(req, request)
+    return _historical_read_only()
 
 
 @app.post("/internal/v1/approvals/{approval_id}/reject")
@@ -2512,15 +2432,13 @@ async def reject_control_plane_plan(
 ):
     if req.approval_id and req.approval_id != approval_id:
         raise OrchestrationError("APPROVAL_ID_MISMATCH", "Path and body approval IDs do not match")
-    return api_success(
-        _control_plane().reject(
-            approval_id,
-            plan_hash=req.plan_hash,
-            actor=_require_console_admin_action(req, request),
-            source="console",
-            comment=req.comment,
-        )
-    )
+    _require_console_admin_action(req, request)
+    return _historical_read_only()
+
+
+def _historical_read_only():
+    return JSONResponse(status_code=410, content=api_failure(
+        "HISTORICAL_RUN_READ_ONLY", "历史事项仅供查阅，请从对应页面或插件发起新的调用。"))
 
 
 class ChatRequest(BaseModel):
@@ -2624,6 +2542,7 @@ class FinanceAnalyzeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     limit: int = Field(default=20, ge=1, le=100)
+    request_id: uuid.UUID
 
 
 @app.get("/tools", deprecated=True)
@@ -2709,7 +2628,7 @@ async def internal_activate_scheduler_after_release(request: Request):
                 scheduler_status.get("state") != "running"
                 or bool(scheduler_status.get("release_hold"))
                 != release_marker_present
-                or runner_status.get("state") != "running"
+                or runner_status.get("state") != "reserved"
                 or runner_status.get("release_hold") is not False
                 or not worker_ready
                 or plugin_status.get("ok") is not True
@@ -2827,25 +2746,19 @@ async def internal_clear_llm_credential(req: LLMClearCredentialRequest, request:
     )
 
 
-@app.post("/internal/v1/admin/finance/reviews/analyze", status_code=202)
+@app.post("/internal/v1/admin/finance/reviews/analyze")
 async def internal_analyze_finance_reviews(req: FinanceAnalyzeRequest, request: Request):
     actor = _require_console_admin_request(request)
-    trigger_id = new_id()
-    command = _finance_review_analysis_command(
-        trigger_id=trigger_id,
-        source_run_id=trigger_id,
-        limit=req.limit,
-        source="console",
-        actor=actor,
-        idempotency_key=f"finance-review-analysis:manual:{trigger_id}",
-        correlation_id=trigger_id,
+    brain = _runtime().finance_brain
+    if brain is None:
+        raise HTTPException(status_code=503, detail="财务分析接口不可用")
+    result = await _automation_project_policies().direct_invocations.call_business(
+        operation="finance-review-analysis", request_id=str(req.request_id),
+        actor_id=actor.actor_id, source="console", arguments={"limit": req.limit},
+        handler=lambda: brain.analyze_pending(limit=req.limit), write=True,
+        resource_keys=(("finance-review", "pending"),),
     )
-    receipt = await asyncio.to_thread(_runtime().submit_command, command)
-    return JSONResponse(
-        status_code=202,
-        content=api_success(receipt.to_dict()),
-        headers={"Location": f"/internal/v1/runs/{receipt.run_id}"},
-    )
+    return api_success(result)
 
 
 @app.post("/knowledge", deprecated=True)

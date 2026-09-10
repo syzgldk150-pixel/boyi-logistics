@@ -316,7 +316,7 @@ def test_projection_counts_and_success_come_from_prestate_and_fresh_rows():
         projection_read=lambda _date: deepcopy(state),
         projection_lookup=lambda _waybill: None,
     )
-    result = ports.projection_replace([deepcopy(_PROJECTION)], "2026-05-12")
+    result = ports.projection_replace([deepcopy(_PROJECTION)], "2026-05-12", {"account_id": "fixture-account"})
     assert result == {
         "ok": True,
         "verified": True,

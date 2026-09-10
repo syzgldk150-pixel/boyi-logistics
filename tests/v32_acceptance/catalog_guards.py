@@ -5,7 +5,7 @@ from copy import deepcopy
 import re
 from uuid import uuid4
 
-from tests.v32_acceptance.finance_maintenance import wait_run
+from tests.v32_acceptance.finance_maintenance import wait_invocation
 from tests.v32_acceptance.finance_maintenance_drill import require_complete
 
 
@@ -28,7 +28,7 @@ def exercise_catalog_guards(*, browser, management, connection_factory,
         submitted = browser.submit_current_run(independent)
         if submitted["http_status"] != 202 or submitted["body"].get("ok") is not True:
             raise AssertionError(f"healthy independent instance was blocked: {submitted}")
-        return require_complete(submitted["body"]["run_id"], connection_factory=connection_factory)
+        return require_complete(submitted["body"]["invocation_id"], connection_factory=connection_factory)
 
     # Change one non-secret persisted integrity field, restoring its exact value.
     generation = management.catalog.require(target).committed_generation
@@ -82,8 +82,8 @@ def exercise_catalog_guards(*, browser, management, connection_factory,
         browser.open_sources()
         failed_dependency = browser.submit_current_run(target)
         if failed_dependency["http_status"] == 202:
-            outcome = wait_run(failed_dependency["body"]["run_id"], connection_factory=connection_factory)
-            if outcome["status"] not in {"FAILED_TERMINAL", "CANCELLED"}:
+            outcome = wait_invocation(failed_dependency["body"]["invocation_id"], connection_factory=connection_factory)
+            if outcome["status"] not in {"FAILED", "CANCELLED"}:
                 raise AssertionError(f"inactive bound account was allowed to execute: {outcome}")
             failed_dependency["run"] = outcome
         elif failed_dependency["http_status"] < 400 or failed_dependency["body"].get("ok") is True:

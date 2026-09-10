@@ -29,15 +29,22 @@ class FakeProjectEntrypoints:
 
     async def invoke_feishu(self, **kwargs):
         self.calls.append(dict(kwargs))
-        if kwargs.get("on_accepted") is not None:
-            await kwargs["on_accepted"]({"run_id": "run-split"})
         if self.results:
-            return dict(self.results.pop(0))
-        return {
-            "success": self.status == "COMPLETED",
-            "status": self.status,
-            "run_id": "run-split",
-        }
+            result = dict(self.results.pop(0))
+        else:
+            result = {
+                "success": self.status == "COMPLETED",
+                "status": self.status,
+                "invocation_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            }
+        result["automation_id"] = "split_pending_problem_upload"
+        if kwargs.get("on_accepted") is not None:
+            await kwargs["on_accepted"]({
+                "invocation_id": result["invocation_id"],
+                "automation_id": result["automation_id"],
+                "status": "RUNNING",
+            })
+        return result
 
 
 def run_verified_message(text: str, *, event_id: str) -> None:
@@ -80,12 +87,12 @@ def selection_preview(
     return {
         "success": True,
         "status": "COMPLETED",
-        "run_id": run_id,
+        "invocation_id": run_id,
         "selection_preview": {
-            "contract_version": 1,
+            "contract_version": 2,
             "automation_id": "split_pending_problem_upload",
             "title": "分批/未到问题件",
-            "preview_run_id": run_id,
+            "preview_invocation_id": run_id,
             "observed_at": observed_at.isoformat(),
             "expires_at": (observed_at + timedelta(minutes=15)).isoformat(),
             "candidate_count": len(rows),
@@ -157,10 +164,10 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         replies: list[str] = []
         pending_store: dict[str, dict[str, Any]] = {}
         pending_ttls: list[int] = []
-        preview_run_id = "44444444-4444-4444-8444-444444444444"
+        preview_invocation_id = "44444444-4444-4444-8444-444444444444"
         self.project_entrypoints.results = [
-            selection_preview(preview_run_id, candidates(3), hidden_completed=2),
-            {"success": True, "status": "COMPLETED", "run_id": "formal-run"},
+            selection_preview(preview_invocation_id, candidates(3), hidden_completed=2),
+            {"success": True, "status": "COMPLETED", "invocation_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"},
         ]
 
         class FakeAgent:
@@ -190,13 +197,13 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         ), patch.object(message_handler, "_reply_text", side_effect=fake_reply):
             asyncio.run(message_handler._process_and_reply("分批", "user", "chat"))
             self.assertEqual("split_pending_selection", pending_store["chat"]["type"])
-            self.assertEqual(preview_run_id, pending_store["chat"]["preview_run_id"])
+            self.assertEqual(preview_invocation_id, pending_store["chat"]["preview_invocation_id"])
             self.assertEqual("user", pending_store["chat"]["originator_actor_id"])
             self.assertTrue(any("3. R0003" in reply for reply in replies))
 
             asyncio.run(message_handler._process_and_reply("1,3", "user", "chat"))
             self.assertEqual("split_pending_confirmation", pending_store["chat"]["type"])
-            self.assertEqual(preview_run_id, pending_store["chat"]["preview_run_id"])
+            self.assertEqual(preview_invocation_id, pending_store["chat"]["preview_invocation_id"])
             self.assertEqual("user", pending_store["chat"]["originator_actor_id"])
             self.assertEqual(["R0001", "R0003"], pending_store["chat"]["selected_bill_codes"])
 
@@ -204,15 +211,15 @@ class FeishuSplitSelectionTests(unittest.TestCase):
 
         self.assertNotIn("chat", pending_store)
         self.assertEqual({}, self.project_entrypoints.calls[0]["envelope"]["body"])
-        self.assertIsNone(self.project_entrypoints.calls[0]["preview_run_id"])
+        self.assertIsNone(self.project_entrypoints.calls[0]["preview_invocation_id"])
         formal_body = self.project_entrypoints.calls[-1]["envelope"]["body"]
         self.assertEqual(
             {"selected_bill_codes": ["R0001", "R0003"]},
             formal_body,
         )
         self.assertEqual(
-            preview_run_id,
-            self.project_entrypoints.calls[-1]["preview_run_id"],
+            preview_invocation_id,
+            self.project_entrypoints.calls[-1]["preview_invocation_id"],
         )
         self.assertFalse(message_handler._contains_account_override(formal_body))
         self.assertEqual(2, len(pending_ttls))
@@ -221,9 +228,9 @@ class FeishuSplitSelectionTests(unittest.TestCase):
     def test_signed_preview_ignores_legacy_tool_running_flag(self):
         replies: list[str] = []
         pending_store: dict[str, dict[str, Any]] = {}
-        preview_run_id = "55555555-5555-4555-8555-555555555555"
+        preview_invocation_id = "55555555-5555-4555-8555-555555555555"
         self.project_entrypoints.results = [
-            selection_preview(preview_run_id, candidates(1)),
+            selection_preview(preview_invocation_id, candidates(1)),
         ]
 
         class FakeAgent:
@@ -253,16 +260,16 @@ class FeishuSplitSelectionTests(unittest.TestCase):
 
         self.assertTrue(any("已开始生成分批问题件候选清单" in reply for reply in replies))
         self.assertFalse(any("脚本正在执行中" in reply for reply in replies))
-        self.assertEqual(preview_run_id, pending_store["chat"]["preview_run_id"])
+        self.assertEqual(preview_invocation_id, pending_store["chat"]["preview_invocation_id"])
         self.assertEqual(1, len(self.project_entrypoints.calls))
 
     def test_initial_confirmation_executes_all_previewed_codes(self):
         replies: list[str] = []
         pending_store: dict[str, dict[str, Any]] = {}
-        preview_run_id = "66666666-6666-4666-8666-666666666666"
+        preview_invocation_id = "66666666-6666-4666-8666-666666666666"
         self.project_entrypoints.results = [
-            selection_preview(preview_run_id, candidates(3)),
-            {"success": True, "status": "COMPLETED", "run_id": "formal-run"},
+            selection_preview(preview_invocation_id, candidates(3)),
+            {"success": True, "status": "COMPLETED", "invocation_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"},
         ]
 
         class FakeAgent:
@@ -298,15 +305,15 @@ class FeishuSplitSelectionTests(unittest.TestCase):
             formal_body,
         )
         self.assertEqual(
-            preview_run_id,
-            self.project_entrypoints.calls[-1]["preview_run_id"],
+            preview_invocation_id,
+            self.project_entrypoints.calls[-1]["preview_invocation_id"],
         )
         self.assertFalse(message_handler._contains_account_override(formal_body))
         self.assertFalse(any(reply.startswith("已选择") for reply in replies))
 
     def test_initial_confirmation_uses_control_plane_not_legacy_tool_running_flag(self):
         replies: list[str] = []
-        preview_run_id = "77777777-7777-4777-8777-777777777777"
+        preview_invocation_id = "77777777-7777-4777-8777-777777777777"
         pending_store = {
             "chat": {
                 "type": "split_pending_selection",
@@ -314,7 +321,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
                 "automation_route_key": "builtin.split_pending_problem_upload",
                 "originator_actor_id": "user",
                 "candidates": candidates(2),
-                "preview_run_id": preview_run_id,
+                "preview_invocation_id": preview_invocation_id,
                 "expires_at": selection_expires_at(),
             }
         }
@@ -345,8 +352,8 @@ class FeishuSplitSelectionTests(unittest.TestCase):
             self.project_entrypoints.calls[0]["envelope"]["body"]["selected_bill_codes"],
         )
         self.assertEqual(
-            preview_run_id,
-            self.project_entrypoints.calls[0]["preview_run_id"],
+            preview_invocation_id,
+            self.project_entrypoints.calls[0]["preview_invocation_id"],
         )
         self.assertTrue(replies)
 
@@ -364,7 +371,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
                 "automation_route_key": "builtin.split_pending_problem_upload",
                 "originator_actor_id": "user",
                 "candidates": candidates(2),
-                "preview_run_id": "88888888-8888-4888-8888-888888888888",
+                "preview_invocation_id": "88888888-8888-4888-8888-888888888888",
                 "expires_at": selection_expires_at(),
             }
         }
@@ -395,7 +402,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
                 "type": "split_pending_selection",
                 "originator_actor_id": "user",
                 "candidates": candidates(2),
-                "preview_run_id": "99999999-9999-4999-8999-999999999999",
+                "preview_invocation_id": "99999999-9999-4999-8999-999999999999",
                 "expires_at": selection_expires_at(),
             }
         }
@@ -418,19 +425,19 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         self.assertIn("已取消", replies[-1])
 
     def test_resending_split_replaces_old_confirmation_with_latest_preview(self):
-        old_preview_run_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-        new_preview_run_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        old_preview_invocation_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        new_preview_invocation_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
         pending_store: dict[str, dict[str, Any]] = {
             "chat": {
                 "type": "split_pending_confirmation",
                 "originator_actor_id": "user",
                 "selected_bill_codes": ["OLD"],
-                "preview_run_id": old_preview_run_id,
+                "preview_invocation_id": old_preview_invocation_id,
                 "expires_at": selection_expires_at(),
             }
         }
         self.project_entrypoints.results = [
-            selection_preview(new_preview_run_id, candidates(1)),
+            selection_preview(new_preview_invocation_id, candidates(1)),
         ]
 
         class FakeAgent:
@@ -453,18 +460,18 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         ), patch.object(message_handler, "_reply_text", side_effect=fake_reply):
             asyncio.run(message_handler._process_and_reply("分批", "user", "chat"))
         self.assertEqual("split_pending_selection", pending_store["chat"]["type"])
-        self.assertEqual(new_preview_run_id, pending_store["chat"]["preview_run_id"])
+        self.assertEqual(new_preview_invocation_id, pending_store["chat"]["preview_invocation_id"])
         self.assertNotIn("preview_fingerprint", pending_store["chat"])
 
     def test_confirmed_selection_submits_typed_command_not_legacy_tool(self):
         replies: list[str] = []
-        preview_run_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        preview_invocation_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
         pending = {
             "type": "split_pending_confirmation",
             "automation_route_key": "builtin.split_pending_problem_upload",
             "originator_actor_id": "user",
             "selected_bill_codes": ["R0001"],
-            "preview_run_id": preview_run_id,
+            "preview_invocation_id": preview_invocation_id,
             "expires_at": selection_expires_at(),
         }
 
@@ -494,12 +501,12 @@ class FeishuSplitSelectionTests(unittest.TestCase):
             {"selected_bill_codes": ["R0001"]},
             self.project_entrypoints.calls[0]["envelope"]["body"],
         )
-        self.assertEqual(preview_run_id, self.project_entrypoints.calls[0]["preview_run_id"])
+        self.assertEqual(preview_invocation_id, self.project_entrypoints.calls[0]["preview_invocation_id"])
         self.assertTrue(replies)
 
     def test_only_preview_originator_can_confirm_or_cancel_selection(self):
         replies: list[str] = []
-        preview_run_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        preview_invocation_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 
         class FakeAgent:
             async def execute_tool(self, *_args, **_kwargs):
@@ -521,7 +528,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
                 "automation_route_key": "builtin.split_pending_problem_upload",
                 "originator_actor_id": "originator",
                 "candidates": candidates(1),
-                "preview_run_id": preview_run_id,
+                "preview_invocation_id": preview_invocation_id,
                 "expires_at": selection_expires_at(),
             },
             {
@@ -529,7 +536,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
                 "automation_route_key": "builtin.split_pending_problem_upload",
                 "originator_actor_id": "originator",
                 "selected_bill_codes": ["R0001"],
-                "preview_run_id": preview_run_id,
+                "preview_invocation_id": preview_invocation_id,
                 "expires_at": selection_expires_at(),
             },
             {
@@ -537,7 +544,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
                 "automation_route_key": "builtin.self_pickup_problem_upload",
                 "originator_actor_id": "originator",
                 "selected_bill_codes": ["R_SELF"],
-                "preview_run_id": preview_run_id,
+                "preview_invocation_id": preview_invocation_id,
                 "expires_at": selection_expires_at(),
             },
         )

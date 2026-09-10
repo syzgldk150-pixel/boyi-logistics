@@ -96,7 +96,7 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
         )
         for source, contract_id, contribution_id, actor, context in cases:
             with self.subTest(source=source.value):
-                self.gateway.command = None
+                self.direct.call = None
                 self.contract = replace(
                     _contract(),
                     invocation_contracts={
@@ -126,7 +126,7 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
                     "PROJECT_RUNTIME_PROJECTION_STALE",
                     raised.exception.code,
                 )
-                self.assertIsNone(self.gateway.command)
+                self.assertIsNone(self.direct.call)
 
     def test_service_v2_feishu_revalidates_exact_projection_at_acceptance(self):
         self._set_service_v2_feishu_contract()
@@ -147,7 +147,7 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
             contribution_id="lookup_command",
         )
 
-        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertIn("invocation_id", receipt)
         self.assertEqual(
             [
                 {
@@ -184,7 +184,7 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
             )
 
         self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
-        self.assertIsNone(self.gateway.command)
+        self.assertIsNone(self.direct.call)
 
     def test_service_v2_feishu_rejects_mismatched_projection_identity(self):
         self._set_service_v2_feishu_contract()
@@ -227,7 +227,7 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
                     "PROJECT_RUNTIME_PROJECTION_STALE",
                     raised.exception.code,
                 )
-                self.assertIsNone(self.gateway.command)
+                self.assertIsNone(self.direct.call)
 
     def test_service_v2_feishu_projection_race_fails_in_uow_guard(self):
         self._set_service_v2_feishu_contract()
@@ -265,7 +265,7 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
 
         self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
         self.assertEqual(2, len(registry.calls))
-        self.assertIsNone(self.gateway.command)
+        self.assertIsNone(self.direct.call)
 
     def test_service_v2_module_slot_rechecks_exact_handle_in_uow_guard(self):
         self._set_service_v2_module_slot_contract()
@@ -294,7 +294,7 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
             contribution_id="validate_waybill",
         )
 
-        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertIn("invocation_id", receipt)
         self.assertEqual(
             [
                 {"slot": "waybill_entry.validators", "handle": "a" * 64},
@@ -302,7 +302,7 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
             ],
             registry.calls,
         )
-        self.assertEqual(waybill, self.gateway.command.parameters["arguments"]["waybill"])
+        self.assertEqual(waybill, self.direct.call.arguments["waybill"])
 
     def test_service_v2_module_slot_generation_switch_fails_before_acceptance(self):
         self._set_service_v2_module_slot_contract()
@@ -331,7 +331,7 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
 
         self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
         self.assertEqual(2, len(registry.calls))
-        self.assertIsNone(self.gateway.command)
+        self.assertIsNone(self.direct.call)
 
     def test_action_v1_module_slot_is_rejected_before_dispatch(self):
         self.entry.runtime_model = "ACTION_V1"
@@ -342,15 +342,16 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
                 entrypoint=AutomationEntrypoint.MODULE_SLOTS,
                 request_id="33333333-3333-4333-8333-333333333333",
                 actor=_admin(),
-                trusted_context={},
+                trusted_context={"module_slot": {"slot": "waybill_entry.validators", "handle": "a" * 64}, "dynamic_inputs": {"waybill": {field: "" for field in WAYBILL_ENTRY_DRAFT_FIELDS}}},
                 expected_automation_generation=1,
                 contribution_id="forged",
             )
 
         self.assertEqual("PROJECT_ENTRYPOINT_DISABLED", raised.exception.code)
-        self.assertIsNone(self.gateway.command)
+        self.assertIsNone(self.direct.call)
 
     def test_action_v1_feishu_invocation_does_not_require_managed_projection(self):
+        self.repository.state.policy["mode"] = "PROJECT_FULL_AUTO"
         self.entry.runtime_model = "ACTION_V1"
         self.contract = _contract_for(AutomationEntrypoint.FEISHU)
 
@@ -363,7 +364,7 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
             expected_automation_generation=1,
         )
 
-        self.assertEqual("run-invoke", receipt.run_id)
+        self.assertIn("invocation_id", receipt)
 
     def test_service_v2_webhook_revalidates_exact_projection_at_acceptance(self):
         self._set_service_v2_webhook_contract()
@@ -387,8 +388,8 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
             contribution_id="receive_status",
         )
 
-        self.assertEqual("run-invoke", receipt.run_id)
-        self.assertEqual({"mode": "saved"}, self.gateway.command.parameters["arguments"])
+        self.assertIn("invocation_id", receipt)
+        self.assertEqual({"mode": "saved"}, self.direct.call.arguments)
         expected_call = {
             "automation_id": AUTOMATION_ID,
             "generation": 1,
@@ -422,7 +423,7 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
 
         self.assertEqual("TRUSTED_CONTEXT_INVALID", raised.exception.code)
         self.assertEqual([], registry.calls)
-        self.assertIsNone(self.gateway.command)
+        self.assertIsNone(self.direct.call)
 
     def test_service_v2_webhook_requires_matching_projection_and_uow_recheck(self):
         self._set_service_v2_webhook_contract()
@@ -500,7 +501,7 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
             )
         self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
         self.assertEqual(2, len(registry.calls))
-        self.assertIsNone(self.gateway.command)
+        self.assertIsNone(self.direct.call)
 
     def test_service_v2_event_revalidates_exact_projection_at_acceptance(self):
         self._set_service_v2_event_contract()
@@ -521,8 +522,8 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
             contribution_id="handle_created",
         )
 
-        self.assertEqual("run-invoke", receipt.run_id)
-        self.assertEqual({"mode": "saved"}, self.gateway.command.parameters["arguments"])
+        self.assertIn("invocation_id", receipt)
+        self.assertEqual({"mode": "saved"}, self.direct.call.arguments)
         expected_call = {
             "automation_id": AUTOMATION_ID,
             "generation": 1,
@@ -563,7 +564,7 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
                     )
                 self.assertEqual("TRUSTED_CONTEXT_INVALID", raised.exception.code)
                 self.assertEqual([], registry.calls)
-                self.assertIsNone(self.gateway.command)
+                self.assertIsNone(self.direct.call)
 
     def test_service_v2_event_requires_managed_event_actor(self):
         self._set_service_v2_event_contract()
@@ -681,4 +682,4 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
             )
         self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
         self.assertEqual(2, len(registry.calls))
-        self.assertIsNone(self.gateway.command)
+        self.assertIsNone(self.direct.call)

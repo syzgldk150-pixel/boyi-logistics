@@ -929,7 +929,9 @@ class MySQLAutomationPluginRuntimeAdapter:
         expected_generation: int,
         expected_manifest_sha256: str,
         lease_id: str,
-        orchestration_run_id: str,
+        orchestration_run_id: str | None = None,
+        invocation_id: str | None = None,
+        provider_call: bool = False,
         expires_at: datetime,
     ) -> RuntimeGenerationLease:
         with self._orchestration.unit_of_work() as uow:
@@ -939,6 +941,8 @@ class MySQLAutomationPluginRuntimeAdapter:
                 expected_manifest_sha256=expected_manifest_sha256,
                 lease_id=lease_id,
                 orchestration_run_id=orchestration_run_id,
+                **({"invocation_id": invocation_id} if invocation_id is not None else {}),
+                **({"provider_call": True} if provider_call else {}),
                 expires_at=expires_at,
                 lease_owner="agent-runtime",
             )
@@ -1392,6 +1396,7 @@ class MySQLAutomationPluginRuntimeAdapter:
             acquired_at=_utc_datetime(row.get("acquired_at"), "acquired_at"),
             expires_at=_utc_datetime(row.get("expires_at"), "expires_at"),
             outcome=RuntimeLeaseOutcome(str(row.get("outcome") or "RUNNING")),
+            invocation_id=row.get("invocation_id"),
             orchestration_run_id=(
                 str(row["orchestration_run_id"])
                 if row.get("orchestration_run_id") is not None

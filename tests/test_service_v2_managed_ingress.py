@@ -74,6 +74,7 @@ class _Policy:
         return {
             "success": True,
             "status": "COMPLETED",
+            "invocation_id": "11111111-1111-4111-8111-111111111111",
             "command_id": "must-not-leak",
         }
 
@@ -133,11 +134,11 @@ class ServiceV2ManagedIngressTests(IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(
-            {"success": True, "status": "COMPLETED"},
+            {"success": True, "status": "COMPLETED", "invocation_id": "11111111-1111-4111-8111-111111111111", **dict.fromkeys(("result", "output", "error", "error_code", "error_summary", "running", "status_url"))},
             webhook_result,
         )
         self.assertEqual(
-            {"success": True, "status": "COMPLETED"},
+            {"success": True, "status": "COMPLETED", "invocation_id": "11111111-1111-4111-8111-111111111111", **dict.fromkeys(("result", "output", "error", "error_code", "error_summary", "running", "status_url"))},
             event_result,
         )
         self.assertEqual(2, len(self.policy.calls))

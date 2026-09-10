@@ -33,6 +33,9 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     if path == "/customer-service/problems/query":
         app._handle_customer_service_problem_query(handler)
         return True
+    if path == "/customer-service/problems/live-query":
+        app._handle_customer_service_problem_live_query(handler)
+        return True
     action = _ACTION_ROUTES.get(path)
     if action:
         app._handle_customer_service_problem_agent_action(handler, action)

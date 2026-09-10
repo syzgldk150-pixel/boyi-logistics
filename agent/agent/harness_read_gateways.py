@@ -116,6 +116,8 @@ class ReadOnlyHarnessGateway:
         list_work_items: Callable[[int], object],
         get_run: Callable[[str], object],
         get_evidence: Callable[[str], object],
+        finance_summary: Callable[[Mapping[str, Any]], object] | None = None,
+        read_boundary: Callable | None = None,
     ) -> None:
         self._knowledge_search = knowledge_search
         self._waybill_lookup = waybill_lookup
@@ -123,16 +125,31 @@ class ReadOnlyHarnessGateway:
         self._list_work_items = list_work_items
         self._get_run = get_run
         self._get_evidence = get_evidence
+        self._finance_summary = finance_summary
+        self._read_boundary = read_boundary
 
     def handlers(self) -> dict[str, Callable[[Mapping[str, Any]], object]]:
-        return {
+        handlers = {
             "knowledge.search": self.knowledge,
             "waybill.lookup": self.waybill,
             "tracking.lookup": self.tracking,
+            "finance.summary": self.finance,
             "work_items.list_open": self.work_items,
             "runs.get_summary": self.run,
             "artifact.inspect": self.evidence,
         }
+        if self._read_boundary is None:
+            return handlers
+        return {name: (lambda arguments, name=name, handler=handler:
+                       self._read_boundary(name, handler, arguments)) for name, handler in handlers.items()}
+
+    def finance(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        if self._finance_summary is None:
+            return _unavailable("财务查询接口尚未连接")
+        result = self._finance_summary(arguments)
+        if not isinstance(result, Mapping):
+            return _unavailable("财务查询未返回有效数据")
+        return _safe_summary(result)
 
     def knowledge(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         try:
@@ -152,14 +169,14 @@ class ReadOnlyHarnessGateway:
         return {"可用": True, "找到": bool(items), "结果": items}
 
     def waybill(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        number = _text(arguments["waybill_number"], limit=191)
+        number = str(arguments["waybill_number"]).strip()
         try:
             row = self._waybill_lookup(number)
         except Exception:
             return _unavailable("运单信息暂时无法读取，请稍后重试")
         if not isinstance(row, Mapping):
             return {"可用": True, "找到": False, "运单号": number}
-        actual = _text(row.get("waybill_no"), limit=191)
+        actual = str(row.get("waybill_no") or "").strip()
         if actual != number:
             return {"可用": True, "找到": False, "运单号": number}
         return {
@@ -173,7 +190,7 @@ class ReadOnlyHarnessGateway:
         }
 
     def tracking(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        number = _text(arguments["tracking_number"], limit=191)
+        number = str(arguments["tracking_number"]).strip()
         try:
             payload = self._tracking_lookup(number)
         except Exception:
@@ -184,12 +201,11 @@ class ReadOnlyHarnessGateway:
                 "运单号": number,
                 "说明": "物流轨迹查询失败，请检查运单号或稍后重试",
             }
-        actual = _text(
+        actual = str(
             payload.get("tracking_number")
             or payload.get("waybill_no")
-            or payload.get("bill_code"),
-            limit=191,
-        )
+            or payload.get("bill_code") or ""
+        ).strip()
         if actual and actual != number:
             return {"可用": True, "找到": False, "运单号": number}
         routes = []

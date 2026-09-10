@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlparse
 from tests.v32_acceptance.console_fixture import ConsoleFixture
 from tests.v32_acceptance.collector_navigation_probe import exercise_run_links, exercise_finance_failure_notification
 from tests.v32_acceptance.finance_maintenance import (
-    ACCOUNTS, RUNTIME, TARGET, composed, connect, prepare_database, setup_instance, wait_run,
+    ACCOUNTS, RUNTIME, TARGET, composed, connect, prepare_database, setup_instance, wait_invocation,
 )
 from tests.v32_acceptance.finance_maintenance_browser import FinanceBrowser
 from tests.v32_acceptance.finance_maintenance_drill import business_proof, require_complete
@@ -39,7 +39,7 @@ def main():
                 baseline = require_complete(browser.run(automation_id))
                 proof = business_proof(automation_id, expected_version=artifacts["baseline"]["version"])
                 source_ids = [row["source_id"] for row in proof["sources"]]
-                report["run_links"] = exercise_run_links(browser, automation_id, baseline["run_id"], source_ids)
+                report["invocation_links"] = exercise_run_links(browser, automation_id, baseline["invocation_id"], source_ids)
                 browser.verify_finance(source_ids, target_date=TARGET,
                     expected_waybills={row["source_id"]: row["waybill_no"] for row in proof["rows"]})
                 browser.page.locator("[data-finance-platform]").select_option("ronghui")
@@ -71,21 +71,21 @@ def main():
                 try:
                     receipt = browser.submit_current_run(automation_id)
                     assert receipt["http_status"] == 202
-                    early = wait_run(receipt["body"]["run_id"])
-                    assert early["status"] == "FAILED_TERMINAL"
+                    early = wait_invocation(receipt["body"]["invocation_id"])
+                    assert early["status"] == "FAILED"
                     assert len(supplier.requests) == calls_before
                     with connect() as connection, connection.cursor() as cursor:
-                        cursor.execute("SELECT COUNT(*) AS n FROM automation_project_generation_leases WHERE orchestration_run_id=%s", (early["run_id"],))
+                        cursor.execute("SELECT COUNT(*) AS n FROM automation_project_generation_leases WHERE invocation_id=%s", (early["invocation_id"],))
                         assert cursor.fetchone()["n"] == 0
                     report["prelease_account_failure"] = {"run": early, "raw_request_count": len(supplier.requests) - calls_before,
-                        "lease_count": 0, "notification": exercise_finance_failure_notification(management, early["run_id"], expect_sources=False)}
+                        "lease_count": 0, "notification": exercise_finance_failure_notification(management, early["invocation_id"], expect_sources=False)}
                 finally:
                     management.account_manager.inactive.remove(failed_account)
                 supplier.failed_accounts.add(failed_account)
-                failed_run = wait_run(browser.run(automation_id))
-                if failed_run["status"] not in {"PARTIAL", "FAILED_TERMINAL", "BLOCKED_DATA"}:
+                failed_run = wait_invocation(browser.run(automation_id))
+                if failed_run["status"] != "FAILED":
                     raise AssertionError(f"supplier failure was not reported: {failed_run}")
-                report["failure_notification"] = exercise_finance_failure_notification(management, failed_run["run_id"])
+                report["failure_notification"] = exercise_finance_failure_notification(management, failed_run["invocation_id"])
                 browser.page.goto(console.url + "/modules/finance", wait_until="domcontentloaded")
                 browser.page.locator("[data-finance-start-date]").fill(TARGET)
                 browser.page.locator("[data-finance-end-date]").fill(TARGET)

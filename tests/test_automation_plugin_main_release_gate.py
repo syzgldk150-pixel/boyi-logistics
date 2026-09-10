@@ -25,10 +25,10 @@ class _Runner:
 
     def resume_after_release(self) -> dict[str, Any]:
         self.events.append("runner-running")
-        return {"state": "running", "release_hold": False, "active_runs": 0}
+        return {"state": "reserved", "release_hold": False, "active_runs": 0}
 
     def runtime_status(self) -> dict[str, Any]:
-        return {"state": "running", "release_hold": False, "active_runs": 0}
+        return {"state": "reserved", "release_hold": False, "active_runs": 0}
 
     def hold_for_release(self) -> None:
         self.events.append("runner-held")

@@ -2630,6 +2630,7 @@ class ProductionServiceV2ProviderExecutor:
         operation: str,
         arguments: Mapping[str, Any],
         call_chain: tuple[str, ...],
+        invocation_id: str,
     ) -> Mapping[str, Any]:
         del caller_automation_id
         router = self._router
@@ -2651,6 +2652,7 @@ class ProductionServiceV2ProviderExecutor:
             operation=operation,
             effect=provider.effect,
             call_chain=call_chain,
+            invocation_id=invocation_id,
         )
 
 

@@ -27,16 +27,6 @@ WAYBILL_ENTRY_ACTIVE_VALIDATORS_ENDPOINT = (
 )
 WAYBILL_ENTRY_EXTENSION_TITLE_MAX_LENGTH = 120
 WAYBILL_ENTRY_EXTENSION_MAX_SLOTS = 64
-WAYBILL_ENTRY_ACTION_RECEIPT_FIELDS = frozenset(
-    {
-        "command_id",
-        "work_item_id",
-        "run_id",
-        "status",
-        "reused",
-        "next_poll_after_ms",
-    }
-)
 
 
 def _safe_extension_title(value: Any) -> str:
@@ -82,40 +72,9 @@ def _normalize_module_slot_projection(value: Any) -> dict[str, tuple[dict[str, s
     return {slot: tuple(grouped[slot]) for slot in WAYBILL_ENTRY_EXTENSION_SLOTS}
 
 
-def _normalize_action_receipt(value: Any) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != WAYBILL_ENTRY_ACTION_RECEIPT_FIELDS:
-        raise ValueError("waybill-entry action receipt is invalid")
-    receipt: dict[str, Any] = {}
-    for field_name in ("command_id", "work_item_id", "run_id"):
-        field_value = value.get(field_name)
-        if type(field_value) is not str or not field_value or len(field_value) > 128:
-            raise ValueError("waybill-entry action receipt identity is invalid")
-        receipt[field_name] = field_value
-    status = value.get("status")
-    if (
-        type(status) is not str
-        or not status
-        or len(status) > 64
-        or not all(character.isupper() or character == "_" for character in status)
-    ):
-        raise ValueError("waybill-entry action receipt status is invalid")
-    reused = value.get("reused")
-    next_poll_after_ms = value.get("next_poll_after_ms")
-    if type(reused) is not bool or type(next_poll_after_ms) is not int or not 0 <= next_poll_after_ms <= 60_000:
-        raise ValueError("waybill-entry action receipt polling metadata is invalid")
-    receipt.update(
-        {
-            "status": status,
-            "reused": reused,
-            "next_poll_after_ms": next_poll_after_ms,
-        }
-    )
-    return receipt
-
-
 def _normalize_invocation_result(slot: str, value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping) or set(value) != (
-        {"kind", "receipt"}
+        {"kind", "result"}
         if slot == WAYBILL_ENTRY_ACTIONS_SLOT
         else {"kind", "validation"}
     ):
@@ -124,7 +83,10 @@ def _normalize_invocation_result(slot: str, value: Any) -> dict[str, Any]:
     if value.get("kind") != expected_kind:
         raise ValueError("waybill-entry extension result kind is invalid")
     if slot == WAYBILL_ENTRY_ACTIONS_SLOT:
-        return {"kind": expected_kind, "receipt": _normalize_action_receipt(value.get("receipt"))}
+        result = value.get("result")
+        if not isinstance(result, Mapping):
+            raise ValueError("waybill-entry action result is invalid")
+        return {"kind": expected_kind, "result": dict(result)}
     return {
         "kind": expected_kind,
         "validation": normalize_waybill_entry_validator_result(value.get("validation")),
@@ -302,12 +264,7 @@ class WaybillEntryExtensionsServiceMixin:
                 "录单扩展返回了无效结果；本次扩展操作未执行。",
             )
             return
-        status = (
-            HTTPStatus.ACCEPTED
-            if safe_slot == WAYBILL_ENTRY_ACTIONS_SLOT
-            else HTTPStatus.OK
-        )
-        self._control_plane_success(handler, status, payload)
+        self._control_plane_success(handler, HTTPStatus.OK, payload)
 
 
 __all__ = [

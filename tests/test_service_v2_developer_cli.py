@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
-from agent.automation_plugins import developer_simulator_v2
 from agent.automation_plugins.developer_v2 import init_service_v2_source
 from scripts import service_v2_plugin
 
@@ -26,17 +24,8 @@ def _invoke(
 def test_all_seven_artifact_commands_form_one_offline_workflow(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The repository contract requires Python 3.10 and the default resolver
-    # is separately tested to fail closed on this Python 3.12-only QA host.
-    # This explicit test fixture isolates command orchestration from that
-    # release-environment gate without weakening the CLI default.
-    monkeypatch.setattr(
-        developer_simulator_v2,
-        "_trusted_manifest_python",
-        lambda manifest_python: Path(sys.executable).resolve(),
-    )
+    # Exercise the actual trusted Python 3.10 resolver and isolated subprocess.
     source = tmp_path / "source"
     initialized = _invoke(
         [

@@ -166,7 +166,9 @@ def _validate_preview_binding(
     batches: list[list[dict[str, str]]],
 ) -> dict[str, object]:
     binding = _object(raw, "scan preview binding")
-    if set(binding) != _SCAN_PREVIEW_BINDING_FIELDS:
+    direct = binding.get("contract_version") == 2
+    fields = (_SCAN_PREVIEW_BINDING_FIELDS - {"preview_run_id", "preview_step_id"}) | {"preview_invocation_id"} if direct else _SCAN_PREVIEW_BINDING_FIELDS
+    if set(binding) != fields:
         raise ValueError("scan preview binding schema is invalid")
     supplied_context_sha256 = _binding_digest(
         binding.get("context_sha256"),
@@ -176,15 +178,11 @@ def _validate_preview_binding(
     unhashed.pop("context_sha256")
     if _canonical_sha256(unhashed) != supplied_context_sha256:
         raise ValueError("scan preview binding digest is stale")
-    if binding.get("contract_version") != _PREVIEW_EVIDENCE_CONTRACT_VERSION:
+    if binding.get("contract_version") not in {_PREVIEW_EVIDENCE_CONTRACT_VERSION, 2}:
         raise ValueError("scan preview binding version is unsupported")
     if binding.get("plugin_id") != ACTION_ID:
         raise ValueError("scan preview binding plugin identity is invalid")
-    for field in (
-        "preview_run_id",
-        "preview_step_id",
-        "project_instance_id",
-    ):
+    for field in (("preview_invocation_id", "project_instance_id") if direct else ("preview_run_id", "preview_step_id", "project_instance_id")):
         if not _text(binding.get(field), field, maximum=128):
             raise ValueError(f"scan preview {field} is missing")
     for field in (
@@ -271,8 +269,7 @@ def _validate_preview_binding(
         )
     return {
         "verified": True,
-        "preview_run_id": binding["preview_run_id"],
-        "preview_step_id": binding["preview_step_id"],
+        **({"preview_invocation_id": binding["preview_invocation_id"]} if direct else {"preview_run_id": binding["preview_run_id"], "preview_step_id": binding["preview_step_id"]}),
         "context_sha256": supplied_context_sha256,
         "target_date": target_date,
         "source_snapshot_sha256": binding["source_snapshot_sha256"],

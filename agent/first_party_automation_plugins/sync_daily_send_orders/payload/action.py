@@ -43,7 +43,7 @@ _ALLOWED_ARGUMENTS = frozenset(
 )
 _FIELD_MAP = (
     ("BILL_CODE", _WAYBILL_FIELD),
-    ("INSERT_DATE", _DATE_FIELD),
+    ("REGISTER_DATE", _DATE_FIELD),
     ("BL_SIGNS_MARKING_TEXT", "签收状态"),
     ("DESTINATION", "目的网点"),
     ("ACCEPT_COUNTY", "收件区/县"),
@@ -371,11 +371,11 @@ def _normalize_source_row(
     target_date: str,
 ) -> tuple[dict[str, object], dict[str, object]]:
     target = _business_date(target_date, "target_date")
-    raw_source_date = row.get("INSERT_DATE")
+    raw_source_date = row.get("REGISTER_DATE")
     source_date = _date_text(raw_source_date)
-    if raw_source_date not in (None, "") and not source_date:
+    if not source_date:
         raise ValueError("Ronghui send-order row has an invalid send date")
-    if source_date and source_date != target_date:
+    if source_date != target_date:
         raise ValueError("Ronghui send-order row is outside the requested date")
     fields: dict[str, object] = {}
     for source, destination in _FIELD_MAP:

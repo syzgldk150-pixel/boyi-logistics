@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -1012,7 +1013,9 @@ class ReleaseBoundaryTests(unittest.TestCase):
 
     def test_ci_and_production_use_python_310_locked_environments(self):
         workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        self.assertEqual(3, workflow.count('python-version: "3.10"'))
+        # Console and the deferred Windows job use setup-python. Agent uses
+        # the distro's trusted 3.10 so copied plugin venvs can start in bwrap.
+        self.assertEqual(2, workflow.count('python-version: "3.10"'))
         self.assertIn(
             "python -m pip install -r agent/requirements.lock -r console/requirements.lock",
             workflow,
@@ -1027,10 +1030,25 @@ class ReleaseBoundaryTests(unittest.TestCase):
         agent_gate = workflow.split("agent-quality:", 1)[1].split(
             "console-quality:", 1
         )[0]
+        self.assertIn("runs-on: ubuntu-22.04", agent_gate)
+        self.assertIn("python3.10 python3.10-venv", agent_gate)
+        self.assertIn('/usr/bin/python3.10 -m venv --copies "$ci_runtime"', agent_gate)
+        self.assertIn('"$ci_runtime/bin/python" -m venv --copies --without-pip', agent_gate)
+        self.assertIn("assert sys.version_info[:2] == (3, 10)", agent_gate)
+        self.assertIn('"$ci_runtime/bin" >> "$GITHUB_PATH"', agent_gate)
         self.assertIn("windows_worker($|/)", agent_gate)
         self.assertIn("--exclude agent/agent/windows_worker", agent_gate)
         self.assertIn("--ignore-glob='tests/test_windows_worker_*.py'", agent_gate)
         self.assertIn("--ignore-glob='agent/tests/test_windows_worker_*.py'", agent_gate)
+
+        import yaml
+        from tests.v32_acceptance.owned_database import ISOLATED_MYSQL_PORTS
+
+        agent_job = yaml.safe_load(workflow)["jobs"]["agent-quality"]
+        database_port = int(agent_job["env"]["AGENT_DB_PORT"])
+        self.assertIn(database_port, ISOLATED_MYSQL_PORTS)
+        self.assertEqual("127.0.0.1", agent_job["env"]["AGENT_DB_HOST"])
+        self.assertIn(f"{database_port}:3306", agent_job["services"]["mysql"]["ports"])
 
         release = (REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh").read_text(encoding="utf-8")
         execution = release.split("trap rollback ERR", 1)[1]
@@ -1873,6 +1891,30 @@ class ReleaseBoundaryTests(unittest.TestCase):
                 self.assertFalse(
                     any(event.startswith("restart:") for event in events)
                 )
+
+    def test_release_includes_local_modules_imported_by_agent_entrypoint(self):
+        publisher = (REPOSITORY_ROOT / "agent/deploy/publish_to_ecs.ps1").read_text(encoding="utf-8")
+        allowed = set(re.findall(r'"([^"\n]+)"', publisher.split("$AgentFiles = @(", 1)[1].split("\n)", 1)[0]))
+        agent_root = REPOSITORY_ROOT / "agent"
+        pending = ["main.py"]
+        checked = set()
+        while pending:
+            filename = pending.pop()
+            if filename in checked:
+                continue
+            checked.add(filename)
+            self.assertIn(filename, allowed, f"Agent startup module missing from deployment: {filename}")
+            tree = ast.parse((agent_root / filename).read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                modules = []
+                if isinstance(node, ast.Import):
+                    modules = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    modules = [node.module]
+                for module in modules:
+                    sibling = module.split(".", 1)[0] + ".py"
+                    if (agent_root / sibling).is_file():
+                        pending.append(sibling)
 
     def test_release_keeps_ssh_verification_and_publishes_new_modules(self):
         publisher = (REPOSITORY_ROOT / "agent" / "deploy" / "publish_to_ecs.ps1").read_text(encoding="utf-8")

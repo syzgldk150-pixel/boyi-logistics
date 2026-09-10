@@ -26,15 +26,15 @@ class ProblemBrowser:
         if parsed.path != '/automations/tasks/output':
             return
         query = parse_qs(parsed.query)
-        if query.get('selection_phase') != ['preview'] or len(query.get('run_id', [])) != 1:
+        if query.get('selection_phase') != ['preview'] or len(query.get('invocation_id', [])) != 1:
             return
         try:
             error = response.json().get('selection_preview_error')
         except Exception as exc:
-            self.preview_errors[query['run_id'][0]] = {'capture_error':type(exc).__name__}
+            self.preview_errors[query['invocation_id'][0]] = {'capture_error':type(exc).__name__}
             return
         if isinstance(error, dict):
-            self.preview_errors[query['run_id'][0]] = {
+            self.preview_errors[query['invocation_id'][0]] = {
                 'http_status':response.status,
                 'error_code':str(error.get('error_code') or ''),
                 'message':str(error.get('message') or ''),
@@ -55,13 +55,13 @@ class ProblemBrowser:
         body = response.value.json()
         if response.value.status != 202 or body.get('ok') is not True:
             raise AssertionError(f'actual selection preview rejected: {body}')
-        self._wait_preview_candidates(automation_id, body['run_id'], expected_count=len(expected_codes))
+        self._wait_preview_candidates(automation_id, body['invocation_id'], expected_count=len(expected_codes))
         codes = form.locator('[data-selection-preview-list] input[type=checkbox]').evaluate_all('nodes => nodes.map(node => node.value)')
         if sorted(codes) != sorted(expected_codes):
             raise AssertionError(f'actual candidate DOM differs: {codes}')
-        return {'run_id':body['run_id'], 'codes':codes}
+        return {'invocation_id':body['invocation_id'], 'codes':codes}
 
-    def _wait_preview_candidates(self, automation_id, run_id, *, expected_count):
+    def _wait_preview_candidates(self, automation_id, invocation_id, *, expected_count):
         state = self.page.wait_for_function("""([id,count]) => {
             const form = document.querySelector(`[data-plugin-instance][data-automation-id="${id}"]`).closest('form');
             const panel = form.querySelector('[data-selection-preview-panel]');
@@ -71,8 +71,8 @@ class ProblemBrowser:
             return form.querySelectorAll('[data-selection-preview-list] input[type=checkbox]').length === count ? {ready:true} : false;
         }""", arg=[automation_id, expected_count], timeout=60000).json_value()
         if 'error' in state:
-            evidence = {'automation_id':automation_id, 'run_id':run_id,
-                'page_message':state['error'], 'response':self.preview_errors.get(run_id),
+            evidence = {'automation_id':automation_id, 'invocation_id':invocation_id,
+                'page_message':state['error'], 'response':self.preview_errors.get(invocation_id),
                 'javascript_errors':self.errors}
             (self.console.runtime/'problem-preview-failure.json').write_text(
                 json.dumps(evidence,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
@@ -86,7 +86,7 @@ class ProblemBrowser:
         body = response.value.json()
         if response.value.status != 202 or body.get('ok') is not True:
             raise AssertionError(f'actual selection confirmation rejected: {body}')
-        return body['run_id']
+        return body['invocation_id']
 
     def upgrade(self, automation_id, artifact):
         self.open()

@@ -5,7 +5,7 @@ tags: [documentation, navigation, authority, lifecycle]
 status: active
 authority: canonical
 owner: repository
-updated: 2026-09-07
+updated: 2026-09-10
 ---
 
 # 仓库文档索引
@@ -21,13 +21,16 @@ updated: 2026-09-07
 
 ## 现行权威文档
 
+- [业务接口与独立插件调用架构](architecture_direct_invocation.md)：V1 本轮实现入口与维护归属，替代旧的统一 Command/Run 调用要求。
+- [架构 V1 验收与复现映射](architecture_refactor_acceptance_mapping.md)、[寄件查询与范围覆盖](direct_waybill_query.md)、[旧执行链退役与回退](legacy_execution_retirement.md)：当前接口迁移、验证入口及历史保留边界。
+
 - [V3.2 第一轮维护边界与归属](low_maintenance_v32.md)：本轮模块入口、简单设置、插件局部维护及来源历史规则；取代旧文档中与本轮范围冲突的集中入口和强制 AI/专属 HTML 要求。
 - [V3.2 复现与发布回退](low_maintenance_v32_release.md)、[逐组验收要求](low_maintenance_v32_acceptance.json)及[扫描未知写恢复](scan_recovery_v32.md)：代码入口、隔离证据和首次核心更新边界。
 - [代码定位索引](../agent/docs/code_navigation_index.md)：需求到代码、测试和模块说明的入口。
 - [项目总览](../agent/docs/project_overview.md)：当前服务边界和模块目录。
 - [扩展化平台架构基准](extension-platform-baseline.md)：固定核心模块、Service v2、自动化中心、Harness、Connector 与迁移路线图的现行基准。
 - [扩展化平台执行账本](extension-platform-progress.md)：无人值守改造的逐 TASK 状态、验证、提交和生产门禁记录。
-- [控制平面](../agent/docs/control_plane_v1.md)：Command、Run、审批、Evidence、Outbox 与恢复。
+- [历史控制平面](../agent/docs/control_plane_v1.md)：保留的 Command、Run、审批、Evidence、Outbox 结构；普通页面和插件已退出其领取/恢复链路。
 - [数据库迁移](../agent/docs/database_migrations.md)：顺序迁移与部署期结构管理。
 - [Action v1 插件兼容轨道](../agent/docs/automation_plugin_platform.md)：现存 v1 自动化插件合同。
 - [Service v2 插件平台](plugin-platform-v2.md)：v2 服务插件、能力代理和迁移合同。

@@ -187,20 +187,6 @@ def _default_feishu_operation(action: str, params: dict[str, Any]) -> Mapping[st
     return feishu_operation(action, params)
 
 
-def _default_projection_sync(
-    records: list[dict[str, Any]],
-    target_date: str,
-) -> Mapping[str, Any]:
-    from tools.phase7_mysql_store import sync_console_waybills
-
-    return sync_console_waybills(
-        records,
-        source="ronghui",
-        target_date=target_date,
-        replace_date=True,
-    )
-
-
 def _default_projection_read(target_date: str) -> Sequence[Mapping[str, Any]]:
     from tools.phase7_mysql_store import list_console_waybills_by_source_date
 
@@ -450,7 +436,7 @@ def build_production_daily_send_ports(
     load_resource = resource_loader or _default_resource_loader
     invoke_feishu = feishu_operation or _default_feishu_operation
     read_source = source_page or _default_source_page
-    sync_projection = projection_sync or _default_projection_sync
+    sync_projection = projection_sync
     read_projection = projection_read or _default_projection_read
     lookup_projection = projection_lookup or _default_projection_lookup
 
@@ -590,7 +576,12 @@ def build_production_daily_send_ports(
     def replace_projection(
         records: list[dict[str, Any]],
         target_date: str,
+        descriptor: Mapping[str, Any],
     ) -> Mapping[str, Any]:
+        if projection_sync is None:
+            from plugin_core_adapters.waybill_query import publish_verified_waybills
+            return publish_verified_waybills(records, source="ronghui", target_date=target_date,
+                account_id=str(descriptor["account_id"]))
         existed = {
             str(record["waybill_no"]): lookup_projection(str(record["waybill_no"])) is not None
             for record in records

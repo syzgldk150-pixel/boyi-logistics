@@ -48,6 +48,7 @@ from agent.orchestration.models import (
     RunStatus,
 )
 from shared.automation_project_authorization import AutomationEntrypoint
+from tests.automation_project_policy_service_support import _DirectCalls
 
 
 PLUGIN_ID = "synthetic_multi_instance_action"
@@ -645,11 +646,14 @@ class AutomationProjectMultiInstanceEntrypointTests(TestCase):
         self.state = _ServiceState(self.projects, self.configs)
         self.repository = _ServiceRepository(self.state)
         self.gateway = _Gateway(self.repository)
+        self.state.fail_gateway_create_after_guard = False
+        self.direct = _DirectCalls(self.repository)
         self.policy = AutomationProjectPolicyService(
             self.repository,
             self.core_catalog,
             self.catalog,
             command_gateway=self.gateway,
+            direct_invocations=self.direct,
         )
         resource_provider = self.resources.get
         self.binding_resolver = ProductionProjectBindingResolver(
@@ -765,24 +769,25 @@ class AutomationProjectMultiInstanceEntrypointTests(TestCase):
             )
         )
 
-        self.assertEqual(8, len(self.gateway.commands))
+        self.assertEqual(8, len(self.direct.calls))
+        self.assertEqual([], self.gateway.commands)
         expected = {
             "instance-one": {"generation": 3, "marker": "one"},
             "instance-two": {"generation": 7, "marker": "two"},
         }
         seen = set()
-        for command in self.gateway.commands:
-            invocation = command.automation_invocation
+        for call in self.direct.calls:
+            invocation = call.invocation
             self.assertIsNotNone(invocation)
             instance = expected[invocation.automation_id]
             seen.add((invocation.automation_id, invocation.entrypoint.value))
             self.assertEqual(instance["generation"], invocation.automation_generation)
             self.assertEqual(
                 {"marker": instance["marker"]},
-                command.parameters["arguments"],
+                call.arguments,
             )
-            self.assertNotIn("account_id", command.parameters["arguments"])
-            self.assertNotIn("resource_bindings", command.parameters["arguments"])
+            self.assertNotIn("account_id", call.arguments)
+            self.assertNotIn("resource_bindings", call.arguments)
             expected_contract = (
                 f"scheduler:{invocation.automation_id}-daily"
                 if invocation.entrypoint is AutomationEntrypoint.SCHEDULER

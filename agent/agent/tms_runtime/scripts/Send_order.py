@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import requests
 
 from agent.tms_runtime.scripts.login_manager import TMSAuth
+from shared.waybill_pagination import collect_complete_pages
 
 
 DATA_QUERY_URL = "https://tms.ronghuiwl.com/dataQuery/findPageByCallId"
@@ -60,7 +61,7 @@ TOTAL_COLUMNS = [
 
 FIELD_MAP = {
     "BILL_CODE": "运单编号",
-    "INSERT_DATE": "发件日期",
+    "REGISTER_DATE": "发件日期",
     "BL_SIGNS_MARKING_TEXT": "签收状态",
     "DESTINATION": "目的网点",
     "ACCEPT_COUNTY": "收件区/县",
@@ -301,17 +302,14 @@ def run_once(params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     date_range = _build_date_range(date_obj)
     session = login_as_daxiang(profile=session_profile)
     if not explicit_page_index:
-        records: List[Dict[str, Any]] = []
-        for raw_page in iter_pages(
-            session,
-            date_range,
-            page_size=page_size,
-            max_pages=max_pages,
-            referer=referer,
-            extra_filters=extra_filters,
-        ):
-            records.extend(normalize_records(raw_page))
-        return records
+        rows, _total = collect_complete_pages(
+            lambda page: fetch_send_orders(session, date_range, page_index=page,
+                page_size=page_size, referer=referer, extra_filters=extra_filters),
+            rows_from=lambda payload: payload.get("data"),
+            total_from=lambda payload: payload.get("total"), identity="BILL_CODE",
+            first_page=0, page_size=page_size, max_pages=max_pages,
+        )
+        return [normalize_record(row) for row in rows]
 
     raw = fetch_send_orders(
         session,

@@ -1324,7 +1324,7 @@ def test_yunda_handlers_use_exact_account_resource_roles_and_closed_schemas() ->
             "readback_sha256": "a" * 64,
         }
 
-    def projection_commit(records, target_date):
+    def projection_commit(records, target_date, descriptor):
         projection_calls.append((list(records), target_date))
         return {
             "ok": True,

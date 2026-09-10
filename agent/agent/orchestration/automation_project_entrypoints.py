@@ -7,19 +7,21 @@ Neither a caller nor an LLM can submit action arguments or project identity.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime, timedelta
 from typing import Any, Mapping, Protocol
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from agent.orchestration.automation_project_policy_service import (
     AutomationProjectPolicyService,
 )
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
-from agent.orchestration.scan_preview_binding import normalize_preview_run_id
+from agent.orchestration.scan_preview_binding import normalize_preview_invocation_id
 from agent.orchestration.selection_preview_binding import (
     SELECTION_PREVIEW_PROJECTS,
 )
@@ -98,7 +100,12 @@ def _safe_managed_dispatch_result(result: Any) -> dict[str, Any]:
             "PROJECT_INVOKE_UNAVAILABLE",
             "Automation project result is unavailable",
         )
-    return {"success": result["success"], "status": result["status"]}
+    identity = normalize_preview_invocation_id(result.get("invocation_id"))
+    return {
+        "invocation_id": identity,
+        **{key: result.get(key) for key in ("success", "status", "result", "output", "error", "error_code", "running", "status_url")},
+        "error_summary": result.get("error_summary") if not result["success"] else None,
+    }
 
 
 @dataclass(frozen=True)
@@ -695,6 +702,52 @@ class AutomationProjectEntrypoints:
         self._routes = route_resolver
         self._feishu_actor_resolver = feishu_actor_resolver
 
+    async def wait_feishu_invocation(self, *, invocation_id: str, automation_id: str,
+                                    event_id: str, sender_id: str, chat_id: str,
+                                    timeout_seconds: float = 30.0) -> dict[str, Any]:
+        """Read only the call accepted for this verified event and sender."""
+        event = _stable_identifier(event_id, "event_id")
+        _stable_identifier(chat_id, "chat_id")
+        sender = _stable_identifier(sender_id, "sender_id")
+        try:
+            valid_id = str(UUID(invocation_id)) == invocation_id
+        except (ValueError, TypeError, AttributeError):
+            valid_id = False
+        if not valid_id or not _is_exact_managed_identifier(automation_id):
+            raise OrchestrationError("INVOCATION_IDENTITY_INVALID", "执行记录标识无效")
+        if self._feishu_actor_resolver is None:
+            raise OrchestrationError("ACTOR_NOT_AUTHORIZED", "飞书身份未绑定")
+        actor = await asyncio.to_thread(self._feishu_actor_resolver, sender)
+        if not isinstance(actor, Actor) or actor.actor_id != sender:
+            raise OrchestrationError("ACTOR_NOT_AUTHORIZED", "飞书身份与消息发送者不匹配")
+        self._policy._require_trusted_entrypoint_actor(AutomationEntrypoint.FEISHU, actor)
+        row = await asyncio.to_thread(self._policy.direct_invocations.repository.get, invocation_id)
+        if row is None:
+            raise OrchestrationError("INVOCATION_NOT_FOUND", "本次执行记录不可读取")
+        if (row.get("source") != "feishu" or row.get("actor_id") != actor.actor_id
+                or row.get("request_id") != event or row.get("automation_id") != automation_id):
+            raise OrchestrationError("ACTOR_NOT_AUTHORIZED", "只能读取本次消息发起的执行")
+        result = await self._policy.direct_invocations.wait(invocation_id, timeout_seconds=timeout_seconds)
+        if result.get("invocation_id") != invocation_id or result.get("automation_id") != automation_id:
+            raise OrchestrationError("INVOCATION_IDENTITY_INVALID", "执行结果与本次调用不匹配")
+        return await asyncio.to_thread(
+            self._policy.project_completed_invocation_result, automation_id, result,
+            is_formal=bool(row.get("preview_invocation_id")),
+        )
+
+    async def cancel_feishu_invocation(self, *, invocation_id: str, event_id: str, sender_id: str, chat_id: str) -> dict[str, Any]:
+        _stable_identifier(event_id, "event_id")
+        _stable_identifier(chat_id, "chat_id")
+        sender = _stable_identifier(sender_id, "sender_id")
+        if self._feishu_actor_resolver is None:
+            raise OrchestrationError("ACTOR_NOT_AUTHORIZED", "飞书身份未绑定")
+        actor = self._feishu_actor_resolver(sender)
+        self._policy._require_trusted_entrypoint_actor(AutomationEntrypoint.FEISHU, actor)
+        row = self._policy.direct_invocations.repository.get(invocation_id)
+        if row is None or row.get("source") != "feishu" or row.get("actor_id") != actor.actor_id:
+            raise OrchestrationError("ACTOR_NOT_AUTHORIZED", "只能取消自己发起的执行")
+        return await self._policy.direct_invocations.cancel(invocation_id)
+
     async def invoke_feishu(
         self,
         *,
@@ -703,7 +756,7 @@ class AutomationProjectEntrypoints:
         sender_id: str,
         chat_id: str,
         envelope: Mapping[str, Any] | None = None,
-        preview_run_id: str | None = None,
+        preview_invocation_id: str | None = None,
         on_accepted: Callable[[Any], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         route = self._require_route(AutomationEntrypoint.FEISHU, route_key)
@@ -712,10 +765,10 @@ class AutomationProjectEntrypoints:
         safe_chat_id = _stable_identifier(chat_id, "chat_id")
         dynamic_inputs = _extract_dynamic_inputs(route, envelope or {})
         selection_route = route.automation_id in SELECTION_PREVIEW_PROJECTS
-        safe_preview_run_id = None
-        if preview_run_id is not None:
+        safe_preview_invocation_id = None
+        if preview_invocation_id is not None:
             if selection_route:
-                safe_preview_run_id = normalize_preview_run_id(preview_run_id)
+                safe_preview_invocation_id = normalize_preview_invocation_id(preview_invocation_id)
                 if set(dynamic_inputs) != {"selected_bill_codes"}:
                     raise OrchestrationError(
                         "SELECTION_INPUT_INVALID",
@@ -731,7 +784,7 @@ class AutomationProjectEntrypoints:
                     "A scan preview cannot be used by this Feishu route",
                 )
             else:
-                safe_preview_run_id = normalize_preview_run_id(preview_run_id)
+                safe_preview_invocation_id = normalize_preview_invocation_id(preview_invocation_id)
         elif selection_route and dynamic_inputs:
             raise OrchestrationError(
                 "SELECTION_INPUT_INVALID",
@@ -753,10 +806,10 @@ class AutomationProjectEntrypoints:
             "event_id": safe_event_id,
             "chat_id": safe_chat_id,
         }
-        if selection_route and safe_preview_run_id is not None:
+        if selection_route and safe_preview_invocation_id is not None:
             return await self._policy.confirm_selection_preview_and_wait(
                 route.automation_id,
-                preview_run_id=safe_preview_run_id,
+                preview_invocation_id=safe_preview_invocation_id,
                 selected_bill_codes=dynamic_inputs["selected_bill_codes"],
                 entrypoint=AutomationEntrypoint.FEISHU,
                 request_id=safe_event_id,
@@ -787,13 +840,13 @@ class AutomationProjectEntrypoints:
             expected_project_configuration_version=(
                 route.project_configuration_version
             ),
-            preview_run_id=(safe_preview_run_id if not selection_route else None),
+            preview_invocation_id=(safe_preview_invocation_id if not selection_route else None),
             on_accepted=on_accepted,
         )
         if selection_route and str(result.get("status") or "").upper() == "COMPLETED":
             result["selection_preview"] = self._policy.get_selection_preview_projection(
                 route.automation_id,
-                preview_run_id=str(result.get("run_id") or ""),
+                preview_invocation_id=str(result.get("invocation_id") or ""),
             )
         return result
 
@@ -840,7 +893,7 @@ class AutomationProjectEntrypoints:
         source_event_id: str,
         webhook_path: str,
         envelope: Mapping[str, Any] | None = None,
-        preview_run_id: Any | None = None,
+        preview_invocation_id: Any | None = None,
     ) -> dict[str, Any]:
         route = self._require_route(AutomationEntrypoint.WEBHOOK, route_key)
         safe_event_id = _stable_identifier(source_event_id, "source_event_id")
@@ -851,8 +904,8 @@ class AutomationProjectEntrypoints:
                 "Verified Webhook path is invalid",
             )
         dynamic_inputs = _extract_dynamic_inputs(route, envelope or {})
-        safe_preview_run_id = None
-        if preview_run_id is not None:
+        safe_preview_invocation_id = None
+        if preview_invocation_id is not None:
             if (
                 route.route_key != _SCAN_WEBHOOK_ROUTE_KEY
                 or route.automation_id != _SCAN_AUTOMATION_ID
@@ -861,13 +914,13 @@ class AutomationProjectEntrypoints:
                     "SCAN_PREVIEW_ID_INVALID",
                     "A scan preview cannot be used by this Webhook route",
                 )
-            if not isinstance(preview_run_id, str):
+            if not isinstance(preview_invocation_id, str):
                 raise OrchestrationError(
                     "SCAN_PREVIEW_ID_INVALID",
                     "Scan preview run id must be a canonical UUID string",
                 )
-            safe_preview_run_id = normalize_preview_run_id(preview_run_id)
-            if preview_run_id != safe_preview_run_id:
+            safe_preview_invocation_id = normalize_preview_invocation_id(preview_invocation_id)
+            if preview_invocation_id != safe_preview_invocation_id:
                 raise OrchestrationError(
                     "SCAN_PREVIEW_ID_INVALID",
                     "Scan preview run id must be canonical",
@@ -893,7 +946,7 @@ class AutomationProjectEntrypoints:
             expected_project_configuration_version=(
                 route.project_configuration_version
             ),
-            preview_run_id=safe_preview_run_id,
+            preview_invocation_id=safe_preview_invocation_id,
         )
 
     def _require_route(
@@ -952,6 +1005,16 @@ class TrustedDynamicArgumentResolver:
             if instant.tzinfo is None:
                 raise ValueError("business-day occurrence has no timezone")
             return instant.astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
+        if resolver_id == f"configured_finance_console_{field}":
+            if (context.get("entrypoint") != "console" or context.get("plugin_id") != "sync_finance_bills"
+                    or field not in {"mode", "rescan_days", "target_date", "start_date", "end_date", "batch_id"}):
+                raise ValueError("configured finance resolver is outside its signed owner")
+            dynamic = context.get("dynamic_inputs")
+            saved = context.get("project_config")
+            if not isinstance(dynamic, Mapping) or not isinstance(saved, Mapping):
+                raise ValueError("configured finance resolver has no compiled settings")
+            inputs = dynamic if dynamic else saved
+            return inputs[field] if field in inputs else OMIT_DYNAMIC_ARGUMENT
         resolver_field = re.sub(r"[^a-z0-9_.-]", "_", field.lower())
         expected_resolver = f"verified_{context.get('entrypoint')}_{resolver_field}"
         expected_optional_resolver = (

@@ -188,14 +188,7 @@ class WaybillEntryExtensionServiceTests(unittest.TestCase):
             "status": 202,
             "data": {
                 "kind": "action",
-                "receipt": {
-                    "command_id": "command-1",
-                    "work_item_id": "work-item-1",
-                    "run_id": "run-1",
-                    "status": "RECEIVED",
-                    "reused": False,
-                    "next_poll_after_ms": 1000,
-                },
+                "result": {"message": "checked"},
             },
         }
 
@@ -204,7 +197,7 @@ class WaybillEntryExtensionServiceTests(unittest.TestCase):
         )
 
         self.assertTrue(app.response["ok"])
-        self.assertEqual(HTTPStatus.ACCEPTED, app.response["status"])
+        self.assertEqual(HTTPStatus.OK, app.response["status"])
         call = app.agent_calls[0]
         self.assertEqual(
             f"{WAYBILL_ENTRY_MODULE_SLOTS_ENDPOINT}/{WAYBILL_ENTRY_ACTIONS_SLOT}/{HANDLE}/invoke",
@@ -313,7 +306,7 @@ class WaybillEntryExtensionServiceTests(unittest.TestCase):
         app.agent_result = {
             "ok": True,
             "status": 202,
-            "data": {"kind": "action", "receipt": {"run_id": "run-1"}},
+            "data": {"kind": "action", "result": ["not-a-business-object"]},
         }
 
         app._handle_waybill_entry_extension_invoke(

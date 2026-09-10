@@ -42,6 +42,7 @@ def test_six_read_only_gateways_use_closed_safe_projections() -> None:
         "knowledge.search",
         "waybill.lookup",
         "tracking.lookup",
+        "finance.summary",
         "work_items.list_open",
         "runs.get_summary",
         "artifact.inspect",

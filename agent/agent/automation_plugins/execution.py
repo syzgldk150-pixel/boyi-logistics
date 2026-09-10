@@ -46,6 +46,8 @@ from agent.automation_plugins.ports import (
     RuntimeGenerationLeasePort,
 )
 from agent.automation_plugins.runtime_environment import minimal_plugin_environment
+from agent.orchestration.execution_resources import EXECUTION_ACTION_SCOPES
+from shared.execution_resource_journal import EXECUTION_RESOURCE_KEYS
 from agent.automation_plugins.sandbox import FailClosedPluginSandbox, SandboxCanaryResult
 from agent.automation_plugins.service_v2_contract import (
     resolve_service_v2_selection_target,
@@ -231,12 +233,15 @@ class PluginExecutionRouter:
             "step_id",
             "_automation_project_invocation",
         }
+        direct = value is not None and "invocation_id" in value
+        if direct:
+            expected_fields = {"invocation_id", "_automation_project_invocation"}
         if value is None or set(value) != expected_fields:
             raise PluginExecutionError(
                 "trusted plugin invocation binding is invalid",
                 code="PLUGIN_RUN_BINDING_INVALID",
             )
-        result = {key: str(value.get(key) or "").strip() for key in ("run_id", "step_id")}
+        result = {key: str(value.get(key) or "").strip() for key in (("invocation_id",) if direct else ("run_id", "step_id"))}
         if any(not item or len(item) > 191 for item in result.values()):
             raise PluginExecutionError(
                 "trusted plugin invocation binding is invalid",
@@ -279,6 +284,7 @@ class PluginExecutionRouter:
         operation: str,
         effect: CapabilityEffect,
         call_chain: tuple[str, ...],
+        invocation_id: str,
     ) -> dict[str, Any]:
         metadata = capability.get("_plugin_runtime")
         if (
@@ -330,10 +336,13 @@ class PluginExecutionRouter:
                 "service invocation ancestry is invalid",
                 code="SERVICE_CALL_CHAIN_INVALID",
             )
-        invocation_id = str(uuid.uuid4())
+        try:
+            if str(uuid.UUID(invocation_id)) != invocation_id:
+                raise ValueError("noncanonical invocation")
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise PluginExecutionError("service Provider requires its current invocation", code="PLUGIN_PROJECT_INVOCATION_REQUIRED") from exc
         return {
-            "run_id": invocation_id,
-            "step_id": f"service:{invocation_id}",
+            "invocation_id": invocation_id,
             "entrypoint": "service",
             "contract_id": _SERVICE_INVOKE_CONTRIBUTION_ID,
             "service_target": {
@@ -431,6 +440,7 @@ class PluginExecutionRouter:
         resolved = cls._service_effect_capability(capability, effect)
         resolved["service"] = str(target["service"])
         resolved["operation"] = str(target["operation"])
+        resolved["_service_contribution_id"] = contribution_id
         return resolved
 
     @staticmethod
@@ -534,7 +544,9 @@ class PluginExecutionRouter:
         expected_generation: int,
         expected_manifest_sha256: str,
         lease_id: str,
-        orchestration_run_id: str,
+        orchestration_run_id: str | None = None,
+        invocation_id: str | None = None,
+        provider_call: bool = False,
         expires_at: datetime,
     ) -> RuntimeGenerationLease:
         """Acquire a database-backed lease without blocking the event loop."""
@@ -553,6 +565,8 @@ class PluginExecutionRouter:
                 expected_manifest_sha256=expected_manifest_sha256,
                 lease_id=lease_id,
                 orchestration_run_id=orchestration_run_id,
+                **({"invocation_id": invocation_id} if invocation_id is not None else {}),
+                **({"provider_call": True} if provider_call else {}),
                 expires_at=expires_at,
             )
         )
@@ -770,7 +784,10 @@ class PluginExecutionRouter:
         *,
         process_launched: bool,
         started_mutating_call_count: int | None = None,
+        verified_business_failure: bool = False,
     ) -> RuntimeLeaseOutcome:
+        if verified_business_failure:
+            return RuntimeLeaseOutcome.VERIFYING
         error_code = str(result.get("error_code") or "").upper()
         nested_error = result.get("error")
         if not error_code and isinstance(nested_error, Mapping):
@@ -875,7 +892,10 @@ class PluginExecutionRouter:
         if capability.get("operation_type") not in _WRITE_TYPES or execution_state is None:
             return result
         self._observe_started_mutating_calls(token, execution_state)
+        self._observe_host_call_observations(token, execution_state)
         if execution_state["started_mutating_call_count"] in (None, 0):
+            return result
+        if self._verified_business_failure(capability, result, execution_state):
             return result
         original_error = result.get("error")
         original_code = str(
@@ -891,6 +911,16 @@ class PluginExecutionRouter:
         governed["error"] = safe_error
         governed["retryable"] = False
         return governed
+
+    @staticmethod
+    def _verified_business_failure(capability, result, execution_state) -> bool:
+        from agent.automation_plugins.finance_failure_proof import is_verified_finance_failure
+        metadata = capability.get("_plugin_runtime") or {}
+        return is_verified_finance_failure(
+            plugin_id=metadata.get("plugin_id"), result=result,
+            started_mutating_call_count=execution_state.get("started_mutating_call_count"),
+            host_call_observations=execution_state.get("host_call_observations", ()),
+        )
 
     @staticmethod
     def _has_observed_started_write(execution_state: Mapping[str, object]) -> bool:
@@ -978,10 +1008,17 @@ class PluginExecutionRouter:
                 generation=raw_generation,
             )
             if initial_metadata.get("runtime_model") == PluginRuntimeModel.SERVICE_V2.value:
+                # Scheduler occurrence identity is not the signed contribution
+                # identity. The policy selected this exact committed target.
+                contribution_id = capability.get("_service_contribution_id", run_binding["contract_id"])
+                target = (initial_metadata.get("compiled_invocations", {}).get(contribution_id) or {}).get("target")
+                if not isinstance(target, Mapping) or target.get("contribution_kind") != run_binding["entrypoint"]:
+                    raise PluginExecutionError("service contribution does not match this entrypoint", code="PLUGIN_GENERATION_METADATA_INVALID")
+                run_binding["contribution_id"] = str(contribution_id)
                 try:
                     selection_target = resolve_service_v2_selection_target(
                         initial_metadata,
-                        contribution_id=run_binding["contract_id"],
+                        contribution_id=run_binding["contribution_id"],
                         contribution_kind=run_binding["entrypoint"],
                         arguments=params,
                     )
@@ -1018,12 +1055,13 @@ class PluginExecutionRouter:
                 operation=str(_service_target.get("operation") or ""),
                 effect=service_effect,
                 call_chain=_service_call_chain,
+                invocation_id=str((trusted_invocation_context or {}).get("invocation_id") or ""),
             )
         timeout = max(1, min(int(capability.get("timeout") or 60), 3600))
         lease_id = str(uuid.uuid4())
         acquired_at = datetime.now(timezone.utc)
         expires_at = acquired_at + timedelta(seconds=timeout + 60)
-        migration_claim = await self._claim_migration_run(
+        migration_claim = None if "invocation_id" in run_binding else await self._claim_migration_run(
             automation_id=automation_id,
             params=params,
             run_id=run_binding["run_id"],
@@ -1043,7 +1081,9 @@ class PluginExecutionRouter:
                     initial_metadata.get("manifest_sha256") or ""
                 ),
                 lease_id=lease_id,
-                orchestration_run_id=run_binding["run_id"],
+                orchestration_run_id=run_binding.get("run_id"),
+                invocation_id=run_binding.get("invocation_id"),
+                provider_call=_service_target is not None,
                 expires_at=expires_at,
             )
         except (Exception, asyncio.CancelledError):
@@ -1053,7 +1093,8 @@ class PluginExecutionRouter:
             )
             raise
         try:
-            if lease.orchestration_run_id != run_binding["run_id"]:
+            if (lease.orchestration_run_id != run_binding.get("run_id")
+                    or lease.invocation_id != run_binding.get("invocation_id")):
                 raise PluginExecutionError(
                     "committed generation lease Run binding changed",
                     code="PLUGIN_GENERATION_LEASE_RUN_BINDING_CONFLICT",
@@ -1074,7 +1115,7 @@ class PluginExecutionRouter:
                 ):
                     resolved = self._service_contribution_capability(
                         resolved,
-                        contribution_id=str(run_binding["contract_id"]),
+                        contribution_id=str(run_binding["contribution_id"]),
                     )
             try:
                 initial_scan_phase = resolve_scan_capability_phase(capability, params)
@@ -1156,6 +1197,7 @@ class PluginExecutionRouter:
                 result,
                 process_launched=bool(execution_state["process_launched"]),
                 started_mutating_call_count=execution_state["started_mutating_call_count"],
+                verified_business_failure=self._verified_business_failure(resolved, result, execution_state),
             )
             if outcome in {RuntimeLeaseOutcome.VERIFYING, RuntimeLeaseOutcome.SUCCEEDED}:
                 raw_account_bindings = resolved["_plugin_runtime"].get("account_bindings")
@@ -1192,7 +1234,8 @@ class PluginExecutionRouter:
                         started_mutating_call_count=execution_state[
                             "started_mutating_call_count"
                         ],
-                        orchestration_run_id=run_binding["run_id"],
+                        orchestration_run_id=run_binding.get("run_id"),
+                        invocation_id=run_binding.get("invocation_id"),
                         host_call_observations=tuple(
                             execution_state["host_call_observations"]
                         ),
@@ -1367,19 +1410,26 @@ class PluginExecutionRouter:
         operation: str,
         effect: CapabilityEffect,
         call_chain: tuple[str, ...],
+        invocation_id: str,
     ) -> Mapping[str, Any]:
         """Execute an internal Provider through the normal lease and sandbox path."""
 
-        result = await self.execute(
-            capability,
-            arguments,
-            _service_target={
-                "service": service,
-                "operation": operation,
-                "effect": effect.value,
-            },
-            _service_call_chain=call_chain,
-        )
+        direct = getattr(self, "direct_invocations", None)
+        if direct is None:
+            raise PluginExecutionError("service invocation runtime is unavailable", code="PLUGIN_PROJECT_INVOCATION_REQUIRED")
+        keys, scopes = direct.reserve_provider(invocation_id, self._service_effect_capability(capability, effect))
+        resource_token, scope_token = EXECUTION_RESOURCE_KEYS.set(keys), EXECUTION_ACTION_SCOPES.set(scopes)
+        try:
+            result = await self.execute(
+                capability,
+                arguments,
+                trusted_invocation_context={"invocation_id": invocation_id},
+                _service_target={"service": service, "operation": operation, "effect": effect.value},
+                _service_call_chain=call_chain,
+            )
+        finally:
+            EXECUTION_RESOURCE_KEYS.reset(resource_token)
+            EXECUTION_ACTION_SCOPES.reset(scope_token)
         verification = getattr(result, "generation_verification", None)
         if not isinstance(verification, GenerationVerificationContext):
             if str(result.get("status") or "").upper() == "SUCCESS":
@@ -1508,7 +1558,7 @@ class PluginExecutionRouter:
             if raw_service_governance is None:
                 compiled_invocations = metadata.get("compiled_invocations")
                 compiled = (
-                    compiled_invocations.get(run_binding.get("contract_id"))
+                    compiled_invocations.get(run_binding.get("contribution_id"))
                     if isinstance(compiled_invocations, Mapping)
                     else None
                 )
@@ -1544,8 +1594,9 @@ class PluginExecutionRouter:
                 "plugin_id": plugin_id,
                 "generation": int(metadata.get("generation") or 0),
                 "lease_id": invocation_id,
-                "orchestration_run_id": run_binding["run_id"],
-                "step_id": run_binding["step_id"],
+                **({"invocation_id": run_binding["invocation_id"]} if "invocation_id" in run_binding else {
+                    "orchestration_run_id": run_binding["run_id"], "step_id": run_binding["step_id"],
+                }),
             },
         )
         action_name = str(capability.get("name") or "")
@@ -1569,18 +1620,9 @@ class PluginExecutionRouter:
                         "service-v2 invocation table is missing",
                         code="PLUGIN_GENERATION_METADATA_INVALID",
                     )
-                contribution_id = run_binding["contract_id"]
+                contribution_id = run_binding["contribution_id"]
                 compiled = compiled_invocations.get(contribution_id)
                 direct_contribution = compiled is not None
-                if compiled is None and run_binding["entrypoint"] == "scheduler":
-                    candidates = [
-                        item
-                        for item in compiled_invocations.values()
-                        if isinstance(item, Mapping)
-                        and isinstance(item.get("target"), Mapping)
-                        and item["target"].get("contribution_kind") == "scheduler"
-                    ]
-                    compiled = candidates[0] if len(candidates) == 1 else None
                 target = (
                     compiled.get("target") if isinstance(compiled, Mapping) else None
                 )
@@ -1826,6 +1868,9 @@ class PluginExecutionRouter:
             return result
         finally:
             self._running.pop(invocation_id, None)
+            drain = getattr(self._issuer, "drain_host_calls", None)
+            if callable(drain):
+                await drain(token)
             if execution_state is not None:
                 self._observe_started_mutating_calls(token, execution_state)
                 self._observe_host_call_observations(token, execution_state)

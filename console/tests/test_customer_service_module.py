@@ -77,6 +77,7 @@ class CustomerServiceModuleTests(unittest.TestCase):
                 "display_name": "tester",
                 "authenticated_by": "mysql_admin_session",
             },
+            "_console_principal": {"actor_id": "9", "roles": ["super_admin"], "authenticated_by": "mysql_admin_session"},
             "actor_roles": ["super_admin"],
             "source": "console",
         }
@@ -139,6 +140,31 @@ class CustomerServiceModuleTests(unittest.TestCase):
         self.assertIn('/customer-service/problems/query', app.sent_html)
         self.assertIn('问题件工作台', app.sent_html)
         self.assertNotIn('module-detail', app.sent_html)
+
+    def test_live_query_uses_each_explicit_account_and_returns_platform_rows(self):
+        app = self._build_app()
+        calls = []
+        def request(method, endpoint, *, payload=None, timeout=None, console_principal=None):
+            self.assertEqual("/internal/v1/business/customer-service-query", endpoint)
+            self.assertEqual("9", console_principal["actor_id"])
+            calls.append(payload)
+            account_id = payload["params"]["account_id"]
+            return {"ok": True, "data": {"rows": [{"account_id": account_id, "external_id": account_id + "-one"}], "total": 1}}
+        app._agent_request = request
+        app._submit_console_tool_command = lambda **kwargs: self.fail("live query must not create a Command")
+        app._handle_customer_service_problem_live_query(_Handler(json.dumps({"account_ids": ["ronghui-a", "yunda-a"],
+            "filters": {"direction": "received", "page": 1, "rows": 50}}).encode(),
+            {"X-Browser-Request-UUID": BROWSER_REQUEST_UUID}))
+        self.assertEqual(HTTPStatus.OK, app.sent_status)
+        self.assertEqual({"ronghui-a", "yunda-a"}, {row["account_id"] for row in app.sent_payload["rows"]})
+        self.assertEqual(2, len({call["request_id"] for call in calls}))
+
+    def test_live_query_requires_explicit_known_accounts(self):
+        app = self._build_app()
+        app._agent_request = lambda *args, **kwargs: self.fail("invalid account must not query")
+        for accounts in ([], ["unknown"], ["ronghui-a", "ronghui-a"]):
+            app._handle_customer_service_problem_live_query(_Handler(json.dumps({"account_ids": accounts}).encode()))
+            self.assertEqual(HTTPStatus.BAD_REQUEST, app.sent_status)
 
     def test_customer_service_route_keeps_settings_collapsed_by_default(self):
         app = self._build_app()
@@ -592,7 +618,7 @@ class CustomerServiceModuleTests(unittest.TestCase):
         self.assertEqual([], arguments["account_ids"])
         self.assertEqual(["synthetic-source-a", "synthetic-source-b"], arguments["source_ids"])
 
-    def test_problem_reply_submits_precise_durable_command(self):
+    def test_problem_reply_calls_precise_direct_business(self):
         app = self._build_app()
         calls = []
 
@@ -602,12 +628,7 @@ class CustomerServiceModuleTests(unittest.TestCase):
                 "ok": True,
                 "status": HTTPStatus.ACCEPTED,
                 "data": {
-                    "command_id": "command-reply-1",
-                    "work_item_id": "work-item-reply-1",
-                    "run_id": "run-reply-1",
-                    "status": "RECEIVED",
-                    "reused": False,
-                    "next_poll_after_ms": 1000,
+                    "ok": True, "external_id": "problem-1", "result": {"success": True},
                 },
             }
 
@@ -642,30 +663,23 @@ class CustomerServiceModuleTests(unittest.TestCase):
 
         app._handle_customer_service_problem_agent_action(handler, "reply")
 
-        response = json.loads(handler.wfile.getvalue().decode("utf-8"))
-        self.assertEqual(HTTPStatus.ACCEPTED, handler.status)
-        self.assertTrue(response["pending"])
-        self.assertEqual("run-reply-1", response["run_id"])
-        self.assertEqual("/internal/v1/commands", calls[0]["endpoint"])
+        response = app.sent_payload
+        self.assertEqual(HTTPStatus.OK, app.sent_status)
+        self.assertTrue(response["ok"])
+        self.assertNotIn("pending", response)
+        self.assertEqual("/internal/v1/business/customer-service-reply", calls[0]["endpoint"])
         command = calls[0]["payload"]
-        self.assertEqual("tool.execute", command["command_type"])
-        self.assertEqual(
-            "customer_service_problem_reply",
-            command["parameters"]["tool_name"],
-        )
-        self.assertEqual(
-            f"console:9:tool.execute:{BROWSER_REQUEST_UUID}",
-            command["idempotency_key"],
-        )
-        arguments = command["parameters"]["arguments"]
+        self.assertEqual(BROWSER_REQUEST_UUID, command["request_id"])
+        self.assertEqual({"params", "request_id", "timeout_sec"}, set(command))
+        arguments = command["params"]
         self.assertEqual("problem-1", arguments["external_id"])
         self.assertEqual("2606000040", arguments["waybill_no"])
         self.assertEqual("已处理", arguments["reply_text"])
         self.assertNotIn("raw", arguments)
         self.assertNotIn("REVERSION", arguments)
         self.assertNotIn("arbitrary_write", arguments)
-        self.assertEqual("console", command["source"])
-        self.assertEqual(["super_admin"], command["actor_roles"])
+        self.assertNotIn("actor", command)
+        self.assertNotIn("command_type", command)
 
     def test_problem_write_requires_stable_browser_request_uuid(self):
         app = self._build_app()
@@ -692,7 +706,7 @@ class CustomerServiceModuleTests(unittest.TestCase):
         self.assertFalse(response["ok"])
         self.assertEqual("BROWSER_REQUEST_UUID_REQUIRED", response["error_code"])
 
-    def test_problem_publish_uses_precise_tool_and_closed_payload(self):
+    def test_problem_publish_uses_direct_operation_and_closed_payload(self):
         app = self._build_app()
         calls = []
 
@@ -702,12 +716,7 @@ class CustomerServiceModuleTests(unittest.TestCase):
                 "ok": True,
                 "status": HTTPStatus.ACCEPTED,
                 "data": {
-                    "command_id": "command-publish-1",
-                    "work_item_id": "work-item-publish-1",
-                    "run_id": "run-publish-1",
-                    "status": "RECEIVED",
-                    "reused": False,
-                    "next_poll_after_ms": 1000,
+                    "ok": True, "external_id": "problem-1", "result": {"success": True},
                 },
             }
 
@@ -736,11 +745,8 @@ class CustomerServiceModuleTests(unittest.TestCase):
         app._handle_customer_service_problem_agent_action(handler, "publish")
 
         command = calls[0]
-        self.assertEqual(
-            "customer_service_problem_publish",
-            command["parameters"]["tool_name"],
-        )
-        publish_payload = command["parameters"]["arguments"]["payload"]
+        self.assertEqual({"params", "request_id", "timeout_sec"}, set(command))
+        publish_payload = command["params"]["payload"]
         self.assertEqual(["site-1"], publish_payload["site_id"])
         self.assertNotIn("unknown", publish_payload)
 

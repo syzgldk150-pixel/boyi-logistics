@@ -146,7 +146,7 @@ class ReceiptAuditWorkflowStaticTests(unittest.TestCase):
         self.assertIn('reviewReasonClose?.addEventListener("click", hideFailReasonPanel)', template)
         self.assertIn('reviewReasonSubmit?.addEventListener("click", () => requestReceiptAuditConfirmation("failed"))', template)
 
-    def test_receipts_audit_submits_durable_plan_without_automatic_original_page_fallback(self):
+    def test_receipts_audit_returns_verified_result_without_original_page_fallback(self):
         template = (CONSOLE_DIR / "templates" / "receipts.html").read_text(encoding="utf-8")
 
         for expected in (
@@ -155,8 +155,7 @@ class ReceiptAuditWorkflowStaticTests(unittest.TestCase):
             "submitReceiptAuditDirect",
             "newBrowserRequestUuid",
             '"X-Browser-Request-UUID": browserRequestUuid',
-            "if (payload.pending)",
-            "审核计划已提交",
+            "applyReceiptAuditPayload",
             'reason: result === "failed" ? (reviewReason?.value || "") : ""',
             "确认驳回回单",
             "确认后将把当前回单提交为审核不通过，并使用上方填写的原因。请确认回单照片和运单信息无误。",
@@ -196,8 +195,8 @@ class ReceiptAuditWorkflowStaticTests(unittest.TestCase):
             "const browserRequestUuid = newBrowserRequestUuid();",
             'fetch("/receipts/sync"',
             '"X-Browser-Request-UUID": browserRequestUuid',
-            "if (payload.pending)",
-            "if (result?.ok && !result.pending)",
+            "if (result?.ok)",
+            "const data = result.payload.data || {};",
         ):
             self.assertIn(expected, template)
         self.assertNotIn("verifyReceiptAuditViaSync", template)
@@ -212,22 +211,24 @@ class ReceiptAuditWorkflowStaticTests(unittest.TestCase):
 
         self.assertIn('path.startswith("/receipts/") and path.endswith("/audit")', app_source)
         self.assertIn("def _handle_receipt_audit", app_source)
-        self.assertIn('tool_name="receipts_audit"', app_source)
-        self.assertIn("_submit_console_tool_command", app_source)
+        self.assertIn('"receipts-audit"', app_source)
+        self.assertNotIn("_submit_console_tool_command", (CONSOLE_DIR / "services" / "waybills_receipts.py").read_text(encoding="utf-8"))
         self.assertNotIn('"/internal/v1/tms/receipts_audit"', app_source)
-        self.assertNotIn("update_receipt_audit_status", app_source)
+        self.assertIn("update_receipt_audit_status", app_source)
+        self.assertIn('data.get("verification", {}).get("verified") is True', app_source)
         self.assertIn("audit_log_request", app_source)
         self.assertNotIn("request_summary=params", app_source)
 
-    def test_feishu_detail_fallback_is_an_explicit_narrow_command(self):
+    def test_feishu_detail_is_an_explicit_narrow_direct_query(self):
         template = (CONSOLE_DIR / "templates" / "receipts.html").read_text(encoding="utf-8")
         route_source = (CONSOLE_DIR / "routes" / "receipts.py").read_text(encoding="utf-8")
         service_source = (CONSOLE_DIR / "services" / "waybills_receipts.py").read_text(encoding="utf-8")
 
         self.assertIn("/feishu-detail-query", route_source)
-        self.assertIn('tool_name="query_receipt_feishu_detail"', service_source)
+        self.assertIn('"receipt-feishu-detail"', service_source)
         self.assertIn('"X-Browser-Request-UUID": browserRequestUuid', template)
-        self.assertIn("payload.work_item_id", template)
+        self.assertIn("JSON.stringify(payload.data || {})", template)
+        self.assertNotIn("payload.work_item_id", template)
         self.assertNotIn('tool_name="feishu_operation"', service_source)
         self.assertNotIn('"/internal/v1/tools/run"', service_source)
 

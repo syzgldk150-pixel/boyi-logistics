@@ -14,10 +14,10 @@ from pydantic import BaseModel, ValidationError
 
 from agent.api_contracts import EnvelopedRoute
 from agent.execution_boundary import EXECUTION_CAPABILITY_HEADER, authorize_tms_target
-from agent.orchestration.models import Actor, ActorType
 from agent.tms_runtime.account_contracts import PRICE_ACCOUNT_ID
 from agent.tms_runtime.dispatch import TARGETS, TaskRequest, execute_target
 from agent.tms_runtime.errors import TMSAuthStateError, auth_error_payload
+from agent.tms_runtime.direct_business import DirectBusinessError, DirectBusinessService
 from agent.tms_runtime.account_manager import get_account_manager
 from agent.tms_runtime.monitoring import (
     build_daily_sign_monitoring_snapshot,
@@ -32,7 +32,7 @@ router = APIRouter(route_class=EnvelopedRoute)
 ACCOUNT_LIST_CACHE_TTL_SEC = 60
 _ACCOUNT_LIST_CACHE: dict[str, Any] = {}
 _ACCOUNT_LIST_CACHE_LOCK = threading.Lock()
-_agent_command_runtime: Any | None = None
+_direct_business_service: DirectBusinessService | None = None
 
 
 # Third-party active HTML/JS must not execute under the Console origin.  These
@@ -89,11 +89,41 @@ def _compatibility_action_is_read(endpoint_name: str, params: dict[str, Any]) ->
     return False
 
 
-def bind_agent_command_runtime(agent_runtime: Any | None) -> None:
-    """Inject the AgentCore/Gateway facade from the composition root."""
+def bind_direct_business_service(service: DirectBusinessService | None) -> None:
+    global _direct_business_service
+    _direct_business_service = service
 
-    global _agent_command_runtime
-    _agent_command_runtime = agent_runtime
+
+async def _call_direct_business(operation: str, params: dict[str, Any], request: Request,
+                                *, request_id: str, timeout_sec: int):
+    service = _direct_business_service
+    if service is None:
+        return JSONResponse(status_code=503, content={"ok": False,
+            "error_code": "BUSINESS_SERVICE_UNAVAILABLE", "error": "业务服务暂不可用。"})
+    principal = getattr(getattr(request, "state", None), "console_principal", None)
+    try:
+        return await service.invoke(operation, params, principal=principal,
+                                    request_id=request_id, timeout_sec=timeout_sec)
+    except DirectBusinessError as exc:
+        status = 403 if exc.code in {"TRUSTED_CONSOLE_ACTOR_REQUIRED", "BUSINESS_PERMISSION_REQUIRED"} else 422
+        return JSONResponse(status_code=status, content={"ok": False, "error_code": exc.code, "error": str(exc)})
+    except (ValueError, TypeError, KeyError):
+        return JSONResponse(status_code=422, content={"ok": False,
+            "error_code": "INVALID_BUSINESS_INPUT", "error": "业务请求字段不符合接口要求。"})
+
+
+@router.post("/business/{operation}")
+async def direct_business_call(operation: str, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if (not isinstance(body, dict) or set(body) - {"params", "request_id", "timeout_sec"}
+            or not isinstance(body.get("params"), dict)):
+        return JSONResponse(status_code=422, content={"ok": False,
+            "error_code": "INVALID_BUSINESS_INPUT", "error": "业务请求格式无效。"})
+    return await _call_direct_business(operation, body["params"], request,
+        request_id=body.get("request_id", ""), timeout_sec=body.get("timeout_sec", 180))
 
 
 def authorize_direct_manual_target(
@@ -799,124 +829,6 @@ def _normalize_compatibility_params(
     return dict(params)
 
 
-async def _submit_compat_command(
-    endpoint_name: str,
-    req: TaskRequest,
-    request: Request,
-) -> JSONResponse | dict[str, Any]:
-    runtime = _agent_command_runtime
-    if runtime is None:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "ok": False,
-                "error_code": "CONTROL_PLANE_UNAVAILABLE",
-                "error": "Agent control plane is not initialized",
-            },
-        )
-
-    trusted_actor = Actor(
-        ActorType.LEGACY_API,
-        "tms-compatibility-api",
-        roles=(),
-        authenticated_by="internal_api_token",
-    )
-    command_source = "legacy_api"
-    request_path = str(getattr(getattr(request, "url", None), "path", ""))
-    principal = getattr(getattr(request, "state", None), "console_principal", None)
-    if request_path.startswith("/internal/v1/") and req.source == "console":
-        if not isinstance(principal, dict):
-            return JSONResponse(
-                status_code=403,
-                content={
-                    "ok": False,
-                    "error_code": "TRUSTED_CONSOLE_ACTOR_REQUIRED",
-                    "error": "a valid Console administrator session is required",
-                },
-            )
-        trusted_actor = Actor(
-            ActorType.CONSOLE_ADMIN,
-            str(principal["actor_id"]),
-            roles=tuple(str(role) for role in principal["roles"]),
-            display_name=str(principal.get("display_name") or "")[:200],
-            authenticated_by="mysql_admin_session",
-        )
-        command_source = "console"
-
-    supplied_idempotency_key = str(req.idempotency_key or "").strip()
-    if endpoint_name in COMPAT_READ_TARGETS:
-        tool_name = "tms_query"
-        params = {"endpoint": f"/{endpoint_name}", "params": dict(req.params)}
-        idempotency_key = supplied_idempotency_key or _compat_idempotency_key(request) or _read_idempotency_key(
-            endpoint_name,
-            req.params,
-        )
-    else:
-        if endpoint_name == "customer_service_problem":
-            action = str(req.params.get("action") or "query").strip().lower()
-            tool_name = CUSTOMER_SERVICE_TOOL_BY_ACTION.get(action, "")
-        else:
-            tool_name = COMPAT_TOOL_BY_TARGET.get(endpoint_name, "")
-        params = _normalize_compatibility_params(endpoint_name, req.params)
-        idempotency_key = supplied_idempotency_key or _compat_idempotency_key(request)
-        if not idempotency_key and _compatibility_action_is_read(endpoint_name, req.params):
-            idempotency_key = _read_idempotency_key(endpoint_name, req.params)
-        if not idempotency_key:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "ok": False,
-                    "error_code": "IDEMPOTENCY_KEY_REQUIRED",
-                    "error": "write compatibility commands require Idempotency-Key",
-                },
-            )
-
-    if not tool_name:
-        return JSONResponse(
-            status_code=410,
-            content={
-                "ok": False,
-                "error_code": "DIRECT_TMS_ENTRY_DISABLED",
-                "error": "submit this operation through /internal/v1/commands",
-            },
-        )
-
-    result = await runtime.execute_tool(
-        tool_name,
-        params,
-        actor=trusted_actor,
-        source=command_source,
-        idempotency_key=idempotency_key,
-        execution_context={
-            "compatibility_endpoint": f"/tms/{endpoint_name}",
-            "deprecated": True,
-        },
-    )
-    if not isinstance(result, dict):
-        return JSONResponse(
-            status_code=502,
-            content={
-                "ok": False,
-                "error_code": "INVALID_CONTROL_PLANE_RESPONSE",
-                "error": "Agent facade returned a non-object response",
-            },
-        )
-    return {
-        "ok": bool(result.get("success")),
-        "data": result.get("data") if result.get("success") else {},
-        "error": result.get("error") if not result.get("success") else None,
-        "error_code": result.get("error_code") if not result.get("success") else None,
-        "command_id": result.get("command_id"),
-        "work_item_id": result.get("work_item_id"),
-        "run_id": result.get("run_id"),
-        "correlation_id": result.get("correlation_id"),
-        "status": result.get("status"),
-        "approval": result.get("approval"),
-        "next_poll_after_ms": result.get("next_poll_after_ms", 0),
-        "deprecated": True,
-    }
-
-
 def _build_handler(endpoint_name: str):
     async def _handler(request: Request):
         try:
@@ -967,7 +879,10 @@ def _build_handler(endpoint_name: str):
             endpoint_name,
             request_params=req.params,
         ):
-            status_code, payload = await execute_target(endpoint_name, req)
+            lifecycle = (_direct_business_service.invocation_service if _direct_business_service is not None
+                and _compatibility_action_is_read(endpoint_name, req.params) else None)
+            options = {"read_lifecycle": lifecycle} if lifecycle is not None else {}
+            status_code, payload = await execute_target(endpoint_name, req, **options)
             if status_code != 200:
                 return JSONResponse(status_code=status_code, content=payload)
             return payload
@@ -983,7 +898,30 @@ def _build_handler(endpoint_name: str):
             if status_code != 200:
                 return JSONResponse(status_code=status_code, content=payload)
             return payload
-        return await _submit_compat_command(endpoint_name, req, request)
+        if endpoint_name in COMPAT_READ_TARGETS:
+            return await _call_direct_business(endpoint_name, req.params, request,
+                request_id=str(uuid.uuid4()), timeout_sec=req.timeout_sec)
+        if endpoint_name == "customer_service_problem":
+            action = str(req.params.get("action") or "query").strip().lower()
+            return await _call_direct_business(
+                "customer-service-" + action.replace("_", "-"),
+                _normalize_customer_service_params(action, req.params), request,
+                request_id=str(uuid.uuid4()) if action in {"query", "detail", "fetch_attachment"}
+                    else str(req.idempotency_key or "").rsplit(":", 1)[-1],
+                timeout_sec=req.timeout_sec,
+            )
+        if endpoint_name == "receipts_audit":
+            return await _call_direct_business("receipts-audit", _normalize_receipts_audit_params(req.params), request,
+                request_id=str(req.idempotency_key or "").rsplit(":", 1)[-1], timeout_sec=req.timeout_sec)
+        if endpoint_name in {"ronghui_waybill_proxy", "yunda_waybill_proxy"}:
+            if not isinstance(getattr(getattr(request, "state", None), "console_principal", None), dict):
+                return JSONResponse(status_code=403, content={"ok": False,
+                    "error_code": "TRUSTED_CONSOLE_ACTOR_REQUIRED", "error": "需要真实管理员会话。"})
+            return JSONResponse(status_code=410, content={"ok": False,
+                "error_code": "DIRECT_TMS_ENTRY_DISABLED", "error": "该原平台接口未开放。"})
+        return JSONResponse(status_code=410, content={"ok": False,
+            "error_code": "PLUGIN_ENTRY_REQUIRED",
+            "error": "请通过已安装插件的明确入口执行此操作。"})
 
     return _handler
 

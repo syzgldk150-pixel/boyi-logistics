@@ -109,7 +109,7 @@ YundaResourceCommitPort = Callable[
     [str, list[dict[str, Any]], str, bool], Mapping[str, Any]
 ]
 YundaProjectionCommitPort = Callable[
-    [list[dict[str, Any]], str], Mapping[str, Any]
+    [list[dict[str, Any]], str, Mapping[str, Any]], Mapping[str, Any]
 ]
 DeliveryViewListPort = Callable[[str], Sequence[Mapping[str, Any]]]
 DeliveryRecordPagePort = Callable[[str, str, int, int], Mapping[str, Any]]
@@ -1617,7 +1617,7 @@ class _FirstPartyCoreHandlers:
         arguments: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         _require_context(context, tool_name=_YUNDA_SEND_TOOL, role="account_id")
-        _one_account(context)
+        descriptor = _account_descriptor(self._ports, _one_account(context), systems={"yunda"})
         port = self._ports.replace_yunda_waybill_projection
         if port is None:
             raise _error("Yunda projection primitive is unavailable", "BROKER_ACTION_UNAVAILABLE")
@@ -1628,7 +1628,7 @@ class _FirstPartyCoreHandlers:
         )
         self._mark_write_started(context)
         try:
-            raw = port(records, target_date)
+            raw = port(records, target_date, descriptor)
         except PluginExecutionError as exc:
             if exc.code == "WRITE_OUTCOME_UNKNOWN":
                 raise

@@ -7,7 +7,7 @@
 {% block main_class %}finance-main{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="/static/finance.css?v=finance-workbench-20260712-3">
+<link rel="stylesheet" href="/static/finance.css?v=20260910-collection-scope">
 {% endblock %}
 
 {% block page_actions %}<a class="ghost-btn" data-console-navigate href="/modules/finance/data-sources">数据源</a>{% endblock %}
@@ -313,20 +313,16 @@
   <section id="finance-panel-sync" class="finance-tab-panel" role="tabpanel" aria-labelledby="finance-tab-sync" tabindex="0" hidden data-finance-panel="sync">
     <div class="finance-sync-actions">
       <form class="finance-panel finance-sync-form" data-finance-sync-form>
-        <div class="finance-panel-head"><div><h2>手动同步</h2><p>默认重扫最近 7 天，智能服务按账号管理绑定登录。</p></div></div>
+        <div class="finance-panel-head"><div><h2>手动同步</h2><p>同步已配置的全部数据源，默认重扫最近 7 天。账号在“数据源管理”中设置。</p></div></div>
         <div class="finance-filter-grid finance-filter-grid--sync">
-          <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option>{% for platform in finance_platforms %}<option value="{{ platform.value }}">{{ platform.label }}</option>{% endfor %}</select></label>
-          <label class="finance-field"><span>账号</span><select name="account_id" data-finance-sync-account><option value="all">全部账号</option></select></label>
           <label class="finance-field"><span>目标日期（可选）</span><input type="date" name="target_date" max="{{ today }}"></label>
           <label class="finance-field"><span>重扫天数</span><input type="number" name="rescan_days" min="1" max="31" value="7"></label>
         </div>
         <button class="primary-btn" type="submit"><i data-feather="download-cloud" aria-hidden="true"></i><span>开始同步</span></button>
       </form>
       <form class="finance-panel finance-sync-form" data-finance-backfill-form>
-        <div class="finance-panel-head"><div><h2>历史回溯</h2><p>按明确日期范围创建回溯批次，不使用历史成功值补齐。</p></div></div>
+        <div class="finance-panel-head"><div><h2>历史回溯</h2><p>按所选日期回溯已配置的全部数据源。账号在“数据源管理”中设置。</p></div></div>
         <div class="finance-filter-grid finance-filter-grid--sync">
-          <label class="finance-field"><span>平台</span><select name="platform"><option value="all">全部平台</option>{% for platform in finance_platforms %}<option value="{{ platform.value }}">{{ platform.label }}</option>{% endfor %}</select></label>
-          <label class="finance-field"><span>账号</span><select name="account_id" data-finance-backfill-account><option value="all">全部账号</option></select></label>
           <label class="finance-field"><span>开始日期</span><input type="date" name="start_date" required max="{{ today }}"></label>
           <label class="finance-field"><span>结束日期</span><input type="date" name="end_date" required max="{{ today }}"></label>
         </div>
@@ -352,6 +348,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/finance.js?v=v32"></script>
+<script src="/static/finance.js?v=20260910-collection-scope"></script>
 <script src="/static/module_source_selector.js?v=v32"></script>
 {% endblock %}

@@ -424,11 +424,14 @@ class WaybillRepository:
         if source:
             sql += " AND source=%s"
             params.append(str(source).strip())
-        sql += " ORDER BY id DESC LIMIT 1"
+        sql += " ORDER BY id LIMIT 2"
         with _connection(self._connection_factory) as connection:
             with _cursor(connection, self._cursor_factory) as cursor:
                 cursor.execute(sql, params)
-                return self._row_to_dict(cursor.fetchone())
+                rows = cursor.fetchall() or []
+                if len(rows) > 1:
+                    raise ValueError("waybill number is ambiguous; specify a verified source identity")
+                return self._row_to_dict(rows[0]) if rows else None
 
     def list_by_numbers(self, waybill_numbers: list[str]) -> list[dict[str, Any]]:
         """Read every row matching one bounded, binary-exact identity set."""
@@ -497,13 +500,18 @@ class WaybillRepository:
         writer_id: str = "",
         validate_schema: bool = True,
     ) -> dict[str, Any]:
-        source_text = str(source or "").strip()[:32] or "sync"
+        source_text = str(source or "").strip()
+        if not source_text or len(source_text) > 32:
+            raise ValueError("an explicit waybill source is required")
         date_text = str(target_date or "").strip()
         normalized_by_waybill: dict[str, dict[str, str]] = {}
         for record in records:
             normalized = self._normalized_record(record)
-            if normalized:
-                normalized_by_waybill.setdefault(normalized["waybill_no"], normalized)
+            if normalized is None:
+                raise ValueError("waybill record is missing its identity")
+            if normalized["waybill_no"] in normalized_by_waybill:
+                raise ValueError("duplicate waybill identities in source publication")
+            normalized_by_waybill[normalized["waybill_no"]] = normalized
 
         if validate_schema:
             self.ensure_schema()
@@ -513,12 +521,16 @@ class WaybillRepository:
                 for row in normalized_by_waybill.values():
                     cursor.execute(
                         """
-                        SELECT id FROM waybills WHERE waybill_no=%s
-                        ORDER BY CASE WHEN source=%s THEN 0 ELSE 1 END, id ASC LIMIT 1
+                        SELECT id FROM waybills WHERE BINARY waybill_no=%s AND BINARY source=%s
+                        AND source_scope IS NULL AND source_record_id IS NULL
+                        ORDER BY id LIMIT 2 FOR UPDATE
                         """,
                         (row["waybill_no"], source_text),
                     )
-                    existing = cursor.fetchone()
+                    matches = cursor.fetchall() or []
+                    if len(matches) > 1:
+                        raise ValueError("legacy waybill identity is ambiguous; source reconciliation required")
+                    existing = matches[0] if matches else None
                     if existing and existing.get("id"):
                         updatable = [field for field in WAYBILL_FIELDS if field != "status"]
                         assignments = ", ".join(f"{field} = %s" for field in updatable)
@@ -556,13 +568,14 @@ class WaybillRepository:
                             f"""
                             DELETE FROM waybills
                             WHERE source = %s AND open_date = %s AND status <> 'cancelled'
+                              AND source_scope IS NULL AND source_record_id IS NULL
                               AND waybill_no NOT IN ({placeholders})
                             """,
                             [source_text, date_text, *keep],
                         )
                     else:
                         cursor.execute(
-                            "DELETE FROM waybills WHERE source = %s AND open_date = %s AND status <> 'cancelled'",
+                            "DELETE FROM waybills WHERE source = %s AND open_date = %s AND status <> 'cancelled' AND source_scope IS NULL AND source_record_id IS NULL",
                             (source_text, date_text),
                         )
                     deleted_stale = int(cursor.rowcount or 0)

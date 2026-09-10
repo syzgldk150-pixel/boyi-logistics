@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import tempfile
 from typing import Any, Callable, Mapping
+from uuid import UUID
 
 
 try:
@@ -708,15 +709,24 @@ class FinanceService:
             limit = max(1, min(int(body.get("limit") or 20), 100))
         except (TypeError, ValueError) as exc:
             raise FinanceValidationError("limit must be an integer") from exc
+        request_id = str(body.get("request_id") or "")
+        try:
+            if str(UUID(request_id)) != request_id:
+                raise ValueError
+        except ValueError as exc:
+            raise FinanceValidationError("request_id must be a UUID") from exc
         result = self.agent_request(
             "POST",
             "/internal/v1/admin/finance/reviews/analyze",
-            payload={"limit": limit},
+            payload={"limit": limit, "request_id": request_id},
             timeout=180,
         )
         if not result.get("ok"):
             raise FinanceUpstreamError(str(result.get("error") or "finance AI analysis failed"))
-        return self._ensure_mapping(result.get("data"), operation="finance AI analysis")
+        invocation = self._ensure_mapping(result.get("data"), operation="finance AI analysis")
+        if invocation.get("status") != "COMPLETED":
+            raise FinanceUpstreamError(str(invocation.get("error_summary") or "本次分析未完成"))
+        return self._ensure_mapping(invocation.get("result"), operation="finance AI analysis result")
 
     def reject_review_case(self, review_case_id: int, body: Mapping[str, Any], *, changed_by: str) -> dict[str, Any]:
         reason = _required_text(body.get("reason"), field_name="reason", max_length=500)

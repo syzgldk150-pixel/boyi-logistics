@@ -12,7 +12,7 @@ class FeishuSelfPickupPendingTests(unittest.TestCase):
         replies: list[str] = []
         pending_store: dict[str, dict[str, Any]] = {}
         project_calls: list[dict[str, Any]] = []
-        preview_run_id = "33333333-3333-4333-8333-333333333333"
+        preview_invocation_id = "33333333-3333-4333-8333-333333333333"
         observed_at = datetime.now(timezone.utc).replace(microsecond=0)
 
         class FakeAgent:
@@ -28,12 +28,12 @@ class FeishuSelfPickupPendingTests(unittest.TestCase):
                 return {
                     "success": True,
                     "status": "COMPLETED",
-                    "run_id": preview_run_id,
+                    "invocation_id": preview_invocation_id,
                     "selection_preview": {
-                        "contract_version": 1,
+                        "contract_version": 2,
                         "automation_id": "self_pickup_problem_upload",
                         "title": "自提到货问题件",
-                        "preview_run_id": preview_run_id,
+                        "preview_invocation_id": preview_invocation_id,
                         "observed_at": observed_at.isoformat(),
                         "expires_at": (
                             observed_at + timedelta(minutes=15)
@@ -87,7 +87,7 @@ class FeishuSelfPickupPendingTests(unittest.TestCase):
 
             self.assertEqual(1, len(project_calls))
             self.assertEqual({}, project_calls[0]["envelope"]["body"])
-            self.assertIsNone(project_calls[0]["preview_run_id"])
+            self.assertIsNone(project_calls[0]["preview_invocation_id"])
             self.assertNotIn("chat-1", pending_store)
             self.assertIn("待上传自提到货问题件候选 0 单", replies[-1])
             self.assertIn("当前没有需要上传的候选数据", replies[-1])

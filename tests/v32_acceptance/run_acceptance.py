@@ -1,4 +1,4 @@
-"""Actual signed Console invocation to durable MySQL Command/Run acceptance."""
+"""Actual Console immediate invocation admission and isolated execution timings."""
 from __future__ import annotations
 
 import asyncio
@@ -14,13 +14,7 @@ from agent.orchestration.models import Actor, ActorType
 from tests.v32_acceptance.browser_performance import TASK_ENV, distribution
 from tests.v32_acceptance.console_fixture import ConsoleFixture
 from tests.v32_acceptance.management_fixture import ManagementFixture, connect
-from tests.v32_acceptance.runner_fixture import RunnerFixture
-
-
-def read_run(run_id):
-    with connect() as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT run_id,status,error_code,error_summary FROM agent_runs WHERE run_id=%s", (run_id,))
-        return cursor.fetchone()
+from tests.direct_invocation_fixture import DirectFixture
 
 
 async def measure(console, automation_ids, runner):
@@ -57,26 +51,18 @@ async def measure(console, automation_ids, runner):
                             "X-Requested-With": "XMLHttpRequest", "Origin": console.url}, timeout=10000)
                     body = await response.json()
                     row["response_ms"] = (time.monotonic() - started) * 1000
-                    if response.status != 202 or body.get("ok") is not True or not body.get("run_id"):
-                        raise AssertionError(f"Run was not durably accepted: HTTP {response.status}, {body}")
+                    if response.status != 202 or body.get("ok") is not True or not body.get("invocation_id"):
+                        raise AssertionError(f"Invocation was not durably accepted: HTTP {response.status}, {body}")
                     row["acceptance_ms"] = row["response_ms"]
-                    row["run_id"] = body["run_id"]
-                    runner.runner.wake(row["run_id"])
-                    # Completion is outside the acceptance stopwatch. The next
-                    # same-instance command is submitted only after a real
-                    # terminal result, preserving the existing overlap guard.
+                    row["invocation_id"] = body["invocation_id"]
+                    # Completion has its own bound, separate from immediate
+                    # admission. The next call uses a new request identity.
                     completion_started = time.monotonic()
-                    while time.monotonic() - completion_started < 60:
-                        persisted = await asyncio.to_thread(read_run, row["run_id"])
-                        if persisted and persisted["status"] in {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}:
-                            row["execution_status"] = persisted["status"]
-                            row["execution_error_code"] = persisted["error_code"]
-                            if persisted["status"] != "COMPLETED":
-                                raise AssertionError(f"real plugin execution ended {persisted['status']}: {persisted['error_code']}: {persisted['error_summary']}")
-                            break
-                        await asyncio.sleep(0.1)
-                    else:
-                        raise AssertionError(f"real Runner did not finish within the separate 60-second execution bound: {persisted}")
+                    persisted = await asyncio.to_thread(runner.service.wait_sync, row["invocation_id"], timeout_seconds=60)
+                    row["execution_status"] = persisted["status"]
+                    row["execution_error_code"] = persisted["error_code"]
+                    if persisted["status"] != "COMPLETED":
+                        raise AssertionError(f"actual plugin did not complete within 60 seconds: {persisted}")
                     row["completion_wait_ms"] = (time.monotonic() - completion_started) * 1000
                 except Exception as exc:
                     row["error"] = type(exc).__name__ + ": " + str(exc)
@@ -108,26 +94,26 @@ def main():
                 management.management.set_enabled(entry.automation_id, enabled=True, request_id=str(uuid4()),
                     expected_record_version=entry.record_version, actor=actor)
         try:
-            with RunnerFixture(management) as runner, ConsoleFixture(agent_base_url=management.url, internal_token=management.internal_token,
+            with DirectFixture(management) as runner, ConsoleFixture(agent_base_url=management.url, internal_token=management.internal_token,
                 signing_secret=management.signing_secret) as console:
                 rows, browser = asyncio.run(measure(console, [entry.automation_id for entry in entries], runner))
                 runtime_evidence = runner.snapshot()
-            run_ids = [row["run_id"] for row in rows if row.get("run_id")]
+            invocation_ids = [row["invocation_id"] for row in rows if row.get("invocation_id")]
             persisted = []
-            if run_ids:
+            if invocation_ids:
                 with connect() as connection, connection.cursor() as cursor:
-                    cursor.execute("SELECT run_id,status FROM agent_runs WHERE run_id IN (" + ",".join(["%s"] * len(run_ids)) + ")", tuple(run_ids))
+                    cursor.execute("SELECT invocation_id,status FROM automation_plugin_invocations WHERE invocation_id IN (" + ",".join(["%s"] * len(invocation_ids)) + ")", tuple(invocation_ids))
                     persisted = cursor.fetchall()
             result = distribution(rows, "acceptance_ms", 500)
-            if len(rows) != 100 or len(persisted) != len(run_ids) or len(set(run_ids)) != len(run_ids):
+            if len(rows) != 100 or len(persisted) != len(invocation_ids) or len(set(invocation_ids)) != len(invocation_ids):
                 result["status"] = "FAIL"
-            report = {"scope": "actual browser form -> authenticated Console -> signed policy -> CommandGateway -> MySQL commit; execution not timed",
+            report = {"scope": "actual browser form -> authenticated Console -> signed policy -> immediate process admission -> MySQL Invocation fact; execution separately timed",
                 "status": result["status"], "result": result, "raw_samples": rows,
-                "persisted_runs": persisted, "browser": browser, "concurrent_clients": 4, "distinct_authenticated_administrators": 4,
+                "persisted_invocations": persisted, "browser": browser, "concurrent_clients": 4, "distinct_authenticated_administrators": 4,
                 "automation_ids": [entry.automation_id for entry in entries], "runtime": runtime_evidence,
                 "business_execution": "actual synthetic compute plugin only; no first-party daily business acceptance claim"}
             (TASK_ENV / "run-acceptance.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            print(json.dumps({"result": result, "persisted_runs": len(persisted)}, ensure_ascii=False, indent=2))
+            print(json.dumps({"result": result, "persisted_invocations": len(persisted)}, ensure_ascii=False, indent=2))
             return 0 if report["status"] == "PASS" else 1
         finally:
             for entry in entries:

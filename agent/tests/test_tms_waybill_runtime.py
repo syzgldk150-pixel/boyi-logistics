@@ -2660,6 +2660,9 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
             def fetchone(self):
                 return self._next_row
 
+            def fetchall(self):
+                return [self._next_row] if self._next_row else []
+
             def close(self):
                 return None
 

@@ -1,6 +1,12 @@
 """Focused tests extracted from the former TMS runtime aggregate."""
 
 from _tms_runtime_test_support import *  # noqa: F403
+from agent.orchestration.models import Actor, ActorType
+from agent.tool_registry import ToolRegistry
+
+
+def direct_admin():
+    return Actor(ActorType.CONSOLE_ADMIN, "test-admin", roles=("admin",), authenticated_by="mysql_admin_session")
 
 
 def _resolved_r7_test_params(params, **_kwargs):
@@ -72,6 +78,9 @@ class _CompletedRunGateway:
 
 def _configure_completed_control_plane(core, *, data):
     gateway = _CompletedRunGateway()
+    core.configure_direct_readers({name: (lambda _arguments: data)
+                                  for name in ("track_waybill", "get_price")
+                                  if name not in core._direct_tool_runners})
     core.configure_orchestration(
         command_gateway=gateway,
         repository=_CompletedRunRepository(data),
@@ -245,11 +254,10 @@ class AgentExecutionToolTests(unittest.TestCase):
             def get_capability(self, name):
                 if name != "track_waybill":
                     return None
-                return {
-                    "name": name,
-                    "version": "1.0.0",
-                    "operation_type": "read",
-                }
+                return ToolRegistry().get_capability(name)
+
+            def validate_input(self, name, params):
+                return ToolRegistry().validate_input(name, params)
 
         class _FakeLLM:
             def __init__(self):
@@ -285,7 +293,7 @@ class AgentExecutionToolTests(unittest.TestCase):
             core.handle_message(
                 "帮我发车",
                 user_id="user-1",
-                conversation_id="conv-1",
+                conversation_id="conv-1", actor=direct_admin(), source="console",
             )
         )
 
@@ -331,10 +339,13 @@ class AgentExecutionToolTests(unittest.TestCase):
 
         self.assertEqual("1. 大祥账号\n2. 操作场账号\n3. 韵达账号", result["reply"])
 
-    def test_agent_submits_track_waybill_to_control_plane_adapter_path(self):
+    def test_agent_queries_tracking_without_command_or_run(self):
         class _FakeRegistry:
             def get_capability(self, name):
-                return {"name": name, "version": "1.0.0", "operation_type": "read"}
+                return ToolRegistry().get_capability(name)
+
+            def validate_input(self, name, params):
+                return ToolRegistry().validate_input(name, params)
 
         run_track = Mock(return_value={"tracking_number": "R00014513348", "route_rows": []})
         core = AgentCore(direct_tool_runners={"track_waybill": run_track})
@@ -344,10 +355,10 @@ class AgentExecutionToolTests(unittest.TestCase):
             data={"tracking_number": "R00014513348", "route_rows": []},
         )
 
-        result = asyncio.run(core.execute_tool("track_waybill", {"tracking_number": "R00014513348"}))
+        result = asyncio.run(core.execute_tool("track_waybill", {"tracking_number": "R00014513348"}, actor=direct_admin(), source="console"))
 
-        run_track.assert_not_called()
-        self.assertEqual("track_waybill", gateway.commands[0].parameters["tool_name"])
+        run_track.assert_called_once_with({"tracking_number": "R00014513348"})
+        self.assertEqual([], gateway.commands)
         self.assertTrue(result["success"])
         self.assertEqual("R00014513348", result["data"]["tracking_number"])
 
@@ -379,10 +390,13 @@ class AgentExecutionToolTests(unittest.TestCase):
         self.assertTrue(result["ronghui"]["saw_yunda_started"])
         self.assertEqual("隆尧莲子镇分部", result["yunda"]["目的网点"])
 
-    def test_agent_submits_get_price_to_control_plane_adapter_path(self):
+    def test_agent_queries_price_without_command_or_run(self):
         class _FakeRegistry:
             def get_capability(self, name):
-                return {"name": name, "version": "1.0.0", "operation_type": "read"}
+                return ToolRegistry().get_capability(name)
+
+            def validate_input(self, name, params):
+                return ToolRegistry().validate_input(name, params)
 
         run_price = Mock(return_value={"mode": "agent_tms_combined", "ronghui": {}, "yunda": {}})
         core = AgentCore(direct_tool_runners={"get_price": run_price})
@@ -393,10 +407,10 @@ class AgentExecutionToolTests(unittest.TestCase):
         )
 
         params = {"address": "河北省邢台市隆尧县莲子镇中学", "weight": 199, "volume": 2.727}
-        result = asyncio.run(core.execute_tool("get_price", params))
+        result = asyncio.run(core.execute_tool("get_price", params, actor=direct_admin(), source="console"))
 
-        run_price.assert_not_called()
-        self.assertEqual("get_price", gateway.commands[0].parameters["tool_name"])
+        run_price.assert_called_once_with(params)
+        self.assertEqual([], gateway.commands)
         self.assertTrue(result["success"])
         self.assertEqual("agent_tms_combined", result["data"]["mode"])
 

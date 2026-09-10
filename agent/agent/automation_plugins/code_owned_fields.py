@@ -562,4 +562,11 @@ def apply_selection_execution_boundary(
     resolved["_plugin_runtime"] = restricted_metadata
     resolved["operation_type"] = "read"
     resolved["risk_level"] = "low"
+    # The signed business schema describes the formal fingerprint. The host's
+    # exact preview protocol requires its absence as the empty sentinel and
+    # has already restricted every available Broker primitive to reads.
+    schema = copy.deepcopy(resolved.get("input_schema") or {})
+    if isinstance(schema.get("properties"), dict) and "preview_fingerprint" in schema["properties"]:
+        schema["properties"]["preview_fingerprint"] = {"type": "string", "const": ""}
+        resolved["input_schema"] = schema
     return resolved

@@ -275,13 +275,14 @@ def test_first_party_descriptors_are_16_actions_and_18_instances(
     assert all(manifest.runtime["kind"] == "python_subprocess" for manifest in manifests.values())
     assert all(manifest.runtime_permissions["max_broker_calls"] > 0 for manifest in manifests.values())
     assert all(manifest.runtime_permissions["broker_operations"] for manifest in manifests.values())
-    assert manifests["sync_scan_codes"].version == "1.0.23"
+    assert manifests["sync_scan_codes"].version == "1.0.24"
     assert manifests["sync_arrival_stats"].version == "1.0.22"
     assert manifests["sync_arrive_list"].version == "1.0.21"
     assert manifests["self_pickup_problem_upload"].version == "1.0.26"
     assert manifests["split_pending_problem_upload"].version == "1.0.25"
-    assert manifests["sync_finance_bills"].version == "1.0.21"
+    assert manifests["sync_finance_bills"].version == "1.0.22"
     assert manifests["sync_customer_service_problems"].version == "1.0.21"
+    assert manifests["sync_daily_send_orders"].version == "1.0.21"
     assert manifests["sync_arrival_stats"].runtime_permissions["max_broker_calls"] == 1000
     assert {
         manifest.version
@@ -295,13 +296,14 @@ def test_first_party_descriptors_are_16_actions_and_18_instances(
             "sync_scan_codes",
             "sync_finance_bills",
             "sync_customer_service_problems",
+            "sync_daily_send_orders",
         }
     } == {FIRST_PARTY_PACKAGE_VERSION}
     assert {
         seed.version
         for seed in seeds
         if seed.plugin_id == "sync_scan_codes"
-    } == {"1.0.23"}
+    } == {"1.0.24"}
     assert {
         seed.version
         for seed in seeds

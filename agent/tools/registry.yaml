@@ -410,7 +410,7 @@ tools:
     heavy: false
 
   - name: query_automation_operations
-    version: "1.0.0"
+    version: "1.1.0"
     operation_type: read
     risk_level: low
     llm_exposed: true
@@ -435,7 +435,7 @@ tools:
         - observed_at
     postconditions:
       - authoritative_result_returned
-    description: "查询主库中已持久化命令和运行的状态计数、终态成功率与新鲜度；不接受 SQL 或任意筛选条件"
+    description: "按中国业务日期查询当前 Invocation 的执行状态计数、终态成功率与新鲜度；未知写计入非成功终态，不混入历史 Command/Run，不接受 SQL 或任意筛选条件"
     input_schema:
       type: object
       additionalProperties: false
@@ -465,6 +465,9 @@ tools:
             query_type:
               type: string
               enum: [automation_operations]
+            record_source:
+              type: string
+              enum: [automation_plugin_invocations]
             availability:
               type: string
               enum: [DATA, NO_DATA]
@@ -475,22 +478,43 @@ tools:
                 start_date: {type: string}
                 end_date: {type: string}
               required: [start_date, end_date]
-            commands:
+            invocations:
               type: object
-              additionalProperties: true
-            runs:
-              type: object
-              additionalProperties: true
+              additionalProperties: false
+              properties:
+                status_counts:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    STARTING: {type: integer, minimum: 0}
+                    RUNNING: {type: integer, minimum: 0}
+                    CANCELLING: {type: integer, minimum: 0}
+                    COMPLETED: {type: integer, minimum: 0}
+                    FAILED: {type: integer, minimum: 0}
+                    CANCELLED: {type: integer, minimum: 0}
+                    WRITE_OUTCOME_UNKNOWN: {type: integer, minimum: 0}
+                total: {type: integer, minimum: 0}
+                success_rate:
+                  oneOf:
+                    - type: "null"
+                    - type: object
+                      additionalProperties: false
+                      properties:
+                        completed_invocations: {type: integer, minimum: 0}
+                        terminal_invocations: {type: integer, minimum: 1}
+                        value: {type: string, pattern: '^(0\.\d{4}|1\.0000)$'}
+                      required: [completed_invocations, terminal_invocations, value]
+              required: [status_counts, total, success_rate]
             freshness:
               type: object
               additionalProperties: false
               properties:
-                latest_command_requested_at:
+                latest_invocation_started_at:
                   oneOf: [{type: string}, {type: "null"}]
-                latest_run_updated_at:
+                latest_invocation_updated_at:
                   oneOf: [{type: string}, {type: "null"}]
-              required: [latest_command_requested_at, latest_run_updated_at]
-          required: [query_type, availability, period, commands, runs, freshness]
+              required: [latest_invocation_started_at, latest_invocation_updated_at]
+          required: [query_type, record_source, availability, period, invocations, freshness]
         meta:
           type: object
           additionalProperties: true

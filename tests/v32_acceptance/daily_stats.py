@@ -9,17 +9,16 @@ from Crypto.PublicKey import ECC
 
 from agent.automation_plugins.first_party import resolve_first_party_manifests
 from agent.automation_plugins.package import Ed25519TrustStore
-from agent.orchestration.context_builder import ContextBuilder
 from agent.tool_registry import ToolRegistry
 from plugin_core_adapters.first_party import build_production_first_party_core_handler_map
 from tests.v32_acceptance.daily_protocol import ACCOUNT_ID, MAIN_CODE, DailyAccounts
-from tests.v32_acceptance.daily_scan import ACTOR, RUNTIME, connect, prepare_database, run_scan, setup_scan, signed_request, wait_result
+from tests.v32_acceptance.daily_scan import ACTOR, RUNTIME, connect, prepare_database, run_scan, setup_scan, signed_request
 from tests.v32_acceptance.daily_stats_protocol import DailyStatsProtocol
 from tests.v32_acceptance.daily_browser import DailyBrowser
 from tests.v32_acceptance.console_fixture import ConsoleFixture
 from tests.v32_acceptance.first_party_fixture import bootstrap, isolated_migration_accounts
 from tests.v32_acceptance.management_fixture import ManagementFixture
-from tests.v32_acceptance.runner_fixture import RunnerFixture
+from tests.direct_invocation_fixture import DirectFixture
 
 
 def setup_stats(management):
@@ -51,8 +50,7 @@ def run_stats(management, runner, boundary, *, browser=None, configure=True):
     target_date = datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
     path, request_id = '/internal/v1/automation-projects/arrival_stats/invoke', str(uuid4())
     receipt = browser.run(automation_id) if browser else signed_request(management, path, payload={'request_id': request_id})
-    runner.runner.wake(receipt['run_id'])
-    result = wait_result(receipt['run_id'])
+    result = runner.service.wait_sync(receipt['invocation_id'])
     if result['status'] != 'COMPLETED':
         raise AssertionError(result)
     from tools.phase7_mysql_store import list_arrival_progress, list_scan_codes_for_date, list_split_pending_problem_items, list_waybill_records
@@ -70,9 +68,9 @@ def run_stats(management, runner, boundary, *, browser=None, configure=True):
     assert any(MAIN_CODE in row for row in sheets['primary']) and any(MAIN_CODE in row for row in sheets['split'])
     writes_before = len(boundary.sheet_writes)
     replay = browser.replay() if browser else signed_request(management, path, payload={'request_id': request_id})
-    assert replay['run_id'] == receipt['run_id'] and len(boundary.sheet_writes) == writes_before
+    assert replay['invocation_id'] == receipt['invocation_id'] and len(boundary.sheet_writes) == writes_before
     return {'status': 'PASS', 'entry': 'actual Console browser control' if browser else 'signed Console Agent HTTP',
-        'actual_run': result, 'replay_run_id': replay['run_id'], 'expected_quantity': int(arrivals[0]['expected_quantity']),
+        'actual_invocation': result, 'replay_invocation_id': replay['invocation_id'], 'expected_quantity': int(arrivals[0]['expected_quantity']),
         'arrived_quantity': int(arrivals[0]['arrived_quantity']), 'pending_quantity': int(split[0]['pending_quantity']),
         'sheet_write_count': writes_before, 'sheet_values': sheets,
         'external_requests': boundary.requests, 'optional_settings': {'archive_snapshot': False, 'pending_sheet_disabled': True}}
@@ -99,7 +97,7 @@ def main():
                 reconciled = management.targets.reconcile_project(identity)
                 if management.catalog.require(identity).committed_snapshot is None:
                     raise AssertionError(f'actual {identity} reconciliation did not commit: {reconciled}')
-            with RunnerFixture(management, context_builder=ContextBuilder(account_resolver=lambda _command: account_manager.list_accounts())) as runner:
+            with DirectFixture(management, saved_resource_provider=boundary.resource_loader) as runner:
                 setup_scan(management)
                 setup_stats(management)
                 with ConsoleFixture(agent_base_url=management.url, internal_token=management.internal_token,

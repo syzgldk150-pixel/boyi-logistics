@@ -4,12 +4,13 @@ import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from agent.orchestration.models import OrchestrationError
 from feishu import message_handler
+from feishu.invocation_results import InvocationResultFollower
 
 
 class _FakeProjectEntrypoints:
@@ -48,7 +49,7 @@ class _FakeProjectEntrypoints:
                 raise result
             on_accepted = kwargs.get("on_accepted")
             if on_accepted is not None:
-                await on_accepted(SimpleNamespace(run_id=result.get("run_id", "")))
+                await on_accepted(SimpleNamespace(run_id=result.get("invocation_id", "")))
             return dict(result)
         on_accepted = kwargs.get("on_accepted")
         if on_accepted is not None:
@@ -56,7 +57,7 @@ class _FakeProjectEntrypoints:
         return {
             "success": self.status == "COMPLETED",
             "status": self.status,
-            "run_id": "run-feishu-one",
+            "invocation_id": "run-feishu-one",
         }
 
     def describe_feishu_route(self, route_key):
@@ -145,8 +146,9 @@ def _run_verified_text(text: str, *, event_id: str) -> None:
 def _scan_preview(run_id: str) -> dict:
     observed_at = datetime.now(timezone.utc).replace(microsecond=0)
     return {
-        "contract_version": 1,
-        "preview_run_id": run_id,
+        "contract_version": 2,
+        "automation_id": "scan_codes",
+        "preview_invocation_id": run_id,
         "target_date": observed_at.date().isoformat(),
         "observed_at": observed_at.isoformat(),
         "expires_at": (observed_at + timedelta(minutes=15)).isoformat(),
@@ -166,10 +168,10 @@ def _selection_preview(
 ) -> dict:
     observed_at = datetime.now(timezone.utc).replace(microsecond=0)
     return {
-        "contract_version": 1,
+        "contract_version": 2,
         "automation_id": automation_id,
         "title": automation_id,
-        "preview_run_id": run_id,
+        "preview_invocation_id": run_id,
         "observed_at": observed_at.isoformat(),
         "expires_at": (observed_at + timedelta(minutes=15)).isoformat(),
         "candidate_count": len(candidates),
@@ -188,7 +190,7 @@ def test_service_v2_feishu_dispatches_verified_exact_context_and_hides_internal_
             "service": "private.service",
             "operation": "private.operation",
             "contribution_id": "private.contribution",
-            "run_id": "11111111-1111-4111-8111-111111111111",
+            "invocation_id": "11111111-1111-4111-8111-111111111111",
             "error_summary": "private.service/private.operation failed",
         }
     )
@@ -290,7 +292,7 @@ def test_service_v2_post_acceptance_wait_failure_never_claims_not_submitted():
         "service_v2_feishu_started",
         "service_v2_feishu_result_pending",
     ]
-    assert "已提交" in replies[-1][0]
+    assert "已发起" in replies[-1][0]
     assert "未能执行" not in replies[-1][0]
     assert "重试" not in replies[-1][0]
 
@@ -470,7 +472,7 @@ def test_direct_feishu_project_rejection_does_not_claim_execution_started():
         message_handler._COMMAND_CONTEXT.reset(token)
 
     assert len(replies) == 1
-    assert "写入结果待人工核验" in replies[0][0]
+    assert "本次执行未开始" in replies[0][0]
     assert "已开始" not in replies[0][0]
     assert "private-run" not in replies[0][0]
 
@@ -517,17 +519,17 @@ def test_direct_project_post_acceptance_wait_failure_reports_background_run(wait
         "automation_project_started",
         "automation_project_result_pending",
     ]
-    assert "已提交" in replies[-1][0]
+    assert "已发起" in replies[-1][0]
     assert "未提交" not in replies[-1][0]
     assert "重试" not in replies[-1][0]
 
 
 def test_direct_feishu_project_rejection_distinguishes_blocking_kinds():
     expected = {
-        "ACTIVE": "仍在执行",
-        "RETRY_PENDING": "等待自动重试",
-        "UNKNOWN_WRITE": "写入结果待人工核验",
-        "NEEDS_ATTENTION": "需要处理的旧事项",
+        "ACTIVE": "本次执行未开始",
+        "RETRY_PENDING": "本次执行未开始",
+        "UNKNOWN_WRITE": "本次执行未开始",
+        "NEEDS_ATTENTION": "本次执行未开始",
     }
     for blocking_kind, phrase in expected.items():
         service = _FakeProjectEntrypoints(
@@ -574,8 +576,8 @@ def test_direct_feishu_project_rejection_distinguishes_blocking_kinds():
         assert "private-run" not in replies[0][0]
 
 
-def test_selection_preview_waits_for_active_project_then_runs() -> None:
-    preview_run_id = "22222222-2222-4222-8222-222222222222"
+def test_selection_preview_fails_once_without_queuing_or_retry() -> None:
+    preview_invocation_id = "22222222-2222-4222-8222-222222222222"
     service = _FakeProjectEntrypoints(
         results=[
             OrchestrationError(
@@ -586,9 +588,9 @@ def test_selection_preview_waits_for_active_project_then_runs() -> None:
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": preview_run_id,
+                "invocation_id": preview_invocation_id,
                 "selection_preview": _selection_preview(
-                    preview_run_id,
+                    preview_invocation_id,
                     "split_pending_problem_upload",
                     [],
                     {
@@ -629,15 +631,12 @@ def test_selection_preview_waits_for_active_project_then_runs() -> None:
     finally:
         message_handler._COMMAND_CONTEXT.reset(token)
 
-    assert result is not None
-    assert len(service.calls) == 2
-    sleep.assert_awaited_once_with(1.0)
-    assert [reply[1]["reply_type"] for reply in replies[:2]] == [
-        "automation_preview_queued",
-        "selection_preview_started",
-    ]
-    assert "待执行分批运单 0 单" in replies[-1][0]
-    assert replies[-1][1]["reply_type"] == "split_candidate_list"
+    assert result is None
+    assert len(service.calls) == 1
+    sleep.assert_not_awaited()
+    assert [reply[1]["reply_type"] for reply in replies] == ["automation_preview_rejected"]
+    assert "已排队" not in replies[-1][0]
+    assert "本次候选读取未完成" in replies[-1][0]
 
 
 @pytest.mark.parametrize("wait_error", [
@@ -683,7 +682,7 @@ def test_selection_preview_post_acceptance_wait_failure_does_not_invite_replay(w
         "selection_preview_started",
         "automation_preview_result_pending",
     ]
-    assert "已提交" in replies[-1][0]
+    assert "已发起" in replies[-1][0]
     assert "重试" not in replies[-1][0]
 
 
@@ -732,7 +731,7 @@ def test_selection_preview_unknown_write_is_not_queued_or_hidden() -> None:
         reply[1]["reply_type"] != "selection_preview_started"
         for reply in replies
     )
-    assert "写入结果待人工核验" in replies[-1][0]
+    assert "本次候选读取未完成" in replies[-1][0]
     assert replies[-1][1]["reply_type"] == "automation_preview_rejected"
 
 
@@ -742,7 +741,7 @@ def test_direct_feishu_project_explains_blocked_data_reason():
             {
                 "success": False,
                 "status": "BLOCKED_DATA",
-                "run_id": "run-blocked-data",
+                "invocation_id": "run-blocked-data",
                 "error_summary": "每日到货表写后读回不一致",
             }
         ]
@@ -786,7 +785,7 @@ def test_direct_feishu_project_explains_terminal_failure_without_internal_status
             {
                 "success": False,
                 "status": "FAILED_TERMINAL",
-                "run_id": "run-terminal-failure",
+                "invocation_id": "run-terminal-failure",
                 "error_summary": "分批结果表写后核验未通过",
             }
         ]
@@ -826,20 +825,20 @@ def test_direct_feishu_project_explains_terminal_failure_without_internal_status
 
 
 def test_scan_preview_creates_volatile_pending_and_confirm_uses_new_event():
-    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    preview_invocation_id = "11111111-1111-4111-8111-111111111111"
     formal_run_id = "22222222-2222-4222-8222-222222222222"
     service = _FakeProjectEntrypoints(
         results=[
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": preview_run_id,
-                "scan_preview": _scan_preview(preview_run_id),
+                "invocation_id": preview_invocation_id,
+                "scan_preview": _scan_preview(preview_invocation_id),
             },
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": formal_run_id,
+                "invocation_id": formal_run_id,
                 "error_code": None,
             },
         ]
@@ -872,15 +871,15 @@ def test_scan_preview_creates_volatile_pending_and_confirm_uses_new_event():
     ):
         _run_verified_text("扫描", event_id="event-scan-preview")
         assert pending["type"] == "scan_preview_confirmation"
-        assert pending["preview_run_id"] == preview_run_id
+        assert pending["preview_invocation_id"] == preview_invocation_id
         assert pending["preview_event_id"] == "event-scan-preview"
         assert pending_writes[-1][2] is False
         assert "待扫描：7" in replies[-1][0]
         assert "确认扫描" in replies[-1][0]
         _run_verified_text("确认扫描", event_id="event-scan-confirm")
 
-    assert service.calls[0]["preview_run_id"] is None
-    assert service.calls[1]["preview_run_id"] == preview_run_id
+    assert service.calls[0]["preview_invocation_id"] is None
+    assert service.calls[1]["preview_invocation_id"] == preview_invocation_id
     assert service.calls[1]["event_id"] == "event-scan-confirm"
     assert service.calls[1]["envelope"]["body"] == {}
     assert pending == {}
@@ -890,14 +889,14 @@ def test_scan_preview_creates_volatile_pending_and_confirm_uses_new_event():
 
 
 def test_scan_preview_requires_explicit_cancel_phrase():
-    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    preview_invocation_id = "11111111-1111-4111-8111-111111111111"
     service = _FakeProjectEntrypoints(
         results=[
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": preview_run_id,
-                "scan_preview": _scan_preview(preview_run_id),
+                "invocation_id": preview_invocation_id,
+                "scan_preview": _scan_preview(preview_invocation_id),
             }
         ]
     )
@@ -937,20 +936,20 @@ def test_scan_preview_requires_explicit_cancel_phrase():
 
 
 def test_unknown_scan_confirmation_locks_out_new_event_identity():
-    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    preview_invocation_id = "11111111-1111-4111-8111-111111111111"
     service = _FakeProjectEntrypoints(
         results=[
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": preview_run_id,
-                "scan_preview": _scan_preview(preview_run_id),
+                "invocation_id": preview_invocation_id,
+                "scan_preview": _scan_preview(preview_invocation_id),
             },
             RuntimeError("response lost"),
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": "22222222-2222-4222-8222-222222222222",
+                "invocation_id": "22222222-2222-4222-8222-222222222222",
                 "error_code": None,
             },
         ]
@@ -983,19 +982,6 @@ def test_unknown_scan_confirmation_locks_out_new_event_identity():
         _run_verified_text("确认扫描", event_id="event-confirm-unknown")
         assert pending["confirmation_state"] == "unknown"
         assert pending["confirmation_event_id"] == "event-confirm-unknown"
-        asyncio.run(
-            message_handler._handle_menu_action(
-                event_key="scan",
-                receive_id="user-one",
-                receive_id_type="open_id",
-                event_id="event-menu-after-unknown",
-            )
-        )
-        assert len(service.calls) == 2
-        assert "结果暂时无法确定" in replies[-1][0]
-        _run_verified_text("登录", event_id="event-login-blocked")
-        assert pending["confirmation_state"] == "unknown"
-        assert "事项中心查看原任务" in replies[-1][0]
         _run_verified_text("确认扫描", event_id="event-confirm-new")
         assert len(service.calls) == 2
         assert "本次没有创建新请求" in replies[-1][0]
@@ -1008,14 +994,14 @@ def test_unknown_scan_confirmation_locks_out_new_event_identity():
 
 
 def test_scan_confirmation_post_acceptance_timeout_reports_background_run():
-    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    preview_invocation_id = "11111111-1111-4111-8111-111111111111"
     service = _FakeProjectEntrypoints(
         results=[
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": preview_run_id,
-                "scan_preview": _scan_preview(preview_run_id),
+                "invocation_id": preview_invocation_id,
+                "scan_preview": _scan_preview(preview_invocation_id),
             }
         ],
         accepted_errors={
@@ -1059,19 +1045,111 @@ def test_scan_confirmation_post_acceptance_timeout_reports_background_run():
         "scan_preview_formal_started",
         "scan_preview_confirmation_result_pending",
     ]
-    assert "正式扫描已提交" in replies[-1][0]
+    assert "正式扫描已发起" in replies[-1][0]
     assert "重试" not in replies[-1][0]
 
 
-def test_consumed_scan_preview_blocks_new_preview_in_same_pending_state():
-    preview_run_id = "11111111-1111-4111-8111-111111111111"
+@pytest.mark.parametrize("initial", ["active", "read_error"])
+@pytest.mark.parametrize("status, final_text", [("COMPLETED", "正式扫描已完成"), ("FAILED", "正式扫描执行失败"), ("CANCELLED", "正式扫描已取消")])
+def test_formal_scan_waits_past_initial_window_and_replies_once_with_actual_terminal_result(initial, status, final_text):
+    preview_id = "11111111-1111-4111-8111-111111111111"
+    formal_id = "22222222-2222-4222-8222-222222222222"
+    receipt = {"invocation_id": formal_id, "automation_id": "scan_codes", "status": "RUNNING"}
+    pending = {}
+    replies = []
+
+    class DelayedResultEntrypoints(_FakeProjectEntrypoints):
+        async def invoke_feishu(self, **kwargs):
+            self.calls.append(kwargs)
+            if not kwargs["preview_invocation_id"]:
+                return {"status": "COMPLETED", "invocation_id": preview_id, "scan_preview": _scan_preview(preview_id)}
+            await kwargs["on_accepted"](receipt)
+            assert replies[-1][1]["reply_type"] == "scan_preview_formal_started"
+            if initial == "read_error":
+                raise RuntimeError("temporary storage failure")
+            return receipt
+
+    service = DelayedResultEntrypoints()
+
+    async def late_result(**kwargs):
+        assert kwargs["invocation_id"] == formal_id
+        assert kwargs["automation_id"] == "scan_codes"
+        assert kwargs["event_id"] == "event-late-confirm"
+        assert pending["confirmation_state"] == "submitting"
+        assert replies[-1][1]["reply_type"] == "scan_preview_confirmation_waiting_result"
+        return {**receipt, "status": status, "success": status == "COMPLETED"}
+
+    service.wait_feishu_invocation = AsyncMock(side_effect=late_result)
+
+    def set_pending(_chat_id, value, ttl_sec=600, *, persist=True):
+        del ttl_sec, persist
+        pending.clear()
+        pending.update(value)
+
+    request = {"tool_name": "sync_scan_codes", "params": {}, "mode": "automation_project", "automation_route_key": "builtin.scan_codes", "dynamic_inputs": {}}
+    with (
+        patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
+        patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+        patch.object(message_handler, "_INVOCATION_RESULTS", InvocationResultFollower(retry_delay=0)),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
+        patch.object(message_handler, "get_pending", side_effect=lambda _key: pending or None),
+        patch.object(message_handler, "set_pending", side_effect=set_pending),
+        patch.object(message_handler, "clear_pending", side_effect=lambda _key, **_kwargs: pending.clear()),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        _run_verified_text("扫描", event_id="event-late-preview")
+        _run_verified_text("确认扫描", event_id="event-late-confirm")
+
+    assert len(service.calls) == 2  # One preview, one formal submission; reads never invoke again.
+    assert service.wait_feishu_invocation.await_count == 1
+    assert pending == {}
+    assert final_text in replies[-1][0]
+    assert sum(final_text in text for text, _kwargs in replies) == 1
+    assert formal_id not in str(replies)
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+def test_fixed_and_dynamic_commands_follow_results_after_initial_wait(dynamic):
+    receipt = {"invocation_id": "33333333-3333-4333-8333-333333333333", "automation_id": "arrival_stats", "status": "RUNNING"}
+    replies = []
+    calls = []
+
+    async def accept(**kwargs):
+        calls.append(kwargs)
+        await kwargs["on_accepted"](receipt)
+        return receipt
+
+    service = _FakeProjectEntrypoints()
+    service.invoke_feishu = accept
+    service.wait_feishu_invocation = AsyncMock(return_value={**receipt, "status": "COMPLETED"})
+    dispatcher = SimpleNamespace(dispatch=accept)
+    request = None if dynamic else {"tool_name": "sync_arrival_stats", "params": {}, "mode": "automation_project", "automation_route_key": "builtin.arrival_stats", "dynamic_inputs": {}}
+    with (
+        patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
+        patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
+        patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher if dynamic else None),
+        patch.object(message_handler, "_INVOCATION_RESULTS", InvocationResultFollower(retry_delay=0)),
+        patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
+        patch.object(message_handler, "get_pending", return_value=None),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        _run_verified_text("扩展统计" if dynamic else "统计", event_id="event-late-statistics")
+
+    assert len(calls) == service.wait_feishu_invocation.await_count == 1
+    assert "已完成" in replies[-1][0]
+    assert sum("已完成" in text for text, _kwargs in replies) == 1
+    assert receipt["invocation_id"] not in str(replies)
+
+
+def test_consumed_scan_preview_does_not_block_new_explicit_trigger():
+    preview_invocation_id = "11111111-1111-4111-8111-111111111111"
     service = _FakeProjectEntrypoints(
         results=[
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": preview_run_id,
-                "scan_preview": _scan_preview(preview_run_id),
+                "invocation_id": preview_invocation_id,
+                "scan_preview": _scan_preview(preview_invocation_id),
             },
             OrchestrationError(
                 "SCAN_PREVIEW_ALREADY_CONSUMED",
@@ -1107,43 +1185,34 @@ def test_consumed_scan_preview_blocks_new_preview_in_same_pending_state():
         _run_verified_text("确认扫描", event_id="event-confirm-consumed")
         assert pending["confirmation_state"] == "terminal"
         assert pending["terminal_error_code"] == "SCAN_PREVIEW_ALREADY_CONSUMED"
-        asyncio.run(
-            message_handler._handle_menu_action(
-                event_key="scan",
-                receive_id="user-one",
-                receive_id_type="open_id",
-                event_id="event-menu-after-terminal",
-            )
-        )
-        assert len(service.calls) == 2
-        assert "事项中心查看原任务" in replies[-1][0]
-        _run_verified_text("扫描", event_id="event-new-preview-blocked")
+        _run_verified_text("扫描", event_id="event-new-preview")
 
-    assert len(service.calls) == 2
-    assert "事项中心查看原任务" in replies[-1][0]
+    assert len(service.calls) == 3
+    assert service.calls[-1]["event_id"] == "event-new-preview"
+    assert service.calls[-1]["preview_invocation_id"] is None
 
 
 def test_scan_confirmation_reply_failure_keeps_event_lock_for_exact_replay():
-    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    preview_invocation_id = "11111111-1111-4111-8111-111111111111"
     formal_run_id = "22222222-2222-4222-8222-222222222222"
     service = _FakeProjectEntrypoints(
         results=[
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": preview_run_id,
-                "scan_preview": _scan_preview(preview_run_id),
+                "invocation_id": preview_invocation_id,
+                "scan_preview": _scan_preview(preview_invocation_id),
             },
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": formal_run_id,
+                "invocation_id": formal_run_id,
                 "error_code": None,
             },
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": formal_run_id,
+                "invocation_id": formal_run_id,
                 "error_code": None,
             },
         ]
@@ -1198,15 +1267,15 @@ def test_scan_confirmation_reply_failure_keeps_event_lock_for_exact_replay():
 
 
 def test_scan_projection_with_private_field_is_rejected_without_pending():
-    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    preview_invocation_id = "11111111-1111-4111-8111-111111111111"
     service = _FakeProjectEntrypoints(
         results=[
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": preview_run_id,
+                "invocation_id": preview_invocation_id,
                 "scan_preview": {
-                    **_scan_preview(preview_run_id),
+                    **_scan_preview(preview_invocation_id),
                     "selection_sha256": "a" * 64,
                 },
             }
@@ -1236,19 +1305,19 @@ def test_scan_projection_with_private_field_is_rejected_without_pending():
 
 
 def test_scan_menu_pending_is_confirmed_from_the_users_next_chat_message():
-    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    preview_invocation_id = "11111111-1111-4111-8111-111111111111"
     service = _FakeProjectEntrypoints(
         results=[
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": preview_run_id,
-                "scan_preview": _scan_preview(preview_run_id),
+                "invocation_id": preview_invocation_id,
+                "scan_preview": _scan_preview(preview_invocation_id),
             },
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": "22222222-2222-4222-8222-222222222222",
+                "invocation_id": "22222222-2222-4222-8222-222222222222",
                 "error_code": None,
             },
         ]
@@ -1279,38 +1348,28 @@ def test_scan_menu_pending_is_confirmed_from_the_users_next_chat_message():
                 event_id="event-menu-preview",
             )
         )
-        assert pending_store["user-one"]["preview_run_id"] == preview_run_id
-        asyncio.run(
-            message_handler._handle_menu_action(
-                event_key="scan",
-                receive_id="user-one",
-                receive_id_type="open_id",
-                event_id="event-menu-reentry-blocked",
-            )
-        )
-        assert len(service.calls) == 1
-        assert "没有创建新预览" in replies[-1][0]
+        assert pending_store["user-one"]["preview_invocation_id"] == preview_invocation_id
         _run_verified_text("确认扫描", event_id="event-menu-confirm")
 
     assert service.calls[1]["event_id"] == "event-menu-confirm"
-    assert service.calls[1]["preview_run_id"] == preview_run_id
+    assert service.calls[1]["preview_invocation_id"] == preview_invocation_id
     assert pending_store == {}
 
 
 def test_sender_scan_pending_takes_priority_over_existing_chat_pending():
-    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    preview_invocation_id = "11111111-1111-4111-8111-111111111111"
     service = _FakeProjectEntrypoints(
         results=[
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": preview_run_id,
-                "scan_preview": _scan_preview(preview_run_id),
+                "invocation_id": preview_invocation_id,
+                "scan_preview": _scan_preview(preview_invocation_id),
             },
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": "22222222-2222-4222-8222-222222222222",
+                "invocation_id": "22222222-2222-4222-8222-222222222222",
                 "error_code": None,
             },
         ]
@@ -1343,10 +1402,10 @@ def test_sender_scan_pending_takes_priority_over_existing_chat_pending():
             )
         )
         assert pending_store["chat-one"] == existing_chat_pending
-        assert pending_store["user-one"]["preview_run_id"] == preview_run_id
+        assert pending_store["user-one"]["preview_invocation_id"] == preview_invocation_id
         _run_verified_text("确认扫描", event_id="event-confirm-with-chat-pending")
 
-    assert service.calls[1]["preview_run_id"] == preview_run_id
+    assert service.calls[1]["preview_invocation_id"] == preview_invocation_id
     assert pending_store == {"chat-one": existing_chat_pending}
     assert "正式扫描已完成" in replies[-1][0]
 
@@ -1466,7 +1525,7 @@ def test_dynamic_feishu_webhook_and_websocket_keep_the_same_verified_identity():
 
 
 def test_self_pickup_preview_and_confirmation_use_persisted_signed_selection():
-    preview_run_id = "11111111-1111-4111-8111-111111111111"
+    preview_invocation_id = "11111111-1111-4111-8111-111111111111"
     rows = [
         {
             "arrival_count": "1",
@@ -1485,15 +1544,15 @@ def test_self_pickup_preview_and_confirmation_use_persisted_signed_selection():
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": preview_run_id,
+                "invocation_id": preview_invocation_id,
                 "selection_preview": _selection_preview(
-                    preview_run_id,
+                    preview_invocation_id,
                     "self_pickup_problem_upload",
                     rows,
                     {"duplicate_source_rows": 0},
                 ),
             },
-            {"success": True, "status": "COMPLETED", "run_id": "run-formal"},
+            {"success": True, "status": "COMPLETED", "invocation_id": "run-formal"},
         ]
     )
     agent = _FakeAgent()
@@ -1527,11 +1586,11 @@ def test_self_pickup_preview_and_confirmation_use_persisted_signed_selection():
     ):
         _run_verified_text("preview-command", event_id="event-preview")
         assert agent.tool_calls == []
-        assert service.calls[0]["preview_run_id"] is None
+        assert service.calls[0]["preview_invocation_id"] is None
         assert service.calls[0]["envelope"]["body"] == {}
         assert pending["type"] == "self_pickup_selection_confirmation"
         assert pending["automation_route_key"] == "builtin.self_pickup_problem_upload"
-        assert pending["preview_run_id"] == preview_run_id
+        assert pending["preview_invocation_id"] == preview_invocation_id
         assert pending["originator_actor_id"] == "user-one"
         assert pending["selected_bill_codes"] == ["R_SELF", "R_DX_PICK"]
         assert "preview_fingerprint" not in pending
@@ -1539,14 +1598,14 @@ def test_self_pickup_preview_and_confirmation_use_persisted_signed_selection():
         _run_verified_text("yes", event_id="event-confirm")
 
     assert service.calls[-1]["event_id"] == "event-confirm"
-    assert service.calls[-1]["preview_run_id"] == preview_run_id
+    assert service.calls[-1]["preview_invocation_id"] == preview_invocation_id
     assert service.calls[-1]["envelope"]["body"] == {
         "selected_bill_codes": ["R_SELF", "R_DX_PICK"],
     }
 
 
 def test_split_preview_selection_and_confirmation_use_persisted_signed_selection():
-    preview_run_id = "22222222-2222-4222-8222-222222222222"
+    preview_invocation_id = "22222222-2222-4222-8222-222222222222"
     rows = [
         {
             "arrived_quantity": 1,
@@ -1564,9 +1623,9 @@ def test_split_preview_selection_and_confirmation_use_persisted_signed_selection
             {
                 "success": True,
                 "status": "COMPLETED",
-                "run_id": preview_run_id,
+                "invocation_id": preview_invocation_id,
                 "selection_preview": _selection_preview(
-                    preview_run_id,
+                    preview_invocation_id,
                     "split_pending_problem_upload",
                     rows,
                     {
@@ -1577,7 +1636,7 @@ def test_split_preview_selection_and_confirmation_use_persisted_signed_selection
                     },
                 ),
             },
-            {"success": True, "status": "COMPLETED", "run_id": "run-formal"},
+            {"success": True, "status": "COMPLETED", "invocation_id": "run-formal"},
         ]
     )
     agent = _FakeAgent()
@@ -1608,16 +1667,16 @@ def test_split_preview_selection_and_confirmation_use_persisted_signed_selection
     ):
         _run_verified_text("split-command", event_id="event-split-preview")
         assert agent.tool_calls == []
-        assert service.calls[0]["preview_run_id"] is None
+        assert service.calls[0]["preview_invocation_id"] is None
         assert service.calls[0]["envelope"]["body"] == {}
         assert pending["type"] == "split_pending_selection"
-        assert pending["preview_run_id"] == preview_run_id
+        assert pending["preview_invocation_id"] == preview_invocation_id
         assert pending["originator_actor_id"] == "user-one"
         assert "preview_fingerprint" not in pending
         assert not message_handler._contains_account_override(pending)
         _run_verified_text("yes", event_id="event-split-confirm")
 
-    assert service.calls[-1]["preview_run_id"] == preview_run_id
+    assert service.calls[-1]["preview_invocation_id"] == preview_invocation_id
     assert service.calls[-1]["envelope"]["body"] == {
         "selected_bill_codes": ["R001"],
     }
