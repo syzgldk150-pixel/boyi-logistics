@@ -8,6 +8,7 @@ first-party bootstrap code; it never performs DDL or filesystem operations.
 from __future__ import annotations
 
 import copy
+from contextlib import nullcontext
 import hashlib
 import inspect
 import re
@@ -62,7 +63,6 @@ from shared.automation_project_manifest import (
     FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES,
 )
 from shared.automation_plugin_repository import (
-    AutomationPluginPreparedTargetOccupied,
     FIRST_PARTY_RELEASE_ACTOR_ID,
 )
 from agent.automation_plugins.catalog_read_scope import catalog_read_transaction
@@ -758,6 +758,38 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         prepared_configuration_request_id: str | None = None,
         allow_blocked_unknown_write_archive: bool = False,
     ) -> PluginInstanceRecord:
+        with self._orchestration.unit_of_work() as uow:
+            self._stage_instance_upgrade(
+                uow,
+                automation_id, version, actor_id=actor_id, actor_role=actor_role,
+                request_id=request_id, expected_current_version=expected_current_version,
+                expected_record_version=expected_record_version,
+                prepared_configuration_request_id=prepared_configuration_request_id,
+                allow_blocked_unknown_write_archive=allow_blocked_unknown_write_archive,
+            )
+            uow.commit()
+        persisted = self.get_instance(automation_id)
+        if persisted is None:
+            raise PluginConflictError(
+                "automation project disappeared after plugin upgrade staging",
+                code="PLUGIN_INSTANCE_NOT_FOUND",
+            )
+        return persisted
+
+    def _stage_instance_upgrade(
+        self,
+        uow: Any,
+        automation_id: str,
+        version: PluginVersionRecord,
+        *,
+        actor_id: str,
+        actor_role: str,
+        request_id: str,
+        expected_current_version: str,
+        expected_record_version: int,
+        prepared_configuration_request_id: str | None = None,
+        allow_blocked_unknown_write_archive: bool = False,
+    ) -> None:
         automation_id = str(automation_id or "").strip()
         actor_id = str(actor_id or "").strip()
         actor_role = str(actor_role or "").strip()
@@ -815,265 +847,256 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         manifest, contract = _version_contract(version)
         if manifest.plugin_id != version.plugin_id or manifest.version != version.version:
             raise PluginPackageError("upgrade package identity differs from its manifest")
-        with self._orchestration.unit_of_work() as uow:
-            self._register(
-                uow.automation_plugins,
-                version,
-                actor_id=actor_id,
-                actor_role=actor_role,
-                request_id=request_id,
-            )
-            project = uow.automation_plugins.get_project(
-                automation_id,
-                for_update=True,
-            )
-            config = uow.automation_plugins.get_project_config(
-                automation_id,
-                for_update=True,
-            )
-            if project is None or config is None:
-                raise PluginConflictError(
-                    "automation project or configuration does not exist",
-                    code="PLUGIN_INSTANCE_NOT_FOUND",
-                )
-            if str(project.get("plugin_id") or "") != version.plugin_id:
-                raise PluginConflictError(
-                    "an upgrade cannot change the instance plugin_id",
-                    code="PLUGIN_UPGRADE_PLUGIN_ID_CONFLICT",
-                )
-            if restoring_history:
-                require_committed_history(
-                    uow.automation_plugins, automation_id, project, version,
-                )
-
-            config_json = config.get("config_json")
-            account_bindings = config.get("account_bindings_json")
-            resource_bindings = config.get("resource_bindings_json")
-            enabled_entrypoints = config.get("enabled_entrypoints_json")
-            schedule = config.get("desired_schedule_json")
-            compiled_before = config.get("compiled_invocations_json")
-            if (
-                not isinstance(config_json, Mapping)
-                or not isinstance(account_bindings, Mapping)
-                or not isinstance(resource_bindings, Mapping)
-                or not isinstance(enabled_entrypoints, list)
-                or not isinstance(schedule, Mapping)
-                or not isinstance(compiled_before, Mapping)
-            ):
-                raise PluginConflictError(
-                    "automation project configuration is not closed",
-                    code="PLUGIN_UPGRADE_CONFIGURATION_INCOMPATIBLE",
-                )
-            try:
-                validate_schema_instance(
-                    f"automation.{automation_id}.upgrade_config",
-                    dict(config_json),
-                    contract.config_schema,
-                )
-                accounts = _closed_bindings(
-                    account_bindings,
-                    contract.account_roles,
-                    kind="account",
-                )
-                resources = _closed_bindings(
-                    resource_bindings,
-                    contract.resource_roles,
-                    kind="resource",
-                )
-                normalized_schedule = normalize_project_schedule(
-                    schedule,
-                    contract.scheduling,
-                )
-                sources = tuple(str(item or "").strip() for item in enabled_entrypoints)
-                if (
-                    any(not source for source in sources)
-                    or len(sources) != len(set(sources))
-                    or not set(sources) <= set(contract.allowed_entrypoints)
-                ):
-                    raise PluginConflictError(
-                        "enabled entrypoints differ from the upgrade contract"
-                    )
-                worker_required = contract.worker_requirement.get("required") is True
-                has_device = config.get("device_id") not in (None, "")
-                if worker_required != has_device:
-                    raise PluginConflictError(
-                        "Worker binding differs from the upgrade contract"
-                    )
-                transient = _transient_entry(automation_id, contract)
-                compiled_after: dict[str, dict[str, Any]] = {}
-                for source in sources:
-                    compiled = compile_instance_arguments(
-                        transient,
-                        config=dict(config_json),
-                        account_bindings=accounts,
-                        resource_bindings=resources,
-                        entrypoint=source,
-                        resolve_dynamic=False,
-                    )
-                    compiled_after[source] = {
-                        "arguments": copy.deepcopy(dict(compiled.arguments)),
-                        "dynamic_resolvers": copy.deepcopy(
-                            dict(compiled.unresolved_dynamic_resolvers)
-                        ),
-                    }
-                    if version.runtime_model is PluginRuntimeModel.SERVICE_V2:
-                        invocation_contract = contract.invocation_contracts[source]
-                        governance = invocation_contract.get("governance")
-                        if not isinstance(governance, Mapping):
-                            raise PluginConflictError(
-                                "service-v2 invocation governance is unavailable"
-                            )
-                        compiled_after[source]["governance"] = copy.deepcopy(
-                            dict(governance)
-                        )
-                        compiled_after[source]["target"] = {
-                            "service": str(invocation_contract.get("service") or ""),
-                            "operation": str(invocation_contract.get("operation") or ""),
-                            "contribution_id": source,
-                            "contribution_kind": str(
-                                invocation_contract.get("contribution_kind") or ""
-                            ),
-                        }
-                if (
-                    canonical_json_bytes(normalized_schedule)
-                    != canonical_json_bytes(schedule)
-                    or canonical_json_bytes(compiled_after)
-                    != canonical_json_bytes(compiled_before)
-                ):
-                    raise PluginConflictError(
-                        "saved schedule or invocation templates need reconfiguration"
-                    )
-            except PluginConflictError as exc:
-                raise PluginConflictError(
-                    "plugin upgrade is incompatible with the saved project configuration",
-                    code="PLUGIN_UPGRADE_CONFIGURATION_INCOMPATIBLE",
-                ) from exc
-            except (KeyError, TypeError, ValueError) as exc:
-                raise PluginConflictError(
-                    "plugin upgrade is incompatible with the saved project configuration",
-                    code="PLUGIN_UPGRADE_CONFIGURATION_INCOMPATIBLE",
-                ) from exc
-
-            stage_arguments: dict[str, Any] = {
-                "plugin_id": version.plugin_id,
-                "from_version": expected_current_version,
-                "to_version": version.version,
-                "package_sha256": version.package_sha256,
-                "request_id": request_id,
-                "actor_id": actor_id,
-                "actor_role": actor_role,
-                "expected_record_version": expected_record_version,
-            }
-            stage = uow.automation_plugins.stage_project_upgrade
-            if "audit_version_identities" in inspect.signature(stage).parameters:
-                stage_arguments["audit_version_identities"] = True
-            if prepared_configuration_request_id is not None:
-                stage_arguments["prepared_configuration_request_id"] = (
-                    prepared_configuration_request_id
-                )
-            if allow_blocked_unknown_write_archive:
-                stage_arguments["allow_blocked_unknown_write_archive"] = True
-            staged = stage(
-                automation_id,
-                **stage_arguments,
-            )
-            if staged.pop("_upgrade_staged_created", False):
-                policy = uow.automation_projects.get_policy(
-                    automation_id,
-                    for_update=True,
-                )
-                if policy is None:
-                    raise PluginConflictError(
-                        "automation project policy does not exist",
-                        code="PLUGIN_POLICY_NOT_FOUND",
-                    )
-                generation = int(staged["target_generation"])
-                config_version = int(config.get("config_version") or 0)
-                durable_mode = str(policy.get("mode") or "")
-                uow.automation_projects.update_policy(
-                    automation_id,
-                    expected_version=int(policy.get("version") or 0),
-                    mode=durable_mode,
-                    contract_hash=None,
-                    contract_snapshot=None,
-                    tool_contract_hash=None,
-                    plugin_contract_hash=None,
-                    project_generation=generation,
-                    project_configuration_version=config_version,
-                    actor_id=actor_id,
-                    actor_role=actor_role,
-                    actor_display_name=None,
-                    comment=None,
-                )
-                uow.automation_projects.append_event(
-                    {
-                        "automation_id": automation_id,
-                        "request_id": request_id,
-                        "from_mode": durable_mode,
-                        "to_mode": durable_mode,
-                        "contract_hash": None,
-                        "contract_snapshot_json": None,
-                        "tool_contract_hash": None,
-                        "plugin_contract_hash": None,
-                        "project_configuration_version": config_version,
-                        "project_generation": generation,
-                        "actor_id": actor_id,
-                        "actor_role": actor_role,
-                        "actor_display_name": None,
-                        "reason": (
-                            "PLUGIN_HISTORICAL_VERSION_RESTORED"
-                            if restoring_history else "PLUGIN_VERSION_CHANGED"
-                        ),
-                        "comment": None,
-                        "correlation_id": request_id,
-                    }
-                )
-                uow.automation_projects.invalidate_pending_approvals_and_wake_runs(
-                    automation_id,
-                    event_repository=uow.events,
-                )
-                event_id = str(
-                    uuid.uuid5(
-                        uuid.NAMESPACE_URL,
-                        f"boyi:automation-plugin-upgrade:{request_id}",
-                    )
-                )
-                uow.events.append_with_outbox(
-                    {
-                        "event_id": event_id,
-                        "event_type": "automation_plugin.upgrade_staged",
-                        "schema_version": 1,
-                        "source_system": "agent",
-                        "source_event_id": f"plugin-upgrade:{request_id}",
-                        "entity_type": "automation_project",
-                        "entity_id": automation_id,
-                        "correlation_id": request_id,
-                        "payload": {
-                            "automation_id": automation_id,
-                            "plugin_id": version.plugin_id,
-                            "from_version": expected_current_version,
-                            "to_version": version.version,
-                            "target_generation": generation,
-                            "operation": "rollback" if restoring_history else "upgrade",
-                        },
-                    },
-                    (
-                        {
-                            "consumer_name": "orchestration.audit",
-                            "topic": "automation_plugin.upgrade_staged",
-                            "partition_key": automation_id,
-                            "max_attempts": 10,
-                        },
-                    ),
-                )
-            uow.commit()
-        persisted = self.get_instance(automation_id)
-        if persisted is None:
+        self._register(
+            uow.automation_plugins,
+            version,
+            actor_id=actor_id,
+            actor_role=actor_role,
+            request_id=request_id,
+        )
+        project = uow.automation_plugins.get_project(
+            automation_id,
+            for_update=True,
+        )
+        config = uow.automation_plugins.get_project_config(
+            automation_id,
+            for_update=True,
+        )
+        if project is None or config is None:
             raise PluginConflictError(
-                "automation project disappeared after plugin upgrade staging",
+                "automation project or configuration does not exist",
                 code="PLUGIN_INSTANCE_NOT_FOUND",
             )
-        return persisted
+        if str(project.get("plugin_id") or "") != version.plugin_id:
+            raise PluginConflictError(
+                "an upgrade cannot change the instance plugin_id",
+                code="PLUGIN_UPGRADE_PLUGIN_ID_CONFLICT",
+            )
+        if restoring_history:
+            require_committed_history(
+                uow.automation_plugins, automation_id, project, version,
+            )
+
+        config_json = config.get("config_json")
+        account_bindings = config.get("account_bindings_json")
+        resource_bindings = config.get("resource_bindings_json")
+        enabled_entrypoints = config.get("enabled_entrypoints_json")
+        schedule = config.get("desired_schedule_json")
+        compiled_before = config.get("compiled_invocations_json")
+        if (
+            not isinstance(config_json, Mapping)
+            or not isinstance(account_bindings, Mapping)
+            or not isinstance(resource_bindings, Mapping)
+            or not isinstance(enabled_entrypoints, list)
+            or not isinstance(schedule, Mapping)
+            or not isinstance(compiled_before, Mapping)
+        ):
+            raise PluginConflictError(
+                "automation project configuration is not closed",
+                code="PLUGIN_UPGRADE_CONFIGURATION_INCOMPATIBLE",
+            )
+        try:
+            validate_schema_instance(
+                f"automation.{automation_id}.upgrade_config",
+                dict(config_json),
+                contract.config_schema,
+            )
+            accounts = _closed_bindings(
+                account_bindings,
+                contract.account_roles,
+                kind="account",
+            )
+            resources = _closed_bindings(
+                resource_bindings,
+                contract.resource_roles,
+                kind="resource",
+            )
+            normalized_schedule = normalize_project_schedule(
+                schedule,
+                contract.scheduling,
+            )
+            sources = tuple(str(item or "").strip() for item in enabled_entrypoints)
+            if (
+                any(not source for source in sources)
+                or len(sources) != len(set(sources))
+                or not set(sources) <= set(contract.allowed_entrypoints)
+            ):
+                raise PluginConflictError(
+                    "enabled entrypoints differ from the upgrade contract"
+                )
+            worker_required = contract.worker_requirement.get("required") is True
+            has_device = config.get("device_id") not in (None, "")
+            if worker_required != has_device:
+                raise PluginConflictError(
+                    "Worker binding differs from the upgrade contract"
+                )
+            transient = _transient_entry(automation_id, contract)
+            compiled_after: dict[str, dict[str, Any]] = {}
+            for source in sources:
+                compiled = compile_instance_arguments(
+                    transient,
+                    config=dict(config_json),
+                    account_bindings=accounts,
+                    resource_bindings=resources,
+                    entrypoint=source,
+                    resolve_dynamic=False,
+                )
+                compiled_after[source] = {
+                    "arguments": copy.deepcopy(dict(compiled.arguments)),
+                    "dynamic_resolvers": copy.deepcopy(
+                        dict(compiled.unresolved_dynamic_resolvers)
+                    ),
+                }
+                if version.runtime_model is PluginRuntimeModel.SERVICE_V2:
+                    invocation_contract = contract.invocation_contracts[source]
+                    governance = invocation_contract.get("governance")
+                    if not isinstance(governance, Mapping):
+                        raise PluginConflictError(
+                            "service-v2 invocation governance is unavailable"
+                        )
+                    compiled_after[source]["governance"] = copy.deepcopy(
+                        dict(governance)
+                    )
+                    compiled_after[source]["target"] = {
+                        "service": str(invocation_contract.get("service") or ""),
+                        "operation": str(invocation_contract.get("operation") or ""),
+                        "contribution_id": source,
+                        "contribution_kind": str(
+                            invocation_contract.get("contribution_kind") or ""
+                        ),
+                    }
+            if (
+                canonical_json_bytes(normalized_schedule)
+                != canonical_json_bytes(schedule)
+                or canonical_json_bytes(compiled_after)
+                != canonical_json_bytes(compiled_before)
+            ):
+                raise PluginConflictError(
+                    "saved schedule or invocation templates need reconfiguration"
+                )
+        except PluginConflictError as exc:
+            raise PluginConflictError(
+                "plugin upgrade is incompatible with the saved project configuration",
+                code="PLUGIN_UPGRADE_CONFIGURATION_INCOMPATIBLE",
+            ) from exc
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PluginConflictError(
+                "plugin upgrade is incompatible with the saved project configuration",
+                code="PLUGIN_UPGRADE_CONFIGURATION_INCOMPATIBLE",
+            ) from exc
+
+        stage_arguments: dict[str, Any] = {
+            "plugin_id": version.plugin_id,
+            "from_version": expected_current_version,
+            "to_version": version.version,
+            "package_sha256": version.package_sha256,
+            "request_id": request_id,
+            "actor_id": actor_id,
+            "actor_role": actor_role,
+            "expected_record_version": expected_record_version,
+        }
+        stage = uow.automation_plugins.stage_project_upgrade
+        if "audit_version_identities" in inspect.signature(stage).parameters:
+            stage_arguments["audit_version_identities"] = True
+        if prepared_configuration_request_id is not None:
+            stage_arguments["prepared_configuration_request_id"] = (
+                prepared_configuration_request_id
+            )
+        if allow_blocked_unknown_write_archive:
+            stage_arguments["allow_blocked_unknown_write_archive"] = True
+        staged = stage(
+            automation_id,
+            **stage_arguments,
+        )
+        if staged.pop("_upgrade_staged_created", False):
+            policy = uow.automation_projects.get_policy(
+                automation_id,
+                for_update=True,
+            )
+            if policy is None:
+                raise PluginConflictError(
+                    "automation project policy does not exist",
+                    code="PLUGIN_POLICY_NOT_FOUND",
+                )
+            generation = int(staged["target_generation"])
+            config_version = int(config.get("config_version") or 0)
+            durable_mode = str(policy.get("mode") or "")
+            uow.automation_projects.update_policy(
+                automation_id,
+                expected_version=int(policy.get("version") or 0),
+                mode=durable_mode,
+                contract_hash=None,
+                contract_snapshot=None,
+                tool_contract_hash=None,
+                plugin_contract_hash=None,
+                project_generation=generation,
+                project_configuration_version=config_version,
+                actor_id=actor_id,
+                actor_role=actor_role,
+                actor_display_name=None,
+                comment=None,
+            )
+            uow.automation_projects.append_event(
+                {
+                    "automation_id": automation_id,
+                    "request_id": request_id,
+                    "from_mode": durable_mode,
+                    "to_mode": durable_mode,
+                    "contract_hash": None,
+                    "contract_snapshot_json": None,
+                    "tool_contract_hash": None,
+                    "plugin_contract_hash": None,
+                    "project_configuration_version": config_version,
+                    "project_generation": generation,
+                    "actor_id": actor_id,
+                    "actor_role": actor_role,
+                    "actor_display_name": None,
+                    "reason": (
+                        "PLUGIN_HISTORICAL_VERSION_RESTORED"
+                        if restoring_history else "PLUGIN_VERSION_CHANGED"
+                    ),
+                    "comment": None,
+                    "correlation_id": request_id,
+                }
+            )
+            uow.automation_projects.invalidate_pending_approvals_and_wake_runs(
+                automation_id,
+                event_repository=uow.events,
+            )
+            event_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"boyi:automation-plugin-upgrade:{request_id}",
+                )
+            )
+            uow.events.append_with_outbox(
+                {
+                    "event_id": event_id,
+                    "event_type": "automation_plugin.upgrade_staged",
+                    "schema_version": 1,
+                    "source_system": "agent",
+                    "source_event_id": f"plugin-upgrade:{request_id}",
+                    "entity_type": "automation_project",
+                    "entity_id": automation_id,
+                    "correlation_id": request_id,
+                    "payload": {
+                        "automation_id": automation_id,
+                        "plugin_id": version.plugin_id,
+                        "from_version": expected_current_version,
+                        "to_version": version.version,
+                        "target_generation": generation,
+                        "operation": "rollback" if restoring_history else "upgrade",
+                    },
+                },
+                (
+                    {
+                        "consumer_name": "orchestration.audit",
+                        "topic": "automation_plugin.upgrade_staged",
+                        "partition_key": automation_id,
+                        "max_attempts": 10,
+                    },
+                ),
+            )
 
     def _prepare_first_party_upgrade_configuration(
         self,
@@ -1084,22 +1107,23 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         expected_current_version: str,
         allow_blocked_unknown_write_archive: bool,
         allow_same_version_resource_repair: bool = False,
+        _unit_of_work: Any | None = None,
     ) -> tuple[str, int, str | None]:
         """Recompile preserved settings against a signed first-party target.
 
         A release may move interactive or planner-owned values out of durable
         project configuration.  The signed target schema remains authoritative;
         the narrow first-party normalizer only removes or injects fields owned
-        by core code for a reserved instance identity.  Saving first gives the
-        generic upgrade path a closed target configuration and leaves a fully
-        recoverable generation if the process stops between the two commits.
+        by core code for a reserved instance identity. Release upgrades provide
+        their Unit of Work so configuration and version staging commit together.
         """
 
         manifest = AutomationPluginManifest.from_mapping(version.manifest)
         contract = _version_contract(version)[1]
         if manifest.plugin_id != seed.plugin_id or manifest.version != seed.version:
             raise PluginPackageError("first-party upgrade target identity is invalid")
-        with self._orchestration.unit_of_work() as uow:
+        transaction = self._orchestration.unit_of_work() if _unit_of_work is None else nullcontext(_unit_of_work)
+        with transaction as uow:
             project = uow.automation_plugins.get_project(
                 seed.automation_id,
                 for_update=True,
@@ -1124,7 +1148,8 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 persisted_version == version.version
                 and not allow_same_version_resource_repair
             ):
-                uow.commit()
+                if _unit_of_work is None:
+                    uow.commit()
                 return (
                     persisted_version,
                     int(project.get("record_version") or 0),
@@ -1266,6 +1291,13 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
             )
             if needs_save:
                 device_id = config.get("device_id")
+                upgrade_configuration = ({
+                    "first_party_upgrade_target": {
+                        "from_version": expected_current_version,
+                        "to_version": version.version,
+                        "package_sha256": version.package_sha256,
+                    }
+                } if expected_current_version != version.version else {})
                 uow.automation_plugins.save_project_config(
                     seed.automation_id,
                     config=normalized_config,
@@ -1292,6 +1324,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     allow_blocked_unknown_write_archive=(
                         allow_blocked_unknown_write_archive
                     ),
+                    **upgrade_configuration,
                 )
                 uow.automation_projects.invalidate_pending_approvals_and_wake_runs(
                     seed.automation_id,
@@ -1306,7 +1339,8 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                         "first-party project disappeared during release upgrade",
                         code="PLUGIN_INSTANCE_NOT_FOUND",
                     )
-            uow.commit()
+            if _unit_of_work is None:
+                uow.commit()
         return (
             str(project.get("plugin_version") or ""),
             int(project.get("record_version") or 0),
@@ -1611,82 +1645,39 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     code="PLUGIN_INSTANCE_VERSION_CONFLICT",
                 )
 
-        # Package registration and missing-instance creation are committed
-        # before upgrades so each upgrade can retain its own idempotent audit
-        # boundary.  A crash after configuration preparation is safe: the old
-        # signed package remains active, and the same release request resumes
-        # staging on the next startup.
-        for (
-            seed,
-            version,
-            current_version,
-            allow_blocked_unknown_write_archive,
-        ) in upgrades:
-            prepared_version, record_version, prepared_configuration_request_id = (
-                self._prepare_first_party_upgrade_configuration(
-                    seed=seed,
-                    version=version,
-                    release_sha=release_sha,
+        # Register packages independently, then atomically prepare settings and
+        # stage each target version. No reconciler can observe target-contract
+        # configuration while the desired package still points to the old code.
+        for seed, version, current_version, allow_archive in upgrades:
+            with self._orchestration.unit_of_work() as uow:
+                prepared_version, record_version, prepared_request = self._prepare_first_party_upgrade_configuration(
+                    seed=seed, version=version, release_sha=release_sha,
                     expected_current_version=current_version,
-                    allow_blocked_unknown_write_archive=(
-                        allow_blocked_unknown_write_archive
-                    ),
+                    allow_blocked_unknown_write_archive=allow_archive,
+                    _unit_of_work=uow,
                 )
-            )
-            if prepared_version == version.version:
-                continue
-            if prepared_version != current_version or record_version <= 0:
-                raise PluginConflictError(
-                    "first-party project changed during release preparation",
-                    code="PLUGIN_INSTANCE_VERSION_CONFLICT",
-                )
-            upgrade_request_id = str(
-                uuid.uuid5(
-                    uuid.NAMESPACE_URL,
-                    "boyi:first-party-plugin-upgrade:"
-                    f"{release_sha}:{seed.automation_id}:"
-                    f"{current_version}:{version.version}",
-                )
-            )
-            upgrade_arguments: dict[str, Any] = {
-                "actor_id": _FIRST_PARTY_RELEASE_ACTOR_ID,
-                "actor_role": _FIRST_PARTY_RELEASE_ACTOR_ROLE,
-                "request_id": upgrade_request_id,
-                "expected_current_version": current_version,
-                "expected_record_version": record_version,
-            }
-            if allow_blocked_unknown_write_archive:
-                upgrade_arguments["allow_blocked_unknown_write_archive"] = True
-            if prepared_configuration_request_id is not None:
-                upgrade_arguments["prepared_configuration_request_id"] = (
-                    prepared_configuration_request_id
-                )
-            try:
-                self.upgrade_instance(
-                    seed.automation_id,
-                    version,
-                    **upgrade_arguments,
-                )
-            except AutomationPluginPreparedTargetOccupied:
-                # Configuration preparation and version staging use separate
-                # idempotent transactions. Another Agent may allocate the
-                # prepared target in between. Never reuse that non-empty
-                # generation or let this project prevent global startup; the
-                # normal reconciler closes it and a later bootstrap retries.
-                with self._orchestration.unit_of_work() as uow:
-                    concurrent = uow.automation_plugins.get_project(
-                        seed.automation_id,
-                        for_update=True,
-                    )
-                    if (
-                        not isinstance(concurrent, Mapping)
-                        or concurrent.get("plugin_id") != seed.plugin_id
-                        or concurrent.get("plugin_version")
-                        not in {current_version, version.version}
-                        or prepared_configuration_request_id is None
-                    ):
-                        raise
+                if prepared_version == version.version:
                     uow.commit()
+                    continue
+                if prepared_version != current_version or record_version <= 0:
+                    raise PluginConflictError(
+                        "first-party project changed during release preparation",
+                        code="PLUGIN_INSTANCE_VERSION_CONFLICT",
+                    )
+                upgrade_request_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
+                    "boyi:first-party-plugin-upgrade:"
+                    f"{release_sha}:{seed.automation_id}:{current_version}:{version.version}"))
+                self._stage_instance_upgrade(
+                    uow, seed.automation_id, version,
+                    actor_id=_FIRST_PARTY_RELEASE_ACTOR_ID,
+                    actor_role=_FIRST_PARTY_RELEASE_ACTOR_ROLE,
+                    request_id=upgrade_request_id,
+                    expected_current_version=current_version,
+                    expected_record_version=record_version,
+                    prepared_configuration_request_id=prepared_request,
+                    allow_blocked_unknown_write_archive=allow_archive,
+                )
+                uow.commit()
         return BootstrapPersistenceResult(
             created=tuple(sorted(created)),
             existing=tuple(sorted(existing)),

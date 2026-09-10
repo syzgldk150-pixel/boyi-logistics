@@ -130,6 +130,8 @@ powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\proje
 
 `-SkipRestart` 和 `-SkipHealthCheck` 仅用于用户明确授权的维护场景。常规生产发布不得跳过重启或健康检查。
 
+迁移后启动失败而旧运行器禁止恢复时，保持两个服务停止和原发布 hold；修复版本走同一 shared 发布流程，额外传入 `-RecoverReleaseHoldSha "<失败发布的40位SHA>"`。发布器持有远端发布锁，仅在原 hold 的身份精确匹配、Agent/Console 均为 inactive 且主进程与控制进程均已退出时原子接管 hold；全程不删除 hold 或启动旧运行器。仍执行全部备份、签名、写入静止、迁移和健康检查。再次失败继续保留 hold 与新旧恢复材料，不自动开放原先已暂停的服务。
+
 本地范围状态保存在忽略目录 `agent/deploy/state/publish_state.json`。本地上传临时目录在完成后清理；远端当次暂存目录及其 `_rollback` 精确恢复材料在成功发布后保留到业务验收结束。删除 stage 之前发生的回滚失败必须保留该目录并输出 `rollback_incomplete ... recovery_material_preserved=1`；若最终 stage 删除已经开始后失败，则输出 `rollback_cleanup_incomplete ... recovery_material_state=unknown verify_required=1`，不得未经核验声称唯一恢复材料仍完整。
 
 ## Nginx 边界
