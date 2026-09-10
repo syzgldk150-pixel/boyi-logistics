@@ -15,7 +15,7 @@ CONSOLE_DIR = Path(__file__).resolve().parents[1]
 BROWSER_REQUEST_UUID = "123e4567-e89b-42d3-a456-426614174000"
 
 from console.app import LocalDocFlowApp
-from console.finance_service import FinanceValidationError
+from console.finance_service import FinanceService, FinanceValidationError
 from console.navigation import CONSOLE_NAVIGATION
 
 
@@ -202,7 +202,7 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
             rendered,
             flags=re.DOTALL,
         )
-        self.assertEqual(5, len(platform_selects))
+        self.assertEqual(3, len(platform_selects))
         for options in platform_selects:
             self.assertEqual(["all", "ronghui"], re.findall(r'<option value="([^"]+)">', options))
         self.assertIn(
@@ -214,6 +214,29 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertNotIn("集配站费用", rendered)
         self.assertNotIn("增值服务费", rendered)
         self.assertNotIn("平台费", rendered)
+
+    def test_collection_forms_match_bound_source_plugin_scope(self):
+        self.app._render_finance(_Handler(), {})
+        service = FinanceService.__new__(FinanceService)
+        cases = (
+            ("sync", {"target_date": "2026-09-09", "rescan_days": "7"},
+             service.build_sync_arguments),
+            ("backfill", {"start_date": "2026-09-01", "end_date": "2026-09-09"},
+             service.build_backfill_arguments),
+        )
+        for name, values, build in cases:
+            with self.subTest(form=name):
+                form = re.search(
+                    rf'<form\b[^>]*data-finance-{name}-form[^>]*>(.*?)</form>',
+                    self.sent_html, flags=re.DOTALL,
+                ).group(1)
+                fields = re.findall(r'<(?:input|select)\b[^>]*\bname="([^"]+)"', form)
+                self.assertEqual(set(values), set(fields))
+                self.assertIn("已配置的全部数据源", form)
+                arguments = build({field: values[field] for field in fields})
+                self.assertEqual(name, arguments["mode"])
+                self.assertNotIn("account_id", arguments)
+                self.assertNotIn("platform", arguments)
 
     def test_frontend_keeps_yunda_label_only_for_historical_sync_records(self):
         script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")

@@ -16,6 +16,13 @@ from shared.runtime_repositories import WAYBILL_FIELDS, WaybillRepository, _conn
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
+def native_waybill_source_scope(source: str) -> str:
+    """Reviewed native collectors use the platform's exact waybill identity."""
+    if source not in {"ronghui", "yunda"}:
+        raise ValueError("unsupported native waybill source")
+    return f"{source}:native-waybill"
+
+
 @dataclass(frozen=True)
 class WaybillSourceScope:
     source: str
@@ -51,6 +58,41 @@ def coverage_satisfies(row: Mapping[str, Any] | None, scope: WaybillSourceScope,
     if business_date >= requested_at.astimezone(SHANGHAI).date():
         return False
     return row.get("final_day") in (True, 1) and row.get("complete_through") is not None
+
+
+def _publication_target(cursor: Any, scope: WaybillSourceScope,
+                        identity: str, waybill_no: str) -> Mapping[str, Any] | None:
+    """Resolve a fresh native entity without duplicating an unscoped old row.
+
+    The old native collectors stored the platform and its exact waybill number,
+    with no document or manual writer. Only a fresh observation using that same
+    reviewed native identity may complete those rows' missing source fields.
+    Other source scopes and ambiguous historical identities are not inferred.
+    """
+    cursor.execute("""SELECT id,waybill_no,status,source_scope,source_record_id,
+        source_account_id,source_permission_scope,document_id,writer_id FROM waybills
+        WHERE BINARY source=%s AND (BINARY waybill_no=%s
+            OR (source_scope=%s AND source_record_id=%s)) ORDER BY id FOR UPDATE""",
+        (scope.source, waybill_no, scope.source_scope, identity))
+    candidates = cursor.fetchall() or []
+    unscoped = [row for row in candidates
+                if row["source_scope"] is None or row["source_record_id"] is None]
+    if unscoped:
+        if len(candidates) != 1:
+            raise ValueError("WAYBILL_LEGACY_IDENTITY_AMBIGUOUS")
+        row = unscoped[0]
+        if (scope.source_scope != native_waybill_source_scope(scope.source) or identity != waybill_no
+                or row["waybill_no"] != waybill_no or row["document_id"] is not None
+                or row["writer_id"] not in (None, "")
+                or any(row[field] is not None for field in (
+                    "source_scope", "source_record_id", "source_account_id", "source_permission_scope"))):
+            raise ValueError("WAYBILL_LEGACY_SOURCE_UNVERIFIED")
+        return row
+    matches = [row for row in candidates
+               if row["source_scope"] == scope.source_scope and row["source_record_id"] == identity]
+    if len(matches) > 1 or any(row["waybill_no"] != waybill_no for row in matches):
+        raise ValueError("WAYBILL_SOURCE_IDENTITY_MISMATCH")
+    return matches[0] if matches else None
 
 
 class WaybillSourceRepository:
@@ -91,10 +133,31 @@ class WaybillSourceRepository:
 
     def read_scope(self, scope: WaybillSourceScope, business_date: date) -> list[dict[str, Any]]:
         with _connection(self._connection_factory) as connection, _cursor(connection, None) as cursor:
-            cursor.execute("""SELECT * FROM waybills WHERE source=%s AND source_scope=%s
-                AND source_permission_scope=%s AND open_date=%s ORDER BY source_record_id""",
-                (scope.source, scope.source_scope, scope.permission_scope, business_date.isoformat()))
-            return [WaybillRepository._row_to_dict(row) for row in cursor.fetchall()]
+            return self._read_scope(cursor, scope, business_date)
+
+    @staticmethod
+    def _read_scope(cursor: Any, scope: WaybillSourceScope, business_date: date) -> list[dict[str, Any]]:
+        cursor.execute("""SELECT * FROM waybills WHERE source=%s AND source_scope=%s
+            AND source_permission_scope=%s AND open_date=%s ORDER BY source_record_id""",
+            (scope.source, scope.source_scope, scope.permission_scope, business_date.isoformat()))
+        return [WaybillRepository._row_to_dict(row) for row in cursor.fetchall()]
+
+    def publication_baseline(self, records: Sequence[Mapping[str, Any]], *, scope: WaybillSourceScope,
+                             business_date: date) -> list[dict[str, Any]]:
+        """Include proven pre-existing targets when verifying a publication.
+
+        This is also the readback baseline if a SQL commit acknowledgement is
+        lost. Reconciliation uses exactly the publisher's predicate, including
+        legacy targets and entities last observed through another permission.
+        """
+        with _connection(self._connection_factory) as connection, _cursor(connection, None) as cursor:
+            baseline = {row["id"]: row for row in self._read_scope(cursor, scope, business_date)}
+            for record in sorted(records, key=lambda row: str(row["source_record_id"])):
+                target = _publication_target(cursor, scope, str(record["source_record_id"]),
+                                             str(record["waybill_no"]))
+                if target is not None and target["id"] not in baseline:
+                    baseline[target["id"]] = dict(target)
+            return list(baseline.values())
 
     def publish(self, records: Sequence[Mapping[str, Any]], *, scope: WaybillSourceScope,
                 business_date: date, captured_at: datetime, complete: bool,
@@ -137,17 +200,19 @@ class WaybillSourceRepository:
             previous = cursor.fetchone()
             if previous and previous["captured_at"] > observed:
                 raise ValueError("an older source snapshot cannot replace a newer publication")
-            for identity, row in sorted(normalized, key=lambda item: item[0]):
-                cursor.execute("""SELECT id FROM waybills WHERE source=%s AND source_scope=%s
-                    AND source_record_id=%s FOR UPDATE""", (scope.source, scope.source_scope, identity))
-                existing = cursor.fetchone()
+            # Resolve the complete result before changing business rows. A later
+            # ambiguous legacy identity must not leave earlier rows half updated.
+            targets = [(identity, row, _publication_target(cursor, scope, identity, row["waybill_no"]))
+                       for identity, row in sorted(normalized, key=lambda item: item[0])]
+            for identity, row, existing in targets:
                 if existing:
                     fields = [field for field in WAYBILL_FIELDS if field != "status"]
                     cursor.execute(f"""UPDATE waybills SET {', '.join(field+'=%s' for field in fields)},
                         status=CASE WHEN status='cancelled' THEN status ELSE %s END,
-                        source_account_id=%s,source_permission_scope=CASE WHEN %s THEN %s ELSE source_permission_scope END,
+                        source_scope=%s,source_record_id=%s,source_account_id=%s,
+                        source_permission_scope=CASE WHEN %s THEN %s ELSE source_permission_scope END,
                         updated_at=UTC_TIMESTAMP(6) WHERE id=%s""",
-                        [*[row[field] for field in fields], row["status"], scope.account_id, complete,
+                        [*[row[field] for field in fields], row["status"], scope.source_scope, identity, scope.account_id, complete,
                          scope.permission_scope, existing["id"]])
                     updated += 1
                 else:

@@ -167,12 +167,14 @@ def _install(management, package, *, account_bindings=None):
     return identity
 
 
-def test_real_subprocess_cancel_releases_only_after_exit_and_new_call_runs(direct_runtime):
+@pytest.mark.parametrize("caller_loop", ["owner", "foreign"])
+def test_real_subprocess_cancel_releases_only_after_exit_and_new_call_runs(direct_runtime, caller_loop):
     management, runtime, _ = direct_runtime
-    identity = _install(management, _service_package(management.task_env, plugin_id="cancel_direct", sleep_seconds=1))
+    identity = _install(management, _service_package(management.task_env, plugin_id="cancel_direct_" + caller_loop, sleep_seconds=1))
     before = _legacy_counts(management.repository)
     first = management.policy.invoke_console(identity, request_id=str(uuid4()), actor=ACTOR)
     async def cancel_after_process_start():
+        assert (asyncio.get_running_loop() is runtime.loop) == (caller_loop == "owner")
         deadline = asyncio.get_running_loop().time() + 5
         while asyncio.get_running_loop().time() < deadline:
             entries = [item for item in runtime.router._running.values() if item.get("automation_id") == identity and item.get("proc") is not None]
@@ -184,7 +186,10 @@ def test_real_subprocess_cancel_releases_only_after_exit_and_new_call_runs(direc
                 return result
             await asyncio.sleep(.01)
         raise AssertionError("actual subprocess did not start")
-    cancelled = asyncio.run_coroutine_threadsafe(cancel_after_process_start(), runtime.loop).result(timeout=10)
+    if caller_loop == "foreign":
+        cancelled = asyncio.run(cancel_after_process_start())
+    else:
+        cancelled = asyncio.run_coroutine_threadsafe(cancel_after_process_start(), runtime.loop).result(timeout=10)
     assert cancelled["status"] == "CANCELLED"
     second = management.policy.invoke_console(identity, request_id=str(uuid4()), actor=ACTOR)
     assert second["invocation_id"] != first["invocation_id"]

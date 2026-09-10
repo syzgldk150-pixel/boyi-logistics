@@ -137,3 +137,20 @@ isolated "$TASK_PYTHON" agent/scripts/accept_low_maintenance_v32.py --phase all 
 M02 字段变化入口为 `tests.v32_acceptance.finance_maintenance`；M03 判断变化入口为 `tests.v32_acceptance.decision_maintenance`。两者的正式结论以完整驱动本次生成的报告为准，准备性运行不能代替宿主冻结后的演练。
 
 P4 真实运行命令与证据见 `docs/direct_waybill_query.md`。已完成两平台当前原页查询范围、寄件日期字段与唯一父单详情的只读核验；仅声明当前查询范围，未声明全组织完整或生产 ECS 运行通过。整体验收结果必须由根任务汇总当前源码、当前 JUnit 和本次 fresh probe 后生成。
+
+## 架构复查修复的局部回归
+
+复用上面的隔离环境，执行以下入口，验证旧运单原位补全、迁移核验状态、执行记录恢复和财务表单范围：
+
+```bash
+isolated "$TASK_PYTHON" -m pytest -q \
+  tests/test_waybill_source_coverage_mysql.py tests/test_yunda_source_contracts.py \
+  tests/test_legacy_execution_retirement_mysql.py tests/test_retired_execution_rollback.py \
+  tests/test_direct_invocation_public_metadata.py \
+  tests/test_automation_invocation_history_browser_mysql.py \
+  console/tests/test_automation_invocation_history.py \
+  console/tests/test_automation_control_plane_cutover.py \
+  console/tests/test_finance_module.py console/tests/test_finance_service.py
+```
+
+浏览器执行记录回归使用真实隔离 MySQL、签名插件子进程与 Console 接口；页面读取历史不会执行业务。局部回归不替代原 A/B/C、M01–M06 完整验收或原性能标准，历史完整报告只适用于其记录的冻结提交。

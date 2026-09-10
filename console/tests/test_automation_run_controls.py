@@ -217,7 +217,9 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         task_html = html.split("<article", 1)[1].split("</article>", 1)[0]
 
         self.assertNotIn("data-automation-toggle", task_html)
-        self.assertNotIn("data-run-now", task_html)
+        run_button = task_html.split('data-run-now', 1)[0].rsplit('<button', 1)[1]
+        self.assertIn(' disabled ', run_button)
+        self.assertIn('data-start-disabled="当前不可执行"', task_html)
         self.assertNotIn("data-settings-toggle", task_html)
         self.assertNotIn("data-schedule-stack", task_html)
         self.assertIn("任务配置只读，但审批策略可以单独设置", task_html)
@@ -423,7 +425,7 @@ const vm = require("node:vm");
 const source = require("node:fs").readFileSync(0, "utf8");
 const controls = source.slice(source.indexOf("function syncRunButtonVisual()"), source.indexOf("const resourceEditors ="));
 const polling = source.slice(source.indexOf("let startPolling = function() {};"), source.indexOf("    // 反馈关闭按钮"))
-  .replace("// 初次进入页面保持干净，不自动展开历史执行结果。", "globalThis.pollTest = {startPolling, pollOutput};");
+  .replace("// Invocation history initialization is complete.", "globalThis.pollTest = {startPolling, pollOutput};");
 const submit = source.slice(source.indexOf('    if (runBtn) {\n      runBtn.addEventListener("click"'),
   source.indexOf('\n  });\n\n  /* ── 列表排序'));
 
@@ -487,7 +489,7 @@ async function exercise(failure, conflict = false) {
   vm.createContext(context);
   vm.runInContext(controls + polling + submit, context);
   const queue = {
-    invocation_id: "accepted-run", status: "RECEIVED", pending: true, queued: true, running: false,
+    invocation_id: "accepted-run", automation_id: "daily_sign", status: "RECEIVED", pending: true, queued: true, running: false,
     started_at: "2026-09-08T01:36:04Z", lines: [], total: 0,
     stage_description: "任务已受理，等待开始执行", next_poll_after_ms: 1000,
   };
@@ -749,7 +751,7 @@ async function exercise(failure, conflict = false) {
         self.assertIn("if (termAttentionLatched) return;", source)
         self.assertIn("const trackingRun = runUiState.running || runUiState.pendingRun;", source)
         self.assertIn(
-            'options.invocationId || runUiState.invocationId || termDrawer.dataset.invocationId || ""',
+            'options.invocationId || termDrawer.dataset.invocationId || runUiState.invocationId || ""',
             source,
         )
         self.assertNotIn("options.invocationId ?? runUiState.invocationId", source)

@@ -35,6 +35,7 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 - 控制平面写请求只接受真实 MySQL 管理员会话和同源 Origin/Referer。Basic Auth 明确拒绝；服务端从会话生成私有 principal 并签名，浏览器 actor、roles、source、authenticated_by 和同名私有标记均不能覆盖。`control_plane_role` 只有 `admin`/`super_admin`，高风险审批只允许后者。
 - 浏览器通过 `X-Browser-Request-UUID` 提供每次用户动作的稳定 UUID，服务端生成 `console:{admin_id}:{command_type}:{uuid}`；缺失或格式错误显式失败。approve/reject 只转发 approval ID、plan hash 和 comment。
 - 插件接受响应保留 invocation_id、automation_id、status 与本次结果；轮询/取消必须核对调用和项目身份，隐藏页暂停轮询，终态停止。普通页面直接显示同步结果或明确失败，不创建空任务卡；Evidence 仅作安全文本渲染。
+- 执行记录由 `services/automation_invocation_history.py` 经签名项目 `/invocations` 读取，仅打开输出或恢复曾打开的输出时请求；按真实来源、状态和 `invocation_phase` 恢复预览/正式阶段，不重放历史。输出使用完整快照替换，历史选择与当前活跃调用控制分离，取消始终绑定当前调用 ID；查看记录不回写调度运行事实。
 - 精确 `scan_codes` 项目的 Console 手工入口固定为两步：首次点击只生成服务端 `dry_run` 预览，预览 Invocation 完成后只展示 Agent 公共投影中的日期、页数、记录数、待扫描数、批次数和失效时间；“确认执行”必须生成新的浏览器 UUID，并只向专用 Console 路由提交 `task_id=scan_codes` 与该公共 `preview_invocation_id`。确认响应不确定时保留同一 UUID 取回原调用结果，不能重复确认已消费预览；本次未知写事实保留，新的明确触发可创建新预览。浏览器不得提交 `dry_run`、Evidence、摘要哈希或运单集合；正式 Invocation 不再投影为新预览，任一过期、漂移、重复消费或治理关闭错误均显式阻断且不回退旧扫描链路。
 - 补充信息表单只允许显式 `note/account_id/argument_updates`；参数更新必须是 JSON 对象。普通说明只作审计 note，Console 不解析自然语言为账号或工具参数。
 - 自动化页按 `automation_id` 每个项目只有一个运行方式事实：ACTION_V1 管理员仍可显式切换 `REQUIRE_EACH_RUN/PROJECT_FULL_AUTO`；SERVICE_V2 只用普通用户可理解的文案显示“完全自动”，不展示运行模型、版本、Host API、服务 ID、迁移术语或逐次审批，即使 Agent 中存在遗留漂移策略行也只接受固定全自动安全投影。权限意图与 `runnable/runtime_status` 分开投影；保存 v1 权限不创建 runtime 代际，配置同步中显示原权限模式但禁止运行旧配置。

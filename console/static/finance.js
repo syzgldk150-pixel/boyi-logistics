@@ -303,8 +303,6 @@
       const selectors = [
         accountSelect,
         $("[data-finance-entry-account]"),
-        $("[data-finance-sync-account]"),
-        $("[data-finance-backfill-account]"),
       ].filter(Boolean);
       selectors.forEach((select) => {
         const selected = select.value;
@@ -335,8 +333,6 @@
     function filterAllAccountSelects() {
       filterAccountSelect(accountSelect, platformSelect?.value || "all");
       filterAccountSelect($("[data-finance-entry-account]"), entryForm?.elements.platform?.value || "all");
-      filterAccountSelect($("[data-finance-sync-account]"), syncForm?.elements.platform?.value || "all");
-      filterAccountSelect($("[data-finance-backfill-account]"), backfillForm?.elements.platform?.value || "all");
     }
 
     function activateTab(name, { focus = false } = {}) {
@@ -1203,8 +1199,6 @@
       control?.addEventListener("change", rememberFinanceSelection);
     });
     entryForm?.elements.platform?.addEventListener("change", filterAllAccountSelects);
-    syncForm?.elements.platform?.addEventListener("change", filterAllAccountSelects);
-    backfillForm?.elements.platform?.addEventListener("change", filterAllAccountSelects);
     entryForm?.addEventListener("submit", (event) => { event.preventDefault(); state.entryPage = 1; loadEntries(); });
     mappingForm?.addEventListener("submit", (event) => { event.preventDefault(); loadMappings(); });
     reviewForm?.addEventListener("submit", (event) => { event.preventDefault(); loadReviews(); });
