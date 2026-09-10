@@ -48,6 +48,7 @@ def test_agent_harness_session_binds_signed_actor_and_projects_gate() -> None:
     calls: list[dict[str, object]] = []
 
     class Service:
+        plugin_execution_enabled = False
         def create_session(self, **kwargs):
             calls.append(kwargs)
             return SimpleNamespace(
@@ -100,11 +101,13 @@ def test_agent_harness_message_returns_only_bounded_conversation_projection() ->
     import main
 
     class Service:
+        plugin_execution_enabled = False
         def send_message(self, **_kwargs):
             return SimpleNamespace(
                 session_id=SESSION_UUID,
                 request_id=REQUEST_UUID,
                 persistence_status="MEMORY_ONLY",
+                plugin_invocations=(),
                 assistant_message=SimpleNamespace(
                     message_id=MESSAGE_UUID,
                     content="Offline result",
@@ -139,6 +142,7 @@ def test_agent_harness_message_returns_only_bounded_conversation_projection() ->
         "result": "Offline result",
         "read_only": True,
         "tool_calls": 0,
+        "plugin_invocations": [],
         "tools": [],
     }
 
@@ -202,6 +206,7 @@ def test_agent_harness_session_projects_restricted_runtime_readiness() -> None:
     import main
 
     service = SimpleNamespace(
+        plugin_execution_enabled=False,
         create_session=lambda **_kwargs: SimpleNamespace(
             session_id=SESSION_UUID,
             request_id=REQUEST_UUID,

@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import pytest
 from uuid import uuid4
 
 from Crypto.PublicKey import ECC
@@ -16,7 +17,8 @@ from tests.direct_invocation_fixture import DirectFixture, direct_repository  # 
 from tests.test_direct_plugin_invocation_mysql import _legacy_counts
 from tests.v32_acceptance.daily_concurrency import Accounts, BoundaryGate, DailyBoundary, ProblemBoundary
 from tests.v32_acceptance.daily_protocol import ACCOUNT_ID, CHILD_CODE
-from tests.v32_acceptance.daily_scan import setup_scan, signed_request
+from tests.v32_acceptance.daily_scan import ACTOR, setup_scan, signed_request
+from agent.plugin_conversations import PluginConversationService
 from tests.v32_acceptance.daily_stats import setup_stats
 from tests.v32_acceptance.decision_maintenance import setup_instance
 from tests.v32_acceptance.first_party_fixture import bootstrap, isolated_migration_accounts
@@ -26,7 +28,16 @@ from tests.v32_acceptance.problem_fixture import ACCOUNTS
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_statistics_scan_pickup_execute_in_parallel_without_a_queue(direct_repository, monkeypatch):  # noqa: F811 - imported pytest fixture
+@pytest.fixture
+def daily_repository():
+    # Each entrypoint scenario installs its own signed packages and must not
+    # inherit the other scenario's materialized package locations.
+    yield from direct_repository.__wrapped__()
+
+
+@pytest.mark.parametrize("chat_entry", [False, True], ids=["console", "conversation"])
+def test_statistics_scan_pickup_execute_in_parallel_without_a_queue(daily_repository, monkeypatch, chat_entry):
+    direct_repository = daily_repository
     browser = Path(os.environ["V32_CHROMIUM_EXECUTABLE"])
     assert browser.is_absolute() and browser.is_file(), "real isolated scan requires installed Chromium"
     monkeypatch.setenv("V32_CHROMIUM_EXECUTABLE", str(browser))
@@ -60,7 +71,16 @@ def test_statistics_scan_pickup_execute_in_parallel_without_a_queue(direct_repos
             setup_instance(management, None)
             with DirectFixture(management, directory=root / "ipc", saved_resource_provider=resources.get) as runtime:
                 before = _legacy_counts(management.repository)
+                chat = PluginConversationService(management.policy)
                 def invoke(identity, **fields):
+                    if chat_entry:
+                        if fields.get("preview_invocation_id"):
+                            return chat.console_action(actor=ACTOR, invocation_id=fields["preview_invocation_id"],
+                                action="confirm", request_id=str(uuid4()), selected_indices=[])
+                        turn = chat.turn(actor=ACTOR, source="console", request_id=str(uuid4()))
+                        targets = [target for target in turn.choices.values() if target.automation_id == identity]
+                        assert len(targets) == 1
+                        return turn.start_console(turn.select([(targets[0].handle, {})]))[0]
                     return signed_request(management, f"/internal/v1/automation-projects/{identity}/invoke", payload={"request_id": str(uuid4()), **fields})
                 def completed(receipt):
                     result = runtime.service.wait_sync(receipt["invocation_id"])
@@ -74,13 +94,19 @@ def test_statistics_scan_pickup_execute_in_parallel_without_a_queue(direct_repos
                 # completed snapshot remains what concurrent statistics reads.
                 daily.ledger.clear()
                 scan_preview = completed(invoke("scan_codes"))
-                pickup_preview = signed_request(management, "/internal/v1/automation-projects/self_pickup_problem_upload/selection-previews", payload={"request_id": str(uuid4())})
+                pickup_preview = (invoke("self_pickup_problem_upload") if chat_entry else signed_request(management, "/internal/v1/automation-projects/self_pickup_problem_upload/selection-previews", payload={"request_id": str(uuid4())}))
                 completed(pickup_preview)
                 scan_gate.enabled = problem_gate.enabled = True
                 try:
                     scan = invoke("scan_codes", preview_invocation_id=scan_preview["invocation_id"])
                     assert scan_gate.started.wait(15), runtime.service.get(scan["invocation_id"])
-                    pickup = signed_request(management, f"/internal/v1/automation-projects/self_pickup_problem_upload/selection-previews/{pickup_preview['invocation_id']}/confirm", payload={"request_id": str(uuid4()), "selected_bill_codes": ["R_M03_STANDARD"]})
+                    if chat_entry:
+                        projection = chat.console_action(actor=ACTOR, invocation_id=pickup_preview["invocation_id"], action="status", request_id=str(uuid4()), selected_indices=[])
+                        indices = [item["index"] for item in projection["preview"]["candidates"] if item["label"].split(" · ")[0] == "R_M03_STANDARD"]
+                        assert len(indices) == 1
+                        pickup = chat.console_action(actor=ACTOR, invocation_id=pickup_preview["invocation_id"], action="confirm", request_id=str(uuid4()), selected_indices=indices)
+                    else:
+                        pickup = signed_request(management, f"/internal/v1/automation-projects/self_pickup_problem_upload/selection-previews/{pickup_preview['invocation_id']}/confirm", payload={"request_id": str(uuid4()), "selected_bill_codes": ["R_M03_STANDARD"]})
                     assert problem_gate.started.wait(10), runtime.service.get(pickup["invocation_id"])
                     statistics = completed(invoke("arrival_stats"))
                     assert runtime.service.get(scan["invocation_id"])["status"] == "RUNNING"

@@ -234,6 +234,7 @@ async def _invoke_automation_project(
     preview_invocation_id: str | None = None,
     on_accepted: Callable[[Any], Awaitable[None]] | None = None,
     on_waiting: Callable[[], Awaitable[None]] | None = None,
+    conversation_target: Any = None,
 ) -> dict[str, Any] | None:
     """Invoke one exact committed project from a verified Feishu event."""
 
@@ -268,6 +269,7 @@ async def _invoke_automation_project(
             sender_id=context.actor_id, chat_id=context.chat_id,
             envelope={"body": inputs, "query": {}},
             preview_invocation_id=preview_invocation_id, on_accepted=callback,
+            **({"conversation_target": conversation_target} if conversation_target is not None else {}),
         )
 
     async def waiting():
@@ -322,6 +324,7 @@ async def _invoke_automation_project_and_reply(
     receive_id: str,
     receive_id_type: str = "chat_id",
     preview_invocation_id: str | None = None,
+    conversation_target: Any = None,
 ) -> dict[str, Any] | None:
     """Invoke one exact committed project and render its bounded Feishu result."""
 
@@ -358,6 +361,7 @@ async def _invoke_automation_project_and_reply(
             dynamic_inputs=dynamic_inputs,
             preview_invocation_id=preview_invocation_id,
             on_accepted=notify_accepted,
+            **({"conversation_target": conversation_target} if conversation_target is not None else {}),
             on_waiting=lambda: _reply_text(
                 receive_id, f"{task_name}已发起，正在等待本次最终结果，完成后会继续回复。",
                 receive_id_type=receive_id_type, reply_type="automation_project_waiting_result",
@@ -460,6 +464,7 @@ async def _invoke_selection_preview_and_reply(
     route_key: str,
     tool_name: str,
     receive_id: str,
+    conversation_target: Any = None,
 ) -> dict[str, Any] | None:
     expected_automation_id = (
         "self_pickup_problem_upload"
@@ -493,6 +498,7 @@ async def _invoke_selection_preview_and_reply(
     try:
         result = await _invoke_automation_project(
             route_key=route_key, dynamic_inputs={}, on_accepted=notify_accepted,
+            **({"conversation_target": conversation_target} if conversation_target is not None else {}),
             on_waiting=lambda: _reply_text(
                 receive_id, "候选清单已发起，正在等待本次最终结果，完成后会继续回复。",
                 reply_type="automation_preview_waiting_result",
@@ -1981,9 +1987,16 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         if (
             isinstance(sender_pending, dict)
             and sender_pending.get("type") == "scan_preview_confirmation"
+            and (_is_scan_confirm_text(text) or _is_scan_cancel_text(text)
+                 or (pending is None and (is_confirm_text(text) or is_cancel_text(text))))
         ):
             pending_key = sender_id
             pending = sender_pending
+    if isinstance(pending, dict) and pending.get("type") == "scan_preview_confirmation" and not (_is_scan_confirm_text(text) or _is_scan_cancel_text(text) or is_confirm_text(text) or is_cancel_text(text)):
+        pending = None  # Keep the preview, but do not capture an unrelated conversation.
+    if (isinstance(pending, dict) and pending.get("type") in {"self_pickup_selection_confirmation", "split_pending_confirmation", "split_pending_selection"}
+            and not (is_confirm_text(text) or is_cancel_text(text) or re.fullmatch(r"[\d\s,，、\-]+", text.strip()))):
+        pending = None
     if isinstance(pending, dict) and pending.get("type") == "active_run":
         clear_pending(pending_key)
         pending = None
@@ -2563,6 +2576,26 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         return
 
     notice_task.cancel()
+    if result.get("plugin_requests"):
+        from agent.plugin_conversations import ConversationPluginTarget
+        targets = result["plugin_requests"]
+        if not all(isinstance(target, ConversationPluginTarget) for target in targets):
+            await _reply_text(chat_id, "插件选择无效，本次未执行。")
+            return
+        async def run_plugin(target):
+            if target.command:
+                matched = await _dispatch_service_v2_feishu_command(text=target.command, receive_id=chat_id, conversation_target=target)
+                if not matched:
+                    await _reply_text(chat_id, f"{target.title}入口已变化，请重新发起。")
+            elif target.selection_tool:
+                await _invoke_selection_preview_and_reply(route_key=target.route_key,
+                    tool_name=SELF_PICKUP_PREVIEW_TOOL_NAME if target.selection_tool == "self_pickup_problem_upload" else "preview_split_pending_problems",
+                    receive_id=chat_id, conversation_target=target)
+            else:
+                await _invoke_automation_project_and_reply(route_key=target.route_key, dynamic_inputs={},
+                    receive_id=chat_id, conversation_target=target)
+        await asyncio.gather(*(run_plugin(target) for target in targets))
+        return
     if await _handle_agent_tool_auth_result(chat_id, result):
         return
     reply_text = format_reply(result.get("reply") or UNKNOWN_EXECUTION_REPLY)
@@ -2570,7 +2603,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     await _reply_text(chat_id, reply_text, reply_type=reply_type)
 
 
-async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str) -> bool:
+async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str, conversation_target: Any = None) -> bool:
     """Dispatch one exact managed command after all fixed routes miss."""
 
     dispatcher = _SERVICE_V2_FEISHU_DISPATCHER
@@ -2598,6 +2631,7 @@ async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str) -> 
             command_text=text, event_id=context.event_id,
             sender_id=context.actor_id, chat_id=context.chat_id,
             on_accepted=callback,
+            **({"conversation_target": conversation_target} if conversation_target is not None else {}),
         )
 
     try:
@@ -2646,6 +2680,13 @@ async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str) -> 
         return True
     if result is None:
         return False
+    if conversation_target is not None and result.get("selection_preview"):
+        await _reply_text(
+            receive_id,
+            f"{conversation_target.title}已读取候选，尚未执行正式处理。请在后台的自动化页面核对本次候选并确认。",
+            reply_type="service_v2_feishu_preview_ready",
+        )
+        return True
     reply, reply_type = _automation_result_reply(
         task_name="扩展任务",
         result=result,

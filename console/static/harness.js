@@ -22,6 +22,8 @@
 
   let sessionId = "";
   let busy = false;
+  let pendingMessage = null;
+  const pluginCards = new Map();
 
   class HarnessRequestError extends Error {
     constructor(code, message, status) {
@@ -86,7 +88,7 @@
     } catch (_error) {
       throw new HarnessRequestError(
         "HARNESS_UNREACHABLE",
-        "AI 助手服务暂时无法连接，未执行任何业务操作。",
+        "暂时无法读取响应。请读取原请求结果，或到自动化页面查看执行记录，勿重复触发。",
         0,
       );
     }
@@ -151,8 +153,8 @@
     }
     if (sessionNote) {
       sessionNote.textContent = value
-        ? "当前为只读会话，回复请结合原始业务系统复核。"
-        : "AI 助手仅使用已开放的只读能力，回复请结合原始业务系统复核。";
+        ? "插件按已保存设置执行；需要确认的操作会先展示预览。"
+        : "可查询业务信息，也可描述要执行的插件。";
     }
   }
 
@@ -230,6 +232,7 @@
     if (returnedSessionId) setSession(returnedSessionId);
     if (response.tools !== undefined) renderTools(response.tools);
     appendMessage("assistant", responseText(response));
+    (response.plugin_invocations || []).forEach((item) => renderPlugin(item, sessionId));
     setState("可以继续提问");
     showModelSettings(false);
   }
@@ -240,15 +243,15 @@
       return "尚未启用智能模型，请先打开“智能模型”完成配置。";
     }
     if (code.includes("MODEL_UNAVAILABLE") || code.includes("TIMEOUT")) {
-      return "智能模型暂时无法连接，请稍后重试。";
+      return "请求响应暂未返回。请读取原请求结果，勿重复发起业务操作。";
     }
     if (code.includes("CAPABILITY_UNAVAILABLE") || code.includes("SIDECAR") || code.includes("UNREACHABLE")) {
-      return "AI 助手当前无法启动只读会话，请稍后重试或联系系统管理员。未执行任何业务操作。";
+      return "AI 助手暂时无法返回结果。已有执行可在自动化页面查看，请勿重复触发。";
     }
     if (code.includes("LIMIT_EXCEEDED")) {
       return "这次问题需要查询的内容过多，请缩小范围后重试。";
     }
-    return String(error && error.message || "AI 助手请求失败，未执行任何业务操作。");
+    return String(error && error.message || "AI 助手请求结果暂时无法读取。");
   }
 
   async function createSession() {
@@ -270,15 +273,126 @@
 
   async function sendMessage(message) {
     const activeSessionId = sessionId || await createSession();
-    const data = await postJson("/harness/messages", {
+    pendingMessage = pendingMessage || {
       request_uuid: requestUuid(),
       session_id: activeSessionId,
       message,
-    });
+    };
+    const data = await postJson("/harness/messages", pendingMessage);
     renderResponse(data);
+    pendingMessage = null;
+  }
+
+  function renderPlugin(item, boundSession) {
+    if (!item.invocation_id) return;
+    let card = pluginCards.get(item.invocation_id);
+    if (!card) {
+      const element = createElement("article", "harness-message harness-message--assistant");
+      const body = createElement("div", "harness-message-body");
+      element.append(body);
+      thread.append(element);
+      card = { element, body, session: boundSession, title: item.title || "插件执行", timer: null };
+      pluginCards.set(item.invocation_id, card);
+    }
+    window.clearTimeout(card.timer);
+    card.body.replaceChildren();
+    appendText(card.body, "strong", "harness-message-label", card.title);
+    const labels = { RUNNING: "正在执行", STARTING: "正在启动", COMPLETED: "已完成", FAILED: "执行失败", CANCELLED: "已取消", CANCELLING: "正在停止", WRITE_OUTCOME_UNKNOWN: "写入结果待核验" };
+    appendText(card.body, "p", "harness-message-copy", labels[item.status] || item.status);
+    if (item.summary) appendText(card.body, "p", "harness-message-copy", item.summary);
+    if (item.message) appendText(card.body, "p", "harness-message-copy", item.message);
+    if (item.result_text) {
+      const details = createElement("details");
+      appendText(details, "summary", "harness-message-copy", "查看返回数据");
+      const data = appendText(details, "pre", "harness-message-copy", item.result_text);
+      data.style.whiteSpace = "pre-wrap";
+      data.style.overflowWrap = "anywhere";
+      card.body.append(details);
+    }
+    const controls = createElement("div", "harness-composer-actions");
+    const notice = appendText(card.body, "p", "harness-message-copy", "");
+    const selections = [];
+    const preview = item.preview;
+    if (preview) {
+      appendText(card.body, "p", "harness-message-copy", typeof preview.summary === "string" ? preview.summary : "请核对本次候选清单。");
+      const state = { CONSUMED: "本次预览已使用，请查看正式执行结果。", EXPIRED: "本次预览已过期，需要重新读取。" };
+      if (state[preview.state]) appendText(card.body, "p", "harness-message-copy", state[preview.state]);
+      (preview.candidates || []).forEach((candidate) => {
+        const label = createElement("label", "harness-message-copy");
+        const input = createElement("input");
+        input.type = "checkbox";
+        input.disabled = !preview.can_confirm;
+        label.append(input, document.createTextNode(` ${candidate.label}`));
+        card.body.append(label, document.createElement("br"));
+        selections.push({ input, index: candidate.index });
+      });
+    }
+    async function action(name, indices = [], stableRequest = requestUuid()) {
+      const data = await postJson("/harness/plugin-actions", {
+        session_id: card.session, invocation_id: item.invocation_id,
+        request_uuid: stableRequest, action: name, selected_indices: indices,
+      });
+      const next = data.plugin_invocations && data.plugin_invocations[0];
+      if (!next || data.session_id !== card.session) throw new Error("执行结果响应不匹配");
+      if (!card.element.isConnected) return;
+      if (next.invocation_id !== item.invocation_id) {
+        notice.textContent = "已提交正式执行。";
+        controls.replaceChildren();
+      }
+      renderPlugin({ ...next, title: card.title }, card.session);
+    }
+    function button(title, name, getIndices) {
+      const control = appendText(controls, "button", "harness-tool-prompt", title);
+      control.type = "button";
+      let request = null;
+      let indices = null;
+      control.addEventListener("click", async () => {
+        if (!request) {
+          indices = getIndices ? getIndices() : [];
+          if (preview?.kind === "selection" && name === "confirm" && !indices.length) {
+            notice.textContent = "请先选择本次要处理的运单。";
+            return;
+          }
+          request = requestUuid();
+          selections.forEach(({ input }) => { input.disabled = true; });
+        }
+        control.disabled = true;
+        try { await action(name, indices, request); }
+        catch (error) {
+          notice.textContent = describeError(error);
+          control.textContent = name === "status" ? "重新读取状态" : "读取本次操作结果";
+          control.disabled = false;
+        }
+      });
+    }
+    const running = ["RUNNING", "STARTING", "CANCELLING"].includes(item.status);
+    if (running && item.status !== "CANCELLING") button("取消本次执行", "cancel");
+    if (preview?.can_confirm) button("确认执行", "confirm", () => selections.filter(({ input }) => input.checked).map(({ index }) => index));
+    button("刷新结果", "status");
+    const link = appendText(controls, "a", "harness-tool-prompt", "查看自动化记录");
+    link.href = "/automations";
+    link.target = "_blank";
+    link.rel = "noopener";
+    card.body.append(controls);
+    // Reading a result never re-submits the plugin. A failed read leaves the
+    // last known state visible and continues reading independently.
+    if (running || !("summary" in item)) {
+      card.timer = window.setTimeout(async () => {
+        if (!card.element.isConnected) return;
+        try { await action("status"); }
+        catch (error) {
+          notice.textContent = describeError(error);
+          button("重新读取状态", "status");
+        }
+      }, 2000);
+    }
+    scrollConversation();
   }
 
   function resetConversation() {
+    pluginCards.forEach((card) => window.clearTimeout(card.timer));
+    pluginCards.clear();
+    pendingMessage = null;
     if (thread) thread.querySelectorAll(".harness-message").forEach((item) => item.remove());
     if (welcome) welcome.hidden = false;
     if (toolsList) toolsList.replaceChildren();
@@ -315,6 +429,10 @@
   form?.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (busy || !messageInput) return;
+    if (pendingMessage) {
+      setFeedback("上次响应尚未确认，请先读取原请求结果。", "info");
+      return;
+    }
     const message = String(messageInput.value || "").trim();
     if (!message || message.length > MAX_MESSAGE_CHARS) {
       setFeedback("请输入消息，且长度不得超过 4000 个字符。", "error");
@@ -336,6 +454,17 @@
       setState(code.includes("MODEL_NOT_CONFIGURED") ? "模型未启用" : "暂时无法连接");
       showModelSettings(code.includes("MODEL_NOT_CONFIGURED"));
       setFeedback("", "error");
+      if (pendingMessage) {
+        const retry = appendText(thread, "button", "harness-tool-prompt harness-message", "读取原请求结果");
+        retry.type = "button";
+        retry.addEventListener("click", async () => {
+          if (busy) return;
+          setBusy(true);
+          try { await sendMessage(pendingMessage.message); retry.remove(); }
+          catch (error) { setFeedback(describeError(error), "error"); }
+          finally { setBusy(false); }
+        });
+      }
     } finally {
       setBusy(false);
       messageInput.focus();

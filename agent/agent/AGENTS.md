@@ -53,7 +53,8 @@
   - `orchestration/automation_run_supersession.py` 只供历史/离线状态验证；046 结清旧队列，主进程不领取或复活历史 Run。当前是否运行只认 Direct 调用的实际生命周期，停止历史 UNKNOWN 不阻新请求。
   - 历史 `sync_scan_codes` 未知写恢复读取原正式 lease、Command、已验签 preview 与原代际账号，在独立外部账本精确证明 APPLIED / NOT_APPLIED；041 保存原快照和原资源键，APPLIED 仅按原日期所有者 CAS 补齐投影与结果，显式人工核验不唤醒原 Run；停止历史的不确定结果保留 UNKNOWN，不阻止新请求。历史紧凑上下文缺失时仍须验证同 Run 的完整 Plan hash 和原预览结果摘要，不得猜测。实现索引、保留/回滚与隔离验收边界见 `../../docs/scan_recovery_v32.md`。
   - `feishu_command_contract.py` 是宿主无条件取消、扫描确认和审批绑定文本的纯解析单点；`direct_tool_router.py` 复用它和登录/固定 Action v1 parser，并通过组合根注入的纯判定器阻止动态 contribution 安装同文案。动态未知才可继续既有 Agent/LLM；匹配后身份缺失必须停止，不得回退。
-- 改固定 Harness Session、只读 Tool Catalog 或受限 sidecar：
+- 改 AI 会话、插件选择、只读 Tool Catalog 或受限 sidecar：
+  - `plugin_conversations.py` 从启用且配置完成的 committed 插件生成不含账号资源的选择句柄；网页 AI 和已绑定管理员的飞书自然对话复用各自入口，执行前复核版本、设置及完全自动权限。模型无权确认预览或提供业务参数；同一请求只重读原 Invocation。实现与隔离验证见 `../../docs/architecture_direct_invocation.md`。
   - `harness/` 只放无环境、数据库、网络、文件、TMS 和飞书依赖的领域模型、内存 Session、Catalog、协议与 fail-closed launcher；`harness_application.py` 绑定真实签名 MySQL 管理员、可信项目调用 adapter 和组合根注入的只读处理器；`harness_api.py` 只承载闭合内部 HTTP 请求、响应投影和错误映射。
   - 动态工具只从 `ManagedContributionRegistry` 的 immutable active snapshot 读取，并在调用前重解 exact active generation。贡献必须绑定 generation 中真实签名的闭合 `runtime_permissions`，只接受 `read/compute + harness_allowed=true + broker_effect=read`，且 network/browser/office 为 false、file roles/Broker operations 为空、调用额度为零；字段缺失不得生成默认权限。
   - `harness_runtime.py` 复用当前启用的 LLM；固定网关由组合根注册，只返回真实查询数据，财务汇总不触发采集。动态插件能力按当前 committed generation 和签名声明开放；调用使用真实 Invocation，内部账号/资源身份不交给模型。历史离线 sidecar 测试不作为当前生产能力声明。

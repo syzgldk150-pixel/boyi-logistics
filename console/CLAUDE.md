@@ -30,7 +30,7 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 
 ## 直接业务入口与历史事项
 
-- `/harness` 是不可停用的固定只读模块，对用户统一显示为“AI 助手”。页面、代理和浏览器脚本分别位于 `templates/harness.html`、`services/harness.py`、`routes/harness.py` 和 `static/harness.js`；浏览器只提交规范请求 UUID、Agent Session UUID 和有界自然中文消息，动态内容只用 `textContent` 渲染。Session/Message POST 只接受真实 MySQL `admin/super_admin` 会话与同源请求，再通过既有签名 principal 调用 Agent `/internal/v1/harness/*`；Basic/emergency 明确拒绝。Console 不托管模型、不选择 service/operation/账号/资源、不读取数据库业务数据，也不回退旧工具。页面只显示欢迎提示、自然中文建议、对话与输入框；连接状态只作为读屏实时文本，内部过程、证据、工具摘要和常驻状态条不得显示。Session 仅当前服务进程保存，模型未配置、超时或供应商异常必须给出明确中文建议。
+- `/harness` 是不可停用的业务查询与插件执行模块，对用户统一显示为“AI 助手”。页面、代理和浏览器脚本分别位于 `templates/harness.html`、`services/harness.py`、`routes/harness.py` 和 `static/harness.js`；浏览器提交规范请求 UUID、Agent Session UUID 和有界自然中文消息；`/harness/plugin-actions` 仅额外接受会话已签发的 Invocation UUID、status/confirm/cancel 与候选下标，动态内容只用 `textContent` 渲染。Session/Message POST 只接受真实 MySQL `admin/super_admin` 会话与同源请求，再通过既有签名 principal 调用 Agent `/internal/v1/harness/*`；Basic/emergency 明确拒绝。Console 不托管模型、不选择 service/operation/账号/资源、不读取数据库业务数据，也不回退旧工具。页面显示欢迎提示、自然中文建议、对话、插件本次执行状态及候选确认、输入框；连接状态只作为读屏实时文本，内部过程、证据、工具摘要和常驻状态条不得显示。Session 仅当前服务进程保存，模型未配置、超时或供应商异常必须给出明确中文建议。
 - `/work-items` 与 `/work-items/{id}` 仅承载历史、Evidence 和精确未知写核验，不是新业务的审批/领取入口，不进入日常侧栏；Console 只代理 Agent，不直读控制平面表。新操作在业务页面显示本次直接结果或 Invocation 状态。
 - 事项详情的历史写入检查使用 `static/unknown_write_recovery.js` 和既有控制平面服务；仅超级管理员检查服务端保存证据，按精确事项/Run/lease 核验，不恢复旧任务。既有事项 GET 的 `unknown_write_recoveries[].write_attempts` 只透传共享层白名单回执诊断，不返回原始范围、定位器或业务行。支持范围与核心迁移规则见 `../docs/historical_write_recovery.md`。
 - 普通页面读写使用 `services/business_calls.py` 调用 `/internal/v1/business/{operation}`，返回真实业务结果；自动化只调用 `/internal/v1/automation-projects/{automation_id}/invoke`。动作、账号和资源来自服务器已验证绑定，不由浏览器注入。插件已真实启动才显示执行中；同实例活跃或资源不足明确拒绝，不展示旧 Run 排队或自动重试。
@@ -245,7 +245,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 - 本目录的 `AGENTS.md` 与 `CLAUDE.md`
 
 
-- 自动化目录“分批/未到问题件上传”和“自提到货问题件”只允许 Console 从已验签、已持久化的候选 Invocation 勾选并确认：后台先由 Agent 以独立只读 Invocation 生成候选，预览指纹始终只保留在 Agent 持久化 Invocation 中，浏览器不得提交账号、运单集合或预览指纹。两项任务不开放定时或 LLM 直达；飞书固定命令继续使用各自的预览确认流程。
+- 自动化目录“分批/未到问题件上传”和“自提到货问题件”只允许 Console 从已验签、已持久化的候选 Invocation 勾选并确认：后台先由 Agent 以独立只读 Invocation 生成候选，预览指纹始终只保留在 Agent 持久化 Invocation 中，浏览器不得提交账号、运单集合或预览指纹。两项任务不开放定时或 LLM 正式写入直达；LLM 可通过当前插件目录生成预览，正式执行仍要求用户确认；飞书固定命令继续使用各自的预览确认流程。
 
 ## 固定业务模块与系统状态
 

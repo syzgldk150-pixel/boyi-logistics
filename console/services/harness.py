@@ -48,6 +48,7 @@ _HARNESS_TOP_LEVEL_RESPONSE_FIELDS = frozenset(
         "tool_calls",
         "blocked_reason",
         "next_poll_after_ms",
+        "plugin_invocations",
     }
 )
 _HARNESS_FORBIDDEN_RESPONSE_KEYS = frozenset(
@@ -159,7 +160,7 @@ def _safe_response_value(value: object, *, depth: int = 0) -> Any:
                 or (
                     is_sensitive_key(key)
                     and normalized_key
-                    not in {"persistence_status", "session_id", "request_uuid", "message_id"}
+                    not in {"persistence_status", "session_id", "request_uuid", "message_id", "invocation_id"}
                 )
             ):
                 raise ValueError("AI 助手返回了不允许展示的字段")
@@ -345,6 +346,29 @@ class HarnessServiceMixin:
 
     def _handle_harness_message(self, handler: Any) -> None:
         self._handle_harness_message_post(handler)
+
+    def _handle_harness_plugin_action(self, handler: Any) -> None:
+        context = self._harness_write_context(handler)
+        if context is None:
+            return
+        fields = frozenset({"request_uuid", "session_id", "invocation_id", "action", "selected_indices"})
+        values = self._read_harness_json(handler, allowed_fields=fields)
+        if values is None:
+            return
+        try:
+            for field in ("request_uuid", "session_id", "invocation_id"):
+                _canonical_uuid(values[field], field_name=field)
+            indices = values["selected_indices"]
+            if (values["action"] not in {"status", "confirm", "cancel"} or not isinstance(indices, list)
+                    or len(indices) > 100 or any(type(index) is not int or index < 0 for index in indices)
+                    or len(set(indices)) != len(indices) or (values["action"] != "confirm" and indices)):
+                raise ValueError("执行操作或候选选择无效。")
+        except (ValueError, TypeError) as exc:
+            self._harness_error(handler, HTTPStatus.BAD_REQUEST, "INVALID_HARNESS_REQUEST", str(exc))
+            return
+        result = self._agent_request("POST", "/internal/v1/harness/plugin-actions", payload=values,
+            timeout=getattr(self.settings, "agent_timeout_seconds", 30), console_principal=context["_console_principal"])
+        self._forward_harness_result(handler, result, required_fields=("session_id", "plugin_invocations"))
 
     def _forward_harness_result(
         self,
