@@ -1422,7 +1422,7 @@ def _normalize_plugin_migration(
         "record_version": record_version,
         "can_mark_ready": bool(role == "TARGET" and state == "TESTING"),
         "can_cutover": bool(role == "TARGET" and state == "READY"),
-        "can_rollback": bool(role == "TARGET" and state == "CUTOVER"),
+        "can_rollback": bool(role == "TARGET" and state in {"TESTING", "READY", "CUTOVER"}),
         "can_complete": bool(role == "TARGET" and state == "CUTOVER"),
         "test_state": test_state,
         "test_status_label": AUTOMATION_PLUGIN_MIGRATION_TEST_STATE_LABELS.get(

@@ -719,7 +719,7 @@ def test_public_text_allows_non_absolute_business_slashes(public_value: str) -> 
     ) == {"value": public_value}
 
 
-def test_invoke_wraps_handler_failure_without_exposing_details() -> None:
+def test_invoke_wraps_handler_failure_without_exposing_details(caplog) -> None:
     def failing(_binding, _arguments):
         raise RuntimeError("Authorization: Bearer must-not-escape")
 
@@ -730,6 +730,10 @@ def test_invoke_wraps_handler_failure_without_exposing_details() -> None:
             registry.invoke(resolved=resolved, binding=_binding(), arguments={"value": "ok"})
         )
     assert "must-not-escape" not in str(error.value)
+    assert "must-not-escape" not in caplog.text
+    assert "exception_type=RuntimeError" in caplog.text
+    assert "service=connector.test.sample@1 operation=query" in caplog.text
+    assert "failing:" in caplog.text
 
 
 def test_fixture_connector_returns_closed_found_and_not_found_results() -> None:

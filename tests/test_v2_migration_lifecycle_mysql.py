@@ -24,7 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = "self_pickup_problem_upload"
 
 
-@pytest.mark.parametrize("enabled,finish", [(True, "rollback"), (False, "complete")])
+@pytest.mark.parametrize("enabled,finish", [(True, "rollback"), (False, "complete"),
+                                           (True, "withdraw"), (False, "withdraw")])
 @pytest.mark.parametrize("reconcile_before_config", [False, True])
 def test_installed_migration_transfers_only_after_verified_direct_call(database, tmp_path, monkeypatch, enabled, finish, reconcile_before_config):
     fixture, name = database
@@ -76,6 +77,33 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
             from shared.orchestration_repository_support import ConcurrentUpdateError
             with pytest.raises(ConcurrentUpdateError):
                 transition(host.management.mark_migration_ready)
+            if finish == "withdraw":
+                # A failed validation must be withdrawable without inventing a
+                # successful execution or changing the source's saved intent.
+                pair = transition(host.management.rollback_migration_pair)
+                assert pair["state"] == "ROLLED_BACK"
+                assert host.catalog.require(SOURCE).enabled is enabled
+                assert host.catalog.require(target).enabled is False
+                assert host.packages.get_active_plugin_migration_pair_for_automation(target) is None
+                assert host.packages.source_project_migration_uninstall_allowed(SOURCE) is False
+                assert not any(row.get("action") == "create" for row in supplier.requests)
+                retired = host.catalog.require(target)
+                removed = host.management.uninstall(target, request_id=str(uuid4()), actor=ACTOR,
+                    current_version=retired.installed_version, expected_record_version=retired.record_version)
+                assert removed["status"] == "UNINSTALLED"
+                fresh = host.management.install_service_v2(archive, request_id=str(uuid4()),
+                    transport_package_sha256=sha256(archive).hexdigest(), actor=ACTOR,
+                    raw_intent=json.dumps({"instance_name": "重新验证的目标", "permissions_confirmed": True}))
+                replacement = host.management.create_migration_pair(migration_pair_id=str(uuid4()),
+                    source_automation_id=SOURCE, target_automation_id=fresh["automation_id"],
+                    business_key_fields=("include_daxiang_s_self_pickup",), business_key_namespace="isolated-upgrade",
+                    request_id=str(uuid4()), reason="retry validation after withdrawal", actor=ACTOR)
+                assert replacement["state"] == "TESTING"
+                authoritative = host.packages.get_authoritative_plugin_migration_pair_for_automation(SOURCE)
+                assert authoritative["migration_pair_id"] == replacement["migration_pair_id"]
+                pair = replacement
+                pair_id = pair["migration_pair_id"]
+                target = fresh["automation_id"]
             for channel, root in (("scheduler", True), ("feishu", True), ("webhook", True), ("harness", True), ("console", False)):
                 with host.repository.unit_of_work() as uow, pytest.raises(ConcurrentUpdateError):
                     uow.automation_plugins.require_migration_direct_entrypoint(target, source=channel, super_admin=root)
@@ -104,3 +132,4 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
             assert pair["state"] == ("ROLLED_BACK" if finish == "rollback" else "COMPLETED")
             assert host.catalog.require(SOURCE).enabled is (enabled if finish == "rollback" else False)
             assert host.catalog.require(target).enabled is (False if finish == "rollback" else enabled)
+            assert host.packages.source_project_migration_uninstall_allowed(SOURCE) is (finish != "rollback")

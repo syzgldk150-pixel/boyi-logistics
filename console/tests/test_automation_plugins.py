@@ -805,6 +805,7 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertEqual("finance_action_east_v1", migration["paired_automation_id"])
         self.assertEqual(4, migration["record_version"])
         self.assertTrue(migration["can_cutover"])
+        self.assertTrue(migration["can_rollback"])
         self.assertFalse(migration["owns_entrypoints"])
 
     def test_preparing_migration_remains_visible_but_disables_all_operations(self):

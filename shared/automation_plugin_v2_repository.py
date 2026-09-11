@@ -192,7 +192,8 @@ def _select_authoritative_migration_pair(
             raise OrchestrationPersistenceError(
                 "migration ownership history is invalid"
             )
-    unfinished = [row for row in rows if row.get("state") != "COMPLETED"]
+    rolled_back = [row for row in rows if row.get("state") == "ROLLED_BACK"]
+    unfinished = [row for row in rows if row.get("state") not in {"COMPLETED", "ROLLED_BACK"}]
     completed = [row for row in rows if row.get("state") == "COMPLETED"]
     if unfinished and completed:
         raise OrchestrationPersistenceError(
@@ -204,11 +205,17 @@ def _select_authoritative_migration_pair(
         )
     if unfinished:
         return unfinished[0]
-    if not rows:
-        return None
-
+    if not completed:
+        if not rolled_back:
+            return None
+        # Every withdrawn attempt restores this same source. A later explicit
+        # attempt may supersede it; withdrawn attempts never own new entrypoints.
+        if len({str(row.get("source_automation_id") or "") for row in rolled_back}) != 1:
+            raise OrchestrationPersistenceError("ambiguous rolled-back migration ownership")
+        return max(rolled_back, key=lambda row: (str(row.get("rolled_back_at") or ""),
+                                               str(row.get("migration_pair_id") or "")))
     fingerprints: set[tuple[str, str, str, bool]] = set()
-    for row in rows:
+    for row in completed:
         snapshot = row.get("entrypoint_snapshot_json")
         if not isinstance(snapshot, Mapping):
             raise OrchestrationPersistenceError(
@@ -238,7 +245,7 @@ def _select_authoritative_migration_pair(
         return int(target.get("generation") or 0) if isinstance(target, Mapping) else 0
 
     return max(
-        rows,
+        completed,
         key=lambda row: (
             _completed_generation(row),
             str(row.get("completed_at") or ""),
@@ -299,9 +306,9 @@ def _lock_migration_pair_creation_conflicts(
         """
         SELECT migration_pair_id, source_automation_id, target_automation_id, state
         FROM automation_plugin_migration_pairs
-        WHERE source_automation_id=%s
+        WHERE (source_automation_id=%s AND state='COMPLETED')
            OR (
-                state<>'COMPLETED'
+                state NOT IN ('COMPLETED', 'ROLLED_BACK')
                 AND (
                     source_automation_id IN (%s, %s)
                     OR target_automation_id IN (%s, %s)
@@ -1121,19 +1128,20 @@ class AutomationPluginV2RepositoryMixin:
         )
 
     def source_project_migration_uninstall_allowed(self, automation_id: str) -> bool:
-        """Return whether a legacy source has completed every migration pair."""
+        """Allow source removal only after the authoritative attempt completed."""
 
         project_id = _required_text(automation_id, "automation_id")
         with self.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT 1 FROM automation_plugin_migration_pairs
-                WHERE source_automation_id=%s AND state<>'COMPLETED'
-                LIMIT 1
+                SELECT * FROM automation_plugin_migration_pairs
+                WHERE source_automation_id=%s FOR UPDATE
                 """,
                 (project_id,),
             )
-            return cursor.fetchone() is None
+            rows = [_decode_row(row, self._MIGRATION_PAIR_JSON_FIELDS) or {} for row in _rows(cursor)]
+        owner = _select_authoritative_migration_pair(rows, automation_id=project_id)
+        return owner is None or owner.get("state") == "COMPLETED"
 
     def get_active_plugin_migration_pair_for_automation(
         self, automation_id: str, *, for_update: bool = True,
@@ -1244,7 +1252,7 @@ class AutomationPluginV2RepositoryMixin:
         allowed_from_states = {
             "READY": {"TESTING"},
             "CUTOVER": {"READY"},
-            "ROLLBACK": {"CUTOVER", "READY"},
+            "ROLLBACK": {"TESTING", "CUTOVER", "READY"},
             "COMPLETE": {"CUTOVER"},
         }[operation]
         with self.cursor() as cursor:
@@ -1888,7 +1896,7 @@ class AutomationPluginV2RepositoryMixin:
         transitions = {
             "READY": {"TESTING"},
             "CUTOVER": {"READY"},
-            "ROLLBACK": {"CUTOVER", "READY"},
+            "ROLLBACK": {"TESTING", "CUTOVER", "READY"},
             # A rollback restores v1 ownership; it is not evidence that the
             # source was migrated and therefore can never unlock source purge.
             "COMPLETE": {"CUTOVER"},
