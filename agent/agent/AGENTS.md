@@ -19,6 +19,8 @@
 
 ## 修改入口
 
+- `automation_plugins/production.py` 重建 Service V2 入口前读取当前实例启停状态；停用、撤回实例只恢复不可调度的持久化证据，不保留命令或路由占用。不能先激活所有已提交代次再停用，避免旧迁移阻断启动。
+
 - 插件迁移撤回/切换后由 `automation_plugins/management.py` 先释放旧入口再同步新入口；准备失败也可撤回 TESTING 并卸载。启动安装及健康检查按 `../../shared/automation_plugin_migration_ownership.py` 排除已移交的旧实例。到货统计和到货清单共用 `automation_plugins/list_connectors_v2.py` 的固定列转换。详见[迁移手册](../../docs/plugin-platform-v2.md)。
 
 - 首方版本升级：`automation_plugins/mysql_repository.py` 在同一 Unit of Work 内准备目标合同配置并暂存版本，失败整体回滚，已提交代次保持不变；`../../shared/automation_plugin_configuration_contract.py` 统一配置 witness 与精确升级目标校验。真实 MySQL 回归见 `../../tests/test_first_party_upgrade_configuration_mysql.py`。

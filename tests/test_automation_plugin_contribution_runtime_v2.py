@@ -903,6 +903,32 @@ def test_committed_webhook_effect_restores_exact_active_route_after_restart() ->
     ) == (snapshot.automation_id, snapshot.generation, "receive_hook")
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_restart_does_not_reserve_disabled_committed_feishu_command(enabled) -> None:
+    snapshot = _snapshot(
+        schedule={"kind": "none", "times": [], "enabled": False},
+        enabled_entrypoints=("run_command",),
+    )
+    plans = _managed_plans(snapshot)
+    generation = RuntimeGenerationRecord(
+        snapshot=snapshot, state=RuntimeGenerationState.COMMITTED,
+        effects=tuple(_effect(snapshot, plan, sequence, state=RuntimeEffectState.APPLIED)
+                      for sequence, plan in enumerate(plans, start=1)),
+    )
+    registry = ManagedContributionRegistry(reserved_feishu_command=lambda _command: True)
+    driver = ProductionRuntimeEffectDriver(
+        broker_handler_keys=(), contribution_registry=registry,
+        project_enabled=lambda _automation_id: enabled,
+    )
+    if enabled:
+        with pytest.raises(PluginConflictError, match="conflicts with an Action V1 command"):
+            driver.restore_from_repository(_GenerationRepository(generation))
+    else:
+        driver.restore_from_repository(_GenerationRepository(generation))
+        assert registry.snapshot()
+        assert all(record.phase == "DRAINING" for record in registry.snapshot())
+
+
 def test_authoritative_empty_webhook_generation_revokes_and_releases_route() -> None:
     schedule = {"kind": "none", "times": [], "enabled": False}
     first = _snapshot(schedule=schedule, enabled_entrypoints=("receive_hook",))

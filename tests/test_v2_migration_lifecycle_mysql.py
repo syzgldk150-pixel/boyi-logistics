@@ -106,6 +106,24 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
                 assert host.packages.get_active_plugin_migration_pair_for_automation(target) is None
                 assert host.packages.source_project_migration_uninstall_allowed(SOURCE) is False
                 assert not any(row.get("action") == "create" for row in supplier.requests)
+                # A fresh process must respect the saved disabled state before
+                # reserving commands, even though its committed effects remain.
+                from agent.direct_tool_router import is_reserved_feishu_command_text
+                from agent.automation_plugins.production import ProductionRuntimeEffectDriver
+                from agent.automation_plugins.service_v2_projection import ManagedContributionRegistry
+                restart_registry = ManagedContributionRegistry(
+                    reserved_feishu_command=is_reserved_feishu_command_text,
+                    migration_reserved_feishu_target=MigrationEntrypointOwnershipResolver(
+                        host.packages).allow_reserved_feishu_target,
+                )
+                restarted = ProductionRuntimeEffectDriver(
+                    broker_handler_keys=host.driver._handler_keys,
+                    contribution_registry=restart_registry,
+                    project_enabled=lambda automation_id: host.catalog.require(automation_id).enabled,
+                )
+                restarted.restore_from_repository(host.runtime_repository)
+                assert not any(record.automation_id == target and record.phase == "COMMITTED"
+                               for record in restart_registry.snapshot())
                 if not reconcile_before_config or finish == "withdraw_failed":
                     retired = host.catalog.require(target)
                     removed = host.management.uninstall(target, request_id=str(uuid4()), actor=ACTOR,
