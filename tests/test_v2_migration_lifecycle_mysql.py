@@ -24,6 +24,78 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = "self_pickup_problem_upload"
 
 
+def test_real_arrive_list_migration_consumes_saved_formal_mode(database, tmp_path, monkeypatch):
+    from agent.automation_plugins.list_connectors_v2 import build_list_connectors
+    from tests.test_arrival_connectors_v2 import _setup
+
+    fixture, name = database
+    monkeypatch.setenv("AGENT_DB_NAME", name)
+    def connect():
+        return fixture.pymysql.connect(host=fixture.host, port=fixture.port, user=fixture.user,
+            password=fixture.password, database=name, charset="utf8mb4", autocommit=False,
+            cursorclass=fixture.pymysql.cursors.DictCursor)
+    private = ECC.generate(curve="Ed25519")
+    trust = Ed25519TrustStore({"isolated-migration": private.public_key().export_key(format="raw")})
+    accounts = ProblemAccounts()
+    bindings = isolated_migration_accounts()
+    bindings["arrive_list"] = {"account_id": [ACCOUNTS["account_id"]]}
+    resources = {}
+    for suffix in ("primary", "secondary"):
+        role = "arrive_" + suffix + "_sheet"
+        resource = {"resource_kind": "feishu_sheet", "sheet_id": "isolated-" + suffix}
+        resource["_meta"] = {"resource_key": role, "configuration_version": 1,
+            "source": "explicit isolated migration fixture",
+            "config_sha256": sha256(json.dumps(resource, sort_keys=True).encode()).hexdigest()}
+        resources["phase7." + role] = resource
+    route = {"resource_kind": "feishu_route", "command": "isolated-arrive-list"}
+    route["_meta"] = {"resource_key": "automation.feishu_route.arrive_list", "configuration_version": 1,
+        "source": "explicit isolated migration fixture",
+        "config_sha256": sha256(json.dumps(route, sort_keys=True).encode()).hexdigest()}
+    resources["automation.feishu_route.arrive_list"] = route
+    def unused_legacy_handler(*_args, **_kwargs):
+        raise AssertionError("configuration migration must not execute legacy business operations")
+    legacy_handlers = {key: unused_legacy_handler for key in (
+        ("browser.invoke", "ronghui.arrive_list.read_page"),
+        ("projection.invoke", "arrival.report.publication.read"),
+        ("projection.invoke", "waybill.snapshot.replace"),
+        ("projection.invoke", "arrival.forecast_snapshot.replace"),
+        ("network.request", "feishu.sheet.replace"),
+    )}
+    registry, _context, _row, _calls, writes = _setup(connector_builder=build_list_connectors,
+        describe_account=accounts.require_active_binding_descriptor)
+    archive = build_plugin_zip(ROOT / "agent/service_v2_plugins/sync_arrive_list_v2", tmp_path / "target.zip").read_bytes()
+    with ManagementFixture(connection_factory=connect, runtime_root=tmp_path / "host", account_manager=accounts,
+            resource_provider=resources.get, broker_handlers=legacy_handlers,
+            upload_signature_verifier=trust, migration_account_bindings=bindings,
+            enable_directory_faults=False, connector_registry=registry) as host:
+        bootstrap(host, private_key=private, trust=trust, key_id="isolated-migration")
+        host.targets.reconcile_project("arrive_list")
+        entry = host.catalog.require("arrive_list")
+        assert entry.committed_generation > 0, host.targets.reconciliation_failures()
+        host.management.save_configuration("arrive_list", config={"dry_run": False, "target_date": "2026-09-12"},
+            account_bindings=bindings["arrive_list"], resource_bindings={
+                "arrive_primary_sheet": "phase7.arrive_primary_sheet",
+                "arrive_secondary_sheet": "phase7.arrive_secondary_sheet",
+                "feishu_route": "automation.feishu_route.arrive_list"},
+            enabled_entrypoints=("console",), schedule={"kind": "none", "times": [], "enabled": False},
+            device_id=None, request_id=str(uuid4()), expected_project_configuration_version=entry.project_config_version,
+            actor=ACTOR)
+        host.targets.reconcile_project("arrive_list")
+        installed = host.management.install_service_v2(archive, request_id=str(uuid4()),
+            transport_package_sha256=sha256(archive).hexdigest(), actor=ACTOR,
+            raw_intent=json.dumps({"instance_name": "隔离到货清单", "permissions_confirmed": True}))
+        target = installed["automation_id"]
+        result = host.management.create_migration_pair(migration_pair_id=str(uuid4()),
+            source_automation_id="arrive_list", target_automation_id=target,
+            business_key_fields=("__host_business_date",), business_key_namespace="arrive-list",
+            request_id=str(uuid4()), reason="verify exact saved formal-mode conversion", actor=ACTOR)
+        assert result["state"] == "TESTING"
+        assert host.configuration.read("arrive_list").config == {"dry_run": False, "target_date": "2026-09-12"}
+        assert host.configuration.read(target).config == {"target_date": "2026-09-12"}
+        assert host.catalog.require(target).committed_generation > 0
+        assert writes == []
+
+
 @pytest.mark.parametrize("enabled,finish", [(True, "rollback"), (False, "complete"),
                                            (True, "withdraw"), (False, "withdraw"), (False, "withdraw_failed")])
 @pytest.mark.parametrize("reconcile_before_config", [False, True])

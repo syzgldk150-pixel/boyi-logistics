@@ -49,8 +49,34 @@ def test_every_production_instance_retains_its_accounts_resources_and_entrypoint
         explicitly_consumed_source_bindings=consumed, kind="resource")
     assert accounts == {target: source_accounts[source] for source, target in mapping.account_roles.items()}
     assert resources == {target: bindings[source] for source, target in mapping.resource_roles.items() if source in bindings}
+    # Historical production configurations persist this value even where V2
+    # now owns it in the operation contract. It must not block target save.
+    original = {"dry_run": False} if "dry_run" in source.config_schema.get("properties", {}) else {}
+    copied = mapping.copy_config(original)
+    assert set(copied).issubset(manifest.config_schema.get("properties", {}))
+    assert original == ({"dry_run": False} if "dry_run" in source.config_schema.get("properties", {}) else {})
     assert len(enabled) == len(set(enabled))
     for kind in template.allowed_entrypoints:
         assert ownership[kind]["source_enabled"] is True
         assert ownership["owners"]["CUTOVER"][kind] == "SERVICE_V2"
         assert ownership["owners"]["ROLLED_BACK"][kind] == "ACTION_V1"
+
+
+@pytest.mark.parametrize("value", [True, "false", 0, None])
+def test_migration_never_turns_preview_or_invalid_mode_into_a_formal_write(value):
+    from agent.automation_plugins.errors import PluginConflictError
+    mapping = reviewed_migration_binding_mapping(source_automation_id="arrive_list",
+        source_plugin_id="sync_arrive_list", target_plugin_id="sync_arrive_list_v2")
+    with pytest.raises(PluginConflictError, match="saved dry_run mode"):
+        mapping.copy_config({"dry_run": value})
+
+
+def test_config_copy_preserves_unknown_fields_and_scan_always_requires_new_preview():
+    mapping = reviewed_migration_binding_mapping(source_automation_id="scan_codes",
+        source_plugin_id="sync_scan_codes", target_plugin_id="sync_scan_codes_v2")
+    for mode in (True, False):
+        source = {"dry_run": mode, "batch_size": 20, "unreviewed_field": [1]}
+        copied = mapping.copy_config(source)
+        assert copied == {"batch_size": 20, "unreviewed_field": [1]}
+        copied["unreviewed_field"].append(2)
+        assert source["unreviewed_field"] == [1]
