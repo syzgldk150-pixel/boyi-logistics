@@ -834,6 +834,8 @@ class MySQLAutomationPluginRuntimeAdapter:
                 automation_id,
                 generation,
             )
+            if not rows:
+                return ()
             snapshot_row = uow.automation_plugins.get_generation_row(
                 automation_id,
                 generation,

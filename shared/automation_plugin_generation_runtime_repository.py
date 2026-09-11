@@ -361,19 +361,36 @@ def list_generation_rows(
     with repository.cursor() as cursor:
         cursor.execute(
             """
-            SELECT generation FROM automation_project_generations
+            SELECT * FROM automation_project_generations
             WHERE automation_id=%s
             ORDER BY generation
             """,
             (safe_automation_id,),
         )
-        generations = [int(row["generation"]) for row in _rows(cursor)]
-    result: list[dict[str, Any]] = []
-    for generation in generations:
-        row = get_generation_row(repository, safe_automation_id, generation)
-        if row is None:
-            raise ConcurrentUpdateError(
-                "runtime generation changed during reconciliation listing"
+        result = [
+            _validated_generation_row(_decode_row(row, repository._GENERATION_JSON_FIELDS))
+            for row in _rows(cursor)
+        ]
+        by_generation = {int(row["generation"]): row for row in result}
+        if len(by_generation) != len(result):
+            raise OrchestrationPersistenceError("runtime generation identities are duplicated")
+        for row in result:
+            row["coeffects"] = []
+            row["effects"] = []
+        # Read all journals in the same transaction. Startup used to issue
+        # three additional queries for every historical generation on every
+        # reconciliation pass, even when every generation was unchanged.
+        for table, field, order, json_fields in (
+            ("automation_project_generation_coeffects", "coeffects", "coeffect_kind, coeffect_key", repository._COEFFECT_JSON_FIELDS),
+            ("automation_project_generation_effects", "effects", "effect_sequence, effect_id", repository._EFFECT_JSON_FIELDS),
+        ):
+            cursor.execute(
+                f"SELECT * FROM {table} WHERE automation_id=%s ORDER BY generation, {order}",
+                (safe_automation_id,),
             )
-        result.append(row)
-    return result
+            for child in _rows(cursor):
+                parent = by_generation.get(int(child["generation"]))
+                if parent is None:
+                    raise ConcurrentUpdateError("runtime generation changed during reconciliation listing")
+                parent[field].append(_decode_row(child, json_fields) or {})
+        return result

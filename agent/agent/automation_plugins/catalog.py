@@ -1624,6 +1624,11 @@ class PluginCatalog:
     def production_health(self, automation_ids: Sequence[str]) -> dict[str, Any]:
         """Return a credential-free release projection and reject dev trust."""
 
+        with self.read_scope():
+            return self._production_health(automation_ids)
+
+    def _production_health(self, automation_ids: Sequence[str]) -> dict[str, Any]:
+
         entries, _, unavailable_projects = self._entries_with_failures()
         expected = {str(item or "").strip() for item in automation_ids if str(item or "").strip()}
         installed = {
