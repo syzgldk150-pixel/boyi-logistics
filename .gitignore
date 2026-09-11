@@ -89,6 +89,8 @@ data/
 *.bmp
 
 # Archives and generated packages
+# Short Unix-socket paths used by isolated plugin integration tests.
+.t/
 *.zip
 *.7z
 *.rar

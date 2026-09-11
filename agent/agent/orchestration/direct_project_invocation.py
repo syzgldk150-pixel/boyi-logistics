@@ -14,6 +14,7 @@ from agent.orchestration.selection_preview_binding import is_selection_preview_p
 from agent.tool_registry import validate_schema_instance
 from shared.automation_project_authorization import AutomationEntrypoint, AutomationProjectInvocation, OMIT_DYNAMIC_ARGUMENT
 from shared.automation_project_authorization import canonical_sha256
+from agent.identity_access import require_project_access
 
 
 def invoke_direct(service, automation_id: str, *, entrypoint, request_id, actor, trusted_context=None, idempotency_key=None, expected_automation_generation=None, expected_project_configuration_version=None, preview_invocation_id=None, selected_bill_codes=None, contribution_id=None, require_full_auto=False, **unsupported) -> dict[str, Any]:
@@ -27,6 +28,7 @@ def invoke_direct(service, automation_id: str, *, entrypoint, request_id, actor,
         validate_service_v2_event_context(context, request_id=request_id)
     direct = getattr(service, "direct_invocations", None)
     safe_id, request_id = _automation_id(automation_id), _request_id(request_id)
+    require_project_access(service, actor, safe_id, entrypoint=source.value)
     from agent.automation_plugins.direct_invocation import public_invocation
     replay = direct.repository.by_request(canonical_sha256([source.value, actor.actor_id, f"automation.{safe_id}.run", idempotency_key or request_id])) if direct is not None else None
     if replay is not None:
@@ -40,8 +42,6 @@ def invoke_direct(service, automation_id: str, *, entrypoint, request_id, actor,
         return public_invocation(replay)
     entry, contract = service._load_contract(safe_id)
     is_v2 = entry.runtime_model == "SERVICE_V2"
-    if is_v2 and source is AutomationEntrypoint.WEBHOOK and "dynamic_inputs" in context:
-        raise OrchestrationError("TRUSTED_CONTEXT_INVALID", "服务 Webhook 不接受动态参数覆盖")
     if not is_v2 and source in {AutomationEntrypoint.HARNESS, AutomationEntrypoint.MODULE_SLOTS, AutomationEntrypoint.EVENTS}:
         raise OrchestrationError("PROJECT_ENTRYPOINT_DISABLED", "该调用入口需要已登记的服务贡献")
     if expected_automation_generation is not None and contract.automation_generation != expected_automation_generation:
@@ -52,6 +52,10 @@ def invoke_direct(service, automation_id: str, *, entrypoint, request_id, actor,
     target = contract.invocation_contracts.get(contribution)
     if target is None or target.entrypoint != source.value:
         raise OrchestrationError("PROJECT_ENTRYPOINT_DISABLED", "该插件未开放此调用入口")
+    if is_v2 and source is AutomationEntrypoint.WEBHOOK:
+        dynamic = context.get("dynamic_inputs", {})
+        if set(dynamic) - set(target.dynamic_argument_resolvers):
+            raise OrchestrationError("TRUSTED_CONTEXT_INVALID", "回调参数未在当前插件入口声明")
     if is_v2:
         require_active_service_v2_dispatch(service._contribution_registry, source=source, entry=entry, automation_id=safe_id, generation=contract.automation_generation, invocation_contract=target, context=context, expected_event_name=context.get("event_name"))
     elif source in {AutomationEntrypoint.HARNESS, AutomationEntrypoint.MODULE_SLOTS, AutomationEntrypoint.EVENTS}:
@@ -78,6 +82,8 @@ def invoke_direct(service, automation_id: str, *, entrypoint, request_id, actor,
         if value is not OMIT_DYNAMIC_ARGUMENT:
             arguments[field] = value
     scan, selection = is_scan_preview_project(entry), is_selection_preview_project(entry)
+    if scan:
+        selection = False
     if is_v2 and selection:
         selection_declaration = selection_preview_contribution(entry, source.value)
         selection = selection_declaration is not None and selection_declaration["id"] == target.contribution_id
@@ -97,7 +103,7 @@ def invoke_direct(service, automation_id: str, *, entrypoint, request_id, actor,
         arguments.update(dry_run=True, selected_bill_codes=[], preview_fingerprint="")
     capability = project_capability_from_snapshot(entry.committed_snapshot)
     if is_v2:
-        capability = PluginExecutionRouter._service_contribution_capability(capability, contribution_id=target.contribution_id)
+        capability = PluginExecutionRouter._service_contribution_capability(capability, contribution_id=target.contribution_id, arguments=arguments)
     from agent.automation_plugins.code_owned_fields import apply_scan_execution_boundary, apply_selection_execution_boundary
     capability = apply_selection_execution_boundary(apply_scan_execution_boundary(capability, arguments), arguments)
     schema_arguments = {key: value for key, value in arguments.items() if key != "_scan_preview_binding"}
@@ -128,6 +134,16 @@ def invoke_direct(service, automation_id: str, *, entrypoint, request_id, actor,
     invocation = AutomationProjectInvocation(automation_id=safe_id, automation_generation=contract.automation_generation, entrypoint=source, contract_id=target.contract_id, contract_hash=contract.contract_hash, policy_version=int(policy["version"]), project_configuration_version=contract.project_configuration_version, request_id=request_id)
     def admission_guard(uow):
         service._require_release_active()
+        # Pair -> project is the same lock order as cutover. Validation calls
+        # are explicit Console administrator actions, never automatic ingress.
+        from shared.orchestration_repository_support import ConcurrentUpdateError
+        try:
+            uow.automation_plugins.require_migration_direct_entrypoint(
+                safe_id, source=source.value, super_admin="super_admin" in actor.roles)
+        except ConcurrentUpdateError as exc:
+            raise OrchestrationError("PLUGIN_MIGRATION_ENTRYPOINT_DISABLED",
+                "插件正在验证或已切换，该入口当前不可执行") from exc
+        require_project_access(service, actor, safe_id, entrypoint=source.value)
         current, _ = service._lock_and_compile_contract(uow, entry, expected=contract, require_enabled=True)
         current_policy = uow.automation_projects.get_policy(safe_id, for_update=True)
         if not current_policy or current_policy["version"] != policy["version"] or current_policy["mode"] != mode:

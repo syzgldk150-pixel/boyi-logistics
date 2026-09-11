@@ -2,9 +2,9 @@
   "schema_version": 2,
   "runtime_model": "service_v2",
   "plugin_id": "self_pickup_problem_upload_v2",
-  "name": "自提问题件 v2",
-  "version": "1.1.0",
-  "description": "通过受管 Connector 预览并按已确认运单逐票登记自提问题件的离线候选 Service v2 包。",
+  "name": "自提到货问题件",
+  "version": "2.0.0",
+  "description": "读取来源表并生成候选；确认后按所选运单登记问题件并核验结果。",
   "host_api": {
     "minimum": "2.0.0",
     "maximum_exclusive": "3.0.0"
@@ -25,8 +25,14 @@
     {
       "service": "plugin.self_pickup_problem_upload_v2.self_pickup_problem_upload@1",
       "operations": [
-        {"name": "preview", "effect": "read"},
-        {"name": "execute", "effect": "external_write"}
+        {
+          "name": "preview",
+          "effect": "read"
+        },
+        {
+          "name": "execute",
+          "effect": "external_write"
+        }
       ]
     }
   ],
@@ -39,18 +45,23 @@
     {
       "service": "connector.boyi.self_pickup_primary_ronghui@1",
       "binding_kind": "account",
-      "account_role": "account_id"
+      "account_role": "self_pickup_primary"
     },
     {
       "service": "connector.boyi.self_pickup_daxiang_s_ronghui@1",
       "binding_kind": "account",
-      "account_role": "daxiang_s_account_id"
+      "account_role": "self_pickup_daxiang_s"
     }
   ],
   "capabilities": [
     {
       "name": "service.invoke",
-      "operations": ["read_rows", "query", "create", "verify"],
+      "operations": [
+        "read_rows",
+        "query",
+        "create",
+        "verify"
+      ],
       "account_role": null,
       "resource_role": null,
       "action_call_limits": {
@@ -63,20 +74,26 @@
   ],
   "account_roles": [
     {
-      "role": "account_id",
-      "allowed_systems": ["ronghui"],
+      "role": "self_pickup_primary",
+      "allowed_systems": [
+        "ronghui"
+      ],
       "required": true
     },
     {
-      "role": "daxiang_s_account_id",
-      "allowed_systems": ["ronghui"],
+      "role": "self_pickup_daxiang_s",
+      "allowed_systems": [
+        "ronghui"
+      ],
       "required": true
     }
   ],
   "resource_roles": [
     {
       "role": "self_pickup_source_sheet",
-      "allowed_kinds": ["feishu_sheet"],
+      "allowed_kinds": [
+        "feishu_sheet"
+      ],
       "required": true
     }
   ],
@@ -88,7 +105,7 @@
         "service": "plugin.self_pickup_problem_upload_v2.self_pickup_problem_upload@1",
         "operation": "execute",
         "selection_preview_operation": "preview",
-        "default_enabled": false
+        "default_enabled": true
       }
     ],
     "scheduler": [],
@@ -98,20 +115,29 @@
         "id": "execute_feishu",
         "service": "plugin.self_pickup_problem_upload_v2.self_pickup_problem_upload@1",
         "operation": "execute",
-        "commands": ["自提到货问题件"],
+        "commands": [
+          "自提到货问题件"
+        ],
         "selection_preview_operation": "preview",
         "default_enabled": false
       }
     ],
-    "events": []
-    ,
+    "events": [],
     "harness": [
       {
         "id": "assistant_preview",
         "title": "查询自提到货问题件候选",
         "description": "读取当前实例绑定的每日到货表，查询自提到货问题件候选；只读预览，不登记问题件。",
-        "scenarios": ["自提到货问题件有哪些", "检查当前自提货物候选"],
-        "input_schema": {"type": "object", "additionalProperties": false, "properties": {}, "required": []},
+        "scenarios": [
+          "自提到货问题件有哪些",
+          "检查当前自提货物候选"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {},
+          "required": []
+        },
         "service": "plugin.self_pickup_problem_upload_v2.self_pickup_problem_upload@1",
         "operation": "preview",
         "effect": "read",
@@ -124,8 +150,14 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "include_daxiang_s_self_pickup": {"type": "boolean"},
-      "limit": {"type": "integer", "minimum": 0, "maximum": 2000}
+      "include_daxiang_s_self_pickup": {
+        "type": "boolean"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 2000
+      }
     },
     "required": []
   },

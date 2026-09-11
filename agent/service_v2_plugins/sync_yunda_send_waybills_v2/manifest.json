@@ -1,0 +1,192 @@
+{
+  "schema_version": 2,
+  "runtime_model": "service_v2",
+  "plugin_id": "sync_yunda_send_waybills_v2",
+  "name": "韵达寄件运单同步",
+  "version": "2.0.0",
+  "description": "韵达寄件运单同步：插件独立完成分页、字段适配、核对与输出，宿主只提供平台和存储接口。",
+  "host_api": {
+    "minimum": "2.0.0",
+    "maximum_exclusive": "3.0.0"
+  },
+  "runtime": {
+    "kind": "python_subprocess",
+    "python": "3.10",
+    "mode": "on_demand",
+    "entrypoint": "payload/main.py",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "settings_ui": {
+    "entry": "settings/index.html",
+    "bridge_api": "1.0.0"
+  },
+  "provides": [
+    {
+      "service": "plugin.sync_yunda_send_waybills_v2.yunda_send@1",
+      "operations": [
+        {
+          "name": "preview",
+          "effect": "read"
+        },
+        {
+          "name": "run",
+          "effect": "external_write"
+        }
+      ]
+    }
+  ],
+  "requires": [
+    {
+      "service": "connector.boyi.yunda_send_source@1",
+      "binding_kind": "account",
+      "account_role": "yunda_send_source"
+    },
+    {
+      "service": "connector.boyi.send_waybills_bitable@1",
+      "binding_kind": "resource",
+      "resource_role": "send_waybills_bitable"
+    },
+    {
+      "service": "connector.boyi.send_waybills_sheet@1",
+      "binding_kind": "resource",
+      "resource_role": "send_waybills_sheet"
+    },
+    {
+      "service": "connector.boyi.yunda_send_projection@1",
+      "binding_kind": "host_internal"
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "service.invoke",
+      "operations": [
+        "commit",
+        "original_data",
+        "renderer_detail",
+        "replace_date",
+        "send_page",
+        "special_line_page",
+        "tracking_detail"
+      ],
+      "account_role": null,
+      "resource_role": null
+    }
+  ],
+  "account_roles": [
+    {
+      "role": "yunda_send_source",
+      "allowed_systems": [
+        "yunda"
+      ],
+      "required": true
+    }
+  ],
+  "resource_roles": [
+    {
+      "role": "send_waybills_bitable",
+      "allowed_kinds": [
+        "feishu_bitable"
+      ],
+      "required": true
+    },
+    {
+      "role": "send_waybills_sheet",
+      "allowed_kinds": [
+        "feishu_sheet"
+      ],
+      "required": true
+    }
+  ],
+  "contributes": {
+    "console": [
+      {
+        "id": "manual_run",
+        "title": "韵达寄件运单同步",
+        "service": "plugin.sync_yunda_send_waybills_v2.yunda_send@1",
+        "operation": "run",
+        "default_enabled": true
+      }
+    ],
+    "scheduler": [
+      {
+        "id": "daily_run",
+        "title": "韵达寄件运单同步",
+        "service": "plugin.sync_yunda_send_waybills_v2.yunda_send@1",
+        "operation": "run",
+        "default_enabled": false
+      }
+    ],
+    "webhook": [],
+    "feishu": [{"id": "command", "service": "plugin.sync_yunda_send_waybills_v2.yunda_send@1", "operation": "run", "commands": ["韵达寄件运单同步"], "default_enabled": false}],
+    "events": [],
+    "harness": [
+      {
+        "id": "assistant_preview",
+        "title": "预览韵达寄件运单同步",
+        "description": "只读检查韵达寄件运单同步",
+        "scenarios": [
+          "预览韵达寄件运单同步"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {},
+          "required": []
+        },
+        "service": "plugin.sync_yunda_send_waybills_v2.yunda_send@1",
+        "operation": "preview",
+        "effect": "read",
+        "confirmation_policy": "none",
+        "preview_operation": null
+      }
+    ]
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "target_date": {
+        "type": "string",
+        "description": "可选，单个寄件日期，格式 YYYY-MM-DD；默认当天。传 start_date/end_date 时忽略"
+      },
+      "start_date": {
+        "type": "string",
+        "description": "可选，范围拉取起始寄件日期，格式 YYYY-MM-DD；需与 end_date 配合或单独表示只拉这一天"
+      },
+      "end_date": {
+        "type": "string",
+        "description": "可选，范围拉取结束寄件日期，格式 YYYY-MM-DD；与 start_date 组成闭区间"
+      },
+      "sync_sheet": {
+        "type": "boolean",
+        "description": "是否同步普通飞书电子表格副本，默认 true"
+      },
+      "ensure_fields": {
+        "type": "boolean",
+        "description": "是否校验并创建缺失字段，默认 true"
+      },
+      "page_size": {
+        "type": "integer",
+        "description": "韵达列表接口每页条数，默认 200"
+      },
+      "max_pages": {
+        "type": "integer",
+        "description": "最多拉取页数，默认 50"
+      },
+      "sql_only": {
+        "type": "boolean",
+        "description": "仅同步控制台 waybills SQL 表，不写入或删除飞书多维表或电子表格"
+      },
+      "sync_sql": {
+        "type": "boolean",
+        "description": "是否同步控制台 waybills SQL 表，默认 true"
+      }
+    },
+    "required": []
+  },
+  "storage": {
+    "kv": false,
+    "collections": []
+  }
+}

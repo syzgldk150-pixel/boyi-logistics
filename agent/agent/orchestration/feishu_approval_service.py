@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping
 from agent.feishu_command_contract import match_feishu_approval_binding
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from agent.orchestration.outbox_dispatcher import OutboxRetryAfter
+from shared.feishu_approval_repository import BindingChallengeExpired, BindingConflict
 
 
 _CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -25,10 +26,12 @@ class FeishuApprovalService:
         *,
         send_text: Callable[[str, str, str], bool],
         notification_lease_seconds: int = DEFAULT_NOTIFICATION_LEASE_SECONDS,
+        identity_access=None,
     ) -> None:
         self._repository = repository
         self._approvals = approval_service
         self._send_text = send_text
+        self.identity_access = identity_access
         if (
             isinstance(notification_lease_seconds, bool)
             or not isinstance(notification_lease_seconds, int)
@@ -41,7 +44,17 @@ class FeishuApprovalService:
     def _digest(code: str) -> str:
         return hashlib.sha256(code.encode("ascii")).hexdigest()
 
-    def create_binding_challenge(self, admin_user_id: int) -> dict[str, Any]:
+    def create_binding_challenge(self, admin_user_id: int, *, role_id=None, account_id=None, label="") -> dict[str, Any]:
+        if not isinstance(label, str) or len(label.strip()) > 80:
+            raise OrchestrationError("INVALID_INPUT", "飞书账号备注需为不超过 80 个字符的文本")
+        if role_id is not None and (not isinstance(role_id, str) or not role_id.strip()):
+            raise OrchestrationError("INVALID_INPUT", "身份编号格式无效")
+        if account_id is not None and (type(account_id) is not int or account_id <= 0):
+            raise OrchestrationError("INVALID_INPUT", "后台账号编号格式无效")
+        if role_id and account_id:
+            raise OrchestrationError("INVALID_INPUT", "请选择身份或后台账号，不能同时选择")
+        if not role_id and not account_id:
+            account_id = admin_user_id  # The existing self-binding endpoint's explicit contract.
         code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(10))
         expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=10)
         challenge_id = str(uuid.uuid4())
@@ -56,14 +69,18 @@ class FeishuApprovalService:
                     "FEISHU_BINDING_FORBIDDEN",
                     "Only an active Console super administrator can create a binding code",
                 )
-            uow.feishu_approvals.create_challenge(
-                {
+            try:
+                uow.feishu_approvals.create_challenge({
                     "challenge_id": challenge_id,
                     "admin_user_id": int(admin_user_id),
                     "code_sha256": self._digest(code),
                     "expires_at": expires_at,
-                }
-            )
+                    "access_role_id": role_id,
+                    "identity_account_id": account_id,
+                    "identity_label": str(label).strip(),
+                })
+            except ValueError as exc:
+                raise OrchestrationError("INVALID_INPUT", "所选身份或后台账号不存在或已停用") from exc
             uow.commit()
         return {
             "challenge_id": challenge_id,
@@ -98,6 +115,12 @@ class FeishuApprovalService:
             uow.commit()
 
     def resolve_actor(self, open_id: str) -> Actor:
+        if self.identity_access is not None:
+            access = self.identity_access.feishu(open_id)
+            return Actor(ActorType.FEISHU_USER, str(open_id),
+                         roles=("admin", "super_admin") if access.active and access.super_admin else ("admin",) if access.active else (),
+                         display_name=access.role_name if access.active else "",
+                         authenticated_by="feishu_admin_binding" if access.active else "feishu_verified_event")
         with self._repository.unit_of_work() as uow:
             binding = uow.feishu_approvals.resolve_binding(open_id)
         if (
@@ -209,7 +232,7 @@ class FeishuApprovalService:
         try:
             with self._repository.unit_of_work() as uow:
                 failure = uow.feishu_approvals.failure_state(open_id, for_update=True)
-                if failure and isinstance(failure.get("locked_until"), datetime) and failure["locked_until"] > now:
+                if failure and failure.get("is_locked"):
                     uow.commit()
                     return "绑定尝试过多，请稍后再试。"
                 challenge = uow.feishu_approvals.get_challenge_by_digest(
@@ -236,9 +259,13 @@ class FeishuApprovalService:
                     chat_id=chat_id,
                 )
                 uow.commit()
+        except BindingConflict:
+            return "该飞书账号已有绑定，请先在后台系统管理中查看或解绑。"
+        except BindingChallengeExpired:
+            return "绑定码无效、已过期或已使用。"
         except ValueError:
-            return "该飞书身份已绑定其他后台管理员，请先由原账号解绑。"
-        return "审批身份绑定成功；账号权限变更或解绑会立即生效。"
+            return "所选身份或账号已失效，请在后台重新生成绑定码。"
+        return "飞书身份绑定成功；身份权限变更或解绑会立即生效。"
 
     def handle_outbox(
         self,

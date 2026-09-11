@@ -386,6 +386,7 @@ class PluginExecutionRouter:
         capability: Mapping[str, Any],
         *,
         contribution_id: str,
+        arguments: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Resolve one direct Service v2 contribution from committed material."""
 
@@ -430,6 +431,22 @@ class PluginExecutionRouter:
                 "service-v2 contribution target is invalid",
                 code="PLUGIN_GENERATION_METADATA_INVALID",
             )
+        if arguments is not None:
+            try:
+                selected = resolve_service_v2_selection_target(
+                    metadata,
+                    contribution_id=contribution_id,
+                    contribution_kind=str(target["contribution_kind"]),
+                    arguments=arguments,
+                )
+            except ValueError as exc:
+                raise PluginExecutionError(
+                    "service-v2 preview or execution arguments are invalid",
+                    code="PLUGIN_GENERATION_METADATA_INVALID",
+                ) from exc
+            if selected is not None:
+                target, governance, _phase = selected
+                exact_governance = cls._validated_service_governance(governance)
         try:
             effect = CapabilityEffect(str(exact_governance["effect"]))
         except ValueError as exc:
@@ -1116,6 +1133,7 @@ class PluginExecutionRouter:
                     resolved = self._service_contribution_capability(
                         resolved,
                         contribution_id=str(run_binding["contribution_id"]),
+                        arguments=params,
                     )
             try:
                 initial_scan_phase = resolve_scan_capability_phase(capability, params)

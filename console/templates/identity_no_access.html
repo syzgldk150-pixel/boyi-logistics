@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}账号权限 - {{ app_title }}{% endblock %}
+{% block breadcrumb %}账号权限{% endblock %}
+{% block subtitle %}当前账号尚未获得功能权限{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>请联系超级管理员分配身份</h2>
+  <p>账号已登录。获得身份权限后，刷新页面即可使用相应功能。</p>
+  <form action="/logout" method="post"><button class="ghost-btn" type="submit">退出登录</button></form>
+</section>
+{% endblock %}

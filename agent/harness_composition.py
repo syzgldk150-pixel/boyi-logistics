@@ -9,6 +9,17 @@ from agent.harness_read_gateways import ReadOnlyHarnessGateway
 from agent.tms_runtime.direct_execution import call_blocking
 from shared.runtime_repositories import WaybillRepository
 from tools.track_waybill_tool import run_track_waybill
+from agent.chat_text_queries import ChatTextQueries
+from agent.orchestration.models import ActorType
+
+
+def build_chat_text_queries(runtime):
+    loop = asyncio.get_running_loop()
+    def reader(actor, name, params, request_id):
+        source = "feishu" if actor.actor_type is ActorType.FEISHU_USER else "console"
+        return asyncio.run_coroutine_threadsafe(runtime.execute_tool(
+            name, params, actor=actor, source=source, idempotency_key=f"chat:{request_id}:{name}"), loop).result()
+    return ChatTextQueries(reader)
 
 
 def build_read_only_harness_gateway(runtime: object, repository: object, *, finance_summary=None, invocations=None) -> ReadOnlyHarnessGateway:

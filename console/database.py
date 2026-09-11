@@ -10,6 +10,7 @@ from console.config import Settings
 from shared.redaction import redact_sensitive, redact_text
 from shared.runtime_repositories import ScheduledTaskRepository, WorkflowResourceRepository
 from shared.runtime_repositories import WaybillRepository
+from shared.identity_repository import IdentityRepository
 
 import re
 
@@ -299,6 +300,7 @@ class DocumentRepository:
         self._scheduled_tasks = ScheduledTaskRepository(self.connect)
         self._workflow_resources = WorkflowResourceRepository(self.connect)
         self._waybills = WaybillRepository(self.connect)
+        self.identities = IdentityRepository(self.connect)
 
     @contextmanager
     def connect(self) -> Iterator[Any]:
@@ -339,6 +341,8 @@ class DocumentRepository:
             "receipt_audit_logs",
             "admin_users",
             "admin_sessions",
+            "access_roles",
+            "feishu_admin_bindings",
             "line_haul_contacts",
         }
         with self.connect() as connection:
@@ -365,7 +369,7 @@ class DocumentRepository:
             )
             admin_user_columns = {str(row.get("COLUMN_NAME") or "") for row in cursor.fetchall() or []}
         missing_admin_columns = sorted(
-            {"ui_preferences_json", "role", "control_plane_role"} - admin_user_columns
+            {"ui_preferences_json", "role", "control_plane_role", "access_role_id"} - admin_user_columns
         )
         if missing_admin_columns:
             raise RuntimeError(
@@ -387,7 +391,7 @@ class DocumentRepository:
             cursor.execute(
                 """
                 SELECT id, username, display_name, avatar_path, ui_preferences_json,
-                       role, control_plane_role, is_active, last_login_at, created_at, updated_at
+                       role, control_plane_role, access_role_id, is_active, last_login_at, created_at, updated_at
                 FROM admin_users
                 ORDER BY id ASC
                 """
@@ -432,17 +436,20 @@ class DocumentRepository:
         password_hash: str,
         is_active: bool = True,
         role: str = "admin",
+        access_role_id: str | None = None,
     ) -> int:
         now = _now_iso()
         with self.connect() as connection:
             cursor = connection.cursor()
+            if access_role_id:
+                IdentityRepository.check_target(cursor, role_id=access_role_id)
             cursor.execute(
                 """
                 INSERT INTO admin_users (
                     username, display_name, password_hash, role, control_plane_role,
-                    is_active, created_at, updated_at
+                    is_active, created_at, updated_at, access_role_id
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 """,
                 (
@@ -454,6 +461,7 @@ class DocumentRepository:
                     1 if is_active else 0,
                     now,
                     now,
+                    access_role_id,
                 ),
             )
             return int(cursor.lastrowid)
@@ -600,9 +608,14 @@ class DocumentRepository:
                     u.ui_preferences_json,
                     u.role,
                     u.control_plane_role,
-                    u.is_active
+                    u.is_active,
+                    u.access_role_id,
+                    r.name AS role_name,
+                    r.permissions_json,
+                    r.is_active AS role_active
                 FROM admin_sessions s
                 JOIN admin_users u ON u.id = s.user_id
+                LEFT JOIN access_roles r ON r.role_id = u.access_role_id
                 WHERE s.session_id = %s
                 """,
                 (str(session_id or ""),),

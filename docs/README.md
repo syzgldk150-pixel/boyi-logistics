@@ -65,3 +65,5 @@ updated: 2026-09-10
 - `status: snapshot`：外部页面或系统在某次抓取时的证据，必须结合 `captured_at` 与 `verified_at` 判断时效。
 
 提交前运行 `python3 agent/scripts/check_documentation.py`，校验本地链接、生命周期元数据和三组指令镜像。
+
+- [身份权限、统一对话与迁移边界](identity_and_unified_chat.md)：身份设置、账号/飞书绑定继承、共用 AI 服务和统计 V2 连接器。

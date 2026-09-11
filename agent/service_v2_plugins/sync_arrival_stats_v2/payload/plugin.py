@@ -20,6 +20,7 @@ CONTRIBUTION_TARGETS = {
     "scheduler": ("daily_arrival_stats", "scheduler"),
     "feishu": ("arrival_stats_command", "feishu"),
     "harness": ("assistant_preview", "harness"),
+    "webhook": ("webhook", "webhook"),
     "service": ("host.service.invoke", "service"),
 }
 

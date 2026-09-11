@@ -1,5 +1,8 @@
 # console
 
+## 当前身份与统一对话边界
+
+后台身份管理：`services/identities.py`、`templates/identity_management.html` 与 `static/identity-settings.css` 管理身份、账号分配及所有飞书绑定。身份定义只由 `shared/identity_permissions.py` 管理，菜单和路由根据实时会话身份检查；`permission_registry.py` 只保留菜单注册元数据，不是用户权限的权威。超级管理员账号不可改为自定义身份。 细节见[维护说明](../docs/identity_and_unified_chat.md)。
 
 本轮 V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v32.md) 为权威索引：自动化只列功能插件；财务/客服采集在所属模块；AI contribution 可选；账号引用及平铺常用参数使用宿主简单设置；历史包回退须有本实例已提交版本证据。局部入口见 `agent/scripts/plugin_maintenance.py`（仓库根相对路径），整轮入口为 `agent/scripts/accept_low_maintenance_v32.py`。
 

@@ -601,10 +601,11 @@ def _validate_account_roles(value: Any) -> tuple[list[dict[str, Any]], set[str]]
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
     for index, raw_item in enumerate(raw_items):
+        fields = _ACCOUNT_ROLE_FIELDS | ({"collection"} if isinstance(raw_item, Mapping) and "collection" in raw_item else set())
         item = _mapping(
             raw_item,
             f"account_roles[{index}]",
-            _ACCOUNT_ROLE_FIELDS,
+            fields,
         )
         role = _role(item["role"], f"account_roles[{index}].role")
         if role in seen:
@@ -624,6 +625,7 @@ def _validate_account_roles(value: Any) -> tuple[list[dict[str, Any]], set[str]]
                     item["required"],
                     f"account_roles[{index}].required",
                 ),
+                **({"collection": _boolean(item["collection"], f"account_roles[{index}].collection")} if "collection" in item else {}),
             }
         )
     return result, seen
@@ -920,7 +922,11 @@ def _validate_contributes(
 
     for index, raw_item in enumerate(_array(raw["webhook"], "contributes.webhook")):
         path = f"contributes.webhook[{index}]"
-        item = _mapping(raw_item, path, _WEBHOOK_FIELDS)
+        item = _mapping(raw_item, path)
+        if set(item) - (_WEBHOOK_FIELDS | {"dynamic_fields", "selection_preview_operation"}):
+            raise PluginManifestError(f"{path} has unsupported fields")
+        if _WEBHOOK_FIELDS - set(item):
+            raise PluginManifestError(f"{path} has missing fields")
         service, operation = _contribution_target(
             item,
             path=path,
@@ -931,8 +937,7 @@ def _validate_contributes(
         route = _text(item["route"], f"{path}.route", maximum=64)
         if not _ROUTE_RE.fullmatch(route):
             raise PluginManifestError(f"{path}.route must be a stable route segment")
-        result["webhook"].append(
-            {
+        normalized_webhook = {
                 "id": _contribution_id(item["id"], f"{path}.id", seen=seen_ids),
                 "service": service,
                 "operation": operation,
@@ -943,7 +948,19 @@ def _validate_contributes(
                     f"{path}.default_enabled",
                 ),
             }
+        if "dynamic_fields" in item:
+            fields = _string_array(item["dynamic_fields"], f"{path}.dynamic_fields", non_empty=True)
+            if len(fields) > 16 or len(set(fields)) != len(fields):
+                raise PluginManifestError(f"{path}.dynamic_fields is invalid")
+            normalized_webhook["dynamic_fields"] = fields
+        preview_operation = _selection_preview_operation(
+            item, path=path, service=service, execute_operation=operation,
+            operations_by_service=operations_by_service,
+            provided_operation_effects=provided_operation_effects,
         )
+        if preview_operation is not None:
+            normalized_webhook["selection_preview_operation"] = preview_operation
+        result["webhook"].append(normalized_webhook)
 
     for index, raw_item in enumerate(_array(raw["feishu"], "contributes.feishu")):
         path = f"contributes.feishu[{index}]"
@@ -1114,7 +1131,7 @@ def _validate_contributes(
                 ),
             }
         )
-    for contribution_kind in ("console", "feishu"):
+    for contribution_kind in ("console", "feishu", "webhook"):
         selection_count = sum(
             "selection_preview_operation" in item
             for item in result[contribution_kind]
@@ -1129,7 +1146,7 @@ def _validate_contributes(
             str(item["operation"]),
             str(item["selection_preview_operation"]),
         )
-        for contribution_kind in ("console", "feishu")
+        for contribution_kind in ("console", "feishu", "webhook")
         for item in result[contribution_kind]
         if "selection_preview_operation" in item
     }

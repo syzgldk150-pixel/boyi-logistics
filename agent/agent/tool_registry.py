@@ -538,6 +538,11 @@ def _validate_instance(tool_name: str, value: Any, schema: dict[str, Any], path:
     if schema_type == "object":
         if not isinstance(value, Mapping):
             raise _input_error(tool_name, path, "must be an object")
+        if "maxProperties" in schema and len(value) > schema["maxProperties"]:
+            raise _input_error(tool_name, path, "contains too many properties")
+        if "propertyNames" in schema:
+            for name in value:
+                _validate_instance(tool_name, name, schema["propertyNames"], f"{path}.propertyName")
         properties = schema.get("properties", {})
         missing = [name for name in schema.get("required", []) if name not in value]
         if missing:
@@ -549,7 +554,7 @@ def _validate_instance(tool_name: str, value: Any, schema: dict[str, Any], path:
         for name, item in value.items():
             if name in properties:
                 _validate_instance(tool_name, item, properties[name], f"{path}.{name}")
-            elif isinstance(additional, dict):
+            elif isinstance(additional, Mapping):
                 _validate_instance(tool_name, item, additional, f"{path}.{name}")
         return
 

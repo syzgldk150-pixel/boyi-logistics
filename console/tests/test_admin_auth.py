@@ -115,6 +115,7 @@ class _AccountRepo:
     def __init__(self):
         self.created = []
         self.active_updates = []
+        self.identities = SimpleNamespace(list_roles=lambda: [{"role_id": "ordinary", "is_active": True}])
 
     def get_admin_user_by_username(self, username):
         return None
@@ -219,10 +220,12 @@ class AdminAuthTests(unittest.TestCase):
         app = self._build_app(repo)
         handler = _Handler(
             path="/settings/accounts/create",
+            headers={"Host": "localhost:8765", "Origin": "http://localhost:8765"},
             form={
                 "username": "ops-admin",
                 "display_name": "Ops Admin",
                 "password": "another-strong-password",
+                "access_role_id": "ordinary",
             },
         )
         app._set_current_admin_user(
@@ -234,6 +237,7 @@ class AdminAuthTests(unittest.TestCase):
 
         self.assertEqual(HTTPStatus.SEE_OTHER, handler.status)
         self.assertEqual("ops-admin", repo.created[0]["username"])
+        self.assertEqual("ordinary", repo.created[0]["access_role_id"])
         self.assertTrue(verify_admin_password("another-strong-password", repo.created[0]["password_hash"]))
         self.assertNotIn("another-strong-password", repo.created[0]["password_hash"])
 
@@ -242,6 +246,7 @@ class AdminAuthTests(unittest.TestCase):
         app = self._build_app(repo)
         handler = _Handler(
             path="/settings/accounts/7/toggle",
+            headers={"Host": "localhost:8765", "Origin": "http://localhost:8765"},
             form={"target_active": "0"},
         )
         app._set_current_admin_user(

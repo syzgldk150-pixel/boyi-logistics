@@ -30,7 +30,7 @@ class _EntrypointsFacade:
             )
         supplied = set(call["envelope"]["body"]) | set(call["envelope"]["query"])
         if (
-            call.get("preview_run_id") is not None
+            call.get("preview_invocation_id") is not None
             and call["route_key"] != "webhook/phase7/scan"
         ):
             raise OrchestrationError(
@@ -96,7 +96,7 @@ def test_delivery_scan_and_arrival_webhooks_use_only_typed_project_routes() -> N
     assert entrypoints.calls[1]["envelope"]["body"]["trigger_flow"] is False
     assert entrypoints.calls[2]["envelope"]["body"]["target_date"] == "2026-08-13"
     assert all(call["webhook_path"] == call["route_key"] for call in entrypoints.calls)
-    assert all(call["preview_run_id"] is None for call in entrypoints.calls)
+    assert all(call["preview_invocation_id"] is None for call in entrypoints.calls)
 
 
 def test_scan_webhook_extracts_reserved_preview_for_new_confirmation_event() -> None:
@@ -116,7 +116,7 @@ def test_scan_webhook_extracts_reserved_preview_for_new_confirmation_event() -> 
 
     assert response.status_code == 200
     assert entrypoints.calls[0]["source_event_id"] == "scan-confirm-2"
-    assert entrypoints.calls[0]["preview_run_id"] == preview_run_id
+    assert entrypoints.calls[0]["preview_invocation_id"] == preview_run_id
     assert entrypoints.calls[0]["envelope"]["body"] == {}
     assert entrypoints.calls[0]["envelope"]["query"] == {
         "source_event_id": "scan-confirm-2"

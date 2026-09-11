@@ -17,9 +17,12 @@ from agent.harness.errors import HarnessError
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from agent.orchestration.selection_preview_binding import is_selection_preview_project
 from agent.orchestration.scan_preview_binding import is_scan_preview_project
+from agent.orchestration.preview_entrypoints import service_preview_route
 from shared.automation_project_authorization import AutomationEntrypoint
 from shared.redaction import redact_text
 from shared.invocation_summary import invocation_count_summary
+from shared.identity_permissions import plugin_permission
+from agent.identity_access import require_project_access
 
 
 PLUGIN_CHAT_INSTRUCTIONS = """你可以按用户明确的执行意图调用当前已安装的插件。
@@ -57,7 +60,7 @@ class ConversationPluginTarget:
 def _channel(actor: Actor, source: str) -> AutomationEntrypoint:
     if source == "console" and actor.actor_type is ActorType.CONSOLE_ADMIN and actor.authenticated_by == "mysql_admin_session" and set(actor.roles).intersection({"admin", "super_admin"}):
         return AutomationEntrypoint.CONSOLE
-    if source == "feishu" and actor.actor_type is ActorType.FEISHU_USER and actor.authenticated_by == "feishu_admin_binding" and actor.roles == ("admin", "super_admin"):
+    if source == "feishu" and actor.actor_type is ActorType.FEISHU_USER and actor.authenticated_by == "feishu_admin_binding" and actor.roles in {("admin",), ("admin", "super_admin")}:
         return AutomationEntrypoint.FEISHU
     raise HarnessError("当前账号没有通过对话执行插件的权限", code="HARNESS_PLUGIN_FORBIDDEN")
 
@@ -71,8 +74,12 @@ class PluginConversationService:
 
     def targets(self, *, actor: Actor, source: str) -> tuple[ConversationPluginTarget, ...]:
         channel = _channel(actor, source)
+        authority = getattr(self.policy, "identity_access", None)
+        access = authority.for_actor(actor) if authority is not None else None
         choices = []
         for entry in self.policy._plugin_catalog.list(include_disabled=False):
+            if access is not None and not access.allows(plugin_permission(entry.plugin_id, management=entry.management)):
+                continue
             snapshot = entry.committed_snapshot
             if (not entry.enabled or not entry.configured or snapshot is None
                     or entry.target_generation != entry.committed_generation
@@ -107,7 +114,16 @@ class PluginConversationService:
                         declarations = [item for item in entry.contributions.get("feishu", ()) if item.get("id") == contribution]
                         if len(declarations) != 1:
                             raise HarnessError("插件飞书入口不明确", code="HARNESS_PLUGIN_UNAVAILABLE")
-                        command = declarations[0]["command"]
+                        commands = declarations[0].get("commands")
+                        if not isinstance(commands, list) or not commands or any(not isinstance(value, str) or not value.strip() for value in commands):
+                            raise HarnessError("插件飞书指令未配置", code="HARNESS_PLUGIN_UNAVAILABLE")
+                        # The first manifest alias is the declared canonical command.
+                        command = commands[0]
+                        if is_selection_preview_project(entry) or is_scan_preview_project(entry):
+                            route_key, preview_tool = service_preview_route(entry.plugin_id, commands)
+                            if route_key:
+                                command = ""
+                                selection_tool = preview_tool if is_selection_preview_project(entry) else ""
                     else:
                         if self.routes is None:
                             raise HarnessError("插件飞书入口不可用", code="HARNESS_PLUGIN_UNAVAILABLE")
@@ -115,7 +131,7 @@ class PluginConversationService:
                         if route is None or not route.enabled:
                             continue
                         route_key = route.route_key
-                    if is_selection_preview_project(entry):
+                    if not contribution and is_selection_preview_project(entry):
                         selection_tool = entry.plugin_id
                 if contribution:
                     declarations = [item for item in entry.contributions.get(channel.value, ()) if item.get("id") == contribution]
@@ -143,6 +159,7 @@ class PluginConversationService:
         row = direct.repository.get(invocation_id)
         if not row or row["actor_id"] != actor.actor_id or row["source"] != "console":
             raise HarnessError("无法读取这次执行", code="HARNESS_PLUGIN_FORBIDDEN")
+        require_project_access(self.policy, actor, row["automation_id"], entrypoint="console")
         if action == "cancel":
             asyncio.run(direct.cancel(invocation_id))
             row = direct.repository.get(invocation_id)

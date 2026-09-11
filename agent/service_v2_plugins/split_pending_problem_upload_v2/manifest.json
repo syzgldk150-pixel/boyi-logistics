@@ -2,9 +2,9 @@
   "schema_version": 2,
   "runtime_model": "service_v2",
   "plugin_id": "split_pending_problem_upload_v2",
-  "name": "分批问题件 v2",
-  "version": "1.1.0",
-  "description": "通过受管 Connector 预览并按已确认运单逐票登记分批及有发未到问题件的离线候选 Service v2 包。",
+  "name": "分批及有发未到问题件",
+  "version": "2.0.0",
+  "description": "读取来源表并生成候选；确认后登记分批问题件、保存清单并核验结果。",
   "host_api": {
     "minimum": "2.0.0",
     "maximum_exclusive": "3.0.0"
@@ -25,8 +25,14 @@
     {
       "service": "plugin.split_pending_problem_upload_v2.split_pending_problem_upload@1",
       "operations": [
-        {"name": "preview", "effect": "read"},
-        {"name": "execute", "effect": "external_write"}
+        {
+          "name": "preview",
+          "effect": "read"
+        },
+        {
+          "name": "execute",
+          "effect": "external_write"
+        }
       ]
     }
   ],
@@ -48,12 +54,12 @@
     {
       "service": "connector.boyi.split_pending_ronghui@1",
       "binding_kind": "account",
-      "account_role": "account_id"
+      "account_role": "split_pending_ronghui"
     },
     {
       "service": "connector.boyi.split_pending_problem_ledger@1",
       "binding_kind": "account",
-      "account_role": "account_id"
+      "account_role": "split_pending_ronghui"
     }
   ],
   "capabilities": [
@@ -87,20 +93,26 @@
   ],
   "account_roles": [
     {
-      "role": "account_id",
-      "allowed_systems": ["ronghui"],
+      "role": "split_pending_ronghui",
+      "allowed_systems": [
+        "ronghui"
+      ],
       "required": true
     }
   ],
   "resource_roles": [
     {
       "role": "split_pending_source_sheet",
-      "allowed_kinds": ["feishu_sheet"],
+      "allowed_kinds": [
+        "feishu_sheet"
+      ],
       "required": true
     },
     {
       "role": "split_pending_target_sheet",
-      "allowed_kinds": ["feishu_sheet"],
+      "allowed_kinds": [
+        "feishu_sheet"
+      ],
       "required": true
     }
   ],
@@ -112,7 +124,7 @@
         "service": "plugin.split_pending_problem_upload_v2.split_pending_problem_upload@1",
         "operation": "execute",
         "selection_preview_operation": "preview",
-        "default_enabled": false
+        "default_enabled": true
       }
     ],
     "scheduler": [],
@@ -122,7 +134,9 @@
         "id": "execute_feishu",
         "service": "plugin.split_pending_problem_upload_v2.split_pending_problem_upload@1",
         "operation": "execute",
-        "commands": ["分批"],
+        "commands": [
+          "分批"
+        ],
         "selection_preview_operation": "preview",
         "default_enabled": false
       }
@@ -133,8 +147,16 @@
         "id": "assistant_preview",
         "title": "查询分批及有发未到候选",
         "description": "读取当前实例绑定的来源表与快照，查询分批及有发未到问题件候选；只读预览，不登记问题件。",
-        "scenarios": ["分批未到有哪些候选", "查询有发未到问题件"],
-        "input_schema": {"type": "object", "additionalProperties": false, "properties": {}, "required": []},
+        "scenarios": [
+          "分批未到有哪些候选",
+          "查询有发未到问题件"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {},
+          "required": []
+        },
         "service": "plugin.split_pending_problem_upload_v2.split_pending_problem_upload@1",
         "operation": "preview",
         "effect": "read",

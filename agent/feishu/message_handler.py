@@ -264,6 +264,15 @@ async def _invoke_automation_project(
     service = _automation_entrypoints()
 
     async def submit(callback):
+        from feishu.migration_entrypoint_router import invoke_migrated_preview
+        migrated, result = await invoke_migrated_preview(
+            dispatcher=_SERVICE_V2_FEISHU_DISPATCHER, route_key=safe_route_key,
+            event_id=context.event_id, sender_id=context.actor_id, chat_id=context.chat_id,
+            dynamic_inputs=inputs, preview_invocation_id=preview_invocation_id,
+            on_accepted=callback, conversation_target=conversation_target,
+        )
+        if migrated:
+            return result
         return await service.invoke_feishu(
             route_key=safe_route_key, event_id=context.event_id,
             sender_id=context.actor_id, chat_id=context.chat_id,
@@ -307,7 +316,7 @@ async def _cancel_direct_plugin(text: str, *, chat_id: str, sender_id: str) -> b
         return True
     key, invocation_id = matches[0]
     result = await _automation_entrypoints().cancel_feishu_invocation(
-        invocation_id, event_id=context.event_id, sender_id=sender_id, chat_id=chat_id,
+        invocation_id=invocation_id, event_id=context.event_id, sender_id=sender_id, chat_id=chat_id,
     )
     if (result.get("status") in {"COMPLETED", "FAILED", "CANCELLED", "WRITE_OUTCOME_UNKNOWN"}
             and _ACTIVE_PLUGIN_INVOCATIONS.get(key) == invocation_id):
@@ -530,7 +539,7 @@ async def _invoke_selection_preview_and_reply(
         return result
     projection = _normalize_selection_preview_projection(
         result.get("selection_preview"),
-        expected_automation_id=expected_automation_id,
+        expected_automation_id=str(result.get("automation_id") or expected_automation_id),
         expected_invocation_id=run_id,
     )
     if projection is None:
@@ -1980,6 +1989,13 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
 
     if await _cancel_direct_plugin(text, chat_id=chat_id, sender_id=sender_id):
         return
+
+    identity_access = getattr(_FEISHU_APPROVAL_RUNTIME, "identity_access", None)
+    if identity_access is not None:
+        identity = await asyncio.to_thread(identity_access.feishu, str(sender_id or ""))
+        if not identity.active:
+            await _reply_text(chat_id, "当前飞书账号未绑定有效身份，请联系超级管理员在后台分配身份。")
+            return
     pending_key = chat_id
     pending = get_pending(pending_key)
     if sender_id:
@@ -2017,6 +2033,10 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         _pending_type(pending),
     )
     login_session = parse_login_send_code_session(text)
+    if identity_access is not None and (login_session or (pending or {}).get("type") in {"login_account_choice", "waiting_code_for_resume", "confirm_login_for_resume"}):
+        if not identity.allows("accounts.manage"):
+            await _reply_text(chat_id, "当前身份没有业务账号登录与维护权限。")
+            return
     if login_session:
         logger.info("feishu route | chat=%s | route=login_command | session=%s", chat_id, login_session)
         if (
@@ -2557,17 +2577,11 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 authenticated_by="feishu_event",
             )
         )
+        context = _COMMAND_CONTEXT.get()
         result = await agent.handle_message(
-            message=text,
-            user_id=sender_id,
-            conversation_id=f"feishu_{chat_id}",
-            actor=feishu_actor,
-            source="feishu",
-            request_id=(
-                _COMMAND_CONTEXT.get().event_id
-                if _COMMAND_CONTEXT.get() is not None
-                else _legacy_read_request_id("chat", {"message": text})
-            ),
+            message=text, user_id=sender_id, actor=feishu_actor,
+            conversation_id=chat_id, source="feishu",
+            request_id=context.event_id if context is not None else "",
         )
     except Exception as e:
         notice_task.cancel()

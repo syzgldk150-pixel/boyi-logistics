@@ -113,6 +113,7 @@ class CoreBrokerInvocationContext:
         repr=False,
         compare=False,
     )
+    account_collection_resolver: Callable[[str], tuple[str, ...]] | None = field(default=None, repr=False, compare=False)
     # Host-private ancestry for nested Service v2 calls.  It is carried only
     # inside the opaque Broker grant and is never exposed as a credential or
     # accepted from subprocess arguments.
@@ -128,6 +129,7 @@ class CoreBrokerInvocationContext:
     mark_write_started: Callable[[], None] | None = None
     generation: int = 0
     write_attempt_identity: Mapping[str, object] = field(default_factory=dict, repr=False)
+    on_completion: Callable[[Callable[[], None]], None] | None = field(default=None, repr=False, compare=False)
 
 
 CoreBrokerHandler = Callable[
@@ -396,6 +398,22 @@ class RegisteredCoreAutomationBrokerAdapter:
             )
         return normalized
 
+    def _resolve_account_role(self, grant: BrokerGrant, role: str, *, collection_only: bool = False) -> tuple[str, ...]:
+        declaration = self._role_declaration(grant.account_roles, role)
+        if declaration is None or (collection_only and declaration.get("collection") is not True):
+            raise PluginExecutionError("account collection is undeclared", code="BROKER_CONTRACT_INVALID")
+        if role not in grant.account_bindings:
+            raise PluginExecutionError("account role is unbound", code="BROKER_ROLE_UNBOUND")
+        ids = self._normalize_account_binding(grant.account_bindings[role])
+        systems = declaration.get("allowed_systems")
+        if not isinstance(systems, list) or len(ids) != len(set(ids)):
+            raise PluginExecutionError("account role contract is invalid", code="BROKER_CONTRACT_INVALID")
+        descriptors = [self._accounts.require_active_binding_descriptor(account_id=identifier, allowed_systems=systems)
+                       for identifier in ids]
+        if tuple(str(item["account_id"]) for item in descriptors) != ids:
+            raise PluginExecutionError("account resolver changed the exact binding", code="BROKER_ACCOUNT_MISMATCH")
+        return ids
+
     def _connector_binding_resolver(
         self,
         *,
@@ -610,29 +628,7 @@ class RegisteredCoreAutomationBrokerAdapter:
                         "account role is unbound",
                         code="BROKER_ROLE_UNBOUND",
                     )
-                normalized_ids = self._normalize_account_binding(
-                    grant.account_bindings[signed_role]
-                )
-                allowed_systems = account_role.get("allowed_systems")
-                if not isinstance(allowed_systems, list):
-                    raise PluginExecutionError(
-                        "account role contract is invalid",
-                        code="BROKER_CONTRACT_INVALID",
-                    )
-                descriptors = [
-                    self._accounts.require_active_binding_descriptor(
-                        account_id=account_id,
-                        allowed_systems=[str(item) for item in allowed_systems],
-                    )
-                    for account_id in normalized_ids
-                ]
-                resolved_ids = tuple(str(item["account_id"]) for item in descriptors)
-                if resolved_ids != normalized_ids:
-                    raise PluginExecutionError(
-                        "account resolver changed the exact binding",
-                        code="BROKER_ACCOUNT_MISMATCH",
-                    )
-                resolved_accounts[signed_role] = resolved_ids
+                resolved_accounts[signed_role] = self._resolve_account_role(grant, signed_role)
                 continue
             if resource_role is not None:
                 resource_id = str(grant.resource_bindings.get(signed_role) or "").strip()
@@ -691,6 +687,7 @@ class RegisteredCoreAutomationBrokerAdapter:
                 )
         context = CoreBrokerInvocationContext(
             automation_id=grant.automation_id,
+            on_completion=grant.on_completion,
             plugin_version=grant.plugin_version,
             tool_name=grant.tool_name,
             operation=operation,
@@ -701,6 +698,7 @@ class RegisteredCoreAutomationBrokerAdapter:
             account_bindings=resolved_accounts,
             resource_bindings=resolved_resources,
             connector_binding_resolver=connector_binding_resolver,
+            account_collection_resolver=lambda name: self._resolve_account_role(grant, name, collection_only=True),
             service_call_chain=self._service_call_chain(grant),
             signed_effect=str(signed_contract.get("effect") or ""),
             signed_broker_effect=str(
@@ -861,6 +859,9 @@ class RegisteredCoreAutomationBrokerAdapter:
                     "Host capability result does not match its registry schema",
                     code="BROKER_SOURCE_INVALID",
                 ) from exc
+        from agent.automation_plugins.host_observation import ServiceInvocationResult
+        if isinstance(result, ServiceInvocationResult):
+            return ServiceInvocationResult(public_result, **result.service_target)
         return public_result
 
 

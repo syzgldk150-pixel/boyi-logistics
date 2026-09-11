@@ -6,6 +6,7 @@ from shared import automation_plugin_repository as _repository
 from shared.automation_plugin_migration_ownership import (
     normalize_migration_entrypoint_ownership,
 )
+from shared.plugin_source_migration import transfer_plugin_sources
 
 Any = _repository.Any
 Mapping = _repository.Mapping
@@ -329,6 +330,7 @@ def _migration_project_snapshot(
             config.get("device_binding_sha256"), "device_binding_sha256"
         ),
         "reconcile_state": _required_text(project.get("reconcile_state"), "reconcile_state"),
+        "enabled": bool(project["enabled"]),
     }
     if generation is None:
         result["pending_generation"] = _positive_int(
@@ -865,6 +867,13 @@ class AutomationPluginV2RepositoryMixin:
             )
             if int(getattr(cursor, "rowcount", 0) or 0) != 1:
                 raise ConcurrentUpdateError("migration pair version changed")
+            # TESTING permits explicit administrator Console validation. The
+            # frozen ownership still leaves automatic ingress with the source.
+            cursor.execute(
+                "UPDATE automation_projects SET enabled=TRUE, state='ENABLED', "
+                "record_version=record_version+1, updated_at=NOW(6) WHERE automation_id=%s",
+                (target_id,),
+            )
             self._insert_migration_event(
                 cursor,
                 pair_id=pair_id,
@@ -881,6 +890,21 @@ class AutomationPluginV2RepositoryMixin:
         return {**pair, "state": "TESTING", "record_version": expected + 1,
                 "entrypoint_snapshot_json": snapshot,
                 "entrypoint_snapshot_sha256": snapshot_sha}
+
+    def require_migration_direct_entrypoint(self, automation_id: str, *, source: str, super_admin: bool) -> None:
+        """Validate live migration ownership before locking the project row."""
+        pair = self.get_authoritative_plugin_migration_pair_for_automation(automation_id)
+        if pair is None:
+            return
+        state = pair.get("state")
+        if pair.get("target_automation_id") == automation_id:
+            allowed = state in {"CUTOVER", "COMPLETED"} or (
+                state in {"TESTING", "READY"} and source == "console" and super_admin
+            )
+        else:
+            allowed = state in {"PREPARING", "TESTING", "READY", "ROLLED_BACK"}
+        if not allowed:
+            raise ConcurrentUpdateError("this entrypoint does not own the plugin migration")
 
     # Migration transitions are deliberately *not* a generic public control
     # surface.  The methods below own the complete database-side checks and
@@ -1256,10 +1280,6 @@ class AutomationPluginV2RepositoryMixin:
             if int(pair.get("record_version") or 0) != expected:
                 raise ConcurrentUpdateError("migration pair version changed")
             ownership = _snapshot_entrypoint_ownership(snapshot)
-            self._assert_migration_scheduler_operation_allowed(
-                operation=operation,
-                ownership=ownership,
-            )
 
             # 2. projects, 3. config rows.  This helper also proves the v1/v2
             # runtime relationship and catches any generation/config/manifest
@@ -1274,6 +1294,8 @@ class AutomationPluginV2RepositoryMixin:
                 entrypoint_ownership=ownership,
             )
             _assert_migration_snapshot_compatible(snapshot, live)
+            if current in {"TESTING", "READY"} and live["source"].get("enabled") != self._source_enabled_before_migration(snapshot):
+                raise ConcurrentUpdateError("migration source enablement changed during validation")
 
             cursor.execute(
                 """
@@ -1347,21 +1369,27 @@ class AutomationPluginV2RepositoryMixin:
                     target_id=target_id,
                     scheduled=scheduled,
                     source_enabled=False,
-                    target_enabled=True,
+                    target_enabled=self._source_enabled_before_migration(snapshot),
                     source_scheduler_enabled=False,
-                    target_scheduler_enabled=scheduler_transferred,
+                    target_scheduler_enabled=scheduler_transferred and self._source_enabled_before_migration(snapshot),
                 )
+                transfer_plugin_sources(self.connection, source_id=source_id, target_id=target_id,
+                    target_generation=target_generation, request_id=safe_request)
             elif operation == "ROLLBACK":
                 self._transfer_migration_entrypoints(
                     cursor,
                     source_id=source_id,
                     target_id=target_id,
                     scheduled=scheduled,
-                    source_enabled=True,
+                    source_enabled=self._source_enabled_before_migration(snapshot),
                     target_enabled=False,
-                    source_scheduler_enabled=scheduler_transferred,
+                    source_scheduler_enabled=scheduler_transferred and self._source_enabled_before_migration(snapshot),
                     target_scheduler_enabled=False,
                 )
+                if current == "CUTOVER":
+                    transfer_plugin_sources(self.connection, source_id=target_id, target_id=source_id,
+                        target_generation=_positive_int(live["source"].get("generation"), "source_generation"),
+                        request_id=safe_request)
             cursor.execute(
                 """
                 UPDATE automation_plugin_migration_pairs
@@ -1523,6 +1551,9 @@ class AutomationPluginV2RepositoryMixin:
             expected_enabled = {
                 str(normalized_ownership["console"]["target_contribution_id"])
             }
+            expected_enabled.update(str(key) for key, value in compiled.items()
+                if isinstance(value, Mapping) and isinstance(value.get("target"), Mapping)
+                and value["target"].get("contribution_kind") == "harness")
             scheduler_ownership = normalized_ownership["scheduler"]
             if scheduler_ownership["source_enabled"]:
                 expected_enabled.add(
@@ -1531,6 +1562,13 @@ class AutomationPluginV2RepositoryMixin:
             feishu_ownership = normalized_ownership["feishu"]
             if feishu_ownership["source_enabled"]:
                 expected_enabled.add(str(feishu_ownership["target_contribution_id"]))
+            webhook_ownership = normalized_ownership.get("webhook")
+            if webhook_ownership is not None:
+                webhook_id = str(webhook_ownership["target_contribution_id"])
+                expected_enabled.add(webhook_id)
+                webhook_target = compiled.get(webhook_id, {}).get("target", {})
+                if webhook_target.get("contribution_kind") != "webhook":
+                    raise ConcurrentUpdateError("migration webhook target is not prepared")
             if (
                 set(map(str, enabled)) != expected_enabled
                 or enabled_console_ids
@@ -1598,6 +1636,14 @@ class AutomationPluginV2RepositoryMixin:
     def _lock_migration_generation_leases(
         cursor: Any, *, source_id: str, target_id: str
     ) -> dict[str, int]:
+        # A direct call is admitted before it acquires its execution lease.
+        # Include that interval and cancellation drain in the cutover check.
+        cursor.execute(
+            "SELECT invocation_id FROM automation_plugin_invocations "
+            "WHERE automation_id IN (%s, %s) AND status IN ('STARTING','RUNNING','CANCELLING') "
+            "ORDER BY invocation_id FOR UPDATE", (source_id, target_id),
+        )
+        active_calls = len(_rows(cursor))
         cursor.execute(
             """
             SELECT automation_id, outcome, verification_evidence_sha256
@@ -1607,7 +1653,7 @@ class AutomationPluginV2RepositoryMixin:
             """,
             (source_id, target_id),
         )
-        summary = {"active": 0, "unknown": 0, "target_verified": 0}
+        summary = {"active": active_calls, "unknown": 0, "target_verified": 0}
         for row in _rows(cursor):
             outcome = str(row.get("outcome") or "")
             if outcome in {"RUNNING", "VERIFYING"}:
@@ -1738,7 +1784,7 @@ class AutomationPluginV2RepositoryMixin:
             for contribution_id, invocation in compiled.items()
             if isinstance(invocation, Mapping)
             and isinstance(invocation.get("target"), Mapping)
-            and invocation["target"].get("contribution_kind") == "console"
+            and invocation["target"].get("contribution_kind") in {"console", "harness"}
         }
 
     @staticmethod
@@ -1751,40 +1797,44 @@ class AutomationPluginV2RepositoryMixin:
         testing_started_at: Any,
         console_contribution_ids: set[str],
     ) -> int:
-        """Count only pair-bound, post-TESTING Console write evidence."""
+        """Count verified direct calls for the frozen target after TESTING.
+
+        A successful read preview proves installation and connectivity, not an
+        external write. Formal calls still require verified write receipts.
+        The old Run queue is not evidence for this direct-invocation runtime.
+        """
 
         if not console_contribution_ids:
             return 0
         cursor.execute(
             """
-            SELECT migration_lock.contribution_id
-            FROM automation_plugin_migration_run_locks AS migration_lock
+            SELECT JSON_UNQUOTE(JSON_EXTRACT(invocation.invocation_json, '$.contract_id')) AS contribution_id
+            FROM automation_plugin_invocations AS invocation
             INNER JOIN automation_project_generation_leases AS lease
-              ON lease.lease_id=migration_lock.lease_id
-            WHERE migration_lock.migration_pair_id=%s
-              AND migration_lock.owner_automation_id=%s
-              AND migration_lock.target_generation=%s
-              AND migration_lock.contribution_kind='console'
-              AND migration_lock.dry_run=FALSE
-              AND migration_lock.state='SUCCEEDED'
-              AND migration_lock.terminal_outcome_code='WRITE_VERIFIED'
-              AND migration_lock.acquired_at >= %s
+              ON lease.invocation_id=invocation.invocation_id
+            WHERE invocation.automation_id=%s AND invocation.generation=%s
+              AND invocation.source IN ('console', 'harness')
+              AND invocation.status='COMPLETED'
+              AND invocation.started_at >= %s AND invocation.finished_at IS NOT NULL
+              AND JSON_UNQUOTE(JSON_EXTRACT(invocation.result_json, '$.status'))='SUCCESS'
               AND lease.automation_id=%s
               AND lease.generation=%s
-              AND lease.orchestration_run_id <=> migration_lock.orchestration_run_id
-              AND lease.outcome='WRITE_VERIFIED'
-              AND lease.verification_evidence_sha256 IS NOT NULL
-              AND EXISTS (
-                  SELECT 1 FROM automation_write_attempt_receipts AS receipt
-                  WHERE receipt.lease_id=lease.lease_id
-                    AND receipt.orchestration_run_id <=> lease.orchestration_run_id
-                    AND receipt.outcome='WRITE_VERIFIED'
-                    AND receipt.evidence_sha256 IS NOT NULL
-              )
+              AND (
+                  (lease.outcome='SUCCEEDED' AND NOT EXISTS (
+                      SELECT 1 FROM automation_write_attempt_receipts AS receipt
+                      WHERE receipt.invocation_id=invocation.invocation_id
+                  )) OR
+                  (lease.outcome='WRITE_VERIFIED' AND lease.verification_evidence_sha256 IS NOT NULL
+                   AND EXISTS (SELECT 1 FROM automation_write_attempt_receipts AS receipt
+                      WHERE receipt.invocation_id=invocation.invocation_id)
+                   AND NOT EXISTS (SELECT 1 FROM automation_write_attempt_receipts AS receipt
+                      WHERE receipt.invocation_id=invocation.invocation_id
+                        AND (receipt.outcome <> 'WRITE_VERIFIED' OR receipt.evidence_sha256 IS NULL)))
+                  )
             FOR UPDATE
             """,
             (
-                pair_id, target_id, target_generation, testing_started_at,
+                target_id, target_generation, testing_started_at,
                 target_id, target_generation,
             ),
         )
@@ -1815,21 +1865,6 @@ class AutomationPluginV2RepositoryMixin:
                     }
                 )
         return result
-
-    @staticmethod
-    def _assert_migration_scheduler_operation_allowed(
-        *,
-        operation: str,
-        ownership: Mapping[str, Any] | None,
-    ) -> None:
-        if (
-            operation in {"CUTOVER", "ROLLBACK"}
-            and ownership is not None
-            and ownership["scheduler"]["source_enabled"] is True
-        ):
-            raise ConcurrentUpdateError(
-                "migration scheduler ownership is production gated"
-            )
 
     @staticmethod
     def _assert_migration_operation_allowed(
@@ -1863,8 +1898,15 @@ class AutomationPluginV2RepositoryMixin:
             raise ConcurrentUpdateError("migration target generation is not stable")
         if operation == "READY" and lease_summary["target_verified"] < 1:
             raise ConcurrentUpdateError(
-                "migration target requires verified manual Console evidence"
+                "migration target requires a verified direct validation call"
             )
+
+    @staticmethod
+    def _source_enabled_before_migration(snapshot: Mapping[str, Any]) -> bool:
+        enabled = snapshot.get("source", {}).get("enabled")
+        if type(enabled) is not bool:
+            raise ConcurrentUpdateError("migration source enablement was not captured; prepare a new migration")
+        return enabled
 
     @staticmethod
     def _transfer_migration_entrypoints(

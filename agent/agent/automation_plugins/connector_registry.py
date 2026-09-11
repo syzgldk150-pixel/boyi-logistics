@@ -15,16 +15,19 @@ import json
 import math
 import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from types import MappingProxyType
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from agent.automation_plugins.errors import AutomationPluginError
 from agent.automation_plugins.host_capability_registry import CapabilityEffect
 from agent.tool_registry import validate_schema_instance
 from shared.redaction import is_sensitive_key, redact_text
+
+if TYPE_CHECKING:
+    from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
 
 
 _SERVICE_RE = re.compile(
@@ -67,7 +70,7 @@ _SENSITIVE_FIELD_MARKERS = (
 _URI_SCHEME_RE = re.compile(
     r"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{0,31}:(?://|[^\s])"
 )
-_POSIX_ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_.-])/(?:$|(?=[^/\s]))")
+_POSIX_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.-])/(?:$|(?=[^/\s]))")
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_.-])[a-zA-Z]:[\\/]")
 _UNC_ABSOLUTE_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9_.-])(?:\\\\|//)[^\\/\s]+(?:[\\/]|$)"
@@ -87,7 +90,7 @@ _SCHEMA_FIELDS = {
         {"type", "description", "items", "minItems", "maxItems", "uniqueItems"}
     ),
     "object": frozenset(
-        {"type", "description", "properties", "required", "additionalProperties"}
+        {"type", "description", "properties", "required", "additionalProperties", "maxProperties", "propertyNames"}
     ),
     "null": frozenset({"type", "description"}),
 }
@@ -249,6 +252,12 @@ def validate_connector_public_text(value: object, *, subject: str) -> str:
 
     if not isinstance(value, str):
         raise ConnectorContractInvalid(f"Connector {subject} must be text")
+    # These are stable pseudonymous customer record keys, not network URIs.
+    # Retain their exact persisted identity across plugin upgrades.
+    if re.fullmatch(r"problem:v[12]:[0-9a-f]{64}", value):
+        return value
+    if re.fullmatch(r"(?:ronghui_problem|ronghui_sign|account):[0-9a-f]{12}", value):
+        return value  # Persisted source scope, derived from a Host-bound account.
     if (
         redact_text(value) != value
         or _URI_SCHEME_RE.search(value) is not None
@@ -265,6 +274,13 @@ def validate_connector_public_text(value: object, *, subject: str) -> str:
 def _validate_closed_schema(schema: object, *, path: str, root: bool = False) -> None:
     if not isinstance(schema, Mapping):
         raise ConnectorContractInvalid(f"Connector {path} must be a JSON Schema object")
+    if "oneOf" in schema:
+        variants = schema["oneOf"]
+        if root or set(schema) != {"oneOf"} or not isinstance(variants, (list, tuple)) or not 2 <= len(variants) <= 4:
+            raise ConnectorContractInvalid(f"Connector {path}.oneOf is invalid")
+        for index, variant in enumerate(variants):
+            _validate_closed_schema(variant, path=f"{path}.oneOf[{index}]")
+        return
     schema_type = schema.get("type")
     if schema_type not in _SCHEMA_FIELDS:
         raise ConnectorContractInvalid(f"Connector {path}.type is invalid")
@@ -277,10 +293,20 @@ def _validate_closed_schema(schema: object, *, path: str, root: bool = False) ->
     if description is not None:
         validate_connector_public_text(description, subject=f"{path} schema metadata")
     if schema_type == "object":
-        if schema.get("additionalProperties") is not False:
-            raise ConnectorContractInvalid(
-                f"Connector {path}.additionalProperties must be false"
-            )
+        additional = schema.get("additionalProperties")
+        if additional is not False:
+            # Source records may gain business fields without a Host release.
+            # Only bounded, typed nested maps are permitted; request envelopes
+            # remain closed and recursive private-field checks still apply.
+            maximum = schema.get("maxProperties")
+            names = schema.get("propertyNames")
+            if (root or not isinstance(additional, Mapping) or type(maximum) is not int
+                    or not 1 <= maximum <= 512 or not isinstance(names, Mapping)
+                    or names.get("type") != "string" or type(names.get("maxLength")) is not int
+                    or not 1 <= names["maxLength"] <= 128):
+                raise ConnectorContractInvalid(f"Connector {path}.additionalProperties must be false or a bounded typed map")
+            _validate_closed_schema(additional, path=f"{path}.additionalProperties")
+            _validate_closed_schema(names, path=f"{path}.propertyNames")
         properties = schema.get("properties")
         required = schema.get("required")
         if not isinstance(properties, Mapping) or not isinstance(required, (list, tuple)):
@@ -451,6 +477,7 @@ class ConnectorBindingRef:
     account_role: str
     account_id: str
     system: str
+    invocation_context: CoreBrokerInvocationContext | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         validate_connector_service_name(self.service, field="binding service")
@@ -467,6 +494,7 @@ class ConnectorResourceBindingRef:
     resource_role: str
     resource_id: str
     kind: str
+    invocation_context: CoreBrokerInvocationContext | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         validate_connector_service_name(self.service, field="binding service")
@@ -483,6 +511,7 @@ class ConnectorHostInternalBindingRef:
     """Opaque proof that the Host, rather than a package, owns this call."""
 
     service: str
+    invocation_context: CoreBrokerInvocationContext | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         validate_connector_service_name(self.service, field="binding service")

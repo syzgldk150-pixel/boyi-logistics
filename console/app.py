@@ -5,6 +5,7 @@ import os
 from console.app_support import *  # noqa: F403
 from console.services.agent_api import AgentApiServiceMixin
 from console.services.auth import AuthServiceMixin
+from console.services.identities import IdentitiesServiceMixin
 from console.services.control_plane import ControlPlaneServiceMixin
 from console.services.harness import HarnessServiceMixin
 from console.services.monitoring_finance import MonitoringFinanceServiceMixin
@@ -40,6 +41,7 @@ class ConsoleHTTPServer(ThreadingHTTPServer):
 
 class LocalDocFlowApp(
     AuthServiceMixin,
+    IdentitiesServiceMixin,
     AgentApiServiceMixin,
     ControlPlaneServiceMixin,
     HarnessServiceMixin,

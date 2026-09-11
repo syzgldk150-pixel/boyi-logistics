@@ -55,6 +55,7 @@ def test_agent_harness_session_binds_signed_actor_and_projects_gate() -> None:
                 session_id=SESSION_UUID,
                 request_id=REQUEST_UUID,
                 persistence_status="MEMORY_ONLY",
+                to_dict=lambda: {"messages": []},
             )
 
     service = Service()
@@ -83,6 +84,7 @@ def test_agent_harness_session_binds_signed_actor_and_projects_gate() -> None:
         "availability": "PRODUCTION_GATED",
         "blocked_reason": "HARNESS_RUNTIME_PRODUCTION_GATED",
         "read_only": True,
+        "messages": [],
         "tools": [
             {
                 "tool_id": "knowledge.search",
@@ -211,6 +213,7 @@ def test_agent_harness_session_projects_restricted_runtime_readiness() -> None:
             session_id=SESSION_UUID,
             request_id=REQUEST_UUID,
             persistence_status="MEMORY_ONLY",
+            to_dict=lambda: {"messages": []},
         )
     )
     result = asyncio.run(

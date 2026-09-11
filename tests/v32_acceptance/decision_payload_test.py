@@ -3,10 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 
-from payload.action import _collect_candidates
-
-
 def main():
+    from payload.action import _collect_candidates
+    import sys
+    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--expected', type=int, choices=(1, 2), required=True)
     args = parser.parse_args()

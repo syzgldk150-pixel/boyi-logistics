@@ -314,9 +314,11 @@ def _validated_preview_revalidation(
     revalidation = data.get("preview_revalidation")
     if not isinstance(revalidation, Mapping) or revalidation.get("verified") is not True:
         raise ValueError("scan preview revalidation proof is missing")
-    for field in ("preview_run_id", "preview_step_id", "verified_at"):
+    for field in ("preview_invocation_id", "verified_at"):
         if not isinstance(revalidation.get(field), str) or not revalidation[field].strip():
             raise ValueError("scan preview revalidation proof is invalid")
+    if "preview_run_id" in revalidation or "preview_step_id" in revalidation:
+        raise ValueError("scan preview must reference a direct invocation")
     context_sha256 = _digest(
         revalidation.get("context_sha256"),
         "preview context digest",
@@ -587,6 +589,8 @@ def _read_request() -> tuple[str, dict[str, object]]:
         )
         expected_identity = (contribution_id, contribution_kind)
         allowed_operations = {allowed_operation}
+        if entrypoint in {"console", "feishu", "webhook"}:
+            allowed_operations.add(PREVIEW_OPERATION)
     elif entrypoint == "service":
         expected_identity = ("host.service.invoke", "service")
         allowed_operations = {PREVIEW_OPERATION, EXECUTE_OPERATION}
@@ -632,7 +636,7 @@ def _read_request() -> tuple[str, dict[str, object]]:
     if (
         not isinstance(governance, Mapping)
         or type(governance.get("harness_allowed")) is not bool
-        or dict(governance) != expected_governance
+        or any(governance.get(key) != value for key, value in expected_governance.items())
     ):
         raise ValueError("service governance is invalid")
     arguments = _normalize_operation_arguments(

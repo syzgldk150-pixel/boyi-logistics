@@ -1,0 +1,151 @@
+{
+  "schema_version": 2,
+  "runtime_model": "service_v2",
+  "plugin_id": "sync_yunda_dispatch_forecast_v2",
+  "name": "韵达应派预报",
+  "version": "2.0.0",
+  "description": "韵达应派预报：插件独立完成分页、字段适配、核对与输出，宿主只提供平台和存储接口。",
+  "host_api": {
+    "minimum": "2.0.0",
+    "maximum_exclusive": "3.0.0"
+  },
+  "runtime": {
+    "kind": "python_subprocess",
+    "python": "3.10",
+    "mode": "on_demand",
+    "entrypoint": "payload/main.py",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "settings_ui": {
+    "entry": "settings/index.html",
+    "bridge_api": "1.0.0"
+  },
+  "provides": [
+    {
+      "service": "plugin.sync_yunda_dispatch_forecast_v2.yunda_dispatch@1",
+      "operations": [
+        {
+          "name": "preview",
+          "effect": "read"
+        },
+        {
+          "name": "run",
+          "effect": "external_write"
+        }
+      ]
+    }
+  ],
+  "requires": [
+    {
+      "service": "connector.boyi.yunda_dispatch_source@1",
+      "binding_kind": "account",
+      "account_role": "yunda_dispatch_source"
+    },
+    {
+      "service": "connector.boyi.dispatch_forecast_bitable@1",
+      "binding_kind": "resource",
+      "resource_role": "dispatch_forecast_bitable"
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "service.invoke",
+      "operations": [
+        "commit",
+        "read_page"
+      ],
+      "account_role": null,
+      "resource_role": null
+    }
+  ],
+  "account_roles": [
+    {
+      "role": "yunda_dispatch_source",
+      "allowed_systems": [
+        "yunda"
+      ],
+      "required": true
+    }
+  ],
+  "resource_roles": [
+    {
+      "role": "dispatch_forecast_bitable",
+      "allowed_kinds": [
+        "feishu_bitable"
+      ],
+      "required": true
+    }
+  ],
+  "contributes": {
+    "console": [
+      {
+        "id": "manual_run",
+        "title": "韵达应派预报",
+        "service": "plugin.sync_yunda_dispatch_forecast_v2.yunda_dispatch@1",
+        "operation": "run",
+        "default_enabled": true
+      }
+    ],
+    "scheduler": [
+      {
+        "id": "daily_run",
+        "title": "韵达应派预报",
+        "service": "plugin.sync_yunda_dispatch_forecast_v2.yunda_dispatch@1",
+        "operation": "run",
+        "default_enabled": false
+      }
+    ],
+    "webhook": [],
+    "feishu": [{"id": "command", "service": "plugin.sync_yunda_dispatch_forecast_v2.yunda_dispatch@1", "operation": "run", "commands": ["韵达网点派件量预测"], "default_enabled": false}],
+    "events": [],
+    "harness": [
+      {
+        "id": "assistant_preview",
+        "title": "预览韵达应派预报",
+        "description": "只读检查韵达应派预报",
+        "scenarios": [
+          "预览韵达应派预报"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {},
+          "required": []
+        },
+        "service": "plugin.sync_yunda_dispatch_forecast_v2.yunda_dispatch@1",
+        "operation": "preview",
+        "effect": "read",
+        "confirmation_policy": "none",
+        "preview_operation": null
+      }
+    ]
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "target_date": {
+        "type": "string",
+        "description": "可选，应派日期，格式 YYYY-MM-DD；默认明天"
+      },
+      "dest_brch": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "description": "必填，项目实例显式保存的目的网点编码；插件和运行时均不提供默认值"
+      },
+      "ensure_fields": {
+        "type": "boolean",
+        "description": "是否校验并创建缺失字段，默认 true"
+      }
+    },
+    "required": [
+      "dest_brch"
+    ]
+  },
+  "storage": {
+    "kv": false,
+    "collections": []
+  }
+}

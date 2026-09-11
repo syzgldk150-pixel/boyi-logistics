@@ -1,5 +1,9 @@
 # agent
 
+## 当前身份与统一对话边界
+
+统一对话与身份：`harness_application.py` 是后台与飞书自然对话的唯一会话服务；`channel_chat.py` 处理可信渠道身份，`chat_text_queries.py` 统一单号与财务文本查询。`core.py` 不再运行第二套 LLM 循环。身份权限在每次工具/插件调用重新核验，不同会话独立并行。统计 V2 的正式连接器位于 `automation_plugins/arrival_connectors_v2.py`；其他插件尚未完成迁移时不得移除 V1 正式执行实现。 细节见[维护说明](../../docs/identity_and_unified_chat.md)。
+
 当前调用架构见 [直接业务与插件说明](../../docs/architecture_direct_invocation.md)。`direct_readers.py` 管理固定查询的参数、角色与临时能力；`automation_plugins/direct_invocation.py` 管理插件独立调用，`orchestration/workflow_runner.py` 在主系统不启用领取。
 
 - `customer_collection_business.py` 从当前客服业务来源准备精确复核并在已验证 Invocation 完成前事务发布；`customer_source_projection.py` 共享来源身份/数据发布，`customer_collection_validation.py` 与历史只读投影复用同一身份和关闭校验。无 Command、Run、Step、Work Item 写入。
@@ -88,9 +92,9 @@
   - `core.py`
   - 全系统只使用一个手工激活的供应商和模型；DeepSeek/GLM 地址固定。调用失败必须显式失败，不得自动切换供应商、回退环境配置或复用旧结果。数据库从未激活过模型版本时才允许继续使用升级前的环境托管配置。
   - 财务大脑只接收未知类目的脱敏聚合证据并返回建议，不得修改正式映射、原始流水、源码或运单事实；所有确认都在 Console 后台由管理员完成。
-  - 任意用户请求如果未命中直达工具且 LLM 未产生真实工具调用，`core.py` 必须回复“没有匹配到可执行脚本，我不知道该执行哪个任务。”，不能放行 LLM 自由回答或描述执行结果
-  - LLM 产生工具调用后，最终回复必须来自工具结果 formatter，不能采用 LLM 对工具结果的自由总结
-  - 飞书自然语言财务查询是独立的代码拥有只读路由：`query_business_finance` 必须保持 `llm_exposed=false`；日期由中国标准时间的受信任当天确定性解析，混合或模糊期间、写意图、利润口径、未启用来源均在提交前拒绝；只有 `feishu_admin_binding` 的管理员可经已注册直接查询接口读取，金额只由专用 formatter 输出
+  - 统一会话允许普通能力说明与澄清；只有实际工具返回才能作为业务执行或查询成功的依据，不得把模型描述当作执行结果
+  - 确定性单号和财务查询复用共享 formatter；自然对话分析仅依据真实工具结果，插件完成状态来自实际 Invocation
+  - 飞书自然语言财务查询是独立的代码拥有只读路由：`query_business_finance` 必须保持 `llm_exposed=false`；日期由中国标准时间的受信任当天确定性解析，混合或模糊期间、写意图、利润口径、未启用来源均在提交前拒绝；后台或已绑定飞书身份具有 `finance.read` 权限时可经已注册直接查询接口读取，金额只由专用 formatter 输出
 - 改飞书文本指令直达路由（不走 LLM 的确定性命令）：
   - `direct_tool_router.py`
   - `tracking_number_validation.py`（单号查询本地格式预检；格式错误直接返回本地结果，不启动 `track_waybill`）
@@ -121,3 +125,8 @@
 - 少货/分批直接复用 `agent.tms_runtime.scripts.ronghui_problem_upload` 的真实“问题件录入”能力，固定登记“少货/分批 / 交接异常”，内容为 `应到XX件 实际到XX件`，并从登记问题件列表权威回读；不得调用 `ronghui_split_complaint` 或恢复投诉 target。
 
 - 韵达原页通过 `tms_runtime/session_broker.py` 的 `request_original_page` 延续同账号的上游会话更新；只原子更新变化的保存态，保留 origins 与登录元数据，登录代际变化拒绝旧响应。账号隔离、并发和真实 HTTP 协议回归见 `../tests/test_yunda_proxy_session_state.py`，维护说明见 `../../docs/original_page_read_requests.md`。
+# 当前改造补充
+
+- `automation_plugins/production_coeffects.py` 负责读取插件所依赖的账号、资源与接口状态；`production.py` 负责运行时组合与切换。
+- V2 预览与正式调用在准入和代次绑定后均按已安装包声明的具体操作确定权限与读写类型，不能用包中正式操作的写权限代替预览权限。
+- 现有扫描、统计、签收状态回调迁移后直接调用当前 V2 入口，参数只来自入口声明及已保存设置。

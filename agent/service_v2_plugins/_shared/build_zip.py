@@ -36,6 +36,16 @@ _SCAN_SHARED_FILES = {
     "payload/boyi_plugin_sdk.py": "boyi_plugin_sdk.py",
 }
 _SCAN_PLUGIN_ID = "sync_scan_codes_v2"
+_CONNECTOR_PLUGINS = {
+    "sync_arrive_list_v2": "sync_arrive_list",
+    "sync_site_send_list_v2": "sync_site_send_list",
+    "sync_yunda_dispatch_forecast_v2": "sync_yunda_dispatch_forecast",
+    "sync_yunda_send_waybills_v2": "sync_yunda_send_waybills",
+    "sync_finance_bills_v2": "sync_finance_bills",
+    "sync_daily_send_orders_v2": "sync_daily_send_orders",
+    "sync_delivery_status_v2": "sync_delivery_status",
+    "sync_customer_service_problems_v2": "sync_customer_service_problems",
+}
 _SOURCE_FILES = {
     "manifest.json": "manifest.json",
     "payload/plugin.py": "payload/plugin.py",
@@ -76,7 +86,25 @@ def build_plugin_zip(source_directory: Path | str, output_path: Path | str) -> P
     shared = Path(__file__).resolve().parent
     entries = {package_path: (source / source_path).read_bytes() for package_path, source_path in _SOURCE_FILES.items()}
     shared_files = _SHARED_FILES
-    if manifest.get("plugin_id") == _ARRIVAL_PLUGIN_ID:
+    if manifest.get("plugin_id") == "sync_daily_should_sign_v2":
+        from service_v2_plugins._shared.daily_sign_package import daily_sign_business_files
+        shared_files = {"payload/main.py":"connector_service_main.py", "payload/connector_adapter.py":"connector_adapter.py",
+                        "payload/boyi_plugin_sdk.py":"boyi_plugin_sdk.py", "payload/daily_sign_io.py":"daily_sign_io.py"}
+        entries["payload/action.py"] = (source / "payload/action.py").read_bytes()
+        entries.update(daily_sign_business_files(source.parents[2]))
+    elif manifest.get("plugin_id") in _CONNECTOR_PLUGINS:
+        shared_files = {"payload/main.py": "connector_service_main.py",
+                        "payload/connector_adapter.py": "connector_adapter.py",
+                        "payload/boyi_plugin_sdk.py": "boyi_plugin_sdk.py"}
+        first_party = source.parents[2] / "agent" / "first_party_automation_plugins"
+        entries["payload/action.py"] = (first_party / _CONNECTOR_PLUGINS[manifest["plugin_id"]] / "payload/action.py").read_bytes()
+        entries["payload/boyi_plugin_result.py"] = (first_party / "_runtime/result.py").read_bytes()
+        if manifest["plugin_id"] == "sync_finance_bills_v2":
+            entries["payload/finance_fields.py"] = (first_party / "sync_finance_bills/payload/finance_fields.py").read_bytes()
+        if manifest["plugin_id"] == "sync_customer_service_problems_v2":
+            entries["payload/customer_problem_fields.py"] = (first_party / "sync_customer_service_problems/payload/customer_problem_fields.py").read_bytes()
+            entries["payload/customer_queue_policy.py"] = (source.parents[2] / "shared/customer_problem_policy.py").read_bytes()
+    elif manifest.get("plugin_id") == _ARRIVAL_PLUGIN_ID:
         shared_files = _ARRIVAL_SHARED_FILES
         repository_root = source.parents[2]
         first_party = repository_root / "agent" / "first_party_automation_plugins"

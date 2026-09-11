@@ -1,0 +1,117 @@
+{% macro role_options(selected) %}
+  <option value="" disabled {% if not selected %}selected{% endif %}>请选择身份</option>
+  {% for role in identity_roles if role.is_active or role.role_id == selected %}
+  <option value="{{ role.role_id }}" {% if role.role_id == selected %}selected{% endif %}>{{ role.name }}{{ '（已停用）' if not role.is_active else '' }}</option>
+  {% endfor %}
+{% endmacro %}
+{% macro target_options(role_id, account_id) %}
+  <option value="" disabled {% if not role_id and not account_id %}selected{% endif %}>请选择身份或后台账号</option>
+  <optgroup label="直接继承身份">
+    {% for role in identity_roles if role.is_active or role.role_id == role_id %}
+    <option value="role:{{ role.role_id }}" {% if role_id == role.role_id %}selected{% endif %}>{{ role.name }}{{ '（已停用）' if not role.is_active else '' }}</option>
+    {% endfor %}
+  </optgroup>
+  <optgroup label="继承后台账号的权限">
+    {% for user in users if user.is_active or user.id == account_id %}
+    <option value="account:{{ user.id }}" {% if account_id == user.id %}selected{% endif %}>{{ user.display_name or user.username }} · {{ user.username }}{{ '（超级管理员）' if user.role == 'super_admin' else '' }}{{ '（已停用）' if not user.is_active else '' }}</option>
+    {% endfor %}
+  </optgroup>
+{% endmacro %}
+{% macro permission_fields(selected) %}
+<fieldset class="identity-permissions"><legend>允许使用的功能</legend>
+  {% for key, item in permission_options.items() %}
+  <label class="identity-permission">
+    <input type="checkbox" name="permission_{{ key }}" value="1" {% if key in selected %}checked{% endif %}>
+    <span><strong>{{ item[0] }}</strong><small>{{ item[1] }}</small></span>
+  </label>
+  {% endfor %}
+</fieldset>
+{% endmacro %}
+
+<nav class="identity-section-nav" aria-label="系统管理分区">
+  <a class="ghost-btn" href="#identity-roles">身份设置</a><a class="ghost-btn" href="#identity-accounts">后台账号</a>
+  <a class="ghost-btn" href="#identity-feishu">飞书账号</a><a class="ghost-btn" href="/settings/system-status">系统状态</a>
+</nav>
+<section class="panel account-admin-panel" id="identity-roles" aria-labelledby="identity-roles-title">
+  <h2 id="identity-roles-title">身份设置</h2>
+  <p class="muted-copy">身份决定账号可以使用哪些功能。修改后，所有继承该身份的后台账号和飞书账号的新请求立即生效。</p>
+  <p><strong>超级管理员</strong>为内置身份，始终拥有全部最高权限。账号与身份管理、插件安装及系统设置由超级管理员维护。</p>
+  {% for role in identity_roles %}
+  <details class="identity-role-editor">
+    <summary><strong>{{ role.name }}</strong><span class="status-pill {{ 'status-pill--success' if role.is_active else 'status-pill--muted' }}">{{ '已启用' if role.is_active else '已停用' }}</span><span>{{ role.permissions|length }} 项权限 · 编辑</span></summary>
+    <form action="/settings/accounts/identities/save" method="post">
+      <input type="hidden" name="role_id" value="{{ role.role_id }}">
+      <label class="identity-field">身份名称<input class="review-input" name="name" value="{{ role.name }}" maxlength="80" required></label>
+      {{ permission_fields(role.permissions) }}
+      <div class="identity-form-actions"><label><input type="checkbox" name="active" value="1" {% if role.is_active %}checked{% endif %}>启用身份</label><button class="primary-btn" type="submit">保存身份</button></div>
+    </form>
+  </details>
+  {% endfor %}
+  <details class="identity-role-editor" {% if not identity_roles %}open{% endif %}>
+    <summary><strong>新增身份</strong></summary>
+    <form action="/settings/accounts/identities/save" method="post">
+      <label class="identity-field">身份名称<input class="review-input" name="name" placeholder="例如：普通用户、业务管理员" maxlength="80" required></label>
+      {{ permission_fields([]) }}
+      <input type="hidden" name="active" value="1">
+      <button class="primary-btn" type="submit">创建身份</button>
+    </form>
+  </details>
+</section>
+
+<section class="panel account-admin-panel" id="identity-accounts" aria-labelledby="identity-accounts-title">
+  <h2 id="identity-accounts-title">后台账号</h2>
+  <form class="identity-create-form" action="/settings/accounts/create" method="post">
+    <label class="identity-field">账号<input class="review-input" name="username" autocomplete="off" required></label>
+    <label class="identity-field">显示名称<input class="review-input" name="display_name" autocomplete="off"></label>
+    <label class="identity-field">初始密码<input class="review-input" type="password" name="password" autocomplete="new-password" minlength="8" required></label>
+    <label class="identity-field">继承身份<select class="review-input" name="access_role_id" required>{{ role_options(none) }}</select></label>
+    <button class="primary-btn" type="submit">新增账号</button>
+  </form>
+  <div class="account-table-wrap"><table class="account-table">
+    <thead><tr><th>账号</th><th>继承身份</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead>
+    <tbody>{% for user in users %}<tr>
+      <td class="account-identity"><strong>{{ user.username }}</strong><span>{{ user.display_name }}</span></td>
+      <td>{% if user.role == 'super_admin' %}<strong>超级管理员</strong><div class="muted-copy">内置全部权限</div>{% else %}
+        <form class="identity-inline-form" action="/settings/accounts/{{ user.id }}/role" method="post">
+          <select class="review-input" name="access_role_id" aria-label="{{ user.username }} 的身份" required>{{ role_options(user.access_role_id) }}</select>
+          <button class="ghost-btn" type="submit">保存身份</button>
+        </form>{% endif %}</td>
+      <td>{{ '已启用' if user.is_active else '已停用' }}</td><td>{{ user.last_login_at or '尚未登录' }}</td>
+      <td><div class="account-row-actions">
+        {% if not admin_user or user.id != admin_user.id %}<form action="/settings/accounts/{{ user.id }}/toggle" method="post"><input type="hidden" name="target_active" value="{{ 0 if user.is_active else 1 }}"><button class="ghost-btn" type="submit">{{ '停用' if user.is_active else '启用' }}</button></form>{% endif %}
+        <details><summary>重置密码</summary><form class="identity-inline-form" action="/settings/accounts/{{ user.id }}/reset-password" method="post">
+          <input class="review-input" type="password" name="password" autocomplete="new-password" minlength="8" aria-label="{{ user.username }} 的新密码" required>
+          <button class="ghost-btn" type="submit">重置密码</button></form></details>
+      </div></td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+
+<section class="panel account-admin-panel" id="identity-feishu" aria-labelledby="identity-feishu-title">
+  <h2 id="identity-feishu-title">飞书账号</h2>
+  <p class="muted-copy">可以直接继承一个身份，也可以继承后台账号的当前权限。生成绑定码后，由要绑定的飞书账号发送给机器人。</p>
+  <form class="identity-create-form" action="/settings/accounts/feishu-approval/challenge" method="post">
+    <label class="identity-field">账号备注<input class="review-input" name="label" maxlength="80" placeholder="例如：仓库小张" required></label>
+    <label class="identity-field">权限来源<select class="review-input" name="target" required>{{ target_options(none,none) }}</select></label>
+    <button class="primary-btn" type="submit">生成一次性绑定码</button>
+  </form>
+  {% if binding_challenge %}<div class="automation-plugin-block" role="status"><span>请在 10 分钟内由要绑定的飞书账号向机器人发送：<strong>{{ binding_challenge.command }}</strong>。只能使用一次；完成后刷新本页查看。</span></div>{% endif %}
+  <div class="account-table-wrap"><table class="account-table">
+    <thead><tr><th>飞书账号</th><th>权限来源</th><th>当前身份</th><th>状态 / 绑定时间</th><th>操作</th></tr></thead>
+    <tbody>{% for binding in feishu_bindings %}<tr>
+      <td><strong>{{ binding.identity_label or '未填写备注' }}</strong><div class="muted-copy">{{ binding.identity_hint }}</div></td>
+      <td>{{ ('后台账号：' ~ binding.username) if binding.identity_account_id else '直接继承身份' }}</td>
+      <td>{{ binding.role_name }}</td><td>{{ '已生效' if binding.effective else ('权限已停用' if binding.active else '已解绑') }}<div class="muted-copy">{{ binding.bound_at }}</div></td>
+      <td>{% if binding.active %}<div class="identity-binding-actions">
+        <details><summary>修改身份与备注</summary>
+          <form action="/settings/accounts/feishu/{{ binding.binding_id }}/update" method="post">
+            <label class="identity-field">账号备注<input class="review-input" name="label" value="{{ binding.identity_label }}" maxlength="80" required></label>
+            <label class="identity-field">权限来源<select class="review-input" name="target" required>{{ target_options(binding.access_role_id,binding.identity_account_id) }}</select></label>
+            <button class="ghost-btn" type="submit">保存飞书身份</button>
+          </form>
+        </details>
+        <form action="/settings/accounts/feishu/{{ binding.binding_id }}/revoke" method="post"><button class="ghost-btn danger" type="submit">解绑此账号</button></form>
+      </div>{% else %}<span class="muted-copy">{{ binding.revoked_at }}</span>{% endif %}</td>
+    </tr>{% else %}<tr><td colspan="5">还没有飞书账号绑定。请先选择权限来源，生成绑定码。</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>

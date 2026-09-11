@@ -10,6 +10,7 @@ MIGRATION_ENTRYPOINT_OWNERSHIP_SCHEMA = (
     "plugin-migration-entrypoint-ownership/1"
 )
 MIGRATION_ENTRYPOINT_KINDS = ("console", "scheduler", "feishu")
+MIGRATION_WEBHOOK_OWNERSHIP_SCHEMA = "plugin-migration-entrypoint-ownership/2"
 MIGRATION_OWNERSHIP_STATES = (
     "PREPARING",
     "TESTING",
@@ -62,6 +63,8 @@ def _route_contract(
                 "commands",
             }
         )
+    if kind == "webhook":
+        expected.update({"source_resource_id", "source_path", "method", "route"})
     if set(value) != expected or not isinstance(value.get("source_enabled"), bool):
         raise ValueError(f"migration {kind} ownership is invalid")
     source_enabled = value["source_enabled"]
@@ -83,6 +86,12 @@ def _route_contract(
         if schedule_mode != expected_mode or (source_enabled != (target_id is not None)):
             raise ValueError("migration scheduler ownership is invalid")
         result["schedule_mode"] = schedule_mode
+        return result
+    if kind == "webhook":
+        for field in ("source_resource_id", "source_path", "method", "route"):
+            result[field] = _identifier(value.get(field), f"migration webhook {field}")
+        if not source_enabled or target_id is None or result["method"] != "POST":
+            raise ValueError("migration webhook ownership is invalid")
         return result
 
     source_tool = _optional_identifier(
@@ -138,19 +147,23 @@ def normalize_migration_entrypoint_ownership(
 ) -> dict[str, Any]:
     """Return a closed ownership contract or reject the entire snapshot."""
 
-    if not isinstance(value, Mapping) or set(value) != {
+    if not isinstance(value, Mapping):
+        raise ValueError("migration entrypoint ownership is invalid")
+    schema = value.get("schema")
+    kinds = MIGRATION_ENTRYPOINT_KINDS + (("webhook",) if schema == MIGRATION_WEBHOOK_OWNERSHIP_SCHEMA else ())
+    if set(value) != {
         "schema",
         "console",
         "scheduler",
         "feishu",
         "owners",
-    }:
+    } | (set(kinds) - set(MIGRATION_ENTRYPOINT_KINDS)):
         raise ValueError("migration entrypoint ownership is invalid")
-    if value.get("schema") != MIGRATION_ENTRYPOINT_OWNERSHIP_SCHEMA:
+    if schema not in {MIGRATION_ENTRYPOINT_OWNERSHIP_SCHEMA, MIGRATION_WEBHOOK_OWNERSHIP_SCHEMA}:
         raise ValueError("migration entrypoint ownership schema is invalid")
     routes = {
         kind: _route_contract(value.get(kind), kind=kind)
-        for kind in MIGRATION_ENTRYPOINT_KINDS
+        for kind in kinds
     }
     owners = value.get("owners")
     if not isinstance(owners, Mapping) or set(owners) != set(
@@ -161,7 +174,7 @@ def normalize_migration_entrypoint_ownership(
     for state in MIGRATION_OWNERSHIP_STATES:
         state_owners = owners.get(state)
         if not isinstance(state_owners, Mapping) or set(state_owners) != set(
-            MIGRATION_ENTRYPOINT_KINDS
+            kinds
         ):
             raise ValueError("migration state ownership is invalid")
         expected = {
@@ -169,14 +182,14 @@ def normalize_migration_entrypoint_ownership(
                 source_enabled=bool(routes[kind]["source_enabled"]),
                 state=state,
             )
-            for kind in MIGRATION_ENTRYPOINT_KINDS
+            for kind in kinds
         }
         if dict(state_owners) != expected:
             raise ValueError("migration state ownership is invalid")
         normalized_owners[state] = expected
     return {
-        "schema": MIGRATION_ENTRYPOINT_OWNERSHIP_SCHEMA,
-        **{kind: copy.deepcopy(routes[kind]) for kind in MIGRATION_ENTRYPOINT_KINDS},
+        "schema": schema,
+        **{kind: copy.deepcopy(routes[kind]) for kind in kinds},
         "owners": normalized_owners,
     }
 
@@ -188,7 +201,7 @@ def migration_entrypoint_owner(
     kind: str,
 ) -> str:
     normalized = normalize_migration_entrypoint_ownership(ownership)
-    if state not in MIGRATION_OWNERSHIP_STATES or kind not in MIGRATION_ENTRYPOINT_KINDS:
+    if state not in MIGRATION_OWNERSHIP_STATES or kind not in normalized["owners"][state]:
         raise ValueError("migration ownership lookup is invalid")
     return str(normalized["owners"][state][kind])
 

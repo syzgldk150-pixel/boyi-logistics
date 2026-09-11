@@ -353,7 +353,7 @@ def test_one_time_binding_and_live_super_admin_role():
     service, repository, _approvals = _service()
     challenge = service.create_binding_challenge(7)
     assert service.handle_text("ou-1", "oc-1", challenge["command"]) == (
-        "审批身份绑定成功；账号权限变更或解绑会立即生效。"
+        "飞书身份绑定成功；身份权限变更或解绑会立即生效。"
     )
     assert service.resolve_actor("ou-1").authenticated_by == "feishu_admin_binding"
     assert service.handle_text("ou-2", "oc-2", challenge["command"]).startswith("绑定码无效")

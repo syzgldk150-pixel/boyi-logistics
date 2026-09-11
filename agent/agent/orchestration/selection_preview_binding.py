@@ -66,7 +66,7 @@ SELECTION_PREVIEW_PROJECTS: Mapping[str, Mapping[str, Any]] = {
 _HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MAX_CANDIDATES = 10_000
 _MAX_FORMAL_SELECTION = 250
-_SERVICE_V2_SELECTION_ENTRYPOINTS = frozenset({"console", "feishu"})
+_SERVICE_V2_SELECTION_ENTRYPOINTS = frozenset({"console", "feishu", "webhook"})
 
 
 @dataclass(frozen=True)
@@ -101,6 +101,8 @@ class _PersistedSelectionPreview:
 
 
 def is_selection_preview_project(entry: Any) -> bool:
+    if getattr(entry, "runtime_model", None) == "SERVICE_V2" and getattr(entry, "plugin_id", None) == "sync_scan_codes_v2":
+        return False  # Scans confirm an exact batch plan, not a selectable row list.
     automation_id = str(getattr(entry, "automation_id", "") or "").strip()
     spec = SELECTION_PREVIEW_PROJECTS.get(automation_id)
     if bool(

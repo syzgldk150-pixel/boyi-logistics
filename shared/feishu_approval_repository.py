@@ -11,6 +11,15 @@ from shared.orchestration_repository_support import (
     _row_dict,
     _rows,
 )
+from shared.identity_repository import IdentityRepository
+
+
+class BindingConflict(ValueError):
+    """A currently active binding must be explicitly revoked first."""
+
+
+class BindingChallengeExpired(ValueError):
+    """The one-time challenge expired or was already consumed."""
 
 
 class FeishuApprovalRepository(RepositoryBase):
@@ -36,6 +45,9 @@ class FeishuApprovalRepository(RepositoryBase):
 
     def create_challenge(self, row: Mapping[str, Any]) -> dict[str, Any]:
         with self.cursor() as cursor:
+            role_id = row.get("access_role_id")
+            account_id = row.get("identity_account_id")
+            IdentityRepository.check_target(cursor, role_id=role_id, account_id=account_id)
             cursor.execute(
                 """
                 UPDATE feishu_admin_binding_challenges
@@ -47,14 +59,16 @@ class FeishuApprovalRepository(RepositoryBase):
             cursor.execute(
                 """
                 INSERT INTO feishu_admin_binding_challenges (
-                    challenge_id, admin_user_id, code_sha256, expires_at
-                ) VALUES (%s, %s, %s, %s)
+                    challenge_id, admin_user_id, code_sha256, expires_at,
+                    access_role_id, identity_account_id, identity_label
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     _required_text(row.get("challenge_id"), "challenge_id"),
                     int(row["admin_user_id"]),
                     _required_text(row.get("code_sha256"), "code_sha256"),
                     row["expires_at"],
+                    role_id, account_id, str(row.get("identity_label") or ""),
                 ),
             )
             cursor.execute(
@@ -82,7 +96,7 @@ class FeishuApprovalRepository(RepositoryBase):
         suffix = " FOR UPDATE" if for_update else ""
         with self.cursor() as cursor:
             cursor.execute(
-                f"SELECT * FROM feishu_binding_failures WHERE open_id=%s{suffix}",
+                f"SELECT *, (locked_until>NOW(6)) AS is_locked FROM feishu_binding_failures WHERE open_id=%s{suffix}",
                 (_required_text(open_id, "open_id"),),
             )
             return _row_dict(cursor, cursor.fetchone())
@@ -131,75 +145,47 @@ class FeishuApprovalRepository(RepositoryBase):
         chat_id: str,
     ) -> dict[str, Any]:
         with self.cursor() as cursor:
+            cursor.execute("SELECT * FROM feishu_admin_binding_challenges WHERE challenge_id=%s AND admin_user_id=%s FOR UPDATE",
+                           (challenge_id, int(admin_user_id)))
+            challenge = _row_dict(cursor, cursor.fetchone())
+            if not challenge:
+                raise BindingChallengeExpired("binding challenge is no longer usable")
+            IdentityRepository.check_target(cursor, role_id=challenge["access_role_id"], account_id=challenge["identity_account_id"])
             cursor.execute(
                 """
                 SELECT binding_id, admin_user_id, open_id
                 FROM feishu_admin_bindings
-                WHERE admin_user_id=%s OR open_id=%s
+                WHERE active=TRUE AND open_id=%s
                 ORDER BY admin_user_id FOR UPDATE
                 """,
-                (int(admin_user_id), _required_text(open_id, "open_id")),
+                (_required_text(open_id, "open_id"),),
             )
             bindings = _rows(cursor)
-            open_binding = next(
-                (
-                    row
-                    for row in bindings
-                    if str(row.get("open_id") or "") == str(open_id)
-                ),
-                None,
-            )
-            if open_binding is not None and int(open_binding["admin_user_id"]) != int(
-                admin_user_id
-            ):
-                raise ValueError("Feishu identity is already bound to another administrator")
-            admin_binding = next(
-                (
-                    row
-                    for row in bindings
-                    if int(row.get("admin_user_id") or 0) == int(admin_user_id)
-                ),
-                None,
-            )
+            if bindings:
+                raise BindingConflict("Feishu identity already has an active binding")
             cursor.execute(
                 """
                 UPDATE feishu_admin_binding_challenges
                 SET used_at=NOW(6)
-                WHERE challenge_id=%s AND used_at IS NULL AND expires_at>NOW(6)
+                WHERE challenge_id=%s AND used_at IS NULL AND expires_at>UTC_TIMESTAMP(6)
                 """,
                 (_required_text(challenge_id, "challenge_id"),),
             )
             if int(getattr(cursor, "rowcount", 0) or 0) != 1:
-                raise ValueError("binding challenge is no longer usable")
-            if admin_binding is None:
-                cursor.execute(
+                raise BindingChallengeExpired("binding challenge is no longer usable")
+            cursor.execute(
                     """
                     INSERT INTO feishu_admin_bindings (
                         binding_id, admin_user_id, open_id, last_chat_id,
-                        notifications_enabled, active
-                    ) VALUES (%s, %s, %s, %s, TRUE, TRUE)
+                        notifications_enabled, active, access_role_id, identity_account_id, identity_label
+                    ) VALUES (%s, %s, %s, %s, TRUE, TRUE, %s, %s, %s)
                     """,
                     (
                         _required_text(binding_id, "binding_id"),
                         int(admin_user_id),
                         _required_text(open_id, "open_id"),
                         _required_text(chat_id, "chat_id"),
-                    ),
-                )
-            else:
-                cursor.execute(
-                    """
-                    UPDATE feishu_admin_bindings
-                    SET open_id=%s, last_chat_id=%s,
-                        notifications_enabled=TRUE, active=TRUE,
-                        revoked_at=NULL, updated_at=NOW(6)
-                    WHERE binding_id=%s AND admin_user_id=%s
-                    """,
-                    (
-                        _required_text(open_id, "open_id"),
-                        _required_text(chat_id, "chat_id"),
-                        admin_binding["binding_id"],
-                        int(admin_user_id),
+                        challenge["access_role_id"], challenge["identity_account_id"], challenge["identity_label"],
                     ),
                 )
             cursor.execute("DELETE FROM feishu_binding_failures WHERE open_id=%s", (open_id,))
@@ -213,8 +199,8 @@ class FeishuApprovalRepository(RepositoryBase):
                 SELECT binding.*, admin.is_active, admin.control_plane_role,
                        admin.display_name, admin.username
                 FROM feishu_admin_bindings AS binding
-                JOIN admin_users AS admin ON admin.id=binding.admin_user_id
-                WHERE binding.open_id=%s{suffix}
+                LEFT JOIN admin_users AS admin ON admin.id=binding.identity_account_id
+                WHERE binding.open_id=%s AND binding.active=TRUE{suffix}
                 """,
                 (_required_text(open_id, "open_id"),),
             )
@@ -226,11 +212,12 @@ class FeishuApprovalRepository(RepositoryBase):
                 """
                 SELECT binding_id, open_id, notifications_enabled, active,
                        bound_at, revoked_at, updated_at
-                FROM feishu_admin_bindings WHERE admin_user_id=%s
+                FROM feishu_admin_bindings WHERE identity_account_id=%s AND active=TRUE
                 """,
                 (int(admin_user_id),),
             )
-            return _row_dict(cursor, cursor.fetchone())
+            rows = _rows(cursor)
+            return {"active": True, "notifications_enabled": any(row["notifications_enabled"] for row in rows)} if rows else None
 
     def revoke(self, admin_user_id: int) -> None:
         with self.cursor() as cursor:
@@ -238,7 +225,7 @@ class FeishuApprovalRepository(RepositoryBase):
                 """
                 UPDATE feishu_admin_bindings
                 SET active=FALSE, revoked_at=NOW(6), updated_at=NOW(6)
-                WHERE admin_user_id=%s
+                WHERE identity_account_id=%s
                 """,
                 (int(admin_user_id),),
             )
@@ -249,7 +236,7 @@ class FeishuApprovalRepository(RepositoryBase):
                 """
                 SELECT binding.binding_id
                 FROM feishu_admin_bindings AS binding
-                JOIN admin_users AS admin ON admin.id=binding.admin_user_id
+                JOIN admin_users AS admin ON admin.id=binding.identity_account_id
                 WHERE binding.active=TRUE AND binding.notifications_enabled=TRUE
                   AND admin.is_active=1 AND admin.control_plane_role='super_admin'
                 ORDER BY binding.binding_id

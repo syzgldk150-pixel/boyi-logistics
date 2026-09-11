@@ -117,9 +117,9 @@ def run_test_feishu_notification_lease_holds_the_database_binding_lane(harness):
         admin_user_id = int(cursor.lastrowid)
         cursor.execute(
             "INSERT INTO feishu_admin_bindings "
-            "(binding_id, admin_user_id, open_id, last_chat_id) "
-            "VALUES (%s, %s, %s, %s)",
-            (binding_id, admin_user_id, f"ou-{binding_id}", f"oc-{binding_id}"),
+            "(binding_id, admin_user_id, identity_account_id, open_id, last_chat_id) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (binding_id, admin_user_id, admin_user_id, f"ou-{binding_id}", f"oc-{binding_id}"),
         )
         cursor.execute(
             "INSERT INTO feishu_approval_deliveries "
@@ -436,7 +436,7 @@ def run_test_feishu_queue_migration_requeues_ambiguous_active_rows_and_resends(h
     # The current repository is only valid against the full migration chain.
     # Keep the 023 recovery assertions above at their historical boundary, then
     # advance in order before exercising the current notification sender.
-    harness._apply_through(database, "030")
+    harness._apply_through(database, "047")
 
     sent: list[tuple[str, str, str]] = []
     service = FeishuApprovalService(

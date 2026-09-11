@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 from agent.automation_plugins.errors import PluginExecutionError
+from agent.automation_plugins.host_observation import ServiceInvocationResult
 from agent.automation_plugins.host_capability_registry import (
     CapabilityEffect,
     HOST_CAPABILITY_API_VERSION,
@@ -400,6 +401,7 @@ class BrokerGrant:
     write_attempt_context: Mapping[str, object] = field(default_factory=dict)
     execution_resource_keys: tuple[tuple[str, ...], ...] = ()
     execution_action_scopes: Mapping[ActionKey, tuple[LockKey, ...]] = field(default_factory=dict)
+    on_completion: Callable[[Callable[[], None]], None] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass
@@ -455,6 +457,13 @@ class LocalBrokerCapabilityIssuer:
         self._write_attempt_recorder = write_attempt_recorder
         self._closing: set[str] = set()
         self._host_tasks: dict[str, set[asyncio.Task]] = {}
+        self._completion_callbacks: dict[str, list[Callable[[], None]]] = {}
+
+    def _register_completion(self, digest: str, callback: Callable[[], None]) -> None:
+        with self._lock:
+            if digest not in self._grants:
+                raise PluginExecutionError("invocation already finished", code="BROKER_CAPABILITY_INVALID")
+            self._completion_callbacks.setdefault(digest, []).append(callback)
 
     def register_host_call(self, capability: str, task: asyncio.Task) -> None:
         digest = hashlib.sha256(capability.encode("ascii")).hexdigest()
@@ -522,6 +531,7 @@ class LocalBrokerCapabilityIssuer:
             write_attempt_context=dict(write_attempt_context or {}),
             execution_resource_keys=EXECUTION_RESOURCE_KEYS.get(),
             execution_action_scopes=dict(EXECUTION_ACTION_SCOPES.get()),
+            on_completion=lambda callback: self._register_completion(digest, callback),
         )
         raw_limit = runtime_permissions.get("max_broker_calls")
         if isinstance(raw_limit, bool) or not isinstance(raw_limit, int) or not 0 <= raw_limit <= 1000:
@@ -534,7 +544,7 @@ class LocalBrokerCapabilityIssuer:
             self._grants = {
                 key: state
                 for key, state in self._grants.items()
-                if state.grant.expires_at > now
+                if state.grant.expires_at > now or self._host_tasks.get(key) or self._completion_callbacks.get(key)
             }
             self._grants[digest] = _BrokerGrantState(
                 grant=grant,
@@ -549,6 +559,9 @@ class LocalBrokerCapabilityIssuer:
             self._grants.pop(digest, None)
             self._host_tasks.pop(digest, None)
             self._closing.discard(digest)
+            callbacks = self._completion_callbacks.pop(digest, ())
+        for callback in callbacks:
+            callback()
 
     def consumed_call_count(self, capability: str) -> int:
         """Legacy diagnostic counter; never use this to infer a write."""
@@ -608,6 +621,7 @@ class LocalBrokerCapabilityIssuer:
         result: Mapping[str, Any],
         evidence_ref: str | None,
         write_started: bool,
+        service_target: Mapping[str, str] | None = None,
     ) -> None:
         """Capture a successful redacted Host result outside plugin JSON."""
 
@@ -627,6 +641,8 @@ class LocalBrokerCapabilityIssuer:
             "evidence_ref": evidence_ref,
             "result": json.loads(canonical_json_bytes(dict(result))),
         }
+        if service_target is not None:
+            observation["service_target"] = dict(service_target)
         with self._lock:
             state = self._grants.get(digest)
             if (
@@ -1292,6 +1308,7 @@ class LocalCoreAutomationBroker:
                 arguments=prepared.arguments,
                 result=public_result,
                 evidence_ref=host_evidence_ref,
+                service_target=result.service_target if isinstance(result, ServiceInvocationResult) else None,
                 write_started=bool(
                     prepared.mark_write_started is not None
                     and prepared.mark_write_started.started()

@@ -1,0 +1,159 @@
+{
+  "schema_version": 2,
+  "runtime_model": "service_v2",
+  "plugin_id": "sync_customer_service_problems_v2",
+  "name": "客服问题件采集",
+  "version": "2.0.0",
+  "description": "按已绑定账号采集融辉与韵达问题件，插件完成字段转换和未结事项复核。",
+  "host_api": {
+    "minimum": "2.0.0",
+    "maximum_exclusive": "3.0.0"
+  },
+  "runtime": {
+    "kind": "python_subprocess",
+    "python": "3.10",
+    "mode": "on_demand",
+    "entrypoint": "payload/main.py",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "settings_ui": {
+    "entry": "settings/index.html",
+    "bridge_api": "1.0.0"
+  },
+  "provides": [
+    {
+      "service": "plugin.sync_customer_service_problems_v2.customer@1",
+      "operations": [
+        {
+          "name": "run",
+          "effect": "read"
+        }
+      ]
+    }
+  ],
+  "requires": [
+    {
+      "service": "connector.boyi.customer_sources@1",
+      "binding_kind": "host_internal"
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "service.invoke",
+      "operations": [
+        "list_page",
+        "detail"
+      ],
+      "account_role": null,
+      "resource_role": null
+    }
+  ],
+  "account_roles": [
+    {
+      "role": "customer_service_source",
+      "allowed_systems": [
+        "ronghui",
+        "yunda"
+      ],
+      "required": true,
+      "collection": true
+    }
+  ],
+  "resource_roles": [],
+  "contributes": {
+    "console": [
+      {
+        "id": "manual_run",
+        "title": "客服问题件采集",
+        "service": "plugin.sync_customer_service_problems_v2.customer@1",
+        "operation": "run",
+        "default_enabled": true
+      }
+    ],
+    "scheduler": [
+      {
+        "id": "daily_run",
+        "title": "客服问题件采集",
+        "service": "plugin.sync_customer_service_problems_v2.customer@1",
+        "operation": "run",
+        "default_enabled": false
+      }
+    ],
+    "webhook": [],
+    "feishu": [],
+    "events": [],
+    "harness": []
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "direction": {
+        "type": "string",
+        "enum": [
+          "received",
+          "published",
+          "both"
+        ],
+        "description": "查询方向，必须由调用方明确指定"
+      },
+      "recheck_items": {
+        "type": "array",
+        "description": "由服务端计划上下文覆盖；当前开放事项的精确详情复核身份",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "dedupe_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "platform": {
+              "type": "string",
+              "enum": [
+                "ronghui",
+                "yunda"
+              ]
+            },
+            "external_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "source_direction": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32
+            },
+            "waybill_no": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "context_error": {
+              "type": "string",
+              "maxLength": 100
+            }
+          },
+          "required": [
+            "dedupe_key"
+          ]
+        }
+      }
+    },
+    "required": [
+      "direction"
+    ]
+  },
+  "storage": {
+    "kv": false,
+    "collections": []
+  },
+  "management": {
+    "purpose": "collector",
+    "module": "customer_service",
+    "dataset": "customer_service.problems",
+    "version": "1"
+  }
+}

@@ -109,11 +109,11 @@ def test_split_pending_manifest_closes_operations_selection_and_454_call_budget(
         },
         {
             "service": "connector.boyi.split_pending_ronghui@1",
-            "account_role": "account_id",
+            "account_role": "split_pending_ronghui",
         },
         {
             "service": "connector.boyi.split_pending_problem_ledger@1",
-            "account_role": "account_id",
+            "account_role": "split_pending_ronghui",
         },
     )
     expected_limits = {
@@ -148,7 +148,7 @@ def test_split_pending_manifest_closes_operations_selection_and_454_call_budget(
         "execute_feishu",
         "assistant_preview",
     )
-    assert contract.default_entrypoints == ("assistant_preview",)
+    assert contract.default_entrypoints == ("execute_console", "assistant_preview")
     assert manifest.contributes["console"] == (
         {
             "id": "execute_console",
@@ -156,7 +156,7 @@ def test_split_pending_manifest_closes_operations_selection_and_454_call_budget(
             "service": manifest.provided_services[0],
             "operation": "execute",
             "selection_preview_operation": "preview",
-            "default_enabled": False,
+            "default_enabled": True,
         },
     )
     assert manifest.contributes["feishu"] == (

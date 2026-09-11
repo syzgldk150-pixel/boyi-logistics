@@ -31,6 +31,28 @@ _REVIEWED_BINDING_MAPPINGS: Mapping[
     MigrationBindingMapping,
 ] = MappingProxyType(
     {
+        ("clockin_daxiang", "clock_in_dual", "clockin_daxiang_v2"): _mapping(account_roles={"account_id":"operator"}, resource_roles={}),
+        ("clockin_daxiang_s", "clock_in_dual", "clockin_daxiang_s_v2"): _mapping(account_roles={"account_id":"operator"}, resource_roles={}),
+        ("arrive_list", "sync_arrive_list", "sync_arrive_list_v2"): _mapping(
+            account_roles={"account_id":"arrive_list_ronghui"}, resource_roles={"arrive_primary_sheet":"arrive_primary_sheet", "arrive_secondary_sheet":"arrive_secondary_sheet"}),
+        ("site_send", "sync_site_send_list", "sync_site_send_list_v2"): _mapping(
+            account_roles={"account_id":"site_send_ronghui"}, resource_roles={"site_send_bitable":"site_send_bitable", "site_send_sheet":"site_send_sheet"}),
+        ("send_order", "sync_daily_send_orders", "sync_daily_send_orders_v2"): _mapping(
+            account_roles={"account_id":"daily_send_source"}, resource_roles={"send_order_bitable":"send_order_bitable"}),
+        ("delivery_status", "sync_delivery_status", "sync_delivery_status_v2"): _mapping(
+            account_roles={"account_id":"delivery_source"}, resource_roles={"delivery_status_bitable":"delivery_status_bitable"}),
+        ("daily_sign", "sync_daily_should_sign", "sync_daily_should_sign_v2"): _mapping(
+            account_roles={"r13_account_id":"daily_sign_r13", "account_id":"daily_sign_tms"},
+            resource_roles={"daily_sign_bitable":"daily_sign_bitable", "daily_sign_sheet":"daily_sign_sheet"}),
+        ("customer_problems_shadow", "sync_customer_service_problems", "sync_customer_service_problems_v2"): _mapping(
+            account_roles={"customer_service_source":"customer_service_source"}, resource_roles={}),
+        ("yunda_dispatch_forecast", "sync_yunda_dispatch_forecast", "sync_yunda_dispatch_forecast_v2"): _mapping(
+            account_roles={"account_id":"yunda_dispatch_source"}, resource_roles={"dispatch_forecast_bitable":"dispatch_forecast_bitable"}),
+        ("yunda_send_waybills", "sync_yunda_send_waybills", "sync_yunda_send_waybills_v2"): _mapping(
+            account_roles={"account_id":"yunda_send_source"}, resource_roles={"send_waybills_bitable":"send_waybills_bitable", "send_waybills_sheet":"send_waybills_sheet"}),
+        **{(instance, "sync_finance_bills", "sync_finance_bills_v2"): _mapping(
+            account_roles={role:role for role in ("finance_quote_source", "finance_daxiang_s_source", "finance_self_pickup_source")}, resource_roles={})
+            for instance in ("finance_bills", "finance_startup_catchup")},
         (
             "arrival_stats",
             "sync_arrival_stats",
@@ -53,8 +75,8 @@ _REVIEWED_BINDING_MAPPINGS: Mapping[
             "self_pickup_problem_upload_v2",
         ): _mapping(
             account_roles={
-                "account_id": "account_id",
-                "daxiang_s_account_id": "daxiang_s_account_id",
+                "account_id": "self_pickup_primary",
+                "daxiang_s_account_id": "self_pickup_daxiang_s",
             },
             resource_roles={
                 "self_pickup_source_sheet": "self_pickup_source_sheet",
@@ -65,7 +87,7 @@ _REVIEWED_BINDING_MAPPINGS: Mapping[
             "split_pending_problem_upload",
             "split_pending_problem_upload_v2",
         ): _mapping(
-            account_roles={"account_id": "account_id"},
+            account_roles={"account_id": "split_pending_ronghui"},
             resource_roles={
                 "split_pending_source_sheet": "split_pending_source_sheet",
                 "split_pending_target_sheet": "split_pending_target_sheet",
@@ -76,7 +98,7 @@ _REVIEWED_BINDING_MAPPINGS: Mapping[
             "sync_scan_codes",
             "sync_scan_codes_v2",
         ): _mapping(
-            account_roles={"account_id": "account_id"},
+            account_roles={"account_id": "scan_ronghui"},
             resource_roles={},
         ),
     }

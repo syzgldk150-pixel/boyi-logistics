@@ -407,8 +407,8 @@ def test_migration_operation_request_reuse_rejects_different_intent(
 
 
 @pytest.mark.parametrize("operation", ("CUTOVER", "ROLLBACK"))
-def test_repository_migration_operation_rejects_scheduler_ownership(
-    operation: str,
+def test_scheduler_migration_reaches_exact_snapshot_validation(
+    operation: str, monkeypatch,
 ) -> None:
     owners = {
         state: {
@@ -470,7 +470,10 @@ def test_repository_migration_operation_rejects_scheduler_ownership(
         else repository.rollback_plugin_migration_pair
     )
 
-    with pytest.raises(ConcurrentUpdateError, match="production gated"):
+    def changed_snapshot(*args, **kwargs):
+        raise ConcurrentUpdateError("exact source schedule changed")
+    monkeypatch.setattr(repository, "_lock_migration_snapshot", changed_snapshot)
+    with pytest.raises(ConcurrentUpdateError, match="exact source schedule changed"):
         method(
             pair["migration_pair_id"],
             expected_record_version=2,
@@ -718,9 +721,9 @@ def test_expired_migration_run_key_is_released_only_when_no_lease_exists():
     assert recovery_params[0] == "EXPIRED"
 
 
-def test_migration_manual_evidence_requires_pair_bound_console_lease() -> None:
+def test_migration_manual_evidence_requires_current_direct_invocation_lease() -> None:
     connection = _Connection(
-        [("SELECT migration_lock.contribution_id", [{"contribution_id": "scheduler"}], 0)]
+        [("FROM automation_plugin_invocations AS invocation", [{"contribution_id": "scheduler"}], 0)]
     )
     repository = AutomationPluginRepository(connection)
 
@@ -735,9 +738,10 @@ def test_migration_manual_evidence_requires_pair_bound_console_lease() -> None:
 
     assert count == 0
     sql, _params = connection.cursor_instance.executions[0]
-    assert "migration_lock.contribution_kind='console'" in sql
-    assert "migration_lock.dry_run=FALSE" in sql
-    assert "lease.orchestration_run_id <=> migration_lock.orchestration_run_id" in sql
+    assert "invocation.source IN ('console', 'harness')" in sql
+    assert "invocation.status='COMPLETED'" in sql
+    assert "lease.invocation_id=invocation.invocation_id" in sql
+    assert "receipt.outcome <> 'WRITE_VERIFIED'" in sql
 
 
 def test_managed_document_uses_cas_and_rejects_credential_fields():

@@ -9,10 +9,13 @@ from agent.execution_boundary import execution_capability_scope
 from agent.orchestration.policy_engine import PolicyEngine
 from agent.tms_runtime.direct_execution import call_blocking
 from shared.redaction import redact_sensitive, redact_text
+from shared.identity_permissions import tool_permission
 
 
 async def invoke_registered_reader(*, catalog, name, arguments, handler, actor, source,
-                                   llm_selected=False, timeout_seconds=1800, invocations=None):
+                                   llm_selected=False, timeout_seconds=1800, invocations=None, identity_access=None):
+    if identity_access is not None and not identity_access.allows(actor, tool_permission(name)):
+        return {"success": False, "error_code": "PERMISSION_DENIED", "error": "当前身份没有该查询权限，请在后台检查绑定的身份。"}
     capability = catalog.get_capability(name)
     if not capability or capability.get("operation_type") not in {"read", "compute"}:
         return {"success": False, "error_code": "DIRECT_READ_NOT_AVAILABLE", "error": "该查询未开放"}

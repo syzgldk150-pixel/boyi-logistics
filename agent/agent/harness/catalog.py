@@ -341,11 +341,13 @@ class HarnessToolCatalog:
         fixed_tools: Sequence[FixedHarnessTool] = (),
         snapshot_provider: ManagedContributionSnapshotProvider | None = None,
         instance_name_resolver: Callable[[str], str] | None = None,
+        tool_allowed: Callable[[object], bool] | None = None,
     ) -> None:
         self._invocation_port = invocation_port
         self._fixed_tools = tuple(fixed_tools)
         self._snapshot_provider = snapshot_provider
         self._instance_name_resolver = instance_name_resolver
+        self._tool_allowed = tool_allowed
         self._lock = RLock()
         self._entries: dict[str, _CatalogEntry] = {}
         self.refresh()
@@ -386,6 +388,8 @@ class HarnessToolCatalog:
                 if entry.descriptor.tool_id in candidates:
                     raise HarnessError("Harness tool collision", code="HARNESS_TOOL_COLLISION")
                 candidates[entry.descriptor.tool_id] = entry
+        if self._tool_allowed is not None:
+            candidates = {key: entry for key, entry in candidates.items() if self._tool_allowed(entry.handle)}
         with self._lock:
             self._entries = candidates
             return self.descriptors()

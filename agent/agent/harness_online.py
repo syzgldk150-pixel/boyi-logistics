@@ -33,6 +33,7 @@ _LABELED_ADDRESS = re.compile(
     r"(?:收货|发货|联系|详细)?地址\s*[:：]?\s*[^\s，。；;]{4,80}"
 )
 _LABELED_ACCOUNT = re.compile(r"(?:业务)?账号(?:标识)?\s*[:：]?\s*[^\s，。；;]{2,80}")
+_EXECUTION_REQUEST = re.compile(r"^(?:(?:请|帮我|现在|立即|先)\s*)*(?:执行|运行|触发|启动|同步|扫描|打卡|上传|写入)")
 _PRIVATE_MODEL_KEY_PARTS = (
     "token",
     "secret",
@@ -220,7 +221,7 @@ class OnlineHarnessSidecar:
         if not messages or not all(isinstance(item, HarnessMessage) for item in messages):
             raise _error("AI 助手会话内容无效", "HARNESS_PROTOCOL_INVALID")
         if self._plugins is not None and self._plugins.selected:
-            return self._plugin_receipt(self._plugins.start_console(self._plugins.selected), 0)
+            return self._start_plugins(self._plugins.selected, 0)
         if not self._llm.public_status().get("configured"):
             raise _error(
                 "尚未启用智能模型，请先在智能模型页面完成配置",
@@ -255,6 +256,10 @@ class OnlineHarnessSidecar:
                 content = _minimize_text(response.get("content") or "").strip()
                 if not content:
                     raise _error("智能模型没有返回可读内容", "HARNESS_PROTOCOL_INVALID")
+                if calls == 0 and _EXECUTION_REQUEST.search(messages[-1].content):
+                    # A model sentence is never an execution receipt. Keep
+                    # requests for clarification, but do not repeat an invented result.
+                    content = "没有匹配到可执行脚本，我不知道该执行哪个任务。请说明插件名称；本次未发起插件执行。"
                 return SidecarResult(content=content, tool_calls=calls)
             if not isinstance(raw_calls, list) or not raw_calls:
                 raise _error("智能模型工具请求无法读取", "HARNESS_PROTOCOL_INVALID")
@@ -330,8 +335,13 @@ class OnlineHarnessSidecar:
                 )
                 calls += 1
             if selected:
-                receipts = self._plugins.start_console(selected)
-                return self._plugin_receipt(receipts, calls)
+                return self._start_plugins(selected, calls)
+
+    def _start_plugins(self, selected, calls):
+        if self._plugins.source == "feishu":
+            self._plugins.selected = selected
+            return SidecarResult(content="已识别要执行的插件。", tool_calls=calls + len(selected), plugin_requests=selected)
+        return self._plugin_receipt(self._plugins.start_console(selected), calls)
 
     @staticmethod
     def _plugin_receipt(receipts, calls):

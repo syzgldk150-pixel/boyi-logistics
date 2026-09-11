@@ -59,48 +59,27 @@ def _entry(**overrides: Any) -> SimpleNamespace:
     return SimpleNamespace(**values)
 
 
-def test_create_migration_pair_with_enabled_scheduler_is_production_gated() -> None:
+def test_migration_preserves_enabled_scheduler_and_its_exact_owner() -> None:
     source, target, source_record = _arrival_migration_fixture(
         enabled_entrypoints=("console", "feishu"),
     )
-    service = AutomationPluginManagementService(
-        catalog=SimpleNamespace(
-            require=lambda automation_id: {
-                "arrival_stats": source,
-                "arrival-stats-v2": target,
-            }[automation_id]
-        ),
-        lifecycle=SimpleNamespace(),
-        configuration=SimpleNamespace(
-            read=lambda _automation_id: replace(
-                source_record,
-                schedule={
-                    "kind": "daily_times",
-                    "times": ["18:30"],
-                    "enabled": True,
-                },
-                enabled_entrypoints=("console", "scheduler", "feishu"),
-            )
-        ),
-        worker_repository=SimpleNamespace(),
-        target_service=SimpleNamespace(),
-        package_repository=SimpleNamespace(),
-        storage=SimpleNamespace(),
+    schedule = {"kind": "daily_times", "times": ["18:30"], "enabled": True}
+    entrypoints, ownership, _ = migration_target_entrypoints_and_ownership(
+        source=source, target=target,
+        source_enabled_entrypoints=("console", "scheduler", "feishu"),
+        source_schedule=schedule, source_resource_bindings=source_record.resource_bindings,
     )
-
+    assert "daily_arrival_stats" in entrypoints
+    assert ownership["scheduler"] == {"source_enabled": True,
+        "target_contribution_id": "daily_arrival_stats", "schedule_mode": "COPY_SOURCE"}
+    assert ownership["owners"]["TESTING"]["scheduler"] == "ACTION_V1"
+    assert ownership["owners"]["CUTOVER"]["scheduler"] == "SERVICE_V2"
+    assert ownership["owners"]["ROLLED_BACK"]["scheduler"] == "ACTION_V1"
     with pytest.raises(PluginConflictError) as raised:
-        service.create_migration_pair(
-            migration_pair_id=str(uuid.uuid4()),
-            source_automation_id="arrival_stats",
-            target_automation_id="arrival-stats-v2",
-            business_key_fields=("__host_business_date",),
-            business_key_namespace="arrival-stats",
-            request_id=str(uuid.uuid4()),
-            reason="scheduler requires production reload authority",
-            actor=_console_actor(),
-        )
-
-    assert raised.value.code == "PLUGIN_MIGRATION_SCHEDULER_PRODUCTION_GATED"
+        migration_target_entrypoints_and_ownership(source=source, target=target,
+            source_enabled_entrypoints=("console",), source_schedule=schedule,
+            source_resource_bindings=source_record.resource_bindings)
+    assert raised.value.code == "PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE"
 
 
 def test_migration_binding_mapping_uses_only_the_reviewed_bijection() -> None:
@@ -182,14 +161,14 @@ def test_self_pickup_migration_maps_both_identical_account_contracts_explicitly(
             "daxiang_s_account_id": "daxiang-s-account",
         },
         source_roles=roles,
-        target_roles=tuple(reversed(roles)),
+        target_roles=tuple({**role, "role": mapping.account_roles[role["role"]]} for role in reversed(roles)),
         source_to_target_roles=mapping.account_roles,
         kind="account",
     )
 
     assert copied == {
-        "account_id": "primary-account",
-        "daxiang_s_account_id": "daxiang-s-account",
+        "self_pickup_primary": "primary-account",
+        "self_pickup_daxiang_s": "daxiang-s-account",
     }
     assert (
         reviewed_migration_binding_mapping(
@@ -209,7 +188,7 @@ def test_split_pending_migration_uses_only_its_reviewed_account_and_sheet_roles(
     )
 
     assert mapping is not None
-    assert dict(mapping.account_roles) == {"account_id": "account_id"}
+    assert dict(mapping.account_roles) == {"account_id": "split_pending_ronghui"}
     assert dict(mapping.resource_roles) == {
         "split_pending_source_sheet": "split_pending_source_sheet",
         "split_pending_target_sheet": "split_pending_target_sheet",
@@ -232,7 +211,7 @@ def test_scan_migration_uses_only_its_reviewed_exact_identity_and_account_role()
     )
 
     assert mapping is not None
-    assert dict(mapping.account_roles) == {"account_id": "account_id"}
+    assert dict(mapping.account_roles) == {"account_id": "scan_ronghui"}
     assert dict(mapping.resource_roles) == {}
     assert (
         reviewed_migration_binding_mapping(
@@ -244,7 +223,7 @@ def test_scan_migration_uses_only_its_reviewed_exact_identity_and_account_role()
     )
 
 
-def test_scan_migration_is_blocked_by_its_dedicated_preview_handoff_gate() -> None:
+def test_scan_migration_rejects_a_target_without_declared_preview_entrypoints() -> None:
     source = _entry(
         automation_id="scan_codes",
         plugin_id="sync_scan_codes",
@@ -263,7 +242,7 @@ def test_scan_migration_is_blocked_by_its_dedicated_preview_handoff_gate() -> No
             source_resource_bindings={},
         )
 
-    assert raised.value.code == "PLUGIN_MIGRATION_SCAN_PREVIEW_PRODUCTION_GATED"
+    assert raised.value.code == "PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE"
 
 
 def _self_pickup_migration_fixture() -> tuple[SimpleNamespace, SimpleNamespace]:
@@ -300,11 +279,10 @@ def _self_pickup_migration_fixture() -> tuple[SimpleNamespace, SimpleNamespace]:
     return source, target
 
 
-def test_self_pickup_enabled_feishu_selection_migration_is_production_gated() -> None:
+def test_self_pickup_enabled_feishu_selection_migration_preserves_exact_command_ownership() -> None:
     source, target = _self_pickup_migration_fixture()
 
-    with pytest.raises(PluginConflictError) as raised:
-        migration_target_entrypoints_and_ownership(
+    entrypoints, ownership, consumed = migration_target_entrypoints_and_ownership(
             source=source,
             target=target,
             source_enabled_entrypoints=("console", "feishu"),
@@ -315,10 +293,10 @@ def test_self_pickup_enabled_feishu_selection_migration_is_production_gated() ->
             },
         )
 
-    assert (
-        raised.value.code
-        == "PLUGIN_MIGRATION_FEISHU_SELECTION_PREVIEW_PRODUCTION_GATED"
-    )
+    assert entrypoints == ("execute_console", "execute_feishu")
+    assert ownership["feishu"]["source_enabled"] is True
+    assert ownership["owners"]["CUTOVER"]["feishu"] == "SERVICE_V2"
+    assert consumed == frozenset({"feishu_route"})
 
 
 def test_self_pickup_console_only_migration_keeps_feishu_unowned() -> None:
@@ -532,7 +510,7 @@ def test_arrival_migration_exactly_maps_business_roles_and_consumes_route_resour
     }
 
 
-def test_arrival_migration_enabled_webhook_is_explicitly_production_gated() -> None:
+def test_arrival_migration_cannot_drop_an_enabled_webhook_without_a_target() -> None:
     source, target, source_record = _arrival_migration_fixture(
         enabled_entrypoints=("console", "feishu", "webhook"),
     )
@@ -563,7 +541,7 @@ def test_arrival_migration_enabled_webhook_is_explicitly_production_gated() -> N
             actor=_console_actor(),
         )
 
-    assert raised.value.code == "PLUGIN_MIGRATION_WEBHOOK_PRODUCTION_GATED"
+    assert raised.value.code == "PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE"
 
 
 def test_migration_ownership_contract_keeps_unmigrated_scheduler_disabled() -> None:

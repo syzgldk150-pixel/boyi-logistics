@@ -168,12 +168,13 @@ def _yunda_dispatch_source_record() -> dict[str, Any]:
 
 
 def test_production_map_registers_only_available_closed_primitives() -> None:
+    from agent.automation_plugins.daily_sign_connectors_v2 import daily_sign_broker_action_keys
     handlers = build_production_first_party_core_handler_map(
         account_manager=_Manager(),
         cursor_secret=_SECRET,
         capability_authorizer=lambda _descriptor, _capability: None,
     )
-    assert set(handlers) == {
+    assert set(handlers) - daily_sign_broker_action_keys() == {
         ("ledger.invoke", "daily_sign.authoritative_sync"),
         ("ledger.invoke", "sync_daily_send_orders.lock.acquire"),
         ("ledger.invoke", "sync_daily_send_orders.lock.release"),
@@ -242,8 +243,9 @@ def test_production_map_registers_only_available_closed_primitives() -> None:
     }
     assert all(
         "run" not in action and "execute" not in action
-        for _operation, action in handlers
+        for _operation, action in set(handlers) - daily_sign_broker_action_keys()
     )
+    assert daily_sign_broker_action_keys() <= set(handlers)
     assert ("browser.invoke", "ronghui.child_count.read") not in handlers
 
 

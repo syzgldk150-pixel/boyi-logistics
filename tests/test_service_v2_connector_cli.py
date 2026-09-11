@@ -324,7 +324,7 @@ def test_connector_cli_is_opt_in_and_production_registry_remains_empty(
     assert ConnectorRegistry().snapshot() == ()
 
 
-def test_production_composition_constructs_an_empty_connector_registry() -> None:
+def test_production_composition_constructs_reviewed_connectors_without_fixture_backends() -> None:
     production_path = (
         Path(__file__).parents[1]
         / "agent"
@@ -353,8 +353,10 @@ def test_production_composition_constructs_an_empty_connector_registry() -> None
     constructor = registry_assignments[0].value
     assert isinstance(constructor, ast.Call)
     assert isinstance(constructor.func, ast.Name)
-    assert constructor.func.id == "ConnectorRegistry"
-    assert constructor.args == []
+    assert constructor.func.id == "build_production_connector_registry"
+    assert len(constructor.args) == 1
+    assert isinstance(constructor.args[0], ast.Name)
+    assert constructor.args[0].id == "broker_handlers"
     assert constructor.keywords == []
     assert not any(
         isinstance(node, ast.Name) and node.id == "build_fixture_tracking_registry"

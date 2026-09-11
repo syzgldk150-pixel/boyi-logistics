@@ -162,6 +162,7 @@ def test_binding_resolver_broker_resource_requires_exact_complete_revision() -> 
     assert descriptor == {
         "resource_id": "bitable-exact",
         "resource_kind": "feishu_bitable",
+        "kind": "feishu_bitable",
         "source": "automation-settings",
         "configuration_version": "4",
         "config_sha256": "d" * 64,

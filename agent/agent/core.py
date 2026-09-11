@@ -1,4 +1,4 @@
-"""Compatibility facade for chat and legacy tool callers.
+"""Composition facade for the common chat engine and direct business readers.
 
 Registered readers return data directly. Installed plugins are invoked through
 the signed plugin interface; historical Command access is retained only for
@@ -8,23 +8,10 @@ explicit work-item inspection and administration.
 from __future__ import annotations
 
 import datetime as dt
-import json
 import logging
-import os
-import time
-import uuid
 from collections.abc import Callable, Mapping
 from typing import Any, Optional
 
-from agent.direct_tool_router import (
-    BUSINESS_FINANCE_WRITE_RE,
-    business_finance_request_from_text,
-    business_operations_request_from_text,
-    direct_tool_request_from_text,
-    format_business_operations_summary_reply,
-    format_tool_reply,
-    parse_login_send_code_session,
-)
 from agent.llm_client import LLMClient
 from agent.direct_readers import invoke_registered_reader
 from agent.finance_brain import FinanceBrain
@@ -37,11 +24,8 @@ from agent.orchestration.models import (
     Command,
     OrchestrationError,
     RunStatus,
-    new_id,
 )
 from agent.tool_registry import ToolRegistry
-from shared.redaction import redact_text
-from agent.plugin_conversations import PLUGIN_CHAT_INSTRUCTIONS
 
 
 logger = logging.getLogger("agent")
@@ -57,7 +41,7 @@ WAITING_STATUSES = {
 
 
 class AgentCore:
-    """Chat and legacy API facade backed by the durable control plane."""
+    """One chat engine for both channels, with independently invoked readers."""
 
     def __init__(
         self,
@@ -70,9 +54,6 @@ class AgentCore:
         self.memory = Memory()
         self.finance_brain: FinanceBrain | None = None
         self._feishu_connected = False
-        self._system_prompt = ""
-        self._tool_selection_prompt = ""
-        self._business_rules = ""
         # Closed host readers are direct requests. Plugins use their dedicated
         # signed invocation entrypoints and never the historical Command path.
         self._direct_tool_runners = dict(direct_tool_runners or {})
@@ -118,7 +99,6 @@ class AgentCore:
         self._plugin_conversations = service
 
     async def init(self) -> None:
-        self._load_prompts()
         try:
             self.memory.init()
             await self.llm.bind_repository(
@@ -132,10 +112,9 @@ class AgentCore:
             logger.error("MySQL connection failed; conversation memory is unavailable: %s", exc)
 
     def reload_runtime_config(self) -> dict[str, Any]:
-        self._load_prompts()
         self.registry.load()
         return {
-            "prompts": ["system.md", "tool_selection.md", "business_rules.md"],
+            "chat_engine": "unified",
             "tools": self.registry.list_tools(),
         }
 
@@ -144,334 +123,26 @@ class AgentCore:
 
         return await self.llm.reload_config()
 
-    def _load_prompts(self) -> None:
-        base = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")
-        for attr, filename in (
-            ("_system_prompt", "system.md"),
-            ("_tool_selection_prompt", "tool_selection.md"),
-            ("_business_rules", "business_rules.md"),
-        ):
-            path = os.path.join(base, filename)
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as handle:
-                    setattr(self, attr, handle.read())
-                logger.info("Loaded prompt: %s", filename)
+    def configure_conversations(self, service) -> None:
+        """Bind the single chat engine shared by Console and Feishu."""
+        self._conversations = service
 
     async def handle_message(
-        self,
-        message: str,
-        user_id: str = "unknown",
-        conversation_id: Optional[str] = None,
-        *,
-        actor: Actor | None = None,
-        source: str = "legacy_api",
-        request_id: str | None = None,
+        self, message: str, user_id: str = "unknown", conversation_id: Optional[str] = None,
+        *, actor: Actor | None = None, source: str = "legacy_api", request_id: str | None = None,
     ) -> dict[str, Any]:
-        """Handle chat while allowing the LLM to select only exposed reads."""
-
-        started = time.monotonic()
-        trusted_actor = actor or Actor(ActorType.LEGACY_API, str(user_id or "unknown"))
-        browser_request_id = str(request_id or uuid.uuid4())
-        try:
-            conv_id = self.memory.get_or_create_conversation(user_id, conversation_id)
-        except Exception:
-            conv_id = conversation_id or "temp"
-        try:
-            history = self.memory.get_recent_messages(conv_id, limit=10)
-        except Exception:
-            history = []
-
-        knowledge_context = ""
-        try:
-            knowledge = self.memory.search_knowledge(message, limit=3)
-            if knowledge:
-                knowledge_context = "\n\n相关知识：\n" + "\n".join(
-                    f"- [{item['category']}] {item['content']}" for item in knowledge
-                )
-        except Exception:
-            pass
-
-        system_content = "\n\n".join(
-            part
-            for part in (
-                self._system_prompt,
-                self._tool_selection_prompt,
-                self._business_rules,
-                knowledge_context,
-            )
-            if part
-        )
-        messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
-        messages.extend(history)
-        messages.append({"role": "user", "content": message})
-        try:
-            self.memory.save_message(conv_id, "user", message)
-        except Exception:
-            pass
-
-        direct_request = direct_tool_request_from_text(message)
-        if direct_request:
-            if direct_request.get("automation_route_key"):
-                # Project identity/generation may only be created by the
-                # trusted Feishu/Console/Scheduler/Webhook adapters.  A chat,
-                # generic command, or LLM path must never turn a familiar
-                # phrase into a project invocation.
-                final_content = UNKNOWN_EXECUTION_REPLY
-                self._save_assistant_message(conv_id, final_content)
-                return {
-                    "reply": final_content,
-                    "conversation_id": conv_id,
-                    "duration_s": round(time.monotonic() - started, 2),
-                    "executed_tools": [],
-                }
-            tool_name = str(direct_request["tool_name"])
-            params = dict(direct_request["params"])
-            local_result = direct_request.get("local_result")
-            if isinstance(local_result, dict):
-                tool_result = local_result
-            else:
-                tool_result = await self.execute_tool(
-                    tool_name,
-                    params,
-                    actor=trusted_actor,
-                    source=source,
-                    idempotency_key=self._entry_idempotency_key(
-                        trusted_actor,
-                        source,
-                        "chat",
-                        browser_request_id,
-                    ),
-                )
-            final_content = format_tool_reply(tool_name, tool_result)
-            self._save_assistant_message(conv_id, final_content)
-            return {
-                "reply": final_content,
-                "conversation_id": conv_id,
-                "duration_s": round(time.monotonic() - started, 2),
-                "executed_tools": [{"tool_name": tool_name, "params": params, "result": tool_result}],
-            }
-
-        if parse_login_send_code_session(message):
-            final_content = "1. 大祥账号\n2. 操作场账号\n3. 韵达账号"
-            self._save_assistant_message(conv_id, final_content)
-            return {
-                "reply": final_content,
-                "conversation_id": conv_id,
-                "duration_s": round(time.monotonic() - started, 2),
-            }
-
-        operations_request = business_operations_request_from_text(
-            message,
-            today=self._today_provider(),
-        )
-        if operations_request is not None:
-            fixed_reply = operations_request.get("reply")
-            if fixed_reply:
-                final_content = str(fixed_reply)
-                executed_tools: list[dict[str, Any]] = []
-            elif not self._can_query_business_finance(trusted_actor, source=source):
-                final_content = "你没有财务查询权限，请联系管理员完成飞书账号绑定。"
-                executed_tools = []
-            else:
-                finance_params = dict(operations_request["params"])
-                operations_params = {
-                    name: finance_params[name]
-                    for name in ("start_date", "end_date")
-                }
-                finance_result = await self.execute_tool(
-                    "query_business_finance",
-                    finance_params,
-                    actor=trusted_actor,
-                    source=source,
-                    idempotency_key=self._entry_idempotency_key(
-                        trusted_actor, source, "business-summary-finance", browser_request_id
-                    ),
-                )
-                operations_result = await self.execute_tool(
-                    "query_automation_operations",
-                    operations_params,
-                    actor=trusted_actor,
-                    source=source,
-                    idempotency_key=self._entry_idempotency_key(
-                        trusted_actor, source, "business-summary-operations", browser_request_id
-                    ),
-                )
-                final_content = format_business_operations_summary_reply(finance_result, operations_result)
-                executed_tools = [
-                    {"tool_name": "query_business_finance", "params": finance_params, "result": finance_result},
-                    {"tool_name": "query_automation_operations", "params": operations_params, "result": operations_result},
-                ]
-            self._save_assistant_message(conv_id, final_content)
-            return {
-                "reply": final_content,
-                "conversation_id": conv_id,
-                "duration_s": round(time.monotonic() - started, 2),
-                "executed_tools": executed_tools,
-            }
-
-        finance_request = business_finance_request_from_text(
-            message,
-            today=self._today_provider(),
-        )
-        if (finance_request is not None and BUSINESS_FINANCE_WRITE_RE.search(message)
-                and self._plugin_conversations is not None and source == "feishu"
-                and trusted_actor.authenticated_by == "feishu_admin_binding"
-                and trusted_actor.roles == ("admin", "super_admin")):
-            finance_request = None  # Selection goes through the installed plugin catalog.
-        if finance_request is not None:
-            fixed_reply = finance_request.get("reply")
-            if fixed_reply:
-                final_content = str(fixed_reply)
-                executed_tools: list[dict[str, Any]] = []
-            elif not self._can_query_business_finance(
-                trusted_actor,
-                source=source,
-            ):
-                final_content = "你没有财务查询权限，请联系管理员完成飞书账号绑定。"
-                executed_tools = []
-            else:
-                params = dict(finance_request["params"])
-                tool_result = await self.execute_tool(
-                    "query_business_finance",
-                    params,
-                    actor=trusted_actor,
-                    source=source,
-                    idempotency_key=self._entry_idempotency_key(
-                        trusted_actor,
-                        source,
-                        "chat",
-                        browser_request_id,
-                    ),
-                )
-                final_content = format_tool_reply("query_business_finance", tool_result)
-                executed_tools = [
-                    {
-                        "tool_name": "query_business_finance",
-                        "params": params,
-                        "result": tool_result,
-                    }
-                ]
-            self._save_assistant_message(conv_id, final_content)
-            return {
-                "reply": final_content,
-                "conversation_id": conv_id,
-                "duration_s": round(time.monotonic() - started, 2),
-                "executed_tools": executed_tools,
-            }
-
-        tools = self.registry.get_openai_tools() or []
-        plugin_turn = None
-        if (self._plugin_conversations is not None and source == "feishu"
-                and trusted_actor.authenticated_by == "feishu_admin_binding"
-                and trusted_actor.roles == ("admin", "super_admin")):
-            plugin_turn = self._plugin_conversations.turn(actor=trusted_actor, source=source, request_id=browser_request_id)
-            tools = [*tools, *plugin_turn.model_tools()]
-            messages[0]["content"] += "\n以下已安装插件可通过可信入口执行，替代此前只读限制；普通业务工具仍只读。\n" + PLUGIN_CHAT_INSTRUCTIONS
-        final_content = ""
-        executed_tool_calls = 0
-        executed_tool_results: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
-        for round_index in range(MAX_TOOL_ROUNDS + 1):
-            llm_result = await self.llm.chat(messages, tools=tools)
-            content = str(llm_result.get("content") or "")
-            tool_calls = llm_result.get("tool_calls")
-            if not tool_calls:
-                if executed_tool_calls == 0:
-                    final_content = (redact_text(content) + "\n本次未发起插件执行。") if plugin_turn and content.strip() else UNKNOWN_EXECUTION_REPLY
-                    logger.warning(
-                        "Blocked unverified LLM reply user=%s conversation=%s",
-                        user_id,
-                        conv_id,
-                    )
-                else:
-                    final_content = "\n\n".join(
-                        format_tool_reply(tool_name, result)
-                        for tool_name, _arguments, result in executed_tool_results
-                    )
-                break
-
-            if plugin_turn:
-                plugin_calls = []
-                for call in tool_calls:
-                    function = call.get("function", {})
-                    name = function.get("name", "")
-                    if name in plugin_turn.choices:
-                        try:
-                            arguments = json.loads(function.get("arguments", "{}"))
-                        except (ValueError, TypeError) as exc:
-                            raise OrchestrationError("PLUGIN_ARGUMENTS_INVALID", "插件参数无效，本次未发起执行") from exc
-                        plugin_calls.append((name, arguments))
-                if plugin_calls:
-                    selected = plugin_turn.select(plugin_calls)
-                    # Only the trusted Feishu transport may consume these objects.
-                    return {"reply": "", "conversation_id": conv_id, "executed_tools": [], "plugin_requests": selected}
-
-            assistant_message: dict[str, Any] = {"role": "assistant", "content": content}
-            assistant_message["tool_calls"] = [
-                {"id": call["id"], "type": "function", "function": call["function"]}
-                for call in tool_calls
-            ]
-            messages.append(assistant_message)
-            for call_index, call in enumerate(tool_calls):
-                function = call.get("function") if isinstance(call, Mapping) else None
-                func_name = str((function or {}).get("name") or "")
-                raw_arguments = (function or {}).get("arguments")
-                try:
-                    func_args = json.loads(raw_arguments)
-                    if not isinstance(func_args, dict):
-                        raise ValueError("tool arguments must be an object")
-                except (json.JSONDecodeError, TypeError, ValueError) as exc:
-                    tool_result = {
-                        "success": False,
-                        "error_code": "INVALID_TOOL_ARGUMENTS",
-                        "error": redact_text(exc),
-                    }
-                else:
-                    if self.registry.get_capability(func_name) is None:
-                        tool_result = {
-                            "success": False,
-                            "error_code": "UNKNOWN_TOOL",
-                            "error": f"未知工具: {func_name}",
-                        }
-                    else:
-                        key = self._entry_idempotency_key(
-                            trusted_actor,
-                            source,
-                            "chat",
-                            f"{browser_request_id}:{round_index}:{call_index}",
-                        )
-                        tool_result = await self.execute_tool(
-                            func_name,
-                            func_args,
-                            actor=trusted_actor,
-                            source=source,
-                            idempotency_key=key,
-                            llm_selected=True,
-                        )
-                        executed_tool_calls += 1
-                        executed_tool_results.append((func_name, func_args, tool_result))
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": str(call.get("id") or new_id()),
-                        "content": json.dumps(tool_result, ensure_ascii=False)[:5000],
-                    }
-                )
-
-        if not final_content and executed_tool_results:
-            final_content = "\n\n".join(
-                format_tool_reply(tool_name, result)
-                for tool_name, _arguments, result in executed_tool_results
-            )
-        self._save_assistant_message(conv_id, final_content)
-        return {
-            "reply": final_content,
-            "conversation_id": conv_id,
-            "duration_s": round(time.monotonic() - started, 2),
-            "executed_tools": [
-                {"tool_name": name, "params": arguments, "result": result}
-                for name, arguments, result in executed_tool_results
-            ],
-        }
+        import asyncio
+        from agent.channel_chat import reply_to_console, reply_to_feishu
+        service = getattr(self, "_conversations", None)
+        if service is None:
+            raise RuntimeError("AI 对话服务未初始化")
+        if source == "console":
+            return await asyncio.to_thread(reply_to_console, service, actor=actor,
+                session_id=conversation_id, request_id=request_id, message=message)
+        if source == "feishu":
+            return await asyncio.to_thread(reply_to_feishu, service, actor=actor,
+                chat_id=conversation_id, event_id=request_id, message=message)
+        raise ValueError("AI 对话需要已验证的后台或飞书身份")
 
     async def execute_tool(
         self,
@@ -495,6 +166,7 @@ class AgentCore:
                 catalog=self.registry, name=tool_name, arguments=params, handler=direct_runner,
                 actor=actor, source=source, llm_selected=llm_selected, timeout_seconds=timeout_seconds,
                 invocations=self._direct_invocations,
+                identity_access=getattr(self, "identity_access", None),
             )
         # Writes and installed plugins have their own explicit, authenticated
         # interface. Do not turn an unregistered ordinary request into a Run.
@@ -671,22 +343,6 @@ class AgentCore:
         if source == "feishu":
             return f"feishu:{command_type}:{request_id}"
         return f"{source}:{actor.actor_id}:{command_type}:{request_id}"
-
-    def _save_assistant_message(self, conversation_id: str, content: str) -> None:
-        try:
-            self.memory.save_message(conversation_id, "assistant", content)
-        except Exception:
-            pass
-
-    @staticmethod
-    def _can_query_business_finance(actor: Actor, *, source: str) -> bool:
-        has_admin_role = bool({"admin", "super_admin"}.intersection(actor.roles))
-        return (
-            source == "feishu"
-            and actor.actor_type is ActorType.FEISHU_USER
-            and actor.authenticated_by == "feishu_admin_binding"
-            and has_admin_role
-        )
 
 
 def _waiting_message(status: str) -> str:

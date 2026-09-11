@@ -352,11 +352,19 @@ class _LeaseRegistry:
                 nonce_sha256=nonce_sha256,
                 expires_at=now + _LEASE_SECONDS,
             )
+        if context.on_completion is not None:
+            context.on_completion(lambda: self._release_completed(owner, nonce_sha256))
         return self._codec.encode(
             context,
             "lease",
             {"nonce": nonce, "owner": list(owner)},
         )
+
+    def _release_completed(self, owner: tuple[str, str], digest: str) -> None:
+        """Release only this invocation after all real Host calls have stopped."""
+        with self._lock:
+            if self._lease is not None and self._lease.owner == owner and hmac.compare_digest(self._lease.nonce_sha256, digest):
+                self._lease = None
 
     def release(
         self,

@@ -91,14 +91,7 @@ class DailySignPersistenceReadbackError(RuntimeError):
     """A daily-sign persistence terminal state cannot be proven."""
 
 
-def _json(value: Any) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        default=str,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+from tools.daily_sign_material import _json, snapshot_fingerprint
 
 
 def _daily_sign_connect():
@@ -107,11 +100,6 @@ def _daily_sign_connect():
     if callable(set_autocommit):
         set_autocommit(False)
     return connection
-
-
-def snapshot_fingerprint(rows: Iterable[dict[str, Any]]) -> str:
-    material = sorted(_json(row) for row in rows)
-    return hashlib.sha256("\n".join(material).encode("utf-8")).hexdigest()
 
 
 def _json_value(value: Any) -> Any:
@@ -1647,9 +1635,9 @@ def verify_daily_sign_completed_run(
     }
 
 
-def start_sync_run() -> tuple[str, datetime]:
+def start_sync_run(*, run_id: str | None = None) -> tuple[str, datetime]:
     ensure_daily_sign_tables()
-    run_id = str(uuid.uuid4())
+    run_id = str(uuid.uuid4()) if run_id is None else str(uuid.UUID(run_id))
     started_at = business_now()
     connection = _daily_sign_connect()
     try:

@@ -26,6 +26,7 @@ from agent.harness.sessions import InMemoryHarnessSessionRepository
 from agent.harness.sidecar import SidecarResult
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from shared.redaction import redact_text
+from shared.identity_permissions import tool_permission, plugin_permission
 
 
 MEMORY_ONLY = "MEMORY_ONLY"
@@ -115,6 +116,15 @@ def bind_signed_console_admin(actor: object) -> Actor:
     return _normalize_admin_actor(actor)
 
 
+def _normalize_chat_actor(actor: object) -> Actor:
+    """Accept authenticated channels without turning Feishu into a Console user."""
+    if isinstance(actor, Actor) and actor.actor_type is ActorType.FEISHU_USER:
+        if actor.authenticated_by != "feishu_admin_binding" or not _ADMIN_ROLES.intersection(actor.roles):
+            raise _error("飞书账号没有绑定有效身份", "HARNESS_PRINCIPAL_INVALID")
+        return actor
+    return _normalize_admin_actor(actor)
+
+
 def _principal_fingerprint(actor: Actor) -> tuple[str, str, tuple[str, ...], str]:
     return (
         actor.actor_type.value,
@@ -187,6 +197,7 @@ class HarnessMessageReceipt:
     replayed: bool
     tool_calls: int
     plugin_invocations: tuple[Mapping[str, Any], ...] = ()
+    plugin_requests: tuple[object, ...] = ()
 
     @property
     def session_id(self) -> str:
@@ -221,6 +232,8 @@ class HarnessConversationService:
         sidecar_factory: HarnessSidecarFactory | None = None,
         timeout_seconds: int = 5,
         plugin_conversations=None,
+        identity_access=None,
+        text_queries=None,
     ) -> None:
         if not isinstance(repository, InMemoryHarnessSessionRepository):
             raise TypeError("HarnessConversationService requires the memory-only repository")
@@ -238,12 +251,29 @@ class HarnessConversationService:
         )
         self._timeout_seconds = timeout_seconds
         self._lock = RLock()
+        self._session_locks: dict[str, RLock] = {}
         self._session_principals: dict[str, tuple[str, str, tuple[str, ...], str]] = {}
         self._message_tool_calls: dict[str, int] = {}
         self._message_plugins: dict[str, tuple[Mapping[str, Any], ...]] = {}
+        self._message_plugin_requests: dict[str, tuple[object, ...]] = {}
         self._pending_sidecars: dict[str, HarnessSidecar] = {}
         self._session_invocations: dict[str, set[str]] = {}
         self._plugin_conversations = plugin_conversations
+        self._identity_access = identity_access
+        self._text_queries = text_queries
+
+    def _chat_actor(self, actor: Actor) -> Actor:
+        actor = _normalize_chat_actor(actor)
+        if self._identity_access is not None and not self._identity_access.allows(actor, "ai.chat"):
+            raise _error("当前身份没有 AI 对话权限", "HARNESS_PERMISSION_DENIED")
+        return actor
+
+    def _session_lock(self, session_id: str):
+        with self._lock:
+            lock = self._session_locks.get(session_id)
+        if lock is None:
+            raise _error("Session principal binding is unavailable", "HARNESS_PRINCIPAL_MISMATCH")
+        return lock
 
     @property
     def plugin_execution_enabled(self) -> bool:
@@ -251,6 +281,7 @@ class HarnessConversationService:
 
     def plugin_action(self, *, actor: Actor, session_id: str, invocation_id: str, request_id: str, action: str, selected_indices: list[int]) -> dict[str, Any]:
         bound_actor = _normalize_admin_actor(actor)
+        self._chat_actor(bound_actor)
         session_id = canonical_uuid(session_id, field_name="session_id")
         invocation_id = canonical_uuid(invocation_id, field_name="invocation_id")
         request_id = canonical_uuid(request_id, field_name="request_id")
@@ -258,7 +289,8 @@ class HarnessConversationService:
                 or len(selected_indices) > 100 or any(type(index) is not int or index < 0 for index in selected_indices)
                 or len(set(selected_indices)) != len(selected_indices) or (action != "confirm" and selected_indices)):
             raise _error("插件操作参数无效", "HARNESS_PLUGIN_REQUEST_INVALID")
-        with self._lock:
+        with self._session_lock(session_id):
+            self._chat_actor(bound_actor)
             if self._plugin_conversations is None or self._session_principals.get(session_id) != _principal_fingerprint(bound_actor):
                 raise _error("会话权限不匹配", "HARNESS_PRINCIPAL_MISMATCH")
             self._repository.get(principal_id=bound_actor.actor_id, session_id=session_id)
@@ -273,7 +305,7 @@ class HarnessConversationService:
             return result
 
     def create_session(self, *, actor: Actor, request_id: str) -> HarnessSessionReceipt:
-        bound_actor = _normalize_admin_actor(actor)
+        bound_actor = self._chat_actor(actor)
         safe_request_id = canonical_uuid(request_id, field_name="request_id")
         with self._lock:
             session = self._repository.create_or_get(
@@ -285,6 +317,7 @@ class HarnessConversationService:
             if previous is not None and previous != fingerprint:
                 raise _error("Session principal binding changed", "HARNESS_PRINCIPAL_MISMATCH")
             self._session_principals[session.session_id] = fingerprint
+            self._session_locks.setdefault(session.session_id, RLock())
             return HarnessSessionReceipt(
                 session=session,
                 request_id=safe_request_id,
@@ -299,12 +332,13 @@ class HarnessConversationService:
         request_id: str,
         message: str,
     ) -> HarnessMessageReceipt:
-        bound_actor = _normalize_admin_actor(actor)
+        bound_actor = self._chat_actor(actor)
         safe_session_id = canonical_uuid(session_id, field_name="session_id")
         safe_request_id = canonical_uuid(request_id, field_name="request_id")
         if not isinstance(message, str) or not message.strip():
             raise _error("Harness message must be text", "HARNESS_MESSAGE_INVALID")
-        with self._lock:
+        with self._session_lock(safe_session_id):
+            self._chat_actor(bound_actor)
             fingerprint = self._session_principals.get(safe_session_id)
             if fingerprint is None:
                 # Never infer an authorization binding from the repository's
@@ -347,7 +381,18 @@ class HarnessConversationService:
                     replayed=True,
                     tool_calls=self._message_tool_calls[assistant_id],
                     plugin_invocations=self._message_plugins.get(assistant_id, ()),
+                    plugin_requests=self._message_plugin_requests.get(assistant_id, ()),
                 )
+
+            clearing = message.strip() == "清空会话"
+            if clearing:
+                old_session = self._repository.clear_messages(principal_id=bound_actor.actor_id, session_id=safe_session_id)
+                for old_message in old_session.messages:
+                    for cache in (self._message_tool_calls, self._message_plugins, self._message_plugin_requests, self._pending_sidecars):
+                        cache.pop(old_message.message_id, None)
+                # This only clears model context. Running plugins and their durable
+                # execution records remain available in the automation module.
+                self._session_invocations.pop(safe_session_id, None)
 
             user_message = HarnessMessage(
                 role="user",
@@ -378,11 +423,14 @@ class HarnessConversationService:
                 )
             )
             sidecar = self._pending_sidecars.get(assistant_id)
-            if sidecar is None:
+            fixed_result = (SidecarResult("已清空会话。已发起的插件继续执行，结果可在自动化记录中查看。", 0)
+                            if clearing else self._text_queries.reply(bound_actor, message, safe_request_id)
+                            if self._text_queries is not None else None)
+            if sidecar is None and fixed_result is None:
                 sidecar = self._build_sidecar(bound_actor, safe_request_id)
                 self._pending_sidecars[assistant_id] = sidecar
             try:
-                result = sidecar.run(
+                result = fixed_result if fixed_result is not None else sidecar.run(
                     messages=session_with_user.messages,
                     timeout_seconds=self._timeout_seconds,
                 )
@@ -409,6 +457,7 @@ class HarnessConversationService:
             )
             self._message_tool_calls[assistant_id] = result.tool_calls
             self._message_plugins[assistant_id] = result.plugin_invocations
+            self._message_plugin_requests[assistant_id] = result.plugin_requests
             self._session_invocations.setdefault(safe_session_id, set()).update(
                 item["invocation_id"] for item in result.plugin_invocations if item.get("invocation_id")
             )
@@ -417,6 +466,7 @@ class HarnessConversationService:
                 principal_id=bound_actor.actor_id,
                 session_id=safe_session_id,
             )
+            self._chat_actor(bound_actor)
             return HarnessMessageReceipt(
                 session=final_session,
                 user_message=user_message,
@@ -425,6 +475,7 @@ class HarnessConversationService:
                 replayed=False,
                 tool_calls=result.tool_calls,
                 plugin_invocations=result.plugin_invocations,
+                plugin_requests=result.plugin_requests,
             )
 
     def _build_sidecar(self, actor: Actor, request_id: str) -> HarnessSidecar:
@@ -607,7 +658,7 @@ class TrustedHarnessInvocationAdapter:
         allowed_dynamic_handles: Iterable[ManagedToolHandle] | None = None,
     ) -> None:
         self._policy_service = policy_service
-        self._actor = _normalize_admin_actor(actor)
+        self._actor = _normalize_chat_actor(actor)
         self._base_request_id = canonical_uuid(base_request_id, field_name="request_id")
         self._call_index = 0
         self._lock = RLock()
@@ -617,6 +668,20 @@ class TrustedHarnessInvocationAdapter:
             else frozenset(allowed_dynamic_handles)
         )
         self._fixed_handlers = self._normalize_fixed_handlers(fixed_handlers)
+
+    def visible_tool_filter(self):
+        authority = getattr(self._policy_service, "identity_access", None)
+        if authority is None:
+            return None
+        access = authority.for_actor(self._actor)
+        def allowed(handle):
+            if type(handle) is _FixedHarnessHandle:
+                return access.allows(tool_permission(handle._handle_id))
+            if type(handle) is ManagedToolHandle:
+                entry = self._policy_service._plugin_catalog.require(handle.automation_id)
+                return access.allows(plugin_permission(entry.plugin_id, management=entry.management, entrypoint="harness"))
+            return False
+        return allowed
 
     @staticmethod
     def _normalize_fixed_handlers(
@@ -711,6 +776,9 @@ class TrustedHarnessInvocationAdapter:
         handle: _FixedHarnessHandle,
         arguments: Mapping[str, Any],
     ) -> Mapping[str, Any]:
+        authority = getattr(self._policy_service, "identity_access", None)
+        if authority is not None and not authority.allows(self._actor, tool_permission(handle._handle_id)):
+            raise _error("当前身份没有该查询权限", "HARNESS_PERMISSION_DENIED")
         safe_arguments = _validate_fixed_arguments(handle._handle_id, arguments)
         handler = self._fixed_handlers.get(handle._handle_id)
         if handler is None:

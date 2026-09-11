@@ -8,6 +8,8 @@ from console.navigation import (
     serialize_mobile_bottom_nav,
     validate_mobile_bottom_nav,
 )
+from shared.identity_permissions import access_from_row
+from shared.identity_routes import console_permissions
 
 
 class AuthServiceMixin:
@@ -66,7 +68,19 @@ class AuthServiceMixin:
     def _ensure_authorized(self, handler: BaseHTTPRequestHandler) -> bool:
         user = self._authenticated_user_from_request(handler)
         if user:
-            return True
+            path = urlparse(handler.path).path.rstrip("/") or "/"
+            permissions = console_permissions(getattr(handler, "command", "GET"), path)
+            if "" in permissions or self._is_super_admin_user(user) or any(p in user.get("access_permissions", ()) for p in permissions):
+                return True
+            if path in {"/", "/portal"}:
+                navigation = self._business_module_navigation(user)
+                if navigation:
+                    self._redirect(handler, navigation[0]["route"])
+                else:
+                    self._send_html(handler, self.template_env.get_template("identity_no_access.html").render(app_title=self.settings.app_title))
+                return False
+            self._send_json(handler, HTTPStatus.FORBIDDEN, {"ok": False, "message": "当前身份没有此功能权限，请联系超级管理员。", "error_code": "IDENTITY_PERMISSION_DENIED"})
+            return False
 
         if self._is_ajax_request(handler):
             self._send_json(
@@ -112,6 +126,7 @@ class AuthServiceMixin:
             "control_plane_role": str(session.get("control_plane_role") or "admin"),
             "role": str(session.get("role") or "admin"),
             "is_legacy_basic_auth": False,
+            **access_from_row(session).public(),
         }
         self._set_current_admin_user(handler, user)
         return user
@@ -365,39 +380,25 @@ class AuthServiceMixin:
         *,
         binding_challenge: dict[str, Any] | None = None,
     ) -> None:
-        session_user = current_admin_user() or {}
-        is_super_admin = str(
-            session_user.get("control_plane_role") or session_user.get("role") or ""
-        ) == "super_admin"
-        binding_status: dict[str, Any] = {}
-        if is_super_admin:
-            result = self._agent_request(
-                "GET",
-                "/internal/v1/admin/feishu-approval-binding",
-                timeout=12,
-            )
-            if result.get("ok") and isinstance(result.get("data"), dict):
-                binding_status = dict(result["data"])
-        template = self.template_env.get_template("admin_accounts.html")
-        body = template.render(
-            app_title=self.settings.app_title,
-            users=self.repository.list_admin_users(),
-            is_super_admin=is_super_admin,
-            feishu_binding=binding_status,
-            binding_challenge=binding_challenge,
-            message=query.get("message", [""])[0],
-            message_kind=query.get("kind", ["info"])[0],
-        )
-        self._send_html(handler, body)
+        self._render_identity_accounts(handler, query, binding_challenge=binding_challenge)
 
     def _handle_feishu_approval_binding(self, handler: BaseHTTPRequestHandler, *, revoke: bool) -> None:
+        if not self._identity_form_allowed(handler):
+            return
+        from console.services.identities import binding_target
+        values = self._parse_urlencoded_form(handler)
+        try:
+            payload = {} if revoke else {**binding_target(values.get("target", "")), "label": values.get("label", "")}
+        except ValueError as exc:
+            self._redirect_with_message(handler, "/settings/accounts", str(exc), "warning")
+            return
         method = "DELETE" if revoke else "POST"
         endpoint = (
             "/internal/v1/admin/feishu-approval-binding"
             if revoke
             else "/internal/v1/admin/feishu-approval-binding/challenge"
         )
-        result = self._agent_request(method, endpoint, payload={}, timeout=12)
+        result = self._agent_request(method, endpoint, payload=payload, timeout=12)
         if not result.get("ok") or not isinstance(result.get("data"), dict):
             self._redirect(
                 handler,
@@ -1169,12 +1170,16 @@ class AuthServiceMixin:
         return None
 
     def _handle_admin_account_create(self, handler: BaseHTTPRequestHandler) -> None:
-        if not self._require_super_admin_account_write(handler):
+        if not self._identity_form_allowed(handler):
             return
         values = self._parse_urlencoded_form(handler)
         username = str(values.get("username", "") or "").strip()
         display_name = str(values.get("display_name", "") or "").strip()
         password = str(values.get("password", "") or "")
+        role_id = str(values.get("access_role_id") or "")
+        if not any(row["role_id"] == role_id and row["is_active"] for row in self.repository.identities.list_roles()):
+            self._redirect_with_message(handler, "/settings/accounts", "请先选择一个已启用的身份。", "warning")
+            return
         if not ADMIN_USERNAME_RE.fullmatch(username):
             self._redirect_with_message(handler, "/settings/accounts", "账号需为 3-64 位字母、数字、点、下划线、@ 或短横线。", "warning")
             return
@@ -1189,11 +1194,12 @@ class AuthServiceMixin:
             display_name=display_name or username,
             password_hash=hash_admin_password(password),
             is_active=True,
+            access_role_id=role_id,
         )
         self._redirect_with_message(handler, "/settings/accounts", f"账号已创建：{username}", "success")
 
     def _handle_admin_account_toggle(self, handler: BaseHTTPRequestHandler, path: str) -> None:
-        if not self._require_super_admin_account_write(handler):
+        if not self._identity_form_allowed(handler):
             return
         user_id = self._parse_admin_user_id(path, "toggle")
         if user_id is None:
@@ -1213,7 +1219,7 @@ class AuthServiceMixin:
         self._redirect_with_message(handler, "/settings/accounts", message, "success")
 
     def _handle_admin_account_reset_password(self, handler: BaseHTTPRequestHandler, path: str) -> None:
-        if not self._require_super_admin_account_write(handler):
+        if not self._identity_form_allowed(handler):
             return
         user_id = self._parse_admin_user_id(path, "reset-password")
         if user_id is None:
@@ -1231,6 +1237,8 @@ class AuthServiceMixin:
         self._redirect_with_message(handler, "/settings/accounts", "密码已重置，原有会话已失效。", "success")
 
     def _handle_admin_account_role(self, handler: BaseHTTPRequestHandler, path: str) -> None:
+        if not self._identity_form_allowed(handler):
+            return
         current_user = current_admin_user() or {}
         if bool(current_user.get("is_legacy_basic_auth")) or str(current_user.get("role") or "") != "super_admin":
             self._send_text(handler, HTTPStatus.FORBIDDEN, "Super administrator permission is required.")
@@ -1240,6 +1248,14 @@ class AuthServiceMixin:
             self._send_text(handler, HTTPStatus.NOT_FOUND, "Admin account not found.")
             return
         values = self._parse_urlencoded_form(handler)
+        if "access_role_id" in values:
+            try:
+                self.repository.identities.assign_account(user_id, values["access_role_id"])
+            except ValueError as exc:
+                self._redirect_with_message(handler, "/settings/accounts", str(exc), "warning")
+                return
+            self._redirect_with_message(handler, "/settings/accounts", "账号身份已更新，新请求立即使用新权限。", "success")
+            return
         role = str(values.get("role") or "").strip()
         if role not in {"admin", "super_admin"}:
             self._redirect_with_message(handler, "/settings/accounts", "管理员角色无效。", "warning")

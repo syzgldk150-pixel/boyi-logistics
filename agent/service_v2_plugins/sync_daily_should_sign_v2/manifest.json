@@ -1,0 +1,257 @@
+{
+  "schema_version": 2,
+  "runtime_model": "service_v2",
+  "plugin_id": "sync_daily_should_sign_v2",
+  "name": "每日应签",
+  "version": "2.0.0",
+  "description": "插件完成每日应签来源分页、到货与签收判断、应签时间计算和飞书表核验；宿主仅提供已绑定的数据读写接口。",
+  "host_api": {
+    "minimum": "2.0.0",
+    "maximum_exclusive": "3.0.0"
+  },
+  "runtime": {
+    "kind": "python_subprocess",
+    "python": "3.10",
+    "mode": "on_demand",
+    "entrypoint": "payload/main.py",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "settings_ui": {
+    "entry": "settings/index.html",
+    "bridge_api": "1.0.0"
+  },
+  "provides": [
+    {
+      "service": "plugin.sync_daily_should_sign_v2.daily_sign@1",
+      "operations": [
+        {
+          "name": "run",
+          "effect": "external_write"
+        }
+      ]
+    }
+  ],
+  "requires": [
+    {
+      "service": "connector.boyi.daily_sign_r13@1",
+      "binding_kind": "account",
+      "account_role": "daily_sign_r13"
+    },
+    {
+      "service": "connector.boyi.daily_sign_tms@1",
+      "binding_kind": "account",
+      "account_role": "daily_sign_tms"
+    },
+    {
+      "service": "connector.boyi.daily_sign_store@1",
+      "binding_kind": "host_internal"
+    },
+    {
+      "service": "connector.boyi.daily_sign_bitable@1",
+      "binding_kind": "resource",
+      "resource_role": "daily_sign_bitable"
+    },
+    {
+      "service": "connector.boyi.daily_sign_sheet@1",
+      "binding_kind": "resource",
+      "resource_role": "daily_sign_sheet"
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "service.invoke",
+      "operations": [
+        "build_marker",
+        "clear_sheet",
+        "create_field",
+        "delete_records",
+        "describe",
+        "earliest_date",
+        "finish_run",
+        "list_fields",
+        "list_records",
+        "load_state",
+        "persist_snapshot",
+        "read_details",
+        "read_problems",
+        "read_r13",
+        "read_sheet",
+        "read_signs",
+        "read_tracking",
+        "source_scope",
+        "start_run",
+        "update_field",
+        "verify_run",
+        "verify_snapshot",
+        "write_records",
+        "write_sheet"
+      ],
+      "account_role": null,
+      "resource_role": null
+    }
+  ],
+  "account_roles": [
+    {
+      "role": "daily_sign_r13",
+      "allowed_systems": [
+        "r13"
+      ],
+      "required": true
+    },
+    {
+      "role": "daily_sign_tms",
+      "allowed_systems": [
+        "ronghui"
+      ],
+      "required": true
+    }
+  ],
+  "resource_roles": [
+    {
+      "role": "daily_sign_bitable",
+      "allowed_kinds": [
+        "feishu_bitable"
+      ],
+      "required": true
+    },
+    {
+      "role": "daily_sign_sheet",
+      "allowed_kinds": [
+        "feishu_sheet"
+      ],
+      "required": true
+    }
+  ],
+  "contributes": {
+    "console": [
+      {
+        "id": "manual_run",
+        "title": "每日应签",
+        "service": "plugin.sync_daily_should_sign_v2.daily_sign@1",
+        "operation": "run",
+        "default_enabled": true
+      }
+    ],
+    "scheduler": [
+      {
+        "id": "daily_run",
+        "title": "每日应签",
+        "service": "plugin.sync_daily_should_sign_v2.daily_sign@1",
+        "operation": "run",
+        "default_enabled": false
+      }
+    ],
+    "webhook": [],
+    "feishu": [
+      {
+        "id": "command",
+        "service": "plugin.sync_daily_should_sign_v2.daily_sign@1",
+        "operation": "run",
+        "commands": [
+          "每日应签"
+        ],
+        "default_enabled": false
+      }
+    ],
+    "events": [],
+    "harness": []
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enrich_addresses": {
+        "type": "boolean",
+        "description": "是否按运单号调用 query_waybill_detail 补齐脱敏收件地址，默认 true"
+      },
+      "days": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 366,
+        "description": "R13 查询天数；当 request_body 没有显式 start/end 时必须提供"
+      },
+      "source_start": {
+        "type": "string",
+        "description": "可选，问题件和签收的权威回溯起点；不填则从已观测账本/到货/R13 最早日期计算"
+      },
+      "source_end": {
+        "type": "string",
+        "description": "可选，问题件和签收查询终点；必须与 source_start 配合且不能晚于本轮观测时间"
+      },
+      "problem_page_size": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200
+      },
+      "problem_max_pages": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 5000
+      },
+      "problem_retry_attempts": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 5
+      },
+      "problem_timeout_sec": {
+        "type": "integer",
+        "minimum": 30,
+        "maximum": 7200
+      },
+      "sign_page_size": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200
+      },
+      "sign_max_pages": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 5000
+      },
+      "sign_chunk_days": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 366
+      },
+      "sign_retry_attempts": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 5
+      },
+      "sign_timeout_sec": {
+        "type": "integer",
+        "minimum": 30,
+        "maximum": 7200
+      },
+      "waybill_timeout_sec": {
+        "type": "integer",
+        "description": "可选，补齐地址的详情查询超时时间，默认 2400 秒"
+      },
+      "browser_batch_size": {
+        "type": "integer",
+        "description": "可选，浏览器补齐详情的批量大小，默认 10"
+      },
+      "sign_site_code": {
+        "type": "string",
+        "minLength": 1,
+        "description": "可选，TMS 签收扫描网点编码；未提供时必须从绑定账号的真实登录态精确取得"
+      },
+      "exact_sign_conflict_limit": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "R13 与主单签收证据冲突时允许逐票精确核验的最大数量"
+      },
+      "exact_historical_sign_limit": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "每轮按 1/3/7 天退避策略精确复核历史候选的最大数量"
+      }
+    },
+    "required": []
+  },
+  "storage": {
+    "kv": false,
+    "collections": []
+  }
+}

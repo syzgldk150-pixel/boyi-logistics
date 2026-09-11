@@ -134,7 +134,7 @@ class EmptyIsolatedAccountDirectory:
 class ManagementFixture:
     def __init__(self, *, connection_factory=None, runtime_root=None, account_manager=None,
                  broker_handlers=None, resource_provider=None, upload_signature_verifier=None,
-                 enable_directory_faults=True, migration_account_bindings=None):
+                 enable_directory_faults=True, migration_account_bindings=None, connector_registry=None):
         self.startup_id = str(uuid4())
         if not os.environ.get("AGENT_DB_NAME", "").endswith("_test") or os.environ.get("AGENT_DB_HOST") != "127.0.0.1":
             raise RuntimeError("explicit isolated loopback test database required")
@@ -143,7 +143,8 @@ class ManagementFixture:
         self.task_env.mkdir(parents=True, exist_ok=True)
         self.account_manager = account_manager or EmptyIsolatedAccountDirectory()
         self.broker_handlers = dict(broker_handlers or {})
-        handler_keys = tuple(self.broker_handlers)
+        self.connector_registry = connector_registry
+        handler_keys = tuple(self.broker_handlers) + (("service.invoke", "*"),) if connector_registry is not None else tuple(self.broker_handlers)
         self.internal_token = secrets.token_urlsafe(32)
         self.signing_secret = secrets.token_urlsafe(32)
         self.requests = []
@@ -171,7 +172,7 @@ class ManagementFixture:
             account_manager=self.account_manager, resource_provider=resource_provider or (lambda _id: None),
             worker_repository=self.management_repository,
         )
-        self.service_registry = ServiceRegistry()
+        self.service_registry = ServiceRegistry(connector_registry=connector_registry)
         self.contribution_registry = ManagedContributionRegistry()
         self.driver = ProductionRuntimeEffectDriver(
             broker_handler_keys=handler_keys, service_registry=self.service_registry,
@@ -183,6 +184,7 @@ class ManagementFixture:
                 core_catalog=self.core_catalog, broker_handler_keys=handler_keys,
                 account_manager=self.account_manager, binding_resolver=self.binding_resolver,
                 service_registry=self.service_registry,
+                connector_registry=connector_registry,
             ),
             planner=ProductionRuntimeEffectPlanner(), driver=self.driver,
         )

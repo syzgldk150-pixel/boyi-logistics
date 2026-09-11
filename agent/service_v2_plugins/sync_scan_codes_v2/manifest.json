@@ -2,9 +2,9 @@
   "schema_version": 2,
   "runtime_model": "service_v2",
   "plugin_id": "sync_scan_codes_v2",
-  "name": "扫描同步 v2",
-  "version": "1.1.0",
-  "description": "通过受管 Connector 分页预览扫描数据，并在正式阶段重读后完成快照与逐批服务端核验的离线候选 Service v2 包。",
+  "name": "扫描",
+  "version": "2.0.0",
+  "description": "分页读取扫描数据并生成预览；确认后重读来源、逐批提交、核验并保存扫描快照。",
   "host_api": {
     "minimum": "2.0.0",
     "maximum_exclusive": "3.0.0"
@@ -25,8 +25,14 @@
     {
       "service": "plugin.sync_scan_codes_v2.scan_codes@1",
       "operations": [
-        {"name": "preview", "effect": "read"},
-        {"name": "execute", "effect": "external_write"}
+        {
+          "name": "preview",
+          "effect": "read"
+        },
+        {
+          "name": "execute",
+          "effect": "external_write"
+        }
       ]
     }
   ],
@@ -34,7 +40,7 @@
     {
       "service": "connector.boyi.scan_ronghui@1",
       "binding_kind": "account",
-      "account_role": "account_id"
+      "account_role": "scan_ronghui"
     },
     {
       "service": "connector.boyi.scan_projection@1",
@@ -44,7 +50,12 @@
   "capabilities": [
     {
       "name": "service.invoke",
-      "operations": ["read_page", "snapshot_replace", "submit", "verify"],
+      "operations": [
+        "read_page",
+        "snapshot_replace",
+        "submit",
+        "verify"
+      ],
       "account_role": null,
       "resource_role": null,
       "action_call_limits": {
@@ -57,8 +68,10 @@
   ],
   "account_roles": [
     {
-      "role": "account_id",
-      "allowed_systems": ["ronghui"],
+      "role": "scan_ronghui",
+      "allowed_systems": [
+        "ronghui"
+      ],
       "required": true
     }
   ],
@@ -70,17 +83,31 @@
         "title": "预览并执行扫描同步",
         "service": "plugin.sync_scan_codes_v2.scan_codes@1",
         "operation": "execute",
-        "default_enabled": false
+        "selection_preview_operation": "preview",
+        "default_enabled": true
       }
     ],
     "scheduler": [],
-    "webhook": [],
+    "webhook": [
+      {
+        "id": "webhook",
+        "service": "plugin.sync_scan_codes_v2.scan_codes@1",
+        "operation": "execute",
+        "method": "POST",
+        "route": "phase7-scan",
+        "default_enabled": false,
+        "selection_preview_operation": "preview"
+      }
+    ],
     "feishu": [
       {
         "id": "execute_feishu",
         "service": "plugin.sync_scan_codes_v2.scan_codes@1",
         "operation": "execute",
-        "commands": ["扫描"],
+        "selection_preview_operation": "preview",
+        "commands": [
+          "扫描"
+        ],
         "default_enabled": false
       }
     ],
@@ -90,8 +117,16 @@
         "id": "assistant_preview",
         "title": "查询待同步扫描数据",
         "description": "分页读取当前实例账号的扫描数据并生成只读同步预览，不提交扫描或写入快照。",
-        "scenarios": ["今天有多少扫描数据待同步", "预览下一批扫描任务"],
-        "input_schema": {"type": "object", "additionalProperties": false, "properties": {}, "required": []},
+        "scenarios": [
+          "今天有多少扫描数据待同步",
+          "预览下一批扫描任务"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {},
+          "required": []
+        },
         "service": "plugin.sync_scan_codes_v2.scan_codes@1",
         "operation": "preview",
         "effect": "read",
@@ -110,9 +145,21 @@
         "maxLength": 10,
         "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
       },
-      "child_item_limit": {"type": "integer", "minimum": 1, "maximum": 100000},
-      "batch_size": {"type": "integer", "minimum": 1, "maximum": 200},
-      "max_batches": {"type": "integer", "minimum": 1, "maximum": 499},
+      "child_item_limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100000
+      },
+      "batch_size": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200
+      },
+      "max_batches": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 499
+      },
       "skip_bill_codes": {
         "type": "array",
         "maxItems": 100000,

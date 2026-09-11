@@ -95,6 +95,11 @@ class _PersistedScanPreview:
 def is_scan_preview_project(entry: Any) -> bool:
     """Match only the reviewed first-party scan project identity."""
 
+    if getattr(entry, "runtime_model", None) == "SERVICE_V2":
+        return (
+            getattr(entry, "plugin_id", None) == "sync_scan_codes_v2"
+            and getattr(entry, "trust_source", None) in {"ed25519_first_party", "ed25519_upload"}
+        )
     return (
         str(getattr(entry, "automation_id", "") or "").strip()
         == SCAN_PROJECT_ID
@@ -110,6 +115,14 @@ def is_scan_preview_project(entry: Any) -> bool:
 def require_scan_formal_governance(entry: Any) -> None:
     """Keep the binding dormant until the signed scan tool is formally safe."""
 
+    if is_scan_preview_project(entry) and getattr(entry, "runtime_model", None) == "SERVICE_V2":
+        # The V2 catalog validates the signed service effects and generation.
+        # Invocation policy then enforces this instance's live permissions;
+        # the V1 release-number gate is not a V2 authorization mechanism.
+        from agent.orchestration.selection_preview_binding import selection_preview_contribution
+        if any(selection_preview_contribution(entry, kind) is not None for kind in ("console", "feishu")):
+            return
+        raise _error("SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED", "扫描插件未声明预览确认入口")
     anchor = getattr(entry, "governance_anchor", None)
     if not is_scan_preview_project(entry) or not isinstance(anchor, Mapping):
         raise _error(
@@ -580,8 +593,10 @@ def validate_scan_preview_context(value: Any) -> dict[str, Any]:
         raise _error("SCAN_PREVIEW_CONTEXT_INVALID", "Scan preview context digest is stale")
     if context.get("contract_version") not in {SCAN_PREVIEW_CONTRACT_VERSION, 2}:
         raise _error("SCAN_PREVIEW_CONTEXT_INVALID", "Scan preview context version is unsupported")
-    if context.get("plugin_id") != SCAN_PLUGIN_ID:
+    if context.get("plugin_id") not in {SCAN_PLUGIN_ID, "sync_scan_codes_v2"}:
         raise _error("SCAN_PREVIEW_CONTEXT_INVALID", "Scan preview plugin identity is invalid")
+    if context.get("plugin_id") == "sync_scan_codes_v2" and not direct:
+        raise _error("SCAN_PREVIEW_CONTEXT_INVALID", "Service v2 requires an Invocation preview")
     if direct:
         normalize_preview_invocation_id(context.get("preview_invocation_id"))
     else:

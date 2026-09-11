@@ -219,7 +219,9 @@ from agent.phase7_resource_import import (
     sync_reviewed_phase7_resource_metadata,
 )
 from agent.runtime_config import load_agent_environment
-from harness_composition import build_read_only_harness_gateway
+from harness_composition import build_read_only_harness_gateway, build_chat_text_queries
+from shared.identity_repository import IdentityRepository
+from agent.identity_access import authorize_console_request
 from agent.service_v2_process_runtime import (
     ServiceV2ProcessRuntime,
     service_v2_harness_conversations,
@@ -1102,10 +1104,11 @@ async def lifespan(app: FastAPI):
     core_catalog = runtime.registry
     account_manager = get_account_manager()
     cursor_secret = production_cursor_secret(os.environ)
+    from agent.automation_plugins.daily_sign_connectors_v2 import daily_sign_broker_action_keys
     plugin_handlers = build_production_first_party_core_handler_map(
         account_manager=account_manager,
         cursor_secret=cursor_secret,
-        allowed_action_keys=release_first_party_broker_action_keys(core_catalog),
+        allowed_action_keys=release_first_party_broker_action_keys(core_catalog) | daily_sign_broker_action_keys(),
     )
     plugin_runtime = await asyncio.to_thread(
         build_production_automation_plugin_runtime,
@@ -1283,6 +1286,8 @@ async def lifespan(app: FastAPI):
         default_full_auto.get("changed", 0),
     )
     automation_project_policy_service = project_policy_service
+    project_policy_service.identity_access = IdentityRepository(_orchestration_connection)
+    agent_core.identity_access = project_policy_service.identity_access
     policy = PolicyEngine(
         catalog,
         scheduler_allowlist_provider=schedule_policy_service.allowlist_entries,
@@ -1302,6 +1307,7 @@ async def lifespan(app: FastAPI):
         approval_service,
         send_text=send_text_sync,
         notification_lease_seconds=DEFAULT_NOTIFICATION_LEASE_SECONDS,
+        identity_access=project_policy_service.identity_access,
     )
     conversation_routes = CommittedAutomationProjectRouteResolver(
             catalog=plugin_runtime.catalog,
@@ -1312,10 +1318,16 @@ async def lifespan(app: FastAPI):
     from agent.plugin_conversations import PluginConversationService
     plugin_conversations = PluginConversationService(project_policy_service, route_resolver=conversation_routes)
     agent_core.configure_plugin_conversations(plugin_conversations)
+    from agent.orchestration.automation_project_entrypoints import ServiceV2WebhookDispatcher
     automation_project_entrypoints = AutomationProjectEntrypoints(
         project_policy_service,
         route_resolver=conversation_routes,
         feishu_actor_resolver=feishu_approval_service.resolve_actor,
+        migration_entrypoint_ownership=plugin_runtime.migration_entrypoint_ownership,
+        service_v2_webhook_dispatcher=ServiceV2WebhookDispatcher(
+            policy_service=project_policy_service,
+            contribution_registry=plugin_runtime.contribution_registry,
+        ),
     )
     bind_automation_project_entrypoints(automation_project_entrypoints)
     bind_feishu_approval_runtime(feishu_approval_service)
@@ -1329,6 +1341,7 @@ async def lifespan(app: FastAPI):
     harness_gateway = build_read_only_harness_gateway(runtime, repository, finance_summary=business_finance_query.run, invocations=direct_invocations)
     process_service_v2_runtime = ServiceV2ProcessRuntime(
         plugin_conversations=plugin_conversations,
+        text_queries=build_chat_text_queries(runtime),
         policy_service=project_policy_service, contribution_registry=plugin_runtime.contribution_registry,
         backend_availability=plugin_runtime.contribution_backend_availability,
         llm_client=runtime.llm, harness_fixed_handlers=harness_gateway.handlers(),
@@ -1337,6 +1350,7 @@ async def lifespan(app: FastAPI):
         ).display_name,
     )
     harness_runtime_status = await asyncio.to_thread(process_service_v2_runtime.start)
+    runtime.configure_conversations(process_service_v2_runtime.conversations)
     logger.info("AI assistant runtime status=%s availability=%s", harness_runtime_status.status, harness_runtime_status.availability)
     runner = WorkflowRunner(saved_resource_provider=get_saved_workflow_resource,
         execution_enabled=False,
@@ -1756,6 +1770,15 @@ async def require_internal_api_token(request: Request, call_next):
                     "This Agent administration request requires an authenticated Console administrator",
                 ),
             )
+    principal = getattr(request.state, "console_principal", None)
+    if principal and automation_project_policy_service is not None:
+        access = getattr(automation_project_policy_service, "identity_access", None)
+        if access is not None:
+            try:
+                await asyncio.to_thread(authorize_console_request, access, automation_project_policy_service,
+                                        principal, request.method, request.url.path)
+            except OrchestrationError as exc:
+                return JSONResponse(status_code=403, content=api_failure(exc.code, str(exc)))
     return await call_next(request)
 
 
@@ -1959,7 +1982,7 @@ async def webhook_sign_status(request: Request):
         source_event_id=source_event_id,
         webhook_path=route_key,
         envelope=envelope,
-        preview_run_id=preview_run_id,
+        preview_invocation_id=preview_run_id,
     )
 
 
@@ -1976,7 +1999,7 @@ async def webhook_handler(path: str, request: Request):
         source_event_id=source_event_id,
         webhook_path=route_key,
         envelope=envelope,
-        preview_run_id=preview_run_id,
+        preview_invocation_id=preview_run_id,
     )
 
 
@@ -2268,10 +2291,14 @@ async def get_feishu_approval_binding(request: Request):
 @app.post("/internal/v1/admin/feishu-approval-binding/challenge")
 async def create_feishu_approval_binding_challenge(request: Request):
     actor = _require_console_super_admin_request(request)
+    payload = await request.json()
+    if not isinstance(payload, dict) or set(payload) - {"role_id", "account_id", "label"}:
+        raise OrchestrationError("INVALID_INPUT", "绑定对象格式无效")
     return api_success(
         await asyncio.to_thread(
             _feishu_approvals().create_binding_challenge,
             int(actor.actor_id),
+            **payload,
         )
     )
 
