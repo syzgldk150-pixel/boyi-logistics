@@ -65,7 +65,7 @@ from shared.automation_project_manifest import (
 from shared.automation_plugin_repository import (
     FIRST_PARTY_RELEASE_ACTOR_ID,
 )
-from agent.automation_plugins.catalog_read_scope import catalog_read_transaction
+from agent.automation_plugins.catalog_read_scope import catalog_read_transaction, catalog_row_cache
 
 
 _MIGRATION_ACTOR_ID = "system:migration:automation-plugin-v1"
@@ -564,6 +564,9 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
 
     def get_catalog_migration_pair(self, automation_id: str) -> Mapping[str, Any] | None:
         with catalog_read_transaction(self._orchestration) as uow:
+            rows = (catalog_row_cache(self._orchestration) or {}).get(automation_id)
+            if rows is not None:
+                return rows.migration_pair(automation_id)
             return uow.automation_plugins.get_active_plugin_migration_pair_for_automation(automation_id, for_update=False)
 
     def get_authoritative_plugin_migration_pair_for_automation(

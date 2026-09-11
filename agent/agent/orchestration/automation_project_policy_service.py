@@ -22,7 +22,7 @@ from agent.automation_plugins.catalog import (
     PluginCatalogEntry,
     project_contract_fragment,
 )
-from agent.automation_plugins.catalog_read_scope import catalog_read_transaction
+from agent.automation_plugins.catalog_read_scope import catalog_read_transaction, catalog_row_cache
 from agent.automation_plugins.code_owned_fields import (
     SCAN_PHASE_FORMAL,
     SCAN_PHASE_PREVIEW,
@@ -1592,10 +1592,12 @@ class AutomationProjectPolicyService:
         contract: CompiledAutomationProjectContract | None = None
         contract_error: str | None = None
         try:
-            with catalog_read_transaction(self._repository) as uow:
-                rows = uow.automation_projects.list_configuration_rows(
-                    entry.automation_id
-                )
+            display_rows = (catalog_row_cache(self._repository) or {}).get(entry.automation_id)
+            if display_rows is not None:
+                rows = display_rows.schedules.get(entry.automation_id, [])
+            else:
+                with catalog_read_transaction(self._repository) as uow:
+                    rows = uow.automation_projects.list_configuration_rows(entry.automation_id)
             contract = self._compile_entry(entry, rows)
         except AutomationProjectContractError as exc:
             contract_error = exc.code

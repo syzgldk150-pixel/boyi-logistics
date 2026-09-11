@@ -16,9 +16,30 @@ def _write(path, value):
 
 @contextmanager
 def observe_preview_timestamps(path: Path):
-    from agent.orchestration import scan_preview_binding
+    from agent.orchestration import direct_invocation_previews, scan_preview_binding
 
     original = scan_preview_binding._load_persisted_scan_preview
+    direct_original = direct_invocation_previews._load
+
+    def direct_observed(repository, invocation_id, **arguments):
+        before = datetime.now(timezone.utc)
+        try:
+            return direct_original(repository, invocation_id, **arguments)
+        except BaseException as error:
+            after = datetime.now(timezone.utc)
+            if getattr(error, 'code', None) == 'PREVIEW_INVALID':
+                evidence = {'status': 'FAIL', 'error_code': error.code,
+                    'preview_invocation_id': invocation_id, 'host_before': before, 'host_after': after}
+                try:
+                    row = repository.get(invocation_id) or {}
+                    result = row.get('result_json') or {}
+                    evidence['persisted_times'] = {'started_at': row.get('started_at'),
+                        'finished_at': row.get('finished_at'), 'observed_at': (result.get('meta') or {}).get('observed_at')}
+                    _write(path, evidence)
+                except Exception as diagnostic_error:
+                    evidence['diagnostic_error'] = type(diagnostic_error).__name__
+                print(json.dumps({'scan_preview_timing': evidence}, ensure_ascii=False, default=str), flush=True)
+            raise
 
     def observed(uow, **arguments):
         before = datetime.now(timezone.utc)
@@ -44,7 +65,7 @@ def observe_preview_timestamps(path: Path):
                 print(json.dumps({'scan_preview_timing': evidence}, ensure_ascii=False, default=str), flush=True)
             raise
 
-    with patch.object(scan_preview_binding, '_load_persisted_scan_preview', observed):
+    with patch.object(scan_preview_binding, '_load_persisted_scan_preview', observed), patch.object(direct_invocation_previews, '_load', direct_observed):
         yield
 
 

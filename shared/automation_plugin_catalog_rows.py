@@ -6,6 +6,9 @@ The cache never supplies locks, execution authority or mutation operations.
 from __future__ import annotations
 
 from typing import Any, Callable, Mapping, Sequence
+from copy import deepcopy
+from shared.automation_project_policy_repository import read_project_configuration_rows
+from shared.automation_plugin_v2_repository import read_active_plugin_migration_pairs, unique_active_plugin_migration_pair
 
 from shared.orchestration_repository_support import (
     OrchestrationPersistenceError, _decode_row, _required_text, _rows,
@@ -33,6 +36,7 @@ class CatalogDisplayRows:
         self.configs: dict[str, dict[str, Any]] = {}
         self.generations: dict[tuple[str, int], dict[str, Any]] = {}
         self.schedules: dict[str, list[dict[str, Any]]] = {}
+        self.migration_pairs: dict[str, list[dict[str, Any]]] = {}
         if not self.identities:
             return
         values = tuple(sorted(self.identities))
@@ -42,11 +46,7 @@ class CatalogDisplayRows:
             self.projects = {str(row["automation_id"]): row for row in _rows(cursor)}
             cursor.execute(f"SELECT * FROM automation_project_configs WHERE automation_id IN ({markers})", values)
             self.configs = {str(row["automation_id"]): row for row in _rows(cursor)}
-            cursor.execute(
-                f"SELECT automation_id, id, cron_expression, enabled FROM scheduled_tasks "
-                f"WHERE automation_id IN ({markers}) ORDER BY automation_id, id", values,
-            )
-            for row in _rows(cursor):
+            for row in read_project_configuration_rows(cursor, values):
                 self.schedules.setdefault(str(row["automation_id"]), []).append(row)
             cursor.execute(
                 "SELECT g.*, t.transition_token AS activation_transition_token, "
@@ -60,6 +60,12 @@ class CatalogDisplayRows:
             self.generations = {
                 (str(row["automation_id"]), int(row["generation"])): row for row in _rows(cursor)
             }
+            for row in read_active_plugin_migration_pairs(cursor, values):
+                for identity in {row['source_automation_id'], row['target_automation_id']} & self.identities:
+                    self.migration_pairs.setdefault(identity, []).append(row)
+
+    def migration_pair(self, automation_id):
+        return deepcopy(unique_active_plugin_migration_pair(self.migration_pairs.get(automation_id, [])))
 
     def generation(self, repository, automation_id: str, generation: int):
         row = self.generations.get((automation_id, generation))

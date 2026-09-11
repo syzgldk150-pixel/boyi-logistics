@@ -58,6 +58,37 @@ class AutomationProjectBootstrapContractError(ValueError):
         self.code = str(code)
 
 
+def read_project_configuration_rows(cursor, automation_ids, *, for_update=False):
+    """Read the same complete schedule contract for one or several projects."""
+    identities = tuple(_required_text(value, "automation_id") for value in automation_ids)
+    if not identities:
+        return []
+    suffix = " FOR UPDATE" if for_update else ""
+    condition = "task.automation_id=%s" if len(identities) == 1 else (
+        "task.automation_id IN (" + ",".join("%s" for _ in identities) + ")"
+    )
+    cursor.execute(
+        f"""
+        SELECT task.id, task.automation_id, task.name, task.tool_name,
+               task.tool_params, task.cron_expression, task.enabled,
+               task.automation_generation, task.configuration_version,
+               task.updated_at,
+               policy.mode AS scheduled_policy_mode,
+               policy.version AS scheduled_policy_version,
+               policy.contract_hash AS scheduled_contract_hash,
+               policy.contract_snapshot_json AS scheduled_contract_snapshot_json,
+               policy.tool_contract_hash AS scheduled_tool_contract_hash
+        FROM scheduled_tasks AS task
+        LEFT JOIN scheduled_task_approval_policies AS policy ON policy.task_id=task.id
+        WHERE {condition}
+        ORDER BY task.id{suffix}
+        """,
+        identities,
+    )
+    return [_decode_row(row, ("tool_params", "scheduled_contract_snapshot_json")) or {}
+            for row in _rows(cursor)]
+
+
 class AutomationProjectPolicyRepository(RepositoryBase):
     POLICY_JSON_FIELDS = ("contract_snapshot_json",)
     EVENT_JSON_FIELDS = ("contract_snapshot_json",)
@@ -518,35 +549,8 @@ class AutomationProjectPolicyRepository(RepositoryBase):
         *,
         for_update: bool = False,
     ) -> list[dict[str, Any]]:
-        suffix = " FOR UPDATE" if for_update else ""
         with self.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT task.id, task.automation_id, task.name, task.tool_name,
-                       task.tool_params, task.cron_expression, task.enabled,
-                       task.automation_generation, task.configuration_version,
-                       task.updated_at,
-                       policy.mode AS scheduled_policy_mode,
-                       policy.version AS scheduled_policy_version,
-                       policy.contract_hash AS scheduled_contract_hash,
-                       policy.contract_snapshot_json AS scheduled_contract_snapshot_json,
-                       policy.tool_contract_hash AS scheduled_tool_contract_hash
-                FROM scheduled_tasks AS task
-                LEFT JOIN scheduled_task_approval_policies AS policy
-                  ON policy.task_id=task.id
-                WHERE task.automation_id=%s
-                ORDER BY task.id{suffix}
-                """,
-                (_required_text(automation_id, "automation_id"),),
-            )
-            return [
-                _decode_row(
-                    row,
-                    ("tool_params", "scheduled_contract_snapshot_json"),
-                )
-                or {}
-                for row in _rows(cursor)
-            ]
+            return read_project_configuration_rows(cursor, (automation_id,), for_update=for_update)
 
     def list_automation_identity_backup_rows_018(
         self,
