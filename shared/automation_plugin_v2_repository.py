@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from shared import automation_plugin_repository as _repository
 from shared.automation_plugin_migration_ownership import (
     normalize_migration_entrypoint_ownership,
@@ -1332,7 +1334,8 @@ class AutomationPluginV2RepositoryMixin:
             # 4. runtime leases.  Their terminal/in-flight states are
             # authoritative, not an actor supplied assertion.
             lease_summary = self._lock_migration_generation_leases(
-                cursor, source_id=source_id, target_id=target_id
+                cursor, source_id=source_id, target_id=target_id,
+                testing_started_at=testing_event["created_at"],
             )
             # 5. business-run migration locks.
             migration_lock_summary = self._lock_migration_run_locks(cursor, pair_id)
@@ -1652,7 +1655,7 @@ class AutomationPluginV2RepositoryMixin:
 
     @staticmethod
     def _lock_migration_generation_leases(
-        cursor: Any, *, source_id: str, target_id: str
+        cursor: Any, *, source_id: str, target_id: str, testing_started_at: datetime
     ) -> dict[str, int]:
         # A direct call is admitted before it acquires its execution lease.
         # Include that interval and cancellation drain in the cutover check.
@@ -1664,19 +1667,23 @@ class AutomationPluginV2RepositoryMixin:
         active_calls = len(_rows(cursor))
         cursor.execute(
             """
-            SELECT automation_id, outcome, verification_evidence_sha256
+            SELECT automation_id, outcome, verification_evidence_sha256,
+                   (automation_id=%s OR acquired_at>=%s) AS migration_relevant
             FROM automation_project_generation_leases
             WHERE automation_id IN (%s, %s)
             ORDER BY automation_id, acquired_at, lease_id FOR UPDATE
             """,
-            (source_id, target_id),
+            (target_id, testing_started_at, source_id, target_id),
         )
         summary = {"active": active_calls, "unknown": 0, "target_verified": 0}
         for row in _rows(cursor):
             outcome = str(row.get("outcome") or "")
             if outcome in {"RUNNING", "VERIFYING"}:
                 summary["active"] += 1
-            if outcome == "WRITE_OUTCOME_UNKNOWN":
+            # Source history predating this validation is not a write by this
+            # migration. Preserve it unchanged, while protecting all active
+            # calls and every unknown write by the new target.
+            if outcome == "WRITE_OUTCOME_UNKNOWN" and row.get("migration_relevant"):
                 summary["unknown"] += 1
         return summary
 

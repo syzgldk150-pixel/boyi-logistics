@@ -7,9 +7,13 @@ import time
 from uuid import uuid4
 from zipfile import ZipFile
 
+import pytest
+
 from service_v2_plugins._shared.build_zip import build_plugin_zip
 from console.services.automation_catalog_projection import normalize_automation_plugin_catalog
 from agent.automation_plugins.service_v2_projection import _contribution_backend
+from agent.automation_plugins.errors import PluginExecutionError
+from agent.automation_plugins.first_party_handler_support import _ARRIVE_FIELDS
 from tests.direct_invocation_fixture import DirectFixture
 from tests.test_arrival_connectors_v2 import _setup
 from tests.test_v2_maintenance_mysql import ACTOR, database  # noqa: F401
@@ -20,7 +24,8 @@ from tests.v32_acceptance.problem_fixture import ACCOUNTS, ProblemAccounts
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_statistics_settings_survive_generation_and_catalog_round_trip(database, tmp_path, monkeypatch):
+@pytest.mark.parametrize("source_failure", [False, True])
+def test_statistics_settings_survive_generation_and_catalog_round_trip(database, tmp_path, monkeypatch, source_failure):
     fixture, name = database
     monkeypatch.setenv("AGENT_DB_NAME", name)
     def connect():
@@ -36,7 +41,13 @@ def test_statistics_settings_survive_generation_and_catalog_round_trip(database,
                              "config_sha256": sha256(json.dumps(resource, sort_keys=True).encode()).hexdigest()}
         resources[role] = resource
     accounts = ProblemAccounts()
-    registry, _context, _row, _calls, writes = _setup(describe_account=accounts.require_active_binding_descriptor)
+    def arrival_page(*_args):
+        if source_failure:
+            raise PluginExecutionError("isolated source failure", code="BROKER_SOURCE_INVALID")
+        return {"items": [[row[key] for key in _ARRIVE_FIELDS]], "returned": 1,
+                "total": 1, "total_authoritative": True}
+    registry, _context, row, _calls, writes = _setup(
+        describe_account=accounts.require_active_binding_descriptor, arrive_list_read_page=arrival_page)
     archive = build_plugin_zip(ROOT / "agent/service_v2_plugins/sync_arrival_stats_v2", tmp_path / "stats.zip").read_bytes()
     with ManagementFixture(connection_factory=connect, runtime_root=tmp_path / "host",
             account_manager=accounts, resource_provider=resources.get,
@@ -99,6 +110,18 @@ def test_statistics_settings_survive_generation_and_catalog_round_trip(database,
                 if result["status"] not in {"STARTING", "ACCEPTED", "RUNNING"}:
                     break
                 time.sleep(.02)
-            assert result["status"] == "COMPLETED", (result, runtime.broker_errors)
-            assert result["result"]["data"]["records"] == 1
-            assert any(item[0] == "arrival_stats_primary_sheet" for item in writes)
+            if source_failure:
+                assert result["status"] == "FAILED", result
+                assert writes == []
+                connection = connect()
+                try:
+                    with connection.cursor() as cursor:
+                        cursor.execute("SELECT outcome FROM automation_project_generation_leases WHERE automation_id=%s", (project,))
+                        outcomes = [item["outcome"] for item in cursor.fetchall()]
+                    assert outcomes == ["FAILED_BEFORE_WRITE"], outcomes
+                finally:
+                    connection.close()
+            else:
+                assert result["status"] == "COMPLETED", (result, runtime.broker_errors)
+                assert result["result"]["data"]["records"] == 1
+                assert any(item[0] == "arrival_stats_primary_sheet" for item in writes)

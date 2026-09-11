@@ -97,6 +97,43 @@ def _invoke(registry, context, suffix, operation, arguments):
         binding=_binding(registry,service,context), arguments=arguments))
 
 
+def test_arrival_connector_accepts_actual_adapter_column_rows_without_losing_values(monkeypatch):
+    from plugin_core_adapters.first_party import _arrive_list_read_page
+    from agent.tms_runtime.scripts import fetch_dispatch
+    from agent.tms_runtime.scripts.login_manager import TMSAuth
+    registry, context, row, _calls, _writes = _setup(arrive_list_read_page=_arrive_list_read_page)
+    source = {source_key: row[target_key] for source_key, target_key in
+              zip(fetch_dispatch.FIELDS_ORDER, _ARRIVE_FIELDS, strict=True)}
+    class Response:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"data": [source], "total": 1}
+    class Session:
+        def post(self, url, **kwargs):
+            assert url == fetch_dispatch.DISPATCH_URL
+            assert kwargs["params"] == {"id": "FIND_DISPATCH_FORECAST_CENTER"}
+            return Response()
+    monkeypatch.setattr(TMSAuth, "login_and_get_session", lambda _self: Session())
+    monkeypatch.setattr(fetch_dispatch, "resolve_login_site_code", lambda _session: "isolated-site")
+    result = _invoke(registry, context, "arrival_stats_tms", "arrive_list_read_page",
+                     {"target_date": _DATE, "page_size": 200})
+    assert result["items"] == [row]
+    assert result["pagination_complete"] is True
+
+
+@pytest.mark.parametrize("width", [17, 19])
+def test_arrival_connector_rejects_changed_column_count(width):
+    def page(*_args):
+        return {"items": [["synthetic"] * width], "returned": 1, "total": 1, "total_authoritative": True}
+    registry, context, _row, _calls, writes = _setup(arrive_list_read_page=page)
+    with pytest.raises(ConnectorInvocationError) as failure:
+        _invoke(registry, context, "arrival_stats_tms", "arrive_list_read_page",
+                {"target_date": _DATE, "page_size": 200})
+    assert failure.value.code == "BROKER_SOURCE_INVALID"
+    assert writes == []
+
+
 @pytest.mark.parametrize("dry_run", [True, False])
 def test_real_arrival_algorithm_reads_through_v2_connectors_with_actual_piece_counts(dry_run):
     registry, context, row, calls, writes = _setup()
