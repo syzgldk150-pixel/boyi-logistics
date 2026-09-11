@@ -1414,6 +1414,12 @@ def _classify_split(records: list[dict[str, Any]], target_date: str) -> tuple[li
     from tools.phase7_mysql_store import render_stats_sheet_values
     from tools.split_pending_snapshot import TARGET_HEADERS, classify_sheet_values
 
+    # These records come from the completed, validated statistics query. An
+    # authoritative empty result clears this projection; it is not a failed or
+    # header-only external sheet read (which the sheet parser still rejects).
+    if records == []:
+        return [], [list(TARGET_HEADERS)]
+
     counts = {
         str(row.get("tracking_number") or ""): row.get("arrived_quantity")
         for row in records

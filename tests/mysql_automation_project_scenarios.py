@@ -2050,7 +2050,9 @@ def run_test_project_invocation_serializes_and_replays_on_real_mysql(case):
     from tests.direct_invocation_fixture import DirectFixture
     from tests.v32_acceptance.management_fixture import ManagementFixture
     from tests.test_direct_plugin_invocation_mysql import ACTOR, _install, _service_package, _legacy_counts
-    database = case.project_approval_atomic_database
+    # The approval migration scenarios intentionally seed incomplete historical
+    # packages. A real runtime startup must use its own valid installed state.
+    database = case.project_invocation_database
     case._run_migrations(database)
     directory = Path(__file__).resolve().parents[1] / ".t" / ("race-" + uuid4().hex[:6])
     directory.mkdir(parents=True)

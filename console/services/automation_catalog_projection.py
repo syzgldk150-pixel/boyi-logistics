@@ -1987,6 +1987,15 @@ def normalize_automation_plugin_catalog(
         uninstall_allowed = lifecycle_actions_allowed or (
             project_state == "INSTALLED" and not enabled and not configured and not migration
             and runtime_model != AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL
+        ) or (
+            runtime_model == "SERVICE_V2"
+            and project_state in {"INSTALLED", "DISABLED"}
+            and not enabled
+            and reconcile_state == "ERROR"
+            and (not migration or (
+                migration.get("state") == "ROLLED_BACK"
+                and migration.get("role") == "TARGET"
+            ))
         )
         disable_allowed = bool(enabled) and project_state not in {
             "UPGRADING",

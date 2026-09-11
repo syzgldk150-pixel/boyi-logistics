@@ -384,6 +384,34 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertTrue(instances[0]["menu_actions_allowed"])
         self.assertFalse(instances[0]["enable_allowed"])
 
+    def test_failed_stopped_v2_can_request_uninstall_after_withdrawal(self):
+        for migration in ({}, {"state": "ROLLED_BACK", "role": "TARGET"}):
+            with self.subTest(migration=migration):
+                payload = _catalog_payload()
+                raw = payload["instances"][0]
+                raw.update(runtime_model="SERVICE_V2", enabled=False, configured=True,
+                    state="DISABLED", reconcile_state="ERROR", migration=migration)
+                _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+                self.assertTrue(instances[0]["uninstall_allowed"])
+                self.assertFalse(instances[0]["enable_allowed"])
+                self.assertFalse(instances[0]["lifecycle_actions_allowed"])
+
+    def test_failed_v2_uninstall_does_not_open_active_or_uncertain_states(self):
+        for updates in (
+            {"enabled": True}, {"state": "UPGRADING"},
+            {"reconcile_state": "BLOCKED_UNKNOWN_WRITE"},
+            {"reconcile_state": "DISPOSING"},
+            {"migration": {"state": "TESTING", "role": "TARGET"}},
+            {"migration": {"state": "ROLLED_BACK", "role": "SOURCE"}},
+        ):
+            with self.subTest(updates=updates):
+                payload = _catalog_payload()
+                payload["instances"][0].update(runtime_model="SERVICE_V2", enabled=False,
+                    configured=True, state="DISABLED", reconcile_state="ERROR")
+                payload["instances"][0].update(updates)
+                _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+                self.assertFalse(instances[0]["uninstall_allowed"])
+
     def test_code_owned_projection_must_not_overlap_browser_schema(self):
         payload = _catalog_payload()
         payload["instances"][0]["code_owned_config_fields"] = ["region"]
