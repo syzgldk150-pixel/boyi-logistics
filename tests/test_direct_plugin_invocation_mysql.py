@@ -66,6 +66,37 @@ def test_real_service_plugin_uses_invocation_foreign_key_without_legacy_rows(dir
     assert leases[0]["outcome"] == "SUCCEEDED"
 
 
+def test_write_evidence_reads_exact_invocation_and_excludes_payload(direct_runtime):
+    management, runtime, identity = direct_runtime
+    ids = []
+    receipt_ids = []
+    for outcome in ("WRITE_OUTCOME_UNKNOWN", "WRITE_VERIFIED"):
+        call = management.policy.invoke_console(identity, request_id=str(uuid4()), actor=ACTOR)
+        assert runtime.service.wait_sync(call["invocation_id"])["status"] == "COMPLETED"
+        ids.append(call["invocation_id"])
+        receipt_ids.append(str(uuid4()))
+        with management.repository.unit_of_work() as uow, uow.connection.cursor() as cursor:
+            cursor.execute("""INSERT INTO automation_write_attempt_receipts
+                (receipt_id,automation_id,generation,lease_id,invocation_id,request_id,
+                 operation,action,argument_sha256,target_ref_sha256,target_ref_json,outcome,
+                 evidence_sha256,created_at,updated_at)
+                SELECT %s,automation_id,generation,lease_id,invocation_id,%s,
+                       'service.invoke','test',%s,%s,%s,%s,%s,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6)
+                FROM automation_project_generation_leases WHERE invocation_id=%s""",
+                (receipt_ids[-1],str(uuid4()),"a"*64,"b"*64,
+                 json.dumps({"role_sha256":"c"*64,"binding_sha256":"d"*64,"private_payload":"must-not-be-public"}),
+                 outcome,"e"*64 if outcome == "WRITE_VERIFIED" else None,ids[-1]))
+            assert cursor.rowcount == 1
+            uow.commit()
+    result = runtime.service.get(ids[0])
+    assert len(result["write_receipts"]) == 1
+    assert result["write_receipts"][0]["receipt_id"] == receipt_ids[0]
+    assert result["write_receipts"][0]["outcome"] == "WRITE_OUTCOME_UNKNOWN"
+    assert receipt_ids[1] not in json.dumps(result)
+    assert "must-not-be-public" not in json.dumps(result)
+    assert "private_payload" not in json.dumps(result)
+
+
 @pytest.mark.parametrize("wait_outcome", ["complete", "timeout", "cancel"])
 def test_foreign_loop_wait_keeps_real_invocation_owned(direct_runtime, monkeypatch, wait_outcome):
     management, runtime, identity = direct_runtime

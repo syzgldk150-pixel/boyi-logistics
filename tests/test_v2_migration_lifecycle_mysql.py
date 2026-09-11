@@ -97,7 +97,8 @@ def test_real_arrive_list_migration_consumes_saved_formal_mode(database, tmp_pat
 
 
 @pytest.mark.parametrize("enabled,finish", [(True, "rollback"), (False, "complete"),
-                                           (True, "withdraw"), (False, "withdraw"), (False, "withdraw_failed")])
+                                           (True, "withdraw"), (False, "withdraw"), (False, "withdraw_failed"),
+                                           (True, "complete_without_route")])
 @pytest.mark.parametrize("reconcile_before_config", [False, True])
 def test_installed_migration_transfers_only_after_verified_direct_call(database, tmp_path, monkeypatch, enabled, finish, reconcile_before_config):
     fixture, name = database
@@ -125,7 +126,8 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
             entry = host.catalog.require(SOURCE)
             host.management.save_plugin_settings(SOURCE, config={"include_daxiang_s_self_pickup": True},
                 account_bindings=bindings[SOURCE], resource_bindings={"self_pickup_source_sheet": RESOURCE_ID,
-                    "feishu_route": "automation.feishu_route.self_pickup_problem_upload"},
+                    **({} if finish == "complete_without_route" else
+                       {"feishu_route": "automation.feishu_route.self_pickup_problem_upload"})},
                 request_id=str(uuid4()), expected_project_configuration_version=entry.project_config_version, actor=ACTOR)
             entry = host.catalog.require(SOURCE)
             host.management.set_enabled(SOURCE, enabled=enabled, expected_record_version=entry.record_version,

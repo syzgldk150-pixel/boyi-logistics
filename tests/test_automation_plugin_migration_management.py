@@ -329,6 +329,25 @@ def test_self_pickup_console_only_migration_keeps_feishu_unowned() -> None:
     } == {state: "NONE" for state in MIGRATION_OWNERSHIP_STATES}
 
 
+def test_self_pickup_migration_uses_reviewed_fixed_command_identity_without_redundant_binding():
+    source, target = _self_pickup_migration_fixture()
+    enabled, ownership, consumed = migration_target_entrypoints_and_ownership(
+        source=source, target=target, source_enabled_entrypoints=("console", "feishu"),
+        source_schedule={"kind": "none", "enabled": False},
+        source_resource_bindings={"self_pickup_source_sheet": "tenant-selected-sheet"},
+    )
+    assert enabled == ("execute_console", "execute_feishu")
+    assert consumed == frozenset()
+    assert ownership["feishu"]["source_resource_id"] == "automation.feishu_route.self_pickup_problem_upload"
+    assert ownership["feishu"]["commands"] == ["自提到货问题件"]
+    with pytest.raises(PluginConflictError, match="not the reviewed route"):
+        migration_target_entrypoints_and_ownership(
+            source=source, target=target, source_enabled_entrypoints=("console", "feishu"),
+            source_schedule={"kind": "none", "enabled": False},
+            source_resource_bindings={"feishu_route": "different-tenant-command"},
+        )
+
+
 def _arrival_migration_fixture(*, enabled_entrypoints: tuple[str, ...]):
     sheet_roles = (
         {

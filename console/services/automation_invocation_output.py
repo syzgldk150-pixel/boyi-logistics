@@ -23,6 +23,14 @@ def invocation_output_lines(invocation: Mapping[str, Any], *, state_label: str) 
     error_code = invocation.get("error_code")
     if isinstance(error_code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{2,63}", error_code):
         lines.append(f"错误代码：{error_code}")
+    receipts = invocation.get("write_receipts")
+    if isinstance(receipts, list) and receipts:
+        verified = sum(item.get("outcome") == "WRITE_VERIFIED" for item in receipts)
+        unresolved = sum(item.get("outcome") not in {"WRITE_VERIFIED", "NOT_APPLIED"} for item in receipts)
+        lines.append(f"写入核验：已确认 {verified} 项，未确认 {unresolved} 项。")
+        for index, item in enumerate(receipts, 1):
+            if item.get("outcome") not in {"WRITE_VERIFIED", "NOT_APPLIED"}:
+                lines.append(f"第 {index} 项未确认，核验记录：{item['receipt_id']}")
     result = invocation.get("result")
     if isinstance(result, Mapping):
         # The result belongs to this exact invocation; missing counts stay missing.

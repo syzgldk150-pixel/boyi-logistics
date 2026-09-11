@@ -15,7 +15,7 @@ from agent.orchestration.execution_resources import canonical_resource_write_loc
 from agent.orchestration.models import OperationType, OrchestrationError
 from shared.automation_project_authorization import canonical_sha256
 from shared.execution_resource_journal import EXECUTION_RESOURCE_KEYS
-from shared.plugin_invocation_repository import TERMINAL_INVOCATION_STATUSES
+from shared.plugin_invocation_repository import TERMINAL_INVOCATION_STATUSES, invocation_write_receipts
 from shared.redaction import redact_text
 
 
@@ -104,6 +104,7 @@ class DirectPluginInvocationService:
             from shared.collector_navigation import collector_invocation_navigation
             with self.repository._repository.unit_of_work() as uow:
                 result["collector_navigation"] = collector_invocation_navigation(uow.connection, invocation_id)
+                result["write_receipts"] = invocation_write_receipts(uow.connection, invocation_id)
         return result
 
     def list_recent(self, automation_id: str, *, limit: int = 30) -> list[dict]:

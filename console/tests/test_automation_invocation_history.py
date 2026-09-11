@@ -99,3 +99,15 @@ def test_preview_phase_comes_from_persisted_invocation_not_browser_query():
     assert app.sent[1]["invocation_phase"] == "formal"
     assert "scan_preview" not in app.sent[1]
     assert len(app.calls) == 1
+
+
+def test_failed_output_exposes_actual_write_verification_counts_without_claiming_success():
+    from console.services.automation_invocation_output import invocation_output_lines
+    row = invocation(status="WRITE_OUTCOME_UNKNOWN", write_receipts=[
+        {"receipt_id":"verified-record","outcome":"WRITE_VERIFIED"},
+        {"receipt_id":"unknown-record","outcome":"WRITE_OUTCOME_UNKNOWN"},
+        {"receipt_id":"not-applied-record","outcome":"NOT_APPLIED"},
+    ])
+    lines = invocation_output_lines(row, state_label="写入结果未确认")
+    assert lines == ["状态：写入结果未确认", "写入核验：已确认 1 项，未确认 1 项。",
+                     "第 2 项未确认，核验记录：unknown-record"]

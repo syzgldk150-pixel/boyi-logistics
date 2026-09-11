@@ -13,6 +13,21 @@ TERMINAL_INVOCATION_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELLED", "W
 _JSON_FIELDS = ("invocation_json", "arguments_json", "result_json")
 
 
+def invocation_write_receipts(connection, invocation_id: str) -> list[dict]:
+    """Read only this call's payload-free write evidence, including failures."""
+    with connection.cursor() as cursor:
+        cursor.execute("""SELECT r.receipt_id,r.operation,r.action,r.argument_sha256,
+            r.outcome,r.evidence_sha256,
+            JSON_UNQUOTE(JSON_EXTRACT(r.target_ref_json,'$.role_sha256')) AS role_sha256,
+            JSON_UNQUOTE(JSON_EXTRACT(r.target_ref_json,'$.binding_sha256')) AS binding_sha256
+            FROM automation_write_attempt_receipts r
+            JOIN automation_project_generation_leases l ON l.lease_id=r.lease_id
+                AND l.invocation_id=r.invocation_id AND l.automation_id=r.automation_id
+                AND l.generation=r.generation
+            WHERE r.invocation_id=%s ORDER BY r.created_at,r.receipt_id""", (invocation_id,))
+        return _rows(cursor)
+
+
 class PluginInvocationRepository:
     def __init__(self, orchestration_repository: Any) -> None:
         self._repository = orchestration_repository
