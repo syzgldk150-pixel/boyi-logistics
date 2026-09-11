@@ -339,6 +339,11 @@ class _AutomationProjects:
 
 
 class _AutomationPlugins:
+    def require_migration_direct_entrypoint(self, automation_id, *, source, super_admin):
+        # This unit fixture contains no migration pairs; migration ownership
+        # and transition races are exercised against MySQL separately.
+        return None
+
     def __init__(self, repository: "_Repository") -> None:
         self._repository = repository
 

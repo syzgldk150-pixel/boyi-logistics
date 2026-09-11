@@ -180,7 +180,7 @@ def _validate_preview_binding(
         raise ValueError("scan preview binding digest is stale")
     if binding.get("contract_version") not in {_PREVIEW_EVIDENCE_CONTRACT_VERSION, 2}:
         raise ValueError("scan preview binding version is unsupported")
-    if binding.get("plugin_id") != ACTION_ID:
+    if binding.get("plugin_id") not in {ACTION_ID, "sync_scan_codes_v2"}:
         raise ValueError("scan preview binding plugin identity is invalid")
     for field in (("preview_invocation_id", "project_instance_id") if direct else ("preview_run_id", "preview_step_id", "project_instance_id")):
         if not _text(binding.get(field), field, maximum=128):

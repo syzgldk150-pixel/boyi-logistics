@@ -4,7 +4,7 @@ type: implementation
 status: active
 authority: canonical
 owner: repository
-updated: 2026-09-10
+updated: 2026-09-11
 ---
 
 # 业务接口与独立插件调用
@@ -15,7 +15,7 @@ updated: 2026-09-10
 
 ## AI 对话调用插件
 
-网页 AI 助手与已绑定管理员的飞书自然对话可选择当前已安装、启用、配置完成且允许自动执行的插件。目录来自当前 committed generation；模型仅选择不含业务身份的工具句柄，宿主使用已保存的账号、资源与参数，通过该渠道现有的 Console/Feishu 入口直接发起 Invocation。执行前再次核对插件版本、设置、权限与登录状态。
+网页 AI 助手与已绑定身份的飞书自然对话共用同一个会话服务、模型与权限目录，可选择当前已安装、启用、配置完成且允许自动执行的插件。目录来自当前 committed generation；模型仅选择不含业务身份的工具句柄，宿主使用已保存的账号、资源与参数，通过该渠道现有的 Console/Feishu 入口直接发起 Invocation。执行前再次核对插件版本、设置、权限与登录状态。
 
 模型工具说明区分插件业务用途与当前渠道的实际授权，旧说明中的“禁止 Agent”或“逐次审批”不能覆盖本次已筛选的调用权限；限制以宿主实际返回为准。界面使用插件名称并保留实例名称以区分同包多实例。
 
@@ -25,7 +25,7 @@ updated: 2026-09-10
 
 飞书现有自提与分批共用一个候选选择入口，须分别发起并确认；统计、扫描与自提可同时发起。Service V2 自定义候选插件在飞书读取预览后明确引导至自动化页面确认，不把预览称为正式完成；网页 AI 对话可直接勾选确认。
 
-维护入口：`agent/agent/plugin_conversations.py`、`harness_online.py`、`harness_application.py` 与 `feishu/message_handler.py`。执行权限、预览和生命周期复用现有模块；无新队列、无数据库迁移。会话仍仅保留在服务内存，Invocation 结果持久化；刷新会话或服务重启后到自动化页面查看原记录。
+维护入口：`agent/agent/plugin_conversations.py`、`harness_online.py`、`harness_application.py` 与 `feishu/message_handler.py`。执行、预览和生命周期复用现有模块；不新增任务队列。身份权限通过迁移 047 统一，细节见[身份权限与统一对话](identity_and_unified_chat.md)。会话仍仅保留在服务内存，Invocation 结果持久化；刷新会话或服务重启后到自动化页面查看原记录。
 
 验证入口：`tests/test_plugin_conversation_intent.py`（模型边界）、`tests/test_plugin_conversations_mysql.py`（真实安装包与对话）、`tests/test_direct_daily_plugins_mysql.py`（真实统计/扫描/自提包及隔离 HTTP、浏览器、MySQL）。模型替身只用于可重复验证工具选择，不能作为真实模型准确率或生产业务执行成功的证据。
 

@@ -86,17 +86,19 @@ async def create_harness_session_response(
     availability_provider: Callable[[], object] | None = None,
 ) -> dict[str, Any]:
     actor = actor_provider(request)
+    from agent.channel_chat import primary_chat_request
     receipt = await asyncio.to_thread(
         conversation_provider().create_session,
         actor=actor,
-        request_id=payload.request_uuid,
+        request_id=primary_chat_request(actor, channel="console"),
     )
     tools = await asyncio.to_thread(tools_provider, actor, payload.request_uuid)
     runtime_status = _harness_runtime_status(availability_provider)
     return api_success(
         {
             "session_id": receipt.session_id,
-            "request_uuid": receipt.request_id,
+            "request_uuid": payload.request_uuid,
+            "messages": receipt.to_dict()["messages"],
             "persistence_status": receipt.persistence_status,
             **runtime_status,
             "read_only": not conversation_provider().plugin_execution_enabled,

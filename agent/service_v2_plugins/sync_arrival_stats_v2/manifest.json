@@ -2,9 +2,9 @@
   "schema_version": 2,
   "runtime_model": "service_v2",
   "plugin_id": "sync_arrival_stats_v2",
-  "name": "到货统计 v2",
-  "version": "1.1.0",
-  "description": "以 v1 已验证算法为唯一业务来源的离线候选到货统计 Service v2 包。",
+  "name": "统计到货数据",
+  "version": "2.0.0",
+  "description": "读取到货与扫描记录，计算累计到货件数，保存统计、未齐清单和归档并核验结果。",
   "host_api": {
     "minimum": "2.0.0",
     "maximum_exclusive": "3.0.0"
@@ -25,8 +25,14 @@
     {
       "service": "plugin.sync_arrival_stats_v2.arrival_stats@1",
       "operations": [
-        {"name": "preview", "effect": "read"},
-        {"name": "run", "effect": "external_write"}
+        {
+          "name": "preview",
+          "effect": "read"
+        },
+        {
+          "name": "run",
+          "effect": "external_write"
+        }
       ]
     }
   ],
@@ -91,34 +97,46 @@
   "account_roles": [
     {
       "role": "arrival_stats_tms",
-      "allowed_systems": ["ronghui"],
+      "allowed_systems": [
+        "ronghui"
+      ],
       "required": true
     }
   ],
   "resource_roles": [
     {
       "role": "arrival_stats_primary_sheet",
-      "allowed_kinds": ["feishu_sheet"],
+      "allowed_kinds": [
+        "feishu_sheet"
+      ],
       "required": true
     },
     {
       "role": "arrival_stats_secondary_sheet",
-      "allowed_kinds": ["feishu_sheet"],
+      "allowed_kinds": [
+        "feishu_sheet"
+      ],
       "required": true
     },
     {
       "role": "arrival_stats_pending_sheet",
-      "allowed_kinds": ["feishu_sheet"],
+      "allowed_kinds": [
+        "feishu_sheet"
+      ],
       "required": false
     },
     {
       "role": "arrival_stats_archive_sheet",
-      "allowed_kinds": ["feishu_sheet"],
+      "allowed_kinds": [
+        "feishu_sheet"
+      ],
       "required": true
     },
     {
       "role": "arrival_stats_split_pending_sheet",
-      "allowed_kinds": ["feishu_sheet"],
+      "allowed_kinds": [
+        "feishu_sheet"
+      ],
       "required": true
     }
   ],
@@ -141,13 +159,29 @@
         "default_enabled": false
       }
     ],
-    "webhook": [],
+    "webhook": [
+      {
+        "id": "webhook",
+        "service": "plugin.sync_arrival_stats_v2.arrival_stats@1",
+        "operation": "run",
+        "method": "POST",
+        "route": "phase7-stats",
+        "selection_preview_operation": "preview",
+        "default_enabled": false,
+        "dynamic_fields": [
+          "target_date",
+          "dry_run"
+        ]
+      }
+    ],
     "feishu": [
       {
         "id": "arrival_stats_command",
         "service": "plugin.sync_arrival_stats_v2.arrival_stats@1",
         "operation": "run",
-        "commands": ["统计到货数据"],
+        "commands": [
+          "统计到货数据"
+        ],
         "default_enabled": false
       }
     ],
@@ -157,8 +191,16 @@
         "id": "assistant_preview",
         "title": "预览到货统计",
         "description": "读取当前实例的到货与扫描数据并生成统计预览；只读计算，不写入飞书表格或统计快照。",
-        "scenarios": ["预览今天的到货统计", "检查到货统计数据是否齐全"],
-        "input_schema": {"type": "object", "additionalProperties": false, "properties": {}, "required": []},
+        "scenarios": [
+          "预览今天的到货统计",
+          "检查到货统计数据是否齐全"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {},
+          "required": []
+        },
         "service": "plugin.sync_arrival_stats_v2.arrival_stats@1",
         "operation": "preview",
         "effect": "read",
@@ -171,24 +213,58 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "refresh_disabled": {"type": "boolean"},
-      "target_date": {"type": "string", "minLength": 10, "maxLength": 10},
-      "scan_window_days": {"type": "integer", "minimum": 1, "maximum": 1},
+      "refresh_disabled": {
+        "type": "boolean"
+      },
+      "target_date": {
+        "type": "string",
+        "minLength": 10,
+        "maxLength": 10
+      },
+      "scan_window_days": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1
+      },
       "arrive_list_request_body": {
         "type": "object",
         "additionalProperties": false,
         "properties": {},
         "required": []
       },
-      "scan_codes_retention_days": {"type": "integer", "minimum": 0, "maximum": 3650},
-      "pending_sheet_disabled": {"type": "boolean"},
-      "missing_limit": {"type": "integer", "minimum": 0, "maximum": 20000},
-      "export_limit": {"type": "integer", "minimum": 0, "maximum": 20000},
-      "child_count_limit": {"type": "integer", "minimum": 0, "maximum": 20000},
-      "archive_snapshot": {"type": "boolean"},
-      "dry_run": {"type": "boolean"}
+      "scan_codes_retention_days": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 3650
+      },
+      "pending_sheet_disabled": {
+        "type": "boolean"
+      },
+      "missing_limit": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 20000
+      },
+      "export_limit": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 20000
+      },
+      "child_count_limit": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 20000
+      },
+      "archive_snapshot": {
+        "type": "boolean"
+      },
+      "dry_run": {
+        "type": "boolean"
+      }
     },
-    "required": ["pending_sheet_disabled"]
+    "required": [
+      "pending_sheet_disabled"
+    ]
   },
   "storage": {
     "kv": false,

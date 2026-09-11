@@ -227,6 +227,7 @@ class ProductionProjectBindingResolver:
         return {
             "resource_id": str(descriptor["resource_id"]),
             "resource_kind": str(descriptor["resource_kind"]),
+            "kind": str(descriptor["resource_kind"]),
             "source": source,
             "configuration_version": str(descriptor["configuration_version"]),
             "config_sha256": str(descriptor["config_sha256"]),

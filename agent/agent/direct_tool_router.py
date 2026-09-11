@@ -1959,6 +1959,8 @@ def format_business_finance_reply(result: dict[str, Any]) -> str:
 
     if not isinstance(result, dict) or not result.get("success", False):
         code = _business_finance_error_code(result if isinstance(result, dict) else {})
+        if code == "PERMISSION_DENIED":
+            return "当前身份没有该查询权限，请在后台检查绑定的身份。"
         return _BUSINESS_FINANCE_FAILURE_REPLIES.get(
             code,
             "财务查询失败，暂不提供金额，请稍后重试。",

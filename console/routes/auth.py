@@ -13,6 +13,14 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
 
 
 def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[str, list[str]]) -> bool:
+    if path == "/settings/accounts/identities/save":
+        app._handle_identity_save(handler)
+        return True
+    if path.startswith("/settings/accounts/feishu/") and path.endswith(("/update", "/revoke")):
+        parts = path.split("/")
+        if len(parts) == 6:
+            app._handle_identity_binding_update(handler, parts[4], revoke=parts[5] == "revoke")
+            return True
     if path == "/logout":
         app._handle_logout(handler)
         return True

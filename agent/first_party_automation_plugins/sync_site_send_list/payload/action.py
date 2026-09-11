@@ -162,14 +162,27 @@ def _committed_count(result: Mapping[str, object], expected: int, label: str) ->
 
 
 def run_action(arguments: dict[str, object], broker: Callable[..., object]) -> dict[str, object]:
-    if set(arguments) != {"target_date"}:
+    if set(arguments) - {"target_date", "dry_run"} or "target_date" not in arguments:
         raise ValueError("site-send arguments are invalid")
+    if "dry_run" in arguments and type(arguments["dry_run"]) is not bool:
+        raise ValueError("site-send dry_run must be boolean")
     requested_date = _target_date(arguments.get("target_date"))
     rows, page_count, business_date, evidence_refs = _collect_rows(
         broker,
         requested_date=requested_date,
     )
     normalized = _normalize(rows)
+    if arguments.get("dry_run") is True:
+        observed_at = utc_observed_at()
+        data = {"dry_run": True, "target_date": business_date, "fetched": len(rows),
+                "normalized": len(normalized), "filtered": len(rows) - len(normalized),
+                "records": normalized, "evidence": {"source": "signed_first_party_plugin",
+                    "observed_at": observed_at, "pagination_complete": True,
+                    "page_count": page_count, "execution_result": "preview_only"}}
+        result_ref, result_proof = executor_success_evidence(action_id=ACTION_ID, data=data, observed_at=observed_at)
+        return success_result(data=data, source_system="ronghui", record_count=len(normalized),
+            pagination_complete=True, evidence_refs=[*evidence_refs, result_ref], observed_at=observed_at,
+            postconditions={"0": True}, postcondition_evidence={"0": result_proof})
     records = [
         {
             "fields": {

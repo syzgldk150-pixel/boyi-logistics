@@ -37,7 +37,7 @@ from agent.harness_application import (
 )
 from agent.harness_online import OnlineHarnessSidecar, visible_descriptors
 from agent.llm_client import LLMClient
-from agent.orchestration.models import Actor
+from agent.orchestration.models import Actor, ActorType
 
 
 _MODEL_TIMEOUT_SECONDS = 5
@@ -531,6 +531,7 @@ class HarnessRuntime:
             fixed_tools=build_fixed_harness_tools(),
             snapshot_provider=self._contribution_registry,
             instance_name_resolver=self._instance_name_resolver,
+            tool_allowed=adapter.visible_tool_filter(),
         )
 
     def public_tools(self, actor: Actor, request_id: str) -> list[dict[str, str]]:
@@ -550,7 +551,7 @@ class HarnessRuntime:
         ]
         if self._plugin_conversations is not None:
             result.extend({"tool_id": target.handle, "title": target.title, "description": target.description}
-                          for target in self._plugin_conversations.targets(actor=actor, source="console"))
+                          for target in self._plugin_conversations.targets(actor=actor, source=self._source(actor)))
         return result
 
     def sidecar_factory(self, actor: Actor, request_id: str) -> OnlineHarnessSidecar:
@@ -558,9 +559,13 @@ class HarnessRuntime:
         return OnlineHarnessSidecar(
             catalog=self._catalog(actor, request_id),
             llm=self._llm,
-            plugin_turn=(self._plugin_conversations.turn(actor=actor, source="console", request_id=request_id)
+            plugin_turn=(self._plugin_conversations.turn(actor=actor, source=self._source(actor), request_id=request_id)
                          if self._plugin_conversations is not None else None),
         )
+
+    @staticmethod
+    def _source(actor: Actor) -> str:
+        return "feishu" if actor.actor_type is ActorType.FEISHU_USER else "console"
 
 
 __all__ = [

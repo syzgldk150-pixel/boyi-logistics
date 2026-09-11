@@ -38,6 +38,8 @@ class SidecarResult:
     content: str
     tool_calls: int
     plugin_invocations: tuple[Mapping[str, Any], ...] = ()
+    # Internal channel handoff; never included in public HTTP receipts.
+    plugin_requests: tuple[object, ...] = ()
 
     def __post_init__(self) -> None:
         if (

@@ -2634,7 +2634,9 @@ def build_production_first_party_core_handler_map(
         or set(delivery_write_handlers) != set(DELIVERY_WRITE_ACTION_KEYS)
     ):
         raise ValueError("production delivery/site write split changed")
+    from plugin_core_adapters.daily_sign_ports import build_daily_sign_port_handlers
     extension_maps = (
+        ("sync_daily_should_sign", build_daily_sign_port_handlers(account_manager=manager), frozenset()),
         (
             "sync_site_send_list",
             site_write_handlers,

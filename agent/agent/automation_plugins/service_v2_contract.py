@@ -197,9 +197,30 @@ def resolve_service_v2_selection_target(
     preview_operation = declaration.get("selection_preview_operation")
     if preview_operation is None:
         return None
-    if contribution_kind not in {"console", "feishu"}:
+    if contribution_kind not in {"console", "feishu", "webhook"}:
         raise ValueError("selection contribution kind is invalid")
-    phase = resolve_service_v2_selection_phase(arguments)
+    if runtime.get("plugin_id") == "sync_scan_codes_v2":
+        dry_run = arguments.get("dry_run")
+        binding = arguments.get("_scan_preview_binding")
+        if dry_run is True and binding is None:
+            phase = "PREVIEW"
+        elif dry_run is False and isinstance(binding, Mapping):
+            from agent.orchestration.scan_preview_binding import validate_scan_preview_context
+            validated = validate_scan_preview_context(binding)
+            if validated["plugin_id"] != "sync_scan_codes_v2":
+                raise ValueError("scan preview belongs to another plugin")
+            phase = "FORMAL"
+        else:
+            raise ValueError("scan phase requires a current preview binding")
+    elif runtime.get("plugin_id") == "sync_arrival_stats_v2" and contribution_kind == "webhook":
+        # The existing statistics callback can calculate without publishing.
+        # It does not select rows or consume a scan confirmation.
+        dry_run = arguments.get("dry_run", False)
+        if not isinstance(dry_run, bool):
+            raise ValueError("statistics dry_run must be a boolean")
+        phase = "PREVIEW" if dry_run else "FORMAL"
+    else:
+        phase = resolve_service_v2_selection_phase(arguments)
 
     compiled_invocations = runtime.get("compiled_invocations")
     compiled = (
@@ -323,7 +344,7 @@ class ServiceV2ProjectContract:
         module_slots_contributed = bool(manifest.contributes.get("module_slots"))
         selection_contributed = any(
             isinstance(item, Mapping) and "selection_preview_operation" in item
-            for kind in ("console", "feishu")
+            for kind in ("console", "feishu", "webhook")
             for item in manifest.contributes.get(kind, ())
         )
         if module_slots_contributed and WAYBILL_ENTRY_DYNAMIC_ARGUMENT_FIELD in config_properties:
@@ -331,8 +352,11 @@ class ServiceV2ProjectContract:
                 "service-v2 config field collides with the Host-owned waybill argument"
             )
         tool_input_schema = copy.deepcopy(input_schema)
-        if selection_contributed:
+        if selection_contributed and manifest.plugin_id != "sync_arrival_stats_v2":
             tool_input_schema = _selection_input_schema(tool_input_schema)
+            if manifest.plugin_id == "sync_scan_codes_v2":
+                for field in ("selected_bill_codes", "preview_fingerprint"):
+                    tool_input_schema["properties"].pop(field)
         if module_slots_contributed:
             # The package-level tool schema is shared by mixed contribution
             # kinds, so the Host-owned occurrence value is optional here.  The
@@ -365,8 +389,19 @@ class ServiceV2ProjectContract:
                 invocation_input_schema = input_schema
                 argument_template = template
                 dynamic_resolvers: dict[str, str] = {}
-                if "selection_preview_operation" in item:
+                if contribution_kind == "webhook" and "dynamic_fields" in item:
+                    fields = item["dynamic_fields"]
+                    if any(field not in config_properties for field in fields):
+                        raise PluginManifestError("Webhook dynamic fields must name declared config fields")
+                    dynamic_resolvers = {
+                        field: f"verified_optional_webhook_{field.lower()}" for field in fields
+                    }
+                    argument_template = {field: value for field, value in template.items() if field not in fields}
+                if "selection_preview_operation" in item and manifest.plugin_id != "sync_arrival_stats_v2":
                     invocation_input_schema = _selection_input_schema(input_schema)
+                    if manifest.plugin_id == "sync_scan_codes_v2":
+                        for field in ("selected_bill_codes", "preview_fingerprint"):
+                            invocation_input_schema["properties"].pop(field)
                 if contribution_kind == "harness":
                     declared_effect = item.get("effect")
                     if declared_effect != effect.value:
@@ -450,7 +485,7 @@ class ServiceV2ProjectContract:
             {
                 **_thaw(item),
                 "argument_field": None,
-                "collection": False,
+                "collection": item.get("collection", False),
             }
             for item in manifest.account_roles
         )

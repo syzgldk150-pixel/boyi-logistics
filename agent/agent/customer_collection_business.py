@@ -9,6 +9,7 @@ from typing import Any, Mapping, Sequence
 
 from agent.automation_plugins.first_party_handler_common import customer_problem_identity
 from agent.automation_plugins.models import GenerationVerificationContext
+from agent.automation_plugins.host_observation import customer_observed_result
 from agent.customer_collection_validation import (
     _mapping_list,
     _opaque_detail_recheck_map,
@@ -99,10 +100,9 @@ def publish_verified_customer_collection(connection: Any, *, invocation_id: str,
     # ResultVerifier authenticates broker observations independently of JSON.
     # A closure still needs an actual exact-detail call for this same identity.
     detail_keys = {
-        observation["result"].get("dedupe_key")
+        result.get("dedupe_key")
         for observation in verification.host_call_observations
-        if observation.get("action") == "customer_problem.detail"
-        and isinstance(observation.get("result"), Mapping)
+        if (result := customer_observed_result(observation, action="detail")) is not None
     }
     for key, check in checks.items():
         if check.get("status") == "RESOLVED" and key not in detail_keys:

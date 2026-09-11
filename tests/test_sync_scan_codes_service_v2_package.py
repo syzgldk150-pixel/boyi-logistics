@@ -90,7 +90,7 @@ def test_scan_manifest_closes_two_operations_connectors_and_correlated_budget() 
     assert tuple(dict(item) for item in manifest.connector_requirements) == (
         {
             "service": "connector.boyi.scan_ronghui@1",
-            "account_role": "account_id",
+            "account_role": "scan_ronghui",
         },
         {
             "service": "connector.boyi.scan_projection@1",
@@ -121,17 +121,19 @@ def test_scan_manifest_closes_two_operations_connectors_and_correlated_budget() 
 
     assert contract.allowed_entrypoints == (
         "execute_console",
+        "webhook",
         "execute_feishu",
         "assistant_preview",
     )
-    assert contract.default_entrypoints == ("assistant_preview",)
+    assert contract.default_entrypoints == ("execute_console", "assistant_preview")
     assert manifest.contributes["console"] == (
         {
             "id": "execute_console",
             "title": "预览并执行扫描同步",
             "service": manifest.provided_services[0],
             "operation": "execute",
-            "default_enabled": False,
+            "selection_preview_operation": "preview",
+            "default_enabled": True,
         },
     )
     assert manifest.contributes["feishu"] == (
@@ -140,14 +142,17 @@ def test_scan_manifest_closes_two_operations_connectors_and_correlated_budget() 
             "service": manifest.provided_services[0],
             "operation": "execute",
             "commands": ("扫描",),
+            "selection_preview_operation": "preview",
             "default_enabled": False,
         },
     )
     assert manifest.contributes["scheduler"] == ()
-    assert manifest.contributes["webhook"] == ()
+    assert manifest.contributes["webhook"] == ({"id": "webhook", "method": "POST", "route": "phase7-scan",
+        "service": manifest.provided_services[0], "operation": "execute", "selection_preview_operation": "preview",
+        "default_enabled": False},)
     assert manifest.contributes["events"] == ()
-    assert "selection_preview_operation" not in manifest.contributes["console"][0]
-    assert "selection_preview_operation" not in manifest.contributes["feishu"][0]
+    assert manifest.contributes["console"][0]["selection_preview_operation"] == "preview"
+    assert manifest.contributes["feishu"][0]["selection_preview_operation"] == "preview"
     assert contract.invocation_contracts["execute_console"]["effect"] == "external_write"
     assert contract.invocation_contracts["execute_feishu"]["effect"] == "external_write"
 

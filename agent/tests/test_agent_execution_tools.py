@@ -3,6 +3,9 @@
 from _tms_runtime_test_support import *  # noqa: F403
 from agent.orchestration.models import Actor, ActorType
 from agent.tool_registry import ToolRegistry
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from tests.chat_runtime_support import configure_chat
 
 
 def direct_admin():
@@ -119,225 +122,49 @@ class AgentExecutionToolTests(unittest.TestCase):
         self.addCleanup(self.delivery_status_sql_patch.stop)
 
     def test_agent_blocks_unverified_execution_completion_claim(self):
-        class _FakeMemory:
-            def get_or_create_conversation(self, user_id, conversation_id):
-                return conversation_id or "conv-1"
-
-            def get_recent_messages(self, conv_id, limit=10):
-                return []
-
-            def search_knowledge(self, message, limit=3):
-                return []
-
-            def save_message(self, *args, **kwargs):
-                return 1
-
-        class _FakeRegistry:
-            def get_openai_tools(self):
-                return []
-
-        class _FakeLLM:
-            async def chat(self, messages, tools=None):
-                return {"content": "同步已完成，已写入MySQL和飞书表格。"}
-
-        run_track = Mock(return_value={"tracking_number": "R00014513348", "route_rows": []})
-        core = AgentCore(direct_tool_runners={"track_waybill": run_track})
-        core.memory = _FakeMemory()
-        core.registry = _FakeRegistry()
-        core.llm = _FakeLLM()
-
-        result = asyncio.run(
-            core.handle_message(
-                "执行一次未知脚本",
-                user_id="user-1",
-                conversation_id="conv-1",
-            )
-        )
-
-        self.assertEqual("没有匹配到可执行脚本，我不知道该执行哪个任务。", result["reply"])
+        core = AgentCore()
+        core.llm = SimpleNamespace(chat=AsyncMock(return_value={"content": "同步已完成，已写入MySQL和飞书表格。"}))
+        _, calls = configure_chat(core)
+        result = asyncio.run(core.handle_message("执行一次未知脚本", actor=direct_admin(), source="console"))
+        self.assertIn("本次未发起插件执行", result["reply"])
+        self.assertNotIn("已写入", result["reply"])
+        self.assertEqual([], calls)
 
     def test_agent_blocks_freeform_execution_answer_without_tool_call(self):
-        class _FakeMemory:
-            def get_or_create_conversation(self, user_id, conversation_id):
-                return conversation_id or "conv-1"
-
-            def get_recent_messages(self, conv_id, limit=10):
-                return []
-
-            def search_knowledge(self, message, limit=3):
-                return []
-
-            def save_message(self, *args, **kwargs):
-                return 1
-
-        class _FakeRegistry:
-            def get_openai_tools(self):
-                return []
-
-        class _FakeLLM:
-            async def chat(self, messages, tools=None):
-                return {"content": "我来处理这个任务。"}
-
         core = AgentCore()
-        core.memory = _FakeMemory()
-        core.registry = _FakeRegistry()
-        core.llm = _FakeLLM()
+        core.llm = SimpleNamespace(chat=AsyncMock(return_value={"content": "我来处理这个任务。"}))
+        _, calls = configure_chat(core)
+        result = asyncio.run(core.handle_message("执行一个不存在的脚本", actor=direct_admin(), source="console"))
+        self.assertIn("没有匹配到可执行脚本", result["reply"])
+        self.assertEqual([], calls)
 
-        result = asyncio.run(
-            core.handle_message(
-                "执行一个不存在的脚本",
-                user_id="user-1",
-                conversation_id="conv-1",
-            )
-        )
-
-        self.assertEqual("没有匹配到可执行脚本，我不知道该执行哪个任务。", result["reply"])
-
-    def test_agent_blocks_plain_freeform_answer_without_tool_call(self):
-        class _FakeMemory:
-            def get_or_create_conversation(self, user_id, conversation_id):
-                return conversation_id or "conv-1"
-
-            def get_recent_messages(self, conv_id, limit=10):
-                return []
-
-            def search_knowledge(self, message, limit=3):
-                return []
-
-            def save_message(self, *args, **kwargs):
-                return 1
-
-        class _FakeRegistry:
-            def get_openai_tools(self):
-                return []
-
-        class _FakeLLM:
-            async def chat(self, messages, tools=None):
-                return {"content": "这是一个普通聊天回复。"}
-
+    def test_agent_allows_normal_chat_without_claiming_execution(self):
         core = AgentCore()
-        core.memory = _FakeMemory()
-        core.registry = _FakeRegistry()
-        core.llm = _FakeLLM()
-
-        result = asyncio.run(
-            core.handle_message(
-                "你好",
-                user_id="user-1",
-                conversation_id="conv-1",
-            )
-        )
-
-        self.assertEqual("没有匹配到可执行脚本，我不知道该执行哪个任务。", result["reply"])
+        core.llm = SimpleNamespace(chat=AsyncMock(return_value={"content": "你好，请告诉我需要查询或执行的业务。"}))
+        _, calls = configure_chat(core)
+        result = asyncio.run(core.handle_message("你好", actor=direct_admin(), source="console"))
+        self.assertEqual("你好，请告诉我需要查询或执行的业务。", result["reply"])
+        self.assertEqual([], calls)
 
     def test_agent_formats_real_tool_result_instead_of_llm_summary(self):
-        class _FakeMemory:
-            def get_or_create_conversation(self, user_id, conversation_id):
-                return conversation_id or "conv-1"
-
-            def get_recent_messages(self, conv_id, limit=10):
-                return []
-
-            def search_knowledge(self, message, limit=3):
-                return []
-
-            def save_message(self, *args, **kwargs):
-                return 1
-
-            def save_tool_log(self, *args, **kwargs):
-                return 1
-
-        class _FakeRegistry:
-            def get_openai_tools(self):
-                return [{"type": "function", "function": {"name": "track_waybill"}}]
-
-            def get_capability(self, name):
-                if name != "track_waybill":
-                    return None
-                return ToolRegistry().get_capability(name)
-
-            def validate_input(self, name, params):
-                return ToolRegistry().validate_input(name, params)
-
-        class _FakeLLM:
-            def __init__(self):
-                self.calls = 0
-
-            async def chat(self, messages, tools=None):
-                self.calls += 1
-                if self.calls == 1:
-                    return {
-                        "content": "",
-                        "tool_calls": [
-                            {
-                                "id": "call-1",
-                                "function": {
-                                    "name": "track_waybill",
-                                    "arguments": '{"tracking_number":"R00014513348"}',
-                                },
-                            }
-                        ],
-                    }
-                return {"content": "假的 LLM 总结：已经处理好了。"}
-
-        core = AgentCore()
-        core.memory = _FakeMemory()
-        core.registry = _FakeRegistry()
-        core.llm = _FakeLLM()
-        _configure_completed_control_plane(
-            core,
-            data={"tracking_number": "R00014513348", "route_rows": []},
-        )
-
-        result = asyncio.run(
-            core.handle_message(
-                "帮我发车",
-                user_id="user-1",
-                conversation_id="conv-1", actor=direct_admin(), source="console",
-            )
-        )
-
+        core = AgentCore(direct_tool_runners={"track_waybill": Mock(return_value={"tracking_number": "R00014513348", "route_rows": []})})
+        core.llm = SimpleNamespace(chat=AsyncMock(return_value={"content": "假的 LLM 总结：已经处理好了。"}))
+        _, calls = configure_chat(core)
+        result = asyncio.run(core.handle_message("R00014513348", actor=direct_admin(), source="console"))
         self.assertIn("R00014513348", result["reply"])
         self.assertNotIn("假的 LLM 总结", result["reply"])
-        self.assertEqual("track_waybill", result["executed_tools"][0]["tool_name"])
-        self.assertTrue(result["executed_tools"][0]["result"]["success"])
+        self.assertEqual("track_waybill", calls[0]["tool_name"])
+        self.assertTrue(calls[0]["result"]["success"])
+        core.llm.chat.assert_not_awaited()
 
     def test_agent_login_message_does_not_reach_llm(self):
-        class _FakeMemory:
-            def get_or_create_conversation(self, user_id, conversation_id):
-                return conversation_id or "conv-1"
-
-            def get_recent_messages(self, conv_id, limit=10):
-                return []
-
-            def search_knowledge(self, message, limit=3):
-                return []
-
-            def save_message(self, *args, **kwargs):
-                return 1
-
-        class _FakeRegistry:
-            def get_openai_tools(self):
-                raise AssertionError("login message should return before tool schema lookup")
-
-        class _FakeLLM:
-            async def chat(self, *args, **kwargs):
-                raise AssertionError("login message should not be routed to LLM")
-
         core = AgentCore()
-        core.memory = _FakeMemory()
-        core.registry = _FakeRegistry()
-        core.llm = _FakeLLM()
-
-        result = asyncio.run(
-            core.handle_message(
-                "登陆",
-                user_id="user-1",
-                conversation_id="conv-1",
-            )
-        )
-
-        self.assertEqual("1. 大祥账号\n2. 操作场账号\n3. 韵达账号", result["reply"])
+        core.llm = SimpleNamespace(chat=AsyncMock(side_effect=AssertionError("login must not call LLM")))
+        _, calls = configure_chat(core)
+        result = asyncio.run(core.handle_message("登陆", actor=direct_admin(), source="console"))
+        self.assertIn("业务账号页面", result["reply"])
+        self.assertEqual([], calls)
+        core.llm.chat.assert_not_awaited()
 
     def test_agent_queries_tracking_without_command_or_run(self):
         class _FakeRegistry:

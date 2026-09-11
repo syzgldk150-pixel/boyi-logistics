@@ -253,7 +253,7 @@ def _read_request() -> tuple[str, dict[str, object]]:
     ):
         raise ValueError("service request entrypoint is invalid")
     target = request.get("target")
-    operation = "preview" if entrypoint == "harness" else "run"
+    operation = "preview" if entrypoint == "harness" or (entrypoint == "webhook" and request["arguments"].get("dry_run") is True) else "run"
     expected_target = {
         "service": SERVICE_NAME,
         "operation": operation,

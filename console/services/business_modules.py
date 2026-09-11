@@ -13,6 +13,7 @@ from typing import Any
 
 from console.app_support import *  # noqa: F403
 from console.navigation import CONSOLE_CONTROL_PLANE_NAVIGATION, CONSOLE_NAVIGATION
+from shared.identity_routes import console_permission
 
 
 _SYSTEM_HEALTH_COMPONENTS = (
@@ -58,7 +59,11 @@ class BusinessModulesServiceMixin:
                 for item in CONSOLE_CONTROL_PLANE_NAVIGATION
                 if item["route"] == "/settings/system-status"
             )
-        return (*CONSOLE_NAVIGATION, *control_plane)
+        items = (*CONSOLE_NAVIGATION, *control_plane)
+        if normalized_user and not self._can_see_system_status_navigation(normalized_user):
+            permissions = normalized_user.get("access_permissions", ())
+            return tuple(item for item in items if console_permission("GET", item["route"]) in permissions)
+        return items
 
     def _business_module_mobile_nav(
         self,

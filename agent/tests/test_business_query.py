@@ -8,7 +8,7 @@ import sys
 import unittest
 from copy import deepcopy
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from agent.business_query import (
     AutomationOperationsQueryService,
@@ -593,135 +593,51 @@ class BusinessFinanceQueryTests(unittest.TestCase):
                 self.assertNotIn("9.99", reply)
 
     def test_agent_finance_route_bypasses_llm_and_uses_trusted_today(self):
-        class _Memory:
-            def get_or_create_conversation(self, _user_id, conversation_id):
-                return conversation_id or "conv-finance"
-
-            def get_recent_messages(self, *_args, **_kwargs):
-                return []
-
-            def search_knowledge(self, *_args, **_kwargs):
-                return []
-
-            def save_message(self, *_args, **_kwargs):
-                return 1
-
-        class _NoLLM:
-            async def chat(self, *_args, **_kwargs):
-                raise AssertionError("finance natural language must bypass the LLM")
-
+        from tests.chat_runtime_support import configure_chat
         core = AgentCore(today_provider=lambda: dt.date(2026, 8, 25))
-        core.memory = _Memory()
-        core.llm = _NoLLM()
-        core.execute_tool = AsyncMock(
-            return_value={"success": True, "data": _finance_payload()}
-        )
-        actor = Actor(
-            ActorType.FEISHU_USER,
-            "bound-admin",
-            roles=("admin",),
-            authenticated_by="feishu_admin_binding",
-        )
-
-        result = asyncio.run(
-            core.handle_message(
-                "查本月财务",
-                user_id="bound-admin",
-                actor=actor,
-                source="feishu",
-                request_id="event-finance-1",
-            )
-        )
-
-        self.assertEqual(
-            result["executed_tools"][0]["params"],
-            {"start_date": "2026-08-01", "end_date": "2026-08-25"},
-        )
+        core.llm.chat = AsyncMock(side_effect=AssertionError("fixed finance reads bypass LLM"))
+        core.execute_tool = AsyncMock(return_value={"success": True, "data": _finance_payload()})
+        _, calls = configure_chat(core)
+        actor = Actor(ActorType.FEISHU_USER, "bound-admin", roles=("admin",), authenticated_by="feishu_admin_binding")
+        result = asyncio.run(core.handle_message("查本月财务", conversation_id="finance-test", actor=actor, source="feishu", request_id="event-finance-1"))
+        self.assertEqual(calls[0]["params"], {"start_date": "2026-08-01", "end_date": "2026-08-25"})
         self.assertIn("总收入：¥10.01", result["reply"])
         core.execute_tool.assert_awaited_once()
+        core.llm.chat.assert_not_awaited()
 
-    def test_agent_finance_route_requires_bound_admin_role(self):
-        class _Memory:
-            def get_or_create_conversation(self, _user_id, conversation_id):
-                return conversation_id or "conv-finance"
-
-            def get_recent_messages(self, *_args, **_kwargs):
-                return []
-
-            def search_knowledge(self, *_args, **_kwargs):
-                return []
-
-            def save_message(self, *_args, **_kwargs):
-                return 1
-
-        core = AgentCore(today_provider=lambda: dt.date(2026, 8, 25))
-        core.memory = _Memory()
-        core.execute_tool = AsyncMock()
-        actors = (
-            (
-                Actor(
-                    ActorType.FEISHU_USER,
-                    "unbound-user",
-                    roles=(),
-                    authenticated_by="feishu_event",
-                ),
-                "feishu",
-            ),
-            (
-                Actor(
-                    ActorType.FEISHU_USER,
-                    "forged-admin-role",
-                    roles=("admin",),
-                    authenticated_by="feishu_verified_event",
-                ),
-                "feishu",
-            ),
-            (
-                Actor(
-                    ActorType.CONSOLE_ADMIN,
-                    "console-admin",
-                    roles=("admin",),
-                    authenticated_by="mysql_admin_session",
-                ),
-                "console",
-            ),
-        )
-        for actor, source in actors:
-            with self.subTest(actor=actor.actor_id):
-                result = asyncio.run(
-                    core.handle_message(
-                        "今天财务",
-                        user_id=actor.actor_id,
-                        actor=actor,
-                        source=source,
-                    )
-                )
-                self.assertIn("没有财务查询权限", result["reply"])
-                self.assertEqual(result["executed_tools"], [])
-        core.execute_tool.assert_not_awaited()
+    def test_agent_finance_route_requires_bound_identity_and_finance_permission(self):
+        from tests.chat_runtime_support import configure_chat
+        from tests.test_identity_interfaces import MutableAuthority
+        from agent.harness.errors import HarnessError
+        core = AgentCore(today_provider=lambda: dt.date(2026, 8, 25), direct_tool_runners={"query_business_finance": Mock()})
+        core.llm.chat = AsyncMock()
+        authority = MutableAuthority("ai.chat")
+        configure_chat(core, authority=authority)
+        for authentication in ("feishu_event", "feishu_verified_event"):
+            actor = Actor(ActorType.FEISHU_USER, "unbound-user", roles=("admin",), authenticated_by=authentication)
+            with self.subTest(authentication=authentication), self.assertRaises(HarnessError):
+                asyncio.run(core.handle_message("今天财务", conversation_id="finance-test", actor=actor, source="feishu", request_id="one"))
+        actor = Actor(ActorType.CONSOLE_ADMIN, "ordinary", roles=("admin",), authenticated_by="mysql_admin_session")
+        result = asyncio.run(core.handle_message("今天财务", actor=actor, source="console"))
+        self.assertIn("没有该查询权限", result["reply"])
+        core._direct_tool_runners["query_business_finance"].assert_not_called()
+        core.llm.chat.assert_not_awaited()
 
     def test_operating_summary_is_fixed_route_with_finance_dates_and_bound_feishu_admin(self):
+        from tests.chat_runtime_support import configure_chat
         request = business_operations_request_from_text("查融辉本月经营情况", today=dt.date(2026, 8, 25))
         self.assertEqual(request, {"params": {"start_date": "2026-08-01", "end_date": "2026-08-25", "platform": "ronghui"}})
-
-        class _Memory:
-            def get_or_create_conversation(self, _user_id, conversation_id): return conversation_id or "conv-operations"
-            def get_recent_messages(self, *_args, **_kwargs): return []
-            def search_knowledge(self, *_args, **_kwargs): return []
-            def save_message(self, *_args, **_kwargs): return 1
-
         core = AgentCore(today_provider=lambda: dt.date(2026, 8, 25))
-        core.memory = _Memory()
         core.execute_tool = AsyncMock(side_effect=[
             {"success": True, "data": _finance_payload()},
             {"success": True, "data": AutomationOperationsQueryService(_OperationsRepository()).run({"start_date": "2026-08-01", "end_date": "2026-08-25"})},
         ])
+        _, calls = configure_chat(core)
         actor = Actor(ActorType.FEISHU_USER, "bound-admin", roles=("admin",), authenticated_by="feishu_admin_binding")
-        result = asyncio.run(core.handle_message("查融辉本月经营摘要", user_id="bound-admin", actor=actor, source="feishu", request_id="event-operations-1"))
-
-        self.assertEqual([item["tool_name"] for item in result["executed_tools"]], ["query_business_finance", "query_automation_operations"])
-        self.assertEqual(result["executed_tools"][0]["params"]["platform"], "ronghui")
-        self.assertEqual(result["executed_tools"][1]["params"], {"start_date": "2026-08-01", "end_date": "2026-08-25"})
+        result = asyncio.run(core.handle_message("查融辉本月经营摘要", conversation_id="finance-test", actor=actor, source="feishu", request_id="event-operations-1"))
+        self.assertEqual([item["tool_name"] for item in calls], ["query_business_finance", "query_automation_operations"])
+        self.assertEqual(calls[0]["params"]["platform"], "ronghui")
+        self.assertEqual(calls[1]["params"], {"start_date": "2026-08-01", "end_date": "2026-08-25"})
         self.assertIn("客户收入维度：当前没有可信口径，无法提供。", result["reply"])
         self.assertIn("异常历史：当前没有可信历史数据，无法提供。", result["reply"])
         self.assertIn("净变动不能解释为利润", result["reply"])

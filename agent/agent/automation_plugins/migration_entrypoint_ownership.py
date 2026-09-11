@@ -12,6 +12,7 @@ from agent.direct_tool_router import (
 )
 from shared.automation_plugin_migration_ownership import (
     MIGRATION_ENTRYPOINT_OWNERSHIP_SCHEMA,
+    MIGRATION_WEBHOOK_OWNERSHIP_SCHEMA,
     MIGRATION_OWNERSHIP_STATES,
     MIGRATION_PERSISTED_PAIR_STATES,
     migration_effective_ownership_state,
@@ -21,11 +22,23 @@ from shared.automation_plugin_migration_ownership import (
 from shared.automation_project_manifest import (
     FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES,
 )
+from shared.plugin_webhook_routes import PLUGIN_WEBHOOK_ROUTES
 
 
 FIXED_FEISHU_OWNER_V1 = "ACTION_V1"
 FIXED_FEISHU_OWNER_V2 = "SERVICE_V2"
 FIXED_FEISHU_OWNER_BLOCKED = "BLOCKED"
+
+
+def _matches_fixed_request(request, source_tool_name, source_route_key):
+    preview_aliases = {
+        "self_pickup_problem_upload": "preview_self_pickup_problems",
+        "split_pending_problem_upload": "preview_split_pending_problems",
+    }
+    return (isinstance(request, Mapping)
+            and request.get("mode") in {"automation_project", "automation_preview"}
+            and request.get("tool_name") in ({source_tool_name} | ({preview_aliases[source_tool_name]} if source_tool_name in preview_aliases else set()))
+            and request.get("automation_route_key") == source_route_key)
 
 
 def _contribution_ids(entry: Any, kind: str) -> tuple[str, ...]:
@@ -96,11 +109,6 @@ def _target_feishu_commands(
             "migration target Feishu contribution is ambiguous",
             code="PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE",
         )
-    if matches[0].get("selection_preview_operation") is not None:
-        raise PluginConflictError(
-            "migration of an enabled Action-v1 Feishu selection-preview route is production gated",
-            code="PLUGIN_MIGRATION_FEISHU_SELECTION_PREVIEW_PRODUCTION_GATED",
-        )
     commands = matches[0].get("commands")
     if (
         not isinstance(commands, (list, tuple))
@@ -119,12 +127,7 @@ def _target_feishu_commands(
         )
     for command in commands:
         request = direct_tool_request_from_text(command)
-        if (
-            not isinstance(request, Mapping)
-            or request.get("mode") != "automation_project"
-            or request.get("tool_name") != source_tool_name
-            or request.get("automation_route_key") != source_route_key
-        ):
+        if not _matches_fixed_request(request, source_tool_name, source_route_key):
             raise PluginConflictError(
                 "migration target Feishu command does not exactly match its v1 route",
                 code="PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE",
@@ -141,17 +144,6 @@ def migration_target_entrypoints_and_ownership(
     source_resource_bindings: Mapping[str, Any],
 ) -> tuple[tuple[str, ...], dict[str, Any], frozenset[str]]:
     """Build the target config and immutable ownership from signed catalogs."""
-
-    if (
-        str(getattr(source, "automation_id", "") or "") == "scan_codes"
-        and str(getattr(source, "plugin_id", "") or "") == "sync_scan_codes"
-        and str(getattr(target, "plugin_id", "") or "")
-        == "sync_scan_codes_v2"
-    ):
-        raise PluginConflictError(
-            "migration of the v1-identity-specific one-use scan preview binding is production gated",
-            code="PLUGIN_MIGRATION_SCAN_PREVIEW_PRODUCTION_GATED",
-        )
 
     source_enabled = tuple(str(item or "") for item in source_enabled_entrypoints)
     if any(not item for item in source_enabled) or len(source_enabled) != len(
@@ -173,27 +165,24 @@ def migration_target_entrypoints_and_ownership(
             code="PLUGIN_MIGRATION_ENTRYPOINT_PRODUCTION_GATED",
         )
     console_id = _single_target_contribution(target, "console")
-    entrypoints = [console_id]
+    entrypoints = [console_id, *_contribution_ids(target, "harness")]
 
     has_real_schedule = (
         source_schedule.get("kind") != "none"
         and source_schedule.get("enabled") is True
     )
-    if "scheduler" in source_enabled or has_real_schedule:
+    if has_real_schedule and "scheduler" not in source_enabled:
         raise PluginConflictError(
-            "migration of an enabled Action-v1 Scheduler is production gated",
-            code="PLUGIN_MIGRATION_SCHEDULER_PRODUCTION_GATED",
+            "migration schedule has no enabled source scheduler entrypoint",
+            code="PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE",
         )
-    scheduler_enabled = False
-    scheduler_id = None
+    scheduler_enabled = has_real_schedule
+    scheduler_id = _single_target_contribution(target, "scheduler") if scheduler_enabled else None
+    if scheduler_id is not None:
+        entrypoints.append(scheduler_id)
 
     feishu_enabled = "feishu" in source_enabled
     webhook_enabled = "webhook" in source_enabled
-    if webhook_enabled:
-        raise PluginConflictError(
-            "migration of an enabled Action-v1 Webhook is production gated",
-            code="PLUGIN_MIGRATION_WEBHOOK_PRODUCTION_GATED",
-        )
     source_template = FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES.get(
         str(getattr(source, "automation_id", "") or "")
     )
@@ -239,11 +228,27 @@ def migration_target_entrypoints_and_ownership(
         )
         entrypoints.append(feishu_id)
 
+    webhook = None
+    if webhook_enabled:
+        reviewed = PLUGIN_WEBHOOK_ROUTES.get(str(getattr(source, "automation_id", "")))
+        webhook_id = _single_target_contribution(target, "webhook")
+        declaration = next(item for item in target.contributions["webhook"] if item["id"] == webhook_id)
+        if (reviewed is None or getattr(target, "plugin_id", None) != reviewed[0] or "webhook_route" not in consumed_route_bindings
+                or source_resource_bindings["webhook_route"] != reviewed[1]
+                or declaration.get("method") != "POST" or declaration.get("route") != reviewed[3]):
+            raise PluginConflictError("migration webhook does not match the reviewed route",
+                code="PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE")
+        webhook = {"source_enabled": True, "target_contribution_id": webhook_id,
+            "source_resource_id": reviewed[1], "source_path": reviewed[2], "method": "POST", "route": reviewed[3]}
+        entrypoints.append(webhook_id)
+
     route_enabled = {
         "console": True,
         "scheduler": scheduler_enabled,
         "feishu": feishu_enabled,
     }
+    if webhook is not None:
+        route_enabled["webhook"] = True
     owners = {
         state: {
             kind: (
@@ -251,13 +256,14 @@ def migration_target_entrypoints_and_ownership(
                 if not route_enabled[kind]
                 else "SERVICE_V2" if state == "CUTOVER" else "ACTION_V1"
             )
-            for kind in ("console", "scheduler", "feishu")
+            for kind in route_enabled
         }
         for state in MIGRATION_OWNERSHIP_STATES
     }
     ownership = normalize_migration_entrypoint_ownership(
         {
-            "schema": MIGRATION_ENTRYPOINT_OWNERSHIP_SCHEMA,
+            "schema": MIGRATION_WEBHOOK_OWNERSHIP_SCHEMA if webhook else MIGRATION_ENTRYPOINT_OWNERSHIP_SCHEMA,
+            **({"webhook": webhook} if webhook else {}),
             "console": {
                 "source_enabled": True,
                 "target_contribution_id": console_id,
@@ -314,6 +320,39 @@ class MigrationEntrypointOwnershipResolver:
         if not callable(reader):
             raise TypeError("repository must expose authoritative migration pairs")
         self._read_pair = reader
+
+    def webhook_target(self, route_key: str) -> Mapping[str, Any] | None:
+        """Resolve an existing public address from its committed migration."""
+        matches = [(source, route) for source, route in PLUGIN_WEBHOOK_ROUTES.items() if route[2] == route_key]
+        if not matches:
+            return None
+        source_id, reviewed = matches[0]
+        try:
+            pair = self._read_pair(source_id)
+            if pair is None:
+                return None
+            state = migration_effective_ownership_state(pair.get("state"), rolled_back_at=pair.get("rolled_back_at"))
+            if state is None or pair.get("source_automation_id") != source_id:
+                raise ValueError("migration is not stable")
+            snapshot = pair["entrypoint_snapshot_json"]
+            ownership = normalize_migration_entrypoint_ownership(snapshot["entrypoint_ownership"])
+            if "webhook" not in ownership:
+                raise ValueError("migration omitted the existing webhook")
+            if migration_entrypoint_owner(ownership, state=state, kind="webhook") == "ACTION_V1":
+                return None
+            declaration = ownership["webhook"]
+            target = snapshot["target"]
+            generation = int(target.get("generation") or target.get("pending_generation") or 0)
+            if (declaration["source_path"] != route_key or declaration["source_resource_id"] != reviewed[1]
+                    or declaration["route"] != reviewed[3] or generation < 1
+                    or target["automation_id"] != pair["target_automation_id"]):
+                raise ValueError("migration webhook identity changed")
+            return {"automation_id": target["automation_id"], "generation": generation,
+                "contribution_id": declaration["target_contribution_id"], "route": declaration["route"],
+                "completed": pair["state"] == "COMPLETED"}
+        except Exception as exc:
+            raise PluginConflictError("Webhook migration ownership is unavailable",
+                code="PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE") from exc
 
     @staticmethod
     def _identity(pair: object) -> _FeishuPairIdentity:
@@ -384,10 +423,7 @@ class MigrationEntrypointOwnershipResolver:
         request = direct_tool_request_from_text(command)
         return bool(
             command in identity.commands
-            and isinstance(request, Mapping)
-            and request.get("mode") == "automation_project"
-            and request.get("tool_name") == identity.source_tool_name
-            and request.get("automation_route_key") == identity.source_route_key
+            and _matches_fixed_request(request, identity.source_tool_name, identity.source_route_key)
         )
 
     def allow_reserved_feishu_target(

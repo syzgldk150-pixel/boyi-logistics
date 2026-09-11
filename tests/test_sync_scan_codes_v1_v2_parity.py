@@ -301,10 +301,9 @@ def _formal_arguments(
     observed_at = datetime.now(timezone.utc) - timedelta(minutes=1)
     values = {**copy.deepcopy(base_arguments), "dry_run": False}
     binding = {
-        "contract_version": 1,
+        "contract_version": 2,
         "plugin_id": "sync_scan_codes",
-        "preview_run_id": str(uuid.UUID(int=1)),
-        "preview_step_id": str(uuid.UUID(int=2)),
+        "preview_invocation_id": str(uuid.UUID(int=1)),
         "preview_result_sha256": "1" * 64,
         "project_instance_id": "scan_codes",
         "generation": 1,
@@ -720,7 +719,7 @@ def _service_request(plugin, arguments: dict[str, object]) -> dict[str, object]:
         ("feishu", "execute_feishu", "feishu"),
     ),
 )
-def test_contribution_entrypoints_cannot_invoke_preview(
+def test_contribution_entrypoints_accept_their_declared_read_only_preview(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     entrypoint: str,
@@ -748,8 +747,8 @@ def test_contribution_entrypoints_cannot_invoke_preview(
     old_stdin = runtime.sys.stdin
     runtime.sys.stdin = io.StringIO(json.dumps(request, ensure_ascii=False))
     try:
-        with pytest.raises(ValueError, match="service target"):
-            runtime._read_request()
+        operation, arguments = runtime._read_request()
+        assert operation == "preview" and arguments["dry_run"] is True
     finally:
         runtime.sys.stdin = old_stdin
 

@@ -8,6 +8,7 @@ from typing import Any, Mapping, Sequence
 
 from agent.automation_plugins.first_party_handler_common import customer_problem_identity
 from agent.automation_plugins.models import GenerationVerificationContext
+from agent.automation_plugins.host_observation import customer_observed_result
 from shared.customer_service_repository import CustomerServiceRepository
 from shared.data_sources import DataSourceError, DataSourceRepository, SourceIdentity, row_dict
 
@@ -19,9 +20,9 @@ def publish_customer_collection(connection: Any, *, verification: GenerationVeri
     source_contexts: dict[str, dict[str, Any]] = {}
     completed: set[tuple[str, str]] = set()
     for observation in verification.host_call_observations:
-        if observation.get("action") != "customer_problem.list_page":
+        result = customer_observed_result(observation, action="list_page")
+        if result is None:
             continue
-        result = observation.get("result")
         context = result.get("source_context") if isinstance(result, Mapping) else None
         if not isinstance(context, Mapping):
             raise DataSourceError("SOURCE_ORGANIZATION_UNVERIFIED")

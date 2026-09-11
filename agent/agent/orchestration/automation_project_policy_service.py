@@ -2147,6 +2147,10 @@ class AutomationProjectPolicyService:
         entrypoint: AutomationEntrypoint,
         actor: Actor,
     ) -> None:
+        if entrypoint is AutomationEntrypoint.HARNESS and actor.actor_type is ActorType.FEISHU_USER:
+            if actor.authenticated_by == "feishu_admin_binding" and "admin" in actor.roles:
+                return
+            raise OrchestrationError("TRUSTED_ENTRYPOINT_REQUIRED", "AI 对话需要已绑定的飞书身份")
         if entrypoint in {
             AutomationEntrypoint.CONSOLE,
             AutomationEntrypoint.HARNESS,
@@ -2157,7 +2161,7 @@ class AutomationProjectPolicyService:
         if entrypoint is AutomationEntrypoint.FEISHU:
             if actor.actor_type is ActorType.FEISHU_USER and (
                 (actor.authenticated_by == "feishu_verified_event" and actor.roles == ())
-                or (actor.authenticated_by == "feishu_admin_binding" and actor.roles == ("admin", "super_admin"))
+                or (actor.authenticated_by == "feishu_admin_binding" and actor.roles in {("admin",), ("admin", "super_admin")})
             ):
                 return
             raise OrchestrationError(

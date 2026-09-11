@@ -1,0 +1,170 @@
+{
+  "schema_version": 2,
+  "runtime_model": "service_v2",
+  "plugin_id": "sync_arrive_list_v2",
+  "name": "到货清单",
+  "version": "2.0.0",
+  "description": "到货清单：独立包执行分页、筛选与输出流程，通过宿主接口读取平台和保存结果。",
+  "host_api": {
+    "minimum": "2.0.0",
+    "maximum_exclusive": "3.0.0"
+  },
+  "runtime": {
+    "kind": "python_subprocess",
+    "python": "3.10",
+    "mode": "on_demand",
+    "entrypoint": "payload/main.py",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "settings_ui": {
+    "entry": "settings/index.html",
+    "bridge_api": "1.0.0"
+  },
+  "provides": [
+    {
+      "service": "plugin.sync_arrive_list_v2.arrive_list@1",
+      "operations": [
+        {
+          "name": "preview",
+          "effect": "read"
+        },
+        {
+          "name": "run",
+          "effect": "external_write"
+        }
+      ]
+    }
+  ],
+  "requires": [
+    {
+      "service": "connector.boyi.arrive_list_ronghui@1",
+      "binding_kind": "account",
+      "account_role": "arrive_list_ronghui"
+    },
+    {
+      "service": "connector.boyi.arrive_primary_sheet@1",
+      "binding_kind": "resource",
+      "resource_role": "arrive_primary_sheet"
+    },
+    {
+      "service": "connector.boyi.arrive_secondary_sheet@1",
+      "binding_kind": "resource",
+      "resource_role": "arrive_secondary_sheet"
+    },
+    {
+      "service": "connector.boyi.arrive_list_projection@1",
+      "binding_kind": "host_internal"
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "service.invoke",
+      "operations": [
+        "forecast_replace",
+        "publication_read",
+        "read_page",
+        "replace",
+        "waybill_replace"
+      ],
+      "account_role": null,
+      "resource_role": null
+    }
+  ],
+  "account_roles": [
+    {
+      "role": "arrive_list_ronghui",
+      "allowed_systems": [
+        "ronghui"
+      ],
+      "required": true
+    }
+  ],
+  "resource_roles": [
+    {
+      "role": "arrive_primary_sheet",
+      "allowed_kinds": [
+        "feishu_sheet"
+      ],
+      "required": true
+    },
+    {
+      "role": "arrive_secondary_sheet",
+      "allowed_kinds": [
+        "feishu_sheet"
+      ],
+      "required": true
+    }
+  ],
+  "contributes": {
+    "console": [
+      {
+        "id": "manual_run",
+        "title": "到货清单",
+        "service": "plugin.sync_arrive_list_v2.arrive_list@1",
+        "operation": "run",
+        "default_enabled": true
+      }
+    ],
+    "scheduler": [
+      {
+        "id": "daily_run",
+        "title": "到货清单",
+        "service": "plugin.sync_arrive_list_v2.arrive_list@1",
+        "operation": "run",
+        "default_enabled": false
+      }
+    ],
+    "webhook": [],
+    "feishu": [
+      {
+        "id": "command",
+        "service": "plugin.sync_arrive_list_v2.arrive_list@1",
+        "operation": "run",
+        "commands": [
+          "arrive-list"
+        ],
+        "default_enabled": false
+      }
+    ],
+    "events": [],
+    "harness": [
+      {
+        "id": "assistant_preview",
+        "title": "预览到货清单",
+        "description": "读取并预览到货清单",
+        "scenarios": [
+          "预览到货清单"
+        ],
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {},
+          "required": []
+        },
+        "service": "plugin.sync_arrive_list_v2.arrive_list@1",
+        "operation": "preview",
+        "effect": "read",
+        "confirmation_policy": "none",
+        "preview_operation": null
+      }
+    ]
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "target_date": {
+        "type": "string",
+        "minLength": 10,
+        "maxLength": 10,
+        "description": "可选：指定业务日期；不填写则每次读取当天数据。"
+      }
+    },
+    "required": []
+  },
+  "storage": {
+    "kv": false,
+    "collections": []
+  }
+}

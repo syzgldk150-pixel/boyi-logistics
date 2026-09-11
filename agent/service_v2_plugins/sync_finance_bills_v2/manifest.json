@@ -1,0 +1,171 @@
+{
+  "schema_version": 2,
+  "runtime_model": "service_v2",
+  "plugin_id": "sync_finance_bills_v2",
+  "name": "财务账单采集",
+  "version": "2.0.0",
+  "description": "独立插件按已绑定财务来源采集、独立复核金额与件数并提交账本，失败来源明确显示。",
+  "host_api": {
+    "minimum": "2.0.0",
+    "maximum_exclusive": "3.0.0"
+  },
+  "runtime": {
+    "kind": "python_subprocess",
+    "python": "3.10",
+    "mode": "on_demand",
+    "entrypoint": "payload/main.py",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "settings_ui": {
+    "entry": "settings/index.html",
+    "bridge_api": "1.0.0"
+  },
+  "provides": [
+    {
+      "service": "plugin.sync_finance_bills_v2.finance@1",
+      "operations": [
+        {
+          "name": "run",
+          "effect": "internal_write"
+        }
+      ]
+    }
+  ],
+  "requires": [
+    {
+      "service": "connector.boyi.finance_quote_source@1",
+      "binding_kind": "account",
+      "account_role": "finance_quote_source"
+    },
+    {
+      "service": "connector.boyi.finance_daxiang_s_source@1",
+      "binding_kind": "account",
+      "account_role": "finance_daxiang_s_source"
+    },
+    {
+      "service": "connector.boyi.finance_self_pickup_source@1",
+      "binding_kind": "account",
+      "account_role": "finance_self_pickup_source"
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "service.invoke",
+      "operations": [
+        "acquire_batch",
+        "capture_page",
+        "commit_projection",
+        "verify_totals",
+        "write_snapshot"
+      ],
+      "account_role": null,
+      "resource_role": null
+    }
+  ],
+  "account_roles": [
+    {
+      "role": "finance_quote_source",
+      "allowed_systems": [
+        "ronghui"
+      ],
+      "required": true
+    },
+    {
+      "role": "finance_daxiang_s_source",
+      "allowed_systems": [
+        "ronghui"
+      ],
+      "required": true
+    },
+    {
+      "role": "finance_self_pickup_source",
+      "allowed_systems": [
+        "ronghui"
+      ],
+      "required": true
+    }
+  ],
+  "resource_roles": [],
+  "contributes": {
+    "console": [
+      {
+        "id": "manual_run",
+        "title": "财务账单采集",
+        "service": "plugin.sync_finance_bills_v2.finance@1",
+        "operation": "run",
+        "default_enabled": true
+      }
+    ],
+    "scheduler": [
+      {
+        "id": "daily_run",
+        "title": "财务账单采集",
+        "service": "plugin.sync_finance_bills_v2.finance@1",
+        "operation": "run",
+        "default_enabled": false
+      }
+    ],
+    "webhook": [],
+    "feishu": [],
+    "events": [],
+    "harness": []
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "mode": {
+        "type": "string",
+        "enum": [
+          "sync",
+          "backfill",
+          "retry"
+        ],
+        "description": "sync=日常同步，backfill=历史回填，retry=按失败批次重试；默认 sync"
+      },
+      "target_date": {
+        "type": "string",
+        "description": "sync 可选结束日期，格式 YYYY-MM-DD；默认前一完整日"
+      },
+      "start_date": {
+        "type": "string",
+        "description": "sync/backfill 可选起始日期；backfill 必填"
+      },
+      "end_date": {
+        "type": "string",
+        "description": "sync/backfill 可选结束日期；backfill 必填"
+      },
+      "platform": {
+        "type": "string",
+        "enum": [
+          "ronghui"
+        ],
+        "description": "sync/backfill 可选平台过滤；首期仅允许已上线的融辉来源"
+      },
+      "batch_id": {
+        "type": "integer",
+        "description": "retry 模式必填的原失败批次 ID；retry 不接受其他范围过滤"
+      },
+      "rescan_days": {
+        "type": "integer",
+        "description": "sync 默认回扫 7 个完整业务日"
+      },
+      "_startup_catchup": {
+        "type": "boolean",
+        "description": "仅由启动缺口扫描注入；普通调用不得设置"
+      }
+    },
+    "required": []
+  },
+  "storage": {
+    "kv": false,
+    "collections": []
+  },
+  "management": {
+    "purpose": "collector",
+    "module": "finance",
+    "dataset": "finance.transactions",
+    "version": "1"
+  }
+}

@@ -144,6 +144,10 @@ class TmsProxyServiceMixin:
         ):
             self._send_text(handler, HTTPStatus.UNAUTHORIZED, "原页授权已失效，请从运单录入重新打开。")
             return False
+        from shared.identity_permissions import access_from_row
+        if not access_from_row(session).allows("waybill.write"):
+            self._send_text(handler, HTTPStatus.FORBIDDEN, "当前身份没有运单录入权限。")
+            return False
         self._set_current_admin_user(
             handler,
             {

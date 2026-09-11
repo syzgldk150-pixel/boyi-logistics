@@ -261,6 +261,11 @@
       throw new HarnessRequestError("INVALID_HARNESS_RESPONSE", "智能服务未返回有效会话。", 502);
     }
     setSession(createdSessionId);
+    for (const message of Array.isArray(data.messages) ? data.messages : []) {
+      if ((message.role === "user" || message.role === "assistant") && typeof message.content === "string") {
+        appendMessage(message.role, message.content);
+      }
+    }
     renderTools(data.tools);
     const unavailable = unavailableStatus(data);
     if (unavailable) {
@@ -389,7 +394,18 @@
     scrollConversation();
   }
 
-  function resetConversation() {
+  async function resetConversation() {
+    setBusy(true);
+    try {
+      await postJson("/harness/messages", {
+        session_id: sessionId, request_uuid: requestUuid(), message: "清空会话",
+      });
+    } catch (error) {
+      setFeedback(describeError(error), "error");
+      return;
+    } finally {
+      setBusy(false);
+    }
     pluginCards.forEach((card) => window.clearTimeout(card.timer));
     pluginCards.clear();
     pendingMessage = null;
@@ -397,10 +413,8 @@
     if (welcome) welcome.hidden = false;
     if (toolsList) toolsList.replaceChildren();
     if (toolsCount) toolsCount.textContent = "未加载";
-    setSession("");
     setState("等待提问");
-    setFeedback("", "info");
-    initializeSession();
+    setFeedback("已清空会话。已发起的插件继续执行，结果可在自动化记录中查看。", "info");
   }
 
   async function initializeSession() {

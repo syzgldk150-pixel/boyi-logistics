@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import uuid
+from dataclasses import replace
 from threading import RLock
 
 from agent.harness.errors import HarnessError
@@ -67,6 +68,17 @@ class InMemoryHarnessSessionRepository:
             if session is None or session.principal_id != principal:
                 raise HarnessError("session is unavailable", code="HARNESS_SESSION_NOT_FOUND")
             return self._clone(session)
+
+    def clear_messages(self, *, principal_id: str, session_id: str) -> HarnessSession:
+        """Clear an explicitly requested conversation; execution records live elsewhere."""
+        with self._lock:
+            session = self.get(principal_id=principal_id, session_id=session_id)
+            self._sessions[session.session_id] = replace(session, messages=())
+            self._message_idempotency = {
+                key: value for key, value in self._message_idempotency.items()
+                if key[:2] != (session.principal_id, session.session_id)
+            }
+            return session
 
     def append_message(
         self,

@@ -11,6 +11,31 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 
+def _finance_service_observations(rows):
+    """Translate Host-attested V2 calls to the same finance verification facts."""
+    from agent.automation_plugins.finance_connectors_v2 import FINANCE_OPERATIONS, ROLES
+    services = {f"connector.boyi.{role}@1": role for role in ROLES}
+    normalized = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            return None
+        target = row.get("service_target")
+        result = row.get("result")
+        if not isinstance(target, Mapping) or not isinstance(result, Mapping):
+            return None
+        operation = FINANCE_OPERATIONS.get(target.get("operation"))
+        role = services.get(target.get("service"))
+        reference = row.get("evidence_ref")
+        if (operation is None or role is None or set(target) != {"service", "operation", "effect"}
+                or row.get("operation") != "service.invoke" or row.get("action") != target["operation"]
+                or row.get("role") != "__system__" or target.get("effect") != operation[2]
+                or not isinstance(reference, str) or not reference):
+            return None
+        normalized.append({**row, "operation": operation[0], "action": operation[1], "role": role,
+            "result": {**result, "evidence_ref": reference}})
+    return normalized
+
+
 def is_verified_finance_failure(
     *,
     plugin_id: str,
@@ -18,8 +43,12 @@ def is_verified_finance_failure(
     started_mutating_call_count: int | None,
     host_call_observations: Sequence[Mapping[str, Any]],
 ) -> bool:
-    if plugin_id != "sync_finance_bills" or result.get("status") != "FAILED":
+    if plugin_id not in {"sync_finance_bills", "sync_finance_bills_v2"} or result.get("status") != "FAILED":
         return False
+    if plugin_id == "sync_finance_bills_v2":
+        host_call_observations = _finance_service_observations(host_call_observations)
+        if host_call_observations is None:
+            return False
     data, error, meta = result.get("data"), result.get("error"), result.get("meta")
     if not all(isinstance(value, Mapping) for value in (data, error, meta)):
         return False

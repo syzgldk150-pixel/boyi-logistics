@@ -310,6 +310,10 @@ class _AutomationProjects:
 
 
 class _AutomationPlugins:
+    def require_migration_direct_entrypoint(self, automation_id, *, source, super_admin):
+        # Both instances are ordinary installations, with no migration pair.
+        return None
+
     def __init__(self, state: "_ServiceState") -> None:
         self.state = state
 

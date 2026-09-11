@@ -1,0 +1,154 @@
+{
+  "schema_version": 2,
+  "runtime_model": "service_v2",
+  "plugin_id": "sync_daily_send_orders_v2",
+  "name": "获取当日寄件数据",
+  "version": "2.0.0",
+  "description": "获取当日寄件数据：插件独立完成分页、字段转换和输出；宿主提供平台读写与数据库接口。",
+  "host_api": {
+    "minimum": "2.0.0",
+    "maximum_exclusive": "3.0.0"
+  },
+  "runtime": {
+    "kind": "python_subprocess",
+    "python": "3.10",
+    "mode": "on_demand",
+    "entrypoint": "payload/main.py",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "settings_ui": {
+    "entry": "settings/index.html",
+    "bridge_api": "1.0.0"
+  },
+  "provides": [
+    {
+      "service": "plugin.sync_daily_send_orders_v2.daily_send@1",
+      "operations": [
+        {
+          "name": "run",
+          "effect": "external_write"
+        }
+      ]
+    }
+  ],
+  "requires": [
+    {
+      "service": "connector.boyi.daily_send_source@1",
+      "binding_kind": "account",
+      "account_role": "daily_send_source"
+    },
+    {
+      "service": "connector.boyi.send_order_bitable@1",
+      "binding_kind": "resource",
+      "resource_role": "send_order_bitable"
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "service.invoke",
+      "operations": [
+        "acquire",
+        "delete_records",
+        "list_records",
+        "read_page",
+        "release",
+        "replace_date",
+        "write_records"
+      ],
+      "account_role": null,
+      "resource_role": null
+    }
+  ],
+  "account_roles": [
+    {
+      "role": "daily_send_source",
+      "allowed_systems": [
+        "ronghui"
+      ],
+      "required": true
+    }
+  ],
+  "resource_roles": [
+    {
+      "role": "send_order_bitable",
+      "allowed_kinds": [
+        "feishu_bitable"
+      ],
+      "required": true
+    }
+  ],
+  "contributes": {
+    "console": [
+      {
+        "id": "manual_run",
+        "title": "获取当日寄件数据",
+        "service": "plugin.sync_daily_send_orders_v2.daily_send@1",
+        "operation": "run",
+        "default_enabled": true
+      }
+    ],
+    "scheduler": [
+      {
+        "id": "daily_run",
+        "title": "获取当日寄件数据",
+        "service": "plugin.sync_daily_send_orders_v2.daily_send@1",
+        "operation": "run",
+        "default_enabled": false
+      }
+    ],
+    "webhook": [],
+    "feishu": [
+      {
+        "id": "command",
+        "service": "plugin.sync_daily_send_orders_v2.daily_send@1",
+        "operation": "run",
+        "commands": [
+          "获取当日寄件数据"
+        ],
+        "default_enabled": false
+      }
+    ],
+    "events": [],
+    "harness": []
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "target_date": {
+        "type": "string",
+        "description": "可选，单个发件日期，格式 YYYY-MM-DD；默认当天"
+      },
+      "start_date": {
+        "type": "string",
+        "description": "可选，范围拉取起始发件日期，格式 YYYY-MM-DD；与 end_date 组成闭区间"
+      },
+      "end_date": {
+        "type": "string",
+        "description": "可选，范围拉取结束发件日期，格式 YYYY-MM-DD；与 start_date 组成闭区间"
+      },
+      "page_size": {
+        "type": "integer",
+        "description": "融辉寄件列表接口每页条数，默认 100"
+      },
+      "max_pages": {
+        "type": "integer",
+        "description": "最多拉取页数，默认 50"
+      },
+      "sql_only": {
+        "type": "boolean",
+        "description": "仅同步控制台 waybills SQL 表，不写入或删除飞书记录"
+      },
+      "sync_sql": {
+        "type": "boolean",
+        "description": "是否同步控制台 waybills SQL 表，默认 true"
+      }
+    },
+    "required": []
+  },
+  "storage": {
+    "kv": false,
+    "collections": []
+  }
+}

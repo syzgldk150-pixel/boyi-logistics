@@ -132,7 +132,7 @@ def test_self_pickup_v2_zip_is_deterministic_and_embeds_v1_action_and_result_byt
             "service": "plugin.self_pickup_problem_upload_v2.self_pickup_problem_upload@1",
             "operation": "execute",
             "selection_preview_operation": "preview",
-            "default_enabled": False,
+            "default_enabled": True,
         },
     )
     assert manifest.contributes["feishu"] == (
@@ -155,7 +155,7 @@ def test_self_pickup_v2_zip_is_deterministic_and_embeds_v1_action_and_result_byt
         "execute_feishu",
         "assistant_preview",
     )
-    assert projection.default_entrypoints == ("assistant_preview",)
+    assert projection.default_entrypoints == ("execute_console", "assistant_preview")
     assert projection.scheduling == {
         "supported": False,
         "allowed_kinds": [],

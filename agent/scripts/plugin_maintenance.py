@@ -51,19 +51,39 @@ PLUGIN_TESTS = {
     "sync_scan_codes_v2": (
         "tests/test_sync_scan_codes_service_v2_package.py",
         "tests/test_sync_scan_codes_v1_v2_parity.py",
+        "tests/test_production_v2_packaged_protocol.py::test_scan_real_zip_console_preview_stays_read_only",
+        "tests/test_production_v2_packaged_protocol.py::test_scan_zip_formal_uses_host_confirmed_plan_and_fresh_readback",
     ),
     "sync_arrival_stats_v2": (
         "tests/test_sync_arrival_stats_service_v2_package.py",
         "tests/test_sync_arrival_stats_v1_v2_parity.py",
+        "tests/test_production_v2_packaged_protocol.py::test_arrival_real_zip_process_writes_calculated_counts_through_production_broker",
+        "tests/test_production_v2_packaged_protocol.py::test_arrival_zip_webhook_calculates_without_writing_only_when_requested",
     ),
     "self_pickup_problem_upload_v2": (
         "tests/test_self_pickup_problem_service_v2_package.py",
         "tests/test_self_pickup_problem_v1_v2_parity.py",
+        "tests/test_production_v2_packaged_protocol.py::test_self_pickup_zip_preview_selects_both_accounts_and_confirms_real_operations",
     ),
     "split_pending_problem_upload_v2": (
         "tests/test_split_pending_problem_service_v2_package.py",
         "tests/test_split_pending_problem_v1_v2_parity.py",
+        "tests/test_production_v2_packaged_protocol.py::test_split_zip_executes_selected_problem_and_publishes_ledger",
     ),
+    "clockin_daxiang_v2": ("tests/test_clockin_daxiang_service_v2_packages.py",),
+    "clockin_daxiang_s_v2": ("tests/test_clockin_daxiang_service_v2_packages.py",),
+    "sync_arrive_list_v2": ("tests/test_list_v2_packaged_protocol.py::test_arrive_list_zip_preserves_statistics_and_refreshes_forecast",),
+    "sync_site_send_list_v2": ("tests/test_list_v2_packaged_protocol.py::test_site_send_zip_filters_rows_and_requires_fresh_write_proof",),
+    "sync_yunda_dispatch_forecast_v2": ("tests/test_yunda_v2_packaged_protocol.py::test_yunda_dispatch_zip_uses_raw_business_fields_and_verified_append",),
+    "sync_yunda_send_waybills_v2": ("tests/test_yunda_v2_packaged_protocol.py::test_yunda_send_zip_reads_two_sources_and_preserves_amounts_in_three_outputs",),
+    "sync_daily_send_orders_v2": (
+        "tests/test_send_delivery_v2_packaged_protocol.py::test_daily_send_zip_replaces_only_target_date_and_matches_projection",
+        "tests/test_send_delivery_v2_packaged_protocol.py::test_cancelled_daily_send_zip_releases_scope_after_its_host_call_finishes",
+    ),
+    "sync_delivery_status_v2": ("tests/test_send_delivery_v2_packaged_protocol.py::test_delivery_zip_classifies_signed_rows_and_verifies_both_outputs",),
+    "sync_finance_bills_v2": ("tests/test_finance_v2_packaged_protocol.py",),
+    "sync_customer_service_problems_v2": ("tests/test_customer_v2_packaged_protocol.py",),
+    "sync_daily_should_sign_v2": ("tests/test_daily_sign_v2_packaged_protocol.py",),
 }
 
 
@@ -84,7 +104,11 @@ def maintenance_scope(plugin_id: str, paths: list[str]) -> dict[str, Any]:
     local_tests = {node.split("::", 1)[0] for node in PLUGIN_TESTS[plugin_id]}
     supporting = [path for path in paths if path not in local_tests and (
         path.endswith('.md') or path.startswith(('tests/', 'agent/tests/', 'console/tests/')))]
-    outside = [path for path in paths if not (path.startswith(local_root) or path in local_tests or path in supporting)]
+    # Business sources are shared with the one-time V1 migration packager;
+    # they are embedded in the V2 ZIP and never imported from the Host at run time.
+    business_root = "agent/first_party_automation_plugins/" + plugin_id.removesuffix("_v2") + "/payload/"
+    outside = [path for path in paths if not (path.startswith(local_root) or
+        (plugin_id.endswith("_v2") and path.startswith(business_root)) or path in local_tests or path in supporting)]
     other_plugins = [path for path in outside if path.startswith(('agent/first_party_automation_plugins/', 'agent/service_v2_plugins/'))]
     core = [path for path in outside if path not in other_plugins]
     return {

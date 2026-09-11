@@ -595,7 +595,7 @@ class ResultVerifier:
         for observation in observations:
             if (
                 not isinstance(observation, Mapping)
-                or set(observation) != required_fields
+                or set(observation) not in (required_fields, required_fields | {"service_target"})
                 or not cls._non_empty_contract_text(observation.get("request_id"))
                 or not cls._non_empty_contract_text(observation.get("operation"))
                 or not cls._non_empty_contract_text(observation.get("action"))
@@ -611,6 +611,16 @@ class ResultVerifier:
                 or not isinstance(observation.get("result"), Mapping)
             ):
                 return "Service v2 Host call observation is invalid"
+            target = observation.get("service_target")
+            if target is not None and (
+                observation.get("operation") != "service.invoke"
+                or not isinstance(target, Mapping)
+                or set(target) != {"service", "operation", "effect"}
+                or not cls._non_empty_contract_text(target.get("service"))
+                or target.get("operation") != observation.get("action")
+                or target.get("effect") not in {item.value for item in CapabilityEffect}
+            ):
+                return "Service v2 Host service observation is invalid"
             if observation["write_started"] is True:
                 started_count += 1
             host_refs.append(str(observation["evidence_ref"]))
@@ -625,6 +635,11 @@ class ResultVerifier:
             if not started_observations:
                 return "Service v2 internal write lacks Host-observed mutation evidence"
             for observation in started_observations:
+                target = observation.get("service_target")
+                if observation.get("operation") == "service.invoke" and isinstance(target, Mapping):
+                    if target.get("effect") != CapabilityEffect.INTERNAL_WRITE.value:
+                        return "Service v2 internal write Host effect is inconsistent"
+                    continue
                 try:
                     descriptor = default_host_capability_registry().resolve(
                         api_version=HOST_CAPABILITY_API_VERSION,

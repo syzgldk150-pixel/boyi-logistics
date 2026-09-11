@@ -505,6 +505,8 @@ class ServiceV2FeishuDispatcher:
         chat_id: str,
         on_accepted: Callable[[Any], Awaitable[None]] | None = None,
         conversation_target: Any = None,
+        preview_invocation_id: str | None = None,
+        selected_bill_codes: list[str] | None = None,
     ) -> dict[str, Any] | None:
         """Dispatch an exact active command, or return ``None`` if unknown."""
 
@@ -555,6 +557,10 @@ class ServiceV2FeishuDispatcher:
         }
         if on_accepted is not None:
             invoke_kwargs["on_accepted"] = on_accepted
+        if preview_invocation_id is not None:
+            invoke_kwargs["preview_invocation_id"] = normalize_preview_invocation_id(preview_invocation_id)
+        if selected_bill_codes is not None:
+            invoke_kwargs["selected_bill_codes"] = selected_bill_codes
         if conversation_target is not None:
             invoke_kwargs.update(require_full_auto=True, expected_project_configuration_version=conversation_target.configuration_version)
         return await self._policy.invoke_trusted_and_wait(
@@ -564,7 +570,7 @@ class ServiceV2FeishuDispatcher:
 
 
 class ServiceV2WebhookDispatcher:
-    """Dispatch one exact managed Webhook route without transport payload input."""
+    """Dispatch an exact managed route with only its declared occurrence fields."""
 
     def __init__(
         self,
@@ -590,6 +596,9 @@ class ServiceV2WebhookDispatcher:
         method: str,
         route: str,
         source_event_id: str,
+        envelope: Mapping[str, Any] | None = None,
+        preview_invocation_id: str | None = None,
+        expected_migration_target: Mapping[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Dispatch an exact active route, or return ``None`` if unowned."""
 
@@ -604,6 +613,33 @@ class ServiceV2WebhookDispatcher:
             return None
 
         automation_id, generation, contribution_id = _managed_target_identity(target)
+        if expected_migration_target is not None:
+            expected = expected_migration_target
+            version_matches = generation >= expected["generation"] if expected["completed"] else generation == expected["generation"]
+            if not version_matches or automation_id != expected["automation_id"] or contribution_id != expected["contribution_id"]:
+                raise OrchestrationError("PROJECT_RUNTIME_PROJECTION_STALE", "回调插件的当前版本与迁移记录不一致")
+        dynamic_context: dict[str, Any] = {}
+        preview_kwargs: dict[str, Any] = {}
+        if envelope is not None or preview_invocation_id is not None:
+            from types import SimpleNamespace
+            entry, contract = self._policy._load_contract(automation_id)
+            invocation = contract.invocation_contracts.get(contribution_id)
+            if invocation is None or contract.automation_generation != generation:
+                raise OrchestrationError("PROJECT_RUNTIME_PROJECTION_STALE", "回调插件的设置已变化")
+            dynamic = _extract_dynamic_inputs(SimpleNamespace(
+                action_fields=frozenset(entry.config_schema["properties"]),
+                dynamic_fields=frozenset(invocation.dynamic_argument_resolvers),
+            ), envelope or {})
+            if dynamic:
+                dynamic_context["dynamic_inputs"] = dynamic
+            if preview_invocation_id is not None:
+                from agent.orchestration.scan_preview_binding import is_scan_preview_project
+                if not is_scan_preview_project(entry):
+                    raise OrchestrationError("SCAN_PREVIEW_ID_INVALID", "此回调不接受扫描预览")
+                normalized = normalize_preview_invocation_id(preview_invocation_id)
+                if normalized != preview_invocation_id:
+                    raise OrchestrationError("SCAN_PREVIEW_ID_INVALID", "扫描预览标识格式无效")
+                preview_kwargs["preview_invocation_id"] = normalized
 
         safe_event_id = _exact_stable_identifier(
             source_event_id,
@@ -635,10 +671,12 @@ class ServiceV2WebhookDispatcher:
                 "source_event_id": safe_event_id,
                 "webhook_path": f"webhook/{route}",
                 "webhook_method": method,
+                **dynamic_context,
             },
             idempotency_key=f"webhook:v2:{event_digest}",
             expected_automation_generation=generation,
             contribution_id=contribution_id,
+            **preview_kwargs,
         )
         return _safe_managed_dispatch_result(result)
 
@@ -720,10 +758,14 @@ class AutomationProjectEntrypoints:
         *,
         route_resolver: AutomationProjectRouteResolverPort,
         feishu_actor_resolver: Any | None = None,
+        migration_entrypoint_ownership: Any | None = None,
+        service_v2_webhook_dispatcher: ServiceV2WebhookDispatcher | None = None,
     ) -> None:
         self._policy = policy_service
         self._routes = route_resolver
         self._feishu_actor_resolver = feishu_actor_resolver
+        self._migration_ownership = migration_entrypoint_ownership
+        self._service_v2_webhooks = service_v2_webhook_dispatcher
 
     async def wait_feishu_invocation(self, *, invocation_id: str, automation_id: str,
                                     event_id: str, sender_id: str, chat_id: str,
@@ -751,6 +793,8 @@ class AutomationProjectEntrypoints:
                 or row.get("request_id") != event or row.get("automation_id") != automation_id):
             raise OrchestrationError("ACTOR_NOT_AUTHORIZED", "只能读取本次消息发起的执行")
         result = await self._policy.direct_invocations.wait(invocation_id, timeout_seconds=timeout_seconds)
+        from agent.identity_access import require_project_access
+        await asyncio.to_thread(require_project_access, self._policy, actor, automation_id, entrypoint="feishu")
         if result.get("invocation_id") != invocation_id or result.get("automation_id") != automation_id:
             raise OrchestrationError("INVOCATION_IDENTITY_INVALID", "执行结果与本次调用不匹配")
         return await asyncio.to_thread(
@@ -769,6 +813,8 @@ class AutomationProjectEntrypoints:
         row = self._policy.direct_invocations.repository.get(invocation_id)
         if row is None or row.get("source") != "feishu" or row.get("actor_id") != actor.actor_id:
             raise OrchestrationError("ACTOR_NOT_AUTHORIZED", "只能取消自己发起的执行")
+        from agent.identity_access import require_project_access
+        await asyncio.to_thread(require_project_access, self._policy, actor, row["automation_id"], entrypoint="feishu")
         return await self._policy.direct_invocations.cancel(invocation_id)
 
     async def invoke_feishu(
@@ -922,6 +968,19 @@ class AutomationProjectEntrypoints:
         envelope: Mapping[str, Any] | None = None,
         preview_invocation_id: Any | None = None,
     ) -> dict[str, Any]:
+        if self._migration_ownership is not None:
+            migrated = self._migration_ownership.webhook_target(route_key)
+            if migrated is not None:
+                if webhook_path.strip("/") != route_key or self._service_v2_webhooks is None:
+                    raise OrchestrationError("PROJECT_RUNTIME_PROJECTION_STALE", "当前回调插件入口尚未就绪")
+                result = await self._service_v2_webhooks.dispatch(
+                    method="POST", route=migrated["route"], source_event_id=source_event_id,
+                    envelope=envelope or {}, preview_invocation_id=preview_invocation_id,
+                    expected_migration_target=migrated,
+                )
+                if result is None:
+                    raise OrchestrationError("PROJECT_ENTRYPOINT_DISABLED", "当前回调插件入口未启用")
+                return result
         route = self._require_route(AutomationEntrypoint.WEBHOOK, route_key)
         safe_event_id = _stable_identifier(source_event_id, "source_event_id")
         safe_path = str(webhook_path or "").strip("/")

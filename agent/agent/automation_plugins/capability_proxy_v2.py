@@ -37,6 +37,7 @@ from agent.automation_plugins.connector_registry import (
     ConnectorResourceBindingRef,
 )
 from agent.automation_plugins.errors import PluginExecutionError
+from agent.automation_plugins.host_observation import ServiceInvocationResult
 from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
 from agent.automation_plugins.service_registry import (
     ResolvedServiceOperation,
@@ -1046,7 +1047,7 @@ class ServiceV2CapabilityProxy:
                     context.mark_write_started()
                 result = await registry.invoke(
                     resolved=provider,
-                    binding=binding,
+                    binding=replace(binding, invocation_context=context),
                     arguments=public_arguments,
                 )
             except ConnectorRegistryError as exc:
@@ -1072,7 +1073,7 @@ class ServiceV2CapabilityProxy:
             )
         public_result = dict(result)
         _canonical_json(public_result)
-        return public_result
+        return ServiceInvocationResult(public_result, service=service, operation=operation, effect=effect.value)
 
 
 def _clock_observed_at(value: object) -> str:

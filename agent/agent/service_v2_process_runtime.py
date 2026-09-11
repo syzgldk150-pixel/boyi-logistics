@@ -33,6 +33,7 @@ class ServiceV2ProcessRuntime:
         harness_fixed_handlers: Mapping[str, ReadOnlyFixedHandler],
         instance_name_resolver: Callable[[str], str] | None = None,
         plugin_conversations=None,
+        text_queries=None,
     ) -> None:
         self._availability = backend_availability
         self._harness = HarnessRuntime(
@@ -49,6 +50,8 @@ class ServiceV2ProcessRuntime:
             sidecar_factory=self._harness.sidecar_factory,
             timeout_seconds=30,
             plugin_conversations=plugin_conversations,
+            identity_access=getattr(policy_service, "identity_access", None),
+            text_queries=text_queries,
         )
         self._ingress = ServiceV2ManagedIngress(
             policy_service=policy_service,
