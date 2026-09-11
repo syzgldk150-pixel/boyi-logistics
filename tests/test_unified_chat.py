@@ -47,6 +47,36 @@ def test_same_model_prompt_for_both_channels_and_group_members_have_separate_his
     assert [row["content"] for row in transcripts[2] if row["role"] == "user"] == ["我有问题"]
 
 
+@pytest.mark.parametrize("message", [
+    "只说明当前账号可用的查询和插件能力，不执行任何插件或业务写入。",
+    "后台账号和飞书账号可以继承哪些权限？",
+])
+def test_account_permission_questions_survive_minimization_in_both_channels(message):
+    transcripts = []
+    answer = "当前账号可查询业务；插件执行需具备对应权限。"
+    async def model(messages, **_):
+        transcripts.append(messages)
+        return {"content": answer}
+    core = AgentCore()
+    core.llm = SimpleNamespace(chat=model)
+    service, _ = configure_chat(core)
+    console = asyncio.run(core.handle_message(message, actor=CONSOLE, source="console"))
+    feishu = reply_to_feishu(service, actor=FEISHU, chat_id="group", event_id="permissions", message=message)
+    assert console["reply"] == feishu["reply"] == answer
+    assert len(transcripts) == 2
+    for transcript in transcripts:
+        assert [row["content"] for row in transcript if row["role"] == "user"] == [message]
+
+
+@pytest.mark.parametrize("text", [
+    "账号：isolated_operator", "业务账号标识=isolated_operator",
+    "账号 isolated_operator", "账号isolated_operator", "账号：隔离测试账号",
+])
+def test_labeled_account_values_remain_hidden(text):
+    from agent.harness_online import _minimize_text
+    assert _minimize_text(text) == "账号：[已隐藏]"
+
+
 def test_chat_permission_revocation_rejects_existing_session_on_both_transports():
     authority = MutableAuthority("ai.chat", "business.query")
     core = AgentCore()

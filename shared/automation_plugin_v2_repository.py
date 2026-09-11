@@ -1317,9 +1317,13 @@ class AutomationPluginV2RepositoryMixin:
             if current in {"TESTING", "READY"} and live["source"].get("enabled") != self._source_enabled_before_migration(snapshot):
                 raise ConcurrentUpdateError("migration source enablement changed during validation")
 
+            # Events use DB-local CURRENT_TIMESTAMP; invocation and lease
+            # timestamps are UTC. Compare the same time basis on non-UTC ECS.
             cursor.execute(
                 """
-                SELECT created_at FROM automation_plugin_migration_pair_events
+                SELECT TIMESTAMPADD(
+                    SECOND, TIMESTAMPDIFF(SECOND, NOW(), UTC_TIMESTAMP()), created_at
+                ) AS created_at FROM automation_plugin_migration_pair_events
                 WHERE migration_pair_id=%s AND to_state='TESTING'
                 ORDER BY created_at, event_id LIMIT 1 FOR UPDATE
                 """,

@@ -1,4 +1,4 @@
-"""Bounded online model loop for the read-only AI assistant.
+"""Common online model loop for queries and authorized plugin tools.
 
 This module talks only to the already active :class:`LLMClient` and to a
 closed :class:`HarnessToolCatalog`.  It never launches scripts, opens files,
@@ -32,7 +32,10 @@ _LONG_HASH = re.compile(r"\b[0-9a-fA-F]{32,}\b")
 _LABELED_ADDRESS = re.compile(
     r"(?:收货|发货|联系|详细)?地址\s*[:：]?\s*[^\s，。；;]{4,80}"
 )
-_LABELED_ACCOUNT = re.compile(r"(?:业务)?账号(?:标识)?\s*[:：]?\s*[^\s，。；;]{2,80}")
+_LABELED_ACCOUNT = re.compile(
+    r"(?:业务)?账号(?:标识)?(?:\s*[:：=]\s*[^\s，。；;]{2,80}"
+    r"|\s*[A-Za-z0-9][A-Za-z0-9_.@-]{1,79})"
+)
 _EXECUTION_REQUEST = re.compile(r"^(?:(?:请|帮我|现在|立即|先)\s*)*(?:执行|运行|触发|启动|同步|扫描|打卡|上传|写入)")
 _PRIVATE_MODEL_KEY_PARTS = (
     "token",

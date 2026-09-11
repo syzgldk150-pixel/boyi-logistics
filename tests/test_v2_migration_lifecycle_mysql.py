@@ -24,7 +24,11 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = "self_pickup_problem_upload"
 
 
-def test_real_arrive_list_migration_consumes_saved_formal_mode(database, tmp_path, monkeypatch):
+@pytest.mark.parametrize("schedule", [
+    {"kind": "none", "times": [], "enabled": False},
+    {"kind": "daily_times", "times": ["23:55"], "enabled": False},
+])
+def test_real_arrive_list_migration_consumes_saved_formal_mode(database, tmp_path, monkeypatch, schedule):
     from agent.automation_plugins.list_connectors_v2 import build_list_connectors
     from tests.test_arrival_connectors_v2 import _setup
 
@@ -77,7 +81,7 @@ def test_real_arrive_list_migration_consumes_saved_formal_mode(database, tmp_pat
                 "arrive_primary_sheet": "phase7.arrive_primary_sheet",
                 "arrive_secondary_sheet": "phase7.arrive_secondary_sheet",
                 "feishu_route": "automation.feishu_route.arrive_list"},
-            enabled_entrypoints=("console",), schedule={"kind": "none", "times": [], "enabled": False},
+            enabled_entrypoints=("console",), schedule=schedule,
             device_id=None, request_id=str(uuid4()), expected_project_configuration_version=entry.project_config_version,
             actor=ACTOR)
         host.targets.reconcile_project("arrive_list")
@@ -92,13 +96,18 @@ def test_real_arrive_list_migration_consumes_saved_formal_mode(database, tmp_pat
         assert result["state"] == "TESTING"
         assert host.configuration.read("arrive_list").config == {"dry_run": False, "target_date": "2026-09-12"}
         assert host.configuration.read(target).config == {"target_date": "2026-09-12"}
+        assert host.configuration.read(target).schedule == schedule
+        with host.repository.unit_of_work() as uow, uow.connection.cursor() as cursor:
+            cursor.execute("SELECT enabled FROM scheduled_tasks WHERE automation_id=%s", (target,))
+            assert all(not row["enabled"] for row in cursor.fetchall())
         assert host.catalog.require(target).committed_generation > 0
         assert writes == []
 
 
 @pytest.mark.parametrize("enabled,finish", [(True, "rollback"), (False, "complete"),
                                            (True, "withdraw"), (False, "withdraw"), (False, "withdraw_failed"),
-                                           (True, "complete_without_route")])
+                                           (True, "complete_without_route"),
+                                           (True, "complete_cst"), (False, "complete_west")])
 @pytest.mark.parametrize("reconcile_before_config", [False, True])
 def test_installed_migration_transfers_only_after_verified_direct_call(database, tmp_path, monkeypatch, enabled, finish, reconcile_before_config):
     fixture, name = database
@@ -106,7 +115,10 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
     def connect():
         return fixture.pymysql.connect(host=fixture.host, port=fixture.port, user=fixture.user,
             password=fixture.password, database=name, charset="utf8mb4", autocommit=False,
-            cursorclass=fixture.pymysql.cursors.DictCursor)
+            cursorclass=fixture.pymysql.cursors.DictCursor,
+            init_command="SET time_zone = '%s'" % {
+                "complete_cst": "+08:00", "complete_west": "-05:00",
+            }.get(finish, "+00:00"))
     private = ECC.generate(curve="Ed25519")
     trust = Ed25519TrustStore({"isolated-migration": private.public_key().export_key(format="raw")})
     accounts = ProblemAccounts()

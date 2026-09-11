@@ -11,7 +11,9 @@ jobs:
     # A relocated setup-python build retains its compiled /opt fallback prefix
     # and cannot start a nested copied plugin venv inside the restricted sandbox.
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
+    # Full MySQL and real-sandbox regression now exceeds the old job budget.
+    # This is the CI job limit; business/browser performance gates are unchanged.
+    timeout-minutes: 45
     services:
       mysql:
         image: mysql:8.0

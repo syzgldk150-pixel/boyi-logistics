@@ -17,9 +17,10 @@ class MigrationBindingMapping:
     account_roles: Mapping[str, str]
     resource_roles: Mapping[str, str]
     consumed_dry_run_values: tuple[bool, ...] = ()
+    consumed_empty_config_fields: tuple[str, ...] = ()
 
     def copy_config(self, source_config: Mapping[str, Any]) -> dict[str, Any]:
-        """Consume only a reviewed invocation-mode field, retaining all others.
+        """Consume only reviewed equivalent config values, retaining all others.
 
         V2 preview/run operations own this flag. Never turn a saved preview
         default into a real write, or silently discard unknown business keys.
@@ -34,6 +35,9 @@ class MigrationBindingMapping:
                     code="PLUGIN_MIGRATION_CONFIG_MODE_UNSUPPORTED",
                 )
             del result["dry_run"]
+        for field in self.consumed_empty_config_fields:
+            if result.get(field) == "":
+                del result[field]
         return result
 
 
@@ -42,11 +46,13 @@ def _mapping(
     account_roles: Mapping[str, str],
     resource_roles: Mapping[str, str],
     consumed_dry_run_values: tuple[bool, ...] = (),
+    consumed_empty_config_fields: tuple[str, ...] = (),
 ) -> MigrationBindingMapping:
     return MigrationBindingMapping(
         account_roles=MappingProxyType(dict(account_roles)),
         resource_roles=MappingProxyType(dict(resource_roles)),
         consumed_dry_run_values=consumed_dry_run_values,
+        consumed_empty_config_fields=consumed_empty_config_fields,
     )
 
 
@@ -130,6 +136,9 @@ _REVIEWED_BINDING_MAPPINGS: Mapping[
             # Both old Console defaults become the same explicit preview;
             # formal scanning still requires the newly generated confirmation.
             consumed_dry_run_values=(False, True),
+            # Both payloads resolve an omitted date on each invocation. Do not
+            # freeze today's date into settings or discard invalid date values.
+            consumed_empty_config_fields=("target_date",),
             account_roles={"account_id": "scan_ronghui"},
             resource_roles={},
         ),

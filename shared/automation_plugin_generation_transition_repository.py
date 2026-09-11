@@ -231,6 +231,7 @@ def _apply_scheduled_task_projection(
     )
     if (
         expressions
+        and desired_schedule["enabled"]
         and scheduler_entrypoint is not None
         and not isinstance(scheduler_arguments, Mapping)
     ):

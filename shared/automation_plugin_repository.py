@@ -2690,7 +2690,8 @@ class AutomationPluginRepository(
                 by_cron[cron] = task
 
             expressions = _schedule_expressions(normalized_schedule)
-            if runtime_model == "SERVICE_V2" and normalized_schedule["kind"] != "none":
+            if (runtime_model == "SERVICE_V2" and normalized_schedule["kind"] != "none"
+                    and normalized_schedule["enabled"]):
                 scheduler_entrypoints = [
                     entrypoint
                     for entrypoint in entrypoints
@@ -2699,12 +2700,14 @@ class AutomationPluginRepository(
                 ]
                 if len(scheduler_entrypoints) != 1:
                     raise OrchestrationPersistenceError(
-                        "service v2 schedule requires exactly one enabled scheduler target"
+                        "service v2 schedule requires exactly one scheduler target"
                     )
                 scheduler_arguments = normalized_compiled[
                     scheduler_entrypoints[0]
                 ]["arguments"]
             else:
+                # Disabled schedules retain their times, but have no compiled
+                # execution arguments until explicitly enabled and recompiled.
                 scheduler_arguments = normalized_compiled.get("scheduler", {}).get(
                     "arguments", {}
                 )

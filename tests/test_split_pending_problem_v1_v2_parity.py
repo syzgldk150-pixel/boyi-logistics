@@ -355,14 +355,16 @@ def test_v1_and_v2_preview_preserve_19_column_classification_and_conservation(
     assert "preflight_services" not in v2_calls[1]["outer_arguments"]
 
 
-@pytest.mark.parametrize("drift", ("header", "too_many_columns", "quantity"))
+@pytest.mark.parametrize("drift", ("header", "too_many_columns", "quantity", "missing_header"))
 def test_invalid_19_column_source_fails_before_state_or_write(
     tmp_path: Path,
     drift: str,
 ) -> None:
     fixture = _fixture()
     rows = copy.deepcopy(fixture["rows"])
-    if drift == "header":
+    if drift == "missing_header":
+        rows = []
+    elif drift == "header":
         rows[0][7] = "漂移体积列"
     elif drift == "too_many_columns":
         rows[1].append("未声明列")
@@ -574,13 +576,15 @@ def test_execute_preflights_every_connector_before_any_primitive_or_write(
     assert tracker.host_refs == []
 
 
+@pytest.mark.parametrize("header_only", [False, True])
 def test_preview_service_is_read_only_and_retains_exact_host_evidence(
     tmp_path: Path,
+    header_only: bool,
 ) -> None:
     fixture = _fixture()
     runtime, plugin = _build_and_load(tmp_path)
     _v1, host_broker, _v1_calls, v2_calls = _recording_brokers(
-        copy.deepcopy(fixture["rows"]),
+        copy.deepcopy(fixture["rows"][:1] if header_only else fixture["rows"]),
         copy.deepcopy(fixture["stored"]),
         plugin,
     )
@@ -604,6 +608,9 @@ def test_preview_service_is_read_only_and_retains_exact_host_evidence(
     assert result["meta"]["write_outcome"] == "NOT_APPLIED"
     assert result["meta"]["evidence_refs"] == refs == tracker.host_refs
     assert tracker.mutating_started is False
+    if header_only:
+        assert result["data"]["candidate_count"] == result["data"]["source_rows"] == 0
+        assert result["data"]["candidates"] == []
 
 
 def test_execute_service_projects_verified_results_and_all_host_evidence(
