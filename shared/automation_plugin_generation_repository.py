@@ -7,6 +7,7 @@ repository type and method names remain backward compatible.
 from __future__ import annotations
 
 from shared import automation_plugin_repository as _repository
+from shared.plugin_json import plugin_json, plugin_json_digest
 from shared.automation_plugin_generation_transition_repository import (
     AutomationPluginGenerationTransitionRepositoryMixin,
     _apply_scheduled_task_projection,
@@ -218,7 +219,7 @@ class AutomationPluginGenerationRepositoryMixin(
             "expected_committed_generation",
         )
         safe_request_id = _required_text(request_id, "request_id")
-        snapshot_hash = _json_hash(normalized)
+        snapshot_hash = plugin_json_digest(normalized)
         with self.cursor() as cursor:
             cursor.execute(
                 """
@@ -341,7 +342,7 @@ class AutomationPluginGenerationRepositoryMixin(
                 ("account_bindings", "account_bindings_json"),
                 ("resource_bindings", "resource_bindings_json"),
             ):
-                if _json_hash(execution_metadata[metadata_field]) != _json_hash(
+                if plugin_json_digest(execution_metadata[metadata_field]) != plugin_json_digest(
                     config.get(config_field)
                 ):
                     raise ConcurrentUpdateError(
@@ -362,7 +363,7 @@ class AutomationPluginGenerationRepositoryMixin(
                 config.get("desired_schedule_sha256") or ""
             ):
                 raise ConcurrentUpdateError("runtime target schedule is stale")
-            if _json_hash(execution_metadata["compiled_invocations"]) != str(
+            if plugin_json_digest(execution_metadata["compiled_invocations"]) != str(
                 config.get("compiled_invocations_sha256") or ""
             ) or str(normalized["compiled_invocations_sha256"]) != str(
                 config.get("compiled_invocations_sha256") or ""
@@ -417,7 +418,7 @@ class AutomationPluginGenerationRepositoryMixin(
                     normalized["governance_anchor_sha256"],
                     normalized["policy_contract_sha256"],
                     entrypoint_hash,
-                    _json_param(normalized, {}),
+                    plugin_json(normalized),
                     snapshot_hash,
                     normalized["created_at"],
                 ),
@@ -1073,7 +1074,7 @@ class AutomationPluginGenerationRepositoryMixin(
                 safe_automation_id,
                 snapshot,
             )
-            if _json_hash(normalized_snapshot) != str(
+            if plugin_json_digest(normalized_snapshot) != str(
                 target.get("snapshot_sha256") or ""
             ) or any(
                 str(normalized_snapshot[field]) != str(target.get(field) or "")
@@ -1205,7 +1206,7 @@ class AutomationPluginGenerationRepositoryMixin(
                 raise ConcurrentUpdateError(
                     "project schedule changed after generation preparation"
                 )
-            if _json_hash(execution_metadata.get("compiled_invocations")) != str(
+            if plugin_json_digest(execution_metadata.get("compiled_invocations")) != str(
                 config.get("compiled_invocations_sha256") or ""
             ) or str(snapshot.get("compiled_invocations_sha256") or "") != str(
                 config.get("compiled_invocations_sha256") or ""
@@ -1541,14 +1542,14 @@ class AutomationPluginGenerationRepositoryMixin(
                 int(normalized_snapshot.get("generation") or 0) != generation
                 or str(normalized_snapshot.get("manifest_sha256") or "")
                 != safe_expected_manifest
-                or _json_hash(normalized_snapshot)
+                or plugin_json_digest(normalized_snapshot)
                 != str(target.get("snapshot_sha256") or "")
             ):
                 raise OrchestrationPersistenceError(
                     "committed runtime generation snapshot integrity failed"
                 )
             runtime_metadata = normalized_snapshot["execution_metadata"]
-            metadata_hash = _json_hash(runtime_metadata)
+            metadata_hash = plugin_json_digest(runtime_metadata)
             if safe_invocation_id:
                 cursor.execute("SELECT automation_id, generation, status FROM automation_plugin_invocations WHERE invocation_id=%s FOR UPDATE", (safe_invocation_id,))
                 call = _row_dict(cursor, cursor.fetchone())
@@ -1576,7 +1577,7 @@ class AutomationPluginGenerationRepositoryMixin(
                     safe_orchestration_run_id,
                     safe_invocation_id,
                     safe_owner,
-                    _json_param(runtime_metadata, {}),
+                    plugin_json(runtime_metadata),
                     metadata_hash,
                     safe_expires_at,
                 ),

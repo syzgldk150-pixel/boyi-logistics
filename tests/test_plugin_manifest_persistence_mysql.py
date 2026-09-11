@@ -13,10 +13,11 @@ from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
 from agent.automation_plugins.mysql_repository import MySQLAutomationPluginRepositoryAdapter
 from agent.automation_plugins.package_v2 import verify_unsigned_plugin_zip_v2
 from agent.automation_plugins.storage import FilesystemPluginStorage, LockedVirtualEnvironmentBuilder
+from agent.automation_plugins.service_v2_contract import ServiceV2ProjectContract
 from service_v2_plugins._shared.build_zip import build_plugin_zip
 from shared.automation_plugin_repository import AutomationPluginRepository
 from shared.orchestration_repository import OrchestrationRepository
-from shared.orchestration_repository_support import IdempotencyConflict, _json_param
+from shared.orchestration_repository_support import IdempotencyConflict, OrchestrationPersistenceError, _json_param
 from tests.test_manual_unknown_write_mysql import database  # noqa: F401 - shared isolated fixture
 
 
@@ -56,6 +57,28 @@ def test_actual_zip_install_and_response_retry_keep_exact_manifest(database, tmp
     replay = lifecycle.install_upload(package, **args)
     assert replay.automation_id == instance.automation_id
     assert replay.active_version.manifest == verified.manifest.to_mapping()
+
+    contract = ServiceV2ProjectContract.from_manifest(verified.manifest)
+    witness = {"runtime_model": "SERVICE_V2", "allowed_entrypoints": list(contract.allowed_entrypoints),
+               "invocation_contracts": dict(contract.invocation_contracts), "scheduling": dict(contract.scheduling)}
+    with connection(database) as conn:
+        repo = AutomationPluginRepository(conn, cursor_factory=database.pymysql.cursors.DictCursor)
+        current = repo.get_project_config(instance.automation_id)
+        save = dict(config={}, account_bindings={}, resource_bindings={}, enabled_entrypoints=(),
+                    schedule={"kind": "none", "times": [], "enabled": False}, compiled_invocations={},
+                    device_binding=None, actor_id="1", actor_role="super_admin", request_id=str(uuid4()),
+                    expected_project_configuration_version=current["config_version"])
+        if plugin_id == "sync_arrival_stats_v2":
+            altered = json.loads(json.dumps(witness))
+            first = next(iter(altered["invocation_contracts"].values()))
+            first["input_schema"]["properties"]["arrive_list_request_body"] = {"type": "string"}
+            with pytest.raises(OrchestrationPersistenceError, match="does not match configuration witness"):
+                repo.save_project_config(instance.automation_id, contract_witness=altered, **save)
+            conn.rollback()
+        # This is a persistence contract test with no execution entry enabled.
+        saved = repo.save_project_config(instance.automation_id, contract_witness=witness, **save)
+        assert saved["config_version"] == current["config_version"] + 1
+        conn.commit()
 
     if plugin_id == "sync_arrival_stats_v2":
         # Reproduce the released writer's exact corruption, then run the bounded
