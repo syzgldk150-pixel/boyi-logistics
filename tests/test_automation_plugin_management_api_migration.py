@@ -20,6 +20,7 @@ from agent.automation_plugins.management import (
 from agent.automation_plugins.management_api import (
     create_automation_plugin_management_router,
 )
+from agent.automation_plugins.migration_binding_mapping import MigrationBindingMapping
 from agent.automation_plugins.models import (
     AutomationProjectConfigRecord,
     PluginProjectState,
@@ -200,7 +201,7 @@ def test_create_migration_pair_copies_closed_bindings_without_scheduler(
 ) -> None:
     monkeypatch.setattr(
         "agent.automation_plugins.management.reviewed_migration_binding_mapping",
-        lambda **_kwargs: SimpleNamespace(
+        lambda **_kwargs: MigrationBindingMapping(
             account_roles={"legacy_operator": "operator"},
             resource_roles={},
         ),
