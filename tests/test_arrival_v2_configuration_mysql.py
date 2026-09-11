@@ -1,9 +1,11 @@
 """Real V2 install, configuration and generation projection for statistics."""
 from hashlib import sha256
+from io import BytesIO
 import json
 from pathlib import Path
 import time
 from uuid import uuid4
+from zipfile import ZipFile
 
 from service_v2_plugins._shared.build_zip import build_plugin_zip
 from console.services.automation_catalog_projection import normalize_automation_plugin_catalog
@@ -64,6 +66,23 @@ def test_statistics_settings_survive_generation_and_catalog_round_trip(database,
         host.management.set_enabled(project, enabled=True, expected_record_version=final.record_version,
                                     request_id=str(uuid4()), actor=ACTOR)
         host.targets.reconcile_project(project)
+        # A real, separately installed next-version ZIP must not disable the
+        # already configured statistics instance or its exact invocation.
+        candidate_bytes = BytesIO()
+        with ZipFile(BytesIO(archive)) as current_zip, ZipFile(candidate_bytes, "w") as candidate_zip:
+            for info in current_zip.infolist():
+                data = current_zip.read(info.filename)
+                if info.filename == "manifest.json":
+                    manifest = json.loads(data)
+                    manifest["version"] = "98.2.0"
+                    data = json.dumps(manifest, ensure_ascii=False).encode()
+                candidate_zip.writestr(info, data)
+        candidate = candidate_bytes.getvalue()
+        next_install = host.management.install_service_v2(candidate, request_id=str(uuid4()),
+            transport_package_sha256=sha256(candidate).hexdigest(), actor=ACTOR,
+            raw_intent=json.dumps({"instance_name": "待配置统计新版", "permissions_confirmed": True}))
+        next_entry = host.catalog.require(next_install["automation_id"])
+        assert not next_entry.enabled and not next_entry.configured
         projected = host.management.catalog_projection(actor=ACTOR, summary=True)
         _packages, instances, _hidden = normalize_automation_plugin_catalog(projected)
         visible = next(item for item in instances if item["automation_id"] == project)

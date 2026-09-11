@@ -81,3 +81,5 @@ TESTING 验证失败时可撤回迁移，保留原实例启停和入口、停用
 迁移和回退测试见 `tests/test_v2_migration_lifecycle_mysql.py`、`tests/test_plugin_migration_direct_mysql.py`；字段变化、局部决策变化的冻结宿主演练见 `tests/test_v2_maintenance_mysql.py`。这些测试使用隔离 MySQL、真实插件 ZIP/子进程和隔离外部接口，不连接生产业务库。
 
 只有线上实例迁移、入口归属与业务验证闭合后，才可移除 V1 运行器、启动安装逻辑及签名发行依赖。历史执行事实和已执行 SQL 迁移不能当作旧源码一起删除。当前过渡发布仍使用[标准 ECS 发布流程](../agent/deploy/publish_to_ecs.md)。
+
+插件自身入口按精确实例、包和已提交代次调用；安装其他版本或重复实例不能阻断该入口。目录中的跨插件依赖只计算已启用、已配置且提交稳定的实例，待配置和停用实例不占可调用路由。同一服务存在多个可调用实例时，裸服务名依赖仍明确拒绝，不按安装顺序或版本高低选择。真实 MySQL 安装新版 ZIP 后继续执行原统计实例的回归见 `tests/test_arrival_v2_configuration_mysql.py`。

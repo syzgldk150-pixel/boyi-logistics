@@ -980,12 +980,12 @@ class PluginCatalog:
         self,
         entries: Sequence[PluginCatalogEntry],
     ) -> dict[str, tuple[str, list[dict[str, str]]]]:
-        """Resolve package-level service providers without rejecting instances.
+        """Project dependencies without blocking exact instance invocations.
 
-        Multiple projects of the same immutable package share one provider
-        claim, so each project may keep independent account/config bindings.
-        Different immutable packages claiming the same service are blocked and
-        remain installed for an administrator to resolve.
+        An installed package is not a callable route. Only enabled, configured
+        and committed instances participate in bare-service dependency lookup.
+        Own contributions already bind an exact instance and package, so other
+        installations of the same service cannot make that binding ambiguous.
         """
 
         v2_entries = [
@@ -998,24 +998,13 @@ class PluginCatalog:
             for service in entry.provided_services:
                 candidates.setdefault(service, []).append(entry)
 
-        conflicts: set[str] = set()
-        providers: dict[str, tuple[str, str, str]] = {}
-        for service, items in candidates.items():
-            identities = {
-                (item.plugin_id, item.installed_version, item.manifest_sha256)
-                for item in items
-            }
-            if len(identities) != 1:
-                conflicts.add(service)
-            else:
-                providers[service] = next(iter(identities))
-
         package_requirements: dict[tuple[str, str, str], tuple[str, ...]] = {}
         package_connector_requirements: dict[
             tuple[str, str, str],
             tuple[ConnectorRequirementContract, ...],
         ] = {}
         package_runtime_ready: dict[tuple[str, str, str], bool] = {}
+        ready_instances: set[str] = set()
         for entry in v2_entries:
             identity = (
                 entry.plugin_id,
@@ -1027,24 +1016,36 @@ class PluginCatalog:
                 identity,
                 self._entry_connector_requirements(entry),
             )
-            package_runtime_ready[identity] = bool(
-                package_runtime_ready.get(identity)
-                or (
-                    entry.enabled
-                    and entry.configured
-                    and entry.state == PluginProjectState.ENABLED.value
-                    and entry.committed_snapshot is not None
-                    and entry.committed_generation is not None
-                    and entry.committed_snapshot.generation
-                    == entry.committed_generation
-                    and entry.committed_snapshot.plugin_version
-                    == entry.installed_version
-                    and entry.target_generation == entry.committed_generation
-                    and entry.reconcile_state == RuntimeReconcileState.STABLE
-                    and not self._missing_requirements(entry)
-                    and not self._required_account_unavailable(entry)
-                )
+            ready = bool(
+                entry.enabled
+                and entry.configured
+                and entry.state == PluginProjectState.ENABLED.value
+                and entry.committed_snapshot is not None
+                and entry.committed_generation is not None
+                and entry.committed_snapshot.generation == entry.committed_generation
+                and entry.committed_snapshot.plugin_version == entry.installed_version
+                and entry.target_generation == entry.committed_generation
+                and entry.reconcile_state == RuntimeReconcileState.STABLE
+                and not self._missing_requirements(entry)
+                and not self._required_account_unavailable(entry)
             )
+            if ready:
+                ready_instances.add(entry.automation_id)
+            package_runtime_ready[identity] = bool(
+                package_runtime_ready.get(identity) or ready
+            )
+
+        conflicts: set[str] = set()
+        providers: dict[str, tuple[str, str, str]] = {}
+        for service, items in candidates.items():
+            routes = [item for item in items if item.automation_id in ready_instances]
+            if len(routes) > 1:
+                conflicts.add(service)
+            elif len(routes) == 1:
+                provider = routes[0]
+                providers[service] = (
+                    provider.plugin_id, provider.installed_version, provider.manifest_sha256
+                )
 
         active_packages: set[tuple[str, str, str]] = set()
         changed = True
@@ -1106,10 +1107,10 @@ class PluginCatalog:
                         {
                             "code": "PROVIDER_CONFLICT",
                             "service": service,
-                            "message": "多个不同版本声明了同一服务",
+                            "message": "依赖服务存在多个可调用实例，无法唯一确定目标",
                         }
                     )
-                elif service not in providers:
+                elif service not in candidates:
                     reasons.append(
                         {
                             "code": "MISSING_PROVIDER",
@@ -1117,21 +1118,12 @@ class PluginCatalog:
                             "message": "依赖服务尚未安装",
                         }
                     )
-                elif providers[service] not in active_packages:
+                elif providers.get(service) not in active_packages:
                     reasons.append(
                         {
                             "code": "PROVIDER_BLOCKED",
                             "service": service,
                             "message": "依赖服务自身尚未就绪",
-                        }
-                    )
-            for service in entry.provided_services:
-                if service in conflicts:
-                    reasons.append(
-                        {
-                            "code": "PROVIDER_CONFLICT",
-                            "service": service,
-                            "message": "该服务存在不同内容的 Provider 冲突",
                         }
                     )
             result[entry.automation_id] = (

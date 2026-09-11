@@ -1382,6 +1382,38 @@ def test_catalog_does_not_report_a_disabled_provider_as_a_ready_dependency() -> 
     )
 
 
+@pytest.mark.parametrize("enabled,configured", [(False, False), (False, True), (True, False)])
+def test_catalog_new_inactive_version_does_not_block_current_instance(enabled, configured):
+    current = _catalog_entry(automation_id="current", plugin_id="base_plugin")
+    candidate = _catalog_entry(automation_id="candidate", plugin_id="base_plugin",
+                               enabled=enabled, configured=configured)
+    candidate = replace(candidate, installed_version="2.0.0", package_sha256="a" * 64,
+                        manifest_sha256="b" * 64,
+                        committed_snapshot=replace(candidate.committed_snapshot, plugin_version="2.0.0"))
+    consumer = _catalog_entry(automation_id="consumer", plugin_id="consumer_plugin",
+                              requires=current.provided_services)
+    statuses = PluginCatalog(_EmptyCatalogRepository())._v2_dependency_statuses((current, candidate, consumer))
+    assert statuses[current.automation_id] == ("READY", [])
+    assert statuses[consumer.automation_id] == ("READY", [])
+
+
+@pytest.mark.parametrize("different_version", [False, True])
+def test_catalog_exact_instances_remain_ready_but_ambiguous_consumers_are_blocked(different_version):
+    current = _catalog_entry(automation_id="current", plugin_id="base_plugin")
+    candidate = replace(current, automation_id="candidate")
+    if different_version:
+        candidate = replace(candidate, installed_version="2.0.0", package_sha256="a" * 64,
+                            manifest_sha256="b" * 64,
+                            committed_snapshot=replace(candidate.committed_snapshot, plugin_version="2.0.0"))
+    consumer = _catalog_entry(automation_id="consumer", plugin_id="consumer_plugin",
+                              requires=current.provided_services)
+    statuses = PluginCatalog(_EmptyCatalogRepository())._v2_dependency_statuses((current, candidate, consumer))
+    assert statuses[current.automation_id] == ("READY", [])
+    assert statuses[candidate.automation_id] == ("READY", [])
+    assert statuses[consumer.automation_id][0] == "BLOCKED_DEPENDENCY"
+    assert statuses[consumer.automation_id][1][0]["code"] == "PROVIDER_CONFLICT"
+
+
 def test_catalog_blocks_login_when_the_bound_account_is_not_runtime_ready() -> None:
     entry = _catalog_entry(
         automation_id="account-project",
