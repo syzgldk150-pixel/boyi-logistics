@@ -704,6 +704,66 @@ def test_arrival_stats_sheet_rechecks_acknowledged_write_until_exact_match(
     assert sleeps == [0.5]
 
 
+@pytest.mark.parametrize("stale_readback", [False, True])
+def test_complete_empty_statistics_clears_split_projection_and_verifies_readback(
+    monkeypatch: pytest.MonkeyPatch, stale_readback: bool,
+) -> None:
+    previous, _ = arrival._classify_split([_stats_record()], "2026-08-15")
+    stored = deepcopy(previous)
+    writes = []
+
+    def write(records):
+        writes.append(deepcopy(records))
+        stored[:] = deepcopy(records)
+        return {"ok": True}
+
+    monkeypatch.setattr(arrival, "_write_split_projection", write)
+    monkeypatch.setattr(arrival, "_read_split_projection", lambda: previous if stale_readback else stored)
+    if stale_readback:
+        with pytest.raises(PluginExecutionError) as exc:
+            arrival._refresh_split_pending_snapshot([], "2026-08-15")
+        assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
+    else:
+        result = arrival._refresh_split_pending_snapshot([], "2026-08-15")
+        assert result["verified"] is True
+        assert result["record_count"] == result["candidate_count"] == 0
+    assert writes == [[]]
+    assert stored == []
+
+
+def test_complete_empty_statistics_clears_split_sheet_but_empty_external_source_still_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.split_pending_snapshot import TARGET_HEADERS, classify_sheet_values
+
+    resource_id = "resource-split-pending"
+    stored = arrival._stats_values("split_pending", [_stats_record()], "2026-08-15")
+    calls = []
+    monkeypatch.setattr(arrival, "_load_resource", lambda _exact: {
+        "resource_kind": "feishu_sheet", "spreadsheet_token": "isolated-token",
+        "sheet_id": "Split", "range": "Split!A1:S1", "clear_range": "Split!A2:S5000",
+        "_meta": {"resource_key": resource_id},
+    })
+
+    def write(action, params):
+        calls.append(action)
+        if action == "clear_sheet":
+            stored[:] = stored[:1]
+        else:
+            stored[:] = deepcopy(params["values"])
+        return True
+
+    monkeypatch.setattr(arrival, "_write_sheet_call", write)
+    monkeypatch.setattr(arrival, "_fresh_sheet_rows", lambda *_a, **_kw: deepcopy(stored))
+    result = arrival._replace_arrival_stats_sheet(resource_id, "split_pending", [], "2026-08-15")
+    assert result["verified"] is True and result["record_count"] == 0
+    assert stored == [list(TARGET_HEADERS)]
+    assert calls == ["clear_sheet", "write_sheet"]
+    for unreadable in ([], stored):
+        with pytest.raises(ValueError):
+            classify_sheet_values(unreadable)
+
+
 def test_split_pending_sheet_uses_exact_resource_and_rejects_mismatch_as_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

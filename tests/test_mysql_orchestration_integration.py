@@ -80,6 +80,9 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
         cls.project_approval_atomic_database = (
             f"{cls.database[:-5]}_project_approval_atomic_test"
         )
+        cls.project_invocation_database = (
+            f"{cls.database[:-5]}_project_invocation_test"
+        )
         cls.worker_dispatch_database = (
             f"{cls.database[:-5]}_worker_dispatch_test"
         )
@@ -111,6 +114,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             cls.project_authorization_partial_database,
             cls.project_authorization_collation_database,
             cls.project_approval_atomic_database,
+            cls.project_invocation_database,
             cls.worker_dispatch_database,
             cls.daily_sign_readback_database,
             cls.feishu_queue_recovery_database,

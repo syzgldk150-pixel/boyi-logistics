@@ -152,8 +152,22 @@ def test_arrival_connector_rejects_changed_column_count(width, builder, suffix, 
 
 
 @pytest.mark.parametrize("dry_run", [True, False])
-def test_real_arrival_algorithm_reads_through_v2_connectors_with_actual_piece_counts(dry_run):
-    registry, context, row, calls, writes = _setup()
+@pytest.mark.parametrize("empty_source", [False, True])
+def test_real_arrival_algorithm_reads_through_v2_connectors_with_actual_piece_counts(dry_run, empty_source, monkeypatch):
+    from plugin_core_adapters import arrival
+
+    split_stored = []
+    def write_split(records):
+        split_stored[:] = copy.deepcopy(records)
+        return {"ok": True}
+    monkeypatch.setattr(arrival, "_write_split_projection", write_split)
+    monkeypatch.setattr(arrival, "_read_split_projection", lambda: copy.deepcopy(split_stored))
+    overrides = {"refresh_split_pending_snapshot": arrival._refresh_split_pending_snapshot}
+    if empty_source:
+        def empty_page(*_args):
+            return {"items": [], "returned": 0, "total": 0, "total_authoritative": True}
+        overrides.update(arrive_list_read_page=empty_page, scan_read_page=empty_page)
+    registry, context, row, calls, writes = _setup(**overrides)
     path = _ROOT / "agent/service_v2_plugins/sync_arrival_stats_v2/payload/plugin.py"
     spec = importlib.util.spec_from_file_location("isolated_arrival_connector_adapter",path)
     adapter = importlib.util.module_from_spec(spec)
@@ -174,17 +188,22 @@ def test_real_arrival_algorithm_reads_through_v2_connectors_with_actual_piece_co
         return adapter.service_invoke_adapter(host,operation,**kwargs)
     result = load_first_party_action("sync_arrival_stats").run_action({"target_date":_DATE,"dry_run":dry_run},broker)
     assert result["status"] == "SUCCESS"
-    assert result["data"]["records"] == 1
-    assert result["data"]["count_result"]["child_scan_rows"] == 1
+    assert result["data"]["records"] == (0 if empty_source else 1)
+    assert result["data"]["count_result"]["child_scan_rows"] == (0 if empty_source else 1)
     if dry_run:
         assert writes == [] and "write-started" not in calls
     else:
         output = [item for item in writes if item[0] == "isolated-primary-table"]
         assert len(output) == 1
-        assert output[0][2][0]["tracking_number"] == row["tracking_number"]
-        assert output[0][2][0]["arrived_quantity"] == 1
-        assert output[0][2][0]["quantity"] == 2
-        assert result["data"]["evidence"]["execution_result"] == "all_required_outputs_committed"
+        if empty_source:
+            assert output[0][2] == [] and split_stored == []
+        else:
+            assert output[0][2][0]["tracking_number"] == row["tracking_number"]
+            assert output[0][2][0]["arrived_quantity"] == 1
+            assert output[0][2][0]["quantity"] == 2
+        assert result["data"]["evidence"]["execution_result"] == (
+            "no_data_cleared" if empty_source else "all_required_outputs_committed"
+        )
     assert all(call[0] == _ACCOUNT for call in calls if call != "write-started")
 
 
