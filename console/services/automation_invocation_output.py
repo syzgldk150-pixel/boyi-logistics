@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Mapping
 
 from shared.redaction import redact_sensitive, redact_text
@@ -18,6 +19,10 @@ def invocation_output_lines(invocation: Mapping[str, Any], *, state_label: str) 
     summary = invocation.get("error_summary")
     if summary:
         lines.append(redact_text(summary))
+    # Keep the actual failure identifiable even when the plugin message is generic.
+    error_code = invocation.get("error_code")
+    if isinstance(error_code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{2,63}", error_code):
+        lines.append(f"错误代码：{error_code}")
     result = invocation.get("result")
     if isinstance(result, Mapping):
         # The result belongs to this exact invocation; missing counts stay missing.

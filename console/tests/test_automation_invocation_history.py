@@ -73,6 +73,25 @@ def test_recovered_active_invocation_cancels_only_exact_project_identity():
     assert len(app.calls) == 2
 
 
+def test_failed_snapshot_preserves_actual_safe_error_code_without_reexecution():
+    row = invocation(status="FAILED", error_code="CONNECTOR_RESPONSE_INVALID",
+                     error_summary="The operation did not produce a complete result")
+    app = _App({"ok": True, "data": row})
+    app._handle_automation_task_output(object(), {"task_id": [row["automation_id"]],
+                                                "invocation_id": [row["invocation_id"]]})
+    assert "错误代码：CONNECTOR_RESPONSE_INVALID" in app.sent[1]["lines"]
+    assert not app.sent[1]["runtime"]["ok"]
+    assert [call[0] for call in app.calls] == ["GET"]
+
+
+@pytest.mark.parametrize("code", [None, "", "<script>unsafe</script>", "x" * 1024])
+def test_output_does_not_render_invalid_error_code(code):
+    from console.services.automation_invocation_output import invocation_output_lines
+
+    assert invocation_output_lines(invocation(status="FAILED", error_code=code),
+                                   state_label="执行失败") == ["状态：执行失败"]
+
+
 def test_preview_phase_comes_from_persisted_invocation_not_browser_query():
     row = invocation(automation_id="scan_codes", status="COMPLETED", invocation_phase="formal")
     app = _App({"ok": True, "data": row})
