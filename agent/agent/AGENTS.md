@@ -19,6 +19,8 @@
 
 ## 修改入口
 
+- 插件迁移撤回/切换后由 `automation_plugins/management.py` 先释放旧入口再同步新入口；准备失败也可撤回 TESTING 并卸载。启动安装及健康检查按 `../../shared/automation_plugin_migration_ownership.py` 排除已移交的旧实例。到货统计和到货清单共用 `automation_plugins/list_connectors_v2.py` 的固定列转换。详见[迁移手册](../../docs/plugin-platform-v2.md)。
+
 - 首方版本升级：`automation_plugins/mysql_repository.py` 在同一 Unit of Work 内准备目标合同配置并暂存版本，失败整体回滚，已提交代次保持不变；`../../shared/automation_plugin_configuration_contract.py` 统一配置 witness 与精确升级目标校验。真实 MySQL 回归见 `../../tests/test_first_party_upgrade_configuration_mysql.py`。
 - 改直接调用、权限、执行记录和历史查询：
   - 当前入口为 `automation_plugins/direct_invocation.py`、`orchestration/direct_project_invocation.py` 与 `tms_runtime/direct_business.py`；`../docs/control_plane_v1.md` 仅供旧控制平面历史/离线核验。

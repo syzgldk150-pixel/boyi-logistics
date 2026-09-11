@@ -2659,10 +2659,8 @@ class AutomationPluginWorkerRepositoryMixin:
                 "DELETE FROM automation_project_generations WHERE automation_id=%s",
                 (automation_id,),
             )
-            cursor.execute(
-                "DELETE FROM automation_project_bootstrap_items_018 WHERE automation_id=%s",
-                (automation_id,),
-            )
+            # The immutable deployment 018 receipt outlives its original plugin.
+            # Deleting an item would corrupt the marker shared by all instances.
             cursor.execute(
                 "DELETE FROM automation_projects WHERE automation_id=%s",
                 (automation_id,),

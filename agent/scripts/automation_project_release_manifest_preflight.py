@@ -503,6 +503,9 @@ plugin_policy_history = _load_exact_module(
     PROJECT_ROOT / "scripts" / "automation_project_plugin_policy_history.py",
     register=False,
 )
+plugin_migration_scope = _load_exact_module(
+    "_automation_project_release_migrations", PROJECT_ROOT / "scripts" / "automation_project_release_migrations.py",
+    register=False)
 def _load_release_contract() -> dict[str, Any]:
     """Load staged code-owned identities without leaking ``shared`` modules."""
 
@@ -545,6 +548,8 @@ def _load_release_contract() -> dict[str, Any]:
             "shared.automation_plugin_repository",
             repository_path,
         )
+        select_migration_pair = sys.modules["shared.automation_plugin_v2_repository"]._select_authoritative_migration_pair
+        source_is_superseded = sys.modules["shared.automation_plugin_migration_ownership"].source_is_superseded
         policy_repository = _load_exact_module(
             "shared.automation_project_policy_repository",
             policy_repository_path,
@@ -775,6 +780,8 @@ def _load_release_contract() -> dict[str, Any]:
         "stable_schedule_task_id": stable_schedule_task_id,
         "validate_generation_row": validate_generation_row,
         "bootstrap_evidence": bootstrap_evidence,
+        "select_migration_pair": select_migration_pair,
+        "source_is_superseded": source_is_superseded,
         "release_projects": release_projects,
         "deferred_projects": deferred_projects,
         "release_tasks": release_tasks,
@@ -1043,6 +1050,8 @@ def _read_reviewed_backups(
 
 def _read_release_projects(cursor: Any, contract: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
     project_ids = tuple(sorted(contract["release_projects"]))
+    if not project_ids:
+        return {}
     placeholders = ", ".join("%s" for _ in project_ids)
     cursor.execute(
         f"""
@@ -2413,6 +2422,7 @@ def _validate_bootstrap_and_policy_state(
     backups: Mapping[str, Mapping[str, Any]],
     projects: Mapping[str, Mapping[str, Any]],
     expect_initial_production_manifest: bool,
+    superseded: frozenset[str] = frozenset(),
 ) -> int:
     evidence = contract["bootstrap_evidence"]
     marker, items_by_id = _read_bootstrap_artifacts(cursor, contract)
@@ -2431,44 +2441,12 @@ def _validate_bootstrap_and_policy_state(
         ) from exc
     _validate_bootstrap_marker_summary(marker_summary)
 
-    source_snapshots: dict[str, Mapping[str, Any]] = {}
-    source_task_ids: set[str] = set()
-    source_enabled_count = 0
-    for automation_id in sorted(contract["release_projects"]):
-        item = items_by_id[automation_id]
-        try:
-            source = evidence[
-                "validate_automation_project_bootstrap_source_snapshot"
-            ](item.get("source_snapshot_json"))
-        except evidence["error_class"] as exc:
-            raise AutomationProjectReleaseManifestError(
-                "AUTOMATION_PROJECT_BOOTSTRAP_SOURCE_INVALID"
-            ) from exc
-        task_ids = {
-            str(task.get("task_id") or "")
-            for task in source.get("scheduled_tasks", [])
-        }
-        if (
-            source.get("automation_id") != automation_id
-            or task_ids != contract["templates"][automation_id]["task_ids"]
-        ):
-            raise AutomationProjectReleaseManifestError(
-                "AUTOMATION_PROJECT_BOOTSTRAP_SOURCE_TASK_SET_MISMATCH"
-            )
-        source_task_ids.update(task_ids)
-        source_enabled_count += sum(
-            task.get("enabled") is True
-            for task in source.get("scheduled_tasks", [])
-        )
-        source_snapshots[automation_id] = source
-    if (
-        source_task_ids != contract["release_tasks"]
-        or source_enabled_count != 55
-    ):
-        raise AutomationProjectReleaseManifestError(
-            "AUTOMATION_PROJECT_BOOTSTRAP_SOURCE_TASK_SET_MISMATCH"
-        )
+    source_snapshots = plugin_migration_scope.validate_bootstrap_sources(
+        contract, items_by_id, error_class=AutomationProjectReleaseManifestError)
 
+    contract = plugin_migration_scope.remaining_contract(contract, superseded)
+    if not contract["release_projects"]:
+        return 0
     policies, policy_events, configuration_evidence = (
         _read_project_policy_evidence(cursor, contract)
     )
@@ -2723,6 +2701,11 @@ def _check_post_018_manifest(
                     "AUTOMATION_PROJECT_RELEASE_TABLE_MISSING",
                     count=missing_count,
                 )
+            superseded = frozenset()
+            if not expect_initial_production_manifest and runner["_table_exists"](cursor, "automation_plugin_migration_pairs"):
+                superseded = plugin_migration_scope.read_superseded_sources(cursor, contract,
+                    error_class=AutomationProjectReleaseManifestError)
+            current_contract = plugin_migration_scope.remaining_contract(contract, superseded)
             schedules = _read_reviewed_schedule_rows(
                 cursor,
                 contract,
@@ -2730,14 +2713,15 @@ def _check_post_018_manifest(
                     expect_initial_production_manifest
                 ),
             )
-            projects = _read_release_projects(cursor, contract)
+            schedules = {identity: row for identity, row in schedules.items() if row.get("automation_id") not in superseded}
+            projects = _read_release_projects(cursor, current_contract)
             _verify_deferred_projects_absent(cursor, contract)
             backups = _read_reviewed_backups(
                 cursor,
                 contract,
             )
             _validate_release_projects_and_tasks(
-                contract,
+                current_contract,
                 schedules=schedules,
                 backups=backups,
                 projects=projects,
@@ -2756,6 +2740,7 @@ def _check_post_018_manifest(
                 schedules=schedules,
                 backups=backups,
                 projects=projects,
+                superseded=superseded,
                 expect_initial_production_manifest=(
                     expect_initial_production_manifest
                 ),

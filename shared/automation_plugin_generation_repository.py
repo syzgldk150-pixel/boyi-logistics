@@ -2759,7 +2759,7 @@ class AutomationPluginGenerationRepositoryMixin(
                 SELECT effect_id, effect_sequence, state
                 FROM automation_project_generation_effects
                 WHERE automation_id=%s AND generation=%s
-                  AND state IN ('APPLIED', 'DISPOSING')
+                  AND state IN ('PLANNED', 'APPLIED', 'DISPOSING')
                 ORDER BY effect_sequence DESC, effect_id DESC FOR UPDATE
                 """,
                 (effect["automation_id"], effect["generation"]),
@@ -2771,14 +2771,14 @@ class AutomationPluginGenerationRepositoryMixin(
                 )
             if str(effect.get("state") or "") == "DISPOSING":
                 return
-            if str(effect.get("state") or "") != "APPLIED":
-                raise ConcurrentUpdateError("runtime effect is not applied")
+            if str(effect.get("state") or "") not in {"PLANNED", "APPLIED"}:
+                raise ConcurrentUpdateError("runtime effect is not disposable")
             cursor.execute(
                 """
                 UPDATE automation_project_generation_effects
                 SET state='DISPOSING', record_version=record_version+1,
                     updated_at=NOW(6)
-                WHERE effect_id=%s AND state='APPLIED'
+                WHERE effect_id=%s AND state IN ('PLANNED', 'APPLIED')
                 """,
                 (safe_effect_id,),
             )

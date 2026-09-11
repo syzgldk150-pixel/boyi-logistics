@@ -219,6 +219,7 @@ class BootstrapResult:
     created: tuple[str, ...]
     existing: tuple[str, ...]
     rejected: Mapping[str, str]
+    superseded: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:

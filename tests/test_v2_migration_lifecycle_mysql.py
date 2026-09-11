@@ -25,7 +25,7 @@ SOURCE = "self_pickup_problem_upload"
 
 
 @pytest.mark.parametrize("enabled,finish", [(True, "rollback"), (False, "complete"),
-                                           (True, "withdraw"), (False, "withdraw")])
+                                           (True, "withdraw"), (False, "withdraw"), (False, "withdraw_failed")])
 @pytest.mark.parametrize("reconcile_before_config", [False, True])
 def test_installed_migration_transfers_only_after_verified_direct_call(database, tmp_path, monkeypatch, enabled, finish, reconcile_before_config):
     fixture, name = database
@@ -66,12 +66,18 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
             if reconcile_before_config:
                 host.targets.reconcile_all()
             pair_id = str(uuid4())
-            pair = host.management.create_migration_pair(migration_pair_id=pair_id, source_automation_id=SOURCE,
-                target_automation_id=target, business_key_fields=("include_daxiang_s_self_pickup",), business_key_namespace="isolated-upgrade",
-                request_id=str(uuid4()), reason="isolated release verification", actor=ACTOR)
+            with monkeypatch.context() as preparation_fault:
+                if finish == "withdraw_failed":
+                    from agent.automation_plugins.errors import PluginConflictError
+                    def reject_preparation(*_args, **_kwargs):
+                        raise PluginConflictError("isolated route reservation failure", code="CONTRIBUTION_ROUTE_CONFLICT")
+                    preparation_fault.setattr(host.driver._contributions, "prepare_generation", reject_preparation)
+                pair = host.management.create_migration_pair(migration_pair_id=pair_id, source_automation_id=SOURCE,
+                    target_automation_id=target, business_key_fields=("include_daxiang_s_self_pickup",), business_key_namespace="isolated-upgrade",
+                    request_id=str(uuid4()), reason="isolated release verification", actor=ACTOR)
             assert pair["state"] == "TESTING", pair
-            assert pair["target_preparation_state"] == "PREPARED", pair
-            if finish == "withdraw":
+            assert pair["target_preparation_state"] == ("PREPARING" if finish == "withdraw_failed" else "PREPARED"), pair
+            if finish.startswith("withdraw"):
                 # A terminal source-side historical failure is not an action
                 # by this validation attempt; do not rewrite its outcome.
                 with host.repository.unit_of_work() as uow, uow.connection.cursor() as cursor:
@@ -90,7 +96,7 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
             from shared.orchestration_repository_support import ConcurrentUpdateError
             with pytest.raises(ConcurrentUpdateError):
                 transition(host.management.mark_migration_ready)
-            if finish == "withdraw":
+            if finish.startswith("withdraw"):
                 # A failed validation must be withdrawable without inventing a
                 # successful execution or changing the source's saved intent.
                 pair = transition(host.management.rollback_migration_pair)
@@ -100,10 +106,11 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
                 assert host.packages.get_active_plugin_migration_pair_for_automation(target) is None
                 assert host.packages.source_project_migration_uninstall_allowed(SOURCE) is False
                 assert not any(row.get("action") == "create" for row in supplier.requests)
-                retired = host.catalog.require(target)
-                removed = host.management.uninstall(target, request_id=str(uuid4()), actor=ACTOR,
-                    current_version=retired.installed_version, expected_record_version=retired.record_version)
-                assert removed["status"] == "UNINSTALLED"
+                if not reconcile_before_config or finish == "withdraw_failed":
+                    retired = host.catalog.require(target)
+                    removed = host.management.uninstall(target, request_id=str(uuid4()), actor=ACTOR,
+                        current_version=retired.installed_version, expected_record_version=retired.record_version)
+                    assert removed["status"] == "UNINSTALLED"
                 fresh = host.management.install_service_v2(archive, request_id=str(uuid4()),
                     transport_package_sha256=sha256(archive).hexdigest(), actor=ACTOR,
                     raw_intent=json.dumps({"instance_name": "重新验证的目标", "permissions_confirmed": True}))
@@ -112,6 +119,7 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
                     business_key_fields=("include_daxiang_s_self_pickup",), business_key_namespace="isolated-upgrade",
                     request_id=str(uuid4()), reason="retry validation after withdrawal", actor=ACTOR)
                 assert replacement["state"] == "TESTING"
+                assert replacement["target_preparation_state"] == "PREPARED", (replacement, host.targets.reconciliation_failures())
                 authoritative = host.packages.get_authoritative_plugin_migration_pair_for_automation(SOURCE)
                 assert authoritative["migration_pair_id"] == replacement["migration_pair_id"]
                 pair = replacement
@@ -146,3 +154,30 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
             assert host.catalog.require(SOURCE).enabled is (enabled if finish == "rollback" else False)
             assert host.catalog.require(target).enabled is (False if finish == "rollback" else enabled)
             assert host.packages.source_project_migration_uninstall_allowed(SOURCE) is (finish != "rollback")
+            from scripts import automation_project_release_manifest_preflight as preflight
+            release_contract = preflight._load_release_contract()
+            with host.repository.unit_of_work() as uow, uow.connection.cursor() as cursor:
+                migrated_sources = preflight.plugin_migration_scope.read_superseded_sources(
+                    cursor, release_contract, error_class=preflight.AutomationProjectReleaseManifestError)
+                assert migrated_sources == (frozenset() if finish == "rollback" else frozenset({SOURCE}))
+            if finish == "complete":
+                retired = host.catalog.require(SOURCE)
+                removed = host.management.uninstall(SOURCE, request_id=str(uuid4()), actor=ACTOR,
+                    current_version=retired.installed_version, expected_record_version=retired.record_version)
+                assert removed["status"] == "UNINSTALLED"
+                from agent.automation_plugins.first_party import SignedFirstPartyPackageProvider, bootstrap_first_party_plugins
+                import subprocess
+                release_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=ROOT).strip()
+                provider = SignedFirstPartyPackageProvider(artifact_root=host.task_env / "first-party-release",
+                    signature_verifier=trust, storage=host.storage, environments=host.lifecycle._environments)
+                reboot = bootstrap_first_party_plugins(host.packages, core_catalog=host.core_catalog,
+                    current_release_sha=release_sha, expected_release_sha=release_sha, package_provider=provider,
+                    superseded_automation_ids=host.packages.superseded_first_party_ids((SOURCE,)))
+                assert reboot.ok, reboot.rejected
+                assert reboot.superseded == (SOURCE,)
+                assert SOURCE not in reboot.created and SOURCE not in reboot.existing
+                assert host.packages.get_instance(SOURCE) is None
+                assert host.catalog.require(target).enabled is enabled
+                with host.repository.unit_of_work() as uow, uow.connection.cursor() as cursor:
+                    assert preflight.plugin_migration_scope.read_superseded_sources(
+                        cursor, release_contract, error_class=preflight.AutomationProjectReleaseManifestError) == frozenset({SOURCE})

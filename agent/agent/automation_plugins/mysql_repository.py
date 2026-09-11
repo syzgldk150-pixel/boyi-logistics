@@ -62,6 +62,7 @@ from agent.tool_registry import validate_schema_instance
 from shared.automation_project_manifest import (
     FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES,
 )
+from shared.automation_plugin_migration_ownership import source_is_superseded
 from shared.automation_plugin_repository import (
     FIRST_PARTY_RELEASE_ACTOR_ID,
 )
@@ -1354,6 +1355,11 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
             ),
         )
 
+    def superseded_first_party_ids(self, automation_ids: Sequence[str]) -> tuple[str, ...]:
+        with self._orchestration.unit_of_work() as uow:
+            return tuple(sorted(identity for identity in automation_ids if source_is_superseded(
+                uow.automation_plugins.get_authoritative_plugin_migration_pair_for_automation(identity), identity)))
+
     def bootstrap_missing(
         self,
         versions: Sequence[PluginVersionRecord],
@@ -1366,6 +1372,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
             raise PluginPackageError("first-party bootstrap contains duplicate versions")
         created: list[str] = []
         existing: list[str] = []
+        superseded: list[str] = []
         upgrades: list[
             tuple[FirstPartyInstanceSeed, PluginVersionRecord, str, bool]
         ] = []
@@ -1388,6 +1395,11 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     ),
                 )
             for seed in sorted(instances, key=lambda item: item.automation_id):
+                pair = uow.automation_plugins.get_authoritative_plugin_migration_pair_for_automation(
+                    seed.automation_id)
+                if source_is_superseded(pair, seed.automation_id):
+                    superseded.append(seed.automation_id)
+                    continue
                 version = by_version.get((seed.plugin_id, seed.version))
                 if version is None:
                     raise PluginPackageError(
@@ -1684,6 +1696,7 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
         return BootstrapPersistenceResult(
             created=tuple(sorted(created)),
             existing=tuple(sorted(existing)),
+            superseded=tuple(sorted(superseded)),
         )
 
     def set_enabled(

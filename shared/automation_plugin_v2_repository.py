@@ -1310,7 +1310,7 @@ class AutomationPluginV2RepositoryMixin:
                 target_id=target_id,
                 business_key_contract=_snapshot_business_key_contract(snapshot),
                 require_target_console_only=False,
-                allow_target_unprepared=False,
+                allow_target_unprepared=(operation == "ROLLBACK" and current == "TESTING"),
                 entrypoint_ownership=ownership,
             )
             _assert_migration_snapshot_compatible(snapshot, live)
@@ -1339,19 +1339,15 @@ class AutomationPluginV2RepositoryMixin:
             )
             # 5. business-run migration locks.
             migration_lock_summary = self._lock_migration_run_locks(cursor, pair_id)
-            target_generation = _positive_int(
-                live["target"].get("generation"), "target_generation"
-            )
-            lease_summary["target_verified"] = self._lock_migration_manual_evidence_count(
-                cursor,
-                pair_id=pair_id,
-                target_id=target_id,
-                target_generation=target_generation,
-                testing_started_at=testing_event["created_at"],
-                console_contribution_ids=self._target_console_contribution_ids(
-                    cursor, target_id
-                ),
-            )
+            if operation == "ROLLBACK" and current == "TESTING":
+                target_generation = None
+                lease_summary["target_verified"] = 0
+            else:
+                target_generation = _positive_int(live["target"].get("generation"), "target_generation")
+                lease_summary["target_verified"] = self._lock_migration_manual_evidence_count(
+                    cursor, pair_id=pair_id, target_id=target_id, target_generation=target_generation,
+                    testing_started_at=testing_event["created_at"],
+                    console_contribution_ids=self._target_console_contribution_ids(cursor, target_id))
             # 6. scheduled task rows.  We lock them before deciding whether to
             # route, so scheduler refresh can never observe a half transfer.
             scheduled = self._lock_migration_scheduled_tasks(
@@ -1914,6 +1910,11 @@ class AutomationPluginV2RepositoryMixin:
             raise ConcurrentUpdateError("migration has active runtime leases")
         if lease_summary["unknown"] or migration_lock_summary["unknown"]:
             raise ConcurrentUpdateError("migration has unknown write outcome")
+        if operation == "ROLLBACK" and state == "TESTING":
+            # A candidate that failed preparation has never owned automatic
+            # entrypoints. The exact config snapshot and active/write checks
+            # above still apply; a successful generation is not needed to stop it.
+            return
         target = live["target"]
         if (
             str(target.get("generation_state") or "") != "COMMITTED"
