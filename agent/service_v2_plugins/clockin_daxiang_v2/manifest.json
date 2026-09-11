@@ -3,7 +3,7 @@
   "runtime_model": "service_v2",
   "plugin_id": "clockin_daxiang_v2",
   "name": "网点打卡-大祥站 v2",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "通过受管浏览器能力依次提交两次网点打卡，并分别执行新鲜、唯一的写后核验。",
   "host_api": {
     "minimum": "2.0.0",
@@ -76,7 +76,13 @@
       }
     ],
     "webhook": [],
-    "feishu": [],
+    "feishu": [{
+      "id": "command",
+      "service": "plugin.clockin_daxiang_v2.clock@1",
+      "operation": "run",
+      "commands": ["网点打卡-大祥"],
+      "default_enabled": false
+    }],
     "events": [],
     "harness": [
       {
@@ -103,7 +109,7 @@
       "sitefbname": {"type": "string", "minLength": 1, "maxLength": 100},
       "first_type": {"type": "string", "minLength": 1, "maxLength": 32},
       "second_type": {"type": "string", "minLength": 1, "maxLength": 32},
-      "delay_seconds": {"type": "number", "minimum": 0, "maximum": 30, "default": 0}
+      "delay_seconds": {"type": "number", "minimum": 0, "maximum": 30}
     },
     "required": [
       "sitecode",

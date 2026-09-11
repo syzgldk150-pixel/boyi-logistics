@@ -279,13 +279,22 @@ def test_both_clock_packages_build_deterministically_and_validate_as_independent
                 },
             },
         )
-        for disabled_kind in ("webhook", "feishu", "events"):
+        assert manifest.contributes["feishu"] == ({
+            "id": "command", "service": metadata["service"], "operation": "run",
+            "commands": ("网点打卡-大祥S站" if plugin_id.endswith("_s_v2") else "网点打卡-大祥",),
+            "default_enabled": False,
+        },)
+        from console.services.automation_catalog_projection import _normalize_plugin_config_schema
+        _, supported, reason = _normalize_plugin_config_schema(json.loads((metadata["source"] / "manifest.json").read_text())["config_schema"], {})
+        assert supported, reason
+        for disabled_kind in ("webhook", "events"):
             assert manifest.contributes[disabled_kind] == ()
 
         projected = ServiceV2ProjectContract.from_manifest(manifest)
         assert projected.allowed_entrypoints == (
             "manual_run",
             "daily_clockin",
+            "command",
             "assistant_preview",
         )
         assert projected.default_entrypoints == ("manual_run", "assistant_preview")
@@ -463,6 +472,7 @@ def test_built_packages_have_only_declarative_manifest_and_compilable_python_mod
     (
         ("console", "manual_run", "console"),
         ("scheduler", "daily_clockin", "scheduler"),
+        ("feishu", "command", "feishu"),
         ("service", "host.service.invoke", "service"),
     ),
 )
@@ -485,7 +495,7 @@ def test_package_entrypoint_accepts_the_execution_schema_v2_runtime_discriminato
         "runtime_model": "SERVICE_V2",
         "automation_id": f"{plugin_id}-project",
         "plugin_id": plugin_id,
-        "plugin_version": "1.1.0",
+        "plugin_version": verified.manifest.version,
         "entrypoint": entrypoint,
         "target": {
             "service": metadata["service"],
@@ -499,7 +509,7 @@ def test_package_entrypoint_accepts_the_execution_schema_v2_runtime_discriminato
     environment = {
         "BOYI_AUTOMATION_ID": request["automation_id"],
         "BOYI_PLUGIN_ID": plugin_id,
-        "BOYI_PLUGIN_VERSION": "1.1.0",
+        "BOYI_PLUGIN_VERSION": verified.manifest.version,
         "PYTHONIOENCODING": "utf-8",
     }
 
