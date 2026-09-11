@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from agent.automation_plugins.errors import PluginConflictError
 from agent.automation_plugins.models import DeviceBinding
+from agent.feishu_resource_catalog import FeishuResourceCatalogError
 
 
 _BINDING_ID_RE = re.compile(r"^[A-Za-z0-9_.:@/-]{1,160}$")
@@ -136,6 +137,16 @@ class ProductionProjectBindingResolver:
         allowed_kinds = self._allowed_values(role, "allowed_kinds")
         try:
             record = self._resource_provider(exact_id)
+        except FeishuResourceCatalogError as exc:
+            # Only the classified catalog code is public; never expose HTTP
+            # details, document tokens or the underlying exception message.
+            cause = str(exc.code)
+            if not re.fullmatch(r"RESOURCE_[A-Z0-9_]{1,64}", cause):
+                cause = "RESOURCE_CATALOG_UNAVAILABLE"
+            raise PluginConflictError(
+                f"绑定的数据源暂不可用：{exact_id}（{cause}）",
+                code="PLUGIN_RESOURCE_POOL_UNAVAILABLE",
+            ) from exc
         except Exception as exc:
             raise PluginConflictError(
                 "the managed resource pool is unavailable",

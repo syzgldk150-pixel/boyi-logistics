@@ -80,3 +80,13 @@ def test_config_copy_preserves_unknown_fields_and_scan_always_requires_new_previ
         assert copied == {"batch_size": 20, "unreviewed_field": [1]}
         copied["unreviewed_field"].append(2)
         assert source["unreviewed_field"] == [1]
+
+
+@pytest.mark.parametrize("value,expected", [("", {}), ("2026-09-12", {"target_date": "2026-09-12"}),
+                                           (None, {"target_date": None}), ("bad", {"target_date": "bad"})])
+def test_scan_copy_preserves_current_day_semantics_without_guessing_invalid_dates(value, expected):
+    mapping = reviewed_migration_binding_mapping(source_automation_id="scan_codes",
+        source_plugin_id="sync_scan_codes", target_plugin_id="sync_scan_codes_v2")
+    original = {"target_date": value, "dry_run": True}
+    assert mapping.copy_config(original) == expected
+    assert original == {"target_date": value, "dry_run": True}

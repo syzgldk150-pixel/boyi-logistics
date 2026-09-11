@@ -129,6 +129,24 @@ def test_binding_resolver_never_uses_default_or_first_item() -> None:
     assert error.value.code == "PLUGIN_WORKER_BINDING_NOT_FOUND"
 
 
+@pytest.mark.parametrize("code,visible", [
+    ("RESOURCE_NOT_FOUND", "RESOURCE_NOT_FOUND"),
+    ("unclassified-detail", "RESOURCE_CATALOG_UNAVAILABLE"),
+])
+def test_binding_failure_exposes_resource_and_classified_cause_only(code, visible):
+    from agent.feishu_resource_catalog import FeishuResourceCatalogError
+    def unavailable(_resource_id):
+        raise FeishuResourceCatalogError("private upstream response", code=code)
+    resolver = ProductionProjectBindingResolver(account_manager=_AccountManager(),
+        resource_provider=unavailable, worker_repository=SimpleNamespace(get_worker_device=lambda _: None))
+    with pytest.raises(PluginConflictError) as failure:
+        resolver.describe_resource_binding(automation_id="isolated",
+            role={"allowed_kinds": ["feishu_sheet"]}, resource_id="reviewed-sheet")
+    assert failure.value.code == "PLUGIN_RESOURCE_POOL_UNAVAILABLE"
+    assert "reviewed-sheet" in str(failure.value) and visible in str(failure.value)
+    assert "private upstream response" not in str(failure.value)
+
+
 def test_binding_resolver_broker_resource_requires_exact_complete_revision() -> None:
     resources = {
         "bitable-exact": {

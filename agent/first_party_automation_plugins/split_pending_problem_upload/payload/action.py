@@ -181,8 +181,6 @@ def _classify(rows: list[list[object]]) -> tuple[list[dict[str, object]], int]:
                 "sheet_values": sheet_values,
             }
         )
-    if source_rows == 0:
-        raise ValueError("split source contains no business rows")
     return candidates, source_rows
 
 

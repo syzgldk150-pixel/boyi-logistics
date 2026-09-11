@@ -70,7 +70,7 @@ _FIRST_PARTY_PACKAGE_VERSION_OVERRIDES: Mapping[str, str] = {
     "sync_finance_bills": "1.0.22",
     "sync_customer_service_problems": "1.0.21",
     "self_pickup_problem_upload": "1.0.26",
-    "split_pending_problem_upload": "1.0.25",
+    "split_pending_problem_upload": "1.0.26",
     "sync_arrival_stats": "1.0.22",
     "sync_arrive_list": "1.0.21",
     "sync_scan_codes": "1.0.25",

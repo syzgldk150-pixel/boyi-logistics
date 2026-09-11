@@ -123,7 +123,7 @@ def _preview(action, *, rows=None, stored=None):
             return {
                 "complete": True,
                 "evidence_ref": "broker-evidence:source",
-                "rows": rows or _source_rows(),
+                "rows": _source_rows() if rows is None else rows,
             }
         if action == "split_pending.snapshot.read":
             assert operation == "projection.invoke"
@@ -136,6 +136,23 @@ def _preview(action, *, rows=None, stored=None):
         raise AssertionError(action)
 
     return action.run_action({}, broker), calls
+
+
+@pytest.mark.parametrize("rows", [[_header()], [_header(), [""] * 19]])
+def test_complete_header_only_source_returns_zero_candidates_without_writing(rows):
+    action, _ = _load_action()
+    result, calls = _preview(action, rows=rows)
+    assert result["status"] == "SUCCESS"
+    assert result["data"]["source_rows"] == result["data"]["candidate_count"] == 0
+    assert result["data"]["candidates"] == result["data"]["results"] == []
+    assert result["meta"]["pagination_complete"] is True
+    assert [call["action"] for call in calls] == ["feishu.sheet.read_rows", "split_pending.snapshot.read"]
+
+
+def test_missing_header_is_not_an_empty_business_result():
+    action, _ = _load_action()
+    with pytest.raises(ValueError, match="no header row"):
+        _preview(action, rows=[])
 
 
 def test_preview_owns_classification_state_join_and_fingerprint():
