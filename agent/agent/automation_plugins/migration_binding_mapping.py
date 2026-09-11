@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Mapping
+from typing import Any, Mapping
+
+from agent.automation_plugins.errors import PluginConflictError
 
 
 @dataclass(frozen=True)
@@ -13,16 +16,37 @@ class MigrationBindingMapping:
 
     account_roles: Mapping[str, str]
     resource_roles: Mapping[str, str]
+    consumed_dry_run_values: tuple[bool, ...] = ()
+
+    def copy_config(self, source_config: Mapping[str, Any]) -> dict[str, Any]:
+        """Consume only a reviewed invocation-mode field, retaining all others.
+
+        V2 preview/run operations own this flag. Never turn a saved preview
+        default into a real write, or silently discard unknown business keys.
+        Source and target snapshots remain in the migration audit.
+        """
+        result = deepcopy(dict(source_config))
+        if "dry_run" in result and self.consumed_dry_run_values:
+            value = result["dry_run"]
+            if type(value) is not bool or value not in self.consumed_dry_run_values:
+                raise PluginConflictError(
+                    "saved dry_run mode is not compatible with target entrypoints",
+                    code="PLUGIN_MIGRATION_CONFIG_MODE_UNSUPPORTED",
+                )
+            del result["dry_run"]
+        return result
 
 
 def _mapping(
     *,
     account_roles: Mapping[str, str],
     resource_roles: Mapping[str, str],
+    consumed_dry_run_values: tuple[bool, ...] = (),
 ) -> MigrationBindingMapping:
     return MigrationBindingMapping(
         account_roles=MappingProxyType(dict(account_roles)),
         resource_roles=MappingProxyType(dict(resource_roles)),
+        consumed_dry_run_values=consumed_dry_run_values,
     )
 
 
@@ -34,12 +58,15 @@ _REVIEWED_BINDING_MAPPINGS: Mapping[
         ("clockin_daxiang", "clock_in_dual", "clockin_daxiang_v2"): _mapping(account_roles={"account_id":"operator"}, resource_roles={}),
         ("clockin_daxiang_s", "clock_in_dual", "clockin_daxiang_s_v2"): _mapping(account_roles={"account_id":"operator"}, resource_roles={}),
         ("arrive_list", "sync_arrive_list", "sync_arrive_list_v2"): _mapping(
+            consumed_dry_run_values=(False,),
             account_roles={"account_id":"arrive_list_ronghui"}, resource_roles={"arrive_primary_sheet":"arrive_primary_sheet", "arrive_secondary_sheet":"arrive_secondary_sheet"}),
         ("site_send", "sync_site_send_list", "sync_site_send_list_v2"): _mapping(
             account_roles={"account_id":"site_send_ronghui"}, resource_roles={"site_send_bitable":"site_send_bitable", "site_send_sheet":"site_send_sheet"}),
         ("send_order", "sync_daily_send_orders", "sync_daily_send_orders_v2"): _mapping(
+            consumed_dry_run_values=(False,),
             account_roles={"account_id":"daily_send_source"}, resource_roles={"send_order_bitable":"send_order_bitable"}),
         ("delivery_status", "sync_delivery_status", "sync_delivery_status_v2"): _mapping(
+            consumed_dry_run_values=(False,),
             account_roles={"account_id":"delivery_source"}, resource_roles={"delivery_status_bitable":"delivery_status_bitable"}),
         ("daily_sign", "sync_daily_should_sign", "sync_daily_should_sign_v2"): _mapping(
             account_roles={"r13_account_id":"daily_sign_r13", "account_id":"daily_sign_tms"},
@@ -47,8 +74,10 @@ _REVIEWED_BINDING_MAPPINGS: Mapping[
         ("customer_problems_shadow", "sync_customer_service_problems", "sync_customer_service_problems_v2"): _mapping(
             account_roles={"customer_service_source":"customer_service_source"}, resource_roles={}),
         ("yunda_dispatch_forecast", "sync_yunda_dispatch_forecast", "sync_yunda_dispatch_forecast_v2"): _mapping(
+            consumed_dry_run_values=(False,),
             account_roles={"account_id":"yunda_dispatch_source"}, resource_roles={"dispatch_forecast_bitable":"dispatch_forecast_bitable"}),
         ("yunda_send_waybills", "sync_yunda_send_waybills", "sync_yunda_send_waybills_v2"): _mapping(
+            consumed_dry_run_values=(False,),
             account_roles={"account_id":"yunda_send_source"}, resource_roles={"send_waybills_bitable":"send_waybills_bitable", "send_waybills_sheet":"send_waybills_sheet"}),
         **{(instance, "sync_finance_bills", "sync_finance_bills_v2"): _mapping(
             account_roles={role:role for role in ("finance_quote_source", "finance_daxiang_s_source", "finance_self_pickup_source")}, resource_roles={})
@@ -98,6 +127,9 @@ _REVIEWED_BINDING_MAPPINGS: Mapping[
             "sync_scan_codes",
             "sync_scan_codes_v2",
         ): _mapping(
+            # Both old Console defaults become the same explicit preview;
+            # formal scanning still requires the newly generated confirmation.
+            consumed_dry_run_values=(False, True),
             account_roles={"account_id": "scan_ronghui"},
             resource_roles={},
         ),

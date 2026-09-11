@@ -1961,7 +1961,7 @@ class AutomationPluginManagementService:
         try:
             self._configuration.save(
                 target_automation_id,
-                config=copy.deepcopy(source_record.config),
+                config=binding_mapping.copy_config(source_record.config),
                 account_bindings=copied_accounts,
                 resource_bindings=copied_resources,
                 enabled_entrypoints=target_entrypoints,
