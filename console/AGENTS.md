@@ -1,5 +1,7 @@
 # console
 
+插件迁移维护入口为 `/automations/maintenance`，从系统状态页进入，只允许真实超级管理员会话。它复用现有迁移 API、当前目录和 CAS，不参与普通自动化列表，不自动执行业务；本轮每日业务使用宿主业务日期标识。安装检查必须覆盖真实 V2 ZIP 的多账号角色、逐动作调用上限和无标题的飞书/Webhook/Event 贡献，未知字段仍拒绝。
+
 ## 当前身份与统一对话边界
 
 后台身份管理：`services/identities.py`、`templates/identity_management.html` 与 `static/identity-settings.css` 管理身份、账号分配及所有飞书绑定。身份定义只由 `shared/identity_permissions.py` 管理，菜单和路由根据实时会话身份检查；`permission_registry.py` 只保留菜单注册元数据，不是用户权限的权威。超级管理员账号不可改为自定义身份。 细节见[维护说明](../docs/identity_and_unified_chat.md)。

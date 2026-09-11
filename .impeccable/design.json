@@ -3,6 +3,7 @@
   "generatedAt": "2026-08-31T00:00:00+08:00",
   "title": "Design System: 博益物流控制台",
   "extensions": {
+    "maintenance": {"path": "/automations/maintenance", "entry": "system-status", "audience": "super_admin", "layout": "native forms and separated progress rows"},
     "reference": {
       "name": "Cal.com",
       "url": "https://getdesign.md/cal/design-md",

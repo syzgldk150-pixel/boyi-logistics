@@ -1,0 +1,14 @@
+.plugin-maintenance { max-width: 72rem; color: var(--text, #374151); }
+.plugin-maintenance p { max-width: 72ch; line-height: 1.65; overflow-wrap: anywhere; }
+.plugin-maintenance section { border-top: 1px solid var(--line, #e5e7eb); padding-block: 24px; margin-top: 24px; }
+.plugin-maintenance h2 { font-size: 1.25rem; margin-bottom: 16px; }
+.plugin-maintenance h3 { font-size: 1.1rem; }
+.plugin-maintenance form { display: grid; gap: 16px; max-width: 48rem; }
+.plugin-maintenance label { display: grid; gap: 8px; font-weight: 600; }
+.plugin-maintenance select { width: 100%; min-width: 0; min-height: 44px; padding: 8px; background: #fff; border: 1px solid #9ca3af; border-radius: 6px; color: #111; }
+.plugin-maintenance button { min-height: 44px; width: fit-content; max-width: 100%; }
+.maintenance-links { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+.maintenance-links a { padding-block: 12px; }
+.plugin-maintenance article { border-bottom: 1px solid var(--line, #e5e7eb); padding-block: 20px; }
+.plugin-maintenance [role="status"][data-error="true"] { color: #b91c1c; }
+.plugin-maintenance :focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }

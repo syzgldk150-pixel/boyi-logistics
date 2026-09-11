@@ -54,6 +54,32 @@ _SERVICE_V2_FORBIDDEN_BROWSER_AUTHORITY = frozenset(
 
 
 class AutomationPluginManagementServiceMixin:
+    def _render_plugin_maintenance(self, handler: BaseHTTPRequestHandler) -> None:
+        """Expose existing migration operations to a real super-admin session."""
+        context = self._control_plane_read_context(handler)
+        if context is None:
+            return
+        if "super_admin" not in list(context.get("actor_roles") or []):
+            self._control_plane_error(
+                handler, HTTPStatus.FORBIDDEN, "SUPER_ADMIN_REQUIRED",
+                "只有超级管理员可以管理插件迁移。",
+            )
+            return
+        # Maintenance must see current ownership/CAS, never the list-page cache.
+        _, instances, _, _, hidden, warning, can_manage = (
+            self._load_automation_plugin_catalog_uncached(handler, summary=True)
+        )
+        visible = [
+            {**item, "module_url": MODULE_PATHS[item["management"]["module"]]}
+            for item in instances if item["automation_id"] not in hidden
+        ]
+        template = self.template_env.get_template("plugin_maintenance.html")
+        self._send_html(handler, template.render(
+            app_title=self.settings.app_title,
+            instances=visible if can_manage and not warning else [],
+            warning=warning,
+        ))
+
     def _automation_plugin_settings_bridge_token(
         self,
         automation_id: str,
@@ -567,11 +593,11 @@ class AutomationPluginManagementServiceMixin:
         if not isinstance(raw_account_roles, list) or len(raw_account_roles) > 64:
             return None
         for raw in raw_account_roles:
-            if not isinstance(raw, dict) or set(raw) != {
+            if not isinstance(raw, dict) or set(raw) not in ({
                 "role",
                 "allowed_systems",
                 "required",
-            }:
+            }, {"role", "allowed_systems", "required", "collection"}):
                 return None
             role = str(raw.get("role") or "").strip()
             systems = raw.get("allowed_systems")
@@ -587,6 +613,7 @@ class AutomationPluginManagementServiceMixin:
                 )
                 or len(systems) != len(set(systems))
                 or not isinstance(raw.get("required"), bool)
+                or ("collection" in raw and not isinstance(raw["collection"], bool))
             ):
                 return None
             account_roles.append(
@@ -594,6 +621,7 @@ class AutomationPluginManagementServiceMixin:
                     "role": role,
                     "allowed_systems": list(systems),
                     "required": raw["required"],
+                    **({"collection": raw["collection"]} if "collection" in raw else {}),
                 }
             )
 
@@ -639,12 +667,12 @@ class AutomationPluginManagementServiceMixin:
         account_role_names = {item["role"] for item in account_roles}
         resource_role_names = {item["role"] for item in resource_roles}
         for raw in raw_permissions:
-            if not isinstance(raw, dict) or set(raw) != {
+            if not isinstance(raw, dict) or set(raw) not in ({
                 "name",
                 "operations",
                 "account_role",
                 "resource_role",
-            }:
+            }, {"name", "operations", "account_role", "resource_role", "action_call_limits"}):
                 return None
             capability = str(raw.get("name") or "").strip()
             operations = raw.get("operations")
@@ -665,12 +693,22 @@ class AutomationPluginManagementServiceMixin:
                 or (resource_role is not None and resource_role not in resource_role_names)
             ):
                 return None
+            limits = raw.get("action_call_limits")
+            if "action_call_limits" in raw and (
+                capability != "service.invoke"
+                or not isinstance(limits, dict)
+                or set(limits) != set(operations)
+                or any(isinstance(value, bool) or not isinstance(value, int)
+                       or not 1 <= value <= 1000 for value in limits.values())
+            ):
+                return None
             permissions.append(
                 {
                     "name": capability,
                     "operations": list(operations),
                     "account_role": account_role,
                     "resource_role": resource_role,
+                    **({"action_call_limits": dict(limits)} if limits is not None else {}),
                 }
             )
 
@@ -703,7 +741,7 @@ class AutomationPluginManagementServiceMixin:
                 contribution_id in seen_contributions
                 or not _SERVICE_V2_IDENTIFIER_RE.fullmatch(contribution_id)
                 or kind not in allowed_kinds
-                or not title
+                or (not title and kind not in {"feishu", "webhook", "events"})
                 or len(title) > 160
                 or (kind != "harness" and not isinstance(raw.get("default_enabled"), bool))
             ):
@@ -1522,6 +1560,7 @@ class AutomationPluginManagementServiceMixin:
                 fallback_message="插件迁移操作失败。",
             )
             return
+        self._clear_automation_plugin_catalog_cache()
         self._send_json(
             handler,
             HTTPStatus.OK,

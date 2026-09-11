@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}插件迁移维护 · {{ app_title }}{% endblock %}
+{% block breadcrumb %}插件迁移维护{% endblock %}
+{% block subtitle %}复制现有设置，验证新版后切换{% endblock %}
+{% block page_actions %}<a class="ghost-btn" href="/settings/system-status">返回系统状态</a>{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/plugin-maintenance.css?v=20260911">{% endblock %}
+{% block content %}
+<div class="plugin-maintenance" data-plugin-maintenance>
+  <p>先在所属业务页面安装新版插件，再选择对应实例复制设置。验证期间，定时和飞书仍使用原实例；新版执行会使用复制的真实账号和表格。</p>
+  <nav aria-label="插件所属页面" class="maintenance-links">
+    <a href="/automations">自动化插件</a>
+    <a href="/modules/finance/data-sources">财务数据源</a>
+    <a href="/modules/customer-service/data-sources">客服数据源</a>
+  </nav>
+  {% if warning %}<p role="alert">{{ warning }}</p>{% else %}
+  <section aria-labelledby="migration-create-title">
+    <h2 id="migration-create-title">复制现有设置</h2>
+    <form data-maintenance-create>
+      <label>原实例<select name="source_automation_id" required><option value="">请选择原实例</option>
+        {% for item in instances if item.runtime_model == 'ACTION_V1' and not item.migration %}
+        <option value="{{ item.automation_id }}">{{ item.instance_name }} · {{ item.automation_id }}</option>
+        {% endfor %}
+      </select></label>
+      <label>已安装的新版实例<select name="target_automation_id" required><option value="">请选择新版实例</option>
+        {% for item in instances if item.runtime_model == 'SERVICE_V2' and not item.migration %}
+        <option value="{{ item.automation_id }}">{{ item.instance_name }} · {{ item.plugin_id }} · {{ item.automation_id }}</option>
+        {% endfor %}
+      </select></label>
+      <p>本轮每日业务按宿主提供的北京时间业务日期标识迁移范围。账号、资源和业务参数由服务端按已审核映射复制，页面不能自行补齐。</p>
+      <button class="primary-btn" type="submit">复制设置并开始验证</button>
+    </form>
+    <p data-maintenance-feedback role="status" aria-live="polite"></p>
+  </section>
+  <section aria-labelledby="migration-list-title">
+    <h2 id="migration-list-title">迁移进度</h2>
+    <a class="ghost-btn" href="/automations/maintenance">刷新状态</a>
+    {% set pairs = instances | selectattr('migration.role', 'defined') | selectattr('migration.role', 'equalto', 'TARGET') | list %}
+    {% for item in pairs %}
+    <article data-maintenance-pair="{{ item.migration.migration_pair_id }}" data-record-version="{{ item.migration.record_version }}">
+      <h3>{{ item.instance_name }}</h3>
+      <p>{{ item.migration.status_label }} · {{ item.active_version or item.version }}</p>
+      <p>原实例：{{ item.migration.paired_automation_id }}<br>新版实例：{{ item.automation_id }}<br>当前自动执行入口：{{ item.migration.entrypoint_owner_automation_id }}</p>
+      <div class="maintenance-links">
+        <a href="{{ item.module_url }}?open_task={{ item.automation_id }}">打开新版实例验证</a>
+        {% if item.migration.can_mark_ready %}<button class="ghost-btn" type="button" data-maintenance-action="ready">核验本次执行证据</button>{% endif %}
+        {% if item.migration.can_cutover %}<button class="primary-btn" type="button" data-maintenance-action="cutover">切换到新版</button>{% endif %}
+        {% if item.migration.can_rollback %}<button class="ghost-btn" type="button" data-maintenance-action="rollback">恢复原实例入口</button>{% endif %}
+        {% if item.migration.can_complete %}<button class="primary-btn" type="button" data-maintenance-action="complete">确认完成迁移</button>{% endif %}
+      </div>
+      <p data-maintenance-feedback role="status" aria-live="polite"></p>
+    </article>
+    {% else %}<p>尚无迁移记录。安装新版后，在上方选择原实例与新版实例。</p>{% endfor %}
+  </section>
+  {% endif %}
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/plugin-maintenance.js?v=20260911"></script>{% endblock %}
