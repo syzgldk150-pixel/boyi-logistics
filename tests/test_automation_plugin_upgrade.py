@@ -256,6 +256,9 @@ def _generation_row(snapshot: RuntimeGenerationSnapshot) -> dict[str, Any]:
 
 
 class _LowLevelPluginRepository:
+    def get_authoritative_plugin_migration_pair_for_automation(self, _automation_id):
+        return None
+
     def __init__(
         self,
         *,

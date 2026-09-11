@@ -378,6 +378,9 @@ def test_arrival_bootstrap_persists_disabled_pending_sheet_invocations() -> None
     template = FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES["arrival_stats"]
 
     class AutomationPlugins:
+        def get_authoritative_plugin_migration_pair_for_automation(self, _automation_id):
+            return None
+
         def __init__(self) -> None:
             self.project = None
             self.saved = None
@@ -483,6 +486,9 @@ def test_first_party_bootstrap_stages_existing_older_instance_to_release_version
     template = FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES["arrival_stats"]
 
     class AutomationPlugins:
+        def get_authoritative_plugin_migration_pair_for_automation(self, _automation_id):
+            return None
+
         def get_project(self, automation_id, *, for_update):
             assert automation_id == template.automation_id
             assert for_update is True
@@ -636,6 +642,9 @@ def test_first_party_bootstrap_leaves_same_release_version_stable() -> None:
     template = FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES["arrival_stats"]
 
     class AutomationPlugins:
+        def get_authoritative_plugin_migration_pair_for_automation(self, _automation_id):
+            return None
+
         def get_project(self, automation_id, *, for_update):
             assert automation_id == template.automation_id
             assert for_update is True
@@ -709,6 +718,9 @@ def test_first_party_bootstrap_never_downgrades_existing_instance() -> None:
     template = FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES["arrival_stats"]
 
     class AutomationPlugins:
+        def get_authoritative_plugin_migration_pair_for_automation(self, _automation_id):
+            return None
+
         def get_project(self, _automation_id, *, for_update):
             assert for_update is True
             return {
