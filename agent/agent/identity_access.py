@@ -6,6 +6,7 @@ import re
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from shared.identity_permissions import plugin_permission
 from shared.identity_routes import agent_permission
+from shared.release_identity import is_release_operation
 
 
 def require_project_access(policy, actor, automation_id, *, entrypoint=""):
@@ -20,6 +21,11 @@ def require_project_access(policy, actor, automation_id, *, entrypoint=""):
 
 
 def authorize_console_request(access, policy, principal, method, path):
+    # The middleware already verified the internal token and request signature.
+    # Release probes have no database account and authorize only their exact
+    # operational endpoint. Every business request still resolves a live account.
+    if is_release_operation(principal, method, path):
+        return
     actor = Actor(ActorType.CONSOLE_ADMIN, principal["actor_id"],
                   roles=tuple(principal["roles"]), authenticated_by=principal["authenticated_by"])
     if path.startswith("/internal/v1/automation-projects/") and "/module-slots/" not in path:

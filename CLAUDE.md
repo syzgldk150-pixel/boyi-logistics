@@ -2,6 +2,8 @@
 
 ## 当前身份与统一对话边界
 
+发布服务身份由 `shared/release_identity.py` 定义，仅在内部 Token 和 Console 签名校验后开放精确健康检查及发布激活；不得作为后台账号或取得业务权限。
+
 身份与 AI 对话：普通后台账号和飞书身份继承后台配置的身份权限，超级管理员原生拥有全部权限。两种自然对话共用一个会话服务、模型和工具目录；固定命令仍直接调用插件。权限修改必须同步 HTTP、直接查询、插件实际实例和模型工具调用边界。 细节见[维护说明](docs/identity_and_unified_chat.md)。
 
 当前调用边界以 [业务接口与独立插件架构](docs/architecture_direct_invocation.md) 为准：普通页面直接业务接口，插件使用真实 Invocation，不创建 Command/Run/Step，不积压或登录后续跑；旧 Runner 仅保留历史和未来长任务代码，主系统不启用领取。

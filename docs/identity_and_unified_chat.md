@@ -59,6 +59,8 @@ PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m pytest -q tests/test_ident
 
 ## 插件 V2 迁移状态
 
+发布程序的健康探针和发布激活属于服务运维身份，精确合同由 `shared/release_identity.py` 定义。它们先通过内部 Token、Console 请求签名和防重放校验，只能访问各自固定方法与路径，不解析为 `admin_users` 数字账号。业务接口仍实时读取账号权限；非数字业务账号明确拒绝，不返回 500。相关回归为 `tests/test_release_identity_permissions.py`。
+
 统计的生产 Connector 实现在 `agent/agent/automation_plugins/arrival_connectors_v2.py`，复用已验证的分页、平台读写和写后回读原语。Host 私有调用上下文仅由能力代理传给连接器，不能从插件输入构造。连接器不加载 V1 包，也不执行整个旧业务脚本；统计算法仍由独立包承载。
 
 `tests/test_arrival_connectors_v2.py` 使用真实统计算法、V2 Connector Registry、宿主能力代理和真实原语执行隔离数据测试，外部平台仅在基础接口处替换。覆盖实际件数、精确表格绑定、字段变化报错、登录过期和未核验写入。该测试不代表生产业务写入验收通过。

@@ -333,19 +333,21 @@ def _run_agent_auth_middleware(
     *,
     signed_principal: dict | None = None,
     authorization: str = "",
+    method: str = "GET",
+    internal_token: str = "service-token",
 ) -> tuple[int, dict, list]:
     from fastapi import Request
     from fastapi.responses import JSONResponse
     import main
 
-    headers = {"X-Agent-Internal-Token": "service-token"}
+    headers = {"X-Agent-Internal-Token": internal_token}
     if authorization:
         headers["Authorization"] = authorization
     if signed_principal is not None:
         headers.update(
             build_console_identity_headers(
                 secret="dedicated-console-secret",
-                method="GET",
+                method=method,
                 request_target=path,
                 body=b"",
                 principal=signed_principal,
@@ -355,7 +357,7 @@ def _run_agent_auth_middleware(
     scope = {
         "type": "http",
         "http_version": "1.1",
-        "method": "GET",
+        "method": method,
         "scheme": "http",
         "path": path,
         "raw_path": path.encode("ascii"),

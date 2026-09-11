@@ -2324,6 +2324,7 @@ try:
     from dotenv import dotenv_values
 
     sys.path.insert(0, os.environ["BOYI_DEPLOYED_ROOT"])
+    from shared.release_identity import release_principal
     from shared.service_identity import (
         build_console_identity_headers,
         validate_service_identity_secrets,
@@ -2342,13 +2343,7 @@ try:
         method="GET",
         request_target=request_target,
         body=b"",
-        principal={
-            "actor_type": "console_admin",
-            "actor_id": "release-identity-probe",
-            "roles": ["admin"],
-            "display_name": "Release identity probe",
-            "authenticated_by": "mysql_admin_session",
-        },
+        principal=release_principal("health"),
         nonce=secrets.token_urlsafe(24),
     )
     headers["X-Agent-Internal-Token"] = internal_token
@@ -2537,6 +2532,7 @@ from urllib.request import Request, urlopen
 from dotenv import dotenv_values
 
 sys.path.insert(0, os.environ["BOYI_DEPLOYED_ROOT"])
+from shared.release_identity import release_principal
 from shared.service_identity import (
     build_console_identity_headers,
     validate_service_identity_secrets,
@@ -2552,13 +2548,7 @@ try:
         console_signing_secret=signing_secret,
     )
     request_target = "/internal/v1/admin/scheduler/activate-after-release"
-    principal = {
-        "actor_type": "console_admin",
-        "actor_id": "release-scheduler-activation",
-        "roles": ["admin"],
-        "display_name": "Release scheduler activation",
-        "authenticated_by": "mysql_admin_session",
-    }
+    principal = release_principal("activate")
     payload = None
     response_status = None
     last_error = None

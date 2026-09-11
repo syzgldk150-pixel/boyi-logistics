@@ -50,7 +50,11 @@ class IdentityRepository:
         kind = str(getattr(getattr(actor, "actor_type", None), "value", ""))
         auth = getattr(actor, "authenticated_by", "")
         if kind == "console_admin" and auth == "mysql_admin_session":
-            return self.account(int(actor.actor_id))
+            try:
+                account_id = int(actor.actor_id)
+            except (TypeError, ValueError):
+                return IdentityAccess()
+            return self.account(account_id)
         if kind == "feishu_user" and auth in {"feishu_admin_binding", "feishu_verified_event"}:
             return self.feishu(actor.actor_id)
         return IdentityAccess()
