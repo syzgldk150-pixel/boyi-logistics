@@ -3,7 +3,7 @@
   "runtime_model": "service_v2",
   "plugin_id": "sync_scan_codes_v2",
   "name": "扫描",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "分页读取扫描数据并生成预览；确认后重读来源、逐批提交、核验并保存扫描快照。",
   "host_api": {
     "minimum": "2.0.0",

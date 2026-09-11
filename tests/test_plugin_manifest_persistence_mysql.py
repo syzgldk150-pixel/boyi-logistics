@@ -60,8 +60,12 @@ def test_actual_zip_install_and_response_retry_keep_exact_manifest(database, tmp
     if plugin_id == "sync_arrival_stats_v2":
         # Reproduce the released writer's exact corruption, then run the bounded
         # deployment repair against the real database, without editing settings.
-        corrupted = _json_param(verified.manifest.to_mapping(), {})
-        assert json.loads(corrupted) != verified.manifest.to_mapping()
+        historical = json.loads((ROOT / "tests/fixtures/plugin_migration/arrival_v2_2_0_0_manifest.json").read_text(encoding="utf-8"))
+        historical_sha = AutomationPluginManifestV2.from_mapping(historical).manifest_sha256
+        assert historical_sha == "ea0d3efb0db644f1cbbb2d15d37778812d68db0b0bfcf6485ce7a472363e37c5"
+        historical_package_sha = "cfe0d70275a41770e23897edea1cb1279773812e0fb98e244d8668b1c4fac7eb"
+        corrupted = _json_param(historical, {})
+        assert json.loads(corrupted) != historical
         migration = (ROOT / "agent/migrations/048_restore_arrival_plugin_manifest.sql").read_text(encoding="utf-8")
         with connection(database) as conn, conn.cursor() as cursor:
             repo = AutomationPluginRepository(conn, cursor_factory=database.pymysql.cursors.DictCursor)
@@ -72,20 +76,24 @@ def test_actual_zip_install_and_response_retry_keep_exact_manifest(database, tmp
                 repo.register_package_version(package={"plugin_id": plugin_id, "display_name": verified.manifest.name,
                                                        "description": verified.manifest.description}, version=changed)
             conn.rollback()
+            historical_row = {**row, "version": historical["version"], "manifest_json": historical,
+                              "manifest_sha256": historical_sha, "package_sha256": historical_package_sha}
+            repo.register_package_version(package={"plugin_id": plugin_id, "display_name": verified.manifest.name,
+                                                   "description": verified.manifest.description}, version=historical_row)
             cursor.execute("UPDATE automation_plugin_versions SET manifest_json=%s WHERE plugin_id=%s AND version=%s",
-                           (corrupted, plugin_id, verified.manifest.version))
+                           (corrupted, plugin_id, historical["version"]))
             cursor.execute("UPDATE automation_plugin_versions SET package_sha256=%s WHERE plugin_id=%s AND version=%s",
-                           ("0" * 64, plugin_id, verified.manifest.version))
+                           ("0" * 64, plugin_id, historical["version"]))
             cursor.execute(migration)
             assert cursor.rowcount == 0
             cursor.execute("UPDATE automation_plugin_versions SET package_sha256=%s WHERE plugin_id=%s AND version=%s",
-                           (package_sha, plugin_id, verified.manifest.version))
+                           (historical_package_sha, plugin_id, historical["version"]))
             cursor.execute(migration)
             assert cursor.rowcount == 1
             cursor.execute(migration)
             assert cursor.rowcount == 0
-            row = repo.get_version(plugin_id, verified.manifest.version)
-            assert row["manifest_json"] == verified.manifest.to_mapping()
+            row = repo.get_version(plugin_id, historical["version"])
+            assert row["manifest_json"] == historical
             conn.commit()
         assert lifecycle.install_upload(package, **args).automation_id == instance.automation_id
 

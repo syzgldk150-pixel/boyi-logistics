@@ -3,7 +3,7 @@
   "runtime_model": "service_v2",
   "plugin_id": "sync_daily_should_sign_v2",
   "name": "每日应签",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "插件完成每日应签来源分页、到货与签收判断、应签时间计算和飞书表核验；宿主仅提供已绑定的数据读写接口。",
   "host_api": {
     "minimum": "2.0.0",

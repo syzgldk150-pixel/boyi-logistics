@@ -3,7 +3,7 @@
   "runtime_model": "service_v2",
   "plugin_id": "sync_customer_service_problems_v2",
   "name": "客服问题件采集",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "按已绑定账号采集融辉与韵达问题件，插件完成字段转换和未结事项复核。",
   "host_api": {
     "minimum": "2.0.0",
