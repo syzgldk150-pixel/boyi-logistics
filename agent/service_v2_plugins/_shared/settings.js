@@ -106,7 +106,9 @@
         input = ["array", "object"].includes(spec.type)
           ? document.createElement("textarea")
           : document.createElement("input");
-        input.type = ["integer", "number"].includes(spec.type) ? "number" : "text";
+        if (input instanceof HTMLInputElement) {
+          input.type = ["integer", "number"].includes(spec.type) ? "number" : "text";
+        }
         if (spec.type === "integer") input.step = "1";
         if (typeof spec.minimum === "number") input.min = String(spec.minimum);
         if (typeof spec.maximum === "number") input.max = String(spec.maximum);
@@ -143,14 +145,23 @@
       const select = document.createElement("select");
       select.dataset.accountRole = role.role;
       select.required = role.required === true;
-      select.append(new Option("请选择账号", ""));
+      select.multiple = role.collection === true || role.binding_cardinality === "many";
+      if (select.multiple) {
+        select.size = 4;
+        const hint = document.createElement("small");
+        hint.textContent = "可选择多个账号；按住 Ctrl（Mac 为 Command）增减选择。";
+        label.append(hint);
+      } else select.append(new Option("请选择账号", ""));
       accounts.filter(item => role.allowed_systems.includes(item.system)).forEach(item => {
         const option = new Option(`${item.name} · ${item.status_label}`, item.account_ref);
         option.disabled = item.available !== true;
         select.append(option);
       });
       const saved = settings.account_bindings?.[role.role];
-      select.value = Array.isArray(saved) ? String(saved[0] || "") : String(saved || "");
+      if (select.multiple) {
+        const selected = new Set(Array.isArray(saved) ? saved : []);
+        Array.from(select.options).forEach(option => { option.selected = selected.has(option.value); });
+      } else select.value = String(saved || "");
       if (!available) select.disabled = true;
       label.append(select);
       accountRoot.append(label);
@@ -200,7 +211,12 @@
       }
     });
     const accountBindings = {};
-    accountRoot.querySelectorAll("[data-account-role]").forEach(select => { if (select.value) accountBindings[select.dataset.accountRole] = select.value; });
+    accountRoot.querySelectorAll("[data-account-role]").forEach(select => {
+      if (select.multiple) {
+        const values = Array.from(select.selectedOptions, option => option.value);
+        if (values.length) accountBindings[select.dataset.accountRole] = values;
+      } else if (select.value) accountBindings[select.dataset.accountRole] = select.value;
+    });
     const resourceBindings = {};
     resourceRoot.querySelectorAll("[data-resource-role]").forEach(select => { if (select.value) resourceBindings[select.dataset.resourceRole] = select.value; });
     return { config, account_bindings: accountBindings, resource_bindings: resourceBindings };

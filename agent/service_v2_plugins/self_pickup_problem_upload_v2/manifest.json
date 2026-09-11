@@ -3,7 +3,7 @@
   "runtime_model": "service_v2",
   "plugin_id": "self_pickup_problem_upload_v2",
   "name": "自提到货问题件",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "读取来源表并生成候选；确认后按所选运单登记问题件并核验结果。",
   "host_api": {
     "minimum": "2.0.0",
