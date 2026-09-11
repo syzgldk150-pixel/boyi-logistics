@@ -12,8 +12,10 @@ import copy
 import hashlib
 import inspect
 import json
+import logging
 import math
 import re
+import traceback
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -829,7 +831,15 @@ class ConnectorRegistry:
                 result = await result
         except ConnectorRegistryError:
             raise
-        except Exception:
+        except Exception as exc:
+            # Diagnose the actual failing code without logging arguments,
+            # credentials, source data, exception messages or local variables.
+            frames = traceback.extract_tb(exc.__traceback__)
+            logging.getLogger(__name__).error(
+                "connector_handler_failed service=%s operation=%s exception_type=%s frames=%s",
+                resolved.service, resolved.operation, type(exc).__name__,
+                " > ".join(f"{frame.name}:{frame.lineno}" for frame in frames),
+            )
             raise ConnectorInvocationError("Connector handler failed") from None
         if not isinstance(result, Mapping):
             raise ConnectorInvocationError("Connector result must be an object")

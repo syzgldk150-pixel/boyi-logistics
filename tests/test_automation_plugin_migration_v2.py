@@ -471,7 +471,7 @@ def test_authoritative_pair_selection_rejects_completed_plus_new_active_pair() -
 
 @pytest.mark.parametrize(
     ("operation", "state"),
-    (("CUTOVER", "READY"), ("ROLLBACK", "CUTOVER")),
+    (("CUTOVER", "READY"), ("ROLLBACK", "CUTOVER"), ("ROLLBACK", "TESTING")),
 )
 @pytest.mark.parametrize(
     ("lease_summary", "migration_lock_summary", "message"),
