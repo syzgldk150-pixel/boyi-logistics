@@ -245,6 +245,7 @@ class ProductionRuntimeEffectDriver:
         service_registry: ServiceRegistry | None = None,
         contribution_registry: ManagedContributionRegistry | None = None,
         projection_lock: Any | None = None,
+        project_enabled: Callable[[str], bool] | None = None,
     ) -> None:
         shared_projection_lock = projection_lock or RLock()
         self._integrity = FilesystemPluginIntegrityVerifier()
@@ -256,6 +257,7 @@ class ProductionRuntimeEffectDriver:
         self._reference_packages: dict[str, str] = {}
         self._service_registry_restored = False
         self._projection_lock = shared_projection_lock
+        self._project_enabled = project_enabled
         self._scheduler_projection_refresher: (
             Callable[[], Mapping[str, Any]] | None
         ) = None
@@ -750,6 +752,7 @@ class ProductionRuntimeEffectDriver:
         committed_contribution_effects: dict[tuple[str, int], tuple[Any, list[RuntimeEffectRecord]]] = {}
         contribution_groups: dict[tuple[str, int], tuple[Any, Any, list[RuntimeEffectRecord]]] = {}
         activation_phases: dict[tuple[str, int], RuntimeActivationPhase | None] = {}
+        inactive_projects: set[str] = set()
         eligible_states = {
             RuntimeGenerationState.TARGET,
             RuntimeGenerationState.PREPARING,
@@ -760,6 +763,12 @@ class ProductionRuntimeEffectDriver:
             RuntimeGenerationState.DISPOSING,
         }
         for automation_id in sorted(automation_ids):
+            if self._project_enabled is not None:
+                enabled = self._project_enabled(automation_id)
+                if not isinstance(enabled, bool):
+                    raise PluginConflictError("persisted project enabled state is invalid")
+                if not enabled:
+                    inactive_projects.add(automation_id)
             for generation in repository.list_project_generations(automation_id):
                 if generation.state not in eligible_states:
                     continue
@@ -879,7 +888,8 @@ class ProductionRuntimeEffectDriver:
                 RuntimeGenerationState.WAITING_COEFFECTS,
             }
             activation_phase = activation_phases[group_key]
-            inactive = retiring or activation_phase is RuntimeActivationPhase.BLOCKED
+            inactive = (retiring or activation_phase is RuntimeActivationPhase.BLOCKED
+                        or snapshot.automation_id in inactive_projects)
             allowed_states = {RuntimeEffectState.APPLIED}
             if retiring:
                 allowed_states.update({RuntimeEffectState.DISPOSING, RuntimeEffectState.DISPOSED})
@@ -919,8 +929,13 @@ class ProductionRuntimeEffectDriver:
                 allowed_states=frozenset({RuntimeEffectState.APPLIED}),
             )
             if materials:
-                self._contributions.prepare_generation(materials, committed=True)
+                self._contributions.prepare_generation(
+                    materials, committed=True,
+                    restored_inactive=snapshot.automation_id in inactive_projects,
+                )
         for automation_id, generation in sorted(committed_by_project.items()):
+            if automation_id in inactive_projects:
+                continue
             if self._services.project_reference(
                 automation_id=automation_id,
                 generation=generation,
@@ -2743,6 +2758,7 @@ def build_production_automation_plugin_runtime(
         service_registry=service_registry,
         contribution_registry=contribution_registry,
         projection_lock=runtime_projection_lock,
+        project_enabled=lambda automation_id: catalog.require(automation_id).enabled,
     )
     reconciler = AutomationRuntimeReconciler(
         repository=runtime_repository,
