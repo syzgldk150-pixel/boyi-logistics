@@ -26,7 +26,7 @@
       });
       const result = await response.json();
       if (!response.ok || result.ok !== true) {
-        throw new Error(result.message || "操作未完成，请刷新状态后核对。");
+        throw new Error(result.error?.message || result.message || "操作未完成，请刷新状态后核对。");
       }
       feedback.textContent = result.message || "操作已提交，请刷新状态核对。";
       if (result.data?.state === "PREPARING") {
