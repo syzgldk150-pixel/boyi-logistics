@@ -6,6 +6,7 @@ CONTRIBUTION_ID = "manual_run"
 CONTRIBUTION_TARGETS = {
     "console": (CONTRIBUTION_ID, "console"),
     "scheduler": ("daily_clockin", "scheduler"),
+    "feishu": ("command", "feishu"),
     "harness": ("assistant_preview", "harness"),
     "service": ("host.service.invoke", "service"),
 }
