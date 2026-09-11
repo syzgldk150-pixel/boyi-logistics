@@ -12,6 +12,7 @@ from shared.plugin_generation_contract import validate_execution_envelope
 import base64
 import binascii
 import hashlib
+import json
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -51,6 +52,13 @@ class AutomationPluginPreparedTargetOccupied(ConcurrentUpdateError):
 
 class AutomationPluginPurgeBlocked(RuntimeError):
     """Raised when active or outcome-unknown execution blocks uninstall."""
+
+
+def _manifest_json(value: Any) -> str:
+    """Preserve verified package definitions; audit redaction is a separate path."""
+    if not isinstance(value, Mapping):
+        raise OrchestrationPersistenceError("plugin manifest must be an object")
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 _PROJECT_STATES = frozenset(
@@ -1382,7 +1390,7 @@ class AutomationPluginRepository(
                     plugin_api,
                     _sha256(version.get("package_sha256"), "package_sha256"),
                     _sha256(version.get("manifest_sha256"), "manifest_sha256"),
-                    _json_param(version.get("manifest_json"), {}),
+                    _manifest_json(version.get("manifest_json")),
                     _sha256(version.get("tool_contract_sha256"), "tool_contract_sha256"),
                     _sha256(version.get("config_schema_sha256"), "config_schema_sha256"),
                     _sha256(
@@ -1453,7 +1461,7 @@ class AutomationPluginRepository(
             for field_name in immutable_fields
         ) or bool(persisted.get("project_full_auto_allowed")) != bool(
             version.get("project_full_auto_allowed")
-        ) or _json_hash(persisted.get("manifest_json")) != _json_hash(
+        ) or _manifest_json(persisted.get("manifest_json")) != _manifest_json(
             version.get("manifest_json")
         ) or _json_hash(persisted.get("install_root_metadata_json")) != _json_hash(
             version.get("install_root_metadata_json")
