@@ -111,6 +111,9 @@ def _run_service_identity_smoke(
             temp_root = Path(temporary)
             (temp_root / "shared").mkdir()
             (temp_root / "shared" / "__init__.py").write_text("", encoding="utf-8")
+            (temp_root / "shared" / "release_identity.py").write_bytes(
+                (REPOSITORY_ROOT / "shared" / "release_identity.py").read_bytes()
+            )
             (temp_root / "dotenv.py").write_text(
                 "def dotenv_values(_path):\n"
                 "    return {\n"
