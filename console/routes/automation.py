@@ -165,6 +165,7 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     migration_route = _automation_plugin_migration_route(path)
     if migration_route and migration_route[1] in {
         "create",
+        "resume",
         "ready",
         "cutover",
         "rollback",

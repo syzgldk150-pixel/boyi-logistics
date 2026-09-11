@@ -329,7 +329,7 @@
               <label class="ghost-btn extension-upgrade"><span>选择更新包</span><input type="file" accept=".zip,application/zip" data-extension-upgrade {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}></label>
               <button class="ghost-btn" type="button" data-extension-action="upgrade" {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>升级</button>
               {% if plugin.enabled %}<button class="ghost-btn" type="button" data-extension-action="disable" {% if not plugin.disable_allowed %}disabled{% endif %}>暂停</button>{% else %}<button class="ghost-btn" type="button" data-extension-action="enable" {% if not plugin.enable_allowed %}disabled{% endif %}>启用</button>{% endif %}
-              <button class="ghost-btn extension-action--danger" type="button" data-extension-action="uninstall" {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>卸载</button>
+              <button class="ghost-btn extension-action--danger" type="button" data-extension-action="uninstall" {% if not plugin.uninstall_allowed %}disabled{% endif %}>卸载</button>
               <a class="ghost-btn" href="/work-items">历史事项与核验</a>
             </div>
             {% endif %}

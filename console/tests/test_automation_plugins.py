@@ -373,6 +373,17 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertTrue(instance["enable_allowed"])
         self.assertTrue(instance["menu_actions_allowed"])
 
+    def test_unconfigured_unpaired_install_can_be_removed_after_reconcile_failure(self):
+        payload = _catalog_payload()
+        payload["instances"][0].update(
+            enabled=False, configured=False, state="INSTALLED", reconcile_state="FAILED",
+        )
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+        self.assertFalse(instances[0]["lifecycle_actions_allowed"])
+        self.assertTrue(instances[0]["uninstall_allowed"])
+        self.assertTrue(instances[0]["menu_actions_allowed"])
+        self.assertFalse(instances[0]["enable_allowed"])
+
     def test_code_owned_projection_must_not_overlap_browser_schema(self):
         payload = _catalog_payload()
         payload["instances"][0]["code_owned_config_fields"] = ["region"]
@@ -1735,6 +1746,41 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         )
         self.assertNotIn("entrypoint_snapshot", json.dumps(forwarded["payload"]))
         self.assertEqual("17", forwarded["console_principal"]["actor_id"])
+
+    def test_migration_retry_retains_pair_identity_and_pending_status(self):
+        app, captured = self._app()
+        calls = []
+        def pending(_method, _path, **kwargs):
+            calls.append(kwargs["payload"])
+            return {"ok": True, "data": {"state": "PREPARING", "blocking_reason": {"message": "配置缺少字段"}}}
+        app._agent_request = pending
+        body = {"source_automation_id": "finance_action_east", "target_automation_id": "finance_action_v2",
+                "business_key_fields": ["__host_business_date"], "business_key_namespace": None, "request_id": REQUEST_ID}
+        for _ in range(2):
+            app._handle_automation_plugin_migration_action(self._handler(body), "", "create")
+        self.assertEqual(calls[0], calls[1])
+        self.assertEqual(202, captured["status"])
+        self.assertIn("配置缺少字段", captured["payload"]["message"])
+
+    def test_migration_resume_uses_persisted_request_and_current_principal(self):
+        app, captured = self._app()
+        calls = []
+        pair_id = "4e19b908-1334-42cc-96e6-85fa164f52af"
+        original_id = "0a968096-8d35-4bcd-88fe-d7788aeb707f"
+        def upstream(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if method == "GET":
+                return {"ok": True, "data": {"migration_pair_id": pair_id, "record_version": 4, "state": "PREPARING",
+                    "create_request_id": original_id, "source_automation_id": "old", "target_automation_id": "new",
+                    "business_key_contract": {"fields": ["__host_business_date"]}}}
+            return {"ok": True, "data": {"state": "TESTING"}}
+        app._agent_request = upstream
+        app._handle_automation_plugin_migration_action(
+            self._handler({"expected_record_version": 4, "confirm": True, "request_id": REQUEST_ID}), pair_id, "resume")
+        self.assertEqual(200, captured["status"])
+        self.assertEqual(original_id, calls[1][2]["payload"]["request_id"])
+        self.assertEqual(pair_id, calls[1][2]["payload"]["migration_pair_id"])
+        self.assertEqual("17", calls[1][2]["console_principal"]["actor_id"])
 
     def test_create_migration_allows_only_the_reserved_host_business_date_key(self):
         app, captured = self._app()

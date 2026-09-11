@@ -469,6 +469,7 @@ def _pair_projection(pair: Mapping[str, Any]) -> dict[str, Any]:
         "target_automation_id": str(pair.get("target_automation_id") or ""),
         "state": str(pair.get("state") or ""),
         "record_version": int(pair.get("record_version") or 0),
+        "create_request_id": str(pair.get("create_request_id") or ""),
         "entrypoint_snapshot_sha256": str(pair.get("entrypoint_snapshot_sha256") or ""),
         "business_key_contract": dict(contract) if isinstance(contract, Mapping) else {},
     }

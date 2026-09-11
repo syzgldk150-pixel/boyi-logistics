@@ -7,7 +7,7 @@ import pytest
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from console.app import LocalDocFlowApp
-from console.routes.automation import handle_get
+from console.routes.automation import handle_get, handle_post
 
 
 def app_and_result():
@@ -81,3 +81,14 @@ def test_catalog_error_does_not_offer_migration_actions():
     app._render_plugin_maintenance(SimpleNamespace())
     assert "插件目录不可用" in result["html"]
     assert "data-maintenance-create" not in result["html"]
+
+
+def test_resume_route_reaches_authorized_migration_handler():
+    observed = []
+    app = SimpleNamespace(
+        _handle_automation_account_post=lambda *_args: False,
+        _handle_automation_plugin_migration_action=lambda *args: observed.append(args),
+    )
+    handler = SimpleNamespace()
+    assert handle_post(app, handler, "/automations/plugin-migrations/existing-pair/resume", "", {})
+    assert observed == [(handler, "existing-pair", "resume")]

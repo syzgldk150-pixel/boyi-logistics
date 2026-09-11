@@ -29,6 +29,10 @@
         throw new Error(result.message || "操作未完成，请刷新状态后核对。");
       }
       feedback.textContent = result.message || "操作已提交，请刷新状态核对。";
+      if (result.data?.state === "PREPARING") {
+        feedback.dataset.error = "true";
+        return;
+      }
       window.location.assign("/automations/maintenance");
     } catch (error) {
       feedback.dataset.error = "true";

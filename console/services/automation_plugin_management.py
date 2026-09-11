@@ -1432,7 +1432,7 @@ class AutomationPluginManagementServiceMixin:
         migration_pair_id: str,
         action: str,
     ) -> None:
-        if action not in {"create", "ready", "cutover", "rollback", "complete"}:
+        if action not in {"create", "resume", "ready", "cutover", "rollback", "complete"}:
             self._control_plane_error(
                 handler,
                 HTTPStatus.NOT_FOUND,
@@ -1501,7 +1501,7 @@ class AutomationPluginManagementServiceMixin:
                 return
             endpoint = "/internal/v1/automation/migrations"
             payload = {
-                "migration_pair_id": str(uuid.uuid4()),
+                "migration_pair_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"boyi:plugin-migration:{request_id}")),
                 "source_automation_id": source_id,
                 "target_automation_id": target_id,
                 "business_key_fields": fields,
@@ -1535,6 +1535,7 @@ class AutomationPluginManagementServiceMixin:
                 "expected_record_version": expected_record_version,
                 "request_id": request_id,
                 "reason": {
+                    "resume": "超级管理员继续未完成的迁移准备",
                     "ready": "超级管理员确认 v2 真跑证据并标记迁移就绪",
                     "cutover": "超级管理员接管自动执行入口",
                     "rollback": "超级管理员将后续入口回滚到旧项目",
@@ -1543,6 +1544,25 @@ class AutomationPluginManagementServiceMixin:
                 "confirm": True,
             }
             automation_id = ""
+
+            if action == "resume":
+                read = self._agent_request("GET", f"/internal/v1/automation/migrations/{quote(pair_id, safe='')}",
+                                           console_principal=trusted_context["_console_principal"])
+                pair = read.get("data") if read.get("ok") else None
+                original_request = self._normalize_browser_request_uuid(pair.get("create_request_id")) if isinstance(pair, dict) else None
+                if (not isinstance(pair, dict) or pair.get("migration_pair_id") != pair_id
+                        or pair.get("state") != "PREPARING" or pair.get("record_version") != expected_record_version
+                        or not original_request):
+                    self._control_plane_error(handler, HTTPStatus.CONFLICT, "PLUGIN_MIGRATION_RESUME_UNAVAILABLE",
+                                              "迁移准备状态已变化或原请求无法确认，请刷新后核对。")
+                    return
+                contract = pair.get("business_key_contract") or {}
+                endpoint = "/internal/v1/automation/migrations"
+                payload = {"migration_pair_id": pair_id, "source_automation_id": pair["source_automation_id"],
+                           "target_automation_id": pair["target_automation_id"], "business_key_fields": contract.get("fields"),
+                           "business_key_namespace": contract.get("namespace"), "request_id": original_request,
+                           "reason": "超级管理员在自动化页面创建并行迁移验证"}
+                automation_id = pair["target_automation_id"]
 
         result = self._agent_request(
             "POST",
@@ -1561,6 +1581,12 @@ class AutomationPluginManagementServiceMixin:
             )
             return
         self._clear_automation_plugin_catalog_cache()
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        if data.get("state") == "PREPARING":
+            reason = data.get("blocking_reason") or {}
+            self._send_json(handler, HTTPStatus.ACCEPTED, {"ok": True, "data": data,
+                "message": "迁移准备尚未完成：" + str(reason.get("message") or "请继续同一次迁移准备。")})
+            return
         self._send_json(
             handler,
             HTTPStatus.OK,
@@ -1569,6 +1595,7 @@ class AutomationPluginManagementServiceMixin:
                 "data": result.get("data") if isinstance(result.get("data"), dict) else {},
                 "message": {
                     "create": "迁移对已创建，v2 项目只开放手动验证入口。",
+                    "resume": "迁移准备已完成，v2 项目只开放手动验证入口。",
                     "ready": "真实执行证据已通过，迁移可以接管自动执行。",
                     "cutover": "自动执行入口已原子切换到 v2 项目。",
                     "rollback": "后续自动执行入口已恢复到旧项目。",

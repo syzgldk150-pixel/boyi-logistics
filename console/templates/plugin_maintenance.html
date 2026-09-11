@@ -42,6 +42,7 @@
       <p>原实例：{{ item.migration.paired_automation_id }}<br>新版实例：{{ item.automation_id }}<br>当前自动执行入口：{{ item.migration.entrypoint_owner_automation_id }}</p>
       <div class="maintenance-links">
         <a href="{{ item.module_url }}?open_task={{ item.automation_id }}">打开新版实例验证</a>
+        {% if item.migration.state == 'PREPARING' %}<button class="ghost-btn" type="button" data-maintenance-action="resume">继续迁移准备</button>{% endif %}
         {% if item.migration.can_mark_ready %}<button class="ghost-btn" type="button" data-maintenance-action="ready">核验本次执行证据</button>{% endif %}
         {% if item.migration.can_cutover %}<button class="primary-btn" type="button" data-maintenance-action="cutover">切换到新版</button>{% endif %}
         {% if item.migration.can_rollback %}<button class="ghost-btn" type="button" data-maintenance-action="rollback">恢复原实例入口</button>{% endif %}
@@ -54,4 +55,4 @@
   {% endif %}
 </div>
 {% endblock %}
-{% block scripts %}<script src="/static/plugin-maintenance.js?v=20260911"></script>{% endblock %}
+{% block scripts %}<script src="/static/plugin-maintenance.js?v=2d7e136cf88b78d0"></script>{% endblock %}
