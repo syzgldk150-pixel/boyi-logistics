@@ -74,3 +74,5 @@ PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m pytest -q tests/test_ident
 工作区已补齐清单、韵达、财务、寄件、签收、客服和每日应签的 V2 生产适配，局部测试/打包入口覆盖现有 V2 插件。真实 ZIP 通过隔离进程、宿主 Broker 和 ResultVerifier 核验；迁移切换与回退、字段及业务判断两次维护演练使用隔离数据库和外部服务。详细归属及复验命令见 [V2 维护入口](../agent/service_v2_plugins/README.md)。
 
 上线迁移尚须按真实实例执行，不能把隔离测试报告称为生产执行结果。在全部现有实例完成切换前，V1 的生产启动与发布依赖仍须保留；完成切换后才清理其运行入口。
+
+插件安装必须原样保存已经验证的清单，不能把日志脱敏用于字段定义。`shared/automation_plugin_repository.py` 将清单存储与审计脱敏分开，并按完整清单比较重复安装；`048_restore_arrival_plugin_manifest.sql` 只修复已知统计 V2 包中被误脱敏的字段定义，按插件、版本、包摘要和清单摘要精确限定，不改实例设置或业务数据。真实 ZIP、隔离 MySQL、安装响应丢失重试与有界修复回归见 `tests/test_plugin_manifest_persistence_mysql.py`。
