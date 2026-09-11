@@ -33,6 +33,33 @@ _PLUGIN_DOCUMENT_INDEX_KINDS = frozenset({"INDEX", "UNIQUE"})
 _PLUGIN_DOCUMENT_INDEX_LIMIT = 128
 
 
+def read_active_plugin_migration_pairs(cursor, automation_ids, *, for_update=False):
+    identities = tuple(_required_text(value, "automation_id") for value in automation_ids)
+    if not identities:
+        return []
+    markers = ",".join("%s" for _ in identities)
+    condition = "source_automation_id=%s OR target_automation_id=%s" if len(identities) == 1 else (
+        f"source_automation_id IN ({markers}) OR target_automation_id IN ({markers})"
+    )
+    cursor.execute(
+        f"""
+        SELECT * FROM automation_plugin_migration_pairs
+        WHERE ({condition})
+          AND state IN ('PREPARING', 'TESTING', 'READY', 'CUTOVER', 'ROLLING_BACK')
+        ORDER BY created_at, migration_pair_id{' FOR UPDATE' if for_update else ''}
+        """,
+        (*identities, *identities),
+    )
+    return [_decode_row(row, _repository.AutomationPluginRepository._MIGRATION_PAIR_JSON_FIELDS) or {}
+            for row in _rows(cursor)]
+
+
+def unique_active_plugin_migration_pair(rows):
+    if len(rows) > 1:
+        raise OrchestrationPersistenceError("automation project has multiple active migration pairs")
+    return rows[0] if rows else None
+
+
 def _validated_document_index_digests(
     value: Mapping[str, str] | None,
     field: str,
@@ -1113,26 +1140,9 @@ class AutomationPluginV2RepositoryMixin:
     ) -> dict[str, Any] | None:
         """Return the single non-terminal pair guarding an automation project."""
 
-        project_id = _required_text(automation_id, "automation_id")
         with self.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT * FROM automation_plugin_migration_pairs
-                WHERE (source_automation_id=%s OR target_automation_id=%s)
-                  AND state IN ('PREPARING', 'TESTING', 'READY', 'CUTOVER', 'ROLLING_BACK')
-                ORDER BY created_at, migration_pair_id{' FOR UPDATE' if for_update else ''}
-                """,
-                (project_id, project_id),
-            )
-            rows = [
-                _decode_row(row, self._MIGRATION_PAIR_JSON_FIELDS) or {}
-                for row in _rows(cursor)
-            ]
-        if len(rows) > 1:
-            raise OrchestrationPersistenceError(
-                "automation project has multiple active migration pairs"
-            )
-        return rows[0] if rows else None
+            rows = read_active_plugin_migration_pairs(cursor, (automation_id,), for_update=for_update)
+        return unique_active_plugin_migration_pair(rows)
 
     def get_authoritative_plugin_migration_pair_for_automation(
         self, automation_id: str
