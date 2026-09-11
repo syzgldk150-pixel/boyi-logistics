@@ -71,6 +71,9 @@ def _automation_plugin_migration_route(path: str) -> tuple[str, str] | None:
 
 
 def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[str, list[str]]) -> bool:
+    if path == "/automations/maintenance":
+        app._render_plugin_maintenance(handler)
+        return True
     if path in {"/module-data-sources/finance", "/module-data-sources/customer_service"}:
         app._handle_module_sources_get(handler, path.rsplit("/", 1)[1])
         return True
