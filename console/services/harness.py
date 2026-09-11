@@ -1,4 +1,4 @@
-"""Authenticated Console proxy for the fixed, read-only Harness surface.
+"""Authenticated Console proxy for shared conversation and plugin execution.
 
 The Console does not host an agent, choose tools, or carry project identity. It
 only renders the host-owned page and forwards the two closed Harness requests
@@ -43,6 +43,7 @@ _HARNESS_TOP_LEVEL_RESPONSE_FIELDS = frozenset(
         "tools",
         "assistant_message",
         "message_id",
+        "messages",
         "created_at",
         "read_only",
         "tool_calls",
