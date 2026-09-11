@@ -280,7 +280,7 @@ def test_first_party_descriptors_are_16_actions_and_18_instances(
     assert manifests["sync_arrival_stats"].version == "1.0.22"
     assert manifests["sync_arrive_list"].version == "1.0.21"
     assert manifests["self_pickup_problem_upload"].version == "1.0.26"
-    assert manifests["split_pending_problem_upload"].version == "1.0.25"
+    assert manifests["split_pending_problem_upload"].version == "1.0.26"
     assert manifests["sync_finance_bills"].version == "1.0.22"
     assert manifests["sync_customer_service_problems"].version == "1.0.21"
     assert manifests["sync_daily_send_orders"].version == "1.0.21"
@@ -321,7 +321,7 @@ def test_first_party_descriptors_are_16_actions_and_18_instances(
         seed.version
         for seed in seeds
         if seed.plugin_id == "split_pending_problem_upload"
-    } == {"1.0.25"}
+    } == {"1.0.26"}
     customer = manifests["sync_customer_service_problems"]
     assert customer.account_roles[0]["collection"] is True
     assert customer.account_roles[0]["argument_field"] is None

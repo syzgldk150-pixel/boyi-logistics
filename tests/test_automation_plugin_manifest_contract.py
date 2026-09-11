@@ -314,7 +314,7 @@ def test_split_contract_is_human_triggered_with_verified_selection_fields() -> N
         "split_pending_problem_upload"
     ]
 
-    assert source["version"] == "1.0.25"
+    assert source["version"] == "1.0.26"
     broker_actions = {
         (item["operation"], item["action"])
         for item in source["runtime_permissions"]["broker_operations"]
