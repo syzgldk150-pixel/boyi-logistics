@@ -2145,6 +2145,7 @@ def bootstrap_first_party_plugins(
     package_provider: FirstPartyPackageProvider | None = None,
     package_materializer: FirstPartyPackageMaterializerPort | None = None,
     allow_development_builtin: bool = False,
+    superseded_automation_ids: tuple[str, ...] = (),
 ) -> BootstrapResult:
     """Install missing instances and stage older signed first-party versions.
 
@@ -2153,6 +2154,11 @@ def bootstrap_first_party_plugins(
     """
 
     try:
+        superseded = set(superseded_automation_ids)
+        if not superseded <= release_first_party_automation_ids():
+            raise PluginPackageError("superseded bootstrap scope is invalid")
+        seeds = tuple(seed for seed in release_first_party_instance_seeds() if seed.automation_id not in superseded)
+        required_plugins = {seed.plugin_id for seed in seeds}
         if package_provider is None:
             raise PluginPackageError("signed first-party package provider is required")
         provider = package_provider
@@ -2200,6 +2206,8 @@ def bootstrap_first_party_plugins(
 
         try:
             for descriptor in descriptors:
+                if descriptor.plugin_id not in required_plugins:
+                    continue
                 existing = repository.get_package_version(
                     descriptor.plugin_id,
                     descriptor.version,
@@ -2252,7 +2260,6 @@ def bootstrap_first_party_plugins(
                         f"first-party package was not materialized: {descriptor.plugin_id}"
                     )
                 versions.append(descriptor)
-            seeds = release_first_party_instance_seeds()
             persisted = repository.bootstrap_missing(
                 tuple(versions),
                 seeds,
@@ -2275,14 +2282,18 @@ def bootstrap_first_party_plugins(
                 ) from bootstrap_error
             raise
         expected_instances = release_first_party_automation_ids()
+        superseded.update(persisted.superseded)
         if set(persisted.created) & set(persisted.existing):
             raise PluginPackageError("repository returned overlapping bootstrap states")
-        if set(persisted.created) | set(persisted.existing) != expected_instances:
+        if (set(persisted.created) | set(persisted.existing)) & superseded:
+            raise PluginPackageError("repository returned overlapping superseded states")
+        if set(persisted.created) | set(persisted.existing) | superseded != expected_instances:
             raise PluginPackageError("repository returned an incomplete instance bootstrap result")
         return BootstrapResult(
             created=tuple(sorted(persisted.created)),
             existing=tuple(sorted(persisted.existing)),
             rejected={},
+            superseded=tuple(sorted(superseded)),
         )
     except AutomationPluginError as exc:
         return BootstrapResult(created=(), existing=(), rejected={"*": f"{exc.code}: {exc}"})

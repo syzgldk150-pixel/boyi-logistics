@@ -1,10 +1,25 @@
 """Arrival-list and site-send infrastructure operations; filtering stays in ZIPs."""
 from agent.automation_plugins.connector_compatibility import ConnectorRequirementContract
-from agent.automation_plugins.connector_registry import ConnectorBindingKind as Kind, ConnectorDescriptor, ConnectorOperation
+from agent.automation_plugins.connector_registry import ConnectorBindingKind as Kind, ConnectorDescriptor, ConnectorInvocationError, ConnectorOperation
 from agent.automation_plugins.connector_schemas import TEXT, DATE, BOOL, COUNT, CELL, CURSOR, object_schema as obj, array_schema as arr, record_schema as record
 from agent.automation_plugins.first_party_handler_support import _ARRIVE_FIELDS, _SITE_FIELDS
 from agent.automation_plugins.host_capability_registry import CapabilityEffect as Effect
 from agent.automation_plugins.reviewed_connectors import reviewed_connector_handler
+
+
+def encode_arrive_page_result(result):
+    """Name the reviewed adapter's exact columns for both list and statistics."""
+    items = result.get("items")
+    if not isinstance(items, list):
+        raise ConnectorInvocationError("Arrival page rows are invalid", code="BROKER_SOURCE_INVALID")
+    rows = []
+    for row in items:
+        if isinstance(row, (list, tuple)):
+            if len(row) != len(_ARRIVE_FIELDS):
+                raise ConnectorInvocationError("Arrival page column count changed", code="BROKER_SOURCE_INVALID")
+            row = dict(zip(_ARRIVE_FIELDS, row, strict=True))
+        rows.append(row)
+    return {**result, "items": rows}
 
 
 def build_list_connectors(reviewed):
@@ -23,7 +38,8 @@ def build_list_connectors(reviewed):
         def operation(name, primitive, action, effect, inputs, outputs, role="account_id", resource=None):
             return ConnectorOperation(name=name, effect=effect, input_schema=inputs, output_schema=outputs,
                 handler=reviewed_connector_handler(reviewed, tool=tool, operation=primitive, action=action,
-                    role=role, account=account, resource=resource, account_alias="account_id"),
+                    role=role, account=account, resource=resource, account_alias="account_id",
+                    encode_result=encode_arrive_page_result if action == "ronghui.arrive_list.read_page" else None),
                 max_input_bytes=64*1024*1024, max_output_bytes=10*1024*1024)
 
         page_result = {"items": arr(record(fields)), "next_cursor": CURSOR, "pagination_complete": BOOL}

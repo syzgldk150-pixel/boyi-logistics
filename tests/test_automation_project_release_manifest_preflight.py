@@ -78,7 +78,9 @@ def _stub_post_018_world(preflight, monkeypatch, *, failure=None):
         "SCHEDULED_TASK_APPROVAL_POLICY_TABLE": "scheduled_policy",
         "SCHEDULED_TASK_APPROVAL_EVENT_TABLE": "scheduled_event",
     }
-    monkeypatch.setattr(preflight, "_load_release_contract", lambda: {})
+    contract = preflight._load_release_contract()
+    monkeypatch.setattr(preflight, "_load_release_contract", lambda: contract)
+    monkeypatch.setattr(preflight.plugin_migration_scope, "read_superseded_sources", lambda *args, **kwargs: frozenset())
     if failure is None:
         monkeypatch.setattr(
             preflight,

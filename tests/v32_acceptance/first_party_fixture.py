@@ -30,8 +30,10 @@ def bootstrap(management, *, private_key, trust, key_id):
     provider = SignedFirstPartyPackageProvider(artifact_root=release_root,
         signature_verifier=trust, storage=management.storage, environments=management.lifecycle._environments)
     result = bootstrap_first_party_plugins(management.packages, core_catalog=management.core_catalog,
-        current_release_sha=release_sha, expected_release_sha=release_sha, package_provider=provider)
+        current_release_sha=release_sha, expected_release_sha=release_sha, package_provider=provider,
+        superseded_automation_ids=management.packages.superseded_first_party_ids(tuple(
+            seed.automation_id for seed in release_first_party_instance_seeds())))
     if result.rejected:
         raise RuntimeError('real signed first-party bootstrap rejected: ' + str(result.rejected))
-    return {'created': result.created, 'existing': result.existing,
+    return {'created': result.created, 'existing': result.existing, 'superseded': result.superseded,
         'release_sha': release_sha, 'artifact_root': str(release_root)}

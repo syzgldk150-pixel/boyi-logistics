@@ -37,6 +37,7 @@ from agent.automation_plugins.models import (
 class BootstrapPersistenceResult:
     created: tuple[str, ...]
     existing: tuple[str, ...]
+    superseded: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

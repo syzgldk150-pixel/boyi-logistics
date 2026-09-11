@@ -240,18 +240,6 @@ class AutomationProjectPolicyService:
                 exc.code,
                 "Automation project bootstrap requires a full release digest",
             ) from exc
-        entries: dict[str, PluginCatalogEntry] = {}
-        try:
-            for automation_id in automation_ids:
-                entry = self._plugin_catalog.require(automation_id)
-                if entry.automation_id != automation_id:
-                    raise ValueError("catalog identity mismatch")
-                entries[automation_id] = entry
-        except Exception as exc:
-            raise OrchestrationError(
-                "PROJECT_POLICY_BOOTSTRAP_SCOPE_INVALID",
-                "Automation project bootstrap release scope is unavailable",
-            ) from exc
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         bootstrap_actor = Actor(
             actor_type=ActorType.SYSTEM,
@@ -283,6 +271,18 @@ class AutomationProjectPolicyService:
                         "PROJECT_POLICY_BOOTSTRAP_PARTIAL",
                         "Automation project bootstrap is partially persisted",
                     )
+                entries: dict[str, PluginCatalogEntry] = {}
+                try:
+                    for automation_id in automation_ids:
+                        entry = self._plugin_catalog.require(automation_id)
+                        if entry.automation_id != automation_id:
+                            raise ValueError("catalog identity mismatch")
+                        entries[automation_id] = entry
+                except Exception as exc:
+                    raise OrchestrationError(
+                        "PROJECT_POLICY_BOOTSTRAP_SCOPE_INVALID",
+                        "Automation project bootstrap release scope is unavailable",
+                    ) from exc
                 for automation_id in automation_ids:
                     entry = entries[automation_id]
                     project = uow.automation_plugins.get_project(

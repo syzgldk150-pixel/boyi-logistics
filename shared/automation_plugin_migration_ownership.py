@@ -228,7 +228,20 @@ def migration_effective_ownership_state(
     raise ValueError("migration pair state is invalid")
 
 
+def source_is_superseded(pair, source_id: str) -> bool:
+    """A proven V2 owner retires startup ownership of its original instance."""
+    if pair is None:
+        return False
+    if pair.get("source_automation_id") != source_id:
+        raise ValueError("first-party source is a migration target")
+    state = migration_effective_ownership_state(pair.get("state"), rolled_back_at=pair.get("rolled_back_at"))
+    if state is None:
+        raise ValueError("first-party migration ownership is unresolved")
+    return state == "CUTOVER"
+
+
 __all__ = [
+    "source_is_superseded",
     "MIGRATION_ENTRYPOINT_OWNERSHIP_SCHEMA",
     "MIGRATION_ENTRYPOINT_KINDS",
     "MIGRATION_OWNERSHIP_STATES",

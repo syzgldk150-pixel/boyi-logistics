@@ -1139,6 +1139,7 @@ def test_runtime_health_fails_closed_when_real_sandbox_canary_failed(monkeypatch
     runtime.catalog = _HealthCatalog()
     runtime.required_first_party_ids = frozenset({"project-a"})
     runtime.runtime_repository = object()
+    runtime.repository = SimpleNamespace(superseded_first_party_ids=lambda _ids: ())
     runtime.release = SimpleNamespace(verified_release_sha="a" * 40)
     runtime._started = True
     runtime._sandbox_canary = SandboxCanaryResult(
@@ -1181,6 +1182,7 @@ def test_runtime_health_snapshot_never_requeries_persistence(monkeypatch) -> Non
     runtime.catalog = _HealthCatalog()
     runtime.required_first_party_ids = frozenset({"project-a"})
     runtime.runtime_repository = object()
+    runtime.repository = SimpleNamespace(superseded_first_party_ids=lambda _ids: ())
     runtime.release = SimpleNamespace(verified_release_sha="a" * 40)
     runtime._started = True
     runtime._sandbox_canary = SandboxCanaryResult(
@@ -1237,6 +1239,7 @@ def test_runtime_health_projects_candidate_failure_without_global_hold(
     runtime.catalog = _HealthCatalog()
     runtime.required_first_party_ids = frozenset({"project-a", "project-b"})
     runtime.runtime_repository = object()
+    runtime.repository = SimpleNamespace(superseded_first_party_ids=lambda _ids: ())
     runtime.release = SimpleNamespace(verified_release_sha="a" * 40)
     runtime.target_service = SimpleNamespace(
         reconciliation_failures=lambda: {

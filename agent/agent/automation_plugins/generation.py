@@ -170,11 +170,11 @@ class AutomationRuntimeReconciler:
     def _compensate(self, effects: Sequence[RuntimeEffectRecord]) -> None:
         for effect in sorted(effects, key=lambda item: item.sequence, reverse=True):
             if (
-                effect.state not in {RuntimeEffectState.APPLIED, RuntimeEffectState.DISPOSING}
+                effect.state not in {RuntimeEffectState.PLANNED, RuntimeEffectState.APPLIED, RuntimeEffectState.DISPOSING}
                 or effect.reversible is not True
             ):
                 continue
-            if effect.state == RuntimeEffectState.APPLIED:
+            if effect.state in {RuntimeEffectState.PLANNED, RuntimeEffectState.APPLIED}:
                 self._repository.mark_generation_effect_disposing(effect.effect_id)
             self._driver.dispose(effect)
             self._repository.mark_generation_effect_disposed(effect.effect_id)

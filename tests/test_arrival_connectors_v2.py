@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from agent.automation_plugins.arrival_connectors_v2 import build_arrival_connectors
+from agent.automation_plugins.list_connectors_v2 import build_list_connectors
 from agent.automation_plugins.connector_registry import (
     ConnectorBindingRef, ConnectorBindingKind, ConnectorBindingInvalid,
     ConnectorHostInternalBindingRef, ConnectorInvocationError, ConnectorResourceBindingRef, ConnectorRegistry,
@@ -31,7 +32,7 @@ _ACCOUNT = "isolated-arrival-account"
 _DATE = "2026-09-11"
 
 
-def _setup(**port_overrides):
+def _setup(*, connector_builder=build_arrival_connectors, **port_overrides):
     row = {key: "" for key in _ARRIVE_FIELDS}
     row.update(tracking_number="R12345678901", goods_name="配件", package_type="纸箱",
         delivery_method="自提", quantity=2, actual_weight="10", volume="0.1",
@@ -70,13 +71,21 @@ def _setup(**port_overrides):
         replace_arrival_stats_sheet=sheet,
         archive_arrival_stats_sheet=lambda resource, records, day: sheet(resource,"archive",records,day))
     ports = replace(ports, **port_overrides)
+    def unexpected(*_args):
+        raise AssertionError("unrelated connector operation")
+    if connector_builder is build_list_connectors:
+        ports = replace(ports, site_send_read_page=unexpected,
+            replace_arrival_forecast_snapshot=unexpected, replace_arrive_sheet_resource=unexpected,
+            read_arrival_report_publication=unexpected)
     context = CoreBrokerInvocationContext(automation_id="isolated-arrival", plugin_version="1.1.0",
         tool_name="sync_arrival_stats_v2", operation="service.invoke", action="run", role="__system__",
         account_bindings={"arrival_stats_tms": (_ACCOUNT,)}, resource_bindings={
             f"arrival_stats_{suffix}_sheet": f"isolated-{suffix}-table" for suffix in ("primary","secondary","pending","archive","split_pending")},
         mark_write_started=lambda: calls.append("write-started"))
     reviewed = build_first_party_core_handler_map(ports)
-    registry = ConnectorRegistry(build_arrival_connectors(reviewed))
+    if connector_builder is build_list_connectors:
+        reviewed[("network.request", "feishu.bitable.replace_snapshot")] = unexpected
+    registry = ConnectorRegistry(connector_builder(reviewed))
     context = replace(context,connector_binding_resolver=lambda requirement: _binding(registry,requirement.service,context))
     return registry, context, row, calls, writes
 
@@ -84,7 +93,7 @@ def _setup(**port_overrides):
 def _binding(registry, service, context):
     descriptor = registry.resolve(service)
     if descriptor.binding_kind is ConnectorBindingKind.ACCOUNT:
-        return ConnectorBindingRef(service,"arrival_stats_tms",_ACCOUNT,"ronghui",context)
+        return ConnectorBindingRef(service,descriptor.account_role,_ACCOUNT,"ronghui",context)
     if descriptor.binding_kind is ConnectorBindingKind.RESOURCE:
         role = descriptor.resource_role
         return ConnectorResourceBindingRef(service,role,context.resource_bindings[role],"feishu_sheet",context)
@@ -97,11 +106,15 @@ def _invoke(registry, context, suffix, operation, arguments):
         binding=_binding(registry,service,context), arguments=arguments))
 
 
-def test_arrival_connector_accepts_actual_adapter_column_rows_without_losing_values(monkeypatch):
+@pytest.mark.parametrize("builder,suffix,operation", [
+    (build_arrival_connectors, "arrival_stats_tms", "arrive_list_read_page"),
+    (build_list_connectors, "arrive_list_ronghui", "read_page"),
+])
+def test_arrival_connector_accepts_actual_adapter_column_rows_without_losing_values(monkeypatch, builder, suffix, operation):
     from plugin_core_adapters.first_party import _arrive_list_read_page
     from agent.tms_runtime.scripts import fetch_dispatch
     from agent.tms_runtime.scripts.login_manager import TMSAuth
-    registry, context, row, _calls, _writes = _setup(arrive_list_read_page=_arrive_list_read_page)
+    registry, context, row, _calls, _writes = _setup(connector_builder=builder, arrive_list_read_page=_arrive_list_read_page)
     source = {source_key: row[target_key] for source_key, target_key in
               zip(fetch_dispatch.FIELDS_ORDER, _ARRIVE_FIELDS, strict=True)}
     class Response:
@@ -116,19 +129,23 @@ def test_arrival_connector_accepts_actual_adapter_column_rows_without_losing_val
             return Response()
     monkeypatch.setattr(TMSAuth, "login_and_get_session", lambda _self: Session())
     monkeypatch.setattr(fetch_dispatch, "resolve_login_site_code", lambda _session: "isolated-site")
-    result = _invoke(registry, context, "arrival_stats_tms", "arrive_list_read_page",
+    result = _invoke(registry, context, suffix, operation,
                      {"target_date": _DATE, "page_size": 200})
     assert result["items"] == [row]
     assert result["pagination_complete"] is True
 
 
 @pytest.mark.parametrize("width", [17, 19])
-def test_arrival_connector_rejects_changed_column_count(width):
+@pytest.mark.parametrize("builder,suffix,operation", [
+    (build_arrival_connectors, "arrival_stats_tms", "arrive_list_read_page"),
+    (build_list_connectors, "arrive_list_ronghui", "read_page"),
+])
+def test_arrival_connector_rejects_changed_column_count(width, builder, suffix, operation):
     def page(*_args):
         return {"items": [["synthetic"] * width], "returned": 1, "total": 1, "total_authoritative": True}
-    registry, context, _row, _calls, writes = _setup(arrive_list_read_page=page)
+    registry, context, _row, _calls, writes = _setup(connector_builder=builder, arrive_list_read_page=page)
     with pytest.raises(ConnectorInvocationError) as failure:
-        _invoke(registry, context, "arrival_stats_tms", "arrive_list_read_page",
+        _invoke(registry, context, suffix, operation,
                 {"target_date": _DATE, "page_size": 200})
     assert failure.value.code == "BROKER_SOURCE_INVALID"
     assert writes == []

@@ -4,7 +4,7 @@ type: 开发与迁移手册
 tags: [ZIP 插件, service_v2, Host API, 独立插件]
 related: [identity_and_unified_chat.md, architecture_direct_invocation.md, ../agent/service_v2_plugins/README.md, ../agent/docs/service_v2_developer_tooling.md]
 status: active
-updated: 2026-09-11
+updated: 2026-09-12
 ---
 
 # 独立插件与宿主接口
@@ -76,6 +76,10 @@ READY 要求目标当前代的新鲜成功 Direct Invocation 和该业务的实�
 
 TESTING 验证失败时可撤回迁移，保留原实例启停和入口、停用目标，并保留失败记录。撤回仍核验配置快照、活跃调用及未知写；管理员卸载撤回的目标、安装修复包为新目标后可显式开始新的迁移，ROLLED_BACK 历史不阻止重试，已 COMPLETED 的源实例仍不能重复迁移。原迁移的源/目标组合保持唯一，不能重写它的验证快照。
 
+准备阶段尚未生成可运行版本时，也能撤回 TESTING；撤回不要求伪造成功结果。入口移交先撤销原持有者的进程路由，再同步新持有者，避免旧目标继续占用飞书命令。准备失败留下的未应用注册记录只允许按原代次清理，不能用于激活。
+
+完成切换的源实例不再属于启动自动安装或旧版健康检查的必需集合，卸载后重启不会重新创建。原 018 发布回执永久保留；`agent/scripts/automation_project_release_migrations.py` 根据当前迁移事件、入口快照及源实例停用状态确定后续发布的检查范围，原首次发布的数量和策略校验不变。
+
 切换前后保持原实例启停意图；原来停用的插件迁移后仍停用。正式业务没有只读预览时，不能伪造一次成功调用来满足 READY，也不能用未经授权的生产写入验证升级。
 
 迁移和回退测试见 `tests/test_v2_migration_lifecycle_mysql.py`、`tests/test_plugin_migration_direct_mysql.py`；字段变化、局部决策变化的冻结宿主演练见 `tests/test_v2_maintenance_mysql.py`。这些测试使用隔离 MySQL、真实插件 ZIP/子进程和隔离外部接口，不连接生产业务库。
@@ -84,4 +88,4 @@ TESTING 验证失败时可撤回迁移，保留原实例启停和入口、停用
 
 插件自身入口按精确实例、包和已提交代次调用；安装其他版本或重复实例不能阻断该入口。目录中的跨插件依赖只计算已启用、已配置且提交稳定的实例，待配置和停用实例不占可调用路由。同一服务存在多个可调用实例时，裸服务名依赖仍明确拒绝，不按安装顺序或版本高低选择。真实 MySQL 安装新版 ZIP 后继续执行原统计实例的回归见 `tests/test_arrival_v2_configuration_mysql.py`。
 
-迁移核验不把 TESTING 开始前已结束的原实例未知写当成本轮执行；历史记录及结果原样保留。任何仍活跃的调用、目标实例的未知写，以及本轮验证期间原实例产生的未知写仍阻止切换和撤回。统计 Connector 将现有读取适配器的固定列数组无损映射为字段对象，字段顺序只来自共享合同；缺列、多列仍报错，不新增平台字段或业务默认值。
+迁移核验不把 TESTING 开始前已结束的原实例未知写当成本轮执行；历史记录及结果原样保留。任何仍活跃的调用、目标实例的未知写，以及本轮验证期间原实例产生的未知写仍阻止切换和撤回。统计与到货清单 Connector 共用 `list_connectors_v2.encode_arrive_page_result`，将现有读取适配器的固定列数组无损映射为字段对象；缺列、多列仍报错，不新增平台字段或业务默认值。

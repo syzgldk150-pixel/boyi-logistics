@@ -2069,7 +2069,7 @@ class AutomationPluginManagementService:
     ) -> dict[str, Any]:
         role = self._require_console_actor(actor, super_admin=True)
         self._require_mutation_allowed()
-        return self._migrations.cutover(
+        result = self._migrations.cutover(
             migration_pair_id,
             expected_record_version=expected_record_version,
             request_id=request_id,
@@ -2077,6 +2077,7 @@ class AutomationPluginManagementService:
             actor_role=role,
             reason=reason,
         )
+        return self._reconcile_migration_ownership(result)
 
     def rollback_migration_pair(
         self,
@@ -2089,7 +2090,7 @@ class AutomationPluginManagementService:
     ) -> dict[str, Any]:
         role = self._require_console_actor(actor, super_admin=True)
         self._require_mutation_allowed()
-        return self._migrations.rollback(
+        result = self._migrations.rollback(
             migration_pair_id,
             expected_record_version=expected_record_version,
             request_id=request_id,
@@ -2097,6 +2098,15 @@ class AutomationPluginManagementService:
             actor_role=role,
             reason=reason,
         )
+        return self._reconcile_migration_ownership(result)
+
+    def _reconcile_migration_ownership(self, result: Mapping[str, Any]) -> dict[str, Any]:
+        """Withdraw the former owner's routes before activating its replacement."""
+        entries = [self._catalog.require(str(result[key]))
+                   for key in ("source_automation_id", "target_automation_id")]
+        for entry in sorted(entries, key=lambda item: (item.enabled, item.automation_id)):
+            self._targets.reconcile_project(entry.automation_id)
+        return dict(result)
 
     def complete_migration_pair(
         self,

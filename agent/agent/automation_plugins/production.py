@@ -1341,27 +1341,20 @@ class ProductionRuntimeEffectDriver:
 
         if snapshot.runtime_model is not PluginRuntimeModel.SERVICE_V2:
             return
+        # Failed preparation can leave exact, unapplied journal rows. Removing
+        # that generation is safe; activation still requires APPLIED rows.
+        allowed_states = frozenset({RuntimeEffectState.PLANNED, RuntimeEffectState.APPLIED,
+                                    RuntimeEffectState.DISPOSING, RuntimeEffectState.DISPOSED})
         self._validated_generation_service_materials(
             snapshot=snapshot,
             effects=effects,
-            allowed_states=frozenset(
-                {
-                    RuntimeEffectState.APPLIED,
-                    RuntimeEffectState.DISPOSING,
-                    RuntimeEffectState.DISPOSED,
-                }
-            ),
+            allowed_states=allowed_states,
         )
         self._validated_generation_contribution_materials(
             snapshot=snapshot,
             effects=effects,
-            allowed_states=frozenset(
-                {
-                    RuntimeEffectState.APPLIED,
-                    RuntimeEffectState.DISPOSING,
-                    RuntimeEffectState.DISPOSED,
-                }
-            ),
+            allowed_states=allowed_states,
+            require_exact=False,  # Preparation may stop before all rows exist.
         )
         self._apply_projection_transition(
             operation="withdraw",
@@ -2433,11 +2426,13 @@ class ProductionAutomationPluginRuntime:
         return tuple(self.target_service.reconcile_all())
 
     def health(self) -> dict[str, Any]:
-        catalog = self.catalog.production_health(tuple(self.required_first_party_ids))
+        required_ids = self.required_first_party_ids - set(
+            self.repository.superseded_first_party_ids(tuple(self.required_first_party_ids)))
+        catalog = self.catalog.production_health(tuple(required_ids))
         ignored_automation_ids = self.catalog.excluded_persisted_automation_ids()
         generations: RuntimeGenerationHealth = runtime_generation_health(
             self.runtime_repository,
-            expected_automation_ids=self.required_first_party_ids,
+            expected_automation_ids=required_ids,
             ignored_automation_ids=ignored_automation_ids,
         )
         sandbox = self._sandbox_canary
@@ -2630,6 +2625,7 @@ def build_production_automation_plugin_runtime(
             expected_release_sha=release.verified_release_sha,
             package_provider=provider,
             package_materializer=provider,
+            superseded_automation_ids=repository.superseded_first_party_ids(tuple(release_first_party_automation_ids())),
         )
 
     bootstrap = _bootstrap_first_party()
