@@ -10,6 +10,7 @@ from console.services.automation_project_contributions import (
     AUTOMATION_PLUGIN_ACTIVE_CONTRIBUTION_FIELDS as _ACTIVE_CONTRIBUTION_FIELDS,
     AUTOMATION_PLUGIN_CONTRIBUTION_PROJECTION_STATES as _CONTRIBUTION_PROJECTION_STATES,
     AUTOMATION_PLUGIN_V2_ENTRYPOINT_ID_RE as AUTOMATION_PLUGIN_V2_ENTRYPOINT_ID_RE,
+    AUTOMATION_PLUGIN_V2_ENTRYPOINT_KINDS,
     normalize_plugin_active_contributions as _normalize_plugin_active_contributions,
 )
 from console.services.automation_resource_catalog import (
@@ -182,9 +183,6 @@ AUTOMATION_PLUGIN_MIGRATION_RESERVED_BUSINESS_KEY_FIELDS = frozenset(
     {"__host_business_date"}
 )
 AUTOMATION_PLUGIN_ENTRYPOINTS = frozenset({"scheduler", "console", "feishu", "webhook"})
-AUTOMATION_PLUGIN_V2_ENTRYPOINT_KINDS = frozenset(
-    {"console", "scheduler", "webhook", "feishu", "events", "module_slots"}
-)
 AUTOMATION_PLUGIN_CONTRIBUTION_PROJECTION_STATES = (
     _CONTRIBUTION_PROJECTION_STATES
 )
