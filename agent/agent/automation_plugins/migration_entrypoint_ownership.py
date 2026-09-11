@@ -204,11 +204,6 @@ def migration_target_entrypoints_and_ownership(
                 code="PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE",
             )
         consumed_route_bindings.add(role)
-    if feishu_enabled and "feishu_route" not in consumed_route_bindings:
-        raise PluginConflictError(
-            "migration source Feishu route binding is missing",
-            code="PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE",
-        )
     source_tool_name = None
     source_route_key = None
     source_feishu_resource_id = None
@@ -216,9 +211,16 @@ def migration_target_entrypoints_and_ownership(
     commands: tuple[str, ...] = ()
     if feishu_enabled:
         source_tool_name, source_route_key = _source_fixed_feishu_identity(source)
-        source_feishu_resource_id = str(
-            source_resource_bindings["feishu_route"]
-        )
+        # Fixed commands are transport identities defined by the reviewed
+        # source template, not tenant-selected business resources. Historical
+        # settings can omit this redundant route binding. An explicit binding
+        # must still match exactly (checked above); never infer sheet/accounts.
+        source_feishu_resource_id = source_template.resource_bindings.get("feishu_route")
+        if not isinstance(source_feishu_resource_id, str) or not source_feishu_resource_id:
+            raise PluginConflictError(
+                "migration source has no reviewed Feishu transport identity",
+                code="PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE",
+            )
         feishu_id = _single_target_contribution(target, "feishu")
         commands = _target_feishu_commands(
             target,

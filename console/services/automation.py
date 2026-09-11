@@ -1869,6 +1869,7 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
                 "invocation_phase": invocation_phase,
                 "status": status,
                 "collector_navigation": run.get("collector_navigation"),
+                "write_receipts": run.get("write_receipts"),
                 "execution_phase": execution_phase,
                 "stage_code": stage_code,
                 "stage_description": stage_description,
