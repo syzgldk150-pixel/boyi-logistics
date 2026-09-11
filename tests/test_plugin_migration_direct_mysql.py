@@ -78,6 +78,39 @@ def test_cutover_counts_a_direct_call_before_its_generation_lease_exists(databas
             (call_id, uuid4().hex * 2, "a" * 64, str(uuid4()), target, str(uuid4())))
         for status in ("STARTING", "RUNNING", "CANCELLING", "CANCELLED"):
             cursor.execute("UPDATE automation_plugin_invocations SET status=%s WHERE invocation_id=%s", (status, call_id))
-            summary = AutomationPluginRepository._lock_migration_generation_leases(cursor, source_id="isolated-source", target_id=target)
+            summary = AutomationPluginRepository._lock_migration_generation_leases(cursor, source_id="isolated-source", target_id=target,
+                                                                                   testing_started_at=datetime(2026, 9, 11))
             assert summary["active"] == (0 if status == "CANCELLED" else 1)
+        connection.rollback()
+
+
+@pytest.mark.parametrize("side,when,outcome,active,unknown", [
+    ("source", -1, "WRITE_OUTCOME_UNKNOWN", 0, 0),
+    ("source", 0, "WRITE_OUTCOME_UNKNOWN", 0, 1),
+    ("source", 1, "WRITE_OUTCOME_UNKNOWN", 0, 1),
+    ("target", -1, "WRITE_OUTCOME_UNKNOWN", 0, 1),
+    ("source", -1, "RUNNING", 1, 0),
+    ("source", -1, "VERIFYING", 1, 0),
+    ("target", 1, "RUNNING", 1, 0),
+    ("target", 1, "FAILED_BEFORE_WRITE", 0, 0),
+])
+def test_migration_ignores_only_preexisting_terminal_source_history(database, side, when, outcome, active, unknown):
+    fixture, name = database
+    source, target = "source-" + uuid4().hex, "target-" + uuid4().hex
+    started = datetime(2026, 9, 11, 8)
+    with fixture._connection(name) as connection, connection.cursor() as cursor:
+        _seed_generation(connection, source)
+        _seed_generation(connection, target)
+        lease_id = str(uuid4())
+        cursor.execute("""INSERT INTO automation_project_generation_leases
+            (lease_id,automation_id,generation,lease_owner,runtime_metadata_json,runtime_metadata_sha256,
+             outcome,acquired_at,expires_at) VALUES(%s,%s,1,'isolated','{}',%s,%s,%s,%s)""",
+            (lease_id, source if side == "source" else target, "a" * 64, outcome,
+             started + timedelta(seconds=when), started + timedelta(minutes=1)))
+        summary = AutomationPluginRepository._lock_migration_generation_leases(cursor, source_id=source,
+            target_id=target, testing_started_at=started)
+        assert summary["active"] == active
+        assert summary["unknown"] == unknown
+        cursor.execute("SELECT outcome FROM automation_project_generation_leases WHERE lease_id=%s", (lease_id,))
+        assert cursor.fetchone()["outcome"] == outcome
         connection.rollback()

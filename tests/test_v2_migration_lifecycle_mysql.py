@@ -71,6 +71,19 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
                 request_id=str(uuid4()), reason="isolated release verification", actor=ACTOR)
             assert pair["state"] == "TESTING", pair
             assert pair["target_preparation_state"] == "PREPARED", pair
+            if finish == "withdraw":
+                # A terminal source-side historical failure is not an action
+                # by this validation attempt; do not rewrite its outcome.
+                with host.repository.unit_of_work() as uow, uow.connection.cursor() as cursor:
+                    cursor.execute("""INSERT INTO automation_project_generation_leases
+                        (lease_id,automation_id,generation,lease_owner,runtime_metadata_json,
+                         runtime_metadata_sha256,outcome,acquired_at,expires_at)
+                        SELECT %s,%s,%s,'isolated-history','{}',%s,'WRITE_OUTCOME_UNKNOWN',
+                               created_at - INTERVAL 1 DAY,created_at - INTERVAL 1 DAY
+                        FROM automation_plugin_migration_pair_events
+                        WHERE migration_pair_id=%s AND to_state='TESTING'""",
+                        (str(uuid4()), SOURCE, host.catalog.require(SOURCE).committed_generation, "a" * 64, pair_id))
+                    uow.commit()
             def transition(method):
                 return method(pair_id, expected_record_version=pair["record_version"], request_id=str(uuid4()),
                     reason="isolated release verification", actor=ACTOR)

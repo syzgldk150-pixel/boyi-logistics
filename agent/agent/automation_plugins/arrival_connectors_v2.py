@@ -8,7 +8,7 @@ from __future__ import annotations
 
 
 from agent.automation_plugins.connector_registry import (
-    ConnectorBindingKind, ConnectorDescriptor, ConnectorOperation,
+    ConnectorBindingKind, ConnectorDescriptor, ConnectorInvocationError, ConnectorOperation,
 )
 from agent.automation_plugins.reviewed_connectors import reviewed_connector_handler
 from agent.automation_plugins.connector_compatibility import ConnectorRequirementContract
@@ -26,6 +26,23 @@ from agent.automation_plugins.connector_schemas import (
 
 _ACCOUNT_ROLE = "arrival_stats_tms"
 _TOOL = "sync_arrival_stats"
+
+
+def _arrive_page_result(result):
+    """Name the reviewed adapter's exact columns; leave business rules in ZIP."""
+    items = result.get("items")
+    if not isinstance(items, list):
+        raise ConnectorInvocationError("Arrival page rows are invalid", code="BROKER_SOURCE_INVALID")
+    rows = []
+    for row in items:
+        if isinstance(row, (list, tuple)):
+            if len(row) != len(_ARRIVE_FIELDS):
+                raise ConnectorInvocationError("Arrival page column count changed", code="BROKER_SOURCE_INVALID")
+            row = dict(zip(_ARRIVE_FIELDS, row, strict=True))
+        rows.append(row)
+    return {**result, "items": rows}
+
+
 def _records_input(fields, *, optional=(), slot=False):
     properties = {"records": _array(_record(fields, optional=optional)), "target_date": _DATE}
     if slot:
@@ -46,7 +63,8 @@ def _handler(reviewed, *, operation, action, role):
     return reviewed_connector_handler(reviewed, tool=_TOOL, operation=operation, action=action, role=role,
         account=ConnectorRequirementContract(service="connector.boyi.arrival_stats_tms@1",
             account_role=_ACCOUNT_ROLE, allowed_systems=("ronghui",), required=True),
-        resource=resource, account_alias="account_id")
+        resource=resource, account_alias="account_id",
+        encode_result=_arrive_page_result if action == "ronghui.arrive_list.read_page" else None)
 
 
 def build_arrival_connectors(reviewed) -> tuple[ConnectorDescriptor, ...]:
@@ -114,4 +132,3 @@ def build_arrival_connectors(reviewed) -> tuple[ConnectorDescriptor, ...]:
             _records_input(fields, optional=() if suffix == "pending" else _ARRIVAL_STATS_V1_OPTIONAL_EMPTY_FIELDS, slot=not archive),
             result, operation="network.request", role=role)], kind=ConnectorBindingKind.RESOURCE, role=role))
     return tuple(descriptors)
-
