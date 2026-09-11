@@ -51,6 +51,7 @@ from agent.automation_plugins.models import (
 from agent.automation_plugins.ports import PluginStoragePort
 from agent.orchestration.models import Actor, ActorType
 from shared.plugin_management import management_for, settings_mode
+from shared.redaction import redact_text
 from shared.orchestration_repository_support import (
     ConcurrentUpdateError,
     IdempotencyConflict,
@@ -114,7 +115,7 @@ class MigrationPreparationPersistedError(PluginConflictError):
 
     code = "PLUGIN_MIGRATION_PREPARATION_PENDING"
 
-    def __init__(self, *, migration_pair_id: str, phase: str) -> None:
+    def __init__(self, *, migration_pair_id: str, phase: str, cause: Exception | None = None) -> None:
         super().__init__(
             "migration preparation is durable but target copy is incomplete; "
             "retry the same request_id",
@@ -122,6 +123,10 @@ class MigrationPreparationPersistedError(PluginConflictError):
         )
         self.migration_pair_id = migration_pair_id
         self.phase = phase
+        self.blocking_reason = {
+            "code": str(getattr(cause, "code", type(cause).__name__)),
+            "message": redact_text(cause)[:400] if cause is not None else "迁移准备尚未完成",
+        }
 
 
 def _iso_datetime(value: object) -> str:
@@ -1971,6 +1976,7 @@ class AutomationPluginManagementService:
             raise MigrationPreparationPersistedError(
                 migration_pair_id=migration_pair_id,
                 phase="TARGET_COPY",
+                cause=exc,
             ) from exc
         try:
             result = self._migrations.finalize_pair_preparation(
@@ -1984,6 +1990,7 @@ class AutomationPluginManagementService:
             raise MigrationPreparationPersistedError(
                 migration_pair_id=migration_pair_id,
                 phase="FINALIZE_TESTING",
+                cause=exc,
             ) from exc
         # The pair is durable before target preparation begins, so the
         # generation-side scheduler gate can only materialize a disabled v2

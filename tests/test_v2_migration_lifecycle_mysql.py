@@ -25,7 +25,8 @@ SOURCE = "self_pickup_problem_upload"
 
 
 @pytest.mark.parametrize("enabled,finish", [(True, "rollback"), (False, "complete")])
-def test_installed_migration_transfers_only_after_verified_direct_call(database, tmp_path, monkeypatch, enabled, finish):
+@pytest.mark.parametrize("reconcile_before_config", [False, True])
+def test_installed_migration_transfers_only_after_verified_direct_call(database, tmp_path, monkeypatch, enabled, finish, reconcile_before_config):
     fixture, name = database
     monkeypatch.setenv("AGENT_DB_NAME", name)
     def connect():
@@ -61,6 +62,8 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
                 transport_package_sha256=sha256(archive).hexdigest(), actor=ACTOR,
                 raw_intent=json.dumps({"instance_name": "隔离升级副本", "permissions_confirmed": True}))
             target = installed["automation_id"]
+            if reconcile_before_config:
+                host.targets.reconcile_all()
             pair_id = str(uuid4())
             pair = host.management.create_migration_pair(migration_pair_id=pair_id, source_automation_id=SOURCE,
                 target_automation_id=target, business_key_fields=("include_daxiang_s_self_pickup",), business_key_namespace="isolated-upgrade",

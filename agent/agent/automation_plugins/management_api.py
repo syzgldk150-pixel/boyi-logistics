@@ -905,6 +905,7 @@ def create_automation_plugin_management_router(
                     "migration_preparation_committed": True,
                     "retry_with_same_request_id": True,
                     "preparation_phase": exc.phase,
+                    "blocking_reason": exc.blocking_reason,
                 }
             )
             refreshed = _refresh_after_committed_migration(

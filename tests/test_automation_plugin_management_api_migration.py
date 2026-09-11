@@ -130,6 +130,7 @@ def test_migration_create_copy_failure_refreshes_scheduler_after_preparing_hold(
             raise MigrationPreparationPersistedError(
                 migration_pair_id=kwargs["migration_pair_id"],
                 phase="TARGET_COPY",
+                cause=ValueError("config field is invalid; password=test-placeholder"),
             )
 
     service = _PreparingService()
@@ -157,6 +158,8 @@ def test_migration_create_copy_failure_refreshes_scheduler_after_preparing_hold(
     assert data["migration_preparation_committed"] is True
     assert data["retry_with_same_request_id"] is True
     assert data["scheduler_refresh_completed"] is True
+    assert "config field is invalid" in data["blocking_reason"]["message"]
+    assert "test-placeholder" not in data["blocking_reason"]["message"]
     assert removed_jobs == ["stale-target-job"]
     assert "不要创建新的迁移对" in response.json()["message"]
 

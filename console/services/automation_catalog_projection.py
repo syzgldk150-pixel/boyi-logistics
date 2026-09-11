@@ -1986,6 +1986,10 @@ def normalize_automation_plugin_catalog(
             and reconcile_state == "STABLE"
             and runtime_model != AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL
         )
+        uninstall_allowed = lifecycle_actions_allowed or (
+            project_state == "INSTALLED" and not enabled and not configured and not migration
+            and runtime_model != AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL
+        )
         disable_allowed = bool(enabled) and project_state not in {
             "UPGRADING",
             "UNINSTALLING",
@@ -2051,7 +2055,8 @@ def normalize_automation_plugin_catalog(
                 "project_state": project_state,
                 "reconcile_state": reconcile_state,
                 "lifecycle_actions_allowed": lifecycle_actions_allowed,
-                "menu_actions_allowed": lifecycle_actions_allowed or disable_allowed,
+                "uninstall_allowed": uninstall_allowed,
+                "menu_actions_allowed": uninstall_allowed or disable_allowed,
                 "enable_allowed": (
                     not enabled and lifecycle_actions_allowed and not blocked
                 ),
