@@ -3116,7 +3116,11 @@ body .line-haul-tool-btn {
   .harness-welcome { margin-top: 30px; }
   .harness-welcome > p { max-width: 34ch; }
   .harness-message-body { max-width: 88%; }
-  .harness-composer-wrap { padding-inline: 2px; }
+  .harness-composer-wrap {
+    bottom: calc(var(--mobile-nav-h) + env(safe-area-inset-bottom));
+    padding-inline: 2px;
+  }
+  .harness-icon-button { min-width: 44px; min-height: 44px; }
   .harness-footnote { display: none; }
 }
 
