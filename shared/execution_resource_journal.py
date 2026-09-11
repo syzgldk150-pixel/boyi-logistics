@@ -6,6 +6,7 @@ import re
 from typing import Mapping
 
 from shared.orchestration_repository_support import _json_hash
+from shared.plugin_json import plugin_json_digest
 
 EXECUTION_RESOURCE_KEYS = ContextVar('execution_resource_keys', default=())
 
@@ -90,7 +91,7 @@ def historical_receipt_execution_scope(row, keys):
         return keys, "LEASE_METADATA_UNAVAILABLE"
     if not target:
         return keys, "TARGET_LOCATOR_UNAVAILABLE"
-    if _json_hash(metadata) != row.get("runtime_metadata_sha256"):
+    if plugin_json_digest(metadata) != row.get("runtime_metadata_sha256"):
         return keys, "LEASE_METADATA_DIGEST_MISMATCH"
     if _json_hash(target) != row.get("target_ref_sha256"):
         return keys, "TARGET_LOCATOR_DIGEST_MISMATCH"

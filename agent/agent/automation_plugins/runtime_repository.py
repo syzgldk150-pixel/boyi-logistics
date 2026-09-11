@@ -49,7 +49,7 @@ from agent.automation_plugins.ports import RuntimeEffectPlan
 from shared.automation_plugin_generation_unknown_write_repository import (
     stabilize_project_after_archival_unknown,
 )
-from shared.redaction import redact_sensitive
+from shared.plugin_json import plugin_json_digest as _persisted_json_sha256
 from agent.automation_plugins.catalog_read_scope import catalog_read_scope, catalog_read_transaction, catalog_version_cache, catalog_row_cache
 
 
@@ -83,17 +83,6 @@ def _utc_datetime(value: object, field: str) -> datetime:
     if result.tzinfo is None:
         return result.replace(tzinfo=timezone.utc)
     return result.astimezone(timezone.utc)
-
-
-def _persisted_json_sha256(value: object) -> str:
-    serialized = json.dumps(
-        redact_sensitive(value),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return hashlib.sha256(serialized).hexdigest()
 
 
 def snapshot_to_row(snapshot: RuntimeGenerationSnapshot) -> dict[str, Any]:

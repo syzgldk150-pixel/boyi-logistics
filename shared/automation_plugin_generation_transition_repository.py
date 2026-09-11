@@ -7,10 +7,10 @@ repository continues to expose these methods through its generation mixin.
 
 from __future__ import annotations
 
-import hashlib
 import json
 
 from shared import automation_plugin_repository as _repository
+from shared.plugin_json import plugin_json_digest as _exact_json_hash
 from shared.automation_plugin_generation_runtime_repository import (
     migration_owned_scheduler_enabled as _migration_owned_scheduler_enabled,
     scheduler_contribution_binding as _scheduler_contribution_binding,
@@ -35,17 +35,6 @@ _schedule_expressions = _repository._schedule_expressions
 _stable_schedule_task_id = _repository._stable_schedule_task_id
 _validated_generation_row = _repository._validated_generation_row
 uuid = _repository.uuid
-
-
-def _exact_json_hash(value: Any) -> str:
-    serialized = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return hashlib.sha256(serialized).hexdigest()
 
 
 def _transition_token(value: Any) -> str:
@@ -777,7 +766,7 @@ def _validate_installed_target_version(
     if runtime_model == "SERVICE_V2":
         if not callable(service_v2_contract_projector):
             raise OrchestrationPersistenceError("service-v2 signed contract projector is required")
-        if _json_hash(manifest) != str(version.get("manifest_sha256") or ""):
+        if _exact_json_hash(manifest) != str(version.get("manifest_sha256") or ""):
             raise ConcurrentUpdateError("installed service-v2 manifest digest changed")
         # The Agent composition supplies its single manifest compiler. Shared
         # only compares its result and never imports an Agent implementation.
@@ -787,16 +776,16 @@ def _validate_installed_target_version(
             "account_roles", "resource_roles",
         }:
             raise OrchestrationPersistenceError("service-v2 signed contract projection is not closed")
-    action_contract_hash = _json_hash(execution_metadata.get("action_contract"))
+    action_contract_hash = _exact_json_hash(execution_metadata.get("action_contract"))
     if action_contract_hash != str(
         version.get("tool_contract_sha256") or ""
-    ) or action_contract_hash != _json_hash(manifest.get("tool_contract")):
+    ) or action_contract_hash != _exact_json_hash(manifest.get("tool_contract")):
         raise ConcurrentUpdateError(
             "runtime target action contract differs from signed package"
         )
-    governance_anchor_hash = _json_hash(manifest.get("governance_anchor"))
+    governance_anchor_hash = _exact_json_hash(manifest.get("governance_anchor"))
     if (
-        _json_hash(execution_metadata.get("governance_anchor"))
+        _exact_json_hash(execution_metadata.get("governance_anchor"))
         != governance_anchor_hash
         or str(snapshot.get("governance_anchor_sha256") or "")
         != governance_anchor_hash
@@ -811,9 +800,9 @@ def _validate_installed_target_version(
         "resource_roles": manifest.get("resource_roles"),
         "install_metadata": version.get("install_root_metadata_json"),
     }
-    runtime_descriptor_hash = _json_hash(expected_runtime_descriptor)
+    runtime_descriptor_hash = _exact_json_hash(expected_runtime_descriptor)
     if (
-        _json_hash(execution_metadata.get("runtime_descriptor"))
+        _exact_json_hash(execution_metadata.get("runtime_descriptor"))
         != runtime_descriptor_hash
         or str(snapshot.get("runtime_descriptor_sha256") or "")
         != runtime_descriptor_hash

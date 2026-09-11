@@ -8,6 +8,7 @@ no filesystem operations and never stores account credentials or sessions.
 from __future__ import annotations
 
 from shared.plugin_generation_contract import validate_execution_envelope
+from shared.plugin_json import plugin_json, plugin_json_digest
 
 import base64
 import binascii
@@ -58,7 +59,7 @@ def _manifest_json(value: Any) -> str:
     """Preserve verified package definitions; audit redaction is a separate path."""
     if not isinstance(value, Mapping):
         raise OrchestrationPersistenceError("plugin manifest must be an object")
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return plugin_json(value)
 
 
 _PROJECT_STATES = frozenset(
@@ -700,7 +701,7 @@ def _generation_execution_metadata(
     _reject_sensitive_generation_metadata(normalized)
     # Round-trip through canonical JSON validation; no custom Python objects,
     # datetimes or plugin-controlled byte payloads may enter the snapshot.
-    _json_hash(normalized)
+    plugin_json_digest(normalized)
     return normalized
 
 
@@ -721,7 +722,7 @@ def _validated_generation_row(value: Any) -> dict[str, Any]:
     runtime_model, plugin_api = _runtime_contract(snapshot)
     if (
         int(snapshot["generation"]) != generation
-        or _json_hash(snapshot) != str(row.get("snapshot_sha256") or "")
+        or plugin_json_digest(snapshot) != str(row.get("snapshot_sha256") or "")
         or str(snapshot["plugin_id"]) != str(row.get("plugin_id") or "")
         or str(snapshot["plugin_version"])
         != str(row.get("plugin_version") or "")
@@ -2313,6 +2314,8 @@ class AutomationPluginRepository(
         ):
             raise ValueError("project configuration payloads must be objects")
         witness = _configuration_contract_witness(contract_witness)
+        _reject_sensitive_generation_metadata(config, "config")
+        _reject_sensitive_generation_metadata(compiled_invocations, "compiled_invocations")
         runtime_model = witness["runtime_model"]
         entrypoints = tuple(
             sorted({_required_text(item, "entrypoint") for item in enabled_entrypoints})
@@ -2447,14 +2450,14 @@ class AutomationPluginRepository(
                     project.get("allowed_entrypoints_sha256"),
                     "allowed_entrypoints_sha256",
                 )
-                != _json_hash(witness["allowed_entrypoints"])
+                != plugin_json_digest(witness["allowed_entrypoints"])
                 or _sha256(
                     project.get("invocation_contracts_sha256"),
                     "invocation_contracts_sha256",
                 )
-                != _json_hash(witness["invocation_contracts"])
+                != plugin_json_digest(witness["invocation_contracts"])
                 or _sha256(project.get("scheduling_sha256"), "scheduling_sha256")
-                != _json_hash(witness["scheduling"])
+                != plugin_json_digest(witness["scheduling"])
             ):
                 raise OrchestrationPersistenceError(
                     "persisted plugin contract does not match configuration witness"
@@ -2818,8 +2821,8 @@ class AutomationPluginRepository(
                 WHERE automation_id=%s AND config_version=%s
                 """,
                 (
-                    _json_param(config, {}),
-                    _json_hash(config),
+                    plugin_json(config),
+                    plugin_json_digest(config),
                     _json_param(account_bindings, {}),
                     _json_hash(account_bindings),
                     _json_param(resource_bindings, {}),
@@ -2828,8 +2831,8 @@ class AutomationPluginRepository(
                     _json_hash(list(entrypoints)),
                     _json_param(normalized_schedule, {}),
                     _json_hash(normalized_schedule),
-                    _json_param(normalized_compiled, {}),
-                    _json_hash(normalized_compiled),
+                    plugin_json(normalized_compiled),
+                    plugin_json_digest(normalized_compiled),
                     device_id,
                     device_binding_sha256,
                     next_version,
