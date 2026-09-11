@@ -8,6 +8,9 @@ from typing import Any
 
 
 AUTOMATION_PLUGIN_V2_ENTRYPOINT_ID_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
+AUTOMATION_PLUGIN_V2_ENTRYPOINT_KINDS = frozenset(
+    {"console", "scheduler", "webhook", "feishu", "events", "harness", "module_slots"}
+)
 AUTOMATION_PLUGIN_CONTRIBUTION_PROJECTION_STATES = frozenset(
     {"ACTIVE", "STALE", "INACTIVE"}
 )
@@ -72,15 +75,7 @@ def normalize_plugin_active_contributions(
         backend_status = str(raw.get("backend_status") or "").strip().upper()
         if (
             not AUTOMATION_PLUGIN_V2_ENTRYPOINT_ID_RE.fullmatch(contribution_id)
-            or contribution_kind
-            not in {
-                "console",
-                "scheduler",
-                "webhook",
-                "feishu",
-                "events",
-                "module_slots",
-            }
+            or contribution_kind not in AUTOMATION_PLUGIN_V2_ENTRYPOINT_KINDS
             or isinstance(generation, bool)
             or not isinstance(generation, int)
             or generation < 1

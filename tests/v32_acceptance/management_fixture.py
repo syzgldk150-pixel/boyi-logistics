@@ -134,7 +134,8 @@ class EmptyIsolatedAccountDirectory:
 class ManagementFixture:
     def __init__(self, *, connection_factory=None, runtime_root=None, account_manager=None,
                  broker_handlers=None, resource_provider=None, upload_signature_verifier=None,
-                 enable_directory_faults=True, migration_account_bindings=None, connector_registry=None):
+                 enable_directory_faults=True, migration_account_bindings=None, connector_registry=None,
+                 contribution_backend_status=None):
         self.startup_id = str(uuid4())
         if not os.environ.get("AGENT_DB_NAME", "").endswith("_test") or os.environ.get("AGENT_DB_HOST") != "127.0.0.1":
             raise RuntimeError("explicit isolated loopback test database required")
@@ -164,6 +165,8 @@ class ManagementFixture:
             MySQLAutomationProjectConfigurationReadAdapter(self.repository),
             allowed_execution_platforms=("server",),
             migration_pair_provider=self.packages.get_catalog_migration_pair,
+            connector_registry=connector_registry,
+            contribution_backend_status=contribution_backend_status,
         )
         self.management_repository = MySQLAutomationPluginManagementRepository(self.repository)
         self.core_catalog = ToolRegistry()

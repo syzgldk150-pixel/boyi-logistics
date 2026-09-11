@@ -6,6 +6,8 @@ import time
 from uuid import uuid4
 
 from service_v2_plugins._shared.build_zip import build_plugin_zip
+from console.services.automation_catalog_projection import normalize_automation_plugin_catalog
+from agent.automation_plugins.service_v2_projection import _contribution_backend
 from tests.direct_invocation_fixture import DirectFixture
 from tests.test_arrival_connectors_v2 import _setup
 from tests.test_v2_maintenance_mysql import ACTOR, database  # noqa: F401
@@ -36,7 +38,8 @@ def test_statistics_settings_survive_generation_and_catalog_round_trip(database,
     archive = build_plugin_zip(ROOT / "agent/service_v2_plugins/sync_arrival_stats_v2", tmp_path / "stats.zip").read_bytes()
     with ManagementFixture(connection_factory=connect, runtime_root=tmp_path / "host",
             account_manager=accounts, resource_provider=resources.get,
-            enable_directory_faults=False, connector_registry=registry) as host:
+            enable_directory_faults=False, connector_registry=registry,
+            contribution_backend_status=_contribution_backend) as host:
         installed = host.management.install_service_v2(archive, request_id=str(uuid4()),
             transport_package_sha256=sha256(archive).hexdigest(), actor=ACTOR,
             raw_intent=json.dumps({"instance_name": "隔离统计", "permissions_confirmed": True}))
@@ -61,6 +64,14 @@ def test_statistics_settings_survive_generation_and_catalog_round_trip(database,
         host.management.set_enabled(project, enabled=True, expected_record_version=final.record_version,
                                     request_id=str(uuid4()), actor=ACTOR)
         host.targets.reconcile_project(project)
+        projected = host.management.catalog_projection(actor=ACTOR, summary=True)
+        _packages, instances, _hidden = normalize_automation_plugin_catalog(projected)
+        visible = next(item for item in instances if item["automation_id"] == project)
+        diagnostic = {key: projected["instances"][0].get(key) for key in (
+            "entrypoints", "entrypoint_kinds", "enabled_entrypoints", "active_contributions", "contribution_projection_state")}
+        diagnostic["missing_requirements"] = visible["missing_requirements"]
+        assert visible["enabled_console_entrypoints"] == list(console_entries), json.dumps(diagnostic)
+        assert not visible["blocked"], json.dumps(diagnostic)
         with DirectFixture(host, directory=tmp_path / "ipc") as runtime:
             receipt = host.policy.invoke_console(project, request_id=str(uuid4()), actor=ACTOR)
             deadline = time.monotonic() + 20
