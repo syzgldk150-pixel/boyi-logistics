@@ -1354,7 +1354,8 @@
     }
 
     function selectionMeta(candidate, automationId) {
-      if (automationId === "self_pickup_problem_upload") {
+      const pluginId = form.closest("[data-automation-task-row]")?.dataset.pluginId;
+      if (automationId === "self_pickup_problem_upload" || pluginId === "self_pickup_problem_upload_v2") {
         return [
           candidate.source_name,
           candidate.destination_site,

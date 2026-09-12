@@ -875,7 +875,6 @@ class ServiceV2CapabilityProxy:
                 code="CAPABILITY_ARGUMENT_INVALID",
             )
         public_arguments = dict(service_arguments)
-        _canonical_json(public_arguments)
         raw_preflight_services = arguments.get("preflight_services", ())
         if (
             not isinstance(raw_preflight_services, (list, tuple))
@@ -958,6 +957,11 @@ class ServiceV2CapabilityProxy:
                     code="CAPABILITY_UNAVAILABLE",
                 )
             provider = registry.require_operation(service, operation)
+        # Managed storage and Provider calls keep their original document cap.
+        # Reviewed Connectors own explicit per-operation page/snapshot limits;
+        # applying the storage cap here would reject already-approved results.
+        if not is_connector:
+            _canonical_json(public_arguments)
         try:
             effect = provider.effect
         except (TypeError, ValueError, AttributeError) as exc:
@@ -1072,7 +1076,8 @@ class ServiceV2CapabilityProxy:
                 code="SERVICE_PROVIDER_RESULT_INVALID",
             )
         public_result = dict(result)
-        _canonical_json(public_result)
+        if not is_connector:
+            _canonical_json(public_result)
         return ServiceInvocationResult(public_result, service=service, operation=operation, effect=effect.value)
 
 

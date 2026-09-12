@@ -111,6 +111,7 @@ def test_real_arrive_list_migration_consumes_saved_formal_mode(database, tmp_pat
                                            (True, "complete_without_route"),
                                            (True, "complete_after_stopped_failure"),
                                            (True, "withdraw_reuse"),
+                                           (True, "withdraw_source_changed"),
                                            (True, "complete_cst"), (False, "complete_west")])
 @pytest.mark.parametrize("reconcile_before_config", [False, True])
 def test_installed_migration_transfers_only_after_verified_direct_call(database, tmp_path, monkeypatch, enabled, finish, reconcile_before_config):
@@ -184,6 +185,20 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
                         (failed_lease, target, generation, failed_call, "a" * 64))
                     uow.commit()
             if finish.startswith("withdraw"):
+                if finish == "withdraw_source_changed":
+                    # Emulate a core/bootstrap update of the still-owned V1
+                    # source through its real configuration/reconcile layer.
+                    saved = host.configuration.read(SOURCE)
+                    host.configuration.save(SOURCE,
+                        config={"include_daxiang_s_self_pickup": False},
+                        account_bindings=saved.account_bindings, resource_bindings=saved.resource_bindings,
+                        enabled_entrypoints=saved.enabled_entrypoints, schedule=saved.schedule, device_id=None,
+                        request_id=str(uuid4()), expected_project_configuration_version=saved.config_version,
+                        actor_id=ACTOR.actor_id, actor_role="super_admin")
+                    with host.repository.unit_of_work() as uow, uow.connection.cursor() as cursor:
+                        cursor.execute("UPDATE automation_projects SET enabled=FALSE,state='DISABLED' WHERE automation_id=%s", (SOURCE,))
+                        uow.commit()
+                    host.targets.reconcile_project(SOURCE)
                 # A terminal source-side historical failure is not an action
                 # by this validation attempt; do not rewrite its outcome.
                 with host.repository.unit_of_work() as uow, uow.connection.cursor() as cursor:
@@ -206,8 +221,11 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
                 # A failed validation must be withdrawable without inventing a
                 # successful execution or changing the source's saved intent.
                 pair = transition(host.management.rollback_migration_pair)
+                if finish == "withdraw_source_changed":
+                    assert host.configuration.read(SOURCE).config["include_daxiang_s_self_pickup"] is False
+                    assert host.catalog.require(SOURCE).enabled is False
                 assert pair["state"] == "ROLLED_BACK"
-                assert host.catalog.require(SOURCE).enabled is enabled
+                assert host.catalog.require(SOURCE).enabled is (False if finish == "withdraw_source_changed" else enabled)
                 assert host.catalog.require(target).enabled is False
                 assert host.packages.get_active_plugin_migration_pair_for_automation(target) is None
                 assert host.packages.source_project_migration_uninstall_allowed(SOURCE) is False
@@ -262,6 +280,9 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
                     request_id=str(uuid4()), reason="retry validation after withdrawal", actor=ACTOR)
                 assert replacement["state"] == "TESTING"
                 assert replacement["target_preparation_state"] == "PREPARED", (replacement, host.targets.reconciliation_failures())
+                if finish == "withdraw_source_changed":
+                    enabled = False
+                    assert host.configuration.read(fresh["automation_id"]).config["include_daxiang_s_self_pickup"] is False
                 authoritative = host.packages.get_authoritative_plugin_migration_pair_for_automation(SOURCE)
                 assert authoritative["migration_pair_id"] == replacement["migration_pair_id"]
                 pair = replacement
@@ -279,7 +300,7 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
                         break
                     time.sleep(.02)
                 assert result["status"] == "COMPLETED", (result, runtime.broker_errors)
-                assert result["result"]["data"]["candidate_count"] == 1
+                assert result["result"]["data"]["candidate_count"] == (0 if finish == "withdraw_source_changed" else 1)
                 assert not any(row.get("action") == "create" for row in supplier.requests)
             pair = transition(host.management.mark_migration_ready)
             assert pair["state"] == "READY", pair

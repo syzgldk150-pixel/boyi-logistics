@@ -102,3 +102,9 @@ PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m pytest -q tests/test_ident
 Console 的插件目录识别包含 `harness` 在内的现行入口类型，避免同包声明 AI 入口时连带拒绝手动入口。运行按钮仍只选择当前已提交、已激活的 `console` 入口，不能把 AI 入口当作手动调用。真实 ZIP → MySQL → Agent 目录 → Console 按钮投影的回归与实际执行共用上述统计测试。
 
 双打卡的 `operation_id` 是宿主签发的不透明操作凭据，提交输出、核验输入和插件均按宿主解码器的 2048 字符合同接收，不能套用普通业务编号的 191 字符限制。`tests/test_clock_v2_real_contract.py` 串起真实宿主 Handler、凭据编解码、输入输出 Schema 和插件流程，仅替换平台基础读写接口，覆盖中文网点及较长合法凭据。历史部分成功仍保留原结果，不能凭这项修复重放已成功步骤。
+
+V2 打卡结果中的 `evidence_ref` 必须与 Host 观测信封比对；原语内部的独立回读证据使用另一引用，不能混为一项。业务字段和每次提交对应的回读仍逐项校验，历史结果不重写。相关回归见 `tests/test_clockin_daxiang_service_v2_packages.py`。
+
+Connector 输入输出由已注册操作的 Schema 与容量上限统一校验，服务代理不再重复套用托管存储的 1 MiB 文档限制。托管存储和普通 Provider 的原上限保持不变。`tests/test_connector_operation_transport_limits.py` 覆盖完整代理链的大页输入、输出及超限拒绝。客服原页的 `FILE_PATH`、`SIGN_FILE_PATH` 附件定位字段不属于问题件判断数据，在 Host 输出前剔除；其余业务字段保持原值，插件仍不能取得原始附件路径。
+
+撤回处于 `TESTING` 的迁移时，源实例尚未转移入口，因此保留源实例当前版本、设置和启停状态；源实例正常升级不会阻止撤回该次验证。源与目标身份、目标快照、当前执行占用及并发版本仍须核验。进入 READY、切换和完成迁移仍严格要求原验证快照匹配。隔离真实 MySQL 的升级后撤回/重新验证覆盖在 `tests/test_v2_migration_lifecycle_mysql.py`。自提候选页面按插件标识识别新版 UUID 实例，显示真实应到与到货件数。

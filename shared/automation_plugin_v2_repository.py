@@ -396,7 +396,7 @@ def _migration_project_snapshot(
 
 
 def _assert_migration_snapshot_compatible(
-    snapshot: Mapping[str, Any], live: Mapping[str, Any]
+    snapshot: Mapping[str, Any], live: Mapping[str, Any], *, withdrawing_validation: bool = False,
 ) -> None:
     """Reject any config/manifest/generation drift since testing began."""
 
@@ -436,6 +436,11 @@ def _assert_migration_snapshot_compatible(
                     "generation_compiled_invocations_sha256",
                 }
             )
+        if withdrawing_validation and side == "source":
+            # TESTING never transferred source ownership. Withdrawing that
+            # attempt must preserve the source's current saved version/config,
+            # rather than requiring or restoring its historical snapshot.
+            required = {"automation_id", "plugin_id", "runtime_model"}
         if any(prior.get(key) != current.get(key) for key in required):
             raise ConcurrentUpdateError(
                 f"migration {side} configuration, manifest, or generation drifted"
@@ -1300,6 +1305,7 @@ class AutomationPluginV2RepositoryMixin:
             if int(pair.get("record_version") or 0) != expected:
                 raise ConcurrentUpdateError("migration pair version changed")
             ownership = _snapshot_entrypoint_ownership(snapshot)
+            withdrawing_validation = operation == "ROLLBACK" and current == "TESTING"
 
             # 2. projects, 3. config rows.  This helper also proves the v1/v2
             # runtime relationship and catches any generation/config/manifest
@@ -1313,8 +1319,8 @@ class AutomationPluginV2RepositoryMixin:
                 allow_target_unprepared=(operation == "ROLLBACK" and current == "TESTING"),
                 entrypoint_ownership=ownership,
             )
-            _assert_migration_snapshot_compatible(snapshot, live)
-            if current in {"TESTING", "READY"} and live["source"].get("enabled") != self._source_enabled_before_migration(snapshot):
+            _assert_migration_snapshot_compatible(snapshot, live, withdrawing_validation=withdrawing_validation)
+            if not withdrawing_validation and current in {"TESTING", "READY"} and live["source"].get("enabled") != self._source_enabled_before_migration(snapshot):
                 raise ConcurrentUpdateError("migration source enablement changed during validation")
 
             # Events use DB-local CURRENT_TIMESTAMP; invocation and lease
@@ -1406,6 +1412,7 @@ class AutomationPluginV2RepositoryMixin:
                     target_enabled=False,
                     source_scheduler_enabled=scheduler_transferred and self._source_enabled_before_migration(snapshot),
                     target_scheduler_enabled=False,
+                    preserve_source=withdrawing_validation,
                 )
                 if current == "CUTOVER":
                     transfer_plugin_sources(self.connection, source_id=target_id, target_id=source_id,
@@ -1957,18 +1964,20 @@ class AutomationPluginV2RepositoryMixin:
         target_enabled: bool,
         source_scheduler_enabled: bool,
         target_scheduler_enabled: bool,
+        preserve_source: bool = False,
     ) -> None:
-        cursor.execute(
-            """
-            UPDATE automation_projects
-            SET enabled=%s, state=IF(%s, 'ENABLED', 'DISABLED'),
-                record_version=record_version+1, updated_at=NOW(6)
-            WHERE automation_id=%s
-            """,
-            (source_enabled, source_enabled, source_id),
-        )
-        if int(getattr(cursor, "rowcount", 0) or 0) != 1:
-            raise ConcurrentUpdateError("migration source project changed")
+        if not preserve_source:
+            cursor.execute(
+                """
+                UPDATE automation_projects
+                SET enabled=%s, state=IF(%s, 'ENABLED', 'DISABLED'),
+                    record_version=record_version+1, updated_at=NOW(6)
+                WHERE automation_id=%s
+                """,
+                (source_enabled, source_enabled, source_id),
+            )
+            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+                raise ConcurrentUpdateError("migration source project changed")
         cursor.execute(
             """
             UPDATE automation_projects
@@ -1984,6 +1993,8 @@ class AutomationPluginV2RepositoryMixin:
             (source_id, source_scheduler_enabled),
             (target_id, target_scheduler_enabled),
         ):
+            if preserve_source and automation_id == source_id:
+                continue
             if not scheduled.get(automation_id):
                 continue
             cursor.execute(

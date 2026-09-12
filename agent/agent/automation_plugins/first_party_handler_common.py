@@ -426,7 +426,12 @@ def _customer_public_item(
     if "raw_fields" in row:
         if not isinstance(row["raw_fields"], Mapping):
             raise _error("customer raw business fields are invalid", "BROKER_SOURCE_INVALID")
-        result["raw_fields"] = _scrub_business_value(row["raw_fields"])
+        # Ronghui includes attachment locators in its raw problem row. They
+        # are not classification/recheck fields and must stay Host-private.
+        result["raw_fields"] = _scrub_business_value({
+            key: value for key, value in row["raw_fields"].items()
+            if str(key).strip().upper() not in {"FILE_PATH", "SIGN_FILE_PATH"}
+        })
         if not isinstance(row.get("site_policy_required"), bool):
             raise _error("customer source queue scope is unverified", "BROKER_SOURCE_INVALID")
         result["site_policy_required"] = row["site_policy_required"]
