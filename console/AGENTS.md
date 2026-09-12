@@ -1,5 +1,7 @@
 # console
 
+当前迁移收尾：AI 精确运行查询读取 Invocation 与历史 Run；寄件回读按业务日期隔离；V2 实例按声明平台展示。实现与回归边界见 [维护说明](../docs/identity_and_unified_chat.md)。
+
 扫描、自提及分批预览支持实际 Service V2 实例 UUID；卡片按插件身份提供预览/确认，输出按 Agent 返回的 Invocation 插件身份区分预览类型，正式确认仍由 Agent 核验同实例、当前代次、发起人及有效期。详见 `../docs/plugin-platform-v2.md`。
 
 插件迁移维护入口为 `/automations/maintenance`，从系统状态页进入，只允许真实超级管理员会话。它复用现有迁移 API、当前目录和 CAS，不参与普通自动化列表，不自动执行业务；本轮每日业务使用宿主业务日期标识。安装检查必须覆盖真实 V2 ZIP 的多账号角色、逐动作调用上限和无标题的飞书/Webhook/Event 贡献，未知字段仍拒绝。

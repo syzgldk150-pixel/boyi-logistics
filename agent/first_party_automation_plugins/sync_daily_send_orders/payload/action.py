@@ -557,12 +557,16 @@ def _verify_bitable_snapshot(
 ) -> None:
     actual_by_waybill: dict[str, dict[str, object]] = {}
     for record in records:
+        raw_fields = _object(record.get("fields"), "send-order Bitable fields")
+        record_date = _date_text(raw_fields.get(_DATE_FIELD))
+        if not record_date:
+            raise ValueError("send-order Bitable record has an invalid send date")
+        if record_date != target_date:
+            continue
         fields = _canonical_bitable_fields(
-            record.get("fields"),
+            raw_fields,
             target_date=target_date,
         )
-        if _date_text(fields[_DATE_FIELD]) != target_date:
-            continue
         waybill_no = str(fields[_WAYBILL_FIELD])
         if waybill_no in actual_by_waybill:
             raise ValueError("send-order Bitable snapshot contains duplicate identities")

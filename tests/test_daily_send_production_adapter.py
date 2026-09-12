@@ -7,8 +7,23 @@ import pytest
 from agent.automation_plugins.errors import PluginExecutionError
 from plugin_core_adapters.daily_send import (
     _normalize_source_total,
+    _verify_bitable_records,
     build_production_daily_send_ports,
 )
+
+
+def test_date_scoped_readback_ignores_only_known_other_days():
+    current = {"fields": deepcopy(_FIELDS)}
+    old = {"fields": {"发件日期": "2026-01-24", "运单编号": None}}
+    assert _verify_bitable_records([current], [old, current])
+    assert not _verify_bitable_records([current], [old])
+    assert not _verify_bitable_records([current], [current, current])
+    for invalid in (
+        {"发件日期": _FIELDS["发件日期"], "运单编号": None},
+        {"发件日期": "not-a-date", "运单编号": None},
+    ):
+        with pytest.raises(PluginExecutionError):
+            _verify_bitable_records([current], [current, {"fields": invalid}])
 
 
 _FIELDS = {

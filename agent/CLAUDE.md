@@ -1,5 +1,7 @@
 # 物流 Agent 系统
 
+当前迁移收尾：AI 精确运行查询读取 Invocation 与历史 Run；寄件回读按业务日期隔离；V2 实例按声明平台展示。实现与回归边界见 [维护说明](../docs/identity_and_unified_chat.md)。
+
 Service V2 扫描按目录验证的 `super_admin_upload/builtin_bundle` 来源识别，首次 Direct Invocation 执行只读预览，正式扫描仍要求精确预览绑定；预览查询和确认不得进入其他插件类型。详见 `../docs/plugin-platform-v2.md`。
 
 ## 当前身份与统一对话边界
