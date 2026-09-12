@@ -283,7 +283,7 @@ def test_first_party_descriptors_are_16_actions_and_18_instances(
     assert manifests["split_pending_problem_upload"].version == "1.0.26"
     assert manifests["sync_finance_bills"].version == "1.0.22"
     assert manifests["sync_customer_service_problems"].version == "1.0.21"
-    assert manifests["sync_daily_send_orders"].version == "1.0.21"
+    assert manifests["sync_daily_send_orders"].version == "1.0.22"
     assert manifests["sync_arrival_stats"].runtime_permissions["max_broker_calls"] == 1000
     assert {
         manifest.version
