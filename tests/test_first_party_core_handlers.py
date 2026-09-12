@@ -300,6 +300,9 @@ def test_customer_handlers_own_bound_source_pagination_and_opaque_identity() -> 
                     "external_id": external,
                     "waybill_no": f"WB-{external}",
                     "status": "待处理",
+                    "site_policy_required": False,
+                    "raw_fields": {"BILL_CODE": f"WB-{external}", "REVERSION_STATUS": "未回复",
+                        "FILE_PATH": "https://attachments.example.invalid/problem.jpg", "SIGN_FILE_PATH": None},
                 }
             ],
             "source_site_code": "fixture-site",
@@ -344,6 +347,11 @@ def test_customer_handlers_own_bound_source_pagination_and_opaque_identity() -> 
     ]
     records = [item for page in pages for item in page["items"]]
     assert len(records) == 4
+    from agent.automation_plugins.connector_registry import _reject_sensitive_result
+    for item in records:
+        assert item["raw_fields"] == {"BILL_CODE": item["waybill_no"], "REVERSION_STATUS": "未回复"}
+        _reject_sensitive_result(item, sensitive_identifiers=("customer-rh", "customer-yd"),
+            reject_wrapped_identifiers=False)
     assert all(str(item["dedupe_key"]).startswith("problem:v2:") for item in records)
     assert all("customer-rh" not in str(item) and "customer-yd" not in str(item) for item in records)
 

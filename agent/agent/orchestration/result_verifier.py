@@ -706,6 +706,10 @@ class ResultVerifier:
                 or submit.get("operation_id") != verified.get("operation_id")
                 or verified.get("clock_type") != expected_types[result_index]
                 or verified.get("site") != expected_site
+                # V2 transport evidence is Host-owned envelope metadata. The
+                # reviewed primitive may also have its own evidence_ref in
+                # business data; these are intentionally different namespaces.
+                or plugin_result.get("evidence_ref") != observations[verify_index]["evidence_ref"]
                 or any(
                     plugin_result.get(field_name) != verified.get(field_name)
                     for field_name in (
@@ -714,7 +718,6 @@ class ResultVerifier:
                         "clock_type",
                         "outcome_category",
                         "observed_at",
-                        "evidence_ref",
                         "site",
                     )
                 )

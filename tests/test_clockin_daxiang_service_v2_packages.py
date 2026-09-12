@@ -119,10 +119,20 @@ def _build(source: Path, output: Path) -> bytes:
     return built.read_bytes()
 
 
-def _verified_clock_contract(plugin_id: str):
+def _verified_clock_contract(plugin_id: str, *, host_envelope: bool = False):
     metadata = PACKAGES[plugin_id]
     arguments = _arguments(str(metadata["site"]))
     broker, calls = _successful_broker(arguments)
+    if host_envelope:
+        from service_v2_plugins._shared.boyi_plugin_sdk import BrokerCallResult
+
+        primitive_broker = broker
+
+        def broker(operation, **kwargs):
+            value = primitive_broker(operation, **kwargs)
+            reference = f"host-call:clock:{len(calls)}"
+            calls[-1]["host_evidence_ref"] = reference
+            return BrokerCallResult(value, host_evidence_ref=reference)
     result = run_clock_service(
         arguments,
         broker,
@@ -181,7 +191,7 @@ def _verified_clock_contract(plugin_id: str):
                 ).encode("utf-8")
             ).hexdigest(),
             "write_started": call["action"] == "ronghui.clock.submit",
-            "evidence_ref": str(call["result"]["evidence_ref"]),
+            "evidence_ref": str(call.get("host_evidence_ref", call["result"]["evidence_ref"])),
             "result": deepcopy(call["result"]),
         }
         for index, call in enumerate(calls, start=1)
@@ -332,6 +342,25 @@ def test_clock_result_closes_generation_evidence_and_indexed_postcondition(
 
     assert outcome.accepted is True
     assert leases.outcomes == [RuntimeLeaseOutcome.WRITE_VERIFIED]
+
+
+@pytest.mark.parametrize("plugin_id", tuple(PACKAGES))
+@pytest.mark.parametrize("forged_primitive_reference", (False, True))
+def test_clock_result_requires_transport_evidence_not_nested_primitive_reference(
+    plugin_id: str, forged_primitive_reference: bool,
+) -> None:
+    step, result, capability, observations = _verified_clock_contract(plugin_id, host_envelope=True)
+    assert observations[2]["evidence_ref"] != observations[2]["result"]["evidence_ref"]
+    if forged_primitive_reference:
+        result["data"]["results"][0]["evidence_ref"] = observations[2]["result"]["evidence_ref"]
+    leases = _ClockGenerationLeases()
+    outcome = ResultVerifier(leases).verify(
+        step, _generation_bound_clock(result, host_call_observations=observations), capability,
+    )
+    assert outcome.accepted is (not forged_primitive_reference)
+    assert leases.outcomes == [
+        RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN if forged_primitive_reference else RuntimeLeaseOutcome.WRITE_VERIFIED
+    ]
 
 
 @pytest.mark.parametrize(
