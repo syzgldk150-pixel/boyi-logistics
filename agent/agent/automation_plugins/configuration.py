@@ -201,6 +201,12 @@ class AutomationProjectConfigurationService:
             trust_source=entry.trust_source,
             config=submitted_config,
         )
+        if entry.runtime_model == PluginRuntimeModel.SERVICE_V2.value:
+            # A settings edit keeps the exact Host-owned fields of this
+            # instance; it cannot grant startup mode or supply recheck identities.
+            for field in code_owned_fields:
+                if field in entry.project_config:
+                    normalized_config[field] = copy.deepcopy(entry.project_config[field])
         validate_schema_instance(
             f"automation.{automation_id}.config",
             normalized_config,

@@ -1,5 +1,7 @@
 # 物流 Agent 系统
 
+新版财务与客服采集器的内部配置字段由宿主管理，目录及设置页不将其展示为用户参数；保存设置保持本实例已有内部配置，拒绝浏览器注入，迁移映射与执行权限不变。回归见 `tests/test_automation_plugin_code_owned_fields.py`。
+
 当前迁移收尾：AI 精确运行查询读取 Invocation 与历史 Run；寄件回读按业务日期隔离；V2 实例按声明平台展示。实现与回归边界见 [维护说明](../docs/identity_and_unified_chat.md)。
 
 Service V2 扫描按目录验证的 `super_admin_upload/builtin_bundle` 来源识别，首次 Direct Invocation 执行只读预览，正式扫描仍要求精确预览绑定；预览查询和确认不得进入其他插件类型。详见 `../docs/plugin-platform-v2.md`。
