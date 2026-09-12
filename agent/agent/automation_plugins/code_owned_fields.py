@@ -12,6 +12,11 @@ _COLLECTOR_INTERNAL_CONFIG_FIELDS = {
     "sync_finance_bills": ("_startup_catchup",),
     "sync_customer_service_problems": ("recheck_items",),
 }
+_SERVICE_V2_COLLECTOR_FIELDS = {
+    "sync_finance_bills_v2": ("_startup_catchup",),
+    "sync_customer_service_problems_v2": ("recheck_items",),
+}
+_SERVICE_V2_TRUST_SOURCES = frozenset({"super_admin_upload", "builtin_bundle"})
 _SCAN_AUTOMATION_ID = "scan_codes"
 _SCAN_PLUGIN_ID = "sync_scan_codes"
 _SCAN_PREVIEW_BINDING_FIELD = "_scan_preview_binding"
@@ -196,6 +201,8 @@ def first_party_code_owned_config_fields(
 
     identity = (str(automation_id or "").strip(), str(plugin_id or "").strip())
     source = str(trust_source or "").strip()
+    if source in _SERVICE_V2_TRUST_SOURCES:
+        return _SERVICE_V2_COLLECTOR_FIELDS.get(identity[1], ())
     if source in _SIGNED_TRUST_SOURCES:
         # Hiding/rejecting these Host-owned inputs only narrows administrator
         # authority. It applies to signed collector instances with new IDs;

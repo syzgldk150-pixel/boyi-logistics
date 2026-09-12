@@ -479,3 +479,43 @@ def test_signed_scan_and_selection_upgrade_keep_preview_restrictions():
         trust_source="ed25519_upload", arguments={"dry_run": True, "selected_bill_codes": [], "preview_fingerprint": ""}) == "PREVIEW"
     assert first_party_code_owned_config_fields(automation_id="scan_codes", plugin_id="sync_scan_codes",
         trust_source="ed25519_upload") == ("_scan_preview_binding", "dry_run")
+
+@pytest.mark.parametrize('plugin_id,field', [
+    ('sync_finance_bills_v2', '_startup_catchup'),
+    ('sync_customer_service_problems_v2', 'recheck_items'),
+])
+@pytest.mark.parametrize('trust_source', ['super_admin_upload', 'builtin_bundle'])
+def test_v2_collector_real_schema_can_be_projected_without_internal_inputs(plugin_id, field, trust_source):
+    import json
+    from pathlib import Path
+    from agent.automation_plugins.catalog import PluginCatalog
+    from console.services.automation_catalog_projection import _normalize_plugin_config_schema
+
+    manifest = json.loads((Path(__file__).resolve().parents[1] / 'agent' / 'service_v2_plugins'
+                           / plugin_id / 'manifest.json').read_text(encoding='utf-8'))
+    entry = SimpleNamespace(automation_id=str(uuid.uuid4()), plugin_id=plugin_id,
+        trust_source=trust_source, config_schema=manifest['config_schema'], project_config={})
+    fields = PluginCatalog._code_owned_config_fields(entry)
+    assert fields == (field,)
+    schema = PluginCatalog._safe_instance_config_schema(entry)
+    assert field not in schema['properties']
+    _, supported, error = _normalize_plugin_config_schema(schema, {}, code_owned_fields=frozenset(fields))
+    assert supported, error
+    assert first_party_code_owned_plan_fields(automation_id=entry.automation_id,
+        plugin_id=plugin_id, trust_source=trust_source) == ()
+
+
+@pytest.mark.parametrize('saved', [{}, {'_startup_catchup': True}])
+def test_v2_collector_settings_preserve_only_existing_host_config(saved):
+    service, repository = _finance_service('new-v2-instance', trust_source='super_admin_upload')
+    entry = service._catalog.entry
+    entry.plugin_id = 'sync_finance_bills_v2'
+    entry.runtime_model = PluginRuntimeModel.SERVICE_V2.value
+    entry.project_config = dict(saved)
+    with pytest.raises(PluginConflictError) as raised:
+        _save(service, entry.automation_id, {'mode': 'sync', '_startup_catchup': True})
+    assert raised.value.code == 'PROJECT_CONFIG_CODE_OWNED_FIELD'
+    assert repository.saved is None
+    _save(service, entry.automation_id, {'mode': 'sync'})
+    assert repository.saved[1]['config'] == {'mode': 'sync', **saved}
+    assert entry.project_config == saved
