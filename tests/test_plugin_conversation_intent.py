@@ -79,7 +79,8 @@ def test_custom_feishu_preview_is_not_reported_as_formal_completion(monkeypatch)
     ("self_pickup_problem_upload_v2", "builtin.self_pickup_problem_upload", "self_pickup_problem_upload"),
     ("split_pending_problem_upload_v2", "builtin.split_pending_problem_upload", "split_pending_problem_upload"),
 ])
-def test_installed_v2_chat_targets_keep_signed_commands_and_preview_route(monkeypatch, plugin_id, route, selection):
+@pytest.mark.parametrize("trust_source", ["super_admin_upload", "builtin_bundle"])
+def test_installed_v2_chat_targets_keep_declared_commands_and_preview_route(monkeypatch, plugin_id, route, selection, trust_source):
     import json
     from contextlib import nullcontext
     from pathlib import Path
@@ -92,7 +93,7 @@ def test_installed_v2_chat_targets_keep_signed_commands_and_preview_route(monkey
     snapshot = SimpleNamespace(generation=2, enabled_entrypoints=[contribution], execution_metadata={"project_config_version":3})
     entry = SimpleNamespace(plugin_id=plugin_id, automation_id="isolated", name=plugin_id, display_name=plugin_id,
         enabled=True, configured=True, committed_snapshot=snapshot, target_generation=2, committed_generation=2,
-        reconcile_state="STABLE", runtime_model="SERVICE_V2", contributions=manifest["contributes"], trust_source="ed25519_upload")
+        reconcile_state="STABLE", runtime_model="SERVICE_V2", contributions=manifest["contributes"], trust_source=trust_source)
     contract = SimpleNamespace(automation_generation=2, project_configuration_version=3, can_full_auto=True,
         invocation_contracts={contribution:SimpleNamespace(entrypoint="feishu", contribution_id=contribution)})
     policy = SimpleNamespace(_plugin_catalog=SimpleNamespace(list=lambda **_: [entry]), _load_contract=lambda _: (entry, contract),
