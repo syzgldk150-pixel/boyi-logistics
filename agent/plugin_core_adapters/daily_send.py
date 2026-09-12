@@ -375,10 +375,18 @@ def _verify_bitable_records(
             return False
         expected[key] = canonical
     actual: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    expected_dates = {key[0] for key in expected}
     for record in observed:
         fields = record.get("fields")
         if not isinstance(fields, Mapping):
             return False
+        record_date = _date_value(fields.get("发件日期"))
+        if not record_date:
+            raise _error("daily-send Bitable date is invalid", "BROKER_SOURCE_INVALID")
+        # A date-scoped write does not own records from another business day.
+        # Still reject unknown dates and validate every field within our scope.
+        if record_date not in expected_dates:
+            continue
         canonical = _canonical_bitable_record(fields)
         key = (str(canonical["发件日期"]), str(canonical["运单编号"]))
         if key in expected:

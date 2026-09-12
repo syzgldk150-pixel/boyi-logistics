@@ -7,6 +7,7 @@ from datetime import date, datetime
 from typing import Any, Callable, Mapping
 
 from shared.redaction import redact_text
+from shared.invocation_summary import invocation_count_summary
 
 
 _PHONE = re.compile(r"(?<!\d)1\d{10}(?!\d)")
@@ -33,6 +34,10 @@ _STATUS_LABELS = {
     "PENDING": "待处理",
     "OPEN": "待处理",
     "RUNNING": "运行中",
+    "STARTING": "正在启动",
+    "CANCELLING": "正在取消",
+    "FAILED": "执行失败",
+    "WRITE_OUTCOME_UNKNOWN": "写入结果待核验",
     "WAITING_APPROVAL": "等待审批",
     "NEEDS_CLARIFICATION": "需要补充信息",
     "BLOCKED": "已阻塞",
@@ -286,7 +291,7 @@ class ReadOnlyHarnessGateway:
                     "说明": _text(step.get("error_summary") or step.get("message"), limit=300),
                 }
             )
-        return {
+        summary = {
             "可用": True,
             "找到": True,
             "运行编号": run_id,
@@ -295,6 +300,15 @@ class ReadOnlyHarnessGateway:
             "完成时间": _time(row.get("finished_at") or row.get("completed_at")),
             "步骤": steps,
         }
+        if row.get("invocation_id") == run_id:
+            summary.update({
+                "记录类型": "插件执行",
+                "插件": _text(row.get("plugin_id"), limit=191),
+                "插件版本": _text(row.get("plugin_version"), limit=64),
+                "结果摘要": invocation_count_summary(row),
+                "错误说明": _text(row.get("error_summary"), limit=300),
+            })
+        return summary
 
     def evidence(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         evidence_id = _text(arguments["artifact_id"], limit=191)

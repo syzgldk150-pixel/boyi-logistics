@@ -722,6 +722,15 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
             task["plugin"] = plugin
             task["plugin_missing"] = plugin is None
             task["plugin_warning"] = ""
+            if plugin and plugin.get("runtime_model") == "SERVICE_V2":
+                declared_systems = {
+                    system for role in plugin.get("account_roles", [])
+                    for system in role.get("allowed_systems", [])
+                }
+                if len(declared_systems) == 1:
+                    provider = next(iter(declared_systems))
+                    if provider in AUTOMATION_PROVIDER_LABELS:
+                        task["provider"] = provider
             if plugin is None:
                 task["can_save"] = False
                 task["can_run_now"] = False

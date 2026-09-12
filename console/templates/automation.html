@@ -176,6 +176,7 @@
     <article
       class="auto-card"
       data-automation-task-row
+      data-task-id="{{ task.task_id }}"
       data-search-text="{{ task.search_text }}"
       data-sort-name="{{ task.name_value|lower }}"
       data-sort-recent="{{ task.last_activity_value }}"
@@ -3053,7 +3054,11 @@
   });
   pageRoot.querySelector("[data-automation-sort]")?.addEventListener("change", applyListState);
   pageRoot.querySelector("[data-automation-search]")?.addEventListener("input", applyListState);
-  setAutomationProvider(readAutomationProvider(), false);
+  const requestedTask = new URLSearchParams(window.location.search).get("open_task");
+  const requestedRow = requestedTask
+    ? Array.from(pageRoot.querySelectorAll("[data-automation-task-row]")).find(row => row.dataset.taskId === requestedTask)
+    : null;
+  setAutomationProvider(requestedRow?.dataset.automationProvider || readAutomationProvider(), false);
 
 
   window.ConsoleUI.refreshIcons(pageRoot);

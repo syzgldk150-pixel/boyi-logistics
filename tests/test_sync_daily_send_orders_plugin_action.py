@@ -70,6 +70,17 @@ def _evidence(index: int) -> str:
     return f"test-evidence:{index}"
 
 
+def test_final_snapshot_ignores_only_known_other_business_dates():
+    action = _load_action()
+    old = {"fields": {"发件日期": "2026-01-24", "运单编号": None}}
+    action._verify_bitable_snapshot([old], [], target_date="2026-09-12")
+    for record_date in ("2026-09-12", "invalid", None):
+        with pytest.raises(ValueError):
+            action._verify_bitable_snapshot(
+                [{"fields": {"发件日期": record_date, "运单编号": None}}],
+                [], target_date="2026-09-12")
+
+
 def test_payload_owns_full_replace_pagination_normalization_and_commit_order():
     action_module = _load_action()
     action_module._BITABLE_PAGE_SIZE = 2
