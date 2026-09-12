@@ -15,6 +15,7 @@ from agent.automation_plugins.connector_compatibility import (
 )
 from agent.automation_plugins.connector_registry import ConnectorRegistryError
 from agent.automation_plugins.errors import PluginConflictError
+from agent.automation_plugins.harness_permissions import project_read_runtime_permissions
 from agent.automation_plugins.host_capability_registry import (
     CapabilityEffect,
     governance_for_effect,
@@ -109,89 +110,7 @@ def _freeze_json(value: Any) -> Any:
 
 
 def _harness_runtime_permissions(value: object | None = None) -> dict[str, Any]:
-    """Return the closed, non-sensitive permission surface for Harness.
-
-    Harness material must carry the exact signed generation descriptor.  There
-    is intentionally no default: an omitted permission surface must not be
-    mistaken for a package that was admitted without Host capabilities.
-    """
-
-    if value is None:
-        raise PluginConflictError(
-            "harness runtime permissions are missing",
-            code="PLUGIN_CONTRACT_INVALID",
-        )
-    if not isinstance(value, Mapping):
-        raise PluginConflictError(
-            "harness runtime permissions are invalid",
-            code="PLUGIN_CONTRACT_INVALID",
-        )
-    expected_fields = {
-        "network",
-        "browser",
-        "office",
-        "file_roles",
-        "broker_operations",
-        "max_broker_calls",
-    }
-    if set(value) != expected_fields:
-        raise PluginConflictError(
-            "harness runtime permissions are not closed",
-            code="PLUGIN_CONTRACT_INVALID",
-        )
-    if any(
-        type(value.get(field_name)) is not bool
-        for field_name in ("network", "browser", "office")
-    ):
-        raise PluginConflictError(
-            "harness runtime permission flags are invalid",
-            code="PLUGIN_CONTRACT_INVALID",
-        )
-    file_roles = value.get("file_roles")
-    broker_operations = value.get("broker_operations")
-    max_broker_calls = value.get("max_broker_calls")
-    if (
-        not isinstance(file_roles, (list, tuple))
-        or any(not isinstance(item, str) or not item for item in file_roles)
-        or not isinstance(broker_operations, (list, tuple))
-        or any(not isinstance(item, Mapping) for item in broker_operations)
-        or isinstance(max_broker_calls, bool)
-        or not isinstance(max_broker_calls, int)
-        or max_broker_calls < 0
-    ):
-        raise PluginConflictError(
-            "harness runtime permissions are invalid",
-            code="PLUGIN_CONTRACT_INVALID",
-        )
-    if (
-        value.get("network") is not False
-        or value.get("browser") is not False
-        or value.get("office") is not False
-        or file_roles
-    ):
-        raise PluginConflictError(
-            "harness runtime permissions expose an unsafe capability surface",
-            code="CAPABILITY_UNAVAILABLE",
-        )
-    allowed_operations: list[dict[str, Any]] = []
-    for raw_operation in broker_operations:
-        operation = dict(raw_operation)
-        governance = operation.get("governance")
-        dynamic_read = (
-            operation.get("operation") == "service.invoke"
-            and operation.get("dynamic_effect") is True
-        )
-        if dynamic_read:
-            allowed_operations.append(copy.deepcopy(operation))
-    projected = {
-        "network": False,
-        "browser": False,
-        "office": False,
-        "file_roles": [],
-        "broker_operations": allowed_operations,
-        "max_broker_calls": max_broker_calls if allowed_operations else 0,
-    }
-    return projected
+    return project_read_runtime_permissions(value)
 
 
 def _harness_contract_from_declaration(

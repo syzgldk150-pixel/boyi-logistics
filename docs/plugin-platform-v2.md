@@ -19,6 +19,14 @@ Service V2 插件是包含实际业务代码的独立 ZIP。宿主负责账号�
 
 插件清单、业务文件归属、局部测试和打包命令见[当前插件维护入口](../agent/service_v2_plugins/README.md)。本手册替代旧文档中“生产 Connector 为空”“AI 只读”“V2 只有离线候选实现”的状态说明。
 
+## 只读预览与未启用定时
+
+`agent/agent/automation_plugins/harness_permissions.py` 是只读能力投影的单点。注册 Harness、生成模型工具目录和发放实际 read/compute 调用权限时，按 Host 注册表保留明确的只读操作。打卡插件可查询预检及核验接口，但正式提交接口不会进入这次只读调用；service.invoke 仍在分发前核验实际目标及当前调用的 effect ceiling。原签名权限不修改，缺字段或治理伪造直接失败。
+
+迁移目标可以保留已关闭的物理定时配置。其声明、账号参数和版本仍须验证，但未启用的 Scheduler contribution 不产生可调用定时合同，也不阻止该实例已有的手动和 AI 入口。意外开启的物理定时、未声明入口或配置漂移仍报错。
+
+复现回归：`PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m pytest -q tests/test_service_v2_read_capability_lifecycle.py tests/test_service_v2_disabled_schedule_contract.py`。这些测试核验真实生产 Manifest 的编译、注册、代次切换和撤销，以及实际 Broker 的读取放行与提交拒绝；不代表执行了真实打卡。
+
 ## 用户入口与权限
 
 - `/automations` 管理功能插件的安装、设置、运行、定时、启停、升级和卸载。财务、客服采集放在各自模块的数据源入口，复用同一插件运行机制。

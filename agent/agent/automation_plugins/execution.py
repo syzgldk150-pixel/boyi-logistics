@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable, Mapping, TypeVar
 
+from agent.automation_plugins.harness_permissions import project_read_runtime_permissions
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.host_capability_registry import (
     CapabilityEffect,
@@ -1588,6 +1589,8 @@ class PluginExecutionRouter:
             exact_service_governance = self._validated_service_governance(
                 raw_service_governance
             )
+            if exact_service_governance["effect"] in {"read", "compute"}:
+                issued_runtime_permissions = project_read_runtime_permissions(runtime_permissions)
             issued_runtime_permissions["_service_effect_ceiling"] = str(
                 exact_service_governance["effect"]
             )
