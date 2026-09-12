@@ -1034,7 +1034,7 @@ def _add_job(
     registry = getattr(agent_core, "registry", None)
     capability = (
         registry.get_capability(tool_name)
-        if registry is not None and hasattr(registry, "get_capability")
+        if not automation_id and registry is not None and hasattr(registry, "get_capability")
         else None
     )
     operation_type = (
