@@ -465,7 +465,7 @@ _CLOCK_SUBMIT_INPUT = _object_schema(
     ("site", "clock_type"),
 )
 _CLOCK_VERIFY_INPUT = _object_schema(
-    {"site": _SITE, "clock_type": _STRING, "operation_id": _STRING},
+    {"site": _SITE, "clock_type": _STRING, "operation_id": {"type": "string", "minLength": 1, "maxLength": 2048}},
     ("site", "clock_type", "operation_id"),
 )
 _CLOCK_READ_OUTPUT = _object_schema(
@@ -474,7 +474,7 @@ _CLOCK_READ_OUTPUT = _object_schema(
     additional_properties=True,
 )
 _CLOCK_WRITE_OUTPUT = _object_schema(
-    {"accepted": {"type": "boolean"}, "operation_id": _STRING, "evidence_ref": _STRING},
+    {"accepted": {"type": "boolean"}, "operation_id": _CLOCK_VERIFY_INPUT["properties"]["operation_id"], "evidence_ref": _STRING},
     ("accepted", "operation_id", "evidence_ref"),
     additional_properties=True,
 )

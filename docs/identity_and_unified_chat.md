@@ -88,3 +88,5 @@ PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m pytest -q tests/test_ident
 已验证的插件字段定义、配置、编译参数、运行代次快照及执行租约统一使用 `shared/plugin_json.py` 原样序列化和计算摘要；写入前继续校验 Schema 并拒绝凭据字段，日志和审计继续使用脱敏。不得将用于日志的脱敏函数用于持久运行数据或其完整性比较。`tests/test_arrival_v2_configuration_mysql.py` 从真实统计 ZIP 开始，在隔离 MySQL 中完成配置、代次投影、启用、实际隔离进程执行与结果验证，覆盖空对象业务字段不被改成字符串。
 
 Console 的插件目录识别包含 `harness` 在内的现行入口类型，避免同包声明 AI 入口时连带拒绝手动入口。运行按钮仍只选择当前已提交、已激活的 `console` 入口，不能把 AI 入口当作手动调用。真实 ZIP → MySQL → Agent 目录 → Console 按钮投影的回归与实际执行共用上述统计测试。
+
+双打卡的 `operation_id` 是宿主签发的不透明操作凭据，提交输出、核验输入和插件均按宿主解码器的 2048 字符合同接收，不能套用普通业务编号的 191 字符限制。`tests/test_clock_v2_real_contract.py` 串起真实宿主 Handler、凭据编解码、输入输出 Schema 和插件流程，仅替换平台基础读写接口，覆盖中文网点及较长合法凭据。历史部分成功仍保留原结果，不能凭这项修复重放已成功步骤。

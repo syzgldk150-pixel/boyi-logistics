@@ -251,7 +251,8 @@ def _submit_and_verify(
         return None, refs, "WRITE_OUTCOME_UNKNOWN"
     try:
         refs.append(_evidence_ref(submitted, "clock submit evidence"))
-        operation_id = _required_text(submitted.get("operation_id"), "operation_id", 256)
+        # The Host returns a signed opaque cursor; match its decoder contract.
+        operation_id = _required_text(submitted.get("operation_id"), "operation_id", 2048)
         if submitted.get("accepted") is not True:
             return None, refs, "CLOCK_SUBMIT_REJECTED"
     except ValueError:
