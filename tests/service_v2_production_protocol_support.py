@@ -65,7 +65,10 @@ class PackagedConnectorHost:
             for account in ([value] if isinstance(value, str) else value)}))
         started = sum(row["write_started"] for row in self.observations)
         lease_outcome = PluginExecutionRouter._lease_outcome(
-            capability, result, process_launched=True, started_mutating_call_count=started)
+            capability, result, process_launched=True, started_mutating_call_count=started,
+            verified_business_failure=PluginExecutionRouter._verified_business_failure(
+                capability, result, {"started_mutating_call_count": started,
+                    "host_call_observations": self.observations}))
         proof = GenerationVerificationContext(automation_id=self.context.automation_id, generation=1,
             lease_id=self.write_identity["lease_id"], invocation_id=self.write_identity["invocation_id"], account_ids=accounts,
             account_bindings_sha256="a" * 64, requires_write_verification=lease_outcome == RuntimeLeaseOutcome.VERIFYING,
