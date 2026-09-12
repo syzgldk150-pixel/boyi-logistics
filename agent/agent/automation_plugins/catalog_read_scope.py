@@ -1,4 +1,4 @@
-"""One read transaction per catalog request, without cross-request business caches."""
+"""One snapshot per catalog or runtime inspection; never cache across operations."""
 from contextlib import contextmanager
 from contextvars import ContextVar
 

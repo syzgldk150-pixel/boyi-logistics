@@ -1648,6 +1648,38 @@ class FinanceSchedulerRegistrationTests(unittest.TestCase):
                         )
                     )
 
+    def test_project_registration_does_not_read_catalog_and_keeps_trusted_invocation(self):
+        if not HAS_APSCHEDULER:
+            self.skipTest("apscheduler is not installed in the unit-test interpreter")
+        import agent.scheduler as scheduler_module
+
+        core = _AgentCore()
+        invoker = _ProjectInvoker()
+        core.registry = SimpleNamespace(get_capability=lambda _name: self.fail(
+            "project schedule registration must not reload the plugin catalog"))
+        scheduled_for = datetime.fromisoformat("2026-09-12T09:00:00+08:00")
+        with patch.object(scheduler_module, "_scheduler", scheduler_module.AsyncIOScheduler(
+            timezone="Asia/Shanghai"
+        )), patch("agent.scheduler._latest_scheduled_fire_time", return_value=scheduled_for):
+            scheduler_module._add_job(
+                task_id="project-test", cron_expr="0 9 * * *", tool_name="automation.project-test.run",
+                tool_params={}, agent_core=core, configuration_version=3,
+                automation_id="project-test", automation_generation=2,
+                automation_project_invoker=invoker,
+            )
+            job = scheduler_module._scheduler.get_job("project-test")
+            self.assertEqual(1, job.max_instances)
+            self.assertTrue(job.coalesce)
+            self.assertEqual(scheduler_module.EXTERNAL_WRITE_MISFIRE_GRACE_SECONDS, job.misfire_grace_time)
+            asyncio.run(job.func(**job.kwargs))
+        self.assertEqual(1, len(invoker.calls))
+        project, invocation = invoker.calls[0]
+        self.assertEqual("project-test", project)
+        self.assertEqual("scheduler", invocation["entrypoint"])
+        self.assertEqual(2, invocation["expected_automation_generation"])
+        self.assertEqual(3, invocation["expected_project_configuration_version"])
+        self.assertEqual(ActorType.SCHEDULER, invocation["actor"].actor_type)
+
     def test_daily_finance_job_freezes_scope_and_submits_through_gateway(self):
         if not HAS_APSCHEDULER:
             self.skipTest("apscheduler is not installed in the unit-test interpreter")

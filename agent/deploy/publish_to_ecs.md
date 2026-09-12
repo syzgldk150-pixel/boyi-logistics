@@ -136,6 +136,10 @@ powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\proje
 
 启动和健康检查读取插件历史时，代次及其 coeffect/effect 日志在同一事务批量读取；没有活动租约的代次不重复加载完整执行快照。所有历史代次、未知写和激活日志校验继续保留，发布启动健康检查时限不变。回归入口为 `tests/test_generation_listing_queries_mysql.py`。
 
+插件进程注册恢复与代次健康检查分别使用单次只读事务，复用连接及一致快照，结束后立即释放；不会跨检查缓存业务状态。写操作继续使用独立提交事务，后续读取必须看到已提交的新配置。这样避免为每个历史代次重新连接 MySQL，同时保留全部租约、未知写和代次完整性检查。
+
+已绑定 automation_id 的定时注册直接采用既有插件并发及错过执行策略，不再为每条定时重复查询插件能力目录；实际触发仍经原可信插件入口复核代次、配置和权限。普通工具的能力读取及财务特殊策略不变。
+
 本地范围状态保存在忽略目录 `agent/deploy/state/publish_state.json`。本地上传临时目录在完成后清理；远端当次暂存目录及其 `_rollback` 精确恢复材料在成功发布后保留到业务验收结束。删除 stage 之前发生的回滚失败必须保留该目录并输出 `rollback_incomplete ... recovery_material_preserved=1`；若最终 stage 删除已经开始后失败，则输出 `rollback_cleanup_incomplete ... recovery_material_state=unknown verify_required=1`，不得未经核验声称唯一恢复材料仍完整。
 
 ## Nginx 边界

@@ -9,6 +9,7 @@ execution outcomes, not reversible effects; an unknown write blocks disposal.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Collection, Mapping, Sequence
 
@@ -1002,6 +1003,21 @@ def runtime_generation_health(
 ) -> RuntimeGenerationHealth:
     """Closed release gate for generation switching and unknown writes."""
 
+    read_scope = getattr(repository, "read_scope", None)
+    with read_scope() if callable(read_scope) else nullcontext():
+        return _runtime_generation_health(
+            repository,
+            expected_automation_ids=expected_automation_ids,
+            ignored_automation_ids=ignored_automation_ids,
+        )
+
+
+def _runtime_generation_health(
+    repository: RuntimeGenerationRepositoryPort,
+    *,
+    expected_automation_ids: Collection[str],
+    ignored_automation_ids: Collection[str],
+) -> RuntimeGenerationHealth:
     expected = {str(item) for item in expected_automation_ids}
     ignored = {str(item) for item in ignored_automation_ids}
     if expected & ignored:

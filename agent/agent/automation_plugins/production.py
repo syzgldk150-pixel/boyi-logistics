@@ -731,6 +731,11 @@ class ProductionRuntimeEffectDriver:
     def restore_from_repository(self, repository: Any) -> None:
         """Rebuild service and contribution registries from durable effects once."""
 
+        read_scope = getattr(repository, "read_scope", None)
+        with read_scope() if callable(read_scope) else nullcontext():
+            self._restore_from_repository(repository)
+
+    def _restore_from_repository(self, repository: Any) -> None:
         with self._service_lock:
             if self._service_registry_restored:
                 return

@@ -594,15 +594,19 @@ class MySQLAutomationPluginRuntimeAdapter:
             raise TypeError("orchestration_repository must expose unit_of_work()")
         self._orchestration = orchestration_repository
 
+    def read_scope(self):
+        """Share one snapshot for a bounded, read-only runtime inspection."""
+        return catalog_read_scope(self._orchestration)
+
     def get_project_runtime(self, automation_id: str) -> ProjectRuntimeRecord | None:
-        with self._orchestration.unit_of_work() as uow:
+        with catalog_read_transaction(self._orchestration) as uow:
             row = uow.automation_plugins.get_project_runtime_row(automation_id)
             return _runtime_from_row(row) if row is not None else None
 
     def list_project_runtime_ids(self) -> Sequence[str]:
         """Read runtime identities without parsing state or generation records."""
 
-        with self._orchestration.unit_of_work() as uow:
+        with catalog_read_transaction(self._orchestration) as uow:
             return tuple(
                 str(row.get("automation_id") or "").strip()
                 if isinstance(row, Mapping)
@@ -611,7 +615,7 @@ class MySQLAutomationPluginRuntimeAdapter:
             )
 
     def list_project_runtimes(self) -> Sequence[ProjectRuntimeRecord]:
-        with self._orchestration.unit_of_work() as uow:
+        with catalog_read_transaction(self._orchestration) as uow:
             return tuple(
                 _runtime_from_row(row)
                 for row in uow.automation_plugins.list_project_runtime_rows()
@@ -622,7 +626,7 @@ class MySQLAutomationPluginRuntimeAdapter:
         automation_id: str,
         generation: int,
     ) -> RuntimeGenerationRecord | None:
-        with self._orchestration.unit_of_work() as uow:
+        with catalog_read_transaction(self._orchestration) as uow:
             row = uow.automation_plugins.get_generation_row(automation_id, generation)
             return generation_from_row(row) if row is not None else None
 
@@ -630,7 +634,7 @@ class MySQLAutomationPluginRuntimeAdapter:
         self,
         automation_id: str,
     ) -> Sequence[RuntimeGenerationRecord]:
-        with self._orchestration.unit_of_work() as uow:
+        with catalog_read_transaction(self._orchestration) as uow:
             return tuple(
                 generation_from_row(row)
                 for row in uow.automation_plugins.list_generation_rows(automation_id)
@@ -829,7 +833,7 @@ class MySQLAutomationPluginRuntimeAdapter:
         automation_id: str,
         generation: int,
     ) -> Sequence[RuntimeGenerationLease]:
-        with self._orchestration.unit_of_work() as uow:
+        with catalog_read_transaction(self._orchestration) as uow:
             rows = uow.automation_plugins.list_active_generation_lease_rows(
                 automation_id,
                 generation,
@@ -850,7 +854,7 @@ class MySQLAutomationPluginRuntimeAdapter:
             )
 
     def has_unknown_generation_write(self, automation_id: str, generation: int) -> bool:
-        with self._orchestration.unit_of_work() as uow:
+        with catalog_read_transaction(self._orchestration) as uow:
             return bool(
                 uow.automation_plugins.has_unknown_generation_write_row(
                     automation_id,
