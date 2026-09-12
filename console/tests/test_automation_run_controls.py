@@ -656,6 +656,61 @@ async function exercise(failure, conflict = false) {
         self.assertIn('body: ""', attention_block)
         self.assertIn("执行前检查未通过", attention_block)
 
+    def test_scan_confirmation_posts_each_current_instance_in_node(self):
+        source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(encoding="utf-8")
+        node = shutil.which("node") or shutil.which("node.exe")
+        if node is None:
+            self.skipTest("Node.js is unavailable")
+        script = r'''
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+const source = require("node:fs").readFileSync(0, "utf8");
+const handler = source.slice(source.indexOf('    if (scanPreviewConfirm) {\n      scanPreviewConfirm.addEventListener("click"'),
+  source.indexOf("    if (selectionPreviewDismiss) {"));
+async function exercise(taskId) {
+  const requests = [];
+  let click, generated = 0, accepted;
+  const context = {
+    URLSearchParams,
+    activeScanPreviewId: "57c866fd-1927-4d9f-ba83-46a01c79dc71",
+    activeScanConfirmationRequestId: "",
+    scanPreviewConfirm: {hasAttribute: () => false, addEventListener: (_, fn) => {click = fn;}},
+    form: {querySelector: selector => {
+      assert.match(selector, /input\[name=['"]task_id['"]\]/);
+      return {value: taskId};
+    }},
+    window: {crypto: {randomUUID: () => {generated += 1; return "c4b6f842-1b98-448e-ac1a-f8065c875cb5";}}},
+    setButtonLoading() {}, setScanConfirmationRetryOnly() {}, renderFeedback() {},
+    renderScanPreviewError() {}, clearScanPreview() {}, startPolling() {},
+    setRunUiState: state => {accepted = state;}, termDrawer: {dataset: {}},
+    fetch: async (url, options) => {
+      requests.push({url, options});
+      return requests.length === 1
+        ? {ok: false, status: 503, json: async () => ({ok: false})}
+        : {ok: true, status: 202, json: async () => ({ok: true, invocation_id: "accepted-call"})};
+    },
+  };
+  vm.runInNewContext(handler, context);
+  await click();
+  await click();
+  assert.equal(generated, 1);
+  assert.equal(requests.length, 2);
+  for (const {url, options} of requests) {
+    assert.equal(url, "/automations/tasks/confirm-scan-preview");
+    assert.deepEqual(Object.fromEntries(new URLSearchParams(options.body)), {
+      task_id: taskId, preview_invocation_id: context.activeScanPreviewId,
+    });
+    assert.equal(options.headers["X-Browser-Request-UUID"], context.activeScanConfirmationRequestId);
+  }
+  assert.equal(accepted.invocationId, "accepted-call");
+}
+(async () => {
+  for (const id of ["scan_codes", "9d9f96b5-7b45-4741-837f-92ff9b8ab365", "9d77e873-fb76-41cb-9e84-b1ae7bad619e"]) await exercise(id);
+})().catch(error => {console.error(error); process.exitCode = 1;});
+'''
+        result = subprocess.run([node, "--input-type=commonjs", "-e", script], input=source, text=True, capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_scan_confirmation_uses_stable_request_uuid_and_only_public_invocation_id(self):
         source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
             encoding="utf-8"
@@ -665,7 +720,8 @@ async function exercise(failure, conflict = false) {
             'fetch("/automations/tasks/confirm-scan-preview"'
         )
         confirm_block = source[confirm_index - 240 : confirm_index + 700]
-        self.assertIn('task_id: "scan_codes"', confirm_block)
+        self.assertIn("task_id: taskId", confirm_block)
+        self.assertNotIn('task_id: "scan_codes"', confirm_block)
         self.assertIn("preview_invocation_id: previewInvocationId", confirm_block)
         self.assertIn('"X-Browser-Request-UUID": confirmationRequestId', confirm_block)
         self.assertNotIn("dry_run", confirm_block)
