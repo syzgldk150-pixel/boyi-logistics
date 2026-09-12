@@ -129,3 +129,35 @@ def test_delivery_zip_classifies_signed_rows_and_verifies_both_outputs(tmp_path,
     else:
         assert writes==[[{'record_id':'rec1','status':'已签收'}],['R001']]
         assert len(host.receipts)==2
+
+
+@pytest.mark.parametrize("has_pending", [False, True])
+def test_delivery_zip_no_change_completes_with_read_evidence_and_no_write(tmp_path, has_pending):
+    rows = [{"record_id":"rec1", "waybill_no":"R001", "status":"未签收"}] if has_pending else []
+    def unexpected(*_):
+        pytest.fail("No-change delivery run must not invent a write")
+    describe = lambda account: {"account_id":account, "system":"ronghui", "session_profile":"isolated"}
+    readers = build_first_party_core_handler_map(FirstPartyCoreHandlerPorts(
+        describe_account=describe,
+        delivery_list_views=lambda *_: [{"view_id":"pending-view", "view_name":"未签收明细"}],
+        delivery_list_records=lambda *_: {"items":rows, "returned":len(rows), "total":len(rows)},
+        delivery_status_read=lambda *_: [{"bill_code":"R001", "status":"运输中"}],
+    ))
+    readers.update(build_delivery_site_handler_map(DeliverySiteHandlerPorts(
+        describe_account=describe, site_bitable_replace=unexpected, site_sheet_replace=unexpected,
+        delivery_bitable_write=unexpected, delivery_projection_update=unexpected), cursor_secret=b"s"*32))
+    host = _host(tmp_path, "sync_delivery_status_v2", ConnectorRegistry(build_delivery_connectors(readers)),
+                 "delivery", "delivery_status_bitable")
+    result = host.execute({}, operation="run")
+    assert result["status"] == "SUCCESS" and result["data"]["updated"] == 0
+    assert result["meta"]["write_outcome"] == "NOT_APPLIED"
+    assert host.observations and not host.receipts
+    verified = host.verify(result, {}, None, "external_write")
+    assert verified.accepted and verified.run_status.value == "COMPLETED"
+    assert not host.verification_settlements
+    # A fabricated write claim and missing source observations remain failures.
+    forged = deepcopy(result)
+    forged["meta"]["write_outcome"] = "WRITE_VERIFIED"
+    assert not host.verify(forged, {}, None, "external_write", expect_success=False).accepted
+    host.observations = ()
+    assert not host.verify(result, {}, None, "external_write", expect_success=False).accepted

@@ -533,6 +533,8 @@ class SessionPersistenceMixin:
         )
 
     def _persist_storage_state_locked(self, context: Any, page: Any) -> dict[str, Any]:
+        if self._is_yunda_mode():
+            self._ensure_yunda_inms_session_in_browser_locked(context, page)
         storage_state = context.storage_state(path=str(self._storage_state_path))
         if not isinstance(storage_state, dict):
             storage_state = self._load_storage_state()

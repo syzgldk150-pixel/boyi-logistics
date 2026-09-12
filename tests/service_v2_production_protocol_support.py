@@ -11,7 +11,7 @@ from agent.automation_plugins.broker import LocalBrokerCapabilityIssuer, LocalCo
 from agent.automation_plugins.capability_proxy_v2 import build_service_v2_capability_handler_map
 from agent.automation_plugins.core_adapter import RegisteredCoreAutomationBrokerAdapter
 from agent.automation_plugins.execution import GenerationBoundResult, PluginExecutionRouter
-from agent.automation_plugins.models import GenerationVerificationContext
+from agent.automation_plugins.models import GenerationVerificationContext, RuntimeLeaseOutcome
 from agent.automation_plugins.host_capability_registry import CapabilityEffect, governance_for_effect
 from agent.orchestration.models import OperationType, PlanStep, RiskLevel
 from agent.orchestration.result_verifier import ResultVerifier
@@ -63,10 +63,13 @@ class PackagedConnectorHost:
             postconditions=tuple(capability["postconditions"]), risk_level=RiskLevel(capability["risk_level"]))
         accounts = tuple(sorted({account for value in self.context.account_bindings.values()
             for account in ([value] if isinstance(value, str) else value)}))
+        started = sum(row["write_started"] for row in self.observations)
+        lease_outcome = PluginExecutionRouter._lease_outcome(
+            capability, result, process_launched=True, started_mutating_call_count=started)
         proof = GenerationVerificationContext(automation_id=self.context.automation_id, generation=1,
             lease_id=self.write_identity["lease_id"], invocation_id=self.write_identity["invocation_id"], account_ids=accounts,
-            account_bindings_sha256="a" * 64, requires_write_verification=effect not in {"read", "compute"},
-            started_mutating_call_count=sum(row["write_started"] for row in self.observations),
+            account_bindings_sha256="a" * 64, requires_write_verification=lease_outcome == RuntimeLeaseOutcome.VERIFYING,
+            started_mutating_call_count=started,
             host_call_observations=self.observations, plugin_id=self.manifest.plugin_id)
         settled = []
         outcome = ResultVerifier(SimpleNamespace(finalize_generation_write=lambda **values: settled.append(values))).verify(

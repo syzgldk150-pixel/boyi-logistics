@@ -1,5 +1,7 @@
 # 物流 Agent 系统
 
+迁移实测补充：每日应签业务字段投影、Service V2 零写入完成和韵达 INMS 登录初始化见 [维护说明](../docs/identity_and_unified_chat.md)。原失败记录保留；无写入完成仍要求真实来源证据，不伪造写入回执。
+
 新版财务与客服采集器的内部配置字段由宿主管理，目录及设置页不将其展示为用户参数；保存设置保持本实例已有内部配置，拒绝浏览器注入，迁移映射与执行权限不变。回归见 `tests/test_automation_plugin_code_owned_fields.py`。
 
 当前迁移收尾：AI 精确运行查询读取 Invocation 与历史 Run；寄件回读按业务日期隔离；V2 实例按声明平台展示。实现与回归边界见 [维护说明](../docs/identity_and_unified_chat.md)。

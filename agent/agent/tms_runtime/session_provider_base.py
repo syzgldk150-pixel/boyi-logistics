@@ -600,7 +600,7 @@ class ProviderSessionAdapterBase:
 
     def _ensure_yunda_inms_session_in_browser_locked(self, context: Any, page: Any) -> None:
         try:
-            page.goto(YUNDA_TRACKING_CLIENT_URL, wait_until="domcontentloaded", timeout=60_000)
+            page.goto(YUNDA_SEND_CLIENT_URL, wait_until="domcontentloaded", timeout=60_000)
             try:
                 page.wait_for_load_state("networkidle", timeout=12_000)
             except Exception:
@@ -615,22 +615,17 @@ class ProviderSessionAdapterBase:
                 )
                 raise TMSAuthStateError("AUTH_PENDING_CODE", YUNDA_SMS_PENDING_MESSAGE)
             if self._is_yunda_login_page(page):
-                raise TMSAuthStateError("AUTH_REQUIRED", "韵达快件跟踪子系统登录未完成，请重新登录韵达账号。")
+                raise TMSAuthStateError("AUTH_REQUIRED", "韵达寄件查询子系统登录未完成，请重新登录韵达账号。")
 
-            try:
-                page.wait_for_selector('iframe[src*="kyinms.yunda56.com"]', timeout=15_000)
-            except Exception:
-                page.wait_for_timeout(2_000)
-            frame_urls = [
-                str(getattr(frame, "url", "") or "")
-                for frame in getattr(page, "frames", [])
-            ]
-            if not any("kyinms.yunda56.com" in frame_url for frame_url in frame_urls):
-                raise TMSAuthStateError("AUTH_REQUIRED", "韵达快件跟踪子系统未加载，请重新登录韵达账号。")
+            # The original client's menu establishes the INMS SSO session.
+            # Merely seeing an INMS frame can also mean its login page loaded.
+            # Require the actual send-waybill data grid before persisting state.
+            page.frame_locator('iframe[src*="kyinms.yunda56.com/ky_inms/public/index.php/business/waybill/sendwaybill/index.html"]').locator("#dg").wait_for(
+                state="attached", timeout=30_000)
         except TMSAuthStateError:
             raise
         except Exception as exc:
-            raise TMSAuthStateError("AUTH_REQUIRED", f"韵达快件跟踪子系统初始化失败: {exc}") from exc
+            raise TMSAuthStateError("AUTH_REQUIRED", "韵达寄件查询子系统未完成登录，请重新登录韵达账号。") from exc
 
     def _click_yunda_client_menu_in_browser_locked(self, page: Any, *, menu_text: str, route_url: str) -> dict[str, Any]:
         script = f"""

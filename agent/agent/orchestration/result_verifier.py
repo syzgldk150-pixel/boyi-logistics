@@ -12,6 +12,7 @@ from agent.automation_plugins.models import (
     GenerationBoundResult,
     GenerationVerificationContext,
     RuntimeLeaseOutcome,
+    is_not_applied_success,
 )
 from agent.automation_plugins.host_capability_registry import (
     CapabilityEffect,
@@ -508,14 +509,18 @@ class ResultVerifier:
                 normalized,
                 "Service v2 write result lacks independent Host evidence",
             )
+        no_write = generation_verification is not None and is_not_applied_success(
+            normalized.to_dict(), generation_verification.started_mutating_call_count
+        )
+        expected_outcome = "NOT_APPLIED" if no_write else "WRITE_VERIFIED"
         observed_at = normalized.meta.get("observed_at")
         if (
             not cls._valid_observed_at(observed_at)
             or not isinstance(normalized.meta.get("source_system"), str)
             or not normalized.meta.get("source_system", "").strip()
-            or evidence.get("outcome") != "WRITE_VERIFIED"
+            or evidence.get("outcome") != expected_outcome
             or not isinstance(evidence.get("outcome"), str)
-            or normalized.meta.get("write_outcome") != "WRITE_VERIFIED"
+            or normalized.meta.get("write_outcome") != expected_outcome
         ):
             return cls._blocked_service_v2_result(
                 normalized,
@@ -626,7 +631,9 @@ class ResultVerifier:
             host_refs.append(str(observation["evidence_ref"]))
         if started_count != generation_verification.started_mutating_call_count:
             return "Service v2 result evidence does not match Host-observed calls"
-        if effect == CapabilityEffect.INTERNAL_WRITE.value:
+        if effect == CapabilityEffect.INTERNAL_WRITE.value and not is_not_applied_success(
+            normalized.to_dict(), generation_verification.started_mutating_call_count
+        ):
             started_observations = tuple(
                 observation
                 for observation in observations
@@ -1175,6 +1182,11 @@ class ResultVerifier:
                 "Plugin generation verification metadata is incomplete",
             )
         is_write = step.operation_type.value not in {"read", "compute"}
+        if (is_write and verification.requires_write_verification is False
+                and is_not_applied_success(raw_result, verification.started_mutating_call_count)):
+            # The normal verifier above still checks matching Host observations
+            # and postconditions. There are no write receipts to finalize.
+            return outcome
         if is_write != verification.requires_write_verification:
             return self._failure(
                 "GENERATION_LEASE_INVALID",
