@@ -29,7 +29,7 @@ def _host(tmp_path, plugin, registry, prefix, resource):
 def test_daily_send_zip_replaces_only_target_date_and_matches_projection(tmp_path):
     records = [{'record_id':'old-target','fields':{'运单编号':'R-OLD','发件日期':1778515200000}},
                {'record_id':'keep-other-day','fields':{'运单编号':'R-KEEP','发件日期':1778601600000}}]
-    row = {'BILL_CODE':'R001','REGISTER_DATE':'2026-05-12 08:00:00','PIECE_NUMBER':'2','GUEST_FREIGHT':'12.50',
+    row = {'BILL_CODE':'R001','REGISTER_DATE':'2026-05-12 14:37:16','PIECE_NUMBER':'2','GUEST_FREIGHT':'12.50',
         'BL_SIGNS_MARKING_TEXT':'已签收','GOODS_NAME':'配件','SCAN_TYPE':'签收扫描'}
     projections=[]
     deleted=[]
@@ -38,7 +38,8 @@ def test_daily_send_zip_replaces_only_target_date_and_matches_projection(tmp_pat
         records[:] = [record for record in records if record['record_id'] not in ids]
         return {'ok':True,'verified':True,'deleted':len(ids)}
     def write(resource, incoming):
-        records.extend({'record_id':'new-'+str(index),'fields':deepcopy(record['fields'])} for index,record in enumerate(incoming))
+        records.extend({'record_id':'new-'+str(index),'fields':dict(deepcopy(record['fields']), **{'发件日期':1778544000000})}
+                       for index,record in enumerate(incoming))
         return {'ok':True,'verified':True,'written':len(incoming)}
     def project(incoming, day, descriptor):
         projections.extend(incoming)

@@ -296,25 +296,6 @@ def _date_text(value: object) -> str:
         return ""
 
 
-def _bitable_timestamp(value: object, *, target_date: str) -> int:
-    if isinstance(value, bool):
-        raise ValueError("send-order Bitable date field is invalid")
-    if isinstance(value, (int, float, Decimal)):
-        try:
-            timestamp = Decimal(str(value))
-        except InvalidOperation as exc:
-            raise ValueError("send-order Bitable date field is invalid") from exc
-        if not timestamp.is_finite():
-            raise ValueError("send-order Bitable date field is invalid")
-        if timestamp < Decimal("10000000000"):
-            timestamp *= 1000
-        integral = timestamp.to_integral_value()
-        if timestamp != integral:
-            raise ValueError("send-order Bitable date field is invalid")
-        return int(integral)
-    return _timestamp_ms(value, target_date=_business_date(target_date, "target_date"))
-
-
 def _canonical_bitable_fields(
     value: object,
     *,
@@ -329,7 +310,12 @@ def _canonical_bitable_fields(
         if field == _WAYBILL_FIELD:
             canonical[field] = _waybill(raw)
         elif field == _DATE_FIELD:
-            canonical[field] = _bitable_timestamp(raw, target_date=target_date)
+            # This column stores a business date, not the source registration
+            # time. Feishu's date-only readback drops that time of day.
+            record_date = _date_text(raw)
+            if not record_date or record_date != target_date:
+                raise ValueError("send-order Bitable date field is invalid")
+            canonical[field] = record_date
         elif field in _NUMERIC_FIELDS:
             canonical[field] = _number(raw)
         else:

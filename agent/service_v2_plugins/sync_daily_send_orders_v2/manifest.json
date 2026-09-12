@@ -3,7 +3,7 @@
   "runtime_model": "service_v2",
   "plugin_id": "sync_daily_send_orders_v2",
   "name": "获取当日寄件数据",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "获取当日寄件数据：插件独立完成分页、字段转换和输出；宿主提供平台读写与数据库接口。",
   "host_api": {
     "minimum": "2.0.0",

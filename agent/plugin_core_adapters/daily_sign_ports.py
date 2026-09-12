@@ -10,6 +10,7 @@ from uuid import UUID
 
 from agent.automation_plugins.daily_sign_connectors_v2 import DAILY_SIGN_PORTS
 from agent.automation_plugins.errors import PluginExecutionError
+from agent.execution_boundary import execution_capability_scope
 from plugin_core_adapters.daily_sign import _exact_resource
 
 
@@ -109,7 +110,11 @@ def build_daily_sign_port_handlers(*, account_manager, store=None, tms=None, fei
                         request = resolved
                 else:
                     target["account_id"] = account_id
-                result = tms(endpoints[name], request)
+                # The outer grant belongs to the V2 package name. Only this
+                # reviewed Host port may use the daily-sign TMS read scope;
+                # the capability stays in-process and is revoked after I/O.
+                with execution_capability_scope("sync_daily_should_sign", ttl_seconds=7500):
+                    result = tms(endpoints[name], request)
                 if name == "read_problems" and isinstance(result, Mapping):
                     payload = result.get("data") if isinstance(result.get("data"), Mapping) else result
                     if isinstance(payload.get("rows"), list):
