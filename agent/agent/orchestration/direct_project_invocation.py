@@ -89,6 +89,8 @@ def invoke_direct(service, automation_id: str, *, entrypoint, request_id, actor,
         selection = selection_declaration is not None and selection_declaration["id"] == target.contribution_id
     if preview_invocation_id is not None:
         from agent.orchestration.direct_invocation_previews import confirm_preview
+        if not (scan or selection):
+            raise OrchestrationError("SELECTION_PREVIEW_PROJECT_INVALID", "该插件入口不支持预览确认。")
         if scan:
             require_scan_formal_governance(entry)
         arguments = confirm_preview(direct.repository, preview_invocation_id, entry=entry, contract=contract, actor_id=actor.actor_id, arguments=arguments, selected_bill_codes=selected_bill_codes, scan=scan)

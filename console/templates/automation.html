@@ -183,8 +183,8 @@
       data-automation-provider="{{ task.provider | default('ronghui', true) }}"
       data-plugin-id="{{ task.plugin.plugin_id if task.plugin else '' }}"
     >
-      {% set is_scan_preview_workflow = task.task_id == 'scan_codes' and task.plugin and task.plugin.plugin_id == 'sync_scan_codes' %}
-      {% set is_selection_preview_workflow = task.task_id in ['self_pickup_problem_upload', 'split_pending_problem_upload'] and task.plugin %}
+      {% set is_scan_preview_workflow = task.plugin and ((task.task_id == 'scan_codes' and task.plugin.plugin_id == 'sync_scan_codes') or (task.plugin.runtime_model == 'SERVICE_V2' and task.plugin.plugin_id == 'sync_scan_codes_v2')) %}
+      {% set is_selection_preview_workflow = task.plugin and (task.task_id in ['self_pickup_problem_upload', 'split_pending_problem_upload'] or (task.plugin.runtime_model == 'SERVICE_V2' and task.plugin.plugin_id in ['self_pickup_problem_upload_v2', 'split_pending_problem_upload_v2'])) %}
       <form method="post" action="/automations/tasks/save" data-ui-submit class="js-automation-form js-automation-task-form" data-scan-preview-workflow="{{ 'true' if is_scan_preview_workflow else 'false' }}" data-selection-preview-workflow="{{ 'true' if is_selection_preview_workflow else 'false' }}">
         <input type="hidden" name="task_id" value="{{ task.task_id }}">
         <input type="hidden" name="task_mode" value="{{ task.task_mode or 'scheduled' }}">

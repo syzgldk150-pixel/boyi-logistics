@@ -971,11 +971,15 @@ class AutomationProjectPolicyService:
     def get_scan_preview_projection(self, automation_id: str, *, preview_invocation_id: str) -> dict[str, Any]:
         from agent.orchestration.direct_invocation_previews import project_preview
         entry, contract = self._load_contract(_automation_id(automation_id))
+        if not is_scan_preview_project(entry):
+            raise OrchestrationError("SCAN_PREVIEW_PROJECT_INVALID", "该插件不支持扫描预览。")
         return project_preview(self.direct_invocations.repository, preview_invocation_id, entry=entry, contract=contract, scan=True)
 
     def get_selection_preview_projection(self, automation_id: str, *, preview_invocation_id: str) -> dict[str, Any]:
         from agent.orchestration.direct_invocation_previews import project_preview
         entry, contract = self._load_contract(_automation_id(automation_id))
+        if not is_selection_preview_project(entry) or is_scan_preview_project(entry):
+            raise OrchestrationError("SELECTION_PREVIEW_PROJECT_INVALID", "该插件不支持候选选择。")
         return project_preview(self.direct_invocations.repository, preview_invocation_id, entry=entry, contract=contract, scan=False)
 
     def invoke_selection_preview(

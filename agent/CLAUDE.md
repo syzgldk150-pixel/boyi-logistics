@@ -1,5 +1,7 @@
 # 物流 Agent 系统
 
+Service V2 扫描按目录验证的 `super_admin_upload/builtin_bundle` 来源识别，首次 Direct Invocation 执行只读预览，正式扫描仍要求精确预览绑定；预览查询和确认不得进入其他插件类型。详见 `../docs/plugin-platform-v2.md`。
+
 ## 当前身份与统一对话边界
 
 插件清单保存与审计脱敏分离；迁移 048 精确修复统计 V2 已知清单字段损坏，细节和真实数据库回归见[维护说明](../docs/identity_and_unified_chat.md)。
