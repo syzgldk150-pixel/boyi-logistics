@@ -114,3 +114,42 @@ def test_migration_ignores_only_preexisting_terminal_source_history(database, si
         cursor.execute("SELECT outcome FROM automation_project_generation_leases WHERE lease_id=%s", (lease_id,))
         assert cursor.fetchone()["outcome"] == outcome
         connection.rollback()
+
+
+@pytest.mark.parametrize("status,finished,matches,active,unknown", [
+    ("WRITE_OUTCOME_UNKNOWN", True, True, 0, 0),
+    ("FAILED", True, True, 0, 0),
+    ("CANCELLED", True, True, 0, 0),
+    ("WRITE_OUTCOME_UNKNOWN", False, True, 0, 1),
+    ("WRITE_OUTCOME_UNKNOWN", True, False, 0, 1),
+    ("RUNNING", True, True, 1, 1),
+    ("CANCELLING", True, True, 1, 1),
+    ("COMPLETED", True, True, 0, 1),
+])
+def test_stopped_direct_failure_is_history_without_fabricating_write_success(
+        database, status, finished, matches, active, unknown):
+    fixture, name = database
+    target, call_id, lease_id = "stopped-" + uuid4().hex, str(uuid4()), str(uuid4())
+    started = datetime(2026, 9, 12, 8)
+    with fixture._connection(name) as connection, connection.cursor() as cursor:
+        _seed_generation(connection, target)
+        cursor.execute("""INSERT INTO automation_plugin_invocations
+            (invocation_id,request_key_sha256,request_sha256,request_id,automation_id,generation,
+             operation,source,actor_id,owner_id,status,invocation_json,arguments_json,started_at,finished_at,updated_at)
+            VALUES(%s,%s,%s,%s,%s,%s,'validation','console','isolated-admin',%s,%s,'{}','{}',%s,%s,%s)""",
+            (call_id, uuid4().hex * 2, "a" * 64, str(uuid4()), target, 1 if matches else 2,
+             str(uuid4()), status, started, started if finished else None, started))
+        cursor.execute("""INSERT INTO automation_project_generation_leases
+            (lease_id,automation_id,generation,invocation_id,lease_owner,runtime_metadata_json,
+             runtime_metadata_sha256,outcome,acquired_at,expires_at)
+            VALUES(%s,%s,1,%s,'isolated','{}',%s,'WRITE_OUTCOME_UNKNOWN',%s,%s)""",
+            (lease_id, target, call_id, "a" * 64, started, started + timedelta(minutes=1)))
+        summary = AutomationPluginRepository._lock_migration_generation_leases(cursor,
+            source_id="isolated-source", target_id=target, testing_started_at=started)
+        assert summary == {"active": active, "unknown": unknown, "target_verified": 0}
+        assert AutomationPluginRepository._lock_migration_manual_evidence_count(cursor,
+            pair_id=str(uuid4()), target_id=target, target_generation=1,
+            testing_started_at=started, console_contribution_ids={"manual_run"}) == 0
+        cursor.execute("SELECT outcome,verification_evidence_sha256 FROM automation_project_generation_leases WHERE lease_id=%s", (lease_id,))
+        assert cursor.fetchone() == {"outcome": "WRITE_OUTCOME_UNKNOWN", "verification_evidence_sha256": None}
+        connection.rollback()

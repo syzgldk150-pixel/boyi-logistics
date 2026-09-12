@@ -1667,11 +1667,17 @@ class AutomationPluginV2RepositoryMixin:
         active_calls = len(_rows(cursor))
         cursor.execute(
             """
-            SELECT automation_id, outcome, verification_evidence_sha256,
-                   (automation_id=%s OR acquired_at>=%s) AS migration_relevant
-            FROM automation_project_generation_leases
-            WHERE automation_id IN (%s, %s)
-            ORDER BY automation_id, acquired_at, lease_id FOR UPDATE
+            SELECT lease.automation_id, lease.outcome, lease.verification_evidence_sha256,
+                   (lease.automation_id=%s OR lease.acquired_at>=%s) AS migration_relevant,
+                   (invocation.status IN ('FAILED','CANCELLED','WRITE_OUTCOME_UNKNOWN')
+                    AND invocation.finished_at IS NOT NULL) AS stopped_direct_call
+            FROM automation_project_generation_leases AS lease
+            LEFT JOIN automation_plugin_invocations AS invocation
+              ON invocation.invocation_id=lease.invocation_id
+             AND invocation.automation_id=lease.automation_id
+             AND invocation.generation=lease.generation
+            WHERE lease.automation_id IN (%s, %s)
+            ORDER BY lease.automation_id, lease.acquired_at, lease.lease_id FOR UPDATE
             """,
             (target_id, testing_started_at, source_id, target_id),
         )
@@ -1680,10 +1686,12 @@ class AutomationPluginV2RepositoryMixin:
             outcome = str(row.get("outcome") or "")
             if outcome in {"RUNNING", "VERIFYING"}:
                 summary["active"] += 1
-            # Source history predating this validation is not a write by this
-            # migration. Preserve it unchanged, while protecting all active
-            # calls and every unknown write by the new target.
-            if outcome == "WRITE_OUTCOME_UNKNOWN" and row.get("migration_relevant"):
+            # A stopped Direct Invocation cannot resume or own execution.
+            # Its unknown receipts remain unknown and cannot count as success;
+            # READY still requires a separate verified current-generation call.
+            # Unbound/legacy unknown ownership and every active call still block.
+            if (outcome == "WRITE_OUTCOME_UNKNOWN" and row.get("migration_relevant")
+                    and not row.get("stopped_direct_call")):
                 summary["unknown"] += 1
         return summary
 

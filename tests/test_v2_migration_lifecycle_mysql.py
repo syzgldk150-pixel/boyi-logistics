@@ -1,9 +1,11 @@
 """Real installed V1/V2 transition, direct execution, SQL ownership and rollback."""
 from hashlib import sha256
+from io import BytesIO
 import json
 from pathlib import Path
 import time
 from uuid import uuid4
+from zipfile import ZipFile
 
 from Crypto.PublicKey import ECC
 import pytest
@@ -107,6 +109,8 @@ def test_real_arrive_list_migration_consumes_saved_formal_mode(database, tmp_pat
 @pytest.mark.parametrize("enabled,finish", [(True, "rollback"), (False, "complete"),
                                            (True, "withdraw"), (False, "withdraw"), (False, "withdraw_failed"),
                                            (True, "complete_without_route"),
+                                           (True, "complete_after_stopped_failure"),
+                                           (True, "withdraw_reuse"),
                                            (True, "complete_cst"), (False, "complete_west")])
 @pytest.mark.parametrize("reconcile_before_config", [False, True])
 def test_installed_migration_transfers_only_after_verified_direct_call(database, tmp_path, monkeypatch, enabled, finish, reconcile_before_config):
@@ -163,6 +167,22 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
                     request_id=str(uuid4()), reason="isolated release verification", actor=ACTOR)
             assert pair["state"] == "TESTING", pair
             assert pair["target_preparation_state"] == ("PREPARING" if finish == "withdraw_failed" else "PREPARED"), pair
+            if finish == "complete_after_stopped_failure":
+                failed_call, failed_lease = str(uuid4()), str(uuid4())
+                with host.repository.unit_of_work() as uow, uow.connection.cursor() as cursor:
+                    generation = host.catalog.require(target).committed_generation
+                    cursor.execute("""INSERT INTO automation_plugin_invocations
+                        (invocation_id,request_key_sha256,request_sha256,request_id,automation_id,generation,
+                         operation,source,actor_id,owner_id,status,invocation_json,arguments_json,started_at,finished_at,updated_at)
+                        VALUES(%s,%s,%s,%s,%s,%s,'validation','console','isolated-admin',%s,
+                               'WRITE_OUTCOME_UNKNOWN','{}','{}',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))""",
+                        (failed_call, uuid4().hex * 2, "a" * 64, str(uuid4()), target, generation, str(uuid4())))
+                    cursor.execute("""INSERT INTO automation_project_generation_leases
+                        (lease_id,automation_id,generation,invocation_id,lease_owner,runtime_metadata_json,
+                         runtime_metadata_sha256,outcome,acquired_at,expires_at)
+                        VALUES(%s,%s,%s,%s,'isolated','{}',%s,'WRITE_OUTCOME_UNKNOWN',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))""",
+                        (failed_lease, target, generation, failed_call, "a" * 64))
+                    uow.commit()
             if finish.startswith("withdraw"):
                 # A terminal source-side historical failure is not an action
                 # by this validation attempt; do not rewrite its outcome.
@@ -210,14 +230,32 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
                 restarted.restore_from_repository(host.runtime_repository)
                 assert not any(record.automation_id == target and record.phase == "COMMITTED"
                                for record in restart_registry.snapshot())
-                if not reconcile_before_config or finish == "withdraw_failed":
+                if finish != "withdraw_reuse" and (not reconcile_before_config or finish == "withdraw_failed"):
                     retired = host.catalog.require(target)
                     removed = host.management.uninstall(target, request_id=str(uuid4()), actor=ACTOR,
                         current_version=retired.installed_version, expected_record_version=retired.record_version)
                     assert removed["status"] == "UNINSTALLED"
-                fresh = host.management.install_service_v2(archive, request_id=str(uuid4()),
-                    transport_package_sha256=sha256(archive).hexdigest(), actor=ACTOR,
-                    raw_intent=json.dumps({"instance_name": "重新验证的目标", "permissions_confirmed": True}))
+                if finish == "withdraw_reuse":
+                    destination = BytesIO()
+                    with ZipFile(BytesIO(archive)) as original, ZipFile(destination, "w") as updated:
+                        for item in original.infolist():
+                            data = original.read(item.filename)
+                            if item.filename == "manifest.json":
+                                manifest = json.loads(data)
+                                manifest["version"] = "2.0.99"
+                                data = json.dumps(manifest, ensure_ascii=False).encode()
+                            updated.writestr(item, data)
+                    upgraded_zip = destination.getvalue()
+                    retired = host.catalog.require(target)
+                    host.management.upgrade(target, upgraded_zip, request_id=str(uuid4()),
+                        expected_record_version=retired.record_version,
+                        transport_package_sha256=sha256(upgraded_zip).hexdigest(), actor=ACTOR)
+                    assert host.catalog.require(target).installed_version == "2.0.99"
+                    fresh = {"automation_id": target}
+                else:
+                    fresh = host.management.install_service_v2(archive, request_id=str(uuid4()),
+                        transport_package_sha256=sha256(archive).hexdigest(), actor=ACTOR,
+                        raw_intent=json.dumps({"instance_name": "重新验证的目标", "permissions_confirmed": True}))
                 replacement = host.management.create_migration_pair(migration_pair_id=str(uuid4()),
                     source_automation_id=SOURCE, target_automation_id=fresh["automation_id"],
                     business_key_fields=("include_daxiang_s_self_pickup",), business_key_namespace="isolated-upgrade",
@@ -258,6 +296,12 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
             assert host.catalog.require(SOURCE).enabled is (enabled if finish == "rollback" else False)
             assert host.catalog.require(target).enabled is (False if finish == "rollback" else enabled)
             assert host.packages.source_project_migration_uninstall_allowed(SOURCE) is (finish != "rollback")
+            if finish == "complete_after_stopped_failure":
+                with host.repository.unit_of_work() as uow, uow.connection.cursor() as cursor:
+                    cursor.execute("SELECT outcome,verification_evidence_sha256 FROM automation_project_generation_leases WHERE lease_id=%s", (failed_lease,))
+                    assert cursor.fetchone() == {"outcome": "WRITE_OUTCOME_UNKNOWN", "verification_evidence_sha256": None}
+                    cursor.execute("SELECT status FROM automation_plugin_invocations WHERE invocation_id=%s", (failed_call,))
+                    assert cursor.fetchone()["status"] == "WRITE_OUTCOME_UNKNOWN"
             from scripts import automation_project_release_manifest_preflight as preflight
             release_contract = preflight._load_release_contract()
             with host.repository.unit_of_work() as uow, uow.connection.cursor() as cursor:
