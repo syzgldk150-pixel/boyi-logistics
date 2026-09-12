@@ -184,6 +184,17 @@ def build_daily_sign_port_handlers(*, account_manager, store=None, tms=None, fei
                                    if key not in {"account_id", "account_label"}}
                         payload["rows"] = rows
                         result = {**result, "data": payload} if isinstance(result.get("data"), Mapping) else payload
+                if name == "read_tracking" and isinstance(result, Mapping):
+                    payload = result.get("data") if isinstance(result.get("data"), Mapping) else result
+                    if isinstance(payload.get("route_rows"), list):
+                        # Daily-sign consumes scan facts only. Route prose and
+                        # its UI summary can contain links to private attachments.
+                        fields = {"scan_type", "scan_time", "scan_station", "scan_code"}
+                        rows = [{key: item for key, item in row.items() if key in fields}
+                                if isinstance(row, Mapping) else row for row in payload["route_rows"]]
+                        payload = {key: item for key, item in payload.items() if key != "summary"}
+                        payload["route_rows"] = rows
+                        result = {**result, "data": payload} if isinstance(result.get("data"), Mapping) else payload
         else:
             sheet = role == "daily_sign_sheet"
             resource = resource_reader(context.resource_id, kind="feishu_sheet" if sheet else "feishu_bitable",

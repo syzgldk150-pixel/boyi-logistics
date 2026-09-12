@@ -1,12 +1,14 @@
 """Production envelope shapes must not leak locators or hide partial reads."""
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 
 from agent.automation_plugins.connector_registry import ConnectorSensitiveDataDenied, _reject_sensitive_result, _validate_schema_value
 from agent.automation_plugins.daily_sign_connectors_v2 import _schemas
 from agent.automation_plugins.errors import PluginExecutionError
-from plugin_core_adapters.daily_sign_ports import _public_feishu_result
+from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
+from plugin_core_adapters.daily_sign_ports import _public_feishu_result, build_daily_sign_port_handlers
 
 
 def checked(name, source):
@@ -71,3 +73,20 @@ def test_projection_does_not_turn_failures_into_success(source):
 def test_business_fields_are_still_checked_for_sensitive_content():
     with pytest.raises(ConnectorSensitiveDataDenied):
         checked("list_records", {"items":[{"record_id":"record-1", "fields":{"password":"do-not-release"}}]})
+
+
+def test_tracking_port_keeps_scan_facts_without_ui_descriptions():
+    facts = {"scan_type":"签收", "scan_time":"2026-09-12 10:00:00", "scan_station":"测试网点", "scan_code":"R00021000001"}
+    source = {"ok":True, "data":{"ok":True,"summary":{"latest_description":"/private/attachment"},
+        "route_rows":[{**facts, "description":"/private/attachment"}]}}
+    original = deepcopy(source)
+    accounts = SimpleNamespace(require_active_binding_descriptor=lambda _: {"system":"ronghui"})
+    handlers = build_daily_sign_port_handlers(account_manager=accounts, tms=lambda *_: source)
+    context = CoreBrokerInvocationContext(automation_id="isolated", plugin_version="2.0.1",
+        tool_name="sync_daily_should_sign", operation="daily_sign.port", action="daily_sign_tms.read_tracking",
+        role="daily_sign_tms", account_ids=("isolated-tms",))
+    value = handlers[("daily_sign.port",context.action)](context,{"values":{"params":{"tracking_number":"R00021000001"}}})["value"]
+    assert source == original
+    assert value == {"ok":True,"data":{"ok":True,"route_rows":[facts]}}
+    _validate_schema_value({"value":value}, _schemas(context.role,"read_tracking")[1], subject="result")
+    _reject_sensitive_result(value, sensitive_identifiers=("isolated-tms",), reject_wrapped_identifiers=False)
