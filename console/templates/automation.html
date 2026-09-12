@@ -2610,8 +2610,9 @@
         activeScanConfirmationRequestId = confirmationRequestId;
         setScanConfirmationRetryOnly(true);
         try {
+          const taskId = String(form.querySelector("input[name='task_id']")?.value || "");
           const body = new URLSearchParams({
-            task_id: "scan_codes",
+            task_id: taskId,
             preview_invocation_id: previewInvocationId,
           });
           const res = await fetch("/automations/tasks/confirm-scan-preview", {
