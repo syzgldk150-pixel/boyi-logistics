@@ -11,6 +11,7 @@
 ## 直接调用边界
 
 - 自然语言插件请求由 `AgentCore` 按当前插件目录选择，`message_handler.py` 消费可信选择对象，经原 Feishu 入口执行并跟随本次结果；固定关键词仍直接路由。扫描确认仅消费明确扫描确认文本，未确认的预览不截获其他自然对话。
+- 固定“统计”及同一宿主解析器接受的无参数统计简称，在迁移分发前规范为声明命令“统计到货数据”；仍由原迁移所有权决定 V1/V2 入口，状态异常明确拒绝，不能回退或重复执行。
 - 非插件只读文本通过注入的 `AgentCore` 直接 reader 调用；已插件化的文本、菜单和 pending 确认只通过注入的 `AutomationProjectEntrypoints` 提交服务端 typed invocation。两者都禁止直接调用 `ToolExecutor`、业务脚本或第三方写函数。
 - Service v2 动态文本只通过独立注入的 `ServiceV2FeishuDispatcher` 解析当前 committed/READY contribution；所有 pending、登录、确认和固定 Action V1 文本优先，只有固定路由未命中后才查动态精确命令，动态未知才继续既有 Agent/LLM 路径。Dispatcher 只接收 `_COMMAND_CONTEXT` 中已验证的 event/sender/chat 与规范化文本，不接收原始 Webhook body、项目/服务/操作/账号/资源或调用参数；命中但身份缺失必须公共拒绝并停止，回复不得暴露 automation、service、operation、contribution 或内部执行 UUID。
 - 插件项目只能按 committed generation 中唯一的 `feishu_route.route_key` 解析实例；重复别名、多候选、缺绑定或非稳定事件 ID 必须显式拒绝，不得按工具、插件或列表首项猜测。消息和旧 pending 中的账号覆盖字段一律拒绝，账号只取该实例的 Business Account bindings；日期、车牌和预览指纹只由代码拥有的 resolver 注入。

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
+from agent.direct_tool_router import direct_tool_request_from_text
 from agent.orchestration.models import OrchestrationError
 from agent.orchestration.preview_entrypoints import PREVIEW_ROUTES
 
@@ -60,6 +61,13 @@ async def dispatch_migrated_fixed_feishu_entrypoint(
         return False
     if mode != "automation_project" or not route_key:
         return False
+
+    # The host parser owns the existing statistics aliases. The migrated
+    # contribution keeps its exact declared command and all ownership checks.
+    if tool_name == "sync_arrival_stats" and route_key == "builtin.arrival_stats":
+        canonical_command = "统计到货数据"
+        if direct_tool_request_from_text(command_text) == direct_tool_request_from_text(canonical_command):
+            command_text = canonical_command
 
     owner = "ACTION_V1"
     owner_reader = getattr(dispatcher, "fixed_feishu_owner", None)
