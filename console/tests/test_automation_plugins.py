@@ -475,6 +475,50 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertEqual("target_date", fields["target_date"]["technical_name"])
         self.assertTrue(fields["engine_retry_mode"]["advanced"])
 
+    def test_scan_production_schema_preserves_date_pattern(self):
+        from shared.automation_project_authorization import _validate_signed_schema_value
+
+        manifest = json.loads((CONSOLE_DIR.parent /
+            "agent/service_v2_plugins/sync_scan_codes_v2/manifest.json").read_text())
+        schema = manifest["config_schema"]
+        payload = _catalog_payload()
+        payload["instances"][0].update(config_schema=schema, config={"target_date": "2026-09-12"})
+
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+
+        projected = instances[0]
+        self.assertTrue(projected["config_schema_supported"])
+        fields = {field["path"]: field for field in projected["config_fields"]}
+        self.assertEqual("2026-09-12", fields["target_date"]["value"])
+        date_schema = schema["properties"]["target_date"]
+        _validate_signed_schema_value(date_schema, "2026-09-12")
+        with self.assertRaisesRegex(ValueError, "does not match pattern"):
+            _validate_signed_schema_value(date_schema, "2026/09/12")
+        exclusion_schema = schema["properties"]["skip_bill_codes"]
+        self.assertEqual("list", fields["skip_bill_codes"]["kind"])
+        _validate_signed_schema_value(exclusion_schema, ["R0000000001"])
+        with self.assertRaises(ValueError):
+            _validate_signed_schema_value(exclusion_schema, [" invalid "])
+        with self.assertRaises(ValueError):
+            _validate_signed_schema_value(exclusion_schema, ["R0000000001", "R0000000001"])
+
+    def test_invalid_pattern_metadata_still_blocks_config_projection(self):
+        for field_schema in (
+            {"type": "string", "pattern": 123},
+            {"type": "integer", "pattern": "[0-9]"},
+            {"type": "array", "items": {"type": "string", "pattern": 123}},
+            {"type": "string", "unknown_constraint": True},
+        ):
+            with self.subTest(field_schema=field_schema):
+                payload = _catalog_payload()
+                payload["instances"][0].update(config={}, config_schema={
+                    "type": "object", "additionalProperties": False,
+                    "properties": {"target_date": field_schema},
+                })
+                _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+                self.assertFalse(instances[0]["config_schema_supported"])
+                self.assertTrue(instances[0]["blocked"])
+
     def test_catalog_keeps_repeat_install_instances_and_safe_project_authority(self):
         packages, instances, unsupported = normalize_automation_plugin_catalog(
             _catalog_payload()
