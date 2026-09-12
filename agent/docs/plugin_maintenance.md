@@ -15,7 +15,7 @@ payload、生产 adapter、Broker/router 与结果校验测试；不会调用部
 当前范围是扫描、统计、分批、自提及财务、客服采集器。
 `describe` 列出实际测试节点，未知插件或缺失测试会失败，不退回全量或无测试打包。
 
-每日应签的接口返回适配归宿主 `plugin_core_adapters/daily_sign_ports.py`：问题件只传业务字段，
+每日应签的接口返回适配归宿主 `plugin_core_adapters/daily_sign_ports.py`：问题件只传业务字段，主单轨迹只传扫描事实，
 飞书只传规范记录、单元格和明确的写入确认，不向插件转发账号标识、表格定位信息及重复包装。
 缺失数据、分页未读完、接口报错必须失败，不能解释为空表；正式写入仍由插件进行新鲜回读核验。
 修改这些共享接口须核心发布。对应验证为 `tests/test_daily_sign_connector_responses.py`、
