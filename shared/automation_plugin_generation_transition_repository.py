@@ -815,6 +815,47 @@ def _validate_installed_target_version(
 
 
 class AutomationPluginGenerationTransitionRepositoryMixin:
+    def retry_disabled_route_preparation_row(
+        self, snapshot: Mapping[str, Any], *, request_id: str, actor_id: str, actor_role: str,
+    ) -> None:
+        """Retry a never-activated disabled upgrade after its route conflict was fixed."""
+        if actor_role != "super_admin":
+            raise ConcurrentUpdateError("preparation repair requires a super administrator")
+        automation_id, generation = snapshot["automation_id"], int(snapshot["generation"])
+        snapshot = _repository._generation_snapshot(automation_id, snapshot)
+        with self.cursor() as cursor:
+            cursor.execute("SELECT * FROM automation_projects WHERE automation_id=%s FOR UPDATE", (automation_id,))
+            project = _row_dict(cursor, cursor.fetchone()) or {}
+            cursor.execute("SELECT * FROM automation_project_generations WHERE automation_id=%s AND generation=%s FOR UPDATE", (automation_id, generation))
+            target = _row_dict(cursor, cursor.fetchone()) or {}
+            checks = {"disabled": project.get("enabled") == 0, "upgrading": project.get("state") == "UPGRADING",
+                "reconcile_error": project.get("reconcile_state") == "ERROR",
+                "target_generation": project.get("target_generation") == generation,
+                "not_committed": project.get("committed_generation") != generation,
+                "failed": target.get("state") == "FAILED",
+                "route_conflict": target.get("error_code") == "CONTRIBUTION_ROUTE_CONFLICT",
+                "snapshot": target.get("snapshot_sha256") == _exact_json_hash(snapshot)}
+            if not all(checks.values()):
+                raise ConcurrentUpdateError("disabled failed preparation changed: " + ", ".join(key for key, valid in checks.items() if not valid))
+            _assert_transition_target_has_no_generation_leases(cursor, automation_id=automation_id, generation=generation)
+            cursor.execute("SELECT transition_token FROM automation_project_generation_transitions WHERE automation_id=%s AND generation=%s FOR UPDATE", (automation_id, generation))
+            if cursor.fetchone() is not None:
+                raise ConcurrentUpdateError("activated generation cannot use preparation repair")
+            cursor.execute("SELECT state FROM automation_project_generation_effects WHERE automation_id=%s AND generation=%s FOR UPDATE", (automation_id, generation))
+            if any(row["state"] not in {"PLANNED", "APPLIED"} for row in _rows(cursor)):
+                raise ConcurrentUpdateError("disposing effects cannot use preparation repair")
+            metadata = {"generation": generation, "snapshot_sha256": target["snapshot_sha256"],
+                        "prior_error_code": target["error_code"], "prior_error_summary": target["error_summary"],
+                        "prior_generation_state": target["state"]}
+            cursor.execute("""INSERT INTO automation_project_events
+                (automation_id,request_id,event_type,from_state,to_state,metadata_json,metadata_sha256,actor_id,actor_role)
+                VALUES (%s,%s,'GENERATION_PREPARATION_RETRIED','UPGRADING','UPGRADING',%s,%s,%s,%s)""",
+                (automation_id, _required_text(request_id, "request_id"), _json_param(metadata, {}),
+                 _json_hash(metadata), _required_text(actor_id, "actor_id"), actor_role))
+            cursor.execute("""UPDATE automation_project_generations SET state='PREPARING',
+                record_version=record_version+1,updated_at=NOW(6) WHERE automation_id=%s AND generation=%s""", (automation_id, generation))
+            cursor.execute("UPDATE automation_projects SET reconcile_state='PREPARING',updated_at=NOW(6) WHERE automation_id=%s", (automation_id,))
+
     def complete_generation_activation_row(
         self,
         automation_id: str,

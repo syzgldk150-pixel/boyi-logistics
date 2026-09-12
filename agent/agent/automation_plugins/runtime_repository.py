@@ -660,6 +660,9 @@ class MySQLAutomationPluginRuntimeAdapter:
     def mark_generation_preparing(self, automation_id: str, generation: int) -> None:
         self._write("mark_generation_preparing_row", automation_id, generation)
 
+    def retry_disabled_route_preparation(self, snapshot, **identity) -> None:
+        self._write("retry_disabled_route_preparation_row", snapshot_to_row(snapshot), **identity)
+
     def replace_generation_coeffects(
         self,
         automation_id: str,

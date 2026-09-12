@@ -768,12 +768,8 @@ class ProductionRuntimeEffectDriver:
             RuntimeGenerationState.DISPOSING,
         }
         for automation_id in sorted(automation_ids):
-            if self._project_enabled is not None:
-                enabled = self._project_enabled(automation_id)
-                if not isinstance(enabled, bool):
-                    raise PluginConflictError("persisted project enabled state is invalid")
-                if not enabled:
-                    inactive_projects.add(automation_id)
+            if not self._is_project_enabled(automation_id):
+                inactive_projects.add(automation_id)
             for generation in repository.list_project_generations(automation_id):
                 if generation.state not in eligible_states:
                     continue
@@ -1082,7 +1078,10 @@ class ProductionRuntimeEffectDriver:
                 self._validated_contribution_payload(item.payload)
                 for item in _service_v2_contribution_effect_plans(snapshot)
             )
-            self._contributions.prepare_generation(generation_materials, committed=False)
+            self._contributions.prepare_generation(
+                generation_materials, committed=False,
+                restored_inactive=not self._is_project_enabled(snapshot.automation_id),
+            )
         return replace(
             effect,
             state=RuntimeEffectState.APPLIED,
@@ -1169,6 +1168,14 @@ class ProductionRuntimeEffectDriver:
             materials.append(self._validated_service_payload(expected))
         return tuple(materials)
 
+    def _is_project_enabled(self, automation_id: str) -> bool:
+        if self._project_enabled is None:
+            return True
+        enabled = self._project_enabled(automation_id)
+        if not isinstance(enabled, bool):
+            raise PluginConflictError("persisted project enabled state is invalid")
+        return enabled
+
     def activate_committed(
         self,
         *,
@@ -1192,13 +1199,15 @@ class ProductionRuntimeEffectDriver:
         )
         for material in services:
             self._ensure_service_reference(material)
+        enabled = self._is_project_enabled(snapshot.automation_id)
         if contributions:
             self._contributions.prepare_generation(
                 contributions,
                 committed=False,
+                restored_inactive=not enabled,
             )
         self._apply_projection_transition(
-            operation="apply",
+            operation="apply" if enabled else "withdraw",
             automation_id=snapshot.automation_id,
             generation=snapshot.generation,
             expected_registration_ids=tuple(
@@ -1675,6 +1684,22 @@ class MySQLRuntimeTargetService:
         for automation_id in consumers:
             self.reconcile_project(automation_id)
         return result
+
+    def retry_disabled_route_preparation(self, automation_id: str, **identity) -> None:
+        entry = self._catalog.require(automation_id)
+        runtime = self._runtime.get_project_runtime(automation_id)
+        if runtime is None or runtime.reconcile_state is not RuntimeReconcileState.ERROR:
+            return
+        target = self._runtime.get_generation(automation_id, runtime.target_generation)
+        if target is None or target.state is not RuntimeGenerationState.FAILED:
+            raise PluginConflictError("failed upgrade preparation is unavailable")
+        config, policy = self._desired_rows(automation_id)
+        candidate = build_runtime_generation_snapshot(entry, desired_config_row=config, policy_row=policy,
+            generation=target.snapshot.generation, core_catalog=self._core_catalog)
+        if not self._same_material(target.snapshot, candidate, manifest_schema_version=entry.manifest_schema_version):
+            raise PluginConflictError("failed preparation no longer matches saved settings")
+        self._runtime.retry_disabled_route_preparation(target.snapshot, **identity)
+        self._reconciler.resume_project(automation_id)
 
     def reconcile_project(
         self,

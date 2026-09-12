@@ -1,5 +1,6 @@
 """Connector page contracts must survive the full Host service proxy."""
 from dataclasses import replace
+import base64
 
 import pytest
 
@@ -42,3 +43,18 @@ def test_connector_uses_declared_page_limit_in_both_directions(large_input):
 def test_managed_storage_document_limit_is_unchanged():
     with pytest.raises(PluginExecutionError, match="document is too large"):
         _canonical_json({"value": "A" * (1024 * 1024 + 1)})
+
+
+@pytest.mark.parametrize("field", ["GUID", "external_id"])
+def test_ronghui_record_identifier_survives_connector_without_allowing_paths(field):
+    identifier = base64.b64encode(bytes(range(15)) + b"\xff").decode()
+    schema = {"type": "object", "properties": {field: {"type": "string"}},
+              "required": [field], "additionalProperties": False}
+    registry = _result_registry(lambda _binding, _args: {field: identifier}, output_schema=schema)
+    adapter, _ = _adapter(connector_registry=registry)
+    assert _invoke(adapter) == {field: identifier}
+    for path in ("/etc/passwd", "https://private.invalid/document", "C:\\private\\file"):
+        registry = _result_registry(lambda _binding, _args: {field: path}, output_schema=schema)
+        adapter, _ = _adapter(connector_registry=registry)
+        with pytest.raises(PluginExecutionError):
+            _invoke(adapter)

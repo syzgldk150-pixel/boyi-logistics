@@ -431,7 +431,7 @@ def _reject_sensitive_result(
         # Ronghui record IDs are canonical base64 encodings of 16-byte IDs.
         # Their slash is data, not a filesystem locator. Binding identity checks
         # above still apply; arbitrary text and URI/path values remain denied.
-        if business_field == "external_id" and len(value) == 24:
+        if business_field in {"external_id", "GUID"} and len(value) == 24:
             try:
                 binary = base64.b64decode(value, validate=True)
             except ValueError:

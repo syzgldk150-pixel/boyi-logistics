@@ -138,6 +138,13 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
         with ManagementFixture(connection_factory=connect, runtime_root=tmp_path / "host", account_manager=accounts,
                 broker_handlers=handlers, resource_provider=supplier.resource_loader, upload_signature_verifier=trust,
                 migration_account_bindings=bindings, enable_directory_faults=False, connector_registry=connectors) as host:
+            # Match production's reserved-command validation during withdrawal
+            # and upgrade, not only in the later restart assertion.
+            from agent.direct_tool_router import is_reserved_feishu_command_text
+            host.contribution_registry._reserved_feishu_command = is_reserved_feishu_command_text
+            host.contribution_registry._migration_reserved_feishu_target = (
+                MigrationEntrypointOwnershipResolver(host.packages).allow_reserved_feishu_target
+            )
             bootstrap(host, private_key=private, trust=trust, key_id="isolated-migration")
             host.targets.reconcile_project(SOURCE)
             entry = host.catalog.require(SOURCE)
@@ -265,10 +272,29 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
                             updated.writestr(item, data)
                     upgraded_zip = destination.getvalue()
                     retired = host.catalog.require(target)
-                    host.management.upgrade(target, upgraded_zip, request_id=str(uuid4()),
-                        expected_record_version=retired.record_version,
-                        transport_package_sha256=sha256(upgraded_zip).hexdigest(), actor=ACTOR)
+                    with monkeypatch.context() as upgrade_fault:
+                        if not reconcile_before_config:
+                            # Reproduce the already-deployed defect: a disabled
+                            # upgrade was prepared as active and reserved V1's command.
+                            upgrade_fault.setattr(host.driver, "_is_project_enabled", lambda _id: True)
+                        host.management.upgrade(target, upgraded_zip, request_id=str(uuid4()),
+                            expected_record_version=retired.record_version,
+                            transport_package_sha256=sha256(upgraded_zip).hexdigest(), actor=ACTOR)
                     assert host.catalog.require(target).installed_version == "2.0.99"
+                    if not reconcile_before_config:
+                        from agent.automation_plugins.runtime_repository import snapshot_to_row
+                        runtime = host.runtime_repository.get_project_runtime(target)
+                        failed = host.runtime_repository.get_generation(target, runtime.target_generation)
+                        assert failed.state.value == "FAILED"
+                        with host.repository.unit_of_work() as uow, pytest.raises(ConcurrentUpdateError):
+                            uow.automation_plugins.retry_disabled_route_preparation_row(
+                                snapshot_to_row(failed.snapshot), request_id=str(uuid4()),
+                                actor_id=ACTOR.actor_id, actor_role="admin")
+                        changed = snapshot_to_row(failed.snapshot)
+                        changed["package_sha256"] = "0" * 64
+                        with host.repository.unit_of_work() as uow, pytest.raises(ConcurrentUpdateError):
+                            uow.automation_plugins.retry_disabled_route_preparation_row(
+                                changed, request_id=str(uuid4()), actor_id=ACTOR.actor_id, actor_role="super_admin")
                     fresh = {"automation_id": target}
                 else:
                     fresh = host.management.install_service_v2(archive, request_id=str(uuid4()),
@@ -280,6 +306,12 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
                     request_id=str(uuid4()), reason="retry validation after withdrawal", actor=ACTOR)
                 assert replacement["state"] == "TESTING"
                 assert replacement["target_preparation_state"] == "PREPARED", (replacement, host.targets.reconciliation_failures())
+                if finish == "withdraw_reuse" and not reconcile_before_config:
+                    with host.repository.unit_of_work() as uow, uow.connection.cursor() as cursor:
+                        cursor.execute("SELECT metadata_json FROM automation_project_events WHERE automation_id=%s AND event_type='GENERATION_PREPARATION_RETRIED'", (target,))
+                        repaired = cursor.fetchall()
+                        assert len(repaired) == 1
+                        assert json.loads(repaired[0]["metadata_json"])["prior_error_code"] == "CONTRIBUTION_ROUTE_CONFLICT"
                 if finish == "withdraw_source_changed":
                     enabled = False
                     assert host.configuration.read(fresh["automation_id"]).config["include_daxiang_s_self_pickup"] is False
