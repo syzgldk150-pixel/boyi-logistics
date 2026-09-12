@@ -278,6 +278,44 @@ def _fixed_feishu_material() -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("command", ("统计", "统计到货数据", "更新统计"))
+@pytest.mark.parametrize("state", ("TESTING", "CUTOVER", "ERROR"))
+def test_statistics_alias_uses_exact_migration_owner_without_fallback(command, state):
+    import asyncio
+    from feishu.migration_entrypoint_router import dispatch_migrated_fixed_feishu_entrypoint
+
+    pair = _fixed_feishu_pair(state)
+
+    class PairRepository:
+        def get_authoritative_plugin_migration_pair_for_automation(self, automation_id):
+            assert automation_id == "arrival_stats"
+            return pair
+
+    ownership = MigrationEntrypointOwnershipResolver(PairRepository())
+    calls, replies = [], []
+
+    class Dispatcher:
+        def fixed_feishu_owner(self, *, source_tool_name, source_route_key, command_text):
+            return ownership.fixed_feishu_owner(source_tool_name=source_tool_name,
+                source_route_key=source_route_key, command=command_text)
+
+    async def dispatch(**kwargs):
+        calls.append(kwargs)
+        return True
+
+    async def reply(*args, **kwargs):
+        replies.append((args, kwargs))
+
+    handled = asyncio.run(dispatch_migrated_fixed_feishu_entrypoint(
+        mode="automation_project", automation_route_key="builtin.arrival_stats",
+        tool_name="sync_arrival_stats", command_text=command, receive_id="test-chat",
+        dispatcher=Dispatcher(), dispatch_service_v2=dispatch, reply_text=reply))
+    assert handled is (state != "TESTING")
+    assert calls == ([{"text": "统计到货数据", "receive_id": "test-chat"}]
+                     if state == "CUTOVER" else [])
+    assert len(replies) == (1 if state == "ERROR" else 0)
+
+
 def test_fixed_feishu_route_has_one_real_owner_across_testing_cutover_rollback() -> None:
     class PairRepository:
         pair = _fixed_feishu_pair("TESTING")
