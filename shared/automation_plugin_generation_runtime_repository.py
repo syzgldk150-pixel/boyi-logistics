@@ -109,25 +109,21 @@ def migration_owned_scheduler_enabled(
 ) -> bool:
     """Return whether the physical scheduler belongs to this project now."""
 
+    from shared.automation_plugin_v2_repository import _select_authoritative_migration_pair
+
     cursor.execute(
         """
-        SELECT source_automation_id, target_automation_id, state
+        SELECT *
         FROM automation_plugin_migration_pairs
         WHERE (source_automation_id=%s OR target_automation_id=%s)
-          AND state<>'COMPLETED'
         ORDER BY created_at, migration_pair_id
-        LIMIT 2
         """,
         (automation_id, automation_id),
     )
-    rows = _rows(cursor)
-    if len(rows) > 1:
-        raise OrchestrationPersistenceError(
-            "automation project has multiple unfinished migration pairs"
-        )
-    if not rows:
+    rows = [_decode_row(row, ("entrypoint_snapshot_json",)) or {} for row in _rows(cursor)]
+    pair = _select_authoritative_migration_pair(rows, automation_id=automation_id)
+    if pair is None:
         return desired_enabled
-    pair = rows[0]
     state = str(pair.get("state") or "")
     source_id = str(pair.get("source_automation_id") or "")
     target_id = str(pair.get("target_automation_id") or "")
@@ -136,7 +132,7 @@ def migration_owned_scheduler_enabled(
             desired_enabled and state in {"PREPARING", "TESTING", "READY", "ROLLED_BACK"}
         )
     if automation_id == target_id:
-        return bool(desired_enabled and state == "CUTOVER")
+        return bool(desired_enabled and state in {"CUTOVER", "COMPLETED"})
     raise OrchestrationPersistenceError("migration pair owner is invalid")
 
 
