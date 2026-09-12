@@ -1996,6 +1996,15 @@ def normalize_automation_plugin_catalog(
                 migration.get("state") == "ROLLED_BACK"
                 and migration.get("role") == "TARGET"
             ))
+        ) or (
+            runtime_model == "SERVICE_V2"
+            and project_state == "UNINSTALLING"
+            and not enabled
+            and reconcile_state == "STABLE"
+            and (not migration or (
+                migration.get("state") == "ROLLED_BACK"
+                and migration.get("role") == "TARGET"
+            ))
         )
         disable_allowed = bool(enabled) and project_state not in {
             "UPGRADING",

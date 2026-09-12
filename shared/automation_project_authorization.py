@@ -572,22 +572,32 @@ def compile_automation_project_contract(
             raise AutomationProjectContractError(
                 "PROJECT_SCHEDULE_CONTRIBUTION_MISSING"
             )
-        _validate_signed_action_arguments(
-            plugin_fragment["invocation_contracts"][scheduler_contribution][
-                "input_schema"
-            ],
-            row_arguments,
-            error_code="PROJECT_SCHEDULE_ARGUMENTS_INVALID",
-            dynamic_fields=set(scheduler_resolvers),
+        inactive_saved_schedule = (
+            runtime_model == "SERVICE_V2"
+            and scheduler_contribution not in effective_entrypoints
         )
-        if not isinstance(scheduler_template, Mapping) or not _arguments_match(
-            scheduler_template,
-            row_arguments,
-            scheduler_resolvers,
-            {},
-            validate_dynamic=False,
-        ):
-            raise AutomationProjectContractError("PROJECT_SCHEDULE_ARGUMENTS_STALE")
+        if inactive_saved_schedule:
+            # Persistence retains disabled schedule times with an explicit
+            # empty-argument placeholder. It is not an executable invocation.
+            if row.get("enabled") not in (False, 0) or dict(row_arguments) != {}:
+                raise AutomationProjectContractError("PROJECT_SCHEDULE_ARGUMENTS_INVALID")
+        else:
+            _validate_signed_action_arguments(
+                plugin_fragment["invocation_contracts"][scheduler_contribution][
+                    "input_schema"
+                ],
+                row_arguments,
+                error_code="PROJECT_SCHEDULE_ARGUMENTS_INVALID",
+                dynamic_fields=set(scheduler_resolvers),
+            )
+            if not isinstance(scheduler_template, Mapping) or not _arguments_match(
+                scheduler_template,
+                row_arguments,
+                scheduler_resolvers,
+                {},
+                validate_dynamic=False,
+            ):
+                raise AutomationProjectContractError("PROJECT_SCHEDULE_ARGUMENTS_STALE")
         configuration_version = row.get("configuration_version")
         if type(configuration_version) is not int or configuration_version <= 0:
             raise AutomationProjectContractError("PROJECT_SCHEDULE_VERSION_INVALID")

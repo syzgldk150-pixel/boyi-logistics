@@ -50,3 +50,31 @@ def test_inactive_schedule_does_not_bypass_existing_checks(disabled_schedule, fi
     with pytest.raises(AutomationProjectContractError) as denied:
         compile_saved(disabled_schedule)
     assert denied.value.code == code
+
+
+@pytest.mark.parametrize("required", [False, True])
+def test_disabled_placeholder_does_not_require_executable_arguments(disabled_schedule, required):
+    definition, fragment, row = disabled_schedule
+    scheduled = fragment['invocation_contracts']['daily_run']
+    scheduled['argument_template'] = {'mode': {'source': 'literal', 'value': 'incremental'}}
+    scheduled['input_schema'] = {'type':'object', 'additionalProperties':False,
+        'properties':{'mode':{'type':'string','enum':['incremental']}},
+        'required':['mode'] if required else []}
+    contract = compile_saved(disabled_schedule)
+    assert set(contract.invocation_contracts) == {'run_now'}
+    assert row['tool_params'] == {}
+    assert contract.snapshot['scheduled_configurations'][0]['enabled'] is False
+
+    # Enabling the contribution requires compilation of the declared arguments;
+    # the persisted placeholder cannot become a runnable scheduler request.
+    fragment['enabled_entrypoints'].append('daily_run')
+    from dataclasses import replace
+    enabled_definition = replace(definition,
+        allowed_entrypoints=frozenset({'run_now','daily_run'}),
+        argument_templates={'run_now':{},'daily_run':{'mode':'incremental'}})
+    with pytest.raises(AutomationProjectContractError) as denied:
+        compile_saved((enabled_definition, fragment, row))
+    assert denied.value.code in {'PROJECT_SCHEDULE_ARGUMENTS_INVALID','PROJECT_SCHEDULE_ARGUMENTS_STALE'}
+    row['tool_params'] = {'mode':'incremental'}
+    active = compile_saved((enabled_definition, fragment, row))
+    assert 'scheduler:'+row['id'] in active.invocation_contracts

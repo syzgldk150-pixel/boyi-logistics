@@ -412,6 +412,31 @@ class AutomationPluginCatalogTests(unittest.TestCase):
                 _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
                 self.assertFalse(instances[0]["uninstall_allowed"])
 
+    def test_disposed_v2_uninstall_can_be_retried_without_enabling_project(self):
+        for migration in ({}, {"state": "ROLLED_BACK", "role": "TARGET"}):
+            with self.subTest(migration=migration):
+                payload = _catalog_payload()
+                payload["instances"][0].update(runtime_model="SERVICE_V2", enabled=False,
+                    configured=True, state="UNINSTALLING", reconcile_state="STABLE", migration=migration)
+                _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+                self.assertTrue(instances[0]["uninstall_allowed"])
+                self.assertFalse(instances[0]["enable_allowed"])
+                self.assertFalse(instances[0]["lifecycle_actions_allowed"])
+
+    def test_uninstall_retry_keeps_draining_and_unknown_states_closed(self):
+        for updates in (
+            {"enabled": True}, {"reconcile_state": "DRAINING"},
+            {"reconcile_state": "BLOCKED_UNKNOWN_WRITE"},
+            {"migration": {"state": "TESTING", "role": "TARGET"}},
+        ):
+            with self.subTest(updates=updates):
+                payload = _catalog_payload()
+                payload["instances"][0].update(runtime_model="SERVICE_V2", enabled=False,
+                    configured=True, state="UNINSTALLING", reconcile_state="STABLE")
+                payload["instances"][0].update(updates)
+                _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+                self.assertFalse(instances[0]["uninstall_allowed"])
+
     def test_code_owned_projection_must_not_overlap_browser_schema(self):
         payload = _catalog_payload()
         payload["instances"][0]["code_owned_config_fields"] = ["region"]
