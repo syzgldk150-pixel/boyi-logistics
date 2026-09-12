@@ -52,7 +52,14 @@ def test_invalid_or_conflicting_confirmation_state_is_rejected(state, confirm):
     assert not valid_preview_state({"preview_state": state, "can_confirm": confirm})
 
 
-def test_browser_used_selection_stays_disabled_and_never_shows_expired():
+@pytest.mark.parametrize("service_v2", [False, True])
+def test_browser_used_selection_stays_disabled_and_never_shows_expired(service_v2):
+    def preview(**kwargs):
+        value = selection_projection(**kwargs)
+        if service_v2:
+            value["automation_id"] = "87911cef-3773-4273-b644-030108c43678"
+        return value
+
     template = (Path(__file__).resolve().parents[1] / "console/templates/automation.html").read_text()
     names = ("previewFeedback", "selectedBillCodes", "syncSelectionPreviewCount", "localizedSelectionStatus",
              "selectionMeta", "renderSelectionPreview", "formatScanPreviewTime")
@@ -72,6 +79,10 @@ def test_browser_used_selection_stays_disabled_and_never_shows_expired():
             <div id="list"></div><button id="confirm">确认</button><button id="all">全选</button>
             <button id="regenerate">重新读取</button></div>''')
         page.add_script_tag(content='''
+            const form = document.createElement('form');
+            const taskRow = document.createElement('article');
+            taskRow.setAttribute('data-automation-task-row', '');
+            taskRow.appendChild(form);
             const selectionPreviewPanel = document.querySelector('#panel');
             const selectionPreviewList = document.querySelector('#list');
             const selectionPreviewConfirm = document.querySelector('#confirm');
@@ -81,18 +92,20 @@ def test_browser_used_selection_stays_disabled_and_never_shows_expired():
             let selectionConfirmationRetryOnly = false, selectionPreviewCanConfirm = false;
             function syncRunButtonVisual() {}
         ''' + '\n'.join(functions))
-        page.evaluate("p => renderSelectionPreview(p)", selection_projection())
+        page.evaluate("v => taskRow.dataset.pluginId = v", "self_pickup_problem_upload_v2" if service_v2 else "self_pickup_problem_upload")
+        page.evaluate("p => renderSelectionPreview(p)", preview())
+        assert "到货 2 / 应到 2" in page.locator('#list').inner_text()
         page.locator('#list input').check()
         assert page.locator('#confirm').is_enabled()
         for expired in (False, True):
-            page.evaluate("p => renderSelectionPreview(p)", selection_projection(consumed=True, expired=expired))
+            page.evaluate("p => renderSelectionPreview(p)", preview(consumed=True, expired=expired))
             assert page.locator('[data-selection-preview-state]').inner_text() == "已使用"
             assert "正式执行记录" in page.locator('[data-selection-preview-message]').inner_text()
             assert not page.locator('#panel.is-expired').count()
             assert page.locator('#list input').is_disabled()
             assert page.locator('#all').is_disabled()
             assert page.locator('#confirm').is_disabled()
-        page.evaluate("p => renderSelectionPreview(p)", selection_projection(expired=True))
+        page.evaluate("p => renderSelectionPreview(p)", preview(expired=True))
         assert page.locator('[data-selection-preview-state]').inner_text() == "已过期"
         assert page.locator('#panel.is-expired').count() == 1
         for kind in ("scan", "selection"):

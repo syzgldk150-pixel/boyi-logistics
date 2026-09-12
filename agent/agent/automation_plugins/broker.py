@@ -6,6 +6,7 @@ import asyncio
 import errno
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -1248,6 +1249,7 @@ class LocalCoreAutomationBroker:
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         response: dict[str, Any]
+        prepared = None
         try:
             payload = await self._read_request_payload(reader)
             request = await asyncio.to_thread(_decode_broker_request, payload)
@@ -1318,6 +1320,15 @@ class LocalCoreAutomationBroker:
             if host_evidence_ref is not None:
                 response["host_evidence_ref"] = host_evidence_ref
         except Exception as exc:
+            # Only signed operation names and closed error codes are logged;
+            # never include request arguments, result data or exception text.
+            code = str(getattr(exc, "code", type(exc).__name__.upper()))[:64]
+            logging.getLogger(__name__).error(
+                "broker_call_failed operation=%s action=%s exception_type=%s code=%s",
+                prepared.operation if prepared is not None else "unprepared",
+                prepared.action if prepared is not None else "unprepared",
+                type(exc).__name__, code if re.fullmatch(r"[A-Z0-9_]+", code) else "UNCLASSIFIED",
+            )
             response = {
                 "ok": False,
                 "error_code": getattr(exc, "code", type(exc).__name__.upper())[:64],

@@ -1915,6 +1915,12 @@ class AutomationPluginManagementService:
                 source_record=source_record,
                 target_entrypoints=target_entrypoints,
             )
+        if target.reconcile_state is RuntimeReconcileState.ERROR:
+            self._targets.retry_disabled_route_preparation(
+                target_automation_id, request_id=str(uuid.uuid5(uuid.UUID(request_id), "repair-route-preparation")),
+                actor_id=actor.actor_id, actor_role=role,
+            )
+            target = self._catalog.require(target_automation_id)
         # Read the source once more only after the durable ownership gate is
         # in place.  Ordinary configuration mutation is now rejected for both
         # sides, so this is the exact source snapshot copied into the new v2
