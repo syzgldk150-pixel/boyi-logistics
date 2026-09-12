@@ -23,7 +23,7 @@ Service V2 插件是包含实际业务代码的独立 ZIP。宿主负责账号�
 
 `agent/agent/automation_plugins/harness_permissions.py` 是只读能力投影的单点。注册 Harness、生成模型工具目录和发放实际 read/compute 调用权限时，按 Host 注册表保留明确的只读操作。打卡插件可查询预检及核验接口，但正式提交接口不会进入这次只读调用；service.invoke 仍在分发前核验实际目标及当前调用的 effect ceiling。原签名权限不修改，缺字段或治理伪造直接失败。
 
-迁移目标可以保留已关闭的物理定时配置。其声明、账号参数和版本仍须验证，但未启用的 Scheduler contribution 不产生可调用定时合同，也不阻止该实例已有的手动和 AI 入口。意外开启的物理定时、未声明入口或配置漂移仍报错。
+迁移目标可以保留已关闭的物理定时配置。未启用的 Scheduler contribution 对应物理行必须关闭且参数为保存层明确写入的空对象；仍核对其声明、实例、代次和配置版本，但不把空对象当作可执行参数。它不产生可调用定时合同，也不阻止已有的手动和 AI 入口；重新启用时必须按当前设置编译并完整校验执行参数。意外开启的物理定时、未声明入口或配置漂移仍报错。
 
 复现回归：`PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m pytest -q tests/test_service_v2_read_capability_lifecycle.py tests/test_service_v2_disabled_schedule_contract.py`。这些测试核验真实生产 Manifest 的编译、注册、代次切换和撤销，以及实际 Broker 的读取放行与提交拒绝；不代表执行了真实打卡。
 
