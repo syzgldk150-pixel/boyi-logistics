@@ -20,6 +20,7 @@ from console.services.automation_preview_support import (
     group_scheduled_rows_by_automation_id,
     normalize_scan_preview_projection,
     normalize_selection_preview_projection,
+    preview_project_id_valid,
     scan_preview_error_message,
     selection_preview_error_message,
 )
@@ -362,7 +363,7 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
             invoke_payload["contribution_id"] = contribution_id
         if preview_invocation_id is not None:
             safe_preview_invocation_id = self._normalize_browser_request_uuid(preview_invocation_id)
-            if automation_id != SCAN_PREVIEW_PROJECT_ID or not safe_preview_invocation_id:
+            if not preview_project_id_valid(automation_id, scan=True) or not safe_preview_invocation_id:
                 return {
                     "ok": False,
                     "status": HTTPStatus.BAD_REQUEST,
@@ -1368,7 +1369,7 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
         if (
             not request_id
             or set(values) != {"task_id", "preview_invocation_id"}
-            or task_id != SCAN_PREVIEW_PROJECT_ID
+            or not preview_project_id_valid(task_id, scan=True)
             or not preview_invocation_id
         ):
             self._send_json(
@@ -1386,11 +1387,11 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
 
         result = self._start_automation_task_run(
             {
-                "task_id": SCAN_PREVIEW_PROJECT_ID,
+                "task_id": task_id,
                 "task_mode": "plugin",
                 "project_plugin_instance": True,
                 "name": "扫描",
-                "tool_name": f"automation.{SCAN_PREVIEW_PROJECT_ID}.run",
+                "tool_name": f"automation.{task_id}.run",
                 "tool_params": {},
                 "tool_params_json": "{}",
             },
@@ -1472,7 +1473,7 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
         if (
             not request_id
             or set(values) != {"task_id"}
-            or task_id not in SELECTION_PREVIEW_PROJECT_IDS
+            or not preview_project_id_valid(task_id, scan=False)
         ):
             self._send_json(
                 handler,
@@ -1565,7 +1566,7 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
             not request_id
             or set(values)
             != {"task_id", "preview_invocation_id", "selected_bill_codes_json"}
-            or task_id not in SELECTION_PREVIEW_PROJECT_IDS
+            or not preview_project_id_valid(task_id, scan=False)
             or not preview_invocation_id
             or not isinstance(selected, list)
             or not selected
@@ -1781,7 +1782,14 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
             run = data
             status = str(run.get("status") or "").upper()
             invocation_phase = str(run.get("invocation_phase") or "run")
-            scan_phase = selection_phase = invocation_phase
+            scan_phase = invocation_phase if (
+                task_id == SCAN_PREVIEW_PROJECT_ID or run.get("plugin_id") == "sync_scan_codes_v2"
+            ) else "run"
+            selection_phase = invocation_phase if (
+                task_id in SELECTION_PREVIEW_PROJECT_IDS or run.get("plugin_id") in {
+                    "self_pickup_problem_upload_v2", "split_pending_problem_upload_v2"
+                }
+            ) else "run"
             execution_phase = str(run.get("execution_phase") or "").strip().lower()
             stage_code = str(run.get("stage_code") or "").strip().upper()
             stage_description = str(run.get("stage_description") or "").strip()
@@ -1904,13 +1912,13 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
                 }
                 if (
                     ok
-                    and task_id == SCAN_PREVIEW_PROJECT_ID
+                    and preview_project_id_valid(task_id, scan=True)
                     and scan_phase == "preview"
                 ):
                     preview_result = self._agent_request(
                         "GET",
                         (
-                            f"/internal/v1/automation-projects/{SCAN_PREVIEW_PROJECT_ID}"
+                            f"/internal/v1/automation-projects/{quote(task_id, safe='')}"
                             f"/scan-previews/{quote(invocation_id, safe='')}"
                         ),
                         timeout=5,
@@ -1920,6 +1928,7 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
                         projection = normalize_scan_preview_projection(
                             preview_result.get("data"),
                             expected_invocation_id=invocation_id,
+                            expected_automation_id=task_id,
                         )
                         if projection is None:
                             payload["scan_preview_error"] = {
@@ -1947,7 +1956,7 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
                         }
                 if (
                     ok
-                    and task_id in SELECTION_PREVIEW_PROJECT_IDS
+                    and preview_project_id_valid(task_id, scan=False)
                     and selection_phase == "preview"
                 ):
                     preview_result = self._agent_request(
@@ -1988,7 +1997,7 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
                         }
                 elif (
                     not ok
-                    and task_id in SELECTION_PREVIEW_PROJECT_IDS
+                    and preview_project_id_valid(task_id, scan=False)
                     and selection_phase == "preview"
                 ):
                     preview_error_code = str(
@@ -2009,7 +2018,7 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
                     payload["runtime"]["message"] = preview_message
             if (
                 attention
-                and task_id in SELECTION_PREVIEW_PROJECT_IDS
+                and preview_project_id_valid(task_id, scan=False)
                 and selection_phase == "preview"
                 and "selection_preview_error" not in payload
             ):

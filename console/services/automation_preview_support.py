@@ -24,6 +24,19 @@ SCAN_PREVIEW_PROJECT_ID = "scan_codes"
 SELECTION_PREVIEW_PROJECT_IDS = frozenset(
     {"self_pickup_problem_upload", "split_pending_problem_upload"}
 )
+
+
+def preview_project_id_valid(automation_id: str, *, scan: bool) -> bool:
+    """Accept fixed V1 IDs or exact V2 instance UUIDs; Agent checks ownership."""
+    legacy_ids = {SCAN_PREVIEW_PROJECT_ID} if scan else SELECTION_PREVIEW_PROJECT_IDS
+    if automation_id in legacy_ids:
+        return True
+    try:
+        return str(uuid.UUID(automation_id)) == automation_id
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 SELECTION_PREVIEW_PUBLIC_FIELDS = frozenset(
     {
         "contract_version",
@@ -126,7 +139,7 @@ def normalize_selection_preview_projection(
     automation_id = str(raw.get("automation_id") or "").strip()
     if (
         automation_id != expected_automation_id
-        or automation_id not in SELECTION_PREVIEW_PROJECT_IDS
+        or not preview_project_id_valid(automation_id, scan=False)
     ):
         return None
     preview_invocation_id = str(raw.get("preview_invocation_id") or "").strip()
@@ -153,7 +166,7 @@ def normalize_selection_preview_projection(
         timestamps[field] = value
     candidate_count = raw.get("candidate_count")
     candidates = raw.get("candidates")
-    allowed_fields = SELECTION_PREVIEW_CANDIDATE_FIELDS[automation_id]
+    allowed_fields = SELECTION_PREVIEW_CANDIDATE_FIELDS.get(automation_id)
     if (
         isinstance(candidate_count, bool)
         or not isinstance(candidate_count, int)
@@ -165,7 +178,13 @@ def normalize_selection_preview_projection(
     normalized_candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
     for candidate in candidates:
-        if not isinstance(candidate, Mapping) or set(candidate) != allowed_fields:
+        if not isinstance(candidate, Mapping):
+            return None
+        if allowed_fields is not None and set(candidate) != allowed_fields:
+            return None
+        if allowed_fields is None and not any(
+            set(candidate) == fields for fields in SELECTION_PREVIEW_CANDIDATE_FIELDS.values()
+        ):
             return None
         bill_code = str(candidate.get("bill_code") or "").strip()
         if not bill_code or len(bill_code) > 64 or bill_code in seen:
@@ -235,6 +254,7 @@ def group_scheduled_rows_by_automation_id(
 
 __all__ = [
     "SCAN_PREVIEW_PROJECT_ID",
+    "preview_project_id_valid",
     "SELECTION_PREVIEW_PROJECT_IDS",
     "SELECTION_PREVIEW_PUBLIC_FIELDS",
     "SELECTION_PREVIEW_CANDIDATE_FIELDS",

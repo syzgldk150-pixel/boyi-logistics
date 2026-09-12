@@ -96,9 +96,14 @@ def is_scan_preview_project(entry: Any) -> bool:
     """Match only the reviewed first-party scan project identity."""
 
     if getattr(entry, "runtime_model", None) == "SERVICE_V2":
+        from agent.automation_plugins.models import PluginTrustSource
+
         return (
             getattr(entry, "plugin_id", None) == "sync_scan_codes_v2"
-            and getattr(entry, "trust_source", None) in {"ed25519_first_party", "ed25519_upload"}
+            and getattr(entry, "trust_source", None) in {
+                PluginTrustSource.SUPER_ADMIN_UPLOAD.value,
+                PluginTrustSource.BUILTIN_BUNDLE.value,
+            }
         )
     return (
         str(getattr(entry, "automation_id", "") or "").strip()

@@ -6,13 +6,17 @@ import importlib.util
 import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from agent.automation_plugins.errors import PluginManifestError
+from agent.automation_plugins.errors import PluginExecutionError
+from agent.automation_plugins.execution import PluginExecutionRouter
 from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
 from agent.automation_plugins.service_v2_contract import ServiceV2ProjectContract
 from service_v2_plugins._shared.build_zip import build_plugin_zip
+from agent.orchestration.scan_preview_binding import is_scan_preview_project
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +45,35 @@ def _build(output: Path) -> bytes:
     built = build_plugin_zip(SOURCE, output)
     assert built == output.resolve()
     return built.read_bytes()
+
+
+@pytest.mark.parametrize("trust", ["super_admin_upload", "builtin_bundle"])
+def test_installed_v2_scan_uses_read_preview_before_formal_binding(trust):
+    raw = json.loads((SOURCE / "manifest.json").read_text(encoding="utf-8"))
+    contract = ServiceV2ProjectContract.from_manifest(AutomationPluginManifestV2.from_mapping(raw))
+    entry = SimpleNamespace(runtime_model="SERVICE_V2", plugin_id=raw["plugin_id"], trust_source=trust)
+    assert is_scan_preview_project(entry)
+    capability = {**contract.tool_contract, "_plugin_runtime": {
+        "runtime_model": "SERVICE_V2", "plugin_id": raw["plugin_id"],
+        "contributions": raw["contributes"], "service_contracts": {"provides": raw["provides"]},
+        "compiled_invocations": {key: {"governance": value["governance"], "target": {
+            "service": value["service"], "operation": value["operation"],
+            "contribution_id": key, "contribution_kind": value["contribution_kind"]}}
+            for key, value in contract.invocation_contracts.items()},
+    }}
+    resolved = PluginExecutionRouter._service_contribution_capability(
+        capability, contribution_id="execute_console", arguments={"dry_run": True})
+    assert resolved["operation"] == "preview"
+    assert resolved["operation_type"] == "read"
+    with pytest.raises(PluginExecutionError, match="preview or execution arguments"):
+        PluginExecutionRouter._service_contribution_capability(
+            capability, contribution_id="execute_console", arguments={"dry_run": False})
+
+
+@pytest.mark.parametrize("trust", ["ed25519_first_party", "ed25519_upload", "unknown", None])
+def test_v1_or_unknown_trust_does_not_identify_v2_scan(trust):
+    assert not is_scan_preview_project(SimpleNamespace(
+        runtime_model="SERVICE_V2", plugin_id="sync_scan_codes_v2", trust_source=trust))
 
 
 def test_scan_v2_zip_is_deterministic_and_embeds_reviewed_v1_bytes(
