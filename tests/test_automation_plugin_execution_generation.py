@@ -22,6 +22,7 @@ from agent.automation_plugins.host_capability_registry import (
     governance_for_effect,
 )
 from agent.automation_plugins.manifest import canonical_json_bytes
+from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
 from agent.automation_plugins.migration import MigrationRunClaim
 from agent.automation_plugins.models import (
     GenerationBoundResult,
@@ -32,6 +33,7 @@ from agent.automation_plugins.models import (
     RuntimeLeaseOutcome,
 )
 from agent.automation_plugins.sandbox import BubblewrapPluginSandbox, SandboxCanaryResult
+from agent.automation_plugins.service_v2_contract import ServiceV2ProjectContract
 from agent.orchestration.execution_adapter import RegisteredToolExecutionAdapter
 from agent.orchestration.models import OperationType, PlanStep, RiskLevel, sha256_json
 from agent.orchestration.result_verifier import ResultVerifier
@@ -40,6 +42,19 @@ from agent.orchestration.result_verifier import ResultVerifier
 def _digest(value: object) -> str:
     payload = canonical_json_bytes(value) if isinstance(value, (dict, list)) else str(value).encode()
     return hashlib.sha256(payload).hexdigest()
+
+
+def _service_v2_runtime_permissions() -> dict[str, Any]:
+    # V2 router fixtures must use the same Host declaration as real packages,
+    # rather than inheriting the V1 browser.invoke fixture below.
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "agent/service_v2_plugins/self_pickup_problem_upload_v2/manifest.json"
+    )
+    manifest = AutomationPluginManifestV2.from_mapping(
+        json.loads(source.read_text(encoding="utf-8"))
+    )
+    return copy.deepcopy(dict(ServiceV2ProjectContract.from_manifest(manifest).runtime_permissions))
 
 
 def _project_invocation(
@@ -403,6 +418,7 @@ def _mixed_effect_service_v2_capability(tmp_path: Path) -> dict[str, Any]:
     metadata.update(
         {
             "plugin_id": "mixed_service",
+            "runtime_permissions": _service_v2_runtime_permissions(),
             "version": "1.1.0",
             "trust_source": PluginTrustSource.SUPER_ADMIN_UPLOAD.value,
             "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
@@ -1022,6 +1038,7 @@ def test_internal_service_invocation_uses_normal_generation_lease_and_opaque_cha
     metadata.update(
         {
             "plugin_id": "base_service",
+            "runtime_permissions": _service_v2_runtime_permissions(),
             "trust_source": PluginTrustSource.SUPER_ADMIN_UPLOAD.value,
             "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
             "plugin_api": "2.0.0",
