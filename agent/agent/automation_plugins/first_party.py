@@ -75,7 +75,7 @@ _FIRST_PARTY_PACKAGE_VERSION_OVERRIDES: Mapping[str, str] = {
     "sync_arrive_list": "1.0.21",
     "sync_scan_codes": "1.0.25",
     "sync_site_send_list": "1.0.21",
-    "sync_daily_send_orders": "1.0.22",
+    "sync_daily_send_orders": "1.0.23",
 }
 _RELEASE_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
 _ACCOUNT_SYSTEM_PREFIXES = {

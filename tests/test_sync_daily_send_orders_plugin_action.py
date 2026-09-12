@@ -81,6 +81,24 @@ def test_final_snapshot_ignores_only_known_other_business_dates():
                 [], target_date="2026-09-12")
 
 
+def test_date_only_bitable_readback_keeps_business_date_and_all_other_fields():
+    action = _load_action()
+    fields, _ = action._normalize_source_row(
+        {"BILL_CODE": "R001", "REGISTER_DATE": "2026-09-12 20:26:08", "PIECE_NUMBER": "2"},
+        target_date="2026-09-12",
+    )
+    # Production Bitable returns the date-only column at UTC midnight;
+    # REGISTER_DATE includes the original time of day.
+    actual = dict(fields, **{"发件日期": 1789142400000})
+    action._verify_bitable_snapshot(
+        [{"fields": actual}], [{"fields": fields}], target_date="2026-09-12")
+    for change in ({"发件日期": "2026-09-11"}, {"发件日期": None},
+                   {"发件日期": "invalid"}, {"件数": 3}, {"运单编号": "R002"}):
+        with pytest.raises(ValueError):
+            action._verify_bitable_snapshot(
+                [{"fields": dict(actual, **change)}], [{"fields": fields}], target_date="2026-09-12")
+
+
 def test_payload_owns_full_replace_pagination_normalization_and_commit_order():
     action_module = _load_action()
     action_module._BITABLE_PAGE_SIZE = 2
