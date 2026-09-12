@@ -960,9 +960,17 @@ def _normalize_plugin_config_schema(
             "maximum",
             "minLength",
             "maxLength",
+            "pattern",
+            "minItems",
+            "maxItems",
+            "uniqueItems",
             "items",
         }
         if set(node) - allowed or node_type not in {"string", "integer", "number", "boolean", "array"}:
+            return False
+        # The signed Host schema enforces patterns when saving configuration.
+        # Displaying a text field must not reject that supported constraint.
+        if "pattern" in node and (node_type != "string" or not isinstance(node["pattern"], str)):
             return False
         present, value = _plugin_config_value(config, path)
         enum = node.get("enum")
@@ -977,8 +985,11 @@ def _normalize_plugin_config_schema(
             items = node.get("items")
             if (
                 not isinstance(items, dict)
-                or set(items) - {"type"}
+                or set(items) - {"type", "minLength", "maxLength", "pattern", "minimum", "maximum"}
                 or items.get("type") not in {"string", "integer", "number"}
+                or ("pattern" in items and (
+                    items.get("type") != "string" or not isinstance(items["pattern"], str)
+                ))
                 or enum is not None
                 or (present and not isinstance(value, list))
             ):
