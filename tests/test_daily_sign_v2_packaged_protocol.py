@@ -52,22 +52,26 @@ class FeishuTables:
         if name == "list_fields":
             return {"items":[{"field_id":f"field-{index}", "field_name":field, "type":2 if field in {"货物件数", "到货件数"} else 1} for index, field in enumerate(SHEET_HEADERS)]}
         if name == "list_records":
-            return {"items":deepcopy(self.records)}
+            items = [{**deepcopy(row), "data": list(row["fields"].values())} for row in self.records]
+            return {"ok":True, "identity":"bot", "items":items,
+                "data":{"items":items, "has_more":False, "query_context":{"revision":{"id":"test"}}}}
         if name == "write_records":
             self.records = [{"record_id":f"record-{index}", **deepcopy(row)} for index,row in enumerate(values["records"])]
             if self.corrupt:
                 self.records[0]["fields"]["到货件数"] = 999
-            return {"ok":True, "written":len(self.records)}
+            return {"ok":True, "written":len(self.records),
+                "results":[{"result":{"data":{"record":{"fields":row["fields"]}}}} for row in self.records]}
         if name in {"read_sheet", "write_sheet", "clear_sheet"}:
             from tools.phase7_sync_common import parse_a1_range
             info = parse_a1_range(values["range"])
             assert info["sheet"] == "test-sheet-tab"
             start, end = info["start_row"]-1, info["end_row"]
             if name == "read_sheet":
-                return {"valueRange":{"values":deepcopy(self.sheet[start:end])}}
+                return {"ok":True, "identity":"bot", "data":{"spreadsheetToken":values["spreadsheet_token"],
+                    "valueRange":{"range":values["range"], "majorDimension":"ROWS", "values":deepcopy(self.sheet[start:end])}}}
             rows = values["values"] if name == "write_sheet" else [[""]*9 for _ in range(end-start)]
             self.sheet[start:end] = deepcopy(rows)
-            return {"ok":True}
+            return {"ok":True, "range":values["range"], "results":[{"data":{"spreadsheetToken":values["spreadsheet_token"]}}]}
         raise AssertionError(f"Unexpected Feishu operation {name}")
 
 
@@ -104,7 +108,8 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         assert values["params"]["account_id"] == "test-tms"
         if endpoint == "/customer_service_problem":
             rows = [problem] if historical else []
-            return {"data":{"ok":True, "rows":rows, "stats":{"total":len(rows), "returned":len(rows), "total_authoritative":True}}}
+            return {"ok":True, "data":{"ok":True, "account_id":"test-tms", "account_label":"Host account",
+                "rows":rows, "stats":{"total":len(rows), "returned":len(rows), "total_authoritative":True}}}
         if endpoint == "/get_sign_records":
             return {"data":[{"扫描单号":"R00021000002", "扫描类型":"签收", "扫描时间":"2026-09-11 10:00:00", "扫描网点":"邵阳大祥S站"}]}
         raise AssertionError(endpoint)

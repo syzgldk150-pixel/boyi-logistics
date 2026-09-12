@@ -26,6 +26,65 @@ def _wire(value):
     return value
 
 
+def _public_feishu_result(name, result):
+    """Expose business values, not CLI wrappers or private target locators.
+
+    These ports read complete snapshots. A partial page or absent payload is
+    an error, never an empty snapshot that could trigger record deletion.
+    Mutation acknowledgements are still followed by the package's readback.
+    """
+    if not isinstance(result, Mapping):
+        raise PluginExecutionError("Daily-sign Feishu response is missing", code="BROKER_SOURCE_INVALID")
+    data = result.get("data")
+    envelopes = [result] + ([data] if isinstance(data, Mapping) else [])
+    if any(row.get("ok") is False or row.get("error") or row.get("errors")
+           or ("code" in row and row["code"] != 0) for row in envelopes):
+        raise PluginExecutionError("Daily-sign Feishu operation failed", code="DAILY_SIGN_FEISHU_FAILED")
+    if name == "read_sheet":
+        matrices = []
+        for row in envelopes:
+            if "values" in row:
+                matrices.append(row["values"])
+            value_range = row.get("valueRange")
+            if isinstance(value_range, Mapping) and "values" in value_range:
+                matrices.append(value_range["values"])
+        if (not matrices or any(not isinstance(matrix, list)
+                or any(not isinstance(row, list) for row in matrix) for matrix in matrices)
+                or any(matrix != matrices[0] for matrix in matrices[1:])):
+            raise PluginExecutionError("Daily-sign Sheet values are missing or inconsistent", code="BROKER_SOURCE_INVALID")
+        return {"valueRange": {"values": matrices[0]}}
+    if name in {"list_fields", "list_records"}:
+        items = result.get("items")
+        if not isinstance(items, list) or any(not isinstance(row, Mapping) for row in items):
+            raise PluginExecutionError("Daily-sign Bitable items are missing", code="BROKER_SOURCE_INVALID")
+        for row in envelopes:
+            if "has_more" in row:
+                if not isinstance(row["has_more"], bool):
+                    raise PluginExecutionError("Daily-sign pagination marker is invalid", code="BROKER_SOURCE_INVALID")
+                if row["has_more"]:
+                    raise PluginExecutionError("Daily-sign Bitable snapshot is incomplete", code="BROKER_SOURCE_INCOMPLETE")
+        # The CLI repeats each record's values as `data`, and repeats all items
+        # in its own `data` envelope. Only canonical fields/record IDs are inputs.
+        return {"items": [{key: value for key, value in row.items() if key != "data"} for row in items]}
+    if name in {"write_sheet", "clear_sheet", "write_records", "delete_records", "create_field", "update_field"}:
+        acknowledged = result.get("ok") is True
+        if name in {"create_field", "update_field"}:
+            # These two operations return the OpenAPI envelope directly.
+            acknowledged = acknowledged or (type(result.get("code")) is int and result["code"] == 0)
+        if not acknowledged:
+            raise PluginExecutionError("Daily-sign mutation acknowledgement is missing", code="BROKER_SOURCE_INVALID")
+        public = {"ok": True}
+        for key in ("requested", "written", "deleted", "chunks", "rows", "skipped"):
+            if key in result:
+                value = result[key]
+                valid = isinstance(value, bool) if key == "skipped" else type(value) is int and value >= 0
+                if not valid:
+                    raise PluginExecutionError("Daily-sign mutation count is invalid", code="BROKER_SOURCE_INVALID")
+                public[key] = value
+        return public
+    raise PluginExecutionError("Daily-sign Feishu operation is undeclared", code="BROKER_BINDING_INVALID")
+
+
 def build_daily_sign_port_handlers(*, account_manager, store=None, tms=None, feishu=None, resource_reader=None):
     if store is None:
         from tools import daily_sign_store as store
@@ -121,7 +180,9 @@ def build_daily_sign_port_handlers(*, account_manager, store=None, tms=None, fei
                         fields = {"external_id", "waybill_no", "problem_type", "registered_at", "registered_site", "source_direction"}
                         rows = [{key: item for key, item in row.items() if key in fields}
                                 if isinstance(row, Mapping) else row for row in payload["rows"]]
-                        payload = {**payload, "rows": rows}
+                        payload = {key: item for key, item in payload.items()
+                                   if key not in {"account_id", "account_label"}}
+                        payload["rows"] = rows
                         result = {**result, "data": payload} if isinstance(result.get("data"), Mapping) else payload
         else:
             sheet = role == "daily_sign_sheet"
@@ -141,10 +202,10 @@ def build_daily_sign_port_handlers(*, account_manager, store=None, tms=None, fei
                         raise ValueError("DAILY_SIGN_SHEET_RANGE_INVALID")
                     values["range"] = actual_sheet + "!" + requested
                     values["spreadsheet_token"] = resource["spreadsheet_token"]
-                    result = feishu(name, values)
+                    result = _public_feishu_result(name, feishu(name, values))
             else:
                 values.update(base_token=resource["base_token"], table_id=resource["table_id"])
-                result = feishu(name, values)
+                result = _public_feishu_result(name, feishu(name, values))
         public = _wire(result)
         material = json.dumps(public, ensure_ascii=False, sort_keys=True, default=str).encode()
         return {"value": public, "evidence_ref": "daily_sign_" + hashlib.sha256(material).hexdigest()}
