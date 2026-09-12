@@ -528,6 +528,16 @@ def compile_automation_project_contract(
         if normalized_entrypoint_kinds[entrypoint]
         == AutomationEntrypoint.SCHEDULER.value
     )
+    # A migration target may retain a disabled physical schedule while its
+    # Scheduler contribution is not enabled. Validate that saved row against
+    # the declared contract, but never make it an invocable Scheduler entry.
+    if scheduled_rows and not scheduler_contributions and runtime_model == "SERVICE_V2":
+        declared_schedulers = tuple(
+            key for key, kind in normalized_entrypoint_kinds.items()
+            if kind == AutomationEntrypoint.SCHEDULER.value
+        )
+        if len(declared_schedulers) == 1 and all(row.get("enabled") in (False, 0) for row in scheduled_rows):
+            scheduler_contributions = declared_schedulers
     if scheduled_rows and len(scheduler_contributions) != 1:
         raise AutomationProjectContractError(
             "PROJECT_SCHEDULE_CONTRIBUTION_AMBIGUOUS"
@@ -541,7 +551,7 @@ def compile_automation_project_contract(
         else None
     )
     scheduler_resolvers = (
-        dict(definition.dynamic_argument_resolvers.get(scheduler_contribution, {}))
+        dict(plugin_fragment["invocation_contracts"][scheduler_contribution]["dynamic_resolvers"])
         if scheduler_contribution is not None
         else {}
     )
@@ -582,7 +592,7 @@ def compile_automation_project_contract(
         if type(configuration_version) is not int or configuration_version <= 0:
             raise AutomationProjectContractError("PROJECT_SCHEDULE_VERSION_INVALID")
         contract_id = f"scheduler:{task_id}"
-        invocation_contracts[contract_id] = InvocationArgumentContract(
+        schedule_invocation = InvocationArgumentContract(
             contract_id=contract_id,
             entrypoint=AutomationEntrypoint.SCHEDULER.value,
             expected_arguments=dict(row_arguments),
@@ -603,6 +613,8 @@ def compile_automation_project_contract(
                 else None
             ),
         )
+        if scheduler_contribution in effective_entrypoints:
+            invocation_contracts[contract_id] = schedule_invocation
         schedule_snapshots.append(
             {
                 "task_id": task_id,

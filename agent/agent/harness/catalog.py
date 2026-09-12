@@ -11,6 +11,9 @@ from threading import RLock
 from typing import Any, Callable, Mapping, Sequence
 
 from agent.harness.errors import HarnessError
+from agent.automation_plugins.errors import PluginConflictError
+from agent.automation_plugins.harness_permissions import project_read_runtime_permissions
+from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.harness.models import strict_json
 from agent.harness.ports import ManagedContributionSnapshotProvider, TrustedHarnessInvocationPort
 
@@ -20,16 +23,6 @@ _FORBIDDEN_SUBMISSION_KEYS = frozenset(
     {"automation_id", "service", "operation", "account_id", "resource_id", "provider_id"}
 )
 _SAFE_EFFECTS = frozenset({"read", "compute"})
-_RUNTIME_PERMISSION_FIELDS = frozenset(
-    {
-        "network",
-        "browser",
-        "office",
-        "file_roles",
-        "broker_operations",
-        "max_broker_calls",
-    }
-)
 _MANAGED_CONTRACT_FIELDS = frozenset(
     {
         "id",
@@ -223,36 +216,11 @@ def _package_is_safe(record: Mapping[str, Any], contract: Mapping[str, Any]) -> 
     if record.get("mutating") is True:
         return False
     permissions = record.get("runtime_permissions")
-    if not isinstance(permissions, Mapping) or set(permissions) != _RUNTIME_PERMISSION_FIELDS:
+    try:
+        projected = project_read_runtime_permissions(permissions)
+        return canonical_json_bytes(projected) == canonical_json_bytes(permissions)
+    except PluginConflictError:
         return False
-    if any(type(permissions.get(field_name)) is not bool for field_name in ("network", "browser", "office")):
-        return False
-    file_roles = permissions.get("file_roles")
-    broker_operations = permissions.get("broker_operations")
-    max_broker_calls = permissions.get("max_broker_calls")
-    if not isinstance(file_roles, (list, tuple)) or file_roles:
-        return False
-    if (
-        permissions.get("network") is not False
-        or permissions.get("browser") is not False
-        or permissions.get("office") is not False
-        or not isinstance(broker_operations, (list, tuple))
-    ):
-        return False
-    for raw_operation in broker_operations:
-        if not isinstance(raw_operation, Mapping):
-            return False
-        dynamic_read = (
-            raw_operation.get("operation") == "service.invoke"
-            and raw_operation.get("dynamic_effect") is True
-        )
-        if not dynamic_read:
-            return False
-    if type(max_broker_calls) is not int or max_broker_calls < 0:
-        return False
-    if bool(broker_operations) != (max_broker_calls > 0):
-        return False
-    return True
 
 
 def _managed_entry(
