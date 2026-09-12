@@ -2863,10 +2863,6 @@
           const body = new URLSearchParams();
           if (isSelectionPreviewWorkflow) {
             body.set("task_id", String(form.querySelector("input[name='task_id']")?.value || ""));
-            const contribution = form.querySelector("[name='contribution_id']");
-            if (contribution instanceof HTMLInputElement || contribution instanceof HTMLSelectElement) {
-              body.set("contribution_id", contribution.value);
-            }
           } else {
             const fd = new FormData(form);
             fd.forEach((v, k) => { if (typeof v === "string") body.append(k, v); });
