@@ -1,5 +1,6 @@
 """Real isolated package + real MySQL, with deterministic platform test servers."""
 from copy import deepcopy
+import base64
 from datetime import date, datetime
 from types import SimpleNamespace
 import os
@@ -70,7 +71,7 @@ class FeishuTables:
         raise AssertionError(f"Unexpected Feishu operation {name}")
 
 
-@pytest.mark.parametrize("count,corrupt", [(514,False), (2,True)])
+@pytest.mark.parametrize("count,corrupt", [(514,False), (2,True), (2,False)])
 def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_path, direct_repository, monkeypatch, count, corrupt):  # noqa: F811
     assert os.environ["AGENT_DB_HOST"] == "127.0.0.1" and os.environ["AGENT_DB_NAME"].endswith("_test")
     # This UUID database belongs only to this test module. Reset its daily-sign
@@ -82,6 +83,16 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
     arrivals = [{"tracking_number":code, "destination_station":"邵阳大祥S站", "expected_quantity":3,
         "arrived_quantity":2, "goods_name":"隔离货物", "package_type":"纸箱", "delivery_method":"派送",
         "recipient_address":"湖南省邵阳市大祥区隔离测试路1号"} for code in (f"R{21000000+index:011d}" for index in range(1,count+1))]
+    historical = count == 2 and not corrupt
+    identity = base64.b64encode(b"\xff" * 16).decode()
+    problem = {"external_id":identity, "waybill_no":"R00021000002", "problem_type":"少货/分批",
+        "registered_at":"2026-09-10 12:00:00", "registered_site":"邵阳大祥S站", "source_direction":"registered",
+        "account_id":"host-private-account", "raw":{"FILE_PATH":"/host/private/attachment"}}
+    if historical:
+        arrivals[0]["recipient_address"] = "/湖南省邵阳市隔离测试路1号"
+        store.upsert_problem_events([{"source":"ronghui_problem:abcdef123456", "external_id":identity,
+            "tracking_number":"R00021000002", "problem_type":"少货/分批",
+            "registered_at":"2026-09-10 12:00:00", "upload_complete":True, "payload":problem}])
     store.save_arrival_stat_snapshot(date(2026,9,10), arrivals)
     source_calls = []
 
@@ -92,7 +103,8 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
             return {"data":[{"billNumberMain":row["tracking_number"], "planSignTime":"2026-09-11 23:59:59"} for row in arrivals]}
         assert values["params"]["account_id"] == "test-tms"
         if endpoint == "/customer_service_problem":
-            return {"data":{"ok":True, "rows":[], "stats":{"total":0, "returned":0, "total_authoritative":True}}}
+            rows = [problem] if historical else []
+            return {"data":{"ok":True, "rows":rows, "stats":{"total":len(rows), "returned":len(rows), "total_authoritative":True}}}
         if endpoint == "/get_sign_records":
             return {"data":[{"扫描单号":"R00021000002", "扫描类型":"签收", "扫描时间":"2026-09-11 10:00:00", "扫描网点":"邵阳大祥S站"}]}
         raise AssertionError(endpoint)
@@ -120,4 +132,7 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
     state = store.load_daily_sign_state()
     assert state["ledger"]["R00021000002"]["tms_signed"]
     assert state["ledger"]["R00021000001"]["arrived_quantity"] == 2
+    if historical:
+        assert state["ledger"]["R00021000001"]["recipient_address"] == arrivals[0]["recipient_address"]
+        assert any(row["external_id"] == identity for row in state["problems"]["R00021000002"])
     assert result["meta"]["write_outcome"] == "WRITE_VERIFIED"

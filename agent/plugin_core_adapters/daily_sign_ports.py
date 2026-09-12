@@ -58,6 +58,13 @@ def build_daily_sign_port_handlers(*, account_manager, store=None, tms=None, fei
                     result[field] = list(result[field].values())
                 for field in ("arrivals", "problems"):
                     result[field] = [row for group in result[field].values() for row in group]
+                # Historical raw responses and old calculation diagnostics are
+                # not inputs to the maintained daily-sign rules. Keep them in
+                # SQL; expose the business columns, never raw account/URL data.
+                for field in ("ledger", "arrivals", "problems", "signs", "sign_verifications"):
+                    result[field] = [{key: item for key, item in row.items()
+                                      if key not in {"payload_json", "calculation_trace"}}
+                                     for row in result[field]]
             elif name == "earliest_date":
                 result = store.earliest_relevant_source_date()
             elif name == "build_marker":
@@ -103,6 +110,14 @@ def build_daily_sign_port_handlers(*, account_manager, store=None, tms=None, fei
                 else:
                     target["account_id"] = account_id
                 result = tms(endpoints[name], request)
+                if name == "read_problems" and isinstance(result, Mapping):
+                    payload = result.get("data") if isinstance(result.get("data"), Mapping) else result
+                    if isinstance(payload.get("rows"), list):
+                        fields = {"external_id", "waybill_no", "problem_type", "registered_at", "registered_site", "source_direction"}
+                        rows = [{key: item for key, item in row.items() if key in fields}
+                                if isinstance(row, Mapping) else row for row in payload["rows"]]
+                        payload = {**payload, "rows": rows}
+                        result = {**result, "data": payload} if isinstance(result.get("data"), Mapping) else payload
         else:
             sheet = role == "daily_sign_sheet"
             resource = resource_reader(context.resource_id, kind="feishu_sheet" if sheet else "feishu_bitable",

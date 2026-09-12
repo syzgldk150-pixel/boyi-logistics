@@ -8,6 +8,7 @@ binding used by the adapter.
 
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import inspect
@@ -388,6 +389,7 @@ def _reject_sensitive_result(
     *,
     sensitive_identifiers: tuple[str, ...],
     reject_wrapped_identifiers: bool,
+    business_field: str | None = None,
 ) -> None:
     if isinstance(value, Mapping):
         for key, nested in value.items():
@@ -399,6 +401,7 @@ def _reject_sensitive_result(
                 nested,
                 sensitive_identifiers=sensitive_identifiers,
                 reject_wrapped_identifiers=reject_wrapped_identifiers,
+                business_field=key,
             )
         return
     if isinstance(value, (list, tuple)):
@@ -407,6 +410,7 @@ def _reject_sensitive_result(
                 nested,
                 sensitive_identifiers=sensitive_identifiers,
                 reject_wrapped_identifiers=reject_wrapped_identifiers,
+                business_field=business_field,
             )
         return
     if isinstance(value, str):
@@ -423,7 +427,23 @@ def _reject_sensitive_result(
             raise ConnectorSensitiveDataDenied(
                 "Connector result contains sensitive data"
             )
-        validate_connector_public_text(value, subject="result")
+        checked = value
+        # Ronghui record IDs are canonical base64 encodings of 16-byte IDs.
+        # Their slash is data, not a filesystem locator. Binding identity checks
+        # above still apply; arbitrary text and URI/path values remain denied.
+        if business_field == "external_id" and len(value) == 24:
+            try:
+                binary = base64.b64decode(value, validate=True)
+            except ValueError:
+                binary = b""
+            if len(binary) == 16 and base64.b64encode(binary).decode() == value:
+                checked = value.replace("/", "_")
+        # Some platform addresses contain a leading slash before the Chinese
+        # address. Validate the address text without changing the returned value.
+        if business_field in {"recipient_address", "dispAddress", "ACCEPT_MAN_ADDRESS", "收件地址", "收件人地址", "values"}:
+            if re.match(r"^/[\u4e00-\u9fff]{2}", value):
+                checked = value[1:]
+        validate_connector_public_text(checked, subject="result")
         return
     if not isinstance(value, bool) and isinstance(value, (int, float)):
         try:

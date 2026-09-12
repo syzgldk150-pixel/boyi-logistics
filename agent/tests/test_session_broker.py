@@ -4,6 +4,31 @@ from _tms_runtime_test_support import *  # noqa: F403
 
 
 class SessionBrokerTests(unittest.TestCase):
+    def test_yunda_persists_only_after_business_frame_initialization(self):
+        broker = SessionBroker(profile_name="yunda", login_mode="yunda_password", require_phone=False)
+        self._configure_broker_state(broker, "yunda-business-session")
+        sequence = []
+        context, page = Mock(), Mock()
+        context.storage_state.side_effect = lambda **_: sequence.append("persist") or {"cookies": [], "origins": []}
+        with (patch.object(broker, "_ensure_yunda_inms_session_in_browser_locked", side_effect=lambda *_: sequence.append("initialize")),
+              patch.object(broker, "_save_meta") as save_meta,
+              patch.object(broker, "_load_meta", return_value=self._authenticated_meta())):
+            broker._persist_storage_state_locked(context, page)
+        self.assertEqual(sequence, ["initialize", "persist"])
+        self.assertEqual(save_meta.call_args.args[0]["status"], "authenticated")
+
+    def test_yunda_missing_business_session_never_marks_login_ready(self):
+        broker = SessionBroker(profile_name="yunda", login_mode="yunda_password", require_phone=False)
+        self._configure_broker_state(broker, "yunda-business-session-failed")
+        context, page = Mock(), Mock()
+        with (patch.object(broker, "_ensure_yunda_inms_session_in_browser_locked",
+                           side_effect=session_broker_module.TMSAuthStateError("AUTH_REQUIRED", "business frame unavailable")),
+              patch.object(broker, "_save_meta") as save_meta):
+            with self.assertRaises(session_broker_module.TMSAuthStateError):
+                broker._persist_storage_state_locked(context, page)
+        context.storage_state.assert_not_called()
+        save_meta.assert_not_called()
+
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.broker = SessionBroker()

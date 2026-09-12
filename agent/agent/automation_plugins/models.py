@@ -345,6 +345,26 @@ class GenerationVerificationContext:
     invocation_id: str | None = None
 
 
+def is_not_applied_success(result: Mapping[str, Any], started_mutating_call_count: int | None) -> bool:
+    """Recognize an explicit no-write result only with Host-observed zero writes.
+
+    This does not verify business success: result schemas, generation identity,
+    source observations and postconditions still require normal verification.
+    """
+    meta = result.get("meta")
+    data = result.get("data")
+    evidence = data.get("evidence") if isinstance(data, Mapping) else None
+    return (
+        type(started_mutating_call_count) is int
+        and started_mutating_call_count == 0
+        and result.get("status") == "SUCCESS"
+        and isinstance(meta, Mapping)
+        and meta.get("write_outcome") == "NOT_APPLIED"
+        and isinstance(evidence, Mapping)
+        and evidence.get("outcome") == "NOT_APPLIED"
+    )
+
+
 class GenerationBoundResult(dict[str, Any]):
     """In-process result envelope with a non-JSON generation side channel.
 

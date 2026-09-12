@@ -39,6 +39,7 @@ from agent.automation_plugins.models import (
     PluginRuntimeModel,
     RuntimeGenerationLease,
     RuntimeLeaseOutcome,
+    is_not_applied_success,
 )
 from agent.automation_plugins.ports import (
     ExecutionCapabilityIssuerPort,
@@ -816,6 +817,10 @@ class PluginExecutionRouter:
         if process_success:
             if capability.get("operation_type") in _WRITE_TYPES:
                 if started_mutating_call_count == 0:
+                    runtime = capability.get("_plugin_runtime")
+                    if (isinstance(runtime, Mapping) and runtime.get("runtime_model") == "SERVICE_V2"
+                            and is_not_applied_success(result, started_mutating_call_count)):
+                        return RuntimeLeaseOutcome.SUCCEEDED
                     return RuntimeLeaseOutcome.FAILED_BEFORE_WRITE
                 if (
                     isinstance(started_mutating_call_count, int)
