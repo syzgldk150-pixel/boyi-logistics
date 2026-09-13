@@ -16,7 +16,7 @@ import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, AsyncContextManager, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.host_observation import ServiceInvocationResult
@@ -432,6 +432,7 @@ class CoreAutomationBrokerAdapterPort(Protocol):
         binding: object,
         arguments: Mapping[str, Any],
         mark_write_started: Callable[[], None] | None = None,
+        write_operation_guard: Callable[[], AsyncContextManager] | None = None,
     ) -> Mapping[str, Any]:
         """Revalidate exact sessions/resources and return redacted business data.
 
@@ -1260,7 +1261,11 @@ class LocalCoreAutomationBroker:
             )
             self._issuer.register_host_call(prepared.capability, asyncio.current_task())
             guard = getattr(self._issuer, "host_operation_guard", None)
-            if guard is not None and prepared.grant.write_attempt_context.get("invocation_id"):
+            if guard is not None and prepared.grant.write_attempt_context.get("invocation_id") and prepared.dynamic_effect:
+                # service.invoke's signed ceiling is not its actual effect.
+                # The proxy resolves that effect before entering this guard.
+                result = await self._invoke_adapter(prepared, write_operation_guard=lambda: guard(prepared))
+            elif guard is not None and prepared.grant.write_attempt_context.get("invocation_id"):
                 async with guard(prepared):
                     result = await self._invoke_adapter(prepared)
             else:
@@ -1342,11 +1347,13 @@ class LocalCoreAutomationBroker:
             writer.close()
             await writer.wait_closed()
 
-    async def _invoke_adapter(self, prepared):
+    async def _invoke_adapter(self, prepared, *, write_operation_guard=None):
+        extra = {"write_operation_guard": write_operation_guard} if write_operation_guard is not None else {}
         return await self._adapter.invoke(
             grant=prepared.grant, operation=prepared.operation,
             action=prepared.action, role=prepared.role, binding=prepared.binding,
             arguments=prepared.arguments, mark_write_started=prepared.mark_write_started,
+            **extra,
         )
 
     @staticmethod
