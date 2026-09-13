@@ -2636,6 +2636,10 @@ def build_production_automation_plugin_runtime(
         environment,
         runtime_release_sha=runtime_release_sha,
     )
+    from agent.automation_plugins.first_party_retirement import read_retired_release, require_completed_migrations
+    retired_release = read_retired_release(release.artifact_root, runtime_release_sha)
+    if retired_release is not None:
+        require_completed_migrations(orchestration_repository)
     if release.artifact_root.parent.name != "releases":
         raise PluginPackageError("plugin artifact root must be inside the releases directory")
     base = release.artifact_root.parent.parent.resolve()
@@ -2655,7 +2659,7 @@ def build_production_automation_plugin_runtime(
     )
     repository = MySQLAutomationPluginRepositoryAdapter(
         orchestration_repository,
-        migration_account_bindings=_migration_account_bindings(
+        migration_account_bindings={} if retired_release is not None else _migration_account_bindings(
             core_catalog=core_catalog,
             account_manager=account_manager,
         ),

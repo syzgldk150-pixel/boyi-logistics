@@ -1160,7 +1160,7 @@ class AutomationPluginV2RepositoryMixin:
         return unique_active_plugin_migration_pair(rows)
 
     def get_authoritative_plugin_migration_pair_for_automation(
-        self, automation_id: str
+        self, automation_id: str, *, for_update: bool = True
     ) -> dict[str, Any] | None:
         """Return the unique current or final migration entrypoint owner.
 
@@ -1172,12 +1172,13 @@ class AutomationPluginV2RepositoryMixin:
         """
 
         project_id = _required_text(automation_id, "automation_id")
+        suffix = " FOR UPDATE" if for_update else ""
         with self.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 SELECT * FROM automation_plugin_migration_pairs
                 WHERE source_automation_id=%s OR target_automation_id=%s
-                ORDER BY created_at, migration_pair_id FOR UPDATE
+                ORDER BY created_at, migration_pair_id{suffix}
                 """,
                 (project_id, project_id),
             )

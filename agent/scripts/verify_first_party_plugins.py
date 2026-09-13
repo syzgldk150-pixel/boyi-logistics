@@ -9,6 +9,7 @@ from pathlib import Path
 from agent.automation_plugins.first_party import preflight_signed_first_party_release
 from agent.automation_plugins.package import load_ed25519_trust_store
 from agent.tool_registry import ToolRegistry
+from agent.automation_plugins.first_party_retirement import read_retired_release, require_completed_migrations
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -21,11 +22,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trust-root", type=Path, required=True)
     parser.add_argument("--release-sha", required=True)
     parser.add_argument("--digest-lock", type=Path)
+    parser.add_argument("--require-completed-migrations", action="store_true")
+    parser.add_argument("--runtime-root", type=Path)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    retired = read_retired_release(args.artifact_root, str(args.release_sha))
+    if retired is not None:
+        if args.require_completed_migrations:
+            if args.runtime_root is None:
+                raise SystemExit("completed-migration verification requires --runtime-root")
+            from agent import runtime_config
+            runtime_config.PROJECT_ROOT = args.runtime_root.resolve(strict=True)
+            runtime_config.load_agent_environment()
+            from main import _orchestration_connection
+            from shared.orchestration_repository import OrchestrationRepository
+            require_completed_migrations(OrchestrationRepository(_orchestration_connection))
+        print("status=ok")
+        print("first_party_retired=true")
+        print(f"release_sha={retired.release_sha}")
+        print("package_count=0")
+        print(f"instance_count={retired.instance_count}")
+        print(f"contracts_sha256={retired.contracts_sha256}")
+        return 0
     kwargs = {}
     if args.digest_lock is not None:
         kwargs["digest_lock_path"] = args.digest_lock

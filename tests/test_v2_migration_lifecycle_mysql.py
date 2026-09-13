@@ -11,6 +11,7 @@ from Crypto.PublicKey import ECC
 import pytest
 
 from agent.automation_plugins.connector_registry import ConnectorRegistry
+from agent.automation_plugins.errors import PluginConflictError
 from agent.automation_plugins.package import Ed25519TrustStore
 from agent.automation_plugins.problem_connectors_v2 import build_problem_connectors
 from agent.automation_plugins.migration_entrypoint_ownership import MigrationEntrypointOwnershipResolver
@@ -166,7 +167,6 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
             pair_id = str(uuid4())
             with monkeypatch.context() as preparation_fault:
                 if finish == "withdraw_failed":
-                    from agent.automation_plugins.errors import PluginConflictError
                     def reject_preparation(*_args, **_kwargs):
                         raise PluginConflictError("isolated route reservation failure", code="CONTRIBUTION_ROUTE_CONFLICT")
                     preparation_fault.setattr(host.driver._contributions, "prepare_generation", reject_preparation)
@@ -348,6 +348,15 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
             assert pair["state"] == ("ROLLED_BACK" if finish == "rollback" else "COMPLETED")
             assert host.catalog.require(SOURCE).enabled is (enabled if finish == "rollback" else False)
             assert host.catalog.require(target).enabled is (False if finish == "rollback" else enabled)
+            visible = {row["automation_id"] for row in host.catalog.safe_projection()["instances"]}
+            assert (SOURCE in visible) is (finish == "rollback")
+            assert target in visible
+            if finish != "rollback":
+                with pytest.raises(PluginConflictError) as retired_error:
+                    host.management.set_enabled(SOURCE, enabled=True, request_id=str(uuid4()),
+                        expected_record_version=host.catalog.require(SOURCE).record_version, actor=ACTOR)
+                assert retired_error.value.code == "PLUGIN_MIGRATION_SOURCE_RETIRED"
+                assert host.catalog.require(SOURCE).enabled is False
             assert host.packages.source_project_migration_uninstall_allowed(SOURCE) is (finish != "rollback")
             if finish == "complete_after_stopped_failure":
                 with host.repository.unit_of_work() as uow, uow.connection.cursor() as cursor:
