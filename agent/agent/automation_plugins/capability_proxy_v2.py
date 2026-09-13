@@ -14,6 +14,7 @@ import json
 import math
 import uuid
 from collections.abc import Mapping
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime
 from typing import Any, Awaitable, Protocol
@@ -1043,33 +1044,30 @@ class ServiceV2CapabilityProxy:
                     binding=binding,
                     arguments=public_arguments,
                 )
-                if is_write and context.mark_write_started is not None:
-                    # Resolve the exact Host binding first. The immutable
-                    # Connector operation is the final fact that crosses the
-                    # write boundary, so an unbound optional resource remains
-                    # a pre-write failure rather than an unknown write.
-                    context.mark_write_started()
-                result = await registry.invoke(
-                    resolved=provider,
-                    binding=replace(binding, invocation_context=context),
-                    arguments=public_arguments,
-                )
+                async with context.write_operation_guard() if is_write and context.write_operation_guard is not None else nullcontext():
+                    if is_write and context.mark_write_started is not None:
+                        # Binding/schema checks and resource admission must
+                        # succeed before recording a real write attempt.
+                        context.mark_write_started()
+                    result = await registry.invoke(
+                        resolved=provider,
+                        binding=replace(binding, invocation_context=context),
+                        arguments=public_arguments,
+                    )
             except ConnectorRegistryError as exc:
                 raise _capability_error(str(exc), code=exc.code) from exc
         else:
-            if is_write and context.mark_write_started is not None:
-                # The Provider's immutable operation descriptor, not the
-                # consumer operation name nor a static service.invoke ceiling,
-                # determines whether this consumer crosses a write boundary.
-                context.mark_write_started()
-            result = await executor(
-                provider=provider,
-                caller_automation_id=context.automation_id,
-                operation=operation,
-                arguments=public_arguments,
-                call_chain=call_chain,
-                invocation_id=str(context.write_attempt_identity.get("invocation_id") or ""),
-            )
+            async with context.write_operation_guard() if is_write and context.write_operation_guard is not None else nullcontext():
+                if is_write and context.mark_write_started is not None:
+                    context.mark_write_started()
+                result = await executor(
+                    provider=provider,
+                    caller_automation_id=context.automation_id,
+                    operation=operation,
+                    arguments=public_arguments,
+                    call_chain=call_chain,
+                    invocation_id=str(context.write_attempt_identity.get("invocation_id") or ""),
+                )
         if not isinstance(result, Mapping):
             raise _capability_error(
                 "service Provider returned a non-object result",

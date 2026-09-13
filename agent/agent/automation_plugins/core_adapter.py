@@ -11,7 +11,7 @@ import asyncio
 import inspect
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
+from typing import Any, AsyncContextManager, Awaitable, Callable, Mapping, Protocol, Sequence
 
 from agent.automation_plugins.broker import BrokerGrant, _assert_redacted
 from agent.automation_plugins.connector_compatibility import (
@@ -127,6 +127,7 @@ class CoreBrokerInvocationContext:
     # intentionally optional so closed handler unit tests can exercise their
     # validation branches without manufacturing write-attempt state.
     mark_write_started: Callable[[], None] | None = None
+    write_operation_guard: Callable[[], AsyncContextManager] | None = field(default=None, repr=False, compare=False)
     generation: int = 0
     write_attempt_identity: Mapping[str, object] = field(default_factory=dict, repr=False)
     on_completion: Callable[[Callable[[], None]], None] | None = field(default=None, repr=False, compare=False)
@@ -588,6 +589,7 @@ class RegisteredCoreAutomationBrokerAdapter:
         signed_roles: tuple[str, ...],
         signed_contract: Mapping[str, object],
         mark_write_started: Callable[[], None] | None,
+        write_operation_guard: Callable[[], AsyncContextManager] | None,
     ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]:
         """Resolve blocking bindings and enter a synchronous handler off-loop."""
 
@@ -709,6 +711,7 @@ class RegisteredCoreAutomationBrokerAdapter:
                 grant.runtime_permissions.get("_service_effect_ceiling") or ""
             ),
             mark_write_started=mark_write_started,
+            write_operation_guard=write_operation_guard,
             generation=int(grant.write_attempt_context.get("generation", 0)),
             write_attempt_identity=dict(grant.write_attempt_context),
         )
@@ -753,6 +756,7 @@ class RegisteredCoreAutomationBrokerAdapter:
         binding: object,
         arguments: Mapping[str, Any],
         mark_write_started: Callable[[], None] | None = None,
+        write_operation_guard: Callable[[], AsyncContextManager] | None = None,
     ) -> Mapping[str, Any]:
         handler = self._handlers.get((operation, action))
         handler_key = f"{operation}:{action}"
@@ -817,6 +821,7 @@ class RegisteredCoreAutomationBrokerAdapter:
                     signed_roles=signed_roles,
                     signed_contract=signed_contract,
                     mark_write_started=mark_write_started,
+                    write_operation_guard=write_operation_guard,
                 )
                 if inspect.isawaitable(resolved):
                     try:
