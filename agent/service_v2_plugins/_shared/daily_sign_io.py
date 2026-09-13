@@ -10,6 +10,7 @@ from business.tracking_ids import is_child_like_tracking, main_tracking_from_sca
 from business.daily_sign_material import snapshot_fingerprint
 
 _BROKER = ContextVar("daily_sign_broker")
+_SOURCE_SCOPES = ContextVar("daily_sign_source_scopes")
 
 
 class PluginExecutionError(RuntimeError):
@@ -25,9 +26,11 @@ class DailySignPersistenceReadbackError(RuntimeError):
 @contextmanager
 def use_broker(broker):
     token = _BROKER.set(broker)
+    scope_token = _SOURCE_SCOPES.set({})
     try:
         yield
     finally:
+        _SOURCE_SCOPES.reset(scope_token)
         _BROKER.reset(token)
 
 
@@ -92,7 +95,14 @@ def verify_daily_sign_completed_run(**values):
 def source_scope(prefix, account_role):
     if account_role not in {"daily_sign_tms", "daily_sign_r13"}:
         raise ValueError("DAILY_SIGN_ACCOUNT_ROLE_INVALID")
-    return _call(account_role, "source_scope", prefix=prefix)
+    # The Host binds an immutable account generation to this invocation.
+    # Resolve each identity once; never reuse identities across invocations or
+    # cache business reads, failures, or values from an earlier successful run.
+    scopes = _SOURCE_SCOPES.get()
+    key = (prefix, account_role)
+    if key not in scopes:
+        scopes[key] = _call(account_role, "source_scope", prefix=prefix)
+    return scopes[key]
 
 
 class AccountRolePort:
