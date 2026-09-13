@@ -1338,6 +1338,16 @@ class PluginCatalog:
         if module is not None and module not in MODULE_PATHS:
             raise PluginConflictError("unsupported plugin module", code="PLUGIN_MODULE_INVALID")
         entries, hidden_automation_ids, unavailable_projects = self._entries_with_failures(module=module)
+        # Completed source instances remain queryable for audit/maintenance,
+        # but must not appear as duplicate, runnable business cards.
+        retired_ids = {
+            entry.automation_id for entry in entries
+            if entry.runtime_model == PluginRuntimeModel.ACTION_V1.value
+            and (pair := self._migration_projection(entry.automation_id))
+            and pair["role"] == "source" and pair["state"] == "COMPLETED"
+        }
+        entries = [entry for entry in entries if entry.automation_id not in retired_ids]
+        hidden_automation_ids = frozenset(hidden_automation_ids) | retired_ids
         # A module filter must not hide providers used by one of its plugins.
         # Account-only actions avoid compiling unrelated projects altogether.
         dependency_entries = self.list() if module and any(entry.required_services for entry in entries) else entries

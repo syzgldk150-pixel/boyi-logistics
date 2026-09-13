@@ -4,7 +4,7 @@ type: 开发与迁移手册
 tags: [ZIP 插件, service_v2, Host API, 独立插件]
 related: [identity_and_unified_chat.md, architecture_direct_invocation.md, ../agent/service_v2_plugins/README.md, ../agent/docs/service_v2_developer_tooling.md]
 status: active
-updated: 2026-09-12
+updated: 2026-09-13
 ---
 
 # 独立插件与宿主接口
@@ -16,6 +16,12 @@ updated: 2026-09-12
 Service V2 插件是包含实际业务代码的独立 ZIP。宿主负责账号、权限、接口、隔离进程、执行记录和安装升级；插件负责字段适配、筛选、计算和业务步骤。短插件触发后直接启动，结束后返回结果，失败和取消不会留下待领取任务。
 
 本轮源码已补齐现有正式业务的 V2 包和生产接口适配。安装、打包、隔离进程执行及写后核验均有实际测试。**源码和隔离测试完成不等于线上迁移完成。** 线上版本、迁移和业务验收须以发布报告为准；在现有实例完成切换前，启动和发布仍依赖旧 ACTION_V1 签名发行包，不得提前删除。
+
+全部原实例的权威迁移记录为 `COMPLETED` 后，宿主发布使用 `build_first_party_plugin_release.py --service-v2-only` 生成仅含发行索引的目录。ECS 发布前及启动时都读取真实迁移归属：旧实例必须停用，现存接管实例必须为 V2；未完成、撤回或冲突时拒绝。该模式不再分发或加载 V1 ZIP，不扫描旧账号生成默认绑定，不重建旧插件目录；V2 包仍按本实例的安装版本独立维护。它不降低未迁移主机的 V1 签名校验，也不把一个空 V1 索引当成退役证明。
+
+已完成迁移的旧实例退出日常业务列表，历史实例元数据、运行与未知写证据继续保留。移除旧可执行文件必须先确认无活动旧调用，并仅处理数据库证明属于这些旧插件的安装目录；不能调用会删除执行历史的强制卸载。V2 后续停用或正常卸载不会复活 V1。回退使用已有 V2 安装版本或经过测试的新宿主提交。
+
+局部回归：`PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m pytest tests/test_first_party_retirement.py tests/test_v2_migration_lifecycle_mysql.py`；后者使用隔离 MySQL、真实 V1/V2 安装及业务供应端协议执行，覆盖迁移、回退、历史保留与列表归属。
 
 插件清单、业务文件归属、局部测试和打包命令见[当前插件维护入口](../agent/service_v2_plugins/README.md)。本手册替代旧文档中“生产 Connector 为空”“AI 只读”“V2 只有离线候选实现”的状态说明。
 

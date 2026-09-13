@@ -2159,6 +2159,10 @@ def bootstrap_first_party_plugins(
             raise PluginPackageError("superseded bootstrap scope is invalid")
         seeds = tuple(seed for seed in release_first_party_instance_seeds() if seed.automation_id not in superseded)
         required_plugins = {seed.plugin_id for seed in seeds}
+        if not seeds:
+            if not _RELEASE_SHA_RE.fullmatch(current_release_sha) or current_release_sha != expected_release_sha:
+                raise PluginPackageError("current release SHA does not match verified release identity")
+            return BootstrapResult(created=(), existing=(), rejected={}, superseded=tuple(sorted(superseded)))
         if package_provider is None:
             raise PluginPackageError("signed first-party package provider is required")
         provider = package_provider

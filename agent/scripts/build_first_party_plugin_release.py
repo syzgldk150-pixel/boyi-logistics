@@ -31,6 +31,7 @@ from agent.automation_plugins.package import (
     verify_signed_plugin_zip,
 )
 from agent.tool_registry import ToolRegistry
+from agent.automation_plugins.first_party_retirement import retired_release_index, read_retired_release
 from scripts.sign_automation_plugin import load_ed25519_private_key
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -49,6 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--release-sha", required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--digest-lock", type=Path)
+    parser.add_argument("--service-v2-only", action="store_true",
+                        help="Package-free host release; ECS must prove all original migrations completed")
     return parser
 
 
@@ -216,6 +219,25 @@ def main(argv: list[str] | None = None) -> int:
     release_sha = str(args.release_sha or "").strip().lower()
     if not _RELEASE_SHA_RE.fullmatch(release_sha):
         raise SystemExit("release-sha must be a lower-case Git SHA")
+    if args.service_v2_only:
+        if any((args.private_key, args.key_id, args.reuse_artifact_root, args.trust_root, args.digest_lock)):
+            raise SystemExit("service-v2-only does not accept V1 signing or reuse inputs")
+        target, parent = _safe_output_target(args.output_root)
+        staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=parent))
+        try:
+            (staging / "release-index.json").write_bytes(canonical_json_bytes(retired_release_index(release_sha)))
+            result = read_retired_release(staging, release_sha)
+            staging.replace(target)
+        except BaseException:
+            if staging.exists() and staging.parent == parent:
+                shutil.rmtree(staging)
+            raise
+        print("status=ok")
+        print(f"release_sha={result.release_sha}")
+        print("package_count=0")
+        print(f"instance_count={result.instance_count}")
+        print(f"contracts_sha256={result.contracts_sha256}")
+        return 0
     signing_mode = args.private_key is not None or args.key_id is not None
     reuse_mode = args.reuse_artifact_root is not None or args.trust_root is not None
     if signing_mode == reuse_mode:

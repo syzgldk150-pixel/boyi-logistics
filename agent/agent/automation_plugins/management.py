@@ -1460,6 +1460,15 @@ class AutomationPluginManagementService:
         self._require_mutation_allowed()
         self._require_no_open_migration_pair(automation_id)
         entry = self._catalog.require(automation_id)
+        if enabled and entry.runtime_model == PluginRuntimeModel.ACTION_V1.value:
+            finder = getattr(self._packages, "get_authoritative_plugin_migration_pair_for_automation", None)
+            pair = finder(automation_id) if callable(finder) else None
+            if (pair and pair.get("source_automation_id") == automation_id
+                    and pair.get("state") == "COMPLETED" and pair.get("rolled_back_at") is None):
+                raise PluginConflictError(
+                    "the completed migration source is retired; enable its V2 target instead",
+                    code="PLUGIN_MIGRATION_SOURCE_RETIRED",
+                )
         if entry.record_version != expected_record_version:
             # A committed state change can outlive its HTTP response.  Let the
             # audited repository prove an exact retry before rejecting the

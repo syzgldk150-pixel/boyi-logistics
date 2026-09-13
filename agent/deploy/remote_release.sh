@@ -1130,7 +1130,7 @@ preflight_signed_first_party_plugins() {
       --artifact-root "${STAGED_FIRST_PARTY_PLUGIN_RELEASE_ROOT}" \
       --trust-root "${STAGED_FIRST_PARTY_PLUGIN_TRUST_ROOT}" \
       --release-sha "${RELEASE_SHA}" \
-      --digest-lock "${digest_lock}"
+      --digest-lock "${digest_lock}" --require-completed-migrations --runtime-root "/home/boyce/agent"
   )" || return 1
   grep -Fxq 'status=ok' <<<"${output}" || {
     echo "Signed first-party plugin preflight returned an invalid status" >&2
@@ -1140,10 +1140,14 @@ preflight_signed_first_party_plugins() {
     echo "Signed first-party plugin release SHA does not match" >&2
     return 1
   }
-  grep -Eq '^package_count=[1-9][0-9]*$' <<<"${output}" || {
-    echo "Signed first-party plugin package count is invalid" >&2
-    return 1
-  }
+  if grep -Fxq 'first_party_retired=true' <<<"${output}"; then
+    grep -Fxq 'package_count=0' <<<"${output}" || return 1
+  else
+    grep -Eq '^package_count=[1-9][0-9]*$' <<<"${output}" || {
+      echo "Signed first-party plugin package count is invalid" >&2
+      return 1
+    }
+  fi
   grep -Eq '^instance_count=[1-9][0-9]*$' <<<"${output}" || {
     echo "Signed first-party plugin migration instance count is invalid" >&2
     return 1
@@ -1190,7 +1194,7 @@ verify_installed_first_party_plugin_artifacts() {
     --artifact-root "${artifact_root}" \
     --trust-root "${FIRST_PARTY_PLUGIN_TRUST_ROOT}" \
     --release-sha "${RELEASE_SHA}" \
-    --digest-lock "${digest_lock}" >/dev/null
+    --digest-lock "${digest_lock}" --require-completed-migrations --runtime-root "/home/boyce/agent" >/dev/null
 }
 
 install_verified_first_party_plugin_artifacts() {

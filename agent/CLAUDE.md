@@ -10,6 +10,8 @@ Service V2 扫描按目录验证的 `super_admin_upload/builtin_bundle` 来源�
 
 ## 当前身份与统一对话边界
 
+所有原业务实例完成迁移后，发布器使用 `--service-v2-only` 发行索引；`automation_plugins/first_party_retirement.py` 在发布前和启动时核验真实完成归属。该模式不加载、修复或重建 V1 包，已迁移旧实例退出日常列表，历史结果与未知写只读保留。详见 `../docs/plugin-platform-v2.md`。
+
 插件清单保存与审计脱敏分离；迁移 048 精确修复统计 V2 已知清单字段损坏，细节和真实数据库回归见[维护说明](../docs/identity_and_unified_chat.md)。
 
 身份与统一对话：`shared/identity_permissions.py`、`shared/identity_repository.py` 是共同权限来源；`agent/identity_access.py` 检查实际入口和插件模块。`harness_composition.py` 为后台与飞书注入同一个查询与插件服务，`agent/channel_chat.py` 只做渠道转换。迁移 047 为发布期核心迁移，不能仅回退旧源码。 细节见[维护说明](../docs/identity_and_unified_chat.md)。

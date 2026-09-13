@@ -2,6 +2,8 @@
 
 ## 当前身份与统一对话边界
 
+全量迁移完成后的 V1 退役由 `agent/agent/automation_plugins/first_party_retirement.py` 验证权威 `COMPLETED` 归属。Service-V2-only 发布不携带或加载旧 ZIP，启动不再恢复旧绑定；已迁移旧实例从日常列表移除，历史执行和未知写保留。详见 `docs/plugin-platform-v2.md`。
+
 迁移不把已精确关联且有结束时间的失败/取消/未知写 Direct Invocation 当成执行占用；历史结果不改写且不计成功，当前代次的新鲜成功与完整写后证据仍为切换条件。验证中修复按撤回、升级、重新验证处理，见 `docs/identity_and_unified_chat.md`。
 
 发布服务身份由 `shared/release_identity.py` 定义，仅在内部 Token 和 Console 签名校验后开放精确健康检查及发布激活；不得作为后台账号或取得业务权限。

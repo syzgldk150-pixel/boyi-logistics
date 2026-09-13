@@ -108,7 +108,7 @@ function Copy-AutomationPluginReleaseInputs(
     $artifactItems = @(Get-ChildItem -LiteralPath $ArtifactRoot -Force)
     $zipItems = @($artifactItems | Where-Object { -not $_.PSIsContainer -and $_.Extension -ceq ".zip" })
     $indexItems = @($artifactItems | Where-Object { -not $_.PSIsContainer -and $_.Name -ceq "release-index.json" })
-    if ($indexItems.Count -ne 1 -or $zipItems.Count -lt 1 -or $artifactItems.Count -ne ($zipItems.Count + 1)) {
+    if ($indexItems.Count -ne 1 -or $artifactItems.Count -ne ($zipItems.Count + 1)) {
         throw "Signed first-party artifact root must contain one release-index.json and only its ZIP packages."
     }
     if (@($artifactItems | Where-Object { $_.PSIsContainer -or $_.LinkType }).Count -ne 0) {
@@ -120,6 +120,9 @@ function Copy-AutomationPluginReleaseInputs(
         }
     }
     $releaseIndex = Get-Content -Raw -Encoding utf8 -LiteralPath $indexItems[0].FullName | ConvertFrom-Json
+    if ($zipItems.Count -eq 0 -and ($releaseIndex.schema_version -ne 2 -or $releaseIndex.runtime_model -cne "SERVICE_V2")) {
+        throw "An empty package set requires the explicit completed-migration release format."
+    }
     if ([string]$releaseIndex.release_sha -cne $ExpectedReleaseSha) {
         throw "Signed first-party release index does not match the committed release SHA."
     }
