@@ -426,36 +426,41 @@ def _customer_public_item(
     if "raw_fields" in row:
         if not isinstance(row["raw_fields"], Mapping):
             raise _error("customer raw business fields are invalid", "BROKER_SOURCE_INVALID")
-        # Ronghui includes attachment locators in its raw problem row. They
-        # are not classification/recheck fields and must stay Host-private.
-        result["raw_fields"] = _scrub_business_value({
-            key: value for key, value in row["raw_fields"].items()
-            if str(key).strip().upper() not in {"FILE_PATH", "SIGN_FILE_PATH"}
-        })
+        result["raw_fields"] = _scrub_customer_value(row["raw_fields"])
         if not isinstance(row.get("site_policy_required"), bool):
             raise _error("customer source queue scope is unverified", "BROKER_SOURCE_INVALID")
         result["site_policy_required"] = row["site_policy_required"]
     return result
 
 
-def _scrub_business_value(value: Any) -> Any:
+def _scrub_customer_value(value: Any) -> Any:
+    # Native Ronghui/Yunda attachment locators are not classification or
+    # exact-status inputs. Keep them Host-private in lists and details alike.
+    return _scrub_business_value(
+        value, private_fields=frozenset({"file_path", "sign_file_path", "bl_attachment"})
+    )
+
+
+def _scrub_business_value(value: Any, *, private_fields: frozenset[str] = frozenset()) -> Any:
     if isinstance(value, Mapping):
         output: dict[str, Any] = {}
         for raw_key, child in value.items():
             key = str(raw_key)
             normalized = key.strip().lower().replace("-", "_")
+            if normalized in private_fields:
+                continue
             if normalized in {"account_id", "account_ids", "account_label"} or normalized.endswith(
                 ("_account_id", "_account_ids")
             ):
                 continue
             if any(marker in normalized for marker in _SENSITIVE_KEY_MARKERS):
                 continue
-            output[key] = _scrub_business_value(child)
+            output[key] = _scrub_business_value(child, private_fields=private_fields)
         return output
     if isinstance(value, list):
-        return [_scrub_business_value(item) for item in value]
+        return [_scrub_business_value(item, private_fields=private_fields) for item in value]
     if isinstance(value, tuple):
-        return [_scrub_business_value(item) for item in value]
+        return [_scrub_business_value(item, private_fields=private_fields) for item in value]
     if isinstance(value, Decimal):
         return format(value, "f")
     if isinstance(value, (date, datetime)):

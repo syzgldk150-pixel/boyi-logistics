@@ -428,6 +428,11 @@ def _reject_sensitive_result(
                 "Connector result contains sensitive data"
             )
         checked = value
+        # Yunda's native problem list uses a single slash as a title value.
+        # Preserve that exact punctuation; paths and all other fields still
+        # pass through the ordinary private-target checks below.
+        if business_field == "prob_title" and value == "/":
+            checked = ""
         # Ronghui record IDs are canonical base64 encodings of 16-byte IDs.
         # Their slash is data, not a filesystem locator. Binding identity checks
         # above still apply; arbitrary text and URI/path values remain denied.
