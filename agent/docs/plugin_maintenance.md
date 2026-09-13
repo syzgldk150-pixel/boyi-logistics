@@ -67,3 +67,9 @@ ACTION_V1 使用当前插件的真实 payload 与既有 Manifest/签名验证实
 生成各自日志、测试报告、测试签名 ZIP 和独立计算的摘要；不会安装这些 ZIP。
 正式冻结后加 `--host-freeze PATH_TO_FREEZE_JSON`，各局部命令使用冻结 SHA 比较，
 并在全部操作前后核验宿主文件。每次使用新的目录，历史结果不覆盖。
+
+## 每日应签 2.0.2 的局部维护
+
+`sync_daily_should_sign_v2` 的包内 `daily_sign_io.py` 在本次 Invocation 内按账号角色和来源前缀复用宿主返回的不可变来源身份。此前每条问题记录重复读取两次相同身份，大页数据会耗尽默认单动作调用次数。新调用、嵌套调用结束及异常退出均恢复各自上下文，不保存历史成功值；业务数据读取和写后回读仍实际执行，调用次数上限不变。
+
+回归 `tests/test_daily_sign_v2_packaged_protocol.py` 使用真实 ZIP、Broker 和隔离 MySQL，包含超过默认次数的大页问题数据以及写后数据损坏场景。本修改只更新每日应签插件包，Host 接口、数据库和运行器不变。

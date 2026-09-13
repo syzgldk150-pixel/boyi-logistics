@@ -99,6 +99,12 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
             "registered_at":"2026-09-10 12:00:00", "upload_complete":True, "payload":problem}])
     store.save_arrival_stat_snapshot(date(2026,9,10), arrivals)
     source_calls = []
+    # Source identity is shared by rows in a single bound invocation. A real
+    # problem page exceeds the 64-call default if identity is resolved per row.
+    problem_rows = [problem] if historical else [
+        {**problem, "external_id": f"problem-{index}", "waybill_no": row["tracking_number"]}
+        for index, row in enumerate(arrivals[:80])
+    ] if count == 514 else []
 
     def tms(endpoint, values):
         source_calls.append(endpoint)
@@ -107,7 +113,7 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
             return {"data":[{"billNumberMain":row["tracking_number"], "planSignTime":"2026-09-11 23:59:59"} for row in arrivals]}
         assert values["params"]["account_id"] == "test-tms"
         if endpoint == "/customer_service_problem":
-            rows = [problem] if historical else []
+            rows = problem_rows
             return {"ok":True, "data":{"ok":True, "account_id":"test-tms", "account_label":"Host account",
                 "rows":rows, "stats":{"total":len(rows), "returned":len(rows), "total_authoritative":True}}}
         if endpoint == "/get_sign_records":
@@ -140,4 +146,6 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
     if historical:
         assert state["ledger"]["R00021000001"]["recipient_address"] == arrivals[0]["recipient_address"]
         assert any(row["external_id"] == identity for row in state["problems"]["R00021000002"])
+    if count == 514:
+        assert sum(len(rows) for rows in state["problems"].values()) == len(problem_rows)
     assert result["meta"]["write_outcome"] == "WRITE_VERIFIED"
