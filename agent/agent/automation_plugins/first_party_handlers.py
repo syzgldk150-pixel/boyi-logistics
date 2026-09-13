@@ -45,6 +45,7 @@ from agent.automation_plugins.first_party_handler_common import (
     _page_state,
     _require_context,
     _scrub_business_value,
+    _scrub_customer_value,
     _source_directions,
     _strict_arguments,
     _strict_record_list,
@@ -649,7 +650,7 @@ class _FirstPartyCoreHandlers:
         if not isinstance(raw, Mapping) or raw.get("ok") is not True:
             code = str(raw.get("error_code") or "BROKER_SOURCE_FAILED") if isinstance(raw, Mapping) else "BROKER_SOURCE_INVALID"
             raise _error("customer detail query failed", code[:64])
-        business = _scrub_business_value(raw)
+        business = _scrub_customer_value(raw)
         if not isinstance(business, dict):
             raise _error("customer detail response is invalid", "BROKER_SOURCE_INVALID")
         business.update(

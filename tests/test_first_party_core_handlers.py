@@ -286,7 +286,8 @@ def test_customer_handlers_own_bound_source_pagination_and_opaque_identity() -> 
             return {
                 "ok": True,
                 "account_id": params["account_id"],
-                "details": [{"status": "已关闭", "session_note": "must be removed"}],
+                "details": [{"status": "已关闭", "session_note": "must be removed",
+                    "bl_attachment": "/uploads/private/problem.jpg", "nested": {"FILE_PATH": "/private/file"}}],
             }
         external = f"{params['platform']}-{params['direction']}"
         return {
@@ -302,7 +303,8 @@ def test_customer_handlers_own_bound_source_pagination_and_opaque_identity() -> 
                     "status": "待处理",
                     "site_policy_required": False,
                     "raw_fields": {"BILL_CODE": f"WB-{external}", "REVERSION_STATUS": "未回复",
-                        "FILE_PATH": "https://attachments.example.invalid/problem.jpg", "SIGN_FILE_PATH": None},
+                        "FILE_PATH": "https://attachments.example.invalid/problem.jpg", "SIGN_FILE_PATH": None,
+                        "bl_attachment": "/uploads/private/problem.jpg", "prob_title": "/"},
                 }
             ],
             "source_site_code": "fixture-site",
@@ -349,7 +351,7 @@ def test_customer_handlers_own_bound_source_pagination_and_opaque_identity() -> 
     assert len(records) == 4
     from agent.automation_plugins.connector_registry import _reject_sensitive_result
     for item in records:
-        assert item["raw_fields"] == {"BILL_CODE": item["waybill_no"], "REVERSION_STATUS": "未回复"}
+        assert item["raw_fields"] == {"BILL_CODE": item["waybill_no"], "REVERSION_STATUS": "未回复", "prob_title": "/"}
         _reject_sensitive_result(item, sensitive_identifiers=("customer-rh", "customer-yd"),
             reject_wrapped_identifiers=False)
     assert all(str(item["dedupe_key"]).startswith("problem:v2:") for item in records)
@@ -373,6 +375,10 @@ def test_customer_handlers_own_bound_source_pagination_and_opaque_identity() -> 
         },
     )
     assert detail["dedupe_key"] == selected["dedupe_key"]
+    assert detail["details"] == [{"status": "已关闭", "nested": {}}]
+    _reject_sensitive_result({key: value for key, value in detail.items() if key != "evidence_ref"},
+        sensitive_identifiers=("customer-rh", "customer-yd"),
+        reject_wrapped_identifiers=False)
     assert not any(
         key.lower() == "account_id"
         or key.lower().endswith("_account_id")

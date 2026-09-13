@@ -41,3 +41,25 @@ def test_record_id_matching_a_bound_identity_is_still_denied():
     identity = base64.b64encode(b"\xff" * 16).decode()
     with pytest.raises(ConnectorSensitiveDataDenied):
         check({"external_id": identity}, bindings=(identity,))
+
+
+def test_yunda_problem_title_punctuation_is_preserved():
+    value = {"raw_fields": {"prob_title": "/", "prob_text": "隔离测试问题说明"}}
+    check(value)
+    assert value["raw_fields"]["prob_title"] == "/"
+
+
+@pytest.mark.parametrize("value", [
+    {"prob_title": "/etc/passwd"},
+    {"prob_title": "https://private.invalid/attachment"},
+    {"prob_title": "/ password=fixture-secret"},
+    {"other_field": "/"},
+])
+def test_yunda_title_exception_does_not_allow_private_targets(value):
+    with pytest.raises(ConnectorSensitiveDataDenied):
+        check(value)
+
+
+def test_yunda_title_matching_bound_identity_is_still_denied():
+    with pytest.raises(ConnectorSensitiveDataDenied):
+        check({"prob_title": "/"}, bindings=("/",))
