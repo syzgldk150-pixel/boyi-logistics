@@ -58,6 +58,7 @@ def _entry(**overrides: Any) -> SimpleNamespace:
     values: dict[str, Any] = {
         "automation_id": "automation-1",
         "plugin_id": "example_action",
+        "runtime_model": PluginRuntimeModel.ACTION_V1.value,
         "display_name": "Example action",
         "installed_version": "1.0.0",
         "record_version": 3,
