@@ -115,7 +115,8 @@ def test_delivery_zip_classifies_signed_rows_and_verifies_both_outputs(tmp_path,
         delivery_list_views=lambda *_:[{'view_id':'pending-view','view_name':'未签收明细'}],
         delivery_list_records=lambda *_:{'items':[{'record_id':'rec1','waybill_no':'R001','status':'未签收'},
                                                 {'record_id':'rec2','waybill_no':'R002','status':'未签收'}],'returned':2,'total':2},
-        delivery_status_read=lambda *_:[{'bill_code':'R001','status':'签收'},{'bill_code':'R002','status':'运输中'}]))
+        delivery_status_read=lambda *_:[{'bill_code':'R001','status':'签收'},{'bill_code':'R002','status':'运输中'}],
+        delivery_projection_lookup=lambda codes: list(codes)))
     readers.update(build_delivery_site_handler_map(DeliverySiteHandlerPorts(describe_account=describe,
         site_bitable_replace=unexpected,site_sheet_replace=unexpected,
         delivery_bitable_write=lambda resource,rows,marker:fresh(rows,marker),
@@ -143,6 +144,7 @@ def test_delivery_zip_no_change_completes_with_read_evidence_and_no_write(tmp_pa
         delivery_list_views=lambda *_: [{"view_id":"pending-view", "view_name":"未签收明细"}],
         delivery_list_records=lambda *_: {"items":rows, "returned":len(rows), "total":len(rows)},
         delivery_status_read=lambda *_: [{"bill_code":"R001", "status":"运输中"}],
+        delivery_projection_lookup=lambda codes: list(codes),
     ))
     readers.update(build_delivery_site_handler_map(DeliverySiteHandlerPorts(
         describe_account=describe, site_bitable_replace=unexpected, site_sheet_replace=unexpected,

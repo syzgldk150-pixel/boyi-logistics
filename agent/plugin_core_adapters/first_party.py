@@ -43,6 +43,7 @@ from plugin_core_adapters.daily_send import build_production_daily_send_handler_
 from plugin_core_adapters.daily_sign import run_daily_sign_with_bound_resources
 from plugin_core_adapters.delivery_site import (
     build_production_delivery_site_handler_map,
+    read_delivery_projection_identities,
 )
 from plugin_core_adapters.finance import build_production_finance_handler_map
 from plugin_core_adapters.problem_actions import build_production_problem_handler_map
@@ -2613,6 +2614,7 @@ def build_production_first_party_core_handler_map(
         delivery_list_views=_delivery_list_views,
         delivery_list_records=_delivery_list_records,
         delivery_status_read=_delivery_status_read,
+        delivery_projection_lookup=read_delivery_projection_identities,
     )
     handlers = build_first_party_core_handler_map(ports, cursor_secret=cursor_secret)
     delivery_site_handlers = build_production_delivery_site_handler_map(

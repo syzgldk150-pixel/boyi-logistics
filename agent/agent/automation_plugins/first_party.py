@@ -456,6 +456,7 @@ _FIRST_PARTY_READ_BROKER_ACTIONS = frozenset(
         "ronghui.clock.precheck",
         "ronghui.clock.verify",
         "ronghui.delivery_status.read",
+        "waybill.delivery_status.lookup",
         "ronghui.finance.capture_page",
         "ronghui.finance.verify_source_totals",
         "ronghui.problem.query",
@@ -673,6 +674,7 @@ _FIRST_PARTY_BROKER_ACTIONS: Mapping[str, tuple[FirstPartyBrokerAction, ...]] = 
             "delivery_status_bitable",
         ),
         _broker_action("browser.invoke", "ronghui.delivery_status.read", "account_id"),
+        _broker_action("projection.invoke", "waybill.delivery_status.lookup", "account_id"),
         _broker_action(
             "network.request",
             "feishu.bitable.write_records",

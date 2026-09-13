@@ -238,6 +238,7 @@ def test_production_map_registers_only_available_closed_primitives() -> None:
         ("network.request", "feishu.sheet.replace_yunda_send_waybills"),
         ("projection.invoke", "waybill.yunda.replace_date"),
         ("projection.invoke", "waybill.delivery_status.update"),
+        ("projection.invoke", "waybill.delivery_status.lookup"),
         ("projection.invoke", "waybill.ronghui.replace_date"),
         ("network.request", "feishu.bitable.delete_records"),
     }

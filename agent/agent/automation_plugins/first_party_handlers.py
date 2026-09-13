@@ -179,6 +179,7 @@ class FirstPartyCoreHandlerPorts:
     delivery_list_views: DeliveryViewListPort | None = None
     delivery_list_records: DeliveryRecordPagePort | None = None
     delivery_status_read: DeliveryStatusReadPort | None = None
+    delivery_projection_lookup: Callable[[list[str]], Sequence[str]] | None = None
     delivery_write_records: DeliveryRecordWritePort | None = None
     delivery_projection_update: DeliveryProjectionPort | None = None
     authorize_capability: CapabilityAuthorizationPort | None = None
@@ -1036,6 +1037,34 @@ class _FirstPartyCoreHandlers:
             "items": items,
             "evidence_ref": self._codec.evidence(context, "delivery-status-read", proof),
         }
+
+    def delivery_projection_lookup(
+        self, context: CoreBrokerInvocationContext, arguments: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        _require_context(context, tool_name=_DELIVERY_TOOL, role="account_id")
+        _account_descriptor(self._ports, _one_account(context), systems={"ronghui"})
+        reader = self._ports.delivery_projection_lookup
+        if reader is None:
+            raise _error("delivery projection reader is unavailable", "BROKER_ACTION_UNAVAILABLE")
+        values = _strict_arguments(arguments, {"bill_codes"})
+        raw_codes = values.get("bill_codes")
+        if not isinstance(raw_codes, list) or not 1 <= len(raw_codes) <= 200:
+            raise _error("delivery lookup bill codes are invalid", "BROKER_ARGUMENT_INVALID")
+        codes = [_text(value, "bill_code", maximum=128) for value in raw_codes]
+        if len(set(codes)) != len(codes):
+            raise _error("delivery lookup bill codes are duplicated", "BROKER_ARGUMENT_INVALID")
+        found = reader(codes)
+        if (not isinstance(found, (list, tuple))
+                or any(not isinstance(code, str) or code not in codes for code in found)
+                or len(set(found)) != len(found)):
+            raise _error("delivery projection identities are invalid", "BROKER_SOURCE_INVALID")
+        result = {
+            "existing_bill_codes": sorted(found),
+            "missing_bill_codes": sorted(set(codes) - set(found)),
+        }
+        return {**result, "evidence_ref": self._codec.evidence(
+            context, "delivery-projection-lookup", result,
+        )}
 
     def delivery_write_records(
         self,
@@ -2758,6 +2787,8 @@ class _FirstPartyCoreHandlers:
             handlers[("browser.invoke", "ronghui.delivery_status.read")] = (
                 self.delivery_status_read
             )
+        if self._ports.delivery_projection_lookup is not None:
+            handlers[("projection.invoke", "waybill.delivery_status.lookup")] = self.delivery_projection_lookup
         if self._ports.yunda_dispatch_read_page is not None:
             handlers[("browser.invoke", "yunda.dispatch_forecast.read_page")] = (
                 self.yunda_dispatch_page

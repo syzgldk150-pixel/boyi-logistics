@@ -606,6 +606,8 @@ def _retry_fresh_readback(
 def _projection_snapshot(
     rows: Sequence[Mapping[str, Any]],
     requested: tuple[str, ...],
+    *,
+    allow_missing: bool = False,
 ) -> list[dict[str, str]]:
     from tools.phase7_mysql_store import CONSOLE_WAYBILL_FIELDS
 
@@ -625,12 +627,20 @@ def _projection_snapshot(
                 "BROKER_SOURCE_INVALID",
             )
         by_identity[identity] = {field: str(raw.get(field) or "").strip() for field in CONSOLE_WAYBILL_FIELDS}
-    if set(by_identity) != requested_set:
+    if not allow_missing and set(by_identity) != requested_set:
         raise _error(
             "delivery projection fresh identities are zero, multiple, or extra",
             "BROKER_SOURCE_INVALID",
         )
     return [by_identity[identity] for identity in sorted(by_identity)]
+
+
+def read_delivery_projection_identities(bill_codes: list[str]) -> list[str]:
+    """Read existing complete rows; absence is explicit, malformed rows still fail."""
+    rows = _projection_snapshot(
+        _default_projection_read(tuple(bill_codes)), tuple(bill_codes), allow_missing=True,
+    )
+    return [row["waybill_no"] for row in rows]
 
 
 def build_production_delivery_site_ports(

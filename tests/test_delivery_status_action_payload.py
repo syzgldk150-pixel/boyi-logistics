@@ -40,6 +40,9 @@ def _load_action():
 
 
 def _result(operation: str, action: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    if action == "waybill.delivery_status.lookup":
+        return {"existing_bill_codes": arguments["bill_codes"], "missing_bill_codes": [],
+                "evidence_ref": "evidence:lookup"}
     if action == "feishu.bitable.list_views":
         return {
             "items": [{"view_id": "view-pending", "view_name": "未签收明细"}],
@@ -117,6 +120,7 @@ def test_pending_view_scan_updates_only_newly_signed_records():
         ("network.request", "feishu.bitable.list_views", "delivery_status_bitable"),
         ("network.request", "feishu.bitable.list_records", "delivery_status_bitable"),
         ("browser.invoke", "ronghui.delivery_status.read", "account_id"),
+        ("projection.invoke", "waybill.delivery_status.lookup", "account_id"),
         ("network.request", "feishu.bitable.write_records", "delivery_status_bitable"),
         ("projection.invoke", "waybill.delivery_status.update", "account_id"),
     ]
@@ -128,6 +132,8 @@ def test_explicit_webhook_mode_preserves_non_signed_status_but_dry_run_never_wri
 
     def broker(operation, *, action, role, arguments):
         calls.append(action)
+        if action == "waybill.delivery_status.lookup":
+            return _result(operation, action, arguments)
         assert action == "ronghui.delivery_status.read"
         assert role == "account_id"
         assert arguments == {"bill_codes": ["R001"]}
@@ -144,7 +150,7 @@ def test_explicit_webhook_mode_preserves_non_signed_status_but_dry_run_never_wri
     assert result["status"] == "SUCCESS"
     assert result["data"]["mode"] == "explicit"
     assert result["data"]["updated"] == 1
-    assert calls == ["ronghui.delivery_status.read"]
+    assert calls == ["ronghui.delivery_status.read", "waybill.delivery_status.lookup"]
 
 
 def test_empty_pending_view_finishes_without_query_or_write() -> None:
