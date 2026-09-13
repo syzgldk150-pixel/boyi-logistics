@@ -171,8 +171,8 @@ class AgentExecutionToolTests(unittest.TestCase):
             def get_capability(self, name):
                 return ToolRegistry().get_capability(name)
 
-            def validate_input(self, name, params):
-                return ToolRegistry().validate_input(name, params)
+            def validate_arguments(self, name, params):
+                return ToolRegistry().validate_arguments(name, params)
 
         run_track = Mock(return_value={"tracking_number": "R00014513348", "route_rows": []})
         core = AgentCore(direct_tool_runners={"track_waybill": run_track})
@@ -222,8 +222,8 @@ class AgentExecutionToolTests(unittest.TestCase):
             def get_capability(self, name):
                 return ToolRegistry().get_capability(name)
 
-            def validate_input(self, name, params):
-                return ToolRegistry().validate_input(name, params)
+            def validate_arguments(self, name, params):
+                return ToolRegistry().validate_arguments(name, params)
 
         run_price = Mock(return_value={"mode": "agent_tms_combined", "ronghui": {}, "yunda": {}})
         core = AgentCore(direct_tool_runners={"get_price": run_price})
