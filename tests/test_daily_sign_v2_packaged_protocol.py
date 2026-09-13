@@ -4,6 +4,8 @@ import base64
 from datetime import date, datetime
 from types import SimpleNamespace
 import os
+import threading
+import time
 import pytest
 
 from agent.automation_plugins.connector_registry import ConnectorRegistry
@@ -75,7 +77,7 @@ class FeishuTables:
         raise AssertionError(f"Unexpected Feishu operation {name}")
 
 
-@pytest.mark.parametrize("count,corrupt", [(514,False), (2,True), (2,False)])
+@pytest.mark.parametrize("count,corrupt", [(514,False), (2,True), (2,False), (8,False)])
 def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_path, direct_repository, monkeypatch, count, corrupt):  # noqa: F811
     assert os.environ["AGENT_DB_HOST"] == "127.0.0.1" and os.environ["AGENT_DB_NAME"].endswith("_test")
     # This UUID database belongs only to this test module. Reset its daily-sign
@@ -99,6 +101,7 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
             "registered_at":"2026-09-10 12:00:00", "upload_complete":True, "payload":problem}])
     store.save_arrival_stat_snapshot(date(2026,9,10), arrivals)
     source_calls = []
+    tracking_active = threading.Lock()
     # Source identity is shared by rows in a single bound invocation. A real
     # problem page exceeds the 64-call default if identity is resolved per row.
     problem_rows = [problem] if historical else [
@@ -110,7 +113,8 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         source_calls.append(endpoint)
         if endpoint == "/get_qianshou":
             assert values["r13_account_id"] == "test-r13"
-            return {"data":[{"billNumberMain":row["tracking_number"], "planSignTime":"2026-09-11 23:59:59"} for row in arrivals]}
+            current = arrivals[:2] if count == 8 else arrivals
+            return {"data":[{"billNumberMain":row["tracking_number"], "planSignTime":"2026-09-11 23:59:59"} for row in current]}
         assert values["params"]["account_id"] == "test-tms"
         if endpoint == "/customer_service_problem":
             rows = problem_rows
@@ -118,6 +122,14 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
                 "rows":rows, "stats":{"total":len(rows), "returned":len(rows), "total_authoritative":True}}}
         if endpoint == "/get_sign_records":
             return {"data":[{"扫描单号":"R00021000002", "扫描类型":"签收", "扫描时间":"2026-09-11 10:00:00", "扫描网点":"邵阳大祥S站"}]}
+        if endpoint == "/ronghui_tms_tracking":
+            if not tracking_active.acquire(blocking=False):
+                return {"ok":False,"error_code":"BUSINESS_RESOURCE_BUSY","error":"Endpoint is already active"}
+            try:
+                time.sleep(0.05)
+                return {"ok":True,"data":{"ok":True,"route_rows":[]}}
+            finally:
+                tracking_active.release()
         raise AssertionError(endpoint)
 
     accounts, resources, tables = BoundAccounts(), BoundResources(), FeishuTables(corrupt=corrupt)
@@ -136,7 +148,7 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         assert result["meta"]["write_outcome"] == "WRITE_OUTCOME_UNKNOWN"
         return
     assert result["status"] == "SUCCESS", (result.get("error"), source_calls, tables.calls)
-    assert len(tables.records) == count-1
+    assert len(tables.records) == (1 if count == 8 else count-1)
     assert tables.records[0]["fields"]["运单编号"] == "R00021000001"
     assert tables.records[0]["fields"]["到货件数"] == 2
     assert tables.sheet[1][0] == "R00021000001" and tables.sheet[1][-1] == 2
@@ -148,4 +160,7 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         assert any(row["external_id"] == identity for row in state["problems"]["R00021000002"])
     if count == 514:
         assert sum(len(rows) for rows in state["problems"].values()) == len(problem_rows)
+    if count == 8:
+        assert source_calls.count("/ronghui_tms_tracking") == 6
+        assert sum(row["last_result"] == "not_signed" for row in state["sign_verifications"].values()) == 6
     assert result["meta"]["write_outcome"] == "WRITE_VERIFIED"
