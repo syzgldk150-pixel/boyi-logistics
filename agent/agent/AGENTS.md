@@ -82,7 +82,7 @@
 - 融辉、韵达、R7、R13 全部通过 `/admin/accounts/{account_id}/*` 使用同一账号管理契约；凭据只来自后台账号管理保存值。大祥报价任务显式绑定 `price_default` 及其 `price_default` profile，后台登录与飞书报价复用同一状态；`/admin/tms/session/*`、`/admin/tms/price-session/*`、`/admin/tms/yunda-session/*` 只保留旧调用兼容。不同账号仍按 `account_id` 隔离 Cookie/Token，R7/R13 使用可持久和在线校验的 SSO Token/Cookie，韵达登录态继续服务报表、查单、寄件同步、报价、录单原页代理和问题件接口
   - 所有签名项目自动化账号只来自项目当前提交的精确角色绑定；后台改绑后下一次运行使用新账号，Broker 和脚本不得按默认标记、列表顺序或固定 ID 猜测。R13 业务查询在该精确账号登录后按原页协议调用 `/gateway/public/aurora/auth` 读取真实站点范围，请求使用 R13 同源 `Origin` 与 `aurora-token`，不得继承 SSO `Origin` 或附加 Bearer；中心账号传空站点列表，其他账号传其 `siteCode`。账号上下文缺失、刷新后范围漂移或请求体尝试覆盖站点时均 fail closed。
   - Agent `_monitor_tms_session_alerts` 是唯一周期主动登录态检查器，检查结果回写 `/admin/accounts` 共享快照；Console `prefer_cached=1` 只读该快照，即使同时携带 `force=1` 也不得发起外部校验。同账号检查或登录忙时，`BLOCKED_LOGIN` 只跳过本轮，不覆盖快照、不累计失败、不发飞书告警。
-  - 韵达账号绿色状态必须校验主站、报表 `searchData`、`kyinms`、消息中心和 `kyproblem` 问题件页；登录/验证码成功后 `SessionBroker` 会初始化这些子系统并写入同一份 `storage_state`，不能只用主站已登录判断业务可用。
+  - 韵达登录后初始化寄件、报表和问题件子系统，共享保存登录态并分别记录就绪结果；各业务接口仍根据实际响应判断可用性，完整能力监控不作为执行门禁。`tms_runtime/yunda_business_identity.py` 为寄件范围与客服采集共用的当前登录组织读取入口，只投影组织代码、网点代码和权限模式，不返回其他个人或认证字段。
   - `tms_runtime/scripts/yunda_waybill_proxy.py` 与 `ronghui_waybill_proxy.py` 只作为 Agent 内部、受能力约束的原页 target。Console 旧 `/ocr/yunda/*`、`/ocr/ronghui/live/*`、`/receipts/yunda/live/*`、`/receipts/ronghui/live/*` 对所有方法固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，且不得调用 Agent。活动原页只能由主站已验证管理员经 `/original-pages/{provider}/launch` 取得一次性 ticket，再到 `https://www.boyi.homes/original/{provider}/` 独立 origin 兑换路径限定 capability；主站 Cookie、浏览器 Cookie 和鉴权头不得跨 origin 或透传给 Console。
 - 改 Phase 7 资源导入、运行时资源存储：
   - `phase7_resource_import.py`
