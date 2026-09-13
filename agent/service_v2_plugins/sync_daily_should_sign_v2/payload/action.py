@@ -7,4 +7,6 @@ def run_action(arguments, broker):
         resource = get_workflow_resource('phase7.daily_sign_sheet')
         return run_daily_sign_sync({**arguments, 'account_id':'daily_sign_tms',
             'r13_account_id':'daily_sign_r13', 'base_token':'daily_sign_bitable',
-            'table_id':'daily_sign_bitable', **resource})
+            # The Host tracking endpoint admits one active request. Keep exact
+            # checks sequential so requests from this invocation do not collide.
+            'table_id':'daily_sign_bitable', 'exact_sign_workers':1, **resource})
