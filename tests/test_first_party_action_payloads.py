@@ -676,6 +676,7 @@ def test_delivery_status_signed_payload_runs_through_router_and_verifier(
             delivery_status_read=lambda descriptor, codes: [
                 {"bill_code": "R001", "status": "签收"}
             ],
+            delivery_projection_lookup=lambda codes: list(codes),
         ),
         cursor_secret=b"delivery-status-router-verifier-secret",
     )

@@ -865,6 +865,7 @@ def test_delivery_status_uses_bound_bitable_without_resource_locator_arguments()
             "feishu.bitable.list_records",
         ): ["delivery_status_bitable"],
         ("browser.invoke", "ronghui.delivery_status.read"): ["account_id"],
+        ("projection.invoke", "waybill.delivery_status.lookup"): ["account_id"],
         (
             "network.request",
             "feishu.bitable.write_records",

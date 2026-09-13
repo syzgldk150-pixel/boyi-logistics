@@ -2,6 +2,8 @@
 
 ## 当前身份与统一对话边界
 
+签收插件只更新已有后台运单，缺失单号明确报告未入库，完整资料由寄件同步补齐；不得生成残缺运单或把数据库错误当作缺失。规则与测试见 `docs/identity_and_unified_chat.md`。
+
 全量迁移完成后的 V1 退役由 `agent/agent/automation_plugins/first_party_retirement.py` 验证权威 `COMPLETED` 归属。Service-V2-only 发布不携带或加载旧 ZIP，启动不再恢复旧绑定；已迁移旧实例从日常列表移除，历史执行和未知写保留。详见 `docs/plugin-platform-v2.md`。
 
 迁移不把已精确关联且有结束时间的失败/取消/未知写 Direct Invocation 当成执行占用；历史结果不改写且不计成功，当前代次的新鲜成功与完整写后证据仍为切换条件。验证中修复按撤回、升级、重新验证处理，见 `docs/identity_and_unified_chat.md`。

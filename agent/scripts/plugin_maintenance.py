@@ -80,7 +80,12 @@ PLUGIN_TESTS = {
         "tests/test_send_delivery_v2_packaged_protocol.py::test_daily_send_zip_replaces_only_target_date_and_matches_projection",
         "tests/test_send_delivery_v2_packaged_protocol.py::test_cancelled_daily_send_zip_releases_scope_after_its_host_call_finishes",
     ),
-    "sync_delivery_status_v2": ("tests/test_send_delivery_v2_packaged_protocol.py::test_delivery_zip_classifies_signed_rows_and_verifies_both_outputs",),
+    "sync_delivery_status_v2": (
+        "tests/test_send_delivery_v2_packaged_protocol.py",
+        "tests/test_delivery_status_action_payload.py",
+        "tests/test_delivery_projection_presence.py",
+        "tests/test_delivery_site_production_adapter.py",
+    ),
     "sync_finance_bills_v2": ("tests/test_finance_v2_packaged_protocol.py",),
     "sync_customer_service_problems_v2": ("tests/test_customer_v2_packaged_protocol.py",),
     "sync_daily_should_sign_v2": ("tests/test_daily_sign_v2_packaged_protocol.py",),

@@ -297,6 +297,26 @@ def _committed(value: object, label: str) -> dict[str, object]:
     return result
 
 
+def _lookup_projection(codes: list[str], broker: Callable[..., object]):
+    existing, missing, refs = [], [], []
+    for start in range(0, len(codes), _MAX_BATCH_SIZE):
+        batch = codes[start:start + _MAX_BATCH_SIZE]
+        result = _object(broker(
+            "projection.invoke", action="waybill.delivery_status.lookup", role=_ACCOUNT_ROLE,
+            arguments={"bill_codes": batch},
+        ), "delivery projection lookup")
+        found, absent = result.get("existing_bill_codes"), result.get("missing_bill_codes")
+        if (not isinstance(found, list) or not isinstance(absent, list)
+                or any(not isinstance(code, str) for code in found + absent)
+                or len(set(found + absent)) != len(found + absent)
+                or set(found + absent) != set(batch)):
+            raise ValueError("delivery projection lookup does not partition requested identities")
+        existing.extend(found)
+        missing.extend(absent)
+        refs.append(broker_evidence_ref(result, "delivery projection lookup"))
+    return set(existing), sorted(missing), refs
+
+
 def run_action(
     arguments: dict[str, object],
     broker: Callable[..., object],
@@ -345,6 +365,8 @@ def run_action(
         broker=broker,
     )
     evidence_refs.extend(query_refs)
+    existing_codes, missing_codes, lookup_refs = _lookup_projection(unique_codes, broker)
+    evidence_refs.extend(lookup_refs)
     unmatched = [code for code in unique_codes if code not in status_by_code]
     write_records: list[dict[str, str]] = []
     signed_codes: list[str] = []
@@ -365,7 +387,9 @@ def run_action(
         if status in _SIGNED_STATUSES:
             signed_codes.append(record["bill_code"])
 
+    projection_codes = list(dict.fromkeys(code for code in signed_codes if code in existing_codes))
     written = 0
+    database_updated = 0
     execution_result = "dry_run_complete"
     if not dry_run:
         if write_records:
@@ -384,14 +408,14 @@ def run_action(
             written = int(write_result.get("written") or 0)
             if written != len(write_records):
                 raise ValueError("delivery-status Bitable write count changed")
-        if signed_codes:
+        if projection_codes:
             projection = _committed(
                 broker(
                     "projection.invoke",
                     action="waybill.delivery_status.update",
                     role=_ACCOUNT_ROLE,
                     arguments={
-                        "bill_codes": list(dict.fromkeys(signed_codes)),
+                        "bill_codes": projection_codes,
                         "status": "signed",
                     },
                 ),
@@ -400,6 +424,9 @@ def run_action(
             evidence_refs.append(
                 broker_evidence_ref(projection, "delivery-status projection update")
             )
+            database_updated = projection.get("updated")
+            if type(database_updated) is not int or database_updated != len(projection_codes):
+                raise ValueError("delivery-status database update count changed")
         execution_result = "no_data" if not pending_records else "writes_committed"
 
     observed_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
@@ -414,6 +441,12 @@ def run_action(
         "unmatched": len(unmatched),
         "unmatched_bill_codes": unmatched,
         "skipped_empty_waybill": skipped_empty,
+        "projection_policy": "existing_only",
+        "database_checked": len(unique_codes),
+        "database_updated": database_updated,
+        "database_would_update": len(projection_codes),
+        "not_in_database_count": len(missing_codes),
+        "not_in_database_bill_codes": missing_codes,
         "evidence": {
             "source": "signed_first_party_plugin",
             "observed_at": observed_at,

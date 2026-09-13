@@ -10,6 +10,7 @@ def build_delivery_connectors(reviewed):
     account = ConnectorRequirementContract(service='connector.boyi.delivery_source@1', account_role='delivery_source', allowed_systems=('ronghui',), required=True)
     resource = ConnectorRequirementContract(service='connector.boyi.delivery_status_bitable@1', binding_kind=Kind.RESOURCE, resource_role='delivery_status_bitable', allowed_resource_kinds=('feishu_bitable',), required=True)
     source_specs = (
+        ('lookup_projection', 'projection.invoke', 'waybill.delivery_status.lookup', Effect.READ, obj({'bill_codes':arr(TEXT,maximum=200)}), obj({'existing_bill_codes':arr(TEXT,maximum=200),'missing_bill_codes':arr(TEXT,maximum=200)})),
         ('read_status', 'browser.invoke', 'ronghui.delivery_status.read', Effect.READ, obj({'bill_codes':arr(TEXT,maximum=200)}), obj({'items':arr(obj({'bill_code':TEXT,'status':TEXT}),maximum=200)})),
         ('update_projection', 'projection.invoke', 'waybill.delivery_status.update', Effect.INTERNAL_WRITE, obj({'bill_codes':arr(TEXT),'status':TEXT}), obj({'committed':BOOL,'record_count':COUNT,'updated':COUNT})),
     )
