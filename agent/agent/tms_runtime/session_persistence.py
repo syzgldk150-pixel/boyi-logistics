@@ -533,8 +533,10 @@ class SessionPersistenceMixin:
         )
 
     def _persist_storage_state_locked(self, context: Any, page: Any) -> dict[str, Any]:
+        query_initialization = {}
         if self._is_yunda_mode():
             self._ensure_yunda_inms_session_in_browser_locked(context, page)
+            query_initialization = self._initialize_yunda_query_sessions_in_browser_locked(page)
         storage_state = context.storage_state(path=str(self._storage_state_path))
         if not isinstance(storage_state, dict):
             storage_state = self._load_storage_state()
@@ -569,6 +571,7 @@ class SessionPersistenceMixin:
                 "authenticated_at": _format_ts(_now_ts()),
                 "pending_since": "",
                 "expires_at": expires_at,
+                "query_session_initialization": query_initialization,
             }
         )
         meta = self._load_meta()

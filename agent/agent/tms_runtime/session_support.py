@@ -69,7 +69,9 @@ YUNDA_INMS_INDEX_URL = f"{YUNDA_INMS_ORIGIN}/ky_inms/public/index.php/system/mai
 YUNDA_PROBLEM_ORIGIN = "https://kyproblem.yunda56.com"
 YUNDA_PROBLEM_QUERY_URL = f"{YUNDA_PROBLEM_ORIGIN}/ky_problem/public/index.php/query/index.html"
 YUNDA_PROBLEM_CLIENT_QUERY_URL = f"{YUNDA_BASE_ORIGIN}/#/ifarme/ifarme/4768/%E9%97%AE%E9%A2%98%E4%BB%B6%E6%9F%A5%E8%AF%A2"
-YUNDA_PROBLEM_IFRAME_SELECTOR = 'iframe[src*="kyproblem.yunda56.com"]'
+YUNDA_PROBLEM_IFRAME_SELECTOR = 'iframe[src*="kyproblem.yunda56.com/ky_problem/public/index.php/query/index.html"]'
+YUNDA_REPORT_CLIENT_URL = f"{YUNDA_BASE_ORIGIN}/#/ifarme/ifarme/16003/网点派件量预测主单表"
+YUNDA_REPORT_IFRAME_SELECTOR = 'iframe[src*="rpts-kyrpts.yunda56.com:8081/kyrpts/page/kywdop/mrt_brch_frgt/mrt_s_brch_frgt_amt_tot"]'
 PHONE_INPUT = "#phone"
 USERNAME_INPUT = "#username"
 PASSWORD_INPUT = "#password"

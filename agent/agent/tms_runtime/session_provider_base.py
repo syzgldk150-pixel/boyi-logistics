@@ -506,98 +506,6 @@ class ProviderSessionAdapterBase:
                     return value
         return ""
 
-    def _ensure_yunda_report_session_in_browser_locked(self, context: Any, page: Any) -> dict[str, Any] | None:
-        config = self.resolve_login_config()
-        try:
-            page.goto(yunda_report.page_url(), wait_until="domcontentloaded", timeout=60_000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=10_000)
-            except Exception:
-                page.wait_for_timeout(1_000)
-
-            if self._is_yunda_sms_page(page):
-                return self._save_yunda_sms_pending_state_locked(
-                    context,
-                    page,
-                    config=config,
-                    message=YUNDA_SMS_PENDING_MESSAGE,
-                )
-
-            if self._is_yunda_login_page(page):
-                report_login_url = str(getattr(page, "url", "") or config.login_url).strip() or config.login_url
-                try:
-                    self._ensure_yunda_account_form_visible(page)
-                except Exception as exc:
-                    raise TMSAuthStateError("AUTH_REQUIRED", f"韵达报表子系统登录页加载失败: {exc}") from exc
-
-                page.locator(YUNDA_USERNAME_INPUT).fill(config.username)
-                page.locator(YUNDA_PASSWORD_INPUT).fill(config.password)
-                if self._is_yunda_captcha_visible(page):
-                    return self._save_yunda_pending_state_locked(
-                        context,
-                        page,
-                        config=config,
-                        login_url=report_login_url,
-                        message="韵达报表子系统登录需要图片验证码，请输入验证码后提交。",
-                    )
-
-                page.locator(YUNDA_LOGIN_BUTTON).click()
-                try:
-                    page.wait_for_load_state("networkidle", timeout=15_000)
-                except Exception:
-                    page.wait_for_timeout(1_500)
-
-                login_error = self._read_yunda_login_error(page)
-                if self._is_yunda_sms_page(page):
-                    sms_error = self._read_yunda_sms_error(page)
-                    return self._save_yunda_sms_pending_state_locked(
-                        context,
-                        page,
-                        config=config,
-                        message=sms_error or login_error or YUNDA_SMS_PENDING_MESSAGE,
-                    )
-                if self._is_yunda_login_page(page):
-                    if self._is_yunda_captcha_visible(page):
-                        return self._save_yunda_pending_state_locked(
-                            context,
-                            page,
-                            config=config,
-                            login_url=str(getattr(page, "url", "") or report_login_url).strip() or report_login_url,
-                            message=login_error or "韵达报表子系统登录需要图片验证码，请输入验证码后提交。",
-                        )
-                    raise TMSAuthStateError("AUTH_REQUIRED", login_error or "韵达报表子系统登录未完成，请重新登录韵达账号。")
-
-                page.goto(yunda_report.page_url(), wait_until="domcontentloaded", timeout=60_000)
-                try:
-                    page.wait_for_load_state("networkidle", timeout=10_000)
-                except Exception:
-                    page.wait_for_timeout(1_000)
-                if self._is_yunda_sms_page(page):
-                    sms_error = self._read_yunda_sms_error(page)
-                    return self._save_yunda_sms_pending_state_locked(
-                        context,
-                        page,
-                        config=config,
-                        message=sms_error or YUNDA_SMS_PENDING_MESSAGE,
-                    )
-                if self._is_yunda_login_page(page):
-                    if self._is_yunda_captcha_visible(page):
-                        return self._save_yunda_pending_state_locked(
-                            context,
-                            page,
-                            config=config,
-                            login_url=str(getattr(page, "url", "") or report_login_url).strip() or report_login_url,
-                            message="韵达报表子系统登录需要图片验证码，请输入验证码后提交。",
-                        )
-                    raise TMSAuthStateError("AUTH_REQUIRED", "韵达报表子系统登录未完成，请重新登录韵达账号。")
-
-            context.storage_state(path=str(self._storage_state_path))
-            return None
-        except TMSAuthStateError:
-            raise
-        except Exception as exc:
-            raise TMSAuthStateError("AUTH_REQUIRED", f"韵达报表子系统初始化失败: {exc}") from exc
-
     def _ensure_yunda_inms_session_in_browser_locked(self, context: Any, page: Any) -> None:
         try:
             page.goto(YUNDA_SEND_CLIENT_URL, wait_until="domcontentloaded", timeout=60_000)
@@ -627,104 +535,33 @@ class ProviderSessionAdapterBase:
         except Exception as exc:
             raise TMSAuthStateError("AUTH_REQUIRED", "韵达寄件查询子系统未完成登录，请重新登录韵达账号。") from exc
 
-    def _click_yunda_client_menu_in_browser_locked(self, page: Any, *, menu_text: str, route_url: str) -> dict[str, Any]:
-        script = f"""
-        () => {{
-          const menuText = {json.dumps(menu_text, ensure_ascii=False)};
-          const routeUrl = {json.dumps(route_url, ensure_ascii=False)};
-          const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
-          const nodes = Array.from(document.querySelectorAll("a, li, [role='menuitem'], [role='button'], button"));
-          const exact = nodes.find((node) => clean(node.innerText || node.textContent) === menuText);
-          const hrefMatch = nodes.find((node) => String(node.href || node.getAttribute("href") || "").includes("/4768/"));
-          const loose = nodes.find((node) => clean(node.innerText || node.textContent).includes(menuText));
-          const target = hrefMatch || exact || loose;
-          if (target) {{
-            target.click();
-            return {{
-              clicked: true,
-              text: clean(target.innerText || target.textContent).slice(0, 80),
-              href: String(target.href || target.getAttribute("href") || "").replace(/[?&][^=#]+=[^&#]*/g, (m) => m.split("=")[0] + "=<redacted>")
-            }};
-          }}
-          window.location.href = routeUrl;
-          return {{
-            clicked: false,
-            fallbackRoute: true,
-            visibleText: clean(document.body && document.body.innerText).slice(0, 240)
-          }};
-        }}
+    def _initialize_yunda_query_sessions_in_browser_locked(self, page: Any) -> dict[str, Any]:
+        """Prime exact client SSO entries and report each subsystem separately.
+
+        This does not validate or admit a business query. Accounts without a
+        report/problem entitlement keep their established INMS session; those
+        subsystems remain explicitly unavailable and their actual reads fail.
         """
-        try:
-            result = page.evaluate(script)
-        except Exception as exc:
+        initialized: dict[str, Any] = {}
+        for capability, route, frame_selector, ready_selector in (
+            ("yunda_report", YUNDA_REPORT_CLIENT_URL, YUNDA_REPORT_IFRAME_SELECTOR, "#exampleTable"),
+            ("yunda_problem", YUNDA_PROBLEM_CLIENT_QUERY_URL, YUNDA_PROBLEM_IFRAME_SELECTOR, "#send_search_btn1"),
+        ):
             try:
-                page.goto(route_url, wait_until="domcontentloaded", timeout=60_000)
+                page.goto(route, wait_until="domcontentloaded", timeout=15_000)
+                if self._is_yunda_sms_page(page) or self._is_yunda_login_page(page):
+                    raise TMSAuthStateError("AUTH_REQUIRED", "韵达查询子系统尚未完成登录。")
+                page.frame_locator(frame_selector).locator(ready_selector).wait_for(
+                    state="attached", timeout=10_000)
+            except TMSAuthStateError:
+                initialized[capability] = {"status": "unavailable", "code": "AUTH_REQUIRED"}
+                logger.warning("yunda_query_session_initialization capability=%s status=unavailable code=AUTH_REQUIRED", capability)
             except Exception:
-                pass
-            return {"clicked": False, "fallbackRoute": True, "error": str(exc)}
-        return result if isinstance(result, dict) else {"clicked": False, "fallbackRoute": True}
-
-    def _yunda_frame_urls(self, page: Any) -> list[str]:
-        return [
-            str(getattr(frame, "url", "") or "")
-            for frame in getattr(page, "frames", [])
-        ]
-
-    def _ensure_yunda_problem_session_in_browser_locked(self, context: Any, page: Any) -> None:
-        try:
-            page.goto(YUNDA_CLIENT_SYSTEM_HOME_URL, wait_until="domcontentloaded", timeout=60_000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=15_000)
-            except Exception:
-                page.wait_for_timeout(2_000)
-
-            if self._is_yunda_sms_page(page):
-                self._save_yunda_sms_pending_state_locked(
-                    context,
-                    page,
-                    config=self.resolve_login_config(),
-                    message=YUNDA_SMS_PENDING_MESSAGE,
-                )
-                raise TMSAuthStateError("AUTH_PENDING_CODE", YUNDA_SMS_PENDING_MESSAGE)
-            if self._is_yunda_login_page(page):
-                raise TMSAuthStateError("AUTH_REQUIRED", "\u97f5\u8fbe\u95ee\u9898\u4ef6\u5b50\u7cfb\u7edf\u767b\u5f55\u672a\u5b8c\u6210\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55\u97f5\u8fbe\u8d26\u53f7\u3002")
-
-            menu_result = self._click_yunda_client_menu_in_browser_locked(
-                page,
-                menu_text="问题件查询",
-                route_url=YUNDA_PROBLEM_CLIENT_QUERY_URL,
-            )
-            try:
-                page.wait_for_load_state("networkidle", timeout=15_000)
-            except Exception:
-                page.wait_for_timeout(2_000)
-
-            try:
-                page.wait_for_selector(YUNDA_PROBLEM_IFRAME_SELECTOR, timeout=30_000)
-            except Exception:
-                page.wait_for_timeout(3_000)
-            frame_urls = self._yunda_frame_urls(page)
-            for _ in range(6):
-                if any("kyproblem.yunda56.com" in frame_url for frame_url in frame_urls):
-                    return
-                page.wait_for_timeout(3_000)
-                frame_urls = self._yunda_frame_urls(page)
-            if not any("kyproblem.yunda56.com" in frame_url for frame_url in frame_urls):
-                current_url = str(getattr(page, "url", "") or "").lower()
-                if "ky-sso.yunda56.com" in current_url:
-                    raise TMSAuthStateError("AUTH_REQUIRED", "\u97f5\u8fbe\u95ee\u9898\u4ef6\u5b50\u7cfb\u7edf\u767b\u5f55\u672a\u5b8c\u6210\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55\u97f5\u8fbe\u8d26\u53f7\u3002")
-                frame_summary = ", ".join(
-                    sorted({urlparse(frame_url).netloc for frame_url in frame_urls if frame_url})[:5]
-                )
-                clicked_text = str(menu_result.get("text") or "").strip() if isinstance(menu_result, dict) else ""
-                hint = f"\uff0c\u5df2\u70b9\u51fb\u83dc\u5355\uff1a{clicked_text}" if clicked_text else ""
-                if frame_summary:
-                    hint += f"\uff0c\u5f53\u524diframe\uff1a{frame_summary}"
-                raise TMSAuthStateError("AUTH_REQUIRED", f"\u97f5\u8fbe\u95ee\u9898\u4ef6\u5b50\u7cfb\u7edf\u672a\u52a0\u8f7d{hint}\u3002\u8bf7\u901a\u8fc7\u97f5\u8fbe\u5ba2\u6237\u7aef\u95ee\u9898\u4ef6\u83dc\u5355\u91cd\u65b0\u521d\u59cb\u5316\u3002")
-        except TMSAuthStateError:
-            raise
-        except Exception as exc:
-            raise TMSAuthStateError("AUTH_REQUIRED", f"\u97f5\u8fbe\u95ee\u9898\u4ef6\u5b50\u7cfb\u7edf\u521d\u59cb\u5316\u5931\u8d25: {exc}") from exc
+                initialized[capability] = {"status": "unavailable", "code": "QUERY_PAGE_NOT_READY"}
+                logger.warning("yunda_query_session_initialization capability=%s status=unavailable", capability)
+            else:
+                initialized[capability] = {"status": "initialized", "code": ""}
+        return initialized
 
     def _prepare_yunda_login_page(self, page: Any, config: LoginConfig) -> None:
         page.goto(config.login_url, wait_until="domcontentloaded", timeout=60_000)
