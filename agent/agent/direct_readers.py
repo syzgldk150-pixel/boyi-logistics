@@ -28,7 +28,8 @@ async def invoke_registered_reader(*, catalog, name, arguments, handler, actor, 
                             for role in required):
         return {"success": False, "error_code": "PERMISSION_DENIED", "error": "当前账号没有查询权限"}
     try:
-        validated = catalog.validate_input(name, arguments)
+        catalog.validate_arguments(name, arguments)
+        validated = dict(arguments)
     except (ValueError, TypeError, KeyError) as exc:
         return {"success": False, "error_code": "INVALID_TOOL_ARGUMENTS", "error": redact_text(exc)}
     timeout = min(float(timeout_seconds), float(capability["timeout"]))

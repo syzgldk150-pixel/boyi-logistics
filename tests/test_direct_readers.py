@@ -4,9 +4,11 @@ import asyncio
 from unittest.mock import Mock
 from types import SimpleNamespace
 import threading
+import pytest
 
 from agent.direct_readers import invoke_registered_reader
 from agent.automation_plugins.direct_invocation import DirectPluginInvocationService
+from agent.automation_plugins.catalog import CompositeToolRegistry
 from agent.execution_boundary import current_execution_capability
 from agent.orchestration.models import Actor, ActorType
 from agent.tool_registry import ToolRegistry
@@ -39,6 +41,34 @@ def test_unbound_actor_and_invalid_fields_never_reach_reader():
     query = Mock(side_effect=AssertionError("must not execute"))
     assert invoke(query, actor=None)["error_code"] == "PERMISSION_DENIED"
     assert invoke(query, arguments={"tracking_number": "R00014513348", "account_override": "another"})["error_code"] == "INVALID_TOOL_ARGUMENTS"
+    query.assert_not_called()
+
+
+@pytest.mark.parametrize("source", ["console", "feishu"])
+def test_composed_production_catalog_uses_shared_validation_contract(source):
+    plugins = SimpleNamespace(get_capability=lambda _: None)
+    catalog = CompositeToolRegistry(ToolRegistry(), plugins)
+    actor = Actor(ActorType.CONSOLE_ADMIN, "test", roles=("admin",),
+                  authenticated_by="mysql_admin_session")
+    if source == "feishu":
+        actor = Actor(ActorType.FEISHU_USER, "test", roles=("admin",),
+                      authenticated_by="feishu_admin_binding")
+    query = Mock(return_value={"route_rows": []})
+    result = invoke(query, catalog=catalog, actor=actor, source=source)
+    assert result["success"] is True
+    query.assert_called_once_with({"tracking_number": "R00014513348"})
+    query.reset_mock()
+    result = invoke(query, catalog=catalog, actor=actor, source=source,
+                    arguments={"tracking_number": "R00014513348", "account_override": "another"})
+    assert result["error_code"] == "INVALID_TOOL_ARGUMENTS"
+    query.assert_not_called()
+
+
+def test_composed_catalog_blocked_reader_never_reaches_handler():
+    catalog = CompositeToolRegistry(ToolRegistry(), SimpleNamespace(get_capability=lambda _: None),
+                                    blocked_core_tool_names=("track_waybill",))
+    query = Mock(side_effect=AssertionError("must not execute"))
+    assert invoke(query, catalog=catalog)["error_code"] == "DIRECT_READ_NOT_AVAILABLE"
     query.assert_not_called()
 
 
