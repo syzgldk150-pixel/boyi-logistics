@@ -169,6 +169,10 @@ def build_daily_sign_port_handlers(*, account_manager, store=None, tms=None, fei
                         request = resolved
                 else:
                     target["account_id"] = account_id
+                if name == "read_tracking":
+                    # Sign verification needs scan facts, not private customer
+                    # details. A masked contact must not invalidate real scans.
+                    target["decrypt_masked"] = False
                 # The outer grant belongs to the V2 package name. Only this
                 # reviewed Host port may use the daily-sign TMS read scope;
                 # the capability stays in-process and is revoked after I/O.
@@ -192,7 +196,8 @@ def build_daily_sign_port_handlers(*, account_manager, store=None, tms=None, fei
                         fields = {"scan_type", "scan_time", "scan_station", "scan_code"}
                         rows = [{key: item for key, item in row.items() if key in fields}
                                 if isinstance(row, Mapping) else row for row in payload["route_rows"]]
-                        payload = {key: item for key, item in payload.items() if key != "summary"}
+                        payload = {key: item for key, item in payload.items()
+                                   if key in {"ok", "error", "type", "tracking_number", "requested_tracking_number", "counts"}}
                         payload["route_rows"] = rows
                         result = {**result, "data": payload} if isinstance(result.get("data"), Mapping) else payload
         else:
