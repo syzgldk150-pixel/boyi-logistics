@@ -1,6 +1,7 @@
 """Production envelope shapes must not leak locators or hide partial reads."""
 from copy import deepcopy
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -78,15 +79,45 @@ def test_business_fields_are_still_checked_for_sensitive_content():
 def test_tracking_port_keeps_scan_facts_without_ui_descriptions():
     facts = {"scan_type":"签收", "scan_time":"2026-09-12 10:00:00", "scan_station":"测试网点", "scan_code":"R00021000001"}
     source = {"ok":True, "data":{"ok":True,"summary":{"latest_description":"/private/attachment"},
+        "waybill_info":[{"private":"customer details"}], "waybill_stub":{"private":"customer details"},
         "route_rows":[{**facts, "description":"/private/attachment"}]}}
     original = deepcopy(source)
     accounts = SimpleNamespace(require_active_binding_descriptor=lambda _: {"system":"ronghui"})
-    handlers = build_daily_sign_port_handlers(account_manager=accounts, tms=lambda *_: source)
+    tms = Mock(return_value=source)
+    handlers = build_daily_sign_port_handlers(account_manager=accounts, tms=tms)
     context = CoreBrokerInvocationContext(automation_id="isolated", plugin_version="2.0.1",
         tool_name="sync_daily_should_sign", operation="daily_sign.port", action="daily_sign_tms.read_tracking",
         role="daily_sign_tms", account_ids=("isolated-tms",))
     value = handlers[("daily_sign.port",context.action)](context,{"values":{"params":{"tracking_number":"R00021000001"}}})["value"]
     assert source == original
     assert value == {"ok":True,"data":{"ok":True,"route_rows":[facts]}}
+    assert tms.call_args.args[1]["params"]["decrypt_masked"] is False
     _validate_schema_value({"value":value}, _schemas(context.role,"read_tracking")[1], subject="result")
     _reject_sensitive_result(value, sensitive_identifiers=("isolated-tms",), reject_wrapped_identifiers=False)
+
+
+def test_tracking_port_accepts_real_scans_when_customer_detail_is_masked(monkeypatch):
+    from agent.tms_runtime.scripts import ronghui_tms_tracking as tracking
+
+    source_rows = [{"scan_type":"签收", "scan_time":"2026-09-12 10:00:00", "scan_station":"测试网点", "scan_code":"R00021000001"}]
+    monkeypatch.setattr(tracking.TMSAuth, "login_and_get_session", lambda _: object())
+    monkeypatch.setattr(tracking, "_resolve_widget_menu_url", lambda _: "https://origin.invalid/tracking")
+    monkeypatch.setattr(tracking, "_collect_api_tracking_rows", lambda *_args, **_kwargs:
+        (source_rows, [], {"billCode":"R00021000001", "sendMan":"*", "sendManMobile":"***"}))
+    # Keep the real adapter and its decryption decision; accessing the private
+    # detail reader in a scan-only request is the regression being exercised.
+    monkeypatch.setattr(tracking, "_needs_decrypted_detail", lambda _: True)
+    private_reader = Mock(side_effect=AssertionError("scan verification must not decrypt customer details"))
+    monkeypatch.setattr(tracking, "query_waybill_detail", private_reader)
+    accounts = SimpleNamespace(require_active_binding_descriptor=lambda _: {"system":"ronghui"})
+    handlers = build_daily_sign_port_handlers(account_manager=accounts,
+        tms=lambda _endpoint, request: tracking.query_ronghui_tms_tracking(request["params"]))
+    context = CoreBrokerInvocationContext(automation_id="isolated", plugin_version="2.0.3",
+        tool_name="sync_daily_should_sign", operation="daily_sign.port", action="daily_sign_tms.read_tracking",
+        role="daily_sign_tms", account_ids=("isolated-tms",))
+    result = handlers[("daily_sign.port", context.action)](context,
+        {"values":{"params":{"tracking_number":"R00021000001", "decrypt_masked":True}}})["value"]
+    assert result["ok"] is True
+    assert result["route_rows"][0]["scan_type"] == "签收"
+    assert "waybill_info" not in result
+    private_reader.assert_not_called()
