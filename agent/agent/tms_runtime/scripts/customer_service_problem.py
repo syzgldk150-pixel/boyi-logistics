@@ -1080,6 +1080,17 @@ def _yunda_post_json(
 def _yunda_query(session: Any, params: dict[str, Any]) -> dict[str, Any]:
     filters = params.get("filters") if isinstance(params.get("filters"), dict) else {}
     direction = _normalize_direction(filters.get("direction") or params.get("direction"), platform="yunda")
+    source_site_code = None
+    if params.get("raw_source") is True:
+        from agent.tms_runtime.yunda_business_identity import read_yunda_business_identity
+
+        try:
+            source_site_code = read_yunda_business_identity(session)["websiteCode"]
+        except ValueError as exc:
+            raise CustomerServiceProblemError(
+                "SOURCE_ORGANIZATION_UNVERIFIED",
+                "韵达当前登录账号的网点身份无法核验，已停止采集。",
+            ) from exc
     if direction in YUNDA_PUBLISHED_DIRECTIONS:
         url = YUNDA_ISSUE_LIST_URL
         referer = f"{YUNDA_PUBLIC_ROOT}/issue/index.html"
@@ -1091,6 +1102,10 @@ def _yunda_query(session: Any, params: dict[str, Any]) -> dict[str, Any]:
         url = YUNDA_QUERY_LIST_URL
         referer = f"{YUNDA_PUBLIC_ROOT}/query/index.html"
         payload = build_yunda_query_payload(filters)
+        if source_site_code is not None:
+            # Native query page: 1 = published to me; 0 = my publications.
+            # The published direction uses its native issue list separately.
+            payload["issuer_site"] = "1"
         source_direction = "query"
         label = "查询列表"
         preserve_empty = False
@@ -1104,8 +1119,20 @@ def _yunda_query(session: Any, params: dict[str, Any]) -> dict[str, Any]:
     )
     raw_rows = _extract_rows(data)
     if params.get("raw_source") is True:
-        raise CustomerServiceProblemError("SOURCE_ORGANIZATION_UNVERIFIED",
-            "韵达问题件接口未提供已验证的组织身份，不能发布为本地权威来源。")
+        _raise_if_source_failed(data, label="韵达问题件查询")
+        declared_total = _extract_declared_total(data)
+        if (not isinstance(data, dict) or not isinstance(data.get("rows"), list)
+                or declared_total is None or any(not isinstance(row, dict) for row in data["rows"])):
+            raise CustomerServiceProblemError("INVALID_RESPONSE", "韵达问题件列表缺少记录或权威总数。")
+        rows = []
+        for row in raw_rows:
+            external_id = _first_text(row, "prob_main_id")
+            if not external_id:
+                raise CustomerServiceProblemError("MISSING_EXTERNAL_ID", "韵达问题件缺少原始问题件编号。")
+            rows.append({"platform": "yunda", "source_direction": source_direction,
+                         "external_id": external_id, "raw_fields": _safe_json(row)})
+        return {"ok": True, "rows": rows, "source_site_code": source_site_code,
+                "stats": {"total": declared_total, "returned": len(rows), "total_authoritative": True}}
     else:
         rows = normalize_problem_rows(
             "yunda",

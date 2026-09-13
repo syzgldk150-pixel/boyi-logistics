@@ -46,13 +46,6 @@ def _literal(html: str, name: str) -> str:
     return values[0]
 
 
-def _nonempty(mapping: Mapping[str, Any], name: str) -> str:
-    value = mapping.get(name)
-    if not isinstance(value, (str, int)) or isinstance(value, bool) or not str(value).strip():
-        raise ValueError("WAYBILL_SOURCE_CONTEXT_UNVERIFIED")
-    return str(value).strip()
-
-
 def observe_query_scope(source: str, account_id: str, session: Any) -> WaybillSourceScope:
     """Read fresh upstream context using the already bound authenticated session."""
     if source == "ronghui":
@@ -71,21 +64,12 @@ def observe_query_scope(source: str, account_id: str, session: Any) -> WaybillSo
         context = {"login_site_code": parser.site_codes[0], "endpoint": CALL_ID, "filters": filters}
     elif source == "yunda":
         from agent.tms_runtime.scripts.yunda_send_waybills import SEND_INDEX_URL, _send_list_form, _special_line_list_form
-        from agent.tms_runtime.session_support import YUNDA_USER_INFO_URL
+        from agent.tms_runtime.yunda_business_identity import read_yunda_business_identity
         from datetime import date
-        response = session.get(YUNDA_USER_INFO_URL, allow_redirects=False, timeout=15,
-                               headers={"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"})
-        _response_body(response)
-        payload = response.json()
-        details = payload.get("details") if isinstance(payload, dict) and payload.get("code") == 200 else None
-        if not isinstance(details, dict):
-            raise ValueError("WAYBILL_SOURCE_CONTEXT_UNVERIFIED")
-        context = {key: _nonempty(details, key) for key in ("orgCode", "websiteCode", "orgType")}
-        if type(details.get("superAdmin")) is not bool or "subPrincipal" not in details:
-            raise ValueError("WAYBILL_SOURCE_PERMISSION_MODE_UNVERIFIED")
-        # Never retain profile/user names, phone numbers or authentication fields.
-        context["super_admin"] = details["superAdmin"]
-        context["sub_principal"] = details["subPrincipal"] is not None
+        try:
+            context = read_yunda_business_identity(session)
+        except ValueError as exc:
+            raise ValueError(str(exc).replace("YUNDA_SOURCE_", "WAYBILL_SOURCE_")) from exc
         body = _response_body(session.get(SEND_INDEX_URL, allow_redirects=False, timeout=15))
         context.update({"share_mode": _literal(body, "is_share_user"),
                         "user_type": _literal(body, "$user_type"),
