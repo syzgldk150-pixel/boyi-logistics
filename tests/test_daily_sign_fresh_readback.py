@@ -10,6 +10,24 @@ from unittest.mock import patch
 import pytest
 
 
+@pytest.mark.parametrize("busy", [True, False])
+def test_start_run_rejection_is_distinct_from_unknown_database_write(monkeypatch, busy):
+    from unittest.mock import Mock
+    from agent.automation_plugins.errors import PluginExecutionError
+    from tools import daily_sign_sync_tool as sync
+
+    error = PluginExecutionError("resource busy", code="EXECUTION_RESOURCE_BUSY") if busy else RuntimeError("connection lost")
+    start = Mock(side_effect=error)
+    load = Mock(side_effect=AssertionError("must not continue after failed start"))
+    monkeypatch.setattr(sync, "start_sync_run", start)
+    monkeypatch.setattr(sync, "load_daily_sign_state", load)
+    result = sync.run_daily_sign_sync({"account_id":"test-tms", "r13_account_id":"test-r13"})
+    assert result["status"] == "FAILED"
+    assert result["error"]["code"] == ("EXECUTION_RESOURCE_BUSY" if busy else "WRITE_OUTCOME_UNKNOWN")
+    assert result["data"] == {}
+    load.assert_not_called()
+
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "agent"))
 

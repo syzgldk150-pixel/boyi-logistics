@@ -26,6 +26,29 @@ def _wire(value):
     return value
 
 
+def _public_tms_result(result):
+    """Keep source failures explicit without sending transport URLs to plugins."""
+    if not isinstance(result, Mapping):
+        return result  # The existing closed output schema rejects invalid shapes.
+    data = result.get("data")
+    envelopes = [result] + ([data] if isinstance(data, Mapping) else [])
+    failures = [row for row in envelopes if row.get("ok") is False
+                or row.get("status") in {"FAILED", "failed", "ERROR", "error"}
+                or row.get("error")]
+    if not failures:
+        return result
+    from tools.phase7_sync_common import tms_auth_error_result
+
+    auth_error = tms_auth_error_result(result)
+    if auth_error:
+        return {"ok": False, "error_code": auth_error["error_code"], "message": "来源账号需要完成登录验证。"}
+    codes = {str(row.get("error_code") or "") for row in failures}
+    timeout_codes = {"ReadTimeout", "ConnectTimeout", "Timeout", "TimeoutError", "TMS_TIMEOUT"}
+    if codes & timeout_codes:
+        return {"ok": False, "error_code": "SOURCE_QUERY_TIMEOUT", "message": "原系统查询超时，本次未取得完整数据。"}
+    return {"ok": False, "error_code": "SOURCE_QUERY_FAILED", "message": "原系统查询失败，本次未取得完整数据。"}
+
+
 def _public_feishu_result(name, result):
     """Expose business values, not CLI wrappers or private target locators.
 
@@ -177,7 +200,7 @@ def build_daily_sign_port_handlers(*, account_manager, store=None, tms=None, fei
                 # reviewed Host port may use the daily-sign TMS read scope;
                 # the capability stays in-process and is revoked after I/O.
                 with execution_capability_scope("sync_daily_should_sign", ttl_seconds=7500):
-                    result = tms(endpoints[name], request)
+                    result = _public_tms_result(tms(endpoints[name], request))
                 if name == "read_problems" and isinstance(result, Mapping):
                     payload = result.get("data") if isinstance(result.get("data"), Mapping) else result
                     if isinstance(payload.get("rows"), list):

@@ -489,7 +489,12 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
         plugin_instances_by_id = {
             str(item["automation_id"]): item for item in automation_plugin_instances
         }
-        scheduled_row_groups = group_scheduled_rows_by_automation_id(scheduled_rows)
+        # A failed catalog is not evidence that installed plugins disappeared.
+        # Without its module/retirement ownership, old SQL schedules must not
+        # reappear as missing-plugin cards. The catalog warning remains visible.
+        scheduled_row_groups = group_scheduled_rows_by_automation_id(
+            [] if automation_plugin_warning and not automation_plugin_instances else scheduled_rows
+        )
         workflow_resources = {
             str(item.get("resource_key", "") or ""): item
             for item in workflow_resource_rows

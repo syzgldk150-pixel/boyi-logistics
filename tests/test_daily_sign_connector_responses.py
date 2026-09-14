@@ -9,7 +9,7 @@ from agent.automation_plugins.connector_registry import ConnectorSensitiveDataDe
 from agent.automation_plugins.daily_sign_connectors_v2 import _schemas
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
-from plugin_core_adapters.daily_sign_ports import _public_feishu_result, build_daily_sign_port_handlers
+from plugin_core_adapters.daily_sign_ports import _public_feishu_result, _public_tms_result, build_daily_sign_port_handlers
 
 
 def checked(name, source):
@@ -74,6 +74,45 @@ def test_projection_does_not_turn_failures_into_success(source):
 def test_business_fields_are_still_checked_for_sensitive_content():
     with pytest.raises(ConnectorSensitiveDataDenied):
         checked("list_records", {"items":[{"record_id":"record-1", "fields":{"password":"do-not-release"}}]})
+
+
+@pytest.mark.parametrize("source,code", [
+    ({"ok":False,"error_code":"ReadTimeout","message":"HTTPSConnectionPool(host='origin.invalid'): /private/path"}, "SOURCE_QUERY_TIMEOUT"),
+    ({"ok":False,"data":{"ok":False,"error_code":"ReadTimeout","message":"https://origin.invalid/query"}}, "SOURCE_QUERY_TIMEOUT"),
+    ({"error":"tms service timeout: http://127.0.0.1:9000/tms/customer_service_problem"}, "SOURCE_QUERY_FAILED"),
+    ({"ok":False,"error_code":"AUTH_PENDING_CODE","message":"https://origin.invalid/login"}, "AUTH_PENDING_CODE"),
+])
+def test_tms_failure_stays_a_source_failure_without_private_transport_text(source, code):
+    original = deepcopy(source)
+    result = _public_tms_result(source)
+    assert source == original
+    assert result["ok"] is False
+    assert result["error_code"] == code
+    assert "rows" not in result
+    _validate_schema_value({"value":result}, _schemas("daily_sign_tms", "read_problems")[1], subject="result")
+    _reject_sensitive_result(result, sensitive_identifiers=("host-private-target",), reject_wrapped_identifiers=False)
+
+
+def test_source_timeout_projection_preserves_existing_read_retry(monkeypatch):
+    from datetime import datetime
+    from tools import daily_sign_pipeline as pipeline
+
+    success = {"ok":True,"rows":[],"stats":{"total":0,"total_authoritative":True}}
+    responses = iter([
+        _public_tms_result({"ok":False,"error_code":"ReadTimeout","message":"https://origin.invalid/query"}),
+        _public_tms_result(success),
+    ])
+    calls = []
+    def read(endpoint, values):
+        calls.append((endpoint, deepcopy(values)))
+        return next(responses)
+    monkeypatch.setattr(pipeline, "call_http_service", read)
+    monkeypatch.setattr(pipeline.time, "sleep", lambda _: None)
+    rows, _ = pipeline._collect_problem_events({}, account_id="isolated-tms",
+        start=datetime(2026,9,14), end=datetime(2026,9,14,12))
+    assert rows == []
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
 
 
 def test_tracking_port_keeps_scan_facts_without_ui_descriptions():
