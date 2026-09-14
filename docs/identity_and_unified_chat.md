@@ -9,6 +9,8 @@ updated: 2026-09-14
 
 # 身份权限与统一对话
 
+每日应签 V2 `2.0.6` 按 2026-09-14 用户确认，只修改未齐分批的应签规则：不再因一条有效少货/分批登记无限期留空；在首次部分到货的次日应签基线上，17:00 前完整成功的新登记将期限延至登记次日 23:59:59。没有新登记时保持已计算期限，不能随执行日期自动延期；旧登记不得缩短期限。补齐当天应签、普通到齐次日应签和其他人工延期类型保持原规则。包内 `daily_sign_rules.py` 为唯一计算实现，新增 `applied_split_events` 仅记录实际延长期限的事件；公共接口、数据库字段和原有列名不变，当前宿主可只升级插件。规则测试和真实 ZIP/MySQL/双飞书表回读场景见 `agent/tests/test_daily_sign_ledger.py`、`tests/test_daily_sign_v2_packaged_protocol.py`。
+
 本文说明当前工作区实现；线上是否启用须以发布记录和实际核验为准。
 
 插件目录不可用时，Console 显示目录加载错误，不从旧 SQL 定时记录重建“扩展信息缺失”卡片；目录恢复后使用当前插件归属正常展示。有效目录中的孤立记录仍显式阻断。每日应签 V2 `2.0.4` 将创建运行记录前的 `EXECUTION_RESOURCE_BUSY` 明确报告为未开始写入；只有写调用已经发出、回执丢失等不确定结果保留 `WRITE_OUTCOME_UNKNOWN`。Host 将 TMS 失败封装投影为明确的来源失败或登录验证状态，不向插件传递传输地址，也不把失败当成空数据；原有来源读取重试和完整性检查保持生效。回归入口为 `tests/test_daily_sign_connector_responses.py`、`tests/test_daily_sign_fresh_readback.py`、`tests/test_daily_sign_v2_packaged_protocol.py` 和 `console/tests/test_automation_project_grouping.py`。

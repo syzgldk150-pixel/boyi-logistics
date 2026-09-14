@@ -429,22 +429,40 @@ class DailySignLedgerRulesTest(unittest.TestCase):
     self.assertEqual(datetime(2026, 8, 13, 23, 59, 59), due)
 
 
- def test_partial_with_successful_split_problem_before_cutoff_has_blank_due(self):
+ def test_partial_with_successful_split_problem_has_a_finite_next_day_due(self):
     due, _ = calculate_system_sign_due(
         [arrival("2026-08-12", 10, 5)],
         [problem("少货/分批", "2026-08-12 16:59:59")],
     )
-    self.assertIsNone(due)
+    self.assertEqual(datetime(2026, 8, 13, 23, 59, 59), due)
+
+
+ def test_partial_requires_a_new_valid_split_registration_for_each_extension(self):
+    history = [arrival("2026-09-13", 10, 9)]
+    events = [problem("少货/分批", "2026-09-13 14:56:38")]
+    due, _ = calculate_system_sign_due(history, events)
+    self.assertEqual(datetime(2026, 9, 14, 23, 59, 59), due)
+    events.append(problem("少货/分批", "2026-09-14 13:31:03"))
+    due, state = calculate_system_sign_due(history, events)
+    self.assertEqual(datetime(2026, 9, 15, 23, 59, 59), due)
+    self.assertEqual("partial_with_daily_split_extension", state["trace"]["reason"])
+    self.assertEqual([events[-1]["external_id"]], state["trace"]["applied_split_events"])
+    # Re-reading the same registrations never advances the deadline itself.
+    unchanged_due, _ = calculate_system_sign_due(history, events)
+    self.assertEqual(due, unchanged_due)
+    events.append(problem("少货/分批", "2026-09-15 16:59:59"))
+    extended_due, _ = calculate_system_sign_due(history, events)
+    self.assertEqual(datetime(2026, 9, 16, 23, 59, 59), extended_due)
 
 
  def test_split_problem_at_cutoff_or_failed_does_not_postpone(self):
     due_at_cutoff, _ = calculate_system_sign_due(
         [arrival("2026-08-12", 10, 5)],
-        [problem("少货/分批", "2026-08-12 17:00:00")],
+        [problem("少货/分批", "2026-08-13 17:00:00")],
     )
     due_failed, _ = calculate_system_sign_due(
         [arrival("2026-08-12", 10, 5)],
-        [problem("少货/分批", "2026-08-12 16:00:00", complete=False)],
+        [problem("少货/分批", "2026-08-13 16:00:00", complete=False)],
     )
     self.assertEqual(datetime(2026, 8, 13, 23, 59, 59), due_at_cutoff)
     self.assertEqual(datetime(2026, 8, 13, 23, 59, 59), due_failed)
@@ -453,7 +471,8 @@ class DailySignLedgerRulesTest(unittest.TestCase):
  def test_partial_completion_is_due_on_completion_day(self):
     due, _ = calculate_system_sign_due(
         [arrival("2026-08-12", 10, 5), arrival("2026-08-13", 10, 5)],
-        [problem("少货/分批", "2026-08-12 16:00:00")],
+        [problem("少货/分批", "2026-08-12 16:00:00"),
+         problem("少货/分批", "2026-08-13 10:00:00")],
     )
     self.assertEqual(datetime(2026, 8, 13, 23, 59, 59), due)
 
