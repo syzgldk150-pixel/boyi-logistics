@@ -170,30 +170,37 @@ def calculate_system_sign_due(
         elif completion is not None:
             due = end_of_day(completion)
             reason = "partial_then_completed"
-        elif first_partial is not None and valid_split:
-            reason = "valid_split_problem_while_incomplete"
         elif first_partial is not None:
             due = end_of_day(first_partial + timedelta(days=1))
-            reason = "partial_without_valid_split_problem"
+            reason = "partial_with_valid_split_problem" if valid_split else "partial_without_valid_split_problem"
         else:
             due = end_of_day(first_arrival + timedelta(days=1))
             reason = "actual_arrival_without_complete_quantity"
 
     applied_manual_events: list[str] = []
+    applied_split_events: list[str] = []
     for event in sorted(
         valid_events,
         key=lambda item: parse_datetime(item.get("registered_at")) or datetime.min,
     ):
         problem_type = clean_text(event.get("problem_type"))
         registered_at = parse_datetime(event.get("registered_at"))
-        if problem_type not in MANUAL_POSTPONE_TYPES or registered_at is None:
+        daily_split = (
+            problem_type == SPLIT_PROBLEM_TYPE
+            and first_partial is not None
+            and completion is None
+        )
+        if (problem_type not in MANUAL_POSTPONE_TYPES and not daily_split) or registered_at is None:
             continue
         candidate_due = end_of_day(registered_at.date() + timedelta(days=1))
         if due is not None and candidate_due > due:
             due = candidate_due
-            applied_manual_events.append(
+            applied_events = applied_split_events if daily_split else applied_manual_events
+            applied_events.append(
                 clean_text(event.get("external_id")) or registered_at.isoformat()
             )
+            if daily_split:
+                reason = "partial_with_daily_split_extension"
 
     trace = {
         "reason": reason,
@@ -201,6 +208,7 @@ def calculate_system_sign_due(
         "valid_problem_events": len(valid_events),
         "valid_split_events": len(valid_split),
         "applied_manual_events": applied_manual_events,
+        "applied_split_events": applied_split_events,
     }
     return due, {**state, "trace": trace}
 

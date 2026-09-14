@@ -1,5 +1,7 @@
 # 物流 Agent 系统
 
+每日应签 V2 `2.0.6` 的未齐分批按有效登记逐日顺延，不再无限期留空；仅插件业务规则更新，维护说明与局部回归见 [维护说明](../docs/identity_and_unified_chat.md)。
+
 迁移实测补充：每日应签业务字段投影、Service V2 零写入完成和韵达 INMS 登录初始化见 [维护说明](../docs/identity_and_unified_chat.md)。原失败记录保留；无写入完成仍要求真实来源证据，不伪造写入回执。
 
 每日应签来源失败的运行记录回读由 `automation_plugins/daily_sign_failure_proof.py` 核验，经 `business_failure_proof.py` 同时供执行器和结果核验器调用；禁止把失败记录提升为业务成功。历史问题件分段读取与回归见上述维护说明。

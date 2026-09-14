@@ -174,7 +174,7 @@ def test_daily_sign_source_failure_verifies_only_failed_run_records(tmp_path, di
     assert not is_verified_daily_sign_failure(**{**proof, "host_call_observations": host.observations[:-1]})
 
 
-@pytest.mark.parametrize("count,corrupt", [(514,False), (2,True), (2,False), (8,False)])
+@pytest.mark.parametrize("count,corrupt", [(514,False), (2,True), (2,False), (8,False), (3,False)])
 def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_path, direct_repository, monkeypatch, count, corrupt):  # noqa: F811
     assert os.environ["AGENT_DB_HOST"] == "127.0.0.1" and os.environ["AGENT_DB_NAME"].endswith("_test")
     # This UUID database belongs only to this test module. Reset its daily-sign
@@ -205,6 +205,8 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         {**problem, "external_id": f"problem-{index}", "waybill_no": row["tracking_number"]}
         for index, row in enumerate(arrivals[:80])
     ] if count == 514 else []
+    if count == 3:
+        problem_rows = [{**problem, "waybill_no":"R00021000001", "registered_at":"2026-09-11 09:31:03"}]
 
     def tms(endpoint, values):
         source_calls.append(endpoint)
@@ -252,12 +254,19 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         return
     assert result["status"] == "SUCCESS", (result.get("error"), source_calls, tables.calls)
     assert len(tables.records) == (1 if count == 8 else count-1)
-    assert tables.records[0]["fields"]["运单编号"] == "R00021000001"
-    assert tables.records[0]["fields"]["到货件数"] == 2
-    assert tables.sheet[1][0] == "R00021000001" and tables.sheet[1][-1] == 2
+    record_fields = {row["fields"]["运单编号"]: row["fields"] for row in tables.records}
+    sheet_rows = {row[0]: row for row in tables.sheet[1:] if row[0]}
+    assert record_fields["R00021000001"]["到货件数"] == 2
+    assert sheet_rows["R00021000001"][-1] == 2
     state = store.load_daily_sign_state()
     assert state["ledger"]["R00021000002"]["tms_signed"]
     assert state["ledger"]["R00021000001"]["arrived_quantity"] == 2
+    if count == 3:
+        due = "2026-09-12 23:59:59"
+        assert record_fields["R00021000001"]["问题件后应签时间"] == due
+        assert sheet_rows["R00021000001"][2] == due
+        assert state["ledger"]["R00021000001"]["system_sign_due_at"] == datetime(2026,9,12,23,59,59)
+        assert record_fields["R00021000003"]["问题件后应签时间"] == "2026-09-11 23:59:59"
     if historical:
         assert state["ledger"]["R00021000001"]["recipient_address"] == arrivals[0]["recipient_address"]
         assert any(row["external_id"] == identity for row in state["problems"]["R00021000002"])
