@@ -1629,6 +1629,8 @@ def verify_daily_sign_completed_run(
             )
     return {
         "verified": True,
+        "run_id": clean_text(run_id),
+        "status": clean_text(row.get("status")),
         "record_count": to_int(row.get("published_rows")) or 0,
         "publication_sha256": clean_text(row.get("fingerprint")),
         "persistence_sha256": marker_sha256 or "",

@@ -42,10 +42,21 @@ def _public_tms_result(result):
     auth_error = tms_auth_error_result(result)
     if auth_error:
         return {"ok": False, "error_code": auth_error["error_code"], "message": "来源账号需要完成登录验证。"}
-    codes = {str(row.get("error_code") or "") for row in failures}
+    codes = {str(row.get("error_code") or row.get("error_type") or "") for row in failures}
     timeout_codes = {"ReadTimeout", "ConnectTimeout", "Timeout", "TimeoutError", "TMS_TIMEOUT"}
     if codes & timeout_codes:
         return {"ok": False, "error_code": "SOURCE_QUERY_TIMEOUT", "message": "原系统查询超时，本次未取得完整数据。"}
+    public_errors = {
+        "HTTPError": ("SOURCE_HTTP_ERROR", "原系统返回 HTTP 错误，本次未取得完整数据。"),
+        "INVALID_RESPONSE": ("SOURCE_RESPONSE_INVALID", "原系统返回了非数据页面，请检查登录态或服务状态。"),
+        "PAGE_CONTEXT_NOT_FOUND": ("PAGE_CONTEXT_NOT_FOUND", "当前账号没有找到问题件查询入口。"),
+        "PAGE_CONTEXT_INCOMPLETE": ("PAGE_CONTEXT_INCOMPLETE", "原页面缺少必要的查询参数。"),
+        "GRID_URL_NOT_FOUND": ("GRID_URL_NOT_FOUND", "原页面的问题件查询地址未解析成功。"),
+        "LOGIN_SITE_CODE_MISSING": ("LOGIN_SITE_CODE_MISSING", "当前登录态缺少网点编号。"),
+    }
+    for source_code, (code, message) in public_errors.items():
+        if source_code in codes:
+            return {"ok": False, "error_code": code, "message": message}
     return {"ok": False, "error_code": "SOURCE_QUERY_FAILED", "message": "原系统查询失败，本次未取得完整数据。"}
 
 

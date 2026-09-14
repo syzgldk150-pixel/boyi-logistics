@@ -937,9 +937,9 @@ class PluginExecutionRouter:
 
     @staticmethod
     def _verified_business_failure(capability, result, execution_state) -> bool:
-        from agent.automation_plugins.finance_failure_proof import is_verified_finance_failure
+        from agent.automation_plugins.business_failure_proof import is_verified_business_failure
         metadata = capability.get("_plugin_runtime") or {}
-        return is_verified_finance_failure(
+        return is_verified_business_failure(
             plugin_id=metadata.get("plugin_id"), result=result,
             started_mutating_call_count=execution_state.get("started_mutating_call_count"),
             host_call_observations=execution_state.get("host_call_observations", ()),
