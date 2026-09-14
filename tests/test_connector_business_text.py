@@ -63,3 +63,29 @@ def test_yunda_title_exception_does_not_allow_private_targets(value):
 def test_yunda_title_matching_bound_identity_is_still_denied():
     with pytest.raises(ConnectorSensitiveDataDenied):
         check({"prob_title": "/"}, bindings=("/",))
+
+
+@pytest.mark.parametrize("field", ["ACCEPT_MAN_PHONE", "SEND_MAN_PHONE", "收货电话", "寄件手机", "receiver_phone", "sender_phone"])
+def test_ronghui_phone_slash_groups_are_preserved(field):
+    # Native sending records may include repeated separators and short suffixes.
+    value = {"rows": [{field: "123456789012//34/56"}]}
+    check(value)
+    assert value["rows"][0][field] == "123456789012//34/56"
+
+
+@pytest.mark.parametrize("value", [
+    {"ACCEPT_MAN_PHONE": "/123/456"},
+    {"ACCEPT_MAN_PHONE": "123//etc/passwd"},
+    {"ACCEPT_MAN_PHONE": "https://private.invalid/123"},
+    {"收货电话": "123//456 password=fixture-secret"},
+    {"receiver_phone": "127.0.0.1:8080/123"},
+    {"other_field": "123456789012//34/56"},
+])
+def test_phone_separators_do_not_allow_targets_or_other_fields(value):
+    with pytest.raises(ConnectorSensitiveDataDenied):
+        check(value)
+
+
+def test_phone_slash_groups_still_reject_bound_identity():
+    with pytest.raises(ConnectorSensitiveDataDenied):
+        check({"ACCEPT_MAN_PHONE": "123456789012//34/56"}, bindings=("123456789012",))
