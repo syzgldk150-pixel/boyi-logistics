@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import time
 from collections import Counter
-from datetime import date, datetime, time as datetime_time, timezone
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from typing import Any
 
 from tools.daily_sign_rules import (
@@ -294,6 +294,37 @@ def _collect_problem_events(
     account_id: str,
     start: datetime,
     end: datetime,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    # Ronghui's full-history request can time out upstream. Read the same
+    # complete interval in bounded windows; never shorten or skip its history.
+    cursor, end = start.replace(microsecond=0), end.replace(microsecond=0)
+    if cursor > end:
+        raise DailySignSyncError("INVALID_ARGUMENT", "问题件查询开始时间晚于结束时间。")
+    max_pages = _bounded_int(params.get("problem_max_pages"), field="problem_max_pages",
+                            default=500, minimum=1, maximum=5000)
+    events, windows, identities = [], [], set()
+    pages, total = 0, 0
+    while cursor <= end:
+        if pages >= max_pages:
+            raise DailySignSyncError("PAGINATION_INCOMPLETE", "问题件查询达到总页数限制，仍有未读取的日期。")
+        window_end = min(cursor + timedelta(days=14) - timedelta(seconds=1), end)
+        rows, evidence = _collect_problem_window({**params, "problem_max_pages": max_pages - pages},
+            account_id=account_id, start=cursor, end=window_end)
+        for row in rows:
+            if (not cursor <= row["registered_at"] <= window_end or row["external_id"] in identities):
+                raise DailySignSyncError("SOURCE_WINDOW_MISMATCH", "融辉问题件返回了范围外或跨段重复的登记记录。")
+            identities.add(row["external_id"])
+        events.extend(rows)
+        pages += evidence["pages"]
+        total += evidence["declared_total"]
+        windows.append({"start": str(cursor), "end": str(window_end), **evidence})
+        cursor = window_end + timedelta(seconds=1)
+    return events, {"rows": len(events), "declared_total": total, "pages": pages,
+                    "complete": True, "windows": windows}
+
+
+def _collect_problem_window(
+    params: dict[str, Any], *, account_id: str, start: datetime, end: datetime,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     page_size = _bounded_int(
         params.get("problem_page_size"),

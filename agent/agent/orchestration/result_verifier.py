@@ -1128,9 +1128,9 @@ class ResultVerifier:
         return None
 
     @staticmethod
-    def _verified_finance_failure(raw_result, verification) -> bool:
-        from agent.automation_plugins.finance_failure_proof import is_verified_finance_failure
-        return is_verified_finance_failure(
+    def _verified_business_failure(raw_result, verification) -> bool:
+        from agent.automation_plugins.business_failure_proof import is_verified_business_failure
+        return is_verified_business_failure(
             plugin_id=verification.plugin_id,
             result=raw_result,
             started_mutating_call_count=verification.started_mutating_call_count,
@@ -1218,7 +1218,7 @@ class ResultVerifier:
             )
         final_outcome = (
             RuntimeLeaseOutcome.WRITE_VERIFIED
-            if outcome.accepted or self._verified_finance_failure(raw_result, verification)
+            if outcome.accepted or self._verified_business_failure(raw_result, verification)
             else RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
         )
         evidence_value = outcome.result.to_dict() if outcome.result is not None else dict(raw_result)

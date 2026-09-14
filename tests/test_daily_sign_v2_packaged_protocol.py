@@ -123,6 +123,57 @@ class FeishuTables:
         raise AssertionError(f"Unexpected Feishu operation {name}")
 
 
+def test_daily_sign_source_failure_verifies_only_failed_run_records(tmp_path, direct_repository, monkeypatch):  # noqa: F811
+    from agent.automation_plugins.daily_sign_failure_proof import is_verified_daily_sign_failure
+    from agent.automation_plugins.execution import PluginExecutionRouter
+
+    assert os.environ["AGENT_DB_HOST"] == "127.0.0.1" and os.environ["AGENT_DB_NAME"].endswith("_test")
+    monkeypatch.setattr(store, "business_now", lambda: datetime(2026, 9, 11, 12))
+    store.save_arrival_stat_snapshot(date(2026, 9, 10), [{"tracking_number": "R00021000001",
+        "destination_station": "邵阳大祥S站", "expected_quantity": 3, "arrived_quantity": 2,
+        "goods_name": "隔离货物", "package_type": "纸箱", "delivery_method": "派送"}])
+    accounts, resources, tables = BoundAccounts(), BoundResources(), FeishuTables()
+    def tms(endpoint, values):
+        if endpoint == "/get_qianshou":
+            return {"data": [{"billNumberMain": "R00021000001", "planSignTime": "2026-09-11 23:59:59"}]}
+        assert endpoint == "/customer_service_problem"
+        filters = values["params"]["filters"]
+        assert filters["date_from"] == "2026-09-10"
+        assert filters["end_time"] == "12:00:00"
+        return {"ok": False, "error_code": "SOURCE_QUERY_FAILED", "message": "Source query failed"}
+    ports = build_daily_sign_port_handlers(account_manager=accounts, store=store, tms=tms,
+        feishu=tables, resource_reader=resources.read)
+    context = CoreBrokerInvocationContext(automation_id="isolated-daily-sign", plugin_version="2.0.4",
+        tool_name="sync_daily_should_sign_v2", operation="service.invoke", action="run", role="__system__",
+        account_bindings={"daily_sign_r13": ("test-r13",), "daily_sign_tms": ("test-tms",)},
+        resource_bindings={"daily_sign_sheet": "test-sheet", "daily_sign_bitable": "test-bitable"})
+    host = PackagedConnectorHost(tmp_path, "sync_daily_should_sign_v2", ConnectorRegistry(build_daily_sign_connectors(ports)),
+        context, account_resolver=accounts, resource_resolver=resources)
+    result = host.execute({"days": 1}, operation="run")
+    assert result["status"] == "FAILED" and result["error"]["code"] == "SOURCE_QUERY_FAILED", result
+    assert not tables.calls
+    assert len(host.receipts) == 2
+    proof = dict(plugin_id=host.manifest.plugin_id, result=result,
+        started_mutating_call_count=len(host.receipts), host_call_observations=host.observations)
+    assert is_verified_daily_sign_failure(**proof), host.observations
+    assert host.verified_outcome.accepted is False
+    assert host.verified_outcome.code == "SOURCE_QUERY_FAILED"
+    assert host.verification_settlements[-1]["outcome"].value == "WRITE_VERIFIED"
+    router = object.__new__(PluginExecutionRouter)
+    monkeypatch.setattr(router, "_observe_started_mutating_calls", lambda *_: None)
+    monkeypatch.setattr(router, "_observe_host_call_observations", lambda *_: None)
+    state = {"started_mutating_call_count": len(host.receipts), "host_call_observations": host.observations}
+    assert router._govern_started_write_failure(host.resolved_capability, result,
+        token="test", execution_state=state) == result
+    for field, value in [("verified", False), ("run_id", "another-run"), ("status", "success"), ("record_count", 1)]:
+        observations = deepcopy(host.observations)
+        observations[-1]["result"]["value"][field] = value
+        assert not is_verified_daily_sign_failure(**{**proof, "host_call_observations": observations})
+    assert not is_verified_daily_sign_failure(**{**proof, "started_mutating_call_count": 3})
+    assert not is_verified_daily_sign_failure(**{**proof, "plugin_id": "another-plugin"})
+    assert not is_verified_daily_sign_failure(**{**proof, "host_call_observations": host.observations[:-1]})
+
+
 @pytest.mark.parametrize("count,corrupt", [(514,False), (2,True), (2,False), (8,False)])
 def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_path, direct_repository, monkeypatch, count, corrupt):  # noqa: F811
     assert os.environ["AGENT_DB_HOST"] == "127.0.0.1" and os.environ["AGENT_DB_NAME"].endswith("_test")
@@ -163,7 +214,10 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
             return {"data":[{"billNumberMain":row["tracking_number"], "planSignTime":"2026-09-11 23:59:59"} for row in current]}
         assert values["params"]["account_id"] == "test-tms"
         if endpoint == "/customer_service_problem":
-            rows = problem_rows
+            filters = values["params"]["filters"]
+            start = f"{filters['date_from']} {filters['start_time']}"
+            end = f"{filters['date_to']} {filters['end_time']}"
+            rows = [row for row in problem_rows if start <= row["registered_at"] <= end]
             return {"ok":True, "data":{"ok":True, "account_id":"test-tms", "account_label":"Host account",
                 "rows":rows, "stats":{"total":len(rows), "returned":len(rows), "total_authoritative":True}}}
         if endpoint == "/get_sign_records":
@@ -186,7 +240,10 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         account_bindings={"daily_sign_r13":("test-r13",), "daily_sign_tms":("test-tms",)},
         resource_bindings={"daily_sign_sheet":"test-sheet", "daily_sign_bitable":"test-bitable"})
     host = PackagedConnectorHost(tmp_path, "sync_daily_should_sign_v2", registry, context, account_resolver=accounts, resource_resolver=resources)
-    result = host.execute({"days":1}, operation="run")
+    arguments = {"days": 1}
+    if count == 514:
+        arguments.update(source_start="2026-08-01 00:00:00", source_end="2026-09-11 12:00:00")
+    result = host.execute(arguments, operation="run")
     if corrupt:
         assert result["status"] == "FAILED" and result["error"]["code"] == "WRITE_OUTCOME_UNKNOWN", result
         assert tables.calls.count("write_records") == 1
@@ -205,6 +262,7 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         assert state["ledger"]["R00021000001"]["recipient_address"] == arrivals[0]["recipient_address"]
         assert any(row["external_id"] == identity for row in state["problems"]["R00021000002"])
     if count == 514:
+        assert source_calls.count("/customer_service_problem") == 3
         assert sum(len(rows) for rows in state["problems"].values()) == len(problem_rows)
     if count == 8:
         assert source_calls.count("/ronghui_tms_tracking") == 6

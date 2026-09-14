@@ -81,6 +81,7 @@ def test_business_fields_are_still_checked_for_sensitive_content():
     ({"ok":False,"data":{"ok":False,"error_code":"ReadTimeout","message":"https://origin.invalid/query"}}, "SOURCE_QUERY_TIMEOUT"),
     ({"error":"tms service timeout: http://127.0.0.1:9000/tms/customer_service_problem"}, "SOURCE_QUERY_FAILED"),
     ({"ok":False,"error_code":"AUTH_PENDING_CODE","message":"https://origin.invalid/login"}, "AUTH_PENDING_CODE"),
+    ({"ok":False,"data":{"ok":False,"error_code":"HTTPError","message":"504 Server Error for https://origin.invalid/query"}}, "SOURCE_HTTP_ERROR"),
 ])
 def test_tms_failure_stays_a_source_failure_without_private_transport_text(source, code):
     original = deepcopy(source)
@@ -113,6 +114,53 @@ def test_source_timeout_projection_preserves_existing_read_retry(monkeypatch):
     assert rows == []
     assert len(calls) == 2
     assert calls[0] == calls[1]
+
+
+def test_problem_windows_cover_full_interval_without_overlap_or_skipped_pages(monkeypatch):
+    from datetime import datetime, timedelta
+    import json
+    from agent.tms_runtime.scripts.customer_service_problem import build_ronghui_query_payload
+    from tools import daily_sign_pipeline as pipeline
+
+    calls = []
+    def read(endpoint, values):
+        assert endpoint == "/customer_service_problem"
+        filters = values["params"]["filters"]
+        native = json.loads(build_ronghui_query_payload(filters, direction="registered")["REGISTER_DATE"])
+        start, end = (datetime.strptime(native[key], "%Y/%m/%d %H:%M:%S") for key in ("start", "end"))
+        calls.append((start, end, filters["page"]))
+        page = filters["page"]
+        return {"ok": True, "rows": [{"external_id": f"{start.date()}-{page}",
+            "waybill_no": f"R0002100000{page}", "problem_type": "少货/分批",
+            "registered_at": str(start if page == 1 else end)}],
+            "stats": {"total": 2, "total_authoritative": True}}
+    monkeypatch.setattr(pipeline, "call_http_service", read)
+    start, end = datetime(2026, 8, 31, 13, 5, 6), datetime(2026, 9, 14, 17, 39, 26)
+    rows, evidence = pipeline._collect_problem_events({"problem_page_size": 1}, account_id="test", start=start, end=end)
+    assert len(rows) == evidence["declared_total"] == 4
+    assert evidence["pages"] == 4 and evidence["complete"] is True
+    assert [call[2] for call in calls] == [1, 2, 1, 2]
+    assert calls[0][0] == start and calls[-1][1] == end
+    assert calls[0][1] + timedelta(seconds=1) == calls[2][0]
+    with pytest.raises(pipeline.DailySignSyncError, match="总页数限制"):
+        pipeline._collect_problem_events({"problem_page_size": 1, "problem_max_pages": 2},
+            account_id="test", start=start, end=end)
+
+
+def test_failed_problem_window_never_returns_partial_history(monkeypatch):
+    from datetime import datetime
+    from tools import daily_sign_pipeline as pipeline
+    calls = []
+    def read(endpoint, values):
+        calls.append(values["params"]["filters"])
+        if len(calls) == 1:
+            return {"ok": True, "rows": [], "stats": {"total": 0, "total_authoritative": True}}
+        return {"ok": False, "error_code": "SOURCE_HTTP_ERROR", "message": "Upstream failed"}
+    monkeypatch.setattr(pipeline, "call_http_service", read)
+    with pytest.raises(pipeline.DailySignSyncError) as error:
+        pipeline._collect_problem_events({"problem_retry_attempts": 1}, account_id="test",
+            start=datetime(2026, 8, 1), end=datetime(2026, 9, 14))
+    assert error.value.code == "SOURCE_HTTP_ERROR" and len(calls) == 2
 
 
 def test_tracking_port_keeps_scan_facts_without_ui_descriptions():
