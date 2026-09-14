@@ -423,6 +423,7 @@ async def _invoke_automation_project_and_reply(
         projection = normalize_scan_preview_public_projection(
             result.get("scan_preview"),
             expected_invocation_id=run_id,
+            expected_automation_id=str(result.get("automation_id") or ""),
         )
         if projection is None:
             await _reply_text(

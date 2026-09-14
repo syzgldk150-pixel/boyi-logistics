@@ -20,8 +20,10 @@ class _FakeProjectEntrypoints:
         status: str = "COMPLETED",
         results: list[dict | Exception] | None = None,
         accepted_errors: dict[int, Exception] | None = None,
+        automation_id: str = "scan_codes",
     ) -> None:
         self.status = status
+        self.automation_id = automation_id
         self.results = list(results or [])
         self.accepted_errors = dict(accepted_errors or {})
         self.calls: list[dict] = []
@@ -50,6 +52,8 @@ class _FakeProjectEntrypoints:
             on_accepted = kwargs.get("on_accepted")
             if on_accepted is not None:
                 await on_accepted(SimpleNamespace(run_id=result.get("invocation_id", "")))
+            if "scan_preview" in result:
+                return {"automation_id": self.automation_id, **result}
             return dict(result)
         on_accepted = kwargs.get("on_accepted")
         if on_accepted is not None:
@@ -826,16 +830,18 @@ def test_direct_feishu_project_explains_terminal_failure_without_internal_status
     assert "run-terminal-failure" not in replies[-1][0]
 
 
-def test_scan_preview_creates_volatile_pending_and_confirm_uses_new_event():
+@pytest.mark.parametrize("automation_id", ["scan_codes", "33333333-3333-4333-8333-333333333333"])
+def test_scan_preview_creates_volatile_pending_and_confirm_uses_new_event(automation_id):
     preview_invocation_id = "11111111-1111-4111-8111-111111111111"
     formal_run_id = "22222222-2222-4222-8222-222222222222"
     service = _FakeProjectEntrypoints(
+        automation_id=automation_id,
         results=[
             {
                 "success": True,
                 "status": "COMPLETED",
                 "invocation_id": preview_invocation_id,
-                "scan_preview": _scan_preview(preview_invocation_id),
+                "scan_preview": {**_scan_preview(preview_invocation_id), "automation_id": automation_id},
             },
             {
                 "success": True,
@@ -1064,7 +1070,7 @@ def test_formal_scan_waits_past_initial_window_and_replies_once_with_actual_term
         async def invoke_feishu(self, **kwargs):
             self.calls.append(kwargs)
             if not kwargs["preview_invocation_id"]:
-                return {"status": "COMPLETED", "invocation_id": preview_id, "scan_preview": _scan_preview(preview_id)}
+                return {"status": "COMPLETED", "automation_id": "scan_codes", "invocation_id": preview_id, "scan_preview": _scan_preview(preview_id)}
             await kwargs["on_accepted"](receipt)
             assert replies[-1][1]["reply_type"] == "scan_preview_formal_started"
             if initial == "read_error":
@@ -1268,7 +1274,11 @@ def test_scan_confirmation_reply_failure_keeps_event_lock_for_exact_replay():
     assert formal_run_id not in replies[-1][0]
 
 
-def test_scan_projection_with_private_field_is_rejected_without_pending():
+@pytest.mark.parametrize("invalid_fields", [
+    {"selection_sha256": "a" * 64},
+    {"automation_id": "44444444-4444-4444-8444-444444444444"},
+])
+def test_scan_projection_with_private_field_is_rejected_without_pending(invalid_fields):
     preview_invocation_id = "11111111-1111-4111-8111-111111111111"
     service = _FakeProjectEntrypoints(
         results=[
@@ -1278,7 +1288,7 @@ def test_scan_projection_with_private_field_is_rejected_without_pending():
                 "invocation_id": preview_invocation_id,
                 "scan_preview": {
                     **_scan_preview(preview_invocation_id),
-                    "selection_sha256": "a" * 64,
+                    **invalid_fields,
                 },
             }
         ]
