@@ -428,6 +428,15 @@ def _reject_sensitive_result(
                 "Connector result contains sensitive data"
             )
         checked = value
+        # Ronghui phone cells can contain slash-separated digit groups, including
+        # repeated slashes. They are business text, not absolute file paths.
+        # Keep the source bytes and bound-identity checks; accept this shape only
+        # in the source/Feishu/waybill phone columns used by sending sync.
+        if business_field in {
+            "ACCEPT_MAN_PHONE", "SEND_MAN_PHONE", "收货电话", "寄件手机",
+            "receiver_phone", "sender_phone",
+        } and re.fullmatch(r"[0-9]+(?:/+[0-9]+)+", value):
+            checked = value.replace("/", " ")
         # Yunda's native problem list uses a single slash as a title value.
         # Preserve that exact punctuation; paths and all other fields still
         # pass through the ordinary private-target checks below.
