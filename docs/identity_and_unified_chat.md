@@ -4,12 +4,14 @@ type: implementation
 status: active
 authority: canonical
 owner: repository
-updated: 2026-09-13
+updated: 2026-09-14
 ---
 
 # 身份权限与统一对话
 
 本文说明当前工作区实现；线上是否启用须以发布记录和实际核验为准。
+
+插件目录不可用时，Console 显示目录加载错误，不从旧 SQL 定时记录重建“扩展信息缺失”卡片；目录恢复后使用当前插件归属正常展示。有效目录中的孤立记录仍显式阻断。每日应签 V2 `2.0.4` 将创建运行记录前的 `EXECUTION_RESOURCE_BUSY` 明确报告为未开始写入；只有写调用已经发出、回执丢失等不确定结果保留 `WRITE_OUTCOME_UNKNOWN`。Host 将 TMS 失败封装投影为明确的来源失败或登录验证状态，不向插件传递传输地址，也不把失败当成空数据；原有来源读取重试和完整性检查保持生效。回归入口为 `tests/test_daily_sign_connector_responses.py`、`tests/test_daily_sign_fresh_readback.py`、`tests/test_daily_sign_v2_packaged_protocol.py` 和 `console/tests/test_automation_project_grouping.py`。
 
 「查询并更新签收状态」与「每日应签」是两个独立插件。按 2026-09-13 用户确认的规则，签收 V2 2.0.2 从飞书未签收清单查询融辉实际状态，先通过只读 `lookup_projection` 精确区分 MySQL `waybills` 已有和未入库单号；飞书正常更新，后台仅更新已有运单的签收状态，结果及两渠道摘要明确报告未入库数量和单号。完整寄件资料由寄件同步负责，签收插件不新增运单。缺失行是明确业务分支；数据库不可达、重复或额外身份、残缺字段仍失败，实际写入继续严格核对数量、完整行与写后状态。没有后台更新对象时不发起数据库写调用；查询或预览不伪造写回执。新增只读宿主接口属于核心更新，后续同接口范围内的业务变更可独立更新插件。回归入口见 `tests/test_delivery_projection_presence.py` 与 `agent/scripts/plugin_maintenance.py test sync_delivery_status_v2`。
 

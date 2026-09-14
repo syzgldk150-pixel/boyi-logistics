@@ -7,6 +7,8 @@ import os
 import threading
 import time
 import pytest
+from contextlib import asynccontextmanager
+from unittest.mock import Mock
 
 from agent.automation_plugins.connector_registry import ConnectorRegistry
 from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
@@ -16,6 +18,50 @@ from tests.direct_invocation_fixture import direct_repository  # noqa: F401
 from tests.service_v2_production_protocol_support import PackagedConnectorHost
 from tools import daily_sign_store as store
 from tools.daily_sign_sync_tool import SHEET_HEADERS
+
+
+@pytest.mark.parametrize("resource_busy", [True, False])
+def test_packaged_start_rejection_is_not_an_unknown_write(tmp_path, monkeypatch, resource_busy):
+    from agent.automation_plugins.broker import LocalBrokerCapabilityIssuer
+    from agent.orchestration.models import OrchestrationError
+
+    start = Mock(side_effect=RuntimeError("acknowledgement lost"))
+    accounts, resources = BoundAccounts(), BoundResources()
+    ports = build_daily_sign_port_handlers(
+        account_manager=accounts, store=SimpleNamespace(start_sync_run=start),
+        resource_reader=resources.read,
+    )
+    registry = ConnectorRegistry(build_daily_sign_connectors(ports))
+    context = CoreBrokerInvocationContext(
+        automation_id="isolated-daily-sign", plugin_version="2.0.4",
+        tool_name="sync_daily_should_sign_v2", operation="service.invoke", action="run", role="__system__",
+        account_bindings={"daily_sign_r13": ("test-r13",), "daily_sign_tms": ("test-tms",)},
+        resource_bindings={"daily_sign_sheet": "test-sheet", "daily_sign_bitable": "test-bitable"},
+    )
+    if resource_busy:
+        original_init = LocalBrokerCapabilityIssuer.__init__
+
+        @asynccontextmanager
+        async def reject_before_write(_prepared):
+            raise OrchestrationError("EXECUTION_RESOURCE_BUSY", "Resource is in use")
+            yield  # pragma: no cover
+
+        def issuer_init(self, *args, **kwargs):
+            original_init(self, *args, **kwargs)
+            self.host_operation_guard = reject_before_write
+
+        monkeypatch.setattr(LocalBrokerCapabilityIssuer, "__init__", issuer_init)
+    host = PackagedConnectorHost(tmp_path, "sync_daily_should_sign_v2", registry, context,
+                                 account_resolver=accounts, resource_resolver=resources)
+    result = host.execute({}, operation="run")
+    assert result["status"] == "FAILED", result
+    assert result["error"]["code"] == ("EXECUTION_RESOURCE_BUSY" if resource_busy else "WRITE_OUTCOME_UNKNOWN"), result
+    if resource_busy:
+        start.assert_not_called()
+        assert not host.receipts
+    else:
+        start.assert_called_once()
+        assert len(host.receipts) == 1
 
 
 class BoundAccounts:

@@ -47,7 +47,14 @@ def _store(name, **values):
 
 
 def start_sync_run():
-    value = _store("start_run")
+    try:
+        value = _store("start_run")
+    except RuntimeError as exc:
+        # The SDK returns the Host's exact error code. This rejection happens
+        # before the Host write, unlike a lost acknowledgement after start_run.
+        if str(exc) == "EXECUTION_RESOURCE_BUSY":
+            raise PluginExecutionError(str(exc), code="EXECUTION_RESOURCE_BUSY") from exc
+        raise
     return value["run_id"], datetime.fromisoformat(value["started_at"])
 
 

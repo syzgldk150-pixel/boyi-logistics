@@ -1870,6 +1870,12 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
         try:
             run_id, started_at = start_sync_run()
         except Exception as exc:
+            if getattr(exc, "code", None) == "EXECUTION_RESOURCE_BUSY":
+                raise DailySignSyncError(
+                    "EXECUTION_RESOURCE_BUSY",
+                    "本次未取得写入资源，尚未创建每日应签运行记录，请稍后重新触发。",
+                    retryable=False,
+                ) from exc
             raise DailySignSyncError(
                 "WRITE_OUTCOME_UNKNOWN",
                 "每日应签运行记录创建后的终态未知。",

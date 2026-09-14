@@ -20,6 +20,7 @@ class AutomationProjectGroupingTests(unittest.TestCase):
         plugin_warning="",
         account_fetch=None,
         account_principal=None,
+        rendered_context=None,
     ):
         captured = {}
 
@@ -52,6 +53,8 @@ class AutomationProjectGroupingTests(unittest.TestCase):
         service._send_html = lambda _handler, _body: None
 
         service._render_automations(SimpleNamespace(current_admin_user={"username": "admin"}), {})
+        if rendered_context is not None:
+            rendered_context.update(captured)
         return captured["scheduled_tasks"]
 
     def test_first_page_defers_account_directory_until_settings(self):
@@ -177,19 +180,20 @@ class AutomationProjectGroupingTests(unittest.TestCase):
         self.assertFalse(tasks[0]["can_run_now"])
         self.assertTrue(tasks[0]["plugin_blocked"])
 
-    def test_catalog_failure_does_not_hide_r7_row_by_local_static_identity(self):
+    def test_catalog_failure_does_not_reconstruct_cards_from_historical_schedules(self):
+        context = {}
         tasks = self._rendered_tasks(
             scheduled_rows=[
-                {"id": "slot-0100", "automation_id": "r7_arrival_checkin"}
+                {"id": "slot-0100", "automation_id": "r7_arrival_checkin"},
+                {"id": "finance-old", "automation_id": None},
+                {"id": "finance-old-schedule", "automation_id": None},
             ],
             plugin_warning="catalog unavailable",
+            rendered_context=context,
         )
 
-        self.assertEqual(1, len(tasks))
-        self.assertEqual("r7_arrival_checkin", tasks[0]["task_id"])
-        self.assertFalse(tasks[0]["can_save"])
-        self.assertFalse(tasks[0]["can_run_now"])
-        self.assertTrue(tasks[0]["plugin_blocked"])
+        self.assertEqual([], tasks)
+        self.assertIn("catalog unavailable", context.values())
 
     def test_unlinked_schedule_row_remains_visible_but_fail_closed(self):
         tasks = self._rendered_tasks(
