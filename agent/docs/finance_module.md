@@ -4,7 +4,7 @@ type: 模块文档
 tags: [融辉, 财务同步, 费用绑定, BI, Decimal]
 related: [project_overview.md, common/finance_data_baseline.md]
 status: active
-updated: 2026-08-30
+updated: 2026-09-15
 ---
 
 # 融辉财务工作台
@@ -91,17 +91,17 @@ updated: 2026-08-30
 
 ## 同步与回溯
 
-- 工具：`sync_finance_bills`。
+- 日常采集插件：`sync_finance_bills_v2`；业务算法在独立 ZIP 中维护，Host 提供原页和账本接口。
 - 启用来源：由 `shared/finance/sources.py` 唯一声明；当前仅融辉三个业务账号为 `production_ready=true`，韵达为 `production_ready=false`。
-- 定时：每天 `00:10`（`10 0 * * *`），目标为完整前一日。
-- Agent 启动时仅在 `finance_bills_0010` 不存在时补种该任务；已有任务行（包括管理员临时停用状态）保持原样，不覆盖其他定时任务。
+- 定时以财务数据源实例中实际保存并启用的计划为准；历史 `00:10` 模板不代表当前所有实例的时间。
+- Agent 启动只恢复已保存且有效的插件注册与时间计划，不补种旧财务任务或自动发起历史补拉。
 - 默认同批次重扫最近 7 个完整业务日，捕获迟到入账和历史修订。
 - 调度触发时冻结 `scheduled_for` 和目标业务日期；同一任务单实例执行。
-- 服务启动时扫描账号/日期缺口，只补缺失或失败运行，不覆盖已有成功快照。
-- 服务启动缺口扫描属于静默补偿：失败时记录脱敏阶段、异常类型和源码位置，但不主动发送飞书告警，避免部署或进程重启产生重复通知；正式定时、手工和重试同步仍按具体错误码告警。
+- 日期缺口检查和历史补拉须由明确的插件触发或人工操作发起；失败结束本次，不形成积压待领取任务。
+- 登录恢复或进程重启不补跑旧失败调用；历史快照及失败记录保留，新的调用按当前来源和配置执行。
 - 首次历史回溯按月规划，实际按自然日抓取，粒度比月更小，单日失败可独立重试并避免大范围查询超时。无法确认最早可查日期时记录 `EARLIEST_DATE_UNCONFIRMED`，不得宣称完成全历史。
 - 单账号失败不覆盖该账号旧成功快照；其他账号可提交，批次标记部分失败。
-- 默认同步、启动补拉和每日定时只遍历启用来源；显式请求未启用平台或账号必须返回 `FINANCE_SOURCE_NOT_ENABLED`，不得尝试原页采集。
+- 显式同步、补拉和已启用定时只遍历启用来源；显式请求未启用平台或账号必须返回 `FINANCE_SOURCE_NOT_ENABLED`，不得尝试原页采集。
 - 重试历史混合批次时只重试仍启用的失败来源，并返回跳过的未启用来源数量；历史批次与运行记录继续保留审计。若批次只有未启用来源，则明确拒绝重试。
 - BI 当前失败告警只统计启用来源的最新失败状态；历史韵达失败仍可在“同步记录”审计中查看，但不得继续污染“部分来源同步失败”数量。
 
@@ -174,18 +174,18 @@ API Key 使用环境变量 `AGENT_LLM_CONFIG_MASTER_KEY` 提供的 32 字节 Bas
 - `GET /settings/llm/status`
 - `POST /settings/llm/candidates|models/refresh|test|activate|rollback|credentials/clear`
 
-Console 的 GET 接口只查询共享 MySQL 账本。`POST /finance/sync`、`/finance/backfill` 和
-`/finance/sync-batches/{id}/retry` 必须先校验真实 MySQL 管理员会话与同源请求，再用浏览器 UUID
-和签名 Console principal 向 Agent `POST /internal/v1/commands` 提交 `sync_finance_bills`，立即返回
-HTTP 202 Run 回执且不得同步等待结果。手工财务同步属于高风险计划，继续由事项中心完成
-`super_admin` 审批；不得新增 `/run-tool` 调用方。平台筛选和同步范围只展示共享注册表中的启用来源。
-Console 不直接访问第三方页面，也不接触第三方登录态。
+Console 的 GET 接口查询共享 MySQL 账本。财务数据源页的采集插件经统一 Invocation 执行；
+`POST /finance/sync`、`/finance/backfill` 和 `/finance/sync-batches/{id}/retry` 则在核对真实管理员会话、
+同源请求与稳定请求身份后，通过 `services/business_calls.py` 调用 Agent 的 `finance-collect` 直接业务接口。
+此接口由 `agent/tms_runtime/finance_business.py` 适配已配置采集入口，不提交 `/internal/v1/commands`，
+不返回旧 Run 领取回执，也不进入事项逐次审批。结果与失败由本次调用如实返回。
+平台和来源权限仍须核验，Console 不直接访问第三方页面或登录态。
 
 `GET /finance/sync-batches` 在批次汇总之外返回最新失败的 `platform/account_id/target_date/error_code/error_message`，同步记录页可直接定位失败来源。显式无数据日期会以零值进入趋势和账号对比；没有成功或无数据运行的日期不会被静默补零。
 
 ## Agent 只读经营查询
 
-`query_business_finance` 是 TASK-050 建立的最小只读经营查询合同。真实执行只由 `main.py` 在组合根中把 `agent/business_query.py` 注入控制平面；独立工具文件固定失败，不能绕过组合根自行连接数据库。
+`query_business_finance` 是 TASK-050 建立的最小只读经营查询合同。真实执行只由 `main.py` 在组合根中把 `agent/business_query.py` 注入直接查询入口；独立工具文件固定失败，不能绕过组合根自行连接数据库。
 
 - 输入仅允许起止日期和当前已启用的融辉平台，闭区间最多 366 个日历日；控制平面账号作用域固定为 `none`，不接受 SQL、账号绑定、表名、字段名或任意数据源。
 - 输出仅包含期间总收入、总支出、净变动、待分类费用数、账本记录数和脱敏来源新鲜度；不返回账号明细或原始流水。
@@ -195,8 +195,8 @@ Console 不直接访问第三方页面，也不接触第三方登录态。
 - 待分类费用存在时只报告账本净变动并明确不得解释为利润。
 - 注册项保持 `llm_exposed=false`。TASK-051 的飞书自然语言入口不让 LLM 生成工具参数：`AgentCore` 在 LLM 前调用代码解析器，把中国标准时间的今天、昨天、本月、上月、最近 N 天、明确单日或日期范围转换为闭合日期参数；混合、非法、逆序、超过 366 天或缺少期间的表达固定澄清。
 - 自然语言入口只接受收入、支出、收支和净变动查询；同步、导入、修改、利润口径和任何识别到的未启用物流来源都在提交前固定拒绝，不会回退到其他工具或把来源静默替换为融辉。
-- 飞书查询必须由现有管理员绑定解析出 `feishu_admin_binding` 和 `admin/super_admin` 角色；未绑定、绑定服务不可用或身份类型不匹配均不提交 Command。此局部门禁不改变其他既有飞书只读工具的权限语义。
-- 查询仍经 `AgentCore.execute_tool` 提交 Command Gateway。专用 formatter 只接受已验证工具数据中的原始两位小数字符串；失败不回显内部异常，`NO_DATA` 不输出零金额，待分类费用时明确净变动不是利润。
+- 飞书查询解析当前有效绑定和继承身份权限，使用与后台相同的财务读取权限；未绑定、权限不足或绑定不可用时明确拒绝，不提交 Command，也不使用默认管理员兜底。
+- 查询经共用直接业务 reader，不经过旧 Command Gateway。formatter 只使用已验证的两位小数字符串；`NO_DATA` 不输出零金额，存在待分类费用时明确净变动不是利润，失败不回显内部异常。
 
 ## 代码入口
 
@@ -206,12 +206,12 @@ Console 不直接访问第三方页面，也不接触第三方登录态。
 - 真实页面发现与只读查询：`agent/tms_runtime/scripts/finance_live_capture.py`。
 - 多账号编排：`tools/finance_sync_service.py`。
 - 工具入口与双重单实例锁：`tools/sync_finance_bills_tool.py`。
-- 定时和启动补拉：`agent/scheduler.py`、`agent/task_templates.py`。
+- 插件时间计划：`agent/scheduler.py`；显式财务操作适配：`agent/tms_runtime/finance_business.py`；旧任务模板不代表当前会自动补跑。
 - Console 服务与页面：`../console/finance_service.py`、`../console/templates/finance.html`、`../console/static/finance.js`、`../console/static/finance.css`。
 
 ## 测试原则
 
-测试使用脱敏的最小真实响应结构，不写入真实账号或认证信息。必须覆盖 Decimal 精度、缺失金额、分页重叠、同键异内容、映射月份版本、S/F 方向、跨午夜日期、7 天重扫、启动补拉、账号/网点不匹配、未启用来源拒绝、历史失败告警过滤、BI 与明细对账，以及财务页的响应式和无障碍状态。
+测试使用脱敏的最小真实响应结构，不写入真实账号或认证信息。必须覆盖 Decimal 精度、缺失金额、分页重叠、同键异内容、映射月份版本、S/F 方向、跨午夜日期、7 天重扫、重启不自动补拉、账号/网点不匹配、未启用来源拒绝、历史失败告警过滤、BI 与明细对账，以及财务页的响应式和无障碍状态。
 
 定向测试：
 

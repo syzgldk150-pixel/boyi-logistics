@@ -3,7 +3,7 @@ module: project
 type: operations
 tags: [git, github, version-control, network]
 status: active
-updated: 2026-08-30
+updated: 2026-09-15
 ---
 
 # GitHub 项目管理与国内网络说明
@@ -16,11 +16,14 @@ updated: 2026-08-30
 
 ## 每项改动
 
+用户已确认本项目只维护一个最新 `main`。保留现有工作区改动，不自动创建分支、Draft PR 或恢复引用；如用户另行要求独立分支，再按该次要求执行。禁止强推覆盖远端历史。
+
 ```bash
 git status -sb
+git fetch origin
+# 工作区和分支归属核对后，仅快进更新
 git switch main
-git pull --ff-only
-git switch -c agent/<task-name>
+git pull --ff-only origin main
 
 # 修改和验证后，只加入本任务文件
 git add -- path/to/file path/to/test
@@ -28,10 +31,12 @@ python3 agent/scripts/check_documentation.py
 git diff --cached --check
 git diff --cached
 git commit -m "<concise task summary>"
-git push -u origin agent/<task-name>
+git push origin main
+git rev-parse HEAD
+git ls-remote --heads origin
 ```
 
-随后使用 Windows GitHub CLI 或 GitHub 插件创建以 `main` 为基线的 Draft PR。未成功推送或未成功建立 Draft PR时，任务尚未完成。
+推送前若远端已有新提交，应先复核并整合，不得强推。推送后核对远端 `main`；需要同步 ECS 时再按[发布手册](../agent/deploy/publish_to_ecs.md)执行并核对服务版本。
 
 ## 网络预检
 
@@ -64,6 +69,6 @@ $env:HTTPS_PROXY = 'http://127.0.0.1:7890'
 4. 清除任何指向旧局域网地址的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`。
 5. 只有 HTTPS Git 仍不可用时，评估 SSH over 443；不得关闭 SSH 主机密钥检查。
 
-## 首次基线例外
+## 历史工作流
 
-仓库第一次建立时允许直接创建和推送 `main`，并创建 `pre-architecture-baseline-<日期>` 标签。该例外在首次基线验证完成后永久结束，后续所有阶段必须使用独立 `agent/*` 分支和 Draft PR。
+早期分支、Draft PR 和首次基线标签规则仅用于解释旧历史，已由上述用户确认的单一 main 策略替代。

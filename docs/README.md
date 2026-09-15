@@ -5,7 +5,7 @@ tags: [documentation, navigation, authority, lifecycle]
 status: active
 authority: canonical
 owner: repository
-updated: 2026-09-10
+updated: 2026-09-15
 ---
 
 # 仓库文档索引
@@ -21,33 +21,31 @@ updated: 2026-09-10
 
 ## 现行权威文档
 
-- [业务接口与独立插件调用架构](architecture_direct_invocation.md)：V1 本轮实现入口与维护归属，替代旧的统一 Command/Run 调用要求。
-- [架构 V1 验收与复现映射](architecture_refactor_acceptance_mapping.md)、[寄件查询与范围覆盖](direct_waybill_query.md)、[旧执行链退役与回退](legacy_execution_retirement.md)：当前接口迁移、验证入口及历史保留边界。
-
-- [V3.2 第一轮维护边界与归属](low_maintenance_v32.md)：本轮模块入口、简单设置、插件局部维护及来源历史规则；取代旧文档中与本轮范围冲突的集中入口和强制 AI/专属 HTML 要求。
-- [V3.2 复现与发布回退](low_maintenance_v32_release.md)、[逐组验收要求](low_maintenance_v32_acceptance.json)及[扫描未知写恢复](scan_recovery_v32.md)：代码入口、隔离证据和首次核心更新边界。
-- [代码定位索引](../agent/docs/code_navigation_index.md)：需求到代码、测试和模块说明的入口。
-- [项目总览](../agent/docs/project_overview.md)：当前服务边界和模块目录。
-- [扩展化平台架构基准](extension-platform-baseline.md)：固定核心模块、Service v2、自动化中心、Harness、Connector 与迁移路线图的现行基准。
-- [扩展化平台执行账本](extension-platform-progress.md)：无人值守改造的逐 TASK 状态、验证、提交和生产门禁记录。
-- [历史控制平面](../agent/docs/control_plane_v1.md)：保留的 Command、Run、审批、Evidence、Outbox 结构；普通页面和插件已退出其领取/恢复链路。
-- [数据库迁移](../agent/docs/database_migrations.md)：顺序迁移与部署期结构管理。
-- [Action v1 插件兼容轨道](../agent/docs/automation_plugin_platform.md)：现存 v1 自动化插件合同。
-- [Service v2 插件平台](plugin-platform-v2.md)：v2 服务插件、能力代理和迁移合同。
-- [ECS 发布手册](../agent/deploy/publish_to_ecs.md) 与 [Nginx 生产边界](../agent/deploy/nginx/README.md)：当前发布、回滚材料和独立 origin 配置。
-- [Git 工作流](git_workflow.md)：分支、提交、推送和 Draft PR 流程。
-- [产品原则](../PRODUCT.md) 与 [设计系统](../DESIGN.md)：产品和界面约束。
+- [业务接口与独立插件调用架构](architecture_direct_invocation.md)：双服务、普通业务直接调用、独立插件 Invocation 和维护归属。
+- [当前插件源码、测试与升级入口](../agent/service_v2_plugins/README.md)、[Service V2 平台合同](plugin-platform-v2.md)：现行业务源码、Host 边界、独立 ZIP 与退役发布。
+- [身份权限与统一对话](identity_and_unified_chat.md)：后台账号和飞书身份继承、共用 AI 服务、授权插件执行及当前应签规则。
+- [V3.2 维护边界](low_maintenance_v32.md)、[复现与发布回退](low_maintenance_v32_release.md)：所属模块入口、可选 AI、简单设置、局部维护与来源历史。
+- [寄件查询与范围覆盖](direct_waybill_query.md)：数据库优先、平台补查及完整来源边界。
+- [代码定位索引](../agent/docs/code_navigation_index.md)、[项目总览](../agent/docs/project_overview.md)：代码、测试和模块入口。
+- [数据库迁移](../agent/docs/database_migrations.md)：部署期顺序迁移；运行时只做校验和读写。
+- [ECS 发布手册](../agent/deploy/publish_to_ecs.md)、[Nginx 边界](../agent/deploy/nginx/README.md)、[Git 工作流](git_workflow.md)：当前 main 维护、V2-only 发布、验证与回滚。
+- [旧执行链退役边界](legacy_execution_retirement.md)、[历史未知写核验](historical_write_recovery.md)、[扫描未知写恢复](scan_recovery_v32.md)：保留事实和人工核验，不恢复旧待领取业务。
+- [产品原则](../PRODUCT.md)、[设计系统](../DESIGN.md)：产品与界面约束。
 
 ## 模块说明
 
 - [Agent 自动化](../agent/docs/agent_automation/module_overview.md)
 - [客服系统](../agent/docs/customer_service/module_overview.md)
 - [财务模块](../agent/docs/finance_module.md)
-- [OCR](../agent/docs/ocr/module_overview.md)
+- [运单录入内的 OCR](../agent/docs/ocr/module_overview.md)
 - [车辆调度](../agent/docs/dispatch/module_overview.md)
 - [AI 客服规划](../agent/docs/ai_service/module_overview.md)
 
 ## 历史、规划与快照
+
+- [扩展平台原始方案](extension-platform-baseline.md)、[原迁移执行账本](extension-platform-progress.md)：保留阶段性 TASK 与隔离证据，不是当前待办或生产门禁。
+- [旧控制平面](../agent/docs/control_plane_v1.md)、[旧 Action V1 合同](../agent/docs/automation_plugin_platform.md)：解释历史记录；不用于新增插件或日常执行。
+- [架构改造验收映射](architecture_refactor_acceptance_mapping.md)、[V3.2 逐组验收要求](low_maintenance_v32_acceptance.json)：阶段验收与复现入口，不能据此推断当前线上每次执行都成功。
 
 - `docs/ai-development/` 保存阶段性架构目标和迁移快照，不作为当前代码事实。
 - `docs/superpowers/` 与 `console/docs/superpowers/` 保存已实施、被取代或历史计划，不作为当前执行清单。
@@ -64,6 +62,4 @@ updated: 2026-09-10
 - `status: historical`：历史记录，不进入默认现行检索。
 - `status: snapshot`：外部页面或系统在某次抓取时的证据，必须结合 `captured_at` 与 `verified_at` 判断时效。
 
-提交前运行 `python3 agent/scripts/check_documentation.py`，校验本地链接、生命周期元数据和三组指令镜像。
-
-- [身份权限、统一对话与迁移边界](identity_and_unified_chat.md)：身份设置、账号/飞书绑定继承、共用 AI 服务和统计 V2 连接器。
+提交前运行 `python3 agent/scripts/check_documentation.py`，校验本地链接、生命周期元数据和已配置的指令镜像；修改其他层级镜像时也须同步核对。

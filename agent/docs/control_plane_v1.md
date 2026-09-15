@@ -3,11 +3,13 @@ module: Agent 统一控制平面
 type: 架构与运行规范
 tags: [Command Gateway, Work Item, Agent Run, Approval, Evidence, Outbox]
 related: [project_overview.md, code_navigation_index.md, database_migrations.md]
-status: active
-updated: 2026-08-30
+status: historical
+updated: 2026-09-15
 ---
 
 # Agent 统一控制平面 v1
+
+> 历史记录：以下方案及验收状态只描述当时阶段，不是当前运行或发布指令。旧分支、TASK 待办、V1 签名发行及生产门禁不应据此恢复执行。当前实现请读 [当前直接调用架构](../../docs/architecture_direct_invocation.md)与[旧执行链退役边界](../../docs/legacy_execution_retirement.md)。
 
 ## 架构边界
 

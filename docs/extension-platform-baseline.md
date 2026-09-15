@@ -4,16 +4,18 @@ module: extension-platform
 type: architecture-baseline
 tags: [extension-platform, service-v2, automation, harness, connector]
 version: 1.0
-status: active
-authority: canonical
+status: historical
+authority: non-authoritative
 baseline_repository: syzgldk150-pixel/boyi-logistics
 baseline_branch: main
 baseline_commit_observed: bc43e4e9b77f10da3da08792a382a59171183756
-updated: 2026-08-30
+updated: 2026-09-15
 owner: repository
 ---
 
 # 博益物流扩展化架构改造基准方案（Codex 执行版）
+
+> 历史记录：以下方案及验收状态只描述当时阶段，不是当前运行或发布指令。旧分支、TASK 待办、V1 签名发行及生产门禁不应据此恢复执行。当前实现请读 [当前架构](architecture_direct_invocation.md)、[V2 插件平台](plugin-platform-v2.md)与[维护边界](low_maintenance_v32.md)。
 
 ## 0. 本文用途
 

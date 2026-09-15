@@ -2,15 +2,17 @@
 module: extension-platform-progress
 type: execution-ledger
 tags: [extension-platform, autonomous-execution, service-v2, migration]
-status: in-progress
-authority: canonical
+status: historical
+authority: non-authoritative
 owner: repository
-updated: 2026-09-01
+updated: 2026-09-15
 ---
 
 # 扩展化平台无人值守执行账本
 
-本账本记录 `agent/extension-platform-autonomous` 分支上每个 TASK 的离线实现、验证、提交和生产门禁。恢复执行时必须先读取本文件，再从唯一的 `IN_PROGRESS` 项继续；不得重复已完成 TASK。
+> 历史记录：以下方案及验收状态只描述当时阶段，不是当前运行或发布指令。旧分支、TASK 待办、V1 签名发行及生产门禁不应据此恢复执行。当前实现请读 [当前架构](architecture_direct_invocation.md)、[当前插件维护入口](../agent/service_v2_plugins/README.md)与[发布手册](../agent/deploy/publish_to_ecs.md)。
+
+本账本保留原 `agent/extension-platform-autonomous` 阶段的离线实现与验证记录。下方状态是当时的快照，原恢复执行规则已经停止适用；当前只维护 main，不按此表重启旧 TASK。
 
 ## 执行基线
 

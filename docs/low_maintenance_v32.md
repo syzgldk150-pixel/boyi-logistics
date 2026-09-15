@@ -1,6 +1,6 @@
 # V3.2 第一轮维护边界
 
-调用层已由 [架构改造 V1](architecture_direct_invocation.md) 更新；本文件其余模块归属、签名、数据正确性与性能标准继续适用。
+调用层已由 [架构改造 V1](architecture_direct_invocation.md) 更新；本文件其余模块归属、权限与接口校验、数据正确性与性能标准继续适用。
 
 本文件保留第一轮低维护方案的模块归属和验收原则。当前源码、协议及升级方式以 [V2 维护入口](../agent/service_v2_plugins/README.md) 为准；旧签名包和首次迁移步骤仅用于解释历史，不是当前维护流程。
 
@@ -19,7 +19,7 @@
 | 分批问题件 | 唯一业务源码 `agent/service_v2_plugins/split_pending_problem_upload_v2/payload/action.py`；v2 包由 `agent/service_v2_plugins/split_pending_problem_upload_v2/` 和共享打包器引用 | 当前实际安装的分批插件；局部候选筛选和判断连同测试，不另写 v2 算法副本 | 预览确认契约、共享问题件身份、Host 能力 |
 | 自提问题件 | 唯一业务源码 `agent/service_v2_plugins/self_pickup_problem_upload_v2/payload/action.py`；v2 包由 `agent/service_v2_plugins/self_pickup_problem_upload_v2/` 和共享打包器引用 | 当前实际安装的自提插件；局部业务判断连同测试，不另写 v2 算法副本 | 共享审批、结果核验或账号会话协议 |
 | 财务采集 | `agent/service_v2_plugins/sync_finance_bills_v2/payload/`；领域账本为 `shared/finance/` | 相容的字段适配/采集编排属于财务采集插件，公共账本保持核心 | 数据集、金额规则、成功发布条件、数据库迁移 |
-| 客服采集 | `shared/ronghui_customer_problem_fields.py` 与 `action.py` | 客服采集插件，真实 raw 字段经插件规范化后发布 | 来源身份/方向业务键、人工字段权属、公共数据库 |
+| 客服采集 | `agent/service_v2_plugins/sync_customer_service_problems_v2/payload/action.py` | 包内筛选与采集编排独立更新 | `shared/ronghui_customer_problem_fields.py` 公共字段协议、来源业务键、人工字段权属、数据库 |
 | 账号 | 既有 Agent 账号库、SessionBroker 与默认账号设置桥 | 维护已有账号引用；多个插件复用 | 凭据存储、会话互斥和 Host 授权协议 |
 | 来源与历史 | `shared/data_sources.py`、`shared/customer_service_repository.py`、`shared/finance/publication.py` | 显式接续兼容生产者；暂停/卸载保留来源与业务历史 | 新数据集、来源等价关系、共享表结构 |
 | 页面 | `console/services/automation_catalog_projection.py`、`module_data_sources.py` 与对应模板/脚本 | 常规参数修改不改页面；专属设置随插件包 | 通用设置桥、模块目录、主导航 |
@@ -54,6 +54,6 @@ Manifest 可选 `management`，字段精确为 `purpose/module/dataset/version`�
 
 后续相容业务规则通过 V2 ZIP 升级；宿主接口、公共字段或数据库变化按标准核心发布流程处理。每日应签顺延规则属于包内维护，Host 不再维护类型清单。
 
-插件回退沿用现有升级入口上传原签名 ZIP，只允许本实例曾实际提交、已排空的历史版本。宿主核对历史快照与目标包的版本、包摘要、清单摘要、信任来源和运行模型，重新验证当前配置、账号、资源、计划与调用契约，再经原 CAS 和代际切换；未提交的准备版本、其他实例的历史、坏摘要或不相容配置均明确拒绝。审计记录标注 rollback，不以改旧代码再发布更高版本冒充回退。配置通过同版本历史恢复，计划保持独立。核心回滚使用发布备份与兼容应用版本，新增业务数据保留，不删除新表或回滚后手工覆盖账本。存在未知写、迁移不兼容或共享协议变化时停止插件级回滚，按核心发布流程处理。
+插件回退沿用现有升级入口上传本实例的原 V2 ZIP，只允许本实例曾实际提交、已排空的历史版本。宿主核对历史快照与目标包的版本、包摘要、清单摘要、信任来源和运行模型，重新验证当前配置、账号、资源、计划与调用契约，再经原 CAS 和代际切换；未提交的准备版本、其他实例的历史、坏摘要或不相容配置均明确拒绝。审计记录标注 rollback，不以改旧代码再发布更高版本冒充回退。配置通过同版本历史恢复，计划保持独立。核心回滚使用发布备份与兼容应用版本，新增业务数据保留，不删除新表或回滚后手工覆盖账本。存在未知写、迁移不兼容或共享协议变化时停止插件级回滚，按核心发布流程处理。
 
 第一轮原范围不包含后续 Agent 扩展。当前自然对话和身份权限能力以 `identity_and_unified_chat.md` 为准。

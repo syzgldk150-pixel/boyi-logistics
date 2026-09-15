@@ -4,7 +4,7 @@ type: 索引文档
 tags: [代码定位, 修改入口, 路由, 文档索引, Agent, Console]
 related: [project_overview.md, control_plane_v1.md, automation_plugin_platform.md, database_migrations.md, rules_and_definitions.md]
 status: active
-updated: 2026-09-11
+updated: 2026-09-15
 ---
 
 # 物流 Agent 代码定位索引
@@ -151,11 +151,11 @@ updated: 2026-09-11
 
 ### TASK-MIG-002 迁移定位
 
-自提问题件 Service v2 独立包位于 `service_v2_plugins/self_pickup_problem_upload_v2/`，闭合 subprocess 适配器位于 `service_v2_plugins/_shared/self_pickup_service_main.py`。Manifest/预算/选择配对、代码拥有迁移映射、一次性 preview binding、Host policy 与 preview/formal 目标解析分别位于 `automation_plugins/manifest_v2.py`、`automation_plugins/service_v2_contract.py`、`automation_plugins/migration_binding_mapping.py`、`agent/orchestration/selection_preview_binding.py`、`agent/orchestration/automation_project_policy_service.py`、`agent/orchestration/planner.py`、`automation_plugins/execution.py` 与 `automation_plugins/broker.py`，Schema 位于 `extension_sdk/schemas/manifest-v2.schema.json`。离线包/parity、preview binding 与 Policy 覆盖位于 `../tests/test_self_pickup_problem_service_v2_package.py`、`../tests/test_self_pickup_problem_v1_v2_parity.py`、`../tests/test_selection_preview_binding.py` 和 `../tests/test_automation_project_policy_service.py`；真实 Connector、安装、入口切换和业务读写仍为 `PRODUCTION_GATED`。
+自提问题件源码位于 `service_v2_plugins/self_pickup_problem_upload_v2/payload/action.py`，子进程适配器位于 `_shared/self_pickup_service_main.py`。预览绑定与确认入口位于 `agent/orchestration/selection_preview_binding.py` 和项目策略服务；真实 Connector 由 `agent/automation_plugins/production_connectors.py` 注入。包回归见 `../tests/test_self_pickup_problem_service_v2_package.py`，预览回归见 `../tests/test_selection_preview_binding.py`。线上结果以实际实例的 Invocation 和独立回读为准。
 
-分批问题件 Service v2 独立包位于 `service_v2_plugins/split_pending_problem_upload_v2/`，闭合 subprocess 适配器位于 `service_v2_plugins/_shared/split_pending_service_main.py`，唯一业务算法仍是逐字节嵌入的 `service_v2_plugins/split_pending_problem_upload_v2/payload/action.py`。源/目标 Sheet、内部 MySQL 投影、融辉问题件与同账号事件账本只经五个精确 Connector 调用；代码拥有迁移角色映射位于 `automation_plugins/migration_binding_mapping.py`。离线确定性包、19 列/数量守恒与 v1-v2 primitive parity 位于 `../tests/test_split_pending_problem_service_v2_package.py`、`../tests/test_split_pending_problem_v1_v2_parity.py`；真实 Connector、安装、入口切换和业务读写仍为 `PRODUCTION_GATED`。
+分批问题件源码位于 `service_v2_plugins/split_pending_problem_upload_v2/payload/action.py`，子进程适配器位于 `_shared/split_pending_service_main.py`。来源、飞书投影、融辉登记与事件回读通过生产 Connector 调用；包回归见 `../tests/test_split_pending_problem_service_v2_package.py`。旧 V1 parity 仅解释历史迁移，不表示当前仍为隔离候选实现。
 
-扫描同步 Service v2 独立包位于 `service_v2_plugins/sync_scan_codes_v2/`，闭合 subprocess 适配器位于 `service_v2_plugins/_shared/scan_service_main.py`，唯一分页、分类、批次和 preview 重验算法仍是逐字节嵌入的 `service_v2_plugins/sync_scan_codes_v2/payload/action.py`。融辉扫描与内部 projection 只经两个精确 Connector 调用；`read_page/snapshot_replace/submit/verify` 的声明上限为 `500/1/499/499`，运行时全局仍限 1000。离线确定性包、v1-v2 primitive parity、写边界及 499 批边界位于 `../tests/test_sync_scan_codes_service_v2_package.py`、`../tests/test_sync_scan_codes_v1_v2_parity.py`；v1 一次性 preview 消费/到期继续由 `../tests/test_scan_preview_binding.py` 覆盖。真实 Connector、安装与绑定、scan-preview handoff、Console/飞书验收、真实扫描、cutover 和部署均为 `PRODUCTION_GATED`。
+扫描同步源码位于 `service_v2_plugins/sync_scan_codes_v2/payload/action.py`，子进程适配器位于 `_shared/scan_service_main.py`。分页、分类、批次与预览重验在包内维护，Host 提供真实扫描接口和独立回读。包回归见 `../tests/test_sync_scan_codes_service_v2_package.py`；Console 和飞书共用当前预览/确认业务边界。来源失败或未知写不转成成功，不重放旧调用。
 
 ## 2026-08-03 新增定位
 
@@ -170,7 +170,7 @@ updated: 2026-09-11
 - 本轮完整验收：`scripts/accept_low_maintenance_v32.py`、仓库 `docs/low_maintenance_v32_acceptance.json`；真实浏览器/协议组合：仓库 `tests/v32_acceptance/`。
 - 模块归属与闭合代际信封：仓库 `shared/plugin_management.py`、`shared/plugin_generation_contract.py`；目录只读事务：`agent/automation_plugins/catalog_read_scope.py`。
 - 同一模块目录批量读取：仓库 `shared/automation_plugin_catalog_rows.py`；仍逐实例校验原始代际与配置，缓存不进入执行或修改链路。
-- ACTION_V1 上传检查、相容预览与历史包回退：`agent/automation_plugins/inspection_action_v1.py`、`agent/orchestration/signed_preview_maintenance.py`、`agent/automation_plugins/historical_version.py`。
+- 当前 V2 检查、升级及历史版本回退：`agent/automation_plugins/inspection_v2.py`、`agent/automation_plugins/historical_version.py`；旧 ACTION_V1 预览维护只用于历史兼容。回退须有本实例已提交版本证据，不能将任意旧 ZIP 作为恢复来源。
 - 隔离环境复现、宿主冻结与两次维护演练：仓库 `tests/v32_acceptance/environment.md`、`isolated_environment.sh`、`host_freeze.py`、`finance_maintenance_drill.py`、`decision_maintenance.py`。
 - 来源身份/接续/历史：仓库 `shared/data_sources.py`、`shared/data_source_migration.py`、`scripts/migrate_module_data_sources.py`；增量结构 `migrations/039_module_data_sources.sql`，卸载后生产者溯源为 `migrations/040_source_producer_provenance.sql`。
 - Console 投影与本地来源：仓库 `console/services/automation_catalog_projection.py`、`console/services/module_data_sources.py`；默认/专属设置共用原管理服务和设置桥。

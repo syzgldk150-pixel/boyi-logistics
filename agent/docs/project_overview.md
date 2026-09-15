@@ -4,40 +4,22 @@ type: 架构文档
 tags: [项目总览, Agent控制平面, 事项中心, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [control_plane_v1.md, code_navigation_index.md, database_migrations.md, ocr/module_overview.md, finance_module.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: active
-updated: 2026-09-10
+updated: 2026-09-15
 ---
 
 # 物流 Agent 项目总览
 
 > 本文件是项目总览的唯一规范副本；仓库根或 `agent/` 根目录不得保留同名重复文档。
 
-## 2026-08-15 自动化插件、账号/资源池与系统定时
+## 当前插件、账号与权限
 
-- 签名插件只安装可复用动作，不携带业务账号、资源详情或实际定时。每次安装由服务端创建独立
-  `automation_id`，重复实例各自选择业务账号、资源、系统定时和项目权限。
-- 业务账号的凭据与登录态只在“业务账号”模块维护；自动化页不再显示顶部登录绿点、登录态
-  popover、凭据表单或账号管理快捷入口。项目卡只消费 Agent 返回的安全账号投影。
-- `workflow_resources` 的 Token、表格 ID、读写范围、路径、配置哈希/版本和原始配置只留在 Agent。
-  Catalog 只暴露 `resource_id/name/kind/status`，Console 按签名 manifest 的 role+kind 精确筛选，
-  不默认选择第一项；资源池不可用、字段漂移、缺失/停用或类型不符时阻断配置和运行。
-- `none/daily_times/startup` 等定时在插件安装后由系统项目配置保存，不属于 ZIP/manifest；配置、
-  账号/资源绑定、入口、定时和权限使用同一版本化合同，任何漂移都会 fail closed 并使授权 stale。
+- 当前业务使用 `SERVICE_V2` 独立 ZIP。业务源码在 `agent/service_v2_plugins/`，Host 提供受审核的接口、隔离、持久化和回读；维护入口见[插件 README](../service_v2_plugins/README.md)。旧 `ACTION_V1` 仅保留离线迁移合同与历史证据，不在生产启动时恢复。
+- 超级管理员安装 ZIP 时创建独立实例，默认停用；账号、资源、参数和时间计划在安装后配置。不同实例可独立执行。生产发布核验 Service-V2-only 退役索引与权威 COMPLETED 归属。
+- 账号登录态由业务账号模块维护；插件只使用管理员明确保存的账号与资源绑定，不选择默认账号或第一项。普通账号与飞书身份继承身份设置的权限，超级管理员原生拥有全部权限。
+- Host Capability Registry 定义精确接口 Schema 和 effect；插件不能自报写入成功。缺少身份、字段、结果或独立写后证据时明确失败或报告未知写。
+- 功能插件在自动化模块，财务/客服采集插件在所属模块的数据源页；共用生命周期与执行机制。Harness contribution 可选，账号引用和平铺参数可用宿主简单设置。
 
-## 2026-08-30 自动化插件双轨定位
-
-- `ACTION_V1` 是现有 Ed25519 签名动作包，当前运行与迁移合同见
-  `automation_plugin_platform.md` 和首方迁移矩阵。
-- `SERVICE_V2` 是无签名、仅由已验证 Console `super_admin` 安装的 ZIP 服务包，严格按
-  `schema_version=2 + runtime_model=service_v2` 分流；开发、能力、托管存储和双轨迁移的权威说明见
-  仓库根 `docs/plugin-platform-v2.md`。
-- Service v2 Host API 由 `agent/automation_plugins/host_capability_registry.py` 按精确 API/capability/action
-  管理 Schema、handler 和五态 effect；Provider 操作以 `{name,effect}` 声明，Host capability 的 action
-  仍是字符串且 effect 只能由 Registry 给出。逐 contribution governance 进入 generation、Direct 调用校验、锁、
-  Evidence 和 ResultVerifier，禁止按名称或 lifecycle effect 猜测。
-- 两种运行模型继续并存，解析失败不得跨模型回退；v1 项目不能原地升级成 v2，迁移必须建立独立
-  v2 项目并行验证。
-
-## 架构 V1：业务接口与独立插件
+## 当前架构：业务接口与独立插件
 
 - 保留 Console、后台服务与共享 MySQL。普通录入/查询直接走业务接口，博益录单存本地；
   外部平台原页存对应平台。OCR 属于运单录入，不另建任务系统。

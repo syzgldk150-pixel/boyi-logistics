@@ -2,51 +2,41 @@
 module: deployment
 type: operations
 status: active
-updated: 2026-09-12
+updated: 2026-09-15
 ---
 
 # 发布到 ECS
 
-Agent 或 shared/migration 发布必须显式传入与待发布 Git SHA 完全一致的签名首方插件目录，
-以及只含受信 Ed25519 `.pub` 公钥的信任根。Console-only 发布不处理插件输入。需要协调两个
-服务的 shared/migration 发布使用 `-Target shared`（`-Target all` 是它的兼容别名）：
+## 当前发行方式
+
+当前核心发布只接受 **Service-V2-only 退役索引**，并在服务器核验原业务实例的权威 `COMPLETED` 迁移归属。索引绑定最终 Git 提交，不含 V1 ZIP；不再签名、复用或恢复 V1 动作包。
+
+V2 业务插件通过后台独立 ZIP 安装或升级。仅改文档或 Host 源码时不重建业务插件；修改插件算法时按[插件维护入口](../service_v2_plugins/README.md)测试、打包并升级对应实例。核心部署不等于已安装插件升级。
+
+提交、推送及必要检查通过后，在仓库根用 Python 3.10 构建最终提交对应的索引。输出目录必须不存在，父目录放在本次任务的 `.task_tmp/` 下：
+
+```bash
+PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python agent/scripts/build_first_party_plugin_release.py \
+  --service-v2-only \
+  --release-sha "$(git rev-parse HEAD)" \
+  --output-root ".task_tmp/<task>/retired-release"
+```
+
+该模式拒绝 `--private-key`、`--key-id`、`--reuse-artifact-root`、`--trust-root` 与 `--digest-lock`。不用读取或复制私钥。
+
+Windows 标准发布入口：
 
 ```powershell
 powershell -ExecutionPolicy Bypass `
   -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1" `
-  -Target shared `
-  -AutomationPluginArtifactRoot "<signed-artifact-directory>" `
-  -AutomationPluginTrustRoot "<public-trust-root-directory>"
+  -Target auto `
+  -AutomationPluginArtifactRoot "<本次 retired-release 目录的 Windows 路径>" `
+  -AutomationPluginTrustRoot "<既有公钥 trust 目录的 Windows 路径>"
 ```
 
-签名包必须在提交、推送及 CI 通过后，使用最终的 40 位提交 SHA 构建；私钥路径和 key ID
-只传给只读源树的本地构建器，不写入仓库、发布目录或命令输出：
+发布脚本目前仍要求包含 Agent 的路径传入非空、只含 Ed25519 `.pub` 的公钥目录；这是发布接口保留的校验输入，不表示仍发布 V1 签名包。Console-only 不处理插件输入。服务器通过 `verify_first_party_plugins.py --service-v2-only --require-completed-migrations` 核验索引和数据库归属，条件不满足即停止，不能改回旧签名模式绕过。
 
-```bash
-PYTHONPATH=agent:. python agent/scripts/build_first_party_plugin_release.py \
-  --private-key "<protected-private-key-path>" \
-  --key-id "<key-id>" \
-  --release-sha "$(git rev-parse HEAD)" \
-  --output-root "<temporary-artifact-directory>"
-```
-
-如果本次提交没有修改任何受签名动作包 payload，优先复用上一版已经验签的不可变 ZIP；构建器会
-使用公共信任根重新验签上一版 release index 和每个包，并逐文件比较 ZIP 内容与当前受审源码，
-只有完全一致时才为新的 Git SHA 生成 release index。此路径不会读取私钥，也不会重新签名：
-
-```bash
-PYTHONPATH=agent:. python agent/scripts/build_first_party_plugin_release.py \
-  --reuse-artifact-root "<previous-signed-artifact-directory>" \
-  --trust-root "<public-trust-root-directory>" \
-  --release-sha "$(git rev-parse HEAD)" \
-  --output-root "<temporary-artifact-directory>"
-```
-
-签名模式与复用模式必须二选一。只要 payload 有任何字节变化，复用就失败关闭；此时必须提升插件
-版本并走受保护私钥的签名模式，禁止把不同源码重新绑定到旧签名 ZIP。
-
-构建目录应在发布与验收完成后精确清理；公共信任根可以长期保留。发布器会再次检查
-release index、包集合、签名、digest lock 与 Git SHA，任何漂移都在远端 mutation 前失败关闭。
+发布与验证结束后只清理本次本地工件目录；远端回滚材料按下文保留。
 
 生产目标固定为：
 
@@ -74,10 +64,10 @@ release index、包集合、签名、digest lock 与 Git SHA，任何漂移都�
 
 Agent 入口依赖的顶层组合模块 `business_composition.py` 与 `harness_composition.py` 必须随包发布；发布边界测试会沿 `main.py` 的本地顶层导入检查白名单，防止源码测试通过但安装后缺少启动模块。
 
-首方动作源码还要经过第二层精确过滤：`scripts/first_party_release_scope.py` 用 AST 读取代码 allowlist，
-只允许共享 `_runtime` 与当前 `RUNNABLE` 包进入暂存树；不会导入或解析 `BLOCKED` payload。PowerShell
-构包结束后与远端 `compileall` 之前都会重验 staged 包集合与 allowlist 完全相等，缺包或夹带包均
-失败关闭。`BLOCKED` 源码只由 CI 的独立非阻断审计读取，不能影响不包含它的生产包。
+当前 V2 源码还要经过精确过滤：`scripts/first_party_release_scope.py` 从代码 allowlist 读取允许的包，
+只发布 `service_v2_plugins/` 下的当前包、`_shared/` 及明确允许的根文件。构包后与远端编译前
+再次核验集合；缺包、多包或夹带 `legacy/`、旧 `first_party_automation_plugins/` 均失败。
+旧迁移样例与摘要只供离线回归，不进入线上导入路径。
 
 以下内容始终排除：
 
@@ -101,8 +91,8 @@ Console `static/` 下已纳入 Git 的面单 PNG 属于明确静态资产例外�
 7. 只有 shared、数据库 migration、任一依赖清单或迁移运行器发生变化时，才分别计算 Agent、Console `requirements.lock` 的 SHA-256 并生成联合哈希。两个服务共用唯一的 `runtime-deps-<联合哈希>` 环境；哈希和两份锁校验均一致时直接复用，否则创建新共享环境并一次性安装两份锁文件的并集。Agent-only 与 Console-only 不构建、不切换共享虚拟环境。
 8. Console-only 只停止 Console；Agent-only 只停止 Agent；shared/migration 才同时停止两个服务。每条路径都先确认自己负责的 unit 已退出，未选中的服务不停止、不重启。
 9. 按 `.deploy-source-manifest` 同步源码，只删除上一版清单中存在而本版已移除的文件；不递归删除未受管业务数据。
-10. shared/migration 路径先执行版本化迁移，再安装两个 unit 并按需原子切换共享虚拟环境；Agent-only/Console-only 只安装自己的 unit，且不执行迁移。包含 Agent 的路径写入 `runtime/release_sha`、安装已验签插件并创建仅属于本次 SHA 的 release hold；Console-only 不创建或消费 Agent hold。
-11. 每条路径只健康检查本次重启的服务：Agent `/health` 必须返回本次 Git SHA，Console 首页必须可访问。shared/migration 额外执行 Agent/Console 签名身份联通和依赖哈希检查；包含 Agent 的路径继续执行控制平面 manifest 门禁，并通过签名激活端点释放 Scheduler/WorkflowRunner hold。
+10. shared/migration 路径先执行版本化迁移，再安装两个 unit 并按需原子切换共享虚拟环境；Agent-only/Console-only 只安装自己的 unit，且不执行迁移。包含 Agent 的路径写入 `runtime/release_sha`、验证 V2 退役索引与完成归属并创建仅属于本次 SHA 的 release hold；Console-only 不创建或消费 Agent hold。
+11. 每条路径只健康检查本次重启的服务：Agent `/health` 必须返回本次 Git SHA，Console 首页必须可访问。shared/migration 额外执行 Agent/Console 签名身份联通和依赖哈希检查；包含 Agent 的路径继续执行控制平面 manifest 门禁，并通过签名激活端点恢复 Direct 新调用及 Scheduler；旧 WorkflowRunner 保持 reserved。
 12. 提交点之前失败时，只停止和恢复本次路径负责的服务、源码、unit 与发布清单；shared/migration 才恢复两套运行时和共享虚拟环境。包含 Agent 的路径仍保留受保护写检查、精确插件版本合同、release hold 和两阶段稳定健康回滚；shared/migration 额外保留 migration checksum 与数据库恢复门禁。Console-only 不触碰 Agent、插件或数据库。所有路径的回滚材料仍位于本次 stage，删除安全边界和失败保留语义不变。
 13. 健康检查成功后仍保留本次远端暂存树、精确回滚包和上一版虚拟环境，直到事项中心、定时自动化、财务、每日应签与客服影子投影完成业务验收。清理必须是验收后的独立、有界管理动作，不得由发布成功路径自动执行；数据库快照同样保留到验收结束。
 
@@ -117,16 +107,13 @@ Console `static/` 下已纳入 Git 的面单 PNG 属于明确静态资产例外�
 协调路径。显式 `-Target agent` 或 `-Target console` 若检测到未发布的 shared/migration 变化会
 失败关闭，必须改用 `-Target shared`，不能用窄目标绕过迁移或共享依赖发布。
 
-```powershell
-# Shared / migration 协调发布（all 为兼容别名）
-powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1" -Target shared
+需要显式目标时，使用上面的完整命令并调整 `-Target`：
 
-# 只发布并重启 Agent
-powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1" -Target agent
+- `shared`：协调发布 Agent、Console 和共享变更；`all` 为兼容别名。
+- `agent`：只发布 Agent，仍须传入退役索引和公钥目录。
+- `console`：只发布 Console，无需插件工件和公钥参数。
 
-# 只发布并重启 Console
-powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1" -Target console
-```
+通常使用 `auto`。共享变更存在时不能用较小目标绕过迁移或依赖更新。
 
 `-SkipRestart` 和 `-SkipHealthCheck` 仅用于用户明确授权的维护场景。常规生产发布不得跳过重启或健康检查。
 
