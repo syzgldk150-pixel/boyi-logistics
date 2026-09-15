@@ -71,7 +71,7 @@
       lodop.SET_PRINT_STYLEA(0, "FontName", item.font);
       lodop.SET_PRINT_STYLEA(0, "FontSize", item.fontPt * context.templateScale);
       lodop.SET_PRINT_STYLEA(0, "FontColor", BLACK);
-      lodop.SET_PRINT_STYLEA(0, "Bold", 0);
+      lodop.SET_PRINT_STYLEA(0, "Bold", item.fontWeight >= 700 ? 1 : 0);
       lodop.SET_PRINT_STYLEA(0, "Alignment", alignCode(item.align));
       lodop.SET_PRINT_STYLEA(0, "WordWrap", 0);
     });
@@ -83,6 +83,7 @@
       ...parsed,
       data: template.normalizeData(data),
     };
+    await template.loadContentFont();
     const items = template.buildDynamicItems(context.data, parsed);
     addBackground(lodop, await loadBackgroundDataUri(), context);
     items.forEach((item) => addDynamicText(lodop, item, context));

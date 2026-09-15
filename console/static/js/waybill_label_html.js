@@ -8,8 +8,21 @@
   // Coordinates refer to the supplied, unmodified 1122 × 1402 blank master.
   const SOURCE_WIDTH = 1122;
   const SOURCE_HEIGHT = 1402;
-  const CHINESE_FONT = "Microsoft YaHei";
-  const NUMBER_FONT = "Arial";
+  const CONTENT_FONT = "思源黑体 CN Bold";
+  const CONTENT_WEIGHT = 700;
+  const FONT_URL = "/static/assets/fonts/SourceHanSansCN-VF.ttf.woff2?v=f971e3bf";
+  let contentFontPromise;
+  const loadContentFont = () => {
+    if (!contentFontPromise) {
+      const face = new FontFace(CONTENT_FONT, `url("${FONT_URL}")`, { weight: String(CONTENT_WEIGHT) });
+      contentFontPromise = face.load().then((loaded) => {
+        document.fonts.add(loaded);
+      }).catch(() => {
+        throw new Error("思源黑体加载失败，请刷新页面后重试");
+      });
+    }
+    return contentFontPromise;
+  };
   const cleanText = (value) => String(value ?? "").replace(/\r\n?/g, "\n").trim();
   const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -88,29 +101,29 @@
 
   // Padded cell rectangles in source pixels, shared by HTML and native printing.
   const FIELD_LAYOUT = [
-    { field: "waybillNo", x: 190, y: 229, w: 194, h: 69, font: NUMBER_FONT },
-    { field: "date", x: 531, y: 229, w: 187, h: 69, font: NUMBER_FONT },
+    { field: "waybillNo", x: 190, y: 229, w: 194, h: 69 },
+    { field: "date", x: 531, y: 229, w: 187, h: 69 },
     { field: "station", x: 891, y: 229, w: 191, h: 69 },
     { field: "recipientName", x: 271, y: 314, w: 365, h: 73 },
-    { field: "recipientPhone", x: 825, y: 314, w: 257, h: 73, font: NUMBER_FONT },
-    { field: "recipientAddress", x: 271, y: 401, w: 810, h: 80, lines: 2 },
+    { field: "recipientPhone", x: 825, y: 314, w: 257, h: 73 },
+    { field: "recipientAddress", align: "left", x: 271, y: 401, w: 810, h: 80, lines: 2 },
     { field: "senderName", x: 271, y: 499, w: 365, h: 72 },
-    { field: "senderPhone", x: 825, y: 499, w: 257, h: 72, font: NUMBER_FONT },
-    { field: "senderAddress", x: 271, y: 588, w: 810, h: 78, lines: 2 },
+    { field: "senderPhone", x: 825, y: 499, w: 257, h: 72 },
+    { field: "senderAddress", align: "left", x: 271, y: 588, w: 810, h: 78, lines: 2 },
     { field: "cargoName", x: 122, y: 769, w: 224, h: 85, align: "center", lines: 2 },
     { field: "packageType", x: 372, y: 769, w: 146, h: 85, align: "center" },
-    { field: "pieces", x: 544, y: 769, w: 131, h: 85, align: "center", font: NUMBER_FONT },
-    { field: "weight", x: 700, y: 769, w: 186, h: 85, align: "center", font: NUMBER_FONT },
-    { field: "volume", x: 911, y: 769, w: 170, h: 85, align: "center", font: NUMBER_FONT },
-    { field: "freight", x: 270, y: 872, w: 126, h: 60, font: NUMBER_FONT },
-    { field: "pickupFee", x: 575, y: 872, w: 154, h: 60, font: NUMBER_FONT },
-    { field: "deliveryFee", x: 913, y: 872, w: 168, h: 60, font: NUMBER_FONT },
-    { field: "transferFee", x: 270, y: 948, w: 126, h: 62, font: NUMBER_FONT },
+    { field: "pieces", x: 544, y: 769, w: 131, h: 85, align: "center" },
+    { field: "weight", x: 700, y: 769, w: 186, h: 85, align: "center" },
+    { field: "volume", x: 911, y: 769, w: 170, h: 85, align: "center" },
+    { field: "freight", x: 270, y: 872, w: 126, h: 60 },
+    { field: "pickupFee", x: 575, y: 872, w: 154, h: 60 },
+    { field: "deliveryFee", x: 913, y: 872, w: 168, h: 60 },
+    { field: "transferFee", x: 270, y: 948, w: 126, h: 62 },
     { field: "transportMethod", x: 575, y: 948, w: 154, h: 62 },
     { field: "paymentMethod", x: 913, y: 948, w: 168, h: 62 },
-    { field: "insuranceAmount", x: 270, y: 1026, w: 126, h: 71, font: NUMBER_FONT },
-    { field: "codAmount", x: 575, y: 1026, w: 506, h: 71, font: NUMBER_FONT },
-    { field: "remark", x: 191, y: 1116, w: 890, h: 94, lines: 2 },
+    { field: "insuranceAmount", x: 270, y: 1026, w: 126, h: 71 },
+    { field: "codAmount", x: 575, y: 1026, w: 506, h: 71 },
+    { field: "remark", align: "left", x: 191, y: 1116, w: 890, h: 94, lines: 2 },
     { field: "makerName", x: 191, y: 1229, w: 154, h: 98 },
     { field: "handlerName", x: 529, y: 1229, w: 144, h: 98 },
   ];
@@ -146,14 +159,14 @@
     return FIELD_LAYOUT.flatMap((item) => {
       const value = cleanText(data[item.field]);
       if (!value) return [];
-      const font = item.font || CHINESE_FONT;
+      const font = CONTENT_FONT;
       for (let px = 32 * settings.fontScale; px >= 22; px -= 0.5) {
-        context.font = `${px}px "${font}"`;
+        context.font = `${CONTENT_WEIGHT} ${px}px "${font}"`;
         const lines = wrapText(value, item.w * 0.95, context);
         const lineHeight = px * 1.18;
         if (lines.length > (item.lines || 1) || lines.length * lineHeight > item.h) continue;
         return [{
-          field: item.field, content: lines.join("\n"), font, align: item.align || "left",
+          field: item.field, content: lines.join("\n"), font, fontWeight: CONTENT_WEIGHT, align: item.align || "center",
           x: item.x * 74 / SOURCE_WIDTH,
           y: (item.y + (item.h - lines.length * lineHeight) / 2) * 92 / SOURCE_HEIGHT,
           w: item.w * 74 / SOURCE_WIDTH,
@@ -170,10 +183,11 @@
 .ys-waybill-label, .ys-waybill-label * { box-sizing: border-box; }
 .ys-waybill-label { width:74mm; height:92mm; position:relative; overflow:hidden; background:#fff; color:#000; }
 .ys-waybill-background { position:absolute; display:block; user-select:none; pointer-events:none; }
-.ys-field { position:absolute; white-space:pre; color:#000; font-weight:400; }
+.ys-field { position:absolute; white-space:pre; color:#000; font-weight:${CONTENT_WEIGHT}; }
 </style>`;
 
   async function buildHtml(data = {}, options = {}) {
+    await loadContentFont();
     const settings = readSettings(options);
     const fields = buildDynamicItems(normalizeData(data, options), settings).map((item) =>
       `<div class="ys-field" data-field="${item.field}" style="left:${placedMm(item.x, settings.offsetX, settings)};top:${placedMm(item.y, settings.offsetY, settings)};width:${sizedMm(item.w, settings)};height:${sizedMm(item.h, settings)};font-family:'${item.font}',sans-serif;font-size:${item.fontPt * settings.templateScale}pt;line-height:${sizedMm(item.lineHeightMm, settings)};text-align:${item.align}">${escapeHtml(item.content)}</div>`
@@ -189,6 +203,6 @@
 
   global.WaybillLabelHtml = {
     width: WIDTH_MM, height: HEIGHT_MM, pageName: PAGE_NAME, backgroundUrl: BACKGROUND_URL,
-    normalizeData, readSettings, buildDynamicItems, buildHtml, renderPreview,
+    normalizeData, readSettings, loadContentFont, buildDynamicItems, buildHtml, renderPreview,
   };
 })(window);
