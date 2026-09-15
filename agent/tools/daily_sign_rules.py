@@ -9,7 +9,9 @@ from zoneinfo import ZoneInfo
 
 BUSINESS_TIMEZONE = ZoneInfo("Asia/Shanghai")
 TARGET_STATION = "邵阳大祥S站"
-MANUAL_POSTPONE_TYPES = frozenset({"客户要求延迟派送", "联系不上收件人"})
+MANUAL_POSTPONE_TYPES = frozenset({
+    "客户要求延迟派送", "联系不上收件人", "客户拒收/拒付费用", "客户原因要求自提", "改派送地址",
+})
 SPLIT_PROBLEM_TYPE = "少货/分批"
 PROBLEM_CUTOFF = time(17, 0, 0)
 

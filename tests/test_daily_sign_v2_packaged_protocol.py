@@ -174,7 +174,7 @@ def test_daily_sign_source_failure_verifies_only_failed_run_records(tmp_path, di
     assert not is_verified_daily_sign_failure(**{**proof, "host_call_observations": host.observations[:-1]})
 
 
-@pytest.mark.parametrize("count,corrupt", [(514,False), (2,True), (2,False), (8,False), (3,False)])
+@pytest.mark.parametrize("count,corrupt", [(514,False), (2,True), (2,False), (8,False), (3,False), (4,False), (5,False), (6,False)])
 def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_path, direct_repository, monkeypatch, count, corrupt):  # noqa: F811
     assert os.environ["AGENT_DB_HOST"] == "127.0.0.1" and os.environ["AGENT_DB_NAME"].endswith("_test")
     # This UUID database belongs only to this test module. Reset its daily-sign
@@ -196,6 +196,9 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         store.upsert_problem_events([{"source":"ronghui_problem:abcdef123456", "external_id":identity,
             "tracking_number":"R00021000002", "problem_type":"少货/分批",
             "registered_at":"2026-09-10 12:00:00", "upload_complete":True, "payload":problem}])
+    manual_problem_type = {4: "客户拒收/拒付费用", 5: "客户原因要求自提", 6: "改派送地址"}.get(count)
+    if manual_problem_type:
+        arrivals[0]["arrived_quantity"] = 3
     store.save_arrival_stat_snapshot(date(2026,9,10), arrivals)
     source_calls = []
     tracking_active = threading.Lock()
@@ -205,8 +208,10 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         {**problem, "external_id": f"problem-{index}", "waybill_no": row["tracking_number"]}
         for index, row in enumerate(arrivals[:80])
     ] if count == 514 else []
-    if count == 3:
+    if count == 3 or manual_problem_type:
         problem_rows = [{**problem, "waybill_no":"R00021000001", "registered_at":"2026-09-11 09:31:03"}]
+        if manual_problem_type:
+            problem_rows[0]["problem_type"] = manual_problem_type
 
     def tms(endpoint, values):
         source_calls.append(endpoint)
@@ -256,17 +261,22 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
     assert len(tables.records) == (1 if count == 8 else count-1)
     record_fields = {row["fields"]["运单编号"]: row["fields"] for row in tables.records}
     sheet_rows = {row[0]: row for row in tables.sheet[1:] if row[0]}
-    assert record_fields["R00021000001"]["到货件数"] == 2
-    assert sheet_rows["R00021000001"][-1] == 2
+    assert record_fields["R00021000001"]["到货件数"] == arrivals[0]["arrived_quantity"]
+    assert sheet_rows["R00021000001"][-1] == arrivals[0]["arrived_quantity"]
     state = store.load_daily_sign_state()
     assert state["ledger"]["R00021000002"]["tms_signed"]
-    assert state["ledger"]["R00021000001"]["arrived_quantity"] == 2
-    if count == 3:
+    assert state["ledger"]["R00021000001"]["arrived_quantity"] == arrivals[0]["arrived_quantity"]
+    if count == 3 or manual_problem_type:
         due = "2026-09-12 23:59:59"
         assert record_fields["R00021000001"]["问题件后应签时间"] == due
         assert sheet_rows["R00021000001"][2] == due
         assert state["ledger"]["R00021000001"]["system_sign_due_at"] == datetime(2026,9,12,23,59,59)
         assert record_fields["R00021000003"]["问题件后应签时间"] == "2026-09-11 23:59:59"
+    if manual_problem_type:
+        stored_events = state["problems"]["R00021000001"]
+        assert len(stored_events) == 1
+        assert stored_events[0]["problem_type"] == manual_problem_type
+        assert stored_events[0]["postpones_sign"]
     if historical:
         assert state["ledger"]["R00021000001"]["recipient_address"] == arrivals[0]["recipient_address"]
         assert any(row["external_id"] == identity for row in state["problems"]["R00021000002"])
