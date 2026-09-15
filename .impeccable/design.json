@@ -3,6 +3,7 @@
   "generatedAt": "2026-08-31T00:00:00+08:00",
   "title": "Design System: 博益物流控制台",
   "extensions": {
+    "waybillPrint": {"background": "console/static/assets/waybill_label_background.jpg", "layout": "console/static/js/waybill_label_html.js", "paper": "74mm × 92mm", "source": "用户提供的主单空白底版，独立于控制台 UI 规范"},
     "maintenance": {"path": "/automations/maintenance", "entry": "system-status", "audience": "super_admin", "layout": "native forms and separated progress rows"},
     "reference": {
       "name": "Cal.com",

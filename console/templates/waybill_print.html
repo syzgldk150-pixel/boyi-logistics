@@ -37,8 +37,8 @@
 
   <div class="print-frame" data-waybill-label-preview></div>
 
-  <script src="/static/js/waybill_label_html.js"></script>
-  <script src="/static/js/waybill_label_lodop.js"></script>
+  <script src="/static/js/waybill_label_html.js?v=20260915"></script>
+  <script src="/static/js/waybill_label_lodop.js?v=20260915"></script>
   <script src="/static/js/clodop_loader.js?v=20260812"></script>
   <script>
     const PRINT_SETTINGS_KEY = "shipnow.manual.printerSettings";
@@ -123,13 +123,16 @@
       receiver_address: {{ (waybill.get("receiver_address", "") or "") | tojson }},
       sender_name: {{ (waybill.get("sender_name", "") or "") | tojson }},
       sender_phone: {{ (waybill.get("sender_phone", "") or "") | tojson }},
+      sender_address: {{ (waybill.get("sender_address", "") or "") | tojson }},
       goods_name_lines: {{ (waybill.get("goods_name_lines", "") or "") | tojson }},
       package_type_lines: {{ (waybill.get("package_type_lines", "") or "") | tojson }},
       quantity_lines: {{ (waybill.get("quantity_lines", "") or "") | tojson }},
       weight_volume: {{ (waybill.get("weight_volume", "") or "") | tojson }},
       delivery_method: {{ (waybill.get("delivery_method", "") or "") | tojson }},
       freight_fee: {{ (waybill.get("freight_fee", "") or "") | tojson }},
+      pickup_fee: {{ (waybill.get("pickup_fee", "") or "") | tojson }},
       delivery_fee: {{ (waybill.get("delivery_fee", "") or "") | tojson }},
+      transfer_fee: {{ (waybill.get("transfer_fee", "") or "") | tojson }},
       payment_method: {{ (waybill.get("payment_method", "") or "") | tojson }},
       insurance_amount: {{ (waybill.get("insurance_amount", "") or "") | tojson }},
       cod_amount: {{ (waybill.get("cod_amount", "") or "") | tojson }},
