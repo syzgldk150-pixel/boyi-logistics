@@ -4,7 +4,7 @@ type: 操作说明
 tags: [插件, 测试, 打包, 维护]
 related: [service_v2_developer_tooling.md, automation_plugin_platform.md, code_navigation_index.md]
 status: active
-updated: 2026-09-07
+updated: 2026-09-15
 ---
 
 # 插件局部测试和打包
@@ -12,7 +12,7 @@ updated: 2026-09-07
 入口为 `scripts/plugin_maintenance.py`，从仓库根目录运行。它选择明确插件对应的真实
 payload、生产 adapter、Broker/router 与结果校验测试；不会调用部署器或操作生产服务、
 生产数据库，也不会读取 `.env` 或凭据文件。需要协议与 MySQL 的测试只在明确的隔离环境运行。
-当前范围是扫描、统计、分批、自提及财务、客服采集器。
+当前支持的 V2 插件以 `scripts/plugin_maintenance.py` 的 `PLUGIN_TESTS` 和各包 Manifest 为准，覆盖日常业务插件；不在文档另存一份容易过期的版本表。
 `describe` 列出实际测试节点，未知插件或缺失测试会失败，不退回全量或无测试打包。
 
 每日应签的接口返回适配归宿主 `plugin_core_adapters/daily_sign_ports.py`：问题件只传业务字段，主单轨迹只传扫描事实，
@@ -23,8 +23,8 @@ payload、生产 adapter、Broker/router 与结果校验测试；不会调用部
 最后一项使用真实插件 ZIP、Broker 和隔离 MySQL，并覆盖写后数据不匹配时停止后续发布。
 
 ```bash
-PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.plugin_maintenance describe sync_customer_service_problems
-PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.plugin_maintenance test sync_customer_service_problems --report PATH_TO_NEW_REPORT
+PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.plugin_maintenance describe sync_customer_service_problems_v2
+PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.plugin_maintenance test sync_customer_service_problems_v2 --report PATH_TO_NEW_REPORT
 ```
 
 `package` 必须先通过选定插件的局部测试，再调用现有权威 packager；失败不会生成工件。
@@ -35,13 +35,9 @@ PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.plugin_maintenance
 PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.plugin_maintenance package self_pickup_problem_upload_v2 --output PATH_TO_NEW_ZIP --report PATH_TO_NEW_REPORT
 ```
 
-ACTION_V1 使用当前插件的真实 payload 与既有 Manifest/签名验证实现，要求明确的新
-`--version`。隔离验收可加 `--test-signing`：临时 Ed25519 私钥仅在当前进程内存中，报告
-只包含公钥并把工件标为 `TEST_ONLY`。该工件不具备生产信任。
-
-正式 ACTION_V1 签名使用发布环境已注入的 `--signing-key-env ENVIRONMENT_NAME` 与
-`--key-id KEY_ID`，命令不发现、读取或输出私钥文件。缺失、无效或非 Ed25519 的注入值
-明确失败。本轮隔离任务不得使用生产签名材料。
+V2 由超级管理员上传已验证 ZIP，不使用 V1 私钥签名流程。旧 ACTION_V1 的 `--version`、
+`--test-signing` 和签名环境参数仅保留给历史离线回归，不能作为当前生产打包或发布方法。
+核心部署使用 Service-V2-only 退役索引，详见[ECS 手册](../deploy/publish_to_ecs.md)。
 
 ## 核心更新判定
 
@@ -62,13 +58,15 @@ ACTION_V1 使用当前插件的真实 payload 与既有 Manifest/签名验证实
 工件版本与摘要。未通过测试的报告记 `FAIL`；报告中有未提交工作区时不能把提交 SHA
 误当成工件全部源码已经提交。第一轮仍执行完整 CI；此入口仅用于后续兼容插件维护。
 
-六个当前插件的完整 CLI 验证可在 `v32_cli_test` 隔离库运行
+原 V3.2 六包历史 CLI 演练可在 `v32_cli_test` 隔离库运行
 `python -m tests.v32_acceptance.plugin_cli_batch`。它逐一真实执行 `describe/test/package`，
 生成各自日志、测试报告、测试签名 ZIP 和独立计算的摘要；不会安装这些 ZIP。
 正式冻结后加 `--host-freeze PATH_TO_FREEZE_JSON`，各局部命令使用冻结 SHA 比较，
 并在全部操作前后核验宿主文件。每次使用新的目录，历史结果不覆盖。
 
-## 每日应签 2.0.3 的局部维护
+## 每日应签的维护边界
+
+当前应签算法和类型清单位于 `service_v2_plugins/sync_daily_should_sign_v2/payload/business/`；从 2.0.8 起 Host 只保存插件明确提交的布尔判断，不再共同维护规则。当前业务规则见[身份与统一对话维护说明](../../docs/identity_and_unified_chat.md)。以下 2.0.3 记录解释来源读取优化，不是当前版本声明。
 
 `sync_daily_should_sign_v2` 的包内 `daily_sign_io.py` 在本次 Invocation 内按账号角色和来源前缀复用宿主返回的不可变来源身份。此前每条问题记录重复读取两次相同身份，大页数据会耗尽默认单动作调用次数。新调用、嵌套调用结束及异常退出均恢复各自上下文，不保存历史成功值；业务数据读取和写后回读仍实际执行，调用次数上限不变。
 
@@ -76,4 +74,4 @@ ACTION_V1 使用当前插件的真实 payload 与既有 Manifest/签名验证实
 
 每日应签的宿主 `read_tracking` 端口固定使用已有的 `decrypt_masked=False` 查询模式，只投影主单编号和扫描事实。该业务不使用收寄件人详情，不能因为客户字段仍脱敏就丢弃已返回的真实扫描记录；普通详情查询的解密规则不变。此端口修复属于核心更新，不能用升级插件包替代；回归同时覆盖真实轨迹适配器和敏感详情不进入插件输出。
 
-回归 `tests/test_daily_sign_v2_packaged_protocol.py` 使用真实 ZIP、Broker 和隔离 MySQL，包含超过默认次数的大页问题数据、多个历史候选遇到仅允许单请求的接口，以及写后数据损坏场景。本修改只更新每日应签插件包，Host 接口、数据库和运行器不变。
+回归 `tests/test_daily_sign_v2_packaged_protocol.py` 使用真实 ZIP、Broker 和隔离 MySQL，包含超过默认次数的大页问题数据、多个历史候选遇到仅允许单请求的接口，以及写后数据损坏场景。仅包内来源复用和并发调整可单独升级 ZIP；Host 端口适配与公共协议变化仍需核心发布。

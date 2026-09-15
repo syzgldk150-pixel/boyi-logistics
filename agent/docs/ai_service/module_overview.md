@@ -4,7 +4,7 @@ type: 模块文档
 tags: [AI客服, 查单, 报价问答, 异常解释, 工单]
 related: [../project_overview.md, ../agent_automation/module_overview.md, ../customer_service/module_overview.md]
 status: planned
-updated: 2026-08-30
+updated: 2026-09-15
 ---
 
 # AI客服模块概述
@@ -29,7 +29,7 @@ AI 客服是规划中的面向客户对话层，不是当前运行模块。若�
 - **本模块当前尚未开发**。计划承载客户对话能力（查单 / 报价问答 / 异常解释 / 工单草稿）。
 - 飞书机器人当前的全部能力（包括"报价"在内）当前都归属 **Agent 自动化能力** 模块（面向内部运维），文档见 `../agent_automation/module_overview.md`。
 - 待 AI客服开发启动时，再把面向客户的能力从 Agent 自动化能力中剥离过来。
-- 当前 `agent/core.py` 的 LLM 只做受限只读工具选择；未调用真实工具时必须明确无可执行脚本，不能把它描述为已上线的客服聊天系统。
+- 当前内部 AI 助手与飞书自然对话已共用 `harness_composition.py` 组合的会话服务，按身份权限查询、调用开放插件并分析真实数据；固定关键词直接分发。这里的面向外部客户客服系统仍是规划，不能把内部助手描述为已上线的外部客服。
 - 当前 Console 的“客户服务”页面是内部问题件处理模块，见 `../customer_service/module_overview.md`，与本规划中的面向客户 AI 对话不是同一模块。
 
 ## 预期输入输出

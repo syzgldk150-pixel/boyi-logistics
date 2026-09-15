@@ -5,9 +5,9 @@
 ## 这里负责什么
 
 - HTTP 运行时入口
-- Agent 编排与工具调度
+- 普通业务直接接口、独立插件调用与结果核验
 - 飞书消息接入
-- 知识库、调度模板、Phase 7 同步链路
+- 后台 AI 助手与飞书共用的对话服务、权限与已注册能力
 - 价格获取、融辉生产财务账本同步等业务工具封装（韵达财务待真实页面验收后启用）
 
 ## 不在这里改什么
@@ -21,11 +21,13 @@
 ## 关键目录
 
 - `agent/`
-  Agent 核心编排、调度、工具执行
+  业务接口、Direct Invocation、插件运行时、模型接入和历史查询
 - `feishu/`
   飞书消息入口与回复格式
+- `service_v2_plugins/`
+  当前业务插件算法、打包入口与包内设置；先读[维护入口](service_v2_plugins/README.md)
 - `tools/`
-  业务工具实现
+  Host 采集、存储、回读及受控接口；不复制 V2 业务算法
 - `docs/`
   项目文档、模块说明、代码定位索引
 - `price_scripts/`
@@ -45,8 +47,10 @@
   看 `tools/registry.yaml`、`agent/tool_registry.py`
 - 改飞书机器人不回话
   看 `feishu/bot.py`、`feishu/message_handler.py`
-- 改同步链路或 Phase 7
-  看 `tools/*sync_tool.py`、`agent/scheduler.py`
+- 改统计、扫描、寄件、应签等插件逻辑
+  看 `service_v2_plugins/<plugin_id>_v2/payload/`，用 `scripts/plugin_maintenance.py` 局部测试与打包
+- 改 AI 助手或飞书自然对话
+  看 `harness_composition.py`、`agent/plugin_conversations.py` 与 `agent/channel_chat.py`；固定关键词直接分发
 
 ## 本地运行
 
@@ -103,7 +107,7 @@ cd /home/deng/projects/boyi-logistics/console
 
 - 发布脚本：`deploy/publish_to_ecs.ps1`
 - 发布说明：`deploy/publish_to_ecs.md`
-- 默认推荐：直接跑 `auto`，脚本会自动判断只发 `agent`、只发 `console` 或全量发布
+- 默认使用 `auto`；包含 Agent 时必须传入最终提交对应的 V2 退役索引和公钥信任目录，完整命令以[发布手册](deploy/publish_to_ecs.md)为准
 
 ## 先读哪些文档
 

@@ -31,7 +31,7 @@
 - Phase 7 同步链路：
   - `send_order_sync_tool.py`（拉融辉寄件数据；支持 `target_date` 单日或 `start_date/end_date` 范围；按 `发件日期 + 运单编号` 安全替换同日飞书快照，并同步 upsert 到控制台 `waybills` 表供 `/waybills` 运单查询；`sql_only=true` 时只刷新控制台 SQL，不写飞书；签收状态映射到 SQL `status=signed/in_transit`，明确返回的当前扫描状态写入 `scan_status`）
   - `delivery_status_sync_tool.py`（查询并更新签收状态；无入参时定时扫描融辉寄件数据表的 `未签收明细` 视图，已签收才写回，并同步更新控制台 `waybills.status=signed`；仍兼容旧 webhook 单号 + record_id 模式）
-  - `daily_sign_sync_tool.py`（维护按主单号累积的共享应签台账：R13 提供当前归属、系统应签日及参考签收状态，实际到货快照负责启动本系统应签日，问题件事件负责有效延期；批量签收证据来自真实“签收管理 → 签收查询”接口，只有主单签收记录能关闭；普通表固定输出九列并与多维表差异同步）
+  - 当前 V2 包的 `payload/business/daily_sign_sync_tool.py`（维护按主单号累积的共享应签台账：R13 提供当前归属、系统应签日及参考签收状态，实际到货快照负责启动本系统应签日，问题件事件负责有效延期；批量签收证据来自真实“签收管理 → 签收查询”接口，只有主单签收记录能关闭；普通表固定输出九列并与多维表差异同步）
   - `daily_sign_backfill_tool.py`（只读影子计算或显式 `apply=true` 的历史回填；合并到货归档、当前应签表、R13 历史、TMS 问题件及“签收管理 → 签收查询”历史，来源缺失时只标记待核验，不猜测日期、不发布飞书）
   - `daily_sign_rules.py` / `daily_sign_store.py`（共享应签计算规则和版本化 MySQL 仓储；多个采集/统计/问题件脚本必须调用这里，禁止复制应签口径）
   - `site_send_list_sync_tool.py`
@@ -39,14 +39,14 @@
   - `scan_sync_tool.py`（刷新扫描索引并批量执行 `scan_next`；`target_date` 留空时扫描执行当天，填写 `YYYY-MM-DD` 时扫描指定单日；任一批次失败立即停止并返回顶层错误，不触发后续流程；`dry_run` 不写索引、不执行扫描；显式数量限制返回未排入数量）
   - `split_pending_snapshot.py`（统计与分批工具共享的 A:S 表头校验、未齐分类、MySQL 快照和“分批及有发未到表”覆盖刷新；零候选会清空旧行）
   - `arrive_list_sync_tool.py`（拉 TMS 派件预报基础清单，过滤 `H...` / `HR...` 回单号；写 waybill_data + 主/副到货清单表，并保存完整成功的预计到货快照；预计数据不启动应签计时；`target_date` 留空时拉执行当天，填写时拉指定单日）
-  - 当前签名 `sync_arrive_list` 的表格归属判定在插件 payload，底层只读证据位于 `../plugin_core_adapters/arrival_report.py`：同日成功统计且原账号/物理 Sheet 与当前绑定一致时，清单只更新本次基础清单和预计快照，保留统计表及累计件数；所有主副表判定必须先于任何写。损坏、换绑或当前表被覆盖时明确要求重新统计；新成功统计可以取代旧版本，次日清单照常发布，不从历史8字段快照拼补A:S。真实插件/Broker/MySQL顺序验收为 `../../tests/test_arrival_report_ownership_mysql.py`。
+  - 当前 V2 `sync_arrive_list_v2` 的表格归属判定在插件 payload，底层只读证据位于 `../plugin_core_adapters/arrival_report.py`：同日成功统计且原账号/物理 Sheet 与当前绑定一致时，清单只更新本次基础清单和预计快照，保留统计表及累计件数；所有主副表判定必须先于任何写。损坏、换绑或当前表被覆盖时明确要求重新统计；新成功统计可以取代旧版本，次日清单照常发布，不从历史8字段快照拼补A:S。真实插件/Broker/MySQL顺序验收为 `../../tests/test_arrival_report_ownership_mysql.py`。
   - `yunda_dispatch_forecast_sync_tool.py`（拉韵达网点派件量预测主单表；默认次日应派时间，按应派时间覆盖指定飞书多维表格）
   - `yunda_send_waybills_sync_tool.py`（拉韵达寄件运单管理；支持 `target_date` 单日或 `start_date/end_date` 范围；补充快件跟踪详情和小眼睛解密字段，按运单号 upsert 到飞书多维表格，同步 upsert 到控制台 `waybills` 表供 `/waybills` 运单查询，并在单日同步时刷新普通飞书电子表格副本；`sql_only=true` 时只刷新控制台 SQL，不读写飞书或电子表格；默认 SQL `status=in_transit`，明确返回的当前扫描状态写入 `scan_status`）
   - `init_waybills_sql_from_feishu_tool.py`（SQL 初始化回填；从飞书融辉寄件数据和韵达寄件运单表全量读取历史记录，按运单号 upsert 到控制台 `waybills`，不删除历史）
   - `phase7_mysql_store.py`（Phase 7 共享 MySQL 存储；包含 `waybill_data` 到货基础表，也维护控制台 `waybills` 表的同步 upsert 入口；`waybills.status` 使用 `pending/in_transit/signed/cancelled`，`waybills.scan_status` 保存明确来源返回的当前扫描状态，同步时必须保留手动作废的 `cancelled`）
   - `phase7_sync_common.py`
 - TMS 问题件上报：
-  - `self_pickup_problem_upload_tool.py`（legacy 兼容只读封装，不参与飞书当前预览或正式写入；当前飞书链路调用 committed project route 的签名 dry-run，并从已验签候选 Run 确认。兼容脚本仍只按 `邵阳自提部` 以及 `邵阳大祥S站 + 派送方式=自提` 规则读取来源，账号必须由自动化项目角色显式绑定，任何路径都不得注入固定账号或默认 session profile）
+  - `self_pickup_problem_upload_tool.py`（legacy 兼容只读封装，不参与飞书当前预览或正式写入；当前飞书链路调用 V2 committed project route 的 dry-run，并从已验证候选 Invocation 确认。兼容脚本仍只按 `邵阳自提部` 以及 `邵阳大祥S站 + 派送方式=自提` 规则读取来源，账号必须由自动化项目角色显式绑定，任何路径都不得注入固定账号或默认 session profile）
 - R7 到达打卡：
   - `r7_arrival_checkin_tool.py`（直接调用 `agent/tms_runtime/scripts/auto_checkin_r7.py`；使用 R7 登录，不依赖 TMS 共享登录态；写 `r7_arrival_checkin_log` 并按 `daily_success_limit` 控制当天后续定时跳过）
   - R7 事件、状态和到达/发车打卡日志表由 `../migrations/006_r7_runtime_tables.sql` 创建；工具仅校验表存在，禁止在运行时建表。
@@ -65,7 +65,9 @@
 - `site_send_list_sync_tool.py` is the exception: an empty TMS fetch is an intentional empty snapshot and must still clear/overwrite the Feishu Bitable and ordinary spreadsheet targets.
 - TMS 兼容接口返回 `AUTH_REQUIRED` / `AUTH_PENDING_CODE` 时，工具必须直接返回顶层 `error_code`，不得包装为“返回格式异常”；统一使用 `phase7_sync_common.tms_auth_error_result()` / `raise_tms_auth_error_if_present()`
 
-## Phase 7 补充说明
+## Phase 7 历史兼容说明
+
+以下工具与 Runner 描述用于保留接口和离线回归；新增业务算法从 V2 插件维护入口定位，不恢复旧领取链。
 
 - `tms_tool.py`
   - 默认走 `http://127.0.0.1:9000/tms/*` 兼容层
@@ -94,6 +96,6 @@
 - `daily_sign_ledger` 中 B 口径为 R13 原始应签时间，C 口径为本系统测算时间；R13 必须按原页“规划应签收时间”口径查询，未显式传入起止时间时至少覆盖原页默认的前 2 天至后 3 天。包装类型不在该 R13 页面字段中，继续从实际到货或 TMS 运单详情取得。无实际到货时 C 与到货件数为空。飞书应签明细始终保留当前 R13 的未签清单；已离开当前 R13 的历史候选只有在有效应签时间不晚于当前业务日时继续发布，历史口径 C 有值时以 C 为准，否则以 B 为准。普通电子表格必须先精确校验九列表头，再写新数据，成功后才清理尾部旧行。签收事件早于当前 R13 派件或首次到货生命周期时只能标记为旧周期证据，不得关闭当前运单。
 - 每轮发布前必须核对当前 R13 行、真实 TMS 主单签收行与待发布行：当前未获得主单签收证据的 R13 行必须全部进入发布集合；只有当前 R13 行都已有真实主单签收证据时，零行发布才是正常结果。
 - 正常到齐为到货业务日次日 23:59:59；部分到货初始同样次日应签。未齐期间，17:00 前完整成功的少货/分批登记只能把 C 顺延至该登记次日 23:59:59；每天继续延期需要新的有效登记，重读旧事件不自动延期。补齐当天应签规则保持为当天 23:59:59。该规则由每日应签包内唯一 `daily_sign_rules.py` 计算，回归见 `tests/test_daily_sign_ledger.py` 与仓库根 `tests/test_daily_sign_v2_packaged_protocol.py`。
-- 只有精确类型“客户要求延迟派送”“联系不上收件人”“客户拒收/拒付费用”“客户原因要求自提”“改派送地址”且完整成功、TMS 登记时间严格早于 17:00:00 的人工问题件可顺延到登记次日，多个事件只能把日期延后。类型目录只定义在 `daily_sign_rules.py`，计算、采集和存储共用。
+- 只有精确类型“客户要求延迟派送”“联系不上收件人”“客户拒收/拒付费用”“客户原因要求自提”“改派送地址”且完整成功、TMS 登记时间严格早于 17:00:00 的人工问题件可顺延到登记次日，多个事件只能把日期延后。类型目录只定义在当前 V2 包内 `daily_sign_rules.py`，由插件计算；Host 验证并保存明确提交的布尔判断，不维护或重算类型规则。
 - 只有“签收管理 → 签收查询”中签收单号等于主单号的 TMS 事件，或快件跟踪页中扫描类型精确为“签收”的主单轨迹可关闭；不得把“到件”结果或子单签收当成主单签收。R13 签收冲突和已离开当前 R13 的历史未签单按限量队列做精确轨迹核验，核验结果写入 `waybill_sign_verification_state` 并按 1/3/7 天退避，避免每次全量慢查。
 - R13/问题件分页、结构或完整性失败时停止发布并保留上一成功表；TMS 签收查询失败允许新增候选但不得删除旧行，运行结果必须标记降级。

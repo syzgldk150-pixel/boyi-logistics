@@ -4,7 +4,7 @@ type: 模块文档
 tags: [客服系统, 问题件, 融辉, 韵达, 原页接口, Console, Agent]
 related: [../code_navigation_index.md, ../project_overview.md]
 status: active
-updated: 2026-08-30
+updated: 2026-09-15
 ---
 
 # 客服系统模块说明
@@ -16,7 +16,7 @@ updated: 2026-08-30
 - Console 页面入口：`/modules/customer-service`
 - Console 设置接口：`GET/POST /customer-service/problem-settings`
 - Console 问题件接口：`/customer-service/problems/query|detail|mark-read|reply|publish|attachments/upload`；附件图片预览接口为 `GET /customer-service/problems/attachments/preview`
-- Agent 只读 target：`/internal/v1/tms/customer_service_problem`；回复、发布、标记已读和附件上传等写操作提交受管 Command，由 WorkflowRunner 执行
+- Agent 只读 target：`/internal/v1/tms/customer_service_problem`；回复、发布、标记已读和附件上传等人工操作经已审核的直接业务接口执行，账号、权限和写后结果仍由 Host 核验，不创建待领取任务
 
 ## Console 交互口径
 

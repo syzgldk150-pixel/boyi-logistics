@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-08-31
+updated: 2026-09-15
 source_of_truth: console/AGENTS.md
 ---
 
@@ -32,7 +32,7 @@ Console 负责：
 Console 不负责：
 
 - Agent 的业务编排、工具执行、审批状态机、Scheduler 或飞书长连接
-- 直接调用第三方写接口来绕过 Agent Command/Run
+- 绕过已审核的业务接口、账号绑定和权限去直接写第三方平台
 - 在运行时创建或修改数据库结构
 - 在主站同源上下文中运行韵达或融辉活动原页
 
@@ -58,7 +58,7 @@ Console 不负责：
 - 管理员命令、审批、账号、系统状态和旧模块审计读取还必须绑定真实 MySQL 管理员会话，并由服务端签名。
 - 浏览器不能声明或覆盖管理员 principal、角色或来源。
 - 物流跟踪由 Console `/tracking` 代理 Agent `/internal/v1/tms/tracking_query`。
-- 一般执行型写请求提交 `/internal/v1/commands`；自动化项目手工执行使用专用项目 invoke 接口。
+- 普通查询和人工操作使用 `/internal/v1/business/{operation}`；插件使用 `/internal/v1/automation-projects/{automation_id}/invoke`。旧 `/internal/v1/commands` 不接受新业务，不进入领取队列。
 - Basic Auth 仅为应急兼容入口，不具备控制平面写权限。
 
 ## 数据库
@@ -89,12 +89,12 @@ Console 运行时唯一业务数据库是与 Agent 共用的 MySQL；没有 SQLi
 - `/dispatch`：map-only 路线、距离与运输方案比价，不包含车辆档案或真实派单
 - `/line-haul-contacts`：专线分流资料
 - `/extensions` 与旧详情 GET：重定向到自动化或对应插件筛选；旧生命周期 POST 返回 410
-- `/automations`：插件安装、实例设置、升级、启停、卸载、定时、权限、运行状态与输出的唯一日常入口；v1→v2 迁移只保留签名后台接口，不在页面展示
+- `/automations`：功能插件的安装、设置、升级、启停、卸载、定时和执行；财务/客服采集在所属模块数据源页管理。`/automations/maintenance` 保留超级管理员的历史迁移维护入口，不是日常任务队列。
 - `/automation-accounts`：业务账号凭据与登录态的唯一 UI
 - `/settings/llm`：智能模型设置
 - `/work-items`：内部控制平面的跨项目历史、审批、Evidence 和异常恢复深链，不进入导航
 
-插件和自动化复用同一个 Agent Catalog、实例仓储和生命周期状态机，并统一在 `/automations` 管理，Console 不维护第二套插件目录。Service v2 安装弹窗只完成 ZIP 检查、权限确认、实例名称和安装确认；最终请求重新上传并验证同一 ZIP，发送后冻结根 UUID 与最小意图，响应丢失只原样重试。插件业务配置在隔离的专属设置页中完成，只能通过闭合桥读取脱敏账号状态、飞书资源目录并保存不透明引用；Console 独立保存启停、定时、取消和运行审批。页面不保存或展示凭据，管理员账号与业务自动化账号仍是两套独立系统。
+各模块的插件入口复用同一个 Agent Catalog、实例仓储和生命周期状态机。V2 安装先检查 ZIP，再以同一字节、稳定请求 UUID、实例名称和权限确认提交，默认停用。安装后的账号引用与平铺常用参数可用宿主简单设置，复杂配置和资源角色使用隔离专属设置页。配置、定时与启停按各自版本校验保存；凭据只在业务账号页维护。AI 助手与飞书自然对话共用 Agent 会话服务，按身份权限查询或执行已开放插件。
 
 ## 本地启动
 
@@ -128,11 +128,7 @@ wsl bash -lc 'cd /home/deng/projects/boyi-logistics/console && ./start_backend.s
 
 ## 生产与发布
 
-生产入口为 `https://boyi.homes`；Console 只监听 `127.0.0.1:8765`，由受控 Nginx 反向代理。统一发布入口为：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1"
-```
+生产入口为 `https://boyi.homes`；Console 只监听 `127.0.0.1:8765`，由受控 Nginx 反向代理。统一发布入口为 [publish_to_ecs.ps1](../agent/deploy/publish_to_ecs.ps1)。包含 Agent 的发布需传入 V2 退役索引和公钥目录，完整命令见[发布手册](../agent/deploy/publish_to_ecs.md)。
 
 默认 `auto` 模式按变更范围选择 Console-only、Agent-only 或共享/迁移发布。发布成功后仍保留当次精确回滚包、上一版共享环境和数据库快照，直到业务验收完成；之后才允许独立清理。
 

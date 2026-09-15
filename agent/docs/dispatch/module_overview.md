@@ -5,7 +5,7 @@ tags: [车辆调度, 地图, 路线规划, 高德地图, 本地估算]
 related: [../project_overview.md, ../code_navigation_index.md]
 status: active
 implementation_status: map_only
-updated: 2026-08-30
+updated: 2026-09-15
 ---
 
 # 车辆调度模块概述
@@ -44,4 +44,4 @@ updated: 2026-08-30
 
 ## 后续启用条件
 
-只有接入并验证真实车辆/司机/派单数据源、定义调度状态机与权限、通过受管 Command 执行写操作，并对第三方平台结果建立可核验回执后，才能把本模块状态从 `map_only` 改为调度系统。
+只有接入并验证真实车辆/司机/派单数据源、定义调度状态机与权限、通过已审核的直接业务接口执行人工操作，并对第三方平台结果建立可核验回执后，才能把本模块状态从 `map_only` 改为调度系统。

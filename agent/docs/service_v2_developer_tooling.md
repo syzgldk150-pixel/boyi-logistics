@@ -10,7 +10,7 @@ related:
   - ../scripts/service_v2_plugin.py
   - ../extension_sdk/schemas/manifest-v2.schema.json
 status: active
-updated: 2026-09-01
+updated: 2026-09-15
 ---
 
 # Service v2 离线开发工具
@@ -70,7 +70,7 @@ settings/                    # 可选
   settings.js
 ```
 
-`manifest.json` 必须是普通文件，`payload/` 必须是真实目录，可选 `settings/` 只允许包内相对 HTML/CSS/JavaScript 和静态资源；递归成员只能是普通目录或普通文件。符号链接、特殊文件、其他根成员和源码自带的 `payload/boyi_plugin_sdk.py` 都会失败。SDK 不由插件作者复制；打包器从仓库当前 Service v2 SDK 单点注入，防止源码携带不同实现。声明必需配置、账号或资源角色时，Manifest 必须提供固定 `settings_ui.entry=settings/index.html` 与 `bridge_api=1.0.0`。
+`manifest.json` 必须是普通文件，`payload/` 必须是真实目录，可选 `settings/` 只允许包内相对 HTML/CSS/JavaScript 和静态资源；递归成员只能是普通目录或普通文件。符号链接、特殊文件、其他根成员和源码自带的 `payload/boyi_plugin_sdk.py` 都会失败。SDK 不由插件作者复制；打包器从仓库当前 Service v2 SDK 单点注入，防止源码携带不同实现。账号引用和平铺常用参数可使用宿主简单设置；复杂配置或资源角色需声明固定 `settings_ui.entry=settings/index.html` 与 `bridge_api=1.0.0`。Harness contribution 可选，离线 init 中的示例不构成全部新插件的强制要求。
 
 目录遍历先检查全部目录项名称，再读取任何成员内容。`.env*`、credential、secret、key、certificate、session、token、Cookie 和密码等敏感候选名称会在打开文件前被拒绝；工具不会为了判断候选内容而读取该文件。显式 JSON 场景文件同样使用敏感名称检查、`lstat`、`O_NOFOLLOW` 和读取前后文件身份/时间元数据核对，只接受严格 UTF-8、无重复键、无非有限数字的根对象。
 
@@ -86,135 +86,19 @@ Connector 不是一种 ZIP Provider。源码包的 `provides` 与 contribution t
 
 每个 Connector operation 的合同固定为 `{name,effect,input_schema,output_schema,max_input_bytes,max_output_bytes}`，effect 允许 `read/internal_write/external_write`。input/output cap 纳入扩展 contract hash；legacy account + read + 默认 cap 的 canonical hash 保持旧 material，不因新增 binding 类型或 cap 字段漂移。宿主先解析 binding、input Schema 和 input cap，再决定是否允许写 marker；handler 返回后再核验 output Schema、output cap 和结果脱敏。`preflight_services` 只闭合解析依赖，不增加 Broker call。账号/资源 ID、绑定字段和宿主引用只能留在 Broker/Host 私有 side channel，插件结果或错误中出现这些值（含嵌套/包装）必须失败。
 
-`connector.fixture.tracking@1/query` 只用于显式离线 Host 集成测试。它只会在调用方显式执行 `connector-test`、给出绝对可信 fixture root、相对 JSON 路径和单号时被加载；路径逃逸、符号链接、敏感名称、超限、重复 JSON 键和 Schema 漂移都显式失败。生产 Agent Registry、安装器和其他开发命令不会加载该 fixture，生产 `ConnectorRegistry` 默认为空。当前状态为 `offline_contract=COMPLETE`、`offline_runtime=READY`、`production_runtime=PRODUCTION_GATED`；真实 TMS、飞书、数据库和写 Connector 均未开放，不得用 fixture 结果冒充生产连通性或授权。
+`connector.fixture.tracking@1/query` 只用于显式离线 Host 集成测试。只有 `connector-test` 接收可信 fixture root、相对 JSON 路径和单号后才加载；路径、成员、大小和 Schema 校验失败必须报错。生产接口另由 `agent/agent/automation_plugins/production_connectors.py` 组合，已包含读取、内部写入及外部写入能力，逐项受当前权限、绑定和写后核验约束。fixture 不进入生产 Registry，也不能证明实际业务可用。
 
-Scheduler contribution 在 `default_enabled=false` 时可以省略 `schedule`，且不得由 CLI 或安装器填充伪造时间；enabled contribution 只能使用项目真实 schedule。MIG001 的 arrival source 没有 Scheduler，目标保持 disabled/no schedule；若源项目已有 enabled Scheduler，迁移必须显式返回 `PLUGIN_MIGRATION_SCHEDULER_PRODUCTION_GATED`，不能在离线层复制或切换。
+Scheduler contribution 未启用时不应伪造执行时间；启用时采用经验证的项目时间计划。当前迁移可复制已审核的真实定时，已完成迁移的实例后续通过设置与升级入口维护。旧 MIG 阶段的 Scheduler 生产门禁仅保留在历史执行账本，不作为当前操作步骤。
 
-### MIG001 到货统计包
+### 当前业务插件与生产维护
 
-`agent/service_v2_plugins/sync_arrival_stats_v2/` 是独立 Service v2 包，包内算法和结果契约使用 v1 payload/action 与共享结果模块的逐字节嵌入副本。离线 fixture 只验证代表性 payload 的 parity、稳定投影和 primitive 顺序，不是正式容量上限或生产吞吐证明；真实 TMS/Feishu/资源读写、独立写后核验、descriptors/handlers、安装、入口接管和部署均保持 `PRODUCTION_GATED`。
+业务源码、版本和测试入口以[当前插件维护入口](../service_v2_plugins/README.md)为准。到货统计、扫描、自提、分批、寄件、签收、财务、客服和每日应签均维护在 `agent/service_v2_plugins/` 的对应包中，真实 Host Connector 位于 `agent/agent/automation_plugins/production_connectors.py`。不再从旧 V1 payload 复制业务算法。
 
-### MIG002 自提问题件候选包
+常规修改使用 `scripts/plugin_maintenance.py test/package` 完成局部验证与打包，然后由超级管理员升级该实例。核心接口、公共原页字段协议、依赖锁或数据库结构变化仍需[核心发布](../deploy/publish_to_ecs.md)。核心部署不会替代已安装 V2 ZIP 的升级。
 
-`agent/service_v2_plugins/self_pickup_problem_upload_v2/` 是独立的
-Service v2 离线候选包。它的唯一业务算法源仍是 v1
-`agent/service_v2_plugins/self_pickup_problem_upload_v2/payload/action.py`；
-专用 `agent/service_v2_plugins/_shared/build_zip.py` 在确定性 ZIP 中逐字节嵌入
-该 action 和 first-party result helper（分别为
-`payload/action.py`、`payload/boyi_plugin_result.py`），并注入受管的
-`main.py` 与 SDK。相同输入产生相同 ZIP，构建器只写调用方指定且此前不存在的
-输出路径。候选 payload 不导入 legacy 路径、不修改 `sys.path`，也不使用 whole-tool
-fallback；因此它不是 generic `service_v2_plugin package` 示例的生产安装结果。
+扫描、自提及分批的首次调用生成候选，正式处理需要精确预览确认。实际结果取自本次 Invocation、真实来源与独立写后核验；零条、失败、取消与未知写分别报告，不能拿隔离场景替代生产验收。
 
-该包提供
-`plugin.self_pickup_problem_upload_v2.self_pickup_problem_upload@1` 的两个不可变
-operation：`preview/read` 与 `execute/external_write`。Console 和 Feishu
-contribution 都声明 `operation=execute`、`selection_preview_operation=preview`，
-且 `default_enabled=false`；不存在 Scheduler、Webhook 或 Event，并提供只读 Harness 候选预览能力与插件专属设置页。
-Preview 请求必须是 `dry_run=true` 且不带选择；正式执行必须是 `dry_run=false`，并带
-规范的非空 `selected_bill_codes` 与 `preview_fingerprint`。Feishu 的生产入口切换
-还必须支持“preview → 用户多轮选择 → 带原 preview fingerprint 的 execute”，不能
-把命令直接变成一次性写入入口。
-
-包外 Connector 依赖严格分为三个独立 service：
-
-| Connector service | binding | 本地 v1 role 检查 | primitive → operation/effect |
-|---|---|---|---|
-| `connector.boyi.self_pickup_source_sheet@1` | resource `self_pickup_source_sheet` | `self_pickup_source_sheet` | `read_rows` → `read_rows/read` |
-| `connector.boyi.self_pickup_primary_ronghui@1` | account `account_id` | `account_id` | `query` → `query/read`；`create` → `create/external_write`；`verify` → `verify/read` |
-| `connector.boyi.self_pickup_daxiang_s_ronghui@1` | account `daxiang_s_account_id` | `daxiang_s_account_id` | `query` → `query/read`；`create` → `create/external_write`；`verify` → `verify/read` |
-
-这些 v1 role 仅用于包内 adapter 的本地一致性检查，账号/资源标识只存在于 Host
-私有 side channel，绝不进入插件 JSON。持久配置仅有
-`include_daxiang_s_self_pickup` 与 `limit`。`service.invoke` action budget
-必须精确为 `read_rows=1`、`query=250`、`create=250`、`verify=250`，总量为 751。
-
-正式执行的第一次真实 Connector 调用必须一次提交三个唯一且完整的
-`preflight_services`，之后不得重复 preflight 或额外调用 Broker；preview 只预检
-source Sheet。写边界从 `create` 开始：写前失败为 `NOT_APPLIED`，`create` 之后的
-异常为 `WRITE_OUTCOME_UNKNOWN`。正式成功必须保留全部 Host Evidence，并逐票证明
-`verify`；preview 成功只能产生 read-only Evidence。离线 fixture 覆盖双来源、重复、
-重排稳定性、来源漂移、全目标 preflight 失败以及 create/verify 不确定结果，并比较
-v1/v2 稳定业务投影和 primitive 顺序；fixture Host Broker 不代表真实 Connector。
-
-三个真实 Connector 的 descriptors/handlers/注册、安装、项目配置、账号与资源绑定、
-Console/Feishu 入口所有权切换（尤其 Feishu 多轮选择）、真实 Sheet/Ronghui 读写与
-独立验证、Evidence 验收、部署和生产运行均为 `PRODUCTION_GATED`。离线测试可以显式
-注入本地 Host Broker，但不得伪造生产 Connector 注册或真实业务数据。
-
-### MIG003 分批问题件候选包
-
-`agent/service_v2_plugins/split_pending_problem_upload_v2/` 是默认关闭的独立
-Service v2 离线候选包。确定性构建器逐字节嵌入 v1
-`service_v2_plugins/split_pending_problem_upload_v2/payload/action.py` 与共享
-result helper；插件 payload 不导入 `agent`、`tools` 或 legacy whole-tool，也不修改
-`sys.path`。包提供同一 service 的 `preview/read` 和 `execute/external_write`；Console
-与 exact 飞书命令“分批”都声明 execute + selection preview，且无
-Scheduler/Webhook/Event；包同时提供只读 Harness 候选预览能力与插件专属设置页。
-
-v1 action 继续唯一拥有 A:S 19 列校验、分批/有发未到分类、逐票
-`expected_quantity = arrived_quantity + pending_quantity`、汇总数量守恒、候选指纹、
-最多 90 票有序选择、全部目标 query 先于写、全量 MySQL snapshot 与 Sheet 投影，
-以及逐票 create → fresh verify → daily-sign event → result 的顺序。正式选择即使只含
-候选子集，snapshot 与 Sheet 仍投影全部当前未齐来源；不得把投影缩成 selected 子集。
-
-五个包外 Connector 使用最小权限分离：
-
-| Connector service | binding | 本地 v1 role 检查 | primitive → operation/effect |
-|---|---|---|---|
-| `connector.boyi.split_pending_source_sheet@1` | resource `split_pending_source_sheet` | `split_pending_source_sheet` | `feishu.sheet.read_rows` → `read_rows/read` |
-| `connector.boyi.split_pending_target_sheet@1` | resource `split_pending_target_sheet` | `split_pending_target_sheet` | `feishu.sheet.replace_rows` → `replace_rows/external_write` |
-| `connector.boyi.split_pending_projection@1` | host_internal | target role | snapshot read/replace/result upsert → `snapshot_read/read`、`snapshot_replace/internal_write`、`result_upsert/internal_write` |
-| `connector.boyi.split_pending_ronghui@1` | account `account_id` | `account_id` | problem query/create/verify → `problem_query/read`、`problem_create/external_write`、`problem_verify/read` |
-| `connector.boyi.split_pending_problem_ledger@1` | account `account_id` | `account_id` | daily-sign event upsert → `event_upsert/internal_write` |
-
-两个账号 Connector 必须共享项目当前精确 `account_id` 绑定；ledger 不能降为
-host-internal，因为事件写合同依赖同一账号 descriptor。Preview 首次调用只提交
-source + projection preflight；execute 首次调用一次提交全部五项，之后不重复。
-九个 `service.invoke.action_call_limits` 的最坏路径为固定调用各 1 次、五个逐票动作各
-90 次，总计 454。Host 通用选择最多 250 票不放宽该 action 的签名上限；第 91 票必须
-在任何 Broker 调用前失败。
-
-写边界从全量 `snapshot_replace` 调用前开始，之后 Sheet、Ronghui、event 或 result 的
-任何异常、响应丢失或读回不闭合都必须是 `WRITE_OUTCOME_UNKNOWN`，不得重放。离线
-fixture 只证明代表性 19 列/数量守恒、字节嵌入、v1-v2 projection/primitive parity、
-每票独立 Host Evidence 和错误边界；真实 5,000×19 容量仍需在真实 descriptor 的
-input/output cap 下实测，禁止截断。五个真实 Connector、账号/资源绑定、安装、入口
-切换、真实 Sheet/MySQL/TMS 读写、生产 Evidence、数据库故障演练和部署均为
-`PRODUCTION_GATED`。
-
-### MIG004 扫描同步候选包
-
-`agent/service_v2_plugins/sync_scan_codes_v2/` 是默认关闭的独立 Service v2
-离线候选包。确定性构建器逐字节嵌入 v1
-`service_v2_plugins/sync_scan_codes_v2/payload/action.py` 与共享 result helper；
-payload 不导入 `agent`、`tools` 或 legacy whole-tool，也不修改 `sys.path`。包提供
-`plugin.sync_scan_codes_v2.scan_codes@1` 的 `preview/read` 与
-`execute/external_write`。Console 和精确飞书命令“扫描”都指向 execute 且默认关闭，
-不声明通用 `selection_preview_operation`、Scheduler、Webhook 或 Event；包同时提供只读 Harness 扫描预览能力与插件专属设置页；
-配置 Schema 也不接受 Host-owned 的 `dry_run` 或 `_scan_preview_binding`。
-
-嵌入的 v1 action 继续唯一拥有稳定分页、等价重复合并、冲突目标拒绝、H 单排除、
-主/子单分类、站点后运单排序、批次截断、PREVIEW/FORMAL、15 分钟到期与正式阶段
-权威重读。正式执行先调用一次 `scan.snapshot.replace` 并独立核对全量身份哈希，随后
-每批严格执行 `ronghui.scan_next.submit` → fresh `ronghui.scan_next.verify`；下一批只有
-在上一批取得 `server_ledger_verified` 后才能开始。必须同时满足
-`candidate = scheduled + omitted` 与 `scheduled = scanned + skipped`，空来源会清空快照，
-非空但无候选也只投影快照且不伪造第三方写。
-
-包外依赖只有账号绑定的 `connector.boyi.scan_ronghui@1` 与 Host 内部
-`connector.boyi.scan_projection@1`。Preview 首次 `read_page` 只预检扫描 Connector；
-execute 首次 `read_page` 一次预检两项。`read_page/snapshot_replace/submit/verify` 的
-逐 action 上限为 `500/1/499/499`，声明合计 1499；运行时全局上限仍固定为 1000，
-因此单页来源、一次快照、499 个单项批次及各自 verify 正好达到边界。写 marker 从
-`snapshot_replace` 调用前开始；snapshot、submit 或 verify 的响应丢失或证明不闭合均为
-`WRITE_OUTCOME_UNKNOWN`、`retryable=false`，不得重放或继续下一批。
-
-v2 离线包没有为 v1-identity-specific 的一次性 preview 消费发明替代实现。现有
-`tests/test_scan_preview_binding.py` 继续覆盖 v1 Host 的唯一消费与到期合同；迁移固定返回
-`PLUGIN_MIGRATION_SCAN_PREVIEW_PRODUCTION_GATED`。真实 Connector descriptor/handler/grant、
-安装与项目绑定、scan-preview handoff、Console/飞书验收、真实扫描和 readback、cutover、
-生产数据库、故障演练及部署全部为 `PRODUCTION_GATED`。
+早期 MIG001–MIG004 的隔离阶段进度保留在[历史迁移账本](../../docs/extension-platform-progress.md)，不再作为现行功能未实现的结论。
 
 ## 4. 安全投影的含义
 
