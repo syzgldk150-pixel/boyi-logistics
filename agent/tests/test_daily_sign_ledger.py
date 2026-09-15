@@ -510,6 +510,54 @@ class DailySignLedgerRulesTest(unittest.TestCase):
     self.assertEqual(datetime(2026, 8, 13, 23, 59, 59), due)
 
 
+ def test_customer_refusal_extends_an_existing_manual_postponement(self):
+    history = [arrival("2026-09-12", 9, 9)]
+    events = [
+        problem("客户要求延迟派送", "2026-09-13 14:15:34"),
+        problem("客户拒收/拒付费用", "2026-09-14 12:56:57"),
+    ]
+    due, state = calculate_system_sign_due(history, events)
+    self.assertEqual(datetime(2026, 9, 15, 23, 59, 59), due)
+    self.assertEqual(
+        [event["external_id"] for event in events],
+        state["trace"]["applied_manual_events"],
+    )
+    repeated_due, _ = calculate_system_sign_due(history, events)
+    self.assertEqual(due, repeated_due)
+    normalized = daily_sign_store._normalize_problem_events([
+        {**event, "source": "test_manual_problem", "tracking_number": "R00021074198"}
+        for event in events
+    ])
+    self.assertTrue(all(event["postpones_sign"] for event in normalized))
+
+
+ def test_customer_refusal_obeys_exact_type_success_and_registration_cutoff(self):
+    for event, expected in (
+        (problem("客户拒收/拒付费用", "2026-09-14 16:59:59"), datetime(2026, 9, 15, 23, 59, 59)),
+        (problem("客户拒收/拒付费用", "2026-09-14 17:00:00"), datetime(2026, 9, 13, 23, 59, 59)),
+        (problem("客户拒收/拒付费用", "2026-09-14 12:56:57", complete=False), datetime(2026, 9, 13, 23, 59, 59)),
+        (problem("客户拒收/拒付费用（其他）", "2026-09-14 12:56:57"), datetime(2026, 9, 13, 23, 59, 59)),
+    ):
+        with self.subTest(event=event):
+            due, _ = calculate_system_sign_due([arrival("2026-09-12", 9, 9)], [event])
+            self.assertEqual(expected, due)
+
+
+ def test_self_pickup_and_address_change_use_the_same_manual_postponement_rules(self):
+    for problem_type in ("客户原因要求自提", "改派送地址"):
+        for registered_at, complete, expected in (
+            ("2026-09-14 16:59:59", True, datetime(2026, 9, 15, 23, 59, 59)),
+            ("2026-09-14 17:00:00", True, datetime(2026, 9, 13, 23, 59, 59)),
+            ("2026-09-14 12:00:00", False, datetime(2026, 9, 13, 23, 59, 59)),
+        ):
+            with self.subTest(problem_type=problem_type, registered_at=registered_at, complete=complete):
+                due, _ = calculate_system_sign_due(
+                    [arrival("2026-09-12", 9, 9)],
+                    [problem(problem_type, registered_at, complete=complete)],
+                )
+                self.assertEqual(expected, due)
+
+
  def test_r13_only_candidate_keeps_r13_due_and_blank_system_due(self):
     row = build_ledger_row(
         "R1",
