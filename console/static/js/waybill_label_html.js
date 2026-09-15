@@ -8,17 +8,16 @@
   // Coordinates refer to the supplied, unmodified 1122 × 1402 blank master.
   const SOURCE_WIDTH = 1122;
   const SOURCE_HEIGHT = 1402;
-  const CONTENT_FONT = "思源黑体 CN Bold";
+  const CONTENT_FONT = "黑体";
   const CONTENT_WEIGHT = 700;
-  const FONT_URL = "/static/assets/fonts/SourceHanSansCN-VF.ttf.woff2?v=f971e3bf";
   let contentFontPromise;
   const loadContentFont = () => {
     if (!contentFontPromise) {
-      const face = new FontFace(CONTENT_FONT, `url("${FONT_URL}")`, { weight: String(CONTENT_WEIGHT) });
+      const face = new FontFace(CONTENT_FONT, `local("SimHei"), local("${CONTENT_FONT}")`);
       contentFontPromise = face.load().then((loaded) => {
         document.fonts.add(loaded);
       }).catch(() => {
-        throw new Error("思源黑体加载失败，请刷新页面后重试");
+        throw new Error("本机黑体字体加载失败，请安装黑体后刷新页面重试");
       });
     }
     return contentFontPromise;
