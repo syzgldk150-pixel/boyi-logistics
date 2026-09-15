@@ -25,8 +25,8 @@ def _load_action():
     result_path = (
         ROOT
         / "agent"
-        / "legacy" / "first_party_automation_plugins"
-        / "_runtime"
+        / "service_v2_plugins"
+        / "_shared"
         / "result.py"
     )
     result_spec = importlib.util.spec_from_file_location("boyi_plugin_result", result_path)
