@@ -19,8 +19,8 @@
 {% if manual_amap_sdk_should_load | default(false) %}
 <script src="https://webapi.amap.com/loader.js"></script>
 {% endif %}
-<script src="/static/js/waybill_label_html.js"></script>
-<script src="/static/js/waybill_label_lodop.js"></script>
+<script src="/static/js/waybill_label_html.js?v=20260915"></script>
+<script src="/static/js/waybill_label_lodop.js?v=20260915"></script>
 <script src="/static/js/clodop_loader.js?v=20260812"></script>
 <script src="/static/js/yunda_entry_mode.js"></script>
 {% endif %}
@@ -1767,7 +1767,9 @@
         weight_volume: manualFieldValue("weight_volume") || weightVolume,
         delivery_method: manualFieldValue("delivery_method"),
         freight_fee: manualFieldValue("freight_fee"),
+        pickup_fee: manualFieldValue("pickup_fee"),
         delivery_fee: manualFieldValue("delivery_fee"),
+        transfer_fee: manualFieldValue("transfer_fee"),
         payment_method: manualFieldValue("payment_method"),
         insurance_amount: manualFieldValue("insurance_amount"),
         cod_amount: manualFieldValue("cod_amount"),
