@@ -54,6 +54,8 @@ def run_test_daily_sign_fresh_readback_rejects_mysql_tamper(case) -> None:
             "registered_at": datetime(2026, 8, 15, 16, 0, 0),
             "registered_site": "集成测试网点",
             "upload_complete": True,
+            "before_cutoff": True,
+            "postpones_sign": True,
             "payload": {"source": "integration"},
         }
     ]

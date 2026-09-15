@@ -83,7 +83,7 @@ OCR 仍是录单内的能力；货拉拉接口尚未完成接入，地图功能�
 
 | 需要修改的内容 | 归属与主要位置 | 更新单位 |
 |---|---|---|
-| 插件的字段、筛选、统计、局部决策 | 对应 `agent/first_party_automation_plugins/<id>/payload/` 或当前实际安装的 Service V2 包 | 该插件的局部测试、打包、升级/回退 |
+| 插件的字段、筛选、统计、局部决策 | 对应 `agent/legacy/first_party_automation_plugins/<id>/payload/` 或当前实际安装的 Service V2 包 | 该插件的局部测试、打包、升级/回退 |
 | 账号引用、资源、可公开标量参数 | 已有插件简单设置和账号模块 | 配置，不改主程序 |
 | 调用生命周期、隔离、凭据变更保护 | `agent/agent/automation_plugins/direct_invocation.py`、Broker、执行路由 | 核心更新 |
 | Invocation 持久化 | `shared/plugin_invocation_repository.py`、迁移 044 | 核心与数据库迁移 |

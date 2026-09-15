@@ -12,9 +12,9 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_ROOT = ROOT / "agent" / "first_party_automation_plugins" / "sync_daily_send_orders"
+PLUGIN_ROOT = ROOT / "agent" / "service_v2_plugins" / "sync_daily_send_orders_v2"
 ACTION_SOURCE = PLUGIN_ROOT / "payload" / "action.py"
-RESULT_SOURCE = ROOT / "agent" / "first_party_automation_plugins" / "_runtime" / "result.py"
+RESULT_SOURCE = ROOT / "agent" / "service_v2_plugins" / "_shared" / "result.py"
 _FORBIDDEN_LOCATION_KEYS = {
     "account_id",
     "account_ids",

@@ -1045,6 +1045,29 @@ restore_legacy_finance_etl() {
   mv -- "${retired_path}" "${LEGACY_FINANCE_ETL_ROOT}"
 }
 
+# Retire the complete old import tree (including bytecode) into this release's
+# rollback material. It is never copied into the new service runtime.
+retire_legacy_plugin_sources() {
+  [[ "${AGENT_RELEASE}" == "1" ]] || return 0
+  local source="/home/boyce/agent/first_party_automation_plugins"
+  local retired="${BACKUP_DIR}/retired/first_party_automation_plugins"
+  [[ ! -L "${source}" && ! -L "${retired}" ]] || return 1
+  [[ -d "${source}" ]] || return 0
+  [[ ! -e "${retired}" ]] || return 1
+  mkdir -p "${BACKUP_DIR}/retired"
+  mv -- "${source}" "${retired}"
+}
+
+restore_legacy_plugin_sources() {
+  local source="/home/boyce/agent/first_party_automation_plugins"
+  local retired="${BACKUP_DIR}/retired/first_party_automation_plugins"
+  [[ -d "${retired}" ]] || return 0
+  [[ ! -L "${source}" && ! -L "${retired}" ]] || return 1
+  # Managed-file restoration may have recreated this exact tree already.
+  mkdir -p "${source}"
+  cp -a "${retired}/." "${source}/"
+}
+
 preflight_staged_first_party_source_scope() {
   local helper="${STAGE_ROOT}/agent/scripts/first_party_release_scope.py"
   local output
@@ -1101,13 +1124,8 @@ run_static_preflight() {
 
 preflight_signed_first_party_plugins() {
   local verifier="${STAGE_ROOT}/agent/scripts/verify_first_party_plugins.py"
-  local digest_lock="${STAGE_ROOT}/agent/first_party_automation_plugins/digests.json"
   [[ -f "${verifier}" && ! -L "${verifier}" ]] || {
     echo "Signed first-party plugin verifier is missing or unsafe" >&2
-    return 1
-  }
-  [[ -f "${digest_lock}" ]] || {
-    echo "Signed first-party plugin digest lock is missing" >&2
     return 1
   }
   [[ -d "${STAGED_FIRST_PARTY_PLUGIN_RELEASE_ROOT}" && \
@@ -1130,7 +1148,7 @@ preflight_signed_first_party_plugins() {
       --artifact-root "${STAGED_FIRST_PARTY_PLUGIN_RELEASE_ROOT}" \
       --trust-root "${STAGED_FIRST_PARTY_PLUGIN_TRUST_ROOT}" \
       --release-sha "${RELEASE_SHA}" \
-      --digest-lock "${digest_lock}" --require-completed-migrations --runtime-root "/home/boyce/agent"
+      --service-v2-only --require-completed-migrations --runtime-root "/home/boyce/agent"
   )" || return 1
   grep -Fxq 'status=ok' <<<"${output}" || {
     echo "Signed first-party plugin preflight returned an invalid status" >&2
@@ -1181,7 +1199,6 @@ preflight_worker_server_identity() {
 verify_installed_first_party_plugin_artifacts() {
   local artifact_root="$1"
   local verifier="${STAGE_ROOT}/agent/scripts/verify_first_party_plugins.py"
-  local digest_lock="${STAGE_ROOT}/agent/first_party_automation_plugins/digests.json"
   local verifier_python="${PYTHON_BINS[agent]}"
   [[ -z "${RELEASE_VENV}" ]] || verifier_python="${RELEASE_VENV}/bin/python"
   [[ -d "${artifact_root}" && ! -L "${artifact_root}" && \
@@ -1194,7 +1211,7 @@ verify_installed_first_party_plugin_artifacts() {
     --artifact-root "${artifact_root}" \
     --trust-root "${FIRST_PARTY_PLUGIN_TRUST_ROOT}" \
     --release-sha "${RELEASE_SHA}" \
-    --digest-lock "${digest_lock}" --require-completed-migrations --runtime-root "/home/boyce/agent" >/dev/null
+    --service-v2-only --require-completed-migrations --runtime-root "/home/boyce/agent" >/dev/null
 }
 
 install_verified_first_party_plugin_artifacts() {
@@ -2621,6 +2638,10 @@ restore_managed_release_state() {
       restore_status=1
     }
   fi
+  restore_legacy_plugin_sources || {
+    echo "Failed to restore retired plugin sources" >&2
+    restore_status=1
+  }
   restore_legacy_finance_etl || {
     echo "Failed to restore legacy finance ETL rollback data" >&2
     restore_status=1
@@ -2900,6 +2921,7 @@ run_release() {
     install_verified_first_party_plugin_artifacts
     RELEASE_STAGE="retire_legacy_finance_etl"
     retire_legacy_finance_etl
+    retire_legacy_plugin_sources
   fi
   for scope in "${SCOPES[@]}"; do
     RELEASE_STAGE="sync_scope:${scope}"

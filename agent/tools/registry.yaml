@@ -945,7 +945,7 @@ tools:
               additionalProperties: true
             - type: "null"
       required: [status, data, meta, warnings, error]
-    executor: tools/daily_sign_sync_tool.py
+    executor: service_v2_plugins/sync_daily_should_sign_v2/payload/business/daily_sign_sync_tool.py
     timeout: 2400
     heavy: false
 

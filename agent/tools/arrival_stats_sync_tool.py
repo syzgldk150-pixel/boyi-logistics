@@ -26,7 +26,7 @@ from tools.daily_sign_store import (
     load_completed_arrival_trackings_before,
     save_arrival_stat_snapshot,
 )
-from tools.daily_sign_rules import business_now
+from tools.daily_sign_values import business_now
 from tools.phase7_mysql_store import (
     cleanup_scan_codes,
     has_waybill_detail,

@@ -17,7 +17,7 @@ from plugin_core_adapters.daily_sign_ports import build_daily_sign_port_handlers
 from tests.direct_invocation_fixture import direct_repository  # noqa: F401
 from tests.service_v2_production_protocol_support import PackagedConnectorHost
 from tools import daily_sign_store as store
-from tools.daily_sign_sync_tool import SHEET_HEADERS
+from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool import SHEET_HEADERS
 
 
 @pytest.mark.parametrize("resource_busy", [True, False])
@@ -174,7 +174,7 @@ def test_daily_sign_source_failure_verifies_only_failed_run_records(tmp_path, di
     assert not is_verified_daily_sign_failure(**{**proof, "host_call_observations": host.observations[:-1]})
 
 
-@pytest.mark.parametrize("count,corrupt", [(514,False), (2,True), (2,False), (8,False), (3,False), (4,False), (5,False), (6,False)])
+@pytest.mark.parametrize("count,corrupt", [(514,False), (2,True), (2,False), (8,False), (3,False), (4,False), (5,False), (6,False), (7,False)])
 def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_path, direct_repository, monkeypatch, count, corrupt):  # noqa: F811
     assert os.environ["AGENT_DB_HOST"] == "127.0.0.1" and os.environ["AGENT_DB_NAME"].endswith("_test")
     # This UUID database belongs only to this test module. Reset its daily-sign
@@ -195,8 +195,24 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         arrivals[0]["recipient_address"] = "/湖南省邵阳市隔离测试路1号"
         store.upsert_problem_events([{"source":"ronghui_problem:abcdef123456", "external_id":identity,
             "tracking_number":"R00021000002", "problem_type":"少货/分批",
-            "registered_at":"2026-09-10 12:00:00", "upload_complete":True, "payload":problem}])
-    manual_problem_type = {4: "客户拒收/拒付费用", 5: "客户原因要求自提", 6: "改派送地址"}.get(count)
+            "registered_at":"2026-09-10 12:00:00", "upload_complete":True,
+            "before_cutoff":True, "postpones_sign":False, "payload":problem}])
+    manual_problem_type = {4: "客户拒收/拒付费用", 5: "客户原因要求自提", 6: "改派送地址", 7: "隔离测试新增顺延类型"}.get(count)
+    if count == 7:
+        # Change only the ZIP's business policy. The unchanged real Host must
+        # preserve the new decision through MySQL, verification and both sinks.
+        from service_v2_plugins._shared import daily_sign_package
+        original = daily_sign_package.daily_sign_business_files
+
+        def package_with_new_type(repository):
+            entries = original(repository)
+            key = "payload/business/daily_sign_rules.py"
+            needle = b"MANUAL_POSTPONE_TYPES = frozenset({"
+            assert entries[key].count(needle) == 1
+            entries[key] = entries[key].replace(needle, needle + ('"' + manual_problem_type + '",').encode())
+            return entries
+
+        monkeypatch.setattr(daily_sign_package, "daily_sign_business_files", package_with_new_type)
     if manual_problem_type:
         arrivals[0]["arrived_quantity"] = 3
     store.save_arrival_stat_snapshot(date(2026,9,10), arrivals)

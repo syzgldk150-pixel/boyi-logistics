@@ -13,7 +13,9 @@ from collections import Counter
 from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from typing import Any
 
-from tools.daily_sign_rules import (
+from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_rules import (
+    MANUAL_POSTPONE_TYPES,
+    is_before_problem_cutoff,
     BUSINESS_TIMEZONE,
     build_ledger_row,
     business_now,
@@ -450,6 +452,8 @@ def _collect_problem_window(
                 "registered_at": registered_at,
                 "registered_site": clean_text(row.get("registered_site")),
                 "upload_complete": True,
+                "before_cutoff": is_before_problem_cutoff(registered_at),
+                "postpones_sign": problem_type in MANUAL_POSTPONE_TYPES,
                 "payload": {
                     "platform": "ronghui",
                     "account_scope": _scope_name("account", account_id),
@@ -590,7 +594,7 @@ def _collect_sign_events(
 
 def _resolve_r13_request(params: dict[str, Any], account_id: str) -> dict[str, Any]:
     # Imported lazily to avoid a module cycle: the public tool delegates here.
-    from tools.daily_sign_sync_tool import build_daily_sign_request_body
+    from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool import build_daily_sign_request_body
 
     try:
         request = build_daily_sign_request_body({**params, "r13_account_id": account_id})
@@ -724,7 +728,7 @@ def _finish_failed_run(
 def run_authoritative_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
     """Collect all authoritative inputs, persist one complete source run, and publish."""
 
-    from tools.daily_sign_sync_tool import (
+    from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool import (
         DAILY_SIGN_SHEET_RESOURCE_KEY,
         _build_records,
         _build_sheet_values,

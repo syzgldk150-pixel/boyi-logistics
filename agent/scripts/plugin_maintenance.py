@@ -105,16 +105,13 @@ def selected_tests(plugin_id: str) -> tuple[str, ...]:
 
 def maintenance_scope(plugin_id: str, paths: list[str]) -> dict[str, Any]:
     selected_tests(plugin_id)
-    local_root = "agent/" + ("service_v2_plugins/" if plugin_id.endswith("_v2") else "first_party_automation_plugins/") + plugin_id + "/"
+    local_root = "agent/" + ("service_v2_plugins/" if plugin_id.endswith("_v2") else "legacy/first_party_automation_plugins/") + plugin_id + "/"
     local_tests = {node.split("::", 1)[0] for node in PLUGIN_TESTS[plugin_id]}
     supporting = [path for path in paths if path not in local_tests and (
         path.endswith('.md') or path.startswith(('tests/', 'agent/tests/', 'console/tests/')))]
-    # Business sources are shared with the one-time V1 migration packager;
-    # they are embedded in the V2 ZIP and never imported from the Host at run time.
-    business_root = "agent/first_party_automation_plugins/" + plugin_id.removesuffix("_v2") + "/payload/"
     outside = [path for path in paths if not (path.startswith(local_root) or
-        (plugin_id.endswith("_v2") and path.startswith(business_root)) or path in local_tests or path in supporting)]
-    other_plugins = [path for path in outside if path.startswith(('agent/first_party_automation_plugins/', 'agent/service_v2_plugins/'))]
+        path in local_tests or path in supporting)]
+    other_plugins = [path for path in outside if path.startswith(('agent/legacy/first_party_automation_plugins/', 'agent/service_v2_plugins/'))]
     core = [path for path in outside if path not in other_plugins]
     return {
         "scope": "CORE_UPDATE_REQUIRED" if core else "MULTI_PLUGIN_REVIEW_REQUIRED" if other_plugins else "PLUGIN_ONLY_CANDIDATE",

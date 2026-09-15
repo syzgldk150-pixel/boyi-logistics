@@ -10,8 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 ACTION_PATH = (
     ROOT
     / "agent"
-    / "first_party_automation_plugins"
-    / "sync_site_send_list"
+    / "service_v2_plugins"
+    / "sync_site_send_list_v2"
     / "payload"
     / "action.py"
 )
@@ -21,8 +21,7 @@ def _load_action():
     result_path = (
         ROOT
         / "agent"
-        / "first_party_automation_plugins"
-        / "_runtime"
+        / "service_v2_plugins" / "_shared"
         / "result.py"
     )
     result_spec = importlib.util.spec_from_file_location("boyi_plugin_result", result_path)

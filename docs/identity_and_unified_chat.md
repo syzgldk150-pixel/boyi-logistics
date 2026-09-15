@@ -111,7 +111,7 @@ PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m pytest -q tests/test_ident
 
 工作区已补齐清单、韵达、财务、寄件、签收、客服和每日应签的 V2 生产适配，局部测试/打包入口覆盖现有 V2 插件。真实 ZIP 通过隔离进程、宿主 Broker 和 ResultVerifier 核验；迁移切换与回退、字段及业务判断两次维护演练使用隔离数据库和外部服务。详细归属及复验命令见 [V2 维护入口](../agent/service_v2_plugins/README.md)。
 
-上线迁移尚须按真实实例执行，不能把隔离测试报告称为生产执行结果。在全部现有实例完成切换前，V1 的生产启动与发布依赖仍须保留；完成切换后才清理其运行入口。
+现行发布只接受 Service-V2-only 退役索引，并在启动和发布时核验全部权威 COMPLETED 迁移记录。旧启动绑定不恢复，旧源码隔离在离线目录且不发布；实例后续更新使用 V2 升级入口。隔离测试仍不能替代生产业务验收。
 
 插件安装必须原样保存已经验证的清单，不能把日志脱敏用于字段定义。`shared/automation_plugin_repository.py` 将清单存储与审计脱敏分开，并按完整清单比较重复安装；`048_restore_arrival_plugin_manifest.sql` 只修复已知统计 V2 包中被误脱敏的字段定义，按插件、版本、包摘要和清单摘要精确限定，不改实例设置或业务数据。真实 ZIP、隔离 MySQL、安装响应丢失重试与有界修复回归见 `tests/test_plugin_manifest_persistence_mysql.py`。
 
@@ -134,3 +134,7 @@ Connector 输入输出由已注册操作的 Schema 与容量上限统一校验�
 `service.invoke` 的签名写权限是能力上限，不能作为本次操作已写入的判断。Broker 将资源协调入口传入宿主私有上下文，能力代理解析并核对 Connector/Provider 的实际 effect 后，仅在真实写操作前协调资源并登记回执；读取不占用写锁。原调用生命周期、同实例互斥、实际写阶段有界等待与写后核验保持不变，不增加积压或自动重试。真实 Broker 通信、注册 Connector 和 Direct 资源协调回归见 `tests/test_service_v2_operation_coordination.py`。
 
 融辉寄件原页的电话字段存在数字组之间连续斜线的真实格式。Connector 在寄件来源、飞书和运单电话列中允许这一精确格式，保留原值；不会拆分、猜测或改写电话号码。其他列、前导斜线、路径、网址、凭据及当前绑定标识仍拒绝。回归见 `tests/test_connector_business_text.py`，其中使用合成电话形态，避免保存真实个人联系方式。
+
+## 应签规则的插件边界
+
+每日应签 2.0.8 将顺延类型、截止时间和流程统一维护在当前 V2 包。Host 要求插件显式提供布尔判断，持久化与回读不重新应用类型白名单。仅包内增加一种顺延类型的真实隔离 ZIP/MySQL/双表回归见 `tests/test_daily_sign_v2_packaged_protocol.py`。

@@ -7,7 +7,7 @@ import pytest
 from agent import feishu_readback
 from agent.automation_plugins.errors import PluginExecutionError
 from plugin_core_adapters.daily_send import build_production_daily_send_ports
-from tools import daily_sign_sync_tool
+from service_v2_plugins.sync_daily_should_sign_v2.payload.business import daily_sign_sync_tool
 
 
 @pytest.fixture(autouse=True)

@@ -2005,21 +2005,21 @@ class Phase7SyncToolTests(unittest.TestCase):
         }
         with (
             patch(
-                "tools.daily_sign_sync_tool.start_sync_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.start_sync_run",
                 return_value=("source-run", datetime(2026, 8, 13, 9, 0, 0)),
             ),
-            patch("tools.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
-            patch("tools.daily_sign_pipeline.finish_sync_run") as finish_mock,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.finish_sync_run") as finish_mock,
             patch(
-                "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.verify_daily_sign_completed_run",
                 side_effect=_daily_completed_run_readback_proof,
             ) as verify_completed,
             patch(
-                "tools.daily_sign_pipeline._resolve_r13_request",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._resolve_r13_request",
                 return_value={"days": 1, "fetch_all": True, "page": 1},
             ),
             patch(
-                "tools.daily_sign_sync_tool.call_http_service",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service",
                 return_value={
                     "ok": False,
                     "error_code": "AUTH_REQUIRED",
@@ -2042,8 +2042,8 @@ class Phase7SyncToolTests(unittest.TestCase):
 
     def test_daily_sign_sync_rejects_implicit_accounts_before_source_calls(self):
         with (
-            patch("tools.daily_sign_sync_tool.call_http_service") as source_mock,
-            patch("tools.daily_sign_sync_tool.start_sync_run") as run_mock,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service") as source_mock,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.start_sync_run") as run_mock,
         ):
             result = daily_sign_sync_tool.run_daily_sign_sync({})
 
@@ -2084,36 +2084,36 @@ class Phase7SyncToolTests(unittest.TestCase):
         ]
         with (
             patch(
-                "tools.daily_sign_sync_tool.start_sync_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.start_sync_run",
                 return_value=("source-run", observed_at),
             ),
-            patch("tools.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
             patch(
-                "tools.daily_sign_pipeline._resolve_r13_request",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._resolve_r13_request",
                 return_value={"days": 1, "fetch_all": True, "page": 1},
             ),
             patch(
-                "tools.daily_sign_sync_tool.call_http_service",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service",
                 return_value={"data": r13_rows},
             ),
             patch(
-                "tools.daily_sign_pipeline._source_query_window",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._source_query_window",
                 return_value=(observed_at, observed_at),
             ),
             patch(
-                "tools.daily_sign_pipeline._collect_problem_events",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_problem_events",
                 return_value=([], {"rows": 0, "declared_total": 0, "complete": True}),
             ),
             patch(
-                "tools.daily_sign_pipeline._collect_sign_events",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_sign_events",
                 return_value=([], {"source_rows": 0, "complete": True}),
             ),
             patch(
-                "tools.daily_sign_sync_tool._sync_r13_sign_conflicts",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_r13_sign_conflicts",
                 return_value=([], {"complete": True, "queried": 0}),
             ) as exact_mock,
             patch(
-                "tools.daily_sign_sync_tool._sync_historical_sign_verifications",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_historical_sign_verifications",
                 return_value=(
                     [],
                     {
@@ -2124,19 +2124,19 @@ class Phase7SyncToolTests(unittest.TestCase):
                 ),
             ) as historical_mock,
             patch(
-                "tools.daily_sign_sync_tool._enrich_missing_addresses",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._enrich_missing_addresses",
                 side_effect=lambda rows, _params: (rows, {"ok": True, "updated": 0}),
             ),
             patch(
-                "tools.daily_sign_sync_tool.persist_daily_sign_snapshot",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.persist_daily_sign_snapshot",
                 side_effect=_daily_persisted_snapshot_proof,
             ) as persist_mock,
             patch(
-                "tools.daily_sign_sync_tool.verify_daily_sign_persistence",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.verify_daily_sign_persistence",
                 side_effect=_daily_persistence_readback_proof,
             ) as verify_persistence,
             patch(
-                "tools.daily_sign_sync_tool._sync_bitable",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_bitable",
                 side_effect=lambda rows, _params: {
                     "ok": True,
                     "written": len(rows),
@@ -2147,7 +2147,7 @@ class Phase7SyncToolTests(unittest.TestCase):
                 },
             ),
             patch(
-                "tools.daily_sign_sync_tool._sync_sheet",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_sheet",
                 side_effect=lambda rows, _params: {
                     "ok": True,
                     "rows": len(rows),
@@ -2157,9 +2157,9 @@ class Phase7SyncToolTests(unittest.TestCase):
                     ),
                 },
             ),
-            patch("tools.daily_sign_sync_tool.finish_sync_run") as finish_mock,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.finish_sync_run") as finish_mock,
             patch(
-                "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.verify_daily_sign_completed_run",
                 side_effect=_daily_completed_run_readback_proof,
             ) as verify_completed,
         ):
@@ -2228,36 +2228,36 @@ class Phase7SyncToolTests(unittest.TestCase):
         }
         with (
             patch(
-                "tools.daily_sign_sync_tool.start_sync_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.start_sync_run",
                 return_value=("source-run", observed_at),
             ),
-            patch("tools.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
             patch(
-                "tools.daily_sign_pipeline._resolve_r13_request",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._resolve_r13_request",
                 return_value={"days": 1, "fetch_all": True, "page": 1},
             ),
             patch(
-                "tools.daily_sign_sync_tool.call_http_service",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service",
                 return_value={"data": []},
             ),
             patch(
-                "tools.daily_sign_pipeline._source_query_window",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._source_query_window",
                 return_value=(observed_at, observed_at),
             ),
             patch(
-                "tools.daily_sign_pipeline._collect_problem_events",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_problem_events",
                 return_value=([], {"rows": 0, "declared_total": 0, "complete": True}),
             ),
             patch(
-                "tools.daily_sign_pipeline._collect_sign_events",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_sign_events",
                 return_value=([], {"source_rows": 0, "complete": True}),
             ),
             patch(
-                "tools.daily_sign_sync_tool._sync_r13_sign_conflicts",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_r13_sign_conflicts",
                 return_value=([], {"complete": True, "queried": 0}),
             ),
             patch(
-                "tools.daily_sign_sync_tool._sync_historical_sign_verifications",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_historical_sign_verifications",
                 return_value=(
                     [],
                     {
@@ -2268,16 +2268,16 @@ class Phase7SyncToolTests(unittest.TestCase):
                 ),
             ),
             patch(
-                "tools.daily_sign_pipeline._finish_failed_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._finish_failed_run",
                 side_effect=_daily_failed_run_values,
             ) as failed_run_mock,
             patch(
-                "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.verify_daily_sign_completed_run",
                 side_effect=_daily_completed_run_readback_proof,
             ) as verify_completed,
-            patch("tools.daily_sign_sync_tool.persist_daily_sign_snapshot") as persist_mock,
-            patch("tools.daily_sign_sync_tool._sync_bitable") as bitable_mock,
-            patch("tools.daily_sign_sync_tool._sync_sheet") as sheet_mock,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.persist_daily_sign_snapshot") as persist_mock,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_bitable") as bitable_mock,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_sheet") as sheet_mock,
         ):
             result = daily_sign_sync_tool.run_daily_sign_sync(
                 {
@@ -2344,42 +2344,42 @@ class Phase7SyncToolTests(unittest.TestCase):
                 }
                 with (
                     patch(
-                        "tools.daily_sign_sync_tool.start_sync_run",
+                        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.start_sync_run",
                         return_value=("source-run", observed_at),
                     ),
                     patch(
-                        "tools.daily_sign_sync_tool.load_daily_sign_state",
+                        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.load_daily_sign_state",
                         return_value=state,
                     ),
                     patch(
-                        "tools.daily_sign_pipeline._resolve_r13_request",
+                        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._resolve_r13_request",
                         return_value={"days": 1, "fetch_all": True, "page": 1},
                     ),
                     patch(
-                        "tools.daily_sign_sync_tool.call_http_service",
+                        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service",
                         return_value={"data": []},
                     ),
                     patch(
-                        "tools.daily_sign_pipeline._source_query_window",
+                        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._source_query_window",
                         return_value=(observed_at, observed_at),
                     ),
                     patch(
-                        "tools.daily_sign_pipeline._collect_problem_events",
+                        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_problem_events",
                         return_value=(
                             [],
                             {"rows": 0, "declared_total": 0, "complete": True},
                         ),
                     ),
                     patch(
-                        "tools.daily_sign_pipeline._collect_sign_events",
+                        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_sign_events",
                         return_value=([], {"source_rows": 0, "complete": True}),
                     ),
                     patch(
-                        "tools.daily_sign_sync_tool._sync_r13_sign_conflicts",
+                        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_r13_sign_conflicts",
                         return_value=([], {"complete": True, "queried": 0}),
                     ),
                     patch(
-                        "tools.daily_sign_sync_tool._sync_historical_sign_verifications",
+                        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_historical_sign_verifications",
                         return_value=(
                             [],
                             {
@@ -2389,21 +2389,21 @@ class Phase7SyncToolTests(unittest.TestCase):
                             },
                         ),
                     ),
-                    patch("tools.daily_sign_sync_tool.finish_sync_run"),
+                    patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.finish_sync_run"),
                     patch(
-                        "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
+                        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.verify_daily_sign_completed_run",
                         side_effect=_daily_completed_run_readback_proof,
                     ) as verify_completed,
                     patch(
-                        "tools.daily_sign_sync_tool.persist_daily_sign_snapshot",
+                        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.persist_daily_sign_snapshot",
                         side_effect=_daily_persisted_snapshot_proof,
                     ) as persist_mock,
                     patch(
-                        "tools.daily_sign_sync_tool.verify_daily_sign_persistence",
+                        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.verify_daily_sign_persistence",
                         side_effect=_daily_persistence_readback_proof,
                     ),
                     patch(
-                        "tools.daily_sign_sync_tool._sync_bitable",
+                        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_bitable",
                         side_effect=lambda rows, _params: {
                             "ok": True,
                             "written": len(rows),
@@ -2413,7 +2413,7 @@ class Phase7SyncToolTests(unittest.TestCase):
                         },
                     ) as bitable_mock,
                     patch(
-                        "tools.daily_sign_sync_tool._sync_sheet",
+                        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_sheet",
                         side_effect=lambda rows, _params: {
                             "ok": True,
                             "rows": len(rows),
@@ -2526,7 +2526,7 @@ class Phase7SyncToolTests(unittest.TestCase):
         ]
         with (
             patch(
-                "tools.daily_sign_sync_tool.get_waybill_tracking_cache",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.get_waybill_tracking_cache",
                 create=True,
                 return_value={"arrived_quantity": 4},
             ),
@@ -2562,7 +2562,7 @@ class Phase7SyncToolTests(unittest.TestCase):
         ]
         with (
             patch(
-                "tools.daily_sign_sync_tool.call_http_service",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service",
                 return_value={
                     "ok": True,
                     "data": [

@@ -130,7 +130,7 @@ updated: 2026-09-10
 - R13 只作为应签候选和冲突诊断；TMS 主单“签收”事件是唯一关闭证据。长历史签收按 31 天窗口完整分页并校验汇总/明细总量，离开当前 R13 的候选由迁移 `013` 按 1/3/7 天退避进行精确轨迹核验。
 - `console` 现已与 Agent 统一使用同一套 MySQL，不再在运行时回退 SQLite。
 - Agent、控制台、自动化调度、Phase 7 同步链路当前统一使用独立的 Agent MySQL；N8N 已从运行时链路移除，不再参与数据库读写、Webhook 映射或任务调度。
-- `sync_daily_send_orders`、`sync_delivery_status`、`sync_daily_should_sign`、`sync_site_send_list`、`sync_arrive_list`、`sync_scan_codes`、`sync_arrival_stats` 已全部并入当前发布仓，由各自 `first_party_automation_plugins/<id>/payload/` 经 Broker 和 `plugin_core_adapters/` 执行；`agent/tms_runtime/` 负责平台协议，旧 whole-tool 不进入新链；`sync_daily_send_orders` 写入飞书后会同步维护控制台 `waybills` SQL 表，并将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按融辉运单号检索。
+- `sync_daily_send_orders`、`sync_delivery_status`、`sync_daily_should_sign`、`sync_site_send_list`、`sync_arrive_list`、`sync_scan_codes`、`sync_arrival_stats` 已全部并入当前发布仓，由各自 `service_v2_plugins/<id>_v2/payload/` 经 Broker 和 `plugin_core_adapters/` 执行；`agent/tms_runtime/` 负责平台协议，旧 whole-tool 不进入新链；`sync_daily_send_orders` 写入飞书后会同步维护控制台 `waybills` SQL 表，并将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按融辉运单号检索。
 - `sync_yunda_dispatch_forecast` 按插件实例绑定的韵达账号读取次日“网点派件量预测主单表”并写入绑定的飞书资源。17:00 是历史默认定时说明，不代表当前生产设置；运行时使用已安装实例的实际定时及精确账号绑定，融辉插件同样不回落 `ronghui/default`。
 - `sync_yunda_send_waybills` 复用该实例绑定韵达账号的登录态，拉取当天“寄件运单管理”列表，补查快件跟踪详情与小眼睛解密接口后写入绑定的寄件资源；历史按天累积，同一运单号重复同步时更新原记录，并同步维护控制台 `waybills` SQL 表，将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按韵达运单号检索。
 - `init_waybills_sql_from_feishu` 可从飞书中的融辉寄件数据表和韵达寄件运单表全量回填控制台 `waybills` SQL 表，用作后台运单查询模块的初始化数据来源；该工具只写 SQL，不修改飞书。

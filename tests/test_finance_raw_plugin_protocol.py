@@ -138,7 +138,7 @@ def test_raw_finance_parser_commits_real_published_rows(database, manifests, tmp
         if field_update:
             # The parent process retained its original parser and Host. Only
             # this independently executed payload maps the changed field.
-            from first_party_automation_plugins.sync_finance_bills.payload.finance_fields import RONGHUI_FIELD_BINDINGS
+            from shared.ronghui_finance_fields import RONGHUI_FIELD_BINDINGS
             assert RONGHUI_FIELD_BINDINGS["bill_code"] == "BILL_CODE"
     assert result["status"] == "SUCCESS", json.dumps({"result": result, "primitive_errors": primitive_errors}, ensure_ascii=False)
     assert result["data"]["written_transactions"] == len(ACCOUNTS)

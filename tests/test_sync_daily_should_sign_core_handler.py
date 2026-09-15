@@ -548,7 +548,7 @@ def test_adapter_does_not_mark_before_handler_rejects_late_write_validation() ->
 def test_production_port_injects_exact_bound_resources_inside_core(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from tools import daily_sign_sync_tool
+    from service_v2_plugins.sync_daily_should_sign_v2.payload.business import daily_sign_sync_tool
 
     captured: list[dict[str, object]] = []
     expected = _authoritative_result()

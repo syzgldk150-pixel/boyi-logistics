@@ -13,9 +13,9 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 from agent.workflow_resource_store import get_workflow_resource
-from tools.daily_sign_rules import TARGET_STATION, build_ledger_row, business_now, clean_text, parse_datetime
+from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_rules import TARGET_STATION, build_ledger_row, business_now, clean_text, parse_datetime
 from tools.daily_sign_store import save_arrival_stat_snapshot, snapshot_fingerprint, upsert_ledger_rows
-from tools.daily_sign_sync_tool import (
+from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool import (
     _extract_rows,
     _daily_sign_candidate_codes,
     _r13_by_code,

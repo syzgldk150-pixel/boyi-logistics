@@ -110,7 +110,7 @@ def test_template_is_outside_first_party_release_discovery() -> None:
     release_scope = (
         ROOT / "agent" / "agent" / "automation_plugins" / "release_scope.py"
     ).read_text(encoding="utf-8")
-    first_party = ROOT / "agent" / "first_party_automation_plugins"
+    first_party = ROOT / "agent" / "legacy" / "first_party_automation_plugins"
 
     assert relative == "agent/examples/automation_plugin"
     assert not TEMPLATE_ROOT.is_relative_to(first_party)

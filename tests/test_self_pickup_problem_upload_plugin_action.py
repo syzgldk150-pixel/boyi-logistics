@@ -12,9 +12,9 @@ from agent.tms_runtime.scripts import self_pickup_problem_upload as legacy_actio
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_ROOT = ROOT / "agent" / "first_party_automation_plugins" / "self_pickup_problem_upload"
+PLUGIN_ROOT = ROOT / "agent" / "service_v2_plugins" / "self_pickup_problem_upload_v2"
 ACTION_SOURCE = PLUGIN_ROOT / "payload" / "action.py"
-RESULT_SOURCE = ROOT / "agent" / "first_party_automation_plugins" / "_runtime" / "result.py"
+RESULT_SOURCE = ROOT / "agent" / "service_v2_plugins" / "_shared" / "result.py"
 _FORBIDDEN_LOCATION_KEYS = {
     "account_id",
     "account_ids",

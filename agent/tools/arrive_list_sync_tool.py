@@ -20,7 +20,7 @@ from tools.phase7_mysql_store import (
     replace_waybill_records,
 )
 from tools.daily_sign_store import save_forecast_snapshot
-from tools.daily_sign_rules import business_now
+from tools.daily_sign_values import business_now
 from tools.phase7_sync_common import (
     TMSAuthSyncError,
     bind_explicit_account_id,

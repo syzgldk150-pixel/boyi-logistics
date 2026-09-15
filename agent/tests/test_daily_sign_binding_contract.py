@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from tools import daily_sign_pipeline, daily_sign_sync_tool
+from service_v2_plugins.sync_daily_should_sign_v2.payload.business import daily_sign_pipeline, daily_sign_sync_tool
 
 
 def _empty_state() -> dict:
@@ -28,7 +28,7 @@ def _empty_state() -> dict:
 
 def test_daily_sign_request_requires_explicit_r13_account_binding() -> None:
     with patch(
-        "tools.daily_sign_sync_tool.get_workflow_resource"
+        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.get_workflow_resource"
     ) as resource_mock, pytest.raises(ValueError, match="r13_account_id"):
         daily_sign_sync_tool.build_daily_sign_request_body(
             {"request_body": {"days": 1}}
@@ -52,7 +52,7 @@ def test_daily_sign_request_uses_exact_selected_account_credentials() -> None:
 
     manager = FakeAccountManager()
     with patch(
-        "tools.daily_sign_sync_tool.get_account_manager", return_value=manager
+        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.get_account_manager", return_value=manager
     ):
         request = daily_sign_sync_tool.build_daily_sign_request_body(
             {"r13_account_id": "r13-project-selected", "request_body": {"days": 1}}
@@ -76,7 +76,7 @@ def test_daily_sign_request_accepts_any_selected_r13_account_id() -> None:
     }
     manager.resolve_role_account_params.side_effect = lambda params, **_kwargs: params
     with patch(
-        "tools.daily_sign_sync_tool.get_account_manager", return_value=manager
+        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.get_account_manager", return_value=manager
     ):
         request = daily_sign_sync_tool.build_daily_sign_request_body(
             {"r13_account_id": "r13-user-selected", "days": 1}

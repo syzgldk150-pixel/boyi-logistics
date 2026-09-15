@@ -98,7 +98,7 @@ Scheduler contribution 在 `default_enabled=false` 时可以省略 `schedule`，
 
 `agent/service_v2_plugins/self_pickup_problem_upload_v2/` 是独立的
 Service v2 离线候选包。它的唯一业务算法源仍是 v1
-`agent/first_party_automation_plugins/self_pickup_problem_upload/payload/action.py`；
+`agent/service_v2_plugins/self_pickup_problem_upload_v2/payload/action.py`；
 专用 `agent/service_v2_plugins/_shared/build_zip.py` 在确定性 ZIP 中逐字节嵌入
 该 action 和 first-party result helper（分别为
 `payload/action.py`、`payload/boyi_plugin_result.py`），并注入受管的
@@ -146,7 +146,7 @@ Console/Feishu 入口所有权切换（尤其 Feishu 多轮选择）、真实 Sh
 
 `agent/service_v2_plugins/split_pending_problem_upload_v2/` 是默认关闭的独立
 Service v2 离线候选包。确定性构建器逐字节嵌入 v1
-`first_party_automation_plugins/split_pending_problem_upload/payload/action.py` 与共享
+`service_v2_plugins/split_pending_problem_upload_v2/payload/action.py` 与共享
 result helper；插件 payload 不导入 `agent`、`tools` 或 legacy whole-tool，也不修改
 `sys.path`。包提供同一 service 的 `preview/read` 和 `execute/external_write`；Console
 与 exact 飞书命令“分批”都声明 execute + selection preview，且无
@@ -187,7 +187,7 @@ input/output cap 下实测，禁止截断。五个真实 Connector、账号/资�
 
 `agent/service_v2_plugins/sync_scan_codes_v2/` 是默认关闭的独立 Service v2
 离线候选包。确定性构建器逐字节嵌入 v1
-`first_party_automation_plugins/sync_scan_codes/payload/action.py` 与共享 result helper；
+`service_v2_plugins/sync_scan_codes_v2/payload/action.py` 与共享 result helper；
 payload 不导入 `agent`、`tools` 或 legacy whole-tool，也不修改 `sys.path`。包提供
 `plugin.sync_scan_codes_v2.scan_codes@1` 的 `preview/read` 与
 `execute/external_write`。Console 和精确飞书命令“扫描”都指向 execute 且默认关闭，

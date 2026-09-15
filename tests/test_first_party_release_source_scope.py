@@ -9,6 +9,7 @@ from agent.automation_plugins.first_party import release_first_party_plugin_ids
 from scripts.first_party_release_scope import (
     ReleaseScopeError,
     deferred_source_files,
+    current_plugin_ids,
     release_plugin_ids,
     release_source_files,
     test_files as selected_test_files,
@@ -17,7 +18,7 @@ from scripts.first_party_release_scope import (
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-FIRST_PARTY_ROOT = REPOSITORY_ROOT / "agent" / "first_party_automation_plugins"
+FIRST_PARTY_ROOT = REPOSITORY_ROOT / "agent" / "service_v2_plugins"
 
 
 def test_ast_scope_matches_runtime_allowlist_without_loading_deferred_payloads() -> None:
@@ -28,17 +29,9 @@ def test_ast_scope_matches_runtime_allowlist_without_loading_deferred_payloads()
     assert selected == release_first_party_plugin_ids()
     assert release_paths
     assert release_paths.isdisjoint(deferred_paths)
-    for plugin_id in selected:
-        assert FIRST_PARTY_ROOT / plugin_id / "payload" / "action.py" in release_paths
-    assert all(
-        not path.is_relative_to(FIRST_PARTY_ROOT / plugin_id)
-        for path in release_paths
-        for plugin_id in release_first_party_plugin_ids() ^ {
-            path.name
-            for path in FIRST_PARTY_ROOT.iterdir()
-            if path.is_dir() and path.name != "_runtime"
-        }
-    )
+    for plugin_id in current_plugin_ids(REPOSITORY_ROOT):
+        assert FIRST_PARTY_ROOT / plugin_id / "payload" / "plugin.py" in release_paths
+    assert all(not path.is_relative_to(REPOSITORY_ROOT / "agent/legacy") for path in release_paths)
 
 
 def test_blocked_source_tests_are_audited_outside_the_release_gate() -> None:
@@ -84,24 +77,8 @@ def _copy_staged_scope(destination: Path) -> None:
     )
     staged_scope.parent.mkdir(parents=True)
     shutil.copyfile(release_scope, staged_scope)
-    runtime = destination / "agent" / "first_party_automation_plugins" / "_runtime"
-    runtime.mkdir(parents=True)
-    for name in ("main.py", "result.py"):
-        shutil.copyfile(FIRST_PARTY_ROOT / "_runtime" / name, runtime / name)
-    for plugin_id in release_first_party_plugin_ids():
-        action = (
-            destination
-            / "agent"
-            / "first_party_automation_plugins"
-            / plugin_id
-            / "payload"
-            / "action.py"
-        )
-        action.parent.mkdir(parents=True)
-        shutil.copyfile(
-            FIRST_PARTY_ROOT / plugin_id / "payload" / "action.py",
-            action,
-        )
+    shutil.copytree(FIRST_PARTY_ROOT, destination / "agent/service_v2_plugins",
+                    ignore=shutil.ignore_patterns("__pycache__"))
 
 
 def test_staged_scope_rejects_even_one_deferred_package_directory(tmp_path: Path) -> None:
@@ -113,7 +90,7 @@ def test_staged_scope_rejects_even_one_deferred_package_directory(tmp_path: Path
     deferred_action = (
         tmp_path
         / "agent"
-        / "first_party_automation_plugins"
+        / "service_v2_plugins"
         / deferred_id
         / "payload"
         / "action.py"

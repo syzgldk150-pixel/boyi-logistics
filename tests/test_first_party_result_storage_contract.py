@@ -8,7 +8,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIRST_PARTY_ROOT = ROOT / "agent" / "first_party_automation_plugins"
+FIRST_PARTY_ROOT = ROOT / "agent" / "service_v2_plugins"
 
 
 def test_first_party_source_system_literals_fit_evidence_storage() -> None:
@@ -45,7 +45,7 @@ def test_first_party_source_system_literals_fit_evidence_storage() -> None:
 
 
 def test_first_party_result_rejects_source_system_beyond_storage_limit() -> None:
-    namespace = runpy.run_path(str(FIRST_PARTY_ROOT / "_runtime" / "result.py"))
+    namespace = runpy.run_path(str(FIRST_PARTY_ROOT / "_shared" / "result.py"))
 
     with pytest.raises(ValueError, match="source_system is invalid"):
         namespace["success_result"](

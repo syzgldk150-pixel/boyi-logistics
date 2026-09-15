@@ -11,17 +11,15 @@ from typing import Any, Mapping
 import uuid
 
 
-FIRST_PARTY_ROOT = (
-    Path(__file__).resolve().parents[1]
-    / "agent"
-    / "first_party_automation_plugins"
-)
+from agent.automation_plugins.first_party_sources import CURRENT_ROOT, legacy_action_source
+
+FIRST_PARTY_ROOT = CURRENT_ROOT
 
 
 def load_first_party_action(plugin_id: str):
     """Load one isolated action payload with its package-local result module."""
 
-    result_source = FIRST_PARTY_ROOT / "_runtime" / "result.py"
+    result_source = CURRENT_ROOT / "_shared" / "result.py"
     result_spec = importlib.util.spec_from_file_location(
         "boyi_plugin_result",
         result_source,
@@ -31,7 +29,7 @@ def load_first_party_action(plugin_id: str):
     previous = sys.modules.get("boyi_plugin_result")
     sys.modules["boyi_plugin_result"] = result_module
     result_spec.loader.exec_module(result_module)
-    source = FIRST_PARTY_ROOT / plugin_id / "payload" / "action.py"
+    source = legacy_action_source(plugin_id)
     spec = importlib.util.spec_from_file_location(
         f"{plugin_id}_plugin_action",
         source,
@@ -40,10 +38,13 @@ def load_first_party_action(plugin_id: str):
     module = importlib.util.module_from_spec(spec)
     package_previous = {}
     local_sources = [(path.stem, path) for path in source.parent.glob("*.py")]
+    parser_name = {"sync_finance_bills": "finance_fields", "sync_customer_service_problems": "customer_problem_fields"}.get(plugin_id)
+    if parser_name:
+        local_sources.append((parser_name, CURRENT_ROOT.parent.parent / "shared" / ("ronghui_" + parser_name + ".py")))
     if plugin_id == "sync_customer_service_problems":
         local_sources.append(("customer_queue_policy", FIRST_PARTY_ROOT.parent.parent / "shared" / "customer_problem_policy.py"))
     for local_name, local_source in local_sources:
-        if local_source.name == "action.py":
+        if local_source.name in {"action.py", "plugin.py"}:
             continue
         package_previous[local_name] = sys.modules.get(local_name)
         local_spec = importlib.util.spec_from_file_location(local_name, local_source)

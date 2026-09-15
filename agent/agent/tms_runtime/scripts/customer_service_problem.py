@@ -312,7 +312,7 @@ def _normalize_direction(value: Any, *, platform: str) -> str:
 def normalize_problem_rows(platform, rows, *, account_id, account_label, source_direction):
     # Compatibility readers reuse the source implementation. Signed collectors
     # receive raw business fields and run their installed generation's parser.
-    from first_party_automation_plugins.sync_customer_service_problems.payload.customer_problem_fields import (
+    from shared.ronghui_customer_problem_fields import (
         CustomerServiceProblemError as ParseError,
         normalize_problem_rows as normalize,
     )
