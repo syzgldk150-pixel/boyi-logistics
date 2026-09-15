@@ -13,12 +13,10 @@ import uuid
 from datetime import date, datetime
 from typing import Any, Iterable, Mapping
 
-from tools.daily_sign_rules import (
-    MANUAL_POSTPONE_TYPES,
+from tools.daily_sign_values import (
     TARGET_STATION,
     business_now,
     clean_text,
-    is_before_problem_cutoff,
     parse_datetime,
     to_int,
 )
@@ -616,15 +614,18 @@ def _normalize_problem_events(events: Iterable[dict[str, Any]]) -> list[dict[str
         registered_at = parse_datetime(row.get("registered_at"))
         if not tracking_number or not problem_type or registered_at is None:
             raise ValueError("问题件事件缺少运单号、准确类型或登记时间")
+        for field in ("upload_complete", "before_cutoff", "postpones_sign"):
+            if type(row.get(field)) is not bool:
+                raise ValueError(f"问题件事件缺少插件明确的布尔判断: {field}")
         output.append(
             {
                 **row,
                 "tracking_number": tracking_number,
                 "problem_type": problem_type,
                 "registered_at": registered_at,
-                "upload_complete": bool(row.get("upload_complete")),
-                "before_cutoff": is_before_problem_cutoff(registered_at),
-                "postpones_sign": problem_type in MANUAL_POSTPONE_TYPES,
+                "upload_complete": row["upload_complete"],
+                "before_cutoff": row["before_cutoff"],
+                "postpones_sign": row["postpones_sign"],
             }
         )
     return output

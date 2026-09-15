@@ -17,8 +17,8 @@ def test_local_test_map_references_real_tests_and_has_each_required_business() -
 
 
 def test_core_or_unrelated_plugin_changes_cannot_be_classified_local() -> None:
-    selected = "sync_customer_service_problems"
-    local = "agent/first_party_automation_plugins/" + selected + "/payload/customer_problem_fields.py"
+    selected = "sync_customer_service_problems_v2"
+    local = "agent/service_v2_plugins/" + selected + "/payload/action.py"
     assert maintenance_scope(selected, [local])["scope"] == "PLUGIN_ONLY_CANDIDATE"
     for path in (
         "shared/data_sources.py", "agent/migrations/039_module_data_sources.sql",
@@ -27,7 +27,7 @@ def test_core_or_unrelated_plugin_changes_cannot_be_classified_local() -> None:
         result = maintenance_scope(selected, [local, path])
         assert result["scope"] == "CORE_UPDATE_REQUIRED"
         assert result["core_paths"] == [path]
-    other = 'agent/first_party_automation_plugins/sync_scan_codes/payload/action.py'
+    other = 'agent/service_v2_plugins/sync_scan_codes_v2/payload/action.py'
     result = maintenance_scope(selected, [local, other])
     assert result['scope'] == 'MULTI_PLUGIN_REVIEW_REQUIRED'
     assert result['other_plugin_paths'] == [other]

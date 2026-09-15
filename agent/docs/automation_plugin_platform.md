@@ -6,13 +6,15 @@ V3.2 补充：模块归属、最小设置、AI 可选、来源保留和维护入
 type: 架构与运行手册
 tags: [自动化插件, ACTION_V1, Ed25519, generation, Windows Worker, Cordis]
 related:
-  - ../first_party_automation_plugins/README.md
-  - ../first_party_automation_plugins/MIGRATION_MATRIX.md
+  - ../service_v2_plugins/README.md
+  - ../legacy/first_party_automation_plugins/MIGRATION_MATRIX.md
   - ../../docs/plugin-platform-v2.md
   - code_navigation_index.md
-status: active
+status: historical
 updated: 2026-09-01
 ---
+
+> 本文是 ACTION_V1 历史合同，不描述当前线上状态。当前实现和维护见 [V2 维护入口](../service_v2_plugins/README.md) 与 [现行平台合同](../../docs/plugin-platform-v2.md)。
 
 # 自动化插件平台 v1（ACTION_V1）
 

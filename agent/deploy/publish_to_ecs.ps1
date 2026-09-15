@@ -47,7 +47,7 @@ $AgentFiles = @(
     "dev_local_tunnel.sh"
 )
 $AgentDirs = @(
-    "agent", "deploy", "docs", "feishu", "first_party_automation_plugins", "knowledge", "prompts", "tms_docs",
+    "agent", "deploy", "docs", "feishu", "service_v2_plugins", "knowledge", "prompts", "tms_docs",
     "tools", "price_scripts", "plugin_core_adapters", "migrations", "scripts"
 )
 $ConsoleFiles = @(
@@ -278,23 +278,11 @@ function Test-ReleaseScopedFirstPartyPath(
     [string[]]$ReleasePluginIds
 ) {
     $normalized = $AgentRelativePath.Replace("\", "/").TrimStart("/")
-    $prefix = "first_party_automation_plugins/"
-    if (-not $normalized.StartsWith($prefix, [StringComparison]::Ordinal)) {
-        return $true
-    }
-    $tail = $normalized.Substring($prefix.Length)
-    if ($tail -in @("README.md", "MIGRATION_MATRIX.md", "digests.json")) {
-        return $true
-    }
-    if ($tail -in @("_runtime/main.py", "_runtime/result.py")) {
-        return $true
-    }
-    $separator = $tail.IndexOf("/", [StringComparison]::Ordinal)
-    if ($separator -le 0) {
+    if ($normalized.StartsWith("first_party_automation_plugins/", [StringComparison]::Ordinal) -or
+        $normalized.StartsWith("legacy/", [StringComparison]::Ordinal)) {
         return $false
     }
-    $pluginId = $tail.Substring(0, $separator)
-    return $ReleasePluginIds -ccontains $pluginId
+    return $true
 }
 
 function Test-BlockedPublishPath([string]$RepoRelativePath) {

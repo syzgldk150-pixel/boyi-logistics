@@ -43,7 +43,7 @@ from agent.tms_runtime.scripts.yunda_finance_adapter import (
 
 
 RONGHUI_MENU_TEXT = "结算明细查询"
-from first_party_automation_plugins.sync_finance_bills.payload.finance_fields import RONGHUI_FIELD_BINDINGS
+from shared.ronghui_finance_fields import RONGHUI_FIELD_BINDINGS
 
 def _ronghui_schema_evidence(html: str, *, expected_markers: set[str]) -> str:
     """Return field-name-only evidence; never include page values or auth data."""
@@ -302,7 +302,7 @@ def _replay_ronghui_request(
 
 
 def _normalize_signed_summary(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
-    from first_party_automation_plugins.sync_finance_bills.payload.finance_fields import (
+    from shared.ronghui_finance_fields import (
         FinanceFieldError, _normalize_signed_summary as normalize,
     )
     try:
@@ -312,7 +312,7 @@ def _normalize_signed_summary(*args: Any, **kwargs: Any) -> list[dict[str, Any]]
 
 
 def _discover_ronghui_summary_fields(*args: Any, **kwargs: Any) -> tuple[str, str]:
-    from first_party_automation_plugins.sync_finance_bills.payload.finance_fields import (
+    from shared.ronghui_finance_fields import (
         FinanceFieldError, _discover_ronghui_summary_fields as discover,
     )
     from shared.finance.money import quantize_storage

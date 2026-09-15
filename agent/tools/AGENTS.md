@@ -1,3 +1,7 @@
+## 每日应签源码归属
+
+每日应签业务规则、采集和渲染已移至仓库根 `agent/service_v2_plugins/sync_daily_should_sign_v2/payload/business/`；`agent/tools/daily_sign_store.py` 仅持久化和回读核验，`agent/tools/daily_sign_values.py` 仅数据规范化。旧 V1 离线材料在 `agent/legacy/`，不进入发布清单。
+
 # tools
 
 ## 目录职责

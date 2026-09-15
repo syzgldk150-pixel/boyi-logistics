@@ -100,13 +100,13 @@ def test_arrival_stats_v2_zip_is_deterministic_and_embeds_authoritative_v1_bytes
         assert archive.read("payload/action.py") == (
             ROOT
             / "agent"
-            / "first_party_automation_plugins"
-            / "sync_arrival_stats"
+            / "service_v2_plugins"
+            / "sync_arrival_stats_v2"
             / "payload"
             / "action.py"
         ).read_bytes()
         assert archive.read("payload/boyi_plugin_result.py") == (
-            ROOT / "agent" / "first_party_automation_plugins" / "_runtime" / "result.py"
+            ROOT / "agent" / "service_v2_plugins" / "_shared" / "result.py"
         ).read_bytes()
         for member in sorted(expected_members):
             content = archive.read(member)

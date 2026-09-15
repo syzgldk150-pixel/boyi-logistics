@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ACTION_PATH = (
     ROOT
     / "agent"
-    / "first_party_automation_plugins"
+    / "legacy" / "first_party_automation_plugins"
     / "sync_daily_should_sign"
     / "payload"
     / "action.py"
@@ -22,8 +22,8 @@ ACTION_PATH = (
 RESULT_PATH = (
     ROOT
     / "agent"
-    / "first_party_automation_plugins"
-    / "_runtime"
+    / "service_v2_plugins"
+    / "_shared"
     / "result.py"
 )
 

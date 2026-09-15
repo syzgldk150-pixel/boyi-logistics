@@ -103,55 +103,41 @@ def release_plugin_ids(repository_root: Path) -> frozenset[str]:
 
 
 def _first_party_root(repository_root: Path) -> Path:
-    return repository_root / "agent" / "first_party_automation_plugins"
+    return repository_root / "agent" / "service_v2_plugins"
 
 
 def known_plugin_ids(repository_root: Path) -> frozenset[str]:
-    root = _first_party_root(repository_root)
-    values: set[str] = set()
-    for path in root.iterdir():
-        if not path.is_dir() or path.name == "_runtime":
-            continue
-        if not _PLUGIN_ID_RE.fullmatch(path.name):
-            raise ReleaseScopeError(f"invalid first-party package directory: {path.name}")
-        values.add(path.name)
-    selected = release_plugin_ids(repository_root)
-    unknown = selected - values
-    if unknown:
-        raise ReleaseScopeError(f"release allowlist references missing source: {sorted(unknown)}")
-    return frozenset(values)
+    # Historical V1 identities are retained only for migration/test selection.
+    return release_plugin_ids(repository_root)
 
 
 def _python_files(root: Path) -> list[Path]:
     if not root.is_dir():
         return []
-    return sorted(
-        path
-        for path in root.rglob("*.py")
-        if path.is_file() and "__pycache__" not in path.parts
-    )
+    return sorted(path for path in root.rglob("*.py")
+                  if path.is_file() and "__pycache__" not in path.parts)
+
+
+def current_plugin_ids(repository_root: Path) -> frozenset[str]:
+    selected = release_plugin_ids(repository_root) - {"clock_in_dual"}
+    return frozenset(plugin_id + "_v2" for plugin_id in selected) | {
+        "clockin_daxiang_v2", "clockin_daxiang_s_v2",
+    }
 
 
 def release_source_files(repository_root: Path) -> tuple[Path, ...]:
     root = _first_party_root(repository_root)
-    selected = release_plugin_ids(repository_root)
-    known_plugin_ids(repository_root)
-    paths = _python_files(root / "_runtime")
-    for plugin_id in sorted(selected):
-        action = root / plugin_id / "payload" / "action.py"
-        if not action.is_file():
-            raise ReleaseScopeError(f"release payload is incomplete: {action}")
+    paths = _python_files(root / "_shared")
+    for plugin_id in sorted(current_plugin_ids(repository_root)):
+        for required in ("manifest.json", "payload/plugin.py", "settings/index.html"):
+            if not (root / plugin_id / required).is_file():
+                raise ReleaseScopeError(f"release payload is incomplete: {plugin_id}/{required}")
         paths.extend(_python_files(root / plugin_id))
     return tuple(sorted(set(paths)))
 
 
 def deferred_source_files(repository_root: Path) -> tuple[Path, ...]:
-    root = _first_party_root(repository_root)
-    deferred = known_plugin_ids(repository_root) - release_plugin_ids(repository_root)
-    paths: list[Path] = []
-    for plugin_id in sorted(deferred):
-        paths.extend(_python_files(root / plugin_id))
-    return tuple(sorted(set(paths)))
+    return tuple(_python_files(repository_root / "agent" / "legacy"))
 
 
 def _is_windows_deferred(path: Path, repository_root: Path) -> bool:
@@ -172,6 +158,8 @@ def _first_party_test_is_deferred(
     if path.name in _RELEASE_CONTROL_TESTS:
         return False
     text = path.read_text(encoding="utf-8")
+    if "service_v2_plugins" in text:
+        return False
     if not any(marker in text for marker in _FIRST_PARTY_TEST_MARKERS):
         return False
     all_ids = known_plugin_ids(repository_root)
@@ -249,31 +237,14 @@ def quality_files(repository_root: Path, *, scope: str) -> tuple[Path, ...]:
 def verify_staged_tree(repository_root: Path) -> None:
     """Fail if a staged server payload contains any non-allowlisted package."""
 
+    for retired in ("first_party_automation_plugins", "legacy"):
+        if (repository_root / "agent" / retired).exists():
+            raise ReleaseScopeError(f"staged release contains offline legacy sources: {retired}")
     root = _first_party_root(repository_root)
-    selected = release_plugin_ids(repository_root)
-    allowed_entries = selected | {
-        "_runtime",
-        "README.md",
-        "MIGRATION_MATRIX.md",
-        "digests.json",
-    }
-    unexpected_entries = sorted(
-        path.name
-        for path in root.iterdir()
-        if path.is_symlink() or path.name not in allowed_entries
-    )
-    if unexpected_entries:
-        raise ReleaseScopeError(
-            f"staged first-party source contains unexpected entries: {unexpected_entries}"
-        )
-    actual = known_plugin_ids(repository_root)
-    unexpected = actual - selected
-    missing = selected - actual
-    if missing or unexpected:
-        raise ReleaseScopeError(
-            "staged first-party package set differs from release allowlist: "
-            f"missing={sorted(missing)} unexpected={sorted(unexpected)}"
-        )
+    allowed = current_plugin_ids(repository_root) | {"_shared", "__init__.py", "README.md", "AGENTS.md", "CLAUDE.md"}
+    unexpected = sorted(p.name for p in root.iterdir() if p.is_symlink() or p.name not in allowed)
+    if unexpected:
+        raise ReleaseScopeError(f"staged current plugin source contains unexpected entries: {unexpected}")
     release_source_files(repository_root)
 
 

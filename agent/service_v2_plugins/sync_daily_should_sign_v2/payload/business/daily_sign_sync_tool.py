@@ -14,7 +14,7 @@ from typing import Any
 from agent import feishu_readback as _feishu_readback
 from agent.tms_runtime.account_manager import get_account_manager
 from agent.workflow_resource_store import get_workflow_resource
-from tools.daily_sign_rules import (
+from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_rules import (
     BUSINESS_TIMEZONE,
     MANUAL_POSTPONE_TYPES,
     build_ledger_row,
@@ -41,7 +41,7 @@ from tools.daily_sign_store import (
     verify_daily_sign_completed_run,
     verify_daily_sign_persistence,
 )
-from tools.daily_sign_readback import (
+from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_readback import (
     verify_bitable_schema,
     verify_bitable_snapshot,
     verify_sheet_snapshot,
@@ -1833,7 +1833,7 @@ def _sync_bitable(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[st
 
 
 def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
-    from tools.daily_sign_pipeline import (
+    from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline import (
         DailySignSyncError,
         _collect_problem_events,
         _collect_sign_events,

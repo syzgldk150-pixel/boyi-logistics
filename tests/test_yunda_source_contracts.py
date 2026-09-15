@@ -34,8 +34,8 @@ def test_dispatch_payload_and_low_level_adapter_share_source_reviewed_field_cont
     action_path = (
         ROOT
         / "agent"
-        / "first_party_automation_plugins"
-        / "sync_yunda_dispatch_forecast"
+        / "service_v2_plugins"
+        / "sync_yunda_dispatch_forecast_v2"
         / "payload"
         / "action.py"
     )

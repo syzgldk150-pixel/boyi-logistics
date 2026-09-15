@@ -1,3 +1,7 @@
+## 当前插件源码边界（2026-09-15）
+
+现行算法只在 `agent/service_v2_plugins/<plugin_id>_v2/payload/` 维护。每日应签规则与流程位于其 `payload/business/`，Host 只保存并核验插件明确提交的判断。旧签名传输及迁移摘要隔离在 `agent/legacy/`，不发布到 ECS；生产发布只接受 V2 退役索引和 COMPLETED 迁移记录。共享原页字段协议 `shared/ronghui_finance_fields.py`、`shared/ronghui_customer_problem_fields.py` 的变更仍属于核心协议更新。详见 `agent/service_v2_plugins/README.md`。
+
 # 最高优先级：Git 版本控制
 
 ## 当前身份与统一对话边界

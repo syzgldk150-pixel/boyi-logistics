@@ -96,7 +96,7 @@ def test_tms_failure_stays_a_source_failure_without_private_transport_text(sourc
 
 def test_source_timeout_projection_preserves_existing_read_retry(monkeypatch):
     from datetime import datetime
-    from tools import daily_sign_pipeline as pipeline
+    from service_v2_plugins.sync_daily_should_sign_v2.payload.business import daily_sign_pipeline as pipeline
 
     success = {"ok":True,"rows":[],"stats":{"total":0,"total_authoritative":True}}
     responses = iter([
@@ -120,7 +120,7 @@ def test_problem_windows_cover_full_interval_without_overlap_or_skipped_pages(mo
     from datetime import datetime, timedelta
     import json
     from agent.tms_runtime.scripts.customer_service_problem import build_ronghui_query_payload
-    from tools import daily_sign_pipeline as pipeline
+    from service_v2_plugins.sync_daily_should_sign_v2.payload.business import daily_sign_pipeline as pipeline
 
     calls = []
     def read(endpoint, values):
@@ -149,7 +149,7 @@ def test_problem_windows_cover_full_interval_without_overlap_or_skipped_pages(mo
 
 def test_failed_problem_window_never_returns_partial_history(monkeypatch):
     from datetime import datetime
-    from tools import daily_sign_pipeline as pipeline
+    from service_v2_plugins.sync_daily_should_sign_v2.payload.business import daily_sign_pipeline as pipeline
     calls = []
     def read(endpoint, values):
         calls.append(values["params"]["filters"])

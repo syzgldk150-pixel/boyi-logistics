@@ -96,70 +96,22 @@ def build_plugin_zip(source_directory: Path | str, output_path: Path | str) -> P
         shared_files = {"payload/main.py": "connector_service_main.py",
                         "payload/connector_adapter.py": "connector_adapter.py",
                         "payload/boyi_plugin_sdk.py": "boyi_plugin_sdk.py"}
-        first_party = source.parents[2] / "agent" / "first_party_automation_plugins"
-        entries["payload/action.py"] = (first_party / _CONNECTOR_PLUGINS[manifest["plugin_id"]] / "payload/action.py").read_bytes()
-        entries["payload/boyi_plugin_result.py"] = (first_party / "_runtime/result.py").read_bytes()
+        entries["payload/action.py"] = (source / "payload/action.py").read_bytes()
+        entries["payload/boyi_plugin_result.py"] = (shared / "result.py").read_bytes()
         if manifest["plugin_id"] == "sync_finance_bills_v2":
-            entries["payload/finance_fields.py"] = (first_party / "sync_finance_bills/payload/finance_fields.py").read_bytes()
+            entries["payload/finance_fields.py"] = (source.parents[2] / "shared/ronghui_finance_fields.py").read_bytes()
         if manifest["plugin_id"] == "sync_customer_service_problems_v2":
-            entries["payload/customer_problem_fields.py"] = (first_party / "sync_customer_service_problems/payload/customer_problem_fields.py").read_bytes()
+            entries["payload/customer_problem_fields.py"] = (source.parents[2] / "shared/ronghui_customer_problem_fields.py").read_bytes()
             entries["payload/customer_queue_policy.py"] = (source.parents[2] / "shared/customer_problem_policy.py").read_bytes()
-    elif manifest.get("plugin_id") == _ARRIVAL_PLUGIN_ID:
-        shared_files = _ARRIVAL_SHARED_FILES
-        repository_root = source.parents[2]
-        first_party = repository_root / "agent" / "first_party_automation_plugins"
-        entries.update(
-            {
-                "payload/action.py": (
-                    first_party / "sync_arrival_stats" / "payload" / "action.py"
-                ).read_bytes(),
-                "payload/boyi_plugin_result.py": (
-                    first_party / "_runtime" / "result.py"
-                ).read_bytes(),
-            }
-        )
-    elif manifest.get("plugin_id") == _SELF_PICKUP_PLUGIN_ID:
-        shared_files = _SELF_PICKUP_SHARED_FILES
-        repository_root = source.parents[2]
-        first_party = repository_root / "agent" / "first_party_automation_plugins"
-        entries.update(
-            {
-                "payload/action.py": (
-                    first_party / "self_pickup_problem_upload" / "payload" / "action.py"
-                ).read_bytes(),
-                "payload/boyi_plugin_result.py": (
-                    first_party / "_runtime" / "result.py"
-                ).read_bytes(),
-            }
-        )
-    elif manifest.get("plugin_id") == _SPLIT_PENDING_PLUGIN_ID:
-        shared_files = _SPLIT_PENDING_SHARED_FILES
-        repository_root = source.parents[2]
-        first_party = repository_root / "agent" / "first_party_automation_plugins"
-        entries.update(
-            {
-                "payload/action.py": (
-                    first_party / "split_pending_problem_upload" / "payload" / "action.py"
-                ).read_bytes(),
-                "payload/boyi_plugin_result.py": (
-                    first_party / "_runtime" / "result.py"
-                ).read_bytes(),
-            }
-        )
-    elif manifest.get("plugin_id") == _SCAN_PLUGIN_ID:
-        shared_files = _SCAN_SHARED_FILES
-        repository_root = source.parents[2]
-        first_party = repository_root / "agent" / "first_party_automation_plugins"
-        entries.update(
-            {
-                "payload/action.py": (
-                    first_party / "sync_scan_codes" / "payload" / "action.py"
-                ).read_bytes(),
-                "payload/boyi_plugin_result.py": (
-                    first_party / "_runtime" / "result.py"
-                ).read_bytes(),
-            }
-        )
+    elif manifest.get("plugin_id") in {_ARRIVAL_PLUGIN_ID, _SELF_PICKUP_PLUGIN_ID, _SPLIT_PENDING_PLUGIN_ID, _SCAN_PLUGIN_ID}:
+        shared_files = {
+            _ARRIVAL_PLUGIN_ID: _ARRIVAL_SHARED_FILES,
+            _SELF_PICKUP_PLUGIN_ID: _SELF_PICKUP_SHARED_FILES,
+            _SPLIT_PENDING_PLUGIN_ID: _SPLIT_PENDING_SHARED_FILES,
+            _SCAN_PLUGIN_ID: _SCAN_SHARED_FILES,
+        }[manifest["plugin_id"]]
+        entries["payload/action.py"] = (source / "payload/action.py").read_bytes()
+        entries["payload/boyi_plugin_result.py"] = (shared / "result.py").read_bytes()
     entries.update(
         {package_path: (shared / source_path).read_bytes() for package_path, source_path in shared_files.items()}
     )

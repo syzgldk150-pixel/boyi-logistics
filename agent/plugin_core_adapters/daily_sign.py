@@ -114,7 +114,7 @@ def run_daily_sign_with_bound_resources(
         kind="feishu_sheet",
         fields=("spreadsheet_token", "range"),
     )
-    from tools.daily_sign_sync_tool import run_daily_sign_sync
+    from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool import run_daily_sign_sync
 
     result = run_daily_sign_sync(
         {

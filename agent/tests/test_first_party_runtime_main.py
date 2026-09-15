@@ -23,7 +23,7 @@ def _load_runtime_main():
     path = (
         __file__
         .replace("tests/test_first_party_runtime_main.py", "")
-        + "first_party_automation_plugins/_runtime/main.py"
+        + "legacy/first_party_automation_plugins/_runtime/main.py"
     )
     spec = importlib.util.spec_from_file_location("runtime_main_for_test", path)
     assert spec is not None and spec.loader is not None

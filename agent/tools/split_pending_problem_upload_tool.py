@@ -15,7 +15,7 @@ if hasattr(sys.stdout, "reconfigure"):
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from tools.feishu_cli_tool import feishu_operation
-from tools.daily_sign_rules import is_before_problem_cutoff
+from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_rules import is_before_problem_cutoff
 from tools.daily_sign_store import upsert_problem_events
 from tools.phase7_mysql_store import (
     list_split_pending_problem_items,

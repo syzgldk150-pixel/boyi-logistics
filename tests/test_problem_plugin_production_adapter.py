@@ -19,7 +19,7 @@ from plugin_core_adapters.problem_actions import (
 
 ROOT = Path(__file__).resolve().parents[1]
 RESULT_SOURCE = (
-    ROOT / "agent" / "first_party_automation_plugins" / "_runtime" / "result.py"
+    ROOT / "agent" / "service_v2_plugins" / "_shared" / "result.py"
 )
 _PRIMARY = "primary-account"
 _DAXIANG = "daxiang-account"
@@ -48,8 +48,8 @@ def _load_action(plugin_id: str):
     action_path = (
         ROOT
         / "agent"
-        / "first_party_automation_plugins"
-        / plugin_id
+        / "service_v2_plugins"
+        / (plugin_id + "_v2")
         / "payload"
         / "action.py"
     )

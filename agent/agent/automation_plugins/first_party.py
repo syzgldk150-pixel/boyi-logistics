@@ -60,10 +60,14 @@ from shared.automation_project_manifest import FIRST_PARTY_MIGRATION_INSTANCE_TE
 from shared.scheduled_task_contracts import APPROVED_SCHEDULED_TASK_PROFILES
 
 
-FIRST_PARTY_ROOT = Path(__file__).resolve().parents[2] / "first_party_automation_plugins"
+from agent.automation_plugins.first_party_sources import (
+    CURRENT_ROOT, LEGACY_ROOT, legacy_action_source,
+)
+
+FIRST_PARTY_ROOT = LEGACY_ROOT
 DIGEST_LOCK_PATH = FIRST_PARTY_ROOT / "digests.json"
 FIRST_PARTY_RUNTIME_PATH = FIRST_PARTY_ROOT / "_runtime" / "main.py"
-FIRST_PARTY_RESULT_PATH = FIRST_PARTY_ROOT / "_runtime" / "result.py"
+FIRST_PARTY_RESULT_PATH = CURRENT_ROOT / "_shared" / "result.py"
 # Payload and Broker-effect changes advance the signed executable contract.
 FIRST_PARTY_PACKAGE_VERSION = "1.0.20"
 _FIRST_PARTY_PACKAGE_VERSION_OVERRIDES: Mapping[str, str] = {
@@ -1394,10 +1398,10 @@ def first_party_payload_files(manifest: AutomationPluginManifest) -> dict[str, b
 
     if manifest.plugin_id not in expected_first_party_plugin_ids():
         raise PluginPackageError("unknown first-party action package")
-    action_path = FIRST_PARTY_ROOT / manifest.plugin_id / "payload" / "action.py"
+    action_path = legacy_action_source(manifest.plugin_id)
     required = (FIRST_PARTY_RUNTIME_PATH, FIRST_PARTY_RESULT_PATH, action_path)
     if any(not path.is_file() for path in required):
-        missing = [str(path.relative_to(FIRST_PARTY_ROOT)) for path in required if not path.is_file()]
+        missing = [path.name for path in required if not path.is_file()]
         raise PluginPackageError(
             "first-party action source is incomplete: " + ", ".join(missing)
         )
@@ -1412,12 +1416,12 @@ def first_party_payload_files(manifest: AutomationPluginManifest) -> dict[str, b
         "sync_finance_bills": "finance_fields.py",
     }.get(manifest.plugin_id)
     if parser_file is not None:
-        fields_path = action_path.parent / parser_file
+        fields_path = CURRENT_ROOT.parent.parent / "shared" / ("ronghui_" + parser_file)
         if not fields_path.is_file():
             raise PluginPackageError("source field parser is missing")
         files[f"payload/{parser_file}"] = fields_path.read_bytes()
     if manifest.plugin_id == "sync_customer_service_problems":
-        policy_path = FIRST_PARTY_ROOT.parent.parent / "shared" / "customer_problem_policy.py"
+        policy_path = CURRENT_ROOT.parent.parent / "shared" / "customer_problem_policy.py"
         if not policy_path.is_file():
             raise PluginPackageError("customer queue policy source is missing")
         files["payload/customer_queue_policy.py"] = policy_path.read_bytes()

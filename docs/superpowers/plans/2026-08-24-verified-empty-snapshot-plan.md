@@ -20,14 +20,14 @@ updated: 2026-08-30
 ## File map
 
 - `agent/plugin_core_adapters/arrival.py`: authoritative arrive/arrival-stat snapshot writes and fresh readback.
-- `agent/first_party_automation_plugins/sync_arrive_list/payload/action.py`: arrive-list result semantics for empty snapshots.
-- `agent/first_party_automation_plugins/*/payload/action.py`: existing empty snapshot result labels for other current snapshot automations.
+- `agent/service_v2_plugins/sync_arrive_list_v2/payload/action.py`: arrive-list result semantics for empty snapshots.
+- `agent/legacy/first_party_automation_plugins/*/payload/action.py`: existing empty snapshot result labels for other current snapshot automations.
 - `tests/test_arrival_production_adapter.py`: production adapter response-loss and empty-title regression coverage.
 - `tests/test_first_party_action_payloads.py`, `tests/test_scan_codes_action_payload.py`, `tests/test_site_send_action_payload.py`, `tests/test_first_party_yunda_action_payloads.py`: signed action empty-source contract coverage.
 - `console/services/automation.py`: durable Run state projection for the automation page.
 - `console/templates/automation.html`: attention-state rendering and polling policy.
 - `console/tests/test_automation_control_plane_cutover.py`, `console/tests/test_automation_run_controls.py`: backend/template regression coverage.
-- `agent/agent/automation_plugins/first_party.py`, `agent/first_party_automation_plugins/digests.json`: signed package version and canonical digests.
+- `agent/agent/automation_plugins/first_party.py`, `agent/legacy/first_party_automation_plugins/digests.json`: signed package version and canonical digests.
 
 ### Task 1: Reproduce and fix verified empty arrive-sheet commits
 
@@ -99,7 +99,7 @@ Stage only the adapter and its test, review the cached diff, and commit `fix: ve
 - Modify: `tests/test_scan_codes_action_payload.py`
 - Modify: `tests/test_site_send_action_payload.py`
 - Modify: `tests/test_first_party_yunda_action_payloads.py`
-- Modify: `agent/first_party_automation_plugins/sync_arrive_list/payload/action.py`
+- Modify: `agent/service_v2_plugins/sync_arrive_list_v2/payload/action.py`
 - Modify as required by failing tests: current snapshot action payloads named in the design spec
 
 - [x] **Step 1: Write failing action-result tests**
@@ -194,7 +194,7 @@ Expected: Console suite passes. Commit `fix: show blocked automation runs explic
 
 **Files:**
 - Modify: `agent/agent/automation_plugins/first_party.py`
-- Modify: `agent/first_party_automation_plugins/digests.json`
+- Modify: `agent/legacy/first_party_automation_plugins/digests.json`
 - Test: signed package manifest, release-scope, upgrade, generation-stability, and Broker security suites
 
 - [x] **Step 1: Write or update the release-version assertion and verify RED**

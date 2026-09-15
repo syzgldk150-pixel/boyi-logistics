@@ -58,7 +58,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_MATRIX = (
     REPOSITORY_ROOT
     / "agent"
-    / "first_party_automation_plugins"
+    / "legacy" / "first_party_automation_plugins"
     / "MIGRATION_MATRIX.md"
 )
 

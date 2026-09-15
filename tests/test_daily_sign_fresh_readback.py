@@ -14,7 +14,7 @@ import pytest
 def test_start_run_rejection_is_distinct_from_unknown_database_write(monkeypatch, busy):
     from unittest.mock import Mock
     from agent.automation_plugins.errors import PluginExecutionError
-    from tools import daily_sign_sync_tool as sync
+    from service_v2_plugins.sync_daily_should_sign_v2.payload.business import daily_sign_sync_tool as sync
 
     error = PluginExecutionError("resource busy", code="EXECUTION_RESOURCE_BUSY") if busy else RuntimeError("connection lost")
     start = Mock(side_effect=error)
@@ -31,7 +31,7 @@ def test_start_run_rejection_is_distinct_from_unknown_database_write(monkeypatch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "agent"))
 
-from tools.daily_sign_readback import (
+from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_readback import (
     DailySignReadbackError,
     verify_bitable_snapshot,
     verify_sheet_snapshot,
@@ -81,6 +81,8 @@ def _row_sets() -> dict[str, list[dict[str, object]]]:
                 "registered_at": datetime(2026, 8, 15, 16, 0, 0),
                 "registered_site": "测试网点",
                 "upload_complete": True,
+                "before_cutoff": True,
+                "postpones_sign": True,
                 "payload": {"source": "test_problem"},
             }
         ],

@@ -1,9 +1,11 @@
 ---
 module: finance
 type: plugin-contract
-status: active
+status: historical
 updated: 2026-08-30
 ---
+
+> 此文记录原 ACTION_V1 提取基线；当前实现和升级入口见上级 README。
 
 # `sync_finance_bills` signed action
 

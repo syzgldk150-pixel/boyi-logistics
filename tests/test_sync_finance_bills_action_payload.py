@@ -15,16 +15,16 @@ ROOT = Path(__file__).resolve().parents[1]
 ACTION_PATH = (
     ROOT
     / "agent"
-    / "first_party_automation_plugins"
-    / "sync_finance_bills"
+    / "service_v2_plugins"
+    / "sync_finance_bills_v2"
     / "payload"
     / "action.py"
 )
 RESULT_PATH = (
     ROOT
     / "agent"
-    / "first_party_automation_plugins"
-    / "_runtime"
+    / "service_v2_plugins"
+    / "_shared"
     / "result.py"
 )
 FIXTURE_ROOT = ROOT / "agent" / "tests" / "fixtures" / "finance"

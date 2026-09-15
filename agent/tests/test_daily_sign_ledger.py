@@ -5,18 +5,17 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from tools.daily_sign_rules import (
+from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_rules import (
     build_ledger_row,
     calculate_system_sign_due,
     ledger_row_should_publish,
 )
-from tools.daily_sign_pipeline import DailySignSyncError
+from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline import DailySignSyncError
 from tools import (
     daily_sign_backfill_tool,
-    daily_sign_readback,
     daily_sign_store,
-    daily_sign_sync_tool,
 )
+from service_v2_plugins.sync_daily_should_sign_v2.payload.business import daily_sign_readback, daily_sign_sync_tool
 from agent.execution_boundary import current_execution_capability, execution_capability_scope
 from agent.automation_plugins.first_party_handler_common import _encode_daily_sign_result
 from agent.tms_runtime.scripts import get_qianshou, get_scan, get_sign_records
@@ -135,7 +134,7 @@ class DailySignLedgerRulesTest(unittest.TestCase):
     }
 
     with patch(
-        "tools.daily_sign_sync_tool.call_http_service",
+        "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service",
         return_value=detail,
     ) as call_detail:
         enriched, result = daily_sign_sync_tool._enrich_missing_addresses(
@@ -343,6 +342,8 @@ class DailySignLedgerRulesTest(unittest.TestCase):
                 "problem_type": "少货",
                 "registered_at": "2026-08-28 10:00:00",
                 "upload_complete": True,
+                "before_cutoff": True,
+                "postpones_sign": False,
             },
             {
                 "source": "ronghui_problem:scope",
@@ -351,6 +352,8 @@ class DailySignLedgerRulesTest(unittest.TestCase):
                 "problem_type": "少货",
                 "registered_at": "2026-08-28 11:00:00",
                 "upload_complete": True,
+                "before_cutoff": True,
+                "postpones_sign": False,
             },
         ]
     )
@@ -409,7 +412,7 @@ class DailySignLedgerRulesTest(unittest.TestCase):
 
     with (
         execution_capability_scope("sync_daily_should_sign", ttl_seconds=30),
-        patch("tools.daily_sign_sync_tool._query_exact_main_sign", side_effect=fake_query),
+        patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._query_exact_main_sign", side_effect=fake_query),
     ):
         expected = current_execution_capability()
         results = daily_sign_sync_tool._query_exact_sign_results(["A", "B"], {})
@@ -525,7 +528,8 @@ class DailySignLedgerRulesTest(unittest.TestCase):
     repeated_due, _ = calculate_system_sign_due(history, events)
     self.assertEqual(due, repeated_due)
     normalized = daily_sign_store._normalize_problem_events([
-        {**event, "source": "test_manual_problem", "tracking_number": "R00021074198"}
+        {**event, "source": "test_manual_problem", "tracking_number": "R00021074198",
+         "before_cutoff": True, "postpones_sign": True}
         for event in events
     ])
     self.assertTrue(all(event["postpones_sign"] for event in normalized))
@@ -784,60 +788,60 @@ class DailySignSyncPipelineTest(unittest.TestCase):
 
         with (
             patch(
-                "tools.daily_sign_sync_tool.call_http_service",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service",
                 return_value=r13_rows,
             ),
             patch(
-                "tools.daily_sign_sync_tool.start_sync_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.start_sync_run",
                 return_value=("run", observed_at),
             ),
-            patch("tools.daily_sign_sync_tool.finish_sync_run"),
-            patch("tools.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.finish_sync_run"),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
             patch(
-                "tools.daily_sign_pipeline._resolve_r13_request",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._resolve_r13_request",
                 return_value={"days": 1, "fetch_all": True, "page": 1},
             ),
             patch(
-                "tools.daily_sign_pipeline._source_query_window",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._source_query_window",
                 return_value=(observed_at, observed_at),
             ),
             patch(
-                "tools.daily_sign_pipeline._collect_problem_events",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_problem_events",
                 return_value=([], {"rows": 0, "declared_total": 0, "complete": True}),
             ),
             patch(
-                "tools.daily_sign_pipeline._collect_sign_events",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_sign_events",
                 return_value=([old_sign], {"source_rows": 1, "complete": True}),
             ),
             patch(
-                "tools.daily_sign_sync_tool._sync_r13_sign_conflicts",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_r13_sign_conflicts",
                 return_value=([], {"ok": True, "complete": True}),
             ),
             patch(
-                "tools.daily_sign_sync_tool._sync_historical_sign_verifications",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_historical_sign_verifications",
                 return_value=(
                     [],
                     {"ok": True, "complete": True, "verification_rows": []},
                 ),
             ),
             patch(
-                "tools.daily_sign_sync_tool.persist_daily_sign_snapshot",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.persist_daily_sign_snapshot",
                 side_effect=persisted_snapshot_proof,
             ) as persist,
             patch(
-                "tools.daily_sign_sync_tool.verify_daily_sign_persistence",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.verify_daily_sign_persistence",
                 side_effect=persistence_readback_proof,
             ) as verify_persistence,
             patch(
-                "tools.daily_sign_sync_tool._sync_bitable",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_bitable",
                 side_effect=sync_bitable,
             ),
             patch(
-                "tools.daily_sign_sync_tool._sync_sheet",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_sheet",
                 side_effect=sync_sheet,
             ),
             patch(
-                "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.verify_daily_sign_completed_run",
                 side_effect=completed_run_readback_proof,
             ) as verify_completed,
         ):
@@ -898,18 +902,18 @@ class DailySignSyncPipelineTest(unittest.TestCase):
 
         with (
             patch(
-                "tools.daily_sign_sync_tool.resolve_bitable_target",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.resolve_bitable_target",
                 return_value=("base", "table"),
             ),
             patch(
-                "tools.daily_sign_sync_tool._ensure_bitable_schema",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._ensure_bitable_schema",
                 return_value={
                     "ok": True,
                     "fields": {"R13应签收时间": 1},
                 },
             ),
             patch(
-                "tools.daily_sign_sync_tool.verify_bitable_snapshot",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.verify_bitable_snapshot",
                 return_value={
                     "verified": True,
                     "record_count": 0,
@@ -917,7 +921,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
                 },
             ),
             patch(
-                "tools.daily_sign_sync_tool.feishu_operation",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.feishu_operation",
                 side_effect=fake_operation,
             ),
         ):
@@ -950,11 +954,11 @@ class DailySignSyncPipelineTest(unittest.TestCase):
 
         with (
             patch(
-                "tools.daily_sign_sync_tool.resolve_sheet_target",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.resolve_sheet_target",
                 return_value=("token", "Sheet1!A2:I200"),
             ),
             patch(
-                "tools.daily_sign_sync_tool.verify_sheet_snapshot",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.verify_sheet_snapshot",
                 return_value={
                     "verified": True,
                     "record_count": 0,
@@ -962,7 +966,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
                 },
             ),
             patch(
-                "tools.daily_sign_sync_tool.feishu_operation",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.feishu_operation",
                 side_effect=fake_operation,
             ),
         ):
@@ -1002,63 +1006,63 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         }
         with (
             patch(
-                "tools.daily_sign_sync_tool.call_http_service",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service",
                 return_value=[self._complete_r13_row()],
             ),
             patch(
-                "tools.daily_sign_sync_tool.start_sync_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.start_sync_run",
                 return_value=("run", observed_at),
             ),
             patch(
-                "tools.daily_sign_sync_tool.load_daily_sign_state",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.load_daily_sign_state",
                 return_value=state,
             ),
             patch(
-                "tools.daily_sign_pipeline._resolve_r13_request",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._resolve_r13_request",
                 return_value={"days": 1, "fetch_all": True, "page": 1},
             ),
             patch(
-                "tools.daily_sign_pipeline._source_query_window",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._source_query_window",
                 return_value=(observed_at, observed_at),
             ),
             patch(
-                "tools.daily_sign_pipeline._collect_problem_events",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_problem_events",
                 return_value=(
                     [],
                     {"rows": 0, "declared_total": 0, "complete": True},
                 ),
             ),
             patch(
-                "tools.daily_sign_pipeline._collect_sign_events",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_sign_events",
                 return_value=([], {"source_rows": 0, "complete": True}),
             ),
             patch(
-                "tools.daily_sign_sync_tool._sync_r13_sign_conflicts",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_r13_sign_conflicts",
                 return_value=([], {"ok": True, "complete": True}),
             ),
             patch(
-                "tools.daily_sign_sync_tool._sync_historical_sign_verifications",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_historical_sign_verifications",
                 return_value=(
                     [],
                     {"ok": True, "complete": True, "verification_rows": []},
                 ),
             ),
             patch(
-                "tools.daily_sign_sync_tool.persist_daily_sign_snapshot",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.persist_daily_sign_snapshot",
                 side_effect=persisted_snapshot_proof,
             ),
             patch(
-                "tools.daily_sign_sync_tool.verify_daily_sign_persistence",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.verify_daily_sign_persistence",
                 side_effect=persistence_readback_proof,
             ),
             patch(
-                "tools.daily_sign_sync_tool._sync_bitable",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_bitable",
                 return_value={"ok": True},
             ),
-            patch("tools.daily_sign_sync_tool._sync_sheet") as sheet,
-            patch("tools.daily_sign_sync_tool.finish_sync_run") as finish,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_sheet") as sheet,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.finish_sync_run") as finish,
             patch(
-                "tools.daily_sign_sync_tool.verify_daily_sign_completed_run"
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.verify_daily_sign_completed_run"
             ) as verify_completed,
         ):
             result = daily_sign_sync_tool.run_daily_sign_sync(self._params())
@@ -1075,28 +1079,28 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         observed_at = datetime(2026, 8, 12, 12, 0, 0)
         with (
             patch(
-                "tools.daily_sign_sync_tool.call_http_service",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service",
                 return_value=[self._complete_r13_row()],
             ),
             patch(
-                "tools.daily_sign_sync_tool.start_sync_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.start_sync_run",
                 return_value=("run", observed_at),
             ),
-            patch("tools.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
             patch(
-                "tools.daily_sign_pipeline._resolve_r13_request",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._resolve_r13_request",
                 return_value={"days": 1, "fetch_all": True, "page": 1},
             ),
             patch(
-                "tools.daily_sign_pipeline._source_query_window",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._source_query_window",
                 return_value=(observed_at, observed_at),
             ),
             patch(
-                "tools.daily_sign_pipeline._collect_problem_events",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_problem_events",
                 return_value=([], {"rows": 0, "declared_total": 0, "complete": True}),
             ),
             patch(
-                "tools.daily_sign_pipeline._collect_sign_events",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_sign_events",
                 side_effect=DailySignSyncError(
                     "INCOMPLETE_SOURCE_EVIDENCE",
                     "主单签收来源不完整。",
@@ -1104,16 +1108,16 @@ class DailySignSyncPipelineTest(unittest.TestCase):
                 ),
             ),
             patch(
-                "tools.daily_sign_pipeline._finish_failed_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._finish_failed_run",
                 side_effect=failed_run_values,
             ) as failed_run,
             patch(
-                "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.verify_daily_sign_completed_run",
                 side_effect=completed_run_readback_proof,
             ) as verify_completed,
-            patch("tools.daily_sign_sync_tool.persist_daily_sign_snapshot") as persist,
-            patch("tools.daily_sign_sync_tool._sync_bitable") as bitable,
-            patch("tools.daily_sign_sync_tool._sync_sheet") as sheet,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.persist_daily_sign_snapshot") as persist,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_bitable") as bitable,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_sheet") as sheet,
         ):
             result = daily_sign_sync_tool.run_daily_sign_sync(self._params())
 
@@ -1133,24 +1137,24 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         observed_at = datetime(2026, 8, 12, 12, 0, 0)
         with (
             patch(
-                "tools.daily_sign_sync_tool.call_http_service",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service",
                 return_value=[self._complete_r13_row()],
             ),
             patch(
-                "tools.daily_sign_sync_tool.start_sync_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.start_sync_run",
                 return_value=("run", observed_at),
             ),
-            patch("tools.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
             patch(
-                "tools.daily_sign_pipeline._resolve_r13_request",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._resolve_r13_request",
                 return_value={"days": 1, "fetch_all": True, "page": 1},
             ),
             patch(
-                "tools.daily_sign_pipeline._source_query_window",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._source_query_window",
                 return_value=(observed_at, observed_at),
             ),
             patch(
-                "tools.daily_sign_pipeline._collect_problem_events",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_problem_events",
                 side_effect=DailySignSyncError(
                     "PAGINATION_INCOMPLETE",
                     "问题件分页不完整。",
@@ -1158,16 +1162,16 @@ class DailySignSyncPipelineTest(unittest.TestCase):
                 ),
             ),
             patch(
-                "tools.daily_sign_pipeline._finish_failed_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._finish_failed_run",
                 side_effect=failed_run_values,
             ) as failed_run,
             patch(
-                "tools.daily_sign_sync_tool.verify_daily_sign_completed_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.verify_daily_sign_completed_run",
                 side_effect=completed_run_readback_proof,
             ) as verify_completed,
-            patch("tools.daily_sign_sync_tool.persist_daily_sign_snapshot") as persist,
-            patch("tools.daily_sign_sync_tool._sync_bitable") as bitable,
-            patch("tools.daily_sign_sync_tool._sync_sheet") as sheet,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.persist_daily_sign_snapshot") as persist,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_bitable") as bitable,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_sheet") as sheet,
         ):
             result = daily_sign_sync_tool.run_daily_sign_sync(self._params())
 
@@ -1191,7 +1195,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         }
         with (
             patch(
-                "tools.daily_sign_sync_tool.call_http_service",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service",
                 side_effect=[
                     {
                         "ok": False,
@@ -1211,9 +1215,9 @@ class DailySignSyncPipelineTest(unittest.TestCase):
                     },
                 ],
             ) as query,
-            patch("tools.daily_sign_sync_tool.time.sleep") as sleep,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.time.sleep") as sleep,
             patch(
-                "tools.daily_sign_sync_tool.upsert_problem_events",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.upsert_problem_events",
                 return_value={"ok": True, "upserted": 1},
             ),
         ):
@@ -1241,8 +1245,8 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             },
         }
         with (
-            patch("tools.daily_sign_sync_tool.call_http_service", return_value=failure),
-            patch("tools.daily_sign_sync_tool.time.sleep"),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service", return_value=failure),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.time.sleep"),
         ):
             events, result = daily_sign_sync_tool._sync_manual_problem_events(
                 {
@@ -1286,8 +1290,8 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             return responses[request["params"]["tracking_number"]]
 
         with (
-            patch("tools.daily_sign_sync_tool.call_http_service", side_effect=fake_call),
-            patch("tools.daily_sign_sync_tool.upsert_sign_events", return_value={"ok": True, "upserted": 1}) as store,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service", side_effect=fake_call),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.upsert_sign_events", return_value={"ok": True, "upserted": 1}) as store,
         ):
             events, result = daily_sign_sync_tool._sync_r13_sign_conflicts(
                 {"exact_sign_workers": 2, "account_id": "ronghui-test"},
@@ -1366,9 +1370,9 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         }
 
         with (
-            patch("tools.daily_sign_sync_tool._query_exact_sign_results", return_value=[result]) as query,
-            patch("tools.daily_sign_sync_tool.upsert_sign_events", return_value={"ok": True, "upserted": 1}) as sign_store,
-            patch("tools.daily_sign_sync_tool.upsert_sign_verification_states", return_value={"ok": True, "upserted": 1}) as verification_store,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._query_exact_sign_results", return_value=[result]) as query,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.upsert_sign_events", return_value={"ok": True, "upserted": 1}) as sign_store,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.upsert_sign_verification_states", return_value={"ok": True, "upserted": 1}) as verification_store,
         ):
             events, audit = daily_sign_sync_tool._sync_historical_sign_verifications(
                 {},
@@ -1410,9 +1414,9 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         }
 
         with (
-            patch("tools.daily_sign_sync_tool._query_exact_sign_results") as query,
-            patch("tools.daily_sign_sync_tool.upsert_sign_events", return_value={"ok": True}),
-            patch("tools.daily_sign_sync_tool.upsert_sign_verification_states", return_value={"ok": True}),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._query_exact_sign_results") as query,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.upsert_sign_events", return_value={"ok": True}),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.upsert_sign_verification_states", return_value={"ok": True}),
         ):
             events, audit = daily_sign_sync_tool._sync_historical_sign_verifications(
                 {},
@@ -1453,9 +1457,9 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         ]
 
         with (
-            patch("tools.daily_sign_sync_tool._query_exact_sign_results", return_value=results),
-            patch("tools.daily_sign_sync_tool.upsert_sign_events", return_value={"ok": True}) as sign_store,
-            patch("tools.daily_sign_sync_tool.upsert_sign_verification_states", return_value={"ok": True}) as verification_store,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._query_exact_sign_results", return_value=results),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.upsert_sign_events", return_value={"ok": True}) as sign_store,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.upsert_sign_verification_states", return_value={"ok": True}) as verification_store,
         ):
             events, audit = daily_sign_sync_tool._sync_historical_sign_verifications(
                 {},
@@ -1499,8 +1503,8 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             return {"ok": True}
 
         with (
-            patch("tools.daily_sign_sync_tool.resolve_sheet_target", return_value=("token", "Sheet1!A2:I200")),
-            patch("tools.daily_sign_sync_tool.feishu_operation", side_effect=fake_operation),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.resolve_sheet_target", return_value=("token", "Sheet1!A2:I200")),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.feishu_operation", side_effect=fake_operation),
         ):
             result = daily_sign_sync_tool._sync_sheet(rows, {})
 
@@ -1515,9 +1519,9 @@ class DailySignSyncPipelineTest(unittest.TestCase):
 
     def test_sheet_header_mismatch_fails_without_write(self):
         with (
-            patch("tools.daily_sign_sync_tool.resolve_sheet_target", return_value=("token", "Sheet1!A2:I200")),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.resolve_sheet_target", return_value=("token", "Sheet1!A2:I200")),
             patch(
-                "tools.daily_sign_sync_tool.feishu_operation",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.feishu_operation",
                 return_value={"ok": True, "data": {"valueRange": {"values": [["运单编号", "旧应签收时间"]]}}},
             ) as operation,
         ):
@@ -1547,11 +1551,11 @@ class DailySignSyncPipelineTest(unittest.TestCase):
 
         with (
             patch(
-                "tools.daily_sign_sync_tool.resolve_sheet_target",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.resolve_sheet_target",
                 return_value=("token", "Sheet1!A2:I200"),
             ),
             patch(
-                "tools.daily_sign_sync_tool.feishu_operation",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.feishu_operation",
                 side_effect=fake_operation,
             ),
         ):
@@ -1584,11 +1588,11 @@ class DailySignSyncPipelineTest(unittest.TestCase):
 
         with (
             patch(
-                "tools.daily_sign_sync_tool.resolve_sheet_target",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.resolve_sheet_target",
                 return_value=("token", "Sheet1!A2:I200"),
             ),
             patch(
-                "tools.daily_sign_sync_tool.feishu_operation",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.feishu_operation",
                 side_effect=fake_operation,
             ),
         ):
@@ -1626,9 +1630,9 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             return {"ok": True, "written": len(params.get("records", [])), "deleted": len(params.get("record_ids", []))}
 
         with (
-            patch("tools.daily_sign_sync_tool.resolve_bitable_target", return_value=("base", "table")),
-            patch("tools.daily_sign_sync_tool._ensure_bitable_schema", return_value={"ok": True, "fields": {"R13应签收时间": 1}}),
-            patch("tools.daily_sign_sync_tool.feishu_operation", side_effect=fake_operation),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.resolve_bitable_target", return_value=("base", "table")),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._ensure_bitable_schema", return_value={"ok": True, "fields": {"R13应签收时间": 1}}),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.feishu_operation", side_effect=fake_operation),
         ):
             result = daily_sign_sync_tool._sync_bitable(rows, {})
 

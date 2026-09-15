@@ -61,7 +61,6 @@ from tools import (
     arrive_list_sync_tool,
     arrival_stats_sync_tool,
     automation_profile_tool,
-    daily_sign_sync_tool,
     delivery_status_sync_tool,
     phase7_mysql_store,
     phase7_sync_common,
@@ -79,6 +78,7 @@ from tools import (
     yunda_dispatch_forecast_sync_tool,
     yunda_send_waybills_sync_tool,
 )
+from service_v2_plugins.sync_daily_should_sign_v2.payload.business import daily_sign_sync_tool
 
 
 def _admin_accounts_payload(*, pending_accounts: set[str] | None = None) -> dict[str, Any]:

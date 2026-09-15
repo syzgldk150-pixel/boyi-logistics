@@ -10,18 +10,18 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIRST_PARTY_ROOT = ROOT / "agent" / "first_party_automation_plugins"
+FIRST_PARTY_ROOT = ROOT / "agent" / "service_v2_plugins"
 
 
 def _load_action(plugin_id: str):
-    result_source = FIRST_PARTY_ROOT / "_runtime" / "result.py"
+    result_source = FIRST_PARTY_ROOT / "_shared" / "result.py"
     result_spec = importlib.util.spec_from_file_location("boyi_plugin_result", result_source)
     assert result_spec is not None and result_spec.loader is not None
     result_module = importlib.util.module_from_spec(result_spec)
     previous = sys.modules.get("boyi_plugin_result")
     sys.modules["boyi_plugin_result"] = result_module
     result_spec.loader.exec_module(result_module)
-    source = FIRST_PARTY_ROOT / plugin_id / "payload" / "action.py"
+    source = FIRST_PARTY_ROOT / (plugin_id + "_v2") / "payload" / "action.py"
     spec = importlib.util.spec_from_file_location(f"{plugin_id}_plugin_action", source)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

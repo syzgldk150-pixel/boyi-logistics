@@ -11,8 +11,8 @@ from agent.orchestration.models import OperationType, PlanStep
 from agent.orchestration.result_verifier import ResultVerifier
 from agent.tms_runtime.scripts import get_qianshou, get_sign_records
 from agent.tool_registry import ToolRegistry
-from tools import daily_sign_pipeline
-from tools.daily_sign_rules import build_ledger_row
+from service_v2_plugins.sync_daily_should_sign_v2.payload.business import daily_sign_pipeline
+from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_rules import build_ledger_row
 
 
 ACCOUNT_PARAMS = {
@@ -151,7 +151,7 @@ class DailySignPipelineTests(unittest.TestCase):
             )
         )
         with (
-            patch("tools.daily_sign_sync_tool.get_account_manager", return_value=manager),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.get_account_manager", return_value=manager),
             self.assertRaises(daily_sign_pipeline.DailySignSyncError) as caught,
         ):
             daily_sign_pipeline._resolve_r13_request(
@@ -170,7 +170,7 @@ class DailySignPipelineTests(unittest.TestCase):
                 "stats": {"total": 0, "returned": 0},
             }
         }
-        with patch("tools.daily_sign_pipeline.call_http_service", return_value=response):
+        with patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.call_http_service", return_value=response):
             with self.assertRaises(daily_sign_pipeline.DailySignSyncError) as caught:
                 daily_sign_pipeline._collect_problem_events(
                     {},
@@ -215,7 +215,7 @@ class DailySignPipelineTests(unittest.TestCase):
             },
         ]
 
-        with patch("tools.daily_sign_pipeline.call_http_service", side_effect=responses):
+        with patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.call_http_service", side_effect=responses):
             events, proof = daily_sign_pipeline._collect_problem_events(
                 {"problem_page_size": 1},
                 account_id="ronghui_daxiang_s",
@@ -264,7 +264,7 @@ class DailySignPipelineTests(unittest.TestCase):
         ]
 
         with (
-            patch("tools.daily_sign_pipeline.call_http_service", side_effect=responses),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.call_http_service", side_effect=responses),
             self.assertRaises(daily_sign_pipeline.DailySignSyncError) as caught,
         ):
             daily_sign_pipeline._collect_problem_events(
@@ -342,37 +342,37 @@ class DailySignPipelineTests(unittest.TestCase):
 
         with (
             patch(
-                "tools.daily_sign_pipeline.start_sync_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.start_sync_run",
                 return_value=("source-run-1", observed_at),
             ),
-            patch("tools.daily_sign_pipeline.load_daily_sign_state", return_value=state),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.load_daily_sign_state", return_value=state),
             patch(
-                "tools.daily_sign_pipeline.earliest_relevant_source_date",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.earliest_relevant_source_date",
                 return_value=date(2026, 8, 12),
             ),
             patch(
-                "tools.daily_sign_pipeline._resolve_r13_request",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._resolve_r13_request",
                 return_value={"days": 1, "fetch_all": True, "page": 1},
             ),
-            patch("tools.daily_sign_pipeline.call_http_service", side_effect=source_call),
-            patch("tools.daily_sign_sync_tool.call_http_service", side_effect=detail_call),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.call_http_service", side_effect=source_call),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service", side_effect=detail_call),
             patch(
-                "tools.daily_sign_sync_tool.get_waybill_tracking_cache",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.get_waybill_tracking_cache",
                 return_value={"arrived_quantity": 1},
             ),
             patch(
-                "tools.daily_sign_pipeline.persist_daily_sign_snapshot",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.persist_daily_sign_snapshot",
                 return_value={"ok": True, "ledger_rows": 1},
             ) as persist,
             patch(
-                "tools.daily_sign_pipeline.sync_bitable_snapshot",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.sync_bitable_snapshot",
                 return_value={"ok": True, "written": 1},
             ),
             patch(
-                "tools.daily_sign_pipeline.sync_sheet_snapshot",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.sync_sheet_snapshot",
                 return_value={"ok": True, "rows": 1},
             ),
-            patch("tools.daily_sign_pipeline.finish_sync_run") as finish,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.finish_sync_run") as finish,
         ):
             result = daily_sign_pipeline.run_authoritative_daily_sign_sync(ACCOUNT_PARAMS)
 
@@ -421,21 +421,21 @@ class DailySignPipelineTests(unittest.TestCase):
 
         with (
             patch(
-                "tools.daily_sign_pipeline.start_sync_run",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.start_sync_run",
                 return_value=("source-run-2", observed_at),
             ),
-            patch("tools.daily_sign_pipeline.load_daily_sign_state", return_value=_empty_state()),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.load_daily_sign_state", return_value=_empty_state()),
             patch(
-                "tools.daily_sign_pipeline.earliest_relevant_source_date",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.earliest_relevant_source_date",
                 return_value=None,
             ),
             patch(
-                "tools.daily_sign_pipeline._resolve_r13_request",
+                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._resolve_r13_request",
                 return_value={"days": 1, "fetch_all": True, "page": 1},
             ),
-            patch("tools.daily_sign_pipeline.call_http_service", side_effect=source_call),
-            patch("tools.daily_sign_pipeline.persist_daily_sign_snapshot") as persist,
-            patch("tools.daily_sign_pipeline.finish_sync_run") as finish,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.call_http_service", side_effect=source_call),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.persist_daily_sign_snapshot") as persist,
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline.finish_sync_run") as finish,
         ):
             result = daily_sign_pipeline.run_authoritative_daily_sign_sync(ACCOUNT_PARAMS)
 

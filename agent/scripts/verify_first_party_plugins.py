@@ -22,6 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trust-root", type=Path, required=True)
     parser.add_argument("--release-sha", required=True)
     parser.add_argument("--digest-lock", type=Path)
+    parser.add_argument("--service-v2-only", action="store_true")
     parser.add_argument("--require-completed-migrations", action="store_true")
     parser.add_argument("--runtime-root", type=Path)
     return parser
@@ -47,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"instance_count={retired.instance_count}")
         print(f"contracts_sha256={retired.contracts_sha256}")
         return 0
+    if args.service_v2_only:
+        raise SystemExit("current release requires a verified V1 retirement index")
     kwargs = {}
     if args.digest_lock is not None:
         kwargs["digest_lock_path"] = args.digest_lock

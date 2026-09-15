@@ -15,13 +15,13 @@ ROOT = Path(__file__).resolve().parents[1]
 ACTION_SOURCE = (
     ROOT
     / "agent"
-    / "first_party_automation_plugins"
-    / "split_pending_problem_upload"
+    / "service_v2_plugins"
+    / "split_pending_problem_upload_v2"
     / "payload"
     / "action.py"
 )
 RESULT_SOURCE = (
-    ROOT / "agent" / "first_party_automation_plugins" / "_runtime" / "result.py"
+    ROOT / "agent" / "service_v2_plugins" / "_shared" / "result.py"
 )
 
 

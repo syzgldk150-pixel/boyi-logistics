@@ -333,7 +333,7 @@ def test_first_party_descriptors_are_16_actions_and_18_instances(
 
 
 def test_first_party_digest_lock_is_canonical_and_current(core_catalog: ToolRegistry) -> None:
-    lock_path = Path("agent/first_party_automation_plugins/digests.json")
+    lock_path = Path("agent/legacy/first_party_automation_plugins/digests.json")
     raw = lock_path.read_bytes()
     value = json.loads(raw.decode("utf-8"))
     assert raw.rstrip(b"\n") == canonical_json_bytes(value)

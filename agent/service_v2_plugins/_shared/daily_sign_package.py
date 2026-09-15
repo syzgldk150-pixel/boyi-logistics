@@ -8,10 +8,11 @@ from pathlib import Path
 
 def daily_sign_business_files(repository: Path) -> dict[str, bytes]:
     paths = {
-        "daily_sign_sync_tool": "agent/tools/daily_sign_sync_tool.py",
-        "daily_sign_pipeline": "agent/tools/daily_sign_pipeline.py",
-        "daily_sign_rules": "agent/tools/daily_sign_rules.py",
-        "daily_sign_readback": "agent/tools/daily_sign_readback.py",
+        "daily_sign_values": "agent/tools/daily_sign_values.py",
+        "daily_sign_sync_tool": "agent/service_v2_plugins/sync_daily_should_sign_v2/payload/business/daily_sign_sync_tool.py",
+        "daily_sign_pipeline": "agent/service_v2_plugins/sync_daily_should_sign_v2/payload/business/daily_sign_pipeline.py",
+        "daily_sign_rules": "agent/service_v2_plugins/sync_daily_should_sign_v2/payload/business/daily_sign_rules.py",
+        "daily_sign_readback": "agent/service_v2_plugins/sync_daily_should_sign_v2/payload/business/daily_sign_readback.py",
         "daily_sign_material": "agent/tools/daily_sign_material.py",
         "phase7_sync_common": "agent/tools/phase7_sync_common.py",
         "feishu_readback": "agent/agent/feishu_readback.py",
@@ -27,6 +28,7 @@ def daily_sign_business_files(repository: Path) -> dict[str, bytes]:
         "from tools.tms_tool import": "from daily_sign_io import",
     }
     replacements.update({f"from tools.{name} import": f"from business.{name} import" for name in paths})
+    replacements.update({f"from service_v2_plugins.sync_daily_should_sign_v2.payload.business.{name} import": f"from business.{name} import" for name in paths})
     entries = {"payload/business/__init__.py": b""}
     for name, path in paths.items():
         text = (repository/path).read_text(encoding="utf-8")

@@ -24,12 +24,12 @@ SHARED_MAIN = (
 V1_ACTION = (
     ROOT
     / "agent"
-    / "first_party_automation_plugins"
-    / "split_pending_problem_upload"
+    / "service_v2_plugins"
+    / "split_pending_problem_upload_v2"
     / "payload"
     / "action.py"
 )
-RESULT_SOURCE = ROOT / "agent" / "first_party_automation_plugins" / "_runtime" / "result.py"
+RESULT_SOURCE = ROOT / "agent" / "service_v2_plugins" / "_shared" / "result.py"
 
 
 def _load_module(name: str, path: Path):

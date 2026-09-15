@@ -1,3 +1,7 @@
+## 每日应签源码归属
+
+每日应签业务规则、采集和渲染已移至仓库根 `agent/service_v2_plugins/sync_daily_should_sign_v2/payload/business/`；`agent/tools/daily_sign_store.py` 仅持久化和回读核验，`agent/tools/daily_sign_values.py` 仅数据规范化。旧 V1 离线材料在 `agent/legacy/`，不进入发布清单。
+
 # 物流 Agent 系统
 
 每日应签 V2 `2.0.7` 将“客户拒收/拒付费用”“客户原因要求自提”“改派送地址”加入人工顺延类型；未齐分批继续按有效登记逐日顺延。类型目录由计算、采集和存储共用，维护说明与局部回归见 [维护说明](../docs/identity_and_unified_chat.md)。
@@ -80,7 +84,7 @@ Service V2 扫描按目录验证的 `super_admin_upload/builtin_bundle` 来源�
 - Outbox 继续处理必要审计和通知，领取/确认用短事务，慢处理在事务外；它不能生成业务执行队列。财务采集结束仅保存采集结果，不自动分析；显式分析使用已注册接口和共享账本，不创建 Command/Run，也不继承历史审批。
 - `domain_events`、`outbox_events`、`event_consumptions` 与 `approval_requests` 只滚动保留最近 30 天的已终结数据；清理必须按外键依赖分批事务化执行。非终态 Run/Work Item、待处理 Outbox、待决定审批和仍占用飞书通知租约的记录必须保留，不能为释放空间破坏幂等或活动流程。
 - `agent/orchestration/` 只依赖端口和 `shared/orchestration_repository.py`；通用仓储原语、历史 Run 查询、结构要求和历史定时审批仓储分别位于 `shared/orchestration_repository_support.py`、`shared/automation_run_lookup.py`、`shared/orchestration_schema.py`、`shared/scheduled_task_approval_repository.py`。工具目录实现、TMS target、飞书 handler 和 Console 代码不得反向导入编排内部实现。
-- 自动化插件的通用清单、签名校验、代际租约、Broker、安装/卸载与 subprocess 路由位于 `agent/automation_plugins/`；首方闭合 handler 门面位于 `agent/automation_plugins/first_party_handlers.py`，通用参数校验、脱敏与不透明证据编解码集中在 `agent/automation_plugins/first_party_handler_common.py`，纯动作常量、写边界声明和到货记录校验集中在 `agent/automation_plugins/first_party_handler_support.py`，不得在动作 handler 中复制；首方动作源码和提取状态位于 `first_party_automation_plugins/`，真实账号会话、浏览器、投影和飞书等闭合底层端口只可放在 `plugin_core_adapters/`，目标 capability 的单次在线鉴权统一由 `plugin_core_adapters/capability_session.py` 提供。签名 payload 不得导入 `agent`、`shared` 或旧 whole-tool 入口，只能调用清单精确声明的 `(operation, action)`；账号 ID 只留在 Python 代际 side-channel，JSON 结果统一使用 binding-set proof。版本切换只把新租约原子指向新 generation，旧租约排空后才删除旧字节；缺少真实页面、独立写后验证或字段来源证据的动作必须保持 fail closed，当前逐动作状态以 `first_party_automation_plugins/MIGRATION_MATRIX.md` 为准。
+- 自动化插件的通用清单、签名校验、代际租约、Broker、安装/卸载与 subprocess 路由位于 `agent/automation_plugins/`；首方闭合 handler 门面位于 `agent/automation_plugins/first_party_handlers.py`，通用参数校验、脱敏与不透明证据编解码集中在 `agent/automation_plugins/first_party_handler_common.py`，纯动作常量、写边界声明和到货记录校验集中在 `agent/automation_plugins/first_party_handler_support.py`，不得在动作 handler 中复制；当前业务源码位于 `service_v2_plugins/`，旧提取材料隔离在 `legacy/first_party_automation_plugins/`，真实账号会话、浏览器、投影和飞书等闭合底层端口只可放在 `plugin_core_adapters/`，目标 capability 的单次在线鉴权统一由 `plugin_core_adapters/capability_session.py` 提供。签名 payload 不得导入 `agent`、`shared` 或旧 whole-tool 入口，只能调用清单精确声明的 `(operation, action)`；账号 ID 只留在 Python 代际 side-channel，JSON 结果统一使用 binding-set proof。版本切换只把新租约原子指向新 generation，旧租约排空后才删除旧字节；缺少真实页面、独立写后验证或字段来源证据的动作必须保持 fail closed，当前源码归属以 `service_v2_plugins/README.md` 为准，线上状态以真实实例记录为准。
 - 现有生产业务的 Service V2 包及 Connector 已实现，业务算法在独立 ZIP 内执行，宿主只提供已审核接口。迁移按显式映射复制当前账号、资源、业务参数、启停和定时；TESTING/READY 时仅超级管理员可从 Console 验证目标，其他入口仍属于原实例；CUTOVER/COMPLETED 才接管，ROLLED_BACK 恢复。READY 必须有目标当前代的新鲜成功 Direct Invocation 与实际业务核验；切换等待已接受调用及写回读排空，历史失败/取消不形成锁。线上尚未完成迁移的实例仍依赖 V1 启动与签名发行，不能提前删除或把隔离测试写成生产验收。
 - 历史插件 venv 精简只使用 `scripts/compact_plugin_venvs.py`：默认只读统计，必须在 Agent 已停止且无活动插件执行的维护窗口中显式传入 `--apply`。只允许删除与 `venv/bin/python` 逐字节一致的 `python3` / `python3.10` 私有普通文件；不得共享 venv、创建软/硬链接或删除每个版本独立的主解释器、签名包、原始 ZIP 和代际目录。
 - 新增自动化的非生产最小模板位于 `examples/automation_plugin/`，签名前预检使用 `scripts/validate_automation_plugin_source.py`。模板故意位于首方发行目录之外，不会进入 bootstrap、Catalog、Broker、ECS 发布或 digest lock；把模板提升为真实首方动作、注册 Broker handler、加入 allowlist、签名或安装必须分别经过后续 TASK 审查。
@@ -134,7 +138,7 @@ Service V2 扫描按目录验证的 `super_admin_upload/builtin_bundle` 来源�
 | OCR识别 | `console/` | `docs/ocr/` | Qwen-OCR、人工复核与 MySQL 入库已运行；自学习/Paddle 方案未实施 |
 | 车辆调度 | `console/` | `docs/dispatch/` | `map_only`：仅地图路线规划与本地试算，无真实派单/车辆/平台接口 |
 | Agent 自动化能力 | `agent/ + feishu/ + tools/` | `docs/agent_automation/` | 飞书机器人承载的全部能力都在此（直接插件/reader / 预览确认 / 账号登录） |
-| 自动化插件平台 | `agent/automation_plugins/`、`first_party_automation_plugins/`、`plugin_core_adapters/`、`agent/windows_worker/`、`service_v2_plugins/` | `docs/automation_plugin_platform.md`、`../docs/plugin-platform-v2.md`、`first_party_automation_plugins/README.md`、`first_party_automation_plugins/MIGRATION_MATRIX.md` | v1 签名动作继续运行；新能力使用 Service v2 无签名 ZIP、Host API 与声明式 Console，双轨迁移后逐项接管；Windows Worker/Tray 与 R7 打卡仍延后 |
+| 自动化插件平台 | `agent/automation_plugins/`、`service_v2_plugins/`、`plugin_core_adapters/`、`agent/windows_worker/`、`service_v2_plugins/` | `docs/automation_plugin_platform.md`、`../docs/plugin-platform-v2.md`、`service_v2_plugins/README.md`、`legacy/first_party_automation_plugins/MIGRATION_MATRIX.md` | 生产为 Service V2 ZIP、Host API 与 Direct Invocation；V1 源码仅留离线回归材料且不发布；Windows Worker/Tray 与 R7 仍未启用 |
 | AI客服 | `agent/ + feishu/`（规划中） | `docs/ai_service/` | 暂未开发；待启动后从 Agent 自动化能力剥离客户对话能力 |
 | 通用规范 | — | `docs/common/` | 活跃 |
 
