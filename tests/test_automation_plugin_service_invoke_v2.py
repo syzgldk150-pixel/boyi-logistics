@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import asyncio
 from dataclasses import replace
@@ -534,7 +535,7 @@ def test_internal_service_write_is_finalized_only_after_provider_evidence(
     async def execute(*_args, **_kwargs):
         return GenerationBoundResult(result, verification=verification)
 
-    router.direct_invocations = SimpleNamespace(reserve_provider=lambda *_: ((), {}))
+    router.direct_invocations = SimpleNamespace(reserve_provider=AsyncMock(return_value=((), {})))
     monkeypatch.setattr(router, "execute", execute)
     public = asyncio.run(
         router.execute_service_operation(
@@ -582,7 +583,7 @@ def test_internal_service_write_with_incomplete_evidence_becomes_unknown(
     async def execute(*_args, **_kwargs):
         return GenerationBoundResult(result, verification=verification)
 
-    router.direct_invocations = SimpleNamespace(reserve_provider=lambda *_: ((), {}))
+    router.direct_invocations = SimpleNamespace(reserve_provider=AsyncMock(return_value=((), {})))
     monkeypatch.setattr(router, "execute", execute)
     with pytest.raises(PluginExecutionError) as unknown:
         asyncio.run(
