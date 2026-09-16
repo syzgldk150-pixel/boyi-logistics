@@ -110,6 +110,73 @@ def test_repeated_cancel_drains_real_verification_before_reuse(direct_runtime, m
     record_property('waiting_cancel_seconds', cancel_seconds)
 
 
+@pytest.mark.parametrize('round_index', range(20))
+def test_waiter_cancellation_drains_settlement_before_releasing_ownership(direct_runtime, monkeypatch, round_index, record_property):
+    host, runtime, identity = direct_runtime
+    admission_entered, admit = threading.Event(), threading.Event()
+    settlement_entered, settle = threading.Event(), threading.Event()
+    wait_for_admission = runtime.service._wait_for_admission
+    update = runtime.service.repository.update
+    has_started_write = runtime.service.repository.has_started_write
+    executed = []
+    execute = runtime.router.execute
+
+    async def gated_admission(call_id):
+        admission_entered.set()
+        assert await asyncio.to_thread(admit.wait, 10)
+        await wait_for_admission(call_id)
+
+    def cancelling_update(call_id, **kwargs):
+        result = update(call_id, **kwargs)
+        if kwargs['status'] == 'CANCELLING':
+            # Reproduce the CI ordering: the waiter observes the cancellation
+            # flag and starts settlement before the public cancel signals it.
+            admit.set()
+            assert settlement_entered.wait(10)
+        return result
+
+    def held_settlement(call_id):
+        settlement_entered.set()
+        assert settle.wait(10)
+        return has_started_write(call_id)
+
+    async def observed_execute(*args, **kwargs):
+        executed.append(True)
+        return await execute(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.service, '_wait_for_admission', gated_admission)
+    monkeypatch.setattr(runtime.service.repository, 'update', cancelling_update)
+    monkeypatch.setattr(runtime.service.repository, 'has_started_write', held_settlement)
+    monkeypatch.setattr(runtime.router, 'execute', observed_execute)
+    call = host.policy.invoke_console(identity, request_id=str(uuid4()), actor=ACTOR)
+    assert admission_entered.wait(5)
+    cancelled = asyncio.run_coroutine_threadsafe(runtime.service.cancel(call['invocation_id']), runtime.loop)
+    try:
+        assert settlement_entered.wait(5)
+
+        async def interrupt_settlement():
+            task = runtime.service._active[call['invocation_id']]['task']
+            task.cancel()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert not task.done()
+            assert call['invocation_id'] in runtime.service._active
+
+        asyncio.run_coroutine_threadsafe(interrupt_settlement(), runtime.loop).result(2)
+        assert runtime.service.get(call['invocation_id'])['status'] == 'CANCELLING'
+        assert not cancelled.done() and not executed
+    finally:
+        admit.set()
+        settle.set()
+    result = cancelled.result(5)
+    assert result['status'] == 'CANCELLED' and result['finished_at'] is not None
+    assert not executed and not runtime.service.active_invocations()
+    assert runtime.service.wait_sync(call['invocation_id'])['status'] == 'CANCELLED'
+    record_property('runtime_model', 'SERVICE_V2')
+    record_property('round', round_index)
+    record_property('cancellation_during_settlement', True)
+
+
 def test_slow_admission_database_does_not_hold_control_or_read_loop(direct_runtime, monkeypatch):
     _host, runtime, _identity = direct_runtime
     entered, release = threading.Event(), threading.Event()
