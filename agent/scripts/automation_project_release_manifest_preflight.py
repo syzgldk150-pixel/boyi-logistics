@@ -385,6 +385,7 @@ def typed_project_scheduled_write_crons(
     )
     crons: list[str] = []
     seen_task_ids: set[str] = set()
+    release_contract: dict[str, Any] | None = None
     for row in cursor.fetchall():
         if not isinstance(row, Mapping):
             raise error_class(
@@ -438,8 +439,14 @@ def typed_project_scheduled_write_crons(
             or snapshot.get("generation") != committed_generation
             or not isinstance(governance_anchor, Mapping)
             or not isinstance(compiled_invocations, Mapping)
-            or "scheduler" not in compiled_invocations
         ):
+            raise error_class("PROJECT_SCHEDULE_CONTRACT_INVALID")
+        if snapshot.get("runtime_model") == "SERVICE_V2":
+            if release_contract is None:
+                release_contract = _load_release_contract()
+            plugin_migration_scope.validate_service_v2_scheduler_contract(
+                snapshot, release_contract, cron_expression=row.get("cron_expression"), error_class=error_class)
+        elif "scheduler" not in compiled_invocations:
             raise error_class("PROJECT_SCHEDULE_CONTRACT_INVALID")
         scheduled_write = (
             policy_mode in {"PROJECT_FULL_AUTO", "LEGACY_SCHEDULE_ONLY"}
@@ -550,6 +557,9 @@ def _load_release_contract() -> dict[str, Any]:
         )
         select_migration_pair = sys.modules["shared.automation_plugin_v2_repository"]._select_authoritative_migration_pair
         source_is_superseded = sys.modules["shared.automation_plugin_migration_ownership"].source_is_superseded
+        scheduler_contribution_binding = sys.modules[
+            "shared.automation_plugin_generation_runtime_repository"
+        ].scheduler_contribution_binding
         policy_repository = _load_exact_module(
             "shared.automation_project_policy_repository",
             policy_repository_path,
@@ -782,6 +792,8 @@ def _load_release_contract() -> dict[str, Any]:
         "bootstrap_evidence": bootstrap_evidence,
         "select_migration_pair": select_migration_pair,
         "source_is_superseded": source_is_superseded,
+        "scheduler_contribution_binding": scheduler_contribution_binding,
+        "persistence_error_class": repository.OrchestrationPersistenceError,
         "release_projects": release_projects,
         "deferred_projects": deferred_projects,
         "release_tasks": release_tasks,

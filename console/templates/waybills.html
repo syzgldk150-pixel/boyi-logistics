@@ -759,6 +759,7 @@
       <a class="ghost-btn" href="{{ row.print_url }}" target="_blank" rel="noreferrer"><i data-feather="printer"></i> 打印</a>
       <a class="ghost-btn" href="{{ row.tracking_url }}"><i data-feather="map-pin"></i> 轨迹跟踪</a>
       <form action="/waybills/{{ row.id }}/status" method="post" data-waybill-cancel-form>
+        <input type="hidden" name="source" value="{{ row.source }}">
         <input type="hidden" name="status" value="cancelled">
         <input type="hidden" name="return_to" value="{{ current_url | default('/waybills') }}">
         <button class="waybill-danger-btn" type="submit" {% if row.status == 'cancelled' %}disabled{% endif %}>
@@ -914,9 +915,9 @@
           </thead>
           <tbody>
             {% for row in rows %}
-            <tr data-waybill-row="{{ row.id }}">
+            <tr data-waybill-row="{{ row.source }}:{{ row.id }}">
               <td class="waybill-col-select">
-                <button class="waybill-select-row" type="button" data-waybill-select="{{ row.id }}" aria-label="查看 {{ row.waybill_no }} 详情"></button>
+                <button class="waybill-select-row" type="button" data-waybill-select="{{ row.source }}:{{ row.id }}" aria-label="查看 {{ row.waybill_no }} 详情"></button>
               </td>
               <td class="waybill-col-no" data-col="no">
                 <a class="waybill-no-link" href="{{ row.tracking_url }}">{{ row.waybill_no }}</a>
@@ -948,7 +949,7 @@
           </tbody>
         </table>
         {% for row in rows %}
-        <template data-waybill-detail-template="{{ row.id }}">
+        <template data-waybill-detail-template="{{ row.source }}:{{ row.id }}">
           {{ detail_template(row) }}
         </template>
         {% endfor %}

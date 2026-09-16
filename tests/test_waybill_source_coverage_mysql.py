@@ -45,6 +45,10 @@ def database():
         for sql in migration.split(";"):
             if sql.strip():
                 cursor.execute(sql)
+        migration = (ROOT / "agent/migrations/051_separate_boyi_waybills.sql").read_text()
+        for sql in migration.split(";"):
+            if sql.strip():
+                cursor.execute(sql)
         connection.commit()
 
     @contextmanager
@@ -113,7 +117,26 @@ def test_manual_boyi_sequence_and_saved_date_keyword_query(manual_repository):
         assert [row["id"] for row in result["rows"]] == [first_id]
         assert result["summary"]["total"] == 1
         assert result["summary"]["fee_total"] == "20.00"
-    assert repo.get_waybill(first_id)["open_date"] == "2026-09-16"
+    assert repo.get_waybill(first_id, source="manual")["open_date"] == "2026-09-16"
+    assert repo.get_waybill_by_no(first_no, source="manual")["id"] == first_id
+    assert not rows(repo.connect)
+
+
+def test_boyi_and_provider_same_id_have_independent_print_and_status(manual_repository):
+    repo = manual_repository
+    boyi_id, number = repo.create_manual_waybill({"freight_fee": "20.00"})
+    provider_id = repo.create_waybill_from_fields({"waybill_no": "provider", "freight_fee": "30.00"}, source="yunda")
+    assert boyi_id == provider_id
+    result = repo.search_waybills()
+    assert result["summary"]["total"] == 2
+    assert {row["source"] for row in result["rows"]} == {"manual", "yunda"}
+    manual = repo.get_waybill_by_no(number)
+    assert manual["print_url"] == f"/waybills/{boyi_id}/print?source=manual"
+    assert repo.get_waybill(boyi_id, source="manual")["waybill_no"] == number
+    assert repo.get_waybill(provider_id)["waybill_no"] == "provider"
+    assert repo.update_waybill_status(boyi_id, "cancelled", source="manual")
+    assert repo.get_waybill(provider_id)["status"] == "in_transit"
+    assert repo.get_waybill(boyi_id, source="manual")["status"] == "cancelled"
 
 
 def test_failed_save_rolls_back_sequence_and_parallel_saves_do_not_duplicate(manual_repository):
@@ -135,7 +158,10 @@ def test_local_date_migration_preserves_numbers_fields_and_totals(manual_reposit
     manual_id, _ = repo.create_manual_waybill({"open_date": "2026/09/16", "freight_fee": "20.00"})
     provider_id = repo.create_waybill_from_fields({"waybill_no": "provider-fixture"}, source="yunda")
     with repo.connect() as connection, connection.cursor() as cursor:
-        cursor.execute("UPDATE waybills SET open_date = '2026/09/16' WHERE id IN (%s, %s)", [manual_id, provider_id])
+        cursor.execute("UPDATE boyi_waybills SET id = id + 100, open_date = '2026/09/16'")
+        cursor.execute("INSERT INTO waybills SELECT * FROM boyi_waybills")
+        cursor.execute("DELETE FROM boyi_waybills")
+        cursor.execute("UPDATE waybills SET open_date = '2026/09/16' WHERE id = %s", [provider_id])
     before = rows(repo.connect)
     migration = (ROOT / "agent/migrations/050_normalize_local_waybill_dates.sql").read_text()
     with repo.connect() as connection, connection.cursor() as cursor:
@@ -143,9 +169,18 @@ def test_local_date_migration_preserves_numbers_fields_and_totals(manual_reposit
     after = rows(repo.connect)
     expected = [dict(row) for row in before]
     for row in expected:
-        if row["id"] == manual_id:
+        if row["id"] == manual_id + 100:
             row["open_date"] = "2026-09-16"
     assert after == expected
+    migration = (ROOT / "agent/migrations/051_separate_boyi_waybills.sql").read_text()
+    with repo.connect() as connection, connection.cursor() as cursor:
+        for sql in migration.split(";"):
+            if sql.strip():
+                cursor.execute(sql)
+        cursor.execute("SELECT * FROM boyi_waybills ORDER BY id")
+        moved = cursor.fetchall()
+    assert moved == [row for row in expected if row["source"] == "manual"]
+    assert rows(repo.connect) == [row for row in expected if row["source"] != "manual"]
     result = repo.search_waybills({"source": "manual", "date_from": "2026-09-16", "date_to": "2026-09-16"})
     assert result["summary"]["total"] == 1
     assert result["summary"]["fee_total"] == "20.00"

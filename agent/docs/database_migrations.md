@@ -25,7 +25,7 @@ updated: 2026-09-16
 
 当前由迁移统一管理以下运行时结构：
 
-- 工作流与运单：`scheduled_tasks`、`workflow_resources`、`waybills`；
+- 工作流与运单：`scheduled_tasks`、`workflow_resources`、`waybills`、`boyi_waybills`；
 - Console 文档、OCR、回单、管理员与专线联系人表；
 - 共享财务账本表；
 - Agent 会话、消息、工具日志、知识库和 Phase 7 表；
@@ -186,3 +186,5 @@ CI 使用隔离的 `test_*` 数据库验证空库顺序执行 `001 -> … -> 034
 部分 DDL 状态下的 `027`/`030` 安全续跑、`017`/`018` 恢复后重应用、`--check`、JSON、外键、
 唯一约束、事务回滚和两个 worker 的 `SKIP LOCKED` 领取。测试代码只接受显式 CI 环境变量，
 不读取项目 `.env`。
+
+`051_separate_boyi_waybills.sql` 建立服务器 MySQL 的博益独立运单表，事务内迁移全部 `source=manual` 行，保留 ID、单号、金额、状态、日期及其他字段，再移除通用表中的相同行；失败时整体回滚数据搬迁。通用表继续保存 OCR 与承运商同步数据，寄件查询以显式公共字段联合读取，两表 ID 按来源区分。新单号仍由 `boyi_manual_waybill` 序列在保存事务内递增。

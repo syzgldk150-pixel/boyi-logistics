@@ -55,7 +55,7 @@ _SCAN_STATUS_SHORT_LABELS = {
     "问题扫描": "问题",
 }
 WAYBILL_SOURCE_LABELS = {
-    "manual": "手工",
+    "manual": "博益开单",
     "ocr": "OCR",
     "ronghui": "融辉寄件",
     "yunda": "韵达寄件",
@@ -794,6 +794,24 @@ class DocumentRepository:
         "cod_amount", "remark", "scan_status",
     ]
 
+    @classmethod
+    def _waybill_query_table(cls, source: str | None = None) -> str:
+        if source == "manual":
+            return "boyi_waybills"
+        if source and source != "all":
+            if source not in WAYBILL_SOURCE_LABELS:
+                raise ValueError("Invalid waybill source")
+            return "waybills"
+        columns = ", ".join([
+            "id", "document_id", *cls._WAYBILL_FIELD_NAMES,
+            "writer_id", "source", "status", "created_at", "updated_at",
+            "source_scope", "source_record_id", "source_account_id", "source_permission_scope",
+        ])
+        return (
+            f"(SELECT {columns} FROM waybills UNION ALL "
+            f"SELECT {columns} FROM boyi_waybills) AS saved_waybills"
+        )
+
     def _field_value(self, fields: dict[str, Any], field_name: str) -> str:
         entry = fields.get(field_name, "")
         if isinstance(entry, dict):
@@ -822,7 +840,8 @@ class DocumentRepository:
 
         placeholders = ", ".join(self.placeholder for _ in columns)
         col_names = ", ".join(columns)
-        sql = f"INSERT INTO waybills ({col_names}) VALUES ({placeholders})"
+        table = "boyi_waybills" if source == "manual" else "waybills"
+        sql = f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})"
         cursor.execute(sql, values)
         return int(cursor.lastrowid)
 
@@ -866,7 +885,7 @@ class DocumentRepository:
         self, fields: dict[str, Any], document_id: int | None = None,
         writer_id: str = "", source: str = "ocr",
     ) -> int:
-        """从 fields dict（OCR 确认后的结构）提取值，写入 waybills 表。"""
+        """保存确认后的字段；博益手工单独立存入服务器 boyi_waybills。"""
         now = _now_iso()
         with self.connect() as connection:
             cursor = connection.cursor()
@@ -897,8 +916,9 @@ class DocumentRepository:
             )
             return waybill_id, waybill_no
 
-    def get_waybill(self, waybill_id: int) -> dict[str, Any] | None:
-        sql = f"SELECT * FROM waybills WHERE id = {self.placeholder}"
+    def get_waybill(self, waybill_id: int, *, source: str | None = None) -> dict[str, Any] | None:
+        table = "boyi_waybills" if source == "manual" else "waybills"
+        sql = f"SELECT * FROM {table} WHERE id = {self.placeholder}"
         with self.connect() as connection:
             cursor = connection.cursor()
             cursor.execute(sql, [waybill_id])
@@ -912,8 +932,19 @@ class DocumentRepository:
         return data
 
     def get_waybill_by_no(self, waybill_no: str, *, source: str | None = None) -> dict[str, Any] | None:
-        row = self._waybills.get_by_number(waybill_no, source=source)
-        return self._row_to_waybill(row) if row else None
+        table = self._waybill_query_table(source)
+        sql = f"SELECT * FROM {table} WHERE waybill_no = {self.placeholder}"
+        params = [str(waybill_no or "").strip()]
+        if source:
+            sql += f" AND source = {self.placeholder}"
+            params.append(source)
+        with self.connect() as connection:
+            cursor = connection.cursor()
+            cursor.execute(sql + " LIMIT 2", params)
+            rows = cursor.fetchall()
+        if len(rows) > 1:
+            raise ValueError("waybill number is ambiguous; specify a verified source identity")
+        return self._row_to_waybill(rows[0]) if rows else None
 
     def upsert_provider_waybill(
         self,
@@ -1553,16 +1584,17 @@ class DocumentRepository:
         page_size = min(max(int(page_size or 50), 10), 100)
         offset = (page - 1) * page_size
         where_sql, params = self._build_waybill_search_where(filters)
+        table = self._waybill_query_table(str(filters.get("source", "") or "").strip().lower())
 
-        count_sql = f"SELECT COUNT(*) AS row_count FROM waybills WHERE {where_sql}"
+        count_sql = f"SELECT COUNT(*) AS row_count FROM {table} WHERE {where_sql}"
         rows_sql = (
-            f"SELECT * FROM waybills WHERE {where_sql} "
+            f"SELECT * FROM {table} WHERE {where_sql} "
             f"ORDER BY {self._waybill_order_clause(filters)} "
             f"LIMIT {self.placeholder} OFFSET {self.placeholder}"
         )
         summary_sql = (
             "SELECT source, created_at, open_date, freight_fee, transfer_fee, "
-            f"payment_method, cod_amount FROM waybills WHERE {where_sql}"
+            f"payment_method, cod_amount FROM {table} WHERE {where_sql}"
         )
 
         with self.connect() as connection:
@@ -1647,15 +1679,16 @@ class DocumentRepository:
     def _waybill_order_clause(self, filters: dict[str, Any]) -> str:
         sort = str(filters.get("sort", "") or "open_date_desc").strip().lower()
         if sort == "open_date_asc":
-            return "open_date ASC, created_at ASC, id ASC"
-        return "open_date DESC, created_at DESC, id DESC"
+            return "open_date ASC, created_at ASC, source ASC, id ASC"
+        return "open_date DESC, created_at DESC, source DESC, id DESC"
 
-    def update_waybill_status(self, waybill_id: int, status: str) -> bool:
+    def update_waybill_status(self, waybill_id: int, status: str, *, source: str | None = None) -> bool:
         normalized = normalize_waybill_status(status)
         if normalized not in WAYBILL_STATUS_LABELS:
             raise ValueError("Invalid waybill status")
+        table = "boyi_waybills" if source == "manual" else "waybills"
         sql = (
-            f"UPDATE waybills SET status = {self.placeholder}, updated_at = {self.placeholder} "
+            f"UPDATE {table} SET status = {self.placeholder}, updated_at = {self.placeholder} "
             f"WHERE id = {self.placeholder}"
         )
         with self.connect() as connection:
@@ -1747,6 +1780,8 @@ class DocumentRepository:
         data["opening_cost"] = _format_money(opening_cost)
         data["pickup_payment_amount"] = _format_money(pickup_payment)
         data["print_url"] = f"/waybills/{data.get('id')}/print"
+        if data.get("source") == "manual":
+            data["print_url"] += "?source=manual"
         data["tracking_url"] = f"/tracking?tracking_number={data.get('waybill_no', '')}"
         return data
 

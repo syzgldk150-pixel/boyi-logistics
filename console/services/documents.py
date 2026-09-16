@@ -681,7 +681,13 @@ class DocumentServiceMixin:
             self._redirect_with_message(handler, return_to, "当前只支持作废运单。", "warning")
             return
         try:
-            updated = self.repository.update_waybill_status(waybill_id, status)
+            source = str(values.get("source", "") or "")
+            if source == "manual":
+                updated = self.repository.update_waybill_status(waybill_id, status, source="manual")
+            elif source in {"", "ocr", "yunda", "ronghui"}:
+                updated = self.repository.update_waybill_status(waybill_id, status)
+            else:
+                raise ValueError("运单来源无效")
         except Exception as exc:
             self._redirect_with_message(handler, return_to, f"运单状态更新失败：{exc}", "warning")
             return
@@ -805,7 +811,7 @@ class DocumentServiceMixin:
 
         self._redirect_with_message(
             handler,
-            f"/waybills/{result.waybill_id}/print?autoprint=1",
+            f"/waybills/{result.waybill_id}/print?source=manual&autoprint=1",
             result.message,
             "success",
         )

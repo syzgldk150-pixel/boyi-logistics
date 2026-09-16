@@ -57,7 +57,7 @@ def test_incomplete_provider_refresh_does_not_present_local_total_as_platform_to
     app._control_plane_read_context = lambda _handler: {"_console_principal": {"actor_id": "fixture"}}
     app._agent_request = lambda *_args, **_kwargs: {"ok": False, "data": {"complete": False}}
     app._render_waybills(handler, {"source": ["yunda"], "date_from": ["2026-09-08"]})
-    assert "仅代表已保存的本地数据" in handler.wfile.getvalue().decode("utf-8")
+    assert "仅代表已保存的服务器数据" in handler.wfile.getvalue().decode("utf-8")
     assert len(repository.calls) == 1
 
 
@@ -104,8 +104,11 @@ class _WaybillRepo:
         self.calls.append({"filters": dict(filters), "page": page, "page_size": page_size})
         return self.result
 
-    def update_waybill_status(self, waybill_id, status):
-        self.calls.append({"waybill_id": waybill_id, "status": status})
+    def update_waybill_status(self, waybill_id, status, *, source=None):
+        call = {"waybill_id": waybill_id, "status": status}
+        if source is not None:
+            call["source"] = source
+        self.calls.append(call)
         return True
 
 
@@ -478,7 +481,7 @@ class WaybillQueryRenderTests(unittest.TestCase):
         self.assertEqual(1, len(repository.calls))
         self.assertEqual("2026/05/12", repository.calls[0]["filters"]["date_from"])
         self.assertEqual("2026/05/13", repository.calls[0]["filters"]["date_to"])
-        self.assertIn("本地快照", handler.wfile.getvalue().decode("utf-8"))
+        self.assertIn("服务器快照", handler.wfile.getvalue().decode("utf-8"))
 
     def test_date_filter_renders_read_only_snapshot_notice(self):
         repository = _WaybillRepo()
@@ -497,7 +500,7 @@ class WaybillQueryRenderTests(unittest.TestCase):
         )
 
         html = handler.wfile.getvalue().decode("utf-8")
-        self.assertIn("本地快照", html)
+        self.assertIn("服务器快照", html)
 
     def test_keyword_filter_queries_waybills(self):
         repository = _WaybillRepo()
@@ -637,7 +640,7 @@ class WaybillQueryRenderTests(unittest.TestCase):
 
         self.assertEqual(1, len(repository.calls))
         html = handler.wfile.getvalue().decode("utf-8")
-        self.assertIn("本地快照", html)
+        self.assertIn("服务器快照", html)
 
     def test_keyword_where_only_searches_allowed_identity_fields(self):
         repository = DocumentRepository.__new__(DocumentRepository)
@@ -689,8 +692,14 @@ class WaybillQueryRenderTests(unittest.TestCase):
     def test_order_clause_is_allowlisted(self):
         repository = DocumentRepository.__new__(DocumentRepository)
 
-        self.assertEqual("open_date ASC, created_at ASC, id ASC", repository._waybill_order_clause({"sort": "open_date_asc"}))
-        self.assertEqual("open_date DESC, created_at DESC, id DESC", repository._waybill_order_clause({"sort": "DROP TABLE"}))
+        self.assertEqual("open_date ASC, created_at ASC, source ASC, id ASC", repository._waybill_order_clause({"sort": "open_date_asc"}))
+        self.assertEqual("open_date DESC, created_at DESC, source DESC, id DESC", repository._waybill_order_clause({"sort": "DROP TABLE"}))
+
+    def test_boyi_cancellation_uses_dedicated_storage(self):
+        repository = _WaybillRepo()
+        app = _build_waybill_app(repository)
+        app._handle_waybill_status_update(_PostHandler({"status": "cancelled", "source": "manual"}), 12)
+        self.assertEqual([{"waybill_id": 12, "status": "cancelled", "source": "manual"}], repository.calls)
 
     def test_waybill_status_update_redirects_to_current_query(self):
         repository = _WaybillRepo()
