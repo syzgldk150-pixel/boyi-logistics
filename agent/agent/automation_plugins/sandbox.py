@@ -44,8 +44,9 @@ def _current_real_uid_task_count(proc_root: Path = _PROC_ROOT) -> int:
         for process_dir in process_dirs:
             try:
                 status = (process_dir / "status").read_bytes()
-            except FileNotFoundError:
-                # A process may exit after /proc was enumerated. All other
+            except (FileNotFoundError, ProcessLookupError):
+                # Linux may report ENOENT or ESRCH if a process exits after
+                # enumeration. Neither represents a live task to count. Other
                 # access and parsing errors remain fail closed below.
                 continue
             fields: dict[bytes, list[bytes]] = {}
