@@ -19,6 +19,10 @@ TOOL_DISPLAY_NAMES = {
 }
 
 
+def invocation_accepted_message(task_name: str) -> str:
+    return f"已受理：{task_name}。资源忙时会等待片刻，无需重复提交；完成后我会反馈结果。"
+
+
 def accepted_result_pending_message(task_name: str) -> str:
     """Describe a post-commit wait failure without inviting a duplicate run."""
 

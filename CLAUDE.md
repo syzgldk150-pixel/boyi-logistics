@@ -80,7 +80,7 @@
 - 系统保持 Agent + Console 双服务；Agent 提供直接业务接口、独立插件调用、账号会话与模型接口，Console 负责页面和本地业务读写。禁止新增独立 LLM 服务、消息中间件或 Console 侧编排器。当前边界见 `docs/architecture_direct_invocation.md`；`agent/docs/control_plane_v1.md` 仅保留历史离线规范。
 - 当前插件调用使用 `DirectPluginInvocationService` 和迁移 044 的 Invocation：入口事务核对账号、资源、权限及 committed generation；同一实例仍活跃时拒绝重复，不查询历史 Run 决定准入。真实宿主写阶段按物理目标有界协调，失败/取消后新调用不受旧记录拦截。
 - 普通查询/录入经 `business_composition.py` 与 `DirectBusinessService`，插件经 `DirectPluginInvocationService -> PluginExecutionRouter`，固定关键词与定时直接调用该入口。主系统不创建 Command/Run/Step；旧通用提交/重试接口不可用，禁止隐式回退旧 Runner。
-- 登录恢复与服务重启不恢复或补跑旧调用；直接失败不积压。`main.py` 禁用旧 Runner 领取，发布 hold 释放后它保持 `reserved`；定时使用现有 APScheduler 直接调用插件，不增加持久待领取队列。
+- 登录恢复与服务重启不恢复或补跑旧调用；当前进程的短暂资源等待遵守 30 秒上限，终态不积压。`main.py` 禁用旧 Runner 领取，发布 hold 释放后它保持 `reserved`；定时使用现有 APScheduler 直接调用插件，不增加持久待领取队列。
 - 新 Invocation 的开始/结束时间明确使用 UTC；旧领取、唤醒和审批时间合同仅供历史解释，见 `docs/control_plane_timebase.md`。不修改数据库时区，不把数据库本地时间直接标成 UTC，普通 Outbox 保持自身数据库时钟。
 - 历史未知写兼容和人工核验见 `docs/historical_write_recovery.md`：迁移 `042` 仅标记固定发布边界前已停止且缺少原始范围的回执，不更改结果；仅仍有有效执行租约的原 Run/Command/Step 关联上的缺失或损坏范围报错；停止、取消、失败的历史回执无论是否有原范围都不形成新任务执行锁。混合任务按已审核动作的真实写目标互斥，旧飞书回执只有原 lease 中唯一匹配该回执的绑定、目标摘要和原物理范围共同闭合时才缩窄冲突投影，UNKNOWN 与原记录不变。签名明确可选且完全未绑定的不可调用资源角色不扩大写锁；损坏或必填绑定仍保守处理。事项人工核验只闭合有证明的精确 lease，不恢复旧 Run。
 - 新调用事实由 `shared/plugin_invocation_repository.py` 保存；业务发布、代次 lease 和写回执使用显式 Unit of Work，连接 `autocommit=False`，运行时禁止 DDL。旧 Command/Work Item/Run/Step/Approval/Evidence 与 Outbox 仓储只服务历史查询、迁移和现有通知；旧 Worker 的 `SKIP LOCKED` 不是当前执行入口。
@@ -133,7 +133,7 @@
 
 ## 阶段一最终收尾合同
 
-- 当前有效验收矩阵为 `docs/low_maintenance_v32_acceptance.json` 的 R1 合同；保留原要求，分别核验 Direct/V2 关键场景轮次，不以历史 Runner 或旧 PASS 文件替代。收尾与第二轮接口交接见 `docs/phase1_final_closeout.md`。
+- 当前有效验收矩阵为 `docs/low_maintenance_v32_acceptance.json` 的 R1 合同及用户后续资源等待修订；保留原要求，分别核验 Direct/V2 关键场景轮次，不以历史 Runner 或旧 PASS 文件替代。收尾与第二轮接口交接见 `docs/phase1_final_closeout.md`。
 - `shared/problem_write_intents.py` 与迁移 `052_problem_write_intents.sql` 保存精确问题件业务目标的写入事实；UNKNOWN/迟到风险仅阻止该目标的新写，权威拒绝才允许新请求，无队列、超时释放或自动重放。新迁移不修改历史迁移字节。
 - `shared/async_work.py` 统一同步工作的重复取消排空；Direct 准入数据库事务与控制锁分开，实际资源写锁覆盖真实执行和核验期间。V2 Connector 在绑定解析后按物理资源或已审投影表协调，Host 回执记录实际持有的范围。
 - 插件局部测试与权威 ZIP 成员、清单和测试源码绑定；源码漂移拒绝打包。财务/客服迟到发布还须验证当前 Invocation 和生产者身份。本轮隔离验收不授权 ECS 部署或真实 TMS/飞书写入。

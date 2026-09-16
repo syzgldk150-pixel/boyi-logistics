@@ -133,7 +133,7 @@ def run_cancel_case(management, runner, boundary, unrelated, round_number):
         return cancellation
     cancellation = asyncio.run_coroutine_threadsafe(begin_cancel(), runner.loop).result(timeout=2)
     blocked = signed_request(management, f'/internal/v1/automation-projects/{management.scan_id}/invoke', payload={'request_id': str(uuid4())})
-    assert blocked['status'] == 'FAILED' and blocked['error_code'] == 'EXECUTION_RESOURCE_BUSY', blocked
+    assert blocked['status'] == 'STARTING' and blocked['waiting_for_resource'], blocked
     released_at = time.monotonic()
     boundary.write_release.set()
     async def settle():
@@ -142,13 +142,15 @@ def run_cancel_case(management, runner, boundary, unrelated, round_number):
     cancellation_seconds = time.monotonic() - released_at
     assert cancelled['status'] == 'WRITE_OUTCOME_UNKNOWN', cancelled
     assert cancellation_seconds <= 2, cancellation_seconds
+    waiting_preview = runner.service.wait_sync(blocked['invocation_id'], timeout_seconds=5)
+    assert waiting_preview['status'] == 'COMPLETED' and len(boundary.ledger) == 1, waiting_preview
     independent = invoke(management, runner, automation_id=unrelated)
     assert independent['status'] == 'COMPLETED'
     boundary.mode = 'SUCCESS'
     fresh = invoke(management, runner)
     assert fresh['status'] == 'COMPLETED' and len(boundary.ledger) == 1
     assert runner.service.get(formal['invocation_id'])['status'] == 'WRITE_OUTCOME_UNKNOWN'
-    return {'round': round_number, 'cancelled': cancelled, 'busy_call_ended': blocked,
+    return {'round': round_number, 'cancelled': cancelled, 'wait_receipt': blocked, 'waiting_preview': waiting_preview,
         'fresh_preview': fresh, 'independent_invocation': independent,
         'write_receipts': write_receipts(formal['invocation_id']),
         'cancellation_seconds_after_actual_port_drained': cancellation_seconds,
