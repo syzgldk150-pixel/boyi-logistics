@@ -4,7 +4,15 @@
   const WIDTH_MM = "74mm";
   const HEIGHT_MM = "92mm";
   const PAGE_NAME = "74mm×92mm 博益物流主单";
-  const BACKGROUND_URL = "/static/assets/waybill_label_background.jpg?v=20260916-master-v2";
+  const BACKGROUND_URL = "/static/assets/waybill_label_background.jpg?v=20260916-receipt-v3";
+  const RECEIPT_BACKGROUND_URL = "/static/assets/waybill_label_receipt_background.jpg?v=20260916-receipt-v3";
+  const receiptRequired = (value) => {
+    if (value === undefined || value === null || value === false || value === 0 || value === "0") return false;
+    if (value === true || value === 1 || value === "1") return true;
+    throw new Error("回单选项无效，请重新勾选");
+  };
+  const backgroundUrlFor = (data = {}) => receiptRequired(data.receiptRequired ?? data.receipt_required)
+    ? RECEIPT_BACKGROUND_URL : BACKGROUND_URL;
   // Coordinates and type sizes follow the supplied 1162 × 1450 master/sample.
   const SOURCE_WIDTH = 1162;
   const SOURCE_HEIGHT = 1450;
@@ -57,6 +65,7 @@
     if (options.blank) return {};
     const field = (canonical, source) => cleanText(data[canonical] ?? data[source]);
     return {
+      receiptRequired: receiptRequired(data.receiptRequired ?? data.receipt_required),
       waybillNo: field("waybillNo", "waybill_no"),
       date: field("date", "open_date").replaceAll("-", "/"),
       station: field("station", "destination_site"),
@@ -93,10 +102,6 @@
     fontScale: clampNumber(settings.print_font_scale, 100, 85, 115) / 100,
     templateScale: clampNumber(settings.print_template_scale, 100, 94, 106) / 100,
   });
-  const stripZeros = (number) => Number(number).toFixed(3).replace(/\.?0+$/, "");
-  const placedMm = (value, offset, settings) => `${stripZeros(offset + value * settings.templateScale)}mm`;
-  const sizedMm = (value, settings) => `${stripZeros(value * settings.templateScale)}mm`;
-
   // Padded content regions in source pixels, shared by HTML and native printing.
   const FIELD_LAYOUT = [
     { field: "waybillNo", x: 33, y: 264, w: 280, h: 85, fontPx: 64 },
@@ -158,11 +163,16 @@
       const font = CONTENT_FONT;
       for (let px = (item.fontPx || CONTENT_SIZE_PX) * settings.fontScale; px >= 22; px -= 0.5) {
         context.font = `${CONTENT_WEIGHT} ${px}px "${font}"`;
-        const lines = wrapText(value, item.w * 0.95, context);
+        const availableWidth = item.w * 0.95;
+        const widthScale = item.lines || value.includes("\n")
+          ? 1 : Math.min(1, availableWidth / context.measureText(value).width);
+        const lines = widthScale >= 0.85 && !value.includes("\n") && !item.lines
+          ? [value] : wrapText(value, availableWidth, context);
         const lineHeight = px * (item.leading || 1.18);
         if (lines.length > (item.lines || 1) || lines.length * lineHeight > item.h) continue;
         return [{
           field: item.field, content: lines.join("\n"), font, fontWeight: CONTENT_WEIGHT, align: "left",
+          widthScale: lines.length === 1 && !item.lines ? widthScale : 1,
           x: item.x * 74 / SOURCE_WIDTH,
           y: (item.y + (item.valign === "top" ? 0 : (item.h - lines.length * lineHeight) / 2)) * 92 / SOURCE_HEIGHT,
           w: item.w * 74 / SOURCE_WIDTH,
@@ -175,21 +185,64 @@
     });
   };
 
-  const labelCss = () => `<style>
-.ys-waybill-label, .ys-waybill-label * { box-sizing: border-box; }
-.ys-waybill-label { width:74mm; height:92mm; position:relative; overflow:hidden; background:#fff; color:#000; }
-.ys-waybill-background { position:absolute; display:block; user-select:none; pointer-events:none; }
-.ys-field { position:absolute; white-space:pre; color:#000; font-weight:${CONTENT_WEIGHT}; }
-</style>`;
+  const backgroundImages = new Map();
+  const loadBackground = (url) => {
+    if (!backgroundImages.has(url)) {
+      backgroundImages.set(url, new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => {
+          if (image.naturalWidth !== SOURCE_WIDTH || image.naturalHeight !== SOURCE_HEIGHT) {
+            reject(new Error("Waybill label background load failed: 底图尺寸不匹配"));
+          } else resolve(image);
+        };
+        image.onerror = () => reject(new Error("Waybill label background load failed: 底图无法读取"));
+        image.src = url;
+      }).catch((error) => {
+        backgroundImages.delete(url);
+        throw error;
+      }));
+    }
+    return backgroundImages.get(url);
+  };
+
+  // Rasterize once at master resolution. C-Lodop must not reflow the text again.
+  async function buildPrintImage(data = {}, options = {}) {
+    await loadContentFont();
+    const normalized = normalizeData(data, options);
+    const background = await loadBackground(backgroundUrlFor(normalized));
+    const items = buildDynamicItems(normalized, readSettings(options));
+    const canvas = document.createElement("canvas");
+    canvas.width = SOURCE_WIDTH;
+    canvas.height = SOURCE_HEIGHT;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("无法生成打印面单，请刷新页面后重试");
+    context.drawImage(background, 0, 0);
+    context.fillStyle = "#000000";
+    context.textBaseline = "alphabetic";
+    for (const item of items) {
+      const px = item.fontPt * 25.4 / 72 * SOURCE_HEIGHT / 92;
+      const lineHeight = item.lineHeightMm * SOURCE_HEIGHT / 92;
+      context.font = `${item.fontWeight} ${px}px "${item.font}"`;
+      const metrics = context.measureText("国Ag");
+      const ascent = metrics.actualBoundingBoxAscent;
+      const descent = metrics.actualBoundingBoxDescent;
+      const baseline = (lineHeight - ascent - descent) / 2 + ascent;
+      item.content.split("\n").forEach((line, index) => {
+        context.save();
+        context.translate(item.x * SOURCE_WIDTH / 74,
+          item.y * SOURCE_HEIGHT / 92 + index * lineHeight + baseline);
+        context.scale(item.widthScale, 1);
+        context.fillText(line, 0, 0);
+        context.restore();
+      });
+    }
+    return canvas.toDataURL("image/png");
+  }
 
   async function buildHtml(data = {}, options = {}) {
-    await loadContentFont();
     const settings = readSettings(options);
-    const fields = buildDynamicItems(normalizeData(data, options), settings).map((item) =>
-      `<div class="ys-field" data-field="${item.field}" style="left:${placedMm(item.x, settings.offsetX, settings)};top:${placedMm(item.y, settings.offsetY, settings)};width:${sizedMm(item.w, settings)};height:${sizedMm(item.h, settings)};font-family:'${item.font}',sans-serif;font-size:${item.fontPt * settings.templateScale}pt;line-height:${sizedMm(item.lineHeightMm, settings)};text-align:${item.align}">${escapeHtml(item.content)}</div>`
-    ).join("");
-    const background = `<img class="ys-waybill-background" src="${BACKGROUND_URL}" alt="" style="left:${placedMm(0, settings.offsetX, settings)};top:${placedMm(0, settings.offsetY, settings)};width:${sizedMm(74, settings)};height:${sizedMm(92, settings)};">`;
-    return `${labelCss()}<div class="ys-waybill-label" data-waybill-background-template="true">${background}${fields}</div>`;
+    const source = await buildPrintImage(data, options);
+    return `<div class="ys-waybill-label" data-waybill-background-template="true" style="width:74mm;height:92mm;position:relative;overflow:hidden;background:#fff"><img alt="博益运单打印预览" style="position:absolute;left:${settings.offsetX}mm;top:${settings.offsetY}mm;width:${74 * settings.templateScale}mm;height:${92 * settings.templateScale}mm;max-width:none" src="${escapeHtml(source)}"></div>`;
   }
 
   async function renderPreview(target, data = {}, options = {}) {
@@ -199,6 +252,6 @@
 
   global.WaybillLabelHtml = {
     width: WIDTH_MM, height: HEIGHT_MM, pageName: PAGE_NAME, backgroundUrl: BACKGROUND_URL,
-    normalizeData, readSettings, loadContentFont, buildDynamicItems, buildHtml, renderPreview,
+    normalizeData, readSettings, loadContentFont, buildDynamicItems, backgroundUrlFor, buildPrintImage, buildHtml, renderPreview,
   };
 })(window);
