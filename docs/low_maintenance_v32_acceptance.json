@@ -422,7 +422,8 @@
         "tests/test_direct_plugin_invocation_mysql.py",
         "tests/test_direct_closeout_mysql.py::test_repeated_cancel_drains_real_verification_before_reuse",
         "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
-        "probe:scan_cancel_recovery"
+        "probe:scan_cancel_recovery",
+        "tests/test_direct_closeout_mysql.py::test_waiter_cancellation_drains_settlement_before_releasing_ownership"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
@@ -471,6 +472,15 @@
           "minimum_cases": 20,
           "properties": {
             "runtime_model": "SERVICE_V2"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_waiter_cancellation_drains_settlement_before_releasing_ownership",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "cancellation_during_settlement": "True"
           },
           "distinct_property": "round"
         }

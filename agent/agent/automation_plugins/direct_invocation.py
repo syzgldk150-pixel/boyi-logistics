@@ -394,9 +394,13 @@ class DirectPluginInvocationService:
                 # and report its result; cancellation cannot undo that commit.
                 await completion
         except BaseException as exc:
-            unknown = await asyncio.to_thread(self.repository.has_started_write, call_id)
             cancelled = isinstance(exc, asyncio.CancelledError)
-            await asyncio.to_thread(self.repository.update, call_id, status="WRITE_OUTCOME_UNKNOWN" if unknown else "CANCELLED" if cancelled else "FAILED", error_code="WRITE_OUTCOME_UNKNOWN" if unknown else "CANCELLED" if cancelled else getattr(exc, "code", type(exc).__name__.upper()), error_summary="执行已停止，已发出的写入结果尚未确认" if unknown else "本次执行已取消" if cancelled else redact_text(exc))
+            def settle_failure(error=exc):
+                unknown = self.repository.has_started_write(call_id)
+                self.repository.update(call_id, status="WRITE_OUTCOME_UNKNOWN" if unknown else "CANCELLED" if cancelled else "FAILED", error_code="WRITE_OUTCOME_UNKNOWN" if unknown else "CANCELLED" if cancelled else getattr(error, "code", type(error).__name__.upper()), error_summary="执行已停止，已发出的写入结果尚未确认" if unknown else "本次执行已取消" if cancelled else redact_text(error))
+            # A waiter can observe cancel_requested before cancel() delivers
+            # Task.cancel(). Drain its entire settlement before releasing it.
+            await _preflight_thread(settle_failure)
         finally:
             EXECUTION_ACTION_SCOPES.reset(action_token)
             EXECUTION_RESOURCE_KEYS.reset(resource_token)
@@ -527,7 +531,7 @@ class DirectPluginInvocationService:
                     await completion
             except BaseException as exc:
                 cancelled = isinstance(exc, asyncio.CancelledError)
-                await asyncio.to_thread(self.repository.update, row["invocation_id"], status="WRITE_OUTCOME_UNKNOWN" if write and started else "CANCELLED" if cancelled else "FAILED", error_code="WRITE_OUTCOME_UNKNOWN" if write and started else "CANCELLED" if cancelled else getattr(exc, "code", type(exc).__name__.upper()), error_summary=redact_text(exc))
+                await _preflight_thread(self.repository.update, row["invocation_id"], status="WRITE_OUTCOME_UNKNOWN" if write and started else "CANCELLED" if cancelled else "FAILED", error_code="WRITE_OUTCOME_UNKNOWN" if write and started else "CANCELLED" if cancelled else getattr(exc, "code", type(exc).__name__.upper()), error_summary=redact_text(exc))
             finally:
                 with self._lock:
                     self._active.pop(row["invocation_id"], None)
