@@ -24,6 +24,10 @@ EXECUTION_ACTION_SCOPES: ContextVar[Mapping[ActionKey, tuple[LockKey, ...]]] = C
     "execution_action_scopes", default=MappingProxyType({}),
 )
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
+# Host-only actual scope after Connector binding/schema validation.
+HOST_OPERATION_RESOURCE_KEYS: ContextVar[tuple[LockKey, ...] | None] = ContextVar(
+    "host_operation_resource_keys", default=None,
+)
 # Closed production adapters, not action-name heuristics. Other browser writes
 # retain their existing account-wide scope until their handler is reviewed.
 _BROWSER_WRITES = frozenset({"ronghui.scan_next.submit"})
@@ -180,3 +184,27 @@ def execution_keys_conflict(left: LockKey, right: LockKey) -> bool:
     if right[0] == "account-write" and left[0] in {"account-resource", "browser-write"}:
         return left[1] == right[1]
     return False
+
+
+def connector_write_locks(provider, binding, saved_resource_provider) -> tuple[LockKey, ...] | None:
+    """Use a resolved Host binding, never package-supplied argument identities."""
+    from agent.automation_plugins.connector_registry import ConnectorBindingRef, ConnectorResourceBindingRef
+    from agent.orchestration.models import OrchestrationError
+
+    primitive = getattr(provider.handler, "execution_primitive", None)
+    operation, action = primitive[:2] if primitive else (None, None)
+    if isinstance(binding, ConnectorResourceBindingRef):
+        record = saved_resource_provider(binding.resource_id) if saved_resource_provider else None
+        key = _saved_physical_key(binding.resource_id, record) if isinstance(record, Mapping) else None
+        if key is None or key[1] != binding.kind:
+            raise OrchestrationError("EXECUTION_RESOURCE_UNVERIFIED", "无法核实本次写入的实际资源")
+        if action in FEISHU_PARENT_WRITE_ACTIONS:
+            key = (*key[:3], "*")
+        return (key,)
+    if operation == "projection.invoke":
+        return tuple(("projection-write", table) for table in _PROJECTION_TABLES.get(action, ("*",)))
+    if isinstance(binding, ConnectorBindingRef):
+        kind = "browser-write" if operation == "browser.invoke" and action in _BROWSER_WRITES else "account-write"
+        return ((kind, binding.account_id),)
+    # Unreviewed internal providers retain their signed execution scope.
+    return None

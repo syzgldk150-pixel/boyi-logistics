@@ -5,30 +5,37 @@ import secrets
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from Crypto.PublicKey import ECC
 
-from agent.automation_plugins.first_party import resolve_first_party_manifests
-from agent.automation_plugins.package import Ed25519TrustStore
-from agent.tool_registry import ToolRegistry
+from agent.automation_plugins.connector_registry import ConnectorRegistry
+from agent.automation_plugins.scan_connectors_v2 import build_scan_connectors
+from agent.automation_plugins.arrival_connectors_v2 import build_arrival_connectors
+from tests.v32_acceptance.service_v2_artifacts import build_artifact
 from plugin_core_adapters.first_party import build_production_first_party_core_handler_map
 from tests.v32_acceptance.daily_protocol import ACCOUNT_ID, MAIN_CODE, DailyAccounts
 from tests.v32_acceptance.daily_scan import ACTOR, RUNTIME, connect, prepare_database, run_scan, setup_scan, signed_request
 from tests.v32_acceptance.daily_stats_protocol import DailyStatsProtocol
 from tests.v32_acceptance.daily_browser import DailyBrowser
 from tests.v32_acceptance.console_fixture import ConsoleFixture
-from tests.v32_acceptance.first_party_fixture import bootstrap, isolated_migration_accounts
 from tests.v32_acceptance.management_fixture import ManagementFixture
 from tests.direct_invocation_fixture import DirectFixture
 
 
-def setup_stats(management):
-    automation_id = 'arrival_stats'
+def setup_stats(management, artifact=None):
+    from tests.v32_acceptance.service_v2_artifacts import install_artifact
+    automation_id = (install_artifact(management, artifact, actor=ACTOR, name='隔离到货统计 V2')
+                     if artifact is not None else 'arrival_stats')
     entry = management.catalog.require(automation_id)
     resources = {role: identity for role, identity in entry.resource_bindings.items() if role not in {'feishu_route', 'webhook_route'}}
+    if artifact is not None:
+        resources = {'arrival_stats_primary_sheet': 'phase7.arrive_primary_sheet',
+                     'arrival_stats_secondary_sheet': 'phase7.arrive_secondary_sheet',
+                     'arrival_stats_archive_sheet': 'phase7.stats_archive_sheet',
+                     'arrival_stats_split_pending_sheet': 'phase7.split_pending_target_sheet'}
     target_date = datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
     management.configuration.save(automation_id, config={'target_date': target_date,
         'pending_sheet_disabled': True, 'archive_snapshot': False, 'dry_run': False},
-        account_bindings={'account_id': [ACCOUNT_ID]}, resource_bindings=resources, enabled_entrypoints=('console',),
+        account_bindings={'arrival_stats_tms' if artifact else 'account_id': [ACCOUNT_ID]}, resource_bindings=resources,
+        enabled_entrypoints=('manual_run',) if artifact else ('console',),
         schedule={'kind': 'none', 'times': [], 'enabled': False}, device_id=None,
         actor_id=ACTOR.actor_id, actor_role='super_admin', request_id=str(uuid4()),
         expected_project_configuration_version=entry.project_config_version)
@@ -41,14 +48,14 @@ def setup_stats(management):
     entry = management.catalog.require(automation_id)
     management.policy.update_policy(automation_id, mode='PROJECT_FULL_AUTO', request_id=str(uuid4()), comment='isolated A01 only',
         expected_policy_version=policy['policy_version'], expected_project_configuration_version=entry.project_config_version, actor=ACTOR)
+    return automation_id
 
 
-def run_stats(management, runner, boundary, *, browser=None, configure=True):
-    automation_id = 'arrival_stats'
+def run_stats(management, runner, boundary, *, browser=None, configure=True, automation_id='arrival_stats'):
     if configure:
         setup_stats(management)
     target_date = datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
-    path, request_id = '/internal/v1/automation-projects/arrival_stats/invoke', str(uuid4())
+    path, request_id = f'/internal/v1/automation-projects/{automation_id}/invoke', str(uuid4())
     receipt = browser.run(automation_id) if browser else signed_request(management, path, payload={'request_id': request_id})
     result = runner.service.wait_sync(receipt['invocation_id'])
     if result['status'] != 'COMPLETED':
@@ -79,33 +86,23 @@ def run_stats(management, runner, boundary, *, browser=None, configure=True):
 def main():
     prepare_database()
     account_manager = DailyAccounts()
-    private_key = ECC.generate(curve='Ed25519')
-    trust = Ed25519TrustStore({'v32-daily': private_key.public_key().export_key(format='raw')})
-    manifests = resolve_first_party_manifests(ToolRegistry(), _plugin_ids=frozenset({'sync_scan_codes', 'sync_arrival_stats'}))
-    keys = {(item['operation'], item['action']) for manifest in manifests.values() for item in manifest.runtime_permissions['broker_operations']}
-    migration_accounts = isolated_migration_accounts()
-    for identity in ('scan_codes', 'arrival_stats'):
-        migration_accounts[identity] = {'account_id': [ACCOUNT_ID]}
+    artifacts = {plugin: build_artifact(plugin, RUNTIME / 'artifacts') for plugin in ('sync_scan_codes_v2', 'sync_arrival_stats_v2')}
     with DailyStatsProtocol() as boundary, boundary.authentication_boundaries():
         handlers = build_production_first_party_core_handler_map(cursor_secret=secrets.token_bytes(32),
-            account_manager=account_manager, allowed_action_keys=keys, capability_authorizer=boundary.authorize)
+            account_manager=account_manager, capability_authorizer=boundary.authorize)
+        connectors = ConnectorRegistry((*build_scan_connectors(handlers), *build_arrival_connectors(handlers)))
         with ManagementFixture(connection_factory=connect, runtime_root=RUNTIME, account_manager=account_manager,
-                broker_handlers=handlers, upload_signature_verifier=trust, enable_directory_faults=False,
-                resource_provider=boundary.resource_loader, migration_account_bindings=migration_accounts) as management:
-            bootstrap(management, private_key=private_key, trust=trust, key_id='v32-daily')
-            for identity in ('scan_codes', 'arrival_stats'):
-                reconciled = management.targets.reconcile_project(identity)
-                if management.catalog.require(identity).committed_snapshot is None:
-                    raise AssertionError(f'actual {identity} reconciliation did not commit: {reconciled}')
+                broker_handlers=handlers, enable_directory_faults=False,
+                resource_provider=boundary.resource_loader, connector_registry=connectors) as management:
             with DirectFixture(management, saved_resource_provider=boundary.resource_loader) as runner:
-                setup_scan(management)
-                setup_stats(management)
+                scan_id = setup_scan(management, artifacts['sync_scan_codes_v2'])
+                stats_id = setup_stats(management, artifacts['sync_arrival_stats_v2'])
                 with ConsoleFixture(agent_base_url=management.url, internal_token=management.internal_token,
                         signing_secret=management.signing_secret, runtime_root=RUNTIME/'console') as console, DailyBrowser(console) as browser:
-                    scan = run_scan(management, runner, boundary, browser=browser, configure=False)
-                    stats = run_stats(management, runner, boundary, browser=browser, configure=False)
+                    scan = run_scan(management, runner, boundary, browser=browser, configure=False, automation_id=scan_id)
+                    stats = run_stats(management, runner, boundary, browser=browser, configure=False, automation_id=stats_id)
                     assert browser.errors == [], browser.errors
-                report = {'status': 'PASS', 'scan': scan, 'statistics': stats, 'runtime': runner.snapshot(),
+                report = {'status': 'PASS', 'runtime_model': 'SERVICE_V2', 'scan': scan, 'statistics': stats, 'runtime': runner.snapshot(),
                     'executed_at': datetime.now(timezone.utc).isoformat()}
     output = RUNTIME.parent / 'a01-scan-statistics.json'
     output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')

@@ -101,4 +101,5 @@ def reviewed_connector_handler(reviewed, *, tool, operation, action, role,
         public = {key: value for key, value in result.items() if key != "evidence_ref"}
         return encode_result(public) if encode_result else public
 
+    invoke.execution_primitive = (operation, action, role)
     return invoke

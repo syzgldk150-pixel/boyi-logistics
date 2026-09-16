@@ -96,7 +96,7 @@ def main():
     if original_contents != candidate_contents:
         raise AssertionError('C04 candidate changed existing settings or business payload')
     package = artifact.read_bytes()
-    report = {'status': 'RUNNING', 'artifact': {'path': str(artifact), 'sha256': sha256(package).hexdigest()}, 'page_errors': [], 'http_responses': []}
+    report = {'status': 'RUNNING', 'runtime_model': 'SERVICE_V2', 'artifact': {'path': str(artifact), 'sha256': sha256(package).hexdigest()}, 'page_errors': [], 'http_responses': []}
     report['candidate_scope'] = {'label': 'TEST_ONLY', 'version': manifest['version'],
         'original_version': json.loads(original_manifest)['version'], 'original_sha256': sha256(baseline.read_bytes()).hexdigest(),
         'changed_fields': ['version', 'contributes.harness'], 'unchanged_files': sorted(original_contents),

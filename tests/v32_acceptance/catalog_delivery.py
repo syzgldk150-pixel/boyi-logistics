@@ -95,7 +95,7 @@ def main():
             failures.append(error.args[0])
             raise
 
-    report = {'status': 'RUNNING'}
+    report = {'status': 'RUNNING', 'runtime_model': 'SERVICE_V2'}
     try:
         with ManagementFixture(connection_factory=connection_factory, runtime_root=runtime,
                 enable_directory_faults=False) as management:

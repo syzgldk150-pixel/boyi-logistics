@@ -102,13 +102,16 @@ def main():
             persisted = []
             if invocation_ids:
                 with connect() as connection, connection.cursor() as cursor:
-                    cursor.execute("SELECT invocation_id,status FROM automation_plugin_invocations WHERE invocation_id IN (" + ",".join(["%s"] * len(invocation_ids)) + ")", tuple(invocation_ids))
+                    cursor.execute("SELECT invocation_id,status,result_json FROM automation_plugin_invocations WHERE invocation_id IN (" + ",".join(["%s"] * len(invocation_ids)) + ")", tuple(invocation_ids))
                     persisted = cursor.fetchall()
+                    for row in persisted:
+                        raw = row.pop('result_json')
+                        row['result'] = json.loads(raw) if isinstance(raw, str) else raw
             result = distribution(rows, "acceptance_ms", 500)
             if len(rows) != 100 or len(persisted) != len(invocation_ids) or len(set(invocation_ids)) != len(invocation_ids):
                 result["status"] = "FAIL"
             report = {"scope": "actual browser form -> authenticated Console -> signed policy -> immediate process admission -> MySQL Invocation fact; execution separately timed",
-                "status": result["status"], "result": result, "raw_samples": rows,
+                "status": result["status"], "runtime_model": "SERVICE_V2", "result": result, "raw_samples": rows,
                 "persisted_invocations": persisted, "browser": browser, "concurrent_clients": 4, "distinct_authenticated_administrators": 4,
                 "automation_ids": [entry.automation_id for entry in entries], "runtime": runtime_evidence,
                 "business_execution": "actual synthetic compute plugin only; no first-party daily business acceptance claim"}

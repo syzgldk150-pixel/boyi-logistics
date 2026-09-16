@@ -1,4 +1,4 @@
-"""M02: real signed finance package lifecycle and raw external HTTP fixture.
+"""M02: current Service V2 finance lifecycle and raw external HTTP fixture.
 
 Only the external supplier boundary is synthetic. Parser, broker, Invocation,
 generation leases, finance publication, signed management and Console are real.
@@ -24,20 +24,17 @@ from uuid import uuid4
 
 import httpx
 import pymysql
-from Crypto.PublicKey import ECC
-
-from agent.automation_plugins.first_party import first_party_payload_files, resolve_first_party_manifests
-from agent.automation_plugins.manifest import AutomationPluginManifest
-from agent.automation_plugins.package import Ed25519PackageSigner, Ed25519TrustStore, build_signed_plugin_zip
+from agent.automation_plugins.connector_registry import ConnectorRegistry
+from agent.automation_plugins.finance_connectors_v2 import build_finance_connectors
 from agent.orchestration.models import Actor, ActorType
 from agent.tms_runtime.scripts.finance_capture_common import RawFinanceCapture
-from agent.tool_registry import ToolRegistry
 from plugin_core_adapters.finance import build_production_finance_handler_map
 from shared.finance import FinanceRepository
 from shared.contracts import api_success
 from tests.v32_acceptance.management_fixture import ManagementFixture
 from shared.plugin_invocation_repository import TERMINAL_INVOCATION_STATUSES
 from tests.direct_invocation_fixture import DirectFixture
+from tests.v32_acceptance.service_v2_artifacts import build_artifact, install_artifact
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = ROOT / ".task_tmp" / "v32" / "m02"
@@ -184,42 +181,32 @@ class Accounts:
         return {"username": "synthetic-login-" + account_id}
 
 
-def packages(private_key, *, versions=("1.0.22", "1.0.23")):
-    source = resolve_first_party_manifests(ToolRegistry())["sync_finance_bills"]
-    result = {}
-    for name, version in zip(("baseline", "candidate"), versions, strict=True):
-        mapping = source.to_signed_mapping()
-        mapping["version"] = version
-        manifest = AutomationPluginManifest.from_mapping(mapping)
-        files = first_party_payload_files(source)
-        if name == "candidate":
-            field_source = files["payload/finance_fields.py"]
-            old = b'"waybill_no": "BILL_CODE"'
-            if field_source.count(old) != 1:
-                raise AssertionError("M02 parser mapping must resolve exactly")
-            files["payload/finance_fields.py"] = field_source.replace(old,
-                b'"waybill_no": "REFERENCE_BILL_V2"').replace(b'"bill_code": "BILL_CODE"',
-                b'"bill_code": "REFERENCE_BILL_V2"')
-        package = build_signed_plugin_zip(manifest, files,
-            signer=Ed25519PackageSigner(key_id="v32-m02", private_key=private_key))
-        result[name] = {"version": version, "bytes": package, "sha256": sha256(package).hexdigest(),
-            "files": {path: sha256(value).hexdigest() for path, value in files.items()}}
-    return result
+def packages(output_root):
+    plugin_id = "sync_finance_bills_v2"
+    baseline = build_artifact(plugin_id, output_root)
+    # Adapt the changed supplier field in the package before the unchanged
+    # canonical validator. Missing new fields still fail; there is no fallback.
+    candidate = build_artifact(plugin_id, output_root, label="candidate", version="98.2.0",
+        edits={"payload/action.py": [(b"canonical_ronghui_row(item, target_date=target_date,",
+            b'canonical_ronghui_row({**item, "BILL_CODE": item["REFERENCE_BILL_V2"]}, target_date=target_date,')]})
+    changed = {name for name in baseline["files"] if baseline["files"][name] != candidate["files"][name]}
+    assert changed == {"manifest.json", "payload/action.py"}, changed
+    return {"baseline": baseline, "candidate": candidate}
 
 
 @contextmanager
 def composed():
     account_manager = Accounts()
-    private_key = ECC.generate(curve="Ed25519")
-    artifacts = packages(private_key)
+    runtime = RUNTIME / uuid4().hex[:10]
+    artifacts = packages(runtime / "artifacts")
     with SupplierFixture() as supplier:
         handlers = build_production_finance_handler_map(cursor_secret=secrets.token_bytes(32),
             account_manager=account_manager, repository_factory=lambda: FinanceRepository(connect),
             capture_port=supplier.capture, capability_authorizer=supplier.authorize)
-        trust = Ed25519TrustStore({"v32-m02": private_key.public_key().export_key(format="raw")})
-        with ManagementFixture(connection_factory=connect, runtime_root=RUNTIME / uuid4().hex[:10],
+        connectors = ConnectorRegistry(build_finance_connectors(handlers))
+        with ManagementFixture(connection_factory=connect, runtime_root=runtime,
                 account_manager=account_manager, broker_handlers=handlers,
-                upload_signature_verifier=trust, enable_directory_faults=False) as management:
+                connector_registry=connectors, enable_directory_faults=False) as management:
             management.app.add_api_route("/internal/v1/admin/accounts",
                 lambda: api_success({"accounts": account_manager.list_accounts()}), methods=["GET"])
             with DirectFixture(management, account_manager=account_manager) as direct:
@@ -228,9 +215,8 @@ def composed():
 
 def setup_instance(management, artifact, *, automation_id=None):
     if automation_id is None:
-        installed = management.management.install(artifact["bytes"], instance_name="M02 隔离真实财务采集",
-            request_id=str(uuid4()), transport_package_sha256=artifact["sha256"], actor=ACTOR, module="finance")
-        automation_id = installed["automation_id"]
+        automation_id = install_artifact(management, artifact, actor=ACTOR,
+            name="M02 隔离真实财务采集", module="finance")
     entry = management.catalog.require(automation_id)
     management.management.save_plugin_settings(automation_id,
         config={"mode": "sync", "target_date": TARGET, "rescan_days": 1, "platform": "ronghui"},
