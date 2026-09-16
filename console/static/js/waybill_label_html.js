@@ -10,6 +10,7 @@
   const SOURCE_HEIGHT = 1402;
   const CONTENT_FONT = "黑体";
   const CONTENT_WEIGHT = 700;
+  const CONTENT_SIZE_PX = 44;
   let contentFontPromise;
   const loadContentFont = () => {
     if (!contentFontPromise) {
@@ -159,7 +160,7 @@
       const value = cleanText(data[item.field]);
       if (!value) return [];
       const font = CONTENT_FONT;
-      for (let px = 32 * settings.fontScale; px >= 22; px -= 0.5) {
+      for (let px = CONTENT_SIZE_PX * settings.fontScale; px >= 22; px -= 0.5) {
         context.font = `${CONTENT_WEIGHT} ${px}px "${font}"`;
         const lines = wrapText(value, item.w * 0.95, context);
         const lineHeight = px * 1.18;
