@@ -1100,7 +1100,7 @@ def test_internal_service_invocation_uses_normal_generation_lease_and_opaque_cha
     )
     identity = "11111111-1111-4111-8111-111111111111"
     class DirectAdmission:
-        def reserve_provider(self, invocation_id, capability):
+        async def reserve_provider(self, invocation_id, capability):
             assert invocation_id == identity
             assert capability["operation_type"] == "read"
             return (), {}
