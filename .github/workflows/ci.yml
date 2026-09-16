@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-22.04
     # Full MySQL and real-sandbox regression now exceeds the old job budget.
     # This is the CI job limit; business/browser performance gates are unchanged.
-    timeout-minutes: 45
+    timeout-minutes: 75
     services:
       mysql:
         image: mysql:8.0
@@ -131,8 +131,8 @@ jobs:
           )
           test "${#root_tests[@]}" -gt 0
           test "${#agent_tests[@]}" -gt 0
-          pytest -q "${root_tests[@]}"
-          pytest -q "${agent_tests[@]}"
+          pytest -q --maxfail=1 --tb=short "${root_tests[@]}"
+          pytest -q --maxfail=1 --tb=short "${agent_tests[@]}"
       - name: Audit deferred first-party source without gating this release
         # BLOCKED action extraction remains visible, but cannot veto a signed
         # release whose payload does not contain those source trees.

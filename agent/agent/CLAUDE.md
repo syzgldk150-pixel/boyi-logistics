@@ -136,3 +136,10 @@
 - `automation_plugins/production_coeffects.py` 负责读取插件所依赖的账号、资源与接口状态；`production.py` 负责运行时组合与切换。
 - V2 预览与正式调用在准入和代次绑定后均按已安装包声明的具体操作确定权限与读写类型，不能用包中正式操作的写权限代替预览权限。
 - 现有扫描、统计、签收状态回调迁移后直接调用当前 V2 入口，参数只来自入口声明及已保存设置。
+
+## 当前 Direct 写入收尾
+
+- `orchestration/execution_resources.py` 在 V2 Connector 宿主解析实际绑定后给出物理写范围；同表别名跨插件/凭据互斥，独立表格可并行，投影使用已审共享表范围。`broker.py` 回执记录 Host 实际持锁范围，插件不能自报。
+- `automation_plugins/direct_invocation.py` 把同步准入与控制锁分离，重复取消通过 `shared.async_work.drain_thread` 等待真实线程结束；Connector 同步处理器同样不阻塞事件循环。旧 owner 终结后不能迟到发布新结果。
+- `plugin_core_adapters/problem_actions.py` 使用共享目标写入事实保护问题件新 UUID 重触发；问题件追加无法权威核验时明确 UNKNOWN，不依据暂时空回读释放目标。
+- Harness 后端不可用只关闭相应 AI 入口，不连带禁用相同实例合法固定入口；具体入口仍由 ManagedContributionRegistry 校验。

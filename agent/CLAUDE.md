@@ -84,7 +84,7 @@ Service V2 扫描按目录验证的 `super_admin_upload/builtin_bundle` 来源�
 - EXT007 的 Service v2 离线开发入口固定为 `scripts/service_v2_plugin.py`，源码/打包、报告和真实本地模拟器职责分别位于 `agent/automation_plugins/developer_v2.py`、`developer_reports_v2.py` 与 `developer_simulator_v2.py`，Manifest 编辑器 Schema 位于 `extension_sdk/schemas/manifest-v2.schema.json`，完整边界见 `docs/service_v2_developer_tooling.md` 与 `../docs/plugin-platform-v2.md`。从仓库根目录以 `PYTHONPATH=agent python -m scripts.service_v2_plugin` 运行 `init/validate/package/inspect/permissions/diff/test`；源码根只允许 `manifest.json + payload/`，以及 Manifest 声明时固定的 `settings/` 静态设置页，必须先按名称拒绝敏感候选再读取，ZIP 必须确定性生成且不可覆盖。`validate/inspect/permissions/diff` 只作已验证工件的离线投影，`diff` 不声明项目兼容；`test` 只接受闭合场景并要求真实 `bwrap + prlimit`、无网络、最小环境、一次性本地 capability 和受信系统 Python 3.10，依赖环境未支持时显式失败。该工具链绝不连接生产、安装插件、创建 grant 或改变授权。
 - Service v2 可选声明包内 `settings/index.html`，仅在 Console 无同源 sandbox iframe 中经受控桥读写自身配置和不透明绑定；禁止访问父 DOM、凭据或外网。账号引用和平铺常用参数可用宿主简单设置，复杂配置与资源角色仍需专属设置页。设置保存保留调度，调度保存保留业务配置。Harness contribution 可选，AI 只调用当前身份、渠道及实例获准的能力；需要确认的操作由精确预览和确认入口执行。
 - `main.py` 为组合根，委托 `business_composition.py` 和 `harness_composition.py` 注入普通业务接口、Agent reader、DirectPluginInvocationService、ResultVerifier、Broker 和仓储。停止时先关闭 Direct 新调用准入并等待实际调用排空，再关闭其他服务；旧 WorkflowRunner 以 execution_enabled=False 保留历史功能。
-- 同一 automation_id 仍在真实执行时拒绝重复，不同实例可并行；幂等请求返回同一 Invocation，新请求与历史失败、取消、未知写无关。容量或资源不可用直接失败，不排队、不自动重试。Broker 只在实际宿主写阶段按权威物理目标有界协调，读取不扩大成账号写锁；子进程、代次 lease 和回执以 invocation_id 绑定，真实结束后才释放资源。
+- 同实例、执行容量或实际资源暂忙时，本次已受理请求在当前进程内最多等待 30 秒，释放后继续，不要求再次提交；等待可取消，总执行容量不增加，活跃请求总量另有上限。超时、过载、停服和明确业务错误仍显式终结；已结束调用、UNKNOWN 和服务重启不自动重放。 幂等请求返回同一 Invocation，不同无冲突实例可并行。Broker 只在实际宿主写阶段按权威物理目标有界协调，读取不扩大成账号写锁；子进程、代次 lease 和回执以 invocation_id 绑定，真实结束后才释放资源。
 - Outbox 继续处理必要审计和通知，领取/确认用短事务，慢处理在事务外；它不能生成业务执行队列。财务采集结束仅保存采集结果，不自动分析；显式分析使用已注册接口和共享账本，不创建 Command/Run，也不继承历史审批。
 - `domain_events`、`outbox_events`、`event_consumptions` 与 `approval_requests` 只滚动保留最近 30 天的已终结数据；清理必须按外键依赖分批事务化执行。非终态 Run/Work Item、待处理 Outbox、待决定审批和仍占用飞书通知租约的记录必须保留，不能为释放空间破坏幂等或活动流程。
 - `agent/orchestration/` 只依赖端口和 `shared/orchestration_repository.py`；通用仓储原语、历史 Run 查询、结构要求和历史定时审批仓储分别位于 `shared/orchestration_repository_support.py`、`shared/automation_run_lookup.py`、`shared/orchestration_schema.py`、`shared/scheduled_task_approval_repository.py`。工具目录实现、TMS target、飞书 handler 和 Console 代码不得反向导入编排内部实现。
@@ -284,3 +284,9 @@ docs/
 
 - `../docs/direct_waybill_query.md`：普通寄件查询、稳定来源/权限覆盖、精确补查、夜间范围发布与已验证边界；`plugin_core_adapters/waybill_query_scope.py` 观察实际原页当前查询范围，不声明全组织完整；缺证明确 partial。
 - `../docs/architecture_refactor_acceptance_mapping.md`：原 A/B/C 与 M01–M06 的驱动映射、短插件新链替换要求及冻结宿主维护演练入口。
+
+## 阶段一收尾补充
+
+- `scripts/acceptance_evidence.py` 为现有完整验收驱动校验当前 V2 运行结果、维护包摘要、冻结证据与原始性能分布；不另设验收平台。
+- `scripts/plugin_maintenance.py` 的 V2 局部测试前后核对实际可打包成员和所选测试摘要，打包再次验证；测试通过但源码变化不能生成可交付 ZIP。
+- 新迁移 `052_problem_write_intents.sql` 仅新增问题件目标写入事实。部署、回滚与独立包的相容边界见 `../docs/phase1_final_closeout.md`；本轮没有生产部署授权。

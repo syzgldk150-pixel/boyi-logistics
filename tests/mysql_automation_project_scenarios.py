@@ -2067,15 +2067,14 @@ def run_test_project_invocation_serializes_and_replays_on_real_mysql(case):
                 return management.policy.invoke_console(identity, request_id=request_ids[index], actor=ACTOR)
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
                 receipts = list(pool.map(submit, range(2)))
-            case.assertEqual(["FAILED", "STARTING"], sorted(row["status"] for row in receipts))
-            accepted = next(row for row in receipts if row["status"] == "STARTING")
-            denied = next(row for row in receipts if row["status"] == "FAILED")
-            case.assertEqual("EXECUTION_RESOURCE_BUSY", denied["error_code"])
+            case.assertEqual(["STARTING", "STARTING"], sorted(row["status"] for row in receipts))
+            accepted, waiting = receipts
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
                 replays = list(pool.map(lambda _: management.policy.invoke_console(identity, request_id=accepted["request_id"], actor=ACTOR), range(8)))
             case.assertEqual({accepted["invocation_id"]}, {row["invocation_id"] for row in replays})
             result = runtime.service.wait_sync(accepted["invocation_id"])
             case.assertEqual("COMPLETED", result["status"])
+            case.assertEqual("COMPLETED", runtime.service.wait_sync(waiting["invocation_id"])["status"])
             fresh = management.policy.invoke_console(identity, request_id=str(uuid4()), actor=ACTOR)
             case.assertEqual("COMPLETED", runtime.service.wait_sync(fresh["invocation_id"])["status"])
             replay = management.policy.invoke_console(identity, request_id=accepted["request_id"], actor=ACTOR)
@@ -2083,9 +2082,9 @@ def run_test_project_invocation_serializes_and_replays_on_real_mysql(case):
             case.assertEqual(result["output"], replay["output"])
             case.assertEqual(before, _legacy_counts(management.repository))
             with management.repository.unit_of_work() as uow, uow.automation_plugins.cursor() as cursor:
-                cursor.execute("SELECT invocation_id,orchestration_run_id FROM automation_project_generation_leases WHERE invocation_id IN (%s,%s,%s)", tuple(row["invocation_id"] for row in (accepted, denied, fresh)))
+                cursor.execute("SELECT invocation_id,orchestration_run_id FROM automation_project_generation_leases WHERE invocation_id IN (%s,%s,%s)", tuple(row["invocation_id"] for row in (accepted, waiting, fresh)))
                 leases = cursor.fetchall()
-            case.assertEqual({accepted["invocation_id"], fresh["invocation_id"]}, {row["invocation_id"] for row in leases})
+            case.assertEqual({accepted["invocation_id"], waiting["invocation_id"], fresh["invocation_id"]}, {row["invocation_id"] for row in leases})
             case.assertTrue(all(row["orchestration_run_id"] is None for row in leases))
 
 

@@ -117,6 +117,8 @@ class RonghuiProblemReadbackTests(unittest.TestCase):
 
         self.assertEqual("guid-1", proof["external_id"])
         self.assertEqual("FIND_PROBLEM_REGISTER_LIST", proof["source"])
+        self.assertEqual("login-site", proof["registered_site"])
+        self.assertEqual("2026-08-15T01:00:00Z", proof["registered_at"])
 
     def test_problem_match_fails_for_missing_multiple_and_incomplete_rows(self):
         with self.assertRaisesRegex(RuntimeError, "未找到目标运单"):

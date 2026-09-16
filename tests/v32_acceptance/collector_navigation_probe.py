@@ -13,7 +13,8 @@ def exercise_run_links(browser, automation_id, invocation_id, expected_sources):
     navigation = response.json()["collector_navigation"]
     assert navigation["status"] == "known" and navigation["module"] == browser.module
     assert navigation["module_url"] == browser.sources_path
-    assert {row["source_id"] for row in navigation["sources"]} == set(expected_sources)
+    assert {row["source_id"] for row in navigation["sources"]} == set(expected_sources), {
+        "navigation": navigation, "expected_sources": expected_sources}
     form = browser.card(automation_id).locator("xpath=ancestor::form")
     drawer = form.locator("[data-terminal-drawer]")
     if not drawer.is_visible():

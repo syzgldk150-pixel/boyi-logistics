@@ -49,6 +49,7 @@ from feishu.migration_entrypoint_router import (
 )
 from feishu.automation_messages import (
     TOOL_DISPLAY_NAMES,
+    invocation_accepted_message,
     accepted_result_pending_message as _accepted_result_pending_message,
     submission_unavailable_reply as _submission_unavailable_reply,
     automation_result_reply as _automation_result_reply,
@@ -343,7 +344,7 @@ async def _invoke_automation_project_and_reply(
     if safe_route_key == SCAN_FEISHU_ROUTE_KEY:
         start_reply = "已开始生成扫描预览，完成后我会发回待扫描清单。"
     else:
-        start_reply = f"已开始执行：{task_name}。完成后我会反馈结果。"
+        start_reply = invocation_accepted_message(task_name)
     accepted_notified = False
 
     async def notify_accepted(_receipt: Any) -> None:
@@ -749,7 +750,7 @@ async def _confirm_scan_preview_and_reply(
         try:
             await _reply_text(
                 chat_id,
-                "已开始执行：正式扫描。完成后我会反馈结果。",
+                invocation_accepted_message("正式扫描"),
                 reply_type="scan_preview_formal_started",
             )
         except Exception:
@@ -2323,7 +2324,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                     return
                 await _reply_text(
                     chat_id,
-                    f"已开始执行：{TOOL_DISPLAY_NAMES.get(legacy_tool_name, legacy_tool_name or '自动化任务')}。完成后我会反馈结果。",
+                    invocation_accepted_message(TOOL_DISPLAY_NAMES.get(legacy_tool_name, legacy_tool_name or "自动化任务")),
                     reply_type=f"tool_start:{legacy_tool_name or 'unknown'}",
                 )
                 await _execute_and_reply(
@@ -2518,7 +2519,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         if mode == "deferred":
             await _reply_text(
                 chat_id,
-                f"已开始执行：{TOOL_DISPLAY_NAMES.get(tool_name, tool_name)}。完成后我会反馈结果。",
+                invocation_accepted_message(TOOL_DISPLAY_NAMES.get(tool_name, tool_name)),
                 reply_type=f"tool_start:{tool_name}",
             )
             await _execute_and_reply(agent, chat_id, tool_name, params)
@@ -2635,7 +2636,7 @@ async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str, con
         try:
             await _reply_text(
                 receive_id,
-                "已开始执行：扩展任务。完成后我会反馈结果。",
+                invocation_accepted_message("扩展任务"),
                 reply_type="service_v2_feishu_started",
             )
         except Exception:
@@ -2739,7 +2740,7 @@ async def _run_deferred_tool(
     if receive_id:
         await _reply_text(
             receive_id,
-            f"已开始执行：{TOOL_DISPLAY_NAMES.get(tool_name, tool_name)}。完成后我会反馈结果。",
+            invocation_accepted_message(TOOL_DISPLAY_NAMES.get(tool_name, tool_name)),
             receive_id_type=receive_id_type,
             reply_type=f"tool_start:{tool_name}",
         )

@@ -42,6 +42,8 @@ def test_blocked_source_tests_are_audited_outside_the_release_gate() -> None:
     selected = release_plugin_ids(REPOSITORY_ROOT)
 
     assert gate.isdisjoint(deferred)
+    for path in (REPOSITORY_ROOT / "tests").glob("test_direct_*.py"):
+        assert path in gate, f"Current Direct regression was incorrectly deferred: {path.name}"
     assert REPOSITORY_ROOT / "tests" / "test_automation_plugin_platform.py" in gate
     assert REPOSITORY_ROOT / "tests" / "test_automation_plugin_release_scope.py" in gate
     assert REPOSITORY_ROOT / "tests" / "test_first_party_action_payloads.py" in gate

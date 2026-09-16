@@ -83,7 +83,7 @@ def business_proof(automation_id, *, expected_version):
     provenance = []
     for row in rows:
         snapshot = json.loads(row.pop("producer_snapshot_json"))
-        if snapshot["plugin_version"] != expected_version or snapshot["plugin_id"] != "sync_finance_bills":
+        if snapshot["plugin_version"] != expected_version or snapshot["plugin_id"] != "sync_finance_bills_v2":
             raise AssertionError("durable finance producer package differs from the actual active run")
         provenance.append({"run_id": row.pop("finance_run_id"), "producer_snapshot": snapshot,
             "started_at": row.pop("started_at").isoformat(), "finished_at": row.pop("finished_at").isoformat(),
@@ -96,10 +96,13 @@ def business_proof(automation_id, *, expected_version):
     return {"sources": sources, "rows": rows, "provenance": provenance}
 
 
-def corrupt_signed_payload(artifact):
+def invalid_v2_entrypoint(artifact):
     with zipfile.ZipFile(io.BytesIO(artifact["bytes"])) as source:
         files = {name: source.read(name) for name in source.namelist()}
-    files["payload/finance_fields.py"] += b"\n# invalid unsigned modification\n"
+    # Unsigned V2 packages must be rejected for an actual contract error.
+    manifest = json.loads(files["manifest.json"])
+    manifest["runtime"]["entrypoint"] = "payload/missing.py"
+    files["manifest.json"] = json.dumps(manifest).encode()
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as destination:
         for name, data in files.items():
@@ -110,7 +113,7 @@ def corrupt_signed_payload(artifact):
 def run_drill(*, host_freeze: Path | None, smoke: bool):
     before_host = verify_host(host_freeze) if host_freeze else {"status": "NOT_FROZEN_PREPARATION"}
     before_process = process_identity()
-    report = {"status": "RUNNING", "host_before": before_host, "steps": []}
+    report = {"status": "RUNNING", "runtime_model": "SERVICE_V2", "host_before": before_host, "steps": []}
     started = time.monotonic()
     RUNTIME.mkdir(parents=True, exist_ok=True)
     output = RUNTIME / ("preparation.json" if smoke else "maintenance-evidence.json")
@@ -140,13 +143,23 @@ def run_drill(*, host_freeze: Path | None, smoke: bool):
                     waybills = {row["source_id"]: row["waybill_no"] for row in proof["rows"]}
                     report["steps"].append({"phase": "baseline", "run": baseline, "proof": proof,
                         "browser": browser.verify_finance(source_ids, target_date=TARGET, expected_waybills=waybills)})
+                    supplier.field = "REFERENCE_BILL_V2"
+                    drifted = wait_invocation(browser.run(automation_id))
+                    if drifted["status"] != "FAILED":
+                        raise AssertionError(f"old V2 package did not reject changed source: {drifted}")
+                    preserved = business_proof(automation_id, expected_version=artifacts["baseline"]["version"])
+                    if preserved["rows"] != proof["rows"]:
+                        raise AssertionError("failed field adaptation changed the last published finance snapshot")
+                    report["steps"].append({"phase": "baseline_source_changed", "source_field": supplier.field,
+                        "run": drifted, "preserved": preserved})
+                    supplier.field = "BILL_CODE"
                     unrelated_id = setup_unrelated(management)
                     supplier.arrived.clear()
                     supplier.release.clear()
                     inflight_id = browser.run(automation_id)
                     if not supplier.arrived.wait(10):
                         raise AssertionError("old plugin did not reach the real external HTTP barrier")
-                    invalid = browser.upgrade(automation_id, corrupt_signed_payload(artifacts["candidate"]), expect_success=False)
+                    invalid = browser.upgrade(automation_id, invalid_v2_entrypoint(artifacts["candidate"]), expect_success=False)
                     if management.catalog.require(automation_id).installed_version != artifacts["baseline"]["version"]:
                         raise AssertionError("invalid candidate changed the installed version")
                     updated = browser.upgrade(automation_id, artifacts["candidate"])
@@ -174,12 +187,16 @@ def run_drill(*, host_freeze: Path | None, smoke: bool):
                         "run": candidate, "proof": candidate_proof,
                         "browser": browser.verify_finance(source_ids, target_date=TARGET, expected_waybills=waybills)})
                     rollback = browser.upgrade(automation_id, artifacts["baseline"])
+                    rollback_changed_source = wait_invocation(browser.run(automation_id))
+                    if rollback_changed_source["status"] != "FAILED":
+                        raise AssertionError("rollback unexpectedly supports the changed source format")
                     supplier.field = "BILL_CODE"
                     rolled_back = require_complete(browser.run(automation_id))
                     rollback_proof = business_proof(automation_id, expected_version=artifacts["baseline"]["version"])
                     if rollback_proof["rows"] != proof["rows"]:
                         raise AssertionError("rollback changed canonical published finance data")
                     report["steps"].append({"phase": "rollback", "upgrade": rollback, "run": rolled_back,
+                        "changed_source_failure": rollback_changed_source, "source_field": supplier.field,
                         "proof": rollback_proof,
                         "browser": browser.verify_finance(source_ids, target_date=TARGET, expected_waybills=waybills)})
                     report["browser_errors"] = browser.errors

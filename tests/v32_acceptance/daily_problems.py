@@ -15,14 +15,17 @@ OUTPUT = ROOT/'.task_tmp/v32/environment/daily-problems.json'
 
 
 def setup_split(management):
-    automation_id = 'split_pending_problem_upload'
-    result = management.targets.reconcile_project(automation_id)
-    if result.committed_generation is None:
-        raise AssertionError('real split initial runtime unavailable: '+str(result))
+    from tests.v32_acceptance.service_v2_artifacts import build_artifact, install_artifact
+    artifact = build_artifact('split_pending_problem_upload_v2', management.task_env / 'split-artifacts')
+    automation_id = install_artifact(management, artifact, actor=ACTOR, name='隔离分批未到问题件 V2')
     entry = management.catalog.require(automation_id)
-    management.management.save_plugin_settings(automation_id, config={}, account_bindings={'account_id':[ACCOUNTS['account_id']]},
+    management.management.save_plugin_settings(automation_id, config={}, account_bindings={'split_pending_ronghui':[ACCOUNTS['account_id']]},
         resource_bindings={'split_pending_source_sheet':SPLIT_SOURCE,'split_pending_target_sheet':SPLIT_TARGET},
         request_id=str(uuid4()), expected_project_configuration_version=entry.project_config_version, actor=ACTOR)
+    management.targets.reconcile_project(automation_id)
+    entry = management.catalog.require(automation_id)
+    management.management.set_enabled(automation_id, enabled=True, request_id=str(uuid4()),
+        expected_record_version=entry.record_version, actor=ACTOR)
     management.targets.reconcile_project(automation_id)
     policy = management.policy.get_policy_projection(automation_id)
     management.policy.update_policy(automation_id, mode='PROJECT_FULL_AUTO', request_id=str(uuid4()),
@@ -35,7 +38,7 @@ def main():
     if os.environ.get('AGENT_DB_NAME') != 'v32_a01_problem_test':
         raise RuntimeError('A01 problems requires its dedicated v32_a01_problem_test database')
     prepare_database()
-    report = {'status':'RUNNING','cases':{}}
+    report = {'status':'RUNNING','runtime_model':'SERVICE_V2','cases':{}}
     try:
         with composed() as (management, runner, supplier, artifacts):
             self_id = setup_instance(management, artifacts['baseline'])
@@ -62,6 +65,8 @@ def main():
         return 0
     except Exception as exc:
         report.update(status='FAIL',error=type(exc).__name__+': '+str(exc))
+        if 'runner' in locals():
+            report['broker_errors'] = runner.broker_errors
         raise
     finally:
         OUTPUT.parent.mkdir(parents=True, exist_ok=True)

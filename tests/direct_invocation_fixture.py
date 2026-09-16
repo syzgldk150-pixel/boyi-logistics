@@ -66,7 +66,12 @@ class DirectFixture:
                 try:
                     return await invoke_service(context, arguments)
                 except Exception as error:
-                    self.broker_errors.append(f"{type(error).__name__}: {error}")
+                    chain = []
+                    cause = error
+                    while cause is not None:
+                        chain.append(f"{type(cause).__name__}: {cause}")
+                        cause = cause.__cause__
+                    self.broker_errors.append(" <- ".join(chain))
                     raise
             effective_handlers[("service.invoke", "*")] = observed_service
         self.broker = LocalCoreAutomationBroker(issuer=self.issuer, adapter=RegisteredCoreAutomationBrokerAdapter(handlers=effective_handlers, account_resolver=AccountManagerSessionResolver(account_manager or management.account_manager), resource_resolver=management.binding_resolver, connector_registry=connectors))

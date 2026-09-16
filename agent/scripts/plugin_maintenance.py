@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import zipfile
 from typing import Any
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -141,14 +142,36 @@ def run_local_tests(plugin_id: str) -> dict[str, Any]:
     if sys.version_info[:2] != (3, 10):
         raise RuntimeError("production plugin tests require Python 3.10")
     nodes = selected_tests(plugin_id)
+    tested_material = v2_test_material(plugin_id) if plugin_id.endswith('_v2') else None
     environment = dict(os.environ)
     environment["PYTHON_DOTENV_DISABLED"] = "1"
     environment["MIGRATION_ENV_FILE"] = os.devnull
     environment["PYTHONPATH"] = os.pathsep.join((str(PROJECT_ROOT / "agent"), str(PROJECT_ROOT)))
     command = [sys.executable, "-m", "pytest", "-q", *nodes]
     completed = subprocess.run(command, cwd=PROJECT_ROOT, env=environment, check=False)
+    changed = tested_material is not None and tested_material != v2_test_material(plugin_id)
+    code = completed.returncode or int(changed)
     return {"plugin_id": plugin_id, "command": ["python", "-m", "pytest", "-q", *nodes],
-        "exit_code": completed.returncode, "status": "PASS" if completed.returncode == 0 else "FAIL"}
+        "exit_code": code, "status": "PASS" if code == 0 else "FAIL",
+        "tested_material": tested_material, "source_changed_during_tests": changed}
+
+
+def v2_test_material(plugin_id: str) -> dict[str, Any]:
+    """Bind local tests to exactly the files shipped by the current packager."""
+    from service_v2_plugins._shared.build_zip import build_plugin_zip
+
+    temporary_root = PROJECT_ROOT / '.task_tmp' / 'plugin-maintenance'
+    temporary_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=temporary_root) as temporary:
+        archive = Path(temporary) / 'tested.zip'
+        build_plugin_zip(PROJECT_ROOT / 'agent/service_v2_plugins' / plugin_id, archive)
+        with zipfile.ZipFile(archive) as package:
+            files = {name: hashlib.sha256(package.read(name)).hexdigest() for name in package.namelist()}
+        package_sha256 = hashlib.sha256(archive.read_bytes()).hexdigest()
+    tests = {node.split('::', 1)[0] for node in selected_tests(plugin_id)}
+    return {'runtime_model': 'SERVICE_V2', 'package_sha256': package_sha256,
+        'manifest_sha256': files['manifest.json'], 'files': files,
+        'test_files': {name: hashlib.sha256((PROJECT_ROOT / name).read_bytes()).hexdigest() for name in sorted(tests)}}
 
 
 def _write_new(path: Path, content: bytes) -> None:
@@ -162,7 +185,7 @@ def _write_new(path: Path, content: bytes) -> None:
 
 def package_plugin(plugin_id: str, output: Path, *, version: str | None,
                    test_signing: bool, signing_key_env: str | None,
-                   key_id: str | None) -> dict[str, Any]:
+                   key_id: str | None, expected_material: dict[str, Any] | None = None) -> dict[str, Any]:
     selected_tests(plugin_id)
     if output.suffix.lower() != ".zip" or output.is_symlink() or output.exists():
         raise ValueError("output must be a new ZIP path")
@@ -173,16 +196,20 @@ def package_plugin(plugin_id: str, output: Path, *, version: str | None,
         from agent.automation_plugins.package_v2 import verify_unsigned_plugin_zip_v2
 
         source = PROJECT_ROOT / "agent" / "service_v2_plugins" / plugin_id
+        if expected_material is not None and v2_test_material(plugin_id) != expected_material:
+            raise ValueError('plugin source or selected tests changed after testing; rerun local tests')
         with tempfile.TemporaryDirectory(prefix="plugin-maintenance-", dir=output.parent) as temporary:
             candidate = Path(temporary) / "candidate.zip"
             build_plugin_zip(source, candidate)
             package = candidate.read_bytes()
             digest = hashlib.sha256(package).hexdigest()
             verified = verify_unsigned_plugin_zip_v2(package, transport_sha256=digest)
+            if expected_material is not None and digest != expected_material['package_sha256']:
+                raise ValueError('packaged bytes differ from the tested source material')
             _write_new(output, package)
         return {"plugin_id": plugin_id, "version": verified.manifest.version,
             "runtime_model": "SERVICE_V2", "trust": "UNSIGNED_SUPER_ADMIN_UPLOAD",
-            "package_sha256": hashlib.sha256(package).hexdigest(), "bytes": len(package)}
+            "package_sha256": hashlib.sha256(package).hexdigest(), "bytes": len(package), "path": str(output.resolve())}
     if version is None or re.fullmatch(r"\d+\.\d+\.\d+", version) is None:
         raise ValueError("ACTION_V1 packaging requires an explicit new semantic --version")
     if test_signing == bool(signing_key_env):
@@ -261,7 +288,8 @@ def main(argv: list[str] | None = None) -> int:
     if code == 0 and args.action == "package":
         result["artifact"] = package_plugin(args.plugin_id, args.output,
             version=args.version, test_signing=args.test_signing,
-            signing_key_env=args.signing_key_env, key_id=args.key_id)
+            signing_key_env=args.signing_key_env, key_id=args.key_id,
+            expected_material=tests.get('tested_material'))
     if args.report:
         _write_new(args.report, (json.dumps(result, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     print(json.dumps(result, ensure_ascii=False, indent=2))
