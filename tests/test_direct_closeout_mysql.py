@@ -44,7 +44,12 @@ def test_concurrent_request_replays_and_busy_identity_remain_terminal(direct_run
         with pytest.raises(OrchestrationError, match='同一请求'):
             original_start(**{**captured[0], 'arguments': {'different': True}})
         busy_request = str(uuid4())
-        busy = host.policy.invoke_console(identity, request_id=busy_request, actor=ACTOR)
+        monkeypatch.setattr(runtime.service, 'resource_wait_seconds', .2)
+        waiting = host.policy.invoke_console(identity, request_id=busy_request, actor=ACTOR)
+        assert waiting['status'] == 'STARTING' and waiting['waiting_for_resource']
+        retry = host.policy.invoke_console(identity, request_id=busy_request, actor=ACTOR)
+        assert retry['invocation_id'] == waiting['invocation_id']
+        busy = runtime.service.wait_sync(waiting['invocation_id'], timeout_seconds=2)
         assert busy['status'] == 'FAILED' and busy['error_code'] == 'EXECUTION_RESOURCE_BUSY'
         assert busy['finished_at'] is not None
         assert len(executions) == 1
@@ -89,7 +94,11 @@ def test_repeated_cancel_drains_real_verification_before_reuse(direct_runtime, m
             threading.Event().wait(.01)
         assert all(not future.done() for future in cancellations)
         busy = host.policy.invoke_console(identity, request_id=str(uuid4()), actor=ACTOR)
-        assert busy['error_code'] == 'EXECUTION_RESOURCE_BUSY'
+        assert busy['status'] == 'STARTING' and busy['waiting_for_resource']
+        started = time.monotonic()
+        waiting_cancelled = asyncio.run_coroutine_threadsafe(runtime.service.cancel(busy['invocation_id']), runtime.loop).result(2)
+        cancel_seconds = time.monotonic() - started
+        assert waiting_cancelled['status'] == 'CANCELLED' and cancel_seconds <= 2
     finally:
         release.set()
     assert all(future.result(10)['status'] == 'COMPLETED' for future in cancellations)
@@ -98,6 +107,7 @@ def test_repeated_cancel_drains_real_verification_before_reuse(direct_runtime, m
     assert runtime.service.wait_sync(new['invocation_id'])['status'] == 'COMPLETED'
     record_property('runtime_model', 'SERVICE_V2')
     record_property('round', round_index)
+    record_property('waiting_cancel_seconds', cancel_seconds)
 
 
 def test_slow_admission_database_does_not_hold_control_or_read_loop(direct_runtime, monkeypatch):

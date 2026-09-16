@@ -1824,7 +1824,7 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
                 "FAILED_RETRYABLE": "执行暂时失败",
             }
             public_status_labels = {
-                "STARTING": "正在启动",
+                "STARTING": "等待执行",
                 "CANCELLING": "正在取消",
                 "FAILED": "执行失败",
                 "WRITE_OUTCOME_UNKNOWN": "写入结果未确认",
@@ -1867,6 +1867,9 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
                 error_code=error_code,
                 status=status,
             )
+            waiting_for_resource = run.get("waiting_for_resource") is True
+            if waiting_for_resource:
+                stage_description = "正在等待空闲资源，释放后会继续执行，无需重复提交。"
             state_label = stage_description or public_status_labels.get(status, "正在同步")
             lines = invocation_output_lines(run, state_label=state_label)
             is_running = status in active_statuses
@@ -1876,6 +1879,7 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
                 "running": is_running,
                 "queued": False,
                 "pending": status in active_statuses,
+                "waiting_for_resource": waiting_for_resource,
                 "awaiting_approval": awaiting_approval,
                 "cancel_requested": status == "CANCELLING",
                 "started_at": str(

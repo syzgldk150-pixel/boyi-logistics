@@ -184,6 +184,10 @@ def resources_runtime(direct_repository):  # noqa: F811
 @pytest.mark.parametrize('scenario', ['alias', 'reverse', 'cancel_waiter', 'timeout'])
 def test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock(resources_runtime, monkeypatch, round_index, scenario, record_property):
     host, runtime, boundary, ids = resources_runtime
+    if scenario == 'timeout':
+        # Exercise the real deadline repeatedly with a short injected budget;
+        # the production default is separately asserted by the admission tests.
+        monkeypatch.setattr(runtime.service, 'resource_wait_seconds', 1.0)
     boundary.reset({'a'})
     def submit(name):
         return host.policy.invoke_console(ids[name], request_id=str(uuid4()), actor=ACTOR)
@@ -210,7 +214,9 @@ def test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock(resou
             started = time.monotonic()
             cancelled = asyncio.run_coroutine_threadsafe(runtime.service.cancel(waiter['invocation_id']), runtime.loop).result(2)
             assert cancelled['status'] == 'CANCELLED', cancelled
-            assert time.monotonic() - started <= 2
+            cancel_seconds = time.monotonic() - started
+            assert cancel_seconds <= 2
+            record_property('waiting_cancel_seconds', cancel_seconds)
             assert not any(call['invocation'] == waiter['invocation_id'] for call in boundary.calls)
         elif scenario == 'timeout':
             timed_out = runtime.service.wait_sync(waiter['invocation_id'], timeout_seconds=12)
@@ -231,3 +237,4 @@ def test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock(resou
     record_property('round', round_index)
     record_property('scenario', scenario)
     record_property('actual_http_mutations', len(boundary.calls))
+    record_property('resource_wait_budget_seconds', runtime.service.resource_wait_seconds)

@@ -15,7 +15,8 @@ updated: 2026-09-16
 原工作区干净。本次使用 `codex/phase1-final-closeout` 独立 worktree，原工作区保持不动。
 本次用户授权覆盖仓库默认 main 直推规则：仅提交任务分支，可创建 Draft PR；不合并、不部署生产。
 
-资源忙可以终结失败；新用户动作使用新请求身份，同请求重投返回同一事实。
+用户后续明确要求替代原 R1 的忙时立即失败规则：同实例、执行容量或实际资源暂忙时，本次已受理请求在当前进程内最多等待 30 秒，释放后继续，不要求再次提交；等待可取消，总执行容量不增加，活跃请求总量另有上限。超时、过载、停服和明确业务错误仍显式终结；已结束调用、UNKNOWN 和服务重启不自动重放。
+新用户动作使用新请求身份，同请求重投返回同一事实。
 不恢复持久业务队列、旧 Runner 领取、登录恢复续跑或失败自动重放。
 UNKNOWN 不意味着未写；只有权威业务证据允许再次写，证据不足须限制受影响目标。
 
@@ -24,7 +25,7 @@ UNKNOWN 不意味着未写；只有权威业务证据允许再次写，证据不
 | 工作项 | 基线实际情况 | 当前处理 | 实际证据入口 |
 |---|---|---|---|
 | 正式检查 | 基线 CI 的 root 集合因迁移清单缺失 050/051 失败；Agent 后续集合未执行 | 保留迁移原字节，补受审清单；分别运行三个集合 | `tests/test_runtime_repositories.py`、`tests/test_waybill_source_coverage_mysql.py` |
-| Direct 终结与新请求 | 已有忙时失败、有界写等待、真实取消排空 | 核查当前 V2 故障和 UNKNOWN 新请求；只修实测缺口 | `tests/test_direct_plugin_invocation_mysql.py` |
+| Direct 终结与新请求 | 已有忙时失败、有界写等待、真实取消排空 | 按用户修订增加 30 秒进程内资源等待，核验取消、超时、原请求续行与 UNKNOWN 隔离 | `tests/test_direct_plugin_invocation_mysql.py` |
 | M02 字段维护 | 使用旧 Action V1 签名包；已有原始字段 Host 接口 | 迁到当前财务 V2 ZIP，只改候选 payload 解析 | `tests/v32_acceptance/finance_maintenance.py` |
 | M03 判断维护 | 使用旧 Action V1 自提包 | 迁到当前自提 V2 ZIP、实际预览确认和回退 | `tests/v32_acceptance/decision_maintenance.py` |
 | 当前验收合同 | 多项仍引用旧 Runner 语义与历史通过说明 | 保留原要求，新增 R1 有效要求；结果另由完整驱动计算 | `docs/low_maintenance_v32_acceptance.json` |
@@ -34,7 +35,7 @@ UNKNOWN 不意味着未写；只有权威业务证据允许再次写，证据不
 系统 Python 3.10、两份锁文件、真实 Chromium 与 bwrap/prlimit。外部协议只绑定本地端口。
 本次没有读取生产凭据、访问 ECS、启动生产定时或向真实 TMS／飞书写入。
 
-首轮完整驱动及对应 CI 保留失败证据；未将局部修复结果拼接为整轮通过。
+首轮完整驱动及对应 CI 保留失败证据；未将局部修复结果拼接为整轮通过。第二次旧规则验收因用户新增资源等待需求中止并标记 SUPERSEDED，不能视为通过；最终必须在修订代码提交后重新冻结并完整执行。
 诊断修复包括：真实问题件回读补传已核验网点；分批事件携带必填分类；
 财务 V2 回执从已审 Connector 的真实参数记录批次，运行来源链接使用当前操作身份；
 离线历史财务测试与当前 V2 维护包隔离；CI 发行范围包含当前 Direct 来源切换测试；

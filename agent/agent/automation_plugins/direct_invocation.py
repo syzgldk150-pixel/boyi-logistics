@@ -1,4 +1,4 @@
-"""Immediate, process-owned plugin calls. Stored rows are facts, never jobs."""
+"""Process-owned calls with bounded resource waits; stored rows are never jobs."""
 from __future__ import annotations
 
 import asyncio
@@ -55,13 +55,15 @@ def public_invocation(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 class DirectPluginInvocationService:
-    def __init__(self, repository: Any, executor: Any, verifier: Any, *, max_concurrency: int = 16, release_hold_provider=None, saved_resource_provider=None, account_validator=None, prepare_arguments=None, publish_result=None) -> None:
+    def __init__(self, repository: Any, executor: Any, verifier: Any, *, max_concurrency: int = 16, resource_wait_seconds: float = 30.0, release_hold_provider=None, saved_resource_provider=None, account_validator=None, prepare_arguments=None, publish_result=None) -> None:
         self.repository = repository
         self.executor = executor
         self.executor.direct_invocations = self
         self.verifier = verifier
         self.owner_id = str(uuid.uuid4())
         self.max_concurrency = max(1, int(max_concurrency))
+        self.resource_wait_seconds = float(resource_wait_seconds)
+        self.max_waiting = self.max_concurrency
         self._hold = release_hold_provider or (lambda: True)
         self._resources = saved_resource_provider
         self._account_validator = account_validator
@@ -92,7 +94,7 @@ class DirectPluginInvocationService:
         row = self.repository.get(invocation_id)
         if row is None:
             raise OrchestrationError("INVOCATION_NOT_FOUND", "没有找到本次执行记录")
-        result = public_invocation(row)
+        result = self._public(row)
         if row["status"] in TERMINAL_INVOCATION_STATUSES:
             from shared.collector_navigation import collector_invocation_navigation
             with self.repository._repository.unit_of_work() as uow:
@@ -101,7 +103,55 @@ class DirectPluginInvocationService:
         return result
 
     def list_recent(self, automation_id: str, *, limit: int = 30) -> list[dict]:
-        return [public_invocation(row) for row in self.repository.list_recent(automation_id, limit=limit)]
+        return [self._public(row) for row in self.repository.list_recent(automation_id, limit=limit)]
+
+    def _public(self, row: Mapping[str, Any]) -> dict:
+        result = public_invocation(row)
+        with self._lock:
+            active = self._active.get(row['invocation_id'])
+            waiting = bool(active and (not active['admitted'] or active.get('resource_waiting'))
+                and not active.get('cancel_requested') and result['running'])
+        result['waiting_for_resource'] = waiting
+        result['wait_message'] = '已受理，正在等待空闲资源，释放后会继续执行。' if waiting else None
+        return result
+
+    def _wake_waiters(self) -> None:
+        if self._loop is not None and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._operation_changed.set)
+
+    async def _wait_for_admission(self, call_id: str) -> None:
+        """Keep this accepted request cancellable without occupying a run slot."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.resource_wait_seconds
+        while True:
+            held = await _preflight_thread(self._hold)
+            with self._lock:
+                current = self._active.get(call_id)
+                if current is None or current.get('cancel_requested'):
+                    raise asyncio.CancelledError
+                if self._closed or held is not False:
+                    raise OrchestrationError('PLUGIN_RELEASE_HELD', '系统正在更新，本次等待已结束')
+                running = [item for identity, item in self._active.items() if identity != call_id and item['admitted']]
+                busy = (bool(current['account_ids'] & self._changing_accounts)
+                    or len(running) >= self.max_concurrency
+                    or any(execution_keys_conflict(left, right) for item in running
+                           for left in item['keys'] for right in current['keys']))
+                if not busy:
+                    current['admitted'] = True
+                    return
+                self._operation_changed.clear()
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise OrchestrationError('EXECUTION_RESOURCE_BUSY', '等待空闲资源超时，本次尚未开始执行，请稍后重试')
+            try:
+                await asyncio.wait_for(self._operation_changed.wait(), remaining)
+            except asyncio.TimeoutError as exc:
+                raise OrchestrationError('EXECUTION_RESOURCE_BUSY', '等待空闲资源超时，本次尚未开始执行，请稍后重试') from exc
+
+    async def _mark_running(self, call_id: str) -> None:
+        stored = await _preflight_thread(self.repository.update, call_id, status='RUNNING')
+        if stored.get('owner_id') != self.owner_id or stored.get('status') != 'RUNNING':
+            raise OrchestrationError('SERVICE_INTERRUPTED', '本次调用已终结，不能继续执行')
 
     def active_invocations(self) -> list[dict]:
         with self._lock:
@@ -144,9 +194,10 @@ class DirectPluginInvocationService:
         def release():
             with self._lock:
                 self._changing_accounts.discard(account_id)
+            self._wake_waiters()
         return release
 
-    def reserve_provider(self, invocation_id: str, capability: Mapping) -> tuple:
+    async def reserve_provider(self, invocation_id: str, capability: Mapping) -> tuple:
         """Add a signed Provider's actual scopes to its current call, never enqueue."""
         metadata = capability["_plugin_runtime"]
         accounts = {str(value) for raw in metadata["account_bindings"].values() for value in (raw if isinstance(raw, (tuple, list)) else (raw,))}
@@ -156,14 +207,30 @@ class DirectPluginInvocationService:
         if write and not bounded:
             keys.update(("account-write", account) for account in accounts)
         instance_keys = {("plugin-instance", metadata["automation_id"])}
-        with self._lock:
-            current = self._active.get(invocation_id)
-            if current is None:
-                raise OrchestrationError("INVOCATION_NOT_ACTIVE", "该调用已结束，不能继续调用插件服务")
-            if accounts & self._changing_accounts or any(execution_keys_conflict(left, right) for call_id, item in self._active.items() if call_id != invocation_id for left in item["keys"] for right in instance_keys):
-                raise OrchestrationError("EXECUTION_RESOURCE_BUSY", "插件服务所需资源正在使用，本次已结束")
-            current["keys"] = tuple(set(current["keys"]) | instance_keys)
-            current["account_ids"] = frozenset(set(current["account_ids"]) | accounts)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.resource_wait_seconds
+        while True:
+            with self._lock:
+                current = self._active.get(invocation_id)
+                if current is None or current.get('cancel_requested'):
+                    raise OrchestrationError("INVOCATION_NOT_ACTIVE", "该调用已结束，不能继续调用插件服务")
+                busy = accounts & self._changing_accounts or any(execution_keys_conflict(left, right)
+                    for call_id, item in self._active.items() if call_id != invocation_id and item['admitted']
+                    for left in item["keys"] for right in instance_keys)
+                if not busy:
+                    current['resource_waiting'] = False
+                    current["keys"] = tuple(set(current["keys"]) | instance_keys)
+                    current["account_ids"] = frozenset(set(current["account_ids"]) | accounts)
+                    break
+                current['resource_waiting'] = True
+                self._operation_changed.clear()
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise OrchestrationError('EXECUTION_RESOURCE_BUSY', '等待插件服务资源超时，请稍后重试')
+            try:
+                await asyncio.wait_for(self._operation_changed.wait(), remaining)
+            except asyncio.TimeoutError as exc:
+                raise OrchestrationError('EXECUTION_RESOURCE_BUSY', '等待插件服务资源超时，请稍后重试') from exc
         return tuple(sorted(keys)), scopes
 
     @asynccontextmanager
@@ -184,7 +251,7 @@ class DirectPluginInvocationService:
             keys = tuple(("account-write", account) for accounts in grant.account_bindings.values() for account in (accounts if isinstance(accounts, (tuple, list)) else (accounts,))) or (("unscoped-host-write",),)
         token = uuid.uuid4().hex
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + min(10.0, max(0.0, (grant.expires_at - datetime.now(timezone.utc)).total_seconds()))
+        deadline = loop.time() + min(self.resource_wait_seconds, max(0.0, (grant.expires_at - datetime.now(timezone.utc)).total_seconds()))
         while True:
             with self._lock:
                 active = self._active.get(identity)
@@ -192,8 +259,10 @@ class DirectPluginInvocationService:
                     raise OrchestrationError("CANCELLED", "本次调用已停止，未发起新的写入")
                 conflict = any(execution_keys_conflict(left, right) for owner, held in self._held_operations.values() if owner != identity for left in held for right in keys)
                 if not conflict:
+                    active['resource_waiting'] = False
                     self._held_operations[token] = (identity, keys)
                     break
+                active['resource_waiting'] = True
                 self._operation_changed.clear()
             remaining = deadline - loop.time()
             if remaining <= 0:
@@ -219,13 +288,12 @@ class DirectPluginInvocationService:
             if replay is not None:
                 if replay["request_sha256"] != row["request_sha256"]:
                     raise OrchestrationError("IDEMPOTENCY_CONFLICT", "同一请求不能更换参数")
-                return public_invocation(replay)
+                return self._public(replay)
             held = self._hold() is not False
             with self._lock:
-                busy = bool(account_ids & self._changing_accounts) or len(self._active) >= self.max_concurrency or any(
-                    execution_keys_conflict(left, right)
-                    for active in self._active.values() for left in active["keys"] for right in keys
-                )
+                # Bound live requests separately; waiting never increases the
+                # number of actually executing plugins or becomes durable work.
+                busy = len(self._active) >= self.max_concurrency + self.max_waiting
                 rejected = self._closed or held or busy
                 row["status"] = "FAILED" if rejected else "STARTING"
                 if not rejected:
@@ -241,19 +309,21 @@ class DirectPluginInvocationService:
                 rejected = rejected or self._closed
                 if not rejected and stored["invocation_id"] == row["invocation_id"]:
                     self._active[row["invocation_id"]] = {"keys": keys, "account_ids": account_ids,
-                        "automation_id": row.get("automation_id"), "operation": row["operation"], "task": None}
+                        "automation_id": row.get("automation_id"), "operation": row["operation"], "task": None, "admitted": False}
             if stored["invocation_id"] != row["invocation_id"]:
-                return public_invocation(stored)
+                return self._public(stored)
             if rejected:
                 reason = "EXECUTION_RESOURCE_BUSY" if busy else "PLUGIN_RELEASE_HELD"
-                return public_invocation(self.repository.update(row["invocation_id"], status="FAILED", error_code=reason, error_summary="当前执行资源不可用，本次已结束，请稍后重新触发"))
+                message = '当前等待请求过多，请稍后重试' if busy else '系统正在更新，请稍后重试'
+                return self._public(self.repository.update(row["invocation_id"], status="FAILED", error_code=reason, error_summary=message))
             loop = self._loop
             if loop is None:
                 loop = self._loop = asyncio.get_running_loop()
             def launch():
                 with self._lock:
-                    active = self._active[row["invocation_id"]]
-                    active["task"] = loop.create_task(coroutine_factory())
+                    active = self._active.get(row["invocation_id"])
+                    if active is not None:
+                        active["task"] = loop.create_task(coroutine_factory())
             try:
                 if asyncio.get_running_loop() is loop:
                     launch()
@@ -261,7 +331,7 @@ class DirectPluginInvocationService:
                     loop.call_soon_threadsafe(launch)
             except RuntimeError:
                 loop.call_soon_threadsafe(launch)
-            return public_invocation(stored)
+            return self._public(stored)
 
     def start(self, *, invocation, capability: Mapping, arguments: Mapping, source: str, actor_id: str, request_key: str, preview_invocation_id: str | None = None, admission_guard=None) -> dict:
         resolved = apply_selection_execution_boundary(apply_scan_execution_boundary(capability, arguments), arguments)
@@ -287,7 +357,8 @@ class DirectPluginInvocationService:
         resource_token = EXECUTION_RESOURCE_KEYS.set(keys)
         action_token = EXECUTION_ACTION_SCOPES.set(scopes)
         try:
-            await _preflight_thread(self.repository.update, call_id, status="RUNNING")
+            await self._wait_for_admission(call_id)
+            await self._mark_running(call_id)
             with self._lock:
                 account_ids = tuple(self._active[call_id]["account_ids"])
             if account_ids and self._account_validator is None:
@@ -331,6 +402,7 @@ class DirectPluginInvocationService:
             EXECUTION_RESOURCE_KEYS.reset(resource_token)
             with self._lock:
                 self._active.pop(call_id, None)
+            self._wake_waiters()
 
     async def wait(self, invocation_id: str, *, timeout_seconds: float | None = None) -> dict:
         with self._lock:
@@ -404,6 +476,7 @@ class DirectPluginInvocationService:
                 self._active.pop(invocation_id, None)
         if never_started:
             await asyncio.to_thread(self.repository.update, invocation_id, status="CANCELLED", error_code="CANCELLED", error_summary="执行启动前已取消")
+            self._wake_waiters()
         return await asyncio.to_thread(self.get, invocation_id)
 
     async def stop(self) -> None:
@@ -426,7 +499,8 @@ class DirectPluginInvocationService:
         async def run():
             started = False
             try:
-                await _preflight_thread(self.repository.update, row["invocation_id"], status="RUNNING")
+                await self._wait_for_admission(row["invocation_id"])
+                await self._mark_running(row["invocation_id"])
                 started = True
                 work = asyncio.create_task(handler())
                 try:
@@ -457,6 +531,7 @@ class DirectPluginInvocationService:
             finally:
                 with self._lock:
                     self._active.pop(row["invocation_id"], None)
+                self._wake_waiters()
         accepted = await _preflight_thread(self._reserve, row=row, keys=resource_keys,
                                           account_ids=frozenset(account_ids), coroutine_factory=run)
         return await self.wait(accepted["invocation_id"])

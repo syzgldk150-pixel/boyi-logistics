@@ -70,7 +70,7 @@ def validate_probe(name, data, *, root):
                          and row['automatic_recovery_or_replay'] is False for row in selected), 'unknown facts or write receipts missing')
     elif name == 'scan_cancel_recovery':
         _require(len({row['round'] for row in data['cases']}) >= 20, 'cancel drill lacks twenty rounds')
-        _require(all(row['busy_call_ended']['error_code'] == 'EXECUTION_RESOURCE_BUSY'
+        _require(all(row['wait_receipt']['status'] == 'STARTING' and row['waiting_preview']['status'] == 'COMPLETED'
                      and row['cancelled']['status'] == 'WRITE_OUTCOME_UNKNOWN' and row['write_receipts']
                      for row in data['cases']), 'cancellation drain proof missing')
     elif name == 'unknown_resource_scope':

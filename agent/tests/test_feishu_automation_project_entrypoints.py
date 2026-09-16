@@ -222,7 +222,7 @@ def test_service_v2_feishu_dispatches_verified_exact_context_and_hides_internal_
     ]
     assert agent.chat_calls == []
     assert replies[0][1]["reply_type"] == "service_v2_feishu_started"
-    assert "已开始执行" in replies[0][0]
+    assert "已受理" in replies[0][0]
     assert replies[-1][0] == (
         "扩展任务执行失败：执行未完成，请在自动化页面查看处理建议。"
     )
@@ -823,7 +823,7 @@ def test_direct_feishu_project_explains_terminal_failure_without_internal_status
     finally:
         message_handler._COMMAND_CONTEXT.reset(token)
 
-    assert "已开始执行：分批问题件任务" in replies[0][0]
+    assert "已受理：分批问题件任务" in replies[0][0]
     assert "分批问题件任务执行失败" in replies[-1][0]
     assert "分批结果表写后核验未通过" in replies[-1][0]
     assert "FAILED_TERMINAL" not in replies[-1][0]
