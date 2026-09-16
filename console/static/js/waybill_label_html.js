@@ -4,10 +4,10 @@
   const WIDTH_MM = "74mm";
   const HEIGHT_MM = "92mm";
   const PAGE_NAME = "74mm×92mm 博益物流主单";
-  const BACKGROUND_URL = "/static/assets/waybill_label_background.jpg";
-  // Coordinates refer to the supplied, unmodified 1122 × 1402 blank master.
-  const SOURCE_WIDTH = 1122;
-  const SOURCE_HEIGHT = 1402;
+  const BACKGROUND_URL = "/static/assets/waybill_label_background.jpg?v=20260916-master-v2";
+  // Coordinates and type sizes follow the supplied 1162 × 1450 master/sample.
+  const SOURCE_WIDTH = 1162;
+  const SOURCE_HEIGHT = 1450;
   const CONTENT_FONT = "黑体";
   const CONTENT_WEIGHT = 700;
   const CONTENT_SIZE_PX = 44;
@@ -79,8 +79,6 @@
       transportMethod: field("transportMethod", "delivery_method"),
       paymentMethod: field("paymentMethod", "payment_method"),
       remark: field("remark", "remark"),
-      makerName: field("makerName", "maker_name"),
-      handlerName: field("handlerName", "handler_name"),
     };
   };
 
@@ -99,33 +97,31 @@
   const placedMm = (value, offset, settings) => `${stripZeros(offset + value * settings.templateScale)}mm`;
   const sizedMm = (value, settings) => `${stripZeros(value * settings.templateScale)}mm`;
 
-  // Padded cell rectangles in source pixels, shared by HTML and native printing.
+  // Padded content regions in source pixels, shared by HTML and native printing.
   const FIELD_LAYOUT = [
-    { field: "waybillNo", x: 190, y: 229, w: 194, h: 69 },
-    { field: "date", x: 531, y: 229, w: 187, h: 69 },
-    { field: "station", x: 891, y: 229, w: 191, h: 69 },
-    { field: "recipientName", x: 271, y: 314, w: 365, h: 73 },
-    { field: "recipientPhone", x: 825, y: 314, w: 257, h: 73 },
-    { field: "recipientAddress", align: "left", x: 271, y: 401, w: 810, h: 80, lines: 2 },
-    { field: "senderName", x: 271, y: 499, w: 365, h: 72 },
-    { field: "senderPhone", x: 825, y: 499, w: 257, h: 72 },
-    { field: "senderAddress", align: "left", x: 271, y: 588, w: 810, h: 78, lines: 2 },
-    { field: "cargoName", x: 122, y: 769, w: 224, h: 85, align: "center", lines: 2 },
-    { field: "packageType", x: 372, y: 769, w: 146, h: 85, align: "center" },
-    { field: "pieces", x: 544, y: 769, w: 131, h: 85, align: "center" },
-    { field: "weight", x: 700, y: 769, w: 186, h: 85, align: "center" },
-    { field: "volume", x: 911, y: 769, w: 170, h: 85, align: "center" },
-    { field: "freight", x: 270, y: 872, w: 126, h: 60 },
-    { field: "pickupFee", x: 575, y: 872, w: 154, h: 60 },
-    { field: "deliveryFee", x: 913, y: 872, w: 168, h: 60 },
-    { field: "transferFee", x: 270, y: 948, w: 126, h: 62 },
-    { field: "transportMethod", x: 575, y: 948, w: 154, h: 62 },
-    { field: "paymentMethod", x: 913, y: 948, w: 168, h: 62 },
-    { field: "insuranceAmount", x: 270, y: 1026, w: 126, h: 71 },
-    { field: "codAmount", x: 575, y: 1026, w: 506, h: 71 },
-    { field: "remark", align: "left", x: 191, y: 1116, w: 890, h: 94, lines: 2 },
-    { field: "makerName", x: 191, y: 1229, w: 154, h: 98 },
-    { field: "handlerName", x: 529, y: 1229, w: 144, h: 98 },
+    { field: "waybillNo", x: 33, y: 264, w: 280, h: 85, fontPx: 64 },
+    { field: "date", x: 348, y: 270, w: 255, h: 73, fontPx: 56 },
+    { field: "station", x: 640, y: 264, w: 242, h: 87, fontPx: 62 },
+    { field: "recipientName", x: 305, y: 396, w: 330, h: 72, fontPx: 54 },
+    { field: "recipientPhone", x: 834, y: 396, w: 303, h: 72, fontPx: 52 },
+    { field: "recipientAddress", x: 342, y: 482, w: 782, h: 110, fontPx: 36, lines: 2, leading: 1.38, valign: "top" },
+    { field: "senderName", x: 305, y: 644, w: 330, h: 72, fontPx: 54 },
+    { field: "senderPhone", x: 834, y: 644, w: 303, h: 72, fontPx: 52 },
+    { field: "senderAddress", x: 342, y: 724, w: 782, h: 102, fontPx: 36, lines: 2, leading: 1.38, valign: "top" },
+    { field: "cargoName", x: 260, y: 864, w: 277, h: 53 },
+    { field: "packageType", x: 782, y: 864, w: 343, h: 53 },
+    { field: "pieces", x: 188, y: 923, w: 349, h: 52, fontPx: 46 },
+    { field: "weight", x: 820, y: 923, w: 305, h: 52, fontPx: 46 },
+    { field: "volume", x: 271, y: 980, w: 266, h: 52, fontPx: 46 },
+    { field: "freight", x: 206, y: 1064, w: 331, h: 52, fontPx: 42 },
+    { field: "pickupFee", x: 206, y: 1119, w: 331, h: 52, fontPx: 42 },
+    { field: "deliveryFee", x: 206, y: 1175, w: 331, h: 52, fontPx: 42 },
+    { field: "transferFee", x: 206, y: 1230, w: 331, h: 52, fontPx: 42 },
+    { field: "transportMethod", x: 789, y: 1064, w: 336, h: 52 },
+    { field: "paymentMethod", x: 789, y: 1120, w: 336, h: 52 },
+    { field: "insuranceAmount", x: 789, y: 1175, w: 336, h: 52, fontPx: 42 },
+    { field: "codAmount", x: 789, y: 1230, w: 336, h: 52, fontPx: 42 },
+    { field: "remark", x: 158, y: 1320, w: 967, h: 96, fontPx: 36, lines: 2, valign: "top" },
   ];
 
   const FIELD_LABELS = {
@@ -135,7 +131,7 @@
     cargoName: "货物名称", packageType: "包装类型", pieces: "件数", weight: "重量", volume: "体积",
     freight: "运费", pickupFee: "接货费", deliveryFee: "送货费", transferFee: "中转费",
     transportMethod: "送货方式", paymentMethod: "结算方式", insuranceAmount: "保价金额", codAmount: "代收金额",
-    remark: "备注", makerName: "制单人", handlerName: "经办人",
+    remark: "备注",
   };
   const wrapText = (text, width, context) => {
     const lines = [];
@@ -160,15 +156,15 @@
       const value = cleanText(data[item.field]);
       if (!value) return [];
       const font = CONTENT_FONT;
-      for (let px = CONTENT_SIZE_PX * settings.fontScale; px >= 22; px -= 0.5) {
+      for (let px = (item.fontPx || CONTENT_SIZE_PX) * settings.fontScale; px >= 22; px -= 0.5) {
         context.font = `${CONTENT_WEIGHT} ${px}px "${font}"`;
         const lines = wrapText(value, item.w * 0.95, context);
-        const lineHeight = px * 1.18;
+        const lineHeight = px * (item.leading || 1.18);
         if (lines.length > (item.lines || 1) || lines.length * lineHeight > item.h) continue;
         return [{
-          field: item.field, content: lines.join("\n"), font, fontWeight: CONTENT_WEIGHT, align: item.align || "center",
+          field: item.field, content: lines.join("\n"), font, fontWeight: CONTENT_WEIGHT, align: "left",
           x: item.x * 74 / SOURCE_WIDTH,
-          y: (item.y + (item.h - lines.length * lineHeight) / 2) * 92 / SOURCE_HEIGHT,
+          y: (item.y + (item.valign === "top" ? 0 : (item.h - lines.length * lineHeight) / 2)) * 92 / SOURCE_HEIGHT,
           w: item.w * 74 / SOURCE_WIDTH,
           h: (lines.length * lineHeight + 4) * 92 / SOURCE_HEIGHT,
           fontPt: px * 92 / SOURCE_HEIGHT * 72 / 25.4,
