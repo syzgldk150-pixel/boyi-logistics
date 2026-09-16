@@ -76,7 +76,7 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 - 资源池投影只允许 `resource_id/name/kind/status` 四个字段，Token、表格 ID、读写范围、文件路径、配置哈希/版本及原始配置不得进入 Console 或浏览器。飞书资源只显示 Agent 按当前文档名与工作表名解析的实时名称，不使用 Console 静态业务别名或内部资源 ID；改名随服务端短时缓存刷新。项目卡按签名 manifest 的 resource role 与 kind 精确生成候选，已有选择也必须重新核验可用性；不默认选择第一项。资源池不可用、descriptor 多/缺字段、必填资源未选、已停用或 kind 不匹配时，原卡显示阻断原因并 fail closed。
 - Console 自动化服务按职责拆分：`services/automation.py` 保留既有任务投影、运行控制、页面组合和兼容会话逻辑，纯 preview 合同、字段校验和调度分组 helper 位于 `services/automation_preview_support.py`；`services/automation_projects.py` 维护项目级权限、历史审批只读投影、插件目录和项目配置；`services/automation_plugin_management.py` 维护 ZIP 上传、实例生命周期、设置桥、v2 迁移及未知写恢复，并由 `AutomationServiceMixin` 组合复用；`routes/automation.py` 是当前插件生命周期入口，`routes/extensions.py` 只保留 GET 重定向与 POST 410。原 `services.automation` 的公共导入保持兼容。
 
-`scheduled_tasks`、`workflow_resources` 和 `waybills` 的结构由 Agent 发布迁移统一管理；Console 只做业务读写，不在启动或请求路径中建表、改表或忽略迁移错误。前两张表必须通过 `shared/runtime_repositories.py` 访问。
+`scheduled_tasks`、`workflow_resources`、`waybills` 和 `boyi_waybills` 的结构由 Agent 发布迁移统一管理；Console 只做业务读写，不在启动或请求路径中建表、改表或忽略迁移错误。前两张表必须通过 `shared/runtime_repositories.py` 访问。
 
 迁移 `014` 仅把遗留任务规范化为当前契约，不能作为免审授权；后续迁移增加任务配置版本、项目级权限与不可变审计事件。既有逐 Cron 策略只用于迁移兼容；Console 的新权限入口始终按项目配置。外部写的未知结果不能显示为成功。
 
@@ -168,7 +168,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `templates/base.html`
   - `app.py`
   - `database.py`
-  - 从本地 `waybills` 表读取已经开单入库的运单，支持关键词、日期、状态、来源、结算方式、派送方式、排序筛选，弹窗详情、列设置、打印、作废和跳转单号查询；状态列优先展示 `scan_status` 的扫描状态简写，缺失时回落到 `waybills.status` 粗状态；空筛选默认不加载全表，只显示主动查询结果。`GET /waybills` 严格只读，不得在日期筛选时暗中刷新外部来源；需要刷新时从自动化页面显式提交受控同步命令
+  - 从服务器 `boyi_waybills`（博益开单）与 `waybills`（其他来源）独立表联合查询已开单运单，支持关键词、日期、状态、来源、结算方式、派送方式、排序筛选，弹窗详情、列设置、打印、作废和跳转单号查询；状态列优先展示 `scan_status` 的扫描状态简写，缺失时回落到 `waybills.status` 粗状态；空筛选默认不加载全表，只显示主动查询结果。`GET /waybills` 严格只读，不得在日期筛选时暗中刷新外部来源；需要刷新时从自动化页面显式提交受控同步命令
 - 改统一回单管理页：
   - `templates/receipts.html`
   - `templates/base.html`
@@ -211,11 +211,11 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 - 原页读取及受审手工领号由 `../shared/manual_entry_contracts.py` 统一判定，Console 与 Agent 不得各自维护白名单；真实接口清单、已有操作冲突后的精确调用追踪及验证边界见 `../docs/original_page_read_requests.md`。
 - `/ocr` 默认进入多页签录单壳，最多 6 个页签；完整 OCR 上传/队列从 `/ocr?mode=ocr` 打开，单据详情仍走 `/documents/{id}`，博益手工录单由内部 `/ocr/boyi/frame` 承载。`/ocr?mode=yunda` 与 `/ocr?mode=ronghui` 分别创建独立来源的韵达/融辉原页页签。
 - 为避免第三方活动 HTML/JavaScript 继承 Console 管理员同源权限，旧 `/ocr/yunda/*`、`/ocr/ronghui/live/*`、`/receipts/yunda/live/*` 与 `/receipts/ronghui/live/*` 对 GET/POST/PUT/PATCH/DELETE 固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，且必须在 Console 本地结束、不得调用 Agent。原页只能经 `/original-pages/{provider}/launch` 生成一次性 ticket，跳转到 `https://www.boyi.homes/original/{provider}/` 在独立 origin 兑换路径限定 capability；ticket 单次、30 秒失效，capability 不携带或复用主站会话 Cookie，写请求必须验证独立 origin。
-- 手工录单提交到 `/waybills/manual`，成功后写入 `waybills`；默认自动打印仍跳转 `/waybills/{id}/print?autoprint=1`，frame 内保存失败或不打印时可通过 `return_to=/ocr/boyi/frame` 留在本 frame。
+- 手工录单提交到 `/waybills/manual`，成功后只写服务器 MySQL 独立表 `boyi_waybills`；自动打印跳转 `/waybills/{id}/print?source=manual&autoprint=1`，frame 内保存失败或不打印时可通过 `return_to=/ocr/boyi/frame` 留在本 frame。
 - 手工录单页右侧地图下方保留“成本比价”只读能力；Console `POST /waybills/quote-options` 仍只展示真实返回金额并比较。只有真实可用的韵达/融辉报价可选择并保存预填数据，然后打开对应的独立来源原页页签；不可用、缺少预览或选择数据时显式阻断，不猜测默认值。
-- 已开单寄件运单查询页为 `/waybills`，GET 先查询本地 `waybills`；真实管理员的明确日期范围查询经签名普通业务接口补查来源覆盖缺口，不创建 Command/Run、不触发整个夜间插件。无范围、缺来源证明或上游失败时显示本地快照与明确未完整更新提示。页面空筛选默认不展示全表，单票物流轨迹仍从 `/tracking` 查询。`waybills.status` 使用 `pending/in_transit/signed/cancelled`，`waybills.scan_status` 保存同步来源明确返回的当前扫描状态；页面“作废运单”只写 `cancelled`，Agent 后续同步不得覆盖该状态。
+- 已开单寄件运单查询页为 `/waybills`，GET 先联合查询服务器 `boyi_waybills` 与 `waybills`；真实管理员的明确日期范围查询经签名普通业务接口补查来源覆盖缺口，不创建 Command/Run、不触发整个夜间插件。无范围、缺来源证明或上游失败时显示本地快照与明确未完整更新提示。页面空筛选默认不展示全表，单票物流轨迹仍从 `/tracking` 查询。`waybills.status` 使用 `pending/in_transit/signed/cancelled`，`waybills.scan_status` 保存同步来源明确返回的当前扫描状态；页面“作废运单”只写 `cancelled`，Agent 后续同步不得覆盖该状态。
 - 统一回单管理页 `/receipts` 读取本地记录与附件；查询和审核在当前页面展示直接结果，失败/未知状态不能称作成功。活动原页 iframe 仍禁用，旧回单原页前缀统一 410；本地照片与证据展示保留。
-- 博益手工单号由 `waybill_sequences` 的独立 `boyi_manual_waybill` 序列从 `BY00001` 全局递增；保存与领号同事务，预览不占号，旧数字单号保留。结算方式只接受寄付、到付、月结，页面与服务端共用 `MANUAL_PAYMENT_METHODS`。本地录单日期统一按 ISO 入库；迁移 `050_normalize_local_waybill_dates.sql` 修正历史手工/OCR 斜杠日期，确保寄件查询可按日期找到。
+- 博益手工单号由 `waybill_sequences` 的独立 `boyi_manual_waybill` 序列从 `BY00001` 全局递增；保存与领号同事务，预览不占号，旧数字单号保留。结算方式只接受寄付、到付、月结，页面与服务端共用 `MANUAL_PAYMENT_METHODS`。博益开单、OCR 日期统一按 ISO 入库；迁移 `050_normalize_local_waybill_dates.sql` 修正历史手工/OCR 斜杠日期，确保寄件查询可按日期找到。
 - 手工工作台右侧为高德地图定位区，收件地址失焦或回车后自动搜索定位；地图卡片下方只保留一个起始地址搜索输入框，不显示定位状态、匹配地址或起始地基础行程预估；手工录单表单分开发货信息和收货信息，不再显示外层“客户信息”标题；顶部“地址解析”弹窗只在浏览器本地解析姓名/电话/地址并填入收货人、收货电话、收件地址，不调用外部接口、不自动保存；打印机设置收纳到顶部按钮弹层，本地打印机选项通过浏览器 `localStorage` 保存偏好，保存后的打印页直接调用本机 C-Lodop 服务，不做浏览器打印兜底。手工录单页和独立打印页统一使用 `static/js/clodop_loader.js`：优先按 C-Lodop 6.644 官方方案从本机 `8000/18000` 端口通过 WebSocket 加载主脚本，仅在 WebSocket 不可用时按页面协议尝试 HTTP/HTTPS 脚本地址；禁止在两个模板中复制加载器或恢复为只依赖 `8443` SSL 证书的旧实现。
 - 热敏主单使用用户桌面“主单模板/主单-空白信息版.jpg”的原始空白底版，保存为 `static/assets/waybill_label_background.jpg`，原图 1122 × 1402 px，打印纸张仍为 74mm × 92mm。`static/js/waybill_label_html.js` 单点维护源图坐标、数据归一化和文字排版，`static/js/waybill_label_lodop.js` 必须复用，先 `ADD_PRINT_IMAGE` 再 `ADD_PRINT_TEXT`，不回退旧模板。所有动态内容（含中文、数字、日期、电话和金额）统一使用本机黑体并加粗，浏览器加载本机黑体（SimHei）后按 700 字重测量，C-Lodop 使用已安装的“黑体”并启用加粗；本机缺少黑体时明确提示安装，不回退思源黑体；短内容在单元格内水平、垂直居中，地址和备注左对齐、垂直居中，同一行按共同中线定位。固定底图文字不变。重量/体积按手工录单已保存的 kg / m³ 格式分栏；接货费、中转费和备注传入实际值，空值不补零，无法解析或文字超出可打印区域时显式报错。发件地址、制单人、经办人无来源时留空，收货签收栏保留手写；不把样张人物或金额写入模板。旧 PNG、SVG 模板及兜底实现已移除；禁止重绘底图、拆 SVG 切片、`ADD_PRINT_HTM` 或浏览器打印兜底。
 
@@ -268,3 +268,5 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 - `../docs/direct_waybill_query.md`：普通寄件查询、稳定来源/权限覆盖、精确补查、夜间范围发布与已验证边界；生产 scope 未核验时明确 partial，不猜来源。
 - `../docs/architecture_refactor_acceptance_mapping.md`：原 A/B/C 与 M01–M06 的驱动映射、短插件新链替换要求及冻结宿主维护演练入口。
+
+- 迁移 `051_separate_boyi_waybills.sql` 将历史 `source=manual` 行原样迁至 `boyi_waybills` 并从通用表移除；新博益单仅写独立表。寄件列表按来源和 ID 绑定详情，打印 query 与作废 form 显式传 `source=manual`，避免跨表同 ID 串单；来源筛选显示“博益开单”。

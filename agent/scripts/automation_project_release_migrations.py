@@ -10,6 +10,27 @@ import hashlib
 import json
 
 
+def validate_service_v2_scheduler_contract(snapshot, contract, *, cron_expression, error_class):
+    """Use the runtime's unique scheduler binding for V2 release windows."""
+    enabled_entrypoints = snapshot.get("enabled_entrypoints")
+    if not isinstance(enabled_entrypoints, list) or any(
+        type(item) is not str for item in enabled_entrypoints
+    ):
+        raise error_class("PROJECT_SCHEDULE_CONTRACT_INVALID")
+    execution_metadata = snapshot["execution_metadata"]
+    try:
+        entrypoint, enabled = contract["scheduler_contribution_binding"](
+            snapshot=snapshot,
+            execution_metadata=execution_metadata,
+            enabled_entrypoints=enabled_entrypoints,
+            schedule_expressions=(cron_expression,),
+        )
+    except (ValueError, contract["persistence_error_class"]) as exc:
+        raise error_class("PROJECT_SCHEDULE_CONTRACT_INVALID") from exc
+    if not enabled or entrypoint not in execution_metadata["compiled_invocations"]:
+        raise error_class("PROJECT_SCHEDULE_CONTRACT_INVALID")
+
+
 def validate_bootstrap_sources(contract, items_by_id, *, error_class):
     """Keep validating the complete immutable 018 receipt after retirement."""
     evidence = contract["bootstrap_evidence"]

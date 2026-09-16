@@ -96,17 +96,17 @@ class WaybillsReceiptsServiceMixin:
             status["warnings"].append(error)
             return status
         if not start:
-            status["warnings"].append("未指定日期，本次仅查询本地数据；请选择日期补查原平台。")
+            status["warnings"].append("未指定日期，本次仅查询服务器数据；请选择日期补查原平台。")
             return status
         # A browser page read uses the same authenticated principal as other
         # direct business reads. Never invent an account from a provider name.
         user = getattr(handler, "current_admin_user", None)
         if not isinstance(user, dict) or user.get("legacy"):
-            status["warnings"].append("原平台补查需要已登录的管理员会话，当前展示本地快照。")
+            status["warnings"].append("原平台补查需要已登录的管理员会话，当前展示服务器快照。")
             return status
         context = self._control_plane_read_context(handler)
         if context is None:
-            status["warnings"].append("原平台补查身份不可用，当前展示本地快照。")
+            status["warnings"].append("原平台补查身份不可用，当前展示服务器快照。")
             return status
         import uuid
         result = self._agent_request("POST", "/internal/v1/business/send-waybills-query", payload={
@@ -115,7 +115,7 @@ class WaybillsReceiptsServiceMixin:
         }, timeout=95, console_principal=context["_console_principal"])
         data = result.get("data") if isinstance(result.get("data"), dict) else result
         if not result.get("ok") or not isinstance(data, dict) or data.get("complete") is not True:
-            status["warnings"].append("原平台数据未完整更新，以下列表和汇总仅代表已保存的本地数据。")
+            status["warnings"].append("原平台数据未完整更新，以下列表和汇总仅代表已保存的服务器数据。")
         else:
             status["messages"].append("已按原平台覆盖范围更新数据，列表和汇总使用同一数据库快照。")
         return status
@@ -215,7 +215,7 @@ class WaybillsReceiptsServiceMixin:
             try:
                 sync_status = self._refresh_waybill_sources(handler, filters)
             except Exception:
-                sync_status["warnings"].append("原平台补查暂不可用，以下列表和汇总仅代表已保存的本地数据。")
+                sync_status["warnings"].append("原平台补查暂不可用，以下列表和汇总仅代表已保存的服务器数据。")
 
         if has_active_filters:
             try:
@@ -1317,7 +1317,14 @@ class WaybillsReceiptsServiceMixin:
         return display_rows
 
     def _render_waybill_print(self, handler: BaseHTTPRequestHandler, waybill_id: int, query: dict) -> None:
-        waybill = self.repository.get_waybill(waybill_id)
+        source = str(query.get("source", [""])[0])
+        if source == "manual":
+            waybill = self.repository.get_waybill(waybill_id, source="manual")
+        elif source in {"", "ocr", "yunda", "ronghui"}:
+            waybill = self.repository.get_waybill(waybill_id)
+        else:
+            self._send_text(handler, HTTPStatus.BAD_REQUEST, "Invalid waybill source.")
+            return
         if not waybill:
             self._send_text(handler, HTTPStatus.NOT_FOUND, "Waybill not found.")
             return
