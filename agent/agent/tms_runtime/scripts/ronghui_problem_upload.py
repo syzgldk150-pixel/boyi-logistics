@@ -444,6 +444,7 @@ def match_unique_registered_problem_item(
         "bill_code": expected_values["BILL_CODE"],
         "matched_fields": list(_PROBLEM_EXPECTED_MATCH_FIELDS),
         "registered_at": _clean_text(row.get("REGISTER_SAVE_DATE")),
+        "registered_site": _clean_text(row.get("REGISTER_SITE")),
     }
 
 

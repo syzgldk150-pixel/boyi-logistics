@@ -234,9 +234,11 @@ def wait_invocation(invocation_id, *, timeout=60, connection_factory=connect):
     row = None
     while time.monotonic() < deadline:
         with connection_factory() as connection, connection.cursor() as cursor:
-            cursor.execute("SELECT invocation_id,status,error_code,error_summary FROM automation_plugin_invocations WHERE invocation_id=%s", (invocation_id,))
+            cursor.execute("SELECT invocation_id,status,error_code,error_summary,result_json FROM automation_plugin_invocations WHERE invocation_id=%s", (invocation_id,))
             row = cursor.fetchone()
         if row and row["status"] in TERMINAL_INVOCATION_STATUSES:
+            raw_result = row.pop("result_json")
+            row["result"] = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
             return row
         threading.Event().wait(0.1)
     raise AssertionError(f"real Invocation completion bound exceeded: {row}")

@@ -194,11 +194,11 @@ def main():
                     failed = wait_invocation(runner, failure['invocation_id'], expected='FAILED', timeout=8)
                     active_after_failure = {identity: runner.service.get(identity_value)['status'] for identity, identity_value in invocations.items()}
                     assert all(active_after_failure[identity] == 'RUNNING' for identity in ('scan_codes', 'self_pickup_problem_upload', 'split_pending_problem_upload')), active_after_failure
-                    stats_result = wait_invocation(runner, statistics['invocation_id'], expected='FAILED')
-                    assert stats_result['error_code'] == 'EXECUTION_RESOURCE_BUSY', stats_result
+                    stats_result = wait_invocation(runner, statistics['invocation_id'], expected='COMPLETED')
+                    assert stats_result['result']['status'] == 'SUCCESS'
                     assert runner.service.get(scan['invocation_id'])['status'] == 'RUNNING'
-                    report['physical_conflict'] = {'status': 'PASS', 'result': stats_result,
-                        'reason': 'Actual scan write owns the same physical account; the fresh statistics request ends busy without a queue.'}
+                    report['independent_statistics'] = {'status': 'PASS', 'result': stats_result,
+                        'reason': 'Statistics reads the previously published scan snapshot and writes independent sheets while the current scan remains in flight.'}
                     scan_gate.release.set()
                     problem_gate.release.set()
                     results = {}
@@ -210,7 +210,7 @@ def main():
                         results[identity] = row
                     fresh_statistics = invoke('arrival_stats')
                     results['arrival_stats'] = wait_invocation(runner, fresh_statistics['invocation_id'], expected='COMPLETED')
-                    assert runner.service.get(statistics['invocation_id'])['status'] == 'FAILED'
+                    assert runner.service.get(statistics['invocation_id']) == stats_result
                     assert [row['BILL_CODE'] for row in daily.ledger] == [CHILD_CODE]
                     assert {row['bill_code'] for row in problems.persisted_problems()} == {'R_M03_STANDARD', 'SYNTHETIC-SPLIT', 'SYNTHETIC-NOT-ARRIVED'}
                     assert _legacy_counts(management.repository) == before
