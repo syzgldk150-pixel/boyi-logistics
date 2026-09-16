@@ -37,7 +37,10 @@ def load_matrix(path: Path) -> dict[str, Any]:
         if not row["scenario"] or not row["requirement"] or row["minimum_cases"] < 1:
             raise ValueError(f"incomplete acceptance requirement: {row['id']}")
         if (not row.get('original_requirement') or not row.get('effective_requirement')
-                or row.get('revision_basis') != 'BOYI-PHASE1-FINAL-CLOSEOUT-R1'
+                or row.get('revision_basis') not in {
+                    'BOYI-PHASE1-FINAL-CLOSEOUT-R1',
+                    'BOYI-PHASE1-FINAL-CLOSEOUT-R1 + USER_RESOURCE_WAIT_2026-09-16',
+                }
                 or row.get('runtime_model') != 'DIRECT_SERVICE_V2' or row.get('applicability') != 'REQUIRED'
                 or not row.get('input_side_effect_assertions')):
             raise ValueError(f"current acceptance contract missing: {row['id']}")
