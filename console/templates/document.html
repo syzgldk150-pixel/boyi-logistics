@@ -749,10 +749,9 @@
               <label class="manual-label required" for="field_payment_method">结算方式</label>
               <select id="field_payment_method" name="field_payment_method" class="manual-select">
                 <option value="">请选择</option>
-                <option value="寄付">寄付</option>
-                <option value="到付">到付</option>
-                <option value="现付">现付</option>
-                <option value="月结">月结</option>
+                {% for method in manual_payment_methods %}
+                <option value="{{ method }}">{{ method }}</option>
+                {% endfor %}
               </select>
             </div>
             {{ render_manual_field('insurance_amount', '保价金额', placeholder='0.00') }}

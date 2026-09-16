@@ -45,7 +45,7 @@ class ManualProxyRequestContractTests(unittest.TestCase):
         )))
 
     def test_observed_yunda_initialization_shapes(self):
-        for suffix in ("elecStock.html", "getCostInfoPrompt.html"):
+        for suffix in ("elecStock.html", "getCostInfoPrompt.html", "getCurrentTime.html"):
             with self.subTest(suffix=suffix):
                 self.assertTrue(manual_proxy_request_allowed("yunda", self.request(
                     path=f"/ky_inms/public/index.php/{suffix}",
@@ -54,6 +54,27 @@ class ManualProxyRequestContractTests(unittest.TestCase):
             path="/ky_inms/public/index.php/business/waybill/entry/getTemplateList.html",
             body="CreatedDotCode=fixture-site&IsNew=1&queryType=fixture-type",
         )))
+
+    def test_yunda_region_and_discount_reads_require_observed_fields(self):
+        shapes = (
+            ("Region/province.html", "state=fixture", ""),
+            ("Region/city.html", "state=fixture", "bm=fixture-region"),
+            ("Region/county.html", "state=fixture", "bm=fixture-region"),
+            ("checkBoxIsDiscount.html", "", "CreatedDotCode=fixture-site&SettlementTotalNumber=0"),
+            ("checkTextIsDiscount.html", "", "CreatedDotCode=fixture-site&SettlementTotalNumber=0"),
+        )
+        for suffix, query, body in shapes:
+            with self.subTest(suffix=suffix):
+                params = self.request(path=f"/ky_inms/public/index.php/{suffix}", query=query, body=body)
+                self.assertTrue(manual_proxy_request_allowed("yunda", params))
+                params["body"] = body + "&action=save"
+                self.assertFalse(manual_proxy_request_allowed("yunda", params))
+                params["body"] = body
+                params["query"] = query + ("&state=other" if query else "CreatedDotCode=other")
+                self.assertFalse(manual_proxy_request_allowed("yunda", params))
+                params["query"] = ""
+                params["body"] = ""
+                self.assertFalse(manual_proxy_request_allowed("yunda", params))
 
     def test_ronghui_manual_allocation_and_following_existence_check(self):
         for body, content_type in (

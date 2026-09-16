@@ -117,11 +117,24 @@ _RONGHUI_READ_QUERY_FIELDS = {
 _YUNDA_EMPTY_INITIALIZATION_PATHS = frozenset({
     "/ky_inms/public/index.php/elecStock.html",
     "/ky_inms/public/index.php/getCostInfoPrompt.html",
+    "/ky_inms/public/index.php/getCurrentTime.html",
 })
 _YUNDA_TEMPLATE_LIST_PATH = (
     "/ky_inms/public/index.php/business/waybill/entry/getTemplateList.html"
 )
 _YUNDA_TEMPLATE_FIELDS = frozenset({"CreatedDotCode", "IsNew", "queryType"})
+_YUNDA_READ_QUERY_FIELDS = {
+    _YUNDA_TEMPLATE_LIST_PATH: _YUNDA_TEMPLATE_FIELDS,
+    "/ky_inms/public/index.php/Region/province.html": frozenset({"state"}),
+    "/ky_inms/public/index.php/Region/city.html": frozenset({"state", "bm"}),
+    "/ky_inms/public/index.php/Region/county.html": frozenset({"state", "bm"}),
+    "/ky_inms/public/index.php/checkBoxIsDiscount.html": frozenset({
+        "CreatedDotCode", "SettlementTotalNumber",
+    }),
+    "/ky_inms/public/index.php/checkTextIsDiscount.html": frozenset({
+        "CreatedDotCode", "SettlementTotalNumber",
+    }),
+}
 
 
 def _unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -228,7 +241,7 @@ def manual_proxy_request_allowed(provider: str, params: Mapping[str, Any]) -> bo
     if provider == "yunda":
         if path in _YUNDA_EMPTY_INITIALIZATION_PATHS:
             return not fields and not params.get("body") and not params.get("body_base64")
-        return path == _YUNDA_TEMPLATE_LIST_PATH and fields.keys() == _YUNDA_TEMPLATE_FIELDS
+        return path in _YUNDA_READ_QUERY_FIELDS and fields.keys() == _YUNDA_READ_QUERY_FIELDS[path]
     if path == "/minic/combobox":
         return fields == {"optionCode": "WEIGHT_RATIO"}
     if path != "/dataQuery/findAllByCallId":

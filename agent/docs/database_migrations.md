@@ -4,10 +4,12 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-09-12
+updated: 2026-09-16
 ---
 
 # 数据库迁移
+
+`050_normalize_local_waybill_dates.sql` 将手工/OCR 的历史斜杠日期转为 ISO 日期，保持单号、行数、金额与其他业务字段不变；修复日期筛选漏掉本地开单。
 
 `049_plugin_migration_revalidation.sql` 将迁移源/目标的历史唯一约束改为普通历史索引，允许同一插件实例撤回、升级后重新验证。历史批次与请求唯一标识不变，活动批次和已完成来源仍由事务排他检查保护，不改写任何业务结果或旧迁移文件。
 

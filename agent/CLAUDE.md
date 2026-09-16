@@ -33,6 +33,8 @@ Service V2 扫描按目录验证的 `super_admin_upload/builtin_bundle` 来源�
 
 ---
 
+迁移 `050_normalize_local_waybill_dates.sql` 仅将历史手工/OCR 运单日期统一为 ISO 格式，保留单号、金额及其他业务字段；用于修复寄件日期查询漏单。
+
 ## ECS 发布入口
 
 - 当用户提到“同步 ECS”“发版”“发布到 ECS”“部署到 ECS”时，默认先使用固定脚本，不要先到处搜索其它发布命令：
