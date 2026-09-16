@@ -1753,8 +1753,8 @@ def test_unknown_write_reply_does_not_expose_internal_failure_or_invite_replay()
 
     assert reply_type == "automation_project_write_outcome_unknown"
     assert reply == (
-        "统计到货数据的目标表可能已更新，但最终核验暂未确认。"
-        "系统已保留核验记录，新任务不会因此被阻塞。"
+        "统计到货数据可能已写入，但最终结果尚未确认。"
+        "系统已保留核验记录，请先核对本次结果，避免重复提交；不受影响的任务可继续执行。"
     )
     assert "FIRST_PARTY_ACTION_FAILED" not in reply
     assert "WRITE_OUTCOME_UNKNOWN" not in reply

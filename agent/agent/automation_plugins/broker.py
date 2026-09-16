@@ -342,6 +342,18 @@ def _extract_write_target_ref(
 
     if not isinstance(arguments, Mapping) or not isinstance(role, str) or not role.strip():
         raise PluginExecutionError("write locator input is invalid", code="WRITE_ATTEMPT_LOCATOR_INVALID")
+    locator_arguments = arguments
+    if plugin_id == "sync_finance_bills_v2" and operation == "service.invoke" and action == "write_snapshot":
+        from agent.automation_plugins.finance_connectors_v2 import ROLES
+
+        # The current finance Connector receives its business inputs inside the
+        # Service V2 envelope. Keep the full envelope hash, but locate the batch
+        # only for the reviewed Connector that actually crossed the write marker.
+        if arguments.get("service") in {f"connector.boyi.{item}@1" for item in ROLES}:
+            locator_arguments = arguments.get("arguments")
+            if arguments.get("operation") != action or not isinstance(locator_arguments, Mapping):
+                raise PluginExecutionError("finance write locator is invalid", code="WRITE_ATTEMPT_LOCATOR_INVALID")
+            _require_locator_arguments("finance.source_snapshot.write", locator_arguments)
     strict = (str(plugin_id or ""), operation, action) in _RECOVERABLE_WRITE_PLUGIN_ACTIONS
     if strict:
         _require_locator_arguments(action, arguments)
@@ -351,11 +363,11 @@ def _extract_write_target_ref(
         idempotency = _first_text(arguments, _IDEMPOTENCY_FIELDS, label="idempotency")
         record_count = _record_count(arguments)
     else:
-        business_date = _optional_locator_text(arguments, _DATE_FIELDS)
-        batch = _optional_locator_text(arguments, _BATCH_FIELDS)
-        run = _optional_locator_text(arguments, _RUN_FIELDS)
-        idempotency = _optional_locator_text(arguments, _IDEMPOTENCY_FIELDS)
-        record_count = _generic_record_count(arguments)
+        business_date = _optional_locator_text(locator_arguments, _DATE_FIELDS)
+        batch = _optional_locator_text(locator_arguments, _BATCH_FIELDS)
+        run = _optional_locator_text(locator_arguments, _RUN_FIELDS)
+        idempotency = _optional_locator_text(locator_arguments, _IDEMPOTENCY_FIELDS)
+        record_count = _generic_record_count(locator_arguments)
     content_sha256 = hashlib.sha256(canonical_json_bytes(dict(arguments))).hexdigest()
     target_ref = {
         "schema": 1,

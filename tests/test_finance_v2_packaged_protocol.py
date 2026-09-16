@@ -1,5 +1,7 @@
 from decimal import Decimal
 from copy import deepcopy
+from hashlib import sha256
+import json
 
 import pytest
 
@@ -66,3 +68,22 @@ def test_finance_zip_captures_three_bound_accounts_and_independently_verifies_le
     else:
         assert result['meta']['write_outcome'] == 'WRITE_VERIFIED'
     assert host.receipts
+    snapshots = [row for row in host.receipts if row['action'] == 'write_snapshot']
+    assert len(snapshots) == len(repository.runs)
+    batch_hashes = {sha256(str(row['batch_id']).encode()).hexdigest() for row in repository.runs.values()}
+    assert len(batch_hashes) == 1
+    for receipt in snapshots:
+        target = receipt['target_ref_json']
+        assert {target['batch_sha256']} == batch_hashes
+        assert target['business_date_sha256'] == sha256(b'2026-07-11').hexdigest()
+        assert '2026-07-11' not in json.dumps(target)
+
+
+def test_unrelated_service_cannot_claim_a_finance_batch_locator():
+    from agent.automation_plugins.broker import _extract_write_target_ref
+    target, _ = _extract_write_target_ref(automation_id='finance-instance',
+        plugin_id='sync_finance_bills_v2', operation='service.invoke', action='write_snapshot',
+        role='__system__', binding=None, request_id='unrelated-service-request',
+        arguments={'service': 'connector.unrelated@1', 'operation': 'write_snapshot',
+            'arguments': {'batch_id': 37, 'target_date': '2026-07-11'}})
+    assert target['batch_sha256'] == ''

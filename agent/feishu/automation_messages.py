@@ -72,8 +72,8 @@ def _automation_result_reply_text(
         return f"{task_name}正在停止，停止后会更新本次结果。", "automation_project_cancelling"
     if problem_code == "WRITE_OUTCOME_UNKNOWN" or "WRITE_OUTCOME_UNKNOWN" in reason:
         return (
-            f"{task_name}的目标表可能已更新，但最终核验暂未确认。"
-            "系统已保留核验记录，新任务不会因此被阻塞。",
+            f"{task_name}可能已写入，但最终结果尚未确认。"
+            "系统已保留核验记录，请先核对本次结果，避免重复提交；不受影响的任务可继续执行。",
             "automation_project_write_outcome_unknown",
         )
     if status == "PARTIAL":

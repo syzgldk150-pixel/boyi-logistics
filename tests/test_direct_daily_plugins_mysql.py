@@ -99,9 +99,7 @@ def test_statistics_scan_pickup_execute_in_parallel_without_a_queue(daily_reposi
                         pickup = signed_request(management, f"/internal/v1/automation-projects/{pickup_id}/selection-previews/{pickup_preview['invocation_id']}/confirm", payload={"request_id": str(uuid4()), "selected_bill_codes": ["R_M03_STANDARD"]})
                     assert problem_gate.started.wait(10), runtime.service.get(pickup["invocation_id"])
                     stats_receipt = invoke(stats_id)
-                    statistics_busy = runtime.service.wait_sync(stats_receipt['invocation_id'])
-                    assert statistics_busy['status'] == 'FAILED', statistics_busy
-                    assert statistics_busy['error_code'] == 'EXECUTION_RESOURCE_BUSY', statistics_busy
+                    statistics_during_scan = completed(stats_receipt)
                     assert runtime.service.get(scan["invocation_id"])["status"] == "RUNNING"
                     assert runtime.service.get(pickup["invocation_id"])["status"] == "RUNNING"
                     scan_gate.release.set()
@@ -115,5 +113,5 @@ def test_statistics_scan_pickup_execute_in_parallel_without_a_queue(daily_reposi
                 assert [row["bill_code"] for row in problems.persisted_problems()] == ["R_M03_STANDARD"]
                 assert _legacy_counts(management.repository) == before
                 (root / "evidence.json").write_text(json.dumps({"runtime_model": "SERVICE_V2", "scan": scan_result,
-                    "statistics_busy": statistics_busy, "statistics": statistics, "pickup": pickup_result,
+                    "statistics_during_scan": statistics_during_scan, "statistics": statistics, "pickup": pickup_result,
                     "legacy_counts_before": before, "legacy_counts_after": _legacy_counts(management.repository)}, ensure_ascii=False, indent=2, default=str))
