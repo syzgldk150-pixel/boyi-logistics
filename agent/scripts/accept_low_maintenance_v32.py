@@ -19,8 +19,10 @@ import time
 from typing import Any
 from uuid import uuid4
 import xml.etree.ElementTree as ET
+import zipfile
 
 from scripts.first_party_release_scope import quality_files, test_files
+from scripts.acceptance_evidence import validate_probe
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MATRIX_PATH = PROJECT_ROOT / "docs" / "low_maintenance_v32_acceptance.json"
@@ -34,6 +36,15 @@ def load_matrix(path: Path) -> dict[str, Any]:
     for row in matrix["groups"]:
         if not row["scenario"] or not row["requirement"] or row["minimum_cases"] < 1:
             raise ValueError(f"incomplete acceptance requirement: {row['id']}")
+        if (not row.get('original_requirement') or not row.get('effective_requirement')
+                or row.get('revision_basis') != 'BOYI-PHASE1-FINAL-CLOSEOUT-R1'
+                or row.get('runtime_model') != 'DIRECT_SERVICE_V2' or row.get('applicability') != 'REQUIRED'
+                or not row.get('input_side_effect_assertions')):
+            raise ValueError(f"current acceptance contract missing: {row['id']}")
+        required = row.get('required_evidence', [])
+        if (not required or not set(row['tests']).issubset({item['reference'] for item in required})
+                or any(item.get('minimum_cases', 0) < 1 for item in required)):
+            raise ValueError(f"required subitem evidence missing: {row['id']}")
     return matrix
 
 
@@ -75,15 +86,27 @@ def evaluate_groups(matrix: dict[str, Any], cases: list[dict[str, Any]]) -> list
         matches = [case for case in cases if any(_matches(reference, case) for reference in row["tests"])]
         missing = [reference for reference in row["tests"] if not any(_matches(reference, case) for case in cases)]
         counts = Counter(case["status"] for case in matches)
+        incomplete = []
+        for requirement in row.get('required_evidence', []):
+            selected = [case for case in cases if _matches(requirement['reference'], case)
+                        and all(case.get('properties', {}).get(key) == str(value)
+                                for key, value in requirement.get('properties', {}).items())]
+            if len(selected) < requirement['minimum_cases']:
+                incomplete.append(requirement['reference'] + ': insufficient required scenario samples')
+            distinct = requirement.get('distinct_property')
+            if distinct and len({case.get('properties', {}).get(distinct) for case in selected
+                                 if distinct in case.get('properties', {})}) < requirement['minimum_cases']:
+                incomplete.append(requirement['reference'] + ': repeated scenario identities are missing')
         if counts["FAIL"]:
             status = "FAIL"
         elif counts["BLOCKED"]:
             status = "BLOCKED"
-        elif missing or len(matches) < row["minimum_cases"] or row["coverage_gaps"]:
+        elif missing or incomplete or len(matches) < row["minimum_cases"] or row["coverage_gaps"]:
             status = "NOT_RUN"
         else:
             status = "PASS"
-        results.append({**row, "status": status, "case_counts": dict(counts), "missing_test_references": missing, "cases": matches})
+        results.append({**row, "status": status, "case_counts": dict(counts), "missing_test_references": missing,
+                        'incomplete_required_evidence': incomplete, "cases": matches})
     return results
 
 
@@ -148,12 +171,11 @@ def fresh_probe_case(check: dict[str, Any], source: Path, *, started_ns: int, ou
         payload = source.read_bytes()
         try:
             parsed = json.loads(payload)
-            if not isinstance(parsed, dict) or not parsed:
-                reason = "probe artifact is empty or invalid"
-            elif "status" in parsed and parsed["status"] != "PASS":
-                reason = "probe artifact does not declare completed PASS"
+            validate_probe(check['name'], parsed, root=PROJECT_ROOT)
         except (ValueError, UnicodeError):
-            reason = "probe artifact is not valid JSON"
+            reason = "probe artifact is not valid JSON" if not isinstance(locals().get('parsed'), dict) else str(sys.exc_info()[1])
+        except (KeyError, TypeError, OSError, zipfile.BadZipFile) as exc:
+            reason = 'probe artifact required evidence is missing or malformed: ' + str(exc)
         target = output / (check['name'] + '-' + source.name)
         target.write_bytes(payload)
         check.update(artifact=str(target), artifact_sha256=hashlib.sha256(payload).hexdigest())
@@ -237,6 +259,7 @@ def render_markdown(report: dict[str, Any]) -> str:
     for row in report["groups"]:
         counts = row["case_counts"]
         gaps = row["coverage_gaps"] + ["测试未产生记录：" + value for value in row["missing_test_references"]]
+        gaps += ['必需子项证据不足：' + item for item in row.get('incomplete_required_evidence', [])]
         lines.append(f"| {row['id']} | {row['status']} | {counts.get('PASS', 0)} | {counts.get('FAIL', 0)} | {counts.get('BLOCKED', 0)} | {'；'.join(gaps).replace('|', '/')} |")
     lines.extend(["", "NOT_RUN 表示整组必要证据未完成；通过切片数量不能视作整组通过。各组原始要求、测试名、日志和测量属性详见同目录 result.json。", "", "## 本次实际命令", ""])
     for check in report["checks"]:

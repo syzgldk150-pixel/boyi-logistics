@@ -11,12 +11,13 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from agent.automation_plugins.code_owned_fields import apply_scan_execution_boundary, apply_selection_execution_boundary
-from agent.orchestration.execution_resources import canonical_resource_write_locks, execution_keys_conflict, EXECUTION_ACTION_SCOPES
+from agent.orchestration.execution_resources import canonical_resource_write_locks, connector_write_locks, execution_keys_conflict, EXECUTION_ACTION_SCOPES, HOST_OPERATION_RESOURCE_KEYS
 from agent.orchestration.models import OperationType, OrchestrationError
 from shared.automation_project_authorization import canonical_sha256
 from shared.execution_resource_journal import EXECUTION_RESOURCE_KEYS
 from shared.plugin_invocation_repository import TERMINAL_INVOCATION_STATUSES, invocation_write_receipts
 from shared.redaction import redact_text
+from shared.async_work import drain_thread as _preflight_thread
 
 
 @dataclass(frozen=True)
@@ -53,16 +54,6 @@ def public_invocation(row: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-async def _preflight_thread(function, *args, **kwargs):
-    """Drain non-cancellable setup work, then stop before starting business work."""
-    work = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-    try:
-        return await asyncio.shield(work)
-    except asyncio.CancelledError:
-        await asyncio.gather(work, return_exceptions=True)
-        raise
-
-
 class DirectPluginInvocationService:
     def __init__(self, repository: Any, executor: Any, verifier: Any, *, max_concurrency: int = 16, release_hold_provider=None, saved_resource_provider=None, account_validator=None, prepare_arguments=None, publish_result=None) -> None:
         self.repository = repository
@@ -77,7 +68,9 @@ class DirectPluginInvocationService:
         self._prepare_arguments = prepare_arguments
         self._publish_result = publish_result
         self._lock = threading.RLock()
+        self._admission_lock = threading.Lock()
         self._active: dict[str, dict] = {}
+        self._pending: dict[str, dict] = {}
         self._active_reads: dict[str, dict] = {}
         self._held_operations: dict[str, tuple] = {}
         self._operation_changed = asyncio.Event()
@@ -145,7 +138,7 @@ class DirectPluginInvocationService:
         if not isinstance(account_id, str) or not account_id:
             raise ValueError("credential change account is required")
         with self._lock:
-            if account_id in self._changing_accounts or any(account_id in item["account_ids"] for item in (*self._active.values(), *self._active_reads.values())):
+            if account_id in self._changing_accounts or any(account_id in item["account_ids"] for item in (*self._active.values(), *self._active_reads.values(), *self._pending.values())):
                 raise OrchestrationError("ACCOUNT_EXECUTION_BUSY", "该账号正在执行，请待本次结束后修改")
             self._changing_accounts.add(account_id)
         def release():
@@ -174,7 +167,7 @@ class DirectPluginInvocationService:
         return tuple(sorted(keys)), scopes
 
     @asynccontextmanager
-    async def host_operation(self, prepared):
+    async def host_operation(self, prepared, *, connector=None):
         """Coordinate the actual host mutation inside this live request only."""
         grant = prepared.grant
         identity = grant.write_attempt_context.get("invocation_id")
@@ -182,6 +175,10 @@ class DirectPluginInvocationService:
             yield
             return
         keys = grant.execution_action_scopes.get((prepared.operation, prepared.action, prepared.role), grant.execution_resource_keys)
+        if connector is not None:
+            resolved = await _preflight_thread(connector_write_locks, *connector, self._resources)
+            if resolved is not None:
+                keys = resolved
         if not keys:
             # A signed unbounded host write has no narrower reviewed scope.
             keys = tuple(("account-write", account) for accounts in grant.account_bindings.values() for account in (accounts if isinstance(accounts, (tuple, list)) else (accounts,))) or (("unscoped-host-write",),)
@@ -205,27 +202,46 @@ class DirectPluginInvocationService:
                 await asyncio.wait_for(self._operation_changed.wait(), remaining)
             except asyncio.TimeoutError as exc:
                 raise OrchestrationError("EXECUTION_RESOURCE_BUSY", "本次写入未能及时取得资源，请重新触发") from exc
+        scope_token = HOST_OPERATION_RESOURCE_KEYS.set(tuple(keys))
         try:
             yield
         finally:
+            HOST_OPERATION_RESOURCE_KEYS.reset(scope_token)
             with self._lock:
                 self._held_operations.pop(token, None)
                 self._operation_changed.set()
 
     def _reserve(self, *, row: dict, keys: tuple, coroutine_factory, account_ids: frozenset = frozenset(), admission_guard=None) -> dict:
-        with self._lock:
+        # Serialize admission transactions without holding the event loop's
+        # resource/control lock over synchronous database I/O.
+        with self._admission_lock:
             replay = self.repository.by_request(row["request_key_sha256"])
             if replay is not None:
                 if replay["request_sha256"] != row["request_sha256"]:
                     raise OrchestrationError("IDEMPOTENCY_CONFLICT", "同一请求不能更换参数")
                 return public_invocation(replay)
-            busy = bool(account_ids & self._changing_accounts) or len(self._active) >= self.max_concurrency or any(
-                execution_keys_conflict(left, right)
-                for active in self._active.values() for left in active["keys"] for right in keys
-            )
-            rejected = self._closed or self._hold() is not False or busy
-            row["status"] = "FAILED" if rejected else "STARTING"
-            stored = self.repository.create(row, admission_guard=admission_guard)
+            held = self._hold() is not False
+            with self._lock:
+                busy = bool(account_ids & self._changing_accounts) or len(self._active) >= self.max_concurrency or any(
+                    execution_keys_conflict(left, right)
+                    for active in self._active.values() for left in active["keys"] for right in keys
+                )
+                rejected = self._closed or held or busy
+                row["status"] = "FAILED" if rejected else "STARTING"
+                if not rejected:
+                    self._pending[row["invocation_id"]] = {"account_ids": account_ids}
+            try:
+                stored = self.repository.create(row, admission_guard=admission_guard)
+            except BaseException:
+                with self._lock:
+                    self._pending.pop(row["invocation_id"], None)
+                raise
+            with self._lock:
+                self._pending.pop(row["invocation_id"], None)
+                rejected = rejected or self._closed
+                if not rejected and stored["invocation_id"] == row["invocation_id"]:
+                    self._active[row["invocation_id"]] = {"keys": keys, "account_ids": account_ids,
+                        "automation_id": row.get("automation_id"), "operation": row["operation"], "task": None}
             if stored["invocation_id"] != row["invocation_id"]:
                 return public_invocation(stored)
             if rejected:
@@ -234,7 +250,6 @@ class DirectPluginInvocationService:
             loop = self._loop
             if loop is None:
                 loop = self._loop = asyncio.get_running_loop()
-            self._active[row["invocation_id"]] = {"keys": keys, "account_ids": account_ids, "automation_id": row.get("automation_id"), "operation": row["operation"], "task": None}
             def launch():
                 with self._lock:
                     active = self._active[row["invocation_id"]]
@@ -292,6 +307,10 @@ class DirectPluginInvocationService:
                 outcome = await verification
             result = outcome.result.to_dict() if outcome.result is not None else dict(raw)
             async def finish():
+                current = await asyncio.to_thread(self.repository.get, call_id)
+                if (current is None or current.get('owner_id') != self.owner_id
+                        or current.get('status') not in {'RUNNING', 'CANCELLING'}):
+                    return
                 if outcome.accepted and self._publish_result is not None:
                     await asyncio.to_thread(self._publish_result, call_id, invocation.automation_id, capability, arguments, outcome)
                 unknown = not outcome.accepted and await asyncio.to_thread(self.repository.has_unverified_write, call_id)
@@ -391,11 +410,18 @@ class DirectPluginInvocationService:
         with self._lock:
             self._closed = True
             reads = [item["task"] for item in self._active_reads.values()]
+        def drain_admission():
+            with self._admission_lock:
+                pass
+        await asyncio.to_thread(drain_admission)
         await asyncio.gather(*(self.cancel(call_id) for call_id in tuple(self._active)), return_exceptions=True)
         if reads:
             await asyncio.gather(*(asyncio.shield(task) for task in reads), return_exceptions=True)
 
     async def call_business(self, *, operation: str, request_id: str, actor_id: str, source: str, arguments: Mapping, handler, verify=None, write: bool = True, resource_keys: tuple = (), account_ids: tuple[str, ...] = ()) -> dict:
+        with self._lock:
+            if self._loop is None:
+                self._loop = asyncio.get_running_loop()
         row = self._row(operation=operation, source=source, actor_id=actor_id, request_id=request_id, request_key=request_id, arguments=arguments)
         async def run():
             started = False
@@ -431,5 +457,6 @@ class DirectPluginInvocationService:
             finally:
                 with self._lock:
                     self._active.pop(row["invocation_id"], None)
-        accepted = self._reserve(row=row, keys=resource_keys, account_ids=frozenset(account_ids), coroutine_factory=run)
+        accepted = await _preflight_thread(self._reserve, row=row, keys=resource_keys,
+                                          account_ids=frozenset(account_ids), coroutine_factory=run)
         return await self.wait(accepted["invocation_id"])

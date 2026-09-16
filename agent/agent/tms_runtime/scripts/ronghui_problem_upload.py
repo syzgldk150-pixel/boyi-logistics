@@ -29,6 +29,10 @@ PROBLEM_REGISTER_QUERY_CALL_ID = "FIND_PROBLEM_REGISTER_LIST"
 AUTHORITATIVE_PAGE_SIZE = 100
 AUTHORITATIVE_MAX_ROWS = 1000
 
+
+class ProblemWriteRejected(RuntimeError):
+    """Remote save explicitly rejected and authoritative readback found no match."""
+
 _CALL_ID_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _PAGE_KEYS = ("pageIndex", "pageSize", "sortField", "sortOrder", "totalColumns")
 _PROBLEM_REQUIRED_NONEMPTY_FIELDS = (
@@ -806,7 +810,7 @@ def upload_problem_item(
             raise RuntimeError("WRITE_OUTCOME_UNKNOWN: TMS 保存响应不可用且权威列表未能确认写入") from exc
         if save_result.get("success") is False:
             message = _clean_text(save_result.get("message")) or "TMS 明确拒绝保存"
-            raise RuntimeError(f"{message}；权威列表未找到完全一致记录") from exc
+            raise ProblemWriteRejected(f"{message}；权威列表未找到完全一致记录") from exc
         raise RuntimeError("TMS 保存已返回，但权威列表未找到完全一致记录") from exc
 
     save_acknowledged = save_error is None and save_result.get("success") is not False

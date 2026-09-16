@@ -284,3 +284,9 @@ docs/
 
 - `../docs/direct_waybill_query.md`：普通寄件查询、稳定来源/权限覆盖、精确补查、夜间范围发布与已验证边界；`plugin_core_adapters/waybill_query_scope.py` 观察实际原页当前查询范围，不声明全组织完整；缺证明确 partial。
 - `../docs/architecture_refactor_acceptance_mapping.md`：原 A/B/C 与 M01–M06 的驱动映射、短插件新链替换要求及冻结宿主维护演练入口。
+
+## 阶段一收尾补充
+
+- `scripts/acceptance_evidence.py` 为现有完整验收驱动校验当前 V2 运行结果、维护包摘要、冻结证据与原始性能分布；不另设验收平台。
+- `scripts/plugin_maintenance.py` 的 V2 局部测试前后核对实际可打包成员和所选测试摘要，打包再次验证；测试通过但源码变化不能生成可交付 ZIP。
+- 新迁移 `052_problem_write_intents.sql` 仅新增问题件目标写入事实。部署、回滚与独立包的相容边界见 `../docs/phase1_final_closeout.md`；本轮没有生产部署授权。

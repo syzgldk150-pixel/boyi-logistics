@@ -1044,7 +1044,7 @@ class ServiceV2CapabilityProxy:
                     binding=binding,
                     arguments=public_arguments,
                 )
-                async with context.write_operation_guard() if is_write and context.write_operation_guard is not None else nullcontext():
+                async with context.write_operation_guard(connector=(provider, binding)) if is_write and context.write_operation_guard is not None else nullcontext():
                     if is_write and context.mark_write_started is not None:
                         # Binding/schema checks and resource admission must
                         # succeed before recording a real write attempt.

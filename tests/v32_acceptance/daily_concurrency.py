@@ -8,12 +8,11 @@ import secrets
 import threading
 from uuid import uuid4
 
-from Crypto.PublicKey import ECC
-
 from agent.automation_plugins.developer_v2 import build_service_v2_package, init_service_v2_source
-from agent.automation_plugins.first_party import resolve_first_party_manifests
-from agent.automation_plugins.package import Ed25519TrustStore
-from agent.tool_registry import ToolRegistry
+from agent.automation_plugins.connector_registry import ConnectorRegistry
+from agent.automation_plugins.scan_connectors_v2 import build_scan_connectors
+from agent.automation_plugins.arrival_connectors_v2 import build_arrival_connectors
+from agent.automation_plugins.problem_connectors_v2 import build_problem_connectors
 from plugin_core_adapters.first_party import build_production_first_party_core_handler_map
 from plugin_core_adapters.problem_actions import build_production_problem_handler_map
 from tests.v32_acceptance.daily_protocol import ACCOUNT_ID, CHILD_CODE, DailyAccounts
@@ -22,7 +21,7 @@ from tests.v32_acceptance.daily_stats import setup_stats
 from tests.v32_acceptance.daily_stats_protocol import DailyStatsProtocol
 from tests.v32_acceptance.daily_problems import setup_split
 from tests.v32_acceptance.decision_maintenance import setup_instance
-from tests.v32_acceptance.first_party_fixture import bootstrap, isolated_migration_accounts
+from tests.v32_acceptance.service_v2_artifacts import build_artifact
 from tests.v32_acceptance.management_fixture import ManagementFixture
 from tests.v32_acceptance.owned_database import connect_owned, prepare_owned
 from tests.v32_acceptance.problem_fixture import ACCOUNTS, SPLIT_TARGET, ProblemAccounts, ProblemSupplier
@@ -123,17 +122,10 @@ def main():
     runtime = OUTPUT.parent / ('a02-' + uuid4().hex)
     runtime.mkdir(parents=True)
     account_manager = Accounts()
-    private_key = ECC.generate(curve='Ed25519')
-    trust = Ed25519TrustStore({'v32-a02': private_key.public_key().export_key(format='raw')})
-    manifests = resolve_first_party_manifests(ToolRegistry(), _plugin_ids=frozenset({'sync_scan_codes', 'sync_arrival_stats'}))
-    keys = {(item['operation'], item['action']) for manifest in manifests.values() for item in manifest.runtime_permissions['broker_operations']}
-    migration_accounts = isolated_migration_accounts()
-    for identity in ('scan_codes', 'arrival_stats'):
-        migration_accounts[identity] = {'account_id': [ACCOUNT_ID]}
-    migration_accounts['self_pickup_problem_upload'] = {role: [value] for role, value in ACCOUNTS.items()}
-    migration_accounts['split_pending_problem_upload'] = {'account_id': [ACCOUNTS['account_id']]}
+    artifacts = {name: build_artifact(name, runtime / name) for name in
+                 ('sync_scan_codes_v2', 'sync_arrival_stats_v2', 'self_pickup_problem_upload_v2')}
     scan_gate, problem_gate = BoundaryGate(), BoundaryGate()
-    report = {'status': 'RUNNING'}
+    report = {'status': 'RUNNING', 'runtime_model': 'SERVICE_V2'}
     try:
         with DailyBoundary(scan_gate) as daily, daily.authentication_boundaries(), ProblemBoundary(runtime / 'supplier', problem_gate) as problems:
             # Statistics and split really share the same bound destination.
@@ -148,28 +140,26 @@ def main():
                     return daily.feishu_operation(action, arguments)
                 return problems.feishu_operation(action, arguments)
             handlers = build_production_first_party_core_handler_map(cursor_secret=secrets.token_bytes(32),
-                account_manager=account_manager, allowed_action_keys=keys, capability_authorizer=daily.authorize)
+                account_manager=account_manager, capability_authorizer=daily.authorize)
             problem_handlers = build_production_problem_handler_map(cursor_secret=secrets.token_bytes(32),
                 account_manager=account_manager, resource_loader=resources.get, feishu_operation=sheet,
                 problem_action=problems.problem_action, capability_authorizer=problems.authorize)
-            if set(handlers) & set(problem_handlers):
-                raise AssertionError('Ambiguous real broker handler identity')
+            # These explicit problem adapters replace the generic map's
+            # unbound problem ports with the owned HTTP supplier.
             handlers.update(problem_handlers)
             with ManagementFixture(connection_factory=lambda: connect_owned(DATABASE), runtime_root=runtime,
                     account_manager=account_manager, broker_handlers=handlers, resource_provider=resources.get,
-                    upload_signature_verifier=trust, enable_directory_faults=False,
-                    migration_account_bindings=migration_accounts) as management:
-                bootstrap(management, private_key=private_key, trust=trust, key_id='v32-a02')
-                for identity in ('scan_codes', 'arrival_stats'):
-                    management.targets.reconcile_project(identity)
-                setup_scan(management)
-                setup_stats(management)
-                setup_instance(management, None)
-                setup_split(management)
+                    enable_directory_faults=False,
+                    connector_registry=ConnectorRegistry((*build_scan_connectors(handlers), *build_arrival_connectors(handlers), *build_problem_connectors(handlers)))) as management:
+                identities = {'scan_codes': setup_scan(management, artifacts['sync_scan_codes_v2']),
+                    'arrival_stats': setup_stats(management, artifacts['sync_arrival_stats_v2']),
+                    'self_pickup_problem_upload': setup_instance(management, artifacts['self_pickup_problem_upload_v2']),
+                    'split_pending_problem_upload': setup_split(management)}
                 failure_id = failing_package(management)
                 with DirectFixture(management, saved_resource_provider=resources.get) as runner:
                     before = _legacy_counts(management.repository)
                     def invoke(identity, **fields):
+                        identity = identities[identity] if identity in identities else identity
                         return signed_request(management, f'/internal/v1/automation-projects/{identity}/invoke',
                             payload={'request_id': str(uuid4()), **fields})
                     # Statistics can consume the last completed scan snapshot. It
@@ -182,7 +172,7 @@ def main():
                     daily.ledger.clear()
                     previews = {}
                     for identity in ('scan_codes', 'self_pickup_problem_upload', 'split_pending_problem_upload'):
-                        path = f'/internal/v1/automation-projects/{identity}/' + ('invoke' if identity == 'scan_codes' else 'selection-previews')
+                        path = f'/internal/v1/automation-projects/{identities[identity]}/' + ('invoke' if identity == 'scan_codes' else 'selection-previews')
                         preview = signed_request(management, path, payload={'request_id': str(uuid4())})
                         wait_invocation(runner, preview['invocation_id'], expected='COMPLETED')
                         previews[identity] = preview['invocation_id']
@@ -194,7 +184,7 @@ def main():
                     assert scan_gate.started.wait(15), 'Actual scan did not reach isolated write boundary'
                     for identity, codes in [('self_pickup_problem_upload', ['R_M03_STANDARD']),
                             ('split_pending_problem_upload', ['SYNTHETIC-SPLIT', 'SYNTHETIC-NOT-ARRIVED'])]:
-                        receipt = signed_request(management, f'/internal/v1/automation-projects/{identity}/selection-previews/{previews[identity]}/confirm',
+                        receipt = signed_request(management, f'/internal/v1/automation-projects/{identities[identity]}/selection-previews/{previews[identity]}/confirm',
                             payload={'request_id': str(uuid4()), 'selected_bill_codes': codes})
                         invocations[identity] = receipt['invocation_id']
                     assert problem_gate.started.wait(10), 'Actual problem task did not reach external boundary'
@@ -204,20 +194,23 @@ def main():
                     failed = wait_invocation(runner, failure['invocation_id'], expected='FAILED', timeout=8)
                     active_after_failure = {identity: runner.service.get(identity_value)['status'] for identity, identity_value in invocations.items()}
                     assert all(active_after_failure[identity] == 'RUNNING' for identity in ('scan_codes', 'self_pickup_problem_upload', 'split_pending_problem_upload')), active_after_failure
-                    stats_result = wait_invocation(runner, statistics['invocation_id'], expected='COMPLETED')
+                    stats_result = wait_invocation(runner, statistics['invocation_id'], expected='FAILED')
+                    assert stats_result['error_code'] == 'EXECUTION_RESOURCE_BUSY', stats_result
                     assert runner.service.get(scan['invocation_id'])['status'] == 'RUNNING'
-                    assert any(request['action'] == 'FIND_DISPATCH_FORECAST_CENTER' for request in daily.requests)
-                    report['independent_statistics'] = {'status': 'PASS', 'result': stats_result,
-                        'scan_status_when_statistics_completed': runner.service.get(scan['invocation_id'])['status'],
-                        'snapshot': 'previous completed scan; the in-progress scan is not included'}
+                    report['physical_conflict'] = {'status': 'PASS', 'result': stats_result,
+                        'reason': 'Actual scan write owns the same physical account; the fresh statistics request ends busy without a queue.'}
                     scan_gate.release.set()
                     problem_gate.release.set()
                     results = {}
                     for identity, invocation_id in invocations.items():
+                        if identity == 'arrival_stats':
+                            continue
                         row = wait_invocation(runner, invocation_id, expected='COMPLETED')
                         assert row['result']['status'] == 'SUCCESS' and row['result']['error'] is None
                         results[identity] = row
-                    assert results['arrival_stats']['finished_at'] < results['scan_codes']['finished_at']
+                    fresh_statistics = invoke('arrival_stats')
+                    results['arrival_stats'] = wait_invocation(runner, fresh_statistics['invocation_id'], expected='COMPLETED')
+                    assert runner.service.get(statistics['invocation_id'])['status'] == 'FAILED'
                     assert [row['BILL_CODE'] for row in daily.ledger] == [CHILD_CODE]
                     assert {row['bill_code'] for row in problems.persisted_problems()} == {'R_M03_STANDARD', 'SYNTHETIC-SPLIT', 'SYNTHETIC-NOT-ARRIVED'}
                     assert _legacy_counts(management.repository) == before

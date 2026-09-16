@@ -20,7 +20,7 @@ def main():
     parser.add_argument("--reset-owned-fixture", action="store_true")
     options = parser.parse_args()
     prepare_database(reset=options.reset_owned_fixture)
-    report = {"status": "RUNNING"}
+    report = {"status": "RUNNING", "runtime_model": "SERVICE_V2"}
     try:
         with composed() as (management, _runner, supplier, artifacts):
             with (ConsoleFixture(agent_base_url=management.url, internal_token=management.internal_token,

@@ -1,6 +1,8 @@
 # 架构 V1 与原 V3.2 验收映射
 
-原 A/B/C 50 组与 M01–M06 的要求和阈值仍以 `docs/low_maintenance_v32_acceptance.json` 为准；本映射不修改矩阵、不减 minimum_cases、不将 SKIP 记为通过。以下映射是代码现状核对，不表示这些组已经重新通过。
+当前合同为 `BOYI-PHASE1-FINAL-CLOSEOUT-R1`。唯一权威矩阵仍是 `docs/low_maintenance_v32_acceptance.json`：保留原编号、原要求和历史测试引用，以 `effective_requirement` 明示 Direct＋Service V2 的现行要求。资源忙可终结失败，用户用新请求重新触发；不恢复持久队列或旧 Runner 领取。需求修订本身不是 PASS。
+
+每个必要引用单独校验；请求重投、取消、重启、物理资源冲突、UNKNOWN 和来源切换分别以 `required_evidence` 检查实际场景、独立轮次及当前 runtime。不得用其他用例数量补足某个场景的重复数。历史兼容测试不能单独满足当前业务组。完整驱动核验 Invocation 结果、实际 ZIP 摘要、宿主冻结和性能原始样本，拒绝仅有 PASS 字样的工件。
 
 ## 唯一完整驱动
 
@@ -40,7 +42,7 @@ isolated "$TASK_PYTHON" agent/scripts/accept_low_maintenance_v32.py --phase all 
 
 ## 新架构验收入口
 
-`tests.v32_acceptance.daily_stats` / `daily_scan` 和财务、客服及维护演练现使用 `DirectFixture`：真实 MySQL、签名插件、隔离子进程和宿主 Broker，结果以本次 `invocation_id` 核验。A01/A02/A08/A09/A10/A11/A12/A13/A19 的业务与阈值继续适用；原 A03/A07 的持久领取、租约等待模型只保留历史回归，新短插件另外验证立即受理或明确繁忙拒绝、无历史积压、精确取消和迟到写保护，见 `tests/test_direct_plugin_invocation_mysql.py`、`tests/test_direct_daily_plugins_mysql.py`。历史 Runner 用例通过不能单独证明新架构通过。
+`tests.v32_acceptance.daily_stats` / `daily_scan` 和财务、客服及维护演练现使用 `DirectFixture`：真实 MySQL、当前 Service V2 ZIP、隔离子进程和宿主 Broker，结果以本次 `invocation_id` 核验。A01/A02/A08/A09/A10/A11/A12/A13/A19 的业务与阈值继续适用；原 A03/A07 的持久领取、租约等待模型只保留历史回归，新短插件另外验证立即受理或明确繁忙拒绝、无历史积压、精确取消和迟到写保护，见 `tests/test_direct_plugin_invocation_mysql.py`、`tests/test_direct_daily_plugins_mysql.py`。历史 Runner 用例通过不能单独证明新架构通过。
 
 财务/客服结果导航按当前 Invocation 的实际来源证明生成。M02/M03 必须在最后核心更新提交并冻结之后运行真实插件字段/判断变化、升级、回退与无关任务持续推进；旧工件和 PREPARATION 不计入本轮通过。
 

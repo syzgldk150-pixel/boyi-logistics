@@ -7,6 +7,7 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from decimal import Decimal, InvalidOperation
+from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_rules import problem_event_flags
 
 from boyi_plugin_result import (
     broker_evidence_ref,
@@ -464,6 +465,7 @@ def _execute_candidate(
                 "problem_type": candidate["problem_type"],
                 "registered_at": problem["registered_at"],
                 "registered_site": problem["registered_site"],
+                **problem_event_flags(problem["registered_at"], candidate["problem_type"]),
             },
         ),
         "problem event ledger",
