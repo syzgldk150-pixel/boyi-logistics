@@ -11,7 +11,7 @@ if str(CONSOLE_DIR) not in sys.path:
     sys.path.insert(0, str(CONSOLE_DIR))
 
 from app import ActionResult, DocumentService, LocalDocFlowApp, ui_label  # noqa: E402
-from database import format_manual_waybill_no  # noqa: E402
+from console.database import MANUAL_PAYMENT_METHODS, format_manual_waybill_no  # noqa: E402
 from console.navigation import (  # noqa: E402
     CONSOLE_NAVIGATION,
     MOBILE_NAVIGATION_CANDIDATES,
@@ -93,9 +93,9 @@ class ManualWaybillServiceTests(unittest.TestCase):
             qwen_provider=None,
         )
 
-    def test_sequence_formatter_starts_with_eight_digits(self):
-        self.assertEqual("00000001", format_manual_waybill_no(1))
-        self.assertEqual("00000123", format_manual_waybill_no(123))
+    def test_sequence_formatter_starts_with_boyi_prefix(self):
+        self.assertEqual("BY00001", format_manual_waybill_no(1))
+        self.assertEqual("BY00123", format_manual_waybill_no(123))
 
     def test_required_missing_does_not_create_or_occupy_number(self):
         repository = _Repository()
@@ -117,9 +117,9 @@ class ManualWaybillServiceTests(unittest.TestCase):
         )
 
         self.assertTrue(result.ok)
-        self.assertEqual("00000001", result.waybill_no)
+        self.assertEqual("BY00001", result.waybill_no)
         fields = repository.created[0]["fields"]
-        self.assertEqual("00000001", fields["waybill_no"])
+        self.assertEqual("BY00001", fields["waybill_no"])
         self.assertEqual("2026/05/12", fields["open_date"])
         self.assertEqual("20.00", fields["freight_fee"])
         self.assertEqual("5.50", fields["delivery_fee"])
@@ -143,8 +143,20 @@ class ManualWaybillServiceTests(unittest.TestCase):
         first = service.apply_manual_waybill(_valid_form(field_open_date="20260512"))
         second = service.apply_manual_waybill(_valid_form(field_open_date="20260513"))
 
-        self.assertEqual("00000001", first.waybill_no)
-        self.assertEqual("00000002", second.waybill_no)
+        self.assertEqual("BY00001", first.waybill_no)
+        self.assertEqual("BY00002", second.waybill_no)
+
+    def test_payment_method_rejects_removed_or_unknown_choice_without_using_number(self):
+        for payment in ("现付", "提付", "unknown"):
+            with self.subTest(payment=payment):
+                repository = _Repository()
+                result = self._service(repository).apply_manual_waybill(
+                    _valid_form(field_payment_method=payment)
+                )
+                self.assertFalse(result.ok)
+                self.assertIn("只能选择寄付、到付、月结", result.message)
+                self.assertEqual([], repository.created)
+                self.assertEqual(1, repository.next_value)
 
     def test_invalid_money_is_rejected_before_create(self):
         repository = _Repository()
@@ -164,9 +176,9 @@ class ManualWaybillRouteTests(unittest.TestCase):
         app.service = SimpleNamespace(
             apply_manual_waybill=lambda form_values: ActionResult(
                 ok=True,
-                message="手工单 00000001 已保存，请打印。",
+                message="手工单 BY00001 已保存，请打印。",
                 waybill_id=1,
-                waybill_no="00000001",
+                waybill_no="BY00001",
             )
         )
 
@@ -222,9 +234,9 @@ class ManualWaybillRouteTests(unittest.TestCase):
         app.service = SimpleNamespace(
             apply_manual_waybill=lambda form_values: ActionResult(
                 ok=True,
-                message="手工单 00000001 已保存。",
+                message="手工单 BY00001 已保存。",
                 waybill_id=1,
-                waybill_no="00000001",
+                waybill_no="BY00001",
             )
         )
 
@@ -256,6 +268,7 @@ class ManualWaybillTemplateTests(unittest.TestCase):
             autoescape=select_autoescape(["html", "xml"]),
         )
         cls.env.globals["ui_label"] = ui_label
+        cls.env.globals["manual_payment_methods"] = MANUAL_PAYMENT_METHODS
         cls.env.globals["current_admin_user"] = lambda: None
         cls.env.globals["console_navigation"] = CONSOLE_NAVIGATION
         cls.env.globals["mobile_navigation_candidates"] = MOBILE_NAVIGATION_CANDIDATES
@@ -290,14 +303,18 @@ class ManualWaybillTemplateTests(unittest.TestCase):
             document_writer_id="",
             manual_amap_config={"amap_js_key": "YOUR_AMAP_JS_API_KEY", "amap_security_code": ""},
             manual_amap_sdk_should_load=False,
-            manual_preview_waybill_no="00000001",
+            manual_preview_waybill_no="BY00001",
         )
 
         self.assertIn('action="/waybills/manual"', html)
         self.assertIn("运单录入", html)
-        self.assertIn("提交后自动生成 00000001", html)
+        self.assertIn("提交后自动生成 BY00001", html)
         self.assertIn('id="field_waybill_no"', html)
-        self.assertIn('value="00000001"', html)
+        self.assertIn('value="BY00001"', html)
+        self.assertIn('value="寄付"', html)
+        self.assertIn('value="到付"', html)
+        self.assertIn('value="月结"', html)
+        self.assertNotIn('<option value="现付">', html)
         self.assertIn("打印预览", html)
         self.assertIn("data-manual-preview", html)
         self.assertIn("地址解析", html)
@@ -456,7 +473,7 @@ class ManualWaybillTemplateTests(unittest.TestCase):
             document_writer_id="",
             manual_amap_config={"amap_js_key": "YOUR_AMAP_JS_API_KEY", "amap_security_code": ""},
             manual_amap_sdk_should_load=False,
-            manual_preview_waybill_no="00000001",
+            manual_preview_waybill_no="BY00001",
         )
 
         self.assertIn('body.boyi-frame-page .sidebar,', html)
@@ -502,7 +519,7 @@ class ManualWaybillTemplateTests(unittest.TestCase):
             document_writer_id="",
             manual_amap_config={"amap_js_key": "YOUR_AMAP_JS_API_KEY", "amap_security_code": ""},
             manual_amap_sdk_should_load=False,
-            manual_preview_waybill_no="00000001",
+            manual_preview_waybill_no="BY00001",
         )
 
         self.assertIn("padding: 10px var(--form-x-pad);", html)
@@ -548,7 +565,7 @@ class ManualWaybillTemplateTests(unittest.TestCase):
             document_writer_id="",
             manual_amap_config={"amap_js_key": "YOUR_AMAP_JS_API_KEY", "amap_security_code": ""},
             manual_amap_sdk_should_load=False,
-            manual_preview_waybill_no="00000001",
+            manual_preview_waybill_no="BY00001",
         )
 
         self.assertIn("const setManualFieldValue = (field, value) => {", html)
@@ -697,7 +714,7 @@ class ManualWaybillTemplateTests(unittest.TestCase):
             message="",
             message_kind="info",
             waybill={
-                "waybill_no": "00000001",
+                "waybill_no": "BY00001",
                 "open_date": "2026/05/12",
                 "destination_site": "杭州余杭",
                 "receiver_name": "王小明",
@@ -718,7 +735,7 @@ class ManualWaybillTemplateTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("00000001", html)
+        self.assertIn("BY00001", html)
         self.assertIn("/static/js/clodop_loader.js?v=20260812", html)
         self.assertIn("打印预览", html)
         self.assertIn("previewWaybill()", html)
@@ -799,7 +816,7 @@ class ManualWaybillTemplateTests(unittest.TestCase):
             message="",
             message_kind="info",
             waybill={
-                "waybill_no": "00000001",
+                "waybill_no": "BY00001",
                 "open_date": "2026/05/12",
                 "destination_site": "杭州余杭",
                 "receiver_name": "王小明",

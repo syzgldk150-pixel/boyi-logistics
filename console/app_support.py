@@ -34,6 +34,7 @@ from console.config import MODULE_DIR, PROJECT_ROOT, load_settings
 from console.runtime_config import load_console_environment
 from console.database import (
     DocumentRepository,
+    MANUAL_PAYMENT_METHODS,
     WAYBILL_SOURCE_LABELS,
     WAYBILL_STATUS_LABELS,
     WAYBILL_STATUS_TONES,
@@ -1468,6 +1469,8 @@ def normalize_money_amount(value: str) -> str:
 
 def normalize_manual_field_value(field_name: str, value: str) -> str:
     normalized = normalize_field_value(field_name, value)
+    if field_name == "payment_method" and normalized and normalized not in MANUAL_PAYMENT_METHODS:
+        raise ValueError("只能选择" + "、".join(MANUAL_PAYMENT_METHODS))
     if field_name in MONEY_FIELD_NAMES:
         return normalize_money_amount(normalized)
     return normalized

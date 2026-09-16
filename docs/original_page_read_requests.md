@@ -9,6 +9,7 @@
 本轮核实范围：
 
 - 韵达：电子面单库存 `elecStock.html`、录单模板列表 `business/waybill/entry/getTemplateList.html`、费用提示 `getCostInfoPrompt.html`。
+- 2026-09-16 在已登录韵达真实录入页补充核实初始化 POST：`getCurrentTime.html` 无参数，返回 `info/data`；`Region/province.html` 仅 query `state`，`Region/city.html` 与 `Region/county.html` 为 query `state` 加正文 `bm`，返回区域选项；`checkBoxIsDiscount.html` 与 `checkTextIsDiscount.html` 正文均为 `CreatedDotCode/SettlementTotalNumber`，分别返回优惠开关显示状态与优惠说明数据。全部取得 HTTP 200，未领号、保存或修改运单。共享契约只增加这些精确读取路径和字段集合，额外操作、重复参数与其他未核实 POST 继续拒绝。
 - 融辉 `/dataQuery/findAllByCallId`：`FIND_SYS_DATE`、`FIND_SITE_INFO_BY_SITE_CODE`、`FIND_SITE_AND_CENTER`、`FIND_TAB_SITE_BY_AGENT`、`FIND_TAB_QUOTE_SWITCH_SITE`、`FIND_TMS_SYS_SHARE_SET`、`FIND_TAB_SITE_BUSINESS_TYPE`、`FIND_BILL_CHECK`、`FIND_TAB_COLLAR_CURRENT_SITE`。
 - 融辉 `/minic/combobox`：`optionCode=WEIGHT_RATIO`。
 - 融辉领号后的存在性检查：`/dataQuery/findAllByCallId`，`id=GET_BILL_BY_BILLCODE`，正文仅非空 `BILL_CODE`。

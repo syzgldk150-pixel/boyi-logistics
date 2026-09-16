@@ -132,6 +132,7 @@ class DocumentServiceMixin:
             manual_amap_config=manual_amap_config,
             manual_amap_sdk_should_load=manual_amap_sdk_should_load,
             manual_preview_waybill_no=manual_preview_waybill_no,
+            manual_payment_methods=MANUAL_PAYMENT_METHODS,
             waybill_entry_extension_fields=WAYBILL_ENTRY_DRAFT_FIELDS,
             waybill_entry_extension_actions=waybill_entry_extensions[
                 WAYBILL_ENTRY_ACTIONS_SLOT

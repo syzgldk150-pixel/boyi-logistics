@@ -12,6 +12,7 @@ from uuid import uuid4
 import pytest
 import pymysql
 
+from console.database import DocumentRepository, format_manual_waybill_no
 from shared.runtime_repositories import WaybillRepository
 from shared.waybill_source_coverage import WaybillSourceRepository, WaybillSourceScope
 
@@ -73,6 +74,81 @@ def rows(connect):
     with connect() as connection, connection.cursor() as cursor:
         cursor.execute("SELECT * FROM waybills ORDER BY id")
         return cursor.fetchall()
+
+
+@pytest.fixture
+def manual_repository(database):
+    initial = (ROOT / "agent/migrations/003_console_runtime_tables.sql").read_text()
+    ddl = initial[initial.index("CREATE TABLE IF NOT EXISTS waybill_sequences ("):].split(";", 1)[0]
+    with database() as connection, connection.cursor() as cursor:
+        cursor.execute(ddl)
+        cursor.execute(
+            "INSERT INTO waybill_sequences VALUES ('manual_waybill', 25, NOW())"
+        )
+    repository = DocumentRepository.__new__(DocumentRepository)
+    repository.placeholder = "%s"
+    repository.connect = database
+    return repository
+
+
+def test_manual_boyi_sequence_and_saved_date_keyword_query(manual_repository):
+    repo = manual_repository
+    assert repo.peek_next_manual_waybill_no() == "BY00001"
+    assert repo.peek_next_manual_waybill_no() == "BY00001"
+    first_id, first_no = repo.create_manual_waybill({
+        "open_date": "2026/09/16", "freight_fee": "20.00", "payment_method": "寄付",
+    })
+    assert first_no == "BY00001"
+    assert repo.peek_next_manual_waybill_no() == "BY00002"
+    second_id, second_no = repo.create_manual_waybill({
+        "open_date": "2026/09/17", "freight_fee": "30.00", "payment_method": "到付",
+    })
+    assert second_no == "BY00002" and second_id != first_id
+    for filters in (
+        {"q": first_no},
+        {"date_from": "2026/09/16", "date_to": "2026/09/16"},
+        {"source": "manual", "payment_method": "寄付"},
+    ):
+        result = repo.search_waybills(filters)
+        assert [row["id"] for row in result["rows"]] == [first_id]
+        assert result["summary"]["total"] == 1
+        assert result["summary"]["fee_total"] == "20.00"
+    assert repo.get_waybill(first_id)["open_date"] == "2026-09-16"
+
+
+def test_failed_save_rolls_back_sequence_and_parallel_saves_do_not_duplicate(manual_repository):
+    from concurrent.futures import ThreadPoolExecutor
+
+    repo = manual_repository
+    with pytest.raises(pymysql.err.DataError):
+        repo.create_manual_waybill({"receiver_name": "x" * 129})
+    assert repo.peek_next_manual_waybill_no() == "BY00001"
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        saved = list(pool.map(lambda _: repo.create_manual_waybill({"open_date": "2026/09/16"}), range(4)))
+    assert sorted(number for _, number in saved) == [format_manual_waybill_no(n) for n in range(1, 5)]
+    assert repo.search_waybills({"source": "manual"})["summary"]["total"] == len(saved)
+    assert repo.peek_next_manual_waybill_no() == "BY00005"
+
+
+def test_local_date_migration_preserves_numbers_fields_and_totals(manual_repository):
+    repo = manual_repository
+    manual_id, _ = repo.create_manual_waybill({"open_date": "2026/09/16", "freight_fee": "20.00"})
+    provider_id = repo.create_waybill_from_fields({"waybill_no": "provider-fixture"}, source="yunda")
+    with repo.connect() as connection, connection.cursor() as cursor:
+        cursor.execute("UPDATE waybills SET open_date = '2026/09/16' WHERE id IN (%s, %s)", [manual_id, provider_id])
+    before = rows(repo.connect)
+    migration = (ROOT / "agent/migrations/050_normalize_local_waybill_dates.sql").read_text()
+    with repo.connect() as connection, connection.cursor() as cursor:
+        cursor.execute(migration)
+    after = rows(repo.connect)
+    expected = [dict(row) for row in before]
+    for row in expected:
+        if row["id"] == manual_id:
+            row["open_date"] = "2026-09-16"
+    assert after == expected
+    result = repo.search_waybills({"source": "manual", "date_from": "2026-09-16", "date_to": "2026-09-16"})
+    assert result["summary"]["total"] == 1
+    assert result["summary"]["fee_total"] == "20.00"
 
 
 def test_partial_refresh_preserves_other_rows_and_never_claims_complete_day(database):

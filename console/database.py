@@ -17,6 +17,8 @@ import re
 _TASK_SLOT_ID_RE = re.compile(r"^(?P<base>.+?)__slot_(?P<slot>\d+)$")
 _TASK_TIME_SUFFIX_RE = re.compile(r"^(?P<base>.+?)_(?P<hour>[01]\d|2[0-3])(?P<minute>[0-5]\d)$")
 _MONEY_CLEAN_RE = re.compile(r"[\s,￥¥元]")
+MANUAL_WAYBILL_SEQUENCE_KEY = "boyi_manual_waybill"
+MANUAL_PAYMENT_METHODS = ("寄付", "到付", "月结")
 
 WAYBILL_STATUS_LABELS = {
     "pending": "待发货",
@@ -249,7 +251,7 @@ def _waybill_date_bound(value: Any) -> str:
 
 
 def format_manual_waybill_no(sequence_value: int) -> str:
-    return f"{int(sequence_value):08d}"
+    return f"BY{int(sequence_value):05d}"
 
 
 def _to_money_decimal(value: Any) -> tuple[Decimal, bool]:
@@ -814,7 +816,8 @@ class DocumentRepository:
         ]
         values = [document_id]
         for fname in self._WAYBILL_FIELD_NAMES:
-            values.append(self._field_value(fields, fname))
+            value = self._field_value(fields, fname)
+            values.append(_waybill_date_bound(value) if fname == "open_date" else value)
         values.extend([writer_id, source, now, now])
 
         placeholders = ", ".join(self.placeholder for _ in columns)
@@ -824,40 +827,40 @@ class DocumentRepository:
         return int(cursor.lastrowid)
 
     def _next_manual_waybill_no(self, cursor: Any, now: str) -> str:
-        sequence_key = "manual_waybill"
+        sequence_key = MANUAL_WAYBILL_SEQUENCE_KEY
         cursor.execute(
             (
-                "INSERT IGNORE INTO waybill_sequences "
-                f"(sequence_key, current_value, updated_at) VALUES ({self.placeholder}, {self.placeholder}, {self.placeholder})"
+                "INSERT INTO waybill_sequences "
+                f"(sequence_key, current_value, updated_at) VALUES ({self.placeholder}, 1, {self.placeholder}) "
+                "ON DUPLICATE KEY UPDATE current_value = current_value + 1, "
+                f"updated_at = {self.placeholder}"
             ),
-            [sequence_key, 0, now],
+            [sequence_key, now, now],
         )
         cursor.execute(
             f"SELECT current_value FROM waybill_sequences WHERE sequence_key = {self.placeholder} FOR UPDATE",
             [sequence_key],
         )
-        row = cursor.fetchone() or {"current_value": 0}
-        next_value = int(row.get("current_value") or 0) + 1
-        cursor.execute(
-            (
-                f"UPDATE waybill_sequences SET current_value = {self.placeholder}, updated_at = {self.placeholder} "
-                f"WHERE sequence_key = {self.placeholder}"
-            ),
-            [next_value, now, sequence_key],
-        )
-        return format_manual_waybill_no(next_value)
+        row = cursor.fetchone()
+        if row is None or row.get("current_value") is None:
+            raise ValueError("博益运单流水号状态缺失")
+        return format_manual_waybill_no(int(row["current_value"]))
 
     def peek_next_manual_waybill_no(self) -> str:
         """读取下一张手工单预览号；实际保存仍以事务内生成值为准。"""
-        sequence_key = "manual_waybill"
+        sequence_key = MANUAL_WAYBILL_SEQUENCE_KEY
         with self.connect() as connection:
             cursor = connection.cursor()
             cursor.execute(
                 f"SELECT current_value FROM waybill_sequences WHERE sequence_key = {self.placeholder}",
                 [sequence_key],
             )
-            row = cursor.fetchone() or {"current_value": 0}
-        return format_manual_waybill_no(int(row.get("current_value") or 0) + 1)
+            row = cursor.fetchone()
+        if row is None:
+            return format_manual_waybill_no(1)
+        if row.get("current_value") is None:
+            raise ValueError("博益运单流水号状态缺失")
+        return format_manual_waybill_no(int(row["current_value"]) + 1)
 
     def create_waybill_from_fields(
         self, fields: dict[str, Any], document_id: int | None = None,
@@ -877,7 +880,7 @@ class DocumentRepository:
             )
 
     def create_manual_waybill(self, fields: dict[str, Any], writer_id: str = "") -> tuple[int, str]:
-        """写入手工录单 waybill，并在同一事务里生成全局 8 位流水号。"""
+        """同一事务保存博益手工单并分配从 BY00001 开始的全局流水号。"""
         now = _now_iso()
         with self.connect() as connection:
             cursor = connection.cursor()
