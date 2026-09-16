@@ -82,6 +82,7 @@ data/
 *.sqlite3
 *.jpg
 *.jpeg
+!console/static/assets/waybill_label_receipt_background.jpg
 *.webp
 !console/static/assets/boyi-logistics-logo-7e1f2994.webp
 *.tif

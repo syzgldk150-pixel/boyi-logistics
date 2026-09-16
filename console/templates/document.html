@@ -19,8 +19,8 @@
 {% if manual_amap_sdk_should_load | default(false) %}
 <script src="https://webapi.amap.com/loader.js"></script>
 {% endif %}
-<script src="/static/js/waybill_label_html.js?v=20260916-master-v2"></script>
-<script src="/static/js/waybill_label_lodop.js?v=20260916-master-v2"></script>
+<script src="/static/js/waybill_label_html.js?v=20260916-receipt-v3"></script>
+<script src="/static/js/waybill_label_lodop.js?v=20260916-receipt-v3"></script>
 <script src="/static/js/clodop_loader.js?v=20260812"></script>
 <script src="/static/js/yunda_entry_mode.js"></script>
 {% endif %}
@@ -686,6 +686,10 @@
             {{ render_manual_field('waybill_no', '运单号', placeholder='提交后自动生成' ~ (' ' ~ manual_preview_waybill_no if manual_preview_waybill_no else ''), readonly=True, forced_value=manual_preview_waybill_no) }}
             {{ render_manual_field('open_date', '日期', required=True, placeholder='年 / 月 / 日') }}
             {{ render_manual_field('destination_site', '到站', required=True) }}
+            <div class="manual-row">
+              <span class="manual-label">回单</span>
+              <label class="manual-toggle" for="field_receipt_required"><input id="field_receipt_required" type="checkbox" name="field_receipt_required" value="1"> 需要回单</label>
+            </div>
           </div>
         </section>
 
@@ -1751,6 +1755,7 @@
       const weightVolume = syncWeightVolumeField();
       return {
         waybill_no: manualWaybillPreviewNo(),
+        receipt_required: document.getElementById("field_receipt_required").checked,
         open_date: manualFieldValue("open_date"),
         destination_site: manualFieldValue("destination_site"),
         receiver_name: manualFieldValue("receiver_name"),

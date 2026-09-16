@@ -49,6 +49,8 @@ def database():
         for sql in migration.split(";"):
             if sql.strip():
                 cursor.execute(sql)
+        migration = (ROOT / "agent/migrations/052_boyi_waybill_receipt_required.sql").read_text()
+        cursor.execute(migration)
         connection.commit()
 
     @contextmanager
@@ -101,11 +103,13 @@ def test_manual_boyi_sequence_and_saved_date_keyword_query(manual_repository):
     assert repo.peek_next_manual_waybill_no() == "BY00001"
     first_id, first_no = repo.create_manual_waybill({
         "open_date": "2026/09/16", "freight_fee": "20.00", "payment_method": "寄付",
+        "receipt_required": "1",
     })
     assert first_no == "BY00001"
     assert repo.peek_next_manual_waybill_no() == "BY00002"
     second_id, second_no = repo.create_manual_waybill({
         "open_date": "2026/09/17", "freight_fee": "30.00", "payment_method": "到付",
+        "receipt_required": "0",
     })
     assert second_no == "BY00002" and second_id != first_id
     for filters in (
@@ -119,12 +123,15 @@ def test_manual_boyi_sequence_and_saved_date_keyword_query(manual_repository):
         assert result["summary"]["fee_total"] == "20.00"
     assert repo.get_waybill(first_id, source="manual")["open_date"] == "2026-09-16"
     assert repo.get_waybill_by_no(first_no, source="manual")["id"] == first_id
+    assert repo.get_waybill(first_id, source="manual")["receipt_required"] == 1
+    assert repo.get_waybill_by_no(first_no)["receipt_required"] == 1
+    assert repo.get_waybill(second_id, source="manual")["receipt_required"] == 0
     assert not rows(repo.connect)
 
 
 def test_boyi_and_provider_same_id_have_independent_print_and_status(manual_repository):
     repo = manual_repository
-    boyi_id, number = repo.create_manual_waybill({"freight_fee": "20.00"})
+    boyi_id, number = repo.create_manual_waybill({"receipt_required": "0", "freight_fee": "20.00"})
     provider_id = repo.create_waybill_from_fields({"waybill_no": "provider", "freight_fee": "30.00"}, source="yunda")
     assert boyi_id == provider_id
     result = repo.search_waybills()
@@ -144,10 +151,10 @@ def test_failed_save_rolls_back_sequence_and_parallel_saves_do_not_duplicate(man
 
     repo = manual_repository
     with pytest.raises(pymysql.err.DataError):
-        repo.create_manual_waybill({"receiver_name": "x" * 129})
+        repo.create_manual_waybill({"receipt_required": "0", "receiver_name": "x" * 129})
     assert repo.peek_next_manual_waybill_no() == "BY00001"
     with ThreadPoolExecutor(max_workers=4) as pool:
-        saved = list(pool.map(lambda _: repo.create_manual_waybill({"open_date": "2026/09/16"}), range(4)))
+        saved = list(pool.map(lambda _: repo.create_manual_waybill({"receipt_required": "0", "open_date": "2026/09/16"}), range(4)))
     assert sorted(number for _, number in saved) == [format_manual_waybill_no(n) for n in range(1, 5)]
     assert repo.search_waybills({"source": "manual"})["summary"]["total"] == len(saved)
     assert repo.peek_next_manual_waybill_no() == "BY00005"
@@ -155,11 +162,13 @@ def test_failed_save_rolls_back_sequence_and_parallel_saves_do_not_duplicate(man
 
 def test_local_date_migration_preserves_numbers_fields_and_totals(manual_repository):
     repo = manual_repository
-    manual_id, _ = repo.create_manual_waybill({"open_date": "2026/09/16", "freight_fee": "20.00"})
+    manual_id, _ = repo.create_manual_waybill({"receipt_required": "0", "open_date": "2026/09/16", "freight_fee": "20.00"})
     provider_id = repo.create_waybill_from_fields({"waybill_no": "provider-fixture"}, source="yunda")
     with repo.connect() as connection, connection.cursor() as cursor:
         cursor.execute("UPDATE boyi_waybills SET id = id + 100, open_date = '2026/09/16'")
-        cursor.execute("INSERT INTO waybills SELECT * FROM boyi_waybills")
+        cursor.execute("SHOW COLUMNS FROM waybills")
+        columns = ", ".join("`" + row["Field"] + "`" for row in cursor.fetchall())
+        cursor.execute(f"INSERT INTO waybills ({columns}) SELECT {columns} FROM boyi_waybills")
         cursor.execute("DELETE FROM boyi_waybills")
         cursor.execute("UPDATE waybills SET open_date = '2026/09/16' WHERE id = %s", [provider_id])
     before = rows(repo.connect)
@@ -179,7 +188,7 @@ def test_local_date_migration_preserves_numbers_fields_and_totals(manual_reposit
                 cursor.execute(sql)
         cursor.execute("SELECT * FROM boyi_waybills ORDER BY id")
         moved = cursor.fetchall()
-    assert moved == [row for row in expected if row["source"] == "manual"]
+    assert moved == [dict(row, receipt_required=0) for row in expected if row["source"] == "manual"]
     assert rows(repo.connect) == [row for row in expected if row["source"] != "manual"]
     result = repo.search_waybills({"source": "manual", "date_from": "2026-09-16", "date_to": "2026-09-16"})
     assert result["summary"]["total"] == 1
