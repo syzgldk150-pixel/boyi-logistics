@@ -33,6 +33,7 @@ from shared.automation_project_authorization import (
     canonical_sha256,
 )
 from shared.orchestration_repository_support import IdempotencyConflict
+from shared.automation_preview_contract import preview_observation_too_far_ahead
 from agent.orchestration.signed_preview_maintenance import signed_preview_contract_compatible
 
 
@@ -544,7 +545,7 @@ def _load_persisted_scan_preview(
 
     validated = _validate_preview_evidence(evidence, preview_arguments)
     observed_at = _parse_timestamp(validated["observed_at"], "observed_at")
-    if observed_at > now:
+    if preview_observation_too_far_ahead(observed_at, now):
         raise _error("SCAN_PREVIEW_INVALID", "The scan preview observation time is in the future")
     return _PersistedScanPreview(
         run_id=safe_run_id,

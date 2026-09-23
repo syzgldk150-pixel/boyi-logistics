@@ -3,11 +3,19 @@ from __future__ import annotations
 import re
 import uuid
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 PREVIEW_CONTRACT_VERSION = 3
 PREVIEW_STATES = frozenset({"AVAILABLE", "CONSUMED", "EXPIRED"})
+_MAX_CLOCK_SKEW = timedelta(seconds=3)
+
+
+def preview_observation_too_far_ahead(observed_at: datetime, now: datetime) -> bool:
+    """Reject future previews beyond a small host clock adjustment window."""
+    if observed_at.tzinfo is None or now.tzinfo is None:
+        raise ValueError("preview timestamps must be timezone-aware")
+    return observed_at > now + _MAX_CLOCK_SKEW
 
 
 def valid_preview_state(raw: Mapping[str, Any]) -> bool:
