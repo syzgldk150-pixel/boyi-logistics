@@ -302,7 +302,7 @@
     window.clearTimeout(card.timer);
     card.body.replaceChildren();
     appendText(card.body, "strong", "harness-message-label", card.title);
-    const labels = { RUNNING: "正在执行", STARTING: "正在启动", COMPLETED: "已完成", FAILED: "执行失败", CANCELLED: "已取消", CANCELLING: "正在停止", WRITE_OUTCOME_UNKNOWN: "写入结果待核验" };
+    const labels = { RUNNING: "正在执行", STARTING: "等待执行", COMPLETED: "已完成", FAILED: "执行失败", CANCELLED: "已取消", CANCELLING: "正在停止", WRITE_OUTCOME_UNKNOWN: "写入结果待核验" };
     appendText(card.body, "p", "harness-message-copy", labels[item.status] || item.status);
     if (item.summary) appendText(card.body, "p", "harness-message-copy", item.summary);
     if (item.message) appendText(card.body, "p", "harness-message-copy", item.message);

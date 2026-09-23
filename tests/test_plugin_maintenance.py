@@ -63,3 +63,28 @@ def test_v1_missing_injected_key_fails_without_creating_artifact(tmp_path: Path,
             version="0.0.901", test_signing=False,
             signing_key_env="ISOLATED_MISSING_SIGNER", key_id="isolated")
     assert not output.exists()
+
+
+def test_v2_packaging_rejects_real_payload_change_after_test_snapshot(tmp_path: Path, monkeypatch) -> None:
+    import shutil
+    from scripts import plugin_maintenance as maintenance
+
+    plugin_id = 'sync_scan_codes_v2'
+    original_root = maintenance.PROJECT_ROOT
+    source = tmp_path / 'agent/service_v2_plugins' / plugin_id
+    source.parent.mkdir(parents=True)
+    shutil.copytree(original_root / 'agent/service_v2_plugins' / plugin_id, source)
+    for node in maintenance.selected_tests(plugin_id):
+        relative = node.split('::', 1)[0]
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(original_root / relative, target)
+    monkeypatch.setattr(maintenance, 'PROJECT_ROOT', tmp_path)
+    tested = maintenance.v2_test_material(plugin_id)
+    action = source / 'payload/action.py'
+    action.write_text(action.read_text() + '\n# actual changed candidate after testing\n')
+    output = tmp_path / 'candidate.zip'
+    with pytest.raises(ValueError, match='changed after testing'):
+        maintenance.package_plugin(plugin_id, output, version=None, test_signing=False,
+            signing_key_env=None, key_id=None, expected_material=tested)
+    assert not output.exists()

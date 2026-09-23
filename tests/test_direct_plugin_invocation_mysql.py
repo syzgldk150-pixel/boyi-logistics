@@ -268,7 +268,8 @@ def test_cancel_during_actual_verification_waits_for_result_and_keeps_instance_o
         assert all(not future.done() for future in futures)
         assert any(row['invocation_id'] == receipt['invocation_id'] for row in runtime.service.active_invocations())
         rejected = management.policy.invoke_console(identity, request_id=str(uuid4()), actor=ACTOR)
-        assert rejected['status'] == 'FAILED' and rejected['error_code'] == 'EXECUTION_RESOURCE_BUSY'
+        assert rejected['status'] == 'STARTING' and rejected['waiting_for_resource']
+        assert asyncio.run_coroutine_threadsafe(runtime.service.cancel(rejected['invocation_id']), runtime.loop).result(2)['status'] == 'CANCELLED'
     finally:
         release.set()
         results = [future.result(timeout=10) for future in futures]
@@ -363,7 +364,8 @@ def test_preflight_cancellation_drains_threads_before_releasing_ownership(bound_
             runtime.service.begin_credentials_change(account_id)
         assert blocked.value.code == "ACCOUNT_EXECUTION_BUSY"
         rejected = management.policy.invoke_console(identity, request_id=str(uuid4()), actor=ACTOR)
-        assert rejected["status"] == "FAILED" and rejected["error_code"] == "EXECUTION_RESOURCE_BUSY"
+        assert rejected['status'] == 'STARTING' and rejected['waiting_for_resource']
+        assert asyncio.run_coroutine_threadsafe(runtime.service.cancel(rejected['invocation_id']), runtime.loop).result(2)['status'] == 'CANCELLED'
         assert executor_calls == business_calls == []
     finally:
         release.set()
@@ -398,12 +400,13 @@ def test_credential_change_guard_and_business_call_share_atomic_admission(direct
     async def invoke():
         return await runtime.service.call_business(operation="isolated.account.operation", request_id=str(uuid4()), actor_id=ACTOR.actor_id, source="console", arguments={}, handler=handler, write=False, account_ids=("isolated-account",))
     try:
-        denied = asyncio.run_coroutine_threadsafe(invoke(), runtime.loop).result(timeout=5)
-        assert denied["status"] == "FAILED" and denied["error_code"] == "EXECUTION_RESOURCE_BUSY"
+        pending = asyncio.run_coroutine_threadsafe(invoke(), runtime.loop)
+        threading.Event().wait(.1)
+        assert not pending.done()
         assert touched == []
     finally:
         release()
-    accepted = asyncio.run_coroutine_threadsafe(invoke(), runtime.loop).result(timeout=5)
+    accepted = pending.result(timeout=5)
     assert accepted["status"] == "COMPLETED" and touched == [True]
 
 

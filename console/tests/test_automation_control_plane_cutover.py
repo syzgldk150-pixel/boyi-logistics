@@ -503,6 +503,20 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
 
                 self.assertEqual(expected_running, app.sent[1]["running"])
 
+    def test_resource_wait_remains_active_and_tells_user_not_to_resubmit(self):
+        for status in ("STARTING", "RUNNING"):
+            with self.subTest(status=status):
+                app = _App({"ok": True, "status": 200, "data": {
+                    "invocation_id": "wait-1", "automation_id": "daily_sign",
+                    "status": status, "waiting_for_resource": True}})
+                app._handle_automation_task_output(object(), {
+                    "invocation_id": ["wait-1"], "task_id": ["daily_sign"], "offset": ["0"]})
+                self.assertTrue(app.sent[1]["running"])
+                self.assertTrue(app.sent[1]["waiting_for_resource"])
+                self.assertIn("等待空闲资源", app.sent[1]["stage_description"])
+                self.assertIn("无需重复提交", app.sent[1]["stage_description"])
+                self.assertGreater(app.sent[1]["next_poll_after_ms"], 0)
+
     def test_completed_scan_preview_returns_only_bounded_projection(self):
         invocation_id = "11111111-1111-4111-8111-111111111111"
         projection = {

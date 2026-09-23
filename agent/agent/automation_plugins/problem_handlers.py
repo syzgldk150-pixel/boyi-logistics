@@ -1068,6 +1068,8 @@ class _ProblemHandlers:
                 "problem_type",
                 "registered_at",
                 "registered_site",
+                "before_cutoff",
+                "postpones_sign",
             },
         )
         descriptor = _one_account(context, self._ports)
@@ -1096,6 +1098,10 @@ class _ProblemHandlers:
         }
         if event["problem_type"] not in _SPLIT_OWNER_BY_TYPE:
             raise _error("problem event type is invalid", "BROKER_ARGUMENT_INVALID")
+        for field in ("before_cutoff", "postpones_sign"):
+            if type(values.get(field)) is not bool:
+                raise _error("problem event requires explicit plugin classification", "BROKER_ARGUMENT_INVALID")
+            event[field] = values[field]
         self._mark_write_started(context)
         raw = self._ports.problem_event_upsert(descriptor, event)
         if (

@@ -119,7 +119,8 @@ def build_problem_connectors(reviewed):
         ],kind=Kind.HOST_INTERNAL))
         descriptors.append(descriptor("split_pending_problem_ledger",[
             op("event_upsert","ledger.invoke","daily_sign.problem_event.upsert","account_id",Effect.INTERNAL_WRITE,
-                obj({"bill_code":_CODE,"external_id":TEXT,"problem_type":_NAME,"registered_at":TEXT,"registered_site":TEXT}),
+                obj({"bill_code":_CODE,"external_id":TEXT,"problem_type":_NAME,"registered_at":TEXT,"registered_site":TEXT,
+                     "before_cutoff":BOOL,"postpones_sign":BOOL}),
                 obj({"committed":BOOL}),account=requirement("split_pending_problem_ledger",kind=Kind.ACCOUNT,role="split_pending_ronghui")),
         ],kind=Kind.ACCOUNT,role="split_pending_ronghui"))
     return tuple(descriptors)

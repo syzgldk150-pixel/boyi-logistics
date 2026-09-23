@@ -11,12 +11,12 @@ from zoneinfo import ZoneInfo
 
 import httpx
 import pymysql
-from Crypto.PublicKey import ECC
 
-from agent.automation_plugins.first_party import resolve_first_party_manifests
-from agent.automation_plugins.package import Ed25519TrustStore
 from agent.orchestration.models import Actor, ActorType
-from agent.tool_registry import ToolRegistry
+from agent.automation_plugins.connector_registry import ConnectorRegistry
+from agent.automation_plugins.scan_connectors_v2 import build_scan_connectors
+from agent.automation_plugins.arrival_connectors_v2 import build_arrival_connectors
+from tests.v32_acceptance.service_v2_artifacts import build_artifact
 from plugin_core_adapters.first_party import build_production_first_party_core_handler_map
 from shared.service_identity import build_console_identity_headers
 from tests.v32_acceptance.daily_protocol import ACCOUNT_ID, CHILD_CODE, DailyAccounts, DailyProtocol
@@ -71,12 +71,15 @@ def signed_request(management, path, *, payload=None):
     return response.json()['data']
 
 
-def setup_scan(management):
-    automation_id = 'scan_codes'
+def setup_scan(management, artifact=None):
+    from tests.v32_acceptance.service_v2_artifacts import install_artifact
+    automation_id = (install_artifact(management, artifact, actor=ACTOR, name='隔离扫描 V2')
+                     if artifact is not None else 'scan_codes')
     entry = management.catalog.require(automation_id)
     management.configuration.save(automation_id, config={
         'target_date': datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat(), 'batch_size': 1, 'max_batches': 2,
-    }, account_bindings={'account_id': [ACCOUNT_ID]}, resource_bindings={}, enabled_entrypoints=('console',),
+    }, account_bindings={'scan_ronghui' if artifact else 'account_id': [ACCOUNT_ID]}, resource_bindings={},
+        enabled_entrypoints=('execute_console',) if artifact else ('console',),
         schedule={'kind': 'none', 'times': [], 'enabled': False}, device_id=None,
         actor_id=ACTOR.actor_id, actor_role='super_admin', request_id=str(uuid4()),
         expected_project_configuration_version=entry.project_config_version)
@@ -89,19 +92,19 @@ def setup_scan(management):
     entry = management.catalog.require(automation_id)
     management.policy.update_policy(automation_id, mode='PROJECT_FULL_AUTO', request_id=str(uuid4()), comment='isolated A01 only',
         expected_policy_version=policy['policy_version'], expected_project_configuration_version=entry.project_config_version, actor=ACTOR)
+    return automation_id
 
 
-def run_scan(management, runner, boundary, *, browser=None, configure=True):
-    automation_id = 'scan_codes'
+def run_scan(management, runner, boundary, *, browser=None, configure=True, automation_id='scan_codes'):
     if configure:
         setup_scan(management)
-    path = '/internal/v1/automation-projects/scan_codes/invoke'
+    path = f'/internal/v1/automation-projects/{automation_id}/invoke'
     preview = browser.run(automation_id) if browser else signed_request(management, path, payload={'request_id': str(uuid4())})
     preview_result = runner.service.wait_sync(preview['invocation_id'])
     if preview_result['status'] != 'COMPLETED':
         raise AssertionError(preview_result)
     assert boundary.ledger == []
-    projection = browser.scan_projection() if browser else signed_request(management, '/internal/v1/automation-projects/scan_codes/scan-previews/' + preview['invocation_id'])
+    projection = browser.scan_projection() if browser else signed_request(management, f'/internal/v1/automation-projects/{automation_id}/scan-previews/' + preview['invocation_id'])
     assert projection['selection_count'] == 1 and projection['can_confirm'] is True
     request_id = str(uuid4())
     formal = browser.confirm_scan() if browser else signed_request(management, path, payload={'request_id': request_id, 'preview_invocation_id': preview['invocation_id']})
@@ -118,28 +121,20 @@ def run_scan(management, runner, boundary, *, browser=None, configure=True):
 
 
 def main():
-    from tests.v32_acceptance.first_party_fixture import bootstrap, isolated_migration_accounts
     prepare_database()
     account_manager = DailyAccounts()
-    private_key = ECC.generate(curve='Ed25519')
-    trust = Ed25519TrustStore({'v32-daily': private_key.public_key().export_key(format='raw')})
-    manifest = resolve_first_party_manifests(ToolRegistry(), _plugin_ids=frozenset({'sync_scan_codes'}))['sync_scan_codes']
-    keys = {(item['operation'], item['action']) for item in manifest.runtime_permissions['broker_operations']}
-    migration_accounts = isolated_migration_accounts()
-    migration_accounts['scan_codes'] = {'account_id': [ACCOUNT_ID]}
+    artifacts = {plugin: build_artifact(plugin, RUNTIME / 'artifacts') for plugin in ('sync_scan_codes_v2',)}
     with DailyProtocol() as boundary, boundary.authentication_boundaries():
         handlers = build_production_first_party_core_handler_map(cursor_secret=secrets.token_bytes(32),
-            account_manager=account_manager, allowed_action_keys=keys, capability_authorizer=boundary.authorize)
+            account_manager=account_manager, capability_authorizer=boundary.authorize)
+        connectors = ConnectorRegistry((*build_scan_connectors(handlers), *build_arrival_connectors(handlers)))
         with ManagementFixture(connection_factory=connect, runtime_root=RUNTIME, account_manager=account_manager,
-                broker_handlers=handlers, upload_signature_verifier=trust, enable_directory_faults=False,
-                resource_provider=boundary.resource_loader,
-                migration_account_bindings=migration_accounts) as management:
-            bootstrap(management, private_key=private_key, trust=trust, key_id='v32-daily')
-            reconciled = management.targets.reconcile_project('scan_codes')
-            if management.catalog.require('scan_codes').committed_snapshot is None:
-                raise AssertionError('actual first-party reconciliation did not commit: ' + str(reconciled))
+                broker_handlers=handlers, enable_directory_faults=False,
+                resource_provider=boundary.resource_loader, connector_registry=connectors) as management:
             with DirectFixture(management, saved_resource_provider=boundary.resource_loader) as runner:
-                report = run_scan(management, runner, boundary)
+                identity = setup_scan(management, artifacts['sync_scan_codes_v2'])
+                report = run_scan(management, runner, boundary, configure=False, automation_id=identity)
+                report['runtime_model'] = 'SERVICE_V2'
                 report.update(executed_at=datetime.now(timezone.utc).isoformat(), runtime=runner.snapshot())
     output = RUNTIME.parent / 'a01-scan.json'
     output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')

@@ -50,6 +50,8 @@ class ProblemBrowser:
     def preview(self, automation_id, *, expected_codes):
         self.open()
         form = self.card(automation_id).locator('xpath=ancestor::form')
+        if form.locator('[data-run-now]').is_disabled():
+            raise AssertionError('actual plugin is not runnable: ' + form.inner_text())
         with self.page.expect_response(lambda response:urlparse(response.url).path == '/automations/tasks/selection-preview') as response:
             form.locator('[data-run-now]').click()
         body = response.value.json()

@@ -465,8 +465,12 @@ def _problem_create(
     plan: Mapping[str, Any],
 ) -> Mapping[str, Any]:
     from agent.tms_runtime.scripts import ronghui_problem_upload as problem
+    from shared.problem_write_intents import ProblemWriteIntents, UnresolvedProblemWrite, problem_target
+    from tools.phase7_mysql_store import _connect
 
     session = _login_session(descriptor)
+    intents = ProblemWriteIntents(_connect)
+    target = attempt = None
     try:
         login_context = problem.fetch_login_context(session)
         page_context = problem.resolve_problem_page_context(session)
@@ -491,6 +495,8 @@ def _problem_create(
                 "verified": True,
                 "postpone_updated": False,
             }
+        target = problem_target(login_context.get('site_code'), plan)
+        attempt = intents.reserve(target)
         result = problem.upload_problem_item(
             session,
             record={
@@ -506,23 +512,28 @@ def _problem_create(
         )
     except PluginExecutionError:
         raise
+    except problem.ProblemWriteRejected as exc:
+        if target is not None and attempt is not None:
+            intents.settle(target, attempt, 'NOT_APPLIED')
+        raise _error('Ronghui problem write was explicitly rejected', 'BROKER_WRITE_FAILED') from exc
+    except UnresolvedProblemWrite as exc:
+        raise _error('This problem target has an unresolved prior write; verify it before submitting again',
+                     'WRITE_OUTCOME_UNKNOWN') from exc
     except Exception as exc:
-        message = str(exc)
-        if "明确拒绝" in message or "explicitly rejected" in message.lower():
-            raise _error(
-                "Ronghui problem write was explicitly rejected",
-                "BROKER_WRITE_FAILED",
-            ) from exc
         raise _error(
             "Ronghui problem write outcome is unknown",
             "WRITE_OUTCOME_UNKNOWN",
         ) from exc
     verification = result.get("verification")
-    if not isinstance(verification, Mapping):
+    if (result.get('saved') is not True or result.get('verified') is not True
+            or not isinstance(verification, Mapping)
+            or any(not str(verification.get(key) or '').strip()
+                   for key in ('external_id', 'registered_at', 'registered_site'))):
         raise _error(
             "Ronghui problem write has no authoritative proof",
             "WRITE_OUTCOME_UNKNOWN",
         )
+    intents.settle(target, attempt, 'VERIFIED')
     return {
         "bill_code": str(plan["bill_code"]),
         "external_id": str(verification.get("external_id") or "").strip(),
@@ -706,7 +717,7 @@ def _datetime_text(value: object) -> str:
 
 def _event_upsert_verified(
     descriptor: Mapping[str, Any],
-    event: dict[str, str],
+    event: dict[str, Any],
     *,
     updater: EventUpdater,
     reader: EventStateReader,
@@ -721,6 +732,8 @@ def _event_upsert_verified(
         "source": source,
         "tracking_number": event["bill_code"],
         "upload_complete": True,
+        "before_cutoff": event["before_cutoff"],
+        "postpones_sign": event["postpones_sign"],
     }
     try:
         updater([payload])
@@ -757,6 +770,8 @@ def _event_upsert_verified(
         or str(observed.get("registered_site") or "").strip()
         != event["registered_site"]
         or observed.get("upload_complete") not in {True, 1}
+        or observed.get("before_cutoff") != event["before_cutoff"]
+        or observed.get("postpones_sign") != event["postpones_sign"]
     ):
         raise _error(
             "problem event readback did not match the write",

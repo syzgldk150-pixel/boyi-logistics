@@ -313,6 +313,15 @@ def test_preview_expiry_result_tampering_and_argument_drift_fail_closed():
     assert stale.value.code == "SCAN_PREVIEW_STALE"
 
 
+def test_scan_preview_accepts_small_clock_adjustment_but_rejects_distant_future():
+    near = _resolve(_Uow(_fixture(observed_at=NOW + timedelta(seconds=2))))
+    assert near.context["observed_at"] == "2026-08-24T04:00:02Z"
+
+    with pytest.raises(OrchestrationError) as distant:
+        _resolve(_Uow(_fixture(observed_at=NOW + timedelta(seconds=5))))
+    assert distant.value.code == "SCAN_PREVIEW_INVALID"
+
+
 def test_expiry_is_rechecked_after_the_preview_lock_boundary():
     context = _resolve(
         _Uow(_fixture(observed_at=NOW - timedelta(minutes=14, seconds=59)))

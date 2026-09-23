@@ -35,7 +35,7 @@ def test_statistics_settings_survive_generation_and_catalog_round_trip(database,
     resources = {}
     for suffix in ("primary", "secondary", "pending", "archive", "split_pending"):
         role = f"arrival_stats_{suffix}_sheet"
-        resource = {"resource_kind": "feishu_sheet", "sheet_id": "synthetic-" + suffix}
+        resource = {"resource_kind": "feishu_sheet", "spreadsheet_token": "synthetic-workbook", "sheet_id": "synthetic-" + suffix}
         resource["_meta"] = {"resource_key": role, "configuration_version": 1,
                              "source": "explicit isolated resource fixture",
                              "config_sha256": sha256(json.dumps(resource, sort_keys=True).encode()).hexdigest()}
@@ -102,7 +102,7 @@ def test_statistics_settings_survive_generation_and_catalog_round_trip(database,
         diagnostic["missing_requirements"] = visible["missing_requirements"]
         assert visible["enabled_console_entrypoints"] == list(console_entries), json.dumps(diagnostic)
         assert not visible["blocked"], json.dumps(diagnostic)
-        with DirectFixture(host, directory=tmp_path / "ipc") as runtime:
+        with DirectFixture(host, directory=tmp_path / "ipc", saved_resource_provider=resources.get) as runtime:
             receipt = host.policy.invoke_console(project, request_id=str(uuid4()), actor=ACTOR)
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline:

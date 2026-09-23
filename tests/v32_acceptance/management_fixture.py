@@ -135,7 +135,7 @@ class ManagementFixture:
     def __init__(self, *, connection_factory=None, runtime_root=None, account_manager=None,
                  broker_handlers=None, resource_provider=None, upload_signature_verifier=None,
                  enable_directory_faults=True, migration_account_bindings=None, connector_registry=None,
-                 contribution_backend_status=None):
+                 contribution_backend_status=None, resource_catalog_provider=None):
         self.startup_id = str(uuid4())
         if not os.environ.get("AGENT_DB_NAME", "").endswith("_test") or os.environ.get("AGENT_DB_HOST") != "127.0.0.1":
             raise RuntimeError("explicit isolated loopback test database required")
@@ -176,7 +176,9 @@ class ManagementFixture:
             worker_repository=self.management_repository,
         )
         self.service_registry = ServiceRegistry(connector_registry=connector_registry)
-        self.contribution_registry = ManagedContributionRegistry()
+        from agent.automation_plugins.runtime_backend_availability import RuntimeContributionBackendAvailability
+        self.backend_availability = RuntimeContributionBackendAvailability()
+        self.contribution_registry = ManagedContributionRegistry(backend_availability=self.backend_availability)
         self.driver = ProductionRuntimeEffectDriver(
             broker_handler_keys=handler_keys, service_registry=self.service_registry,
             contribution_registry=self.contribution_registry,
@@ -214,7 +216,7 @@ class ManagementFixture:
             configuration=self.configuration, worker_repository=self.management_repository,
             target_service=self.targets, package_repository=self.packages,
             storage=self.storage, release_hold_provider=lambda: False,
-            resource_catalog_provider=self.delayed_external_resources,
+            resource_catalog_provider=resource_catalog_provider or self.delayed_external_resources,
             contribution_registry=self.contribution_registry,
         )
         self.policy = AutomationProjectPolicyService(

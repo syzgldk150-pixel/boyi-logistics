@@ -1100,7 +1100,7 @@ def test_internal_service_invocation_uses_normal_generation_lease_and_opaque_cha
     )
     identity = "11111111-1111-4111-8111-111111111111"
     class DirectAdmission:
-        def reserve_provider(self, invocation_id, capability):
+        async def reserve_provider(self, invocation_id, capability):
             assert invocation_id == identity
             assert capability["operation_type"] == "read"
             return (), {}
@@ -2264,6 +2264,37 @@ def test_bubblewrap_nproc_baseline_counts_real_uid_tasks_and_fails_closed(
     with pytest.raises(PluginExecutionError) as unreadable:
         sandbox_module._current_real_uid_task_count(unreadable_root)  # noqa: SLF001
     assert unreadable.value.code == "PLUGIN_SANDBOX_NPROC_BASELINE_UNAVAILABLE"
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="Linux /proc contract")
+@pytest.mark.parametrize("round_index", range(20))
+@pytest.mark.parametrize("error_type", [FileNotFoundError, ProcessLookupError, PermissionError])
+def test_sandbox_process_exit_during_count_does_not_reject_new_launch(
+    tmp_path, monkeypatch, round_index, error_type,
+):
+    import errno
+    proc_root = tmp_path / "proc"
+    current = proc_root / str(os.getpid())
+    current.mkdir(parents=True)
+    uid = os.getuid()
+    (current / "status").write_text(
+        f"Uid:\t{uid}\t{uid}\t{uid}\t{uid}\nThreads:\t3\n", encoding="utf-8")
+    exited = proc_root / str(os.getpid() + round_index + 1)
+    exited.mkdir()
+    original_read = Path.read_bytes
+    def read_status(path):
+        if path == exited / "status":
+            code = {FileNotFoundError: errno.ENOENT, ProcessLookupError: errno.ESRCH,
+                    PermissionError: errno.EACCES}[error_type]
+            raise error_type(code, "isolated status read")
+        return original_read(path)
+    monkeypatch.setattr(Path, "read_bytes", read_status)
+    if error_type is PermissionError:
+        with pytest.raises(PluginExecutionError) as denied:
+            sandbox_module._current_real_uid_task_count(proc_root)
+        assert denied.value.code == "PLUGIN_SANDBOX_NPROC_BASELINE_UNAVAILABLE"
+    else:
+        assert sandbox_module._current_real_uid_task_count(proc_root) == 3
 
 
 def test_bubblewrap_fails_closed_without_a_regular_absolute_prlimit(

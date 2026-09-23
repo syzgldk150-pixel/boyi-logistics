@@ -8,14 +8,13 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import time
 from uuid import uuid4
 
 from tests.v32_acceptance.host_freeze import verify_host
 
 ROOT = Path(__file__).resolve().parents[2]
-PLUGINS = ('sync_scan_codes', 'sync_arrival_stats', 'self_pickup_problem_upload',
-    'split_pending_problem_upload', 'sync_finance_bills', 'sync_customer_service_problems')
+PLUGINS = ('sync_scan_codes_v2', 'sync_arrival_stats_v2', 'self_pickup_problem_upload_v2',
+    'split_pending_problem_upload_v2', 'sync_finance_bills_v2', 'sync_customer_service_problems_v2')
 
 
 def main():
@@ -29,12 +28,11 @@ def main():
         raise RuntimeError('CLI batch requires v32_cli_test and disabled dotenv')
     output = ROOT / '.task_tmp/v32/plugin-cli' / ('run-' + uuid4().hex)
     output.mkdir(parents=True)
-    report = {'status': 'RUNNING', 'plugins': {}, 'output': str(output),
+    report = {'status': 'RUNNING', 'runtime_model': 'SERVICE_V2', 'plugins': {}, 'output': str(output),
         'host_freeze': verify_host(args.host_freeze) if args.host_freeze else {'status': 'NOT_REQUESTED'}}
     cli = [sys.executable, str(ROOT / 'agent/scripts/plugin_maintenance.py')]
-    stamp = int(time.time())
     try:
-        for index, plugin_id in enumerate(PLUGINS):
+        for plugin_id in PLUGINS:
             entry = {'commands': [], 'status': 'RUNNING'}
             report['plugins'][plugin_id] = entry
             for action in ('describe', 'test', 'package'):
@@ -45,8 +43,7 @@ def main():
                 if action != 'describe':
                     command += ['--report', str(result_path)]
                 if action == 'package':
-                    command += ['--test-signing', '--version', f'98.6.{stamp + index}',
-                        '--output', str(output / (plugin_id + '.zip'))]
+                    command += ['--output', str(output / (plugin_id + '.zip'))]
                 log = output / f'{plugin_id}-{action}.log'
                 with log.open('x', encoding='utf-8') as stream:
                     completed = subprocess.run(command, cwd=ROOT, env=dict(os.environ),

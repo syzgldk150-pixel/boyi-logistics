@@ -1441,7 +1441,7 @@ class PluginExecutionRouter:
         direct = getattr(self, "direct_invocations", None)
         if direct is None:
             raise PluginExecutionError("service invocation runtime is unavailable", code="PLUGIN_PROJECT_INVOCATION_REQUIRED")
-        keys, scopes = direct.reserve_provider(invocation_id, self._service_effect_capability(capability, effect))
+        keys, scopes = await direct.reserve_provider(invocation_id, self._service_effect_capability(capability, effect))
         resource_token, scope_token = EXECUTION_RESOURCE_KEYS.set(keys), EXECUTION_ACTION_SCOPES.set(scopes)
         try:
             result = await self.execute(

@@ -7,59 +7,283 @@
       "scenario": "四个核心业务分别从实际入口到真实业务函数执行",
       "requirement": "分为扫描、统计、分批、自提四个必测子项；仅替换隔离外部边界，分别核对输出、目标集合、计数／字段与副作用次数；不只断言 202",
       "tests": [
+        "tests/test_direct_daily_plugins_mysql.py",
+        "probe:daily_scan_statistics",
+        "probe:daily_problems",
+        "tests/test_problem_connectors_v2.py::test_problem_sheet_preserves_phone_and_address_column_semantics"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "original_requirement": "分为扫描、统计、分批、自提四个必测子项；仅替换隔离外部边界，分别核对输出、目标集合、计数／字段与副作用次数；不只断言 202",
+      "effective_requirement": "扫描、统计、分批、自提四项分别使用真实发行 V2 包及当前入口、Direct、业务函数和隔离外部目标；核对候选、字段、结果和副作用，不只断言202或示例文本。",
+      "effective_scenario": "四个核心业务分别端到端执行",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "四脚本均由实际Console预览/确认或执行按钮进入真实签名包、4worker Runner、原生产业务函数及隔离HTTP协议；分别验证MySQL结果、实际目标/计数、外部副作用及同请求重放。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。 主分支 da20899 的分批与自提来源表列语义修复纳入本轮必需回归，正式结果仍只取新鲜测试。",
+      "historical_tests": [
         "tests/test_first_party_action_payloads.py",
         "tests/test_problem_plugin_production_adapter.py",
         "probe:daily_scan_statistics",
         "probe:daily_problems"
       ],
-      "minimum_cases": 1,
-      "coverage_gaps": [],
-      "evidence_note": "四脚本均由实际Console预览/确认或执行按钮进入真实签名包、4worker Runner、原生产业务函数及隔离HTTP协议；分别验证MySQL结果、实际目标/计数、外部副作用及同请求重放。"
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_daily_plugins_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_scan_statistics",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_problems",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_problem_connectors_v2.py::test_problem_sheet_preserves_phone_and_address_column_semantics",
+          "minimum_cases": 2
+        }
+      ],
+      "input_side_effect_assertions": "扫描、统计、分批、自提四项分别使用真实发行 V2 包及当前入口、Direct、业务函数和隔离外部目标；核对候选、字段、结果和副作用，不只断言202或示例文本。",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A02",
       "scenario": "四个独立业务任务共同运行，另一个注入失败",
       "requirement": "在已有总容量／浏览器上限下独立推进；失败不取消其他任务；真实共享资源和业务依赖仍遵守约束",
       "tests": [
-        "tests/test_workflow_runner_durable_admission.py",
-        "probe:daily_concurrency"
+        "probe:daily_concurrency",
+        "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "实际四个日常任务同时受理，外部协议barrier观测并行与真实共享资源等待；第五个真实bwrap插件故障，四任务不取消并全部完成和验证，副作用准确。"
+      "original_requirement": "在已有总容量／浏览器上限下独立推进；失败不取消其他任务；真实共享资源和业务依赖仍遵守约束",
+      "effective_requirement": "执行容量保持原上限；无冲突任务重叠推进，一项失败不取消其他任务。同实例、容量或实际资源暂忙时先受理并在当前进程内最多等待30秒，释放后同一请求继续；总活跃请求有界，超时或过载明确结束，保留业务依赖。",
+      "effective_scenario": "并发、真实冲突与故障隔离",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1 + USER_RESOURCE_WAIT_2026-09-16",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际四个日常任务同时受理，外部协议barrier观测并行与真实共享资源等待；第五个真实bwrap插件故障，四任务不取消并全部完成和验证，副作用准确。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_workflow_runner_durable_admission.py",
+        "probe:daily_concurrency"
+      ],
+      "required_evidence": [
+        {
+          "reference": "probe:daily_concurrency",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "alias"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "reverse"
+          },
+          "distinct_property": "round"
+        }
+      ],
+      "input_side_effect_assertions": "执行容量保持原上限；无冲突任务重叠推进，一项失败不取消其他任务。同实例、容量或实际资源暂忙时先受理并在当前进程内最多等待30秒，释放后同一请求继续；总活跃请求有界，超时或过载明确结束，保留业务依赖。",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A03",
       "scenario": "4 个工作槽，1 个任务占资源，至少 4 个不同任务等待该资源，再提交独立任务",
       "requirement": "有真实空闲容量时独立任务在 2 秒内开始业务执行；不能靠增大工作槽通过",
       "tests": [
-        "tests/test_workflow_runner_durable_admission.py::test_four_workers_return_resource_wait_claims_and_cancel"
+        "tests/test_direct_closeout_mysql.py::test_concurrent_request_replays_and_busy_identity_remain_terminal",
+        "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+        "tests/test_direct_resource_wait_mysql.py::test_busy_request_waits_then_executes_once_without_resubmission"
       ],
       "minimum_cases": 20,
       "coverage_gaps": [],
-      "evidence_note": "A03使用真实MySQL、CommandGateway、WorkflowRunner和注册的隔离合成工作负载，4个worker/3个浏览器容量名额；不声称运行四个真实业务脚本。"
+      "original_requirement": "有真实空闲容量时独立任务在 2 秒内开始业务执行；不能靠增大工作槽通过",
+      "effective_requirement": "同实例、总容量或实际写目标暂忙不得立即失败：在当前进程内最多等待30秒，资源释放后原请求继续且不占额外执行名额；等待可取消，资源释放后2秒内开始。超时或活跃请求达到上限才明确拒绝，不持久排队、重启不补跑，不靠增加执行容量通过。",
+      "effective_scenario": "繁忙终结与容量归还【已修订】",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1 + USER_RESOURCE_WAIT_2026-09-16",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "A03使用真实MySQL、CommandGateway、WorkflowRunner和注册的隔离合成工作负载，4个worker/3个浏览器容量名额；不声称运行四个真实业务脚本。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_workflow_runner_durable_admission.py::test_four_workers_return_resource_wait_claims_and_cancel"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_concurrent_request_replays_and_busy_identity_remain_terminal",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_concurrent_request_replays_and_busy_identity_remain_terminal",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "concurrent_submissions": "20"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "alias"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "reverse"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "timeout"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_wait_mysql.py::test_busy_request_waits_then_executes_once_without_resubmission",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "same_instance"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_wait_mysql.py::test_busy_request_waits_then_executes_once_without_resubmission",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "capacity"
+          },
+          "distinct_property": "round"
+        }
+      ],
+      "input_side_effect_assertions": "同实例、总容量或实际写目标暂忙不得立即失败：在当前进程内最多等待30秒，资源释放后原请求继续且不占额外执行名额；等待可取消，资源释放后2秒内开始。超时或活跃请求达到上限才明确拒绝，不持久排队、重启不补跑，不靠增加执行容量通过。",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A04",
       "scenario": "同账号不同资源，跨插件／角色／凭据访问同一资源",
       "requirement": "经验证独立的前者可并行；冲突的后者互斥，不因不同 runtime_target 或角色逃过保护",
       "tests": [
-        "tests/test_workflow_runner_durable_admission.py::test_saved_mysql_resource_aliases_overlap_and_unknown_account_scope"
+        "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock"
       ],
       "minimum_cases": 20,
       "coverage_gaps": [],
-      "evidence_note": "真实MySQL保存的、宿主完整性校验过的合成Sheet/Bitable locator，经生产Runner准入。跨插件/角色/凭据物理别名互斥，独立子表可并行；整表与局部范围保守按同表互斥，建表动作持有父资源；未知操作或URL-only保留同账号保守锁。不能推断没有权威locator的跨凭据物理别名，也不声称跨进程资源协调。"
+      "original_requirement": "经验证独立的前者可并行；冲突的后者互斥，不因不同 runtime_target 或角色逃过保护",
+      "effective_requirement": "经验证独立的前者可并行；冲突的后者互斥，不因不同 runtime_target 或角色逃过保护",
+      "effective_scenario": "同账号不同资源，跨插件／角色／凭据访问同一资源",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实MySQL保存的、宿主完整性校验过的合成Sheet/Bitable locator，经生产Runner准入。跨插件/角色/凭据物理别名互斥，独立子表可并行；整表与局部范围保守按同表互斥，建表动作持有父资源；未知操作或URL-only保留同账号保守锁。不能推断没有权威locator的跨凭据物理别名，也不声称跨进程资源协调。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_workflow_runner_durable_admission.py::test_saved_mysql_resource_aliases_overlap_and_unknown_account_scope"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "alias"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "reverse"
+          },
+          "distinct_property": "round"
+        }
+      ],
+      "input_side_effect_assertions": "经验证独立的前者可并行；冲突的后者互斥，不因不同 runtime_target 或角色逃过保护",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A05",
       "scenario": "整表覆盖与表内写，多个资源反向申请",
       "requirement": "作用范围重叠被识别，准入无死锁、无部分锁泄漏；不要求开发不需要的行级锁框架",
       "tests": [
-        "tests/test_workflow_runner_durable_admission.py::test_saved_mysql_resource_aliases_overlap_and_unknown_account_scope"
+        "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock"
       ],
       "minimum_cases": 20,
       "coverage_gaps": [],
-      "evidence_note": "真实MySQL保存的、宿主完整性校验过的合成Sheet/Bitable locator，经生产Runner准入。跨插件/角色/凭据物理别名互斥，独立子表可并行；整表与局部范围保守按同表互斥，建表动作持有父资源；未知操作或URL-only保留同账号保守锁。不能推断没有权威locator的跨凭据物理别名，也不声称跨进程资源协调。"
+      "original_requirement": "作用范围重叠被识别，准入无死锁、无部分锁泄漏；不要求开发不需要的行级锁框架",
+      "effective_requirement": "作用范围重叠被识别，准入无死锁、无部分锁泄漏；不要求开发不需要的行级锁框架",
+      "effective_scenario": "整表覆盖与表内写，多个资源反向申请",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实MySQL保存的、宿主完整性校验过的合成Sheet/Bitable locator，经生产Runner准入。跨插件/角色/凭据物理别名互斥，独立子表可并行；整表与局部范围保守按同表互斥，建表动作持有父资源；未知操作或URL-only保留同账号保守锁。不能推断没有权威locator的跨凭据物理别名，也不声称跨进程资源协调。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_workflow_runner_durable_admission.py::test_saved_mysql_resource_aliases_overlap_and_unknown_account_scope"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "alias"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "reverse"
+          },
+          "distinct_property": "round"
+        }
+      ],
+      "input_side_effect_assertions": "作用范围重叠被识别，准入无死锁、无部分锁泄漏；不要求开发不需要的行级锁框架",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A06",
@@ -69,55 +293,286 @@
         "agent/tests/test_session_process_isolation.py",
         "tests/test_session_boundaries.py",
         "tests/test_plugin_runtime_isolation_mysql.py",
-        "tests/test_workflow_runner_durable_admission.py::test_saved_mysql_resource_aliases_overlap_and_unknown_account_scope",
-        "agent/tests/test_yunda_proxy_session_state.py"
+        "agent/tests/test_yunda_proxy_session_state.py",
+        "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock"
       ],
       "minimum_cases": 20,
       "coverage_gaps": [],
-      "evidence_note": "同一真实4worker Runner并发两个真实安装实例，经bwrap子进程执行：20轮相同/tmp文件名隔离、配置与环境身份/输出不串扰，实际子进程单调时钟区间有交叠；会话共享串行由同组真实MySQL锁及session边界回归复用。新并发测试揭示并修复首次受理缺失幂等索引gap锁死锁，项目锁与唯一键语义冲突校验保留。"
+      "original_requirement": "无账号、会话、参数、输出串扰；共享会话正确串行，不牵连其他资源",
+      "effective_requirement": "无账号、会话、参数、输出串扰；共享会话正确串行，不牵连其他资源",
+      "effective_scenario": "并发使用登录态、临时目录、环境与输出",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "同一真实4worker Runner并发两个真实安装实例，经bwrap子进程执行：20轮相同/tmp文件名隔离、配置与环境身份/输出不串扰，实际子进程单调时钟区间有交叠；会话共享串行由同组真实MySQL锁及session边界回归复用。新并发测试揭示并修复首次受理缺失幂等索引gap锁死锁，项目锁与唯一键语义冲突校验保留。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "agent/tests/test_session_process_isolation.py",
+        "tests/test_session_boundaries.py",
+        "tests/test_plugin_runtime_isolation_mysql.py",
+        "tests/test_workflow_runner_durable_admission.py::test_saved_mysql_resource_aliases_overlap_and_unknown_account_scope",
+        "agent/tests/test_yunda_proxy_session_state.py"
+      ],
+      "required_evidence": [
+        {
+          "reference": "agent/tests/test_session_process_isolation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_session_boundaries.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_runtime_isolation_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_yunda_proxy_session_state.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "alias"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "reverse"
+          },
+          "distinct_property": "round"
+        }
+      ],
+      "input_side_effect_assertions": "无账号、会话、参数、输出串扰；共享会话正确串行，不牵连其他资源",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A07",
       "scenario": "等待跨至少两个租约周期，旧领取与恢复领取竞争",
       "requirement": "无重复授权执行；旧 claim 不能继续新写或覆盖新结果；可用可控时钟，不依赖长时间人工观察",
       "tests": [
-        "tests/test_workflow_runner_durable_admission.py::test_claim_round_fences_same_process_late_start_and_release",
-        "tests/test_workflow_runner_durable_admission.py::test_preparation_and_heartbeat_progress_with_the_ordinary_io_pool_full"
+        "tests/test_direct_closeout_mysql.py::test_restart_fences_actual_inflight_invocation_and_late_completion",
+        "tests/test_direct_plugin_invocation_mysql.py::test_generation_upgrade_and_rollback_use_real_invocation_leases",
+        "tests/test_direct_resource_wait_mysql.py::test_restart_ends_waiting_request_without_replaying_it"
       ],
       "minimum_cases": 21,
       "coverage_gaps": [],
-      "evidence_note": "实际续租跨两个周期；可控时钟20轮过期/恢复竞争，旧claim被拒绝开始、释放和覆盖真实MySQL已验证新结果。实际注册隔离工作负载，仅外部业务范围由A01验证。"
+      "original_requirement": "无重复授权执行；旧 claim 不能继续新写或覆盖新结果；可用可控时钟，不依赖长时间人工观察",
+      "effective_requirement": "真实Direct重启终结执行中和等待资源的旧调用，不重放；旧owner／generation／执行身份不能继续新写或迟到覆盖。等待请求不能在旧回调释放后重新获得执行权；历史Runner用例不作为当前通过证据。",
+      "effective_scenario": "当前执行身份与重启隔离【已修订】",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1 + USER_RESOURCE_WAIT_2026-09-16",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际续租跨两个周期；可控时钟20轮过期/恢复竞争，旧claim被拒绝开始、释放和覆盖真实MySQL已验证新结果。实际注册隔离工作负载，仅外部业务范围由A01验证。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_workflow_runner_durable_admission.py::test_claim_round_fences_same_process_late_start_and_release",
+        "tests/test_workflow_runner_durable_admission.py::test_preparation_and_heartbeat_progress_with_the_ordinary_io_pool_full"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_restart_fences_actual_inflight_invocation_and_late_completion",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_plugin_invocation_mysql.py::test_generation_upgrade_and_rollback_use_real_invocation_leases",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_restart_fences_actual_inflight_invocation_and_late_completion",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "before_execution"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_restart_fences_actual_inflight_invocation_and_late_completion",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "after_execution"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_wait_mysql.py::test_restart_ends_waiting_request_without_replaying_it",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "restart_waiter"
+          },
+          "distinct_property": "round"
+        }
+      ],
+      "input_side_effect_assertions": "真实Direct重启终结执行中和等待资源的旧调用，不重放；旧owner／generation／执行身份不能继续新写或迟到覆盖。等待请求不能在旧回调释放后重新获得执行权；历史Runner用例不作为当前通过证据。",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A08",
       "scenario": "等待取消、运行取消、租约丢失",
       "requirement": "等待任务 2 秒内取消并且之后不开始任何业务写；运行中请求可能已发出时进入真实终止／核验，不虚报零副作用",
       "tests": [
+        "tests/test_direct_plugin_invocation_mysql.py",
+        "tests/test_direct_closeout_mysql.py::test_repeated_cancel_drains_real_verification_before_reuse",
+        "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+        "probe:scan_cancel_recovery",
+        "tests/test_direct_closeout_mysql.py::test_waiter_cancellation_drains_settlement_before_releasing_ownership"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "original_requirement": "等待任务 2 秒内取消并且之后不开始任何业务写；运行中请求可能已发出时进入真实终止／核验，不虚报零副作用",
+      "effective_requirement": "准入或实际写前的资源等待取消2秒内生效且后续零新写；执行／核验／结果提交中取消保留真实占用直到结束，不能假报零副作用；重复取消安全，不遗留后台执行。",
+      "effective_scenario": "当前调用取消与真实收尾【已修订】",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1 + USER_RESOURCE_WAIT_2026-09-16",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "外部已真实提交后请求取消20轮：Run保持CANCELLED，原lease/receipt UNKNOWN再独立只读核验补齐实际已写原结果，外部恰好一次且无关真实任务继续。结合原20轮等待取消<=2s/真实两子进程精确终止/线程退出与claim fencing。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
         "tests/test_workflow_runner_durable_admission.py",
         "tests/test_workflow_runner_cancellation.py",
         "agent/tests/test_tool_executor_cancel.py::test_same_tool_runs_in_parallel_and_bound_cancel_is_exact",
         "probe:scan_cancel_recovery"
       ],
-      "minimum_cases": 1,
-      "coverage_gaps": [],
-      "evidence_note": "外部已真实提交后请求取消20轮：Run保持CANCELLED，原lease/receipt UNKNOWN再独立只读核验补齐实际已写原结果，外部恰好一次且无关真实任务继续。结合原20轮等待取消<=2s/真实两子进程精确终止/线程退出与claim fencing。"
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_plugin_invocation_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_repeated_cancel_drains_real_verification_before_reuse",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:scan_cancel_recovery",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "cancel_waiter"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_repeated_cancel_drains_real_verification_before_reuse",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_waiter_cancellation_drains_settlement_before_releasing_ownership",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "cancellation_during_settlement": "True"
+          },
+          "distinct_property": "round"
+        }
+      ],
+      "input_side_effect_assertions": "准入或实际写前的资源等待取消2秒内生效且后续零新写；执行／核验／结果提交中取消保留真实占用直到结束，不能假报零副作用；重复取消安全，不遗留后台执行。",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A09",
       "scenario": "同一 request_id 并发重发至少 20 次",
       "requirement": "一次逻辑执行；相同 key 的语义冲突被拒绝；还要核对业务副作用，不只核对 Run 数",
       "tests": [
-        "tests/test_workflow_runner_durable_admission.py::test_twenty_concurrent_replays_execute_once_and_reject_changed_semantics"
+        "tests/test_direct_closeout_mysql.py::test_concurrent_request_replays_and_busy_identity_remain_terminal",
+        "tests/test_direct_resource_wait_mysql.py::test_busy_request_waits_then_executes_once_without_resubmission"
       ],
       "minimum_cases": 20,
       "coverage_gaps": [],
-      "evidence_note": "20轮各20次同key并发，经实际CommandGateway/MySQL/Runner/注册隔离工作负载，断言业务函数副作用计数恰好一次；同key参数冲突拒绝。四个业务脚本独立整链属于A01。"
+      "original_requirement": "一次逻辑执行；相同 key 的语义冲突被拒绝；还要核对业务副作用，不只核对 Run 数",
+      "effective_requirement": "每轮同一request_id并发重发至少20次，在资源等待中和终态后均返回同一Invocation，只执行一次且副作用准确；参数冲突拒绝。等待超时后同请求返回原失败，不重新等待或执行；新用户动作使用新身份，受业务防重约束。",
+      "effective_scenario": "相同请求并发重投与新请求",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1 + USER_RESOURCE_WAIT_2026-09-16",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "20轮各20次同key并发，经实际CommandGateway/MySQL/Runner/注册隔离工作负载，断言业务函数副作用计数恰好一次；同key参数冲突拒绝。四个业务脚本独立整链属于A01。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_workflow_runner_durable_admission.py::test_twenty_concurrent_replays_execute_once_and_reject_changed_semantics"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_concurrent_request_replays_and_busy_identity_remain_terminal",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_concurrent_request_replays_and_busy_identity_remain_terminal",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "concurrent_submissions": "20"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_wait_mysql.py::test_busy_request_waits_then_executes_once_without_resubmission",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "same_instance"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_wait_mysql.py::test_busy_request_waits_then_executes_once_without_resubmission",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "capacity"
+          },
+          "distinct_property": "round"
+        }
+      ],
+      "input_side_effect_assertions": "每轮同一request_id并发重发至少20次，在资源等待中和终态后均返回同一Invocation，只执行一次且副作用准确；参数冲突拒绝。等待超时后同请求返回原失败，不重新等待或执行；新用户动作使用新身份，受业务防重约束。",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A10",
       "scenario": "已写响应丢失、确实未写、结果未知",
       "requirement": "分别补结果、按契约安全重试、受影响范围保护；不重复已经确认的写，无关任务继续",
       "tests": [
+        "tests/test_direct_problem_unknown_mysql.py",
+        "tests/test_scan_readback_protocol.py",
+        "tests/test_scan_snapshot_recovery_mysql.py",
+        "probe:scan_recovery",
+        "probe:unknown_resource_scope",
+        "probe:daily_concurrency"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "original_requirement": "分别补结果、按契约安全重试、受影响范围保护；不重复已经确认的写，无关任务继续",
+      "effective_requirement": "外部已写响应丢失、权威未写、迟到写、未知、部分写场景，新的UUID与合法跨入口／实例重触发不重复逻辑业务效果。只对未核清目标结束／拒绝，无关任务继续；不恢复全局历史锁。",
+      "effective_scenario": "UNKNOWN后的新请求【已修订】",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "原三态各20轮扫描恢复和日期CAS之外，实际scan/统计HTTP失败产生非空MySQL原锁键，销毁原Runner后新4worker Runner用生产准入函数验证20轮跨插件/角色/账号别名互斥和独立已知范围继续；此后半使用受控metadata和注册本地工作负载，并非第二套已装插件完整业务。实际安装插件共享资源完整链复用A02。旧NULL原键显式UNKNOWN_WRITE_SCOPE_UNAVAILABLE，不能猜测。 当前同范围未知写以 RESOURCE_WAIT 保护：每轮重复确认实际检查等待期间独立任务完成、2秒内取消、精确预览消费拒绝，并在原写权威恢复后检查取消状态、零新增 receipt 与无隐藏 Run 残留；三态各20轮和每UNKNOWN轮20次确认不变。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
         "tests/test_workflow_runner_recovery.py",
         "tests/test_result_verifier.py",
         "agent/tests/test_scan_unknown_write_recovery.py",
@@ -127,23 +582,125 @@
         "probe:unknown_resource_scope",
         "probe:daily_concurrency"
       ],
-      "minimum_cases": 1,
-      "coverage_gaps": [],
-      "evidence_note": "原三态各20轮扫描恢复和日期CAS之外，实际scan/统计HTTP失败产生非空MySQL原锁键，销毁原Runner后新4worker Runner用生产准入函数验证20轮跨插件/角色/账号别名互斥和独立已知范围继续；此后半使用受控metadata和注册本地工作负载，并非第二套已装插件完整业务。实际安装插件共享资源完整链复用A02。旧NULL原键显式UNKNOWN_WRITE_SCOPE_UNAVAILABLE，不能猜测。 当前同范围未知写以 RESOURCE_WAIT 保护：每轮重复确认实际检查等待期间独立任务完成、2秒内取消、精确预览消费拒绝，并在原写权威恢复后检查取消状态、零新增 receipt 与无隐藏 Run 残留；三态各20轮和每UNKNOWN轮20次确认不变。"
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_problem_unknown_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_scan_readback_protocol.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_scan_snapshot_recovery_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:scan_recovery",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:unknown_resource_scope",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_concurrency",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_problem_unknown_mysql.py::test_new_uuid_and_alias_instance_never_duplicate_uncertain_problem",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "applied_lost"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_problem_unknown_mysql.py::test_new_uuid_and_alias_instance_never_duplicate_uncertain_problem",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "rejected"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_problem_unknown_mysql.py::test_new_uuid_and_alias_instance_never_duplicate_uncertain_problem",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "late"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_problem_unknown_mysql.py::test_new_uuid_and_alias_instance_never_duplicate_uncertain_problem",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "unresolved"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_problem_unknown_mysql.py::test_partial_batch_does_not_replay_verified_item_or_uncertain_tail",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2"
+          },
+          "distinct_property": "round"
+        }
+      ],
+      "input_side_effect_assertions": "外部已写响应丢失、权威未写、迟到写、未知、部分写场景，新的UUID与合法跨入口／实例重触发不重复逻辑业务效果。只对未核清目标结束／拒绝，无关任务继续；不恢复全局历史锁。",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A11",
       "scenario": "超时／重试与取消本次运行",
       "requirement": "重试有界；等待不扣业务重试次数；未来正常定时和必须核验的计划不丢失；重启不重复触发同一个定时发生实例",
       "tests": [
+        "tests/test_direct_plugin_invocation_mysql.py::test_failed_package_has_no_backlog_or_automatic_retry",
+        "tests/test_direct_plugin_invocation_mysql.py::test_restart_settles_interrupted_facts_without_execution_or_recovery",
+        "tests/test_scheduled_task_contracts.py",
+        "probe:customer_collection_flow"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "original_requirement": "重试有界；等待不扣业务重试次数；未来正常定时和必须核验的计划不丢失；重启不重复触发同一个定时发生实例",
+      "effective_requirement": "资源短暂占用只让当前已受理调用有界等待，不重跑已结束业务。普通失败和等待超时不自动重试；当前定时发生实例的结果如实记录，同身份重投不新增执行，未来计划保留。重启／重新登录不续跑旧调用。",
+      "effective_scenario": "失败终结与未来定时【已修订】",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1 + USER_RESOURCE_WAIT_2026-09-16",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际Scheduler→AgentCore→Gateway→MySQL四worker Runner→隔离HTTP读超时有界三次；取消一次请求，重建Runner/core同occurrence重放原Run无新HTTP，未来occurrence执行，计划与未知核验保护由原MySQL场景组合。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
         "tests/test_scheduled_task_contracts.py",
         "tests/test_workflow_runner_scheduler_supersession.py",
         "tests/test_scheduler_runner_lifecycle_mysql.py",
         "tests/test_mysql_orchestration_integration.py::test_scheduler_supersession_selector_is_exact_and_terminal_retry_observes_cancellation"
       ],
-      "minimum_cases": 1,
-      "coverage_gaps": [],
-      "evidence_note": "实际Scheduler→AgentCore→Gateway→MySQL四worker Runner→隔离HTTP读超时有界三次；取消一次请求，重建Runner/core同occurrence重放原Run无新HTTP，未来occurrence执行，计划与未知核验保护由原MySQL场景组合。"
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_plugin_invocation_mysql.py::test_failed_package_has_no_backlog_or_automatic_retry",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_plugin_invocation_mysql.py::test_restart_settles_interrupted_facts_without_execution_or_recovery",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_scheduled_task_contracts.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "资源短暂占用只让当前已受理调用有界等待，不重跑已结束业务。普通失败和等待超时不自动重试；当前定时发生实例的结果如实记录，同身份重投不新增执行，未来计划保留。重启／重新登录不续跑旧调用。",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A12",
@@ -153,13 +710,56 @@
         "tests/test_scan_preview_binding.py",
         "tests/test_selection_preview_binding.py",
         "agent/tests/test_feishu_split_selection.py",
+        "probe:daily_scan_statistics",
+        "probe:daily_problems",
+        "tests/test_direct_daily_plugins_mysql.py"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "original_requirement": "预览零写入；正式目标与用户确认一致；重复确认幂等；不叠加额外审批，不放开旧任务自动执行",
+      "effective_requirement": "预览零写入；正式目标与用户确认一致；重复确认幂等；不叠加额外审批，不放开旧任务自动执行",
+      "effective_scenario": "预览、排除、候选选择、确认、过期或配置变化",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实扫描/问题件入口预览零写与确认目标、重放结果，结合不可变预览过期/配置变化/排除选择绑定、旧审批任务转自动阻断回归。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_scan_preview_binding.py",
+        "tests/test_selection_preview_binding.py",
+        "agent/tests/test_feishu_split_selection.py",
         "tests/test_workflow_runner_policy_recheck.py",
         "probe:daily_scan_statistics",
         "probe:daily_problems"
       ],
-      "minimum_cases": 1,
-      "coverage_gaps": [],
-      "evidence_note": "真实扫描/问题件入口预览零写与确认目标、重放结果，结合不可变预览过期/配置变化/排除选择绑定、旧审批任务转自动阻断回归。"
+      "required_evidence": [
+        {
+          "reference": "tests/test_scan_preview_binding.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_selection_preview_binding.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_feishu_split_selection.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_scan_statistics",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_problems",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_daily_plugins_mysql.py",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "预览零写入；正式目标与用户确认一致；重复确认幂等；不叠加额外审批，不放开旧任务自动执行",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A13",
@@ -171,11 +771,59 @@
         "tests/test_scheduled_task_contracts.py",
         "tests/test_control_plane_execution_boundaries.py",
         "tests/test_automation_project_api.py",
-        "tests/test_mysql_orchestration_integration.py::test_automation_project_invocation_serializes_and_replays_on_real_mysql"
+        "tests/test_direct_daily_plugins_mysql.py",
+        "probe:customer_collection_flow"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "实际固定按钮/飞书同义词和取消解析、Scheduler精确发生实例及可信actor/generation参数边界回归，结合唯一Runner执行入口检查及真实MySQL命令受理重放，核验统一权威链。四日常业务的外部协议和结果分别由A01验证，不额外制造十二套组合要求。"
+      "original_requirement": "进入同一权威链路，不调用 LLM；保留同义词／取消语义，不新增本来未开放的定时或 AI 写入口",
+      "effective_requirement": "进入同一权威链路，不调用 LLM；保留同义词／取消语义，不新增本来未开放的定时或 AI 写入口",
+      "effective_scenario": "后台固定按钮、飞书固定指令和已开放定时",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际固定按钮/飞书同义词和取消解析、Scheduler精确发生实例及可信actor/generation参数边界回归，结合唯一Runner执行入口检查及真实MySQL命令受理重放，核验统一权威链。四日常业务的外部协议和结果分别由A01验证，不额外制造十二套组合要求。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "agent/tests/test_feishu_automation_project_entrypoints.py",
+        "tests/test_automation_project_entrypoints.py",
+        "tests/test_scheduled_task_contracts.py",
+        "tests/test_control_plane_execution_boundaries.py",
+        "tests/test_automation_project_api.py",
+        "tests/test_mysql_orchestration_integration.py::test_automation_project_invocation_serializes_and_replays_on_real_mysql"
+      ],
+      "required_evidence": [
+        {
+          "reference": "agent/tests/test_feishu_automation_project_entrypoints.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_project_entrypoints.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_scheduled_task_contracts.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_control_plane_execution_boundaries.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_project_api.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_daily_plugins_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "进入同一权威链路，不调用 LLM；保留同义词／取消语义，不新增本来未开放的定时或 AI 写入口",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A14",
@@ -187,7 +835,30 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "独立浏览器命令实际注入三类外部依赖30秒延迟/503，并验证3个模块冷导航真实列表与初始化原阈值；退出码或性能失败即整组FAIL。"
+      "original_requirement": "冷首屏和本地轻量列表仍按性能目标完成；调用跟踪证明首屏不等待这些依赖，而非仅显示骨架",
+      "effective_requirement": "冷首屏和本地轻量列表仍按性能目标完成；调用跟踪证明首屏不等待这些依赖，而非仅显示骨架",
+      "effective_scenario": "飞书资源／Worker／全量账号探测延迟 30 秒或失败",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "独立浏览器命令实际注入三类外部依赖30秒延迟/503，并验证3个模块冷导航真实列表与初始化原阈值；退出码或性能失败即整组FAIL。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "agent/tests/test_feishu_resource_catalog.py",
+        "probe:browser_performance"
+      ],
+      "required_evidence": [
+        {
+          "reference": "agent/tests/test_feishu_resource_catalog.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:browser_performance",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "冷首屏和本地轻量列表仍按性能目标完成；调用跟踪证明首屏不等待这些依赖，而非仅显示骨架",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A15",
@@ -202,7 +873,45 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "真实浏览器目录坏实例/重复ID/目标账号停用时合法实例仍显示并进入真实Runner；依赖目标明确拒绝，原始HTTP不调用被阻断账号。目录批量测试保留逐实例校验与隔离。"
+      "original_requirement": "合法独立实例仍可展示和操作；坏实例有提示；有真实依赖的实例不被错误放行",
+      "effective_requirement": "合法独立实例仍可展示和操作；坏实例有提示；有真实依赖的实例不被错误放行",
+      "effective_scenario": "单个坏实例、重复 ID、局部依赖故障",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实浏览器目录坏实例/重复ID/目标账号停用时合法实例仍显示并进入真实Runner；依赖目标明确拒绝，原始HTTP不调用被阻断账号。目录批量测试保留逐实例校验与隔离。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_automation_plugin_platform.py::test_catalog_quarantines_one_corrupt_persisted_project",
+        "tests/test_automation_plugin_platform.py::test_catalog_identity_corruption_remains_global",
+        "tests/test_automation_project_policy_service.py",
+        "probe:customer_collection_flow",
+        "tests/test_automation_plugin_catalog_batch.py"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_plugin_platform.py::test_catalog_quarantines_one_corrupt_persisted_project",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_plugin_platform.py::test_catalog_identity_corruption_remains_global",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_project_policy_service.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_plugin_catalog_batch.py",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "合法独立实例仍可展示和操作；坏实例有提示；有真实依赖的实例不被错误放行",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A16",
@@ -215,7 +924,35 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "真实签名目录响应已取得后阻塞传输，实际卸载并失效缓存，再放行旧响应；原调用者拒绝旧结果且实例不复活。结合首次不可达不造数据、singleflight及请求结束缓存清除回归。"
+      "original_requirement": "不造假可运行项目；同 key 合并刷新；旧响应不覆盖新配置，不使已卸载实例复活",
+      "effective_requirement": "不造假可运行项目；同 key 合并刷新；旧响应不覆盖新配置，不使已卸载实例复活",
+      "effective_scenario": "无可信首次目录、并发刷新、卸载与刷新竞态",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实签名目录响应已取得后阻塞传输，实际卸载并失效缓存，再放行旧响应；原调用者拒绝旧结果且实例不复活。结合首次不可达不造数据、singleflight及请求结束缓存清除回归。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "console/tests/test_plugin_catalog_singleflight.py",
+        "probe:catalog_delivery",
+        "tests/test_automation_plugin_catalog_batch.py"
+      ],
+      "required_evidence": [
+        {
+          "reference": "console/tests/test_plugin_catalog_singleflight.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:catalog_delivery",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_plugin_catalog_batch.py",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "不造假可运行项目；同 key 合并刷新；旧响应不覆盖新配置，不使已卸载实例复活",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A17",
@@ -227,7 +964,30 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "实际Chromium已打开20次保留DOM标签切换及设置保存/关闭重开，结合页面控制器监听/轮询/终态清理回归；性能和错误由本次navigation probe判断。"
+      "original_requirement": "无重复整页获取和重复初始化；监听器、轮询、在途请求没有线性积累；终态停止、隐藏退避、关闭清理",
+      "effective_requirement": "无重复整页获取和重复初始化；监听器、轮询、在途请求没有线性积累；终态停止、隐藏退避、关闭清理",
+      "effective_scenario": "20 次已打开标签切换，再关闭标签／设置页",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际Chromium已打开20次保留DOM标签切换及设置保存/关闭重开，结合页面控制器监听/轮询/终态清理回归；性能和错误由本次navigation probe判断。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "console/tests/test_control_plane_ui.py",
+        "probe:navigation_probe"
+      ],
+      "required_evidence": [
+        {
+          "reference": "console/tests/test_control_plane_ui.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:navigation_probe",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "无重复整页获取和重复初始化；监听器、轮询、在途请求没有线性积累；终态停止、隐藏退避、关闭清理",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A18",
@@ -241,26 +1001,129 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "实际旧DOM保留后停用项目，再从旧页面提交得到HTTP422 PLUGIN_DISABLED且supplier零调用；结合可信actor/绑定/权限作用域变更回归。"
+      "original_requirement": "服务端按新事实处理，旧快照不构成授权；缓存不跨不相容权限范围泄漏",
+      "effective_requirement": "服务端按新事实处理，旧快照不构成授权；缓存不跨不相容权限范围泄漏",
+      "effective_scenario": "页面旧快照后项目被停用、权限或绑定变化",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际旧DOM保留后停用项目，再从旧页面提交得到HTTP422 PLUGIN_DISABLED且supplier零调用；结合可信actor/绑定/权限作用域变更回归。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_automation_project_policy_service.py",
+        "console/tests/test_plugin_catalog_singleflight.py",
+        "tests/test_automation_project_authorization.py",
+        "probe:customer_collection_flow"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_project_policy_service.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_plugin_catalog_singleflight.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_project_authorization.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "服务端按新事实处理，旧快照不构成授权；缓存不跨不相容权限范围泄漏",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A19",
       "scenario": "对单个同步查询注入慢响应，普通执行池饱和",
       "requirement": "同一事件循环仍可推进；无关心跳／取消／状态响应不被整体堵住；整库不可用不伪装为可用",
       "tests": [
-        "tests/test_workflow_runner_durable_admission.py::test_preparation_and_heartbeat_progress_with_the_ordinary_io_pool_full",
-        "tests/test_automation_project_api.py::test_concurrent_acceptance_does_not_block_the_http_event_loop",
+        "tests/test_direct_closeout_mysql.py::test_slow_admission_database_does_not_hold_control_or_read_loop",
+        "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
         "probe:catalog_delivery"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "实际查询慢与普通I/O满池时续租/取消和HTTP事件循环可推进；真实loopback ECONNREFUSED数据库故障明确不可用且零可执行卡片，恢复后真实bwrap任务COMPLETED。"
+      "original_requirement": "同一事件循环仍可推进；无关心跳／取消／状态响应不被整体堵住；整库不可用不伪装为可用",
+      "effective_requirement": "给当前Direct／查询链注入慢同步I/O，普通执行容量繁忙时取消、状态及事件循环能推进，不因持锁同步调用全局停顿；不能用旧Runner控制池测试单独证明。",
+      "effective_scenario": "同步I/O与控制操作隔离",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际查询慢与普通I/O满池时续租/取消和HTTP事件循环可推进；真实loopback ECONNREFUSED数据库故障明确不可用且零可执行卡片，恢复后真实bwrap任务COMPLETED。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_workflow_runner_durable_admission.py::test_preparation_and_heartbeat_progress_with_the_ordinary_io_pool_full",
+        "tests/test_automation_project_api.py::test_concurrent_acceptance_does_not_block_the_http_event_loop",
+        "probe:catalog_delivery"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_slow_admission_database_does_not_hold_control_or_read_loop",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:catalog_delivery",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "alias"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "reverse"
+          },
+          "distinct_property": "round"
+        }
+      ],
+      "input_side_effect_assertions": "给当前Direct／查询链注入慢同步I/O，普通执行容量繁忙时取消、状态及事件循环能推进，不因持锁同步调用全局停顿；不能用旧Runner控制池测试单独证明。",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A20",
       "scenario": "真实 MySQL 8 领取／事务／唯一约束／必要迁移",
       "requirement": "使用明确测试库；旧状态样例可升级；需要完整业务集合的查询不滥用 SKIP LOCKED；回滚兼容性有证据",
       "tests": [
+        "tests/test_direct_plugin_invocation_mysql.py",
+        "tests/test_problem_write_intents_migration_mysql.py",
+        "tests/test_waybill_source_coverage_mysql.py",
+        "tests/test_runtime_repositories.py",
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_mysql_orchestration_integration.py::test_empty_upgrade_and_partial_migrations_are_reentrant",
+        "tests/test_mysql_orchestration_integration.py::test_json_unique_foreign_key_and_transaction_rollback"
+      ],
+      "minimum_cases": 1,
+      "coverage_gaps": [],
+      "not_applicable_references": {
+        "tests/test_mysql_orchestration_integration.py::test_empty_cutover_seed_rollback_is_reentrant_and_preserves_prior_rows": "旧可回写014方案被不可变014与017向前恢复链替代",
+        "tests/test_mysql_orchestration_integration.py::test_legacy_finance_yunda_startup_apply_restore_and_reapply_are_exact": "旧可回写014方案被不可变014与017向前恢复链替代",
+        "tests/test_mysql_orchestration_integration.py::test_task_cutover_exact_production_set_is_reentrant_and_fail_closed": "014生产字节不可变，实际升级改用016/017正向迁移"
+      },
+      "original_requirement": "使用明确测试库；旧状态样例可升级；需要完整业务集合的查询不滥用 SKIP LOCKED；回滚兼容性有证据",
+      "effective_requirement": "使用明确归属测试库验证当前Invocation唯一约束、事务、版本切换和必要迁移；旧样例升级保留数据；不强制实现已取消的任务领取，保留历史兼容检查，不滥用SKIP LOCKED遗漏业务集合。",
+      "effective_scenario": "真实MySQL事务、幂等、迁移【已修订】",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际MySQL8测试库的全部适用原集成场景；原入口保留。Windows专属Worker为本轮明确不适用，不据其跳过阻断本组。需要完整待审批集合的生产SQL使用FOR UPDATE而不使用SKIP LOCKED，分组审批真实MySQL事务回滚覆盖该完整集合。 三项旧014方案测试保留在原CI collected入口，其既有skip理由与已替代的实际forward/restore测试分别列明；不把skip写成PASS。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
         "tests/test_mysql_orchestration_integration.py::test_empty_upgrade_and_partial_migrations_are_reentrant",
         "tests/test_mysql_orchestration_integration.py::test_json_unique_foreign_key_and_transaction_rollback",
         "tests/test_mysql_orchestration_integration.py::test_immutable_014_forward_chain_017_restore_partial_and_reapply",
@@ -289,14 +1152,38 @@
         "tests/test_mysql_orchestration_integration.py::test_generation_write_lock_order_races",
         "tests/test_mysql_orchestration_integration.py::test_daily_sign_fresh_readback_rejects_event_and_publication_tamper"
       ],
-      "minimum_cases": 1,
-      "coverage_gaps": [],
-      "evidence_note": "实际MySQL8测试库的全部适用原集成场景；原入口保留。Windows专属Worker为本轮明确不适用，不据其跳过阻断本组。需要完整待审批集合的生产SQL使用FOR UPDATE而不使用SKIP LOCKED，分组审批真实MySQL事务回滚覆盖该完整集合。 三项旧014方案测试保留在原CI collected入口，其既有skip理由与已替代的实际forward/restore测试分别列明；不把skip写成PASS。",
-      "not_applicable_references": {
-        "tests/test_mysql_orchestration_integration.py::test_empty_cutover_seed_rollback_is_reentrant_and_preserves_prior_rows": "旧可回写014方案被不可变014与017向前恢复链替代",
-        "tests/test_mysql_orchestration_integration.py::test_legacy_finance_yunda_startup_apply_restore_and_reapply_are_exact": "旧可回写014方案被不可变014与017向前恢复链替代",
-        "tests/test_mysql_orchestration_integration.py::test_task_cutover_exact_production_set_is_reentrant_and_fail_closed": "014生产字节不可变，实际升级改用016/017正向迁移"
-      }
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_plugin_invocation_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_problem_write_intents_migration_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_waybill_source_coverage_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_runtime_repositories.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_mysql_orchestration_integration.py::test_empty_upgrade_and_partial_migrations_are_reentrant",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_mysql_orchestration_integration.py::test_json_unique_foreign_key_and_transaction_rollback",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "使用明确归属测试库验证当前Invocation唯一约束、事务、版本切换和必要迁移；旧样例升级保留数据；不强制实现已取消的任务领取，保留历史兼容检查，不滥用SKIP LOCKED遗漏业务集合。",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A21",
@@ -315,7 +1202,65 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "真实默认设置/两实例、账号与配置历史恢复、模块采集设置与真实单Scheduler Job、完整签名版本升级/失败候选/在途旧版本与新Run新版本/历史回退组合。所有操作走既有管理服务，不要求每种入口重复同一生命周期。"
+      "original_requirement": "既有能力保留；配置和定时不互相覆盖；不同实例不误改；在途运行不混用版本；升级失败不全平台停摆",
+      "effective_requirement": "既有能力保留；配置和定时不互相覆盖；不同实例不误改；在途运行不混用版本；升级失败不全平台停摆",
+      "effective_scenario": "插件安装、设置、启停、定时、升级和多实例",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实默认设置/两实例、账号与配置历史恢复、模块采集设置与真实单Scheduler Job、完整签名版本升级/失败候选/在途旧版本与新Run新版本/历史回退组合。所有操作走既有管理服务，不要求每种入口重复同一生命周期。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_automation_plugin_lifecycle.py",
+        "tests/test_automation_project_policy_service.py",
+        "probe:navigation_probe",
+        "probe:run_acceptance",
+        "tests/test_service_v2_policy_runtime.py",
+        "tests/test_plugin_service_v2_foundation.py",
+        "probe:settings_effective",
+        "probe:customer_collection_flow",
+        "probe:field_maintenance"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_plugin_lifecycle.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_project_policy_service.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:navigation_probe",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:run_acceptance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_policy_runtime.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_service_v2_foundation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:settings_effective",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "既有能力保留；配置和定时不互相覆盖；不同实例不误改；在途运行不混用版本；升级失败不全平台停摆",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A22",
@@ -339,7 +1284,90 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "受影响Console原录单/OCR模式/运单/跟踪/回单/登录菜单回归与真实登录/模块导航/数据查询冒烟组合；不声称未打开的外部业务页面已做真实在线操作。"
+      "original_requirement": "受共享改动影响的现有回归和页面冒烟通过；不通过移除已有功能来换取通过",
+      "effective_requirement": "受共享改动影响的现有回归和页面冒烟通过；不通过移除已有功能来换取通过",
+      "effective_scenario": "录单／OCR、运单、跟踪、回单、客服、财务、登录与导航",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "受影响Console原录单/OCR模式/运单/跟踪/回单/登录菜单回归与真实登录/模块导航/数据查询冒烟组合；不声称未打开的外部业务页面已做真实在线操作。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "console/tests/test_customer_service_module.py",
+        "console/tests/test_finance_module.py",
+        "agent/tests/test_session_broker.py",
+        "probe:navigation_probe",
+        "console/tests/test_manual_waybill.py",
+        "console/tests/test_document_mode_switch.py",
+        "console/tests/test_waybill_entry_extensions.py",
+        "console/tests/test_waybill_query.py",
+        "console/tests/test_tracking_query.py",
+        "console/tests/test_receipts_management.py",
+        "console/tests/test_admin_auth.py",
+        "console/tests/test_mobile_navigation.py",
+        "console/tests/test_menu_registration.py",
+        "probe:legacy_page_smoke"
+      ],
+      "required_evidence": [
+        {
+          "reference": "console/tests/test_customer_service_module.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_finance_module.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_session_broker.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:navigation_probe",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_manual_waybill.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_document_mode_switch.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_waybill_entry_extensions.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_waybill_query.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_tracking_query.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_receipts_management.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_admin_auth.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_mobile_navigation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_menu_registration.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:legacy_page_smoke",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "受共享改动影响的现有回归和页面冒烟通过；不通过移除已有功能来换取通过",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A23",
@@ -352,7 +1380,35 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "四个实际日常Run完成后，真实Outbox消费者分别外部HTTP503后200、原生产可重建展示事件事务失败回滚后重试；PENDING attempt1到PUBLISHED attempt2，业务Run/Step/执行次数及TMS/Sheet ledger不变。关键账本写失败不可完成沿用真实扫描/财务失败和发布门。"
+      "original_requirement": "已确认业务成功不被改为业务失败；可靠重试通知／展示，不重跑外部写；关键账本失败则不能假报成功",
+      "effective_requirement": "已确认业务成功不被改为业务失败；可靠重试通知／展示，不重跑外部写；关键账本失败则不能假报成功",
+      "effective_scenario": "通知失败、可重建展示更新失败",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "四个实际日常Run完成后，真实Outbox消费者分别外部HTTP503后200、原生产可重建展示事件事务失败回滚后重试；PENDING attempt1到PUBLISHED attempt2，业务Run/Step/执行次数及TMS/Sheet ledger不变。关键账本写失败不可完成沿用真实扫描/财务失败和发布门。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "agent/tests/test_outbox_dispatcher.py",
+        "tests/test_feishu_readback_delayed.py",
+        "probe:daily_concurrency"
+      ],
+      "required_evidence": [
+        {
+          "reference": "agent/tests/test_outbox_dispatcher.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_feishu_readback_delayed.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_concurrency",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "已确认业务成功不被改为业务失败；可靠重试通知／展示，不重跑外部写；关键账本失败则不能假报成功",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "A24",
@@ -366,7 +1422,40 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "真实scan写入barrier尚未释放时stats尚未started、attempts0、Step PENDING且无发车来源HTTP查询；释放后stats实际开始晚于scan verified完成，原扫描投影驱动真实统计结果。独立任务与四槽资源等待复用A02/A03。"
+      "original_requirement": "后续动作不读取未发布／不匹配快照；依赖等待不占满无关执行槽；不得为了并发取消依赖",
+      "effective_requirement": "后续业务只读取当前口径允许的已发布、匹配快照；依赖不满足可明确失败并待用户重触发，不伪造完成或自动排队；无关业务不因旧事项被阻断。",
+      "effective_scenario": "扫描与统计的数据依赖【已修订】",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实scan写入barrier尚未释放时stats尚未started、attempts0、Step PENDING且无发车来源HTTP查询；释放后stats实际开始晚于scan verified完成，原扫描投影驱动真实统计结果。独立任务与四槽资源等待复用A02/A03。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_sync_scan_codes_v1_v2_parity.py",
+        "tests/test_sync_arrival_stats_v1_v2_parity.py",
+        "probe:daily_scan_statistics",
+        "probe:daily_concurrency"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_sync_scan_codes_v1_v2_parity.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_sync_arrival_stats_v1_v2_parity.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_scan_statistics",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_concurrency",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "后续业务只读取当前口径允许的已发布、匹配快照；依赖不满足可明确失败并待用户重触发，不伪造完成或自动排队；无关业务不因旧事项被阻断。",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "B01",
@@ -381,18 +1470,79 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "真实财务/客服本地查询与目录不可用性能探针、采集失败保留上次完整发布数据、卸载后历史来源查询组合；不把不存在的本次数据伪装成功。"
+      "original_requirement": "财务等固定页面和已经保存的业务数据仍可查询；菜单不依赖该插件生命周期；状态如实标识",
+      "effective_requirement": "财务等固定页面和已经保存的业务数据仍可查询；菜单不依赖该插件生命周期；状态如实标识",
+      "effective_scenario": "采集插件、AI 或外部资源目录不可用，业务 DB 正常",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实财务/客服本地查询与目录不可用性能探针、采集失败保留上次完整发布数据、卸载后历史来源查询组合；不把不存在的本次数据伪装成功。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "console/tests/test_finance_module.py",
+        "tests/test_module_data_sources_mysql.py::test_recent_failed_collection_keeps_published_history",
+        "probe:detail_browser",
+        "probe:customer_collection_flow"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_finance_module.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_recent_failed_collection_keeps_published_history",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:detail_browser",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "财务等固定页面和已经保存的业务数据仍可查询；菜单不依赖该插件生命周期；状态如实标识",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "B02",
       "scenario": "财务采集适配器的外部字段／响应变化",
       "requirement": "在现有真实调用链上，只调整测试适配实现便可产生相同标准账单；核心金额规则、去重和页面查询无需修改；不是无人调用的演示接口",
       "tests": [
+        "probe:field_maintenance",
         "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows"
       ],
       "minimum_cases": 3,
       "coverage_gaps": [],
-      "evidence_note": "实际三个采集路径用真实业务payload/Broker/财务仓储；字段变化只改独立执行payload映射，断言父进程宿主映射未变，并验证真实MySQL发布、账单金额和后续查询。冻结宿主升级回退的附加要求由M02独立判定。"
+      "original_requirement": "在现有真实调用链上，只调整测试适配实现便可产生相同标准账单；核心金额规则、去重和页面查询无需修改；不是无人调用的演示接口",
+      "effective_requirement": "在当前发行采集包与真实调用链，只改目标包易变字段／解析即可输出同一标准账单；不改核心金额、业务去重、来源身份和查询页面，不以无人调用接口或旧包代替。",
+      "effective_scenario": "真实V2采集器的字段适配",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际三个采集路径用真实业务payload/Broker/财务仓储；字段变化只改独立执行payload映射，断言父进程宿主映射未变，并验证真实MySQL发布、账单金额和后续查询。冻结宿主升级回退的附加要求由M02独立判定。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows"
+      ],
+      "required_evidence": [
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "在当前发行采集包与真实调用链，只改目标包易变字段／解析即可输出同一标准账单；不改核心金额、业务去重、来源身份和查询页面，不以无人调用接口或旧包代替。",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "B03",
@@ -404,7 +1554,30 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "实际DOM停用/卸载与新UUID重装后同历史source、人工字段、独立来源和共享账号保持；原在途和purge顺序精确生命周期测试组合。"
+      "original_requirement": "业务历史、人工字段、来源记录和其他实例数据保留；不能误删共享账号／资源；没有未处理在途任务后再清理专属临时资源",
+      "effective_requirement": "业务历史、人工字段、来源记录和其他实例数据保留；不能误删共享账号／资源；没有未处理在途任务后再清理专属临时资源",
+      "effective_scenario": "隔离环境停用、卸载、重装某采集实例",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际DOM停用/卸载与新UUID重装后同历史source、人工字段、独立来源和共享账号保持；原在途和purge顺序精确生命周期测试组合。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "probe:customer_collection_flow"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "业务历史、人工字段、来源记录和其他实例数据保留；不能误删共享账号／资源；没有未处理在途任务后再清理专属临时资源",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "B04",
@@ -420,7 +1593,50 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "实际签名包安装/配置/四脚本及100无Harness V2任务的组合根未构造模型客户端，模型未配置分支真实完成；Manifest不要求AI。控制容量和普通I/O隔离复用实际并发/取消，不宣称模拟AI超时。原要求为未配置或超时，不扩成全部双故障。"
+      "original_requirement": "插件正常安装、配置和执行本来支持的入口；四日常业务不依赖模型；AI 故障不耗尽必要控制容量",
+      "effective_requirement": "插件正常安装、配置和执行本来支持的入口；四日常业务不依赖模型；AI 故障不耗尽必要控制容量",
+      "effective_scenario": "合法插件没有 AI 声明，模型未配置或 API 超时",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际签名包安装/配置/四脚本及100无Harness V2任务的组合根未构造模型客户端，模型未配置分支真实完成；Manifest不要求AI。控制容量和普通I/O隔离复用实际并发/取消，不宣称模拟AI超时。原要求为未配置或超时，不扩成全部双故障。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_service_v2_harness_contribution_contract.py",
+        "tests/test_automation_plugin_manifest_contract.py",
+        "probe:run_acceptance",
+        "probe:daily_scan_statistics",
+        "probe:daily_problems",
+        "probe:daily_concurrency"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_service_v2_harness_contribution_contract.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_plugin_manifest_contract.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:run_acceptance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_scan_statistics",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_problems",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_concurrency",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "插件正常安装、配置和执行本来支持的入口；四日常业务不依赖模型；AI 故障不耗尽必要控制容量",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "B05",
@@ -435,7 +1651,45 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "实际Console和生产Scheduler→CommandGateway→Runner→rawHTTP调用同一publisher，标准业务键、方向、状态与人工字段一致；相同发生实例重放原Run且零新增读取。"
+      "original_requirement": "使用同一权威更新规则；业务键幂等；金额、筛选、状态转换不漂移；不覆盖约定的人工字段",
+      "effective_requirement": "使用同一权威更新规则；业务键幂等；金额、筛选、状态转换不漂移；不覆盖约定的人工字段",
+      "effective_scenario": "同一业务数据分别由允许的不同入口重复提交",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际Console和生产Scheduler→CommandGateway→Runner→rawHTTP调用同一publisher，标准业务键、方向、状态与人工字段一致；相同发生实例重放原Run且零新增读取。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_finance_validation.py",
+        "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+        "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+        "probe:customer_collection_flow"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_finance_validation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "使用同一权威更新规则；业务键幂等；金额、筛选、状态转换不漂移；不覆盖约定的人工字段",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "B06",
@@ -445,11 +1699,49 @@
         "tests/test_module_data_sources_mysql.py",
         "tests/test_module_data_sources_mysql.py::test_finance_repository_rolls_back_with_autocommit_factory",
         "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
-        "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows"
+        "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows",
+        "probe:field_maintenance"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "真实adapter先成功完整发布；第二批写一来源后实际中断未finalize，SQL running/finished_at NULL/半批一行但查询仍旧完整发布；相同输入通过真实parser/adapter重新提交，明细/BI/业务键均无重复。"
+      "original_requirement": "最新已发布成功快照继续可查，半批不伪装完整；恢复后无重复账单；不要求为此新建一套批处理平台",
+      "effective_requirement": "最新已发布成功快照继续可查，半批不伪装完整；恢复后无重复账单；不要求为此新建一套批处理平台",
+      "effective_scenario": "财务采集写入半批后中断，并重新提交",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实adapter先成功完整发布；第二批写一来源后实际中断未finalize，SQL running/finished_at NULL/半批一行但查询仍旧完整发布；相同输入通过真实parser/adapter重新提交，明细/BI/业务键均无重复。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_finance_repository_rolls_back_with_autocommit_factory",
+        "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
+        "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_finance_repository_rolls_back_with_autocommit_factory",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "最新已发布成功快照继续可查，半批不伪装完整；恢复后无重复账单；不要求为此新建一套批处理平台",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "B07",
@@ -457,11 +1749,44 @@
       "requirement": "路由调用服务，服务显式依赖必要仓储／适配器；财务领域不导入供应商插件内部类型；新拆分无反向依赖聚合模块和导入时 I/O",
       "tests": [
         "tests/test_control_plane_execution_boundaries.py",
-        "tests/test_automation_plugin_catalog_batch.py"
+        "tests/test_automation_plugin_catalog_batch.py",
+        "probe:daily_scan_statistics",
+        "probe:customer_collection_flow"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "已只读核查受改路由→管理/策略服务→明确仓储/适配器链；目录批量拆分的两处反向聚合导入改为必传原纯函数，无逻辑复制。原逐实例代际校验与fresh写授权保留，请求缓存不进入执行。实际MySQL目录回归和runtime_import_boundaries通过；完整入口仍强制本次imports/编译/正确性gate成功，非仅报告文字。 最终只读审查发现的未知模块归属消失问题已由实际MySQL负例验证修复：坏声明进入严格解析的不可用提示，不成为可操作实例，正确跨模块隔离保留。"
+      "original_requirement": "路由调用服务，服务显式依赖必要仓储／适配器；财务领域不导入供应商插件内部类型；新拆分无反向依赖聚合模块和导入时 I/O",
+      "effective_requirement": "路由调用服务，服务显式依赖必要仓储／适配器；财务领域不导入供应商插件内部类型；新拆分无反向依赖聚合模块和导入时 I/O",
+      "effective_scenario": "本次触及模块的依赖与导入边界",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "已只读核查受改路由→管理/策略服务→明确仓储/适配器链；目录批量拆分的两处反向聚合导入改为必传原纯函数，无逻辑复制。原逐实例代际校验与fresh写授权保留，请求缓存不进入执行。实际MySQL目录回归和runtime_import_boundaries通过；完整入口仍强制本次imports/编译/正确性gate成功，非仅报告文字。 最终只读审查发现的未知模块归属消失问题已由实际MySQL负例验证修复：坏声明进入严格解析的不可用提示，不成为可操作实例，正确跨模块隔离保留。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_control_plane_execution_boundaries.py",
+        "tests/test_automation_plugin_catalog_batch.py"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_control_plane_execution_boundaries.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_plugin_catalog_batch.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_scan_statistics",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "路由调用服务，服务显式依赖必要仓储／适配器；财务领域不导入供应商插件内部类型；新拆分无反向依赖聚合模块和导入时 I/O",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "B08",
@@ -473,7 +1798,30 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "实际停用/卸载目标实例后独立实例仍真实执行，固定来源历史与管理入口可用；沿用Host/Broker授权边界。"
+      "original_requirement": "生命周期只作用目标实例及真实依赖；启停／设置／历史查询不因无关坏实例被锁死；现有 Connector／Host 访问边界未被绕过",
+      "effective_requirement": "生命周期只作用目标实例及真实依赖；启停／设置／历史查询不因无关坏实例被锁死；现有 Connector／Host 访问边界未被绕过",
+      "effective_scenario": "停用某插件后保留固定业务、其他独立任务及既有管理功能",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际停用/卸载目标实例后独立实例仍真实执行，固定来源历史与管理入口可用；沿用Host/Broker授权边界。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_automation_plugin_lifecycle.py",
+        "probe:customer_collection_flow"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_plugin_lifecycle.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "生命周期只作用目标实例及真实依赖；启停／设置／历史查询不因无关坏实例被锁死；现有 Connector／Host 访问边界未被绕过",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C01",
@@ -486,7 +1834,35 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "真实MySQL三模块各50已安装实例，真实Agent过滤和DOM归属、150实例无交叉；每模块搜索唯一实例1、无匹配0、清空50，由module_scope本次子进程重新执行。冷首屏性能另由A14独立按原阈值判定。"
+      "original_requirement": "四个独立功能插件仍在自动化；财务与客服采集实例仅在所属模块的日常列表、计数与搜索中出现；不新增全局插件中心；不是前端隐藏",
+      "effective_requirement": "四个独立功能插件仍在自动化；财务与客服采集实例仅在所属模块的日常列表、计数与搜索中出现；不新增全局插件中心；不是前端隐藏",
+      "effective_scenario": "自动化／财务／客服归属",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实MySQL三模块各50已安装实例，真实Agent过滤和DOM归属、150实例无交叉；每模块搜索唯一实例1、无匹配0、清空50，由module_scope本次子进程重新执行。冷首屏性能另由A14独立按原阈值判定。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_automation_plugin_platform.py",
+        "probe:module_scope",
+        "tests/test_plugin_module_management.py"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_plugin_platform.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:module_scope",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_module_management.py",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "四个独立功能插件仍在自动化；财务与客服采集实例仅在所属模块的日常列表、计数与搜索中出现；不新增全局插件中心；不是前端隐藏",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C02",
@@ -501,7 +1877,45 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "客服真实模块安装/配置/同步/查询/卸载/重装，财务真实模块安装/多账号设置/采集/查询/签名升级和回退；错误模块/数据契约真实包校验拒绝由既有服务测试组合。"
+      "original_requirement": "财务与客服都可上传并安装兼容包、配置、同步、查记录、升级／卸载；错误模块或不兼容数据契约安装被准确拒绝；调用同一安装与执行服务",
+      "effective_requirement": "财务与客服都可上传并安装兼容包、配置、同步、查记录、升级／卸载；错误模块或不兼容数据契约安装被准确拒绝；调用同一安装与执行服务",
+      "effective_scenario": "所属模块内安装／实例操作",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "客服真实模块安装/配置/同步/查询/卸载/重装，财务真实模块安装/多账号设置/采集/查询/签名升级和回退；错误模块/数据契约真实包校验拒绝由既有服务测试组合。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_automation_plugin_lifecycle.py",
+        "tests/test_plugin_module_management.py",
+        "tests/test_action_v1_module_installation.py",
+        "probe:customer_collection_flow",
+        "probe:field_maintenance"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_plugin_lifecycle.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_module_management.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_action_v1_module_installation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "财务与客服都可上传并安装兼容包、配置、同步、查记录、升级／卸载；错误模块或不兼容数据契约安装被准确拒绝；调用同一安装与执行服务",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C03",
@@ -517,7 +1931,50 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "无专属页面合法插件默认设置在真实浏览器保存与重开；实际账号引用多角色与布尔设置变更/恢复生效，内部字段封闭校验和无账号配置由相关契约测试组合。"
+      "original_requirement": "只有账号需求且无 settings/index.html 的合法插件可安装并用宿主默认页；无账号无需配置；多个必要角色正确显示；不出现 Cookie／Token／数据库等无关输入",
+      "effective_requirement": "只有账号需求且无 settings/index.html 的合法插件可安装并用宿主默认页；无账号无需配置；多个必要角色正确显示；不出现 Cookie／Token／数据库等无关输入",
+      "effective_scenario": "默认设置页",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "无专属页面合法插件默认设置在真实浏览器保存与重开；实际账号引用多角色与布尔设置变更/恢复生效，内部字段封闭校验和无账号配置由相关契约测试组合。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_automation_plugin_manifest_contract.py",
+        "probe:navigation_probe",
+        "tests/test_plugin_module_management.py",
+        "tests/test_automation_plugin_code_owned_fields.py",
+        "probe:settings_effective",
+        "probe:customer_collection_flow"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_plugin_manifest_contract.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:navigation_probe",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_module_management.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_plugin_code_owned_fields.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:settings_effective",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "只有账号需求且无 settings/index.html 的合法插件可安装并用宿主默认页；无账号无需配置；多个必要角色正确显示；不出现 Cookie／Token／数据库等无关输入",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C04",
@@ -532,7 +1989,45 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "真实clock专属设置UI，经原packager/inspect/install加载opaque iframe：两账号保存、第二次改绑、stale CAS拒绝、历史恢复/重开，父窗口不可读、业务调用零。测试副本仅移除可选AI harness声明并改变版本，业务payload/settings各成员与原包相同；原AI组合被现有授权保护拒绝不标为修复，也不将此设置验收当作打卡业务验收。 宿主先监听再加载 iframe；真实 Node 时序回归覆盖缓存子页首次请求、重开和其他来源消息拒绝，完整原浏览器 probe 验证保存与重开。"
+      "original_requirement": "有特殊需求的插件自有页面可用且复用账号能力；默认／专属页保存同一配置事实；并发版本检查有效；设置与计划互不覆盖；有未满足必填配置不假报就绪",
+      "effective_requirement": "有特殊需求的插件自有页面可用且复用账号能力；默认／专属页保存同一配置事实；并发版本检查有效；设置与计划互不覆盖；有未满足必填配置不假报就绪",
+      "effective_scenario": "专属设置与保存",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实clock专属设置UI，经原packager/inspect/install加载opaque iframe：两账号保存、第二次改绑、stale CAS拒绝、历史恢复/重开，父窗口不可读、业务调用零。测试副本仅移除可选AI harness声明并改变版本，业务payload/settings各成员与原包相同；原AI组合被现有授权保护拒绝不标为修复，也不将此设置验收当作打卡业务验收。 宿主先监听再加载 iframe；真实 Node 时序回归覆盖缓存子页首次请求、重开和其他来源消息拒绝，完整原浏览器 probe 验证保存与重开。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_automation_project_policy_service.py",
+        "tests/test_plugin_module_management.py",
+        "tests/test_automation_plugin_management_api.py",
+        "console/tests/test_plugin_settings_initialization.py",
+        "probe:custom_settings"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_project_policy_service.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_module_management.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_plugin_management_api.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_plugin_settings_initialization.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:custom_settings",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "有特殊需求的插件自有页面可用且复用账号能力；默认／专属页保存同一配置事实；并发版本检查有效；设置与计划互不覆盖；有未满足必填配置不假报就绪",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C05",
@@ -549,7 +2044,55 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "实际统一账号引用绑定和停用/恢复，仅依赖目标阻断；M01真实同实例更换账号下一Run使用新账号、历史恢复再使用原账号。浏览器字段与Session隔离回归不复制凭据。"
+      "original_requirement": "插件选择统一账号引用，失效只影响对应来源／任务，统一恢复后可继续；不复制账号库、不静默换账号，浏览器不获得原始凭据；账号显示不触发全量在线探测",
+      "effective_requirement": "插件选择统一账号引用，失效只影响对应来源／任务，统一恢复后可继续；不复制账号库、不静默换账号，浏览器不获得原始凭据；账号显示不触发全量在线探测",
+      "effective_scenario": "Agent 账号复用",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际统一账号引用绑定和停用/恢复，仅依赖目标阻断；M01真实同实例更换账号下一Run使用新账号、历史恢复再使用原账号。浏览器字段与Session隔离回归不复制凭据。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "agent/tests/test_session_broker.py",
+        "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+        "tests/test_automation_project_entrypoints.py",
+        "agent/tests/test_session_process_isolation.py",
+        "probe:customer_collection_flow",
+        "probe:settings_effective",
+        "agent/tests/test_yunda_proxy_session_state.py"
+      ],
+      "required_evidence": [
+        {
+          "reference": "agent/tests/test_session_broker.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_project_entrypoints.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_session_process_isolation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:settings_effective",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_yunda_proxy_session_state.py",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "插件选择统一账号引用，失效只影响对应来源／任务，统一恢复后可继续；不复制账号库、不静默换账号，浏览器不获得原始凭据；账号显示不触发全量在线探测",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C06",
@@ -563,7 +2106,40 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "真实财务浏览器安装采集包、统一三角色账号、原生产raw采集/独立parser/Runner/MySQL、来源明细和BI完整数学核对；source状态probe额外覆盖无数据/单源失败与历史金额。冻结局部变更由M02严格单独验证。"
+      "original_requirement": "真实浏览器从财务安装／迁入已实现采集器、绑定账号、同步到真实业务函数与测试库、选择来源、查看原有明细／BI；金额、业务键、覆盖范围和汇总正确",
+      "effective_requirement": "真实浏览器从财务安装／迁入已实现采集器、绑定账号、同步到真实业务函数与测试库、选择来源、查看原有明细／BI；金额、业务键、覆盖范围和汇总正确",
+      "effective_scenario": "财务完整用户路径",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实财务浏览器安装采集包、统一三角色账号、原生产raw采集/独立parser/Runner/MySQL、来源明细和BI完整数学核对；source状态probe额外覆盖无数据/单源失败与历史金额。冻结局部变更由M02严格单独验证。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "agent/tests/test_finance_sync_service.py",
+        "probe:field_maintenance",
+        "probe:finance_source_state"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_finance_sync_service.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:finance_source_state",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "真实浏览器从财务安装／迁入已实现采集器、绑定账号、同步到真实业务函数与测试库、选择来源、查看原有明细／BI；金额、业务键、覆盖范围和汇总正确",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C07",
@@ -576,7 +2152,35 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "真实客服模块浏览器安装/配置/采集/来源查询，签名子进程与原Host采集、parser、MySQL双方向标准数据，人工字段复采保留且无回复发布操作。韵达权威组织缺失另明确阻断，不冒充真实已配置韵达采集。"
+      "original_requirement": "客服模块同样完成实际采集、来源选择、问题件列表与既有统计；不只占位；客服采集不触发上传／回复／发布；内部人工处理字段不被覆盖",
+      "effective_requirement": "客服模块同样完成实际采集、来源选择、问题件列表与既有统计；不只占位；不触发对外问题件上传、回复或业务发布，本地数据发布沿正常流程；内部人工处理字段不被覆盖",
+      "effective_scenario": "客服完整用户路径",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实客服模块浏览器安装/配置/采集/来源查询，签名子进程与原Host采集、parser、MySQL双方向标准数据，人工字段复采保留且无回复发布操作。韵达权威组织缺失另明确阻断，不冒充真实已配置韵达采集。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "agent/tests/test_customer_service_problem_sync_tool.py",
+        "probe:customer_collection_flow"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_customer_service_problem_sync_tool.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "客服模块同样完成实际采集、来源选择、问题件列表与既有统计；不只占位；不触发对外问题件上传、回复或业务发布，本地数据发布沿正常流程；内部人工处理字段不被覆盖",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C08",
@@ -591,7 +2195,45 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "真实动态来源注册、仅账号不构成来源、停用/卸载后相同source历史查询；结合财务增量历史导入及浏览器来源过滤。"
+      "original_requirement": "合法新来源经安装配置出现，无需改 Python 来源常量；仅登录账号不会自动变成可用来源；停用／卸载来源仍可查询其历史；SQL 和其他校验未残留错误静态限制",
+      "effective_requirement": "合法新来源经安装配置出现，无需改 Python 来源常量；仅登录账号不会自动变成可用来源；停用／卸载来源仍可查询其历史；SQL 和其他校验未残留错误静态限制",
+      "effective_scenario": "动态来源注册和历史筛选",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实动态来源注册、仅账号不构成来源、停用/卸载后相同source历史查询；结合财务增量历史导入及浏览器来源过滤。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_legacy_finance_import_is_incremental_and_reports_missing_identity",
+        "probe:navigation_probe",
+        "probe:detail_browser",
+        "probe:customer_collection_flow"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_legacy_finance_import_is_incremental_and_reports_missing_identity",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:navigation_probe",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:detail_browser",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "合法新来源经安装配置出现，无需改 Python 来源常量；仅登录账号不会自动变成可用来源；停用／卸载来源仍可查询其历史；SQL 和其他校验未残留错误静态限制",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C09",
@@ -606,7 +2248,45 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "真实财务未采集空态→三角色成功→保存source/platform/direction/fee_level并刷新恢复→单raw账号503，失败状态明确、旧完整发布历史/汇总金额保留并显示更新时间差异。"
+      "original_requirement": "选择来源与类型后刷新可恢复必要选择；查询绑定稳定来源而非插件存活；未成功采集显示尚无数据；失败来源不悄悄从总额剔除；兼容范围内聚合且显示更新差异",
+      "effective_requirement": "选择来源与类型后刷新可恢复必要选择；查询绑定稳定来源而非插件存活；未成功采集显示尚无数据；失败来源不悄悄从总额剔除；兼容范围内聚合且显示更新差异",
+      "effective_scenario": "BI 绑定与数据状态",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实财务未采集空态→三角色成功→保存source/platform/direction/fee_level并刷新恢复→单raw账号503，失败状态明确、旧完整发布历史/汇总金额保留并显示更新时间差异。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "console/tests/test_finance_service.py",
+        "tests/test_module_data_sources_mysql.py::test_recent_failed_collection_keeps_published_history",
+        "probe:detail_browser",
+        "probe:finance_source_state"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_finance_service.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_recent_failed_collection_keeps_published_history",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:detail_browser",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:finance_source_state",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "选择来源与类型后刷新可恢复必要选择；查询绑定稳定来源而非插件存活；未成功采集显示尚无数据；失败来源不悄悄从总额剔除；兼容范围内聚合且显示更新差异",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C10",
@@ -619,7 +2299,35 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "真实DOM卸载最后来源实例，source historyOnly且业务/人工字段/原producer版本与包摘要保留，另一实例可查；在途/资源处置顺序由实际生命周期边界回归验证。"
+      "original_requirement": "卸载最后一个采集实例后仍保留来源、历史、人工字段、报表引用和必要溯源；其他实例／共享账号不被误删；在途结束前不删执行环境",
+      "effective_requirement": "卸载最后一个采集实例后仍保留来源、历史、人工字段、报表引用和必要溯源；其他实例／共享账号不被误删；在途结束前不删执行环境",
+      "effective_scenario": "最后实例卸载和多实例",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实DOM卸载最后来源实例，source historyOnly且业务/人工字段/原producer版本与包摘要保留，另一实例可查；在途/资源处置顺序由实际生命周期边界回归验证。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "probe:customer_collection_flow",
+        "tests/test_lifecycle_disposal_order.py"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_lifecycle_disposal_order.py",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "卸载最后一个采集实例后仍保留来源、历史、人工字段、报表引用和必要溯源；其他实例／共享账号不被误删；在途结束前不删执行环境",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C11",
@@ -627,11 +2335,47 @@
       "requirement": "兼容替换保留 source_id／报表；旧生产者不再新写，迟到结果不覆盖；切换重试不重复采集；不同站点／账本不得仅凭同名接续",
       "tests": [
         "tests/test_module_data_sources_mysql.py::test_management_adapter_continues_verified_source_atomically",
-        "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields"
+        "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+        "tests/test_direct_source_switch_mysql.py::test_actual_v2_producer_switch_retains_identity_and_rejects_late_publication"
       ],
       "minimum_cases": 21,
       "coverage_gaps": [],
-      "evidence_note": "20轮真实MySQL管理adapter接续CAS与同请求重放，验证已绑定可信别名、固定source_id/revision、迟到旧producer拒写；来源层实际不同组织/同名拒接续及人工字段/历史不变组合验证。安装/卸载整链另由C02/C10负责，不扩大本组。"
+      "original_requirement": "兼容替换保留 source_id／报表；旧生产者不再新写，迟到结果不覆盖；切换重试不重复采集；不同站点／账本不得仅凭同名接续",
+      "effective_requirement": "兼容替换保留 source_id／报表；旧生产者不再新写，迟到结果不覆盖；切换重试不重复采集；不同站点／账本不得仅凭同名接续",
+      "effective_scenario": "替换采集器接续同来源",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "20轮真实MySQL管理adapter接续CAS与同请求重放，验证已绑定可信别名、固定source_id/revision、迟到旧producer拒写；来源层实际不同组织/同名拒接续及人工字段/历史不变组合验证。安装/卸载整链另由C02/C10负责，不扩大本组。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_module_data_sources_mysql.py::test_management_adapter_continues_verified_source_atomically",
+        "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_management_adapter_continues_verified_source_atomically",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_source_switch_mysql.py::test_actual_v2_producer_switch_retains_identity_and_rejects_late_publication",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_source_switch_mysql.py::test_actual_v2_producer_switch_retains_identity_and_rejects_late_publication",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2"
+          },
+          "distinct_property": "round"
+        }
+      ],
+      "input_side_effect_assertions": "兼容替换保留 source_id／报表；旧生产者不再新写，迟到结果不覆盖；切换重试不重复采集；不同站点／账本不得仅凭同名接续",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C12",
@@ -647,7 +2391,50 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "实际多来源/同账本双凭据不重复计金额、不同业务与组织不误并、换站点保留历史；原多账号角色和计划配置使用现存017/018真实升级恢复与当前source迁移全行前后不变的SQL证据。"
+      "original_requirement": "既有多账号实例保留角色和计划；不同凭据采同一账本不会在合并中重复计入；不同真实业务不误去重；变更到不同站点不覆盖原历史",
+      "effective_requirement": "既有多账号实例保留角色和计划；不同凭据采同一账本不会在合并中重复计入；不同真实业务不误去重；变更到不同站点不覆盖原历史",
+      "effective_scenario": "多来源、账号与重复业务",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际多来源/同账本双凭据不重复计金额、不同业务与组织不误并、换站点保留历史；原多账号角色和计划配置使用现存017/018真实升级恢复与当前source迁移全行前后不变的SQL证据。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+        "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
+        "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+        "tests/test_mysql_orchestration_integration.py::test_017_finance_startup_create_seed_restore_and_reapply_are_exact",
+        "tests/test_mysql_orchestration_integration.py::test_automation_project_018_forward_restore_reapply_and_atomic_config"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_mysql_orchestration_integration.py::test_017_finance_startup_create_seed_restore_and_reapply_are_exact",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_mysql_orchestration_integration.py::test_automation_project_018_forward_restore_reapply_and_atomic_config",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "既有多账号实例保留角色和计划；不同凭据采同一账本不会在合并中重复计入；不同真实业务不误去重；变更到不同站点不覆盖原历史",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C13",
@@ -665,7 +2452,60 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "真实旧结构017/018升级/恢复/重入保留必要UUID/计划/账号；本轮来源增量迁移对projects/configs/schedules/commands/runs全行前后相等，未知身份显式诊断；实际模块设置深链/来源筛选与Scheduler同发生实例不重复Job组合。不引用已skip旧014方案作为PASS。"
+      "original_requirement": "测试旧结构、旧自动化卡片／深链／来源筛选的增量迁移；重复运行迁移不重复造实例、来源或 Job；Run／UUID／账号／启停／计划及汇总对得上；未识别项有诊断",
+      "effective_requirement": "使用旧结构样例验证增量迁移；不重复建实例／来源／Job；保留旧Run历史、现行Invocation、账号、计划、启停与汇总；未识别项诊断，不为当前执行重新造旧Run。",
+      "effective_scenario": "旧实例、来源与历史引用迁移",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实旧结构017/018升级/恢复/重入保留必要UUID/计划/账号；本轮来源增量迁移对projects/configs/schedules/commands/runs全行前后相等，未知身份显式诊断；实际模块设置深链/来源筛选与Scheduler同发生实例不重复Job组合。不引用已skip旧014方案作为PASS。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_migration_reentry_is_safe",
+        "tests/test_module_data_sources_mysql.py::test_legacy_finance_import_is_incremental_and_reports_missing_identity",
+        "tests/test_mysql_orchestration_integration.py::test_017_finance_startup_create_seed_restore_and_reapply_are_exact",
+        "tests/test_mysql_orchestration_integration.py::test_automation_project_018_forward_restore_reapply_and_atomic_config",
+        "tests/test_mysql_orchestration_integration.py::test_automation_project_018_partial_rerun_is_safe",
+        "probe:customer_collection_flow",
+        "probe:navigation_probe"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_migration_reentry_is_safe",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_legacy_finance_import_is_incremental_and_reports_missing_identity",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_mysql_orchestration_integration.py::test_017_finance_startup_create_seed_restore_and_reapply_are_exact",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_mysql_orchestration_integration.py::test_automation_project_018_forward_restore_reapply_and_atomic_config",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_mysql_orchestration_integration.py::test_automation_project_018_partial_rerun_is_safe",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:navigation_probe",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "使用旧结构样例验证增量迁移；不重复建实例／来源／Job；保留旧Run历史、现行Invocation、账号、计划、启停与汇总；未识别项诊断，不为当前执行重新造旧Run。",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C14",
@@ -679,7 +2519,40 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "真实来源查询与财务/客服DOM，加上客服账号停用/恢复、卸载historyOnly和旧DOM提交被最新服务端启停事实拒绝；目录延迟不影响本地查询复用A14/detail probe。"
+      "original_requirement": "插件停用、账号掉线、外部目录失败时，数据库正常的财务／客服查询可用；当前不可采集状态与历史可读状态正确分离，陈旧页面不能越过服务端实际启停",
+      "effective_requirement": "插件停用、账号掉线、外部目录失败时，数据库正常的财务／客服查询可用；当前不可采集状态与历史可读状态正确分离，陈旧页面不能越过服务端实际启停",
+      "effective_scenario": "采集与消费解耦",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实来源查询与财务/客服DOM，加上客服账号停用/恢复、卸载historyOnly和旧DOM提交被最新服务端启停事实拒绝；目录延迟不影响本地查询复用A14/detail probe。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_recent_failed_collection_keeps_published_history",
+        "probe:detail_browser",
+        "probe:customer_collection_flow"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_recent_failed_collection_keeps_published_history",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:detail_browser",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "插件停用、账号掉线、外部目录失败时，数据库正常的财务／客服查询可用；当前不可采集状态与历史可读状态正确分离，陈旧页面不能越过服务端实际启停",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C15",
@@ -695,7 +2568,50 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "真实按模块先过滤摘要、固定三模块冷首屏+列表控件原阈值及三类30秒目录故障；真实旧响应卸载竞态与请求作用域隔离组合，BI来源本地查询不实时采集。"
+      "original_requirement": "调用跟踪证明先按归属查询摘要，不构造全部重目录；三个入口及 BI 选择不触发实时采集／全量外部校验；A14、性能和缓存竞态覆盖新页面",
+      "effective_requirement": "调用跟踪证明先按归属查询摘要，不构造全部重目录；三个入口及 BI 选择不触发实时采集／全量外部校验；A14、性能和缓存竞态覆盖新页面",
+      "effective_scenario": "分模块轻量列表",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "真实按模块先过滤摘要、固定三模块冷首屏+列表控件原阈值及三类30秒目录故障；真实旧响应卸载竞态与请求作用域隔离组合，BI来源本地查询不实时采集。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_automation_plugin_platform.py",
+        "probe:browser_performance",
+        "tests/test_plugin_module_management.py",
+        "console/tests/test_plugin_catalog_singleflight.py",
+        "probe:catalog_delivery",
+        "tests/test_automation_plugin_catalog_batch.py"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_plugin_platform.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:browser_performance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_module_management.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_plugin_catalog_singleflight.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:catalog_delivery",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_plugin_catalog_batch.py",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "调用跟踪证明先按归属查询摘要，不构造全部重目录；三个入口及 BI 选择不触发实时采集／全量外部校验；A14、性能和缓存竞态覆盖新页面",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C16",
@@ -715,7 +2631,70 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "财务成功/客服两个实际Run output DOM来源链接，财务真实失败事件经生产投影和原Feishu formatter只捕获发送边界；真实Scheduler同业务source与同occurrence复用、普通非采集Run的实际输出not_collector、缺失Run/source明确诊断组合。原通知策略/固定指令回归保留，不触发真实飞书写。"
+      "original_requirement": "模块采集复用现有 Scheduler，重启和页面迁移不多造 Job；运行记录／通知回到正确模块与来源；回到设置所属页不强制跳自动化；原固定指令语义保留",
+      "effective_requirement": "模块采集复用现有 Scheduler，重启和页面迁移不多造 Job；运行记录／通知回到正确模块与来源；回到设置所属页不强制跳自动化；原固定指令语义保留",
+      "effective_scenario": "计划、结果与导航",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "财务成功/客服两个实际Run output DOM来源链接，财务真实失败事件经生产投影和原Feishu formatter只捕获发送边界；真实Scheduler同业务source与同occurrence复用、普通非采集Run的实际输出not_collector、缺失Run/source明确诊断组合。原通知策略/固定指令回归保留，不触发真实飞书写。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_scheduled_task_contracts.py",
+        "agent/tests/test_feishu_automation_project_entrypoints.py",
+        "probe:navigation_probe",
+        "probe:run_acceptance",
+        "tests/test_collector_navigation.py",
+        "agent/tests/test_finance_alert_policy.py",
+        "console/tests/test_automation_control_plane_cutover.py",
+        "probe:finance_source_state",
+        "probe:customer_collection_flow",
+        "probe:field_maintenance"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_scheduled_task_contracts.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_feishu_automation_project_entrypoints.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:navigation_probe",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:run_acceptance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_collector_navigation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_finance_alert_policy.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_automation_control_plane_cutover.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:finance_source_state",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "模块采集复用现有 Scheduler，重启和页面迁移不多造 Job；运行记录／通知回到正确模块与来源；回到设置所属页不强制跳自动化；原固定指令语义保留",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C17",
@@ -737,7 +2716,80 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "原业务与权限/菜单全部Console回归、实际客服采集及禁止回复发布边界组合，不通过删除旧模块或将业务写入伪装采集。"
+      "original_requirement": "财务／客服增加入口但原业务不被移除或整体重做；运单、回单、OCR 等回归；换页面不扩大账号／数据权限；已有模块外部动作不被误列为采集",
+      "effective_requirement": "财务／客服增加入口但原业务不被移除或整体重做；运单、回单、OCR 等回归；换页面不扩大账号／数据权限；已有模块外部动作不被误列为采集",
+      "effective_scenario": "固定模块与操作范围",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "原业务与权限/菜单全部Console回归、实际客服采集及禁止回复发布边界组合，不通过删除旧模块或将业务写入伪装采集。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "console/tests/test_customer_service_module.py",
+        "console/tests/test_finance_module.py",
+        "tests/test_control_plane_execution_boundaries.py",
+        "tests/test_plugin_module_management.py",
+        "probe:customer_collection_flow",
+        "console/tests/test_manual_waybill.py",
+        "console/tests/test_waybill_query.py",
+        "console/tests/test_tracking_query.py",
+        "console/tests/test_receipts_management.py",
+        "console/tests/test_document_mode_switch.py",
+        "console/tests/test_menu_registration.py",
+        "console/tests/test_permission_registry.py"
+      ],
+      "required_evidence": [
+        {
+          "reference": "console/tests/test_customer_service_module.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_finance_module.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_control_plane_execution_boundaries.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_module_management.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_manual_waybill.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_waybill_query.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_tracking_query.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_receipts_management.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_document_mode_switch.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_menu_registration.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_permission_registry.py",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "财务／客服增加入口但原业务不被移除或整体重做；运单、回单、OCR 等回归；换页面不扩大账号／数据权限；已有模块外部动作不被误列为采集",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "C18",
@@ -749,11 +2801,64 @@
         "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
         "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
         "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows",
-        "tests/test_first_party_action_payloads.py::test_customer_problem_payload_rejects_repeated_cursor"
+        "tests/test_first_party_action_payloads.py::test_customer_problem_payload_rejects_repeated_cursor",
+        "probe:field_maintenance",
+        "probe:customer_collection_flow"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "现采集为完整分页/日期窗口重采，无持久high-water游标，不新增游标平台。适用链为真实半批中断不发布/重提业务键幂等、重复分页cursor明确拒绝、完整发布门、旧producer迟到拒写及人工字段保留。"
+      "original_requirement": "缺页／中断／单源失败不清空历史、不发布伪完整批次、不推进未确认游标；重试与迟到修正按业务键生效；旧采集器迟到批次不能盖掉新发布，人工字段保留",
+      "effective_requirement": "缺页／中断／单源失败不清空历史、不发布伪完整批次、不推进未确认游标；重试与迟到修正按业务键生效；旧采集器迟到批次不能盖掉新发布，人工字段保留",
+      "effective_scenario": "部分发布、增量游标与迟到更新",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "现采集为完整分页/日期窗口重采，无持久high-water游标，不新增游标平台。适用链为真实半批中断不发布/重提业务键幂等、重复分页cursor明确拒绝、完整发布门、旧producer迟到拒写及人工字段保留。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+        "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
+        "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+        "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows",
+        "tests/test_first_party_action_payloads.py::test_customer_problem_payload_rejects_repeated_cursor"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_first_party_action_payloads.py::test_customer_problem_payload_rejects_repeated_cursor",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "缺页／中断／单源失败不清空历史、不发布伪完整批次、不推进未确认游标；重试与迟到修正按业务键生效；旧采集器迟到批次不能盖掉新发布，人工字段保留",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "M01",
@@ -765,7 +2870,30 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "实际默认设置布尔与统一账号变更→下一Run结果变化；DOM历史恢复→新generation下一Run回到原结果。插件版本、宿主PID/starttick不变。"
+      "original_requirement": "从真实页面修改一个实际常用参数／账号／运行窗口，校验错误值；保存后目标新任务使用新配置、在途不混用、恢复可用；不改源码／数据库结构、不手写 JSON、不重启主服务；不能为此强制所有逻辑配置化",
+      "effective_requirement": "从真实页面修改一个实际常用参数／账号／运行窗口，校验错误值；保存后目标新任务使用新配置、在途不混用、恢复可用；不改源码／数据库结构、不手写 JSON、不重启主服务；不能为此强制所有逻辑配置化",
+      "effective_scenario": "常用配置的局部修改与恢复",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际默认设置布尔与统一账号变更→下一Run结果变化；DOM历史恢复→新generation下一Run回到原结果。插件版本、宿主PID/starttick不变。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_automation_project_policy_service.py",
+        "probe:settings_effective"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_project_policy_service.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:settings_effective",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "从真实页面修改一个实际常用参数／账号／运行窗口，校验错误值；保存后目标新任务使用新配置、在途不混用、恢复可用；不改源码／数据库结构、不手写 JSON、不重启主服务；不能为此强制所有逻辑配置化",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "M02",
@@ -776,7 +2904,25 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "入口强制host-freeze并验核心文件SHA与Agent/Console启动标识，真实财务字段变化只修改签名payload后模块升级，原标准数据/明细/BI一致，默认宿主及算法不改。未冻结或PREPARATION产物明确失败。"
+      "original_requirement": "按 5.8 冻结宿主，用隔离外部目标复现等价字段变化；仅改并打包对应采集逻辑，经模块升级后输出原标准数据；宿主核心文件摘要、Agent／Console 启动标识不变，原查询／BI 无需修改；不得 mock 整个解析器或只换测试服务数据",
+      "effective_requirement": "按本文7.2/7.3，用真实当前V2采集包从旧格式失败／差异、候选修复到原版回退；只改目标包及测试版本材料，真实模块升级后标准数据与BI正确；核心摘要和Agent／Console启动身份不变。",
+      "effective_scenario": "冻结宿主后的真实V2字段维护",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "入口强制host-freeze并验核心文件SHA与Agent/Console启动标识，真实财务字段变化只修改签名payload后模块升级，原标准数据/明细/BI一致，默认宿主及算法不改。未冻结或PREPARATION产物明确失败。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "probe:field_maintenance"
+      ],
+      "required_evidence": [
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "按本文7.2/7.3，用真实当前V2采集包从旧格式失败／差异、候选修复到原版回退；只改目标包及测试版本材料，真实模块升级后标准数据与BI正确；核心摘要和Agent／Console启动身份不变。",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "M03",
@@ -787,7 +2933,25 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "入口强制冻结manifest，原自提实际局部判断候选包经真实Console预览/确认和原生产handler/raw HTTP生成预定分支，回退原签名包恢复默认结果，无关真实任务持续运行且Host标识不变。"
+      "original_requirement": "只改对应插件中的实际局部判断及其样例，安装隔离候选包后经真实入口得到预定分支；回退恢复旧行为；无公共接口／主系统重发，无新增通用节点编辑器；最终默认规则不被测试变体污染",
+      "effective_requirement": "按本文7.2/7.4，只改真实V2插件中的局部判断和样例；新旧分支经真实入口产生预期业务结果，原包回退恢复；无宿主重发、无示例回显替代，测试规则不污染生产默认。",
+      "effective_scenario": "冻结宿主后的真实V2判断维护",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "入口强制冻结manifest，原自提实际局部判断候选包经真实Console预览/确认和原生产handler/raw HTTP生成预定分支，回退原签名包恢复默认结果，无关真实任务持续运行且Host标识不变。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "probe:decision_maintenance"
+      ],
+      "required_evidence": [
+        {
+          "reference": "probe:decision_maintenance",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "按本文7.2/7.4，只改真实V2插件中的局部判断和样例；新旧分支经真实入口产生预期业务结果，原包回退恢复；无宿主重发、无示例回显替代，测试规则不污染生产默认。",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "M04",
@@ -800,7 +2964,35 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "实际M02旧任务在途受控暂停、坏签名候选真实拒绝且当前版本不变，正常升级后旧任务旧版本/新任务新版本，设置计划/业务数据保留、历史签名包受控回退；M03验证真实业务分支回退。"
+      "original_requirement": "目标包校验失败保留原版本；成功切换时在途保持旧快照，新任务用新版本；无关任务持续推进；相同操作重试不重复 Job／写入；恢复前核验配置和契约兼容；业务历史、source_id、账号、计划与报表引用不丢；不把回退代码当成撤销已发生外部写入",
+      "effective_requirement": "目标包校验失败保留原版本；成功切换时在途保持旧快照，新任务用新版本；无关任务持续推进；相同操作重试不重复 Job／写入；恢复前核验配置和契约兼容；业务历史、source_id、账号、计划与报表引用不丢；不把回退代码当成撤销已发生外部写入",
+      "effective_scenario": "升级失败、在途版本和回退",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际M02旧任务在途受控暂停、坏签名候选真实拒绝且当前版本不变，正常升级后旧任务旧版本/新任务新版本，设置计划/业务数据保留、历史签名包受控回退；M03验证真实业务分支回退。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_automation_plugin_lifecycle.py",
+        "probe:field_maintenance",
+        "probe:decision_maintenance"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_plugin_lifecycle.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:decision_maintenance",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "目标包校验失败保留原版本；成功切换时在途保持旧快照，新任务用新版本；无关任务持续推进；相同操作重试不重复 Job／写入；恢复前核验配置和契约兼容；业务历史、source_id、账号、计划与报表引用不丢；不把回退代码当成撤销已发生外部写入",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "M05",
@@ -833,10 +3025,138 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "六插件实际describe/test/package限定所属payload并对core diff明确CORE_UPDATE_REQUIRED；包/Manifest/API/数据契约不兼容通过原真实安装校验拒绝，兼容候选沿同管理服务升级。公共接口/共享数据库/Runner改动在本轮归为核心更新，冻结后不得混入插件迭代。",
       "not_applicable_references": {
         "tests/test_service_v2_developer_simulator.py::test_manifest_python_probe_rejects_wrong_interpreter_version": "本轮要求并实际使用Python3.10，该原测试仅在当前解释器与Manifest要求不同时运行。完整CI保留其原SKIP；适用的缺失精确解释器/沙箱/不兼容契约负例仍实际执行，不将此SKIP记为PASS。"
-      }
+      },
+      "original_requirement": "兼容包只更换目标版本及其必要私有环境，不改共享依赖、不执行宿主部署命令；构造一个不兼容 Host／数据契约或系统依赖候选被明确识别为需核心更新／不能激活，不能偷偷改宿主；无权限自扩张、任意 SQL／Shell 或动态生产代码覆盖",
+      "effective_requirement": "兼容包只更换目标版本及其必要私有环境，不改共享依赖、不执行宿主部署命令；构造一个不兼容 Host／数据契约或系统依赖候选被明确识别为需核心更新／不能激活，不能偷偷改宿主；无权限自扩张、任意 SQL／Shell 或动态生产代码覆盖",
+      "effective_scenario": "独立更新的真实边界与依赖",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "六插件实际describe/test/package限定所属payload并对core diff明确CORE_UPDATE_REQUIRED；包/Manifest/API/数据契约不兼容通过原真实安装校验拒绝，兼容候选沿同管理服务升级。公共接口/共享数据库/Runner改动在本轮归为核心更新，冻结后不得混入插件迭代。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_service_v2_developer_cli.py",
+        "tests/test_service_v2_developer_simulator.py::test_simulator_broker_socket_path_fits_hosted_checkout_and_fails_closed_when_too_long",
+        "tests/test_service_v2_developer_simulator.py::test_real_sandbox_blocks_host_environment_file_and_network_and_report_is_stable",
+        "tests/test_service_v2_developer_simulator.py::test_write_faults_are_single_attempt_and_classified_without_bodies",
+        "tests/test_service_v2_developer_simulator.py::test_successful_host_write_then_plugin_failure_is_forced_unknown",
+        "tests/test_service_v2_developer_simulator.py::test_successful_host_write_and_plugin_success_still_requires_real_verification",
+        "tests/test_service_v2_developer_simulator.py::test_suite_schema_and_nested_sensitive_material_fail_closed",
+        "tests/test_service_v2_developer_simulator.py::test_call_mismatch_is_not_replayed_and_report_omits_arguments",
+        "tests/test_service_v2_developer_simulator.py::test_replayed_request_id_is_rejected_without_consuming_next_fixture",
+        "tests/test_service_v2_developer_simulator.py::test_per_action_fixture_limit_is_enforced_before_sandbox",
+        "tests/test_service_v2_developer_simulator.py::test_service_invoke_fixture_fails_without_offline_provider_contract",
+        "tests/test_service_v2_developer_simulator.py::test_dependency_package_fails_closed_before_sandbox_execution",
+        "tests/test_service_v2_developer_simulator.py::test_process_failure_does_not_leak_stderr_and_cleans_task_temp",
+        "tests/test_service_v2_developer_simulator.py::test_plugin_controlled_code_and_sensitive_result_are_normalized",
+        "tests/test_service_v2_developer_simulator.py::test_stdin_backpressure_is_inside_timeout_and_cleans_process_temp",
+        "tests/test_service_v2_developer_simulator.py::test_cancelled_execution_kills_and_reaps_the_process_group",
+        "tests/test_service_v2_developer_simulator.py::test_missing_exact_manifest_python_fails_closed_and_cleans_temp",
+        "tests/test_service_v2_developer_simulator.py::test_missing_bubblewrap_fails_closed_without_running_plugin",
+        "tests/test_plugin_maintenance.py",
+        "tests/test_action_v1_module_installation.py",
+        "tests/test_plugin_service_v2_foundation.py",
+        "probe:plugin_cli_batch",
+        "probe:field_maintenance"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_service_v2_developer_cli.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_simulator_broker_socket_path_fits_hosted_checkout_and_fails_closed_when_too_long",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_real_sandbox_blocks_host_environment_file_and_network_and_report_is_stable",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_write_faults_are_single_attempt_and_classified_without_bodies",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_successful_host_write_then_plugin_failure_is_forced_unknown",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_successful_host_write_and_plugin_success_still_requires_real_verification",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_suite_schema_and_nested_sensitive_material_fail_closed",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_call_mismatch_is_not_replayed_and_report_omits_arguments",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_replayed_request_id_is_rejected_without_consuming_next_fixture",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_per_action_fixture_limit_is_enforced_before_sandbox",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_service_invoke_fixture_fails_without_offline_provider_contract",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_dependency_package_fails_closed_before_sandbox_execution",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_process_failure_does_not_leak_stderr_and_cleans_task_temp",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_plugin_controlled_code_and_sensitive_result_are_normalized",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_stdin_backpressure_is_inside_timeout_and_cleans_process_temp",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_cancelled_execution_kills_and_reaps_the_process_group",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_missing_exact_manifest_python_fails_closed_and_cleans_temp",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_missing_bubblewrap_fails_closed_without_running_plugin",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_maintenance.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_action_v1_module_installation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_service_v2_foundation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:plugin_cli_batch",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "兼容包只更换目标版本及其必要私有环境，不改共享依赖、不执行宿主部署命令；构造一个不兼容 Host／数据契约或系统依赖候选被明确识别为需核心更新／不能激活，不能偷偷改宿主；无权限自扩张、任意 SQL／Shell 或动态生产代码覆盖",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     },
     {
       "id": "M06",
@@ -853,7 +3173,58 @@
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
-      "evidence_note": "实际六插件局部测试和签名打包入口保留命令、原始日志、版本和ZIP SHA，两个维护probe只收本次fresh执行完整结果；56组机器矩阵缺失/失败/旧工件均非零，维护归属/复现/发布回滚随最终交付核对。test_v32_e2e_fixture_reset.py仅支持隔离测试环境的安全重建入口，验证参与者互斥及精确路径范围，不计作产品业务验收，也不替代六插件工件和两次真实维护演练。"
+      "original_requirement": "复用现有工具提供经过运行验证的局部测试／契约检查／必要回归／打包入口，产物关联包摘要和提交；一次“字段变化”和一次“判断变化”都有修改范围、测试、工件、升级／回退证据；用户不手动选几十条命令；共享变更自动扩大或明确升级测试范围，正式 CI 不被关闭",
+      "effective_requirement": "实跑当前V2 describe/test/package或等效统一入口，验证源码范围、测试和工件摘要一致；字段和判断两次真实演练有完整升级／回退证据；共享变更不能误报插件独立更新，不关闭正式CI。",
+      "effective_scenario": "可复现的V2局部测试和打包",
+      "revision_basis": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "applicability": "REQUIRED",
+      "historical_evidence_note": "实际六插件局部测试和签名打包入口保留命令、原始日志、版本和ZIP SHA，两个维护probe只收本次fresh执行完整结果；56组机器矩阵缺失/失败/旧工件均非零，维护归属/复现/发布回滚随最终交付核对。test_v32_e2e_fixture_reset.py仅支持隔离测试环境的安全重建入口，验证参与者互斥及精确路径范围，不计作产品业务验收，也不替代六插件工件和两次真实维护演练。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "historical_tests": [
+        "tests/test_service_v2_developer_cli.py",
+        "probe:plugin_cli_batch",
+        "probe:field_maintenance",
+        "probe:decision_maintenance",
+        "tests/test_low_maintenance_v32_acceptance.py",
+        "tests/test_v32_e2e_fixture_reset.py",
+        "tests/test_scan_preview_observation.py"
+      ],
+      "required_evidence": [
+        {
+          "reference": "tests/test_service_v2_developer_cli.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:plugin_cli_batch",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:decision_maintenance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_low_maintenance_v32_acceptance.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_v32_e2e_fixture_reset.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_scan_preview_observation.py",
+          "minimum_cases": 1
+        }
+      ],
+      "input_side_effect_assertions": "实跑当前V2 describe/test/package或等效统一入口，验证源码范围、测试和工件摘要一致；字段和判断两次真实演练有完整升级／回退证据；共享变更不能误报插件独立更新，不关闭正式CI。",
+      "evidence_contract": "本次完整驱动的新鲜 JUnit/探针；每个引用必须完成且无失败/跳过。当前链路以 V2 ZIP、Direct Invocation、真实 MySQL 和隔离外部协议为准；历史兼容用例仅作关联回归。"
     }
-  ]
+  ],
+  "effective_source": "BOYI_CODEX_PHASE1_FINAL_CLOSEOUT_R1.md",
+  "contract_revision": "BOYI-PHASE1-FINAL-CLOSEOUT-R1",
+  "current_contract": "BOYI-PHASE1-FINAL-CLOSEOUT-R1"
 }
