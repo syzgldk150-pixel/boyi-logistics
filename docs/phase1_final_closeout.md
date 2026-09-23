@@ -9,13 +9,50 @@ updated: 2026-09-23
 
 # 第一轮最终收尾
 
-任务合同：`BOYI-PHASE1-FINAL-CLOSEOUT-R1`。当前执行中，本页不是通过声明。
+任务合同：`BOYI-PHASE1-FINAL-CLOSEOUT-R1`。
+
+第一轮代码与隔离验收通过，可基于被验提交进入第二轮开发；本次未部署或验证生产。
+
+| 结论 | 结果 |
+|---|---|
+| IMPLEMENTATION_STATUS | COMPLETE |
+| ISOLATED_ACCEPTANCE_STATUS | PASS |
+| CI_STATUS | PASS，对应被验提交的正式 PR CI 已结束；发行范围外审计为 success |
+| PRODUCTION_STATUS | NOT_DEPLOYED_NOT_VERIFIED |
+| PHASE2_READY_FOR_DEVELOPMENT | YES，仅允许基于本页被验基线开始后续开发 |
+
+`BASE_SHA=7ccc71445925f1fe3c7f35a3c7dd1a01198ff2ec`。`TESTED_CODE_SHA=a5a828a50caff4bce70a7ac30fdbf8e834814fc8`。
+验收时间：2026-09-23T10:10:13.897361+00:00 至 2026-09-23T11:01:12.500491+00:00。
+冻结文件 SHA-256：`6a7a29a1716bafb6cd7cbf8ebdcbc132e4e22f7190cebdb0e46560df19ca762e`；完整结果 SHA-256：`cb14351cf7e4fe074eabfe57d46b03cabe8b4cf83f0bcc3d800a9b66abe91c05`。
+矩阵 SHA-256：`a98a4d9d9e2e34d8aa1626b75792adb65ffcaf46fcc50ec474d236aab2c664c0`。
+
+[Draft PR #171](https://github.com/syzgldk150-pixel/boyi-logistics/pull/171)；
+[该被验提交的正式 CI](https://github.com/syzgldk150-pixel/boyi-logistics/actions/runs/35847178273)。
+测试结束后的报告提交仅更新文档和索引，不改变被验代码；实际报告提交另列于交付摘要与 PR。
+相对基线变更 124 个文件，增加 5214 行、删除 716 行（不包含后续报告提交）。
+
+执行期间远端 main 前进到 `da20899dedef077cf68b5990190b59bdc074217d`，运单录入与打印版本及分批/自提来源表修复均已合入本轮冻结提交。主分支运单回执迁移 052 原字节保留，本任务尚未发布的写入事实迁移改为 053；两个来源表的列语义回归纳入 A01 必需证据。
+远程 CI 沿用仓库现行 PR 合并预览检出规则：实际检出 SHA、PR 头提交和合并基线逐作业保存在机器摘要的 `ci.checkout_records`。
+该 CI 由上述 `TESTED_CODE_SHA` 触发；本地完整业务、性能及维护验收固定测试该提交本身，二者身份分别记录。
+
+机器摘要见 [phase1_final_results.json](phase1_final_results.json)，现行要求见 [完整验收矩阵](low_maintenance_v32_acceptance.json)。
+完整工件：`C:/Users/DENG/Desktop/BOYI_PHASE1_CLOSEOUT_20260916/final-a5a828a-PASS.zip`，SHA-256：`762a23eb40cf35751b8cee0c1fd56aeff97a9987d83be551af55314080f4dc51`。
+归档保留原路径映射、原始样本、JUnit、截图、测试 ZIP、冻结记录及 CI；可先解压再按 `manifest.json` 核对。
+首轮失败另存 `C:/Users/DENG/Desktop/BOYI_PHASE1_CLOSEOUT_20260916/attempt1-efeab453-FAIL.zip`，不计入最终通过结果。
+旧规则的未完成验收另存 `attempt2-88884fa-SUPERSEDED.zip`；资源等待需求修订后的正式结果独立计算。
+异步接口测试替身未同步导致的失败及中止记录另存 `attempt3-6623e81-FAILED-INCOMPLETE.zip`，保留原失败断言与对应 CI 状态，不计入最终通过结果。
+启动检查的进程退出竞态导致的完整失败验收及复现记录另存 `attempt4-040e574-FAIL.zip`；该提交的 CI 达到原运行时限，终止前也有失败标记，因此不能算作通过。
+随后远程 CI 发现等待取消收尾竞态，原始 CI 和本地中止记录另存 `attempt5-65d440b-CI-FAIL-INCOMPLETE.zip`；未将该次本地部分成功当作整轮通过。
+合入用户指定的最新运单版本及分批/自提连接器修复前，完整验收被中止并标记 SUPERSEDED；此前代码提交的 CI 已通过，但不能替代最终整轮。记录另存 `attempt6-2381174-SUPERSEDED.zip`。
+预览校验遭遇 1.195050 秒 UTC 时钟回拨，完整验收在根测试出现失败后终止；原失败与复现探针另存 `attempt7-b0c67fe-PREVIEW-CLOCK-FAIL-INCOMPLETE.zip`，不计入最终通过结果。
+下一轮根、Agent、Console 和正式 CI 均通过，但旧测试插件目录令页面种子冲突；该轮已中止并另存 `attempt8-f18096b-FIXTURE-FAIL-INCOMPLETE.zip`。完整驱动现在用已有独占锁保护的显式重置重建自有 E2E 库和目录。
+
 
 基线 `BASE_SHA=7ccc71445925f1fe3c7f35a3c7dd1a01198ff2ec`，已核对远端 main；
 原工作区干净。本次使用 `codex/phase1-final-closeout` 独立 worktree，原工作区保持不动。
 本次用户授权覆盖仓库默认 main 直推规则：仅提交任务分支，可创建 Draft PR；不合并、不部署生产。
 
-用户后续明确要求替代原 R1 的忙时立即失败规则：同实例、执行容量或实际资源暂忙时，本次已受理请求在当前进程内最多等待 30 秒，释放后继续，不要求再次提交；等待可取消，总执行容量不增加，活跃请求总量另有上限。超时、过载、停服和明确业务错误仍显式终结；已结束调用、UNKNOWN 和服务重启不自动重放。
+用户后续明确要求替代原 R1 的忙时立即失败规则：同实例、执行容量或实际资源暂忙时，本次已受理请求在当前进程内等待，每次资源等待默认最多 30 秒，释放后继续，不要求再次提交；等待可取消，总执行容量不增加，活跃请求总量另有上限。超时、过载、停服和明确业务错误仍显式终结；已结束调用、UNKNOWN 和服务重启不自动重放。
 新用户动作使用新请求身份，同请求重投返回同一事实。
 不恢复持久业务队列、旧 Runner 领取、登录恢复续跑或失败自动重放。
 UNKNOWN 不意味着未写；只有权威业务证据允许再次写，证据不足须限制受影响目标。
@@ -29,7 +66,7 @@ UNKNOWN 不意味着未写；只有权威业务证据允许再次写，证据不
 | M02 字段维护 | 使用旧 Action V1 签名包；已有原始字段 Host 接口 | 迁到当前财务 V2 ZIP，只改候选 payload 解析 | `tests/v32_acceptance/finance_maintenance.py` |
 | M03 判断维护 | 使用旧 Action V1 自提包 | 迁到当前自提 V2 ZIP、实际预览确认和回退 | `tests/v32_acceptance/decision_maintenance.py` |
 | 当前验收合同 | 多项仍引用旧 Runner 语义与历史通过说明 | 保留原要求，新增 R1 有效要求；结果另由完整驱动计算 | `docs/low_maintenance_v32_acceptance.json` |
-| 性能、完整验收与 CI | 本次尚未得到最终冻结基线结果 | 诊断后冻结、整轮重跑；不拼接旧结果 | `agent/scripts/accept_low_maintenance_v32.py` |
+| 性能、完整验收与 CI | 最终冻结基线已完成整轮验收和 CI | 诊断后冻结、整轮重跑；不拼接旧结果 | `agent/scripts/accept_low_maintenance_v32.py` |
 
 环境只使用本任务新建的 loopback MySQL 数据目录、禁用 dotenv 的清洁环境、
 系统 Python 3.10、两份锁文件、真实 Chromium 与 bwrap/prlimit。外部协议只绑定本地端口。
@@ -68,7 +105,7 @@ UNKNOWN 不意味着未写；只有权威业务证据允许再次写，证据不
 局部维护复用 `python -m scripts.plugin_maintenance describe/test/package <准确 V2 plugin_id>`。
 工具选择现有真实打包测试，并把测试源码、清单、实际 ZIP 成员及包摘要绑定；后续变化必须重新测试。
 `--base-ref` 发现共享宿主变更返回 `CORE_UPDATE_REQUIRED`，跨插件共享改动返回 `MULTI_PLUGIN_REVIEW_REQUIRED`。
-本轮六包 CLI、M02 字段变化和 M03 判断变化的实际命令、输出 ZIP 与摘要将随最终证据归档。
+本轮六包 CLI、M02 字段变化和 M03 判断变化的实际命令、输出 ZIP 与摘要已随最终证据归档。
 
 ## 第二轮交接：只记录现有接口
 
@@ -92,3 +129,137 @@ UNKNOWN 不意味着未写；只有权威业务证据允许再次写，证据不
 候选维护失败时，通过现有生命周期安装该实例实际提交过的原版本；不把旧代码改高版本冒充回退。包/配置恢复不撤销外部已写业务。核心回退不得删除或清空问题件写入事实来解除 UNKNOWN；旧核心不具备新防重保证时保持相关写入口暂停，先核验未决目标。不得直接用旧备份覆盖发布后产生的新业务数据。
 
 `PRODUCTION_STATUS=NOT_DEPLOYED_NOT_VERIFIED`。本轮最终实现、隔离验收、CI 和第二轮准入分别报告；冻结前准备结果不用于提前宣布第一轮通过。
+
+## 最终测试与维护证据
+
+| 集合 | PASS | FAIL | SKIP |
+|---|---:|---:|---:|
+| test-agent | 1302 | 0 | 0 |
+| test-console | 748 | 0 | 0 |
+| test-root | 4447 | 0 | 5 |
+
+以上按 JUnit testcase 统计；子测试另保留在原日志。依赖锁、编译、ruff、注册表、导入边界、仓库卫生、文档和内部契约均通过。
+非必需跳过及原因逐条保存在机器摘要；本轮必需引用无跳过。CI Windows 历史作业沿既有发行范围跳过，当前 Direct/V2/来源链未延期或标 xfail。
+
+| 维护 | 基线版本 | 候选版本 | 宿主与进程 | 回退 |
+|---|---|---|---|---|
+| M02 财务字段 | 2.0.1 | 98.2.0 | 完全一致 | 恢复原 ZIP 并验证真实业务 |
+| M03 自提判断 | 2.0.1 | 98.3.0 | 完全一致 | 恢复原 ZIP 并验证真实业务 |
+
+M02 财务字段 baseline ZIP：`/home/deng/projects/boyi-phase1-final-closeout/.task_tmp/v32/m02/e1d1a737ad/artifacts/sync_finance_bills_v2-baseline-2.0.1.zip`；SHA-256：`b1ea9a3c0508c2de8c34adbba60eda5b185691bae09d9d2b1d46886546bd40df`。
+
+M02 财务字段 candidate ZIP：`/home/deng/projects/boyi-phase1-final-closeout/.task_tmp/v32/m02/e1d1a737ad/artifacts/sync_finance_bills_v2-candidate-98.2.0.zip`；SHA-256：`df7a394770e1e4b7c369910a934bb86f32ac3ed474aa4093dc287f35a5f36d56`。
+
+M03 自提判断 baseline ZIP：`/home/deng/projects/boyi-phase1-final-closeout/.task_tmp/v32/m03/run-b46710bb371744f4b655b1872c3cbc53/artifacts/self_pickup_problem_upload_v2-baseline-2.0.1.zip`；SHA-256：`ed7b47dbbe3bad13bfe392bb3bc803afeff192d069c17352f0298ee17a6f8c5c`。
+
+M03 自提判断 candidate ZIP：`/home/deng/projects/boyi-phase1-final-closeout/.task_tmp/v32/m03/run-b46710bb371744f4b655b1872c3cbc53/artifacts/self_pickup_problem_upload_v2-candidate-98.3.0.zip`；SHA-256：`d15b9b88557c94612a797ccf8e17ea504bc2ec6c40d60ead1b03b5abf36430ce`。
+
+维护演练期间无关调用完成，源格式变化先使旧包明确失败，再由候选包处理；回退不撤销已发生的外部业务。测试规则只存在于隔离候选包。
+
+实际复现入口（先按 `tests/v32_acceptance/environment.md` 准备独占隔离环境）：
+
+```bash
+bash tests/v32_acceptance/isolated_environment.sh run --database v32_cli_test python -m scripts.plugin_maintenance test sync_finance_bills_v2
+```
+
+完整驱动、各探针和三个测试集合的实际命令均在归档 `result.json` 的 `checks[].command`；不是仅执行上述局部命令。
+
+## 最终性能
+
+| 指标 | 样本 | P50 ms | P95 ms | 最大 ms | 错误 | 目标 ms |
+|---|---:|---:|---:|---:|---:|---:|
+| automation/shell | 30 | 516.600 | 664.500 | 676.100 | 0 | 1000 |
+| automation/list_and_controls | 30 | 830.300 | 966.700 | 983.500 | 0 | 1500 |
+| finance/shell | 30 | 517.700 | 631.300 | 673.800 | 0 | 1000 |
+| finance/list_and_controls | 30 | 850.900 | 968.100 | 1003.300 | 0 | 1500 |
+| customer_service/shell | 30 | 517.500 | 615.700 | 623.600 | 0 | 1000 |
+| customer_service/list_and_controls | 30 | 841.500 | 903.200 | 939.600 | 0 | 1500 |
+| finance/source_detail | 100 | 261.000 | 305.800 | 346.700 | 0 | 1500 |
+| customer_service/source_detail | 100 | 136.200 | 166.700 | 205.200 | 0 | 1500 |
+| direct/admission | 100 | 174.828 | 237.134 | 297.414 | 0 | 500 |
+| navigation/tab_switch | 20 | 74.300 | 111.700 | 113.700 | 0 | 200 |
+| direct/independent_start | 20 | 47.621 | 74.336 | 90.121 | 0 | 2000 |
+| direct/resume_after_release | 40 | 13.846 | 20.330 | 28.293 | 0 | 2000 |
+| direct/waiting_cancel | 60 | 23.268 | 70.629 | 79.773 | 0 | 2000 |
+
+受理样本最终状态：`{"COMPLETED": 100}`；繁忙拒绝 0。繁忙故障用例独立记录，不混入成功受理分位数。
+分位数采用 nearest rank `ceil(p*n)`，不丢弃慢样本。没有可比基线实测，故只报告本轮绝对值，不宣称优化倍数。
+环境：12th Gen Intel(R) Core(TM) i7-12700H，20 个逻辑处理器，内存 16595980288 bytes，Python 3.10.20；MySQL、浏览器、依赖锁和固定容量详见机器摘要。
+冷样本使用新页面/DOM、独立管理员会话，每批清除服务端列表展示缓存，保留已安装包和真实数据库；loopback 路由关闭浏览器 HTTP 缓存。明细测量复用页面并发出真实本地 SQL 查询，未替换响应。
+
+各入口安装实例数、财务/客服合成明细规模、并发客户端、依赖延迟注入与调用跟踪见原始页面工件。独立任务开始、资源释放后续行和等待取消的原始耗时来自 JUnit 属性；等待取消逐轮核对后续零新写。已发生外部操作的取消则保留真实核验及终结时间线。
+生产默认资源等待预算为 30 秒，当前 V2 测试明确校验该值；重复超时故障演练注入较短预算，实际预算见用例源码及相关 JUnit 属性，以真实计时触发同一超时分支。资源释放、取消及无重复执行使用真实进程、MySQL 与调用记录核验。
+
+## 各组最终结果
+
+| 组 | 结果 | 命中用例统计 |
+|---|---|---|
+| A01 | PASS | `{"PASS": 6}` |
+| A02 | PASS | `{"PASS": 81}` |
+| A03 | PASS | `{"PASS": 140}` |
+| A04 | PASS | `{"PASS": 80}` |
+| A05 | PASS | `{"PASS": 80}` |
+| A06 | PASS | `{"PASS": 129}` |
+| A07 | PASS | `{"PASS": 61}` |
+| A08 | PASS | `{"PASS": 141}` |
+| A09 | PASS | `{"PASS": 60}` |
+| A10 | PASS | `{"PASS": 184}` |
+| A11 | PASS | `{"PASS": 108}` |
+| A12 | PASS | `{"PASS": 57}` |
+| A13 | PASS | `{"PASS": 204}` |
+| A14 | PASS | `{"PASS": 15}` |
+| A15 | PASS | `{"PASS": 83}` |
+| A16 | PASS | `{"PASS": 7}` |
+| A17 | PASS | `{"PASS": 12}` |
+| A18 | PASS | `{"PASS": 102}` |
+| A19 | PASS | `{"PASS": 82}` |
+| A20 | PASS | `{"PASS": 107}` |
+| A21 | PASS | `{"PASS": 150}` |
+| A22 | PASS | `{"PASS": 294}` |
+| A23 | PASS | `{"PASS": 10}` |
+| A24 | PASS | `{"PASS": 23}` |
+| B01 | PASS | `{"PASS": 59}` |
+| B02 | PASS | `{"PASS": 5}` |
+| B03 | PASS | `{"PASS": 43}` |
+| B04 | PASS | `{"PASS": 44}` |
+| B05 | PASS | `{"PASS": 54}` |
+| B06 | PASS | `{"PASS": 47}` |
+| B07 | PASS | `{"PASS": 30}` |
+| B08 | PASS | `{"PASS": 34}` |
+| C01 | PASS | `{"PASS": 50}` |
+| C02 | PASS | `{"PASS": 55}` |
+| C03 | PASS | `{"PASS": 64}` |
+| C04 | PASS | `{"PASS": 132}` |
+| C05 | PASS | `{"PASS": 112}` |
+| C06 | PASS | `{"PASS": 59}` |
+| C07 | PASS | `{"PASS": 49}` |
+| C08 | PASS | `{"PASS": 45}` |
+| C09 | PASS | `{"PASS": 70}` |
+| C10 | PASS | `{"PASS": 45}` |
+| C11 | PASS | `{"PASS": 41}` |
+| C12 | PASS | `{"PASS": 44}` |
+| C13 | PASS | `{"PASS": 47}` |
+| C14 | PASS | `{"PASS": 44}` |
+| C15 | PASS | `{"PASS": 57}` |
+| C16 | PASS | `{"PASS": 189}` |
+| C17 | PASS | `{"PASS": 235}` |
+| C18 | PASS | `{"PASS": 49}` |
+| M01 | PASS | `{"PASS": 78}` |
+| M02 | PASS | `{"PASS": 1}` |
+| M03 | PASS | `{"PASS": 1}` |
+| M04 | PASS | `{"PASS": 35}` |
+| M05 | PASS | `{"PASS": 64}` |
+| M06 | PASS | `{"PASS": 28}` |
+
+各必需子项的精确引用、有效要求、重复轮次和工件在同一份机器结果中。复用用例会被多组引用，不能把各组计数相加当作独立测试数。
+
+## 第二轮接口补充
+
+财务查询由 `console/finance_service.py` 校验 `start_date/end_date`（ISO 日期）、`platform/account_id/source_ids`（后者为逗号分隔的稳定来源 ID）、费用方向/级别/名称、运单号；明细使用 `page/page_size`。未填日期会采用服务端当前月到当前日，第二轮有“今天”语义时应明确传入业务日期，不能依赖这个默认。
+财务金额来自已发布标准账本；返回 `period`、`failed_sources`、明细及来源状态。参数、仓储、契约和部分采集错误分别使用 `FINANCE_VALIDATION_ERROR`、`FINANCE_UNAVAILABLE`、`FINANCE_CONTRACT_ERROR`、`FINANCE_SYNC_PARTIAL_FAILED` 等既有码；查询失败不得改为金额零。
+客服本地查询使用稳定 `source_ids` 或已授权 `account_ids`，`filters.direction/q/date_from/date_to/rows/page`；日期筛选实际作用于 `source_updated_at`，不能当作发货日期。请求仍通过登录身份和服务端上下文鉴别。错误筛选返回错误，数据库不可用为 `CUSTOMER_LOCAL_DATA_UNAVAILABLE`。`last_attempt_at/last_published_at`、上次成功结果和当前失败须分别展示，人工字段属于本地模块。
+“邵阳大祥站”到稳定组织/来源 ID 的真实映射、发货重量字段与单位、业务日切换、退货作废口径和全量覆盖尚未在本轮生产数据上核实。不能凭账号显示名、到货数量或历史值构造吨位答案。
+
+## 剩余范围
+
+本次代码与隔离验收合同无未完成必需项。生产未部署、真实数据未验证；截图所示那次分批调用的具体失败阶段尚无线上记录证据，已修复的相关缺口仍需未来授权发布后生效。第二轮尚未实施。
