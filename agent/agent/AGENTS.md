@@ -133,6 +133,8 @@
 - 韵达原页通过 `tms_runtime/session_broker.py` 的 `request_original_page` 延续同账号的上游会话更新；只原子更新变化的保存态，保留 origins 与登录元数据，登录代际变化拒绝旧响应。账号隔离、并发和真实 HTTP 协议回归见 `../tests/test_yunda_proxy_session_state.py`，维护说明见 `../../docs/original_page_read_requests.md`。
 # 当前改造补充
 
+- 问题件来源表的电话与地址校验由 `automation_plugins/connector_registry.py` 按两个已审核 `read_rows` 服务及精确表头保留列含义；仅复用现有业务文本规则，不改写来源单元格或插件筛选。拒绝日志仅记录服务、操作与数组位置，不记录单元格原文；回归见 `../../tests/test_problem_connectors_v2.py`。
+
 - `automation_plugins/production_coeffects.py` 负责读取插件所依赖的账号、资源与接口状态；`production.py` 负责运行时组合与切换。
 - V2 预览与正式调用在准入和代次绑定后均按已安装包声明的具体操作确定权限与读写类型，不能用包中正式操作的写权限代替预览权限。
 - 现有扫描、统计、签收状态回调迁移后直接调用当前 V2 入口，参数只来自入口声明及已保存设置。
