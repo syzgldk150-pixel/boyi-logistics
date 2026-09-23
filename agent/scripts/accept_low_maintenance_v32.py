@@ -192,7 +192,9 @@ def fresh_probe_case(check: dict[str, Any], source: Path, *, started_ns: int, ou
 
 def run_browser_acceptance(output: Path, checks: list[dict[str, Any]], cases: list[dict[str, Any]]) -> None:
     fixture_root = PROJECT_ROOT / ".task_tmp" / "v32" / "environment"
-    for module in ("prepare_database", "management_fixture", "data_fixture"):
+    checks.append(run_check("seed-prepare_database", [sys.executable, "-m", "tests.v32_acceptance.prepare_database",
+        "--reset-owned-fixture"], output, browser_database=True))
+    for module in ("management_fixture", "data_fixture"):
         checks.append(run_check("seed-" + module, [sys.executable, "-m", "tests.v32_acceptance." + module], output, browser_database=True))
     started_ns = time.time_ns()
     scope = run_check("module_scope", [sys.executable, "-m", "tests.v32_acceptance.browser_performance", "--scope-only"], output, browser_database=True)
