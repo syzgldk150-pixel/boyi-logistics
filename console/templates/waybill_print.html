@@ -37,8 +37,8 @@
 
   <div class="print-frame" data-waybill-label-preview></div>
 
-  <script src="/static/js/waybill_label_html.js?v=20260916-readable"></script>
-  <script src="/static/js/waybill_label_lodop.js?v=20260916-readable"></script>
+  <script src="/static/js/waybill_label_html.js?v=20260916-receipt-v3"></script>
+  <script src="/static/js/waybill_label_lodop.js?v=20260916-receipt-v3"></script>
   <script src="/static/js/clodop_loader.js?v=20260812"></script>
   <script>
     const PRINT_SETTINGS_KEY = "shipnow.manual.printerSettings";
@@ -115,6 +115,7 @@
     const WAYBILL_LABEL_WIDTH = "74mm";
     const WAYBILL_LABEL_HEIGHT = "92mm";
     const WAYBILL_PRINT_DATA = {
+      receipt_required: {{ (waybill.get("receipt_required") == 1) | tojson }},
       waybill_no: {{ (waybill.get("waybill_no", "") or "") | tojson }},
       open_date: {{ (waybill.get("open_date", "") or "") | tojson }},
       destination_site: {{ (waybill.get("destination_site", "") or "") | tojson }},

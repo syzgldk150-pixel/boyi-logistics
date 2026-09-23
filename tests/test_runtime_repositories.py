@@ -322,12 +322,13 @@ class RuntimeRepositoryTests(unittest.TestCase):
                 "050",
                 "051",
                 "052",
+                "053",
             ],
             [version for version, _ in migrations],
         )
         self.assertEqual(
-            ["050_normalize_local_waybill_dates.sql", "051_separate_boyi_waybills.sql", "052_problem_write_intents.sql"],
-            [path.name for version, path in migrations if version in {"050", "051", "052"}],
+            ["050_normalize_local_waybill_dates.sql", "051_separate_boyi_waybills.sql", "052_boyi_waybill_receipt_required.sql", "053_problem_write_intents.sql"],
+            [path.name for version, path in migrations if version in {"050", "051", "052", "053"}],
         )
         self.assertNotIn("load_dotenv", script_path.read_text(encoding="utf-8").split("def _connect", 1)[0])
         for _, path in migrations:

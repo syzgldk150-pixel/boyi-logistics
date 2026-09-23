@@ -808,8 +808,8 @@ class DocumentRepository:
             "source_scope", "source_record_id", "source_account_id", "source_permission_scope",
         ])
         return (
-            f"(SELECT {columns} FROM waybills UNION ALL "
-            f"SELECT {columns} FROM boyi_waybills) AS saved_waybills"
+            f"(SELECT {columns}, NULL AS receipt_required FROM waybills UNION ALL "
+            f"SELECT {columns}, receipt_required FROM boyi_waybills) AS saved_waybills"
         )
 
     def _field_value(self, fields: dict[str, Any], field_name: str) -> str:
@@ -837,6 +837,13 @@ class DocumentRepository:
             value = self._field_value(fields, fname)
             values.append(_waybill_date_bound(value) if fname == "open_date" else value)
         values.extend([writer_id, source, now, now])
+
+        if source == "manual":
+            receipt_value = self._field_value(fields, "receipt_required")
+            if receipt_value not in ("0", "1"):
+                raise ValueError("博益运单回单选项必须明确为 0 或 1")
+            columns.append("receipt_required")
+            values.append(int(receipt_value))
 
         placeholders = ", ".join(self.placeholder for _ in columns)
         col_names = ", ".join(columns)

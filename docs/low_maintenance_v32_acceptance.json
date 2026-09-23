@@ -9,7 +9,8 @@
       "tests": [
         "tests/test_direct_daily_plugins_mysql.py",
         "probe:daily_scan_statistics",
-        "probe:daily_problems"
+        "probe:daily_problems",
+        "tests/test_problem_connectors_v2.py::test_problem_sheet_preserves_phone_and_address_column_semantics"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
@@ -20,7 +21,7 @@
       "runtime_model": "DIRECT_SERVICE_V2",
       "applicability": "REQUIRED",
       "historical_evidence_note": "四脚本均由实际Console预览/确认或执行按钮进入真实签名包、4worker Runner、原生产业务函数及隔离HTTP协议；分别验证MySQL结果、实际目标/计数、外部副作用及同请求重放。",
-      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。 主分支 da20899 的分批与自提来源表列语义修复纳入本轮必需回归，正式结果仍只取新鲜测试。",
       "historical_tests": [
         "tests/test_first_party_action_payloads.py",
         "tests/test_problem_plugin_production_adapter.py",
@@ -39,6 +40,10 @@
         {
           "reference": "probe:daily_problems",
           "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_problem_connectors_v2.py::test_problem_sheet_preserves_phone_and_address_column_semantics",
+          "minimum_cases": 2
         }
       ],
       "input_side_effect_assertions": "扫描、统计、分批、自提四项分别使用真实发行 V2 包及当前入口、Direct、业务函数和隔离外部目标；核对候选、字段、结果和副作用，不只断言202或示例文本。",

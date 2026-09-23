@@ -289,4 +289,4 @@ docs/
 
 - `scripts/acceptance_evidence.py` 为现有完整验收驱动校验当前 V2 运行结果、维护包摘要、冻结证据与原始性能分布；不另设验收平台。
 - `scripts/plugin_maintenance.py` 的 V2 局部测试前后核对实际可打包成员和所选测试摘要，打包再次验证；测试通过但源码变化不能生成可交付 ZIP。
-- 新迁移 `052_problem_write_intents.sql` 仅新增问题件目标写入事实。部署、回滚与独立包的相容边界见 `../docs/phase1_final_closeout.md`；本轮没有生产部署授权。
+- 新迁移 `053_problem_write_intents.sql` 仅新增问题件目标写入事实，接在主分支已有的运单回执迁移 `052_boyi_waybill_receipt_required.sql` 之后。部署、回滚与独立包的相容边界见 `../docs/phase1_final_closeout.md`；本轮没有生产部署授权。

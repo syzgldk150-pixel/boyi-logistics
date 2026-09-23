@@ -168,6 +168,22 @@ class ManualWaybillServiceTests(unittest.TestCase):
         self.assertIn("金额格式无效", result.message)
         self.assertEqual([], repository.created)
 
+    def test_receipt_checkbox_is_saved_and_invalid_value_is_rejected(self):
+        for submitted, expected in (({}, "0"), ({"field_receipt_required": "1"}, "1"),
+                                    ({"field_receipt_required": "0"}, "0")):
+            with self.subTest(submitted=submitted):
+                repository = _Repository()
+                result = self._service(repository).apply_manual_waybill(_valid_form(**submitted))
+                self.assertTrue(result.ok)
+                self.assertEqual(expected, repository.created[0]["fields"]["receipt_required"])
+        repository = _Repository()
+        result = self._service(repository).apply_manual_waybill(
+            _valid_form(field_receipt_required="false")
+        )
+        self.assertFalse(result.ok)
+        self.assertIn("回单选项无效", result.message)
+        self.assertEqual([], repository.created)
+
 
 class ManualWaybillRouteTests(unittest.TestCase):
     def test_manual_save_without_autoprint_redirects_to_return_to(self):
@@ -309,6 +325,7 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertIn('action="/waybills/manual"', html)
         self.assertIn("运单录入", html)
         self.assertIn("提交后自动生成 BY00001", html)
+        self.assertIn('id="field_receipt_required" type="checkbox"', html)
         self.assertIn('id="field_waybill_no"', html)
         self.assertIn('value="BY00001"', html)
         self.assertIn('value="寄付"', html)
@@ -779,11 +796,10 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertNotIn("DEFAULT_REMARK", js)
         self.assertNotIn("slice(0, maxChars)", js)
 
-    def test_lodop_renderer_uses_shared_layout_and_native_items(self):
+    def test_lodop_renderer_uses_composed_label_without_native_reflow(self):
         js = (CONSOLE_DIR / "static/js/waybill_label_lodop.js").read_text(encoding="utf-8")
         self.assertIn("const template = global.WaybillLabelHtml", js)
-        self.assertIn("template.normalizeData(data)", js)
-        self.assertIn("template.buildDynamicItems(context.data, parsed)", js)
+        self.assertIn("template.buildPrintImage(data, settings)", js)
         self.assertIn("applyCalibration", js)
         self.assertIn("ADD_PRINT_TEXT", js)
         self.assertIn("ADD_PRINT_LINE", js)
@@ -849,3 +865,14 @@ class ManualWaybillTemplateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SavedReceiptPrintTests(unittest.TestCase):
+    def test_saved_print_uses_persisted_receipt_choice(self):
+        env = Environment(loader=FileSystemLoader(str(CONSOLE_DIR / "templates")))
+        for value, expected in ((0, "false"), (1, "true"), (None, "false")):
+            with self.subTest(value=value):
+                html = env.get_template("waybill_print.html").render(
+                    waybill={"receipt_required": value}, autoprint=False, print_preview=False,
+                )
+                self.assertIn(f"receipt_required: {expected}", html)
