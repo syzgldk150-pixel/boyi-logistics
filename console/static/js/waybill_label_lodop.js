@@ -6,7 +6,6 @@
   const { width: WIDTH_MM, height: HEIGHT_MM, pageName: PAGE_NAME, backgroundUrl: BACKGROUND_URL, readSettings } = template;
   const CHINESE_FALLBACK_FONT = "SimHei";
   const BLACK = "#000000";
-  let backgroundDataUriPromise = null;
   const stripZeros = (number) => Number(number).toFixed(3).replace(/\.?0+$/, "");
   const mm = (value, offset = 0, scale = 1) => `${stripZeros(offset + value * scale)}mm`;
 
@@ -18,23 +17,6 @@
     }
   };
 
-  const blobToDataUri = (blob) => new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(reader.error || new Error("Background image read failed"));
-    reader.readAsDataURL(blob);
-  });
-
-  const loadBackgroundDataUri = async () => {
-    if (!backgroundDataUriPromise) {
-      backgroundDataUriPromise = fetch(BACKGROUND_URL, { cache: "no-cache" }).then(async (response) => {
-        if (!response.ok) throw new Error(`Waybill label background load failed: ${response.status}`);
-        return blobToDataUri(await response.blob());
-      });
-    }
-    return backgroundDataUriPromise;
-  };
-
   const escapeAttr = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
     "&": "&amp;",
     "<": "&lt;",
@@ -44,7 +26,6 @@
   }[char]));
 
   const imageHtml = (src) => `<img border='0' src='${escapeAttr(src)}'>`;
-  const alignCode = (align) => align === "center" ? 2 : align === "right" ? 3 : 1;
 
   const addBackground = (lodop, dataUri, context) => {
     lodop.ADD_PRINT_IMAGE(
@@ -59,34 +40,10 @@
     }
   };
 
-  const addDynamicText = (lodop, item, context) => {
-    item.content.split("\n").forEach((line, index) => {
-      lodop.ADD_PRINT_TEXT(
-        mm(item.y + index * item.lineHeightMm, context.offsetY, context.templateScale),
-        mm(item.x, context.offsetX, context.templateScale),
-        mm(item.w, 0, context.templateScale),
-        mm(item.lineHeightMm + 0.3, 0, context.templateScale),
-        line,
-      );
-      lodop.SET_PRINT_STYLEA(0, "FontName", item.font);
-      lodop.SET_PRINT_STYLEA(0, "FontSize", item.fontPt * context.templateScale);
-      lodop.SET_PRINT_STYLEA(0, "FontColor", BLACK);
-      lodop.SET_PRINT_STYLEA(0, "Bold", item.fontWeight >= 700 ? 1 : 0);
-      lodop.SET_PRINT_STYLEA(0, "Alignment", alignCode(item.align));
-      lodop.SET_PRINT_STYLEA(0, "WordWrap", 0);
-    });
-  };
   const applyTemplate = async (lodop, data = {}, settings = {}) => {
+    const image = await template.buildPrintImage(data, settings);
     setupPage(lodop, settings);
-    const parsed = readSettings(settings);
-    const context = {
-      ...parsed,
-      data: template.normalizeData(data),
-    };
-    await template.loadContentFont();
-    const items = template.buildDynamicItems(context.data, parsed);
-    addBackground(lodop, await loadBackgroundDataUri(), context);
-    items.forEach((item) => addDynamicText(lodop, item, context));
+    addBackground(lodop, image, readSettings(settings));
   };
 
   const addLine = (lodop, item, context) => {

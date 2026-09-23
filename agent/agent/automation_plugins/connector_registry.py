@@ -406,13 +406,19 @@ def _reject_sensitive_result(
             )
         return
     if isinstance(value, (list, tuple)):
-        for nested in value:
-            _reject_sensitive_result(
-                nested,
-                sensitive_identifiers=sensitive_identifiers,
-                reject_wrapped_identifiers=reject_wrapped_identifiers,
-                business_field=business_field,
-            )
+        for index, nested in enumerate(value):
+            try:
+                _reject_sensitive_result(
+                    nested,
+                    sensitive_identifiers=sensitive_identifiers,
+                    reject_wrapped_identifiers=reject_wrapped_identifiers,
+                    business_field=business_field,
+                )
+            except ConnectorSensitiveDataDenied as exc:
+                # Positions locate a rejected cell without exposing its value.
+                raise ConnectorSensitiveDataDenied(
+                    f"{exc} (array item {index + 1})"
+                ) from None
         return
     if isinstance(value, str):
         if any(
@@ -475,6 +481,29 @@ def _reject_sensitive_result(
             raise ConnectorSensitiveDataDenied(
                 "Connector result contains sensitive data"
             )
+
+
+def _result_validation_view(service: str, operation: str, result: dict) -> dict:
+    """Retain reviewed column semantics while checking problem source cells."""
+    if operation != "read_rows" or service not in {
+        "connector.boyi.self_pickup_source_sheet@1",
+        "connector.boyi.split_pending_source_sheet@1",
+    }:
+        return result
+    rows = result.get("rows")
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], list):
+        return result  # The ordinary closed output schema still rejects drift.
+    fields = {"收件电话": "receiver_phone", "收货电话": "receiver_phone",
+              "收件地址": "recipient_address", "收件人地址": "recipient_address"}
+    columns = {index: fields[heading] for index, heading in enumerate(rows[0])
+               if isinstance(heading, str) and heading in fields}
+    # This view is used only by the leak check. Never rewrite source cells,
+    # headers, row order, schema validation or the bytes returned to the plugin.
+    return {**result, "rows": [rows[0], *[
+        [{columns[index]: cell} if index in columns else cell
+         for index, cell in enumerate(row)] if isinstance(row, list) else row
+        for row in rows[1:]
+    ]]}
 
 
 def _json_copy(
@@ -888,11 +917,18 @@ class ConnectorRegistry:
         )
         if not isinstance(detached_result, dict):
             raise ConnectorInvocationError("Connector result must be an object")
-        _reject_sensitive_result(
-            detached_result,
-            sensitive_identifiers=self._binding_identifiers(binding),
-            reject_wrapped_identifiers=isinstance(binding, ConnectorResourceBindingRef),
-        )
+        try:
+            _reject_sensitive_result(
+                _result_validation_view(resolved.service, resolved.operation, detached_result),
+                sensitive_identifiers=self._binding_identifiers(binding),
+                reject_wrapped_identifiers=isinstance(binding, ConnectorResourceBindingRef),
+            )
+        except ConnectorSensitiveDataDenied as exc:
+            logging.getLogger(__name__).error(
+                "connector_result_rejected service=%s operation=%s reason=%s",
+                resolved.service, resolved.operation, str(exc),
+            )
+            raise
         _validate_schema_value(detached_result, current.output_schema, subject="result")
         if any(
             isinstance(value, float) and not math.isfinite(value)

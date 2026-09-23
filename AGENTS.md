@@ -134,6 +134,6 @@
 ## 阶段一最终收尾合同
 
 - 当前有效验收矩阵为 `docs/low_maintenance_v32_acceptance.json` 的 R1 合同及用户后续资源等待修订；保留原要求，分别核验 Direct/V2 关键场景轮次，不以历史 Runner 或旧 PASS 文件替代。收尾与第二轮接口交接见 `docs/phase1_final_closeout.md`。
-- `shared/problem_write_intents.py` 与迁移 `052_problem_write_intents.sql` 保存精确问题件业务目标的写入事实；UNKNOWN/迟到风险仅阻止该目标的新写，权威拒绝才允许新请求，无队列、超时释放或自动重放。新迁移不修改历史迁移字节。
+- `shared/problem_write_intents.py` 与迁移 `053_problem_write_intents.sql` 保存精确问题件业务目标的写入事实；UNKNOWN/迟到风险仅阻止该目标的新写，权威拒绝才允许新请求，无队列、超时释放或自动重放。运单回执迁移 `052_boyi_waybill_receipt_required.sql` 保持原字节，新迁移不修改历史迁移。
 - `shared/async_work.py` 统一同步工作的重复取消排空；Direct 准入数据库事务与控制锁分开，实际资源写锁覆盖真实执行和核验期间。V2 Connector 在绑定解析后按物理资源或已审投影表协调，Host 回执记录实际持有的范围。
 - 插件局部测试与权威 ZIP 成员、清单和测试源码绑定；源码漂移拒绝打包。财务/客服迟到发布还须验证当前 Invocation 和生产者身份。本轮隔离验收不授权 ECS 部署或真实 TMS/飞书写入。

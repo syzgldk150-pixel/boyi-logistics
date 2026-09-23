@@ -1,4 +1,4 @@
-"""Upgrade a task-owned pre-052 MySQL database without touching old business rows."""
+"""Upgrade a task-owned pre-053 MySQL database without touching old business rows."""
 import os
 from uuid import uuid4
 
@@ -11,7 +11,7 @@ from tests import test_mysql_orchestration_integration as support
 pytestmark = pytest.mark.skipif(os.getenv('RUN_MYSQL_INTEGRATION') != '1', reason='isolated MySQL required')
 
 
-def test_052_upgrade_preserves_all_old_rows_and_reentry_keeps_write_facts():
+def test_053_upgrade_preserves_all_old_rows_and_reentry_keeps_write_facts():
     helper = type('ProblemIntentUpgrade', (support.MySqlOrchestrationIntegrationTests,), {})
     helper.pymysql = pymysql
     helper.host, helper.port = os.environ['AGENT_DB_HOST'], int(os.environ['AGENT_DB_PORT'])
@@ -24,7 +24,9 @@ def test_052_upgrade_preserves_all_old_rows_and_reentry_keeps_write_facts():
     try:
         helper._apply_through(helper.database, '017')
         helper._seed_required_project_resources(helper.database)
-        helper._apply_through(helper.database, '051')
+        # The reviewed waybill receipt migration now owns 052; this task's
+        # write-intent migration applies after it without rewriting that data.
+        helper._apply_through(helper.database, '052')
         with helper._connection(autocommit=True) as connection, connection.cursor() as cursor:
             cursor.execute('''INSERT INTO boyi_waybills
                 (id,waybill_no,open_date,receiver_address,goods_name_lines,package_type_lines,

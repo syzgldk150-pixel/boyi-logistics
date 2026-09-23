@@ -2048,6 +2048,11 @@ class DocumentService:
                 message="必填字段未填写：" + "、".join(missing_labels),
             )
 
+        receipt_value = form_values.get("field_receipt_required", "0")
+        if receipt_value not in ("0", "1"):
+            return ActionResult(ok=False, message="回单选项无效，请重新勾选。")
+        fields["receipt_required"] = receipt_value
+
         waybill_id, waybill_no = self.repository.create_manual_waybill(fields, writer_id=writer_id)
         if writer_id:
             self.repository.upsert_writer(writer_id)

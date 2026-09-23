@@ -4,7 +4,10 @@ from dataclasses import replace
 
 import pytest
 
-from agent.automation_plugins.connector_registry import ConnectorRegistry, ConnectorInvocationError
+from agent.automation_plugins.connector_registry import (
+    ConnectorRegistry, ConnectorInvocationError, ConnectorSensitiveDataDenied,
+    _result_validation_view,
+)
 from agent.automation_plugins.problem_connectors_v2 import build_problem_connectors
 from agent.automation_plugins.problem_handlers import build_problem_handler_map, _SELF_PRIMARY_CAUSE, _SELF_DAXIANG_CAUSE
 from tests.production_connector_support import ConnectorTestHost
@@ -79,3 +82,58 @@ def test_chinese_problem_classification_is_business_text_not_an_absolute_path():
     result = host.invoke("split_pending_ronghui","problem_query",{"bill_code":"R001",
         "problem_cause_sha256":"a"*64,"problem_owner_type":"交接异常","problem_type":"少货/分批"})
     assert result["ready"] is True
+
+
+@pytest.mark.parametrize("prefix,maximum", [("self_pickup", 2000), ("split_pending", 5000)])
+def test_problem_sheet_preserves_phone_and_address_column_semantics(prefix, maximum):
+    from tests.test_problem_plugin_production_adapter import _split_header, _split_row
+    row = _split_row("R12345678901", expected=3, arrived=1)
+    row[11] = "123456789012//34/56"
+    row[12] = "/湖南省邵阳市测试地址"
+    rows = [_split_header(), row]
+    host = _host(prefix + "_problem_upload", sheet_rows_read=lambda *_: {"complete": True, "rows": rows})
+    result = host.invoke(prefix + "_source_sheet", "read_rows", {"end_column": "S", "max_rows": maximum})
+    assert result == {"complete": True, "rows": rows}
+    assert row[11] == "123456789012//34/56"
+    assert row[12] == "/湖南省邵阳市测试地址"
+    if prefix == "split_pending":
+        preview = load_first_party_action("split_pending_problem_upload").run_action({"dry_run": True}, host.broker)
+        assert preview["status"] == "SUCCESS"
+        assert preview["data"]["candidate_count"] == 1
+
+
+@pytest.mark.parametrize("prefix,maximum", [("self_pickup", 2000), ("split_pending", 5000)])
+@pytest.mark.parametrize("column,value", [
+    (11, "123//etc/passwd"),
+    (12, "/etc/passwd"),
+    (12, "/湖南省测试地址 https://private.invalid"),
+    (12, "/湖南省测试地址 password=fixture-secret"),
+    (8, "123456789012//34/56"),
+    (8, "/湖南省邵阳市测试地址"),
+])
+def test_problem_sheet_exceptions_remain_scoped_to_business_columns(prefix, maximum, column, value):
+    from tests.test_problem_plugin_production_adapter import _split_header, _split_row
+    row = _split_row("R12345678901", expected=3, arrived=1)
+    row[column] = value
+    host = _host(prefix + "_problem_upload", sheet_rows_read=lambda *_: {"complete": True, "rows": [_split_header(), row]})
+    with pytest.raises(ConnectorSensitiveDataDenied) as failure:
+        host.invoke(prefix + "_source_sheet", "read_rows", {"end_column": "S", "max_rows": maximum})
+    assert f"array item {column + 1}" in str(failure.value)
+    assert "array item 2" in str(failure.value)
+    assert value not in str(failure.value)
+
+
+def test_problem_sheet_column_context_cannot_apply_to_other_services_or_operations():
+    result = {"complete": True, "rows": [["收件地址"], ["/湖南省测试地址"]]}
+    assert _result_validation_view("connector.boyi.other_source@1", "read_rows", result) is result
+    assert _result_validation_view("connector.boyi.self_pickup_source_sheet@1", "other", result) is result
+
+
+def test_problem_sheet_phone_cannot_leak_bound_resource_identity():
+    from tests.test_problem_plugin_production_adapter import _split_header, _split_row
+    row = _split_row("R12345678901", expected=3, arrived=1)
+    row[11] = "123456789012//34/56"
+    host = _host("self_pickup_problem_upload", sheet_rows_read=lambda *_: {"complete": True, "rows": [_split_header(), row]})
+    host.context = replace(host.context, resource_bindings={"self_pickup_source_sheet": "123456789012"})
+    with pytest.raises(ConnectorSensitiveDataDenied):
+        host.invoke("self_pickup_source_sheet", "read_rows", {"end_column": "S", "max_rows": 2000})
