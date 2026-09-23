@@ -45,9 +45,9 @@ def test_broker_read_bypasses_writer_but_actual_writes_wait_before_receipt(tmp_p
         guard_attempted = asyncio.Event()
 
         @asynccontextmanager
-        async def observed_guard(prepared):
+        async def observed_guard(prepared, **kwargs):
             guard_attempted.set()
-            async with direct.host_operation(prepared):
+            async with direct.host_operation(prepared, **kwargs):
                 yield
 
         issuer.host_operation_guard = observed_guard

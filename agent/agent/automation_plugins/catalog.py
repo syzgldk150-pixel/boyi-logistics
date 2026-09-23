@@ -1202,11 +1202,11 @@ class PluginCatalog:
         enabled = set(entry.current_enabled_entrypoints)
         reasons: list[dict[str, str]] = []
         resolver = self._contribution_backend_status
-        for kind in ("scheduler", "webhook", "feishu", "events", "harness"):
-            raw_items = entry.contributions.get(
-                kind,
-                () if kind == "harness" else None,
-            )
+        # Harness is an optional read-only entry. Its live backend is checked
+        # by ManagedContributionRegistry at dispatch; a missing model must not
+        # disable the same instance's fixed Console/Feishu business entry.
+        for kind in ("scheduler", "webhook", "feishu", "events"):
+            raw_items = entry.contributions.get(kind)
             if not isinstance(raw_items, (list, tuple)):
                 return [
                     {

@@ -66,6 +66,40 @@ class FinanceBrowser:
             raise AssertionError(f"actual settings context failed: {context_body}; JS errors: {self.errors}")
         rejected = []
         settings = context_body["data"]["settings"]
+        if self.page.locator("[data-plugin-settings-frame]").count():
+            host = self.page.locator("[data-plugin-settings-history]")
+            for config in invalid_configs:
+                response = self.context.request.post(self.console.url + host.get_attribute("data-endpoint"),
+                    data={"bridge_session": host.get_attribute("data-session"), "operation": "save", "payload": {
+                        "config": config, "account_bindings": settings["account_bindings"],
+                        "resource_bindings": settings["resource_bindings"],
+                        "expected_project_configuration_version": settings["project_configuration_version"],
+                        "request_id": str(uuid4())}},
+                    headers={"X-Requested-With": "XMLHttpRequest", "Origin": self.console.url})
+                body = response.json()
+                if response.status < 400 or body.get("ok") is True:
+                    raise AssertionError("invalid custom settings were accepted")
+                rejected.append({"config": config, "http_status": response.status, "response": body})
+            frame = self.page.frame_locator("[data-plugin-settings-frame]")
+            frame.locator("[data-save-settings]:enabled").wait_for()
+            for role, account in accounts.items():
+                frame.locator(f'[data-account-role="{role}"]').select_option(account)
+            for key, value in (config_values or {}).items():
+                field = frame.locator(f'[data-config-field="{key}"]')
+                if field.get_attribute("type") == "checkbox":
+                    field.set_checked(value)
+                else:
+                    if field.evaluate("node => node.tagName") == "SELECT":
+                        field.select_option(str(value))
+                    else:
+                        field.fill(str(value))
+            with self.page.expect_response(lambda response: "/settings/bridge" in response.url
+                    and response.request.post_data_json.get("operation") == "save") as response:
+                frame.locator("[data-save-settings]").click()
+            body = response.value.json()
+            if response.value.status != 200 or body.get("ok") is not True:
+                raise AssertionError(f"actual custom account selection save failed: {body}")
+            return {"previous_config": settings["config"], "selected_config": config_values or {}, "rejected": rejected}
         form = self.page.locator("[data-default-plugin-settings]")
         for config in invalid_configs:
             response = self.context.request.post(self.console.url + form.get_attribute("data-endpoint"),

@@ -19,6 +19,7 @@ class DailyBrowser(ProblemBrowser):
         return body
 
     def run(self, automation_id):
+        self.current_automation_id = automation_id
         self.open()
         form = self.card(automation_id).locator("xpath=ancestor::form")
         if not form.locator("[data-run-now]").count():
@@ -28,17 +29,17 @@ class DailyBrowser(ProblemBrowser):
         return self._click(form.locator("[data-run-now]"), "/automations/tasks/run-now")
 
     def scan_projection(self):
-        form = self.card("scan_codes").locator("xpath=ancestor::form")
-        self.page.wait_for_function("""() => {
-            const form = document.querySelector('[data-plugin-instance][data-automation-id="scan_codes"]').closest('form');
+        form = self.card(self.current_automation_id).locator("xpath=ancestor::form")
+        self.page.wait_for_function("""identity => {
+            const form = document.querySelector('[data-plugin-instance][data-automation-id="' + identity + '"]').closest('form');
             const button = form.querySelector('[data-scan-preview-confirm]');
             return !form.querySelector('[data-scan-preview-panel]').hidden && !button.disabled;
-        }""", timeout=60000)
+        }""", arg=self.current_automation_id, timeout=60000)
         return {"selection_count": int(form.locator("[data-scan-preview-selection]").inner_text()),
             "can_confirm": form.locator("[data-scan-preview-confirm]").is_enabled()}
 
     def confirm_scan(self):
-        form = self.card("scan_codes").locator("xpath=ancestor::form")
+        form = self.card(self.current_automation_id).locator("xpath=ancestor::form")
         return self._click(form.locator("[data-scan-preview-confirm]"), "/automations/tasks/confirm-scan-preview")
 
     def replay(self):

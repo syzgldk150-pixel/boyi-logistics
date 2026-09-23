@@ -3,19 +3,22 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
 from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 from playwright.sync_api import sync_playwright
 
+from agent.orchestration import direct_invocation_previews
 from agent.orchestration.direct_invocation_previews import project_preview
+from agent.orchestration.models import OrchestrationError
 from console.services.automation_preview_support import normalize_selection_preview_projection
 from shared.automation_preview_contract import valid_preview_state
 
 
-def selection_projection(*, consumed=False, expired=False):
+def selection_projection(*, consumed=False, expired=False, observed_at=None):
     identity = str(uuid4())
-    observed = datetime.now(timezone.utc) - timedelta(minutes=20 if expired else 1)
+    observed = observed_at or datetime.now(timezone.utc) - timedelta(minutes=20 if expired else 1)
     row = {
         "status": "COMPLETED", "automation_id": "self_pickup_problem_upload", "generation": 1,
         "invocation_json": {"contract_hash": "contract", "project_configuration_version": 1},
@@ -31,6 +34,22 @@ def selection_projection(*, consumed=False, expired=False):
         contract=SimpleNamespace(automation_generation=1, contract_hash="contract", project_configuration_version=1), scan=False)
     assert row["status"] == "COMPLETED"
     return projection
+
+
+def test_preview_accepts_small_clock_adjustment_but_rejects_distant_future():
+    fixed_now = datetime(2026, 9, 23, 9, 0, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now.astimezone(tz) if tz else fixed_now.replace(tzinfo=None)
+
+    with patch.object(direct_invocation_previews, "datetime", FixedDateTime):
+        near = selection_projection(observed_at=fixed_now + timedelta(seconds=2))
+        assert near["preview_state"] == "AVAILABLE"
+        with pytest.raises(OrchestrationError) as distant:
+            selection_projection(observed_at=fixed_now + timedelta(seconds=5))
+    assert distant.value.code == "PREVIEW_INVALID"
 
 
 @pytest.mark.parametrize("consumed,expired,state", [

@@ -158,7 +158,10 @@ def _first_party_test_is_deferred(
     if path.name in _RELEASE_CONTROL_TESTS:
         return False
     text = path.read_text(encoding="utf-8")
-    if "service_v2_plugins" in text:
+    if "service_v2_plugins" in text or any(
+        re.search(rf"(?<![a-z0-9_]){re.escape(plugin_id)}(?![a-z0-9_])", text)
+        for plugin_id in current_plugin_ids(repository_root)
+    ):
         return False
     if not any(marker in text for marker in _FIRST_PARTY_TEST_MARKERS):
         return False

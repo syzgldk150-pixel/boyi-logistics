@@ -16,11 +16,10 @@ from agent.tms_runtime.account_manager import get_account_manager
 from agent.workflow_resource_store import get_workflow_resource
 from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_rules import (
     BUSINESS_TIMEZONE,
-    MANUAL_POSTPONE_TYPES,
+    problem_event_flags,
     build_ledger_row,
     business_now,
     clean_text,
-    is_before_problem_cutoff,
     ledger_row_is_due,
     ledger_row_should_publish,
     parse_datetime,
@@ -787,8 +786,7 @@ def _sync_manual_problem_events(params: dict[str, Any]) -> tuple[list[dict[str, 
             "registered_at": clean_text(row.get("registered_at")),
             "registered_site": clean_text(row.get("registered_site")),
             "upload_complete": True,
-            "before_cutoff": is_before_problem_cutoff(row.get("registered_at")),
-            "postpones_sign": clean_text(row.get("problem_type")) in MANUAL_POSTPONE_TYPES,
+            **problem_event_flags(row.get("registered_at"), clean_text(row.get("problem_type"))),
             "payload": row,
         }
         for row in seen.values()

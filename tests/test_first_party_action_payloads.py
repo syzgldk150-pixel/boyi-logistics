@@ -1355,6 +1355,11 @@ def test_every_first_party_zip_contains_action_bytes_not_core_bridge(manifests) 
             expected_payload_files.add("payload/customer_queue_policy.py")
         elif plugin_id == "sync_finance_bills":
             expected_payload_files.add("payload/finance_fields.py")
+        elif plugin_id == "split_pending_problem_upload":
+            expected_payload_files.update({
+                "payload/service_v2_plugins/sync_daily_should_sign_v2/payload/business/daily_sign_rules.py",
+                "payload/tools/daily_sign_values.py",
+            })
         assert set(payload_files) == expected_payload_files, plugin_id
         for path, content in payload_files.items():
             source = content.decode("utf-8")

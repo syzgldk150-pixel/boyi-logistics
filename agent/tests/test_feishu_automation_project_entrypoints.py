@@ -222,7 +222,7 @@ def test_service_v2_feishu_dispatches_verified_exact_context_and_hides_internal_
     ]
     assert agent.chat_calls == []
     assert replies[0][1]["reply_type"] == "service_v2_feishu_started"
-    assert "已开始执行" in replies[0][0]
+    assert "已受理" in replies[0][0]
     assert replies[-1][0] == (
         "扩展任务执行失败：执行未完成，请在自动化页面查看处理建议。"
     )
@@ -823,7 +823,7 @@ def test_direct_feishu_project_explains_terminal_failure_without_internal_status
     finally:
         message_handler._COMMAND_CONTEXT.reset(token)
 
-    assert "已开始执行：分批问题件任务" in replies[0][0]
+    assert "已受理：分批问题件任务" in replies[0][0]
     assert "分批问题件任务执行失败" in replies[-1][0]
     assert "分批结果表写后核验未通过" in replies[-1][0]
     assert "FAILED_TERMINAL" not in replies[-1][0]
@@ -1753,8 +1753,8 @@ def test_unknown_write_reply_does_not_expose_internal_failure_or_invite_replay()
 
     assert reply_type == "automation_project_write_outcome_unknown"
     assert reply == (
-        "统计到货数据的目标表可能已更新，但最终核验暂未确认。"
-        "系统已保留核验记录，新任务不会因此被阻塞。"
+        "统计到货数据可能已写入，但最终结果尚未确认。"
+        "系统已保留核验记录，请先核对本次结果，避免重复提交；不受影响的任务可继续执行。"
     )
     assert "FIRST_PARTY_ACTION_FAILED" not in reply
     assert "WRITE_OUTCOME_UNKNOWN" not in reply

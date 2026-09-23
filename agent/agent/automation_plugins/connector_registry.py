@@ -28,6 +28,7 @@ from agent.automation_plugins.errors import AutomationPluginError
 from agent.automation_plugins.host_capability_registry import CapabilityEffect
 from agent.tool_registry import validate_schema_instance
 from shared.redaction import is_sensitive_key, redact_text
+from shared.async_work import drain_thread
 
 if TYPE_CHECKING:
     from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
@@ -889,7 +890,10 @@ class ConnectorRegistry:
         )
         current = self.require_operation(resolved.service, resolved.operation)
         try:
-            result = current.handler(binding, MappingProxyType(detached_arguments))
+            if inspect.iscoroutinefunction(current.handler):
+                result = current.handler(binding, MappingProxyType(detached_arguments))
+            else:
+                result = await drain_thread(current.handler, binding, MappingProxyType(detached_arguments))
             if inspect.isawaitable(result):
                 result = await result
         except ConnectorRegistryError:

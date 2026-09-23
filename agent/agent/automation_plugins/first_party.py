@@ -1425,6 +1425,12 @@ def first_party_payload_files(manifest: AutomationPluginManifest) -> dict[str, b
         if not policy_path.is_file():
             raise PluginPackageError("customer queue policy source is missing")
         files["payload/customer_queue_policy.py"] = policy_path.read_bytes()
+    if manifest.plugin_id == "split_pending_problem_upload":
+        for relative in (
+            'service_v2_plugins/sync_daily_should_sign_v2/payload/business/daily_sign_rules.py',
+            'tools/daily_sign_values.py',
+        ):
+            files['payload/' + relative] = (CURRENT_ROOT.parent / relative).read_bytes()
     return files
 
 

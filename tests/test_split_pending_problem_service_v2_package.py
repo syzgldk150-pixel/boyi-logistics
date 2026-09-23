@@ -61,6 +61,8 @@ def test_split_pending_v2_zip_is_deterministic_and_embeds_reviewed_v1_bytes(
             "payload/boyi_plugin_sdk.py",
             "payload/main.py",
             "payload/plugin.py",
+            "payload/service_v2_plugins/sync_daily_should_sign_v2/payload/business/daily_sign_rules.py",
+            "payload/tools/daily_sign_values.py",
             "settings/index.html",
             "settings/settings.css",
             "settings/settings.js",

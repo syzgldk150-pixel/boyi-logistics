@@ -1,0 +1,3546 @@
+{
+  "schema_version": 1,
+  "base_sha": "7ccc71445925f1fe3c7f35a3c7dd1a01198ff2ec",
+  "tested_code_sha": "a5a828a50caff4bce70a7ac30fdbf8e834814fc8",
+  "dirty_paths": [],
+  "acceptance_status": "PASS",
+  "started_at": "2026-09-23T10:10:13.897361+00:00",
+  "completed_at": "2026-09-23T11:01:12.500491+00:00",
+  "report_sha256": "cb14351cf7e4fe074eabfe57d46b03cabe8b4cf83f0bcc3d800a9b66abe91c05",
+  "matrix_sha256": "a98a4d9d9e2e34d8aa1626b75792adb65ffcaf46fcc50ec474d236aab2c664c0",
+  "group_counts": {
+    "PASS": 56
+  },
+  "case_counts": {
+    "PASS": 6517,
+    "BLOCKED": 5
+  },
+  "suite_counts": {
+    "test-agent": {
+      "PASS": 1302
+    },
+    "test-console": {
+      "PASS": 748
+    },
+    "test-root": {
+      "PASS": 4447,
+      "SKIP": 5
+    }
+  },
+  "changes": {
+    "files": 124,
+    "added_lines": 5214,
+    "removed_lines": 716
+  },
+  "performance": [
+    {
+      "metric": "automation/shell",
+      "samples": 30,
+      "successful_samples": 30,
+      "errors": 0,
+      "threshold_ms": 1000,
+      "quantile_method": "nearest rank ceil(p*n)",
+      "p50_ms": 516.5999999996275,
+      "p95_ms": 664.5,
+      "max_ms": 676.1000000014901,
+      "status": "PASS"
+    },
+    {
+      "metric": "automation/list_and_controls",
+      "samples": 30,
+      "successful_samples": 30,
+      "errors": 0,
+      "threshold_ms": 1500,
+      "quantile_method": "nearest rank ceil(p*n)",
+      "p50_ms": 830.3000000007451,
+      "p95_ms": 966.6999999992549,
+      "max_ms": 983.5,
+      "status": "PASS"
+    },
+    {
+      "metric": "finance/shell",
+      "samples": 30,
+      "successful_samples": 30,
+      "errors": 0,
+      "threshold_ms": 1000,
+      "quantile_method": "nearest rank ceil(p*n)",
+      "p50_ms": 517.7000000011176,
+      "p95_ms": 631.3000000007451,
+      "max_ms": 673.8000000007451,
+      "status": "PASS"
+    },
+    {
+      "metric": "finance/list_and_controls",
+      "samples": 30,
+      "successful_samples": 30,
+      "errors": 0,
+      "threshold_ms": 1500,
+      "quantile_method": "nearest rank ceil(p*n)",
+      "p50_ms": 850.9000000003725,
+      "p95_ms": 968.0999999996275,
+      "max_ms": 1003.3000000007451,
+      "status": "PASS"
+    },
+    {
+      "metric": "customer_service/shell",
+      "samples": 30,
+      "successful_samples": 30,
+      "errors": 0,
+      "threshold_ms": 1000,
+      "quantile_method": "nearest rank ceil(p*n)",
+      "p50_ms": 517.5,
+      "p95_ms": 615.6999999992549,
+      "max_ms": 623.5999999996275,
+      "status": "PASS"
+    },
+    {
+      "metric": "customer_service/list_and_controls",
+      "samples": 30,
+      "successful_samples": 30,
+      "errors": 0,
+      "threshold_ms": 1500,
+      "quantile_method": "nearest rank ceil(p*n)",
+      "p50_ms": 841.5,
+      "p95_ms": 903.1999999992549,
+      "max_ms": 939.5999999996275,
+      "status": "PASS"
+    },
+    {
+      "metric": "finance/source_detail",
+      "samples": 100,
+      "successful_samples": 100,
+      "errors": 0,
+      "threshold_ms": 1500,
+      "quantile_method": "nearest rank ceil(p*n)",
+      "p50_ms": 261.0,
+      "p95_ms": 305.80000000074506,
+      "max_ms": 346.7000000011176,
+      "status": "PASS"
+    },
+    {
+      "metric": "customer_service/source_detail",
+      "samples": 100,
+      "successful_samples": 100,
+      "errors": 0,
+      "threshold_ms": 1500,
+      "quantile_method": "nearest rank ceil(p*n)",
+      "p50_ms": 136.19999999925494,
+      "p95_ms": 166.7000000011176,
+      "max_ms": 205.19999999925494,
+      "status": "PASS"
+    },
+    {
+      "metric": "direct/admission",
+      "samples": 100,
+      "successful_samples": 100,
+      "errors": 0,
+      "threshold_ms": 500,
+      "quantile_method": "nearest rank ceil(p*n)",
+      "p50_ms": 174.82848200052103,
+      "p95_ms": 237.13424900051905,
+      "max_ms": 297.4139670004661,
+      "status": "PASS"
+    },
+    {
+      "metric": "navigation/tab_switch",
+      "samples": 20,
+      "successful_samples": 20,
+      "errors": 0,
+      "threshold_ms": 200,
+      "quantile_method": "nearest rank ceil(p*n)",
+      "p50_ms": 74.29999999888241,
+      "p95_ms": 111.70000000111759,
+      "max_ms": 113.70000000111759,
+      "status": "PASS"
+    },
+    {
+      "metric": "direct/independent_start",
+      "samples": 20,
+      "successful_samples": 20,
+      "errors": 0,
+      "p50_ms": 47.6209979988198,
+      "p95_ms": 74.33613700050046,
+      "max_ms": 90.1211720010906,
+      "threshold_ms": 2000,
+      "status": "PASS",
+      "quantile_method": "nearest rank ceil(p*n); threshold applies to every sample"
+    },
+    {
+      "metric": "direct/resume_after_release",
+      "samples": 40,
+      "successful_samples": 40,
+      "errors": 0,
+      "p50_ms": 13.84560699989379,
+      "p95_ms": 20.330182998804958,
+      "max_ms": 28.29344299971126,
+      "threshold_ms": 2000,
+      "status": "PASS",
+      "quantile_method": "nearest rank ceil(p*n); threshold applies to every sample"
+    },
+    {
+      "metric": "direct/waiting_cancel",
+      "samples": 60,
+      "successful_samples": 60,
+      "errors": 0,
+      "p50_ms": 23.267906999535626,
+      "p95_ms": 70.62920000134909,
+      "max_ms": 79.77336500152887,
+      "threshold_ms": 2000,
+      "status": "PASS",
+      "quantile_method": "nearest rank ceil(p*n); threshold applies to every sample"
+    }
+  ],
+  "independent_start_raw_samples": [
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[0]",
+      "round": 0,
+      "start_ms": 37.72817500066594
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[1]",
+      "round": 1,
+      "start_ms": 33.498513999802526
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[2]",
+      "round": 2,
+      "start_ms": 47.72310800035484
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[3]",
+      "round": 3,
+      "start_ms": 35.534540000298875
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[4]",
+      "round": 4,
+      "start_ms": 45.283899000423844
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[5]",
+      "round": 5,
+      "start_ms": 62.22811699990416
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[6]",
+      "round": 6,
+      "start_ms": 50.55852899931779
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[7]",
+      "round": 7,
+      "start_ms": 74.33613700050046
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[8]",
+      "round": 8,
+      "start_ms": 53.86100599935162
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[9]",
+      "round": 9,
+      "start_ms": 48.39203300070949
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[10]",
+      "round": 10,
+      "start_ms": 47.3532880005223
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[11]",
+      "round": 11,
+      "start_ms": 45.796001999406144
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[12]",
+      "round": 12,
+      "start_ms": 90.1211720010906
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[13]",
+      "round": 13,
+      "start_ms": 47.6209979988198
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[14]",
+      "round": 14,
+      "start_ms": 44.11387499931152
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[15]",
+      "round": 15,
+      "start_ms": 48.65830499875301
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[16]",
+      "round": 16,
+      "start_ms": 52.38961900067807
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[17]",
+      "round": 17,
+      "start_ms": 52.19390799902612
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[18]",
+      "round": 18,
+      "start_ms": 41.16445199906593
+    },
+    {
+      "test": "test_concurrent_request_replays_and_busy_identity_remain_terminal[19]",
+      "round": 19,
+      "start_ms": 34.82921899922076
+    }
+  ],
+  "resource_wait_raw_samples": {
+    "resume_after_release_seconds": [
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-0]",
+        "round": 0,
+        "elapsed_ms": 15.475124999284162
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-1]",
+        "round": 1,
+        "elapsed_ms": 13.84560699989379
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-2]",
+        "round": 2,
+        "elapsed_ms": 13.722314000915503
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-3]",
+        "round": 3,
+        "elapsed_ms": 12.501719000283629
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-4]",
+        "round": 4,
+        "elapsed_ms": 13.73164500000712
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-5]",
+        "round": 5,
+        "elapsed_ms": 12.963330000275164
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-6]",
+        "round": 6,
+        "elapsed_ms": 13.395109001066885
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-7]",
+        "round": 7,
+        "elapsed_ms": 28.29344299971126
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-8]",
+        "round": 8,
+        "elapsed_ms": 12.792581999747199
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-9]",
+        "round": 9,
+        "elapsed_ms": 13.318241999513702
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-10]",
+        "round": 10,
+        "elapsed_ms": 13.434018999760156
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-11]",
+        "round": 11,
+        "elapsed_ms": 13.324093000846915
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-12]",
+        "round": 12,
+        "elapsed_ms": 16.00586000131443
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-13]",
+        "round": 13,
+        "elapsed_ms": 12.474177001422504
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-14]",
+        "round": 14,
+        "elapsed_ms": 13.837415999660152
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-15]",
+        "round": 15,
+        "elapsed_ms": 13.605984000605531
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-16]",
+        "round": 16,
+        "elapsed_ms": 13.028319999648375
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-17]",
+        "round": 17,
+        "elapsed_ms": 15.29279399983352
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-18]",
+        "round": 18,
+        "elapsed_ms": 13.898943001549924
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[same_instance-19]",
+        "round": 19,
+        "elapsed_ms": 15.883443998973235
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-0]",
+        "round": 0,
+        "elapsed_ms": 13.752078000834445
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-1]",
+        "round": 1,
+        "elapsed_ms": 13.810714001010638
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-2]",
+        "round": 2,
+        "elapsed_ms": 18.564725000032922
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-3]",
+        "round": 3,
+        "elapsed_ms": 20.330182998804958
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-4]",
+        "round": 4,
+        "elapsed_ms": 15.99859700036177
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-5]",
+        "round": 5,
+        "elapsed_ms": 17.347678000078304
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-6]",
+        "round": 6,
+        "elapsed_ms": 17.298823999226443
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-7]",
+        "round": 7,
+        "elapsed_ms": 18.496598000638187
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-8]",
+        "round": 8,
+        "elapsed_ms": 15.39265199971851
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-9]",
+        "round": 9,
+        "elapsed_ms": 13.732591998632415
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-10]",
+        "round": 10,
+        "elapsed_ms": 20.132694000494666
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-11]",
+        "round": 11,
+        "elapsed_ms": 13.581368999439292
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-12]",
+        "round": 12,
+        "elapsed_ms": 13.527694998629158
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-13]",
+        "round": 13,
+        "elapsed_ms": 20.70232699952612
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-14]",
+        "round": 14,
+        "elapsed_ms": 15.640166999219218
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-15]",
+        "round": 15,
+        "elapsed_ms": 13.385215999733191
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-16]",
+        "round": 16,
+        "elapsed_ms": 16.481349999594386
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-17]",
+        "round": 17,
+        "elapsed_ms": 15.312561999962782
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-18]",
+        "round": 18,
+        "elapsed_ms": 14.529553000102169
+      },
+      {
+        "test": "test_busy_request_waits_then_executes_once_without_resubmission[capacity-19]",
+        "round": 19,
+        "elapsed_ms": 14.634237000791472
+      }
+    ],
+    "waiting_cancel_seconds": [
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[0]",
+        "round": 0,
+        "elapsed_ms": 12.214332000439754
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[1]",
+        "round": 1,
+        "elapsed_ms": 13.943784000730375
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[2]",
+        "round": 2,
+        "elapsed_ms": 13.992021999001736
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[3]",
+        "round": 3,
+        "elapsed_ms": 11.285910000879085
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[4]",
+        "round": 4,
+        "elapsed_ms": 11.875714000780135
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[5]",
+        "round": 5,
+        "elapsed_ms": 9.633310999561218
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[6]",
+        "round": 6,
+        "elapsed_ms": 9.157477999906405
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[7]",
+        "round": 7,
+        "elapsed_ms": 10.484908998478204
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[8]",
+        "round": 8,
+        "elapsed_ms": 11.655278000034741
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[9]",
+        "round": 9,
+        "elapsed_ms": 10.283617000823142
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[10]",
+        "round": 10,
+        "elapsed_ms": 13.319816000148421
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[11]",
+        "round": 11,
+        "elapsed_ms": 11.034716999347438
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[12]",
+        "round": 12,
+        "elapsed_ms": 10.348757001338527
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[13]",
+        "round": 13,
+        "elapsed_ms": 12.230766000357107
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[14]",
+        "round": 14,
+        "elapsed_ms": 11.183704998984467
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[15]",
+        "round": 15,
+        "elapsed_ms": 13.209168000685167
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[16]",
+        "round": 16,
+        "elapsed_ms": 11.138793001009617
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[17]",
+        "round": 17,
+        "elapsed_ms": 12.100158999601263
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[18]",
+        "round": 18,
+        "elapsed_ms": 12.921595000079833
+      },
+      {
+        "test": "test_repeated_cancel_drains_real_verification_before_reuse[19]",
+        "round": 19,
+        "elapsed_ms": 12.62192300055176
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-0]",
+        "round": 0,
+        "elapsed_ms": 23.72706000096514
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-1]",
+        "round": 1,
+        "elapsed_ms": 26.752251000289107
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-2]",
+        "round": 2,
+        "elapsed_ms": 24.814119999064133
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-3]",
+        "round": 3,
+        "elapsed_ms": 23.267906999535626
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-4]",
+        "round": 4,
+        "elapsed_ms": 20.394398001371883
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-5]",
+        "round": 5,
+        "elapsed_ms": 24.08777100026782
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-6]",
+        "round": 6,
+        "elapsed_ms": 21.90380100000766
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-7]",
+        "round": 7,
+        "elapsed_ms": 21.99984099934227
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-8]",
+        "round": 8,
+        "elapsed_ms": 24.721625999518437
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-9]",
+        "round": 9,
+        "elapsed_ms": 28.03983500052709
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-10]",
+        "round": 10,
+        "elapsed_ms": 26.89729600024293
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-11]",
+        "round": 11,
+        "elapsed_ms": 22.037875998648815
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-12]",
+        "round": 12,
+        "elapsed_ms": 26.338002000557026
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-13]",
+        "round": 13,
+        "elapsed_ms": 20.262138999896706
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-14]",
+        "round": 14,
+        "elapsed_ms": 21.487497000634903
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-15]",
+        "round": 15,
+        "elapsed_ms": 20.507659999566386
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-16]",
+        "round": 16,
+        "elapsed_ms": 23.736623999866424
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-17]",
+        "round": 17,
+        "elapsed_ms": 23.181641001428943
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-18]",
+        "round": 18,
+        "elapsed_ms": 26.392956000563572
+      },
+      {
+        "test": "test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock[cancel_waiter-19]",
+        "round": 19,
+        "elapsed_ms": 21.288357998855645
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[0]",
+        "round": 0,
+        "elapsed_ms": 67.58634800098662
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[1]",
+        "round": 1,
+        "elapsed_ms": 66.83430500015675
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[2]",
+        "round": 2,
+        "elapsed_ms": 57.75619599990023
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[3]",
+        "round": 3,
+        "elapsed_ms": 64.47319700055232
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[4]",
+        "round": 4,
+        "elapsed_ms": 52.61150299884321
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[5]",
+        "round": 5,
+        "elapsed_ms": 70.62920000134909
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[6]",
+        "round": 6,
+        "elapsed_ms": 56.37386600028549
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[7]",
+        "round": 7,
+        "elapsed_ms": 64.70662600077048
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[8]",
+        "round": 8,
+        "elapsed_ms": 71.45726399903651
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[9]",
+        "round": 9,
+        "elapsed_ms": 67.86662400008936
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[10]",
+        "round": 10,
+        "elapsed_ms": 79.77336500152887
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[11]",
+        "round": 11,
+        "elapsed_ms": 69.2311080001673
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[12]",
+        "round": 12,
+        "elapsed_ms": 60.866610998346005
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[13]",
+        "round": 13,
+        "elapsed_ms": 63.84881099984341
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[14]",
+        "round": 14,
+        "elapsed_ms": 67.75139999990643
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[15]",
+        "round": 15,
+        "elapsed_ms": 61.12340899926494
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[16]",
+        "round": 16,
+        "elapsed_ms": 61.3395969994599
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[17]",
+        "round": 17,
+        "elapsed_ms": 63.23186400004488
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[18]",
+        "round": 18,
+        "elapsed_ms": 65.68151700048475
+      },
+      {
+        "test": "test_four_workers_return_resource_wait_claims_and_cancel[19]",
+        "round": 19,
+        "elapsed_ms": 76.40284199987946
+      }
+    ]
+  },
+  "runtime": {
+    "sandbox": {
+      "healthy": true,
+      "code": "OK"
+    },
+    "max_concurrency": 16,
+    "execution": "DirectPluginInvocationService -> PluginExecutionRouter -> bwrap/prlimit subprocess",
+    "broker": "real local Unix socket, signed grant, host-operation resource scope",
+    "persistence": "Invocation facts, actual generation leases and write receipts; no Command/Run/Step"
+  },
+  "admission_outcomes": {
+    "COMPLETED": 100
+  },
+  "busy_rejections": 0,
+  "baseline_performance": "NO_MEASURED_BASELINE",
+  "environment": {
+    "python": "3.10.20",
+    "python_executable": "/home/deng/projects/boyi-phase1-final-closeout/.task_tmp/v32/environment/venv-system/bin/python",
+    "mysql": "8.0.46-0ubuntu0.24.04.4",
+    "database": "v32_acceptance_test",
+    "dotenv_disabled": true
+  },
+  "groups": [
+    {
+      "id": "A01",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "扫描、统计、分批、自提四项分别使用真实发行 V2 包及当前入口、Direct、业务函数和隔离外部目标；核对候选、字段、结果和副作用，不只断言202或示例文本。",
+      "tests": [
+        "tests/test_direct_daily_plugins_mysql.py",
+        "probe:daily_scan_statistics",
+        "probe:daily_problems",
+        "tests/test_problem_connectors_v2.py::test_problem_sheet_preserves_phone_and_address_column_semantics"
+      ],
+      "case_counts": {
+        "PASS": 6
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_daily_plugins_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_scan_statistics",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_problems",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_problem_connectors_v2.py::test_problem_sheet_preserves_phone_and_address_column_semantics",
+          "minimum_cases": 2
+        }
+      ]
+    },
+    {
+      "id": "A02",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "执行容量保持原上限；无冲突任务重叠推进，一项失败不取消其他任务。同实例、容量或实际资源暂忙时先受理并在当前进程内最多等待30秒，释放后同一请求继续；总活跃请求有界，超时或过载明确结束，保留业务依赖。",
+      "tests": [
+        "probe:daily_concurrency",
+        "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock"
+      ],
+      "case_counts": {
+        "PASS": 81
+      },
+      "required_evidence": [
+        {
+          "reference": "probe:daily_concurrency",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "alias"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "reverse"
+          },
+          "distinct_property": "round"
+        }
+      ]
+    },
+    {
+      "id": "A03",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "同实例、总容量或实际写目标暂忙不得立即失败：在当前进程内最多等待30秒，资源释放后原请求继续且不占额外执行名额；等待可取消，资源释放后2秒内开始。超时或活跃请求达到上限才明确拒绝，不持久排队、重启不补跑，不靠增加执行容量通过。",
+      "tests": [
+        "tests/test_direct_closeout_mysql.py::test_concurrent_request_replays_and_busy_identity_remain_terminal",
+        "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+        "tests/test_direct_resource_wait_mysql.py::test_busy_request_waits_then_executes_once_without_resubmission"
+      ],
+      "case_counts": {
+        "PASS": 140
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_concurrent_request_replays_and_busy_identity_remain_terminal",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_concurrent_request_replays_and_busy_identity_remain_terminal",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "concurrent_submissions": "20"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "alias"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "reverse"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "timeout"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_wait_mysql.py::test_busy_request_waits_then_executes_once_without_resubmission",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "same_instance"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_wait_mysql.py::test_busy_request_waits_then_executes_once_without_resubmission",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "capacity"
+          },
+          "distinct_property": "round"
+        }
+      ]
+    },
+    {
+      "id": "A04",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "经验证独立的前者可并行；冲突的后者互斥，不因不同 runtime_target 或角色逃过保护",
+      "tests": [
+        "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock"
+      ],
+      "case_counts": {
+        "PASS": 80
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "alias"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "reverse"
+          },
+          "distinct_property": "round"
+        }
+      ]
+    },
+    {
+      "id": "A05",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "作用范围重叠被识别，准入无死锁、无部分锁泄漏；不要求开发不需要的行级锁框架",
+      "tests": [
+        "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock"
+      ],
+      "case_counts": {
+        "PASS": 80
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "alias"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "reverse"
+          },
+          "distinct_property": "round"
+        }
+      ]
+    },
+    {
+      "id": "A06",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "无账号、会话、参数、输出串扰；共享会话正确串行，不牵连其他资源",
+      "tests": [
+        "agent/tests/test_session_process_isolation.py",
+        "tests/test_session_boundaries.py",
+        "tests/test_plugin_runtime_isolation_mysql.py",
+        "agent/tests/test_yunda_proxy_session_state.py",
+        "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock"
+      ],
+      "case_counts": {
+        "PASS": 129
+      },
+      "required_evidence": [
+        {
+          "reference": "agent/tests/test_session_process_isolation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_session_boundaries.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_runtime_isolation_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_yunda_proxy_session_state.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "alias"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "reverse"
+          },
+          "distinct_property": "round"
+        }
+      ]
+    },
+    {
+      "id": "A07",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "真实Direct重启终结执行中和等待资源的旧调用，不重放；旧owner／generation／执行身份不能继续新写或迟到覆盖。等待请求不能在旧回调释放后重新获得执行权；历史Runner用例不作为当前通过证据。",
+      "tests": [
+        "tests/test_direct_closeout_mysql.py::test_restart_fences_actual_inflight_invocation_and_late_completion",
+        "tests/test_direct_plugin_invocation_mysql.py::test_generation_upgrade_and_rollback_use_real_invocation_leases",
+        "tests/test_direct_resource_wait_mysql.py::test_restart_ends_waiting_request_without_replaying_it"
+      ],
+      "case_counts": {
+        "PASS": 61
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_restart_fences_actual_inflight_invocation_and_late_completion",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_plugin_invocation_mysql.py::test_generation_upgrade_and_rollback_use_real_invocation_leases",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_restart_fences_actual_inflight_invocation_and_late_completion",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "before_execution"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_restart_fences_actual_inflight_invocation_and_late_completion",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "after_execution"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_wait_mysql.py::test_restart_ends_waiting_request_without_replaying_it",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "restart_waiter"
+          },
+          "distinct_property": "round"
+        }
+      ]
+    },
+    {
+      "id": "A08",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "准入或实际写前的资源等待取消2秒内生效且后续零新写；执行／核验／结果提交中取消保留真实占用直到结束，不能假报零副作用；重复取消安全，不遗留后台执行。",
+      "tests": [
+        "tests/test_direct_plugin_invocation_mysql.py",
+        "tests/test_direct_closeout_mysql.py::test_repeated_cancel_drains_real_verification_before_reuse",
+        "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+        "probe:scan_cancel_recovery",
+        "tests/test_direct_closeout_mysql.py::test_waiter_cancellation_drains_settlement_before_releasing_ownership"
+      ],
+      "case_counts": {
+        "PASS": 141
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_plugin_invocation_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_repeated_cancel_drains_real_verification_before_reuse",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:scan_cancel_recovery",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "cancel_waiter"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_repeated_cancel_drains_real_verification_before_reuse",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_waiter_cancellation_drains_settlement_before_releasing_ownership",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "cancellation_during_settlement": "True"
+          },
+          "distinct_property": "round"
+        }
+      ]
+    },
+    {
+      "id": "A09",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "每轮同一request_id并发重发至少20次，在资源等待中和终态后均返回同一Invocation，只执行一次且副作用准确；参数冲突拒绝。等待超时后同请求返回原失败，不重新等待或执行；新用户动作使用新身份，受业务防重约束。",
+      "tests": [
+        "tests/test_direct_closeout_mysql.py::test_concurrent_request_replays_and_busy_identity_remain_terminal",
+        "tests/test_direct_resource_wait_mysql.py::test_busy_request_waits_then_executes_once_without_resubmission"
+      ],
+      "case_counts": {
+        "PASS": 60
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_concurrent_request_replays_and_busy_identity_remain_terminal",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_concurrent_request_replays_and_busy_identity_remain_terminal",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "concurrent_submissions": "20"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_wait_mysql.py::test_busy_request_waits_then_executes_once_without_resubmission",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "same_instance"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_wait_mysql.py::test_busy_request_waits_then_executes_once_without_resubmission",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "capacity"
+          },
+          "distinct_property": "round"
+        }
+      ]
+    },
+    {
+      "id": "A10",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "外部已写响应丢失、权威未写、迟到写、未知、部分写场景，新的UUID与合法跨入口／实例重触发不重复逻辑业务效果。只对未核清目标结束／拒绝，无关任务继续；不恢复全局历史锁。",
+      "tests": [
+        "tests/test_direct_problem_unknown_mysql.py",
+        "tests/test_scan_readback_protocol.py",
+        "tests/test_scan_snapshot_recovery_mysql.py",
+        "probe:scan_recovery",
+        "probe:unknown_resource_scope",
+        "probe:daily_concurrency"
+      ],
+      "case_counts": {
+        "PASS": 184
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_problem_unknown_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_scan_readback_protocol.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_scan_snapshot_recovery_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:scan_recovery",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:unknown_resource_scope",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_concurrency",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_problem_unknown_mysql.py::test_new_uuid_and_alias_instance_never_duplicate_uncertain_problem",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "applied_lost"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_problem_unknown_mysql.py::test_new_uuid_and_alias_instance_never_duplicate_uncertain_problem",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "rejected"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_problem_unknown_mysql.py::test_new_uuid_and_alias_instance_never_duplicate_uncertain_problem",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "late"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_problem_unknown_mysql.py::test_new_uuid_and_alias_instance_never_duplicate_uncertain_problem",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "unresolved"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_problem_unknown_mysql.py::test_partial_batch_does_not_replay_verified_item_or_uncertain_tail",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2"
+          },
+          "distinct_property": "round"
+        }
+      ]
+    },
+    {
+      "id": "A11",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "资源短暂占用只让当前已受理调用有界等待，不重跑已结束业务。普通失败和等待超时不自动重试；当前定时发生实例的结果如实记录，同身份重投不新增执行，未来计划保留。重启／重新登录不续跑旧调用。",
+      "tests": [
+        "tests/test_direct_plugin_invocation_mysql.py::test_failed_package_has_no_backlog_or_automatic_retry",
+        "tests/test_direct_plugin_invocation_mysql.py::test_restart_settles_interrupted_facts_without_execution_or_recovery",
+        "tests/test_scheduled_task_contracts.py",
+        "probe:customer_collection_flow"
+      ],
+      "case_counts": {
+        "PASS": 108
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_plugin_invocation_mysql.py::test_failed_package_has_no_backlog_or_automatic_retry",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_plugin_invocation_mysql.py::test_restart_settles_interrupted_facts_without_execution_or_recovery",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_scheduled_task_contracts.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "A12",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "预览零写入；正式目标与用户确认一致；重复确认幂等；不叠加额外审批，不放开旧任务自动执行",
+      "tests": [
+        "tests/test_scan_preview_binding.py",
+        "tests/test_selection_preview_binding.py",
+        "agent/tests/test_feishu_split_selection.py",
+        "probe:daily_scan_statistics",
+        "probe:daily_problems",
+        "tests/test_direct_daily_plugins_mysql.py"
+      ],
+      "case_counts": {
+        "PASS": 57
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_scan_preview_binding.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_selection_preview_binding.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_feishu_split_selection.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_scan_statistics",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_problems",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_daily_plugins_mysql.py",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "A13",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "进入同一权威链路，不调用 LLM；保留同义词／取消语义，不新增本来未开放的定时或 AI 写入口",
+      "tests": [
+        "agent/tests/test_feishu_automation_project_entrypoints.py",
+        "tests/test_automation_project_entrypoints.py",
+        "tests/test_scheduled_task_contracts.py",
+        "tests/test_control_plane_execution_boundaries.py",
+        "tests/test_automation_project_api.py",
+        "tests/test_direct_daily_plugins_mysql.py",
+        "probe:customer_collection_flow"
+      ],
+      "case_counts": {
+        "PASS": 204
+      },
+      "required_evidence": [
+        {
+          "reference": "agent/tests/test_feishu_automation_project_entrypoints.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_project_entrypoints.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_scheduled_task_contracts.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_control_plane_execution_boundaries.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_project_api.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_daily_plugins_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "A14",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "冷首屏和本地轻量列表仍按性能目标完成；调用跟踪证明首屏不等待这些依赖，而非仅显示骨架",
+      "tests": [
+        "agent/tests/test_feishu_resource_catalog.py",
+        "probe:browser_performance"
+      ],
+      "case_counts": {
+        "PASS": 15
+      },
+      "required_evidence": [
+        {
+          "reference": "agent/tests/test_feishu_resource_catalog.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:browser_performance",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "A15",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "合法独立实例仍可展示和操作；坏实例有提示；有真实依赖的实例不被错误放行",
+      "tests": [
+        "tests/test_automation_plugin_platform.py::test_catalog_quarantines_one_corrupt_persisted_project",
+        "tests/test_automation_plugin_platform.py::test_catalog_identity_corruption_remains_global",
+        "tests/test_automation_project_policy_service.py",
+        "probe:customer_collection_flow",
+        "tests/test_automation_plugin_catalog_batch.py"
+      ],
+      "case_counts": {
+        "PASS": 83
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_plugin_platform.py::test_catalog_quarantines_one_corrupt_persisted_project",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_plugin_platform.py::test_catalog_identity_corruption_remains_global",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_project_policy_service.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_plugin_catalog_batch.py",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "A16",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "不造假可运行项目；同 key 合并刷新；旧响应不覆盖新配置，不使已卸载实例复活",
+      "tests": [
+        "console/tests/test_plugin_catalog_singleflight.py",
+        "probe:catalog_delivery",
+        "tests/test_automation_plugin_catalog_batch.py"
+      ],
+      "case_counts": {
+        "PASS": 7
+      },
+      "required_evidence": [
+        {
+          "reference": "console/tests/test_plugin_catalog_singleflight.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:catalog_delivery",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_plugin_catalog_batch.py",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "A17",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "无重复整页获取和重复初始化；监听器、轮询、在途请求没有线性积累；终态停止、隐藏退避、关闭清理",
+      "tests": [
+        "console/tests/test_control_plane_ui.py",
+        "probe:navigation_probe"
+      ],
+      "case_counts": {
+        "PASS": 12
+      },
+      "required_evidence": [
+        {
+          "reference": "console/tests/test_control_plane_ui.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:navigation_probe",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "A18",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "服务端按新事实处理，旧快照不构成授权；缓存不跨不相容权限范围泄漏",
+      "tests": [
+        "tests/test_automation_project_policy_service.py",
+        "console/tests/test_plugin_catalog_singleflight.py",
+        "tests/test_automation_project_authorization.py",
+        "probe:customer_collection_flow"
+      ],
+      "case_counts": {
+        "PASS": 102
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_project_policy_service.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_plugin_catalog_singleflight.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_project_authorization.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "A19",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "给当前Direct／查询链注入慢同步I/O，普通执行容量繁忙时取消、状态及事件循环能推进，不因持锁同步调用全局停顿；不能用旧Runner控制池测试单独证明。",
+      "tests": [
+        "tests/test_direct_closeout_mysql.py::test_slow_admission_database_does_not_hold_control_or_read_loop",
+        "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+        "probe:catalog_delivery"
+      ],
+      "case_counts": {
+        "PASS": 82
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_closeout_mysql.py::test_slow_admission_database_does_not_hold_control_or_read_loop",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:catalog_delivery",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "alias"
+          },
+          "distinct_property": "round"
+        },
+        {
+          "reference": "tests/test_direct_resource_scope_mysql.py::test_actual_resource_scope_is_alias_safe_and_releases_without_deadlock",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2",
+            "scenario": "reverse"
+          },
+          "distinct_property": "round"
+        }
+      ]
+    },
+    {
+      "id": "A20",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "使用明确归属测试库验证当前Invocation唯一约束、事务、版本切换和必要迁移；旧样例升级保留数据；不强制实现已取消的任务领取，保留历史兼容检查，不滥用SKIP LOCKED遗漏业务集合。",
+      "tests": [
+        "tests/test_direct_plugin_invocation_mysql.py",
+        "tests/test_problem_write_intents_migration_mysql.py",
+        "tests/test_waybill_source_coverage_mysql.py",
+        "tests/test_runtime_repositories.py",
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_mysql_orchestration_integration.py::test_empty_upgrade_and_partial_migrations_are_reentrant",
+        "tests/test_mysql_orchestration_integration.py::test_json_unique_foreign_key_and_transaction_rollback"
+      ],
+      "case_counts": {
+        "PASS": 107
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_direct_plugin_invocation_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_problem_write_intents_migration_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_waybill_source_coverage_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_runtime_repositories.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_mysql_orchestration_integration.py::test_empty_upgrade_and_partial_migrations_are_reentrant",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_mysql_orchestration_integration.py::test_json_unique_foreign_key_and_transaction_rollback",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "A21",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "既有能力保留；配置和定时不互相覆盖；不同实例不误改；在途运行不混用版本；升级失败不全平台停摆",
+      "tests": [
+        "tests/test_automation_plugin_lifecycle.py",
+        "tests/test_automation_project_policy_service.py",
+        "probe:navigation_probe",
+        "probe:run_acceptance",
+        "tests/test_service_v2_policy_runtime.py",
+        "tests/test_plugin_service_v2_foundation.py",
+        "probe:settings_effective",
+        "probe:customer_collection_flow",
+        "probe:field_maintenance"
+      ],
+      "case_counts": {
+        "PASS": 150
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_plugin_lifecycle.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_project_policy_service.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:navigation_probe",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:run_acceptance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_policy_runtime.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_service_v2_foundation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:settings_effective",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "A22",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "受共享改动影响的现有回归和页面冒烟通过；不通过移除已有功能来换取通过",
+      "tests": [
+        "console/tests/test_customer_service_module.py",
+        "console/tests/test_finance_module.py",
+        "agent/tests/test_session_broker.py",
+        "probe:navigation_probe",
+        "console/tests/test_manual_waybill.py",
+        "console/tests/test_document_mode_switch.py",
+        "console/tests/test_waybill_entry_extensions.py",
+        "console/tests/test_waybill_query.py",
+        "console/tests/test_tracking_query.py",
+        "console/tests/test_receipts_management.py",
+        "console/tests/test_admin_auth.py",
+        "console/tests/test_mobile_navigation.py",
+        "console/tests/test_menu_registration.py",
+        "probe:legacy_page_smoke"
+      ],
+      "case_counts": {
+        "PASS": 294
+      },
+      "required_evidence": [
+        {
+          "reference": "console/tests/test_customer_service_module.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_finance_module.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_session_broker.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:navigation_probe",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_manual_waybill.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_document_mode_switch.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_waybill_entry_extensions.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_waybill_query.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_tracking_query.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_receipts_management.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_admin_auth.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_mobile_navigation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_menu_registration.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:legacy_page_smoke",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "A23",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "已确认业务成功不被改为业务失败；可靠重试通知／展示，不重跑外部写；关键账本失败则不能假报成功",
+      "tests": [
+        "agent/tests/test_outbox_dispatcher.py",
+        "tests/test_feishu_readback_delayed.py",
+        "probe:daily_concurrency"
+      ],
+      "case_counts": {
+        "PASS": 10
+      },
+      "required_evidence": [
+        {
+          "reference": "agent/tests/test_outbox_dispatcher.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_feishu_readback_delayed.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_concurrency",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "A24",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "后续业务只读取当前口径允许的已发布、匹配快照；依赖不满足可明确失败并待用户重触发，不伪造完成或自动排队；无关业务不因旧事项被阻断。",
+      "tests": [
+        "tests/test_sync_scan_codes_v1_v2_parity.py",
+        "tests/test_sync_arrival_stats_v1_v2_parity.py",
+        "probe:daily_scan_statistics",
+        "probe:daily_concurrency"
+      ],
+      "case_counts": {
+        "PASS": 23
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_sync_scan_codes_v1_v2_parity.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_sync_arrival_stats_v1_v2_parity.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_scan_statistics",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_concurrency",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "B01",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "财务等固定页面和已经保存的业务数据仍可查询；菜单不依赖该插件生命周期；状态如实标识",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "console/tests/test_finance_module.py",
+        "tests/test_module_data_sources_mysql.py::test_recent_failed_collection_keeps_published_history",
+        "probe:detail_browser",
+        "probe:customer_collection_flow"
+      ],
+      "case_counts": {
+        "PASS": 59
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_finance_module.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_recent_failed_collection_keeps_published_history",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:detail_browser",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "B02",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "在当前发行采集包与真实调用链，只改目标包易变字段／解析即可输出同一标准账单；不改核心金额、业务去重、来源身份和查询页面，不以无人调用接口或旧包代替。",
+      "tests": [
+        "probe:field_maintenance",
+        "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows"
+      ],
+      "case_counts": {
+        "PASS": 5
+      },
+      "required_evidence": [
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "B03",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "业务历史、人工字段、来源记录和其他实例数据保留；不能误删共享账号／资源；没有未处理在途任务后再清理专属临时资源",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "probe:customer_collection_flow"
+      ],
+      "case_counts": {
+        "PASS": 43
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "B04",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "插件正常安装、配置和执行本来支持的入口；四日常业务不依赖模型；AI 故障不耗尽必要控制容量",
+      "tests": [
+        "tests/test_service_v2_harness_contribution_contract.py",
+        "tests/test_automation_plugin_manifest_contract.py",
+        "probe:run_acceptance",
+        "probe:daily_scan_statistics",
+        "probe:daily_problems",
+        "probe:daily_concurrency"
+      ],
+      "case_counts": {
+        "PASS": 44
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_service_v2_harness_contribution_contract.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_plugin_manifest_contract.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:run_acceptance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_scan_statistics",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_problems",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_concurrency",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "B05",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "使用同一权威更新规则；业务键幂等；金额、筛选、状态转换不漂移；不覆盖约定的人工字段",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_finance_validation.py",
+        "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+        "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+        "probe:customer_collection_flow"
+      ],
+      "case_counts": {
+        "PASS": 54
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_finance_validation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "B06",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "最新已发布成功快照继续可查，半批不伪装完整；恢复后无重复账单；不要求为此新建一套批处理平台",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_finance_repository_rolls_back_with_autocommit_factory",
+        "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
+        "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows",
+        "probe:field_maintenance"
+      ],
+      "case_counts": {
+        "PASS": 47
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_finance_repository_rolls_back_with_autocommit_factory",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "B07",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "路由调用服务，服务显式依赖必要仓储／适配器；财务领域不导入供应商插件内部类型；新拆分无反向依赖聚合模块和导入时 I/O",
+      "tests": [
+        "tests/test_control_plane_execution_boundaries.py",
+        "tests/test_automation_plugin_catalog_batch.py",
+        "probe:daily_scan_statistics",
+        "probe:customer_collection_flow"
+      ],
+      "case_counts": {
+        "PASS": 30
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_control_plane_execution_boundaries.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_plugin_catalog_batch.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:daily_scan_statistics",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "B08",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "生命周期只作用目标实例及真实依赖；启停／设置／历史查询不因无关坏实例被锁死；现有 Connector／Host 访问边界未被绕过",
+      "tests": [
+        "tests/test_automation_plugin_lifecycle.py",
+        "probe:customer_collection_flow"
+      ],
+      "case_counts": {
+        "PASS": 34
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_plugin_lifecycle.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "C01",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "四个独立功能插件仍在自动化；财务与客服采集实例仅在所属模块的日常列表、计数与搜索中出现；不新增全局插件中心；不是前端隐藏",
+      "tests": [
+        "tests/test_automation_plugin_platform.py",
+        "probe:module_scope",
+        "tests/test_plugin_module_management.py"
+      ],
+      "case_counts": {
+        "PASS": 50
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_plugin_platform.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:module_scope",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_module_management.py",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "C02",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "财务与客服都可上传并安装兼容包、配置、同步、查记录、升级／卸载；错误模块或不兼容数据契约安装被准确拒绝；调用同一安装与执行服务",
+      "tests": [
+        "tests/test_automation_plugin_lifecycle.py",
+        "tests/test_plugin_module_management.py",
+        "tests/test_action_v1_module_installation.py",
+        "probe:customer_collection_flow",
+        "probe:field_maintenance"
+      ],
+      "case_counts": {
+        "PASS": 55
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_plugin_lifecycle.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_module_management.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_action_v1_module_installation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "C03",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "只有账号需求且无 settings/index.html 的合法插件可安装并用宿主默认页；无账号无需配置；多个必要角色正确显示；不出现 Cookie／Token／数据库等无关输入",
+      "tests": [
+        "tests/test_automation_plugin_manifest_contract.py",
+        "probe:navigation_probe",
+        "tests/test_plugin_module_management.py",
+        "tests/test_automation_plugin_code_owned_fields.py",
+        "probe:settings_effective",
+        "probe:customer_collection_flow"
+      ],
+      "case_counts": {
+        "PASS": 64
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_plugin_manifest_contract.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:navigation_probe",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_module_management.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_plugin_code_owned_fields.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:settings_effective",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "C04",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "有特殊需求的插件自有页面可用且复用账号能力；默认／专属页保存同一配置事实；并发版本检查有效；设置与计划互不覆盖；有未满足必填配置不假报就绪",
+      "tests": [
+        "tests/test_automation_project_policy_service.py",
+        "tests/test_plugin_module_management.py",
+        "tests/test_automation_plugin_management_api.py",
+        "console/tests/test_plugin_settings_initialization.py",
+        "probe:custom_settings"
+      ],
+      "case_counts": {
+        "PASS": 132
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_project_policy_service.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_module_management.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_plugin_management_api.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_plugin_settings_initialization.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:custom_settings",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "C05",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "插件选择统一账号引用，失效只影响对应来源／任务，统一恢复后可继续；不复制账号库、不静默换账号，浏览器不获得原始凭据；账号显示不触发全量在线探测",
+      "tests": [
+        "agent/tests/test_session_broker.py",
+        "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+        "tests/test_automation_project_entrypoints.py",
+        "agent/tests/test_session_process_isolation.py",
+        "probe:customer_collection_flow",
+        "probe:settings_effective",
+        "agent/tests/test_yunda_proxy_session_state.py"
+      ],
+      "case_counts": {
+        "PASS": 112
+      },
+      "required_evidence": [
+        {
+          "reference": "agent/tests/test_session_broker.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_project_entrypoints.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_session_process_isolation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:settings_effective",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_yunda_proxy_session_state.py",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "C06",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "真实浏览器从财务安装／迁入已实现采集器、绑定账号、同步到真实业务函数与测试库、选择来源、查看原有明细／BI；金额、业务键、覆盖范围和汇总正确",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "agent/tests/test_finance_sync_service.py",
+        "probe:field_maintenance",
+        "probe:finance_source_state"
+      ],
+      "case_counts": {
+        "PASS": 59
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_finance_sync_service.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:finance_source_state",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "C07",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "客服模块同样完成实际采集、来源选择、问题件列表与既有统计；不只占位；不触发对外问题件上传、回复或业务发布，本地数据发布沿正常流程；内部人工处理字段不被覆盖",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "agent/tests/test_customer_service_problem_sync_tool.py",
+        "probe:customer_collection_flow"
+      ],
+      "case_counts": {
+        "PASS": 49
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_customer_service_problem_sync_tool.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "C08",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "合法新来源经安装配置出现，无需改 Python 来源常量；仅登录账号不会自动变成可用来源；停用／卸载来源仍可查询其历史；SQL 和其他校验未残留错误静态限制",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_legacy_finance_import_is_incremental_and_reports_missing_identity",
+        "probe:navigation_probe",
+        "probe:detail_browser",
+        "probe:customer_collection_flow"
+      ],
+      "case_counts": {
+        "PASS": 45
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_legacy_finance_import_is_incremental_and_reports_missing_identity",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:navigation_probe",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:detail_browser",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "C09",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "选择来源与类型后刷新可恢复必要选择；查询绑定稳定来源而非插件存活；未成功采集显示尚无数据；失败来源不悄悄从总额剔除；兼容范围内聚合且显示更新差异",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "console/tests/test_finance_service.py",
+        "tests/test_module_data_sources_mysql.py::test_recent_failed_collection_keeps_published_history",
+        "probe:detail_browser",
+        "probe:finance_source_state"
+      ],
+      "case_counts": {
+        "PASS": 70
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_finance_service.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_recent_failed_collection_keeps_published_history",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:detail_browser",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:finance_source_state",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "C10",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "卸载最后一个采集实例后仍保留来源、历史、人工字段、报表引用和必要溯源；其他实例／共享账号不被误删；在途结束前不删执行环境",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "probe:customer_collection_flow",
+        "tests/test_lifecycle_disposal_order.py"
+      ],
+      "case_counts": {
+        "PASS": 45
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_lifecycle_disposal_order.py",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "C11",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "兼容替换保留 source_id／报表；旧生产者不再新写，迟到结果不覆盖；切换重试不重复采集；不同站点／账本不得仅凭同名接续",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py::test_management_adapter_continues_verified_source_atomically",
+        "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+        "tests/test_direct_source_switch_mysql.py::test_actual_v2_producer_switch_retains_identity_and_rejects_late_publication"
+      ],
+      "case_counts": {
+        "PASS": 41
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_management_adapter_continues_verified_source_atomically",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_source_switch_mysql.py::test_actual_v2_producer_switch_retains_identity_and_rejects_late_publication",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_direct_source_switch_mysql.py::test_actual_v2_producer_switch_retains_identity_and_rejects_late_publication",
+          "minimum_cases": 20,
+          "properties": {
+            "runtime_model": "SERVICE_V2"
+          },
+          "distinct_property": "round"
+        }
+      ]
+    },
+    {
+      "id": "C12",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "既有多账号实例保留角色和计划；不同凭据采同一账本不会在合并中重复计入；不同真实业务不误去重；变更到不同站点不覆盖原历史",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+        "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
+        "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+        "tests/test_mysql_orchestration_integration.py::test_017_finance_startup_create_seed_restore_and_reapply_are_exact",
+        "tests/test_mysql_orchestration_integration.py::test_automation_project_018_forward_restore_reapply_and_atomic_config"
+      ],
+      "case_counts": {
+        "PASS": 44
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_mysql_orchestration_integration.py::test_017_finance_startup_create_seed_restore_and_reapply_are_exact",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_mysql_orchestration_integration.py::test_automation_project_018_forward_restore_reapply_and_atomic_config",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "C13",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "使用旧结构样例验证增量迁移；不重复建实例／来源／Job；保留旧Run历史、现行Invocation、账号、计划、启停与汇总；未识别项诊断，不为当前执行重新造旧Run。",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_migration_reentry_is_safe",
+        "tests/test_module_data_sources_mysql.py::test_legacy_finance_import_is_incremental_and_reports_missing_identity",
+        "tests/test_mysql_orchestration_integration.py::test_017_finance_startup_create_seed_restore_and_reapply_are_exact",
+        "tests/test_mysql_orchestration_integration.py::test_automation_project_018_forward_restore_reapply_and_atomic_config",
+        "tests/test_mysql_orchestration_integration.py::test_automation_project_018_partial_rerun_is_safe",
+        "probe:customer_collection_flow",
+        "probe:navigation_probe"
+      ],
+      "case_counts": {
+        "PASS": 47
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_migration_reentry_is_safe",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_legacy_finance_import_is_incremental_and_reports_missing_identity",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_mysql_orchestration_integration.py::test_017_finance_startup_create_seed_restore_and_reapply_are_exact",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_mysql_orchestration_integration.py::test_automation_project_018_forward_restore_reapply_and_atomic_config",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_mysql_orchestration_integration.py::test_automation_project_018_partial_rerun_is_safe",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:navigation_probe",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "C14",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "插件停用、账号掉线、外部目录失败时，数据库正常的财务／客服查询可用；当前不可采集状态与历史可读状态正确分离，陈旧页面不能越过服务端实际启停",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_recent_failed_collection_keeps_published_history",
+        "probe:detail_browser",
+        "probe:customer_collection_flow"
+      ],
+      "case_counts": {
+        "PASS": 44
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_recent_failed_collection_keeps_published_history",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:detail_browser",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "C15",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "调用跟踪证明先按归属查询摘要，不构造全部重目录；三个入口及 BI 选择不触发实时采集／全量外部校验；A14、性能和缓存竞态覆盖新页面",
+      "tests": [
+        "tests/test_automation_plugin_platform.py",
+        "probe:browser_performance",
+        "tests/test_plugin_module_management.py",
+        "console/tests/test_plugin_catalog_singleflight.py",
+        "probe:catalog_delivery",
+        "tests/test_automation_plugin_catalog_batch.py"
+      ],
+      "case_counts": {
+        "PASS": 57
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_plugin_platform.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:browser_performance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_module_management.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_plugin_catalog_singleflight.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:catalog_delivery",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_automation_plugin_catalog_batch.py",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "C16",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "模块采集复用现有 Scheduler，重启和页面迁移不多造 Job；运行记录／通知回到正确模块与来源；回到设置所属页不强制跳自动化；原固定指令语义保留",
+      "tests": [
+        "tests/test_scheduled_task_contracts.py",
+        "agent/tests/test_feishu_automation_project_entrypoints.py",
+        "probe:navigation_probe",
+        "probe:run_acceptance",
+        "tests/test_collector_navigation.py",
+        "agent/tests/test_finance_alert_policy.py",
+        "console/tests/test_automation_control_plane_cutover.py",
+        "probe:finance_source_state",
+        "probe:customer_collection_flow",
+        "probe:field_maintenance"
+      ],
+      "case_counts": {
+        "PASS": 189
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_scheduled_task_contracts.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_feishu_automation_project_entrypoints.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:navigation_probe",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:run_acceptance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_collector_navigation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "agent/tests/test_finance_alert_policy.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_automation_control_plane_cutover.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:finance_source_state",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "C17",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "财务／客服增加入口但原业务不被移除或整体重做；运单、回单、OCR 等回归；换页面不扩大账号／数据权限；已有模块外部动作不被误列为采集",
+      "tests": [
+        "console/tests/test_customer_service_module.py",
+        "console/tests/test_finance_module.py",
+        "tests/test_control_plane_execution_boundaries.py",
+        "tests/test_plugin_module_management.py",
+        "probe:customer_collection_flow",
+        "console/tests/test_manual_waybill.py",
+        "console/tests/test_waybill_query.py",
+        "console/tests/test_tracking_query.py",
+        "console/tests/test_receipts_management.py",
+        "console/tests/test_document_mode_switch.py",
+        "console/tests/test_menu_registration.py",
+        "console/tests/test_permission_registry.py"
+      ],
+      "case_counts": {
+        "PASS": 235
+      },
+      "required_evidence": [
+        {
+          "reference": "console/tests/test_customer_service_module.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_finance_module.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_control_plane_execution_boundaries.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_module_management.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_manual_waybill.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_waybill_query.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_tracking_query.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_receipts_management.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_document_mode_switch.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_menu_registration.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "console/tests/test_permission_registry.py",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "C18",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "缺页／中断／单源失败不清空历史、不发布伪完整批次、不推进未确认游标；重试与迟到修正按业务键生效；旧采集器迟到批次不能盖掉新发布，人工字段保留",
+      "tests": [
+        "tests/test_module_data_sources_mysql.py",
+        "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+        "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
+        "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+        "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows",
+        "tests/test_first_party_action_payloads.py::test_customer_problem_payload_rejects_repeated_cursor",
+        "probe:field_maintenance",
+        "probe:customer_collection_flow"
+      ],
+      "case_counts": {
+        "PASS": 49
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_module_data_sources_mysql.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_first_party_action_payloads.py::test_customer_problem_payload_rejects_repeated_cursor",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:customer_collection_flow",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "M01",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "从真实页面修改一个实际常用参数／账号／运行窗口，校验错误值；保存后目标新任务使用新配置、在途不混用、恢复可用；不改源码／数据库结构、不手写 JSON、不重启主服务；不能为此强制所有逻辑配置化",
+      "tests": [
+        "tests/test_automation_project_policy_service.py",
+        "probe:settings_effective"
+      ],
+      "case_counts": {
+        "PASS": 78
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_project_policy_service.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:settings_effective",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "M02",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "按本文7.2/7.3，用真实当前V2采集包从旧格式失败／差异、候选修复到原版回退；只改目标包及测试版本材料，真实模块升级后标准数据与BI正确；核心摘要和Agent／Console启动身份不变。",
+      "tests": [
+        "probe:field_maintenance"
+      ],
+      "case_counts": {
+        "PASS": 1
+      },
+      "required_evidence": [
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "M03",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "按本文7.2/7.4，只改真实V2插件中的局部判断和样例；新旧分支经真实入口产生预期业务结果，原包回退恢复；无宿主重发、无示例回显替代，测试规则不污染生产默认。",
+      "tests": [
+        "probe:decision_maintenance"
+      ],
+      "case_counts": {
+        "PASS": 1
+      },
+      "required_evidence": [
+        {
+          "reference": "probe:decision_maintenance",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "M04",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "目标包校验失败保留原版本；成功切换时在途保持旧快照，新任务用新版本；无关任务持续推进；相同操作重试不重复 Job／写入；恢复前核验配置和契约兼容；业务历史、source_id、账号、计划与报表引用不丢；不把回退代码当成撤销已发生外部写入",
+      "tests": [
+        "tests/test_automation_plugin_lifecycle.py",
+        "probe:field_maintenance",
+        "probe:decision_maintenance"
+      ],
+      "case_counts": {
+        "PASS": 35
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_automation_plugin_lifecycle.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:decision_maintenance",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "M05",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "兼容包只更换目标版本及其必要私有环境，不改共享依赖、不执行宿主部署命令；构造一个不兼容 Host／数据契约或系统依赖候选被明确识别为需核心更新／不能激活，不能偷偷改宿主；无权限自扩张、任意 SQL／Shell 或动态生产代码覆盖",
+      "tests": [
+        "tests/test_service_v2_developer_cli.py",
+        "tests/test_service_v2_developer_simulator.py::test_simulator_broker_socket_path_fits_hosted_checkout_and_fails_closed_when_too_long",
+        "tests/test_service_v2_developer_simulator.py::test_real_sandbox_blocks_host_environment_file_and_network_and_report_is_stable",
+        "tests/test_service_v2_developer_simulator.py::test_write_faults_are_single_attempt_and_classified_without_bodies",
+        "tests/test_service_v2_developer_simulator.py::test_successful_host_write_then_plugin_failure_is_forced_unknown",
+        "tests/test_service_v2_developer_simulator.py::test_successful_host_write_and_plugin_success_still_requires_real_verification",
+        "tests/test_service_v2_developer_simulator.py::test_suite_schema_and_nested_sensitive_material_fail_closed",
+        "tests/test_service_v2_developer_simulator.py::test_call_mismatch_is_not_replayed_and_report_omits_arguments",
+        "tests/test_service_v2_developer_simulator.py::test_replayed_request_id_is_rejected_without_consuming_next_fixture",
+        "tests/test_service_v2_developer_simulator.py::test_per_action_fixture_limit_is_enforced_before_sandbox",
+        "tests/test_service_v2_developer_simulator.py::test_service_invoke_fixture_fails_without_offline_provider_contract",
+        "tests/test_service_v2_developer_simulator.py::test_dependency_package_fails_closed_before_sandbox_execution",
+        "tests/test_service_v2_developer_simulator.py::test_process_failure_does_not_leak_stderr_and_cleans_task_temp",
+        "tests/test_service_v2_developer_simulator.py::test_plugin_controlled_code_and_sensitive_result_are_normalized",
+        "tests/test_service_v2_developer_simulator.py::test_stdin_backpressure_is_inside_timeout_and_cleans_process_temp",
+        "tests/test_service_v2_developer_simulator.py::test_cancelled_execution_kills_and_reaps_the_process_group",
+        "tests/test_service_v2_developer_simulator.py::test_missing_exact_manifest_python_fails_closed_and_cleans_temp",
+        "tests/test_service_v2_developer_simulator.py::test_missing_bubblewrap_fails_closed_without_running_plugin",
+        "tests/test_plugin_maintenance.py",
+        "tests/test_action_v1_module_installation.py",
+        "tests/test_plugin_service_v2_foundation.py",
+        "probe:plugin_cli_batch",
+        "probe:field_maintenance"
+      ],
+      "case_counts": {
+        "PASS": 64
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_service_v2_developer_cli.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_simulator_broker_socket_path_fits_hosted_checkout_and_fails_closed_when_too_long",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_real_sandbox_blocks_host_environment_file_and_network_and_report_is_stable",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_write_faults_are_single_attempt_and_classified_without_bodies",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_successful_host_write_then_plugin_failure_is_forced_unknown",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_successful_host_write_and_plugin_success_still_requires_real_verification",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_suite_schema_and_nested_sensitive_material_fail_closed",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_call_mismatch_is_not_replayed_and_report_omits_arguments",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_replayed_request_id_is_rejected_without_consuming_next_fixture",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_per_action_fixture_limit_is_enforced_before_sandbox",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_service_invoke_fixture_fails_without_offline_provider_contract",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_dependency_package_fails_closed_before_sandbox_execution",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_process_failure_does_not_leak_stderr_and_cleans_task_temp",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_plugin_controlled_code_and_sensitive_result_are_normalized",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_stdin_backpressure_is_inside_timeout_and_cleans_process_temp",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_cancelled_execution_kills_and_reaps_the_process_group",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_missing_exact_manifest_python_fails_closed_and_cleans_temp",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_service_v2_developer_simulator.py::test_missing_bubblewrap_fails_closed_without_running_plugin",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_maintenance.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_action_v1_module_installation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_plugin_service_v2_foundation.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:plugin_cli_batch",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        }
+      ]
+    },
+    {
+      "id": "M06",
+      "status": "PASS",
+      "runtime_model": "DIRECT_SERVICE_V2",
+      "effective_requirement": "实跑当前V2 describe/test/package或等效统一入口，验证源码范围、测试和工件摘要一致；字段和判断两次真实演练有完整升级／回退证据；共享变更不能误报插件独立更新，不关闭正式CI。",
+      "tests": [
+        "tests/test_service_v2_developer_cli.py",
+        "probe:plugin_cli_batch",
+        "probe:field_maintenance",
+        "probe:decision_maintenance",
+        "tests/test_low_maintenance_v32_acceptance.py",
+        "tests/test_v32_e2e_fixture_reset.py",
+        "tests/test_scan_preview_observation.py"
+      ],
+      "case_counts": {
+        "PASS": 28
+      },
+      "required_evidence": [
+        {
+          "reference": "tests/test_service_v2_developer_cli.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:plugin_cli_batch",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:field_maintenance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "probe:decision_maintenance",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_low_maintenance_v32_acceptance.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_v32_e2e_fixture_reset.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_scan_preview_observation.py",
+          "minimum_cases": 1
+        }
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "name": "lock-agent",
+      "status": "PASS",
+      "seconds": 0.5706014420011343,
+      "exit_code": 0
+    },
+    {
+      "name": "lock-console",
+      "status": "PASS",
+      "seconds": 0.5446126099996036,
+      "exit_code": 0
+    },
+    {
+      "name": "compile-agent",
+      "status": "PASS",
+      "seconds": 1.9186244570009876,
+      "exit_code": 0
+    },
+    {
+      "name": "lint-agent",
+      "status": "PASS",
+      "seconds": 0.03524873099922843,
+      "exit_code": 0
+    },
+    {
+      "name": "registry",
+      "status": "PASS",
+      "seconds": 0.24819964300149877,
+      "exit_code": 0
+    },
+    {
+      "name": "imports",
+      "status": "PASS",
+      "seconds": 1.6862911680000252,
+      "exit_code": 0
+    },
+    {
+      "name": "hygiene",
+      "status": "PASS",
+      "seconds": 0.44091008599934867,
+      "exit_code": 0
+    },
+    {
+      "name": "documentation",
+      "status": "PASS",
+      "seconds": 0.04765411300104461,
+      "exit_code": 0
+    },
+    {
+      "name": "internal-contracts",
+      "status": "PASS",
+      "seconds": 0.2943932859998313,
+      "exit_code": 0
+    },
+    {
+      "name": "compile-console",
+      "status": "PASS",
+      "seconds": 0.03322008099894447,
+      "exit_code": 0
+    },
+    {
+      "name": "lint-console",
+      "status": "PASS",
+      "seconds": 0.029685614999834797,
+      "exit_code": 0
+    },
+    {
+      "name": "test-root",
+      "status": "PASS",
+      "seconds": 2106.0732877680002,
+      "exit_code": 0
+    },
+    {
+      "name": "test-agent",
+      "status": "PASS",
+      "seconds": 29.735682558999542,
+      "exit_code": 0
+    },
+    {
+      "name": "test-console",
+      "status": "PASS",
+      "seconds": 3.830771658998856,
+      "exit_code": 0
+    },
+    {
+      "name": "seed-prepare_database",
+      "status": "PASS",
+      "seconds": 7.115422859998944,
+      "exit_code": 0
+    },
+    {
+      "name": "seed-management_fixture",
+      "status": "PASS",
+      "seconds": 69.49049839799954,
+      "exit_code": 0
+    },
+    {
+      "name": "seed-data_fixture",
+      "status": "PASS",
+      "seconds": 16.360013973000605,
+      "exit_code": 0
+    },
+    {
+      "name": "module_scope",
+      "status": "PASS",
+      "seconds": 12.926060796000456,
+      "exit_code": 0
+    },
+    {
+      "name": "navigation_probe",
+      "status": "PASS",
+      "seconds": 11.939944785999614,
+      "exit_code": 0
+    },
+    {
+      "name": "legacy_page_smoke",
+      "status": "PASS",
+      "seconds": 6.142448317999879,
+      "exit_code": 0
+    },
+    {
+      "name": "detail_browser",
+      "status": "PASS",
+      "seconds": 17.202973428000405,
+      "exit_code": 0
+    },
+    {
+      "name": "browser_performance",
+      "status": "PASS",
+      "seconds": 66.09130931999971,
+      "exit_code": 0
+    },
+    {
+      "name": "run_acceptance",
+      "status": "PASS",
+      "seconds": 23.495329385999867,
+      "exit_code": 0
+    },
+    {
+      "name": "daily_scan_statistics",
+      "status": "PASS",
+      "seconds": 19.44512666800074,
+      "exit_code": 0
+    },
+    {
+      "name": "daily_problems",
+      "status": "PASS",
+      "seconds": 16.118647303001126,
+      "exit_code": 0
+    },
+    {
+      "name": "daily_concurrency",
+      "status": "PASS",
+      "seconds": 24.363380777000202,
+      "exit_code": 0
+    },
+    {
+      "name": "settings_effective",
+      "status": "PASS",
+      "seconds": 18.08424352500151,
+      "exit_code": 0
+    },
+    {
+      "name": "custom_settings",
+      "status": "PASS",
+      "seconds": 12.03423389100135,
+      "exit_code": 0
+    },
+    {
+      "name": "catalog_delivery",
+      "status": "PASS",
+      "seconds": 11.517509135001092,
+      "exit_code": 0
+    },
+    {
+      "name": "scan_recovery",
+      "status": "PASS",
+      "seconds": 461.74544447900007,
+      "exit_code": 0
+    },
+    {
+      "name": "unknown_resource_scope",
+      "status": "PASS",
+      "seconds": 29.35829222099892,
+      "exit_code": 0
+    },
+    {
+      "name": "scan_cancel_recovery",
+      "status": "PASS",
+      "seconds": 126.48584527100138,
+      "exit_code": 0
+    },
+    {
+      "name": "customer_collection_flow",
+      "status": "PASS",
+      "seconds": 28.855284256000232,
+      "exit_code": 0
+    },
+    {
+      "name": "finance_source_state",
+      "status": "PASS",
+      "seconds": 16.196295280000413,
+      "exit_code": 0
+    },
+    {
+      "name": "field_maintenance",
+      "status": "PASS",
+      "seconds": 21.084146030001648,
+      "exit_code": 0
+    },
+    {
+      "name": "decision_maintenance",
+      "status": "PASS",
+      "seconds": 18.130977025999528,
+      "exit_code": 0
+    },
+    {
+      "name": "plugin_cli_batch",
+      "status": "PASS",
+      "seconds": 21.827210663999722,
+      "exit_code": 0
+    }
+  ],
+  "production_status": "NOT_DEPLOYED_NOT_VERIFIED",
+  "implementation_status": "COMPLETE",
+  "ci_status": "PASS",
+  "phase2_ready_for_development": true,
+  "ci": {
+    "url": "https://github.com/syzgldk150-pixel/boyi-logistics/actions/runs/35847178273",
+    "head_sha": "a5a828a50caff4bce70a7ac30fdbf8e834814fc8",
+    "conclusion": "success",
+    "jobs": [
+      {
+        "name": "console-quality",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "agent-quality",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "windows-worker-quality",
+        "status": "completed",
+        "conclusion": "skipped"
+      }
+    ],
+    "checkout_records": [
+      {
+        "job": "console-quality",
+        "checkout_kind": "pull_request_merge_preview",
+        "pr_head_sha": "a5a828a50caff4bce70a7ac30fdbf8e834814fc8",
+        "merge_base_sha": "da20899dedef077cf68b5990190b59bdc074217d",
+        "checkout_sha": "99ba79c5ef4424bf203ea7df0addeec4feff5131"
+      },
+      {
+        "job": "agent-quality",
+        "checkout_kind": "pull_request_merge_preview",
+        "pr_head_sha": "a5a828a50caff4bce70a7ac30fdbf8e834814fc8",
+        "merge_base_sha": "da20899dedef077cf68b5990190b59bdc074217d",
+        "checkout_sha": "99ba79c5ef4424bf203ea7df0addeec4feff5131"
+      }
+    ],
+    "deferred_source_audit": "success"
+  },
+  "freeze": {
+    "host_base_sha": "a5a828a50caff4bce70a7ac30fdbf8e834814fc8",
+    "file_sha256": "6a7a29a1716bafb6cd7cbf8ebdcbc132e4e22f7190cebdb0e46560df19ca762e"
+  },
+  "machine": {
+    "captured_at": "2026-09-23T09:02:34.969074+00:00",
+    "kernel": "6.6.87.2-microsoft-standard-WSL2",
+    "architecture": "x86_64",
+    "python": "3.10.20",
+    "cpu_model": "12th Gen Intel(R) Core(TM) i7-12700H",
+    "logical_cpus": 20,
+    "memory_bytes": 16595980288,
+    "dependency_locks": {
+      "agent/requirements.lock": "2d4218dc5094de653ad50c75c3b8ed4fbbb3e49607b0c2974979026c4f62c6c2",
+      "console/requirements.lock": "91109b3660551cef52954034eb2fe1356db755de473b7b71d3da9bb689669cf2"
+    },
+    "baseline_performance": "NO_MEASURED_BASELINE",
+    "capacity": "Actual fixed Direct capacity is recorded in each runtime evidence object; no capacity increase was used."
+  },
+  "upstream_main_review": {
+    "base_sha": "7ccc71445925f1fe3c7f35a3c7dd1a01198ff2ec",
+    "observed_main_sha": "da20899dedef077cf68b5990190b59bdc074217d",
+    "source": "GitHub compare API: 7ccc71445925f1fe3c7f35a3c7dd1a01198ff2ec...da20899dedef077cf68b5990190b59bdc074217d",
+    "ahead_by": 3,
+    "integration_commits": [
+      "19d128291f975e673a02bd4b34e8540189426a7c",
+      "71be8f2c0ea16cba968470c0b23060854ec21b57",
+      "da20899dedef077cf68b5990190b59bdc074217d"
+    ],
+    "changed_files": [
+      ".gitignore",
+      "agent/agent/AGENTS.md",
+      "agent/agent/CLAUDE.md",
+      "agent/agent/automation_plugins/connector_registry.py",
+      "agent/migrations/052_boyi_waybill_receipt_required.sql",
+      "console/AGENTS.md",
+      "console/CLAUDE.md",
+      "console/app_support.py",
+      "console/database.py",
+      "console/static/assets/waybill_label_background.jpg",
+      "console/static/assets/waybill_label_receipt_background.jpg",
+      "console/static/js/waybill_label_html.js",
+      "console/static/js/waybill_label_lodop.js",
+      "console/templates/document.html",
+      "console/templates/waybill_print.html",
+      "console/tests/test_manual_waybill.py",
+      "tests/test_problem_connectors_v2.py",
+      "tests/test_waybill_source_coverage_mysql.py"
+    ],
+    "assessment": "保留主分支唯一最新运单录入和打印版本，包括运单回执迁移052；合入分批和自提来源表列语义修复。任务分支自己的未发布问题件写入迁移改为053，新增列语义回归成为A01必需证据。",
+    "integrated_into_tested_code": true
+  },
+  "evidence_archive": {
+    "path": "/mnt/c/Users/DENG/Desktop/BOYI_PHASE1_CLOSEOUT_20260916/final-a5a828a-PASS.zip",
+    "sha256": "762a23eb40cf35751b8cee0c1fd56aeff97a9987d83be551af55314080f4dc51",
+    "bytes": 2269279,
+    "archived_files": 121
+  },
+  "skipped_cases": [
+    {
+      "suite": "test-root",
+      "test": "tests.test_mysql_orchestration_integration.MySqlOrchestrationIntegrationTests::test_automation_worker_dispatch_is_durable_exact_device_and_replay_safe",
+      "reason": "Windows Worker is deferred from the current server-only release"
+    },
+    {
+      "suite": "test-root",
+      "test": "tests.test_mysql_orchestration_integration.MySqlOrchestrationIntegrationTests::test_empty_cutover_seed_rollback_is_reentrant_and_preserves_prior_rows",
+      "reason": "superseded by immutable-014 forward-chain restore coverage"
+    },
+    {
+      "suite": "test-root",
+      "test": "tests.test_mysql_orchestration_integration.MySqlOrchestrationIntegrationTests::test_legacy_finance_yunda_startup_apply_restore_and_reapply_are_exact",
+      "reason": "superseded by immutable-014 forward-chain restore coverage"
+    },
+    {
+      "suite": "test-root",
+      "test": "tests.test_mysql_orchestration_integration.MySqlOrchestrationIntegrationTests::test_task_cutover_exact_production_set_is_reentrant_and_fail_closed",
+      "reason": "014 is production-applied and byte-immutable; upgrades live in 016/017"
+    },
+    {
+      "suite": "test-root",
+      "test": "tests.test_service_v2_developer_simulator::test_manifest_python_probe_rejects_wrong_interpreter_version",
+      "reason": "current interpreter already matches the manifest runtime"
+    }
+  ],
+  "required_group_skips": 0
+}

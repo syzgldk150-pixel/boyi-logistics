@@ -22,6 +22,13 @@ def is_before_problem_cutoff(value: Any) -> bool:
     return bool(parsed and parsed.time() < PROBLEM_CUTOFF)
 
 
+def problem_event_flags(registered_at: Any, problem_type: str) -> dict[str, bool]:
+    if parse_datetime(registered_at) is None:
+        raise ValueError("problem event requires an authoritative registration time")
+    return {"before_cutoff": is_before_problem_cutoff(registered_at),
+            "postpones_sign": clean_text(problem_type) in MANUAL_POSTPONE_TYPES}
+
+
 def is_valid_problem_event(event: dict[str, Any]) -> bool:
     return bool(event.get("upload_complete")) and is_before_problem_cutoff(
         event.get("registered_at")

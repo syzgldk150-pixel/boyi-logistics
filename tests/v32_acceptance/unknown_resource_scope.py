@@ -9,7 +9,7 @@ def exercise(management, runner, boundary, unrelated, connection_factory):
     actual_scan = scan_recovery.invoke(management, runner, preview_invocation_id=preview['invocation_id'])
     assert actual_scan['status'] == 'COMPLETED', actual_scan
     boundary.mode = 'SHEET_UNKNOWN'
-    stopped = scan_recovery.invoke(management, runner, automation_id='arrival_stats')
+    stopped = scan_recovery.invoke(management, runner, automation_id=management.stats_id)
     assert stopped['status'] == 'WRITE_OUTCOME_UNKNOWN', stopped
     assert boundary.sheet_writes
     with connection_factory() as connection, connection.cursor() as cursor:
@@ -24,7 +24,7 @@ def exercise(management, runner, boundary, unrelated, connection_factory):
     # These are fresh, explicit HTTP invocations of the actual statistics
     # package and its same physical Sheet, not a synthetic lease or queue.
     for number in range(20):
-        refreshed = scan_recovery.invoke(management, runner, automation_id='arrival_stats')
+        refreshed = scan_recovery.invoke(management, runner, automation_id=management.stats_id)
         assert refreshed['status'] == 'COMPLETED', refreshed
         assert refreshed['invocation_id'] != stopped['invocation_id']
         assert runner.service.get(stopped['invocation_id'])['status'] == 'WRITE_OUTCOME_UNKNOWN'

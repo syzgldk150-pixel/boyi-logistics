@@ -50,6 +50,9 @@ def _collector_navigation(connection, run_id, *, direct):
             # The Broker receipt holds a non-secret hash of the actual batch ID.
             # Restrict to this Run and its exact lease/producer generation before
             # matching batch identities; never use a current account alias.
+            current_finance = {row["plugin_id"] for row in generations} == {"sync_finance_bills_v2"}
+            receipt_operation, receipt_action = (("service.invoke", "write_snapshot") if current_finance
+                else ("ledger.invoke", "finance.source_snapshot.write"))
             cursor.execute(f"""SELECT DISTINCT source.source_id,source.display_name
                 FROM automation_write_attempt_receipts receipt
                 JOIN finance_source_run_bindings binding ON BINARY binding.producer_instance_id=BINARY receipt.automation_id
@@ -57,8 +60,8 @@ def _collector_navigation(connection, run_id, *, direct):
                 JOIN finance_sync_runs capture ON capture.id=binding.run_id
                     AND BINARY SHA2(CAST(capture.batch_id AS CHAR),256)=BINARY JSON_UNQUOTE(JSON_EXTRACT(receipt.target_ref_json,'$.batch_sha256'))
                 JOIN module_data_sources source ON source.source_id=binding.source_id
-                WHERE receipt.{lease_field}=%s AND receipt.action='finance.source_snapshot.write'
-                    AND source.module='finance' ORDER BY source.source_id""", (run_id,))
+                WHERE receipt.{lease_field}=%s AND receipt.operation=%s AND receipt.action=%s
+                    AND source.module='finance' ORDER BY source.source_id""", (run_id, receipt_operation, receipt_action))
         else:
             cursor.execute(f"""SELECT DISTINCT source.source_id,source.display_name
                 FROM customer_problem_publications publication

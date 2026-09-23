@@ -10,13 +10,12 @@ import secrets
 import threading
 from uuid import uuid4
 
-from Crypto.PublicKey import ECC
 import httpx
 
-from agent.automation_plugins.first_party import first_party_payload_files, resolve_first_party_manifests
 from agent.automation_plugins.first_party_handlers import FirstPartyCoreHandlerPorts, build_first_party_core_handler_map
-from agent.automation_plugins.package import Ed25519PackageSigner, Ed25519TrustStore, build_signed_plugin_zip
-from agent.tool_registry import ToolRegistry
+from agent.automation_plugins.connector_registry import ConnectorRegistry
+from agent.automation_plugins.customer_connectors_v2 import build_customer_connectors
+from agent.automation_plugins.manifest_v2 import parse_manifest_v2
 from shared.contracts import api_success
 from shared.customer_service_repository import CustomerServiceRepository
 from shared.data_sources import DataSourceRepository
@@ -29,6 +28,7 @@ from tests.v32_acceptance.finance_maintenance_drill import require_complete
 from tests.v32_acceptance.collector_navigation_probe import exercise_run_links
 from tests.v32_acceptance.management_fixture import ManagementFixture
 from tests.direct_invocation_fixture import DirectFixture
+from tests.v32_acceptance.service_v2_artifacts import build_artifact
 
 DATABASE = "v32_customer_flow_test"
 connection_factory = partial(connect, database=DATABASE)
@@ -204,12 +204,11 @@ def main():
     options = parser.parse_args()
     prepare_database(database=DATABASE, reset=options.reset_owned_fixture)
     account_manager = Accounts()
-    key = ECC.generate(curve="Ed25519")
-    manifest = resolve_first_party_manifests(ToolRegistry())["sync_customer_service_problems"]
-    package = build_signed_plugin_zip(manifest, first_party_payload_files(manifest),
-        signer=Ed25519PackageSigner(key_id="customer-flow", private_key=key))
-    artifact = {"bytes": package, "version": manifest.version, "sha256": sha256(package).hexdigest()}
-    report = {"status": "RUNNING", "artifact_version": artifact["version"], "artifact_sha256": artifact["sha256"], "steps": []}
+    artifact = build_artifact('sync_customer_service_problems_v2', RUNTIME / uuid4().hex / 'artifacts')
+    from zipfile import ZipFile
+    with ZipFile(artifact['archive']) as package:
+        manifest = parse_manifest_v2(json.loads(package.read('manifest.json')))
+    report = {"status": "RUNNING", "runtime_model": "SERVICE_V2", "artifact_version": artifact["version"], "artifact_sha256": artifact["sha256"], "steps": []}
     RUNTIME.mkdir(parents=True, exist_ok=True)
     try:
         with CustomerSource() as supplier:
@@ -218,7 +217,7 @@ def main():
                 cursor_secret=secrets.token_bytes(32))
             with ManagementFixture(connection_factory=connection_factory, runtime_root=RUNTIME / uuid4().hex[:10],
                     account_manager=account_manager, broker_handlers=handlers, enable_directory_faults=False,
-                    upload_signature_verifier=Ed25519TrustStore({"customer-flow": key.public_key().export_key(format="raw")})) as management:
+                    connector_registry=ConnectorRegistry(build_customer_connectors(handlers))) as management:
                 management.app.add_api_route("/internal/v1/admin/accounts",
                     lambda: api_success({"accounts": account_manager.list_accounts()}), methods=["GET"])
                 with (DirectFixture(management) as runner, ConsoleFixture(
@@ -231,7 +230,7 @@ def main():
                         configured_instance(management, automation_id=automation_id, account=account)
                         settings = browser.save_accounts(automation_id, {"customer_service_source": [account]},
                             config_values={"direction": "both"}, invalid_configs=({}, {"direction": "invalid"}))
-                        browser.page.locator("[data-settings-feedback]").filter(has_text="设置已保存").wait_for()
+                        browser.page.frame_locator('[data-plugin-settings-frame]').locator('[data-settings-feedback]').filter(has_text="设置已保存").wait_for()
                         screenshot = console.runtime / f"customer-simple-settings-{index}.png"
                         browser.page.screenshot(path=str(screenshot), full_page=True)
                         settings["screenshot"] = str(screenshot)

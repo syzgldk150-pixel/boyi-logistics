@@ -14,8 +14,7 @@ from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from typing import Any
 
 from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_rules import (
-    MANUAL_POSTPONE_TYPES,
-    is_before_problem_cutoff,
+    problem_event_flags,
     BUSINESS_TIMEZONE,
     build_ledger_row,
     business_now,
@@ -452,8 +451,7 @@ def _collect_problem_window(
                 "registered_at": registered_at,
                 "registered_site": clean_text(row.get("registered_site")),
                 "upload_complete": True,
-                "before_cutoff": is_before_problem_cutoff(registered_at),
-                "postpones_sign": problem_type in MANUAL_POSTPONE_TYPES,
+                **problem_event_flags(registered_at, problem_type),
                 "payload": {
                     "platform": "ronghui",
                     "account_scope": _scope_name("account", account_id),

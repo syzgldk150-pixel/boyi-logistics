@@ -42,7 +42,7 @@ def test_packaged_start_rejection_is_not_an_unknown_write(tmp_path, monkeypatch,
         original_init = LocalBrokerCapabilityIssuer.__init__
 
         @asynccontextmanager
-        async def reject_before_write(_prepared):
+        async def reject_before_write(_prepared, **_resolved):
             raise OrchestrationError("EXECUTION_RESOURCE_BUSY", "Resource is in use")
             yield  # pragma: no cover
 

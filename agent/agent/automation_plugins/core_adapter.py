@@ -127,7 +127,7 @@ class CoreBrokerInvocationContext:
     # intentionally optional so closed handler unit tests can exercise their
     # validation branches without manufacturing write-attempt state.
     mark_write_started: Callable[[], None] | None = None
-    write_operation_guard: Callable[[], AsyncContextManager] | None = field(default=None, repr=False, compare=False)
+    write_operation_guard: Callable[..., AsyncContextManager] | None = field(default=None, repr=False, compare=False)
     generation: int = 0
     write_attempt_identity: Mapping[str, object] = field(default_factory=dict, repr=False)
     on_completion: Callable[[Callable[[], None]], None] | None = field(default=None, repr=False, compare=False)
@@ -589,7 +589,7 @@ class RegisteredCoreAutomationBrokerAdapter:
         signed_roles: tuple[str, ...],
         signed_contract: Mapping[str, object],
         mark_write_started: Callable[[], None] | None,
-        write_operation_guard: Callable[[], AsyncContextManager] | None,
+        write_operation_guard: Callable[..., AsyncContextManager] | None,
     ) -> Mapping[str, Any] | Awaitable[Mapping[str, Any]]:
         """Resolve blocking bindings and enter a synchronous handler off-loop."""
 
@@ -756,7 +756,7 @@ class RegisteredCoreAutomationBrokerAdapter:
         binding: object,
         arguments: Mapping[str, Any],
         mark_write_started: Callable[[], None] | None = None,
-        write_operation_guard: Callable[[], AsyncContextManager] | None = None,
+        write_operation_guard: Callable[..., AsyncContextManager] | None = None,
     ) -> Mapping[str, Any]:
         handler = self._handlers.get((operation, action))
         handler_key = f"{operation}:{action}"

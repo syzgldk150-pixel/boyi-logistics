@@ -10,16 +10,14 @@ import time
 from unittest.mock import patch
 from uuid import uuid4
 
-from Crypto.PublicKey import ECC
-
-from agent.automation_plugins.first_party import resolve_first_party_manifests
-from agent.automation_plugins.package import Ed25519TrustStore
-from agent.tool_registry import ToolRegistry
+from agent.automation_plugins.connector_registry import ConnectorRegistry
+from agent.automation_plugins.scan_connectors_v2 import build_scan_connectors
+from agent.automation_plugins.arrival_connectors_v2 import build_arrival_connectors
 from plugin_core_adapters.first_party import build_production_first_party_core_handler_map
-from tests.v32_acceptance.daily_protocol import ACCOUNT_ID, DailyAccounts
+from tests.v32_acceptance.daily_protocol import DailyAccounts
 from tests.v32_acceptance.daily_stats_protocol import DailyStatsProtocol
 from tests.v32_acceptance.daily_scan import ACTOR, ROOT, connect, prepare_database, setup_scan, signed_request
-from tests.v32_acceptance.first_party_fixture import bootstrap, isolated_migration_accounts
+from tests.v32_acceptance.service_v2_artifacts import build_artifact
 from tests.v32_acceptance.management_fixture import ManagementFixture
 from tests.direct_invocation_fixture import DirectFixture
 from tests.v32_acceptance.scan_preview_observation import checkpoint_case, observe_preview_timestamps
@@ -59,7 +57,9 @@ class LostReplyProtocol(DailyStatsProtocol):
         return result
 
 
-def invoke(management, runner, *, preview_invocation_id=None, automation_id='scan_codes'):
+def invoke(management, runner, *, preview_invocation_id=None, automation_id=None):
+    if automation_id is None:
+        automation_id = management.scan_id
     payload = {'request_id': str(uuid4())}
     if preview_invocation_id:
         payload['preview_invocation_id'] = preview_invocation_id
@@ -121,7 +121,7 @@ def run_cancel_case(management, runner, boundary, unrelated, round_number):
     boundary.write_release.clear()
     preview = invoke(management, runner)
     assert preview['status'] == 'COMPLETED'
-    formal = signed_request(management, '/internal/v1/automation-projects/scan_codes/invoke',
+    formal = signed_request(management, f'/internal/v1/automation-projects/{management.scan_id}/invoke',
         payload={'request_id': str(uuid4()), 'preview_invocation_id': preview['invocation_id']})
     assert boundary.write_started.wait(12), 'real external write never started'
     assert len(boundary.ledger) == 1
@@ -132,8 +132,8 @@ def run_cancel_case(management, runner, boundary, unrelated, round_number):
         assert runner.service.get(formal['invocation_id'])['status'] == 'CANCELLING'
         return cancellation
     cancellation = asyncio.run_coroutine_threadsafe(begin_cancel(), runner.loop).result(timeout=2)
-    blocked = signed_request(management, '/internal/v1/automation-projects/scan_codes/invoke', payload={'request_id': str(uuid4())})
-    assert blocked['status'] == 'FAILED' and blocked['error_code'] == 'EXECUTION_RESOURCE_BUSY', blocked
+    blocked = signed_request(management, f'/internal/v1/automation-projects/{management.scan_id}/invoke', payload={'request_id': str(uuid4())})
+    assert blocked['status'] == 'STARTING' and blocked['waiting_for_resource'], blocked
     released_at = time.monotonic()
     boundary.write_release.set()
     async def settle():
@@ -142,13 +142,15 @@ def run_cancel_case(management, runner, boundary, unrelated, round_number):
     cancellation_seconds = time.monotonic() - released_at
     assert cancelled['status'] == 'WRITE_OUTCOME_UNKNOWN', cancelled
     assert cancellation_seconds <= 2, cancellation_seconds
+    waiting_preview = runner.service.wait_sync(blocked['invocation_id'], timeout_seconds=5)
+    assert waiting_preview['status'] == 'COMPLETED' and len(boundary.ledger) == 1, waiting_preview
     independent = invoke(management, runner, automation_id=unrelated)
     assert independent['status'] == 'COMPLETED'
     boundary.mode = 'SUCCESS'
     fresh = invoke(management, runner)
     assert fresh['status'] == 'COMPLETED' and len(boundary.ledger) == 1
     assert runner.service.get(formal['invocation_id'])['status'] == 'WRITE_OUTCOME_UNKNOWN'
-    return {'round': round_number, 'cancelled': cancelled, 'busy_call_ended': blocked,
+    return {'round': round_number, 'cancelled': cancelled, 'wait_receipt': blocked, 'waiting_preview': waiting_preview,
         'fresh_preview': fresh, 'independent_invocation': independent,
         'write_receipts': write_receipts(formal['invocation_id']),
         'cancellation_seconds_after_actual_port_drained': cancellation_seconds,
@@ -170,27 +172,20 @@ def main():
     prepare_database(database=DATABASE)
     runtime_root = ROOT / '.task_tmp' / 'v32' / 'reliability' / ('scan-recovery-' + uuid4().hex[:8])
     accounts = DailyAccounts()
-    private_key = ECC.generate(curve='Ed25519')
-    trust = Ed25519TrustStore({'v32-recovery': private_key.public_key().export_key(format='raw')})
-    manifests = resolve_first_party_manifests(ToolRegistry(), _plugin_ids=frozenset({'sync_scan_codes', 'sync_arrival_stats'}))
-    keys = {(item['operation'], item['action']) for manifest in manifests.values() for item in manifest.runtime_permissions['broker_operations']}
-    migration_accounts = isolated_migration_accounts()
-    migration_accounts['scan_codes'] = {'account_id': [ACCOUNT_ID]}
-    migration_accounts['arrival_stats'] = {'account_id': [ACCOUNT_ID]}
+    artifacts = {name: build_artifact(name, runtime_root / name) for name in
+                 ('sync_scan_codes_v2', 'sync_arrival_stats_v2')}
     with LostReplyProtocol() as boundary, boundary.authentication_boundaries(), patch('plugin_core_adapters.first_party.get_account_manager', return_value=accounts), observe_preview_timestamps(runtime_root / 'preview-timing.json'):
         handlers = build_production_first_party_core_handler_map(cursor_secret=secrets.token_bytes(32),
-            account_manager=accounts, allowed_action_keys=keys, capability_authorizer=boundary.authorize)
+            account_manager=accounts, capability_authorizer=boundary.authorize)
         with ManagementFixture(connection_factory=connection_factory, runtime_root=runtime_root, account_manager=accounts,
-                broker_handlers=handlers, upload_signature_verifier=trust, enable_directory_faults=False,
-                resource_provider=boundary.resource_loader, migration_account_bindings=migration_accounts) as management:
-            bootstrap(management, private_key=private_key, trust=trust, key_id='v32-recovery')
-            management.targets.reconcile_project('scan_codes')
-            setup_scan(management)
+                broker_handlers=handlers, enable_directory_faults=False,
+                connector_registry=ConnectorRegistry((*build_scan_connectors(handlers), *build_arrival_connectors(handlers))),
+                resource_provider=boundary.resource_loader) as management:
+            management.scan_id = setup_scan(management, artifacts['sync_scan_codes_v2'])
             if args.physical_scope:
                 from tests.v32_acceptance.daily_stats import setup_stats
 
-                management.targets.reconcile_project('arrival_stats')
-                setup_stats(management)
+                management.stats_id = setup_stats(management, artifacts['sync_arrival_stats_v2'])
             unrelated = install_unrelated(management, actor=ACTOR, plugin_id='scan_recovery_independent', name='隔离核验期间独立任务')
             with DirectFixture(management, saved_resource_provider=boundary.resource_loader) as runner:
                 cases = []
@@ -207,6 +202,7 @@ def main():
 
                     cases.append(exercise(management, runner, boundary, unrelated, connection_factory))
                 report = {'status': 'PASS' if args.rounds == 20 or args.physical_scope else 'PREPARATION', 'cases': cases,
+                    'runtime_model': 'SERVICE_V2',
                     'executed_at': datetime.now(timezone.utc).isoformat()}
     output = ROOT / '.task_tmp' / 'v32' / 'reliability' / ('unknown-resource-scope.json' if args.physical_scope else 'scan-cancel-recovery.json' if args.cancel_only else 'scan-recovery.json')
     output.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str) + '\n', encoding='utf-8')

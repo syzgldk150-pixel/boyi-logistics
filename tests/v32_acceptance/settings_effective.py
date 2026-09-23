@@ -21,7 +21,7 @@ STANDARD_CODE = 'R_M03_STANDARD'
 def open_settings(browser, automation_id):
     path = f'/automations/{automation_id}/settings'
     browser.page.goto(browser.console.url + path, wait_until='domcontentloaded')
-    browser.page.wait_for_selector('[data-default-plugin-settings] button[type=submit]:enabled')
+    browser.page.frame_locator('[data-plugin-settings-frame]').locator('[data-save-settings]:enabled').wait_for()
     return path
 
 
@@ -44,7 +44,7 @@ def main():
     if os.environ.get('AGENT_DB_NAME') != 'v32_m01_test':
         raise RuntimeError('M01 requires its explicit dedicated test database')
     prepare_database()
-    report = {'status': 'RUNNING', 'phases': {}}
+    report = {'status': 'RUNNING', 'runtime_model': 'SERVICE_V2', 'phases': {}}
     try:
         with composed() as (management, runner, supplier, artifacts):
             automation_id = setup_instance(management, artifacts['baseline'])
@@ -64,15 +64,16 @@ def main():
                     report['phases']['baseline'] = actual_run(browser, supplier, automation_id,
                         [PRIMARY_CODE, STANDARD_CODE], original_accounts)
                     settings_path = open_settings(browser, automation_id)
-                    form = browser.page.locator('[data-default-plugin-settings]')
-                    # The existing boolean control exposes explicit true/false options.
-                    form.locator('[data-config-key="include_daxiang_s_self_pickup"]').select_option(label='关闭')
-                    form.locator('select[name="account_id"]').select_option(ACCOUNTS['daxiang_s_account_id'])
+                    form = browser.page.frame_locator('[data-plugin-settings-frame]')
+                    report['resource_controls'] = form.locator('[data-resource-role]').evaluate_all(
+                        'nodes => nodes.map(n => ({role:n.dataset.resourceRole,value:n.value,disabled:n.disabled,options:Array.from(n.options,o=>({value:o.value,disabled:o.disabled}))}))')
+                    form.locator('[data-config-field="include_daxiang_s_self_pickup"]').uncheck()
+                    form.locator('[data-account-role="self_pickup_primary"]').select_option(ACCOUNTS['daxiang_s_account_id'])
                     with browser.page.expect_response(lambda response: urlparse(response.url).path == settings_path + '/bridge') as response:
-                        form.locator('button[type=submit]').click()
+                        form.locator('[data-save-settings]').click()
                     if response.value.status != 200 or response.value.json().get('ok') is not True:
-                        raise AssertionError('actual default setting save rejected')
-                    browser.page.wait_for_function("document.querySelector('[data-settings-feedback]')?.textContent.includes('设置已保存')", timeout=60000)
+                        raise AssertionError('actual custom setting save rejected: ' + str(response.value.json()))
+                    form.locator('[data-settings-feedback]').filter(has_text='设置已保存').wait_for()
                     report['phases']['changed'] = actual_run(browser, supplier, automation_id,
                         [PRIMARY_CODE], {PRIMARY_CODE: ACCOUNTS['daxiang_s_account_id']})
                     open_settings(browser, automation_id)

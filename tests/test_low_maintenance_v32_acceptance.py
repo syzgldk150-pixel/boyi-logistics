@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 
 from scripts.accept_low_maintenance_v32 import (
     MATRIX_PATH,
@@ -102,3 +103,36 @@ def test_preparation_or_failed_artifact_cannot_pass_even_when_child_exits_zero(t
     output.mkdir()
     check = {"name": "drill", "status": "PASS", "exit_code": 0, "seconds": 0.1}
     assert fresh_probe_case(check, artifact, started_ns=1, output=output)["status"] == "FAIL"
+
+
+def test_aggregate_passes_cannot_hide_a_missing_critical_twentieth_round():
+    matrix = _matrix(minimum=20)
+    matrix['groups'][0]['required_evidence'] = [{'reference': 'tests/test_example.py::test_execution',
+        'minimum_cases': 20, 'properties': {'runtime_model': 'SERVICE_V2'}, 'distinct_property': 'round'}]
+    cases = [{**_case(name=f'test_execution[{number}]'), 'properties': {'runtime_model': 'SERVICE_V2', 'round': str(number)}}
+             for number in range(19)]
+    cases.extend(_case(name=f'test_other[{number}]') for number in range(100))
+    assert evaluate_groups(matrix, cases)[0]['status'] == 'NOT_RUN'
+    cases.append({**_case(name='test_execution[19]'), 'properties': {'runtime_model': 'SERVICE_V2', 'round': '19'}})
+    assert evaluate_groups(matrix, cases)[0]['status'] == 'PASS'
+
+
+def test_pass_label_cannot_replace_current_runtime_or_business_result(tmp_path):
+    output = tmp_path / 'fresh'
+    output.mkdir()
+    artifact = tmp_path / 'probe.json'
+    for data in ({}, {'status': 'PASS'}, {'status': 'PASS', 'runtime_model': 'ACTION_V1'},
+                 {'status': 'PASS', 'runtime_model': 'SERVICE_V2'}):
+        artifact.write_text(json.dumps(data), encoding='utf-8')
+        check = {'name': 'daily_concurrency', 'status': 'PASS', 'exit_code': 0, 'seconds': .1}
+        assert fresh_probe_case(check, artifact, started_ns=1, output=output)['status'] == 'FAIL'
+
+
+def test_performance_pass_requires_raw_samples_not_just_summary(tmp_path):
+    output = tmp_path / 'fresh'
+    output.mkdir()
+    artifact = tmp_path / 'probe.json'
+    artifact.write_text(json.dumps({'status': 'PASS', 'raw_samples': [],
+        'result': {'status': 'PASS', 'samples': 100, 'p95_ms': 1}}), encoding='utf-8')
+    check = {'name': 'run_acceptance', 'status': 'PASS', 'exit_code': 0, 'seconds': .1}
+    assert fresh_probe_case(check, artifact, started_ns=1, output=output)['status'] == 'FAIL'

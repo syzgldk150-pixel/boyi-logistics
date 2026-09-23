@@ -6,11 +6,12 @@ import secrets
 import pytest
 from uuid import uuid4
 
-from Crypto.PublicKey import ECC
 
-from agent.automation_plugins.first_party import resolve_first_party_manifests
-from agent.automation_plugins.package import Ed25519TrustStore
-from agent.tool_registry import ToolRegistry
+from agent.automation_plugins.connector_registry import ConnectorRegistry
+from agent.automation_plugins.scan_connectors_v2 import build_scan_connectors
+from agent.automation_plugins.arrival_connectors_v2 import build_arrival_connectors
+from agent.automation_plugins.problem_connectors_v2 import build_problem_connectors
+from tests.v32_acceptance.service_v2_artifacts import build_artifact
 from plugin_core_adapters.first_party import build_production_first_party_core_handler_map
 from plugin_core_adapters.problem_actions import build_production_problem_handler_map
 from tests.direct_invocation_fixture import DirectFixture, direct_repository  # noqa:F401
@@ -21,9 +22,7 @@ from tests.v32_acceptance.daily_scan import ACTOR, setup_scan, signed_request
 from agent.plugin_conversations import PluginConversationService
 from tests.v32_acceptance.daily_stats import setup_stats
 from tests.v32_acceptance.decision_maintenance import setup_instance
-from tests.v32_acceptance.first_party_fixture import bootstrap, isolated_migration_accounts
 from tests.v32_acceptance.management_fixture import ManagementFixture
-from tests.v32_acceptance.problem_fixture import ACCOUNTS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -47,28 +46,19 @@ def test_statistics_scan_pickup_execute_in_parallel_without_a_queue(daily_reposi
     root = ROOT / ".t" / ("daily-" + uuid4().hex[:6])
     root.mkdir(parents=True)
     accounts = Accounts()
-    private = ECC.generate(curve="Ed25519")
-    trust = Ed25519TrustStore({"direct-daily": private.public_key().export_key(format="raw")})
-    manifests = resolve_first_party_manifests(ToolRegistry(), _plugin_ids=frozenset({"sync_scan_codes", "sync_arrival_stats"}))
-    keys = {(item["operation"], item["action"]) for manifest in manifests.values() for item in manifest.runtime_permissions["broker_operations"]}
-    bindings = isolated_migration_accounts()
-    for identity in ("scan_codes", "arrival_stats"):
-        bindings[identity] = {"account_id": [ACCOUNT_ID]}
-    bindings["self_pickup_problem_upload"] = {role: [value] for role, value in ACCOUNTS.items()}
+    artifacts = {identity: build_artifact(identity, root / 'artifacts') for identity in
+                 ('sync_scan_codes_v2', 'sync_arrival_stats_v2', 'self_pickup_problem_upload_v2')}
     scan_gate, problem_gate = BoundaryGate(), BoundaryGate()
     with DailyBoundary(scan_gate) as daily, daily.authentication_boundaries(), ProblemBoundary(root / "supplier", problem_gate) as problems:
         resources = {**daily.resources, **problems.resources}
         def sheet(action, arguments):
             return daily.feishu_operation(action, arguments) if arguments["spreadsheet_token"] == "isolated-daily-workbook" else problems.feishu_operation(action, arguments)
-        handlers = build_production_first_party_core_handler_map(cursor_secret=secrets.token_bytes(32), account_manager=accounts, allowed_action_keys=keys, capability_authorizer=daily.authorize)
+        handlers = build_production_first_party_core_handler_map(cursor_secret=secrets.token_bytes(32), account_manager=accounts, capability_authorizer=daily.authorize)
         handlers.update(build_production_problem_handler_map(cursor_secret=secrets.token_bytes(32), account_manager=accounts, resource_loader=resources.get, feishu_operation=sheet, problem_action=problems.problem_action, capability_authorizer=problems.authorize))
-        with ManagementFixture(connection_factory=direct_repository._connection_factory, runtime_root=root / "runtime", account_manager=accounts, broker_handlers=handlers, resource_provider=resources.get, upload_signature_verifier=trust, enable_directory_faults=False, migration_account_bindings=bindings) as management:
-            bootstrap(management, private_key=private, trust=trust, key_id="direct-daily")
-            for identity in ("scan_codes", "arrival_stats"):
-                management.targets.reconcile_project(identity)
-            setup_scan(management)
-            setup_stats(management)
-            setup_instance(management, None)
+        with ManagementFixture(connection_factory=direct_repository._connection_factory, runtime_root=root / "runtime", account_manager=accounts, broker_handlers=handlers, resource_provider=resources.get, enable_directory_faults=False, connector_registry=ConnectorRegistry((*build_scan_connectors(handlers), *build_arrival_connectors(handlers), *build_problem_connectors(handlers)))) as management:
+            scan_id = setup_scan(management, artifacts['sync_scan_codes_v2'])
+            stats_id = setup_stats(management, artifacts['sync_arrival_stats_v2'])
+            pickup_id = setup_instance(management, artifacts['self_pickup_problem_upload_v2'])
             with DirectFixture(management, directory=root / "ipc", saved_resource_provider=resources.get) as runtime:
                 before = _legacy_counts(management.repository)
                 chat = PluginConversationService(management.policy)
@@ -87,18 +77,18 @@ def test_statistics_scan_pickup_execute_in_parallel_without_a_queue(daily_reposi
                     assert result["status"] == "COMPLETED", json.dumps(result, ensure_ascii=False, default=str)
                     return result
                 # Establish a real previously committed scan snapshot first.
-                first_preview = completed(invoke("scan_codes"))
-                completed(invoke("scan_codes", preview_invocation_id=first_preview["invocation_id"]))
+                first_preview = completed(invoke(scan_id))
+                completed(invoke(scan_id, preview_invocation_id=first_preview["invocation_id"]))
                 assert [row["BILL_CODE"] for row in daily.ledger] == [CHILD_CODE]
                 # Reset only the isolated upstream outbound ledger. The local
                 # completed snapshot remains what concurrent statistics reads.
                 daily.ledger.clear()
-                scan_preview = completed(invoke("scan_codes"))
-                pickup_preview = (invoke("self_pickup_problem_upload") if chat_entry else signed_request(management, "/internal/v1/automation-projects/self_pickup_problem_upload/selection-previews", payload={"request_id": str(uuid4())}))
+                scan_preview = completed(invoke(scan_id))
+                pickup_preview = (invoke(pickup_id) if chat_entry else signed_request(management, f"/internal/v1/automation-projects/{pickup_id}/selection-previews", payload={"request_id": str(uuid4())}))
                 completed(pickup_preview)
                 scan_gate.enabled = problem_gate.enabled = True
                 try:
-                    scan = invoke("scan_codes", preview_invocation_id=scan_preview["invocation_id"])
+                    scan = invoke(scan_id, preview_invocation_id=scan_preview["invocation_id"])
                     assert scan_gate.started.wait(15), runtime.service.get(scan["invocation_id"])
                     if chat_entry:
                         projection = chat.console_action(actor=ACTOR, invocation_id=pickup_preview["invocation_id"], action="status", request_id=str(uuid4()), selected_indices=[])
@@ -106,18 +96,22 @@ def test_statistics_scan_pickup_execute_in_parallel_without_a_queue(daily_reposi
                         assert len(indices) == 1
                         pickup = chat.console_action(actor=ACTOR, invocation_id=pickup_preview["invocation_id"], action="confirm", request_id=str(uuid4()), selected_indices=indices)
                     else:
-                        pickup = signed_request(management, f"/internal/v1/automation-projects/self_pickup_problem_upload/selection-previews/{pickup_preview['invocation_id']}/confirm", payload={"request_id": str(uuid4()), "selected_bill_codes": ["R_M03_STANDARD"]})
+                        pickup = signed_request(management, f"/internal/v1/automation-projects/{pickup_id}/selection-previews/{pickup_preview['invocation_id']}/confirm", payload={"request_id": str(uuid4()), "selected_bill_codes": ["R_M03_STANDARD"]})
                     assert problem_gate.started.wait(10), runtime.service.get(pickup["invocation_id"])
-                    statistics = completed(invoke("arrival_stats"))
+                    stats_receipt = invoke(stats_id)
+                    statistics_during_scan = completed(stats_receipt)
                     assert runtime.service.get(scan["invocation_id"])["status"] == "RUNNING"
                     assert runtime.service.get(pickup["invocation_id"])["status"] == "RUNNING"
                     scan_gate.release.set()
                     problem_gate.release.set()
                     scan_result, pickup_result = completed(scan), completed(pickup)
+                    statistics = completed(invoke(stats_id))
                 finally:
                     scan_gate.release.set()
                     problem_gate.release.set()
                 assert [row["BILL_CODE"] for row in daily.ledger] == [CHILD_CODE]
                 assert [row["bill_code"] for row in problems.persisted_problems()] == ["R_M03_STANDARD"]
                 assert _legacy_counts(management.repository) == before
-                (root / "evidence.json").write_text(json.dumps({"scan": scan_result, "statistics": statistics, "pickup": pickup_result, "legacy_counts_before": before, "legacy_counts_after": _legacy_counts(management.repository)}, ensure_ascii=False, indent=2, default=str))
+                (root / "evidence.json").write_text(json.dumps({"runtime_model": "SERVICE_V2", "scan": scan_result,
+                    "statistics_during_scan": statistics_during_scan, "statistics": statistics, "pickup": pickup_result,
+                    "legacy_counts_before": before, "legacy_counts_after": _legacy_counts(management.repository)}, ensure_ascii=False, indent=2, default=str))
