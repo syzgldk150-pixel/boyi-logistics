@@ -9,7 +9,7 @@ from agent.orchestration.models import OrchestrationError
 from agent.orchestration.scan_preview_binding import _validate_preview_evidence, _bind_formal_arguments, validate_scan_preview_context
 from agent.orchestration.selection_preview_binding import SELECTION_PREVIEW_PROJECTS, _validate_candidates, _validate_generic_candidates, _selected_bill_codes, _summary, _service_v2_summary
 from shared.automation_project_authorization import canonical_sha256
-from shared.automation_preview_contract import PREVIEW_CONTRACT_VERSION
+from shared.automation_preview_contract import PREVIEW_CONTRACT_VERSION, preview_observation_too_far_ahead
 
 
 def _load(repository, invocation_id, *, entry, contract, actor_id=None):
@@ -35,7 +35,7 @@ def _load(repository, invocation_id, *, entry, contract, actor_id=None):
         raise OrchestrationError("PREVIEW_INVALID", "预览数据格式无效")
     observed = datetime.fromisoformat(result["meta"]["observed_at"].replace("Z", "+00:00"))
     now = datetime.now(timezone.utc)
-    if observed.tzinfo is None or observed > now:
+    if observed.tzinfo is None or preview_observation_too_far_ahead(observed, now):
         raise OrchestrationError("PREVIEW_INVALID", "预览时间无效")
     return row, result, data, observed, observed + timedelta(minutes=15)
 

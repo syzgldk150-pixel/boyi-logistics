@@ -11,6 +11,7 @@
 - `business_query.py` 的经营摘要按中国业务日期读取当前 `automation_plugin_invocations.started_at`，计数及新鲜度来自同一只读快照；终态口径复用共享 Invocation 定义，未知写不计成功，空数据明确返回 `NO_DATA`。旧 Command/Run 不混入当前执行统计；直接 reader 继续校验角色与参数，财务金额仍由原账本聚合。隔离 MySQL 验证见 `../../tests/test_automation_operations_invocations_mysql.py`。
 
 - 当前扫描／自提／分批公共预览合同为版本 3：`preview_state` 明确区分 `AVAILABLE/CONSUMED/EXPIRED`，`can_confirm` 只能在 AVAILABLE 时为真。已使用优先于到期状态，正式处理结果仍读取对应 Invocation；不改变签名插件的业务预览绑定或一次性消费边界。
+- 预览生成与确认的 UTC 时钟允许共享合同中的 3 秒短时回拨容差；超出该窗口的未来时间及真正到期的预览仍拒绝。隔离复现见 `../../tests/test_direct_preview_state.py`、`../../tests/test_scan_preview_binding.py`。
 - 融辉打卡的只读能力检查接受已核验的“网点到离港记录”和“网点到离港记录-新”精确菜单名称，仍要求唯一入口与真实页面标记；不使用包含匹配或任意首条菜单。
 
 ## 目录职责
