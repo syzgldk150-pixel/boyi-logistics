@@ -1,5 +1,6 @@
 """Both transports use one model loop, query path and current identity authority."""
 import asyncio
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
@@ -10,7 +11,9 @@ from agent.core import AgentCore
 from agent.channel_chat import reply_to_feishu
 from agent.harness.errors import HarnessError
 from agent.orchestration.models import Actor, ActorType
+from agent.shipment_conversation import ShipmentConversation
 from shared.identity_permissions import IdentityAccess
+from shared.shipment_metrics import BUSINESS_ZONE
 from tests.chat_runtime_support import configure_chat
 from tests.test_identity_interfaces import MutableAuthority
 
@@ -31,7 +34,9 @@ def test_console_and_feishu_read_the_same_tracking_data_without_calling_model():
     core.llm.chat.assert_not_awaited()
 
 
-def test_same_model_prompt_for_both_channels_and_group_members_have_separate_history():
+def test_same_model_prompt_for_both_channels_and_group_members_have_separate_history(monkeypatch):
+    now = datetime(2026, 9, 24, 12, tzinfo=BUSINESS_ZONE)
+    monkeypatch.setattr("agent.harness_online.ShipmentConversation", lambda: ShipmentConversation(clock=lambda: now))
     transcripts = []
     async def model(messages, **_):
         transcripts.append(messages)
