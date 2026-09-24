@@ -101,7 +101,7 @@ def test_registered_agent_reader_obeys_release_hold_before_provider():
     assert lifecycle.active_read_count() == 0
 
 
-def test_harness_fixed_reads_are_admitted_and_drained_without_stored_tasks():
+def test_harness_fixed_reads_are_admitted_and_drained_without_stored_tasks(monkeypatch):
     async def exercise():
         held = [True]
         lifecycle = DirectPluginInvocationService(object(), SimpleNamespace(), None, release_hold_provider=lambda: held[0])
@@ -109,8 +109,10 @@ def test_harness_fixed_reads_are_admitted_and_drained_without_stored_tasks():
         def knowledge(query, limit):
             entered.set()
             assert finish.wait(timeout=3)
-            return [{"category": "fixture", "content": query}]
-        runtime = SimpleNamespace(memory=SimpleNamespace(search_knowledge=knowledge, connection_factory=lambda: None))
+            return {"ok": True, "source": "feishu_wiki_cli", "items": [{"body": query}]}
+        monkeypatch.setattr("harness_composition.FeishuKnowledgeSource", lambda: SimpleNamespace(search=knowledge))
+        legacy_reader = Mock(side_effect=AssertionError("legacy knowledge must not be used"))
+        runtime = SimpleNamespace(memory=SimpleNamespace(search_knowledge=legacy_reader, connection_factory=lambda: None))
         repository = SimpleNamespace(list_work_items=Mock(), get_run=Mock(), get_evidence=Mock())
         gateway = build_read_only_harness_gateway(runtime, repository, invocations=lifecycle)
         reader = gateway.handlers()["knowledge.search"]
@@ -127,6 +129,7 @@ def test_harness_fixed_reads_are_admitted_and_drained_without_stored_tasks():
         assert lifecycle.active_invocations() == []
         finish.set()
         result = await task
-        assert result["可用"] is True and result["结果"][0]["内容"] == "fixture"
+        assert result["ok"] is True and result["items"][0]["body"] == "fixture"
+        legacy_reader.assert_not_called()
         assert lifecycle.active_read_count() == 0
     asyncio.run(exercise())
