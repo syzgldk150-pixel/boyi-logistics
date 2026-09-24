@@ -3,7 +3,7 @@ from __future__ import annotations
 from agent.harness_read_gateways import ReadOnlyHarnessGateway
 
 
-def test_six_read_only_gateways_use_closed_safe_projections() -> None:
+def test_read_only_gateways_use_closed_safe_projections() -> None:
     calls: list[tuple[str, object]] = []
 
     gateway = ReadOnlyHarnessGateway(
@@ -46,6 +46,7 @@ def test_six_read_only_gateways_use_closed_safe_projections() -> None:
         "work_items.list_open",
         "runs.get_summary",
         "artifact.inspect",
+        "shipment.query",
     }
     knowledge = handlers["knowledge.search"]({"query": "签收", "limit": 3})
     waybill = handlers["waybill.lookup"]({"waybill_number": "R001"})

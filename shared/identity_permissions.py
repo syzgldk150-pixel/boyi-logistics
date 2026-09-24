@@ -70,7 +70,7 @@ def tool_permission(name: str) -> str:
         "query_finance_summary": "finance.read", "query_business_finance_summary": "finance.read",
         "query_business_finance": "finance.read",
         "query_automation_operations": "finance.read",
-        "knowledge.search": "business.query", "waybill.lookup": "business.query", "tracking.lookup": "business.query",
+        "knowledge.search": "business.query", "shipment.query": "business.query", "waybill.lookup": "business.query", "tracking.lookup": "business.query",
         "finance.summary": "finance.read",
         "query_run_result": SUPER_ADMIN, "query_evidence_summary": SUPER_ADMIN,
     }.get(name, SUPER_ADMIN)

@@ -205,7 +205,7 @@ def test_production_gated_sidecar_never_falls_back() -> None:
     assert service_error.value.code == "HARNESS_RUNTIME_PRODUCTION_GATED"
 
 
-def test_fixed_host_tool_definitions_are_exactly_six_closed_read_only_tools() -> None:
+def test_fixed_host_tool_definitions_match_closed_read_only_catalog() -> None:
     tools = build_fixed_harness_tools()
     assert tuple(tool.descriptor.tool_id for tool in tools) == FIXED_HARNESS_TOOL_IDS
     assert set(FIXED_HARNESS_TOOL_IDS) == {
@@ -216,6 +216,7 @@ def test_fixed_host_tool_definitions_are_exactly_six_closed_read_only_tools() ->
         "work_items.list_open",
         "runs.get_summary",
         "artifact.inspect",
+        "shipment.query",
     }
     for tool in tools:
         schema = tool.descriptor.input_schema
