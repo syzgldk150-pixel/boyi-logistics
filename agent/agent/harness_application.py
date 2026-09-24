@@ -27,6 +27,7 @@ from agent.harness.sidecar import SidecarResult
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from shared.redaction import redact_text
 from shared.identity_permissions import tool_permission, plugin_permission
+from shared.shipment_metrics import QUERY_KEYS as SHIPMENT_QUERY_KEYS
 
 
 MEMORY_ONLY = "MEMORY_ONLY"
@@ -553,7 +554,7 @@ FIXED_HARNESS_TOOL_IDS = (
 )
 
 _FIXED_ARGUMENT_KEYS = {
-    "shipment.query": frozenset({"station", "period", "start_date", "end_date", "group_by", "comparison"}),
+    "shipment.query": SHIPMENT_QUERY_KEYS,
     "knowledge.search": frozenset({"query", "limit"}),
     "waybill.lookup": frozenset({"waybill_number"}),
     "tracking.lookup": frozenset({"tracking_number"}),
