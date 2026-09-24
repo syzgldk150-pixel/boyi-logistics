@@ -122,6 +122,7 @@ class ReadOnlyHarnessGateway:
         get_run: Callable[[str], object],
         get_evidence: Callable[[str], object],
         finance_summary: Callable[[Mapping[str, Any]], object] | None = None,
+        shipment_query: Callable[[Mapping[str, Any]], object] | None = None,
         read_boundary: Callable | None = None,
     ) -> None:
         self._knowledge_search = knowledge_search
@@ -131,11 +132,13 @@ class ReadOnlyHarnessGateway:
         self._get_run = get_run
         self._get_evidence = get_evidence
         self._finance_summary = finance_summary
+        self._shipment_query = shipment_query
         self._read_boundary = read_boundary
 
     def handlers(self) -> dict[str, Callable[[Mapping[str, Any]], object]]:
         handlers = {
             "knowledge.search": self.knowledge,
+            "shipment.query": self.shipment,
             "waybill.lookup": self.waybill,
             "tracking.lookup": self.tracking,
             "finance.summary": self.finance,
@@ -147,6 +150,11 @@ class ReadOnlyHarnessGateway:
             return handlers
         return {name: (lambda arguments, name=name, handler=handler:
                        self._read_boundary(name, handler, arguments)) for name, handler in handlers.items()}
+
+    def shipment(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        if self._shipment_query is None:
+            return {"ok": False, "status": "unavailable", "code": "SHIPMENT_SOURCE_UNAVAILABLE", "message": "发货吨位查询尚未连接可信数据源。"}
+        return self._shipment_query(arguments)
 
     def finance(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         if self._finance_summary is None:
@@ -161,6 +169,10 @@ class ReadOnlyHarnessGateway:
             rows = self._knowledge_search(str(arguments["query"]), int(arguments["limit"]))
         except Exception:
             return _unavailable("业务知识暂时无法读取，请稍后重试")
+        if isinstance(rows, Mapping) and rows.get("source") == "feishu_wiki_cli":
+            return dict(rows)
+        if isinstance(rows, Mapping) and rows.get("ok") is False:
+            return {key: rows[key] for key in ("ok", "status", "code", "message") if key in rows}
         items = []
         for row in rows if isinstance(rows, (list, tuple)) else ():
             if not isinstance(row, Mapping):

@@ -258,6 +258,7 @@ class HarnessConversationService:
         self._message_plugin_requests: dict[str, tuple[object, ...]] = {}
         self._pending_sidecars: dict[str, HarnessSidecar] = {}
         self._session_invocations: dict[str, set[str]] = {}
+        self._session_query_context: dict[str, dict[str, Any]] = {}
         self._plugin_conversations = plugin_conversations
         self._identity_access = identity_access
         self._text_queries = text_queries
@@ -393,6 +394,7 @@ class HarnessConversationService:
                 # This only clears model context. Running plugins and their durable
                 # execution records remain available in the automation module.
                 self._session_invocations.pop(safe_session_id, None)
+                self._session_query_context.pop(safe_session_id, None)
 
             user_message = HarnessMessage(
                 role="user",
@@ -428,6 +430,9 @@ class HarnessConversationService:
                             if self._text_queries is not None else None)
             if sidecar is None and fixed_result is None:
                 sidecar = self._build_sidecar(bound_actor, safe_request_id)
+                bind_context = getattr(sidecar, "bind_query_context", None)
+                if callable(bind_context):
+                    bind_context(self._session_query_context.get(safe_session_id))
                 self._pending_sidecars[assistant_id] = sidecar
             try:
                 result = fixed_result if fixed_result is not None else sidecar.run(
@@ -456,6 +461,8 @@ class HarnessConversationService:
                 message=assistant_message,
             )
             self._message_tool_calls[assistant_id] = result.tool_calls
+            if sidecar is not None and getattr(sidecar, "query_context", None) is not None:
+                self._session_query_context[safe_session_id] = copy.deepcopy(sidecar.query_context)
             self._message_plugins[assistant_id] = result.plugin_invocations
             self._message_plugin_requests[assistant_id] = result.plugin_requests
             self._session_invocations.setdefault(safe_session_id, set()).update(
@@ -542,9 +549,11 @@ FIXED_HARNESS_TOOL_IDS = (
     "finance.summary",
     "runs.get_summary",
     "artifact.inspect",
+    "shipment.query",
 )
 
 _FIXED_ARGUMENT_KEYS = {
+    "shipment.query": frozenset({"station", "period", "start_date", "end_date", "group_by", "comparison"}),
     "knowledge.search": frozenset({"query", "limit"}),
     "waybill.lookup": frozenset({"waybill_number"}),
     "tracking.lookup": frozenset({"tracking_number"}),
@@ -567,12 +576,13 @@ def _object_schema(properties: Mapping[str, Mapping[str, Any]], required: Iterab
 def build_fixed_harness_tools() -> tuple[FixedHarnessTool, ...]:
     """Build the host-rendered read-only tools without a default gateway."""
 
+    from agent.shipment_conversation import SHIPMENT_SCHEMA
     string_id = {"type": "string", "maxLength": 191}
     descriptors = (
         ToolDescriptor(
             tool_id="knowledge.search",
             title="查询业务知识",
-            description="查询已经整理并允许读取的业务知识。",
+            description="在授权的融辉红头文件、韵达红头文件内检索并读取正文。query 使用简短、连续的主题词，例如发货、作废、回单；不要把完整问句作为检索词。返回原文、例外、来源编号及可用链接；目录摘要不代表正文，读取失败不能依靠模型记忆回答。",
             input_schema=_object_schema(
                 {
                     "query": {"type": "string", "maxLength": 500},
@@ -624,6 +634,9 @@ def build_fixed_harness_tools() -> tuple[FixedHarnessTool, ...]:
             description="按证据编号查看脱敏后的运行证据摘要。",
             input_schema=_object_schema({"artifact_id": string_id}, ("artifact_id",)),
         ),
+        ToolDescriptor(tool_id="shipment.query", title="查询发货吨位",
+            description="按网点和开单日期查询计费重量吨位，可按日、目的地分组及比较昨日。station 必须逐字保留用户给出的完整网点名称，禁止缩写、改名或删掉前缀；追问继承用空字符串。period=today 今天，yesterday 昨天（无已有参照的前一天），previous_day 已有单日查询的前一天，range 明确日期区间，inherit 继承有效日期。start_date/end_date 仅 range 填 YYYY-MM-DD，其余填空字符串。group_by=total/date/destination/inherit。comparison 仅要求比较时选 previous_day_full（昨日全天）或 previous_day_same_time（昨日同截止），否则 none。不能用于实际重量、结算重量、利润或扫描量。",
+            input_schema=copy.deepcopy(SHIPMENT_SCHEMA)),
     )
     return tuple(
         FixedHarnessTool(
@@ -844,7 +857,14 @@ def _validate_fixed_arguments(
     safe = strict_json(dict(arguments), field_name="fixed Harness arguments")
     if not isinstance(safe, dict):
         raise _error("Fixed Harness arguments are invalid", "HARNESS_ARGUMENT_INVALID")
-    if handle_id == "knowledge.search":
+    if handle_id == "shipment.query":
+        from datetime import datetime
+        from shared.shipment_metrics import BUSINESS_ZONE, ShipmentQueryError, resolve_query
+        try:
+            resolve_query(safe, now=datetime.now(BUSINESS_ZONE))
+        except (ShipmentQueryError, TypeError, ValueError) as exc:
+            raise _error("发货查询条件不完整或无效", "HARNESS_ARGUMENT_INVALID") from exc
+    elif handle_id == "knowledge.search":
         if (
             not isinstance(safe.get("query"), str)
             or len(safe["query"]) > 500

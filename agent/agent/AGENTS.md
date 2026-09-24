@@ -34,7 +34,7 @@
   - `main.py` 是唯一组合根；`orchestration/` 不得导入 `tools`、`feishu` 或 Console。持久化统一走 `../../shared/orchestration_repository.py` 的显式 Unit of Work。
   - 已开始外部写且结果未证实时，本次 Invocation 终结为 WRITE_OUTCOME_UNKNOWN；保存真实回执，不重放旧调用。新请求建立独立 Invocation，必要历史核验不得隐式继续原业务。
   - 旧澄清事件和 Plan Hash 仅供历史验证，不重新调度。新请求的业务参数必须通过当前 schema、权威账号、项目权限与代次校验，不能借用原 Command 的授权。
-  - 当前直接执行受有界并发与实际资源控制；资源不足、登录、数据或业务错误直接结束，无等待队列和自动补跑。调用生命周期持有实际账号使用登记，取消/超时后等线程或子进程真正结束及必要业务落库完成才释放。旧 Runner 心跳/领取参数不影响当前路径。
+  - 当前直接执行受有界并发与实际资源控制；已受理请求遇临时资源忙时，仅在当前进程内有界等待，默认最多 30 秒且可取消；超时、过载、登录、数据或业务错误明确终结，无持久等待队列和自动补跑。调用生命周期持有实际账号使用登记，取消/超时后等线程或子进程真正结束及必要业务落库完成才释放。旧 Runner 心跳/领取参数不影响当前路径。
   - `orchestration/execution_resources.py` 只从 `workflow_resource_store.get_saved_workflow_resource` 的宿主完整性校验记录归一已审核 Sheet/Bitable 写范围。已知同表别名跨插件／角色／凭据互斥，缺少子表 ID 或创建归档表时持有整个父资源；未知动作、URL-only、未知 locator 保留同账号保守锁，并与该账号已知资源双向冲突。无权威物理身份的跨凭据范围及多个独立服务进程之间的资源协调仍是明确限制，不可描述为已覆盖。
   - 混合步骤按已审核 Broker 动作持有写范围并集：扫描提交只保护实际写账号，本地投影按真实共享表跨账号互斥，飞书保留物理范围；只读账号角色不扩大成全账号写锁。签名唯一声明可选、绑定键完全缺失且无账号歧义的资源角色可排除，Broker 仍在写前拒绝该角色。Direct 调用冻结的逐动作范围沿执行上下文进入 Broker 收据，无法证明的动作保留原保守范围。历史收据只读投影和明确限制见 `../../docs/historical_write_recovery.md`。
   - `orchestration/signed_preview_maintenance.py` 核验固定扫描／自提／分批实例的 V1 签名 ZIP 维护兼容：版本与 payload 可变，Host 工具、调用、治理、Broker 和角色契约必须与宿主审核来源一致，且 committed 快照身份及摘要一致；不把 `ed25519_upload` 改写为首发信任。内部配置拒写与预览只读裁剪继续由 `automation_plugins/code_owned_fields.py` 统一执行；财务／客服新签名实例的内部字段不可编辑，也不因此获得启动补采或额外计划字段权限。
@@ -65,6 +65,7 @@
   - 历史 `sync_scan_codes` 未知写恢复读取原正式 lease、Command、已验签 preview 与原代际账号，在独立外部账本精确证明 APPLIED / NOT_APPLIED；041 保存原快照和原资源键，APPLIED 仅按原日期所有者 CAS 补齐投影与结果，显式人工核验不唤醒原 Run；停止历史的不确定结果保留 UNKNOWN，不阻止新请求。历史紧凑上下文缺失时仍须验证同 Run 的完整 Plan hash 和原预览结果摘要，不得猜测。实现索引、保留/回滚与隔离验收边界见 `../../docs/scan_recovery_v32.md`。
   - `feishu_command_contract.py` 是宿主无条件取消、扫描确认和审批绑定文本的纯解析单点；`direct_tool_router.py` 复用它和登录/固定 Action v1 parser，并通过组合根注入的纯判定器阻止动态 contribution 安装同文案。动态未知才可继续既有 Agent/LLM；匹配后身份缺失必须停止，不得回退。
 - 改 AI 会话、插件选择、只读 Tool Catalog 或受限 sidecar：
+  - 发货与知识局部入口为 `shipment_queries.py`、`shipment_conversation.py`、`knowledge_answers.py`，计算合同在 `shared/shipment_metrics.py`；来源未核实明确不可用，过期查询条件不从旧文本猜测。范围见 `../../docs/shipment_knowledge_queries.md`。
   - `plugin_conversations.py` 从启用且配置完成的 committed 插件生成不含账号资源的选择句柄；网页 AI 和已绑定管理员的飞书自然对话复用各自入口，执行前复核版本、设置及完全自动权限。模型无权确认预览或提供业务参数；同一请求只重读原 Invocation。实现与隔离验证见 `../../docs/architecture_direct_invocation.md`。
   - `harness/` 只放无环境、数据库、网络、文件、TMS 和飞书依赖的领域模型、内存 Session、Catalog、协议与 fail-closed launcher；`harness_application.py` 绑定真实签名 MySQL 管理员、可信项目调用 adapter 和组合根注入的只读处理器；`harness_api.py` 只承载闭合内部 HTTP 请求、响应投影和错误映射。
   - 动态工具只从 `ManagedContributionRegistry` 的 immutable active snapshot 读取，并在调用前重解 exact active generation。贡献必须绑定 generation 中真实签名的闭合 `runtime_permissions`，只接受 `read/compute + harness_allowed=true + broker_effect=read`，权限由 `automation_plugins/harness_permissions.py` 按 Host 精确操作统一投影：保留 read/compute 操作及受调用 effect ceiling 限制的 service.invoke，浏览器只开放逐项受审的只读 action；Catalog、贡献注册和实际只读调用发放权限复用此规则。缺字段、伪造治理或无对应操作的权限标志均拒绝，正式提交不进入只读授权。

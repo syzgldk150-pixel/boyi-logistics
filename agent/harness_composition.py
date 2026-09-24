@@ -9,7 +9,9 @@ from agent.harness_read_gateways import ReadOnlyHarnessGateway
 from agent.tms_runtime.direct_execution import call_blocking
 from shared.runtime_repositories import WaybillRepository
 from tools.track_waybill_tool import run_track_waybill
+from tools.feishu_knowledge import FeishuKnowledgeSource
 from agent.chat_text_queries import ChatTextQueries
+from agent.shipment_queries import ShipmentQueryService, unavailable_shipment_source
 from agent.orchestration.models import ActorType, OrchestrationError
 
 
@@ -24,6 +26,7 @@ def build_chat_text_queries(runtime):
 
 def build_read_only_harness_gateway(runtime: object, repository: object, *, finance_summary=None, invocations=None) -> ReadOnlyHarnessGateway:
     memory = getattr(runtime, "memory")
+    knowledge = FeishuKnowledgeSource()
     loop = asyncio.get_running_loop() if invocations is not None else None
 
     def tracking(number):
@@ -51,13 +54,14 @@ def build_read_only_harness_gateway(runtime: object, repository: object, *, fina
         return repository.get_run(run_id)
 
     return ReadOnlyHarnessGateway(
-        knowledge_search=memory.search_knowledge,
+        knowledge_search=knowledge.search,
         waybill_lookup=WaybillRepository(memory.connection_factory).get_by_number,
         tracking_lookup=tracking,
         list_work_items=lambda limit: repository.list_work_items(limit=limit, offset=0),
         get_run=get_run,
         get_evidence=repository.get_evidence,
         finance_summary=finance_summary,
+        shipment_query=ShipmentQueryService(read_day=unavailable_shipment_source),
         read_boundary=read_boundary if invocations is not None else None,
     )
 
