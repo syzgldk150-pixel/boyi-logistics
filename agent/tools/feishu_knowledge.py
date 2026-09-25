@@ -1,7 +1,7 @@
 """Read only the authorized Wiki spaces through the installed Feishu CLI.
 
-Contract checked against larksuite/cli v1.0.3: bot Wiki list/get_node and
-docs +fetch. That version's full-text docs +search is user-only; this adapter
+Contract checked against larksuite/cli v1.0.3: bot Wiki list/get_node,
+docs +fetch and drive +download. That version's docs +search is user-only; this adapter
 explicitly searches bounded in-scope bodies instead. It never changes login.
 """
 from __future__ import annotations
@@ -12,8 +12,11 @@ import re
 import selectors
 import signal
 import subprocess
+import sys
+import tempfile
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from threading import BoundedSemaphore
 from urllib.parse import urlparse
 
@@ -58,12 +61,34 @@ class KnowledgeCli:
         else:
             args.extend(["--params", json.dumps(parameters, ensure_ascii=False, separators=(",", ":"))])
         args.extend(["--as", "bot", "--format", "json"])
+        return self._run(args, deadline=deadline)
+
+    def read_pdf(self, object_id, *, deadline):
+        """v1.0.3 download uses relative output and has no --format flag."""
+        object_id = _identity(object_id)
+        if os.name != "posix":
+            _fail("KNOWLEDGE_RUNTIME_UNSUPPORTED", "知识读取需要受控的 Linux 运行环境。")
+        temporary_root = Path(__file__).resolve().parents[1] / ".task_tmp" / "knowledge"
+        temporary_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="pdf-", dir=temporary_root) as directory:
+            pdf = Path(directory) / "source.pdf"
+            self._run(["lark-cli", "drive", "+download", "--file-token", object_id,
+                       "--output", "./source.pdf", "--as", "bot"], deadline=deadline,
+                      cwd=directory, download_path=pdf)
+            if not pdf.is_file() or pdf.is_symlink() or not 0 < pdf.stat().st_size <= 16_000_000:
+                _fail("KNOWLEDGE_PDF_INVALID", "PDF 下载为空或超过读取上限。")
+            return self._run([sys.executable, "-I", str(Path(__file__).with_name("feishu_knowledge_pdf.py")),
+                              str(pdf)], deadline=deadline, cwd=directory,
+                             env={"PATH": os.defpath, "LANG": "C.UTF-8"})
+
+    @staticmethod
+    def _run(args, *, deadline, cwd=None, download_path=None, env=None):
         remaining = min(15, deadline-time.monotonic())
         if remaining <= 0:
             _fail("KNOWLEDGE_TIMEOUT", "知识读取超时，本次未返回完整依据。")
         try:
             process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                       stderr=subprocess.PIPE, start_new_session=True)
+                                       stderr=subprocess.PIPE, start_new_session=True, cwd=cwd, env=env)
         except FileNotFoundError:
             _fail("KNOWLEDGE_CLI_UNAVAILABLE", "飞书 CLI 尚未安装。")
         output = bytearray()
@@ -74,6 +99,8 @@ class KnowledgeCli:
                 selector.register(process.stderr, selectors.EVENT_READ, data=errors)
                 expires = time.monotonic() + remaining
                 while selector.get_map():
+                    if download_path is not None and download_path.exists() and download_path.stat().st_size > 16_000_000:
+                        _fail("KNOWLEDGE_OUTPUT_LIMIT", "知识文件超过本次读取上限。")
                     wait = expires-time.monotonic()
                     if wait <= 0:
                         _fail("KNOWLEDGE_TIMEOUT", "知识读取超时，本次未返回完整依据。")
@@ -98,6 +125,8 @@ class KnowledgeCli:
             error = payload.get("error")
             if isinstance(error, dict):
                 code = error.get("code", code)
+            if isinstance(code, str) and code.startswith("KNOWLEDGE_PDF_"):
+                _fail(code, "PDF 文字层不能完整提取，未作为知识依据。")
             if code in _PERMISSION_CODES:
                 _fail("KNOWLEDGE_PERMISSION_DENIED", "机器人没有读取授权知识库的权限，请开通只读权限并加入这两个空间。")
             if process.returncode or code not in (None, 0) or error:
@@ -127,8 +156,9 @@ def _data(payload):
 
 class FeishuKnowledgeSource:
     """No persistent body cache: every answer rechecks current scope and revision."""
-    def __init__(self, *, cli=None, space_names=AUTHORIZED_SPACES):
+    def __init__(self, *, cli=None, space_names=AUTHORIZED_SPACES, pdf_reader=None):
         self._cli = cli or KnowledgeCli()
+        self._pdf_reader = pdf_reader or getattr(self._cli, "read_pdf", None)
         self._space_names = tuple(space_names)
         if not self._space_names or len(set(self._space_names)) != len(self._space_names):
             raise ValueError("unique authorized space names required")
@@ -194,25 +224,39 @@ class FeishuKnowledgeSource:
             _fail("KNOWLEDGE_SCOPE_MISMATCH", "知识正文已移出授权范围或身份不一致。")
         if node.get("node_type") == "shortcut" and node.get("origin_space_id") != space_id:
             _fail("KNOWLEDGE_SCOPE_MISMATCH", "该快捷方式指向授权范围之外，未读取目标正文。")
-        if node.get("obj_type") != "docx":
+        if node.get("obj_type") not in {"docx", "file"}:
             _fail("KNOWLEDGE_FORMAT_UNSUPPORTED", "该知识内容不是受支持的文档正文，未读取表格或附件。")
+        if node.get("obj_type") == "file" and not str(node.get("title", "")).lower().endswith(".pdf"):
+            _fail("KNOWLEDGE_FORMAT_UNSUPPORTED", "当前只支持在线文档和 PDF 文件。")
         _identity(node.get("obj_token"))
         return node
 
-    def _body(self, node_id, space_id, deadline):
+    def _body(self, node_id, space_id, deadline, query):
         before = self._node(node_id, space_id, deadline)
-        body = _data(self._cli(("docs", "+fetch"), {"doc": before["obj_token"]}, deadline=deadline))
-        markdown = body.get("markdown")
-        if not isinstance(markdown, str) or not markdown.strip() or type(body.get("has_more")) is not bool:
-            _fail("KNOWLEDGE_BODY_UNVERIFIED", "没有取得完整可核验的知识正文。")
-        if body["has_more"]:
+        is_pdf = before["obj_type"] == "file"
+        pdf_metadata = {}
+        if is_pdf:
+            if self._pdf_reader is None:
+                _fail("KNOWLEDGE_PDF_UNAVAILABLE", "PDF 读取尚未配置。")
+            from tools.feishu_knowledge_pdf import select_pages
+            body = _data(self._pdf_reader(before["obj_token"], deadline=deadline))
+            try:
+                markdown, pdf_metadata = select_pages(body, query)
+            except ValueError as exc:
+                _fail("KNOWLEDGE_PDF_EXCERPT_LIMIT", str(exc))
+        else:
+            body = _data(self._cli(("docs", "+fetch"), {"doc": before["obj_token"]}, deadline=deadline))
+            markdown = body.get("markdown")
+            if not isinstance(markdown, str) or not markdown.strip() or type(body.get("has_more")) is not bool:
+                _fail("KNOWLEDGE_BODY_UNVERIFIED", "没有取得完整可核验的知识正文。")
+        if not is_pdf and body["has_more"]:
             # v1.0.3 advertises offsets without a verifiable continuation cursor
             # in the checked response contract. Never guess a character offset.
             _fail("KNOWLEDGE_BODY_INCOMPLETE", "正文仍有后续内容，当前 CLI 合同未核实续页位置，不能作为完整依据。")
         if len(markdown) > 12000:
             _fail("KNOWLEDGE_BODY_INCOMPLETE", "正文超过本次上下文上限，不能截断后声称完整读取。")
         after = self._node(node_id, space_id, deadline)
-        for key in ("obj_token", "obj_edit_time", "title"):
+        for key in ("obj_token", "obj_type", "obj_edit_time", "title"):
             if before.get(key) != after.get(key):
                 _fail("KNOWLEDGE_CHANGED_DURING_READ", "文档在读取期间更新，请重新查询。")
         title = after.get("title")
@@ -225,7 +269,7 @@ class FeishuKnowledgeSource:
         return {"source_id": node_id, "document_id": after["obj_token"], "title": title, "url": url,
                 "updated_at": after.get("obj_edit_time"), "read_at": datetime.now(timezone.utc).isoformat(),
                 "revision": None, "effective_date": None, "body": markdown,
-                "body_complete": True, "embedded_content_read": False,
+                "body_complete": not is_pdf, "embedded_content_read": False, **pdf_metadata,
                 "authority": "untrusted_business_document"}
 
     def search(self, query: str, limit: int) -> dict:
@@ -241,8 +285,10 @@ class FeishuKnowledgeSource:
                     scanned += 1
                     if scanned > 20:
                         _fail("KNOWLEDGE_SEARCH_LIMIT", "本次未能完整检索授权范围，请指定文档或缩小查询。")
-                    item = self._body(node["node_token"], space_id, deadline)
-                    if query.casefold() in (item["title"] + "\n" + item["body"]).casefold():
+                    item = self._body(node["node_token"], space_id, deadline, query)
+                    if item.get("format") == "pdf" and not item["body"] and query.casefold() in item["title"].casefold():
+                        _fail("KNOWLEDGE_PDF_TOPIC_REQUIRED", "PDF 较长，请指定需要查阅的业务主题。")
+                    if item["body"] and query.casefold() in (item["title"] + "\n" + item["body"]).casefold():
                         item["space"] = space_name
                         evidence.append(item)
             return {"ok": True, "status": "found" if evidence else "no_match", "source": "feishu_wiki_cli",

@@ -10,6 +10,8 @@ import time
 import pytest
 
 from tools.feishu_knowledge import FeishuKnowledgeSource, KnowledgeCli, KnowledgeError
+from tools.feishu_knowledge_pdf import extract_pages, select_pages
+from agent.knowledge_answers import cite_knowledge
 
 
 class WikiProtocol:
@@ -154,3 +156,93 @@ def test_cli_cannot_execute_shell_or_write_commands():
     with pytest.raises(KnowledgeError) as error:
         KnowledgeCli()(("docs", "+create"), {}, deadline=time.monotonic()+1)
     assert error.value.code == "KNOWLEDGE_COMMAND_DENIED"
+
+
+def pdf_protocol():
+    protocol = WikiProtocol()
+    protocol.node.update(obj_type="file", title="操作手册.pdf")
+    return protocol
+
+
+def test_pdf_search_scans_all_pages_and_cites_whole_pages_with_context():
+    protocol = pdf_protocol()
+    def read_pdf(object_id, *, deadline):
+        assert object_id == "docA" and deadline > time.monotonic()
+        return {"pages": [{"page": 1, "text": "适用范围"}, {"page": 2, "text": "回单办理规则"},
+                          {"page": 3, "text": "例外：客户原因除外"}, {"page": 4, "text": "其他业务"}],
+                "page_count": 4, "text_layer_complete": True}
+    result = FeishuKnowledgeSource(cli=protocol, pdf_reader=read_pdf).search("回单", 3)
+    assert result["ok"]
+    item = result["items"][0]
+    assert item["matched_pages"] == [2]
+    assert item["selected_pages"] == [1, 2, 3]
+    assert item["page_count"] == 4 and item["text_layer_complete"]
+    assert item["excerpt_only"] and not item["body_complete"] and not item["images_read"]
+    assert "客户原因除外" in item["body"] and "其他业务" not in item["body"]
+    rendered = cite_knowledge("按返回页办理。", [result])
+    assert "PDF 页码 1、2、3" in rendered and "表格版面未核验" in rendered
+    assert not any(command == ("docs", "+fetch") for command, _ in protocol.calls)
+
+
+def test_pdf_revocation_during_download_returns_no_evidence():
+    protocol = pdf_protocol()
+    def read_pdf(*args, **kwargs):
+        protocol.revoked = True
+        return {"pages": [{"page": 1, "text": "回单"}], "page_count": 1, "text_layer_complete": True}
+    result = FeishuKnowledgeSource(cli=protocol, pdf_reader=read_pdf).search("回单", 3)
+    assert result["code"] == "KNOWLEDGE_PERMISSION_DENIED" and result["items"] == []
+
+
+def test_pdf_does_not_truncate_large_hits_or_treat_missing_pages_as_no_match():
+    with pytest.raises(ValueError, match="页数较多"):
+        select_pages({"pages": [{"page": 1, "text": "回单" + "x"*12000}],
+                      "page_count": 1, "text_layer_complete": True}, "回单")
+    with pytest.raises(ValueError, match="页码不连续"):
+        select_pages({"pages": [{"page": 2, "text": "其他业务"}],
+                      "page_count": 1, "text_layer_complete": True}, "回单")
+    text, metadata = select_pages({"pages": [{"page": 1, "text": "其他业务"}],
+                                   "page_count": 1, "text_layer_complete": True}, "回单")
+    assert text == "" and metadata["matched_pages"] == []
+
+
+def test_pdf_parser_extracts_real_text_and_rejects_image_only_page(tmp_path):
+    from pypdf import PdfWriter
+    from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=200, height=200)
+    font = DictionaryObject({NameObject("/Type"): NameObject("/Font"),
+                             NameObject("/Subtype"): NameObject("/Type1"),
+                             NameObject("/BaseFont"): NameObject("/Helvetica")})
+    page[NameObject("/Resources")] = DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})})
+    content = DecodedStreamObject()
+    content.set_data(b"BT /F1 12 Tf 10 100 Td (Receipt policy) Tj ET")
+    page[NameObject("/Contents")] = content
+    path = tmp_path / "text.pdf"
+    writer.write(path)
+    assert "Receipt policy" in extract_pages(path)["pages"][0]["text"]
+    writer.add_blank_page(width=200, height=200)
+    writer.write(path)
+    with pytest.raises(ValueError, match="missing_text_layer"):
+        extract_pages(path)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="production uses Linux process groups")
+def test_pdf_download_uses_verified_cli_arguments_and_always_cleans_up(monkeypatch, tmp_path):
+    from pathlib import Path
+    from pypdf import PdfWriter
+    import tools.feishu_knowledge as module
+    monkeypatch.setattr(module, "__file__", str(tmp_path / "tools" / "feishu_knowledge.py"))
+    seen = []
+    def run(args, *, deadline, cwd=None, download_path=None, env=None):
+        seen.append((args, Path(cwd)))
+        if args[0] == "lark-cli":
+            assert args == ["lark-cli", "drive", "+download", "--file-token", "docA",
+                            "--output", "./source.pdf", "--as", "bot"]
+            PdfWriter().write(download_path)
+            return {"data": {"saved_path": "./source.pdf"}}
+        assert env == {"PATH": os.defpath, "LANG": "C.UTF-8"}
+        raise KnowledgeError("KNOWLEDGE_PDF_EXTRACTION_FAILED", "不能提取")
+    monkeypatch.setattr(KnowledgeCli, "_run", staticmethod(run))
+    with pytest.raises(KnowledgeError, match="不能提取"):
+        KnowledgeCli().read_pdf("docA", deadline=time.monotonic()+5)
+    assert len(seen) == 2 and not seen[0][1].exists()
