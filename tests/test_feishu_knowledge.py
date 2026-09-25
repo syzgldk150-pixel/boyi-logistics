@@ -15,6 +15,18 @@ from tools.feishu_knowledge_pdf import extract_pages, select_pages
 from agent.knowledge_answers import cite_knowledge
 
 
+def test_repeated_pdf_searches_keep_all_used_pages_and_reject_version_drift():
+    item = {"source_id": "nodeA", "document_id": "docA", "updated_at": "100", "title": "手册.pdf",
+            "space": "融辉红头文件", "format": "pdf", "selected_pages": [1, 2]}
+    first = {"ok": True, "items": [item]}
+    second = {"ok": True, "items": [{**item, "selected_pages": [97, 98, 99]}]}
+    answer = cite_knowledge("条款摘要", [first, second])
+    assert "PDF 页码 1、2、97、98、99" in answer
+    assert item["selected_pages"] == [1, 2]
+    second["items"][0]["updated_at"] = "101"
+    assert "文件发生变化" in cite_knowledge("不能混合版本", [first, second])
+
+
 @pytest.mark.parametrize("deny_second", [False, True])
 def test_two_sources_read_concurrently_and_one_failure_returns_no_partial_evidence(deny_second):
     both_reading = Barrier(2)
