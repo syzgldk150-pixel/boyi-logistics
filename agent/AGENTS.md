@@ -18,6 +18,8 @@ Service V2 扫描按目录验证的 `super_admin_upload/builtin_bundle` 来源�
 
 ## 当前身份与统一对话边界
 
+发货吨位通过 `plugin_core_adapters/shipment_source.py` 从现有宿主用途唯一账号读取真实完整寄件快照，复用 `waybill_query.collect_ronghui_day`，在 `harness_composition.py` 内登记账号读取生命周期；不新增账本或借用显示重量。计费公斤、开单日期、作废消失、网点复核与验收边界见 `../docs/shipment_knowledge_queries.md`。
+
 所有原业务实例完成迁移后，发布器使用 `--service-v2-only` 发行索引；`automation_plugins/first_party_retirement.py` 在发布前和启动时核验真实完成归属。该模式不加载、修复或重建 V1 包，已迁移旧实例退出日常列表，历史结果与未知写只读保留。详见 `../docs/plugin-platform-v2.md`。
 
 插件清单保存与审计脱敏分离；迁移 048 精确修复统计 V2 已知清单字段损坏，细节和真实数据库回归见[维护说明](../docs/identity_and_unified_chat.md)。

@@ -15,6 +15,7 @@ import threading
 from uuid import uuid4
 
 import httpx
+import pytest
 
 from agent.scheduler import _execute_scheduled_tool
 from agent.automation_plugins.developer_v2 import build_service_v2_package, init_service_v2_source
@@ -119,7 +120,8 @@ json.dump(result, sys.stdout)
     return archive.read_bytes()
 
 
-def test_timeout_cancel_future_occurrence_and_restart(direct_repository, record_property):  # noqa: F811 - imported pytest fixture
+@pytest.mark.parametrize("delayed_cancel_update", [False, True])
+def test_timeout_cancel_future_occurrence_and_restart(direct_repository, record_property, monkeypatch, delayed_cancel_update):  # noqa: F811 - imported pytest fixture
     directory = Path(__file__).resolve().parents[1] / '.t' / ('sched-' + uuid4().hex[:6])
     directory.mkdir(parents=True)
     occurrence = datetime.now(timezone.utc).replace(microsecond=0)
@@ -148,6 +150,17 @@ def test_timeout_cancel_future_occurrence_and_restart(direct_repository, record_
             async def invoke(at):
                 return await _execute_scheduled_tool(None, task_id=task_id, tool_name=f'automation.{identity}.run', arguments={}, scheduled_for=at, cron_expression='0 8 * * *', configuration_version=entry.project_config_version, automation_id=identity, automation_generation=entry.committed_snapshot.generation, automation_project_invoker=management.policy)
             with DirectFixture(management, directory=directory / 'ipc') as runtime:
+                update_entered, release_update = threading.Event(), threading.Event()
+                real_update = runtime.service.repository.update
+
+                def update(invocation_id, **kwargs):
+                    if delayed_cancel_update and kwargs.get('status') == 'CANCELLING':
+                        update_entered.set()
+                        if not release_update.wait(8):
+                            raise AssertionError('cancel persistence barrier timed out')
+                    return real_update(invocation_id, **kwargs)
+
+                monkeypatch.setattr(runtime.service.repository, 'update', update)
                 timed_out = asyncio.run_coroutine_threadsafe(invoke(occurrence), runtime.loop).result(timeout=15)
                 assert timed_out['status'] == 'FAILED', timed_out
                 assert workload.calls['timeout'] == workload.timeouts['timeout'] == 1, json.dumps(timed_out)
@@ -161,9 +174,24 @@ def test_timeout_cancel_future_occurrence_and_restart(direct_repository, record_
                     calls = runtime.service.active_invocations()
                     assert len(calls) == 1
                     cancelling = asyncio.create_task(runtime.service.cancel(calls[0]['invocation_id']))
-                    await asyncio.sleep(.05)
-                    assert not cancelling.done(), 'The actual host read must drain before releasing the call.'
-                    workload.release_cancel.set()
+                    try:
+                        if delayed_cancel_update:
+                            deadline = asyncio.get_running_loop().time() + 5
+                            while not update_entered.is_set() and asyncio.get_running_loop().time() < deadline:
+                                await asyncio.sleep(.01)
+                            assert update_entered.is_set()
+                        else:
+                            await asyncio.sleep(.05)
+                        assert not cancelling.done(), 'The actual host read must drain before releasing the call.'
+                        workload.release_cancel.set()
+                        if delayed_cancel_update:
+                            # The real read and executor settle before the delayed
+                            # SQL update; cancellation must already be delivered.
+                            settled = await runtime.service.wait(calls[0]['invocation_id'])
+                            assert settled['status'] == 'CANCELLED', settled
+                    finally:
+                        workload.release_cancel.set()
+                        release_update.set()
                     return await cancelling
                 cancelled = asyncio.run_coroutine_threadsafe(cancel_actual_read(), runtime.loop).result(timeout=10)
                 assert cancelled['status'] == 'CANCELLED', cancelled

@@ -161,6 +161,23 @@ def publish_verified_waybills(records, *, source, target_date, account_id,
             "readback_count": len(actual),
             "readback_sha256": canonical_sha256([actual[key] for key in sorted(actual)])}
 
+def collect_ronghui_day(session, day: date, *, site_code=None, check_deadline=None):
+    """One complete native list protocol shared by waybill and weight readers."""
+    from agent.tms_runtime.scripts import Send_order
+    from shared.waybill_pagination import collect_complete_pages
+
+    def fetch(page):
+        if check_deadline is not None:
+            check_deadline()
+        return Send_order.fetch_send_orders(session, Send_order._build_date_range(day),
+            page_index=page, page_size=100, referer=Send_order.DEFAULT_REFERER,
+            extra_filters={"SEND_SITE_CODE": site_code} if site_code is not None else None)
+
+    return collect_complete_pages(fetch, rows_from=lambda payload: payload.get("data"),
+        total_from=lambda payload: payload.get("total"), identity="BILL_CODE",
+        first_page=0, page_size=100, max_pages=50)
+
+
 def build_reviewed_provider_source(*, scope: WaybillSourceScope, descriptor: Mapping[str, Any],
                                    verify_scope: Callable[[], WaybillSourceScope]) -> WaybillQuerySource:
     """Use the actual reviewed list protocols after fresh scope verification.
@@ -180,16 +197,11 @@ def build_reviewed_provider_source(*, scope: WaybillSourceScope, descriptor: Map
             raise ValueError("WAYBILL_SOURCE_SCOPE_CHANGED")
         if scope.source == "ronghui":
             from agent.tms_runtime.scripts import Send_order
-            from shared.waybill_pagination import collect_complete_pages
             from tools.send_order_sync_tool import _console_waybill_records, _filter_receipt_like_rows, _date_from_value
             session = Send_order.TMSAuth(profile=profile).login_and_get_session()
             if session is None:
                 raise ValueError("WAYBILL_SOURCE_LOGIN_REQUIRED")
-            raw, _total = collect_complete_pages(
-                lambda page: Send_order.fetch_send_orders(session, Send_order._build_date_range(day),
-                    page_index=page, page_size=100, referer=Send_order.DEFAULT_REFERER),
-                rows_from=lambda payload: payload.get("data"), total_from=lambda payload: payload.get("total"),
-                identity="BILL_CODE", first_page=0, page_size=100, max_pages=50)
+            raw, _total = collect_ronghui_day(session, day)
             if any(_date_from_value(row.get("REGISTER_DATE")) != day.isoformat() for row in raw):
                 raise ValueError("WAYBILL_SOURCE_DATE_MISMATCH")
             normalized, _excluded = _filter_receipt_like_rows([Send_order.normalize_record(row) for row in raw])

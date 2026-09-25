@@ -143,6 +143,8 @@
 
 ## 当前 Direct 写入收尾
 
+- `DirectPluginInvocationService.cancel` 先向实际执行任务送达取消，再等待数据库的 CANCELLING 状态写入；仓储不允许迟到状态覆盖终态。真实读取期间取消与核验/持久化期间保留实际结果的边界，分别由 Scheduler 与 Direct MySQL 集成测试验证。
+
 - `orchestration/execution_resources.py` 在 V2 Connector 宿主解析实际绑定后给出物理写范围；同表别名跨插件/凭据互斥，独立表格可并行，投影使用已审共享表范围。`broker.py` 回执记录 Host 实际持锁范围，插件不能自报。
 - `automation_plugins/direct_invocation.py` 把同步准入与控制锁分离，重复取消通过 `shared.async_work.drain_thread` 等待真实线程结束；Connector 同步处理器同样不阻塞事件循环。旧 owner 终结后不能迟到发布新结果。
 - `plugin_core_adapters/problem_actions.py` 使用共享目标写入事实保护问题件新 UUID 重触发；问题件追加无法权威核验时明确 UNKNOWN，不依据暂时空回读释放目标。

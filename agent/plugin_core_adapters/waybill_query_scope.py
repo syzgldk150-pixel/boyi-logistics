@@ -19,11 +19,14 @@ class _BusinessInputs(HTMLParser):
     def __init__(self):
         super().__init__()
         self.site_codes: list[str] = []
+        self.site_names: list[str] = []
 
     def handle_starttag(self, tag, attrs):
         fields = dict(attrs)
         if tag == "input" and fields.get("id") == "loginSiteCode":
             self.site_codes.append(str(fields.get("value") or "").strip())
+        if tag == "input" and fields.get("id") == "loginSiteName":
+            self.site_names.append(str(fields.get("value") or "").strip())
 
 
 def _response_body(response: Any) -> str:
@@ -46,16 +49,28 @@ def _literal(html: str, name: str) -> str:
     return values[0]
 
 
+def _ronghui_context(session):
+    response = session.get("https://tms.ronghuiwl.com/module/index?mv=index",
+                           allow_redirects=False, timeout=15)
+    parser = _BusinessInputs()
+    parser.feed(_response_body(response))
+    if len(parser.site_codes) != 1 or not parser.site_codes[0]:
+        raise ValueError("WAYBILL_SOURCE_CONTEXT_UNVERIFIED")
+    return parser
+
+
+def read_ronghui_site(session):
+    parser = _ronghui_context(session)
+    if len(parser.site_names) != 1 or not parser.site_names[0]:
+        raise ValueError("WAYBILL_SOURCE_CONTEXT_UNVERIFIED")
+    return parser.site_codes[0], parser.site_names[0]
+
+
 def observe_query_scope(source: str, account_id: str, session: Any) -> WaybillSourceScope:
     """Read fresh upstream context using the already bound authenticated session."""
     if source == "ronghui":
         from agent.tms_runtime.scripts.Send_order import CALL_ID, build_payload
-        response = session.get("https://tms.ronghuiwl.com/module/index?mv=index",
-                               allow_redirects=False, timeout=15)
-        parser = _BusinessInputs()
-        parser.feed(_response_body(response))
-        if len(parser.site_codes) != 1 or not parser.site_codes[0]:
-            raise ValueError("WAYBILL_SOURCE_CONTEXT_UNVERIFIED")
+        parser = _ronghui_context(session)
         # Date and pagination change between requests, while business filters do not.
         filters = build_payload({"start": "", "end": ""})
         for key in ("SEARCH_DATE_RANGE1", "SEARCH_DATE_RANGE2", "SEARCH_DATE_RANGE", "REGISTER_DATE",

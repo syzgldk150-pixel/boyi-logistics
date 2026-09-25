@@ -4,6 +4,8 @@
 
 ## 已实现的路径
 
+- 发货计费吨位复用 `waybill_query.collect_ronghui_day` 完整分页，在 `shipment_source.py` 中按宿主唯一用途账号、真实站点与开单日期构建本次快照，不新增账本或复用旧展示重量。每次按需刷新，因此能排除已从原查询消失的作废单；详细来源合同与验收边界见 [发货吨位与飞书知识](shipment_knowledge_queries.md)。
+
 - `agent/agent/send_waybills_business.py`：数据库优先；按明确日期范围补查未覆盖的来源，明确单号补查只做 upsert；失败返回本地已保存数据和 `partial`，不能把失败当作空平台。
 - `agent/plugin_core_adapters/waybill_query.py`：组合真实原生分页/详情接口、现有字段转换及数据库；不在 Agent 内层依赖 tools。宿主提供已核实的来源与当前权限观察器，浏览器和插件不能自报“已验证”。
 - `shared/waybill_pagination.py`：校验总数、分页停止条件、重复实体和页间总量变化。上游目前使用按日分页，没有伪造增量游标。

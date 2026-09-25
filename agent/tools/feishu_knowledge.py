@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import BoundedSemaphore
@@ -279,18 +280,26 @@ class FeishuKnowledgeSource:
             return {"ok": False, "status": "busy", "code": "KNOWLEDGE_BUSY", "message": "知识读取暂忙，请稍后重试。"}
         deadline = time.monotonic() + 25
         try:
-            evidence, scanned = [], 0
+            candidates = []
             for space_name, space_id in self._spaces(deadline):
                 for node in self._nodes(space_id, deadline):
-                    scanned += 1
-                    if scanned > 20:
+                    candidates.append((space_name, space_id, node["node_token"]))
+                    if len(candidates) > 20:
                         _fail("KNOWLEDGE_SEARCH_LIMIT", "本次未能完整检索授权范围，请指定文档或缩小查询。")
-                    item = self._body(node["node_token"], space_id, deadline, query)
-                    if item.get("format") == "pdf" and not item["body"] and query.casefold() in item["title"].casefold():
-                        _fail("KNOWLEDGE_PDF_TOPIC_REQUIRED", "PDF 较长，请指定需要查阅的业务主题。")
-                    if item["body"] and query.casefold() in (item["title"] + "\n" + item["body"]).casefold():
-                        item["space"] = space_name
-                        evidence.append(item)
+            def read(candidate):
+                space_name, space_id, node_id = candidate
+                item = self._body(node_id, space_id, deadline, query)
+                if item.get("format") == "pdf" and not item["body"] and query.casefold() in item["title"].casefold():
+                    _fail("KNOWLEDGE_PDF_TOPIC_REQUIRED", "PDF 较长，请指定需要查阅的业务主题。")
+                if item["body"] and query.casefold() in (item["title"] + "\n" + item["body"]).casefold():
+                    item["space"] = space_name
+                    return item
+                return None
+            # The two independent PDF reads share the same deadline. Bounded
+            # parallelism leaves time for the model's answer or a refined query
+            # within the existing 30-second conversation budget; no body cache.
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                evidence = [item for item in pool.map(read, candidates) if item is not None]
             return {"ok": True, "status": "found" if evidence else "no_match", "source": "feishu_wiki_cli",
                     "identity": "bot", "spaces": list(self._space_names), "search_mode": "bounded_literal_body_search",
                     "scope_complete": True, "matched": len(evidence), "items": evidence[:limit],
