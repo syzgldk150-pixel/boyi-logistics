@@ -11,8 +11,20 @@ def cite_knowledge(answer: str, results: Sequence[Mapping]) -> str:
     failures = [item for item in results if item.get("ok") is False]
     if failures:
         return "尚未取得可核验的知识依据。" + str(failures[-1].get("message") or "知识读取失败。")
-    evidence = {item["source_id"]: item for result in results for item in result.get("items", ())
-                if isinstance(item, Mapping) and item.get("source_id")}
+    evidence = {}
+    for result in results:
+        for item in result.get("items", ()):
+            if not isinstance(item, Mapping) or not item.get("source_id"):
+                continue
+            previous = evidence.get(item["source_id"])
+            if previous is not None and any(previous.get(key) != item.get(key)
+                    for key in ("document_id", "updated_at", "title")):
+                return "本轮检索期间知识文件发生变化，请重新查询后再核对条款。"
+            merged = dict(item)
+            if previous is not None and item.get("format") == "pdf":
+                merged["selected_pages"] = sorted(set(previous.get("selected_pages", ())) |
+                                                  set(item.get("selected_pages", ())))
+            evidence[item["source_id"]] = merged
     if not evidence:
         return "本次在授权知识库内未找到匹配依据，暂不能据此判断规则。"
     urls = {item.get("url") for item in evidence.values() if item.get("url")}
