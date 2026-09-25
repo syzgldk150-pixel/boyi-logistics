@@ -115,6 +115,7 @@ def test_waiter_cancellation_drains_settlement_before_releasing_ownership(direct
     host, runtime, identity = direct_runtime
     admission_entered, admit = threading.Event(), threading.Event()
     settlement_entered, settle = threading.Event(), threading.Event()
+    cancelling_persisted = threading.Event()
     wait_for_admission = runtime.service._wait_for_admission
     update = runtime.service.repository.update
     has_started_write = runtime.service.repository.has_started_write
@@ -129,8 +130,9 @@ def test_waiter_cancellation_drains_settlement_before_releasing_ownership(direct
     def cancelling_update(call_id, **kwargs):
         result = update(call_id, **kwargs)
         if kwargs['status'] == 'CANCELLING':
-            # Reproduce the CI ordering: the waiter observes the cancellation
-            # flag and starts settlement before the public cancel signals it.
+            # Cancellation is delivered before this database write. Track its
+            # completion independently from entry into failure settlement.
+            cancelling_persisted.set()
             admit.set()
             assert settlement_entered.wait(10)
         return result
@@ -153,6 +155,7 @@ def test_waiter_cancellation_drains_settlement_before_releasing_ownership(direct
     cancelled = asyncio.run_coroutine_threadsafe(runtime.service.cancel(call['invocation_id']), runtime.loop)
     try:
         assert settlement_entered.wait(5)
+        assert cancelling_persisted.wait(5)
 
         async def interrupt_settlement():
             task = runtime.service._active[call['invocation_id']]['task']
