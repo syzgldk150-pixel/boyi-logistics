@@ -59,4 +59,4 @@ def unavailable_shipment_source(_station, _day):
     used as a substitute for the typed chargeable-weight contract.
     """
     raise ShipmentQueryError("SHIPMENT_SOURCE_CONTRACT_UNVERIFIED",
-        "尚未完整核实计费重量单位、作废标记和网点身份映射，暂不能报告真实吨位。")
+        "真实寄件数据尚未接通，仍需核实账户与网点映射并完成完整范围读取，暂不能报告真实吨位。")

@@ -23,5 +23,10 @@ def cite_knowledge(answer: str, results: Sequence[Mapping]) -> str:
         source = f"《{title}》"
         if item.get("url"):
             source = f"[{source}]({item['url']})"
-        citations.append(f"{source}（{item['space']}，来源编号 {item['source_id']}）")
-    return answer + "\n\n依据：" + "；".join(citations) + "。附件和嵌入表格未读取。"
+        pages = item.get("selected_pages") if item.get("format") == "pdf" else None
+        page_note = "，PDF 页码 " + "、".join(map(str, pages)) if pages else ""
+        citations.append(f"{source}（{item['space']}{page_note}，来源编号 {item['source_id']}）")
+    limitation = ("PDF 依据限所列页的文字层；图示、扫描文字及表格版面未核验。"
+                  if any(item.get("format") == "pdf" for item in evidence.values())
+                  else "附件和嵌入表格未读取。")
+    return answer + "\n\n依据：" + "；".join(citations) + "。" + limitation

@@ -26,7 +26,7 @@
   - `sync_finance_bills_tool.py`（工具入口与进程/数据库双重单实例锁）
   - 真实页面采集位于 `../agent/tms_runtime/scripts/*finance*`，共享领域与仓储位于 `../../shared/finance/`
 - 飞书 CLI：
-  - `feishu_knowledge.py`：限定授权 Wiki 空间的固定只读 CLI，不切换共享身份，不开放写入；正文不完整和权限不足明确失败。维护边界见 `../../docs/shipment_knowledge_queries.md`。
+  - `feishu_knowledge.py`、`feishu_knowledge_pdf.py`：限定授权 Wiki 空间的只读 CLI；支持在线正文与 PDF 文字层，PDF 子进程有界解析、按命中页及邻页摘录并标注页码，不把图表或整书误报为已读。不切换共享身份，权限不足和解析不完整明确失败。维护边界见 `../../docs/shipment_knowledge_queries.md`。
   - `feishu_cli_tool.py`
   - `receipt_feishu_detail_query_tool.py`（回单页缺失韵达明细时使用的精确只读能力；只接受 `waybill_no`，服务端固定飞书资源和字段，必须证明分页完整且只命中一条，歧义、缺字段或分页未知均显式失败；不得改用宽泛 `feishu_operation`）
 - Phase 7 同步链路：

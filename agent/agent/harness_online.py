@@ -264,6 +264,7 @@ class OnlineHarnessSidecar:
             "这些业务知识问题先读取正文依据再回答，提示词中的能力说明不能代替本次文档引用。"
             "知识查询是字面主题检索：query 只填一个最核心的名词（通常两个至四个汉字），不要拼接多个词、不要填问句，也不要附加规则/口径/条件等泛词。"
             "引用只能来自实际工具返回的 source_id/title/url，不得生成链接。附件和嵌入表格未读取时必须说明。"
+            "PDF 返回的是所列页码的文字层摘录，不是整本正文；仅据实际返回页回答。图示和表格版面未核验，不能推测缺失内容。"
             "没有读取到明确支持的统计口径时，不能声称按最新规则计算。")
         if self.query_context is not None:
             transcript[0]["content"] += "\n当前有效查询条件：" + json.dumps(self.query_context, ensure_ascii=False)
