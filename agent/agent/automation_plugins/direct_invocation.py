@@ -465,12 +465,17 @@ class DirectPluginInvocationService:
             active["cancel_requested"] = True
         if active["task"] is None:
             await asyncio.sleep(0)
-        await asyncio.to_thread(self.repository.update, invocation_id, status="CANCELLING")
         task = active["task"]
         if task is not None and not task.done():
             if first_cancel:
                 task.cancel()
             self._operation_changed.set()
+        # Deliver cancellation before waiting for database I/O. Otherwise a
+        # host read can finish while the CANCELLING update waits, and enter
+        # successful verification before Task.cancel() reaches the executor.
+        # Repository updates cannot overwrite an already settled terminal row.
+        await asyncio.to_thread(self.repository.update, invocation_id, status="CANCELLING")
+        if task is not None and not task.done():
             await asyncio.gather(asyncio.shield(task), return_exceptions=True)
         # Cancellation before the coroutine's first instruction has no
         # finalizer; settle that never-started call explicitly.

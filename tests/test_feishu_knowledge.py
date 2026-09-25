@@ -6,12 +6,33 @@ import os
 import subprocess
 import sys
 import time
+from threading import Barrier
 
 import pytest
 
 from tools.feishu_knowledge import FeishuKnowledgeSource, KnowledgeCli, KnowledgeError
 from tools.feishu_knowledge_pdf import extract_pages, select_pages
 from agent.knowledge_answers import cite_knowledge
+
+
+@pytest.mark.parametrize("deny_second", [False, True])
+def test_two_sources_read_concurrently_and_one_failure_returns_no_partial_evidence(deny_second):
+    both_reading = Barrier(2)
+    class ParallelSource(FeishuKnowledgeSource):
+        def _spaces(self, deadline):
+            return [("融辉红头文件", "A"), ("韵达红头文件", "B")]
+        def _nodes(self, space_id, deadline):
+            return [{"node_token": space_id}]
+        def _body(self, node_id, space_id, deadline, query):
+            both_reading.wait(timeout=2)
+            if deny_second and space_id == "B":
+                raise KnowledgeError("KNOWLEDGE_PERMISSION_DENIED", "无权限")
+            return {"source_id": node_id, "title": "规则", "body": "计重规则"}
+    result = ParallelSource().search("计重", 2)
+    if deny_second:
+        assert result["ok"] is False and result["items"] == []
+    else:
+        assert result["ok"] is True and [item["source_id"] for item in result["items"]] == ["A", "B"]
 
 
 class WikiProtocol:

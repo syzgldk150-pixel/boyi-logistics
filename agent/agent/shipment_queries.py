@@ -53,10 +53,6 @@ class ShipmentQueryService:
 
 
 def unavailable_shipment_source(_station, _day):
-    """Until native unit, validity and exact site mapping have been verified.
-
-    Existing waybills.weight_volume is a display string and is deliberately not
-    used as a substitute for the typed chargeable-weight contract.
-    """
-    raise ShipmentQueryError("SHIPMENT_SOURCE_CONTRACT_UNVERIFIED",
-        "真实寄件数据尚未接通，仍需核实账户与网点映射并完成完整范围读取，暂不能报告真实吨位。")
+    """An isolated gateway without the host read lifecycle cannot use accounts."""
+    raise ShipmentQueryError("SHIPMENT_READ_LIFECYCLE_UNAVAILABLE",
+        "查询运行环境尚未连接账号读取服务，暂不能报告真实吨位。")

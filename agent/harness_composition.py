@@ -12,6 +12,8 @@ from tools.track_waybill_tool import run_track_waybill
 from tools.feishu_knowledge import FeishuKnowledgeSource
 from agent.chat_text_queries import ChatTextQueries
 from agent.shipment_queries import ShipmentQueryService, unavailable_shipment_source
+from plugin_core_adapters.shipment_source import prepare_shipment_query
+from shared.shipment_metrics import ShipmentQueryError
 from agent.orchestration.models import ActorType, OrchestrationError
 
 
@@ -34,8 +36,15 @@ def build_read_only_harness_gateway(runtime: object, repository: object, *, fina
             return run_track_waybill({"tracking_number": number, "timeout_sec": 20, "client_timeout_sec": 22})
 
     def read_boundary(name, handler, arguments):
+        accounts = ()
+        if name == "shipment.query":
+            try:
+                accounts, handler = prepare_shipment_query(arguments.get("station"))
+            except ShipmentQueryError as exc:
+                return {"ok": False, "status": "unavailable", "code": exc.code, "message": str(exc)}
         async def read():
-            return await invocations.call_read(operation=name, handler=lambda: call_blocking(handler, arguments, timeout_sec=300))
+            return await invocations.call_read(operation=name, account_ids=accounts,
+                handler=lambda: call_blocking(handler, arguments, timeout_sec=300))
         return asyncio.run_coroutine_threadsafe(read(), loop).result()
 
     def get_run(run_id):
