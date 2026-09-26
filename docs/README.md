@@ -5,19 +5,37 @@ tags: [documentation, navigation, authority, lifecycle]
 status: active
 authority: canonical
 owner: repository
-updated: 2026-09-15
+updated: 2026-09-26
 ---
 
 # 仓库文档索引
 
-本页是 `boyi-logistics` 的仓库级文档入口。检索只以 Git 跟踪文件为范围；`.task_tmp/`、`tmp/`、缓存、运行态和生成物不属于项目知识。
+本页是 `boyi-logistics` 的仓库级文档入口。实现检索以 Git 跟踪文件为范围，并按下方索引补充查阅用户指定的本地项目档案；`.task_tmp/`、`tmp/`、缓存、运行态和其他未归档生成物不作为现行项目文档。
 
 ## 推荐读取顺序
 
-1. 先读对应工具的根级指令：[AGENTS.md](../AGENTS.md) 或 [CLAUDE.md](../CLAUDE.md)。
+1. 先读对应工具的根级指令：[AGENTS.md](../AGENTS.md) 或 [CLAUDE.md](../CLAUDE.md)，并查看下方本地项目档案清单，按任务范围选择相关资料。
 2. 按需求查 [代码定位索引](../agent/docs/code_navigation_index.md)。
 3. 进入目标模块后，只读该模块的指令和命中的少量说明文件。
 4. 代码、迁移、测试与发布脚本始终优先于历史说明；发现冲突时修正文档，不以旧说明覆盖当前实现。
+
+## 本地项目档案
+
+用户已将桌面项目资料统一归档到 `C:\Users\DENG\Desktop\博益项目档案`，WSL 路径为 `/mnt/c/Users/DENG/Desktop/博益项目档案`。每次新任务先查看该目录，再按当前任务查阅相关任务书、验收证据或发布记录，不必全量读取。
+
+以下名称均相对于该档案目录：
+
+| 文件或目录 | 用途与查阅入口 |
+|---|---|
+| `BOYI_CODEX_MASTER_DEVELOPMENT_AND_STAGE_AUDIT_V1_0.md` | 项目总任务书、开发阶段和阶段核查基准。 |
+| `BOYI_CODEX_PHASE1_FINAL_CLOSEOUT_R1.md` | 第一阶段收尾任务、执行范围和验收要求。 |
+| `BOYI_PHASE1_CLOSEOUT_20260916/` | 第一阶段验收与历史发布资料；先看 `README.md`、`phase1_final_closeout.md`，再查相关证据。 |
+| `BOYI_STAGE_AUDIT_20260924/` | 阶段核查结果、证据索引和当时的后续任务；先看 `stage-audit.md`、`next-tasks.md`。 |
+| `BOYI_QUERY_KNOWLEDGE_20260924/` | 发货吨位和飞书知识的授权、核对与验收资料；先看 `部署前验收.md`，按需查 `predeployment-evidence/`。 |
+| `BOYI_PRODUCTION_RELEASE_20260926/` | 生产发布过程与上线验证；先看 `生产发布记录.md`、`发布状态.json`，按需查 `evidence/`。 |
+| `SERVER_B_CODEX_DEPLOYMENT_V2.md` | 马来西亚服务器 B 的独立部署任务书，按服务器 B 相关任务查阅。 |
+
+档案是用户指定的背景与历史证据来源，不随源码发布。引用时核对文档时间、适用范围和实际完成状态；结合本次用户要求、现行代码及必要的线上核实判断，不能把旧任务书中的待办或授权自动沿用到新任务。目录不可达时如实说明，不猜测内容。新增或移动档案时同步维护本索引。
 
 ## 现行权威文档
 
