@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
-from agent.tms_runtime.errors import TMSAuthStateError
+from agent.tms_runtime.errors import TMSAuthStateError, login_runtime_error
 from agent.tms_runtime.session_broker import build_session_broker
 from agent.tms_runtime.session_state import SessionStateStore
 
@@ -37,23 +37,28 @@ def run_worker(*, profile: str, state_dir: Path, request: dict[str, Any]) -> int
         else:
             raise TMSAuthStateError("AUTH_UNAVAILABLE", "不支持的登录操作。")
     except TMSAuthStateError as exc:
+        runtime_error = login_runtime_error(exc)
+        reported_error = runtime_error or exc
         _write_result(
             state_dir,
             {
                 "ok": False,
-                "error_code": exc.code,
-                "error": str(exc),
-                "commit_staged_state": True,
+                "error_code": reported_error.code,
+                "error": str(reported_error),
+                "commit_staged_state": runtime_error is None,
             },
         )
         return 0
-    except Exception:
+    except Exception as exc:
+        reported_error = login_runtime_error(exc) or TMSAuthStateError(
+            "LOGIN_WORKER_UNAVAILABLE", "登录工作进程异常退出。"
+        )
         _write_result(
             state_dir,
             {
                 "ok": False,
-                "error_code": "AUTH_UNAVAILABLE",
-                "error": "登录工作进程异常退出。",
+                "error_code": reported_error.code,
+                "error": str(reported_error),
                 "commit_staged_state": False,
             },
         )

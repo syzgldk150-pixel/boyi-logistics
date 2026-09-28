@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent.tms_runtime.account_contracts import PRICE_ACCOUNT_ID, PRICE_SESSION_PROFILE
-from agent.tms_runtime.errors import TMSAuthStateError
+from agent.tms_runtime.errors import TMSAuthStateError, login_runtime_error
 from agent.tms_runtime.session_broker import SAVED_PASSWORD_MASK, get_session_broker
 from shared.runtime_events import publish_account_session_degraded, publish_account_session_restored
 
@@ -633,6 +633,9 @@ class AutomationAccountManager:
         try:
             auth.login_and_get_session(**kwargs)
         except Exception as exc:
+            runtime_error = login_runtime_error(exc)
+            if runtime_error is not None:
+                raise runtime_error from exc
             system_label = str(SYSTEMS[row["system"]].get("label") or row["system"])
             raise TMSAuthStateError(
                 "LOGIN_FAILED",
@@ -1197,9 +1200,19 @@ class AutomationAccountManager:
         except Exception as exc:
             if isinstance(exc, TMSAuthStateError) and exc.code == "BLOCKED_LOGIN":
                 raise
-            if isinstance(exc, TMSAuthStateError) and exc.code == "LOGIN_PAGE_UNAVAILABLE":
-                current = self._login_error_status(row, exc, status)
+            runtime_error = login_runtime_error(exc)
+            if runtime_error is not None:
+                current = self._login_error_status(row, runtime_error, status)
                 current["auto_login_retryable"] = True
+                current["last_error_code"] = runtime_error.code
+                current["label"] = "登录环境异常，等待重试"
+                current["status_tone"] = "warning"
+                current["last_error_summary"] = f"{runtime_error}将在下一轮自动检查时重新尝试。"
+                logger.warning(
+                    "Account login runtime recovery: account=%s error_code=%s; retry next monitor cycle",
+                    account_id,
+                    runtime_error.code,
+                )
                 self._publish_account_session_transition(row, status, current)
                 return current
             row = self._record_auto_login_failure(account_id)
@@ -1225,6 +1238,8 @@ class AutomationAccountManager:
         if not credentials.get("username") or not credentials.get("password"):
             raise TMSAuthStateError("AUTH_REQUIRED", "请先保存账号密码。")
         result = self._login_sso(row, allow_cached=True)
+        if str(result.get("status") or "").strip() == "authenticated":
+            row = self._reset_auto_login_failures(row["account_id"])
         return self._with_session_transition(row, {"status": "logged_out"}, result)
 
     def submit_code(self, account_id: str, code: str) -> dict[str, Any]:

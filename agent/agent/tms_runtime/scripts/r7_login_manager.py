@@ -184,10 +184,9 @@ class R7SSOAuth(SSOSessionPersistenceMixin):
         response.raise_for_status()
 
     def _verify_authenticated(self) -> bool:
-        try:
-            response = self.session.get(self.welcome_url, allow_redirects=False, timeout=10)
-        except Exception:
-            return False
+        response = self.session.get(self.welcome_url, allow_redirects=False, timeout=10)
+        if response.status_code == 429 or response.status_code >= 500:
+            response.raise_for_status()
 
         if response.status_code in (301, 302, 303, 307, 308):
             location = response.headers.get("Location", "")
@@ -252,4 +251,4 @@ class R7SSOAuth(SSOSessionPersistenceMixin):
 
         self._save_sso_state(status="expired", error="R7 SSO 登录失败")
         suffix = f" Last error type: {type(last_error).__name__}" if last_error else ""
-        raise RuntimeError(f"R7 SSO login failed after multiple attempts.{suffix}")
+        raise RuntimeError(f"R7 SSO login failed after multiple attempts.{suffix}") from last_error
