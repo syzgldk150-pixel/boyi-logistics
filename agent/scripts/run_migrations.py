@@ -278,6 +278,8 @@ def _connect():
     from dotenv import load_dotenv
     env_file = Path(os.getenv("MIGRATION_ENV_FILE", PROJECT_ROOT / ".env"))
     load_dotenv(env_file)
+    from shared.mysql_connection import database_target_environment, mysql_tls_options
+    os.environ.update(database_target_environment(env_file.parent / "runtime" / "database-target.json"))
     import pymysql
 
     return pymysql.connect(
@@ -289,6 +291,7 @@ def _connect():
         charset="utf8mb4",
         autocommit=True,
         cursorclass=pymysql.cursors.DictCursor,
+        **mysql_tls_options(os.getenv("AGENT_DB_SSL_CA")),
     )
 
 def _applied_migrations(cursor) -> dict[str, dict[str, str]]:

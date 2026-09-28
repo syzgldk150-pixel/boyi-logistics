@@ -10,6 +10,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Callable
 
 import pymysql
+from shared.mysql_connection import mysql_tls_options
 from shared.runtime_repositories import WaybillRepository
 from shared.scan_snapshot_recovery import (
     SNAPSHOT_UPSERT_SQL as _SCAN_CODES_SNAPSHOT_UPSERT_SQL,
@@ -187,6 +188,7 @@ def _connect():
         charset="utf8mb4",
         autocommit=True,
         cursorclass=pymysql.cursors.DictCursor,
+        **mysql_tls_options(_env_first(("AGENT_DB_SSL_CA", "DOCFLOW_MYSQL_SSL_CA"), "")),
     )
 
 

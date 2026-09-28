@@ -7,6 +7,7 @@ import logging
 from typing import Any, Optional
 
 import pymysql
+from shared.mysql_connection import mysql_tls_options
 from shared.redaction import redact_sensitive
 
 from shared.runtime_repositories import ScheduledTaskRepository
@@ -88,6 +89,7 @@ class Memory:
             "database": os.getenv("AGENT_DB_NAME", "agent_db"),
             "charset": "utf8mb4",
             "autocommit": True,
+            **mysql_tls_options(os.getenv("AGENT_DB_SSL_CA")),
         }
         self._scheduled_tasks = ScheduledTaskRepository(
             self._conn,

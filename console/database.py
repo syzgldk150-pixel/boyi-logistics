@@ -7,6 +7,7 @@ from typing import Any, Iterator
 import pymysql
 
 from console.config import Settings
+from shared.mysql_connection import mysql_tls_options
 from shared.redaction import redact_sensitive, redact_text
 from shared.runtime_repositories import ScheduledTaskRepository, WorkflowResourceRepository
 from shared.runtime_repositories import WaybillRepository
@@ -318,6 +319,7 @@ class DocumentRepository:
             charset="utf8mb4",
             cursorclass=self._mysql.cursors.DictCursor,
             autocommit=False,
+            **mysql_tls_options(self.settings.mysql_ssl_ca),
         )
         try:
             yield connection

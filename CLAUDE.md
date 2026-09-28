@@ -106,6 +106,8 @@
 
 ## 安全与数据规则
 
+- MySQL 目标迁移与 TLS 连接统一由 `shared/mysql_connection.py` 管理；非敏感运行态目标配置同时覆盖 Agent/Console/迁移器，保留既有凭据加载方式。切换、核验和回退见 [RDS 迁移说明](docs/mysql_rds_migration.md)。
+
 - 永远不要读取、打印或提交 `.env`、凭据文件、私钥或其他敏感内容。
 - 密码、Token、Cookie、Authorization 和原始请求体不得写入日志、审计记录或异常输出。
 - 影响财务结算的金额必须使用 `Decimal(str(value))`，明确空值语义和最终舍入规则，并执行行数、总量、极值及关键反算校验。

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import os
 from pathlib import Path
+
+from shared.mysql_connection import database_target_environment
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -16,3 +19,4 @@ def load_agent_environment() -> None:
     from dotenv import load_dotenv
 
     load_dotenv(PROJECT_ROOT / ".env")
+    os.environ.update(database_target_environment(PROJECT_ROOT / "runtime" / "database-target.json"))
