@@ -16,7 +16,7 @@
 - Service v2 动态文本只通过独立注入的 `ServiceV2FeishuDispatcher` 解析当前 committed/READY contribution；所有 pending、登录、确认和固定 Action V1 文本优先，只有固定路由未命中后才查动态精确命令，动态未知才继续既有 Agent/LLM 路径。Dispatcher 只接收 `_COMMAND_CONTEXT` 中已验证的 event/sender/chat 与规范化文本，不接收原始 Webhook body、项目/服务/操作/账号/资源或调用参数；命中但身份缺失必须公共拒绝并停止，回复不得暴露 automation、service、operation、contribution 或内部执行 UUID。
 - 插件项目只能按 committed generation 中唯一的 `feishu_route.route_key` 解析实例；重复别名、多候选、缺绑定或非稳定事件 ID 必须显式拒绝，不得按工具、插件或列表首项猜测。消息和旧 pending 中的账号覆盖字段一律拒绝，账号只取该实例的 Business Account bindings；日期、车牌和预览指纹只由代码拥有的 resolver 注入。
 - 每个生产命令使用飞书事件头 `event_id` 生成 `feishu:{event_id}` 幂等键；缺少稳定事件 ID 的写命令必须显式拒绝，不能用消息内容、时间戳或随机值代替。
-- `builtin.scan_codes` 只接受“扫描/菜单生成预览 → 原发起人精确回复确认扫描或取消扫描”的两步流程。公共回复只显示日期、来源页数/记录数、待扫描数、批次数和失效时间；pending 只在进程内保存公共 `preview_invocation_id` 和事件身份，最长十五分钟且服务重启不恢复。正式确认不得发送 `dry_run`、哈希、Evidence 或运单集合；结果未知时锁定原事件 ID，仅允许该事件精确重放，已消费预览不能再次确认；新的明确触发可以生成新预览，禁止旧链路回退。
+- `builtin.scan_codes` 只接受“扫描/菜单生成预览 → 原发起人精确回复“确认”或“取消””的两步流程。预览成功只回复扫描日期、扫描件数及确认/取消提示，不发送生成中的常规通知；扫描件数取真实 selection_count，其他预览字段仍保留在服务端用于核验；pending 只在进程内保存公共 `preview_invocation_id` 和事件身份，最长十五分钟且服务重启不恢复。正式确认不得发送 `dry_run`、哈希、Evidence 或运单集合；结果未知时锁定原事件 ID，仅允许该事件精确重放，已消费预览不能再次确认；新的明确触发可以生成新预览，禁止旧链路回退。
 - 飞书 actor 只由 `FeishuApprovalService.resolve_actor()` 从真实事件发送者构造：当前仍有效的 Console 超级管理员绑定投影为 `FEISHU_USER` 且角色为 `admin/super_admin`，其他已验证事件角色为空；消息、动态 contribution 或调用方不得自行提交角色。旧审批决定协议仅作历史核验；普通消息和 Dispatcher 不能伪造批准身份，也不能据此创建新的插件审批/执行队列。
 - 登录和验证码流程仍由账号管理接口处理。登录成功只更新账号状态；不恢复旧调用、不重新提交原工具。
 

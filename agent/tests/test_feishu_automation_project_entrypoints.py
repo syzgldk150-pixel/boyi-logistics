@@ -432,7 +432,7 @@ def test_direct_feishu_project_reports_waiting_approval_without_generic_executio
     assert agent.chat_calls == []
     assert service.calls[0]["event_id"] == "event-waiting"
     assert service.calls[0]["route_key"] == "builtin.scan_codes"
-    assert "已开始生成扫描预览" in replies[0][0]
+    assert len(replies) == 1
     assert "等待审批" in replies[-1][0]
 
 
@@ -830,8 +830,20 @@ def test_direct_feishu_project_explains_terminal_failure_without_internal_status
     assert "run-terminal-failure" not in replies[-1][0]
 
 
+def test_short_scan_replies_require_pending_context():
+    from agent.feishu_command_contract import is_scan_cancel_text, is_scan_confirm_text
+
+    assert is_scan_confirm_text("确认", pending=True)
+    assert is_scan_cancel_text("取消", pending=True)
+    assert not is_scan_confirm_text("确认")
+    assert not is_scan_cancel_text("取消")
+    assert not is_scan_confirm_text("确认统计", pending=True)
+    assert not is_scan_cancel_text("取消统计", pending=True)
+
+
 @pytest.mark.parametrize("automation_id", ["scan_codes", "33333333-3333-4333-8333-333333333333"])
-def test_scan_preview_creates_volatile_pending_and_confirm_uses_new_event(automation_id):
+@pytest.mark.parametrize("confirmation", ["确认", "确认扫描"])
+def test_scan_preview_creates_volatile_pending_and_confirm_uses_new_event(automation_id, confirmation):
     preview_invocation_id = "11111111-1111-4111-8111-111111111111"
     formal_run_id = "22222222-2222-4222-8222-222222222222"
     service = _FakeProjectEntrypoints(
@@ -882,9 +894,12 @@ def test_scan_preview_creates_volatile_pending_and_confirm_uses_new_event(automa
         assert pending["preview_invocation_id"] == preview_invocation_id
         assert pending["preview_event_id"] == "event-scan-preview"
         assert pending_writes[-1][2] is False
-        assert "待扫描：7" in replies[-1][0]
-        assert "确认扫描" in replies[-1][0]
-        _run_verified_text("确认扫描", event_id="event-scan-confirm")
+        assert replies[-1][0] == (
+            f"扫描日期：{_scan_preview(preview_invocation_id)['target_date']}\n"
+            "扫描件数：7\n\n回复“确认”开始扫描，回复“取消”放弃。"
+        )
+        assert len(replies) == 1
+        _run_verified_text(confirmation, event_id="event-scan-confirm")
 
     assert service.calls[0]["preview_invocation_id"] is None
     assert service.calls[1]["preview_invocation_id"] == preview_invocation_id
@@ -896,7 +911,8 @@ def test_scan_preview_creates_volatile_pending_and_confirm_uses_new_event(automa
     assert "Run" not in replies[-1][0]
 
 
-def test_scan_preview_requires_explicit_cancel_phrase():
+@pytest.mark.parametrize("cancellation", ["取消", "取消扫描"])
+def test_scan_preview_accepts_short_cancel_without_cancelling_running_plugin(cancellation):
     preview_invocation_id = "11111111-1111-4111-8111-111111111111"
     service = _FakeProjectEntrypoints(
         results=[
@@ -933,10 +949,9 @@ def test_scan_preview_requires_explicit_cancel_phrase():
         patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
     ):
         _run_verified_text("扫描", event_id="event-preview-cancel")
-        _run_verified_text("取消", event_id="event-generic-cancel")
-        assert pending["type"] == "scan_preview_confirmation"
-        assert "确认扫描”或“取消扫描" in replies[-1][0]
-        _run_verified_text("取消扫描", event_id="event-explicit-cancel")
+        with patch.object(message_handler, "_cancel_direct_plugin", new_callable=AsyncMock) as cancel_running:
+            _run_verified_text(cancellation, event_id="event-generic-cancel")
+            cancel_running.assert_not_awaited()
 
     assert pending == {}
     assert "没有提交正式扫描" in replies[-1][0]
@@ -987,13 +1002,13 @@ def test_unknown_scan_confirmation_locks_out_new_event_identity():
         patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
     ):
         _run_verified_text("扫描", event_id="event-preview-unknown")
-        _run_verified_text("确认扫描", event_id="event-confirm-unknown")
+        _run_verified_text("确认", event_id="event-confirm-unknown")
         assert pending["confirmation_state"] == "unknown"
         assert pending["confirmation_event_id"] == "event-confirm-unknown"
-        _run_verified_text("确认扫描", event_id="event-confirm-new")
+        _run_verified_text("确认", event_id="event-confirm-new")
         assert len(service.calls) == 2
         assert "本次没有创建新请求" in replies[-1][0]
-        _run_verified_text("确认扫描", event_id="event-confirm-unknown")
+        _run_verified_text("确认", event_id="event-confirm-unknown")
 
     assert len(service.calls) == 3
     assert service.calls[1]["event_id"] == service.calls[2]["event_id"]
@@ -1045,7 +1060,7 @@ def test_scan_confirmation_post_acceptance_timeout_reports_background_run():
         patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
     ):
         _run_verified_text("扫描", event_id="event-preview-accepted-timeout")
-        _run_verified_text("确认扫描", event_id="event-confirm-accepted-timeout")
+        _run_verified_text("确认", event_id="event-confirm-accepted-timeout")
 
     assert pending["confirmation_state"] == "unknown"
     assert pending["confirmation_event_id"] == "event-confirm-accepted-timeout"
@@ -1106,7 +1121,7 @@ def test_formal_scan_waits_past_initial_window_and_replies_once_with_actual_term
         patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
     ):
         _run_verified_text("扫描", event_id="event-late-preview")
-        _run_verified_text("确认扫描", event_id="event-late-confirm")
+        _run_verified_text("确认", event_id="event-late-confirm")
 
     assert len(service.calls) == 2  # One preview, one formal submission; reads never invoke again.
     assert service.wait_feishu_invocation.await_count == 1
@@ -1190,7 +1205,7 @@ def test_consumed_scan_preview_does_not_block_new_explicit_trigger():
         patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
     ):
         _run_verified_text("扫描", event_id="event-preview-consumed")
-        _run_verified_text("确认扫描", event_id="event-confirm-consumed")
+        _run_verified_text("确认", event_id="event-confirm-consumed")
         assert pending["confirmation_state"] == "terminal"
         assert pending["terminal_error_code"] == "SCAN_PREVIEW_ALREADY_CONSUMED"
         _run_verified_text("扫描", event_id="event-new-preview")
@@ -1260,12 +1275,12 @@ def test_scan_confirmation_reply_failure_keeps_event_lock_for_exact_replay():
     ):
         _run_verified_text("扫描", event_id="event-preview-reply-loss")
         with pytest.raises(RuntimeError, match="reply lost"):
-            _run_verified_text("确认扫描", event_id="event-confirm-reply-loss")
+            _run_verified_text("确认", event_id="event-confirm-reply-loss")
         assert pending["confirmation_state"] == "submitting"
         assert pending["confirmation_event_id"] == "event-confirm-reply-loss"
-        _run_verified_text("确认扫描", event_id="event-confirm-different")
+        _run_verified_text("确认", event_id="event-confirm-different")
         assert len(service.calls) == 2
-        _run_verified_text("确认扫描", event_id="event-confirm-reply-loss")
+        _run_verified_text("确认", event_id="event-confirm-reply-loss")
 
     assert len(service.calls) == 3
     assert service.calls[1]["event_id"] == service.calls[2]["event_id"]
@@ -1361,7 +1376,7 @@ def test_scan_menu_pending_is_confirmed_from_the_users_next_chat_message():
             )
         )
         assert pending_store["user-one"]["preview_invocation_id"] == preview_invocation_id
-        _run_verified_text("确认扫描", event_id="event-menu-confirm")
+        _run_verified_text("确认", event_id="event-menu-confirm")
 
     assert service.calls[1]["event_id"] == "event-menu-confirm"
     assert service.calls[1]["preview_invocation_id"] == preview_invocation_id
@@ -1415,7 +1430,7 @@ def test_sender_scan_pending_takes_priority_over_existing_chat_pending():
         )
         assert pending_store["chat-one"] == existing_chat_pending
         assert pending_store["user-one"]["preview_invocation_id"] == preview_invocation_id
-        _run_verified_text("确认扫描", event_id="event-confirm-with-chat-pending")
+        _run_verified_text("确认", event_id="event-confirm-with-chat-pending")
 
     assert service.calls[1]["preview_invocation_id"] == preview_invocation_id
     assert pending_store == {"chat-one": existing_chat_pending}

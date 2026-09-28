@@ -341,10 +341,7 @@ async def _invoke_automation_project_and_reply(
     context = _COMMAND_CONTEXT.get()
     safe_route_key = str(route_key or "").strip()
     task_name = _automation_task_name(safe_route_key)
-    if safe_route_key == SCAN_FEISHU_ROUTE_KEY:
-        start_reply = "已开始生成扫描预览，完成后我会发回待扫描清单。"
-    else:
-        start_reply = invocation_accepted_message(task_name)
+    start_reply = invocation_accepted_message(task_name)
     accepted_notified = False
 
     async def notify_accepted(_receipt: Any) -> None:
@@ -352,6 +349,8 @@ async def _invoke_automation_project_and_reply(
         if accepted_notified:
             return
         accepted_notified = True
+        if safe_route_key == SCAN_FEISHU_ROUTE_KEY:
+            return
         try:
             await _reply_text(
                 receive_id,
@@ -372,7 +371,7 @@ async def _invoke_automation_project_and_reply(
             preview_invocation_id=preview_invocation_id,
             on_accepted=notify_accepted,
             **({"conversation_target": conversation_target} if conversation_target is not None else {}),
-            on_waiting=lambda: _reply_text(
+            on_waiting=None if safe_route_key == SCAN_FEISHU_ROUTE_KEY else lambda: _reply_text(
                 receive_id, f"{task_name}已发起，正在等待本次最终结果，完成后会继续回复。",
                 receive_id_type=receive_id_type, reply_type="automation_project_waiting_result",
             ),
@@ -709,7 +708,7 @@ async def _confirm_scan_preview_and_reply(
     if context.event_id == preview_event_id:
         await _reply_text(
             chat_id,
-            "确认扫描必须使用一条新的飞书消息，请重新发送“确认扫描”。",
+            "确认扫描必须使用一条新的飞书消息，请重新发送“确认”。",
             reply_type="scan_preview_new_event_required",
         )
         return
@@ -1989,9 +1988,6 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         await _reply_text(chat_id, "Agent 尚未初始化，请稍后再试")
         return
 
-    if await _cancel_direct_plugin(text, chat_id=chat_id, sender_id=sender_id):
-        return
-
     identity_access = getattr(_FEISHU_APPROVAL_RUNTIME, "identity_access", None)
     if identity_access is not None:
         identity = await asyncio.to_thread(identity_access.feishu, str(sender_id or ""))
@@ -2006,7 +2002,8 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
             isinstance(sender_pending, dict)
             and sender_pending.get("type") == "scan_preview_confirmation"
             and (_is_scan_confirm_text(text) or _is_scan_cancel_text(text)
-                 or (pending is None and (is_confirm_text(text) or is_cancel_text(text))))
+                 or ((pending is None or pending.get("type") == "active_run")
+                     and (is_confirm_text(text) or is_cancel_text(text))))
         ):
             pending_key = sender_id
             pending = sender_pending
@@ -2058,7 +2055,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     if isinstance(pending, dict) and pending.get("type") == "scan_preview_confirmation":
         state = str(pending.get("confirmation_state") or "pending")
         originator = str(pending.get("originator_actor_id") or "").strip()
-        if _is_scan_cancel_text(text):
+        if _is_scan_cancel_text(text, pending=True):
             if originator != str(sender_id or "").strip():
                 await _reply_text(
                     chat_id,
@@ -2080,7 +2077,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 reply_type="scan_preview_cancelled",
             )
             return
-        if _is_scan_confirm_text(text):
+        if _is_scan_confirm_text(text, pending=True):
             await _confirm_scan_preview_and_reply(
                 chat_id=chat_id,
                 pending_key=pending_key,
@@ -2097,9 +2094,12 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
             return
         await _reply_text(
             chat_id,
-            "扫描预览仍在等待确认，请明确回复“确认扫描”或“取消扫描”。",
+            "扫描预览仍在等待确认，请回复“确认”或“取消”。",
             reply_type="scan_preview_confirmation_required",
         )
+        return
+
+    if await _cancel_direct_plugin(text, chat_id=chat_id, sender_id=sender_id):
         return
 
     cancel_tool_name = _cancel_tool_name_from_text(text)

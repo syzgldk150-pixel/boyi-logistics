@@ -73,12 +73,14 @@ _TOOL_CANCEL_COMMANDS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
-def is_scan_confirm_text(value: Any) -> bool:
-    return bool(_SCAN_CONFIRM_RE.fullmatch(str(value or "")))
+def is_scan_confirm_text(value: Any, *, pending: bool = False) -> bool:
+    text = str(value or "")
+    return bool(_SCAN_CONFIRM_RE.fullmatch(text) or (pending and text.strip() == "确认"))
 
 
-def is_scan_cancel_text(value: Any) -> bool:
-    return bool(_SCAN_CANCEL_RE.fullmatch(str(value or "")))
+def is_scan_cancel_text(value: Any, *, pending: bool = False) -> bool:
+    text = str(value or "")
+    return bool(_SCAN_CANCEL_RE.fullmatch(text) or (pending and text.strip() == "取消"))
 
 
 def cancel_tool_name_from_text(value: Any) -> str | None:

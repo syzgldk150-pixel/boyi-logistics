@@ -26,7 +26,7 @@ SCAN_PREVIEW_ERROR_MESSAGES = {
     "SCAN_PREVIEW_STALE": "扫描数据已变化，请重新发送“扫描”后再确认。",
     "PROJECT_INVOCATION_STALE": "扫描项目配置已变化，请重新发送“扫描”。",
     "SCAN_PREVIEW_ALREADY_CONSUMED": "该预览已提交过正式请求，请前往事项中心查看原任务。",
-    "REQUEST_ID_REUSED": "本次飞书事件标识已被使用，请重新发送“确认扫描”。",
+    "REQUEST_ID_REUSED": "本次飞书事件标识已被使用，请重新发送“确认”。",
     "SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED": "正式扫描尚未开放，本次没有写入第三方系统。",
     "SCAN_PREVIEW_CONTEXT_REQUIRED": "服务端扫描合同缺少预览上下文，正式执行已阻断。",
     "SCAN_PREVIEW_CONTEXT_INVALID": "服务端扫描合同与预览不一致，正式执行已阻断。",
@@ -282,14 +282,9 @@ def scan_confirmation_ttl(pending: dict[str, Any]) -> int:
 def scan_preview_reply(projection: dict[str, Any]) -> str:
     return "\n".join(
         [
-            "扫描预览已生成：",
-            f"日期：{projection['target_date']}",
-            f"来源页数：{projection['source_page_count']}",
-            f"来源记录：{projection['normalized_record_count']}",
-            f"待扫描：{projection['selection_count']}",
-            f"提交批次：{projection['batch_count']}",
-            f"有效期至：{projection['expires_at']}",
+            f"扫描日期：{projection['target_date']}",
+            f"扫描件数：{projection['selection_count']}",
             "",
-            "请在十五分钟内回复“确认扫描”执行正式扫描，或回复“取消扫描”放弃。",
+            "回复“确认”开始扫描，回复“取消”放弃。",
         ]
     )
