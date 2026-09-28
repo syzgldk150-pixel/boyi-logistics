@@ -1,7 +1,6 @@
 [Unit]
 Description=Logistics Agent Service
-After=network.target mysqld.service
-Wants=mysqld.service
+After=network.target
 
 [Service]
 Type=simple
