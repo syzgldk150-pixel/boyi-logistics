@@ -1355,7 +1355,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn('--retries "${PIP_RETRIES}"', release)
         self.assertIn('--timeout "${PIP_TIMEOUT_SECONDS}"', release)
         self.assertIn('release_error stage=${RELEASE_STAGE}', release)
-        self.assertIn("for attempt in {1..30}; do", release)
+        self.assertIn("while (( SECONDS < health_deadline )); do", release)
         self.assertNotIn('\nBACKUP_ROOT=', release)
         self.assertIn('BACKUP_DIR="${STAGE_ROOT}/_rollback"', release)
         self.assertNotIn('LEGACY_BACKUP_ROOT=', release)

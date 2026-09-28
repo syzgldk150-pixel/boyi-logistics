@@ -2243,17 +2243,21 @@ check_rollback_health() {
 
 check_health() {
   [[ "${SKIP_HEALTH}" == "1" ]] && return 0
-  local target attempt body healthy
+  local target body healthy health_wait_seconds health_deadline
   local -a health_targets=("${REQUESTED_TARGETS[@]}")
   if [[ "${VENV_ACTIVATED}" == "1" || "${SERVICES_QUIESCED}" == "1" ]]; then
     health_targets=("${RUNTIME_TARGETS[@]}")
   fi
   for target in "${health_targets[@]}"; do
     healthy=0
-    # A first-party version upgrade can spend more than 30 seconds reconciling
-    # generations before Uvicorn exposes /health. Keep the release hold active
-    # and allow one minute for the bounded startup to finish.
-    for attempt in {1..30}; do
+    # Cross-region RDS startup performs durable plugin/scheduler projection
+    # before exposing HTTP. Preserve the hold while that bounded work finishes.
+    health_wait_seconds=60
+    if [[ "${target}" == "agent" && -f "${ROOTS[agent]}/runtime/database-target.json" ]]; then
+      health_wait_seconds=1200
+    fi
+    health_deadline=$((SECONDS + health_wait_seconds))
+    while (( SECONDS < health_deadline )); do
       if [[ "${target}" == "agent" ]]; then
         body="$(curl -fsS --max-time 5 http://127.0.0.1:9000/health 2>/dev/null || true)"
         if RELEASE_BODY="${body}" RELEASE_EXPECTED="${RELEASE_SHA}" "${PYTHON_BINS[agent]}" - <<'PY'
