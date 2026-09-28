@@ -822,6 +822,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
             "business_module_migration_contract.py",
             "migration_018_authorization.py",
             "migration_030_notification_lease.py",
+            "migration_connection.py",
             "automation_project_release_manifest_preflight.py",
             "automation_project_resource_preflight.py",
             "automation_project_schedule_identity_preflight.py",

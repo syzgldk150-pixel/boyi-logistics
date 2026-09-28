@@ -275,24 +275,7 @@ def split_sql_statements(text: str) -> list[str]:
     return statements
 
 def _connect():
-    from dotenv import load_dotenv
-    env_file = Path(os.getenv("MIGRATION_ENV_FILE", PROJECT_ROOT / ".env"))
-    load_dotenv(env_file)
-    from shared.mysql_connection import database_target_environment, mysql_tls_options
-    os.environ.update(database_target_environment(env_file.parent / "runtime" / "database-target.json"))
-    import pymysql
-
-    return pymysql.connect(
-        host=os.getenv("AGENT_DB_HOST", "127.0.0.1"),
-        port=int(os.getenv("AGENT_DB_PORT", "3306")),
-        user=os.getenv("AGENT_DB_USER", "agent"),
-        password=os.getenv("AGENT_DB_PASS", ""),
-        database=os.getenv("AGENT_DB_NAME", "agent_db"),
-        charset="utf8mb4",
-        autocommit=True,
-        cursorclass=pymysql.cursors.DictCursor,
-        **mysql_tls_options(os.getenv("AGENT_DB_SSL_CA")),
-    )
+    return _load_script_helper("migration_connection.py").connect(PROJECT_ROOT)
 
 def _applied_migrations(cursor) -> dict[str, dict[str, str]]:
     cursor.execute("SELECT version, filename, checksum FROM schema_migrations")

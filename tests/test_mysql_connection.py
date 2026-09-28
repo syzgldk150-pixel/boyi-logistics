@@ -1,6 +1,9 @@
 import json
+import os
 from pathlib import Path
 import ssl
+import subprocess
+import sys
 
 import pytest
 
@@ -81,3 +84,38 @@ def test_invalid_target_stops_bootstrap(tmp_path, target):
     path.write_text(json.dumps(target))
     with pytest.raises(ValueError):
         database_target_environment(path)
+
+
+def test_migration_runner_connects_from_isolated_deployment_path(tmp_path):
+    runner = Path(__file__).resolve().parents[1] / "agent/scripts/run_migrations.py"
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "database-target.json").write_text(json.dumps({
+        "host": "db.example", "port": 3307,
+        "ssl_ca": "/etc/ssl/certs/ca-certificates.crt",
+    }))
+    code = f"""
+import importlib.util, ssl, sys, types
+import pymysql
+spec = importlib.util.spec_from_file_location('staged_runner', {str(runner)!r})
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
+stale_shared = types.ModuleType('shared')
+sys.modules['shared'] = stale_shared
+def connect(**kwargs):
+    assert kwargs['host'] == 'db.example'
+    assert kwargs['port'] == 3307
+    assert kwargs['ssl'].verify_mode == ssl.CERT_REQUIRED
+    assert kwargs['ssl'].check_hostname
+    return 'verified'
+pymysql.connect = connect
+assert runner._connect() == 'verified'
+assert sys.modules['shared'] is stale_shared
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", code], cwd=tmp_path,
+        env={**os.environ, "PYTHON_DOTENV_DISABLED": "1",
+             "MIGRATION_ENV_FILE": str(tmp_path / "not-present")},
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
