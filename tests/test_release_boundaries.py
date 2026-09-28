@@ -1417,8 +1417,8 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertIn('data["automation_workers"].get("state") != "disabled"', release)
         self.assertIn('data["automation_workers"].get("release_hold") is not False', release)
         self.assertIn('data["automation_workers"].get("active_jobs") or 0', release)
-        self.assertIn("for _attempt in range(3):", release)
-        self.assertIn("urlopen(request, timeout=60)", release)
+        self.assertIn("for _attempt in range(activation_attempts):", release)
+        self.assertIn("urlopen(request, timeout=activation_timeout)", release)
         self.assertIn(
             'request_target = "/internal/v1/admin/scheduler/activate-after-release"',
             release,

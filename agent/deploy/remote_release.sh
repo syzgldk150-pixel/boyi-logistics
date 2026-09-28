@@ -2573,11 +2573,18 @@ try:
         console_signing_secret=signing_secret,
     )
     request_target = "/internal/v1/admin/scheduler/activate-after-release"
+    rds_target = os.path.isfile(os.path.join(
+        os.environ["BOYI_DEPLOYED_ROOT"], "agent", "runtime", "database-target.json"
+    ))
+    activation_timeout = 1200 if rds_target else 60
+    # A timed-out RDS activation can still be reconciling on the server.
+    # Do not queue another state-changing request behind that operation.
+    activation_attempts = 1 if rds_target else 3
     principal = release_principal("activate")
     payload = None
     response_status = None
     last_error = None
-    for _attempt in range(3):
+    for _attempt in range(activation_attempts):
         headers = build_console_identity_headers(
             secret=signing_secret,
             method="POST",
@@ -2594,7 +2601,7 @@ try:
             method="POST",
         )
         try:
-            with urlopen(request, timeout=60) as response:
+            with urlopen(request, timeout=activation_timeout) as response:
                 response_status = response.status
                 payload = json.loads(response.read().decode("utf-8"))
             break
