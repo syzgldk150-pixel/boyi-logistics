@@ -509,19 +509,18 @@ class TmsProxyServiceMixin:
         }
         if frame_ancestor_origin:
             blocked_headers.update({"x-frame-options", "content-security-policy"})
-        handler.send_response(status)
-        handler.send_header("Content-Type", content_type)
+        response_headers = {}
         for key, value in (headers or {}).items():
             key_text = str(key)
             if key_text.lower() in blocked_headers:
                 continue
-            handler.send_header(key_text, str(value))
+            response_headers[key_text] = str(value)
         if frame_ancestor_origin:
-            handler.send_header("Content-Security-Policy", f"frame-ancestors {frame_ancestor_origin}")
-        handler.send_header("Cache-Control", cache_control)
-        handler.send_header("Content-Length", str(len(payload)))
-        handler.end_headers()
-        handler.wfile.write(payload)
+            response_headers["Content-Security-Policy"] = f"frame-ancestors {frame_ancestor_origin}"
+        self._send_bytes(
+            handler, status, payload, content_type,
+            cache_control=cache_control, extra_headers=response_headers,
+        )
 
     def _handle_yunda_receipt_live_proxy(
         self,
