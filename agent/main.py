@@ -835,6 +835,8 @@ def _is_transient_tms_session_status(status_payload: dict) -> bool:
 
 
 def _should_alert_tms_session_status(status_payload: dict) -> bool:
+    if status_payload.get("auto_login_retryable"):
+        return False
     if status_payload.get("auto_login_enabled") is False:
         return False
     if bool(status_payload.get("account_disabled")):

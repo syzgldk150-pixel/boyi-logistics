@@ -370,6 +370,7 @@ class SessionPersistenceMixin:
         epoch = -1
         process: subprocess.Popen[Any] | None = None
         process_group_id: int | None = None
+        operation_completed = False
         try:
             with self._lock:
                 epoch = self._bump_state_epoch_locked()
@@ -384,7 +385,12 @@ class SessionPersistenceMixin:
             }
             if os.name == "posix":
                 popen_kwargs["start_new_session"] = True
-            process = subprocess.Popen(self._login_worker_command(stage_dir), **popen_kwargs)
+            try:
+                process = subprocess.Popen(self._login_worker_command(stage_dir), **popen_kwargs)
+            except OSError as exc:
+                raise TMSAuthStateError(
+                    "LOGIN_WORKER_UNAVAILABLE", "登录工作进程未能启动。"
+                ) from exc
             if os.name == "posix":
                 try:
                     process_group_id = os.getpgid(process.pid)
@@ -399,10 +405,6 @@ class SessionPersistenceMixin:
                     timeout=self._browser_action_timeout_sec,
                 )
             except subprocess.TimeoutExpired as exc:
-                self._terminate_process_tree(
-                    process,
-                    process_group_id=process_group_id,
-                )
                 raise TMSAuthStateError(
                     "LOGIN_TIMEOUT",
                     f"登录操作超过 {self._browser_action_timeout_sec:g} 秒，已终止浏览器进程。",
@@ -410,7 +412,11 @@ class SessionPersistenceMixin:
 
             envelope = self._state_store.read_dict(stage_dir / _LOGIN_RESULT_FILE)
             if process.returncode != 0 or envelope is None:
-                raise TMSAuthStateError("AUTH_UNAVAILABLE", "登录工作进程未返回有效结果。")
+                raise TMSAuthStateError("LOGIN_WORKER_UNAVAILABLE", "登录工作进程未返回有效结果。")
+            if envelope.get("ok") is not True and envelope.get("ok") is not False:
+                raise TMSAuthStateError("LOGIN_WORKER_UNAVAILABLE", "登录工作进程返回格式异常。")
+            if envelope.get("ok") is True and not isinstance(envelope.get("result"), dict):
+                raise TMSAuthStateError("LOGIN_WORKER_UNAVAILABLE", "登录工作进程返回格式异常。")
 
             commit_staged_state = bool(envelope.get("commit_staged_state"))
             with self._lock:
@@ -428,11 +434,10 @@ class SessionPersistenceMixin:
                     str(envelope.get("error") or "登录操作失败。"),
                 )
             result = envelope.get("result")
-            if not isinstance(result, dict):
-                raise TMSAuthStateError("AUTH_UNAVAILABLE", "登录工作进程返回格式异常。")
+            operation_completed = True
             return result
         finally:
-            if process is not None and process.poll() is None:
+            if process is not None and (process.poll() is None or not operation_completed):
                 self._terminate_process_tree(
                     process,
                     process_group_id=process_group_id,

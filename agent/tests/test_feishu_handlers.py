@@ -871,6 +871,16 @@ class FeishuNotifyTests(unittest.TestCase):
 
         self.assertEqual(first, second)
 
+    def test_runtime_recovery_does_not_send_an_account_login_failure_alert(self):
+        self.assertFalse(main._should_alert_tms_session_status({
+            "status": "error", "auto_login_enabled": True,
+            "auto_login_retryable": True, "last_error_summary": "登录进程异常，等待重试",
+        }))
+        self.assertTrue(main._should_alert_tms_session_status({
+            "status": "error", "auto_login_enabled": True,
+            "last_error_summary": "账号或密码错误",
+        }))
+
 
 class TmsAccountMonitorTests(unittest.TestCase):
     def test_alert_monitor_waits_for_websocket_lease_in_websocket_mode(self):

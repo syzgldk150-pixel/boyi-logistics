@@ -219,6 +219,44 @@ class SessionProcessIsolationTests(unittest.TestCase):
         broker._login_operation_lock.release()
         self.assertFalse((broker._state_dir / ".login_ops").exists())
 
+        # Recovery must launch a fresh worker, without inheriting partial files
+        # from the terminated operation or requiring a manual unlock.
+        with patch.object(persistence_module.subprocess, "Popen", side_effect=lambda command, **kwargs: _SuccessfulProcess(command)):
+            self.assertEqual("authenticated", broker.send_code()["status"])
+
+    def test_worker_start_failure_cleans_staging_and_allows_a_new_login(self):
+        broker = self._broker("worker_start_failure")
+        with patch.object(persistence_module.subprocess, "Popen", side_effect=OSError("fixture-launch-failure")):
+            with self.assertRaises(TMSAuthStateError) as raised:
+                broker.send_code()
+        self.assertEqual("LOGIN_WORKER_UNAVAILABLE", raised.exception.code)
+        self.assertFalse((broker._state_dir / ".login_ops").exists())
+        with patch.object(persistence_module.subprocess, "Popen", side_effect=lambda command, **kwargs: _SuccessfulProcess(command)):
+            self.assertEqual("authenticated", broker.send_code()["status"])
+
+    def test_malformed_worker_result_preserves_session_and_cleans_descendants(self):
+        broker = self._broker("malformed_result")
+        SessionStateStore.write_dict(broker._meta_path, {"status": "authenticated", "authenticated_at": "fixture-existing"})
+
+        class MalformedProcess(_SuccessfulProcess):
+            def communicate(self, *, input, timeout):
+                _write_staged_success(self.stage_dir)
+                SessionStateStore.write_dict(self.stage_dir / "operation_result.json", {
+                    "ok": True, "commit_staged_state": True, "result": [],
+                })
+                self.returncode = 0
+
+        with (
+            patch.object(persistence_module.subprocess, "Popen", side_effect=lambda command, **kwargs: MalformedProcess(command)),
+            patch.object(broker, "_terminate_process_tree") as terminate,
+        ):
+            with self.assertRaises(TMSAuthStateError) as raised:
+                broker.send_code()
+        self.assertEqual("LOGIN_WORKER_UNAVAILABLE", raised.exception.code)
+        self.assertEqual("fixture-existing", SessionStateStore.read_dict(broker._meta_path)["authenticated_at"])
+        self.assertFalse((broker._state_dir / ".login_ops").exists())
+        terminate.assert_called_once()
+
     def test_same_profile_fails_immediately_while_different_profile_runs(self):
         first = self._broker("account_a")
         second = self._broker("account_b")
