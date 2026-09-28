@@ -25,3 +25,9 @@ Agent、Console、飞书单实例租约、Phase 7 共享仓储和部署迁移器
 旧 ECS MySQL 退役时，先确认两个业务服务已通过 RDS 连接和健康检查，再停止并禁用 `mysqld.service`。Agent unit 不再依赖或自动启动本地 MySQL；保留 MySQL 数据目录和迁移备份，不卸载、不删除。旧库仅用于明确的恢复操作，不进入当前运行链路。
 
 相关代码测试：`tests/test_mysql_connection.py`。实际迁移的数量、耗时、备份路径和核对结果应记录在当次运维交付中，不在规则文档中硬编码动态统计。
+
+## 发布预检的连接模块
+
+迁移入口通过同目录的 `migration_connection.py` 加载本次暂存树中的共享连接模块，
+不依赖当前工作目录、生产旧版 `shared` 或 `PYTHONPATH`。连接目标仍取自显式
+`MIGRATION_ENV_FILE` 对应运行目录，以保证发布预检和服务使用同一数据库。
