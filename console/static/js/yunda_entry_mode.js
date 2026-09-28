@@ -1379,15 +1379,43 @@
     });
   }
 
+  function showOriginalPageLoading(frame, chip, notice, label) {
+    frame.setAttribute("aria-busy", "true");
+    notice.setAttribute("role", "status");
+    notice.setAttribute("aria-live", "polite");
+    notice.textContent = `正在打开${label}原页，首次加载需要一些时间…`;
+    notice.hidden = false;
+    if (chip) chip.textContent = "正在加载";
+    const slowTimer = window.setTimeout(() => {
+      if (!frame.isConnected || frame.getAttribute("aria-busy") !== "true") return;
+      notice.textContent = `${label}原页仍在加载，请稍候。若长时间没有显示，可关闭这个页签后重新打开。`;
+    }, 15000);
+    frame.addEventListener("load", () => {
+      window.clearTimeout(slowTimer);
+      frame.setAttribute("aria-busy", "false");
+      notice.hidden = true;
+      // The isolated page cannot be inspected from this origin. A load event
+      // only ends the loading notice; it does not assert business readiness.
+      if (chip) chip.textContent = "原页模式";
+    });
+    frame.addEventListener("error", () => {
+      window.clearTimeout(slowTimer);
+      frame.setAttribute("aria-busy", "false");
+      if (chip) chip.textContent = "加载失败";
+      notice.textContent = `${label}原页加载失败，请关闭这个页签后重新打开。`;
+      notice.hidden = false;
+    });
+  }
+
   function initRonghuiLiveInstance(ronghuiRoot) {
     const ronghuiStatusChip = ronghuiRoot.querySelector("[data-ronghui-status-chip]") || document.querySelector("[data-ronghui-status-chip]");
     const ronghuiFrame = ronghuiRoot.querySelector("[data-ronghui-live-frame]");
     const ronghuiFallback = ronghuiRoot.querySelector("[data-ronghui-live-fallback]");
     if (!ronghuiRoot || ronghuiRoot.dataset.ronghuiLive !== "1") return;
-    if (ronghuiStatusChip) ronghuiStatusChip.textContent = "原页模式";
     if (!ronghuiFrame || !ronghuiFallback || ronghuiRoot.dataset.ronghuiLiveBound === "1") return;
 
     ronghuiRoot.dataset.ronghuiLiveBound = "1";
+    showOriginalPageLoading(ronghuiFrame, ronghuiStatusChip, ronghuiFallback, "融辉");
     const sessionUrl = cleanText(ronghuiRoot.dataset.ronghuiSessionUrl || "/automations");
     const showAuthFallback = () => {
       if (ronghuiStatusChip) ronghuiStatusChip.textContent = "需要登录";
@@ -1428,9 +1456,9 @@
     const yundaStatusChip = yundaRoot.querySelector("[data-yunda-status-chip]") || document.querySelector("[data-yunda-status-chip]");
     const yundaFrame = yundaRoot.querySelector("[data-yunda-live-frame]");
     const yundaFallback = yundaRoot.querySelector("[data-yunda-live-fallback]");
-    if (yundaStatusChip) yundaStatusChip.textContent = "原页模式";
     if (!yundaFrame || !yundaFallback || yundaRoot.dataset.yundaLiveBound === "1") return;
     yundaRoot.dataset.yundaLiveBound = "1";
+    showOriginalPageLoading(yundaFrame, yundaStatusChip, yundaFallback, "韵达");
     const sessionUrl = cleanText(yundaRoot.dataset.yundaSessionUrl || "/automations");
     const showAuthFallback = () => {
       if (yundaStatusChip) yundaStatusChip.textContent = "需要登录";
@@ -1473,7 +1501,6 @@
     statusChip = document.querySelector("[data-yunda-status-chip]");
     if (!root || !sideRoot) return;
     if (root.dataset.yundaLive === "1") {
-      if (statusChip) statusChip.textContent = "原页模式";
       return;
     }
     attachEvents();

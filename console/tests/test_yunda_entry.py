@@ -1,4 +1,5 @@
 import base64
+import gzip
 import io
 import json
 import re
@@ -512,6 +513,32 @@ class YundaEntryTemplateTests(unittest.TestCase):
 
 
 class YundaEntryBackendTests(unittest.TestCase):
+    def test_original_page_compression_preserves_body_and_isolation_headers(self):
+        app = self._app()
+        payload = (".entry { color: #334155; }\n" * 2000).encode()
+        for accepted, compressed in (("gzip, deflate", True), ("gzip;q=0, *;q=1", False), ("", False)):
+            with self.subTest(accepted=accepted):
+                handler = _LiveHandler(headers={"Accept-Encoding": accepted})
+                app._send_proxy_bytes(handler, HTTPStatus.OK, payload, {
+                    "Content-Type": "text/css",
+                    "Cache-Control": "public, max-age=86400",
+                    "Set-Cookie": "upstream-cookie-must-not-reach-browser",
+                    "X-Frame-Options": "SAMEORIGIN",
+                    "Content-Security-Policy": "frame-ancestors 'none'",
+                    "Content-Length": "1",
+                }, frame_ancestor_origin="https://boyi.homes")
+                body = handler.wfile.getvalue()
+                self.assertEqual(payload, gzip.decompress(body) if compressed else body)
+                self.assertEqual("gzip" if compressed else "", handler.header_value("Content-Encoding"))
+                self.assertEqual(str(len(body)), handler.header_value("Content-Length"))
+                self.assertEqual("", handler.header_value("Set-Cookie"))
+                self.assertEqual("", handler.header_value("X-Frame-Options"))
+                self.assertEqual("frame-ancestors https://boyi.homes", handler.header_value("Content-Security-Policy"))
+                self.assertEqual("public, max-age=86400", handler.header_value("Cache-Control"))
+                if compressed:
+                    self.assertLess(len(body), len(payload) // 10)
+                    self.assertIn("Accept-Encoding", handler.header_value("Vary"))
+
     def _app(self, repository=None):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
         app.settings = SimpleNamespace(agent_base_url="http://agent.test", agent_timeout_seconds=30)
