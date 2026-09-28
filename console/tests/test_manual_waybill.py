@@ -168,6 +168,14 @@ class ManualWaybillServiceTests(unittest.TestCase):
         self.assertIn("金额格式无效", result.message)
         self.assertEqual([], repository.created)
 
+    def test_sender_address_is_saved_without_requiring_an_ocr_template_field(self):
+        for submitted, expected in (({}, ""), ({"field_sender_address": "湖南省邵阳市测试路8号"}, "湖南省邵阳市测试路8号")):
+            with self.subTest(submitted=submitted):
+                repository = _Repository()
+                result = self._service(repository).apply_manual_waybill(_valid_form(**submitted))
+                self.assertTrue(result.ok)
+                self.assertEqual(expected, repository.created[0]["fields"]["sender_address"])
+
     def test_receipt_checkbox_is_saved_and_invalid_value_is_rejected(self):
         for submitted, expected in (({}, "0"), ({"field_receipt_required": "1"}, "1"),
                                     ({"field_receipt_required": "0"}, "0")):
@@ -609,6 +617,8 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertIn("toSlashDate", html)
         self.assertNotIn('<div class="manual-section-title">核心信息</div>', html)
         self.assertNotIn('<div class="manual-section-title">客户信息</div>', html)
+        self.assertIn('name="field_sender_address"', html)
+        self.assertIn('sender_address: manualFieldValue("sender_address")', html)
         self.assertIn("manual-party-stack", html)
         self.assertIn("manual-grid--party", html)
         self.assertIn('manual-subsection-title">发货信息', html)
@@ -855,6 +865,13 @@ class ManualWaybillTemplateTests(unittest.TestCase):
 
         self.assertIn("window.setTimeout(() => previewWaybill(), 220);", html)
         self.assertNotIn("window.setTimeout(() => printWaybill(), 220);", html)
+
+    def test_saved_print_passes_sender_address(self):
+        html = self.env.get_template("waybill_print.html").render(
+            waybill={"sender_address": "Sender address fixture"},
+            autoprint=False, print_preview=False,
+        )
+        self.assertIn('sender_address: "Sender address fixture"', html)
 
     def test_notice_default_uses_full_neutral_border(self):
         css = (CONSOLE_DIR / "static" / "style.css").read_text(encoding="utf-8")

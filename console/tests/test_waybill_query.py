@@ -190,6 +190,7 @@ class WaybillQueryTemplateTests(unittest.TestCase):
                     "receiver_address": "浙江省杭州市余杭区",
                     "sender_name": "李建国",
                     "sender_phone": "13987654321",
+                    "sender_address": "湖南省邵阳市测试路8号",
                     "goods_name_lines": "电子产品",
                     "package_type_lines": "纸箱",
                     "quantity_lines": "1件",
@@ -243,6 +244,7 @@ class WaybillQueryTemplateTests(unittest.TestCase):
             **_waybill_template_defaults(),
         )
 
+        self.assertIn("湖南省邵阳市测试路8号", html)
         self.assertIn("共 1 条", html)
         self.assertIn("00000001", html)
         self.assertIn("data-date-range-picker", html)

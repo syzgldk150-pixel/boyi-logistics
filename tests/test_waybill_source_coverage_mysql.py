@@ -51,6 +51,8 @@ def database():
                 cursor.execute(sql)
         migration = (ROOT / "agent/migrations/052_boyi_waybill_receipt_required.sql").read_text()
         cursor.execute(migration)
+        migration = (ROOT / "agent/migrations/054_boyi_waybill_sender_address.sql").read_text()
+        cursor.execute(migration)
         connection.commit()
 
     @contextmanager
@@ -104,6 +106,7 @@ def test_manual_boyi_sequence_and_saved_date_keyword_query(manual_repository):
     first_id, first_no = repo.create_manual_waybill({
         "open_date": "2026/09/16", "freight_fee": "20.00", "payment_method": "寄付",
         "receipt_required": "1",
+        "sender_address": "湖南省邵阳市测试路8号",
     })
     assert first_no == "BY00001"
     assert repo.peek_next_manual_waybill_no() == "BY00002"
@@ -119,6 +122,7 @@ def test_manual_boyi_sequence_and_saved_date_keyword_query(manual_repository):
     ):
         result = repo.search_waybills(filters)
         assert [row["id"] for row in result["rows"]] == [first_id]
+        assert result["rows"][0]["sender_address"] == "湖南省邵阳市测试路8号"
         assert result["summary"]["total"] == 1
         assert result["summary"]["fee_total"] == "20.00"
     assert repo.get_waybill(first_id, source="manual")["open_date"] == "2026-09-16"
@@ -126,6 +130,9 @@ def test_manual_boyi_sequence_and_saved_date_keyword_query(manual_repository):
     assert repo.get_waybill(first_id, source="manual")["receipt_required"] == 1
     assert repo.get_waybill_by_no(first_no)["receipt_required"] == 1
     assert repo.get_waybill(second_id, source="manual")["receipt_required"] == 0
+    assert repo.get_waybill(first_id, source="manual")["sender_address"] == "湖南省邵阳市测试路8号"
+    assert repo.get_waybill_by_no(first_no)["sender_address"] == "湖南省邵阳市测试路8号"
+    assert repo.get_waybill(second_id, source="manual")["sender_address"] == ""
     assert not rows(repo.connect)
 
 
@@ -188,7 +195,7 @@ def test_local_date_migration_preserves_numbers_fields_and_totals(manual_reposit
                 cursor.execute(sql)
         cursor.execute("SELECT * FROM boyi_waybills ORDER BY id")
         moved = cursor.fetchall()
-    assert moved == [dict(row, receipt_required=0) for row in expected if row["source"] == "manual"]
+    assert moved == [dict(row, receipt_required=0, sender_address=None) for row in expected if row["source"] == "manual"]
     assert rows(repo.connect) == [row for row in expected if row["source"] != "manual"]
     result = repo.search_waybills({"source": "manual", "date_from": "2026-09-16", "date_to": "2026-09-16"})
     assert result["summary"]["total"] == 1

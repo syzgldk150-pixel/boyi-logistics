@@ -808,8 +808,8 @@ class DocumentRepository:
             "source_scope", "source_record_id", "source_account_id", "source_permission_scope",
         ])
         return (
-            f"(SELECT {columns}, NULL AS receipt_required FROM waybills UNION ALL "
-            f"SELECT {columns}, receipt_required FROM boyi_waybills) AS saved_waybills"
+            f"(SELECT {columns}, NULL AS receipt_required, NULL AS sender_address FROM waybills UNION ALL "
+            f"SELECT {columns}, receipt_required, sender_address FROM boyi_waybills) AS saved_waybills"
         )
 
     def _field_value(self, fields: dict[str, Any], field_name: str) -> str:
@@ -844,6 +844,8 @@ class DocumentRepository:
                 raise ValueError("博益运单回单选项必须明确为 0 或 1")
             columns.append("receipt_required")
             values.append(int(receipt_value))
+            columns.append("sender_address")
+            values.append(self._field_value(fields, "sender_address"))
 
         placeholders = ", ".join(self.placeholder for _ in columns)
         col_names = ", ".join(columns)
