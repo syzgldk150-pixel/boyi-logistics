@@ -180,6 +180,7 @@ MONEY_FIELD_NAMES = {
 }
 
 MANUAL_EXTRA_FIELD_LABELS = {
+    "sender_address": "发货地址",
     "insurance_amount": "保价金额",
     "cod_amount": "代收金额",
 }

@@ -700,6 +700,7 @@
               <div class="manual-grid manual-grid--party">
                 {{ render_manual_field('sender_name', '发货人') }}
                 {{ render_manual_field('sender_phone', '发货电话') }}
+                {{ render_manual_field('sender_address', '发货地址', is_textarea=True, span='2') }}
               </div>
             </div>
             <div class="manual-party-block">
@@ -1763,6 +1764,7 @@
         receiver_address: manualFieldValue("receiver_address"),
         sender_name: manualFieldValue("sender_name"),
         sender_phone: manualFieldValue("sender_phone"),
+        sender_address: manualFieldValue("sender_address"),
         goods_name_lines: manualFieldValue("goods_name_lines"),
         package_type_lines: manualFieldValue("package_type_lines"),
         quantity_lines: manualFieldValue("quantity_lines"),
