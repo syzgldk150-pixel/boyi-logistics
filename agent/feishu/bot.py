@@ -5,6 +5,7 @@ import asyncio
 import logging
 import threading
 import socket
+from shared.mysql_connection import mysql_tls_options
 
 try:
     import fcntl
@@ -58,6 +59,7 @@ def _db_connect_for_lease():
         database=os.getenv("AGENT_DB_NAME", "agent_db"),
         charset="utf8mb4",
         autocommit=True,
+        **mysql_tls_options(os.getenv("AGENT_DB_SSL_CA")),
     )
 
 

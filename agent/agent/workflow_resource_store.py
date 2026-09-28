@@ -5,6 +5,7 @@ import re
 from collections.abc import Mapping
 
 import pymysql
+from shared.mysql_connection import mysql_tls_options
 
 from shared.runtime_repositories import WorkflowResourceRepository
 
@@ -36,6 +37,7 @@ def _connect():
         database=os.getenv("AGENT_DB_NAME", "agent_db"),
         charset="utf8mb4",
         autocommit=True,
+        **mysql_tls_options(os.getenv("AGENT_DB_SSL_CA")),
     )
 
 

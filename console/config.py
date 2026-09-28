@@ -190,6 +190,7 @@ class Settings:
     training_sample_threshold: int
     paddle_enabled: bool
     paddle_confidence_threshold: float
+    mysql_ssl_ca: str = ""
 
 
 def load_settings() -> Settings:
@@ -214,6 +215,7 @@ def load_settings() -> Settings:
         mysql_user=os.getenv("DOCFLOW_MYSQL_USER", os.getenv("AGENT_DB_USER", "")),
         mysql_password=os.getenv("DOCFLOW_MYSQL_PASSWORD", os.getenv("AGENT_DB_PASS", "")),
         mysql_database=os.getenv("DOCFLOW_MYSQL_DATABASE", os.getenv("AGENT_DB_NAME", "")),
+        mysql_ssl_ca=os.getenv("DOCFLOW_MYSQL_SSL_CA", os.getenv("AGENT_DB_SSL_CA", "")),
         agent_base_url=(
             os.getenv("DOCFLOW_AGENT_BASE_URL", "").strip()
             or f"http://127.0.0.1:{agent_port}"

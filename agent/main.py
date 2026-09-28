@@ -450,6 +450,7 @@ def _orchestration_connection():
     """Return a transaction-scoped MySQL connection; runtime never runs DDL."""
 
     import pymysql
+    from shared.mysql_connection import mysql_tls_options
 
     return pymysql.connect(
         host=os.getenv("AGENT_DB_HOST", "127.0.0.1"),
@@ -460,6 +461,7 @@ def _orchestration_connection():
         charset="utf8mb4",
         autocommit=False,
         cursorclass=pymysql.cursors.DictCursor,
+        **mysql_tls_options(os.getenv("AGENT_DB_SSL_CA")),
     )
 
 

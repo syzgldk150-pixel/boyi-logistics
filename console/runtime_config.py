@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import os
 from pathlib import Path
+
+from shared.mysql_connection import database_target_environment
 
 
 MODULE_DIR = Path(__file__).resolve().parent
@@ -23,3 +26,4 @@ def load_console_environment() -> None:
 
     if OCR_MODULE_DIR is not None:
         load_dotenv(OCR_MODULE_DIR / ".env")
+    os.environ.update(database_target_environment(project_root / "runtime" / "database-target.json"))
