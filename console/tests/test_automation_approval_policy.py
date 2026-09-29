@@ -765,7 +765,7 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
         self.assertIn(".auto-pending-approvals[hidden]", style)
         self.assertIn('.selection-preview-item input[type="checkbox"]', style)
         self.assertIn("appearance: auto", style)
-        self.assertIn("style.css?v=cal-console-20260912-chat-composer", base)
+        self.assertIn("style.css?v=cal-console-20260929-date-popover", base)
         self.assertNotIn(".automation-plugin-install-panel", style)
         self.assertNotIn(
             ".automation-plugin-install-form { display: grid; grid-template-columns:",

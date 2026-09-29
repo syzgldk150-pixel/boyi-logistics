@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "博益融辉原页验证",
+  "version": "0.3.0",
+  "description": "仅在博益运单录入页验证融辉真实内嵌。无账号隔离，不收集登录信息。",
+  "permissions": [
+    "declarativeNetRequestWithHostAccess",
+    "cookies",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "https://boyi.homes/*",
+    "https://tms.ronghuiwl.com/*",
+    "http://tms.ronghuiwl.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://boyi.homes/ocr*"
+      ],
+      "js": [
+        "content.js",
+        "layout-host.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://tms.ronghuiwl.com/module/index*"
+      ],
+      "js": [
+        "layout-shell.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "world": "MAIN"
+    }
+  ]
+}

@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from console.services.browser_extension_package import serve_ronghui_extension_package
+
 
 def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[str, list[str]]) -> bool:
+    if path == "/ocr/browser-extension.zip":
+        serve_ronghui_extension_package(app, handler)
+        return True
     if path in {"/ocr", "/workspaces/ocr"}:
         app._render_ocr_workspace(handler, query)
         return True
