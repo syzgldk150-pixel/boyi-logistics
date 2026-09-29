@@ -18,6 +18,12 @@
 
 后续增加读取接口时，先在真实登录原页记录方法、路径、query/body 字段、响应结构及用途，再更新这份共享契约及两端测试。不得保存凭据或业务原始值。页面初始化验证不等于已验证真实保存、领号、上传、删除或打印。
 
+## 韵达电子单号领号
+
+2026-09-29 线上访问日志确认“获取电子单号”的 POST 请求被原页代理返回 405；不是初始化读取或登录失败。已在登录后的韵达真实录入页核实按钮处理器，并在发送前终止请求，取得请求结构：`/ky_inms/public/index.php/joinlgs/MakeLogisticsApi/getLogisticsNum.html`，无 query，表单正文仅 `CreatedDotCode/UserCode`。页面以响应 `info` 判断结果，并从 `logistics` 取单号；此次检查未实际申请单号，也未保存运单。
+
+该接口归入受审手工写入，共享契约只允许精确 POST 路径及上述两个非空字符串字段，拒绝额外字段、重复字段、query/body 冲突与 GET 领号。账号与来源权限继续由独立原页 capability、管理员身份、Origin 和 Agent 签名校验承担；不进入只读初始化清单。Console 与真实 Agent 路由/代理运输测试使用合成字段验证放行及参数原样转发，不替代生产真实领号验收。
+
 ## 融辉电子主单领号
 
 真实原页的 `crud.init()` 会恢复 `FIND_BILL_CHECK` 返回的“电子主单”保存偏好，并调用 `crud.refreshBillCode()`；电子主单开关、重置及无单号订单带入也会调用该函数。函数以 POST 请求 `/dataQuery/findAllByCallId?id=FIND_TMS_BILL_CODE_BY`，正文 `vCount=1`，将返回的单号填入 `BILL_CODE` 并设为只读，再调用上述存在性检查、本地生成子单号。现有证据只观察到一次领号请求被原代理规则拒绝，不能据此声称重复领号已发生。

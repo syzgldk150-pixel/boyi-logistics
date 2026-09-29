@@ -71,9 +71,10 @@ YUNDA_MANUAL_ENTRY_ROUTE_ACTIONS = {
 
 YUNDA_MANUAL_ENTRY_ACTIONS = frozenset(YUNDA_MANUAL_ENTRY_ROUTE_ACTIONS.values())
 
-# Reviewed manual writes use these save endpoints or the exact Ronghui
-# single-number allocation selector below. Allocation is not a read operation.
+# Reviewed manual writes use these save endpoints or the exact Yunda/Ronghui
+# single-number allocation requests below. Allocation is not a read operation.
 YUNDA_MANUAL_PROXY_SAVE_PATH = "/ky_inms/public/index.php/business/waybill/entry/save.html"
+YUNDA_MANUAL_BILL_ALLOCATION_PATH = "/ky_inms/public/index.php/joinlgs/MakeLogisticsApi/getLogisticsNum.html"
 RONGHUI_MANUAL_PROXY_SAVE_PATH = "/dataOperation/saveTables"
 RONGHUI_MANUAL_BILL_ALLOCATION_CALL_ID = "FIND_TMS_BILL_CODE_BY"
 
@@ -215,7 +216,8 @@ def manual_proxy_request_allowed(provider: str, params: Mapping[str, Any]) -> bo
     method = str(params.get("method") or "GET").strip().upper()
     if method == "GET":
         if provider == "yunda":
-            return path.startswith(YUNDA_MANUAL_PROXY_ALLOWED_PREFIXES)
+            return (urlparse(path).path != YUNDA_MANUAL_BILL_ALLOCATION_PATH
+                    and path.startswith(YUNDA_MANUAL_PROXY_ALLOWED_PREFIXES))
         parsed_path = urlparse(path)
         if parsed_path.path == "/dataQuery/findAllByCallId":
             if parsed_path.query or parsed_path.fragment or parsed_path.params:
@@ -239,6 +241,10 @@ def manual_proxy_request_allowed(provider: str, params: Mapping[str, Any]) -> bo
     except (ValueError, TypeError, UnicodeError, binascii.Error):
         return False
     if provider == "yunda":
+        if path == YUNDA_MANUAL_BILL_ALLOCATION_PATH:
+            return fields.keys() == {"CreatedDotCode", "UserCode"} and all(
+                isinstance(value, str) and bool(value.strip()) for value in fields.values()
+            )
         if path in _YUNDA_EMPTY_INITIALIZATION_PATHS:
             return not fields and not params.get("body") and not params.get("body_base64")
         return path in _YUNDA_READ_QUERY_FIELDS and fields.keys() == _YUNDA_READ_QUERY_FIELDS[path]

@@ -5,10 +5,36 @@ import json
 import unittest
 from urllib.parse import urlencode
 
-from shared.manual_entry_contracts import manual_proxy_request_allowed
+from shared.manual_entry_contracts import YUNDA_MANUAL_BILL_ALLOCATION_PATH, manual_proxy_request_allowed
 
 
 class ManualProxyRequestContractTests(unittest.TestCase):
+    def test_yunda_manual_allocation_requires_exact_nonempty_identity_fields(self):
+        path = YUNDA_MANUAL_BILL_ALLOCATION_PATH
+        body = "CreatedDotCode=fixture-site&UserCode=fixture-user"
+        params = self.request(path=path, body=body)
+        self.assertTrue(manual_proxy_request_allowed("yunda", params))
+        self.assertTrue(manual_proxy_request_allowed("yunda", {
+            **params, "body_base64": base64.b64encode(body.encode()).decode(),
+        }))
+        for invalid in (
+            {**params, "method": "GET"},
+            {**params, "method": "GET", "path": path + "?ignored=1"},
+            {**params, "method": "PUT"},
+            {**params, "body": ""},
+            {**params, "body": "CreatedDotCode=fixture-site"},
+            {**params, "body": "CreatedDotCode=&UserCode=fixture-user"},
+            {**params, "body": "CreatedDotCode=fixture-site&UserCode=%20"},
+            {**params, "body": body + "&count=2"},
+            {**params, "body": body + "&UserCode=other"},
+            {**params, "query": "CreatedDotCode=other"},
+            {**params, "path": path + "/extra"},
+            {**params, "content_type": "application/json",
+             "body": '{"CreatedDotCode":"fixture-site","UserCode":null}'},
+        ):
+            with self.subTest(params=invalid):
+                self.assertFalse(manual_proxy_request_allowed("yunda", invalid))
+
     def request(self, *, path="/dataQuery/findAllByCallId", query="", body="", **extra):
         return {
             "method": "POST", "path": path, "query": query, "body": body,
