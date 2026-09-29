@@ -22,7 +22,7 @@
 <script src="/static/js/waybill_label_html.js?v=20260916-receipt-v3"></script>
 <script src="/static/js/waybill_label_lodop.js?v=20260916-receipt-v3"></script>
 <script src="/static/js/clodop_loader.js?v=20260812"></script>
-<script src="/static/js/yunda_entry_mode.js?v=fa1dc29fb1b0"></script>
+<script src="/static/js/yunda_entry_mode.js?v=429666c55fb4"></script>
 {% endif %}
 <style>
   body.no-scroll { overflow: hidden; }
@@ -75,14 +75,16 @@
   .entry-tab-limit[hidden] { display: none; }
   .entry-frame-stack { flex: 1; min-height: 0; position: relative; background: #fff; }
   .entry-frame-panel { position: absolute; inset: 0; display: none; min-width: 0; min-height: 0; background: #fff; overflow: hidden; }
-  .entry-frame-panel.is-active { display: block; }
+  .entry-frame-panel.is-active { display: flex; flex-direction: column; }
+  .entry-frame-viewport { position: relative; flex: 1; min-height: 0; overflow: auto; }
+  .entry-origin-notice { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 0 0 auto; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--surface); font-size: .76rem; line-height: 1.5; }
+  .entry-origin-notice p { flex: 1; margin: 0; min-width: 220px; color: var(--muted); }
+  .entry-origin-notice a { color: var(--primary); white-space: nowrap; }
+  .entry-origin-notice button { font-size: inherit; min-height: 28px; padding: 2px 8px; }
   .entry-instance-frame { position: absolute; inset: 0; display: block; width: 100%; height: 100%; min-height: 0; border: 0; background: #fff; }
-  .entry-frame-panel > .manual-chip { position: absolute; top: 8px; right: 10px; z-index: 4; }
-  .entry-frame-panel > .yunda-live-fallback { position: absolute; top: 44px; left: 10px; right: 10px; z-index: 5; }
+  .entry-frame-viewport > .yunda-live-fallback { position: absolute; top: 10px; left: 10px; right: 10px; z-index: 5; }
   .entry-frame-panel[data-entry-provider="yunda"] .entry-instance-frame,
   .entry-frame-panel[data-entry-provider="ronghui"] .entry-instance-frame { min-width: 1280px; }
-  .entry-frame-panel[data-entry-provider="yunda"],
-  .entry-frame-panel[data-entry-provider="ronghui"] { overflow: auto; }
   .manual-workbench, .ocr-workspace { flex: 1; min-height: 0; height: 100%; }
   .manual-workbench { display: grid; grid-template-columns: minmax(0, 1fr) clamp(430px, 30vw, 560px); gap: 16px; }
   .manual-card, .manual-side-card, .ocr-figure-panel, .ocr-review-panel {
@@ -522,7 +524,22 @@
 {% if is_entry_tabs_shell %}
 {% set entry_initial_provider = 'yunda' if is_yunda_mode else ('ronghui' if is_ronghui_mode else 'boyi') %}
 {% set entry_initial_label = ('韵达' if is_yunda_mode else ('融辉' if is_ronghui_mode else '博益')) ~ ' 1' %}
-{% set entry_initial_src = '/original-pages/yunda/launch' if is_yunda_mode else ('/original-pages/ronghui/launch' if is_ronghui_mode else '/ocr/boyi/frame') %}
+{% set entry_yunda_src = 'https://kyinms.yunda56.com/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&p=nil' %}
+{% set entry_initial_src = entry_yunda_src if is_yunda_mode else ('/original-pages/ronghui/launch' if is_ronghui_mode else '/ocr/boyi/frame') %}
+{% macro entry_origin_notice(provider) %}
+<div class="entry-origin-notice" data-entry-origin-notice>
+  {% if provider == 'yunda' %}
+  <span class="manual-chip" data-yunda-status-chip>韵达原站</span>
+  <p>使用浏览器中的韵达登录状态；博益资料、报价需手动填写。登录后可重新加载本页。</p>
+  <a href="{{ entry_yunda_src }}" target="_blank" rel="noopener noreferrer">在新窗口登录韵达</a>
+  <button type="button" class="ghost-btn" data-entry-reload>重新加载</button>
+  {% else %}
+  <span class="manual-chip" data-ronghui-status-chip>代理模式</span>
+  <p>融辉暂用代理页面，部分交互仍受限；原站跨站登录限制使真实内嵌暂不可用。</p>
+  <a href="https://tms.ronghuiwl.com/module/index?mv=index" target="_blank" rel="noopener noreferrer">在新窗口使用完整原站</a>
+  {% endif %}
+</div>
+{% endmacro %}
 <div
   class="entry-tabs-shell"
   data-entry-tabs-root
@@ -530,7 +547,7 @@
   data-entry-max-tabs="6"
   data-entry-initial-provider="{{ entry_initial_provider }}"
   data-entry-src-boyi="/ocr/boyi/frame"
-  data-entry-src-yunda="/original-pages/yunda/launch"
+  data-entry-src-yunda="{{ entry_yunda_src }}"
   data-entry-src-ronghui="/original-pages/ronghui/launch"
 >
   <div class="entry-tabs-toolbar">
@@ -550,11 +567,14 @@
     </div>
   </div>
   <div class="entry-tab-limit" data-entry-tab-limit hidden>最多同时打开 6 个录单页签，请先关闭不需要的页签。</div>
+  <template data-entry-origin-template="yunda">{{ entry_origin_notice('yunda') }}</template>
+  <template data-entry-origin-template="ronghui">{{ entry_origin_notice('ronghui') }}</template>
   <div class="entry-frame-stack" data-entry-frame-stack>
-    <div class="entry-frame-panel is-active" data-entry-frame-panel data-entry-id="entry-1" data-entry-provider="{{ entry_initial_provider }}"{% if entry_initial_provider == 'yunda' %} data-yunda-root data-yunda-live="1" data-yunda-session-url="/automations"{% elif entry_initial_provider == 'ronghui' %} data-ronghui-root data-ronghui-live="1" data-ronghui-session-url="/automations"{% endif %}>
+    <div class="entry-frame-panel is-active" data-entry-frame-panel data-entry-id="entry-1" data-entry-provider="{{ entry_initial_provider }}"{% if entry_initial_provider == 'yunda' %} data-yunda-root data-yunda-live="1" data-yunda-native="1"{% elif entry_initial_provider == 'ronghui' %} data-ronghui-root data-ronghui-live="1" data-ronghui-session-url="/automations"{% endif %}>
       {% if entry_initial_provider in ['yunda', 'ronghui'] %}
-      <div class="manual-chip" {% if entry_initial_provider == 'yunda' %}data-yunda-status-chip{% else %}data-ronghui-status-chip{% endif %}>登录态</div>
+      {{ entry_origin_notice(entry_initial_provider) }}
       {% endif %}
+      <div class="entry-frame-viewport">
       <iframe
         class="entry-instance-frame{% if entry_initial_provider == 'yunda' %} yunda-live-frame{% elif entry_initial_provider == 'ronghui' %} ronghui-live-frame{% endif %}"
         data-entry-frame
@@ -566,6 +586,7 @@
       {% if entry_initial_provider in ['yunda', 'ronghui'] %}
       <div class="yunda-live-fallback yunda-empty" {% if entry_initial_provider == 'yunda' %}data-yunda-live-fallback{% else %}data-ronghui-live-fallback{% endif %} hidden>{{ '韵达' if entry_initial_provider == 'yunda' else '融辉' }}原页面加载失败，可刷新登录态后重试。</div>
       {% endif %}
+      </div>
     </div>
   </div>
 </div>
@@ -832,7 +853,7 @@
             <div class="manual-quote-price">--</div>
           </div>
           <div class="manual-quote-meta"><span>等待真实报价返回</span></div>
-          <button type="button" class="ghost-btn manual-quote-select" data-quote-provider="yunda" disabled>选择韵达并预填</button>
+          <button type="button" class="ghost-btn manual-quote-select" data-quote-provider="yunda" disabled>打开韵达原站（手动填写）</button>
         </article>
         <article class="manual-quote-item">
           <div class="manual-quote-main">
@@ -1045,7 +1066,7 @@
       }
     };
     const prefillKey = (mode, stored) => `${mode}:${Number(stored?.created_at || 0)}`;
-    const requiresPrefillReady = (mode) => mode === "ronghui" || mode === "yunda";
+    const requiresPrefillReady = (mode) => mode === "ronghui";
     const resetPrefillReady = (mode) => {
       if (mode) prefillReadyModes.delete(mode);
     };
@@ -1056,7 +1077,7 @@
       }
     };
     const prefillFrameSrc = (mode, liveSrc) => {
-      if (!liveSrc || !["yunda", "ronghui"].includes(mode)) return liveSrc || "";
+      if (!liveSrc || mode !== "ronghui") return liveSrc || "";
       const stored = readStoredPrefill();
       if (!stored || stored.provider !== mode) return liveSrc;
       const url = new URL(liveSrc, window.location.origin);
@@ -1158,7 +1179,7 @@
       if (normalizedProvider === "yunda") {
         panel.setAttribute("data-yunda-root", "");
         panel.dataset.yundaLive = "1";
-        panel.dataset.yundaSessionUrl = "/automations";
+        panel.dataset.yundaNative = "1";
       }
       if (normalizedProvider === "ronghui") {
         panel.setAttribute("data-ronghui-root", "");
@@ -1166,12 +1187,12 @@
         panel.dataset.ronghuiSessionUrl = "/automations";
       }
       if (["yunda", "ronghui"].includes(normalizedProvider)) {
-        const chip = document.createElement("div");
-        chip.className = "manual-chip";
-        chip.textContent = "登录态";
-        chip.setAttribute(normalizedProvider === "yunda" ? "data-yunda-status-chip" : "data-ronghui-status-chip", "");
-        panel.appendChild(chip);
+        const notice = entryTabsRoot.querySelector(`[data-entry-origin-template="${normalizedProvider}"]`);
+        panel.appendChild(notice.content.cloneNode(true));
       }
+      const viewport = document.createElement("div");
+      viewport.className = "entry-frame-viewport";
+      panel.appendChild(viewport);
       const frame = document.createElement("iframe");
       frame.className = `entry-instance-frame${normalizedProvider === "yunda" ? " yunda-live-frame" : ""}${normalizedProvider === "ronghui" ? " ronghui-live-frame" : ""}`;
       frame.dataset.entryFrame = "1";
@@ -1180,18 +1201,18 @@
       if (normalizedProvider === "ronghui") frame.setAttribute("data-ronghui-live-frame", "");
       frame.title = label;
       let nextSrc = entryFrameSrc(normalizedProvider);
-      if (options.prefill && ["yunda", "ronghui"].includes(normalizedProvider)) {
+      if (options.prefill && normalizedProvider === "ronghui") {
         nextSrc = prefillFrameSrc(normalizedProvider, nextSrc);
       }
       frame.src = nextSrc;
-      panel.appendChild(frame);
+      viewport.appendChild(frame);
       if (["yunda", "ronghui"].includes(normalizedProvider)) {
         const fallback = document.createElement("div");
         fallback.className = "yunda-live-fallback yunda-empty";
         fallback.hidden = true;
         fallback.textContent = `${entryProviderLabels[normalizedProvider]}原页面加载失败，可刷新登录态后重试。`;
         fallback.setAttribute(normalizedProvider === "yunda" ? "data-yunda-live-fallback" : "data-ronghui-live-fallback", "");
-        panel.appendChild(fallback);
+        viewport.appendChild(fallback);
       }
       entryTabList.appendChild(tab);
       entryFrameStack.appendChild(panel);
@@ -1219,6 +1240,12 @@
       window.dispatchEvent(new CustomEvent("console:ocr-mode-change", { detail: { mode: initialProvider } }));
     };
     entryTabsRoot?.addEventListener("click", (event) => {
+      const reloadButton = event.target?.closest?.("[data-entry-reload]");
+      if (reloadButton) {
+        const frame = reloadButton.closest("[data-entry-frame-panel]")?.querySelector("[data-entry-frame]");
+        if (frame) frame.src = entryFrameSrc("yunda");
+        return;
+      }
       const addButton = event.target?.closest?.("[data-entry-add-provider]");
       if (addButton) {
         addEntryTab(addButton.dataset.entryAddProvider || "boyi");
@@ -1271,7 +1298,7 @@
     };
     function postStoredPrefillToFrame(mode, frame = null) {
       const stored = readStoredPrefill();
-      if (!stored || stored.provider !== mode || !["yunda", "ronghui"].includes(mode)) return false;
+      if (mode !== "ronghui" || !stored || stored.provider !== mode) return false;
       if (Date.now() - Number(stored.created_at || 0) > 30 * 60 * 1000) {
         sessionStorage.removeItem(PREFILL_STORAGE_KEY);
         return false;
@@ -1308,7 +1335,7 @@
     }
     function scheduleStoredPrefillToFrame(mode, frame = null) {
       const stored = readStoredPrefill();
-      if (!stored || stored.provider !== mode || !["yunda", "ronghui"].includes(mode)) return;
+      if (mode !== "ronghui" || !stored || stored.provider !== mode) return;
       if (requiresPrefillReady(mode) && !prefillReadyModes.has(mode)) return false;
       const token = prefillKey(mode, stored);
       clearPrefillSchedule();
@@ -1332,12 +1359,13 @@
     }
     window.addEventListener("message", (event) => {
       const data = event.data || {};
-      if (["SHIPNOW_PREFILL_READY", "SHIPNOW_PREFILL_RESULT", "SHIPNOW_YUNDA_LOCAL_PRINT"].includes(data.type)) {
+      if (["SHIPNOW_PREFILL_READY", "SHIPNOW_PREFILL_RESULT"].includes(data.type)) {
         if (event.origin !== ORIGINAL_PAGE_ORIGIN) return;
       } else if (event.origin !== window.location.origin) {
         return;
       }
-      if (data.type === "SHIPNOW_PREFILL_READY" && ["yunda", "ronghui"].includes(data.provider)) {
+      if (data.provider !== "ronghui" || !entryFrameForMessage(event, "ronghui")) return;
+      if (data.type === "SHIPNOW_PREFILL_READY") {
         prefillReadyModes.add(data.provider);
         scheduleStoredPrefillToFrame(data.provider, entryFrameForMessage(event, data.provider));
         return;
@@ -1357,6 +1385,7 @@
       }
     });
     const loadModeLiveFrame = (mode) => {
+      if (mode !== "ronghui") return;
       const selector = mode === "yunda"
         ? "[data-yunda-live-frame]"
         : (mode === "ronghui" ? "[data-ronghui-live-frame]" : "");
@@ -1791,7 +1820,7 @@
       pending: "待维护",
     }[status] || "失败");
     const quoteButtonText = (provider) => {
-      if (provider === "yunda") return "选择韵达并预填";
+      if (provider === "yunda") return "打开韵达原站（手动填写）";
       if (provider === "ronghui") return "选择融辉并预填";
       return "暂不可选";
     };
@@ -1880,22 +1909,26 @@
     const selectQuoteProvider = (provider) => {
       const quote = (lastQuotePayload?.quotes || []).find((item) => item.provider === provider);
       if (!quote || quote.status !== "available") {
-        showManualNotice("当前平台没有可用报价，不能预填。");
+        showManualNotice("当前平台没有可用报价，不能选择。");
         return;
       }
       const freightInput = document.getElementById("field_freight_fee");
       if (freightInput) freightInput.value = quote.price || "";
-      const form = readManualWaybillPreview();
-      sessionStorage.setItem(PREFILL_STORAGE_KEY, JSON.stringify({
-        version: 1,
-        provider,
-        form,
-        selected_quote: quote,
-        created_at: Date.now(),
-      }));
+      if (provider === "ronghui") {
+        const form = readManualWaybillPreview();
+        sessionStorage.setItem(PREFILL_STORAGE_KEY, JSON.stringify({
+          version: 1,
+          provider,
+          form,
+          selected_quote: quote,
+          created_at: Date.now(),
+        }));
+      }
       if (window.parent && window.parent !== window) {
         window.parent.postMessage({ type: "SHIPNOW_OPEN_ENTRY_TAB", provider }, window.location.origin);
-        showManualNotice(`已打开新的${quoteProviderLabels[provider] || provider}页签并准备预填。`, "success");
+        showManualNotice(provider === "yunda"
+          ? "已请求打开韵达原站，请在原站手动填写资料和报价。"
+          : "已打开新的融辉页签并准备预填。", "success");
         return;
       }
       if (entryTabsRoot) {
