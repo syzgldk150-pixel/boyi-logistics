@@ -1379,7 +1379,7 @@
     });
   }
 
-  function showOriginalPageLoading(frame, chip, notice, label, modeLabel = "原页模式") {
+  function showOriginalPageLoading(frame, chip, notice, label) {
     frame.setAttribute("aria-busy", "true");
     notice.setAttribute("role", "status");
     notice.setAttribute("aria-live", "polite");
@@ -1396,7 +1396,7 @@
       notice.hidden = true;
       // The isolated page cannot be inspected from this origin. A load event
       // only ends the loading notice; it does not assert business readiness.
-      if (chip) chip.textContent = modeLabel;
+      if (chip) chip.textContent = `${label}原站`;
     });
     frame.addEventListener("error", () => {
       window.clearTimeout(slowTimer);
@@ -1415,34 +1415,7 @@
     if (!ronghuiFrame || !ronghuiFallback || ronghuiRoot.dataset.ronghuiLiveBound === "1") return;
 
     ronghuiRoot.dataset.ronghuiLiveBound = "1";
-    showOriginalPageLoading(ronghuiFrame, ronghuiStatusChip, ronghuiFallback, "融辉", "代理模式");
-    const sessionUrl = cleanText(ronghuiRoot.dataset.ronghuiSessionUrl || "/automations");
-    const showAuthFallback = () => {
-      if (ronghuiStatusChip) ronghuiStatusChip.textContent = "需要登录";
-      ronghuiFallback.hidden = false;
-      ronghuiFallback.innerHTML = `融辉登录态不可用，请到 <a href="${escapeHtml(sessionUrl)}">自动化登录态</a> 刷新后重试。`;
-    };
-    const hideFallback = () => {
-      if (ronghuiStatusChip) ronghuiStatusChip.textContent = "代理模式";
-      ronghuiFallback.hidden = true;
-    };
-    const inspectFrame = () => {
-      let text = "";
-      try {
-        text = cleanText(ronghuiFrame.contentDocument?.body?.innerText || "");
-      } catch (_) {
-        return;
-      }
-      if (!text) return;
-      if (/AUTH_REQUIRED|AUTH_PENDING_CODE|当前未登录|登录态已失效|登录态已过期|缺少登录配置|验证码/.test(text)) {
-        showAuthFallback();
-        return;
-      }
-      hideFallback();
-    };
-
-    ronghuiFrame.addEventListener("load", inspectFrame);
-    window.setTimeout(inspectFrame, 700);
+    showOriginalPageLoading(ronghuiFrame, ronghuiStatusChip, ronghuiFallback, "融辉");
   }
 
   function initAllRonghuiLiveInstances() {
@@ -1458,36 +1431,7 @@
     const yundaFallback = yundaRoot.querySelector("[data-yunda-live-fallback]");
     if (!yundaFrame || !yundaFallback || yundaRoot.dataset.yundaLiveBound === "1") return;
     yundaRoot.dataset.yundaLiveBound = "1";
-    const isNative = yundaRoot.dataset.yundaNative === "1";
-    showOriginalPageLoading(yundaFrame, yundaStatusChip, yundaFallback, "韵达", isNative ? "韵达原站" : "原页模式");
-    // Native Yunda owns its browser session and interactions; do not inspect or inject into it.
-    if (isNative) return;
-    const sessionUrl = cleanText(yundaRoot.dataset.yundaSessionUrl || "/automations");
-    const showAuthFallback = () => {
-      if (yundaStatusChip) yundaStatusChip.textContent = "需要登录";
-      yundaFallback.hidden = false;
-      yundaFallback.innerHTML = `韵达登录态不可用，请到 <a href="${escapeHtml(sessionUrl)}">自动化登录态</a> 刷新后重试。`;
-    };
-    const hideFallback = () => {
-      if (yundaStatusChip) yundaStatusChip.textContent = "原页模式";
-      yundaFallback.hidden = true;
-    };
-    const inspectFrame = () => {
-      let text = "";
-      try {
-        text = cleanText(yundaFrame.contentDocument?.body?.innerText || "");
-      } catch (_) {
-        return;
-      }
-      if (!text) return;
-      if (/AUTH_REQUIRED|AUTH_PENDING_CODE|当前未登录|登录态已失效|登录态已过期|缺少登录配置|验证码|账号密码登录/.test(text)) {
-        showAuthFallback();
-        return;
-      }
-      hideFallback();
-    };
-    yundaFrame.addEventListener("load", inspectFrame);
-    window.setTimeout(inspectFrame, 700);
+    showOriginalPageLoading(yundaFrame, yundaStatusChip, yundaFallback, "韵达");
   }
 
   function initAllYundaLiveInstances() {
