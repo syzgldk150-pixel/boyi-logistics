@@ -1622,7 +1622,7 @@ body.dispatch-page .notice { display: none; }
 .customer-service-date-popover {
   position: absolute;
   top: calc(100% + 8px);
-  left: 0;
+  right: 0;
   z-index: 40;
   width: min(352px, calc(100vw - 48px));
   border: 1px solid var(--line);
