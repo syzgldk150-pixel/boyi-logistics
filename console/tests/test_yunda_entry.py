@@ -237,7 +237,7 @@ class YundaEntryTemplateTests(unittest.TestCase):
         self.assertNotIn('/ocr/yunda/live', html)
         self.assertNotIn('data-mode-panel="yunda"', html)
 
-    def test_document_template_renders_ronghui_on_isolated_origin(self):
+    def test_document_template_renders_ronghui_directly_on_native_origin(self):
         template = self.env.get_template("document.html")
         html = template.render(
             app_title="Test Console",
@@ -280,9 +280,11 @@ class YundaEntryTemplateTests(unittest.TestCase):
         self.assertIn('body.entry-tabs-page .sidebar { display: flex !important; }', html)
         self.assertIn('data-entry-add-provider="boyi"', html)
         self.assertIn('data-entry-add-provider="yunda"', html)
-        self.assertIn('src="/original-pages/ronghui/launch"', html)
-        self.assertIn('部分交互仍受限', html)
-        self.assertIn('原站跨站登录限制使真实内嵌暂不可用', html)
+        self.assertIn('src="https://tms.ronghuiwl.com/module/index?mv=index"', html)
+        self.assertIn('data-ronghui-native="1"', html)
+        self.assertNotIn('/original-pages/ronghui/launch', html)
+        self.assertIn('融辉限制跨站登录', html)
+        self.assertIn('内嵌可能空白或无法登录', html)
         self.assertNotIn('第三方活动原页暂时停用', html)
         self.assertNotIn('data-mode-panel="ronghui"', html)
         self.assertNotIn(' src="/ocr/yunda/live', html)
@@ -298,21 +300,21 @@ class YundaEntryTemplateTests(unittest.TestCase):
         self.assertIn("function addEntryTab", template)
         self.assertIn("entryTabsRoot.dataset.entryInitialProvider", template)
         self.assertIn('data-entry-src-yunda="{{ entry_yunda_src }}"', template)
-        self.assertIn('data-entry-src-ronghui="/original-pages/ronghui/launch"', template)
-        self.assertIn('const ORIGINAL_PAGE_ORIGIN = "https://www.boyi.homes"', template)
+        self.assertIn('data-entry-src-ronghui="{{ entry_ronghui_src }}"', template)
+        self.assertNotIn('/original-pages/', template)
         self.assertNotIn('"/ocr/ronghui/live"', template)
         self.assertNotIn('"/ocr/yunda/live', template)
         self.assertNotIn('第三方活动原页已安全停用', template)
 
-    def test_document_template_enables_third_party_prefill_only_for_available_quotes(self):
+    def test_document_template_opens_native_sites_only_for_available_quotes(self):
         template = (CONSOLE_DIR / "templates" / "document.html").read_text(encoding="utf-8")
 
         self.assertIn('const nextMode = ["manual", "ocr"].includes(mode) ? mode : "manual"', template)
         self.assertIn('if (provider === "yunda") return "打开韵达原站（手动填写）"', template)
-        self.assertIn('if (provider === "ronghui") return "选择融辉并预填"', template)
+        self.assertIn('if (provider === "ronghui") return "打开融辉原站（手动填写）"', template)
         self.assertIn('available && ["yunda", "ronghui"].includes(provider)', template)
 
-    def test_native_yunda_ignores_old_prefill_and_keeps_absolute_upstream_url(self):
+    def test_native_entry_quotes_only_request_tabs_without_prefill(self):
         node = shutil.which("node") or shutil.which("node.exe")
         if not node:
             self.skipTest("Node.js is required for the entry bridge regression")
@@ -321,19 +323,29 @@ class YundaEntryTemplateTests(unittest.TestCase):
 const assert = require("node:assert/strict");
 const source = require("node:fs").readFileSync(0, "utf8");
 const readBetween = (start, end) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
-const nativeUrl = source.match(/entry_yunda_src = '([^']+)'/)[1];
-let stored = {provider: "yunda", created_at: Date.now()};
-const readStoredPrefill = () => stored;
-const window = {location: {origin: "https://boyi.homes"}, setTimeout: () => {throw Error("unexpected native prefill retry");}};
-const functions = readBetween("const prefillFrameSrc =", "const entryTabsRoot =")
-    + readBetween("function postStoredPrefillToFrame(", 'window.addEventListener("message",');
+const nativeYunda = source.match(/entry_yunda_src = '([^']+)'/)[1];
+const nativeRonghui = source.match(/entry_ronghui_src = '([^']+)'/)[1];
+const entryTabsRoot = {dataset:{entrySrcYunda:nativeYunda,entrySrcRonghui:nativeRonghui}};
+const messages=[], notices=[];
+const window = {location:{origin:"https://boyi.homes"},parent:{postMessage:(message,origin)=>messages.push({message,origin})}};
+const sessionStorage = {getItem:()=>{throw Error("unexpected old prefill read");},setItem:()=>{throw Error("unexpected prefill write");}};
+const document = {getElementById:()=>null};
+const quoteProviderLabels = {yunda:"Yunda",ronghui:"Ronghui"};
+const showManualNotice = text=>notices.push(text);
+const lastQuotePayload = {quotes:[{provider:"yunda",status:"available",price:"10.00"},{provider:"ronghui",status:"available",price:"20.00"}]};
+const functions = readBetween("const entryFrameSrc =", "const entryTabCount =")
+    + readBetween("const selectQuoteProvider =", 'quoteAction?.addEventListener("click", calculateQuoteOptions)');
 eval(functions + `
-    assert.equal(prefillFrameSrc("yunda", nativeUrl), nativeUrl);
-    const nativeFrame = {contentWindow: {postMessage: () => {throw Error("unexpected native prefill message");}}};
-    assert.equal(postStoredPrefillToFrame("yunda", nativeFrame), false);
-    scheduleStoredPrefillToFrame("yunda", nativeFrame);
-    stored = {provider: "ronghui", created_at: 123};
-    assert.equal(prefillFrameSrc("ronghui", "/original-pages/ronghui/launch"), "/original-pages/ronghui/launch?_prefill=123");
+    assert.equal(entryFrameSrc("yunda"), nativeYunda);
+    assert.equal(entryFrameSrc("ronghui"), nativeRonghui);
+    selectQuoteProvider("yunda");
+    selectQuoteProvider("ronghui");
+    assert.deepEqual(messages.map(x=>x.message), [{type:"SHIPNOW_OPEN_ENTRY_TAB",provider:"yunda"},{type:"SHIPNOW_OPEN_ENTRY_TAB",provider:"ronghui"}]);
+    assert.ok(messages.every(x=>x.origin===window.location.origin));
+    assert.ok(notices.every(x=>x.includes("手动填写")));
+    lastQuotePayload.quotes[1].status="unavailable";
+    selectQuoteProvider("ronghui");
+    assert.equal(messages.length,2);
 `);
 """
         result = subprocess.run(
@@ -387,7 +399,7 @@ eval(functions + `
                 compact_labels,
             )
 
-    def test_ronghui_live_frontend_marks_original_page_and_auth_errors(self):
+    def test_native_frontend_labels_source_without_inspecting_cross_origin_login(self):
         script = (CONSOLE_DIR / "static" / "js" / "yunda_entry_mode.js").read_text(encoding="utf-8")
 
         self.assertIn("function initRonghuiLiveInstance", script)
@@ -396,9 +408,9 @@ eval(functions + `
         self.assertIn('ronghuiRoot.querySelector("[data-ronghui-status-chip]")', script)
         self.assertIn('ronghuiRoot.querySelector("[data-ronghui-live-frame]")', script)
         self.assertIn('ronghuiRoot.querySelector("[data-ronghui-live-fallback]")', script)
-        self.assertIn("代理模式", script)
-        self.assertIn("AUTH_REQUIRED", script)
-        self.assertIn("ronghuiSessionUrl", script)
+        self.assertIn("`${label}原站`", script)
+        self.assertNotIn("ronghuiSessionUrl", script)
+        self.assertNotIn("contentDocument", script)
 
     def test_original_page_proxies_include_manual_prefill_listener(self):
         yunda_proxy = (AGENT_DIR / "agent" / "tms_runtime" / "scripts" / "yunda_waybill_proxy.py").read_text(
@@ -461,7 +473,7 @@ eval(functions + `
         self.assertIn("labelTextMatches(text, wanted)", ronghui_proxy)
         self.assertNotIn("if (!wanted || text.indexOf(wanted) === -1) continue;", ronghui_proxy)
 
-    def test_ronghui_prefill_payload_covers_manual_quote_fields_from_real_case(self):
+    def test_manual_preview_preserves_quote_fields(self):
         template = (CONSOLE_DIR / "templates" / "document.html").read_text(encoding="utf-8")
 
         expected_manual_fields = [
@@ -481,28 +493,6 @@ eval(functions + `
         for field_name in expected_manual_fields:
             with self.subTest(field_name=field_name):
                 self.assertIn(f'{field_name}: manualFieldValue("{field_name}")', template)
-
-        expected_ronghui_keys = [
-            "destination_site",
-            "receiver_name",
-            "receiver_phone",
-            "receiver_address",
-            "goods_name",
-            "package_type",
-            "quantity",
-            "weight",
-            "volume",
-            "freight_fee",
-            "delivery_method",
-            "payment_method",
-        ]
-        for field_key in expected_ronghui_keys:
-            with self.subTest(field_key=field_key):
-                self.assertIn(f'key: "{field_key}"', template)
-
-        self.assertIn('"到站"', template)
-        self.assertIn('"目的地"', template)
-        self.assertLess(template.index('key: "destination_site"'), template.index('key: "receiver_address"'))
 
     def test_yunda_frontend_uses_fixed_business_layout(self):
         script = (CONSOLE_DIR / "static" / "js" / "yunda_entry_mode.js").read_text(encoding="utf-8")
