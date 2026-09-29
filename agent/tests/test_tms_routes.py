@@ -184,7 +184,7 @@ class TMSRoutesTests(unittest.TestCase):
             )
         )
 
-    def test_isolated_lookup_route_preserves_real_adapter_transport(self):
+    def test_isolated_manual_route_preserves_real_adapter_transport(self):
         """Use real route authorization and proxy code; replace only network I/O."""
         app = FastAPI()
 
@@ -218,6 +218,8 @@ class TMSRoutesTests(unittest.TestCase):
             return {**params, "session_profile": f"{default_system}_fixture_selected"}
 
         requests = (
+            ("yunda", "/ky_inms/public/index.php/joinlgs/MakeLogisticsApi/getLogisticsNum.html", "",
+             b"CreatedDotCode=fixture-site&UserCode=fixture-user", "application/x-www-form-urlencoded"),
             ("ronghui", "/dataQuery/findAllByCallId", "id=FIND_SYS_DATE", b"", ""),
             ("ronghui", "/dataQuery/findAllByCallId", "id=FIND_TAB_SITE_BUSINESS_TYPE",
              b"SITE_CODE=fixture-site", "application/x-www-form-urlencoded; charset=UTF-8"),

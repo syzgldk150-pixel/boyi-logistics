@@ -715,6 +715,27 @@ class YundaEntryBackendTests(unittest.TestCase):
                 self.assertEqual([], app.repository.upserts)
                 self.assertEqual([], app.repository.snapshots)
 
+    def test_yunda_allocation_retains_real_identity_origin_and_parameter_checks(self):
+        path = "/ky_inms/public/index.php/joinlgs/MakeLogisticsApi/getLogisticsNum.html"
+        body = b"CreatedDotCode=fixture-site&UserCode=fixture-user"
+        app, handler = self._post_original_page("yunda", path, body=body)
+        self.assertEqual(HTTPStatus.OK, handler.status)
+        self.assertEqual(1, len(app.agent_calls))
+        params = app.agent_calls[0]["payload"]["params"]
+        self.assertEqual(body, base64.b64decode(params["body_base64"]))
+        self.assertEqual("/original/yunda", params["proxy_prefix"])
+        self.assertEqual([], app.repository.upserts)
+        for kwargs, expected in (
+            ({"headers": {"Origin": "https://boyi.homes"}}, HTTPStatus.FORBIDDEN),
+            ({"role": "legacy_admin"}, HTTPStatus.FORBIDDEN),
+            ({"body": body + b"&count=2"}, HTTPStatus.METHOD_NOT_ALLOWED),
+            ({"query": "UserCode=other"}, HTTPStatus.METHOD_NOT_ALLOWED),
+        ):
+            with self.subTest(kwargs=kwargs):
+                app, handler = self._post_original_page("yunda", path, **{"body": body, **kwargs})
+                self.assertEqual(expected, handler.status or app.sent_status)
+                self.assertEqual([], app.agent_calls)
+
     def test_ronghui_allocation_retains_real_identity_origin_and_parameter_checks(self):
         for kwargs, expected in (
             ({"body": b"vCount=2"}, HTTPStatus.METHOD_NOT_ALLOWED),
