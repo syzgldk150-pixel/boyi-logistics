@@ -1379,7 +1379,7 @@
     });
   }
 
-  function showOriginalPageLoading(frame, chip, notice, label) {
+  function showOriginalPageLoading(frame, chip, notice, label, modeLabel = "原页模式") {
     frame.setAttribute("aria-busy", "true");
     notice.setAttribute("role", "status");
     notice.setAttribute("aria-live", "polite");
@@ -1396,7 +1396,7 @@
       notice.hidden = true;
       // The isolated page cannot be inspected from this origin. A load event
       // only ends the loading notice; it does not assert business readiness.
-      if (chip) chip.textContent = "原页模式";
+      if (chip) chip.textContent = modeLabel;
     });
     frame.addEventListener("error", () => {
       window.clearTimeout(slowTimer);
@@ -1415,7 +1415,7 @@
     if (!ronghuiFrame || !ronghuiFallback || ronghuiRoot.dataset.ronghuiLiveBound === "1") return;
 
     ronghuiRoot.dataset.ronghuiLiveBound = "1";
-    showOriginalPageLoading(ronghuiFrame, ronghuiStatusChip, ronghuiFallback, "融辉");
+    showOriginalPageLoading(ronghuiFrame, ronghuiStatusChip, ronghuiFallback, "融辉", "代理模式");
     const sessionUrl = cleanText(ronghuiRoot.dataset.ronghuiSessionUrl || "/automations");
     const showAuthFallback = () => {
       if (ronghuiStatusChip) ronghuiStatusChip.textContent = "需要登录";
@@ -1423,7 +1423,7 @@
       ronghuiFallback.innerHTML = `融辉登录态不可用，请到 <a href="${escapeHtml(sessionUrl)}">自动化登录态</a> 刷新后重试。`;
     };
     const hideFallback = () => {
-      if (ronghuiStatusChip) ronghuiStatusChip.textContent = "原页模式";
+      if (ronghuiStatusChip) ronghuiStatusChip.textContent = "代理模式";
       ronghuiFallback.hidden = true;
     };
     const inspectFrame = () => {
@@ -1458,7 +1458,10 @@
     const yundaFallback = yundaRoot.querySelector("[data-yunda-live-fallback]");
     if (!yundaFrame || !yundaFallback || yundaRoot.dataset.yundaLiveBound === "1") return;
     yundaRoot.dataset.yundaLiveBound = "1";
-    showOriginalPageLoading(yundaFrame, yundaStatusChip, yundaFallback, "韵达");
+    const isNative = yundaRoot.dataset.yundaNative === "1";
+    showOriginalPageLoading(yundaFrame, yundaStatusChip, yundaFallback, "韵达", isNative ? "韵达原站" : "原页模式");
+    // Native Yunda owns its browser session and interactions; do not inspect or inject into it.
+    if (isNative) return;
     const sessionUrl = cleanText(yundaRoot.dataset.yundaSessionUrl || "/automations");
     const showAuthFallback = () => {
       if (yundaStatusChip) yundaStatusChip.textContent = "需要登录";
