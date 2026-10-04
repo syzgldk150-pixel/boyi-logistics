@@ -735,12 +735,16 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             },
         }
 
-    def test_candidate_union_publishes_current_r13_rows_and_only_due_history(self):
+    def test_publication_contains_only_current_r13_rows(self):
         state = self._state()
         captured = []
         observed_at = datetime(2026, 8, 12, 12, 0, 0)
         r13_rows = [
             {
+                "problemType": "", "problemRegisterDate": "",
+                "problemCause": "", "problemRegisterSite": "",
+                                "goodsName": "测试货物", "pcs": 1, "dispAddress": "测试地址",
+                                "dispatchMode": "自提", "packTypeDesc": "纸箱", "isSigns": 0,
                 "billNumberMain": "R2",
                 "planSignTime": "2026-08-13 23:59:59",
                 "signTime": "2026-08-12 09:00:00",
@@ -751,6 +755,10 @@ class DailySignSyncPipelineTest(unittest.TestCase):
                 "dispAddress": "测试地址",
             },
             {
+                "problemType": "", "problemRegisterDate": "",
+                "problemCause": "", "problemRegisterSite": "",
+                                "goodsName": "测试货物", "pcs": 1, "dispAddress": "测试地址",
+                                "dispatchMode": "自提", "packTypeDesc": "纸箱", "isSigns": 0,
                 "billNumberMain": "R3",
                 "planSignTime": "2026-08-13 23:59:59",
                 "goodsName": "测试货物",
@@ -909,7 +917,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
                 "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._ensure_bitable_schema",
                 return_value={
                     "ok": True,
-                    "fields": {"R13应签收时间": 1},
+                    "fields": {"规划应签收时间": 1},
                 },
             ),
             patch(
@@ -939,7 +947,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
 
         def fake_operation(action, params):
             actions.append((action, params["range"]))
-            if action == "read_sheet" and params["range"] == "Sheet1!A1:I1":
+            if action == "read_sheet" and params["range"] == "Sheet1!A1:L1":
                 return {
                     "ok": True,
                     "data": {
@@ -974,7 +982,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(0, result["rows"])
-        self.assertIn(("clear_sheet", "Sheet1!A2:I200"), actions)
+        self.assertIn(("clear_sheet", "Sheet1!A2:L200"), actions)
 
     def test_r13_explicit_business_failure_is_not_a_zero_row_result(self):
         with self.assertRaisesRegex(RuntimeError, "explicit failure code"):
@@ -1478,7 +1486,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         self.assertEqual("error", verification_by_code["SIGNED"]["last_result"])
         self.assertEqual("batch_deferred_after_peer_query_error", verification_by_code["SIGNED"]["last_error"])
 
-    def test_sheet_validates_nine_headers_and_writes_before_clearing_tail(self):
+    def test_sheet_validates_twelve_headers_and_writes_before_clearing_tail(self):
         actions = []
         rows = [
             {
@@ -1493,7 +1501,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             if action == "read_sheet":
                 values = (
                     [daily_sign_sync_tool.SHEET_HEADERS]
-                    if params["range"] == "Sheet1!A1:I1"
+                    if params["range"] == "Sheet1!A1:L1"
                     else expected_values
                 )
                 return {
@@ -1537,10 +1545,10 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         def fake_operation(action, params):
             nonlocal header_reads
             actions.append(action)
-            if action == "read_sheet" and params["range"] == "Sheet1!A1:I1":
+            if action == "read_sheet" and params["range"] == "Sheet1!A1:L1":
                 header_reads += 1
                 headers = (
-                    daily_sign_sync_tool.SHEET_HEADERS[:8]
+                    daily_sign_sync_tool.PREVIOUS_SHEET_HEADERS[:8]
                     if header_reads == 1
                     else daily_sign_sync_tool.SHEET_HEADERS
                 )
@@ -1572,7 +1580,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
 
         def fake_operation(action, params):
             nonlocal header_reads
-            if action == "read_sheet" and params["range"] == "Sheet1!A1:I1":
+            if action == "read_sheet" and params["range"] == "Sheet1!A1:L1":
                 header_reads += 1
                 headers = (
                     daily_sign_sync_tool.LEGACY_VERBOSE_SHEET_HEADERS
@@ -1582,7 +1590,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
                 return {"ok": True, "data": {"valueRange": {"values": [headers]}}}
             if action == "read_sheet":
                 return {"ok": True, "data": {"valueRange": {"values": []}}}
-            if action == "write_sheet" and params["range"] == "Sheet1!A1:I1":
+            if action == "write_sheet" and params["range"] == "Sheet1!A1:L1":
                 self.assertEqual([daily_sign_sync_tool.SHEET_HEADERS], params["values"])
             return {"ok": True}
 
@@ -1631,7 +1639,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
 
         with (
             patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.resolve_bitable_target", return_value=("base", "table")),
-            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._ensure_bitable_schema", return_value={"ok": True, "fields": {"R13应签收时间": 1}}),
+            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._ensure_bitable_schema", return_value={"ok": True, "fields": {"规划应签收时间": 1}}),
             patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.feishu_operation", side_effect=fake_operation),
         ):
             result = daily_sign_sync_tool._sync_bitable(rows, {})
@@ -1677,7 +1685,7 @@ class DailySignSourceCompletenessTest(unittest.TestCase):
         self.assertEqual(["account-ronghui-daxiang-s"], profiles)
         self.assertEqual("7390004", collect.call_args.kwargs["site_code"])
 
-    def test_r13_keeps_signed_fields_instead_of_filtering_them(self):
+    def test_r13_keeps_unsigned_rows_even_with_other_sign_signals(self):
         class Response:
             def raise_for_status(self):
                 return None
@@ -1688,8 +1696,11 @@ class DailySignSourceCompletenessTest(unittest.TestCase):
                         "records": [
                             {
                                 "billNumberMain": "R1",
-                                "planSignTime": "2026-08-13 23:59:59",
-                                "isSigns": "已签",
+                                "isSigns": 0, "problemType": "", "problemRegisterDate": "",
+                                "problemCause": "", "problemRegisterSite": "",
+                                "goodsName": "测试货物", "pcs": 1, "dispAddress": "测试地址",
+                                "dispatchMode": "自提", "packTypeDesc": "纸箱",
+                                "displayPlanSignTime": "2026-08-13 23:59:59",
                                 "signSiteName": "邵阳大祥S站",
                                 "signTime": "2026-08-12 10:00:00",
                                 "dispTime": "2026-08-12 09:00:00",
@@ -1735,7 +1746,7 @@ class DailySignSourceCompletenessTest(unittest.TestCase):
             )
 
         self.assertEqual(1, len(rows))
-        self.assertEqual("已签", rows[0]["isSigns"])
+        self.assertEqual(0, rows[0]["isSigns"])
         self.assertEqual("2026-08-12 10:00:00", rows[0]["signTime"])
         self.assertEqual("2026-08-12 09:00:00", rows[0]["dispTime"])
 
@@ -1750,7 +1761,11 @@ class DailySignSourceCompletenessTest(unittest.TestCase):
                         "records": [
                             {
                                 "billNumberMain": "R1",
-                                "planSignTime": "2026-08-12 23:59:59",
+                                "isSigns": 0, "problemType": "", "problemRegisterDate": "",
+                                "problemCause": "", "problemRegisterSite": "",
+                                "goodsName": "测试货物", "pcs": 1, "dispAddress": "测试地址",
+                                "dispatchMode": "自提", "packTypeDesc": "纸箱",
+                                "displayPlanSignTime": "2026-08-12 23:59:59",
                             }
                         ],
                         "total": 2,

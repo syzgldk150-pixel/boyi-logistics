@@ -1,6 +1,7 @@
 import argparse
 import json
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from math import ceil
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -12,8 +13,6 @@ R13_ORIGIN = "https://r13.ronghuiwl.com"
 API_URL = f"{R13_ORIGIN}/gateway/site/waybillSignWarn/pageGet"
 AUTH_CONTEXT_URL = f"{R13_ORIGIN}/gateway/public/aurora/auth"
 REFERER_URL = f"{R13_ORIGIN}/outlets/cargoReceiptWarn"
-R13_PAGE_MIN_LOOKBACK_DAYS = 2
-R13_PAGE_FORWARD_DAYS = 3
 
 
 def _format_dt(value: datetime) -> str:
@@ -22,12 +21,12 @@ def _format_dt(value: datetime) -> str:
 
 def _default_range(days: int) -> Tuple[str, str]:
     if days <= 0:
-        days = 7
-    today = datetime.now()
+        days = 15
+    today = datetime.now(ZoneInfo("Asia/Shanghai"))
     start_dt = (
-        today - timedelta(days=max(days - 1, R13_PAGE_MIN_LOOKBACK_DAYS))
+        today - timedelta(days=days - 1)
     ).replace(hour=0, minute=0, second=0, microsecond=0)
-    end_dt = (today + timedelta(days=R13_PAGE_FORWARD_DAYS)).replace(
+    end_dt = today.replace(
         hour=23,
         minute=59,
         second=59,
@@ -197,6 +196,7 @@ def _build_payload(
 ) -> Dict[str, Any]:
     return {
         "queryType": 2,
+        "isSigns": "0",
         "showSub": "10",
         "dispSiteCode_CondList": list(disp_site_codes),
         "queryDate": [start, end],
@@ -357,14 +357,22 @@ def fetch_qianshou(
                 raise RuntimeError(
                     f"R13 page {current_page} contains a row without a waybill identity"
                 )
-            plan_sign_time = str(row.get("planSignTime") or "").strip()
+            plan_sign_time = str(row.get("displayPlanSignTime") or "").strip()
             if not plan_sign_time:
                 raise RuntimeError(
-                    f"R13 page {current_page} contains a row without planSignTime"
+                    f"R13 page {current_page} contains a row without displayPlanSignTime"
                 )
+            if str(row.get("isSigns")) != "0":
+                raise RuntimeError(f"R13 page {current_page} returned a row outside unsigned scope")
+            problem_fields = ("problemType", "problemRegisterDate", "problemCause", "problemRegisterSite")
+            required_fields = (*problem_fields, "goodsName", "pcs", "dispAddress", "dispatchMode", "packTypeDesc")
+            missing = [key for key in required_fields if key not in row]
+            if missing:
+                raise RuntimeError(f"R13 page {current_page} is missing fields: {', '.join(missing)}")
             normalized = {
                 "billNumberMain": bill_code,
                 "planSignTime": plan_sign_time,
+                **{key: row[key] for key in problem_fields},
                 "goodsName": row.get("goodsName"),
                 "pcs": _optional_nonnegative_int(row.get("pcs"), field="pcs"),
                 "dispAddress": row.get("dispAddress"),
@@ -441,7 +449,7 @@ def run_once(params: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     start = params.get("start")
     end = params.get("end")
-    days = _coerce_int(params.get("days"), default=7)
+    days = _coerce_int(params.get("days"), default=15)
     page_size = _coerce_int(params.get("page_size") or params.get("pageSize"), default=100)
     page = _coerce_int(params.get("page") or params.get("currentPage"), default=1)
     fetch_all = _coerce_bool(params.get("fetch_all") or params.get("fetchAll"), default=True)
@@ -476,7 +484,7 @@ def main() -> None:
     parser.add_argument("--account-id", required=True)
     parser.add_argument("--start", default=None, help="YYYY-MM-DD HH:MM:SS")
     parser.add_argument("--end", default=None, help="YYYY-MM-DD HH:MM:SS")
-    parser.add_argument("--days", type=int, default=7)
+    parser.add_argument("--days", type=int, default=15)
     parser.add_argument("--page-size", type=int, default=100)
     parser.add_argument("--page", type=int, default=1)
     parser.add_argument("--fetch-all", action="store_true")

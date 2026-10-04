@@ -453,10 +453,10 @@ class DailySignSourceTests(unittest.TestCase):
                 return cls(2026, 8, 27, 12, 0, 0, tzinfo=tz)
 
         with patch.object(get_qianshou, "datetime", FixedDateTime):
-            start, end = get_qianshou._default_range(1)
+            start, end = get_qianshou._default_range(15)
 
-        self.assertEqual("2026-08-25 00:00:00", start)
-        self.assertEqual("2026-08-30 23:59:59", end)
+        self.assertEqual("2026-08-13 00:00:00", start)
+        self.assertEqual("2026-08-27 23:59:59", end)
 
     def test_get_qianshou_uses_the_live_r13_plan_sign_query_contract(self):
         payload = get_qianshou._build_payload(
@@ -468,6 +468,7 @@ class DailySignSourceTests(unittest.TestCase):
         )
 
         self.assertEqual(2, payload["queryType"])
+        self.assertEqual("0", payload["isSigns"])
         self.assertEqual("2026-08-25 00:00:00", payload["planSignTime_CondStart"])
         self.assertEqual("2026-08-30 23:59:59", payload["planSignTime_CondEnd"])
         self.assertNotIn("scanTime_CondStart", payload)
@@ -613,7 +614,12 @@ class DailySignSourceTests(unittest.TestCase):
                     "records": [
                         {
                             "waybillNo": "R001",
-                            "planSignTime": "2026-08-13 23:59:59",
+                            "planSignTime": "2026-08-12 23:59:59",
+                            "displayPlanSignTime": "2026-08-13 23:59:59",
+                            "isSigns": 0, "problemType": "", "problemRegisterDate": "",
+                            "problemCause": "", "problemRegisterSite": "",
+                                "goodsName": "测试货物", "pcs": 1, "dispAddress": "测试地址",
+                                "dispatchMode": "自提", "packTypeDesc": "纸箱",
                             "goodsName": "货物",
                             "pcs": 1,
                             "dispatchMode": "送货",
@@ -668,7 +674,7 @@ class DailySignSourceTests(unittest.TestCase):
             "agent.tms_runtime.scripts.get_qianshou.R13SSOAuth",
             return_value=auth,
         ):
-            with self.assertRaisesRegex(RuntimeError, "without planSignTime"):
+            with self.assertRaisesRegex(RuntimeError, "without displayPlanSignTime"):
                 get_qianshou.fetch_qianshou(
                     config_path=None,
                     username=None,
@@ -781,7 +787,12 @@ class DailySignSourceTests(unittest.TestCase):
                     "records": [
                         {
                             "billNumberMain": "R001",
-                            "planSignTime": "2026-08-13 23:59:59",
+                            "planSignTime": "2026-08-12 23:59:59",
+                            "displayPlanSignTime": "2026-08-13 23:59:59",
+                            "isSigns": 0, "problemType": "", "problemRegisterDate": "",
+                            "problemCause": "", "problemRegisterSite": "",
+                                "goodsName": "测试货物", "pcs": 1, "dispAddress": "测试地址",
+                                "dispatchMode": "自提", "packTypeDesc": "纸箱",
                             "dispTime": "2026-08-13 08:00:00",
                             "signTime": "2026-08-13 08:30:00",
                             "signSiteName": "R13 展示网点",

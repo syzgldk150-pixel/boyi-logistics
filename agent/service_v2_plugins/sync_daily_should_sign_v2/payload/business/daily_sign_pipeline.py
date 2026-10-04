@@ -607,27 +607,11 @@ def _resolve_r13_request(params: dict[str, Any], account_id: str) -> dict[str, A
                 retryable=code in {"AUTH_REQUIRED", "LOGIN_FAILED", "SESSION_UNAVAILABLE"},
             ) from exc
         raise
-    start = clean_text(request.get("start"))
-    end = clean_text(request.get("end"))
-    if bool(start) != bool(end):
-        raise DailySignSyncError(
-            "INVALID_ARGUMENT",
-            "R13 start 与 end 必须同时提供。",
-        )
-    if not start:
-        requested_days = request.get("days")
-        if requested_days in (None, ""):
-            raise DailySignSyncError(
-                "INVALID_ARGUMENT",
-                "每日应签同步必须显式提供 R13 start/end 或 days 查询范围。",
-            )
-        request["days"] = _bounded_int(
-            requested_days,
-            field="days",
-            default=7,
-            minimum=1,
-            maximum=366,
-        )
+    # Match the original page's “过去15天”, including today's full business day.
+    today = business_now()
+    request["start"] = (today - timedelta(days=14)).strftime("%Y-%m-%d 00:00:00")
+    request["end"] = today.strftime("%Y-%m-%d 23:59:59")
+    request["days"] = 15
     request["page"] = 1
     request["fetch_all"] = True
     request["page_size"] = _bounded_int(

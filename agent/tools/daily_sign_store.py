@@ -308,8 +308,8 @@ def build_daily_sign_persistence_marker(
         publication,
         label="publication rows",
     )
-    if any(row["tms_signed"] for row in canonical_publication):
-        raise ValueError("每日应签发布集合不得包含已签收主单")
+    # The plugin owns publication membership. R13's current unsigned snapshot
+    # may disagree with TMS; persist both facts without silently dropping rows.
     material = {
         "schema_version": 1,
         "problem_events": {

@@ -89,7 +89,10 @@ PLUGIN_TESTS = {
     ),
     "sync_finance_bills_v2": ("tests/test_finance_v2_packaged_protocol.py",),
     "sync_customer_service_problems_v2": ("tests/test_customer_v2_packaged_protocol.py",),
-    "sync_daily_should_sign_v2": ("tests/test_daily_sign_v2_packaged_protocol.py",),
+    "sync_daily_should_sign_v2": (
+        "tests/test_daily_sign_v2_packaged_protocol.py",
+        "tests/test_daily_sign_r13_snapshot.py",
+    ),
 }
 
 

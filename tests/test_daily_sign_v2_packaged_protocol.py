@@ -83,7 +83,7 @@ class BoundResources:
 
     def read(self, resource_id, *, kind, fields):
         self.require_active(resource_id=resource_id, allowed_kinds=[kind])
-        values = {"spreadsheet_token":"test-sheet-target", "range":"test-sheet-tab!A2:I10"} if kind == "feishu_sheet" else {"base_token":"test-base", "table_id":"test-table"}
+        values = {"spreadsheet_token":"test-sheet-target", "range":"test-sheet-tab!A2:L10"} if kind == "feishu_sheet" else {"base_token":"test-base", "table_id":"test-table"}
         assert all(field in values for field in fields)
         return values
 
@@ -91,7 +91,7 @@ class BoundResources:
 class FeishuTables:
     def __init__(self, *, corrupt=False):
         self.records = []
-        self.sheet = [list(SHEET_HEADERS)] + [[""]*9 for _ in range(9)]
+        self.sheet = [list(SHEET_HEADERS)] + [[""]*12 for _ in range(9)]
         self.calls = []
         self.corrupt = corrupt
 
@@ -117,7 +117,7 @@ class FeishuTables:
             if name == "read_sheet":
                 return {"ok":True, "identity":"bot", "data":{"spreadsheetToken":values["spreadsheet_token"],
                     "valueRange":{"range":values["range"], "majorDimension":"ROWS", "values":deepcopy(self.sheet[start:end])}}}
-            rows = values["values"] if name == "write_sheet" else [[""]*9 for _ in range(end-start)]
+            rows = values["values"] if name == "write_sheet" else [[""]*12 for _ in range(end-start)]
             self.sheet[start:end] = deepcopy(rows)
             return {"ok":True, "range":values["range"], "results":[{"data":{"spreadsheetToken":values["spreadsheet_token"]}}]}
         raise AssertionError(f"Unexpected Feishu operation {name}")
@@ -234,7 +234,11 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         if endpoint == "/get_qianshou":
             assert values["r13_account_id"] == "test-r13"
             current = arrivals[:2] if count == 8 else arrivals
-            return {"data":[{"billNumberMain":row["tracking_number"], "planSignTime":"2026-09-11 23:59:59"} for row in current]}
+            return {"data":[{"billNumberMain":row["tracking_number"], "planSignTime":"2026-09-11 23:59:59",
+                "isSigns":0, "problemType":"原页问题", "problemRegisterDate":"2026-09-10 12:00:00",
+                "problemCause":"原页内容", "problemRegisterSite":"原页网点", "goodsName":"原页货物",
+                "packTypeDesc":"纸箱", "pcs":row["expected_quantity"], "dispAddress":"原页地址",
+                "dispatchMode":"派送"} for row in current]}
         assert values["params"]["account_id"] == "test-tms"
         if endpoint == "/customer_service_problem":
             filters = values["params"]["filters"]
@@ -274,7 +278,7 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         assert result["meta"]["write_outcome"] == "WRITE_OUTCOME_UNKNOWN"
         return
     assert result["status"] == "SUCCESS", (result.get("error"), source_calls, tables.calls)
-    assert len(tables.records) == (1 if count == 8 else count-1)
+    assert len(tables.records) == (2 if count == 8 else count)
     record_fields = {row["fields"]["运单编号"]: row["fields"] for row in tables.records}
     sheet_rows = {row[0]: row for row in tables.sheet[1:] if row[0]}
     assert record_fields["R00021000001"]["到货件数"] == arrivals[0]["arrived_quantity"]
@@ -283,18 +287,17 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
     assert state["ledger"]["R00021000002"]["tms_signed"]
     assert state["ledger"]["R00021000001"]["arrived_quantity"] == arrivals[0]["arrived_quantity"]
     if count == 3 or manual_problem_type:
-        due = "2026-09-12 23:59:59"
-        assert record_fields["R00021000001"]["问题件后应签时间"] == due
-        assert sheet_rows["R00021000001"][2] == due
+        assert record_fields["R00021000001"]["问题件类型"] == "原页问题"
+        assert sheet_rows["R00021000001"][2] == "原页问题"
         assert state["ledger"]["R00021000001"]["system_sign_due_at"] == datetime(2026,9,12,23,59,59)
-        assert record_fields["R00021000003"]["问题件后应签时间"] == "2026-09-11 23:59:59"
+        assert record_fields["R00021000003"]["规划应签收时间"] == "2026-09-11 23:59:59"
     if manual_problem_type:
         stored_events = state["problems"]["R00021000001"]
         assert len(stored_events) == 1
         assert stored_events[0]["problem_type"] == manual_problem_type
         assert stored_events[0]["postpones_sign"]
     if historical:
-        assert state["ledger"]["R00021000001"]["recipient_address"] == arrivals[0]["recipient_address"]
+        assert state["ledger"]["R00021000001"]["recipient_address"] == "原页地址"
         assert any(row["external_id"] == identity for row in state["problems"]["R00021000002"])
     if count == 514:
         assert source_calls.count("/customer_service_problem") == 3

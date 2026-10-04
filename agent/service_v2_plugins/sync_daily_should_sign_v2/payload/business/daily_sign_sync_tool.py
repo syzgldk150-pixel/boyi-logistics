@@ -21,7 +21,6 @@ from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_ru
     business_now,
     clean_text,
     ledger_row_is_due,
-    ledger_row_should_publish,
     parse_datetime,
 )
 from tools.daily_sign_store import (
@@ -60,9 +59,9 @@ from tools.tms_tool import call_http_service
 DAILY_SIGN_SHEET_RESOURCE_KEY = "phase7.daily_sign_sheet"
 DAILY_SIGN_BITABLE_RESOURCE_KEY = "phase7.daily_sign_bitable"
 DAILY_SIGN_LEGACY_SHEET_COL_COUNT = 8
-DAILY_SIGN_SHEET_COL_COUNT = 9
+DAILY_SIGN_SHEET_COL_COUNT = 12
 _FEISHU_READBACK_DELAYS = _feishu_readback.FEISHU_READBACK_DELAYS
-SHEET_HEADERS = [
+PREVIOUS_SHEET_HEADERS = [
     "运单编号",
     "R13应签收时间",
     "问题件后应签时间",
@@ -72,6 +71,10 @@ SHEET_HEADERS = [
     "收件人地址",
     "送货方式",
     "到货件数",
+]
+SHEET_HEADERS = [
+    "运单编号", "规划应签收时间", "问题件类型", "登记时间", "内容", "登记网点",
+    "货物品名", "包装类型", "货物件数", "收件人地址", "送货方式", "到货件数",
 ]
 LEGACY_VERBOSE_SHEET_HEADERS = [
     "运单编号",
@@ -1216,8 +1219,8 @@ def _build_ledger_records(rows: list[dict[str, Any]], date_field_type: int = 1) 
         {
             "fields": {
                 "运单编号": row.get("tracking_number", ""),
-                "R13应签收时间": _bitable_time(row.get("r13_plan_sign_at"), date_field_type),
-                "问题件后应签时间": _bitable_time(row.get("system_sign_due_at"), date_field_type),
+                "规划应签收时间": _bitable_time(row.get("r13_plan_sign_at"), date_field_type),
+                **_r13_problem_cells(row),
                 "货物品名": clean_text(row.get("goods_name")),
                 "包装类型": clean_text(row.get("package_type")),
                 "货物件数": _to_int(row.get("expected_quantity")),
@@ -1235,16 +1238,47 @@ def _build_ledger_sheet_values(rows: list[dict[str, Any]]) -> list[list[Any]]:
         [
             clean_text(row.get("tracking_number") or row.get("billNumberMain")),
             _normalize_time(row.get("r13_plan_sign_at") or row.get("planSignTime")),
-            _normalize_time(row.get("system_sign_due_at")),
+            *_r13_problem_cells(row).values(),
             clean_text(row.get("goods_name") or row.get("goodsName")),
             clean_text(row.get("package_type") or row.get("packTypeDesc")),
-            _to_int(row.get("expected_quantity") if "expected_quantity" in row else row.get("pcs")) or "",
+            _to_int(row.get("expected_quantity") if "expected_quantity" in row else row.get("pcs")),
             clean_text(row.get("recipient_address") or row.get("dispAddress")),
             clean_text(row.get("delivery_method") or row.get("dispatchMode")),
             _to_int(row.get("arrived_quantity")) if _to_int(row.get("arrived_quantity")) is not None else "",
         ]
         for row in rows
     ]
+
+
+def _r13_problem_cells(row: dict[str, Any]) -> dict[str, str]:
+    source = (row.get("calculation_trace") or {}).get("r13_publication", {})
+    return {
+        label: clean_text(source.get(key))
+        for label, key in (
+            ("问题件类型", "problemType"), ("登记时间", "problemRegisterDate"),
+            ("内容", "problemCause"), ("登记网点", "problemRegisterSite"),
+        )
+    }
+
+
+def _apply_r13_publication_fields(row: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+    """Use this run's original page fields, including explicit empty values."""
+    mapping = {
+        "r13_plan_sign_at": "planSignTime", "goods_name": "goodsName",
+        "package_type": "packTypeDesc", "expected_quantity": "pcs",
+        "recipient_address": "dispAddress", "delivery_method": "dispatchMode",
+    }
+    problem_keys = ("problemType", "problemRegisterDate", "problemCause", "problemRegisterSite")
+    missing = [key for key in (*mapping.values(), *problem_keys) if key not in source]
+    if missing:
+        raise ValueError("R13 当前来源缺少字段: " + ", ".join(missing))
+    return {
+        **row, **{field: source[key] for field, key in mapping.items()},
+        "calculation_trace": {
+            **(row.get("calculation_trace") or {}),
+            "r13_publication": {key: source[key] for key in problem_keys},
+        },
+    }
 
 
 def _sort_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1297,7 +1331,7 @@ def _sheet_values(payload: Any) -> list[list[Any]]:
 def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str, Any]:
     spreadsheet_token, configured_range = resolve_sheet_target(params, DAILY_SIGN_SHEET_RESOURCE_KEY)
     info = parse_a1_range(configured_range)
-    header_range = f"{info['sheet']}!A1:I1"
+    header_range = f"{info['sheet']}!A1:L1"
 
     def read_headers() -> list[str]:
         result = feishu_operation(
@@ -1327,14 +1361,16 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
         }
     legacy_eight_headers_match = (
         actual_headers[:DAILY_SIGN_LEGACY_SHEET_COL_COUNT]
-        == SHEET_HEADERS[:DAILY_SIGN_LEGACY_SHEET_COL_COUNT]
+        == PREVIOUS_SHEET_HEADERS[:DAILY_SIGN_LEGACY_SHEET_COL_COUNT]
         and (
-            len(actual_headers) < DAILY_SIGN_SHEET_COL_COUNT
-            or not actual_headers[DAILY_SIGN_SHEET_COL_COUNT - 1]
+            len(actual_headers) < len(PREVIOUS_SHEET_HEADERS)
+            or not actual_headers[len(PREVIOUS_SHEET_HEADERS) - 1]
         )
+        and not any(actual_headers[9:])
     )
     legacy_verbose_headers_match = (
-        actual_headers[:DAILY_SIGN_SHEET_COL_COUNT] == LEGACY_VERBOSE_SHEET_HEADERS
+        actual_headers[:9] in (LEGACY_VERBOSE_SHEET_HEADERS, PREVIOUS_SHEET_HEADERS)
+        and not any(actual_headers[9:])
     )
     if legacy_eight_headers_match or legacy_verbose_headers_match:
         header_error: Exception | None = None
@@ -1389,7 +1425,7 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
         }
     sheet_values = _build_ledger_sheet_values(rows)
     write_range = build_range_from_template(
-        f"{info['sheet']}!A2:I2", max(len(sheet_values), 1), DAILY_SIGN_SHEET_COL_COUNT
+        f"{info['sheet']}!A2:L2", max(len(sheet_values), 1), DAILY_SIGN_SHEET_COL_COUNT
     )
     write_result: dict[str, Any] = {"ok": True, "skipped": True, "rows": 0}
     mutation_error: Exception | None = None
@@ -1432,7 +1468,7 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
                 "clear_sheet",
                 {
                     "spreadsheet_token": spreadsheet_token,
-                    "range": f"{info['sheet']}!A{tail_start}:I{old_end_row}",
+                    "range": f"{info['sheet']}!A{tail_start}:L{old_end_row}",
                     "as": params.get("as", "bot"),
                     "dry_run": bool(params.get("dry_run", False)),
                 },
@@ -1447,7 +1483,7 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
             mutation_error = exc
             clear_result = {"ok": False}
     readback_end = max(old_end_row, 1 + len(sheet_values))
-    readback_range = f"{info['sheet']}!A2:I{readback_end}"
+    readback_range = f"{info['sheet']}!A2:L{readback_end}"
 
     def readback() -> dict[str, Any]:
         result = feishu_operation(
@@ -1532,10 +1568,10 @@ def _ensure_bitable_schema(base_token: str, table_id: str, params: dict[str, Any
             "error_code": "PROJECTION_READ_FAILED",
         }
     by_name = {clean_text(item.get("field_name")): item for item in _field_items(result)}
-    old = by_name.get("应签收时间")
+    old = by_name.get("R13应签收时间") or by_name.get("应签收时间")
     schema_changed = False
     schema_error: Exception | None = None
-    if old and "R13应签收时间" not in by_name:
+    if old and "规划应签收时间" not in by_name:
         schema_changed = True
         try:
             rename = feishu_operation(
@@ -1544,7 +1580,7 @@ def _ensure_bitable_schema(base_token: str, table_id: str, params: dict[str, Any
                     "base_token": base_token,
                     "table_id": table_id,
                     "field_id": old.get("field_id"),
-                    "field_name": "R13应签收时间",
+                    "field_name": "规划应签收时间",
                     "type": old.get("type"),
                     "property": old.get("property") if isinstance(old.get("property"), dict) else {},
                     "dry_run": bool(params.get("dry_run", False)),
@@ -1557,18 +1593,21 @@ def _ensure_bitable_schema(base_token: str, table_id: str, params: dict[str, Any
             ):
                 schema_error = RuntimeError("daily-sign Bitable field rename failed")
             else:
-                by_name["R13应签收时间"] = {**old, "field_name": "R13应签收时间"}
+                by_name["规划应签收时间"] = {**old, "field_name": "规划应签收时间"}
         except Exception as exc:
             # A lost schema response is reconciled by readback.  Do not issue
             # another rename or continue with additional mutations here.
             schema_error = exc
     date_type = _to_int(
-        (by_name.get("R13应签收时间") or old or {}).get("type")
+        (by_name.get("规划应签收时间") or old or {}).get("type")
     ) or 1
     required_types = {
         "运单编号": 1,
-        "R13应签收时间": date_type,
-        "问题件后应签时间": date_type,
+        "规划应签收时间": date_type,
+        "问题件类型": 1,
+        "登记时间": 1,
+        "内容": 1,
+        "登记网点": 1,
         "货物品名": 1,
         "包装类型": 1,
         "货物件数": 2,
@@ -1701,7 +1740,7 @@ def _sync_bitable(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[st
         if code in existing_by_code:
             return {"error": f"多维表存在重复运单编号: {code}"}
         existing_by_code[code] = item
-    date_field_type = int(schema_result["fields"]["R13应签收时间"])
+    date_field_type = int(schema_result["fields"]["规划应签收时间"])
     target_records = _build_ledger_records(rows, date_field_type=date_field_type)
     writes: list[dict[str, Any]] = []
     unchanged = 0
@@ -2021,82 +2060,25 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
             and ledger_row_is_due(row, observed_at.date())
             and parse_datetime(row.get("r13_plan_sign_at")) is None
         )
-        open_rows = _sort_rows(
-            [
-                row
-                for row in ledger_rows
-                if ledger_row_should_publish(row, observed_at.date())
-            ]
-        )
-        current_projection = _current_r13_projection_summary(ledger_rows, open_rows)
-        current_open_codes = current_projection["current_open_codes"]
-        published_current_codes = current_projection["published_current_codes"]
-        if current_open_codes != published_current_codes:
+        # Publication is the complete current R13 unsigned query, not historical
+        # ledger candidates or a second filter based on locally calculated due dates.
+        ledger_rows = [
+            _apply_r13_publication_fields(row, r13_by_code[row["tracking_number"]])
+            if row["tracking_number"] in r13_by_code else row
+            for row in ledger_rows
+        ]
+        open_rows = _sort_rows([
+            row for row in ledger_rows if row["tracking_number"] in r13_by_code
+        ])
+        if {row["tracking_number"] for row in open_rows} != set(r13_by_code):
             raise DailySignSyncError(
-                "PROJECTION_SET_MISMATCH",
-                "R13 当前未签清单与每日应签待发布清单不一致，已保留原表。",
-                retryable=True,
+                "PROJECTION_SET_MISMATCH", "R13 本次完整清单与待发布清单不一致，已保留原表。"
             )
-        diagnostics.update(
-            {
-                "r13_current_open_rows": len(current_open_codes),
-                "r13_current_signed_rows": current_projection[
-                    "current_signed_rows"
-                ],
-            }
-        )
-        missing_publication_r13_plan = sum(
-            1
-            for row in open_rows
-            if parse_datetime(row.get("r13_plan_sign_at")) is None
-        )
-        if missing_publication_r13_plan:
-            raise DailySignSyncError(
-                "INCOMPLETE_SOURCE_EVIDENCE",
-                "待发布应签记录缺少 R13 规划应签收时间，停止写入。",
-                retryable=True,
-            )
-        open_rows, address_result = _enrich_missing_addresses(open_rows, params)
-        if address_result.get("error"):
-            raise DailySignSyncError(
-                clean_text(address_result.get("error_code")) or "SOURCE_QUERY_FAILED",
-                clean_text(address_result.get("error")) or "运单地址补全失败。",
-                retryable=True,
-            )
-        required_publication_fields = {
-            "goods_name": "货物品名",
-            "package_type": "包装类型",
-            "expected_quantity": "货物件数",
-            "delivery_method": "送货方式",
-        }
-        missing_publication_fields = Counter(
-            label
-            for row in open_rows
-            for field, label in required_publication_fields.items()
-            if row.get(field) in (None, "")
-        )
-        if missing_publication_fields:
-            summary = "、".join(
-                f"{label}{count}条"
-                for label, count in sorted(missing_publication_fields.items())
-            )
-            raise DailySignSyncError(
-                "INCOMPLETE_SOURCE_EVIDENCE",
-                f"主单详情缺少应签表必填信息（{summary}），停止写入。",
-                retryable=True,
-            )
-        by_code = {row["tracking_number"]: row for row in open_rows}
-        for row in ledger_rows:
-            if row["tracking_number"] in by_code:
-                enriched = by_code[row["tracking_number"]]
-                for field in (
-                    "goods_name",
-                    "package_type",
-                    "expected_quantity",
-                    "delivery_method",
-                    "recipient_address",
-                ):
-                    row[field] = enriched.get(field)
+        diagnostics.update({
+            "r13_current_open_rows": len(open_rows),
+            "r13_current_signed_rows": sum(row.get("tms_signed") is True for row in open_rows),
+        })
+        address_result = {"ok": True, "source": "r13", "queried": 0}
         all_sign_events = bulk_sign_events + exact_sign_events + historical_sign_events
         persistence_marker = build_daily_sign_persistence_marker(
             problem_events=problem_events,
