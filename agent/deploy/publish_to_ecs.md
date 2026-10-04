@@ -2,7 +2,7 @@
 module: deployment
 type: operations
 status: active
-updated: 2026-09-15
+updated: 2026-10-04
 ---
 
 # 发布到 ECS
@@ -40,19 +40,38 @@ powershell -ExecutionPolicy Bypass `
 
 生产目标固定为：
 
-- SSH：`boyce@123.57.106.70`
+- SSH/SCP：Tailscale `boyce@100.107.181.3`（普通 OpenSSH 经 Tailscale 传输，不依赖 Tailscale SSH 功能）。
+- 主机身份：`HostKeyAlias=123.57.106.70` 复用 Windows `known_hosts` 中已经核验的 A 服务器身份；该值不用于网络连接。
 - Agent：`/home/boyce/agent`，`agent.service`
 - Console：`/home/boyce/console`，`console.service`
 - Shared：`/home/boyce/shared`
+
+## Tailscale 连接检查
+
+发布电脑和服务器 A 必须在线并连接同一 Tailscale 网络，访问策略允许该电脑连接 A 的 TCP 22。无需重新开放公网 SSH、设置出口节点或依赖 Clash；GitHub 推送仍使用原有 Git 网络配置。
+
+发布器默认使用 `100.107.181.3`，SSH/SCP 使用同一固定密钥、BatchMode、严格主机身份校验和 10 秒连接超时。连接失败立即停止，不自动回退到公网地址。不要仅将旧命令的地址替换后关闭主机校验。
+
+只验证连接时，在 Windows PowerShell 执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1" `
+  -CheckConnection
+```
+
+这个选项只调用 Windows 系统 SSH，验证既有主机身份、远端用户为 `boyce`，以及 Agent/Console 的工作目录；不要求发布工件或干净工作区，不运行 Git、创建发布目录、上传文件、迁移或重启。普通发布也执行相同连接预检，再继续原有发行流程。
+
+本机缺少既有主机记录时，必须先核验服务器身份；预检不会自动接受新主机密钥、读取私钥内容或改用密码。更换发布电脑时先配置 Tailscale、合法的 SSH 身份及经核验的主机记录。
 
 ## 发布前提
 
 脚本采用失败关闭策略，以下任一条件不满足都会停止：
 
-1. Git 工作区必须干净，当前分支必须配置 upstream。
+1. Tailscale SSH 连接与远端用户、工作目录预检通过；正式发布要求 Git 工作区干净，当前分支必须配置 upstream。
 2. 脚本会先 `git fetch`，本地 `HEAD` 必须与远程 upstream 完全一致。
 3. 本地 `127.0.0.1:9000` 不得有 Agent 监听，避免与 ECS 同时消费飞书任务。
-4. Windows `known_hosts` 必须已有经过人工核验的 ECS 主机密钥。
+4. Windows `known_hosts` 必须已有以 `123.57.106.70` 标识的、经过核验的 A 服务器主机密钥；发布器通过 HostKeyAlias 复用该记录。
 5. SSH 只允许固定私钥、公钥认证、`BatchMode=yes`、`IdentitiesOnly=yes` 和 `StrictHostKeyChecking=yes`；不允许 root、密码回退或跳过主机校验。
 6. 远端执行用户必须是 `boyce`，systemd `WorkingDirectory` 必须与上述固定目录一致。
 7. 数据库必须是官方 MySQL 8.x（不接受 MySQL 5.7、MariaDB 或未知版本）；迁移预检会在读取迁移历史或执行任何 DDL 前查询并校验服务端版本。
@@ -82,7 +101,7 @@ Console `static/` 下已纳入 Git 的面单 PNG 属于明确静态资产例外�
 
 固定顺序如下：
 
-1. 检查 Git 工作区和远程提交。
+1. 先通过 Tailscale 校验 SSH 主机身份、远端用户和两个服务工作目录，再检查 Git 工作区和远程提交。
 2. 检查本地 Agent 已停止。
 3. 校验 SSH 主机密钥、远端用户和 systemd 工作目录。
 4. 在项目内 `.task_tmp/` 构建白名单暂存包，上传到 `/home/boyce/.boyi-deploy/release-*`；Agent 与 Console 独立发布时各自使用唯一 stage，避免前一服务保留的回滚包阻断后一服务。

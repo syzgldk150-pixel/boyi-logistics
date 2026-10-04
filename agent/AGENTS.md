@@ -41,6 +41,8 @@ Service V2 扫描按目录验证的 `super_admin_upload/builtin_bundle` 来源�
 
 ## ECS 发布入口
 
+- 发布连接默认使用 Tailscale `boyce@100.107.181.3`；SSH 与 SCP 均以 `HostKeyAlias=123.57.106.70` 校验既有服务器身份，不连接旧公网 SSH。`deploy/publish_to_ecs.ps1 -CheckConnection` 只核验连接、身份和两个服务工作目录，不构包、上传或重启；正常发布也先执行同一预检。
+
 - 当用户提到“同步 ECS”“发版”“发布到 ECS”“部署到 ECS”时，默认先使用固定脚本，不要先到处搜索其它发布命令：
   - `deploy/publish_to_ecs.ps1 -Target auto`；包含 Agent 时必须另传最终提交对应的 Service-V2-only 退役索引目录与既有公钥信任目录，完整命令见 [ECS 发布手册](deploy/publish_to_ecs.md)。
 - 这个脚本是标准发布入口，默认 `auto` 模式按已提交变更选择 `agent`、`console` 或 `shared/migration` 路径，并只重启、检查本次路径负责的服务。只有共享代码、迁移、迁移运行器或任一依赖锁变化才协调 Agent 与 Console；`-Target all` 是 `shared` 的兼容别名。

@@ -6,6 +6,15 @@ on:
     branches: [main]
 
 jobs:
+  publish-transport:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Windows publisher transport without network or credentials
+        shell: powershell
+        run: ./tests/test_publish_transport.ps1
+
   agent-quality:
     # The plugin runtime requires the distro's trusted Python 3.10 at /usr.
     # A relocated setup-python build retains its compiled /opt fallback prefix

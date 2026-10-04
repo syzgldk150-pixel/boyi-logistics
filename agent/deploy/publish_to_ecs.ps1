@@ -2,12 +2,13 @@
 param(
     [ValidateSet("auto", "all", "agent", "console", "shared")]
     [string]$Target = "auto",
-    [string]$RemoteHost = "123.57.106.70",
+    [string]$RemoteHost = "100.107.181.3",
     [string]$SshKeyPath = "C:\Users\DENG\.ssh\codex_ecs_ed25519",
     [string]$AutomationPluginArtifactRoot,
     [string]$AutomationPluginTrustRoot,
     [ValidatePattern("^[0-9a-f]{40}$")]
     [string]$RecoverReleaseHoldSha,
+    [switch]$CheckConnection,
     [switch]$SkipRestart,
     [switch]$SkipHealthCheck,
     [switch]$EmergencyUserAuthorizedScheduledWindowOverride
@@ -17,6 +18,8 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $RemoteUser = "boyce"
+# Reuse the verified server identity; this is not a public-network destination.
+$SshHostKeyAlias = "123.57.106.70"
 $RemoteDeployRoot = "/home/boyce/.boyi-deploy"
 $ScriptDir = Split-Path -Parent $PSCommandPath
 $AgentRoot = Split-Path -Parent $ScriptDir
@@ -31,6 +34,7 @@ $sshArgs = @(
     "-o", "IdentitiesOnly=yes",
     "-o", "BatchMode=yes",
     "-o", "StrictHostKeyChecking=yes",
+    "-o", "HostKeyAlias=$SshHostKeyAlias",
     "-o", "ConnectTimeout=10"
 )
 $scpArgs = @(
@@ -38,6 +42,7 @@ $scpArgs = @(
     "-o", "IdentitiesOnly=yes",
     "-o", "BatchMode=yes",
     "-o", "StrictHostKeyChecking=yes",
+    "-o", "HostKeyAlias=$SshHostKeyAlias",
     "-o", "ConnectTimeout=10"
 )
 
@@ -190,9 +195,9 @@ function Assert-CleanPublishedCommit() {
 }
 
 function Assert-SshHostKey() {
-    & ssh-keygen -F $RemoteHost *> $null
+    & ssh-keygen -F $SshHostKeyAlias *> $null
     if ($LASTEXITCODE -ne 0) {
-        throw "SSH host key for $RemoteHost is not present in known_hosts. Verify and add it manually first."
+        throw "SSH host identity $SshHostKeyAlias for $RemoteHost is not present in known_hosts. Verify the server identity before publishing."
     }
 }
 
@@ -537,15 +542,22 @@ function Resolve-Targets([hashtable]$State, [hashtable]$Fingerprints) {
     }
 }
 
-Assert-Command "git"
-Assert-Command "wsl.exe"
 Assert-Command "ssh"
-Assert-Command "scp"
 Assert-Command "ssh-keygen"
 Assert-PathExists $RepoRoot
 Assert-PathExists $SshKeyPath
 Assert-SshHostKey
 
+Write-Host "Checking ECS connection over Tailscale: $remoteSpec"
+Invoke-Remote 'test "$(id -un)" = boyce && test "$(systemctl show agent.service -p WorkingDirectory --value)" = /home/boyce/agent && test "$(systemctl show console.service -p WorkingDirectory --value)" = /home/boyce/console'
+if ($CheckConnection) {
+    Write-Host "ECS connection, host identity, user and service directories verified. No release performed."
+    return
+}
+
+Assert-Command "git"
+Assert-Command "wsl.exe"
+Assert-Command "scp"
 $releaseSha = Assert-CleanPublishedCommit
 if (Test-LocalTcpListener 9000) {
     throw "A local Agent is listening on 127.0.0.1:9000. Stop it before publishing."

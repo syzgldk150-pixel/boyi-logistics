@@ -107,7 +107,7 @@ cd /home/deng/projects/boyi-logistics/console
 
 - 发布脚本：`deploy/publish_to_ecs.ps1`
 - 发布说明：`deploy/publish_to_ecs.md`
-- 默认使用 `auto`；包含 Agent 时必须传入最终提交对应的 V2 退役索引和公钥信任目录，完整命令以[发布手册](deploy/publish_to_ecs.md)为准
+- 默认经 Tailscale `boyce@100.107.181.3` 发布，使用 `-CheckConnection` 可先执行只读连接检查。默认范围仍为 `auto`；包含 Agent 时必须传入最终提交对应的 V2 退役索引和公钥信任目录，完整命令以[发布手册](deploy/publish_to_ecs.md)为准
 
 ## 先读哪些文档
 

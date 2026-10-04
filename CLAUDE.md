@@ -112,7 +112,7 @@
 - 密码、Token、Cookie、Authorization 和原始请求体不得写入日志、审计记录或异常输出。
 - 影响财务结算的金额必须使用 `Decimal(str(value))`，明确空值语义和最终舍入规则，并执行行数、总量、极值及关键反算校验。
 - 页面和第三方接口逻辑必须来自真实页面、真实请求或官方契约；缺字段、多候选或解析失败必须显式失败，不得猜测或静默回退。
-- ECS 固定使用 `boyce@123.57.106.70` 和既有系统 SSH 配置；禁止 `root`、密码回退和跳过主机密钥校验。
+- ECS 发布固定通过 Tailscale 连接 `boyce@100.107.181.3`；Windows 系统 SSH/SCP 以 `HostKeyAlias=123.57.106.70` 复用既有已验证的服务器身份，该别名不是公网连接目标。禁止 `root`、密码回退、跳过主机校验或自动改走公网；连接预检见 `agent/deploy/publish_to_ecs.ps1 -CheckConnection`。
 
 ## Console 移动端框架
 
