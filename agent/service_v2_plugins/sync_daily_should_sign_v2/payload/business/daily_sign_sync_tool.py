@@ -1244,7 +1244,7 @@ def _build_ledger_sheet_values(rows: list[dict[str, Any]]) -> list[list[Any]]:
             _to_int(row.get("expected_quantity") if "expected_quantity" in row else row.get("pcs")),
             clean_text(row.get("recipient_address") or row.get("dispAddress")),
             clean_text(row.get("delivery_method") or row.get("dispatchMode")),
-            _to_int(row.get("arrived_quantity")) if _to_int(row.get("arrived_quantity")) is not None else "",
+            _to_int(row.get("arrived_quantity")) if _to_int(row.get("arrived_quantity")) is not None else "无数据",
         ]
         for row in rows
     ]
@@ -1259,6 +1259,26 @@ def _r13_problem_cells(row: dict[str, Any]) -> dict[str, str]:
             ("内容", "problemCause"), ("登记网点", "problemRegisterSite"),
         )
     }
+
+
+def _current_stat_quantity(history: list[dict[str, Any]], observed_at: datetime) -> int | None:
+    """The Host supplies only active successful daily statistics snapshots.
+
+    Their quantities are already cumulative. Use today's matching row once;
+    never sum days or substitute an earlier day's count for a missing row.
+    """
+    today = observed_at.date().isoformat()
+    matches = [row for row in history if str(row.get("business_date")) == today]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise ValueError("当天成功统计中同一运单存在多条记录，无法确定到货件数")
+    value = matches[0].get("arrived_quantity")
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool) or not str(value).isdigit():
+        raise ValueError("当天统计的到货件数不是非负整数")
+    return int(value)
 
 
 def _apply_r13_publication_fields(row: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
@@ -2063,7 +2083,12 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
         # Publication is the complete current R13 unsigned query, not historical
         # ledger candidates or a second filter based on locally calculated due dates.
         ledger_rows = [
-            _apply_r13_publication_fields(row, r13_by_code[row["tracking_number"]])
+            _apply_r13_publication_fields(
+                {**row, "arrived_quantity": _current_stat_quantity(
+                    state.get("arrivals", {}).get(row["tracking_number"], []), observed_at
+                )},
+                r13_by_code[row["tracking_number"]],
+            )
             if row["tracking_number"] in r13_by_code else row
             for row in ledger_rows
         ]

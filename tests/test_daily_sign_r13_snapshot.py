@@ -107,3 +107,25 @@ def test_snapshot_marker_preserves_tms_conflict_and_r13_problem_evidence():
     after = build_daily_sign_persistence_marker(**values)
     assert before["publication_rows"]["count"] == 1
     assert before["publication_rows"]["sha256"] != after["publication_rows"]["sha256"]
+
+
+def test_arrival_count_uses_today_completed_statistics_without_summing_days():
+    history = [
+        {"business_date": "2026-10-03", "arrived_quantity": 2},
+        {"business_date": "2026-10-04", "arrived_quantity": 3},
+    ]
+    assert sync._current_stat_quantity(history, datetime(2026, 10, 4, 12)) == 3
+    history[-1]["arrived_quantity"] = 0
+    assert sync._current_stat_quantity(history, datetime(2026, 10, 4, 12)) == 0
+    assert sync._current_stat_quantity(history, datetime(2026, 10, 5, 12)) is None
+    assert sync._build_ledger_sheet_values([{"arrived_quantity": None}])[0][-1] == "无数据"
+    assert sync._build_ledger_records([{"arrived_quantity": None}])[0]["fields"]["到货件数"] is None
+
+
+def test_arrival_count_rejects_ambiguous_or_invalid_statistics():
+    row = {"business_date": "2026-10-04", "arrived_quantity": 2}
+    with pytest.raises(ValueError, match="多条"):
+        sync._current_stat_quantity([row, row], datetime(2026, 10, 4))
+    for value in (-1, "2.5", True):
+        with pytest.raises(ValueError, match="非负整数"):
+            sync._current_stat_quantity([{**row, "arrived_quantity": value}], datetime(2026, 10, 4))
