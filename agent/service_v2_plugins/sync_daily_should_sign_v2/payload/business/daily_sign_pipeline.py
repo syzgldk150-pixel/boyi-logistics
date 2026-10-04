@@ -607,11 +607,11 @@ def _resolve_r13_request(params: dict[str, Any], account_id: str) -> dict[str, A
                 retryable=code in {"AUTH_REQUIRED", "LOGIN_FAILED", "SESSION_UNAVAILABLE"},
             ) from exc
         raise
-    # Match the original page's “过去15天”, including today's full business day.
+    # Query the requested rolling 30-day window, including today's full business day.
     today = business_now()
-    request["start"] = (today - timedelta(days=14)).strftime("%Y-%m-%d 00:00:00")
+    request["days"] = 30
+    request["start"] = (today - timedelta(days=request["days"] - 1)).strftime("%Y-%m-%d 00:00:00")
     request["end"] = today.strftime("%Y-%m-%d 23:59:59")
-    request["days"] = 15
     request["page"] = 1
     request["fetch_all"] = True
     request["page_size"] = _bounded_int(

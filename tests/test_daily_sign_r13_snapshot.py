@@ -31,7 +31,7 @@ def fetch(pages):
     ):
         rows = get_qianshou.fetch_qianshou(
             config_path=None, username=None, password=None, account_id="selected-pool-account",
-            start="2026-09-20 00:00:00", end="2026-10-04 23:59:59", days=15,
+            start="2026-09-05 00:00:00", end="2026-10-04 23:59:59", days=30,
             page_size=1, page=1,
         )
     return rows, session
@@ -47,6 +47,8 @@ def test_all_pages_keep_original_fields_and_exact_unsigned_filter():
     for number, call in enumerate(session.post.call_args_list, 1):
         body = call.kwargs["json"]
         assert body["isSigns"] == "0" and body["currentPage"] == number
+        assert body["planSignTime_CondStart"] == "2026-09-05 00:00:00"
+        assert body["planSignTime_CondEnd"] == "2026-10-04 23:59:59"
         assert body["dispSiteCode_CondList"] == ["test-site"]
     assert rows[0]["planSignTime"] == "2026-10-04 23:59:59"
     rendered = sync._apply_r13_publication_fields({"tracking_number": rows[0]["billNumberMain"],
@@ -73,15 +75,19 @@ def test_missing_source_field_is_not_replaced_by_history():
         fetch([page(row)])
 
 
-def test_fixed_fifteen_business_days_override_old_saved_range():
+@pytest.mark.parametrize("today,start,end", [
+    (datetime(2026, 10, 4, 12), "2026-09-05 00:00:00", "2026-10-04 23:59:59"),
+    (datetime(2026, 3, 1, 12), "2026-01-31 00:00:00", "2026-03-01 23:59:59"),
+])
+def test_fixed_thirty_business_days_override_old_saved_range(today, start, end):
     with (patch.object(sync, "build_daily_sign_request_body", return_value={"days": 365,
         "start": "2000-01-01", "end": "2030-01-01", "page": 4, "fetch_all": False}), patch.object(
-        pipeline, "business_now", return_value=datetime(2026, 10, 4, 12)),
+        pipeline, "business_now", return_value=today),
     ):
         request = pipeline._resolve_r13_request({}, "selected-pool-account")
-    assert request["start"] == "2026-09-20 00:00:00"
-    assert request["end"] == "2026-10-04 23:59:59"
-    assert request["days"] == 15 and request["page"] == 1 and request["fetch_all"] is True
+    assert request["start"] == start
+    assert request["end"] == end
+    assert request["days"] == 30 and request["page"] == 1 and request["fetch_all"] is True
 
 
 def test_original_empty_problem_fields_do_not_reuse_prior_events():
