@@ -34,4 +34,4 @@ PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.plugin_maintenance
 
 ## 历史边界
 
-生产发布要求 Service-V2-only 退役索引及全部权威 COMPLETED 迁移记录。`agent/legacy/first_party_automation_plugins/` 只保留离线迁移回归所需的 V1 传输、两种旧适配器和摘要，不进入 ECS 发布清单；旧业务算法不在该目录复制。旧版本身份和已执行 SQL 仅用于解释历史事实。发布器将服务器旧源码树移入当次回滚材料，当前运行目录不再保留旧导入树。
+生产发布要求 Service-V2-only 退役索引及全部权威 COMPLETED 迁移记录。`agent/legacy/first_party_automation_plugins/` 只保留离线迁移回归所需的 V1 传输、两种旧适配器、摘要及分批1.0.26的固定规则字节，不进入 ECS 发布清单。该固定快照只重建已有历史摘要，不维护或执行当前算法；V2仍只从本目录读取现行规则。旧版本身份和已执行 SQL 仅用于解释历史事实。发布器将服务器旧源码树移入当次回滚材料，当前运行目录不再保留旧导入树。

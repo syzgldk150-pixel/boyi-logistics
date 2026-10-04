@@ -1426,11 +1426,14 @@ def first_party_payload_files(manifest: AutomationPluginManifest) -> dict[str, b
             raise PluginPackageError("customer queue policy source is missing")
         files["payload/customer_queue_policy.py"] = policy_path.read_bytes()
     if manifest.plugin_id == "split_pending_problem_upload":
+        # Reproduce the retired 1.0.26 bytes without coupling its immutable lock
+        # to future daily-sign V2 calculation changes. Never used by V2 packaging.
         for relative in (
             'service_v2_plugins/sync_daily_should_sign_v2/payload/business/daily_sign_rules.py',
             'tools/daily_sign_values.py',
         ):
-            files['payload/' + relative] = (CURRENT_ROOT.parent / relative).read_bytes()
+            frozen = LEGACY_ROOT / manifest.plugin_id / "frozen" / Path(relative).name
+            files['payload/' + relative] = frozen.read_bytes()
     return files
 
 
