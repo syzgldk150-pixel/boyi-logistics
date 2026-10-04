@@ -11,7 +11,7 @@ DAILY_SIGN_PORTS = {
     "daily_sign_tms": ("account", "ronghui", {"read_problems":"read", "read_signs":"read", "read_tracking":"read", "read_details":"read", "source_scope":"read", "describe":"read"}),
     "daily_sign_store": ("internal", "", {"start_run":"internal_write", "load_state":"read", "earliest_date":"read", "build_marker":"read", "persist_snapshot":"internal_write", "verify_snapshot":"read", "finish_run":"internal_write", "verify_run":"read"}),
     "daily_sign_bitable": ("resource", "feishu_bitable", {"list_fields":"read", "update_field":"external_write", "create_field":"external_write", "list_records":"read", "write_records":"external_write", "delete_records":"external_write"}),
-    "daily_sign_sheet": ("resource", "feishu_sheet", {"describe":"read", "read_sheet":"read", "write_sheet":"external_write", "clear_sheet":"external_write"}),
+    "daily_sign_sheet": ("resource", "feishu_sheet", {"describe":"read", "read_sheet":"read", "write_sheet":"external_write", "clear_sheet":"external_write", "read_sheet_formats":"read", "write_sheet_format":"external_write"}),
 }
 
 
@@ -55,6 +55,26 @@ def _schemas(role, name):
         result["properties"]["items"] = rows
         outputs = result
     elif role == "daily_sign_sheet":
+        if name in {"read_sheet_formats", "write_sheet_format"}:
+            cells = obj({"start_col": TEXT, "end_col": TEXT,
+                         "start_row": {"type": "integer", "minimum": 1},
+                         "end_row": {"type": "integer", "minimum": 1},
+                         "col_count": {"type": "integer", "minimum": 1},
+                         "row_count": {"type": "integer", "minimum": 1}})
+            fields = {"cells": cells}
+            required = ["cells"]
+            if name == "write_sheet_format":
+                fields.update(rule_id=TEXT, properties=obj({
+                    "rule_type": TEXT,
+                    "attrs": arr(obj({"formula": arr(TEXT, maximum=1)}), maximum=1),
+                    "style": source_record_schema(depth=1),
+                    "has_ref": {"type": "boolean"},
+                }, required=["rule_type", "attrs", "style"]))
+                required.append("properties")
+            inputs = obj(fields, required)
+            outputs = obj({"ok": {"type": "boolean"}}) if name == "write_sheet_format" else obj({
+                "rules": arr(obj({"rule_id": TEXT, "properties": raw}), maximum=20)})
+            return obj({"values": inputs}), obj({"value": outputs})
         matrix = arr(arr(CELL, maximum=256), maximum=100000)
         inputs["properties"]["values"] = matrix
         outputs = source_record_schema(depth=3)

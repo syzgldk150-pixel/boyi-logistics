@@ -79,6 +79,8 @@ updated: 2026-09-15
 | MySQL 工作流资源、任务配置与安全投影 | `agent/workflow_resource_store.py` `feishu_resource_catalog.py` `../shared/runtime_repositories.py` `../console/services/automation_projects.py` | 完整资源配置只留在 Agent 运行时；插件目录仅投影 `resource_id/name/kind/status/purpose/problem_code`。飞书名称按当前“文档名 / 工作表名”逐项实时解析并短时缓存；单项权限、删除、定位、冲突或超时不会清空其他可用资源，缓存过期后也不回退静态别名。代码审阅过的 `sheet_title/table_title` 只在旧子表 ID 失效且存在唯一精确同名项时修复定位，并先持久化新配置版本再供运行时使用；多候选或无候选均失败。Console 按签名 role+kind 选择 ID，并只阻断依赖异常资源的任务。定时属于系统项目配置，不写进插件包。 |
 | ECS 部署、systemd、服务启动参数与工程检查 | `agent.service` `../console/console.service` `requirements.txt` `requirements.lock` `../console/requirements.txt` `../console/requirements.lock` `pyproject.toml` `../.github/workflows/ci.yml` `docs/project_overview.md` | 服务进程配置看 systemd 文件；两个服务共用按两份 lock 文件联合哈希校验的唯一环境，哈希变化或校验失败才重建；CI 运行编译、Ruff、工具清单和运行时导入边界检查 |
 
+每日应签动态条件格式：`service_v2_plugins/sync_daily_should_sign_v2/payload/business/daily_sign_format.py` 负责公式、黄色样式和实际数据范围；`tools/feishu_sheet_formats.py` 负责绑定表的 sheet-ai 格式接口读写。
+
 ## 按目录理解职责
 
 ### `console/`

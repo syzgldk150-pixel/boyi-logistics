@@ -449,6 +449,11 @@ def _reject_sensitive_result(
         # pass through the ordinary private-target checks below.
         if business_field == "prob_title" and value == "/":
             checked = ""
+        # Feishu conditional-format ranges are cell coordinates, not URI
+        # schemes (A2:L29). Keep identity checks above and only accept a closed
+        # A1 rectangle here; URLs, sheet locators and paths remain rejected.
+        if business_field == "ranges" and re.fullmatch(r"[A-Z]{1,3}[1-9][0-9]*:[A-Z]{1,3}[1-9][0-9]*", value):
+            checked = value.replace(":", " ")
         # Ronghui record IDs are canonical base64 encodings of 16-byte IDs.
         # Their slash is data, not a filesystem locator. Binding identity checks
         # above still apply; arbitrary text and URI/path values remain denied.

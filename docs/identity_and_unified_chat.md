@@ -4,12 +4,12 @@ type: implementation
 status: active
 authority: canonical
 owner: repository
-updated: 2026-10-04
+updated: 2026-10-05
 ---
 
 # 身份权限与统一对话
 
-## 每日应签 R13 原页快照（2.1.5）
+## 每日应签 R13 原页快照（2.1.6）
 
 2026-10-04 使用 DrissionPageMCP 核实已登录的 `/outlets/cargoReceiptWarn`：无 iframe，Vue 组件 `CargoReceiptWarn`，查询为 `POST /gateway/site/waybillSignWarn/pageGet`。应签时间使用 `queryType=2`、`planSignTime_CondStart/End`，签收否为 `isSigns="0"`，查看下属沿用原页 `showSub="10"`。2.1.3 按用户要求扩大为最近30天（含当天），从上海业务日减29天的00:00:00至当天23:59:59，不是上一个自然月；例如2026-10-04查询2026-09-05至2026-10-04。旧保存的日期参数不改变本插件范围。账号/站点仍由所选业务账号池绑定和实际登录上下文取得。
 
@@ -24,6 +24,10 @@ updated: 2026-10-04
 2.1.5 按用户要求取消 TMS 问题件、签收、轨迹及详情补查，删除相应运行依赖和调用权限。仅需绑定 R13 账号；原 TMS 账号角色及旧参数保留为不参与运行的可选历史配置，原实例升级不清除已有绑定。只处理本次完整 R13 清单，不重算清单外历史台账。未查询来源报告 `not_requested`，不标记完整采集；R13 失败仍阻止发布，双飞书表写后回读及累计快照规则保持。真实 ZIP/MySQL 回归断言来源调用仅 `/get_qianshou`，并覆盖无 TMS 绑定、R13 失败和双表回读不一致。执行历史列表只返回运行摘要，完整业务结果由单次结果接口读取，避免重复携带30次运行的两份完整输出。
 
 2.1.4 修复内部到齐和应签计算仍跨日累加累计快照的问题：报表与内部规则共用 `calculate_arrival_state`，连续两天累计2件仍为2件，货物总数3件时保持未齐，符合条件的分批登记仍可顺延至登记次日。最新快照纠正为不足、0或空值时撤销之前的到齐判断；0或空值不依据旧到货数生成应签日期。只使用截至本次观测业务日的快照。2.1.3 的最近30天范围和R13发布集合保持不变，现有Host可直接升级插件。回归入口为`tests/test_daily_sign_r13_snapshot.py`、`agent/tests/test_daily_sign_ledger_pipeline.py`、`agent/tests/test_daily_sign_ledger.py`及`tests/test_daily_sign_v2_packaged_protocol.py`；数据库用例需要显式配置隔离MySQL，跳过不算通过，也不代表生产业务验收。
+
+2.1.6 在普通表数据与清尾回读成功后维护一条黄色条件格式：`=AND($L2<>"",$I2<>"",VALUE($L2)<>VALUE($I2))`，背景 `#FFFF00`，范围按实际 N 条数据设置为 `A2:L{N+1}`。按精确公式识别已存在规则，更新范围并保留其其他样式，不重复创建、不修改其他规则；重复命中明确失败。零数据保留原来的空发布保护；已空目标不创建超出实际行数的范围，下次有数据再创建或更新。写响应丢失只做有界回读，不重放创建；未核验成功不会报告整次成功，运行诊断包含 `sheet_format_readback`。
+
+本次需要先部署 Host，再升级原实例 ZIP。Host 的 `read_sheet_formats` / `write_sheet_format` 仅操作项目绑定的普通表，公式与范围策略在包内 `daily_sign_format.py`。底层使用飞书官方 CLI 的 [sheet-ai 协议](https://github.com/larksuite/cli/blob/main/shortcuts/sheets/sheet_ai_api.go) 和 [条件格式对象协议](https://github.com/larksuite/cli/blob/main/shortcuts/sheets/lark_sheet_object_crud.go)，不以旧 `sheets/v2/condition_formats` 的空结果推断自定义公式不存在，也不使用静态填色代替规则。2026-10-05 真实接口核验：28条数据范围 A2:L29，自定义公式与黄色回读一致，63/61 的行命中、相等件数行不命中。回归入口为 `tests/test_daily_sign_conditional_format.py` 和真实 ZIP/MySQL 测试。
 
 每日应签 V2 `2.0.7` 按 2026-09-15 用户确认，将精确类型“客户拒收/拒付费用”“客户原因要求自提”“改派送地址”纳入 `MANUAL_POSTPONE_TYPES`。与已有人工类型相同：完整成功且登记严格早于 17:00:00 时顺延至登记次日 23:59:59，只延后、不缩短，重读旧登记不继续延期；无实际到货仍不凭问题件生成应签时间。该常量也用于宿主存储的 `postpones_sign`，发布须同步共用源码和插件包，避免计算与持久字段不一致。无需变更数据库或接口。回归覆盖连续人工登记、截止时刻、失败登记、近似类型，以及实际 ZIP/MySQL/双飞书表发布。
 
@@ -68,6 +72,8 @@ V2 自动化卡片按已安装插件声明的唯一平台分类；从迁移页�
 插件安装脚本的 URL 缓存键随源码摘要更新，避免已登录浏览器继续运行旧安装器。页面入口变更后需要重新验证真实上传、检查和安装。
 
 迁移准备中断会显示脱敏后的实际失败原因，并提供“继续迁移准备”；重试复用持久化迁移和原请求编号，仍检查当前超级管理员及记录版本，不创建重复迁移。未配置、未参与迁移的停用新实例可卸载，最终由 Agent 校验实际调用和代次状态，不要求其先具备业务运行条件。
+
+
 
 ## 管理方式
 

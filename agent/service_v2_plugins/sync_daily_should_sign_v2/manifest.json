@@ -3,8 +3,8 @@
   "runtime_model": "service_v2",
   "plugin_id": "sync_daily_should_sign_v2",
   "name": "每日应签",
-  "version": "2.1.5",
-  "description": "仅从业务账号池绑定的R13读取过去30天未签收清单，匹配统计累计到货件数，按12列更新并核验飞书表。",
+  "version": "2.1.6",
+  "description": "读取R13过去30天未签收清单与统计累计到货数，按实际行数维护12列报表及件数不一致的黄色条件格式，并回读核验。",
   "host_api": {
     "minimum": "2.0.0",
     "maximum_exclusive": "3.0.0"
@@ -69,13 +69,15 @@
         "persist_snapshot",
         "read_r13",
         "read_sheet",
+        "read_sheet_formats",
         "source_scope",
         "start_run",
         "update_field",
         "verify_run",
         "verify_snapshot",
         "write_records",
-        "write_sheet"
+        "write_sheet",
+        "write_sheet_format"
       ],
       "account_role": null,
       "resource_role": null

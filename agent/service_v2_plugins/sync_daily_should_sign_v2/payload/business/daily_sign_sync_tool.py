@@ -1553,9 +1553,15 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
             "每日应签电子表格新鲜回读不匹配。",
             cause=clean_text(exc),
         )
+    from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_format import sync_quantity_format
+    try:
+        format_readback = sync_quantity_format(feishu_operation, spreadsheet_token, info["sheet"], len(sheet_values))
+    except Exception as exc:
+        return _write_outcome_unknown("每日应签黄色条件格式未通过回读核验。", cause=clean_text(exc))
     return {
         "ok": True,
         "rows": len(sheet_values),
+        "format_readback": format_readback,
         "write_result": write_result,
         "clear_result": clear_result,
         "readback": readback,
@@ -2128,6 +2134,7 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
             {
                 "sheet_rows": sheet_result.get("rows", len(open_rows)),
                 "sheet_readback": sheet_readback,
+                "sheet_format_readback": sheet_result["format_readback"],
             }
         )
 

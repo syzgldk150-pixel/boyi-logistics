@@ -74,6 +74,14 @@ def _public_feishu_result(name, result):
     if any(row.get("ok") is False or row.get("error") or row.get("errors")
            or ("code" in row and row["code"] != 0) for row in envelopes):
         raise PluginExecutionError("Daily-sign Feishu operation failed", code="DAILY_SIGN_FEISHU_FAILED")
+    if name == "read_sheet_formats":
+        if not isinstance(result.get("rules"), list):
+            raise PluginExecutionError("Sheet formats snapshot missing", code="BROKER_SOURCE_INVALID")
+        return {"rules": result["rules"]}
+    if name == "write_sheet_format":
+        if result.get("ok") is not True:
+            raise PluginExecutionError("Sheet format acknowledgement missing", code="BROKER_SOURCE_INVALID")
+        return {"ok": True}
     if name == "read_sheet":
         matrices = []
         for row in envelopes:
@@ -252,6 +260,8 @@ def build_daily_sign_port_handlers(*, account_manager, store=None, tms=None, fei
                         raise ValueError("DAILY_SIGN_SHEET_RANGE_INVALID")
                     values["range"] = actual_sheet + "!" + requested
                     values["spreadsheet_token"] = resource["spreadsheet_token"]
+                    if name == "write_sheet_format" and values["properties"]["rule_type"] != "expression":
+                        raise ValueError("DAILY_SIGN_FORMAT_RULE_TYPE_INVALID")
                     result = _public_feishu_result(name, feishu(name, values))
             else:
                 values.update(base_token=resource["base_token"], table_id=resource["table_id"])

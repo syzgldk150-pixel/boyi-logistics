@@ -150,3 +150,5 @@
 - `automation_plugins/direct_invocation.py` 把同步准入与控制锁分离，重复取消通过 `shared.async_work.drain_thread` 等待真实线程结束；Connector 同步处理器同样不阻塞事件循环。旧 owner 终结后不能迟到发布新结果。
 - `plugin_core_adapters/problem_actions.py` 使用共享目标写入事实保护问题件新 UUID 重触发；问题件追加无法权威核验时明确 UNKNOWN，不依据暂时空回读释放目标。
 - Harness 后端不可用只关闭相应 AI 入口，不连带禁用相同实例合法固定入口；具体入口仍由 ManagedContributionRegistry 校验。
+
+- 每日应签 2.1.6 的动态黄色条件格式由插件 `daily_sign_format.py` 维护，Host 仅提供精确绑定表的格式读写；写后回读与协议依据见仓库根 `docs/identity_and_unified_chat.md`。先部署 Host，再升级原实例 ZIP。

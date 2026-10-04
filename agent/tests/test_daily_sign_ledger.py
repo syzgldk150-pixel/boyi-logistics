@@ -782,6 +782,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
                 "ok": True,
                 "rows": len(rows),
                 "readback": projection_readback_proof(rows, digest_char="s"),
+                "format_readback": {"verified": True, "range": f"A2:L{len(rows)+1}"},
             }
 
         with (
@@ -1364,6 +1365,8 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         self.assertEqual("batch_deferred_after_peer_query_error", verification_by_code["SIGNED"]["last_error"])
 
     def test_sheet_validates_twelve_headers_and_writes_before_clearing_tail(self):
+        from tests.daily_sign_format_fixture import SheetFormats
+        formats = SheetFormats()
         actions = []
         rows = [
             {
@@ -1375,6 +1378,8 @@ class DailySignSyncPipelineTest(unittest.TestCase):
 
         def fake_operation(action, params):
             actions.append(action)
+            if action in {"read_sheet_formats", "write_sheet_format"}:
+                return formats(action, params)
             if action == "read_sheet":
                 values = (
                     [daily_sign_sync_tool.SHEET_HEADERS]
@@ -1395,7 +1400,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(
-            ["read_sheet", "write_sheet", "clear_sheet", "read_sheet"],
+            ["read_sheet", "write_sheet", "clear_sheet", "read_sheet", "read_sheet_formats", "write_sheet_format", "read_sheet_formats"],
             actions,
         )
         self.assertTrue(result["readback"]["verified"])

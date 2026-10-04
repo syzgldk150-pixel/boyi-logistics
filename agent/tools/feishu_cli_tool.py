@@ -684,6 +684,10 @@ def feishu_operation(
     mark_write_started: Callable[[], None] | None = None,
 ) -> dict:
     """执行飞书操作。"""
+    if action in {"read_sheet_formats", "write_sheet_format"}:
+        from tools.feishu_sheet_formats import sheet_format_operation
+        return sheet_format_operation(action, params, call_api=_call_open_api,
+            sheet_info=_spreadsheet_sheet_info, mark_write_started=mark_write_started)
     if action == "send_message":
         target_type, target_value = _normalize_receive_target(params)
         content = params.get("content", params.get("text", ""))

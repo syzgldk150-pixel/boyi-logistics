@@ -16,6 +16,7 @@ from tests.direct_invocation_fixture import direct_repository  # noqa: F401
 from tests.service_v2_production_protocol_support import PackagedConnectorHost
 from tools import daily_sign_store as store
 from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool import SHEET_HEADERS
+from tests.daily_sign_format_fixture import SheetFormats
 
 
 @pytest.mark.parametrize("resource_busy", [True, False])
@@ -92,9 +93,12 @@ class FeishuTables:
         self.sheet = [list(SHEET_HEADERS)] + [[""]*12 for _ in range(9)]
         self.calls = []
         self.corrupt = corrupt
+        self.formats = SheetFormats()
 
     def __call__(self, name, values):
         self.calls.append(name)
+        if name in {"read_sheet_formats", "write_sheet_format"}:
+            return self.formats(name, values)
         if name == "list_fields":
             return {"items":[{"field_id":f"field-{index}", "field_name":field, "type":2 if field in {"货物件数", "到货件数"} else 1} for index, field in enumerate(SHEET_HEADERS)]}
         if name == "list_records":
@@ -269,6 +273,9 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
     assert not state["ledger"]["R00021000002"]["tms_signed"]
     assert len(state["ledger"]) == len(tables.records)
     diagnostics = result["data"]["diagnostics"]
+    assert diagnostics["sheet_format_readback"]["verified"]
+    assert diagnostics["sheet_format_readback"]["range"] == f"A2:L{len(tables.records)+1}"
+    assert len(tables.formats.rules) == 1
     assert diagnostics["secondary_sources"]["status"] == "not_requested"
     assert not diagnostics["problems_complete"] and not diagnostics["signs_complete"]
     assert state["ledger"]["R00021000001"]["arrived_quantity"] == arrivals[0]["arrived_quantity"]

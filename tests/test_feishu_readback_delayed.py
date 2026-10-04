@@ -194,9 +194,13 @@ def test_daily_sign_sheet_lost_write_ack_is_proved_by_delayed_snapshot(
         "_build_ledger_sheet_values",
         lambda _rows: deepcopy(expected),
     )
+    from tests.daily_sign_format_fixture import SheetFormats
+    formats = SheetFormats()
 
     def feishu(action: str, params: dict[str, object]) -> dict[str, object]:
         nonlocal readback_calls, write_calls
+        if action in {"read_sheet_formats", "write_sheet_format"}:
+            return formats(action, params)
         if action == "read_sheet":
             value_range = str(params["range"])
             if value_range.endswith("A1:L1"):

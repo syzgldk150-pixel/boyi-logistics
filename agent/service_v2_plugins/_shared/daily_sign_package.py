@@ -13,6 +13,7 @@ def daily_sign_business_files(repository: Path) -> dict[str, bytes]:
         "daily_sign_pipeline": "agent/service_v2_plugins/sync_daily_should_sign_v2/payload/business/daily_sign_pipeline.py",
         "daily_sign_rules": "agent/service_v2_plugins/sync_daily_should_sign_v2/payload/business/daily_sign_rules.py",
         "daily_sign_readback": "agent/service_v2_plugins/sync_daily_should_sign_v2/payload/business/daily_sign_readback.py",
+        "daily_sign_format": "agent/service_v2_plugins/sync_daily_should_sign_v2/payload/business/daily_sign_format.py",
         "daily_sign_material": "agent/tools/daily_sign_material.py",
         "phase7_sync_common": "agent/tools/phase7_sync_common.py",
         "feishu_readback": "agent/agent/feishu_readback.py",

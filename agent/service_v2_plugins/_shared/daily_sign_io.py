@@ -157,7 +157,7 @@ def get_workflow_resource(key):
 
 def feishu_operation(name, values):
     values = dict(values)
-    sheet = name in {"read_sheet", "write_sheet", "clear_sheet"}
+    sheet = name in {"read_sheet", "write_sheet", "clear_sheet", "read_sheet_formats", "write_sheet_format"}
     role = "daily_sign_sheet" if sheet else "daily_sign_bitable"
     keys = ("spreadsheet_token",) if sheet else ("base_token", "table_id")
     if any(values.pop(key, None) != role for key in keys):
