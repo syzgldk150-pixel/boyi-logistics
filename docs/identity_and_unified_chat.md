@@ -9,17 +9,17 @@ updated: 2026-10-04
 
 # 身份权限与统一对话
 
-## 每日应签 R13 原页快照（2.1.1）
+## 每日应签 R13 原页快照（2.1.2）
 
 2026-10-04 使用 DrissionPageMCP 核实已登录的 `/outlets/cargoReceiptWarn`：无 iframe，Vue 组件 `CargoReceiptWarn`，查询为 `POST /gateway/site/waybillSignWarn/pageGet`。应签时间使用 `queryType=2`、`planSignTime_CondStart/End`，签收否为 `isSigns="0"`，查看下属沿用原页 `showSub="10"`。过去15天包含当天，从上海业务日减14天的00:00:00至当天23:59:59；旧保存的日期参数不扩大本插件范围。账号/站点仍由所选业务账号池绑定和实际登录上下文取得。
 
 本次原页只读核验返回28行，权威总数28，签收状态全部0。字段映射：运单编号=`waybillNo`，规划应签收时间=`displayPlanSignTime`，问题件类型=`problemType`，登记时间=`problemRegisterDate`，内容=`problemCause`，登记网点=`problemRegisterSite`，货物品名=`goodsName`，包装类型=`packTypeDesc`，货物件数=`pcs`，收件人地址使用原页渲染的`dispAddress`，送货方式=`dispatchMode`。接口字段`planSignTime`不代替页面展示的`displayPlanSignTime`；内部标准化后仍以`planSignTime`传给插件。字段缺失、非未签收返回或分页不完整均失败。
 
-以上十一列加末列“到货件数”构成十二列 A:L。原页和接口未提供到货件数字段；用户已确认取每日执行完“统计”后的单号统计数字。按运单号匹配当天最后一次成功且有效的统计快照，直接使用其中的累计到货件数，不再跨日相加；同日重新统计后仅使用新有效快照。当天无匹配记录或件数为空时，普通表显示“无数据”，多维表数值列留空；真实0保留0，不回退前一日或历史台账数字。不得把“货物是否到齐”换算成件数，也不得把缺数据当作0。四个原页问题字段保存在本次台账计算记录的`r13_publication`中，参与持久化及双表回读；原页空值不补旧问题件。
+以上十一列加末列“到货件数”构成十二列 A:L。原页和接口未提供到货件数字段；用户已确认取每日执行完“统计”后的单号统计数字。按运单号匹配截至当前业务日该单最近一次成功且有效的统计快照，直接使用其中的累计到货件数，不跨日相加；同日重新统计后仅使用新有效快照。用户明确要求当天未出现在统计中的R13未签运单仍展示已知累计数：昨天5件、今天无该单号显示5；今天统计累计8件显示8，不能相加成13。`calculation_trace.arrival_quantity_source`保存来源业务日期、运行编号及`used_prior_day`，明确记录跨日取数的使用情况。从未有统计记录、或最新匹配快照件数为空时，普通表显示“无数据”，多维表数值列留空；真实0保留0，不用更早数值覆盖最新快照的空值或纠正值。未来业务日快照不参与选择，同日多条匹配或日期/件数异常显式失败。不得把“货物是否到齐”换算成件数，也不得把缺数据当作0。四个原页问题字段保存在本次台账计算记录的`r13_publication`中，参与持久化及双表回读；原页空值不补旧问题件。
 
 发布集合只包含本次R13完整清单，不追加历史台账，也不因TMS签收证据二次删行；台账继续独立保留TMS签收事实与原有应签计算。普通电子表格精确迁移旧八/九列表头至十二列并按A:L写入、清尾、回读。多维表提交相同顺序的十二字段，旧计算列不再写入；已有多维表视图的可见列顺序由其视图设置控制，当前Connector没有修改视图排序的能力。
 
-本次同时改动Host `get_qianshou.py`字段读取和持久化成员规则，必须与V2包2.1.1配套升级；仅上传ZIP不构成上线完成。回归入口为`tests/test_daily_sign_r13_snapshot.py`、`agent/tests/test_daily_sign_ledger_pipeline.py`、`agent/tests/test_daily_sign_ledger.py`及`tests/test_daily_sign_v2_packaged_protocol.py`。本机隔离MySQL未配置时后者数据库用例跳过，不代表生产验收。
+本次同时改动Host `get_qianshou.py`字段读取和持久化成员规则，必须与V2包2.1.2配套升级；仅上传ZIP不构成上线完成。回归入口为`tests/test_daily_sign_r13_snapshot.py`、`agent/tests/test_daily_sign_ledger_pipeline.py`、`agent/tests/test_daily_sign_ledger.py`及`tests/test_daily_sign_v2_packaged_protocol.py`。本机隔离MySQL未配置时后者数据库用例跳过，不代表生产验收。
 
 每日应签 V2 `2.0.7` 按 2026-09-15 用户确认，将精确类型“客户拒收/拒付费用”“客户原因要求自提”“改派送地址”纳入 `MANUAL_POSTPONE_TYPES`。与已有人工类型相同：完整成功且登记严格早于 17:00:00 时顺延至登记次日 23:59:59，只延后、不缩短，重读旧登记不继续延期；无实际到货仍不凭问题件生成应签时间。该常量也用于宿主存储的 `postpones_sign`，发布须同步共用源码和插件包，避免计算与持久字段不一致。无需变更数据库或接口。回归覆盖连续人工登记、截止时刻、失败登记、近似类型，以及实际 ZIP/MySQL/双飞书表发布。
 

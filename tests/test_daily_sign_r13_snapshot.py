@@ -109,15 +109,28 @@ def test_snapshot_marker_preserves_tms_conflict_and_r13_problem_evidence():
     assert before["publication_rows"]["sha256"] != after["publication_rows"]["sha256"]
 
 
-def test_arrival_count_uses_today_completed_statistics_without_summing_days():
+def test_arrival_count_uses_latest_per_waybill_statistics_without_summing_days():
     history = [
-        {"business_date": "2026-10-03", "arrived_quantity": 2},
-        {"business_date": "2026-10-04", "arrived_quantity": 3},
+        {"business_date": "2026-10-03", "arrived_quantity": 5, "run_id": "yesterday"},
+        {"business_date": "2026-10-04", "arrived_quantity": 8, "run_id": "today"},
     ]
-    assert sync._current_stat_quantity(history, datetime(2026, 10, 4, 12)) == 3
+    observed_at = datetime(2026, 10, 4, 12)
+    row = {"arrived_quantity": 99}
+    result = sync._apply_latest_stat_quantity(row, history, observed_at)
+    assert result["arrived_quantity"] == 8
+    assert result["calculation_trace"]["arrival_quantity_source"]["used_prior_day"] is False
+    result = sync._apply_latest_stat_quantity(row, history[:1], observed_at)
+    assert result["arrived_quantity"] == 5
+    assert result["calculation_trace"]["arrival_quantity_source"] == {
+        "source": "latest_successful_statistics", "business_date": "2026-10-03",
+        "run_id": "yesterday", "used_prior_day": True,
+    }
+    # A newer explicit correction wins even when it is zero or no data.
     history[-1]["arrived_quantity"] = 0
-    assert sync._current_stat_quantity(history, datetime(2026, 10, 4, 12)) == 0
-    assert sync._current_stat_quantity(history, datetime(2026, 10, 5, 12)) is None
+    assert sync._apply_latest_stat_quantity(row, history, observed_at)["arrived_quantity"] == 0
+    history[-1]["arrived_quantity"] = None
+    assert sync._apply_latest_stat_quantity(row, history, observed_at)["arrived_quantity"] is None
+    assert sync._apply_latest_stat_quantity(row, [], observed_at)["arrived_quantity"] is None
     assert sync._build_ledger_sheet_values([{"arrived_quantity": None}])[0][-1] == "无数据"
     assert sync._build_ledger_records([{"arrived_quantity": None}])[0]["fields"]["到货件数"] is None
 
@@ -125,7 +138,18 @@ def test_arrival_count_uses_today_completed_statistics_without_summing_days():
 def test_arrival_count_rejects_ambiguous_or_invalid_statistics():
     row = {"business_date": "2026-10-04", "arrived_quantity": 2}
     with pytest.raises(ValueError, match="多条"):
-        sync._current_stat_quantity([row, row], datetime(2026, 10, 4))
+        sync._apply_latest_stat_quantity({}, [row, row], datetime(2026, 10, 4))
     for value in (-1, "2.5", True):
         with pytest.raises(ValueError, match="非负整数"):
-            sync._current_stat_quantity([{**row, "arrived_quantity": value}], datetime(2026, 10, 4))
+            sync._apply_latest_stat_quantity({}, [{**row, "arrived_quantity": value}], datetime(2026, 10, 4))
+    with pytest.raises(ValueError, match="业务日期"):
+        sync._apply_latest_stat_quantity({}, [{"arrived_quantity": 5}], datetime(2026, 10, 4))
+
+
+def test_latest_statistics_selection_ignores_future_and_input_order():
+    history = [
+        {"business_date": "2026-10-05", "arrived_quantity": 10},
+        {"business_date": "2026-10-04", "arrived_quantity": 8},
+        {"business_date": "2026-10-03", "arrived_quantity": 5},
+    ]
+    assert sync._apply_latest_stat_quantity({}, history, datetime(2026, 10, 4))["arrived_quantity"] == 8

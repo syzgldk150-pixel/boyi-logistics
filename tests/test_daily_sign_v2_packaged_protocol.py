@@ -216,7 +216,8 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
     if manual_problem_type:
         arrivals[0]["arrived_quantity"] = 3
     store.save_arrival_stat_snapshot(date(2026,9,10), arrivals)
-    store.save_arrival_stat_snapshot(date(2026,9,11), arrivals)
+    # The first unsigned waybill can be absent today but retain its known count.
+    store.save_arrival_stat_snapshot(date(2026,9,11), arrivals[1:] if historical else arrivals)
     source_calls = []
     tracking_active = threading.Lock()
     # Source identity is shared by rows in a single bound invocation. A real

@@ -1261,24 +1261,46 @@ def _r13_problem_cells(row: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _current_stat_quantity(history: list[dict[str, Any]], observed_at: datetime) -> int | None:
+def _apply_latest_stat_quantity(
+    row: dict[str, Any], history: list[dict[str, Any]], observed_at: datetime
+) -> dict[str, Any]:
     """The Host supplies only active successful daily statistics snapshots.
 
-    Their quantities are already cumulative. Use today's matching row once;
-    never sum days or substitute an earlier day's count for a missing row.
+    Their quantities are already cumulative. Use this waybill's latest snapshot
+    at or before the business date, including when today's list omits it.
     """
     today = observed_at.date().isoformat()
-    matches = [row for row in history if str(row.get("business_date")) == today]
-    if not matches:
-        return None
-    if len(matches) != 1:
-        raise ValueError("当天成功统计中同一运单存在多条记录，无法确定到货件数")
-    value = matches[0].get("arrived_quantity")
-    if value is None or value == "":
-        return None
-    if isinstance(value, bool) or not str(value).isdigit():
-        raise ValueError("当天统计的到货件数不是非负整数")
-    return int(value)
+    eligible = []
+    for item in history:
+        try:
+            business_date = datetime.strptime(str(item.get("business_date")), "%Y-%m-%d").date()
+        except ValueError as exc:
+            raise ValueError("统计快照缺少有效业务日期，无法确定最近累计到货件数") from exc
+        if business_date <= observed_at.date():
+            eligible.append(item)
+    latest_date = max((str(item.get("business_date") or "") for item in eligible), default="")
+    matches = [item for item in eligible if str(item.get("business_date") or "") == latest_date]
+    if len(matches) > 1:
+        raise ValueError("最近成功统计中同一运单存在多条记录，无法确定到货件数")
+    snapshot = matches[0] if matches else {}
+    value = snapshot.get("arrived_quantity")
+    quantity = None
+    if value is not None and value != "":
+        if isinstance(value, bool) or not str(value).isdigit():
+            raise ValueError("最近统计的到货件数不是非负整数")
+        quantity = int(value)
+    return {
+        **row, "arrived_quantity": quantity,
+        "calculation_trace": {
+            **(row.get("calculation_trace") or {}),
+            "arrival_quantity_source": {
+                "source": "latest_successful_statistics",
+                "business_date": latest_date or None,
+                "run_id": snapshot.get("run_id"),
+                "used_prior_day": bool(latest_date and latest_date < today),
+            },
+        },
+    }
 
 
 def _apply_r13_publication_fields(row: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
@@ -2084,9 +2106,9 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
         # ledger candidates or a second filter based on locally calculated due dates.
         ledger_rows = [
             _apply_r13_publication_fields(
-                {**row, "arrived_quantity": _current_stat_quantity(
+                _apply_latest_stat_quantity(row,
                     state.get("arrivals", {}).get(row["tracking_number"], []), observed_at
-                )},
+                ),
                 r13_by_code[row["tracking_number"]],
             )
             if row["tracking_number"] in r13_by_code else row
