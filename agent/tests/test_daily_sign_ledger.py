@@ -473,20 +473,21 @@ class DailySignLedgerRulesTest(unittest.TestCase):
 
  def test_partial_completion_is_due_on_completion_day(self):
     due, _ = calculate_system_sign_due(
-        [arrival("2026-08-12", 10, 5), arrival("2026-08-13", 10, 5)],
+        [arrival("2026-08-12", 10, 5), arrival("2026-08-13", 10, 10)],
         [problem("少货/分批", "2026-08-12 16:00:00"),
          problem("少货/分批", "2026-08-13 10:00:00")],
     )
     self.assertEqual(datetime(2026, 8, 13, 23, 59, 59), due)
 
 
- def test_daily_arrival_rows_are_accumulated_until_expected_quantity_is_reached(self):
+ def test_repeated_cumulative_snapshots_do_not_complete_a_partial_arrival(self):
     due, state = calculate_system_sign_due(
         [arrival("2026-08-12", 10, 5), arrival("2026-08-13", 10, 5)],
         [],
     )
-    self.assertEqual(10, state["arrived_quantity"])
-    self.assertEqual("completed", state["arrival_status"])
+    self.assertEqual(5, state["arrived_quantity"])
+    self.assertEqual("partial", state["arrival_status"])
+    self.assertIsNone(state["completion_date"])
     self.assertEqual(datetime(2026, 8, 13, 23, 59, 59), due)
 
 

@@ -35,57 +35,76 @@ def is_valid_problem_event(event: dict[str, Any]) -> bool:
     )
 
 
-def _arrival_state(history: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    ordered = sorted(
-        (item for item in history if parse_date(item.get("business_date"))),
-        key=lambda item: parse_date(item.get("business_date")) or date.min,
-    )
+def calculate_arrival_state(
+    history: Iterable[dict[str, Any]], *, observed_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Statistics rows are cumulative snapshots, never daily increments."""
+    snapshots: dict[date, dict[str, Any]] = {}
+    for item in history:
+        try:
+            business_date = datetime.strptime(str(item.get("business_date")), "%Y-%m-%d").date()
+        except ValueError as exc:
+            raise ValueError("统计快照缺少有效业务日期，无法确定最近累计到货件数") from exc
+        if observed_at is not None and business_date > observed_at.date():
+            continue
+        if business_date in snapshots:
+            raise ValueError("成功统计中同一运单同一天存在多条记录，无法确定到货件数")
+        value = item.get("arrived_quantity")
+        quantity = None
+        if value not in (None, ""):
+            if isinstance(value, bool) or not str(value).isdigit():
+                raise ValueError("最近统计的到货件数不是非负整数")
+            quantity = int(value)
+        snapshots[business_date] = {
+            **item, "business_date": business_date.isoformat(), "arrived_quantity": quantity,
+        }
+    ordered = sorted(snapshots.items())
     first_arrival_date: date | None = None
     first_partial_date: date | None = None
     completion_date: date | None = None
     latest_expected: int | None = None
-    cumulative_arrived = 0
+    latest_arrived: int | None = None
     latest_row: dict[str, Any] = {}
 
-    for item in ordered:
+    for _, item in ordered:
         expected = to_int(item.get("expected_quantity"))
         if expected is not None:
             if expected < 0:
                 raise ValueError("expected_quantity cannot be negative")
             latest_expected = expected
 
-    for item in ordered:
-        business_date = parse_date(item.get("business_date"))
-        arrived = to_int(item.get("arrived_quantity"))
-        if business_date is None:
-            continue
-        if arrived is not None and arrived < 0:
-            raise ValueError("arrived_quantity cannot be negative")
+    for business_date, item in ordered:
+        arrived = item["arrived_quantity"]
         latest_row = item
-        if arrived:
-            cumulative_arrived += arrived
+        latest_arrived = arrived
         if arrived and first_arrival_date is None:
             first_arrival_date = business_date
         if (
-            cumulative_arrived > 0
+            arrived is not None and arrived > 0
             and latest_expected is not None
-            and latest_expected > cumulative_arrived
+            and latest_expected > arrived
             and first_partial_date is None
         ):
             first_partial_date = business_date
         if (
-            completion_date is None
+            arrived is not None
             and latest_expected is not None
             and latest_expected > 0
-            and cumulative_arrived >= latest_expected
+            and arrived >= latest_expected
         ):
-            completion_date = business_date
+            if completion_date is None:
+                completion_date = business_date
+        else:
+            # A later correction or missing quantity invalidates prior completion.
+            completion_date = None
 
-    if first_arrival_date is None:
+    if not ordered or latest_arrived == 0:
         status = "not_arrived"
+    elif latest_arrived is None:
+        status = "unknown"
     elif completion_date is not None:
         status = "completed"
-    elif cumulative_arrived > 0:
+    elif latest_arrived > 0:
         status = "partial"
     else:
         status = "unknown"
@@ -94,7 +113,7 @@ def _arrival_state(history: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "first_partial_date": first_partial_date,
         "completion_date": completion_date,
         "expected_quantity": latest_expected,
-        "arrived_quantity": cumulative_arrived if first_arrival_date is not None else None,
+        "arrived_quantity": latest_arrived,
         "arrival_status": status,
         "latest_row": latest_row,
         "arrival_observations": len(ordered),
@@ -104,8 +123,9 @@ def _arrival_state(history: Iterable[dict[str, Any]]) -> dict[str, Any]:
 def calculate_system_sign_due(
     arrival_history: Iterable[dict[str, Any]],
     problem_events: Iterable[dict[str, Any]],
+    *, observed_at: datetime | None = None,
 ) -> tuple[datetime | None, dict[str, Any]]:
-    state = _arrival_state(arrival_history)
+    state = calculate_arrival_state(arrival_history, observed_at=observed_at)
     first_arrival = state["first_arrival_date"]
     first_partial = state["first_partial_date"]
     completion = state["completion_date"]
@@ -118,7 +138,7 @@ def calculate_system_sign_due(
 
     due: datetime | None = None
     reason = "no_actual_arrival"
-    if first_arrival is not None:
+    if first_arrival is not None and (state["arrived_quantity"] or 0) > 0:
         if completion is not None and first_partial is None:
             due = end_of_day(completion + timedelta(days=1))
             reason = "complete_on_first_arrival"
@@ -181,7 +201,7 @@ def build_ledger_row(
     r13_row = r13_row or {}
     previous_row = previous_row or {}
     problem_rows = list(problem_events)
-    due, state = calculate_system_sign_due(arrival_history, problem_rows)
+    due, state = calculate_system_sign_due(arrival_history, problem_rows, observed_at=observed_at)
     latest_arrival = state.get("latest_row") or {}
     r13_current = bool(r13_row)
     raw_sign_at = parse_datetime(sign_event.get("scanned_at")) if sign_event else None

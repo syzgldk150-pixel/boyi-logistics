@@ -9,7 +9,7 @@ updated: 2026-10-04
 
 # 身份权限与统一对话
 
-## 每日应签 R13 原页快照（2.1.3）
+## 每日应签 R13 原页快照（2.1.4）
 
 2026-10-04 使用 DrissionPageMCP 核实已登录的 `/outlets/cargoReceiptWarn`：无 iframe，Vue 组件 `CargoReceiptWarn`，查询为 `POST /gateway/site/waybillSignWarn/pageGet`。应签时间使用 `queryType=2`、`planSignTime_CondStart/End`，签收否为 `isSigns="0"`，查看下属沿用原页 `showSub="10"`。2.1.3 按用户要求扩大为最近30天（含当天），从上海业务日减29天的00:00:00至当天23:59:59，不是上一个自然月；例如2026-10-04查询2026-09-05至2026-10-04。旧保存的日期参数不改变本插件范围。账号/站点仍由所选业务账号池绑定和实际登录上下文取得。
 
@@ -19,7 +19,7 @@ updated: 2026-10-04
 
 发布集合只包含本次R13完整清单，不追加历史台账，也不因TMS签收证据二次删行；台账继续独立保留TMS签收事实与原有应签计算。普通电子表格精确迁移旧八/九列表头至十二列并按A:L写入、清尾、回读。多维表提交相同顺序的十二字段，旧计算列不再写入；已有多维表视图的可见列顺序由其视图设置控制，当前Connector没有修改视图排序的能力。
 
-2.1.2 所需Host `get_qianshou.py`字段读取和持久化成员规则已配套发布。2.1.3 仅扩大包内日期范围，复用宿主已有的显式起止时间和完整分页，可单独升级原插件，无需重启服务。回归入口为`tests/test_daily_sign_r13_snapshot.py`、`agent/tests/test_daily_sign_ledger_pipeline.py`、`agent/tests/test_daily_sign_ledger.py`及`tests/test_daily_sign_v2_packaged_protocol.py`。本机隔离MySQL未配置时后者数据库用例跳过，不代表生产验收。
+2.1.4 修复内部到齐和应签计算仍跨日累加累计快照的问题：报表与内部规则共用 `calculate_arrival_state`，连续两天累计2件仍为2件，货物总数3件时保持未齐，符合条件的分批登记仍可顺延至登记次日。最新快照纠正为不足、0或空值时撤销之前的到齐判断；0或空值不依据旧到货数生成应签日期。只使用截至本次观测业务日的快照。2.1.3 的最近30天范围和R13发布集合保持不变，现有Host可直接升级插件。回归入口为`tests/test_daily_sign_r13_snapshot.py`、`agent/tests/test_daily_sign_ledger_pipeline.py`、`agent/tests/test_daily_sign_ledger.py`及`tests/test_daily_sign_v2_packaged_protocol.py`；数据库用例需要显式配置隔离MySQL，跳过不算通过，也不代表生产业务验收。
 
 每日应签 V2 `2.0.7` 按 2026-09-15 用户确认，将精确类型“客户拒收/拒付费用”“客户原因要求自提”“改派送地址”纳入 `MANUAL_POSTPONE_TYPES`。与已有人工类型相同：完整成功且登记严格早于 17:00:00 时顺延至登记次日 23:59:59，只延后、不缩短，重读旧登记不继续延期；无实际到货仍不凭问题件生成应签时间。该常量也用于宿主存储的 `postpones_sign`，发布须同步共用源码和插件包，避免计算与持久字段不一致。无需变更数据库或接口。回归覆盖连续人工登记、截止时刻、失败登记、近似类型，以及实际 ZIP/MySQL/双飞书表发布。
 

@@ -3,7 +3,7 @@
   "runtime_model": "service_v2",
   "plugin_id": "sync_daily_should_sign_v2",
   "name": "每日应签",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "description": "读取业务账号池所绑定 R13 到货预报的过去30天未签收全量清单，按12列输出原页字段并核验飞书表。",
   "host_api": {
     "minimum": "2.0.0",

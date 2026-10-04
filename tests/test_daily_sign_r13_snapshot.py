@@ -90,6 +90,35 @@ def test_fixed_thirty_business_days_override_old_saved_range(today, start, end):
     assert request["days"] == 30 and request["page"] == 1 and request["fetch_all"] is True
 
 
+@pytest.mark.parametrize("counts,expected,quantity,status,due", [
+    ([2, 2], 3, 2, "partial", datetime(2026, 9, 12, 23, 59, 59)),
+    ([2, 3], 3, 3, "completed", datetime(2026, 9, 11, 23, 59, 59)),
+    ([2], 3, 2, "partial", datetime(2026, 9, 12, 23, 59, 59)),
+    ([5, 8], 10, 8, "partial", datetime(2026, 9, 12, 23, 59, 59)),
+    ([3, 2], 3, 2, "partial", datetime(2026, 9, 12, 23, 59, 59)),
+    ([3, 0], 3, 0, "not_arrived", None),
+    ([3, None], 3, None, "unknown", None),
+    ([2, 2, 3], 3, 2, "partial", datetime(2026, 9, 12, 23, 59, 59)),
+])
+def test_cumulative_snapshots_keep_internal_rules_and_report_consistent(
+    counts, expected, quantity, status, due,
+):
+    observed_at = datetime(2026, 9, 11, 12)
+    history = [{"business_date": f"2026-09-{10 + index:02}",
+        "expected_quantity": expected, "arrived_quantity": count, "run_id": f"run-{index}"}
+        for index, count in enumerate(counts)]
+    row = sync.build_ledger_row("R00021000001", r13_row=source_row(), previous_row=None,
+        arrival_history=history, problem_events=[{"problem_type": "少货/分批",
+            "registered_at": "2026-09-11 09:31:03", "upload_complete": True}],
+        sign_event=None, observed_at=observed_at)
+    assert row["arrived_quantity"] == quantity
+    assert row["arrival_status"] == status
+    assert row["completion_date"] == (datetime(2026, 9, 11).date() if status == "completed" else None)
+    assert row["system_sign_due_at"] == due
+    published = sync._apply_latest_stat_quantity(row, history, observed_at)
+    assert published["arrived_quantity"] == row["arrived_quantity"]
+
+
 def test_original_empty_problem_fields_do_not_reuse_prior_events():
     source = {**source_row(), "billNumberMain": "R1", "problemType": None, "problemRegisterDate": None,
         "problemCause": None, "problemRegisterSite": None}

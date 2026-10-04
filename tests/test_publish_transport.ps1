@@ -80,3 +80,6 @@ finally {
     Remove-Item -LiteralPath $fixtureKey -Force
     Remove-Item -LiteralPath $fixture -Force
 }
+# Expected failure mocks must not leak their native exit code into the CI wrapper.
+# Reaching here means every assertion and cleanup succeeded; exceptions still fail.
+$global:LASTEXITCODE = 0

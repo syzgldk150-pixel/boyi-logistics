@@ -18,6 +18,7 @@ from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_ru
     BUSINESS_TIMEZONE,
     problem_event_flags,
     build_ledger_row,
+    calculate_arrival_state,
     business_now,
     clean_text,
     ledger_row_is_due,
@@ -1270,27 +1271,11 @@ def _apply_latest_stat_quantity(
     at or before the business date, including when today's list omits it.
     """
     today = observed_at.date().isoformat()
-    eligible = []
-    for item in history:
-        try:
-            business_date = datetime.strptime(str(item.get("business_date")), "%Y-%m-%d").date()
-        except ValueError as exc:
-            raise ValueError("统计快照缺少有效业务日期，无法确定最近累计到货件数") from exc
-        if business_date <= observed_at.date():
-            eligible.append(item)
-    latest_date = max((str(item.get("business_date") or "") for item in eligible), default="")
-    matches = [item for item in eligible if str(item.get("business_date") or "") == latest_date]
-    if len(matches) > 1:
-        raise ValueError("最近成功统计中同一运单存在多条记录，无法确定到货件数")
-    snapshot = matches[0] if matches else {}
-    value = snapshot.get("arrived_quantity")
-    quantity = None
-    if value is not None and value != "":
-        if isinstance(value, bool) or not str(value).isdigit():
-            raise ValueError("最近统计的到货件数不是非负整数")
-        quantity = int(value)
+    state = calculate_arrival_state(history, observed_at=observed_at)
+    snapshot = state["latest_row"]
+    latest_date = snapshot.get("business_date")
     return {
-        **row, "arrived_quantity": quantity,
+        **row, "arrived_quantity": state["arrived_quantity"],
         "calculation_trace": {
             **(row.get("calculation_trace") or {}),
             "arrival_quantity_source": {

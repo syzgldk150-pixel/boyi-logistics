@@ -293,6 +293,9 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         assert sheet_rows["R00021000001"][2] == "原页问题"
         assert state["ledger"]["R00021000001"]["system_sign_due_at"] == datetime(2026,9,12,23,59,59)
         assert record_fields["R00021000003"]["规划应签收时间"] == "2026-09-11 23:59:59"
+    if count == 3 and not manual_problem_type:
+        assert state["ledger"]["R00021000001"]["arrival_status"] == "partial"
+        assert state["ledger"]["R00021000001"]["completion_date"] is None
     if manual_problem_type:
         stored_events = state["problems"]["R00021000001"]
         assert len(stored_events) == 1
