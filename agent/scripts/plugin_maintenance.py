@@ -92,6 +92,8 @@ PLUGIN_TESTS = {
     "sync_daily_should_sign_v2": (
         "tests/test_daily_sign_v2_packaged_protocol.py",
         "tests/test_daily_sign_r13_snapshot.py",
+        "tests/test_feishu_readback_delayed.py",
+        "agent/tests/test_daily_sign_ledger.py",
     ),
 }
 

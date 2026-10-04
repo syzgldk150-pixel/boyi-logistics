@@ -127,23 +127,28 @@ def test_daily_send_lost_write_ack_is_proved_by_delayed_bitable_readback() -> No
     assert list_calls == 3
 
 
+_DAILY_SIGN_FIELDS = {
+    "运单编号": 1,
+    "规划应签收时间": 1,
+    "问题件类型": 1,
+    "登记时间": 1,
+    "内容": 1,
+    "登记网点": 1,
+    "货物品名": 1,
+    "包装类型": 1,
+    "货物件数": 2,
+    "收件人地址": 1,
+    "送货方式": 1,
+    "到货件数": 2,
+}
+
+
 def test_daily_sign_schema_lost_ack_is_proved_without_repeating_field_creation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    required = {
-        "运单编号": 1,
-        "R13应签收时间": 1,
-        "问题件后应签时间": 1,
-        "货物品名": 1,
-        "包装类型": 1,
-        "货物件数": 2,
-        "收件人地址": 1,
-        "送货方式": 1,
-        "到货件数": 2,
-    }
     fields = [
         {"field_name": name, "type": value}
-        for name, value in required.items()
+        for name, value in _DAILY_SIGN_FIELDS.items()
         if name != "到货件数"
     ]
     complete_fields = fields + [{"field_name": "到货件数", "type": 2}]
@@ -174,7 +179,7 @@ def test_daily_sign_schema_lost_ack_is_proved_without_repeating_field_creation(
 def test_daily_sign_sheet_lost_write_ack_is_proved_by_delayed_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    expected = [["R1", "2026-08-15 23:59:59", "", "货物", "纸箱", 2, "地址", "派送", ""]]
+    expected = [["R1", "2026-08-15 23:59:59", "", "", "", "", "货物", "纸箱", 2, "地址", "派送", ""]]
     blank = [[], []]
     readback_calls = 0
     write_calls = 0
@@ -182,7 +187,7 @@ def test_daily_sign_sheet_lost_write_ack_is_proved_by_delayed_snapshot(
     monkeypatch.setattr(
         daily_sign_sync_tool,
         "resolve_sheet_target",
-        lambda _params, _key: ("sheet-token", "每日应签!A2:I3"),
+        lambda _params, _key: ("sheet-token", "每日应签!A2:L3"),
     )
     monkeypatch.setattr(
         daily_sign_sync_tool,
@@ -194,7 +199,7 @@ def test_daily_sign_sheet_lost_write_ack_is_proved_by_delayed_snapshot(
         nonlocal readback_calls, write_calls
         if action == "read_sheet":
             value_range = str(params["range"])
-            if value_range.endswith("A1:I1"):
+            if value_range.endswith("A1:L1"):
                 return {"ok": True, "values": [daily_sign_sync_tool.SHEET_HEADERS]}
             readback_calls += 1
             return {"ok": True, "values": blank if readback_calls == 1 else expected + [[]]}
@@ -217,17 +222,6 @@ def test_daily_sign_sheet_lost_write_ack_is_proved_by_delayed_snapshot(
 def test_daily_sign_bitable_lost_write_ack_is_proved_by_delayed_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    required = {
-        "运单编号": 1,
-        "R13应签收时间": 1,
-        "问题件后应签时间": 1,
-        "货物品名": 1,
-        "包装类型": 1,
-        "货物件数": 2,
-        "收件人地址": 1,
-        "送货方式": 1,
-        "到货件数": 2,
-    }
     target = [{"fields": {"运单编号": "R1"}}]
     stored: list[dict[str, object]] = []
     record_reads = 0
@@ -243,7 +237,7 @@ def test_daily_sign_bitable_lost_write_ack_is_proved_by_delayed_snapshot(
     def feishu(action: str, params: dict[str, object]) -> dict[str, object]:
         nonlocal record_reads, write_calls
         if action == "list_fields":
-            return {"ok": True, "items": [{"field_name": name, "type": value} for name, value in required.items()]}
+            return {"ok": True, "items": [{"field_name": name, "type": value} for name, value in _DAILY_SIGN_FIELDS.items()]}
         if action == "list_records":
             record_reads += 1
             visible = [] if record_reads == 2 else stored
