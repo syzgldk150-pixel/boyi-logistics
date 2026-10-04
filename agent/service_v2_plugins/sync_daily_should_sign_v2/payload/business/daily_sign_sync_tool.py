@@ -1899,17 +1899,12 @@ def _sync_bitable(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[st
 def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
     from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline import (
         DailySignSyncError,
-        _collect_problem_events,
-        _collect_sign_events,
         _extract_rows as _extract_authoritative_rows,
         _finish_failed_run,
         _legacy_candidate_keys,
-        _merge_problem_events,
-        _merge_sign_events,
         _required_account_id as _required_pipeline_account_id,
         _resolve_r13_request,
         _r13_rows_by_code,
-        _source_query_window,
         _unified_failure,
         _unified_success,
     )
@@ -1929,7 +1924,6 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
                 "权威每日应签同步不支持跳过持久化的 dry_run。",
             )
         r13_account_id = _required_pipeline_account_id(params, "r13_account_id")
-        account_id = _required_pipeline_account_id(params, "account_id")
 
         try:
             run_id, started_at = start_sync_run()
@@ -1972,121 +1966,29 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
         r13_by_code = _r13_rows_by_code(r13_rows)
         diagnostics.update({"r13_complete": True, "r13_rows": len(r13_rows)})
 
-        source_start, source_end = _source_query_window(
-            params,
-            r13_rows=r13_rows,
-            state=state,
-            observed_at=observed_at,
-        )
-        problem_events, problem_proof = _collect_problem_events(
-            params,
-            account_id=account_id,
-            start=source_start,
-            end=source_end,
-        )
-        problems_by_code = _merge_problem_events(
-            state.get("problems", {}),
-            problem_events,
-        )
-        diagnostics.update(
-            {
-                "problems_complete": True,
-                "problem_rows": len(problem_events),
-                "problem_proof": problem_proof,
-            }
-        )
-
-        known_codes = (
-            set(r13_by_code)
-            | set(state.get("ledger", {}))
-            | set(state.get("target_station_codes", set()))
-        )
-        bulk_sign_events, bulk_sign_proof = _collect_sign_events(
-            params,
-            account_id=account_id,
-            start=source_start,
-            end=source_end,
-            known_codes=known_codes,
-        )
-        signs_by_code = _merge_sign_events(
-            state.get("signs", {}),
-            bulk_sign_events,
-        )
-        working_state = {
-            **state,
-            "problems": problems_by_code,
-            "signs": signs_by_code,
-        }
-
-        exact_sign_events, exact_sign_result = _sync_r13_sign_conflicts(
-            params,
-            r13_by_code,
-            working_state,
-            persist=False,
-        )
-        if exact_sign_result.get("complete") is not True:
-            raise DailySignSyncError(
-                "INCOMPLETE_SOURCE_EVIDENCE",
-                "R13 签收状态与主单轨迹冲突，精确签收核验未完整。",
-                retryable=True,
-            )
-        signs_by_code = _merge_sign_events(signs_by_code, exact_sign_events)
-        working_state["signs"] = signs_by_code
-
-        historical_sign_events, historical_sign_result = _sync_historical_sign_verifications(
-            params,
-            r13_by_code,
-            working_state,
-            observed_at=observed_at,
-            persist=False,
-        )
-        verification_rows = list(historical_sign_result.pop("verification_rows", []))
-        if historical_sign_result.get("complete") is not True:
-            raise DailySignSyncError(
-                "INCOMPLETE_SOURCE_EVIDENCE",
-                "历史每日应签候选的主单轨迹核验未完整。",
-                retryable=True,
-            )
-        signs_by_code = _merge_sign_events(signs_by_code, historical_sign_events)
-        working_state["signs"] = signs_by_code
-        sign_proof = {
-            "complete": True,
-            "bulk": bulk_sign_proof,
-            "exact_conflicts": exact_sign_result,
-            "historical_exact": historical_sign_result,
-        }
-        diagnostics.update(
-            {
-                "signs_complete": True,
-                "sign_rows": len(signs_by_code),
-                "sign_proof": sign_proof,
-            }
-        )
-
-        candidate_codes, excluded_child_codes = _daily_sign_candidate_codes(
-            r13_by_code,
-            state.get("ledger", {}),
-            set(state.get("target_station_codes", set())),
-        )
+        # R13 already supplies the requested problem/sign fields. Do not query
+        # secondary systems or recompute thousands of historical candidates.
+        # Stored event facts remain historical inputs, never publication fields.
+        problem_events: list[dict[str, Any]] = []
+        all_sign_events: list[dict[str, Any]] = []
+        verification_rows: list[dict[str, Any]] = []
+        candidate_codes = set(r13_by_code)
+        diagnostics.update({
+            "problem_rows": 0, "sign_rows": 0,
+            "secondary_sources": {"status": "not_requested", "publication_source": "r13"},
+        })
         ledger_rows = [
             build_ledger_row(
                 code,
                 r13_row=r13_by_code.get(code),
                 previous_row=state.get("ledger", {}).get(code),
                 arrival_history=state.get("arrivals", {}).get(code, []),
-                problem_events=problems_by_code.get(code, []),
-                sign_event=signs_by_code.get(code),
+                problem_events=state.get("problems", {}).get(code, []),
+                sign_event=state.get("signs", {}).get(code),
                 observed_at=observed_at,
             )
             for code in sorted(candidate_codes)
         ]
-        excluded_missing_r13_plan_rows = sum(
-            1
-            for row in ledger_rows
-            if row.get("r13_current") is not True
-            and ledger_row_is_due(row, observed_at.date())
-            and parse_datetime(row.get("r13_plan_sign_at")) is None
-        )
         # Publication is the complete current R13 unsigned query, not historical
         # ledger candidates or a second filter based on locally calculated due dates.
         ledger_rows = [
@@ -2111,7 +2013,6 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
             "r13_current_signed_rows": sum(row.get("tms_signed") is True for row in open_rows),
         })
         address_result = {"ok": True, "source": "r13", "queried": 0}
-        all_sign_events = bulk_sign_events + exact_sign_events + historical_sign_events
         persistence_marker = build_daily_sign_persistence_marker(
             problem_events=problem_events,
             sign_events=all_sign_events,
@@ -2253,9 +2154,6 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
             {
                 "r13_rows": len(r13_rows),
                 "candidate_rows": len(candidate_codes),
-                "excluded_child_candidate_rows": len(excluded_child_codes),
-                "excluded_child_candidate_codes": sorted(excluded_child_codes),
-                "excluded_missing_r13_plan_rows": excluded_missing_r13_plan_rows,
                 "published_rows": len(open_rows),
                 "unmatched_rows": sum(1 for row in open_rows if "r13_without_arrival_history" in row.get("data_quality_flags", [])),
                 "closed_by_tms_rows": sum(1 for row in ledger_rows if row.get("tms_signed")),
@@ -2264,8 +2162,8 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
                 "quality_flag_counts": dict(sorted(quality_flag_counts.items())),
                 "fingerprint": fingerprint,
                 "source_window": {
-                    "start": source_start.isoformat(),
-                    "end": source_end.isoformat(),
+                    "start": r13_request["start"],
+                    "end": r13_request["end"],
                 },
                 "ledger_result": ledger_result,
                 "address_enrichment": address_result,
@@ -2284,12 +2182,12 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
             "status": "success",
             "degraded": False,
             "r13_complete": True,
-            "problems_complete": True,
-            "signs_complete": True,
+            "problems_complete": False,
+            "signs_complete": False,
             "r13_rows": len(r13_rows),
             "arrival_rows": diagnostics["arrival_rows"],
             "problem_rows": len(problem_events),
-            "sign_rows": len(signs_by_code),
+            "sign_rows": 0,
             "candidate_rows": len(candidate_codes),
             "published_rows": len(open_rows),
             "unmatched_rows": diagnostics["unmatched_rows"],
@@ -2333,8 +2231,6 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
             | {
                 f"mysql:daily_sign_sync_runs:{run_id}",
                 f"r13:complete:{snapshot_fingerprint(r13_rows)}",
-                f"ronghui_problems:complete:{snapshot_fingerprint(problem_events)}",
-                f"ronghui_signs:complete:{snapshot_fingerprint(all_sign_events)}",
                 f"mysql:daily_sign_persistence:{persistence_marker['marker_sha256']}",
                 f"mysql:daily_sign_ledger:{persistence_readback['ledger_sha256']}",
                 f"feishu:daily_sign_bitable:{bitable_readback['snapshot_sha256']}",

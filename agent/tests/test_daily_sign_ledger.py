@@ -769,17 +769,6 @@ class DailySignSyncPipelineTest(unittest.TestCase):
                 "dispAddress": "测试地址",
             },
         ]
-        old_sign = {
-            "source": "ronghui_sign:test",
-            "external_id": "old-sign",
-            "tracking_number": "OLD",
-            "scan_code": "OLD",
-            "scan_type": "签收",
-            "scanned_at": "2026-08-12 10:00:00",
-            "scan_site": "邵阳大祥S站",
-            "is_main_waybill": True,
-        }
-
         def sync_bitable(rows, _params):
             return {
                 "ok": True,
@@ -808,7 +797,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
             patch(
                 "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._resolve_r13_request",
-                return_value={"days": 1, "fetch_all": True, "page": 1},
+                return_value={"days": 30, "fetch_all": True, "page": 1, "start": "2026-07-14 00:00:00", "end": "2026-08-12 23:59:59"},
             ),
             patch(
                 "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._source_query_window",
@@ -816,22 +805,19 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             ),
             patch(
                 "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_problem_events",
-                return_value=([], {"rows": 0, "declared_total": 0, "complete": True}),
+                side_effect=AssertionError("R13-only publication must not read problem history"),
             ),
             patch(
                 "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_sign_events",
-                return_value=([old_sign], {"source_rows": 1, "complete": True}),
+                side_effect=AssertionError("R13-only publication must not read sign history"),
             ),
             patch(
                 "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_r13_sign_conflicts",
-                return_value=([], {"ok": True, "complete": True}),
+                side_effect=AssertionError("R13-only publication must not read tracking"),
             ),
             patch(
                 "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_historical_sign_verifications",
-                return_value=(
-                    [],
-                    {"ok": True, "complete": True, "verification_rows": []},
-                ),
+                side_effect=AssertionError("R13-only publication must not read historical tracking"),
             ),
             patch(
                 "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.persist_daily_sign_snapshot",
@@ -869,19 +855,18 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             sorted(row["tracking_number"] for row in captured),
         )
         persisted_rows = persist.call_args.kwargs["ledger_rows"]
-        old = next(row for row in persisted_rows if row["tracking_number"] == "OLD")
+        self.assertNotIn("OLD", [row["tracking_number"] for row in persisted_rows])
         r2 = next(row for row in persisted_rows if row["tracking_number"] == "R2")
         r3 = next(row for row in persisted_rows if row["tracking_number"] == "R3")
-        self.assertTrue(old["tms_signed"])
         self.assertFalse(r2["tms_signed"])
         self.assertIn("r13_signed_without_tms_scan", r2["data_quality_flags"])
         self.assertIsNone(r3["system_sign_due_at"])
         self.assertIsNone(r3["arrived_quantity"])
         marker = persist.call_args.kwargs["persistence_marker"]
         self.assertEqual(0, marker["problem_events"]["count"])
-        self.assertEqual(1, marker["sign_events"]["count"])
+        self.assertEqual(0, marker["sign_events"]["count"])
         self.assertEqual(0, marker["sign_verification_states"]["count"])
-        self.assertEqual(4, marker["ledger_rows"]["count"])
+        self.assertEqual(2, marker["ledger_rows"]["count"])
         self.assertEqual(2, marker["publication_rows"]["count"])
         self.assertEqual(64, len(marker["marker_sha256"]))
         verify_persistence.assert_called_once()
@@ -1028,7 +1013,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             ),
             patch(
                 "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._resolve_r13_request",
-                return_value={"days": 1, "fetch_all": True, "page": 1},
+                return_value={"days": 30, "fetch_all": True, "page": 1, "start": "2026-07-14 00:00:00", "end": "2026-08-12 23:59:59"},
             ),
             patch(
                 "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._source_query_window",
@@ -1083,116 +1068,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         finish.assert_not_called()
         verify_completed.assert_not_called()
 
-    def test_sign_query_failure_is_blocked_and_never_publishes(self):
-        state = self._state()
-        observed_at = datetime(2026, 8, 12, 12, 0, 0)
-        with (
-            patch(
-                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service",
-                return_value=[self._complete_r13_row()],
-            ),
-            patch(
-                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.start_sync_run",
-                return_value=("run", observed_at),
-            ),
-            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
-            patch(
-                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._resolve_r13_request",
-                return_value={"days": 1, "fetch_all": True, "page": 1},
-            ),
-            patch(
-                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._source_query_window",
-                return_value=(observed_at, observed_at),
-            ),
-            patch(
-                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_problem_events",
-                return_value=([], {"rows": 0, "declared_total": 0, "complete": True}),
-            ),
-            patch(
-                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_sign_events",
-                side_effect=DailySignSyncError(
-                    "INCOMPLETE_SOURCE_EVIDENCE",
-                    "主单签收来源不完整。",
-                    retryable=True,
-                ),
-            ),
-            patch(
-                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._finish_failed_run",
-                side_effect=failed_run_values,
-            ) as failed_run,
-            patch(
-                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.verify_daily_sign_completed_run",
-                side_effect=completed_run_readback_proof,
-            ) as verify_completed,
-            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.persist_daily_sign_snapshot") as persist,
-            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_bitable") as bitable,
-            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_sheet") as sheet,
-        ):
-            result = daily_sign_sync_tool.run_daily_sign_sync(self._params())
 
-        self.assertEqual("FAILED", result["status"])
-        self.assertEqual("INCOMPLETE_SOURCE_EVIDENCE", result["error"]["code"])
-        self.assertTrue(result["error"]["retryable"])
-        self.assertEqual("run", result["data"]["source_run_id"])
-        self.assertFalse(result["meta"]["pagination_complete"])
-        failed_run.assert_called_once()
-        verify_completed.assert_called_once()
-        persist.assert_not_called()
-        bitable.assert_not_called()
-        sheet.assert_not_called()
-
-    def test_problem_query_incomplete_stops_before_publish(self):
-        state = self._state()
-        observed_at = datetime(2026, 8, 12, 12, 0, 0)
-        with (
-            patch(
-                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service",
-                return_value=[self._complete_r13_row()],
-            ),
-            patch(
-                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.start_sync_run",
-                return_value=("run", observed_at),
-            ),
-            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
-            patch(
-                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._resolve_r13_request",
-                return_value={"days": 1, "fetch_all": True, "page": 1},
-            ),
-            patch(
-                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._source_query_window",
-                return_value=(observed_at, observed_at),
-            ),
-            patch(
-                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._collect_problem_events",
-                side_effect=DailySignSyncError(
-                    "PAGINATION_INCOMPLETE",
-                    "问题件分页不完整。",
-                    retryable=True,
-                ),
-            ),
-            patch(
-                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._finish_failed_run",
-                side_effect=failed_run_values,
-            ) as failed_run,
-            patch(
-                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.verify_daily_sign_completed_run",
-                side_effect=completed_run_readback_proof,
-            ) as verify_completed,
-            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.persist_daily_sign_snapshot") as persist,
-            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_bitable") as bitable,
-            patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool._sync_sheet") as sheet,
-        ):
-            result = daily_sign_sync_tool.run_daily_sign_sync(self._params())
-
-        self.assertEqual("FAILED", result["status"])
-        self.assertEqual("PAGINATION_INCOMPLETE", result["error"]["code"])
-        self.assertTrue(result["error"]["retryable"])
-        self.assertFalse(result["meta"]["pagination_complete"])
-        failed_run.assert_called_once()
-        verify_completed.assert_called_once()
-        persist.assert_not_called()
-        bitable.assert_not_called()
-        sheet.assert_not_called()
 
     def test_problem_query_retries_transient_source_failure_without_guessing(self):
         problem_row = {

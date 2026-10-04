@@ -4,8 +4,6 @@ import base64
 from datetime import date, datetime
 from types import SimpleNamespace
 import os
-import threading
-import time
 import pytest
 from contextlib import asynccontextmanager
 from unittest.mock import Mock
@@ -134,18 +132,13 @@ def test_daily_sign_source_failure_verifies_only_failed_run_records(tmp_path, di
         "goods_name": "隔离货物", "package_type": "纸箱", "delivery_method": "派送"}])
     accounts, resources, tables = BoundAccounts(), BoundResources(), FeishuTables()
     def tms(endpoint, values):
-        if endpoint == "/get_qianshou":
-            return {"data": [{"billNumberMain": "R00021000001", "planSignTime": "2026-09-11 23:59:59"}]}
-        assert endpoint == "/customer_service_problem"
-        filters = values["params"]["filters"]
-        assert filters["date_from"] == "2026-09-10"
-        assert filters["end_time"] == "12:00:00"
+        assert endpoint == "/get_qianshou"
         return {"ok": False, "error_code": "SOURCE_QUERY_FAILED", "message": "Source query failed"}
     ports = build_daily_sign_port_handlers(account_manager=accounts, store=store, tms=tms,
         feishu=tables, resource_reader=resources.read)
     context = CoreBrokerInvocationContext(automation_id="isolated-daily-sign", plugin_version="2.0.4",
         tool_name="sync_daily_should_sign_v2", operation="service.invoke", action="run", role="__system__",
-        account_bindings={"daily_sign_r13": ("test-r13",), "daily_sign_tms": ("test-tms",)},
+        account_bindings={"daily_sign_r13": ("test-r13",)},
         resource_bindings={"daily_sign_sheet": "test-sheet", "daily_sign_bitable": "test-bitable"})
     host = PackagedConnectorHost(tmp_path, "sync_daily_should_sign_v2", ConnectorRegistry(build_daily_sign_connectors(ports)),
         context, account_resolver=accounts, resource_resolver=resources)
@@ -219,9 +212,7 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
     # The first unsigned waybill can be absent today but retain its known count.
     store.save_arrival_stat_snapshot(date(2026,9,11), arrivals[1:] if historical else arrivals)
     source_calls = []
-    tracking_active = threading.Lock()
-    # Source identity is shared by rows in a single bound invocation. A real
-    # problem page exceeds the 64-call default if identity is resolved per row.
+    # Existing event facts stay in SQL; this run must never refresh them from TMS.
     problem_rows = [problem] if historical else [
         {**problem, "external_id": f"problem-{index}", "waybill_no": row["tracking_number"]}
         for index, row in enumerate(arrivals[:80])
@@ -230,6 +221,12 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         problem_rows = [{**problem, "waybill_no":"R00021000001", "registered_at":"2026-09-11 09:31:03"}]
         if manual_problem_type:
             problem_rows[0]["problem_type"] = manual_problem_type
+    if not historical and problem_rows:
+        store.upsert_problem_events([{
+            **row, "source": "ronghui_problem:abcdef123456",
+            "tracking_number": row["waybill_no"], "upload_complete": True,
+            "before_cutoff": True, "postpones_sign": bool(manual_problem_type),
+        } for row in problem_rows])
 
     def tms(endpoint, values):
         source_calls.append(endpoint)
@@ -241,24 +238,6 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
                 "problemCause":"原页内容", "problemRegisterSite":"原页网点", "goodsName":"原页货物",
                 "packTypeDesc":"纸箱", "pcs":row["expected_quantity"], "dispAddress":"原页地址",
                 "dispatchMode":"派送"} for row in current]}
-        assert values["params"]["account_id"] == "test-tms"
-        if endpoint == "/customer_service_problem":
-            filters = values["params"]["filters"]
-            start = f"{filters['date_from']} {filters['start_time']}"
-            end = f"{filters['date_to']} {filters['end_time']}"
-            rows = [row for row in problem_rows if start <= row["registered_at"] <= end]
-            return {"ok":True, "data":{"ok":True, "account_id":"test-tms", "account_label":"Host account",
-                "rows":rows, "stats":{"total":len(rows), "returned":len(rows), "total_authoritative":True}}}
-        if endpoint == "/get_sign_records":
-            return {"data":[{"扫描单号":"R00021000002", "扫描类型":"签收", "扫描时间":"2026-09-11 10:00:00", "扫描网点":"邵阳大祥S站"}]}
-        if endpoint == "/ronghui_tms_tracking":
-            if not tracking_active.acquire(blocking=False):
-                return {"ok":False,"error_code":"BUSINESS_RESOURCE_BUSY","error":"Endpoint is already active"}
-            try:
-                time.sleep(0.05)
-                return {"ok":True,"data":{"ok":True,"route_rows":[]}}
-            finally:
-                tracking_active.release()
         raise AssertionError(endpoint)
 
     accounts, resources, tables = BoundAccounts(), BoundResources(), FeishuTables(corrupt=corrupt)
@@ -266,13 +245,14 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
     registry = ConnectorRegistry(build_daily_sign_connectors(reviewed))
     context = CoreBrokerInvocationContext(automation_id="isolated-daily-sign", plugin_version="2.0.0", tool_name="sync_daily_should_sign_v2",
         operation="service.invoke", action="run", role="__system__",
-        account_bindings={"daily_sign_r13":("test-r13",), "daily_sign_tms":("test-tms",)},
+        account_bindings={"daily_sign_r13":("test-r13",)},
         resource_bindings={"daily_sign_sheet":"test-sheet", "daily_sign_bitable":"test-bitable"})
     host = PackagedConnectorHost(tmp_path, "sync_daily_should_sign_v2", registry, context, account_resolver=accounts, resource_resolver=resources)
     arguments = {"days": 1}
     if count == 514:
         arguments.update(source_start="2026-08-01 00:00:00", source_end="2026-09-11 12:00:00")
     result = host.execute(arguments, operation="run")
+    assert source_calls == ["/get_qianshou"]
     if corrupt:
         assert result["status"] == "FAILED" and result["error"]["code"] == "WRITE_OUTCOME_UNKNOWN", result
         assert tables.calls.count("write_records") == 1
@@ -286,7 +266,11 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
     assert record_fields["R00021000001"]["到货件数"] == arrivals[0]["arrived_quantity"]
     assert sheet_rows["R00021000001"][-1] == arrivals[0]["arrived_quantity"]
     state = store.load_daily_sign_state()
-    assert state["ledger"]["R00021000002"]["tms_signed"]
+    assert not state["ledger"]["R00021000002"]["tms_signed"]
+    assert len(state["ledger"]) == len(tables.records)
+    diagnostics = result["data"]["diagnostics"]
+    assert diagnostics["secondary_sources"]["status"] == "not_requested"
+    assert not diagnostics["problems_complete"] and not diagnostics["signs_complete"]
     assert state["ledger"]["R00021000001"]["arrived_quantity"] == arrivals[0]["arrived_quantity"]
     if count == 3 or manual_problem_type:
         assert record_fields["R00021000001"]["问题件类型"] == "原页问题"
@@ -305,9 +289,7 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         assert state["ledger"]["R00021000001"]["recipient_address"] == "原页地址"
         assert any(row["external_id"] == identity for row in state["problems"]["R00021000002"])
     if count == 514:
-        assert source_calls.count("/customer_service_problem") == 3
         assert sum(len(rows) for rows in state["problems"].values()) == len(problem_rows)
     if count == 8:
-        assert source_calls.count("/ronghui_tms_tracking") == 6
-        assert sum(row["last_result"] == "not_signed" for row in state["sign_verifications"].values()) == 6
+        assert not state["sign_verifications"]
     assert result["meta"]["write_outcome"] == "WRITE_VERIFIED"

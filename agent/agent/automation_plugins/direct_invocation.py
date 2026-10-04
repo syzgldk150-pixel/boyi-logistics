@@ -103,7 +103,12 @@ class DirectPluginInvocationService:
         return result
 
     def list_recent(self, automation_id: str, *, limit: int = 30) -> list[dict]:
-        return [self._public(row) for row in self.repository.list_recent(automation_id, limit=limit)]
+        # History selects executions; full business output belongs to get(id).
+        # Returning two copies of every historical result can exceed the
+        # Console's short status-read deadline even while the task is healthy.
+        return [{key: value for key, value in self._public(row).items()
+                 if key not in {"result", "output"}}
+                for row in self.repository.list_recent(automation_id, limit=limit)]
 
     def _public(self, row: Mapping[str, Any]) -> dict:
         result = public_invocation(row)

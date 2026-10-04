@@ -3,8 +3,8 @@
   "runtime_model": "service_v2",
   "plugin_id": "sync_daily_should_sign_v2",
   "name": "每日应签",
-  "version": "2.1.4",
-  "description": "读取业务账号池所绑定 R13 到货预报的过去30天未签收全量清单，按12列输出原页字段并核验飞书表。",
+  "version": "2.1.5",
+  "description": "仅从业务账号池绑定的R13读取过去30天未签收清单，匹配统计累计到货件数，按12列更新并核验飞书表。",
   "host_api": {
     "minimum": "2.0.0",
     "maximum_exclusive": "3.0.0"
@@ -39,11 +39,6 @@
       "account_role": "daily_sign_r13"
     },
     {
-      "service": "connector.boyi.daily_sign_tms@1",
-      "binding_kind": "account",
-      "account_role": "daily_sign_tms"
-    },
-    {
       "service": "connector.boyi.daily_sign_store@1",
       "binding_kind": "host_internal"
     },
@@ -67,18 +62,13 @@
         "create_field",
         "delete_records",
         "describe",
-        "earliest_date",
         "finish_run",
         "list_fields",
         "list_records",
         "load_state",
         "persist_snapshot",
-        "read_details",
-        "read_problems",
         "read_r13",
         "read_sheet",
-        "read_signs",
-        "read_tracking",
         "source_scope",
         "start_run",
         "update_field",
@@ -104,7 +94,7 @@
       "allowed_systems": [
         "ronghui"
       ],
-      "required": true
+      "required": false
     }
   ],
   "resource_roles": [
@@ -173,79 +163,88 @@
       },
       "source_start": {
         "type": "string",
-        "description": "可选，问题件和签收的权威回溯起点；不填则从已观测账本/到货/R13 最早日期计算"
+        "description": "历史配置保留；当前仅查询 R13，不再使用此项补查其他来源"
       },
       "source_end": {
         "type": "string",
-        "description": "可选，问题件和签收查询终点；必须与 source_start 配合且不能晚于本轮观测时间"
+        "description": "历史配置保留；当前仅查询 R13，不再使用此项补查其他来源"
       },
       "problem_page_size": {
         "type": "integer",
         "minimum": 1,
-        "maximum": 200
+        "maximum": 200,
+        "description": "历史配置保留；当前仅查询 R13，不再使用此项补查其他来源"
       },
       "problem_max_pages": {
         "type": "integer",
         "minimum": 1,
-        "maximum": 5000
+        "maximum": 5000,
+        "description": "历史配置保留；当前仅查询 R13，不再使用此项补查其他来源"
       },
       "problem_retry_attempts": {
         "type": "integer",
         "minimum": 1,
-        "maximum": 5
+        "maximum": 5,
+        "description": "历史配置保留；当前仅查询 R13，不再使用此项补查其他来源"
       },
       "problem_timeout_sec": {
         "type": "integer",
         "minimum": 30,
-        "maximum": 7200
+        "maximum": 7200,
+        "description": "历史配置保留；当前仅查询 R13，不再使用此项补查其他来源"
       },
       "sign_page_size": {
         "type": "integer",
         "minimum": 1,
-        "maximum": 200
+        "maximum": 200,
+        "description": "历史配置保留；当前仅查询 R13，不再使用此项补查其他来源"
       },
       "sign_max_pages": {
         "type": "integer",
         "minimum": 1,
-        "maximum": 5000
+        "maximum": 5000,
+        "description": "历史配置保留；当前仅查询 R13，不再使用此项补查其他来源"
       },
       "sign_chunk_days": {
         "type": "integer",
         "minimum": 1,
-        "maximum": 366
+        "maximum": 366,
+        "description": "历史配置保留；当前仅查询 R13，不再使用此项补查其他来源"
       },
       "sign_retry_attempts": {
         "type": "integer",
         "minimum": 1,
-        "maximum": 5
+        "maximum": 5,
+        "description": "历史配置保留；当前仅查询 R13，不再使用此项补查其他来源"
       },
       "sign_timeout_sec": {
         "type": "integer",
         "minimum": 30,
-        "maximum": 7200
+        "maximum": 7200,
+        "description": "历史配置保留；当前仅查询 R13，不再使用此项补查其他来源"
       },
       "waybill_timeout_sec": {
         "type": "integer",
-        "description": "可选，补齐地址的详情查询超时时间，默认 2400 秒"
+        "description": "历史配置保留；当前仅查询 R13，不再使用此项补查其他来源"
       },
       "browser_batch_size": {
         "type": "integer",
-        "description": "可选，浏览器补齐详情的批量大小，默认 10"
+        "description": "历史配置保留；当前仅查询 R13，不再使用此项补查其他来源"
       },
       "sign_site_code": {
         "type": "string",
         "minLength": 1,
-        "description": "可选，TMS 签收扫描网点编码；未提供时必须从绑定账号的真实登录态精确取得"
+        "description": "历史配置保留；当前仅查询 R13，不再使用此项补查其他来源"
       },
       "exact_sign_conflict_limit": {
         "type": "integer",
         "minimum": 0,
-        "description": "R13 与主单签收证据冲突时允许逐票精确核验的最大数量"
+        "description": "历史配置保留；当前仅查询 R13，不再使用此项补查其他来源"
       },
       "exact_historical_sign_limit": {
         "type": "integer",
         "minimum": 0,
-        "description": "每轮按 1/3/7 天退避策略精确复核历史候选的最大数量"
+        "description": "历史配置保留；当前仅查询 R13，不再使用此项补查其他来源"
       }
     },
     "required": []
