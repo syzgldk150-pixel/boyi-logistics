@@ -1862,6 +1862,7 @@
     const termBtn = form.querySelector("[data-terminal-toggle]");
     const termDrawer = form.querySelector("[data-terminal-drawer]");
     let fetchOutputState = async function() { return null; };
+    let resetTerminalOutput = function() {};
     let startPolling = function() {};
     let stopPolling = function() {};
     if (termBtn && termDrawer) {
@@ -2291,6 +2292,14 @@
         }
       }
 
+      resetTerminalOutput = function(status = "读取状态中") {
+        termBody.textContent = "";
+        if (termStatus) {
+          termStatus.textContent = status;
+          termStatus.className = "auto-terminal-status";
+        }
+      };
+
       startPolling = function(startedAt = "") {
         if (runUiState.conflictUnresolved) return;
         termPollGeneration += 1;
@@ -2299,7 +2308,7 @@
         termAttentionLatched = false;
         termNeedsFinalRuntimePoll = false;
         termFinalRuntimePollCount = 0;
-        termBody.textContent = "";
+        resetTerminalOutput();
         if (startedAt) {
           termDrawer.dataset.runStartedAt = startedAt;
         }
@@ -2833,6 +2842,7 @@
         if (runBtn.dataset.startDisabled) return;
 
         stopPolling();
+        resetTerminalOutput("正在提交");
         if (termDrawer) termDrawer.dataset.invocationId = "";
         stopRunProgress();
         if (isScanPreviewWorkflow) clearScanPreview({ force: true });

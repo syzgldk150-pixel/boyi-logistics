@@ -424,7 +424,7 @@ const assert = require("node:assert/strict");
 const vm = require("node:vm");
 const source = require("node:fs").readFileSync(0, "utf8");
 const controls = source.slice(source.indexOf("function syncRunButtonVisual()"), source.indexOf("const resourceEditors ="));
-const polling = source.slice(source.indexOf("let startPolling = function() {};"), source.indexOf("    // 反馈关闭按钮"))
+const polling = source.slice(source.indexOf("let resetTerminalOutput = function() {};"), source.indexOf("    // 反馈关闭按钮"))
   .replace("// Invocation history initialization is complete.", "globalThis.pollTest = {startPolling, pollOutput};");
 const submit = source.slice(source.indexOf('    if (runBtn) {\n      runBtn.addEventListener("click"'),
   source.indexOf('\n  });\n\n  /* ── 列表排序'));
@@ -603,6 +603,28 @@ async function exercise(failure, conflict = false) {
   assert.ok(requests.slice(oldRequests).filter(request => request.method === "GET").every(request =>
     new URL(request.url, "https://console.invalid").searchParams.get("invocation_id") === "accepted-run"));
   assert.equal(requests.filter(request => request.method === "POST").length, conflict ? 1 : 0);
+  if (!conflict) {
+    // A new submission must not inherit the previous attempt's error/output.
+    termStatus.textContent = "状态读取失败";
+    termStatus.className = "auto-terminal-status auto-terminal-status--error";
+    termBody.textContent = "previous output";
+    let resolveSubmit, resolveFreshStatus;
+    responses.push(new Promise(resolve => {resolveSubmit = resolve;}));
+    responses.push({ok: true, json: () => new Promise(resolve => {resolveFreshStatus = resolve;})});
+    const submission = handlers.runClick({preventDefault() {}});
+    assert.equal(termStatus.textContent, "正在提交");
+    assert.equal(termStatus.className, "auto-terminal-status");
+    assert.equal(termBody.textContent, "");
+    resolveSubmit(response({ok: true, pending: true, invocation_id: "fresh-run"}));
+    await submission;
+    await flush();
+    assert.equal(termStatus.textContent, "读取状态中");
+    assert.equal(termStatus.className, "auto-terminal-status");
+    assert.equal(context.runUiState.invocationId, "fresh-run");
+    resolveFreshStatus({...queue, invocation_id: "fresh-run", running: true, queued: false});
+    await flush();
+    assert.equal(termStatus.textContent, "运行中");
+  }
 }
 (async () => {
   await exercise(response => response({running: false, error: "unavailable"}, false));
