@@ -9,7 +9,7 @@ updated: 2026-10-05
 
 # 身份权限与统一对话
 
-## 每日应签 R13 原页快照（2.1.6）
+## 每日应签 R13 原页快照（2.1.7）
 
 2026-10-04 使用 DrissionPageMCP 核实已登录的 `/outlets/cargoReceiptWarn`：无 iframe，Vue 组件 `CargoReceiptWarn`，查询为 `POST /gateway/site/waybillSignWarn/pageGet`。应签时间使用 `queryType=2`、`planSignTime_CondStart/End`，签收否为 `isSigns="0"`，查看下属沿用原页 `showSub="10"`。2.1.3 按用户要求扩大为最近30天（含当天），从上海业务日减29天的00:00:00至当天23:59:59，不是上一个自然月；例如2026-10-04查询2026-09-05至2026-10-04。旧保存的日期参数不改变本插件范围。账号/站点仍由所选业务账号池绑定和实际登录上下文取得。
 
@@ -28,6 +28,8 @@ updated: 2026-10-05
 2.1.6 在普通表数据与清尾回读成功后维护一条黄色条件格式：`=AND($L2<>"",$I2<>"",VALUE($L2)<>VALUE($I2))`，背景 `#FFFF00`，范围按实际 N 条数据设置为 `A2:L{N+1}`。按精确公式识别已存在规则，更新范围并保留其其他样式，不重复创建、不修改其他规则；重复命中明确失败。零数据保留原来的空发布保护；已空目标不创建超出实际行数的范围，下次有数据再创建或更新。写响应丢失只做有界回读，不重放创建；未核验成功不会报告整次成功，运行诊断包含 `sheet_format_readback`。
 
 本次需要先部署 Host，再升级原实例 ZIP。Host 的 `read_sheet_formats` / `write_sheet_format` 仅操作项目绑定的普通表，公式与范围策略在包内 `daily_sign_format.py`。底层使用飞书官方 CLI 的 [sheet-ai 协议](https://github.com/larksuite/cli/blob/main/shortcuts/sheets/sheet_ai_api.go) 和 [条件格式对象协议](https://github.com/larksuite/cli/blob/main/shortcuts/sheets/lark_sheet_object_crud.go)，不以旧 `sheets/v2/condition_formats` 的空结果推断自定义公式不存在，也不使用静态填色代替规则。2026-10-05 真实接口核验：28条数据范围 A2:L29，自定义公式与黄色回读一致，63/61 的行命中、相等件数行不命中。回归入口为 `tests/test_daily_sign_conditional_format.py` 和真实 ZIP/MySQL 测试。
+
+每日应签 2.1.7 仅比较当前十二个托管字段，忽略旧列并统一飞书空单元格语义，未变化的记录不再重写。表结构或记录未写入时复用本次完整新鲜读取完成核验；实际发生写入仍重新回读。原实例可直接升级 ZIP，不需要更新 Host。多维表差异判断与写后核验复用同一字段比较函数，不忽略托管字段的真实变化、数字0或类型差异。无变化时仍检查完整分页和精确运单集合，不能用缓存或旧成功值替代本次读取。回归 `tests/test_daily_sign_bitable_delta.py` 覆盖15条含旧列及省略空值的记录：全未变化仅两次读取；一条变化只更新一条并重新回读。
 
 每日应签 V2 `2.0.7` 按 2026-09-15 用户确认，将精确类型“客户拒收/拒付费用”“客户原因要求自提”“改派送地址”纳入 `MANUAL_POSTPONE_TYPES`。与已有人工类型相同：完整成功且登记严格早于 17:00:00 时顺延至登记次日 23:59:59，只延后、不缩短，重读旧登记不继续延期；无实际到货仍不凭问题件生成应签时间。该常量也用于宿主存储的 `postpones_sign`，发布须同步共用源码和插件包，避免计算与持久字段不一致。无需变更数据库或接口。回归覆盖连续人工登记、截止时刻、失败登记、近似类型，以及实际 ZIP/MySQL/双飞书表发布。
 

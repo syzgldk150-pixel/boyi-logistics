@@ -41,6 +41,7 @@ from tools.daily_sign_store import (
     verify_daily_sign_persistence,
 )
 from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_readback import (
+    bitable_fields_match,
     verify_bitable_schema,
     verify_bitable_snapshot,
     verify_sheet_snapshot,
@@ -1717,7 +1718,7 @@ def _ensure_bitable_schema(base_token: str, table_id: str, params: dict[str, Any
             )
     else:
         try:
-            readback = read_schema()
+            readback = verify_bitable_schema(required_types, _field_items(result))
         except Exception as exc:
             return {
                 "error": "每日应签多维表字段新鲜回读不可用。",
@@ -1783,7 +1784,7 @@ def _sync_bitable(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[st
         code = clean_text(fields.get("运单编号"))
         target_codes.add(code)
         existing = existing_by_code.get(code)
-        if existing and existing.get("fields") == fields:
+        if existing and bitable_fields_match(fields, existing["fields"]):
             unchanged += 1
             continue
         writes.append({**record, **({"record_id": existing.get("record_id")} if existing else {})})
@@ -1885,7 +1886,10 @@ def _sync_bitable(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[st
                 convert_non_retryable=True,
             )
         else:
-            readback_result = readback()
+            # No mutation: the complete snapshot just read is already fresh evidence.
+            readback_result = verify_bitable_snapshot(
+                target_records, existing_result, identity_field="运单编号",
+            )
     except Exception as exc:
         return _write_outcome_unknown(
             "每日应签多维表新鲜回读不匹配。",

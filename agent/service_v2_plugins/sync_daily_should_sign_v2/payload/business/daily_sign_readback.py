@@ -104,6 +104,19 @@ def _pagination_incomplete(payload: Mapping[str, object]) -> bool:
     )
 
 
+def bitable_fields_match(
+    expected: Mapping[str, object], observed: Mapping[str, object],
+) -> bool:
+    """Compare the managed columns, with Feishu's stored blank-cell semantics."""
+    for field, value in expected.items():
+        if value in (None, ""):
+            if observed.get(field) not in (None, ""):
+                return False
+        elif field not in observed or observed[field] != value:
+            return False
+    return True
+
+
 def verify_bitable_snapshot(
     expected_records: Sequence[Mapping[str, object]],
     payload: Mapping[str, object],
@@ -139,20 +152,7 @@ def verify_bitable_snapshot(
         raise DailySignReadbackError("daily-sign Bitable readback identity set changed")
     for identity, expected_fields in expected_by_identity.items():
         observed_fields = observed_by_identity[identity]
-        mismatched = False
-        for field, expected_value in expected_fields.items():
-            if expected_value in (None, ""):
-                # Feishu omits empty cells from a record's ``fields`` object.
-                # An omitted field, JSON null, and an empty string therefore
-                # describe the same stored blank cell.
-                if observed_fields.get(field) not in (None, ""):
-                    mismatched = True
-                    break
-                continue
-            if field not in observed_fields or observed_fields[field] != expected_value:
-                mismatched = True
-                break
-        if mismatched:
+        if not bitable_fields_match(expected_fields, observed_fields):
             raise DailySignReadbackError("daily-sign Bitable readback field changed")
     canonical = [
         expected_by_identity[identity]
@@ -203,6 +203,7 @@ def verify_bitable_schema(
 
 __all__ = [
     "DailySignReadbackError",
+    "bitable_fields_match",
     "verify_bitable_schema",
     "verify_bitable_snapshot",
     "verify_sheet_snapshot",
