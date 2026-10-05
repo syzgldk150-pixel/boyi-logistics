@@ -545,3 +545,49 @@ def test_restart_settles_interrupted_facts_without_execution_or_recovery(direct_
     assert fresh.active_invocations() == [] and _legacy_counts(management.repository) == before
     receipt = management.policy.invoke_console(identity, request_id=str(uuid4()), actor=ACTOR)
     assert runtime.service.wait_sync(receipt["invocation_id"])["status"] == "COMPLETED"
+
+
+def test_status_authorization_and_projection_share_one_live_connection(direct_runtime, monkeypatch):
+    from agent.identity_access import authorize_console_request
+    from shared.identity_repository import IdentityRepository
+    from tests.test_feishu_bindings_mysql import seed_admin
+
+    management, runtime, identity = direct_runtime
+    receipt = management.policy.invoke_console(identity, request_id=str(uuid4()), actor=ACTOR)
+    invocation_id = receipt["invocation_id"]
+    assert runtime.service.wait_sync(invocation_id)["status"] == "COMPLETED"
+    admin_id = seed_admin(management.repository)
+    connections = []
+    original = management.repository._connection_factory
+
+    def connect():
+        connection = original()
+        connections.append(connection)
+        return connection
+
+    access = IdentityRepository(connect)
+    monkeypatch.setattr(management.repository, "_connection_factory", connect)
+    monkeypatch.setattr(management.policy, "identity_access", access, raising=False)
+    principal = {"actor_id": str(admin_id), "roles": ["super_admin"],
+                 "authenticated_by": "mysql_admin_session"}
+    path = f"/internal/v1/automation-invocations/{invocation_id}"
+    # Cancel authorization follows the former uncoupled read path, without
+    # actually cancelling anything, and gives a like-for-like connection baseline.
+    authorize_console_request(access, management.policy, principal, "POST", path + "/cancel")
+    previous = runtime.service.get(invocation_id)
+    assert len(connections) == 6
+    connections.clear()
+    current = authorize_console_request(access, management.policy, principal, "GET", path)
+    assert len(connections) == 1
+    assert current == previous
+    assert all(not connection.open for connection in connections)
+
+    with management.repository.unit_of_work() as uow, uow.connection.cursor() as cursor:
+        cursor.execute("UPDATE admin_users SET is_active=0 WHERE id=%s", (admin_id,))
+        uow.commit()
+    connections.clear()
+    with pytest.raises(OrchestrationError) as denied:
+        authorize_console_request(access, management.policy, principal, "GET", path)
+    assert denied.value.code == "IDENTITY_PERMISSION_DENIED"
+    assert len(connections) == 1
+    assert all(not connection.open for connection in connections)

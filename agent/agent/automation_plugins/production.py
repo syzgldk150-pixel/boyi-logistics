@@ -18,6 +18,8 @@ from pathlib import Path, PurePosixPath
 from threading import RLock
 from typing import Any, Callable, Mapping, Sequence
 
+from shared.async_work import drain_thread
+
 from agent.automation_plugins.broker import (
     LocalBrokerCapabilityIssuer,
     LocalCoreAutomationBroker,
@@ -2363,7 +2365,7 @@ class ProductionServiceV2ProviderExecutor:
                 "resolved service operation changed before execution",
                 code="SERVICE_PROVIDER_ROUTE_INVALID",
             )
-        capability = self._routable_capability(provider)
+        capability = await drain_thread(self._routable_capability, provider)
         return await router.execute_service_operation(
             capability,
             arguments,

@@ -371,7 +371,7 @@ def _scheduler_refresh_succeeded(evidence: object) -> bool:
     return isinstance(invalid_tasks, (list, tuple)) and not invalid_tasks
 
 
-def _refresh_after_committed_operation(
+async def _refresh_after_committed_operation(
     response: dict[str, Any] | JSONResponse,
     *,
     scheduler_refresh_provider: Callable[[], Mapping[str, Any]] | None,
@@ -393,7 +393,7 @@ def _refresh_after_committed_operation(
     refresh_completed = False
     if scheduler_refresh_provider is not None:
         try:
-            refreshed = scheduler_refresh_provider()
+            refreshed = await run_in_threadpool(scheduler_refresh_provider)
             refresh_completed = _scheduler_refresh_succeeded(refreshed)
         except Exception:  # noqa: BLE001 - committed mutation, report refresh separately
             refresh_completed = False
@@ -415,14 +415,14 @@ def _refresh_after_committed_operation(
     return response
 
 
-def _refresh_after_committed_migration(
+async def _refresh_after_committed_migration(
     response: dict[str, Any] | JSONResponse,
     *,
     scheduler_refresh_provider: Callable[[], Mapping[str, Any]] | None,
 ) -> dict[str, Any] | JSONResponse:
     """Keep migration response wording while using the common refresh helper."""
 
-    return _refresh_after_committed_operation(
+    return await _refresh_after_committed_operation(
         response,
         scheduler_refresh_provider=scheduler_refresh_provider,
         committed_field="migration_operation_committed",
@@ -670,7 +670,7 @@ def create_automation_plugin_management_router(
                 **({"module": request.query_params["module"]} if "module" in request.query_params else {}),
             )
         )
-        return _refresh_after_committed_operation(
+        return await _refresh_after_committed_operation(
             response,
             scheduler_refresh_provider=scheduler_refresh_provider,
             committed_field="plugin_operation_committed",
@@ -733,7 +733,7 @@ def create_automation_plugin_management_router(
                 **({"module": request.query_params["module"]} if "module" in request.query_params else {}),
             )
         )
-        return _refresh_after_committed_operation(
+        return await _refresh_after_committed_operation(
             response,
             scheduler_refresh_provider=scheduler_refresh_provider,
             committed_field="plugin_operation_committed",
@@ -774,7 +774,7 @@ def create_automation_plugin_management_router(
                 actor=actor,
             )
         )
-        return _refresh_after_committed_operation(
+        return await _refresh_after_committed_operation(
             response,
             scheduler_refresh_provider=scheduler_refresh_provider,
             committed_field="plugin_operation_committed",
@@ -803,7 +803,7 @@ def create_automation_plugin_management_router(
                 actor=actor,
             )
         )
-        return _refresh_after_committed_operation(
+        return await _refresh_after_committed_operation(
             response,
             scheduler_refresh_provider=scheduler_refresh_provider,
             committed_field="plugin_operation_committed",
@@ -832,7 +832,7 @@ def create_automation_plugin_management_router(
                 actor=actor,
             )
         )
-        return _refresh_after_committed_operation(
+        return await _refresh_after_committed_operation(
             response,
             scheduler_refresh_provider=scheduler_refresh_provider,
             committed_field="plugin_operation_committed",
@@ -908,7 +908,7 @@ def create_automation_plugin_management_router(
                     "blocking_reason": exc.blocking_reason,
                 }
             )
-            refreshed = _refresh_after_committed_migration(
+            refreshed = await _refresh_after_committed_migration(
                 response,
                 scheduler_refresh_provider=scheduler_refresh_provider,
             )
@@ -924,7 +924,7 @@ def create_automation_plugin_management_router(
             ValueError,
         ) as exc:
             response = _plugin_error_response(exc)
-        return _refresh_after_committed_migration(
+        return await _refresh_after_committed_migration(
             response,
             scheduler_refresh_provider=scheduler_refresh_provider,
         )
@@ -948,7 +948,7 @@ def create_automation_plugin_management_router(
                 actor=actor,
             )
         )
-        return _refresh_after_committed_migration(
+        return await _refresh_after_committed_migration(
             response,
             scheduler_refresh_provider=scheduler_refresh_provider,
         )
@@ -972,7 +972,7 @@ def create_automation_plugin_management_router(
                 actor=actor,
             )
         )
-        return _refresh_after_committed_migration(
+        return await _refresh_after_committed_migration(
             response,
             scheduler_refresh_provider=scheduler_refresh_provider,
         )
@@ -996,7 +996,7 @@ def create_automation_plugin_management_router(
                 actor=actor,
             )
         )
-        return _refresh_after_committed_migration(
+        return await _refresh_after_committed_migration(
             response,
             scheduler_refresh_provider=scheduler_refresh_provider,
         )
@@ -1020,7 +1020,7 @@ def create_automation_plugin_management_router(
                 actor=actor,
             )
         )
-        return _refresh_after_committed_migration(
+        return await _refresh_after_committed_migration(
             response,
             scheduler_refresh_provider=scheduler_refresh_provider,
         )
@@ -1062,8 +1062,8 @@ def create_automation_plugin_management_router(
         schedule_enabled = bool(
             isinstance(schedule, Mapping) and schedule.get("enabled") is True
         )
-        scheduler_entrypoint_enabled = _scheduler_contribution_enabled(
-            data,
+        scheduler_entrypoint_enabled = await run_in_threadpool(
+            _scheduler_contribution_enabled, data,
             service=service,
             actor=actor,
             automation_id=automation_id,
@@ -1074,7 +1074,7 @@ def create_automation_plugin_management_router(
         else:
             try:
                 refreshed = (
-                    scheduler_refresh_provider()
+                    await run_in_threadpool(scheduler_refresh_provider)
                     if scheduler_refresh_provider is not None
                     else {"initialized": False}
                 )
@@ -1221,8 +1221,8 @@ def create_automation_plugin_management_router(
         schedule_enabled = bool(
             isinstance(schedule, Mapping) and schedule.get("enabled") is True
         )
-        scheduler_entrypoint_enabled = _scheduler_contribution_enabled(
-            data,
+        scheduler_entrypoint_enabled = await run_in_threadpool(
+            _scheduler_contribution_enabled, data,
             service=service,
             actor=actor,
             automation_id=automation_id,
@@ -1233,7 +1233,7 @@ def create_automation_plugin_management_router(
         else:
             try:
                 refreshed = (
-                    scheduler_refresh_provider()
+                    await run_in_threadpool(scheduler_refresh_provider)
                     if scheduler_refresh_provider is not None
                     else {"initialized": False}
                 )

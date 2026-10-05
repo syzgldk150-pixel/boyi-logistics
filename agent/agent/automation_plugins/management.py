@@ -2190,6 +2190,12 @@ class AutomationPluginManagementService:
         entry = self._catalog.require(automation_id)
         projection.update(
             {
+                "runtime_model": entry.runtime_model,
+                "entrypoint_kinds": {
+                    key: contract["contribution_kind"]
+                    for key, contract in entry.invocation_contracts.items()
+                    if contract.get("contribution_kind")
+                },
                 "target_generation": entry.target_generation,
                 "committed_generation": entry.committed_generation,
                 "reconcile_state": entry.reconcile_state.value,

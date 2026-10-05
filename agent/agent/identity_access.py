@@ -4,19 +4,23 @@ from __future__ import annotations
 import re
 
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
+from agent.automation_plugins.catalog_read_scope import catalog_read_scope
 from shared.identity_permissions import plugin_permission
 from shared.identity_routes import agent_permission
 from shared.release_identity import is_release_operation
 
 
-def require_project_access(policy, actor, automation_id, *, entrypoint=""):
+def require_project_access(policy, actor, automation_id, *, entrypoint="", connection=None):
     access = getattr(policy, "identity_access", None)
     if access is None:  # Offline policy compositions supply their own actors.
         return
     if actor.actor_type not in {ActorType.CONSOLE_ADMIN, ActorType.FEISHU_USER}:
         return  # Existing scheduler/webhook contracts own these non-human sources.
     entry = policy._plugin_catalog.require(automation_id)
-    if not access.allows(actor, plugin_permission(entry.plugin_id, management=entry.management, entrypoint=entrypoint)):
+    permission = plugin_permission(entry.plugin_id, management=entry.management, entrypoint=entrypoint)
+    allowed = (access.allows(actor, permission) if connection is None
+               else access.allows(actor, permission, connection=connection))
+    if not allowed:
         raise OrchestrationError("IDENTITY_PERMISSION_DENIED", "当前身份没有执行或查看此插件的权限。")
 
 
@@ -36,7 +40,18 @@ def authorize_console_request(access, policy, principal, method, path):
     if path.startswith("/internal/v1/automation-invocations/"):
         match = re.fullmatch(r"/internal/v1/automation-invocations/([^/]+)(?:/cancel)?", path)
         if match:
-            row = policy.direct_invocations.repository.get(match[1])
+            if method == "GET" and path == f"/internal/v1/automation-invocations/{match[1]}":
+                direct = policy.direct_invocations
+                # One worker owns the connection from live authorization through
+                # result projection. No connection or permission cache escapes.
+                with catalog_read_scope(direct.repository._repository) as uow:
+                    row = direct.repository.get(match[1], connection=uow.connection)
+                    if row:
+                        require_project_access(policy, actor, row["automation_id"],
+                                               entrypoint="console", connection=uow.connection)
+                        return direct.project_record(row, connection=uow.connection)
+            else:
+                row = policy.direct_invocations.repository.get(match[1])
             if row:
                 require_project_access(policy, actor, row["automation_id"], entrypoint="console")
                 return

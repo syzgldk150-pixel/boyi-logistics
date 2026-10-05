@@ -1583,8 +1583,9 @@ def test_upgrade_response_loss_retry_keeps_non_runnable_transition_idempotent() 
     assert {call["expected_record_version"] for call in lifecycle_calls} == {3}
 
 
-def test_configuration_persists_exact_payload_and_projects_reconcile_block() -> None:
-    catalog = _Catalog(_entry())
+@pytest.mark.parametrize("runtime_model", [PluginRuntimeModel.SERVICE_V2.value, PluginRuntimeModel.ACTION_V1.value])
+def test_configuration_persists_exact_payload_and_projects_reconcile_block(runtime_model) -> None:
+    catalog = _Catalog(_entry(runtime_model=runtime_model))
     saved: list[dict[str, Any]] = []
     record = AutomationProjectConfigRecord(
         automation_id="automation-1",
@@ -1644,3 +1645,5 @@ def test_configuration_persists_exact_payload_and_projects_reconcile_block() -> 
         "enabled": True,
     }
     assert result["enabled_entrypoints"] == ["scheduler"]
+    assert result["runtime_model"] == runtime_model
+    assert result["entrypoint_kinds"] == {"console": "console", "scheduler": "scheduler"}

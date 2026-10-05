@@ -85,6 +85,9 @@ def create_automation_project_router(
     @router.get("/internal/v1/automation-invocations/{invocation_id}")
     async def get_invocation(invocation_id: str, request: Request):
         actor_provider(request)
+        authorized = getattr(request.state, "authorized_invocation", None)
+        if isinstance(authorized, dict) and authorized.get("invocation_id") == invocation_id:
+            return api_success(authorized)
         return api_success(await asyncio.to_thread(service_provider().direct_invocations.get, invocation_id))
 
     @router.get("/internal/v1/automation-projects/{automation_id}/invocations")

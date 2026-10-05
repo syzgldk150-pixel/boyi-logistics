@@ -75,6 +75,8 @@ def _entry(**overrides: Any) -> SimpleNamespace:
         "resource_bindings_sha256": "3" * 64,
         "device_binding_sha256": "4" * 64,
         "current_enabled_entrypoints": ("console",),
+        "invocation_contracts": {"console": {"contribution_kind": "console"},
+                                 "scheduler": {"contribution_kind": "scheduler"}},
     }
     values.update(overrides)
     return SimpleNamespace(**values)

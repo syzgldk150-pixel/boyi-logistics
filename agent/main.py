@@ -1779,8 +1779,10 @@ async def require_internal_api_token(request: Request, call_next):
         access = getattr(automation_project_policy_service, "identity_access", None)
         if access is not None:
             try:
-                await asyncio.to_thread(authorize_console_request, access, automation_project_policy_service,
-                                        principal, request.method, request.url.path)
+                request.state.authorized_invocation = await asyncio.to_thread(
+                    authorize_console_request, access, automation_project_policy_service,
+                    principal, request.method, request.url.path,
+                )
             except OrchestrationError as exc:
                 return JSONResponse(status_code=403, content=api_failure(exc.code, str(exc)))
     return await call_next(request)

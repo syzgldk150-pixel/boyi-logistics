@@ -51,6 +51,7 @@ from agent.automation_plugins.host_capability_registry import (
     default_host_capability_registry,
     effect_rank,
 )
+from shared.async_work import drain_thread
 from shared.orchestration_repository_support import ConcurrentUpdateError
 
 
@@ -892,8 +893,11 @@ class ServiceV2CapabilityProxy:
             )
         preflight_services = tuple(raw_preflight_services)
 
-        with self._orchestration.unit_of_work() as uow:
-            manifest = _manifest_for_context(uow.automation_plugins, context)
+        def read_manifest():
+            with self._orchestration.unit_of_work() as uow:
+                return _manifest_for_context(uow.automation_plugins, context)
+
+        manifest = await drain_thread(read_manifest)
         if service not in manifest.required_services:
             raise _capability_error(
                 "service was not declared in this plugin's requires contract",
@@ -957,7 +961,7 @@ class ServiceV2CapabilityProxy:
                     "Host capability service.invoke has no approved backend",
                     code="CAPABILITY_UNAVAILABLE",
                 )
-            provider = registry.require_operation(service, operation)
+            provider = await drain_thread(registry.require_operation, service, operation)
         # Managed storage and Provider calls keep their original document cap.
         # Reviewed Connectors own explicit per-operation page/snapshot limits;
         # applying the storage cap here would reject already-approved results.
@@ -1048,7 +1052,7 @@ class ServiceV2CapabilityProxy:
                     if is_write and context.mark_write_started is not None:
                         # Binding/schema checks and resource admission must
                         # succeed before recording a real write attempt.
-                        context.mark_write_started()
+                        await drain_thread(context.mark_write_started)
                     result = await registry.invoke(
                         resolved=provider,
                         binding=replace(binding, invocation_context=context),
@@ -1059,7 +1063,7 @@ class ServiceV2CapabilityProxy:
         else:
             async with context.write_operation_guard() if is_write and context.write_operation_guard is not None else nullcontext():
                 if is_write and context.mark_write_started is not None:
-                    context.mark_write_started()
+                    await drain_thread(context.mark_write_started)
                 result = await executor(
                     provider=provider,
                     caller_automation_id=context.automation_id,

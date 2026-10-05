@@ -2129,7 +2129,7 @@
           renderFeedback(form, {
             kind: "info",
             title: data.cancel_requested ? "取消中" : (data.stage_description || "执行中"),
-            message: data.cancel_requested ? "已发送取消请求，正在停止脚本。" : (data.stage_description || "任务已受理，资源忙时会等待片刻，结果会自动更新。"),
+            message: data.cancel_requested ? "已发送取消请求，正在停止脚本。" : (data.stage_description || "任务已受理，结果会自动更新。"),
             showTimer: true,
             stampText: startedAt ? `开始：${startedAt}` : "",
             body: "",

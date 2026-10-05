@@ -1,6 +1,7 @@
 """Durable call facts and request deduplication; no polling or claiming API."""
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any, Mapping
 
 from shared.orchestration_repository_support import (
@@ -32,16 +33,16 @@ class PluginInvocationRepository:
     def __init__(self, orchestration_repository: Any) -> None:
         self._repository = orchestration_repository
 
-    def _read(self, clause: str, params: tuple, *, many: bool = False) -> Any:
-        with self._repository.unit_of_work() as uow:
-            with uow.automation_plugins.cursor() as cursor:
+    def _read(self, clause: str, params: tuple, *, many: bool = False, connection=None) -> Any:
+        with self._repository.unit_of_work() if connection is None else nullcontext() as uow:
+            with connection.cursor() if connection is not None else uow.automation_plugins.cursor() as cursor:
                 cursor.execute("SELECT * FROM automation_plugin_invocations " + clause, params)
                 if many:
                     return [_decode_row(row, _JSON_FIELDS) for row in _rows(cursor)]
                 return _decode_row(_row_dict(cursor, cursor.fetchone()), _JSON_FIELDS)
 
-    def get(self, invocation_id: str) -> dict | None:
-        return self._read("WHERE invocation_id=%s", (invocation_id,))
+    def get(self, invocation_id: str, *, connection=None) -> dict | None:
+        return self._read("WHERE invocation_id=%s", (invocation_id,), connection=connection)
 
     def by_request(self, request_key_sha256: str) -> dict | None:
         return self._read("WHERE request_key_sha256=%s", (request_key_sha256,))

@@ -94,12 +94,19 @@ class DirectPluginInvocationService:
         row = self.repository.get(invocation_id)
         if row is None:
             raise OrchestrationError("INVOCATION_NOT_FOUND", "没有找到本次执行记录")
+        return self.project_record(row)
+
+    def project_record(self, row: Mapping[str, Any], *, connection=None) -> dict:
+        """Project an already-read record within the caller's read snapshot."""
         result = self._public(row)
         if row["status"] in TERMINAL_INVOCATION_STATUSES:
             from shared.collector_navigation import collector_invocation_navigation
-            with self.repository._repository.unit_of_work() as uow:
-                result["collector_navigation"] = collector_invocation_navigation(uow.connection, invocation_id)
-                result["write_receipts"] = invocation_write_receipts(uow.connection, invocation_id)
+            if connection is None:
+                with self.repository._repository.unit_of_work() as uow:
+                    return self.project_record(row, connection=uow.connection)
+            invocation_id = row["invocation_id"]
+            result["collector_navigation"] = collector_invocation_navigation(connection, invocation_id)
+            result["write_receipts"] = invocation_write_receipts(connection, invocation_id)
         return result
 
     def list_recent(self, automation_id: str, *, limit: int = 30) -> list[dict]:

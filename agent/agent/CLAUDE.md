@@ -144,6 +144,8 @@
 
 ## 当前 Direct 写入收尾
 
+- 后台单次 Invocation 状态读取在请求内复用同一数据库连接完成实时权限校验与结果投影；定时保存使用本实例返回的入口元数据，调度刷新和 Service V2 同步数据库操作不占用事件循环。取消仍排空真实线程，详见 `../../docs/architecture_direct_invocation.md`。
+
 - `DirectPluginInvocationService.cancel` 先向实际执行任务送达取消，再等待数据库的 CANCELLING 状态写入；仓储不允许迟到状态覆盖终态。真实读取期间取消与核验/持久化期间保留实际结果的边界，分别由 Scheduler 与 Direct MySQL 集成测试验证。
 
 - `orchestration/execution_resources.py` 在 V2 Connector 宿主解析实际绑定后给出物理写范围；同表别名跨插件/凭据互斥，独立表格可并行，投影使用已审共享表范围。`broker.py` 回执记录 Host 实际持锁范围，插件不能自报。

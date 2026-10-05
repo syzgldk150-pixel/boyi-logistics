@@ -15,7 +15,11 @@ class IdentityRepository:
         self._cursor_factory = cursor_factory
 
     @contextmanager
-    def cursor(self):
+    def cursor(self, *, connection=None):
+        if connection is not None:
+            with _cursor(connection, self._cursor_factory) as cursor:
+                yield cursor
+            return
         with _connection(self._connect) as connection:
             connection.autocommit(False)
             try:
@@ -26,8 +30,8 @@ class IdentityRepository:
                 connection.rollback()
                 raise
 
-    def account(self, account_id: int) -> IdentityAccess:
-        with self.cursor() as cursor:
+    def account(self, account_id: int, *, connection=None) -> IdentityAccess:
+        with self.cursor(connection=connection) as cursor:
             cursor.execute("""SELECT u.is_active, u.control_plane_role, u.access_role_id,
                 r.name AS role_name, r.is_active AS role_active, r.permissions_json
                 FROM admin_users u LEFT JOIN access_roles r ON r.role_id=u.access_role_id WHERE u.id=%s""", (account_id,))
@@ -46,7 +50,7 @@ class IdentityRepository:
                 WHERE b.open_id=%s AND b.active=TRUE""", (open_id,))
             return access_from_row(cursor.fetchone())
 
-    def for_actor(self, actor) -> IdentityAccess:
+    def for_actor(self, actor, *, connection=None) -> IdentityAccess:
         kind = str(getattr(getattr(actor, "actor_type", None), "value", ""))
         auth = getattr(actor, "authenticated_by", "")
         if kind == "console_admin" and auth == "mysql_admin_session":
@@ -54,13 +58,13 @@ class IdentityRepository:
                 account_id = int(actor.actor_id)
             except (TypeError, ValueError):
                 return IdentityAccess()
-            return self.account(account_id)
+            return self.account(account_id, connection=connection)
         if kind == "feishu_user" and auth in {"feishu_admin_binding", "feishu_verified_event"}:
             return self.feishu(actor.actor_id)
         return IdentityAccess()
 
-    def allows(self, actor, permission: str) -> bool:
-        return self.for_actor(actor).allows(permission)
+    def allows(self, actor, permission: str, *, connection=None) -> bool:
+        return self.for_actor(actor, connection=connection).allows(permission)
 
     def require(self, actor, permission: str) -> None:
         if not self.allows(actor, permission):
