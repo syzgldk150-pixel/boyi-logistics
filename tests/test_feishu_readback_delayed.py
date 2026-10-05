@@ -203,8 +203,8 @@ def test_daily_sign_sheet_lost_write_ack_is_proved_by_delayed_snapshot(
             return formats(action, params)
         if action == "read_sheet":
             value_range = str(params["range"])
-            if value_range.endswith("A1:L1"):
-                return {"ok": True, "values": [daily_sign_sync_tool.SHEET_HEADERS]}
+            if "!A1:" in value_range:
+                return {"ok": True, "values": [daily_sign_sync_tool.SHEET_HEADERS] + blank}
             readback_calls += 1
             return {"ok": True, "values": blank if readback_calls == 1 else expected + [[]]}
         if action == "write_sheet":

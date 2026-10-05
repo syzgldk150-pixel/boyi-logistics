@@ -607,9 +607,11 @@ def _resolve_r13_request(params: dict[str, Any], account_id: str) -> dict[str, A
                 retryable=code in {"AUTH_REQUIRED", "LOGIN_FAILED", "SESSION_UNAVAILABLE"},
             ) from exc
         raise
-    # Query the requested rolling 30-day window, including today's full business day.
+    # Query every currently unsigned bill due through today, including older bills.
+    # The old saved date range must not silently drop overdue unresolved freight.
     today = business_now()
     request["days"] = 30
+    request["include_history"] = True
     request["start"] = (today - timedelta(days=request["days"] - 1)).strftime("%Y-%m-%d 00:00:00")
     request["end"] = today.strftime("%Y-%m-%d 23:59:59")
     request["page"] = 1

@@ -4,14 +4,20 @@ type: implementation
 status: active
 authority: canonical
 owner: repository
-updated: 2026-10-05
+updated: 2026-10-06
 ---
 
 # 身份权限与统一对话
 
-## 每日应签 R13 原页快照（2.1.7）
+## 每日应签 R13 原页快照（2.1.8）
 
 2026-10-04 使用 DrissionPageMCP 核实已登录的 `/outlets/cargoReceiptWarn`：无 iframe，Vue 组件 `CargoReceiptWarn`，查询为 `POST /gateway/site/waybillSignWarn/pageGet`。应签时间使用 `queryType=2`、`planSignTime_CondStart/End`，签收否为 `isSigns="0"`，查看下属沿用原页 `showSub="10"`。2.1.3 按用户要求扩大为最近30天（含当天），从上海业务日减29天的00:00:00至当天23:59:59，不是上一个自然月；例如2026-10-04查询2026-09-05至2026-10-04。旧保存的日期参数不改变本插件范围。账号/站点仍由所选业务账号池绑定和实际登录上下文取得。
+
+每日应签 2.1.8 先读取 R13 截至今天全部未签收单（无起始日期，含超过30天旧单），再按本次单号批量读取数据库中的累计到货快照，不加载清单外历史明细、不额外查询签收状态。到齐单仍识别最新统计纠正。普通表合并表头与数据读取，内容和尾部均一致时跳过写入、清尾及重复回读；变化时保留完整写后核验。需要先更新 Host 的 R13 历史范围参数和按单号读取接口，再升级原实例 ZIP。
+
+2026-10-06 通过已登录原页组件的 `selectPage` 做只读核验：保留 `planSignTime_CondEnd=当天23:59:59` 与 `isSigns="0"`，删除 `queryDate` 和 `planSignTime_CondStart`，当前返回15条、总数15、签收状态全部0，浏览器调用约0.2秒；该样本没有超过30天的行，跨月旧单由网关及真实 ZIP/MySQL 回归验证。未签收集合始终以本次完整 R13 结果为准；不能把最近一个月查不到解释为已签收，也不追加未核实的历史台账。
+
+`load_state.tracking_numbers` 在 SQL 内按单号筛选台账、统计及已有事件，跳过预报明细；空列表只返回来源完整性证据和空明细，省略参数保留既有其他调用方的读取方式。保持最新有效累计快照规则和纠错，不把 R13 到齐标志换算为件数。运行诊断 `timings_seconds` 记录启动、R13查询、按号读取、计算、持久化核验及两类飞书表的实际阶段耗时。完整 ZIP/MySQL 测试验证仅 R13 来源调用、跨月发布、累计纠正、限定读取和重复执行两表零写入。
 
 2.1.2 的过去15天原页只读核验返回28行，权威总数28，签收状态全部0；该历史计数不代表当前30天查询结果。字段映射：运单编号=`waybillNo`，规划应签收时间=`displayPlanSignTime`，问题件类型=`problemType`，登记时间=`problemRegisterDate`，内容=`problemCause`，登记网点=`problemRegisterSite`，货物品名=`goodsName`，包装类型=`packTypeDesc`，货物件数=`pcs`，收件人地址使用原页渲染的`dispAddress`，送货方式=`dispatchMode`。接口字段`planSignTime`不代替页面展示的`displayPlanSignTime`；内部标准化后仍以`planSignTime`传给插件。字段缺失、非未签收返回或分页不完整均失败。
 

@@ -21,7 +21,7 @@ def source_row(code="R00021000001"):
     }
 
 
-def fetch(pages):
+def fetch(pages, *, include_history=False):
     session = Mock()
     session.post.side_effect = [SimpleNamespace(raise_for_status=lambda: None, json=lambda d=d: d) for d in pages]
     auth = SimpleNamespace(last_token="test-only", login_and_get_session=lambda **_: session)
@@ -32,7 +32,7 @@ def fetch(pages):
         rows = get_qianshou.fetch_qianshou(
             config_path=None, username=None, password=None, account_id="selected-pool-account",
             start="2026-09-05 00:00:00", end="2026-10-04 23:59:59", days=30,
-            page_size=1, page=1,
+            page_size=1, page=1, include_history=include_history,
         )
     return rows, session
 
@@ -79,12 +79,13 @@ def test_missing_source_field_is_not_replaced_by_history():
     (datetime(2026, 10, 4, 12), "2026-09-05 00:00:00", "2026-10-04 23:59:59"),
     (datetime(2026, 3, 1, 12), "2026-01-31 00:00:00", "2026-03-01 23:59:59"),
 ])
-def test_fixed_thirty_business_days_override_old_saved_range(today, start, end):
+def test_all_unsigned_through_today_overrides_old_saved_range(today, start, end):
     with (patch.object(sync, "build_daily_sign_request_body", return_value={"days": 365,
         "start": "2000-01-01", "end": "2030-01-01", "page": 4, "fetch_all": False}), patch.object(
         pipeline, "business_now", return_value=today),
     ):
         request = pipeline._resolve_r13_request({}, "selected-pool-account")
+    assert request["include_history"] is True
     assert request["start"] == start
     assert request["end"] == end
     assert request["days"] == 30 and request["page"] == 1 and request["fetch_all"] is True
@@ -188,3 +189,15 @@ def test_latest_statistics_selection_ignores_future_and_input_order():
         {"business_date": "2026-10-03", "arrived_quantity": 5},
     ]
     assert sync._apply_latest_stat_quantity({}, history, datetime(2026, 10, 4))["arrived_quantity"] == 8
+
+
+def test_all_history_keeps_old_unsigned_waybill_without_a_lower_date_bound():
+    old = {**source_row(), "displayPlanSignTime": "2026-01-01 23:59:59"}
+    rows, session = fetch([page(old)], include_history=True)
+    assert rows[0]["planSignTime"] == "2026-01-01 23:59:59"
+    body = session.post.call_args.kwargs["json"]
+    assert "queryDate" not in body and "planSignTime_CondStart" not in body
+    assert body["planSignTime_CondEnd"] == "2026-10-04 23:59:59"
+    assert body["isSigns"] == "0"
+    with pytest.raises(RuntimeError, match="unsigned scope"):
+        fetch([page({**old, "isSigns": 1})], include_history=True)

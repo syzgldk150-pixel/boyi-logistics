@@ -982,25 +982,39 @@ def upsert_ledger_rows(
     }
 
 
-def load_daily_sign_state() -> dict[str, Any]:
+def load_daily_sign_state(tracking_numbers: list[str] | None = None) -> dict[str, Any]:
+    # None retains the existing full-state reader for other callers. The current
+    # R13 report always supplies its complete identity set, including an empty set.
+    scoped = tracking_numbers is not None
+    codes = tuple(sorted(set(tracking_numbers or [])))
+    if any(not isinstance(code, str) or not code.strip() or code != code.strip() for code in codes):
+        raise ValueError("daily-sign tracking numbers must be nonempty normalized strings")
+
+    def scope(column: str, *, conjunction: str = "AND") -> str:
+        if not scoped:
+            return ""
+        predicate = f"{column} IN ({','.join(['%s'] * len(codes))})" if codes else "FALSE"
+        return f" {conjunction} {predicate} "
+
     ensure_daily_sign_tables()
     connection = _daily_sign_connect()
     try:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT * FROM daily_sign_ledger")
+            cursor.execute("SELECT * FROM daily_sign_ledger" + scope("tracking_number", conjunction="WHERE"), codes)
             ledger = {
                 clean_text(row.get("tracking_number")): row
                 for row in cursor.fetchall() or []
                 if clean_text(row.get("tracking_number"))
             }
             cursor.execute(
-                """
+                f"""
                 SELECT i.*, r.business_date, r.fingerprint
                 FROM arrival_stat_items i
                 JOIN arrival_stat_runs r ON r.run_id = i.run_id
                 WHERE r.status = 'success' AND r.is_active = TRUE
+                {scope('i.tracking_number')}
                 ORDER BY r.business_date, i.tracking_number
-                """
+                """, codes
             )
             arrivals: dict[str, list[dict[str, Any]]] = {}
             target_station_codes: set[str] = set()
@@ -1015,27 +1029,28 @@ def load_daily_sign_state() -> dict[str, Any]:
                 arrival_refs.add(
                     f"arrival_stat:{clean_text(row.get('run_id'))}:{clean_text(row.get('fingerprint'))}"
                 )
-            cursor.execute(
-                """
-                SELECT i.*, r.business_date, r.fingerprint
-                FROM arrival_forecast_items i
-                JOIN arrival_forecast_runs r ON r.run_id = i.run_id
-                JOIN (
-                    SELECT business_date, MAX(id) AS latest_id
-                    FROM arrival_forecast_runs
-                    WHERE status = 'success'
-                    GROUP BY business_date
-                ) latest ON latest.latest_id = r.id
-                ORDER BY r.business_date, i.tracking_number
-                """
-            )
             forecast_refs: set[str] = set()
-            for row in cursor.fetchall() or []:
-                if clean_text(row.get("destination_station")) == TARGET_STATION:
-                    target_station_codes.add(clean_text(row.get("tracking_number")))
-                forecast_refs.add(
-                    f"arrival_forecast:{clean_text(row.get('run_id'))}:{clean_text(row.get('fingerprint'))}"
+            if not scoped:
+                cursor.execute(
+                    """
+                    SELECT i.*, r.business_date, r.fingerprint
+                    FROM arrival_forecast_items i
+                    JOIN arrival_forecast_runs r ON r.run_id = i.run_id
+                    JOIN (
+                        SELECT business_date, MAX(id) AS latest_id
+                        FROM arrival_forecast_runs
+                        WHERE status = 'success'
+                        GROUP BY business_date
+                    ) latest ON latest.latest_id = r.id
+                    ORDER BY r.business_date, i.tracking_number
+                    """
                 )
+                for row in cursor.fetchall() or []:
+                    if clean_text(row.get("destination_station")) == TARGET_STATION:
+                        target_station_codes.add(clean_text(row.get("tracking_number")))
+                    forecast_refs.add(
+                        f"arrival_forecast:{clean_text(row.get('run_id'))}:{clean_text(row.get('fingerprint'))}"
+                    )
             cursor.execute(
                 """
                 SELECT run_id, business_date, row_count, fingerprint, completed_at
@@ -1067,14 +1082,14 @@ def load_daily_sign_state() -> dict[str, Any]:
                 forecast_refs.add(
                     f"arrival_forecast:{clean_text(row.get('run_id'))}:{clean_text(row.get('fingerprint'))}"
                 )
-            cursor.execute("SELECT * FROM waybill_problem_events ORDER BY registered_at, id")
+            cursor.execute("SELECT * FROM waybill_problem_events" + scope("tracking_number", conjunction="WHERE") + " ORDER BY registered_at, id", codes)
             problems: dict[str, list[dict[str, Any]]] = {}
             for row in cursor.fetchall() or []:
                 code = clean_text(row.get("tracking_number"))
                 if code:
                     problems.setdefault(code, []).append(row)
             cursor.execute(
-                """
+                f"""
                 SELECT s.*
                 FROM waybill_sign_events s
                 JOIN (
@@ -1086,14 +1101,15 @@ def load_daily_sign_state() -> dict[str, Any]:
                   ON latest.tracking_number = s.tracking_number
                  AND latest.scanned_at = s.scanned_at
                 WHERE s.is_main_waybill = TRUE AND s.scan_type = '签收'
-                """
+                {scope('s.tracking_number')}
+                """, codes
             )
             signs = {
                 clean_text(row.get("tracking_number")): row
                 for row in cursor.fetchall() or []
                 if clean_text(row.get("tracking_number"))
             }
-            cursor.execute("SELECT * FROM waybill_sign_verification_state")
+            cursor.execute("SELECT * FROM waybill_sign_verification_state" + scope("tracking_number", conjunction="WHERE"), codes)
             sign_verifications = {
                 clean_text(row.get("tracking_number")): row
                 for row in cursor.fetchall() or []

@@ -58,8 +58,9 @@ def start_sync_run():
     return value["run_id"], datetime.fromisoformat(value["started_at"])
 
 
-def load_daily_sign_state():
-    state = _store("load_state")
+def load_daily_sign_state(tracking_numbers=None):
+    values = {} if tracking_numbers is None else {"tracking_numbers": list(tracking_numbers)}
+    state = _store("load_state", **values)
     for field in ("ledger", "signs", "sign_verifications"):
         rows = state[field]
         keyed = {row["tracking_number"]: row for row in rows}

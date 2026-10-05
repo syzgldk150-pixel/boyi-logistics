@@ -152,7 +152,7 @@ def build_daily_sign_port_handlers(*, account_manager, store=None, tms=None, fei
                 run_id, observed = store.start_sync_run(run_id=invocation)
                 result = {"run_id": run_id, "started_at": observed}
             elif name == "load_state":
-                result = store.load_daily_sign_state()
+                result = store.load_daily_sign_state(**values)
                 # The broker supplies actual evidence references; SQL locator
                 # strings need not cross the subprocess boundary.
                 result = {**result, "source_refs": []}

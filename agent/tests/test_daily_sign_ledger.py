@@ -781,6 +781,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             return {
                 "ok": True,
                 "rows": len(rows),
+                "written": len(rows), "unchanged": False,
                 "readback": projection_readback_proof(rows, digest_char="s"),
                 "format_readback": {"verified": True, "range": f"A2:L{len(rows)+1}"},
             }
@@ -934,11 +935,11 @@ class DailySignSyncPipelineTest(unittest.TestCase):
 
         def fake_operation(action, params):
             actions.append((action, params["range"]))
-            if action == "read_sheet" and params["range"] == "Sheet1!A1:L1":
+            if action == "read_sheet" and params["range"].startswith("Sheet1!A1:"):
                 return {
                     "ok": True,
                     "data": {
-                        "valueRange": {"values": [daily_sign_sync_tool.SHEET_HEADERS]}
+                        "valueRange": {"values": [daily_sign_sync_tool.SHEET_HEADERS, ["OLD-SIGNED"]]}
                     },
                 }
             if action == "clear_sheet":
@@ -951,14 +952,6 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             patch(
                 "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.resolve_sheet_target",
                 return_value=("token", "Sheet1!A2:I200"),
-            ),
-            patch(
-                "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.verify_sheet_snapshot",
-                return_value={
-                    "verified": True,
-                    "record_count": 0,
-                    "snapshot_sha256": "s" * 64,
-                },
             ),
             patch(
                 "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.feishu_operation",
@@ -1383,7 +1376,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
             if action == "read_sheet":
                 values = (
                     [daily_sign_sync_tool.SHEET_HEADERS]
-                    if params["range"] == "Sheet1!A1:L1"
+                    if params["range"].startswith("Sheet1!A1:")
                     else expected_values
                 )
                 return {
@@ -1427,7 +1420,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
         def fake_operation(action, params):
             nonlocal header_reads
             actions.append(action)
-            if action == "read_sheet" and params["range"] == "Sheet1!A1:L1":
+            if action == "read_sheet" and params["range"].startswith("Sheet1!A1:"):
                 header_reads += 1
                 headers = (
                     daily_sign_sync_tool.PREVIOUS_SHEET_HEADERS[:8]
@@ -1453,7 +1446,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(
-            ["read_sheet", "write_sheet", "read_sheet", "clear_sheet", "read_sheet"],
+            ["read_sheet", "write_sheet", "read_sheet"],
             actions,
         )
 
@@ -1462,7 +1455,7 @@ class DailySignSyncPipelineTest(unittest.TestCase):
 
         def fake_operation(action, params):
             nonlocal header_reads
-            if action == "read_sheet" and params["range"] == "Sheet1!A1:L1":
+            if action == "read_sheet" and params["range"].startswith("Sheet1!A1:"):
                 header_reads += 1
                 headers = (
                     daily_sign_sync_tool.LEGACY_VERBOSE_SHEET_HEADERS

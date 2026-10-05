@@ -193,8 +193,9 @@ def _build_payload(
     disp_site_codes: List[str],
     page_size: int,
     page: int,
+    include_history: bool = False,
 ) -> Dict[str, Any]:
-    return {
+    payload = {
         "queryType": 2,
         "isSigns": "0",
         "showSub": "10",
@@ -206,6 +207,12 @@ def _build_payload(
         "planSignTime_CondStart": start,
         "planSignTime_CondEnd": end,
     }
+    if include_history:
+        # Original R13 page endpoint accepts an upper bound without a lower bound.
+        # Keep current unsigned status authoritative for overdue historical bills.
+        payload.pop("queryDate")
+        payload.pop("planSignTime_CondStart")
+    return payload
 
 
 def fetch_qianshou(
@@ -222,6 +229,7 @@ def fetch_qianshou(
     fetch_all: bool = True,
     max_pages: int = 500,
     account_id: str,
+    include_history: bool = False,
 ) -> List[Dict[str, Any]]:
     resolved_account_id = str(account_id or "").strip()
     if not resolved_account_id:
@@ -289,6 +297,7 @@ def fetch_qianshou(
             disp_site_codes=disp_site_codes,
             page_size=page_size,
             page=current_page,
+            include_history=include_history,
         )
 
         response = session.post(API_URL, json=payload, headers=headers, timeout=20)
@@ -472,6 +481,7 @@ def run_once(params: Dict[str, Any]) -> List[Dict[str, Any]]:
         fetch_all=fetch_all,
         max_pages=max_pages,
         account_id=account_id,
+        include_history=_coerce_bool(params.get("include_history"), default=False),
     )
 
 

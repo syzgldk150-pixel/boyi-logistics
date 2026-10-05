@@ -28,6 +28,7 @@ def _schemas(role, name):
         if name in {"start_run", "load_state", "earliest_date"}:
             inputs = obj({})
         if name == "load_state":
+            inputs = obj({"tracking_numbers": arr(TEXT, maximum=100000)}, required=[])
             # Keyed ledger maps travel as rows, avoiding a small object-width
             # limit on the number of waybills. Keys are reconstructed exactly.
             outputs = obj({"ledger":rows, "arrivals":rows, "problems":rows, "signs":rows,

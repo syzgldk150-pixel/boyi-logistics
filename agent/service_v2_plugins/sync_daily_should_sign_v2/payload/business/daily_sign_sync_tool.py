@@ -41,6 +41,7 @@ from tools.daily_sign_store import (
     verify_daily_sign_persistence,
 )
 from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_readback import (
+    DailySignReadbackError,
     bitable_fields_match,
     verify_bitable_schema,
     verify_bitable_snapshot,
@@ -1361,12 +1362,16 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
     info = parse_a1_range(configured_range)
     header_range = f"{info['sheet']}!A1:L1"
 
-    def read_headers() -> list[str]:
+    initial_rows: list[list[Any]] = []
+    snapshot_end = max(info["end_row"], 1 + len(rows), 2)
+
+    def read_headers(range_to_read: str = header_range) -> list[str]:
+        nonlocal initial_rows
         result = feishu_operation(
             "read_sheet",
             {
                 "spreadsheet_token": spreadsheet_token,
-                "range": header_range,
+                "range": range_to_read,
                 "as": params.get("as", "bot"),
             },
         )
@@ -1377,10 +1382,12 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
         ):
             raise RuntimeError("daily-sign Sheet header read failed")
         values = _sheet_values(result)
+        if range_to_read != header_range:
+            initial_rows = values[1:]
         return [clean_text(value) for value in (values[0] if values else [])]
 
     try:
-        actual_headers = read_headers()
+        actual_headers = read_headers(f"{info['sheet']}!A1:L{snapshot_end}")
     except Exception as exc:
         return {
             "error": "读取应签表头失败。",
@@ -1452,6 +1459,24 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
             "actual_headers": actual_headers,
         }
     sheet_values = _build_ledger_sheet_values(rows)
+    try:
+        unchanged_readback = verify_sheet_snapshot(
+            sheet_values, initial_rows,
+            observed_row_capacity=snapshot_end - 1,
+            columns=DAILY_SIGN_SHEET_COL_COUNT,
+        )
+    except DailySignReadbackError:
+        pass  # A changed current snapshot follows the normal single-write path.
+    else:
+        from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_format import sync_quantity_format
+        try:
+            format_readback = sync_quantity_format(feishu_operation, spreadsheet_token, info["sheet"], len(sheet_values))
+        except Exception as exc:
+            return _write_outcome_unknown("每日应签黄色条件格式未通过回读核验。", cause=clean_text(exc))
+        return {"ok": True, "rows": len(sheet_values), "written": 0, "unchanged": True,
+                "readback": unchanged_readback, "format_readback": format_readback,
+                "write_result": {"ok": True, "skipped": True, "rows": 0},
+                "clear_result": {"ok": True, "skipped": True}}
     write_range = build_range_from_template(
         f"{info['sheet']}!A2:L2", max(len(sheet_values), 1), DAILY_SIGN_SHEET_COL_COUNT
     )
@@ -1562,6 +1587,8 @@ def _sync_sheet(rows: list[dict[str, Any]], params: dict[str, Any]) -> dict[str,
     return {
         "ok": True,
         "rows": len(sheet_values),
+        "written": len(sheet_values),
+        "unchanged": False,
         "format_readback": format_readback,
         "write_result": write_result,
         "clear_result": clear_result,
@@ -1927,6 +1954,16 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
         "problems_complete": False,
         "signs_complete": False,
     }
+    phase_started = time.perf_counter()
+    timings: dict[str, float] = {}
+
+    def complete_phase(name: str) -> None:
+        nonlocal phase_started
+        now = time.perf_counter()
+        timings[name] = round(now - phase_started, 3)
+        phase_started = now
+
+    diagnostics["timings_seconds"] = timings
     try:
         if params.get("dry_run"):
             raise DailySignSyncError(
@@ -1951,7 +1988,15 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
             ) from exc
         observed_at = started_at
         diagnostics["run_id"] = run_id
-        state = load_daily_sign_state()
+        complete_phase("start_run")
+        r13_request = _resolve_r13_request(params, r13_account_id)
+        r13_response = call_http_service("/get_qianshou", r13_request)
+        r13_rows = _extract_authoritative_rows(r13_response, label="R13 应签查询")
+        r13_by_code = _r13_rows_by_code(r13_rows)
+        diagnostics.update({"r13_complete": True, "r13_rows": len(r13_rows)})
+
+        complete_phase("r13_query")
+        state = load_daily_sign_state(tracking_numbers=sorted(r13_by_code))
         arrival_source_proof = state.get("arrival_source_proof")
         if (
             not isinstance(arrival_source_proof, dict)
@@ -1970,12 +2015,7 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-        r13_request = _resolve_r13_request(params, r13_account_id)
-        r13_response = call_http_service("/get_qianshou", r13_request)
-        r13_rows = _extract_authoritative_rows(r13_response, label="R13 应签查询")
-        r13_by_code = _r13_rows_by_code(r13_rows)
-        diagnostics.update({"r13_complete": True, "r13_rows": len(r13_rows)})
-
+        complete_phase("scoped_state_read")
         # R13 already supplies the requested problem/sign fields. Do not query
         # secondary systems or recompute thousands of historical candidates.
         # Stored event facts remain historical inputs, never publication fields.
@@ -2023,6 +2063,7 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
             "r13_current_signed_rows": sum(row.get("tms_signed") is True for row in open_rows),
         })
         address_result = {"ok": True, "source": "r13", "queried": 0}
+        complete_phase("build_rows")
         persistence_marker = build_daily_sign_persistence_marker(
             problem_events=problem_events,
             sign_events=all_sign_events,
@@ -2088,6 +2129,7 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+        complete_phase("persistence_and_readback")
         bitable_result = _sync_bitable(open_rows, params)
         if bitable_result.get("error"):
             error_code = clean_text(bitable_result.get("error_code"))
@@ -2114,6 +2156,7 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
                 "bitable_readback": bitable_readback,
             }
         )
+        complete_phase("bitable_sync")
         sheet_result = _sync_sheet(open_rows, params)
         if sheet_result.get("error"):
             error_code = clean_text(sheet_result.get("error_code"))
@@ -2137,11 +2180,14 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
         diagnostics.update(
             {
                 "sheet_rows": sheet_result.get("rows", len(open_rows)),
+                "sheet_written": sheet_result["written"],
+                "sheet_unchanged": sheet_result["unchanged"],
                 "sheet_readback": sheet_readback,
                 "sheet_format_readback": sheet_result["format_readback"],
             }
         )
 
+        complete_phase("sheet_sync")
         fingerprint = clean_text(
             persistence_marker.get("publication_rows", {}).get("sha256")
         )
@@ -2173,7 +2219,7 @@ def run_daily_sign_sync(params: dict[str, Any]) -> dict[str, Any]:
                 "quality_flag_counts": dict(sorted(quality_flag_counts.items())),
                 "fingerprint": fingerprint,
                 "source_window": {
-                    "start": r13_request["start"],
+                    "start": None if r13_request.get("include_history") else r13_request["start"],
                     "end": r13_request["end"],
                 },
                 "ledger_result": ledger_result,

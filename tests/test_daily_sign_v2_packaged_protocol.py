@@ -236,8 +236,9 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         source_calls.append(endpoint)
         if endpoint == "/get_qianshou":
             assert values["r13_account_id"] == "test-r13"
+            assert values["include_history"] is True
             current = arrivals[:2] if count == 8 else arrivals
-            return {"data":[{"billNumberMain":row["tracking_number"], "planSignTime":"2026-09-11 23:59:59",
+            return {"data":[{"billNumberMain":row["tracking_number"], "planSignTime": "2026-01-01 23:59:59" if count == 8 else "2026-09-11 23:59:59",
                 "isSigns":0, "problemType":"原页问题", "problemRegisterDate":"2026-09-10 12:00:00",
                 "problemCause":"原页内容", "problemRegisterSite":"原页网点", "goodsName":"原页货物",
                 "packTypeDesc":"纸箱", "pcs":row["expected_quantity"], "dispAddress":"原页地址",
@@ -299,4 +300,36 @@ def test_daily_sign_zip_calculates_and_publishes_verified_mysql_snapshot(tmp_pat
         assert sum(len(rows) for rows in state["problems"].values()) == len(problem_rows)
     if count == 8:
         assert not state["sign_verifications"]
+        assert diagnostics["arrival_rows"] == 4  # Two requested identities, two days each.
+        assert record_fields["R00021000001"]["规划应签收时间"] == "2026-01-01 23:59:59"
+        calls_before = len(tables.calls)
+        second = host.execute(arguments, operation="run")
+        assert second["status"] == "SUCCESS", second.get("error")
+        assert source_calls == ["/get_qianshou", "/get_qianshou"]
+        assert not set(tables.calls[calls_before:]) & {"write_records", "write_sheet", "clear_sheet", "write_sheet_format"}
+        assert second["data"]["diagnostics"]["sheet_written"] == 0
+        assert second["data"]["diagnostics"]["sheet_unchanged"] is True
+    assert set(diagnostics["timings_seconds"]) == {
+        "start_run", "r13_query", "scoped_state_read", "build_rows",
+        "persistence_and_readback", "bitable_sync", "sheet_sync"}
+    assert all(value >= 0 for value in diagnostics["timings_seconds"].values())
     assert result["meta"]["write_outcome"] == "WRITE_VERIFIED"
+
+
+def test_scoped_state_reads_only_selected_waybills_and_keeps_latest_corrections(direct_repository, monkeypatch):  # noqa: F811
+    assert os.environ["AGENT_DB_HOST"] == "127.0.0.1" and os.environ["AGENT_DB_NAME"].endswith("_test")
+    monkeypatch.setattr(store, "business_now", lambda: datetime(2026, 9, 11, 12))
+    rows = [{"tracking_number": code, "destination_station": "邵阳大祥S站",
+        "expected_quantity": 3, "arrived_quantity": 3} for code in ("SELECTED", "UNRELATED")]
+    store.save_arrival_stat_snapshot(date(2026, 9, 10), rows)
+    store.save_arrival_stat_snapshot(date(2026, 9, 11), [{**row, "arrived_quantity": 0} for row in rows])
+    scoped = store.load_daily_sign_state(tracking_numbers=["SELECTED", "SELECTED", "MISSING"])
+    assert set(scoped["arrivals"]) == {"SELECTED"}
+    assert [row["arrived_quantity"] for row in scoped["arrivals"]["SELECTED"]] == [3, 0]
+    assert scoped["arrival_source_proof"]["complete"] is True
+    for key in ("ledger", "problems", "signs", "sign_verifications"):
+        assert set(scoped[key]) <= {"SELECTED", "MISSING"}
+    empty = store.load_daily_sign_state(tracking_numbers=[])
+    assert empty["arrival_source_proof"]["complete"] is True
+    assert all(not empty[key] for key in ("ledger", "arrivals", "problems", "signs", "sign_verifications", "target_station_codes"))
+    assert "UNRELATED" in store.load_daily_sign_state()["arrivals"]
