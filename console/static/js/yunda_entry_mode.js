@@ -1380,17 +1380,26 @@
   }
 
   function showOriginalPageLoading(frame, chip, notice, label) {
-    frame.setAttribute("aria-busy", "true");
     notice.setAttribute("role", "status");
     notice.setAttribute("aria-live", "polite");
-    notice.textContent = `正在打开${label}原页，首次加载需要一些时间…`;
-    notice.hidden = false;
-    if (chip) chip.textContent = "正在加载";
-    const slowTimer = window.setTimeout(() => {
-      if (!frame.isConnected || frame.getAttribute("aria-busy") !== "true") return;
-      notice.textContent = `${label}原页仍在加载，请稍候。若长时间没有显示，可关闭这个页签后重新打开。`;
-    }, 15000);
+    let slowTimer;
+    const startLoading = () => {
+      window.clearTimeout(slowTimer);
+      frame.setAttribute("aria-busy", "true");
+      notice.textContent = `正在打开${label}原页…`;
+      notice.hidden = false;
+      if (chip) chip.textContent = "正在加载";
+      slowTimer = window.setTimeout(() => {
+        if (!frame.isConnected || frame.getAttribute("aria-busy") !== "true") return;
+        frame.setAttribute("aria-busy", "false");
+        if (chip) chip.textContent = "加载未完成";
+        const extensionHint = label === "融辉" ? "请先确认内嵌扩展已安装并更新。" : "";
+        notice.textContent = `${label}原页尚未完成加载。${extensionHint}若页面空白，请在新窗口登录${label}，完成后回到这里点“重新加载”。`;
+      }, 15000);
+    };
+    frame.addEventListener("console:original-page-reload", startLoading);
     frame.addEventListener("load", () => {
+      if (!frame.getAttribute("src")) return;
       window.clearTimeout(slowTimer);
       frame.setAttribute("aria-busy", "false");
       notice.hidden = true;
@@ -1402,9 +1411,10 @@
       window.clearTimeout(slowTimer);
       frame.setAttribute("aria-busy", "false");
       if (chip) chip.textContent = "加载失败";
-      notice.textContent = `${label}原页加载失败，请关闭这个页签后重新打开。`;
+      notice.textContent = `${label}原页加载失败，请在新窗口登录后点“重新加载”。`;
       notice.hidden = false;
     });
+    startLoading();
   }
 
   function initRonghuiLiveInstance(ronghuiRoot) {

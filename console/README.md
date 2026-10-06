@@ -71,9 +71,9 @@ Console 运行时唯一业务数据库是与 Agent 共用的 MySQL；没有 SQLi
 
 旧的同源代理路径 `/ocr/yunda/*`、`/ocr/ronghui/live/*`、`/receipts/yunda/live/*` 和 `/receipts/ronghui/live/*` 对所有方法固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，且不会调用 Agent。
 
-当前入口从主站已登录页面请求 `/original-pages/{provider}/launch`，获取一次性短期 ticket 后跳转到独立来源 `https://www.boyi.homes/original/{yunda|ronghui}/`。主站会话 Cookie 不会发送到该来源；独立来源使用路径限定 capability，写请求还需校验独立 Origin。
+保留的代理入口从主站已登录页面请求 `/original-pages/{provider}/launch`，获取一次性短期 ticket 后跳转到独立来源 `https://www.boyi.homes/original/{yunda|ronghui}/`。主站会话 Cookie 不会发送到该来源；独立来源使用路径限定 capability，写请求还需校验独立 Origin。
 
-原页响应复用 Console 的编码协商与 gzip 压缩，保留上游缓存策略及独立来源的安全响应头。录单页签打开时立即显示加载状态，15 秒仍未结束则提示继续等待；跨域 iframe 的 `load` 只结束加载提示，不代表业务登录或录单功能已验证，也不会自动刷新或重放业务操作。
+保留的代理响应复用 Console 的编码协商与 gzip 压缩，保留上游缓存策略及独立来源的安全响应头。当前录单页签直接嵌入真实原站，禁止原页接管博益顶层窗口；需扫码时从明确的新窗口入口登录，完成后回到录单页点“重新加载”。初始页及动态页签均先绑定加载监听再开始导航，重载重新计时，15 秒未完成时显示登录与扩展检查指引；跨域 iframe 的 `load` 只结束加载提示，不代表业务登录或录单功能已验证，不自动刷新或重放业务操作。融辉内嵌需本机安装/更新扩展，0.3.1 支持从博益首页切换到录单模块。
 
 ## 主要页面
 

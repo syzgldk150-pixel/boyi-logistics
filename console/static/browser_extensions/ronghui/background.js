@@ -59,7 +59,7 @@ chrome.webRequest.onHeadersReceived.addListener(async response => {
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (message?.type !== 'prepare-ronghui-embed') return;
   const origin = new URL(sender.url || 'https://invalid.local');
-  if (origin.origin !== 'https://boyi.homes' || origin.pathname !== '/ocr' || !sender.tab) {
+  if (origin.origin !== 'https://boyi.homes' || sender.frameId !== 0 || !sender.tab) {
     reply({ok:false}); return;
   }
   (async () => {

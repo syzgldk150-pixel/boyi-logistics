@@ -172,10 +172,11 @@ class YundaEntryTemplateTests(unittest.TestCase):
         self.assertIn('min-width: 1280px', html)
         self.assertIn('body.entry-tabs-page .sidebar { display: flex !important; }', html)
         self.assertIn(
-            'src="https://kyinms.yunda56.com/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&amp;p=nil"',
+            'data-entry-pending-src="https://kyinms.yunda56.com/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&amp;p=nil"',
             html,
         )
         self.assertIn('data-yunda-native="1"', html)
+        self._assert_original_frame_navigation_is_contained(html)
         self.assertNotIn('/original-pages/yunda/launch', html)
         self.assertIn('data-entry-add-provider="boyi"', html)
         self.assertIn('data-entry-add-provider="yunda"', html)
@@ -229,7 +230,7 @@ class YundaEntryTemplateTests(unittest.TestCase):
         self.assertIn('data-entry-ocr-link href="/ocr?mode=ocr"', html)
         self.assertIn('data-entry-initial-provider="yunda"', html)
         self.assertIn(
-            'src="https://kyinms.yunda56.com/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&amp;p=nil"',
+            'data-entry-pending-src="https://kyinms.yunda56.com/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&amp;p=nil"',
             html,
         )
         self.assertIn('data-yunda-native="1"', html)
@@ -280,15 +281,25 @@ class YundaEntryTemplateTests(unittest.TestCase):
         self.assertIn('body.entry-tabs-page .sidebar { display: flex !important; }', html)
         self.assertIn('data-entry-add-provider="boyi"', html)
         self.assertIn('data-entry-add-provider="yunda"', html)
-        self.assertIn('src="https://tms.ronghuiwl.com/module/index?mv=index"', html)
+        self.assertIn('data-entry-pending-src="https://tms.ronghuiwl.com/module/index?mv=index"', html)
+        self._assert_original_frame_navigation_is_contained(html)
         self.assertIn('data-ronghui-native="1"', html)
         self.assertNotIn('/original-pages/ronghui/launch', html)
-        self.assertIn('安装内嵌扩展后', html)
-        self.assertIn('未安装时如无法登录', html)
+        self.assertIn('内嵌使用需安装或更新扩展', html)
+        self.assertIn('请在新窗口登录', html)
         self.assertIn('href="/ocr/browser-extension.zip" download', html)
         self.assertNotIn('第三方活动原页暂时停用', html)
         self.assertNotIn('data-mode-panel="ronghui"', html)
         self.assertNotIn(' src="/ocr/yunda/live', html)
+
+    def _assert_original_frame_navigation_is_contained(self, html):
+        frame = re.search(r"<iframe\b[^>]*data-entry-frame\b[^>]*>", html).group(0)
+        self.assertNotRegex(frame, r'\s+src=')
+        permissions = re.search(r'sandbox="([^"]+)"', frame).group(1).split()
+        self.assertIn("allow-forms", permissions)
+        self.assertIn("allow-modals", permissions)
+        self.assertIn("allow-popups-to-escape-sandbox", permissions)
+        self.assertFalse(any(token.startswith("allow-top-navigation") for token in permissions))
 
     def test_document_template_mode_switch_supports_multi_open_tabs(self):
         template = (CONSOLE_DIR / "templates" / "document.html").read_text(encoding="utf-8")

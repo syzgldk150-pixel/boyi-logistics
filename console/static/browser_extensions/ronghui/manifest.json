@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "博益融辉原页验证",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "仅在博益运单录入页验证融辉真实内嵌。无账号隔离，不收集登录信息。",
   "permissions": [
     "declarativeNetRequestWithHostAccess",
@@ -19,7 +19,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://boyi.homes/ocr*"
+        "https://boyi.homes/*"
       ],
       "js": [
         "content.js",

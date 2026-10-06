@@ -1,5 +1,6 @@
 (() => {
-  if (location.pathname !== '/ocr') return;
+  // The Console changes modules without a document navigation.
+  if (location.origin !== 'https://boyi.homes') return;
   const pending = new WeakSet();
   const prepared = new WeakSet();
   async function mount(frame) {
@@ -12,7 +13,8 @@
       const result = await chrome.runtime.sendMessage({type:'prepare-ronghui-embed'});
       if (!result?.ok || !frame.isConnected) { frame.dataset.ronghuiExtension='failed'; return; }
       prepared.add(frame);
-      frame.dataset.ronghuiExtension = '0.3.0';
+      frame.dataset.ronghuiExtension = '0.3.1';
+      frame.dispatchEvent(new Event('console:original-page-reload'));
       frame.src = 'https://tms.ronghuiwl.com/module/index?mv=index';
     } finally { pending.delete(frame); }
   }

@@ -1,5 +1,5 @@
 (() => {
-  if (location.origin !== 'https://boyi.homes' || location.pathname !== '/ocr' ||
+  if (location.origin !== 'https://boyi.homes' ||
       window.__boyiRonghuiLayoutHost) return;
   window.__boyiRonghuiLayoutHost = true;
   const ORIGIN = 'https://tms.ronghuiwl.com';
