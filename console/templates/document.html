@@ -1118,6 +1118,8 @@
       // Bind loading observers before navigating, including cached/partial pages.
       window.dispatchEvent(new CustomEvent("console:ocr-mode-change", { detail: { mode: provider } }));
       if (provider === "ronghui") {
+        // Ronghui rejects the cross-site Referer even with a valid browser login.
+        frame.referrerPolicy = "no-referrer";
         frame.dataset.entryPendingSrc = entryFrameSrc(provider);
         frame.dispatchEvent(new Event("console:original-page-prepare"));
         return;

@@ -47,7 +47,10 @@ assert.equal(frame.getAttribute('aria-busy'), 'false');
 assert.equal(notice.hidden, true);
 assert.equal(timers.size, 0);
 const ronghui = new Frame(); let preparationRequested = false;
-ronghui.addEventListener('console:original-page-prepare', () => preparationRequested = true);
+ronghui.addEventListener('console:original-page-prepare', () => {
+  assert.equal(ronghui.referrerPolicy, 'no-referrer');
+  preparationRequested = true;
+});
 eval(between(sources.template, '    const bindEntryPanelFrame =', '    function createEntryTab(')
   + '\nbindEntryPanelFrame({}, "ronghui", ronghui);');
 assert.equal(preparationRequested, true);
