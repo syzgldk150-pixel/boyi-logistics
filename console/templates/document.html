@@ -22,7 +22,7 @@
 <script src="/static/js/waybill_label_html.js?v=20260916-receipt-v3"></script>
 <script src="/static/js/waybill_label_lodop.js?v=20260916-receipt-v3"></script>
 <script src="/static/js/clodop_loader.js?v=20260812"></script>
-<script src="/static/js/yunda_entry_mode.js?v=20261006-original-login"></script>
+<script src="/static/js/yunda_entry_mode.js?v=20261006-original-login-2"></script>
 {% endif %}
 <style>
   body.no-scroll { overflow: hidden; }
@@ -1117,6 +1117,11 @@
       if (!["yunda", "ronghui"].includes(provider)) return;
       // Bind loading observers before navigating, including cached/partial pages.
       window.dispatchEvent(new CustomEvent("console:ocr-mode-change", { detail: { mode: provider } }));
+      if (provider === "ronghui") {
+        frame.dataset.entryPendingSrc = entryFrameSrc(provider);
+        frame.dispatchEvent(new Event("console:original-page-prepare"));
+        return;
+      }
       frame.src = frame.dataset.entryPendingSrc || entryFrameSrc(provider);
       delete frame.dataset.entryPendingSrc;
     };
@@ -1212,7 +1217,12 @@
         const frame = reloadButton.closest("[data-entry-frame-panel]")?.querySelector("[data-entry-frame]");
         if (frame) {
           frame.dispatchEvent(new Event("console:original-page-reload"));
-          frame.src = entryFrameSrc(frame.dataset.entryProvider);
+          if (frame.dataset.entryProvider === "ronghui") {
+            frame.dataset.entryPendingSrc = entryFrameSrc("ronghui");
+            frame.dispatchEvent(new Event("console:original-page-prepare"));
+          } else {
+            frame.src = entryFrameSrc(frame.dataset.entryProvider);
+          }
         }
         return;
       }

@@ -2,23 +2,37 @@
   // The Console changes modules without a document navigation.
   if (location.origin !== 'https://boyi.homes') return;
   const pending = new WeakSet();
-  const prepared = new WeakSet();
-  async function mount(frame) {
-    if (pending.has(frame) || prepared.has(frame)) return;
+  const mounted = new WeakSet();
+  async function prepare(frame) {
+    if (pending.has(frame) || frame.dataset.entryFrameBound !== '1' || !frame.dataset.entryPendingSrc) return;
     let source;
-    try { source = new URL(frame.src); } catch { return; }
-    if (source.hostname !== 'tms.ronghuiwl.com') return;
+    try { source = new URL(frame.dataset.entryPendingSrc); } catch { return; }
+    if (source.origin !== 'https://tms.ronghuiwl.com' || source.pathname !== '/module/index') return;
     pending.add(frame);
+    frame.dataset.ronghuiExtension = 'preparing';
     try {
       const result = await chrome.runtime.sendMessage({type:'prepare-ronghui-embed'});
       if (!result?.ok || !frame.isConnected) { frame.dataset.ronghuiExtension='failed'; return; }
-      prepared.add(frame);
-      frame.dataset.ronghuiExtension = '0.3.1';
+      frame.dataset.ronghuiExtension = '0.3.2';
+      delete frame.dataset.entryPendingSrc;
       frame.dispatchEvent(new Event('console:original-page-reload'));
-      frame.src = 'https://tms.ronghuiwl.com/module/index?mv=index';
+      frame.src = source.href;
+    } catch {
+      frame.dataset.ronghuiExtension = 'failed';
     } finally { pending.delete(frame); }
   }
-  function scan() { document.querySelectorAll('iframe[data-ronghui-live-frame]').forEach(mount); }
-  new MutationObserver(scan).observe(document,{subtree:true,childList:true,attributes:true,attributeFilter:['src']});
+  function scan() {
+    document.querySelectorAll('iframe[data-ronghui-live-frame]').forEach(frame => {
+      if (mounted.has(frame)) return;
+      mounted.add(frame);
+      frame.addEventListener('console:original-page-prepare', () => prepare(frame));
+      prepare(frame);
+    });
+  }
+  new MutationObserver(records => {
+    scan();
+    records.filter(record => record.type === 'attributes' && mounted.has(record.target))
+      .forEach(record => prepare(record.target));
+  }).observe(document,{subtree:true,childList:true,attributes:true,attributeFilter:['data-entry-pending-src']});
   scan();
 })();

@@ -42,10 +42,17 @@ const entryFrameSrc = () => 'https://tms.ronghuiwl.com/module/index?mv=index';
 window.addEventListener('console:ocr-mode-change', () => showOriginalPageLoading(frame, chip, notice, '融辉'), {once:true});
 // Simulate an iframe which completes immediately when its src is assigned.
 eval(between(sources.template, '    const bindEntryPanelFrame =', '    function createEntryTab(')
-  + '\nbindEntryPanelFrame({}, "ronghui", frame);');
+  + '\nbindEntryPanelFrame({}, "yunda", frame);');
 assert.equal(frame.getAttribute('aria-busy'), 'false');
 assert.equal(notice.hidden, true);
 assert.equal(timers.size, 0);
+const ronghui = new Frame(); let preparationRequested = false;
+ronghui.addEventListener('console:original-page-prepare', () => preparationRequested = true);
+eval(between(sources.template, '    const bindEntryPanelFrame =', '    function createEntryTab(')
+  + '\nbindEntryPanelFrame({}, "ronghui", ronghui);');
+assert.equal(preparationRequested, true);
+assert.equal(ronghui.getAttribute('src'), null);
+assert.equal(ronghui.dataset.entryPendingSrc, entryFrameSrc());
 frame.dispatchEvent(new Event('console:original-page-reload'));
 assert.equal(frame.getAttribute('aria-busy'), 'true');
 assert.equal(notice.hidden, false);
@@ -72,23 +79,44 @@ assert.equal(timers.size, 0);
 const assert = require('node:assert/strict');
 const sources = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
 const location = {origin:'https://boyi.homes', pathname:'/'};
-let observer, frames = [], messages = 0, reloads = 0;
+let observer, frames = [], messages = 0, reloads = 0, navigations = 0, finishPreparation;
 const document = {querySelectorAll:() => frames};
 class MutationObserver { constructor(callback) { observer = callback; } observe() {} }
-const chrome = {runtime:{sendMessage:async () => { messages++; return {ok:true}; }}};
+const chrome = {runtime:{sendMessage:() => { messages++; return new Promise(resolve => finishPreparation = resolve); }}};
 eval(sources.content);
 assert.equal(typeof observer, 'function');
 location.pathname = '/ocr';
-const frame = {src:'https://tms.ronghuiwl.com/module/index?mv=index', dataset:{},
-  isConnected:true, dispatchEvent:() => reloads++};
+const source = 'https://tms.ronghuiwl.com/module/index?mv=index';
+const frame = new EventTarget();
+frame.dataset = {entryPendingSrc:source}; frame.isConnected = true;
+Object.defineProperty(frame, 'src', {set(value) { assert.equal(value, source); navigations++; }});
+frame.addEventListener('console:original-page-reload', () => reloads++);
 frames = [frame];
-observer(); observer();
+observer([]); observer([]);
+assert.equal(messages, 0); // Parsing the iframe must not race the host's load listeners.
+frame.dataset.entryFrameBound = '1';
+frame.dispatchEvent(new Event('console:original-page-prepare'));
+assert.equal(messages, 1);
+assert.equal(navigations, 0); // No original request until browser login adaptation finishes.
+finishPreparation({ok:true});
 setImmediate(() => {
   assert.equal(messages, 1);
   assert.equal(frame.dataset.ronghuiExtension, sources.version);
   assert.equal(reloads, 1);
-  observer();
+  assert.equal(navigations, 1);
+  observer([]);
   assert.equal(messages, 1);
+  frame.dataset.entryPendingSrc = source;
+  frame.dispatchEvent(new Event('console:original-page-prepare'));
+  assert.equal(messages, 2);
+  assert.equal(navigations, 1);
+  finishPreparation({ok:false});
+  setImmediate(() => {
+    assert.equal(frame.dataset.ronghuiExtension, 'failed');
+    assert.equal(navigations, 1);
+    observer([]);
+    assert.equal(messages, 2); // A failed preparation is not silently retried on DOM changes.
+  });
 });
 """, {
             "content": (CONSOLE / "static/browser_extensions/ronghui/content.js").read_text(encoding="utf-8"),

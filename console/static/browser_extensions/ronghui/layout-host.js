@@ -5,6 +5,7 @@
   const ORIGIN = 'https://tms.ronghuiwl.com';
   const mounted = new WeakSet();
   function query(frame) {
+    if (!frame.getAttribute('src') || frame.contentDocument) return;
     frame.contentWindow?.postMessage({type: 'boyi-ronghui-layout-query'}, ORIGIN);
   }
   function scan() {
