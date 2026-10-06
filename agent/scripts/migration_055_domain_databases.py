@@ -96,7 +96,8 @@ def preflight_permissions(cursor):
         privileges = set()
         for grant in grants:
             match = re.match(r"GRANT (.+?) ON (.+?) TO ", grant)
-            if match and match[2].replace('`', '') in {"*.*", schema + ".*"}:
+            # RDS escapes literal underscores in schema-level SHOW GRANTS.
+            if match and match[2].replace('`', '').replace('\\_', '_') in {"*.*", schema + ".*"}:
                 privileges.update(match[1].split(", "))
         if "ALL PRIVILEGES" not in privileges and not required <= privileges:
             raise RuntimeError(f"database administrator must grant migration/read/write privileges on {schema} before release")

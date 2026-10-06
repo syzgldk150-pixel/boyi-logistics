@@ -35,3 +35,11 @@ def test_migration_account_with_all_three_schema_grants_is_ready(schemas):
     preflight_permissions(cursor([
         f"GRANT ALL PRIVILEGES ON `{schema}`.* TO 'agent'@'%'" for schema in schemas
     ]))
+
+
+def test_rds_literal_underscore_schema_grants_are_recognized():
+    preflight_permissions(cursor([
+        "GRANT ALL PRIVILEGES ON `agent_db`.* TO 'agent'@'%'",
+        r"GRANT ALL PRIVILEGES ON `waybill\_db`.* TO 'agent'@'%'",
+        r"GRANT ALL PRIVILEGES ON `finance\_db`.* TO 'agent'@'%'",
+    ]))
