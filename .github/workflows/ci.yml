@@ -48,6 +48,7 @@ jobs:
       AGENT_DB_PASS: ""
       AGENT_DB_NAME: agent_control_plane_test
       MIGRATION_ENV_FILE: /dev/null
+      MIGRATION_BACKUP_DIRECTORY: ${{ runner.temp }}/domain-migration-backups
     steps:
       - uses: actions/checkout@v4
       - name: Install restricted Harness sandbox dependencies

@@ -3,6 +3,7 @@ import os
 import re
 
 import pymysql
+from tests.mysql_database_cleanup import drop_test_database
 
 ISOLATED_MYSQL_PORTS = frozenset({33326, 33330})
 
@@ -35,7 +36,7 @@ def prepare_owned(expected_name):
     fixture.host, fixture.port = '127.0.0.1', int(os.environ['AGENT_DB_PORT'])
     fixture.user, fixture.password = os.environ['AGENT_DB_USER'], os.environ['AGENT_DB_PASS']
     with fixture._server_connection() as connection, connection.cursor() as cursor:
-        cursor.execute(f'DROP DATABASE IF EXISTS `{expected_name}`')
+        drop_test_database(cursor, expected_name)
         cursor.execute(f'CREATE DATABASE `{expected_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci')
     fixture._run_migrations(expected_name)
     fixture._run_migrations(expected_name, check_only=True)

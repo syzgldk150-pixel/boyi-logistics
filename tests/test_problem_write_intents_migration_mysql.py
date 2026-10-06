@@ -7,6 +7,7 @@ import pytest
 
 from shared.problem_write_intents import ProblemWriteIntents, UnresolvedProblemWrite
 from tests import test_mysql_orchestration_integration as support
+from tests.mysql_database_cleanup import drop_test_database
 
 pytestmark = pytest.mark.skipif(os.getenv('RUN_MYSQL_INTEGRATION') != '1', reason='isolated MySQL required')
 
@@ -35,12 +36,18 @@ def test_053_upgrade_preserves_all_old_rows_and_reentry_keeps_write_facts():
                  '7','123.4500','保留人工备注','manual','2026-09-15 12:00:00','2026-09-15 12:00:00')''')
             cursor.execute('SHOW TABLES')
             tables = sorted(next(iter(row.values())) for row in cursor.fetchall())
+            original_columns = {}
+            for table in tables:
+                cursor.execute(f'SHOW COLUMNS FROM `{table}`')
+                original_columns[table] = ','.join(f"`{row['Field']}`" for row in cursor.fetchall())
         def snapshot():
             with helper._connection() as connection, connection.cursor() as cursor:
                 result = {}
                 for table in tables:
                     if table != 'schema_migrations':
-                        cursor.execute(f'SELECT * FROM `{table}`')
+                        # Later migrations may add fields (054 sender_address);
+                        # every pre-upgrade field and row must remain identical.
+                        cursor.execute(f'SELECT {original_columns[table]} FROM `{table}`')
                         result[table] = sorted(cursor.fetchall(), key=repr)
                 return result
         before = snapshot()
@@ -62,4 +69,4 @@ def test_053_upgrade_preserves_all_old_rows_and_reentry_keeps_write_facts():
         helper._run_migrations(helper.database, check_only=True)
     finally:
         with helper._server_connection() as connection, connection.cursor() as cursor:
-            cursor.execute(f'DROP DATABASE `{helper.database}`')
+            drop_test_database(cursor, helper.database)

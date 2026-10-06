@@ -10,6 +10,7 @@ from shared.automation_plugin_repository import AutomationPluginRepository
 from shared.orchestration_repository import OrchestrationRepository
 from shared.orchestration_repository_support import ConcurrentUpdateError, _json_hash, _json_param
 from tests import test_mysql_orchestration_integration as mysql_helpers
+from tests.mysql_database_cleanup import drop_test_database
 
 
 pytestmark = pytest.mark.skipif(
@@ -38,7 +39,7 @@ def database():
         yield case
     finally:
         with case._server_connection() as connection, connection.cursor() as cursor:
-            cursor.execute(f"DROP DATABASE `{case.database}`")
+            drop_test_database(cursor, case.database)
 
 
 def _connection(case):

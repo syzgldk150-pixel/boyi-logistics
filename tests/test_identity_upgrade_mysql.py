@@ -8,6 +8,7 @@ import pytest
 from shared.identity_repository import IdentityRepository
 from tests.test_manual_unknown_write_mysql import database as database
 from tests.test_feishu_bindings_mysql import pytestmark
+from tests.mysql_database_cleanup import drop_test_database
 
 
 def test_existing_accounts_and_bindings_keep_their_actual_owner_after_upgrade(database):
@@ -51,4 +52,4 @@ def test_existing_accounts_and_bindings_keep_their_actual_owner_after_upgrade(da
         assert not identities.feishu("ou-before-upgrade").super_admin
     finally:
         with database._server_connection() as connection, connection.cursor() as cursor:
-            cursor.execute(f"DROP DATABASE `{name}`")
+            drop_test_database(cursor, name)

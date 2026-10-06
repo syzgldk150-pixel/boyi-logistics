@@ -95,8 +95,9 @@ class RuntimeRepositoryTests(unittest.TestCase):
 
         sql, params = cursor.calls[0]
         self.assertIn("WHERE BINARY waybill_no IN (%s)", sql)
-        self.assertEqual(["signed", "WB-1"], params)
-        self.assertEqual(1, result["updated"])
+        self.assertEqual(["signed", "WB-1", "ronghui"], params)
+        self.assertEqual(3, result["updated"])
+        self.assertEqual(["ronghui", "yunda", "ocr"], [params[-1] for _, params in cursor.calls])
 
     def test_projection_status_update_marks_after_schema_validation_and_before_update(self):
         marks: list[str] = []
@@ -104,7 +105,7 @@ class RuntimeRepositoryTests(unittest.TestCase):
 
         class MarkerCursor(_Cursor):
             def execute(self, sql, params=None):
-                if "UPDATE waybills" in sql:
+                if "UPDATE " in sql:
                     testcase.assertEqual(["started"], marks)
                 super().execute(sql, params)
 
@@ -124,10 +125,10 @@ class RuntimeRepositoryTests(unittest.TestCase):
                 mark_write_started=lambda: marks.append("started"),
             )
 
-        self.assertEqual(1, result["updated"])
+        self.assertEqual(3, result["updated"])
         self.assertEqual(["started"], marks)
         self.assertIn("information_schema.COLUMNS", cursor.calls[0][0])
-        self.assertIn("UPDATE waybills", cursor.calls[1][0])
+        self.assertIn("UPDATE ronghui_waybills", cursor.calls[1][0])
 
     def test_projection_schema_failure_does_not_mark_or_update(self):
         marks: list[str] = []
@@ -324,6 +325,7 @@ class RuntimeRepositoryTests(unittest.TestCase):
                 "052",
                 "053",
                 "054",
+                "055",
             ],
             [version for version, _ in migrations],
         )

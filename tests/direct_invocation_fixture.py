@@ -18,6 +18,7 @@ from agent.orchestration.result_verifier import ResultVerifier
 from agent.plugin_business_results import PluginBusinessResults
 from shared.plugin_invocation_repository import PluginInvocationRepository
 from tests.v32_acceptance.management_fixture import UnavailablePort
+from tests.mysql_database_cleanup import drop_test_database
 
 
 @pytest.fixture(scope="module")
@@ -45,7 +46,7 @@ def direct_repository():
         environment.setenv("AGENT_DB_NAME", helper.database)
         yield result
     with helper._server_connection() as connection, connection.cursor() as cursor:
-        cursor.execute(f"DROP DATABASE `{helper.database}`")
+        drop_test_database(cursor, helper.database)
 
 
 class DirectFixture:

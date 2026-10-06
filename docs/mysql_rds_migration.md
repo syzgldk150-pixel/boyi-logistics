@@ -2,12 +2,12 @@
 module: deployment
 type: operations
 status: active
-updated: 2026-09-28
+updated: 2026-10-06
 ---
 
 # MySQL 迁往 RDS
 
-Agent、Console、飞书单实例租约、Phase 7 共享仓储和部署迁移器使用同一业务库。将本地 MySQL 切换到公网 RDS 时，必须一起切换这些入口，并通过 CA 和域名验证建立 TLS 连接。R7 离线 mysql_sink 不属于当前生产链路。
+Agent、Console、飞书单实例租约、Phase 7 共享仓储和部署迁移器使用同一 MySQL 实例。迁移 055 后实体分为 `agent_db`、`waybill_db`、`finance_db`，运行入口通过 `agent_db` 中的显式视图访问业务库，详见[分库说明](database_domains.md)。迁往其他实例时必须一起备份、迁移和核对三个库、跨库外键与视图，并通过 CA 和域名验证建立 TLS 连接。R7 离线 mysql_sink 不属于当前生产链路。
 
 `shared/mysql_connection.py` 维护统一 TLS 参数。`AGENT_DB_SSL_CA` 指定 Agent 和部署迁移器的 CA 文件；Console 使用 `DOCFLOW_MYSQL_SSL_CA`，未指定时继承 `AGENT_DB_SSL_CA`。未配置 CA 的原本地连接不变；已配置但缺失或无效的 CA 必须报错，不降级。
 

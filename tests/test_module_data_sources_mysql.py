@@ -11,6 +11,7 @@ import pytest
 
 from shared.customer_service_repository import CustomerServiceRepository
 from shared.data_sources import DataSourceError, DataSourceRepository, SourceIdentity
+from tests.mysql_database_cleanup import drop_test_database
 
 
 @pytest.fixture(scope="module")
@@ -39,7 +40,7 @@ def database():
         yield fixture, name
     finally:
         with fixture._server_connection() as connection, connection.cursor() as cursor:
-            cursor.execute(f"DROP DATABASE `{name}`")
+            drop_test_database(cursor, name)
 
 
 def identity(organization: str) -> SourceIdentity:

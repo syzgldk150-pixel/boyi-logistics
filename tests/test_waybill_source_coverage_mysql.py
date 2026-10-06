@@ -55,6 +55,12 @@ def database():
         cursor.execute(migration)
         connection.commit()
 
+        # This fixture also exercises historical 050/051 in-place migrations.
+        # Expose the new writer names over its deliberately pre-055 table;
+        # physical split/rollback is covered in test_domain_database_split_mysql.
+        for platform in ("yunda", "ronghui"):
+            cursor.execute(f"CREATE VIEW {platform}_waybills AS SELECT * FROM waybills WHERE source='{platform}' WITH CHECK OPTION")
+
     @contextmanager
     def connect():
         connection = pymysql.connect(**kwargs)
@@ -147,9 +153,9 @@ def test_boyi_and_provider_same_id_have_independent_print_and_status(manual_repo
     manual = repo.get_waybill_by_no(number)
     assert manual["print_url"] == f"/waybills/{boyi_id}/print?source=manual"
     assert repo.get_waybill(boyi_id, source="manual")["waybill_no"] == number
-    assert repo.get_waybill(provider_id)["waybill_no"] == "provider"
+    assert repo.get_waybill(provider_id, source="yunda")["waybill_no"] == "provider"
     assert repo.update_waybill_status(boyi_id, "cancelled", source="manual")
-    assert repo.get_waybill(provider_id)["status"] == "in_transit"
+    assert repo.get_waybill(provider_id, source="yunda")["status"] == "in_transit"
     assert repo.get_waybill(boyi_id, source="manual")["status"] == "cancelled"
 
 

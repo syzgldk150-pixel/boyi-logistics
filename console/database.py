@@ -12,6 +12,7 @@ from shared.redaction import redact_sensitive, redact_text
 from shared.runtime_repositories import ScheduledTaskRepository, WorkflowResourceRepository
 from shared.runtime_repositories import WaybillRepository
 from shared.identity_repository import IdentityRepository
+from shared.logistics_tables import waybill_table, receipt_table
 
 import re
 
@@ -343,6 +344,13 @@ class DocumentRepository:
             "receipt_records",
             "receipt_attachments",
             "receipt_audit_logs",
+            "receipt_sequences",
+            "yunda_receipts",
+            "ronghui_receipts",
+            "boyi_receipts",
+            "yunda_waybills",
+            "ronghui_waybills",
+            "boyi_waybills",
             "admin_users",
             "admin_sessions",
             "access_roles",
@@ -798,12 +806,8 @@ class DocumentRepository:
 
     @classmethod
     def _waybill_query_table(cls, source: str | None = None) -> str:
-        if source == "manual":
-            return "boyi_waybills"
         if source and source != "all":
-            if source not in WAYBILL_SOURCE_LABELS:
-                raise ValueError("Invalid waybill source")
-            return "waybills"
+            return waybill_table(source)
         columns = ", ".join([
             "id", "document_id", *cls._WAYBILL_FIELD_NAMES,
             "writer_id", "source", "status", "created_at", "updated_at",
@@ -811,7 +815,7 @@ class DocumentRepository:
         ])
         return (
             f"(SELECT {columns}, NULL AS receipt_required, NULL AS sender_address FROM waybills UNION ALL "
-            f"SELECT {columns}, receipt_required, sender_address FROM boyi_waybills) AS saved_waybills"
+            f"SELECT {columns}, receipt_required, sender_address FROM boyi_waybills WHERE source='manual') AS saved_waybills"
         )
 
     def _field_value(self, fields: dict[str, Any], field_name: str) -> str:
@@ -851,7 +855,7 @@ class DocumentRepository:
 
         placeholders = ", ".join(self.placeholder for _ in columns)
         col_names = ", ".join(columns)
-        table = "boyi_waybills" if source == "manual" else "waybills"
+        table = waybill_table(source)
         sql = f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})"
         cursor.execute(sql, values)
         return int(cursor.lastrowid)
@@ -928,11 +932,11 @@ class DocumentRepository:
             return waybill_id, waybill_no
 
     def get_waybill(self, waybill_id: int, *, source: str | None = None) -> dict[str, Any] | None:
-        table = "boyi_waybills" if source == "manual" else "waybills"
-        sql = f"SELECT * FROM {table} WHERE id = {self.placeholder}"
+        table = waybill_table(source)
+        sql = f"SELECT * FROM {table} WHERE id = {self.placeholder} AND source = {self.placeholder}"
         with self.connect() as connection:
             cursor = connection.cursor()
-            cursor.execute(sql, [waybill_id])
+            cursor.execute(sql, [waybill_id, source])
             row = cursor.fetchone()
         if not row:
             return None
@@ -1006,6 +1010,7 @@ class DocumentRepository:
 
     def upsert_receipt_record(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         platform = self._normalize_receipt_platform(payload.get("platform"))
+        table = receipt_table(platform)
         direction = self._normalize_receipt_direction(payload.get("direction"))
         waybill_no = str(payload.get("waybill_no", "") or "").strip()
         receipt_no = str(payload.get("receipt_no", "") or "").strip()
@@ -1092,19 +1097,26 @@ class DocumentRepository:
             assignments_parts.append(f"{column} = VALUES({column})")
         assignments = ", ".join(assignments_parts)
         sql = (
-            f"INSERT INTO receipt_records ({', '.join(columns)}) "
-            f"VALUES ({placeholders}) "
+            f"INSERT INTO {table} (id, {', '.join(columns)}) "
+            f"VALUES ({self.placeholder}, {placeholders}) "
             "ON DUPLICATE KEY UPDATE "
             f"{assignments}, id = LAST_INSERT_ID(id)"
         )
         with self.connect() as connection:
             cursor = connection.cursor()
-            cursor.execute(sql, [*values, *update_params])
+            # One global receipt identity keeps existing attachment and audit
+            # links valid across the three physical platform tables.
+            cursor.execute("UPDATE receipt_sequences SET current_value=LAST_INSERT_ID(current_value+1) WHERE sequence_key='receipt_record'")
+            if cursor.rowcount != 1:
+                raise RuntimeError("receipt sequence is missing; run deployment migrations")
+            cursor.execute("SELECT current_value FROM receipt_sequences WHERE sequence_key='receipt_record' FOR UPDATE")
+            new_id = int(cursor.fetchone()["current_value"])
+            cursor.execute(sql, [new_id, *values, *update_params])
             receipt_id = int(getattr(cursor, "lastrowid", 0) or 0)
             if not receipt_id:
                 cursor.execute(
                     (
-                        "SELECT id FROM receipt_records "
+                        f"SELECT id FROM {table} "
                         f"WHERE platform = {self.placeholder} AND direction = {self.placeholder} "
                         f"AND waybill_no = {self.placeholder} AND receipt_no = {self.placeholder} "
                         "LIMIT 1"
@@ -1311,9 +1323,14 @@ class DocumentRepository:
         now = _now_iso()
         with self.connect() as connection:
             cursor = connection.cursor()
+            cursor.execute("SELECT platform FROM receipt_records WHERE id=%s", [safe_id])
+            record = cursor.fetchone()
+            if not record:
+                return None
+            table = receipt_table(record["platform"])
             cursor.execute(
                 (
-                    "UPDATE receipt_records "
+                    f"UPDATE {table} "
                     f"SET audit_status = {self.placeholder}, updated_at = {self.placeholder}, synced_at = {self.placeholder} "
                     f"WHERE id = {self.placeholder}"
                 ),
@@ -1697,14 +1714,14 @@ class DocumentRepository:
         normalized = normalize_waybill_status(status)
         if normalized not in WAYBILL_STATUS_LABELS:
             raise ValueError("Invalid waybill status")
-        table = "boyi_waybills" if source == "manual" else "waybills"
+        table = waybill_table(source)
         sql = (
             f"UPDATE {table} SET status = {self.placeholder}, updated_at = {self.placeholder} "
-            f"WHERE id = {self.placeholder}"
+            f"WHERE id = {self.placeholder} AND source = {self.placeholder}"
         )
         with self.connect() as connection:
             cursor = connection.cursor()
-            cursor.execute(sql, [normalized, _now_iso(), int(waybill_id)])
+            cursor.execute(sql, [normalized, _now_iso(), int(waybill_id), source])
             return int(cursor.rowcount or 0) > 0
 
     def _waybill_opening_cost(self, row: dict[str, Any]) -> tuple[Decimal, bool]:
@@ -1791,8 +1808,8 @@ class DocumentRepository:
         data["opening_cost"] = _format_money(opening_cost)
         data["pickup_payment_amount"] = _format_money(pickup_payment)
         data["print_url"] = f"/waybills/{data.get('id')}/print"
-        if data.get("source") == "manual":
-            data["print_url"] += "?source=manual"
+        if data.get("source") in WAYBILL_SOURCE_LABELS:
+            data["print_url"] += f"?source={data['source']}"
         data["tracking_url"] = f"/tracking?tracking_number={data.get('waybill_no', '')}"
         return data
 

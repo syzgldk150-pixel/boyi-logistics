@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
 from shared.automation_project_manifest import automation_id_for_reviewed_task
+from shared.logistics_tables import waybill_table
 
 
 ConnectionFactory = Callable[[], Any]
@@ -419,7 +420,8 @@ class WaybillRepository:
         return payload
 
     def get_by_number(self, waybill_no: str, *, source: str | None = None) -> dict[str, Any] | None:
-        sql = "SELECT * FROM waybills WHERE waybill_no=%s"
+        table = waybill_table(source) if source else "waybills"
+        sql = f"SELECT * FROM {table} WHERE waybill_no=%s"
         params: list[Any] = [str(waybill_no or "").strip()]
         if source:
             sql += " AND source=%s"
@@ -474,11 +476,12 @@ class WaybillRepository:
         date_text = str(target_date or "").strip()
         if not source_text or not date_text:
             raise ValueError("source and target_date are required")
+        table = waybill_table(source_text)
         with _connection(self._connection_factory) as connection:
             with _cursor(connection, self._cursor_factory) as cursor:
                 cursor.execute(
-                    """
-                    SELECT * FROM waybills
+                    f"""
+                    SELECT * FROM {table}
                     WHERE source=%s AND open_date=%s
                     ORDER BY waybill_no, id
                     """,
@@ -503,6 +506,7 @@ class WaybillRepository:
         source_text = str(source or "").strip()
         if not source_text or len(source_text) > 32:
             raise ValueError("an explicit waybill source is required")
+        table = waybill_table(source_text)
         date_text = str(target_date or "").strip()
         normalized_by_waybill: dict[str, dict[str, str]] = {}
         for record in records:
@@ -520,8 +524,8 @@ class WaybillRepository:
             with _cursor(connection, self._cursor_factory) as cursor:
                 for row in normalized_by_waybill.values():
                     cursor.execute(
-                        """
-                        SELECT id FROM waybills WHERE BINARY waybill_no=%s AND BINARY source=%s
+                        f"""
+                        SELECT id FROM {table} WHERE BINARY waybill_no=%s AND BINARY source=%s
                         AND source_scope IS NULL AND source_record_id IS NULL
                         ORDER BY id LIMIT 2 FOR UPDATE
                         """,
@@ -536,7 +540,7 @@ class WaybillRepository:
                         assignments = ", ".join(f"{field} = %s" for field in updatable)
                         cursor.execute(
                             f"""
-                            UPDATE waybills SET {assignments},
+                            UPDATE {table} SET {assignments},
                                 status = CASE WHEN status = 'cancelled' THEN status ELSE %s END,
                                 writer_id = %s, source = %s, updated_at = NOW()
                             WHERE id = %s
@@ -555,7 +559,7 @@ class WaybillRepository:
                         value_columns = columns[:-2]
                         placeholders = ", ".join("%s" for _ in value_columns)
                         cursor.execute(
-                            f"INSERT INTO waybills ({', '.join(columns)}) VALUES ({placeholders}, NOW(), NOW())",
+                            f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders}, NOW(), NOW())",
                             [None, *[row[field] for field in WAYBILL_FIELDS], str(writer_id or ""), source_text],
                         )
                         creates += 1
@@ -566,7 +570,7 @@ class WaybillRepository:
                         placeholders = ", ".join("%s" for _ in keep)
                         cursor.execute(
                             f"""
-                            DELETE FROM waybills
+                            DELETE FROM {table}
                             WHERE source = %s AND open_date = %s AND status <> 'cancelled'
                               AND source_scope IS NULL AND source_record_id IS NULL
                               AND waybill_no NOT IN ({placeholders})
@@ -575,7 +579,7 @@ class WaybillRepository:
                         )
                     else:
                         cursor.execute(
-                            "DELETE FROM waybills WHERE source = %s AND open_date = %s AND status <> 'cancelled' AND source_scope IS NULL AND source_record_id IS NULL",
+                            f"DELETE FROM {table} WHERE source = %s AND open_date = %s AND status <> 'cancelled' AND source_scope IS NULL AND source_record_id IS NULL",
                             (source_text, date_text),
                         )
                     deleted_stale = int(cursor.rowcount or 0)
@@ -605,22 +609,36 @@ class WaybillRepository:
             self.ensure_schema()
         placeholders = ", ".join("%s" for _ in clean_numbers)
         with _connection(self._connection_factory) as connection:
-            with _cursor(connection, self._cursor_factory) as cursor:
-                if mark_write_started is not None:
-                    mark_write_started()
-                cursor.execute(
-                    f"UPDATE waybills SET status = %s, updated_at = NOW() WHERE BINARY waybill_no IN ({placeholders}) AND status <> 'cancelled'",
-                    [normalized_status, *clean_numbers],
-                )
-                updated = int(cursor.rowcount or 0)
+            begin = getattr(connection, "begin", None)
+            if callable(begin):
+                begin()
+            try:
+                with _cursor(connection, self._cursor_factory) as cursor:
+                    if mark_write_started is not None:
+                        mark_write_started()
+                    updated = 0
+                    for source in ("ronghui", "yunda", "ocr"):
+                        table = waybill_table(source)
+                        cursor.execute(
+                            f"UPDATE {table} SET status = %s, updated_at = NOW() WHERE BINARY waybill_no IN ({placeholders}) AND status <> 'cancelled' AND source=%s",
+                            [normalized_status, *clean_numbers, source],
+                        )
+                        updated += int(cursor.rowcount or 0)
+                if callable(begin):
+                    connection.commit()
+            except Exception:
+                if callable(begin):
+                    connection.rollback()
+                raise
         return {"ok": True, "updated": updated, "status": normalized_status}
 
     def delete_receipt_like(self, *, source: str = "ronghui", validate_schema: bool = True) -> dict[str, Any]:
         source_text = str(source or "").strip()[:32] or "ronghui"
+        table = waybill_table(source_text)
         if validate_schema:
             self.ensure_schema()
         with _connection(self._connection_factory) as connection:
             with _cursor(connection, self._cursor_factory) as cursor:
-                cursor.execute("DELETE FROM waybills WHERE source = %s AND UPPER(waybill_no) LIKE 'H%%'", (source_text,))
+                cursor.execute(f"DELETE FROM {table} WHERE source = %s AND UPPER(waybill_no) LIKE 'H%%'", (source_text,))
                 deleted = int(cursor.rowcount or 0)
         return {"ok": True, "source": source_text, "deleted": deleted}

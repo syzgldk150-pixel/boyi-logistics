@@ -822,6 +822,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
             "business_module_migration_contract.py",
             "migration_018_authorization.py",
             "migration_030_notification_lease.py",
+            "migration_055_domain_databases.py",
             "migration_connection.py",
             "automation_project_release_manifest_preflight.py",
             "automation_project_resource_preflight.py",
@@ -2117,6 +2118,9 @@ class ReleaseBoundaryTests(unittest.TestCase):
             r"""
             run_staged_migration_runner() {
               case "$1" in
+                --domain-database-split-status)
+                  echo 'domain_database_split_status=pending_clean'
+                  ;;
                 --control-plane-task-cutover-status)
                   echo 'control_plane_task_cutover_status=applied'
                   ;;
@@ -2139,6 +2143,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
               esac
             }
             capture_control_plane_release_state
+            [[ "${DOMAIN_DATABASE_SPLIT_PENDING_AT_APPLY}" == "1" ]]
             printf 'states=%s,%s,%s,%s,%s,%s\n' \
               "${CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY}" \
               "${DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY}" \
@@ -2288,6 +2293,9 @@ class ReleaseBoundaryTests(unittest.TestCase):
             r"""
             run_staged_migration_runner() {
               case "$1" in
+                --domain-database-split-status)
+                  echo 'domain_database_split_status=pending_clean'
+                  ;;
                 --control-plane-task-cutover-status)
                   echo 'control_plane_task_cutover_status=applied'
                   ;;
@@ -2312,6 +2320,9 @@ class ReleaseBoundaryTests(unittest.TestCase):
             r"""
             run_staged_migration_runner() {
               case "$1" in
+                --domain-database-split-status)
+                  echo 'domain_database_split_status=pending_clean'
+                  ;;
                 --control-plane-task-cutover-status)
                   echo 'control_plane_task_cutover_status=applied'
                   ;;

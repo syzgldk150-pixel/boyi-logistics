@@ -2687,9 +2687,9 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
                 replace_date=True,
             )
 
-        update_sql = next(sql for sql, _params in calls if "UPDATE waybills" in sql)
-        delete_sql = next(sql for sql, _params in calls if "DELETE FROM waybills" in sql)
-        update_params = next(params for sql, params in calls if "UPDATE waybills" in sql)
+        update_sql = next(sql for sql, _params in calls if "UPDATE ronghui_waybills" in sql)
+        delete_sql = next(sql for sql, _params in calls if "DELETE FROM ronghui_waybills" in sql)
+        update_params = next(params for sql, params in calls if "UPDATE ronghui_waybills" in sql)
         self.assertIn("status = CASE WHEN status = 'cancelled' THEN status ELSE %s END", update_sql)
         self.assertIn("status <> 'cancelled'", delete_sql)
         self.assertIn("signed", update_params)

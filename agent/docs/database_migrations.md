@@ -4,7 +4,7 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-09-16
+updated: 2026-10-06
 ---
 
 # 数据库迁移
@@ -162,7 +162,7 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   `UeBd3I` 不变，仅在完整校验工作簿、工作表、范围、配置版本与哈希后，为受管资源补入其
   `FILTER` 公式明确指向的 `8fc516!A1:S197` 源区域；已有定位缺失时补齐，存在冲突定位时阻断。
 
-生产迁移序列当前从 `001` 连续到 `036`，固定递增且不得改写已执行文件；发布器只按顺序补执行
+迁移源码序列当前从 `001` 连续到 `055`，生产已应用版本以实库为准，固定递增且不得改写已执行文件；发布器只按顺序补执行
 `schema_migrations` 尚未记录的迁移，并对所有已执行版本保持原始校验和。`016`/`017`/`018` 在业务行
 变更前各自保存完整行备份；`027` 与 `030` 额外允许 MySQL DDL 已部分提交但 history 尚未登记时按精确
 结构合同前向续跑。远端发布必须在变更前捕获各项迁移状态和 bootstrap marker 状态，`pending_dirty`
@@ -189,4 +189,6 @@ CI 使用隔离的 `test_*` 数据库验证空库顺序执行 `001 -> … -> 034
 唯一约束、事务回滚和两个 worker 的 `SKIP LOCKED` 领取。测试代码只接受显式 CI 环境变量，
 不读取项目 `.env`。
 
-`051_separate_boyi_waybills.sql` 建立服务器 MySQL 的博益独立运单表，事务内迁移全部 `source=manual` 行，保留 ID、单号、金额、状态、日期及其他字段，再移除通用表中的相同行；失败时整体回滚数据搬迁。通用表继续保存 OCR 与承运商同步数据，寄件查询以显式公共字段联合读取，两表 ID 按来源区分。新单号仍由 `boyi_manual_waybill` 序列在保存事务内递增。
+`051_separate_boyi_waybills.sql` 建立服务器 MySQL 的博益独立运单表，事务内迁移全部 `source=manual` 行，保留 ID、单号、金额、状态、日期及其他字段，再移除通用表中的相同行；失败时整体回滚数据搬迁。该阶段通用表保存 OCR 与承运商同步数据，新单号由 `boyi_manual_waybill` 序列在保存事务内递增。
+
+`055_domain_database_split.sql` 由专用部署执行器配合应用：实体拆为运行 `agent_db`、运单回单 `waybill_db` 和财务 `finance_db`，运单及回单分别按韵达、融辉、博益分表；OCR 进入博益表并保留来源。统一查询保留不存数据的显式视图，写入按平台路由；运单按来源加 ID 定位，回单保持全局 ID 以保留附件关联。备份、逐行/金额核对、权限及激活前回退详见[分库说明](../../docs/database_domains.md)。

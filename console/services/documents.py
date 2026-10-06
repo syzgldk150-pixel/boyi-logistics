@@ -682,10 +682,8 @@ class DocumentServiceMixin:
             return
         try:
             source = str(values.get("source", "") or "")
-            if source == "manual":
-                updated = self.repository.update_waybill_status(waybill_id, status, source="manual")
-            elif source in {"", "ocr", "yunda", "ronghui"}:
-                updated = self.repository.update_waybill_status(waybill_id, status)
+            if source in {"manual", "ocr", "yunda", "ronghui"}:
+                updated = self.repository.update_waybill_status(waybill_id, status, source=source)
             else:
                 raise ValueError("运单来源无效")
         except Exception as exc:

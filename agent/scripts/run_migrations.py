@@ -379,7 +379,11 @@ def run(*, check_only: bool) -> int:
                 else None
             )
             for version, path in pending:
-                if version == "027":
+                if version == "055":
+                    env_path = Path(os.getenv("MIGRATION_ENV_FILE", PROJECT_ROOT / ".env"))
+                    backup_directory = Path(os.getenv("MIGRATION_BACKUP_DIRECTORY", str(env_path.parent / "runtime" / "migration-backups")))
+                    _load_domain_database_migration().apply(cursor, path, split_sql_statements, backup_directory)
+                elif version == "027":
                     assert business_module_contract is not None
                     business_module_contract.apply_business_module_lifecycle_migration(
                         cursor,
@@ -397,6 +401,16 @@ def run(*, check_only: bool) -> int:
     finally:
         connection.close()
     return 0
+
+
+def _load_domain_database_migration():
+    path = Path(__file__).with_name("migration_055_domain_databases.py")
+    spec = importlib.util.spec_from_file_location("_boyi_domain_database_migration", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("domain database migration module is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _load_control_plane_scheduled_task_contract_module() -> Any:
@@ -2785,6 +2799,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--check", action="store_true", help="Validate migration history without applying changes")
+    modes.add_argument("--domain-database-split-status", action="store_true", help="Report migration 055 state")
+    modes.add_argument("--restore-domain-database-split", action="store_true", help="Restore migration 055 before activation; reject changed data")
     modes.add_argument(
         "--restore-control-plane-task-cutover",
         action="store_true",
@@ -2897,6 +2913,8 @@ def main() -> int:
         default=SCHEDULED_WRITE_WINDOW_AFTER_MINUTES,
     )
     args = parser.parse_args()
+    if args.domain_database_split_status or args.restore_domain_database_split:
+        return _load_domain_database_migration().cli(_connect, _require_mysql8, restore_requested=args.restore_domain_database_split)
     if (
         args.expect_initial_production_manifest
         and not args.check_control_plane_release_manifest

@@ -15,6 +15,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from shared.scheduled_task_contracts import _arguments_for_schema_validation
+from tests.mysql_database_cleanup import drop_test_database
 
 
 RUN_MYSQL = os.getenv("RUN_MYSQL_INTEGRATION") == "1"
@@ -124,7 +125,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
 
         with cls._server_connection() as connection, connection.cursor() as cursor:
             for database in cls.all_databases:
-                cursor.execute(f"DROP DATABASE IF EXISTS `{database}`")
+                drop_test_database(cursor, database)
                 cursor.execute(
                     f"CREATE DATABASE `{database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
                 )
@@ -203,7 +204,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
     def tearDownClass(cls) -> None:
         with cls._server_connection() as connection, connection.cursor() as cursor:
             for database in cls.all_databases:
-                cursor.execute(f"DROP DATABASE IF EXISTS `{database}`")
+                drop_test_database(cursor, database)
 
     @classmethod
     @contextmanager
@@ -251,6 +252,7 @@ class MySqlOrchestrationIntegrationTests(unittest.TestCase):
             # The integration job is fully configured through explicit
             # variables and must never consult the project .env file.
             "MIGRATION_ENV_FILE": os.devnull,
+            "MIGRATION_BACKUP_DIRECTORY": os.getenv("MIGRATION_BACKUP_DIRECTORY", str(PROJECT_ROOT / ".task_tmp" / "mysql-migration-backups")),
         }
 
     @classmethod

@@ -1,5 +1,7 @@
 # console
 
+迁移 055 后运单与回单按平台存于 `waybill_db`，财务实体存于 `finance_db`；`agent_db` 保留无副本的查询/写入视图。平台写入名称复用 `shared/logistics_tables.py`；运单详情、打印和作废必须传来源及 ID，回单使用全局 ID 保留附件与审核关联。详见 [分库说明](../docs/database_domains.md)。
+
 当前迁移收尾：AI 精确运行查询读取 Invocation 与历史 Run；寄件回读按业务日期隔离；V2 实例按声明平台展示。实现与回归边界见 [维护说明](../docs/identity_and_unified_chat.md)。
 
 扫描、自提及分批预览支持实际 Service V2 实例 UUID；卡片按插件身份提供预览/确认，输出按 Agent 返回的 Invocation 插件身份区分预览类型，正式确认仍由 Agent 核验同实例、当前代次、发起人及有效期。详见 `../docs/plugin-platform-v2.md`。

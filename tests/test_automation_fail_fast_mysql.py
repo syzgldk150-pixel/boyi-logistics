@@ -33,6 +33,7 @@ from shared.automation_project_authorization import AutomationEntrypoint, Automa
 from shared.execution_resource_journal import unknown_execution_keys
 from tests.test_legacy_unknown_scope_migration_mysql import _Database, _digest
 from tests.test_workflow_runner_durable_admission import _Catalog, _until
+from tests.mysql_database_cleanup import drop_test_database
 
 
 pytestmark = pytest.mark.skipif(
@@ -56,7 +57,7 @@ def database():
     helper.pymysql, helper.runner = pymysql, support._load_migration_runner()
     helper.host, helper.port = os.environ["AGENT_DB_HOST"], int(os.environ["AGENT_DB_PORT"])
     helper.user, helper.password = os.environ["AGENT_DB_USER"], os.environ["AGENT_DB_PASS"]
-    helper.database = "automation_fail_fast_" + uuid4().hex + "_test"
+    helper.database = "fail_fast_" + uuid4().hex + "_test"
     with helper._server_connection() as connection, connection.cursor() as cursor:
         cursor.execute(f"CREATE DATABASE `{helper.database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
     try:
@@ -66,7 +67,7 @@ def database():
             yield _Database(helper)
     finally:
         with helper._server_connection() as connection, connection.cursor() as cursor:
-            cursor.execute(f"DROP DATABASE `{helper.database}`")
+            drop_test_database(cursor, helper.database)
 
 
 class _ProbeCatalog(_Catalog):

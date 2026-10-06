@@ -344,12 +344,13 @@ class ReceiptRepositoryTests(unittest.TestCase):
 
         class _Cursor:
             lastrowid = 12
+            rowcount = 1
 
             def execute(self, sql, params=None):
                 calls.append((sql, params))
 
             def fetchone(self):
-                return {"id": 12}
+                return {"id": 12, "current_value": 12}
 
         class _Context:
             def __enter__(self):
@@ -376,19 +377,20 @@ class ReceiptRepositoryTests(unittest.TestCase):
         )
 
         self.assertEqual({"id": 12}, result)
-        self.assertTrue(any("receipt_records" in sql and "ON DUPLICATE KEY UPDATE" in sql for sql, _ in calls))
+        self.assertTrue(any("yunda_receipts" in sql and "ON DUPLICATE KEY UPDATE" in sql for sql, _ in calls))
 
     def test_receipt_upsert_does_not_downgrade_completed_audit_to_pending_sync_status(self):
         calls = []
 
         class _Cursor:
             lastrowid = 12
+            rowcount = 1
 
             def execute(self, sql, params=None):
                 calls.append((sql, params or []))
 
             def fetchone(self):
-                return {"id": 12}
+                return {"id": 12, "current_value": 12}
 
         class _Context:
             def __enter__(self):
@@ -415,7 +417,7 @@ class ReceiptRepositoryTests(unittest.TestCase):
         )
 
         self.assertEqual({"id": 12, "audit_status": "\u5ba1\u6838\u901a\u8fc7"}, result)
-        upsert_sql, upsert_params = calls[0]
+        upsert_sql, upsert_params = next((sql, params) for sql, params in calls if "INSERT INTO yunda_receipts" in sql)
         self.assertIn("audit_status = CASE", upsert_sql)
         self.assertIn("THEN audit_status ELSE VALUES(audit_status) END", upsert_sql)
         self.assertIn("\u5ba1\u6838\u901a\u8fc7", upsert_params)
@@ -428,12 +430,13 @@ class ReceiptRepositoryTests(unittest.TestCase):
 
         class _Cursor:
             lastrowid = 12
+            rowcount = 1
 
             def execute(self, sql, params=None):
                 return None
 
             def fetchone(self):
-                return {"id": 12}
+                return {"id": 12, "current_value": 12}
 
         class _Context:
             def __enter__(self):

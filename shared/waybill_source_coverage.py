@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from shared.runtime_repositories import WAYBILL_FIELDS, WaybillRepository, _connection, _cursor
+from shared.logistics_tables import waybill_table
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -69,8 +70,9 @@ def _publication_target(cursor: Any, scope: WaybillSourceScope,
     reviewed native identity may complete those rows' missing source fields.
     Other source scopes and ambiguous historical identities are not inferred.
     """
-    cursor.execute("""SELECT id,waybill_no,status,source_scope,source_record_id,
-        source_account_id,source_permission_scope,document_id,writer_id FROM waybills
+    table = waybill_table(scope.source)
+    cursor.execute(f"""SELECT id,waybill_no,status,source_scope,source_record_id,
+        source_account_id,source_permission_scope,document_id,writer_id FROM {table}
         WHERE BINARY source=%s AND (BINARY waybill_no=%s
             OR (source_scope=%s AND source_record_id=%s)) ORDER BY id FOR UPDATE""",
         (scope.source, waybill_no, scope.source_scope, identity))
@@ -137,7 +139,8 @@ class WaybillSourceRepository:
 
     @staticmethod
     def _read_scope(cursor: Any, scope: WaybillSourceScope, business_date: date) -> list[dict[str, Any]]:
-        cursor.execute("""SELECT * FROM waybills WHERE source=%s AND source_scope=%s
+        table = waybill_table(scope.source)
+        cursor.execute(f"""SELECT * FROM {table} WHERE source=%s AND source_scope=%s
             AND source_permission_scope=%s AND open_date=%s ORDER BY source_record_id""",
             (scope.source, scope.source_scope, scope.permission_scope, business_date.isoformat()))
         return [WaybillRepository._row_to_dict(row) for row in cursor.fetchall()]
@@ -168,6 +171,7 @@ class WaybillSourceRepository:
         advance coverage and cannot delete rows. Unknown legacy rows are untouched.
         """
         observed = utc_naive(captured_at)
+        table = waybill_table(scope.source)
         normalized: list[tuple[str, dict[str, str]]] = []
         identities: set[str] = set()
         for record in records:
@@ -207,7 +211,7 @@ class WaybillSourceRepository:
             for identity, row, existing in targets:
                 if existing:
                     fields = [field for field in WAYBILL_FIELDS if field != "status"]
-                    cursor.execute(f"""UPDATE waybills SET {', '.join(field+'=%s' for field in fields)},
+                    cursor.execute(f"""UPDATE {table} SET {', '.join(field+'=%s' for field in fields)},
                         status=CASE WHEN status='cancelled' THEN status ELSE %s END,
                         source_scope=%s,source_record_id=%s,source_account_id=%s,
                         source_permission_scope=CASE WHEN %s THEN %s ELSE source_permission_scope END,
@@ -217,13 +221,13 @@ class WaybillSourceRepository:
                     updated += 1
                 else:
                     columns = [*WAYBILL_FIELDS, "source", "source_scope", "source_record_id", "source_account_id", "source_permission_scope"]
-                    cursor.execute(f"""INSERT INTO waybills ({','.join(columns)},created_at,updated_at)
+                    cursor.execute(f"""INSERT INTO {table} ({','.join(columns)},created_at,updated_at)
                         VALUES({','.join('%s' for _ in columns)},UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))""",
                         [*[row[field] for field in WAYBILL_FIELDS], scope.source, scope.source_scope,
                          identity, scope.account_id, scope.permission_scope if complete else None])
                     created += 1
             if complete:
-                deletion = "DELETE FROM waybills WHERE source=%s AND source_scope=%s AND source_permission_scope=%s AND open_date=%s AND status<>'cancelled'"
+                deletion = f"DELETE FROM {table} WHERE source=%s AND source_scope=%s AND source_permission_scope=%s AND open_date=%s AND status<>'cancelled'"
                 args: list[Any] = [scope.source, scope.source_scope, scope.permission_scope, business_date.isoformat()]
                 if identities:
                     deletion += f" AND source_record_id NOT IN ({','.join('%s' for _ in identities)})"

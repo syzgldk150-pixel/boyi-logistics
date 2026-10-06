@@ -57,7 +57,8 @@ def _prepare_locked(*, reset_owned_fixture):
     fixture.runner = _load_migration_runner()
     with pymysql.connect(host=fixture.host,port=fixture.port,user=fixture.user,password=fixture.password,autocommit=True) as connection,connection.cursor() as cursor:
         if reset_owned_fixture:
-            cursor.execute('DROP DATABASE IF EXISTS v32_e2e_test')
+            from tests.mysql_database_cleanup import drop_test_database
+            drop_test_database(cursor, 'v32_e2e_test')
         cursor.execute('CREATE DATABASE IF NOT EXISTS v32_e2e_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci')
     if reset_owned_fixture:
         _reset_owned_runtime()

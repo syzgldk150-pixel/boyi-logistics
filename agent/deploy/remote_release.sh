@@ -78,6 +78,7 @@ AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY=0
 FEISHU_NOTIFICATION_LEASE_PENDING_AT_APPLY=0
 CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE=0
 MIGRATIONS_ATTEMPTED=0
+DOMAIN_DATABASE_SPLIT_PENDING_AT_APPLY=0
 NEW_RUNTIME_START_ATTEMPTED=0
 SCHEDULER_RELEASE_HOLD_CREATED=0
 FIRST_PARTY_PLUGIN_INSTALL_ATTEMPTED=0
@@ -1824,6 +1825,12 @@ capture_control_plane_release_state() {
     CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE=0
     return 0
   fi
+  status="$(run_staged_migration_runner --domain-database-split-status)" || return 1
+  case "${status}" in
+    domain_database_split_status=pending_clean) DOMAIN_DATABASE_SPLIT_PENDING_AT_APPLY=1 ;;
+    domain_database_split_status=ACTIVE) DOMAIN_DATABASE_SPLIT_PENDING_AT_APPLY=0 ;;
+    *) echo "Migration 055 has unfinished state; restore or finish it before release" >&2; return 1 ;;
+  esac
   status="$(run_staged_migration_runner --control-plane-task-cutover-status)" || return 1
   case "${status}" in
     control_plane_task_cutover_status=pending_clean)
@@ -2744,6 +2751,10 @@ rollback() {
     fi
     if [[ "${services_stopped}" == "1" ]]; then
       echo "Restoring managed release state" >&2
+      if [[ "${DOMAIN_DATABASE_SPLIT_PENDING_AT_APPLY}" == "1" && \
+        "${MIGRATIONS_ATTEMPTED}" == "1" ]]; then
+        run_staged_migration_runner --restore-domain-database-split || rollback_status=1
+      fi
       if [[ "${FEISHU_NOTIFICATION_LEASE_PENDING_AT_APPLY}" == "1" && \
         "${MIGRATIONS_ATTEMPTED}" == "1" ]]; then
         restore_feishu_notification_leases || rollback_status=1

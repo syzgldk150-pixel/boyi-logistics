@@ -162,6 +162,7 @@ class _Database:
 def database():
     import pymysql
     from tests import test_mysql_orchestration_integration as support
+    from tests.mysql_database_cleanup import drop_test_database
 
     assert os.environ["AGENT_DB_HOST"] == "127.0.0.1"
     assert re.fullmatch(r"(?:test_[A-Za-z0-9_]+|[A-Za-z0-9_]+_test)", os.environ["AGENT_DB_NAME"])
@@ -179,7 +180,7 @@ def database():
             yield _Database(helper)
     finally:
         with helper._server_connection() as connection, connection.cursor() as cursor:
-            cursor.execute(f"DROP DATABASE `{helper.database}`")
+            drop_test_database(cursor, helper.database)
 
 
 def test_migration_is_idempotent_and_only_labels_stopped_pre_release_missing_scope(database):

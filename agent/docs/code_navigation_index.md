@@ -4,7 +4,7 @@ type: 索引文档
 tags: [代码定位, 修改入口, 路由, 文档索引, Agent, Console]
 related: [project_overview.md, control_plane_v1.md, automation_plugin_platform.md, database_migrations.md, rules_and_definitions.md]
 status: active
-updated: 2026-09-15
+updated: 2026-10-06
 ---
 
 # 物流 Agent 代码定位索引
@@ -114,6 +114,11 @@ updated: 2026-09-15
 - 旧 `finance_etl` / `tools/finance_tool.py` 已退出线上目录与工具注册表；财务同步统一从
   `sync_finance_bills` 经直接插件 Invocation 进入，并由 `shared/finance/` 的来源注册表控制实际上线平台。
 - 该目录是旧 Excel 离线 ETL；新融辉/韵达逐笔财务工作台不导入、不回退到这里。
+
+### 数据库分域
+
+- 实体库与平台分表说明：`../../docs/database_domains.md`；唯一表名路由 `../../shared/logistics_tables.py`。
+- 部署迁移：`migrations/055_domain_database_split.sql` 与 `scripts/migration_055_domain_databases.py`；运行库视图不存业务副本，后续结构与备份覆盖三个库。
 
 ### `shared/finance/`
 

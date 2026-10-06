@@ -28,6 +28,7 @@ from agent.orchestration.result_verifier import ResultVerifier
 from agent.orchestration.workflow_runner import WorkflowRunner, _CLAIM_OWNER, _ResourceWait
 from agent.tool_registry import validate_schema_instance
 from shared.orchestration_repository_support import ConcurrentUpdateError, IdempotencyConflict
+from tests.mysql_database_cleanup import drop_test_database
 
 
 pytestmark = pytest.mark.skipif(
@@ -52,7 +53,7 @@ def repository():
     assert helper.host == "127.0.0.1"
     helper.runner = mysql_support._load_migration_runner()
     with helper._server_connection() as connection, connection.cursor() as cursor:
-        cursor.execute("DROP DATABASE IF EXISTS v32_reliability_test")
+        drop_test_database(cursor, helper.database)
         cursor.execute("CREATE DATABASE v32_reliability_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
     helper._run_migrations(helper.database)
     result = helper._repository()
@@ -64,7 +65,7 @@ def repository():
         environment.setenv("AGENT_DB_NAME", helper.database)
         yield result
     with helper._server_connection() as connection, connection.cursor() as cursor:
-        cursor.execute("DROP DATABASE v32_reliability_test")
+        drop_test_database(cursor, helper.database)
 
 
 class _Catalog:

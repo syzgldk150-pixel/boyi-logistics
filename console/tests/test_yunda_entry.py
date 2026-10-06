@@ -1104,7 +1104,7 @@ class YundaEntryBackendTests(unittest.TestCase):
         self.assertEqual(2, len(repository.snapshots))
         self.assertEqual(["save_request", "save_response"], [item["snapshot_kind"] for item in repository.snapshots])
         self.assertEqual("YD001", result["data"]["local_waybill"]["waybill_no"])
-        self.assertTrue(result["data"]["print_url"].endswith("/waybills/101/print?preview=1"))
+        self.assertTrue(result["data"]["print_url"].endswith("/waybills/101/print?source=yunda&preview=1"))
 
     def test_persist_yunda_draft_save_writes_snapshot_only(self):
         repository = _Repository()
@@ -1271,8 +1271,8 @@ class YundaEntryBackendTests(unittest.TestCase):
         response_body = json.loads(handler.wfile.getvalue().decode("utf-8"))
         self.assertEqual("1", response_body["info"])
         self.assertEqual("YD777", response_body["LogisticsId"])
-        self.assertEqual("/waybills/101/print?preview=1", response_body["shipnow_print_url"])
-        self.assertEqual("/waybills/101/print?autoprint=1", response_body["shipnow_autoprint_url"])
+        self.assertEqual("/waybills/101/print?source=yunda&preview=1", response_body["shipnow_print_url"])
+        self.assertEqual("/waybills/101/print?source=yunda&autoprint=1", response_body["shipnow_autoprint_url"])
         self.assertEqual(101, response_body["shipnow_local_waybill_id"])
         self.assertEqual(1, len(repository.upserts))
         self.assertEqual("YD777", repository.upserts[0]["payload"]["waybill_no"])

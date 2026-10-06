@@ -1318,10 +1318,8 @@ class WaybillsReceiptsServiceMixin:
 
     def _render_waybill_print(self, handler: BaseHTTPRequestHandler, waybill_id: int, query: dict) -> None:
         source = str(query.get("source", [""])[0])
-        if source == "manual":
-            waybill = self.repository.get_waybill(waybill_id, source="manual")
-        elif source in {"", "ocr", "yunda", "ronghui"}:
-            waybill = self.repository.get_waybill(waybill_id)
+        if source in {"manual", "ocr", "yunda", "ronghui"}:
+            waybill = self.repository.get_waybill(waybill_id, source=source)
         else:
             self._send_text(handler, HTTPStatus.BAD_REQUEST, "Invalid waybill source.")
             return
