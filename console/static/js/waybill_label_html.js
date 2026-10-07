@@ -164,15 +164,12 @@
       for (let px = (item.fontPx || CONTENT_SIZE_PX) * settings.fontScale; px >= 22; px -= 0.5) {
         context.font = `${CONTENT_WEIGHT} ${px}px "${font}"`;
         const availableWidth = item.w * 0.95;
-        const widthScale = item.lines || value.includes("\n")
-          ? 1 : Math.min(1, availableWidth / context.measureText(value).width);
-        const lines = widthScale >= 0.85 && !value.includes("\n") && !item.lines
-          ? [value] : wrapText(value, availableWidth, context);
+        // Fit by reducing font size, preserving the font's natural proportions.
+        const lines = wrapText(value, availableWidth, context);
         const lineHeight = px * (item.leading || 1.18);
         if (lines.length > (item.lines || 1) || lines.length * lineHeight > item.h) continue;
         return [{
           field: item.field, content: lines.join("\n"), font, fontWeight: CONTENT_WEIGHT, align: "left",
-          widthScale: lines.length === 1 && !item.lines ? widthScale : 1,
           x: item.x * 74 / SOURCE_WIDTH,
           y: (item.y + (item.valign === "top" ? 0 : (item.h - lines.length * lineHeight) / 2)) * 92 / SOURCE_HEIGHT,
           w: item.w * 74 / SOURCE_WIDTH,
@@ -231,7 +228,6 @@
         context.save();
         context.translate(item.x * SOURCE_WIDTH / 74,
           item.y * SOURCE_HEIGHT / 92 + index * lineHeight + baseline);
-        context.scale(item.widthScale, 1);
         context.fillText(line, 0, 0);
         context.restore();
       });
