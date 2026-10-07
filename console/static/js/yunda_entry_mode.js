@@ -1398,6 +1398,13 @@
       }, 15000);
     };
     frame.addEventListener("console:original-page-reload", startLoading);
+    frame.addEventListener("console:original-page-prepare-failed", () => {
+      window.clearTimeout(slowTimer);
+      frame.setAttribute("aria-busy", "false");
+      if (chip) chip.textContent = "扩展准备失败";
+      notice.textContent = "融辉内嵌扩展未能完成准备，请更新原页助手并在扩展管理页重新加载，然后重试。";
+      notice.hidden = false;
+    });
     frame.addEventListener("load", () => {
       if (!frame.getAttribute("src")) return;
       window.clearTimeout(slowTimer);

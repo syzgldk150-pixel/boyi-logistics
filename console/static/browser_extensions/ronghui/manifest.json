@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "博益融辉原页验证",
-  "version": "0.3.2",
-  "description": "仅在博益运单录入页验证融辉真实内嵌。无账号隔离，不收集登录信息。",
+  "name": "博益原页助手",
+  "version": "0.4.0",
+  "description": "适配韵达扫码与融辉内嵌，登录后返回博益录单。无账号隔离，不收集登录信息。",
   "permissions": [
     "declarativeNetRequestWithHostAccess",
     "cookies",
-    "webRequest"
+    "webRequest",
+    "storage"
   ],
   "host_permissions": [
     "https://boyi.homes/*",
@@ -23,7 +24,8 @@
       ],
       "js": [
         "content.js",
-        "layout-host.js"
+        "layout-host.js",
+        "original-login.js"
       ],
       "run_at": "document_start"
     },
@@ -37,6 +39,24 @@
       "run_at": "document_idle",
       "all_frames": true,
       "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://ky-sso.yunda56.com/public/feishu/login*"
+      ],
+      "css": ["yunda-login.css"],
+      "all_frames": true,
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://kyinms.yunda56.com/ky_inms/public/index.php/index/index.html*",
+        "https://kyinms.yunda56.com/ky_inms/public/index.php/business/waybill/entry/indexNew.html*",
+        "https://tms.ronghuiwl.com/module/index*"
+      ],
+      "js": ["original-login.js"],
+      "all_frames": true,
+      "run_at": "document_idle"
     }
   ]
 }

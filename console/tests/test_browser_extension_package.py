@@ -27,7 +27,8 @@ class BrowserExtensionPackageTests(unittest.TestCase):
             self.assertEqual(manifest["manifest_version"], 3)
             scripts = {manifest["background"]["service_worker"]}
             for content in manifest["content_scripts"]:
-                scripts.update(content["js"])
+                scripts.update(content.get("js", []))
+                scripts.update(content.get("css", []))
             self.assertEqual(set(archive.namelist()),
                              {f"extension/{name}" for name in scripts | {"manifest.json", "README.md"}})
             for name in scripts:

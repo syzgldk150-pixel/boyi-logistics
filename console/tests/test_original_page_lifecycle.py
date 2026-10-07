@@ -69,6 +69,11 @@ frame.dispatchEvent(new Event('error'));
 assert.equal(chip.textContent, '加载失败');
 assert.equal(timers.size, 0);
 frame.dispatchEvent(new Event('console:original-page-reload'));
+frame.dispatchEvent(new Event('console:original-page-prepare-failed'));
+assert.equal(frame.getAttribute('aria-busy'), 'false');
+assert.equal(chip.textContent, '扩展准备失败');
+assert.equal(timers.size, 0);
+frame.dispatchEvent(new Event('console:original-page-reload'));
 frame.src = entryFrameSrc();
 assert.equal(notice.hidden, true);
 assert.equal(timers.size, 0);
@@ -149,6 +154,72 @@ const prepare = sender => new Promise(resolve => handler({type:'prepare-ronghui-
 """, {
             "background": (CONSOLE / "static/browser_extensions/ronghui/background.js").read_text(encoding="utf-8"),
         })
+
+
+    def test_ronghui_opens_native_entry_once_and_reuses_existing_tabs(self):
+        self.run_node(r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const sources = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+function run(existing, candidates=1) {
+  let clicks=0, active=null, observer;
+  const entries=existing?[{title:'运单录入'}]:[];
+  const root={classList:{contains:()=>false,toggle(){}}};
+  const menus=Array.from({length:candidates},()=>({textContent:'运单录入',closest:()=>null,
+    click(){clicks++;entries.push({title:'运单录入'});active=entries[0];}}));
+  const tabs={getTabs:()=>entries,getActiveTab:()=>active,activeTab:t=>{active=t;}};
+  const parent={postMessage(){}};
+  const context={location:{origin:'https://tms.ronghuiwl.com',pathname:'/module/index',ancestorOrigins:['https://boyi.homes']},
+    window:{parent,mini:{get:()=>tabs},addEventListener(){},dispatchEvent(){}},
+    document:{documentElement:root,head:{append(){}},createElement:()=>({}),querySelectorAll:()=>menus},
+    MutationObserver:class {constructor(fn){observer=fn;}observe(){}},
+    requestAnimationFrame:fn=>fn(),Event,console};
+  vm.runInNewContext(sources.layout,context);
+  observer();observer();
+  assert.equal(clicks,existing||candidates!==1?0:1);
+  if(candidates===1) assert.equal(active,entries[0]);
+  entries.length=0;observer(); // Closing a form must never allocate another one.
+  assert.equal(clicks,existing||candidates!==1?0:1);
+}
+run(false);run(true);run(false,2);
+""", {"layout": (CONSOLE / "static/browser_extensions/ronghui/layout-shell.js").read_text(encoding="utf-8")})
+
+    def test_login_return_is_bound_to_the_created_tab_and_exact_origin(self):
+        self.run_node(r"""
+const assert = require('node:assert/strict');
+const sources = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const listeners = [], stored = {}, updates = [], sent = [], removed = [];
+const chrome = {
+  declarativeNetRequest:{getSessionRules:async()=>[], updateSessionRules:async()=>{}},
+  webRequest:{onHeadersReceived:{addListener(){}}},
+  runtime:{onMessage:{addListener(fn){listeners.push(fn);}}}, cookies:{getAll:async()=>[]},
+  storage:{session:{set:async obj=>Object.assign(stored,obj),get:async key=>({[key]:stored[key]}),remove:async key=>{delete stored[key];}}},
+  tabs:{onRemoved:{addListener(){}},create:async()=>({id:91}),
+    update:async(id, value)=>{updates.push({id,value});},
+    sendMessage:async(id,msg)=>{sent.push({id,msg});return {ok:true};},
+    remove:async id=>{removed.push(id);}}
+};
+eval(sources.background);
+const invoke=(message,sender)=>new Promise(resolve=>listeners.at(-1)(message,sender,resolve));
+(async()=>{
+  const request={type:'open-original-login',provider:'ronghui',entryId:'entry-2'};
+  assert.deepEqual(await invoke(request,{url:'https://other.example/ocr',frameId:0,tab:{id:3}}),{ok:false});
+  assert.deepEqual(await invoke(request,{url:'https://boyi.homes/ocr',frameId:2,tab:{id:3}}),{ok:false});
+  assert.equal(updates.length,0);
+  assert.deepEqual(await invoke(request,{url:'https://boyi.homes/ocr',frameId:0,tab:{id:3}}),{ok:true});
+  assert.deepEqual(stored['original-login-91'],{hostTabId:3,entryId:'entry-2',provider:'ronghui'});
+  const ready={type:'original-login-ready',provider:'ronghui'};
+  assert.deepEqual(await invoke(ready,{url:'https://tms.ronghuiwl.com/system/login',frameId:0,tab:{id:91}}),{ok:false});
+  assert.deepEqual(await invoke(ready,{url:'https://tms.ronghuiwl.com/module/index',frameId:0,tab:{id:92}}),{ok:false});
+  assert.equal(sent.length,0);
+  assert.deepEqual(await invoke(ready,{url:'https://tms.ronghuiwl.com/module/index',frameId:0,tab:{id:91}}),{ok:true});
+  assert.deepEqual(sent,[{id:3,msg:{type:'original-login-complete',provider:'ronghui',entryId:'entry-2'}}]);
+  assert.deepEqual(removed,[91]);
+  assert.deepEqual(stored,{});
+  assert.deepEqual(await invoke(ready,{url:'https://tms.ronghuiwl.com/module/index',frameId:0,tab:{id:91}}),{ok:false});
+  assert.equal(sent.length,1);
+})();
+""", {"background": (CONSOLE / "static/browser_extensions/ronghui/background.js").read_text(encoding="utf-8")})
 
 
 if __name__ == "__main__":

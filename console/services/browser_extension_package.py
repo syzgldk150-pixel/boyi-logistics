@@ -1,4 +1,4 @@
-"""Package the reviewed browser-side Ronghui adapter from shipped source."""
+"""Package the reviewed browser-side original-page adapters from shipped source."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 EXTENSION_ROOT = Path(__file__).resolve().parents[1] / "static/browser_extensions/ronghui"
 PACKAGE_FILES = (
     "manifest.json", "background.js", "content.js", "layout-host.js", "layout-shell.js", "README.md",
+    "original-login.js", "yunda-login.css",
 )
 
 

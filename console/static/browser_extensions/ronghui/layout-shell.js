@@ -41,8 +41,22 @@
   let preferred = true;
   let scheduled = false;
   let previousState = '';
+  let entryOpened = false;
   function sync(force = false) {
     const tabs = window.mini?.get('mainTabs');
+    if (tabs && !entryOpened) {
+      const entries = tabs.getTabs().filter(tab => tab.title === '运单录入');
+      const menus = Array.from(document.querySelectorAll('#mainMenu a.menu-title'))
+        .filter(item => !item.closest('.compact-menu') && item.textContent.trim() === '运单录入');
+      if (entries.length === 1) {
+        entryOpened = true;
+        if (tabs.getActiveTab() !== entries[0]) tabs.activeTab(entries[0]);
+      } else if (entries.length === 0 && menus.length === 1) {
+        // Use the authenticated native menu once; its URL carries transient state.
+        entryOpened = true;
+        menus[0].click();
+      }
+    }
     const entry = tabs?.getTabs().find(tab => tab.title === '运单录入');
     const available = Boolean(entry);
     const focused = available && tabs.getActiveTab() === entry && preferred;

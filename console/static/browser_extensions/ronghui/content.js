@@ -12,13 +12,15 @@
     frame.dataset.ronghuiExtension = 'preparing';
     try {
       const result = await chrome.runtime.sendMessage({type:'prepare-ronghui-embed'});
-      if (!result?.ok || !frame.isConnected) { frame.dataset.ronghuiExtension='failed'; return; }
-      frame.dataset.ronghuiExtension = '0.3.2';
+      if (!result?.ok) throw new Error('Preparation failed');
+      if (!frame.isConnected) return;
+      frame.dataset.ronghuiExtension = '0.4.0';
       delete frame.dataset.entryPendingSrc;
       frame.dispatchEvent(new Event('console:original-page-reload'));
       frame.src = source.href;
     } catch {
       frame.dataset.ronghuiExtension = 'failed';
+      frame.dispatchEvent(new Event('console:original-page-prepare-failed'));
     } finally { pending.delete(frame); }
   }
   function scan() {

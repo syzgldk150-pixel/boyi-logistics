@@ -1,0 +1,9 @@
+/* The original 250 × 294 frame cannot scroll. Keep its 250px QR frame intact. */
+@media (max-width: 400px) {
+  .qrcode-body > p {
+    margin: 0 0 12px;
+    font-size: 16px;
+    line-height: 24px;
+  }
+  #feishu_qrcode > iframe { display: block; }
+}

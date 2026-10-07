@@ -22,7 +22,7 @@
 <script src="/static/js/waybill_label_html.js?v=20260916-receipt-v3"></script>
 <script src="/static/js/waybill_label_lodop.js?v=20260916-receipt-v3"></script>
 <script src="/static/js/clodop_loader.js?v=20260812"></script>
-<script src="/static/js/yunda_entry_mode.js?v=20261006-original-login-2"></script>
+<script src="/static/js/yunda_entry_mode.js?v=20261007-original-login"></script>
 {% endif %}
 <style>
   body.no-scroll { overflow: hidden; }
@@ -531,14 +531,15 @@
 <div class="entry-origin-notice" data-entry-origin-notice>
   {% if provider == 'yunda' %}
   <span class="manual-chip" data-yunda-status-chip>韵达原站</span>
-  <p>使用浏览器中的韵达登录状态；如需扫码，请在新窗口登录，完成后回到这里点“重新加载”。博益资料、报价需手动填写。</p>
-  <a href="{{ entry_yunda_src }}" target="_blank" rel="noopener noreferrer">在新窗口登录韵达</a>
+  <p>安装或更新原页助手后，扫码二维码完整显示；在新窗口登录成功后自动返回录单。博益资料、报价需手动填写。</p>
+  <a href="/ocr/browser-extension.zip" download>下载原页助手</a>
+  <a href="{{ entry_yunda_src }}" data-entry-login="yunda" target="_blank" rel="noopener noreferrer">在新窗口登录韵达</a>
   <button type="button" class="ghost-btn" data-entry-reload>重新加载</button>
   {% else %}
   <span class="manual-chip" data-ronghui-status-chip>融辉原站</span>
-  <p>内嵌使用需安装或更新扩展。请在新窗口登录后点“重新加载”；若仍为空白，请在新窗口继续操作。</p>
+  <p>内嵌使用需安装或更新扩展。请在新窗口登录，成功后自动返回并进入运单录入；若仍为空白，请点“重新加载”。</p>
   <a href="/ocr/browser-extension.zip" download>下载内嵌扩展</a>
-  <a href="{{ entry_ronghui_src }}" target="_blank" rel="noopener noreferrer">在新窗口打开融辉</a>
+  <a href="{{ entry_ronghui_src }}" data-entry-login="ronghui" target="_blank" rel="noopener noreferrer">在新窗口打开融辉</a>
   <button type="button" class="ghost-btn" data-entry-reload>重新加载</button>
   {% endif %}
 </div>

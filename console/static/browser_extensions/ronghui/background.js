@@ -94,4 +94,47 @@ chrome.tabs.onRemoved.addListener(async tabId => {
     removeRuleIds:rules.map(rule => rule.id),
     addRules:tabIds.length ? rules.map(rule => ({...rule,condition:{...rule.condition,tabIds}})) : []
   });
+  await chrome.storage.session.remove('original-login-' + tabId);
+});
+
+const ORIGINAL_ENTRIES = {
+  ronghui: 'https://tms.ronghuiwl.com/module/index?mv=index',
+  yunda: 'https://kyinms.yunda56.com/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&p=nil'
+};
+chrome.runtime.onMessage.addListener((message, sender, reply) => {
+  if (!['open-original-login', 'original-login-ready'].includes(message?.type)) return;
+  const provider = message.provider;
+  if (!Object.hasOwn(ORIGINAL_ENTRIES, provider) || sender.frameId !== 0 || !sender.tab) {
+    reply({ok:false}); return;
+  }
+  const source = new URL(sender.url || 'https://invalid.local');
+  (async () => {
+    if (message.type === 'open-original-login') {
+      if (source.origin !== 'https://boyi.homes' || !/^entry-\d+$/.test(message.entryId)) return {ok:false};
+      // Store the destination before navigation, including an already logged-in page.
+      const login = await chrome.tabs.create({url:'about:blank', openerTabId:sender.tab.id});
+      const key = 'original-login-' + login.id;
+      await chrome.storage.session.set({[key]:{
+        hostTabId:sender.tab.id, entryId:message.entryId, provider
+      }});
+      await chrome.tabs.update(login.id, {url:ORIGINAL_ENTRIES[provider]});
+      return {ok:true};
+    }
+    const expected = new URL(ORIGINAL_ENTRIES[provider]);
+    const allowedPaths = provider === 'yunda' ? [expected.pathname,
+      '/ky_inms/public/index.php/index/index.html'] : [expected.pathname];
+    if (source.origin !== expected.origin || !allowedPaths.includes(source.pathname)) return {ok:false};
+    const key = 'original-login-' + sender.tab.id;
+    const pending = (await chrome.storage.session.get(key))[key];
+    if (!pending || pending.provider !== provider) return {ok:false};
+    const result = await chrome.tabs.sendMessage(pending.hostTabId, {
+      type:'original-login-complete', provider, entryId:pending.entryId
+    }, {frameId:0});
+    if (!result?.ok) return {ok:false};
+    await chrome.storage.session.remove(key);
+    await chrome.tabs.update(pending.hostTabId, {active:true});
+    await chrome.tabs.remove(sender.tab.id);
+    return {ok:true};
+  })().then(reply, () => reply({ok:false}));
+  return true;
 });

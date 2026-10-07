@@ -44,7 +44,7 @@
     const description = notice.querySelector('p');
     if (description) description.textContent = state.focused
       ? '已展开融辉运单录入，可通过“原站菜单”切换账号或使用其他功能。'
-      : '从融辉菜单进入“运单录入”后，自动展开录单区域。';
+      : '登录后自动进入运单录入；可通过原站菜单切换其他功能。';
   });
   new MutationObserver(scan).observe(document, {subtree: true, childList: true});
   scan();
