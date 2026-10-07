@@ -13,7 +13,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 EXTENSION_ROOT = Path(__file__).resolve().parents[1] / "static/browser_extensions/ronghui"
 PACKAGE_FILES = (
     "manifest.json", "background.js", "content.js", "layout-host.js", "layout-shell.js", "README.md",
-    "original-login.js", "yunda-login.css",
+    "original-login.js", "yunda-login.css", "entry-events.js",
 )
 
 

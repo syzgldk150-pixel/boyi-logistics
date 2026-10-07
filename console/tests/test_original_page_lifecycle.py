@@ -184,6 +184,65 @@ function run(existing, candidates=1) {
 run(false);run(true);run(false,2);
 """, {"layout": (CONSOLE / "static/browser_extensions/ronghui/layout-shell.js").read_text(encoding="utf-8")})
 
+    def test_address_enter_and_blur_use_current_value_without_changing_native_business(self):
+        self.run_node(r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const sources = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const RH = 'https://tms.ronghuiwl.com';
+function setup(ancestors=[RH, 'https://boyi.homes'], path='/widget/home', delayed=false) {
+  let value='test address', ready=!delayed, load;
+  const calls=[];
+  const address={getValue:()=>value, fire(type, event, extra) {
+    assert.equal(this,address);
+    calls.push({type, value:event?.value, event, extra});
+    return 'native result';
+  }};
+  const native=address.fire;
+  const save=()=>{}, print=()=>{};
+  const window={mini:{get:id=>ready && id==='ACCEPT_MAN_ADDRESS'?address:null},
+    crud:{saveMethodCs:save},printBillNew1:print,
+    addEventListener(type,fn){assert.equal(type,'load');load=fn;}};
+  const context={location:{origin:RH,pathname:path,ancestorOrigins:ancestors},window};
+  vm.runInNewContext(sources.adapter,context);
+  return {address, native, calls, window, save, print, context,
+    setValue:v=>{value=v;},finish:()=>{ready=true;load?.();}};
+}
+const s=setup();
+// Programmatic/autofilled values may not fire valuechanged; retry via Enter must work.
+assert.equal(s.address.fire('enter',{}),'native result');
+assert.equal(s.calls.at(-1).value,'test address');
+s.setValue('updated address');
+s.address.fire('blur',undefined,'preserved');
+assert.equal(s.calls.at(-1).value,'updated address');
+assert.equal(s.calls.at(-1).extra,'preserved');
+// Explicit event values and unrelated events must retain native semantics.
+for (const value of ['', 'event address', 0]) {
+  const event={value};s.address.fire('enter',event);
+  assert.equal(s.calls.at(-1).event,event);
+  assert.equal(s.calls.at(-1).value,value);
+}
+s.address.fire('valuechanged',{});
+assert.equal(s.calls.at(-1).value,undefined);
+s.setValue('');s.address.fire('blur',{});
+assert.equal(s.calls.at(-1).value,'');
+const installed=s.address.fire;
+s.finish();vm.runInNewContext(sources.adapter,s.context);
+assert.equal(s.address.fire,installed);
+assert.equal(s.window.crud.saveMethodCs,s.save);
+assert.equal(s.window.printBillNew1,s.print);
+const delayed=setup(undefined,undefined,true);
+assert.equal(delayed.address.fire,delayed.native);
+delayed.finish();assert.notEqual(delayed.address.fire,delayed.native);
+for (const ancestors of [[],[RH],[RH,'https://other.example'],['https://boyi.homes'],
+    [RH,'https://boyi.homes','https://other.example']]) {
+  const excluded=setup(ancestors);
+  assert.equal(excluded.address.fire,excluded.native);
+}
+const other=setup(undefined,'/module/index');
+assert.equal(other.address.fire,other.native);
+""", {"adapter": (CONSOLE / "static/browser_extensions/ronghui/entry-events.js").read_text(encoding="utf-8")})
+
     def test_login_return_is_bound_to_the_created_tab_and_exact_origin(self):
         self.run_node(r"""
 const assert = require('node:assert/strict');

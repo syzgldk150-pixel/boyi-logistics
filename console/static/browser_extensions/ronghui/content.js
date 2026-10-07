@@ -14,7 +14,7 @@
       const result = await chrome.runtime.sendMessage({type:'prepare-ronghui-embed'});
       if (!result?.ok) throw new Error('Preparation failed');
       if (!frame.isConnected) return;
-      frame.dataset.ronghuiExtension = '0.4.2';
+      frame.dataset.ronghuiExtension = '0.4.3';
       delete frame.dataset.entryPendingSrc;
       frame.dispatchEvent(new Event('console:original-page-reload'));
       frame.src = source.href;
