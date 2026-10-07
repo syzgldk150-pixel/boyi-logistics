@@ -103,10 +103,12 @@
     templateScale: clampNumber(settings.print_template_scale, 100, 94, 106) / 100,
   });
   // Padded content regions in source pixels, shared by HTML and native printing.
+  const HEADER_FIELDS = new Set(["waybillNo", "date", "station"]);
+  const HEADER_TEXT_LAYOUT = { y: 270, h: 73, fontPx: 48 };
   const FIELD_LAYOUT = [
-    { field: "waybillNo", x: 33, y: 264, w: 280, h: 85, fontPx: 64 },
-    { field: "date", x: 348, y: 270, w: 255, h: 73, fontPx: 56 },
-    { field: "station", x: 640, y: 264, w: 242, h: 87, fontPx: 62 },
+    { field: "waybillNo", x: 33, w: 280, ...HEADER_TEXT_LAYOUT },
+    { field: "date", x: 348, w: 255, ...HEADER_TEXT_LAYOUT },
+    { field: "station", x: 640, w: 242, ...HEADER_TEXT_LAYOUT },
     { field: "recipientName", x: 305, y: 396, w: 330, h: 72, fontPx: 54 },
     { field: "recipientPhone", x: 834, y: 396, w: 303, h: 72, fontPx: 52 },
     { field: "recipientAddress", x: 342, y: 482, w: 782, h: 110, fontPx: 36, lines: 2, leading: 1.38, valign: "top" },
@@ -157,7 +159,7 @@
   const buildDynamicItems = (data, settings = readSettings()) => {
     const context = document.createElement("canvas").getContext("2d");
     if (!context) throw new Error("无法测量打印文字，请刷新页面后重试");
-    return FIELD_LAYOUT.flatMap((item) => {
+    const items = FIELD_LAYOUT.flatMap((item) => {
       const value = cleanText(data[item.field]);
       if (!value) return [];
       const font = CONTENT_FONT;
@@ -180,6 +182,20 @@
       }
       throw new Error(`${FIELD_LABELS[item.field]}内容过长，请缩短内容后重试`);
     });
+    // Keep the entire header row at the smallest fitted size, on one baseline.
+    const headerItems = items.filter((item) => HEADER_FIELDS.has(item.field));
+    if (headerItems.length) {
+      const fontPt = Math.min(...headerItems.map((item) => item.fontPt));
+      for (const item of headerItems) {
+        const lineHeightMm = item.lineHeightMm * fontPt / item.fontPt;
+        const heightReduction = item.lineHeightMm - lineHeightMm;
+        item.y += heightReduction / 2;
+        item.h -= heightReduction;
+        item.fontPt = fontPt;
+        item.lineHeightMm = lineHeightMm;
+      }
+    }
+    return items;
   };
 
   const backgroundImages = new Map();
