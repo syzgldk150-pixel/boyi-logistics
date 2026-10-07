@@ -392,7 +392,7 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertIn("field_receiver_phone", html)
         self.assertIn("field_receiver_address", html)
         self.assertIn("extractDestinationSiteFromAddress", html)
-        self.assertIn("cityMatches[cityMatches.length - 1]", html)
+        self.assertIn("syncDestinationSiteFromAddress", html)
         self.assertIn('document.getElementById("field_destination_site")', html)
         self.assertIn("parsed.destination_site", html)
         self.assertNotIn('name="action" value="preview"', html)
@@ -490,6 +490,71 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertNotIn("shipnow.manualQuote.prefill", html)
         self.assertNotIn("codexManualPrefill", html)
         self.assertIn(".manual-map-card { flex: 0 0 auto;", html)
+
+    def test_receiver_address_fills_destination_site_in_browser(self):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            self.skipTest("Playwright is required for the destination autofill regression")
+        html = self.env.get_template("document.html").render(
+            app_title="Test Console", document=None, fields=[], pending_docs=[], counts={}, queue_snapshot={},
+            auto_refresh=False, ocr_mode=False, yunda_mode=False, ronghui_mode=False, boyi_frame_mode=True,
+            message="", message_kind="info", original_url="", processed_url="", preprocess_info={},
+            preprocess_quality={}, raw_ocr={}, available_templates=[], active_template_name="test_template",
+            document_template_name="test_template", settings={}, writers=[], document_writer_id="",
+            manual_amap_config={"amap_js_key": "YOUR_AMAP_JS_API_KEY", "amap_security_code": ""},
+            manual_amap_sdk_should_load=False, manual_preview_waybill_no="BY00001",
+        )
+        page_url = "https://console.test/ocr/boyi/frame"
+
+        def serve(route):
+            url = route.request.url
+            if url == page_url:
+                route.fulfill(body=html, content_type="text/html")
+                return
+            path = CONSOLE_DIR / "static" / url.split("/static/", 1)[-1].split("?", 1)[0]
+            if url.startswith("https://console.test/static/") and path.is_file():
+                route.fulfill(path=str(path))
+            else:
+                route.abort()
+
+        cases = (
+            ("河南省洛阳市偃师区区鹰浩塑胶科技有限公司西侧70米继伟汽修厂", "洛阳市"),
+            ("湖南省邵阳市邵东县廉桥镇", "邵东县"),
+            ("江苏省苏州市昆山市花桥镇", "昆山市"),
+            ("上海市青浦区盈港东路6679号", "上海市"),
+            ("重庆巫山县巫峡镇", "巫山县"),
+            ("广西南宁市青秀区民族大道", "南宁市"),
+            ("吉林市船营区", "吉林市"),
+            ("湖北省恩施土家族苗族自治州恩施市", "恩施市"),
+            ("广东省东莞市长安镇", "东莞市"),
+            ("洛阳市大张超市", "洛阳市"),
+            ("偃师区鹰浩塑胶科技有限公司", ""),
+        )
+        with sync_playwright() as playwright:
+            if not Path(playwright.chromium.executable_path).is_file():
+                self.skipTest("Chromium is required for the destination autofill regression")
+            with playwright.chromium.launch() as browser:
+                page = browser.new_page()
+                page.route("**/*", serve)
+                page.goto(page_url)
+                address = page.locator("#field_receiver_address")
+                destination = page.locator("#field_destination_site")
+                for text, expected in cases:
+                    with self.subTest(address=text):
+                        destination.fill("")
+                        address.fill(text)
+                        self.assertEqual(destination.input_value(), expected)
+
+                destination.fill("")
+                address.fill("河南省洛阳市偃师区")
+                self.assertEqual(destination.input_value(), "洛阳市")
+                address.fill("")
+                self.assertEqual(destination.input_value(), "")
+
+                destination.fill("邵阳大祥S站")
+                address.fill("湖南省长沙市岳麓区")
+                self.assertEqual(destination.input_value(), "邵阳大祥S站")
 
     def test_document_template_boyi_frame_is_isolated_manual_entry(self):
         template = self.env.get_template("document.html")

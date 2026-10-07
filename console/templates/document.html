@@ -1960,12 +1960,42 @@
     const looksLikeAddressPart = (value) => /省|市|区|县|镇|乡|街道|路|街|巷|弄|村|号|栋|幢|单元|室|楼|园|小区|市场|公司|仓|店/.test(value);
     const stripReceiverNameLabel = (value) => String(value || "").replace(/^(收货人|收件人|联系人|姓名)[:：]?/, "").trim();
     const stripAddressLabel = (value) => String(value || "").replace(/^(收货地址|收件地址|详细地址|地址)[:：]?/, "").trim();
+    // 到站取收件地址里明确写出的市县：区归属所在市，县、旗、县级市取本级；地址未写出时留空，不猜测。
+    const destinationMunicipalityPattern = /^(北京|上海|天津|重庆)市?/;
+    const destinationProvinceNames = "河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|海南|四川|贵州|云南|陕西|甘肃|青海|台湾|内蒙古|广西|西藏|宁夏|新疆|香港|澳门";
+    const destinationProvincePattern = new RegExp(`^(?:${destinationProvinceNames})(?:省|壮族自治区|回族自治区|维吾尔自治区|自治区|特别行政区|(?![市州县区盟]))`);
+    const destinationNameChars = "[^省市县区旗路街道巷弄号村镇乡\\d]";
+    const destinationCityPattern = new RegExp(`^(${destinationNameChars}{2,12}?(?:自治州|地区|盟|州|市))`);
+    const destinationCountyPattern = new RegExp(`^(${destinationNameChars}{1,8}?(?:自治县|县|自治旗|旗|市|区))`);
+    const destinationNonAdministrativePattern = /(超|菜|夜|集|门)市$/;
     const extractDestinationSiteFromAddress = (address) => {
-      const compact = String(address || "").replace(/\s+/g, "");
-      const cityMatches = Array.from(compact.matchAll(/([^省市区县镇乡街道]{2,12}市)/g))
-        .map((match) => match[1])
-        .filter(Boolean);
-      return cityMatches.length ? cityMatches[cityMatches.length - 1] : "";
+      let rest = String(address || "").replace(/\s+/g, "");
+      let city = "";
+      const municipality = rest.match(destinationMunicipalityPattern);
+      if (municipality) {
+        city = `${municipality[1]}市`;
+        rest = rest.slice(municipality[0].length);
+      } else {
+        rest = rest.replace(destinationProvincePattern, "");
+        city = rest.match(destinationCityPattern)?.[1] || "";
+        rest = rest.slice(city.length);
+      }
+      const county = rest.match(destinationCountyPattern)?.[1] || "";
+      if (county && !county.endsWith("区") && !destinationNonAdministrativePattern.test(county)) return county;
+      return city;
+    };
+    const destinationSiteInput = document.getElementById("field_destination_site");
+    let autoDestinationSite = "";
+    const syncDestinationSiteFromAddress = () => {
+      if (!destinationSiteInput || manualMap.composing) return;
+      const current = String(destinationSiteInput.value || "").trim();
+      if (current && current !== autoDestinationSite) return;
+      const next = extractDestinationSiteFromAddress(addressInput?.value || "");
+      autoDestinationSite = next;
+      if (next === current) return;
+      destinationSiteInput.value = next;
+      destinationSiteInput.dispatchEvent(new Event("input", { bubbles: true }));
+      destinationSiteInput.dispatchEvent(new Event("change", { bubbles: true }));
     };
     const isReliableReceiverName = (value) => {
       const cleaned = stripReceiverNameLabel(value);
@@ -2030,10 +2060,10 @@
       showAddressParserError("");
       const nameInput = document.getElementById("field_receiver_name");
       const phoneInput = document.getElementById("field_receiver_phone");
-      const destinationInput = document.getElementById("field_destination_site");
       setManualFieldValue(nameInput, parsed.receiver_name);
       setManualFieldValue(phoneInput, parsed.receiver_phone);
-      setManualFieldValue(destinationInput, parsed.destination_site);
+      if (parsed.destination_site) autoDestinationSite = parsed.destination_site;
+      setManualFieldValue(destinationSiteInput, parsed.destination_site);
       if (addressInput) {
         setManualFieldValue(addressInput, parsed.receiver_address);
         locateReceiverAddress();
@@ -2054,13 +2084,20 @@
       nextField?.focus();
     };
     addressInput?.addEventListener("compositionstart", () => { manualMap.composing = true; });
-    addressInput?.addEventListener("compositionend", () => { manualMap.composing = false; });
+    addressInput?.addEventListener("compositionend", () => {
+      manualMap.composing = false;
+      syncDestinationSiteFromAddress();
+    });
     addressInput?.addEventListener("input", () => {
       manualMap.lastQuery = "";
       manualMap.receiverLocation = null;
       if (manualMap.map) setMapPlaceholder(false);
+      syncDestinationSiteFromAddress();
     });
-    addressInput?.addEventListener("blur", () => { locateReceiverAddress(); });
+    addressInput?.addEventListener("blur", () => {
+      syncDestinationSiteFromAddress();
+      locateReceiverAddress();
+    });
     addressInput?.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" || event.shiftKey || manualMap.composing) return;
       event.preventDefault();
