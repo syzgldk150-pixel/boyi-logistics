@@ -142,20 +142,21 @@
     to { opacity: 1; transform: translateY(0); }
   }
   .manual-form { display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: hidden; }
-  .manual-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 14px var(--form-x-pad); }
-  .manual-section { margin: 0 0 12px; }
+  .manual-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 12px var(--form-x-pad); }
+  .manual-section { margin: 0 0 10px; }
   .manual-section-title {
-    margin: 0 0 8px; padding-bottom: 6px; border-bottom: 1px solid #eef0f4;
+    margin: 0 0 6px; padding-bottom: 4px; border-bottom: 1px solid #eef0f4;
     color: var(--muted); font-size: .78rem; font-weight: 900;
   }
-  .manual-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 16px; }
-  .manual-party-stack { display: grid; gap: 10px; }
-  .manual-party-block { display: grid; gap: 7px; min-width: 0; }
+  .manual-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 16px; }
+  .manual-grid--goods { grid-template-columns: minmax(0, 1.4fr) repeat(4, minmax(0, 1fr)); }
+  .manual-party-stack { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; }
+  .manual-party-block { display: grid; align-content: start; gap: 7px; min-width: 0; }
   .manual-subsection-title {
     color: #8b95a5; font-size: .72rem; font-weight: 900; line-height: 1;
   }
-  .manual-grid--party { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 20px; }
-  .manual-row { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: 8px; min-width: 0; }
+  .manual-grid--party { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; }
+  .manual-row { display: grid; grid-template-columns: 68px minmax(0, 1fr); align-items: center; gap: 8px; min-width: 0; }
   .manual-row--wide { grid-column: 1 / -1; }
   .manual-row--span-2 { grid-column: span 2; }
   .manual-row--span-3 { grid-column: span 3; }
@@ -176,7 +177,7 @@
   .manual-textarea { min-height: 46px; padding: 7px 9px; resize: vertical; line-height: 1.35; }
   .manual-actions {
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
-    padding: 14px var(--form-x-pad); border-top: 1px solid var(--line); background: rgba(255,255,255,.96);
+    padding: 10px var(--form-x-pad); border-top: 1px solid var(--line); background: rgba(255,255,255,.96);
     flex: 0 0 auto;
   }
   .manual-action-group { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
@@ -427,20 +428,28 @@
   .yd-list-item span { display: block; margin-top: 3px; color: #64748b; font-size: 12px; }
   .yd-list-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 
-  @media (max-width: 1560px) {
-    .manual-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .manual-grid--party { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .manual-row--span-3 { grid-column: 1 / -1; }
+  @media (min-width: 1281px) and (max-width: 1400px) {
+    .manual-grid--goods { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   }
 
   @media (max-width: 1280px) {
-    .manual-workbench { grid-template-columns: minmax(0, 1fr); overflow-y: auto; }
+    .manual-workbench { grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; overflow-y: auto; }
+    .manual-card { height: auto; overflow: visible; }
+    .manual-form, .manual-scroll { overflow: visible; }
+    .manual-actions { position: sticky; bottom: 0; z-index: 2; border-radius: 0 0 12px 12px; }
     .manual-side { overflow: visible; }
-    .manual-grid { grid-template-columns: minmax(0, 1fr); }
-    .manual-grid--party { grid-template-columns: minmax(0, 1fr); }
-    .manual-row--span-2, .manual-row--span-3 { grid-column: 1 / -1; }
     .yunda-workspace { grid-template-columns: minmax(0, 1fr); }
     .yunda-grid { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  @media (max-width: 900px) {
+    .manual-grid, .manual-grid--goods { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .manual-party-stack { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  @media (max-width: 560px) {
+    .manual-grid, .manual-grid--goods, .manual-grid--party { grid-template-columns: minmax(0, 1fr); }
+    .manual-row--span-2, .manual-row--span-3 { grid-column: 1 / -1; }
   }
 
   @media (max-width: 767px) {
@@ -750,12 +759,12 @@
 
         <section class="manual-section">
           <div class="manual-section-title">货物明细</div>
-          <div class="manual-grid">
+          <div class="manual-grid manual-grid--goods">
             {{ render_manual_field('goods_name_lines', '货物名称', required=True) }}
             {{ render_manual_field('package_type_lines', '包装类型', required=True) }}
             {{ render_manual_field('quantity_lines', '件数', required=True) }}
             <div class="manual-row">
-              <label class="manual-label" for="field_weight_kg">重量（千克）</label>
+              <label class="manual-label" for="field_weight_kg">重量 kg</label>
               <input id="field_weight_kg" name="field_weight_kg" class="manual-input" type="number" min="0" step="0.01" inputmode="decimal" data-weight-input data-quote-input>
             </div>
             <div class="manual-row">
@@ -792,7 +801,7 @@
             </div>
             {{ render_manual_field('insurance_amount', '保价金额', placeholder='0.00') }}
             {{ render_manual_field('cod_amount', '代收金额', placeholder='0.00') }}
-            <div class="manual-row manual-row--span-3 manual-row--tall">
+            <div class="manual-row manual-row--wide manual-row--tall">
               <label class="manual-label" for="field_remark">备注</label>
               <textarea id="field_remark" name="field_remark" class="manual-input manual-textarea"></textarea>
             </div>
