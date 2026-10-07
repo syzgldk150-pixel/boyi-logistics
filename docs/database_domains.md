@@ -43,7 +43,7 @@ updated: 2026-10-06
 ## 发布和核验
 
 1. 管理员给已有应用账号授予两个新库所需的建表、迁移及读写权限；不改账号密码或凭据文件。
-   当前 RDS 的 `agent@%` 可使用 `agent/deploy/mysql/database_domains_grants.sql`，只涉及两个新库。
+   迁移账号和实际 Console 连接账号必须分别核验，不能用 Agent 授权代替 Console 授权。当前 RDS 的 `agent@%` 可使用 `agent/deploy/mysql/database_domains_grants.sql`，只涉及两个新库。
 2. 标准发布器取得互斥锁并排空调用，停止 Agent/Console 后才执行 055。
 3. 执行器在 `runtime/migration-backups/` 保存受限权限的业务 SQL 压缩备份和行数/金额汇总。
    `MIGRATION_BACKUP_DIRECTORY` 可显式指定备份目录；不备份凭据表，不输出业务记录内容。
@@ -60,3 +60,7 @@ updated: 2026-10-06
 
 回归入口：`tests/test_domain_database_split_mysql.py` 与
 `tests/test_waybill_source_coverage_mysql.py`。
+
+## Console 运单库权限修复（2026-10-07）
+
+现场只读核验发现 Console 实际身份为 `n8n@%`，仅有 `agent_db` 权限；Agent 已有新库权限。Console 通过 INVOKER 视图读取单号时返回 1356，直接读取运单库返回 1142。数据已正确迁入新库，不应恢复旧表或改用旧数据。数据库管理员应为现有 Console 账号恢复 `waybill_db` 的 SELECT、INSERT、UPDATE、DELETE 权限（不含 DDL 或授权转授），覆盖各平台运单、回单及辅助表。授权后以 Console 原配置重新检查视图读取与单号预览，不能只验证 Agent。

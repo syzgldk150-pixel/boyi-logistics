@@ -63,12 +63,13 @@ class DocumentServiceMixin:
         }
         manual_amap_sdk_should_load = not manual_amap_config["amap_js_key"].startswith("YOUR_")
         manual_preview_waybill_no = ""
+        manual_preview_error = ""
         waybill_entry_extensions = self._empty_waybill_entry_extensions()
         if document is None:
             try:
                 manual_preview_waybill_no = self.repository.peek_next_manual_waybill_no()
             except Exception:
-                manual_preview_waybill_no = ""
+                manual_preview_error = "单号预览读取失败，请联系管理员检查运单数据库权限。修复前请勿提交录单。"
         if boyi_frame_mode:
             waybill_entry_extensions = self._load_waybill_entry_extensions(handler)
 
@@ -132,6 +133,7 @@ class DocumentServiceMixin:
             manual_amap_config=manual_amap_config,
             manual_amap_sdk_should_load=manual_amap_sdk_should_load,
             manual_preview_waybill_no=manual_preview_waybill_no,
+            manual_preview_error=manual_preview_error,
             manual_payment_methods=MANUAL_PAYMENT_METHODS,
             waybill_entry_extension_fields=WAYBILL_ENTRY_DRAFT_FIELDS,
             waybill_entry_extension_actions=waybill_entry_extensions[

@@ -2,6 +2,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -297,6 +298,33 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         cls.env.globals["console_navigation"] = CONSOLE_NAVIGATION
         cls.env.globals["mobile_navigation_candidates"] = MOBILE_NAVIGATION_CANDIDATES
         cls.env.globals["mobile_navigation_for_user"] = mobile_bottom_nav_for_user
+
+    def test_preview_query_failure_is_visible_and_blocks_submit_without_exposing_database_error(self):
+        app = object.__new__(LocalDocFlowApp)
+        app.repository = Mock()
+        app.repository.count_by_status.return_value = {}
+        app.repository.list_documents_by_status.return_value = []
+        app.repository.list_writers.return_value = []
+        app.repository.peek_next_manual_waybill_no.side_effect = RuntimeError("private database diagnostic")
+        app.settings = SimpleNamespace(app_title="Test", amap_api_key="", amap_security_code="")
+        app.template_store = Mock()
+        app.template_store.get_active_template_name.return_value = "test"
+        app.template_store.list_templates.return_value = []
+        app._get_template_spec_for_document = Mock(return_value={"fields": []})
+        app._load_waybill_entry_extensions = Mock(return_value=app._empty_waybill_entry_extensions())
+        app.task_queue = Mock()
+        app.task_queue.snapshot.return_value = {}
+        app.template_env = self.env
+        app._send_html = Mock()
+
+        app._render_document(object(), None, {"boyi_frame": ["1"]})
+
+        html = app._send_html.call_args.args[1]
+        self.assertIn("单号预览读取失败", html)
+        self.assertIn("单号暂不可用", html)
+        self.assertIn('value="confirm" disabled', html)
+        self.assertNotIn("private database diagnostic", html)
+        self.assertNotIn("提交后自动生成", html)
 
     def test_document_template_defaults_to_manual_submit(self):
         template = self.env.get_template("document.html")

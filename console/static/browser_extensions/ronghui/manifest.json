@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "博益原页助手",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "适配韵达扫码与融辉内嵌，登录后返回博益录单。无账号隔离，不收集登录信息。",
   "permissions": [
     "declarativeNetRequestWithHostAccess",
@@ -42,6 +42,7 @@
     },
     {
       "matches": [
+        "https://ky-sso.yunda56.com/login*",
         "https://ky-sso.yunda56.com/public/feishu/login*"
       ],
       "css": ["yunda-login.css"],

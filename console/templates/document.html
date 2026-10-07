@@ -676,6 +676,9 @@
       </div>
     </div>
     <div class="manual-feedback" data-manual-feedback aria-live="polite" hidden></div>
+    {% if manual_preview_error|default('') %}
+    <div class="notice error" role="alert">{{ manual_preview_error }}</div>
+    {% endif %}
 
     {% if is_boyi_frame and ((waybill_entry_extension_actions|default([])) or (waybill_entry_extension_validators|default([])) or (waybill_entry_extensions_unavailable|default(false))) %}
     <div class="waybill-extension-bar" data-waybill-entry-extensions aria-label="录单扩展能力">
@@ -711,7 +714,7 @@
       <div class="manual-scroll">
         <section class="manual-section">
           <div class="manual-grid">
-            {{ render_manual_field('waybill_no', '运单号', placeholder='提交后自动生成' ~ (' ' ~ manual_preview_waybill_no if manual_preview_waybill_no else ''), readonly=True, forced_value=manual_preview_waybill_no) }}
+            {{ render_manual_field('waybill_no', '运单号', placeholder='单号暂不可用' if manual_preview_error|default('') else '提交后自动生成' ~ (' ' ~ manual_preview_waybill_no if manual_preview_waybill_no else ''), readonly=True, forced_value=manual_preview_waybill_no) }}
             {{ render_manual_field('open_date', '日期', required=True, placeholder='年 / 月 / 日') }}
             {{ render_manual_field('destination_site', '到站', required=True) }}
             <div class="manual-row">
@@ -805,7 +808,7 @@
         {% endif %}
         <div class="manual-action-group">
           <label class="manual-toggle"><input type="checkbox" name="auto_print" checked data-printer-setting> 保存后打印</label>
-          <button class="primary-btn action-btn" type="submit" name="action" value="confirm"><i data-feather="check"></i> 保存</button>
+          <button class="primary-btn action-btn" type="submit" name="action" value="confirm"{% if manual_preview_error|default('') %} disabled{% endif %}><i data-feather="check"></i> 保存</button>
         </div>
       </div>
     </form>

@@ -1,3 +1,7 @@
+/* In a sandboxed embed the original resize message leaves this frame at 250px.
+   Reserve the title plus the complete QR window in the owning login document. */
+#third_qrcode_container { height: 294px !important; }
+
 /* The original 250 × 294 frame cannot scroll. Keep its 250px QR frame intact. */
 @media (max-width: 400px) {
   .qrcode-body > p {
