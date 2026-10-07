@@ -2,7 +2,7 @@
 module: deployment
 type: operations
 status: active
-updated: 2026-10-06
+updated: 2026-10-07
 ---
 
 # MySQL 迁往 RDS
@@ -12,6 +12,8 @@ Agent、Console、飞书单实例租约、Phase 7 共享仓储和部署迁移器
 `shared/mysql_connection.py` 维护统一 TLS 参数。`AGENT_DB_SSL_CA` 指定 Agent 和部署迁移器的 CA 文件；Console 使用 `DOCFLOW_MYSQL_SSL_CA`，未指定时继承 `AGENT_DB_SSL_CA`。未配置 CA 的原本地连接不变；已配置但缺失或无效的 CA 必须报错，不降级。
 
 为避免改写现有凭据文件，部署可在 `agent/runtime/database-target.json` 保存仅含 `host`、整数 `port`、绝对路径 `ssl_ca` 的非敏感目标。Agent 和 Console 在原配置加载完成后应用它，同时覆盖两套 host/port/CA 环境变量；用户名、密码和库名继续通过既有加载器读取。部署迁移器从所选 `MIGRATION_ENV_FILE` 的父目录下 `runtime/database-target.json` 读取同一目标。目标文件和公开 CA 是运行态，不进入源码发布包。
+
+当前 ECS 的 Agent 与部署迁移器使用 `agent@%`，Console 使用独立 `console@%`；默认连接库仍为 `agent_db`。迁移/恢复必须分别验证两种身份对三个库的权限，并保留 Console 的独立配置加载优先级。账号切换记录及 `60-database-account.conf` 说明见[当前数据库连接身份](database_domains.md#当前数据库连接身份)，不能只校验 Agent 后就认为 Console 已可用。
 
 迁移步骤：
 

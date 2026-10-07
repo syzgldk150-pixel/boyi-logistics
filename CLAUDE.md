@@ -2,6 +2,8 @@
 
 数据库迁移 055 将实体拆为 `agent_db`（运行/配置）、`waybill_db`（平台分表的运单/回单）与 `finance_db`（财务）。运行库中的业务同名对象是无副本的显式视图；写入按平台路由，运单 ID 必须带来源，回单 ID 保持全局唯一。后续 DDL、备份与跨实例迁移必须覆盖实体库及视图，详见 [分库说明](docs/database_domains.md)。
 
+当前 ECS 数据库连接身份为 Agent `agent@%`、Console `console@%`，两者分别核验三个库的实际权限；旧 `n8n` 不再是 Console 连接配置。Console 独立凭据及 systemd 继承处理见 [分库说明](docs/database_domains.md#当前数据库连接身份)，不得在发布时覆盖为 Agent 或旧账号。
+
 现行算法只在 `agent/service_v2_plugins/<plugin_id>_v2/payload/` 维护。每日应签规则与流程位于其 `payload/business/`，Host 只保存并核验插件明确提交的判断。旧签名传输及迁移摘要隔离在 `agent/legacy/`，不发布到 ECS；生产发布只接受 V2 退役索引和 COMPLETED 迁移记录。共享原页字段协议 `shared/ronghui_finance_fields.py`、`shared/ronghui_customer_problem_fields.py` 的变更仍属于核心协议更新。详见 `agent/service_v2_plugins/README.md`。
 
 # 最高优先级：Git 版本控制

@@ -2,7 +2,7 @@
 module: deployment
 type: operations
 status: active
-updated: 2026-10-04
+updated: 2026-10-07
 ---
 
 # 发布到 ECS
@@ -76,6 +76,12 @@ powershell -ExecutionPolicy Bypass `
 6. 远端执行用户必须是 `boyce`，systemd `WorkingDirectory` 必须与上述固定目录一致。
 7. 数据库必须是官方 MySQL 8.x（不接受 MySQL 5.7、MariaDB 或未知版本）；迁移预检会在读取迁移历史或执行任何 DDL 前查询并校验服务端版本。
 8. Agent 与 Console 的运行环境必须注入同一份非空 `CONSOLE_AGENT_SIGNING_SECRET`，且与 `AGENT_INTERNAL_API_TOKEN` 分离。发布脚本不会生成、读取或打印这两个值；缺少签名密钥时管理员命令、事项审批和账号管理会显式返回 503/403。
+
+## Console 独立数据库账号
+
+当前 ECS 数据库身份为 Agent `agent@%`、Console `console@%`。Console 独立配置由 `/home/boyce/console/.env` 和既有 bootstrap 加载；已安装的 `/etc/systemd/system/console.service.d/60-database-account.conf` 通过 `UnsetEnvironment=DOCFLOW_MYSQL_USER DOCFLOW_MYSQL_PASSWORD` 清除 Agent EnvironmentFile 中可能残留的旧 Console 身份变量。源码发布不得覆盖这份运行配置，也不得把 Console 自动改回旧账号或 Agent 账号。
+
+用户名、权限和服务状态可以核验，密码与凭据文件内容不得输出或进入发布包。数据库迁移/账号调整后分别验证两个服务的真实连接，尤其是 Console 对运单库和财务库跨库视图的访问；只验证 Agent 连接不能发现 Console 权限缺失。切换记录和恢复顺序见[分库说明](../../docs/database_domains.md#当前数据库连接身份)。
 
 ## 源码白名单
 

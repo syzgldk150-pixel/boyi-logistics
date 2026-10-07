@@ -2,6 +2,8 @@
 
 数据库迁移 055 将实体拆为 `agent_db`（运行/配置）、`waybill_db`（平台分表的运单/回单）与 `finance_db`（财务）。部署期备份并核对分表原文、行数及金额，运行库保留不存数据的显式视图；激活前失败按原数据核对后回退。后续 DDL 与备份必须覆盖三个库，详见 [分库说明](../docs/database_domains.md)。
 
+当前 ECS 数据库连接身份为 Agent `agent@%`、Console `console@%`，两者分别核验三个库的实际权限；旧 `n8n` 不再是 Console 连接配置。Console 独立凭据及 systemd 继承处理见 [分库说明](../docs/database_domains.md#当前数据库连接身份)，不得在发布时覆盖为 Agent 或旧账号。
+
 每日应签业务规则、采集和渲染已移至仓库根 `agent/service_v2_plugins/sync_daily_should_sign_v2/payload/business/`；`agent/tools/daily_sign_store.py` 仅持久化和回读核验，`agent/tools/daily_sign_values.py` 仅数据规范化。旧 V1 离线材料在 `agent/legacy/`，不进入发布清单。
 
 # 物流 Agent 系统
