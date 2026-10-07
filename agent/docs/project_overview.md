@@ -4,7 +4,7 @@ type: 架构文档
 tags: [项目总览, Agent控制平面, 事项中心, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [control_plane_v1.md, code_navigation_index.md, database_migrations.md, ocr/module_overview.md, finance_module.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: active
-updated: 2026-09-15
+updated: 2026-10-07
 ---
 
 # 物流 Agent 项目总览
@@ -46,7 +46,7 @@ updated: 2026-09-15
 旧 Command、Plan、定时逐次审批及 014–018 迁移合同保留在 [历史控制平面](control_plane_v1.md)；
 退役和发布回退限制见 [旧执行链退役](../../docs/legacy_execution_retirement.md)，不得作为当前调用要求。
 
-## 2026-08-11 架构基线
+## 架构基线
 
 - 生产与 CI 统一使用 Python 3.10，Agent、Console 依赖分别由精确锁文件约束；ECS 发布按两份锁文件的联合哈希复用唯一共享环境，仅在依赖变化或校验失败时重建。发布成功后仍保留当次精确回滚包、上一版虚拟环境和数据库快照，直到业务验收完成后再以独立、有界操作清理。
 - Console 保留 `ThreadingHTTPServer`，`app.py` 是组合入口，业务服务位于 `console/services/`，路由识别位于 `console/routes/`。
@@ -102,14 +102,14 @@ updated: 2026-09-15
 - 项目级控制台目录现已独立为与 agent 并列的 `console/` 工作区。
 - Console 导航固定登记上述 15 个模块身份；迁移 `027` 保存的 14 行历史生命周期状态和 Lite 审计仅供只读兼容，不参与固定模块菜单、页面、API 或新调用可用性判断。依赖 Agent、账号、资源或其他业务数据的具体操作仍由各自合同独立失败关闭。
 - OCR、运单、跟踪、回单、客服、融辉财务、调度、自动化、账号、智能模型、事项中心和系统管理均沿既有页面与服务边界运行；韵达财务适配器待真实来源验收后再启用。
-- 财务工作台通过共享 MySQL 账本与 `sync_finance_bills` 插件接通；代码来源注册表开放融辉三个财务角色，实际启停、时刻与账号以已安装实例的持久设置为准，本轮未核验或修改生产配置。逐笔汇总、平台汇总与 signed-net 必须一致，旧 Excel ETL 已退出当前运行时。
+- 财务工作台通过共享 MySQL 账本与 `sync_finance_bills` 插件接通；代码来源注册表开放融辉三个财务角色，实际启停、时刻与账号以已安装实例的持久设置为准。逐笔汇总、平台汇总与 signed-net 必须一致，旧 Excel ETL 已退出当前运行时。
 - `车辆调度` 当前为 `map_only`：高德地图、路线规划与本地试算；没有真实货拉拉派单、车辆或平台接口。
 - 面向客户的独立 AI 客服模块仍未建立；现有固定命令、受限只读查询和客服工作台分别由 `agent/`、`feishu/` 与 Console 既有链路承载。
 - Agent 公开面只保留精简 `/health`、飞书事件入口和带独立 Webhook Token 的 `/webhook/*`；主要管理与业务代理接口位于 `/internal/v1/*`。`/chat`、`/run-tool` 等旧入口只作为继续鉴权的 deprecated 兼容层，不得新增调用方。
 - 调度模板、TMS 兼容接口和共享登录态仍由 Agent 承载；Console 通过受控内部接口访问，不把 `/tms/*` 当作新的控制平面写入口。
 - Phase 7 迁移所需的飞书表格、Webhook 等资源配置统一保存在 Agent MySQL 的 `workflow_resources` 表中，不再依赖 N8N sqlite；Console 只读取闭合安全 descriptor，不直接读取 Token、表格 ID、范围、路径或原始配置。
-- `sync_daily_should_sign` 必须显式绑定项目当前选择的独立 `r13_account_id` 与融辉 TMS `account_id`；后台可改绑为任意同系统有效账号，下一次运行只使用新绑定。R13 在精确账号登录后按原页协议从 `/gateway/public/aurora/auth` 读取实际站点范围，请求使用 R13 同源 `Origin` 与 `aurora-token`，不继承 SSO `Origin` 或附加 Bearer；中心账号使用空过滤，其他账号使用其 `siteCode`。缺账号上下文、刷新后范围漂移或请求体覆盖账号/站点都会阻塞。结构完整且权威总数为零的 R13 结果仍完成其他来源证据核验；若最终发布集合为空，则正常删除多维表旧记录、清空电子表格旧数据并回读为零行，真实来源异常则在投影变更前失败。同一个 TMS 登录态统一用于问题件、主单签收、轨迹核验和地址补全，不读取旧 `workflow_resources.phase7.r13_credentials`，也不接受请求体内联凭据或隐式默认账号。
-- R13 只作为应签候选和冲突诊断；TMS 主单“签收”事件是唯一关闭证据。长历史签收按 31 天窗口完整分页并校验汇总/明细总量，离开当前 R13 的候选由迁移 `013` 按 1/3/7 天退避进行精确轨迹核验。
+- 每日应签 V2 必须显式绑定项目当前选择的 `daily_sign_r13` 账号；`daily_sign_tms` 只是可选的历史融辉配置，当前运行不调用 TMS 问题件、签收、轨迹或地址补全。后台可改绑为任意同系统有效账号，下一次运行只使用新绑定。R13 在精确账号登录后按原页协议从 `/gateway/public/aurora/auth` 读取实际站点范围，请求使用 R13 同源 `Origin` 与 `aurora-token`，不继承 SSO `Origin` 或附加 Bearer；中心账号使用空过滤，其他账号使用其 `siteCode`。缺账号上下文、刷新后范围漂移或请求体覆盖账号/站点都会阻塞。
+- 发布集合就是 R13 截至今天的全部未签收单（无起始日期，含超过30天旧单），按本次单号匹配统计累计到货快照。结构完整且权威总数为零的 R13 结果是合法的空发布：删除多维表旧记录、清空电子表格旧数据并回读为零行；真实来源异常在投影变更前失败。不读取旧 `workflow_resources.phase7.r13_credentials`，也不接受请求体内联凭据或隐式默认账号。现行规则详见仓库根 `docs/identity_and_unified_chat.md`。
 - `console` 现已与 Agent 统一使用同一套 MySQL，不再在运行时回退 SQLite。
 - Agent、控制台、自动化调度、Phase 7 同步链路当前统一使用独立的 Agent MySQL；N8N 已从运行时链路移除，不再参与数据库读写、Webhook 映射或任务调度。
 - `sync_daily_send_orders`、`sync_delivery_status`、`sync_daily_should_sign`、`sync_site_send_list`、`sync_arrive_list`、`sync_scan_codes`、`sync_arrival_stats` 已全部并入当前发布仓，由各自 `service_v2_plugins/<id>_v2/payload/` 经 Broker 和 `plugin_core_adapters/` 执行；`agent/tms_runtime/` 负责平台协议，旧 whole-tool 不进入新链；`sync_daily_send_orders` 写入飞书后会同步维护控制台 `waybills` SQL 表，并将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按融辉运单号检索。
@@ -118,23 +118,23 @@ updated: 2026-09-15
 - `init_waybills_sql_from_feishu` 可从飞书中的融辉寄件数据表和韵达寄件运单表全量回填控制台 `waybills` SQL 表，用作后台运单查询模块的初始化数据来源；该工具只写 SQL，不修改飞书。
 - `r7_arrival_checkin` 和 `r7_departure_checkin` 已从当前发行的后台 `/automations`、调度注册和飞书直达入口移除；历史项目、运行及审计记录继续保留，不参与当前健康计数，也不会执行第三方打卡写入。
 - `sync_arrive_list` 当前拉取 TMS「派件预报」作为到货基础清单；`sync_arrival_stats` 以“目标日 arrive-list ∪ 目标日实际扫描主单”为当天范围，过滤历史已到齐且当天未重扫的重复主单，历史未齐主单以到货 0 保留，当天重扫主单始终保留。
-- 2026-05-18：`sync_arrival_stats` 会把 `<子单示例>` 这类融辉纯数字子单归并到主单 `<主单示例>`，并在统计导出时过滤历史缓存中的子单行，避免旧误入库子单继续写入飞书。
+- `sync_arrival_stats` 会把 `<子单示例>` 这类融辉纯数字子单归并到主单 `<主单示例>`，并在统计导出时过滤历史缓存中的子单行，避免旧误入库子单继续写入飞书。
 - `sync_arrival_stats` 以累计子单扫描数作为到货件数并按主单开单件数封顶；`count_result.quantity_gaps` 记录扫描不足，`quantity_adjustments` 记录超量封顶。
 - `scan_codes` 表按 `raw_code` 主键 UPSERT 累积；`sync_arrival_stats` 的 `scan_window_days` 只允许 1，保证当天范围不被历史扫描污染。首次部署或历史回填必须单独运行 `sync_scan_codes`。
 - `sync_arrival_stats` 的「未齐货物」飞书清单是可选输出。迁移生成的签名插件实例默认使用 `pending_sheet_disabled=true` 且不绑定 `arrival_stats_pending_sheet`，因此不要求存在 `phase7.pending_arrivals_sheet`；只有先在 `workflow_resources` 配置并显式绑定该资源，再把开关改为 false 才会写入。清单仍由 MySQL 视图 `v_arrival_progress` 实时计算（已到件数 < 应到件数 的主单），齐货后自动剔除。
 - `sync_arrival_stats` 成功完成后还会复用本次 19 列统计结果，通过 `tools/split_pending_snapshot.py` 自动覆盖 `phase7.split_pending_target_sheet` 和 `split_pending_problem_items`；全部到齐时清空“分批及有发未到表”旧行，仅保留表头，自动刷新不产生融辉差错或问题件上报。
-- 2026-05-22: `sync_arrival_stats` archive snapshots in `phase7.stats_archive_sheet` are idempotent by date tab. The tool reuses an existing `YYYY-MM-DD` sheet, clears that tab's configured `default_write_range` expanded to cover previous rows, and rewrites the latest stats instead of creating duplicate tabs or failing on `sheet already exists`.
+- `sync_arrival_stats` archive snapshots in `phase7.stats_archive_sheet` are idempotent by date tab. The tool reuses an existing `YYYY-MM-DD` sheet, clears that tab's configured `default_write_range` expanded to cover previous rows, and rewrites the latest stats instead of creating duplicate tabs or failing on `sheet already exists`.
 - `query_waybill_detail` 查询主单详情时默认带 `isView=true` 获取解密视图；若接口结果仍缺失或加密，再回退到快件跟踪页 MiniUI 解密按钮补齐。控制台 `/tracking/query` 的融辉运单详情在 `decrypt_masked=true` 且收寄件人姓名/电话缺失或带星号时，也会复用该详情补齐链路覆盖展示字段。`sync_arrival_stats` 会把历史缓存中收件人/电话仍带星号的主单重新纳入补抓。
 - TMS 底层 HTTP / 浏览器脚本已并入 `agent/tms_runtime/`，不再依赖 ECS `root` 账户下的 `/root/http_service`。
 - Phase 7 运行期 MySQL 当前承载共享配置表 `workflow_resources`、`scheduled_tasks`、到货统计所需的快照表 / 视图，以及给控制台 `/waybills` 运单查询使用的 `waybills` 同步记录。
 - ECS 上的控制台已独立部署为 `console.service`，仅监听 `127.0.0.1:8765`；公网入口固定为 `https://boyi.homes`，由 Nginx 终止 TLS 并反向代理，HTTP 和 `www.boyi.homes` 统一跳转到根域名 HTTPS。
-- 2026-05-18：`/automation-accounts` 账号编辑弹层支持点击页面其他区域自动收起；已保存密码仅在页面显示为掩码，保存时若未输入新密码会保留 Agent 侧原密码，`凭据已配置` 状态使用成功色展示。
-- 2026-05-20：融辉 TMS 登录态默认切换为图片验证码；顶部 `/automations` 和业务账号管理页会展示 Agent 返回的验证码图片，融辉/大祥报价登录配置不再要求手机号，旧短信验证码页仍兼容。
-- 2026-05-31：自动化业务账号按真实外部系统展示为 TMS融辉、韵达、R7、R13；大祥报价、自提问题件和大祥S站作为 TMS融辉账号用途维护，不再作为独立系统展示。
-- 2026-08-11：账号页统一所有系统的管理契约：“立即登录”执行真实登录，自动登录只控制定时校验与掉线恢复，退出登录同时关闭自动登录，连续失败三次熔断。大祥报价改为显式绑定 `price_default` 账号及其 `price_default` profile，飞书报价与后台登录复用同一登录态；R7/R13 接入可持久、可校验、可清理的 SSO Token/Cookie 状态，不再显示“不支持”或把登录降级成凭据检查。每个账号仍按 `account_id` 隔离运行态，避免不同真实账号互相覆盖。
+- `/automation-accounts` 账号编辑弹层支持点击页面其他区域自动收起；已保存密码仅在页面显示为掩码，保存时若未输入新密码会保留 Agent 侧原密码，`凭据已配置` 状态使用成功色展示。
+- 融辉 TMS 登录态默认按图片验证码处理；业务账号管理页展示 Agent 返回的验证码图片，自动化页不再显示登录状态或验证码。融辉/大祥报价登录配置不要求手机号，旧短信验证码页仍兼容。
+- 自动化业务账号按真实外部系统展示为 TMS融辉、韵达、R7、R13；大祥报价、自提问题件和大祥S站作为 TMS融辉账号用途维护，不再作为独立系统展示。
+- 账号页统一所有系统的管理契约：“立即登录”执行真实登录，自动登录只控制定时校验与掉线恢复，退出登录同时关闭自动登录，连续失败三次熔断。大祥报价改为显式绑定 `price_default` 账号及其 `price_default` profile，飞书报价与后台登录复用同一登录态；R7/R13 接入可持久、可校验、可清理的 SSO Token/Cookie 状态，不再显示“不支持”或把登录降级成凭据检查。每个账号仍按 `account_id` 隔离运行态，避免不同真实账号互相覆盖。
 
-## 2026-04-03 历史更新
+## 自动化配置
 
-- 当时新增 `/automations` 统一维护 Agent 自动化参数；其中顶部登录态、默认账号/密码和直接资源配置入口已由 2026-08-15 插件项目页取代，凭据与登录态现只在“业务账号”模块维护。
-- 当前 Console 不直接操作 `workflow_resources` 的完整配置；只消费 Agent 的安全资源 descriptor。`scheduled_tasks` 由安装后的系统项目定时配置生成和维护。
-- 任务在控制台保存后会触发 Agent `/admin/reload`，把最新的调度定义即时重载到 APScheduler。
+- 凭据与登录态只在“业务账号”模块维护；`/automations` 只选择并保存项目的账号与资源绑定。
+- Console 不直接操作 `workflow_resources` 的完整配置，只消费 Agent 的安全资源 descriptor。`scheduled_tasks` 由安装后的系统项目定时配置生成和维护。
+- V2 项目配置经 `PUT /internal/v1/automation/instances/{automation_id}/configuration` 原子保存，稳定 generation 提交后由 Agent 原子刷新进程内 Scheduler，刷新失败保留旧 Job 集并显式报告；历史 `scheduled_tasks` 分组保存后经 `/internal/v1/admin/reload` 重载调度定义。

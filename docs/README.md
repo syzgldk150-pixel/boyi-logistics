@@ -5,7 +5,7 @@ tags: [documentation, navigation, authority, lifecycle]
 status: active
 authority: canonical
 owner: repository
-updated: 2026-09-26
+updated: 2026-10-07
 ---
 
 # 仓库文档索引
@@ -65,6 +65,7 @@ updated: 2026-09-26
 - [扩展平台原始方案](extension-platform-baseline.md)、[原迁移执行账本](extension-platform-progress.md)：保留阶段性 TASK 与隔离证据，不是当前待办或生产门禁。
 - [旧控制平面](../agent/docs/control_plane_v1.md)、[旧 Action V1 合同](../agent/docs/automation_plugin_platform.md)：解释历史记录；不用于新增插件或日常执行。
 - [架构改造验收映射](architecture_refactor_acceptance_mapping.md)、[V3.2 逐组验收要求](low_maintenance_v32_acceptance.json)：阶段验收与复现入口，不能据此推断当前线上每次执行都成功。
+- [第一轮收尾验收报告](phase1_final_closeout.md)（2026-09-23）、[身份与 V2 插件验证记录](identity_v2_validation_20260911.md)（2026-09-11）：当时的验收证据与状态，不代表现行部署情况。
 
 - `docs/ai-development/` 保存阶段性架构目标和迁移快照，不作为当前代码事实。
 - `docs/superpowers/` 与 `console/docs/superpowers/` 保存已实施、被取代或历史计划，不作为当前执行清单。

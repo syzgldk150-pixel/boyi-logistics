@@ -10,7 +10,7 @@ related:
   - ../scripts/service_v2_plugin.py
   - ../extension_sdk/schemas/manifest-v2.schema.json
 status: active
-updated: 2026-09-15
+updated: 2026-10-07
 ---
 
 # Service v2 离线开发工具
@@ -88,7 +88,7 @@ Connector 不是一种 ZIP Provider。源码包的 `provides` 与 contribution t
 
 `connector.fixture.tracking@1/query` 只用于显式离线 Host 集成测试。只有 `connector-test` 接收可信 fixture root、相对 JSON 路径和单号后才加载；路径、成员、大小和 Schema 校验失败必须报错。生产接口另由 `agent/agent/automation_plugins/production_connectors.py` 组合，已包含读取、内部写入及外部写入能力，逐项受当前权限、绑定和写后核验约束。fixture 不进入生产 Registry，也不能证明实际业务可用。
 
-Scheduler contribution 未启用时不应伪造执行时间；启用时采用经验证的项目时间计划。当前迁移可复制已审核的真实定时，已完成迁移的实例后续通过设置与升级入口维护。旧 MIG 阶段的 Scheduler 生产门禁仅保留在历史执行账本，不作为当前操作步骤。
+Scheduler contribution 未启用时不应伪造执行时间；启用时采用经验证的项目时间计划。迁移时已复制经审核的真实定时，现有实例均已完成迁移，后续通过设置与升级入口维护。旧 MIG 阶段的 Scheduler 生产门禁仅保留在历史执行账本，不作为当前操作步骤。
 
 ### 当前业务插件与生产维护
 

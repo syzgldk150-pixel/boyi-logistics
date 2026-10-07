@@ -1,6 +1,6 @@
 # V3.2 第一轮维护边界
 
-现行验收合同为 `BOYI-PHASE1-FINAL-CLOSEOUT-R1`，结果见[本轮收尾记录](phase1_final_closeout.md)。调用层已由 [架构改造 V1](architecture_direct_invocation.md) 更新；本文件其余模块归属、权限与接口校验、数据正确性与性能标准继续适用。
+现行验收合同为 `BOYI-PHASE1-FINAL-CLOSEOUT-R1`，结果见[第一轮收尾记录](phase1_final_closeout.md)（历史验收报告）。调用层已由 [架构改造 V1](architecture_direct_invocation.md) 更新；本文件其余模块归属、权限与接口校验、数据正确性与性能标准继续适用。
 
 本文件保留第一轮低维护方案的模块归属和验收原则。当前源码、协议及升级方式以 [V2 维护入口](../agent/service_v2_plugins/README.md) 为准；旧签名包和首次迁移步骤仅用于解释历史，不是当前维护流程。
 
@@ -48,7 +48,7 @@ Manifest 可选 `management`，字段精确为 `purpose/module/dataset/version`�
 
 插件由 Invocation 直接执行，主系统不启用旧 Runner 领取。写目标有界协调只发生在本次存活调用中，不生成持久等待队列；取消不能在线程尚在执行时假报零副作用。通知或展示失败不重新执行业务写。
 
-## 本轮复现与发布准备
+## 复现与发布准备
 
 整轮入口为 `python agent/scripts/accept_low_maintenance_v32.py`，必须配合入口要求的隔离测试环境；它实际运行检查并产生机器结果，必需项失败、受阻或未运行均非零。真实浏览器入口位于 `tests/v32_acceptance/`。测试环境和测试签名包不得用于生产。具体命令及首次核心发布、插件回退顺序见 [复现与发布说明](low_maintenance_v32_release.md)。
 

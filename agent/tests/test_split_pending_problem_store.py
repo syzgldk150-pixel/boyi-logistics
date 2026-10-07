@@ -84,8 +84,9 @@ class SplitPendingProblemStoreTests(unittest.TestCase):
         self.assertIn("WHEN problem_type = VALUES(problem_type) THEN upload_status", sql)
         self.assertIn("complaint_status = 'not_applicable'", sql)
         self.assertNotIn("WHEN VALUES(problem_type) = '少货/分批' THEN 'pending'", sql)
-        self.assertEqual("not_applicable", values[0][-2])
-        self.assertEqual("not_applicable", values[1][-2])
+        # upload/error/uploaded, complaint status/error/processed are parameters.
+        self.assertEqual(("pending", None, None, "not_applicable", None, None), values[0][9:15])
+        self.assertEqual(("pending", None, None, "not_applicable", None, None), values[1][9:15])
         self.assertEqual(1, connection.commit_count)
 
     def test_combined_result_updates_only_problem_steps(self):

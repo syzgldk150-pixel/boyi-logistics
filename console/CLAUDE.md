@@ -4,17 +4,17 @@
 
 当前 ECS 数据库连接身份为 Agent `agent@%`、Console `console@%`，两者分别核验三个库的实际权限；旧 `n8n` 不再是 Console 连接配置。Console 独立凭据及 systemd 继承处理见 [分库说明](../docs/database_domains.md#当前数据库连接身份)，不得在发布时覆盖为 Agent 或旧账号。
 
-当前迁移收尾：AI 精确运行查询读取 Invocation 与历史 Run；寄件回读按业务日期隔离；V2 实例按声明平台展示。实现与回归边界见 [维护说明](../docs/identity_and_unified_chat.md)。
+AI 精确运行查询读取 Invocation 与历史 Run；寄件回读按业务日期隔离；V2 实例按声明平台展示。实现与回归边界见 [维护说明](../docs/identity_and_unified_chat.md)。
 
 扫描、自提及分批预览支持实际 Service V2 实例 UUID；卡片按插件身份提供预览/确认，输出按 Agent 返回的 Invocation 插件身份区分预览类型，正式确认仍由 Agent 核验同实例、当前代次、发起人及有效期。详见 `../docs/plugin-platform-v2.md`。
 
-插件迁移维护入口为 `/automations/maintenance`，从系统状态页进入，只允许真实超级管理员会话。它复用现有迁移 API、当前目录和 CAS，不参与普通自动化列表，不自动执行业务；本轮每日业务使用宿主业务日期标识。安装检查必须覆盖真实 V2 ZIP 的多账号角色、逐动作调用上限和无标题的飞书/Webhook/Event 贡献，未知字段仍拒绝。
+插件迁移维护入口为 `/automations/maintenance`，从系统状态页进入，只允许真实超级管理员会话。它复用现有迁移 API、当前目录和 CAS，不参与普通自动化列表，不自动执行业务；每日业务使用宿主业务日期标识。安装检查必须覆盖真实 V2 ZIP 的多账号角色、逐动作调用上限和无标题的飞书/Webhook/Event 贡献，未知字段仍拒绝。
 
 ## 当前身份与统一对话边界
 
 后台身份管理：`services/identities.py`、`templates/identity_management.html` 与 `static/identity-settings.css` 管理身份、账号分配及所有飞书绑定。身份定义只由 `shared/identity_permissions.py` 管理，菜单和路由根据实时会话身份检查；`permission_registry.py` 只保留菜单注册元数据，不是用户权限的权威。超级管理员账号不可改为自定义身份。 细节见[维护说明](../docs/identity_and_unified_chat.md)。
 
-本轮 V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v32.md) 为权威索引：自动化只列功能插件；财务/客服采集在所属模块；AI contribution 可选；账号引用及平铺常用参数使用宿主简单设置；历史包回退须有本实例已提交版本证据。局部入口见 `agent/scripts/plugin_maintenance.py`（仓库根相对路径），整轮入口为 `agent/scripts/accept_low_maintenance_v32.py`。
+V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v32.md) 为权威索引：自动化只列功能插件；财务/客服采集在所属模块；AI contribution 可选；账号引用及平铺常用参数使用宿主简单设置；历史包回退须有本实例已提交版本证据。局部入口见 `agent/scripts/plugin_maintenance.py`（仓库根相对路径），整轮入口为 `agent/scripts/accept_low_maintenance_v32.py`。
 
 专属设置资源由 `services/plugin_settings_assets.py` 在认证 HTML 响应内组装：仅支持包内同目录 classic JS/CSS 文件及内联 script/style，以每响应 nonce 执行；拒绝外链、路径穿越和不支持的脚本加载形式。图片仅允许 data URI，字体与连接被 CSP 禁止；新增资源形式须明确调整协议，不能宣称支持任意网页。iframe 保持 `sandbox="allow-scripts"`，不授予同源 Cookie，配置与统一账号仍只经现有会话绑定 Host 桥保存。真实入口验收见 `tests/v32_acceptance/custom_settings.py`（仓库根相对路径）。
 
@@ -76,7 +76,7 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 - 插件只安装动作并声明可用的调度类型，实际定时属于系统项目配置，不属于 ZIP 或 manifest。安装完成后才在自动化卡片设置 `none/daily_times/startup`；同一插件的多个 `automation_id` 实例可各自选择账号、资源、定时和权限。
 - 迁移入口归属：`TESTING/READY` 保留原 V1 入口，超级管理员仅可显式验证 V2；`CUTOVER/COMPLETED` 开放 V2，`ROLLED_BACK` 恢复原入口。已审阅映射复制原定时、飞书和 Webhook 设置；停用定时保留时间但不启用。未知入口或损坏配置明确失败，不猜测映射。固定飞书保留命令仅对应迁移目标可接管，既有 pending/登录/确认优先级不变；完成后不新建同源 pair，V2 升级沿用既有归属。具体合同见 `../docs/plugin-platform-v2.md`。
 - 自动化页不再渲染顶部账号登录绿点、登录态 popover、凭据表单或账号管理快捷入口，也不再探测旧 TMS session 接口；旧 `/automations/*-session/*` 和 `/automations/session-context` 不得路由。凭据和登录态只在侧栏“业务账号”模块管理；项目卡仅从 Agent catalog 的 `account_bindings` 显示业务账号池下拉，不回显凭据、不选默认/首项。未选、停用或 session 失效必须阻断运行、启用和完全自动。
-- 每日应签的两个账号角色来自两个不同系统：`r13_account_id` 显示为“R13 应签查询账号”，负责读取该账号所属站点范围和应签清单；`account_id` 显示为“融辉到货与签收核验账号”，负责到货、问题件和主单签收证据。两者都只取项目当前绑定，后台改绑后下一次运行生效，不固定账号或站点。
+- 每日应签 V2 的账号角色为 `daily_sign_r13`（必填，读取该 R13 账号所属站点范围和应签清单）与 `daily_sign_tms`（可选的历史融辉配置，当前运行不调用）。“R13 应签查询账号/融辉到货与签收核验账号”文案只用于旧 V1 实例的历史展示。账号都只取项目当前绑定，后台改绑后下一次运行生效，不固定账号或站点。
 - 资源池投影只允许 `resource_id/name/kind/status` 四个字段，Token、表格 ID、读写范围、文件路径、配置哈希/版本及原始配置不得进入 Console 或浏览器。飞书资源只显示 Agent 按当前文档名与工作表名解析的实时名称，不使用 Console 静态业务别名或内部资源 ID；改名随服务端短时缓存刷新。项目卡按签名 manifest 的 resource role 与 kind 精确生成候选，已有选择也必须重新核验可用性；不默认选择第一项。资源池不可用、descriptor 多/缺字段、必填资源未选、已停用或 kind 不匹配时，原卡显示阻断原因并 fail closed。
 - Console 自动化服务按职责拆分：`services/automation.py` 保留既有任务投影、运行控制、页面组合和兼容会话逻辑，纯 preview 合同、字段校验和调度分组 helper 位于 `services/automation_preview_support.py`；`services/automation_projects.py` 维护项目级权限、历史审批只读投影、插件目录和项目配置；`services/automation_plugin_management.py` 维护 ZIP 上传、实例生命周期、设置桥、v2 迁移及未知写恢复，并由 `AutomationServiceMixin` 组合复用；`routes/automation.py` 是当前插件生命周期入口，`routes/extensions.py` 只保留 GET 重定向与 POST 410。原 `services.automation` 的公共导入保持兼容。
 
@@ -172,7 +172,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `templates/base.html`
   - `app.py`
   - `database.py`
-  - 从服务器 `boyi_waybills`（博益开单）与 `waybills`（其他来源）独立表联合查询已开单运单，支持关键词、日期、状态、来源、结算方式、派送方式、排序筛选，弹窗详情、列设置、打印、作废和跳转单号查询；状态列优先展示 `scan_status` 的扫描状态简写，缺失时回落到 `waybills.status` 粗状态；空筛选默认不加载全表，只显示主动查询结果。`GET /waybills` 严格只读，不得在日期筛选时暗中刷新外部来源；需要刷新时从自动化页面显式提交受控同步命令
+  - 从服务器 `boyi_waybills`（博益开单）与 `waybills`（其他来源）独立表联合查询已开单运单，支持关键词、日期、状态、来源、结算方式、派送方式、排序筛选，弹窗详情、列设置、打印、作废和跳转单号查询；状态列优先展示 `scan_status` 的扫描状态简写，缺失时回落到 `waybills.status` 粗状态；空筛选默认不加载全表，只显示主动查询结果。指定日期的查询由真实管理员会话经签名普通业务接口 `send-waybills-query` 按原平台覆盖范围补查；未指定日期、无管理员身份或补查不完整时只展示服务器快照并明确提示，不从来源名猜账号
 - 改统一回单管理页：
   - `templates/receipts.html`
   - `templates/base.html`

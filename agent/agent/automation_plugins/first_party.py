@@ -1434,6 +1434,10 @@ def first_party_payload_files(manifest: AutomationPluginManifest) -> dict[str, b
         ):
             frozen = LEGACY_ROOT / manifest.plugin_id / "frozen" / Path(relative).name
             files['payload/' + relative] = frozen.read_bytes()
+    if manifest.plugin_id == "sync_scan_codes":
+        # Reproduce the retired V1 action bytes without coupling its immutable
+        # lock to later V2 scan changes. Never used by V2 packaging.
+        files["payload/action.py"] = (LEGACY_ROOT / manifest.plugin_id / "frozen" / "action.py").read_bytes()
     return files
 
 

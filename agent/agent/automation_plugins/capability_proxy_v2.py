@@ -12,7 +12,9 @@ import asyncio
 import hashlib
 import json
 import math
+import threading
 import uuid
+from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import nullcontext
 from dataclasses import replace
@@ -79,6 +81,7 @@ _UNAVAILABLE_CAPABILITIES = (
 UNAVAILABLE_SERVICE_V2_HANDLER_KEYS = frozenset((operation, "*") for operation in _UNAVAILABLE_CAPABILITIES)
 SERVICE_V2_SERVICE_INVOKE_HANDLER_KEY = ("service.invoke", "*")
 _MAX_SERVICE_CALL_DEPTH = 8
+_INVOCATION_MANIFEST_CACHE_LIMIT = 128
 _REVIEWED_CLOCK_OPERATION = "browser.invoke"
 _SERVICE_V2_CLOCK_OPERATION = "browser.session"
 _CLOCK_TOOL_NAME = "clock_in_dual"
@@ -595,6 +598,44 @@ class ServiceV2CapabilityProxy:
         self._services = service_registry
         self._service_executor = service_executor
         self._connectors = connector_registry
+        # One lease executes one committed generation, so its validated
+        # manifest cannot change while the invocation runs. Reusing it avoids
+        # a database Unit of Work on every Host call of that invocation.
+        self._invocation_manifests: OrderedDict[tuple[str, ...], AutomationPluginManifestV2] = OrderedDict()
+        self._invocation_manifests_lock = threading.Lock()
+
+    def _invocation_manifest(
+        self,
+        context: CoreBrokerInvocationContext,
+    ) -> AutomationPluginManifestV2:
+        identity = context.write_attempt_identity if isinstance(context.write_attempt_identity, Mapping) else {}
+        lease_id = str(identity.get("lease_id") or "").strip()
+        key = (
+            (
+                context.automation_id,
+                str(identity.get("plugin_id") or ""),
+                str(identity.get("generation") or ""),
+                lease_id,
+                context.plugin_version,
+            )
+            if lease_id
+            else None
+        )
+        if key is not None:
+            with self._invocation_manifests_lock:
+                cached = self._invocation_manifests.get(key)
+                if cached is not None:
+                    self._invocation_manifests.move_to_end(key)
+                    return cached
+        with self._orchestration.unit_of_work() as uow:
+            manifest = _manifest_for_context(uow.automation_plugins, context)
+        if key is not None:
+            with self._invocation_manifests_lock:
+                self._invocation_manifests[key] = manifest
+                self._invocation_manifests.move_to_end(key)
+                while len(self._invocation_manifests) > _INVOCATION_MANIFEST_CACHE_LIMIT:
+                    self._invocation_manifests.popitem(last=False)
+        return manifest
 
     @staticmethod
     def unavailable(
@@ -893,11 +934,7 @@ class ServiceV2CapabilityProxy:
             )
         preflight_services = tuple(raw_preflight_services)
 
-        def read_manifest():
-            with self._orchestration.unit_of_work() as uow:
-                return _manifest_for_context(uow.automation_plugins, context)
-
-        manifest = await drain_thread(read_manifest)
+        manifest = await drain_thread(self._invocation_manifest, context)
         if service not in manifest.required_services:
             raise _capability_error(
                 "service was not declared in this plugin's requires contract",

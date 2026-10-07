@@ -4,7 +4,7 @@ type: 操作说明
 tags: [插件, 测试, 打包, 维护]
 related: [service_v2_developer_tooling.md, automation_plugin_platform.md, code_navigation_index.md]
 status: active
-updated: 2026-09-15
+updated: 2026-10-07
 ---
 
 # 插件局部测试和打包
@@ -68,12 +68,6 @@ V2 测试前后按权威打包器计算实际包、清单、成员文件及所�
 
 ## 每日应签的维护边界
 
-当前应签算法和类型清单位于 `service_v2_plugins/sync_daily_should_sign_v2/payload/business/`；从 2.0.8 起 Host 只保存插件明确提交的布尔判断，不再共同维护规则。当前业务规则见[身份与统一对话维护说明](../../docs/identity_and_unified_chat.md)。以下 2.0.3 记录解释来源读取优化，不是当前版本声明。
+当前应签算法和类型清单位于 `service_v2_plugins/sync_daily_should_sign_v2/payload/business/`；Host 只保存插件明确提交的布尔判断，不共同维护规则。现行版本只读取 R13 来源，不调用 TMS 问题件、签收或轨迹接口；业务规则见[身份与统一对话维护说明](../../docs/identity_and_unified_chat.md)。
 
-`sync_daily_should_sign_v2` 的包内 `daily_sign_io.py` 在本次 Invocation 内按账号角色和来源前缀复用宿主返回的不可变来源身份。此前每条问题记录重复读取两次相同身份，大页数据会耗尽默认单动作调用次数。新调用、嵌套调用结束及异常退出均恢复各自上下文，不保存历史成功值；业务数据读取和写后回读仍实际执行，调用次数上限不变。
-
-2.0.3 另将本次运行的逐票轨迹核验设为单个并发请求，与现有轨迹接口的并发合同一致，避免同一插件内部并发请求互相返回 `BUSINESS_RESOURCE_BUSY`。所有候选仍实际查询，任何真实查询错误仍阻止发布，不降低完整性标准。
-
-每日应签的宿主 `read_tracking` 端口固定使用已有的 `decrypt_masked=False` 查询模式，只投影主单编号和扫描事实。该业务不使用收寄件人详情，不能因为客户字段仍脱敏就丢弃已返回的真实扫描记录；普通详情查询的解密规则不变。此端口修复属于核心更新，不能用升级插件包替代；回归同时覆盖真实轨迹适配器和敏感详情不进入插件输出。
-
-回归 `tests/test_daily_sign_v2_packaged_protocol.py` 使用真实 ZIP、Broker 和隔离 MySQL，包含超过默认次数的大页问题数据、多个历史候选遇到仅允许单请求的接口，以及写后数据损坏场景。仅包内来源复用和并发调整可单独升级 ZIP；Host 端口适配与公共协议变化仍需核心发布。
+回归 `tests/test_daily_sign_v2_packaged_protocol.py` 使用真实 ZIP、Broker 和隔离 MySQL，覆盖写后数据损坏等场景。只改包内规则或来源处理时可单独升级 ZIP；Host 端口适配与公共协议变化仍需核心发布。

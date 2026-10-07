@@ -4,7 +4,7 @@ type: 索引文档
 tags: [代码定位, 修改入口, 路由, 文档索引, Agent, Console]
 related: [project_overview.md, control_plane_v1.md, automation_plugin_platform.md, database_migrations.md, rules_and_definitions.md]
 status: active
-updated: 2026-10-06
+updated: 2026-10-07
 ---
 
 # 物流 Agent 代码定位索引
@@ -108,17 +108,11 @@ updated: 2026-10-06
 - 只保留旧离线地址库、批量报价和报价表资料，不进入线上运行链。
 - 当前 `get_price` 先查 `agent/direct_readers.py` 与 `tools/price_tool.py`，再进入 `agent/tms_runtime/` 的真实平台适配器。
 
-### `finance_reconciliation/`
-
-- 负责 ETL 抽取、对账、报表生成。
-- 旧 `finance_etl` / `tools/finance_tool.py` 已退出线上目录与工具注册表；财务同步统一从
-  `sync_finance_bills` 经直接插件 Invocation 进入，并由 `shared/finance/` 的来源注册表控制实际上线平台。
-- 该目录是旧 Excel 离线 ETL；新融辉/韵达逐笔财务工作台不导入、不回退到这里。
-
 ### 数据库分域
 
 - 实体库与平台分表说明：`../../docs/database_domains.md`；唯一表名路由 `../../shared/logistics_tables.py`。
 - 部署迁移：`migrations/055_domain_database_split.sql` 与 `scripts/migration_055_domain_databases.py`；运行库视图不存业务副本，后续结构与备份覆盖三个库。
+- 生产库是跨地域 RDS：写库代码的批量写入、连接复用约束及实测见 `../../docs/mysql_rds_migration.md` 的“跨地域访问的性能约束”；插件调用清单按 lease 缓存于 `agent/automation_plugins/capability_proxy_v2.py`。
 
 ### `shared/finance/`
 
@@ -164,7 +158,7 @@ updated: 2026-10-06
 
 扫描同步源码位于 `service_v2_plugins/sync_scan_codes_v2/payload/action.py`，子进程适配器位于 `_shared/scan_service_main.py`。分页、分类、批次与预览重验在包内维护，Host 提供真实扫描接口和独立回读。包回归见 `../tests/test_sync_scan_codes_service_v2_package.py`；Console 和飞书共用当前预览/确认业务边界。来源失败或未知写不转成成功，不重放旧调用。
 
-## 2026-08-03 新增定位
+## 问题件上报定位
 
 | 需求类型 | 优先查看文件 | 说明 |
 |---|---|---|
@@ -174,7 +168,7 @@ updated: 2026-10-06
 
 - 产品边界、维护归属和来源：仓库 `docs/low_maintenance_v32.md`；复现、首次核心发布及插件回退顺序：`docs/low_maintenance_v32_release.md`。
 - 指定插件的局部测试与打包：`scripts/plugin_maintenance.py`、`docs/plugin_maintenance.md`。
-- 本轮完整验收：`scripts/accept_low_maintenance_v32.py`、仓库 `docs/low_maintenance_v32_acceptance.json`；真实浏览器/协议组合：仓库 `tests/v32_acceptance/`。
+- 完整验收：`scripts/accept_low_maintenance_v32.py`、仓库 `docs/low_maintenance_v32_acceptance.json`；真实浏览器/协议组合：仓库 `tests/v32_acceptance/`。
 - 模块归属与闭合代际信封：仓库 `shared/plugin_management.py`、`shared/plugin_generation_contract.py`；目录只读事务：`agent/automation_plugins/catalog_read_scope.py`。
 - 同一模块目录批量读取：仓库 `shared/automation_plugin_catalog_rows.py`；仍逐实例校验原始代际与配置，缓存不进入执行或修改链路。
 - 当前 V2 检查、升级及历史版本回退：`agent/automation_plugins/inspection_v2.py`、`agent/automation_plugins/historical_version.py`；旧 ACTION_V1 预览维护只用于历史兼容。回退须有本实例已提交版本证据，不能将任意旧 ZIP 作为恢复来源。

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -803,6 +804,76 @@ def test_service_invoke_requires_declared_dependency_and_dispatches_exact_operat
     assert calls[0]["caller_automation_id"] == "instance-v2"
     assert calls[0]["call_chain"] == ("plugin.base.runner@1",)
     assert calls[0]["arguments"] == {"query": "safe"}
+
+
+class _CountingOrchestration(_Orchestration):
+    def __init__(self, documents: _Documents) -> None:
+        super().__init__(documents)
+        self.units = 0
+
+    def unit_of_work(self):
+        self.units += 1
+        return super().unit_of_work()
+
+
+def _lease_context(lease_id: str | None) -> CoreBrokerInvocationContext:
+    identity = (
+        {"automation_id": "instance-v2", "plugin_id": "sample_plugin", "generation": 3, "lease_id": lease_id}
+        if lease_id is not None
+        else {}
+    )
+    return replace(_context("service.invoke", "get"), write_attempt_identity=identity)
+
+
+def test_service_invoke_reads_the_manifest_once_per_invocation_lease() -> None:
+    async def execute(**_values):
+        return {
+            "status": "SUCCESS",
+            "data": {"evidence": {"service": "plugin.base.runner@1", "operation": "get", "outcome": "READ_VERIFIED"}},
+            "meta": {"evidence_refs": ["evidence:base:get"]},
+            "warnings": [],
+            "error": None,
+        }
+
+    orchestration = _CountingOrchestration(_Documents(manifest=_service_consumer_manifest()))
+    proxy = ServiceV2CapabilityProxy(
+        orchestration,
+        service_registry=_service_registry(),
+        service_executor=execute,
+    )
+    request = {"service": "plugin.base.runner@1", "operation": "get", "arguments": {}}
+
+    for _ in range(3):
+        asyncio.run(proxy.service_invoke(_lease_context("lease-a"), request))
+    assert orchestration.units == 1
+
+    asyncio.run(proxy.service_invoke(_lease_context("lease-b"), request))
+    assert orchestration.units == 2
+
+    # Without a lease identity nothing proves the generation is pinned.
+    for _ in range(2):
+        asyncio.run(proxy.service_invoke(_lease_context(None), request))
+    assert orchestration.units == 4
+
+
+def test_service_invoke_does_not_cache_a_rejected_manifest() -> None:
+    async def execute(**_values):
+        raise AssertionError("an invalid manifest must not reach a Provider")
+
+    documents = _Documents(manifest=_service_consumer_manifest())
+    documents.manifest["version"] = "9.9.9"
+    orchestration = _CountingOrchestration(documents)
+    proxy = ServiceV2CapabilityProxy(
+        orchestration,
+        service_registry=_service_registry(),
+        service_executor=execute,
+    )
+    request = {"service": "plugin.base.runner@1", "operation": "get", "arguments": {}}
+    for _ in range(2):
+        with pytest.raises(PluginExecutionError) as rejected:
+            asyncio.run(proxy.service_invoke(_lease_context("lease-a"), request))
+        assert rejected.value.code == "CAPABILITY_CONTRACT_INVALID"
+    assert orchestration.units == 2
 
 
 def test_service_invoke_fails_closed_for_undeclared_operation_dependency_and_cycle() -> None:

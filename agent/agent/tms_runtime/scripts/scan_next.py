@@ -98,6 +98,7 @@ XPATH_CONFIRM_BUTTON = (
 XPATH_CONFIRM_UPLOAD_MESSAGE = '//div[contains(@class, "mini-messagebox-content")][contains(., "确定上传当前已编数据")]'
 XPATH_SUCCESS_MESSAGE = '//div[contains(@class, "mini-messagebox-content")][contains(., "数据保存成功")]'
 XPATH_ALREADY_SIGNED_MESSAGE = '//div[contains(@class, "mini-messagebox-content")][contains(., "已做过签收")]'
+XPATH_MESSAGEBOX_CONTENT = '//div[contains(@class, "mini-messagebox-content")]'
 XPATH_GRID_ROW_ANY = '//div[@id="datagrid"]//table//tr[contains(@class, "mini-grid-row")]'
 XPATH_GRID_ROW_UNSELECTED = (
     '//div[@id="datagrid"]//table//tr[@class="mini-grid-row mini-grid-newRow"]'
@@ -421,25 +422,34 @@ MINI_ADD_BILL_CODE_SCRIPT = (
   }
 
   const base = window.basepath || "";
-  let allowed = false;
-  $U.httpUtils.syncPostJson(
-    base + "/dataQuery/findAllByCallId?id=FIND_TMS_SYS_SHARE_SET",
-    { SHARE_CODE_IN: "MainBill,AllBill,ReturnBill,SubBill" },
-    (data) => {
-      if (!Array.isArray(data)) return;
-      for (const row of data) {
-        const pattern = row && row.SHARE_VALUE;
-        if (!pattern) continue;
-        try {
-          const regex = new RegExp(pattern);
-          if (regex.test(bill)) {
-            allowed = true;
-            break;
-          }
-        } catch (_) {}
+  // Bill-number formats are system settings; read them once per page and
+  // keep only a non-empty successful answer. Signed state stays per bill.
+  let patterns = Array.isArray(window.__boyiScanBillPatterns) ? window.__boyiScanBillPatterns : null;
+  if (!patterns) {
+    const loaded = [];
+    $U.httpUtils.syncPostJson(
+      base + "/dataQuery/findAllByCallId?id=FIND_TMS_SYS_SHARE_SET",
+      { SHARE_CODE_IN: "MainBill,AllBill,ReturnBill,SubBill" },
+      (data) => {
+        if (!Array.isArray(data)) return;
+        for (const row of data) {
+          const pattern = row && row.SHARE_VALUE;
+          if (pattern) loaded.push(String(pattern));
+        }
       }
-    }
-  );
+    );
+    if (loaded.length) window.__boyiScanBillPatterns = loaded;
+    patterns = loaded;
+  }
+  let allowed = false;
+  for (const pattern of patterns) {
+    try {
+      if (new RegExp(pattern).test(bill)) {
+        allowed = true;
+        break;
+      }
+    } catch (_) {}
+  }
   if (!allowed) return { ok: false, error: "invalid_bill_code" };
 
   let signed = false;
@@ -1015,17 +1025,26 @@ def _click_confirm_any(
     raise TimeoutError("未等到确认弹窗") from last_error
 
 
-def _wait_signed_popup(page, frame, *, timeout_ms: int = 2_000) -> bool:
-    deadline = time.time() + timeout_ms / 1000.0
-    while time.time() < deadline:
+def _visible_messagebox_text(page, frame) -> Optional[str]:
+    """Return the text of a MiniUI message box that is visible now.
+
+    Bills are added through the page API, which already queries the signed
+    state synchronously, so the normal path raises no message box. Checking
+    the current page state replaces waiting a fixed time for a box to appear.
+    """
+
+    for scope in (frame, page):
         try:
-            if _is_visible(frame, XPATH_ALREADY_SIGNED_MESSAGE) or _is_visible(page, XPATH_ALREADY_SIGNED_MESSAGE):
-                _click_confirm_any(page, frame, message_xpath=XPATH_ALREADY_SIGNED_MESSAGE, timeout_ms=2_000)
-                return True
+            boxes = scope.query_selector_all(f"xpath={XPATH_MESSAGEBOX_CONTENT}")
         except Exception:
-            pass
-        time.sleep(0.2)
-    return False
+            continue
+        for box in boxes:
+            try:
+                if box.is_visible():
+                    return " ".join(str(box.inner_text() or "").split())[:200]
+            except Exception:
+                continue
+    return None
 
 
 def _run_flow_impl(
@@ -1099,6 +1118,9 @@ def _run_flow_impl(
             if not pending_codes:
                 return
             stage = "upload"
+            message = _visible_messagebox_text(page, frame)
+            if message is not None:
+                raise RuntimeError(f"上传前页面存在未处理提示: {message}")
             upload_result = _upload_rows_by_mini_api(frame)
             if not upload_result.get("ok"):
                 raise RuntimeError(f"上传失败: {_mini_failure_detail(upload_result)}")
@@ -1135,14 +1157,19 @@ def _run_flow_impl(
             add_result = _add_bill_code_by_mini_api(frame, bill)
             if add_result.get("ok"):
                 log(f"扫描单号已提交到页面逻辑: {bill}")
-                _pause(frame)
             elif add_result.get("signed"):
                 log(f"单号已做过签收，跳过: {bill}")
                 skipped_signed_codes.append(bill)
                 continue
             else:
                 raise RuntimeError(f"扫描单号写入失败: {_mini_failure_detail(add_result)}")
-            if _wait_signed_popup(page, frame):
+            # The add API above already queried the signed state; inspect a box
+            # that is visible now instead of waiting a fixed time for one.
+            message = _visible_messagebox_text(page, frame)
+            if message is not None:
+                if "已做过签收" not in message:
+                    raise RuntimeError(f"录入单号后出现未预期提示: {message}")
+                _click_confirm_any(page, frame, message_xpath=XPATH_ALREADY_SIGNED_MESSAGE, timeout_ms=2_000)
                 log(f"单号已做过签收，跳过: {bill}")
                 skipped_signed_codes.append(bill)
                 continue

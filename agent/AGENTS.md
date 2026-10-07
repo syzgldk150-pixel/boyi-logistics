@@ -8,7 +8,7 @@
 
 # 物流 Agent 系统
 
-每日应签顺延规则的唯一来源是当前 V2 插件 `payload/business/daily_sign_rules.py`。从 2.0.8 起，插件明确提交问题件完整性、截止时间与顺延判断，Host 只验证并保存这些事实；不再维护一份类型清单。具体业务规则与回归见[维护说明](../docs/identity_and_unified_chat.md)。
+每日应签顺延规则的唯一来源是当前 V2 插件 `payload/business/daily_sign_rules.py`。插件明确提交问题件完整性、截止时间与顺延判断，Host 只验证并保存这些事实，不维护类型清单。具体业务规则与回归见[维护说明](../docs/identity_and_unified_chat.md)。
 
 迁移实测补充：每日应签业务字段投影、Service V2 零写入完成和韵达 INMS 登录初始化见 [维护说明](../docs/identity_and_unified_chat.md)。原失败记录保留；无写入完成仍要求真实来源证据，不伪造写入回执。
 
@@ -16,7 +16,7 @@
 
 新版财务与客服采集器的内部配置字段由宿主管理，目录及设置页不将其展示为用户参数；保存设置保持本实例已有内部配置，拒绝浏览器注入，迁移映射与执行权限不变。回归见 `tests/test_automation_plugin_code_owned_fields.py`。
 
-当前迁移收尾：AI 精确运行查询读取 Invocation 与历史 Run；寄件回读按业务日期隔离；V2 实例按声明平台展示。实现与回归边界见 [维护说明](../docs/identity_and_unified_chat.md)。
+AI 精确运行查询读取 Invocation 与历史 Run；寄件回读按业务日期隔离；V2 实例按声明平台展示。实现与回归边界见 [维护说明](../docs/identity_and_unified_chat.md)。
 
 Service V2 扫描按目录验证的 `super_admin_upload/builtin_bundle` 来源识别，首次 Direct Invocation 执行只读预览，正式扫描仍要求精确预览绑定；预览查询和确认不得进入其他插件类型。详见 `../docs/plugin-platform-v2.md`。
 
@@ -30,10 +30,10 @@ Service V2 扫描按目录验证的 `super_admin_upload/builtin_bundle` 来源�
 
 身份与统一对话：`shared/identity_permissions.py`、`shared/identity_repository.py` 是共同权限来源；`agent/identity_access.py` 检查实际入口和插件模块。`harness_composition.py` 为后台与飞书注入同一个查询与插件服务，`agent/channel_chat.py` 只做渠道转换。迁移 047 为发布期核心迁移，不能仅回退旧源码。 细节见[维护说明](../docs/identity_and_unified_chat.md)。
 
-本轮 V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v32.md) 为权威索引：自动化只列功能插件；财务/客服采集在所属模块；AI contribution 可选；账号引用及平铺常用参数使用宿主简单设置；历史包回退须有本实例已提交版本证据。局部入口见 `agent/scripts/plugin_maintenance.py`（仓库根相对路径），整轮入口为 `agent/scripts/accept_low_maintenance_v32.py`。
+V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v32.md) 为权威索引：自动化只列功能插件；财务/客服采集在所属模块；AI contribution 可选；账号引用及平铺常用参数使用宿主简单设置；历史包回退须有本实例已提交版本证据。局部入口见 `agent/scripts/plugin_maintenance.py`（仓库根相对路径），整轮入口为 `agent/scripts/accept_low_maintenance_v32.py`。
 
 > Agent 提供业务接口、独立插件执行、账号会话及共用 AI 对话服务；Console 提供录单、查询和管理页面。OCR 属于运单录入功能，货拉拉业务接口尚未完成接入。
-> 当前架构见 [业务接口与独立插件调用](../docs/architecture_direct_invocation.md)：最小 Agent 仅接已注册接口、开放插件和显式分析；本轮不新增模型框架。
+> 当前架构见 [业务接口与独立插件调用](../docs/architecture_direct_invocation.md)：最小 Agent 仅接已注册接口、开放插件和显式分析，不新增模型框架。
 
 首方升级配置事件的 `first_party_upgrade_target` 由 `scripts/automation_project_plugin_policy_history.py` 按同项目、精确请求、版本及不可变包身份，与真实升级事件配对核验；普通配置事件仍保持原五字段合同。发布门禁与真实 MySQL 写入回读回归见 `../tests/test_first_party_upgrade_release_manifest.py`。
 
@@ -55,7 +55,7 @@ Service V2 扫描按目录验证的 `super_admin_upload/builtin_bundle` 来源�
 - 当前 Linux/ECS 发行明确不包含 Windows Worker/Tray：Agent 不装载其签名密钥、transport 或路由，发布器不以 Worker mTLS、服务端身份或 dispatcher readiness 阻断其余服务端插件。版本化 `deploy/nginx/boyi-worker-mtls.conf` 仅保留为未来重新启用时的安全合同；重新启用必须在同一受审提交中恢复精确 mTLS location、身份验证、发布预检和健康门禁，不得通过环境变量旁路打开。
 - 数据库结构由 `migrations/` 的顺序 SQL 和 `scripts/run_migrations.py` 管理；运行期模块不得新增 `CREATE TABLE`、`ALTER TABLE` 或吞掉迁移异常，详见 `docs/database_migrations.md`。
 - V3.2 扫描未知写恢复使用 041 的原快照 journal 和日期所有者 CAS；核心/数据库更新、保留与回滚边界见 `../docs/scan_recovery_v32.md`。
-- MySQL binlog 由 `deploy/mysql/zz-boyi-binlog-retention.cnf` 固定保留最近 30 天，迁移 `032` 只校验参数且不扩大应用数据库账号权限；禁止直接删除 `/var/lib/mysql` 下的日志文件。
+- 生产库为阿里云 RDS，binlog 保留期由 RDS 实例参数固定为 30 天（2026-10-07 核实 `binlog_expire_logs_seconds=2592000`）；迁移 `032` 只校验该参数且不扩大应用数据库账号权限。`deploy/mysql/zz-boyi-binlog-retention.cnf` 只适用于自建 MySQL（原 ECS 本机库已于 2026-09-28 退役）；禁止直接删除 binlog 文件。
 - 发布白名单必须包含受管的 `migrations/` 和 `scripts/`，但不得递归发布业务数据、凭据或运行态目录。
 - `scripts/automation_project_resource_preflight.py` 封装迁移 018 的八项 required-existing 资源只读前检；`scripts/automation_project_schedule_identity_preflight.py` 从共享迁移清单构造 71 项历史计划任务身份并仅在 018 待执行时做只读前检，其中 R7 发车身份只供迁移审计且不进入当前发行或执行面；`scripts/automation_project_release_manifest_preflight.py` 在 018 应用后独立核验 committed generation、typed schedule、14 条 deferred R7、一次性项目策略 marker 与不可变证据链，插件升级历史的六键/七键元数据证据由 `scripts/automation_project_plugin_policy_history.py` 严格校验；首次切换必须精确得到 71 行/68 启用/16 策略，后续切换按当前 committed 配置和历史 marker 证据校验，前向恢复后的 bootstrap generation 仅在未知写证据持久化、无活动 lease、无其他不安全 generation 且当前 successor 已稳定提交时允许保持 BLOCKED 归档；`scripts/automation_plugin_install_ownership_preflight.py` 只读输出首方签名包的安全不可变身份并在内部核验确定性安装根，不得输出数据库元数据或绝对路径；`scripts/automation_project_version_preflight.py` 仅按恢复源码与对应 release index 给出的精确实例 ID、插件 ID 和版本做只读回滚兼容检查，禁止扫描或降级其他项目；`run_migrations.py` 仅通过脚本同目录 exact-path loader 绑定这些公开检查函数，loader 必须完整恢复临时模块及 `shared` 命名空间，禁止裸导入或修改全局 `sys.path`。
 - 标准发布器的计划写窗口同时读取旧任务级精确豁免和项目化 `automation.<automation_id>.run` 计划；项目化计划必须精确绑定启用项目、当前 committed generation、有效项目策略与签名 generation 中的治理动作类型；Service V2 复用仓库的 scheduler contribution 解析，要求唯一启用且存在编译契约，不能按旧版固定 `scheduler` 键判断，只对完全自动/遗留定时授权的外部写、财务写和破坏性动作建立发布窗口，结构或绑定不闭合时 fail closed。紧急计划窗口覆盖只能由本地显式 `-EmergencyUserAuthorizedScheduledWindowOverride` 开关发起，远端仅接受代码内固定授权参数；该覆盖只跳过两次计划任务临近时间检查，必须额外先证明 protected writes 为 0，且不得旁路其余预检、备份、服务静默、回滚或健康门禁。首次升级前的旧 scheduler 不会动态读取 release hold，因此紧急路径必须记录 `residual_race_user_authorized=true`，在最终 running=0 检查后不夹入其他工作、立即停服务，并在停后再次检查；该 hold 只保证新进程以 held 状态启动，不能宣称动态暂停旧进程。
@@ -68,6 +68,12 @@ Service V2 扫描按目录验证的 `super_admin_upload/builtin_bundle` 来源�
 - 本地 WSL 启动 `agent` 或飞书 WebSocket 只允许在测试窗口内运行，测试完成后必须停止，避免与 ECS 同时消费飞书消息。
 - 执行“同步 ECS”“发版”“发布到 ECS”“部署到 ECS”前，先确认本地 WSL `agent` 已停止；常用检查是 `curl http://127.0.0.1:9000/health` 不再返回本地实例，必要时执行 `tmux kill-session -t codex-agent`。
 - `/health` 只用于存活与发布 SHA 校验；排查组件、实例和工具状态时使用携带内部 Token 的 `/internal/v1/health`，不要把本地 MySQL/TMS 状态误判为 ECS 状态。
+
+## 生产数据库访问约束
+
+- 生产库是杭州 RDS 的公网 TLS 端点，ECS 在北京：2026-10-07 实测单条语句往返约 35.7ms，新建 TLS 连接约 0.27s。任何"每次调用开连接"或"逐行一次往返"的写法都会被成倍放大，详见 [RDS 迁移说明](../docs/mysql_rds_migration.md#跨地域访问的性能约束)。
+- 插件调用热路径不得为不变数据重复开 Unit of Work：`automation_plugins/capability_proxy_v2.py` 按调用 lease（automation_id/plugin_id/generation/lease_id/version）缓存已校验的 Service V2 清单，缺少 lease 身份时才逐次读取。
+- `executemany` 的 INSERT 在 VALUES 中只能使用占位符，常量也作为参数传入，保证 PyMySQL 合并为多行 INSERT；`tools/phase7_mysql_store.py` 的结构校验按进程和连接目标只做一次成功校验，失败不缓存。
 
 ## HTTP 安全边界
 
@@ -131,7 +137,7 @@ Service V2 扫描按目录验证的 `super_admin_upload/builtin_bundle` 来源�
 - 旧 WAITING_APPROVAL、登录阻塞和待领取 Run 不再恢复或领取；046 只按其迁移条件结清历史状态。任何未闭合的写结果保持原始 UNKNOWN 与证据，不能伪造成功。
 - 保存或清除账号凭据必须登记实际在用账号，与本次 Direct 插件、普通查询及写操作互斥；有调用仍使用该账号或无法核实状态时明确拒绝修改，不能覆盖正在使用的登录态。账号、来源与项目绑定仍由宿主核验，客户端不得自报；持久 PROJECT_FULL_AUTO 管理员意图不随凭据变化改写。缺账号或登录态直接结束本次调用，登录恢复不续跑；历史定时免审撤权审计继续保留，但不创建新的审批或待执行队列。
 - 生产发布持有远端互斥锁并保存本次源码、数据库、依赖环境与迁移/marker 前镜像；release hold 同时停止新普通查询、新插件调用和定时触发，等待已开始的读取、写入与业务落库真正结束后才停服务。新进程在 marker 存续时保持 hold，健康、签名身份、迁移与依赖检查通过后才激活 Direct 调用及 Scheduler；旧 Runner 始终 reserved。marker 删除仍是发布提交点；删除前异常保留 marker，激活请求发出后不得自动回滚可能已开始执行的业务。历史 bootstrap 只撤销本次产生的状态，并依既有发布脚本按逆序恢复，不改写已执行迁移字节。
-- 打卡的 `clock_in_dual` 为 v1.1 精确账号/会话配置的外部写：每次提交 ACK 后必须通过 `FIND_REACH_OR_LEAVE_PORT_DETNEW` 做独立新鲜读回，并唯一匹配网点、操作类型、结果类别、时间与 GUID/ROW_ID；零条、多条、不完整或不可达均记为未知写且禁止重试。财务启动不补拉历史；采集使用明确的插件调用入口，不能绕过当前项目权限。发布前必须按当前有效策略快照计算外部写静默窗口，窗口内停止发布。
+- 打卡（V2 `clockin_daxiang_v2`、`clockin_daxiang_s_v2`，经已审核的 `ronghui.clock.precheck/submit/verify` 动作调用 `clock_in_dual` 原语）为精确账号/会话配置的外部写：每次提交 ACK 后必须通过 `FIND_REACH_OR_LEAVE_PORT_DETNEW` 做独立新鲜读回，并唯一匹配网点、操作类型、结果类别、时间与 GUID/ROW_ID；零条、多条、不完整或不可达均记为未知写且禁止重试。财务启动不补拉历史；采集使用明确的插件调用入口，不能绕过当前项目权限。发布前必须按当前有效策略快照计算外部写静默窗口，窗口内停止发布。
 - 每日应签与客服问题件只读试点通过 `pilot_projection.py` 投影；每次采集（包括来源不完整或详情复核失败）都必须保存 COMPLETE/INCOMPLETE 影子 Evidence。客服旧口径集合必须从现有账号选择与站点过滤规则独立计算，不能从新集合反推。首页保持旧口径，直至连续三个完整业务日影子集合、来源完整性和差异证据满足切换标准。
 
 ## 快速定位入口
@@ -145,7 +151,6 @@ Service V2 扫描按目录验证的 `super_admin_upload/builtin_bundle` 来源�
 | 控制台工作区 | `console/` | `docs/project_overview.md` | 与 agent 并列部署 |
 | 实时报价 | `tools/price_tool.py`、`agent/tms_runtime/scripts/{get_price,yunda_price}.py` | `docs/agent_automation/module_overview.md` | 受管只读能力；融辉/韵达分别使用精确账号登录态 |
 | 旧离线价格工程 | `price_scripts/` | `docs/price_scripts/` | legacy 隔离；文档均为历史/审计快照，不是运行入口 |
-| 财务对账 | `finance_reconciliation/` | `docs/finance_reconciliation/` | ETL v5.1 完成 |
 | 财务工作台 | `../shared/finance/`、`agent/business_query.py`、`agent/direct_tool_router.py`、`agent/core.py`、`agent/tms_runtime/scripts/*finance*`、`tools/finance_sync_service.py`、`tools/sync_finance_bills_tool.py`、`../console/finance_service.py` | `docs/finance_module.md` | 融辉逐笔账本、费用绑定、BI、00:10 同步与失败审计，以及不向 LLM 暴露、只允许飞书管理员绑定使用的确定性自然语言只读经营汇总；韵达财务未启用，并与旧 Excel ETL 隔离 |
 | OCR识别 | `console/` | `docs/ocr/` | Qwen-OCR、人工复核与 MySQL 入库已运行；自学习/Paddle 方案未实施 |
 | 车辆调度 | `console/` | `docs/dispatch/` | `map_only`：仅地图路线规划与本地试算，无真实派单/车辆/平台接口 |
@@ -163,10 +168,19 @@ docs/
 ├── code_navigation_index.md             # 修改入口索引：按需求类型定位到具体文件
 ├── project_overview.md               # 项目级架构：模块关系/本地控制台/路由
 ├── finance_module.md                 # 融辉/韵达财务同步、账本、绑定、BI 与校验口径
+├── database_migrations.md            # 部署期顺序迁移与运行时只校验结构
+├── plugin_maintenance.md             # V2 插件局部测试、打包与升级
+├── service_v2_developer_tooling.md   # Service V2 离线开发 CLI 与 Manifest Schema
+├── business_module_lifecycle.md      # 固定模块与旧生命周期只读兼容
+├── rules_and_definitions.md          # 业务规则与术语
+├── automation_plugin_platform.md     # historical：V1 插件平台设计
+├── control_plane_v1.md               # historical：旧控制平面离线规范
 ├── ai_service/
-│   └── module_overview.md           # 模块文档：AI客服定位与上下游
+│   └── module_overview.md           # planned：AI客服定位与上下游
 ├── agent_automation/
 │   └── module_overview.md           # 模块文档：飞书直接插件/reader / 预览确认 / 账号登录
+├── customer_service/
+│   └── module_overview.md           # 客服问题件工作台
 ├── price_scripts/
 │   ├── 01-amap-address-fetch.md      # 历史快照：旧高德 POI 地址库
 │   ├── 02-tms-price-fetch.md         # 历史快照：旧 TMS 批量报价采集
@@ -175,9 +189,6 @@ docs/
 │   ├── tms-batch-quote-resume.md     # 已废弃：旧断点续传记录
 │   ├── tms_price_structure_analysis.md # 分析快照：当时两地扫描
 │   └── data_accuracy_audit_report.md # 审计快照：未按当前数据重算
-├── finance_reconciliation/
-│   ├── module_overview.md             # 模块文档：ETL管道结构与数据源
-│   └── data_structure_analysis.md         # 分析报告：全量字段定义与关联关系
 ├── ocr/
 │   ├── module_overview.md             # 现行 OCR 工作区与实现边界
 │   └── ocr-self-learning-plan.md      # historical / not_implemented 方案
@@ -277,7 +288,7 @@ docs/
 
 ## 每日应签共享台账
 
-- 每日应签 2.1.5 仅采集 R13 过去30天未签收完整清单，匹配统计累计到货快照；不再获取 TMS 问题件、签收、轨迹或详情，不重算清单外历史候选。已存事件保留历史事实，不替代 R13 发布字段；未查询的来源明确标记 not_requested，不伪造完整性。
+- 每日应签只采集 R13 截至今天的全部未签收单（无起始日期，含超过30天旧单），按本次单号匹配统计累计到货快照；不获取 TMS 问题件、签收、轨迹或详情，不重算清单外历史候选。已存事件保留历史事实，不替代 R13 发布字段；未查询的来源明确标记 not_requested，不伪造完整性。
 - 问题件 `(source, external_id)` 是大小写敏感的真实来源身份；迁移 `029_daily_sign_problem_event_binary_identity.sql` 使 MySQL 唯一键与采集层语义一致，禁止按不区分大小写的排序规则覆盖另一条事件。
 - 必须显式使用自动化项目业务账号池绑定的 `r13_account_id`，允许后台改绑为任意有效 R13 账号；历史 TMS 角色保留可选配置以兼容原实例升级，当前运行不依赖或调用它。R13 查询站点在精确账号登录后按原页协议从 `/gateway/public/aurora/auth` 的真实上下文取得：请求使用 R13 同源 `Origin` 和 `aurora-token`，不得继承 SSO `Origin` 或额外附加 Bearer；中心账号 `siteTypeCode=999` 使用空站点过滤，其他账号使用其 `siteCode`。业务脚本与请求体不得硬编码、猜测或覆盖账号/站点；上下文缺失、刷新后站点漂移或调用方传入站点均显式失败。不读取旧 `phase7.r13_credentials`，不接受内联凭据、隐式账号或多候选。
 - 来源不完整、业务失败码、冲突无法核验、字段缺失或账号不唯一必须显式阻塞。R13 结构完整且权威总数为零、统计来源证据有效时，按正常发布流程删除多维表旧记录、清空电子表格旧数据并新鲜回读为零行。登录、HTTP、业务响应、结构或分页异常必须在投影变更前失败，不得伪装成零行。
@@ -296,4 +307,4 @@ docs/
 
 - `scripts/acceptance_evidence.py` 为现有完整验收驱动校验当前 V2 运行结果、维护包摘要、冻结证据与原始性能分布；不另设验收平台。
 - `scripts/plugin_maintenance.py` 的 V2 局部测试前后核对实际可打包成员和所选测试摘要，打包再次验证；测试通过但源码变化不能生成可交付 ZIP。
-- 新迁移 `053_problem_write_intents.sql` 仅新增问题件目标写入事实，接在主分支已有的运单回执迁移 `052_boyi_waybill_receipt_required.sql` 之后。部署、回滚与独立包的相容边界见 `../docs/phase1_final_closeout.md`；本轮没有生产部署授权。
+- 迁移 `053_problem_write_intents.sql` 仅新增问题件目标写入事实，接在运单回执迁移 `052_boyi_waybill_receipt_required.sql` 之后，已随生产发布执行。部署、回滚与独立包的相容边界见 `../docs/phase1_final_closeout.md`。

@@ -2,7 +2,7 @@
 
 ## 当前身份与统一对话边界
 
-统一对话与身份：`harness_application.py` 是后台与飞书自然对话的唯一会话服务；`channel_chat.py` 处理可信渠道身份，`chat_text_queries.py` 统一单号与财务文本查询。`core.py` 不再运行第二套 LLM 循环。身份权限在每次工具/插件调用重新核验，不同会话独立并行。统计 V2 的正式连接器位于 `automation_plugins/arrival_connectors_v2.py`；其他插件尚未完成迁移时不得移除 V1 正式执行实现。 细节见[维护说明](../../docs/identity_and_unified_chat.md)。
+统一对话与身份：`harness_application.py` 是后台与飞书自然对话的唯一会话服务；`channel_chat.py` 处理可信渠道身份，`chat_text_queries.py` 统一单号与财务文本查询。`core.py` 不再运行第二套 LLM 循环。身份权限在每次工具/插件调用重新核验，不同会话独立并行。统计 V2 的正式连接器位于 `automation_plugins/arrival_connectors_v2.py`。所有原业务实例已完成迁移并只运行 V2；Host 审核原语仍由 V2 Connector 复用，不能当作 V1 遗留删除。细节见[维护说明](../../docs/identity_and_unified_chat.md)。
 
 当前调用架构见 [直接业务与插件说明](../../docs/architecture_direct_invocation.md)。`direct_readers.py` 管理固定查询的参数、角色与临时能力；`automation_plugins/direct_invocation.py` 管理插件独立调用，`orchestration/workflow_runner.py` 在主系统不启用领取。
 
@@ -80,7 +80,7 @@
   - `tms_runtime/session_adapters.py`、`session_state.py`、`session_validators.py`、`session_models.py`
   - `tms_runtime/dispatch.py`
   - `tms_runtime/scripts/`
-  - `tms_runtime/scripts/scan_next.py` 必须使用调度器所选账号的精确 `session_profile` 启动浏览器并校验共享登录态，不得固定落到默认会话；扫描员/网点只取发件扫描同源 iframe/父页/顶层页中 `$Z.user.getUserInfo()` 的真实 `loginUserName/loginUserAccount/loginSiteName/loginSiteCode`，多个可用来源必须完全一致，写表前等待上下文完整就绪。上下文不可用、来源不一致、缺字段、员工编码超长、站点非唯一精确匹配、录单或上传失败均显式停止，禁止页头文字、默认网点、模糊站点和二次输入/上传兜底。
+  - `tms_runtime/scripts/scan_next.py` 必须使用调度器所选账号的精确 `session_profile` 启动浏览器并校验共享登录态，不得固定落到默认会话；扫描员/网点只取发件扫描同源 iframe/父页/顶层页中 `$Z.user.getUserInfo()` 的真实 `loginUserName/loginUserAccount/loginSiteName/loginSiteCode`，多个可用来源必须完全一致，写表前等待上下文完整就绪。上下文不可用、来源不一致、缺字段、员工编码超长、站点非唯一精确匹配、录单或上传失败均显式停止，禁止页头文字、默认网点、模糊站点和二次输入/上传兜底。录单不设固定等待：页面录入接口同步查询 `FIND_WAYBILL_SIGN_STATE`，已签收单直接跳过；录入后和上传前只即时检查当前可见的提示框，“已做过签收”跳过该单，其他提示显式失败；单号格式规则每个页面会话只读取一次。每批最多 200 单，不同主单的子单可同批录入。
   - `tms_runtime/scripts/` 中与 `price_scripts/` 旧离线脚本重名的模块（如 `login_manager`、`address_utils`、`get_price`、`browser_address_resolver`）必须使用 `agent.tms_runtime.scripts...` 包内导入，不得裸 `import login_manager` / `import get_price`，避免旧脚本目录或 `sys.modules` 缓存串线。
   - `SessionBroker` 是对旧调用方的统一门面；融辉/韵达验证码流程分别经 provider adapter，文件状态只由 state store 管理。融辉图片验证码必须点击真实登录页 `newLogin()` 入口，保留原页密码加密和 `userInfo` 写入回调；`userInfo` 必须保持 JavaScript 可读，且四个页面身份字段完整后才能标记 authenticated。历史错误 `httpOnly=true` 状态只允许由共享状态迁移器修正，不得在扫描脚本中从页头或默认值补身份。调度器不得访问 broker 私有状态或按目录顺序加载脚本。
 - 融辉、韵达、R7、R13 全部通过 `/admin/accounts/{account_id}/*` 使用同一账号管理契约；凭据只来自后台账号管理保存值。大祥报价任务显式绑定 `price_default` 及其 `price_default` profile，后台登录与飞书报价复用同一状态；`/admin/tms/session/*`、`/admin/tms/price-session/*`、`/admin/tms/yunda-session/*` 只保留旧调用兼容。不同账号仍按 `account_id` 隔离 Cookie/Token，R7/R13 使用可持久和在线校验的 SSO Token/Cookie，韵达登录态继续服务报表、查单、寄件同步、报价、录单原页代理和问题件接口
@@ -114,7 +114,7 @@
   - 韵达新增：`韵达登录/韵达发验证码` 走 `yunda` 登录态；`切换到融辉自动化/切换到韵达自动化/当前自动化状态` 管理当前 Profile；`韵达派件预测/网点派件量预测主单表` 触发韵达派件预测同步
   - 含 `is_confirm_text` / `is_cancel_text` / `parse_verify_code` 用于 pending 状态机
   - TMS 工具返回登录态错误时必须顶层包含 `error_code=AUTH_REQUIRED` / `AUTH_PENDING_CODE`，不能只返回“格式异常”；共享解析在 `../tools/phase7_sync_common.py`
-  - `self_pickup_problem_upload` 两个来源分别使用项目当前显式绑定的 `account_id` 与 `daxiang_s_account_id`；Broker 从精确绑定账号解析会话与站点，后台改绑后下一次运行使用新账号，禁止固定账号、固定站点、默认 profile 或 `price_default` 回落。
+  - 自提问题件两个来源分别使用项目当前显式绑定的 `self_pickup_primary` 与 `self_pickup_daxiang_s` 角色账号（旧 V1 工具对应 `account_id` 与 `daxiang_s_account_id`）；Broker 从精确绑定账号解析会话与站点，后台改绑后下一次运行使用新账号，禁止固定账号、固定站点、默认 profile 或 `price_default` 回落。
 - 改"先预览-后确认"或"登录恢复"等多轮交互的待确认状态：
   - `pending_actions.py`（登录等兼容 pending 保留带 TTL 的存储；扫描、自提/分批预览确认使用 persist=False 的进程内状态，重启后不恢复执行）
   - 与 `feishu/message_handler.py` 的选择、登录恢复和验证码 pending 配合；自提/分批选择状态仅保存 `preview_invocation_id`、候选/选择和到期时间，不保存账号或指纹
@@ -130,11 +130,11 @@
 - `../docs/project_overview.md`
 - `../docs/control_plane_v1.md`（历史/离线规范）
 
-- `split_pending_problem_upload` 仅由精确文本“分批”触发；融辉账号必须由自动化项目的 `account_id` 角色显式绑定，运行时不得注入 `ronghui_default` 或任何默认 profile。dry-run 编号列表后回复“确认”直接执行全部，输入序号、多选或区间时只选择对应运单并在回显后再次确认，运行时目标显式导入 `agent.tms_runtime.scripts.split_pending_problem_upload`。
+- `split_pending_problem_upload` 仅由精确文本“分批”触发；融辉账号必须由自动化项目的 `split_pending_ronghui` 角色（旧 V1 为 `account_id`）显式绑定，运行时不得注入 `ronghui_default` 或任何默认 profile。dry-run 编号列表后回复“确认”直接执行全部，输入序号、多选或区间时只选择对应运单并在回显后再次确认，运行时目标显式导入 `agent.tms_runtime.scripts.split_pending_problem_upload`。
 - 少货/分批直接复用 `agent.tms_runtime.scripts.ronghui_problem_upload` 的真实“问题件录入”能力，固定登记“少货/分批 / 交接异常”，内容为 `应到XX件 实际到XX件`，并从登记问题件列表权威回读；不得调用 `ronghui_split_complaint` 或恢复投诉 target。
 
 - 韵达原页通过 `tms_runtime/session_broker.py` 的 `request_original_page` 延续同账号的上游会话更新；只原子更新变化的保存态，保留 origins 与登录元数据，登录代际变化拒绝旧响应。账号隔离、并发和真实 HTTP 协议回归见 `../tests/test_yunda_proxy_session_state.py`，维护说明见 `../../docs/original_page_read_requests.md`。
-# 当前改造补充
+# 补充约束
 
 - 问题件来源表的电话与地址校验由 `automation_plugins/connector_registry.py` 按两个已审核 `read_rows` 服务及精确表头保留列含义；仅复用现有业务文本规则，不改写来源单元格或插件筛选。拒绝日志仅记录服务、操作与数组位置，不记录单元格原文；回归见 `../../tests/test_problem_connectors_v2.py`。
 
@@ -142,7 +142,7 @@
 - V2 预览与正式调用在准入和代次绑定后均按已安装包声明的具体操作确定权限与读写类型，不能用包中正式操作的写权限代替预览权限。
 - 现有扫描、统计、签收状态回调迁移后直接调用当前 V2 入口，参数只来自入口声明及已保存设置。
 
-## 当前 Direct 写入收尾
+## Direct 写入与资源协调
 
 - 后台单次 Invocation 状态读取在请求内复用同一数据库连接完成实时权限校验与结果投影；定时保存使用本实例返回的入口元数据，调度刷新和 Service V2 同步数据库操作不占用事件循环。取消仍排空真实线程，详见 `../../docs/architecture_direct_invocation.md`。
 
@@ -153,6 +153,6 @@
 - `plugin_core_adapters/problem_actions.py` 使用共享目标写入事实保护问题件新 UUID 重触发；问题件追加无法权威核验时明确 UNKNOWN，不依据暂时空回读释放目标。
 - Harness 后端不可用只关闭相应 AI 入口，不连带禁用相同实例合法固定入口；具体入口仍由 ManagedContributionRegistry 校验。
 
-- 每日应签 2.1.6 的动态黄色条件格式由插件 `daily_sign_format.py` 维护，Host 仅提供精确绑定表的格式读写；写后回读与协议依据见仓库根 `docs/identity_and_unified_chat.md`。先部署 Host，再升级原实例 ZIP。
+- 每日应签的动态黄色条件格式由插件 `daily_sign_format.py` 维护，Host 仅提供精确绑定表的格式读写；写后回读与协议依据见仓库根 `docs/identity_and_unified_chat.md`。
 
-- 每日应签 2.1.8 先读取 R13 截至今天全部未签收单（无起始日期，含超过30天旧单），再按本次单号批量读取数据库中的累计到货快照，不加载清单外历史明细、不额外查询签收状态。到齐单仍识别最新统计纠正。普通表合并表头与数据读取，内容和尾部均一致时跳过写入、清尾及重复回读；变化时保留完整写后核验。需要先更新 Host 的 R13 历史范围参数和按单号读取接口，再升级原实例 ZIP。
+- 每日应签先读取 R13 截至今天全部未签收单（无起始日期，含超过30天旧单），再按本次单号批量读取数据库中的累计到货快照，不加载清单外历史明细、不额外查询签收状态。到齐单仍识别最新统计纠正。普通表合并表头与数据读取，内容和尾部均一致时跳过写入、清尾及重复回读；变化时保留完整写后核验。Host 提供 R13 无起始日期的历史范围参数和按单号读取累计快照的接口。

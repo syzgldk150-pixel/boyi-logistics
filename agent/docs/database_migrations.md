@@ -4,7 +4,7 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-10-06
+updated: 2026-10-07
 ---
 
 # 数据库迁移
@@ -139,9 +139,9 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
 - `030_feishu_notification_lease.sql`：为飞书审批外部发送增加短事务通知租约、队列唯一占用键和恢复索引；
   所有 DDL 都按 `information_schema` 守卫，以支持 DDL 已提交但迁移历史尚未登记时的安全重试。
 - `031_control_plane_retention.sql`：为控制平面 30 天滚动清理增加事件、Outbox 与审批查询索引。
-- `032_mysql_binlog_retention.sql`：校验服务端二进制日志保留期严格为 30 天；服务器参数由
-  `deploy/mysql/zz-boyi-binlog-retention.cnf` 管理并安装到 ECS `/etc/my.cnf.d/`，应用迁移账号不授予
-  `SYSTEM_VARIABLES_ADMIN`。
+- `032_mysql_binlog_retention.sql`：校验服务端二进制日志保留期严格为 30 天，应用迁移账号不授予
+  `SYSTEM_VARIABLES_ADMIN`。生产 RDS 由实例参数设定该值（2026-10-07 核实为 2592000 秒）；
+  `deploy/mysql/zz-boyi-binlog-retention.cnf` 只用于自建 MySQL（原 ECS 本机库已于 2026-09-28 退役）。
   超期文件只能由 MySQL 自动过期或正式 `PURGE BINARY LOGS` 清理，禁止直接删除 binlog 文件。
 - `033_plugin_service_v2_foundation.sql`：在不改写历史 v1 包的前提下增加 `ACTION_V1/SERVICE_V2`
   运行模型、Service/Contribution 代际类型、v1→v2 migration pair 与业务运行键、托管插件文档及

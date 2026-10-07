@@ -4,7 +4,7 @@ type: 模块文档
 tags: [Agent自动化, 飞书触发器, 直达指令, pending状态机, 登录恢复, TMS自动化]
 related: [../project_overview.md, ../code_navigation_index.md, ../ai_service/module_overview.md]
 status: active
-updated: 2026-09-28
+updated: 2026-10-07
 ---
 
 ## 当前执行边界
@@ -14,48 +14,6 @@ Console 手动和定时直接启动对应插件，记录 Invocation，完成后�
 单号查询/报价等已注册 reader 直接返回数据；不创建 Command/Run，也不等待 Runner 领取。
 失败、取消和未知写均结束本次；登录成功只恢复账号可用性，用户新触发才会产生新调用。
 不同插件可以并行，只有实际仍在运行的同实例/资源约束本次调用。
-
-下列按日期记录保留业务演变线索；如涉及已退役执行入口，以本节及现行代码索引为准。
-
-> 2026-09-28：登录运行异常与账号认证失败分开处理。浏览器超时、页面驱动异常、登录进程异常和网络/上游服务暂时不可用不再累计账号的三次失败计数；失败 worker 清理进程组与临时状态，保留原有共享会话，下轮监控用新进程重新尝试。R7/R13 保留网络异常原因，手动登录成功会解除自动登录暂停。
-
-> 2026-09-08：签名到货清单插件在写入前读取 `arrival.report.publication.read`，同一业务日、同一来源账号、同一物理工作表已有成功统计时保留统计表和累计到货件数，仅更新本次 MySQL 基础清单与预计快照。判定使用已完成且写后核验的 Invocation、原代际账号/资源绑定以及写入回执；旧成功 Run/Step 只作为历史发布证明读取，并现场读取表头、行数与件数；已有统计被覆盖、账号或位置变化及证据损坏时显式要求重新统计，新的成功统计替代旧发布版本。次日或该目标没有当日统计时仍正常写清单。读 primitive 是核心更新，业务取舍仍在 `service_v2_plugins/sync_arrive_list_v2/payload/action.py`，精确资源读取在 `plugin_core_adapters/arrival_report.py`。
-
-> 2026-08-30: 账号管理的现行入口统一为 `/admin/accounts/{account_id}/*`，旧 `/admin/tms/*-session` 只保留兼容且不得作为新入口。韵达/融辉旧同源活动原页路径固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`；活动原页只允许经一次性 ticket 在 `https://www.boyi.homes/original/{provider}/` 独立 origin 使用路径限定 capability。
-> 2026-08-29: Agent `_monitor_tms_session_alerts` 是唯一周期主动登录态检查器；检查完成后把同一份最终状态写入 `/admin/accounts` 共享快照，Console `/automation-accounts` 只用 `prefer_cached=1` 被动读取。即使请求同时携带 `force=1`，缓存读取也不得触发外部校验或后台刷新。同账号已有检查或登录在执行时，`BLOCKED_LOGIN` 只跳过本轮，不覆盖快照、不累计自动登录失败，也不发送飞书断线告警；显式手动登录和单账号状态操作仍更新这份共享快照。
-> 2026-08-15: 已插件化的飞书确定性指令不再把工具名和账号参数交给通用命令入口。文本、菜单及 pending 确认只提交由服务端构造的项目调用；项目实例通过 committed generation 中唯一的 `feishu_route.route_key` 精确解析，多实例别名冲突时显式拒绝。账号只来自该实例绑定的业务账号池，消息体或旧 pending 中出现 `account_id/account_ids` 等覆盖字段会失效并要求重新发起。自提、分批和 R7 多车牌仍保留“预览/选择/确认”状态机，日期、车牌和预览指纹由代码拥有的 resolver 闭合；Webhook 与 WebSocket 对同一真实 `event_id` 使用同一幂等身份。单号查询和报价等只读能力现由组合根注入直接 reader，已退出通用 Command 链路。
-> 2026-08-13: 融辉发件扫描会把任务所选账号的精确 `session_profile` 同时传给浏览器 storage state 和共享登录校验，避免账号已登录但扫描误用默认会话。写表前等待发件扫描同源 iframe/父页/顶层页的 `$Z.user.getUserInfo()` 就绪，只使用真实 `loginUserName/loginUserAccount/loginSiteName/loginSiteCode`；多个可用来源必须完全一致，不一致时显式报 `ambiguous_login_context`，不从页头文字、用户名或硬编码网点补值。上下文不可用、字段缺失或 `SCAN_MAN_CODE` 超过数据库 20 字节限制时显式失败并返回具体状态。站点必须唯一精确匹配并包含真实编码，录单和上传失败不再切换到第二条操作路径。`sync_scan_codes` 任一批次失败后立即停止、不触发后续流程，并向控制台返回失败而不是“已完成”；`dry_run` 不写扫描索引、不调用 `/scan_next`，显式批次/条数限制会返回未排入数量。
-> 2026-08-13: 融辉图片验证码登录改为直接点击真实登录页的 `newLogin()` 按钮，沿用原页密码加密、AJAX 成功判定和 `userInfo` Cookie 写入回调，不再用 requests POST 将重定向误判为完整登录。共享会话会保留 Cookie 的 `HttpOnly`、`Secure`、`SameSite` 和过期属性，并自动把历史上误标为 `HttpOnly` 的融辉 `userInfo` 恢复为 JavaScript 可读；缺少或无法唯一解析 `loginUserName/loginUserAccount/loginSiteName/loginSiteCode` 时，主页、菜单和扫描 API 即使可访问也不得显示 authenticated，必须进入重新登录流程。
-> 2026-08-13: 后台 `/automations` 的“获取并扫描数据”和 `arrive-list` 卡片新增独立“指定日期”控件。日期留空时不写入日期覆盖参数，继续使用各脚本的执行当日；选择日期时按 `target_date=YYYY-MM-DD` 拉取指定单日。扫描同步会在调用融辉 `/get_scan` 前转换为原页使用的 `YYYY/MM/DD` 日期格式，并拒绝同时设置 `target_date` 与高级请求体中的 `date/start/end`，避免日期来源歧义。
-> 2026-08-11: 后台账号列表新增直接可见的账号级“自动登录”开关，所有现有/新增账号缺省关闭。账号管理只把页面明确保存的完整账号密码认作可用凭据，不展示或使用部署环境变量兜底；未保存凭据时不能开启自动登录或发起登录，历史残留的开启状态也会在访问登录页前自动关闭。“退出登录”和“清空保存凭据”都会关闭自动登录；关闭后不再定时校验、自动重登或发送飞书断线提醒。“停用账号”停止任务选择、任务执行与登录监控，但不等同于退出。自动登录连续失败上限为 3 次，第 3 次失败后持久熔断，避免账号被锁。
-> 2026-08-11: 账号列表中系统名下方的灰色账号备注由账号 `name` 提供；“编辑”面板可通过 `/admin/accounts/{account_id}/name` 单独修改并持久化。备注保存只更新 `name/updated_at`，不改凭据、登录态、启停或自动登录设置，也不触发额外的登录态校验。
-> 2026-07-16: 融辉 TMS 单号查询会从真实 `FIND_SACN_TRACK_BY_CODE` 响应中先取得每个子单的最新扫描，再按完整主单前缀、四位数字子单后缀、当前到达网点和明确的到达类扫描（`到件` / `到达` / `卸车`）去重生成实时 `arrival_progress`。实时子单分布优先于数据库和飞书历史缓存，旧缓存的 `0` 不得覆盖实时统计；缺少明确到达值时飞书显示“无数据”，只有来源明确的零值才显示 `0 件`。
-> 2026-07-03: 融辉 TMS 单号查询的扫描接口必须携带“快件跟踪”菜单页 `authenticationKey/pageId` 和真实 `Referer`，否则 TMS 返回“非法的请求”并被误报为无扫描记录；当 `FIND_SACN_TRACK_BY_CODE_MAIN` 返回空但普通扫描接口有同一主单 `BILL_CODE` 行时，按精确主单号筛选普通扫描行作为 `route_rows`，仍不使用不确定候选或历史值兜底。
-> 2026-06-22: 融辉单号查询已切换为融辉 TMS 原页/接口数据，扫描轨迹、运单详情和子单详情均由 TMS 适配器提供。
-> 2026-06-16: 先预览后确认的 `confirm_action` 状态必须与飞书回复文案一致；只要 dry-run 成功且回复提示“确认/取消”，即使候选为 0 单也必须注册 pending，保证用户回复“取消”能清除状态而不是落入未知脚本路由。
-> 2026-06-07: 韵达单号查询兼容 `list.html` 的目的网点字段返回为 `Buyer_Destination_Dot_Code` / `Destination_Dot_Code` 但值实际是网点名称的情况；飞书单号查询“货物信息”摘要新增“派送方式”，韵达详情页的“货物信息”段也同步展示派送方式。
-> 2026-06-06: 单号查询新增本地格式预检：裸单号、`查单号 <单号>`、`查物流 <单号>` 等直达路由先通过 `agent/tracking_number_validation.py` 校验；格式错误时直接返回 `单号查询失败：单号格式错误...`，不启动 `track_waybill` 工具、不进入 LLM、不访问外部 TMS/韵达接口。`track_waybill_tool.py` 同步复用该校验作为 API/控制台兜底。
-> 2026-06-04: 融辉地址报价的 `P_CALC_CLIENT_PRICE_BILL_SHOW4` payload 默认按运单录入页保价字段对齐：`INSURANCE=3000`、`INSURANCE_FEE=3`，避免后端按空保价回落到 2000/2 元导致机器人报价比页面“总金额”少 1 元。
-> 2026-06-05: 网点出港清单 `site_send_list_sync_tool.py` 改为把空 TMS 结果当作有效空快照处理：仍清空/覆盖飞书多维表和普通电子表格目标，不再按 `no_fetched_rows` 跳过。
-> 2026-06-01: 显式单账号状态操作和飞书登录态监控统一走 `AutomationAccountManager.check_status_with_auto_login()`：先校验共享 session，若状态为 `expired` / `logged_out` / `error` 则先自动登录；只有自动登录后仍为 `pending_code` 或 `error` 才展示或发送需要人工处理的状态。账号页的周期轮询不执行该主动检查。
-> 2026-06-01: 韵达单号查询的运单详情在 `list.html` 返回脱敏收寄件人/电话时，会追加调用原页面“小眼睛”同源接口 `system/mail/getOriginalData.html`，用明文 `Sender_*` / `Buyer_*` 字段覆盖 `waybill_stub` / `waybill_info`；接口失败时保留 `list.html` 轨迹和详情回退。
-> 2026-06-01: 韵达地址报价改为复刻录单页链路：先调用 `getInsuredAmount.html` 按重量同步最低申明价值，再调用 `price.html`，最终按页面 JS 的 `Number(CostTotal)+Number(短信费)` 和 `getFloatStr_1()` 截两位展示；`TotalMoney`/`CostTotal` 本身不含页面勾选短信费。
-> 2026-05-31: Yunda waybill query still uses only `ky_inms/public/index.php/system/mail/list.html`, and now maps the same response's `logistics` node into `waybill_stub` / `waybill_info` so the console 运单详情 tab can show basic, sender, receiver, goods, fee, and remark fields.
-> 2026-05-28: 韵达地址报价不接收飞书申明价值参数；报价时保留/使用运单录入页按重量自动调整后的申明价值等成本字段，报价结果对齐客户端“成本信息-总计”。
-> 2026-06-02: 飞书地址报价的体积字段支持厘米尺寸表达式，例如 `30*23*103*1+97*23*31*4`，按 `长*宽*高*件数` 合计后转换为立方米并四舍五入保留三位小数，对齐韵达录单页体积精度。
-> 2026-05-26: 飞书地址报价同时查询融辉和韵达。若其中一家出现非登录类报价失败，另一家成功结果仍正常发送，失败段显示为“融辉不可到达”或“韵达不可到达”；登录态错误仍走对应账号登录恢复流程，不当作不可到达。
-> 2026-05-25: `/automation-accounts` 中所有启用且支持共享 session 的账号都会纳入登录态监控。断线后先按账号自动登录：融辉/大祥及自定义 `ronghui_*`、`price_*` 账号复用本地图片验证码 OCR，最多 4 次；韵达出现图片验证码也先 OCR，转短信页时返回 `challenge_type=sms`。自动登录成功不通知，4 次 OCR 失败、短信验证码或真实异常才按账号维度飞书告警。飞书主动“登录/发验证码”改为动态列出账号管理里的可登录账号，pending 统一使用 `auth_session=account:<account_id>`，验证码提交到 `/admin/accounts/{account_id}/submit-code`。
-> 2026-05-21: Ronghui (`default` / `ronghui_*`) and Daxiang price (`price` / `price_*`) login recovery now tries image-captcha OCR first. `send-code` may return `authenticated` directly after up to 4 OCR/login attempts; only after 4 failures does the broker fall back to `pending_code + challenge_type=image` so the console and Feishu can keep the existing manual captcha-entry path.
-> 2026-05-21: Snapshot-style syncs for daily sign and Yunda send waybills treat empty TMS source results as `no_fetched_rows` and skip Feishu Bitable deletes/writes, ordinary spreadsheet refresh, and SQL date replacement where applicable. This protects existing target data when source-side queries unexpectedly return zero rows.
-> 2026-05-12: Yunda waybill query calls the concrete `ky_inms/public/index.php/system/mail/list.html` endpoint only; there is no Playwright/browser fallback and no legacy endpoint probing.
-> 2026-05-13（已由 2026-08-11 规则取代）: 早期 `yunda` profile 曾允许部署环境凭据；当前账号管理只接受页面明确保存的账号凭据，禁止环境变量或其他隐式凭据兜底。
-> 2026-05-13: Yunda password login may be redirected by SSO to `/public/sms/sms_valid`. `session_broker.py` now records this as `challenge_type=sms` so the console and Feishu recovery flow ask for a 6-digit SMS code instead of showing the Yunda image-captcha flow.
-> 2026-05-13: TMS credential status endpoints must not return saved passwords. They may report `has_saved_credentials`, `credential_source`, and non-secret status fields; password inputs in the console are write-only.
-> 2026-05-13: The same `yunda` main-account login state is used for both report automation and waybill tracking. After Yunda login succeeds, `session_broker.py` opens the client-side “快件跟踪” route once so `kyinms.yunda56.com` cookies are included in the shared storage state; validation also touches the INMS index page.
-> 2026-05-31: `self_pickup_problem_upload` 同时处理 `邵阳自提部` 和 `邵阳大祥S站 + 派送方式=自提` 两类来源；两类来源分别使用项目设置显式绑定的 `account_id` 与 `daxiang_s_account_id`，运行时再从中央账号管理解析 session profile，登记前通过 `FIND_PROBLEM_BY_CODE` 跳过已有同类型或同文案问题件。缺少任一启用来源的账号绑定时显式阻断，不猜测默认账号。
-> 2026-05-19: 新增 `self_pickup_problem_upload`，用于从飞书到货表筛选目的站点 `邵阳自提部` 的单号，先 dry-run 预览，确认后在 TMS 问题件录入中上传 `开单为自提件` 问题件；默认不上传截图。运单号只裁剪前后空白，若裁剪后仍含内部空白则报告来源行并阻断该候选，禁止删除内部空白后猜测单号。
-> 2026-05-19: 融辉登录页已从短信验证码形态切到图片验证码形态时，`session_broker.py` 会自动识别页面 DOM，保存验证码图片和 cookie 会话并返回 `challenge_type=image`；旧短信验证码页仍保留 `challenge_type=sms` 流程。
-> 2026-05-20: 融辉与大祥报价登录默认按图片验证码处理，不再要求手机号；Console 会透传 `captcha_image` / `captcha_image_mime` / `captcha_captured_at` 到 `/automations` 顶部模块，飞书登录恢复支持 4-8 位字母数字验证码。
 
 # Agent 自动化能力模块概述
 
@@ -73,9 +31,11 @@ Console 手动和定时直接启动对应插件，记录 Invocation，完成后�
 
 兜底规则：用户文本如果没有命中直达指令，且本轮 LLM 没有产生真实工具调用，`agent/core.py` 统一回复 `没有匹配到可执行脚本，我不知道该执行哪个任务。`，禁止 LLM 自由聊天、自行描述“已执行”或猜测后台结果。LLM 产生工具调用后，最终回复也必须来自工具结果 formatter，不能采用 LLM 对工具结果的自由总结。
 
-执行标准：`扫描`、`统计`、`发车`、`arrivelist` 等固定关键字先走直达路由，不交给 LLM；“帮我执行某某脚本/处理某某同步”这类非固定表达可交给 LLM 选择工具，但只有真实产生 tool call 才能执行。单号查询先做本地格式预检，错误格式直接本地回复，不启动工具脚本。直达工具和 LLM 选中的工具共用同一套登录过期处理：工具结果出现 `AUTH_REQUIRED` / `AUTH_PENDING_CODE` 后，进入发送验证码、提交验证码、登录成功只更新账号状态、由用户重新触发新调用的流程。
+执行标准：`扫描`、`统计`、`arrivelist` 等固定关键字先走直达路由，不交给 LLM；“帮我执行某某脚本/处理某某同步”这类非固定表达可交给 LLM 选择工具，但只有真实产生 tool call 才能执行。单号查询先做本地格式预检，错误格式直接本地回复，不启动工具脚本。直达工具和 LLM 选中的工具共用同一套登录过期处理：工具结果出现 `AUTH_REQUIRED` / `AUTH_PENDING_CODE` 后，进入发送验证码、提交验证码、登录成功只更新账号状态、由用户重新触发新调用的流程。
 
 TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `error_code=AUTH_REQUIRED` 或 `error_code=AUTH_PENDING_CODE`，不得包装成“返回格式异常”。共享解析入口在 `tools/phase7_sync_common.py`。飞书消息处理会记录入站消息类别、pending 类型、路由结果、工具名和 auth 状态；验证码只记录长度，不记录内容。
+
+每个生产命令以飞书事件头 `event_id` 生成 `feishu:{event_id}` 幂等键，Webhook 与 WebSocket 对同一真实 `event_id` 使用同一幂等身份；缺少稳定事件 ID 的写命令显式拒绝。
 
 **已注册指令：**
 
@@ -91,16 +51,14 @@ TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `er
 | `arrivelist` / `到货清单` / `预到达清单` / `执行一次arrivelist脚本` 等 | `sync_arrive_list` | 直接插件（已启动后异步等待结果；拉取 TMS 派件预报基础清单并写入 MySQL + 飞书表格） |
 | `韵达派件预测` / `网点派件量预测主单表` / `应派预测` 等 | `sync_yunda_dispatch_forecast` | 直接插件（已启动后异步等待结果；默认拉取次日应派数据，按应派时间覆盖飞书多维表格） |
 | `韵达寄件运单` / `韵达寄件运单管理` / `yunda send waybills` 等 | `sync_yunda_send_waybills` | 直接插件（已启动后异步等待结果；默认拉取当天寄件运单，补充快件跟踪详情和小眼睛解密字段后按运单号更新飞书多维表格，并同步控制台 `waybills` SQL 表） |
-| `扫描` / `获取并扫描数据` / `同步扫描` 等 | `sync_scan_codes` | 直接插件（已启动后异步等待结果；拉取扫描记录、刷新扫描索引并执行 scan_next） |
+| `扫描` / `获取并扫描数据` / `同步扫描` 等 | `sync_scan_codes` | reply（先生成预览，原发起人回复“确认”后执行；每批最多 200 单录入并上传，逐批回读核验） |
 | `统计` / `到货统计` / `统计到货数据` / `刷新统计` 等 | `sync_arrival_stats` | 直接插件（已启动后异步等待结果） |
-| `到达打卡` / `R7到达打卡` | `r7_arrival_checkin` | 已移除（当前发行不显示、不注册、不执行） |
-| `发车` / `R7发车` / `发车打卡` | `r7_departure_checkin` | 已移除（当前发行不显示、不注册、不执行） |
 | `分批`（仅精确文本） | `split_pending_problem_upload` | reply（dry-run 完整编号列表 → “确认”直接执行全部；输入序号后回显并二次确认部分执行） |
 | `自提到货问题件` / `自提部到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` / `开单为自提件问题件` 等 | `self_pickup_problem_upload` | reply（先 dry_run 预览，再确认执行；默认不上传截图） |
 
 R7 两个历史工具和日志表仅为既有记录追溯保留。当前发行把两个项目列入隐藏集合，Scheduler 不注册 Job，飞书不提供直达命令，后台也不补回卡片；不得从静态元数据或历史定时行恢复其执行入口。
 
-`self_pickup_problem_upload` 的当前执行链路是：飞书文本 `自提到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` → committed project route 的签名 dry-run → 已验签并持久化的 `selection_preview` → 飞书保存 `preview_invocation_id` 并默认选择全部候选 → 确认时服务端从同一候选 Invocation 恢复指纹和正式参数 → `automation.self_pickup_problem_upload.run`。旧 `agent/direct_tool_router.py`、`tools/self_pickup_problem_upload_tool.py` 与 `/tms/self_pickup_problem_upload` 不再参与飞书预览或正式写入。自提任务读取大祥到货数据表中已审阅的 `UeBd3I` 工作表，与分批/未到任务的来源定位相互独立；启动同步会把自提资源的精确文档、工作表和范围定位恢复到该工作表，避免历史发布继续引用分批来源。签名动作读取项目绑定的来源表，按两条来源规则筛单：`目的站点=邵阳自提部` 进入自提部来源；`目的站点=邵阳大祥S站` 且 `派送方式=自提` 进入大祥S站来源；两类来源都必须满足 `累计到货件数 = 件数/货物件数`，未到齐或缺少件数列时不进入上传候选。候选运单号统一只裁剪前后空白；裁剪后仍含空白时显式报告来源行，预览与正式执行都不会删除内部空白或猜测单号。候选指纹按规范内容排序计算，来源行顺序变化不会造成假过期；内容变化则返回 `SELECTION_PREVIEW_EXPIRED` 且在任何 TMS 写入前终止。真实执行时每个来源分别通过签名 Broker 定位 TMS `问题件录入`，问题件类型固定为 `开单为自提件`，问题件科目为 `特殊时效`；保存前读取登记问题件列表，已有同类型或同文案记录则跳过，新增后必须独立读回验证。自提部与大祥S站来源分别使用项目设置显式绑定的 `account_id` 与 `daxiang_s_account_id`；后台改绑后下一次运行使用新账号，脚本不内置默认站点、账号或 session profile。
+`self_pickup_problem_upload` 的当前执行链路是：飞书文本 `自提到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` → committed project route 的签名 dry-run → 已验签并持久化的 `selection_preview` → 飞书保存 `preview_invocation_id` 并默认选择全部候选 → 确认时服务端从同一候选 Invocation 恢复指纹和正式参数 → `automation.self_pickup_problem_upload.run`。旧 `agent/direct_tool_router.py`、`tools/self_pickup_problem_upload_tool.py` 与 `/tms/self_pickup_problem_upload` 不再参与飞书预览或正式写入。自提任务读取大祥到货数据表中已审阅的 `UeBd3I` 工作表，与分批/未到任务的来源定位相互独立；启动同步会把自提资源的精确文档、工作表和范围定位恢复到该工作表，避免历史发布继续引用分批来源。签名动作读取项目绑定的来源表，按两条来源规则筛单：`目的站点=邵阳自提部` 进入自提部来源；`目的站点=邵阳大祥S站` 且 `派送方式=自提` 进入大祥S站来源；两类来源都必须满足 `累计到货件数 = 件数/货物件数`，未到齐或缺少件数列时不进入上传候选。候选运单号统一只裁剪前后空白；裁剪后仍含空白时显式报告来源行，预览与正式执行都不会删除内部空白或猜测单号。候选指纹按规范内容排序计算，来源行顺序变化不会造成假过期；内容变化则返回 `SELECTION_PREVIEW_EXPIRED` 且在任何 TMS 写入前终止。真实执行时每个来源分别通过签名 Broker 定位 TMS `问题件录入`，问题件类型固定为 `开单为自提件`，问题件科目为 `特殊时效`；保存前读取登记问题件列表，已有同类型或同文案记录则跳过，新增后必须独立读回验证。自提部与大祥S站来源分别使用项目设置显式绑定的 `self_pickup_primary` 与 `self_pickup_daxiang_s` 角色账号；后台改绑后下一次运行使用新账号，脚本不内置默认站点、账号或 session profile。
 
 **新增指令的步骤：**
 
@@ -117,7 +75,7 @@ R7 两个历史工具和日志表仅为既有记录追溯保留。当前发行�
 - 自提/分批调用 committed project route 的签名 `dry_run`，完成后读取已验签、已持久化的 `selection_preview`
 - 飞书只保存 `preview_invocation_id`、候选/所选运单和到期时间；候选为零时只回复零行，不开放写确认
 - 下一次用户输入命中 `is_confirm_text` 时只提交运行号与选择结果，服务端从同一候选 Invocation 恢复指纹和正式参数；命中 `is_cancel_text` 时清除 pending
-- 其他 legacy `confirm_action` 仍按其独立契约执行，不得复用自提/分批的账号或候选数据
+- 其他 legacy `confirm_action` 仍按其独立契约执行，不得复用自提/分批的账号或候选数据；dry-run 成功且回复提示“确认/取消”时，即使候选为 0 也注册 pending，保证回复“取消”能清除状态
 
 **关键文件：**
 - `agent/pending_actions.py` — 登录等兼容 pending 保留有 TTL 的存储；扫描、自提和分批预览确认使用进程内 `persist=False` 状态，重启后必须重新生成，不恢复执行。
@@ -129,7 +87,7 @@ R7 两个历史工具和日志表仅为既有记录追溯保留。当前发行�
 
 后台登录态监控只处理 `/automation-accounts` 中处于启用状态、已在页面保存完整账号密码且打开“自动登录”开关的共享 session 账号；开关默认关闭。Agent `_monitor_tms_session_alerts` 是唯一周期主动检查器，统一执行“校验 → 必要时自动登录 → 返回最终状态”，再把最终结果写入 `agent/tms_runtime/routes.py` 维护的账号列表共享快照；Console 批量轮询只用 `prefer_cached=1` 被动读取该快照，不再发起第二次校验。页面未保存凭据、关闭开关、停用账号或进入失败熔断时，该账号会在校验前被跳过，不访问登录页，也不发送飞书断线提醒；部署环境变量凭据不参与账号管理的凭据判断或登录。同账号已有检查或手动登录在执行时，本轮监控收到 `BLOCKED_LOGIN` 后立即跳过，不排队、不覆盖共享快照、不增加失败计数、不发送告警。共享 session 账号为 `expired` / `logged_out` / `error` 时才尝试自动恢复；如果自动登录成功，不发送提醒。连续自动登录失败达到 3 次后持久暂停，防止账号锁定；当次可发送一次需要人工处理的提醒，后续轮询不再重试或重复推送。手动登录、验证码提交和显式单账号状态操作会更新同一共享快照；手动登录成功或用户重新开启开关会清零失败计数。通知目标优先读取 `FEISHU_TMS_ALERT_CHAT_ID` 等环境变量；如果未配置，则使用机器人最近收到消息的 chat_id。
 
-2026-08-11 起，账号管理对融辉、韵达、R7、R13 和大祥报价统一提供“保存凭据、立即登录、退出登录、自动登录、停用/恢复、状态校验”六类操作；页面不再显示 R7/R13“不支持”。协议差异只存在于后端 provider：融辉/韵达使用共享 SessionBroker，R7/R13 持久化各自 SSO Token/Cookie；每个真实账号始终按 `account_id` 隔离会话。大祥报价不再保留写死的 `price` 身份，统一绑定账号 `price_default` 及同名 profile，后台登录、飞书报价和融辉原页代理复用同一登录态。
+账号管理对融辉、韵达、R7、R13 和大祥报价统一提供“保存凭据、立即登录、退出登录、自动登录、停用/恢复、状态校验”六类操作；页面不再显示 R7/R13“不支持”。协议差异只存在于后端 provider：融辉/韵达使用共享 SessionBroker，R7/R13 持久化各自 SSO Token/Cookie；每个真实账号始终按 `account_id` 隔离会话。大祥报价不再保留写死的 `price` 身份，统一绑定账号 `price_default` 及同名 profile，后台登录、飞书报价和融辉原页代理复用同一登录态。凭据状态接口不返回已保存密码，只报告 `has_saved_credentials`、`credential_source` 等非敏感字段，Console 密码输入只写不读。账号备注使用账号 `name`，经 `/admin/accounts/{account_id}/name` 单独保存，不改凭据、登录态、启停或自动登录设置。
 
 运行异常恢复由 `tms_runtime/errors.py` 统一分类，依据异常类型、错误码及显式原因链，不输出浏览器异常中的输入值或会话 URL。`LOGIN_TIMEOUT`、`LOGIN_PAGE_UNAVAILABLE`、`LOGIN_WORKER_UNAVAILABLE`、网络连接/请求超时和上游 HTTP 429/5xx 不计入账号失败次数，也不清除先前真实认证失败的计数；缺少依赖的 `AUTH_UNAVAILABLE` 同样不应锁定账号，页面明确提示检查运行环境。失败登录进程及其残留子进程、临时目录和锁在本轮退出时清理，运行异常及无效 worker 回包不提交部分登录状态。每轮最多一次登录调用，仍受默认 120 秒总期限约束；下一轮监控才重试，监控默认在整轮结束后等待 60 秒，不添加请求内无限重试或立即重试循环。持续原站故障、缺失依赖及页面协议变化仍需修复相应原因，不能把再次尝试报告为已登录。
 
@@ -181,7 +139,20 @@ R7 两个历史工具和日志表仅为既有记录追溯保留。当前发行�
 
 如果短信验证码已经由后台按钮或接口发出，但飞书内存 pending 丢失，用户直接回复 4-8 位验证码时，机器人会先检查账号管理里是否只有一个账号处于 `pending_code`。只有一个时直接提交；多个账号同时待验证时，先要求用户选择账号，避免把验证码提交到错误账号。
 
+登录协议要点：
+
+- 融辉与大祥报价登录按图片验证码处理，不要求手机号：直接点击真实登录页 `newLogin()`，沿用原页密码加密、AJAX 成功判定和 `userInfo` Cookie 写入回调。共享会话保留 Cookie 的 `HttpOnly`、`Secure`、`SameSite` 与过期属性，并把历史上误标为 `HttpOnly` 的融辉 `userInfo` 恢复为 JavaScript 可读；缺少或无法唯一解析 `loginUserName/loginUserAccount/loginSiteName/loginSiteCode` 时，即使主页、菜单可访问也不得显示 authenticated。
+- 每次登录先用本地 OCR 识别图片验证码，最多 3 次（`session_support.MAX_AUTO_CAPTCHA_ATTEMPTS`）；仍失败时返回 `pending_code + challenge_type=image`，Console 透传 `captcha_image/captcha_image_mime/captcha_captured_at` 供人工输入，飞书支持回复 4-8 位字母数字验证码。账号级连续自动登录失败 3 次后持久暂停（`AUTO_LOGIN_FAILURE_LIMIT`）。
+- 融辉登录页为短信形态、或韵达密码登录被 SSO 重定向到 `/public/sms/sms_valid` 时，记为 `challenge_type=sms`，Console 与飞书改为输入短信验证码。韵达登录后在同一上下文初始化寄件、报表和问题件子系统，见仓库根 `docs/identity_and_unified_chat.md`。
+
 Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_ws_consumer`；同一套数据库下只有拿到租约的实例会消费飞书事件。MySQL 不可用时降级为本机文件锁 `agent/tms_runtime/state/feishu_ws.lock`。
+
+## 报价
+
+- `get_price` 由组合根注入的直接 reader 执行；`tools/price_tool.py` 并发请求融辉 `/tms/get_price` 和韵达 `/tms/yunda_price`，飞书分两条回复，首行分别标注 `融辉价格` / `韵达价格`。一家出现非登录类失败时另一家结果照常发送，失败段显示“融辉不可到达”或“韵达不可到达”；登录态错误走对应账号的登录恢复，不当作不可到达。
+- 缺少任何影响金额的条件先澄清，不补默认值。体积可为数字或厘米尺寸表达式（如 `30*23*103*1+97*23*31*4`），按 `长*宽*高*件数` 合计后换算为立方米并四舍五入保留三位小数，对齐韵达录单页精度。
+- 融辉段使用大祥账号 `price_default` 的登录态，用真实运单录入页详细地址 blur 解析目的网点/派件网点，不做拆词兜底；报价 payload 的保价字段对齐录单页默认 `INSURANCE=3000`、`INSURANCE_FEE=3`（`get_price.py`），避免后端按空保价回落而少算。
+- 韵达段复刻录单页链路：飞书不传申明价值，先调用 `getInsuredAmount.html` 按重量取得当前规则下的申明价值，再调用 `price.html`；最终金额为页面的 `Number(CostTotal)+Number(短信费)` 经 `getFloatStr_1()` 截两位，对齐客户端“成本信息-总计”（`TotalMoney`/`CostTotal` 本身不含短信费）。特殊区域由 `checkServiceScope.html` 校验，命中时展示加收备注和提醒。
 
 ## 关键文件触点
 
@@ -198,24 +169,22 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 | 自提到货问题件编排 | `service_v2_plugins/self_pickup_problem_upload_v2/payload/action.py` + `agent/orchestration/selection_preview_binding.py` + `agent/orchestration/automation_project_entrypoints.py` + `agent/orchestration/automation_project_policy_service.py` + `feishu/message_handler.py`；旧 tool/runtime 仅兼容隔离 |
 | 扫描同步算法 | `service_v2_plugins/sync_scan_codes_v2/payload/action.py` + `plugin_core_adapters/` |
 | 到货清单同步算法 | `service_v2_plugins/sync_arrive_list_v2/payload/action.py` + `plugin_core_adapters/arrival_report.py` |
-| R7 到达打卡编排 | `tools/r7_arrival_checkin_tool.py` + `agent/tms_runtime/scripts/auto_checkin_r7.py` |
-| R7 发车打卡编排 | `tools/r7_departure_checkin_tool.py` + `agent/tms_runtime/scripts/auto_departure_r7.py` |
 | 到货统计算法 | `service_v2_plugins/sync_arrival_stats_v2/payload/action.py` + `plugin_core_adapters/`；公共未齐快照 helper 为 `tools/split_pending_snapshot.py` |
 | 工具对外注册 | `tools/registry.yaml` |
 
-`sync_arrive_list` 的当前执行链路是：飞书文本 `arrivelist/到货清单/预到达清单` → `agent/direct_tool_router.py` 精确解析 committed 项目 → `AutomationProjectEntrypoints` → Direct Invocation → 签名插件 `service_v2_plugins/sync_arrive_list_v2/payload/action.py` → 闭合 Broker / `plugin_core_adapters/` → TMS、MySQL 与飞书。`tools/arrive_list_sync_tool.py` 保留公共表头等兼容辅助函数，不是插件的 whole-tool 回退入口。派件预报返回的 18 列字段会直接规范化为 `waybill_data` 基础清单；`H...` / `HR...` 回单号只允许作为回单字段保留，不能作为主单号进入表格首列。后台卡片的 `target_date` 留空时使用执行当天，选择日期时拉取指定单日。`sync_arrival_stats` 每次也会重新拉取目标日 `/fetch_dispatch` 与目标日 `/get_scan`，以“目标日 arrive-list 主单 ∪ 目标日实际到件扫描主单”生成当天统计范围：arrive-list 有但未扫描且历史未到齐（包括历史到货为 0）的单号继续以到货 0 展示；每票目标日前最近一份有效成功快照已经到齐、且目标日未再次扫描的 arrive-list 重复主单会被过滤；目标日实际重扫主单始终保留；扫描存在但 arrive-list 缺失的主单通过 `/query_waybill_detail` 补齐详情。仅存在于累计扫描索引的旧主单不得进入当天表。累计扫描索引仍用于计算当天范围内每票的累计到货件数，支持跨日分批到货，但输出以开单件数封顶，并通过 `historical_filter_result` 与 `count_result.quantity_adjustments` 返回过滤、保留和超量封顶计数。
+`sync_arrive_list` 的当前执行链路是：飞书文本 `arrivelist/到货清单/预到达清单` → `agent/direct_tool_router.py` 精确解析 committed 项目 → `AutomationProjectEntrypoints` → Direct Invocation → 签名插件 `service_v2_plugins/sync_arrive_list_v2/payload/action.py` → 闭合 Broker / `plugin_core_adapters/` → TMS、MySQL 与飞书。`tools/arrive_list_sync_tool.py` 保留公共表头等兼容辅助函数，不是插件的 whole-tool 回退入口。写入前插件读取 `arrival.report.publication.read`：同一业务日、同一来源账号、同一物理工作表已有成功统计时，保留统计表和累计到货件数，只更新本次 MySQL 基础清单与预计快照；判定使用已完成且写后核验的 Invocation、原代际账号/资源绑定和写入回执，并现场读取表头、行数与件数。统计已被覆盖、账号或位置变化及证据损坏时显式要求重新统计，新的成功统计替代旧发布版本；精确资源读取在 `plugin_core_adapters/arrival_report.py`。派件预报返回的 18 列字段会直接规范化为 `waybill_data` 基础清单；`H...` / `HR...` 回单号只允许作为回单字段保留，不能作为主单号进入表格首列。后台卡片的 `target_date` 留空时使用执行当天，选择日期时拉取指定单日。`sync_arrival_stats` 每次也会重新拉取目标日 `/fetch_dispatch` 与目标日 `/get_scan`，以“目标日 arrive-list 主单 ∪ 目标日实际到件扫描主单”生成当天统计范围：arrive-list 有但未扫描且历史未到齐（包括历史到货为 0）的单号继续以到货 0 展示；每票目标日前最近一份有效成功快照已经到齐、且目标日未再次扫描的 arrive-list 重复主单会被过滤；目标日实际重扫主单始终保留；扫描存在但 arrive-list 缺失的主单通过 `/query_waybill_detail` 补齐详情。仅存在于累计扫描索引的旧主单不得进入当天表。累计扫描索引仍用于计算当天范围内每票的累计到货件数，支持跨日分批到货，但输出以开单件数封顶，并通过 `historical_filter_result` 与 `count_result.quantity_adjustments` 返回过滤、保留和超量封顶计数。
 
-`sync_scan_codes` 的执行链路是：后台“获取并扫描数据”、飞书扫描指令或 Webhook → 本次预览与明确确认 → Direct Invocation → `service_v2_plugins/sync_scan_codes_v2/payload/action.py` → 受审 Broker 读取、索引投影、分批扫描和独立核验。后台卡片的 `target_date` 留空时不发送日期覆盖参数，`get_scan` 按执行当天查询；选择日期时工具将 `YYYY-MM-DD` 转换为融辉扫描记录查询使用的 `YYYY/MM/DD` 单日范围。`target_date` 与高级 `request_body.params.date/start/end` 不能同时设置，冲突时显式失败。调度器选定账号后，`scan_next` 必须沿用该账号的 `session_profile`，并在发件扫描同源 iframe/父页/顶层页登录上下文完整就绪且值一致后再录单；扫描员和网点字段严格采用原页 `$Z.user.getUserInfo()`，禁止页头/默认值回退，站点只接受唯一精确匹配。任何批次失败都会立刻终止余下批次并返回顶层 `SCAN_NEXT_BATCH_FAILED`，后续 webhook 不执行；显式 `child_item_limit/max_batches` 导致的未排入子单通过 `omitted_items/truncated` 返回，避免把限定执行误报为全量完成。
+`sync_scan_codes` 的执行链路是：后台“获取并扫描数据”、飞书扫描指令或 Webhook → 本次预览与明确确认 → Direct Invocation → `service_v2_plugins/sync_scan_codes_v2/payload/action.py` → 受审 Broker 读取、索引投影、分批扫描和独立核验。后台卡片的 `target_date` 留空时扫描执行当天（上海业务日），选择日期时扫描指定单日，Host 按融辉扫描记录查询使用的日期格式发起查询。调度器选定账号后，`scan_next` 必须沿用该账号的 `session_profile`，并在发件扫描同源 iframe/父页/顶层页登录上下文完整就绪且值一致后再录单；扫描员和网点字段严格采用原页 `$Z.user.getUserInfo()`，禁止页头/默认值回退，站点只接受唯一精确匹配。每批默认最多 200 单（`batch_size` 上限 200），不同主单的子单可同批录入。录单不设固定等待：页面录入接口同步查询签收状态，已签收单直接跳过；录入后和上传前只即时检查可见提示框，签收提示跳过该单，其他提示显式失败。每批上传后以融辉扫描账本权威回读核验；任一批次提交或核验失败即终止本次调用，已提交但无法证实的批次记为未知写，不重放。显式 `child_item_limit/max_batches` 导致的未排入子单通过 `omitted_items/truncated` 返回，避免把限定执行误报为全量完成。
 
-`sync_arrival_stats` 成功写完统计输出后，会把本次内存中的 A:S 统计结果交给 `split_pending_snapshot.py`：严格校验 19 列表头、件数、重复运单和到货范围，按 `已到 < 应到` 生成未齐候选，同时覆盖 `split_pending_problem_items` 快照与“分批及有发未到表”。正常统计但全部到齐时目标表只保留表头并清除旧行；统计结果为空、字段异常或重复单号时显式失败并保留旧快照。旧的 `phase7.pending_arrivals_sheet` 仅为可选输出：迁移生成的签名插件实例默认保存 `pending_sheet_disabled=true` 且不绑定 `arrival_stats_pending_sheet`，因此不会调用该资源；只有先配置并显式绑定精确资源，再把开关改为 false 才会启用。遗留 whole-tool 在资源未配置或写入失败时仍返回 skipped，不会中断主/副统计表、归档和分批未齐快照链路。该自动阶段只刷新数据，不调用融辉问题件上报。
+`sync_arrival_stats` 成功写完统计输出后，会把本次内存中的 A:S 统计结果交给 `split_pending_snapshot.py`：严格校验 19 列表头、件数、重复运单和到货范围，按 `已到 < 应到` 生成未齐候选，同时覆盖 `split_pending_problem_items` 快照与“分批及有发未到表”。正常统计但全部到齐时目标表只保留表头并清除旧行；统计结果为空、字段异常或重复单号时显式失败并保留旧快照。旧的 `phase7.pending_arrivals_sheet` 仅为可选输出：迁移生成的签名插件实例默认保存 `pending_sheet_disabled=true` 且不绑定 `arrival_stats_pending_sheet`，因此不会调用该资源；只有先配置并显式绑定精确资源，再把开关改为 false 才会启用。该自动阶段只刷新数据，不调用融辉问题件上报。
 
-`sync_daily_send_orders` 的执行链路是：后台定时任务 `获取当日寄件数据` 或飞书文本 `获取当日寄件数据/融辉寄件数据/TMS寄件数据` → Direct Invocation → `service_v2_plugins/sync_daily_send_orders_v2/payload/action.py` → Broker → `/send_order` → 融辉 `FIND_BILL_SEND` 寄件查询接口 → 飞书多维表格资源 `phase7.send_order_bitable`。默认 `发件日期=当天`，可传 `target_date` 拉单日，也可传 `start_date` + `end_date` 拉闭区间日期范围；范围模式逐日执行。写入前会剔除 `运单编号` 为 `H` / `HR` 等回单号开头的记录，并返回 `skipped_receipt_like` 计数。写入策略为按日安全替换：同一台机器上先加本地文件锁，避免多进程重叠执行；再读取飞书中同一 `发件日期` 的旧记录并按 `运单编号` 建索引，本次拉到的单号更新或新增，写入成功后删除同一天旧记录中本次未返回的单号；读取飞书旧记录时按 200 条分页完整扫描，避免飞书列表接口截断后把后续旧单误判为新增；写入和删除完成后会复扫同日记录，同日同单号已有重复记录时只保留首条并删除多余记录。因此重复拉同一天时，飞书中该日期最终记录数会与本次接口返回数一致，其他日期历史不受影响。运行时 `/send_order` 在未显式传 `page_index` 时会按 `page_size/max_pages` 拉完整分页；显式传 `page_index` 时保留旧单页兼容行为。飞书写入成功后，同步将本次有效记录按 `waybill_no` upsert 到控制台 SQL 表 `waybills`，来源标记为 `ronghui`，明确返回的当前扫描状态写入 `scan_status`，；只有来源组织、查询权限范围、分页与当前账号绑定均已证明的完整同步才发布覆盖。普通页面局部补查只 upsert，不删除其他单号，范围不足明确返回 partial；`sql_only=true` 时只执行原站拉取和控制台 SQL 回填，不读写飞书。
+`sync_daily_send_orders` 的执行链路是：后台定时任务 `获取当日寄件数据` 或飞书文本 `获取当日寄件数据/融辉寄件数据/TMS寄件数据` → Direct Invocation → `service_v2_plugins/sync_daily_send_orders_v2/payload/action.py` → Broker → `/send_order` → 融辉 `FIND_BILL_SEND` 寄件查询接口 → 飞书多维表格资源 `phase7.send_order_bitable`。默认 `发件日期=当天`，可传 `target_date` 拉单日，也可传 `start_date` + `end_date` 拉闭区间日期范围；范围模式逐日执行。写入前会剔除 `运单编号` 为 `H` / `HR` 等回单号开头的记录，并返回 `skipped_receipt_like` 计数。写入策略为按日安全替换：同一台机器上先加本地文件锁，避免多进程重叠执行；再读取飞书中同一 `发件日期` 的旧记录并按 `运单编号` 建索引，本次拉到的单号更新或新增，写入成功后删除同一天旧记录中本次未返回的单号；读取飞书旧记录时按 200 条分页完整扫描，避免飞书列表接口截断后把后续旧单误判为新增；写入和删除完成后会复扫同日记录，同日同单号已有重复记录时只保留首条并删除多余记录。因此重复拉同一天时，飞书中该日期最终记录数会与本次接口返回数一致，其他日期历史不受影响。运行时 `/send_order` 在未显式传 `page_index` 时会按 `page_size/max_pages` 拉完整分页；显式传 `page_index` 时保留旧单页兼容行为。飞书写入成功后，同步将本次有效记录按 `waybill_no` upsert 到控制台 SQL 表 `waybills`，来源标记为 `ronghui`，明确返回的当前扫描状态写入 `scan_status`；只有来源组织、查询权限范围、分页与当前账号绑定均已证明的完整同步才发布覆盖。普通页面局部补查只 upsert，不删除其他单号，范围不足明确返回 partial；`sql_only=true` 时只执行原站拉取和控制台 SQL 回填，不读写飞书。
 
 `sync_delivery_status` 的执行链路是：后台定时任务 `查询并更新签收状态` → Direct Invocation → `service_v2_plugins/sync_delivery_status_v2/payload/action.py` → Broker → 飞书多维表格资源 `phase7.delivery_status_bitable` → `/delivery_status` → 写回同一多维表格。无入参时默认使用融辉寄件数据表 `<配置中的表格标识>/<配置中的表格标识>` 的 `未签收明细` 视图，只处理 `签收状态=未签收` 且 `运单编号` 非空的记录；查询结果为 `签收` 或 `已签收` 时才写回 `已签收`。旧版 webhook 传入 `BILL_CODE/bill_codes` + `RECORD_ID/record_ids` 的模式继续保留。
 
-`sync_yunda_dispatch_forecast` 的执行链路是：飞书文本 `韵达派件预测/网点派件量预测主单表` 或 17:00 定时任务 → Direct Invocation → `service_v2_plugins/sync_yunda_dispatch_forecast_v2/payload/action.py` → Broker → `/yunda_dispatch_forecast` → 韵达报表接口 `mrt_s_brch_frgt_amt_tot/searchData` → 飞书多维表格。默认 `应派时间=明天`，只写主单号、开单件数、扫描件数、重量/kg、体积/m3、包装类型、清场时间、规划时效、开单目的地址、预计到达时间、应派时间 11 列，并按日追加到派件总表；只有显式传 `append_only=false` 时才会替换同一应派时间的旧记录。写飞书时会优先复用多维表首个主字段承接“主单号”索引列；如果表里还保留旧版单独“主单号”字段，则同步期间会兼容镜像，避免首列再次出现空白。韵达登录态的绿色状态必须同时通过主站 SSO 和报表子系统 `searchData` 只读校验；共享报表端点和查询参数定义在 `agent/tms_runtime/yunda_report.py`，避免后台显示已登录但派件预测接口不可用。
+`sync_yunda_dispatch_forecast` 的执行链路是：飞书文本 `韵达派件预测/网点派件量预测主单表` 或实例定时任务（时刻以已安装实例的定时设置为准）→ Direct Invocation → `service_v2_plugins/sync_yunda_dispatch_forecast_v2/payload/action.py` → Broker → `/yunda_dispatch_forecast` → 韵达报表接口 `mrt_s_brch_frgt_amt_tot/searchData` → 飞书多维表格。默认 `应派时间=明天`，只写主单号、开单件数、扫描件数、重量/kg、体积/m3、包装类型、清场时间、规划时效、开单目的地址、预计到达时间、应派时间 11 列，并按日追加到派件总表；只有显式传 `append_only=false` 时才会替换同一应派时间的旧记录。写飞书时会优先复用多维表首个主字段承接“主单号”索引列；如果表里还保留旧版单独“主单号”字段，则同步期间会兼容镜像，避免首列再次出现空白。韵达登录态的绿色状态必须同时通过主站 SSO 和报表子系统 `searchData` 只读校验；共享报表端点和查询参数定义在 `agent/tms_runtime/yunda_report.py`，避免后台显示已登录但派件预测接口不可用。
 
-`sync_yunda_send_waybills` 的执行链路是：飞书文本 `韵达寄件运单/韵达寄件运单管理` 或后台定时任务 → Direct Invocation → `service_v2_plugins/sync_yunda_send_waybills_v2/payload/action.py` → Broker → `/yunda_send_waybills` → 韵达 `business/waybill/sendwaybill/list.html` + `business/specialLine/specialLineManage/getList.html` → `system/mail/list.html`、`system/mail/getOriginalData.html`、必要时 `business/waybill/sendwaybill/renderer.html` → 飞书多维表格。默认 `寄件日期=当天`，可传 `target_date` 拉单日，也可传 `start_date` + `end_date` 拉闭区间日期范围；范围模式按天循环调用韵达接口，避免跨天分页和去重边界不清。目标资源为 `phase7.yunda_send_waybills_bitable`，内置默认表为 `<配置中的表格标识>/<配置中的表格标识>`；历史记录按天累积，同一运单号重复同步时更新原记录。字段来源中，收寄件人、电话、地址优先使用小眼睛解密接口；`体积重` 来自快件跟踪详情 `Extend_Field1`，`到付款` 来自详情 `COD`；寄件填仓管理使用 `SendType=1` 查询并与普通寄件运单按运单号去重合并，填仓单的运费桶优先取 `Special_Freight`，再回退 `Freight`。飞书字段 `中转运费` 按业务要求写每单开单总成本：普通寄件单优先取编辑详情页“成本信息-总计” `renderer.html -> price.Total`，寄件填仓单取列表返回的 `Total_Cost_Money`。列表导出 Excel 中的“总金额”与该值一致；列表接口里的 `Total_Money` 是“实收总金额”，不用于 `中转运费`。飞书写入成功后，同步将本次有效记录按 `waybill_no` upsert 到控制台 SQL 表 `waybills`，来源标记为 `yunda`，明确返回的当前扫描状态写入 `scan_status`，；完整覆盖必须具备真实来源范围与分页证明，普通页面补查只局部 upsert，不能按局部结果删除旧单或宣称整日完整；`sql_only=true` 时只执行原站拉取和控制台 SQL 回填，不创建字段、不读写飞书多维表或普通电子表格。
+`sync_yunda_send_waybills` 的执行链路是：飞书文本 `韵达寄件运单/韵达寄件运单管理` 或后台定时任务 → Direct Invocation → `service_v2_plugins/sync_yunda_send_waybills_v2/payload/action.py` → Broker → `/yunda_send_waybills` → 韵达 `business/waybill/sendwaybill/list.html` + `business/specialLine/specialLineManage/getList.html` → `system/mail/list.html`、`system/mail/getOriginalData.html`、必要时 `business/waybill/sendwaybill/renderer.html` → 飞书多维表格。默认 `寄件日期=当天`，可传 `target_date` 拉单日，也可传 `start_date` + `end_date` 拉闭区间日期范围；范围模式按天循环调用韵达接口，避免跨天分页和去重边界不清。目标资源为 `phase7.yunda_send_waybills_bitable`，内置默认表为 `<配置中的表格标识>/<配置中的表格标识>`；历史记录按天累积，同一运单号重复同步时更新原记录。字段来源中，收寄件人、电话、地址优先使用小眼睛解密接口；`体积重` 来自快件跟踪详情 `Extend_Field1`，`到付款` 来自详情 `COD`；寄件填仓管理使用 `SendType=1` 查询并与普通寄件运单按运单号去重合并，填仓单的运费桶优先取 `Special_Freight`，再回退 `Freight`。飞书字段 `中转运费` 按业务要求写每单开单总成本：普通寄件单优先取编辑详情页“成本信息-总计” `renderer.html -> price.Total`，寄件填仓单取列表返回的 `Total_Cost_Money`。列表导出 Excel 中的“总金额”与该值一致；列表接口里的 `Total_Money` 是“实收总金额”，不用于 `中转运费`。飞书写入成功后，同步将本次有效记录按 `waybill_no` upsert 到控制台 SQL 表 `waybills`，来源标记为 `yunda`，明确返回的当前扫描状态写入 `scan_status`；完整覆盖必须具备真实来源范围与分页证明，普通页面补查只局部 upsert，不能按局部结果删除旧单或宣称整日完整；`sql_only=true` 时只执行原站拉取和控制台 SQL 回填，不创建字段、不读写飞书多维表或普通电子表格。
 同步写入会额外维护 `日期` 字段，单日模式取本次 `target_date`，范围模式取每天循环日期；飞书表中该列为日期字段时写入毫秒时间戳，确保按日期筛选/分组可用。
 
 `init_waybills_sql_from_feishu` 用于初始化或修复控制台 `/waybills` 的 SQL 数据：从 `phase7.send_order_bitable` 对应的融辉寄件数据表，以及 `phase7.yunda_send_waybills_bitable` 对应的韵达寄件运单表分页读取全部飞书记录，复用两套同步工具的字段映射后按 `waybill_no` upsert 到 `waybills`。该工具只写 SQL，不修改飞书；`replace_date=false`，因此不会按日期删除旧记录，适合首次上线或 SQL 表丢失后的历史回填。融辉初始化同样剔除 `H...` / `HR...` 回单类单号，并会清理 SQL 中该来源已有的回单类历史行。
@@ -241,14 +210,15 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 - **写操作须经已注册边界**：第三方写、财务采集和内部投影使用当前插件/业务接口，保留权限、精确绑定、受审 capability 和独立写后 Evidence。预览确认绑定本次 Invocation；不创建旧 Command/Plan/审批队列，也不把 deferred 文案当作写授权。
 - **状态切换原子**：每次切 pending 都先 `clear_pending` 再 `set_pending`，避免半成品状态留存。
 
-## 2026-05-12 韵达快件追踪
+## 单号查询
 
-- `track_waybill` 直达查询由 `agent/direct_readers.py` 与组合根注入 reader；复用 `tools/track_waybill_tool.py` 的协议封装，不创建 Command/Run。
-- 文本命令入口在 `agent/direct_tool_router.py`：支持裸单号、`查单号 <单号>`、`查物流 <单号>`、`韵达 <单号>`；`R/RC/200` 识别为融辉，`000` 识别为专线，其它纯数字识别为韵达。
-- 韵达查询脚本在 `agent/tms_runtime/scripts/yunda_waybill_tracking.py`，复用项目绑定的韵达账号登录态和 `/admin/accounts/{account_id}/*` 恢复流程，不新增凭据读取；旧 `/admin/tms/yunda-session/*` 仅兼容。
-- 回复格式由 `format_track_waybill_reply` 生成：首行 `查询单号：xxx`，后续为 `【时间 状态】描述`；默认展示全部轨迹，超过飞书文本长度时保留最新记录并提示截断。
+- `track_waybill` 直达查询由 `agent/direct_readers.py` 与组合根注入 reader 执行，复用 `tools/track_waybill_tool.py` 的协议封装，不创建 Command/Run。
+- 文本入口在 `agent/direct_tool_router.py`：裸单号、`查单号 <单号>`、`查物流 <单号>`、`韵达 <单号>`；先经 `agent/tracking_number_validation.py` 本地格式预检，格式错误直接回复 `单号查询失败：单号格式错误...`，不启动工具、不进入 LLM、不访问外部接口。`R/RC/200` 识别为融辉，`000` 识别为专线，其它纯数字识别为韵达。
+- 融辉：扫描轨迹、运单详情和子单详情均来自融辉 TMS 原页/接口适配器。扫描接口必须携带“快件跟踪”菜单页 `authenticationKey/pageId` 和真实 `Referer`；`FIND_SACN_TRACK_BY_CODE_MAIN` 为空但普通扫描接口有同一主单 `BILL_CODE` 行时，按精确主单号筛选普通扫描行。实时到货进度从 `FIND_SACN_TRACK_BY_CODE` 取每个子单最新扫描，按完整主单前缀、四位数字子单后缀、当前到达网点及明确到达类扫描（`到件`/`到达`/`卸车`）去重统计，优先于数据库和飞书历史缓存；缺少明确到达值时显示“无数据”，只有来源明确的零值才显示 `0 件`。
+- 韵达：只调用 `ky_inms/public/index.php/system/mail/list.html`，无浏览器回退或旧端点探测；同一响应的 `logistics` 节点映射为 `waybill_stub`/`waybill_info` 供 Console 运单详情展示。`list.html` 返回脱敏收寄件人/电话时追加原页“小眼睛”接口 `system/mail/getOriginalData.html`，用明文 `Sender_*`/`Buyer_*` 字段覆盖，失败时保留 `list.html` 的轨迹和详情。目的网点字段名为 `Buyer_Destination_Dot_Code`/`Destination_Dot_Code` 但值是网点名称时按名称处理；货物信息摘要包含派送方式。查询复用项目绑定的韵达账号登录态和 `/admin/accounts/{account_id}/*` 恢复流程。
+- 回复格式由 `format_track_waybill_reply` 生成：首行 `查询单号：xxx`，后续为 `【时间 状态】描述`；默认展示全部轨迹，超过飞书文本长度时保留最新记录并提示截断。飞书摘要的其他展示规则见 `agent/feishu/CLAUDE.md`。
 
-## 2026-08-29 分批及有发未到问题件
+## 分批及有发未到问题件
 
 - 链路：飞书仅精确文本“分批” → committed project route 的签名 dry-run 返回并持久化 `selection_preview` → 飞书 pending 只保存 `preview_invocation_id`、候选和用户选择 → 首次列表中回复“确认”会上传运行号与全部 `selected_bill_codes`；输入序号/多选/区间时只选择对应运单，回显后再回复“确认”。服务端从同一已验签候选 Invocation 恢复 `preview_fingerprint` 与正式参数后执行。
 - 旧文本“分批问题件”“上报分批差错”“分批差错”“上传分批/未到问题件”等只提示发送“分批”，不映射工具；菜单事件也不直接运行分批工具。

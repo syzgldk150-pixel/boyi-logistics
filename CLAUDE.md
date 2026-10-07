@@ -1,4 +1,4 @@
-## 当前插件源码边界（2026-09-15）
+## 当前插件源码边界
 
 数据库迁移 055 将实体拆为 `agent_db`（运行/配置）、`waybill_db`（平台分表的运单/回单）与 `finance_db`（财务）。运行库中的业务同名对象是无副本的显式视图；写入按平台路由，运单 ID 必须带来源，回单 ID 保持全局唯一。后续 DDL、备份与跨实例迁移必须覆盖实体库及视图，详见 [分库说明](docs/database_domains.md)。
 
@@ -23,7 +23,7 @@
 当前调用边界以 [业务接口与独立插件架构](docs/architecture_direct_invocation.md) 为准：普通页面直接业务接口，插件使用真实 Invocation，不创建 Command/Run/Step，不积压或登录后续跑；旧 Runner 仅保留历史和未来长任务代码，主系统不启用领取。
 
 
-本轮 V3.2 维护边界以 [docs/low_maintenance_v32.md](docs/low_maintenance_v32.md) 为权威索引：自动化只列功能插件；财务/客服采集在所属模块；AI contribution 可选；账号引用及平铺常用参数使用宿主简单设置；历史包回退须有本实例已提交版本证据。局部入口见 `agent/scripts/plugin_maintenance.py`（仓库根相对路径），整轮入口为 `agent/scripts/accept_low_maintenance_v32.py`。
+V3.2 维护边界以 [docs/low_maintenance_v32.md](docs/low_maintenance_v32.md) 为权威索引：自动化只列功能插件；财务/客服采集在所属模块；AI contribution 可选；账号引用及平铺常用参数使用宿主简单设置；历史包回退须有本实例已提交版本证据。局部入口见 `agent/scripts/plugin_maintenance.py`（仓库根相对路径），整轮入口为 `agent/scripts/accept_low_maintenance_v32.py`。
 
 本项目按用户已确认的单一 `main` 策略维护：开始先执行 `git status -sb` 并更新远端状态，保留工作区已有改动；在最新 `main` 上完成本次授权修改，验证后显式暂存、提交和推送 `origin/main`。不自动创建分支、Draft PR、恢复引用或备份标签；只有用户另行要求时才使用独立分支。禁止 `git add -A`、强推或覆盖他人提交。不得提交凭据、业务原始资料、运行态和输出报表；同步未完成时不得报告已交付。
 
@@ -111,6 +111,7 @@
 ## 安全与数据规则
 
 - MySQL 目标迁移与 TLS 连接统一由 `shared/mysql_connection.py` 管理；非敏感运行态目标配置同时覆盖 Agent/Console/迁移器，保留既有凭据加载方式。切换、核验和回退见 [RDS 迁移说明](docs/mysql_rds_migration.md)。
+- 生产库是跨地域 RDS（ECS 北京→RDS 杭州公网 TLS，单次往返约 35ms，新建连接约 0.27s）：批量写入的 VALUES 只用占位符，热路径不为不变数据重复建连接或事务；写入回执与写后核验不因性能省略。约束与实测见 [跨地域访问的性能约束](docs/mysql_rds_migration.md#跨地域访问的性能约束)。
 
 - 永远不要读取、打印或提交 `.env`、凭据文件、私钥或其他敏感内容。
 - 密码、Token、Cookie、Authorization 和原始请求体不得写入日志、审计记录或异常输出。
@@ -150,4 +151,4 @@
 - 当前有效验收矩阵为 `docs/low_maintenance_v32_acceptance.json` 的 R1 合同及用户后续资源等待修订；保留原要求，分别核验 Direct/V2 关键场景轮次，不以历史 Runner 或旧 PASS 文件替代。收尾与第二轮接口交接见 `docs/phase1_final_closeout.md`。被验提交、完整组结果与性能摘要见 `docs/phase1_final_results.json`；原始工件位置及摘要见收尾报告。
 - `shared/problem_write_intents.py` 与迁移 `053_problem_write_intents.sql` 保存精确问题件业务目标的写入事实；UNKNOWN/迟到风险仅阻止该目标的新写，权威拒绝才允许新请求，无队列、超时释放或自动重放。运单回执迁移 `052_boyi_waybill_receipt_required.sql` 保持原字节，新迁移不修改历史迁移。
 - `shared/async_work.py` 统一同步工作的重复取消排空；Direct 准入数据库事务与控制锁分开，实际资源写锁覆盖真实执行和核验期间。V2 Connector 在绑定解析后按物理资源或已审投影表协调，Host 回执记录实际持有的范围。
-- 插件局部测试与权威 ZIP 成员、清单和测试源码绑定；源码漂移拒绝打包。财务/客服迟到发布还须验证当前 Invocation 和生产者身份。本轮隔离验收不授权 ECS 部署或真实 TMS/飞书写入。
+- 插件局部测试与权威 ZIP 成员、清单和测试源码绑定；源码漂移拒绝打包。财务/客服迟到发布还须验证当前 Invocation 和生产者身份。隔离验收结果本身不构成 ECS 部署或真实 TMS/飞书写入的授权。

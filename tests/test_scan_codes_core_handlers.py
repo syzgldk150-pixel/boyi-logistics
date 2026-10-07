@@ -23,6 +23,7 @@ from plugin_core_adapters.scan_snapshot import (
     replace_scan_snapshot_verified,
     scan_snapshot_identities_sha256,
 )
+from shared.scan_snapshot_recovery import SNAPSHOT_INITIAL_SEEN_COUNT
 
 
 _SECRET = b"scan-codes-closed-handler-secret-value"
@@ -296,8 +297,9 @@ def test_scan_snapshot_store_atomically_deletes_before_insert(
             assert "snapshot_date" in statement
             assert "last_seen_at" in statement
             assert len(values) == len(rows)
+            assert all(value[-3] == "2026-08-24" for value in values)
             assert all(value[-2] == "2026-08-24" for value in values)
-            assert all(value[-1] == "2026-08-24" for value in values)
+            assert all(value[-1] == SNAPSHOT_INITIAL_SEEN_COUNT for value in values)
             events.append("insert")
 
     class Connection:

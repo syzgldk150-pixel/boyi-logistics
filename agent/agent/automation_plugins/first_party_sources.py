@@ -1,8 +1,8 @@
 """Explicit offline V1 replay sources; current releases ship only V2 sources.
 
 Shared action bytes have one owner: the current V2 package. The retired
-clock/daily-sign adapters, V1 transport and digest-locked split rule snapshot
-remain in the offline directory.
+clock/daily-sign adapters, V1 transport and digest-locked split-rule and scan
+action snapshots remain in the offline directory.
 No source is imported or executed by this path resolver.
 """
 from pathlib import Path

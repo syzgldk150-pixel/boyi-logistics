@@ -11,7 +11,7 @@
 ## 直接调用边界
 
 - 自然语言插件请求由 `AgentCore` 按当前插件目录选择，`message_handler.py` 消费可信选择对象，经原 Feishu 入口执行并跟随本次结果；固定关键词仍直接路由。扫描确认仅消费明确扫描确认文本，未确认的预览不截获其他自然对话。
-- 固定“统计”及同一宿主解析器接受的无参数统计简称，在迁移分发前规范为声明命令“统计到货数据”；仍由原迁移所有权决定 V1/V2 入口，状态异常明确拒绝，不能回退或重复执行。
+- 固定“统计”及同一宿主解析器接受的无参数统计简称，在迁移分发前规范为声明命令“统计到货数据”；入口由迁移所有权决定（所有实例已完成迁移，当前为 V2），状态异常明确拒绝，不能回退或重复执行。
 - 非插件只读文本通过注入的 `AgentCore` 直接 reader 调用；已插件化的文本、菜单和 pending 确认只通过注入的 `AutomationProjectEntrypoints` 提交服务端 typed invocation。两者都禁止直接调用 `ToolExecutor`、业务脚本或第三方写函数。
 - Service v2 动态文本只通过独立注入的 `ServiceV2FeishuDispatcher` 解析当前 committed/READY contribution；所有 pending、登录、确认和固定 Action V1 文本优先，只有固定路由未命中后才查动态精确命令，动态未知才继续既有 Agent/LLM 路径。Dispatcher 只接收 `_COMMAND_CONTEXT` 中已验证的 event/sender/chat 与规范化文本，不接收原始 Webhook body、项目/服务/操作/账号/资源或调用参数；命中但身份缺失必须公共拒绝并停止，回复不得暴露 automation、service、operation、contribution 或内部执行 UUID。
 - 插件项目只能按 committed generation 中唯一的 `feishu_route.route_key` 解析实例；重复别名、多候选、缺绑定或非稳定事件 ID 必须显式拒绝，不得按工具、插件或列表首项猜测。消息和旧 pending 中的账号覆盖字段一律拒绝，账号只取该实例的 Business Account bindings；日期、车牌和预览指纹只由代码拥有的 resolver 注入。
@@ -46,7 +46,7 @@
 - **消息可观测性**：入站消息必须记录 chat、消息类别、pending 类型和路由结果；出站消息必须记录回复类别。验证码只允许记录长度或类别，不能记录验证码内容。
 - **自动化反馈文案**：飞书触发任何脚本时确认调用已受理后回复业务名称和“已受理”，说明资源忙会短暂等待且无需重复提交，终态再明确回复完成、部分完成、取消或可理解的失败原因；用户消息不得暴露内部执行 UUID、`FAILED_TERMINAL`、`BLOCKED_DATA` 等控制平面内部状态。
   - 固定命令、扫描预览和分批／自提候选预览只有 Invocation 已发起后才发送受理文案；首次等待返回活跃状态或暂时读错后，原消息协程按已接受的精确 `invocation_id` 继续只读等待终态并回复，不重复 invoke、不按项目最新记录替代。读取前复核原事件、发送者与项目；连续三次读取异常明确提示结果无法读取，通知异常不得撤销已接受 Invocation。等待可随协程关闭退出，不建设跨重启通知队列或恢复旧业务。
-- **自提/分批先预览后确认**：固定文本调用 committed project route 的签名 `dry_run`，完成后只接受已验签并持久化的 `selection_preview`。飞书 pending 仅保存 `preview_invocation_id`、原发起人、候选/所选运单和到期时间，不保存账号或指纹；确认与取消都必须精确匹配原发起人，确认时服务端从同一候选 Invocation 恢复指纹与正式参数。自提自动选择全部候选，分批允许序号、多选和区间；候选有效期为 15 分钟，零候选不注册外部写确认。账号只来自项目当前 `account_id` / `daxiang_s_account_id` 角色绑定，后台改绑后下一次预览使用新账号；消息、pending 和脚本都不得固定账号、站点或回落默认 profile。
+- **自提/分批先预览后确认**：固定文本调用 committed project route 的签名 `dry_run`，完成后只接受已验签并持久化的 `selection_preview`。飞书 pending 仅保存 `preview_invocation_id`、原发起人、候选/所选运单和到期时间，不保存账号或指纹；确认与取消都必须精确匹配原发起人，确认时服务端从同一候选 Invocation 恢复指纹与正式参数。自提自动选择全部候选，分批允许序号、多选和区间；候选有效期为 15 分钟，零候选不注册外部写确认。账号只来自项目当前角色绑定（自提 V2 为 `self_pickup_primary` / `self_pickup_daxiang_s`，分批 V2 为 `split_pending_ronghui`），后台改绑后下一次预览使用新账号；消息、pending 和脚本都不得固定账号、站点或回落默认 profile。
 - **登录态过期恢复**：任意工具结果含 `AUTH_REQUIRED` / "当前未登录" / "登录态已过期" 关键字
   - 自动注册 `confirm_login_for_resume` pending，提示用户是否重新登录
   - 用户回"是" → 调 `POST /admin/accounts/{account_id}/login` → 注册 `waiting_code_for_resume`
@@ -57,7 +57,7 @@
 - **同实例互斥执行**：由 Agent 精确解析当前项目并检查真实活跃 Invocation；相同实例正在执行时，本次受理请求在当前进程内有界等待资源释放，等待可取消；独立实例可并行。不按历史输出或同名工具推断在途状态；取消只绑定本次项目/发起人的实际 Invocation，旧失败或取消记录不阻新触发。
 - **主动登录/发码**：用户直接发送 `登录`、`登陆`、`发验证码`、`重新登录` 等文本
   - 主动登录/发码优先级高于所有 pending；收到后必须先清除旧 pending，不能把“登陆”当成上一次登录恢复任务的确认，也不能自动续跑旧任务
-  - 泛化登录词会先提示选择：`1. 大祥账号` / `2. 操作场账号`
+  - 泛化登录词会先提示选择：`1. 大祥账号` / `2. 操作场账号` / `3. 韵达账号`
 - 大祥报价直达任务必须携带 `account_id=price_default`，登录恢复走 `/admin/accounts/price_default/login`；账号凭据只来自账号管理页面保存值，不读取部署环境变量
   - 操作场账号同样走 `/admin/accounts/{account_id}/login`，账号密码来自后台业务账号页面保存值
   - 发送成功后注册 `waiting_code_for_resume` pending；用户回 4-8 位字母数字验证码后只完成登录态校验，不自动续跑原工具

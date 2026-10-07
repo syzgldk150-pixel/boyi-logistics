@@ -1,13 +1,15 @@
 ---
 module: 阶段一收尾
 type: 验收记录
-status: active
+status: historical
 authority: report
 owner: repository
-updated: 2026-09-23
+updated: 2026-10-07
 ---
 
 # 第一轮最终收尾
+
+> 历史记录：本文是 2026-09-23 第一轮收尾的验收报告。文中“未部署/未验证生产”“第二轮尚未实施”及当时的插件版本只代表当时状态；后续发布已执行迁移 053 等变更，现行实现与生产状态以现行文档、发布记录和后台实例记录为准。
 
 任务合同：`BOYI-PHASE1-FINAL-CLOSEOUT-R1`。
 

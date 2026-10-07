@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import platform
 import re
+import threading
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Callable
@@ -13,6 +14,7 @@ import pymysql
 from shared.mysql_connection import mysql_tls_options
 from shared.runtime_repositories import WaybillRepository
 from shared.scan_snapshot_recovery import (
+    SNAPSHOT_INITIAL_SEEN_COUNT as _SCAN_CODES_SNAPSHOT_INITIAL_SEEN_COUNT,
     SNAPSHOT_UPSERT_SQL as _SCAN_CODES_SNAPSHOT_UPSERT_SQL,
     lock_snapshot_head,
     record_snapshot_head,
@@ -338,8 +340,32 @@ def _int_cell(value: Any) -> int | str:
     return parsed if parsed is not None else ""
 
 
+_PHASE7_SCHEMA_VALIDATED: set[tuple[Any, ...]] = set()
+_PHASE7_SCHEMA_LOCK = threading.Lock()
+
+
+def _phase7_schema_target() -> tuple[Any, ...]:
+    # The active connector (tests may substitute it) and the configured target
+    # identify the database that one successful validation applies to.
+    return (
+        _connect,
+        _resolve_mysql_host(),
+        _env_int_first(("AGENT_DB_PORT", "DOCFLOW_MYSQL_PORT"), 3306),
+        _env_first(("AGENT_DB_NAME", "DOCFLOW_MYSQL_DATABASE"), "agent_db"),
+    )
+
+
 def ensure_phase7_tables() -> None:
-    """Validate Phase 7 tables and views installed by deployment migrations."""
+    """Validate Phase 7 tables and views installed by deployment migrations.
+
+    Only deployment migrations change this schema and they restart the
+    services, so one successful check per process and database target is
+    enough. A failed check is never remembered.
+    """
+    target = _phase7_schema_target()
+    with _PHASE7_SCHEMA_LOCK:
+        if target in _PHASE7_SCHEMA_VALIDATED:
+            return
     conn = _connect()
     try:
         with conn.cursor() as cur:
@@ -387,6 +413,8 @@ def ensure_phase7_tables() -> None:
                 )
     finally:
         conn.close()
+    with _PHASE7_SCHEMA_LOCK:
+        _PHASE7_SCHEMA_VALIDATED.add(target)
 
 
 def ensure_console_waybill_table() -> None:
@@ -717,6 +745,7 @@ def replace_scan_codes_snapshot(
                             *_scan_row_tuple(row),
                             start_date.isoformat(),
                             start_date.isoformat(),
+                            _SCAN_CODES_SNAPSHOT_INITIAL_SEEN_COUNT,
                         )
                         for row in rows
                     ],
@@ -1230,6 +1259,48 @@ def render_pending_sheet_values(records: list[dict[str, Any]]) -> list[list[Any]
     return values
 
 
+# Placeholders only, so PyMySQL's executemany sends one multi-row INSERT
+# instead of one round trip per waybill.
+_SPLIT_PENDING_UPSERT_SQL = """
+    INSERT INTO split_pending_problem_items (
+        tracking_number, source_row_no, destination_station,
+        expected_quantity, arrived_quantity, pending_quantity,
+        problem_type, problem_owner_type, problem_cause,
+        upload_status, error_summary, uploaded_at,
+        complaint_status, complaint_error_summary, complaint_processed_at,
+        refreshed_at
+    ) VALUES (
+        %s, %s, %s, %s, %s, %s, %s, %s, %s,
+        %s, %s, %s, %s, %s, %s, %s
+    )
+    ON DUPLICATE KEY UPDATE
+        source_row_no = VALUES(source_row_no),
+        destination_station = VALUES(destination_station),
+        expected_quantity = VALUES(expected_quantity),
+        arrived_quantity = VALUES(arrived_quantity),
+        pending_quantity = VALUES(pending_quantity),
+        problem_owner_type = VALUES(problem_owner_type),
+        problem_cause = VALUES(problem_cause),
+        upload_status = CASE
+            WHEN problem_type = VALUES(problem_type) THEN upload_status
+            ELSE 'pending'
+        END,
+        error_summary = CASE
+            WHEN problem_type = VALUES(problem_type) THEN error_summary
+            ELSE NULL
+        END,
+        uploaded_at = CASE
+            WHEN problem_type = VALUES(problem_type) THEN uploaded_at
+            ELSE NULL
+        END,
+        complaint_status = 'not_applicable',
+        complaint_error_summary = NULL,
+        complaint_processed_at = NULL,
+        problem_type = VALUES(problem_type),
+        refreshed_at = VALUES(refreshed_at)
+"""
+
+
 def replace_split_pending_problem_items(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Refresh the current snapshot while preserving completed steps for the same type."""
 
@@ -1276,44 +1347,7 @@ def replace_split_pending_problem_items(records: list[dict[str, Any]]) -> dict[s
         with conn.cursor() as cur:
             if normalized:
                 cur.executemany(
-                    """
-                    INSERT INTO split_pending_problem_items (
-                        tracking_number, source_row_no, destination_station,
-                        expected_quantity, arrived_quantity, pending_quantity,
-                        problem_type, problem_owner_type, problem_cause,
-                        upload_status, error_summary, uploaded_at,
-                        complaint_status, complaint_error_summary, complaint_processed_at,
-                        refreshed_at
-                    ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        'pending', NULL, NULL, %s, NULL, NULL, %s
-                    )
-                    ON DUPLICATE KEY UPDATE
-                        source_row_no = VALUES(source_row_no),
-                        destination_station = VALUES(destination_station),
-                        expected_quantity = VALUES(expected_quantity),
-                        arrived_quantity = VALUES(arrived_quantity),
-                        pending_quantity = VALUES(pending_quantity),
-                        problem_owner_type = VALUES(problem_owner_type),
-                        problem_cause = VALUES(problem_cause),
-                        upload_status = CASE
-                            WHEN problem_type = VALUES(problem_type) THEN upload_status
-                            ELSE 'pending'
-                        END,
-                        error_summary = CASE
-                            WHEN problem_type = VALUES(problem_type) THEN error_summary
-                            ELSE NULL
-                        END,
-                        uploaded_at = CASE
-                            WHEN problem_type = VALUES(problem_type) THEN uploaded_at
-                            ELSE NULL
-                        END,
-                        complaint_status = 'not_applicable',
-                        complaint_error_summary = NULL,
-                        complaint_processed_at = NULL,
-                        problem_type = VALUES(problem_type),
-                        refreshed_at = VALUES(refreshed_at)
-                    """,
+                    _SPLIT_PENDING_UPSERT_SQL,
                     [
                         (
                             item["tracking_number"],
@@ -1325,7 +1359,12 @@ def replace_split_pending_problem_items(records: list[dict[str, Any]]) -> dict[s
                             item["problem_type"],
                             item["problem_owner_type"],
                             item["problem_cause"],
+                            "pending",
+                            None,
+                            None,
                             "not_applicable",
+                            None,
+                            None,
                             refreshed_at,
                         )
                         for item in normalized

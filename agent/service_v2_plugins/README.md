@@ -4,7 +4,7 @@ type: 维护入口
 status: active
 authority: canonical
 owner: repository
-updated: 2026-09-15
+updated: 2026-10-07
 ---
 
 # 当前插件维护入口
@@ -17,9 +17,9 @@ updated: 2026-09-15
 
 构建器 `_shared/build_zip.py` 只从当前插件及明确的共享协议文件取源码，不读取旧 V1 目录。共享的原页字段协议位于仓库根 `shared/ronghui_finance_fields.py`、`shared/ronghui_customer_problem_fields.py`，由 Host 和 ZIP 同源引用；修改这些公共协议仍需要核心更新。`_shared/` 的改动也须检查所有受影响包。
 
-每日应签从 2.0.8 起向 Host 明确提交 `upload_complete/before_cutoff/postpones_sign` 布尔判断。Host 只验证类型、身份和持久化回读，不维护问题件类型清单或重新计算截止时间。新增顺延类型只修改插件规则并升级该 ZIP。部署本次边界变更时应先升级至 2.0.8，再更新 Host；旧 Host 接受这些字段，新 Host 对缺失判断明确拒绝，绝不静默回退。
+每日应签向 Host 明确提交 `upload_complete/before_cutoff/postpones_sign` 布尔判断。Host 只验证类型、身份和持久化回读，不维护问题件类型清单或重新计算截止时间，缺少判断时明确拒绝，绝不静默回退。新增顺延类型只修改插件规则并升级该 ZIP。
 
-每日应签 2.1.8 先读取 R13 截至今天全部未签收单（无起始日期，含超过30天旧单），再按本次单号批量读取数据库中的累计到货快照，不加载清单外历史明细、不额外查询签收状态。到齐单仍识别最新统计纠正。普通表合并表头与数据读取，内容和尾部均一致时跳过写入、清尾及重复回读；变化时保留完整写后核验。需要先更新 Host 的 R13 历史范围参数和按单号读取接口，再升级原实例 ZIP。 多维表继续使用 2.1.7 的十二字段差异更新。详见[业务说明](../../docs/identity_and_unified_chat.md)。
+每日应签只读取 R13 截至今天的全部未签收单，再按本次单号批量读取累计到货快照；扫描默认每批 200 单。各插件现行规则见本目录 `CLAUDE.md`，每日应签协议详见[业务说明](../../docs/identity_and_unified_chat.md)。
 
 各插件当前版本以其 `manifest.json` 为准；线上安装版本和执行结果以后台真实实例记录为准，不从目录名推断。
 
@@ -36,4 +36,4 @@ PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.plugin_maintenance
 
 ## 历史边界
 
-生产发布要求 Service-V2-only 退役索引及全部权威 COMPLETED 迁移记录。`agent/legacy/first_party_automation_plugins/` 只保留离线迁移回归所需的 V1 传输、两种旧适配器、摘要及分批1.0.26的固定规则字节，不进入 ECS 发布清单。该固定快照只重建已有历史摘要，不维护或执行当前算法；V2仍只从本目录读取现行规则。旧版本身份和已执行 SQL 仅用于解释历史事实。发布器将服务器旧源码树移入当次回滚材料，当前运行目录不再保留旧导入树。
+生产发布要求 Service-V2-only 退役索引及全部权威 COMPLETED 迁移记录。`agent/legacy/first_party_automation_plugins/` 只保留离线迁移回归所需的 V1 传输、两种旧适配器、摘要、分批1.0.26的固定规则字节及扫描 V1 的固定 action 字节，不进入 ECS 发布清单。该固定快照只重建已有历史摘要，不维护或执行当前算法；V2仍只从本目录读取现行规则。旧版本身份和已执行 SQL 仅用于解释历史事实。发布器将服务器旧源码树移入当次回滚材料，当前运行目录不再保留旧导入树。

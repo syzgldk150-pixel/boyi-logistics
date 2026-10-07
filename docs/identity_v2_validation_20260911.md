@@ -1,11 +1,13 @@
 ---
 module: identity-and-plugins
 type: validation
-status: active
-updated: 2026-09-11
+status: historical
+updated: 2026-10-07
 ---
 
 # 身份、统一对话与 V2 插件验证记录
+
+> 历史记录：本文是 2026-09-11 的源码与隔离验证记录，其中“尚未完成与发布依赖”只代表当时状态。所有业务实例已完成 V2 迁移，现行实现见[身份权限与统一对话](identity_and_unified_chat.md)与[插件平台](plugin-platform-v2.md)。
 
 本次变更将普通后台账号与飞书账号的权限统一为可配置身份；两个聊天入口共用实际会话服务和模型工具链。V2 包承载现有业务算法，宿主补齐已审核的基础接口、实际结果验证及迁移归属。
 

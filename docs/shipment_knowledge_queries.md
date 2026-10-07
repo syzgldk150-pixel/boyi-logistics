@@ -4,12 +4,12 @@ type: maintenance
 status: active
 authority: implementation
 owner: repository
-updated: 2026-09-25
+updated: 2026-10-07
 ---
 
 # 发货吨位与飞书知识读取
 
-本轮复用现有 Harness、统一会话、身份权限和只读边界，没有另建 Agent、账本或任务队列。真实来源在隔离进程验证，尚未部署生产；合成测试与真实业务验收分别记录。
+复用现有 Harness、统一会话、身份权限和只读边界，没有另建 Agent、账本或任务队列。相关代码已随生产版本发布；真实来源在隔离进程验证，合成测试与真实业务验收分别记录。
 
 ## 已确认与待核实
 
@@ -33,7 +33,7 @@ updated: 2026-09-25
 
 已核对 ECS 的 `lark-cli 1.0.3` 与 Feishu bot 身份。使用 `wiki spaces list/get_node`、`wiki nodes list`、`docs +fetch`；该版本全文 `docs +search` 只支持 user，故本次使用明确标记的范围内正文主题检索，没有切换共享 CLI 身份。协议依据为 [官方 v1.0.3 源码](https://github.com/larksuite/cli/tree/v1.0.3)。
 
-在线文档正文仍有后续页时，本轮未核实续页位置，返回 `KNOWLEDGE_BODY_INCOMPLETE`；超过预算、格式不支持、权限不足、无命中分别报告。不伪造 revision，不把编辑时间当生效日期。在线文档续页、节点链接和冲突制度适用关系仍待核实。
+在线文档正文仍有后续页时，目前未核实续页位置，返回 `KNOWLEDGE_BODY_INCOMPLETE`；超过预算、格式不支持、权限不足、无命中分别报告。不伪造 revision，不把编辑时间当生效日期。在线文档续页、节点链接和冲突制度适用关系仍待核实。
 
 ## 验收与发布边界
 

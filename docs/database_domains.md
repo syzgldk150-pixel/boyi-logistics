@@ -76,15 +76,15 @@ Console unit 仍从 Agent 的 EnvironmentFile 继承共用服务配置；上述 
    不得接触生产库；真实回归要求本机 127.0.0.1:33330。
 
 `run_migrations.py --domain-database-split-status` 只读报告状态。
-标准发布在本轮首次应用 055 后、激活前失败，会调用 `--restore-domain-database-split`：
+标准发布在首次应用 055 后、激活前失败时（如新环境首次迁移），会调用 `--restore-domain-database-split`：
 先逐行核对分表仍等于迁移前内容，再恢复原表位置、移除新入口和 055 历史。备份文件保留。
 分表已发生业务变化时拒绝回退，防止用旧快照覆盖新记录；激活后的恢复必须另行停写、核对差异。
 
 回归入口：`tests/test_domain_database_split_mysql.py` 与
 `tests/test_waybill_source_coverage_mysql.py`。
 
-## Console 运单库权限修复（2026-10-07）
+## Console 账号权限要求
 
-本次修复前只读核验发现 Console 当时使用 `n8n@%`，仅有 `agent_db` 权限；Agent 已有新库权限。Console 通过 INVOKER 视图读取单号时返回 1356，直接读取运单库返回 1142。数据已正确迁入新库，不应恢复旧表或改用旧数据。数据库管理员应为现有 Console 账号恢复 `waybill_db` 的 SELECT、INSERT、UPDATE、DELETE 权限（不含 DDL 或授权转授），覆盖各平台运单、回单及辅助表。授权后以 Console 原配置重新检查视图读取与单号预览，不能只验证 Agent。
+Console 账号需要 `waybill_db` 的 SELECT、INSERT、UPDATE、DELETE 权限（不含 DDL 或授权转授），覆盖各平台运单、回单及辅助表。缺少该权限时，经 INVOKER 视图读取单号返回 1356，直接读取运单库返回 1142；数据已由 055 正确迁入新库，应补齐账号权限，不应恢复旧表或改用旧数据。
 
-当日先恢复旧账号权限，验证 15 个运单、回单相关视图可读及单号预览正常；随后按用户要求切换为独立 `console@%`。切换前验证新账号对运行、运单、回单及财务共 9 个代表性表的读取和单号预览，重启后确认实际连接身份为 `console@%`、线上录单页 HTTP 200、单号预览存在且保存按钮可用。该验收没有提交、打印或修改真实运单。
+2026-10-07 切换为 `console@%` 前，已用新账号验证运行、运单、回单及财务共 9 个代表性表的读取和单号预览；重启后确认实际连接身份为 `console@%`、线上录单页 HTTP 200、单号预览存在且保存按钮可用。该验收没有提交、打印或修改真实运单。
