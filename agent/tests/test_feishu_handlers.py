@@ -548,6 +548,36 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replies[1][0], "login_success")
         self.assertIn("先前调用已经结束", replies[1][1])
 
+    async def test_best_qr_does_not_create_sms_pending_or_resume_business(self):
+        replies = []
+
+        async def reply(chat_id, text, **kwargs):
+            replies.append(text)
+
+        async def post(path, body=None):
+            self.assertEqual(path, "/admin/accounts/custom_best/login")
+            return {"ok": True, "status": "pending_code", "challenge_type": "qr"}
+
+        with (
+            patch.object(message_handler, "_reply_text", side_effect=reply),
+            patch.object(message_handler, "_post_admin", side_effect=post),
+            patch.object(message_handler, "set_pending") as pending,
+            patch.object(message_handler, "clear_pending") as clear,
+        ):
+            await message_handler._send_code_and_wait("chat-test", auth_session="account:custom_best")
+        pending.assert_not_called()
+        clear.assert_called_once_with("chat-test")
+        self.assertIn("微信扫码", replies[-1])
+        self.assertNotIn("自动识别", replies[0])
+        alert = notify.build_tms_session_disconnected_message("expired", context={"system": "best", "login_kind": "qr"})
+        self.assertIn("微信扫码", alert)
+        self.assertNotIn("6 位", alert)
+        options = message_handler._account_options_from_accounts_payload({"accounts": [{
+            "account_id": "custom_best", "name": "百世测试", "system": "best", "is_active": True,
+            "session_capable": True, "status": {"status": "pending_code", "challenge_type": "qr"},
+        }]}, pending_only=True)
+        self.assertEqual([], options)
+
     async def test_ronghui_pending_image_send_code_keeps_manual_fallback_prompt(self):
         replies: list[tuple[str, str]] = []
 

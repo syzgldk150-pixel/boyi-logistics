@@ -139,6 +139,14 @@ R7 两个历史工具和日志表仅为既有记录追溯保留。当前发行�
 
 如果短信验证码已经由后台按钮或接口发出，但飞书内存 pending 丢失，用户直接回复 4-8 位验证码时，机器人会先检查账号管理里是否只有一个账号处于 `pending_code`。只有一个时直接提交；多个账号同时待验证时，先要求用户选择账号，避免把验证码提交到错误账号。
 
+
+百世快运在业务账号页选择“百世快运”新增账号，点击“微信扫码登录”，使用已绑定百世账号的微信扫码并确认。页面自动检查扫码结果；绑定多个启用账号时必须明确选择。无需保存动态密码或跳转官网操作滑块。此流程只恢复账号，不触发业务任务。
+
+- 协议依据：百世 V5 官方原页的 `wxLogin/getQrCode`、`wxLogin/getQrStatus`、`user/cacheLogin`，实际路径前缀为 `/ltlv5-war/web/`。扫码凭证约 180 秒有效，图片通过受保护的账号接口以内嵌图片返回，不对外公开票据。
+- `session_best_adapter.py` 复用账号隔离的 staged 登录流程；只保存百世 Cookie、USER_INFO 和非敏感状态。登录返回身份必须匹配所选账号，站点须唯一，且 `menu/getUserMenuVos` 在线校验通过，才提交 authenticated。缺字段、停用账号、多站点或验证失败均不保存新会话。
+- 待扫码仅在当前可见账号页每 3 秒检查；多账号选择、错误、离开页面或二维码过期时停止自动检查。普通账号状态列表仍只读取共享快照。百世的监控开关只校验已保存会话，过期需人工重新扫码，不请求密码、不后台刷新二维码。
+- 验证入口：`agent/tests/test_best_session.py`（从仓库根定位）、账号管理测试及 Console 账号页测试。`best_home` 是百世只读菜单验证能力，不作为其他平台的能力使用。
+
 登录协议要点：
 
 - 融辉与大祥报价登录按图片验证码处理，不要求手机号：直接点击真实登录页 `newLogin()`，沿用原页密码加密、AJAX 成功判定和 `userInfo` Cookie 写入回调。共享会话保留 Cookie 的 `HttpOnly`、`Secure`、`SameSite` 与过期属性，并把历史上误标为 `HttpOnly` 的融辉 `userInfo` 恢复为 JavaScript 可读；缺少或无法唯一解析 `loginUserName/loginUserAccount/loginSiteName/loginSiteCode` 时，即使主页、菜单可访问也不得显示 authenticated。

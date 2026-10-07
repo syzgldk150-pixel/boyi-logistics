@@ -40,6 +40,34 @@ class AutomationAccountManagerTests(unittest.TestCase):
             item.stop()
         self.tempdir.cleanup()
 
+    def test_best_login_needs_no_saved_password_and_keeps_independent_profile(self):
+        first = self.manager.create_account(account_id="best_ops", system="best", name="百世运营")
+        second = self.manager.create_account(account_id="best_other", system="best", name="百世备用")
+        self.assertEqual("qr", first["login_kind"])
+        self.assertNotEqual(first["session_profile"], second["session_profile"])
+        broker = Mock()
+        broker.get_manual_credentials.return_value = {"has_manual_credentials": False}
+        broker.send_code.return_value = {"status": "pending_code", "challenge_type": "qr"}
+        with patch.object(self.manager, "_broker", return_value=broker):
+            result = self.manager.login("best_ops")
+        self.assertEqual("pending_code", result["status"])
+        broker.send_code.assert_called_once()
+
+    def test_best_monitor_never_generates_new_qr_and_preserves_pending_message(self):
+        self.manager.create_account(account_id="best_ops", system="best", name="百世运营")
+        broker = Mock()
+        broker.get_manual_credentials.return_value = {"has_manual_credentials": False}
+        broker.describe_status.return_value = {"status": "pending_code", "last_error_summary": "请选择百世账号"}
+        with patch.object(self.manager, "_broker", return_value=broker):
+            pending = self.manager.describe_status("best_ops", validate=False)
+            self.assertEqual("请选择百世账号", pending["last_error_summary"])
+            self.manager.set_auto_login("best_ops", True)
+            broker.describe_status.return_value = {"status": "expired", "last_error_summary": "已过期"}
+            result = self.manager.check_status_with_auto_login("best_ops")
+        self.assertTrue(result["auto_login_enabled"])
+        self.assertIn("扫码", result["last_error_summary"])
+        broker.send_code.assert_not_called()
+
     def test_active_binding_descriptor_is_local_and_contains_routing_fields(self):
         with patch.object(
             account_manager_module,

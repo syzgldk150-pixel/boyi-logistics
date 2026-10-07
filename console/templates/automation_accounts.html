@@ -95,6 +95,7 @@
         {% set challenge_type = status.challenge_type or 'sms' %}
         {% set has_active_challenge = status_value == 'pending_code' and not account.auto_login_blocked %}
         {% set primary_label = '已停用' if not account.is_active else '先保存凭据' if not account.has_manual_credentials else '刷新验证码' if status_value == 'pending_code' and challenge_type == 'image' else '重新发送' if status_value == 'pending_code' else '重新登录' if status_value == 'authenticated' else '立即登录' if account.session_capable else '重新验证' %}
+        {% if account.login_kind == 'qr' %}{% set primary_label = '已停用' if not account.is_active else '刷新二维码' if has_active_challenge else '微信扫码登录' %}{% endif %}
           <tr class="{% if not account.is_active %}is-disabled{% endif %}" data-account-row data-account-system="{{ account.system }}" data-account-id="{{ account.account_id }}" data-account-active="{{ 'true' if account.is_active else 'false' }}" data-account-auto-login="{{ 'true' if account.auto_login_enabled else 'false' }}" data-account-auto-login-blocked="{{ 'true' if account.auto_login_blocked else 'false' }}" data-account-status="{{ status_value }}" data-account-challenge-type="{{ challenge_type }}" data-account-login-kind="{{ account.login_kind or '' }}" data-account-session-capable="{{ 'true' if account.session_capable else 'false' }}" data-account-has-credentials="{{ 'true' if account.has_saved_credentials else 'false' }}" data-account-has-manual-credentials="{{ 'true' if account.has_manual_credentials else 'false' }}"{% if account_filter and account.system != account_filter %} hidden{% endif %}>
             <td>
               <div class="automation-account-system-cell">
@@ -114,12 +115,12 @@
               {% if account.session_capable %}
               <form class="automation-account-inline-auto-login" action="/automation-accounts/{{ account.account_id }}/auto-login" method="post" data-account-action-form data-account-auto-login-form>
                 <input type="hidden" name="auto_login_enabled" value="{{ 0 if account.auto_login_enabled else 1 }}" data-account-auto-login-value>
-                <button class="automation-account-auto-login-switch{% if account.auto_login_enabled %} is-active{% endif %}" type="submit" role="switch" aria-checked="{{ 'true' if account.auto_login_enabled else 'false' }}" data-account-auto-login-switch{% if not account.is_active or not account.has_manual_credentials %} disabled{% endif %}>
+                <button class="automation-account-auto-login-switch{% if account.auto_login_enabled %} is-active{% endif %}" type="submit" role="switch" aria-checked="{{ 'true' if account.auto_login_enabled else 'false' }}" data-account-auto-login-switch{% if not account.is_active or (not account.has_manual_credentials and account.login_kind != 'qr') %} disabled{% endif %}>
                   <span class="automation-account-switch-track" aria-hidden="true"><span class="automation-account-switch-thumb"></span></span>
                   <span data-account-auto-login-label>{{ '已暂停' if account.auto_login_blocked else '已开启' if account.auto_login_enabled else '已关闭' }}</span>
                 </button>
                 <small data-account-auto-login-note>
-                  {% if not account.has_manual_credentials %}保存凭据后可立即登录{% elif not account.is_active %}账号已停用{% elif account.auto_login_blocked %}连续失败 3 次，已暂停{% elif account.auto_login_enabled %}定时校验与掉线恢复{% else %}仅关闭监控，仍可手动登录{% endif %}
+                  {% if account.login_kind == 'qr' %}仅监控登录态，失效后重新扫码{% elif not account.has_manual_credentials %}保存凭据后可立即登录{% elif not account.is_active %}账号已停用{% elif account.auto_login_blocked %}连续失败 3 次，已暂停{% elif account.auto_login_enabled %}定时校验与掉线恢复{% else %}仅关闭监控，仍可手动登录{% endif %}
                 </small>
               </form>
               {% else %}
@@ -141,7 +142,7 @@
               <div class="automation-account-actions-stack">
                 <div class="automation-account-row-actions">
                   <form action="/automation-accounts/{{ account.account_id }}/login" method="post" data-account-action-form data-account-login-form>
-                    <button class="automation-account-action-link" type="submit" data-account-primary-action title="立即执行一次登录；自动登录开关只控制定时校验与掉线恢复"{% if not account.is_active or not account.has_manual_credentials %} disabled{% endif %}>{{ primary_label }}</button>
+                    <button class="automation-account-action-link" type="submit" data-account-primary-action title="{{ '生成微信登录二维码' if account.login_kind == 'qr' else '立即执行一次登录；自动登录开关只控制定时校验与掉线恢复' }}"{% if not account.is_active or (not account.has_manual_credentials and account.login_kind != 'qr') %} disabled{% endif %}>{{ primary_label }}</button>
                   </form>
 
                   <details class="automation-account-details automation-account-edit">
@@ -159,6 +160,9 @@
                         </button>
                         <p class="automation-account-form-error" data-account-form-error hidden></p>
                       </form>
+                      {% if account.login_kind == 'qr' %}
+                      <p>使用绑定百世账号的微信扫码。无需保存动态密码，登录态失效后重新扫码。</p>
+                      {% else %}
                       <div class="automation-account-edit-divider"><span>登录凭据</span></div>
                       <form class="automation-account-credentials" action="/automation-accounts/{{ account.account_id }}/credentials" method="post" data-account-action-form>
                         <label>
@@ -178,6 +182,7 @@
                           保存
                         </button>
                       </form>
+                      {% endif %}
                     </div>
                   </details>
 
@@ -203,6 +208,7 @@
                         </button>
                       </form>
                       {% endif %}
+                      {% if account.login_kind != 'qr' %}
                       <form action="/automation-accounts/{{ account.account_id }}/clear-credentials" method="post" data-account-action-form>
                         <button class="ghost-btn ghost-btn--danger" type="submit">
                           <i data-feather="trash-2"></i>
@@ -212,6 +218,7 @@
                           </span>
                         </button>
                       </form>
+                      {% endif %}
                       <form action="/automation-accounts/{{ account.account_id }}/active" method="post" data-account-action-form>
                         <input type="hidden" name="target_active" value="{{ 0 if account.is_active else 1 }}">
                         <button class="ghost-btn" type="submit">
@@ -225,7 +232,19 @@
                     </div>
                   </details>
                 </div>
-                {% if account.session_capable %}
+                {% if account.login_kind == 'qr' %}
+                <div data-account-qr-panel{% if not has_active_challenge or not account.is_active %} hidden{% endif %}>
+                  <p>请使用绑定百世账号的微信扫码并确认。</p>
+                  <img src="{{ status.captcha_image if has_active_challenge else '' }}" alt="百世快运微信登录二维码" width="220" height="220" data-account-qr-image>
+                  <select class="review-input compact-input" data-account-qr-choice{% if not status.account_choices %} hidden{% endif %}>
+                    <option value="">请选择百世账号</option>
+                    {% for choice in status.account_choices or [] %}<option value="{{ choice.value }}">{{ choice.label }}</option>{% endfor %}
+                  </select>
+                  <button type="button" class="ghost-btn" data-account-qr-check>检查扫码结果</button>
+                  <small data-account-qr-expiry>{{ status.expires_at or '' }}</small>
+                  <p class="automation-account-inline-error" data-account-inline-error hidden></p>
+                </div>
+                {% elif account.session_capable %}
                 <form class="automation-account-inline-code" action="/automation-accounts/{{ account.account_id }}/submit-code" method="post" data-account-code-form{% if not has_active_challenge %} hidden{% endif %}>
                   <div class="automation-account-inline-code-main">
                     <input class="review-input compact-input automation-account-code-input" type="text" name="code" autocomplete="one-time-code" placeholder="{{ '输入图片验证码' if challenge_type == 'image' else '6 位验证码' }}" data-account-code-input>
@@ -283,6 +302,71 @@
     return row?.dataset.accountChallengeType === "image";
   }
 
+  function isQrAccount(row) {
+    return row?.dataset.accountLoginKind === "qr";
+  }
+
+  function applyQrState(row, state) {
+    const panel = row.querySelector("[data-account-qr-panel]");
+    const image = row.querySelector("[data-account-qr-image]");
+    const choice = row.querySelector("[data-account-qr-choice]");
+    const pending = state.status === "pending_code" && row.dataset.accountActive === "true";
+    if (panel) panel.hidden = !pending;
+    if (image) {
+      const src = String(state.captcha_image || "");
+      if (pending && /^data:image\/(png|jpeg);base64,/.test(src)) {
+        if (image.getAttribute("src") !== src) {
+          image.src = src;
+          delete row.dataset.qrPollPaused;
+        }
+      } else image.removeAttribute("src");
+    }
+    if (choice) {
+      const selected = choice.value;
+      const choices = pending && Array.isArray(state.account_choices) ? state.account_choices : [];
+      choice.replaceChildren(new Option("请选择百世账号", ""));
+      choices.forEach((item) => choice.add(new Option(String(item.label), String(item.value))));
+      if (choices.some((item) => String(item.value) === selected)) choice.value = selected;
+      choice.hidden = choices.length === 0;
+    }
+    const expiry = row.querySelector("[data-account-qr-expiry]");
+    if (expiry) expiry.textContent = state.expires_at ? `有效期至 ${state.expires_at}` : "";
+  }
+
+  async function checkQrLogin(row, manual = false) {
+    if (!accountPageActive || document.hidden || row.hidden || !isQrAccount(row)
+        || row.dataset.accountStatus !== "pending_code" || row.dataset.accountActive !== "true"
+        || row.dataset.qrChecking === "true" || row.querySelector('[data-submitting="true"]')) return;
+    const choice = row.querySelector("[data-account-qr-choice]");
+    if (!manual && (row.dataset.qrPollPaused === "true" || (choice && !choice.hidden))) return;
+    if (choice && !choice.hidden && !choice.value) {
+      setInlineError(row, "请选择要保存的百世账号。");
+      return;
+    }
+    row.dataset.qrChecking = "true";
+    const button = row.querySelector("[data-account-qr-check]");
+    if (button) button.disabled = true;
+    try {
+      const response = await fetch(`/automation-accounts/${encodeURIComponent(row.dataset.accountId)}/submit-code`, {
+        method: "POST",
+        headers: { "Accept": "application/json", "X-Requested-With": "fetch", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+        body: new URLSearchParams({ code: choice && !choice.hidden ? choice.value : "check" }).toString(),
+        credentials: "same-origin",
+      });
+      const payload = await response.json();
+      if (payload.state) applyState(row, payload.state);
+      if (!response.ok || !payload.ok) throw new Error(payload.message || "扫码结果检查失败，请重试。");
+      delete row.dataset.qrPollPaused;
+      setInlineError(row, "");
+    } catch (err) {
+      row.dataset.qrPollPaused = "true";
+      setInlineError(row, err instanceof Error ? err.message : "扫码结果检查失败，请重试。");
+    } finally {
+      delete row.dataset.qrChecking;
+      if (button) button.disabled = false;
+    }
+  }
+
   function applyCodeInputMode(input, row) {
     if (!input || !row) return;
     const image = isImageChallenge(row);
@@ -328,6 +412,7 @@
   }
 
   function credentialDisplay(row) {
+    if (isQrAccount(row)) return { label: "微信扫码", tone: "muted", hasCredentials: true };
     const hasManual = row?.dataset.accountHasManualCredentials === "true";
     if (hasManual) return { label: "已保存账号密码", tone: "success", hasCredentials: true };
     return { label: "未保存账号密码", tone: "warning", hasCredentials: false };
@@ -357,10 +442,11 @@
     const loading = form?.dataset.submitting === "true";
     button.setAttribute("aria-checked", enabled ? "true" : "false");
     button.classList.toggle("is-active", enabled);
-    button.disabled = loading || !active || !hasManual;
+    button.disabled = loading || !active || (!hasManual && !isQrAccount(row));
     if (value) value.value = enabled ? "0" : "1";
     if (label) label.textContent = blocked ? "已暂停" : enabled ? "已开启" : "已关闭";
     if (note) {
+      if (isQrAccount(row)) { note.textContent = "仅监控登录态，失效后重新扫码"; return; }
       note.textContent = !hasManual
         ? "保存凭据后可立即登录"
         : !active
@@ -383,6 +469,11 @@
         note: "不参与任务执行与登录监控；停用操作不会退出当前会话。",
       };
     }
+    if (isQrAccount(row)) return {
+      label: ({authenticated: "已登录", pending_code: "等待扫码", expired: "已过期", logged_out: "未登录"})[status] || "异常",
+      tone: status === "authenticated" ? "success" : "warning",
+      note: "登录态独立保存；失效后需重新扫码，无需保存动态密码。",
+    };
     if (row?.dataset.accountSessionCapable === "true" && !meta.hasCredentials) {
       if (status === "authenticated") {
         return {
@@ -533,7 +624,7 @@
     } else {
       const row = accountRow(button);
       button.disabled = button.matches("[data-account-primary-action]") && (
-        row?.dataset.accountActive !== "true" || row?.dataset.accountHasManualCredentials !== "true"
+        row?.dataset.accountActive !== "true" || (row?.dataset.accountHasManualCredentials !== "true" && !isQrAccount(row))
       );
       if (button.matches("[data-account-primary-action]")) {
         button.textContent = row ? actionLabel(row, {}) : (button.dataset.originalHtml || button.textContent);
@@ -556,6 +647,7 @@
 
   function actionLabel(row, state) {
     if (row.dataset.accountActive !== "true") return "已停用";
+    if (isQrAccount(row)) return (state?.status || row.dataset.accountStatus) === "pending_code" ? "刷新二维码" : "微信扫码登录";
     if (row.dataset.accountHasManualCredentials !== "true") return "先保存凭据";
     const status = String(state?.status || row.dataset.accountStatus || "");
     const challengeType = String(state?.challenge_type || state?.challengeType || row.dataset.accountChallengeType || "");
@@ -603,7 +695,7 @@
       const disabledBadge = row.querySelector("[data-account-disabled-badge]");
       if (disabledBadge) disabledBadge.hidden = active;
       const primary = row.querySelector("[data-account-primary-action]");
-      if (primary) primary.disabled = !active || row.dataset.accountHasManualCredentials !== "true";
+      if (primary) primary.disabled = !active || (row.dataset.accountHasManualCredentials !== "true" && !isQrAccount(row));
       const activeInput = row.querySelector('input[name="target_active"]');
       if (activeInput) activeInput.value = active ? "0" : "1";
       const activeLabel = row.querySelector("[data-account-active-label]");
@@ -633,7 +725,7 @@
     const tone = String(state.status_tone || "");
     const challengeType = String(state.challenge_type || state.challengeType || "");
     if (status) row.dataset.accountStatus = status;
-    if (challengeType) row.dataset.accountChallengeType = challengeType === "image" ? "image" : "sms";
+    if (challengeType) row.dataset.accountChallengeType = challengeType;
     if ("is_active" in state) row.dataset.accountActive = asFlag(state.is_active) ? "true" : "false";
     if ("auto_login_enabled" in state) {
       row.dataset.accountAutoLogin = asFlag(state.auto_login_enabled) ? "true" : "false";
@@ -660,8 +752,9 @@
     const primary = row.querySelector("[data-account-primary-action]");
     if (primary) {
       primary.textContent = actionLabel(row, state);
-      primary.disabled = row.dataset.accountActive !== "true" || row.dataset.accountHasManualCredentials !== "true";
+      primary.disabled = row.dataset.accountActive !== "true" || (row.dataset.accountHasManualCredentials !== "true" && !isQrAccount(row));
     }
+    if (isQrAccount(row)) { applyQrState(row, state); return; }
 
     const codeForm = row.querySelector("[data-account-code-form]");
     const codeInput = row.querySelector("[data-account-code-input]");
@@ -731,7 +824,7 @@
       if (!payload.ok) throw new Error(payload.message || "账号状态批量刷新失败。");
       (payload.accounts || []).forEach((account) => {
         const row = rowByAccountId(account?.account_id);
-        if (!row) return;
+        if (!row || row.dataset.qrChecking === "true" || row.querySelector('[data-submitting="true"]')) return;
         if (account.credentials) applyCredentials(row, account.credentials);
         if (account.status) applyState(row, account.status);
       });
@@ -748,7 +841,7 @@
     const form = event.target instanceof HTMLFormElement ? event.target : null;
     if (!form || !form.matches("[data-account-action-form], [data-account-code-form]")) return;
     event.preventDefault();
-    if (form.dataset.submitting === "true") return;
+    if (form.dataset.submitting === "true" || accountRow(form)?.dataset.qrChecking === "true") return;
     form.dataset.submitting = "true";
 
     const row = accountRow(form);
@@ -820,6 +913,8 @@
 
   page.addEventListener("submit", submitAccountForm);
   page.addEventListener("click", (event) => {
+    const qrCheck = event.target?.closest?.("[data-account-qr-check]");
+    if (qrCheck) { checkQrLogin(accountRow(qrCheck), true); return; }
     const tab = event.target?.closest?.("[data-account-tab]");
     if (!tab || !page.contains(tab)) return;
     event.preventDefault();
@@ -844,10 +939,14 @@
     if (!document.hidden) refreshAccountStatuses();
   });
   const statusPollTimerId = window.setInterval(refreshAccountStatuses, statusPollIntervalMs);
+  const qrPollTimerId = window.setInterval(() => {
+    page.querySelectorAll("[data-account-row]").forEach((row) => checkQrLogin(row));
+  }, 3000);
   window.addEventListener("beforeunload", () => {
     accountPageActive = false;
     refreshStatusesAbort?.abort();
     window.clearInterval(statusPollTimerId);
+    window.clearInterval(qrPollTimerId);
   }, { once: true });
   applyAccountFilter(page.querySelector("[data-account-tabs]")?.dataset.initialFilter || accountFilterFromUrl(), { updateUrl: false });
   page.querySelectorAll('input[name="password"][data-password-saved]').forEach(setupPasswordMask);

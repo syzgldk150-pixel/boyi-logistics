@@ -168,6 +168,10 @@ def build_tms_session_disconnected_message(
     context = context or {}
     challenge_type = str(context.get("challenge_type") or context.get("challengeType") or "").strip().lower()
     system_label = str(context.get("system_label") or context.get("system") or "TMS").strip()
+    if challenge_type == "qr" or context.get("login_kind") == "qr" or context.get("system") == "best":
+        state_text = "等待微信扫码" if normalized_status == "pending_code" else _status_text(normalized_status)
+        account_name = str(context.get("account_name") or context.get("account_id") or "").strip()
+        return f"【Agent 自动化】{system_label} {state_text}。\n账号：{account_name}\n请打开后台业务账号页面，使用微信扫码重新登录。"
     if normalized_status == "pending_code":
         if challenge_type == "image":
             title = f"\u3010Agent \u81ea\u52a8\u5316\u3011{system_label} \u56fe\u5f62\u9a8c\u8bc1\u7801\u81ea\u52a8\u8bc6\u522b\u672a\u901a\u8fc7\uff0c\u7b49\u5f85\u4eba\u5de5\u8f93\u5165\u9a8c\u8bc1\u7801\u3002"

@@ -69,6 +69,15 @@ SYSTEMS: dict[str, dict[str, Any]] = {
         "custom_profile_prefix": "r13",
         "require_phone": False,
     },
+    "best": {
+        "label": "百世快运",
+        "login_kind": "qr",
+        "session_capable": True,
+        "session_backend": "tms",
+        "default_session_profile": "best_default",
+        "custom_profile_prefix": "best",
+        "require_phone": False,
+    },
 }
 
 ACCOUNT_PURPOSES: dict[str, str] = {
@@ -792,7 +801,7 @@ class AutomationAccountManager:
             if not SYSTEMS[row["system"]].get("session_capable"):
                 raise TMSAuthStateError("UNSUPPORTED_ACTION", "该账号类型不支持自动登录。")
             credentials = self._manual_credentials_for_row(row)
-            if not credentials.get("has_manual_credentials"):
+            if not credentials.get("has_manual_credentials") and SYSTEMS[row["system"]].get("login_kind") != "qr":
                 raise TMSAuthStateError("AUTH_REQUIRED", "请先保存账号密码，再开启自动登录。")
         row = self._set_auto_login_state(
             account_id,
@@ -980,7 +989,8 @@ class AutomationAccountManager:
         row = self._get_account_row(account_id)
         config = SYSTEMS[row["system"]]
         credentials = self._manual_credentials_for_row(row)
-        if row.get("auto_login_enabled", False) and not credentials.get("has_manual_credentials"):
+        if (row.get("auto_login_enabled", False) and not credentials.get("has_manual_credentials")
+                and config.get("login_kind") != "qr"):
             row = self._set_auto_login_state(
                 row["account_id"],
                 enabled=False,
@@ -1027,6 +1037,8 @@ class AutomationAccountManager:
                     "account_disabled": True,
                 }
             )
+        elif config.get("login_kind") == "qr":
+            status["monitoring_paused"] = not monitoring_enabled
         elif config.get("session_capable") and not row.get("auto_login_enabled", False):
             raw_status = str(status.get("status") or "")
             if raw_status == "logged_out":
@@ -1147,7 +1159,7 @@ class AutomationAccountManager:
     ) -> dict[str, Any]:
         row = self._get_account_row(account_id)
         credentials = self._manual_credentials_for_row(row)
-        if not credentials.get("has_manual_credentials"):
+        if not credentials.get("has_manual_credentials") and SYSTEMS[row["system"]].get("login_kind") != "qr":
             if row.get("auto_login_enabled", False) or row.get("auto_login_blocked", False):
                 self._set_auto_login_state(
                     account_id,
@@ -1167,6 +1179,9 @@ class AutomationAccountManager:
             row = self._reset_auto_login_failures(account_id)
             return self._with_account_context(row, status)
         if str(status.get("status") or "").strip() not in AUTO_LOGIN_STATUSES:
+            return status
+        if SYSTEMS[row["system"]].get("login_kind") == "qr":
+            status["last_error_summary"] = "百世快运登录态不可用，请重新微信扫码。"
             return status
         try:
             result = (
@@ -1226,7 +1241,7 @@ class AutomationAccountManager:
             raise TMSAuthStateError("ACCOUNT_DISABLED", "账号已停用，请先启用账号。")
         if self._uses_tms_broker(row):
             credentials = self._manual_credentials_for_row(row)
-            if not credentials.get("has_manual_credentials"):
+            if not credentials.get("has_manual_credentials") and SYSTEMS[row["system"]].get("login_kind") != "qr":
                 raise TMSAuthStateError("AUTH_REQUIRED", "请先保存账号密码，再登录。")
             result = self._broker(row).send_code()
             if result.get("auto_login_attempts_exhausted"):

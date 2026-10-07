@@ -116,6 +116,28 @@ class AutomationAccountsTemplateTests(unittest.TestCase):
         self.assertIn("document.activeElement === input", html)
         self.assertIn("setPasswordSavedState(passwordInput, !!credentials.has_saved_credentials)", html)
 
+    def test_best_qr_account_can_login_without_password_and_requires_account_selection(self):
+        html = self.template.render(
+            account_rows=[{
+                "account_id": "best_ops", "name": "百世运营", "system": "best", "system_label": "百世快运",
+                "is_active": True, "auto_login_enabled": False, "session_capable": True, "login_kind": "qr",
+                "has_manual_credentials": False, "credentials": {},
+                "status": {"status": "pending_code", "challenge_type": "qr", "captcha_image": "data:image/jpeg;base64,dGVzdA==",
+                           "account_choices": [{"value": "sample", "label": "示例站点"}], "expires_at": "2026-10-07 20:00:00"},
+            }],
+            account_groups=[], accounts=[], account_filter="", account_total_count=1,
+            account_system_counts={"best": 1}, account_tab_systems=["best"],
+            account_system_labels={"best": "百世快运"}, account_system_order=["best"],
+        )
+        markup = html.split("<script>")[-2] if "<script>" in html else html
+        self.assertIn('data-account-qr-panel>', markup)
+        self.assertIn('data-account-qr-choice>', markup)
+        self.assertIn('<option value="">请选择百世账号</option>', markup)
+        self.assertIn('<option value="sample">示例站点</option>', markup)
+        self.assertNotIn('name="password"', markup)
+        self.assertNotIn('data-account-primary-action title="生成微信登录二维码" disabled', markup)
+        self.assertIn('data-account-primary-action title="生成微信登录二维码">刷新二维码', markup)
+
     def test_account_note_is_editable_and_updates_without_login_status_check(self):
         html = self._render()
 

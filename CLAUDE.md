@@ -70,7 +70,7 @@ V3.2 维护边界以 [docs/low_maintenance_v32.md](docs/low_maintenance_v32.md) 
 - 旧脚本必须置于明确的 `legacy` 或离线命名空间，并与线上运行路径隔离。
 - 数据库结构只由 `agent/migrations/` 的顺序 SQL 和部署期迁移器维护；服务、仓储、同步工具和 Console 请求路径只能校验结构及读写数据，不能运行 DDL。
 - Console 保持现有 HTTP 框架；`console/app.py` 只负责组合、生命周期和请求分发，业务实现必须进入 `console/services/`，路由识别进入 `console/routes/`。
-- TMS SessionBroker 只保留稳定门面；provider 执行、adapter、状态持久化和响应验证分别位于 `session_provider_base.py`、`session_adapters.py`、`session_persistence.py` 和 `session_validation_service.py`，调度器只依赖公开接口。
+- TMS SessionBroker 只保留稳定门面；provider 执行、adapter、状态持久化和响应验证分别位于 `session_provider_base.py`、`session_adapters.py`（百世微信扫码为 `session_best_adapter.py`）、`session_persistence.py` 和 `session_validation_service.py`，调度器只依赖公开接口。
 - TMS 登录浏览器必须在按账号隔离的 staged 子进程中运行，总期限由非敏感配置 `TMS_BROWSER_ACTION_TIMEOUT_SECONDS` 控制且默认 120 秒；同账号并发登录或执行立即 `BLOCKED_LOGIN`，不同账号互不阻塞，token/epoch 不匹配的迟到结果不得提交。通用 Broker 只做本地账号/资源绑定检查；业务动作直接访问真实目标并由响应登录页进入 `BLOCKED_LOGIN`，完整 capability 矩阵只用于后台监控且不得成为执行门禁。
 - `agent/agent/` 不得依赖 `tools` 或 `feishu`；跨包回调和事件必须由 `agent/main.py` 组合注入，或通过 `shared/runtime_events.py` 的中立契约发布。
 - 生产与 CI 固定使用 Python 3.10；服务依赖必须在各自 `requirements.txt` 和 `requirements.lock` 精确固定。Agent 与 Console 共用一个按两份锁文件联合 SHA-256 标识、并分别通过精确依赖校验的 `runtime-deps-<hash>` 虚拟环境；只有任一锁文件内容变化或环境校验失败时才构建新环境并在健康检查前原子切换。失败时从当次暂存目录恢复旧环境和源码；成功后也必须保留当次远端精确回滚包、上一版虚拟环境和数据库快照，直到业务验收完成后再以独立有界操作清理。

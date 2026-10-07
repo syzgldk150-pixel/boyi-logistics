@@ -710,9 +710,10 @@ AUTOMATION_ACCOUNT_SYSTEM_LABELS = {
     "yunda": "韵达",
     "r7": "R7",
     "r13": "R13",
+    "best": "百世快运",
 }
 
-AUTOMATION_ACCOUNT_SYSTEM_ORDER = ("ronghui", "yunda", "r7", "r13")
+AUTOMATION_ACCOUNT_SYSTEM_ORDER = ("ronghui", "yunda", "r7", "r13", "best")
 
 AUTOMATION_DEFAULT_ACCOUNT_IDS = {
     "ronghui": "ronghui_default",

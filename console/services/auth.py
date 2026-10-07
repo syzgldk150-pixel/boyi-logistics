@@ -596,6 +596,9 @@ class AuthServiceMixin:
             else:
                 credentials_label = "未保存账号密码"
                 credentials_tone = "warning"
+            if account.get("login_kind") == "qr":
+                credentials_label = "微信扫码"
+                credentials_tone = "muted"
             raw_status_value = str(status.get("status") or "").strip()
             status_label = str(status.get("label") or "")
             status_tone = str(status.get("status_tone") or "")
@@ -607,6 +610,11 @@ class AuthServiceMixin:
                 status_tone = "neutral"
                 status_note = "不参与任务执行与登录监控；停用操作不会退出当前会话。"
                 status["last_error_summary"] = ""
+            elif account.get("login_kind") == "qr":
+                credentials_tone = "success" if raw_status_value == "authenticated" else "warning"
+                status_label = {"authenticated": "已登录", "pending_code": "等待扫码", "expired": "已过期", "logged_out": "未登录"}.get(raw_status_value, "异常")
+                status_tone = "success" if raw_status_value == "authenticated" else "warning"
+                status_note = "登录态独立保存；失效后需重新扫码，无需保存动态密码。"
             elif bool(account.get("session_capable")) and raw_status_value == "authenticated" and not has_saved_credentials:
                 status_label = "登录态有效"
                 status_tone = "warning"
@@ -1013,7 +1021,7 @@ class AuthServiceMixin:
                 "POST",
                 f"/internal/v1/admin/accounts/{quoted_id}/login",
                 payload={},
-                success_message="已立即执行一次登录；自动登录开关只控制后续定时校验与掉线恢复。",
+                success_message="登录请求已处理，请查看账号状态并完成页面提示。",
                 timeout=90,
                 account_id=account_id,
             )
@@ -1034,7 +1042,7 @@ class AuthServiceMixin:
                 "POST",
                 f"/internal/v1/admin/accounts/{quoted_id}/submit-code",
                 payload={"code": code},
-                success_message="验证码已提交。",
+                success_message="登录验证已处理。",
                 timeout=45,
                 account_id=account_id,
             )

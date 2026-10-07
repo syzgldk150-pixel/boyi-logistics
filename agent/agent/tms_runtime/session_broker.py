@@ -10,6 +10,7 @@ from agent.tms_runtime.session_adapters import (
 )
 from agent.tms_runtime.session_persistence import SessionPersistenceMixin
 from agent.tms_runtime.session_validation_service import SessionValidationMixin
+from agent.tms_runtime.session_best_adapter import BestSessionAdapter
 
 
 _BROWSER_ACTION_TIMEOUT_ENV = "TMS_BROWSER_ACTION_TIMEOUT_SECONDS"
@@ -90,8 +91,13 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
         self._health_snapshot_meta = self._load_meta()
         self._pending: PendingBrowser | None = None
         self._provider_adapter: SessionProviderAdapter = (
-            YundaSessionAdapter(self) if self._login_mode.startswith("yunda") else RonghuiSessionAdapter(self)
+            BestSessionAdapter(self) if self._is_best_mode()
+            else YundaSessionAdapter(self) if self._login_mode.startswith("yunda")
+            else RonghuiSessionAdapter(self)
         )
+
+    def _is_best_mode(self) -> bool:
+        return self._login_mode == "best_qr"
 
     def _read_existing_meta_for_transition(self) -> dict[str, Any]:
         return self._state_store.read_dict(self._meta_path) or {}
@@ -168,6 +174,7 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
                 "captcha_image": meta.get("captcha_image", "") if meta["status"] == "pending_code" else "",
                 "captcha_image_mime": meta.get("captcha_image_mime", "") if meta["status"] == "pending_code" else "",
                 "captcha_captured_at": meta.get("captcha_captured_at", "") if meta["status"] == "pending_code" else "",
+                "account_choices": meta.get("account_choices", []) if meta["status"] == "pending_code" else [],
             }
 
     def health_snapshot(self) -> dict[str, Any]:
@@ -198,6 +205,8 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
             challenge_type = str(status.get("challenge_type") or "").strip().lower()
             if self._is_yunda_mode():
                 raise TMSAuthStateError("AUTH_PENDING_CODE", YUNDA_SMS_PENDING_MESSAGE)
+            if challenge_type == "qr":
+                raise TMSAuthStateError("AUTH_PENDING_CODE", "百世快运二维码已生成，等待微信扫码确认。")
             if challenge_type == "image":
                 raise TMSAuthStateError("AUTH_PENDING_CODE", f"融辉{challenge_label}已生成，等待人工提交验证码。")
             raise TMSAuthStateError("AUTH_PENDING_CODE", "短信验证码已发送，等待人工提交验证码。")
@@ -304,6 +313,16 @@ def build_session_broker(
         "execute_login_inline": execute_login_inline,
         "browser_action_timeout_sec": browser_action_timeout_sec,
     }
+    if normalized.startswith("best_"):
+        return SessionBroker(
+            **common,
+            username_envs=(), password_envs=(), phone_envs=(),
+            base_origin_envs=(), base_origin_default="https://v5.800best.com",
+            login_path_default="/login", home_path_default="/",
+            login_url_keywords=("/login",),
+            login_body_markers=("普通密码登录", "请输入用户名"),
+            login_page_marker="", login_mode="best_qr",
+        )
     if normalized == "yunda" or normalized.startswith("yunda_"):
         return SessionBroker(
             **common,

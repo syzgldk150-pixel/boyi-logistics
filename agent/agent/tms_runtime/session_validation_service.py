@@ -1,6 +1,7 @@
 """Bounded live validation and capability-scoped session construction."""
 
 from agent.tms_runtime.session_support import *  # noqa: F403
+from agent.tms_runtime.session_best_adapter import BEST_MENU_PATH, best_payload, validate_best_menu
 
 
 _RONGHUI_CAPABILITIES = frozenset(
@@ -21,7 +22,8 @@ _YUNDA_CAPABILITIES = frozenset(
         "yunda_problem",
     }
 )
-_KNOWN_CAPABILITIES = _RONGHUI_CAPABILITIES | _YUNDA_CAPABILITIES
+_BEST_CAPABILITIES = frozenset({"best_home"})
+_KNOWN_CAPABILITIES = _RONGHUI_CAPABILITIES | _YUNDA_CAPABILITIES | _BEST_CAPABILITIES
 
 _RONGHUI_MENU_PROBES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "ronghui_scan": (
@@ -53,7 +55,12 @@ class SessionValidationMixin:
             return session
 
         def raise_on_login(response: Any, *_args: Any, **_kwargs: Any) -> Any:
-            if self._is_yunda_mode():
+            if self._is_best_mode():
+                if urlparse(str(response.url)).path.startswith("/ltlv5-war/web/"):
+                    best_payload(response)
+                elif urlparse(str(response.url)).path in {"/login", "/wxLogin"}:
+                    raise TMSAuthStateError("AUTH_REQUIRED", "百世快运登录态已失效，请重新扫码。")
+            elif self._is_yunda_mode():
                 headers = getattr(response, "headers", {}) or {}
                 location = str(headers.get("Location") or headers.get("location") or "").lower()
                 current_url = str(getattr(response, "url", "") or "").lower()
@@ -345,6 +352,10 @@ class SessionValidationMixin:
                 "融辉写能力没有安全的只读探针，未执行写入测试。",
             )
         config = self.resolve_login_config()
+        if capability == "best_home":
+            response = session.get(config.base_origin + BEST_MENU_PATH, timeout=15)
+            validate_best_menu(response)
+            return
         if capability == "ronghui_home":
             self._validate_ronghui_home_once(session, config)
             return
@@ -377,7 +388,10 @@ class SessionValidationMixin:
                 "SESSION_CAPABILITY_UNKNOWN",
                 f"未知会话 capability: {normalized or '<empty>'}",
             )
-        if self._is_yunda_mode() != (normalized in _YUNDA_CAPABILITIES):
+        if (
+            self._is_yunda_mode() != (normalized in _YUNDA_CAPABILITIES)
+            or self._is_best_mode() != (normalized in _BEST_CAPABILITIES)
+        ):
             raise TMSAuthStateError(
                 "SESSION_CAPABILITY_MISMATCH",
                 "会话账号与目标 capability 不匹配。",
@@ -444,7 +458,7 @@ class SessionValidationMixin:
                 meta = {**meta, "status": status, "last_error_summary": ""}
             if status not in {"authenticated", "expired"} or not self._storage_state_path.exists():
                 return self._save_meta(meta)
-            if not self._is_yunda_mode():
+            if not self._is_yunda_mode() and not self._is_best_mode():
                 context_status, context_error, _changed = self._normalize_ronghui_user_context_state_locked()
                 if context_status != "ready":
                     return self._save_meta(
@@ -475,7 +489,7 @@ class SessionValidationMixin:
                         "last_error_summary": f"登录态校验失败: {exc}",
                     }
                 )
-            capability = "yunda_message" if self._is_yunda_mode() else "ronghui_home"
+            capability = "best_home" if self._is_best_mode() else "yunda_message" if self._is_yunda_mode() else "ronghui_home"
 
         try:
             self._validate_capability_once(session, capability)
@@ -502,6 +516,17 @@ class SessionValidationMixin:
             )
 
     def validate_health_matrix(self) -> dict[str, Any]:
+        if self._is_best_mode():
+            status = self.describe_status(validate=True, force=True)
+            authenticated = status["authenticated"]
+            return {
+                "profile": self.profile_name,
+                "status": "ok" if authenticated else "unavailable",
+                "capabilities": {"best_home": {
+                    "status": "ok" if authenticated else "AUTH_REQUIRED",
+                    "error": status["last_error_summary"],
+                }},
+            }
         capabilities = sorted(_YUNDA_CAPABILITIES if self._is_yunda_mode() else _RONGHUI_CAPABILITIES)
         with self._lock:
             if not self._storage_state_path.exists():

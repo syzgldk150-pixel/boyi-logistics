@@ -1120,6 +1120,8 @@ def _account_options_from_accounts_payload(
         if not option:
             continue
         status = option.get("status") if isinstance(option.get("status"), dict) else {}
+        if pending_only and str(status.get("challenge_type") or "").lower() == "qr":
+            continue
         if pending_only and not (
             bool(status.get("pending_code"))
             or str(status.get("status") or "").strip().lower() == "pending_code"
@@ -1552,7 +1554,7 @@ def _auth_session_uses_auto_image(auth_session: str) -> bool:
         return False
     if account_id.startswith(("ronghui", "price")):
         return True
-    return normalized != "yunda"
+    return not account_id and normalized != "yunda"
 
 
 def _challenge_prompt(resp: dict[str, Any]) -> str:
@@ -1560,6 +1562,8 @@ def _challenge_prompt(resp: dict[str, Any]) -> str:
     challenge_label = str(resp.get("challenge_label") or "").strip() or "验证码"
     account_name = str(resp.get("account_name") or "").strip()
     prefix = f"{account_name} " if account_name else ""
+    if challenge_type == "qr":
+        return f"{prefix}请打开后台业务账号页面，使用微信扫码并确认；无需回复验证码。"
     if challenge_type == "image":
         fallback_summary = str(resp.get("last_error_summary") or "").strip()
         summary = f"{fallback_summary}\n" if fallback_summary else ""
@@ -1617,6 +1621,11 @@ async def _send_code_and_wait(
     if not pending_code and str(resp.get("status_tone") or "").strip().lower() == "success":
         clear_pending(chat_id)
         await _reply_text(chat_id, str(resp.get("label") or "账号凭据验证通过"), reply_type="login_success")
+        return
+
+    if str(resp.get("challenge_type") or "").lower() == "qr":
+        clear_pending(chat_id)
+        await _reply_text(chat_id, _challenge_prompt(resp), reply_type="send_code_prompt")
         return
 
     set_pending(

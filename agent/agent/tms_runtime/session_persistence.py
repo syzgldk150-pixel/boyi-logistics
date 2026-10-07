@@ -236,6 +236,12 @@ class SessionPersistenceMixin:
             ):
                 if meta.get(key):
                     payload[key] = str(meta.get(key) or "")
+            if isinstance(meta.get("account_choices"), list):
+                payload["account_choices"] = [
+                    {"value": str(item["value"]), "label": str(item["label"])}
+                    for item in meta["account_choices"]
+                    if isinstance(item, dict) and item.get("value") and item.get("label")
+                ]
         self._state_store.write_dict(self._meta_path, payload)
         self._health_snapshot_meta = dict(payload)
         try:
@@ -550,7 +556,7 @@ class SessionPersistenceMixin:
             json.dumps(cookies, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        if not self._is_yunda_mode():
+        if not self._is_yunda_mode() and not self._is_best_mode():
             context_status, context_error, _context_changed = self._normalize_ronghui_user_context_state_locked()
             if context_status != "ready":
                 self._invalidate_ronghui_context_locked(context_error)
