@@ -1,5 +1,7 @@
 # console
 
+候选列表使用 Agent 公共预览的 `selection_limit` 显示本次上限，超量选择时禁用确认；服务端仍从同一持久化预览校验。页面不得内置自提/分批业务限额。
+
 迁移 055 后运单与回单按平台存于 `waybill_db`，财务实体存于 `finance_db`；`agent_db` 保留无副本的查询/写入视图。平台写入名称复用 `shared/logistics_tables.py`；运单详情、打印和作废必须传来源及 ID，回单使用全局 ID 保留附件与审核关联。详见 [分库说明](../docs/database_domains.md)。
 
 当前 ECS 数据库连接身份为 Agent `agent@%`、Console `console@%`，两者分别核验三个库的实际权限；旧 `n8n` 不再是 Console 连接配置。Console 独立凭据及 systemd 继承处理见 [分库说明](../docs/database_domains.md#当前数据库连接身份)，不得在发布时覆盖为 Agent 或旧账号。

@@ -1,5 +1,7 @@
 ## 每日应签源码归属
 
+自提/分批选择上限来自已持久化预览的 `selection_limit`。问题件查询绑定插件完整计划，统计的分批快照和表格由插件生成；财务分页按本次捕获实际页大小核验。Host 不重算分类、说明、批量或日期切块规则，升级顺序见 `service_v2_plugins/README.md`。
+
 数据库迁移 055 将实体拆为 `agent_db`（运行/配置）、`waybill_db`（平台分表的运单/回单）与 `finance_db`（财务）。部署期备份并核对分表原文、行数及金额，运行库保留不存数据的显式视图；激活前失败按原数据核对后回退。后续 DDL 与备份必须覆盖三个库，详见 [分库说明](../docs/database_domains.md)。
 
 当前 ECS 数据库连接身份为 Agent `agent@%`、Console `console@%`，两者分别核验三个库的实际权限；旧 `n8n` 不再是 Console 连接配置。Console 独立凭据及 systemd 继承处理见 [分库说明](../docs/database_domains.md#当前数据库连接身份)，不得在发布时覆盖为 Agent 或旧账号。

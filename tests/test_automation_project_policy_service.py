@@ -77,7 +77,7 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         row = self.direct.rows[receipt["invocation_id"]]
         row.update(status="COMPLETED", result_json={"status": "SUCCESS", "error": None,
             "meta": {"observed_at": datetime.now(timezone.utc).isoformat()},
-            "data": {"dry_run": True, "candidate_count": 1,
+            "data": {"dry_run": True, "candidate_count": 1, "selection_limit": 250,
                 "candidates": [{"bill_code": "R0001"}], "preview_fingerprint": "f" * 64}})
         return receipt["invocation_id"]
 

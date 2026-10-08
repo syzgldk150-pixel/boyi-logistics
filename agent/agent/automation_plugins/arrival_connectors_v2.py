@@ -14,13 +14,13 @@ from agent.automation_plugins.reviewed_connectors import reviewed_connector_hand
 from agent.automation_plugins.list_connectors_v2 import encode_arrive_page_result
 from agent.automation_plugins.connector_compatibility import ConnectorRequirementContract
 from agent.automation_plugins.first_party_handler_support import (
-    _ARRIVE_FIELDS, _ARRIVAL_STATS_FIELDS, _ARRIVAL_STATS_V1_OPTIONAL_EMPTY_FIELDS,
+    _ARRIVE_FIELDS, _ARRIVAL_STATS_FIELDS, _SPLIT_SNAPSHOT_FIELDS, _ARRIVAL_STATS_V1_OPTIONAL_EMPTY_FIELDS,
     _ARRIVAL_SNAPSHOT_FIELDS, _PENDING_FIELDS, _SCAN_READ_FIELDS,
     _SCAN_SNAPSHOT_FIELDS, _SCAN_SOURCE_FIELDS,
 )
 from agent.automation_plugins.host_capability_registry import CapabilityEffect as Effect
 from agent.automation_plugins.connector_schemas import (
-    TEXT as _TEXT, DATE as _DATE, BOOL as _BOOL, COUNT as _COUNT, CURSOR as _CURSOR,
+    TEXT as _TEXT, DATE as _DATE, BOOL as _BOOL, COUNT as _COUNT, CURSOR as _CURSOR, CELL as _CELL,
     object_schema as _object, array_schema as _array, record_schema as _record,
 )
 
@@ -104,7 +104,7 @@ def build_arrival_connectors(reviewed) -> tuple[ConnectorDescriptor, ...]:
         projection("arrival_replace", "arrival.snapshot.replace", Effect.INTERNAL_WRITE,
                    _records_input(_ARRIVAL_SNAPSHOT_FIELDS), _projection_result()),
         projection("split_pending_refresh", "split_pending.snapshot.refresh", Effect.INTERNAL_WRITE,
-                   _records_input(_ARRIVAL_STATS_FIELDS, optional=_ARRIVAL_STATS_V1_OPTIONAL_EMPTY_FIELDS), _projection_result()),
+                   _records_input(_SPLIT_SNAPSHOT_FIELDS), _projection_result()),
     ]
     descriptors = [tms, descriptor("arrival_stats_projection", projection_ops, kind=ConnectorBindingKind.HOST_INTERNAL)]
     for suffix in ("primary", "secondary", "pending", "archive", "split_pending"):
@@ -115,6 +115,8 @@ def build_arrival_connectors(reviewed) -> tuple[ConnectorDescriptor, ...]:
             "resource_slot": _TEXT, "record_count": _COUNT, "committed": _BOOL, "verified": _BOOL})
         descriptors.append(descriptor(role, [op("add" if archive else "replace",
             "feishu.sheet.add" if archive else "feishu.sheet.replace", Effect.EXTERNAL_WRITE,
-            _records_input(fields, optional=() if suffix == "pending" else _ARRIVAL_STATS_V1_OPTIONAL_EMPTY_FIELDS, slot=not archive),
+            (_object({"rows": _array(_array(_CELL, maximum=19), maximum=20001),
+                      "resource_slot": _TEXT, "target_date": _DATE}) if suffix == "split_pending" else
+             _records_input(fields, optional=() if suffix == "pending" else _ARRIVAL_STATS_V1_OPTIONAL_EMPTY_FIELDS, slot=not archive)),
             result, operation="network.request", role=role)], kind=ConnectorBindingKind.RESOURCE, role=role))
     return tuple(descriptors)

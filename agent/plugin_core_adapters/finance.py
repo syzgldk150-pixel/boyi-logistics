@@ -7,7 +7,6 @@ and database run identifiers remain in this core-owned adapter.
 
 from __future__ import annotations
 
-import calendar
 import hashlib
 import hmac
 import secrets
@@ -48,9 +47,9 @@ _ROLES = (
     "finance_self_pickup_source",
 )
 _COORDINATOR = _ROLES[0]
-_PAGE_SIZE = 100
-_MAX_PAGES = 200
-_MAX_TARGETS = 255
+_MAX_PAGE_SIZE = 200
+_MAX_SOURCE_ROWS = 20_000
+_MAX_TARGETS = 10_000
 _CAPTURE_TTL_SECONDS = 3_600.0
 MARKED_WRITE_ACTION_KEYS = frozenset(
     {
@@ -449,6 +448,7 @@ class _CaptureState:
     role: str
     account_id: str
     target_date: str
+    page_size: int
     capture_ref: str
     source_context_ref: str
     captured: _CapturedSource
@@ -592,7 +592,7 @@ class _FinanceBrokerHandlers:
         if isinstance(capture, RawFinanceCapture):
             from agent.automation_plugins.first_party_handler_common import _scrub_business_value
 
-            total = _integer(capture.validation.get("source_total"), "source_total", maximum=_PAGE_SIZE * _MAX_PAGES)
+            total = _integer(capture.validation.get("source_total"), "source_total", maximum=_MAX_SOURCE_ROWS)
             if total != len(capture.rows):
                 raise _error("finance raw source total is not closed", "BROKER_SOURCE_INVALID")
             site_code = _text(capture.source_site_code, "source site code", maximum=191)
@@ -625,7 +625,7 @@ class _FinanceBrokerHandlers:
         source_total = _integer(
             capture.validation.get("source_total"),
             "source_total",
-            maximum=_PAGE_SIZE * _MAX_PAGES,
+            maximum=_MAX_SOURCE_ROWS,
         )
         if source_total != len(public_transactions):
             raise _error("finance source total is not closed", "BROKER_SOURCE_INVALID")
@@ -678,20 +678,20 @@ class _FinanceBrokerHandlers:
         if trigger != expected_trigger:
             raise _error("finance trigger type is invalid", "BROKER_ARGUMENT_INVALID")
         roles = values.get("source_roles")
-        if roles != list(_ROLES):
-            raise _error("finance source-role order changed", "BROKER_ARGUMENT_INVALID")
-        if _integer(values.get("max_targets"), "max_targets", minimum=1) != _MAX_TARGETS:
-            raise _error("finance target limit changed", "BROKER_ARGUMENT_INVALID")
-        rescan_days = _integer(values.get("rescan_days"), "rescan_days", minimum=1)
+        if (not isinstance(roles, list) or not roles or any(role not in _ROLES for role in roles)
+                or len(set(roles)) != len(roles)):
+            raise _error("finance source roles are invalid", "BROKER_ARGUMENT_INVALID")
+        maximum = _integer(values.get("max_targets"), "max_targets", minimum=1, maximum=_MAX_TARGETS)
+        _integer(values.get("rescan_days"), "rescan_days", minimum=1)
         targets = _FinanceBrokerHandlers._contract_targets(values)
+        if len(targets) > maximum or any(role not in roles for role, _ in targets):
+            raise _error("finance targets exceed the package plan", "BROKER_ARGUMENT_INVALID")
         if mode == "retry":
             if any(values.get(field) is not None for field in ("start_date", "end_date", "earliest_date_status")):
                 raise _error("finance retry contract contains a date range", "BROKER_ARGUMENT_INVALID")
             if startup or targets or values.get("month_chunks") != []:
                 raise _error("finance retry contract is not closed", "BROKER_ARGUMENT_INVALID")
             _integer(values.get("retry_batch_id"), "retry_batch_id", minimum=1)
-            if rescan_days != 7:
-                raise _error("finance retry rescan window changed", "BROKER_ARGUMENT_INVALID")
             return
         if values.get("retry_batch_id") is not None:
             raise _error("finance non-retry contract has a retry batch", "BROKER_ARGUMENT_INVALID")
@@ -704,16 +704,8 @@ class _FinanceBrokerHandlers:
                 raise _error("finance backfill status is invalid", "BROKER_ARGUMENT_INVALID")
         elif values.get("earliest_date_status") is not None:
             raise _error("finance earliest-date status is invalid", "BROKER_ARGUMENT_INVALID")
-        expected_targets = [
-            (role, target.isoformat())
-            for role in _ROLES
-            for target in (
-                date.fromordinal(ordinal)
-                for ordinal in range(date.fromisoformat(start).toordinal(), date.fromisoformat(end).toordinal() + 1)
-            )
-        ]
-        if targets != expected_targets:
-            raise _error("finance requested targets changed", "BROKER_ARGUMENT_INVALID")
+        if not targets or any(not start <= target_date <= end for _, target_date in targets):
+            raise _error("finance targets are outside the declared range", "BROKER_ARGUMENT_INVALID")
         raw_chunks = values.get("month_chunks")
         if not isinstance(raw_chunks, list) or not raw_chunks:
             raise _error("finance month chunks are invalid", "BROKER_ARGUMENT_INVALID")
@@ -724,17 +716,6 @@ class _FinanceBrokerHandlers:
             observed_end = _business_date(row.get("end_date"), "chunk_end_date")
             if observed_start != chunk_start or observed_end < observed_start or observed_end > end:
                 raise _error("finance month chunks are not contiguous", "BROKER_ARGUMENT_INVALID")
-            parsed_start = date.fromisoformat(observed_start)
-            expected_end = min(
-                date(
-                    parsed_start.year,
-                    parsed_start.month,
-                    calendar.monthrange(parsed_start.year, parsed_start.month)[1],
-                ),
-                date.fromisoformat(end),
-            ).isoformat()
-            if observed_end != expected_end:
-                raise _error("finance month chunk changed", "BROKER_ARGUMENT_INVALID")
             chunk_start = date.fromordinal(date.fromisoformat(observed_end).toordinal() + 1).isoformat()
         if chunk_start != date.fromordinal(date.fromisoformat(end).toordinal() + 1).isoformat():
             raise _error("finance month chunks do not cover the range", "BROKER_ARGUMENT_INVALID")
@@ -923,10 +904,8 @@ class _FinanceBrokerHandlers:
         if values.get("schema_version") != 1:
             raise _error("finance capture version is invalid", "BROKER_ARGUMENT_INVALID")
         target_date = _business_date(values.get("target_date"))
-        page_number = _integer(values.get("page_number"), "page_number", minimum=1, maximum=_MAX_PAGES)
-        page_size = _integer(values.get("page_size"), "page_size", minimum=1, maximum=_PAGE_SIZE)
-        if page_size != _PAGE_SIZE:
-            raise _error("finance page size changed", "BROKER_ARGUMENT_INVALID")
+        page_number = _integer(values.get("page_number"), "page_number", minimum=1, maximum=_MAX_SOURCE_ROWS)
+        page_size = _integer(values.get("page_size"), "page_size", minimum=1, maximum=_MAX_PAGE_SIZE)
         accounts, descriptors = self._descriptors(context)
         account_id = accounts[context.role]
         now = time.monotonic()
@@ -952,6 +931,7 @@ class _FinanceBrokerHandlers:
                 role=context.role,
                 account_id=account_id,
                 target_date=target_date,
+                page_size=page_size,
                 capture_ref=token,
                 source_context_ref=source_context_ref,
                 captured=captured,
@@ -967,6 +947,7 @@ class _FinanceBrokerHandlers:
             or state.role != context.role
             or state.account_id != account_id
             or state.target_date != target_date
+            or state.page_size != page_size
         ):
             raise _error("finance capture cursor changed context", "BROKER_CURSOR_INVALID")
         start = (page_number - 1) * page_size
@@ -1081,13 +1062,13 @@ class _FinanceBrokerHandlers:
         if supplied_capture_sha256 != expected_capture_sha256:
             raise _error("finance capture digest changed", "BROKER_SOURCE_MISMATCH")
         expected_counts = [
-            min(_PAGE_SIZE, state.captured.source_total - start)
-            for start in range(0, state.captured.source_total, _PAGE_SIZE)
+            min(state.page_size, state.captured.source_total - start)
+            for start in range(0, state.captured.source_total, state.page_size)
         ] or [0]
         raw_counts = values.get("page_row_counts")
         if not isinstance(raw_counts, list):
             raise _error("finance page counts are invalid", "BROKER_ARGUMENT_INVALID")
-        observed_counts = [_integer(value, "page_row_count", maximum=_PAGE_SIZE) for value in raw_counts]
+        observed_counts = [_integer(value, "page_row_count", maximum=state.page_size) for value in raw_counts]
         if observed_counts != expected_counts:
             raise _error("finance page counts changed", "BROKER_SOURCE_MISMATCH")
         if _integer(values.get("transaction_count"), "transaction_count") != state.captured.source_total:
@@ -1168,7 +1149,7 @@ class _FinanceBrokerHandlers:
         value: object,
         target_date: str,
     ) -> list[dict[str, Any]]:
-        if not isinstance(value, list) or len(value) > _PAGE_SIZE * _MAX_PAGES:
+        if not isinstance(value, list) or len(value) > _MAX_SOURCE_ROWS:
             raise _error("finance transactions are invalid", "BROKER_ARGUMENT_INVALID")
         rows: list[dict[str, Any]] = []
         identities: set[str] = set()
@@ -1196,7 +1177,7 @@ class _FinanceBrokerHandlers:
         value: object,
         target_date: str,
     ) -> list[dict[str, Any]]:
-        if not isinstance(value, list) or len(value) > _PAGE_SIZE * _MAX_PAGES:
+        if not isinstance(value, list) or len(value) > _MAX_SOURCE_ROWS:
             raise _error("finance summaries are invalid", "BROKER_ARGUMENT_INVALID")
         rows: list[dict[str, Any]] = []
         for raw in value:

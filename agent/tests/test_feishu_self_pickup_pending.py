@@ -39,6 +39,7 @@ class FeishuSelfPickupPendingTests(unittest.TestCase):
                             observed_at + timedelta(minutes=15)
                         ).isoformat(),
                         "candidate_count": 0,
+                        "selection_limit": 250,
                         "candidates": [],
                         "summary": {"duplicate_source_rows": 0},
                         "can_confirm": True,

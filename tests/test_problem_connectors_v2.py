@@ -9,7 +9,8 @@ from agent.automation_plugins.connector_registry import (
     _result_validation_view,
 )
 from agent.automation_plugins.problem_connectors_v2 import build_problem_connectors
-from agent.automation_plugins.problem_handlers import build_problem_handler_map, _SELF_PRIMARY_CAUSE, _SELF_DAXIANG_CAUSE
+from agent.automation_plugins.problem_handlers import build_problem_handler_map
+from tests.test_problem_plugin_core_handlers import _SELF_PRIMARY_CAUSE, _SELF_DAXIANG_CAUSE, _query_plan
 from tests.production_connector_support import ConnectorTestHost
 from tests.test_problem_plugin_core_handlers import _ports, _context, _problem_result
 from tests.first_party_action_payload_support import load_first_party_action
@@ -33,7 +34,7 @@ def test_problem_query_create_verify_use_the_same_bound_plan_and_exact_account(s
             return {"ready":True,"existing":None}
         return _problem_result(plan,confirmed=operation=="verify")
     host = _host("self_pickup_problem_upload",problem_action=action)
-    query = host.invoke(suffix,"query",{"bill_code":"R001"})
+    query = host.invoke(suffix,"query",_query_plan(cause=cause))
     assert query["precondition_ref"].startswith("problemref_")
     create_args = {"bill_code":"R001","precondition_ref":query["precondition_ref"],"problem_cause":cause,
                    "problem_owner_type":"特殊时效","problem_type":"开单为自提件","update_postpone_days":True}
@@ -49,7 +50,7 @@ def test_problem_query_create_verify_use_the_same_bound_plan_and_exact_account(s
     assert replay.value.code == "BROKER_CURSOR_INVALID"
     # A new explicit invocation obtains its own precondition; an old consumed
     # reference does not prevent it from executing.
-    query = host.invoke(suffix,"query",{"bill_code":"R001"})
+    query = host.invoke(suffix,"query",_query_plan(cause=cause))
     host.invoke(suffix,"create",{**create_args,"precondition_ref":query["precondition_ref"]})
     assert len([call for call in calls if call[1]=="create"]) == 2
 
@@ -58,7 +59,7 @@ def test_unknown_write_keeps_the_failed_readback_code():
     def action(_account, operation, _plan):
         return {"ready":True,"existing":None} if operation == "query" else {"saved":True}
     host = _host("self_pickup_problem_upload",problem_action=action)
-    query = host.invoke("self_pickup_primary_ronghui","query",{"bill_code":"R001"})
+    query = host.invoke("self_pickup_primary_ronghui","query",_query_plan())
     with pytest.raises(ConnectorInvocationError) as failure:
         host.invoke("self_pickup_primary_ronghui","create",{"bill_code":"R001",
             "precondition_ref":query["precondition_ref"],"problem_cause":_SELF_PRIMARY_CAUSE,
@@ -80,7 +81,7 @@ def test_split_plugin_runs_its_real_classification_and_preview_through_connector
 def test_chinese_problem_classification_is_business_text_not_an_absolute_path():
     host = _host("split_pending_problem_upload")
     result = host.invoke("split_pending_ronghui","problem_query",{"bill_code":"R001",
-        "problem_cause_sha256":"a"*64,"problem_owner_type":"交接异常","problem_type":"少货/分批"})
+        "problem_cause_sha256":"a"*64,"problem_owner_type":"交接异常","problem_type":"少货/分批","update_postpone_days":False})
     assert result["ready"] is True
 
 

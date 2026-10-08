@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from shared.automation_preview_contract import PREVIEW_CONTRACT_VERSION, SCAN_PREVIEW_PUBLIC_FIELDS, normalize_scan_preview_projection, valid_preview_state
+from shared.automation_preview_contract import PREVIEW_CONTRACT_VERSION, SCAN_PREVIEW_PUBLIC_FIELDS, normalize_scan_preview_projection, valid_preview_state, selection_limit
 
 from console.app_support import normalize_feedback_text
 from console.services.automation_projects import AUTOMATION_PROJECT_ID_RE
@@ -134,8 +134,13 @@ def normalize_selection_preview_projection(
 ) -> dict[str, Any] | None:
     """Accept only the simple, signed public selection contract."""
 
-    if not isinstance(raw, Mapping) or set(raw) != SELECTION_PREVIEW_PUBLIC_FIELDS:
+    if not isinstance(raw, Mapping) or set(raw) - {"selection_limit"} != SELECTION_PREVIEW_PUBLIC_FIELDS:
         return None
+    if "selection_limit" in raw:
+        try:
+            selection_limit(raw["selection_limit"])
+        except ValueError:
+            return None
     automation_id = str(raw.get("automation_id") or "").strip()
     if (
         automation_id != expected_automation_id
@@ -201,6 +206,7 @@ def normalize_selection_preview_projection(
         "preview_invocation_id": preview_invocation_id,
         **timestamps,
         "candidate_count": candidate_count,
+        **({"selection_limit": raw["selection_limit"]} if "selection_limit" in raw else {}),
         "candidates": normalized_candidates,
         "summary": dict(summary),
         "can_confirm": raw["can_confirm"],

@@ -9,9 +9,19 @@ from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.problem_handlers import (
     ProblemHandlerPorts,
-    _SELF_PRIMARY_CAUSE,
     build_problem_handler_map,
 )
+
+
+from tests.first_party_action_payload_support import load_first_party_action
+
+_SELF_PRIMARY_CAUSE = load_first_party_action("self_pickup_problem_upload")._PRIMARY_CAUSE
+_SELF_DAXIANG_CAUSE = load_first_party_action("self_pickup_problem_upload")._DAXIANG_CAUSE
+
+
+def _query_plan(bill_code="R001", cause=_SELF_PRIMARY_CAUSE):
+    return {"bill_code": bill_code, "problem_cause_sha256": hashlib.sha256(cause.encode()).hexdigest(),
+            "problem_owner_type": "特殊时效", "problem_type": "开单为自提件", "update_postpone_days": True}
 
 
 _SECRET = b"problem-handler-tests-use-a-stable-secret"
@@ -160,7 +170,7 @@ def test_self_pickup_precondition_is_short_opaque_one_time_and_plan_bound() -> N
     )
     query = handlers[(query_context.operation, query_context.action)](
         query_context,
-        {"bill_code": "R001"},
+        _query_plan(),
     )
     reference = query["precondition_ref"]
     assert len(reference) < 512
@@ -217,7 +227,7 @@ def test_problem_write_authorizes_once_before_receipt_and_query_does_not() -> No
     )
     query = handlers[(query_context.operation, query_context.action)](
         query_context,
-        {"bill_code": "R001"},
+        _query_plan(),
     )
     create_context = replace(
         query_context,
@@ -264,7 +274,7 @@ def test_problem_write_requires_authoritative_readback_and_verify_is_fresh() -> 
     )
     query = handlers[(query_context.operation, query_context.action)](
         query_context,
-        {"bill_code": "R001"},
+        _query_plan(),
     )
     create_context = replace(query_context, action="ronghui.problem.create")
     with pytest.raises(PluginExecutionError) as unknown:

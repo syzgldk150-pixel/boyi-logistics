@@ -495,6 +495,7 @@
           </div>
           <div class="selection-preview-toolbar">
             <span><b data-selection-preview-selected>0</b> / <span data-selection-preview-count>0</span> 票已选</span>
+            <span data-selection-preview-limit></span>
             <span>有效期至 <b data-selection-preview-expires>—</b></span>
             <button class="ghost-btn" type="button" data-selection-preview-toggle-all>全选</button>
           </div>
@@ -1311,13 +1312,16 @@
 
     function syncSelectionPreviewCount() {
       const selected = selectedBillCodes();
+      const maximum = Number(selectionPreviewPanel?.dataset.selectionLimit || 0);
+      const limitLabel = selectionPreviewPanel?.querySelector("[data-selection-preview-limit]");
+      if (limitLabel) limitLabel.textContent = maximum > 0 ? `每次最多 ${maximum} 票${selected.length > maximum ? "，已超出上限，请减少选择" : ""}` : "";
       const checkboxes = selectionPreviewList
         ? Array.from(selectionPreviewList.querySelectorAll("input[type='checkbox']"))
         : [];
       const selectedTarget = selectionPreviewPanel?.querySelector("[data-selection-preview-selected]");
       if (selectedTarget) selectedTarget.textContent = String(selected.length);
       if (selectionPreviewConfirm) {
-        selectionPreviewConfirm.disabled = !selectionPreviewCanConfirm || !activeSelectionPreviewId || selected.length === 0;
+        selectionPreviewConfirm.disabled = !selectionPreviewCanConfirm || !activeSelectionPreviewId || selected.length === 0 || (maximum > 0 && selected.length > maximum);
       }
       if (selectionPreviewToggleAll) {
         const allSelected = checkboxes.length > 0 && selected.length === checkboxes.length;
@@ -1381,6 +1385,7 @@
       selectionConfirmationRetryOnly = false;
       const canConfirm = preview.can_confirm === true;
       selectionPreviewCanConfirm = canConfirm;
+      selectionPreviewPanel.dataset.selectionLimit = String(preview.selection_limit || "");
       const feedback = previewFeedback(preview, "selection");
       const candidates = Array.isArray(preview.candidates) ? preview.candidates : [];
       const title = selectionPreviewPanel.querySelector("[data-selection-preview-title]");

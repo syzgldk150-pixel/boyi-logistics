@@ -13,13 +13,13 @@ from tests.service_v2_production_protocol_support import PackagedConnectorHost
 from tests.test_finance_core_adapter import ACCOUNTS, ROLES, _AccountManager, _Repository, _capture
 
 
-def _host(tmp_path, *, drift=False):
+def _host(tmp_path, *, drift=False, capture_port=_capture):
     repository = _Repository()
     captures = []
 
     def capture(descriptor, target_date):
         captures.append((descriptor['account_id'], target_date))
-        result = _capture(descriptor, target_date)
+        result = capture_port(descriptor, target_date)
         if drift and len(captures) == 2:
             result.transactions[0]['new_amount'] = '79.7500'
         return result

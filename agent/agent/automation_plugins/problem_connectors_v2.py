@@ -50,7 +50,7 @@ def build_problem_connectors(reviewed):
     for self_pickup in (True, False):
         prefix = "self_pickup" if self_pickup else "split_pending"
         tool = "self_pickup_problem_upload" if self_pickup else "split_pending_problem_upload"
-        maximum = 2000 if self_pickup else 5000
+        maximum = 10_000
         source_role = f"{prefix}_source_sheet"
         target_role = "split_pending_target_sheet"
 
@@ -75,16 +75,15 @@ def build_problem_connectors(reviewed):
 
         source = requirement(source_role,kind=Kind.RESOURCE,role=source_role)
         source_read = op("read_rows","network.request","feishu.sheet.read_rows",source_role,Effect.READ,
-            obj({"end_column":{"type":"string","pattern":"^S$"},"max_rows":{"type":"integer","minimum":maximum,"maximum":maximum}}),
+            obj({"end_column":{"type":"string","pattern":"^S$"},"max_rows":{"type":"integer","minimum":1,"maximum":maximum}}),
             obj({"complete":BOOL,"rows":array(array(CELL,maximum=19),maximum=maximum)}),resource=source)
         descriptors.append(descriptor(source_role,[source_read],kind=Kind.RESOURCE,role=source_role))
 
         account_services = [("self_pickup_primary_ronghui","account_id","self_pickup_primary"),("self_pickup_daxiang_s_ronghui","daxiang_s_account_id","self_pickup_daxiang_s")] if self_pickup else [("split_pending_ronghui","account_id","split_pending_ronghui")]
         for suffix, role, binding_role in account_services:
             account = requirement(suffix,kind=Kind.ACCOUNT,role=binding_role)
-            query_fields = {"bill_code":_CODE}
-            if not self_pickup:
-                query_fields.update(problem_cause_sha256=_HASH,problem_owner_type=_NAME,problem_type=_NAME)
+            query_fields = {"bill_code":_CODE,"problem_cause_sha256":_HASH,
+                "problem_owner_type":_NAME,"problem_type":_NAME,"update_postpone_days":BOOL}
             query_output = obj({"bill_code":_CODE,"existing":BOOL,"precondition_ref":_REF,"ready":BOOL,
                 "external_id":TEXT,"registered_at":TEXT},["bill_code","existing","precondition_ref","ready"])
             create_fields = {"bill_code":_CODE,"precondition_ref":_REF,"problem_cause":{"type":"string","minLength":1,"maxLength":2000},
@@ -104,15 +103,15 @@ def build_problem_connectors(reviewed):
         if self_pickup:
             continue
         target = requirement(target_role,kind=Kind.RESOURCE,role=target_role)
-        rows_schema = array(array(CELL,maximum=19),maximum=5001)
+        rows_schema = array(array(CELL,maximum=19),maximum=10001)
         descriptors.append(descriptor(target_role,[op("replace_rows","network.request","feishu.sheet.replace_rows",target_role,
             Effect.EXTERNAL_WRITE,obj({"rows":rows_schema}),obj({"committed":BOOL,"written":COUNT}),resource=target)],kind=Kind.RESOURCE,role=target_role))
         descriptors.append(descriptor("split_pending_projection",[
             op("snapshot_read","projection.invoke","split_pending.snapshot.read",target_role,Effect.READ,
-                obj({"max_records":{"type":"integer","minimum":5000,"maximum":5000}}),
-                obj({"complete":BOOL,"records":array(obj({key:TEXT for key in _SNAPSHOT_PUBLIC_FIELDS}),maximum=5000)}),resource=target),
+                obj({"max_records":{"type":"integer","minimum":1,"maximum":10000}}),
+                obj({"complete":BOOL,"records":array(obj({key:TEXT for key in _SNAPSHOT_PUBLIC_FIELDS}),maximum=10000)}),resource=target),
             op("snapshot_replace","projection.invoke","split_pending.snapshot.replace",target_role,Effect.INTERNAL_WRITE,
-                obj({"records":array(record(sorted(_SNAPSHOT_FIELDS)),maximum=5000)}),obj({"committed":BOOL,"record_count":COUNT}),resource=target),
+                obj({"records":array(record(sorted(_SNAPSHOT_FIELDS)),maximum=10000)}),obj({"committed":BOOL,"record_count":COUNT}),resource=target),
             op("result_upsert","projection.invoke","split_pending.result.upsert",target_role,Effect.INTERNAL_WRITE,
                 obj({"bill_code":_CODE,"complaint_status":_NAME,"problem_item_status":_NAME,"problem_type":_NAME}),
                 obj({"committed":BOOL}),resource=target),

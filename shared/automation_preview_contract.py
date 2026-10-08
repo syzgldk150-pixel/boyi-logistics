@@ -100,3 +100,10 @@ def normalize_scan_preview_projection(
         "can_confirm": raw["can_confirm"],
         "preview_state": raw["preview_state"],
     }
+
+
+def selection_limit(value: object) -> int:
+    """The installed package owns its business limit; bound public payload size."""
+    if type(value) is not int or not 1 <= value <= 10000:
+        raise ValueError("selection_limit must be an integer between 1 and 10000")
+    return value

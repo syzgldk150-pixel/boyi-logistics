@@ -50,34 +50,9 @@ _SPLIT_TARGET_ROLE = "split_pending_target_sheet"
 _PRIMARY_ACCOUNT_ROLE = "account_id"
 _DAXIANG_ACCOUNT_ROLE = "daxiang_s_account_id"
 _MAX_COLUMNS = 19
-_SELF_MAX_ROWS = 2_000
-_SPLIT_MAX_ROWS = 5_000
+_MAX_SHEET_ROWS = 10_000
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
-_SELF_PROBLEM_TYPE = "开单为自提件"
-_SELF_OWNER_TYPE = "特殊时效"
-_SELF_PRIMARY_CAUSE = (
-    "货已到，尽快安排提货，自提部免费仓储只有1天，尽快提走，"
-    "超时产生仓储费0.03元/KG/天10元票/天；自提电话：0739-5186128 "
-    "地址：双清区建设南路白马田伟业物流城内融辉物流(导航：勇胜物流)；"
-    "托盘类、少量件数类货物提货时间:9:00-20:00；"
-    "件数多的需要装卸工操作的货物提货时间10:00-20:00；"
-)
-_SELF_DAXIANG_CAUSE = (
-    "货已到，尽快安排提货，网点免费仓储只有3天，尽快提走，"
-    "超时产生仓储费0.03元/KG/天10元票/天；自提电话：0739-5186128 "
-    "地址：双清区建设南路白马田伟业物流城内融辉物流(导航：勇胜物流)；"
-    "托盘类、少量件数类货物提货时间:9:00-20:00；"
-    "件数多的需要装卸工操作的货物提货时间10:00-20:00"
-)
-_SELF_CAUSE_BY_ROLE = {
-    _PRIMARY_ACCOUNT_ROLE: _SELF_PRIMARY_CAUSE,
-    _DAXIANG_ACCOUNT_ROLE: _SELF_DAXIANG_CAUSE,
-}
-_SPLIT_OWNER_BY_TYPE = {
-    "少货/分批": "交接异常",
-    "有发未到": "通知类（不顺延时效）",
-}
 MARKED_WRITE_ACTION_KEYS = frozenset(
     {
         ("browser.invoke", "ronghui.problem.create"),
@@ -361,59 +336,26 @@ class ProblemHandlerPorts:
     authorize_capability: CapabilityAuthorizationPort | None = None
 
 
-def _self_plan(context: CoreBrokerInvocationContext, bill_code: str) -> dict[str, Any]:
-    cause = _SELF_CAUSE_BY_ROLE.get(context.role)
-    if cause is None:
-        raise _error("self-pickup account role is invalid", "BROKER_CONTEXT_INVALID")
-    return {
-        "bill_code": bill_code,
-        "problem_cause_sha256": hashlib.sha256(cause.encode("utf-8")).hexdigest(),
-        "problem_owner_type": _SELF_OWNER_TYPE,
-        "problem_type": _SELF_PROBLEM_TYPE,
-        "update_postpone_days": True,
-    }
-
-
-def _split_plan(arguments: Mapping[str, Any]) -> dict[str, Any]:
-    values = _strict(
-        arguments,
-        {
-            "bill_code",
-            "problem_cause_sha256",
-            "problem_owner_type",
-            "problem_type",
-        },
-    )
-    problem_type = _text(values.get("problem_type"), "problem_type", maximum=64)
-    owner = _text(
-        values.get("problem_owner_type"),
-        "problem_owner_type",
-        maximum=64,
-    )
-    if _SPLIT_OWNER_BY_TYPE.get(problem_type) != owner:
-        raise _error("split problem classification is invalid", "BROKER_ARGUMENT_INVALID")
-    return {
-        "bill_code": _waybill(values.get("bill_code")),
-        "problem_cause_sha256": _sha256(
-            values.get("problem_cause_sha256"),
-            "problem_cause_sha256",
-        ),
-        "problem_owner_type": owner,
-        "problem_type": problem_type,
-        "update_postpone_days": False,
-    }
-
-
 def _problem_plan_from_query(
     context: CoreBrokerInvocationContext,
     arguments: Mapping[str, Any],
 ) -> dict[str, Any]:
-    if context.tool_name == _SELF_TOOL:
-        values = _strict(arguments, {"bill_code"})
-        return _self_plan(context, _waybill(values.get("bill_code")))
-    if context.tool_name == _SPLIT_TOOL:
-        return _split_plan(arguments)
-    raise _error("problem tool is invalid", "BROKER_CONTEXT_INVALID")
+    if context.tool_name not in {_SELF_TOOL, _SPLIT_TOOL}:
+        raise _error("problem tool is invalid", "BROKER_CONTEXT_INVALID")
+    values = _strict(arguments, {
+        "bill_code", "problem_cause_sha256", "problem_owner_type",
+        "problem_type", "update_postpone_days",
+    })
+    update_postpone = values.get("update_postpone_days")
+    if type(update_postpone) is not bool:
+        raise _error("problem plan requires update_postpone_days", "BROKER_ARGUMENT_INVALID")
+    return {
+        "bill_code": _waybill(values.get("bill_code")),
+        "problem_cause_sha256": _sha256(values.get("problem_cause_sha256"), "problem_cause_sha256"),
+        "problem_owner_type": _text(values.get("problem_owner_type"), "problem_owner_type", maximum=64),
+        "problem_type": _text(values.get("problem_type"), "problem_type", maximum=64),
+        "update_postpone_days": update_postpone,
+    }
 
 
 def _problem_identity(value: object, plan: Mapping[str, Any]) -> dict[str, str]:
@@ -523,17 +465,12 @@ class _ProblemHandlers:
         values = _strict(arguments, {"end_column", "max_rows"})
         if values.get("end_column") != "S":
             raise _error("sheet end column is invalid", "BROKER_ARGUMENT_INVALID")
-        signed_maximum = (
-            _SELF_MAX_ROWS if context.tool_name == _SELF_TOOL else _SPLIT_MAX_ROWS
-        )
         maximum = _integer(
             values.get("max_rows"),
             "max_rows",
             minimum=1,
-            maximum=signed_maximum,
+            maximum=_MAX_SHEET_ROWS,
         )
-        if maximum != signed_maximum:
-            raise _error("sheet row bound changed", "BROKER_ARGUMENT_INVALID")
         role = next(iter(roles))
         resource_id = _resource_id(context, role)
         raw = self._ports.sheet_rows_read(resource_id, "S", maximum)
@@ -797,10 +734,8 @@ class _ProblemHandlers:
             values.get("max_records"),
             "max_records",
             minimum=1,
-            maximum=_SPLIT_MAX_ROWS,
+            maximum=_MAX_SHEET_ROWS,
         )
-        if maximum != _SPLIT_MAX_ROWS:
-            raise _error("snapshot bound changed", "BROKER_ARGUMENT_INVALID")
         raw = self._ports.snapshot_read(maximum)
         if (
             not isinstance(raw, Sequence)
@@ -841,7 +776,7 @@ class _ProblemHandlers:
 
     @staticmethod
     def _snapshot_records(value: object) -> list[dict[str, Any]]:
-        if not isinstance(value, list) or len(value) > _SPLIT_MAX_ROWS:
+        if not isinstance(value, list) or len(value) > _MAX_SHEET_ROWS:
             raise _error("split snapshot records are invalid", "BROKER_ARGUMENT_INVALID")
         records: list[dict[str, Any]] = []
         identities: set[str] = set()
@@ -863,12 +798,6 @@ class _ProblemHandlers:
                 maximum=64,
             )
             cause = _text(raw.get("problem_cause"), "problem_cause", maximum=2_000)
-            if _SPLIT_OWNER_BY_TYPE.get(problem_type) != owner:
-                raise _error("split classification is invalid", "BROKER_ARGUMENT_INVALID")
-            if problem_type == "有发未到" and cause != "有发未到":
-                raise _error("split cause is invalid", "BROKER_ARGUMENT_INVALID")
-            if problem_type == "少货/分批" and cause != f"应到{expected}件 实际到{arrived}件":
-                raise _error("split cause is invalid", "BROKER_ARGUMENT_INVALID")
             record = {
                 "arrived_quantity": arrived,
                 "bill_code": bill_code,
@@ -886,7 +815,7 @@ class _ProblemHandlers:
                     raw.get("source_row_no"),
                     "source_row_no",
                     minimum=2,
-                    maximum=_SPLIT_MAX_ROWS,
+                    maximum=_MAX_SHEET_ROWS,
                 ),
             }
             identities.add(bill_code)
@@ -950,7 +879,7 @@ class _ProblemHandlers:
         )
         resource_id = _resource_id(context, _SPLIT_TARGET_ROLE)
         values = _strict(arguments, {"rows"})
-        rows = _rows(values.get("rows"), maximum=_SPLIT_MAX_ROWS + 1)
+        rows = _rows(values.get("rows"), maximum=_MAX_SHEET_ROWS + 1)
         if not rows or tuple(rows[0]) != _TARGET_HEADERS:
             raise _error("split target header changed", "BROKER_ARGUMENT_INVALID")
         if any(len(row) != _MAX_COLUMNS for row in rows):
@@ -1023,10 +952,7 @@ class _ProblemHandlers:
         }
         if result["problem_item_status"] != "success":
             raise _error("problem result is not successful", "BROKER_ARGUMENT_INVALID")
-        if (
-            result["problem_type"] not in _SPLIT_OWNER_BY_TYPE
-            or result["complaint_status"] != "not_applicable"
-        ):
+        if result["complaint_status"] != "not_applicable":
             raise _error("problem result classification is invalid", "BROKER_ARGUMENT_INVALID")
         self._mark_write_started(context)
         raw = self._ports.result_upsert(result)
@@ -1096,8 +1022,6 @@ class _ProblemHandlers:
                 maximum=256,
             ),
         }
-        if event["problem_type"] not in _SPLIT_OWNER_BY_TYPE:
-            raise _error("problem event type is invalid", "BROKER_ARGUMENT_INVALID")
         for field in ("before_cutoff", "postpones_sign"):
             if type(values.get(field)) is not bool:
                 raise _error("problem event requires explicit plugin classification", "BROKER_ARGUMENT_INVALID")

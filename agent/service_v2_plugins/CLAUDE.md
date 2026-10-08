@@ -1,5 +1,7 @@
 # 当前 V2 插件源码规则
 
+自提/分批在预览中返回 `selection_limit`，查询提交完整问题件计划，Host 不保存类型、责任方或问题说明公式。分批数量分类唯一源码为 `split_pending_problem_upload_v2/payload/split_rules.py`，共享构建器将相同字节装入统计和分批两个独立 ZIP；修改此规则需同时升级这两个包。统计提交已分类快照及渲染行，Host 只落库、写表并核验。财务包决定重扫天数、目标集合、日期切块和页大小，Host 绑定计划、完整性与实际回读。冻结 Host 的真实 ZIP 回归见 `tests/test_plugin_business_boundary.py`。
+
 当前业务动作只维护在本目录对应插件的 `payload/`；每日应签规则、采集和渲染在 `sync_daily_should_sign_v2/payload/business/`。Host 不维护应签类型清单或覆盖插件提交的判断。公共字段协议在根目录 `shared/ronghui_*_fields.py`，修改公共协议需要核心更新。
 
 打包不得读取 `agent/legacy/` 或已退役的 `agent/first_party_automation_plugins/`。迁移历史、旧摘要和 SQL 保留用于离线回归，不能作为线上回退入口。维护与发布顺序见本目录 `README.md`；各插件现行版本以其 `manifest.json` 为准，线上版本以后台实例记录为准。

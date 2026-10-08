@@ -9,7 +9,7 @@ from agent.orchestration.models import OrchestrationError
 from agent.orchestration.scan_preview_binding import _validate_preview_evidence, _bind_formal_arguments, validate_scan_preview_context
 from agent.orchestration.selection_preview_binding import SELECTION_PREVIEW_PROJECTS, _validate_candidates, _validate_generic_candidates, _selected_bill_codes, _summary, _service_v2_summary
 from shared.automation_project_authorization import canonical_sha256
-from shared.automation_preview_contract import PREVIEW_CONTRACT_VERSION, preview_observation_too_far_ahead
+from shared.automation_preview_contract import PREVIEW_CONTRACT_VERSION, preview_observation_too_far_ahead, selection_limit
 
 
 def _load(repository, invocation_id, *, entry, contract, actor_id=None):
@@ -54,6 +54,15 @@ def _candidates(entry, data):
     return _validate_candidates(rows, spec["candidate_fields"])
 
 
+def _selection_limit(entry, data):
+    if entry.runtime_model != "SERVICE_V2":
+        return 90 if entry.plugin_id == "split_pending_problem_upload" else 250
+    try:
+        return selection_limit(data.get("selection_limit"))
+    except ValueError as exc:
+        raise OrchestrationError("PREVIEW_INVALID", "候选清单缺少插件选择上限，请更新插件并重新读取") from exc
+
+
 def project_preview(repository, invocation_id, *, entry, contract, scan):
     row, result, data, observed, expires = _load(repository, invocation_id, entry=entry, contract=contract)
     state = "CONSUMED" if row.get("preview_consumed_by") else "AVAILABLE" if datetime.now(timezone.utc) < expires else "EXPIRED"
@@ -63,6 +72,8 @@ def project_preview(repository, invocation_id, *, entry, contract, scan):
         projection.update({key: evidence[key] for key in ("target_date", "source_page_count", "normalized_record_count", "selection_count", "batch_count")})
     else:
         candidates = _candidates(entry, data)
+        if entry.runtime_model == "SERVICE_V2":
+            projection["selection_limit"] = _selection_limit(entry, data)
         projection.update(title=entry.display_name, candidates=candidates, candidate_count=len(candidates), summary=_service_v2_summary(data) if entry.runtime_model == "SERVICE_V2" else _summary(entry.automation_id, data))
     return projection
 
@@ -93,8 +104,9 @@ def confirm_preview(repository, invocation_id, *, entry, contract, actor_id, arg
     if {key: value for key, value in row["arguments_json"].items() if key not in selection_fields} != {key: value for key, value in arguments.items() if key not in selection_fields}:
         raise OrchestrationError("PREVIEW_STALE", "正式执行条件与候选清单不同，请重新读取")
     selected = _selected_bill_codes(selected_bill_codes or ())
-    if not selected or len(selected) > (90 if entry.plugin_id == "split_pending_problem_upload" else 250):
-        raise OrchestrationError("SELECTION_INPUT_INVALID", "请选择范围内的候选运单")
+    maximum = _selection_limit(entry, data)
+    if not selected or len(selected) > maximum:
+        raise OrchestrationError("SELECTION_INPUT_INVALID", f"本次最多选择 {maximum} 票运单，请减少选择数量")
     available = {item["bill_code"] for item in candidates}
     if not set(selected) <= available:
         raise OrchestrationError("SELECTION_INPUT_INVALID", "所选运单不属于本次候选清单")

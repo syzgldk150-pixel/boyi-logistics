@@ -38,6 +38,8 @@ def load_first_party_action(plugin_id: str):
     module = importlib.util.module_from_spec(spec)
     package_previous = {}
     local_sources = [(path.stem, path) for path in source.parent.glob("*.py")]
+    if plugin_id == "sync_arrival_stats":
+        local_sources.append(("split_rules", CURRENT_ROOT / "split_pending_problem_upload_v2/payload/split_rules.py"))
     parser_name = {"sync_finance_bills": "finance_fields", "sync_customer_service_problems": "customer_problem_fields"}.get(plugin_id)
     if parser_name:
         local_sources.append((parser_name, CURRENT_ROOT.parent.parent / "shared" / ("ronghui_" + parser_name + ".py")))

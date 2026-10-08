@@ -405,7 +405,13 @@ def _preflight_candidate(
             "browser.invoke",
             action="ronghui.problem.query",
             role=str(candidate["account_role"]),
-            arguments={"bill_code": candidate["bill_code"]},
+            arguments={
+                "bill_code": candidate["bill_code"],
+                "problem_cause_sha256": candidate["problem_cause_sha256"],
+                "problem_owner_type": _PROBLEM_OWNER_TYPE,
+                "problem_type": _PROBLEM_TYPE,
+                "update_postpone_days": True,
+            },
         ),
         "Ronghui problem preflight",
     )
@@ -515,6 +521,7 @@ def run_action(
     previews = [_candidate_preview(candidate) for candidate in candidates]
     common_data: dict[str, object] = {
         "candidate_count": len(candidates),
+        "selection_limit": _MAX_SELECTED,
         "candidates": previews,
         "duplicate_source_rows": duplicate_count,
         "preview_fingerprint": fingerprint,

@@ -8,6 +8,7 @@ arrival counting, quantity caps, commit order and result evidence.
 from __future__ import annotations
 
 import re
+from split_rules import arrival_split_projection
 from collections import Counter
 from collections.abc import Callable, Mapping
 from datetime import datetime
@@ -576,6 +577,8 @@ def run_action(
         for row in export_records
     ]
 
+    split_records, split_rows = arrival_split_projection(stats_records)
+
     warnings: list[str] = []
     if dry_run:
         commit_state = "dry_run_complete"
@@ -651,7 +654,7 @@ def run_action(
                 "projection.invoke",
                 action="split_pending.snapshot.refresh",
                 role=_ROLE,
-                arguments={"records": stats_records, "target_date": target_date},
+                arguments={"records": split_records, "target_date": target_date},
             ),
             "split-pending snapshot",
         )
@@ -663,7 +666,7 @@ def run_action(
                 role="arrival_stats_split_pending_sheet",
                 arguments={
                     "resource_slot": "arrival_stats_split_pending",
-                    "records": stats_records,
+                    "rows": split_rows,
                     "target_date": target_date,
                 },
             ),

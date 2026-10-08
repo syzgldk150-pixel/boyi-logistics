@@ -1,5 +1,7 @@
 # agent
 
+Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一预览上限校验，缺失即失败。问题件查询必须显式绑定类型、责任方、说明摘要和顺延标志；分批快照接受插件提交的完整分类，Host 不重算业务规则。财务合同绑定包内计划及实际捕获页大小，保留来源总数、金额和写后回读校验。
+
 ## 当前身份与统一对话边界
 
 统一对话与身份：`harness_application.py` 是后台与飞书自然对话的唯一会话服务；`channel_chat.py` 处理可信渠道身份，`chat_text_queries.py` 统一单号与财务文本查询。`core.py` 不再运行第二套 LLM 循环。身份权限在每次工具/插件调用重新核验，不同会话独立并行。统计 V2 的正式连接器位于 `automation_plugins/arrival_connectors_v2.py`。所有原业务实例已完成迁移并只运行 V2；Host 审核原语仍由 V2 Connector 复用，不能当作 V1 遗留删除。细节见[维护说明](../../docs/identity_and_unified_chat.md)。

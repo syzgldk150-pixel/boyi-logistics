@@ -60,7 +60,7 @@ def _setup(*, connector_builder=build_arrival_connectors, **port_overrides):
                 "identities_sha256":hashlib.sha256(canonical_json_bytes(sorted(records,key=lambda row:row["raw_code"]))).hexdigest()}
     def sheet(resource, layout, records, day):
         writes.append((resource, layout, copy.deepcopy(records), day))
-        return {"ok": True, "verified": True, "record_count": len(records)}
+        return {"ok": True, "verified": True, "record_count": len(records) - (1 if layout == "split_pending" else 0)}
     ports = FirstPartyCoreHandlerPorts(describe_account=descriptor,
         arrive_list_read_page=page([row]), scan_read_page=page(scans),
         waybill_detail_read=lambda _a, code: copy.deepcopy(row) if code == row["tracking_number"] else None,

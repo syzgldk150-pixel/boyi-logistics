@@ -93,7 +93,7 @@ def test_browser_used_selection_stays_disabled_and_never_shows_expired(service_v
         page = browser.new_page()
         page.set_content('''<div id="panel"><b data-selection-preview-title></b>
             <p data-selection-preview-message></p><span data-selection-preview-state></span>
-            <span data-selection-preview-count></span><span data-selection-preview-selected></span>
+            <span data-selection-preview-limit></span><span data-selection-preview-count></span><span data-selection-preview-selected></span>
             <span data-selection-preview-expires></span><span data-selection-preview-empty></span>
             <div id="list"></div><button id="confirm">确认</button><button id="all">全选</button>
             <button id="regenerate">重新读取</button></div>''')
@@ -115,6 +115,18 @@ def test_browser_used_selection_stays_disabled_and_never_shows_expired(service_v
         page.evaluate("p => renderSelectionPreview(p)", preview())
         assert "到货 2 / 应到 2" in page.locator('#list').inner_text()
         page.locator('#list input').check()
+        assert page.locator('#confirm').is_enabled()
+        limited = preview()
+        limited['selection_limit'] = 1
+        limited['candidates'].append({**limited['candidates'][0], 'bill_code':'SECOND-BILL'})
+        limited['candidate_count'] = 2
+        page.evaluate("p => renderSelectionPreview(p)", limited)
+        page.locator('#list input').nth(0).check()
+        assert page.locator('#confirm').is_enabled()
+        page.locator('#list input').nth(1).check()
+        assert page.locator('#confirm').is_disabled()
+        assert '1' in page.locator('[data-selection-preview-limit]').inner_text()
+        page.locator('#list input').nth(1).uncheck()
         assert page.locator('#confirm').is_enabled()
         for expired in (False, True):
             page.evaluate("p => renderSelectionPreview(p)", preview(consumed=True, expired=expired))

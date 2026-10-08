@@ -8,6 +8,8 @@ mismatching observation is ``WRITE_OUTCOME_UNKNOWN``.
 
 from __future__ import annotations
 
+from agent.automation_plugins.first_party_handler_support import _SPLIT_SNAPSHOT_FIELDS as _SPLIT_FIELDS
+
 import hashlib
 import json
 import logging
@@ -80,17 +82,7 @@ _ARRIVAL_FIELDS = (
     "delivery_method",
     "recipient_address",
 )
-_SPLIT_FIELDS = (
-    "tracking_number",
-    "source_row_no",
-    "destination_station",
-    "expected_quantity",
-    "arrived_quantity",
-    "pending_quantity",
-    "problem_type",
-    "problem_owner_type",
-    "problem_cause",
-)
+
 _NUMERIC_RECORD_FIELDS = frozenset(
     {
         "quantity",
@@ -1410,26 +1402,6 @@ def _cleanup_scan_snapshot(retention_days: int) -> Mapping[str, Any]:
     }
 
 
-def _classify_split(records: list[dict[str, Any]], target_date: str) -> tuple[list[dict[str, Any]], list[list[Any]]]:
-    from tools.phase7_mysql_store import render_stats_sheet_values
-    from tools.split_pending_snapshot import TARGET_HEADERS, classify_sheet_values
-
-    # These records come from the completed, validated statistics query. An
-    # authoritative empty result clears this projection; it is not a failed or
-    # header-only external sheet read (which the sheet parser still rejects).
-    if records == []:
-        return [], [list(TARGET_HEADERS)]
-
-    counts = {
-        str(row.get("tracking_number") or ""): row.get("arrived_quantity")
-        for row in records
-    }
-    values = render_stats_sheet_values(records, counts, target_date=target_date)
-    candidates, _source_rows = classify_sheet_values(values)
-    rows = [list(TARGET_HEADERS), *[list(item["sheet_values"]) for item in candidates]]
-    return candidates, rows
-
-
 def _write_split_projection(records: list[dict[str, Any]]) -> Mapping[str, Any]:
     from tools.phase7_mysql_store import replace_split_pending_problem_items
 
@@ -1446,7 +1418,7 @@ def _refresh_split_pending_snapshot(
     records: list[dict[str, Any]],
     target_date: str,
 ) -> Mapping[str, Any]:
-    candidates, _rows = _classify_split(records, target_date)
+    candidates = records
     try:
         _write_split_projection(candidates)
     except Exception:
@@ -1602,8 +1574,7 @@ def _stats_values(
 ) -> list[list[Any]]:
     if layout in {"stats", "split_pending"}:
         if layout == "split_pending":
-            _candidates, rows = _classify_split(records, target_date)
-            return rows
+            return records  # Explicit package-rendered rows; no Host reclassification.
         from tools.phase7_mysql_store import render_stats_sheet_values
 
         counts = {
@@ -1631,6 +1602,12 @@ def _replace_arrival_stats_sheet(
             required=("spreadsheet_token", "sheet_id", "range", "clear_range"),
         )
         values = _stats_values(layout, records, target_date)
+        if not values:
+            raise _error("split-pending sheet header is required", "BROKER_ARGUMENT_INVALID")
+        try:
+            expected = _canonical_rows(values, width=19)
+        except ValueError as exc:
+            raise _error("split-pending sheet arguments are invalid", "BROKER_ARGUMENT_INVALID") from exc
         sheet_id = str(resource["sheet_id"])
         clear = _range_shape(resource["clear_range"], label="split-pending clear")
         title = _range_shape(resource["range"], label="split-pending title")
@@ -1660,10 +1637,6 @@ def _replace_arrival_stats_sheet(
                 },
             )
         managed_range = f"{sheet_id}!A1:S{clear['end_row']}"
-        try:
-            expected = _canonical_rows(values, width=19)
-        except ValueError as exc:
-            raise _error("split-pending sheet arguments are invalid", "BROKER_ARGUMENT_INVALID") from exc
         observed = _require_exact_readback(
             lambda: _fresh_sheet_rows(resource, managed_range, width=19),
             expected,
@@ -1672,7 +1645,7 @@ def _replace_arrival_stats_sheet(
         return {
             "ok": True,
             "verified": True,
-            "record_count": len(records),
+            "record_count": len(records) - 1,
             "target_date": target_date,
             "readback_sha256": _records_sha256([{"row": row} for row in observed]),
         }

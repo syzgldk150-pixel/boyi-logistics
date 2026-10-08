@@ -39,7 +39,7 @@ class _HostResult(dict[str, object]):
 def _restore_embedded_module_names():
     previous = {
         name: sys.modules.get(name)
-        for name in ("boyi_plugin_result", "boyi_plugin_sdk", "plugin", "action")
+        for name in ("boyi_plugin_result", "boyi_plugin_sdk", "plugin", "action", "split_rules")
     }
     yield
     for name, old in previous.items():
@@ -62,6 +62,7 @@ def _load_runtime(payload: Path):
     sdk = _load_module("split_pending_embedded_sdk", payload / "boyi_plugin_sdk.py")
     sys.modules.update({"boyi_plugin_result": result, "boyi_plugin_sdk": sdk})
     plugin = _load_module("split_pending_embedded_plugin", payload / "plugin.py")
+    sys.modules["split_rules"] = _load_module("split_rules", payload / "split_rules.py")
     action = _load_module("split_pending_embedded_action", payload / "action.py")
     sys.modules.update({"plugin": plugin, "action": action})
     runtime = _load_module("split_pending_embedded_runtime", payload / "main.py")

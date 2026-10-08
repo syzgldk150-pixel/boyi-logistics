@@ -115,6 +115,8 @@ def build_plugin_zip(source_directory: Path | str, output_path: Path | str) -> P
     entries.update(
         {package_path: (shared / source_path).read_bytes() for package_path, source_path in shared_files.items()}
     )
+    if manifest.get("plugin_id") in {_SPLIT_PENDING_PLUGIN_ID, _ARRIVAL_PLUGIN_ID}:
+        entries["payload/split_rules.py"] = (source.parent / _SPLIT_PENDING_PLUGIN_ID / "payload/split_rules.py").read_bytes()
     if manifest.get("plugin_id") == _SPLIT_PENDING_PLUGIN_ID:
         for relative in ("service_v2_plugins/sync_daily_should_sign_v2/payload/business/daily_sign_rules.py",
                          "tools/daily_sign_values.py"):

@@ -248,3 +248,16 @@ __all__ = [
     "_YUNDA_SEND_SHEET_ROLE",
     "MARKED_WRITE_ACTION_KEYS",
 ]
+
+
+_SPLIT_SNAPSHOT_FIELDS = (
+    "tracking_number",
+    "source_row_no",
+    "destination_station",
+    "expected_quantity",
+    "arrived_quantity",
+    "pending_quantity",
+    "problem_type",
+    "problem_owner_type",
+    "problem_cause",
+)

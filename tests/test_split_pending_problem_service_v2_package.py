@@ -57,6 +57,7 @@ def test_split_pending_v2_zip_is_deterministic_and_embeds_reviewed_v1_bytes(
         expected_members = {
             "manifest.json",
             "payload/action.py",
+            "payload/split_rules.py",
             "payload/boyi_plugin_result.py",
             "payload/boyi_plugin_sdk.py",
             "payload/main.py",
@@ -68,6 +69,7 @@ def test_split_pending_v2_zip_is_deterministic_and_embeds_reviewed_v1_bytes(
             "settings/settings.js",
         }
         assert set(archive.namelist()) == expected_members
+        assert archive.read("payload/split_rules.py") == (ROOT / "agent/service_v2_plugins/split_pending_problem_upload_v2/payload/split_rules.py").read_bytes()
         assert archive.read("payload/action.py") == V1_ACTION.read_bytes()
         assert archive.read("payload/boyi_plugin_result.py") == RESULT_SOURCE.read_bytes()
         for member in sorted(expected_members):

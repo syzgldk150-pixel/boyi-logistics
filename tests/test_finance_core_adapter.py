@@ -456,7 +456,8 @@ def test_finance_no_data_and_retry_keep_exact_role_bindings() -> None:
     ]
 
 
-def test_finance_contract_rejects_a_cross_month_chunk_even_with_matching_digest() -> None:
+@pytest.mark.parametrize("chunk_start,accepted", [("2026-07-01", True), ("2026-07-02", False)])
+def test_finance_contract_uses_package_chunks_but_rejects_a_gap(chunk_start, accepted) -> None:
     repository = _Repository()
     handlers = build_production_finance_handler_map(
         cursor_secret=b"i" * 32,
@@ -474,22 +475,20 @@ def test_finance_contract_rejects_a_cross_month_chunk_even_with_matching_digest(
             "rescan_days": 7,
         }
     )
-    contract["month_chunks"] = [{"start_date": "2026-07-01", "end_date": "2026-08-05"}]
-    with pytest.raises(PluginExecutionError) as exc_info:
-        handlers[("ledger.invoke", "finance.batch.acquire")](
-            _context(
-                "ledger.invoke",
-                "finance.batch.acquire",
-                "finance_quote_source",
-            ),
-            {
-                "schema_version": 1,
-                "contract": contract,
-                "contract_sha256": action._sha256(contract),
-            },
+    contract["month_chunks"] = [{"start_date": chunk_start, "end_date": "2026-08-05"}]
+    def acquire():
+        return handlers[("ledger.invoke", "finance.batch.acquire")](
+            _context("ledger.invoke", "finance.batch.acquire", "finance_quote_source"),
+            {"schema_version": 1, "contract": contract, "contract_sha256": action._sha256(contract)},
         )
-    assert exc_info.value.code == "BROKER_ARGUMENT_INVALID"
-    assert repository.batches == {}
+    if accepted:
+        assert acquire()["acquired"] is True
+        assert repository.batches
+    else:
+        with pytest.raises(PluginExecutionError) as exc_info:
+            acquire()
+        assert exc_info.value.code == "BROKER_ARGUMENT_INVALID"
+        assert repository.batches == {}
 
 
 def test_finance_migration_instances_bind_the_reviewed_account_pool_roles() -> None:

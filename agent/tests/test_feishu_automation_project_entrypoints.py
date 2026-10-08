@@ -180,6 +180,7 @@ def _selection_preview(
         "observed_at": observed_at.isoformat(),
         "expires_at": (observed_at + timedelta(minutes=15)).isoformat(),
         "candidate_count": len(candidates),
+        "selection_limit": 90 if automation_id == "split_pending_problem_upload" else 250,
         "candidates": candidates,
         "summary": summary,
         "can_confirm": True,

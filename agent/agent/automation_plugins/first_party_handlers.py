@@ -56,6 +56,7 @@ from agent.automation_plugins.first_party_handler_support import (
     MARKED_WRITE_ACTION_KEYS,
     _ARRIVAL_SNAPSHOT_FIELDS,
     _ARRIVAL_STATS_FIELDS,
+    _SPLIT_SNAPSHOT_FIELDS,
     _ARRIVE_FIELDS,
     _ARRIVE_TOOL,
     _ARRIVAL_STATS_TOOL,
@@ -2442,28 +2443,20 @@ class _FirstPartyCoreHandlers:
         context: CoreBrokerInvocationContext,
         arguments: Mapping[str, Any],
     ) -> Mapping[str, Any]:
-        values = _strict_arguments(arguments, {"records", "target_date"})
-        normalized_arguments = {
-            "records": _arrival_stats_v1_records(
-                values.get("records"),
-                fields=_ARRIVAL_STATS_FIELDS,
-                label="projection",
-            ),
-            "target_date": values.get("target_date"),
-        }
         return self._projection_replace(
             context,
-            normalized_arguments,
+            arguments,
             port=self._ports.refresh_split_pending_snapshot,
             label="split-pending-snapshot-refresh",
             tool_names={_ARRIVAL_STATS_TOOL},
-            fields=_ARRIVAL_STATS_FIELDS,
+            fields=_SPLIT_SNAPSHOT_FIELDS,
         )
 
     @staticmethod
     def _sheet_rows(tool_name: str, values: object) -> tuple[list[list[Any]], int]:
-        columns = len(_ARRIVE_FIELDS) if tool_name == _ARRIVE_TOOL else len(_SITE_FIELDS)
-        if not isinstance(values, list) or len(values) > _MAX_RECORDS:
+        columns = 19 if tool_name == _ARRIVAL_STATS_TOOL else len(_ARRIVE_FIELDS) if tool_name == _ARRIVE_TOOL else len(_SITE_FIELDS)
+        maximum = _MAX_RECORDS + 1 if tool_name == _ARRIVAL_STATS_TOOL else _MAX_RECORDS
+        if not isinstance(values, list) or len(values) > maximum:
             raise _error("sheet values are invalid", "BROKER_ARGUMENT_INVALID")
         rows: list[list[Any]] = []
         for raw in values:
@@ -2480,7 +2473,8 @@ class _FirstPartyCoreHandlers:
         if context.tool_name == _ARRIVAL_STATS_TOOL:
             if self._ports.replace_arrival_stats_sheet is None:
                 raise _error("arrival statistics sheet primitive is unavailable", "BROKER_ACTION_UNAVAILABLE")
-            values = _strict_arguments(arguments, {"resource_slot", "records", "target_date"})
+            content_field = "rows" if arguments.get("resource_slot") == "arrival_stats_split_pending" else "records"
+            values = _strict_arguments(arguments, {"resource_slot", content_field, "target_date"})
             slot = _text(values.get("resource_slot"), "resource_slot", maximum=64)
             slots = {
                 "arrival_stats_primary": ("arrival_stats_primary_sheet", "stats"),
@@ -2501,19 +2495,26 @@ class _FirstPartyCoreHandlers:
                 )
             target_date = _business_date(values.get("target_date"))
             fields = _PENDING_FIELDS if slot == "arrival_stats_pending" else _ARRIVAL_STATS_FIELDS
-            records = (
-                _strict_record_list(
-                    values.get("records"),
-                    fields=fields,
-                    label="arrival statistics sheet",
+            if layout == "split_pending":
+                records, _ = self._sheet_rows(_ARRIVAL_STATS_TOOL, values.get("rows"))
+                if not records:
+                    raise _error("split-pending sheet requires a header row", "BROKER_ARGUMENT_INVALID")
+                expected_count = len(records) - 1
+            else:
+                records = (
+                    _strict_record_list(
+                        values.get("records"),
+                        fields=fields,
+                        label="arrival statistics sheet",
+                    )
+                    if fields == _PENDING_FIELDS
+                    else _arrival_stats_v1_records(
+                        values.get("records"),
+                        fields=fields,
+                        label="arrival statistics sheet",
+                    )
                 )
-                if fields == _PENDING_FIELDS
-                else _arrival_stats_v1_records(
-                    values.get("records"),
-                    fields=fields,
-                    label="arrival statistics sheet",
-                )
-            )
+                expected_count = len(records)
             self._mark_write_started(context)
             raw = self._ports.replace_arrival_stats_sheet(
                 context.resource_id,
@@ -2531,14 +2532,14 @@ class _FirstPartyCoreHandlers:
                     "WRITE_OUTCOME_UNKNOWN",
                 )
             observed = raw.get("record_count", raw.get("rows"))
-            if isinstance(observed, bool) or not isinstance(observed, int) or observed != len(records):
+            if isinstance(observed, bool) or not isinstance(observed, int) or observed != expected_count:
                 raise _error(
                     "sheet snapshot fresh readback count is invalid",
                     "WRITE_OUTCOME_UNKNOWN",
                 )
             proof = {
                 "resource_slot": slot,
-                "record_count": len(records),
+                "record_count": expected_count,
                 "committed": True,
                 "verified": True,
             }

@@ -24,6 +24,11 @@ def _load_zip_action(payload: Path):
     )
     assert result_spec is not None and result_spec.loader is not None
     result_module = importlib.util.module_from_spec(result_spec)
+    previous_rules = sys.modules.get("split_rules")
+    rules_spec = importlib.util.spec_from_file_location("split_rules", payload / "split_rules.py")
+    rules = importlib.util.module_from_spec(rules_spec)
+    rules_spec.loader.exec_module(rules)
+    sys.modules["split_rules"] = rules
     previous = sys.modules.get("boyi_plugin_result")
     sys.modules["boyi_plugin_result"] = result_module
     result_spec.loader.exec_module(result_module)
@@ -36,6 +41,10 @@ def _load_zip_action(payload: Path):
     try:
         action_spec.loader.exec_module(action_module)
     finally:
+        if previous_rules is None:
+            sys.modules.pop("split_rules", None)
+        else:
+            sys.modules["split_rules"] = previous_rules
         if previous is None:
             sys.modules.pop("boyi_plugin_result", None)
         else:

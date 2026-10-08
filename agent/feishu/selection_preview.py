@@ -9,10 +9,9 @@ from typing import Any
 from agent.feishu_command_contract import is_scan_cancel_text, is_scan_confirm_text
 from agent.orchestration.models import OrchestrationError
 from agent.orchestration.scan_preview_binding import normalize_preview_invocation_id
-from shared.automation_preview_contract import PREVIEW_CONTRACT_VERSION, valid_preview_state
+from shared.automation_preview_contract import PREVIEW_CONTRACT_VERSION, valid_preview_state, selection_limit
 
 
-SELF_PICKUP_MAX_SELECTED = 250
 SELECTION_PREVIEW_PENDING_TTL = 900
 SCAN_PREVIEW_PENDING_TTL = 900
 FEISHU_SAFE_TEXT_BYTES = 3500
@@ -103,6 +102,7 @@ def parse_split_selection(text: str, candidate_count: int) -> list[int]:
 def split_candidate_lines(
     candidates: list[dict[str, Any]],
     hidden_completed: int,
+    *, maximum: int,
 ) -> list[str]:
     lines = [
         f"待执行分批运单 {len(candidates)} 单（已隐藏完整成功 {hidden_completed} 单）：",
@@ -117,7 +117,7 @@ def split_candidate_lines(
     lines.extend(
         [
             "",
-            "回复“确认”直接执行全部；如需部分上传，请输入序号：2 / 1,3,5 / 2-4。",
+            f"每次最多选择 {maximum} 单；" + ("回复“确认”直接执行全部；" if len(candidates) <= maximum else "候选超过上限，请先选择部分运单；") + "输入序号：2 / 1,3,5 / 2-4。",
             "回复“取消”放弃；部分选择后需再次回复“确认”执行；15 分钟内有效。",
         ]
     )
@@ -204,6 +204,11 @@ def normalize_selection_preview_projection(
         candidate = dict(raw_candidate)
         candidate["bill_code"] = bill_code
         candidates.append(candidate)
+    if "selection_limit" in value:
+        try:
+            selection_limit(value["selection_limit"])
+        except ValueError:
+            return None
     projection = dict(value)
     projection["preview_invocation_id"] = preview_invocation_id
     projection["candidates"] = candidates
@@ -213,6 +218,7 @@ def normalize_selection_preview_projection(
 def self_pickup_candidate_lines(
     candidates: list[dict[str, Any]],
     duplicate_source_rows: int,
+    *, maximum: int,
 ) -> list[str]:
     lines = [f"待上传自提到货问题件候选 {len(candidates)} 单："]
     for item in candidates:
@@ -222,9 +228,9 @@ def self_pickup_candidate_lines(
     lines.append("")
     if not candidates:
         lines.append("当前没有需要上传的候选数据。")
-    elif len(candidates) > SELF_PICKUP_MAX_SELECTED:
+    elif len(candidates) > maximum:
         lines.append(
-            f"候选超过单次上限 {SELF_PICKUP_MAX_SELECTED} 单，本次未开放确认入口。"
+            f"候选超过单次上限 {maximum} 单，本次未开放确认入口。"
         )
     else:
         lines.append("回复“确认”上传全部候选，回复“取消”放弃；15 分钟内有效。")

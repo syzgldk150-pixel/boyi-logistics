@@ -56,17 +56,21 @@ PLUGIN_TESTS = {
         "tests/test_production_v2_packaged_protocol.py::test_scan_zip_formal_uses_host_confirmed_plan_and_fresh_readback",
     ),
     "sync_arrival_stats_v2": (
+        "tests/test_plugin_business_boundary.py::test_arrival_classification_changes_only_in_package_and_empty_projection_clears",
         "tests/test_sync_arrival_stats_service_v2_package.py",
         "tests/test_sync_arrival_stats_v1_v2_parity.py",
         "tests/test_production_v2_packaged_protocol.py::test_arrival_real_zip_process_writes_calculated_counts_through_production_broker",
         "tests/test_production_v2_packaged_protocol.py::test_arrival_zip_webhook_calculates_without_writing_only_when_requested",
     ),
     "self_pickup_problem_upload_v2": (
+        "tests/test_plugin_business_boundary.py::test_self_pickup_description_can_change_in_the_zip_with_the_host_frozen",
         "tests/test_self_pickup_problem_service_v2_package.py",
         "tests/test_self_pickup_problem_v1_v2_parity.py",
         "tests/test_production_v2_packaged_protocol.py::test_self_pickup_zip_preview_selects_both_accounts_and_confirms_real_operations",
     ),
     "split_pending_problem_upload_v2": (
+        "tests/test_plugin_business_boundary.py::test_selection_limit_follows_installed_zip_before_an_invocation_is_created",
+        "tests/test_plugin_business_boundary.py::test_split_problem_description_can_change_without_host_reclassification",
         "tests/test_split_pending_problem_service_v2_package.py",
         "tests/test_split_pending_problem_v1_v2_parity.py",
         "tests/test_production_v2_packaged_protocol.py::test_split_zip_executes_selected_problem_and_publishes_ledger",
@@ -87,7 +91,11 @@ PLUGIN_TESTS = {
         "tests/test_delivery_projection_presence.py",
         "tests/test_delivery_site_production_adapter.py",
     ),
-    "sync_finance_bills_v2": ("tests/test_finance_v2_packaged_protocol.py",),
+    "sync_finance_bills_v2": (
+        "tests/test_plugin_business_boundary.py::test_finance_smaller_package_pages_are_verified_against_actual_pages",
+        "tests/test_plugin_business_boundary.py::test_finance_retry_default_and_target_budget_belong_to_package",
+        "tests/test_finance_v2_packaged_protocol.py",
+    ),
     "sync_customer_service_problems_v2": ("tests/test_customer_v2_packaged_protocol.py",),
     "sync_daily_should_sign_v2": (
         "tests/test_daily_sign_bitable_delta.py",

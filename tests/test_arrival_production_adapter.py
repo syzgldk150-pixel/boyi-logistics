@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from service_v2_plugins.split_pending_problem_upload_v2.payload.split_rules import arrival_split_projection
+
 import hashlib
 import logging
 from copy import deepcopy
@@ -209,7 +211,7 @@ def test_split_pending_projection_reads_back_exact_classified_identities(
     monkeypatch.setattr(arrival, "_write_split_projection", write)
     monkeypatch.setattr(arrival, "_read_split_projection", lambda: deepcopy(stored))
 
-    result = arrival._refresh_split_pending_snapshot(records, "2026-08-15")
+    result = arrival._refresh_split_pending_snapshot(arrival_split_projection(records)[0], "2026-08-15")
 
     assert result["verified"] is True
     assert result["record_count"] == 1
@@ -708,7 +710,7 @@ def test_arrival_stats_sheet_rechecks_acknowledged_write_until_exact_match(
 def test_complete_empty_statistics_clears_split_projection_and_verifies_readback(
     monkeypatch: pytest.MonkeyPatch, stale_readback: bool,
 ) -> None:
-    previous, _ = arrival._classify_split([_stats_record()], "2026-08-15")
+    previous, _ = arrival_split_projection([_stats_record()])
     stored = deepcopy(previous)
     writes = []
 
@@ -737,7 +739,7 @@ def test_complete_empty_statistics_clears_split_sheet_but_empty_external_source_
     from tools.split_pending_snapshot import TARGET_HEADERS, classify_sheet_values
 
     resource_id = "resource-split-pending"
-    stored = arrival._stats_values("split_pending", [_stats_record()], "2026-08-15")
+    stored = arrival_split_projection([_stats_record()])[1]
     calls = []
     monkeypatch.setattr(arrival, "_load_resource", lambda _exact: {
         "resource_kind": "feishu_sheet", "spreadsheet_token": "isolated-token",
@@ -755,7 +757,7 @@ def test_complete_empty_statistics_clears_split_sheet_but_empty_external_source_
 
     monkeypatch.setattr(arrival, "_write_sheet_call", write)
     monkeypatch.setattr(arrival, "_fresh_sheet_rows", lambda *_a, **_kw: deepcopy(stored))
-    result = arrival._replace_arrival_stats_sheet(resource_id, "split_pending", [], "2026-08-15")
+    result = arrival._replace_arrival_stats_sheet(resource_id, "split_pending", arrival_split_projection([])[1], "2026-08-15")
     assert result["verified"] is True and result["record_count"] == 0
     assert stored == [list(TARGET_HEADERS)]
     assert calls == ["clear_sheet", "write_sheet"]
@@ -789,7 +791,7 @@ def test_split_pending_sheet_uses_exact_resource_and_rejects_mismatch_as_unknown
         arrival._replace_arrival_stats_sheet(
             resource_id,
             "split_pending",
-            [_stats_record()],
+            arrival_split_projection([_stats_record()])[1],
             "2026-08-15",
         )
 
@@ -810,7 +812,7 @@ def test_split_pending_sheet_rechecks_after_lost_write_response_without_rewritin
         "_meta": {"resource_key": resource_id},
     }
     records = [_stats_record()]
-    values = arrival._stats_values("split_pending", records, "2026-08-15")
+    values = arrival_split_projection(records)[1]
     expected = arrival._canonical_rows(values, width=19)
     write_calls: list[str] = []
     reads = iter([[], expected])
@@ -833,7 +835,7 @@ def test_split_pending_sheet_rechecks_after_lost_write_response_without_rewritin
     result = arrival._replace_arrival_stats_sheet(
         resource_id,
         "split_pending",
-        records,
+        arrival_split_projection(records)[1],
         "2026-08-15",
     )
 
@@ -857,7 +859,7 @@ def test_split_pending_sheet_rechecks_acknowledged_write_until_exact_match(
     }
     records = [_stats_record()]
     expected = arrival._canonical_rows(
-        arrival._stats_values("split_pending", records, "2026-08-15"),
+        arrival_split_projection(records)[1],
         width=19,
     )
     reads = iter([[], expected])
@@ -875,7 +877,7 @@ def test_split_pending_sheet_rechecks_acknowledged_write_until_exact_match(
     result = arrival._replace_arrival_stats_sheet(
         resource_id,
         "split_pending",
-        records,
+        arrival_split_projection(records)[1],
         "2026-08-15",
     )
 
@@ -978,7 +980,7 @@ def test_split_pending_unknown_write_recovery_uses_read_only_exact_comparison(
     }
     records = [_stats_record()]
     primary_values = arrival._stats_values("stats", records, "2026-08-15")
-    target_values = arrival._stats_values("split_pending", records, "2026-08-15")
+    target_values = arrival_split_projection(records)[1]
     reads: list[str] = []
 
     monkeypatch.setattr(

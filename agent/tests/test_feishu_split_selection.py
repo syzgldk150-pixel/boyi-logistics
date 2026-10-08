@@ -96,6 +96,7 @@ def selection_preview(
             "observed_at": observed_at.isoformat(),
             "expires_at": (observed_at + timedelta(minutes=15)).isoformat(),
             "candidate_count": len(rows),
+            "selection_limit": 90,
             "candidates": rows,
             "summary": {
                 "complete_count": hidden_completed,
@@ -153,7 +154,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
     def test_long_candidate_list_is_chunked_with_global_numbering(self):
         rows = candidates(180)
         chunks = message_handler._split_text_chunks(
-            message_handler._split_candidate_lines(rows, hidden_completed=7)
+            message_handler._split_candidate_lines(rows, hidden_completed=7, maximum=90)
         )
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(chunk.encode("utf-8")) <= message_handler.FEISHU_SAFE_TEXT_BYTES for chunk in chunks))
@@ -318,6 +319,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         pending_store = {
             "chat": {
                 "type": "split_pending_selection",
+                "selection_limit": 90,
                 "tool_name": message_handler.SPLIT_TOOL_NAME,
                 "automation_route_key": "builtin.split_pending_problem_upload",
                 "originator_actor_id": "user",
@@ -358,8 +360,36 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         )
         self.assertTrue(replies)
 
+    def test_package_limit_blocks_confirm_all_and_keeps_preview_for_subset(self):
+        for maximum in (90, 37):
+            with self.subTest(maximum=maximum):
+                self.project_entrypoints.calls.clear()
+                pending = {"type": "split_pending_selection", "selection_limit": maximum,
+                    "automation_route_key": "builtin.split_pending_problem_upload",
+                    "originator_actor_id": "user", "candidates": candidates(maximum + 1),
+                    "preview_invocation_id": "77777777-7777-4777-8777-777777777777",
+                    "expires_at": selection_expires_at()}
+                store = {"chat": pending}
+                replies = []
+                async def reply(_chat, text, **_kwargs):
+                    replies.append(str(text))
+                with patch("feishu.bot.get_agent_core", return_value=object()), patch.object(
+                    message_handler, "get_pending", side_effect=lambda chat: store.get(chat)
+                ), patch.object(message_handler, "clear_pending", side_effect=lambda chat: store.pop(chat, None)), patch.object(
+                    message_handler, "set_pending", side_effect=lambda chat, value, **_kw: store.update({chat:value})
+                ), patch.object(message_handler, "_reply_text", side_effect=reply):
+                    asyncio.run(message_handler._process_and_reply("确认", "user", "chat"))
+                    self.assertEqual([], self.project_entrypoints.calls)
+                    self.assertIs(store["chat"], pending)
+                    self.assertIn(str(maximum), replies[-1])
+                    asyncio.run(message_handler._process_and_reply(f"1-{maximum}", "user", "chat"))
+                    self.assertEqual(maximum, store["chat"]["selection_limit"])
+                    asyncio.run(message_handler._process_and_reply("确认", "user", "chat"))
+                    self.assertNotIn("chat", store)
+                self.assertEqual(maximum, len(self.project_entrypoints.calls[0]["envelope"]["body"]["selected_bill_codes"]))
+
     def test_candidate_prompt_explains_initial_confirmation_executes_all(self):
-        prompt = "\n".join(message_handler._split_candidate_lines(candidates(2), hidden_completed=0))
+        prompt = "\n".join(message_handler._split_candidate_lines(candidates(2), hidden_completed=0, maximum=90))
         self.assertIn("回复“确认”直接执行全部", prompt)
         self.assertIn("部分选择后需再次回复“确认”执行", prompt)
 
@@ -368,6 +398,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         pending_store = {
             "chat": {
                 "type": "split_pending_selection",
+                "selection_limit": 90,
                 "tool_name": message_handler.SPLIT_TOOL_NAME,
                 "automation_route_key": "builtin.split_pending_problem_upload",
                 "originator_actor_id": "user",
@@ -401,6 +432,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         pending_store = {
             "chat": {
                 "type": "split_pending_selection",
+                "selection_limit": 90,
                 "originator_actor_id": "user",
                 "candidates": candidates(2),
                 "preview_invocation_id": "99999999-9999-4999-8999-999999999999",
@@ -431,6 +463,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         pending_store: dict[str, dict[str, Any]] = {
             "chat": {
                 "type": "split_pending_confirmation",
+                "selection_limit": 90,
                 "originator_actor_id": "user",
                 "selected_bill_codes": ["OLD"],
                 "preview_invocation_id": old_preview_invocation_id,
@@ -469,6 +502,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         preview_invocation_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
         pending = {
             "type": "split_pending_confirmation",
+                "selection_limit": 90,
             "automation_route_key": "builtin.split_pending_problem_upload",
             "originator_actor_id": "user",
             "selected_bill_codes": ["R0001"],
@@ -526,6 +560,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         pending_shapes = (
             {
                 "type": "split_pending_selection",
+                "selection_limit": 90,
                 "automation_route_key": "builtin.split_pending_problem_upload",
                 "originator_actor_id": "originator",
                 "candidates": candidates(1),
@@ -534,6 +569,7 @@ class FeishuSplitSelectionTests(unittest.TestCase):
             },
             {
                 "type": "split_pending_confirmation",
+                "selection_limit": 90,
                 "automation_route_key": "builtin.split_pending_problem_upload",
                 "originator_actor_id": "originator",
                 "selected_bill_codes": ["R0001"],

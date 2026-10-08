@@ -1033,7 +1033,7 @@ def test_arrival_stats_sheet_and_archive_use_exact_instance_resource_roles() -> 
 
     def replace_sheet(resource_id, layout, records, target_date):
         sheet_calls.append((resource_id, layout, list(records), target_date))
-        return {"ok": True, "verified": True, "record_count": len(records)}
+        return {"ok": True, "verified": True, "record_count": len(records) - (layout == "split_pending")}
 
     def archive(resource_id, records, target_date):
         archive_calls.append((resource_id, list(records), target_date))
@@ -1077,7 +1077,7 @@ def test_arrival_stats_sheet_and_archive_use_exact_instance_resource_roles() -> 
             ),
             {
                 "resource_slot": slot,
-                "records": records,
+                **({"rows": [["header"] * 19, ["value"] * 19]} if expected_layout == "split_pending" else {"records": records}),
                 "target_date": "2026-08-15",
             },
         )

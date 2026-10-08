@@ -59,7 +59,6 @@ from feishu.invocation_results import InvocationResultFollower
 from feishu.selection_preview import (
     FEISHU_SAFE_TEXT_BYTES,
     SCAN_PREVIEW_ERROR_MESSAGES,
-    SELF_PICKUP_MAX_SELECTED,
     contains_account_override as _contains_account_override,
     normalize_selection_preview_projection as _normalize_selection_preview_projection,
     parse_split_selection as _parse_split_selection,
@@ -551,13 +550,17 @@ async def _invoke_selection_preview_and_reply(
         )
         return result
 
+    maximum = projection.get("selection_limit")
+    if type(maximum) is not int or maximum <= 0:
+        await _reply_text(receive_id, "候选清单缺少选择上限，请更新插件并重新读取。", reply_type="selection_preview_invalid")
+        return result
     candidates = list(projection["candidates"])
     can_confirm = bool(projection["can_confirm"])
     ttl = _selection_preview_ttl(projection) if can_confirm else 0
     context = _COMMAND_CONTEXT.get()
     originator_actor_id = context.actor_id if context is not None else ""
     if tool_name == SELF_PICKUP_PREVIEW_TOOL_NAME:
-        if candidates and len(candidates) <= SELF_PICKUP_MAX_SELECTED and ttl > 0:
+        if candidates and len(candidates) <= maximum and ttl > 0:
             set_pending(
                 receive_id,
                 {
@@ -579,6 +582,7 @@ async def _invoke_selection_preview_and_reply(
             _self_pickup_candidate_lines(
                 candidates,
                 int(projection["summary"].get("duplicate_source_rows") or 0),
+                maximum=maximum,
             ),
             reply_type="self_pickup_candidate_list",
         )
@@ -611,12 +615,13 @@ async def _invoke_selection_preview_and_reply(
             "originator_actor_id": originator_actor_id,
             "expires_at": projection["expires_at"],
             "candidates": candidates,
+            "selection_limit": maximum,
         },
         ttl_sec=ttl,
     )
     await _reply_split_lines(
         receive_id,
-        _split_candidate_lines(candidates, hidden_completed),
+        _split_candidate_lines(candidates, hidden_completed, maximum=maximum),
         reply_type="split_candidate_list",
     )
     return result
@@ -904,6 +909,14 @@ async def _execute_split_formal(
             "分批候选清单已失效，请重新发送“分批”。",
             reply_type="split_confirmation_stale",
         )
+        return
+    maximum = pending.get("selection_limit")
+    if type(maximum) is not int or maximum <= 0:
+        clear_pending(chat_id)
+        await _reply_text(chat_id, "候选清单已失效，请重新发送“分批”。")
+        return
+    if len(selected_bill_codes) > maximum:
+        await _reply_text(chat_id, f"本次最多选择 {maximum} 单，当前选择 {len(selected_bill_codes)} 单。请减少选择数量；候选列表仍保留。")
         return
     clear_pending(chat_id)
     await _invoke_automation_project_and_reply(
@@ -2189,6 +2202,11 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 return
             try:
                 selected_numbers = _parse_split_selection(text, len(candidates))
+                maximum = pending.get("selection_limit")
+                if type(maximum) is not int or maximum <= 0:
+                    raise ValueError("候选清单已失效，请重新发送“分批”")
+                if len(selected_numbers) > maximum:
+                    raise ValueError(f"本次最多选择 {maximum} 单，当前选择 {len(selected_numbers)} 单")
             except ValueError as exc:
                 await _reply_text(
                     chat_id,
@@ -2219,6 +2237,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                     "automation_route_key": pending.get("automation_route_key"),
                     "originator_actor_id": pending.get("originator_actor_id"),
                     "selected_bill_codes": selected_codes,
+                    "selection_limit": maximum,
                     "preview_invocation_id": pending.get("preview_invocation_id"),
                     "expires_at": pending.get("expires_at"),
                     "selected": selected,
