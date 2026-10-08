@@ -455,7 +455,10 @@ def verify_unsigned_plugin_zip_v2(
             }
         ),
         contributions_sha256=_json_digest(manifest_mapping["contributes"]),
-        capabilities_sha256=_json_digest(manifest_mapping["capabilities"]),
+        capabilities_sha256=_json_digest(
+            {"capabilities": manifest_mapping["capabilities"], "http_requests": manifest_mapping["http_requests"]}
+            if manifest.http_requests else manifest_mapping["capabilities"]
+        ),
         storage_sha256=_json_digest(manifest_mapping["storage"]),
     )
 

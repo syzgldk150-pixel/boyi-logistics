@@ -663,6 +663,10 @@ class ResultVerifier:
         ):
             return "Service v2 result evidence does not match Host-observed calls"
 
+        from agent.automation_plugins.http_write_verification import http_verification_error
+        http_error = http_verification_error(observations, normalized.meta)
+        if http_error is not None:
+            return http_error
         if (service, operation) not in cls._CLOCK_SERVICE_TARGETS:
             return None
         expected_actions = (

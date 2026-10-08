@@ -291,6 +291,47 @@
           }
         }
       ]
+    },
+    "http_requests": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "account_role",
+          "action",
+          "method",
+          "path"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          },
+          "account_role": {
+            "$ref": "#/$defs/role"
+          },
+          "action": {
+            "enum": [
+              "read_json",
+              "write_json"
+            ]
+          },
+          "method": {
+            "enum": [
+              "GET",
+              "POST"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 501
+          }
+        }
+      }
     }
   },
   "$defs": {

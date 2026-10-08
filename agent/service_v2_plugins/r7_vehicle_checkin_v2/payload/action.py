@@ -3,8 +3,12 @@
 from datetime import datetime, timedelta, timezone
 import re
 
+if __package__:
+    from .r7_client import R7VehicleClient
+else:
+    from r7_client import R7VehicleClient
+
 SERVICE = "plugin.r7_vehicle_checkin_v2.checkin@1"
-CONNECTOR = "connector.boyi.r7_vehicle_tasks@1"
 SHANGHAI = timezone(timedelta(hours=8))
 ERROR_MESSAGES = {
     "BLOCKED_LOGIN": "所选R7账号未登录或登录态已失效，请在账号管理中重新登录。",
@@ -25,28 +29,16 @@ def date_range(now=None):
 
 def run(broker, now=None):
     interval = date_range(now)
-    refs, rows, completed = [], [], []
+    client = R7VehicleClient(broker)
+    refs, rows, completed = client.refs, [], []
     attempted = False
     pagination_complete = False
     current_task = None
     total = None
 
-    def call(operation, args):
-        result = broker(
-            "service.invoke",
-            action=operation,
-            role="__system__",
-            arguments={"service": CONNECTOR, "operation": operation, "arguments": args},
-        )
-        reference = getattr(result, "host_evidence_ref", None)
-        if not isinstance(result, dict) or not isinstance(reference, str) or not reference:
-            raise ValueError("R7_HOST_EVIDENCE_MISSING")
-        refs.append(reference)
-        return result
-
     try:
         for page in range(1, 101):
-            result = call("read_page", {**interval, "page": page})
+            result = client.read_page(**interval, page=page)
             if total is None:
                 total = result["total"]
             if result["total"] != total or result["page"] != page:
@@ -62,12 +54,12 @@ def run(broker, now=None):
             raise ValueError("R7_TASK_IDENTITY_AMBIGUOUS")
         pagination_complete = True
         candidates = [r for r in rows if r["status"] == 55]
-        if len(candidates) > 800:
+        if len(candidates) > 200:
             raise ValueError("R7_CANDIDATE_LIMIT")
         for row in candidates:
             attempted = True
             current_task = {"task_id": row["task_id"], "task_number": row["task_number"]}
-            result = call("arrive", {**interval, "task_id": row["task_id"], "task_number": row["task_number"]})
+            result = client.arrive(**interval, task_id=row["task_id"], task_number=row["task_number"])
             if (
                 result["confirmed"] is not True
                 or result["task_id"] != row["task_id"]
@@ -99,6 +91,7 @@ def run(broker, now=None):
                 "pagination_complete": True,
                 "evidence_refs": refs,
                 "write_outcome": outcome,
+                "http_write_verifications": client.proofs,
                 "postconditions": {"0": True},
                 "postcondition_evidence": {
                     "0": {

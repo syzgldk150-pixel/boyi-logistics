@@ -3,19 +3,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta, timezone
 
-import requests
-
-from agent.tms_runtime.scripts.r7_login_manager import R7SSOAuth
-from agent.tms_runtime.sso_session_persistence import default_sso_state_path
-
-ORIGIN = "https://r7.ronghuiwl.com"
-PAGE = "/gateway/tms/public/lineTask/pageGet"
-DETAIL = "/gateway/tms/public/lineTask/getById"
-PUNCH = "/gateway/tms/public/lineTask/saveCenterPunch"
-AUTH = "/gateway/public/aurora/auth"
+PAGE = "task_page"
+DETAIL = "task_detail"
+PUNCH = "arrival_punch"
+AUTH = "operator_context"
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
@@ -65,45 +58,24 @@ def find_via(row, station):
 
 
 class R7VehicleClient:
-    def __init__(self, session):
-        self.session = session
+    def __init__(self, broker):
+        self.broker = broker
+        self.refs = []
+        self.proofs = []
+        self.user = None
 
-    @classmethod
-    def from_account(cls, account_id):
-        if not isinstance(account_id, str) or not account_id.strip():
-            fail("BLOCKED_LOGIN")
-        auth = R7SSOAuth(config_path="", state_path=default_sso_state_path(account_id))
-        if not auth.restore_persisted_session(
-            validate=False, validator=auth._verify_authenticated, attach_bearer=False
-        ):
-            auth.session.close()
-            fail("BLOCKED_LOGIN")
-        auth.session.headers.pop("Authorization", None)
-        auth.session.headers.update(
-            {
-                "aurora-token": auth.last_token,
-                "Origin": ORIGIN,
-                "Referer": ORIGIN + "/operateManage/vehicleSchedule/vehicleRegular",
-            }
+    def request(self, name, body, *, write=False):
+        response = self.broker(
+            "http.request",
+            action="write_json" if write else "read_json",
+            role="r7_operator",
+            arguments={"request": name, "body": body},
         )
-        return cls(auth.session)
-
-    def close(self):
-        self.session.close()
-
-    def request(self, path, body, *, write=False):
-        try:
-            response = self.session.post(ORIGIN + path, json=body, timeout=(10, 25), allow_redirects=False)
-        except requests.RequestException:
-            fail("WRITE_OUTCOME_UNKNOWN" if write else "R7_REQUEST_FAILED")
-        if response.status_code in {301, 302, 303, 307, 308, 401, 403}:
-            fail("WRITE_OUTCOME_UNKNOWN" if write else "BLOCKED_LOGIN")
-        if response.status_code != 200:
-            fail("WRITE_OUTCOME_UNKNOWN" if write else "R7_REQUEST_FAILED")
-        try:
-            result = response.json()
-        except ValueError:
-            fail("WRITE_OUTCOME_UNKNOWN" if write else "R7_SOURCE_INVALID")
+        reference = getattr(response, "host_evidence_ref", None)
+        if not isinstance(response, dict) or not isinstance(reference, str) or not reference:
+            fail("R7_HOST_EVIDENCE_MISSING")
+        self.refs.append(reference)
+        result = response.get("response")
         if not isinstance(result, dict) or result.get("code") != 200 or "data" not in result:
             fail("WRITE_OUTCOME_UNKNOWN" if write else "R7_SOURCE_INVALID")
         return result["data"]
@@ -146,7 +118,9 @@ class R7VehicleClient:
         start, end = timestamp(start_time), timestamp(end_time)
         if start > end or (end - start).total_seconds() > 3 * 86400:
             fail("R7_RANGE_INVALID")
-        user = self.request(AUTH, {})
+        if self.user is None:
+            self.user = self.request(AUTH, {})
+        user = self.user
         if not isinstance(user, dict) or user.get("siteTypeCode") not in {110, 401}:
             fail("R7_OPERATION_SITE_REQUIRED")
         station = text(user.get("siteCode"))
@@ -166,7 +140,7 @@ class R7VehicleClient:
             fail("R7_DRIVER_ARRIVAL_CONFIRMATION_REQUIRED")
         if selected.get("carHeadRealArriveTimeCenter"):
             fail("R7_EXISTING_PUNCH_CONFIRMATION_REQUIRED")
-        now = datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+        now = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
         if not row.get("needExtraCarType") and now < timestamp(row.get("taskReleaseTime")):
             fail("R7_TASK_TIME_INVALID")
         if "headAmount" not in row or "trunkAmount" not in row:
@@ -183,6 +157,7 @@ class R7VehicleClient:
             restockTag=False,
         )
         ack = self.request(PUNCH, payload, write=True)
+        write_ref = self.refs[-1]
         # The server owns the final time; it can differ from the dialog time.
         try:
             actual = find_via(ack, station)
@@ -198,6 +173,30 @@ class R7VehicleClient:
                 or verified.get("carHeadRealArriveTimeCenter") != actual_time
             ):
                 fail("WRITE_OUTCOME_UNKNOWN")
+            write_index = ack["taskViaList"].index(actual)
+            read_index = fresh["taskViaList"].index(verified)
+            self.proofs.append(
+                {
+                    "write_ref": write_ref,
+                    "read_ref": self.refs[-1],
+                    "matches": [
+                        {
+                            "write_path": "/response/data/" + field,
+                            "read_path": "/response/data/" + field,
+                            "expected": value,
+                        }
+                        for field, value in (("id", task_id), ("taskNumber", task_number))
+                    ]
+                    + [
+                        {
+                            "write_path": f"/response/data/taskViaList/{write_index}/{field}",
+                            "read_path": f"/response/data/taskViaList/{read_index}/{field}",
+                            "expected": value,
+                        }
+                        for field, value in (("id", selected["id"]), ("carHeadRealArriveTimeCenter", actual_time))
+                    ],
+                }
+            )
             return {
                 "task_id": task_id,
                 "task_number": task_number,
@@ -205,5 +204,5 @@ class R7VehicleClient:
                 "arrival_time": actual_time,
                 "status": fresh["taskStatus"],
             }
-        except (R7TaskError, KeyError, TypeError, AttributeError):
+        except (RuntimeError, KeyError, TypeError, AttributeError):
             fail("WRITE_OUTCOME_UNKNOWN")

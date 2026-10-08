@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 
 PLUGIN_ID = "r7_vehicle_checkin_v2"
-PLUGIN_VERSION = "1.0.0"
+PLUGIN_VERSION = "1.1.0"
 SERVICE_NAME = "plugin.r7_vehicle_checkin_v2.checkin@1"
 _REQUEST_FIELDS = {
     "schema_version",

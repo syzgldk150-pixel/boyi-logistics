@@ -57,7 +57,7 @@ _TOP_LEVEL_REQUIRED_FIELDS = frozenset(
         "storage",
     }
 )
-_TOP_LEVEL_FIELDS = _TOP_LEVEL_REQUIRED_FIELDS | {"settings_ui", "management"}
+_TOP_LEVEL_FIELDS = _TOP_LEVEL_REQUIRED_FIELDS | {"settings_ui", "management", "http_requests"}
 _SETTINGS_UI_FIELDS = frozenset({"entry", "bridge_api"})
 _HOST_API_FIELDS = frozenset({"minimum", "maximum_exclusive"})
 _RUNTIME_FIELDS = frozenset(
@@ -1298,6 +1298,7 @@ class AutomationPluginManifestV2:
     storage: Mapping[str, Any]
     settings_ui: Mapping[str, Any] | None = None
     management: Mapping[str, str] | None = None
+    http_requests: tuple[Mapping[str, Any], ...] = ()
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "AutomationPluginManifestV2":
@@ -1353,6 +1354,13 @@ class AutomationPluginManifestV2:
             resource_roles=resource_role_names,
             storage=storage,
         )
+        from agent.automation_plugins.http_request_contract import validate_http_requests
+        try:
+            http_requests = validate_http_requests(
+                data.get("http_requests", []), account_roles=account_roles, capabilities=capabilities,
+            )
+        except ValueError as exc:
+            raise PluginManifestError(str(exc)) from exc
         contributes = _validate_contributes(
             data["contributes"],
             operations_by_service=operations_by_service,
@@ -1396,6 +1404,7 @@ class AutomationPluginManifestV2:
             storage=_deep_freeze(storage),
             settings_ui=_deep_freeze(settings_ui) if settings_ui is not None else None,
             management=_deep_freeze(management) if management is not None else None,
+            http_requests=tuple(_deep_freeze(item) for item in http_requests),
         )
         canonical_json_bytes(normalized.to_mapping())
         return normalized
@@ -1423,6 +1432,8 @@ class AutomationPluginManifestV2:
             result["settings_ui"] = _deep_thaw(self.settings_ui)
         if self.management is not None:
             result["management"] = _deep_thaw(self.management)
+        if self.http_requests:
+            result["http_requests"] = [_deep_thaw(item) for item in self.http_requests]
         return result
 
     @property

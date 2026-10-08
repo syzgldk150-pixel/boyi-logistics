@@ -57,6 +57,7 @@ _MANIFEST_SECTIONS = (
     "provides",
     "requires",
     "capabilities",
+    "http_requests",
     "account_roles",
     "resource_roles",
     "contributes",
@@ -338,6 +339,7 @@ def project_permission_report(verified: VerifiedPluginPackageV2) -> dict[str, An
         },
         "provided_operations": provided_operations,
         "host_capabilities": host_capabilities,
+        **({"http_requests": _stable(package.manifest.http_requests)} if package.manifest.http_requests else {}),
         "contributions": contributions,
         "account_roles": sorted(
             (_stable(item) for item in contract.account_roles),
@@ -421,8 +423,8 @@ def _manifest_delta(
     before: VerifiedPluginPackageV2,
     after: VerifiedPluginPackageV2,
 ) -> dict[str, Any]:
-    before_manifest = before.manifest_mapping
-    after_manifest = after.manifest_mapping
+    before_manifest = {"http_requests": [], **before.manifest_mapping}
+    after_manifest = {"http_requests": [], **after.manifest_mapping}
     sections: list[dict[str, Any]] = []
     changed_sections: list[str] = []
     for name in _MANIFEST_SECTIONS:

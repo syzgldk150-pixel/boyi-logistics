@@ -637,6 +637,10 @@ class ServiceV2CapabilityProxy:
                     self._invocation_manifests.popitem(last=False)
         return manifest
 
+    def http_request(self, context: CoreBrokerInvocationContext, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        from agent.automation_plugins.account_http import account_http_request
+        return account_http_request(context, arguments, self._invocation_manifest(context))
+
     @staticmethod
     def unavailable(
         context: CoreBrokerInvocationContext,
@@ -1208,6 +1212,7 @@ def build_service_v2_capability_handler_map(
     }
     handlers[("storage.kv", "*")] = proxy.kv
     handlers[("storage.collection", "*")] = proxy.collection
+    handlers[("http.request", "*")] = proxy.http_request
     if service_registry is not None or connector_registry is not None:
         handlers[SERVICE_V2_SERVICE_INVOKE_HANDLER_KEY] = proxy.service_invoke
     reviewed = reviewed_handlers or {}

@@ -25,7 +25,7 @@ Service V2 插件是包含实际业务代码的独立 ZIP。宿主负责账号�
 
 插件清单、业务文件归属、局部测试和打包命令见[当前插件维护入口](../agent/service_v2_plugins/README.md)。本手册替代旧文档中“生产 Connector 为空”“AI 只读”“V2 只有离线候选实现”的状态说明。
 
-新 R7 车线每日打卡包 `r7_vehicle_checkin_v2` 使用账号型 `connector.boyi.r7_vehicle_tasks@1`，支持宿主账号选择及默认关闭的项目定时；新增 Connector 需随核心更新后再安装 ZIP，旧 R7 迁移身份继续停用。接口证据、构建方式与本次验收范围见 [R7车线每日打卡](../agent/docs/r7_vehicle_checkin.md)。
+R7 车线每日打卡包 `r7_vehicle_checkin_v2` 1.1.0 使用通用账号 `http.request`，查询、提交和核验规则均在 ZIP 内，支持宿主账号选择及默认关闭的项目定时。通用能力首次需要核心更新；后续同系统业务只升级 ZIP，旧 R7 迁移身份继续停用。详见[通用账号请求](../agent/docs/plugin_account_http.md)。接口证据、构建方式与本次验收范围见 [R7车线每日打卡](../agent/docs/r7_vehicle_checkin.md)。
 
 ## 只读预览与未启用定时
 
@@ -63,7 +63,7 @@ Manifest Schema 位于 `agent/extension_sdk/schemas/manifest-v2.schema.json`。�
 
 每个服务操作声明精确 effect：`read`、`compute`、`internal_write`、`external_write` 或 `destructive`。预览按预览操作确定权限和读写类型，不因为同一包还有正式写操作而被视为写调用。
 
-`service.invoke` 只接受 Manifest 声明的服务和操作。插件不能任意访问宿主 Python、SQL 连接、文件、网络或第三方凭据。宿主 `production_connectors.py` 注册已实现的到货、扫描、问题件、寄件、签收、财务、客服和每日应签接口。打卡复用已审核的 `browser.session` 动作。测试用 tracking fixture 只供显式隔离测试使用，不是生产物流接口。
+`service.invoke` 只接受 Manifest 声明的服务和操作。插件不能任意访问宿主 Python、SQL 连接、文件、网络或第三方凭据。宿主 `production_connectors.py` 注册已实现的到货、扫描、问题件、寄件、签收、财务、客服和每日应签接口。融辉网点打卡复用已审核的 `browser.session` 动作；R7 等新网页业务通过包声明的 `http_requests` 使用通用账号请求，宿主不增加专用业务接口。测试用 tracking fixture 只供显式隔离测试使用，不是生产物流接口。
 
 Connector 在宿主解析当前账号和资源，验证输入和调用范围，并记录真实操作观测。敏感内部身份不进入模型或插件返回值。缺字段、分页不完整、范围不明、重复游标、空响应或权威回读失败必须给出具体失败结果；退出码或 `success=true` 不能替代业务成功。
 

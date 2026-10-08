@@ -10,11 +10,10 @@ from agent.automation_plugins.delivery_connectors_v2 import build_delivery_conne
 from agent.automation_plugins.customer_connectors_v2 import build_customer_connectors
 from agent.automation_plugins.daily_sign_connectors_v2 import build_daily_sign_connectors
 from agent.automation_plugins.connector_registry import ConnectorRegistry
-from agent.automation_plugins.r7_vehicle_connectors_v2 import build_r7_vehicle_connectors
 
 
 def build_production_connector_registry(reviewed) -> ConnectorRegistry:
     return ConnectorRegistry((*build_arrival_connectors(reviewed), *build_problem_connectors(reviewed),
                               *build_scan_connectors(reviewed), *build_list_connectors(reviewed), *build_yunda_connectors(reviewed),
                               *build_finance_connectors(reviewed), *build_daily_send_connectors(reviewed), *build_delivery_connectors(reviewed),
-                              *build_customer_connectors(reviewed), *build_daily_sign_connectors(reviewed), *build_r7_vehicle_connectors()))
+                              *build_customer_connectors(reviewed), *build_daily_sign_connectors(reviewed)))

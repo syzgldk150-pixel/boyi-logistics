@@ -32,7 +32,7 @@ PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.plugin_maintenance
 PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.plugin_maintenance package sync_scan_codes_v2 --output .task_tmp/scan.zip --report .task_tmp/scan-report.json
 ```
 
-迁移而来的现有插件替换插件 ID 即可测试和打包。新建通用包 `r7_vehicle_checkin_v2` 使用 `scripts.service_v2_plugin` 打包，账号、定时、原站协议与局部测试命令见 [R7车线每日打卡](../docs/r7_vehicle_checkin.md)。V2 由超级管理员安装，保留原配置和入口；不使用旧 V1 签名包格式。现有实例后续维护使用升级入口，不重新执行历史迁移。真实隔离 ZIP、MySQL 和两类飞书表回读测试见 `tests/test_daily_sign_v2_packaged_protocol.py`，其中包含只改包内顺延类型、Host 不变的场景。
+迁移而来的现有插件替换插件 ID 即可测试和打包。新建通用包 `r7_vehicle_checkin_v2` 使用 `scripts.service_v2_plugin` 打包，页面接口、参数及核验规则应全部在包内，通过通用 `http.request` 复用账号登录态，详见 [通用账号请求](../docs/plugin_account_http.md)。账号、定时、原站协议与局部测试命令见 [R7车线每日打卡](../docs/r7_vehicle_checkin.md)。V2 由超级管理员安装，保留原配置和入口；不使用旧 V1 签名包格式。现有实例后续维护使用升级入口，不重新执行历史迁移。真实隔离 ZIP、MySQL 和两类飞书表回读测试见 `tests/test_daily_sign_v2_packaged_protocol.py`，其中包含只改包内顺延类型、Host 不变的场景。
 
 ## 历史边界
 

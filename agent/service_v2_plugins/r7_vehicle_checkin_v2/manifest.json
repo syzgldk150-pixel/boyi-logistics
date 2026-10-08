@@ -10,16 +10,12 @@
   ],
   "capabilities": [
     {
-      "name": "service.invoke",
+      "name": "http.request",
       "operations": [
-        "read_page",
-        "arrive"
+        "read_json",
+        "write_json"
       ],
-      "action_call_limits": {
-        "read_page": 100,
-        "arrive": 800
-      },
-      "account_role": null,
+      "account_role": "r7_operator",
       "resource_role": null
     }
   ],
@@ -81,13 +77,7 @@
       ]
     }
   ],
-  "requires": [
-    {
-      "service": "connector.boyi.r7_vehicle_tasks@1",
-      "binding_kind": "account",
-      "account_role": "r7_operator"
-    }
-  ],
+  "requires": [],
   "resource_roles": [],
   "runtime": {
     "entrypoint": "payload/main.py",
@@ -103,5 +93,35 @@
     "collections": [],
     "kv": false
   },
-  "version": "1.0.0"
+  "version": "1.1.0",
+  "http_requests": [
+    {
+      "name": "task_page",
+      "account_role": "r7_operator",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/gateway/tms/public/lineTask/pageGet"
+    },
+    {
+      "name": "task_detail",
+      "account_role": "r7_operator",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/gateway/tms/public/lineTask/getById"
+    },
+    {
+      "name": "operator_context",
+      "account_role": "r7_operator",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/gateway/public/aurora/auth"
+    },
+    {
+      "name": "arrival_punch",
+      "account_role": "r7_operator",
+      "action": "write_json",
+      "method": "POST",
+      "path": "/gateway/tms/public/lineTask/saveCenterPunch"
+    }
+  ]
 }

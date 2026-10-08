@@ -325,6 +325,7 @@ def _descriptor(
     output_schema: Mapping[str, object],
     handler_key: str,
     enabled: bool = True,
+    per_call_limit: int = 64,
 ) -> HostCapabilityDescriptor:
     return HostCapabilityDescriptor(
         api_version=HOST_CAPABILITY_API_VERSION,
@@ -334,10 +335,10 @@ def _descriptor(
         input_schema=input_schema,
         output_schema=output_schema,
         handler_key=handler_key,
-        requires_account_role=capability == "browser.session",
+        requires_account_role=capability in {"browser.session", "http.request"},
         requires_resource_role=False,
         scheduler_allowed=True,
-        per_call_limit=64,
+        per_call_limit=per_call_limit,
         timeout_seconds=30,
         enabled=enabled,
     )
@@ -481,6 +482,21 @@ _CLOCK_WRITE_OUTPUT = _object_schema(
 
 
 _BASELINE_DESCRIPTORS = (
+    *(_descriptor(
+        "http.request", action, effect,
+        input_schema=_object_schema({
+            "request": {"type": "string", "minLength": 1, "maxLength": 64},
+            "body": {"type": "object", "additionalProperties": True},
+        }, ("request", "body")),
+        output_schema=_object_schema({
+            "status_code": {"type": "integer", "minimum": 100, "maximum": 599},
+            "response": {"type": "object", "additionalProperties": True},
+        }, ("status_code", "response")),
+        handler_key="http.request:*", per_call_limit=limit,
+    ) for action, effect, limit in (
+        ("read_json", CapabilityEffect.READ, 800),
+        ("write_json", CapabilityEffect.EXTERNAL_WRITE, 200),
+    )),
     _descriptor(
         "storage.kv",
         "get",
