@@ -4,7 +4,7 @@ type: 模块文档
 tags: [融辉, 财务同步, 费用绑定, BI, Decimal]
 related: [project_overview.md, common/finance_data_baseline.md]
 status: active
-updated: 2026-09-15
+updated: 2026-10-08
 ---
 
 # 融辉财务工作台
@@ -14,6 +14,14 @@ updated: 2026-09-15
 本模块当前只从已完成真实页面验收的融辉财务页面同步逐笔交易、平台汇总和费用项目，并为 Console 的 `/modules/finance` 提供统一账本、费用绑定、同步审计和 BI 查询。
 
 本模块是项目唯一的财务架构。生产财务来源由 `shared/finance/sources.py` 的启用注册表统一控制；当前仅启用融辉三个业务账号。韵达适配器只作为待真实页面验收的预留实现，不进入定时、启动补拉、手工同步、重试目标、Console 平台选项或当前失败告警。不得新增 Excel/CSV 工作簿 ETL，也不得在运行失败时回退到历史导出文件、手工汇总或上一次成功值。
+
+## 财务插件与 Host 的维护边界
+
+当前采集编排属于 `service_v2_plugins/sync_finance_bills_v2/payload/`。重扫天数、逻辑目标集合、日期切块、目标数量限制和页大小由包内计划明确提交；Host 核验角色绑定、权限、计划一致性和实际来源证据，不重建另一份业务默认值。分页完整性按本次捕获的实际页大小核对，不能固定按 100 行推断末页。
+
+规则归属调整不改变财务正确性要求：来源总量、明细与汇总、金额反算、极值、余额链及写后回读仍须闭合。字段缺失或采集失败不能用零值、旧快照或历史实现兜底。`tests/test_plugin_business_boundary.py` 覆盖冻结 Host 后改变财务包的页大小、重扫默认值与目标预算。
+
+2026-10-08 修复的是 Host 对显式计划的消费方式，现有财务 ZIP 未换包；本次没有重新采集生产财务数据。通用维护边界见[插件维护入口](../service_v2_plugins/README.md)，本次核验范围见[上线记录](../../docs/plugin_business_boundary_20261008.md)。
 
 ## 数据源口径
 

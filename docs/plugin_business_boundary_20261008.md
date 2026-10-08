@@ -1,0 +1,65 @@
+---
+module: 自动化插件平台
+type: 修复与上线记录
+tags: [service_v2, 插件边界, ECS, 发布, 预览]
+related: [plugin-platform-v2.md, ../agent/service_v2_plugins/README.md, ../agent/docs/plugin_maintenance.md]
+status: historical
+updated: 2026-10-08
+---
+
+# 2026-10-08 插件职责边界修复与上线记录
+
+本页记录本次修复、发布和截至北京时间 2026-10-08 19:40 的核验结果。后续源码以各包 Manifest 为准，线上版本与状态以真实实例记录为准；日常维护合同见[插件维护入口](../agent/service_v2_plugins/README.md)。
+
+## 问题与修复范围
+
+扫描问题先在核心提交 `3bcc62ed3bb11178ab76b1ac0cc4f76404f03503` 修复：Host 重建批次计划可能与插件预览不一致，导致结果不能按同一计划闭合。修复后 Host 绑定插件提交的批次数与计划摘要，实际写入继续独立核验。
+
+随后以该提交为基线，核查当时 ECS 的 16 种已启用 V2 插件、17 个实例，其中扫描之外为 15 种。复现了分批 91 票被 Host 确认后又被插件拒绝、自提文案变更受 Host 旧规则阻挡、财务重扫默认值变化被 Host 拒绝，并检查了统计与分批重复分类的实现。
+
+| 范围 | 本次修复后的职责 |
+|---|---|
+| 扫描 | ZIP 生成批次计划；Host 绑定预览和确认，核验结构、候选、实际提交和账本回读。 |
+| 自提、分批选择 | ZIP 预览给出 `selection_limit`；Host、飞书、Console 使用同一上限，超量不能提交，缺字段明确失败。 |
+| 问题件登记 | ZIP 提交类型、责任方、说明摘要和顺延标志等完整计划；Host 不重新生成业务文案或默认值。 |
+| 到货统计与分批 | 分类只维护在 `split_pending_problem_upload_v2/payload/split_rules.py`，同源装入两个 ZIP；Host 保存插件已分类快照和渲染行，空结果清理旧投影。 |
+| 财务 | ZIP 决定重扫、目标、日期切块和分页；Host 绑定计划并按实际采集页大小核验，保留总量、金额、余额链等检查。 |
+
+插件继续依赖 Host 提供登录态、权限、调度、隔离执行、外部接口和持久化。这些基础能力的依赖不要求 Host 同时维护插件业务规则。其他已核查插件未复现相同规则冲突，不据此宣称其所有真实业务场景均已验收。
+
+## 已完成的发布与安装
+
+核心提交 `17ad00c7c0820d76df4538923097acad8d53326a` 已通过标准 `shared` 路径发布到 ECS。用户明确授权本次紧急定时窗口覆盖，只跳过定时临近检查；任务排空、备份、健康检查及回滚检查保留。发布日志记录 `release_runtime_activation=ok` 与 `Publish completed: shared`。
+
+先暂停三个受影响实例并排空，再发布核心，通过真实超级管理员页面升级 ZIP，回读版本和代次后恢复原启用状态。最终核验如下：
+
+| 插件 | 升级前版本 | 安装版本 | 已提交代次 | 最终状态 |
+|---|---|---|---|---|
+| `self_pickup_problem_upload_v2` | 2.0.1 | 2.1.0 | 2 | ENABLED / STABLE |
+| `split_pending_problem_upload_v2` | 2.0.3 | 2.1.0 | 3 | ENABLED / STABLE |
+| `sync_arrival_stats_v2` | 2.0.1 | 2.1.0 | 2 | ENABLED / STABLE |
+
+三个实例均保持已配置；配置、账号绑定、资源绑定、入口及期望定时五类摘要与升级前一致。到货统计的定时开关原为关闭，恢复后仍关闭。财务只更新 Host，未替换现有财务 ZIP。
+
+本地最终 ZIP 与安装记录的 SHA-256 均一致：
+
+| ZIP | SHA-256 |
+|---|---|
+| `self_pickup_problem_upload_v2-2.1.0.zip` | `76714b52ac537dc0d04d3b55796bf837284d05fe16029ad5293d04ef8fe88050` |
+| `split_pending_problem_upload_v2-2.1.0.zip` | `6322e7080ddb8c4861b9150e07d6e469d1b2a9a9ce52ca6ddd3923092fe0312b` |
+| `sync_arrival_stats_v2-2.1.0.zip` | `6e610221d0fb1d800ff8a9a82b27423a4141557880684b6fe86c07118d7045d5` |
+
+## 验证结果与限制
+
+- 本次修复回归实际通过 `508 passed, 108 subtests passed`；三个 ZIP 均经 `plugin_maintenance.py package` 对应测试和工件检查。该数字是修复时的验证结果，不代表后续仅改文档时重新执行了测试。
+- 冻结 Host 的真实隔离 ZIP 回归覆盖上限、文案、分类、财务默认值与分页变化；扫描合同回归覆盖不同批量、零候选和首写前计划漂移。
+- 2026-10-08 19:38—19:39 从后台触发的只读预览成功返回：自提 4 票、上限 250；分批 3 票、上限 90。候选数量仅是当次读取结果，不是长期固定业务数量。
+- 本次上线后核验没有提交正式扫描、问题件登记、统计写表或财务采集；只读预览和隔离回归不能代替这些真实写入的业务验收，也不改写历史失败记录。
+
+本次回滚材料保留在 `/home/boyce/.boyi-deploy/release-17ad00c7c082-20261008185936`，状态为 `pending_business_validation`；前次扫描修复回滚材料也保留。后续须在实际业务验收完成后按[ECS 发布手册](../agent/deploy/publish_to_ecs.md)独立清理。回退涉及显式计划协议时，须恢复匹配的核心和包版本，不能直接启用不兼容旧包。
+
+## 证据位置
+
+本地任务证据位于仓库内 `.task_tmp/boundary-fix-20261008/`：`all-regression.log`、三个 `*-report.json`、`publish.log`、`before.json`、`after.json`、`installation-verification.json` 及三个最终 ZIP。初始审计复现位于 `.task_tmp/plugin-boundary-audit-20261008/reproduction.json`。
+
+这些文件是当次本地证据与交付工件，不随源码发布，也不保证其他检出目录具有同一临时目录；本页保留已核验的版本、摘要与结果。文档不包含凭据或原始业务明细。

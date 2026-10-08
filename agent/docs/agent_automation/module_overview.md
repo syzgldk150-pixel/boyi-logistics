@@ -4,7 +4,7 @@ type: 模块文档
 tags: [Agent自动化, 飞书触发器, 直达指令, pending状态机, 登录恢复, TMS自动化]
 related: [../project_overview.md, ../code_navigation_index.md, ../ai_service/module_overview.md]
 status: active
-updated: 2026-10-07
+updated: 2026-10-08
 ---
 
 ## 当前执行边界
@@ -14,6 +14,12 @@ Console 手动和定时直接启动对应插件，记录 Invocation，完成后�
 单号查询/报价等已注册 reader 直接返回数据；不创建 Command/Run，也不等待 Runner 领取。
 失败、取消和未知写均结束本次；登录成功只恢复账号可用性，用户新触发才会产生新调用。
 不同插件可以并行，只有实际仍在运行的同实例/资源约束本次调用。
+
+## 扫描和候选预览的规则归属
+
+扫描批次由已安装 ZIP 生成，Host 原样绑定本次 `batch_count/batch_plan_sha256`，不按宿主默认值重新分批。自提和分批的选择上限来自已持久化预览的 `selection_limit`，飞书与 Console 消费同一值；当前包分别为 250、90。超过上限时保留候选并要求重新选择，缺少上限则拒绝确认，不能套用其他插件的默认值。
+
+问题件类型、责任方、说明和顺延判断由包内计划明确提交，Host 验证计划绑定并执行实际写入与独立回读。结果不可读取时保留原 Invocation 的真实状态，不能自动重跑历史任务或伪报成功。维护规则见[当前插件入口](../../service_v2_plugins/README.md)，2026-10-08 修复及只读验收见[上线记录](../../../docs/plugin_business_boundary_20261008.md)。
 
 # Agent 自动化能力模块概述
 

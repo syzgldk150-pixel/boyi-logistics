@@ -4,7 +4,7 @@ type: 操作说明
 tags: [插件, 测试, 打包, 维护]
 related: [service_v2_developer_tooling.md, automation_plugin_platform.md, code_navigation_index.md]
 status: active
-updated: 2026-10-07
+updated: 2026-10-08
 ---
 
 # 插件局部测试和打包
@@ -51,6 +51,19 @@ V2 由超级管理员上传已验证 ZIP，不使用 V1 私钥签名流程。旧
 源码归属比较不替代安装期 Host API、能力、数据契约、版本、签名与 generation 校验。
 升级和回退必须继续经过原有实例生命周期、精确版本/CAS与在途排空机制；此离线入口
 不会直接覆盖正在运行的代码、修改主服务依赖、开启业务定时或触发真实业务写入。
+
+## 规则变更的验证范围
+
+| 变更 | 维护与验证要求 |
+|---|---|
+| 扫描批量、候选上限、问题件说明等包内规则 | 使用现有 Host 合同，测试并升级对应 ZIP；预览和正式确认须绑定同一包所提交的计划。 |
+| 分批分类共享规则 | 唯一源码为 `split_pending_problem_upload_v2/payload/split_rules.py`；构建器分别装入分批与到货统计 ZIP，两个包都需验证和升级。 |
+| 财务重扫、目标、日期切块、分页规则 | 由财务包生成计划；Host 按计划和实际采集分页核验，保留来源总量、金额与余额链检查。 |
+| Host API、公共字段协议或持久化合同 | 按核心变更处理，并检查所有消费包；不能只升级 ZIP 或让旧包继续使用不兼容的新 Host。 |
+
+`tests/test_plugin_business_boundary.py` 在冻结 Host 上运行真实隔离 ZIP，覆盖包内上限、问题件说明、分批分类、财务默认值和页大小变化。相关用例已进入 `PLUGIN_TESTS`；以 `describe` 输出为准，不用修改 Host 后的通过结果证明插件规则独立。扫描计划绑定另由 `tests/test_sync_scan_codes_v1_v2_parity.py` 覆盖。
+
+2026-10-08 的显式计划协议涉及核心和三个 ZIP 的协同升级，操作顺序见[插件维护入口](../service_v2_plugins/README.md#显式计划协议的协同升级)，实际安装和只读预览结果见[上线记录](../../docs/plugin_business_boundary_20261008.md)。后续安装响应超时应先回读原操作和实例状态，不能直接重复提交。
 
 ## 验证证据
 

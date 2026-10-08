@@ -5,7 +5,7 @@ tags: [documentation, navigation, authority, lifecycle]
 status: active
 authority: canonical
 owner: repository
-updated: 2026-10-07
+updated: 2026-10-08
 ---
 
 # 仓库文档索引
@@ -61,6 +61,8 @@ updated: 2026-10-07
 - [AI 客服规划](../agent/docs/ai_service/module_overview.md)
 
 ## 历史、规划与快照
+
+- [插件职责边界修复与上线记录](plugin_business_boundary_20261008.md)（2026-10-08）：扫描、自提、分批、到货统计和财务的边界修复、核心发布与三个 2.1.0 包安装结果，以及只读预览验收范围。
 
 - [扩展平台原始方案](extension-platform-baseline.md)、[原迁移执行账本](extension-platform-progress.md)：保留阶段性 TASK 与隔离证据，不是当前待办或生产门禁。
 - [旧控制平面](../agent/docs/control_plane_v1.md)、[旧 Action V1 合同](../agent/docs/automation_plugin_platform.md)：解释历史记录；不用于新增插件或日常执行。
