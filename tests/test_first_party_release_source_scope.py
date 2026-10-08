@@ -8,6 +8,7 @@ import pytest
 from agent.automation_plugins.first_party import release_first_party_plugin_ids
 from scripts.first_party_release_scope import (
     ReleaseScopeError,
+    STANDALONE_SERVICE_V2_PLUGIN_IDS,
     deferred_source_files,
     current_plugin_ids,
     release_plugin_ids,
@@ -30,7 +31,10 @@ def test_ast_scope_matches_runtime_allowlist_without_loading_deferred_payloads()
     assert release_paths
     assert release_paths.isdisjoint(deferred_paths)
     for plugin_id in current_plugin_ids(REPOSITORY_ROOT):
-        assert FIRST_PARTY_ROOT / plugin_id / "payload" / "plugin.py" in release_paths
+        entry = "main.py" if plugin_id in STANDALONE_SERVICE_V2_PLUGIN_IDS else "plugin.py"
+        assert FIRST_PARTY_ROOT / plugin_id / "payload" / entry in release_paths
+    assert "r7_vehicle_checkin_v2" in current_plugin_ids(REPOSITORY_ROOT)
+    assert not {"r7_arrival_checkin_v2", "r7_departure_checkin_v2"} & current_plugin_ids(REPOSITORY_ROOT)
     assert all(not path.is_relative_to(REPOSITORY_ROOT / "agent/legacy") for path in release_paths)
 
 

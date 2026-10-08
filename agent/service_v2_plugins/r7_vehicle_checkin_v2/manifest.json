@@ -1,0 +1,107 @@
+{
+  "account_roles": [
+    {
+      "role": "r7_operator",
+      "allowed_systems": [
+        "r7"
+      ],
+      "required": true
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "service.invoke",
+      "operations": [
+        "read_page",
+        "arrive"
+      ],
+      "action_call_limits": {
+        "read_page": 100,
+        "arrive": 800
+      },
+      "account_role": null,
+      "resource_role": null
+    }
+  ],
+  "config_schema": {
+    "additionalProperties": false,
+    "properties": {},
+    "required": [],
+    "type": "object"
+  },
+  "contributes": {
+    "console": [
+      {
+        "id": "run",
+        "title": "执行R7车线每日打卡",
+        "service": "plugin.r7_vehicle_checkin_v2.checkin@1",
+        "operation": "run",
+        "default_enabled": true
+      }
+    ],
+    "scheduler": [
+      {
+        "id": "daily_checkin",
+        "title": "R7车线每日打卡定时",
+        "service": "plugin.r7_vehicle_checkin_v2.checkin@1",
+        "operation": "run",
+        "default_enabled": false
+      }
+    ],
+    "feishu": [
+      {
+        "id": "command",
+        "service": "plugin.r7_vehicle_checkin_v2.checkin@1",
+        "operation": "run",
+        "commands": [
+          "R7车线每日打卡"
+        ],
+        "default_enabled": false
+      }
+    ],
+    "harness": [],
+    "webhook": [],
+    "events": []
+  },
+  "description": "按北京时间查询今天及前两天计划发车的运输任务，只对车辆到达任务逐条提交到达待卸并独立回读核验。使用实例选择的R7账号登录态；可在项目中配置定时。",
+  "host_api": {
+    "maximum_exclusive": "3.0.0",
+    "minimum": "2.0.0"
+  },
+  "name": "R7车线每日打卡",
+  "plugin_id": "r7_vehicle_checkin_v2",
+  "provides": [
+    {
+      "service": "plugin.r7_vehicle_checkin_v2.checkin@1",
+      "operations": [
+        {
+          "name": "run",
+          "effect": "external_write"
+        }
+      ]
+    }
+  ],
+  "requires": [
+    {
+      "service": "connector.boyi.r7_vehicle_tasks@1",
+      "binding_kind": "account",
+      "account_role": "r7_operator"
+    }
+  ],
+  "resource_roles": [],
+  "runtime": {
+    "entrypoint": "payload/main.py",
+    "kind": "python_subprocess",
+    "mode": "on_demand",
+    "python": "3.10",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "runtime_model": "service_v2",
+  "schema_version": 2,
+  "storage": {
+    "collections": [],
+    "kv": false
+  },
+  "version": "1.0.0"
+}

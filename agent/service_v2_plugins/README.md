@@ -4,7 +4,7 @@ type: 维护入口
 status: active
 authority: canonical
 owner: repository
-updated: 2026-10-07
+updated: 2026-10-08
 ---
 
 # 当前插件维护入口
@@ -13,7 +13,7 @@ updated: 2026-10-07
 
 ## 源码归属
 
-每个 `<plugin_id>_v2/payload/action.py` 是对应业务编排的唯一源码。每日应签的采集、计算、顺延类型、截止时间和表格渲染位于 `sync_daily_should_sign_v2/payload/business/`。打卡的共同实现位于 `_shared/clock_runtime.py`；公共包内结果协议位于 `_shared/result.py`。
+每个 `<plugin_id>_v2/payload/action.py` 是对应业务编排的唯一源码。每日应签的采集、计算、顺延类型、截止时间和表格渲染位于 `sync_daily_should_sign_v2/payload/business/`。融辉网点打卡的共同实现位于 `_shared/clock_runtime.py`；公共包内结果协议位于 `_shared/result.py`。
 
 构建器 `_shared/build_zip.py` 只从当前插件及明确的共享协议文件取源码，不读取旧 V1 目录。共享的原页字段协议位于仓库根 `shared/ronghui_finance_fields.py`、`shared/ronghui_customer_problem_fields.py`，由 Host 和 ZIP 同源引用；修改这些公共协议仍需要核心更新。`_shared/` 的改动也须检查所有受影响包。
 
@@ -32,7 +32,7 @@ PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.plugin_maintenance
 PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.plugin_maintenance package sync_scan_codes_v2 --output .task_tmp/scan.zip --report .task_tmp/scan-report.json
 ```
 
-替换插件 ID 即可测试和打包。V2 由超级管理员安装，保留原配置和入口；不使用旧 V1 签名包格式。现有实例后续维护使用升级入口，不重新执行历史迁移。真实隔离 ZIP、MySQL 和两类飞书表回读测试见 `tests/test_daily_sign_v2_packaged_protocol.py`，其中包含只改包内顺延类型、Host 不变的场景。
+迁移而来的现有插件替换插件 ID 即可测试和打包。新建通用包 `r7_vehicle_checkin_v2` 使用 `scripts.service_v2_plugin` 打包，账号、定时、原站协议与局部测试命令见 [R7车线每日打卡](../docs/r7_vehicle_checkin.md)。V2 由超级管理员安装，保留原配置和入口；不使用旧 V1 签名包格式。现有实例后续维护使用升级入口，不重新执行历史迁移。真实隔离 ZIP、MySQL 和两类飞书表回读测试见 `tests/test_daily_sign_v2_packaged_protocol.py`，其中包含只改包内顺延类型、Host 不变的场景。
 
 ## 历史边界
 

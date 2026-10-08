@@ -155,7 +155,7 @@ V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v3
 | OCR识别 | `console/` | `docs/ocr/` | Qwen-OCR、人工复核与 MySQL 入库已运行；自学习/Paddle 方案未实施 |
 | 车辆调度 | `console/` | `docs/dispatch/` | `map_only`：仅地图路线规划与本地试算，无真实派单/车辆/平台接口 |
 | Agent 自动化能力 | `agent/ + feishu/ + tools/` | `docs/agent_automation/` | 飞书机器人承载的全部能力都在此（直接插件/reader / 预览确认 / 账号登录） |
-| 自动化插件平台 | `agent/automation_plugins/`、`service_v2_plugins/`、`plugin_core_adapters/`、`agent/windows_worker/`、`service_v2_plugins/` | `docs/automation_plugin_platform.md`、`../docs/plugin-platform-v2.md`、`service_v2_plugins/README.md`、`legacy/first_party_automation_plugins/MIGRATION_MATRIX.md` | 生产为 Service V2 ZIP、Host API 与 Direct Invocation；V1 源码仅留离线回归材料且不发布；Windows Worker/Tray 与 R7 仍未启用 |
+| 自动化插件平台 | `agent/automation_plugins/`、`service_v2_plugins/`、`plugin_core_adapters/`、`agent/windows_worker/`、`service_v2_plugins/` | `docs/automation_plugin_platform.md`、`../docs/plugin-platform-v2.md`、`service_v2_plugins/README.md`、`legacy/first_party_automation_plugins/MIGRATION_MATRIX.md` | 生产为 Service V2 ZIP、Host API 与 Direct Invocation；V1 源码仅留离线回归材料且不发布；Windows Worker/Tray 及旧 R7 入口仍停用；新 R7 车线每日打卡独立 V2 包见 `docs/r7_vehicle_checkin.md` |
 | AI客服 | `agent/ + feishu/`（规划中） | `docs/ai_service/` | 暂未开发；待启动后从 Agent 自动化能力剥离客户对话能力 |
 | 通用规范 | — | `docs/common/` | 活跃 |
 

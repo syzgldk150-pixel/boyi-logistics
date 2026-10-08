@@ -4,7 +4,7 @@ type: 开发与迁移手册
 tags: [ZIP 插件, service_v2, Host API, 独立插件]
 related: [identity_and_unified_chat.md, architecture_direct_invocation.md, ../agent/service_v2_plugins/README.md, ../agent/docs/service_v2_developer_tooling.md]
 status: active
-updated: 2026-10-07
+updated: 2026-10-08
 ---
 
 # 独立插件与宿主接口
@@ -24,6 +24,8 @@ Service V2 插件是包含实际业务代码的独立 ZIP。宿主负责账号�
 局部回归：`PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m pytest tests/test_first_party_retirement.py tests/test_v2_migration_lifecycle_mysql.py`；后者使用隔离 MySQL、真实 V1/V2 安装及业务供应端协议执行，覆盖迁移、回退、历史保留与列表归属。
 
 插件清单、业务文件归属、局部测试和打包命令见[当前插件维护入口](../agent/service_v2_plugins/README.md)。本手册替代旧文档中“生产 Connector 为空”“AI 只读”“V2 只有离线候选实现”的状态说明。
+
+新 R7 车线每日打卡包 `r7_vehicle_checkin_v2` 使用账号型 `connector.boyi.r7_vehicle_tasks@1`，支持宿主账号选择及默认关闭的项目定时；新增 Connector 需随核心更新后再安装 ZIP，旧 R7 迁移身份继续停用。接口证据、构建方式与本次验收范围见 [R7车线每日打卡](../agent/docs/r7_vehicle_checkin.md)。
 
 ## 只读预览与未启用定时
 

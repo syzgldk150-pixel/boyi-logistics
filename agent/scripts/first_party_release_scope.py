@@ -21,6 +21,7 @@ if sys.platform == "win32":
 
 
 _ALLOWLIST_NAME = "RUNNABLE_SERVER_FIRST_PARTY_PLUGIN_IDS"
+STANDALONE_SERVICE_V2_PLUGIN_IDS = frozenset({"r7_vehicle_checkin_v2"})
 _PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _FIRST_PARTY_TEST_MARKERS = (
     "first_party_automation_plugins",
@@ -122,14 +123,19 @@ def current_plugin_ids(repository_root: Path) -> frozenset[str]:
     selected = release_plugin_ids(repository_root) - {"clock_in_dual"}
     return frozenset(plugin_id + "_v2" for plugin_id in selected) | {
         "clockin_daxiang_v2", "clockin_daxiang_s_v2",
-    }
+    } | STANDALONE_SERVICE_V2_PLUGIN_IDS
 
 
 def release_source_files(repository_root: Path) -> tuple[Path, ...]:
     root = _first_party_root(repository_root)
     paths = _python_files(root / "_shared")
     for plugin_id in sorted(current_plugin_ids(repository_root)):
-        for required in ("manifest.json", "payload/plugin.py", "settings/index.html"):
+        required_files = (
+            ("manifest.json", "payload/main.py")
+            if plugin_id in STANDALONE_SERVICE_V2_PLUGIN_IDS
+            else ("manifest.json", "payload/plugin.py", "settings/index.html")
+        )
+        for required in required_files:
             if not (root / plugin_id / required).is_file():
                 raise ReleaseScopeError(f"release payload is incomplete: {plugin_id}/{required}")
         paths.extend(_python_files(root / plugin_id))
