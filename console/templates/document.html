@@ -533,7 +533,7 @@
 {% set entry_initial_label = ('韵达' if is_yunda_mode else ('融辉' if is_ronghui_mode else '博益')) ~ ' 1' %}
 {% set entry_yunda_src = 'https://kyinms.yunda56.com/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&p=nil' %}
 {% set entry_ronghui_src = 'https://tms.ronghuiwl.com/module/index?mv=index' %}
-{% set entry_best_src = 'https://v5.800best.com/' %}
+{% set entry_best_src = 'https://v5.800best.com/baseService/transOrder/createOrder' %}
 {% set entry_initial_src = entry_yunda_src if is_yunda_mode else (entry_ronghui_src if is_ronghui_mode else '/ocr/boyi/frame') %}
 {% macro entry_origin_notice(provider) %}
 <div class="entry-origin-notice" data-entry-origin-notice>
@@ -575,7 +575,7 @@
       <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="boyi"><i data-feather="plus"></i> 新建博益</button>
       <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="yunda"><i data-feather="truck"></i> 韵达原页</button>
       <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="ronghui"><i data-feather="truck"></i> 融辉原页</button>
-      <a class="ghost-btn entry-add-btn" href="{{ entry_best_src }}" target="_blank" rel="noopener noreferrer" title="在新窗口登录百世并录单" aria-label="百世原页（新窗口打开）"><i data-feather="truck"></i> 百世原页</a>
+      <a class="ghost-btn entry-add-btn" href="{{ entry_best_src }}" target="_blank" rel="noopener noreferrer" title="在新窗口打开百世，登录后进入运单录入" aria-label="百世原页（新窗口打开）"><i data-feather="truck"></i> 百世原页</a>
       <a class="ghost-btn entry-ocr-link" data-entry-ocr-link href="/ocr?mode=ocr"><i data-feather="image"></i> 图片识别队列</a>
     </div>
   </div>
