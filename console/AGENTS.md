@@ -206,7 +206,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - 问题件处理弹窗只保留处理状态、回复内容和回复处理按钮；回复成功后必须立即在当前弹窗展示“已有回复”，不在弹窗内提供标记已读按钮。
   - 设置接口为 `/customer-service/problem-settings`，只保存融辉/韵达业务账号 `account_id` 和轮询间隔，不保存密码、Cookie、Token、SSO 参数或声音开关。
   - 客服问题件列表读已发布本地数据；详情与明确的标记已读/回复/发布/附件操作经签名 `/internal/v1/business/customer-service-*` 直接返回结果，不提交 Command/Run。每次业务写有稳定浏览器 UUID、精确账号与写后核验；不透传客户端 actor/roles/raw。附件图片同源预览；插件采集结果由 Host 验证后事务发布，消失记录仅有精确详情关闭证明才更新，人工备注独立保留。
-  - 登录账号 `<业务账号标识>` 的问题件只展示“发布网点”和“通知网点”都为 `邵阳操作场` 的记录；任一字段缺失或不是该网点都不展示。
+  - 命中 `shared/customer_problem_policy.py` 中操作场账号规则的问题件只展示“发布网点”和“通知网点”都为 `邵阳操作场` 的记录；任一字段缺失或不是该网点都不展示。
   - 后续涉及融辉/韵达原页结构、后台接口、iframe、MiniUI、layui/EasyUI 或问题件动作抓取，必须先调用 `ronghui-yunda-origin-capture` skill 复核真实页面和真实接口。
 - 改数据库落库或控制台读取：
   - `database.py`

@@ -51,7 +51,7 @@ V3.2 维护边界以 [docs/low_maintenance_v32.md](docs/low_maintenance_v32.md) 
 
 # 项目结构与边界
 
-`boyi-logistics` 是私有单仓，目录职责如下：
+`boyi-logistics` 是公开单仓，目录职责如下：
 
 - `agent/`：Agent 服务、飞书接入、TMS 自动化工具、发布脚本及其模块文档。
 - `console/`：Console 服务、模板和静态资源。
@@ -61,6 +61,8 @@ V3.2 维护边界以 [docs/low_maintenance_v32.md](docs/low_maintenance_v32.md) 
 - `tests/`：跨模块共享测试；模块测试仍保留在各自目录。
 
 原始业务表格/PDF、财务元数据、OCR 原图、生成报表和运行态不属于源码仓库。所有配置凭据只通过环境变量或部署环境注入，禁止写入代码或文档。
+
+公开文档、页面示例和测试资料使用明确虚构的数据，不复制真实客户或联系人的号码、地址、运单记录及经营报价。按实际用途区分访问凭据、资源标识和公开服务地址，不因字符串格式相似就删除有效业务配置。用户明确授权的历史清理及旧副本处理见 `docs/git_workflow.md`。
 
 ## 文档与模块规则
 
