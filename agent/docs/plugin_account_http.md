@@ -60,9 +60,9 @@ GET 时 `body` 转为查询参数，POST 时作为 JSON。路径必须是规范�
 ## 维护入口
 
 - 协议：`http_request_contract.py`、`manifest_v2.py`、`host_capability_registry.py` 和编辑器 `manifest-v2.schema.json`。
-- 传输：`account_http.py`；本次已验证 Manifest 来自 `capability_proxy_v2.py`。
+- 传输：`account_http.py`；本次已验证 Manifest 来自 `capability_proxy_v2.py`。已实现的 `http.request` 不得留在不可用占位能力集合中；生产依赖就绪检查和执行驱动均使用过滤后的能力清单。
 - 通用核验：`http_write_verification.py`，由 `orchestration/result_verifier.py` 调用。
 - 参考插件：`service_v2_plugins/r7_vehicle_checkin_v2/` 1.1.0；旧 1.0.0 的专用 R7 Connector 已移除，本次发布应配套新版 ZIP。
 - 测试：`tests/test_account_http.py`、`tests/test_r7_vehicle_checkin_v2.py`。前者验证只改包声明即可调用新路径，后者执行真实隔离 ZIP/Broker 和同一账号的写后核验；业务服务响应为隔离 fixture，不代替生产实例验收。
 
-本次属于一次通用宿主能力升级，尚未部署 ECS。以后在已支持账号协议内新增接口、调整业务规则或字段，发布插件 ZIP 即可；不应为这些变化继续增加主程序业务分支。
+首次使用需要一次通用宿主能力升级，并在安装后确认插件的依赖就绪和启用状态。以后在已支持账号协议内新增接口、调整业务规则或字段，发布插件 ZIP 即可；不应为这些变化继续增加主程序业务分支。

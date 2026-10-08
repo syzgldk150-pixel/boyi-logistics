@@ -1,8 +1,10 @@
 """Generic account transport, package declarations and Host readback proofs."""
 
 from copy import deepcopy
+from dataclasses import replace
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -24,6 +26,37 @@ def manifest():
             Path(__file__).resolve().parents[1] / "agent/service_v2_plugins/r7_vehicle_checkin_v2/manifest.json"
         ).read_text()
     )
+
+
+def test_http_package_dependencies_are_ready_in_production_registration():
+    from agent.automation_plugins.capability_proxy_v2 import (
+        UNAVAILABLE_SERVICE_V2_HANDLER_KEYS,
+        build_service_v2_capability_handler_map,
+    )
+    from agent.automation_plugins.production_coeffects import ProductionRuntimeCoeffectProvider
+    from agent.automation_plugins.service_v2_contract import ServiceV2ProjectContract
+    from tests.test_automation_plugin_service_runtime_v2 import _snapshot
+
+    contract = ServiceV2ProjectContract.from_manifest(AutomationPluginManifestV2.from_mapping(manifest()))
+    snapshot = _snapshot(automation_id="http-project", plugin_id="http_plugin", package_sha256="a" * 64, manifest_sha256="b" * 64)
+    metadata = deepcopy(snapshot.execution_metadata)
+    metadata["runtime_descriptor"].update(
+        runtime_permissions=contract.runtime_permissions,
+        account_roles=manifest()["account_roles"],
+    )
+    metadata["account_bindings"] = {"r7_operator": "selected-r7"}
+    handlers = build_service_v2_capability_handler_map(SimpleNamespace(unit_of_work=lambda: None))
+    # Production removes unavailable placeholders before observing dependencies.
+    available = set(handlers) - set(UNAVAILABLE_SERVICE_V2_HANDLER_KEYS)
+    provider = ProductionRuntimeCoeffectProvider(
+        core_catalog=SimpleNamespace(),
+        broker_handler_keys=tuple(available),
+        account_manager=SimpleNamespace(list_accounts=lambda **_: [
+            {"account_id": "selected-r7", "system": "r7", "is_active": True},
+        ]),
+    )
+    observations = provider.observe(replace(snapshot, execution_metadata=metadata))
+    assert all(item.ready for item in observations), [item.reason_code for item in observations]
 
 
 @pytest.mark.parametrize(

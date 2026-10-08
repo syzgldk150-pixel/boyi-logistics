@@ -75,7 +75,6 @@ _UNAVAILABLE_CAPABILITIES = (
     "event.publish",
     "file.read",
     "file.write",
-    "http.request",
     "service.invoke",
 )
 UNAVAILABLE_SERVICE_V2_HANDLER_KEYS = frozenset((operation, "*") for operation in _UNAVAILABLE_CAPABILITIES)
