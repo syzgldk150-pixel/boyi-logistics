@@ -1393,7 +1393,7 @@
         if (!frame.isConnected || frame.getAttribute("aria-busy") !== "true") return;
         frame.setAttribute("aria-busy", "false");
         if (chip) chip.textContent = "加载未完成";
-        const extensionHint = label === "融辉" ? "请先确认内嵌扩展已安装并更新。" : "";
+        const extensionHint = ["融辉", "百世"].includes(label) ? "请先确认原页助手已安装并更新。" : "";
         notice.textContent = `${label}原页尚未完成加载。${extensionHint}若页面空白，请在新窗口登录${label}，完成后回到这里点“重新加载”。`;
       }, 15000);
     };
@@ -1402,7 +1402,7 @@
       window.clearTimeout(slowTimer);
       frame.setAttribute("aria-busy", "false");
       if (chip) chip.textContent = "扩展准备失败";
-      notice.textContent = "融辉内嵌扩展未能完成准备，请更新原页助手并在扩展管理页重新加载，然后重试。";
+      notice.textContent = `${label}内嵌扩展未能完成准备，请更新原页助手并在扩展管理页重新加载，然后重试。`;
       notice.hidden = false;
     });
     frame.addEventListener("load", () => {
@@ -1458,6 +1458,13 @@
   }
 
   function initIfNeeded(mode) {
+    document.querySelectorAll("[data-best-root]").forEach((panel) => {
+      const frame = panel.querySelector("[data-best-live-frame]");
+      const notice = panel.querySelector("[data-best-live-fallback]");
+      if (!frame || !notice || panel.dataset.bestLiveBound === "1") return;
+      panel.dataset.bestLiveBound = "1";
+      showOriginalPageLoading(frame, panel.querySelector("[data-best-status-chip]"), notice, "百世");
+    });
     initAllRonghuiLiveInstances();
     initAllYundaLiveInstances();
     root = document.querySelector('[data-yunda-root]:not([data-yunda-live="1"])') || document.querySelector("[data-yunda-root]");

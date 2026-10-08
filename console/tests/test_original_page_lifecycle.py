@@ -135,21 +135,26 @@ setImmediate(() => {
         self.run_node(r"""
 const assert = require('node:assert/strict');
 const sources = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
-let handler, updates = 0;
+const handlers = []; let updates = 0;
 const chrome = {
   declarativeNetRequest:{getSessionRules:async()=>[], updateSessionRules:async()=>{updates++;}},
   webRequest:{onHeadersReceived:{addListener(){}}},
-  runtime:{onMessage:{addListener(callback){handler=callback;}}},
+  runtime:{onMessage:{addListener(callback){handlers.push(callback);}}},
+  storage:{session:{get:async()=>({}),set:async()=>{}}},
   tabs:{onRemoved:{addListener(){}}}, cookies:{getAll:async()=>[]}
 };
 eval(sources.background);
-const prepare = sender => new Promise(resolve => handler({type:'prepare-ronghui-embed'}, sender, resolve));
+const prepare = (sender, type='prepare-ronghui-embed') =>
+  new Promise(resolve => handlers[0]({type}, sender, resolve));
 (async () => {
   assert.deepEqual(await prepare({url:'https://boyi.homes/', frameId:0, tab:{id:1}}), {ok:true});
   assert.equal(updates, 1);
   assert.deepEqual(await prepare({url:'https://other.example/ocr', frameId:0, tab:{id:1}}), {ok:false});
   assert.deepEqual(await prepare({url:'https://boyi.homes/ocr', frameId:2, tab:{id:1}}), {ok:false});
   assert.equal(updates, 1);
+  assert.deepEqual(await prepare({url:'https://boyi.homes/ocr', frameId:0, tab:{id:1}}, 'prepare-best-embed'), {ok:true});
+  assert.equal(updates, 1); // Best must not replace Ronghui's HTTP redirect rules.
+  assert.deepEqual(await prepare({url:'https://other.example/ocr', frameId:0, tab:{id:1}}, 'prepare-best-embed'), {ok:false});
 })();
 """, {
             "background": (CONSOLE / "static/browser_extensions/ronghui/background.js").read_text(encoding="utf-8"),

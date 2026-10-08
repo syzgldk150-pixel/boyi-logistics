@@ -7,24 +7,27 @@
     if (pending.has(frame) || frame.dataset.entryFrameBound !== '1' || !frame.dataset.entryPendingSrc) return;
     let source;
     try { source = new URL(frame.dataset.entryPendingSrc); } catch { return; }
-    if (source.origin !== 'https://tms.ronghuiwl.com' || source.pathname !== '/module/index') return;
+    const provider = source.origin === 'https://tms.ronghuiwl.com' && source.pathname === '/module/index' ? 'ronghui' :
+      source.origin === 'https://v5.800best.com' && source.pathname === '/baseService/transOrder/createOrder' ? 'best' : null;
+    if (!provider) return;
+    const statusKey = provider + 'Extension';
     pending.add(frame);
-    frame.dataset.ronghuiExtension = 'preparing';
+    frame.dataset[statusKey] = 'preparing';
     try {
-      const result = await chrome.runtime.sendMessage({type:'prepare-ronghui-embed'});
+      const result = await chrome.runtime.sendMessage({type:'prepare-' + provider + '-embed'});
       if (!result?.ok) throw new Error('Preparation failed');
       if (!frame.isConnected) return;
-      frame.dataset.ronghuiExtension = '0.4.3';
+      frame.dataset[statusKey] = '0.4.4';
       delete frame.dataset.entryPendingSrc;
       frame.dispatchEvent(new Event('console:original-page-reload'));
       frame.src = source.href;
     } catch {
-      frame.dataset.ronghuiExtension = 'failed';
+      frame.dataset[statusKey] = 'failed';
       frame.dispatchEvent(new Event('console:original-page-prepare-failed'));
     } finally { pending.delete(frame); }
   }
   function scan() {
-    document.querySelectorAll('iframe[data-ronghui-live-frame]').forEach(frame => {
+    document.querySelectorAll('iframe[data-ronghui-live-frame], iframe[data-best-live-frame]').forEach(frame => {
       if (mounted.has(frame)) return;
       mounted.add(frame);
       frame.addEventListener('console:original-page-prepare', () => prepare(frame));

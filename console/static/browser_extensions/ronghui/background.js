@@ -1,16 +1,20 @@
 const HOST = 'tms.ronghuiwl.com';
+const BEST_HOST = 'v5.800best.com';
 const activeTabs = new Set();
-const ready = chrome.declarativeNetRequest.getSessionRules().then(rules => {
+const bestTabs = new Set();
+const ready = Promise.all([chrome.declarativeNetRequest.getSessionRules(),
+  chrome.storage.session.get('best-embed-tabs')]).then(([rules, stored]) => {
   rules.forEach(rule => (rule.condition.tabIds || []).forEach(id => activeTabs.add(id)));
+  (stored['best-embed-tabs'] || []).forEach(id => bestTabs.add(id));
 });
 const stats = {adapted:0, failed:0, captured:0};
 globalThis.embedProofStats = stats;
-function applicableDomain(domain) {
+function applicableDomain(domain, host = HOST) {
   const value = domain.replace(/^\./, '').toLowerCase();
-  return HOST === value || HOST.endsWith('.' + value);
+  return host === value || host.endsWith('.' + value);
 }
-function existingCookieDetails(cookie) {
-  const details = {url:'https://' + HOST + cookie.path, name:cookie.name,
+function existingCookieDetails(cookie, host = HOST) {
+  const details = {url:'https://' + host + cookie.path, name:cookie.name,
     value:cookie.value, path:cookie.path, secure:true, sameSite:'no_restriction',
     httpOnly:cookie.httpOnly, storeId:cookie.storeId};
   if (!cookie.hostOnly) details.domain = cookie.domain;
@@ -20,7 +24,7 @@ function existingCookieDetails(cookie) {
 }
 function receivedCookieDetails(header, responseUrl) {
   const u = new URL(responseUrl);
-  if (u.hostname !== HOST || u.protocol !== 'https:') return null;
+  if (![HOST, BEST_HOST].includes(u.hostname) || u.protocol !== 'https:') return null;
   const parts = header.split(';');
   const pair = parts.shift();
   const equals = pair.indexOf('=');
@@ -32,7 +36,7 @@ function receivedCookieDetails(header, responseUrl) {
     const split = piece.indexOf('=');
     const key = (split < 0 ? piece : piece.slice(0,split)).trim().toLowerCase();
     const value = split < 0 ? '' : piece.slice(split+1).trim();
-    if (key === 'domain') { if (!applicableDomain(value)) return null; details.domain = value; }
+    if (key === 'domain') { if (!applicableDomain(value, u.hostname)) return null; details.domain = value; }
     if (key === 'path' && value.startsWith('/')) details.path = value;
     if (key === 'httponly') details.httpOnly = true;
     if (key === 'expires' && Number.isFinite(Date.parse(value))) details.expirationDate = Date.parse(value)/1000;
@@ -43,21 +47,22 @@ function receivedCookieDetails(header, responseUrl) {
   return details;
 }
 async function adaptCookie(details) {
-  try { await chrome.cookies.set(details); stats.adapted++; }
-  catch { stats.failed++; }
+  try { await chrome.cookies.set(details); stats.adapted++; return true; }
+  catch { stats.failed++; return false; }
 }
 chrome.webRequest.onHeadersReceived.addListener(async response => {
   await ready;
-  if (!activeTabs.has(response.tabId)) return;
+  const host = new URL(response.url).hostname;
+  if (!(host === HOST ? activeTabs : bestTabs).has(response.tabId)) return;
   const headers = (response.responseHeaders || []).filter(h => h.name.toLowerCase() === 'set-cookie');
   for (const header of headers) {
     if (typeof header.value !== 'string') continue;
     const details = receivedCookieDetails(header.value,response.url);
     if (details) { stats.captured++; await adaptCookie(details); }
   }
-}, {urls:['https://' + HOST + '/*']}, ['responseHeaders','extraHeaders']);
+}, {urls:['https://' + HOST + '/*', 'https://' + BEST_HOST + '/*']}, ['responseHeaders','extraHeaders']);
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
-  if (message?.type !== 'prepare-ronghui-embed') return;
+  if (!['prepare-ronghui-embed', 'prepare-best-embed'].includes(message?.type)) return;
   const origin = new URL(sender.url || 'https://invalid.local');
   if (origin.origin !== 'https://boyi.homes' || sender.frameId !== 0 || !sender.tab) {
     reply({ok:false}); return;
@@ -65,29 +70,38 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   (async () => {
     await ready;
     const tabId = sender.tab.id;
-    activeTabs.add(tabId);
-    const currentRules = await chrome.declarativeNetRequest.getSessionRules();
-    const tabIds = [...activeTabs];
-    await chrome.declarativeNetRequest.updateSessionRules({
-      removeRuleIds:currentRules.map(rule => rule.id),
-      addRules:[
-        {id:1,priority:1,action:{type:'upgradeScheme'},
-          condition:{urlFilter:'|http://' + HOST + '/',tabIds}},
-        {id:2,priority:2,action:{type:'modifyHeaders',responseHeaders:[
-          {header:'location',operation:'set',value:'https://' + HOST + '/system/login'}]},
-          condition:{requestDomains:[HOST],tabIds,responseHeaders:[
-            {header:'location',values:['http://' + HOST + '/system/login*']}]} }
-      ]
-    });
-    const cookies = await chrome.cookies.getAll({domain:HOST});
-    await Promise.all(cookies.filter(c => applicableDomain(c.domain)).map(c => adaptCookie(existingCookieDetails(c))));
-    reply({ok:stats.failed===0});
+    const host = message.type === 'prepare-best-embed' ? BEST_HOST : HOST;
+    if (host === BEST_HOST) {
+      bestTabs.add(tabId);
+      await chrome.storage.session.set({'best-embed-tabs':[...bestTabs]});
+    } else {
+      activeTabs.add(tabId);
+      const currentRules = await chrome.declarativeNetRequest.getSessionRules();
+      const tabIds = [...activeTabs];
+      await chrome.declarativeNetRequest.updateSessionRules({
+        removeRuleIds:currentRules.map(rule => rule.id),
+        addRules:[
+          {id:1,priority:1,action:{type:'upgradeScheme'},
+            condition:{urlFilter:'|http://' + HOST + '/',tabIds}},
+          {id:2,priority:2,action:{type:'modifyHeaders',responseHeaders:[
+            {header:'location',operation:'set',value:'https://' + HOST + '/system/login'}]},
+            condition:{requestDomains:[HOST],tabIds,responseHeaders:[
+              {header:'location',values:['http://' + HOST + '/system/login*']}]} }
+        ]
+      });
+    }
+    const cookies = await chrome.cookies.getAll({domain:host});
+    const results = await Promise.all(cookies.filter(c => applicableDomain(c.domain, host))
+      .map(c => adaptCookie(existingCookieDetails(c, host))));
+    reply({ok:results.every(Boolean)});
   })().catch(() => reply({ok:false}));
   return true;
 });
 chrome.tabs.onRemoved.addListener(async tabId => {
   await ready;
   activeTabs.delete(tabId);
+  bestTabs.delete(tabId);
+  await chrome.storage.session.set({'best-embed-tabs':[...bestTabs]});
   const rules = await chrome.declarativeNetRequest.getSessionRules();
   const tabIds = [...activeTabs];
   await chrome.declarativeNetRequest.updateSessionRules({
@@ -99,6 +113,7 @@ chrome.tabs.onRemoved.addListener(async tabId => {
 
 const ORIGINAL_ENTRIES = {
   ronghui: 'https://tms.ronghuiwl.com/module/index?mv=index',
+  best: 'https://v5.800best.com/baseService/transOrder/createOrder',
   yunda: 'https://kyinms.yunda56.com/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&p=nil'
 };
 chrome.runtime.onMessage.addListener((message, sender, reply) => {

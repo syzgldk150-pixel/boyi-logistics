@@ -214,7 +214,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 ## 运单录入与打印
 
-- 录单工具栏在“融辉原页”后提供“百世原页”，以带 `noopener noreferrer` 的新窗口链接打开 `https://v5.800best.com/baseService/transOrder/createOrder`。未登录时由百世原站通过 `redirectUrl` 保留目标，登录后直接进入运单录入。百世原站的登录会话 `sid` 使用 `SameSite=Lax`，跨站 iframe 的扫码请求不能携带该会话，会导致 `userName和ticket不能为空`；因此百世不创建内嵌页签，也不占用 6 页签上限。登录与录单均在原站窗口完成，不经 Console/Agent 代理，不注入账号、预填或保存逻辑。
+- 录单工具栏“百世原页”创建内部页签并计入 6 页签上限，直接嵌入 `https://v5.800best.com/baseService/transOrder/createOrder`。该地址默认显示草稿箱，原页助手 0.4.4 只在博益内嵌时首次点击唯一的原站“运单录入”页签，后续手动切换与未保存内容保持。百世与融辉在首次加载/重载前完成浏览器本机 SameSite/Secure 适配；未登录时从独立窗口扫码，成功后只恢复发起页签。扩展缺失/旧版/准备失败时不直接导航。独立原站标签保留原站默认行为，不经 Console/Agent 代理，不注入账号、预填、上传、保存或打印逻辑。实测与安装说明见 `static/browser_extensions/ronghui/README.md`。
 
 - 韵达/融辉 iframe 禁止顶层跳转，扫码登录使用扩展登记的新窗口入口，成功后只恢复发起登录的录单页签；初始页和动态页签都先绑定加载监听再设置地址，重新加载重置提示，15 秒未完成提供登录/扩展检查指引。融辉初始/动态 frame 在准备导航前统一设置 `referrerPolicy=no-referrer`，避免原站拒绝博益跨站来源；首次加载和手动重载均须等扩展完成登录适配后才请求原站；扩展缺失、旧版或准备失败不自动导航/重试。扩展从主站任意入口加载，只适配精确的融辉 iframe，兼容首页到录单页的局部导航；后台消息仅接受主站顶层 frame。
 - 原页读取及受审手工领号由 `../shared/manual_entry_contracts.py` 统一判定，Console 与 Agent 不得各自维护白名单；真实接口清单、已有操作冲突后的精确调用追踪及验证边界见 `../docs/original_page_read_requests.md`。
