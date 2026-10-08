@@ -9,7 +9,7 @@ updated: 2026-10-08
 
 新网页业务的接口路径、参数、分页、字段解析、提交条件和成功判断放在独立 ZIP 内。宿主提供 `http.request` 通用能力，负责使用实例选择的账号登录态、约束目的站点、权限、超时、写开始回执及真实响应观测。新增同系统的页面业务不再需要注册一个专用 Host Connector。
 
-当前支持 R7、R13 的已保存 SSO 会话及 GET/POST JSON 接口。两种系统的站点和认证协议固定在 `agent/agent/automation_plugins/account_http.py`，凭据不出宿主。其他认证协议、文件上传或非 JSON 接口尚不支持，不能伪称已接通；新增认证协议时扩展通用账号适配器，业务路径继续留在包内。现有数据库、飞书等 Connector 仍可复用。
+当前支持 R7、R13 的已保存 SSO 会话及 GET/POST JSON 接口。两种系统的站点和认证协议固定在 `agent/agent/automation_plugins/account_http.py`，凭据不出宿主。R7 请求携带原站确认的 `x-appId=tms` 和同源 `aurora-back`，不继承 SSO 的应用标识或 Bearer。业务响应 `code=-2` 按登录拒绝处理；只读请求报告 `BLOCKED_LOGIN`，已开始的写请求仍报告未知写且不重试。其他认证协议、文件上传或非 JSON 接口尚不支持，不能伪称已接通；新增认证协议时扩展通用账号适配器，业务路径继续留在包内。现有数据库、飞书等 Connector 仍可复用。
 
 ## 包声明与调用
 

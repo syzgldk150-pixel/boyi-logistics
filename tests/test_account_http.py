@@ -179,6 +179,35 @@ def transport(monkeypatch, *, restored=True, session=None):
     return AccountHTTPTransport(system="r7", account_id="chosen-second"), session
 
 
+def test_r7_transport_uses_original_page_application_context(monkeypatch):
+    session = Session()
+    session.headers.update({"Authorization": "Bearer fixture-old", "Origin": "https://sso.ronghuiwl.com", "x-appId": "sso"})
+    client, _ = transport(monkeypatch, session=session)
+    assert session.headers == {
+        "Origin": "https://r7.ronghuiwl.com",
+        "Referer": "https://r7.ronghuiwl.com/",
+        "aurora-back": "https://r7.ronghuiwl.com/",
+        "x-appId": "tms",
+        "aurora-token": "fixture-token",
+    }
+    client.close()
+
+
+@pytest.mark.parametrize("write", [False, True])
+def test_business_login_rejection_stops_without_retry(monkeypatch, write):
+    client, session = transport(monkeypatch, session=Session(data={"code": -2, "message": "Token无效"}))
+    markers = []
+    with pytest.raises(PluginExecutionError) as error:
+        client.exchange(
+            {"method": "POST", "path": "/gateway/business/action", "action": "write_json" if write else "read_json"},
+            {},
+            mark_write_started=lambda: markers.append(True),
+        )
+    assert error.value.code == ("WRITE_OUTCOME_UNKNOWN" if write else "BLOCKED_LOGIN")
+    assert len(session.calls) == 1 and markers == ([True] if write else [])
+    client.close()
+
+
 def test_saved_login_is_exact_and_missing_session_does_not_login(monkeypatch):
     session = Session()
     with pytest.raises(PluginExecutionError) as error:

@@ -55,6 +55,8 @@ class AccountHTTPTransport:
         self.session.headers.update(
             {"aurora-token": auth.last_token, "Origin": self.origin, "Referer": self.origin + "/"}
         )
+        if system == "r7":
+            self.session.headers.update({"x-appId": "tms", "aurora-back": self.origin + "/"})
 
     def close(self):
         self.session.close()
@@ -92,6 +94,8 @@ class AccountHTTPTransport:
                 data = json.loads(b"".join(chunks))
                 if not isinstance(data, dict):
                     _error("WRITE_OUTCOME_UNKNOWN" if write else "HTTP_RESPONSE_INVALID")
+                if data.get("code") == -2:
+                    _error("WRITE_OUTCOME_UNKNOWN" if write else "BLOCKED_LOGIN")
                 return {"status_code": response.status_code, "response": _public_json(redact_sensitive(data))}
         except (requests.RequestException, ValueError):
             _error("WRITE_OUTCOME_UNKNOWN" if write else "HTTP_REQUEST_FAILED")
