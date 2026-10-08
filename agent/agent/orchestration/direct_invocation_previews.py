@@ -59,7 +59,7 @@ def project_preview(repository, invocation_id, *, entry, contract, scan):
     state = "CONSUMED" if row.get("preview_consumed_by") else "AVAILABLE" if datetime.now(timezone.utc) < expires else "EXPIRED"
     projection = {"contract_version": PREVIEW_CONTRACT_VERSION, "preview_invocation_id": invocation_id, "automation_id": entry.automation_id, "observed_at": observed.isoformat(), "expires_at": expires.isoformat(), "can_confirm": state == "AVAILABLE", "preview_state": state}
     if scan:
-        evidence = _validate_preview_evidence(data.get("preview_evidence", {}), row["arguments_json"])
+        evidence = _validate_preview_evidence(data.get("preview_evidence", {}))
         projection.update({key: evidence[key] for key in ("target_date", "source_page_count", "normalized_record_count", "selection_count", "batch_count")})
     else:
         candidates = _candidates(entry, data)
@@ -74,7 +74,7 @@ def confirm_preview(repository, invocation_id, *, entry, contract, actor_id, arg
     if scan:
         if selected_bill_codes is not None:
             raise OrchestrationError("PREVIEW_INPUT_INVALID", "扫描确认不接受替换单号")
-        evidence = _validate_preview_evidence(data.get("preview_evidence", {}), row["arguments_json"])
+        evidence = _validate_preview_evidence(data.get("preview_evidence", {}))
         formal = _bind_formal_arguments(row["arguments_json"], arguments, target_date=evidence["target_date"])
         context = {"contract_version": 2, "plugin_id": entry.plugin_id,
             "preview_invocation_id": invocation_id, "preview_result_sha256": canonical_sha256(result),

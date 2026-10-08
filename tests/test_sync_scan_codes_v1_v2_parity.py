@@ -9,6 +9,7 @@ import uuid
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -964,3 +965,96 @@ def test_499_one_item_batches_use_exactly_the_global_1000_call_budget(
     assert result["data"]["scheduled_items"] == 499
     assert result["data"]["scanned"] == 499
     assert result["data"]["skipped_signed_count"] == 0
+
+
+
+def _direct_scan_preview(tmp_path, *, count, batch_size=None):
+    """Exercise the installed ZIP output through the real Host preview adapter."""
+    runtime, plugin = _build_and_load(tmp_path)
+    action = sys.modules["action"]
+    arguments = {"dry_run": True, "target_date": "2026-08-31"}
+    if batch_size is not None:
+        arguments["batch_size"] = batch_size
+    pages = [[{
+        "bill_code": f"R12345678901{index:04d}", "destination": "测试下一站",
+        "scan_type": "到货", "scan_time": "2026-08-31 08:00:00", "scan_site": "测试网点",
+    } for index in range(1, count + 1)]]
+    _, broker, _, calls = _recording_brokers(pages, plugin, action)
+    preview = runtime.run_scan_action_offline("preview", arguments, broker)
+    assert preview["status"] == "SUCCESS"
+    assert [call["action"] for call in calls] == ["ronghui.scan.read_page"]
+    invocation_id = str(uuid.uuid4())
+    entry = SimpleNamespace(automation_id=str(uuid.uuid4()), plugin_id="sync_scan_codes_v2",
+                            runtime_model="SERVICE_V2")
+    contract = SimpleNamespace(automation_generation=3, contract_hash="a" * 64,
+                               project_configuration_version=2)
+    row = {"status": "COMPLETED", "automation_id": entry.automation_id, "generation": 3,
+           "actor_id": "scan-test-user", "arguments_json": arguments, "result_json": preview,
+           "invocation_json": {"contract_hash": contract.contract_hash,
+                               "project_configuration_version": 2}}
+    repository = SimpleNamespace(get=lambda identity: row if identity == invocation_id else None)
+    return runtime, plugin, action, pages, invocation_id, entry, contract, repository, row
+
+
+@pytest.mark.parametrize("count,batch_size,expected_sizes", [
+    (686, None, [200, 200, 200, 86]),
+    (215, 73, [73, 73, 69]),
+    (120, 50, [50, 50, 20]),
+    (0, None, []),
+])
+def test_plugin_batch_plan_survives_host_preview_confirmation_and_execution(
+    tmp_path, count, batch_size, expected_sizes,
+):
+    from agent.orchestration.direct_invocation_previews import confirm_preview, project_preview
+
+    runtime, plugin, action, pages, identity, entry, contract, repository, row = _direct_scan_preview(
+        tmp_path, count=count, batch_size=batch_size)
+    projection = project_preview(repository, identity, entry=entry, contract=contract, scan=True)
+    assert projection["can_confirm"] is True
+    assert projection["selection_count"] == count
+    assert projection["batch_count"] == len(expected_sizes)
+    formal = confirm_preview(repository, identity, entry=entry, contract=contract,
+        actor_id=row["actor_id"], arguments=row["arguments_json"], selected_bill_codes=None, scan=True)
+    evidence = row["result_json"]["data"]["preview_evidence"]
+    assert formal["_scan_preview_binding"]["batch_plan_sha256"] == evidence["batch_plan_sha256"]
+    _, broker, _, calls = _recording_brokers(pages, plugin, action)
+    result = runtime.run_scan_action_offline("execute", formal, broker)
+    assert result["status"] == "SUCCESS"
+    submits = [call for call in calls if call["action"] == "ronghui.scan_next.submit"]
+    verifies = [call for call in calls if call["action"] == "ronghui.scan_next.verify"]
+    assert [len(call["arguments"]["items"]) for call in submits] == expected_sizes
+    assert len(verifies) == len(submits)
+    assert result["data"]["scanned"] == count
+
+
+@pytest.mark.parametrize("change", ["plugin_batching", "bound_plan"])
+def test_plugin_rejects_changed_confirmed_batch_plan_before_any_write(tmp_path, monkeypatch, change):
+    from agent.orchestration.direct_invocation_previews import confirm_preview
+
+    runtime, plugin, action, pages, identity, entry, contract, repository, row = _direct_scan_preview(
+        tmp_path, count=215)
+    formal = confirm_preview(repository, identity, entry=entry, contract=contract,
+        actor_id=row["actor_id"], arguments=row["arguments_json"], selected_bill_codes=None, scan=True)
+    if change == "plugin_batching":
+        monkeypatch.setattr(action, "_DEFAULT_BATCH_SIZE", 73)
+    else:
+        binding = formal["_scan_preview_binding"]
+        binding["batch_plan_sha256"] = "b" * 64
+        binding.pop("context_sha256")
+        binding["context_sha256"] = action._canonical_sha256(binding)
+    _, broker, _, calls = _recording_brokers(pages, plugin, action)
+    with pytest.raises(ValueError, match="authoritative revalidation changed:.*batch_plan_sha256"):
+        runtime.run_scan_action_offline("execute", formal, broker)
+    assert calls and all(call["action"] == "ronghui.scan.read_page" for call in calls)
+
+
+
+@pytest.mark.parametrize("count,batches", [(0, 1), (2, 0), (2, 3)])
+def test_host_rejects_impossible_plugin_batch_counts(tmp_path, count, batches):
+    from agent.orchestration.direct_invocation_previews import project_preview
+    from agent.orchestration.models import OrchestrationError
+
+    _, _, _, _, identity, entry, contract, repository, row = _direct_scan_preview(tmp_path, count=count)
+    row["result_json"]["data"]["preview_evidence"]["batch_count"] = batches
+    with pytest.raises(OrchestrationError, match="batch count is invalid"):
+        project_preview(repository, identity, entry=entry, contract=contract, scan=True)

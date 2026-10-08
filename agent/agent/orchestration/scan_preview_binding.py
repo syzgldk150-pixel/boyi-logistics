@@ -63,8 +63,6 @@ _MAX_SOURCE_PAGES = 500
 _MAX_SOURCE_EVIDENCE_REFS = 500
 _MAX_ITEMS = 100_000
 _MAX_BATCHES = 499
-_DEFAULT_BATCH_SIZE = 50
-_MAX_BATCH_SIZE = 200
 _HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -543,7 +541,7 @@ def _load_persisted_scan_preview(
     if not isinstance(data, Mapping) or data.get("dry_run") is not True or not isinstance(evidence, Mapping):
         raise _error("SCAN_PREVIEW_INVALID", "The scan preview result has no exact preview evidence")
 
-    validated = _validate_preview_evidence(evidence, preview_arguments)
+    validated = _validate_preview_evidence(evidence)
     observed_at = _parse_timestamp(validated["observed_at"], "observed_at")
     if preview_observation_too_far_ahead(observed_at, now):
         raise _error("SCAN_PREVIEW_INVALID", "The scan preview observation time is in the future")
@@ -956,7 +954,6 @@ def normalize_preview_invocation_id(value: Any) -> str:
 
 def _validate_preview_evidence(
     evidence: Mapping[str, Any],
-    preview_arguments: Mapping[str, Any],
 ) -> dict[str, Any]:
     expected_fields = {
         "contract_version",
@@ -1030,18 +1027,15 @@ def _validate_preview_evidence(
         raise _error("SCAN_PREVIEW_INVALID", "The scan preview selection digest is invalid")
     if value["selection_count"] > value["normalized_record_count"]:
         raise _error("SCAN_PREVIEW_INVALID", "The scan preview selection exceeds its source snapshot")
-    batch_size = _bounded_int(
-        preview_arguments.get("batch_size", _DEFAULT_BATCH_SIZE),
-        "batch_size",
-        1,
-        _MAX_BATCH_SIZE,
-    )
-    batches = [
-        normalized_items[index : index + batch_size]
-        for index in range(0, len(normalized_items), batch_size)
-    ]
-    if len(batches) != value["batch_count"] or canonical_sha256(batches) != value["batch_plan_sha256"]:
-        raise _error("SCAN_PREVIEW_INVALID", "The scan preview batch plan digest is invalid")
+    # The installed plugin owns the batch plan, including its defaults. Bind
+    # its count/digest unchanged; the plugin revalidates that exact plan before
+    # the first write, and Host receipts/readback still verify actual writes.
+    # Repartitioning here would couple every plugin batching change to Host.
+    if (bool(value["batch_count"]) != bool(value["selection_count"])
+            or value["batch_count"] > value["selection_count"]):
+        raise _error("SCAN_PREVIEW_INVALID", "The scan preview batch count is invalid")
+    if not normalized_items and value["batch_plan_sha256"] != canonical_sha256([]):
+        raise _error("SCAN_PREVIEW_INVALID", "The empty scan preview batch plan digest is invalid")
     value["items"] = normalized_items
     return value
 
