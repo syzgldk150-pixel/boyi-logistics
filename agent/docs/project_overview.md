@@ -4,7 +4,7 @@ type: 架构文档
 tags: [项目总览, Agent控制平面, 事项中心, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [control_plane_v1.md, code_navigation_index.md, database_migrations.md, ocr/module_overview.md, finance_module.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: active
-updated: 2026-10-07
+updated: 2026-10-08
 ---
 
 # 物流 Agent 项目总览
@@ -122,7 +122,7 @@ updated: 2026-10-07
 - `sync_arrival_stats` 以累计子单扫描数作为到货件数并按主单开单件数封顶；`count_result.quantity_gaps` 记录扫描不足，`quantity_adjustments` 记录超量封顶。
 - `scan_codes` 表按 `raw_code` 主键 UPSERT 累积；`sync_arrival_stats` 的 `scan_window_days` 只允许 1，保证当天范围不被历史扫描污染。首次部署或历史回填必须单独运行 `sync_scan_codes`。
 - `sync_arrival_stats` 的「未齐货物」飞书清单是可选输出。迁移生成的签名插件实例默认使用 `pending_sheet_disabled=true` 且不绑定 `arrival_stats_pending_sheet`，因此不要求存在 `phase7.pending_arrivals_sheet`；只有先在 `workflow_resources` 配置并显式绑定该资源，再把开关改为 false 才会写入。清单仍由 MySQL 视图 `v_arrival_progress` 实时计算（已到件数 < 应到件数 的主单），齐货后自动剔除。
-- `sync_arrival_stats` 成功完成后还会复用本次 19 列统计结果，通过 `tools/split_pending_snapshot.py` 自动覆盖 `phase7.split_pending_target_sheet` 和 `split_pending_problem_items`；全部到齐时清空“分批及有发未到表”旧行，仅保留表头，自动刷新不产生融辉差错或问题件上报。
+- `sync_arrival_stats_v2` 在包内通过同源 `split_rules.py` 生成未齐快照和 19 列表格行，Host 原样保存、写表并核验；现行链路不使用旧 `tools/split_pending_snapshot.py` 重算分类。合法空结果或全部到齐时清除未齐快照和目标旧行、保留表头；来源失败不得冒充空结果，自动刷新不触发融辉问题件上报。
 - `sync_arrival_stats` archive snapshots in `phase7.stats_archive_sheet` are idempotent by date tab. The tool reuses an existing `YYYY-MM-DD` sheet, clears that tab's configured `default_write_range` expanded to cover previous rows, and rewrites the latest stats instead of creating duplicate tabs or failing on `sheet already exists`.
 - `query_waybill_detail` 查询主单详情时默认带 `isView=true` 获取解密视图；若接口结果仍缺失或加密，再回退到快件跟踪页 MiniUI 解密按钮补齐。控制台 `/tracking/query` 的融辉运单详情在 `decrypt_masked=true` 且收寄件人姓名/电话缺失或带星号时，也会复用该详情补齐链路覆盖展示字段。`sync_arrival_stats` 会把历史缓存中收件人/电话仍带星号的主单重新纳入补抓。
 - TMS 底层 HTTP / 浏览器脚本已并入 `agent/tms_runtime/`，不再依赖 ECS `root` 账户下的 `/root/http_service`。
@@ -130,8 +130,8 @@ updated: 2026-10-07
 - ECS 上的控制台已独立部署为 `console.service`，仅监听 `127.0.0.1:8765`；公网入口固定为 `https://boyi.homes`，由 Nginx 终止 TLS 并反向代理，HTTP 和 `www.boyi.homes` 统一跳转到根域名 HTTPS。
 - `/automation-accounts` 账号编辑弹层支持点击页面其他区域自动收起；已保存密码仅在页面显示为掩码，保存时若未输入新密码会保留 Agent 侧原密码，`凭据已配置` 状态使用成功色展示。
 - 融辉 TMS 登录态默认按图片验证码处理；业务账号管理页展示 Agent 返回的验证码图片，自动化页不再显示登录状态或验证码。融辉/大祥报价登录配置不要求手机号，旧短信验证码页仍兼容。
-- 自动化业务账号按真实外部系统展示为 TMS融辉、韵达、R7、R13；大祥报价、自提问题件和大祥S站作为 TMS融辉账号用途维护，不再作为独立系统展示。
-- 账号页统一所有系统的管理契约：“立即登录”执行真实登录，自动登录只控制定时校验与掉线恢复，退出登录同时关闭自动登录，连续失败三次熔断。大祥报价改为显式绑定 `price_default` 账号及其 `price_default` profile，飞书报价与后台登录复用同一登录态；R7/R13 接入可持久、可校验、可清理的 SSO Token/Cookie 状态，不再显示“不支持”或把登录降级成凭据检查。每个账号仍按 `account_id` 隔离运行态，避免不同真实账号互相覆盖。
+- 自动化业务账号按真实外部系统展示为 TMS融辉、韵达、R7、R13、百世快运；大祥报价、自提问题件和大祥S站作为 TMS融辉账号用途维护，不再作为独立系统展示。
+- 账号页统一管理账号、登录态和退出操作。密码类账号的“立即登录”执行真实登录，自动登录控制定时校验与掉线恢复，退出登录同时关闭自动登录，连续失败三次熔断。百世通过官方微信二维码登录并保存独立会话，其开关只监控已有会话，失效后需人工重新扫码，不自动生成二维码。大祥报价改为显式绑定 `price_default` 账号及其 `price_default` profile，飞书报价与后台登录复用同一登录态；R7/R13 接入可持久、可校验、可清理的 SSO Token/Cookie 状态，不再显示“不支持”或把登录降级成凭据检查。每个账号仍按 `account_id` 隔离运行态，避免不同真实账号互相覆盖。
 
 ## 自动化配置
 

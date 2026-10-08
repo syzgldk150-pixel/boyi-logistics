@@ -58,6 +58,12 @@ updated: 2026-10-08
 
 本次回滚材料保留在 `/home/boyce/.boyi-deploy/release-17ad00c7c082-20261008185936`，状态为 `pending_business_validation`；前次扫描修复回滚材料也保留。后续须在实际业务验收完成后按[ECS 发布手册](../agent/deploy/publish_to_ecs.md)独立清理。回退涉及显式计划协议时，须恢复匹配的核心和包版本，不能直接启用不兼容旧包。
 
+## 同日其他对话的扫描实跑记录
+
+“检查 ECS 运行状态”对话另有用户明确要求的实际重跑，完成于 2026-10-08 17:47:14。该对话记录为 686 件分四批处理，其中 679 件成功且独立回查匹配 679 条，7 件已签收跳过。前次失败窗口回查为零条匹配，但底层错误详情未保留，重跑未复现，具体失败原因仍未确定，不能写成已证实的网络故障。
+
+这次实跑发生在 19 点的 `17ad00c` 协同发布之前，属于另一段用户授权与验证记录；不替代本页所述新版上线后的正式写入验收。本页“上线后未提交正式扫描”的范围保持不变。
+
 ## 证据位置
 
 本地任务证据位于仓库内 `.task_tmp/boundary-fix-20261008/`：`all-regression.log`、三个 `*-report.json`、`publish.log`、`before.json`、`after.json`、`installation-verification.json` 及三个最终 ZIP。初始审计复现位于 `.task_tmp/plugin-boundary-audit-20261008/reproduction.json`。
