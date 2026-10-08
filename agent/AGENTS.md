@@ -183,17 +183,8 @@ docs/
 │   └── module_overview.md           # 模块文档：飞书直接插件/reader / 预览确认 / 账号登录
 ├── customer_service/
 │   └── module_overview.md           # 客服问题件工作台
-├── price_scripts/
-│   ├── 01-amap-address-fetch.md      # 历史快照：旧高德 POI 地址库
-│   ├── 02-tms-price-fetch.md         # 历史快照：旧 TMS 批量报价采集
-│   ├── 03-quote-sheet-generation.md  # 历史快照：旧离线报价表生成
-│   ├── project_structure.md          # 历史快照：已退役目录树/数据流
-│   ├── tms-batch-quote-resume.md     # 已废弃：旧断点续传记录
-│   ├── tms_price_structure_analysis.md # 分析快照：当时两地扫描
-│   └── data_accuracy_audit_report.md # 审计快照：未按当前数据重算
 ├── ocr/
-│   ├── module_overview.md             # 现行 OCR 工作区与实现边界
-│   └── ocr-self-learning-plan.md      # historical / not_implemented 方案
+│   └── module_overview.md             # 现行 OCR 工作区与实现边界
 ├── dispatch/
 │   └── module_overview.md             # 模块文档：车辆调度工作区与运力管理
 └── common/
@@ -234,7 +225,7 @@ docs/
 |------|---------|
 | 修改某个脚本 | `docs/{模块}/` 下对应模块文档 |
 | 理解当前实时报价 | `tools/price_tool.py`、`agent/tms_runtime/` 与 `docs/agent_automation/module_overview.md`；不要使用旧价格快照 |
-| 追溯旧离线报价 | `docs/price_scripts/`，仅作 historical/snapshot 阅读，不执行其中入口 |
+| 维护旧离线报价残留 | `price_scripts/AGENTS.md`；只维护已隔离代码，不恢复旧批量流水线 |
 | 精度/财务规范 | `docs/common/finance_data_baseline.md` |
 | 新建脚本 | 先搜已有同功能文档，检查是否可复用 |
 
@@ -242,7 +233,7 @@ docs/
 
 - 修改代码时，同步更新 `docs/` 下对应文档
 - 新增脚本时，在对应模块文档中补充文件说明
-- 变更数据流时，更新 `project_structure.md` 和 `data_accuracy_audit_report.md`
+- 变更数据流时，更新受影响模块的现行说明与 `docs/code_navigation_index.md`，不引用已删除的旧项目资料
 - 所有文档更新时同步修改 frontmatter 的 `updated` 字段
 
 ---

@@ -71,10 +71,10 @@ updated: 2026-10-08
 - [架构改造验收映射](architecture_refactor_acceptance_mapping.md)、[V3.2 逐组验收要求](low_maintenance_v32_acceptance.json)：阶段验收与复现入口，不能据此推断当前线上每次执行都成功。
 - [第一轮收尾验收报告](phase1_final_closeout.md)（2026-09-23）、[身份与 V2 插件验证记录](identity_v2_validation_20260911.md)（2026-09-11）：当时的验收证据与状态，不代表现行部署情况。
 
-- `docs/ai-development/` 保存阶段性架构目标和迁移快照，不作为当前代码事实。
-- `docs/superpowers/` 与 `console/docs/superpowers/` 保存已实施、被取代或历史计划，不作为当前执行清单。
-- `agent/docs/price_scripts/` 保存已退出现行入口的离线价格项目资料，除明确标记的当前入口外只作历史参考。
+- [空快照设计](superpowers/specs/2026-08-24-verified-empty-snapshot-design.md)与[历史发布记录](superpowers/plans/2026-08-24-verified-empty-snapshot-plan.md)保留空结果清理规则和发布证据；当前实现仍以插件及宿主代码为准。
 - `agent/tms_docs/` 保存原系统页面抓取快照。页面或接口相关改动必须重新从真实来源验证，不能仅凭快照实现。
+
+已无对应实现的旧项目资料、被现行说明替代的建设方案和重复实施清单不再保留在当前文档树中，删除时同步修正索引和引用。仍承担迁移解释、发布回滚、业务验收或未完成事项追踪的记录继续保留；历史资料是否存在不构成恢复旧入口的授权。
 
 ## 生命周期字段
 

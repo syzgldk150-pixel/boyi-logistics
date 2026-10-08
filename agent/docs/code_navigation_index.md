@@ -106,7 +106,7 @@ updated: 2026-10-08
 
 ### `price_scripts/`
 
-- 只保留旧离线地址库、批量报价和报价表资料，不进入线上运行链。
+- 只保留少量已隔离的旧报价实现，不进入线上运行链；维护边界见 `../price_scripts/AGENTS.md`。
 - 当前 `get_price` 先查 `agent/direct_readers.py` 与 `tools/price_tool.py`，再进入 `agent/tms_runtime/` 的真实平台适配器。
 
 ### 数据库分域

@@ -2,9 +2,9 @@
 module: OCR识别
 type: 模块文档
 tags: [OCR, 单据录入, Qwen-OCR, 模板配置, MySQL, waybills]
-related: [ocr-self-learning-plan.md, ../project_overview.md, ../code_navigation_index.md]
+related: [../project_overview.md, ../code_navigation_index.md]
 status: active
-updated: 2026-08-30
+updated: 2026-10-08
 ---
 
 # OCR 识别模块概述
@@ -13,7 +13,7 @@ updated: 2026-08-30
 
 OCR 的现行运行入口全部位于 `console/`。当前是 `Qwen-OCR 单引擎 + OpenCV 轻预处理 + 后台任务队列 + 人工复核 + MySQL 入库`，没有启用 PaddleOCR、双引擎路由、自动训练或模型热更新。
 
-`ocr-self-learning-plan.md` 是未完成的历史方案，不是当前实施说明。仓库虽然已经有训练相关表结构和配置占位，但没有训练样本采集器、Paddle provider、训练管线、模型激活流程或准确率看板。
+仓库有训练相关表结构和配置占位，但没有训练样本采集器、Paddle provider、训练管线、模型激活流程或准确率看板。当前能力与未实现边界以本页及实际代码为准。
 
 ## 已实现能力
 

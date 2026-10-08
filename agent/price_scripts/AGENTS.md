@@ -15,7 +15,6 @@
 
 - 飞书或 Console 报价故障先查 `../tools/price_tool.py` 和 `../agent/tms_runtime/`，不要把本目录旧实现接回线上。
 - 本目录与 `../agent/tms_runtime/scripts/` 存在 `get_price.py`、`login_manager.py`、`browser_address_resolver.py` 等同名模块；任何复用都必须使用完整包路径，禁止裸导入或长期修改 `sys.path`。
-- `../docs/price_scripts/` 全部是历史快照，只用于追溯旧批量报价、数据审计和报表口径，不是运行手册。
 - 旧批量流水线入口已不存在；不得根据历史文档重建或猜测入口。需要恢复离线批处理时，必须另立任务，从受审历史提交和真实数据源重新验证。
 
 ## 相关文档
