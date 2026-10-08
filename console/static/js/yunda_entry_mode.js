@@ -1457,20 +1457,9 @@
     });
   }
 
-  function initAllBestLiveInstances() {
-    document.querySelectorAll('[data-entry-frame-panel][data-entry-provider="best"]').forEach((panel) => {
-      const frame = panel.querySelector("[data-entry-frame]");
-      const fallback = panel.querySelector("[data-best-live-fallback]");
-      if (!frame || !fallback || panel.dataset.bestLiveBound === "1") return;
-      panel.dataset.bestLiveBound = "1";
-      showOriginalPageLoading(frame, panel.querySelector("[data-best-status-chip]"), fallback, "百世");
-    });
-  }
-
   function initIfNeeded(mode) {
     initAllRonghuiLiveInstances();
     initAllYundaLiveInstances();
-    initAllBestLiveInstances();
     root = document.querySelector('[data-yunda-root]:not([data-yunda-live="1"])') || document.querySelector("[data-yunda-root]");
     sideRoot = document.querySelector("[data-yunda-side-root]");
     statusChip = document.querySelector("[data-yunda-status-chip]");

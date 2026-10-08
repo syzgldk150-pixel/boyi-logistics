@@ -22,7 +22,7 @@
 <script src="/static/js/waybill_label_html.js?v=20261007-uniform-header-v2"></script>
 <script src="/static/js/waybill_label_lodop.js?v=20260916-receipt-v3"></script>
 <script src="/static/js/clodop_loader.js?v=20260812"></script>
-<script src="/static/js/yunda_entry_mode.js?v=20261008-best-entry"></script>
+<script src="/static/js/yunda_entry_mode.js?v=20261008-best-login-window"></script>
 {% endif %}
 <style>
   body.no-scroll { overflow: hidden; }
@@ -543,11 +543,6 @@
   <a href="/ocr/browser-extension.zip" download>下载原页助手</a>
   <a href="{{ entry_yunda_src }}" data-entry-login="yunda" target="_blank" rel="noopener noreferrer">在新窗口登录韵达</a>
   <button type="button" class="ghost-btn" data-entry-reload>重新加载</button>
-  {% elif provider == 'best' %}
-  <span class="manual-chip" data-best-status-chip>百世原站</span>
-  <p>请在百世原页登录并录单。若内嵌登录不可用，请在新窗口登录后回到这里重新加载。</p>
-  <a href="{{ entry_best_src }}" target="_blank" rel="noopener noreferrer">在新窗口打开百世</a>
-  <button type="button" class="ghost-btn" data-entry-reload>重新加载</button>
   {% else %}
   <span class="manual-chip" data-ronghui-status-chip>融辉原站</span>
   <p>内嵌使用需安装或更新扩展。请在新窗口登录，成功后自动返回并进入运单录入；若仍为空白，请点“重新加载”。</p>
@@ -566,7 +561,6 @@
   data-entry-src-boyi="/ocr/boyi/frame"
   data-entry-src-yunda="{{ entry_yunda_src }}"
   data-entry-src-ronghui="{{ entry_ronghui_src }}"
-  data-entry-src-best="{{ entry_best_src }}"
 >
   <div class="entry-tabs-toolbar">
     <div class="entry-tab-list" data-entry-tab-list role="tablist" aria-label="录单页签">
@@ -581,14 +575,13 @@
       <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="boyi"><i data-feather="plus"></i> 新建博益</button>
       <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="yunda"><i data-feather="truck"></i> 韵达原页</button>
       <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="ronghui"><i data-feather="truck"></i> 融辉原页</button>
-      <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="best"><i data-feather="truck"></i> 百世原页</button>
+      <a class="ghost-btn entry-add-btn" href="{{ entry_best_src }}" target="_blank" rel="noopener noreferrer" title="在新窗口登录百世并录单" aria-label="百世原页（新窗口打开）"><i data-feather="truck"></i> 百世原页</a>
       <a class="ghost-btn entry-ocr-link" data-entry-ocr-link href="/ocr?mode=ocr"><i data-feather="image"></i> 图片识别队列</a>
     </div>
   </div>
   <div class="entry-tab-limit" data-entry-tab-limit hidden>最多同时打开 6 个录单页签，请先关闭不需要的页签。</div>
   <template data-entry-origin-template="yunda">{{ entry_origin_notice('yunda') }}</template>
   <template data-entry-origin-template="ronghui">{{ entry_origin_notice('ronghui') }}</template>
-  <template data-entry-origin-template="best">{{ entry_origin_notice('best') }}</template>
   <div class="entry-frame-stack" data-entry-frame-stack>
     <div class="entry-frame-panel is-active" data-entry-frame-panel data-entry-id="entry-1" data-entry-provider="{{ entry_initial_provider }}"{% if entry_initial_provider == 'yunda' %} data-yunda-root data-yunda-live="1" data-yunda-native="1"{% elif entry_initial_provider == 'ronghui' %} data-ronghui-root data-ronghui-live="1" data-ronghui-native="1"{% endif %}>
       {% if entry_initial_provider in ['yunda', 'ronghui'] %}
@@ -1090,10 +1083,9 @@
       boyi: "博益",
       yunda: "韵达",
       ronghui: "融辉",
-      best: "百世",
     };
     const entryFrameSrc = (provider) => {
-      const key = { boyi: "entrySrcBoyi", yunda: "entrySrcYunda", ronghui: "entrySrcRonghui", best: "entrySrcBest" }[provider];
+      const key = { boyi: "entrySrcBoyi", yunda: "entrySrcYunda", ronghui: "entrySrcRonghui" }[provider];
       return entryTabsRoot?.dataset[key] || "/ocr/boyi/frame";
     };
     const entryTabCount = () => entryTabsRoot ? entryTabsRoot.querySelectorAll("[data-entry-tab]").length : 0;
@@ -1135,7 +1127,7 @@
     const bindEntryPanelFrame = (panel, provider, frame) => {
       if (!panel || !frame || frame.dataset.entryFrameBound === "1") return;
       frame.dataset.entryFrameBound = "1";
-      if (!["yunda", "ronghui", "best"].includes(provider)) return;
+      if (!["yunda", "ronghui"].includes(provider)) return;
       // Bind loading observers before navigating, including cached/partial pages.
       window.dispatchEvent(new CustomEvent("console:ocr-mode-change", { detail: { mode: provider } }));
       if (provider === "ronghui") {
@@ -1150,7 +1142,7 @@
     };
     function createEntryTab(provider) {
       if (!entryTabsRoot || !entryTabList || !entryFrameStack) return null;
-      const normalizedProvider = ["boyi", "yunda", "ronghui", "best"].includes(provider) ? provider : "boyi";
+      const normalizedProvider = ["boyi", "yunda", "ronghui"].includes(provider) ? provider : "boyi";
       if (entryTabCount() >= ENTRY_MAX_TABS) {
         updateEntryLimitState();
         return null;
@@ -1181,7 +1173,7 @@
         panel.dataset.ronghuiLive = "1";
         panel.dataset.ronghuiNative = "1";
       }
-      if (["yunda", "ronghui", "best"].includes(normalizedProvider)) {
+      if (["yunda", "ronghui"].includes(normalizedProvider)) {
         const notice = entryTabsRoot.querySelector(`[data-entry-origin-template="${normalizedProvider}"]`);
         panel.appendChild(notice.content.cloneNode(true));
       }
@@ -1195,13 +1187,13 @@
       if (normalizedProvider === "yunda") frame.setAttribute("data-yunda-live-frame", "");
       if (normalizedProvider === "ronghui") frame.setAttribute("data-ronghui-live-frame", "");
       frame.title = label;
-      if (["yunda", "ronghui", "best"].includes(normalizedProvider)) {
+      if (["yunda", "ronghui"].includes(normalizedProvider)) {
         frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads");
       } else {
         frame.src = entryFrameSrc(normalizedProvider);
       }
       viewport.appendChild(frame);
-      if (["yunda", "ronghui", "best"].includes(normalizedProvider)) {
+      if (["yunda", "ronghui"].includes(normalizedProvider)) {
         const fallback = document.createElement("div");
         fallback.className = "yunda-live-fallback yunda-empty";
         fallback.hidden = true;
