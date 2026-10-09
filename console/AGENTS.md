@@ -211,6 +211,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 - 改数据库落库或控制台读取：
   - `database.py`
   - `config.py`
+  - 生产库为跨地域 RDS，新建 TLS 连接约 0.27s：`DocumentRepository.connect()` 复用已提交的连接，异常、提交失败或会话状态不明的连接必须关闭而非放回；不得改回每次查询新建连接，也不得在连接上保留会话变量、命名锁或未提交事务。会话 `last_seen_at` 只作记录，每 60s 最多更新一次。
 
 ## 运单录入与打印
 

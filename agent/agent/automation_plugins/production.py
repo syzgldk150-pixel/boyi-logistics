@@ -2475,13 +2475,17 @@ class ProductionAutomationPluginRuntime:
     def health(self) -> dict[str, Any]:
         required_ids = self.required_first_party_ids - set(
             self.repository.superseded_first_party_ids(tuple(self.required_first_party_ids)))
-        catalog = self.catalog.production_health(tuple(required_ids))
-        ignored_automation_ids = self.catalog.excluded_persisted_automation_ids()
-        generations: RuntimeGenerationHealth = runtime_generation_health(
-            self.runtime_repository,
-            expected_automation_ids=required_ids,
-            ignored_automation_ids=ignored_automation_ids,
-        )
+        # Catalog, exclusion and generation reads share one snapshot connection
+        # instead of opening a cross-region connection per project lookup.
+        read_scope = getattr(self.runtime_repository, "read_scope", None)
+        with read_scope() if callable(read_scope) else nullcontext():
+            catalog = self.catalog.production_health(tuple(required_ids))
+            ignored_automation_ids = self.catalog.excluded_persisted_automation_ids()
+            generations: RuntimeGenerationHealth = runtime_generation_health(
+                self.runtime_repository,
+                expected_automation_ids=required_ids,
+                ignored_automation_ids=ignored_automation_ids,
+            )
         sandbox = self._sandbox_canary
         sandbox_ready = bool(sandbox is not None and sandbox.healthy)
         target_service = getattr(self, "target_service", None)

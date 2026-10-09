@@ -1834,3 +1834,64 @@ def test_generation_health_identity_query_error_remains_global() -> None:
 
     with pytest.raises(RuntimeError, match="database unavailable"):
         runtime_generation_health(repository, expected_automation_ids=set())
+
+
+def test_release_health_reads_lease_outcomes_once_per_project() -> None:
+    class BatchedRepository(_MemoryGenerationRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.lease_reads: list[int] = []
+            self.unknown_reads: list[int] = []
+
+        def generation_lease_outcomes(self, automation_id: str):
+            active = frozenset(number for number, leases in self.leases.items() if leases)
+            return active, frozenset(self.unknown)
+
+        def list_active_generation_leases(self, automation_id: str, generation: int):
+            self.lease_reads.append(generation)
+            return super().list_active_generation_leases(automation_id, generation)
+
+        def has_unknown_generation_write(self, automation_id: str, generation: int) -> bool:
+            self.unknown_reads.append(generation)
+            return super().has_unknown_generation_write(automation_id, generation)
+
+    def compare(repository: BatchedRepository):
+        repository.lease_reads.clear()
+        repository.unknown_reads.clear()
+        batched = runtime_generation_health(repository, expected_automation_ids={"project-a"})
+        reads = (list(repository.lease_reads), list(repository.unknown_reads))
+        repository.generation_lease_outcomes = None  # fall back to per-generation reads
+        try:
+            legacy = runtime_generation_health(repository, expected_automation_ids={"project-a"})
+        finally:
+            del repository.generation_lease_outcomes
+        assert batched == legacy
+        return batched, reads
+
+    repository = BatchedRepository()
+    reconciler, _ = _reconciler(repository)
+    committed = None
+    for number in (1, 2, 3):
+        reconciler.reconcile(
+            _snapshot(number, f"{number}.0.0"),
+            expected_committed_generation=committed,
+            request_id=str(uuid.uuid4()),
+        )
+        committed = number
+    assert len(repository.generations) == 3
+
+    health, reads = compare(repository)
+    assert health.active_lease_count == 0
+    assert "WRITE_OUTCOME_UNKNOWN" not in health.blocked_projects.get("project-a", ())
+    assert reads == ([], [])
+
+    repository.leases[3] = [RuntimeGenerationLease(
+        str(uuid.uuid4()), "project-a", 3, _snapshot(3, "3.0.0"), {},
+        datetime.now(timezone.utc), datetime.now(timezone.utc) + timedelta(minutes=5),
+    )]
+    repository.unknown.add(2)
+    health, reads = compare(repository)
+    assert health.active_lease_count == 1
+    assert "ACTIVE_GENERATION_LEASE" in health.blocked_projects["project-a"]
+    assert "WRITE_OUTCOME_UNKNOWN" in health.blocked_projects["project-a"]
+    assert reads == ([3], [])

@@ -2086,6 +2086,21 @@ class AutomationPluginGenerationRepositoryMixin(
             )
             return cursor.fetchone() is not None
 
+    def generation_lease_outcome_rows(self, automation_id: str) -> list[dict[str, Any]]:
+        """Return distinct project generations with active or unknown-write leases."""
+
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT generation, outcome FROM automation_project_generation_leases
+                WHERE automation_id=%s
+                  AND outcome IN ('RUNNING', 'VERIFYING', 'WRITE_OUTCOME_UNKNOWN')
+                GROUP BY generation, outcome
+                """,
+                (_required_text(automation_id, "automation_id"),),
+            )
+            return _rows(cursor)
+
     def finance_startup_occurrence_gate_row(
         self,
         *,

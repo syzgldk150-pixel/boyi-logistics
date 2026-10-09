@@ -1,4 +1,7 @@
 import json
+import threading
+import time
+from collections import deque
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -214,6 +217,13 @@ def _normalize_scheduled_task_group_id(task_id: str) -> str:
     return time_match.group("base") if time_match else normalized
 
 
+def _close_quietly(connection: Any) -> None:
+    try:
+        connection.close()
+    except Exception:
+        pass
+
+
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -296,11 +306,21 @@ LINE_HAUL_CONTACT_FIELDS = (
 )
 
 
+# The production database is a cross-region RDS endpoint: a new TLS connection
+# costs ~0.27s while a statement round trip is ~35ms. Reuse committed
+# connections instead of reconnecting for every query in every request.
+_IDLE_CONNECTION_LIMIT = 8
+_IDLE_PING_AFTER_SECONDS = 30.0
+_CONNECTION_MAX_AGE_SECONDS = 1800.0
+
+
 class DocumentRepository:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.placeholder = "%s"
         self._mysql = pymysql
+        self._idle_connections: deque[tuple[Any, float, float]] = deque()
+        self._idle_lock = threading.Lock()
         self._scheduled_tasks = ScheduledTaskRepository(self.connect)
         self._workflow_resources = WorkflowResourceRepository(self.connect)
         self._waybills = WaybillRepository(self.connect)
@@ -308,7 +328,50 @@ class DocumentRepository:
 
     @contextmanager
     def connect(self) -> Iterator[Any]:
-        connection = self._mysql.connect(
+        connection, created_at = self._checkout_connection()
+        try:
+            yield connection
+            connection.commit()
+        except BaseException:
+            # A failed or interrupted use may leave unknown session state.
+            try:
+                connection.rollback()
+            except Exception:
+                pass
+            finally:
+                _close_quietly(connection)
+            raise
+        self._checkin_connection(connection, created_at)
+
+    def _checkout_connection(self) -> tuple[Any, float]:
+        while True:
+            with self._idle_lock:
+                if not self._idle_connections:
+                    break
+                connection, created_at, returned_at = self._idle_connections.pop()
+            now = time.monotonic()
+            if now - created_at >= _CONNECTION_MAX_AGE_SECONDS or not getattr(connection, "open", False):
+                _close_quietly(connection)
+                continue
+            if now - returned_at >= _IDLE_PING_AFTER_SECONDS:
+                try:
+                    connection.ping(reconnect=False)
+                except Exception:
+                    _close_quietly(connection)
+                    continue
+            return connection, created_at
+        return self._open_connection(), time.monotonic()
+
+    def _checkin_connection(self, connection: Any, created_at: float) -> None:
+        if getattr(connection, "open", False) is True:
+            with self._idle_lock:
+                if len(self._idle_connections) < _IDLE_CONNECTION_LIMIT:
+                    self._idle_connections.append((connection, created_at, time.monotonic()))
+                    return
+        _close_quietly(connection)
+
+    def _open_connection(self) -> Any:
+        return self._mysql.connect(
             host=self.settings.mysql_host,
             port=self.settings.mysql_port,
             user=self.settings.mysql_user,
@@ -322,14 +385,6 @@ class DocumentRepository:
             autocommit=False,
             **mysql_tls_options(self.settings.mysql_ssl_ca),
         )
-        try:
-            yield connection
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     def initialize(self) -> None:
         """Validate the deployment-managed schema without mutating it at runtime."""

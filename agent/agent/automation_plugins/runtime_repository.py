@@ -865,6 +865,17 @@ class MySQLAutomationPluginRuntimeAdapter:
                 )
             )
 
+    def generation_lease_outcomes(self, automation_id: str) -> tuple[frozenset[int], frozenset[int]]:
+        """Return (generations with active leases, generations with unknown writes)."""
+        with catalog_read_transaction(self._orchestration) as uow:
+            rows = uow.automation_plugins.generation_lease_outcome_rows(automation_id)
+        active: set[int] = set()
+        unknown: set[int] = set()
+        for row in rows:
+            generation = int(row["generation"])
+            (unknown if row["outcome"] == "WRITE_OUTCOME_UNKNOWN" else active).add(generation)
+        return frozenset(active), frozenset(unknown)
+
     def reserve_generation_dispose(
         self,
         automation_id: str,

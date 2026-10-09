@@ -1116,17 +1116,25 @@ def _runtime_generation_health(
                     "ACTIVATION_"
                     f"{committed_rows[0].activation_phase.value}"
                 )
+            # One read per project instead of two per historical generation;
+            # generations with active leases still use the exact per-generation reader.
+            outcome_reader = getattr(repository, "generation_lease_outcomes", None)
+            lease_outcomes = outcome_reader(automation_id) if callable(outcome_reader) else None
             for generation in generations:
                 number = generation.snapshot.generation
-                leases = tuple(
-                    repository.list_active_generation_leases(automation_id, number)
-                )
+                if lease_outcomes is None or number in lease_outcomes[0]:
+                    leases = tuple(
+                        repository.list_active_generation_leases(automation_id, number)
+                    )
+                else:
+                    leases = ()
                 project_active_leases += len(leases)
                 if leases:
                     reasons.add("ACTIVE_GENERATION_LEASE")
-                unknown_write = repository.has_unknown_generation_write(
-                    automation_id,
-                    number,
+                unknown_write = (
+                    number in lease_outcomes[1]
+                    if lease_outcomes is not None
+                    else repository.has_unknown_generation_write(automation_id, number)
                 )
                 archival_unknown = (
                     number != project.committed_generation

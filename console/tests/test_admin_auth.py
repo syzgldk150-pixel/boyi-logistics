@@ -199,6 +199,29 @@ class AdminAuthTests(unittest.TestCase):
         self.assertEqual("admin", current_admin_user()["username"])
         self.assertEqual(["sid"], repo.touched)
 
+    def test_recent_session_activity_is_not_rewritten_on_every_request(self):
+        session = {
+            "session_id": "sid",
+            "user_id": 7,
+            "username": "admin",
+            "display_name": "Admin",
+            "is_active": 1,
+            "role": "super_admin",
+            "expires_at": datetime.now() + timedelta(hours=1),
+            "last_seen_at": (datetime.now() - timedelta(seconds=10)).isoformat(timespec="seconds"),
+        }
+        repo = _SessionRepo(session=session)
+        app = self._build_app(repo)
+        cookie = app._encode_session_cookie("sid")
+        handler = _Handler(headers={"Cookie": f"docflow_admin_session={cookie}"})
+
+        self.assertTrue(app._ensure_authorized(handler))
+        self.assertEqual([], repo.touched)
+
+        session["last_seen_at"] = (datetime.now() - timedelta(minutes=2)).isoformat(timespec="seconds")
+        self.assertTrue(app._ensure_authorized(handler))
+        self.assertEqual(["sid"], repo.touched)
+
     def test_login_success_creates_session_cookie(self):
         repo = _LoginRepo()
         app = self._build_app(repo)

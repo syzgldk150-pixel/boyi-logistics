@@ -11,6 +11,8 @@ from console.navigation import (
 from shared.identity_permissions import access_from_row
 from shared.identity_routes import console_permissions
 
+_SESSION_TOUCH_INTERVAL = timedelta(seconds=60)  # noqa: F405
+
 
 class AuthServiceMixin:
     def _require_same_origin_write(self, handler: BaseHTTPRequestHandler) -> bool:
@@ -115,7 +117,10 @@ class AuthServiceMixin:
             self.repository.delete_admin_session(session_id)
             return None
 
-        self.repository.touch_admin_session(session_id)
+        # last_seen_at is informational only; avoid a write transaction per request.
+        last_seen_at = self._coerce_datetime(session.get("last_seen_at"))
+        if datetime.now() - last_seen_at >= _SESSION_TOUCH_INTERVAL:
+            self.repository.touch_admin_session(session_id)
         user = {
             "id": int(session.get("user_id") or 0),
             "username": str(session.get("username") or ""),

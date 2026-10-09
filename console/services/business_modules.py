@@ -115,10 +115,12 @@ class BusinessModulesServiceMixin:
         return cls._health_field(value)
 
     def _system_status_snapshot(self, handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+        # The live plugin and generation checks read the cross-region database;
+        # a 4s budget always ended in "unavailable" on this diagnostic page.
         result = self._agent_request(
             "GET",
             "/internal/v1/health",
-            timeout=4,
+            timeout=20,
             console_principal=self._mysql_console_principal(
                 getattr(handler, "current_admin_user", None)
             ),

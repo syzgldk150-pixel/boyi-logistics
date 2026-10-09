@@ -76,6 +76,7 @@ V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v3
 - 生产库是杭州 RDS 的公网 TLS 端点，ECS 在北京：2026-10-07 实测单条语句往返约 35.7ms，新建 TLS 连接约 0.27s。任何"每次调用开连接"或"逐行一次往返"的写法都会被成倍放大，详见 [RDS 迁移说明](../docs/mysql_rds_migration.md#跨地域访问的性能约束)。
 - 插件调用热路径不得为不变数据重复开 Unit of Work：`automation_plugins/capability_proxy_v2.py` 按调用 lease（automation_id/plugin_id/generation/lease_id/version）缓存已校验的 Service V2 清单，缺少 lease 身份时才逐次读取。
 - `executemany` 的 INSERT 在 VALUES 中只能使用占位符，常量也作为参数传入，保证 PyMySQL 合并为多行 INSERT；`tools/phase7_mysql_store.py` 的结构校验按进程和连接目标只做一次成功校验，失败不缓存。
+- 运行时健康检查同样按快照读取：`production.py` 的插件健康让目录、排除项和代次检查共用 `runtime_repository.read_scope()`，`generation.py` 用 `generation_lease_outcomes` 每个项目一次读取活动租约/未知写代次，仅对有活动租约的代次调用逐代次读取；不得恢复按历史代次逐条查询。
 
 ## HTTP 安全边界
 
