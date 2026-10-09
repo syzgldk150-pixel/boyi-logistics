@@ -152,7 +152,7 @@ V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v3
 |------|----------|----------|------|
 | 控制台工作区 | `console/` | `docs/project_overview.md` | 与 agent 并列部署 |
 | 实时报价 | `tools/price_tool.py`、`agent/tms_runtime/scripts/{get_price,yunda_price}.py` | `docs/agent_automation/module_overview.md` | 受管只读能力；融辉/韵达分别使用精确账号登录态 |
-| 旧离线价格工程 | `price_scripts/` | `docs/price_scripts/` | legacy 隔离；文档均为历史/审计快照，不是运行入口 |
+| 旧离线价格工程 | `price_scripts/` | `price_scripts/AGENTS.md` | legacy 隔离；只保留少量旧报价代码，不是运行入口，旧价格文档已移除 |
 | 财务工作台 | `../shared/finance/`、`agent/business_query.py`、`agent/direct_tool_router.py`、`agent/core.py`、`agent/tms_runtime/scripts/*finance*`、`tools/finance_sync_service.py`、`tools/sync_finance_bills_tool.py`、`../console/finance_service.py` | `docs/finance_module.md` | 融辉逐笔账本、费用绑定、BI、00:10 同步与失败审计，以及不向 LLM 暴露、只允许飞书管理员绑定使用的确定性自然语言只读经营汇总；韵达财务未启用，并与旧 Excel ETL 隔离 |
 | OCR识别 | `console/` | `docs/ocr/` | Qwen-OCR、人工复核与 MySQL 入库已运行；自学习/Paddle 方案未实施 |
 | 车辆调度 | `console/` | `docs/dispatch/` | `map_only`：仅地图路线规划与本地试算，无真实派单/车辆/平台接口 |
@@ -173,6 +173,8 @@ docs/
 ├── database_migrations.md            # 部署期顺序迁移与运行时只校验结构
 ├── plugin_maintenance.md             # V2 插件局部测试、打包与升级
 ├── service_v2_developer_tooling.md   # Service V2 离线开发 CLI 与 Manifest Schema
+├── plugin_account_http.md            # 插件通过宿主通用账号请求访问业务网页
+├── r7_vehicle_checkin.md             # R7 车线每日打卡 V2 包的账号、定时与原站协议
 ├── business_module_lifecycle.md      # 固定模块与旧生命周期只读兼容
 ├── rules_and_definitions.md          # 业务规则与术语
 ├── automation_plugin_platform.md     # historical：V1 插件平台设计

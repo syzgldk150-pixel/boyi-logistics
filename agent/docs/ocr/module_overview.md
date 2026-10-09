@@ -1,10 +1,10 @@
 ---
 module: OCR识别
 type: 模块文档
-tags: [OCR, 单据录入, Qwen-OCR, 模板配置, MySQL, waybills]
+tags: [OCR, 单据录入, Qwen-OCR, 模板配置, MySQL, boyi_waybills]
 related: [../project_overview.md, ../code_navigation_index.md]
 status: active
-updated: 2026-10-08
+updated: 2026-10-09
 ---
 
 # OCR 识别模块概述
@@ -23,24 +23,25 @@ OCR 的现行运行入口全部位于 `console/`。当前是 `Qwen-OCR 单引擎
 - Qwen-OCR 执行整页识别、分块追问与必要字段定向提取
 - `/documents/{id}` 提供整张单据与字段表单的人工复核
 - 复核页支持置信度提示、填写人和键盘操作
-- 确认成功后更新 `documents`，并创建来源为 `ocr` 的 `waybills` 行
+- 确认成功后更新 `documents`，并在 `boyi_waybills` 创建 `source=ocr` 的运单行
 - `/waybills/manual` 提供独立的手工录单入口
 - 模板可在 `/templates/new` 与 `/templates/{template_name}/edit` 管理
 
 ## 数据库存量
 
-迁移 `agent/migrations/003_console_runtime_tables.sql` 建立 OCR 现行表和预留表：
+迁移 `agent/migrations/003_console_runtime_tables.sql` 建立 OCR 现行表和预留表；运单存储经迁移 051、055 调整：
 
 | 表名 | 当前用途 |
 |------|----------|
 | `documents` | OCR 文档、字段结果与复核状态 |
-| `waybills` | OCR 确认或手工录入后的结构化运单 |
+| `waybill_db.boyi_waybills` | OCR 确认（`source=ocr`）与博益手工录单（`source=manual`）的结构化运单；Console 经运行库同名视图读写 |
+| `waybills` | 运行库只读 UNION ALL 视图，汇总韵达、融辉、博益三张平台表供查询，不能写入 |
 | `writers` | 填写人/复核员选项 |
 | `training_samples` | 已建表，当前没有自动采集链路 |
 | `model_versions` | 已建表，当前没有训练或激活链路 |
 | `accuracy_log` | 已建表，当前没有准确率记录/看板链路 |
 
-运行时不得由 `console/database.py` 或请求路径执行 DDL；结构只由 `agent/migrations/` 和部署期迁移器维护。
+写入表名按来源由 `shared/logistics_tables.py` 唯一映射，分库与视图说明见[分库说明](../../../docs/database_domains.md)。运行时不得由 `console/database.py` 或请求路径执行 DDL；结构只由 `agent/migrations/` 和部署期迁移器维护。
 
 ## 关键文件
 

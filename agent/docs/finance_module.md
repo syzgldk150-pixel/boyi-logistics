@@ -4,7 +4,7 @@ type: 模块文档
 tags: [融辉, 财务同步, 费用绑定, BI, Decimal]
 related: [project_overview.md, common/finance_data_baseline.md]
 status: active
-updated: 2026-10-08
+updated: 2026-10-09
 ---
 
 # 融辉财务工作台
@@ -79,7 +79,7 @@ updated: 2026-10-08
 
 ## 账本与费用绑定
 
-共享财务表使用 `finance_` 前缀，金额列使用 MySQL `DECIMAL(20,4)`。Python 全链路使用 `Decimal(str(value))`；缺失金额不静默补零；API 返回金额字符串；页面最终使用 `ROUND_HALF_UP` 展示两位。
+共享财务表使用 `finance_` 前缀；迁移 055 后实体表位于 `finance_db`，运行库保留同名可写单表视图供现有程序访问，详见[分库说明](../../docs/database_domains.md)。金额列使用 MySQL `DECIMAL(20,4)`。Python 全链路使用 `Decimal(str(value))`；缺失金额不静默补零；API 返回金额字符串；页面最终使用 `ROUND_HALF_UP` 展示两位。
 
 核心表：
 

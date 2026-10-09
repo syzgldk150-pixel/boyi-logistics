@@ -4,7 +4,7 @@ type: 插件开发说明
 tags: [service_v2, 大祥S站, 打卡]
 related: [../clockin_daxiang_v2/README.md]
 status: active
-updated: 2026-08-31
+updated: 2026-09-12
 ---
 
 # clockin_daxiang_s_v2

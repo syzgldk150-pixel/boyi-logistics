@@ -4,7 +4,7 @@ type: 运行边界与历史持久化契约
 tags: [business-modules, 固定模块, 生命周期兼容, MySQL, 只读接口]
 related: [code_navigation_index.md, ../migrations/027_business_module_lifecycle.sql, ../../shared/business_modules.py]
 status: active
-updated: 2026-08-30
+updated: 2026-09-09
 ---
 
 # 固定业务模块与旧生命周期只读兼容
