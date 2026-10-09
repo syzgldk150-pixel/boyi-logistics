@@ -214,6 +214,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 ## 运单录入与打印
 
+- 原页助手 0.4.11 修复融辉会话过期后在博益内嵌登录页登录导致的网点、地图与地址失效：原站 MiniUI 以不带 SameSite/Secure 的 `document.cookie` 写 `userInfo`，Chrome 在跨站 frame 中直接丢弃，后台 Cookie 变更适配无事件可处理。`cookie-writes.js` 只在顶层为博益的融辉 frame 中、原站脚本运行前给其自身写入改用 `SameSite=None; Secure`，保留名称、值、路径、有效期和域；单独原站标签不注入，不读取或补造资料、不重放初始化。验证边界见扩展 README。
 - 原页助手 0.4.10 默认收起百世新版录单页顶部蓝色导航，保留原生页签、工具栏、表单与地图；与融辉共用外层“原站菜单”切换入口，切换只改变布局，不重载或替换原表单。百世上传、保存工具栏在内嵌录单页随表单滚动，展开菜单时也不吸顶。独立原站页面保持原样。
 - 原页助手 0.4.9 持续适配已登记融辉内嵌标签期间的原站 JavaScript Cookie 更新，复用现有 SameSite/Secure 适配，不扩主机权限、不恢复删除值、不重放初始化。真实故障已确认 `userInfo` 被写为非 Secure Lax，内嵌读取为空会使 `crud.init` 中断并影响网点、地图与地址；隔离 MV3 回归使用纯合成资料，用户更新助手并刷新整页后已确认原故障 Chrome 中全部恢复，详见扩展 README。
 

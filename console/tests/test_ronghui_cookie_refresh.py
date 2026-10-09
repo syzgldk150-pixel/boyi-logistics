@@ -43,6 +43,18 @@ window.crud={
 crud.init();
 </script>'''
 
+# Same document.cookie shape as the real login page's mini.Cookie.set: no
+# SameSite or Secure attribute, written after the login request succeeds.
+NATIVE_LOGIN = '''<!doctype html><meta charset="utf-8">
+<script>
+async function login(){
+  await fetch('/system/login',{method:'POST'});
+  document.cookie='userInfo='+escape(JSON.stringify({loginSiteName:'synthetic-login-site'}))+';path=/';
+  location.href='/module/index?mv=index';
+}
+</script>
+<button onclick="login()">Synthetic login</button>'''
+
 
 class RonghuiCookieRefreshTests(unittest.TestCase):
     def test_native_js_refresh_remains_readable_in_nested_cross_site_entry(self):
@@ -107,5 +119,64 @@ class RonghuiCookieRefreshTests(unittest.TestCase):
                 expect(entry.locator('#address')).to_have_text("synthetic address initialized")
                 expect(host.locator('#unsaved')).to_have_value("keep this draft")
                 self.assertEqual(reads, {"home": 1, "entry": 2})
+            finally:
+                context.close()
+
+    def test_login_inside_embed_keeps_native_profile_cookie(self):
+        from playwright.sync_api import expect, sync_playwright
+
+        with sync_playwright() as playwright, tempfile.TemporaryDirectory() as profile:
+            if not Path(playwright.chromium.executable_path).is_file():
+                self.skipTest("Chromium is required for the extension regression")
+            context = playwright.chromium.launch_persistent_context(
+                profile, channel="chromium", headless=True,
+                args=[f"--disable-extensions-except={EXTENSION}", f"--load-extension={EXTENSION}"],
+            )
+            session = {"logged_in": False}
+            try:
+                def respond(route):
+                    url = urlsplit(route.request.url)
+                    if url.netloc == "boyi.homes":
+                        body = HOST_HTML
+                    elif url.netloc != "tms.ronghuiwl.com":
+                        route.fulfill(status=404, body="")
+                        return
+                    elif url.path == "/system/login" and route.request.method == "POST":
+                        session["logged_in"] = True
+                        route.fulfill(json={"success": True})
+                        return
+                    elif url.path == "/synthetic-login" or (
+                            url.path == "/module/index" and not session["logged_in"]):
+                        # Serve login in place: Playwright does not route a fulfilled
+                        # redirect's follow-up request, which would reach the real site.
+                        body = NATIVE_LOGIN
+                    elif url.path == "/module/index":
+                        body = NATIVE_HOME
+                    elif url.path == "/widget/home":
+                        body = NATIVE_ENTRY
+                    else:
+                        route.fulfill(status=404, body="")
+                        return
+                    route.fulfill(body=body, content_type="text/html; charset=utf-8")
+
+                context.route("**/*", respond)
+                host = context.new_page()
+                host.goto(BOYI + "/ocr")
+                native = host.frame_locator('[data-ronghui-live-frame]')
+                native.get_by_role("button", name="Synthetic login").click()
+                entry = native.frame_locator('iframe')
+                # Chrome drops a SameSite-unspecified write from this cross-site
+                # frame; the native init then fails before sites, map and address.
+                expect(entry.locator('#site')).to_have_text("synthetic-login-site")
+                expect(entry.locator('#map')).to_have_text("synthetic map initialized")
+                expect(entry.locator('#address')).to_have_text("synthetic address initialized")
+                cookie = next(item for item in context.cookies(RONGHUI) if item["name"] == "userInfo")
+                self.assertEqual((cookie["sameSite"], cookie["secure"]), ("None", True))
+
+                standalone = context.new_page()
+                standalone.goto(RONGHUI + "/synthetic-login")
+                self.assertTrue(standalone.evaluate(
+                    "Object.getOwnPropertyDescriptor(Document.prototype, 'cookie').set"
+                    ".toString().includes('[native code]')"))
             finally:
                 context.close()

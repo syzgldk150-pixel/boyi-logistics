@@ -14,6 +14,7 @@ EXTENSION_ROOT = Path(__file__).resolve().parents[1] / "static/browser_extension
 PACKAGE_FILES = (
     "manifest.json", "background.js", "content.js", "layout-host.js", "layout-shell.js", "README.md",
     "original-login.js", "yunda-login.css", "entry-events.js", "best-entry.js", "best-storage.js",
+    "cookie-writes.js",
 )
 
 
