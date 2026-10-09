@@ -8,7 +8,7 @@
     let source;
     try { source = new URL(frame.dataset.entryPendingSrc); } catch { return; }
     const provider = source.origin === 'https://tms.ronghuiwl.com' && source.pathname === '/module/index' ? 'ronghui' :
-      source.origin === 'https://v5.800best.com' && source.pathname === '/baseService/transOrder/createOrder' ? 'best' : null;
+      source.origin === 'https://v5.800best.com' && source.pathname === '/baseService/transOrder/networkProductOrder' ? 'best' : null;
     if (!provider) return;
     const statusKey = provider + 'Extension';
     pending.add(frame);
@@ -18,7 +18,7 @@
       const result = await chrome.runtime.sendMessage({type:'prepare-' + provider + '-embed'});
       if (!result?.ok) throw new Error('Preparation failed');
       if (!frame.isConnected) return;
-      frame.dataset[statusKey] = '0.4.8';
+      frame.dataset[statusKey] = '0.4.10';
       delete frame.dataset.entryPendingSrc;
       frame.dispatchEvent(new Event('console:original-page-reload'));
       if (provider === 'best') frame.sandbox.add('allow-storage-access-by-user-activation');

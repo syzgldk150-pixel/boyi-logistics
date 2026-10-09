@@ -51,12 +51,16 @@ async function adaptCookie(details) {
   catch { stats.failed++; return false; }
 }
 chrome.cookies.onChanged.addListener(async ({removed, cookie}) => {
-  if (removed || !applicableDomain(cookie.domain, BEST_HOST) ||
-      (cookie.secure && cookie.sameSite === 'no_restriction')) return;
+  if (removed || (cookie.secure && cookie.sameSite === 'no_restriction')) return;
+  const host = applicableDomain(cookie.domain, HOST) ? HOST :
+    applicableDomain(cookie.domain, BEST_HOST) ? BEST_HOST : null;
+  if (!host) return;
   await ready;
-  // BEST also refreshes its login markers with document.cookie. These writes
+  // Native pages also refresh login data with document.cookie. These writes
   // have no Set-Cookie response header and must retain the embed attributes.
-  if (bestTabs.size) await adaptCookie(existingCookieDetails(cookie, BEST_HOST));
+  if ((host === HOST ? activeTabs : bestTabs).size) {
+    await adaptCookie(existingCookieDetails(cookie, host));
+  }
 });
 chrome.webRequest.onHeadersReceived.addListener(async response => {
   await ready;
@@ -121,7 +125,7 @@ chrome.tabs.onRemoved.addListener(async tabId => {
 
 const ORIGINAL_ENTRIES = {
   ronghui: 'https://tms.ronghuiwl.com/module/index?mv=index',
-  best: 'https://v5.800best.com/baseService/transOrder/createOrder',
+  best: 'https://v5.800best.com/baseService/transOrder/networkProductOrder',
   yunda: 'https://kyinms.yunda56.com/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&p=nil'
 };
 chrome.runtime.onMessage.addListener((message, sender, reply) => {

@@ -5,7 +5,7 @@
   const YUNDA_HOME = '/ky_inms/public/index.php/index/index.html';
   const YUNDA_ENTRY = '/ky_inms/public/index.php/business/waybill/entry/indexNew.html';
   const BEST = 'https://v5.800best.com';
-  const BEST_ENTRY = '/baseService/transOrder/createOrder';
+  const BEST_ENTRY = '/baseService/transOrder/networkProductOrder';
   if (location.origin === BOYI && window.parent === window) {
     window.addEventListener('message', event => {
       if (event.origin !== BEST || !['boyi-best-entry-unavailable', 'boyi-best-storage-unavailable'].includes(event.data?.type)) return;

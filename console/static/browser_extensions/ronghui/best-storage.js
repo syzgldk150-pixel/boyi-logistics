@@ -1,6 +1,6 @@
 (() => {
   if (location.origin !== 'https://v5.800best.com' ||
-      location.pathname !== '/baseService/transOrder/createOrder' ||
+      location.pathname !== '/baseService/transOrder/networkProductOrder' ||
       window.parent === window || location.ancestorOrigins?.[0] !== 'https://boyi.homes') return;
   // BEST keeps its native profile and site catalogue in localStorage/IndexedDB.
   // Use the browser's same-origin storage handle, without reading or copying data.

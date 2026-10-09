@@ -141,29 +141,33 @@ setImmediate(() => {
         self.run_node(r"""
 const assert = require('node:assert/strict');
 const sources = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
-const handlers = [], adapted = []; let updates = 0, cookieChanged;
+const handlers = [], adapted = []; let updates = 0, cookieChanged, tabRemoved;
 const chrome = {
   declarativeNetRequest:{getSessionRules:async()=>[], updateSessionRules:async()=>{updates++;}},
   webRequest:{onHeadersReceived:{addListener(){}}},
   runtime:{onMessage:{addListener(callback){handlers.push(callback);}}},
-  storage:{session:{get:async()=>({}),set:async()=>{}}},
-  tabs:{onRemoved:{addListener(){}}}, cookies:{getAll:async()=>[],
+  storage:{session:{get:async()=>({}),set:async()=>{},remove:async()=>{}}},
+  tabs:{onRemoved:{addListener(fn){tabRemoved=fn;}}}, cookies:{getAll:async()=>[],
     set:async details=>{adapted.push(details);},onChanged:{addListener(fn){cookieChanged=fn;}}}
 };
 eval(sources.background);
 const prepare = (sender, type='prepare-ronghui-embed') =>
   new Promise(resolve => handlers[0]({type}, sender, resolve));
 (async () => {
+  const cookie={name:'userName',value:'synthetic-user',domain:'v5.800best.com',path:'/',
+    secure:false,sameSite:'lax',httpOnly:false,hostOnly:true,session:true,storeId:'0'};
+  const ronghuiCookie={...cookie,name:'synthetic-ronghui-profile',domain:'tms.ronghuiwl.com'};
+  await cookieChanged({removed:false,cookie:ronghuiCookie});
+  await cookieChanged({removed:false,cookie});
+  assert.equal(adapted.length,0); // Neither provider has an embedded tab yet.
   assert.deepEqual(await prepare({url:'https://boyi.homes/', frameId:0, tab:{id:1}}), {ok:true});
   assert.equal(updates, 1);
   assert.deepEqual(await prepare({url:'https://other.example/ocr', frameId:0, tab:{id:1}}), {ok:false});
   assert.deepEqual(await prepare({url:'https://boyi.homes/ocr', frameId:2, tab:{id:1}}), {ok:false});
   assert.equal(updates, 1);
-  assert.deepEqual(await prepare({url:'https://boyi.homes/ocr', frameId:0, tab:{id:1}}, 'prepare-best-embed'), {ok:true});
+  assert.deepEqual(await prepare({url:'https://boyi.homes/ocr', frameId:0, tab:{id:2}}, 'prepare-best-embed'), {ok:true});
   assert.equal(updates, 1); // Best must not replace Ronghui's HTTP redirect rules.
   assert.deepEqual(await prepare({url:'https://other.example/ocr', frameId:0, tab:{id:1}}, 'prepare-best-embed'), {ok:false});
-  const cookie={name:'userName',value:'synthetic-user',domain:'v5.800best.com',path:'/',
-    secure:false,sameSite:'lax',httpOnly:false,hostOnly:true,session:true,storeId:'0'};
   await cookieChanged({removed:false,cookie});
   assert.equal(adapted.length,1);
   assert.equal(adapted[0].value,cookie.value);
@@ -173,6 +177,22 @@ const prepare = (sender, type='prepare-ronghui-embed') =>
   await cookieChanged({removed:false,cookie:{...cookie,secure:true,sameSite:'no_restriction'}});
   await cookieChanged({removed:false,cookie:{...cookie,domain:'unrelated.example'}});
   assert.equal(adapted.length,1); // No restoration after logout or self-triggered loop.
+  await cookieChanged({removed:false,cookie:ronghuiCookie});
+  assert.equal(adapted.length,2);
+  assert.equal(adapted[1].url,'https://tms.ronghuiwl.com/');
+  assert.equal(adapted[1].name,ronghuiCookie.name);
+  assert.equal(adapted[1].value,ronghuiCookie.value);
+  assert.equal(adapted[1].secure,true);
+  assert.equal(adapted[1].sameSite,'no_restriction');
+  await cookieChanged({removed:true,cookie:ronghuiCookie});
+  await cookieChanged({removed:false,cookie:{...ronghuiCookie,secure:true,sameSite:'no_restriction'}});
+  await cookieChanged({removed:false,cookie:{...ronghuiCookie,domain:'other.ronghuiwl.com'}});
+  assert.equal(adapted.length,2);
+  await tabRemoved(1);
+  await cookieChanged({removed:false,cookie:ronghuiCookie});
+  assert.equal(adapted.length,2); // Remaining Best tabs cannot keep Ronghui adaptation active.
+  await cookieChanged({removed:false,cookie});
+  assert.equal(adapted.length,3);
 })();
 """, {
             "background": (CONSOLE / "static/browser_extensions/ronghui/background.js").read_text(encoding="utf-8"),
@@ -266,12 +286,36 @@ const other=setup(undefined,'/module/index');
 assert.equal(other.address.fire,other.native);
 """, {"adapter": (CONSOLE / "static/browser_extensions/ronghui/entry-events.js").read_text(encoding="utf-8")})
 
+    def test_best_retired_entry_does_not_install_storage_or_tab_adapters(self):
+        self.run_node(r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const sources = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+let storageRequests=0, tabQueries=0;
+const context={
+  location:{origin:'https://v5.800best.com',pathname:'/baseService/transOrder/createOrder',
+    ancestorOrigins:['https://boyi.homes']},
+  window:{parent:{}},
+  document:{
+    requestStorageAccess(){storageRequests++;return Promise.resolve({});},
+    querySelectorAll(){tabQueries++;return [];}
+  }
+};
+vm.runInNewContext(sources.storage,context);
+vm.runInNewContext(sources.entry,context);
+assert.equal(storageRequests,0);
+assert.equal(tabQueries,0);
+""", {
+            "storage": (CONSOLE / "static/browser_extensions/ronghui/best-storage.js").read_text(encoding="utf-8"),
+            "entry": (CONSOLE / "static/browser_extensions/ronghui/best-entry.js").read_text(encoding="utf-8"),
+        })
+
     def test_best_login_checks_server_and_follows_spa_login_transitions(self):
         self.run_node(r"""
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const sources = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
-const ENTRY = '/baseService/transOrder/createOrder';
+const ENTRY = '/baseService/transOrder/networkProductOrder';
 const flush = () => new Promise(resolve=>setImmediate(resolve));
 function setup(path='/login') {
   let observer, navigation, tabs=false, finish, reads=0, messages=0, disconnected=false;
@@ -301,6 +345,8 @@ function setup(path='/login') {
 }
 (async()=>{
   const s=setup();assert.equal(s.state().reads,0);
+  s.navigate('/baseService/transOrder/createOrder',true);
+  assert.equal(s.state().reads,0); // The retired form cannot finish this login flow.
   s.navigate(ENTRY,true);s.finish({code:'40001'});await flush();
   assert.equal(s.state().messages,0);
   s.mutate();s.mutate();assert.equal(s.state().reads,1); // No loop on cached DOM.
