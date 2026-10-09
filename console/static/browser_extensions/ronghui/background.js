@@ -50,6 +50,14 @@ async function adaptCookie(details) {
   try { await chrome.cookies.set(details); stats.adapted++; return true; }
   catch { stats.failed++; return false; }
 }
+chrome.cookies.onChanged.addListener(async ({removed, cookie}) => {
+  if (removed || !applicableDomain(cookie.domain, BEST_HOST) ||
+      (cookie.secure && cookie.sameSite === 'no_restriction')) return;
+  await ready;
+  // BEST also refreshes its login markers with document.cookie. These writes
+  // have no Set-Cookie response header and must retain the embed attributes.
+  if (bestTabs.size) await adaptCookie(existingCookieDetails(cookie, BEST_HOST));
+});
 chrome.webRequest.onHeadersReceived.addListener(async response => {
   await ready;
   const host = new URL(response.url).hostname;

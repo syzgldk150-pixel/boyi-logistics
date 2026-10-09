@@ -18,9 +18,10 @@
       const result = await chrome.runtime.sendMessage({type:'prepare-' + provider + '-embed'});
       if (!result?.ok) throw new Error('Preparation failed');
       if (!frame.isConnected) return;
-      frame.dataset[statusKey] = '0.4.6';
+      frame.dataset[statusKey] = '0.4.8';
       delete frame.dataset.entryPendingSrc;
       frame.dispatchEvent(new Event('console:original-page-reload'));
+      if (provider === 'best') frame.sandbox.add('allow-storage-access-by-user-activation');
       frame.src = source.href;
     } catch (error) {
       frame.dataset[statusKey] = 'failed';

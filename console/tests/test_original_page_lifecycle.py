@@ -141,13 +141,14 @@ setImmediate(() => {
         self.run_node(r"""
 const assert = require('node:assert/strict');
 const sources = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
-const handlers = []; let updates = 0;
+const handlers = [], adapted = []; let updates = 0, cookieChanged;
 const chrome = {
   declarativeNetRequest:{getSessionRules:async()=>[], updateSessionRules:async()=>{updates++;}},
   webRequest:{onHeadersReceived:{addListener(){}}},
   runtime:{onMessage:{addListener(callback){handlers.push(callback);}}},
   storage:{session:{get:async()=>({}),set:async()=>{}}},
-  tabs:{onRemoved:{addListener(){}}}, cookies:{getAll:async()=>[]}
+  tabs:{onRemoved:{addListener(){}}}, cookies:{getAll:async()=>[],
+    set:async details=>{adapted.push(details);},onChanged:{addListener(fn){cookieChanged=fn;}}}
 };
 eval(sources.background);
 const prepare = (sender, type='prepare-ronghui-embed') =>
@@ -161,6 +162,17 @@ const prepare = (sender, type='prepare-ronghui-embed') =>
   assert.deepEqual(await prepare({url:'https://boyi.homes/ocr', frameId:0, tab:{id:1}}, 'prepare-best-embed'), {ok:true});
   assert.equal(updates, 1); // Best must not replace Ronghui's HTTP redirect rules.
   assert.deepEqual(await prepare({url:'https://other.example/ocr', frameId:0, tab:{id:1}}, 'prepare-best-embed'), {ok:false});
+  const cookie={name:'userName',value:'synthetic-user',domain:'v5.800best.com',path:'/',
+    secure:false,sameSite:'lax',httpOnly:false,hostOnly:true,session:true,storeId:'0'};
+  await cookieChanged({removed:false,cookie});
+  assert.equal(adapted.length,1);
+  assert.equal(adapted[0].value,cookie.value);
+  assert.equal(adapted[0].secure,true);
+  assert.equal(adapted[0].sameSite,'no_restriction');
+  await cookieChanged({removed:true,cookie});
+  await cookieChanged({removed:false,cookie:{...cookie,secure:true,sameSite:'no_restriction'}});
+  await cookieChanged({removed:false,cookie:{...cookie,domain:'unrelated.example'}});
+  assert.equal(adapted.length,1); // No restoration after logout or self-triggered loop.
 })();
 """, {
             "background": (CONSOLE / "static/browser_extensions/ronghui/background.js").read_text(encoding="utf-8"),
@@ -262,9 +274,11 @@ const sources = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
 const ENTRY = '/baseService/transOrder/createOrder';
 const flush = () => new Promise(resolve=>setImmediate(resolve));
 function setup(path='/login') {
-  let observer, tabs=false, finish, reads=0, messages=0, disconnected=false;
+  let observer, navigation, tabs=false, finish, reads=0, messages=0, disconnected=false;
   const location={origin:'https://v5.800best.com',pathname:path};
-  const window={addEventListener(){}};window.parent=window;
+  const window={addEventListener(){},navigation:{addEventListener(type,fn){
+    assert.equal(type,'navigatesuccess');navigation=fn;
+  }}};window.parent=window;
   const context={location,window,AbortSignal,
     document:{querySelectorAll:()=>tabs?[{textContent:'运单录入'}]:[]},
     MutationObserver:class {constructor(fn){observer=fn;}observe(){}disconnect(){disconnected=true;}},
@@ -281,6 +295,7 @@ function setup(path='/login') {
   };
   vm.runInNewContext(sources.login,context);
   return {navigate(path,hasTabs){location.pathname=path;tabs=hasTabs;observer();},
+    routeOnly(path){location.pathname=path;navigation();},
     mutate:()=>observer(),finish:payload=>finish(payload),
     state:()=>({reads,messages,disconnected})};
 }
@@ -298,6 +313,11 @@ function setup(path='/login') {
   s.mutate();assert.equal(s.state().messages,1);
   const late=setup();late.navigate(ENTRY,true);late.navigate('/login',false);
   late.finish(valid);await flush();assert.equal(late.state().messages,0);
+  const spa=setup();spa.navigate(ENTRY,true);spa.finish({code:'40001'});await flush();
+  // A DOM mutation before pushState is not a new location; popstate does not fire.
+  spa.mutate();spa.routeOnly('/login');spa.routeOnly(ENTRY);
+  assert.equal(spa.state().reads,2);
+  spa.finish(valid);await flush();assert.equal(spa.state().messages,1);
 })();
 """, {"login": (CONSOLE / "static/browser_extensions/ronghui/original-login.js").read_text(encoding="utf-8")})
 
@@ -309,7 +329,7 @@ const listeners = [], stored = {}, updates = [], sent = [], removed = [];
 const chrome = {
   declarativeNetRequest:{getSessionRules:async()=>[], updateSessionRules:async()=>{}},
   webRequest:{onHeadersReceived:{addListener(){}}},
-  runtime:{onMessage:{addListener(fn){listeners.push(fn);}}}, cookies:{getAll:async()=>[]},
+  runtime:{onMessage:{addListener(fn){listeners.push(fn);}}}, cookies:{getAll:async()=>[],onChanged:{addListener(){}}},
   storage:{session:{set:async obj=>Object.assign(stored,obj),get:async key=>({[key]:stored[key]}),remove:async key=>{delete stored[key];}}},
   tabs:{onRemoved:{addListener(){}},create:async()=>({id:91}),
     update:async(id, value)=>{updates.push({id,value});},

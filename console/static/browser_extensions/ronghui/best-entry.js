@@ -26,5 +26,6 @@
     observer.disconnect();
     if (!complete) window.parent.postMessage({type:'boyi-best-entry-unavailable'}, 'https://boyi.homes');
   }, 30000);
+  window.navigation?.addEventListener('navigatesuccess', check);
   check();
 })();

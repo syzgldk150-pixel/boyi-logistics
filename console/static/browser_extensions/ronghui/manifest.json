@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "博益原页助手",
-  "version": "0.4.6",
+  "version": "0.4.8",
   "description": "适配韵达、融辉和百世原页，登录后返回博益录单。无账号隔离，不收集登录信息。",
   "permissions": [
     "declarativeNetRequestWithHostAccess",
@@ -13,7 +13,8 @@
     "https://boyi.homes/*",
     "https://tms.ronghuiwl.com/*",
     "http://tms.ronghuiwl.com/*",
-    "https://v5.800best.com/*"
+    "https://v5.800best.com/*",
+    "http://v5.800best.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -21,6 +22,15 @@
   "content_scripts": [
     {
       "matches": ["https://v5.800best.com/baseService/transOrder/createOrder*"],
+      "js": ["best-storage.js"],
+      "all_frames": true,
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://v5.800best.com/baseService/transOrder/createOrder*"
+      ],
       "js": ["best-entry.js"],
       "all_frames": true,
       "run_at": "document_idle"

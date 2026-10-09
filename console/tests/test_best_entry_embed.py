@@ -118,13 +118,22 @@ class BestEntryEmbedTests(unittest.TestCase):
                             route.fulfill(
                                 content_type="text/html; charset=utf-8",
                                 headers={"Set-Cookie": "sid=synthetic-best-session; Path=/; Secure; HttpOnly; SameSite=Lax"},
-                                body=f'<script>location.replace({ENTRY!r})</script>',
+                                body=f'''<script>
+                                localStorage.setItem("best-test-context","synthetic");
+                                document.cookie="userName=synthetic-best-user; Path=/; SameSite=Lax";
+                                location.replace({ENTRY!r});</script>''',
                             )
                             return
                         elif url == ENTRY:
                             entry_reads += 1
                             if "sid=synthetic-best-session" in (route.request.header_value("cookie") or ""):
-                                body = NATIVE_ENTRY
+                                # BEST needs the original page's browser storage,
+                                # which a direct cross-site iframe cannot share.
+                                body = NATIVE_ENTRY + f'''<script>
+                                if(localStorage.getItem('best-test-context')!=='synthetic' ||
+                                  !document.cookie.includes('userName=synthetic-best-user'))
+                                  location.replace({(BEST + '/login')!r});
+                                </script>'''
                             else:
                                 # Real BEST paints cached entry tabs before its
                                 # protected request rejects the expired session.
@@ -151,6 +160,10 @@ class BestEntryEmbedTests(unittest.TestCase):
                     popup = popup_event.value
                     expect(popup.get_by_role("button", name="完成测试登录")).to_be_visible()
                     self.assertFalse(popup.is_closed())
+                    # A user may switch Boyi's internal tab while scanning.
+                    page.locator('[data-entry-frame-panel][data-entry-provider="best"]').evaluate(
+                        "panel=>panel.classList.remove('is-active')"
+                    )
                     with popup.expect_event("close"):
                         popup.get_by_role("button", name="完成测试登录").click()
                     embedded = page.frame_locator('[data-best-live-frame]')
@@ -158,6 +171,9 @@ class BestEntryEmbedTests(unittest.TestCase):
                     expect(embedded.get_by_role("tab", name="运单录入")).to_have_attribute("aria-selected", "true")
                     expect(page.locator('#unsaved')).to_have_value("keep this draft")
                     expect(page.locator('[data-best-login-required]')).to_have_count(0)
+                    expect(page.locator('[data-entry-frame-panel][data-entry-provider="best"]')).to_have_class(
+                        "entry-frame-panel is-active"
+                    )
                     self.assertEqual(page.url, BOYI + "/ocr")
                     self.assertEqual(entry_reads, 4)  # Initial embed, popup, login redirect, restored embed.
 
