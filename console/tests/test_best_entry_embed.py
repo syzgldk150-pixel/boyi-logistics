@@ -13,6 +13,7 @@ EXTENSION = CONSOLE / "static/browser_extensions/ronghui"
 BOYI = "https://boyi.homes"
 BEST = "https://v5.800best.com"
 ENTRY = BEST + "/baseService/transOrder/createOrder"
+MENU = BEST + "/ltlv5-war/web/menu/getUserMenuVos"
 
 
 def host_html():
@@ -106,6 +107,11 @@ class BestEntryEmbedTests(unittest.TestCase):
                         url = route.request.url
                         if url == BOYI + "/ocr":
                             body = host_html()
+                        elif url == MENU:
+                            logged_in = "sid=synthetic-best-session" in (route.request.header_value("cookie") or "")
+                            route.fulfill(json={"code": "200", "vo": {"menuTreeNode": {"children": []}}}
+                                          if logged_in else {"code": "40001", "msgs": []})
+                            return
                         elif url == BEST + "/login":
                             body = f'<button onclick="location.href=\'{BEST}/complete-test\'">完成测试登录</button>'
                         elif url == BEST + "/complete-test":
@@ -120,7 +126,13 @@ class BestEntryEmbedTests(unittest.TestCase):
                             if "sid=synthetic-best-session" in (route.request.header_value("cookie") or ""):
                                 body = NATIVE_ENTRY
                             else:
-                                body = f'<script>location.replace({(BEST + "/login")!r})</script>'
+                                # Real BEST paints cached entry tabs before its
+                                # protected request rejects the expired session.
+                                body = NATIVE_ENTRY + f'''<script>
+                                fetch({MENU!r}).then(r=>r.json()).then(result=>{{
+                                  if(result.code==='40001') setTimeout(()=>location.replace({(BEST + "/login")!r}),500);
+                                }});
+                                </script>'''
                         else:
                             route.fulfill(status=404, body="")
                             return
@@ -137,6 +149,8 @@ class BestEntryEmbedTests(unittest.TestCase):
                     with context.expect_page() as popup_event:
                         page.get_by_role("button", name="打开百世扫码登录").click()
                     popup = popup_event.value
+                    expect(popup.get_by_role("button", name="完成测试登录")).to_be_visible()
+                    self.assertFalse(popup.is_closed())
                     with popup.expect_event("close"):
                         popup.get_by_role("button", name="完成测试登录").click()
                     embedded = page.frame_locator('[data-best-live-frame]')

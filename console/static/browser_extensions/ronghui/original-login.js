@@ -94,20 +94,52 @@
     }
     return;
   }
-  if (location.origin === BEST && location.pathname === '/login') {
-    if (window.parent !== window && location.ancestorOrigins?.[0] === BOYI) {
-      window.parent.postMessage({type:'boyi-best-login-required'}, BOYI);
+  if (location.origin === BEST) {
+    // BEST renders cached tabs before its server rejects an expired session.
+    // Keep observing its SPA login/entry transitions; a tab label is not proof.
+    let path, generation = 0, attempted = false, complete = false;
+    async function checkBest() {
+      if (complete) return;
+      if (path !== location.pathname) {
+        path = location.pathname;
+        generation++;
+        attempted = false;
+        if (path === '/login' && window.parent !== window && location.ancestorOrigins?.[0] === BOYI) {
+          window.parent.postMessage({type:'boyi-best-login-required'}, BOYI);
+        }
+      }
+      if (window.parent !== window || path !== BEST_ENTRY || attempted ||
+          !Array.from(document.querySelectorAll('[role="tab"]'))
+            .some(tab => tab.textContent.trim() === '运单录入')) return;
+      attempted = true;
+      const checkedGeneration = generation;
+      try {
+        const response = await fetch('/ltlv5-war/web/menu/getUserMenuVos', {
+          credentials:'include', cache:'no-store', signal:AbortSignal.timeout(10000)
+        });
+        if (!response.ok) return;
+        const payload = await response.json();
+        if (String(payload?.code) !== '200' || !Array.isArray(payload?.vo?.menuTreeNode?.children) ||
+            checkedGeneration !== generation || location.pathname !== BEST_ENTRY) return;
+        const result = await chrome.runtime.sendMessage({type:'original-login-ready', provider:'best'});
+        if (result?.ok) { complete = true; observer.disconnect(); }
+      } catch {
+        // Failed verification keeps the native login window open. No credentials
+        // or response bodies are retained, logged or sent to the Console.
+      }
     }
+    const observer = new MutationObserver(checkBest);
+    observer.observe(document, {subtree:true, childList:true});
+    window.addEventListener('popstate', checkBest);
+    checkBest();
     return;
   }
   const ronghui = location.origin === 'https://tms.ronghuiwl.com' && location.pathname === '/module/index';
   const yunda = location.origin === YUNDA && [YUNDA_HOME, YUNDA_ENTRY].includes(location.pathname);
-  const best = location.origin === BEST && location.pathname === BEST_ENTRY;
-  if (!ronghui && !yunda && !best) return;
+  if (!ronghui && !yunda) return;
   let complete = false;
   function check() {
-    const ready = best ? Array.from(document.querySelectorAll('[role="tab"]'))
-      .some(tab => tab.textContent.trim() === '运单录入') : ronghui ?
+    const ready = ronghui ?
       (document.querySelector('#mainTabs') && document.querySelector('#mainMenu a.menu-title')) :
       (location.pathname === YUNDA_HOME ? document.querySelector('#admin-navbar-side') :
         document.querySelector('[name="LogisticsId"]'));
@@ -116,7 +148,7 @@
     observer.disconnect();
     if (window.parent === window) {
       // Only the background's explicitly opened login tab can complete a return.
-      chrome.runtime.sendMessage({type:'original-login-ready', provider:best?'best':ronghui?'ronghui':'yunda'}).catch(() => {});
+      chrome.runtime.sendMessage({type:'original-login-ready', provider:ronghui?'ronghui':'yunda'}).catch(() => {});
     } else if (yunda && location.pathname === YUNDA_HOME && location.ancestorOrigins?.[0] === BOYI) {
       location.replace(YUNDA + YUNDA_ENTRY + '?page=tab&p=nil');
     }

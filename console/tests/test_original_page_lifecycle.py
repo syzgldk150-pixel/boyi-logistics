@@ -254,6 +254,53 @@ const other=setup(undefined,'/module/index');
 assert.equal(other.address.fire,other.native);
 """, {"adapter": (CONSOLE / "static/browser_extensions/ronghui/entry-events.js").read_text(encoding="utf-8")})
 
+    def test_best_login_checks_server_and_follows_spa_login_transitions(self):
+        self.run_node(r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const sources = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const ENTRY = '/baseService/transOrder/createOrder';
+const flush = () => new Promise(resolve=>setImmediate(resolve));
+function setup(path='/login') {
+  let observer, tabs=false, finish, reads=0, messages=0, disconnected=false;
+  const location={origin:'https://v5.800best.com',pathname:path};
+  const window={addEventListener(){}};window.parent=window;
+  const context={location,window,AbortSignal,
+    document:{querySelectorAll:()=>tabs?[{textContent:'运单录入'}]:[]},
+    MutationObserver:class {constructor(fn){observer=fn;}observe(){}disconnect(){disconnected=true;}},
+    fetch:(url,options)=>{
+      assert.equal(url,'/ltlv5-war/web/menu/getUserMenuVos');
+      assert.equal(options.credentials,'include');assert.equal(options.cache,'no-store');
+      assert.ok(options.signal);reads++;
+      return new Promise(resolve=>{finish=payload=>resolve({ok:true,json:async()=>payload});});
+    },
+    chrome:{runtime:{sendMessage:async message=>{
+      assert.equal(message.type,'original-login-ready');assert.equal(message.provider,'best');
+      messages++;return {ok:true};
+    }}}
+  };
+  vm.runInNewContext(sources.login,context);
+  return {navigate(path,hasTabs){location.pathname=path;tabs=hasTabs;observer();},
+    mutate:()=>observer(),finish:payload=>finish(payload),
+    state:()=>({reads,messages,disconnected})};
+}
+(async()=>{
+  const s=setup();assert.equal(s.state().reads,0);
+  s.navigate(ENTRY,true);s.finish({code:'40001'});await flush();
+  assert.equal(s.state().messages,0);
+  s.mutate();s.mutate();assert.equal(s.state().reads,1); // No loop on cached DOM.
+  s.navigate('/login',false);s.navigate(ENTRY,true);
+  s.finish({code:'200',vo:{}});await flush();assert.equal(s.state().messages,0);
+  s.navigate('/login',false);s.navigate(ENTRY,true);
+  const valid={code:'200',vo:{menuTreeNode:{children:[]}}};
+  s.finish(valid);await flush();
+  assert.deepEqual(s.state(),{reads:3,messages:1,disconnected:true});
+  s.mutate();assert.equal(s.state().messages,1);
+  const late=setup();late.navigate(ENTRY,true);late.navigate('/login',false);
+  late.finish(valid);await flush();assert.equal(late.state().messages,0);
+})();
+""", {"login": (CONSOLE / "static/browser_extensions/ronghui/original-login.js").read_text(encoding="utf-8")})
+
     def test_login_return_is_bound_to_the_created_tab_and_exact_origin(self):
         self.run_node(r"""
 const assert = require('node:assert/strict');

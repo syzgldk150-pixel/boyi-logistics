@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "博益原页助手",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "适配韵达、融辉和百世原页，登录后返回博益录单。无账号隔离，不收集登录信息。",
   "permissions": [
     "declarativeNetRequestWithHostAccess",
