@@ -13,16 +13,22 @@
     const statusKey = provider + 'Extension';
     pending.add(frame);
     frame.dataset[statusKey] = 'preparing';
+    delete frame.dataset.originalPagePrepareError;
     try {
       const result = await chrome.runtime.sendMessage({type:'prepare-' + provider + '-embed'});
       if (!result?.ok) throw new Error('Preparation failed');
       if (!frame.isConnected) return;
-      frame.dataset[statusKey] = '0.4.4';
+      frame.dataset[statusKey] = '0.4.5';
       delete frame.dataset.entryPendingSrc;
       frame.dispatchEvent(new Event('console:original-page-reload'));
       frame.src = source.href;
-    } catch {
+    } catch (error) {
       frame.dataset[statusKey] = 'failed';
+      // Reloading an unpacked extension invalidates scripts in existing pages.
+      // Retrying only the provider iframe cannot reconnect that host document.
+      if (String(error?.message).includes('Extension context invalidated')) {
+        frame.dataset.originalPagePrepareError = 'extension-reloaded';
+      }
       frame.dispatchEvent(new Event('console:original-page-prepare-failed'));
     } finally { pending.delete(frame); }
   }

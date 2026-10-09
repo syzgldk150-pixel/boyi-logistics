@@ -68,10 +68,12 @@
         const result = await chrome.runtime.sendMessage({type:'open-original-login',
           provider, entryId:panel.dataset.entryId});
         if (!result?.ok) throw new Error('Login window unavailable');
-      } catch {
+      } catch (error) {
         delete panel.dataset.entryAwaitingLogin;
         panel.querySelector('.entry-origin-notice p').textContent =
-          '登录窗口未能打开，请更新原页助手后重试，或右键在新窗口打开原站链接。';
+          String(error?.message).includes('Extension context invalidated') ?
+            '原页助手已重新加载，当前网页连接已失效。请先保存其他页签的内容，再刷新整个博益网页后重试。' :
+            '登录窗口未能打开，请确认原页助手已启用；若刚更新过扩展，请先保存内容并刷新整个博益网页，或右键在新窗口打开原站链接。';
       }
     });
     chrome.runtime.onMessage.addListener((message, sender, reply) => {

@@ -1401,8 +1401,11 @@
     frame.addEventListener("console:original-page-prepare-failed", () => {
       window.clearTimeout(slowTimer);
       frame.setAttribute("aria-busy", "false");
-      if (chip) chip.textContent = "扩展准备失败";
-      notice.textContent = `${label}内嵌扩展未能完成准备，请更新原页助手并在扩展管理页重新加载，然后重试。`;
+      const extensionReloaded = frame.dataset.originalPagePrepareError === "extension-reloaded";
+      if (chip) chip.textContent = extensionReloaded ? "请刷新整个网页" : "扩展准备失败";
+      notice.textContent = extensionReloaded ?
+        `原页助手已重新加载，当前网页连接已失效。请先保存其他页签的内容，再刷新整个博益网页；仅点这里的“重新加载”无法恢复连接。` :
+        `${label}内嵌扩展未能完成准备。请确认原页助手已启用；若刚更新或重新加载过扩展，请先保存其他页签的内容，再刷新整个博益网页后重试。`;
       notice.hidden = false;
     });
     frame.addEventListener("load", () => {

@@ -1,6 +1,7 @@
 """Run the shipped MV3 extension and entry-tab code against native-shaped pages."""
 
 from pathlib import Path
+import json
 import tempfile
 import unittest
 
@@ -53,6 +54,39 @@ function selectTab(entry) {
 
 
 class BestEntryEmbedTests(unittest.TestCase):
+    def test_reloading_extension_requires_host_refresh_and_preserves_drafts(self):
+        from playwright.sync_api import expect, sync_playwright
+
+        version = json.loads((EXTENSION / "manifest.json").read_text())["version"]
+        with sync_playwright() as playwright, tempfile.TemporaryDirectory() as profile:
+            if not Path(playwright.chromium.executable_path).is_file():
+                self.skipTest("Chromium is required for the extension regression")
+            context = playwright.chromium.launch_persistent_context(
+                profile, channel="chromium", headless=True,
+                args=[f"--disable-extensions-except={EXTENSION}", f"--load-extension={EXTENSION}"],
+            )
+            try:
+                context.route("**/*", lambda route: route.fulfill(
+                    body=host_html() if route.request.url.startswith(BOYI) else NATIVE_ENTRY,
+                    content_type="text/html; charset=utf-8",
+                ))
+                page = context.new_page()
+                page.goto(BOYI + "/ocr")
+                worker = context.service_workers[0] if context.service_workers else context.wait_for_event("serviceworker")
+                page.locator('[data-entry-add-provider="best"]').click()
+                expect(page.locator('[data-best-live-frame]').first).to_have_attribute("data-best-extension", version)
+                with worker.expect_event("close"):
+                    worker.evaluate("setTimeout(() => chrome.runtime.reload(), 100)")
+                page.locator('[data-entry-add-provider="best"]').click()
+                failed = page.locator('[data-best-live-frame]').nth(1)
+                expect(failed).to_have_attribute("data-best-extension", "failed")
+                expect(failed).to_have_attribute("data-original-page-prepare-error", "extension-reloaded")
+                self.assertIsNone(failed.get_attribute("src"))
+                expect(page.locator('#unsaved')).to_have_value("keep this draft")
+
+            finally:
+                context.close()
+
     def test_login_returns_to_embedded_form_and_preserves_manual_tab_choice(self):
         from playwright.sync_api import expect, sync_playwright
 
