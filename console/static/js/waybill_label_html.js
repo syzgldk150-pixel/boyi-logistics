@@ -16,20 +16,34 @@
   // Coordinates and type sizes follow the supplied 1162 × 1450 master/sample.
   const SOURCE_WIDTH = 1162;
   const SOURCE_HEIGHT = 1450;
-  const CONTENT_FONT = "黑体";
-  const CONTENT_WEIGHT = 700;
-  const CONTENT_SIZE_PX = 44;
-  let contentFontPromise;
+  // Typefaces matched against the 主单.jpg sample: Arial Narrow Bold for the
+  // waybill number, date and phones; Microsoft YaHei Bold for short values;
+  // the bundled Source Han Sans at weight 800 for names and addresses.
+  const LABEL_FONTS = {
+    narrow: { family: "BoyiLabelNarrow", weight: 700, name: "Arial Narrow",
+      source: 'local("Arial Narrow Bold"), local("ArialNarrow-Bold")' },
+    yahei: { family: "BoyiLabelYaHei", weight: 700, name: "微软雅黑",
+      source: 'local("Microsoft YaHei Bold"), local("MicrosoftYaHei-Bold")' },
+    sans: { family: "BoyiLabelSans", weight: 800, name: "思源黑体", descriptors: { weight: "250 900" },
+      source: 'url("/static/assets/fonts/SourceHanSansCN-VF.ttf.woff2") format("woff2")' },
+  };
+  const fontCss = (style, px) => `${style.weight} ${px}px "${style.family}"`;
+  let labelFontsPromise;
   const loadContentFont = () => {
-    if (!contentFontPromise) {
-      const face = new FontFace(CONTENT_FONT, `local("SimHei"), local("${CONTENT_FONT}")`);
-      contentFontPromise = face.load().then((loaded) => {
-        document.fonts.add(loaded);
-      }).catch(() => {
-        throw new Error("本机黑体字体加载失败，请安装黑体后刷新页面重试");
+    if (!labelFontsPromise) {
+      labelFontsPromise = Promise.all(Object.values(LABEL_FONTS).map((style) => {
+        const face = new FontFace(style.family, style.source, style.descriptors || { weight: String(style.weight) });
+        return face.load().then((loaded) => {
+          document.fonts.add(loaded);
+        }).catch(() => {
+          throw new Error(`打印字体“${style.name}”加载失败，请确认本机已安装该字体后刷新页面重试`);
+        });
+      })).catch((error) => {
+        labelFontsPromise = undefined;
+        throw error;
       });
     }
-    return contentFontPromise;
+    return labelFontsPromise;
   };
   const cleanText = (value) => String(value ?? "").replace(/\r\n?/g, "\n").trim();
   const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -41,7 +55,8 @@
     if (!text) return "";
     if (!/^\d+(?:\.\d+)?$/.test(text)) throw new Error("费用格式无法识别，请检查运单金额");
     const [whole, fraction = ""] = text.split(".");
-    return `${whole}.${fraction.padEnd(2, "0")}`;
+    // Whole amounts print without ".00", as on the sample label.
+    return /^0*$/.test(fraction) ? whole : `${whole}.${fraction.padEnd(2, "0")}`;
   };
 
   const readWeightVolume = (data) => {
@@ -112,33 +127,36 @@
     fontScale: clampNumber(settings.print_font_scale, 100, 85, 115) / 100,
     templateScale: clampNumber(settings.print_template_scale, 100, 94, 106) / 100,
   });
-  // Padded content regions in source pixels, shared by HTML and native printing.
-  const HEADER_FIELDS = new Set(["waybillNo", "date", "station"]);
-  const HEADER_TEXT_LAYOUT = { y: 270, h: 73, fontPx: 48 };
+  // Measured from the 主单.jpg sample in source pixels: text origin, baseline,
+  // font size and horizontal scale. Longer content shrinks within maxWidth.
+  const MIN_FONT_PX = 22;
+  const FEE_STYLE = { font: "yahei", px: 43.9, scale: 0.91, maxWidth: 325 };
+  const ADDRESS_STYLE = { font: "sans", px: 36.3, scale: 0.971, maxWidth: 760, lines: 2, pitch: 50 };
   const FIELD_LAYOUT = [
-    { field: "waybillNo", x: 33, w: 280, ...HEADER_TEXT_LAYOUT },
-    { field: "date", x: 348, w: 255, ...HEADER_TEXT_LAYOUT },
-    { field: "station", x: 640, w: 242, ...HEADER_TEXT_LAYOUT },
-    { field: "recipientName", x: 305, y: 396, w: 330, h: 72, fontPx: 54 },
-    { field: "recipientPhone", x: 834, y: 396, w: 303, h: 72, fontPx: 52 },
-    { field: "recipientAddress", x: 342, y: 482, w: 782, h: 110, fontPx: 36, lines: 2, leading: 1.38, valign: "top" },
-    { field: "senderName", x: 305, y: 644, w: 330, h: 72, fontPx: 54 },
-    { field: "senderPhone", x: 834, y: 644, w: 303, h: 72, fontPx: 52 },
-    { field: "senderAddress", x: 342, y: 724, w: 782, h: 102, fontPx: 36, lines: 2, leading: 1.38, valign: "top" },
-    { field: "cargoName", x: 260, y: 864, w: 277, h: 53 },
-    { field: "packageType", x: 782, y: 864, w: 343, h: 53 },
-    { field: "pieces", x: 188, y: 923, w: 349, h: 52, fontPx: 46 },
-    { field: "weight", x: 820, y: 923, w: 305, h: 52, fontPx: 46 },
-    { field: "volume", x: 271, y: 980, w: 266, h: 52, fontPx: 46 },
-    { field: "freight", x: 206, y: 1064, w: 331, h: 52, fontPx: 42 },
-    { field: "pickupFee", x: 206, y: 1119, w: 331, h: 52, fontPx: 42 },
-    { field: "deliveryFee", x: 206, y: 1175, w: 331, h: 52, fontPx: 42 },
-    { field: "transferFee", x: 206, y: 1230, w: 331, h: 52, fontPx: 42 },
-    { field: "transportMethod", x: 789, y: 1064, w: 336, h: 52 },
-    { field: "paymentMethod", x: 789, y: 1120, w: 336, h: 52 },
-    { field: "insuranceAmount", x: 789, y: 1175, w: 336, h: 52, fontPx: 42 },
-    { field: "codAmount", x: 789, y: 1230, w: 336, h: 52, fontPx: 42 },
-    { field: "remark", x: 158, y: 1320, w: 967, h: 96, fontPx: 36, lines: 2, valign: "top" },
+    { field: "waybillNo", font: "narrow", px: 69, scale: 1.051, x: 34.7, baseline: 330.3, maxWidth: 284 },
+    { field: "date", font: "narrow", px: 59.9, scale: 0.983, x: 351.8, baseline: 329.4, maxWidth: 256 },
+    { field: "station", font: "yahei", px: 62.6, scale: 0.973, x: 641.2, baseline: 330.6, maxWidth: 250 },
+    { field: "recipientName", font: "sans", px: 57.1, scale: 0.921, x: 305.9, baseline: 451.9, maxWidth: 340 },
+    { field: "recipientPhone", font: "narrow", px: 55.2, scale: 1.042, x: 836.3, baseline: 450.4, maxWidth: 300 },
+    { field: "recipientAddress", ...ADDRESS_STYLE, x: 343.9, baseline: 521.4 },
+    { field: "senderName", font: "sans", px: 54.9, scale: 0.994, x: 306.2, baseline: 697.1, maxWidth: 340 },
+    { field: "senderPhone", font: "narrow", px: 55.2, scale: 1.023, x: 835, baseline: 698.4, maxWidth: 300 },
+    { field: "senderAddress", ...ADDRESS_STYLE, x: 343.9, baseline: 761.4 },
+    { field: "cargoName", font: "yahei", px: 43, scale: 0.949, x: 261.6, baseline: 906.2, maxWidth: 280 },
+    { field: "packageType", font: "yahei", px: 43.3, scale: 1.033, x: 782.3, baseline: 906.2, maxWidth: 340 },
+    { field: "pieces", font: "yahei", px: 43.9, scale: 0.96, x: 189.8, baseline: 965.6, maxWidth: 345 },
+    { field: "weight", font: "yahei", px: 46.5, scale: 0.968, x: 819.8, baseline: 970.5, maxWidth: 305 },
+    { field: "volume", font: "yahei", px: 43.9, scale: 1.008, x: 273.7, baseline: 1021.6, maxWidth: 262 },
+    // Fee values sit on their label baselines (label bottom + 2.6px), like the sample freight.
+    { field: "freight", ...FEE_STYLE, x: 208, baseline: 1107.6 },
+    { field: "pickupFee", ...FEE_STYLE, x: 208, baseline: 1160.6 },
+    { field: "deliveryFee", ...FEE_STYLE, x: 208, baseline: 1217.6 },
+    { field: "transferFee", ...FEE_STYLE, x: 208, baseline: 1275.6 },
+    { field: "transportMethod", font: "yahei", px: 40.2, scale: 0.97, x: 792.6, baseline: 1103.6, maxWidth: 335 },
+    { field: "paymentMethod", font: "yahei", px: 40, scale: 0.992, x: 792.2, baseline: 1160.6, maxWidth: 335 },
+    { field: "insuranceAmount", ...FEE_STYLE, x: 792.4, baseline: 1220.6, maxWidth: 335 },
+    { field: "codAmount", ...FEE_STYLE, x: 792.4, baseline: 1276.6, maxWidth: 335 },
+    { field: "remark", ...ADDRESS_STYLE, x: 150, baseline: 1356.4, maxWidth: 970 },
   ];
 
   const FIELD_LABELS = {
@@ -172,39 +190,22 @@
     const items = FIELD_LAYOUT.flatMap((item) => {
       const value = cleanText(data[item.field]);
       if (!value) return [];
-      const font = CONTENT_FONT;
-      for (let px = (item.fontPx || CONTENT_SIZE_PX) * settings.fontScale; px >= 22; px -= 0.5) {
-        context.font = `${CONTENT_WEIGHT} ${px}px "${font}"`;
-        const availableWidth = item.w * 0.95;
-        // Fit by reducing font size, preserving the font's natural proportions.
-        const lines = wrapText(value, availableWidth, context);
-        const lineHeight = px * (item.leading || 1.18);
-        if (lines.length > (item.lines || 1) || lines.length * lineHeight > item.h) continue;
+      const style = LABEL_FONTS[item.font];
+      const basePx = item.px * settings.fontScale;
+      for (let px = basePx; px >= MIN_FONT_PX; px -= 0.5) {
+        context.font = fontCss(style, px);
+        // Fit by reducing font size; the sample's horizontal scale is kept.
+        const lines = wrapText(value, item.maxWidth / item.scale, context);
+        if (lines.length > (item.lines || 1)) continue;
         return [{
-          field: item.field, content: lines.join("\n"), font, fontWeight: CONTENT_WEIGHT, align: "left",
-          x: item.x * 74 / SOURCE_WIDTH,
-          y: (item.y + (item.valign === "top" ? 0 : (item.h - lines.length * lineHeight) / 2)) * 92 / SOURCE_HEIGHT,
-          w: item.w * 74 / SOURCE_WIDTH,
-          h: (lines.length * lineHeight + 4) * 92 / SOURCE_HEIGHT,
-          fontPt: px * 92 / SOURCE_HEIGHT * 72 / 25.4,
-          lineHeightMm: lineHeight * 92 / SOURCE_HEIGHT,
+          field: item.field, lines, style, px, scale: item.scale,
+          x: item.x, baseline: item.baseline, pitch: (item.pitch || 0) * px / item.px,
         }];
       }
       throw new Error(`${FIELD_LABELS[item.field]}内容过长，请缩短内容后重试`);
     });
-    // Keep the entire header row at the smallest fitted size, on one baseline.
-    const headerItems = items.filter((item) => HEADER_FIELDS.has(item.field));
-    if (headerItems.length) {
-      const fontPt = Math.min(...headerItems.map((item) => item.fontPt));
-      for (const item of headerItems) {
-        const lineHeightMm = item.lineHeightMm * fontPt / item.fontPt;
-        const heightReduction = item.lineHeightMm - lineHeightMm;
-        item.y += heightReduction / 2;
-        item.h -= heightReduction;
-        item.fontPt = fontPt;
-        item.lineHeightMm = lineHeightMm;
-      }
-    }
+    // Header values share one baseline; only an overlong value shrinks, so a
+    // long destination never makes the waybill number or date unreadable.
     return items;
   };
 
@@ -318,16 +319,16 @@
     const text = createCanvas(width, height);
     text.context.fillStyle = "#000000";
     text.context.textBaseline = "alphabetic";
+    const scaleX = width / SOURCE_WIDTH;
+    const scaleY = height / SOURCE_HEIGHT;
     for (const item of items) {
-      const px = item.fontPt * 25.4 / 72 * dotsPerMm;
-      const lineHeight = item.lineHeightMm * dotsPerMm;
-      text.context.font = `${item.fontWeight} ${px}px "${item.font}"`;
-      const metrics = text.context.measureText("国Ag");
-      const ascent = metrics.actualBoundingBoxAscent;
-      const descent = metrics.actualBoundingBoxDescent;
-      const baseline = (lineHeight - ascent - descent) / 2 + ascent;
-      item.content.split("\n").forEach((line, index) => {
-        text.context.fillText(line, item.x * dotsPerMm, item.y * dotsPerMm + index * lineHeight + baseline);
+      text.context.font = fontCss(item.style, item.px);
+      item.lines.forEach((line, index) => {
+        text.context.save();
+        text.context.translate(item.x * scaleX, (item.baseline + index * item.pitch) * scaleY);
+        text.context.scale(item.scale * scaleX, scaleY);
+        text.context.fillText(line, 0, 0);
+        text.context.restore();
       });
     }
 

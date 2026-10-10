@@ -914,6 +914,23 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertNotIn("context.drawImage(background, 0, 0);", js)
         self.assertNotIn("ADD_PRINT_IMAGE", js)
 
+    def test_dynamic_text_follows_measured_sample_typography(self):
+        js = (CONSOLE_DIR / "static/js/waybill_label_html.js").read_text(encoding="utf-8")
+        # Typefaces measured against 主单.jpg; missing local fonts fail explicitly.
+        self.assertIn('local("Arial Narrow Bold")', js)
+        self.assertIn('local("Microsoft YaHei Bold")', js)
+        self.assertIn('url("/static/assets/fonts/SourceHanSansCN-VF.ttf.woff2")', js)
+        self.assertTrue((CONSOLE_DIR / "static/assets/fonts/SourceHanSansCN-VF.ttf.woff2").is_file())
+        self.assertIn("加载失败，请确认本机已安装该字体", js)
+        self.assertNotIn('local("SimHei")', js)
+        # Sample-measured size, horizontal scale and baseline per field.
+        self.assertIn('{ field: "waybillNo", font: "narrow", px: 69, scale: 1.051, x: 34.7, baseline: 330.3', js)
+        self.assertIn('{ field: "station", font: "yahei", px: 62.6', js)
+        self.assertIn('font: "sans", px: 36.3, scale: 0.971, maxWidth: 760, lines: 2, pitch: 50', js)
+        self.assertIn("text.context.scale(item.scale * scaleX, scaleY);", js)
+        # Whole amounts drop ".00" like the sample; fractions keep two places.
+        self.assertIn('return /^0*$/.test(fraction) ? whole : `${whole}.${fraction.padEnd(2, "0")}`;', js)
+
     def test_lodop_renderer_uses_composed_label_without_native_reflow(self):
         js = (CONSOLE_DIR / "static/js/waybill_label_lodop.js").read_text(encoding="utf-8")
         self.assertIn("const template = global.WaybillLabelHtml", js)
