@@ -1,5 +1,6 @@
 """Concurrent refresh and mutation races use the production Console cache."""
 from concurrent.futures import ThreadPoolExecutor
+import threading
 from threading import Event
 from types import SimpleNamespace
 
@@ -90,3 +91,66 @@ def test_cache_scope_changes_when_the_same_actor_loses_permissions():
     actor.current_admin_user["role"] = "viewer"
     assert service._load_automation_plugin_catalog(actor, module="finance", summary=True) == result("viewer")
     assert calls == ["super_admin", "viewer"]
+
+
+def test_stale_partial_navigation_returns_snapshot_and_refreshes_once_in_background(monkeypatch):
+    import console.services.automation_projects as module
+
+    clock = [1000.0]
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    started, release, done = Event(), Event(), Event()
+    calls = []
+
+    def read(handler, **scope):
+        calls.append(dict(handler.current_admin_user))
+        if len(calls) == 1:
+            return result("old")
+        started.set()
+        assert release.wait(3)
+        try:
+            return result("new")
+        finally:
+            done.set()
+
+    service = make_service(read)
+    actor = SimpleNamespace(current_admin_user={"id": "one", "role": "super_admin"})
+    assert service._load_automation_plugin_catalog(actor, module="automation", summary=True) == result("old")
+    clock[0] += 120.0  # past the 60s fresh period, inside the 300s stale window
+    assert service._load_automation_plugin_catalog(
+        actor, module="automation", summary=True, prefer_stale=True) == result("old")
+    assert started.wait(3)
+    # The background read keeps the identity captured by the triggering request.
+    actor.current_admin_user["id"] = "changed-after-request"
+    assert service._load_automation_plugin_catalog(
+        actor, module="automation", summary=True, prefer_stale=True) == result("old")
+    release.set()
+    assert done.wait(3)
+    for _ in range(100):
+        if not service._automation_catalog_inflight:
+            break
+        threading.Event().wait(0.01)
+    assert calls == [{"id": "one", "role": "super_admin"}] * 2
+    assert service._load_automation_plugin_catalog(actor, module="automation", summary=True) == result("new")
+    assert len(calls) == 2
+
+
+def test_full_navigation_and_expired_window_still_read_synchronously(monkeypatch):
+    import console.services.automation_projects as module
+
+    clock = [1000.0]
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    calls = []
+
+    def read(_handler, **_scope):
+        calls.append(len(calls))
+        return result(f"read-{len(calls)}")
+
+    service = make_service(read)
+    actor = SimpleNamespace(current_admin_user={"id": "one", "role": "super_admin"})
+    assert service._load_automation_plugin_catalog(actor, module="automation", summary=True) == result("read-1")
+    clock[0] += 120.0
+    assert service._load_automation_plugin_catalog(actor, module="automation", summary=True) == result("read-2")
+    clock[0] += 400.0  # beyond fresh + stale window
+    assert service._load_automation_plugin_catalog(
+        actor, module="automation", summary=True, prefer_stale=True) == result("read-3")
+    assert len(calls) == 3

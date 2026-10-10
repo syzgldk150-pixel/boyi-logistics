@@ -56,6 +56,27 @@ def read_active_plugin_migration_pairs(cursor, automation_ids, *, for_update=Fal
             for row in _rows(cursor)]
 
 
+def read_plugin_migration_pair_history(cursor, automation_ids, *, for_update=False):
+    """Read every migration pair, in any state, touching the given projects."""
+    identities = tuple(_required_text(value, "automation_id") for value in automation_ids)
+    if not identities:
+        return []
+    markers = ",".join("%s" for _ in identities)
+    condition = "source_automation_id=%s OR target_automation_id=%s" if len(identities) == 1 else (
+        f"source_automation_id IN ({markers}) OR target_automation_id IN ({markers})"
+    )
+    cursor.execute(
+        f"""
+        SELECT * FROM automation_plugin_migration_pairs
+        WHERE {condition}
+        ORDER BY created_at, migration_pair_id{' FOR UPDATE' if for_update else ''}
+        """,
+        (*identities, *identities),
+    )
+    return [_decode_row(row, _repository.AutomationPluginRepository._MIGRATION_PAIR_JSON_FIELDS) or {}
+            for row in _rows(cursor)]
+
+
 def unique_active_plugin_migration_pair(rows):
     if len(rows) > 1:
         raise OrchestrationPersistenceError("automation project has multiple active migration pairs")
@@ -1172,20 +1193,8 @@ class AutomationPluginV2RepositoryMixin:
         """
 
         project_id = _required_text(automation_id, "automation_id")
-        suffix = " FOR UPDATE" if for_update else ""
         with self.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT * FROM automation_plugin_migration_pairs
-                WHERE source_automation_id=%s OR target_automation_id=%s
-                ORDER BY created_at, migration_pair_id{suffix}
-                """,
-                (project_id, project_id),
-            )
-            rows = [
-                _decode_row(row, self._MIGRATION_PAIR_JSON_FIELDS) or {}
-                for row in _rows(cursor)
-            ]
+            rows = read_plugin_migration_pair_history(cursor, (project_id,), for_update=for_update)
         return _select_authoritative_migration_pair(
             rows,
             automation_id=project_id,

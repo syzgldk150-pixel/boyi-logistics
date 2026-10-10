@@ -565,12 +565,13 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
 
     def get_catalog_migration_pair(self, automation_id: str) -> Mapping[str, Any] | None:
         with catalog_read_transaction(self._orchestration) as uow:
+            rows = (catalog_row_cache(self._orchestration) or {}).get(automation_id)
             if automation_id in FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES:
-                completed = uow.automation_plugins.get_authoritative_plugin_migration_pair_for_automation(automation_id, for_update=False)
+                completed = (rows.authoritative_migration_pair(automation_id) if rows is not None else
+                    uow.automation_plugins.get_authoritative_plugin_migration_pair_for_automation(automation_id, for_update=False))
                 if (completed is not None and completed.get("state") == "COMPLETED"
                         and source_is_superseded(completed, automation_id)):
                     return completed
-            rows = (catalog_row_cache(self._orchestration) or {}).get(automation_id)
             if rows is not None:
                 return rows.migration_pair(automation_id)
             return uow.automation_plugins.get_active_plugin_migration_pair_for_automation(automation_id, for_update=False)

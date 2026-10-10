@@ -398,7 +398,8 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
             committed_snapshot = generation_from_row(generation_row).snapshot
             package_key = (str(row.get("plugin_id") or ""), committed_snapshot.plugin_version)
             cached_package = version_cache.get(package_key) if version_cache is not None else None
-            committed_version_row = cached_package[0] if cached_package is not None else low_level.get_version(*package_key)
+            committed_version_row = cached_package[0] if cached_package is not None else (
+                catalog_rows.version(low_level, *package_key) if catalog_rows is not None else low_level.get_version(*package_key))
             if committed_version_row is None:
                 raise ValueError("project committed plugin version disappeared")
             committed_version = _version_from_row(committed_version_row)
@@ -501,10 +502,12 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
                 raise ValueError(
                     "project committed generation differs from its immutable installation"
                 )
-        version_row = committed_version_row if committed_snapshot is not None and committed_snapshot.plugin_version == desired_version_name else low_level.get_version(
-            str(row.get("plugin_id") or ""),
-            desired_version_name,
-        )
+        if committed_snapshot is not None and committed_snapshot.plugin_version == desired_version_name:
+            version_row = committed_version_row
+        elif catalog_rows is not None:
+            version_row = catalog_rows.version(low_level, str(row.get("plugin_id") or ""), desired_version_name)
+        else:
+            version_row = low_level.get_version(str(row.get("plugin_id") or ""), desired_version_name)
         if version_row is None:
             raise ValueError("project desired plugin version disappeared")
         return PluginInstanceRecord(

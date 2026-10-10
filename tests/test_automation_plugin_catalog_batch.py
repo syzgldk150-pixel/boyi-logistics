@@ -4,9 +4,10 @@ from uuid import uuid4
 import pytest
 
 from agent.automation_plugins.catalog import PluginCatalog
-from agent.automation_plugins.catalog_read_scope import catalog_row_cache
+from agent.automation_plugins.catalog_read_scope import catalog_read_transaction, catalog_row_cache
 from agent.automation_plugins.manifest import AutomationPluginManifest
 from agent.automation_plugins.mysql_repository import MySQLAutomationPluginRepositoryAdapter
+from agent.orchestration.automation_project_policy_support import scoped_policy_projection
 from agent.automation_plugins.runtime_repository import (
     MySQLAutomationPluginCatalogRepositoryAdapter, MySQLAutomationProjectConfigurationReadAdapter,
 )
@@ -116,3 +117,116 @@ def test_batch_schedule_and_migration_rows_match_direct_reads_and_keep_conflicts
             uow.automation_plugins.get_active_plugin_migration_pair_for_automation(source, for_update=False)
         assert display.migration_pair(target)['migration_pair_id'] == pair_id
         assert display.migration_pair(unrelated)['target_automation_id'] == unrelated
+
+
+def test_catalog_projection_batches_versions_and_migration_history(database):
+    fixture, name = database
+    statements = []
+    connections = []
+
+    def connect():
+        connections.append(1)
+        connection = fixture.pymysql.connect(
+            host=fixture.host, port=fixture.port, user=fixture.user, password=fixture.password,
+            database=name, charset="utf8mb4", cursorclass=fixture.pymysql.cursors.DictCursor,
+        )
+        original_cursor = connection.cursor
+
+        def counting_cursor(*args, **kwargs):
+            cursor = original_cursor(*args, **kwargs)
+            original_execute = cursor.execute
+
+            def execute(query, args=None):
+                statements.append(" ".join(str(query).split()))
+                return original_execute(query, args)
+
+            cursor.execute = execute
+            return cursor
+
+        connection.cursor = counting_cursor
+        return connection
+
+    repository = OrchestrationRepository(connect)
+    packages = MySQLAutomationPluginRepositoryAdapter(repository, release_hold_provider=lambda: False)
+    marker = uuid4().hex
+    installed = []
+    for index in range(3):
+        raw = _synthetic_manifest("1.0.0").to_mapping()
+        raw["plugin_id"] = f"batch_{marker}_{index}"
+        manifest = AutomationPluginManifest.from_mapping(raw)
+        installed.append(packages.install_instance(
+            replace(_version(manifest, "1"), installed_at=None), instance_name=f"synthetic batch {index}",
+            actor_id="synthetic-catalog-admin", actor_role="super_admin", request_id=str(uuid4())))
+    catalog = PluginCatalog(MySQLAutomationPluginCatalogRepositoryAdapter(repository),
+        MySQLAutomationProjectConfigurationReadAdapter(repository),
+        migration_pair_provider=packages.get_catalog_migration_pair)
+    statements.clear()
+    with catalog.read_scope():
+        view = catalog.safe_projection(module="automation")
+        assert {item.automation_id for item in installed} <= {item["automation_id"] for item in view["instances"]}
+        per_key_reads = [sql for sql in statements if "FROM automation_plugin_versions WHERE plugin_id=%s" in sql]
+        assert per_key_reads == []
+        rows = catalog_row_cache(repository)
+        with catalog_read_transaction(repository) as uow:
+            low = uow.automation_plugins
+            for project in installed:
+                display = rows[project.automation_id]
+                key = (project.plugin_id, project.active_version.version)
+                assert key in display.versions
+                assert display.version(low, *key) == low.get_version(*key)
+                assert display.authoritative_migration_pair(project.automation_id) == (
+                    low.get_authoritative_plugin_migration_pair_for_automation(project.automation_id, for_update=False))
+            # Keys outside the batch keep the direct read and its result.
+            assert display.version(low, installed[0].plugin_id, "9.9.9") is None
+        # The policy projection served with the catalog reuses its snapshot
+        # connection instead of opening a second cross-region connection.
+        opened = len(connections)
+        identities = {item.automation_id for item in installed}
+        policies = scoped_policy_projection(repository, catalog, identities,
+            lambda entry, policy: {"automation_id": entry.automation_id})
+        assert {item["automation_id"] for item in policies["items"]} == identities
+        assert len(connections) == opened
+
+
+def test_batched_authoritative_migration_history_matches_direct_reads(database):
+    fixture, name = database
+    repository = OrchestrationRepository(lambda: fixture.pymysql.connect(
+        host=fixture.host, port=fixture.port, user=fixture.user, password=fixture.password,
+        database=name, charset="utf8mb4", cursorclass=fixture.pymysql.cursors.DictCursor,
+    ))
+    source, target, other_target, untouched = ("history_" + uuid4().hex for _ in range(4))
+    def insert_pair(cursor, destination, state):
+        identifier = str(uuid4())
+        cursor.execute(
+            "INSERT INTO automation_plugin_migration_pairs "
+            "(migration_pair_id,source_automation_id,target_automation_id,state,entrypoint_snapshot_json,"
+            "entrypoint_snapshot_sha256,create_request_id,created_by_actor_id,created_by_actor_role,"
+            "last_transition_request_id,last_transition_actor_id,last_transition_actor_role,last_transition_reason) "
+            "VALUES (%s,%s,%s,%s,'{}',%s,%s,'isolated-admin','super_admin',%s,"
+            "'isolated-admin','super_admin','isolated history test')",
+            (identifier, source, destination, state, '0' * 64, identifier, identifier),
+        )
+
+    with fixture._connection(name) as connection, connection.cursor() as cursor:
+        insert_pair(cursor, target, "TESTING")
+        connection.commit()
+    identities = (source, target, other_target, untouched)
+    with repository.unit_of_work() as uow:
+        display = uow.automation_plugins.read_catalog_rows(identities)
+        for identity in identities:
+            assert display.authoritative_migration_pair(identity) == (
+                uow.automation_plugins.get_authoritative_plugin_migration_pair_for_automation(identity, for_update=False))
+        assert display.authoritative_migration_pair(untouched) is None
+        copied = display.authoritative_migration_pair(source)
+        copied["state"] = "COMPLETED"
+        assert display.authoritative_migration_pair(source)["state"] == "TESTING"
+    with fixture._connection(name) as connection, connection.cursor() as cursor:
+        insert_pair(cursor, other_target, "READY")
+        connection.commit()
+    with repository.unit_of_work() as uow:
+        display = uow.automation_plugins.read_catalog_rows(identities)
+        for reader in (lambda: display.authoritative_migration_pair(source),
+                       lambda: uow.automation_plugins.get_authoritative_plugin_migration_pair_for_automation(source, for_update=False)):
+            with pytest.raises(OrchestrationPersistenceError, match="ambiguous unfinished migration ownership"):
+                reader()
+        assert display.authoritative_migration_pair(other_target)["target_automation_id"] == other_target

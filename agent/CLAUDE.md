@@ -77,6 +77,7 @@ V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v3
 - 插件调用热路径不得为不变数据重复开 Unit of Work：`automation_plugins/capability_proxy_v2.py` 按调用 lease（automation_id/plugin_id/generation/lease_id/version）缓存已校验的 Service V2 清单，缺少 lease 身份时才逐次读取。
 - `executemany` 的 INSERT 在 VALUES 中只能使用占位符，常量也作为参数传入，保证 PyMySQL 合并为多行 INSERT；`tools/phase7_mysql_store.py` 的结构校验按进程和连接目标只做一次成功校验，失败不缓存。
 - 运行时健康检查同样按快照读取：`production.py` 的插件健康让目录、排除项和代次检查共用 `runtime_repository.read_scope()`，`generation.py` 用 `generation_lease_outcomes` 每个项目一次读取活动租约/未知写代次，仅对有活动租约的代次调用逐代次读取；不得恢复按历史代次逐条查询。
+- 插件目录展示同样按快照读取：`shared/automation_plugin_catalog_rows.py` 在同一只读事务内批量读取项目、配置、计划、当前代次、包版本（当前代次与目标版本）及迁移归属历史，`runtime_repository.py` 与 `mysql_repository.get_catalog_migration_pair` 优先使用这批数据，批外键才逐条读取；同一读取范围内已编译的目录条目直接复用，权限投影经 `catalog_read_transaction` 复用该快照连接。不得恢复逐项目的包版本或迁移归属查询。
 
 ## HTTP 安全边界
 

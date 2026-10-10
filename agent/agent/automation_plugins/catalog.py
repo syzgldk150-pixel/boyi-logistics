@@ -879,10 +879,14 @@ class PluginCatalog:
                     if ownership["module"] != module:
                         hidden.add(project.automation_id)
                         continue
-                entry = _entry_from_project(project, self._project_configuration)
+                # One read scope is one snapshot: reuse entries already
+                # compiled by an earlier pass instead of compiling them again.
                 cache = self._entry_cache()
-                if cache is not None:
-                    cache[entry.automation_id] = entry
+                entry = cache.get(project.automation_id) if cache is not None else None
+                if entry is None:
+                    entry = _entry_from_project(project, self._project_configuration)
+                    if cache is not None:
+                        cache[entry.automation_id] = entry
                 entries.append(entry)
             except (AutomationPluginError, ValueError, OrchestrationPersistenceError) as exc:
                 failures[project.automation_id] = self._project_data_failure(exc)

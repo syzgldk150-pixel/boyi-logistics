@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from agent.automation_plugins.catalog import PluginCatalogEntry
+from agent.automation_plugins.catalog_read_scope import catalog_read_transaction
 from agent.orchestration.automation_project_service_v2 import (
     normalize_service_v2_module_slot_context,
 )
@@ -32,7 +33,9 @@ from shared.automation_project_authorization import (
 
 def scoped_policy_projection(repository, catalog, selected, describe_entry):
     """Keep scoped display reads within one catalog read transaction."""
-    with repository.unit_of_work() as uow:
+    # Inside an active catalog read scope this reuses its connection and
+    # snapshot; otherwise it opens its own unit of work as before.
+    with catalog_read_transaction(repository) as uow:
         rows = uow.automation_projects.list_policies(automation_ids=tuple(sorted(selected))) if selected is not None else uow.automation_projects.list_policies()
         policies = {str(row.get("automation_id") or ""): row for row in rows}
     scope = getattr(catalog, "read_scope", None)

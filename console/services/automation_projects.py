@@ -4,6 +4,7 @@ import copy
 import threading
 import time
 from concurrent.futures import Future
+from types import SimpleNamespace
 from collections.abc import Mapping
 from console.app_support import *  # noqa: F403
 from console.services.automation_plugin_management import AutomationPluginManagementServiceMixin
@@ -153,11 +154,9 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
         with lock:
             cache = getattr(self, "_automation_catalog_cache", {})
             cached = cache.get(cache_key)
-            if cached is not None and (
-                cached[0] > current
-                or (prefer_stale and cached[0] + 300.0 > current)
-            ):
+            if cached is not None and cached[0] > current:
                 return copy.deepcopy(cached[1])
+            stale = cached is not None and prefer_stale and cached[0] + 300.0 > current
             epoch = getattr(self, "_automation_catalog_cache_epoch", 0)
             inflight = getattr(self, "_automation_catalog_inflight", {})
             flight_key = (epoch, cache_key)
@@ -167,8 +166,46 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
                 future = Future()
                 inflight[flight_key] = future
                 self._automation_catalog_inflight = inflight
+        if stale:
+            # Serve the bounded safe snapshot now; the Agent read (seconds on
+            # the cross-region database) refreshes it in the background with
+            # the principal captured from this request, never a later one.
+            if owner:
+                snapshot_handler = SimpleNamespace(
+                    current_admin_user=copy.deepcopy(user)
+                )
+                threading.Thread(
+                    target=self._refresh_automation_plugin_catalog,
+                    args=(snapshot_handler,),
+                    kwargs={
+                        "cache_key": cache_key, "epoch": epoch, "flight_key": flight_key,
+                        "future": future, "module": module, "summary": summary,
+                        "background": True,
+                    },
+                    name="automation-catalog-refresh",
+                    daemon=True,
+                ).start()
+            return copy.deepcopy(cached[1])
         if not owner:
             return copy.deepcopy(future.result(timeout=20))
+        return self._refresh_automation_plugin_catalog(
+            handler, cache_key=cache_key, epoch=epoch, flight_key=flight_key,
+            future=future, module=module, summary=summary,
+        )
+
+    def _refresh_automation_plugin_catalog(
+        self,
+        handler: Any,
+        *,
+        cache_key: tuple,
+        epoch: int,
+        flight_key: tuple,
+        future: Future,
+        module: str | None,
+        summary: bool,
+        background: bool = False,
+    ):
+        lock = self._automation_catalog_cache_lock
         try:
             result = self._load_automation_plugin_catalog_uncached(handler, module=module, summary=summary)
             with lock:
@@ -185,7 +222,10 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
             return result
         except BaseException as exc:
             future.set_exception(exc)
-            raise
+            if not background:
+                raise
+            LOGGER.warning("Background automation catalog refresh failed: %s", type(exc).__name__)
+            return None
         finally:
             with lock:
                 self._automation_catalog_inflight.pop(flight_key, None)
