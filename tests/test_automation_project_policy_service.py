@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import threading
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -825,6 +826,27 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         result = asyncio.run(self.service.invoke_trusted_and_wait(AUTOMATION_ID, entrypoint="console", request_id="callback", actor=_admin(), on_accepted=on_accepted))
         self.assertEqual([("accepted", result["invocation_id"]), ("wait", result["invocation_id"])], events)
         self.assertTrue(result["success"])
+
+    def test_trusted_wait_admits_off_the_event_loop_thread(self):
+        # Scheduler, Feishu and Webhook admission performs synchronous
+        # cross-region database work; it must not block every HTTP request.
+        receipt = {"invocation_id": "threaded-invocation", "status": "COMPLETED", "error_code": None, "output": {}}
+        admission_threads = []
+        def invoke_trusted(*_args, **_kwargs):
+            admission_threads.append(threading.get_ident())
+            return receipt
+        async def wait(identity, *, timeout_seconds):
+            return receipt
+        async def run():
+            loop_thread = threading.get_ident()
+            result = await self.service.invoke_trusted_and_wait(
+                AUTOMATION_ID, entrypoint="feishu", request_id="threaded-admission", actor=_admin())
+            return loop_thread, result
+        with patch.object(self.service, "invoke_trusted", side_effect=invoke_trusted), patch.object(self.direct, "wait", side_effect=wait):
+            loop_thread, result = asyncio.run(run())
+        self.assertEqual(receipt, result)
+        self.assertEqual(1, len(admission_threads))
+        self.assertNotEqual(loop_thread, admission_threads[0])
 
     def test_trusted_wait_does_not_announce_failed_admission_or_completed_replay(self):
         for status, error in (("FAILED", "PLUGIN_RELEASE_HELD"), ("FAILED", "EXECUTION_RESOURCE_BUSY"), ("COMPLETED", None), ("CANCELLED", "CANCELLED"), ("WRITE_OUTCOME_UNKNOWN", "WRITE_OUTCOME_UNKNOWN")):

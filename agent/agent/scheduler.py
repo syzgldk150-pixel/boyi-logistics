@@ -1025,10 +1025,10 @@ def _add_job(
             status = "success" if isinstance(result, dict) and result.get("success") else "error"
             if status != "success":
                 logger.error("Scheduled task did not complete: %s -> %s", tid, _result_error(result))
-            _update_task_status(agent_core, tid, status, result)
+            await asyncio.to_thread(_update_task_status, agent_core, tid, status, result)
         except Exception as exc:
             logger.error("Scheduled task failed: %s -> %s", tid, str(exc)[:200])
-            _update_task_status(agent_core, tid, "error", {"error": str(exc)})
+            await asyncio.to_thread(_update_task_status, agent_core, tid, "error", {"error": str(exc)})
 
     options: dict[str, Any] = {}
     registry = getattr(agent_core, "registry", None)

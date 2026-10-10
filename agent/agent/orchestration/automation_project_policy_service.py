@@ -7,6 +7,7 @@ committed plugin generation and locked orchestration rows.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections import Counter
@@ -1096,7 +1097,10 @@ class AutomationProjectPolicyService:
         on_accepted: Callable[[Any], Awaitable[None]] | None = None,
         require_full_auto: bool = False,
     ) -> dict[str, Any]:
-        receipt = self.invoke_trusted(
+        # Admission is synchronous cross-region database work; keep it off the
+        # event loop exactly like the HTTP invoke route already does.
+        receipt = await asyncio.to_thread(
+            self.invoke_trusted,
             automation_id, entrypoint=entrypoint, request_id=request_id, actor=actor,
             trusted_context=trusted_context, idempotency_key=idempotency_key,
             expected_automation_generation=expected_automation_generation,

@@ -148,7 +148,7 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
 
 ## Direct 写入与资源协调
 
-- 后台单次 Invocation 状态读取在请求内复用同一数据库连接完成实时权限校验与结果投影；定时保存使用本实例返回的入口元数据，调度刷新和 Service V2 同步数据库操作不占用事件循环。取消仍排空真实线程，详见 `../../docs/architecture_direct_invocation.md`。
+- 后台单次 Invocation 状态读取在请求内复用同一数据库连接完成实时权限校验与结果投影；定时保存使用本实例返回的入口元数据，调度刷新和 Service V2 同步数据库操作不占用事件循环；定时、飞书、Webhook 等异步入口经 `invoke_trusted_and_wait` 受理时，同步准入（幂等查重、合同加载、Invocation 创建）在工作线程执行，定时任务结束后的运行状态写入同样不在事件循环上。取消仍排空真实线程，详见 `../../docs/architecture_direct_invocation.md`。
 
 - `DirectPluginInvocationService.cancel` 先向实际执行任务送达取消，再等待数据库的 CANCELLING 状态写入；仓储不允许迟到状态覆盖终态。真实读取期间取消与核验/持久化期间保留实际结果的边界，分别由 Scheduler 与 Direct MySQL 集成测试验证。
 

@@ -4,7 +4,7 @@ type: implementation
 status: active
 authority: canonical
 owner: repository
-updated: 2026-10-07
+updated: 2026-10-10
 ---
 
 # 业务接口与独立插件调用
@@ -79,6 +79,8 @@ OCR 仍是录单内的能力；货拉拉接口尚未完成接入，地图功能�
 配置/定时保存返回本实例的 `runtime_model` 与 `entrypoint_kinds`，入口判断直接使用保存后的元数据，避免为判断一个定时入口再次遍历所有插件。调度器刷新仍在提交后等待真实结果，使用既有刷新锁，由工作线程执行；刷新失败仍区分已经保存的配置与未刷新的运行态，不假报定时已生效。
 
 Service V2 调用中的同步 manifest 读取（同一调用 lease 只读一次，见 `capability_proxy_v2.py`）、服务查找、Provider 代次读取与写入起始登记通过 `drain_thread` 执行。慢数据库操作不占用服务事件循环，取消仍等待实际线程结束才退出资源保护范围，签名、权限与写后核验保持原合同。后台只有收到明确的资源等待状态时才显示等待资源，普通执行中提示不猜测资源繁忙。
+
+2026-10-10 线上采样发现，定时任务受理（`scheduler.job_func → invoke_trusted_and_wait → invoke_direct`）曾在事件循环线程同步执行跨地域数据库查询，整点多个定时同时触发时 40 秒内阻塞事件循环约 11 秒，期间所有 Agent HTTP 请求（包括自动化目录）排队。现与 HTTP 手动执行入口一致，`invoke_trusted_and_wait` 通过 `asyncio.to_thread` 执行同步准入，提交仍由 `DirectPluginInvocationService` 回到其事件循环启动。回归见 `tests/test_automation_project_policy_service.py` 的 `test_trusted_wait_admits_off_the_event_loop_thread`。
 
 回归入口：`tests/test_automation_request_responsiveness.py` 检查请求复用、调度刷新期间并发响应及取消排空；`tests/test_direct_plugin_invocation_mysql.py` 使用真实 MySQL、签名包和隔离进程验证完整终态读取由 6 次连接变为 1 次、公开结果相同且撤权立即生效。该连接数不包含 Console 自身的登录会话查询，测试不代表线上延迟承诺。
 
