@@ -427,6 +427,9 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertIn('name="print_offset_y"', html)
         self.assertIn('name="print_font_scale"', html)
         self.assertIn('name="print_template_scale"', html)
+        self.assertIn('name="print_dpi"', html)
+        self.assertIn('<option value="203">203 dpi', html)
+        self.assertIn('<option value="300">300 dpi', html)
         self.assertIn("data-printer-calibration", html)
         self.assertIn("data-client-notice", html)
         self.assertIn('name="auto_print"', html)
@@ -892,6 +895,24 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertNotIn("ADD_PRINT_IMAGE", js)
         self.assertNotIn("DEFAULT_REMARK", js)
         self.assertNotIn("slice(0, maxChars)", js)
+
+    def test_print_image_is_pure_black_and_white_on_printer_dot_grid(self):
+        js = (CONSOLE_DIR / "static/js/waybill_label_html.js").read_text(encoding="utf-8")
+        # Thermal heads print only black/white dots: the image is built at the
+        # printer's dot grid so the driver neither resamples nor dithers it.
+        self.assertIn("const PRINT_DOTS_PER_MM = { 203: 8, 300: 300 / 25.4 };", js)
+        self.assertIn('printDpi: String(settings.print_dpi || "203") === "300" ? 300 : 203', js)
+        self.assertIn("PRINT_DOTS_PER_MM[settings.printDpi] * settings.templateScale", js)
+        self.assertIn("const width = Math.round(74 * dotsPerMm);", js)
+        self.assertIn("const height = Math.round(92 * dotsPerMm);", js)
+        # Template noise is removed in memory and frame rules stay at least two dots wide.
+        self.assertIn("loadCleanBackground", js)
+        self.assertIn("RULE_MIN_RUN", js)
+        self.assertIn("luminance(rulePixels, index) < RULE_COVERAGE_LEVEL", js)
+        self.assertIn("textPixels[index + 3] >= TEXT_COVERAGE_ALPHA", js)
+        self.assertIn("const value = ink ? 0 : 255;", js)
+        self.assertNotIn("context.drawImage(background, 0, 0);", js)
+        self.assertNotIn("ADD_PRINT_IMAGE", js)
 
     def test_lodop_renderer_uses_composed_label_without_native_reflow(self):
         js = (CONSOLE_DIR / "static/js/waybill_label_lodop.js").read_text(encoding="utf-8")

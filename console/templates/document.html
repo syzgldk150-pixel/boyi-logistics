@@ -19,7 +19,7 @@
 {% if manual_amap_sdk_should_load | default(false) %}
 <script src="https://webapi.amap.com/loader.js"></script>
 {% endif %}
-<script src="/static/js/waybill_label_html.js?v=20261007-uniform-header-v2"></script>
+<script src="/static/js/waybill_label_html.js?v=20261010-thermal-dots"></script>
 <script src="/static/js/waybill_label_lodop.js?v=20260916-receipt-v3"></script>
 <script src="/static/js/clodop_loader.js?v=20260812"></script>
 <script src="/static/js/yunda_entry_mode.js?v=20261009-extension-reload"></script>
@@ -644,6 +644,13 @@
               <div class="printer-row">
                 <label class="printer-label" for="printer_paper">纸张</label>
                 <input id="printer_paper" type="text" name="printer_paper" value="74mm×92mm 热敏标签" class="manual-input" readonly>
+              </div>
+              <div class="printer-row">
+                <label class="printer-label" for="print_dpi">打印精度</label>
+                <select id="print_dpi" name="print_dpi" class="manual-select" data-printer-setting>
+                  <option value="203">203 dpi（8 点/毫米）</option>
+                  <option value="300">300 dpi（12 点/毫米）</option>
+                </select>
               </div>
               <div class="printer-row">
                 <label class="printer-label" for="print_copies">份数</label>

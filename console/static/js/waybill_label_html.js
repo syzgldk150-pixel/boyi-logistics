@@ -95,7 +95,17 @@
     const number = Number.parseFloat(value);
     return Number.isFinite(number) ? Math.max(min, Math.min(number, max)) : fallback;
   };
+  // Thermal heads print only black or white dots. The label is produced at the
+  // printer's own dot grid as a pure black/white image so the driver neither
+  // resamples nor dithers it (dithered gray turned rules dotted and text fuzzy).
+  const PRINT_DOTS_PER_MM = { 203: 8, 300: 300 / 25.4 };
+  const BACKGROUND_INK_LEVEL = 160; // source pixels darker than this are template ink
+  const RULE_MIN_RUN = 80; // straight template ink runs this long (source px, ~5mm) are frame rules
+  const RULE_COVERAGE_LEVEL = 205; // rule dots at least ~20% covered print, keeping rules >= 2 dots
+  const BACKGROUND_COVERAGE_LEVEL = 150; // other template ink prints when at least ~40% covered
+  const TEXT_COVERAGE_ALPHA = 102; // text dots at least 40% covered print black
   const readSettings = (settings = {}) => ({
+    printDpi: String(settings.print_dpi || "203") === "300" ? 300 : 203,
     orientation: String(settings.print_orientation || "1") === "2" ? 2 : 1,
     offsetX: clampNumber(settings.print_offset_x, 0, -20, 20),
     offsetY: clampNumber(settings.print_offset_y, 0, -20, 20),
@@ -218,37 +228,122 @@
     return backgroundImages.get(url);
   };
 
-  // Rasterize once at master resolution. C-Lodop must not reflow the text again.
+  const createCanvas = (width, height) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) throw new Error("无法生成打印面单，请刷新页面后重试");
+    return { canvas, context };
+  };
+  const luminance = (pixels, index) => 0.299 * pixels[index] + 0.587 * pixels[index + 1] + 0.114 * pixels[index + 2];
+
+  const maskCanvas = (mask) => {
+    const { canvas, context } = createCanvas(SOURCE_WIDTH, SOURCE_HEIGHT);
+    const frame = context.createImageData(SOURCE_WIDTH, SOURCE_HEIGHT);
+    for (let pixel = 0; pixel < mask.length; pixel += 1) {
+      const value = mask[pixel] ? 0 : 255;
+      const index = pixel * 4;
+      frame.data[index] = frame.data[index + 1] = frame.data[index + 2] = value;
+      frame.data[index + 3] = 255;
+    }
+    context.putImageData(frame, 0, 0);
+    return canvas;
+  };
+  const markLongRuns = (ink, rules, length, step, count, stride) => {
+    for (let line = 0; line < count; line += 1) {
+      let start = -1;
+      for (let position = 0; position <= length; position += 1) {
+        const pixel = line * stride + position * step;
+        if (position < length && ink[pixel]) {
+          if (start < 0) start = position;
+        } else if (start >= 0) {
+          if (position - start >= RULE_MIN_RUN) {
+            for (let run = start; run < position; run += 1) rules[line * stride + run * step] = 1;
+          }
+          start = -1;
+        }
+      }
+    }
+  };
+
+  // The original master is used unchanged; this in-memory copy drops its JPEG
+  // gray noise and separates frame rules from the printed labels.
+  const cleanBackgrounds = new Map();
+  const loadCleanBackground = (url) => {
+    if (!cleanBackgrounds.has(url)) {
+      cleanBackgrounds.set(url, loadBackground(url).then((image) => {
+        const { context } = createCanvas(SOURCE_WIDTH, SOURCE_HEIGHT);
+        context.drawImage(image, 0, 0);
+        const pixels = context.getImageData(0, 0, SOURCE_WIDTH, SOURCE_HEIGHT).data;
+        const ink = new Uint8Array(SOURCE_WIDTH * SOURCE_HEIGHT);
+        for (let pixel = 0; pixel < ink.length; pixel += 1) {
+          ink[pixel] = luminance(pixels, pixel * 4) < BACKGROUND_INK_LEVEL ? 1 : 0;
+        }
+        const rules = new Uint8Array(ink.length);
+        markLongRuns(ink, rules, SOURCE_WIDTH, 1, SOURCE_HEIGHT, SOURCE_WIDTH);
+        markLongRuns(ink, rules, SOURCE_HEIGHT, SOURCE_WIDTH, SOURCE_WIDTH, 1);
+        return { ink: maskCanvas(ink), rules: maskCanvas(rules) };
+      }).catch((error) => {
+        cleanBackgrounds.delete(url);
+        throw error;
+      }));
+    }
+    return cleanBackgrounds.get(url);
+  };
+
+  // Rasterize once on the printer's dot grid. C-Lodop must not reflow or resample it.
   async function buildPrintImage(data = {}, options = {}) {
     await loadContentFont();
     const normalized = normalizeData(data, options);
-    const background = await loadBackground(backgroundUrlFor(normalized));
-    const items = buildDynamicItems(normalized, readSettings(options));
-    const canvas = document.createElement("canvas");
-    canvas.width = SOURCE_WIDTH;
-    canvas.height = SOURCE_HEIGHT;
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("无法生成打印面单，请刷新页面后重试");
-    context.drawImage(background, 0, 0);
-    context.fillStyle = "#000000";
-    context.textBaseline = "alphabetic";
+    const settings = readSettings(options);
+    const background = await loadCleanBackground(backgroundUrlFor(normalized));
+    const items = buildDynamicItems(normalized, settings);
+    const dotsPerMm = PRINT_DOTS_PER_MM[settings.printDpi] * settings.templateScale;
+    const width = Math.round(74 * dotsPerMm);
+    const height = Math.round(92 * dotsPerMm);
+
+    // Downscale each template layer; gray then measures how much of a dot it covers.
+    const scaled = (source) => {
+      const layer = createCanvas(width, height);
+      layer.context.imageSmoothingEnabled = true;
+      layer.context.imageSmoothingQuality = "high";
+      layer.context.drawImage(source, 0, 0, width, height);
+      return layer;
+    };
+    const label = scaled(background.ink);
+    const rulePixels = scaled(background.rules).context.getImageData(0, 0, width, height).data;
+
+    // Text is drawn on its own layer directly at printer resolution.
+    const text = createCanvas(width, height);
+    text.context.fillStyle = "#000000";
+    text.context.textBaseline = "alphabetic";
     for (const item of items) {
-      const px = item.fontPt * 25.4 / 72 * SOURCE_HEIGHT / 92;
-      const lineHeight = item.lineHeightMm * SOURCE_HEIGHT / 92;
-      context.font = `${item.fontWeight} ${px}px "${item.font}"`;
-      const metrics = context.measureText("国Ag");
+      const px = item.fontPt * 25.4 / 72 * dotsPerMm;
+      const lineHeight = item.lineHeightMm * dotsPerMm;
+      text.context.font = `${item.fontWeight} ${px}px "${item.font}"`;
+      const metrics = text.context.measureText("国Ag");
       const ascent = metrics.actualBoundingBoxAscent;
       const descent = metrics.actualBoundingBoxDescent;
       const baseline = (lineHeight - ascent - descent) / 2 + ascent;
       item.content.split("\n").forEach((line, index) => {
-        context.save();
-        context.translate(item.x * SOURCE_WIDTH / 74,
-          item.y * SOURCE_HEIGHT / 92 + index * lineHeight + baseline);
-        context.fillText(line, 0, 0);
-        context.restore();
+        text.context.fillText(line, item.x * dotsPerMm, item.y * dotsPerMm + index * lineHeight + baseline);
       });
     }
-    return canvas.toDataURL("image/png");
+
+    const frame = label.context.getImageData(0, 0, width, height);
+    const pixels = frame.data;
+    const textPixels = text.context.getImageData(0, 0, width, height).data;
+    for (let index = 0; index < pixels.length; index += 4) {
+      const ink = luminance(pixels, index) < BACKGROUND_COVERAGE_LEVEL
+        || luminance(rulePixels, index) < RULE_COVERAGE_LEVEL
+        || textPixels[index + 3] >= TEXT_COVERAGE_ALPHA;
+      const value = ink ? 0 : 255;
+      pixels[index] = pixels[index + 1] = pixels[index + 2] = value;
+      pixels[index + 3] = 255;
+    }
+    label.context.putImageData(frame, 0, 0);
+    return label.canvas.toDataURL("image/png");
   }
 
   async function buildHtml(data = {}, options = {}) {
