@@ -115,9 +115,10 @@ def test_stale_partial_navigation_returns_snapshot_and_refreshes_once_in_backgro
     service = make_service(read)
     actor = SimpleNamespace(current_admin_user={"id": "one", "role": "super_admin"})
     assert service._load_automation_plugin_catalog(actor, module="automation", summary=True) == result("old")
-    clock[0] += 120.0  # past the 60s fresh period, inside the 300s stale window
+    clock[0] += 3 * 3600.0  # past the 60s fresh period, inside the snapshot window
     assert service._load_automation_plugin_catalog(
         actor, module="automation", summary=True, prefer_stale=True) == result("old")
+    assert actor.automation_catalog_snapshot_age_seconds == 3 * 3600.0
     assert started.wait(3)
     # The background read keeps the identity captured by the triggering request.
     actor.current_admin_user["id"] = "changed-after-request"
@@ -134,7 +135,7 @@ def test_stale_partial_navigation_returns_snapshot_and_refreshes_once_in_backgro
     assert len(calls) == 2
 
 
-def test_full_navigation_and_expired_window_still_read_synchronously(monkeypatch):
+def test_without_snapshot_preference_and_after_window_reads_synchronously(monkeypatch):
     import console.services.automation_projects as module
 
     clock = [1000.0]
@@ -150,7 +151,7 @@ def test_full_navigation_and_expired_window_still_read_synchronously(monkeypatch
     assert service._load_automation_plugin_catalog(actor, module="automation", summary=True) == result("read-1")
     clock[0] += 120.0
     assert service._load_automation_plugin_catalog(actor, module="automation", summary=True) == result("read-2")
-    clock[0] += 400.0  # beyond fresh + stale window
+    clock[0] += module.AUTOMATION_CATALOG_SNAPSHOT_MAX_AGE_SECONDS + 1.0  # beyond the snapshot window
     assert service._load_automation_plugin_catalog(
         actor, module="automation", summary=True, prefer_stale=True) == result("read-3")
     assert len(calls) == 3

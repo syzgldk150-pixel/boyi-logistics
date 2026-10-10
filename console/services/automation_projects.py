@@ -104,6 +104,13 @@ from console.services.automation_catalog_projection import (
 )
 
 
+# A catalog read is fresh for 60s. Automation page views may then show the
+# last safe snapshot (refreshed in the background) for up to 12h; every
+# lifecycle mutation still clears it and execution is decided by the Agent.
+AUTOMATION_CATALOG_FRESH_SECONDS = 60.0
+AUTOMATION_CATALOG_SNAPSHOT_MAX_AGE_SECONDS = 12 * 3600.0
+
+
 class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, ModuleDataSourcesServiceMixin):
     _automation_plugin_max_package_bytes = AUTOMATION_PLUGIN_MAX_PACKAGE_BYTES
     _automation_plugin_version_re = AUTOMATION_PLUGIN_VERSION_RE
@@ -156,7 +163,10 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
             cached = cache.get(cache_key)
             if cached is not None and cached[0] > current:
                 return copy.deepcopy(cached[1])
-            stale = cached is not None and prefer_stale and cached[0] + 300.0 > current
+            stale = cached is not None and prefer_stale and (
+                cached[0] - AUTOMATION_CATALOG_FRESH_SECONDS
+                + AUTOMATION_CATALOG_SNAPSHOT_MAX_AGE_SECONDS > current
+            )
             epoch = getattr(self, "_automation_catalog_cache_epoch", 0)
             inflight = getattr(self, "_automation_catalog_inflight", {})
             flight_key = (epoch, cache_key)
@@ -170,6 +180,9 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
             # Serve the bounded safe snapshot now; the Agent read (seconds on
             # the cross-region database) refreshes it in the background with
             # the principal captured from this request, never a later one.
+            handler.automation_catalog_snapshot_age_seconds = (
+                current - (cached[0] - AUTOMATION_CATALOG_FRESH_SECONDS)
+            )
             if owner:
                 snapshot_handler = SimpleNamespace(
                     current_admin_user=copy.deepcopy(user)
@@ -216,7 +229,7 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
                     result = ([], [], [], [], frozenset(), "插件目录已变化，请刷新后继续。", result[6])
                 elif not result[5]:
                     cache = getattr(self, "_automation_catalog_cache", {})
-                    cache[cache_key] = (time.monotonic() + 60.0, copy.deepcopy(result))
+                    cache[cache_key] = (time.monotonic() + AUTOMATION_CATALOG_FRESH_SECONDS, copy.deepcopy(result))
                     self._automation_catalog_cache = cache
             future.set_result(copy.deepcopy(result))
             return result

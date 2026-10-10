@@ -465,18 +465,26 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
                 f"自动化任务数据库当前不可达，任务列表已临时降级为空。详情：{exc}"
             )
 
+        # Keep-alive connections reuse the handler; never carry an old age.
+        handler.automation_catalog_snapshot_age_seconds = None
         if query.get("refresh_resources") == ["1"]:
             plugin_catalog = self._load_automation_plugin_catalog(
                 handler, module=module, summary=True,
                 refresh_resources=True,
             )
-        elif partial_navigation:
+        else:
+            # Sidebar clicks and full page loads both show the last safe
+            # snapshot at once and refresh it in the background.
             plugin_catalog = self._load_automation_plugin_catalog(
                 handler, module=module, summary=True,
                 prefer_stale=True,
             )
-        else:
-            plugin_catalog = self._load_automation_plugin_catalog(handler, module=module, summary=True)
+        snapshot_age = getattr(handler, "automation_catalog_snapshot_age_seconds", None)
+        automation_catalog_snapshot_notice = (
+            f"列表为约 {max(1, round(snapshot_age / 60))} 分钟前的状态，正在后台更新"
+            if isinstance(snapshot_age, (int, float)) and snapshot_age >= 300
+            else ""
+        )
         (
             automation_plugin_packages,
             automation_plugin_instances,
@@ -948,6 +956,7 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
             automation_workers=automation_workers,
             unsupported_automation_ids=unsupported_automation_ids,
             automation_plugin_warning=automation_plugin_warning,
+            automation_catalog_snapshot_notice=automation_catalog_snapshot_notice,
             can_manage_plugins=can_manage_plugins,
             automation_plugin_filter=plugin_filter,
         )

@@ -57,6 +57,37 @@ class AutomationProjectGroupingTests(unittest.TestCase):
             rendered_context.update(captured)
         return captured["scheduled_tasks"]
 
+    def test_full_page_uses_snapshot_and_explains_old_list(self):
+        for age, expected in ((None, ""), (120.0, ""), (25 * 60.0, "列表为约 25 分钟前的状态，正在后台更新")):
+            with self.subTest(age=age):
+                captured, scopes = {}, []
+
+                class _Template:
+                    def render(self, **context):
+                        captured.update(context)
+                        return "rendered"
+
+                def load(handler, **scope):
+                    scopes.append(scope)
+                    if age is not None:
+                        handler.automation_catalog_snapshot_age_seconds = age
+                    return ([], [], [], [], frozenset(), "", False)
+
+                service = AutomationServiceMixin.__new__(AutomationServiceMixin)
+                service.repository = SimpleNamespace(list_scheduled_tasks=lambda: [], list_workflow_resources=lambda: [])
+                service.settings = SimpleNamespace(app_title="Console", agent_base_url="http://agent")
+                service.automation_virtual_task_state = {}
+                service.template_env = SimpleNamespace(get_template=lambda _name: _Template())
+                service._load_automation_plugin_catalog = load
+                service._load_automation_project_policies = lambda _handler, _tasks: ("", False)
+                service._send_html = lambda _handler, _body: None
+                # A reused keep-alive handler must not show a previous request's age.
+                handler = SimpleNamespace(current_admin_user={"username": "admin"}, headers={},
+                    automation_catalog_snapshot_age_seconds=9999.0)
+                service._render_automations(handler, {})
+                self.assertEqual([{"module": "automation", "summary": True, "prefer_stale": True}], scopes)
+                self.assertEqual(expected, captured["automation_catalog_snapshot_notice"])
+
     def test_first_page_defers_account_directory_until_settings(self):
         captured = {}
         principal = {

@@ -81,6 +81,12 @@
   </div>
   {% endif %}
 
+  {% if automation_catalog_snapshot_notice %}
+  <div class="automation-filter-notice" role="status" data-catalog-snapshot-notice>
+    <span>{{ automation_catalog_snapshot_notice }}</span>
+    <a href="{{ management_url }}">刷新</a>
+  </div>
+  {% endif %}
   {% if automation_plugin_warning %}
   <div class="auto-feedback auto-feedback--warning" role="status">
     <div class="auto-feedback-head">
