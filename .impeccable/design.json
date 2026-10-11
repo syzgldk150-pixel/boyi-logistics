@@ -4,7 +4,7 @@
   "title": "Design System: 博益物流控制台",
   "extensions": {
     "originalPages": {"adapter": "console/static/browser_extensions/ronghui/", "version": "0.4.2", "loginReturn": "Embedded Yunda login shows a dedicated window action; return only to the initiating entry tab after native login", "qrLayout": "Preserve 250px QR frame inside 294px Yunda login wrapper"},
-    "waybillPrint": {"background": "console/static/assets/waybill_label_background.jpg", "layout": "console/static/js/waybill_label_html.js", "paper": "74mm × 92mm", "source": "用户提供的主单空白底版，独立于控制台 UI 规范"},
+    "waybillPrint": {"background": "console/static/assets/waybill_label_75x100.png", "layout": "console/static/js/waybill_label_html.js", "paper": "75mm × 100mm", "source": "用户提供的主单空白底版，独立于控制台 UI 规范"},
     "maintenance": {"path": "/automations/maintenance", "entry": "system-status", "audience": "super_admin", "layout": "native forms and separated progress rows"},
     "reference": {
       "name": "Cal.com",

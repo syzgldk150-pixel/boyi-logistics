@@ -1,11 +1,11 @@
 (function (global) {
   "use strict";
 
-  const WIDTH_MM = "74mm";
-  const HEIGHT_MM = "92mm";
-  const PAGE_NAME = "74mm×92mm 博益物流主单";
-  const BACKGROUND_URL = "/static/assets/waybill_label_background.jpg?v=20260916-receipt-v3";
-  const RECEIPT_BACKGROUND_URL = "/static/assets/waybill_label_receipt_background.jpg?v=20260916-receipt-v3";
+  const WIDTH_MM = "75mm";
+  const HEIGHT_MM = "100mm";
+  const PAGE_NAME = "75mm×100mm 博益物流主单";
+  const BACKGROUND_URL = "/static/assets/waybill_label_75x100.png?v=20261011-75x100";
+  const RECEIPT_BACKGROUND_URL = "/static/assets/waybill_label_75x100_receipt.png?v=20261011-75x100";
   const receiptRequired = (value) => {
     if (value === undefined || value === null || value === false || value === 0 || value === "0") return false;
     if (value === true || value === 1 || value === "1") return true;
@@ -13,37 +13,27 @@
   };
   const backgroundUrlFor = (data = {}) => receiptRequired(data.receiptRequired ?? data.receipt_required)
     ? RECEIPT_BACKGROUND_URL : BACKGROUND_URL;
-  // Coordinates and type sizes follow the supplied 1162 × 1450 master/sample.
-  const SOURCE_WIDTH = 1162;
-  const SOURCE_HEIGHT = 1450;
-  // Typefaces matched against the 主单.jpg sample: Arial Narrow Bold for the
-  // waybill number, date and phones; Microsoft YaHei Bold for short values;
-  // the bundled Source Han Sans at weight 800 for names and addresses.
-  const LABEL_FONTS = {
-    narrow: { family: "BoyiLabelNarrow", weight: 700, name: "Arial Narrow",
-      source: 'local("Arial Narrow Bold"), local("ArialNarrow-Bold")' },
-    yahei: { family: "BoyiLabelYaHei", weight: 700, name: "微软雅黑",
-      source: 'local("Microsoft YaHei Bold"), local("MicrosoftYaHei-Bold")' },
-    sans: { family: "BoyiLabelSans", weight: 800, name: "思源黑体", descriptors: { weight: "250 900" },
-      source: 'url("/static/assets/fonts/SourceHanSansCN-VF.ttf.woff2") format("woff2")' },
-  };
-  const fontCss = (style, px) => `${style.weight} ${px}px "${style.family}"`;
-  let labelFontsPromise;
+  // Coordinates and type sizes follow the supplied 1200 × 1600 master/sample
+  // (16 source px per mm, exactly two source px per 203dpi printer dot).
+  const SOURCE_WIDTH = 1200;
+  const SOURCE_HEIGHT = 1600;
+  // The 填写样张 sample sets every value in Source Han Sans Bold, served with the
+  // Console, so printing needs no locally installed font.
+  const LABEL_FONT = { family: "BoyiLabelSans", weight: 700, name: "思源黑体",
+    source: 'url("/static/assets/fonts/SourceHanSansCN-VF.ttf.woff2") format("woff2")' };
+  const fontCss = (px) => `${LABEL_FONT.weight} ${px}px "${LABEL_FONT.family}"`;
+  let labelFontPromise;
   const loadContentFont = () => {
-    if (!labelFontsPromise) {
-      labelFontsPromise = Promise.all(Object.values(LABEL_FONTS).map((style) => {
-        const face = new FontFace(style.family, style.source, style.descriptors || { weight: String(style.weight) });
-        return face.load().then((loaded) => {
-          document.fonts.add(loaded);
-        }).catch(() => {
-          throw new Error(`打印字体“${style.name}”加载失败，请确认本机已安装该字体后刷新页面重试`);
-        });
-      })).catch((error) => {
-        labelFontsPromise = undefined;
-        throw error;
+    if (!labelFontPromise) {
+      const face = new FontFace(LABEL_FONT.family, LABEL_FONT.source, { weight: "250 900" });
+      labelFontPromise = face.load().then((loaded) => {
+        document.fonts.add(loaded);
+      }).catch(() => {
+        labelFontPromise = undefined;
+        throw new Error(`打印字体“${LABEL_FONT.name}”加载失败，请检查网络后刷新页面重试`);
       });
     }
-    return labelFontsPromise;
+    return labelFontPromise;
   };
   const cleanText = (value) => String(value ?? "").replace(/\r\n?/g, "\n").trim();
   const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -127,42 +117,44 @@
     fontScale: clampNumber(settings.print_font_scale, 100, 85, 115) / 100,
     templateScale: clampNumber(settings.print_template_scale, 100, 94, 106) / 100,
   });
-  // Measured from the 主单.jpg sample in source pixels: text origin, baseline,
-  // font size and horizontal scale. Longer content shrinks within maxWidth.
+  // Measured from the 填写样张 sample in source pixels: text origin, baseline and
+  // font size. Longer content shrinks within maxWidth, which stops about 10px
+  // before the next divider or 24px inside the frame.
   const MIN_FONT_PX = 22;
-  const FEE_STYLE = { font: "yahei", px: 43.9, scale: 0.91, maxWidth: 325 };
-  const ADDRESS_STYLE = { font: "sans", px: 36.3, scale: 0.971, maxWidth: 760, lines: 2, pitch: 50 };
+  const ADDRESS_STYLE = { px: 40, maxWidth: 680, lines: 2, pitch: 57.5 };
+  const LEFT_DETAIL = { px: 34, x: 305, maxWidth: 276 };
+  const RIGHT_DETAIL = { px: 34, x: 860.5, maxWidth: 270 };
   const FIELD_LAYOUT = [
-    { field: "waybillNo", font: "narrow", px: 69, scale: 1.051, x: 34.7, baseline: 330.3, maxWidth: 284 },
-    { field: "date", font: "narrow", px: 59.9, scale: 0.983, x: 351.8, baseline: 329.4, maxWidth: 256 },
-    { field: "station", font: "yahei", px: 62.6, scale: 0.973, x: 641.2, baseline: 330.6, maxWidth: 250 },
-    { field: "recipientName", font: "sans", px: 57.1, scale: 0.921, x: 305.9, baseline: 451.9, maxWidth: 340 },
-    { field: "recipientPhone", font: "narrow", px: 55.2, scale: 1.042, x: 836.3, baseline: 450.4, maxWidth: 300 },
-    { field: "recipientAddress", ...ADDRESS_STYLE, x: 343.9, baseline: 521.4 },
-    { field: "senderName", font: "sans", px: 54.9, scale: 0.994, x: 306.2, baseline: 697.1, maxWidth: 340 },
-    { field: "senderPhone", font: "narrow", px: 55.2, scale: 1.023, x: 835, baseline: 698.4, maxWidth: 300 },
-    { field: "senderAddress", ...ADDRESS_STYLE, x: 343.9, baseline: 761.4 },
-    { field: "cargoName", font: "yahei", px: 43, scale: 0.949, x: 261.6, baseline: 906.2, maxWidth: 280 },
-    { field: "packageType", font: "yahei", px: 43.3, scale: 1.033, x: 782.3, baseline: 906.2, maxWidth: 340 },
-    { field: "pieces", font: "yahei", px: 43.9, scale: 0.96, x: 189.8, baseline: 965.6, maxWidth: 345 },
-    { field: "weight", font: "yahei", px: 46.5, scale: 0.968, x: 819.8, baseline: 970.5, maxWidth: 305 },
-    { field: "volume", font: "yahei", px: 43.9, scale: 1.008, x: 273.7, baseline: 1021.6, maxWidth: 262 },
-    // Fee values sit on their label baselines (label bottom + 2.6px), like the sample freight.
-    { field: "freight", ...FEE_STYLE, x: 208, baseline: 1107.6 },
-    { field: "pickupFee", ...FEE_STYLE, x: 208, baseline: 1160.6 },
-    { field: "deliveryFee", ...FEE_STYLE, x: 208, baseline: 1217.6 },
-    { field: "transferFee", ...FEE_STYLE, x: 208, baseline: 1275.6 },
-    { field: "transportMethod", font: "yahei", px: 40.2, scale: 0.97, x: 792.6, baseline: 1103.6, maxWidth: 335 },
-    { field: "paymentMethod", font: "yahei", px: 40, scale: 0.992, x: 792.2, baseline: 1160.6, maxWidth: 335 },
-    { field: "insuranceAmount", ...FEE_STYLE, x: 792.4, baseline: 1220.6, maxWidth: 335 },
-    { field: "codAmount", ...FEE_STYLE, x: 792.4, baseline: 1276.6, maxWidth: 335 },
-    { field: "remark", ...ADDRESS_STYLE, x: 150, baseline: 1356.4, maxWidth: 970 },
+    { field: "waybillNo", px: 44, x: 62.5, baseline: 348.5, maxWidth: 240 },
+    { field: "date", px: 44, x: 336, baseline: 348.5, maxWidth: 250 },
+    { field: "station", px: 44, x: 617.5, baseline: 348.5, maxWidth: 250 },
+    { field: "recipientName", px: 40, x: 413.5, baseline: 481.5, maxWidth: 228 },
+    { field: "recipientPhone", px: 40, x: 845.5, baseline: 481.5, maxWidth: 284 },
+    { field: "recipientAddress", ...ADDRESS_STYLE, x: 450.5, baseline: 579 },
+    { field: "senderName", px: 40, x: 413.5, baseline: 795.5, maxWidth: 228 },
+    { field: "senderPhone", px: 40, x: 845.5, baseline: 795.5, maxWidth: 284 },
+    // The sender block leaves room for a single address line above its divider.
+    { field: "senderAddress", ...ADDRESS_STYLE, lines: 1, x: 450.5, baseline: 882.5 },
+    { field: "cargoName", ...LEFT_DETAIL, baseline: 1002.5 },
+    { field: "packageType", ...RIGHT_DETAIL, baseline: 1002.5 },
+    { field: "pieces", ...LEFT_DETAIL, baseline: 1060.5 },
+    { field: "weight", ...RIGHT_DETAIL, baseline: 1060.5 },
+    { field: "volume", ...LEFT_DETAIL, baseline: 1119.5 },
+    { field: "freight", ...LEFT_DETAIL, baseline: 1204.5 },
+    { field: "transportMethod", ...RIGHT_DETAIL, baseline: 1204.5 },
+    { field: "pickupFee", ...LEFT_DETAIL, baseline: 1263.5 },
+    { field: "paymentMethod", ...RIGHT_DETAIL, baseline: 1263.5 },
+    { field: "deliveryFee", ...LEFT_DETAIL, baseline: 1322.5 },
+    { field: "insuranceAmount", ...RIGHT_DETAIL, baseline: 1322.5 },
+    { field: "transferFee", ...LEFT_DETAIL, baseline: 1381.5 },
+    { field: "codAmount", ...RIGHT_DETAIL, baseline: 1381.5 },
+    { field: "remark", ...ADDRESS_STYLE, x: 214.5, baseline: 1463.5, maxWidth: 916 },
   ];
 
   const FIELD_LABELS = {
     waybillNo: "运单编号", date: "日期", station: "目的地",
     recipientName: "收货人", recipientPhone: "收货电话", recipientAddress: "收件地址",
-    senderName: "发货人", senderPhone: "发货电话", senderAddress: "发件地址",
+    senderName: "发货人", senderPhone: "发货电话", senderAddress: "发货地址",
     cargoName: "货物名称", packageType: "包装类型", pieces: "件数", weight: "重量", volume: "体积",
     freight: "运费", pickupFee: "接货费", deliveryFee: "送货费", transferFee: "中转费",
     transportMethod: "送货方式", paymentMethod: "结算方式", insuranceAmount: "保价金额", codAmount: "代收金额",
@@ -190,15 +182,14 @@
     const items = FIELD_LAYOUT.flatMap((item) => {
       const value = cleanText(data[item.field]);
       if (!value) return [];
-      const style = LABEL_FONTS[item.font];
       const basePx = item.px * settings.fontScale;
       for (let px = basePx; px >= MIN_FONT_PX; px -= 0.5) {
-        context.font = fontCss(style, px);
-        // Fit by reducing font size; the sample's horizontal scale is kept.
-        const lines = wrapText(value, item.maxWidth / item.scale, context);
+        context.font = fontCss(px);
+        // Fit by reducing font size; glyphs are never squeezed horizontally.
+        const lines = wrapText(value, item.maxWidth, context);
         if (lines.length > (item.lines || 1)) continue;
         return [{
-          field: item.field, lines, style, px, scale: item.scale,
+          field: item.field, lines, px,
           x: item.x, baseline: item.baseline, pitch: (item.pitch || 0) * px / item.px,
         }];
       }
@@ -268,8 +259,8 @@
     }
   };
 
-  // The original master is used unchanged; this in-memory copy drops its JPEG
-  // gray noise and separates frame rules from the printed labels.
+  // The original master is used unchanged; this in-memory copy drops its
+  // anti-aliased gray edges and separates frame rules from the printed labels.
   const cleanBackgrounds = new Map();
   const loadCleanBackground = (url) => {
     if (!cleanBackgrounds.has(url)) {
@@ -301,8 +292,8 @@
     const background = await loadCleanBackground(backgroundUrlFor(normalized));
     const items = buildDynamicItems(normalized, settings);
     const dotsPerMm = PRINT_DOTS_PER_MM[settings.printDpi] * settings.templateScale;
-    const width = Math.round(74 * dotsPerMm);
-    const height = Math.round(92 * dotsPerMm);
+    const width = Math.round(75 * dotsPerMm);
+    const height = Math.round(100 * dotsPerMm);
 
     // Downscale each template layer; gray then measures how much of a dot it covers.
     const scaled = (source) => {
@@ -322,11 +313,11 @@
     const scaleX = width / SOURCE_WIDTH;
     const scaleY = height / SOURCE_HEIGHT;
     for (const item of items) {
-      text.context.font = fontCss(item.style, item.px);
+      text.context.font = fontCss(item.px);
       item.lines.forEach((line, index) => {
         text.context.save();
         text.context.translate(item.x * scaleX, (item.baseline + index * item.pitch) * scaleY);
-        text.context.scale(item.scale * scaleX, scaleY);
+        text.context.scale(scaleX, scaleY);
         text.context.fillText(line, 0, 0);
         text.context.restore();
       });
@@ -350,7 +341,7 @@
   async function buildHtml(data = {}, options = {}) {
     const settings = readSettings(options);
     const source = await buildPrintImage(data, options);
-    return `<div class="ys-waybill-label" data-waybill-background-template="true" style="width:74mm;height:92mm;position:relative;overflow:hidden;background:#fff"><img alt="博益运单打印预览" style="position:absolute;left:${settings.offsetX}mm;top:${settings.offsetY}mm;width:${74 * settings.templateScale}mm;height:${92 * settings.templateScale}mm;max-width:none" src="${escapeHtml(source)}"></div>`;
+    return `<div class="ys-waybill-label" data-waybill-background-template="true" style="width:75mm;height:100mm;position:relative;overflow:hidden;background:#fff"><img alt="博益运单打印预览" style="position:absolute;left:${settings.offsetX}mm;top:${settings.offsetY}mm;width:${75 * settings.templateScale}mm;height:${100 * settings.templateScale}mm;max-width:none" src="${escapeHtml(source)}"></div>`;
   }
 
   async function renderPreview(target, data = {}, options = {}) {

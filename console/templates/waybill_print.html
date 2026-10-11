@@ -6,8 +6,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     :root {
-      --paper-w: 74mm;
-      --paper-h: 92mm;
+      --paper-w: 75mm;
+      --paper-h: 100mm;
       --font: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", SimHei, Arial, sans-serif;
     }
     * { box-sizing: border-box; }
@@ -17,13 +17,13 @@
     .print-toolbar a, .print-toolbar button { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 0 12px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; color: #111827; font: 600 13px var(--font); text-decoration: none; cursor: pointer; }
     .print-status { flex: 1 1 100%; color: #4b5563; font: 600 12px var(--font); }
     .print-frame { width: var(--paper-w); height: var(--paper-h); background: #fff; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12); }
-    .print-frame .ys-waybill-label { display: block; width: 74mm; height: 92mm; }
+    .print-frame .ys-waybill-label { display: block; width: 75mm; height: 100mm; }
     @media print {
-      @page { size: 74mm 92mm; margin: 0; }
-      html, body { width: 74mm; height: 92mm; background: #fff; padding: 0; overflow: hidden; }
+      @page { size: 75mm 100mm; margin: 0; }
+      html, body { width: 75mm; height: 100mm; background: #fff; padding: 0; overflow: hidden; }
       body { display: block; }
       .no-print { display: none !important; }
-      .print-frame { width: 74mm; height: 92mm; box-shadow: none; }
+      .print-frame { width: 75mm; height: 100mm; box-shadow: none; }
     }
   </style>
 </head>
@@ -37,8 +37,8 @@
 
   <div class="print-frame" data-waybill-label-preview></div>
 
-  <script src="/static/js/waybill_label_html.js?v=20261010-sample-layout"></script>
-  <script src="/static/js/waybill_label_lodop.js?v=20260916-receipt-v3"></script>
+  <script src="/static/js/waybill_label_html.js?v=20261011-75x100"></script>
+  <script src="/static/js/waybill_label_lodop.js?v=20261011-75x100"></script>
   <script src="/static/js/clodop_loader.js?v=20260812"></script>
   <script>
     const PRINT_SETTINGS_KEY = "shipnow.manual.printerSettings";
@@ -112,8 +112,8 @@
       return null;
     }
 
-    const WAYBILL_LABEL_WIDTH = "74mm";
-    const WAYBILL_LABEL_HEIGHT = "92mm";
+    const WAYBILL_LABEL_WIDTH = "75mm";
+    const WAYBILL_LABEL_HEIGHT = "100mm";
     const WAYBILL_PRINT_DATA = {
       receipt_required: {{ (waybill.get("receipt_required") == 1) | tojson }},
       waybill_no: {{ (waybill.get("waybill_no", "") or "") | tojson }},

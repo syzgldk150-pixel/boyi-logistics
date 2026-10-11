@@ -416,8 +416,9 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertIn("SET_PREVIEW_WINDOW", html)
         self.assertIn("SET_PREVIEW_WINDOW(1, 0, 0, 760, 680", html)
         self.assertIn("未连接到 C-Lodop 打印服务", html)
-        self.assertIn('const WAYBILL_LABEL_WIDTH = "74mm"', html)
-        self.assertIn('const WAYBILL_LABEL_HEIGHT = "92mm"', html)
+        self.assertIn('const WAYBILL_LABEL_WIDTH = "75mm"', html)
+        self.assertIn('const WAYBILL_LABEL_HEIGHT = "100mm"', html)
+        self.assertIn('value="75mm×100mm 热敏标签"', html)
         self.assertNotIn("renderWaybillLabelDataUrl", html)
         self.assertNotIn("buildLodopWaybillLabelHtml", html)
         self.assertNotIn("ADD_PRINT_HTM", html)
@@ -881,10 +882,14 @@ class ManualWaybillTemplateTests(unittest.TestCase):
 
     def test_html_renderer_owns_shared_master_layout(self):
         js = (CONSOLE_DIR / "static/js/waybill_label_html.js").read_text(encoding="utf-8")
-        self.assertIn('const WIDTH_MM = "74mm"', js)
-        self.assertIn('const HEIGHT_MM = "92mm"', js)
-        self.assertIn("/static/assets/waybill_label_background.jpg", js)
-        self.assertTrue((CONSOLE_DIR / "static/assets/waybill_label_background.jpg").is_file())
+        self.assertIn('const WIDTH_MM = "75mm"', js)
+        self.assertIn('const HEIGHT_MM = "100mm"', js)
+        self.assertIn("const SOURCE_WIDTH = 1200;", js)
+        self.assertIn("const SOURCE_HEIGHT = 1600;", js)
+        for name in ("waybill_label_75x100.png", "waybill_label_75x100_receipt.png"):
+            self.assertIn(f"/static/assets/{name}", js)
+            self.assertTrue((CONSOLE_DIR / "static/assets" / name).is_file())
+        self.assertFalse((CONSOLE_DIR / "static/assets/waybill_label_background.jpg").exists())
         self.assertIn("buildDynamicItems", js)
         self.assertIn("readWeightVolume", js)
         self.assertIn("pickup_fee", js)
@@ -903,8 +908,8 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertIn("const PRINT_DOTS_PER_MM = { 203: 8, 300: 300 / 25.4 };", js)
         self.assertIn('printDpi: String(settings.print_dpi || "203") === "300" ? 300 : 203', js)
         self.assertIn("PRINT_DOTS_PER_MM[settings.printDpi] * settings.templateScale", js)
-        self.assertIn("const width = Math.round(74 * dotsPerMm);", js)
-        self.assertIn("const height = Math.round(92 * dotsPerMm);", js)
+        self.assertIn("const width = Math.round(75 * dotsPerMm);", js)
+        self.assertIn("const height = Math.round(100 * dotsPerMm);", js)
         # Template noise is removed in memory and frame rules stay at least two dots wide.
         self.assertIn("loadCleanBackground", js)
         self.assertIn("RULE_MIN_RUN", js)
@@ -916,18 +921,20 @@ class ManualWaybillTemplateTests(unittest.TestCase):
 
     def test_dynamic_text_follows_measured_sample_typography(self):
         js = (CONSOLE_DIR / "static/js/waybill_label_html.js").read_text(encoding="utf-8")
-        # Typefaces measured against 主单.jpg; missing local fonts fail explicitly.
-        self.assertIn('local("Arial Narrow Bold")', js)
-        self.assertIn('local("Microsoft YaHei Bold")', js)
+        # The 填写样张 sample uses Source Han Sans Bold only, served with the
+        # Console, so no printing computer needs a locally installed font.
         self.assertIn('url("/static/assets/fonts/SourceHanSansCN-VF.ttf.woff2")', js)
         self.assertTrue((CONSOLE_DIR / "static/assets/fonts/SourceHanSansCN-VF.ttf.woff2").is_file())
-        self.assertIn("加载失败，请确认本机已安装该字体", js)
-        self.assertNotIn('local("SimHei")', js)
-        # Sample-measured size, horizontal scale and baseline per field.
-        self.assertIn('{ field: "waybillNo", font: "narrow", px: 69, scale: 1.051, x: 34.7, baseline: 330.3', js)
-        self.assertIn('{ field: "station", font: "yahei", px: 62.6', js)
-        self.assertIn('font: "sans", px: 36.3, scale: 0.971, maxWidth: 760, lines: 2, pitch: 50', js)
-        self.assertIn("text.context.scale(item.scale * scaleX, scaleY);", js)
+        self.assertIn('weight: 700, name: "思源黑体"', js)
+        self.assertIn("加载失败，请检查网络后刷新页面重试", js)
+        self.assertNotIn("local(", js)
+        # Sample-measured size, origin and baseline per field; glyphs are not squeezed.
+        self.assertIn('{ field: "waybillNo", px: 44, x: 62.5, baseline: 348.5, maxWidth: 240 }', js)
+        self.assertIn('{ field: "recipientName", px: 40, x: 413.5, baseline: 481.5', js)
+        self.assertIn("const ADDRESS_STYLE = { px: 40, maxWidth: 680, lines: 2, pitch: 57.5 };", js)
+        self.assertIn('{ field: "senderAddress", ...ADDRESS_STYLE, lines: 1, x: 450.5, baseline: 882.5 }', js)
+        self.assertIn("const LEFT_DETAIL = { px: 34, x: 305, maxWidth: 276 };", js)
+        self.assertIn("text.context.scale(scaleX, scaleY);", js)
         # Whole amounts drop ".00" like the sample; fractions keep two places.
         self.assertIn('return /^0*$/.test(fraction) ? whole : `${whole}.${fraction.padEnd(2, "0")}`;', js)
 
@@ -939,6 +946,9 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertIn("ADD_PRINT_TEXT", js)
         self.assertIn("ADD_PRINT_LINE", js)
         self.assertEqual(1, js.count("ADD_PRINT_IMAGE"))
+        self.assertIn("mm(75, 0, context.templateScale)", js)
+        self.assertIn("mm(100, 0, context.templateScale)", js)
+        self.assertIn("纸张：75mm × 100mm", js)
         self.assertIn("POS_BASEON_PAPER", js)
         self.assertNotIn("ADD_PRINT_HTM", js)
         self.assertNotIn("FIELD_LAYOUT", js)
