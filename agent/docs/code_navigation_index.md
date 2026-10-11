@@ -4,7 +4,7 @@ type: 索引文档
 tags: [代码定位, 修改入口, 路由, 文档索引, Agent, Console]
 related: [project_overview.md, control_plane_v1.md, automation_plugin_platform.md, database_migrations.md, rules_and_definitions.md]
 status: active
-updated: 2026-10-09
+updated: 2026-10-11
 ---
 
 # 物流 Agent 代码定位索引
