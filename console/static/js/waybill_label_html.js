@@ -107,8 +107,14 @@
   const BACKGROUND_INK_LEVEL = 160; // source pixels darker than this are template ink
   const RULE_MIN_RUN = 80; // straight template ink runs this long (source px, ~5mm) are frame rules
   const RULE_COVERAGE_LEVEL = 205; // rule dots at least ~20% covered print, keeping rules >= 2 dots
-  const BACKGROUND_COVERAGE_LEVEL = 150; // other template ink prints when at least ~40% covered
-  const TEXT_COVERAGE_ALPHA = 102; // text dots at least 40% covered print black
+  // Other template ink and text print when at least ~60% covered. A dot only
+  // ~40% covered prints just when no neighbouring dot is solid: thin isolated
+  // strokes survive, but bold strokes no longer spread into the one-dot gaps
+  // of dense glyphs such as 费 or 额 (2026-10-11 print showed them as blots).
+  const BACKGROUND_SOLID_LEVEL = 102;
+  const BACKGROUND_COVERAGE_LEVEL = 150;
+  const TEXT_SOLID_ALPHA = 153;
+  const TEXT_COVERAGE_ALPHA = 102;
   const readSettings = (settings = {}) => ({
     printDpi: String(settings.print_dpi || "203") === "300" ? 300 : 203,
     orientation: String(settings.print_orientation || "1") === "2" ? 2 : 1,
@@ -334,10 +340,19 @@
     const frame = label.context.getImageData(0, 0, width, height);
     const pixels = frame.data;
     const textPixels = text.context.getImageData(0, 0, width, height).data;
-    for (let index = 0; index < pixels.length; index += 4) {
-      const ink = luminance(pixels, index) < BACKGROUND_COVERAGE_LEVEL
-        || luminance(rulePixels, index) < RULE_COVERAGE_LEVEL
-        || textPixels[index + 3] >= TEXT_COVERAGE_ALPHA;
+    const solid = new Uint8Array(width * height);
+    const partial = new Uint8Array(width * height);
+    for (let dot = 0, index = 0; dot < solid.length; dot += 1, index += 4) {
+      const shade = luminance(pixels, index);
+      solid[dot] = shade < BACKGROUND_SOLID_LEVEL || textPixels[index + 3] >= TEXT_SOLID_ALPHA ? 1 : 0;
+      partial[dot] = shade < BACKGROUND_COVERAGE_LEVEL || textPixels[index + 3] >= TEXT_COVERAGE_ALPHA ? 1 : 0;
+    }
+    for (let dot = 0, index = 0; dot < solid.length; dot += 1, index += 4) {
+      const x = dot % width;
+      const besideSolid = (x > 0 && solid[dot - 1]) || (x < width - 1 && solid[dot + 1])
+        || (dot >= width && solid[dot - width]) || (dot + width < solid.length && solid[dot + width]);
+      const ink = luminance(rulePixels, index) < RULE_COVERAGE_LEVEL
+        || solid[dot] || (partial[dot] && !besideSolid);
       const value = ink ? 0 : 255;
       pixels[index] = pixels[index + 1] = pixels[index + 2] = value;
       pixels[index + 3] = 255;

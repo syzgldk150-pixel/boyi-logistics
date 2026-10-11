@@ -915,6 +915,11 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertIn("RULE_MIN_RUN", js)
         self.assertIn("luminance(rulePixels, index) < RULE_COVERAGE_LEVEL", js)
         self.assertIn("textPixels[index + 3] >= TEXT_COVERAGE_ALPHA", js)
+        # Solid (~60%) dots always print; ~40% dots only away from solid ones, so
+        # dense bold glyphs keep their one-dot gaps instead of printing as blots.
+        self.assertIn("const BACKGROUND_SOLID_LEVEL = 102;", js)
+        self.assertIn("const TEXT_SOLID_ALPHA = 153;", js)
+        self.assertIn("|| solid[dot] || (partial[dot] && !besideSolid);", js)
         self.assertIn("const value = ink ? 0 : 255;", js)
         self.assertNotIn("context.drawImage(background, 0, 0);", js)
         self.assertNotIn("ADD_PRINT_IMAGE", js)
