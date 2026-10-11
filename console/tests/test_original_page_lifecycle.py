@@ -37,7 +37,7 @@ class Frame extends EventTarget {
   set src(value) { this.attrs.src = value; this.dispatchEvent(new Event('load')); }
 }
 eval(between(sources.loading, '  function showOriginalPageLoading(', '  function initRonghuiLiveInstance('));
-const chip = {}, notice = {setAttribute() {}}, frame = new Frame();
+const chip = {}, notice = {setAttribute() {}, dataset: {}}, frame = new Frame();
 const entryFrameSrc = () => 'https://tms.ronghuiwl.com/module/index?mv=index';
 window.addEventListener('console:ocr-mode-change', () => showOriginalPageLoading(frame, chip, notice, '融辉'), {once:true});
 // Simulate an iframe which completes immediately when its src is assigned.
@@ -83,6 +83,16 @@ frame.dispatchEvent(new Event('console:original-page-reload'));
 frame.src = entryFrameSrc();
 assert.equal(notice.hidden, true);
 assert.equal(timers.size, 0);
+// The helper reports denied storage before the page finishes loading.
+frame.dispatchEvent(new Event('console:original-page-reload'));
+notice.dataset.originalPageIssue = 'boyi-best-storage-unavailable';
+notice.hidden = false;
+frame.src = entryFrameSrc();
+assert.equal(notice.hidden, false);
+frame.dispatchEvent(new Event('console:original-page-reload'));
+assert.equal(notice.dataset.originalPageIssue, undefined);
+frame.src = entryFrameSrc();
+assert.equal(notice.hidden, true);
 """, {
             "loading": (CONSOLE / "static/js/yunda_entry_mode.js").read_text(encoding="utf-8"),
             "template": (CONSOLE / "templates/document.html").read_text(encoding="utf-8"),

@@ -2,7 +2,9 @@
 
 from pathlib import Path
 import json
+import shutil
 import tempfile
+import time
 import unittest
 
 from jinja2 import Environment
@@ -15,10 +17,35 @@ BEST = "https://v5.800best.com"
 ENTRY = BEST + "/baseService/transOrder/networkProductOrder"
 OLD_ENTRY = BEST + "/baseService/transOrder/createOrder"
 MENU = BEST + "/ltlv5-war/web/menu/getUserMenuVos"
+# Playwright starts Chromium without the third-party storage partitioning that
+# Chrome applies to the embedded BEST frame. Repeat its other disabled features
+# without ThirdPartyStoragePartitioning; the last --disable-features wins.
+PARTITIONED_STORAGE = "--disable-features=" + ",".join([
+    "AvoidUnnecessaryBeforeUnloadCheckSync", "BoundaryEventDispatchTracksNodeRemoval",
+    "DestroyProfileOnBrowserClose", "DialMediaRouteProvider", "GlobalMediaControls", "HttpsUpgrades",
+    "LensOverlay", "MediaRouter", "PaintHolding", "Translate", "AutoDeElevate", "RenderDocument",
+    "OptimizationHints",
+])
+STORAGE_BUNDLE = BEST + "/main.synthetic.bundle.js"
 
 
-def host_html():
+def extension_args(extension=EXTENSION):
+    return [f"--disable-extensions-except={extension}", f"--load-extension={extension}", PARTITIONED_STORAGE]
+
+
+def extension_with_storage_answer(root, answer):
+    """Copy the extension, replacing only how the browser answers the storage request."""
+    copy = Path(root) / "extension"
+    shutil.copytree(EXTENSION, copy)
+    storage = copy / "best-storage.js"
+    storage.write_text(f"Document.prototype.requestStorageAccess = {answer};\n" +
+                       storage.read_text(encoding="utf-8"), encoding="utf-8")
+    return copy
+
+
+def host_html(loading_notice=False):
     template = (CONSOLE / "templates/document.html").read_text(encoding="utf-8")
+    loading = (CONSOLE / "static/js/yunda_entry_mode.js").read_text(encoding="utf-8") if loading_notice else ""
     start = template.index("{% macro entry_origin_notice(provider) %}")
     end = template.index("{% endmacro %}", start) + len("{% endmacro %}")
     notice = Environment(autoescape=True).from_string(
@@ -34,7 +61,7 @@ def host_html():
       <template data-entry-origin-template="best">{notice}</template>
       <div data-entry-frame-stack><section data-entry-frame-panel data-entry-provider="boyi" data-entry-id="entry-1">
         <input id="unsaved" value="keep this draft"></section></div>
-    </div><script>{template[start:end]}</script>'''
+    </div><script>{loading}</script><script>{template[start:end]}</script>'''
 
 
 NATIVE_ENTRY = '''<!doctype html><meta charset="utf-8">
@@ -92,7 +119,7 @@ class BestEntryEmbedTests(unittest.TestCase):
                 self.skipTest("Chromium is required for the extension regression")
             context = playwright.chromium.launch_persistent_context(
                 profile, channel="chromium", headless=True,
-                args=[f"--disable-extensions-except={EXTENSION}", f"--load-extension={EXTENSION}"],
+                args=extension_args(),
             )
             try:
                 context.route("**/*", lambda route: route.fulfill(
@@ -153,7 +180,7 @@ class BestEntryEmbedTests(unittest.TestCase):
                 self.skipTest("Chromium is required for the extension regression")
             context = playwright.chromium.launch_persistent_context(
                 profile, channel="chromium", headless=True,
-                args=[f"--disable-extensions-except={EXTENSION}", f"--load-extension={EXTENSION}"],
+                args=extension_args(),
             )
             entry_reads = 0
             try:
@@ -290,7 +317,7 @@ class BestEntryEmbedTests(unittest.TestCase):
                 self.skipTest("Chromium is required for the extension regression")
             context = playwright.chromium.launch_persistent_context(
                 profile, channel="chromium", headless=True,
-                args=[f"--disable-extensions-except={EXTENSION}", f"--load-extension={EXTENSION}"],
+                args=extension_args(),
             )
             try:
                 context.route("**/*", lambda route: route.fulfill(
@@ -323,7 +350,7 @@ class BestEntryEmbedTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as profile:
                 context = playwright.chromium.launch_persistent_context(
                     profile, channel="chromium", headless=True,
-                    args=[f"--disable-extensions-except={EXTENSION}", f"--load-extension={EXTENSION}"],
+                    args=extension_args(),
                 )
                 try:
                     entry_reads = 0
@@ -352,16 +379,18 @@ class BestEntryEmbedTests(unittest.TestCase):
                             return
                         elif url == OLD_ENTRY:
                             body = NATIVE_ENTRY
+                        elif url == STORAGE_BUNDLE:
+                            # BEST's bundle needs the original page's browser
+                            # storage, which a direct cross-site iframe cannot share.
+                            route.fulfill(content_type="application/javascript", body=f'''
+                            if(localStorage.getItem('best-test-context')!=='synthetic' ||
+                              !document.cookie.includes('userName=synthetic-best-user'))
+                              location.replace({(BEST + '/login')!r});''')
+                            return
                         elif url == ENTRY:
                             entry_reads += 1
                             if "sid=synthetic-best-session" in (route.request.header_value("cookie") or ""):
-                                # BEST needs the original page's browser storage,
-                                # which a direct cross-site iframe cannot share.
-                                body = NATIVE_ENTRY + f'''<script>
-                                if(localStorage.getItem('best-test-context')!=='synthetic' ||
-                                  !document.cookie.includes('userName=synthetic-best-user'))
-                                  location.replace({(BEST + '/login')!r});
-                                </script>'''
+                                body = NATIVE_ENTRY + f'<script src="{STORAGE_BUNDLE}"></script>'
                             else:
                                 # Real BEST paints cached entry tabs before its
                                 # protected request rejects the expired session.
@@ -442,3 +471,67 @@ class BestEntryEmbedTests(unittest.TestCase):
                     expect(frames.nth(0).content_frame.locator('#code')).to_have_value("local-unsaved-draft")
                 finally:
                     context.close()
+
+    def embed_with_storage_answer(self, answer, bundle_delay=0):
+        """Embed BEST once; return what its bundle bound and the host notice after load."""
+        from playwright.sync_api import expect, sync_playwright
+
+        with sync_playwright() as playwright, tempfile.TemporaryDirectory() as root:
+            if not Path(playwright.chromium.executable_path).is_file():
+                self.skipTest("Chromium is required for the extension regression")
+            context = playwright.chromium.launch_persistent_context(
+                str(Path(root) / "profile"), channel="chromium", headless=True,
+                args=extension_args(extension_with_storage_answer(root, answer)),
+            )
+            try:
+                def respond(route):
+                    url = route.request.url
+                    if url.startswith(BOYI):
+                        route.fulfill(body=host_html(loading_notice=True), content_type="text/html; charset=utf-8")
+                    elif url == BEST + "/seed":
+                        route.fulfill(body="<script>localStorage.setItem('USER_INFO','synthetic-site')</script>",
+                                      content_type="text/html; charset=utf-8")
+                    elif url == ENTRY:
+                        route.fulfill(content_type="text/html; charset=utf-8", body=f'''<!doctype html>
+                          <script>window.order = ['head'];</script><div class="g-page"></div>
+                          <script src="{STORAGE_BUNDLE}"></script><script>order.push('tail');</script>''')
+                    elif url == STORAGE_BUNDLE:
+                        time.sleep(bundle_delay)
+                        # BEST binds the storage object when its bundle evaluates.
+                        route.fulfill(content_type="application/javascript", body="""
+                          const T = localStorage; window.boundUser = T.getItem('USER_INFO'); order.push('bundle');""")
+                    else:
+                        route.fulfill(status=404, body="")
+
+                context.route("**/*", respond)
+                seed = context.new_page()
+                seed.goto(BEST + "/seed")  # A top-level BEST page owns the unpartitioned storage.
+                seed.close()
+                page = context.new_page()
+                page.goto(BOYI + "/ocr")
+                page.get_by_role("button", name="百世原页", exact=True).click()
+                expect(page.frame_locator('[data-best-live-frame]').locator('.g-page')).to_be_attached()
+                entry = next(frame for frame in page.frames if frame.url == ENTRY)
+                entry.wait_for_function("window.order.includes('bundle')")
+                expect(page.locator('[data-best-live-frame]')).to_have_attribute('aria-busy', 'false')
+                return (entry.evaluate("({order: window.order, boundUser: window.boundUser})"),
+                        page.locator('[data-best-live-fallback]').evaluate(
+                            "notice => ({hidden: notice.hidden, text: notice.textContent})"))
+            finally:
+                context.close()
+
+    def test_native_bundle_waits_for_original_storage(self):
+        # Chrome can answer the storage request after a cached bundle is ready.
+        bound, notice = self.embed_with_storage_answer(
+            "(native => function(...args) { return new Promise(resolve => setTimeout(resolve, 400))"
+            ".then(() => native.apply(this, args)); })(Document.prototype.requestStorageAccess)")
+        self.assertEqual(bound, {"order": ["head", "tail", "bundle"], "boundUser": "synthetic-site"})
+        self.assertTrue(notice["hidden"])
+
+    def test_denied_storage_keeps_notice_after_page_load(self):
+        bound, notice = self.embed_with_storage_answer(
+            "() => Promise.reject(new DOMException('denied', 'NotAllowedError'))", bundle_delay=0.5)
+        # The native page still starts; only the browser's partitioned storage is available.
+        self.assertEqual(bound, {"order": ["head", "bundle", "tail"], "boundUser": None})
+        self.assertFalse(notice["hidden"])
+        self.assertIn("浏览器未允许百世内嵌页使用原站登录状态", notice["text"])

@@ -17,6 +17,7 @@
       notice.textContent = event.data.type === 'boyi-best-storage-unavailable' ?
         '浏览器未允许百世内嵌页使用原站登录状态。请允许此网站的第三方网站数据后重新加载，或在新窗口录单。' :
         '未能自动进入百世录入表单，请点击原页的“运单录入”页签，或重新加载。';
+      notice.dataset.originalPageIssue = event.data.type;
       notice.hidden = false;
     });
     // The SSO page tries to navigate window.top, which the embed must block.

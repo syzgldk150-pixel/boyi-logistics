@@ -1385,6 +1385,7 @@
     let slowTimer;
     const startLoading = () => {
       window.clearTimeout(slowTimer);
+      delete notice.dataset.originalPageIssue;
       frame.setAttribute("aria-busy", "true");
       notice.textContent = `正在打开${label}原页…`;
       notice.hidden = false;
@@ -1412,7 +1413,9 @@
       if (!frame.getAttribute("src")) return;
       window.clearTimeout(slowTimer);
       frame.setAttribute("aria-busy", "false");
-      notice.hidden = true;
+      // A problem the helper reported for this page, such as denied storage
+      // access, usually arrives before load and must stay visible.
+      if (!notice.dataset.originalPageIssue) notice.hidden = true;
       // The isolated page cannot be inspected from this origin. A load event
       // only ends the loading notice; it does not assert business readiness.
       if (chip) chip.textContent = `${label}原站`;
