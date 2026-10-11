@@ -114,7 +114,7 @@ updated: 2026-10-09
 ### 数据库分域
 
 - 实体库与平台分表说明：`../../docs/database_domains.md`；唯一表名路由 `../../shared/logistics_tables.py`。
-- 部署迁移：`migrations/055_domain_database_split.sql` 与 `scripts/migration_055_domain_databases.py`；运行库视图不存业务副本，后续结构与备份覆盖三个库。
+- 部署迁移：`migrations/055_domain_database_split.sql` 与 `scripts/migration_055_domain_databases.py`；运行库视图不存业务副本，后续结构与备份覆盖三个库。`migrations/056_drop_boyi_handling_fees.sql` 先备份再删除博益接货费、送货费，并由迁移器刷新视图。
 - 生产库是跨地域 RDS：写库代码的批量写入、连接复用约束及实测见 `../../docs/mysql_rds_migration.md` 的“跨地域访问的性能约束”；插件调用清单按 lease 缓存于 `agent/automation_plugins/capability_proxy_v2.py`。
 
 ### `shared/finance/`

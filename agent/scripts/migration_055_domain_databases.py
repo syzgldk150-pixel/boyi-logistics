@@ -184,9 +184,40 @@ def _views(cursor, runtime, waybill, finance):
     for schema, tables in ((finance, FINANCE_TABLES), (waybill, (*LOGISTICS_TABLES, *NEW_TABLES, "receipt_sequences"))):
         for table in tables:
             cursor.execute(f"CREATE OR REPLACE ALGORITHM=MERGE SQL SECURITY INVOKER VIEW {qualified(runtime, table)} AS SELECT * FROM {qualified(schema, table)}")
-    wb_cols = ','.join(map(quote, columns(cursor, waybill, "ronghui_waybills")))
-    cursor.execute(f"CREATE OR REPLACE SQL SECURITY INVOKER VIEW {qualified(runtime, 'waybills')} AS SELECT {wb_cols} FROM {qualified(waybill, 'ronghui_waybills')} UNION ALL SELECT {wb_cols} FROM {qualified(waybill, 'yunda_waybills')} UNION ALL SELECT {wb_cols} FROM {qualified(waybill, 'boyi_waybills')} WHERE source='ocr'")
+    wb_columns = columns(cursor, waybill, "ronghui_waybills")
+    wb_cols = ','.join(map(quote, wb_columns))
+    # Boyi rows have no platform-only handling fees since migration 056.
+    boyi_present = set(columns(cursor, waybill, "boyi_waybills"))
+    boyi_cols = ','.join(f"NULL AS {quote(c)}" if c in {"pickup_fee", "delivery_fee"} and c not in boyi_present else quote(c) for c in wb_columns)
+    cursor.execute(f"CREATE OR REPLACE SQL SECURITY INVOKER VIEW {qualified(runtime, 'waybills')} AS SELECT {wb_cols} FROM {qualified(waybill, 'ronghui_waybills')} UNION ALL SELECT {wb_cols} FROM {qualified(waybill, 'yunda_waybills')} UNION ALL SELECT {boyi_cols} FROM {qualified(waybill, 'boyi_waybills')} WHERE source='ocr'")
     cursor.execute(f"CREATE OR REPLACE SQL SECURITY INVOKER VIEW {qualified(runtime, 'receipt_records')} AS " + " UNION ALL ".join(f"SELECT * FROM {qualified(waybill, platform + '_receipts')}" for platform in ("yunda", "ronghui", "boyi")))
+
+
+def bind_database_names(cursor, sql):
+    """Bind a later migration's entity database names for this runtime."""
+    _, waybill, finance = names(cursor)
+    return sql.replace("{{waybill_db}}", quote(waybill)).replace("{{finance_db}}", quote(finance))
+
+
+def refresh_views(cursor):
+    """Re-project the runtime views after a later entity-table migration."""
+    if status(cursor) != "ACTIVE":
+        raise RuntimeError("domain split must be active before later entity migrations")
+    _views(cursor, *names(cursor))
+
+
+def apply_version(cursor, version, sql_path, split_sql, backup_directory):
+    """Apply 055 itself, or a later SQL migration on the entity databases."""
+    if version == VERSION:
+        return apply(cursor, sql_path, split_sql, backup_directory)
+    return apply_later_migration(cursor, sql_path.read_text(encoding="utf-8"), split_sql)
+
+
+def apply_later_migration(cursor, sql, split_sql):
+    """Run a post-055 SQL migration on the entity databases, then re-project the views."""
+    for statement in split_sql(bind_database_names(cursor, sql)):
+        cursor.execute(statement)
+    refresh_views(cursor)
 
 
 def apply(cursor, sql_path, split_sql, backup_directory):

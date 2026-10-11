@@ -379,10 +379,10 @@ def run(*, check_only: bool) -> int:
                 else None
             )
             for version, path in pending:
-                if version == "055":
+                if version >= "055":  # 055 split the entity databases; later SQL targets them.
                     env_path = Path(os.getenv("MIGRATION_ENV_FILE", PROJECT_ROOT / ".env"))
                     backup_directory = Path(os.getenv("MIGRATION_BACKUP_DIRECTORY", str(env_path.parent / "runtime" / "migration-backups")))
-                    _load_domain_database_migration().apply(cursor, path, split_sql_statements, backup_directory)
+                    _load_domain_database_migration().apply_version(cursor, version, path, split_sql_statements, backup_directory)
                 elif version == "027":
                     assert business_module_contract is not None
                     business_module_contract.apply_business_module_lifecycle_migration(

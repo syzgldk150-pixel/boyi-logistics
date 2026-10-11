@@ -33,8 +33,6 @@ WAYBILL_ENTRY_DRAFT_FIELDS = (
     "weight_kg",
     "volume_m3",
     "freight_fee",
-    "pickup_fee",
-    "delivery_fee",
     "transfer_fee",
     "delivery_method",
     "payment_method",
@@ -58,8 +56,6 @@ WAYBILL_ENTRY_DRAFT_MAX_LENGTHS: Mapping[str, int] = MappingProxyType(
         "weight_kg": 64,
         "volume_m3": 64,
         "freight_fee": 64,
-        "pickup_fee": 64,
-        "delivery_fee": 64,
         "transfer_fee": 64,
         "delivery_method": 120,
         "payment_method": 120,
@@ -96,8 +92,6 @@ class WaybillEntryDraft(TypedDict):
     weight_kg: str
     volume_m3: str
     freight_fee: str
-    pickup_fee: str
-    delivery_fee: str
     transfer_fee: str
     delivery_method: str
     payment_method: str

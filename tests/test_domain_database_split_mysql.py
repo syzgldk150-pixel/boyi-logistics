@@ -190,3 +190,49 @@ def test_restore_and_reapply_before_activation(database):
         cur.execute("SELECT COUNT(*) AS n FROM waybills")
         assert cur.fetchone()["n"] == 3
     apply()
+
+
+def test_boyi_handling_fees_drop_after_split_keeps_platform_fees(database):
+    conn, connect, migration, apply = database
+    apply()
+    runner = load("run_migrations")
+    with conn.cursor() as cur:
+        runtime, waybill, _ = migration.names(cur)
+        cur.execute(f"UPDATE `{waybill}`.ronghui_waybills SET pickup_fee='3.00', delivery_fee='5.00' WHERE id=1")
+        cur.execute(f"UPDATE `{waybill}`.boyi_waybills SET pickup_fee='7.50', delivery_fee='9.25' WHERE id=1")
+        sql = (ROOT / "agent/migrations/056_drop_boyi_handling_fees.sql").read_text(encoding="utf-8")
+        migration.apply_later_migration(cur, sql, runner.split_sql_statements)
+        boyi_columns = migration.columns(cur, waybill, "boyi_waybills")
+        assert "pickup_fee" not in boyi_columns and "delivery_fee" not in boyi_columns
+        assert {"pickup_fee", "delivery_fee"} <= set(migration.columns(cur, waybill, "ronghui_waybills"))
+        # The runtime views were re-projected onto the changed entity table.
+        cur.execute("SELECT * FROM boyi_waybills WHERE id=1")
+        manual = cur.fetchone()
+        assert manual["waybill_no"] == "BY00001" and "pickup_fee" not in manual
+        cur.execute("SELECT source, pickup_fee, delivery_fee FROM waybills")
+        fees = {row["source"]: (row["pickup_fee"], row["delivery_fee"]) for row in cur.fetchall()}
+        assert fees["ronghui"] == ("3.00", "5.00")
+        assert fees["ocr"] == (None, None)
+        cur.execute(f"SELECT id, pickup_fee, delivery_fee FROM `{waybill}`._migration_056_boyi_handling_fees ORDER BY id")
+        archived = cur.fetchall()
+        assert len(archived) == 2
+        assert archived[0] == {"id": 1, "pickup_fee": "7.50", "delivery_fee": "9.25"}
+    repo = repository(connect)
+    assert repo.search_waybills({"date_from": "2026-09-08", "date_to": "2026-09-08"})["pagination"]["total"] == 4
+    assert "pickup_fee" not in repo.get_waybill(1, source="manual")
+    fields = {name: "" for name in repo._WAYBILL_FIELD_NAMES}
+    fields.update(open_date="2026-09-09", freight_fee="30.00", transfer_fee="2.00",
+                  receipt_required="0", sender_address="")
+    waybill_id, number = repo.create_manual_waybill(fields)
+    assert repo.get_waybill(waybill_id, source="manual")["transfer_fee"] == "2.00"
+    assert number.startswith("BY")
+
+
+def test_runtime_views_reject_missing_boyi_business_column(database):
+    conn, _, migration, apply = database
+    apply()
+    with conn.cursor() as cur:
+        _, waybill, _ = migration.names(cur)
+        cur.execute(f"ALTER TABLE `{waybill}`.boyi_waybills DROP COLUMN freight_fee")
+        with pytest.raises(pymysql.err.OperationalError, match="freight_fee"):
+            migration.refresh_views(cur)

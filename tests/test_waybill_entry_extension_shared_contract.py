@@ -103,3 +103,9 @@ def test_validator_result_is_closed_and_validity_matches_error_issues() -> None:
     ):
         with pytest.raises(ValueError):
             normalize_waybill_entry_validator_result(invalid)
+
+
+@pytest.mark.parametrize("field", ["pickup_fee", "delivery_fee"])
+def test_boyi_draft_rejects_removed_platform_fees(field: str) -> None:
+    with pytest.raises(ValueError, match="fields"):
+        normalize_waybill_entry_draft({**_draft(), field: "12.00"})

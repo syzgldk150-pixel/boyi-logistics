@@ -2,7 +2,7 @@
 module: database
 type: architecture
 status: active
-updated: 2026-10-07
+updated: 2026-10-11
 ---
 
 # 运行、运单回单、财务分库
@@ -37,7 +37,11 @@ updated: 2026-10-07
 `shared/logistics_tables.py` 唯一维护。MySQL 同一连接跨库的事务与外键继续保留。
 
 后续修改业务表结构必须对 `waybill_db` 或 `finance_db` 实体表执行新迁移，并刷新相应视图的字段投影；
-不能对运行库中的视图执行 `ALTER TABLE`，也不能改写 001–055 的已发布 SQL。
+不能对运行库中的视图执行 `ALTER TABLE`，也不能改写 001–055 的已发布 SQL。055 之后的迁移用
+`{{waybill_db}}`、`{{finance_db}}` 引用实体库，执行器按当前运行库绑定库名，执行后重建全部视图。
+迁移 056 删除了 `boyi_waybills` 的接货费、送货费；`waybills` 只读视图中博益 OCR 行的这两列读为 NULL，
+融辉、韵达平台表保留原值。删除前的行 ID 和两项费用原样保存在
+`waybill_db._migration_056_boyi_handling_fees`，该备份表不接入运行时视图，保留到业务验收完成。
 同实例迁移或灾备必须覆盖三个库、跨库外键和视图，单独导出 `agent_db` 不再包含业务实体数据。
 
 ## 当前数据库连接身份

@@ -547,9 +547,13 @@ class WaybillEntryExtensionTemplateTests(unittest.TestCase):
         )
         self.assertIsNotNone(field_match)
         self.assertEqual(list(WAYBILL_ENTRY_DRAFT_FIELDS), json.loads(field_match.group(1)))
-        self.assertIn("pickup_fee", json.loads(field_match.group(1)))
         self.assertIn("transfer_fee", json.loads(field_match.group(1)))
-        for excluded in ("waybill_no", "weight_volume", "return_to", "auto_print", "action"):
+        # Every draft field has a matching entry-form input; the Boyi form has
+        # no pickup or delivery fee.
+        for field_name in WAYBILL_ENTRY_DRAFT_FIELDS:
+            self.assertIn(f'id="field_{field_name}"', html)
+        for excluded in ("waybill_no", "weight_volume", "return_to", "auto_print", "action",
+                         "pickup_fee", "delivery_fee"):
             self.assertNotIn(excluded, json.loads(field_match.group(1)))
 
     def test_slots_never_mount_outside_boyi_frame(self):
