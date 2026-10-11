@@ -7,6 +7,7 @@ The ordinary shipment uses the platform's current minimum declared value.
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 
@@ -94,7 +95,16 @@ def _destination(client, request, context):
         raise QuoteError("融辉该地址暂无服务网点")
     match = _procedure(client, "ronghui_match_site", "GET_FIRST_MATCH_SITE_ZB", [{"p_site_names": ", ".join(names)}])
     index = match.get("p_match_index")
-    if isinstance(index, bool) or not isinstance(index, int) or not 1 <= index <= len(names):
+    # The source endpoint emits integral JSON numbers such as 2.0. Browser
+    # JSON.parse/CDP normalizes these to int, whereas Host json.loads preserves
+    # float. Validate the numeric value without accepting strings or rounding.
+    if isinstance(index, bool) or not isinstance(index, (int, float)):
+        raise QuoteError("融辉未确定服务网点")
+    if isinstance(index, float):
+        if not math.isfinite(index) or not index.is_integer():
+            raise QuoteError("融辉未确定服务网点")
+        index = int(index)
+    if not 1 <= index <= len(names):
         raise QuoteError("融辉未确定服务网点")
     name = _text(match, "p_match_name")
     if name != names[index - 1]:

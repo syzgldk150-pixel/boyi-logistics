@@ -7,7 +7,7 @@ updated: 2026-10-12
 
 # 三平台报价
 
-`quote_prices_v2` 1.0.0 是独立 Service V2 插件。融辉、韵达、百世的地址解析、产品选择与金额计算全部在 ZIP 内；Host 仅提供账号绑定、已保存登录态、受声明约束的只读 HTTP、最小业务上下文及执行记录。系统工具目录不再提供 `get_price`，旧报价脚本只保留在 `agent/legacy/price_quote/`，不发布或作为回退。
+`quote_prices_v2` 1.0.1 是独立 Service V2 插件。融辉、韵达、百世的地址解析、产品选择与金额计算全部在 ZIP 内；Host 仅提供账号绑定、已保存登录态、受声明约束的只读 HTTP、最小业务上下文及执行记录。系统工具目录不再提供 `get_price`，旧报价脚本只保留在 `agent/legacy/price_quote/`，不发布或作为回退。
 
 ## 输入与结果
 
@@ -41,15 +41,15 @@ updated: 2026-10-12
 
 业务实现位于 `agent/service_v2_plugins/quote_prices_v2/payload/`，24 项只读请求在该目录 `manifest.json` 的 `http_requests` 中声明；账号业务上下文只返回融辉当前操作人和站点的四个必要字段，不返回认证材料。飞书与 Console 将本次输入传入真实 Direct Invocation；同一请求 UUID 重放必须匹配原调用的完整输入。
 
-2026-10-11/12 已通过真实原页接口与未保存录单表单对照：融辉六个产品/方式组合、韵达两种方式、百世两种方式金额均一致。真实地址和经营报价不入仓库。纯包测试使用虚构数据；`tests/test_quote_prices_v2_packaged.py` 使用真实 Linux 隔离进程、SDK 与 Broker，外部平台响应由模拟传输提供，不能代替线上实例验收。
+2026-10-11/12 已通过真实原页接口与未保存录单表单对照：融辉六个产品/方式组合、韵达两种方式、百世两种方式金额均一致。1.0.1 按真实原始 JSON 支持网点序号以整数值小数表示，仍校验整数、范围及网点名称；避免浏览器转换掩盖接口数值类型差异。真实地址和经营报价不入仓库。纯包测试使用虚构数据；`tests/test_quote_prices_v2_packaged.py` 使用真实 Linux 隔离进程、SDK 与 Broker，外部平台响应由模拟传输提供，不能代替线上实例验收。
 
 在仓库根目录、项目 Python 3.10 环境中执行：
 
 ```bash
 PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 PYTHONDONTWRITEBYTECODE=1 python -m pytest -q tests/test_quote_prices_v2.py tests/test_quote_ronghui_v2.py tests/test_quote_yunda_v2.py tests/test_quote_best_v2.py tests/test_quote_prices_v2_packaged.py tests/test_quote_runtime_inputs.py tests/test_quote_system_retirement.py
-PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin package agent/service_v2_plugins/quote_prices_v2 .task_tmp/quote_prices_v2-1.0.0.zip
-PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin inspect .task_tmp/quote_prices_v2-1.0.0.zip
-PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin permissions .task_tmp/quote_prices_v2-1.0.0.zip
+PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin package agent/service_v2_plugins/quote_prices_v2 .task_tmp/quote_prices_v2-1.0.1.zip
+PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin inspect .task_tmp/quote_prices_v2-1.0.1.zip
+PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin permissions .task_tmp/quote_prices_v2-1.0.1.zip
 ```
 
 打包前确保源码目录只有 manifest、Python 源码与声明的静态文件，不含浏览器试价生成的缓存或业务资料。ZIP 不可覆盖，重复构建使用新的输出路径。

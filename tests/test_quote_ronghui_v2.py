@@ -20,7 +20,7 @@ class FakeClient:
                 "geoResult": {"province": "测试省", "city": "测试市", "county": "测试区", "town": "测试街"},
                 "areaResults": [{"areaName": "测试候选甲"}, {"areaName": "测试目的网点"}],
             }]}},
-            "ronghui_match_site": {"success": True, "result": {"p_match_index": 2, "p_match_name": "测试目的网点"}},
+            "ronghui_match_site": {"success": True, "result": {"p_match_index": 2.0, "p_match_name": "测试目的网点"}},
             "ronghui_destination_name": [{"DESTINATION_NAME": "测试目的网点", "DESTINATION_CODE": "D-TEST", "TYPE": "一级网点"}],
             "ronghui_destination": [{
                 "DESTINATION_NAME": "测试目的网点", "DESTINATION_CODE": "D-TEST", "SITE_CODE": "DS-TEST",
@@ -89,12 +89,26 @@ def test_ambiguous_lookup_does_not_take_first(endpoint):
         quote(client, INPUT)
 
 
-@pytest.mark.parametrize("index", [0, -1, 3, 1.5, True, "2"])
+@pytest.mark.parametrize("index", [0, -1, 3, 1.5, 2.00000001, float("nan"), float("inf"), float("-inf"), True, "2"])
 def test_invalid_authoritative_area_index_is_rejected(index):
     client = FakeClient()
     client.responses["ronghui_match_site"]["result"]["p_match_index"] = index
     with pytest.raises(QuoteError, match="服务网点"):
         quote(client, INPUT)
+
+
+@pytest.mark.parametrize("literal", ["2", "2.0"])
+def test_source_json_integral_number_selects_the_authoritative_area(literal):
+    client = FakeClient()
+    client.responses["ronghui_match_site"] = json.loads(
+        '{"success":true,"result":{"p_match_index":' + literal + ',"p_match_name":"测试目的网点"}}'
+    )
+    index = client.responses["ronghui_match_site"]["result"]["p_match_index"]
+    assert type(index) is (float if literal == "2.0" else int)
+    result = quote(client, INPUT)
+    assert len(result["quotes"]) == 6
+    selected = next(body for name, body in client.calls if name == "ronghui_destination_name")
+    assert selected == {"DESTINATION_NAME": "测试目的网点"}
 
 
 def test_area_index_and_name_must_agree():

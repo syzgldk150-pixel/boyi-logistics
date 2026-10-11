@@ -71,7 +71,7 @@ def packaged_host(tmp_path, monkeypatch, *, unavailable=(), wrong_yunda=False):
 
     monkeypatch.setattr("agent.automation_plugins.account_http.AccountHTTPTransport", Transport)
     context = CoreBrokerInvocationContext(
-        automation_id="isolated-three-platform-quote", plugin_version="1.0.0",
+        automation_id="isolated-three-platform-quote", plugin_version="1.0.1",
         tool_name="quote_prices_v2", operation="http.request", action="read_json", role="ronghui_quote",
         account_bindings={system + "_quote": (account,) for system, account in ACCOUNTS.items()},
     )
