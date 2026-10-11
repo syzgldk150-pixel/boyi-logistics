@@ -130,7 +130,9 @@
     { field: "station", px: 44, x: 617.5, baseline: 348.5, maxWidth: 250 },
     { field: "recipientName", px: 40, x: 413.5, baseline: 481.5, maxWidth: 228 },
     { field: "recipientPhone", px: 40, x: 845.5, baseline: 481.5, maxWidth: 284 },
-    { field: "recipientAddress", ...ADDRESS_STYLE, x: 450.5, baseline: 579 },
+    // A long recipient address takes a third line at full size; the lines then
+    // close up so the last baseline stays at 683, clear of the divider.
+    { field: "recipientAddress", ...ADDRESS_STYLE, lines: 3, lastBaseline: 683, x: 450.5, baseline: 579 },
     { field: "senderName", px: 40, x: 413.5, baseline: 795.5, maxWidth: 228 },
     { field: "senderPhone", px: 40, x: 845.5, baseline: 795.5, maxWidth: 284 },
     // The sender block leaves room for a single address line above its divider.
@@ -176,6 +178,12 @@
     return lines;
   };
 
+  const linePitch = (item, px, count) => {
+    const pitch = (item.pitch || 0) * px / item.px;
+    return item.lastBaseline && count > 1
+      ? Math.min(pitch, (item.lastBaseline - item.baseline) / (count - 1)) : pitch;
+  };
+
   const buildDynamicItems = (data, settings = readSettings()) => {
     const context = document.createElement("canvas").getContext("2d");
     if (!context) throw new Error("无法测量打印文字，请刷新页面后重试");
@@ -190,7 +198,7 @@
         if (lines.length > (item.lines || 1)) continue;
         return [{
           field: item.field, lines, px,
-          x: item.x, baseline: item.baseline, pitch: (item.pitch || 0) * px / item.px,
+          x: item.x, baseline: item.baseline, pitch: linePitch(item, px, lines.length),
         }];
       }
       throw new Error(`${FIELD_LABELS[item.field]}内容过长，请缩短内容后重试`);

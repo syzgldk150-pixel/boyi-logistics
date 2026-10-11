@@ -933,6 +933,9 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertIn('{ field: "recipientName", px: 40, x: 413.5, baseline: 481.5', js)
         self.assertIn("const ADDRESS_STYLE = { px: 40, maxWidth: 680, lines: 2, pitch: 57.5 };", js)
         self.assertIn('{ field: "senderAddress", ...ADDRESS_STYLE, lines: 1, x: 450.5, baseline: 882.5 }', js)
+        # A long recipient address uses a third full-size line, closed up above the divider.
+        self.assertIn('{ field: "recipientAddress", ...ADDRESS_STYLE, lines: 3, lastBaseline: 683, x: 450.5, baseline: 579 }', js)
+        self.assertIn("Math.min(pitch, (item.lastBaseline - item.baseline) / (count - 1))", js)
         self.assertIn("const LEFT_DETAIL = { px: 34, x: 305, maxWidth: 276 };", js)
         self.assertIn("text.context.scale(scaleX, scaleY);", js)
         # Whole amounts drop ".00" like the sample; fractions keep two places.
