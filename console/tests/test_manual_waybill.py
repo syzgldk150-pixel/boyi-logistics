@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -37,11 +38,9 @@ class _TemplateStore:
                 {"name": "delivery_method", "label": "送货方式", "required": True},
                 {"name": "freight_fee", "label": "运费", "required": True},
                 {"name": "payment_method", "label": "结算方式", "required": True},
-                {"name": "delivery_fee", "label": "送货费", "required": False},
                 {"name": "sender_name", "label": "发货人", "required": False},
                 {"name": "sender_phone", "label": "发货电话", "required": False},
                 {"name": "weight_volume", "label": "重/体积", "required": False},
-                {"name": "pickup_fee", "label": "接货费", "required": False},
                 {"name": "transfer_fee", "label": "中转费", "required": False},
                 {"name": "remark", "label": "备注", "required": False},
             ],
@@ -78,7 +77,7 @@ def _valid_form(**overrides):
         "field_quantity_lines": "1件",
         "field_delivery_method": "送货",
         "field_freight_fee": "20",
-        "field_delivery_fee": "5.5",
+        "field_transfer_fee": "5.5",
         "field_payment_method": "寄付",
     }
     values.update(overrides)
@@ -123,7 +122,9 @@ class ManualWaybillServiceTests(unittest.TestCase):
         self.assertEqual("BY00001", fields["waybill_no"])
         self.assertEqual("2026/05/12", fields["open_date"])
         self.assertEqual("20.00", fields["freight_fee"])
-        self.assertEqual("5.50", fields["delivery_fee"])
+        self.assertEqual("5.50", fields["transfer_fee"])
+        self.assertNotIn("pickup_fee", fields)
+        self.assertNotIn("delivery_fee", fields)
         self.assertEqual("", fields["insurance_amount"])
         self.assertEqual("", fields["cod_amount"])
 
@@ -845,7 +846,7 @@ class ManualWaybillTemplateTests(unittest.TestCase):
                 "quantity_lines": "1件",
                 "weight_volume": "2.50kg",
                 "freight_fee": "20.00",
-                "delivery_fee": "5.00",
+                "transfer_fee": "5.00",
                 "payment_method": "寄付",
                 "remark": "易碎物品，请轻拿轻放",
                 "insurance_amount": "",
@@ -892,7 +893,9 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertFalse((CONSOLE_DIR / "static/assets/waybill_label_background.jpg").exists())
         self.assertIn("buildDynamicItems", js)
         self.assertIn("readWeightVolume", js)
-        self.assertIn("pickup_fee", js)
+        # The template has no pickup or delivery fee; the label never prints them.
+        self.assertNotIn("pickup_fee", js)
+        self.assertNotIn("delivery_fee", js)
         self.assertIn("transfer_fee", js)
         self.assertIn("insurance_amount", js)
         self.assertIn("cod_amount", js)
@@ -933,15 +936,16 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertIn('weight: 700, name: "思源黑体"', js)
         self.assertIn("加载失败，请检查网络后刷新页面重试", js)
         self.assertNotIn("local(", js)
-        # Sample-measured size, origin and baseline per field; glyphs are not squeezed.
-        self.assertIn('{ field: "waybillNo", px: 44, x: 62.5, baseline: 348.5, maxWidth: 240 }', js)
-        self.assertIn('{ field: "recipientName", px: 40, x: 413.5, baseline: 481.5', js)
-        self.assertIn("const ADDRESS_STYLE = { px: 40, maxWidth: 680, lines: 2, pitch: 57.5 };", js)
-        self.assertIn('{ field: "senderAddress", ...ADDRESS_STYLE, lines: 1, x: 450.5, baseline: 882.5 }', js)
-        # A long recipient address uses a third full-size line, closed up above the divider.
-        self.assertIn('{ field: "recipientAddress", ...ADDRESS_STYLE, lines: 3, lastBaseline: 683, x: 450.5, baseline: 579 }', js)
-        self.assertIn("Math.min(pitch, (item.lastBaseline - item.baseline) / (count - 1))", js)
-        self.assertIn("const LEFT_DETAIL = { px: 34, x: 305, maxWidth: 276 };", js)
+        # Every value is 50px like the enlarged 填写样张; origin and baseline per field.
+        self.assertIn("const VALUE_PX = 50;", js)
+        self.assertIn('{ field: "waybillNo", x: 62, baseline: 348, maxWidth: 245 }', js)
+        self.assertIn('{ field: "recipientName", x: 364, baseline: 483, maxWidth: 200 }', js)
+        # The sample wraps the recipient address into three 58px-spaced lines.
+        self.assertIn('{ field: "recipientAddress", x: 400, baseline: 568, maxWidth: 700, lines: 3, pitch: 58 }', js)
+        self.assertIn('{ field: "senderAddress", x: 407, baseline: 894, maxWidth: 720 }', js)
+        self.assertIn('{ field: "paymentMethod", x: 338, baseline: 1427.5, maxWidth: 250 }', js)
+        self.assertIn('{ field: "remark", x: 215, baseline: 1529, maxWidth: 919 }', js)
+        self.assertIn("pitch: (item.pitch || 0) * px / VALUE_PX", js)
         self.assertIn("text.context.scale(scaleX, scaleY);", js)
         # Whole amounts drop ".00" like the sample; fractions keep two places.
         self.assertIn('return /^0*$/.test(fraction) ? whole : `${whole}.${fraction.padEnd(2, "0")}`;', js)
@@ -965,15 +969,22 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertFalse((CONSOLE_DIR / "static/js/waybill_label_svg.js").exists())
         self.assertFalse((CONSOLE_DIR / "static/assets/waybill_label_background.png").exists())
 
-    def test_manual_and_saved_print_pass_both_handling_fees(self):
+    def test_entry_and_print_drop_pickup_and_delivery_fees(self):
         manual = (CONSOLE_DIR / "templates/document.html").read_text(encoding="utf-8")
         saved = self.env.get_template("waybill_print.html").render(
-            waybill={"pickup_fee": "12.30", "transfer_fee": "45.60"},
+            waybill={"pickup_fee": "12.30", "delivery_fee": "7.80", "transfer_fee": "45.60"},
             autoprint=False, print_preview=False,
         )
-        self.assertIn('pickup_fee: manualFieldValue("pickup_fee")', manual)
+        # The Boyi label, entry form and OCR template share one field set.
+        for name in ("pickup_fee", "delivery_fee"):
+            self.assertNotIn(name, manual)
+            self.assertNotIn(name, saved)
+            for template in ("config/waybill_template.json", "config/templates/template_new.json"):
+                spec = json.loads((CONSOLE_DIR / template).read_text(encoding="utf-8"))
+                self.assertNotIn(name, [field["name"] for field in spec["fields"]])
+        self.assertNotIn("接货费", manual)
+        self.assertNotIn("送货费", manual)
         self.assertIn('transfer_fee: manualFieldValue("transfer_fee")', manual)
-        self.assertIn('pickup_fee: "12.30"', saved)
         self.assertIn('transfer_fee: "45.60"', saved)
 
     def test_print_template_preview_mode_auto_opens_preview(self):
@@ -998,7 +1009,7 @@ class ManualWaybillTemplateTests(unittest.TestCase):
                 "quantity_lines": "1件",
                 "weight_volume": "2.50kg",
                 "freight_fee": "20.00",
-                "delivery_fee": "5.00",
+                "transfer_fee": "5.00",
                 "payment_method": "寄付",
                 "remark": "",
                 "insurance_amount": "",

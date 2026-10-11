@@ -37,7 +37,7 @@
 
   <div class="print-frame" data-waybill-label-preview></div>
 
-  <script src="/static/js/waybill_label_html.js?v=20261011-open-strokes"></script>
+  <script src="/static/js/waybill_label_html.js?v=20261011-large-type"></script>
   <script src="/static/js/waybill_label_lodop.js?v=20261011-75x100"></script>
   <script src="/static/js/clodop_loader.js?v=20260812"></script>
   <script>
@@ -131,8 +131,6 @@
       weight_volume: {{ (waybill.get("weight_volume", "") or "") | tojson }},
       delivery_method: {{ (waybill.get("delivery_method", "") or "") | tojson }},
       freight_fee: {{ (waybill.get("freight_fee", "") or "") | tojson }},
-      pickup_fee: {{ (waybill.get("pickup_fee", "") or "") | tojson }},
-      delivery_fee: {{ (waybill.get("delivery_fee", "") or "") | tojson }},
       transfer_fee: {{ (waybill.get("transfer_fee", "") or "") | tojson }},
       payment_method: {{ (waybill.get("payment_method", "") or "") | tojson }},
       insurance_amount: {{ (waybill.get("insurance_amount", "") or "") | tojson }},

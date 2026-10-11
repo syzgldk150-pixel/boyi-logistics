@@ -172,8 +172,6 @@ QUALITY_ISSUE_LABELS = {
 
 MONEY_FIELD_NAMES = {
     "freight_fee",
-    "pickup_fee",
-    "delivery_fee",
     "transfer_fee",
     "insurance_amount",
     "cod_amount",

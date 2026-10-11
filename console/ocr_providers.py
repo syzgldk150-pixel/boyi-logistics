@@ -30,7 +30,7 @@ SECOND_PASS_BLOCKS = (
     ("header", ("waybill_no", "destination_site", "open_date")),
     ("contact", ("receiver_address", "sender_name", "sender_phone")),
     ("goods", ("goods_name_lines", "package_type_lines", "quantity_lines", "weight_volume")),
-    ("charges", ("delivery_method", "freight_fee", "pickup_fee", "delivery_fee", "transfer_fee", "payment_method", "remark")),
+    ("charges", ("delivery_method", "freight_fee", "transfer_fee", "payment_method", "remark")),
 )
 SPECIAL_REGION_RERUN_FIELDS = ("waybill_no", "freight_fee")
 ENABLE_TARGETED_PAGE_RERUN = False
@@ -40,8 +40,6 @@ SECOND_PASS_OVERRIDE_FIELDS = {
     "open_date",
     "delivery_method",
     "freight_fee",
-    "pickup_fee",
-    "delivery_fee",
     "transfer_fee",
     "payment_method",
     "remark",
@@ -335,7 +333,7 @@ def _build_qwen_payload(
             "5. quantity_lines 只能写件数，不要混入包装种类。",
             "6. sender_name 只写发货人姓名，sender_phone 只写发货人电话。",
             "7. delivery_method 只能写送货或自提。",
-            "8. freight_fee、pickup_fee、delivery_fee、transfer_fee 只保留金额或数字，不要带无关说明。",
+            "8. freight_fee、transfer_fee 只保留金额或数字，不要带无关说明。",
             "9. payment_method 只能返回手写或勾选后的结算方式，不要返回印刷字“结算方式”。",
             "10. remark 只能返回备注内容，不要返回印刷字“备注”。",
             "11. waybill_no 只返回右上角红色运单号/流水号，不要返回发站编号。",
@@ -645,7 +643,7 @@ def _build_targeted_field_instruction(field: dict[str, Any], current_result: dic
     elif field["name"] == "freight_fee":
         parts.append("只返回小写运费金额，不要读取运费总计的大写金额，也不要补成 0.00。")
         parts.append("只看右下角小写¥后的数字，不要抄运费总计里的90.41。")
-    elif field["name"] in {"pickup_fee", "delivery_fee", "transfer_fee"}:
+    elif field["name"] == "transfer_fee":
         parts.append("只返回该费用格里的数字金额；若空白就返回空字符串。")
     elif field["name"] == "payment_method":
         parts.append("只返回实际结算方式，不要翻译成英文。")
@@ -675,7 +673,7 @@ def _build_field_instruction(field: dict[str, Any], field_state: dict[str, Any])
         parts.append("只看顶部“到达站:”后的手写站点，不是底部发货点城市。")
     elif field["name"] == "receiver_phone":
         parts.append("只返回右侧收货人电话。")
-    elif field["name"] in {"receiver_phone", "sender_phone", "waybill_no", "freight_fee", "pickup_fee", "delivery_fee", "transfer_fee"}:
+    elif field["name"] in {"receiver_phone", "sender_phone", "waybill_no", "freight_fee", "transfer_fee"}:
         parts.append("优先输出清晰可见的数字或金额。")
     elif field["name"] == "delivery_method":
         parts.append("只返回送货或自提；如果只看到印刷标签而没有明确勾选/手写标记，则返回空字符串。")
@@ -1105,7 +1103,7 @@ def _sanitize_field_value(field_name: str, value: str) -> str:
             return ""
         return ""
 
-    if field_name in {"freight_fee", "pickup_fee", "delivery_fee", "transfer_fee"}:
+    if field_name in {"freight_fee", "transfer_fee"}:
         match = re.search(r"\d+(?:\.\d+)?", cleaned.replace(",", ""))
         return match.group(0) if match else ""
 
@@ -1166,7 +1164,7 @@ def _should_rerun_field(field_name: str, current_results: dict[str, Any]) -> boo
         return not current_value or _looks_like_dimension(current_value)
     if field_name == "weight_volume":
         return not current_value or not _looks_like_dimension(current_value)
-    if field_name in {"pickup_fee", "delivery_fee", "transfer_fee", "payment_method", "remark"}:
+    if field_name in {"transfer_fee", "payment_method", "remark"}:
         return not current_value
     return False
 

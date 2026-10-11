@@ -327,30 +327,6 @@
       "hint": "右下角“小写¥:”后的运费金额，只取小写数值。"
     },
     {
-      "name": "pickup_fee",
-      "label": "接货费",
-      "required": false,
-      "bbox": [
-        0.66,
-        0.32,
-        0.83,
-        0.38
-      ],
-      "hint": "接货费金额。"
-    },
-    {
-      "name": "delivery_fee",
-      "label": "送货费",
-      "required": false,
-      "bbox": [
-        0.66,
-        0.38,
-        0.83,
-        0.44
-      ],
-      "hint": "送货费金额。"
-    },
-    {
       "name": "transfer_fee",
       "label": "中转费",
       "required": false,

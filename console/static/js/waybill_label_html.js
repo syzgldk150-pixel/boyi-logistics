@@ -4,8 +4,8 @@
   const WIDTH_MM = "75mm";
   const HEIGHT_MM = "100mm";
   const PAGE_NAME = "75mm×100mm 博益物流主单";
-  const BACKGROUND_URL = "/static/assets/waybill_label_75x100.png?v=20261011-75x100";
-  const RECEIPT_BACKGROUND_URL = "/static/assets/waybill_label_75x100_receipt.png?v=20261011-75x100";
+  const BACKGROUND_URL = "/static/assets/waybill_label_75x100.png?v=20261011-large-type";
+  const RECEIPT_BACKGROUND_URL = "/static/assets/waybill_label_75x100_receipt.png?v=20261011-large-type";
   const receiptRequired = (value) => {
     if (value === undefined || value === null || value === false || value === 0 || value === "0") return false;
     if (value === true || value === 1 || value === "1") return true;
@@ -85,8 +85,6 @@
       pieces: field("pieces", "quantity_lines"),
       ...readWeightVolume(data),
       freight: money(field("freight", "freight_fee")),
-      pickupFee: money(field("pickupFee", "pickup_fee")),
-      deliveryFee: money(field("deliveryFee", "delivery_fee")),
       transferFee: money(field("transferFee", "transfer_fee")),
       insuranceAmount: money(field("insuranceAmount", "insurance_amount")),
       codAmount: money(field("codAmount", "cod_amount")),
@@ -123,40 +121,36 @@
     fontScale: clampNumber(settings.print_font_scale, 100, 85, 115) / 100,
     templateScale: clampNumber(settings.print_template_scale, 100, 94, 106) / 100,
   });
-  // Measured from the 填写样张 sample in source pixels: text origin, baseline and
-  // font size. Longer content shrinks within maxWidth, which stops about 10px
-  // before the next divider or 24px inside the frame.
+  // Measured from the 填写样张 sample in source pixels: every value is 50px, set
+  // just after its own label. Longer content shrinks within maxWidth, which stops
+  // before the next label or divider, or 24px inside the frame.
   const MIN_FONT_PX = 22;
-  const ADDRESS_STYLE = { px: 40, maxWidth: 680, lines: 2, pitch: 57.5 };
-  const LEFT_DETAIL = { px: 34, x: 305, maxWidth: 276 };
-  const RIGHT_DETAIL = { px: 34, x: 860.5, maxWidth: 270 };
+  const VALUE_PX = 50;
   const FIELD_LAYOUT = [
-    { field: "waybillNo", px: 44, x: 62.5, baseline: 348.5, maxWidth: 240 },
-    { field: "date", px: 44, x: 336, baseline: 348.5, maxWidth: 250 },
-    { field: "station", px: 44, x: 617.5, baseline: 348.5, maxWidth: 250 },
-    { field: "recipientName", px: 40, x: 413.5, baseline: 481.5, maxWidth: 228 },
-    { field: "recipientPhone", px: 40, x: 845.5, baseline: 481.5, maxWidth: 284 },
-    // A long recipient address takes a third line at full size; the lines then
-    // close up so the last baseline stays at 683, clear of the divider.
-    { field: "recipientAddress", ...ADDRESS_STYLE, lines: 3, lastBaseline: 683, x: 450.5, baseline: 579 },
-    { field: "senderName", px: 40, x: 413.5, baseline: 795.5, maxWidth: 228 },
-    { field: "senderPhone", px: 40, x: 845.5, baseline: 795.5, maxWidth: 284 },
+    { field: "waybillNo", x: 62, baseline: 348, maxWidth: 245 },
+    { field: "date", x: 337, baseline: 348, maxWidth: 287 },
+    { field: "station", x: 652, baseline: 348, maxWidth: 220 },
+    { field: "recipientName", x: 364, baseline: 483, maxWidth: 200 },
+    { field: "recipientPhone", x: 809, baseline: 483, maxWidth: 325 },
+    // The sample wraps the recipient address at about 700px into three lines.
+    { field: "recipientAddress", x: 400, baseline: 568, maxWidth: 700, lines: 3, pitch: 58 },
+    { field: "senderName", x: 366, baseline: 804, maxWidth: 200 },
+    { field: "senderPhone", x: 808, baseline: 804, maxWidth: 325 },
     // The sender block leaves room for a single address line above its divider.
-    { field: "senderAddress", ...ADDRESS_STYLE, lines: 1, x: 450.5, baseline: 882.5 },
-    { field: "cargoName", ...LEFT_DETAIL, baseline: 1002.5 },
-    { field: "packageType", ...RIGHT_DETAIL, baseline: 1002.5 },
-    { field: "pieces", ...LEFT_DETAIL, baseline: 1060.5 },
-    { field: "weight", ...RIGHT_DETAIL, baseline: 1060.5 },
-    { field: "volume", ...LEFT_DETAIL, baseline: 1119.5 },
-    { field: "freight", ...LEFT_DETAIL, baseline: 1204.5 },
-    { field: "transportMethod", ...RIGHT_DETAIL, baseline: 1204.5 },
-    { field: "pickupFee", ...LEFT_DETAIL, baseline: 1263.5 },
-    { field: "paymentMethod", ...RIGHT_DETAIL, baseline: 1263.5 },
-    { field: "deliveryFee", ...LEFT_DETAIL, baseline: 1322.5 },
-    { field: "insuranceAmount", ...RIGHT_DETAIL, baseline: 1322.5 },
-    { field: "transferFee", ...LEFT_DETAIL, baseline: 1381.5 },
-    { field: "codAmount", ...RIGHT_DETAIL, baseline: 1381.5 },
-    { field: "remark", ...ADDRESS_STYLE, x: 214.5, baseline: 1463.5, maxWidth: 916 },
+    { field: "senderAddress", x: 407, baseline: 894, maxWidth: 720 },
+    { field: "cargoName", x: 336, baseline: 1022.5, maxWidth: 252 },
+    { field: "packageType", x: 912, baseline: 1022.5, maxWidth: 222 },
+    { field: "pieces", x: 240, baseline: 1091.5, maxWidth: 348 },
+    { field: "weight", x: 910, baseline: 1091.5, maxWidth: 224 },
+    { field: "volume", x: 342, baseline: 1168, maxWidth: 246 },
+    { field: "freight", x: 244, baseline: 1278, maxWidth: 344 },
+    { field: "transportMethod", x: 917, baseline: 1278, maxWidth: 217 },
+    { field: "transferFee", x: 281, baseline: 1351, maxWidth: 307 },
+    { field: "insuranceAmount", x: 913, baseline: 1351, maxWidth: 221 },
+    { field: "paymentMethod", x: 338, baseline: 1427.5, maxWidth: 250 },
+    { field: "codAmount", x: 915, baseline: 1427.5, maxWidth: 219 },
+    // The remark row holds one line; a long remark shrinks to fit it.
+    { field: "remark", x: 215, baseline: 1529, maxWidth: 919 },
   ];
 
   const FIELD_LABELS = {
@@ -164,7 +158,7 @@
     recipientName: "收货人", recipientPhone: "收货电话", recipientAddress: "收件地址",
     senderName: "发货人", senderPhone: "发货电话", senderAddress: "发货地址",
     cargoName: "货物名称", packageType: "包装类型", pieces: "件数", weight: "重量", volume: "体积",
-    freight: "运费", pickupFee: "接货费", deliveryFee: "送货费", transferFee: "中转费",
+    freight: "运费", transferFee: "中转费",
     transportMethod: "送货方式", paymentMethod: "结算方式", insuranceAmount: "保价金额", codAmount: "代收金额",
     remark: "备注",
   };
@@ -184,19 +178,13 @@
     return lines;
   };
 
-  const linePitch = (item, px, count) => {
-    const pitch = (item.pitch || 0) * px / item.px;
-    return item.lastBaseline && count > 1
-      ? Math.min(pitch, (item.lastBaseline - item.baseline) / (count - 1)) : pitch;
-  };
-
   const buildDynamicItems = (data, settings = readSettings()) => {
     const context = document.createElement("canvas").getContext("2d");
     if (!context) throw new Error("无法测量打印文字，请刷新页面后重试");
     const items = FIELD_LAYOUT.flatMap((item) => {
       const value = cleanText(data[item.field]);
       if (!value) return [];
-      const basePx = item.px * settings.fontScale;
+      const basePx = VALUE_PX * settings.fontScale;
       for (let px = basePx; px >= MIN_FONT_PX; px -= 0.5) {
         context.font = fontCss(px);
         // Fit by reducing font size; glyphs are never squeezed horizontally.
@@ -204,7 +192,7 @@
         if (lines.length > (item.lines || 1)) continue;
         return [{
           field: item.field, lines, px,
-          x: item.x, baseline: item.baseline, pitch: linePitch(item, px, lines.length),
+          x: item.x, baseline: item.baseline, pitch: (item.pitch || 0) * px / VALUE_PX,
         }];
       }
       throw new Error(`${FIELD_LABELS[item.field]}内容过长，请缩短内容后重试`);

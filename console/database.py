@@ -850,14 +850,17 @@ class DocumentRepository:
     # waybills 表操作
     # ------------------------------------------------------------------
 
+    # Console writes only Boyi waybills (manual and OCR), which no longer carry
+    # pickup or delivery fees; platform waybills keep both.
     _WAYBILL_FIELD_NAMES = [
         "waybill_no", "destination_site", "open_date", "receiver_address",
         "receiver_name", "receiver_phone", "sender_name", "sender_phone",
         "goods_name_lines", "package_type_lines", "quantity_lines",
-        "weight_volume", "delivery_method", "freight_fee", "pickup_fee",
-        "delivery_fee", "transfer_fee", "payment_method", "insurance_amount",
+        "weight_volume", "delivery_method", "freight_fee",
+        "transfer_fee", "payment_method", "insurance_amount",
         "cod_amount", "remark", "scan_status",
     ]
+    _PLATFORM_ONLY_FIELD_NAMES = ["pickup_fee", "delivery_fee"]
 
     @classmethod
     def _waybill_query_table(cls, source: str | None = None) -> str:
@@ -868,9 +871,11 @@ class DocumentRepository:
             "writer_id", "source", "status", "created_at", "updated_at",
             "source_scope", "source_record_id", "source_account_id", "source_permission_scope",
         ])
+        platform_only = ", ".join(cls._PLATFORM_ONLY_FIELD_NAMES)
+        boyi_absent = ", ".join(f"NULL AS {name}" for name in cls._PLATFORM_ONLY_FIELD_NAMES)
         return (
-            f"(SELECT {columns}, NULL AS receipt_required, NULL AS sender_address FROM waybills UNION ALL "
-            f"SELECT {columns}, receipt_required, sender_address FROM boyi_waybills WHERE source='manual') AS saved_waybills"
+            f"(SELECT {columns}, {platform_only}, NULL AS receipt_required, NULL AS sender_address FROM waybills UNION ALL "
+            f"SELECT {columns}, {boyi_absent}, receipt_required, sender_address FROM boyi_waybills WHERE source='manual') AS saved_waybills"
         )
 
     def _field_value(self, fields: dict[str, Any], field_name: str) -> str:
