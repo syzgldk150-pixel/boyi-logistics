@@ -15,7 +15,7 @@
 - 自然语言插件请求由 `AgentCore` 按当前插件目录选择，`message_handler.py` 消费可信选择对象，经原 Feishu 入口执行并跟随本次结果；固定关键词仍直接路由。扫描确认仅消费明确扫描确认文本，未确认的预览不截获其他自然对话。
 - 固定“统计”及同一宿主解析器接受的无参数统计简称，在迁移分发前规范为声明命令“统计到货数据”；入口由迁移所有权决定（所有实例已完成迁移，当前为 V2），状态异常明确拒绝，不能回退或重复执行。
 - 非插件只读文本通过注入的 `AgentCore` 直接 reader 调用；已插件化的文本、菜单和 pending 确认只通过注入的 `AutomationProjectEntrypoints` 提交服务端 typed invocation。两者都禁止直接调用 `ToolExecutor`、业务脚本或第三方写函数。
-- Service v2 动态文本只通过独立注入的 `ServiceV2FeishuDispatcher` 解析当前 committed/READY contribution；所有 pending、登录、确认和固定 Action V1 文本优先，只有固定路由未命中后才查动态精确命令，动态未知才继续既有 Agent/LLM 路径。Dispatcher 只接收 `_COMMAND_CONTEXT` 中已验证的 event/sender/chat 与规范化文本，不接收原始 Webhook body、项目/服务/操作/账号/资源或调用参数；命中但身份缺失必须公共拒绝并停止，回复不得暴露 automation、service、operation、contribution 或内部执行 UUID。
+- Service v2 动态文本通过独立注入的 `ServiceV2FeishuDispatcher` 解析当前 committed/READY contribution；pending、登录、确认和固定 Action V1 文本优先，动态未知才继续既有 Agent/LLM 路径。Dispatcher 接收 `_COMMAND_CONTEXT` 中已验证的 event/sender/chat、精确声明命令，以及当前 contribution `input_schema` 声明的本次业务输入；不得接收项目/服务/操作/账号/资源身份或覆盖保存配置。报价解析器只提交地址、重量、体积与静态命令“三平台报价”。命中但身份缺失必须拒绝并停止，回复不暴露内部执行身份。
 - 插件项目只能按 committed generation 中唯一的 `feishu_route.route_key` 解析实例；重复别名、多候选、缺绑定或非稳定事件 ID 必须显式拒绝，不得按工具、插件或列表首项猜测。消息和旧 pending 中的账号覆盖字段一律拒绝，账号只取该实例的 Business Account bindings；日期、车牌和预览指纹只由代码拥有的 resolver 注入。
 - 每个生产命令使用飞书事件头 `event_id` 生成 `feishu:{event_id}` 幂等键；缺少稳定事件 ID 的写命令必须显式拒绝，不能用消息内容、时间戳或随机值代替。
 - `builtin.scan_codes` 只接受“扫描/菜单生成预览 → 原发起人精确回复“确认”或“取消””的两步流程。预览成功只回复扫描日期、扫描件数及确认/取消提示，不发送生成中的常规通知；扫描件数取真实 selection_count，其他预览字段仍保留在服务端用于核验；pending 只在进程内保存公共 `preview_invocation_id` 和事件身份，最长十五分钟且服务重启不恢复。正式确认不得发送 `dry_run`、哈希、Evidence 或运单集合；结果未知时锁定原事件 ID，仅允许该事件精确重放，已消费预览不能再次确认；新的明确触发可以生成新预览，禁止旧链路回退。
@@ -60,11 +60,11 @@
 - **主动登录/发码**：用户直接发送 `登录`、`登陆`、`发验证码`、`重新登录` 等文本
   - 主动登录/发码优先级高于所有 pending；收到后必须先清除旧 pending，不能把“登陆”当成上一次登录恢复任务的确认，也不能自动续跑旧任务
   - 泛化登录词会先提示选择：`1. 大祥账号` / `2. 操作场账号` / `3. 韵达账号`
-- 大祥报价直达任务必须携带 `account_id=price_default`，登录恢复走 `/admin/accounts/price_default/login`；账号凭据只来自账号管理页面保存值，不读取部署环境变量
+- 报价账号由 `quote_prices_v2` 项目明确绑定融辉、韵达、百世三个账号角色；飞书消息不携带账号。账号登录仍在业务账号页统一管理，凭据只来自该页保存值，不读取部署环境变量。
   - 操作场账号同样走 `/admin/accounts/{account_id}/login`，账号密码来自后台业务账号页面保存值
   - 发送成功后注册 `waiting_code_for_resume` pending；用户回 4-8 位字母数字验证码后只完成登录态校验，不自动续跑原工具
   - 如果验证码已由后台或接口生成但飞书 pending 丢失，用户直接回 4-8 位验证码时会先检查 TMS session 是否处于 `pending_code`，命中后提交验证码完成登录
-- **报价验证码**：`get_price` 同时查询融辉和韵达，`tools/price_tool.py` 会并发启动两段 HTTP 查询；飞书回复两条报价消息时首行分别标注 `融辉价格` / `韵达价格`；融辉段使用大祥账号专用登录态，并用真实运单录入页详细地址 blur 解析获取目的网点/派件网点，无头页只补公开登录上下文和地图空实现，不做拆词兜底；韵达段使用韵达账号登录态；韵达价格来自运单录入页 `price.html` 成本口径并计入页面默认短信费，详细字段来自运单录入地址解析/网点匹配接口和 `checkServiceScope.html` 特殊区域校验接口；命中特殊区域时飞书必须展示特殊区域、加收备注和提醒
+- **三平台报价**：`地址，重量，体积`（可加“报价”前缀）只调用 `quote_prices_v2` 当前 V2 入口，重量单位为公斤、体积单位为立方米；体积可输入 `长*宽*高*件数`（厘米）表达式。缺任一条件先提示补齐，不调用系统 reader、不默认体积。飞书始终分别显示 `融辉价格`、`韵达价格`、`百世价格`，各项来自该次 Invocation 的结果，某平台失败保留其失败原因，其余成功报价正常显示；特殊区域等提醒来自插件结果。
 - 融辉、韵达及其他 TMS 账号的发码、提码和状态操作统一走 `/admin/accounts/{account_id}/*`；`/admin/tms/session/*`、`/admin/tms/price-session/*`、`/admin/tms/yunda-session/*` 仅保留旧调用兼容，不得成为新入口
 - **已移除自动化**：R7 到达打卡与 R7 发车打卡不再提供飞书指令；遗留待处理状态收到下一条消息时直接清理，不执行历史任务。
 - **TMS 登录态主动提醒**：`main.py` 启动 `_monitor_tms_session_alerts`

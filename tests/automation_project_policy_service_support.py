@@ -347,6 +347,9 @@ class _AutomationPlugins:
     def __init__(self, repository: "_Repository") -> None:
         self._repository = repository
 
+    def get_generation_row(self, automation_id, generation, **_kwargs):
+        return copy.deepcopy(self._repository.generation_rows.get((automation_id, generation)))
+
     def get_project(self, automation_id, **kwargs):
         if kwargs.get("for_update"):
             self._repository.state.acceptance_lock_trace.append("project:lock")
@@ -657,6 +660,7 @@ class _Repository:
         self.account_lock_events: list[tuple] = []
         self.block_account_locks = False
         self.runnable_run_ids: list[str] = []
+        self.generation_rows: dict[tuple[str, int], dict] = {}
 
     def unit_of_work(self):
         return _Uow(self)
@@ -908,6 +912,11 @@ class _DirectCalls:
             "actor_id": fields["actor_id"], "preview_invocation_id": fields.get("preview_invocation_id"),
             "status": "STARTING", "result_json": None}
         self.rows[identity] = row
+        metadata = fields["capability"]["_plugin_runtime"]
+        self.policy_repository.generation_rows.setdefault((invocation.automation_id, invocation.automation_generation), {
+            "runtime_model": metadata["runtime_model"],
+            "snapshot_json": {"execution_metadata": {"contributions": copy.deepcopy(metadata.get("contributions", {}))}},
+        })
         return public_invocation(row)
 
     async def wait(self, identity, *, timeout_seconds=None):
@@ -928,7 +937,10 @@ class AutomationProjectPolicyServiceTestBase(TestCase):
                 "input_schema": {"type": "object", "additionalProperties": True},
                 "permissions": {"required_roles": ["admin"]}, "approval": {"mode": "required"},
                 "_plugin_runtime": {"automation_id": self.entry.automation_id,
-                    "plugin_id": self.entry.plugin_id, "runtime_model": self.entry.runtime_model}}
+                    "plugin_id": self.entry.plugin_id, "runtime_model": self.entry.runtime_model,
+                    "contributions": getattr(self.entry, "contributions", {
+                        item.entrypoint: [{"id": key}] for key, item in self.contract.invocation_contracts.items()
+                    })}}
         self.addCleanup(patch.stopall)
         patch("agent.orchestration.direct_project_invocation.project_capability_from_snapshot", side_effect=capability).start()
         patch("agent.orchestration.direct_project_invocation.PluginExecutionRouter._service_contribution_capability", side_effect=lambda capability, **_: capability).start()

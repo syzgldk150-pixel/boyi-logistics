@@ -302,6 +302,140 @@ def test_endpoint_change_is_in_permission_digest_and_upgrade_report(tmp_path):
     assert "http_requests" in report["manifest"]["changed_sections"]
 
 
+def test_http_optional_fields_preserve_old_normalized_declarations():
+    raw = manifest()
+    parsed = AutomationPluginManifestV2.from_mapping(raw)
+    assert parsed.to_mapping()["http_requests"] == raw["http_requests"]
+
+
+def test_three_platforms_share_an_action_with_exact_separate_roles():
+    from agent.automation_plugins.harness_permissions import project_read_runtime_permissions
+    from agent.automation_plugins.service_v2_contract import ServiceV2ProjectContract
+    from agent.automation_plugins.developer_reports_v2 import _broker_operation_index
+
+    raw = manifest()
+    raw["account_roles"] = [
+        {"role": system + "_operator", "allowed_systems": [system], "required": True}
+        for system in ("ronghui", "yunda", "best")
+    ]
+    raw["capabilities"] = [
+        {"name": "http.request", "operations": ["read_json"], "account_role": role["role"], "resource_role": None}
+        for role in raw["account_roles"]
+    ]
+    raw["http_requests"] = [
+        {"name": role["role"], "account_role": role["role"], "action": "read_json", "method": "POST", "path": "/records"}
+        for role in raw["account_roles"]
+    ]
+    contract = ServiceV2ProjectContract.from_manifest(AutomationPluginManifestV2.from_mapping(raw))
+    operations = contract.runtime_permissions["broker_operations"]
+    assert len(operations) == 1
+    assert operations[0]["roles"] == ["ronghui_operator", "yunda_operator", "best_operator"]
+    assert project_read_runtime_permissions(contract.runtime_permissions)["broker_operations"] == operations
+    assert set(_broker_operation_index(contract)) == {
+        ("http.request", "read_json", role["role"]) for role in raw["account_roles"]
+    }
+
+
+@pytest.mark.parametrize("field,value", [
+    ("encoding", "xml"), ("query", {"token": "fixture"}), ("query", {"id": ["one"]}),
+    ("referer", "https://other.example/page"), ("referer", "/../page"),
+])
+def test_optional_request_metadata_cannot_inject_auth_or_other_origins(field, value):
+    raw = manifest()
+    raw["http_requests"][0][field] = value
+    with pytest.raises(PluginManifestError):
+        AutomationPluginManifestV2.from_mapping(raw)
+
+
+def test_form_post_preserves_declared_query_and_referer(monkeypatch):
+    client, session = transport(monkeypatch, session=Session(data=[{"id": "row"}]))
+    result = client.exchange({
+        "method": "POST", "path": "/data/query", "action": "read_json", "encoding": "form",
+        "query": {"id": "FIND_ROWS"}, "referer": "/entry/index.html",
+    }, {"data": json.dumps({"weight": 123})})
+    assert result["response"] == [{"id": "row"}]
+    options = session.calls[0][2]
+    assert options["params"] == {"id": "FIND_ROWS"}
+    assert options["data"] == {"data": '{"weight": 123}'} and "json" not in options
+    assert options["headers"]["Referer"] == "https://r7.ronghuiwl.com/entry/index.html"
+
+
+def test_get_cannot_replace_package_declared_query(monkeypatch):
+    client, session = transport(monkeypatch)
+    with pytest.raises(PluginExecutionError) as error:
+        client.exchange({"method": "GET", "path": "/data", "action": "read_json", "query": {"id": "bound"}}, {"id": "other"})
+    assert error.value.code == "HTTP_ARGUMENT_INVALID" and not session.calls
+
+
+def test_text_response_redacts_credentials_and_preserves_business_defaults(monkeypatch):
+    client, session = transport(monkeypatch)
+    session.response.content = (
+        '<input id="CreatedDotCode" value="EXAMPLE01">'
+        '<input name="csrfToken" value="fixture-html-secret">'
+        '<script>var CreatedByCode="staff-fixture"; var accessToken="fixture-js-secret";</script>'
+    ).encode()
+    result = client.exchange({"method": "GET", "path": "/entry.html", "action": "read_text"}, {})
+    assert 'value="EXAMPLE01"' in result["response"]
+    assert 'CreatedByCode="staff-fixture"' in result["response"]
+    assert "fixture-html-secret" not in result["response"] and "fixture-js-secret" not in result["response"]
+
+
+@pytest.mark.parametrize("body", [b'"scalar"', b"42", b"<html>ordinary page</html>"])
+def test_json_read_rejects_scalars_and_html(monkeypatch, body):
+    client, session = transport(monkeypatch)
+    session.response.content = body
+    with pytest.raises(PluginExecutionError) as error:
+        client.exchange({"method": "GET", "path": "/records", "action": "read_json"}, {})
+    assert error.value.code == "HTTP_RESPONSE_INVALID"
+
+
+@pytest.mark.parametrize("system,origin", [
+    ("ronghui", "https://tms.ronghuiwl.com"), ("yunda", "https://kyinms.yunda56.com"),
+    ("best", "https://v5.800best.com"),
+])
+def test_cookie_platforms_use_exact_account_binding_without_login(monkeypatch, system, origin):
+    calls = []
+    session = Session()
+    session.hooks = {"response": [object()]}
+
+    def binding(account_id):
+        calls.append(account_id)
+        return {"system": system, "session_profile": system + "_chosen"}
+
+    def broker(profile):
+        calls.append(profile)
+
+        def request_original_page(method, url, *, timeout, request_timeout, response_consumer, **kwargs):
+            assert timeout == 25 and request_timeout == (5, 20)
+            assert len(kwargs["hooks"]["response"]) == 1
+            try:
+                return response_consumer(session.request(method, url, timeout=request_timeout, **kwargs))
+            finally:
+                session.close()
+
+        return SimpleNamespace(request_original_page=request_original_page)
+
+    monkeypatch.setattr(account_http, "get_account_manager", lambda: SimpleNamespace(require_active_binding_descriptor=binding))
+    monkeypatch.setattr(account_http, "get_session_broker", broker)
+    client = AccountHTTPTransport(system=system, account_id="selected-second")
+    result = client.exchange({"method": "GET", "path": "/records", "action": "read_json"}, {})
+    assert result["status_code"] == 200
+    assert calls == ["selected-second", system + "_chosen"]
+    assert session.calls[0][1] == origin + "/records"
+    client.close()
+    assert session.closed
+
+
+def test_cookie_platform_cannot_use_account_from_another_system(monkeypatch):
+    monkeypatch.setattr(account_http, "get_account_manager", lambda: SimpleNamespace(
+        require_active_binding_descriptor=lambda _: {"system": "yunda", "session_profile": "yunda_chosen"},
+    ))
+    monkeypatch.setattr(account_http, "get_session_broker", lambda _: pytest.fail("wrong account cannot open"))
+    with pytest.raises(PluginExecutionError) as error:
+        AccountHTTPTransport(system="best", account_id="chosen")
+    assert error.value.code == "HTTP_REQUEST_BINDING_MISMATCH"
+
+
 def observations():
     return tuple(
         {

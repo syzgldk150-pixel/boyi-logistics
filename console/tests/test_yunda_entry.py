@@ -324,7 +324,8 @@ class YundaEntryTemplateTests(unittest.TestCase):
         self.assertIn('const nextMode = ["manual", "ocr"].includes(mode) ? mode : "manual"', template)
         self.assertIn('if (provider === "yunda") return "打开韵达原站（手动填写）"', template)
         self.assertIn('if (provider === "ronghui") return "打开融辉原站（手动填写）"', template)
-        self.assertIn('available && ["yunda", "ronghui"].includes(provider)', template)
+        self.assertIn('if (provider === "best") return "打开百世原站（手动填写）"', template)
+        self.assertIn('available && ["yunda", "ronghui", "best"].includes(provider)', template)
 
     def test_native_entry_quotes_only_request_tabs_without_prefill(self):
         node = shutil.which("node") or shutil.which("node.exe")
@@ -337,27 +338,30 @@ const source = require("node:fs").readFileSync(0, "utf8");
 const readBetween = (start, end) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
 const nativeYunda = source.match(/entry_yunda_src = '([^']+)'/)[1];
 const nativeRonghui = source.match(/entry_ronghui_src = '([^']+)'/)[1];
-const entryTabsRoot = {dataset:{entrySrcYunda:nativeYunda,entrySrcRonghui:nativeRonghui}};
+const nativeBest = source.match(/entry_best_src = '([^']+)'/)[1];
+const entryTabsRoot = {dataset:{entrySrcYunda:nativeYunda,entrySrcRonghui:nativeRonghui,entrySrcBest:nativeBest}};
 const messages=[], notices=[];
 const window = {location:{origin:"https://boyi.homes"},parent:{postMessage:(message,origin)=>messages.push({message,origin})}};
 const sessionStorage = {getItem:()=>{throw Error("unexpected old prefill read");},setItem:()=>{throw Error("unexpected prefill write");}};
 const document = {getElementById:()=>null};
-const quoteProviderLabels = {yunda:"Yunda",ronghui:"Ronghui"};
+const quoteProviderLabels = {yunda:"Yunda",ronghui:"Ronghui",best:"Best"};
 const showManualNotice = text=>notices.push(text);
-const lastQuotePayload = {quotes:[{provider:"yunda",status:"available",price:"10.00"},{provider:"ronghui",status:"available",price:"20.00"}]};
+const lastQuotePayload = {quotes:[{provider:"yunda",status:"available",price:"10.00"},{provider:"ronghui",status:"available",price:"20.00"},{provider:"best",status:"available",price:"30.00"}]};
 const functions = readBetween("const entryFrameSrc =", "const entryTabCount =")
     + readBetween("const selectQuoteProvider =", 'quoteAction?.addEventListener("click", calculateQuoteOptions)');
 eval(functions + `
     assert.equal(entryFrameSrc("yunda"), nativeYunda);
     assert.equal(entryFrameSrc("ronghui"), nativeRonghui);
+    assert.equal(entryFrameSrc("best"), nativeBest);
     selectQuoteProvider("yunda");
     selectQuoteProvider("ronghui");
-    assert.deepEqual(messages.map(x=>x.message), [{type:"SHIPNOW_OPEN_ENTRY_TAB",provider:"yunda"},{type:"SHIPNOW_OPEN_ENTRY_TAB",provider:"ronghui"}]);
+    selectQuoteProvider("best");
+    assert.deepEqual(messages.map(x=>x.message), [{type:"SHIPNOW_OPEN_ENTRY_TAB",provider:"yunda"},{type:"SHIPNOW_OPEN_ENTRY_TAB",provider:"ronghui"},{type:"SHIPNOW_OPEN_ENTRY_TAB",provider:"best"}]);
     assert.ok(messages.every(x=>x.origin===window.location.origin));
     assert.ok(notices.every(x=>x.includes("手动填写")));
     lastQuotePayload.quotes[1].status="unavailable";
     selectQuoteProvider("ronghui");
-    assert.equal(messages.length,2);
+    assert.equal(messages.length,3);
 `);
 """
         result = subprocess.run(

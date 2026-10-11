@@ -10,6 +10,9 @@ from urllib.parse import unquote
 
 
 RONGHUI_USER_INFO_COOKIE = "userInfo"
+RONGHUI_PUBLIC_CONTEXT_FIELDS = (
+    "loginEmpName", "loginEmpCode", "loginSiteName", "loginSiteCode",
+)
 RONGHUI_USER_CONTEXT_FIELDS = (
     "loginUserName",
     "loginUserAccount",
@@ -118,6 +121,7 @@ def normalize_ronghui_user_info_storage_state(
 
 
 __all__ = [
+    "RONGHUI_PUBLIC_CONTEXT_FIELDS",
     "RONGHUI_USER_CONTEXT_FIELDS",
     "RONGHUI_USER_INFO_COOKIE",
     "decode_js_cookie_value",

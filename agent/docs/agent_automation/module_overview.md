@@ -4,14 +4,15 @@ type: 模块文档
 tags: [Agent自动化, 飞书触发器, 直达指令, pending状态机, 登录恢复, TMS自动化]
 related: [../project_overview.md, ../code_navigation_index.md, ../ai_service/module_overview.md]
 status: active
-updated: 2026-10-08
+updated: 2026-10-12
 ---
 
 ## 当前执行边界
 
 [架构 V1](../../../docs/architecture_direct_invocation.md) 是当前调用规则：固定飞书关键词、
 Console 手动和定时直接启动对应插件，记录 Invocation，完成后回复真实结果。
-单号查询/报价等已注册 reader 直接返回数据；不创建 Command/Run，也不等待 Runner 领取。
+单号查询等已注册 reader 直接返回数据；不创建 Command/Run，也不等待 Runner 领取。
+报价使用 `quote_prices_v2` 独立 ZIP 的 Direct Invocation 入口；三家平台协议与金额已对照原页验证。核心发布、ZIP 安装与实际实例验收是独立步骤，见[三平台报价](../three_platform_quote.md)。
 失败、取消和未知写均结束本次；登录成功只恢复账号可用性，用户新触发才会产生新调用。
 不同插件可以并行，只有实际仍在运行的同实例/资源约束本次调用。
 
@@ -25,7 +26,7 @@ Console 手动和定时直接启动对应插件，记录 Invocation，完成后�
 
 ## 模块定位
 
-飞书接入负责固定指令、登录和预览确认及结果回复。插件通过注入的 `AutomationProjectEntrypoints` 绑定当前 committed generation 并直接执行，**不经过 LLM**；单号查询和报价调用已注册 direct reader。自然对话进入 Agent 的既有接口和数据分析能力，不能自动变成后台执行队列。
+飞书接入负责固定指令、登录和预览确认及结果回复。插件通过注入的 `AutomationProjectEntrypoints` 绑定当前 committed generation 并直接执行，**不经过 LLM**；单号查询调用已注册 direct reader。报价源码通过 V2 项目接入，交付状态见下方“报价”。自然对话进入 Agent 的既有接口和数据分析能力，不能自动变成后台执行队列。
 
 > 当前飞书机器人承载的全部能力都归属本模块。AI客服模块（面向客户的对话能力）尚未启动开发，待开发后会把客户对话相关的能力从这里剥离过去。
 
@@ -52,7 +53,7 @@ TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `er
 | `操作场登录` / `后台发验证码` / `后台保存账号登录` 等 | `/admin/accounts/{account_id}/login`（默认融辉操作场账号） | pending 或直接 authenticated（图片验证码先自动 OCR，失败 3 次后转人工输入并暂停自动重试） |
 | `韵达登录` / `韵达发验证码` / `yunda验证码` 等 | `/admin/accounts/{account_id}/login`（默认韵达账号） | pending 或直接 authenticated（图片验证码先 OCR；转手机验证码时飞书接管短信码输入） |
 | `切换到融辉自动化` / `切换到韵达自动化` / `当前自动化状态` | `automation_profile` | reply（切换或查看后台自动化 Profile；默认 `ronghui`） |
-| `报价` / `价格` + `地址,重量,体积` | `get_price` | reply（缺少任何影响金额的条件时先澄清，不补默认值；体积可为数字或 `长*宽*高*件数+...` 厘米表达式；保价/申明价值只采用真实页面本次返回的规则和值） |
+| `报价` / `价格` / `三平台报价` + `地址,重量,体积`，或完整的裸输入 | `quote_prices_v2` 项目 | 直接调用已安装且启用的 V2 实例。必须提供 address/weight/volume，缺少时先澄清，不补默认体积；体积可为数字或 `长*宽*高*件数+...` 厘米表达式 |
 | `获取当日寄件数据` / `融辉寄件数据` / `TMS寄件数据` 等 | `sync_daily_send_orders` | 直接插件（已启动后异步等待结果；默认拉取当天融辉寄件数据，按发件日期替换同日飞书快照，并同步控制台 `waybills` SQL 表） |
 | `arrivelist` / `到货清单` / `预到达清单` / `执行一次arrivelist脚本` 等 | `sync_arrive_list` | 直接插件（已启动后异步等待结果；拉取 TMS 派件预报基础清单并写入 MySQL + 飞书表格） |
 | `韵达派件预测` / `网点派件量预测主单表` / `应派预测` 等 | `sync_yunda_dispatch_forecast` | 直接插件（已启动后异步等待结果；默认拉取次日应派数据，按应派时间覆盖飞书多维表格） |
@@ -93,7 +94,7 @@ R7 两个历史工具和日志表仅为既有记录追溯保留。当前发行�
 
 后台登录态监控只处理 `/automation-accounts` 中处于启用状态、已在页面保存完整账号密码且打开“自动登录”开关的共享 session 账号；开关默认关闭。Agent `_monitor_tms_session_alerts` 是唯一周期主动检查器，统一执行“校验 → 必要时自动登录 → 返回最终状态”，再把最终结果写入 `agent/tms_runtime/routes.py` 维护的账号列表共享快照；Console 批量轮询只用 `prefer_cached=1` 被动读取该快照，不再发起第二次校验。页面未保存凭据、关闭开关、停用账号或进入失败熔断时，该账号会在校验前被跳过，不访问登录页，也不发送飞书断线提醒；部署环境变量凭据不参与账号管理的凭据判断或登录。同账号已有检查或手动登录在执行时，本轮监控收到 `BLOCKED_LOGIN` 后立即跳过，不排队、不覆盖共享快照、不增加失败计数、不发送告警。共享 session 账号为 `expired` / `logged_out` / `error` 时才尝试自动恢复；如果自动登录成功，不发送提醒。连续自动登录失败达到 3 次后持久暂停，防止账号锁定；当次可发送一次需要人工处理的提醒，后续轮询不再重试或重复推送。手动登录、验证码提交和显式单账号状态操作会更新同一共享快照；手动登录成功或用户重新开启开关会清零失败计数。通知目标优先读取 `FEISHU_TMS_ALERT_CHAT_ID` 等环境变量；如果未配置，则使用机器人最近收到消息的 chat_id。
 
-账号管理对融辉、韵达、R7、R13 和大祥报价统一提供“保存凭据、立即登录、退出登录、自动登录、停用/恢复、状态校验”六类操作；页面不再显示 R7/R13“不支持”。协议差异只存在于后端 provider：融辉/韵达使用共享 SessionBroker，R7/R13 持久化各自 SSO Token/Cookie；每个真实账号始终按 `account_id` 隔离会话。大祥报价不再保留写死的 `price` 身份，统一绑定账号 `price_default` 及同名 profile，后台登录、飞书报价和融辉原页代理复用同一登录态。凭据状态接口不返回已保存密码，只报告 `has_saved_credentials`、`credential_source` 等非敏感字段，Console 密码输入只写不读。账号备注使用账号 `name`，经 `/admin/accounts/{account_id}/name` 单独保存，不改凭据、登录态、启停或自动登录设置。
+账号管理对融辉、韵达、R7、R13 和大祥报价统一提供“保存凭据、立即登录、退出登录、自动登录、停用/恢复、状态校验”六类操作；页面不再显示 R7/R13“不支持”。协议差异只存在于后端 provider：融辉/韵达使用共享 SessionBroker，R7/R13 持久化各自 SSO Token/Cookie；每个真实账号始终按 `account_id` 隔离会话。三平台报价源码从项目 `ronghui_quote`、`yunda_quote`、`best_quote` 角色取得精确账号并复用其后台登录态，不以 `price_default` 或 `price` 身份回落；公共账号用途保持原约定。凭据状态接口不返回已保存密码，只报告 `has_saved_credentials`、`credential_source` 等非敏感字段，Console 密码输入只写不读。账号备注使用账号 `name`，经 `/admin/accounts/{account_id}/name` 单独保存，不改凭据、登录态、启停或自动登录设置。
 
 运行异常恢复由 `tms_runtime/errors.py` 统一分类，依据异常类型、错误码及显式原因链，不输出浏览器异常中的输入值或会话 URL。`LOGIN_TIMEOUT`、`LOGIN_PAGE_UNAVAILABLE`、`LOGIN_WORKER_UNAVAILABLE`、网络连接/请求超时和上游 HTTP 429/5xx 不计入账号失败次数，也不清除先前真实认证失败的计数；缺少依赖的 `AUTH_UNAVAILABLE` 同样不应锁定账号，页面明确提示检查运行环境。失败登录进程及其残留子进程、临时目录和锁在本轮退出时清理，运行异常及无效 worker 回包不提交部分登录状态。每轮最多一次登录调用，仍受默认 120 秒总期限约束；下一轮监控才重试，监控默认在整轮结束后等待 60 秒，不添加请求内无限重试或立即重试循环。持续原站故障、缺失依赖及页面协议变化仍需修复相应原因，不能把再次尝试报告为已登录。
 
@@ -163,10 +164,12 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 
 ## 报价
 
-- `get_price` 由组合根注入的直接 reader 执行；`tools/price_tool.py` 并发请求融辉 `/tms/get_price` 和韵达 `/tms/yunda_price`，飞书分两条回复，首行分别标注 `融辉价格` / `韵达价格`。一家出现非登录类失败时另一家结果照常发送，失败段显示“融辉不可到达”或“韵达不可到达”；登录态错误走对应账号的登录恢复，不当作不可到达。
-- 缺少任何影响金额的条件先澄清，不补默认值。体积可为数字或厘米尺寸表达式（如 `30*23*103*1+97*23*31*4`），按 `长*宽*高*件数` 合计后换算为立方米并四舍五入保留三位小数，对齐韵达录单页精度。
-- 融辉段使用大祥账号 `price_default` 的登录态，用真实运单录入页详细地址 blur 解析目的网点/派件网点，不做拆词兜底；报价 payload 的保价字段对齐录单页默认 `INSURANCE=3000`、`INSURANCE_FEE=3`（`get_price.py`），避免后端按空保价回落而少算。
-- 韵达段复刻录单页链路：飞书不传申明价值，先调用 `getInsuredAmount.html` 按重量取得当前规则下的申明价值，再调用 `price.html`；最终金额为页面的 `Number(CostTotal)+Number(短信费)` 经 `getFloatStr_1()` 截两位，对齐客户端“成本信息-总计”（`TotalMoney`/`CostTotal` 本身不含短信费）。特殊区域由 `checkServiceScope.html` 校验，命中时展示加收备注和提醒。
+- **实现与核验**：`service_v2_plugins/quote_prices_v2/` 是三平台报价的唯一业务实现；飞书与 Console 调用同一 V2 项目。2026-10-11/12 已与融辉、韵达、百世原页逐项核对当前普通货物报价。使用条件、金额口径、局限与安装步骤见[三平台报价](../three_platform_quote.md)；实际可用状态以实例记录为准。
+- 原 `tools/price_tool.py` 与 `agent/tms_runtime/scripts/{get_price,yunda_price,batch_price}.py` 已迁到 `legacy/price_quote/`，只作离线参考。系统工具目录和 TMS target 不再提供新报价入口，禁止回调旧脚本或以旧结果掩盖新插件失败。
+- 一次查询必须提供 `address`、`weight`（kg）和 `volume`（m³）；重量、体积为有限正数，无默认体积。缺失或歧义先澄清。飞书支持裸 `地址,重量,体积` 及报价前缀，体积也可解析明确的厘米尺寸表达式；Console 保留输入精度，不按金额精度截断重量或体积。
+- 项目按 `ronghui_quote`、`yunda_quote`、`best_quote` 三个角色绑定精确账号，复用各自已保存登录态。不固定 `price_default`，不任选候选或回落到其他账号。每次重新读取平台地址解析、产品与费用，缺字段或匹配不唯一明确失败，不填入猜测金额或旧值。
+- 源码的飞书入口提交 typed project invocation，完成后分别显示融辉、韵达、百世结果；Console 手工录单报价只选择唯一且生效的项目与 Console contribution，以同一请求 UUID 读取本次 Invocation。返回的自提与派送报价分开处理，Console 只比较用户选定送货方式，保留勇胜待维护项。
+- 平台失败显示本次明确原因或“无数据”，不使用默认金额、上次成功值或其他平台结果。整个 Invocation 失败时 Console 只展示其平台错误，不展示其夹带的报价金额；登录成功仅恢复账号可用性，用户重新触发后才开始新查询。
 
 ## 关键文件触点
 
@@ -174,6 +177,7 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 |---|---|
 | 文本路由 | `agent/direct_tool_router.py` |
 | 插件项目飞书入口与精确路由 | `agent/orchestration/automation_project_entrypoints.py` + `feishu/message_handler.py` |
+| 三平台报价独立包 | `service_v2_plugins/quote_prices_v2/` + `../console/services/documents.py`；旧报价代码仅在 `legacy/price_quote/` |
 | 自动化 Profile 状态 | `agent/automation_profile.py` |
 | pending 存储 | `agent/pending_actions.py` |
 | 消息状态机（三态 pending） | `feishu/message_handler.py` 的 `_process_and_reply` |

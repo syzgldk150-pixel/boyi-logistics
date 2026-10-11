@@ -1,8 +1,8 @@
 """Trusted Scheduler, Feishu, Webhook, and Event adapters for projects.
 
 Transport handlers verify their native signature/session first, resolve one
-exact committed instance route, and pass only closed transport facts here.
-Neither a caller nor an LLM can submit action arguments or project identity.
+exact committed instance route, and pass closed transport facts and explicitly
+declared occurrence inputs. Callers cannot replace project identity or settings.
 """
 
 from __future__ import annotations
@@ -434,8 +434,8 @@ class ServiceV2FeishuDispatcher:
 
     This adapter is intentionally separate from the fixed Action V1 route
     resolver.  The verified Feishu transport supplies only its stable event
-    identities and command text; project and contribution identity come only
-    from the active managed-contribution projection.
+    identities, command text and declared runtime inputs; project and contribution
+    identity come only from the active managed-contribution projection.
     """
 
     def __init__(
@@ -507,6 +507,7 @@ class ServiceV2FeishuDispatcher:
         conversation_target: Any = None,
         preview_invocation_id: str | None = None,
         selected_bill_codes: list[str] | None = None,
+        runtime_inputs: Mapping[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Dispatch an exact active command, or return ``None`` if unknown."""
 
@@ -524,6 +525,27 @@ class ServiceV2FeishuDispatcher:
 
         if conversation_target is not None and (target.automation_id != conversation_target.automation_id or target.generation != conversation_target.generation or target.contribution_id != conversation_target.contribution_id):
             raise OrchestrationError("PROJECT_INVOCATION_STALE", "对话中选择的插件已变化，请重新触发")
+
+        dynamic_context: dict[str, Any] = {}
+        if runtime_inputs is not None:
+            if not isinstance(runtime_inputs, Mapping):
+                raise OrchestrationError("PROJECT_DYNAMIC_INPUT_INVALID", "本次调用参数必须为对象")
+            entry, contract = self._policy._load_contract(target.automation_id)
+            invocation = contract.invocation_contracts.get(target.contribution_id)
+            if invocation is None or contract.automation_generation != target.generation:
+                raise OrchestrationError("PROJECT_RUNTIME_PROJECTION_STALE", "插件入口已变化，请重新触发")
+            if set(runtime_inputs) - set(invocation.dynamic_argument_resolvers):
+                raise OrchestrationError("PROJECT_ARGUMENT_OVERRIDE_FORBIDDEN", "本次参数未在插件入口声明")
+            declarations = [item for item in entry.contributions.get("feishu", ())
+                            if item.get("id") == target.contribution_id]
+            if len(declarations) != 1 or "input_schema" not in declarations[0]:
+                raise OrchestrationError("PROJECT_DYNAMIC_INPUT_INVALID", "插件入口不接受本次输入")
+            from agent.tool_registry import validate_schema_instance
+            try:
+                validate_schema_instance("feishu.runtime_inputs", dict(runtime_inputs), declarations[0]["input_schema"])
+            except (ValueError, TypeError, KeyError) as exc:
+                raise OrchestrationError("PROJECT_DYNAMIC_INPUT_INVALID", "本次调用参数缺失或格式无效") from exc
+            dynamic_context["dynamic_inputs"] = dict(runtime_inputs)
 
         safe_event_id = _stable_identifier(event_id, "event_id")
         safe_sender_id = _stable_identifier(sender_id, "sender_id")
@@ -550,6 +572,7 @@ class ServiceV2FeishuDispatcher:
             "trusted_context": {
                 "event_id": safe_event_id,
                 "chat_id": safe_chat_id,
+                **dynamic_context,
             },
             "idempotency_key": f"feishu:{safe_event_id}",
             "expected_automation_generation": getattr(target, "generation", None),

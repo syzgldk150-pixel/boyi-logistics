@@ -21,7 +21,7 @@ if sys.platform == "win32":
 
 
 _ALLOWLIST_NAME = "RUNNABLE_SERVER_FIRST_PARTY_PLUGIN_IDS"
-STANDALONE_SERVICE_V2_PLUGIN_IDS = frozenset({"r7_vehicle_checkin_v2"})
+STANDALONE_SERVICE_V2_PLUGIN_IDS = frozenset({"r7_vehicle_checkin_v2", "quote_prices_v2"})
 _PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _FIRST_PARTY_TEST_MARKERS = (
     "first_party_automation_plugins",
@@ -246,7 +246,7 @@ def quality_files(repository_root: Path, *, scope: str) -> tuple[Path, ...]:
 def verify_staged_tree(repository_root: Path) -> None:
     """Fail if a staged server payload contains any non-allowlisted package."""
 
-    for retired in ("first_party_automation_plugins", "legacy"):
+    for retired in ("first_party_automation_plugins", "legacy", "price_scripts"):
         if (repository_root / "agent" / retired).exists():
             raise ReleaseScopeError(f"staged release contains offline legacy sources: {retired}")
     root = _first_party_root(repository_root)

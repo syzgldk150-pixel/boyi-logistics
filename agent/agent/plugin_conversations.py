@@ -102,6 +102,12 @@ class PluginConversationService:
                 contribution = invocation.contribution_id if entry.runtime_model == "SERVICE_V2" else None
                 if contribution and contribution not in snapshot.enabled_entrypoints:
                     continue
+                if contribution and any(
+                    item.get("id") == contribution and item.get("input_schema", {}).get("properties")
+                    for item in entry.contributions.get(channel.value, ())
+                ):
+                    # These entries require explicit channel input, not an empty model call.
+                    continue
                 capability = project_capability_from_snapshot(snapshot)
                 if contribution:
                     capability = PluginExecutionRouter._service_contribution_capability(capability, contribution_id=contribution)

@@ -64,7 +64,6 @@ TARGETS: dict[str, Target] = {
         module="agent.tms_runtime.scripts.get_sign_records",
         func="run_once",
     ),
-    "get_price": Target(module="agent.tms_runtime.scripts.get_price", func="run_once"),
     "get_wangdiansendlist": Target(module=f"{SCRIPTS_PACKAGE}.get_wangdiansendlist", func="run_once"),
     "child_count": Target(module=f"{SCRIPTS_PACKAGE}.child_count", func="run_once"),
     "yunda_waybill_entry": Target(module="agent.tms_runtime.scripts.yunda_waybill_entry", func="run_once"),
@@ -81,7 +80,6 @@ TARGETS: dict[str, Target] = {
         func="run_once",
         max_concurrency=12,
     ),
-    "yunda_price": Target(module="agent.tms_runtime.scripts.yunda_price", func="run_once"),
     "waybill_tracking": Target(module=f"{SCRIPTS_PACKAGE}.waybill_tracking", func="run_once"),
     "query_waybill_detail": Target(module=f"{SCRIPTS_PACKAGE}.query_waybill_detail", func="run_once"),
     "self_pickup_problem_upload": Target(module=f"{SCRIPTS_PACKAGE}.self_pickup_problem_upload", func="run_once", max_concurrency=1),
@@ -109,19 +107,16 @@ TARGET_ACCOUNT_SYSTEMS: dict[str, str] = {
     "self_pickup_problem_upload": "ronghui",
     "split_pending_problem_upload": "ronghui",
     "scan_next": "ronghui",
-    "get_price": "ronghui",
     "yunda_waybill_tracking": "yunda",
     "yunda_waybill_entry": "yunda",
     "yunda_waybill_proxy": "yunda",
     "receipts_sync": "ronghui",
     "ronghui_waybill_proxy": "ronghui",
-    "yunda_price": "yunda",
     "yunda_dispatch_forecast": "yunda",
     "yunda_send_waybills": "yunda",
 }
 
 TARGET_ACCOUNT_PURPOSES: dict[str, str] = {
-    "get_price": "price",
     "receipts_sync": "price",
     "ronghui_waybill_proxy": "price",
 }

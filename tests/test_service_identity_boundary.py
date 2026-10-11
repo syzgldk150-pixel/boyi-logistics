@@ -433,10 +433,10 @@ def test_execution_capability_bypasses_only_exact_legacy_tms_target() -> None:
         async def json(self):
             return self._payload
 
-    with execution_capability_scope("get_price", ttl_seconds=30) as capability:
+    with execution_capability_scope("track_waybill", ttl_seconds=30) as capability:
         assert asyncio.run(
             _execution_capability_authorizes_request(
-                _Request("/tms/get_price", {"params": {"address": "x"}}),
+                _Request("/tms/tracking_query", {"params": {"tracking_number": "R00000000001"}}),
                 capability,
             )
         )

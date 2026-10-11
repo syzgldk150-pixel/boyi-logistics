@@ -82,7 +82,7 @@ class _CompletedRunGateway:
 def _configure_completed_control_plane(core, *, data):
     gateway = _CompletedRunGateway()
     core.configure_direct_readers({name: (lambda _arguments: data)
-                                  for name in ("track_waybill", "get_price")
+                                  for name in ("track_waybill",)
                                   if name not in core._direct_tool_runners})
     core.configure_orchestration(
         command_gateway=gateway,
@@ -204,9 +204,9 @@ class AgentExecutionToolTests(unittest.TestCase):
             return {"目的网点": "隆尧莲子镇分部"}
 
         with (
-            patch("tools.price_tool.PRICE_TOOL_PREFER_HTTP", True),
-            patch("tools.price_tool.get_price_via_http", side_effect=_fake_ronghui),
-            patch("tools.price_tool.get_yunda_price_via_http", side_effect=_fake_yunda),
+            patch("legacy.price_quote.price_tool.PRICE_TOOL_PREFER_HTTP", True),
+            patch("legacy.price_quote.price_tool.get_price_via_http", side_effect=_fake_ronghui),
+            patch("legacy.price_quote.price_tool.get_yunda_price_via_http", side_effect=_fake_yunda),
         ):
             result = price_tool.get_combined_price(
                 address="河北省邢台市隆尧县莲子镇中学",
@@ -217,29 +217,10 @@ class AgentExecutionToolTests(unittest.TestCase):
         self.assertTrue(result["ronghui"]["saw_yunda_started"])
         self.assertEqual("隆尧莲子镇分部", result["yunda"]["目的网点"])
 
-    def test_agent_queries_price_without_command_or_run(self):
-        class _FakeRegistry:
-            def get_capability(self, name):
-                return ToolRegistry().get_capability(name)
-
-            def validate_arguments(self, name, params):
-                return ToolRegistry().validate_arguments(name, params)
-
-        run_price = Mock(return_value={"mode": "agent_tms_combined", "ronghui": {}, "yunda": {}})
-        core = AgentCore(direct_tool_runners={"get_price": run_price})
-        core.registry = _FakeRegistry()
-        gateway = _configure_completed_control_plane(
-            core,
-            data={"mode": "agent_tms_combined", "ronghui": {}, "yunda": {}},
-        )
-
-        params = {"address": "河北省邢台市隆尧县莲子镇中学", "weight": 199, "volume": 2.727}
-        result = asyncio.run(core.execute_tool("get_price", params, actor=direct_admin(), source="console"))
-
-        run_price.assert_called_once_with(params)
-        self.assertEqual([], gateway.commands)
-        self.assertTrue(result["success"])
-        self.assertEqual("agent_tms_combined", result["data"]["mode"])
+    def test_system_price_tool_is_retired_from_registry(self):
+        self.assertIsNone(ToolRegistry().get_capability("get_price"))
+        with self.assertRaises(KeyError):
+            ToolRegistry().validate_arguments("get_price", {"address": "示例地址", "weight": 199, "volume": 2.727})
 
     def test_r7_arrival_checkin_tool_passes_managed_credentials_only_to_script_runtime(self):
         captured: dict[str, Any] = {}

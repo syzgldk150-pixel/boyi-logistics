@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Compute product prices and dispatch-site info for a given address/weight/volume.
+Offline snapshot of the retired Ronghui quote script for historical regression.
 
 Flow (derived from the TMS front-end logic):
 1) /map/inputtipsDTH -> parse address + area name

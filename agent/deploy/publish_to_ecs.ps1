@@ -53,7 +53,7 @@ $AgentFiles = @(
 )
 $AgentDirs = @(
     "agent", "deploy", "docs", "feishu", "service_v2_plugins", "knowledge", "prompts", "tms_docs",
-    "tools", "price_scripts", "plugin_core_adapters", "migrations", "scripts"
+    "tools", "plugin_core_adapters", "migrations", "scripts"
 )
 $ConsoleFiles = @(
     "AGENTS.md", "CLAUDE.md", "README.md", "app.py", "app_support.py", "check_syntax.py", "config.py",

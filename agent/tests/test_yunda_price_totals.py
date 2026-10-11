@@ -1,13 +1,7 @@
-import sys
 import unittest
-from pathlib import Path
 
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "agent" / "tms_runtime" / "scripts"
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-import yunda_price
+from legacy.price_quote import yunda_price
 
 
 class YundaPriceTotalTests(unittest.TestCase):

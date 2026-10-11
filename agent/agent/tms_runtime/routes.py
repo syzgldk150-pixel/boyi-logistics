@@ -66,12 +66,10 @@ CUSTOMER_SERVICE_TOOL_BY_ACTION = {
 COMPAT_READ_TARGETS = frozenset(
     {
         "delivery_status",
-        "get_price",
         "query_waybill_detail",
         "ronghui_tms_tracking",
         "tracking_query",
         "waybill_tracking",
-        "yunda_price",
         "yunda_waybill_tracking",
     }
 )

@@ -8,7 +8,7 @@
 
 `tools/` 保留三类代码：
 
-- 仍在使用的直接 reader 与业务入口：运单/单号查询、报价、OCR、财务与经营只读查询、回单、客服问题件等，由组合根注入或经 `registry.yaml` 调用。
+- 仍在使用的直接 reader 与业务入口：运单/单号查询、OCR、财务与经营只读查询、回单、客服问题件等，由组合根注入或经 `registry.yaml` 调用。
 - Host 原语复用的共享仓储与 helper：`phase7_mysql_store.py`、`daily_sign_store.py`、`split_pending_snapshot.py`、`feishu_cli_tool.py`，以及旧同步工具中被 `../plugin_core_adapters/` 复用的表头、区间和记录转换函数。
 - 旧 V1 整段同步工具：只用于离线回归和上述 helper 复用，不再作为执行入口。
 
@@ -22,11 +22,12 @@
   - `track_waybill_tool.py`（调用 Agent `/tms/tracking_query`，统一分发融辉 TMS、韵达和专线单号）
 - OCR 工具封装：
   - `ocr_tool.py`
-- 价格查询与 TMS 对接：
-  - `price_tool.py`
+- 价格查询：
+  - 当前实现为 `../service_v2_plugins/quote_prices_v2/` 独立 ZIP，飞书和自然对话调用已安装插件实例；系统工具目录不再注册 `get_price`。
+  - 原工具与融辉/韵达脚本位于 `../legacy/price_quote/`，仅用于离线回归。
+- TMS 对接：
   - `tms_tool.py`
   - `internal_http.py`（工具访问底层 TMS target 的能力请求头；缺少当前工具短期执行能力时显式失败，不读取或回退到 `AGENT_INTERNAL_API_TOKEN`）
-  - 地址报价会同时调用融辉 `/tms/get_price` 和韵达 `/tms/yunda_price`；韵达结果包含录单页总价、网点明细，以及 `checkServiceScope.html` 返回的特殊区域加收/提醒；旧发站/到站兼容模式只走融辉
 - 财务账本同步：
   - `finance_sync_service.py`（融辉/韵达多账号、多日期编排与提交前校验）
   - `sync_finance_bills_tool.py`（工具入口与进程/数据库双重单实例锁）

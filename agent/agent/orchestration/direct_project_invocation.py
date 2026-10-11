@@ -1,6 +1,7 @@
 """Compile one immediate call from the existing signed project authority."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -15,6 +16,36 @@ from agent.tool_registry import validate_schema_instance
 from shared.automation_project_authorization import AutomationEntrypoint, AutomationProjectInvocation, OMIT_DYNAMIC_ARGUMENT
 from shared.automation_project_authorization import canonical_sha256
 from agent.identity_access import require_project_access
+
+
+def _validate_runtime_input_replay(service, replay, *, source, dynamic):
+    """Compare occurrence inputs against the accepted generation, never current settings."""
+    if source not in {AutomationEntrypoint.CONSOLE, AutomationEntrypoint.FEISHU}:
+        return
+    with service._repository.unit_of_work() as uow:
+        generation = uow.automation_plugins.get_generation_row(
+            replay["automation_id"], replay["generation"], include_execution_details=False,
+        )
+    if generation is None:
+        raise OrchestrationError("PROJECT_INVOCATION_STALE", "原调用的输入合同已不可读取，请发起新查询")
+    if generation.get("runtime_model") != "SERVICE_V2":
+        return
+    declarations = generation["snapshot_json"]["execution_metadata"]["contributions"].get(source.value, ())
+    contribution_id = replay["invocation_json"]["contract_id"]
+    matches = [item for item in declarations if item.get("id") == contribution_id]
+    if len(matches) != 1:
+        raise OrchestrationError("PROJECT_INVOCATION_STALE", "原调用的输入合同已不可读取，请发起新查询")
+    schema = matches[0].get("input_schema")
+    if schema is None:
+        return  # Existing static and preview contributions keep their replay contract.
+    expected = {key: value for key, value in replay["arguments_json"].items()
+                if key in schema["properties"]}
+    if not isinstance(dynamic, Mapping) or dict(dynamic) != expected:
+        raise OrchestrationError("IDEMPOTENCY_CONFLICT", "同一请求必须保留原调用的完整参数")
+    try:
+        validate_schema_instance("runtime_input_replay", dynamic, schema)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise OrchestrationError("IDEMPOTENCY_CONFLICT", "同一请求的参数与原输入合同不一致") from exc
 
 
 def invoke_direct(service, automation_id: str, *, entrypoint, request_id, actor, trusted_context=None, idempotency_key=None, expected_automation_generation=None, expected_project_configuration_version=None, preview_invocation_id=None, selected_bill_codes=None, contribution_id=None, require_full_auto=False, **unsupported) -> dict[str, Any]:
@@ -37,6 +68,7 @@ def invoke_direct(service, automation_id: str, *, entrypoint, request_id, actor,
         if replay.get("preview_invocation_id") != preview_invocation_id or (selected_bill_codes is not None and replay["arguments_json"].get("selected_bill_codes") != list(selected_bill_codes)):
             raise OrchestrationError("IDEMPOTENCY_CONFLICT", "同一请求不能替换预览或所选运单")
         dynamic = (trusted_context or {}).get("dynamic_inputs", {})
+        _validate_runtime_input_replay(service, replay, source=source, dynamic=dynamic)
         if any(replay["arguments_json"].get(key) != value for key, value in dynamic.items()):
             raise OrchestrationError("IDEMPOTENCY_CONFLICT", "同一请求不能更换参数")
         return public_invocation(replay)
@@ -52,10 +84,14 @@ def invoke_direct(service, automation_id: str, *, entrypoint, request_id, actor,
     target = contract.invocation_contracts.get(contribution)
     if target is None or target.entrypoint != source.value:
         raise OrchestrationError("PROJECT_ENTRYPOINT_DISABLED", "该插件未开放此调用入口")
-    if is_v2 and source is AutomationEntrypoint.WEBHOOK:
+    occurrence_input = any(
+        item.get("id") == target.contribution_id and "input_schema" in item
+        for item in getattr(entry, "contributions", {}).get(source.value, ())
+    ) if is_v2 else False
+    if is_v2 and (source is AutomationEntrypoint.WEBHOOK or occurrence_input):
         dynamic = context.get("dynamic_inputs", {})
         if set(dynamic) - set(target.dynamic_argument_resolvers):
-            raise OrchestrationError("TRUSTED_CONTEXT_INVALID", "回调参数未在当前插件入口声明")
+            raise OrchestrationError("TRUSTED_CONTEXT_INVALID", "调用参数未在当前插件入口声明")
     if is_v2:
         require_active_service_v2_dispatch(service._contribution_registry, source=source, entry=entry, automation_id=safe_id, generation=contract.automation_generation, invocation_contract=target, context=context, expected_event_name=context.get("event_name"))
     elif source in {AutomationEntrypoint.HARNESS, AutomationEntrypoint.MODULE_SLOTS, AutomationEntrypoint.EVENTS}:

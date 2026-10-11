@@ -96,7 +96,6 @@ class _ExecutionSlot:
 CORE_BROWSER_TOOL_NAMES = frozenset(
     {
         "clock_in_dual",
-        "get_price",
         "r7_arrival_checkin",
         "r7_departure_checkin",
         "sync_arrival_stats",
@@ -108,7 +107,6 @@ CORE_BROWSER_TOOL_NAMES = frozenset(
 )
 CORE_BROWSER_TMS_ENDPOINTS = frozenset(
     {
-        "get_price",
         "ronghui_tms_tracking",
         "tracking_query",
         "waybill_tracking",

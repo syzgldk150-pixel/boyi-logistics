@@ -1,5 +1,7 @@
 # console
 
+手工录单比价只调用唯一且已生效的 `quote_prices_v2` 项目 Console 入口，以本次浏览器 UUID 提交地址、重量和体积，再读取同一 Invocation。三平台结果只按所选自提/派送方式比较，失败与无数据明确显示；勇胜仍为待维护。插件动态输入必须由已安装 contribution 的 `input_schema` 声明并经 Agent 校验，浏览器不得指定服务、操作、账号、资源或配置。
+
 候选列表使用 Agent 公共预览的 `selection_limit` 显示本次上限，超量选择时禁用确认；服务端仍从同一持久化预览校验。页面不得内置自提/分批业务限额。
 
 迁移 055 后运单与回单按平台存于 `waybill_db`，财务实体存于 `finance_db`；`agent_db` 保留无副本的查询/写入视图。平台写入名称复用 `shared/logistics_tables.py`；运单详情、打印和作废必须传来源及 ID，回单使用全局 ID 保留附件与审核关联。详见 [分库说明](../docs/database_domains.md)。

@@ -182,6 +182,21 @@ def test_grouped_approval_route_never_accepts_approval_ids_or_plan_hashes() -> N
     assert len(service.calls) == 0
 
 
+def test_console_invoke_passes_runtime_inputs_for_manifest_validation() -> None:
+    client, service, actor = _client()
+    inputs = {"address": "测试省测试市示例路1号", "weight": 12.5, "volume": 0.045}
+    response = client.post("/internal/v1/automation-projects/project-a/invoke", json={
+        "request_id": "quote-request", "contribution_id": "quote_console", "runtime_inputs": inputs,
+    })
+    assert response.status_code == 200
+    assert service.calls[-1] == ("project-a", {"request_id": "quote-request", "actor": actor,
+        "preview_invocation_id": None, "contribution_id": "quote_console", "runtime_inputs": inputs})
+    invalid = client.post("/internal/v1/automation-projects/project-a/invoke", json={
+        "request_id": "quote-request", "runtime_inputs": "not-an-object",
+    })
+    assert invalid.status_code == 422
+
+
 def test_console_invoke_submits_only_server_resolved_project_identity() -> None:
     client, service, actor = _client()
 

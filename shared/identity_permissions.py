@@ -66,7 +66,7 @@ def tool_permission(name: str) -> str:
         "query_waybill": "business.query", "query_tracking": "business.query",
         "query_knowledge": "business.query", "track_waybill": "business.query",
         "search_tracking": "business.query", "query_receipts": "business.query",
-        "receipt_feishu_detail_query": "business.query", "get_price": "dispatch",
+        "receipt_feishu_detail_query": "business.query",
         "query_finance_summary": "finance.read", "query_business_finance_summary": "finance.read",
         "query_business_finance": "finance.read",
         "query_automation_operations": "finance.read",

@@ -228,8 +228,10 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
     def request_original_page(
         self, method: str, url: str, *, timeout: float,
         deadline_monotonic: float | None = None, cancelled: threading.Event | None = None,
+        response_consumer: Callable[[requests.Response], Any] | None = None,
+        request_timeout: tuple[float, float] | None = None,
         **kwargs: Any,
-    ) -> requests.Response:
+    ) -> Any:
         """Carry upstream response state across this profile's raw page requests."""
         deadline = time.monotonic() + timeout
         if deadline_monotonic is not None:
@@ -259,18 +261,25 @@ class SessionBroker(SessionPersistenceMixin, SessionValidationMixin):
                 session = self.build_requests_session(validate=False)
                 domain = urlparse(self.resolve_login_config().base_origin).hostname or ""
                 before = self._storage_cookies_from_requests_session(session, domain)
-            response = session.request(method, url, timeout=remaining_budget(), **kwargs)
-            after = self._storage_cookies_from_requests_session(session, domain)
-            with self._lock:
-                if epoch != self._state_epoch or self._active_login_token is not None:
-                    raise TMSAuthStateError("BLOCKED_LOGIN", "账号登录状态已变化，本次旧响应未采用。")
-                if after != before:
-                    # HTTP errors can also set session state. Preserve
-                    # browser origins and login metadata; this is not login.
-                    state = self._load_storage_state()
-                    state["cookies"] = after
-                    self._state_store.write_dict(self._storage_state_path, state)
-            return response
+            budget = remaining_budget()
+            transport_timeout = (
+                tuple(min(value, budget) for value in request_timeout) if request_timeout is not None else budget
+            )
+            response = session.request(method, url, timeout=transport_timeout, **kwargs)
+            try:
+                result = response_consumer(response) if response_consumer is not None else response
+            finally:
+                after = self._storage_cookies_from_requests_session(session, domain)
+                with self._lock:
+                    if epoch != self._state_epoch or self._active_login_token is not None:
+                        raise TMSAuthStateError("BLOCKED_LOGIN", "账号登录状态已变化，本次旧响应未采用。")
+                    if after != before:
+                        # HTTP errors can also set session state. Preserve
+                        # browser origins and login metadata; this is not login.
+                        state = self._load_storage_state()
+                        state["cookies"] = after
+                        self._state_store.write_dict(self._storage_state_path, state)
+            return result
         finally:
             if session is not None:
                 session.close()

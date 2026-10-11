@@ -13,7 +13,7 @@ from feishu import message_handler, notify
 from feishu.reply_formatter import format_reply
 import main
 from main import _check_tms_account_session, _feishu_event_type, _tms_session_alert_key, _verify_feishu_event_token
-from tools.price_tool import get_price_via_script
+from legacy.price_quote.price_tool import get_price_via_script
 
 
 def _admin_accounts_payload(*, pending_accounts: set[str] | None = None) -> dict:
@@ -283,7 +283,7 @@ class FeishuMessageHandlerTests(unittest.TestCase):
                 print("[Login] 第 1 次尝试成功")
                 return {"目的网点": "测试站"}
 
-        with patch("tools.price_tool._load_local_price_module", return_value=DummyModule()):
+        with patch("legacy.price_quote.price_tool._load_local_price_module", return_value=DummyModule()):
             result = get_price_via_script("武汉", 10)
 
         self.assertEqual(result["目的网点"], "测试站")

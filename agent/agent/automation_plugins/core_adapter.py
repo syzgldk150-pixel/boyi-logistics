@@ -291,7 +291,8 @@ class RegisteredCoreAutomationBrokerAdapter:
         )
         if descriptor.requires_account_role:
             roles_valid = (
-                len(signed_roles) == 1
+                bool(signed_roles)
+                and (operation == "http.request" or len(signed_roles) == 1)
                 and account_declarations == signed_roles
                 and not resource_declarations
             )
@@ -602,7 +603,11 @@ class RegisteredCoreAutomationBrokerAdapter:
                 "the internal broker role must be the only signed role",
                 code="BROKER_CONTRACT_INVALID",
             )
-        for signed_role in signed_roles:
+        # HTTP declarations may share an action across independent providers.
+        # One call selects exactly one signed role; an unrelated account must
+        # not be resolved or included in that call's Host-private context.
+        roles_to_resolve = (role,) if operation == "http.request" else signed_roles
+        for signed_role in roles_to_resolve:
             account_role = self._role_declaration(grant.account_roles, signed_role)
             resource_role = self._role_declaration(grant.resource_roles, signed_role)
             if signed_role == SYSTEM_CAPABILITY_ROLE:

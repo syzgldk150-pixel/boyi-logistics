@@ -29,12 +29,10 @@ _CURRENT_CAPABILITY: ContextVar[str] = ContextVar("agent_execution_capability", 
 _READ_ONLY_TMS_TARGETS = frozenset(
     {
         "delivery_status",
-        "get_price",
         "query_waybill_detail",
         "ronghui_tms_tracking",
         "tracking_query",
         "waybill_tracking",
-        "yunda_price",
         "yunda_waybill_tracking",
     }
 )
@@ -44,7 +42,6 @@ TOOL_ALLOWED_TMS_TARGETS: dict[str, frozenset[str]] = {
     "query_waybill": frozenset({"delivery_status", "waybill_tracking"}),
     "track_waybill": frozenset({"query_waybill_detail", "tracking_query"}),
     "tms_query": _READ_ONLY_TMS_TARGETS,
-    "get_price": frozenset({"get_price", "yunda_price"}),
     "sync_daily_send_orders": frozenset({"send_order"}),
     "sync_delivery_status": frozenset({"delivery_status"}),
     "sync_daily_should_sign": frozenset(

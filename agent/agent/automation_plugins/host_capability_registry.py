@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import Callable, Iterable, Mapping
 
 from agent.automation_plugins.errors import PluginExecutionError
+from agent.tms_runtime.ronghui_user_context import RONGHUI_PUBLIC_CONTEXT_FIELDS
 
 
 HOST_CAPABILITY_API_VERSION = "2.0.0"
@@ -335,7 +336,7 @@ def _descriptor(
         input_schema=input_schema,
         output_schema=output_schema,
         handler_key=handler_key,
-        requires_account_role=capability in {"browser.session", "http.request"},
+        requires_account_role=capability in {"account.context", "browser.session", "http.request"},
         requires_resource_role=False,
         scheduler_allowed=True,
         per_call_limit=per_call_limit,
@@ -482,6 +483,14 @@ _CLOCK_WRITE_OUTPUT = _object_schema(
 
 
 _BASELINE_DESCRIPTORS = (
+    _descriptor(
+        "account.context", "read", CapabilityEffect.READ,
+        input_schema=_object_schema({}, ()),
+        output_schema=_object_schema({
+            field: _STRING for field in RONGHUI_PUBLIC_CONTEXT_FIELDS
+        }, RONGHUI_PUBLIC_CONTEXT_FIELDS),
+        handler_key="account.context:*",
+    ),
     *(_descriptor(
         "http.request", action, effect,
         input_schema=_object_schema({
@@ -490,11 +499,14 @@ _BASELINE_DESCRIPTORS = (
         }, ("request", "body")),
         output_schema=_object_schema({
             "status_code": {"type": "integer", "minimum": 100, "maximum": 599},
-            "response": {"type": "object", "additionalProperties": True},
+            "response": {"type": "string"} if action == "read_text" else {
+                "oneOf": [{"type": "object", "additionalProperties": True}, {"type": "array", "items": _JSON_VALUE}],
+            },
         }, ("status_code", "response")),
         handler_key="http.request:*", per_call_limit=limit,
     ) for action, effect, limit in (
         ("read_json", CapabilityEffect.READ, 800),
+        ("read_text", CapabilityEffect.READ, 800),
         ("write_json", CapabilityEffect.EXTERNAL_WRITE, 200),
     )),
     _descriptor(

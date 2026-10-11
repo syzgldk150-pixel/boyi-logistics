@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -11,10 +12,10 @@ from typing import Any
 
 from agent.business_query import AutomationOperationsQueryService, BusinessQueryError
 from agent.feishu_command_contract import is_unconditional_host_feishu_command_text
-from agent.tms_runtime.account_contracts import PRICE_ACCOUNT_ID
 from agent.tracking_number_validation import validate_tracking_number
 
-PRICE_PREFIX_RE = re.compile(r"^\s*(?:报价|价格)(?:查询)?\s*[:：]?\s*(.+?)\s*$", re.IGNORECASE)
+PRICE_PREFIX_RE = re.compile(r"^\s*(?:三平台报价|报价|价格)(?:查询)?\s*[:：]?\s*(.+?)\s*$", re.IGNORECASE)
+QUOTE_PLUGIN_COMMAND = "三平台报价"
 PRICE_SPLIT_RE = re.compile(r"[，,；;]")
 TRACKING_QUERY_RE = re.compile(
     r"^\s*(?P<prefix>查(?:单号|运单|物流|快递)|单号查询|运单查询|物流查询|韵达|融辉)\s*[:：]?\s*(?P<code>[A-Za-z0-9]+)\s*$",
@@ -156,6 +157,8 @@ def is_reserved_feishu_command_text(text: str) -> bool:
 
     normalized = _normalize_command_text(text)
     if not normalized:
+        return False
+    if normalized == QUOTE_PLUGIN_COMMAND:
         return False
     if is_unconditional_host_feishu_command_text(normalized):
         return True
@@ -531,7 +534,7 @@ def parse_number_token(raw_value: str, *, number_kind: str) -> float | None:
         parsed = float(value)
     except ValueError:
         return None
-    return parsed if parsed > 0 else None
+    return parsed if math.isfinite(parsed) and parsed > 0 else None
 
 
 def parse_volume_expression_token(raw_value: str) -> float | None:
@@ -680,12 +683,20 @@ def direct_tool_request_from_text(text: str) -> dict[str, Any] | None:
         return request
 
     price_params = parse_price_request(normalized)
-    if price_params:
-        return {
-            "tool_name": "get_price",
-            "params": {**price_params, "account_id": PRICE_ACCOUNT_ID},
-            "mode": "reply",
-        }
+    price_intent = (price_params is not None or PRICE_PREFIX_RE.match(normalized)
+                    or normalized in {"报价", "价格", "报价查询", "价格查询", QUOTE_PLUGIN_COMMAND}
+                    or (PRICE_SPLIT_RE.search(normalized)
+                        and re.search(r"[省市区县镇乡街路村]", PRICE_SPLIT_RE.split(normalized)[0])))
+    if price_intent:
+        request = {"tool_name": "quote_prices_v2", "params": {}, "mode": "service_v2_quote"}
+        if price_params is None or "volume" not in price_params:
+            request["local_result"] = {
+                "success": False,
+                "error": "请提供完整收货地址、重量（公斤）和体积（立方米），格式：地址，重量，体积。体积也可用长*宽*高*件数（厘米）填写。",
+            }
+        else:
+            request["runtime_inputs"] = price_params
+        return request
 
     if SPLIT_PENDING_PROBLEM_UPLOAD_RE.match(normalized):
         return {
@@ -743,6 +754,8 @@ def direct_tool_request_from_text(text: str) -> dict[str, Any] | None:
 
 
 def format_tool_reply(tool_name: str, result: dict[str, Any]) -> str:
+    if tool_name == "quote_prices_v2":
+        return str(result.get("error") or "报价结果暂时无法读取，请重新发送完整查询。")
     if tool_name == "query_business_finance":
         return format_business_finance_reply(result)
     if tool_name == "query_automation_operations":
@@ -1742,6 +1755,39 @@ def format_self_pickup_problem_upload_reply(result: dict[str, Any]) -> str:
 def format_price_reply(result: dict[str, Any]) -> str:
     messages = format_price_reply_messages(result)
     return "\n\n".join(message for message in messages if message)
+
+
+def format_quote_plugin_messages(result: dict[str, Any]) -> list[str]:
+    """Render the three explicit provider outcomes from one plugin Invocation."""
+    outcome = result.get("result")
+    data = outcome.get("data") if isinstance(outcome, dict) else None
+    data = data if isinstance(data, dict) else {}
+    messages = []
+    for key, title in (("ronghui", "融辉"), ("yunda", "韵达"), ("best", "百世")):
+        provider = data.get(key)
+        lines = [f"{title}价格"]
+        if not isinstance(provider, dict):
+            lines.append("无数据：本次查询未返回该平台的有效结果，请在后台查看执行结果。")
+        elif provider.get("status") != "success":
+            lines.append("报价失败：" + str(provider.get("error") or "本次查询无有效报价。"))
+        else:
+            quotes = provider.get("quotes")
+            valid_quotes = []
+            for quote in quotes if isinstance(quotes, list) else []:
+                if not isinstance(quote, dict) or not str(quote.get("label") or "").strip():
+                    continue
+                try:
+                    amount = Decimal(str(quote.get("amount")))
+                except (InvalidOperation, ValueError):
+                    continue
+                if amount.is_finite() and amount >= 0:
+                    valid_quotes.append(f"{quote['label']}：{quote['amount']}元")
+            lines.extend(valid_quotes or ["无数据：本次查询未返回有效报价金额。"])
+            warnings = provider.get("warnings")
+            if isinstance(warnings, list):
+                lines.extend(f"提醒：{warning}" for warning in warnings if isinstance(warning, str) and warning.strip())
+        messages.append("\n".join(lines))
+    return messages
 
 
 def format_price_reply_messages(result: dict[str, Any]) -> list[str]:

@@ -1041,6 +1041,7 @@ class AutomationProjectPolicyService:
         actor: Actor,
         preview_invocation_id: str | None = None,
         contribution_id: str | None = None,
+        runtime_inputs: Mapping[str, Any] | None = None,
     ) -> Any:
         return self.invoke_trusted(
             automation_id,
@@ -1049,6 +1050,7 @@ class AutomationProjectPolicyService:
             actor=actor,
             preview_invocation_id=preview_invocation_id,
             contribution_id=contribution_id,
+            trusted_context={"dynamic_inputs": runtime_inputs} if runtime_inputs is not None else None,
         )
 
     def invoke_harness(

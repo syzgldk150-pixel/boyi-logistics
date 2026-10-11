@@ -4,7 +4,6 @@ import gzip
 from email.utils import formatdate
 
 from console.app_support import *  # noqa: F403
-from console.services.business_calls import call_business
 from shared.waybill_entry_extensions import (
     WAYBILL_ENTRY_ACTIONS_SLOT,
     WAYBILL_ENTRY_DRAFT_FIELDS,
@@ -55,6 +54,7 @@ class DocumentServiceMixin:
         ocr_mode = document is None and mode_value == "ocr"
         yunda_mode = document is None and mode_value == "yunda"
         ronghui_mode = document is None and mode_value == "ronghui"
+        best_mode = document is None and mode_value == "best"
         active_template_name = self.template_store.get_active_template_name()
         template_spec = self._get_template_spec_for_document(document)
         manual_amap_config = {
@@ -115,6 +115,7 @@ class DocumentServiceMixin:
             ocr_mode=ocr_mode,
             yunda_mode=yunda_mode,
             ronghui_mode=ronghui_mode,
+            best_mode=best_mode,
             active_original_page_disabled=active_original_page_disabled,
             boyi_frame_mode=boyi_frame_mode,
             message=query.get("message", [""])[0],
@@ -220,20 +221,17 @@ class DocumentServiceMixin:
                 slug="pricing",
                 name="价格获取",
                 status="maintained",
-                summary="基于地址库和融辉系统生成报价资产与成本底表。",
-                code_path="price_scripts/",
-                docs_path="docs/price_scripts/",
+                summary="通过三平台报价插件查询融辉、韵达与百世实时价格。",
+                code_path="agent/service_v2_plugins/quote_prices_v2/",
+                docs_path="agent/service_v2_plugins/README.md",
                 route="/modules/pricing",
-                workspace_path="",
-                current_focus="地址标准化、融辉批量取价与报价单产出。",
-                inputs=("地址数据库", "融辉登录状态", "网点映射规则"),
-                outputs=("全国报价表", "客户报价单", "价格图表", "网点报价表"),
+                workspace_path="/automations",
+                current_focus="使用项目绑定账号，按地址、重量和体积查询三平台报价。",
+                inputs=("收件地址", "重量", "体积", "项目绑定的平台账号"),
+                outputs=("融辉报价", "韵达报价", "百世报价"),
                 dependencies=(),
                 consumers=("finance", "ai-service", "customer-service"),
-                commands=(
-                    'cd /d C:\\Users\\DENG\\Desktop\\agent\\price_scripts\\scripts\\02_tms_price_fetch && python -u batch_run.py',
-                    'cd /d C:\\Users\\DENG\\Desktop\\agent\\price_scripts\\scripts\\03_finance_summary_charts && python 生成客户报价表.py',
-                ),
+                commands=(),
             ),
             "finance": ProjectModule(
                 slug="finance",
@@ -696,43 +694,74 @@ class DocumentServiceMixin:
             return
         self._redirect_with_message(handler, return_to, "运单已作废。", "success")
 
-    def _unwrap_quote_agent_result(self, result: dict[str, Any], *, label: str) -> dict[str, Any]:
-        if not result.get("ok"):
-            error = result.get("error")
-            payload = error if isinstance(error, dict) else {"error": str(error or f"{label}报价调用失败")}
-            if result.get("status"):
-                payload["status_code"] = result.get("status")
-            return payload
-        outer = result.get("data")
-        if isinstance(outer, dict):
-            if outer.get("ok") is False:
-                return outer
-            nested = outer.get("data")
-            if isinstance(nested, dict):
-                return nested
-            return outer
-        return {"error": f"{label}报价返回格式异常"}
-
-    def _call_quote_agent_source(
-        self,
-        *,
-        endpoint: str,
-        label: str,
-        request: dict[str, Any],
-        trusted_context: dict[str, Any],
+    def _call_quote_plugin(
+        self, handler: BaseHTTPRequestHandler, *, request: dict[str, Any],
+        request_id: str, trusted_context: dict[str, Any],
     ) -> dict[str, Any]:
-        timeout_sec = 75
-        payload = {
-            "params": {
-                "address": request["receiver_address"],
-                "weight": str(request["weight"]),
-                "volume": str(request["volume"]),
-            },
-            "timeout_sec": timeout_sec,
-        }
-        result = call_business(self, endpoint.rsplit("/", 1)[-1], payload["params"],
-            trusted_context=trusted_context, timeout_sec=timeout_sec)
-        return self._unwrap_quote_agent_result(result, label=label)
+        # A stale UI catalog is useful for display, but never selects a quote provider.
+        catalog = self._load_automation_plugin_catalog_uncached(handler)
+        if catalog[5]:
+            raise ValueError(str(catalog[5]))
+        instances = [item for item in catalog[1] if item.get("plugin_id") == "quote_prices_v2"]
+        if len(instances) != 1:
+            raise ValueError("请在自动化中配置唯一的三平台报价插件项目。")
+        instance = instances[0]
+        entries = instance.get("enabled_console_entrypoints") or []
+        if (instance.get("runtime_model") != "SERVICE_V2"
+                or instance.get("contribution_projection_state") != "ACTIVE"
+                or not instance.get("enabled") or not instance.get("configured")
+                or instance.get("blocked") or len(entries) != 1):
+            raise ValueError("三平台报价插件尚未就绪，请检查项目设置、启用状态和账号绑定。")
+        automation_id = instance["automation_id"]
+        principal = trusted_context["_console_principal"]
+        accepted = self._agent_request(
+            "POST", f"/internal/v1/automation-projects/{quote(automation_id, safe='')}/invoke",
+            payload={"request_id": request_id, "contribution_id": entries[0], "runtime_inputs": {
+                "address": request["receiver_address"], "weight": float(request["weight"]),
+                "volume": float(request["volume"]),
+            }}, timeout=20, console_principal=principal,
+        )
+        if not accepted.get("ok"):
+            raise ValueError(str(accepted.get("error") or "报价插件调用失败。"))
+        receipt = accepted.get("data")
+        if not isinstance(receipt, dict) or receipt.get("automation_id") != automation_id:
+            raise ValueError("报价插件未返回当前项目的执行记录。")
+        invocation_id = self._normalize_browser_request_uuid(receipt.get("invocation_id"))
+        if not invocation_id:
+            raise ValueError("报价插件未返回有效的执行标识。")
+        deadline = time.monotonic() + 300
+        while True:
+            current = self._agent_request(
+                "GET", f"/internal/v1/automation-invocations/{invocation_id}",
+                timeout=15, console_principal=principal,
+            )
+            if not current.get("ok"):
+                raise ValueError(str(current.get("error") or "本次报价结果读取失败。"))
+            invocation = current.get("data")
+            if (not isinstance(invocation, dict) or invocation.get("invocation_id") != invocation_id
+                    or invocation.get("automation_id") != automation_id):
+                raise ValueError("报价执行记录与本次请求不匹配。")
+            status = invocation.get("status")
+            result = invocation.get("result")
+            data = result.get("data") if isinstance(result, dict) else None
+            if status == "COMPLETED":
+                if not isinstance(data, dict):
+                    raise ValueError("本次报价未返回有效的平台结果。")
+                return data
+            if status == "FAILED" and isinstance(data, dict):
+                # Keep this call's platform errors, never prices from a failed invocation.
+                errors = {}
+                for provider in ("ronghui", "yunda", "best"):
+                    row = data.get(provider)
+                    error = row.get("error") if isinstance(row, dict) else None
+                    errors[provider] = {"status": "failed", "error": error or
+                        invocation.get("error_summary") or "本次报价执行失败。"}
+                return errors
+            if status not in {"STARTING", "RUNNING", "CANCELLING"}:
+                raise ValueError(str(invocation.get("error_summary") or f"本次报价已结束：{status or '状态无效'}"))
+            if time.monotonic() >= deadline:
+                raise ValueError("等待本次报价超时，请在自动化项目中查看这次执行记录。")
+            time.sleep(0.5)
 
     def _handle_quote_options(self, handler: BaseHTTPRequestHandler) -> None:
         trusted_context = self._control_plane_write_context(handler)
@@ -741,6 +770,9 @@ class DocumentServiceMixin:
         body = self._parse_json_body(handler)
         try:
             request = parse_quote_options_request(body)
+            request_id = self._normalize_browser_request_uuid(handler.headers.get("X-Browser-Request-UUID"))
+            if not request_id:
+                raise QuoteOptionsValidationError("缺少有效的本次报价请求标识，请刷新页面重试。")
         except QuoteOptionsValidationError as exc:
             self._send_json(
                 handler,
@@ -749,32 +781,14 @@ class DocumentServiceMixin:
             )
             return
 
-        sources = {
-            "ronghui": ("/internal/v1/tms/get_price", "融辉"),
-            "yunda": ("/internal/v1/tms/yunda_price", "韵达"),
-        }
-        results: dict[str, Any] = {}
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = {
-                executor.submit(
-                    self._call_quote_agent_source,
-                    endpoint=endpoint,
-                    label=label,
-                    request=request,
-                    trusted_context=trusted_context,
-                ): provider
-                for provider, (endpoint, label) in sources.items()
-            }
-            for future in as_completed(futures):
-                provider = futures[future]
-                try:
-                    results[provider] = future.result()
-                except Exception as exc:
-                    results[provider] = {"error": f"{sources[provider][1]}报价调用失败：{exc}"}
-
+        try:
+            result = self._call_quote_plugin(handler, request=request, request_id=request_id,
+                trusted_context=trusted_context)
+        except Exception as exc:
+            error = redact_text(str(exc))
+            result = {provider: {"status": "failed", "error": error} for provider in ("ronghui", "yunda", "best")}
         payload = build_manual_quote_options(
-            ronghui_result=results.get("ronghui") or {"error": "融辉报价无返回"},
-            yunda_result=results.get("yunda") or {"error": "韵达报价无返回"},
+            plugin_result=result,
             delivery_method=request["delivery_method"],
         )
         self._send_json(handler, HTTPStatus.OK, payload)

@@ -24,7 +24,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 import fetch_pre_arrive_list
 import fetch_dispatch
 import yunda_dispatch_forecast
-import yunda_price
+from legacy.price_quote import price_tool, yunda_price
 import yunda_waybill_entry
 import yunda_waybill_tracking
 import yunda_send_waybills
@@ -65,7 +65,6 @@ from tools import (
     phase7_mysql_store,
     phase7_sync_common,
     init_waybills_sql_from_feishu_tool,
-    price_tool,
     query_tool,
     r7_arrival_checkin_tool,
     r7_departure_checkin_tool,

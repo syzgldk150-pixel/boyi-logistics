@@ -2,9 +2,11 @@ import io
 import json
 import sys
 import unittest
+from decimal import Decimal
 from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 CONSOLE_DIR = Path(__file__).resolve().parents[1]
@@ -19,176 +21,208 @@ from app import (  # noqa: E402
 )
 
 
+REQUEST_ID = "11111111-1111-4111-8111-111111111111"
+INVOCATION_ID = "22222222-2222-4222-8222-222222222222"
+PROJECT_ID = "33333333-3333-4333-8333-333333333333"
+
+
+def _provider(*rows, **extra):
+    return {"status": "success", "quotes": [
+        {"label": label, "amount": amount, "delivery_method": method}
+        for label, amount, method in rows
+    ], **extra}
+
+
+def _request(**changes):
+    return {"receiver_address": "测试省测试市示例路1号", "weight_kg": "12.5",
+        "volume_m3": "0.045", "delivery_method": "送货", **changes}
+
+
+def _data():
+    return {
+        "ronghui": _provider(("融辉产品甲", "92.00", "派送")),
+        "yunda": _provider(("韵达派送", "88.00", "派送")),
+        "best": _provider(("百世产品甲", "78.00", "派送")),
+    }
+
+
+def _instance(**changes):
+    return {"automation_id": PROJECT_ID, "plugin_id": "quote_prices_v2",
+        "runtime_model": "SERVICE_V2", "contribution_projection_state": "ACTIVE",
+        "enabled": True, "configured": True, "blocked": False,
+        "enabled_console_entrypoints": ["quote_console"], **changes}
+
+
 class _JsonHandler:
-    def __init__(self, payload):
+    def __init__(self, payload, request_id=REQUEST_ID):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.headers = {"Content-Length": str(len(body)), "Content-Type": "application/json"}
+        self.headers = {"Content-Length": str(len(body)), "Content-Type": "application/json",
+            "X-Browser-Request-UUID": request_id}
         self.rfile = io.BytesIO(body)
         self.wfile = io.BytesIO()
         self.status = None
-        self.sent_headers = []
 
     def send_response(self, status):
         self.status = status
 
     def send_header(self, name, value):
-        self.sent_headers.append((name, value))
+        pass
 
     def end_headers(self):
-        return None
+        pass
 
     def json_body(self):
         return json.loads(self.wfile.getvalue().decode("utf-8"))
 
 
 class ManualQuoteOptionsTests(unittest.TestCase):
-    def test_ronghui_dispatch_uses_lowest_dispatch_product(self):
-        payload = build_manual_quote_options(
-            ronghui_result={
-                "目的网点": "杭州余杭",
-                "融惠达": "80.00",
-                "融惠达(派送)": "126.50",
-                "精准零担(派送)": "118.20",
-            },
-            yunda_result={"韵达派送": "135.00", "目的网点": "杭州韵达"},
-            delivery_method="送货",
-        )
-
+    def test_selects_lowest_product_in_exact_delivery_mode(self):
+        data = _data()
+        data["ronghui"] = _provider(("融辉产品甲", "10.00", "自提"),
+            ("融辉产品乙", "70.00", "派送"), ("融辉产品丙", "72.50", "派送"))
+        payload = build_manual_quote_options(plugin_result=data, delivery_method="送货")
         ronghui = next(item for item in payload["quotes"] if item["provider"] == "ronghui")
-        self.assertEqual("available", ronghui["status"])
-        self.assertEqual("118.20", ronghui["price"])
-        self.assertEqual("精准零担", ronghui["product_name"])
+        self.assertEqual("70.00", ronghui["price"])
+        self.assertEqual("融辉产品乙", ronghui["product_name"])
         self.assertEqual("ronghui", payload["best_provider"])
+        self.assertEqual(3, payload["available_count"])
 
-    def test_ronghui_self_pickup_ignores_dispatch_prices(self):
-        payload = build_manual_quote_options(
-            ronghui_result={
-                "目的网点": "杭州余杭",
-                "融惠达": "88.00",
-                "精准零担": "90.00",
-                "融惠达(派送)": "70.00",
-            },
-            yunda_result={"error": "韵达不可达"},
-            delivery_method="自提",
-        )
-
-        ronghui = next(item for item in payload["quotes"] if item["provider"] == "ronghui")
-        self.assertEqual("available", ronghui["status"])
-        self.assertEqual("88.00", ronghui["price"])
-        self.assertEqual("融惠达", ronghui["product_name"])
-
-    def test_yunda_uses_selected_delivery_method_price(self):
-        payload = build_manual_quote_options(
-            ronghui_result={"网点不可达": "网点不可达"},
-            yunda_result={"韵达自提": "52.00", "韵达派送": "60.00", "目的网点": "杭州韵达"},
-            delivery_method="自提",
-        )
-
-        yunda = next(item for item in payload["quotes"] if item["provider"] == "yunda")
-        self.assertEqual("available", yunda["status"])
-        self.assertEqual("52.00", yunda["price"])
-        self.assertEqual("韵达自提", yunda["product_name"])
-        self.assertEqual("yunda", payload["best_provider"])
-
-    def test_single_provider_failure_keeps_available_provider(self):
-        payload = build_manual_quote_options(
-            ronghui_result={"error": "融辉登录态失效", "error_code": "AUTH_REQUIRED"},
-            yunda_result={"韵达派送": "73.40", "目的网点": "杭州韵达"},
-            delivery_method="送货",
-        )
-
-        ronghui = next(item for item in payload["quotes"] if item["provider"] == "ronghui")
-        self.assertEqual("auth_required", ronghui["status"])
-        self.assertIn("登录态", ronghui["error"])
+    def test_self_pickup_never_uses_dispatch_or_legacy_result(self):
+        data = _data()
+        data["best"] = _provider(("百世派送", "1.00", "派送"), ("百世自提", "50.00", "自提"))
+        data["yunda"] = {"韵达自提": "0.10"}
+        payload = build_manual_quote_options(plugin_result=data, delivery_method="自提")
         self.assertEqual(1, payload["available_count"])
-        self.assertEqual("yunda", payload["best_provider"])
+        self.assertEqual("best", payload["best_provider"])
+        self.assertEqual("50.00", next(item for item in payload["quotes"] if item["provider"] == "best")["price"])
 
-    def test_both_provider_failures_report_no_available_quote(self):
-        payload = build_manual_quote_options(
-            ronghui_result={"网点不可达": "网点不可达"},
-            yunda_result={"error": "韵达地址不可达"},
-            delivery_method="送货",
-        )
+    def test_provider_failure_keeps_other_results_and_yongsheng_pending(self):
+        data = _data()
+        data["ronghui"] = {"status": "failed", "error": "融辉登录态失效", "error_code": "AUTH_REQUIRED"}
+        payload = build_manual_quote_options(plugin_result=data, delivery_method="送货")
+        quotes = {item["provider"]: item for item in payload["quotes"]}
+        self.assertEqual("auth_required", quotes["ronghui"]["status"])
+        self.assertEqual("pending", quotes["yongsheng"]["status"])
+        self.assertEqual(2, payload["available_count"])
+        self.assertEqual("best", payload["best_provider"])
 
+    def test_invalid_platform_amount_does_not_silently_select_another_product(self):
+        data = {"best": _provider(("产品甲", "bad", "派送"), ("产品乙", "20.00", "派送"))}
+        payload = build_manual_quote_options(plugin_result=data, delivery_method="派送")
+        best = next(item for item in payload["quotes"] if item["provider"] == "best")
+        self.assertEqual("invalid_price", best["status"])
         self.assertFalse(payload["ok"])
-        self.assertEqual(0, payload["available_count"])
-        self.assertEqual("", payload["best_provider"])
-        self.assertIn("无可用报价", payload["message"])
+
+    def test_missing_delivery_mode_is_invalid(self):
+        payload = build_manual_quote_options(plugin_result={"best": {"status": "success",
+            "quotes": [{"label": "产品甲", "amount": "20.00"}]}}, delivery_method="派送")
+        self.assertFalse(payload["ok"])
+        self.assertIn("送货方式", next(item for item in payload["quotes"] if item["provider"] == "best")["error"])
+
+    def test_no_data_and_explicit_zero_are_distinct(self):
+        missing = build_manual_quote_options(plugin_result={}, delivery_method="自提")
+        self.assertEqual(0, missing["available_count"])
+        self.assertEqual("", missing["best_provider"])
+        zero = build_manual_quote_options(plugin_result={"best": _provider(("产品甲", "0.00", "自提"))}, delivery_method="自提")
+        self.assertEqual(1, zero["available_count"])
+        self.assertEqual("best", zero["best_provider"])
+
+    def test_weight_volume_keep_input_precision(self):
+        result = parse_quote_options_request(_request(weight_kg="1.235", volume_m3="0.001"))
+        self.assertEqual(Decimal("1.235"), result["weight"])
+        self.assertEqual(Decimal("0.001"), result["volume"])
 
     def test_missing_weight_or_volume_is_rejected_without_defaults(self):
-        with self.assertRaises(QuoteOptionsValidationError):
-            parse_quote_options_request(
-                {
-                    "receiver_address": "浙江省杭州市余杭区文一西路969号",
-                    "weight_kg": "",
-                    "volume_m3": "0.35",
-                    "delivery_method": "送货",
-                }
-            )
-
-        with self.assertRaises(QuoteOptionsValidationError):
-            parse_quote_options_request(
-                {
-                    "receiver_address": "浙江省杭州市余杭区文一西路969号",
-                    "weight_kg": "12",
-                    "volume_m3": "abc",
-                    "delivery_method": "送货",
-                }
-            )
+        for payload in (_request(weight_kg=""), _request(volume_m3="bad"), _request(volume_m3="0"),
+                _request(weight_kg="1" * 400)):
+            with self.subTest(payload=payload), self.assertRaises(QuoteOptionsValidationError):
+                parse_quote_options_request(payload)
 
 
 class ManualQuoteOptionsEndpointTests(unittest.TestCase):
-    def test_quote_options_endpoint_calls_both_agent_price_sources(self):
+    def _app(self, *, instances=None, states=None):
         app = object.__new__(LocalDocFlowApp)
         app.settings = SimpleNamespace(agent_timeout_seconds=5)
-        app._control_plane_write_context = lambda handler: {"_console_principal": {"actor_id": "admin-1", "roles": ["admin"]}}
+        principal = {"actor_id": "admin-1", "roles": ["admin"]}
+        app._control_plane_write_context = lambda handler: {"_console_principal": principal}
+        app._load_automation_plugin_catalog_uncached = lambda handler: (
+            [], [_instance()] if instances is None else instances, [], [], frozenset(), "", False)
+        current_states = iter(states or [{"status": "COMPLETED", "result": {"data": _data()}}])
         calls = []
 
-        def fake_agent_request(method, endpoint, *, payload=None, timeout=None, console_principal=None):
-            self.assertEqual("admin-1", console_principal["actor_id"])
-            calls.append((method, endpoint, payload, timeout))
-            if endpoint == "/internal/v1/business/get_price":
-                return {"ok": True, "status": 200, "data": {"融惠达(派送)": "92.00", "目的网点": "杭州余杭"}}
-            if endpoint == "/internal/v1/business/yunda_price":
-                return {"ok": True, "status": 200, "data": {"韵达派送": "88.00", "目的网点": "杭州韵达"}}
-            raise AssertionError(endpoint)
+        def fake_request(method, endpoint, *, payload=None, timeout=None, console_principal=None):
+            self.assertIs(principal, console_principal)
+            calls.append((method, endpoint, payload))
+            if method == "POST":
+                self.assertEqual(f"/internal/v1/automation-projects/{PROJECT_ID}/invoke", endpoint)
+                return {"ok": True, "data": {"automation_id": PROJECT_ID,
+                    "invocation_id": INVOCATION_ID, "status": "STARTING"}}
+            self.assertEqual(f"/internal/v1/automation-invocations/{INVOCATION_ID}", endpoint)
+            return {"ok": True, "data": {"automation_id": PROJECT_ID,
+                "invocation_id": INVOCATION_ID, **next(current_states)}}
 
-        app._agent_request = fake_agent_request
-        handler = _JsonHandler(
-            {
-                "receiver_address": "浙江省杭州市余杭区文一西路969号",
-                "weight_kg": "12.5",
-                "volume_m3": "0.45",
-                "delivery_method": "送货",
-            }
-        )
+        app._agent_request = fake_request
+        return app, calls
 
-        app._handle_quote_options(handler)
-
-        body = handler.json_body()
+    def test_quote_endpoint_invokes_one_plugin_with_same_request_and_polls_exact_result(self):
+        app, calls = self._app(states=[{"status": "RUNNING"},
+            {"status": "COMPLETED", "result": {"data": _data()}}])
+        handler = _JsonHandler(_request())
+        with patch("console.services.documents.time.sleep"):
+            app._handle_quote_options(handler)
         self.assertEqual(HTTPStatus.OK, handler.status)
-        self.assertEqual("yunda", body["best_provider"])
-        self.assertEqual({"/internal/v1/business/get_price", "/internal/v1/business/yunda_price"}, {call[1] for call in calls})
-        self.assertTrue(all(call[2]["params"]["volume"] == "0.45" for call in calls))
+        self.assertEqual("best", handler.json_body()["best_provider"])
+        posts = [call for call in calls if call[0] == "POST"]
+        self.assertEqual(1, len(posts))
+        self.assertEqual({"request_id": REQUEST_ID, "contribution_id": "quote_console", "runtime_inputs": {
+            "address": "测试省测试市示例路1号", "weight": 12.5, "volume": 0.045}}, posts[0][2])
+        self.assertEqual(3, len(calls))
 
-    def test_quote_options_endpoint_rejects_invalid_numbers_before_agent_call(self):
-        app = object.__new__(LocalDocFlowApp)
-        app.settings = SimpleNamespace(agent_timeout_seconds=5)
-        app._control_plane_write_context = lambda handler: {"_console_principal": {"actor_id": "admin-1", "roles": ["admin"]}}
-        app._agent_request = lambda *args, **kwargs: self.fail("agent should not be called")
-        handler = _JsonHandler(
-            {
-                "receiver_address": "浙江省杭州市余杭区文一西路969号",
-                "weight_kg": "bad",
-                "volume_m3": "0.45",
-                "delivery_method": "送货",
-            }
-        )
+    def test_missing_duplicate_or_stale_instance_never_invokes(self):
+        for instances in ([], [_instance(), _instance()], [_instance(contribution_projection_state="STALE")],
+                [_instance(enabled_console_entrypoints=[])], [_instance(enabled=False)]):
+            with self.subTest(instances=instances):
+                app, calls = self._app(instances=instances)
+                handler = _JsonHandler(_request())
+                app._handle_quote_options(handler)
+                self.assertFalse(handler.json_body()["ok"])
+                self.assertEqual([], calls)
 
+    def test_mismatched_or_failed_invocation_never_returns_prices(self):
+        for state in ({"status": "COMPLETED", "automation_id": "other", "result": {"data": _data()}},
+                {"status": "COMPLETED", "invocation_id": REQUEST_ID, "result": {"data": _data()}},
+                {"status": "FAILED", "error_summary": "本次报价失败", "result": {"data": _data()}},
+                {"status": "COMPLETED", "result": {}}):
+            with self.subTest(state=state):
+                app, calls = self._app(states=[state])
+                handler = _JsonHandler(_request())
+                app._handle_quote_options(handler)
+                self.assertFalse(handler.json_body()["ok"])
+                self.assertEqual(0, handler.json_body()["available_count"])
+                self.assertEqual(1, sum(call[0] == "POST" for call in calls))
+
+    def test_invalid_number_or_request_id_is_rejected_before_catalog(self):
+        for payload, request_id in ((_request(weight_kg="bad"), REQUEST_ID), (_request(), "")):
+            app, calls = self._app()
+            app._load_automation_plugin_catalog_uncached = lambda _: self.fail("catalog should not be called")
+            handler = _JsonHandler(payload, request_id=request_id)
+            app._handle_quote_options(handler)
+            self.assertEqual(HTTPStatus.BAD_REQUEST, handler.status)
+            self.assertEqual([], calls)
+
+    def test_failed_invocation_keeps_current_platform_errors_without_prices(self):
+        data = {provider: {"status": "failed", "error": f"{provider} 本次无数据",
+            "quotes": [{"label": "不能使用的报价", "amount": "1.00", "delivery_method": "派送"}]}
+            for provider in ("ronghui", "yunda", "best")}
+        app, _ = self._app(states=[{"status": "FAILED", "result": {"data": data}}])
+        handler = _JsonHandler(_request())
         app._handle_quote_options(handler)
-
-        self.assertEqual(HTTPStatus.BAD_REQUEST, handler.status)
-        self.assertFalse(handler.json_body()["ok"])
+        payload = handler.json_body()
+        self.assertFalse(payload["ok"])
+        self.assertEqual(0, payload["available_count"])
+        for row in payload["quotes"][:3]:
+            self.assertIn("本次无数据", row["error"])
+            self.assertEqual("", row["price"])
 
 
 if __name__ == "__main__":

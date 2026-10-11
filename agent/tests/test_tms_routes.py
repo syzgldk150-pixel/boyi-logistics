@@ -789,15 +789,10 @@ class TMSRoutesTests(unittest.TestCase):
         self.assertEqual(submit_response.json()["submitted"], "123456")
         self.assertEqual(["yunda_default", "yunda_default"], calls)
 
-    def test_get_price_route_uses_dispatch_layer(self):
-        async def fake_execute_target(name, req):
-            self.assertEqual(name, "get_price")
-            self.assertEqual(req.params["address"], "长沙")
-            return 200, {"ok": True, "data": {"目的网点": "测试站"}}
-
+    def test_get_price_route_is_retired_even_with_old_execution_capability(self):
         capability = issue_execution_capability("get_price", ttl_seconds=30)
         try:
-            with patch("agent.tms_runtime.routes.execute_target", side_effect=fake_execute_target):
+            with patch("agent.tms_runtime.routes.execute_target") as execute:
                 response = self.client.post(
                     "/tms/get_price",
                     json={"params": {"address": "长沙"}, "timeout_sec": 30},
@@ -806,9 +801,8 @@ class TMSRoutesTests(unittest.TestCase):
         finally:
             revoke_execution_capability(capability)
 
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.json()["ok"])
-        self.assertEqual(response.json()["data"]["目的网点"], "测试站")
+        self.assertEqual(response.status_code, 404)
+        execute.assert_not_called()
 
     def test_post_route_returns_auth_required_payload(self):
         async def fake_execute_target(name, req):

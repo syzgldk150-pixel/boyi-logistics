@@ -3,8 +3,21 @@
 import re
 from collections.abc import Mapping
 
-HTTP_ACTIONS = {"read_json", "write_json"}
-HTTP_ACCOUNT_SYSTEMS = {"r7", "r13"}
+from shared.redaction import redact_sensitive
+
+HTTP_ACTIONS = {"read_json", "read_text", "write_json"}
+HTTP_ACCOUNT_SYSTEMS = {"r7", "r13", "ronghui", "yunda", "best"}
+_REQUIRED_FIELDS = {"name", "account_role", "action", "method", "path"}
+_OPTIONAL_FIELDS = {"encoding", "query", "referer"}
+
+
+def _canonical_path(path):
+    return (
+        isinstance(path, str)
+        and re.fullmatch(r"/[A-Za-z0-9_.\-/]{1,500}", path)
+        and "//" not in path
+        and not any(part in {".", ".."} for part in path.split("/"))
+    )
 
 
 def validate_http_requests(raw, *, account_roles, capabilities):
@@ -19,7 +32,8 @@ def validate_http_requests(raw, *, account_roles, capabilities):
     }
     result, names, paths = [], set(), set()
     for item in raw:
-        if not isinstance(item, Mapping) or set(item) != {"name", "account_role", "action", "method", "path"}:
+        if (not isinstance(item, Mapping) or not _REQUIRED_FIELDS <= set(item)
+                or set(item) - _REQUIRED_FIELDS - _OPTIONAL_FIELDS):
             raise ValueError("http_requests declaration fields are invalid")
         name, role, action, method, path = (item[key] for key in ("name", "account_role", "action", "method", "path"))
         if not all(isinstance(value, str) for value in (name, role, action, method, path)):
@@ -37,19 +51,26 @@ def validate_http_requests(raw, *, account_roles, capabilities):
         ):
             raise ValueError("http_requests requires one supported account system")
         if method not in {"GET", "POST"}:
-            raise ValueError("http_requests supports GET or POST JSON APIs")
-        if (
-            not re.fullmatch(r"/[A-Za-z0-9_.\-/]{1,500}", path)
-            or "//" in path
-            or any(part in {".", ".."} for part in path.split("/"))
-        ):
+            raise ValueError("http_requests supports GET or POST APIs")
+        if not _canonical_path(path):
             raise ValueError("http_requests requires a canonical relative path without query or origin")
-        identity = (role, method, path)
+        if "encoding" in item and (not isinstance(item["encoding"], str) or item["encoding"] not in {"json", "form"}):
+            raise ValueError("http_requests encoding must be json or form")
+        if "referer" in item and not _canonical_path(item["referer"]):
+            raise ValueError("http_requests referer must be a canonical relative path")
+        query = item.get("query", {})
+        if (not isinstance(query, Mapping) or len(query) > 50
+                or any(not isinstance(key, str) or not key or len(key) > 128
+                       or not isinstance(value, str) or len(value) > 2048 for key, value in query.items())
+                or redact_sensitive(query) != query):
+            raise ValueError("http_requests query must contain non-sensitive string parameters")
+        identity = (role, method, path, tuple(sorted(query.items())))
         if identity in paths:
             raise ValueError("http_requests endpoint declarations must be unique")
         names.add(name)
         paths.add(identity)
-        result.append(dict(item))
+        # Preserve normalized bytes for existing declarations without options.
+        result.append({**item, **({"query": dict(query)} if "query" in item else {})})
     if grants != {(item["account_role"], item["action"]) for item in result}:
         raise ValueError("http.request capabilities must have matching request declarations")
     return result

@@ -6,14 +6,13 @@
 
 ## 修改入口
 
-- 当前 Agent 报价工具：`../tools/price_tool.py`
-- Agent 本地 TMS 调用门面：`../tools/tms_tool.py`
-- 当前融辉/韵达报价 target：`../agent/tms_runtime/scripts/get_price.py` 与 `../agent/tms_runtime/scripts/yunda_price.py`
-- 当前账号入口：`/admin/accounts/{account_id}/*`；融辉报价显式绑定 `price_default`
+- 当前报价插件：`../service_v2_plugins/quote_prices_v2/payload/`
+- 已退役的系统报价工具与融辉/韵达脚本：`../legacy/price_quote/`
+- 账号入口：`/admin/accounts/{account_id}/*`；报价通过插件实例分别绑定三个平台账号。
 
 ## 隔离规则
 
-- 飞书或 Console 报价故障先查 `../tools/price_tool.py` 和 `../agent/tms_runtime/`，不要把本目录旧实现接回线上。
+- 飞书或 Console 报价故障先查 `../service_v2_plugins/quote_prices_v2/` 和已安装实例，不要把本目录旧实现接回线上。
 - 本目录与 `../agent/tms_runtime/scripts/` 存在 `get_price.py`、`login_manager.py`、`browser_address_resolver.py` 等同名模块；任何复用都必须使用完整包路径，禁止裸导入或长期修改 `sys.path`。
 - 旧批量流水线入口已不存在；不得根据历史文档重建或猜测入口。需要恢复离线批处理时，必须另立任务，从受审历史提交和真实数据源重新验证。
 

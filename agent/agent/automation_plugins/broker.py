@@ -37,6 +37,7 @@ from agent.orchestration.execution_resources import EXECUTION_ACTION_SCOPES, Act
 
 _OPERATIONS = frozenset(
     {
+        "account.context",
         "browser.invoke",
         "browser.session",
         "event.publish",
@@ -54,6 +55,7 @@ _OPERATIONS = frozenset(
 )
 _SERVICE_V2_OPERATIONS = frozenset(
     {
+        "account.context",
         "browser.session",
         "event.publish",
         "file.read",

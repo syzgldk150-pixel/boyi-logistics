@@ -19,8 +19,8 @@ from agent.tms_runtime.dispatch import TaskRequest, execute_target
 ReadHandler = Callable[[dict[str, Any], int], Awaitable[Mapping[str, Any]]]
 
 DIRECT_READ_TARGETS = frozenset({
-    "delivery_status", "get_price", "query_waybill_detail", "ronghui_tms_tracking",
-    "tracking_query", "waybill_tracking", "yunda_price", "yunda_waybill_tracking",
+    "delivery_status", "query_waybill_detail", "ronghui_tms_tracking",
+    "tracking_query", "waybill_tracking", "yunda_waybill_tracking",
 })
 CUSTOMER_ACTIONS = frozenset({
     "query", "detail", "fetch_attachment", "mark_read", "reply", "publish", "upload_attachment",

@@ -238,6 +238,50 @@ def test_service_v2_feishu_dispatches_verified_exact_context_and_hides_internal_
         assert private_value not in public_reply
 
 
+def test_quote_text_uses_verified_plugin_invocation_and_returns_three_platforms():
+    dispatcher = _FakeServiceV2FeishuDispatcher(result={
+        "success": True, "status": "COMPLETED",
+        "invocation_id": "11111111-1111-4111-8111-111111111111",
+        "result": {"data": {
+            "ronghui": {"status": "success", "quotes": [{"label": "自提", "amount": "10.00"}]},
+            "yunda": {"status": "failed", "quotes": [], "error": "当前未登录"},
+            "best": {"status": "success", "quotes": [{"label": "派送", "amount": "20.00"}]},
+        }},
+    })
+    agent, replies = _FakeAgent(), []
+    with (
+        patch("feishu.bot.get_agent_core", return_value=agent),
+        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
+        patch.object(message_handler, "get_pending", return_value=None),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        _run_verified_text("示例市测试路1号，1000，2.5", event_id="event-quote-one")
+    assert dispatcher.calls == [{
+        "command_text": "三平台报价", "event_id": "event-quote-one", "sender_id": "user-one", "chat_id": "chat-one",
+        "runtime_inputs": {"address": "示例市测试路1号", "weight": 1000.0, "volume": 2.5},
+    }]
+    assert agent.tool_calls == agent.chat_calls == []
+    assert "融辉、韵达、百世" in replies[0][0]
+    assert [text for text, _ in replies[1:]] == ["融辉价格\n自提：10.00元", "韵达价格\n报价失败：当前未登录", "百世价格\n派送：20.00元"]
+
+
+def test_quote_missing_volume_clarifies_before_plugin_or_reader_calls():
+    dispatcher = _FakeServiceV2FeishuDispatcher()
+    agent, replies = _FakeAgent(), []
+    with (
+        patch("feishu.bot.get_agent_core", return_value=agent),
+        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
+        patch.object(message_handler, "get_pending", return_value=None),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        _run_verified_text("示例市测试路1号，1000", event_id="event-quote-missing")
+    assert dispatcher.calls == agent.tool_calls == agent.chat_calls == []
+    assert len(replies) == 1
+    assert "体积" in replies[0][0]
+
+
 def test_service_v2_feishu_unknown_command_continues_to_existing_agent_path():
     dispatcher = _FakeServiceV2FeishuDispatcher(result=None)
     agent = _FakeAgent()

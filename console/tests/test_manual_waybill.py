@@ -487,6 +487,7 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertIn('data-quote-action="calculate"', html)
         self.assertIn('data-quote-provider="yunda"', html)
         self.assertIn('data-quote-provider="ronghui"', html)
+        self.assertIn('data-quote-provider="best"', html)
         self.assertIn("/waybills/quote-options", html)
         self.assertIn("SHIPNOW_OPEN_ENTRY_TAB", html)
         self.assertIn("打开韵达原站（手动填写）", html)

@@ -19,7 +19,9 @@ import httpx
 
 from agent.direct_tool_router import (
     FIRST_PARTY_FEISHU_ROUTE_KEYS,
+    QUOTE_PLUGIN_COMMAND,
     direct_tool_request_from_text,
+    format_quote_plugin_messages,
     format_tool_reply,
     format_tool_reply_messages,
     is_deprecated_split_command,
@@ -2512,6 +2514,18 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         local_result = direct_request.get("local_result")
         logger.info("feishu route | chat=%s | route=direct_tool | tool=%s | mode=%s", chat_id, tool_name, mode)
 
+        if mode == "service_v2_quote":
+            if isinstance(local_result, dict):
+                await _reply_tool_result(chat_id, tool_name, local_result)
+                return
+            handled = await _dispatch_service_v2_feishu_command(
+                text=QUOTE_PLUGIN_COMMAND, receive_id=chat_id,
+                runtime_inputs=direct_request["runtime_inputs"], quote_result=True,
+            )
+            if not handled:
+                await _reply_text(chat_id, "价格查询插件尚未启用或未配置，请在后台检查三平台报价项目。", reply_type="quote_plugin_unavailable")
+            return
+
         if await dispatch_migrated_fixed_feishu_entrypoint(
             mode=mode,
             automation_route_key=automation_route_key,
@@ -2560,12 +2574,6 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 chat_id,
                 f"正在查询单号：{tracking_number}" if tracking_number else "正在查询单号",
                 reply_type="tool_start:track_waybill",
-            )
-        elif tool_name == "get_price":
-            await _reply_text(
-                chat_id,
-                "正在查询融辉和韵达价格，完成后我会反馈结果。",
-                reply_type="tool_start:get_price",
             )
 
         try:
@@ -2647,7 +2655,9 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     await _reply_text(chat_id, reply_text, reply_type=reply_type)
 
 
-async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str, conversation_target: Any = None) -> bool:
+async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str, conversation_target: Any = None,
+                                           runtime_inputs: dict[str, Any] | None = None,
+                                           quote_result: bool = False) -> bool:
     """Dispatch one exact managed command after all fixed routes miss."""
 
     dispatcher = _SERVICE_V2_FEISHU_DISPATCHER
@@ -2655,6 +2665,7 @@ async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str, con
         return False
     context = _COMMAND_CONTEXT.get() or FeishuCommandContext("", "", "")
     accepted_notified = False
+    task_name = "融辉、韵达、百世报价查询" if quote_result else "扩展任务"
 
     async def notify_accepted(_receipt: Any) -> None:
         nonlocal accepted_notified
@@ -2664,7 +2675,7 @@ async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str, con
         try:
             await _reply_text(
                 receive_id,
-                invocation_accepted_message("扩展任务"),
+                invocation_accepted_message(task_name),
                 reply_type="service_v2_feishu_started",
             )
         except Exception:
@@ -2676,6 +2687,7 @@ async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str, con
             sender_id=context.actor_id, chat_id=context.chat_id,
             on_accepted=callback,
             **({"conversation_target": conversation_target} if conversation_target is not None else {}),
+            **({"runtime_inputs": runtime_inputs} if runtime_inputs is not None else {}),
         )
 
     try:
@@ -2684,7 +2696,7 @@ async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str, con
             event_id=context.event_id, sender_id=context.actor_id, chat_id=context.chat_id,
             submit=submit, on_accepted=notify_accepted,
             on_waiting=lambda: _reply_text(
-                receive_id, "扩展任务已发起，正在等待本次最终结果，完成后会继续回复。",
+                receive_id, f"{task_name}已发起，正在等待本次最终结果，完成后会继续回复。",
                 reply_type="service_v2_feishu_waiting_result",
             ),
         )
@@ -2695,13 +2707,13 @@ async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str, con
         if accepted_notified:
             await _reply_text(
                 receive_id,
-                _accepted_result_pending_message("扩展任务"),
+                _accepted_result_pending_message(task_name),
                 reply_type="service_v2_feishu_result_pending",
             )
             return True
         await _reply_text(
             receive_id,
-            "扩展任务未能执行：消息身份不完整或当前入口不可用。",
+            f"{task_name}未能执行：消息身份不完整或当前入口不可用。",
             reply_type="service_v2_feishu_rejected",
         )
         return True
@@ -2712,18 +2724,22 @@ async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str, con
         if accepted_notified:
             await _reply_text(
                 receive_id,
-                _accepted_result_pending_message("扩展任务"),
+                _accepted_result_pending_message(task_name),
                 reply_type="service_v2_feishu_result_pending",
             )
         else:
             await _reply_text(
                 receive_id,
-                "扩展任务暂时无法执行，请稍后重试。",
+                f"{task_name}暂时无法执行，请稍后重试。",
                 reply_type="service_v2_feishu_failed",
             )
         return True
     if result is None:
         return False
+    if quote_result:
+        for message in format_quote_plugin_messages(result):
+            await _reply_text(receive_id, message, reply_type="quote_plugin_result")
+        return True
     if conversation_target is not None and result.get("selection_preview"):
         await _reply_text(
             receive_id,
@@ -2732,7 +2748,7 @@ async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str, con
         )
         return True
     reply, reply_type = _automation_result_reply(
-        task_name="扩展任务",
+        task_name=task_name,
         result=result,
     )
     await _reply_text(receive_id, reply, reply_type=reply_type)

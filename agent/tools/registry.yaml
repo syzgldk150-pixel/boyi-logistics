@@ -166,12 +166,10 @@ tools:
           type: string
           enum:
             - /delivery_status
-            - /get_price
             - /query_waybill_detail
             - /ronghui_tms_tracking
             - /tracking_query
             - /waybill_tracking
-            - /yunda_price
             - /yunda_waybill_tracking
           description: "固定只读兼容端点；不接受任何写入或同步 target"
         params:
@@ -204,83 +202,6 @@ tools:
     executor: tools/tms_tool.py
     timeout: 60
     heavy: false
-
-  - name: get_price
-    version: "1.0.0"
-    operation_type: read
-    risk_level: low
-    llm_exposed: true
-    approval:
-      mode: none
-    permissions:
-      required_roles:
-        - admin
-    account_scope:
-      required: false
-      allow_implicit_default: false
-    idempotency:
-      mode: parameters
-      key_fields: []
-    retry:
-      safe: false
-      max_attempts: 1
-    evidence:
-      required: true
-      required_fields:
-        - source
-        - observed_at
-    postconditions:
-      - authoritative_result_returned
-    description: "查询物流报价。默认走 Agent /tms/get_price；兼容旧版发站/到站/重量查询"
-    input_schema:
-      type: object
-      additionalProperties: false
-      properties:
-        address:
-          type: string
-          description: "优先使用：完整收货地址，如 浙江省杭州市西湖区文三路100号"
-        from_station:
-          type: string
-          description: "兼容旧版：发站名称"
-        to_station:
-          type: string
-          description: "兼容旧版：到站名称"
-        weight:
-          type: number
-          description: "重量(kg)"
-        volume:
-          type: number
-          description: "可选：体积(m³)，默认 0.1"
-        account_id:
-          type: string
-          description: "可选：账号管理中的融辉报价账号 ID；飞书直达报价默认使用 price_default"
-      required: [weight]
-    output_schema:
-      type: object
-      additionalProperties: false
-      properties:
-        status:
-          type: string
-          enum: [SUCCESS, FAILED]
-        data:
-          type: object
-          additionalProperties: true
-        meta:
-          type: object
-          additionalProperties: true
-        warnings:
-          type: array
-          items:
-            type: string
-        error:
-          oneOf:
-            - type: object
-              additionalProperties: true
-            - type: "null"
-      required: [status, data, meta, warnings, error]
-    executor: tools/price_tool.py
-    timeout: 60
-    heavy: true
 
   - name: query_business_finance
     version: "1.0.0"

@@ -2,14 +2,14 @@
 module: 独立插件账号请求
 type: 开发手册
 status: active
-updated: 2026-10-08
+updated: 2026-10-11
 ---
 
 # 插件拥有业务，宿主提供账号请求
 
 新网页业务的接口路径、参数、分页、字段解析、提交条件和成功判断放在独立 ZIP 内。宿主提供 `http.request` 通用能力，负责使用实例选择的账号登录态、约束目的站点、权限、超时、写开始回执及真实响应观测。新增同系统的页面业务不再需要注册一个专用 Host Connector。
 
-当前支持 R7、R13 的已保存 SSO 会话及 GET/POST JSON 接口。两种系统的站点和认证协议固定在 `agent/agent/automation_plugins/account_http.py`，凭据不出宿主。R7 请求携带原站确认的 `x-appId=tms` 和同源 `aurora-back`，不继承 SSO 的应用标识或 Bearer。业务响应 `code=-2` 按登录拒绝处理；只读请求报告 `BLOCKED_LOGIN`，已开始的写请求仍报告未知写且不重试。其他认证协议、文件上传或非 JSON 接口尚不支持，不能伪称已接通；新增认证协议时扩展通用账号适配器，业务路径继续留在包内。现有数据库、飞书等 Connector 仍可复用。
+当前支持 R7、R13 的已保存 SSO 会话，以及融辉 TMS、韵达 kyinms、百世 V5 的实例绑定账号保存态。平台站点和认证协议固定在 `agent/agent/automation_plugins/account_http.py`，凭据不出宿主；账号必须与声明系统精确匹配，不自行选择默认账号或发起登录。R7 请求携带原站确认的 `x-appId=tms` 和同源 `aurora-back`，不继承 SSO 的应用标识或 Bearer。SSO 响应 `code=-2`、百世 `code=40001` 和明确登录页按登录拒绝处理；只读请求报告 `BLOCKED_LOGIN`，已开始的写请求仍报告未知写且不重试。支持 GET/POST、JSON 或表单请求、JSON 对象/数组及只读文本响应；文件上传和其他站点认证协议尚不支持。业务路径、参数、HTML 字段解析和成功判断继续留在包内。现有数据库、飞书等 Connector 仍可复用。
 
 ## 包声明与调用
 
@@ -25,9 +25,9 @@ Manifest 可选新增 `http_requests`；旧包没有该字段时保持原规范�
 }
 ```
 
-对应 `capabilities` 声明 `name=http.request`，`operations` 列出实际需要的 `read_json/write_json`，绑定同一 `account_role`，`resource_role=null`。账号角色必须必填且只声明一个受支持系统；实例仍通过宿主简单设置选择账号。现有权限模型每个 capability/action 只允许一个绑定角色，多个账号实例分别配置。
+对应 `capabilities` 声明 `name=http.request`，`operations` 列出实际需要的 `read_json/read_text/write_json`，绑定同一 `account_role`，`resource_role=null`。账号角色必须必填且只声明一个受支持系统；实例通过宿主简单设置分别选择账号。一个包可对多个账号角色声明同一 HTTP action；编译后的权限合并角色列表，每次 Broker 调用仍核验一个精确角色及其绑定账号，不跨角色共享认证。
 
-`read_json` 是只读权限，`write_json` 是外部写权限；实际读写性质来自原站请求验证，不能依据 GET/POST 或接口名字猜测。安装人员审核包内声明，运行时不能把已声明的写接口改成只读调用。接口声明进入包、Manifest 和权限摘要及离线权限报告，修改接口需要升级 ZIP。此机制以管理员安装的插件为业务代码信任边界，不自动证明一个外部接口确实只读。
+`read_json/read_text` 是只读权限，`write_json` 是外部写权限；实际读写性质来自原站请求验证，不能依据 GET/POST 或接口名字猜测。安装人员审核包内声明，运行时不能把已声明的写接口改成只读调用。接口声明进入包、Manifest 和权限摘要及离线权限报告，修改接口需要升级 ZIP。此机制以管理员安装的插件为业务代码信任边界，不自动证明一个外部接口确实只读。
 
 插件仅传声明名称和 JSON 数据，不传 URL、认证头或账号 ID：
 
@@ -40,7 +40,15 @@ data = response["response"]
 evidence_ref = response.host_evidence_ref
 ```
 
-GET 时 `body` 转为查询参数，POST 时作为 JSON。路径必须是规范相对路径，不接受域名、查询串、百分号编码或目录跳转。运行时从本次已验证版本加载声明，核对动作和账号角色；主程序决定站点及登录态，不跟随重定向，不输出响应头或凭据字段。请求/响应各限制 4 MiB，单次连接/读取超时为 5/20 秒，不自动重试。每次调用 `read_json` 上限 800 次、`write_json` 上限 200 次，总计 1000 次。插件沙箱仍无直接网络及宿主文件访问权限。
+GET 时 `body` 转为查询参数，POST 默认作为 JSON；声明 `encoding="form"` 时 POST 发送表单。包可声明静态 `query` 字符串映射（例如融辉数据查询的 `id`）；GET 动态参数不能覆盖静态参数。可选 `referer` 是固定同源相对路径。上述可选字段缺省时保留旧包规范化内容与摘要。
+
+路径与 referer 必须是规范相对路径，不接受域名、查询串、百分号编码或目录跳转。`read_json` 返回 `response` 对象或数组，拒绝标量与 HTML；`read_text` 返回经过统一脱敏的 `response` 字符串，HTML/JavaScript 中明确凭据字段也会脱敏，插件只解析业务字段。运行时从本次已验证版本加载声明，核对动作和账号角色；主程序决定站点及登录态，不跟随重定向，不输出响应头或 Cookie/Token。请求/响应各限制 4 MiB，单次连接/读取超时为 5/20 秒，不自动重试。每次调用 `read_json/read_text` 分别上限 800 次、`write_json` 上限 200 次，总计 1000 次；多个角色共享同一 action 限额。插件沙箱仍无直接网络及宿主文件访问权限。
+
+## 非凭据账号上下文
+
+需要原页员工和网点字段的插件可声明 `account.context` / `read`，绑定一个精确 `account_role`、`resource_role=null`，调用 `broker_call("account.context", action="read", role="声明角色", arguments={})`。此能力不需要 `http_requests` 条目，不接受字段、账号 ID 或 Cookie 参数，不联网或触发登录。
+
+当前仅融辉账号适配此投影：宿主复用 SessionBroker 保存态和现有 `userInfo` 解析器，只返回 `loginEmpName/loginEmpCode/loginSiteName/loginSiteCode` 四个原名字段。插件不能读取凭据、登录用户名或任意保存态字段；缺少字段返回 `CONTEXT_DATA_MISSING`，存在冲突身份返回 `CONTEXT_DATA_AMBIGUOUS`，无保存态或正在登录返回 `BLOCKED_LOGIN`，不选择任意候选补齐。保存态投影不证明远端登录仍有效，后续实际请求仍独立判断登录状态。成功结果直接是四字段对象，`host_evidence_ref` 位于标准 Broker 信封，插件应保留在同次证据中。新增平台上下文须先审核其非凭据字段白名单，不能将业务公式或报价协议移入 Host。
 
 ## 插件定义核验条件，宿主核对真实响应
 
@@ -60,7 +68,7 @@ GET 时 `body` 转为查询参数，POST 时作为 JSON。路径必须是规范�
 ## 维护入口
 
 - 协议：`http_request_contract.py`、`manifest_v2.py`、`host_capability_registry.py` 和编辑器 `manifest-v2.schema.json`。
-- 传输：`account_http.py`；本次已验证 Manifest 来自 `capability_proxy_v2.py`。已实现的 `http.request` 不得留在不可用占位能力集合中；生产依赖就绪检查和执行驱动均使用过滤后的能力清单。
+- 传输：`account_http.py`；非凭据账号投影：`account_context.py`；本次已验证 Manifest 来自 `capability_proxy_v2.py`。已实现的 `http.request/account.context` 不得留在不可用占位能力集合中；生产依赖就绪检查和执行驱动均使用过滤后的能力清单。
 - 通用核验：`http_write_verification.py`，由 `orchestration/result_verifier.py` 调用。
 - 参考插件：`service_v2_plugins/r7_vehicle_checkin_v2/` 1.1.0；旧 1.0.0 的专用 R7 Connector 已移除，本次发布应配套新版 ZIP。
 - 测试：`tests/test_account_http.py`、`tests/test_r7_vehicle_checkin_v2.py`。前者验证只改包声明即可调用新路径，后者执行真实隔离 ZIP/Broker 和同一账号的写后核验；业务服务响应为隔离 fixture，不代替生产实例验收。

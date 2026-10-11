@@ -1,0 +1,429 @@
+{
+  "account_roles": [
+    {
+      "role": "ronghui_quote",
+      "allowed_systems": [
+        "ronghui"
+      ],
+      "required": true
+    },
+    {
+      "role": "yunda_quote",
+      "allowed_systems": [
+        "yunda"
+      ],
+      "required": true
+    },
+    {
+      "role": "best_quote",
+      "allowed_systems": [
+        "best"
+      ],
+      "required": true
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "account.context",
+      "operations": [
+        "read"
+      ],
+      "account_role": "ronghui_quote",
+      "resource_role": null
+    },
+    {
+      "name": "http.request",
+      "operations": [
+        "read_json"
+      ],
+      "account_role": "ronghui_quote",
+      "resource_role": null
+    },
+    {
+      "name": "http.request",
+      "operations": [
+        "read_json",
+        "read_text"
+      ],
+      "account_role": "yunda_quote",
+      "resource_role": null
+    },
+    {
+      "name": "http.request",
+      "operations": [
+        "read_json",
+        "read_text"
+      ],
+      "account_role": "best_quote",
+      "resource_role": null
+    }
+  ],
+  "config_schema": {
+    "additionalProperties": false,
+    "properties": {},
+    "required": [],
+    "type": "object"
+  },
+  "contributes": {
+    "console": [
+      {
+        "id": "quote",
+        "title": "三平台报价",
+        "service": "plugin.quote_prices_v2.quote@1",
+        "operation": "quote",
+        "default_enabled": true,
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "address": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "weight": {
+              "type": "number",
+              "minimum": 1e-06
+            },
+            "volume": {
+              "type": "number",
+              "minimum": 1e-06
+            }
+          },
+          "required": [
+            "address",
+            "weight",
+            "volume"
+          ]
+        }
+      }
+    ],
+    "events": [],
+    "feishu": [
+      {
+        "id": "command",
+        "service": "plugin.quote_prices_v2.quote@1",
+        "operation": "quote",
+        "commands": [
+          "三平台报价"
+        ],
+        "default_enabled": true,
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "address": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "weight": {
+              "type": "number",
+              "minimum": 1e-06
+            },
+            "volume": {
+              "type": "number",
+              "minimum": 1e-06
+            }
+          },
+          "required": [
+            "address",
+            "weight",
+            "volume"
+          ]
+        }
+      }
+    ],
+    "harness": [],
+    "scheduler": [],
+    "webhook": []
+  },
+  "description": "输入完整收货地址、重量（公斤）和体积（立方米），使用项目绑定账号分别查询融辉、韵达、百世的本次报价，并保留各平台失败原因。",
+  "host_api": {
+    "maximum_exclusive": "3.0.0",
+    "minimum": "2.0.0"
+  },
+  "name": "三平台价格查询",
+  "plugin_id": "quote_prices_v2",
+  "provides": [
+    {
+      "service": "plugin.quote_prices_v2.quote@1",
+      "operations": [
+        {
+          "name": "quote",
+          "effect": "read"
+        }
+      ]
+    }
+  ],
+  "requires": [],
+  "resource_roles": [],
+  "runtime": {
+    "entrypoint": "payload/main.py",
+    "kind": "python_subprocess",
+    "mode": "on_demand",
+    "python": "3.10",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "runtime_model": "service_v2",
+  "schema_version": 2,
+  "storage": {
+    "collections": [],
+    "kv": false
+  },
+  "version": "1.0.0",
+  "http_requests": [
+    {
+      "name": "ronghui_destination_name",
+      "account_role": "ronghui_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findAllByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_DESTINATION_BY_NAME"
+      }
+    },
+    {
+      "name": "ronghui_destination",
+      "account_role": "ronghui_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findAllByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_CREATE_BILL_DESTINATION"
+      }
+    },
+    {
+      "name": "ronghui_send_site",
+      "account_role": "ronghui_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findAllByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_SITE_AND_CENTER"
+      }
+    },
+    {
+      "name": "ronghui_send_center",
+      "account_role": "ronghui_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findAllByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_CREATE_BILL_SEND_CENTER"
+      }
+    },
+    {
+      "name": "ronghui_destination_hub",
+      "account_role": "ronghui_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findAllByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_HUB_DESTINATION_FORORDER"
+      }
+    },
+    {
+      "name": "ronghui_destination_center",
+      "account_role": "ronghui_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findAllByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_CREATE_BILL_DISP_CENTER_NEW"
+      }
+    },
+    {
+      "name": "ronghui_route",
+      "account_role": "ronghui_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findAllByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_PLAN_GOODS_ROUTE"
+      }
+    },
+    {
+      "name": "ronghui_weight_ratio",
+      "account_role": "ronghui_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findAllByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_TAB_WEIGHT_RATIO"
+      }
+    },
+    {
+      "name": "ronghui_goods_type",
+      "account_role": "ronghui_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findAllByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_TAB_GOODS_TYPE"
+      }
+    },
+    {
+      "name": "ronghui_insurance",
+      "account_role": "ronghui_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findAllByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_BY_VALIDITY_NEW"
+      }
+    },
+    {
+      "name": "ronghui_address",
+      "account_role": "ronghui_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/map/inputtipsDTH",
+      "encoding": "form",
+      "referer": "/widget/home"
+    },
+    {
+      "name": "ronghui_match_site",
+      "account_role": "ronghui_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataOperation/execProcedure",
+      "encoding": "form",
+      "referer": "/widget/home"
+    },
+    {
+      "name": "ronghui_quote",
+      "account_role": "ronghui_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataOperation/batchExecProcedure",
+      "encoding": "form",
+      "referer": "/widget/home"
+    },
+    {
+      "name": "yunda_entry",
+      "account_role": "yunda_quote",
+      "action": "read_text",
+      "method": "GET",
+      "path": "/ky_inms/public/index.php/business/waybill/entry/indexNew.html",
+      "query": {
+        "page": "tab",
+        "p": "nil"
+      },
+      "referer": "/ky_inms/public/index.php/business/waybill/entry/indexNew.html"
+    },
+    {
+      "name": "yunda_address",
+      "account_role": "yunda_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/ky_inms/public/index.php/joinlgs/MakeLogisticsApi/getAchieveSiteByAddress.html",
+      "encoding": "form",
+      "referer": "/ky_inms/public/index.php/business/waybill/entry/indexNew.html"
+    },
+    {
+      "name": "yunda_weight",
+      "account_role": "yunda_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/ky_inms/public/index.php/weight.html",
+      "encoding": "form",
+      "referer": "/ky_inms/public/index.php/business/waybill/entry/indexNew.html"
+    },
+    {
+      "name": "yunda_insured",
+      "account_role": "yunda_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/ky_inms/public/index.php/joinlgs/MakeLogisticsApi/getInsuredAmount.html",
+      "encoding": "form",
+      "referer": "/ky_inms/public/index.php/business/waybill/entry/indexNew.html"
+    },
+    {
+      "name": "yunda_price",
+      "account_role": "yunda_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/ky_inms/public/index.php/price.html",
+      "encoding": "form",
+      "referer": "/ky_inms/public/index.php/business/waybill/entry/indexNew.html"
+    },
+    {
+      "name": "best_site",
+      "account_role": "best_quote",
+      "action": "read_text",
+      "method": "GET",
+      "path": "/ltlv5-war/web/user/getLoginInfoByDomain",
+      "query": {
+        "jsonpCallback": "quoteContext"
+      },
+      "referer": "/baseService/transOrder/networkProductOrder"
+    },
+    {
+      "name": "best_products",
+      "account_role": "best_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/ltlv5-war/web/networkProduct/matchVisibility",
+      "encoding": "json",
+      "referer": "/baseService/transOrder/networkProductOrder"
+    },
+    {
+      "name": "best_address",
+      "account_role": "best_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/ltlv5-war/web/aiAddress/parse",
+      "encoding": "json",
+      "referer": "/baseService/transOrder/networkProductOrder"
+    },
+    {
+      "name": "best_services",
+      "account_role": "best_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/ltlv5-war/web/networkProduct/listNetworkServiceIdByProductIdAndSiteIdWithSop",
+      "encoding": "json",
+      "referer": "/baseService/transOrder/networkProductOrder"
+    },
+    {
+      "name": "best_weight",
+      "account_role": "best_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/ltlv5-war/web/cubicWeightRatio/calcFeeWeightAndInsure",
+      "encoding": "json",
+      "referer": "/baseService/transOrder/networkProductOrder"
+    },
+    {
+      "name": "best_quote",
+      "account_role": "best_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/ltlv5-war/web/transOrder/measureCalcFeeForTransOrderNew",
+      "encoding": "json",
+      "referer": "/baseService/transOrder/networkProductOrder"
+    }
+  ]
+}

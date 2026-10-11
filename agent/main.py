@@ -271,7 +271,6 @@ from feishu.notify import (
     send_tms_session_disconnected_alert,
 )
 from tools.feishu_cli_tool import feishu_operation
-from tools.price_tool import run_price_tool
 from tools.track_waybill_tool import run_track_waybill
 from plugin_core_adapters import build_production_first_party_core_handler_map
 from shared.orchestration_repository import (
@@ -1078,7 +1077,6 @@ async def lifespan(app: FastAPI):
     agent_core = AgentCore(
         direct_tool_runners={
             "track_waybill": run_track_waybill,
-            "get_price": run_price_tool,
         }
     )
     runtime = _runtime()
@@ -1162,7 +1160,6 @@ async def lifespan(app: FastAPI):
         executor=plugin_runtime.execution_router,
         direct_runners={
             "track_waybill": run_track_waybill,
-            "get_price": run_price_tool,
             "query_business_finance": business_finance_query.run,
             "query_automation_operations": automation_operations_query.run,
         },

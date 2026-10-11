@@ -529,12 +529,12 @@
 
 {% if not document %}
 {% if is_entry_tabs_shell %}
-{% set entry_initial_provider = 'yunda' if is_yunda_mode else ('ronghui' if is_ronghui_mode else 'boyi') %}
-{% set entry_initial_label = ('韵达' if is_yunda_mode else ('融辉' if is_ronghui_mode else '博益')) ~ ' 1' %}
+{% set entry_initial_provider = 'best' if best_mode|default(false) else ('yunda' if is_yunda_mode else ('ronghui' if is_ronghui_mode else 'boyi')) %}
+{% set entry_initial_label = {'best': '百世', 'yunda': '韵达', 'ronghui': '融辉', 'boyi': '博益'}[entry_initial_provider] ~ ' 1' %}
 {% set entry_yunda_src = 'https://kyinms.yunda56.com/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&p=nil' %}
 {% set entry_ronghui_src = 'https://tms.ronghuiwl.com/module/index?mv=index' %}
 {% set entry_best_src = 'https://v5.800best.com/baseService/transOrder/networkProductOrder' %}
-{% set entry_initial_src = entry_yunda_src if is_yunda_mode else (entry_ronghui_src if is_ronghui_mode else '/ocr/boyi/frame') %}
+{% set entry_initial_src = entry_best_src if entry_initial_provider == 'best' else (entry_yunda_src if is_yunda_mode else (entry_ronghui_src if is_ronghui_mode else '/ocr/boyi/frame')) %}
 {% macro entry_origin_notice(provider) %}
 <div class="entry-origin-notice" data-entry-origin-notice>
   {% if provider == 'yunda' %}
@@ -591,8 +591,8 @@
   <template data-entry-origin-template="ronghui">{{ entry_origin_notice('ronghui') }}</template>
   <template data-entry-origin-template="best">{{ entry_origin_notice('best') }}</template>
   <div class="entry-frame-stack" data-entry-frame-stack>
-    <div class="entry-frame-panel is-active" data-entry-frame-panel data-entry-id="entry-1" data-entry-provider="{{ entry_initial_provider }}"{% if entry_initial_provider == 'yunda' %} data-yunda-root data-yunda-live="1" data-yunda-native="1"{% elif entry_initial_provider == 'ronghui' %} data-ronghui-root data-ronghui-live="1" data-ronghui-native="1"{% endif %}>
-      {% if entry_initial_provider in ['yunda', 'ronghui'] %}
+    <div class="entry-frame-panel is-active" data-entry-frame-panel data-entry-id="entry-1" data-entry-provider="{{ entry_initial_provider }}"{% if entry_initial_provider == 'yunda' %} data-yunda-root data-yunda-live="1" data-yunda-native="1"{% elif entry_initial_provider == 'ronghui' %} data-ronghui-root data-ronghui-live="1" data-ronghui-native="1"{% elif entry_initial_provider == 'best' %} data-best-root{% endif %}>
+      {% if entry_initial_provider in ['yunda', 'ronghui', 'best'] %}
       {{ entry_origin_notice(entry_initial_provider) }}
       {% endif %}
       <div class="entry-frame-viewport">
@@ -600,15 +600,15 @@
         class="entry-instance-frame{% if entry_initial_provider == 'yunda' %} yunda-live-frame{% elif entry_initial_provider == 'ronghui' %} ronghui-live-frame{% endif %}"
         data-entry-frame
         data-entry-provider="{{ entry_initial_provider }}"
-        {% if entry_initial_provider == 'yunda' %}data-yunda-live-frame{% elif entry_initial_provider == 'ronghui' %}data-ronghui-live-frame{% endif %}
-        {% if entry_initial_provider in ['yunda', 'ronghui'] %}
+        {% if entry_initial_provider == 'yunda' %}data-yunda-live-frame{% elif entry_initial_provider == 'ronghui' %}data-ronghui-live-frame{% elif entry_initial_provider == 'best' %}data-best-live-frame{% endif %}
+        {% if entry_initial_provider in ['yunda', 'ronghui', 'best'] %}
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads"
         data-entry-pending-src="{{ entry_initial_src }}"
         {% else %}src="{{ entry_initial_src }}"{% endif %}
         title="{{ entry_initial_label }}"
       ></iframe>
-      {% if entry_initial_provider in ['yunda', 'ronghui'] %}
-      <div class="yunda-live-fallback yunda-empty" {% if entry_initial_provider == 'yunda' %}data-yunda-live-fallback{% else %}data-ronghui-live-fallback{% endif %} hidden>{{ '韵达' if entry_initial_provider == 'yunda' else '融辉' }}原页面加载失败，可刷新登录态后重试。</div>
+      {% if entry_initial_provider in ['yunda', 'ronghui', 'best'] %}
+      <div class="yunda-live-fallback yunda-empty" data-{{ entry_initial_provider }}-live-fallback hidden>{{ {'best': '百世', 'yunda': '韵达', 'ronghui': '融辉'}[entry_initial_provider] }}原页面加载失败，可刷新登录态后重试。</div>
       {% endif %}
       </div>
     </div>
@@ -897,6 +897,14 @@
         </article>
         <article class="manual-quote-item">
           <div class="manual-quote-main">
+            <div class="manual-quote-name">百世<span class="manual-quote-badge">待比价</span></div>
+            <div class="manual-quote-price">--</div>
+          </div>
+          <div class="manual-quote-meta"><span>等待真实报价返回</span></div>
+          <button type="button" class="ghost-btn manual-quote-select" data-quote-provider="best" disabled>打开百世原站（手动填写）</button>
+        </article>
+        <article class="manual-quote-item">
+          <div class="manual-quote-main">
             <div class="manual-quote-name">勇胜手工专线<span class="manual-quote-badge">待维护</span></div>
             <div class="manual-quote-price">--</div>
           </div>
@@ -1082,6 +1090,7 @@
     const quoteProviderLabels = {
       yunda: "韵达",
       ronghui: "融辉",
+      best: "百世",
       yongsheng: "勇胜手工专线",
     };
     const entryTabsRoot = document.querySelector("[data-entry-tabs-root]");
@@ -1274,7 +1283,7 @@
       if (event.origin !== window.location.origin) return;
       const data = event.data || {};
       if (data.type !== "SHIPNOW_OPEN_ENTRY_TAB") return;
-      const provider = ["yunda", "ronghui"].includes(data.provider) ? data.provider : "";
+      const provider = ["yunda", "ronghui", "best"].includes(data.provider) ? data.provider : "";
       if (provider) addEntryTab(provider);
     });
     bindInitialEntryTabs();
@@ -1688,6 +1697,7 @@
     const quoteButtonText = (provider) => {
       if (provider === "yunda") return "打开韵达原站（手动填写）";
       if (provider === "ronghui") return "打开融辉原站（手动填写）";
+      if (provider === "best") return "打开百世原站（手动填写）";
       return "暂不可选";
     };
     const setQuoteSummary = (message, isError = false) => {
@@ -1719,7 +1729,7 @@
               <div class="manual-quote-price">${price}</div>
             </div>
             <div class="manual-quote-meta">${meta.length ? meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("") : "<span>暂无明细</span>"}</div>
-            <button type="button" class="ghost-btn manual-quote-select" data-quote-provider="${escapeHtml(provider)}" ${available && ["yunda", "ronghui"].includes(provider) ? "" : "disabled"}>
+            <button type="button" class="ghost-btn manual-quote-select" data-quote-provider="${escapeHtml(provider)}" ${available && ["yunda", "ronghui", "best"].includes(provider) ? "" : "disabled"}>
               ${escapeHtml(quoteButtonText(provider))}
             </button>
           </article>
@@ -1753,11 +1763,11 @@
       }
       syncWeightVolumeField();
       quoteAction?.setAttribute("disabled", "disabled");
-      setQuoteSummary("正在获取融辉与韵达真实报价...");
+      setQuoteSummary("正在获取融辉、韵达与百世真实报价...");
       try {
         const response = await fetch(QUOTE_OPTIONS_ENDPOINT, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "X-Browser-Request-UUID": crypto.randomUUID() },
           body: JSON.stringify(request),
         });
         const payload = await response.json();
@@ -1789,8 +1799,8 @@
         addEntryTab(provider);
         return;
       }
-      if (["yunda", "ronghui"].includes(provider)) {
-        window.location.href = provider === "yunda" ? "/ocr?mode=yunda" : "/ocr?mode=ronghui";
+      if (["yunda", "ronghui", "best"].includes(provider)) {
+        window.location.href = `/ocr?mode=${encodeURIComponent(provider)}`;
         return;
       }
       setMode(provider);

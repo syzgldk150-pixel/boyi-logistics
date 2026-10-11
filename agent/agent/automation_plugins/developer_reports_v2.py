@@ -134,12 +134,13 @@ def _broker_operation_index(
         if not isinstance(raw, Mapping):
             raise PluginManifestError("verified runtime permission operation is invalid")
         roles = raw.get("roles")
-        if not isinstance(roles, list) or len(roles) != 1:
+        if not isinstance(roles, list) or not roles:
             raise PluginManifestError("verified runtime permission role is invalid")
-        key = (str(raw.get("operation") or ""), str(raw.get("action") or ""), str(roles[0]))
-        if key in result:
-            raise PluginManifestError("verified runtime permission operation is ambiguous")
-        result[key] = raw
+        for role in roles:
+            key = (str(raw.get("operation") or ""), str(raw.get("action") or ""), str(role))
+            if key in result:
+                raise PluginManifestError("verified runtime permission operation is ambiguous")
+            result[key] = raw
     return result
 
 

@@ -1,4 +1,4 @@
-"""Quote tool that prefers the embedded /tms/get_price price session."""
+"""Offline snapshot of the retired core quote tool; never a runtime fallback."""
 
 import importlib.util
 import io
@@ -9,12 +9,13 @@ import threading
 from contextlib import contextmanager, redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
+from pathlib import Path
 
 import httpx
 
 from agent.tms_runtime.account_contracts import PRICE_ACCOUNT_ID
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
 WORKSPACE_ROOT = os.path.dirname(PROJECT_ROOT)
 
 from shared.redaction import redact_text

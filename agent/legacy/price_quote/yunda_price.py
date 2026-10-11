@@ -1,4 +1,4 @@
-"""Fetch Yunda waybill-entry prices for one address/weight/volume."""
+"""Offline snapshot of the retired Yunda quote script for historical regression."""
 
 from __future__ import annotations
 

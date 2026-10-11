@@ -66,6 +66,7 @@ _HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 _SUPPORTED_CAPABILITIES = frozenset(
     {
+        "account.context",
         "browser.session",
         "event.publish",
         "file.read",
@@ -389,6 +390,22 @@ class ServiceV2ProjectContract:
                 invocation_input_schema = input_schema
                 argument_template = template
                 dynamic_resolvers: dict[str, str] = {}
+                if contribution_kind in {"console", "feishu"} and "input_schema" in item:
+                    occurrence = item["input_schema"]
+                    fields = occurrence["properties"]
+                    if set(fields) & set(config_properties):
+                        raise PluginManifestError("Runtime inputs must not replace saved configuration")
+                    invocation_input_schema = copy.deepcopy(input_schema)
+                    invocation_input_schema["properties"].update(copy.deepcopy(fields))
+                    invocation_input_schema["required"].extend(occurrence["required"])
+                    for field, schema in fields.items():
+                        previous = tool_input_schema["properties"].get(field)
+                        if previous is not None and previous != schema:
+                            raise PluginManifestError("Runtime input schemas conflict")
+                        tool_input_schema["properties"][field] = copy.deepcopy(schema)
+                        prefix = "verified" if field in occurrence["required"] else "verified_optional"
+                        resolver_field = re.sub(r"[^a-z0-9_.-]", "_", field.lower())
+                        dynamic_resolvers[field] = f"{prefix}_{contribution_kind}_{resolver_field}"
                 if contribution_kind == "webhook" and "dynamic_fields" in item:
                     fields = item["dynamic_fields"]
                     if any(field not in config_properties for field in fields):
@@ -491,7 +508,7 @@ class ServiceV2ProjectContract:
         )
         resource_roles = tuple(_thaw(item) for item in manifest.resource_roles)
         broker_operations: list[dict[str, Any]] = []
-        seen_broker_operations: set[tuple[str, str]] = set()
+        seen_broker_operations: dict[tuple[str, str], dict[str, Any]] = {}
         max_broker_calls = 0
         scheduler_contributed = bool(manifest.contributes.get("scheduler"))
         for capability in manifest.capabilities:
@@ -508,9 +525,6 @@ class ServiceV2ProjectContract:
             for operation in capability["operations"]:
                 action = str(operation)
                 identity = (name, action)
-                if identity in seen_broker_operations:
-                    raise PluginManifestError("duplicate Host capability operation")
-                seen_broker_operations.add(identity)
                 if name == "service.invoke":
                     # The target Provider owns the immutable operation effect.
                     # This static admission ceiling is deliberately protective;
@@ -556,7 +570,6 @@ class ServiceV2ProjectContract:
                         )
                     per_call_limit = descriptor.per_call_limit
                 bound_role = account_role or resource_role or SYSTEM_CAPABILITY_ROLE
-                max_broker_calls += per_call_limit
                 broker_operation = {
                     "operation": name,
                     "action": action,
@@ -570,6 +583,18 @@ class ServiceV2ProjectContract:
                     action_call_limits, Mapping
                 ):
                     broker_operation["per_action_limit"] = per_call_limit
+                previous = seen_broker_operations.get(identity)
+                if previous is not None:
+                    # One Host action can be independently bound to several
+                    # selected accounts. Each call still carries one exact role.
+                    if (name != "http.request" or str(bound_role) in previous["roles"]
+                            or {key: value for key, value in previous.items() if key != "roles"}
+                            != {key: value for key, value in broker_operation.items() if key != "roles"}):
+                        raise PluginManifestError("duplicate Host capability operation")
+                    previous["roles"].append(str(bound_role))
+                    continue
+                max_broker_calls += per_call_limit
+                seen_broker_operations[identity] = broker_operation
                 broker_operations.append(broker_operation)
         runtime_permissions = {
             "network": "http.request" in capability_names,

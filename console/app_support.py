@@ -7,6 +7,7 @@ import html
 import io
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -1477,7 +1478,6 @@ def normalize_manual_field_value(field_name: str, value: str) -> str:
 
 
 QUOTE_MONEY_SCALE = Decimal("0.01")
-RONGHUI_PRODUCT_NAMES = ("融惠达", "精准零担", "融安达", "融速达")
 QUOTE_AUTH_ERROR_CODES = {"AUTH_REQUIRED", "AUTH_EXPIRED", "LOGIN_REQUIRED", "SESSION_EXPIRED"}
 
 
@@ -1502,7 +1502,7 @@ def _quote_decimal(value: Any, *, field_name: str = "price") -> Decimal:
         raise ValueError(f"{field_name} 非数字") from exc
     if amount <= Decimal("0"):
         raise ValueError(f"{field_name} 必须大于 0")
-    return amount.quantize(QUOTE_MONEY_SCALE, rounding=ROUND_HALF_UP)
+    return amount
 
 
 def _quote_money_text(amount: Decimal) -> str:
@@ -1531,6 +1531,8 @@ def parse_quote_options_request(payload: dict[str, Any]) -> dict[str, Any]:
         volume = _quote_decimal(body.get("volume_m3") or body.get("field_volume_m3"), field_name="体积")
     except ValueError as exc:
         raise QuoteOptionsValidationError(f"体积 m³ 必须填写有效数字：{exc}") from exc
+    if any(not math.isfinite(float(value)) or float(value) <= 0 for value in (weight, volume)):
+        raise QuoteOptionsValidationError("重量和体积必须是可查询范围内的大于 0 的数字。")
     delivery_method = _normalize_quote_delivery_method(
         body.get("delivery_method") or body.get("field_delivery_method")
     )
@@ -1595,119 +1597,49 @@ def _unavailable_quote(
     }
 
 
-def _result_has_explicit_failure(result: Any) -> bool:
-    if not isinstance(result, dict):
-        return True
-    if result.get("ok") is False or result.get("error") or result.get("message"):
-        return True
-    if result.get("网点不可达") or result.get("不可达") or result.get("unavailable"):
-        return True
-    return False
+def _plugin_provider_quote(
+    result: Any, *, provider: str, label: str, delivery_method: str,
+) -> dict[str, Any]:
+    def unavailable(error: str, status: str = "unavailable") -> dict[str, Any]:
+        return _unavailable_quote(provider=provider, label=label,
+            delivery_method=delivery_method, error=error, status=status)
 
-
-def _result_site_name(result: Any) -> str:
-    if not isinstance(result, dict):
-        return ""
-    for key in ("目的网点", "网点名称", "site_name", "destination_site"):
-        value = _clean_quote_text(result.get(key))
-        if value:
-            return value
-    return ""
-
-
-def _ronghui_quote(result: Any, delivery_method: str) -> dict[str, Any]:
-    label = "融辉"
-    site_name = _result_site_name(result)
-    if _result_has_explicit_failure(result):
-        error = "地址不可达或未匹配到融辉可报价网点。"
-        if isinstance(result, dict) and (result.get("error") or result.get("message")):
-            error = _quote_error_text(result, error)
-        return _unavailable_quote(
-            provider="ronghui",
-            label=label,
-            delivery_method=delivery_method,
-            error=error,
-            status=_quote_error_status(result),
-            site_name=site_name,
-        )
-
+    if not isinstance(result, dict) or result.get("status") != "success":
+        return unavailable(_quote_error_text(result, f"{label}无数据。"), _quote_error_status(result))
+    rows = result.get("quotes")
+    if not isinstance(rows, list) or not rows:
+        return unavailable(f"{label}未返回报价明细。")
     candidates: list[tuple[Decimal, str, str]] = []
-    result_items = result.items() if isinstance(result, dict) else ()
-    for key, value in result_items:
-        product_key = _clean_quote_text(key)
-        if not product_key:
+    for row in rows:
+        if not isinstance(row, dict) or row.get("delivery_method") not in {"自提", "派送"}:
+            return unavailable(f"{label}报价送货方式缺失或无效。", "invalid_price")
+        if row["delivery_method"] != delivery_method:
             continue
-        is_dispatch = product_key.endswith("(派送)")
-        product_name = product_key.removesuffix("(派送)")
-        if delivery_method == "派送":
-            if not is_dispatch:
-                continue
-        elif is_dispatch or product_name not in RONGHUI_PRODUCT_NAMES:
-            continue
-        try:
-            amount = _quote_decimal(value, field_name=f"融辉 {product_key}")
-        except ValueError:
-            continue
-        candidates.append((amount, product_name, product_key))
-
+        amount_text = row.get("amount")
+        if not isinstance(amount_text, str) or not re.fullmatch(r"\d+(?:\.\d+)?", amount_text):
+            return unavailable(f"{label}报价金额无法解析。", "invalid_price")
+        amount = Decimal(amount_text)
+        product_label = _clean_quote_text(row.get("label"))
+        if not product_label:
+            return unavailable(f"{label}报价产品名称缺失。", "invalid_price")
+        candidates.append((amount, _clean_quote_text(row.get("product_name")) or product_label, product_label))
     if not candidates:
-        return _unavailable_quote(
-            provider="ronghui",
-            label=label,
-            delivery_method=delivery_method,
-            error=f"融辉当前送货方式无可用报价：{delivery_method}",
-            site_name=site_name,
-        )
-
-    amount, product_name, product_key = min(candidates, key=lambda item: item[0])
+        return unavailable(f"{label}当前送货方式无可用报价：{delivery_method}")
+    amount, product_name, _ = min(candidates, key=lambda item: item[0])
+    details = [f"{name}={_quote_money_text(value)}" for value, _, name in sorted(candidates, key=lambda item: item[0])]
+    warnings = result.get("warnings")
+    if isinstance(warnings, list):
+        details.extend(item for item in warnings if isinstance(item, str) and item.strip())
     return {
-        "provider": "ronghui",
+        "provider": provider,
         "label": label,
         "status": "available",
         "price": _quote_money_text(amount),
         "product_name": product_name,
         "delivery_method": delivery_method,
-        "site_name": site_name,
+        "site_name": _clean_quote_text(result.get("site_name")),
         "error": "",
-        "details": [f"{key}={_quote_money_text(value)}" for value, _, key in sorted(candidates, key=lambda item: item[0])],
-        "_price_decimal": amount,
-    }
-
-
-def _yunda_quote(result: Any, delivery_method: str) -> dict[str, Any]:
-    label = "韵达"
-    site_name = _result_site_name(result)
-    if _result_has_explicit_failure(result):
-        return _unavailable_quote(
-            provider="yunda",
-            label=label,
-            delivery_method=delivery_method,
-            error=_quote_error_text(result, "韵达当前无可用报价。"),
-            status=_quote_error_status(result),
-            site_name=site_name,
-        )
-    price_key = "韵达自提" if delivery_method == "自提" else "韵达派送"
-    try:
-        amount = _quote_decimal((result or {}).get(price_key), field_name=price_key)
-    except ValueError as exc:
-        return _unavailable_quote(
-            provider="yunda",
-            label=label,
-            delivery_method=delivery_method,
-            error=f"韵达当前送货方式无可用报价或金额不可解析：{exc}",
-            status="invalid_price",
-            site_name=site_name,
-        )
-    return {
-        "provider": "yunda",
-        "label": label,
-        "status": "available",
-        "price": _quote_money_text(amount),
-        "product_name": price_key,
-        "delivery_method": delivery_method,
-        "site_name": site_name,
-        "error": "",
-        "details": [f"{price_key}={_quote_money_text(amount)}"],
+        "details": details,
         "_price_decimal": amount,
     }
 
@@ -1728,17 +1660,19 @@ def _yongsheng_pending_quote(delivery_method: str) -> dict[str, Any]:
 
 def build_manual_quote_options(
     *,
-    ronghui_result: Any,
-    yunda_result: Any,
+    plugin_result: Any,
     delivery_method: str,
 ) -> dict[str, Any]:
     normalized_delivery = _normalize_quote_delivery_method(delivery_method)
+    data = plugin_result if isinstance(plugin_result, dict) else {}
     quotes = [
-        _yunda_quote(yunda_result, normalized_delivery),
-        _ronghui_quote(ronghui_result, normalized_delivery),
+        _plugin_provider_quote(data.get(provider), provider=provider, label=label,
+            delivery_method=normalized_delivery)
+        for provider, label in (("yunda", "韵达"), ("ronghui", "融辉"), ("best", "百世"))
+    ] + [
         _yongsheng_pending_quote(normalized_delivery),
     ]
-    available = [quote for quote in quotes if quote.get("status") == "available" and quote.get("_price_decimal")]
+    available = [quote for quote in quotes if quote.get("status") == "available"]
     best_provider = ""
     if available:
         best = min(available, key=lambda item: item["_price_decimal"])

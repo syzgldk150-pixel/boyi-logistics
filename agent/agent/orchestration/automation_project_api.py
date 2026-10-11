@@ -50,6 +50,7 @@ class ProjectInvokeRequest(BaseModel):
     request_id: str
     preview_invocation_id: str | None = None
     contribution_id: str | None = Field(default=None, max_length=128)
+    runtime_inputs: dict[str, Any] | None = None
 
 
 class ProjectSelectionPreviewRequest(BaseModel):
@@ -277,6 +278,8 @@ def create_automation_project_router(
         }
         if payload.contribution_id is not None:
             invocation_arguments["contribution_id"] = payload.contribution_id
+        if payload.runtime_inputs is not None:
+            invocation_arguments["runtime_inputs"] = payload.runtime_inputs
         receipt = await asyncio.to_thread(service_provider().invoke_console,
             automation_id,
             **invocation_arguments,

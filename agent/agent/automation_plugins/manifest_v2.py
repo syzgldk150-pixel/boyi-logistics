@@ -417,6 +417,18 @@ def _validate_config_schema(value: Any) -> dict[str, Any]:
     return normalized
 
 
+def _validate_occurrence_input_schema(item: Mapping[str, Any], path: str) -> dict[str, Any]:
+    schema = _validate_config_schema(item["input_schema"])
+    if "selection_preview_operation" in item:
+        raise PluginManifestError(f"{path}.input_schema cannot replace preview inputs")
+    forbidden = {"automation_id", "plugin_id", "service", "operation", "contribution_id",
+                 "resource_id", "resource_ids", "resource_binding", "resource_bindings"}
+    if any(name in forbidden or name.endswith(("_resource_id", "_resource_ids"))
+           for name in schema["properties"]):
+        raise PluginManifestError(f"{path}.input_schema cannot declare execution identities")
+    return schema
+
+
 def _validate_host_api(value: Any) -> dict[str, str]:
     raw = _mapping(value, "host_api", _HOST_API_FIELDS)
     minimum = _semver(raw["minimum"], "host_api.minimum")
@@ -848,10 +860,8 @@ def _validate_contributes(
     for index, raw_item in enumerate(_array(raw["console"], "contributes.console")):
         path = f"contributes.console[{index}]"
         item = _mapping(raw_item, path)
-        if frozenset(item) not in {
-            _CONSOLE_REQUIRED_FIELDS,
-            _CONSOLE_FIELDS,
-        }:
+        if (_CONSOLE_REQUIRED_FIELDS - set(item)
+                or set(item) - (_CONSOLE_FIELDS | {"input_schema"})):
             raise PluginManifestError(f"{path} has unsupported or missing fields")
         service, operation = _contribution_target(
             item,
@@ -868,6 +878,8 @@ def _validate_contributes(
                 f"{path}.default_enabled",
             ),
         }
+        if "input_schema" in item:
+            normalized_console["input_schema"] = _validate_occurrence_input_schema(item, path)
         preview_operation = _selection_preview_operation(
             item,
             path=path,
@@ -965,10 +977,8 @@ def _validate_contributes(
     for index, raw_item in enumerate(_array(raw["feishu"], "contributes.feishu")):
         path = f"contributes.feishu[{index}]"
         item = _mapping(raw_item, path)
-        if frozenset(item) not in {
-            _FEISHU_REQUIRED_FIELDS,
-            _FEISHU_FIELDS,
-        }:
+        if (_FEISHU_REQUIRED_FIELDS - set(item)
+                or set(item) - (_FEISHU_FIELDS | {"input_schema"})):
             raise PluginManifestError(f"{path} has unsupported or missing fields")
         service, operation = _contribution_target(
             item,
@@ -990,6 +1000,8 @@ def _validate_contributes(
                 f"{path}.default_enabled",
             ),
         }
+        if "input_schema" in item:
+            normalized_feishu["input_schema"] = _validate_occurrence_input_schema(item, path)
         preview_operation = _selection_preview_operation(
             item,
             path=path,

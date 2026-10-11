@@ -11,6 +11,7 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import requests
@@ -140,6 +141,30 @@ class YundaProxySessionStateTests(unittest.TestCase):
 
     def invoke(self, path, method="GET", profile="yunda_fixture_a"):
         return proxy.run_once({"session_profile": profile, "path": path, "method": method, "timeout_sec": 3})
+
+    def test_plugin_http_preserves_cookie_chain_across_new_clients(self):
+        from agent.automation_plugins import account_http
+
+        broker, initial = self.broker()
+        manager = SimpleNamespace(require_active_binding_descriptor=lambda _: {
+            "system": "yunda", "session_profile": broker.profile_name,
+        })
+        with (
+            patch.dict(account_http._COOKIE_ORIGINS, {"yunda": self.upstream.origin}),
+            patch.object(account_http, "get_account_manager", return_value=manager),
+            patch.object(account_http, "get_session_broker", side_effect=self.brokers.__getitem__),
+        ):
+            client = account_http.AccountHTTPTransport(system="yunda", account_id="fixture-selected")
+            client.exchange({"action": "read_text", "method": "GET", "path": ENTRY}, {})
+            client.close()
+            self.brokers[broker.profile_name] = build_session_broker(broker.profile_name, state_dir_override=broker._state_dir)
+            client = account_http.AccountHTTPTransport(system="yunda", account_id="fixture-selected")
+            result = client.exchange({"action": "read_json", "method": "POST", "path": COST, "encoding": "form"}, {})
+            client.close()
+        self.assertEqual({"status": 0, "data": []}, result["response"])
+        saved = json.loads(broker._storage_state_path.read_text())
+        self.assertEqual(initial["origins"], saved["origins"])
+        self.assertEqual([("GET", ENTRY), ("POST", COST)], self.upstream.calls)
 
     def test_entry_state_survives_separate_proxy_requests_and_broker_recreation(self):
         broker, initial = self.broker()

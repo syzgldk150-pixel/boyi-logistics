@@ -153,7 +153,7 @@ def register_business_modules(items: Iterable[BusinessModuleCode]) -> tuple[Busi
 BUSINESS_MODULE_CATALOG = register_business_modules(
     (
         _module("overview", "/", "概览", disable_allowed=False, api_prefixes=("/monitoring",)),
-        _module("waybill_entry", "/ocr", "运单录入", disable_allowed=True, api_prefixes=("/ocr", "/upload", "/documents", "/templates", "/runtime/originals", "/runtime/artifacts", "/runtime/logs", "/waybills/manual", "/waybills/quote-options", "/original-pages"), page_prefixes=("/workspaces/ocr",), tool_names=("ocr_recognize", "get_price")),
+        _module("waybill_entry", "/ocr", "运单录入", disable_allowed=True, api_prefixes=("/ocr", "/upload", "/documents", "/templates", "/runtime/originals", "/runtime/artifacts", "/runtime/logs", "/waybills/manual", "/waybills/quote-options", "/original-pages"), page_prefixes=("/workspaces/ocr",), tool_names=("ocr_recognize",)),
         _module("waybill_query", "/waybills", "寄件运单查询", disable_allowed=True, api_prefixes=("/waybills",), tool_names=("query_waybill",)),
         _module("tracking", "/tracking", "物流跟踪", disable_allowed=True, api_prefixes=("/tracking",), internal_extensions=("tracking.ronghui.source_adapter", "tracking.yunda.source_adapter", "tracking.line_haul.source_adapter"), tool_names=("track_waybill",)),
         _module("receipts", "/receipts", "回单管理", disable_allowed=True, api_prefixes=("/receipts",), tool_names=("query_receipt_feishu_detail", "receipts_sync", "receipts_audit")),

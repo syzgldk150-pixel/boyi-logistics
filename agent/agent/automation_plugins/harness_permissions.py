@@ -56,8 +56,10 @@ def project_read_runtime_permissions(value: object) -> dict[str, Any]:
             unavailable()
         name, action, roles = operation["operation"], operation["action"], operation["roles"]
         if (not isinstance(name, str) or not name or not isinstance(action, str) or not action
-                or not isinstance(roles, list) or len(roles) != 1
-                or not isinstance(roles[0], str) or not roles[0] or (name, action) in seen):
+                or not isinstance(roles, list) or not roles
+                or any(not isinstance(role, str) or not role for role in roles)
+                or len(set(roles)) != len(roles) or (len(roles) != 1 and name != "http.request")
+                or (name, action) in seen):
             unavailable()
         seen.add((name, action))
         names.add(name)

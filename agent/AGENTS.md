@@ -153,8 +153,8 @@ V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v3
 | 模块 | 代码路径 | 文档路径 | 状态 |
 |------|----------|----------|------|
 | 控制台工作区 | `console/` | `docs/project_overview.md` | 与 agent 并列部署 |
-| 实时报价 | `tools/price_tool.py`、`agent/tms_runtime/scripts/{get_price,yunda_price}.py` | `docs/agent_automation/module_overview.md` | 受管只读能力；融辉/韵达分别使用精确账号登录态 |
-| 旧离线价格工程 | `price_scripts/` | `price_scripts/AGENTS.md` | legacy 隔离；只保留少量旧报价代码，不是运行入口，旧价格文档已移除 |
+| 三平台报价 | `service_v2_plugins/quote_prices_v2/` | `docs/three_platform_quote.md` | 独立 V2 包承载三平台真实报价；飞书与 Console 复用同一实例，线上状态以已安装版本与当前代次为准 |
+| 旧离线价格工程 | `legacy/price_quote/`、`price_scripts/` | `legacy/AGENTS.md`、`price_scripts/AGENTS.md` | 原系统报价工具及运行脚本已隔离为离线参考，不发布、不作为新插件回退 |
 | 财务工作台 | `../shared/finance/`、`agent/business_query.py`、`agent/direct_tool_router.py`、`agent/core.py`、`agent/tms_runtime/scripts/*finance*`、`tools/finance_sync_service.py`、`tools/sync_finance_bills_tool.py`、`../console/finance_service.py` | `docs/finance_module.md` | 融辉逐笔账本、费用绑定、BI、00:10 同步与失败审计，以及不向 LLM 暴露、只允许飞书管理员绑定使用的确定性自然语言只读经营汇总；韵达财务未启用，并与旧 Excel ETL 隔离 |
 | OCR识别 | `console/` | `docs/ocr/` | Qwen-OCR、人工复核与 MySQL 入库已运行；自学习/Paddle 方案未实施 |
 | 车辆调度 | `console/` | `docs/dispatch/` | `map_only`：仅地图路线规划与本地试算，无真实派单/车辆/平台接口 |
@@ -228,8 +228,8 @@ docs/
 | 场景 | 先搜什么 |
 |------|---------|
 | 修改某个脚本 | `docs/{模块}/` 下对应模块文档 |
-| 理解当前实时报价 | `tools/price_tool.py`、`agent/tms_runtime/` 与 `docs/agent_automation/module_overview.md`；不要使用旧价格快照 |
-| 维护旧离线报价残留 | `price_scripts/AGENTS.md`；只维护已隔离代码，不恢复旧批量流水线 |
+| 理解报价源码与交付状态 | `service_v2_plugins/quote_prices_v2/` 与 `docs/three_platform_quote.md`；输入必须提供 address/weight/volume，不补默认体积；发布核心后仍须安装、绑定账号并启用独立 ZIP |
+| 维护旧离线报价残留 | `legacy/price_quote/`、`price_scripts/AGENTS.md`；只维护已隔离代码，不恢复旧系统工具或批量流水线 |
 | 精度/财务规范 | `docs/common/finance_data_baseline.md` |
 | 新建脚本 | 先搜已有同功能文档，检查是否可复用 |
 
@@ -256,7 +256,7 @@ docs/
 - 韵达/融辉录入的旧同源兼容 URL 不创建第三方活动 iframe；`/ocr?mode=yunda`、`/ocr?mode=ronghui` 仍回到博益本地录单壳，`/ocr/yunda/*` 与 `/ocr/ronghui/live/*` 固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`。活动原页只能由已验证 Console principal 经 `/original-pages/{provider}/launch` 取得一次性 ticket，再到 `https://www.boyi.homes/original/{provider}/` 独立 origin 兑换受审、路径限定 capability，不能改回同源预填代理。
 - 统一回单管理：Console `/receipts/sync` 经普通 receipts-query 接口读取并保存本地结果，审核经 receipts-audit 直接业务动作并独立读后核验；两者不创建 Command/Run/Step，不要求事项中心审批。管理员签名、精确账号和稳定请求 UUID 保留；缺字段、多候选、登录失效或写后状态不一致明确失败。活动原页前缀仍为 410，本地照片、证据和结果页面保留。
 - 车辆调度中心：`http://127.0.0.1:8765/dispatch`
-- 自动化账号管理：`http://127.0.0.1:8765/automation-accounts`，Console 只代理 Agent `agent/tms_runtime/account_manager.py` 的账号元数据、凭据写入和登录态操作；账号系统按真实外部系统展示，大祥报价、自提问题件、大祥S站等通过 TMS融辉账号用途区分。密码类账号统一提供保存凭据、立即登录、登录状态、退出登录、自动登录开关、三次失败熔断和重新启用；协议差异只留在后端 provider。列表灰色备注来自 `name`，可独立修改且不得影响凭据和状态。业务账号密码不得写入 Console/MySQL 或 GET 响应。大祥报价显式使用 `price_default` 账号及其 `price_default` profile，飞书报价与后台登录复用同一状态，不再写死特殊 `price` 身份；R7/R13 使用可持久和在线校验的 SSO Token/Cookie，不得显示“不支持”或只做凭据检查。每个账号仍按 `account_id` 隔离运行态，所有 profile 只使用页面保存的独立凭据，不继承部署级账号密码。自动登录默认关闭，密码类账号只能在页面保存完整凭据后开启；百世快运使用官方微信二维码，扫码后保存独立会话，无需动态密码；其开关仅监控登录态，失效后人工重新扫码，不自动生成二维码。账号管理不得把环境变量凭据计入或展示为已保存凭据。
+- 自动化账号管理：`http://127.0.0.1:8765/automation-accounts`，Console 只代理 Agent `agent/tms_runtime/account_manager.py` 的账号元数据、凭据写入和登录态操作；账号系统按真实外部系统展示，大祥报价、自提问题件、大祥S站等通过 TMS融辉账号用途区分。密码类账号统一提供保存凭据、立即登录、登录状态、退出登录、自动登录开关、三次失败熔断和重新启用；协议差异只留在后端 provider。列表灰色备注来自 `name`，可独立修改且不得影响凭据和状态。业务账号密码不得写入 Console/MySQL 或 GET 响应。三平台报价源码按项目 `ronghui_quote`、`yunda_quote`、`best_quote` 角色绑定精确账号，复用各账号的后台登录态；不把 `price_default` 或 `price` 身份作为报价默认值，公共账号用途保持原约定；R7/R13 使用可持久和在线校验的 SSO Token/Cookie，不得显示“不支持”或只做凭据检查。每个账号仍按 `account_id` 隔离运行态，所有 profile 只使用页面保存的独立凭据，不继承部署级账号密码。自动登录默认关闭，密码类账号只能在页面保存完整凭据后开启；百世快运使用官方微信二维码，扫码后保存独立会话，无需动态密码；其开关仅监控登录态，失效后人工重新扫码，不自动生成二维码。账号管理不得把环境变量凭据计入或展示为已保存凭据。
 - 启动脚本：`console/start_backend.sh`
 - 停止脚本：`console/stop_backend.sh`
 

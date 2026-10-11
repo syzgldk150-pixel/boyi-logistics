@@ -1,0 +1,199 @@
+"""Synthetic protocol fixtures; no real customer, account, or price data."""
+
+from copy import deepcopy
+from html import escape
+
+import pytest
+
+from service_v2_plugins.quote_prices_v2.payload import yunda
+from service_v2_plugins.quote_prices_v2.payload.common import QuoteError
+
+
+REQUEST = {"address": "测试省测试市测试区虚构路1号", "weight": "100", "volume": "0.001"}
+SITE = {
+    "info": "0", "target_center_code": "fictional-destination", "Coverage": "1",
+    "BuyerProvince": "测试省", "BuyerCity": "测试市", "BuyerArea": "测试区",
+    "BuyerProvinceCode": "fictional-province", "BuyerCityCode": "fictional-city",
+    "BuyerAreaCode": "fictional-area", "TownCode": "fictional-town",
+    "business_center_code": "fictional-center", "IsMustSend": "0", "SpecialAreaCode": "",
+}
+
+
+def page_html(**overrides):
+    fields = dict.fromkeys(yunda.FORM_FIELDS, "")
+    fields.update({
+        "CreatedDotCode": "fictional-origin", "SenderDistributionCode": "fictional-origin-center",
+        "current_time": "2026-01-02 03:04:05", "InsuredAmount": "0.00",
+        "Freight": "0.00", "OrderSource": "65", "Del": "0.00", "ItemTotalNumber": "0",
+        "CheckHeavyWeight": "0", "CheckFixedCost": "0", "CheckSafeArrive": "0",
+        "CheckBulkCargo": "0", "DeliversSms1": "0", "DeliversSms2": "0",
+        "DispatchSms": "1", "IsSendMsg": "0", "IsCod": "0",
+    })
+    fields.update(overrides)
+    selects = {
+        "GoodsType": [("", ""), ("184", "正常货物")],
+        "ProductType": [("24", "标准快运")], "PaymentType": [("102", "现金")],
+        "ServiceType": [("111", "派送"), ("112", "自提")],
+        "ShippingMethods": [("180", "送货"), ("179", "送货上楼")],
+    }
+    html = "".join(
+        f'<input name="{name}" value="{escape(value)}">'
+        for name, value in fields.items() if name not in selects
+    )
+    html += "".join(
+        f'<select name="{name}">' + "".join(
+            f'<option value="{value}">{label}</option>' for value, label in options
+        ) + "</select>" for name, options in selects.items()
+    )
+    return html + '''<script>var CreatedByCode="fictional-operator";
+        var $BubbleRatio="3000"; var $HeavyMinWeight="5";</script>'''
+
+
+class Client:
+    def __init__(self, *, html=None, replacements=None):
+        self.html = page_html() if html is None else html
+        self.replacements = replacements or {}
+        self.calls = []
+        self.mode = None
+
+    def request(self, name, body=None, *, text=False):
+        self.calls.append((name, deepcopy(body), text))
+        if name == "yunda_entry":
+            assert text is True
+            return self.html
+        assert text is False
+        if name == "yunda_address":
+            self.mode = body["ServiceType"]
+        override = self.replacements.get((name, self.mode), self.replacements.get(name))
+        if isinstance(override, Exception):
+            raise override
+        if override is not None:
+            return deepcopy(override)
+        return deepcopy({
+            "yunda_address": {"info": 1, "data": {"fictional-destination": SITE}},
+            "yunda_weight": {"info": 1, "data": 2, "Tfr": 100, "Del": 100, "CheckBulkCargo": 0},
+            "yunda_insured": {"info": 1, "data": {"MIN": "200", "MAX": "20000"}},
+            "yunda_price": {"info": 1, "lb": 2, "data": {"CostTotal": "12.34", "DotCostTotal": "8.20"}},
+        }[name])
+
+
+def test_fresh_page_defaults_and_live_responses_determine_both_quotes():
+    client = Client()
+    result = yunda.quote(client, REQUEST)
+    assert result["warnings"] == []
+    assert result["quotes"] == [
+        {"label": "韵达自提", "amount": "12.39", "delivery_method": "自提"},
+        {"label": "韵达派送", "amount": "12.39", "delivery_method": "派送"},
+    ]
+    assert [call[0] for call in client.calls].count("yunda_entry") == 1
+    prices = [body for name, body, _ in client.calls if name == "yunda_price"]
+    assert [p["ShippingMethods"] for p in prices] == ["", "180"]
+    for body in prices:
+        assert body["InsuredAmount"] == "200"
+        assert body["BuyerAddress"] == "虚构路1号"
+        assert body["Volume"] == "0.001"
+        assert body["CreatedByCode"] == "fictional-operator"
+        assert body["DestinationDotScope"] == "fictional-center"
+        assert body["CheckHeavyWeight"] == body["CheckFixedCost"] == "0"
+        assert body["InGoodsType"] == ""  # The current original page leaves this empty.
+        assert "DispatchSms" not in body  # Added by the page after pricing, not by the API.
+
+
+@pytest.mark.parametrize("field", ["CostTotal", "DotCostTotal"])
+def test_missing_total_fails_instead_of_reusing_other_total(field):
+    data = {"CostTotal": "10", "DotCostTotal": "20"}
+    del data[field]
+    response = {"info": 1, "lb": 2 if field == "CostTotal" else 1, "data": data}
+    with pytest.raises(QuoteError, match="报价金额"):
+        yunda.quote(Client(replacements={"yunda_price": response}), REQUEST)
+
+
+def test_dot_total_and_all_enabled_sms_flags_match_original_page():
+    client = Client(
+        html=page_html(DeliversSms1="1", DeliversSms2="1", IsSendMsg="1", IsCod="1"),
+        replacements={"yunda_price": {"info": 1, "lb": 1, "data": {"DotCostTotal": "8.20"}}},
+    )
+    assert yunda.quote(client, REQUEST)["quotes"][0]["amount"] == "8.45"
+
+
+def test_total_uses_page_number_addition_and_truncation():
+    form = dict.fromkeys(yunda.SMS_FIELDS, "0")
+    form["DispatchSms"] = "1"
+    form["DeliversSms1"] = "1"
+    # JS Number(6.1) + Number(0.1) is 6.199999999999999; original truncates it.
+    assert yunda._amount({"info": 1, "lb": 2, "data": {"CostTotal": "6.1"}}, form) == "6.19"
+
+
+@pytest.mark.parametrize("data", [{}, {"a": SITE, "b": SITE}, [], [SITE, SITE]])
+def test_address_must_have_exactly_one_candidate(data):
+    client = Client(replacements={"yunda_address": {"info": 1, "data": data}})
+    with pytest.raises(QuoteError, match="唯一目的网点"):
+        yunda.quote(client, REQUEST)
+    assert not any(name == "yunda_price" for name, _, _ in client.calls)
+
+
+@pytest.mark.parametrize("code", ["BA", "OR", "RF", "AE", "AY"])
+def test_unserviceable_area_does_not_produce_a_price(code):
+    site = {**SITE, "target_center_code": code}
+    client = Client(replacements={"yunda_address": {"info": 1, "data": {"a": site}}})
+    with pytest.raises(QuoteError, match="不可报价"):
+        yunda.quote(client, REQUEST)
+
+
+def test_one_delivery_mode_failure_keeps_other_fresh_mode():
+    client = Client(replacements={("yunda_price", "111"): {"info": 0, "data": "synthetic failure"}})
+    result = yunda.quote(client, REQUEST)
+    assert len(result["quotes"]) == 1
+    assert result["quotes"][0]["delivery_method"] == "自提"
+    assert "派送" in result["warnings"][0]
+
+
+def test_pickup_only_area_does_not_quote_delivery():
+    site = {**SITE, "Coverage": "4"}
+    result = yunda.quote(Client(replacements={"yunda_address": {"info": 1, "data": {"a": site}}}), REQUEST)
+    assert len(result["quotes"]) == 1
+    assert "仅支持自提" in result["warnings"][0]
+
+
+@pytest.mark.parametrize("field", ["data", "Tfr", "Del", "CheckBulkCargo"])
+def test_missing_weight_response_stops_pricing(field):
+    response = {"info": 1, "data": 50, "Tfr": 100, "Del": 100, "CheckBulkCargo": 0}
+    del response[field]
+    client = Client(replacements={"yunda_weight": response})
+    with pytest.raises(QuoteError):
+        yunda.quote(client, REQUEST)
+    assert not any(name == "yunda_price" for name, _, _ in client.calls)
+
+
+def test_insured_range_must_be_valid_and_live():
+    client = Client(replacements={"yunda_insured": {"info": 1, "data": {"MIN": "200", "MAX": "100"}}})
+    with pytest.raises(QuoteError, match="保价范围无效"):
+        yunda.quote(client, REQUEST)
+    assert not any(name == "yunda_price" for name, _, _ in client.calls)
+
+
+def test_bulk_calculation_disables_heavy_and_fixed_cost_as_page_does():
+    client = Client(html=page_html(CheckHeavyWeight="1", CheckFixedCost="1"), replacements={
+        "yunda_weight": {"info": 1, "data": 250, "Tfr": 250, "Del": 250, "CheckBulkCargo": 1},
+    })
+    yunda.quote(client, REQUEST)
+    for name, body, _ in client.calls:
+        if name == "yunda_price":
+            assert body["SettlementTotalNumber"] == "250.00"
+            assert body["CheckBulkCargo"] == "1"
+            assert body["CheckHeavyWeight"] == body["CheckFixedCost"] == "0"
+
+
+def test_page_context_missing_identity_or_threshold_fails_before_api():
+    for old in ('var CreatedByCode="fictional-operator";', 'var $BubbleRatio="3000";'):
+        client = Client(html=page_html().replace(old, ""))
+        with pytest.raises(QuoteError):
+            yunda.quote(client, REQUEST)
+        assert len(client.calls) == 1
+
+
+def test_login_failure_is_not_retried_or_exposed_as_a_quote():
+    client = Client(replacements={"yunda_address": RuntimeError("BLOCKED_LOGIN")})
+    with pytest.raises(RuntimeError, match="BLOCKED_LOGIN"):
+        yunda.quote(client, REQUEST)
+    assert len(client.calls) == 2

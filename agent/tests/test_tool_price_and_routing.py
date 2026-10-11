@@ -248,7 +248,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
                     "data": {"目的网点": "泸州泸县站"},
                 }
 
-        with patch("tools.price_tool.httpx.post", return_value=_Response()):
+        with patch("legacy.price_quote.price_tool.httpx.post", return_value=_Response()):
             result = price_tool.get_price_via_http(
                 address="四川省泸州市泸县241乡道东南侧",
                 weight=800,
@@ -278,7 +278,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
             raise AssertionError(url)
 
         with (
-            patch("tools.price_tool.httpx.post", side_effect=fake_post),
+            patch("legacy.price_quote.price_tool.httpx.post", side_effect=fake_post),
             patch.object(price_tool, "PRICE_TOOL_PREFER_HTTP", True),
         ):
             result = price_tool.get_combined_price(
@@ -311,7 +311,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
             raise AssertionError(url)
 
         with (
-            patch("tools.price_tool.httpx.post", side_effect=fake_post),
+            patch("legacy.price_quote.price_tool.httpx.post", side_effect=fake_post),
             patch.object(price_tool, "PRICE_TOOL_PREFER_HTTP", True),
         ):
             result = price_tool.get_combined_price(
@@ -350,7 +350,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
             raise AssertionError(url)
 
         with (
-            patch("tools.price_tool.httpx.post", side_effect=fake_post),
+            patch("legacy.price_quote.price_tool.httpx.post", side_effect=fake_post),
             patch.object(price_tool, "PRICE_TOOL_PREFER_HTTP", True),
         ):
             result = price_tool.get_combined_price(
@@ -387,7 +387,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
             raise AssertionError(url)
 
         with (
-            patch("tools.price_tool.httpx.post", side_effect=fake_post),
+            patch("legacy.price_quote.price_tool.httpx.post", side_effect=fake_post),
             patch.object(price_tool, "PRICE_TOOL_PREFER_HTTP", True),
         ):
             result = price_tool.get_combined_price(
@@ -426,7 +426,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
             raise AssertionError(url)
 
         with (
-            patch("tools.price_tool.httpx.post", side_effect=fake_post),
+            patch("legacy.price_quote.price_tool.httpx.post", side_effect=fake_post),
             patch.object(price_tool, "PRICE_TOOL_PREFER_HTTP", True),
         ):
             result = price_tool.get_combined_price(
@@ -441,7 +441,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertEqual("武汉融信站", result["ronghui"]["目的网点"])
 
     def test_ronghui_address_resolution_prefers_entry_page_resolver(self):
-        from agent.tms_runtime.scripts import get_price as ronghui_get_price
+        from legacy.price_quote import get_price as ronghui_get_price
 
         browser_resolved = {
             "used_address": "浙江省宁波市镇海区招宝山街道威海路1188号2楼A库康特恩仓库",
@@ -473,7 +473,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         parse_address.assert_not_called()
 
     def test_ronghui_address_resolution_does_not_fallback_when_entry_page_fails(self):
-        from agent.tms_runtime.scripts import get_price as ronghui_get_price
+        from legacy.price_quote import get_price as ronghui_get_price
 
         with (
             patch.object(
@@ -494,7 +494,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
 
     def test_ronghui_address_resolution_uses_runtime_resolver_when_cached_legacy_module_exists(self):
         from agent.tms_runtime.scripts import browser_address_resolver as runtime_resolver
-        from agent.tms_runtime.scripts import get_price as ronghui_get_price
+        from legacy.price_quote import get_price as ronghui_get_price
 
         class WrongCachedResolver:
             def __init__(self, **_kwargs):
@@ -578,7 +578,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertEqual("浙江宁波象山丹西公司一分部", result["dispatch"]["dispatch_site_name"])
 
     def test_ronghui_fetch_prices_reports_entry_page_resolver_failure(self):
-        from agent.tms_runtime.scripts import get_price as ronghui_get_price
+        from legacy.price_quote import get_price as ronghui_get_price
 
         class Auth:
             config = {"test_user_data": {}}
@@ -618,7 +618,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertNotIn("网点不可达", result)
 
     def test_ronghui_price_payload_uses_entry_page_insurance_defaults(self):
-        from agent.tms_runtime.scripts import get_price as ronghui_get_price
+        from legacy.price_quote import get_price as ronghui_get_price
 
         payload = ronghui_get_price._build_base_payload(
             ctx={"site_code": "7390004", "site_name": "邵阳大祥站"},
@@ -653,7 +653,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertEqual("3", payload["INSURANCE_FEE"])
 
     def test_ronghui_price_sum_matches_entry_page_total_with_insurance_fee(self):
-        from agent.tms_runtime.scripts import get_price as ronghui_get_price
+        from legacy.price_quote import get_price as ronghui_get_price
 
         total = ronghui_get_price._calc_sum_fee(
             {
@@ -979,22 +979,22 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
     def test_dispatch_load_callable_prefers_runtime_scripts_dir(self):
         from agent.tms_runtime import dispatch
 
-        fake = types.ModuleType("get_price")
-        fake.__file__ = str(Path(tempfile.gettempdir()) / "get_price.py")
+        fake = types.ModuleType("query_waybill_detail")
+        fake.__file__ = str(Path(tempfile.gettempdir()) / "query_waybill_detail.py")
         fake.run_once = lambda params: {"wrong": True}
-        original = sys.modules.get("get_price")
-        sys.modules["get_price"] = fake
+        original = sys.modules.get("query_waybill_detail")
+        sys.modules["query_waybill_detail"] = fake
         try:
-            fn = dispatch._load_callable(dispatch.TARGETS["get_price"])
+            fn = dispatch._load_callable(dispatch.TARGETS["query_waybill_detail"])
             loaded_file = Path(sys.modules[fn.__module__].__file__).resolve()
             self.assertTrue(loaded_file.is_relative_to(SCRIPTS_DIR))
-            self.assertEqual("agent.tms_runtime.scripts.get_price", fn.__module__)
+            self.assertEqual("agent.tms_runtime.scripts.query_waybill_detail", fn.__module__)
             self.assertIsNot(fn, fake.run_once)
         finally:
             if original is None:
-                sys.modules.pop("get_price", None)
+                sys.modules.pop("query_waybill_detail", None)
             else:
-                sys.modules["get_price"] = original
+                sys.modules["query_waybill_detail"] = original
 
     def test_feishu_admin_base_ignores_http_service_url(self):
         with patch.dict(

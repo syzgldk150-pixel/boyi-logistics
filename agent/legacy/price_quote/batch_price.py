@@ -3,7 +3,7 @@
 Batch price calculator for a fixed destination code.
 
 Usage (WSL):
-  python3 scripts/batch_price.py --dest-code 021039 --start 1 --end 3000 --out prices_puxi.csv
+  python -m legacy.price_quote.batch_price --dest-code EXAMPLE01 --start 1 --end 3000 --out prices_example.csv
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import sys
 import time
 from typing import Any, Dict, Iterable, Optional, Tuple
 
-from agent.tms_runtime.scripts import get_price
+from legacy.price_quote import get_price
 from agent.tms_runtime.scripts.login_manager import TMSAuth
 
 

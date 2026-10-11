@@ -10,9 +10,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 AGENT_PACKAGE_ROOT = PROJECT_ROOT / "agent"
 SCRIPT_ROOT = PROJECT_ROOT / "agent" / "tms_runtime" / "scripts"
 RUNTIME_ROOTS = (PROJECT_ROOT / "agent", PROJECT_ROOT / "tools", PROJECT_ROOT.parent / "console", PROJECT_ROOT.parent / "shared")
-ALLOWED_LEGACY_ISOLATION = {
-    PROJECT_ROOT / "tools" / "price_tool.py",
-}
 WORKFLOW_RUNNER = PROJECT_ROOT / "agent" / "orchestration" / "workflow_runner.py"
 
 
@@ -31,7 +28,7 @@ def main() -> int:
             continue
         for path in _python_files(root):
             source = path.read_text(encoding="utf-8-sig")
-            if "sys.path.insert" in source and path not in ALLOWED_LEGACY_ISOLATION:
+            if "sys.path.insert" in source:
                 problems.append(f"global sys.path mutation: {path.relative_to(PROJECT_ROOT.parent)}")
             if path.is_relative_to(SCRIPT_ROOT):
                 tree = ast.parse(source, filename=str(path))
