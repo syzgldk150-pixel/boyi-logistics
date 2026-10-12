@@ -270,7 +270,18 @@ def _quote_mode(client, page, base, request, delivery, match):
     form["ServiceType"] = page.option("ServiceType", delivery)
     form["ShippingMethods"] = page.option("ShippingMethods", "送货") if delivery == "派送" else ""
     form.update(_address(client, form, request, form["ServiceType"], match))
-    form.update(GrossWeight=request["weight"], Volume=request["volume"])
+    gross, volume = money(request["weight"]), money(request["volume"])
+    ratio = page.thresholds["$BubbleRatio"]
+    heavy = (
+        ratio != 0 and gross > volume * Decimal(1000000) / ratio
+        and gross > page.thresholds["$HeavyMinWeight"]
+    )
+    # Selecting fixed/heavy clears bulk on the page and recalculates weight.
+    # The weight and price requests must use the same requested product options.
+    form.update(
+        GrossWeight=request["weight"], Volume=request["volume"],
+        CheckFixedCost="1", CheckHeavyWeight="1" if heavy else "0", CheckBulkCargo="0",
+    )
     weight = _success(client.request("yunda_weight", {
         "current_time": form["current_time"], "vol": request["volume"],
         **{key: form[key] for key in (
@@ -285,18 +296,9 @@ def _quote_mode(client, page, base, request, delivery, match):
     bulk = _scalar(weight.get("CheckBulkCargo"), "大票货开关")
     if bulk not in {"0", "1", "2"}:
         raise QuoteError("韵达计费重量返回的开关无效")
-    if form["CheckBulkCargo"] != "2":
-        form["CheckBulkCargo"] = "1" if bulk == "1" else "0"
-        if bulk == "1":
-            form["CheckFixedCost"] = form["CheckHeavyWeight"] = "0"
-    ratio = page.thresholds["$BubbleRatio"]
-    if (
-        ratio == 0 or form["CheckBulkCargo"] == "1"
-        or money(request["weight"]) <= money(request["volume"]) * Decimal(1000000) / ratio
-        or money(request["weight"]) <= page.thresholds["$HeavyMinWeight"]
-    ):
-        form["CheckHeavyWeight"] = "0"
-    form["SettlementTotalNumber"] = _page_number(max(money(request["weight"]), money(weight["data"])))
+    if bulk == "1":
+        raise QuoteError("平台计重结果要求大票货，无法按一口价报价，请在原页核实")
+    form["SettlementTotalNumber"] = _page_number(max(gross, money(weight["data"])))
     if money(form["SettlementTotalNumber"]) <= 0:
         raise QuoteError("韵达计费重量不足原页最小精度")
     insured = _success(client.request("yunda_insured", {
@@ -313,20 +315,23 @@ def _quote_mode(client, page, base, request, delivery, match):
     quote = {"label": "韵达" + delivery, "amount": _amount(result, form), "delivery_method": delivery}
     if match["site_name"]:
         quote["site_name"] = match["site_name"]
-    return quote
+    options = "韵重货＋一口价" if heavy else "仅一口价（韵重货不适用）"
+    return quote, f"韵达{delivery}报价选项：{options}"
 
 
 def quote(client, request):
     page, base = _context(client.request("yunda_entry", text=True))
-    quotes, warnings, matches = [], [], []
+    quotes, warnings, matches, option_details = [], [], [], []
     for delivery in ("自提", "派送"):
         match = {}
         matches.append((delivery, match))
         try:
-            quotes.append(_quote_mode(client, page, base, request, delivery, match))
+            mode_quote, mode_options = _quote_mode(client, page, base, request, delivery, match)
+            quotes.append(mode_quote)
+            option_details.append(mode_options)
         except QuoteError as exc:
             warnings.append(f"韵达{delivery}：{exc}")
-    details = _match_details(matches)
+    details = _match_details(matches) + option_details
     if not quotes:
         raise QuoteError("；".join(warnings), details=details)
     result = {"quotes": quotes, "warnings": warnings, "details": details}

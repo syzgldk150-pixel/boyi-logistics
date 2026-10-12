@@ -7,7 +7,7 @@ updated: 2026-10-12
 
 # 三平台报价
 
-`quote_prices_v2` 1.0.3 是独立 Service V2 插件。融辉、韵达、百世的地址解析、产品选择与金额计算全部在 ZIP 内；Host 仅提供账号绑定、已保存登录态、受声明约束的只读 HTTP、最小业务上下文及执行记录。系统工具目录不再提供 `get_price`，旧报价脚本只保留在 `agent/legacy/price_quote/`，不发布或作为回退。
+`quote_prices_v2` 1.0.4 是独立 Service V2 插件。融辉、韵达、百世的地址解析、产品选择与金额计算全部在 ZIP 内；Host 仅提供账号绑定、已保存登录态、受声明约束的只读 HTTP、最小业务上下文及执行记录。系统工具目录不再提供 `get_price`，旧报价脚本只保留在 `agent/legacy/price_quote/`，不发布或作为回退。
 
 ## 输入与结果
 
@@ -18,8 +18,10 @@ updated: 2026-10-12
 | 平台 | 本次计算口径 |
 | --- | --- |
 | 融辉 | 沿用原页详细地址匹配、线路和中心选择，查询可用产品与计费重量、最低保价；按当前费用明细汇总费用并减折扣，分别计算自提和派送。 |
-| 韵达 | 从当前录单页读取账号业务上下文与表单默认值，再查询地址、计费重量、保价区间和费用；按原页规则选择费用合计并加当前消息费、截取两位。 |
+| 韵达 | 从当前录单页读取账号上下文、表单及阈值；默认选中一口价，符合原页重量/体积条件时同时选韵重货，不符合时仅一口价。按实际选项查询计费重量、保价区间和费用，再按原页规则选择费用合计并加当前消息费、截取两位。 |
 | 百世 | 从当前账号读取发站，选择平台唯一默认且有效产品；分别解析派送、站点自提地址与服务权限，按现付、普通保价及平台当次最低保价测算，合计响应中实际有金额的费用项。 |
+
+1.0.4 的韵达自提、派送分别注明本次“韵重货＋一口价”或“仅一口价（韵重货不适用）”。是否能选韵重货以当前页 `$BubbleRatio`、`$HeavyMinWeight` 为准：比率不为零，且重量严格大于 `体积 × 1000000 / 比率` 和最低重量；等于阈值时不选。计重和报价请求使用相同选项并取消大票货；若平台计重结果要求大票货、使一口价无法使用，则明确失败，不改报其他产品。
 
 特殊区域、需要人工指定网点/线路、额外派送加价等未闭合场景明确失败，同时保留本次已查到的网点和限制资料。融辉补查本次匹配派件网点的资料，单独资料查询失败时保留已成功价格并明确资料缺失；韵达 `SpecialArea` 集合按原页作为带相似度的“特殊区域参考”展示，不当作地址已命中；百世按当前模式的区域匹配结果展示收费标准、适用服务、说明与有效期。百世结果会注明当次最低保价，上楼、进仓等附加服务须另行核实。当前输入只有地址、重量、体积，不代表已覆盖全部特殊货物与附加服务。
 
@@ -41,15 +43,15 @@ updated: 2026-10-12
 
 业务实现位于 `agent/service_v2_plugins/quote_prices_v2/payload/`，25 项只读请求在该目录 `manifest.json` 的 `http_requests` 中声明；网点/服务字段映射与中文 `details` 均在 ZIP 内，Host 只通用显示并在报价失败时保留；新增融辉声明 `ronghui_site_info` 调用 `FIND_SITE_DISP_INFO`，按原页派件网点标识读取资料并核对响应站点，韵达/百世复用当次地址匹配响应。账号业务上下文只返回融辉当前操作人和站点的四个必要字段，不返回认证材料。飞书与 Console 将本次输入传入真实 Direct Invocation；同一请求 UUID 重放必须匹配原调用的完整输入。1.0.2 的两个入口仅要求地址、重量；Host 省略未填体积，默认规则只在 ZIP 内维护，结果 `request.volume_defaulted=true` 记录本次默认值使用情况。
 
-2026-10-11/12 已通过真实原页接口与未保存录单表单对照：融辉六个产品/方式组合、韵达两种方式、百世两种方式金额均一致。1.0.1 按真实原始 JSON 支持网点序号以整数值小数表示，仍校验整数、范围及网点名称；避免浏览器转换掩盖接口数值类型差异。2026-10-12 已逐平台核对原页网点字段、特殊区域语义与联系方式，新展示使用当次返回值。真实地址和经营报价不入仓库。纯包测试使用虚构数据；`tests/test_quote_prices_v2_packaged.py` 使用真实 Linux 隔离进程、SDK 与 Broker，外部平台响应由模拟传输提供，不能代替线上实例验收。
+2026-10-11/12 已通过真实原页接口与未保存录单表单对照：融辉六个产品/方式组合、韵达两种方式、百世两种方式金额均一致。1.0.1 按真实原始 JSON 支持网点序号以整数值小数表示，仍校验整数、范围及网点名称；避免浏览器转换掩盖接口数值类型差异。2026-10-12 已逐平台核对原页网点字段、特殊区域语义与联系方式，新展示使用当次返回值。2026-10-12 已核对韵达原页两项选择及大体积无法选择韵重货时的一口价计算请求；计重、报价参数保持一致。真实地址和经营报价不入仓库。纯包测试使用虚构数据；`tests/test_quote_prices_v2_packaged.py` 使用真实 Linux 隔离进程、SDK 与 Broker，外部平台响应由模拟传输提供，覆盖 Console/飞书两个入口的组合选项、大体积仅一口价及平台当次计费重量传递，不能代替线上实例验收。
 
 在仓库根目录、项目 Python 3.10 环境中执行：
 
 ```bash
 PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 PYTHONDONTWRITEBYTECODE=1 python -m pytest -q tests/test_quote_prices_v2.py tests/test_quote_ronghui_v2.py tests/test_quote_yunda_v2.py tests/test_quote_best_v2.py tests/test_quote_prices_v2_packaged.py tests/test_quote_runtime_inputs.py tests/test_quote_system_retirement.py
-PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin package agent/service_v2_plugins/quote_prices_v2 .task_tmp/quote_prices_v2-1.0.3.zip
-PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin inspect .task_tmp/quote_prices_v2-1.0.3.zip
-PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin permissions .task_tmp/quote_prices_v2-1.0.3.zip
+PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin package agent/service_v2_plugins/quote_prices_v2 .task_tmp/quote_prices_v2-1.0.4.zip
+PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin inspect .task_tmp/quote_prices_v2-1.0.4.zip
+PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin permissions .task_tmp/quote_prices_v2-1.0.4.zip
 ```
 
 打包前确保源码目录只有 manifest、Python 源码与声明的静态文件，不含浏览器试价生成的缓存或业务资料。ZIP 不可覆盖，重复构建使用新的输出路径。

@@ -73,7 +73,7 @@ def packaged_host(tmp_path, monkeypatch, *, unavailable=(), wrong_yunda=False):
 
     monkeypatch.setattr("agent.automation_plugins.account_http.AccountHTTPTransport", Transport)
     context = CoreBrokerInvocationContext(
-        automation_id="isolated-three-platform-quote", plugin_version="1.0.3",
+        automation_id="isolated-three-platform-quote", plugin_version="1.0.4",
         tool_name="quote_prices_v2", operation="http.request", action="read_json", role="ronghui_quote",
         account_bindings={system + "_quote": (account,) for system, account in ACCOUNTS.items()},
     )
@@ -113,12 +113,52 @@ def test_real_zip_three_platforms_use_exact_roles_and_observed_reads(tmp_path, m
             assert Decimal(str(request["VOLUME"])) == expected_volume
         elif name == "yunda_weight":
             assert Decimal(str(body["vol"])) == expected_volume
+            assert body["CheckFixedCost"] == body["CheckHeavyWeight"] == "1"
+            assert body["CheckBulkCargo"] == "0"
+        elif name == "yunda_price":
+            assert body["CheckFixedCost"] == body["CheckHeavyWeight"] == "1"
+            assert body["CheckBulkCargo"] == "0"
+            assert body["SettlementTotalNumber"] == "1000.00"
         elif name in {"best_weight", "best_quote"}:
             assert Decimal(str(body["cubic"])) == expected_volume
+    assert [line for line in result["data"]["yunda"]["details"] if "报价选项" in line] == [
+        "韵达自提报价选项：韵重货＋一口价", "韵达派送报价选项：韵重货＋一口价",
+    ]
     assert host.receipts == [] and closed == [True]
     assert all(row["write_started"] is False for row in host.observations)
     assert set(result["meta"]["evidence_refs"]) == {row["evidence_ref"] for row in host.observations}
     assert {row["role"] for row in host.observations} == {key + "_quote" for key in ACCOUNTS}
+
+
+@pytest.mark.parametrize("entrypoint", ["console", "feishu"])
+def test_real_zip_large_volume_uses_fixed_cost_and_fresh_chargeable_weight(tmp_path, monkeypatch, entrypoint):
+    host, fixtures, calls, _, _ = packaged_host(tmp_path, monkeypatch)
+    fixtures["yunda"].replacements["yunda_weight"] = {
+        "info": 1, "data": 2000, "Tfr": 2000, "Del": 2000, "CheckBulkCargo": 0,
+    }
+    result = host.execute({**INPUT, "volume": 10}, operation="quote", entrypoint=entrypoint)
+    assert result["status"] == "SUCCESS", result
+    assert host.verified_outcome.accepted
+    yunda = result["data"]["yunda"]
+    assert yunda["status"] == "success" and len(yunda["quotes"]) == 2
+    assert yunda["warnings"] == []
+    assert [line for line in yunda["details"] if "报价选项" in line] == [
+        "韵达自提报价选项：仅一口价（韵重货不适用）",
+        "韵达派送报价选项：仅一口价（韵重货不适用）",
+    ]
+    for endpoint in ("yunda_weight", "yunda_price"):
+        bodies = [body for _, name, body in calls if name == endpoint]
+        assert len(bodies) == 2
+        for body in bodies:
+            assert body["CheckFixedCost"] == "1"
+            assert body["CheckHeavyWeight"] == body["CheckBulkCargo"] == "0"
+            if endpoint == "yunda_weight":
+                assert body["vol"] == "10"
+            else:
+                assert body["Volume"] == "10"
+                assert body["SettlementTotalNumber"] == "2000.00"
+    assert host.receipts == []
+    assert all(row["write_started"] is False for row in host.observations)
 
 
 @pytest.mark.parametrize("volume", [None, 0, -1, "invalid"])

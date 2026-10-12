@@ -22,7 +22,7 @@ SITE = {
 }
 
 
-def page_html(**overrides):
+def page_html(*, bubble_ratio="3000", heavy_min_weight="5", **overrides):
     fields = dict.fromkeys(yunda.FORM_FIELDS, "")
     fields.update({
         "CreatedDotCode": "fictional-origin", "SenderDistributionCode": "fictional-origin-center",
@@ -48,8 +48,8 @@ def page_html(**overrides):
             f'<option value="{value}">{label}</option>' for value, label in options
         ) + "</select>" for name, options in selects.items()
     )
-    return html + '''<script>var CreatedByCode="fictional-operator";
-        var $BubbleRatio="3000"; var $HeavyMinWeight="5";</script>'''
+    return html + f'''<script>var CreatedByCode="fictional-operator";
+        var $BubbleRatio="{bubble_ratio}"; var $HeavyMinWeight="{heavy_min_weight}";</script>'''
 
 
 class Client:
@@ -80,7 +80,7 @@ class Client:
         }[name])
 
 
-def test_fresh_page_defaults_and_live_responses_determine_both_quotes():
+def test_both_options_are_selected_before_weight_and_preserved_in_both_quotes():
     client = Client()
     result = yunda.quote(client, REQUEST)
     assert result["warnings"] == []
@@ -93,6 +93,7 @@ def test_fresh_page_defaults_and_live_responses_determine_both_quotes():
         "自提/派送匹配网点：虚构网点甲", "网点地址：测试市虚构站点路1号",
         "查件电话：000-00000001", "客服电话：000-00000002",
         "派送范围：测试区内", "特殊区域：虚构园区需预约",
+        "韵达自提报价选项：韵重货＋一口价", "韵达派送报价选项：韵重货＋一口价",
     ]
     assert [call[0] for call in client.calls].count("yunda_entry") == 1
     prices = [body for name, body, _ in client.calls if name == "yunda_price"]
@@ -103,9 +104,60 @@ def test_fresh_page_defaults_and_live_responses_determine_both_quotes():
         assert body["Volume"] == "0.001"
         assert body["CreatedByCode"] == "fictional-operator"
         assert body["DestinationDotScope"] == "fictional-center"
-        assert body["CheckHeavyWeight"] == body["CheckFixedCost"] == "0"
+        assert body["CheckHeavyWeight"] == body["CheckFixedCost"] == "1"
+        assert body["CheckBulkCargo"] == "0"
         assert body["InGoodsType"] == ""  # The current original page leaves this empty.
         assert "DispatchSms" not in body  # Added by the page after pricing, not by the API.
+    weights = [body for name, body, _ in client.calls if name == "yunda_weight"]
+    assert len(weights) == 2
+    assert all(body["CheckHeavyWeight"] == body["CheckFixedCost"] == "1" for body in weights)
+    assert all(body["CheckBulkCargo"] == "0" for body in weights)
+
+
+def test_large_volume_uses_only_fixed_cost_and_its_fresh_mode_weight():
+    client = Client(
+        html=page_html(CheckHeavyWeight="1", CheckFixedCost="0", CheckBulkCargo="1"),
+        replacements={
+            ("yunda_weight", "112"): {"info": 1, "data": 500, "Tfr": 510, "Del": 500, "CheckBulkCargo": 0},
+            ("yunda_weight", "111"): {"info": 1, "data": 600, "Tfr": 610, "Del": 600, "CheckBulkCargo": 0},
+        },
+    )
+    result = yunda.quote(client, {**REQUEST, "volume": "2"})
+    prices = [body for name, body, _ in client.calls if name == "yunda_price"]
+    assert [(body["ServiceType"], body["SettlementTotalNumber"]) for body in prices] == [
+        ("112", "500.00"), ("111", "600.00"),
+    ]
+    for name, body, _ in client.calls:
+        if name in {"yunda_weight", "yunda_price"}:
+            assert body["CheckHeavyWeight"] == "0"
+            assert body["CheckFixedCost"] == "1"
+            assert body["CheckBulkCargo"] == "0"
+    assert result["details"][-2:] == [
+        "韵达自提报价选项：仅一口价（韵重货不适用）",
+        "韵达派送报价选项：仅一口价（韵重货不适用）",
+    ]
+
+
+@pytest.mark.parametrize("weight,volume,ratio,minimum,expected_heavy", [
+    ("10", "0.03", "3000", "5", "0"),  # Equal to density threshold.
+    ("10.01", "0.03", "3000", "5", "1"),
+    ("5", "0.001", "3000", "5", "0"),  # Equal to minimum weight.
+    ("5.01", "0.001", "3000", "5", "1"),
+    ("100", "0.001", "0", "5", "0"),
+    ("100", "0.001", "3000", "101", "0"),  # Fresh page threshold changes.
+    ("10", "0.03", "6000", "5", "1"),
+])
+def test_heavy_eligibility_uses_strict_current_page_thresholds(
+    weight, volume, ratio, minimum, expected_heavy,
+):
+    client = Client(html=page_html(bubble_ratio=ratio, heavy_min_weight=minimum))
+    result = yunda.quote(client, {**REQUEST, "weight": weight, "volume": volume})
+    assert len(result["quotes"]) == 2
+    for name, body, _ in client.calls:
+        if name in {"yunda_weight", "yunda_price"}:
+            assert body["CheckHeavyWeight"] == expected_heavy
+            assert body["CheckFixedCost"] == "1"
+            assert body["CheckBulkCargo"] == "0"
 
 
 @pytest.mark.parametrize("field", ["CostTotal", "DotCostTotal"])
@@ -181,16 +233,56 @@ def test_insured_range_must_be_valid_and_live():
     assert not any(name == "yunda_price" for name, _, _ in client.calls)
 
 
-def test_bulk_calculation_disables_heavy_and_fixed_cost_as_page_does():
+def test_bulk_calculation_cannot_silently_replace_requested_fixed_cost_product():
     client = Client(html=page_html(CheckHeavyWeight="1", CheckFixedCost="1"), replacements={
         "yunda_weight": {"info": 1, "data": 250, "Tfr": 250, "Del": 250, "CheckBulkCargo": 1},
     })
-    yunda.quote(client, REQUEST)
-    for name, body, _ in client.calls:
-        if name == "yunda_price":
-            assert body["SettlementTotalNumber"] == "250.00"
-            assert body["CheckBulkCargo"] == "1"
-            assert body["CheckHeavyWeight"] == body["CheckFixedCost"] == "0"
+    with pytest.raises(QuoteError, match="无法按一口价报价") as caught:
+        yunda.quote(client, REQUEST)
+    assert not any(name in {"yunda_insured", "yunda_price"} for name, _, _ in client.calls)
+    assert "自提/派送匹配网点：虚构网点甲" in caught.value.details
+    assert not any("报价选项" in line for line in caught.value.details)
+
+
+def test_bulk_failure_in_one_mode_keeps_only_other_mode_quote_and_options():
+    client = Client(replacements={
+        ("yunda_weight", "111"): {"info": 1, "data": 250, "Tfr": 250, "Del": 250, "CheckBulkCargo": 1},
+    })
+    result = yunda.quote(client, REQUEST)
+    assert [item["delivery_method"] for item in result["quotes"]] == ["自提"]
+    assert result["warnings"] == ["韵达派送：平台计重结果要求大票货，无法按一口价报价，请在原页核实"]
+    assert [line for line in result["details"] if "报价选项" in line] == ["韵达自提报价选项：韵重货＋一口价"]
+    assert [body["ServiceType"] for name, body, _ in client.calls if name == "yunda_price"] == ["112"]
+
+
+@pytest.mark.parametrize("field", ["data", "Tfr", "Del"])
+@pytest.mark.parametrize("value", [None, "", "not-a-number", "NaN", "-1", True])
+def test_invalid_fresh_weight_response_stops_pricing(field, value):
+    response = {"info": 1, "data": 50, "Tfr": 100, "Del": 100, "CheckBulkCargo": 0}
+    response[field] = value
+    client = Client(replacements={"yunda_weight": response})
+    with pytest.raises(QuoteError):
+        yunda.quote(client, REQUEST)
+    assert not any(name == "yunda_price" for name, _, _ in client.calls)
+
+
+@pytest.mark.parametrize("value", [None, "", "not-a-number", "3", True])
+def test_invalid_bulk_response_stops_pricing(value):
+    client = Client(replacements={
+        "yunda_weight": {"info": 1, "data": 50, "Tfr": 100, "Del": 100, "CheckBulkCargo": value},
+    })
+    with pytest.raises(QuoteError):
+        yunda.quote(client, REQUEST)
+    assert not any(name == "yunda_price" for name, _, _ in client.calls)
+
+
+@pytest.mark.parametrize("threshold", ["bubble_ratio", "heavy_min_weight"])
+@pytest.mark.parametrize("value", ["", "not-a-number", "NaN", "."])
+def test_invalid_current_page_threshold_stops_before_weight(threshold, value):
+    client = Client(html=page_html(**{threshold: value}))
+    with pytest.raises(QuoteError):
+        yunda.quote(client, REQUEST)
+    assert len(client.calls) == 1
 
 
 def test_page_context_missing_identity_or_threshold_fails_before_api():
@@ -247,6 +339,7 @@ def test_missing_site_fields_are_explicit_without_replacing_a_valid_price():
     assert result["details"] == [
         "自提/派送匹配网点：无数据", "网点地址：无数据", "查件电话：无数据",
         "客服电话：无数据", "派送范围：无数据", "特殊区域：无数据",
+        "韵达自提报价选项：韵重货＋一口价", "韵达派送报价选项：韵重货＋一口价",
     ]
 
 
