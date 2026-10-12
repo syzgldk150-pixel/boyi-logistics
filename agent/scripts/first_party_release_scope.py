@@ -22,6 +22,7 @@ if sys.platform == "win32":
 
 _ALLOWLIST_NAME = "RUNNABLE_SERVER_FIRST_PARTY_PLUGIN_IDS"
 STANDALONE_SERVICE_V2_PLUGIN_IDS = frozenset({"r7_vehicle_checkin_v2", "quote_prices_v2"})
+SHARED_RUNTIME_SERVICE_V2_PLUGIN_IDS = frozenset({"sync_self_pickup_should_sign_v2"})
 _PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _FIRST_PARTY_TEST_MARKERS = (
     "first_party_automation_plugins",
@@ -123,7 +124,7 @@ def current_plugin_ids(repository_root: Path) -> frozenset[str]:
     selected = release_plugin_ids(repository_root) - {"clock_in_dual"}
     return frozenset(plugin_id + "_v2" for plugin_id in selected) | {
         "clockin_daxiang_v2", "clockin_daxiang_s_v2",
-    } | STANDALONE_SERVICE_V2_PLUGIN_IDS
+    } | STANDALONE_SERVICE_V2_PLUGIN_IDS | SHARED_RUNTIME_SERVICE_V2_PLUGIN_IDS
 
 
 def release_source_files(repository_root: Path) -> tuple[Path, ...]:

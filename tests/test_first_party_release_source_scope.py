@@ -34,6 +34,8 @@ def test_ast_scope_matches_runtime_allowlist_without_loading_deferred_payloads()
         entry = "main.py" if plugin_id in STANDALONE_SERVICE_V2_PLUGIN_IDS else "plugin.py"
         assert FIRST_PARTY_ROOT / plugin_id / "payload" / entry in release_paths
     assert "r7_vehicle_checkin_v2" in current_plugin_ids(REPOSITORY_ROOT)
+    assert "sync_self_pickup_should_sign_v2" in current_plugin_ids(REPOSITORY_ROOT)
+    assert "sync_self_pickup_should_sign" not in selected
     assert not {"r7_arrival_checkin_v2", "r7_departure_checkin_v2"} & current_plugin_ids(REPOSITORY_ROOT)
     assert all(not path.is_relative_to(REPOSITORY_ROOT / "agent/legacy") for path in release_paths)
 

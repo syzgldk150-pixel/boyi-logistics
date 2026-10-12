@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>自提部每日应签设置</title>
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <main class="settings-page">
+    <header class="settings-intro">
+      <h1>自提部每日应签设置</h1>
+      <p>选择 R13 自提部账号和飞书“自提部应签明细”工作表。每次查询截至当天的全部未签收单，并匹配最新累计到货件数。</p>
+    </header>
+    <form data-settings-form>
+      <section class="settings-section">
+        <h2>运行账号</h2>
+        <p>选择已登录的 R13 自提部账号。</p>
+        <div class="settings-grid" data-account-fields></div>
+      </section>
+      <section class="settings-section">
+        <h2>输出工作表</h2>
+        <p>选择“自提部应签明细”，使用 A 至 L 列的十二列表头。</p>
+        <div class="settings-grid" data-resource-fields></div>
+      </section>
+      <div data-config-fields hidden></div>
+      <div class="settings-actions">
+        <button type="button" data-save-settings disabled>保存插件设置</button>
+        <span class="settings-feedback" data-settings-feedback role="status" aria-live="polite">正在连接…</span>
+      </div>
+    </form>
+  </main>
+  <script src="settings.js"></script>
+</body>
+</html>

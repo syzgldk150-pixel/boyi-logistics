@@ -41,6 +41,8 @@ updated: 2026-10-12
 
 每日应签只读取 R13 截至今天的全部未签收单，再按本次单号批量读取累计到货快照；扫描默认每批 200 单。各插件现行规则见本目录 `CLAUDE.md`，每日应签协议详见[业务说明](../../docs/identity_and_unified_chat.md)。
 
+自提部每日应签 `sync_self_pickup_should_sign_v2` 复用同一来源及十二列发布规则，仅输出实例绑定的“自提部应签明细”电子表格，不写原每日应签的全局台账或多维表。账号、资源、隔离边界及打包验证见[维护手册](../docs/self_pickup_daily_sign.md)。
+
 各插件当前版本以其 `manifest.json` 为准；线上安装版本和执行结果以后台真实实例记录为准，不从目录名推断。
 
 三平台报价 `quote_prices_v2` 使用通用账号 HTTP 与最小账号业务上下文；地址解析、产品选择和金额计算只在 ZIP 内。飞书与 Console 共享实例，系统工具报价入口已退役。使用及安装说明见[三平台报价](../docs/three_platform_quote.md)。

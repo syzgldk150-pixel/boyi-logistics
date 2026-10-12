@@ -1,0 +1,103 @@
+{
+  "schema_version": 2,
+  "runtime_model": "service_v2",
+  "plugin_id": "sync_self_pickup_should_sign_v2",
+  "name": "自提部每日应签",
+  "version": "1.0.0",
+  "description": "使用实例绑定的R13自提部账号，读取截至今天的全部未签收清单，匹配最新累计到货快照，仅发布至绑定的自提部应签明细电子表格，并核验12列内容及黄色条件格式。",
+  "host_api": {
+    "minimum": "2.0.0",
+    "maximum_exclusive": "3.0.0"
+  },
+  "runtime": {
+    "kind": "python_subprocess",
+    "python": "3.10",
+    "mode": "on_demand",
+    "entrypoint": "payload/main.py",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "settings_ui": {
+    "entry": "settings/index.html",
+    "bridge_api": "1.0.0"
+  },
+  "provides": [
+    {
+      "service": "plugin.sync_self_pickup_should_sign_v2.daily_sign@1",
+      "operations": [{"name": "run", "effect": "external_write"}]
+    }
+  ],
+  "requires": [
+    {
+      "service": "connector.boyi.daily_sign_r13@1",
+      "binding_kind": "account",
+      "account_role": "daily_sign_r13"
+    },
+    {
+      "service": "connector.boyi.daily_sign_store@1",
+      "binding_kind": "host_internal"
+    },
+    {
+      "service": "connector.boyi.daily_sign_sheet@1",
+      "binding_kind": "resource",
+      "resource_role": "daily_sign_sheet"
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "service.invoke",
+      "operations": [
+        "clear_sheet", "describe", "load_state", "read_r13", "read_sheet",
+        "read_sheet_formats", "write_sheet", "write_sheet_format"
+      ],
+      "account_role": null,
+      "resource_role": null
+    }
+  ],
+  "account_roles": [
+    {"role": "daily_sign_r13", "allowed_systems": ["r13"], "required": true}
+  ],
+  "resource_roles": [
+    {"role": "daily_sign_sheet", "allowed_kinds": ["feishu_sheet"], "required": true}
+  ],
+  "contributes": {
+    "console": [
+      {
+        "id": "manual_run",
+        "title": "自提部每日应签",
+        "service": "plugin.sync_self_pickup_should_sign_v2.daily_sign@1",
+        "operation": "run",
+        "default_enabled": true
+      }
+    ],
+    "scheduler": [
+      {
+        "id": "daily_run",
+        "title": "自提部每日应签",
+        "service": "plugin.sync_self_pickup_should_sign_v2.daily_sign@1",
+        "operation": "run",
+        "default_enabled": false
+      }
+    ],
+    "feishu": [
+      {
+        "id": "command",
+        "service": "plugin.sync_self_pickup_should_sign_v2.daily_sign@1",
+        "operation": "run",
+        "commands": ["自提部每日应签"],
+        "default_enabled": false
+      }
+    ],
+    "webhook": [],
+    "events": [],
+    "harness": []
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {},
+    "required": []
+  },
+  "storage": {"kv": false, "collections": []},
+  "management": {"purpose": "action", "module": "automation", "dataset": "", "version": ""}
+}

@@ -4,7 +4,7 @@ type: 索引文档
 tags: [代码定位, 修改入口, 路由, 文档索引, Agent, Console]
 related: [project_overview.md, control_plane_v1.md, automation_plugin_platform.md, database_migrations.md, rules_and_definitions.md]
 status: active
-updated: 2026-10-11
+updated: 2026-10-12
 ---
 
 # 物流 Agent 代码定位索引
@@ -83,6 +83,8 @@ updated: 2026-10-11
 | ECS 部署、systemd、服务启动参数与工程检查 | `agent.service` `../console/console.service` `requirements.txt` `requirements.lock` `../console/requirements.txt` `../console/requirements.lock` `pyproject.toml` `../.github/workflows/ci.yml` `docs/project_overview.md` | 服务进程配置看 systemd 文件；两个服务共用按两份 lock 文件联合哈希校验的唯一环境，哈希变化或校验失败才重建；CI 运行编译、Ruff、工具清单和运行时导入边界检查 |
 
 每日应签动态条件格式：`service_v2_plugins/sync_daily_should_sign_v2/payload/business/daily_sign_format.py` 负责公式、黄色样式和实际数据范围；`tools/feishu_sheet_formats.py` 负责绑定表的 sheet-ai 格式接口读写。
+
+自提部每日应签：`service_v2_plugins/sync_self_pickup_should_sign_v2/payload/action.py` 只读取实例绑定 R13 和当前单号统计，并输出绑定 Sheet；复用每日应签业务源码，不写其全局台账和多维表。手动、定时及飞书入口由新包 Manifest 声明，设置使用宿主资源桥；使用说明见 `docs/self_pickup_daily_sign.md`，隔离 ZIP 回归见 `../tests/test_self_pickup_daily_sign_v2.py`。
 
 ## 按目录理解职责
 

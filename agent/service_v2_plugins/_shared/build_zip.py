@@ -86,7 +86,7 @@ def build_plugin_zip(source_directory: Path | str, output_path: Path | str) -> P
     shared = Path(__file__).resolve().parent
     entries = {package_path: (source / source_path).read_bytes() for package_path, source_path in _SOURCE_FILES.items()}
     shared_files = _SHARED_FILES
-    if manifest.get("plugin_id") == "sync_daily_should_sign_v2":
+    if manifest.get("plugin_id") in {"sync_daily_should_sign_v2", "sync_self_pickup_should_sign_v2"}:
         from service_v2_plugins._shared.daily_sign_package import daily_sign_business_files
         shared_files = {"payload/main.py":"connector_service_main.py", "payload/connector_adapter.py":"connector_adapter.py",
                         "payload/boyi_plugin_sdk.py":"boyi_plugin_sdk.py", "payload/daily_sign_io.py":"daily_sign_io.py"}
