@@ -1146,10 +1146,20 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
                 "request_id": request_id,
                 "expected_project_configuration_version": expected_version,
             },
-            timeout=25,
+            timeout=90,
             console_principal=trusted_context["_console_principal"],
         )
         if not result.get("ok"):
+            if result.get("status") is None and result.get("error_code") in {
+                "agent_request_failed", "agent_unreachable",
+            }:
+                # Losing the response does not establish whether the schedule
+                # committed. Keep the request identity and refresh stale views.
+                self._clear_automation_plugin_catalog_cache()
+                result = {
+                    **result,
+                    "error": "尚未确认保存结果；请保持当前设置再次点击保存以核对同一请求。",
+                }
             self._automation_project_agent_error(
                 handler,
                 result,

@@ -1516,6 +1516,99 @@ class AutomationPluginHandlerTests(unittest.TestCase):
             "expected_project_configuration_version": 9,
         }
 
+    @staticmethod
+    def _schedule_payload() -> dict:
+        return {
+            "schedule": {
+                "kind": "daily_times",
+                "times": ["19:00", "03:00", "08:00", "11:00", "14:00", "17:00"],
+                "enabled": True,
+            },
+            "request_id": REQUEST_ID,
+            "expected_project_configuration_version": 9,
+        }
+
+    def test_schedule_save_waits_for_refresh_and_preserves_exact_request(self):
+        app, captured = self._app()
+        calls = []
+        app._agent_request = lambda *args, **kwargs: (
+            calls.append((args, kwargs)) or {
+                "ok": True,
+                "data": {
+                    "project_configuration_version": 10,
+                    "schedule_runtime_state": "ACTIVE",
+                    "schedule_runtime_enabled": True,
+                    "scheduler_refresh_completed": True,
+                },
+            }
+        )
+        app._handle_automation_plugin_schedule_save(
+            self._handler(self._schedule_payload()), "finance_action_east",
+        )
+
+        self.assertEqual(1, len(calls))
+        args, forwarded = calls[0]
+        self.assertEqual(("PUT", "/internal/v1/automation/instances/finance_action_east/schedule"), args)
+        self.assertEqual(90, forwarded["timeout"])
+        self.assertEqual("17", forwarded["console_principal"]["actor_id"])
+        expected = self._schedule_payload()
+        expected["schedule"]["times"].sort()
+        self.assertEqual(expected, forwarded["payload"])
+        self.assertEqual(HTTPStatus.OK, captured["status"])
+        self.assertEqual(10, captured["payload"]["data"]["project_configuration_version"])
+        self.assertEqual("定时计划已保存并生效。", captured["payload"]["message"])
+
+    def test_schedule_transport_failure_is_uncertain_without_automatic_retry(self):
+        for code in ("agent_request_failed", "agent_unreachable"):
+            with self.subTest(code=code):
+                app, captured = self._app()
+                app._automation_catalog_cache = {"old": "cached schedule"}
+                app._automation_catalog_cache_epoch = 4
+                calls = []
+                app._agent_request = lambda *args, **kwargs: (
+                    calls.append((args, kwargs)) or {
+                        "ok": False, "status": None,
+                        "error_code": code, "error": "timed out",
+                    }
+                )
+                app._handle_automation_plugin_schedule_save(
+                    self._handler(self._schedule_payload()), "finance_action_east",
+                )
+
+                self.assertEqual(1, len(calls))
+                self.assertEqual(REQUEST_ID, calls[0][1]["payload"]["request_id"])
+                self.assertEqual(HTTPStatus.BAD_GATEWAY, captured["status"])
+                self.assertFalse(captured["payload"]["ok"])
+                self.assertEqual({
+                    "code": code,
+                    "message": "尚未确认保存结果；请保持当前设置再次点击保存以核对同一请求。",
+                }, captured["payload"]["error"])
+                self.assertEqual({}, app._automation_catalog_cache)
+                self.assertEqual(5, app._automation_catalog_cache_epoch)
+
+    def test_schedule_agent_rejection_keeps_original_status_code_and_message(self):
+        for status, code, message in (
+            (HTTPStatus.CONFLICT, "PROJECT_CONFIGURATION_VERSION_CONFLICT", "项目配置已变化，请刷新后重试。"),
+            (HTTPStatus.SERVICE_UNAVAILABLE, "agent_request_failed", "定时服务暂不可用。"),
+        ):
+            with self.subTest(code=code):
+                app, captured = self._app()
+                app._automation_catalog_cache = {"old": "cached schedule"}
+                calls = []
+                app._agent_request = lambda *args, **kwargs: (
+                    calls.append((args, kwargs)) or {
+                        "ok": False, "status": status, "error_code": code, "error": message,
+                    }
+                )
+                app._handle_automation_plugin_schedule_save(
+                    self._handler(self._schedule_payload()), "finance_action_east",
+                )
+
+                self.assertEqual(1, len(calls))
+                self.assertEqual(status, captured["status"])
+                self.assertEqual({"code": code, "message": message}, captured["payload"]["error"])
+                self.assertEqual({"old": "cached schedule"}, app._automation_catalog_cache)
+
     def test_configuration_forwards_only_atomic_agent_dto_and_signed_principal(self):
         payload = self._configuration_payload()
         app, captured = self._app()
@@ -1542,6 +1635,7 @@ class AutomationPluginHandlerTests(unittest.TestCase):
 
         self.assertEqual(HTTPStatus.OK, captured["status"])
         self.assertEqual("PUT", forwarded["method"])
+        self.assertEqual(25, forwarded["timeout"])
         self.assertEqual(
             "/internal/v1/automation/instances/finance_action_east/configuration",
             forwarded["endpoint"],

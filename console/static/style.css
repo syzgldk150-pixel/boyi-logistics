@@ -820,6 +820,7 @@ body.dispatch-page .notice { display: none; }
 .auto-icon-btn[disabled] { opacity: 0.35; cursor: not-allowed; }
 .auto-add-btn { align-self: flex-start; min-height: 30px; padding: 0 12px; font-size: 0.8rem; gap: 6px; }
 .auto-add-btn .feather { width: 14px; height: 14px; }
+.auto-schedule-stack[hidden], .auto-add-btn[hidden] { display: none; }
 .auto-account-select-row { display: flex; align-items: center; gap: 10px; }
 .auto-account-select { max-width: 360px; min-height: 38px; }
 .auto-account-role-stack { display: flex; flex-direction: column; gap: 10px; }
