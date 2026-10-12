@@ -6,6 +6,8 @@ and Host observation/result verification run through the production code.
 """
 
 from copy import deepcopy
+from decimal import Decimal
+import json
 import zipfile
 
 import pytest
@@ -71,7 +73,7 @@ def packaged_host(tmp_path, monkeypatch, *, unavailable=(), wrong_yunda=False):
 
     monkeypatch.setattr("agent.automation_plugins.account_http.AccountHTTPTransport", Transport)
     context = CoreBrokerInvocationContext(
-        automation_id="isolated-three-platform-quote", plugin_version="1.0.1",
+        automation_id="isolated-three-platform-quote", plugin_version="1.0.2",
         tool_name="quote_prices_v2", operation="http.request", action="read_json", role="ronghui_quote",
         account_bindings={system + "_quote": (account,) for system, account in ACCOUNTS.items()},
     )
@@ -83,9 +85,11 @@ def packaged_host(tmp_path, monkeypatch, *, unavailable=(), wrong_yunda=False):
 
 
 @pytest.mark.parametrize("entrypoint", ["console", "feishu"])
-def test_real_zip_three_platforms_use_exact_roles_and_observed_reads(tmp_path, monkeypatch, entrypoint):
+@pytest.mark.parametrize("omit_volume", [False, True])
+def test_real_zip_three_platforms_use_exact_roles_and_observed_reads(tmp_path, monkeypatch, entrypoint, omit_volume):
     host, _, calls, resolver, closed = packaged_host(tmp_path, monkeypatch)
-    result = host.execute(INPUT, operation="quote", entrypoint=entrypoint)
+    arguments = {key: value for key, value in INPUT.items() if not omit_volume or key != "volume"}
+    result = host.execute(arguments, operation="quote", entrypoint=entrypoint)
     assert result["status"] == "SUCCESS", result
     assert host.verified_outcome.accepted
     # This is the Host HTTP permission. The actual subprocess is still launched
@@ -98,10 +102,31 @@ def test_real_zip_three_platforms_use_exact_roles_and_observed_reads(tmp_path, m
     assert set(system for system, _, _ in calls) == set(ACCOUNTS)
     assert result["meta"]["record_count"] == sum(len(result["data"][key]["quotes"]) for key in ACCOUNTS)
     assert result["meta"]["write_outcome"] == "NOT_APPLIED"
+    assert result["data"]["request"]["volume"] == ("0.1" if omit_volume else "1")
+    assert result["data"]["request"].get("volume_defaulted", False) is omit_volume
+    expected_volume = Decimal(result["data"]["request"]["volume"])
+    for system, name, body in calls:
+        if name == "ronghui_quote":
+            request = json.loads(body["data"])[0]
+            assert Decimal(str(request["VOLUME"])) == expected_volume
+        elif name == "yunda_weight":
+            assert Decimal(str(body["vol"])) == expected_volume
+        elif name in {"best_weight", "best_quote"}:
+            assert Decimal(str(body["cubic"])) == expected_volume
     assert host.receipts == [] and closed == [True]
     assert all(row["write_started"] is False for row in host.observations)
     assert set(result["meta"]["evidence_refs"]) == {row["evidence_ref"] for row in host.observations}
     assert {row["role"] for row in host.observations} == {key + "_quote" for key in ACCOUNTS}
+
+
+@pytest.mark.parametrize("volume", [None, 0, -1, "invalid"])
+def test_real_zip_explicit_invalid_volume_fails_without_platform_reads(tmp_path, monkeypatch, volume):
+    host, _, calls, _, _ = packaged_host(tmp_path, monkeypatch)
+    result = host.execute({**INPUT, "volume": volume}, operation="quote", entrypoint="feishu")
+    assert result["status"] == "FAILED", result
+    assert result["error"]["code"] == "INVALID_REQUEST"
+    assert result["data"] == {}
+    assert calls == [] and host.observations == () and host.receipts == []
 
 
 def test_real_zip_one_platform_login_failure_keeps_other_quotes(tmp_path, monkeypatch):

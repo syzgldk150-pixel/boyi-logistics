@@ -1527,21 +1527,22 @@ def parse_quote_options_request(payload: dict[str, Any]) -> dict[str, Any]:
         weight = _quote_decimal(body.get("weight_kg") or body.get("field_weight_kg"), field_name="重量")
     except ValueError as exc:
         raise QuoteOptionsValidationError(f"重量 kg 必须填写有效数字：{exc}") from exc
-    try:
-        volume = _quote_decimal(body.get("volume_m3") or body.get("field_volume_m3"), field_name="体积")
-    except ValueError as exc:
-        raise QuoteOptionsValidationError(f"体积 m³ 必须填写有效数字：{exc}") from exc
-    if any(not math.isfinite(float(value)) or float(value) <= 0 for value in (weight, volume)):
+    result = {"receiver_address": receiver_address, "weight": weight}
+    volume_key = "volume_m3" if "volume_m3" in body else "field_volume_m3"
+    if volume_key in body:
+        raw_volume = body[volume_key]
+        if not (isinstance(raw_volume, str) and not raw_volume.strip()):
+            try:
+                result["volume"] = _quote_decimal(raw_volume, field_name="体积")
+            except ValueError as exc:
+                raise QuoteOptionsValidationError(f"体积 m³ 必须填写有效数字：{exc}") from exc
+    values = (result[key] for key in ("weight", "volume") if key in result)
+    if any(not math.isfinite(float(value)) or float(value) <= 0 for value in values):
         raise QuoteOptionsValidationError("重量和体积必须是可查询范围内的大于 0 的数字。")
-    delivery_method = _normalize_quote_delivery_method(
+    result["delivery_method"] = _normalize_quote_delivery_method(
         body.get("delivery_method") or body.get("field_delivery_method")
     )
-    return {
-        "receiver_address": receiver_address,
-        "weight": weight,
-        "volume": volume,
-        "delivery_method": delivery_method,
-    }
+    return result
 
 
 def _quote_error_text(payload: Any, default: str) -> str:
@@ -1682,12 +1683,18 @@ def build_manual_quote_options(
         public_quote = dict(quote)
         public_quote.pop("_price_decimal", None)
         public_quotes.append(public_quote)
+    message = "已获取可用报价。" if available else "无可用报价，请查看各平台失败原因。"
+    request = data.get("request")
+    if isinstance(request, dict) and request.get("volume_defaulted") is True:
+        volume = _clean_quote_text(request.get("volume"))
+        if volume:
+            message = f"体积未填写，本次按 {volume} m³ 计算。{message}"
     return {
         "ok": bool(available),
         "quotes": public_quotes,
         "best_provider": best_provider,
         "available_count": len(available),
-        "message": "已获取可用报价。" if available else "无可用报价，请查看各平台失败原因。",
+        "message": message,
     }
 
 

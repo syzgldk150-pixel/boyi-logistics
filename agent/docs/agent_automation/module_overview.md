@@ -53,7 +53,7 @@ TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `er
 | `操作场登录` / `后台发验证码` / `后台保存账号登录` 等 | `/admin/accounts/{account_id}/login`（默认融辉操作场账号） | pending 或直接 authenticated（图片验证码先自动 OCR，失败 3 次后转人工输入并暂停自动重试） |
 | `韵达登录` / `韵达发验证码` / `yunda验证码` 等 | `/admin/accounts/{account_id}/login`（默认韵达账号） | pending 或直接 authenticated（图片验证码先 OCR；转手机验证码时飞书接管短信码输入） |
 | `切换到融辉自动化` / `切换到韵达自动化` / `当前自动化状态` | `automation_profile` | reply（切换或查看后台自动化 Profile；默认 `ronghui`） |
-| `报价` / `价格` / `三平台报价` + `地址,重量,体积`，或完整的裸输入 | `quote_prices_v2` 项目 | 直接调用已安装且启用的 V2 实例。必须提供 address/weight/volume，缺少时先澄清，不补默认体积；体积可为数字或 `长*宽*高*件数+...` 厘米表达式 |
+| `报价` / `价格` / `三平台报价` + `地址,重量,体积`，或完整的裸输入 | `quote_prices_v2` 项目 | 直接调用已安装且启用的 V2 实例。必须提供 address/weight；省略 volume 时由插件按 0.1 立方米计算并注明，显式无效值先澄清；体积可为数字或 `长*宽*高*件数+...` 厘米表达式 |
 | `获取当日寄件数据` / `融辉寄件数据` / `TMS寄件数据` 等 | `sync_daily_send_orders` | 直接插件（已启动后异步等待结果；默认拉取当天融辉寄件数据，按发件日期替换同日飞书快照，并同步控制台 `waybills` SQL 表） |
 | `arrivelist` / `到货清单` / `预到达清单` / `执行一次arrivelist脚本` 等 | `sync_arrive_list` | 直接插件（已启动后异步等待结果；拉取 TMS 派件预报基础清单并写入 MySQL + 飞书表格） |
 | `韵达派件预测` / `网点派件量预测主单表` / `应派预测` 等 | `sync_yunda_dispatch_forecast` | 直接插件（已启动后异步等待结果；默认拉取次日应派数据，按应派时间覆盖飞书多维表格） |

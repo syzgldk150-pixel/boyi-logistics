@@ -20,6 +20,7 @@ from agent.orchestration.automation_project_entrypoints import ServiceV2FeishuDi
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from agent.orchestration.automation_project_policy_service import AutomationProjectPolicyService
 from agent.tool_registry import validate_schema_instance
+from shared.automation_project_authorization import OMIT_DYNAMIC_ARGUMENT
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,7 +29,7 @@ INPUT_SCHEMA = {
     "properties": {"address": {"type": "string", "minLength": 1},
                    "weight": {"type": "number", "minimum": 0.000001},
                    "volume": {"type": "number", "minimum": 0.000001}},
-    "required": ["address", "weight", "volume"],
+    "required": ["address", "weight"],
 }
 INPUT = {"address": "示例市示例区测试路1号", "weight": 1000, "volume": 2.5}
 
@@ -55,12 +56,19 @@ def test_runtime_inputs_compile_separately_from_saved_settings():
     for channel in ("console", "feishu"):
         invocation = contract.invocation_contracts[channel]
         assert invocation["argument_template"] == {}
-        assert invocation["dynamic_resolvers"] == {name: f"verified_{channel}_{name}" for name in INPUT}
+        assert invocation["dynamic_resolvers"] == {
+            "address": f"verified_{channel}_address", "weight": f"verified_{channel}_weight",
+            "volume": f"verified_optional_{channel}_volume",
+        }
         validate_schema_instance("quote", INPUT, invocation["input_schema"])
+        validate_schema_instance("quote", {"address": INPUT["address"], "weight": 1000}, invocation["input_schema"])
         with pytest.raises(ValueError):
-            validate_schema_instance("quote", {"address": INPUT["address"], "weight": 1000}, invocation["input_schema"])
+            validate_schema_instance("quote", {"address": INPUT["address"]}, invocation["input_schema"])
         resolver = TrustedDynamicArgumentResolver()
-        assert resolver(f"verified_{channel}_volume", "volume", {"entrypoint": channel, "dynamic_inputs": INPUT}) == 2.5
+        assert resolver(f"verified_optional_{channel}_volume", "volume", {"entrypoint": channel, "dynamic_inputs": INPUT}) == 2.5
+        assert resolver(f"verified_optional_{channel}_volume", "volume", {
+            "entrypoint": channel, "dynamic_inputs": {"address": INPUT["address"], "weight": 1000},
+        }) is OMIT_DYNAMIC_ARGUMENT
     validate_schema_instance("quote", INPUT, contract.tool_contract["input_schema"])
 
 
@@ -111,18 +119,19 @@ def _dispatch(inputs):
                                       chat_id="chat-one", runtime_inputs=inputs)
 
 
-def test_dispatch_keeps_inputs_and_project_identity_in_separate_channels():
-    policy, pending = _dispatch(INPUT)
+@pytest.mark.parametrize("inputs", [INPUT, {"address": INPUT["address"], "weight": 1000}])
+def test_dispatch_keeps_inputs_and_project_identity_in_separate_channels(inputs):
+    policy, pending = _dispatch(inputs)
     asyncio.run(pending)
     automation_id, kwargs = policy.calls[0]
     assert automation_id == "quote-instance"
-    assert kwargs["trusted_context"] == {"event_id": "event-one", "chat_id": "chat-one", "dynamic_inputs": INPUT}
+    assert kwargs["trusted_context"] == {"event_id": "event-one", "chat_id": "chat-one", "dynamic_inputs": inputs}
     assert kwargs["idempotency_key"] == "feishu:event-one"
     assert kwargs["expected_automation_generation"] == 2
 
 
 @pytest.mark.parametrize("inputs", [
-    {"address": INPUT["address"], "weight": 1000},
+    {"address": INPUT["address"]},
     {**INPUT, "volume": 0}, {**INPUT, "weight": float("inf")},
     {**INPUT, "account_id": "forbidden"}, {**INPUT, "automation_id": "another-instance"},
 ])
@@ -151,7 +160,7 @@ def test_quote_text_routes_only_to_plugin_and_converts_dimension_expression():
     assert not is_reserved_feishu_command_text(QUOTE_PLUGIN_COMMAND)
 
 
-@pytest.mark.parametrize("text", ["报价", QUOTE_PLUGIN_COMMAND, "示例市测试路1号，1000", "示例市测试路1号，1000，0", "报价：示例市测试路1号，inf，2"])
+@pytest.mark.parametrize("text", ["报价", QUOTE_PLUGIN_COMMAND, "示例市测试路1号，1000，0", "报价：示例市测试路1号，inf，2"])
 def test_incomplete_quote_is_clarified_without_running_a_tool(text):
     request = direct_tool_request_from_text(text)
     assert request["mode"] == "service_v2_quote"
@@ -244,3 +253,15 @@ def test_static_and_preview_replays_do_not_require_runtime_input_envelopes(previ
                                     contribution_id="quote", preview_invocation_id=preview)
     assert result["success"] is True
     assert reads == [("quote-instance", 4, False)]
+
+
+def test_console_replay_preserves_omitted_volume_from_original_request():
+    inputs = {"address": INPUT["address"], "weight": 1000}
+    service, actor, _ = _replay_policy(arguments=inputs)
+    result = service.invoke_console("quote-instance", request_id="request-one", actor=actor,
+                                    contribution_id="quote", runtime_inputs=inputs)
+    assert result["success"] is True
+    with pytest.raises(OrchestrationError) as rejected:
+        service.invoke_console("quote-instance", request_id="request-one", actor=actor,
+                               contribution_id="quote", runtime_inputs={**inputs, "volume": 0.1})
+    assert rejected.value.code == "IDEMPOTENCY_CONFLICT"

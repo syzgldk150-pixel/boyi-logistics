@@ -582,8 +582,10 @@ def parse_price_request(text: str) -> dict[str, Any] | None:
     if not PRICE_SPLIT_RE.search(candidate):
         return None
 
-    parts = [part.strip() for part in PRICE_SPLIT_RE.split(candidate) if part.strip()]
-    if len(parts) < 2:
+    parts = [part.strip() for part in PRICE_SPLIT_RE.split(candidate)]
+    if parts and not parts[-1]:
+        parts.pop()
+    if len(parts) < 2 or any(not part for part in parts):
         return None
 
     if (
@@ -596,19 +598,19 @@ def parse_price_request(text: str) -> dict[str, Any] | None:
 
     volume = None
     weight = parse_number_token(parts[-1], number_kind="weight")
+    address = ",".join(parts[:-1]).strip()
     if len(parts) >= 3:
-        address = ""
-        if not address:
-            possible_volume = parse_volume_token(parts[-1])
-            possible_weight = parse_number_token(parts[-2], number_kind="weight")
-        if not address and possible_volume is not None and possible_weight is not None:
-            volume = possible_volume
+        possible_weight = parse_number_token(parts[-2], number_kind="weight")
+        numeric_weight = re.fullmatch(
+            r"[-+]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?|inf(?:inity)?|nan)(?:\s*(?:kg|公斤|千克|斤))?",
+            parts[-2], re.IGNORECASE,
+        )
+        if possible_weight is not None or numeric_weight:
+            volume = parse_volume_token(parts[-1])
+            if possible_weight is None or volume is None:
+                return None
             weight = possible_weight
             address = ",".join(parts[:-2]).strip()
-        elif not address:
-            address = ",".join(parts[:-1]).strip()
-    else:
-        address = parts[0].strip()
 
     if not address or weight is None:
         return None
@@ -689,10 +691,10 @@ def direct_tool_request_from_text(text: str) -> dict[str, Any] | None:
                         and re.search(r"[省市区县镇乡街路村]", PRICE_SPLIT_RE.split(normalized)[0])))
     if price_intent:
         request = {"tool_name": "quote_prices_v2", "params": {}, "mode": "service_v2_quote"}
-        if price_params is None or "volume" not in price_params:
+        if price_params is None:
             request["local_result"] = {
                 "success": False,
-                "error": "请提供完整收货地址、重量（公斤）和体积（立方米），格式：地址，重量，体积。体积也可用长*宽*高*件数（厘米）填写。",
+                "error": "请提供完整收货地址和重量（公斤），格式：地址，重量，体积。体积选填，不填按0.1立方米；填写时须大于0，也可用长*宽*高*件数（厘米）填写。",
             }
         else:
             request["runtime_inputs"] = price_params
@@ -1766,6 +1768,9 @@ def format_quote_plugin_messages(result: dict[str, Any]) -> list[str]:
     for key, title in (("ronghui", "融辉"), ("yunda", "韵达"), ("best", "百世")):
         provider = data.get(key)
         lines = [f"{title}价格"]
+        request = data.get("request")
+        if key == "ronghui" and isinstance(request, dict) and request.get("volume_defaulted") is True:
+            lines.append(f"体积未填写，本次按{request['volume']}立方米计算。")
         if not isinstance(provider, dict):
             lines.append("无数据：本次查询未返回该平台的有效结果，请在后台查看执行结果。")
         elif provider.get("status") != "success":

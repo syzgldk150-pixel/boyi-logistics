@@ -714,12 +714,13 @@ class DocumentServiceMixin:
             raise ValueError("三平台报价插件尚未就绪，请检查项目设置、启用状态和账号绑定。")
         automation_id = instance["automation_id"]
         principal = trusted_context["_console_principal"]
+        runtime_inputs = {"address": request["receiver_address"], "weight": float(request["weight"])}
+        if "volume" in request:
+            runtime_inputs["volume"] = float(request["volume"])
         accepted = self._agent_request(
             "POST", f"/internal/v1/automation-projects/{quote(automation_id, safe='')}/invoke",
-            payload={"request_id": request_id, "contribution_id": entries[0], "runtime_inputs": {
-                "address": request["receiver_address"], "weight": float(request["weight"]),
-                "volume": float(request["volume"]),
-            }}, timeout=20, console_principal=principal,
+            payload={"request_id": request_id, "contribution_id": entries[0], "runtime_inputs": runtime_inputs},
+            timeout=20, console_principal=principal,
         )
         if not accepted.get("ok"):
             raise ValueError(str(accepted.get("error") or "报价插件调用失败。"))

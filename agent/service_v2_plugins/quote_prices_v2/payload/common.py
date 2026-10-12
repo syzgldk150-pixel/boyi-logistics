@@ -5,6 +5,9 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 
 
+DEFAULT_VOLUME = "0.1"
+
+
 class QuoteError(ValueError):
     """A provider's explicit, public business failure."""
 
@@ -22,16 +25,21 @@ def positive_number(value, name):
 
 
 def quote_inputs(arguments):
-    if not isinstance(arguments, dict) or set(arguments) != {"address", "weight", "volume"}:
-        raise QuoteError("请提供完整收货地址、重量（公斤）和体积（立方米）")
+    if (not isinstance(arguments, dict) or not {"address", "weight"} <= set(arguments)
+            or set(arguments) - {"address", "weight", "volume"}):
+        raise QuoteError("请提供完整收货地址和重量（公斤），体积（立方米）可省略")
     address = arguments["address"]
     if not isinstance(address, str) or not address.strip() or len(address) > 500:
         raise QuoteError("请提供有效的完整收货地址")
-    return {
+    volume_defaulted = "volume" not in arguments
+    request = {
         "address": address.strip(),
         "weight": format(positive_number(arguments["weight"], "重量"), "f"),
-        "volume": format(positive_number(arguments["volume"], "体积"), "f"),
+        "volume": format(positive_number(DEFAULT_VOLUME if volume_defaulted else arguments["volume"], "体积"), "f"),
     }
+    if volume_defaulted:
+        request["volume_defaulted"] = True
+    return request
 
 
 def money(value):

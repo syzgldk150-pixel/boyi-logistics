@@ -228,7 +228,7 @@ docs/
 | 场景 | 先搜什么 |
 |------|---------|
 | 修改某个脚本 | `docs/{模块}/` 下对应模块文档 |
-| 理解报价源码与交付状态 | `service_v2_plugins/quote_prices_v2/` 与 `docs/three_platform_quote.md`；输入必须提供 address/weight/volume，不补默认体积；发布核心后仍须安装、绑定账号并启用独立 ZIP |
+| 理解报价源码与交付状态 | `service_v2_plugins/quote_prices_v2/` 与 `docs/three_platform_quote.md`；输入必须提供 address/weight；volume 省略时仅由 ZIP 默认 0.1 立方米并注明；发布核心后仍须安装、绑定账号并启用独立 ZIP |
 | 维护旧离线报价残留 | `legacy/price_quote/`、`price_scripts/AGENTS.md`；只维护已隔离代码，不恢复旧系统工具或批量流水线 |
 | 精度/财务规范 | `docs/common/finance_data_baseline.md` |
 | 新建脚本 | 先搜已有同功能文档，检查是否可复用 |

@@ -266,8 +266,16 @@ def test_quote_text_uses_verified_plugin_invocation_and_returns_three_platforms(
     assert [text for text, _ in replies[1:]] == ["融辉价格\n自提：10.00元", "韵达价格\n报价失败：当前未登录", "百世价格\n派送：20.00元"]
 
 
-def test_quote_missing_volume_clarifies_before_plugin_or_reader_calls():
-    dispatcher = _FakeServiceV2FeishuDispatcher()
+def test_quote_missing_volume_reaches_plugin_and_displays_its_default():
+    dispatcher = _FakeServiceV2FeishuDispatcher(result={
+        "success": True, "status": "COMPLETED",
+        "result": {"data": {
+            "request": {"volume": "0.1", "volume_defaulted": True},
+            "ronghui": {"status": "success", "quotes": [{"label": "自提", "amount": "10.00"}]},
+            "yunda": {"status": "failed", "quotes": [], "error": "当前未登录"},
+            "best": {"status": "success", "quotes": [{"label": "派送", "amount": "20.00"}]},
+        }},
+    })
     agent, replies = _FakeAgent(), []
     with (
         patch("feishu.bot.get_agent_core", return_value=agent),
@@ -277,9 +285,16 @@ def test_quote_missing_volume_clarifies_before_plugin_or_reader_calls():
         patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
     ):
         _run_verified_text("示例市测试路1号，1000", event_id="event-quote-missing")
-    assert dispatcher.calls == agent.tool_calls == agent.chat_calls == []
-    assert len(replies) == 1
-    assert "体积" in replies[0][0]
+    assert dispatcher.calls == [{
+        "command_text": "三平台报价", "event_id": "event-quote-missing",
+        "sender_id": "user-one", "chat_id": "chat-one",
+        "runtime_inputs": {"address": "示例市测试路1号", "weight": 1000.0},
+    }]
+    assert agent.tool_calls == agent.chat_calls == []
+    assert len(replies) == 4
+    assert "体积未填写，本次按0.1立方米计算。" in replies[1][0]
+    assert "自提：10.00元" in replies[1][0]
+    assert "默认" not in replies[2][0]
 
 
 def test_service_v2_feishu_unknown_command_continues_to_existing_agent_path():

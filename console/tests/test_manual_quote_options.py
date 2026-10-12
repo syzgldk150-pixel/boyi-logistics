@@ -1,5 +1,7 @@
 import io
 import json
+import shutil
+import subprocess
 import sys
 import unittest
 from decimal import Decimal
@@ -132,11 +134,72 @@ class ManualQuoteOptionsTests(unittest.TestCase):
         self.assertEqual(Decimal("1.235"), result["weight"])
         self.assertEqual(Decimal("0.001"), result["volume"])
 
-    def test_missing_weight_or_volume_is_rejected_without_defaults(self):
-        for payload in (_request(weight_kg=""), _request(volume_m3="bad"), _request(volume_m3="0"),
-                _request(weight_kg="1" * 400)):
+    def test_missing_or_blank_volume_is_omitted_for_plugin_default(self):
+        missing_volume = _request()
+        missing_volume.pop("volume_m3")
+        for payload in (missing_volume, _request(volume_m3=""), _request(volume_m3=" \t ")):
+            with self.subTest(payload=payload):
+                self.assertNotIn("volume", parse_quote_options_request(payload))
+
+    def test_missing_weight_or_explicit_invalid_volume_is_rejected(self):
+        for payload in (_request(weight_kg=""), _request(weight_kg="1" * 400),
+                *(_request(volume_m3=value) for value in ("bad", "0", 0, "-1", None, True, "1" * 400))):
             with self.subTest(payload=payload), self.assertRaises(QuoteOptionsValidationError):
                 parse_quote_options_request(payload)
+
+    def test_volume_alias_is_used_only_when_primary_key_is_missing(self):
+        payload = _request(field_volume_m3="0.02")
+        payload.pop("volume_m3")
+        self.assertEqual(Decimal("0.02"), parse_quote_options_request(payload)["volume"])
+        payload["volume_m3"] = ""
+        self.assertNotIn("volume", parse_quote_options_request(payload))
+        payload["volume_m3"] = None
+        with self.assertRaises(QuoteOptionsValidationError):
+            parse_quote_options_request(payload)
+
+    def test_summary_reports_default_only_from_plugin_request(self):
+        for request, expected in (({"volume": "0.1", "volume_defaulted": True}, True),
+                ({"volume": "0.1", "volume_defaulted": False}, False), ({"volume": "0.1"}, False)):
+            payload = build_manual_quote_options(plugin_result={**_data(), "request": request},
+                delivery_method="送货")
+            self.assertEqual(expected, "体积未填写，本次按 0.1 m³ 计算。" in payload["message"])
+
+    def test_browser_quote_input_omits_blank_volume_and_rejects_invalid_input(self):
+        node = shutil.which("node") or shutil.which("node.exe")
+        if not node:
+            self.skipTest("Node.js is required for the quote input regression")
+        template = (CONSOLE_DIR / "templates" / "document.html").read_text(encoding="utf-8")
+        script = r"""
+const assert = require("node:assert/strict");
+const source = require("node:fs").readFileSync(0, "utf8");
+const fields = {receiver_address:"测试地址",weight_kg:"1000",volume_m3:"",delivery_method:"送货"};
+const manualFieldValue = name => fields[name].trim();
+const volumeField = {validity:{badInput:false}};
+const document = {getElementById:() => volumeField};
+const start = source.indexOf("const readQuoteRequest =");
+eval(source.slice(start, source.indexOf("const calculateQuoteOptions =", start)) + `
+  let request = readQuoteRequest();
+  assert.equal("volume_m3" in request, false);
+  assert.equal(validateQuoteRequest(request), "");
+  fields.volume_m3 = " 0.45 ";
+  request = readQuoteRequest();
+  assert.equal(request.volume_m3, "0.45");
+  assert.equal(validateQuoteRequest(request), "");
+  for (const value of ["0", "-1", "bad", "Infinity"]) {
+    fields.volume_m3 = value;
+    assert.notEqual(validateQuoteRequest(readQuoteRequest()), "");
+  }
+  fields.volume_m3 = "";
+  volumeField.validity.badInput = true;
+  assert.notEqual(validateQuoteRequest(readQuoteRequest()), "");
+  volumeField.validity.badInput = false;
+  fields.weight_kg = "";
+  assert.notEqual(validateQuoteRequest(readQuoteRequest()), "");
+`);
+"""
+        result = subprocess.run([node, "--input-type=commonjs", "-e", script],
+            input=template, text=True, capture_output=True, check=False, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 class ManualQuoteOptionsEndpointTests(unittest.TestCase):
@@ -188,6 +251,15 @@ class ManualQuoteOptionsEndpointTests(unittest.TestCase):
                 self.assertFalse(handler.json_body()["ok"])
                 self.assertEqual([], calls)
 
+    def test_omitted_volume_stays_omitted_in_invocation_and_shows_plugin_default(self):
+        data = {**_data(), "request": {"volume": "0.1", "volume_defaulted": True}}
+        app, calls = self._app(states=[{"status": "COMPLETED", "result": {"data": data}}])
+        handler = _JsonHandler(_request(volume_m3=""))
+        app._handle_quote_options(handler)
+        self.assertEqual(HTTPStatus.OK, handler.status)
+        self.assertEqual({"address": "测试省测试市示例路1号", "weight": 12.5}, calls[0][2]["runtime_inputs"])
+        self.assertIn("本次按 0.1 m³ 计算", handler.json_body()["message"])
+
     def test_mismatched_or_failed_invocation_never_returns_prices(self):
         for state in ({"status": "COMPLETED", "automation_id": "other", "result": {"data": _data()}},
                 {"status": "COMPLETED", "invocation_id": REQUEST_ID, "result": {"data": _data()}},
@@ -202,7 +274,8 @@ class ManualQuoteOptionsEndpointTests(unittest.TestCase):
                 self.assertEqual(1, sum(call[0] == "POST" for call in calls))
 
     def test_invalid_number_or_request_id_is_rejected_before_catalog(self):
-        for payload, request_id in ((_request(weight_kg="bad"), REQUEST_ID), (_request(), "")):
+        for payload, request_id in ((_request(weight_kg="bad"), REQUEST_ID), (_request(), ""),
+                (_request(volume_m3=None), REQUEST_ID), (_request(volume_m3=0), REQUEST_ID)):
             app, calls = self._app()
             app._load_automation_plugin_catalog_uncached = lambda _: self.fail("catalog should not be called")
             handler = _JsonHandler(payload, request_id=request_id)

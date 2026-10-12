@@ -92,8 +92,7 @@
           },
           "required": [
             "address",
-            "weight",
-            "volume"
+            "weight"
           ]
         }
       }
@@ -128,8 +127,7 @@
           },
           "required": [
             "address",
-            "weight",
-            "volume"
+            "weight"
           ]
         }
       }
@@ -138,7 +136,7 @@
     "scheduler": [],
     "webhook": []
   },
-  "description": "输入完整收货地址、重量（公斤）和体积（立方米），使用项目绑定账号分别查询融辉、韵达、百世的本次报价，并保留各平台失败原因。",
+  "description": "输入完整收货地址和重量（公斤），可填写体积（立方米）；省略体积时使用0.1立方米。使用项目绑定账号分别查询融辉、韵达、百世本次报价，并保留各平台失败原因。",
   "host_api": {
     "maximum_exclusive": "3.0.0",
     "minimum": "2.0.0"
@@ -172,7 +170,7 @@
     "collections": [],
     "kv": false
   },
-  "version": "1.0.1",
+  "version": "1.0.2",
   "http_requests": [
     {
       "name": "ronghui_destination_name",

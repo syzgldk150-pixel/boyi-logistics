@@ -31,8 +31,8 @@ def providers(**overrides):
     return {"ronghui": provider, "yunda": provider, "best": provider, **overrides}
 
 
-@pytest.mark.parametrize("field", ["address", "weight", "volume"])
-def test_all_quote_inputs_are_required(field):
+@pytest.mark.parametrize("field", ["address", "weight"])
+def test_address_and_weight_are_required(field):
     value = dict(INPUT)
     del value[field]
     with pytest.raises(QuoteError):
@@ -48,8 +48,30 @@ def test_weight_and_volume_are_positive_finite_numbers(field, value):
 
 def test_input_preserves_small_volume_without_money_rounding():
     assert quote_inputs(INPUT)["volume"] == "0.001"
+    assert "volume_defaulted" not in quote_inputs(INPUT)
     with pytest.raises(QuoteError):
         quote_inputs({**INPUT, "account_id": "synthetic-override"})
+
+
+def test_omitted_volume_uses_plugin_default_and_records_it():
+    request = quote_inputs({"address": INPUT["address"], "weight": INPUT["weight"]})
+    assert request == {"address": INPUT["address"], "weight": "100", "volume": "0.1", "volume_defaulted": True}
+
+
+def test_defaulted_volume_reaches_all_providers_and_returned_request():
+    requests = []
+
+    def capturing_provider(client, request):
+        requests.append(dict(request))
+        return provider(client, request)
+
+    result = run(broker, {"address": INPUT["address"], "weight": INPUT["weight"]},
+                 providers={key: capturing_provider for key in providers()})
+    assert result["status"] == "SUCCESS"
+    assert len(requests) == 3
+    assert all(request == result["data"]["request"] for request in requests)
+    assert result["data"]["request"]["volume"] == "0.1"
+    assert result["data"]["request"]["volume_defaulted"] is True
 
 
 def test_money_does_not_replace_missing_amount_with_zero():

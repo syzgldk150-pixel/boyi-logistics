@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 
 PLUGIN_ID = 'quote_prices_v2'
-PLUGIN_VERSION = '1.0.1'
+PLUGIN_VERSION = '1.0.2'
 SERVICE_NAME = 'plugin.quote_prices_v2.quote@1'
 _REQUEST_FIELDS = {
     "schema_version",
@@ -103,7 +103,7 @@ def main() -> int:
             "data": {},
             "meta": _meta(record_count=0),
             "warnings": [],
-            "error": {"code": "INVALID_REQUEST", "message": "报价请求无效，请提供完整地址、重量（公斤）和体积（立方米）"},
+            "error": {"code": "INVALID_REQUEST", "message": "报价请求无效，请提供完整地址和有效重量（公斤）；填写体积时必须大于0"},
         }
     json.dump(result, sys.stdout, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return 0

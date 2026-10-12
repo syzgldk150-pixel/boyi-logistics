@@ -58,6 +58,21 @@ class FeishuMessageHandlerTests(unittest.TestCase):
             },
         )
 
+    def test_price_request_empty_optional_volume_remains_omitted(self):
+        self.assertEqual(parse_price_request("测试市测试路1号，1000， "), {
+            "address": "测试市测试路1号", "weight": 1000.0,
+        })
+
+    def test_price_request_invalid_fields_are_not_reinterpreted_as_omitted_volume(self):
+        for fields in ("1000，0", "1000，-1", "1000，abc", "1000，nan", "0，1", "，1", "1000，30*23*103"):
+            with self.subTest(fields=fields):
+                self.assertIsNone(parse_price_request("测试市测试路1号，" + fields))
+
+    def test_price_request_address_commas_keep_optional_volume(self):
+        self.assertEqual(parse_price_request("测试省测试市，测试路1号，1000"), {
+            "address": "测试省测试市,测试路1号", "weight": 1000.0,
+        })
+
     def test_price_request_with_volume_supports_prefix(self):
         request = parse_price_request(
             "报价：武汉市黄陂区横店街天阳路1号惠强科技园三号楼5层巴思川食品有限公司，1055，0.3"

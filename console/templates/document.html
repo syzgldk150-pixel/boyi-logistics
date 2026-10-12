@@ -877,7 +877,7 @@
           <i data-feather="bar-chart-2"></i> 比价
         </button>
       </div>
-      <div class="manual-quote-summary" data-quote-summary>填写收件地址、重量、体积和送货方式后点击比价。</div>
+      <div class="manual-quote-summary" data-quote-summary>填写收件地址、重量和送货方式后点击比价；体积选填，不填按 0.1 m³ 报价。</div>
       <div class="manual-quote-results" data-quote-results>
         <article class="manual-quote-item">
           <div class="manual-quote-main">
@@ -1737,21 +1737,25 @@
       }).join("");
       window.ConsoleUI?.refreshIcons?.();
     };
-    const readQuoteRequest = () => ({
-      receiver_address: manualFieldValue("receiver_address"),
-      weight_kg: manualFieldValue("weight_kg"),
-      volume_m3: manualFieldValue("volume_m3"),
-      delivery_method: manualFieldValue("delivery_method"),
-    });
+    const readQuoteRequest = () => {
+      const request = {
+        receiver_address: manualFieldValue("receiver_address"),
+        weight_kg: manualFieldValue("weight_kg"),
+        delivery_method: manualFieldValue("delivery_method"),
+      };
+      const volume = manualFieldValue("volume_m3");
+      if (volume) request.volume_m3 = volume;
+      return request;
+    };
     const validateQuoteRequest = (payload) => {
       const missing = [];
       if (!payload.receiver_address) missing.push("收件地址");
       if (!payload.weight_kg) missing.push("重量 kg");
-      if (!payload.volume_m3) missing.push("体积 m³");
       if (!payload.delivery_method) missing.push("送货方式");
       if (missing.length) return `请先填写：${missing.join("、")}`;
       if (Number.isNaN(Number(payload.weight_kg)) || Number(payload.weight_kg) <= 0) return "重量 kg 必须是大于 0 的数字。";
-      if (Number.isNaN(Number(payload.volume_m3)) || Number(payload.volume_m3) <= 0) return "体积 m³ 必须是大于 0 的数字。";
+      if (document.getElementById("field_volume_m3")?.validity?.badInput ||
+          ("volume_m3" in payload && (!Number.isFinite(Number(payload.volume_m3)) || Number(payload.volume_m3) <= 0))) return "体积 m³ 必须是大于 0 的数字。";
       return "";
     };
     const calculateQuoteOptions = async () => {
