@@ -2738,7 +2738,11 @@ async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str, con
         return False
     if quote_result:
         for message in format_quote_plugin_messages(result):
-            await _reply_text(receive_id, message, reply_type="quote_plugin_result")
+            # Long platform service areas can exceed a message by themselves.
+            # At most 800 Unicode characters fit the existing 3500-byte splitter.
+            lines = [line[pos:pos + 800] for line in message.split("\n")
+                     for pos in range(0, max(len(line), 1), 800)]
+            await _reply_split_lines(receive_id, lines, reply_type="quote_plugin_result")
         return True
     if conversation_target is not None and result.get("selection_preview"):
         await _reply_text(

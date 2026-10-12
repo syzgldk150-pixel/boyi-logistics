@@ -27,6 +27,13 @@ class FakeClient:
                 "SITE_NAME": "测试派件网点", "SITE_TYPE": "一级网点", "LEVELS": "一级网点",
                 "SUPERIOR_FINANCE_CENTER_CODE": "DF-TEST", "SUPERIOR_FINANCE_CENTER": "测试派件财务中心",
             }],
+            "ronghui_site_info": [{
+                "SITE_CODE": "DS-TEST", "SITE_NAME": "测试派件网点", "ADDRESS": "测试路88号",
+                "PHONE": "010-00000001", "MANAGER_PHONE": "010-00000002",
+                "DISPATCH_RANGE": "测试街道", "SPECSERVICE_RANGE": "测试园区需预约",
+                "NOT_DISPATCH_RANGE": "测试山村", "EXCEED_TOWN": "测试镇",
+                "EXCEED_TOWN_DETAIL": "测试镇须联系网点确认费用", "TIME_OF_ARRIVAL": "隔日",
+            }],
             "ronghui_send_site": [{"SITE_CODE": "S-TEST", "SITE_NAME": "测试寄件网点", "PROVINCE": "测试省", "SUPERIOR_FINANCE_CENTER_CODE": "SF-TEST", "SUPERIOR_FINANCE_CENTER": "测试寄件财务中心"}],
             "ronghui_send_center": [{"SITE_CODE": "SC-TEST", "SITE_NAME": "测试寄件中心"}],
             "ronghui_destination_hub": [],
@@ -43,7 +50,10 @@ class FakeClient:
 
     def request(self, name, body):
         self.calls.append((name, copy.deepcopy(body)))
-        return copy.deepcopy(self.responses[name])
+        response = self.responses[name]
+        if isinstance(response, Exception):
+            raise response
+        return copy.deepcopy(response)
 
 
 def test_quote_matches_live_contract_not_retired_price_procedure():
@@ -140,8 +150,83 @@ def test_destination_delivery_mode_constraints(level, mode):
 def test_required_special_service_is_not_guessed(level):
     client = FakeClient()
     client.responses["ronghui_destination"][0]["LEVELS"] = level
-    with pytest.raises(QuoteError, match="专属配送服务"):
+    with pytest.raises(QuoteError, match="专属配送服务") as caught:
         quote(client, INPUT)
+    assert "匹配网点：测试派件网点" in caught.value.details
+    assert "特殊区域：测试园区需预约" in caught.value.details
+    assert not any(name == "ronghui_quote" for name, _ in client.calls)
+
+
+def test_site_details_are_bound_to_the_same_underling_as_each_quote():
+    client = FakeClient()
+    result = quote(client, INPUT)
+    assert result["site_name"] == "测试派件网点"
+    assert {row["site_name"] for row in result["quotes"]} == {"测试派件网点"}
+    assert result["details"] == [
+        "匹配网点：测试派件网点", "门店地址：测试路88号", "查询电话：010-00000001",
+        "经理电话：010-00000002", "派送范围：测试街道", "特殊区域：测试园区需预约",
+        "不派送范围：测试山村", "超远乡镇：测试镇", "超远乡镇详情：测试镇须联系网点确认费用",
+        "到件时效：隔日",
+    ]
+    assert ("ronghui_site_info", {"SITE_CODE": "DS-TEST"}) in client.calls
+
+
+def test_second_level_details_use_original_page_underling_not_finance_centre():
+    client = FakeClient()
+    client.responses["ronghui_destination"][0].update({
+        "SITE_TYPE": "二级网点", "ENABLE_ACCOUNT_PURPOSE": 1, "BL_PURPOSE_SITE": 1,
+        "SUPERIOR_SITE_CODE": "US-TEST", "SUPERIOR_SITE": "测试所属网点",
+        "FINANCE_CENTER_CODE": "UF-TEST", "FINANCE_CENTER": "测试财务中心",
+    })
+    client.responses["ronghui_site_info"][0].update(SITE_CODE="US-TEST", SITE_NAME="测试所属网点")
+    result = quote(client, INPUT)
+    assert result["site_name"] == "测试所属网点"
+    assert ("ronghui_site_info", {"SITE_CODE": "US-TEST"}) in client.calls
+
+
+@pytest.mark.parametrize("value", [None, "", "  ", "0", 0, 0.0, False])
+def test_missing_site_field_is_no_data_not_no_special_area(value):
+    client = FakeClient()
+    client.responses["ronghui_site_info"][0]["SPECSERVICE_RANGE"] = value
+    result = quote(client, INPUT)
+    assert "特殊区域：无数据" in result["details"]
+    assert len(result["quotes"]) == 6
+
+
+def test_explicit_no_special_area_is_displayed_only_when_source_says_so():
+    client = FakeClient()
+    client.responses["ronghui_site_info"][0]["SPECSERVICE_RANGE"] = "无"
+    assert "特殊区域：无" in quote(client, INPUT)["details"]
+
+
+@pytest.mark.parametrize("response,reason", [
+    ([], "融辉网点资料无数据"),
+    ([{"SITE_CODE": "OTHER-TEST", "ADDRESS": "不得显示的其他网点地址"}], "融辉网点资料与匹配网点不一致"),
+    ([{"SITE_CODE": "DS-TEST"}, {"SITE_CODE": "DS-TEST"}], "融辉网点资料匹配不唯一"),
+    ({"success": False}, "融辉网点资料返回格式无效"),
+    (RuntimeError("BLOCKED_LOGIN"), "账号未登录或登录已失效"),
+    (RuntimeError("transport-secret-must-not-appear"), "平台资料请求失败，请稍后重试"),
+])
+def test_site_detail_failure_keeps_valid_quotes_without_substituting_data(response, reason):
+    client = FakeClient()
+    client.responses["ronghui_site_info"] = response
+    result = quote(client, INPUT)
+    assert len(result["quotes"]) == 6
+    assert all(row["amount"] == "111.00" for row in result["quotes"])
+    assert "门店地址：无数据" in result["details"]
+    assert "特殊区域：无数据" in result["details"]
+    assert f"网点资料查询失败：{reason}" in result["details"]
+    assert "不得显示" not in str(result["details"])
+    assert "transport-secret" not in str(result["details"])
+
+
+def test_quote_calculation_failure_keeps_matched_site_details():
+    client = FakeClient()
+    client.responses["ronghui_quote"] = {"success": False}
+    with pytest.raises(QuoteError, match="未成功") as caught:
+        quote(client, INPUT)
+    assert "查询电话：010-00000001" in caught.value.details
+    assert "特殊区域：测试园区需预约" in caught.value.details
 
 
 @pytest.mark.parametrize("value", [None, False, 0, -1, "NaN", "Infinity"])

@@ -33,6 +33,12 @@ _FEE_FIELDS = {
     "OTHER_FEE3", "SUM_OTHER_FEE", "PICKUP_FEE_VALUE", "PAY_SUBSIDY_FEE",
 }
 _PRODUCTS = (("001", "融惠达"), ("002", "精准零担"), ("003", "融安达"), ("004", "融速达"))
+_SITE_FIELDS = (
+    ("ADDRESS", "门店地址"), ("PHONE", "查询电话"), ("MANAGER_PHONE", "经理电话"),
+    ("DISPATCH_RANGE", "派送范围"), ("SPECSERVICE_RANGE", "特殊区域"),
+    ("NOT_DISPATCH_RANGE", "不派送范围"), ("EXCEED_TOWN", "超远乡镇"),
+    ("EXCEED_TOWN_DETAIL", "超远乡镇详情"), ("TIME_OF_ARRIVAL", "到件时效"),
+)
 
 
 def _text(row, key):
@@ -156,6 +162,36 @@ def _dispatch(destination):
     return result
 
 
+def _site_details(client, destination):
+    # The live "查看派件网点信息" page queries its selected underling site,
+    # which can differ from the finance/dispatch centre used for pricing.
+    dispatch = _dispatch(destination)
+    site_code = dispatch["DISPATCH_UNDERLING_SITE_CODE"]
+    site_name = dispatch["DISPATCH_UNDERLING_SITE"]
+    details = [f"匹配网点：{site_name}"]
+    row, failure = {}, ""
+    try:
+        row = _query(client, "ronghui_site_info", {"SITE_CODE": site_code}, "网点资料")
+        if _text(row, "SITE_CODE") != site_code:
+            raise QuoteError("融辉网点资料与匹配网点不一致")
+    except QuoteError as exc:
+        row, failure = {}, str(exc)
+    except Exception as exc:
+        # Do not expose raw transport errors or substitute another site's data.
+        failure = ("账号未登录或登录已失效" if str(exc) in {"BLOCKED_LOGIN", "AUTH_REQUIRED"}
+                   else "平台资料请求失败，请稍后重试")
+    for key, label in _SITE_FIELDS:
+        value = row.get(key)
+        if isinstance(value, (str, int)) and not isinstance(value, bool):
+            value = str(value).strip()
+        else:
+            value = ""
+        details.append(f"{label}：{value if value and value != '0' else '无数据'}")
+    if failure:
+        details.append(f"网点资料查询失败：{failure}")
+    return site_name, details
+
+
 def _base(client, request, context, area, destination):
     site = context["loginSiteCode"]
     sender = _query(client, "ronghui_send_site", {"SITE_CODE": site}, "寄件网点")
@@ -258,7 +294,19 @@ def quote(client, request):
     context = client.context()
     context = {key: _text(context, key) for key in ("loginEmpName", "loginEmpCode", "loginSiteName", "loginSiteCode")}
     area, destination = _destination(client, request, context)
-    base, settlement = _base(client, request, context, area, destination)
+    site_name, details = _site_details(client, destination)
+    try:
+        base, settlement = _base(client, request, context, area, destination)
+        quotes = _quotes(client, destination, base, settlement, site_name)
+    except QuoteError as exc:
+        raise QuoteError(str(exc), details=details) from None
+    return {
+        "quotes": quotes, "site_name": site_name, "details": details,
+        "warnings": ["按普通货物、平台当前最低保价计算；上楼、进仓等附加服务须另行核实"],
+    }
+
+
+def _quotes(client, destination, base, settlement, site_name):
     level = _text(destination, "LEVELS")
     modes = ["自提"] if level == "自提部" else ["派送"] if level in {"直派部", "分拨服务大厅"} else ["自提", "派送"]
     if level in {"分拨服务大厅", "分拨代派部"}:
@@ -275,5 +323,6 @@ def quote(client, request):
             payload = dict(base, PRODUCT_CODE=code, PRODUCT_TYPE=name, DISPATCH_MODE=mode, INSURANCE=_number(minimum))
             calculated = _procedure(client, "ronghui_quote", "P_CALC_CLIENT_PRICE_SHOW4", [payload])
             row = _one(calculated.get("data"), "费用计算")
-            quotes.append({"label": f"{name}（{mode}）", "product_name": name, "delivery_method": mode, "amount": _sum_fees(row)})
-    return {"quotes": quotes, "warnings": ["按普通货物、平台当前最低保价计算；上楼、进仓等附加服务须另行核实"]}
+            quotes.append({"label": f"{name}（{mode}）", "product_name": name, "delivery_method": mode,
+                           "amount": _sum_fees(row), "site_name": site_name})
+    return quotes

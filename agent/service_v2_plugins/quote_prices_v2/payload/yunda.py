@@ -1,4 +1,4 @@
-"""Yunda's logged-in waybill-page quote protocol (verified 2026-10-11).
+"""Yunda's logged-in waybill-page quote protocol (verified 2026-10-12).
 
 Only calculation endpoints are used. The fresh page supplies account context and
 ordinary-shipment defaults; no waybill is created and no old quote is reused.
@@ -134,7 +134,73 @@ def _success(response, label):
     return response
 
 
-def _address(client, form, request, mode):
+def _detail_text(value):
+    if value is None or value == "":
+        return "无数据"
+    if not isinstance(value, str):
+        return "无数据（平台字段格式异常）"
+    return value.strip() or "无数据"
+
+
+def _site_details(row):
+    # The live entry page displays these fields from the address matcher.
+    details = [
+        f"{label}：{_detail_text(row.get(field))}"
+        for label, field in (
+            ("匹配网点", "target_center"), ("网点地址", "SiteAddress"),
+            ("查件电话", "qry_phone"), ("客服电话", "cxdh"),
+            ("派送范围", "remark"), ("特殊区域", "special_range"),
+        )
+    ]
+    for label, field in (
+        ("业务电话", "sale_phone"), ("经理电话", "site_manager_phone"),
+        ("目的分拨", "business_center"), ("覆盖类型", "CoverageName"),
+        ("派送情况", "SendMsg"), ("乡镇派送说明", "TownMsg"),
+        ("服务限制", "servicemsg"), ("重量限制", "LimitingMsg"),
+        ("特殊区域提示", "SpecialAreaMsg"), ("大票货服务范围", "ServiceScope"),
+        ("派送时效", "deliverprescription"),
+    ):
+        if row.get(field) not in (None, ""):
+            details.append(f"{label}：{_detail_text(row[field])}")
+    areas = row.get("SpecialArea")
+    if areas not in (None, {}, []):
+        if not isinstance(areas, dict):
+            details.append("特殊区域参考：无数据（平台字段格式异常）")
+        else:
+            # The page lists every candidate and highlights nonzero Similarity.
+            # A candidate is not evidence that this address is in that area.
+            for name, area in areas.items():
+                if not isinstance(area, dict):
+                    details.append("特殊区域参考：无数据（平台字段格式异常）")
+                    continue
+                details.append(
+                    f"特殊区域参考：{_detail_text(name)}"
+                    f"（平台相似度：{_detail_text(area.get('Similarity'))}）；"
+                    f"说明：{_detail_text(area.get('remark'))}"
+                )
+    return details
+
+
+def _match_details(matches):
+    groups = []
+    for delivery, match in matches:
+        if not match:
+            continue
+        same = next((group for group in groups if (
+            match["code"] and match == group[1]
+        )), None)
+        if same is None:
+            groups.append(([delivery], match))
+        else:
+            same[0].append(delivery)
+    details = []
+    for deliveries, match in groups:
+        first, *rest = match["details"]
+        details.extend(["/".join(deliveries) + first, *rest])
+    return details
+
+
+def _address(client, form, request, mode, match):
     body = {
         "BuyerProvince": "", "BuyerCity": "", "BuyerArea": "",
         "CreatedDotCode": form["CreatedDotCode"], "IsCod": form["IsCod"],
@@ -149,6 +215,13 @@ def _address(client, form, request, mode):
     if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
         raise QuoteError("韵达地址未匹配唯一目的网点，请补充完整地址")
     row = rows[0]
+    # Retain this exact mode's matched site even when its service is restricted.
+    match.update({
+        "code": str(row["target_center_code"]) if isinstance(row.get("target_center_code"), (str, int))
+        and not isinstance(row.get("target_center_code"), bool) else "",
+        "site_name": row["target_center"].strip() if isinstance(row.get("target_center"), str) else "",
+        "details": _site_details(row),
+    })
     if str(row.get("info")) not in {"0", "1"}:
         raise QuoteError("韵达目的网点存在服务限制，请在原页核实")
     code = _scalar(row.get("target_center_code"), "目的网点")
@@ -192,11 +265,11 @@ def _amount(response, form):
     return _page_number(str(float(total) + float(message)))
 
 
-def _quote_mode(client, page, base, request, delivery):
+def _quote_mode(client, page, base, request, delivery, match):
     form = dict(base)
     form["ServiceType"] = page.option("ServiceType", delivery)
     form["ShippingMethods"] = page.option("ShippingMethods", "送货") if delivery == "派送" else ""
-    form.update(_address(client, form, request, form["ServiceType"]))
+    form.update(_address(client, form, request, form["ServiceType"], match))
     form.update(GrossWeight=request["weight"], Volume=request["volume"])
     weight = _success(client.request("yunda_weight", {
         "current_time": form["current_time"], "vol": request["volume"],
@@ -237,17 +310,29 @@ def _quote_mode(client, page, base, request, delivery):
     if not minimum <= money(form["InsuredAmount"]) <= maximum:
         form["InsuredAmount"] = format(minimum, "f")
     result = client.request("yunda_price", {key: value for key, value in form.items() if key not in LOCAL_ONLY})
-    return {"label": "韵达" + delivery, "amount": _amount(result, form), "delivery_method": delivery}
+    quote = {"label": "韵达" + delivery, "amount": _amount(result, form), "delivery_method": delivery}
+    if match["site_name"]:
+        quote["site_name"] = match["site_name"]
+    return quote
 
 
 def quote(client, request):
     page, base = _context(client.request("yunda_entry", text=True))
-    quotes, warnings = [], []
+    quotes, warnings, matches = [], [], []
     for delivery in ("自提", "派送"):
+        match = {}
+        matches.append((delivery, match))
         try:
-            quotes.append(_quote_mode(client, page, base, request, delivery))
+            quotes.append(_quote_mode(client, page, base, request, delivery, match))
         except QuoteError as exc:
             warnings.append(f"韵达{delivery}：{exc}")
+    details = _match_details(matches)
     if not quotes:
-        raise QuoteError("；".join(warnings))
-    return {"quotes": quotes, "warnings": warnings}
+        raise QuoteError("；".join(warnings), details=details)
+    result = {"quotes": quotes, "warnings": warnings, "details": details}
+    identities = {(match.get("code"), match.get("site_name")) for _, match in matches}
+    if len(identities) == 1:
+        code, name = identities.pop()
+        if code and name:
+            result["site_name"] = name
+    return result

@@ -1601,16 +1601,23 @@ def _unavailable_quote(
 def _plugin_provider_quote(
     result: Any, *, provider: str, label: str, delivery_method: str,
 ) -> dict[str, Any]:
+    provider_details = result.get("details") if isinstance(result, dict) else None
+    provider_details = [item for item in provider_details if isinstance(item, str) and item.strip()] if isinstance(provider_details, list) else []
+    provider_site = _clean_quote_text(result.get("site_name")) if isinstance(result, dict) else ""
+    warnings = result.get("warnings") if isinstance(result, dict) else None
+    warnings = [item for item in warnings if isinstance(item, str) and item.strip()] if isinstance(warnings, list) else []
+
     def unavailable(error: str, status: str = "unavailable") -> dict[str, Any]:
         return _unavailable_quote(provider=provider, label=label,
-            delivery_method=delivery_method, error=error, status=status)
+            delivery_method=delivery_method, error=error, status=status,
+            details=provider_details + warnings, site_name=provider_site)
 
     if not isinstance(result, dict) or result.get("status") != "success":
         return unavailable(_quote_error_text(result, f"{label}无数据。"), _quote_error_status(result))
     rows = result.get("quotes")
     if not isinstance(rows, list) or not rows:
         return unavailable(f"{label}未返回报价明细。")
-    candidates: list[tuple[Decimal, str, str]] = []
+    candidates: list[tuple[Decimal, str, str, str]] = []
     for row in rows:
         if not isinstance(row, dict) or row.get("delivery_method") not in {"自提", "派送"}:
             return unavailable(f"{label}报价送货方式缺失或无效。", "invalid_price")
@@ -1623,14 +1630,14 @@ def _plugin_provider_quote(
         product_label = _clean_quote_text(row.get("label"))
         if not product_label:
             return unavailable(f"{label}报价产品名称缺失。", "invalid_price")
-        candidates.append((amount, _clean_quote_text(row.get("product_name")) or product_label, product_label))
+        candidates.append((amount, _clean_quote_text(row.get("product_name")) or product_label,
+            product_label, _clean_quote_text(row.get("site_name")) or provider_site))
     if not candidates:
         return unavailable(f"{label}当前送货方式无可用报价：{delivery_method}")
-    amount, product_name, _ = min(candidates, key=lambda item: item[0])
-    details = [f"{name}={_quote_money_text(value)}" for value, _, name in sorted(candidates, key=lambda item: item[0])]
-    warnings = result.get("warnings")
-    if isinstance(warnings, list):
-        details.extend(item for item in warnings if isinstance(item, str) and item.strip())
+    amount, product_name, _, site_name = min(candidates, key=lambda item: item[0])
+    details = [f"{name}={_quote_money_text(value)}" for value, _, name, _ in sorted(candidates, key=lambda item: item[0])]
+    details.extend(provider_details)
+    details.extend(warnings)
     return {
         "provider": provider,
         "label": label,
@@ -1638,7 +1645,7 @@ def _plugin_provider_quote(
         "price": _quote_money_text(amount),
         "product_name": product_name,
         "delivery_method": delivery_method,
-        "site_name": _clean_quote_text(result.get("site_name")),
+        "site_name": site_name,
         "error": "",
         "details": details,
         "_price_decimal": amount,

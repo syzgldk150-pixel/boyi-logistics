@@ -51,14 +51,21 @@ def run(broker, arguments, *, providers=None):
     successes = 0
     for key, label in PLATFORMS:
         client = QuoteClient(broker, key + "_quote")
+        result = None
         try:
-            result = _checked_result(providers[key](client, request))
+            result = providers[key](client, request)
             if not client.refs:
                 raise QuoteError("平台查询缺少本次请求凭证")
+            result = _checked_result(result)
             data[key] = result
             successes += 1
         except QuoteError as exc:
             data[key] = {"status": "failed", "quotes": [], "error": str(exc)}
+            details = exc.details
+            if not details and client.refs and isinstance(result, dict):
+                details = result.get("details")
+            if isinstance(details, list) and details:
+                data[key]["details"] = [line for line in details if isinstance(line, str) and line.strip()]
         except Exception as exc:
             # The broker supplies closed error codes. Never expose raw bodies,
             # URLs, account state or unexpected exception strings to the chat.

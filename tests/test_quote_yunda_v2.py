@@ -12,6 +12,9 @@ from service_v2_plugins.quote_prices_v2.payload.common import QuoteError
 REQUEST = {"address": "测试省测试市测试区虚构路1号", "weight": "100", "volume": "0.001"}
 SITE = {
     "info": "0", "target_center_code": "fictional-destination", "Coverage": "1",
+    "target_center": "虚构网点甲", "SiteAddress": "测试市虚构站点路1号",
+    "qry_phone": "000-00000001", "cxdh": "000-00000002",
+    "remark": "测试区内", "special_range": "虚构园区需预约",
     "BuyerProvince": "测试省", "BuyerCity": "测试市", "BuyerArea": "测试区",
     "BuyerProvinceCode": "fictional-province", "BuyerCityCode": "fictional-city",
     "BuyerAreaCode": "fictional-area", "TownCode": "fictional-town",
@@ -82,8 +85,14 @@ def test_fresh_page_defaults_and_live_responses_determine_both_quotes():
     result = yunda.quote(client, REQUEST)
     assert result["warnings"] == []
     assert result["quotes"] == [
-        {"label": "韵达自提", "amount": "12.39", "delivery_method": "自提"},
-        {"label": "韵达派送", "amount": "12.39", "delivery_method": "派送"},
+        {"label": "韵达自提", "amount": "12.39", "delivery_method": "自提", "site_name": "虚构网点甲"},
+        {"label": "韵达派送", "amount": "12.39", "delivery_method": "派送", "site_name": "虚构网点甲"},
+    ]
+    assert result["site_name"] == "虚构网点甲"
+    assert result["details"] == [
+        "自提/派送匹配网点：虚构网点甲", "网点地址：测试市虚构站点路1号",
+        "查件电话：000-00000001", "客服电话：000-00000002",
+        "派送范围：测试区内", "特殊区域：虚构园区需预约",
     ]
     assert [call[0] for call in client.calls].count("yunda_entry") == 1
     prices = [body for name, body, _ in client.calls if name == "yunda_price"]
@@ -197,3 +206,92 @@ def test_login_failure_is_not_retried_or_exposed_as_a_quote():
     with pytest.raises(RuntimeError, match="BLOCKED_LOGIN"):
         yunda.quote(client, REQUEST)
     assert len(client.calls) == 2
+
+
+def test_different_mode_sites_keep_their_own_details_and_quote_names():
+    other = {
+        **SITE, "target_center_code": "fictional-other", "target_center": "虚构网点乙",
+        "SiteAddress": "测试市虚构站点路2号", "qry_phone": "000-00000003",
+    }
+    client = Client(replacements={("yunda_address", "111"): {"info": 1, "data": {"other": other}}})
+    result = yunda.quote(client, REQUEST)
+    assert "site_name" not in result
+    assert [item["site_name"] for item in result["quotes"]] == ["虚构网点甲", "虚构网点乙"]
+    details = result["details"]
+    split = details.index("派送匹配网点：虚构网点乙")
+    assert "网点地址：测试市虚构站点路1号" in details[:split]
+    assert "网点地址：测试市虚构站点路2号" not in details[:split]
+    assert "查件电话：000-00000003" in details[split:]
+    assert "查件电话：000-00000001" not in details[split:]
+
+
+def test_same_site_with_different_service_details_is_not_combined():
+    other = {**SITE, "special_range": "测试区北侧不派送"}
+    result = yunda.quote(Client(replacements={
+        ("yunda_address", "111"): {"info": 1, "data": {"a": other}},
+    }), REQUEST)
+    assert "自提匹配网点：虚构网点甲" in result["details"]
+    assert "派送匹配网点：虚构网点甲" in result["details"]
+    assert "特殊区域：虚构园区需预约" in result["details"]
+    assert "特殊区域：测试区北侧不派送" in result["details"]
+
+
+def test_missing_site_fields_are_explicit_without_replacing_a_valid_price():
+    site = {key: value for key, value in SITE.items() if key not in {
+        "target_center", "SiteAddress", "qry_phone", "cxdh", "remark", "special_range",
+    }}
+    result = yunda.quote(Client(replacements={"yunda_address": {"info": 1, "data": {"a": site}}}), REQUEST)
+    assert len(result["quotes"]) == 2
+    assert "site_name" not in result
+    assert all("site_name" not in item for item in result["quotes"])
+    assert result["details"] == [
+        "自提/派送匹配网点：无数据", "网点地址：无数据", "查件电话：无数据",
+        "客服电话：无数据", "派送范围：无数据", "特殊区域：无数据",
+    ]
+
+
+def test_special_area_candidates_preserve_similarity_and_are_not_called_matches():
+    site = {**SITE, "SpecialAreaMsg": "本次地址需核实园区门禁", "SpecialArea": {
+        "虚构园区甲": {"Similarity": "16.67%", "remark": "预约后派送", "charge_type": 1},
+        "虚构园区乙": {"Similarity": "0.00%", "remark": "特殊服务另询", "charge_type": 0},
+    }}
+    result = yunda.quote(Client(replacements={"yunda_address": {"info": 1, "data": {"a": site}}}), REQUEST)
+    assert "特殊区域提示：本次地址需核实园区门禁" in result["details"]
+    assert [line for line in result["details"] if line.startswith("特殊区域参考：")] == [
+        "特殊区域参考：虚构园区甲（平台相似度：16.67%）；说明：预约后派送",
+        "特殊区域参考：虚构园区乙（平台相似度：0.00%）；说明：特殊服务另询",
+    ]
+
+
+def test_malformed_optional_details_are_reported_without_losing_prices():
+    site = {**SITE, "SiteAddress": {"unknown": "must not stringify"}, "SpecialArea": ["bad"]}
+    result = yunda.quote(Client(replacements={"yunda_address": {"info": 1, "data": {"a": site}}}), REQUEST)
+    assert len(result["quotes"]) == 2
+    assert "网点地址：无数据（平台字段格式异常）" in result["details"]
+    assert "特殊区域参考：无数据（平台字段格式异常）" in result["details"]
+    assert "must not stringify" not in str(result)
+
+
+def test_restricted_site_details_survive_failure_of_both_modes():
+    site = {**SITE, "info": "3", "servicemsg": "虚构站点暂停服务", "LimitingMsg": "虚构道路限制"}
+    client = Client(replacements={"yunda_address": {"info": 1, "data": {"a": site}}})
+    with pytest.raises(QuoteError, match="服务限制") as caught:
+        yunda.quote(client, REQUEST)
+    assert "自提/派送匹配网点：虚构网点甲" in caught.value.details
+    assert "服务限制：虚构站点暂停服务" in caught.value.details
+    assert "重量限制：虚构道路限制" in caught.value.details
+    assert not any(name == "yunda_price" for name, _, _ in client.calls)
+
+
+def test_failed_price_keeps_the_failed_modes_own_site_details():
+    site = {**SITE, "target_center_code": "fictional-other", "target_center": "虚构网点乙"}
+    client = Client(replacements={
+        ("yunda_address", "111"): {"info": 1, "data": {"other": site}},
+        ("yunda_price", "111"): {"info": 0},
+    })
+    result = yunda.quote(client, REQUEST)
+    assert len(result["quotes"]) == 1
+    assert result["quotes"][0]["site_name"] == "虚构网点甲"
+    assert "site_name" not in result
+    assert "派送匹配网点：虚构网点乙" in result["details"]
+    assert "费用计算失败" in result["warnings"][0]

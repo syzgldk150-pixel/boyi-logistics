@@ -265,3 +265,23 @@ def test_console_replay_preserves_omitted_volume_from_original_request():
         service.invoke_console("quote-instance", request_id="request-one", actor=actor,
                                contribution_id="quote", runtime_inputs={**inputs, "volume": 0.1})
     assert rejected.value.code == "IDEMPOTENCY_CONFLICT"
+
+
+def test_site_details_render_for_success_and_restricted_platform_without_losing_default_note():
+    details = ["匹配网点：测试网点", "网点地址：测试路1号", "联系电话：无数据", "特殊区域：测试园区需人工核实"]
+    result = {"result": {"data": {
+        "request": {"volume": "0.1", "volume_defaulted": True},
+        "ronghui": {"status": "success", "quotes": [{"label": "测试派送", "amount": "12.50"}],
+                    "details": details, "warnings": ["测试提醒"]},
+        "yunda": {"status": "failed", "error": "特殊区域暂不能自动报价", "details": details},
+        "best": {"status": "success", "quotes": [{"label": "测试自提", "amount": "10.00"}],
+                 "details": [None, {}, "", *details]},
+    }}}
+    messages = format_quote_plugin_messages(result)
+    for message in messages:
+        assert "\n".join(details) in message
+    assert "体积未填写，本次按0.1立方米计算。" in messages[0]
+    assert "测试派送：12.50元" in messages[0]
+    assert messages[0].endswith("提醒：测试提醒")
+    assert "报价失败：特殊区域暂不能自动报价" in messages[1]
+    assert "None" not in messages[2]

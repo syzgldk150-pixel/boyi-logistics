@@ -89,6 +89,29 @@ class ManualQuoteOptionsTests(unittest.TestCase):
         self.assertEqual("ronghui", payload["best_provider"])
         self.assertEqual(3, payload["available_count"])
 
+    def test_details_and_site_follow_selected_quote_and_preserve_failed_match(self):
+        details = ["派送匹配网点：测试派送站", "网点地址：测试路1号", "特殊区域：测试园区需核实"]
+        data = {"best": {"status": "success", "details": details, "quotes": [
+            {"label": "测试自提", "amount": "1.00", "delivery_method": "自提", "site_name": "测试自提站"},
+            {"label": "测试派送", "amount": "12.00", "delivery_method": "派送", "site_name": "测试派送站"},
+        ]}, "ronghui": {"status": "failed", "error": "特殊区域暂不能自动报价", "details": details}}
+        payload = build_manual_quote_options(plugin_result=data, delivery_method="送货")
+        quotes = {item["provider"]: item for item in payload["quotes"]}
+        self.assertEqual("测试派送站", quotes["best"]["site_name"])
+        self.assertEqual("12.00", quotes["best"]["price"])
+        for provider in ("best", "ronghui"):
+            for detail in details:
+                self.assertIn(detail, quotes[provider]["details"])
+        self.assertEqual("", quotes["ronghui"]["price"])
+
+    def test_selected_mode_failure_keeps_specific_provider_reason(self):
+        data = {"best": _provider(("测试自提", "10.00", "自提"),
+            warnings=["派送：测试特殊区域需核实"], details=["派送网点：测试网点"])}
+        result = build_manual_quote_options(plugin_result=data, delivery_method="派送")
+        best = next(item for item in result["quotes"] if item["provider"] == "best")
+        self.assertEqual("unavailable", best["status"])
+        self.assertEqual(["派送网点：测试网点", "派送：测试特殊区域需核实"], best["details"])
+
     def test_self_pickup_never_uses_dispatch_or_legacy_result(self):
         data = _data()
         data["best"] = _provider(("百世派送", "1.00", "派送"), ("百世自提", "50.00", "自提"))
@@ -195,6 +218,34 @@ eval(source.slice(start, source.indexOf("const calculateQuoteOptions =", start))
   volumeField.validity.badInput = false;
   fields.weight_kg = "";
   assert.notEqual(validateQuoteRequest(readQuoteRequest()), "");
+`);
+"""
+        result = subprocess.run([node, "--input-type=commonjs", "-e", script],
+            input=template, text=True, capture_output=True, check=False, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+    def test_browser_renders_all_site_details_with_html_escaping(self):
+        node = shutil.which("node") or shutil.which("node.exe")
+        if not node:
+            self.skipTest("Node.js is required for the quote rendering regression")
+        template = (CONSOLE_DIR / "templates/document.html").read_text(encoding="utf-8")
+        script = r"""
+const assert = require("node:assert/strict");
+const source = require("node:fs").readFileSync(0, "utf8");
+const quoteResults = {innerHTML:""};
+const quoteSummary = {textContent:"",classList:{toggle(){}}};
+const quoteProviderLabels = {best:"百世"};
+const window = {};
+const escapeStart = source.indexOf("const escapeHtml =");
+const renderStart = source.indexOf("const quoteStatusLabel =");
+eval(source.slice(escapeStart, source.indexOf("const manualFieldValue =", escapeStart)) +
+  source.slice(renderStart, source.indexOf("const readQuoteRequest =", renderStart)) + `
+  renderQuoteResults({quotes:[{provider:"best",status:"available",price:"10.00",
+    details:["网点：测试网点", "地址：测试路1号", "电话：无数据", "特殊区域：<img src=x onerror=alert(1)>"]}]});
+  assert.ok(quoteResults.innerHTML.includes("电话：无数据"));
+  assert.ok(quoteResults.innerHTML.includes("特殊区域：&lt;img src=x onerror=alert(1)&gt;"));
+  assert.ok(!quoteResults.innerHTML.includes("<img"));
 `);
 """
         result = subprocess.run([node, "--input-type=commonjs", "-e", script],

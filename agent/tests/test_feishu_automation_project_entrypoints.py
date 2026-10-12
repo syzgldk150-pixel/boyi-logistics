@@ -266,6 +266,30 @@ def test_quote_text_uses_verified_plugin_invocation_and_returns_three_platforms(
     assert [text for text, _ in replies[1:]] == ["融辉价格\n自提：10.00元", "韵达价格\n报价失败：当前未登录", "百世价格\n派送：20.00元"]
 
 
+def test_quote_long_site_coverage_is_sent_completely_in_bounded_messages():
+    long_detail = "特殊区域：" + "测试派送范围🧪" * 700
+    dispatcher = _FakeServiceV2FeishuDispatcher(result={
+        "success": True, "status": "COMPLETED", "result": {"data": {
+            "ronghui": {"status": "success", "quotes": [{"label": "自提", "amount": "10.00"}],
+                        "details": ["网点名称：测试网点", long_detail]},
+        }},
+    })
+    agent, replies = _FakeAgent(), []
+    with (
+        patch("feishu.bot.get_agent_core", return_value=agent),
+        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
+        patch.object(message_handler, "get_pending", return_value=None),
+        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
+    ):
+        _run_verified_text("示例市测试路1号，1000", event_id="event-quote-long-site")
+    messages = [text for text, _ in replies[1:]]
+    assert len(messages) > 3
+    assert all(len(text.encode("utf-8")) <= 3500 for text in messages)
+    assert long_detail in "".join(messages).replace("\n", "")
+    assert len(dispatcher.calls) == 1
+
+
 def test_quote_missing_volume_reaches_plugin_and_displays_its_default():
     dispatcher = _FakeServiceV2FeishuDispatcher(result={
         "success": True, "status": "COMPLETED",

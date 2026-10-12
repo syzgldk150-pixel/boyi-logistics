@@ -1788,6 +1788,10 @@ def format_quote_plugin_messages(result: dict[str, Any]) -> list[str]:
                 if amount.is_finite() and amount >= 0:
                     valid_quotes.append(f"{quote['label']}：{quote['amount']}元")
             lines.extend(valid_quotes or ["无数据：本次查询未返回有效报价金额。"])
+        if isinstance(provider, dict):
+            details = provider.get("details")
+            if isinstance(details, list):
+                lines.extend(detail for detail in details if isinstance(detail, str) and detail.strip())
             warnings = provider.get("warnings")
             if isinstance(warnings, list):
                 lines.extend(f"提醒：{warning}" for warning in warnings if isinstance(warning, str) and warning.strip())

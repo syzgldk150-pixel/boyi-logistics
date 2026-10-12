@@ -170,7 +170,7 @@
     "collections": [],
     "kv": false
   },
-  "version": "1.0.2",
+  "version": "1.0.3",
   "http_requests": [
     {
       "name": "ronghui_destination_name",
@@ -194,6 +194,18 @@
       "referer": "/widget/home",
       "query": {
         "id": "FIND_CREATE_BILL_DESTINATION"
+      }
+    },
+    {
+      "name": "ronghui_site_info",
+      "account_role": "ronghui_quote",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findAllByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_SITE_DISP_INFO"
       }
     },
     {

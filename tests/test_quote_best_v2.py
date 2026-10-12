@@ -33,8 +33,14 @@ class FakeClient:
                 "siteRelatedInfoVo": {
                     "addressThreeCanton": "测试省|测试市|测试区", "isBlindArea": False,
                     "parseCount": 37, "siteExceptionInterceptionVoList": [], "specialAreaList": [],
-                    "specialServiceName": "正常派送", "specialServiceVo": {"whetherChargeTownFee": False, "hasAddPrice": False},
-                    "parseSiteVo": {"id": 22}, "parseTownVo": {"id": 33},
+                    "specialServiceName": "正常派送", "specialServiceVo": {
+                        "whetherChargeTownFee": False, "hasAddPrice": False,
+                        "dispatchTimeLimitName": "测试次日", "specialServiceDisplay": "测试街道正常派送",
+                    },
+                    "parseSiteVo": {
+                        "id": 22, "name": "测试目的站", "location": "测试省测试市测试路2号",
+                        "phone": "测试客服电话", "salePhone": "测试业务电话", "dispatchRange": "测试街道",
+                    }, "parseTownVo": {"id": 33},
                     "cbSiteRouteVo": {"sendSiteId": 11, "dispSiteId": 22},
                 },
             }},
@@ -219,3 +225,148 @@ def test_request_does_not_copy_customer_metadata_from_parsed_address():
     quote(client, INPUT)
     serialized = json.dumps([body for name, body, _ in client.calls if name == "best_quote"], ensure_ascii=False)
     assert "测试姓名" not in serialized and "测试号码" not in serialized
+
+
+def test_best_details_include_current_matched_site_and_delivery_rules():
+    client = FakeClient()
+    result = quote(client, INPUT)
+    text = "\n".join(result["details"])
+    assert "网点：测试目的站" in text
+    assert "网点地址：测试省测试市测试路2号" in text
+    assert "联系电话：测试客服电话；手机：测试业务电话" in text
+    assert "覆盖范围：测试街道" in text
+    assert "覆盖方式：正常派送；时效：测试次日" in text
+    assert "服务说明：测试街道正常派送" in text
+    assert "特殊区域：未匹配到特殊区域" in text
+    assert "站点异常：无" in text
+    assert all(row["site_name"] == "测试目的站" for row in result["quotes"])
+    # Equal names alone cannot establish that both modes matched the same site.
+    assert "site_name" not in result
+    assert all(set(body) >= {"dispSiteId"} and "details" not in body and "site_name" not in body
+               for name, body, _ in client.calls if name == "best_quote")
+
+
+def test_common_site_name_requires_identical_site_identity_for_both_modes():
+    client = FakeClient()
+    client.destination_by_service = {101: 22, 102: 22}
+    result = quote(client, INPUT)
+    assert result["site_name"] == "测试目的站"
+    assert all(line.startswith("派送/自提") for line in result["details"])
+
+
+def test_different_mode_sites_are_labeled_separately():
+    class DifferentSites(FakeClient):
+        def request(self, name, body=None, *, text=False):
+            response = super().request(name, body, text=text)
+            if name == "best_address":
+                response["vo"]["siteRelatedInfoVo"]["parseSiteVo"]["name"] = (
+                    "测试派送站" if body["networkServiceId"] == "101" else "测试自提站"
+                )
+            return response
+
+    result = quote(DifferentSites(), INPUT)
+    assert "派送网点：测试派送站" in result["details"]
+    assert "自提网点：测试自提站" in result["details"]
+    assert [row["site_name"] for row in result["quotes"]] == ["测试派送站", "测试自提站"]
+    assert "site_name" not in result
+
+
+def test_missing_display_fields_are_reported_without_discarding_a_real_price():
+    client = FakeClient()
+    client.responses["best_address"]["vo"]["siteRelatedInfoVo"]["parseSiteVo"] = {"id": 22}
+    result = quote(client, INPUT)
+    text = "\n".join(result["details"])
+    assert "网点：无数据" in text
+    assert "网点地址：无数据" in text
+    assert "联系电话：无数据；手机：无数据" in text
+    assert all(row["amount"] == "96.25" for row in result["quotes"])
+    assert "site_name" not in result
+
+
+def test_special_area_failure_retains_full_service_and_charge_information():
+    client = FakeClient()
+    related = client.responses["best_address"]["vo"]["siteRelatedInfoVo"]
+    related["specialAreaList"] = [{
+        "specialAreaName": "测试特殊园区", "standardAddress": "测试省测试市测试区特殊路3号",
+        "isMatchUp": True, "selectDispatchDetailTypes": ["DISP", "SITE_SELF"],
+        "chargesStandard": "测试阶梯标准", "chargesMode": "票", "remark": "测试免费重量说明",
+        "effectDate": "2026-01-01", "expireDate": "2026-12-31",
+    }]
+    with pytest.raises(QuoteError) as raised:
+        quote(client, INPUT)
+    text = "\n".join(raised.value.details)
+    assert "测试目的站" in text
+    assert "特殊区域：测试特殊园区；精确匹配：是" in text
+    assert "特殊区域地址：测试省测试市测试区特殊路3号" in text
+    assert "特殊区域服务：派送、站点自提" in text
+    assert "特殊区域收费标准：测试阶梯标准；计费方式：票" in text
+    assert "特殊区域说明：测试免费重量说明" in text
+    assert "特殊区域有效期：2026-01-01 ~ 2026-12-31" in text
+    assert not any(name == "best_quote" for name, _, _ in client.calls)
+
+
+def test_town_charge_and_site_warning_details_survive_rejected_quotes():
+    client = FakeClient()
+    related = client.responses["best_address"]["vo"]["siteRelatedInfoVo"]
+    related["specialServiceVo"].update(whetherChargeTownFee=True, hasAddPrice=True,
+                                     townFeeRemark="测试乡镇收费标准", reMark="测试乡镇限制")
+    related["siteExceptionInterceptionVoList"] = [{
+        "handleType": "DISCONTINUATION", "siteName": "测试目的站", "destSiteNamePath": "测试限制范围",
+        "startDate": "2026-01-01", "endDate": "2026-01-02", "reMark": "测试临时停发",
+    }]
+    with pytest.raises(QuoteError) as raised:
+        quote(client, INPUT)
+    text = "\n".join(raised.value.details)
+    assert "乡镇收费：是；特殊加价：是" in text
+    assert "乡镇费用标准：测试乡镇收费标准" in text
+    assert "服务备注：测试乡镇限制" in text
+    assert "站点异常：停发" in text and "测试临时停发" in text
+    assert "2026-01-01 ~ 2026-01-02" in text
+    assert not any(name == "best_quote" for name, _, _ in client.calls)
+
+
+def test_price_failure_keeps_the_successfully_resolved_site_details():
+    client = FakeClient()
+    client.responses["best_quote"]["code"] = "400"
+    with pytest.raises(QuoteError) as raised:
+        quote(client, INPUT)
+    assert any("网点地址：测试省测试市测试路2号" in line for line in raised.value.details)
+
+
+def test_mode_not_available_still_includes_its_matched_site_details():
+    client = FakeClient()
+    client.responses["best_services"]["voList"] = [102]
+    result = quote(client, INPUT)
+    assert [row["delivery_method"] for row in result["quotes"]] == ["自提"]
+    assert result["details"]
+    assert "site_name" not in result
+
+
+def test_special_area_blocks_only_the_affected_mode_and_preserves_its_details():
+    class DispatchSpecial(FakeClient):
+        def request(self, name, body=None, *, text=False):
+            response = super().request(name, body, text=text)
+            if name == "best_address" and body["networkServiceId"] == "101":
+                response["vo"]["siteRelatedInfoVo"]["specialAreaList"] = [{
+                    "specialAreaName": "测试派送限制区域", "chargesStandard": "测试收费标准",
+                    "selectDispatchDetailTypes": ["SITE_SELF"], "remark": "测试说明",
+                }]
+            return response
+
+    client = DispatchSpecial()
+    result = quote(client, INPUT)
+    assert [row["delivery_method"] for row in result["quotes"]] == ["自提"]
+    assert [body["basicServiceId"] for name, body, _ in client.calls if name == "best_quote"] == [2]
+    assert any("派送特殊区域：测试派送限制区域" in line for line in result["details"])
+    assert "自提特殊区域：未匹配到特殊区域" in result["details"]
+    assert any("派送" in warning and "特殊区域" in warning for warning in result["warnings"])
+
+
+def test_site_weight_restriction_is_displayed_without_inventing_missing_times():
+    client = FakeClient()
+    site = client.responses["best_address"]["vo"]["siteRelatedInfoVo"]["parseSiteVo"]
+    site["siteExtendVo"] = {"dispSiteWeightSwitch": True, "dispSiteWeightLimitMin": 0, "dispSiteWeightLimit": 70}
+    result = quote(client, INPUT)
+    text = "\n".join(result["details"])
+    assert "派件重量范围：0 ~ 70公斤" in text
+    assert "重量限制时间：无数据 ~ 无数据" in text

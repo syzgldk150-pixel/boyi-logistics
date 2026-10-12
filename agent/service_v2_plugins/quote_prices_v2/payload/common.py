@@ -9,7 +9,11 @@ DEFAULT_VOLUME = "0.1"
 
 
 class QuoteError(ValueError):
-    """A provider's explicit, public business failure."""
+    """A provider's explicit, public business failure with observed site details."""
+
+    def __init__(self, message, *, details=None):
+        super().__init__(message)
+        self.details = list(details or [])
 
 
 def positive_number(value, name):

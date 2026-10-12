@@ -1720,7 +1720,7 @@
           quote.product_name ? `产品：${quote.product_name}` : "",
           quote.site_name ? `网点：${quote.site_name}` : "",
           quote.error ? `原因：${quote.error}` : "",
-          ...(Array.isArray(quote.details) ? quote.details.slice(0, 2) : []),
+          ...(Array.isArray(quote.details) ? quote.details : []),
         ].filter(Boolean);
         return `
           <article class="manual-quote-item${isBest ? " is-best" : ""}">

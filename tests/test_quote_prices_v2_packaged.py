@@ -73,7 +73,7 @@ def packaged_host(tmp_path, monkeypatch, *, unavailable=(), wrong_yunda=False):
 
     monkeypatch.setattr("agent.automation_plugins.account_http.AccountHTTPTransport", Transport)
     context = CoreBrokerInvocationContext(
-        automation_id="isolated-three-platform-quote", plugin_version="1.0.2",
+        automation_id="isolated-three-platform-quote", plugin_version="1.0.3",
         tool_name="quote_prices_v2", operation="http.request", action="read_json", role="ronghui_quote",
         account_bindings={system + "_quote": (account,) for system, account in ACCOUNTS.items()},
     )
@@ -98,6 +98,8 @@ def test_real_zip_three_platforms_use_exact_roles_and_observed_reads(tmp_path, m
     for system in ACCOUNTS:
         assert result["data"][system]["status"] == "success", result
         assert result["data"][system]["quotes"]
+        assert result["data"][system]["details"]
+        assert any("网点" in line for line in result["data"][system]["details"])
         assert (ACCOUNTS[system], (system,)) in resolver.calls
     assert set(system for system, _, _ in calls) == set(ACCOUNTS)
     assert result["meta"]["record_count"] == sum(len(result["data"][key]["quotes"]) for key in ACCOUNTS)

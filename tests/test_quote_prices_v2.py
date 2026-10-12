@@ -165,3 +165,32 @@ def test_unobserved_success_and_missing_delivery_method_are_rejected():
     assert result["data"]["best"]["status"] == "failed"
     assert result["data"]["ronghui"]["status"] == "failed"
     assert result["data"]["yunda"]["status"] == "success"
+
+
+def test_observed_site_details_survive_provider_restriction():
+    details = ["匹配网点：测试网点", "特殊区域：测试园区需人工核实"]
+
+    def restricted(client, request):
+        client.request("synthetic_price", request)
+        raise QuoteError("特殊区域暂不能自动报价", details=details)
+
+    result = run(broker, INPUT, providers=providers(best=restricted))
+    assert result["status"] == "SUCCESS"
+    assert result["data"]["best"]["quotes"] == []
+    assert result["data"]["best"]["details"] == details
+    assert result["meta"]["record_count"] == 2
+
+
+@pytest.mark.parametrize("quotes", [[], [{"label": "测试派送", "delivery_method": "派送", "amount": None}]])
+@pytest.mark.parametrize("observed", [False, True])
+def test_invalid_quote_keeps_only_observed_site_details(quotes, observed):
+    details = ["匹配网点：测试网点", "特殊区域：测试园区"]
+
+    def invalid(client, request):
+        if observed:
+            client.request("synthetic_price", request)
+        return {"quotes": quotes, "details": details}
+
+    result = run(broker, INPUT, providers=providers(best=invalid))["data"]["best"]
+    assert result["status"] == "failed" and result["quotes"] == []
+    assert result.get("details") == (details if observed else None)
