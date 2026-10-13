@@ -4,7 +4,7 @@ type: 模块文档
 tags: [融辉, 财务同步, 费用绑定, BI, Decimal]
 related: [project_overview.md, common/finance_data_baseline.md]
 status: active
-updated: 2026-10-09
+updated: 2026-10-14
 ---
 
 # 融辉财务工作台
@@ -100,6 +100,8 @@ updated: 2026-10-09
 ## 同步与回溯
 
 - 日常采集插件：`sync_finance_bills_v2`；业务算法在独立 ZIP 中维护，Host 提供原页和账本接口。
+- 页面“刷新数据”和查询仅读取账本，默认日期为本月；没有本月快照时明确无数据。手工同步、回溯、重试根据顶部来源唯一定位已接续采集器，执行其全部绑定来源；多个生产者时须先选来源，未接续时须先配置。不能退回旧 `finance_bills` 实例。
+- 财务采集包 2.0.2 起在 `manual_run` 声明可选 `collection_request`，通过现有 V2 运行时输入携带本次模式、日期和批次；包内将它作为完整请求解析，避免混入实例保存的历史日期。普通数据源页运行及定时仍使用保存设置。核心页面路由与 ZIP 均须升级，旧包明确要求升级，不恢复 V1。
 - 启用来源：由 `shared/finance/sources.py` 唯一声明；当前仅融辉三个业务账号为 `production_ready=true`，韵达为 `production_ready=false`。
 - 定时以财务数据源实例中实际保存并启用的计划为准；历史 `00:10` 模板不代表当前所有实例的时间。
 - Agent 启动只恢复已保存且有效的插件注册与时间计划，不补种旧财务任务或自动发起历史补拉。

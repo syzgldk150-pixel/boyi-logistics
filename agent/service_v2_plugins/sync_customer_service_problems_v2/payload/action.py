@@ -24,7 +24,8 @@ ACTION_ID = "sync_customer_service_problems"
 _ROLE = "customer_service_source"
 _DIRECTIONS = {"received", "published", "both"}
 _MAX_PAGES = 500
-_MAX_RECHECKS = 500
+_MAX_RECHECKS = 1000
+_MAX_BROKER_CALLS = 1000
 _LIST_TERMINAL_PROBLEM_STATUSES = {"已处理", "已关闭", "已完成"}
 _DETAIL_TERMINAL_PROBLEM_STATUSES = {"已回复", "已处理", "已关闭", "已完成"}
 _DETAIL_REPLY_KEYS = {"reply_text", "reversion", "deal_result"}
@@ -249,14 +250,18 @@ def _recheck_details(
     broker: Callable[..., object],
     *,
     current_keys: set[str],
+    page_count: int,
 ) -> tuple[list[dict[str, object]], list[str]]:
     if raw_items in (None, ""):
         return [], []
-    if not isinstance(raw_items, list) or len(raw_items) > _MAX_RECHECKS:
+    if not isinstance(raw_items, list):
         raise ValueError("recheck_items are invalid")
+    if len(raw_items) > _MAX_RECHECKS:
+        raise ValueError("CUSTOMER_RECHECK_INPUT_LIMIT")
     details: list[dict[str, object]] = []
     evidence_refs: list[str] = []
     seen: set[str] = set()
+    pending = []
     for raw_item in raw_items:
         item = _object(raw_item, "recheck item")
         key = _dedupe_key(item)
@@ -272,6 +277,15 @@ def _recheck_details(
                 "context_error",
                 maximum=100,
             )
+        detail_arguments = None if context_error else _detail_arguments(item, dedupe_key=key)
+        pending.append((item, key, context_error, detail_arguments))
+    # Reserve every exact detail call before starting any of them. The Host
+    # also enforces this global cap across both declared service operations.
+    detail_calls = sum(arguments is not None for _, _, _, arguments in pending)
+    if page_count + detail_calls > _MAX_BROKER_CALLS:
+        raise ValueError("CUSTOMER_RECHECK_BUDGET_EXCEEDED")
+    for item, key, context_error, detail_arguments in pending:
+        if context_error:
             details.append(
                 _blocked_recheck(
                     item,
@@ -282,7 +296,6 @@ def _recheck_details(
                 )
             )
             continue
-        detail_arguments = _detail_arguments(item, dedupe_key=key)
         try:
             result = broker(
                 "browser.invoke",
@@ -292,6 +305,8 @@ def _recheck_details(
             )
         except RuntimeError as exc:
             error_code = str(exc).strip().upper() or "DETAIL_QUERY_FAILED"
+            if error_code in {"BROKER_CALL_LIMIT", "BROKER_CAPABILITY_INVALID"}:
+                raise
             details.append(
                 _blocked_recheck(
                     item,
@@ -336,6 +351,7 @@ def run_action(arguments: dict[str, object], broker: Callable[..., object]) -> d
         arguments.get("recheck_items"),
         broker,
         current_keys={_dedupe_key(item) for item in records},
+        page_count=page_count,
     )
     observed_at = utc_observed_at()
     evidence_refs = list(dict.fromkeys([*page_refs, *detail_refs]))

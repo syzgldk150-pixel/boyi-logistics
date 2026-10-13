@@ -1,6 +1,8 @@
 import io
 import json
 import re
+import shutil
+import subprocess
 import types
 import unittest
 from http import HTTPStatus
@@ -76,8 +78,8 @@ class _FakeFinanceService:
     def save_fee_mapping(self, fee_item_id, body, *, changed_by):
         return self._result("save_mapping", fee_item_id, body, changed_by=changed_by)
 
-    def build_retry_arguments(self, batch_id):
-        return self._result("retry_batch", batch_id)
+    def build_retry_arguments(self, batch_id, body):
+        return self._result("retry_batch", batch_id, body)
 
     def analyze_review_cases(self, body):
         return self._result("analyze_reviews", body)
@@ -233,8 +235,9 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
                 fields = re.findall(r'<(?:input|select)\b[^>]*\bname="([^"]+)"', form)
                 self.assertEqual(set(values), set(fields))
                 self.assertIn("已配置的全部数据源", form)
-                arguments = build({field: values[field] for field in fields})
+                arguments = build({**{field: values[field] for field in fields}, "automation_id": "finance-v2-instance"})
                 self.assertEqual(name, arguments["mode"])
+                self.assertEqual("finance-v2-instance", arguments["automation_id"])
                 self.assertNotIn("account_id", arguments)
                 self.assertNotIn("platform", arguments)
 
@@ -288,6 +291,44 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertNotIn("事项中心完成审批", script)
         self.assertIn("财务采集完成", script)
         self.assertNotIn("await loadBatches();\n        await loadOverview();", script)
+
+    def test_collection_uses_source_producer_and_rejects_ambiguous_or_missing_sources(self):
+        node = shutil.which("node") or shutil.which("node.exe")
+        if node is None:
+            self.skipTest("Node.js is required for finance source routing")
+        script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")
+        function = script.split("    async function collectionArguments(body) {", 1)[1].split(
+            "    async function refreshCollectedData()", 1,
+        )[0]
+        harness = "async function collectionArguments(body) {" + function + r'''
+const assert = require("node:assert/strict");
+let selected = "";
+let sources = [];
+function globalFilters() { return {source_ids: selected}; }
+async function fetchJson(url) {
+  assert.equal(url, "/module-data-sources/finance");
+  return {sources};
+}
+(async () => {
+  sources = [{source_id: "a", status: "active", producer_instance_id: "actual-v2"},
+             {source_id: "b", status: "active", producer_instance_id: "actual-v2"}];
+  assert.deepEqual(await collectionArguments({mode: "sync"}), {mode: "sync", automation_id: "actual-v2"});
+  sources[1].producer_instance_id = "another-v2";
+  await assert.rejects(collectionArguments({}), /多个采集器/);
+  selected = "a";
+  assert.equal((await collectionArguments({})).automation_id, "actual-v2");
+  selected = "missing";
+  await assert.rejects(collectionArguments({}), /尚未接续/);
+  selected = "a";
+  sources[0].status = "history_only";
+  await assert.rejects(collectionArguments({}), /尚未接续/);
+  sources = [];
+  selected = "";
+  await assert.rejects(collectionArguments({}), /尚未接续/);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+'''
+        result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=20, check=False)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_finance_api_routes_include_review_fact_and_knowledge_workflows(self):
         source = (CONSOLE_DIR / "routes" / "finance.py").read_text(encoding="utf-8")

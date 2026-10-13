@@ -444,7 +444,7 @@ class FinanceServiceTests(unittest.TestCase):
 
     def test_sync_builds_governed_arguments_without_login_context(self):
         payload = self.service.build_sync_arguments(
-            {"platform": "ronghui", "account_id": "price_default", "rescan_days": 7}
+            {"platform": "ronghui", "account_id": "price_default", "rescan_days": 7, "automation_id": "finance-v2-instance"}
         )
 
         self.assertEqual(
@@ -453,6 +453,7 @@ class FinanceServiceTests(unittest.TestCase):
                 "rescan_days": 7,
                 "platform": "ronghui",
                 "account_id": "price_default",
+                "automation_id": "finance-v2-instance",
             },
             payload,
         )
@@ -489,7 +490,7 @@ class FinanceServiceTests(unittest.TestCase):
             with self.subTest(operation=operation.__name__, body=body):
                 calls_before = list(self.agent_calls)
                 with self.assertRaisesRegex(FinanceValidationError, message):
-                    operation(body)
+                    operation({**body, "automation_id": "finance-v2-instance"})
                 self.assertEqual(calls_before, self.agent_calls)
 
     def test_backfill_requires_real_date_range(self):
@@ -500,11 +501,17 @@ class FinanceServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(FinanceValidationError, "不能包含登录账号"):
             self.service.build_sync_arguments({"login_account": "not-allowed"})
 
-    def test_retry_sends_only_batch_id(self):
+    def test_retry_sends_batch_and_selected_collector(self):
         self.assertEqual(
-            {"mode": "retry", "batch_id": 8},
-            self.service.build_retry_arguments(8),
+            {"mode": "retry", "batch_id": 8, "automation_id": "finance-v2-instance"},
+            self.service.build_retry_arguments(8, {"automation_id": "finance-v2-instance"}),
         )
+
+    def test_collection_requires_explicit_collector(self):
+        with self.assertRaisesRegex(FinanceValidationError, "请填写财务采集器"):
+            self.service.build_sync_arguments({})
+        with self.assertRaisesRegex(FinanceValidationError, "请填写财务采集器"):
+            self.service.build_retry_arguments(8, {})
 
     def test_missing_shared_repository_is_explicitly_unavailable(self):
         service = FinanceService(object())

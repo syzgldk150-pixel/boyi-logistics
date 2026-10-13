@@ -313,7 +313,7 @@
   <section id="finance-panel-sync" class="finance-tab-panel" role="tabpanel" aria-labelledby="finance-tab-sync" tabindex="0" hidden data-finance-panel="sync">
     <div class="finance-sync-actions">
       <form class="finance-panel finance-sync-form" data-finance-sync-form>
-        <div class="finance-panel-head"><div><h2>手动同步</h2><p>同步已配置的全部数据源，默认重扫最近 7 天。账号在“数据源管理”中设置。</p></div></div>
+        <div class="finance-panel-head"><div><h2>手动同步</h2><p>按顶部所选来源定位采集器，同步该采集器已配置的全部数据源，默认重扫最近 7 天。账号在“数据源管理”中设置。</p></div></div>
         <div class="finance-filter-grid finance-filter-grid--sync">
           <label class="finance-field"><span>目标日期（可选）</span><input type="date" name="target_date" max="{{ today }}"></label>
           <label class="finance-field"><span>重扫天数</span><input type="number" name="rescan_days" min="1" max="31" value="7"></label>
@@ -321,7 +321,7 @@
         <button class="primary-btn" type="submit"><i data-feather="download-cloud" aria-hidden="true"></i><span>开始同步</span></button>
       </form>
       <form class="finance-panel finance-sync-form" data-finance-backfill-form>
-        <div class="finance-panel-head"><div><h2>历史回溯</h2><p>按所选日期回溯已配置的全部数据源。账号在“数据源管理”中设置。</p></div></div>
+        <div class="finance-panel-head"><div><h2>历史回溯</h2><p>按顶部所选来源定位采集器，按日期回溯该采集器已配置的全部数据源。账号在“数据源管理”中设置。</p></div></div>
         <div class="finance-filter-grid finance-filter-grid--sync">
           <label class="finance-field"><span>开始日期</span><input type="date" name="start_date" required max="{{ today }}"></label>
           <label class="finance-field"><span>结束日期</span><input type="date" name="end_date" required max="{{ today }}"></label>
@@ -348,6 +348,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/finance.js?v=20260910-collection-scope"></script>
+<script src="/static/finance.js?v=20261014-v2-collection"></script>
 <script src="/static/module_source_selector.js?v=v32"></script>
 {% endblock %}

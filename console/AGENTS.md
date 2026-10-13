@@ -196,7 +196,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `finance_service.py`
   - `app.py`
   - 页面入口为 `/modules/finance`，包含“BI 总览 / 交易明细 / 费用项目绑定 / 同步记录”四个页签；数据统一经 `shared.finance` 仓储读取，金额保持字符串并在服务端生成图形比例，前端不得自行计算结算金额。
-  - 财务查询经共享账本直接读取。同步、回填和重试经 `/internal/v1/business/finance-collect` 转到用户明确选择的已安装财务采集插件；后台显示对应 Invocation。真实管理员、同源、稳定浏览器 UUID 和精确账号绑定均保留，不创建事项审批或 Command/Run；不传凭据。
+  - 财务查询经共享账本直接读取，不触发采集。同步、回填和重试从所选来源的已接续生产者唯一确定实例，经 `/internal/v1/business/finance-collect` 调用当前 Service V2 `manual_run`；多实例或未接续时明确提示，不使用旧 `finance_bills` 默认实例。财务包 2.0.2 起以可选 `collection_request` 接收本次日期，后台显示对应 Invocation。真实管理员、同源、稳定浏览器 UUID 和精确账号绑定均保留，不创建事项审批或 Command/Run；不传凭据。
   - 费用方向由共享仓储中锁定的费用项目决定，保存绑定时不得信任前端传入的 `direction`；运单级必须绑定共享仓储返回的平台录单费用项目，运营级不得绑定录单项目。
   - Console 与 Agent 必须连接同一套 Agent MySQL；同步记录返回最新失败账号/日期/错误，显式无数据账号和日期展示零值，缺失/失败日期不得补零；同步请求超时需覆盖 Agent 工具的长回溯上限。
   - 当前生产只展示和调度共享来源注册表中启用的融辉三个财务角色；韵达财务适配器保持禁用。逐笔汇总、平台汇总与 signed-net 不一致必须显式失败，不能补零或继续发布。

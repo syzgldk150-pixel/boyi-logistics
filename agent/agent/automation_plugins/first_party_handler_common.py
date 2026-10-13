@@ -435,9 +435,10 @@ def _customer_public_item(
 
 def _scrub_customer_value(value: Any) -> Any:
     # Native Ronghui/Yunda attachment locators are not classification or
-    # exact-status inputs. Keep them Host-private in lists and details alike.
+    # exact-status inputs. Yunda's prob_mark is also unused by classification
+    # and can contain private locators. Keep these Host-private in both views.
     return _scrub_business_value(
-        value, private_fields=frozenset({"file_path", "sign_file_path", "bl_attachment"})
+        value, private_fields=frozenset({"file_path", "sign_file_path", "bl_attachment", "prob_mark"})
     )
 
 

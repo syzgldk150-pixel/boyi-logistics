@@ -1141,13 +1141,34 @@
       }
     }
 
+    async function collectionArguments(body) {
+      const payload = await fetchJson("/module-data-sources/finance");
+      const selected = globalFilters().source_ids;
+      const sources = Array.isArray(payload.sources) ? payload.sources : [];
+      const scope = selected ? sources.filter(source => source.source_id === selected) : sources;
+      if (!scope.length || scope.some(source => !source.producer_instance_id || source.status !== "active")) {
+        throw new Error("所选财务来源尚未接续采集器，请先在数据源页面配置。");
+      }
+      const producers = [...new Set(scope.map(source => source.producer_instance_id))];
+      if (producers.length !== 1) {
+        throw new Error("当前来源属于多个采集器，请先在顶部选择一个来源再采集。");
+      }
+      return { ...body, automation_id: producers[0] };
+    }
+
+    async function refreshCollectedData() {
+      state.loadedTabs.delete("entries");
+      state.loadedTabs.delete("waybill-facts");
+      await Promise.all([loadBatches(), loadOverview()]);
+    }
+
     async function submitSyncAction(form, endpoint, busyLabel) {
       const button = form.querySelector('button[type="submit"]');
       const body = formValues(form);
       setButtonBusy(button, true, busyLabel);
       try {
-        await fetchJson(endpoint, financeCommandOptions(body));
-        await loadBatches();
+        await fetchJson(endpoint, financeCommandOptions(await collectionArguments(body)));
+        await refreshCollectedData();
         setStatus("财务采集完成。", "success");
       } catch (error) {
         setStatus(`财务采集失败：${error.message}`, "error");
@@ -1162,9 +1183,9 @@
       try {
         await fetchJson(
           `${ENDPOINTS.batches}/${batchId}/retry`,
-          financeCommandOptions({}),
+          financeCommandOptions(await collectionArguments({})),
         );
-        await loadBatches();
+        await refreshCollectedData();
         setStatus(`批次 #${batchId} 重试完成。`, "success");
       } catch (error) {
         setStatus(`批次重试失败：${error.message}`, "error");

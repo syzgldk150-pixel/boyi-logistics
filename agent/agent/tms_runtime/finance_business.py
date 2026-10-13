@@ -1,4 +1,4 @@
-"""Console finance collection through an installed, signed finance plugin."""
+"""Console finance collection through an installed Service V2 contribution."""
 from __future__ import annotations
 
 from datetime import date
@@ -18,7 +18,7 @@ class FinancePluginBusinessService:
                        request_id: str, timeout_sec: int) -> dict[str, Any]:
         if set(params) - FINANCE_DYNAMIC_FIELDS - {"platform", "account_id", "automation_id"}:
             raise DirectBusinessError("INVALID_FINANCE_INPUT", "财务采集包含未开放字段。")
-        # The current signed collector deliberately fans out to all of its
+        # The collector deliberately fans out to all of its
         # three bound sources. A browser selector must not change that scope.
         if params.get("account_id") or params.get("platform") not in {None, "", "ronghui"}:
             raise DirectBusinessError("FINANCE_SCOPE_NOT_SUPPORTED", "该财务插件按已绑定数据源完整采集，不能改为单账号采集。")
@@ -44,17 +44,20 @@ class FinancePluginBusinessService:
                 raise ValueError
         except (TypeError, ValueError) as exc:
             raise DirectBusinessError("INVALID_FINANCE_INPUT", "财务日期或批次参数无效。") from exc
-        automation_id = str(params.get("automation_id") or "finance_bills")
+        automation_id = str(params.get("automation_id") or "").strip()
+        if not automation_id:
+            raise DirectBusinessError("FINANCE_PLUGIN_REQUIRED", "请选择已接续财务来源的采集器。")
         entry, contract = self.policy._load_contract(automation_id)
-        if entry.plugin_id != "sync_finance_bills":
+        if entry.plugin_id != "sync_finance_bills_v2" or entry.runtime_model != "SERVICE_V2":
             raise DirectBusinessError("FINANCE_PLUGIN_REQUIRED", "请选择已安装的财务采集插件。")
-        target = contract.invocation_contracts.get("console")
-        if target is None or any(target.dynamic_argument_resolvers.get(field) != f"configured_finance_console_{field}" for field in dynamic):
-            raise DirectBusinessError("FINANCE_PLUGIN_UPDATE_REQUIRED", "请先升级财务采集插件以启用按日期直接采集。")
+        target = contract.invocation_contracts.get("manual_run")
+        if target is None or target.dynamic_argument_resolvers.get("collection_request") != "verified_optional_console_collection_request":
+            raise DirectBusinessError("FINANCE_PLUGIN_UPDATE_REQUIRED", "请先升级财务采集插件到 2.0.2 或更新版本，以启用按日期采集。")
         actor = Actor(ActorType.CONSOLE_ADMIN, str(principal["actor_id"]),
                       tuple(principal.get("roles") or ()), authenticated_by="mysql_admin_session")
         result = await self.policy.invoke_trusted_and_wait(automation_id, entrypoint="console",
-            request_id=request_id, actor=actor, trusted_context={"dynamic_inputs": dynamic},
+            request_id=request_id, actor=actor, contribution_id="manual_run",
+            trusted_context={"dynamic_inputs": {"collection_request": dynamic}},
             timeout_seconds=timeout_sec)
         if result.get("status") == "RUNNING":
             result = await self.policy.direct_invocations.cancel(result["invocation_id"])

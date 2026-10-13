@@ -276,7 +276,8 @@ def test_production_handler_blocks_a_locally_disabled_account_without_online_aut
     assert exc.value.code == "BROKER_ACCOUNT_UNAVAILABLE"
 
 
-def test_customer_handlers_own_bound_source_pagination_and_opaque_identity() -> None:
+@pytest.mark.parametrize("prob_mark", ["https://private.example.invalid/problem", "/private/problem"])
+def test_customer_handlers_own_bound_source_pagination_and_opaque_identity(prob_mark: str) -> None:
     manager = _Manager()
     calls: list[dict[str, Any]] = []
 
@@ -287,8 +288,9 @@ def test_customer_handlers_own_bound_source_pagination_and_opaque_identity() -> 
             return {
                 "ok": True,
                 "account_id": params["account_id"],
-                "details": [{"status": "已关闭", "session_note": "must be removed",
-                    "bl_attachment": "/uploads/private/problem.jpg", "nested": {"FILE_PATH": "/private/file"}}],
+                "details": [{"status": "已关闭", "session_note": "must be removed", "prob_mark": prob_mark,
+                    "bl_attachment": "/uploads/private/problem.jpg",
+                    "nested": {"FILE_PATH": "/private/file", "PROB_MARK": prob_mark}}],
             }
         external = f"{params['platform']}-{params['direction']}"
         return {
@@ -305,7 +307,7 @@ def test_customer_handlers_own_bound_source_pagination_and_opaque_identity() -> 
                     "site_policy_required": False,
                     "raw_fields": {"BILL_CODE": f"WB-{external}", "REVERSION_STATUS": "未回复",
                         "FILE_PATH": "https://attachments.example.invalid/problem.jpg", "SIGN_FILE_PATH": None,
-                        "bl_attachment": "/uploads/private/problem.jpg", "prob_title": "/"},
+                        "bl_attachment": "/uploads/private/problem.jpg", "prob_title": "/", "prob_mark": prob_mark},
                 }
             ],
             "source_site_code": "fixture-site",

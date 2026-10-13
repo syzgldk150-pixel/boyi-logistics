@@ -87,3 +87,23 @@ def test_unrelated_service_cannot_claim_a_finance_batch_locator():
         arguments={'service': 'connector.unrelated@1', 'operation': 'write_snapshot',
             'arguments': {'batch_id': 37, 'target_date': '2026-07-11'}})
     assert target['batch_sha256'] == ''
+
+
+def test_finance_page_request_owns_dates_without_changing_saved_scheduler_scope(tmp_path):
+    host, repository, captures = _host(tmp_path)
+    result = host.execute({
+        "mode": "backfill", "start_date": "2026-06-01", "end_date": "2026-06-10",
+        "collection_request": {"mode": "sync", "target_date": "2026-07-11", "rescan_days": 1},
+    }, operation="run")
+    assert result["status"] == "SUCCESS", result
+    assert {target_date.isoformat() for _, target_date in captures} == {"2026-07-11"}
+    assert len(repository.runs) == 3
+    assert host.verified_outcome.accepted is True
+
+
+def test_finance_page_request_rejects_internal_startup_scope_before_capture(tmp_path):
+    host, repository, captures = _host(tmp_path)
+    result = host.execute({"collection_request": {"mode": "sync", "_startup_catchup": True}}, operation="run")
+    assert result["status"] == "FAILED", result
+    assert captures == []
+    assert repository.runs == {}

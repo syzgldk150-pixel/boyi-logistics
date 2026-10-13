@@ -245,7 +245,7 @@ class MonitoringFinanceServiceMixin:
                 match = re.fullmatch(r"/finance/sync-batches/(\d+)/retry", path)
                 if not match:
                     raise FinanceValidationError("同步批次 ID 无效。")
-                arguments = service.build_retry_arguments(int(match.group(1)))
+                arguments = service.build_retry_arguments(int(match.group(1)), body)
             else:
                 self._send_json(
                     handler,

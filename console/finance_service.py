@@ -310,8 +310,8 @@ class FinanceService:
     ) -> None:
         self.source_repository = repository
         # Reserved for read/analysis-only finance-brain APIs. Manual sync,
-        # backfill, and retry are submitted by the Console through Command
-        # Gateway and must never execute through this service adapter.
+        # backfill, and retry use the Console business endpoint and the exact
+        # installed collector contribution.
         self.agent_request = agent_request
         if callable(getattr(repository, "get_summary", None)):
             self.repository = repository
@@ -791,12 +791,14 @@ class FinanceService:
         self._append_safe_sync_scope(params, body)
         return params
 
-    def build_retry_arguments(self, batch_id: int) -> dict[str, Any]:
+    def build_retry_arguments(self, batch_id: int, body: Mapping[str, Any]) -> dict[str, Any]:
         """Build the exact selector for a persisted failed sync batch."""
 
         if batch_id < 1:
             raise FinanceValidationError("同步批次 ID 必须是正整数。")
-        return {"mode": "retry", "batch_id": batch_id}
+        params = {"mode": "retry", "batch_id": batch_id}
+        self._append_safe_sync_scope(params, body)
+        return params
 
     @staticmethod
     def _append_safe_sync_scope(params: dict[str, Any], body: Mapping[str, Any]) -> None:
@@ -810,6 +812,9 @@ class FinanceService:
         }
         if forbidden.intersection(body):
             raise FinanceValidationError("同步请求不能包含登录账号、登录态或凭据字段。")
+        params["automation_id"] = _required_text(
+            body.get("automation_id"), field_name="财务采集器", max_length=160,
+        )
         platform = _optional_filter(str(body.get("platform") or ""), field_name="平台", max_length=32)
         account_id = _optional_filter(str(body.get("account_id") or ""), field_name="账号", max_length=96)
         _validate_enabled_finance_platform(platform)

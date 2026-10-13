@@ -5,4 +5,15 @@ PRIMITIVES = {('browser.invoke', 'ronghui.finance.capture_page', 'finance_quote_
 def service_invoke_adapter(broker, operation, **kwargs):
     return invoke_primitive(broker, PRIMITIVES, operation, **kwargs)
 def prepare_arguments(arguments):
-    return dict(arguments)
+    values = dict(arguments)
+    if "collection_request" not in values:
+        return values
+    request = values.pop("collection_request")
+    if not isinstance(request, dict):
+        raise ValueError("finance collection request must be an object")
+    allowed = {"mode", "target_date", "start_date", "end_date", "batch_id", "rescan_days"}
+    if "mode" not in request or set(request) - allowed:
+        raise ValueError("finance collection request contains undeclared fields")
+    # A page request is one complete occurrence; saved backfill dates or retry
+    # IDs must not leak into this collection or alter the scheduler settings.
+    return dict(request)
