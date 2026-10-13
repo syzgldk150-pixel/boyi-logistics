@@ -64,6 +64,8 @@ class DocumentServiceMixin:
         manual_amap_sdk_should_load = not manual_amap_config["amap_js_key"].startswith("YOUR_")
         manual_preview_waybill_no = ""
         manual_preview_error = ""
+        saved_manual_waybill = None
+        saved_manual_print_error = ""
         waybill_entry_extensions = self._empty_waybill_entry_extensions()
         if document is None:
             try:
@@ -72,6 +74,31 @@ class DocumentServiceMixin:
                 manual_preview_error = "单号预览读取失败，请联系管理员检查运单数据库权限。修复前请勿提交录单。"
         if boyi_frame_mode:
             waybill_entry_extensions = self._load_waybill_entry_extensions(handler)
+            saved_waybill_id = str(query.get("saved_waybill_id", [""])[0]).strip()
+            if saved_waybill_id:
+                try:
+                    waybill_id = int(saved_waybill_id)
+                    if waybill_id <= 0:
+                        raise ValueError("Invalid saved waybill id")
+                    saved_waybill = self.repository.get_waybill(waybill_id, source="manual")
+                    if not saved_waybill or not str(saved_waybill.get("waybill_no") or "").strip():
+                        raise ValueError("Saved waybill not found")
+                    print_fields = (
+                        "waybill_no", "open_date", "destination_site", "receiver_name",
+                        "receiver_phone", "receiver_address", "sender_name", "sender_phone",
+                        "sender_address", "goods_name_lines", "package_type_lines", "quantity_lines",
+                        "weight_volume", "delivery_method", "freight_fee", "transfer_fee",
+                        "payment_method", "insurance_amount", "cod_amount", "remark",
+                    )
+                    saved_manual_waybill = {
+                        name: str(saved_waybill[name]) if saved_waybill.get(name) is not None else ""
+                        for name in print_fields
+                    }
+                    saved_manual_waybill["receipt_required"] = saved_waybill.get("receipt_required") == 1
+                except Exception:
+                    saved_manual_print_error = (
+                        "未能读取已保存运单，已停止打印。请到寄件运单查询核对并重新打开打印预览，勿重复保存。"
+                    )
 
         fields = []
         preprocess_info = {}
@@ -135,6 +162,8 @@ class DocumentServiceMixin:
             manual_amap_sdk_should_load=manual_amap_sdk_should_load,
             manual_preview_waybill_no=manual_preview_waybill_no,
             manual_preview_error=manual_preview_error,
+            saved_manual_waybill=saved_manual_waybill,
+            saved_manual_print_error=saved_manual_print_error,
             manual_payment_methods=MANUAL_PAYMENT_METHODS,
             waybill_entry_extension_fields=WAYBILL_ENTRY_DRAFT_FIELDS,
             waybill_entry_extension_actions=waybill_entry_extensions[
@@ -824,9 +853,14 @@ class DocumentServiceMixin:
             self._redirect_with_message(handler, return_to, result.message, "success")
             return
 
+        print_return = urlparse(return_to)
+        if print_return.path != "/ocr/boyi/frame":
+            print_return = urlparse("/ocr/boyi/frame")
+        print_query = parse_qs(print_return.query, keep_blank_values=True)
+        print_query["saved_waybill_id"] = [str(result.waybill_id)]
         self._redirect_with_message(
             handler,
-            f"/waybills/{result.waybill_id}/print?source=manual&autoprint=1",
+            print_return._replace(query=urlencode(print_query, doseq=True)).geturl(),
             result.message,
             "success",
         )

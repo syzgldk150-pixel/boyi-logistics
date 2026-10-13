@@ -111,6 +111,7 @@
   .manual-feedback[hidden] { display: none; }
   .manual-feedback.is-error { border-bottom-color: #fecaca; background: #fef2f2; color: #b91c1c; }
   .manual-feedback.is-success { border-bottom-color: #bbf7d0; background: #ecfdf5; color: #047857; }
+  .manual-saved-print-actions { flex: 0 0 auto; padding: 6px var(--form-x-pad); border-bottom: 1px solid var(--line); }
   .waybill-extension-bar {
     flex: 0 0 auto; display: flex; align-items: center; gap: 8px; min-height: 42px;
     padding: 6px var(--form-x-pad); overflow-x: auto; border-bottom: 1px solid var(--line); background: #fff;
@@ -700,6 +701,14 @@
       </div>
     </div>
     <div class="manual-feedback" data-manual-feedback aria-live="polite" hidden></div>
+    {% if saved_manual_waybill|default(none) %}
+    <div class="manual-saved-print-actions">
+      <button class="ghost-btn" type="button" data-saved-manual-preview>重新打开已保存单预览</button>
+    </div>
+    {% endif %}
+    {% if saved_manual_print_error|default('') %}
+    <div class="notice error" role="alert">{{ saved_manual_print_error }}</div>
+    {% endif %}
     {% if manual_preview_error|default('') %}
     <div class="notice error" role="alert">{{ manual_preview_error }}</div>
     {% endif %}
@@ -1050,6 +1059,14 @@
 {% block scripts %}
 <script>
   document.addEventListener("DOMContentLoaded", () => {
+    const savedManualWaybill = {{ saved_manual_waybill | default(none) | tojson }};
+    if ({{ boyi_frame_mode | default(false) | tojson }}) {
+      const currentUrl = new URL(window.location.href);
+      if (currentUrl.searchParams.has("saved_waybill_id")) {
+        currentUrl.searchParams.delete("saved_waybill_id");
+        window.history.replaceState(window.history.state, "", currentUrl);
+      }
+    }
     const openDateInput = document.querySelector('input[data-open-date-input="true"]');
     const padDatePart = (value) => String(value).padStart(2, "0");
     const toSlashDate = (value) => {
@@ -1644,12 +1661,30 @@
         }
       });
     });
+    let manualSubmitting = false;
+    let manualSubmitButtons = [];
     manualForm?.addEventListener("submit", (event) => {
+      if (manualSubmitting) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       syncWeightVolumeField();
       if (!validateManualRequiredFields()) {
         event.preventDefault();
         event.stopPropagation();
+        return;
       }
+      manualSubmitting = true;
+      manualForm.setAttribute("aria-busy", "true");
+      manualSubmitButtons = Array.from(manualForm.querySelectorAll('button[type="submit"]:not(:disabled)'));
+      manualSubmitButtons.forEach((button) => { button.disabled = true; });
+    });
+    window.addEventListener("pageshow", () => {
+      manualSubmitting = false;
+      manualForm?.removeAttribute("aria-busy");
+      manualSubmitButtons.forEach((button) => { button.disabled = false; });
+      manualSubmitButtons = [];
     });
     const manualWaybillPreviewNo = () => {
       const input = document.getElementById("field_waybill_no");
@@ -1840,21 +1875,24 @@
       if (!window.WaybillLabelLodop?.applyTemplate) throw new Error("Waybill Lodop renderer not loaded");
       await window.WaybillLabelLodop.applyTemplate(lodop, wb, settings);
     };
-    const previewManualWaybill = async () => {
-      if (!validateManualRequiredFields("打印预览前请先填写")) return;
-      persistPrinterSettings();
-      setManualFeedback("正在打开 C-Lodop 打印预览...", "info");
+    const previewWaybillSnapshot = async (waybill) => {
       const settings = readSavedPrinterSettings();
       const copies = Math.max(1, Math.min(Number(settings.print_copies || 1) || 1, 5));
+      const lodop = await getCLODOP();
+      if (!lodop) throw new Error("C-Lodop service not found");
+      const printerIndex = findCLODOPPrinterIndex(lodop, settings.printer_name);
+      lodop.PRINT_INIT("博益物流运单预览");
+      if (printerIndex !== null) lodop.SET_PRINTER_INDEX(printerIndex);
+      lodop.SET_PRINT_COPIES(copies);
+      await applyWaybillLodopTemplate(lodop, waybill, settings);
+      openLodopPreview(lodop);
+    };
+    const previewManualWaybill = async () => {
+      if (!validateManualRequiredFields("打印预览前请先填写")) return;
+      setManualFeedback("正在打开 C-Lodop 打印预览...", "info");
       try {
-        const lodop = await getCLODOP();
-        if (!lodop) throw new Error("C-Lodop service not found");
-        const printerIndex = findCLODOPPrinterIndex(lodop, settings.printer_name);
-        lodop.PRINT_INIT("博益物流运单预览");
-        if (printerIndex !== null) lodop.SET_PRINTER_INDEX(printerIndex);
-        lodop.SET_PRINT_COPIES(copies);
-        await applyWaybillLodopTemplate(lodop, readManualWaybillPreview(), settings);
-        openLodopPreview(lodop);
+        persistPrinterSettings();
+        await previewWaybillSnapshot(readManualWaybillPreview());
         setManualFeedback("已调用 C-Lodop 打印预览，如未弹出窗口请检查 C-Lodop 服务或打印机权限。", "success");
       } catch (error) {
         console.error("C-Lodop preview failed", error);
@@ -1862,6 +1900,24 @@
       }
     };
     document.querySelector("[data-manual-preview]")?.addEventListener("click", previewManualWaybill);
+    const savedManualPreviewButton = document.querySelector("[data-saved-manual-preview]");
+    const previewSavedManualWaybill = async () => {
+      if (!savedManualWaybill || savedManualPreviewButton?.disabled) return;
+      if (savedManualPreviewButton) savedManualPreviewButton.disabled = true;
+      const savedMessage = `运单 ${savedManualWaybill.waybill_no} 已保存`;
+      setManualFeedback(`${savedMessage}，正在打开打印预览…`, "info");
+      try {
+        await previewWaybillSnapshot(savedManualWaybill);
+        setManualFeedback(`${savedMessage}，已调用 C-Lodop 打印预览，可继续录入下一单。`, "success");
+      } catch (error) {
+        console.error("Saved waybill preview failed", error);
+        setManualFeedback(`${savedMessage}。${formatManualPrintError(error)} 请点击“重新打开已保存单预览”重试，勿重复保存。`, "error");
+      } finally {
+        if (savedManualPreviewButton) savedManualPreviewButton.disabled = false;
+      }
+    };
+    savedManualPreviewButton?.addEventListener("click", previewSavedManualWaybill);
+    if (savedManualWaybill) previewSavedManualWaybill();
     const previewCalibrationPage = async () => {
       persistPrinterSettings();
       const settings = readSavedPrinterSettings();
