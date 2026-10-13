@@ -42,5 +42,12 @@
     openPreview(lodop);
   }
 
-  global.BoyiWaybillPrint = { preview, findPrinterIndex, openPreview };
+  // Best-effort warm-up while the operator reads the details; preview() still
+  // awaits the same cached promises and reports any real failure itself.
+  function prepare() {
+    const tasks = [global.WaybillLabelHtml?.prepare?.(), global.BoyiCLodop?.getInstance?.()];
+    return Promise.allSettled(tasks.filter(Boolean));
+  }
+
+  global.BoyiWaybillPrint = { preview, prepare, findPrinterIndex, openPreview };
 })(window);

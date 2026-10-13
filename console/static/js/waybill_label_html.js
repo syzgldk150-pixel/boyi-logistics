@@ -18,9 +18,10 @@
   const SOURCE_WIDTH = 1200;
   const SOURCE_HEIGHT = 1600;
   // The 填写样张 sample sets every value in Source Han Sans Bold, served with the
-  // Console, so printing needs no locally installed font.
+  // Console, so printing needs no locally installed font. The content-hashed URL
+  // matches style.css, so the 7.7MB face is cached long-term and shared.
   const LABEL_FONT = { family: "BoyiLabelSans", weight: 700, name: "思源黑体",
-    source: 'url("/static/assets/fonts/SourceHanSansCN-VF.ttf.woff2") format("woff2")' };
+    source: 'url("/static/assets/fonts/SourceHanSansCN-VF.ttf.woff2?v=f971e3bf") format("woff2")' };
   const fontCss = (px) => `${LABEL_FONT.weight} ${px}px "${LABEL_FONT.family}"`;
   let labelFontPromise;
   const loadContentFont = () => {
@@ -349,6 +350,11 @@
     return label.canvas.toDataURL("image/png");
   }
 
+  // Warm the font and both cleaned backgrounds before the first print click.
+  const prepare = () => Promise.all([
+    loadContentFont(), loadCleanBackground(BACKGROUND_URL), loadCleanBackground(RECEIPT_BACKGROUND_URL),
+  ]);
+
   async function buildHtml(data = {}, options = {}) {
     const settings = readSettings(options);
     const source = await buildPrintImage(data, options);
@@ -362,6 +368,6 @@
 
   global.WaybillLabelHtml = {
     width: WIDTH_MM, height: HEIGHT_MM, pageName: PAGE_NAME, backgroundUrl: BACKGROUND_URL,
-    normalizeData, readSettings, loadContentFont, buildDynamicItems, backgroundUrlFor, buildPrintImage, buildHtml, renderPreview,
+    normalizeData, readSettings, loadContentFont, prepare, buildDynamicItems, backgroundUrlFor, buildPrintImage, buildHtml, renderPreview,
   };
 })(window);

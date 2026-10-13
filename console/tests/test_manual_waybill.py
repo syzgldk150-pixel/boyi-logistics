@@ -874,7 +874,7 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         js = (CONSOLE_DIR / "static/js/waybill_label_html.js").read_text(encoding="utf-8")
         # The 填写样张 sample uses Source Han Sans Bold only, served with the
         # Console, so no printing computer needs a locally installed font.
-        self.assertIn('url("/static/assets/fonts/SourceHanSansCN-VF.ttf.woff2")', js)
+        self.assertIn('url("/static/assets/fonts/SourceHanSansCN-VF.ttf.woff2?v=f971e3bf")', js)
         self.assertTrue((CONSOLE_DIR / "static/assets/fonts/SourceHanSansCN-VF.ttf.woff2").is_file())
         self.assertIn('weight: 700, name: "思源黑体"', js)
         self.assertIn("加载失败，请检查网络后刷新页面重试", js)

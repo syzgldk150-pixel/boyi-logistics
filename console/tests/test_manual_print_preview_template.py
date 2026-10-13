@@ -35,7 +35,7 @@ class ManualPrintPreviewTemplateTests(unittest.TestCase):
 
         for template in (document_template, query_template):
             self.assertIn('/static/js/clodop_loader.js?v=20260812', template)
-            self.assertIn("/static/js/waybill_print_preview.js?v=20261013", template)
+            self.assertIn("/static/js/waybill_print_preview.js?v=20261013-prewarm", template)
             self.assertNotIn("CLodopfuncs.js?priority=", template)
 
         self.assertIn("ws://localhost:8000/CLodopfuncs.js", loader)

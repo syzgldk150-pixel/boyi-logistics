@@ -6,10 +6,10 @@
 {% block subtitle %}运单管理 / 寄件运单查询{% endblock %}
 
 {% block head %}
-<script src="/static/js/waybill_label_html.js?v=20261011-large-type"></script>
+<script src="/static/js/waybill_label_html.js?v=20261013-prewarm"></script>
 <script src="/static/js/waybill_label_lodop.js?v=20261011-75x100"></script>
 <script src="/static/js/clodop_loader.js?v=20260812"></script>
-<script src="/static/js/waybill_print_preview.js?v=20261013"></script>
+<script src="/static/js/waybill_print_preview.js?v=20261013-prewarm"></script>
 {% endblock %}
 
 {% block page_actions %}
@@ -93,34 +93,45 @@
   .waybill-empty .feather { margin: 0 auto 12px; }
   .waybill-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; }
   .waybill-page-size-control .waybill-select { width: auto; }
-  .waybill-detail-dialog { width: min(880px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); border-radius: var(--radius-xl); }
+  .waybill-detail-dialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); border-radius: var(--radius-xl); }
   .waybill-detail-dialog:not([open]) { display: none; }
-  .waybill-detail-content { max-height: calc(100dvh - 48px); display: flex; flex-direction: column; }
-  .waybill-detail-head { align-items: center; padding: 16px 24px; }
+  .waybill-detail-content { max-height: calc(100dvh - 48px); display: flex; flex-direction: column; font-size: .875rem; }
+  .waybill-detail-head { align-items: center; padding: 14px 20px 12px; }
   .waybill-detail-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-  .waybill-detail-title-row .waybill-detail-title { font-size: 1.125rem; font-weight: 600; overflow-wrap: anywhere; }
-  .waybill-detail-date { color: var(--muted); margin-top: 8px; font-size: .8125rem; }
-  .waybill-detail-body { overflow-y: auto; min-height: 0; padding: 0 24px; }
-  .waybill-detail-section { padding: 20px 0; border-bottom: 1px solid var(--line); }
+  .waybill-detail-title-row .waybill-detail-title { font-size: 1.0625rem; font-weight: 600; overflow-wrap: anywhere; }
+  .waybill-detail-date { color: var(--muted); margin-top: 4px; font-size: .8125rem; }
+  .waybill-detail-body { overflow-y: auto; min-height: 0; padding: 0 20px; }
+  .waybill-detail-section { padding: 16px 0; border-bottom: 1px solid var(--line); }
   .waybill-detail-section:last-child { border-bottom: 0; }
   .waybill-detail-section h3 { margin: 0 0 12px; font-size: .875rem; font-weight: 600; color: var(--text-strong); }
   .waybill-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
-  .waybill-detail-grid--three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .waybill-detail-item { min-width: 0; }
-  .waybill-detail-label { margin-bottom: 4px; color: var(--muted); font-size: .8125rem; }
-  .waybill-detail-value { color: var(--text-strong); overflow-wrap: anywhere; white-space: pre-wrap; }
-  .waybill-detail-value.is-money { font-variant-numeric: tabular-nums; }
-  .waybill-party p { margin: 4px 0; overflow-wrap: anywhere; }
-  .waybill-party strong { font-weight: 600; color: var(--text-strong); }
-  .waybill-detail-times { display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: .8125rem; color: var(--muted); padding: 16px 0; }
-  .waybill-detail-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px 24px; border-top: 1px solid var(--line); background: var(--canvas); }
+  .waybill-parties { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 14px 0 12px; }
+  .waybill-party { min-width: 0; padding: 10px 12px; border-radius: var(--radius-lg); background: var(--surface); }
+  .waybill-party-role { margin: 0 0 4px; color: var(--muted); font-size: .75rem; font-weight: 500; }
+  .waybill-party-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+  .waybill-party-main strong { font-weight: 600; color: var(--text-strong); overflow-wrap: anywhere; }
+  .waybill-party-phone { color: var(--text); font-variant-numeric: tabular-nums; }
+  .waybill-party-address { margin: 4px 0 0; color: var(--text); font-size: .8125rem; line-height: 1.5; overflow-wrap: anywhere; }
+  .waybill-detail-facts { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 0 24px; padding: 4px 0 12px; border-bottom: 1px solid var(--line); }
+  .waybill-facts-block { min-width: 0; }
+  .waybill-facts-block h3 { margin: 0; padding: 8px 0 4px; color: var(--muted); font-size: .75rem; font-weight: 500; }
+  .waybill-kv { margin: 0; }
+  .waybill-kv-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: baseline; gap: 12px; padding: 4px 0; line-height: 1.5; }
+  .waybill-kv-row dt { color: var(--muted); font-size: .8125rem; }
+  .waybill-kv-row dd { margin: 0; color: var(--text-strong); overflow-wrap: anywhere; white-space: pre-wrap; }
+  .waybill-kv-row dd.is-money { text-align: right; font-variant-numeric: tabular-nums; }
+  .waybill-kv--remark { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .waybill-kv-empty { color: var(--muted); padding: 4px 0; }
+  .waybill-detail-times { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: .75rem; color: var(--muted); padding: 10px 0 12px; }
+  .waybill-detail-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--line); background: var(--canvas); }
   .waybill-detail-action-group { display: flex; gap: 8px; flex-wrap: wrap; }
   .waybill-detail-actions form { margin: 0; }
   .waybill-danger-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fef2f2; color: #b91c1c; cursor: pointer; }
   .waybill-danger-btn:hover { background: #fee2e2; }
   .waybill-danger-btn:disabled { opacity: .55; cursor: not-allowed; }
-  .waybill-detail-message, .waybill-print-status { margin: 12px 24px; }
-  .waybill-history summary { cursor: pointer; min-height: 40px; display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .waybill-detail-message, .waybill-print-status { margin: 12px 20px; }
+  .waybill-history.waybill-detail-section { padding: 4px 0; }
+  .waybill-history summary { cursor: pointer; min-height: 36px; display: flex; align-items: center; gap: 8px; font-size: .8125rem; font-weight: 600; color: var(--text-strong); }
   .waybill-history summary::before { content: "＋"; }
   .waybill-history[open] summary::before { content: "−"; }
   .waybill-history-list { margin: 0; padding-left: 20px; }
@@ -163,7 +174,7 @@
     .waybill-detail-content { max-height: calc(100dvh - 16px); }
     .waybill-detail-head, .waybill-detail-actions { padding: 16px; }
     .waybill-detail-body { padding: 0 16px; }
-    .waybill-detail-grid, .waybill-detail-grid--three { grid-template-columns: 1fr; }
+    .waybill-detail-grid, .waybill-parties, .waybill-detail-facts { grid-template-columns: 1fr; }
     .waybill-detail-actions { flex-wrap: wrap; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
     .waybill-detail-action-group { width: 100%; }
     .waybill-detail-action-group > * { flex: 1; }
@@ -185,7 +196,7 @@
 {%- endmacro %}
 
 {% macro detail_item(label, value, money=false) %}
-  <div class="waybill-detail-item"><div class="waybill-detail-label">{{ label }}</div><div class="waybill-detail-value{% if money %} is-money{% endif %}">{% if money and value is defined and value is not none and value|string != '' %}¥{{ value }}{% else %}{{ empty_dash(value) }}{% endif %}</div></div>
+  <div class="waybill-kv-row"><dt>{{ label }}</dt><dd{% if money %} class="is-money"{% endif %}>{% if money and value is defined and value is not none and value|string != '' %}¥{{ value }}{% else %}{{ empty_dash(value) }}{% endif %}</dd></div>
 {% endmacro %}
 
 {% macro detail_template(row) %}
@@ -199,26 +210,29 @@
     </header>
     <div class="waybill-detail-message notice" data-waybill-detail-message role="status" hidden></div>
     <div class="waybill-detail-body" data-waybill-read-view>
-      <section class="waybill-detail-section waybill-detail-grid">
-        <div class="waybill-party"><h3>发货方</h3><p><strong>{{ empty_dash(row.sender_name) }}</strong></p><p>{{ empty_dash(row.sender_phone) }}</p><p>{{ empty_dash(row.sender_address) }}</p></div>
-        <div class="waybill-party"><h3>收货方</h3><p><strong>{{ empty_dash(row.receiver_name) }}</strong></p><p>{{ empty_dash(row.receiver_phone) }}</p><p>{{ empty_dash(row.receiver_address) }}</p></div>
+      <section class="waybill-parties" aria-label="收发货方">
+        <div class="waybill-party"><h3 class="waybill-party-role">发货方</h3><div class="waybill-party-main"><strong>{{ empty_dash(row.sender_name) }}</strong><span class="waybill-party-phone">{{ empty_dash(row.sender_phone) }}</span></div><p class="waybill-party-address">{{ empty_dash(row.sender_address) }}</p></div>
+        <div class="waybill-party"><h3 class="waybill-party-role">收货方</h3><div class="waybill-party-main"><strong>{{ empty_dash(row.receiver_name) }}</strong><span class="waybill-party-phone">{{ empty_dash(row.receiver_phone) }}</span></div><p class="waybill-party-address">{{ empty_dash(row.receiver_address) }}</p></div>
       </section>
-      <section class="waybill-detail-section"><h3>货物信息</h3><div class="waybill-detail-grid waybill-detail-grid--three">
-        {{ detail_item('货物名称', row.goods_name_lines) }}{{ detail_item('件数', row.quantity_lines) }}{{ detail_item('包装', row.package_type_lines) }}
-        {{ detail_item('重量 / 体积', row.weight_volume) }}{{ detail_item('送货方式', row.delivery_method) }}
-        {{ detail_item('需要回单', '是' if row.receipt_required in [1, '1', true] else ('否' if row.receipt_required in [0, '0', false] else '无数据')) }}
-      </div></section>
-      <section class="waybill-detail-section"><h3>费用信息</h3><div class="waybill-detail-grid waybill-detail-grid--three">
-        {% for name, label in [('freight_fee', '运费'), ('transfer_fee', '中转费'), ('insurance_amount', '保价'), ('cod_amount', '代收')] %}
-          {% if row[name] is defined and row[name] is not none and row[name]|string != '' %}{{ detail_item(label, row[name], true) }}{% endif %}
-        {% endfor %}
-        {% if row.payment_method and ('到付' in row.payment_method or '提付' in row.payment_method) and (row.cod_amount or row.freight_fee) %}{{ detail_item('提付金额', row.pickup_payment_amount, true) }}{% endif %}
-        {% if (row.source == 'yunda' and row.transfer_fee) or (row.source != 'yunda' and row.freight_fee) %}{{ detail_item('开单成本', row.opening_cost, true) }}{% endif %}
-        {% if row.source in ['yunda', 'ronghui'] %}{% for name, label in [('pickup_fee', '接货费'), ('delivery_fee', '送货费')] %}
-          {% if row[name] is defined and row[name] is not none and row[name]|string != '' %}{{ detail_item(label, row[name], true) }}{% endif %}
-        {% endfor %}{% endif %}
-      </div></section>
-      <section class="waybill-detail-section"><h3>备注</h3><div class="waybill-detail-value">{{ empty_dash(row.remark) }}</div></section>
+      <div class="waybill-detail-facts">
+        <section class="waybill-facts-block"><h3>货物信息</h3><dl class="waybill-kv">
+          {{ detail_item('货物名称', row.goods_name_lines) }}{{ detail_item('件数', row.quantity_lines) }}{{ detail_item('包装', row.package_type_lines) }}
+          {{ detail_item('重量 / 体积', row.weight_volume) }}{{ detail_item('送货方式', row.delivery_method) }}
+          {{ detail_item('需要回单', '是' if row.receipt_required in [1, '1', true] else ('否' if row.receipt_required in [0, '0', false] else '无数据')) }}
+        </dl></section>
+        {% set fee_items %}
+          {% for name, label in [('freight_fee', '运费'), ('transfer_fee', '中转费'), ('insurance_amount', '保价'), ('cod_amount', '代收')] %}
+            {% if row[name] is defined and row[name] is not none and row[name]|string != '' %}{{ detail_item(label, row[name], true) }}{% endif %}
+          {% endfor %}
+          {% if row.payment_method and ('到付' in row.payment_method or '提付' in row.payment_method) and (row.cod_amount or row.freight_fee) %}{{ detail_item('提付金额', row.pickup_payment_amount, true) }}{% endif %}
+          {% if (row.source == 'yunda' and row.transfer_fee) or (row.source != 'yunda' and row.freight_fee) %}{{ detail_item('开单成本', row.opening_cost, true) }}{% endif %}
+          {% if row.source in ['yunda', 'ronghui'] %}{% for name, label in [('pickup_fee', '接货费'), ('delivery_fee', '送货费')] %}
+            {% if row[name] is defined and row[name] is not none and row[name]|string != '' %}{{ detail_item(label, row[name], true) }}{% endif %}
+          {% endfor %}{% endif %}
+        {% endset %}
+        <section class="waybill-facts-block"><h3>费用信息</h3>{% if fee_items | trim %}<dl class="waybill-kv">{{ fee_items }}</dl>{% else %}<p class="waybill-kv-empty">无数据</p>{% endif %}</section>
+      </div>
+      <dl class="waybill-kv waybill-kv--remark">{{ detail_item('备注', row.remark) }}</dl>
       {% if row.source == 'manual' %}<details class="waybill-detail-section waybill-history" data-waybill-history><summary>修改记录</summary><div data-waybill-history-body aria-live="polite"></div></details>{% endif %}
       <div class="waybill-detail-times"><span>创建时间：{{ row.created_at or '无数据' }}</span><span>最近更新：{{ row.updated_at or '无数据' }}</span></div>
     </div>
@@ -784,6 +798,7 @@
       detail.setAttribute("open", "");
     }
     bindHistory(slot);
+    window.BoyiWaybillPrint?.prepare?.();
     window.ConsoleUI?.refreshIcons?.();
     return true;
   }
@@ -1043,6 +1058,7 @@
       };
       button.disabled = true;
       setStatus("正在读取运单并打开打印预览…");
+      window.BoyiWaybillPrint?.prepare?.();
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 15000);
       try {
