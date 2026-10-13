@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tools import split_pending_problem_upload_tool as legacy_action
+from tests.first_party_action_payload_support import load_first_party_action
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,14 +33,8 @@ def _load_action():
     previous = sys.modules.get("boyi_plugin_result")
     sys.modules["boyi_plugin_result"] = result_module
     result_spec.loader.exec_module(result_module)
-    action_spec = importlib.util.spec_from_file_location(
-        "split_pending_problem_upload_plugin_action",
-        ACTION_SOURCE,
-    )
-    assert action_spec is not None and action_spec.loader is not None
-    action_module = importlib.util.module_from_spec(action_spec)
     try:
-        action_spec.loader.exec_module(action_module)
+        action_module = load_first_party_action("split_pending_problem_upload")
     finally:
         if previous is None:
             sys.modules.pop("boyi_plugin_result", None)

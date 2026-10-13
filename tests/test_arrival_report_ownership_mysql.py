@@ -1,31 +1,31 @@
-"""Actual MySQL join: a verified sheet alone cannot claim statistics ownership."""
+"""Historical ownership joins and current V2 replacement through actual MySQL."""
 from __future__ import annotations
 
 import json
 import os
-import asyncio
 from copy import deepcopy
+from hashlib import sha256
 from pathlib import Path
-import socket
+import time
 from uuid import uuid4
 
 import pytest
 
 from plugin_core_adapters import arrival_report
 from plugin_core_adapters import arrival, first_party
-from agent.automation_plugins.broker import LocalBrokerCapabilityIssuer, LocalCoreAutomationBroker
-from agent.automation_plugins.core_adapter import AccountManagerSessionResolver, RegisteredCoreAutomationBrokerAdapter
-from agent.automation_plugins.first_party import resolve_first_party_manifests
-from agent.orchestration.execution_resources import EXECUTION_ACTION_SCOPES
-from agent.tool_registry import ToolRegistry
-from shared.automation_plugin_repository import AutomationPluginRepository
-from shared.execution_resource_journal import EXECUTION_RESOURCE_KEYS
+from agent.automation_plugins.arrival_connectors_v2 import build_arrival_connectors
+from agent.automation_plugins.connector_registry import ConnectorRegistry
+from agent.automation_plugins.list_connectors_v2 import build_list_connectors
+from agent.automation_plugins.service_v2_projection import _contribution_backend
+from service_v2_plugins._shared.build_zip import build_plugin_zip
 from shared.orchestration_repository_support import _json_hash
-from tests.test_arrival_report_ownership import DAY, ACCOUNT, _publication
-from tests.first_party_action_payload_support import load_first_party_action
+from tests.test_arrival_report_ownership import DAY, _publication
+from tests.direct_invocation_fixture import DirectFixture
 from tests.test_arrival_production_adapter import _record
-from tests.test_first_party_action_payloads import _ExactResourceResolver
 from tests.test_legacy_unknown_scope_migration_mysql import database as database
+from tests.test_v2_maintenance_mysql import ACTOR, database as v2_database  # noqa: F401
+from tests.v32_acceptance.management_fixture import ManagementFixture
+from tests.v32_acceptance.problem_fixture import ACCOUNTS, ProblemAccounts
 
 
 pytestmark = pytest.mark.skipif(os.getenv("RUN_MYSQL_INTEGRATION") != "1", reason="requires isolated MySQL")
@@ -123,8 +123,16 @@ def test_mysql_requires_completed_run_verified_step_and_final_same_day_snapshot(
             connection.commit()
 
 
-def test_real_plugins_broker_and_mysql_list_statistics_list_keep_statistical_sheet(database, monkeypatch, tmp_path):
+def test_real_v2_plugins_broker_and_mysql_latest_list_replaces_shared_sheet(v2_database, monkeypatch, tmp_path):
     """Only TMS/Feishu terminal protocols use fixtures; SQL and algorithms run."""
+    fixture, name = v2_database
+    monkeypatch.setenv("AGENT_DB_NAME", name)
+
+    def connect():
+        return fixture.pymysql.connect(host=fixture.host, port=fixture.port, user=fixture.user,
+            password=fixture.password, database=name, charset="utf8mb4", autocommit=False,
+            cursorclass=fixture.pymysql.cursors.DictCursor)
+
     source = [{**_record("R12345678901"), "recipient_address": "complete fixture delivery address"}]
     monkeypatch.setattr(first_party, "_arrive_list_read_page", lambda *_args: {
         "items": deepcopy(source), "returned": len(source), "total": len(source), "total_authoritative": True,
@@ -138,9 +146,12 @@ def test_real_plugins_broker_and_mysql_list_statistics_list_keep_statistical_she
             "resource_kind": "feishu_sheet", "spreadsheet_token": "fixture-book", "sheet_id": resource_id,
             "range": f"{resource_id}!A2:R100", "snapshot_range": f"{resource_id}!A2:S100",
             "clear_range": f"{resource_id}!A2:S100", "title_range": f"{resource_id}!A1:S1",
-            "_meta": {"resource_key": resource_id},
         }
     resources["fixture-split-resource"]["range"] = "fixture-split-resource!A1:S100"
+    for resource_id, resource in resources.items():
+        resource["_meta"] = {"resource_key": resource_id, "configuration_version": 1,
+            "source": "explicit isolated resource fixture",
+            "config_sha256": sha256(json.dumps(resource, sort_keys=True).encode()).hexdigest()}
     monkeypatch.setattr(arrival, "_load_resource", lambda key: deepcopy(resources[key]))
     from agent import workflow_resource_store
     monkeypatch.setattr(workflow_resource_store, "get_saved_workflow_resource", lambda key: deepcopy(resources[key]))
@@ -165,119 +176,106 @@ def test_real_plugins_broker_and_mysql_list_statistics_list_keep_statistical_she
 
     monkeypatch.setattr(arrival, "_invoke_feishu", feishu)
 
-    class Manager:
-        def require_active_binding_descriptor(self, account_id):
-            assert account_id == ACCOUNT
-            return {"account_id": ACCOUNT, "system": "ronghui", "account_purpose": "general", "session_profile": "fixture"}
-
-    manager = Manager()
+    accounts = ProblemAccounts()
+    reviewed = first_party.build_production_first_party_core_handler_map(
+        cursor_secret=b"fixture-report-publication-secret", account_manager=accounts)
+    registry = ConnectorRegistry((*build_arrival_connectors(reviewed), *build_list_connectors(reviewed)))
     root = Path(__file__).resolve().parents[1]
-    manifests = resolve_first_party_manifests(ToolRegistry(root / "agent/tools/registry.yaml"))
+    with ManagementFixture(connection_factory=connect, runtime_root=tmp_path / "host",
+            account_manager=accounts, resource_provider=resources.get,
+            enable_directory_faults=False, connector_registry=registry,
+            contribution_backend_status=_contribution_backend) as host:
+        projects = {}
+        for plugin_id, account_role, bindings, config in (
+            ("sync_arrive_list", "arrive_list_ronghui", {
+                "arrive_primary_sheet": "fixture-primary-resource",
+                "arrive_secondary_sheet": "fixture-secondary-resource"}, {"target_date": DAY}),
+            ("sync_arrival_stats", "arrival_stats_tms", {
+                "arrival_stats_primary_sheet": "fixture-primary-resource",
+                "arrival_stats_secondary_sheet": "fixture-secondary-resource",
+                "arrival_stats_split_pending_sheet": "fixture-split-resource",
+                "arrival_stats_archive_sheet": "fixture-split-resource"}, {
+                    "target_date": DAY, "pending_sheet_disabled": True, "archive_snapshot": False}),
+        ):
+            archive = build_plugin_zip(root / "agent/service_v2_plugins" / (plugin_id + "_v2"),
+                tmp_path / (plugin_id + ".zip")).read_bytes()
+            installed = host.management.install_service_v2(archive, request_id=str(uuid4()),
+                transport_package_sha256=sha256(archive).hexdigest(), actor=ACTOR,
+                raw_intent=json.dumps({"instance_name": plugin_id, "permissions_confirmed": True}))
+            project = projects[plugin_id] = installed["automation_id"]
+            entry = host.catalog.require(project)
+            host.configuration.save(project, config=config,
+                account_bindings={account_role: [ACCOUNTS["account_id"]]}, resource_bindings=bindings,
+                enabled_entrypoints=tuple(key for key, value in entry.invocation_contracts.items()
+                    if value.get("contribution_kind") == "console"),
+                schedule={"kind": "none", "times": [], "enabled": False}, device_id=None,
+                actor_id=ACTOR.actor_id, actor_role="super_admin", request_id=str(uuid4()),
+                expected_project_configuration_version=entry.project_config_version)
+            host.targets.reconcile_project(project)
+            entry = host.catalog.require(project)
+            host.management.set_enabled(project, enabled=True, expected_record_version=entry.record_version,
+                request_id=str(uuid4()), actor=ACTOR)
+            host.targets.reconcile_project(project)
 
-    def record_write(receipt):
-        with database.helper._connection() as connection:
-            AutomationPluginRepository(connection).record_generation_write_attempt_row(receipt)
-            connection.commit()
+        with DirectFixture(host, directory=tmp_path / "ipc", saved_resource_provider=resources.get) as runtime:
+            def run_plugin(plugin_id):
+                receipt = host.policy.invoke_console(projects[plugin_id], request_id=str(uuid4()), actor=ACTOR)
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    result = runtime.service.get(receipt["invocation_id"])
+                    if result["status"] not in {"STARTING", "ACCEPTED", "RUNNING"}:
+                        break
+                    time.sleep(.02)
+                assert result["status"] == "COMPLETED", (result, runtime.broker_errors)
+                with connect() as connection, connection.cursor() as cursor:
+                    cursor.execute("SELECT operation,action,outcome FROM automation_write_attempt_receipts WHERE invocation_id=%s",
+                        (receipt["invocation_id"],))
+                    writes = cursor.fetchall()
+                assert writes and all(row["outcome"] == "WRITE_VERIFIED" for row in writes)
+                return result["result"], writes
 
-    issuer = LocalBrokerCapabilityIssuer(tmp_path / "arrival-report.sock", write_attempt_recorder=record_write)
-    adapter = RegisteredCoreAutomationBrokerAdapter(
-        handlers=first_party.build_production_first_party_core_handler_map(
-            cursor_secret=b"fixture-report-publication-secret", account_manager=manager,
-        ), account_resolver=AccountManagerSessionResolver(manager),
-        resource_resolver=_ExactResourceResolver({key: "feishu_sheet" for key in resources}),
-    )
-
-    async def run_plugin(plugin_id, day):
-        manifest = manifests[plugin_id]
-        mapping = manifest.to_mapping()
-        binding = ({"arrive_primary_sheet": "fixture-primary-resource", "arrive_secondary_sheet": "fixture-secondary-resource"}
-                   if plugin_id == "sync_arrive_list" else {
-                       "arrival_stats_primary_sheet": "fixture-primary-resource", "arrival_stats_secondary_sheet": "fixture-secondary-resource",
-                       "arrival_stats_split_pending_sheet": "fixture-split-resource", "arrival_stats_archive_sheet": "fixture-split-resource",
-                   })
-        seeded = database.seed(run_status="RUNNING", step_status="RUNNING", lease_outcome="RUNNING",
-                               receipt_outcome="NOT_APPLIED")
-        metadata = {"account_bindings": {"account_id": [ACCOUNT]}, "resource_bindings": binding}
-        with database.helper._connection() as connection, connection.cursor() as cursor:
-            cursor.execute("UPDATE automation_project_generation_leases SET runtime_metadata_json=%s,runtime_metadata_sha256=%s WHERE lease_id=%s",
-                           (json.dumps(metadata), _json_hash(metadata), seeded["lease_id"]))
-            connection.commit()
-        scopes = {}
-        for role, key in binding.items():
-            scopes[("network.request", "feishu.sheet.replace", role)] = (("physical-write", "feishu_sheet",
-                arrival_report._sha("fixture-book"), arrival_report._sha(key)),)
-        all_keys = tuple(sorted({key for group in scopes.values() for key in group}))
-        token_keys = EXECUTION_RESOURCE_KEYS.set(all_keys)
-        token_scopes = EXECUTION_ACTION_SCOPES.set(scopes)
-        try:
-            capability = issuer.issue(
-                automation_id=database.project_id, plugin_version=manifest.version, tool_name=plugin_id,
-                ttl_seconds=120, runtime_permissions=mapping["runtime_permissions"],
-                account_roles=mapping["account_roles"], resource_roles=mapping["resource_roles"],
-                account_bindings={"account_id": [ACCOUNT]}, resource_bindings=binding,
-                write_attempt_context={"automation_id": database.project_id, "plugin_id": plugin_id, "generation": 1,
-                    "lease_id": seeded["lease_id"], "orchestration_run_id": seeded["run_id"], "step_id": seeded["step_id"]},
-            )
-        finally:
-            EXECUTION_RESOURCE_KEYS.reset(token_keys)
-            EXECUTION_ACTION_SCOPES.reset(token_scopes)
-
-        def call(operation, *, action, role, arguments):
-            request = {"schema_version": 1, "capability": capability, "request_id": str(uuid4()), "operation": operation,
-                       "action": action, "role": role, "arguments": arguments}
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.connect(str(issuer.broker_socket_path))
-                client.sendall(json.dumps(request).encode() + b"\n")
-                with client.makefile("rb") as stream:
-                    response = json.loads(stream.readline())
-            assert response["ok"] is True, response
-            return response["data"]
-
-        action = load_first_party_action(plugin_id)
-        arguments = {"target_date": day}
-        if plugin_id == "sync_arrival_stats":
-            arguments.update(pending_sheet_disabled=True, archive_snapshot=False)
-        result = await asyncio.to_thread(action.run_action, arguments, call)
-        assert result["status"] == "SUCCESS"
-        observations = issuer.broker_call_observations(capability)
-        written = [row for row in observations if row["write_started"]]
-        assert written and all(row["result"].get("committed") is True for row in written)
-        # The workflow result is already verified at every production port;
-        # publish its terminal fixture state to exercise the real reader join.
-        with database.helper._connection() as connection, connection.cursor() as cursor:
-            cursor.execute("UPDATE automation_write_attempt_receipts SET outcome='WRITE_VERIFIED' WHERE lease_id=%s AND outcome='STARTED'", (seeded["lease_id"],))
-            cursor.execute("UPDATE automation_project_generation_leases SET outcome='WRITE_VERIFIED' WHERE lease_id=%s", (seeded["lease_id"],))
-            cursor.execute("UPDATE agent_runs SET status='COMPLETED',finished_at=UTC_TIMESTAMP(6) WHERE run_id=%s", (seeded["run_id"],))
-            cursor.execute("UPDATE agent_run_steps SET status='COMPLETED',postcondition_status='VERIFIED' WHERE step_id=%s", (seeded["step_id"],))
-            connection.commit()
-        issuer.revoke(capability)
-        return result, written
-
-    async def scenario():
-        broker = LocalCoreAutomationBroker(issuer=issuer, adapter=adapter)
-        await broker.start()
-        try:
-            first, _ = await run_plugin("sync_arrive_list", DAY)
+            first, _ = run_plugin("sync_arrive_list")
             assert first["data"]["bill_codes"] == 1
             assert len(cells["fixture-primary-resource"][1]) == 18
-            stats, _ = await run_plugin("sync_arrival_stats", DAY)
+            stats, _ = run_plugin("sync_arrival_stats")
             assert stats["data"]["records"] == 1
             assert cells["fixture-primary-resource"][2][18] == 0
-            before = deepcopy(cells)
+            split_before = deepcopy(cells["fixture-split-resource"])
+            source[0]["goods_name"] = "latest fixture goods"
+            updated, _ = run_plugin("sync_arrive_list")
+            assert updated["data"]["bill_codes"] == 1
+            assert updated["data"]["statistics_sheets_preserved"] == []
+            assert len(cells["fixture-primary-resource"][1]) == 18
+            assert len(cells["fixture-primary-resource"][2]) == 18
+            assert cells["fixture-primary-resource"][2][1] == "latest fixture goods"
+            assert cells["fixture-split-resource"] == split_before
+            # An authoritative empty source is also the latest valid result.
             source.clear()
             writes_before = len(feishu_writes)
-            last, writes = await run_plugin("sync_arrive_list", DAY)
+            last, writes = run_plugin("sync_arrive_list")
             assert last["data"]["bill_codes"] == 0
-            assert last["data"]["statistics_sheets_preserved"] == ["arrive_primary_sheet", "arrive_secondary_sheet"]
-            assert cells == before and len(feishu_writes) == writes_before
-            assert {row["action"] for row in writes} == {"waybill.snapshot.replace", "arrival.forecast_snapshot.replace"}
+            assert last["data"]["statistics_sheets_preserved"] == []
+            for resource_id in ("fixture-primary-resource", "fixture-secondary-resource"):
+                assert len(cells[resource_id][1]) == 18
+                assert all(not any(value not in ("", None) for value in row)
+                    for number, row in cells[resource_id].items() if number > 1)
+            assert cells["fixture-split-resource"] == split_before
+            assert set(feishu_writes[writes_before:]) == {"fixture-primary-resource", "fixture-secondary-resource"}
+            assert {row["operation"] for row in writes} == {"service.invoke"}
+            assert sorted(row["action"] for row in writes) == ["forecast_replace", "replace", "replace", "waybill_replace"]
             from tools.daily_sign_store import snapshot_fingerprint
             forecast = arrival._read_forecast_runs(DAY)
             assert any(row["row_count"] == 0 and row["fingerprint"] == snapshot_fingerprint([]) for row in forecast)
-            following, _ = await run_plugin("sync_arrive_list", "2026-09-09")
+            project = projects["sync_arrive_list"]
+            entry = host.catalog.require(project)
+            host.management.save_plugin_settings(project, config={"target_date": "2026-09-09"},
+                account_bindings={"arrive_list_ronghui": [ACCOUNTS["account_id"]]},
+                resource_bindings={"arrive_primary_sheet": "fixture-primary-resource",
+                    "arrive_secondary_sheet": "fixture-secondary-resource"}, request_id=str(uuid4()),
+                expected_project_configuration_version=entry.project_config_version, actor=ACTOR)
+            host.targets.reconcile_project(project)
+            following, _ = run_plugin("sync_arrive_list")
             assert following["data"]["statistics_sheets_preserved"] == []
             assert len(feishu_writes) > writes_before
-        finally:
-            await broker.stop()
-
-    asyncio.run(scenario())
+            assert cells["fixture-split-resource"] == split_before
+            assert arrival._read_forecast_runs(DAY) == forecast

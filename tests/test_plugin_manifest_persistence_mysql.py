@@ -14,7 +14,7 @@ from agent.automation_plugins.mysql_repository import MySQLAutomationPluginRepos
 from agent.automation_plugins.package_v2 import verify_unsigned_plugin_zip_v2
 from agent.automation_plugins.storage import FilesystemPluginStorage, LockedVirtualEnvironmentBuilder
 from agent.automation_plugins.service_v2_contract import ServiceV2ProjectContract
-from service_v2_plugins._shared.build_zip import build_plugin_zip
+from tests.service_v2_package_fixture import build_production_plugin_fixture
 from shared.automation_plugin_repository import AutomationPluginRepository
 from shared.orchestration_repository import OrchestrationRepository
 from shared.orchestration_repository_support import IdempotencyConflict, OrchestrationPersistenceError, _json_param
@@ -39,7 +39,7 @@ class NoSignatureForV2:
 
 @pytest.mark.parametrize("plugin_id", PLUGINS)
 def test_actual_zip_install_and_response_retry_keep_exact_manifest(database, tmp_path, plugin_id):
-    package = build_plugin_zip(SOURCES / plugin_id, tmp_path / "plugin.zip").read_bytes()
+    package = build_production_plugin_fixture(SOURCES / plugin_id, tmp_path / "plugin.zip").read_bytes()
     package_sha = hashlib.sha256(package).hexdigest()
     verified = verify_unsigned_plugin_zip_v2(package, transport_sha256=package_sha)
     orchestration = OrchestrationRepository(lambda: connection(database), database.pymysql.cursors.DictCursor)

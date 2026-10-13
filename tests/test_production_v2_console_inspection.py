@@ -9,7 +9,7 @@ import pytest
 from agent.automation_plugins.inspection_v2 import service_v2_wizard_projection
 from agent.automation_plugins.package_v2 import verify_unsigned_plugin_zip_v2
 from console.services.automation_plugin_management import AutomationPluginManagementServiceMixin
-from service_v2_plugins._shared.build_zip import build_plugin_zip
+from tests.service_v2_package_fixture import build_production_plugin_fixture
 
 
 SOURCES = Path(__file__).resolve().parents[1] / "agent" / "service_v2_plugins"
@@ -18,7 +18,7 @@ normalize = AutomationPluginManagementServiceMixin._normalize_service_v2_inspect
 
 
 def projection(plugin_id, tmp_path):
-    path = build_plugin_zip(SOURCES / plugin_id, tmp_path / f"{plugin_id}.zip")
+    path = build_production_plugin_fixture(SOURCES / plugin_id, tmp_path / f"{plugin_id}.zip")
     raw = path.read_bytes()
     verified = verify_unsigned_plugin_zip_v2(raw, transport_sha256=hashlib.sha256(raw).hexdigest())
     return service_v2_wizard_projection(verified)

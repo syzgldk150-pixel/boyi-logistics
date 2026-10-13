@@ -1671,14 +1671,15 @@ def test_arrive_payload_runs_closed_production_primitives_through_write_verifier
 @pytest.mark.parametrize(
     "force_sheet_readback_unknown",
     [False, True],
-    ids=["verified", "sheet-readback-unknown"],
+    ids=["legacy-projection-rejected", "sheet-readback-unknown"],
 )
-def test_arrival_stats_runs_closed_production_primitives_through_write_verifier(
+def test_retired_arrival_stats_preserves_unknown_writes_when_current_contract_rejects(
     manifests,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     force_sheet_readback_unknown: bool,
 ) -> None:
+    """Frozen V1 input must not bypass the current plugin-owned projection contract."""
     manifest = manifests["sync_arrival_stats"]
     install_root = tmp_path / "arrival-stats-generation-1"
     package_root = install_root / "package"
@@ -2022,11 +2023,21 @@ def test_arrival_stats_runs_closed_production_primitives_through_write_verifier(
             await broker.stop()
 
     raw, verified = asyncio.run(run())
+    assert raw["status"] == "FAILED"
+    assert raw["error"]["code"] == "WRITE_OUTCOME_UNKNOWN"
+    assert raw["error"]["retryable"] is False
+    assert verified.accepted is False
+    assert leases.finalized == []
+    assert leases.released == [RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN]
+    receipts = leases.write_attempt_receipts
+    assert receipts
+    assert all(len(row["target_ref_sha256"]) == 64 and len(row["argument_sha256"]) == 64 for row in receipts)
+    # The capture stores pre-write recorder inputs; an interrupted payload
+    # must not add a successful finalization to these durable attempt facts.
+    assert all("outcome" not in row and "evidence_sha256" not in row for row in receipts)
+    assert {row["action"] for row in receipts} >= {"scan.snapshot.replace", "waybill.snapshot.replace", "feishu.sheet.replace"}
+    assert not {"split_pending.snapshot.refresh", "arrival.snapshot.replace"} & {row["action"] for row in receipts}
     if force_sheet_readback_unknown:
-        assert raw["status"] == "FAILED"
-        assert raw["error"]["code"] == "WRITE_OUTCOME_UNKNOWN"
-        assert raw["error"]["retryable"] is False
-        assert verified.accepted is False
         assert call_order == [
             "arrive-source",
             "scan-source",
@@ -2040,20 +2051,10 @@ def test_arrival_stats_runs_closed_production_primitives_through_write_verifier(
             "sheet:stats-primary-resource:stats",
         ]
         return
-    assert isinstance(raw, GenerationBoundResult), json.dumps(raw, sort_keys=True)
-    assert raw["status"] == "SUCCESS"
-    assert raw["data"]["records"] == 1
-    assert raw["data"]["count_result"]["arrived_nonzero"] == 1
-    assert "account_id" not in raw["meta"]
+    assert "BROKER_ARGUMENT_INVALID" in raw["error"]["message"]
     assert "stats-account" not in json.dumps(raw, sort_keys=True)
-    assert raw.generation_verification.account_ids == ("stats-account",)
-    assert verified.accepted is True
-    assert verified.code == "VERIFIED"
-    assert verified.result is not None
-    assert verified.result.meta["account_id"] == f"binding-set:{_sha(account_bindings)}"
-    assert leases.released == [RuntimeLeaseOutcome.VERIFYING]
-    assert len(leases.finalized) == 1
-    assert leases.finalized[0]["outcome"] == RuntimeLeaseOutcome.WRITE_VERIFIED
+    assert split_records == [] and arrival_runs == []
+    assert stored_waybills == [detail_record]
     assert call_order == [
         "arrive-source",
         "scan-source",
@@ -2069,9 +2070,6 @@ def test_arrival_stats_runs_closed_production_primitives_through_write_verifier(
         "pending-read",
         "sheet:stats-pending-resource:pending",
         "sheet:stats-archive-resource:archive",
-        "split-pending",
-        "sheet:stats-split-pending-resource:split_pending",
-        "arrival-snapshot",
     ]
     assert authenticated and set(authenticated) == {"stats-account"}
 

@@ -14,9 +14,9 @@ import pytest
 
 from agent.automation_plugins.connector_registry import ConnectorRegistry
 from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
-from agent.automation_plugins.developer_v2 import build_service_v2_package
 from agent.automation_plugins.errors import PluginExecutionError
 from tests.service_v2_production_protocol_support import PackagedConnectorHost
+from tests.service_v2_package_fixture import build_production_plugin_fixture
 from tests.test_account_context import add_cookie, setup_account
 from tests.test_quote_best_v2 import FakeClient as BestFixture
 from tests.test_quote_ronghui_v2 import FakeClient as RonghuiFixture
@@ -43,7 +43,7 @@ class BoundAccounts:
 
 
 def packaged_host(tmp_path, monkeypatch, *, unavailable=(), wrong_yunda=False):
-    monkeypatch.setattr("tests.service_v2_production_protocol_support.build_plugin_zip", build_service_v2_package)
+    monkeypatch.setattr("tests.service_v2_production_protocol_support.build_plugin_zip", build_production_plugin_fixture)
     fixtures = {"ronghui": RonghuiFixture(), "yunda": YundaFixture(), "best": BestFixture()}
     # Use the existing real account.context handler and only synthetic saved state.
     session, closed, _ = setup_account(monkeypatch)

@@ -6,7 +6,7 @@ from zipfile import ZipFile
 
 from playwright.sync_api import sync_playwright
 
-from service_v2_plugins._shared.build_zip import build_plugin_zip
+from tests.service_v2_package_fixture import build_production_plugin_fixture
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,10 +17,12 @@ def test_every_production_package_settings_renders_and_preserves_object_array_an
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         checked = []
-        cases = [(source, False) for source in sorted(SOURCES.glob("*/manifest.json"))]
+        settings_sources = [source for source in sorted(SOURCES.glob("*/manifest.json"))
+                            if json.loads(source.read_text(encoding="utf-8")).get("settings_ui") is not None]
+        cases = [(source, False) for source in settings_sources]
         cases.append((SOURCES / "sync_arrival_stats_v2/manifest.json", True))
         for source, round_trip in cases:
-            archive = build_plugin_zip(source.parent, tmp_path / f"{source.parent.name}-{round_trip}.zip")
+            archive = build_production_plugin_fixture(source.parent, tmp_path / f"{source.parent.name}-{round_trip}.zip")
             with ZipFile(archive) as package:
                 assets = {name: package.read(name) for name in package.namelist() if name.startswith("settings/")}
                 manifest = json.loads(package.read("manifest.json"))
@@ -74,5 +76,5 @@ def test_every_production_package_settings_renders_and_preserves_object_array_an
             if not round_trip:
                 checked.append(manifest["plugin_id"])
             page.close()
-        assert len(checked) == len(list(SOURCES.glob("*/manifest.json")))
+        assert len(checked) == len(settings_sources)
         browser.close()

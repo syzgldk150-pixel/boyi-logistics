@@ -12,13 +12,17 @@ from tests.mysql_database_cleanup import drop_test_database
 pytestmark = pytest.mark.skipif(os.getenv('RUN_MYSQL_INTEGRATION') != '1', reason='isolated MySQL required')
 
 
-def test_053_upgrade_preserves_all_old_rows_and_reentry_keeps_write_facts():
+def test_053_upgrade_preserves_all_old_rows_and_reentry_keeps_write_facts(monkeypatch):
     helper = type('ProblemIntentUpgrade', (support.MySqlOrchestrationIntegrationTests,), {})
     helper.pymysql = pymysql
     helper.host, helper.port = os.environ['AGENT_DB_HOST'], int(os.environ['AGENT_DB_PORT'])
     helper.user, helper.password = os.environ['AGENT_DB_USER'], os.environ['AGENT_DB_PASS']
     helper.database = 'problem_upgrade_' + uuid4().hex + '_test'
     helper.runner = support._load_migration_runner()
+    migrations = [item for item in helper.runner.discover_migrations() if item[0] <= '053']
+    # This upgrade contract ends at 053; later migrations deliberately change
+    # business columns and have their own preservation/backup checks.
+    monkeypatch.setattr(helper.runner, 'discover_migrations', lambda: migrations)
     assert helper.host == '127.0.0.1'
     with helper._server_connection() as connection, connection.cursor() as cursor:
         cursor.execute(f'CREATE DATABASE `{helper.database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci')
@@ -45,8 +49,7 @@ def test_053_upgrade_preserves_all_old_rows_and_reentry_keeps_write_facts():
                 result = {}
                 for table in tables:
                     if table != 'schema_migrations':
-                        # Later migrations may add fields (054 sender_address);
-                        # every pre-upgrade field and row must remain identical.
+                        # Every pre-053 field and row must remain identical.
                         cursor.execute(f'SELECT {original_columns[table]} FROM `{table}`')
                         result[table] = sorted(cursor.fetchall(), key=repr)
                 return result

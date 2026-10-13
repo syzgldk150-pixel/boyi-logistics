@@ -267,7 +267,9 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
                             data = original.read(item.filename)
                             if item.filename == "manifest.json":
                                 manifest = json.loads(data)
-                                manifest["version"] = "2.0.99"
+                                major, minor, patch = map(int, manifest["version"].split("."))
+                                upgraded_version = f"{major}.{minor}.{patch + 1}"
+                                manifest["version"] = upgraded_version
                                 data = json.dumps(manifest, ensure_ascii=False).encode()
                             updated.writestr(item, data)
                     upgraded_zip = destination.getvalue()
@@ -280,7 +282,7 @@ def test_installed_migration_transfers_only_after_verified_direct_call(database,
                         host.management.upgrade(target, upgraded_zip, request_id=str(uuid4()),
                             expected_record_version=retired.record_version,
                             transport_package_sha256=sha256(upgraded_zip).hexdigest(), actor=ACTOR)
-                    assert host.catalog.require(target).installed_version == "2.0.99"
+                    assert host.catalog.require(target).installed_version == upgraded_version
                     if not reconcile_before_config:
                         from agent.automation_plugins.runtime_repository import snapshot_to_row
                         runtime = host.runtime_repository.get_project_runtime(target)

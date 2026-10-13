@@ -305,19 +305,19 @@ class WorkflowRunnerReleaseHoldTests(unittest.TestCase):
     def test_core_browser_tools_share_the_default_single_browser_lane(self):
         async def exercise() -> None:
             runner = _runner(_ClaimRepository())
-            price_step = _step(
+            tracking_step = _step(
                 operation=OperationType.READ,
                 account_id=None,
-                tool_name="get_price",
+                tool_name="track_waybill",
             )
             clock_step = _step(
                 operation=OperationType.EXTERNAL_WRITE,
                 account_id="clock-account",
                 tool_name="clock_in_dual",
             )
-            price_release = await runner._acquire_execution_slot(
-                price_step,
-                _plan(price_step),
+            tracking_release = await runner._acquire_execution_slot(
+                tracking_step,
+                _plan(tracking_step),
                 {"heavy": True},
             )
             clock_slot = asyncio.create_task(
@@ -331,7 +331,7 @@ class WorkflowRunnerReleaseHoldTests(unittest.TestCase):
             with self.assertRaises(_ResourceWait):
                 await clock_slot
 
-            price_release()
+            tracking_release()
             clock_release = await runner._acquire_execution_slot(clock_step, _plan(clock_step), {"heavy": False})
             clock_release()
 
