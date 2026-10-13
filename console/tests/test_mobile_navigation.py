@@ -1,3 +1,4 @@
+import importlib.util
 import io
 import json
 import sys
@@ -215,7 +216,16 @@ class MobileNavigationTests(unittest.TestCase):
     def test_migration_is_registered_and_idempotent_without_runtime_ddl(self):
         migration = PROJECT_ROOT / "agent" / "migrations" / "008_admin_ui_preferences.sql"
         source = migration.read_text(encoding="utf-8")
-        from scripts.run_migrations import discover_migrations, split_sql_statements
+        # Load by path: the Console job puts only the repository root on
+        # sys.path, the root gate also puts agent/ there, and "agent" or
+        # "scripts" then name different packages.
+        spec = importlib.util.spec_from_file_location(
+            "_console_test_run_migrations", PROJECT_ROOT / "agent" / "scripts" / "run_migrations.py"
+        )
+        run_migrations = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(run_migrations)
+        discover_migrations = run_migrations.discover_migrations
+        split_sql_statements = run_migrations.split_sql_statements
 
         self.assertTrue(migration.is_file())
         self.assertIn("information_schema.COLUMNS", source)
