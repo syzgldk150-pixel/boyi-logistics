@@ -154,8 +154,49 @@ class WaybillQueryTemplateTests(unittest.TestCase):
         )
         cls.template = cls.env.get_template("waybills.html")
 
-    def test_template_renders_search_summary_and_table(self):
-        html = self.template.render(
+    @staticmethod
+    def _sample_row(**overrides):
+        row = {
+            "id": 1,
+            "waybill_no": "00000001",
+            "open_date": "2026/05/12",
+            "created_at": "2026-05-12 10:00:00",
+            "updated_at": "2026-05-12 10:00:00",
+            "destination_site": "杭州余杭",
+            "receiver_name": "王小明",
+            "receiver_phone": "13812345678",
+            "receiver_address": "浙江省杭州市余杭区",
+            "sender_name": "李建国",
+            "sender_phone": "13987654321",
+            "sender_address": "湖南省邵阳市测试路8号",
+            "goods_name_lines": "电子产品",
+            "package_type_lines": "纸箱",
+            "quantity_lines": "1件",
+            "weight_volume": "2.50kg",
+            "freight_fee": "20.00",
+            "pickup_fee": "",
+            "delivery_fee": "5.00",
+            "transfer_fee": "",
+            "payment_method": "到付",
+            "delivery_method": "送货",
+            "insurance_amount": "",
+            "cod_amount": "4.00",
+            "remark": "",
+            "source": "manual",
+            "source_label": "手工",
+            "status": "in_transit",
+            "status_label": "运输中",
+            "status_tone": "info",
+            "opening_cost": "20.00",
+            "pickup_payment_amount": "4.00",
+            "print_data_url": "/waybills/1/print-data?source=manual",
+            "tracking_url": "/tracking?tracking_number=00000001",
+        }
+        row.update(overrides)
+        return row
+
+    def _render_page(self, row):
+        return self.template.render(
             app_title="Test Console",
             filters={
                 "q": "00000001",
@@ -167,44 +208,7 @@ class WaybillQueryTemplateTests(unittest.TestCase):
                 "delivery_method": "",
                 "sort": "open_date_desc",
             },
-            rows=[
-                {
-                    "id": 1,
-                    "waybill_no": "00000001",
-                    "open_date": "2026/05/12",
-                    "created_at": "2026-05-12 10:00:00",
-                    "updated_at": "2026-05-12 10:00:00",
-                    "destination_site": "杭州余杭",
-                    "receiver_name": "王小明",
-                    "receiver_phone": "13812345678",
-                    "receiver_address": "浙江省杭州市余杭区",
-                    "sender_name": "李建国",
-                    "sender_phone": "13987654321",
-                    "sender_address": "湖南省邵阳市测试路8号",
-                    "goods_name_lines": "电子产品",
-                    "package_type_lines": "纸箱",
-                    "quantity_lines": "1件",
-                    "weight_volume": "2.50kg",
-                    "freight_fee": "20.00",
-                    "pickup_fee": "",
-                    "delivery_fee": "5.00",
-                    "transfer_fee": "",
-                    "payment_method": "到付",
-                    "delivery_method": "送货",
-                    "insurance_amount": "",
-                    "cod_amount": "4.00",
-                    "remark": "",
-                    "source": "manual",
-                    "source_label": "手工",
-                    "status": "in_transit",
-                    "status_label": "运输中",
-                    "status_tone": "info",
-                    "opening_cost": "20.00",
-                    "pickup_payment_amount": "4.00",
-                    "print_data_url": "/waybills/1/print-data?source=manual",
-                    "tracking_url": "/tracking?tracking_number=00000001",
-                }
-            ],
+            rows=[row],
             summary={
                 "total": 1,
                 "manual_count": 1,
@@ -235,6 +239,9 @@ class WaybillQueryTemplateTests(unittest.TestCase):
             **_waybill_template_defaults(),
         )
 
+    def test_template_renders_search_summary_and_table(self):
+        html = self._render_page(self._sample_row())
+
         self.assertIn("湖南省邵阳市测试路8号", html)
         self.assertIn("共 1 条", html)
         self.assertIn("00000001", html)
@@ -256,9 +263,13 @@ class WaybillQueryTemplateTests(unittest.TestCase):
         self.assertNotIn('type="date" name="date_from"', html)
         self.assertIn("运单号 / 电话 / 收货人 / 发货人", html)
         self.assertIn("开单日期", html)
-        self.assertIn("开单成本", html)
-        self.assertIn("¥20.00", html)
-        self.assertIn("提付金额", html)
+        # 博益开单详情只展示录单原有费用字段，不出现派生的开单成本/提付金额。
+        self.assertNotIn("开单成本", html)
+        self.assertNotIn("提付金额", html)
+        self.assertIn("保价金额", html)
+        self.assertIn("代收金额", html)
+        self.assertIn("<dt>结算方式</dt><dd>到付</dd>", html)
+        self.assertIn("¥4.00", html)
         self.assertIn("运输中", html)
         self.assertIn("更多筛选", html)
         self.assertIn("列设置", html)
@@ -274,6 +285,16 @@ class WaybillQueryTemplateTests(unittest.TestCase):
         self.assertNotIn("内部备注", html)
         self.assertNotIn("费用合计", html)
         self.assertNotIn("导出当前页", html)
+
+    def test_platform_detail_keeps_derived_opening_cost_and_pickup_amount(self):
+        html = self._render_page(self._sample_row(
+            source="ronghui", source_label="融辉寄件", opening_cost="20.00", pickup_payment_amount="4.00",
+            print_data_url="/waybills/1/print-data?source=ronghui",
+        ))
+
+        self.assertIn("<dt>开单成本</dt>", html)
+        self.assertIn("<dt>提付金额</dt>", html)
+        self.assertNotIn("<dt>保价金额</dt>", html)
 
     def test_detail_opens_as_centered_modal_not_right_drawer(self):
         template_text = (Path(__file__).resolve().parents[1] / "templates" / "waybills.html").read_text(encoding="utf-8")

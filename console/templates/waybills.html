@@ -221,14 +221,20 @@
           {{ detail_item('需要回单', '是' if row.receipt_required in [1, '1', true] else ('否' if row.receipt_required in [0, '0', false] else '无数据')) }}
         </dl></section>
         {% set fee_items %}
-          {% for name, label in [('freight_fee', '运费'), ('transfer_fee', '中转费'), ('insurance_amount', '保价'), ('cod_amount', '代收')] %}
-            {% if row[name] is defined and row[name] is not none and row[name]|string != '' %}{{ detail_item(label, row[name], true) }}{% endif %}
-          {% endfor %}
-          {% if row.payment_method and ('到付' in row.payment_method or '提付' in row.payment_method) and (row.cod_amount or row.freight_fee) %}{{ detail_item('提付金额', row.pickup_payment_amount, true) }}{% endif %}
-          {% if (row.source == 'yunda' and row.transfer_fee) or (row.source != 'yunda' and row.freight_fee) %}{{ detail_item('开单成本', row.opening_cost, true) }}{% endif %}
-          {% if row.source in ['yunda', 'ronghui'] %}{% for name, label in [('pickup_fee', '接货费'), ('delivery_fee', '送货费')] %}
-            {% if row[name] is defined and row[name] is not none and row[name]|string != '' %}{{ detail_item(label, row[name], true) }}{% endif %}
-          {% endfor %}{% endif %}
+          {% if row.source == 'manual' %}
+            {# 博益开单按录单字段原样展示，不显示查询页派生的开单成本/提付金额 #}
+            {% for name, label in [('freight_fee', '运费'), ('transfer_fee', '中转费'), ('insurance_amount', '保价金额'), ('cod_amount', '代收金额')] %}{{ detail_item(label, row[name], true) }}{% endfor %}
+            {{ detail_item('结算方式', row.payment_method) }}
+          {% else %}
+            {% for name, label in [('freight_fee', '运费'), ('transfer_fee', '中转费'), ('insurance_amount', '保价'), ('cod_amount', '代收')] %}
+              {% if row[name] is defined and row[name] is not none and row[name]|string != '' %}{{ detail_item(label, row[name], true) }}{% endif %}
+            {% endfor %}
+            {% if row.payment_method and ('到付' in row.payment_method or '提付' in row.payment_method) and (row.cod_amount or row.freight_fee) %}{{ detail_item('提付金额', row.pickup_payment_amount, true) }}{% endif %}
+            {% if (row.source == 'yunda' and row.transfer_fee) or (row.source != 'yunda' and row.freight_fee) %}{{ detail_item('开单成本', row.opening_cost, true) }}{% endif %}
+            {% if row.source in ['yunda', 'ronghui'] %}{% for name, label in [('pickup_fee', '接货费'), ('delivery_fee', '送货费')] %}
+              {% if row[name] is defined and row[name] is not none and row[name]|string != '' %}{{ detail_item(label, row[name], true) }}{% endif %}
+            {% endfor %}{% endif %}
+          {% endif %}
         {% endset %}
         <section class="waybill-facts-block"><h3>费用信息</h3>{% if fee_items | trim %}<dl class="waybill-kv">{{ fee_items }}</dl>{% else %}<p class="waybill-kv-empty">无数据</p>{% endif %}</section>
       </div>
