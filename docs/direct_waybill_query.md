@@ -13,7 +13,7 @@
 - `agent/migrations/045_waybill_source_coverage.sql`：新增来源身份和覆盖表。旧行起初保持 NULL；仅在原平台本次精确返回能核实旧原生采集身份时原位补全，规则见下文，不按账号或插件名猜归属。
 - 两个同步工具与两个实际生产 projection 均接入来源范围写入器。已证明完整分页的夜间快照才可替换对应平台/来源/权限/日期范围；精确补查不删除其他行；缺 scope 证明不执行 SQL 写入并明确 partial/失败。
 - `console/database.py`：同一响应的列表、总数和汇总在同一 MySQL 一致性快照中读取。
-- `agent/plugin_core_adapters/arrival_report.py`：同时读取新 Invocation 的结果/代次回执和历史 Run 的只读证据。当前统计已写、写结果未知等事实不会被简化的到货清单覆盖；不改统计算法。
+- `agent/plugin_core_adapters/arrival_report.py`：提供历史发布与写入证据读取。当前 V2 允许后续成功的到货清单用本次有效结果覆盖原到货表；查询失败或写结果未知必须明确报告，不能作为成功发布或自动重放的依据；不改统计算法。
 
 ## Console 查询与后台补查
 
