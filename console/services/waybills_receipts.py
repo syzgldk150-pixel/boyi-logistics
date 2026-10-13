@@ -64,6 +64,8 @@ class WaybillsReceiptsServiceMixin:
         body = template.render(
             app_title=self.settings.app_title,
             initial_tracking_number=query.get("tracking_number", [""])[0].strip(),
+            # Set by a Boyi waybill's linked platform waybill; unknown values are ignored.
+            initial_provider=self._tracking_provider(query.get("provider", [""])[0]),
             message=query.get("message", [""])[0],
             message_kind=query.get("kind", ["info"])[0],
         )
@@ -1459,6 +1461,12 @@ class WaybillsReceiptsServiceMixin:
     def _normalize_tracking_payload(cls, data: dict[str, Any]) -> dict[str, Any]:
         return data
 
+    @staticmethod
+    def _tracking_provider(value: Any) -> str:
+        """Platform of a linked waybill number; empty lets the Agent infer it."""
+        provider = str(value or "").strip().lower()
+        return provider if provider in {"ronghui", "yunda", "zhuanxian", "best"} else ""
+
     def _handle_tracking_query(self, handler: BaseHTTPRequestHandler) -> None:
         trusted_context = self._control_plane_write_context(handler)
         if trusted_context is None:
@@ -1473,9 +1481,17 @@ class WaybillsReceiptsServiceMixin:
         if not tracking_number:
             self._send_json(handler, HTTPStatus.BAD_REQUEST, {"error": "请输入运单号"})
             return
+        provider = self._tracking_provider(body.get("provider"))
+        if provider == "best":
+            self._send_json(handler, HTTPStatus.UNPROCESSABLE_ENTITY, {
+                "error": f"百世运单 {tracking_number} 的轨迹查询暂未接入，请先在百世系统中查询。",
+            })
+            return
+        params = {"tracking_number": tracking_number, "decrypt_masked": True}
+        if provider:
+            params["provider"] = provider
 
-        result = call_business(self, "tracking_query",
-            {"tracking_number": tracking_number, "decrypt_masked": True},
+        result = call_business(self, "tracking_query", params,
             trusted_context=trusted_context, timeout_sec=180)
         if not result.get("ok"):
             error = result.get("error")

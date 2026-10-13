@@ -53,6 +53,9 @@ def database():
         cursor.execute(migration)
         migration = (ROOT / "agent/migrations/054_boyi_waybill_sender_address.sql").read_text()
         cursor.execute(migration)
+        # Post-055 migration on this pre-split fixture: the entity table is local.
+        migration = (ROOT / "agent/migrations/059_boyi_waybill_platform_link.sql").read_text()
+        cursor.execute(migration.replace("{{waybill_db}}.", ""))
         connection.commit()
 
         # This fixture also exercises historical 050/051 in-place migrations.
@@ -201,7 +204,8 @@ def test_local_date_migration_preserves_numbers_fields_and_totals(manual_reposit
                 cursor.execute(sql)
         cursor.execute("SELECT * FROM boyi_waybills ORDER BY id")
         moved = cursor.fetchall()
-    assert moved == [dict(row, receipt_required=0, sender_address=None) for row in expected if row["source"] == "manual"]
+    assert moved == [dict(row, receipt_required=0, sender_address=None, linked_platform=None, linked_waybill_no=None)
+                     for row in expected if row["source"] == "manual"]
     assert rows(repo.connect) == [row for row in expected if row["source"] != "manual"]
     result = repo.search_waybills({"source": "manual", "date_from": "2026-09-16", "date_to": "2026-09-16"})
     assert result["summary"]["total"] == 1

@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Callable, Iterator
+from urllib.parse import urlencode
 
 import pymysql
 
@@ -250,6 +251,33 @@ MANUAL_WAYBILL_EDIT_LABELS = {
     "receipt_required": "需要回单",
 }
 MANUAL_WAYBILL_EDIT_FIELDS = tuple(MANUAL_WAYBILL_EDIT_LABELS)
+# Platform waybill a Boyi manual waybill may be linked to for tracking. Best
+# tracking is not connected yet; the link is still saved and shown.
+WAYBILL_LINK_PLATFORMS = {"ronghui": "融辉", "yunda": "韵达", "best": "百世"}
+_WAYBILL_LINK_NUMBER = re.compile(r"^[A-Z0-9]{4,40}$")
+
+
+def normalize_waybill_link(platform: Any, waybill_no: Any) -> tuple[str, str]:
+    """Validated (platform, number), or ("", "") to clear; ValueError otherwise."""
+    platform_text = str(platform or "").strip().lower()
+    number = re.sub(r"\s+", "", str(waybill_no or "")).upper()
+    if not platform_text and not number:
+        return "", ""
+    if platform_text not in WAYBILL_LINK_PLATFORMS:
+        raise ValueError("请选择绑定平台：融辉、韵达或百世。")
+    if not _WAYBILL_LINK_NUMBER.fullmatch(number):
+        raise ValueError("平台运单号应为 4–40 位字母或数字。")
+    return platform_text, number
+
+
+def waybill_link_text(platform: Any, waybill_no: Any) -> str:
+    platform_text = str(platform or "")
+    number = str(waybill_no or "")
+    if not platform_text and not number:
+        return ""
+    return f"{WAYBILL_LINK_PLATFORMS.get(platform_text, platform_text)} {number}".strip()
+
+
 _MANUAL_WEIGHT_PART = re.compile(r"^(\d+(?:\.\d+)?)kg$")
 _MANUAL_VOLUME_PART = re.compile(r"^(\d+(?:\.\d+)?)m³$")
 
@@ -942,8 +970,10 @@ class DocumentRepository:
         platform_only = ", ".join(cls._PLATFORM_ONLY_FIELD_NAMES)
         boyi_absent = ", ".join(f"NULL AS {name}" for name in cls._PLATFORM_ONLY_FIELD_NAMES)
         return (
-            f"(SELECT {columns}, {platform_only}, NULL AS receipt_required, NULL AS sender_address FROM waybills UNION ALL "
-            f"SELECT {columns}, {boyi_absent}, receipt_required, sender_address FROM boyi_waybills WHERE source='manual') AS saved_waybills"
+            f"(SELECT {columns}, {platform_only}, NULL AS receipt_required, NULL AS sender_address, "
+            "NULL AS linked_platform, NULL AS linked_waybill_no FROM waybills UNION ALL "
+            f"SELECT {columns}, {boyi_absent}, receipt_required, sender_address, linked_platform, linked_waybill_no "
+            "FROM boyi_waybills WHERE source='manual') AS saved_waybills"
         )
 
     def _field_value(self, fields: dict[str, Any], field_name: str) -> str:
@@ -1866,18 +1896,9 @@ class DocumentRepository:
             row = cursor.fetchone()
             if row is None:
                 raise ManualWaybillEditError("NOT_FOUND", "运单不存在或不是博益开单。")
-            cursor.execute(
-                f"SELECT waybill_id, request_sha256, changes_json FROM boyi_waybill_edit_logs "
-                f"WHERE request_id = {self.placeholder} FOR UPDATE",
-                [request_id],
-            )
-            prior = cursor.fetchone()
-            if prior is not None:
-                if int(prior["waybill_id"]) != int(waybill_id) or prior["request_sha256"] != request_sha256:
-                    raise ManualWaybillEditError("REQUEST_REUSED", "同一保存请求不能用于其他内容，请刷新后重试。")
-                changes = prior["changes_json"]
-                return {"outcome": "REPLAYED",
-                        "changes": json.loads(changes) if isinstance(changes, (str, bytes)) else changes}
+            replayed = self._replay_manual_waybill_edit(cursor, waybill_id, request_id, request_sha256)
+            if replayed is not None:
+                return replayed
             if normalize_waybill_status(row.get("status")) == "cancelled":
                 raise ManualWaybillEditError("CANCELLED", "运单已作废，不能修改。")
             if manual_waybill_fingerprint(row) != expected_fingerprint:
@@ -1903,13 +1924,88 @@ class DocumentRepository:
                 f"WHERE id = {self.placeholder} AND source = 'manual'",
                 [*values, _now_iso(), int(waybill_id)],
             )
+            self._insert_manual_waybill_edit(cursor, row, request_id, request_sha256, actor_id, actor_name, changes)
+            return {"outcome": "SAVED", "changes": changes}
+
+    def _replay_manual_waybill_edit(
+        self, cursor: Any, waybill_id: int, request_id: str, request_sha256: str,
+    ) -> dict[str, Any] | None:
+        """The saved result of this request ID, or None for a new request."""
+        cursor.execute(
+            f"SELECT waybill_id, request_sha256, changes_json FROM boyi_waybill_edit_logs "
+            f"WHERE request_id = {self.placeholder} FOR UPDATE",
+            [request_id],
+        )
+        prior = cursor.fetchone()
+        if prior is None:
+            return None
+        if int(prior["waybill_id"]) != int(waybill_id) or prior["request_sha256"] != request_sha256:
+            raise ManualWaybillEditError("REQUEST_REUSED", "同一保存请求不能用于其他内容，请刷新后重试。")
+        changes = prior["changes_json"]
+        return {"outcome": "REPLAYED",
+                "changes": json.loads(changes) if isinstance(changes, (str, bytes)) else changes}
+
+    def _insert_manual_waybill_edit(
+        self, cursor: Any, row: dict[str, Any], request_id: str, request_sha256: str,
+        actor_id: str, actor_name: str, changes: list[dict[str, Any]],
+    ) -> None:
+        cursor.execute(
+            "INSERT INTO boyi_waybill_edit_logs (waybill_id, waybill_no, request_id, request_sha256, "
+            "actor_id, actor_name, changes_json) VALUES "
+            f"({', '.join([self.placeholder] * 7)})",
+            [int(row["id"]), str(row.get("waybill_no") or ""), request_id, request_sha256,
+             actor_id, actor_name, json.dumps(changes, ensure_ascii=False)],
+        )
+
+    def link_manual_waybill(
+        self,
+        waybill_id: int,
+        platform: str,
+        waybill_no: str,
+        *,
+        expected_platform: str,
+        expected_waybill_no: str,
+        request_id: str,
+        request_sha256: str,
+        actor_id: str,
+        actor_name: str,
+    ) -> dict[str, Any]:
+        """Link (or clear) the platform waybill of one Boyi manual waybill.
+
+        Inputs are already normalized. The row is locked and its current link
+        must equal what the operator saw; the change is recorded with the
+        manual edits in the same transaction and replays by request ID.
+        """
+        table = waybill_table("manual")
+        with self.connect() as connection:
+            cursor = connection.cursor()
             cursor.execute(
-                "INSERT INTO boyi_waybill_edit_logs (waybill_id, waybill_no, request_id, request_sha256, "
-                "actor_id, actor_name, changes_json) VALUES "
-                f"({', '.join([self.placeholder] * 7)})",
-                [int(waybill_id), str(row.get("waybill_no") or ""), request_id, request_sha256,
-                 actor_id, actor_name, json.dumps(changes, ensure_ascii=False)],
+                f"SELECT * FROM {table} WHERE id = {self.placeholder} AND source = 'manual' FOR UPDATE",
+                [int(waybill_id)],
             )
+            row = cursor.fetchone()
+            if row is None:
+                raise ManualWaybillEditError("NOT_FOUND", "运单不存在或不是博益开单。")
+            replayed = self._replay_manual_waybill_edit(cursor, waybill_id, request_id, request_sha256)
+            if replayed is not None:
+                return replayed
+            if normalize_waybill_status(row.get("status")) == "cancelled":
+                raise ManualWaybillEditError("CANCELLED", "运单已作废，不能绑定平台运单。")
+            current_platform = _stored_text(row.get("linked_platform"))
+            current_no = _stored_text(row.get("linked_waybill_no"))
+            if (current_platform, current_no) != (expected_platform, expected_waybill_no):
+                raise ManualWaybillEditError("STALE", "平台运单绑定已被修改，请关闭后重新打开再操作。")
+            if (current_platform, current_no) == (platform, waybill_no):
+                return {"outcome": "UNCHANGED", "changes": []}
+            changes = [{"field": "linked_waybill", "label": "绑定平台运单",
+                        "before": waybill_link_text(current_platform, current_no),
+                        "after": waybill_link_text(platform, waybill_no)}]
+            cursor.execute(
+                f"UPDATE {table} SET linked_platform = {self.placeholder}, linked_waybill_no = {self.placeholder}, "
+                f"updated_at = {self.placeholder} WHERE id = {self.placeholder} AND source = 'manual'",
+                [platform or None, waybill_no or None, _now_iso(), int(waybill_id)],
+            )
+            self._insert_manual_waybill_edit(cursor, row, request_id, request_sha256, actor_id, actor_name, changes)
             return {"outcome": "SAVED", "changes": changes}
 
     def list_manual_waybill_edits(self, waybill_id: int, *, limit: int = 20) -> list[dict[str, Any]]:
@@ -2032,7 +2128,13 @@ class DocumentRepository:
         data["print_data_url"] = f"/waybills/{data.get('id')}/print-data"
         if data.get("source") in WAYBILL_SOURCE_LABELS:
             data["print_data_url"] += f"?source={data['source']}"
-        data["tracking_url"] = f"/tracking?tracking_number={data.get('waybill_no', '')}"
+        linked_platform = str(data.get("linked_platform") or "")
+        linked_no = str(data.get("linked_waybill_no") or "")
+        data["linked_text"] = waybill_link_text(linked_platform, linked_no)
+        if linked_platform and linked_no:
+            data["tracking_url"] = "/tracking?" + urlencode({"tracking_number": linked_no, "provider": linked_platform})
+        else:
+            data["tracking_url"] = f"/tracking?tracking_number={data.get('waybill_no', '')}"
         return data
 
     # ------------------------------------------------------------------

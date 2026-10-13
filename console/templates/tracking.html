@@ -705,6 +705,8 @@
           class="tracking-input"
           placeholder="输入运单号"
           value="{{ initial_tracking_number | default('') }}"
+          data-linked-provider="{{ initial_provider | default('') }}"
+          data-linked-number="{{ initial_tracking_number | default('') }}"
           autocomplete="off"
           spellcheck="false"
           aria-label="运单号"
@@ -837,8 +839,12 @@
   }
 
   input.addEventListener('input', function() {
-    var type = detectType(this.value);
-    if (type === 'ronghui') {
+    var type = linkedProvider(this.value.trim()) || detectType(this.value);
+    if (type === 'best') {
+      badge.textContent = linkedProviderLabels.best;
+      badge.className = 'tracking-type-badge';
+      badge.hidden = false;
+    } else if (type === 'ronghui') {
       badge.textContent = '融辉单号';
       badge.className = 'tracking-type-badge tracking-type-badge--rh';
       badge.hidden = false;
@@ -855,6 +861,13 @@
     }
   });
 
+  // A Boyi waybill's linked platform number keeps its platform while unchanged.
+  var linkedProviderLabels = { ronghui: '融辉单号', yunda: '韵达单号', best: '百世单号' };
+  function linkedProvider(trackingNumber) {
+    var provider = input.getAttribute('data-linked-provider') || '';
+    return provider && trackingNumber === (input.getAttribute('data-linked-number') || '') ? provider : '';
+  }
+
   function doSearch() {
     var trackingNumber = input.value.trim();
     if (!trackingNumber) {
@@ -862,7 +875,8 @@
       return;
     }
 
-    var type = detectType(trackingNumber);
+    var provider = linkedProvider(trackingNumber);
+    var type = provider || detectType(trackingNumber);
     if (!type) {
       showSection(stateError);
       document.getElementById('errorMsg').textContent =
@@ -877,7 +891,7 @@
     fetch('/tracking/query', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tracking_number: trackingNumber })
+      body: JSON.stringify(provider ? { tracking_number: trackingNumber, provider: provider } : { tracking_number: trackingNumber })
     })
     .then(function(resp) {
       return resp.json().then(function(data) {

@@ -4,6 +4,7 @@ import gzip
 from email.utils import formatdate
 
 from console.app_support import *  # noqa: F403
+from console.database import normalize_waybill_link, waybill_link_text
 from console.services.waybill_printing import build_waybill_print_data
 from shared.waybill_entry_extensions import (
     WAYBILL_ENTRY_ACTIONS_SLOT,
@@ -814,6 +815,66 @@ class DocumentServiceMixin:
         }.get(outcome, "运单已修改；如已打印面单，请重新打印。")
         self._send_json(handler, HTTPStatus.OK, {
             "ok": True, "outcome": outcome, "changes": result["changes"], "message": message,
+        })
+
+    _WAYBILL_LINK_REQUEST_KEYS = frozenset(
+        {"request_id", "platform", "waybill_no", "expected_platform", "expected_waybill_no"}
+    )
+
+    def _handle_manual_waybill_link(self, handler: BaseHTTPRequestHandler, waybill_id: int) -> None:
+        """Link or clear the platform waybill whose tracking a Boyi waybill uses."""
+
+        def fail(status: HTTPStatus, message: str, code: str = "WAYBILL_LINK_INVALID") -> None:
+            self._send_json(handler, status, {"ok": False, "error_code": code, "message": message})
+
+        context = self._control_plane_write_context(handler)
+        if context is None:
+            return
+        values = self._read_control_plane_json(handler)
+        if values is None:
+            return
+        request_id = self._normalize_browser_request_uuid(values.get("request_id") if isinstance(values, dict) else "")
+        if (
+            not isinstance(values, dict)
+            or set(values) != self._WAYBILL_LINK_REQUEST_KEYS
+            or not request_id
+            or request_id != self._normalize_browser_request_uuid(handler.headers.get("X-Browser-Request-UUID"))
+            or any(not isinstance(values[key], str) or len(values[key]) > 64 for key in self._WAYBILL_LINK_REQUEST_KEYS)
+        ):
+            fail(HTTPStatus.BAD_REQUEST, "绑定内容不完整，请关闭后重新打开再操作。")
+            return
+        try:
+            platform, waybill_no = normalize_waybill_link(values["platform"], values["waybill_no"])
+            expected_platform, expected_no = normalize_waybill_link(values["expected_platform"], values["expected_waybill_no"])
+        except ValueError as exc:
+            fail(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc))
+            return
+        user = getattr(handler, "current_admin_user", None) or {}
+        request_sha256 = hashlib.sha256(json.dumps(
+            {"waybill_id": int(waybill_id), "link": values},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        try:
+            result = self.repository.link_manual_waybill(
+                waybill_id, platform, waybill_no,
+                expected_platform=expected_platform, expected_waybill_no=expected_no,
+                request_id=request_id, request_sha256=request_sha256,
+                actor_id=str(user.get("id") or context["actor"].get("actor_id") or ""),
+                actor_name=str(user.get("display_name") or user.get("username") or "")[:128],
+            )
+        except ManualWaybillEditError as exc:
+            fail(HTTPStatus.NOT_FOUND if exc.code == "NOT_FOUND" else HTTPStatus.CONFLICT, str(exc), exc.code)
+            return
+        except Exception:
+            fail(HTTPStatus.SERVICE_UNAVAILABLE, "绑定保存失败，请稍后重试；可重新打开运单核对是否已绑定。", "WAYBILL_LINK_FAILED")
+            return
+        if result["outcome"] == "UNCHANGED":
+            message = "绑定未变化。"
+        elif platform:
+            message = f"已绑定{waybill_link_text(platform, waybill_no)}，轨迹将查询该平台运单。"
+        else:
+            message = "已解除平台运单绑定。"
+        self._send_json(handler, HTTPStatus.OK, {
+            "ok": True, "outcome": result["outcome"], "changes": result["changes"], "message": message,
         })
 
     def _handle_waybill_status_update(self, handler: BaseHTTPRequestHandler, waybill_id: int) -> None:

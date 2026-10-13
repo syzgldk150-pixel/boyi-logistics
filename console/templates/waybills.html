@@ -122,6 +122,14 @@
   .waybill-kv-row dd.is-money { text-align: right; font-variant-numeric: tabular-nums; }
   .waybill-kv--remark { padding: 8px 0; border-bottom: 1px solid var(--line); }
   .waybill-kv-empty { color: var(--muted); padding: 4px 0; }
+  .waybill-link { padding: 4px 0 8px; border-bottom: 1px solid var(--line); }
+  .waybill-link-value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+  .waybill-link-toggle { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: .8125rem; cursor: pointer; }
+  .waybill-link-toggle:hover { text-decoration: underline; }
+  .waybill-link-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0 4px 84px; }
+  .waybill-link-form[hidden] { display: none; }
+  .waybill-link-platform { width: auto; min-width: 104px; }
+  .waybill-link-no { flex: 1 1 160px; min-width: 0; }
   .waybill-detail-times { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: .75rem; color: var(--muted); padding: 10px 0 12px; }
   .waybill-detail-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--line); background: var(--canvas); }
   .waybill-detail-action-group { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -175,6 +183,8 @@
     .waybill-detail-head, .waybill-detail-actions { padding: 16px; }
     .waybill-detail-body { padding: 0 16px; }
     .waybill-detail-grid, .waybill-parties, .waybill-detail-facts { grid-template-columns: 1fr; }
+    .waybill-link-form { margin-left: 0; }
+    .waybill-link-form > * { flex: 1 1 100%; }
     .waybill-detail-actions { flex-wrap: wrap; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
     .waybill-detail-action-group { width: 100%; }
     .waybill-detail-action-group > * { flex: 1; }
@@ -239,6 +249,27 @@
         <section class="waybill-facts-block"><h3>费用信息</h3>{% if fee_items | trim %}<dl class="waybill-kv">{{ fee_items }}</dl>{% else %}<p class="waybill-kv-empty">无数据</p>{% endif %}</section>
       </div>
       <dl class="waybill-kv waybill-kv--remark">{{ detail_item('备注', row.remark) }}</dl>
+      {% if row.source == 'manual' %}
+      <div class="waybill-link" data-waybill-link data-linked-platform="{{ row.linked_platform or '' }}" data-linked-no="{{ row.linked_waybill_no or '' }}" data-waybill-no="{{ row.waybill_no }}">
+        <dl class="waybill-kv"><div class="waybill-kv-row"><dt>平台运单</dt><dd class="waybill-link-value">
+          <span>{{ row.linked_text or '未绑定' }}</span>
+          {% if row.status != 'cancelled' %}<button class="waybill-link-toggle" type="button" data-waybill-link-toggle aria-expanded="false">{{ '修改绑定' if row.linked_text else '绑定平台运单' }}</button>{% endif %}
+        </dd></div></dl>
+        {% if row.status != 'cancelled' %}
+        <form class="waybill-link-form" data-waybill-link-form hidden>
+          <label class="sr-only" for="waybillLinkPlatform{{ row.id }}">绑定平台</label>
+          <select id="waybillLinkPlatform{{ row.id }}" class="waybill-select waybill-link-platform" name="platform">
+            <option value="">选择平台</option>
+            {% for value, label in [('ronghui', '融辉'), ('yunda', '韵达'), ('best', '百世')] %}<option value="{{ value }}"{% if row.linked_platform == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+          </select>
+          <label class="sr-only" for="waybillLinkNo{{ row.id }}">平台运单号</label>
+          <input id="waybillLinkNo{{ row.id }}" class="waybill-edit-input waybill-link-no" name="waybill_no" value="{{ row.linked_waybill_no or '' }}" maxlength="40" autocomplete="off" spellcheck="false" placeholder="平台运单号">
+          <button class="primary-btn" type="submit">保存绑定</button>
+          {% if row.linked_text %}<button class="ghost-btn" type="button" data-waybill-link-clear>解除绑定</button>{% endif %}
+        </form>
+        {% endif %}
+      </div>
+      {% endif %}
       {% if row.source == 'manual' %}<details class="waybill-detail-section waybill-history" data-waybill-history><summary>修改记录</summary><div data-waybill-history-body aria-live="polite"></div></details>{% endif %}
       <div class="waybill-detail-times"><span>创建时间：{{ row.created_at or '无数据' }}</span><span>最近更新：{{ row.updated_at or '无数据' }}</span></div>
     </div>
@@ -1009,19 +1040,8 @@
             body: JSON.stringify({ request_id: requestId, fingerprint: result.fingerprint, fields }),
           }, 95000);
           saved = true;
-          const id = `manual:${content.dataset.waybillId}`;
           const message = outcome.outcome === "UNCHANGED" ? "未修改任何内容。" : "已修改；如已打印面单，请重新打印。";
-          await loadWaybills(new URL(window.location.href), { pushState: false, silent: true });
-          const current = panel();
-          if (!current) return;
-          if (!selectWaybill(current, id)) {
-            const url = new URL("/waybills", window.location.origin);
-            url.search = new URLSearchParams({ q: result.waybill_no, source: "manual" });
-            const next = await fetchPanel(url);
-            const template = next.querySelector(`[data-waybill-detail-template="${CSS.escape(id)}"]`);
-            if (!template || !selectWaybill(current, id, template)) throw new Error("已保存，但更新后的运单详情暂未读到，请重新查询。");
-          }
-          detailMessage(current.querySelector("[data-waybill-detail-slot]"), message, "success");
+          await reopenSavedManualWaybill(content.dataset.waybillId, result.waybill_no, message);
         } catch (error) {
           detailMessage(content.isConnected ? content : panel()?.querySelector("[data-waybill-detail-slot]"), saved ? "已保存，但详情刷新失败，请关闭后重新查询并核对。" : error.message);
           if (saved && !content.isConnected) setRefreshNotice("已保存，但详情刷新失败，请重新查询并核对。", "warning");
@@ -1034,11 +1054,76 @@
     finally { if (button.isConnected) button.disabled = false; }
   }
 
+  // Reload the list after a saved change and reopen the same Boyi waybill.
+  async function reopenSavedManualWaybill(waybillId, waybillNo, message) {
+    const id = `manual:${waybillId}`;
+    await loadWaybills(new URL(window.location.href), { pushState: false, silent: true });
+    const current = panel();
+    if (!current) return;
+    if (!selectWaybill(current, id)) {
+      const url = new URL("/waybills", window.location.origin);
+      url.search = new URLSearchParams({ q: waybillNo, source: "manual" });
+      const next = await fetchPanel(url);
+      const template = next.querySelector(`[data-waybill-detail-template="${CSS.escape(id)}"]`);
+      if (!template || !selectWaybill(current, id, template)) throw new Error("已保存，但更新后的运单详情暂未读到，请重新查询。");
+    }
+    detailMessage(current.querySelector("[data-waybill-detail-slot]"), message, "success");
+  }
+
+  // Link (or clear) the platform waybill whose tracking this Boyi waybill uses.
+  async function saveWaybillLink(content, form, clear) {
+    const box = form.closest("[data-waybill-link]");
+    const buttons = [...form.querySelectorAll("button")];
+    const values = {
+      platform: clear ? "" : form.elements.platform.value,
+      waybill_no: clear ? "" : form.elements.waybill_no.value.trim(),
+      expected_platform: box.dataset.linkedPlatform || "",
+      expected_waybill_no: box.dataset.linkedNo || "",
+    };
+    if (!clear && (!values.platform || !values.waybill_no)) {
+      detailMessage(content, "请选择平台并填写平台运单号。");
+      (values.platform ? form.elements.waybill_no : form.elements.platform).focus();
+      return;
+    }
+    const signature = JSON.stringify(values);
+    if (form.dataset.signature !== signature) { form.dataset.requestId = crypto.randomUUID(); form.dataset.signature = signature; }
+    const requestId = form.dataset.requestId;
+    buttons.forEach((item) => { item.disabled = true; });
+    detailMessage(content, "");
+    let saved = false;
+    try {
+      const outcome = await requestJSON(`/waybills/${content.dataset.waybillId}/platform-link`, {
+        method: "POST", headers: { "Content-Type": "application/json", "X-Browser-Request-UUID": requestId },
+        body: JSON.stringify({ request_id: requestId, ...values }),
+      }, 30000);
+      saved = true;
+      await reopenSavedManualWaybill(content.dataset.waybillId, box.dataset.waybillNo, outcome.message || "已保存绑定。");
+    } catch (error) {
+      detailMessage(content.isConnected ? content : panel()?.querySelector("[data-waybill-detail-slot]"), saved ? "已保存，但详情刷新失败，请关闭后重新查询并核对。" : error.message);
+    } finally {
+      if (!saved) buttons.forEach((item) => { item.disabled = false; });
+    }
+  }
+
   function bindDetail(scope) {
     const detail = scope.querySelector("[data-waybill-detail-dialog]");
     detail?.addEventListener("click", (event) => {
       if (event.target instanceof Element && event.target.closest("[data-waybill-detail-close]")) closeWaybillDetail(scope);
       if (event.target instanceof Element && event.target.closest("[data-waybill-edit]")) beginEdit(scope);
+      const linkToggle = event.target instanceof Element ? event.target.closest("[data-waybill-link-toggle]") : null;
+      if (linkToggle) {
+        const box = linkToggle.closest("[data-waybill-link]");
+        const form = box?.querySelector("[data-waybill-link-form]");
+        if (form) {
+          form.hidden = !form.hidden;
+          linkToggle.setAttribute("aria-expanded", String(!form.hidden));
+          if (!form.hidden) (form.elements.platform.value ? form.elements.waybill_no : form.elements.platform).focus();
+        }
+      }
+      const linkClear = event.target instanceof Element ? event.target.closest("[data-waybill-link-clear]") : null;
+      if (linkClear && window.confirm("确认解除平台运单绑定？解除后轨迹将按博益运单号查询。")) {
+        saveWaybillLink(linkClear.closest("[data-waybill-detail-content]"), linkClear.closest("form"), true);
+      }
     });
     detail?.addEventListener("cancel", (event) => {
       event.preventDefault();
@@ -1106,6 +1191,12 @@
       });
     });
     scope.addEventListener("submit", (event) => {
+      const linkForm = event.target instanceof Element ? event.target.closest("[data-waybill-link-form]") : null;
+      if (linkForm) {
+        event.preventDefault();
+        if (!linkForm.querySelector("button:disabled")) saveWaybillLink(linkForm.closest("[data-waybill-detail-content]"), linkForm, false);
+        return;
+      }
       const form = event.target instanceof Element ? event.target.closest("[data-waybill-cancel-form]") : null;
       if (!form) return;
       if (!window.confirm("确认作废这张运单？作废后不会被后续同步覆盖。")) {

@@ -34,7 +34,8 @@ def render_query(app, state=None):
             "opening_cost": "12.30",
             "pickup_payment_amount": "0.00",
             "print_data_url": f"/waybills/41/print-data?source={source}",
-            "tracking_url": "/tracking?tracking_number=SYNTHETIC00041",
+            "tracking_url": (state.saved_fields.get("tracking_url") if state and source == "manual" else None)
+            or "/tracking?tracking_number=SYNTHETIC00041",
         }
         for source in ("manual", "yunda")
     ]
@@ -64,7 +65,7 @@ def render_query(app, state=None):
 def query_page(app, browser):
     state = SimpleNamespace(
         status=200, payload=None, data_requests=[], errors=[], saved_fields={},
-        list_requests=[], edit_requests=[], history_requests=[], source_requests=[],
+        list_requests=[], edit_requests=[], history_requests=[], source_requests=[], link_requests=[],
         save_status=200, save_message="", source_complete=True,
         defer_refresh=False, source_pending=[],
     )
@@ -98,6 +99,17 @@ def query_page(app, browser):
                     state.saved_fields = {key.removeprefix("field_"): value for key, value in payload["fields"].items()}
                 route.fulfill(status=state.save_status, content_type="application/json", body=json.dumps({
                     "ok": state.save_status == 200, "outcome": "SAVED", "message": state.save_message,
+                }))
+            elif parsed.path == "/waybills/41/platform-link":
+                payload = route.request.post_data_json
+                state.link_requests.append((payload, route.request.headers.get("x-browser-request-uuid")))
+                state.saved_fields.update(
+                    linked_platform=payload["platform"], linked_waybill_no=payload["waybill_no"],
+                    linked_text=f"韵达 {payload['waybill_no']}",
+                    tracking_url=f"/tracking?tracking_number={payload['waybill_no']}&provider={payload['platform']}",
+                )
+                route.fulfill(content_type="application/json", body=json.dumps({
+                    "ok": True, "outcome": "SAVED", "changes": [], "message": "已绑定合成平台运单。",
                 }))
             elif parsed.path == "/waybills/41/edit-history":
                 state.history_requests.append(parse_qs(parsed.query))
@@ -357,4 +369,24 @@ def test_query_and_edit_are_usable_without_page_overflow(query_page, width, heig
     assert detail.evaluate("node => node.scrollWidth <= node.clientWidth")
     assert form.get_by_role("button", name="保存修改", exact=True).is_visible()
     page.screenshot(path=str(output / f"edit-{width}.png"))
+    assert not query_page.errors
+
+
+def test_link_platform_waybill_from_details_updates_tracking(query_page):
+    page = query_page.page
+    detail = open_detail(page)
+    assert "未绑定" in detail.locator("[data-waybill-link]").inner_text()
+    detail.locator("[data-waybill-link-toggle]").click()
+    form = detail.locator("[data-waybill-link-form]")
+    form.locator('[name="platform"]').select_option("yunda")
+    form.locator('[name="waybill_no"]').fill("4321098765")
+    form.locator('button[type="submit"]').click()
+    page.wait_for_function("document.querySelector('[data-waybill-detail-dialog] [data-waybill-detail-message]')?.textContent.includes('已绑定合成平台运单')")
+
+    (payload, header), = query_page.link_requests
+    assert payload == {"request_id": header, "platform": "yunda", "waybill_no": "4321098765",
+                       "expected_platform": "", "expected_waybill_no": ""}
+    detail = page.locator("[data-waybill-detail-dialog]")
+    assert "韵达 4321098765" in detail.locator("[data-waybill-link]").inner_text()
+    assert detail.locator("a", has_text="轨迹跟踪").get_attribute("href") == "/tracking?tracking_number=4321098765&provider=yunda"
     assert not query_page.errors

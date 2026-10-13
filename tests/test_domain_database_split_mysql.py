@@ -138,9 +138,17 @@ def test_physical_split_preserves_rows_links_and_finance_foreign_keys(database):
         assert cur.fetchone()["n"] == 1
 
 
+def apply_platform_link_migration(conn, migration):
+    """Current Console queries read the 059 link columns of Boyi waybills."""
+    sql = (ROOT / "agent/migrations/059_boyi_waybill_platform_link.sql").read_text(encoding="utf-8")
+    with conn.cursor() as cur:
+        migration.apply_later_migration(cur, sql, load("run_migrations").split_sql_statements)
+
+
 def test_platform_writes_same_id_and_receipt_global_identity(database):
     conn, connect, migration, apply = database
     apply()
+    apply_platform_link_migration(conn, migration)
     repo = repository(connect)
     assert repo.get_waybill(1, source="manual")["waybill_no"] == "BY00001"
     assert repo.get_waybill(1, source="ronghui")["waybill_no"] == "RH-1"
@@ -217,6 +225,7 @@ def test_boyi_handling_fees_drop_after_split_keeps_platform_fees(database):
         archived = cur.fetchall()
         assert len(archived) == 2
         assert archived[0] == {"id": 1, "pickup_fee": "7.50", "delivery_fee": "9.25"}
+    apply_platform_link_migration(conn, migration)
     repo = repository(connect)
     assert repo.search_waybills({"date_from": "2026-09-08", "date_to": "2026-09-08"})["pagination"]["total"] == 4
     assert "pickup_fee" not in repo.get_waybill(1, source="manual")

@@ -15,6 +15,8 @@ updated: 2026-10-13
 
 `058_automation_project_schedule_changes.sql` 在运行库 `agent_db` 新增 `automation_project_schedule_changes`：每次只改“每天指定时间”时间点的保存记录一条幂等事实（请求 ID 唯一、操作人、前后定时与摘要、所绑定的代次和配置版本），不设外键，卸载实例后仍保留审计。只新增表，不改动既有表或历史迁移；回退旧版本代码时该表闲置无害。057 与 058 随同一次 shared 发布执行。
 
+`059_boyi_waybill_platform_link.sql` 给 `waybill_db.boyi_waybills` 新增可空的 `linked_platform`、`linked_waybill_no`，记录博益开单绑定的融辉/韵达/百世平台运单；默认均为空，不改动既有行或平台表。执行后 `run_migrations.py` 重建 `agent_db.boyi_waybills` 视图，`waybills` 联合视图不投影这两列。Console 的寄件查询按这两列生成轨迹链接，必须先迁移再重启 Console；Console 账号沿用对博益运单表的既有 SELECT/UPDATE 权限。回退到旧代码时两列闲置无害。
+
 `054_boyi_waybill_sender_address.sql` 为博益手工单新增选填 `sender_address`，历史记录保持 NULL；录入、详情与打印共用已保存值。
 
 `050_normalize_local_waybill_dates.sql` 将手工/OCR 的历史斜杠日期转为 ISO 日期，保持单号、行数、金额与其他业务字段不变；修复日期筛选漏掉本地开单。
